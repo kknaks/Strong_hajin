@@ -25,6 +25,14 @@ describe("product surfaces", () => {
           { id: "demo-admin", display_name: "데모 관리자" },
         ]);
       }
+      if (path === "/api/organization/me") {
+        return jsonResponse({
+          member_id: "mina",
+          display_name: "민아 (구성원)",
+          organizations: [],
+          capabilities: ["daily_report.generate"],
+        });
+      }
 
       if (path === "/api/my-work") {
         return jsonResponse([
@@ -43,6 +51,26 @@ describe("product surfaces", () => {
         return jsonResponse([{ id: "jiho", display_name: "지호 (팀장)" }]);
       }
       if (path === "/api/actions") return jsonResponse([]);
+      if (path === "/api/action-inbox") {
+        return jsonResponse([
+          {
+            request_id: "request-1",
+            title: "오늘 확인할 업무 요청",
+            state: "pending",
+            version: 1,
+            task_id: null,
+            assignment_state: null,
+            conditions: null,
+          },
+        ]);
+      }
+      if (path.startsWith("/api/daily-reports/status")) {
+        return jsonResponse({
+          report_date: "2026-09-03",
+          status: "draft",
+          report_id: "report-1",
+        });
+      }
 
       if (path === "/api/tasks/task-1/start" && init?.method === "POST") {
         taskState = "in_progress";
@@ -56,6 +84,8 @@ describe("product surfaces", () => {
     render(<App />);
 
     expect(await screen.findByText("고객 피드백 정리")).toBeTruthy();
+    expect(await screen.findByText("오늘 확인할 업무 요청")).toBeTruthy();
+    expect(await screen.findByText("초안을 편집하거나 제출할 수 있습니다.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "일일보고 작성" })).toBeTruthy();
 
     const navigation = within(screen.getByRole("navigation", { name: "제품 탐색" }));
@@ -95,6 +125,14 @@ describe("product surfaces", () => {
           { id: "mina", display_name: "민아 (구성원)" },
           { id: "jiho", display_name: "지호 (팀장)" },
         ]);
+      }
+      if (path === "/api/organization/me") {
+        return jsonResponse({
+          member_id: personaId,
+          display_name: personaId === "jiho" ? "지호 (팀장)" : "민아 (구성원)",
+          organizations: [],
+          capabilities: personaId === "mina" ? ["daily_report.generate"] : [],
+        });
       }
       if (path === "/api/my-work") {
         return jsonResponse(
@@ -145,6 +183,9 @@ describe("product surfaces", () => {
     });
 
     fireEvent.change(screen.getByLabelText("사용자"), { target: { value: "jiho" } });
+    await waitFor(() => {
+      expect(within(navigation).queryByRole("button", { name: "보고" })).toBeNull();
+    });
     fireEvent.click(within(navigation).getByRole("button", { name: "판단" }));
     expect(await screen.findByText("UI로 만든 업무 요청")).toBeTruthy();
     expect(screen.getByRole("button", { name: "수락" })).toBeTruthy();
@@ -159,6 +200,14 @@ describe("product surfaces", () => {
       const path = String(input);
       if (path === "/api/developer/personas") {
         return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      }
+      if (path === "/api/organization/me") {
+        return jsonResponse({
+          member_id: "mina",
+          display_name: "민아 (구성원)",
+          organizations: [],
+          capabilities: ["daily_report.generate"],
+        });
       }
       if (path === "/api/my-work") return jsonResponse([]);
       if (path === "/api/work-request-assignee-candidates") return jsonResponse([]);
@@ -234,6 +283,14 @@ describe("product surfaces", () => {
       const path = String(input);
       if (path === "/api/developer/personas") {
         return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      }
+      if (path === "/api/organization/me") {
+        return jsonResponse({
+          member_id: "mina",
+          display_name: "민아 (구성원)",
+          organizations: [],
+          capabilities: ["daily_report.generate"],
+        });
       }
       if (path === "/api/my-work") {
         return jsonResponse([

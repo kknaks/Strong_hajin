@@ -45,6 +45,8 @@ class DailyReportRepository(Protocol):
 
     def history(self, owner_id: str, report_id: str) -> dict[str, Any]: ...
 
+    def status_for_date(self, owner_id: str, report_date: str) -> dict[str, Any]: ...
+
 
 class DailyReportDraftWorkflowPort(Protocol):
     def run(self, principal: Principal, report_date: str) -> dict[str, Any]: ...
@@ -147,6 +149,11 @@ class DailyReportApplication:
     def history(self, principal: Principal, report_id: str) -> dict[str, Any]:
         self._require(principal, DAILY_REPORT_READ)
         return self._reports.history(str(principal.id), report_id)
+
+    def status_for_date(self, principal: Principal, report_date: str) -> dict[str, Any]:
+        self._require(principal, DAILY_REPORT_READ)
+        date.fromisoformat(report_date)
+        return self._reports.status_for_date(str(principal.id), report_date)
 
     @staticmethod
     def _require(principal: Principal, capability: str) -> None:

@@ -8,6 +8,7 @@ import {
   getConversation,
   getConversations,
   getDeveloperPersonas,
+  getMyOrganizationProfile,
   getMyWork,
   sendConversationMessage,
 } from "./api";
@@ -37,6 +38,7 @@ const navigation: ReadonlyArray<{ id: ProductSurface; label: string }> = [
 export default function App() {
   const [personaId, setPersonaId] = useState("mina");
   const [personas, setPersonas] = useState<Persona[]>([]);
+  const [capabilities, setCapabilities] = useState<string[] | null>(null);
   const [surface, setSurface] = useState<ProductSurface>("today");
   const [error, setError] = useState<string | null>(null);
   const [isAxOpen, setIsAxOpen] = useState(false);
@@ -62,6 +64,22 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void getMyOrganizationProfile(personaId)
+      .then((profile) => {
+        if (!cancelled) setCapabilities(profile.capabilities);
+      })
+      .catch(() => {
+        if (!cancelled) setCapabilities([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [personaId]);
 
   const refreshConversations = useCallback(async () => {
     const items = await getConversations(personaId);
@@ -207,6 +225,9 @@ export default function App() {
   const currentPersona = personas.find((persona) => persona.id === personaId);
   const currentPersonaName = currentPersona?.display_name ?? "사용자";
   const pageProps = { personaId, onError: setError };
+  const visibleNavigation = navigation.filter(
+    (item) => item.id !== "report" || capabilities?.includes("daily_report.generate"),
+  );
 
   return (
     <main className="thesc-shell">
@@ -223,7 +244,7 @@ export default function App() {
           </div>
         </div>
         <nav aria-label="제품 탐색">
-          {navigation.map((item) => (
+          {visibleNavigation.map((item) => (
             <button
               className={surface === item.id ? "active" : ""}
               key={item.id}

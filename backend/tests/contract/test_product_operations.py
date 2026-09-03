@@ -185,6 +185,15 @@ def test_generate_draft_fails_explicitly_without_the_codex_cli_binary(tmp_path, 
 
 def test_daily_report_edit_submit_and_history_are_report_owned_operations(tmp_path) -> None:
     client = _client_with_seeded_database(tmp_path, report_provider=ContractTestAiProvider())
+    before_generation = client.get(
+        "/api/daily-reports/status?report_date=2026-09-03",
+        headers={"X-Demo-Persona": "mina"},
+    )
+    assert before_generation.json() == {
+        "report_date": "2026-09-03",
+        "status": "not_started",
+        "report_id": None,
+    }
     generated = client.post(
         "/api/daily-reports/generate-draft",
         headers={"X-Demo-Persona": "mina"},
@@ -206,6 +215,15 @@ def test_daily_report_edit_submit_and_history_are_report_owned_operations(tmp_pa
     edited_body = edited.json()
     assert edited_body["draft_version"] == 2
     assert edited_body["body"] == "사람이 확인하고 보완한 보고입니다."
+    draft_status = client.get(
+        "/api/daily-reports/status?report_date=2026-09-03",
+        headers={"X-Demo-Persona": "mina"},
+    )
+    assert draft_status.json() == {
+        "report_date": "2026-09-03",
+        "status": "draft",
+        "report_id": generated["report_id"],
+    }
 
     submitted = client.post(
         f"/api/daily-reports/{generated['report_id']}/submit",
@@ -220,6 +238,15 @@ def test_daily_report_edit_submit_and_history_are_report_owned_operations(tmp_pa
     submitted_body = submitted.json()
     assert submitted_body["submission_version"] == 1
     assert submitted_body["body"] == "사람이 확인하고 보완한 보고입니다."
+    submitted_status = client.get(
+        "/api/daily-reports/status?report_date=2026-09-03",
+        headers={"X-Demo-Persona": "mina"},
+    )
+    assert submitted_status.json() == {
+        "report_date": "2026-09-03",
+        "status": "submitted",
+        "report_id": generated["report_id"],
+    }
 
     history = client.get(
         f"/api/daily-reports/{generated['report_id']}/history",

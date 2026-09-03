@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
 
-import { getMyWork } from "./api";
-import { isDirectTask, type DirectTask, type ProductSurface } from "./viewModels";
+import { getActionInbox, getActions, getDailyReportStatus, getMyWork } from "./api";
+import {
+  isDirectTask,
+  type ActionItem,
+  type DailyReportStatus,
+  type DirectTask,
+  type ProductSurface,
+  type WorkRequest,
+} from "./viewModels";
 
 type TodayPageProps = {
   personaId: string;
@@ -11,14 +18,37 @@ type TodayPageProps = {
 
 export function TodayPage({ personaId, onError, onNavigate }: TodayPageProps) {
   const [tasks, setTasks] = useState<DirectTask[]>([]);
+  const [requests, setRequests] = useState<WorkRequest[]>([]);
+  const [actions, setActions] = useState<ActionItem[]>([]);
+  const [reportStatus, setReportStatus] = useState<DailyReportStatus | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
-    void getMyWork(personaId)
-      .then((items) => {
+    const reportDate = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
+    void Promise.allSettled([
+      getMyWork(personaId),
+      getActionInbox(personaId),
+      getActions(personaId),
+      getDailyReportStatus(personaId, reportDate),
+    ])
+      .then(([workResult, inboxResult, actionsResult, reportResult]) => {
         if (cancelled) return;
-        setTasks(items.filter(isDirectTask));
+        if (
+          workResult.status === "rejected" ||
+          inboxResult.status === "rejected" ||
+          actionsResult.status === "rejected"
+        ) {
+          throw new Error("오늘의 업무 projection을 불러오지 못했습니다.");
+        }
+        setTasks(
+          workResult.value
+            .filter(isDirectTask)
+            .filter((task) => ["open", "in_progress", "blocked"].includes(task.state)),
+        );
+        setRequests(inboxResult.value);
+        setActions(actionsResult.value.filter((action) => action.state === "pending"));
+        setReportStatus(reportResult.status === "fulfilled" ? reportResult.value : null);
         onError(null);
       })
       .catch((error: unknown) => {
@@ -47,9 +77,24 @@ export function TodayPage({ personaId, onError, onNavigate }: TodayPageProps) {
               판단 보기
             </button>
           </div>
-          <p className="empty-row">
-            업무 요청 판단 원장을 연결하면 권한이 있는 요청만 이곳에 표시됩니다.
-          </p>
+          {requests.length === 0 && actions.length === 0 ? (
+            <p className="empty-row">현재 확인할 업무가 없습니다.</p>
+          ) : (
+            <ul className="evidence-list">
+              {requests.map((request) => (
+                <li key={request.request_id}>
+                  <b>{request.title}</b>
+                  <span>업무 요청 · {request.state}</span>
+                </li>
+              ))}
+              {actions.map((action) => (
+                <li key={action.action_id}>
+                  <b>{action.title}</b>
+                  <span>AX 확인 필요 · {action.payload_summary}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
 
         <section className="surface-card">
@@ -82,11 +127,17 @@ export function TodayPage({ personaId, onError, onNavigate }: TodayPageProps) {
             보고 열기
           </button>
         </div>
-        <p>오늘의 업무 기록을 확인한 뒤 일일보고를 작성하세요.</p>
+        <p>{reportReminder(reportStatus)}</p>
         <button className="primary" onClick={() => onNavigate("report")} type="button">
           일일보고 작성
         </button>
       </section>
     </>
   );
+}
+
+function reportReminder(status: DailyReportStatus | null): string {
+  if (status?.status === "submitted") return "오늘 보고는 제출되었습니다. 제출 이력을 확인할 수 있습니다.";
+  if (status?.status === "draft") return "초안을 편집하거나 제출할 수 있습니다.";
+  return "오늘의 업무 기록을 확인한 뒤 일일보고 초안을 만들 수 있습니다.";
 }

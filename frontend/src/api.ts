@@ -1,6 +1,7 @@
 import type {
   DailyReportDraft,
   DailyReportHistory,
+  DailyReportStatus,
   MyWorkItem,
   OrganizationProfile,
   Persona,
@@ -116,6 +117,14 @@ export async function getDailyReportHistory(
   reportId: string,
 ): Promise<DailyReportHistory> {
   return request<DailyReportHistory>(`/api/daily-reports/${reportId}/history`, personaId);
+}
+
+export async function getDailyReportStatus(
+  personaId: string,
+  reportDate: string,
+): Promise<DailyReportStatus> {
+  const query = new URLSearchParams({ report_date: reportDate });
+  return request<DailyReportStatus>(`/api/daily-reports/status?${query}`, personaId);
 }
 
 export async function getActionInbox(personaId: string): Promise<WorkRequest[]> {

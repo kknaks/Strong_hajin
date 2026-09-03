@@ -65,6 +65,12 @@ export type DailyReportHistory = {
   }>;
 };
 
+export type DailyReportStatus = {
+  report_date: string;
+  status: "not_started" | "draft" | "submitted";
+  report_id: string | null;
+};
+
 export type WorkRequest = {
   request_id: string;
   title: string;

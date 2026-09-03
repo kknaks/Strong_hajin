@@ -229,6 +229,19 @@ class SqlAlchemyDailyReportRepository:
             ],
         }
 
+    def status_for_date(self, owner_id: str, report_date: str) -> dict[str, Any]:
+        report = self._session.scalar(
+            select(DailyReportRecord).where(
+                DailyReportRecord.owner_id == owner_id,
+                DailyReportRecord.report_date == report_date,
+            )
+        )
+        return {
+            "report_date": report_date,
+            "status": report.status if report is not None else "not_started",
+            "report_id": str(report.id) if report is not None else None,
+        }
+
     def _owned_report(self, owner_id: str, report_id: str, *, lock: bool = False) -> DailyReportRecord:
         statement = select(DailyReportRecord).where(
             DailyReportRecord.id == UUID(report_id), DailyReportRecord.owner_id == owner_id

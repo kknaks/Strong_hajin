@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from ax_workspace.modules.organization_access.domain import Principal, SEED_PERSONAS
@@ -416,6 +416,18 @@ def create_app(
                 raise _runtime_error(error) from error
             except ProviderFailure as error:
                 raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
+            except ValueError as error:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+
+        @app.get("/api/daily-reports/status")
+        def daily_report_status(
+            report_date: str = Query(),
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.daily_report_status(principal, report_date)
+            except DailyReportAccessDenied as error:
+                raise _runtime_error(error) from error
             except ValueError as error:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
 

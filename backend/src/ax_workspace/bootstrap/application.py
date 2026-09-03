@@ -158,6 +158,10 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return self._reports(session).history(principal, report_id)
 
+    def daily_report_status(self, principal: Principal, report_date: str) -> dict[str, Any]:
+        with self._session_factory() as session:
+            return self._reports(session).status_for_date(principal, report_date)
+
     def _reports(self, session: Any) -> DailyReportApplication:
         return DailyReportApplication(
             SqlAlchemyDailyReportRepository(session),
