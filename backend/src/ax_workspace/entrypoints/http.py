@@ -15,6 +15,7 @@ from ax_workspace.modules.ax_execution.application import (
     RunNotFound,
 )
 from ax_workspace.modules.work.application import InvalidTaskTransition, TaskError, TaskNotFound, TaskState
+from ax_workspace.modules.work.requests import WorkRequestError
 from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.ax_execution.domain import catalog_definitions
 from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
@@ -46,6 +47,16 @@ class DecisionRequest(BaseModel):
 
 class CreateTaskRequest(BaseModel):
     title: str
+
+
+class CreateWorkRequestRequest(BaseModel):
+    title: str
+    assignee_id: str
+
+
+class WorkRequestDecisionRequest(BaseModel):
+    expected_version: int
+    reason: str | None = None
 
 
 class GenerateDailyReportDraftRequest(BaseModel):
@@ -85,6 +96,8 @@ def _runtime_error(error: Exception) -> HTTPException:
     if isinstance(error, TaskNotFound):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
     if isinstance(error, (TaskError, InvalidTaskTransition)):
+        return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
+    if isinstance(error, WorkRequestError):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     raise error
 
@@ -190,6 +203,44 @@ def create_app(
         def create_self_task(request: CreateTaskRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
             try:
                 return app.state.workflow_application.create_self_task(principal, request.title)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/work-requests", status_code=status.HTTP_201_CREATED)
+        def create_work_request(
+            request: CreateWorkRequestRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.create_work_request(
+                    principal, request.title, request.assignee_id
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/work-requests/{request_id}/accept")
+        def accept_work_request(
+            request_id: UUID,
+            request: WorkRequestDecisionRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.accept_work_request(
+                    principal, request_id, request.expected_version
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/work-requests/{request_id}/reject")
+        def reject_work_request(
+            request_id: UUID,
+            request: WorkRequestDecisionRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.reject_work_request(
+                    principal, request_id, request.expected_version, request.reason or ""
+                )
             except Exception as error:
                 raise _runtime_error(error) from error
 

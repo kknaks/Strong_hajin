@@ -57,6 +57,17 @@ def test_entrypoints_do_not_import_platform_implementations() -> None:
         assert "ax_workspace.platform" not in source, module
 
 
+def test_reports_feature_does_not_embed_provider_policy_or_spawn_processes() -> None:
+    reports_sources = [
+        PACKAGE_ROOT / "modules" / "reports" / "application.py",
+        PACKAGE_ROOT / "platform" / "reports.py",
+    ]
+    forbidden = ("gpt-5.6-terra", 'service_tier="fast"', "subprocess")
+    for source_path in reports_sources:
+        source = source_path.read_text(encoding="utf-8")
+        assert not any(token in source for token in forbidden), source_path
+
+
 def test_frontend_is_the_only_canonical_ui_source_root() -> None:
     repository_root = Path(__file__).resolve().parents[2]
 

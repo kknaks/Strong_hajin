@@ -15,8 +15,8 @@ from ax_workspace.modules.ax_execution.ai import AiGeneration
 class ContractTestAiProvider:
     def generate(self, request) -> AiGeneration:
         return AiGeneration(
-            cli_run_ref="run_mcp_contract_test",
-            cli_thread_ref="thread_mcp_contract_test",
+            provider_run_ref="run_mcp_contract_test",
+            provider_session_ref="thread_mcp_contract_test",
             body="MCP에서 생성한 보고 초안입니다.",
             requested_model="gpt-5.6-terra",
             observed_model="gpt-5.6-terra",

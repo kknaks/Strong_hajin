@@ -19,6 +19,7 @@ from typing import Any, Callable
 from ax_workspace.modules.ax_execution.ai import (
     AiGeneration,
     AiGenerationRequest,
+    AiProviderProvenance,
     ProviderRequestFailed,
     ProviderUnavailable,
 )
@@ -87,18 +88,28 @@ class CodexCliProviderAdapter:
 
             latency_ms = int((perf_counter() - started) * 1000)
             run_ref, thread_ref, observed_model, observed_tier, usage = self._provenance(result.stdout)
+            provenance = AiProviderProvenance(
+                provider_run_ref=run_ref,
+                provider_session_ref=thread_ref,
+                requested_model=self._profile.model,
+                observed_model=observed_model,
+                requested_tier=self._profile.service_tier,
+                observed_tier=observed_tier,
+                latency_ms=latency_ms,
+                usage=usage,
+            )
             if result.returncode != 0:
-                raise ProviderRequestFailed("Codex CLI generation failed")
+                raise ProviderRequestFailed("Codex CLI generation failed", provenance)
             try:
                 payload = json.loads(output_path.read_text(encoding="utf-8"))
                 body = payload["body"].strip()
             except (OSError, json.JSONDecodeError, KeyError, AttributeError) as error:
-                raise ProviderRequestFailed("Codex CLI returned invalid structured output") from error
+                raise ProviderRequestFailed("Codex CLI returned invalid structured output", provenance) from error
             if not body:
-                raise ProviderRequestFailed("Codex CLI returned an empty daily report")
+                raise ProviderRequestFailed("Codex CLI returned an empty daily report", provenance)
             return AiGeneration(
-                cli_run_ref=run_ref,
-                cli_thread_ref=thread_ref,
+                provider_run_ref=run_ref,
+                provider_session_ref=thread_ref,
                 body=body,
                 requested_model=self._profile.model,
                 observed_model=observed_model,

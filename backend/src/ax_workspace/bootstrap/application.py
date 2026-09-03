@@ -14,8 +14,13 @@ from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
 from ax_workspace.platform.codex_cli import CodexCliProviderAdapter
 from ax_workspace.platform.reports import SqlAlchemyDailyReportDraftWorkflow, SqlAlchemyDailyReportRepository
 from ax_workspace.modules.work.application import TaskApplication, TaskState
+from ax_workspace.modules.work.requests import WorkRequestApplication
 from ax_workspace.platform.persistence import make_session_factory
-from ax_workspace.platform.work_tasks import SqlAlchemyTaskRepository, SqlAlchemyWorkRecordSource
+from ax_workspace.platform.work_tasks import (
+    SqlAlchemyTaskRepository,
+    SqlAlchemyWorkRecordSource,
+    SqlAlchemyWorkRequestRepository,
+)
 from ax_workspace.platform.workflow_runtime import SqlAlchemyUnitOfWork, workflow_service
 
 
@@ -138,6 +143,34 @@ class WorkflowApplication:
     def create_self_task(self, principal: Principal, title: str) -> dict[str, Any]:
         with self._session_factory() as session:
             result = TaskApplication(SqlAlchemyTaskRepository(session)).create_self(principal, title)
+            session.commit()
+            return result
+
+    def create_work_request(self, principal: Principal, title: str, assignee_id: str) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = WorkRequestApplication(SqlAlchemyWorkRequestRepository(session)).create(
+                principal, title, assignee_id
+            )
+            session.commit()
+            return result
+
+    def accept_work_request(
+        self, principal: Principal, request_id: UUID, expected_version: int
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = WorkRequestApplication(SqlAlchemyWorkRequestRepository(session)).accept(
+                principal, request_id, expected_version
+            )
+            session.commit()
+            return result
+
+    def reject_work_request(
+        self, principal: Principal, request_id: UUID, expected_version: int, reason: str
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = WorkRequestApplication(SqlAlchemyWorkRequestRepository(session)).reject(
+                principal, request_id, expected_version, reason
+            )
             session.commit()
             return result
 

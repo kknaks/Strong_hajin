@@ -400,14 +400,14 @@ class SqlAlchemyDailyReportDraftWorkflow:
                 ProviderCallRecord(
                     id=uuid4(),
                     node_execution_id=execution.id,
-                    cli_run_ref=None,
-                    cli_thread_ref=None,
-                    requested_model="gpt-5.6-terra",
-                    observed_model=None,
-                    requested_tier="fast",
-                    observed_tier=None,
-                    latency_ms=None,
-                    usage=None,
+                    provider_run_ref=error.provenance.provider_run_ref,
+                    provider_session_ref=error.provenance.provider_session_ref,
+                    requested_model=error.provenance.requested_model,
+                    observed_model=error.provenance.observed_model,
+                    requested_tier=error.provenance.requested_tier,
+                    observed_tier=error.provenance.observed_tier,
+                    latency_ms=error.provenance.latency_ms,
+                    usage=error.provenance.usage,
                     status="failed",
                     normalized_error=str(error),
                 )
@@ -419,8 +419,8 @@ class SqlAlchemyDailyReportDraftWorkflow:
             ProviderCallRecord(
                 id=uuid4(),
                 node_execution_id=execution.id,
-                cli_run_ref=generation.cli_run_ref,
-                cli_thread_ref=generation.cli_thread_ref,
+                provider_run_ref=generation.provider_run_ref,
+                provider_session_ref=generation.provider_session_ref,
                 requested_model=generation.requested_model,
                 observed_model=generation.observed_model,
                 requested_tier=generation.requested_tier,
@@ -433,8 +433,8 @@ class SqlAlchemyDailyReportDraftWorkflow:
         )
         return {
             "body": generation.body,
-            "cli_run_ref": generation.cli_run_ref,
-            "cli_thread_ref": generation.cli_thread_ref,
+            "provider_run_ref": generation.provider_run_ref,
+            "provider_session_ref": generation.provider_session_ref,
             "observed_model": generation.observed_model,
             "observed_tier": generation.observed_tier,
         }

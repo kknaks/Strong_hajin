@@ -21,8 +21,8 @@ class ContractTestAiProvider:
     def generate(self, request) -> AiGeneration:
         assert "authorized evidence" in request.prompt
         return AiGeneration(
-            cli_run_ref="run_contract_test",
-            cli_thread_ref="thread_contract_test",
+            provider_run_ref="run_contract_test",
+            provider_session_ref="thread_contract_test",
             body="오늘 처리한 업무를 확인했습니다.",
             requested_model="gpt-5.6-terra",
             observed_model="gpt-5.6-terra",
@@ -98,8 +98,8 @@ def test_generate_draft_creates_a_report_owned_draft_from_authorized_task_events
             select(ProviderCallRecord).join(WorkflowNodeExecutionRecord).where(WorkflowNodeExecutionRecord.run_id == run.id)
         )
         assert provider_call is not None
-        assert provider_call.cli_run_ref == "run_contract_test"
-        assert provider_call.cli_thread_ref == "thread_contract_test"
+        assert provider_call.provider_run_ref == "run_contract_test"
+        assert provider_call.provider_session_ref == "thread_contract_test"
         assert provider_call.requested_model == "gpt-5.6-terra"
         assert provider_call.requested_tier == "fast"
         assert provider_call.observed_tier == "fast"
@@ -247,6 +247,49 @@ def test_task_cancel_and_stale_transition_leave_no_extra_mutation(tmp_path) -> N
     )
     assert cancelled.json()["state"] == "cancelled"
     assert client.get("/api/my-work", headers={"X-Demo-Persona": "mina"}).json() == []
+
+
+def test_work_request_creates_a_task_only_after_the_assignee_accepts(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+    created = client.post(
+        "/api/work-requests",
+        headers={"X-Demo-Persona": "mina"},
+        json={"title": "제품 요구사항 확인", "assignee_id": "jiho"},
+    )
+    assert created.status_code == 201
+    request = created.json()
+    assert request["state"] == "pending"
+    assert client.get("/api/my-work", headers={"X-Demo-Persona": "jiho"}).json() == []
+
+    accepted = client.post(
+        f"/api/work-requests/{request['request_id']}/accept",
+        headers={"X-Demo-Persona": "jiho"},
+        json={"expected_version": request["version"]},
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["state"] == "accepted"
+    assert accepted.json()["task_id"]
+    assert accepted.json()["assignment_state"] == "active"
+    assert client.get("/api/my-work", headers={"X-Demo-Persona": "jiho"}).json()[0]["task_id"] == accepted.json()["task_id"]
+
+
+def test_work_request_rejection_never_creates_a_task(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+    created = client.post(
+        "/api/work-requests",
+        headers={"X-Demo-Persona": "mina"},
+        json={"title": "지금은 수락할 수 없는 요청", "assignee_id": "jiho"},
+    ).json()
+
+    rejected = client.post(
+        f"/api/work-requests/{created['request_id']}/reject",
+        headers={"X-Demo-Persona": "jiho"},
+        json={"expected_version": created["version"], "reason": "현재 우선순위와 맞지 않습니다."},
+    )
+    assert rejected.status_code == 200
+    assert rejected.json()["state"] == "rejected"
+    assert rejected.json()["task_id"] is None
+    assert client.get("/api/my-work", headers={"X-Demo-Persona": "jiho"}).json() == []
 
 
 def test_organization_profile_is_a_persisted_authorized_projection(tmp_path) -> None:

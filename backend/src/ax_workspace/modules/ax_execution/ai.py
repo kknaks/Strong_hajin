@@ -24,8 +24,8 @@ class AiProviderProfileRequest:
 
 @dataclass(frozen=True, slots=True)
 class AiGeneration:
-    cli_run_ref: str | None
-    cli_thread_ref: str | None
+    provider_run_ref: str | None
+    provider_session_ref: str | None
     body: str
     requested_model: str
     observed_model: str | None
@@ -35,12 +35,28 @@ class AiGeneration:
     usage: dict[str, Any] | None
 
 
+@dataclass(frozen=True, slots=True)
+class AiProviderProvenance:
+    provider_run_ref: str | None = None
+    provider_session_ref: str | None = None
+    requested_model: str | None = None
+    observed_model: str | None = None
+    requested_tier: str | None = None
+    observed_tier: str | None = None
+    latency_ms: int | None = None
+    usage: dict[str, Any] | None = None
+
+
 class AiProvider(Protocol):
     def generate(self, request: AiGenerationRequest) -> AiGeneration: ...
 
 
 class ProviderFailure(RuntimeError):
     """Normalized provider failure; never include credentials or the raw prompt."""
+
+    def __init__(self, message: str, provenance: AiProviderProvenance | None = None) -> None:
+        super().__init__(message)
+        self.provenance = provenance or AiProviderProvenance()
 
 
 class ProviderUnavailable(ProviderFailure):

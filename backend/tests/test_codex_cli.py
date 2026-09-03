@@ -57,8 +57,8 @@ def test_codex_cli_adapter_uses_an_isolated_ephemeral_structured_turn(tmp_path) 
     )
 
     assert result.body == "실제 CLI 형식의 보고 초안"
-    assert result.cli_thread_ref == "thread_123"
-    assert result.cli_run_ref == "turn_456"
+    assert result.provider_session_ref == "thread_123"
+    assert result.provider_run_ref == "turn_456"
     assert result.observed_model == "gpt-5.6-terra"
     assert result.observed_tier is None
     assert captured["environment"]["CODEX_HOME"] == str(tmp_path / "isolated-runtime")
