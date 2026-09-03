@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-import { getMyOrganizationProfile } from "./api";
+import { getMyOrganizationProfile, getOrganizationTree, getOrganizationUnitMembers } from "./api";
 import { capabilityText, personName } from "./labels";
-import type { OrganizationProfile } from "./viewModels";
+import type { OrganizationMember, OrganizationProfile, OrganizationUnitNode } from "./viewModels";
 
 type OrgPageProps = {
   personaId: string;
@@ -11,12 +11,21 @@ type OrgPageProps = {
 
 export function OrgPage({ personaId, onError }: OrgPageProps) {
   const [profile, setProfile] = useState<OrganizationProfile | null>(null);
+  const [units, setUnits] = useState<OrganizationUnitNode[]>([]);
+  const [selectedUnit, setSelectedUnit] = useState<string | null>(null);
+  const [members, setMembers] = useState<OrganizationMember[] | null>(null);
+  const [selectedMember, setSelectedMember] = useState<OrganizationMember | null>(null);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
-    void getMyOrganizationProfile()
-      .then((nextProfile) => {
-        if (!cancelled) setProfile(nextProfile);
+    void Promise.all([getMyOrganizationProfile(), getOrganizationTree()])
+      .then(([nextProfile, tree]) => {
+        if (cancelled) return;
+        setProfile(nextProfile);
+        setUnits(tree);
+        setSelectedUnit((current) => current ?? nextProfile.organizations.find((item) => item.id !== "scax")?.id ?? tree[0]?.id ?? null);
+        onError(null);
       })
       .catch((error: unknown) => {
         if (!cancelled) onError(error instanceof Error ? error.message : "조직 정보를 불러오지 못했습니다.");
@@ -26,50 +35,210 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
     };
   }, [onError, personaId]);
 
+  useEffect(() => {
+    if (!selectedUnit) return;
+    let cancelled = false;
+    setMembers(null);
+    setSelectedMember(null);
+    void getOrganizationUnitMembers(selectedUnit)
+      .then((items) => {
+        if (!cancelled) setMembers(items);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) onError(error instanceof Error ? error.message : "구성원을 불러오지 못했습니다.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [onError, selectedUnit]);
+
+  const childrenOf = useMemo(() => {
+    const map = new Map<string | null, OrganizationUnitNode[]>();
+    for (const unit of units) {
+      const list = map.get(unit.parent_id) ?? [];
+      list.push(unit);
+      map.set(unit.parent_id, list);
+    }
+    for (const list of map.values()) list.sort((a, b) => a.display_order - b.display_order || a.id.localeCompare(b.id));
+    return map;
+  }, [units]);
+  const unitById = useMemo(() => new Map(units.map((unit) => [unit.id, unit])), [units]);
+  const selected = selectedUnit ? unitById.get(selectedUnit) : undefined;
+
+  const renderUnit = (unit: OrganizationUnitNode, depth: number) => {
+    const children = childrenOf.get(unit.id) ?? [];
+    const isCollapsed = collapsed.has(unit.id);
+    return (
+      <li key={unit.id}>
+        <div className={unit.id === selectedUnit ? "org-node selected" : "org-node"} style={{ paddingLeft: 12 + depth * 20 }}>
+          {children.length > 0 ? (
+            <button
+              aria-expanded={!isCollapsed}
+              aria-label={isCollapsed ? `${unit.name} 펼치기` : `${unit.name} 접기`}
+              className="org-caret"
+              onClick={() =>
+                setCollapsed((current) => {
+                  const next = new Set(current);
+                  if (next.has(unit.id)) next.delete(unit.id);
+                  else next.add(unit.id);
+                  return next;
+                })
+              }
+              type="button"
+            >
+              {isCollapsed ? "▸" : "▾"}
+            </button>
+          ) : (
+            <span className="org-caret placeholder">–</span>
+          )}
+          <button className="org-node-main" onClick={() => setSelectedUnit(unit.id)} type="button">
+            <b>{unit.name}</b>
+            {unit.unit_type && <span className="badge outline">{unit.unit_type}</span>}
+            {unit.leaders.map((leader) => (
+              <span className="badge neutral" key={`${leader.display_name}-${leader.position}`}>
+                {personName(leader.display_name)} {leader.position}
+                {leader.kind === "acting" ? " 직무대행" : ""}
+              </span>
+            ))}
+            <span className="t-meta">전체 {unit.member_count}명</span>
+          </button>
+        </div>
+        {!isCollapsed && children.length > 0 && <ul>{children.map((child) => renderUnit(child, depth + 1))}</ul>}
+        {isCollapsed && children.length > 0 && (
+          <div className="t-meta" style={{ paddingLeft: 44 + depth * 20 }}>
+            하위 {children.length}
+          </div>
+        )}
+      </li>
+    );
+  };
+
   return (
     <section className="page-surface">
       <div className="page-head">
         <div>
-          <h1>조직</h1>
-          <p>내 소속과 현재 허용된 권한을 확인합니다. 조직도·구성원 탐색은 다음 단계에서 열립니다.</p>
+          <h1>조직과 구성원</h1>
+          <p>조직도는 탐색 기준일 뿐 업무·인사·권한 열람 범위를 넓히지 않습니다. 상위 조직을 고르면 하위 조직의 재직 구성원까지 함께 봅니다.</p>
         </div>
       </div>
-      {profile && (
-        <div className="org-grid">
-          <section className="surface-card">
-            <div className="card-title">
-              <h2>{personName(profile.display_name)}</h2>
-            </div>
-            <p>현재 재직 중인 소속</p>
-            <div className="org-chips">
-              {profile.organizations.length === 0 ? (
-                <span className="badge neutral">소속 정보 없음</span>
-              ) : (
-                profile.organizations.map((organization) => (
-                  <span className="badge ai" key={organization.id}>
-                    {organization.name}
-                  </span>
-                ))
-              )}
-            </div>
-          </section>
-          <section className="surface-card">
-            <div className="card-title">
-              <h2>허용된 권한</h2>
-              <span className="badge neutral">{profile.capabilities.length}개</span>
-            </div>
-            <p>화면·AX 대화·MCP Tool 모두 이 권한으로 같은 업무 기능을 엽니다.</p>
-            <ul className="capability-list">
-              {profile.capabilities.map((capability) => (
-                <li key={capability}>
-                  <span>{capabilityText(capability)}</span>
-                  <code>{capability}</code>
-                </li>
-              ))}
-            </ul>
-          </section>
+
+      <div className="org-layout">
+        <div>
+          <h2 className="section-title">조직도</h2>
+          <div className="decision-panel">
+            <ul className="org-tree">{(childrenOf.get(null) ?? []).map((unit) => renderUnit(unit, 0))}</ul>
+          </div>
+
+          <h2 className="section-title">
+            {selected?.name ?? "조직"} <small>전체 {selected?.member_count ?? 0}명</small>
+          </h2>
+          <div className="decision-panel">
+            {members === null ? (
+              <p className="t-meta">불러오는 중…</p>
+            ) : members.length === 0 ? (
+              <div className="empty-state">
+                <b>재직 중인 구성원이 없습니다</b>
+                <p>하위 조직을 포함해도 현재 소속된 사람이 없습니다.</p>
+              </div>
+            ) : (
+              <ul className="member-list">
+                {members.map((member) => (
+                  <li key={member.member_id}>
+                    <button
+                      className={selectedMember?.member_id === member.member_id ? "member-row selected" : "member-row"}
+                      onClick={() => setSelectedMember(member)}
+                      type="button"
+                    >
+                      <span className="avatar md" aria-hidden>
+                        {personName(member.display_name).slice(0, 1)}
+                      </span>
+                      <span className="member-main">
+                        <b>{personName(member.display_name)}</b>
+                        <span className="chip-row" style={{ marginTop: 4 }}>
+                          {member.memberships.map((membership) => (
+                            <span className="badge ai" key={membership.organization_id}>
+                              {membership.organization_name} · {membership.kind === "primary" ? "주소속" : "겸직"}
+                            </span>
+                          ))}
+                          {member.positions.map((position) => (
+                            <span className="badge neutral" key={`${position.organization_name}-${position.position}`}>
+                              {position.organization_name} {position.position}
+                            </span>
+                          ))}
+                        </span>
+                      </span>
+                      <span className="t-meta">{[member.grade, ...member.jobs].filter(Boolean).join(" · ") || "—"}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
-      )}
+
+        <aside>
+          <h2 className="section-title">구성원 상세</h2>
+          {selectedMember ? (
+            <div className="decision-panel">
+              <div className="member-head">
+                <span className="avatar lg" aria-hidden>
+                  {personName(selectedMember.display_name).slice(0, 1)}
+                </span>
+                <div>
+                  <b className="t-item">{personName(selectedMember.display_name)}</b>
+                  <p className="t-meta">{[selectedMember.grade, ...selectedMember.jobs].filter(Boolean).join(" · ") || "직급·직무 정보 없음"}</p>
+                </div>
+              </div>
+              <dl className="meta-grid" style={{ marginTop: 16 }}>
+                <div>
+                  <dt>소속</dt>
+                  <dd>{selectedMember.memberships.map((item) => `${item.organization_name}(${item.kind === "primary" ? "주소속" : "겸직"})`).join(", ") || "—"}</dd>
+                </div>
+                <div>
+                  <dt>보직</dt>
+                  <dd>{selectedMember.positions.map((item) => `${item.organization_name} ${item.position}`).join(", ") || "없음"}</dd>
+                </div>
+                <div>
+                  <dt>직급</dt>
+                  <dd>{selectedMember.grade ?? "—"}</dd>
+                </div>
+                <div>
+                  <dt>직무</dt>
+                  <dd>{selectedMember.jobs.join(", ") || "—"}</dd>
+                </div>
+              </dl>
+              <p className="t-meta" style={{ marginTop: 12 }}>
+                권한·비공개 업무·인사 이력은 별도 권한이 없으면 표시하지 않습니다.
+              </p>
+            </div>
+          ) : (
+            <div className="decision-panel">
+              <div className="empty-state">
+                <b>구성원을 선택하세요</b>
+                <p>조직도에서 조직을, 목록에서 사람을 고르면 소속·보직·직급·직무를 봅니다.</p>
+              </div>
+            </div>
+          )}
+
+          {profile && (
+            <>
+              <h2 className="section-title">
+                내 권한 <small>{profile.capabilities.length}개</small>
+              </h2>
+              <div className="decision-panel">
+                <ul className="capability-list">
+                  {profile.capabilities.map((capability) => (
+                    <li key={capability}>
+                      <span>{capabilityText(capability)}</span>
+                      <code>{capability}</code>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </>
+          )}
+        </aside>
+      </div>
     </section>
   );
 }

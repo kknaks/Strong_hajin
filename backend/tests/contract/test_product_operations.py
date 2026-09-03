@@ -24,6 +24,10 @@ from ax_workspace.platform.persistence import (
     make_session_factory,
 )
 from ax_workspace.entrypoints.mcp import McpReportsFacade
+from ax_workspace.platform.work_tasks import business_date
+
+# Reports use Seoul business dates; task activity recorded "now" must land on today's report.
+REPORT_DATE = business_date(datetime.now(UTC))
 
 
 class ContractTestAiProvider:
@@ -203,7 +207,7 @@ def test_generate_draft_creates_a_report_owned_draft_from_authorized_task_events
     response = client.post(
         "/api/daily-reports/generate-draft",
         headers={"X-Demo-Persona": "mina"},
-        json={"report_date": "2026-09-03"},
+        json={"report_date": REPORT_DATE},
     )
 
     assert response.status_code == 201
@@ -253,7 +257,7 @@ def test_generate_draft_fails_explicitly_without_the_codex_cli_binary(tmp_path, 
     response = client.post(
         "/api/daily-reports/generate-draft",
         headers={"X-Demo-Persona": "mina"},
-        json={"report_date": "2026-09-03"},
+        json={"report_date": REPORT_DATE},
     )
 
     assert response.status_code == 503
@@ -263,18 +267,18 @@ def test_generate_draft_fails_explicitly_without_the_codex_cli_binary(tmp_path, 
 def test_daily_report_edit_submit_and_history_are_report_owned_operations(tmp_path) -> None:
     client = _client_with_seeded_database(tmp_path, report_provider=ContractTestAiProvider())
     before_generation = client.get(
-        "/api/daily-reports/status?report_date=2026-09-03",
+        f"/api/daily-reports/status?report_date={REPORT_DATE}",
         headers={"X-Demo-Persona": "mina"},
     )
     assert before_generation.json() == {
-        "report_date": "2026-09-03",
+        "report_date": REPORT_DATE,
         "status": "not_started",
         "report_id": None,
     }
     generated = client.post(
         "/api/daily-reports/generate-draft",
         headers={"X-Demo-Persona": "mina"},
-        json={"report_date": "2026-09-03"},
+        json={"report_date": REPORT_DATE},
     ).json()
 
     edited = client.post(
@@ -293,11 +297,11 @@ def test_daily_report_edit_submit_and_history_are_report_owned_operations(tmp_pa
     assert edited_body["draft_version"] == 2
     assert edited_body["body"] == "사람이 확인하고 보완한 보고입니다."
     draft_status = client.get(
-        "/api/daily-reports/status?report_date=2026-09-03",
+        f"/api/daily-reports/status?report_date={REPORT_DATE}",
         headers={"X-Demo-Persona": "mina"},
     )
     assert draft_status.json() == {
-        "report_date": "2026-09-03",
+        "report_date": REPORT_DATE,
         "status": "draft",
         "report_id": generated["report_id"],
     }
@@ -316,11 +320,11 @@ def test_daily_report_edit_submit_and_history_are_report_owned_operations(tmp_pa
     assert submitted_body["submission_version"] == 1
     assert submitted_body["body"] == "사람이 확인하고 보완한 보고입니다."
     submitted_status = client.get(
-        "/api/daily-reports/status?report_date=2026-09-03",
+        f"/api/daily-reports/status?report_date={REPORT_DATE}",
         headers={"X-Demo-Persona": "mina"},
     )
     assert submitted_status.json() == {
-        "report_date": "2026-09-03",
+        "report_date": REPORT_DATE,
         "status": "submitted",
         "report_id": generated["report_id"],
     }
@@ -415,7 +419,7 @@ def test_task_and_work_request_capabilities_are_enforced_for_http_and_mcp(tmp_pa
     report_denied = client.post(
         "/api/daily-reports/generate-draft",
         headers={"X-Demo-Persona": "jiho"},
-        json={"report_date": "2026-09-03"},
+        json={"report_date": REPORT_DATE},
     )
     assert report_denied.status_code == 403
     assert "daily_report.generate" in report_denied.json()["detail"]
@@ -790,7 +794,7 @@ def test_expired_appointment_is_removed_from_the_server_principal_projection(tmp
     denied = client.post(
         "/api/daily-reports/generate-draft",
         headers={"X-Demo-Persona": "mina"},
-        json={"report_date": "2026-09-03"},
+        json={"report_date": REPORT_DATE},
     )
 
     assert "daily_report.generate" not in profile.json()["capabilities"]

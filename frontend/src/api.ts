@@ -4,6 +4,10 @@ import type {
   DailyReportStatus,
   DirectTask,
   MyWorkItem,
+  OrganizationMember,
+  OrganizationUnitNode,
+  RequestComment,
+  RequestTimeline,
   TaskMaterial,
   TaskMaterialKind,
   TaskPatch,
@@ -308,4 +312,35 @@ export async function login(account: string): Promise<OrganizationProfile> {
 
 export async function logout(): Promise<void> {
   await request<void>("/api/auth/logout", { method: "POST" });
+}
+
+export async function getOrganizationTree(): Promise<OrganizationUnitNode[]> {
+  return request<OrganizationUnitNode[]>("/api/organization/tree");
+}
+
+export async function getOrganizationUnitMembers(unitId: string): Promise<OrganizationMember[]> {
+  return request<OrganizationMember[]>(`/api/organization/units/${unitId}/members`);
+}
+
+export async function getWorkRequestTimeline(requestId: string): Promise<RequestTimeline> {
+  return request<RequestTimeline>(`/api/work-requests/${requestId}/timeline`);
+}
+
+export async function addWorkRequestComment(requestId: string, body: string): Promise<RequestComment> {
+  return request<RequestComment>(`/api/work-requests/${requestId}/comments`, { body: JSON.stringify({ body }), method: "POST" });
+}
+
+export async function resubmitWorkRequest(
+  requestId: string,
+  expectedVersion: number,
+  changes: { title?: string; description?: string; due_date?: string | null },
+): Promise<WorkRequest> {
+  const body: Record<string, unknown> = { expected_version: expectedVersion };
+  if (changes.title !== undefined) body.title = changes.title;
+  if (changes.description !== undefined) body.description = changes.description;
+  if (changes.due_date !== undefined) {
+    if (changes.due_date) body.due_date = changes.due_date;
+    else body.clear_due_date = true;
+  }
+  return request<WorkRequest>(`/api/work-requests/${requestId}/resubmit`, { body: JSON.stringify(body), method: "POST" });
 }

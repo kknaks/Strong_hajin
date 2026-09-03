@@ -47,6 +47,7 @@ class TaskRepository(Protocol):
     def task(self, task_id: UUID, owner_id: str, *, lock: bool = False) -> Any: ...
     def tasks_for(self, owner_id: str, *, include_closed: bool = False) -> list[Any]: ...
     def touch(self, task: Any) -> None: ...
+    def record_activity(self, task: Any, actor_id: str, event_kind: str, summary: str, *, before_ref: str | None = None, reason: str | None = None) -> None: ...
 
 
 class TaskApplication:
@@ -109,6 +110,10 @@ class TaskApplication:
         task.due_date = due_date
         task.version += 1
         self.repository.touch(task)
+        self.repository.record_activity(
+            task, str(principal.id), "task.updated", f"업무 내용 수정: {task.title} ({', '.join(sorted(changes))})",
+            before_ref=f"task:{task.id}@{expected_version}",
+        )
         return self._view(task)
 
     def list_for(self, principal: Principal, *, include_closed: bool = False) -> list[dict[str, Any]]:
@@ -142,10 +147,19 @@ class TaskApplication:
             raise InvalidTaskTransition("task state transition is not allowed")
         if target is TaskState.BLOCKED and not (reason or "").strip():
             raise InvalidTaskTransition("block reason is required")
+        previous_state = task.state
         task.state = target
         task.block_reason = reason.strip() if target is TaskState.BLOCKED else None
         task.version += 1
         self.repository.touch(task)
+        self.repository.record_activity(
+            task,
+            str(principal.id),
+            "task.state_changed",
+            f"업무 상태 {previous_state} → {target.value}: {task.title}",
+            before_ref=f"task:{task.id}@{expected_version}:{previous_state}",
+            reason=task.block_reason,
+        )
         return self._view(task)
 
     @staticmethod
@@ -166,6 +180,18 @@ class TaskApplication:
             "due_date": _iso(getattr(task, "due_date", None)),
             "created_at": _iso(getattr(task, "created_at", None)),
             "updated_at": _iso(getattr(task, "updated_at", None)),
+            "organization_unit_id": getattr(task, "organization_unit_id", None),
+            "origin_kind": getattr(task, "origin_kind", "direct"),
+            "visibility": getattr(task, "visibility", "scope_default"),
+            "lineage": {
+                "request_thread_id": _str(getattr(task, "request_thread_id", None)),
+                "source_work_request_id": _str(getattr(task, "source_work_request_id", None)),
+                "source_decision_item_id": _str(getattr(task, "source_decision_item_id", None)),
+                "source_submission_id": _str(getattr(task, "source_submission_id", None)),
+                "source_review_decision_id": _str(getattr(task, "source_review_decision_id", None)),
+                "source_action_item_id": _str(getattr(task, "source_action_item_id", None)),
+                "source_task_id": _str(getattr(task, "source_task_id", None)),
+            },
         }
 
 
@@ -183,3 +209,7 @@ def _clean_text(value: Any) -> str | None:
 
 def _iso(value: Any) -> str | None:
     return value.isoformat() if hasattr(value, "isoformat") else None
+
+
+def _str(value: Any) -> str | None:
+    return str(value) if value is not None else None

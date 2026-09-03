@@ -40,6 +40,10 @@ function withSession(fetchMock: FetchImpl, initialPersona = "mina"): (input: Req
   };
 }
 
+function seoulTodayForTest(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
+}
+
 async function switchAccount(personaId: string, displayName: string) {
   fireEvent.click(screen.getByRole("button", { name: "로그아웃" }));
   fireEvent.click(await screen.findByRole("radio", { name: (name) => name.startsWith(displayName) }));
@@ -617,10 +621,10 @@ describe("product surfaces", () => {
         });
       }
       if (path === "/api/my-work" || path === "/api/action-inbox") return jsonResponse([]);
-      if (path.startsWith("/api/daily-reports/status?report_date=2026-09-03")) {
+      if (path.startsWith(`/api/daily-reports/status?report_date=${seoulTodayForTest()}`)) {
         return new Response(JSON.stringify({ detail: "기존 날짜를 불러오지 못했습니다." }), { status: 500 });
       }
-      if (path.startsWith("/api/daily-reports/status?report_date=2026-09-02")) {
+      if (path.startsWith("/api/daily-reports/status?report_date=2026-01-02")) {
         return new Promise(() => {});
       }
       return new Response("not found", { status: 404 });
@@ -632,7 +636,7 @@ describe("product surfaces", () => {
     fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "보고" }));
     expect((await screen.findByRole("alert")).textContent).toContain("기존 날짜를 불러오지 못했습니다.");
 
-    fireEvent.change(screen.getByLabelText("보고일"), { target: { value: "2026-09-02" } });
+    fireEvent.change(screen.getByLabelText("보고일"), { target: { value: "2026-01-02" } });
     await waitFor(() => {
       expect(screen.queryByRole("alert")).toBeNull();
     });

@@ -18,6 +18,20 @@ export type DirectTask = {
   due_date?: string | null;
   created_at?: string;
   updated_at?: string;
+  organization_unit_id?: string | null;
+  origin_kind?: string;
+  visibility?: string;
+  lineage?: TaskLineage;
+};
+
+export type TaskLineage = {
+  request_thread_id: string | null;
+  source_work_request_id: string | null;
+  source_decision_item_id: string | null;
+  source_submission_id: string | null;
+  source_review_decision_id: string | null;
+  source_action_item_id: string | null;
+  source_task_id: string | null;
 };
 
 export type TaskMaterialKind = "input" | "output";
@@ -106,6 +120,8 @@ export type DailyReportStatus = {
 
 export type WorkRequest = {
   request_id: string;
+  request_thread_id?: string | null;
+  submission_version?: number | null;
   title: string;
   description?: string | null;
   due_date?: string | null;
@@ -176,4 +192,53 @@ export type ConversationMessageAcceptance = {
   turn_id: string | null;
   queued: boolean;
   queue_size: number;
+};
+
+export type OrganizationUnitNode = {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  unit_type: string | null;
+  lifecycle: string;
+  display_order: number;
+  member_count: number;
+  direct_member_count: number;
+  leaders: Array<{ display_name: string; position: string; kind: string }>;
+};
+
+export type OrganizationMember = {
+  member_id: string;
+  display_name: string;
+  memberships: Array<{ organization_id: string; organization_name: string; kind: string }>;
+  positions: Array<{ position: string; organization_name: string; kind: string }>;
+  grade: string | null;
+  jobs: string[];
+};
+
+export type RequestComment = {
+  comment_id: string;
+  author_member_id: string;
+  body: string;
+  created_at: string;
+  edited_at: string | null;
+};
+
+export type RequestTimeline = {
+  request: WorkRequest;
+  request_thread_id: string | null;
+  comments: RequestComment[];
+  decision_item: { decision_item_id: string; kind: string; status: string; due_at: string | null } | null;
+  submissions: Array<{
+    submission_id: string;
+    submission_version: number;
+    revises_id: string | null;
+    submitted_by: string;
+    submitted_at: string;
+    snapshot: Record<string, unknown>;
+    subject_version: number | null;
+    diff: Record<string, { before: unknown; after: unknown }> | null;
+  }>;
+  review_assignments: Array<{ review_assignment_id: string; submission_id: string; reviewer_member_id: string; status: string; assigned_at: string }>;
+  review_decisions: Array<{ review_decision_id: string; submission_id: string; actor_member_id: string; decision: string; reason: string | null; conditions: Record<string, unknown> | null; decided_at: string }>;
+  activity: Array<{ event_kind: string; actor_id: string; safe_summary: string; reason: string | null; occurred_at: string }>;
 };

@@ -90,6 +90,7 @@ def test_materials_upload_download_detach_and_stay_private_to_the_owner(tmp_path
     assert uploaded.status_code == 201, uploaded.text
     material = uploaded.json()
     assert material["kind"] == "output" and material["name"] == "결과 보고서.txt" and material["size_bytes"] == 17
+    assert material["source_kind"] == "file" and material["integrity_ref"].startswith("sha256:")
     stored = list((tmp_path / "materials").rglob("*"))
     assert any(path.is_file() for path in stored)
 

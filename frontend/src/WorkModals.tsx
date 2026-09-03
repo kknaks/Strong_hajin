@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 
 import {
+  addWorkRequestComment,
   createDirectTask,
   createWorkRequest,
   decideWorkRequest,
   detachTaskMaterial,
   getTaskMaterials,
+  getWorkRequestTimeline,
   negotiateWorkRequest,
+  resubmitWorkRequest,
   taskMaterialContentUrl,
   uploadTaskMaterial,
 } from "./api";
@@ -21,7 +24,7 @@ import {
   workRequestStateLabel,
 } from "./labels";
 import { ConfirmModal, Drawer } from "./Modal";
-import type { DirectTask, Persona, TaskMaterial, TaskMaterialKind, TaskPatch, WorkRequest } from "./viewModels";
+import type { DirectTask, Persona, RequestTimeline, TaskMaterial, TaskMaterialKind, TaskPatch, WorkRequest } from "./viewModels";
 
 export type TaskAction = "start" | "block" | "resume" | "complete" | "cancel";
 
@@ -473,6 +476,8 @@ export function TaskQuickActions({
 
 /* ---------------------------------------------------------------- work request detail (drawer) */
 
+const decisionLabel: Record<string, string> = { accept: "수락", negotiate: "조정 요청", reject: "거절" };
+
 export function WorkRequestDetailDrawer({
   request,
   personaId,
@@ -496,21 +501,50 @@ export function WorkRequestDetailDrawer({
   const [mode, setMode] = useState<"negotiate" | "reject" | null>(null);
   const [note, setNote] = useState("");
   const [isWorking, setIsWorking] = useState(false);
-  const requesterName = request.requester_id === personaId ? "나" : displayNameOf(personas, request.requester_id, "요청자");
+  const [timeline, setTimeline] = useState<RequestTimeline | null>(null);
+  const [comment, setComment] = useState("");
+  const [revision, setRevision] = useState<{ title: string; description: string; due_date: string } | null>(null);
+  const nameOf = (id: string) => (id === personaId ? "나" : displayNameOf(personas, id, id));
+  const requesterName = nameOf(request.requester_id ?? "");
   const isAssignee = request.assignee_id === personaId;
+  const isRequester = request.requester_id === personaId;
   const assigneeName = isAssignee ? "나" : displayNameOf(personas, request.assignee_id, "담당자");
   const isOpen = request.state === "pending" || request.state === "negotiating";
   const decidable = canDecide && isAssignee && isOpen;
+  const canResubmit = isRequester && request.state === "negotiating";
   const condition = conditionText(request.conditions);
 
-  async function run(action: () => Promise<unknown>, success: string, failure: string) {
+  const loadTimeline = async () => {
+    try {
+      setTimeline(await getWorkRequestTimeline(request.request_id));
+    } catch {
+      setTimeline(null);
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    void getWorkRequestTimeline(request.request_id)
+      .then((next) => {
+        if (!cancelled) setTimeline(next);
+      })
+      .catch(() => {
+        if (!cancelled) setTimeline(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [request.request_id, request.version]);
+
+  async function run(action: () => Promise<unknown>, success: string, failure: string, close = true) {
     setIsWorking(true);
     onError(null);
     try {
       await action();
       await onChanged();
       onNotice?.(success);
-      onClose();
+      if (close) onClose();
+      else await loadTimeline();
     } catch (error) {
       onError(error instanceof Error ? error.message : failure);
     } finally {
@@ -529,10 +563,49 @@ export function WorkRequestDetailDrawer({
         mode === "reject"
           ? decideWorkRequest(request.request_id, "reject", request.version, trimmed)
           : negotiateWorkRequest(request.request_id, request.version, { note: trimmed }),
-      mode === "reject" ? `'${request.title}' 요청을 거절했습니다.` : `'${request.title}' 요청에 협의 조건을 보냈습니다.`,
+      mode === "reject" ? `'${request.title}' 요청을 거절했습니다.` : `'${request.title}' 요청에 조정을 요청했습니다.`,
       "요청을 처리하지 못했습니다.",
     );
   }
+
+  async function submitComment() {
+    const text = comment.trim();
+    if (!text) return;
+    setIsWorking(true);
+    onError(null);
+    try {
+      await addWorkRequestComment(request.request_id, text);
+      setComment("");
+      await loadTimeline();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "댓글을 남기지 못했습니다.");
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
+  function submitRevision() {
+    if (!revision) return;
+    if (!revision.title.trim()) {
+      onError("업무 제목을 입력해 주세요.");
+      return;
+    }
+    const changes: { title?: string; description?: string; due_date?: string | null } = {};
+    if (revision.title.trim() !== request.title) changes.title = revision.title.trim();
+    if (revision.description.trim() !== (request.description ?? "")) changes.description = revision.description.trim();
+    if (revision.due_date !== (request.due_date ?? "")) changes.due_date = revision.due_date || null;
+    if (Object.keys(changes).length === 0) {
+      onError("바뀐 내용이 없어 재상신할 수 없습니다. 조정 요청에 답하는 내용을 고쳐 주세요.");
+      return;
+    }
+    void run(
+      () => resubmitWorkRequest(request.request_id, request.version, changes),
+      `'${request.title}' 요청을 재상신했습니다. 같은 요청의 새 회차로 판단자에게 다시 갑니다.`,
+      "재상신하지 못했습니다.",
+    );
+  }
+
+  const lastDecision = timeline?.review_decisions.at(-1);
 
   return (
     <Drawer
@@ -561,6 +634,26 @@ export function WorkRequestDetailDrawer({
               수락
             </button>
           </>
+        ) : canResubmit ? (
+          <>
+            <button className="btn h40 ghost" onClick={onClose} type="button">
+              닫기
+            </button>
+            <span className="spacer" />
+            {revision ? (
+              <button className="btn h40 primary" disabled={isWorking} onClick={submitRevision} type="button">
+                재상신
+              </button>
+            ) : (
+              <button
+                className="btn h40 primary"
+                onClick={() => setRevision({ title: request.title, description: request.description ?? "", due_date: request.due_date ?? "" })}
+                type="button"
+              >
+                내용 고쳐 재상신
+              </button>
+            )}
+          </>
         ) : (
           <button className="btn h40" onClick={onClose} type="button">
             닫기
@@ -570,6 +663,7 @@ export function WorkRequestDetailDrawer({
       headerExtra={
         <div className="chip-row">
           <StatusText label={workRequestStateLabel[request.state]} state={request.state} />
+          {request.submission_version && request.submission_version > 1 && <span className="badge ai">재상신 {request.submission_version}회차</span>}
           <span className="badge outline">v{request.version}</span>
         </div>
       }
@@ -596,30 +690,58 @@ export function WorkRequestDetailDrawer({
           <dd>{request.task_id ? "수락 후 생성됨" : "아직 없음"}</dd>
         </div>
       </dl>
-      {request.description && (
+      {request.description && !revision && (
         <section className="drawer-section">
           <h4>요청 내용</h4>
           <p className="prewrap">{request.description}</p>
         </section>
       )}
-      {condition && (
+
+      {request.state === "negotiating" && lastDecision && (
         <section className="drawer-section">
-          <h4>협의 조건</h4>
-          <p>{condition}</p>
+          <h4>직전 판단</h4>
+          <blockquote className="effect-note">
+            {nameOf(lastDecision.actor_member_id)}의 조정 요청: {lastDecision.reason ?? condition ?? "조건 없음"}
+          </blockquote>
         </section>
       )}
-      <section className="drawer-section">
-        <h4>{isOpen ? "수락하면 바뀌는 것" : "결과"}</h4>
-        <blockquote className="effect-note">
-          {request.state === "accepted" && `${assigneeName === "나" ? "내" : `${assigneeName}의`} 업무에 “${request.title}”가 생성되었습니다.`}
-          {request.state === "rejected" && "요청이 거절되어 업무가 생성되지 않았습니다."}
-          {isOpen &&
-            `수락하면 ${assigneeName === "나" ? "내" : `${assigneeName}의`} 업무에 “${request.title}”가 ${request.due_date ? `기한 ${formatMonthDay(request.due_date)}로 ` : ""}생성됩니다. 거절하면 업무는 만들어지지 않습니다.`}
-        </blockquote>
-      </section>
+
+      {revision && (
+        <section className="drawer-section">
+          <h4>재상신 내용</h4>
+          <div className="form-stack">
+            <div className="field">
+              <label htmlFor="revision-title">요청할 업무</label>
+              <input id="revision-title" onChange={(event) => setRevision({ ...revision, title: event.target.value })} value={revision.title} />
+            </div>
+            <div className="field">
+              <label htmlFor="revision-due">희망 기한</label>
+              <input id="revision-due" onChange={(event) => setRevision({ ...revision, due_date: event.target.value })} type="date" value={revision.due_date} />
+            </div>
+            <div className="field">
+              <label htmlFor="revision-description">요청 내용</label>
+              <textarea id="revision-description" onChange={(event) => setRevision({ ...revision, description: event.target.value })} value={revision.description} />
+            </div>
+            <p className="t-meta">재상신은 같은 요청의 새 회차입니다. 이전 회차와 판단은 그대로 남고 달라진 항목만 diff로 표시됩니다.</p>
+          </div>
+        </section>
+      )}
+
+      {!revision && (
+        <section className="drawer-section">
+          <h4>{isOpen ? "수락하면 바뀌는 것" : "결과"}</h4>
+          <blockquote className="effect-note">
+            {request.state === "accepted" && `${assigneeName === "나" ? "내" : `${assigneeName}의`} 업무에 “${request.title}”가 생성되었습니다.`}
+            {request.state === "rejected" && "요청이 거절되어 업무가 생성되지 않았습니다."}
+            {isOpen &&
+              `수락하면 ${assigneeName === "나" ? "내" : `${assigneeName}의`} 업무에 “${request.title}”가 ${request.due_date ? `기한 ${formatMonthDay(request.due_date)}로 ` : ""}생성됩니다. 거절하면 업무는 만들어지지 않습니다.`}
+          </blockquote>
+        </section>
+      )}
+
       {mode && (
         <section className="drawer-section">
-          <h4>{mode === "reject" ? "거절 사유" : "협의 조건"}</h4>
+          <h4>{mode === "reject" ? "거절 사유" : "조정 요청 조건"}</h4>
           <div className="inline-reason" style={{ padding: 0 }}>
             <label className="sr-only" htmlFor={`drawer-note-${request.request_id}`}>
               {mode === "reject" ? "거절 사유" : "협의 조건"}
@@ -631,7 +753,7 @@ export function WorkRequestDetailDrawer({
               onKeyDown={(event) => {
                 if (event.key === "Enter") submitNote();
               }}
-              placeholder={mode === "reject" ? "거절 사유를 적어 주세요" : "예: 9월 5일까지 완료 가능"}
+              placeholder={mode === "reject" ? "거절 사유를 적어 주세요" : "예: 9월 15일까지면 가능"}
               value={note}
             />
             <button className={mode === "reject" ? "btn danger" : "btn primary"} disabled={isWorking} onClick={submitNote} type="button">
@@ -643,6 +765,83 @@ export function WorkRequestDetailDrawer({
           </div>
         </section>
       )}
+
+      {timeline && timeline.submissions.length > 0 && (
+        <section className="drawer-section">
+          <h4>
+            회차와 판단 <span className="t-meta">· 판단 항목 {timeline.decision_item?.status === "resolved" ? "종결" : timeline.decision_item?.status === "awaiting_revision" ? "보완 대기" : "열림"}</span>
+          </h4>
+          <ol className="timeline-list">
+            {timeline.submissions.map((submission) => {
+              const decisions = timeline.review_decisions.filter((item) => item.submission_id === submission.submission_id);
+              const assignment = timeline.review_assignments.find((item) => item.submission_id === submission.submission_id);
+              return (
+                <li key={submission.submission_id}>
+                  <div className="timeline-item-head">
+                    <b>{submission.submission_version}회차</b>
+                    <span className="t-meta">
+                      {nameOf(submission.submitted_by)} · {formatMonthDay(isoDateInSeoul(submission.submitted_at))}
+                      {assignment && ` · 판단자 ${nameOf(assignment.reviewer_member_id)}`}
+                    </span>
+                  </div>
+                  {submission.diff && Object.keys(submission.diff).length > 0 && (
+                    <ul className="diff-list">
+                      {Object.entries(submission.diff).map(([key, change]) => (
+                        <li key={key}>
+                          <span className="t-meta">{key === "title" ? "제목" : key === "description" ? "내용" : key === "due_date" ? "기한" : key}</span>
+                          <s>{String(change.before ?? "—")}</s> → <b>{String(change.after ?? "—")}</b>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {decisions.map((decision) => (
+                    <p className={`decision-line ${decision.decision}`} key={decision.review_decision_id}>
+                      {nameOf(decision.actor_member_id)} · {decisionLabel[decision.decision] ?? decision.decision}
+                      {decision.reason && ` — ${decision.reason}`}
+                    </p>
+                  ))}
+                  {decisions.length === 0 && <p className="t-meta">판단 대기</p>}
+                </li>
+              );
+            })}
+          </ol>
+        </section>
+      )}
+
+      <section className="drawer-section">
+        <h4>
+          논의 <span className="t-meta">· {timeline?.comments.length ?? 0}개 · 댓글은 상태를 바꾸지 않습니다</span>
+        </h4>
+        {timeline && timeline.comments.length > 0 ? (
+          <ul className="comment-list">
+            {timeline.comments.map((item) => (
+              <li key={item.comment_id}>
+                <b>{nameOf(item.author_member_id)}</b> <span className="t-meta">{formatMonthDay(isoDateInSeoul(item.created_at))}</span>
+                <p className="prewrap">{item.body}</p>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="t-meta">아직 논의가 없습니다.</p>
+        )}
+        <div className="inline-reason" style={{ padding: "8px 0 0" }}>
+          <label className="sr-only" htmlFor={`comment-${request.request_id}`}>
+            댓글
+          </label>
+          <input
+            id={`comment-${request.request_id}`}
+            onChange={(event) => setComment(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void submitComment();
+            }}
+            placeholder="무엇이 걸리는지 남긴다"
+            value={comment}
+          />
+          <button className="btn" disabled={isWorking || !comment.trim()} onClick={() => void submitComment()} type="button">
+            남기기
+          </button>
+        </div>
+      </section>
     </Drawer>
   );
 }

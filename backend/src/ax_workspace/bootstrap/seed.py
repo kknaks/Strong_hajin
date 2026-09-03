@@ -10,12 +10,19 @@ from ax_workspace.platform.persistence import (
     AppointmentRecord,
     CapabilityRecord,
     EmploymentPeriodRecord,
+    GradeAssignmentRecord,
+    GradeRecord,
+    JobAssignmentRecord,
+    JobRecord,
     MemberRecord,
     MeetingEvidenceRecord,
     MembershipRecord,
     OrganizationUnitRecord,
+    OrganizationUnitTypeRecord,
+    PositionDefinitionRecord,
     RoleCapabilityRecord,
     RoleRecord,
+    StandardGrantRuleRecord,
     WorkRecord,
     WorkflowDefinitionRecord,
     WorkflowDefinitionVersionRecord,
@@ -102,11 +109,70 @@ def _install_daily_report_generation(session: Session) -> None:
         )
 
 
+ORGANIZATION_UNIT_TYPES = [
+    ("company", "회사", 0),
+    ("division", "본부", 1),
+    ("office", "실", 2),
+    ("team", "팀", 3),
+    ("part", "파트", 4),
+]
+
+# id, name, type, parent, display_order — depth is independent of type (파트 sits under a 팀, 인사팀 sits directly under a 본부).
+ORGANIZATION_UNITS = [
+    ("scax", "SCAX", "company", None, 0),
+    ("product-division", "제품본부", "division", "scax", 0),
+    ("platform-office", "플랫폼실", "office", "product-division", 0),
+    ("product", "제품팀", "team", "platform-office", 0),
+    ("engineering", "개발팀", "team", "platform-office", 1),
+    ("infra-part", "인프라파트", "part", "engineering", 0),
+    ("management-division", "경영지원본부", "division", "scax", 1),
+    ("legal", "법무팀", "team", "management-division", 0),
+    ("finance", "재무팀", "team", "management-division", 1),
+    ("people", "피플팀", "team", "management-division", 2),
+]
+
+POSITION_DEFINITIONS = [
+    ("ceo", "company", "대표", "head"),
+    ("division-head", "division", "본부장", "head"),
+    ("office-head", "office", "실장", "head"),
+    ("team-lead", "team", "팀장", "head"),
+    ("team-deputy", "team", "부팀장", "deputy"),
+    ("part-lead", "part", "파트장", "head"),
+]
+
+GRADES = [("staff", "사원", 0), ("associate", "대리", 1), ("manager", "과장", 2), ("senior-manager", "차장", 3), ("director", "부장", 4)]
+JOBS = [("planning", "기획"), ("engineering", "개발"), ("legal", "법무"), ("finance", "재무"), ("people", "인사")]
+
+# persona -> (grade, job, primary unit, position)
+PERSONA_PLACEMENT = {
+    "mina": ("associate", "planning", "product", None),
+    "jiho": ("senior-manager", "planning", "product", "team-lead"),
+    "sora": ("manager", "legal", "legal", None),
+    "minseok": ("manager", "finance", "finance", None),
+    "demo-admin": ("director", "people", "people", None),
+}
+
+
 def _seed_organization_access(session: Session) -> None:
-    organizations = {"scax": "SCAX", "product": "제품팀", "legal": "법무팀", "finance": "재무팀", "people": "피플팀"}
-    for organization_id, name in organizations.items():
-        if session.get(OrganizationUnitRecord, organization_id) is None:
-            session.add(OrganizationUnitRecord(id=organization_id, name=name))
+    for type_id, name, order in ORGANIZATION_UNIT_TYPES:
+        if session.get(OrganizationUnitTypeRecord, type_id) is None:
+            session.add(OrganizationUnitTypeRecord(id=type_id, name=name, display_order=order))
+    for unit_id, name, type_id, parent_id, order in ORGANIZATION_UNITS:
+        unit = session.get(OrganizationUnitRecord, unit_id)
+        if unit is None:
+            session.add(OrganizationUnitRecord(id=unit_id, name=name, unit_type_id=type_id, parent_id=parent_id, display_order=order))
+        else:
+            unit.unit_type_id, unit.parent_id, unit.display_order = type_id, parent_id, order
+    for position_id, type_id, name, slot in POSITION_DEFINITIONS:
+        if session.get(PositionDefinitionRecord, position_id) is None:
+            session.add(PositionDefinitionRecord(id=position_id, organization_unit_type_id=type_id, name=name, slot_key=slot))
+    for grade_id, name, order in GRADES:
+        if session.get(GradeRecord, grade_id) is None:
+            session.add(GradeRecord(id=grade_id, name=name, display_order=order))
+    for job_id, name in JOBS:
+        if session.get(JobRecord, job_id) is None:
+            session.add(JobRecord(id=job_id, name=name))
+    session.flush()
 
     from ax_workspace.modules.organization_access.domain import SEED_PERSONAS
 
@@ -122,13 +188,14 @@ def _seed_organization_access(session: Session) -> None:
     )
     for capability in all_capabilities:
         if session.get(CapabilityRecord, capability) is None:
-            session.add(CapabilityRecord(id=capability, label=capability, version=1))
+            session.add(CapabilityRecord(id=capability, label=capability, version=1, group=capability.split(".")[0]))
 
     for principal in SEED_PERSONAS.values():
         member_id = str(principal.id)
         role_id = f"seed-role:{member_id}"
+        grade_id, job_id, primary_unit, position_id = PERSONA_PLACEMENT[member_id]
         if session.get(MemberRecord, member_id) is None:
-            session.add(MemberRecord(id=member_id, display_name=principal.display_name, employment_state="active"))
+            session.add(MemberRecord(id=member_id, display_name=principal.display_name, employment_state="active", account_ref=f"developer:{member_id}"))
         if session.scalar(select(EmploymentPeriodRecord).where(EmploymentPeriodRecord.member_id == member_id)) is None:
             session.add(EmploymentPeriodRecord(member_id=member_id, state="active"))
         for organization_id in principal.organization_scope:
@@ -139,23 +206,43 @@ def _seed_organization_access(session: Session) -> None:
                 )
             )
             if exists is None:
+                is_primary = organization_id == primary_unit
                 session.add(
                     MembershipRecord(
                         member_id=member_id,
                         organization_id=organization_id,
-                        is_primary=organization_id == "scax",
+                        is_primary=is_primary,
+                        membership_kind="primary" if is_primary else "additional",
                     )
                 )
+        if session.scalar(select(GradeAssignmentRecord).where(GradeAssignmentRecord.member_id == member_id)) is None:
+            session.add(GradeAssignmentRecord(member_id=member_id, grade_id=grade_id))
+        if session.scalar(select(JobAssignmentRecord).where(JobAssignmentRecord.member_id == member_id)) is None:
+            session.add(JobAssignmentRecord(member_id=member_id, job_id=job_id, assignment_kind="primary"))
         if session.get(RoleRecord, role_id) is None:
             session.add(RoleRecord(id=role_id, label=f"{principal.display_name} 기본 역할", version=1))
         if session.scalar(select(AppointmentRecord).where(AppointmentRecord.member_id == member_id)) is None:
             session.add(
                 AppointmentRecord(
                     member_id=member_id,
-                    organization_id="scax",
+                    organization_id=primary_unit if position_id else "scax",
                     role_id=role_id,
+                    position_definition_id=position_id,
+                    appointment_kind="primary",
                 )
             )
+        if position_id:
+            rule_id = f"standard:{position_id}:{role_id}"
+            if session.get(StandardGrantRuleRecord, rule_id) is None:
+                session.add(
+                    StandardGrantRuleRecord(
+                        id=rule_id,
+                        trigger_kind="appointment",
+                        trigger_source_ref=position_id,
+                        role_id=role_id,
+                        scope_template="descendants",
+                    )
+                )
         for capability in principal.capabilities:
             role_capability = session.scalar(
                 select(RoleCapabilityRecord).where(
@@ -177,7 +264,12 @@ def _seed_organization_access(session: Session) -> None:
                         AccessGrantRecord(
                             member_id=member_id,
                             capability_id=capability,
+                            role_id=role_id,
+                            role_capability_version=1,
+                            scope_kind="unit",
                             scope_organization_id="scax",
+                            scope_ref="scax",
+                            include_descendants=True,
                             granted_by_member_id=member_id,
                         )
                     )

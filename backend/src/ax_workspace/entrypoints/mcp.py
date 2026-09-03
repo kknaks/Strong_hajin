@@ -128,6 +128,11 @@ class McpReportsFacade:
     def list_work_requests(self) -> list[dict[str, Any]]:
         return self._application.list_work_requests(self.principal)
 
+    def resubmit_work_request(self, request_id: str, expected_version: int, title: str | None, description: str | None, due_date: str | None) -> dict[str, Any]:
+        return self._application.resubmit_work_request(
+            self.principal, UUID(request_id), expected_version, title=title, description=description, due_date=_parse_iso_date(due_date)
+        )
+
     def get_work_request(self, request_id: str) -> dict[str, Any]:
         return self._application.get_work_request(self.principal, UUID(request_id))
 
@@ -347,6 +352,12 @@ def _register_work_request_create_tools(server: MCPServer, facade: McpReportsFac
     @server.tool(description="List authorized organization-ledger assignee candidates for a new WorkRequest.")
     def work_request_assignee_candidates() -> list[dict[str, str]]:
         return facade.work_request_assignee_candidates()
+
+    @server.tool(description="Revise a negotiating WorkRequest you sent (new submission version with diff) using its required expected version.")
+    def work_request_resubmit(
+        request_id: str, expected_version: int, title: str | None = None, description: str | None = None, due_date: str | None = None
+    ) -> dict[str, Any]:
+        return facade.resubmit_work_request(request_id, expected_version, title, description, due_date)
 
     @server.tool(description="Create a WorkRequest with an optional ISO due_date and description; it creates no Task until the assignee accepts.")
     def work_request_create(title: str, assignee_id: str, due_date: str | None = None, description: str | None = None) -> dict[str, Any]:

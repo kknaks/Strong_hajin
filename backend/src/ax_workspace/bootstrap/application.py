@@ -36,7 +36,8 @@ from ax_workspace.modules.work.requests import WorkRequestApplication
 from ax_workspace.platform.persistence import make_session_factory
 from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
 from ax_workspace.platform.work_tasks import (
-    SqlAlchemyTaskMaterialRepository,
+    SqlAlchemyAttachmentRepository,
+    SqlAlchemyCommentRepository,
     SqlAlchemyTaskRepository,
     SqlAlchemyWorkRecordSource,
     SqlAlchemyWorkRequestRepository,
@@ -93,6 +94,14 @@ class WorkflowApplication:
             except TaskAccessDenied:
                 direct_work = []
         return [*direct_work, *workflow_work]
+
+    def organization_tree(self, principal: Principal) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).organization_tree(principal)
+
+    def organization_unit_members(self, principal: Principal, unit_id: str) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).unit_members(principal, unit_id)
 
     def my_organization_profile(self, principal: Principal) -> dict[str, Any]:
         with self._session_factory() as session:
@@ -223,7 +232,7 @@ class WorkflowApplication:
 
     def _materials(self, session: Any) -> TaskMaterialApplication:
         return TaskMaterialApplication(
-            SqlAlchemyTaskRepository(session), SqlAlchemyTaskMaterialRepository(session), self._material_storage
+            SqlAlchemyTaskRepository(session), SqlAlchemyAttachmentRepository(session), self._material_storage
         )
 
     def list_tasks(self, principal: Principal, *, include_closed: bool = False) -> list[dict[str, Any]]:
@@ -282,6 +291,22 @@ class WorkflowApplication:
             )
             session.commit()
             return result
+
+    def resubmit_work_request(self, principal: Principal, request_id: UUID, expected_version: int, **changes: Any) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._work_requests(session).resubmit(principal, request_id, expected_version, **changes)
+            session.commit()
+            return result
+
+    def add_work_request_comment(self, principal: Principal, request_id: UUID, body: str) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._work_requests(session).add_comment(principal, request_id, body)
+            session.commit()
+            return result
+
+    def work_request_timeline(self, principal: Principal, request_id: UUID) -> dict[str, Any]:
+        with self._session_factory() as session:
+            return self._work_requests(session).timeline(principal, request_id)
 
     def negotiate_work_request(
         self, principal: Principal, request_id: UUID, expected_version: int, conditions: dict[str, Any]
@@ -392,6 +417,7 @@ class WorkflowApplication:
         return WorkRequestApplication(
             SqlAlchemyWorkRequestRepository(session),
             OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
+            SqlAlchemyCommentRepository(session),
         )
 
     def _conversations(self, session: Any) -> ConversationApplication:

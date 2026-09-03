@@ -114,6 +114,18 @@ class WorkRequestNegotiationRequest(BaseModel):
     conditions: dict[str, object]
 
 
+class CommentRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=4000)
+
+
+class WorkRequestResubmitRequest(BaseModel):
+    expected_version: int
+    title: str | None = None
+    description: str | None = None
+    due_date: date | None = None
+    clear_due_date: bool = False
+
+
 class GenerateDailyReportDraftRequest(BaseModel):
     report_date: str
 
@@ -379,6 +391,14 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
+        @app.get("/api/organization/tree")
+        def organization_tree(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+            return app.state.workflow_application.organization_tree(principal)
+
+        @app.get("/api/organization/units/{unit_id}/members")
+        def organization_unit_members(unit_id: str, principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+            return app.state.workflow_application.organization_unit_members(principal, unit_id)
+
         @app.get("/api/organization/me")
         def my_organization_profile(principal: Principal = Depends(developer_principal)) -> dict[str, object]:
             return app.state.workflow_application.my_organization_profile(principal)
@@ -503,6 +523,34 @@ def create_app(
         ) -> dict[str, object]:
             try:
                 return app.state.workflow_application.get_work_request(principal, request_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/work-requests/{request_id}/resubmit")
+        def resubmit_work_request(
+            request_id: UUID,
+            request: WorkRequestResubmitRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.resubmit_work_request(
+                    principal, request_id, request.expected_version,
+                    title=request.title, description=request.description, due_date=request.due_date, clear_due_date=request.clear_due_date,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/work-requests/{request_id}/comments", status_code=status.HTTP_201_CREATED)
+        def add_work_request_comment(request_id: UUID, request: CommentRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.add_work_request_comment(principal, request_id, request.body)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/work-requests/{request_id}/timeline")
+        def work_request_timeline(request_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.work_request_timeline(principal, request_id)
             except Exception as error:
                 raise _runtime_error(error) from error
 

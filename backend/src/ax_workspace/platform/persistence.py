@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Index, Integer, JSON, String, Text, Uuid, UniqueConstraint, create_engine, text
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Index, Integer, JSON, String, Text, Uuid, UniqueConstraint, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -11,19 +11,42 @@ class Base(DeclarativeBase):
     pass
 
 
+class OrganizationUnitTypeRecord(Base):
+    """ERD ORGANIZATION_UNIT_TYPE — organization vocabulary (회사·본부·실·팀·파트); depth is not tied to type."""
+
+    __tablename__ = "organization_unit_types"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    lifecycle: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
 class OrganizationUnitRecord(Base):
+    """ERD ORGANIZATION_UNIT — hierarchy is a self reference; hierarchy never derives authorization."""
+
     __tablename__ = "organization_units"
 
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    parent_id: Mapped[str | None] = mapped_column(ForeignKey("organization_units.id"))
+    unit_type_id: Mapped[str | None] = mapped_column(ForeignKey("organization_unit_types.id"))
+    lifecycle: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    abolished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class MemberRecord(Base):
+    """ERD MEMBER — the person identity; the login account is a separate optional reference."""
+
     __tablename__ = "members"
 
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
     employment_state: Mapped[str] = mapped_column(String(40), nullable=False)
+    account_ref: Mapped[str | None] = mapped_column(String(200))
+    record_status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
 
 
 class EmploymentPeriodRecord(Base):
@@ -34,26 +57,81 @@ class EmploymentPeriodRecord(Base):
     state: Mapped[str] = mapped_column(String(40), nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    change_reason_ref: Mapped[str | None] = mapped_column(String(200))
 
 
 class MembershipRecord(Base):
     __tablename__ = "memberships"
-    __table_args__ = (UniqueConstraint("member_id", "organization_id", name="uq_member_organization"),)
+    __table_args__ = (Index("ix_memberships_member_org", "member_id", "organization_id"),)
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
     organization_id: Mapped[str] = mapped_column(ForeignKey("organization_units.id"), nullable=False)
     valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    is_primary: Mapped[bool] = mapped_column(nullable=False, default=False)
+    is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    membership_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="additional")
+    change_reason_ref: Mapped[str | None] = mapped_column(String(200))
+
+
+class PositionDefinitionRecord(Base):
+    """ERD POSITION_DEFINITION — appointment vocabulary allowed per unit type; slot_key expresses exclusivity."""
+
+    __tablename__ = "position_definitions"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    organization_unit_type_id: Mapped[str] = mapped_column(ForeignKey("organization_unit_types.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    slot_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    lifecycle: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+
+
+class GradeRecord(Base):
+    __tablename__ = "grades"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lifecycle: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+
+
+class GradeAssignmentRecord(Base):
+    __tablename__ = "grade_assignments"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    grade_id: Mapped[str] = mapped_column(ForeignKey("grades.id"), nullable=False)
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class JobRecord(Base):
+    __tablename__ = "jobs"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    lifecycle: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+
+
+class JobAssignmentRecord(Base):
+    __tablename__ = "job_assignments"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"), nullable=False)
+    assignment_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="primary")
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class CapabilityRecord(Base):
     __tablename__ = "capabilities"
 
-    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
     label: Mapped[str] = mapped_column(String(200), nullable=False)
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    description: Mapped[str | None] = mapped_column(Text)
+    group: Mapped[str | None] = mapped_column(String(100))
 
 
 class RoleRecord(Base):
@@ -61,42 +139,86 @@ class RoleRecord(Base):
 
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
     label: Mapped[str] = mapped_column(String(200), nullable=False)
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    sensitivity: Mapped[str] = mapped_column(String(20), nullable=False, default="normal")
+    lifecycle: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
 
 
 class RoleCapabilityRecord(Base):
     __tablename__ = "role_capabilities"
-    __table_args__ = (UniqueConstraint("role_id", "capability_id", name="uq_role_capability"),)
+    __table_args__ = (UniqueConstraint("role_id", "capability_id", "mapping_version"),)
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     role_id: Mapped[str] = mapped_column(ForeignKey("roles.id"), nullable=False)
     capability_id: Mapped[str] = mapped_column(ForeignKey("capabilities.id"), nullable=False)
-    mapping_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    mapping_version: Mapped[int] = mapped_column(nullable=False, default=1)
 
 
 class AppointmentRecord(Base):
+    """ERD APPOINTMENT — a position held at a unit; the linked role is the standard role snapshot that came with it."""
+
     __tablename__ = "appointments"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
     organization_id: Mapped[str] = mapped_column(ForeignKey("organization_units.id"), nullable=False)
     role_id: Mapped[str] = mapped_column(ForeignKey("roles.id"), nullable=False)
+    position_definition_id: Mapped[str | None] = mapped_column(ForeignKey("position_definitions.id"))
+    appointment_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="primary")
     valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    change_reason_ref: Mapped[str | None] = mapped_column(String(200))
+
+
+class StandardGrantRuleRecord(Base):
+    """ERD STANDARD_GRANT_RULE — which role an employment/membership/appointment suggests, and at what scope."""
+
+    __tablename__ = "standard_grant_rules"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    trigger_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    trigger_source_ref: Mapped[str | None] = mapped_column(String(200))
+    role_id: Mapped[str] = mapped_column(ForeignKey("roles.id"), nullable=False)
+    scope_template: Mapped[str] = mapped_column(String(20), nullable=False)
+    rule_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    lifecycle: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
 
 
 class AccessGrantRecord(Base):
+    """ERD ACCESS_GRANT — a capability (or role snapshot) granted at a scope; revocation is independent of validity."""
+
     __tablename__ = "access_grants"
-    __table_args__ = (UniqueConstraint("member_id", "capability_id", name="uq_member_capability"),)
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
     capability_id: Mapped[str] = mapped_column(ForeignKey("capabilities.id"), nullable=False)
+    role_id: Mapped[str | None] = mapped_column(ForeignKey("roles.id"))
+    role_capability_version: Mapped[int | None] = mapped_column(Integer)
+    scope_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="unit")
     scope_organization_id: Mapped[str | None] = mapped_column(ForeignKey("organization_units.id"))
+    scope_ref: Mapped[str | None] = mapped_column(String(200))
+    include_descendants: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    granted_by_member_id: Mapped[str | None] = mapped_column(ForeignKey("members.id"))
+    granted_by_member_id: Mapped[str | None] = mapped_column(String(100))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    origin_rule_id: Mapped[str | None] = mapped_column(ForeignKey("standard_grant_rules.id"))
+    origin_rule_version: Mapped[int | None] = mapped_column(Integer)
+
+
+class ResourceRelationshipRecord(Base):
+    """ERD RESOURCE_RELATIONSHIP — a member's period-bound relationship (owner·requester·assignee·reviewer·cc) to a resource."""
+
+    __tablename__ = "resource_relationships"
+    __table_args__ = (Index("ix_resource_relationships_resource", "resource_type", "resource_id"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    relationship_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class WorkflowDefinitionRecord(Base):
@@ -379,27 +501,208 @@ class TaskRecord(Base):
     description: Mapped[str | None] = mapped_column(Text)
     start_date: Mapped[date | None] = mapped_column(Date)
     due_date: Mapped[date | None] = mapped_column(Date)
+    # ERD TASK attribution and lineage
+    organization_unit_id: Mapped[str | None] = mapped_column(ForeignKey("organization_units.id"))
+    origin_kind: Mapped[str] = mapped_column(String(30), nullable=False, default="direct")
+    visibility: Mapped[str] = mapped_column(String(20), nullable=False, default="scope_default")
+    request_thread_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    source_work_request_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    source_decision_item_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    source_submission_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    source_review_decision_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    source_action_item_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    source_task_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     version: Mapped[int] = mapped_column(nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     causation_key: Mapped[str | None] = mapped_column(String(64), unique=True)
 
 
-class TaskMaterialRecord(Base):
-    """A reference document (input) or deliverable (output) attached to a Task; bytes live behind MaterialStorage."""
+class RequestThreadRecord(Base):
+    """ERD REQUEST_THREAD — the continuity of exactly one WorkRequest: comments, submissions, decisions, and the derived Task."""
 
-    __tablename__ = "task_materials"
+    __tablename__ = "request_threads"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"), nullable=False, index=True)
-    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    initiated_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    organization_context_id: Mapped[str | None] = mapped_column(String(100))
+    purpose: Mapped[str] = mapped_column(String(300), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SubjectRecord(Base):
+    """ERD SUBJECT — the stable identity of what is being judged; versions freeze its content."""
+
+    __tablename__ = "subjects"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    subject_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    owning_resource_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    owning_resource_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    workflow_run_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SubjectVersionRecord(Base):
+    __tablename__ = "subject_versions"
+    __table_args__ = (UniqueConstraint("subject_id", "version"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    subject_id: Mapped[UUID] = mapped_column(ForeignKey("subjects.id"), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DecisionItemRecord(Base):
+    """ERD ACTION_ITEM (human decision item). Named DecisionItem here because `action_items` already holds AX chat proposals."""
+
+    __tablename__ = "decision_items"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    kind: Mapped[str] = mapped_column(String(60), nullable=False)
+    subject_id: Mapped[UUID] = mapped_column(ForeignKey("subjects.id"), nullable=False)
+    context_type: Mapped[str | None] = mapped_column(String(40))
+    context_id: Mapped[str | None] = mapped_column(String(100))
+    supersedes_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    effect_identity: Mapped[str | None] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="open")
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SubmissionRecord(Base):
+    """ERD SUBMISSION — one proposal round against a fixed SubjectVersion; revisions are new rows."""
+
+    __tablename__ = "submissions"
+    __table_args__ = (UniqueConstraint("decision_item_id", "submission_version"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    decision_item_id: Mapped[UUID] = mapped_column(ForeignKey("decision_items.id"), nullable=False)
+    subject_version_id: Mapped[UUID] = mapped_column(ForeignKey("subject_versions.id"), nullable=False)
+    submission_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    revises_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    submitted_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision_policy_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    diff: Mapped[dict | None] = mapped_column(JSON)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ReviewAssignmentRecord(Base):
+    """ERD REVIEW_ASSIGNMENT — who currently owes an answer to a Submission; history 1..N, active at most 1."""
+
+    __tablename__ = "review_assignments"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    submission_id: Mapped[UUID] = mapped_column(ForeignKey("submissions.id"), nullable=False)
+    reviewer_member_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    supersedes_assignment_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    resolution_kind: Mapped[str | None] = mapped_column(String(20))
+    resolution_ref: Mapped[str | None] = mapped_column(String(100))
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    assigned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ReviewDecisionRecord(Base):
+    """ERD REVIEW_DECISION — the immutable answer bound to one assignment, submission, and actor."""
+
+    __tablename__ = "review_decisions"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    review_assignment_id: Mapped[UUID] = mapped_column(ForeignKey("review_assignments.id"), nullable=False)
+    submission_id: Mapped[UUID] = mapped_column(ForeignKey("submissions.id"), nullable=False)
+    actor_member_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    decision: Mapped[str] = mapped_column(String(30), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    conditions: Mapped[dict | None] = mapped_column(JSON)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ActivityEventRecord(Base):
+    """ERD ACTIVITY_EVENT — append-only official facts with a safe summary; never a copy of sensitive payloads."""
+
+    __tablename__ = "activity_events"
+    __table_args__ = (Index("ix_activity_events_target", "target_type", "target_id"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    request_thread_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    target_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    event_kind: Mapped[str] = mapped_column(String(80), nullable=False)
+    actor_kind: Mapped[str] = mapped_column(String(30), nullable=False, default="member")
+    actor_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    before_ref: Mapped[str | None] = mapped_column(String(200))
+    after_ref: Mapped[str | None] = mapped_column(String(200))
+    reason: Mapped[str | None] = mapped_column(Text)
+    safe_summary: Mapped[str] = mapped_column(String(300), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CommentRecord(Base):
+    """ERD COMMENT — discussion on a RequestThread; never a state transition."""
+
+    __tablename__ = "comments"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    request_thread_id: Mapped[UUID] = mapped_column(ForeignKey("request_threads.id"), nullable=False, index=True)
+    author_member_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AttachmentRecord(Base):
+    """ERD ATTACHMENT — the artifact itself (file behind MaterialStorage, or a link); bindings say where it is used."""
+
+    __tablename__ = "attachments"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    source_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_ref: Mapped[str] = mapped_column(String(500), nullable=False, unique=True)
     name: Mapped[str] = mapped_column(String(300), nullable=False)
     content_type: Mapped[str] = mapped_column(String(200), nullable=False)
-    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    storage_key: Mapped[str] = mapped_column(String(300), nullable=False, unique=True)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    provenance: Mapped[str] = mapped_column(String(300), nullable=False)
+    integrity_ref: Mapped[str] = mapped_column(String(80), nullable=False)
     uploaded_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    lifecycle: Mapped[str] = mapped_column(String(20), nullable=False, default="available")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AttachmentBindingRecord(Base):
+    """ERD ATTACHMENT_BINDING — exactly one context (comment·task·submission) and a role per binding."""
+
+    __tablename__ = "attachment_bindings"
+    __table_args__ = (Index("ix_attachment_bindings_context", "context_type", "context_id"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    attachment_id: Mapped[UUID] = mapped_column(ForeignKey("attachments.id"), nullable=False)
+    context_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    context_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    bound_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    bound_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    unbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EvidenceRecord(Base):
+    """ERD EVIDENCE — an attachment explicitly adopted as decision basis for one Submission."""
+
+    __tablename__ = "evidence"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    submission_id: Mapped[UUID] = mapped_column(ForeignKey("submissions.id"), nullable=False, index=True)
+    attachment_id: Mapped[UUID | None] = mapped_column(ForeignKey("attachments.id"))
+    evidence_role: Mapped[str] = mapped_column(String(20), nullable=False)
+    fixed_snapshot_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    mutable_source: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    adopted_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    adopted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class TaskActivityRecord(Base):
@@ -413,9 +716,14 @@ class TaskActivityRecord(Base):
 
 
 class WorkRequestRecord(Base):
+    """ERD WORK_REQUEST — request-first ledger; its RequestThread and Subject are created with it."""
+
     __tablename__ = "work_requests"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    request_thread_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    subject_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    organization_context_id: Mapped[str | None] = mapped_column(String(100))
     requester_id: Mapped[str] = mapped_column(String(100), nullable=False)
     assignee_id: Mapped[str] = mapped_column(String(100), nullable=False)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
