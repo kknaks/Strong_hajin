@@ -72,4 +72,5 @@ export type WorkRequest = {
   version: number;
   task_id: string | null;
   assignment_state: string | null;
+  conditions: Record<string, unknown> | null;
 };

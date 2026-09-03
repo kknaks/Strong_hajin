@@ -31,10 +31,12 @@ The only production/development LLM adapter is `CodexCliProviderAdapter`. It inv
 For the browser WorkRequest journey, run the backend on port 8001, then start Vite with the matching proxy and execute the Playwright script:
 
 ```sh
-DATABASE_URL=postgresql+psycopg://ax:ax@localhost:54329/ax_demo make api
-VITE_API_TARGET=http://127.0.0.1:8001 npm --prefix frontend run dev -- --host 127.0.0.1 --port 5176
-SCAX_E2E_URL=http://127.0.0.1:5176 npm --prefix frontend run e2e:work-request
+DATABASE_URL=postgresql+psycopg://ax:ax@localhost:54329/ax_demo make api-e2e
+DATABASE_URL=postgresql+psycopg://ax:ax@localhost:54329/ax_demo make frontend-e2e
+make e2e-work-request
 ```
+
+`api-e2e` listens on `127.0.0.1:8001`, while `frontend-e2e` configures Vite's `/api` proxy with `VITE_API_TARGET=http://127.0.0.1:8001` and listens on `127.0.0.1:5176`. This avoids accidentally validating the unrelated default API port 8000; `e2e-work-request` uses the UI itself to create a request, switch to the assignee, then accept it.
 
 `make verify` deliberately excludes PostgreSQL integration tests; its success is not PostgreSQL coverage. For an explicit, reproducible disposable-PostgreSQL proof, start the documented container and run:
 

@@ -9,6 +9,7 @@ from ax_workspace.modules.organization_access.domain import Principal
 class OrganizationRepository(Protocol):
     def profile_for(self, member_id: str) -> dict[str, Any] | None: ...
     def principal_for(self, member_id: str) -> Principal | None: ...
+    def work_request_assignee_candidates(self, principal: Principal) -> list[dict[str, str]]: ...
 
 
 class OrganizationApplication:
@@ -26,3 +27,9 @@ class OrganizationApplication:
         if principal is None:
             raise LookupError("active organization member was not found")
         return principal
+
+    def work_request_assignee_candidates(self, principal: Principal) -> list[dict[str, str]]:
+        return self._repository.work_request_assignee_candidates(principal)
+
+    def is_work_request_assignee(self, principal: Principal, assignee_id: str) -> bool:
+        return any(candidate["id"] == assignee_id for candidate in self.work_request_assignee_candidates(principal))

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
+from uuid import UUID
 
 from mcp.server.fastmcp import FastMCP
 
@@ -71,6 +72,35 @@ class McpReportsFacade:
     def daily_report_history(self, report_id: str) -> dict[str, Any]:
         return self._application.daily_report_history(self._principal, report_id)
 
+    def work_request_assignee_candidates(self) -> list[dict[str, str]]:
+        return self._application.work_request_assignee_candidates(self._principal)
+
+    def list_work_requests(self) -> list[dict[str, Any]]:
+        return self._application.list_work_requests(self._principal)
+
+    def get_work_request(self, request_id: str) -> dict[str, Any]:
+        return self._application.get_work_request(self._principal, UUID(request_id))
+
+    def create_work_request(self, title: str, assignee_id: str) -> dict[str, Any]:
+        return self._application.create_work_request(self._principal, title, assignee_id)
+
+    def accept_work_request(self, request_id: str, expected_version: int) -> dict[str, Any]:
+        return self._application.accept_work_request(self._principal, UUID(request_id), expected_version)
+
+    def negotiate_work_request(
+        self, request_id: str, expected_version: int, conditions: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._application.negotiate_work_request(
+            self._principal, UUID(request_id), expected_version, conditions
+        )
+
+    def reject_work_request(
+        self, request_id: str, expected_version: int, reason: str
+    ) -> dict[str, Any]:
+        return self._application.reject_work_request(
+            self._principal, UUID(request_id), expected_version, reason
+        )
+
 
 def create_mcp_server(settings: Settings | None = None) -> FastMCP:
     bound_persona = os.getenv("AX_MCP_PERSONA")
@@ -91,6 +121,7 @@ def _create_bound_persona_server(facade: McpReportsFacade) -> FastMCP:
     )
     if "work.read" in principal.capabilities:
         _register_daily_report_tools(server, facade)
+        _register_work_request_tools(server, facade)
     return server
 
 
@@ -129,6 +160,38 @@ def _register_daily_report_tools(server: FastMCP, facade: McpReportsFacade) -> N
     @server.tool(description="Read the draft and immutable submission history of a daily report.")
     def daily_report_history(report_id: str) -> dict[str, Any]:
         return facade.daily_report_history(report_id)
+
+
+def _register_work_request_tools(server: FastMCP, facade: McpReportsFacade) -> None:
+    @server.tool(description="List WorkRequests that the delegated persona requested or must decide.")
+    def work_request_list() -> list[dict[str, Any]]:
+        return facade.list_work_requests()
+
+    @server.tool(description="Read one WorkRequest visible to the delegated persona.")
+    def work_request_get(request_id: str) -> dict[str, Any]:
+        return facade.get_work_request(request_id)
+
+    @server.tool(description="List authorized organization-ledger assignee candidates for a new WorkRequest.")
+    def work_request_assignee_candidates() -> list[dict[str, str]]:
+        return facade.work_request_assignee_candidates()
+
+    @server.tool(description="Create a WorkRequest; it creates no Task until the assignee accepts.")
+    def work_request_create(title: str, assignee_id: str) -> dict[str, Any]:
+        return facade.create_work_request(title, assignee_id)
+
+    @server.tool(description="Accept a visible WorkRequest using its required expected version.")
+    def work_request_accept(request_id: str, expected_version: int) -> dict[str, Any]:
+        return facade.accept_work_request(request_id, expected_version)
+
+    @server.tool(description="Return a WorkRequest for conditions negotiation using its required expected version.")
+    def work_request_negotiate(
+        request_id: str, expected_version: int, conditions: dict[str, Any]
+    ) -> dict[str, Any]:
+        return facade.negotiate_work_request(request_id, expected_version, conditions)
+
+    @server.tool(description="Reject a WorkRequest using its required expected version and reason.")
+    def work_request_reject(request_id: str, expected_version: int, reason: str) -> dict[str, Any]:
+        return facade.reject_work_request(request_id, expected_version, reason)
 
 
 def main() -> None:

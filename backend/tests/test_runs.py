@@ -9,6 +9,7 @@ from ax_workspace.modules.ax_execution.ai import AiGeneration
 from ax_workspace.platform.persistence import (
     ProviderCallRecord,
     ReportDraftRecord,
+    EmploymentPeriodRecord,
     WorkflowNodeExecutionRecord,
     WorkflowRunRecord,
     make_session_factory,
@@ -272,6 +273,50 @@ def test_work_request_creates_a_task_only_after_the_assignee_accepts(tmp_path) -
     assert accepted.json()["task_id"]
     assert accepted.json()["assignment_state"] == "active"
     assert client.get("/api/my-work", headers={"X-Demo-Persona": "jiho"}).json()[0]["task_id"] == accepted.json()["task_id"]
+
+
+def test_work_request_uses_authorized_organization_candidates_and_rejects_an_out_of_scope_assignee(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+
+    candidates = client.get(
+        "/api/work-request-assignee-candidates",
+        headers={"X-Demo-Persona": "mina"},
+    )
+
+    assert candidates.status_code == 200
+    assert candidates.json() == [{"id": "jiho", "display_name": "지호 (팀장)"}]
+
+    rejected = client.post(
+        "/api/work-requests",
+        headers={"X-Demo-Persona": "mina"},
+        json={"title": "권한 밖 배정 시도", "assignee_id": "sora"},
+    )
+
+    assert rejected.status_code == 422
+    assert "eligible assignee" in rejected.json()["detail"]
+
+    unknown = client.post(
+        "/api/work-requests",
+        headers={"X-Demo-Persona": "mina"},
+        json={"title": "임의 식별자 배정 시도", "assignee_id": "not-in-the-ledger"},
+    )
+    assert unknown.status_code == 422
+
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+    with make_session_factory(database_url)() as session:
+        employment = session.scalar(
+            select(EmploymentPeriodRecord).where(EmploymentPeriodRecord.member_id == "jiho")
+        )
+        assert employment is not None
+        employment.state = "inactive"
+        session.commit()
+
+    inactive = client.post(
+        "/api/work-requests",
+        headers={"X-Demo-Persona": "mina"},
+        json={"title": "비활성 구성원 배정 시도", "assignee_id": "jiho"},
+    )
+    assert inactive.status_code == 422
 
 
 def test_work_request_rejection_never_creates_a_task(tmp_path) -> None:

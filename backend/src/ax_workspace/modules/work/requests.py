@@ -17,15 +17,23 @@ class WorkRequestRepository(Protocol):
     def create_accepted_task(self, request: Any) -> Any: ...
     def append_audit(self, request_id: UUID, actor_id: str, event_type: str, payload: dict[str, Any]) -> None: ...
     def inbox_for(self, assignee_id: str) -> list[Any]: ...
+    def list_for(self, principal_id: str) -> list[Any]: ...
+
+
+class WorkRequestAssigneeDirectory(Protocol):
+    def is_work_request_assignee(self, principal: Principal, assignee_id: str) -> bool: ...
 
 
 class WorkRequestApplication:
-    def __init__(self, repository: WorkRequestRepository) -> None:
+    def __init__(self, repository: WorkRequestRepository, assignee_directory: WorkRequestAssigneeDirectory) -> None:
         self._repository = repository
+        self._assignee_directory = assignee_directory
 
     def create(self, principal: Principal, title: str, assignee_id: str) -> dict[str, Any]:
         if not title.strip():
             raise WorkRequestError("title is required")
+        if not self._assignee_directory.is_work_request_assignee(principal, assignee_id):
+            raise WorkRequestError("assignee is not an eligible assignee")
         request = self._repository.create_request(str(principal.id), assignee_id, title.strip())
         self._repository.append_audit(request.id, str(principal.id), "work_request.created", {})
         return self._view(request)
@@ -67,6 +75,17 @@ class WorkRequestApplication:
 
     def inbox(self, principal: Principal) -> list[dict[str, Any]]:
         return [self._view(request) for request in self._repository.inbox_for(str(principal.id))]
+
+    def list(self, principal: Principal) -> list[dict[str, Any]]:
+        return [self._view(request) for request in self._repository.list_for(str(principal.id))]
+
+    def get(self, principal: Principal, request_id: UUID) -> dict[str, Any]:
+        request = self._repository.request(request_id)
+        if request is None:
+            raise WorkRequestError("work request was not found")
+        if str(principal.id) not in {request.requester_id, request.assignee_id}:
+            raise WorkRequestError("principal cannot read this work request")
+        return self._view(request)
 
     def _decision_target(self, principal: Principal, request_id: UUID, expected_version: int) -> Any:
         request = self._repository.request(request_id, lock=True)

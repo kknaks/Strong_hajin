@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { decideWorkRequest, getActionInbox } from "./api";
+import { decideWorkRequest, getActionInbox, negotiateWorkRequest } from "./api";
 import type { WorkRequest } from "./viewModels";
 
 type ActionInboxPageProps = {
@@ -11,6 +11,8 @@ type ActionInboxPageProps = {
 export function ActionInboxPage({ personaId, onError }: ActionInboxPageProps) {
   const [requests, setRequests] = useState<WorkRequest[]>([]);
   const [isWorking, setIsWorking] = useState(false);
+  const [negotiatingRequestId, setNegotiatingRequestId] = useState<string | null>(null);
+  const [conditions, setConditions] = useState("");
 
   async function refresh() {
     try {
@@ -43,6 +45,27 @@ export function ActionInboxPage({ personaId, onError }: ActionInboxPageProps) {
     }
   }
 
+  async function negotiate(request: WorkRequest) {
+    const note = conditions.trim();
+    if (!note) {
+      onError("협의 조건을 입력해 주세요.");
+      return;
+    }
+
+    setIsWorking(true);
+    onError(null);
+    try {
+      await negotiateWorkRequest(personaId, request.request_id, request.version, { note });
+      setConditions("");
+      setNegotiatingRequestId(null);
+      await refresh();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "협의 요청을 처리하지 못했습니다.");
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
   return (
     <section className="page-surface">
       <p className="kicker">ACTIONS</p>
@@ -60,6 +83,7 @@ export function ActionInboxPage({ personaId, onError }: ActionInboxPageProps) {
                 <div>
                   <b>{request.title}</b>
                   <span>{request.state}</span>
+                  {request.conditions && <small>협의 조건: {JSON.stringify(request.conditions)}</small>}
                 </div>
                 <div>
                   <button disabled={isWorking} onClick={() => void decide(request, "accept")} type="button">
@@ -68,7 +92,28 @@ export function ActionInboxPage({ personaId, onError }: ActionInboxPageProps) {
                   <button disabled={isWorking} onClick={() => void decide(request, "reject")} type="button">
                     거절
                   </button>
+                  <button
+                    disabled={isWorking}
+                    onClick={() => setNegotiatingRequestId(request.request_id)}
+                    type="button"
+                  >
+                    협의
+                  </button>
                 </div>
+                {negotiatingRequestId === request.request_id && (
+                  <div className="request-negotiation">
+                    <label htmlFor={`conditions-${request.request_id}`}>협의 조건</label>
+                    <input
+                      id={`conditions-${request.request_id}`}
+                      onChange={(event) => setConditions(event.target.value)}
+                      placeholder="예: 9월 5일까지 완료 가능"
+                      value={conditions}
+                    />
+                    <button disabled={isWorking} onClick={() => void negotiate(request)} type="button">
+                      조건 보내기
+                    </button>
+                  </div>
+                )}
               </li>
             ))}
           </ul>

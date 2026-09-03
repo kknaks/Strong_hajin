@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.work.application import TaskNotFound, TaskState
@@ -133,6 +133,20 @@ class SqlAlchemyWorkRequestRepository:
                 .where(
                     WorkRequestRecord.assignee_id == assignee_id,
                     WorkRequestRecord.state.in_(("pending", "negotiating")),
+                )
+                .order_by(WorkRequestRecord.created_at)
+            )
+        )
+
+    def list_for(self, principal_id: str) -> list[WorkRequestRecord]:
+        return list(
+            self._session.scalars(
+                select(WorkRequestRecord)
+                .where(
+                    or_(
+                        WorkRequestRecord.requester_id == principal_id,
+                        WorkRequestRecord.assignee_id == principal_id,
+                    )
                 )
                 .order_by(WorkRequestRecord.created_at)
             )

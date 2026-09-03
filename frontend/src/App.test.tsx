@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
@@ -10,6 +10,7 @@ const jsonResponse = (body: unknown) =>
 
 describe("product surfaces", () => {
   afterEach(() => {
+    cleanup();
     vi.unstubAllGlobals();
   });
 
@@ -36,6 +37,10 @@ describe("product surfaces", () => {
           },
           { assignment_id: "assignment-1", title: "수락된 배정", state: "active" },
         ]);
+      }
+
+      if (path === "/api/work-request-assignee-candidates") {
+        return jsonResponse([{ id: "jiho", display_name: "지호 (팀장)" }]);
       }
 
       if (path === "/api/tasks/task-1/start" && init?.method === "POST") {
@@ -66,5 +71,84 @@ describe("product surfaces", () => {
       "/api/tasks/task-1/start",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("creates a work request through the UI and projects it only after the assignee accepts", async () => {
+    let request: {
+      request_id: string;
+      title: string;
+      state: "pending" | "accepted";
+      version: number;
+      task_id: string | null;
+      assignment_state: string | null;
+      conditions: null;
+    } | null = null;
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const headers = new Headers(init?.headers);
+      const personaId = headers.get("X-Demo-Persona");
+
+      if (path === "/api/developer/personas") {
+        return jsonResponse([
+          { id: "mina", display_name: "민아 (구성원)" },
+          { id: "jiho", display_name: "지호 (팀장)" },
+        ]);
+      }
+      if (path === "/api/my-work") {
+        return jsonResponse(
+          personaId === "jiho" && request?.state === "accepted"
+            ? [{ task_id: "task-1", title: request.title, state: "open", version: 1, block_reason: null }]
+            : [],
+        );
+      }
+      if (path === "/api/work-request-assignee-candidates") {
+        return jsonResponse([{ id: "jiho", display_name: "지호 (팀장)" }]);
+      }
+      if (path === "/api/work-requests" && init?.method === "POST") {
+        request = {
+          request_id: "request-1",
+          title: JSON.parse(String(init.body)).title,
+          state: "pending",
+          version: 1,
+          task_id: null,
+          assignment_state: null,
+          conditions: null,
+        };
+        return jsonResponse(request);
+      }
+      if (path === "/api/action-inbox") {
+        return jsonResponse(personaId === "jiho" && request?.state === "pending" ? [request] : []);
+      }
+      if (path === "/api/work-requests/request-1/accept" && init?.method === "POST" && request) {
+        request = { ...request, state: "accepted", version: 2, task_id: "task-1", assignment_state: "active" };
+        return jsonResponse(request);
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
+    await screen.findByLabelText("담당 후보");
+    fireEvent.change(screen.getByLabelText("요청할 업무"), { target: { value: "UI로 만든 업무 요청" } });
+    fireEvent.click(screen.getByRole("button", { name: "업무 요청 보내기" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/work-requests",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+
+    fireEvent.change(screen.getByLabelText("사용자"), { target: { value: "jiho" } });
+    fireEvent.click(within(navigation).getByRole("button", { name: "판단" }));
+    expect(await screen.findByText("UI로 만든 업무 요청")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "수락" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "수락" }));
+
+    fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
+    expect(await screen.findByText("UI로 만든 업무 요청")).toBeTruthy();
   });
 });

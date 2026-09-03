@@ -148,17 +148,31 @@ class WorkflowApplication:
 
     def create_work_request(self, principal: Principal, title: str, assignee_id: str) -> dict[str, Any]:
         with self._session_factory() as session:
-            result = WorkRequestApplication(SqlAlchemyWorkRequestRepository(session)).create(
+            result = self._work_requests(session).create(
                 principal, title, assignee_id
             )
             session.commit()
             return result
 
+    def work_request_assignee_candidates(self, principal: Principal) -> list[dict[str, str]]:
+        with self._session_factory() as session:
+            return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).work_request_assignee_candidates(
+                principal
+            )
+
+    def list_work_requests(self, principal: Principal) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return self._work_requests(session).list(principal)
+
+    def get_work_request(self, principal: Principal, request_id: UUID) -> dict[str, Any]:
+        with self._session_factory() as session:
+            return self._work_requests(session).get(principal, request_id)
+
     def accept_work_request(
         self, principal: Principal, request_id: UUID, expected_version: int
     ) -> dict[str, Any]:
         with self._session_factory() as session:
-            result = WorkRequestApplication(SqlAlchemyWorkRequestRepository(session)).accept(
+            result = self._work_requests(session).accept(
                 principal, request_id, expected_version
             )
             session.commit()
@@ -168,7 +182,7 @@ class WorkflowApplication:
         self, principal: Principal, request_id: UUID, expected_version: int, reason: str
     ) -> dict[str, Any]:
         with self._session_factory() as session:
-            result = WorkRequestApplication(SqlAlchemyWorkRequestRepository(session)).reject(
+            result = self._work_requests(session).reject(
                 principal, request_id, expected_version, reason
             )
             session.commit()
@@ -178,7 +192,7 @@ class WorkflowApplication:
         self, principal: Principal, request_id: UUID, expected_version: int, conditions: dict[str, Any]
     ) -> dict[str, Any]:
         with self._session_factory() as session:
-            result = WorkRequestApplication(SqlAlchemyWorkRequestRepository(session)).negotiate(
+            result = self._work_requests(session).negotiate(
                 principal, request_id, expected_version, conditions
             )
             session.commit()
@@ -186,7 +200,14 @@ class WorkflowApplication:
 
     def work_request_inbox(self, principal: Principal) -> list[dict[str, Any]]:
         with self._session_factory() as session:
-            return WorkRequestApplication(SqlAlchemyWorkRequestRepository(session)).inbox(principal)
+            return self._work_requests(session).inbox(principal)
+
+    @staticmethod
+    def _work_requests(session: Any) -> WorkRequestApplication:
+        return WorkRequestApplication(
+            SqlAlchemyWorkRequestRepository(session),
+            OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
+        )
 
     def transition_task(self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None = None, expected_version: int = 0) -> dict[str, Any]:
         with self._session_factory() as session:

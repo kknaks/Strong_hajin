@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { createDirectTask, getMyWork, transitionDirectTask } from "./api";
-import { isDirectTask, type DirectTask, type TaskState } from "./viewModels";
+import {
+  createDirectTask,
+  createWorkRequest,
+  getMyWork,
+  getWorkRequestAssigneeCandidates,
+  transitionDirectTask,
+} from "./api";
+import { isDirectTask, type DirectTask, type Persona, type TaskState } from "./viewModels";
 
 type MyWorkPageProps = {
   personaId: string;
@@ -22,6 +28,9 @@ const taskStateLabel: Record<TaskState, string> = {
 export function MyWorkPage({ personaId, onError }: MyWorkPageProps) {
   const [tasks, setTasks] = useState<DirectTask[]>([]);
   const [title, setTitle] = useState("");
+  const [requestTitle, setRequestTitle] = useState("");
+  const [assigneeCandidates, setAssigneeCandidates] = useState<Persona[]>([]);
+  const [assigneeId, setAssigneeId] = useState("");
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [filter, setFilter] = useState<TaskFilter>("all");
 
@@ -38,6 +47,26 @@ export function MyWorkPage({ personaId, onError }: MyWorkPageProps) {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void getWorkRequestAssigneeCandidates(personaId)
+      .then((candidates) => {
+        if (cancelled) return;
+        setAssigneeCandidates(candidates);
+        setAssigneeId(candidates[0]?.id ?? "");
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          onError(error instanceof Error ? error.message : "업무 대상 후보를 불러오지 못했습니다.");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [onError, personaId]);
 
   const createTask = async () => {
     const trimmedTitle = title.trim();
@@ -73,6 +102,24 @@ export function MyWorkPage({ personaId, onError }: MyWorkPageProps) {
     }
   };
 
+  const createRequest = async () => {
+    const trimmedTitle = requestTitle.trim();
+    if (!trimmedTitle || !assigneeId) {
+      onError("업무 제목과 담당 후보를 선택해 주세요.");
+      return;
+    }
+
+    setBusyAction("request");
+    try {
+      await createWorkRequest(personaId, trimmedTitle, assigneeId);
+      setRequestTitle("");
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "업무 요청을 만들지 못했습니다.");
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   const visibleTasks = filter === "all" ? tasks : tasks.filter((task) => task.state === filter);
 
   return (
@@ -102,6 +149,45 @@ export function MyWorkPage({ personaId, onError }: MyWorkPageProps) {
           {busyAction === "create" ? "추가 중" : "업무 추가"}
         </button>
       </div>
+
+      <section className="surface-card request-create">
+        <div>
+          <h3>동료에게 업무 요청</h3>
+          <p>수락 전에는 담당자의 내 업무에 생성되지 않습니다.</p>
+        </div>
+        <label htmlFor="work-request-title">요청할 업무</label>
+        <input
+          id="work-request-title"
+          onChange={(event) => setRequestTitle(event.target.value)}
+          placeholder="동료에게 요청할 업무 제목"
+          value={requestTitle}
+        />
+        <label htmlFor="work-request-assignee">담당 후보</label>
+        <select
+          disabled={assigneeCandidates.length === 0}
+          id="work-request-assignee"
+          onChange={(event) => setAssigneeId(event.target.value)}
+          value={assigneeId}
+        >
+          {assigneeCandidates.length === 0 ? (
+            <option value="">요청 가능한 동료가 없습니다.</option>
+          ) : (
+            assigneeCandidates.map((candidate) => (
+              <option key={candidate.id} value={candidate.id}>
+                {candidate.display_name}
+              </option>
+            ))
+          )}
+        </select>
+        <button
+          className="primary"
+          disabled={busyAction !== null || assigneeCandidates.length === 0}
+          onClick={() => void createRequest()}
+          type="button"
+        >
+          {busyAction === "request" ? "요청 중" : "업무 요청 보내기"}
+        </button>
+      </section>
 
       <div className="work-tabs" role="group" aria-label="업무 상태 필터">
         {(["all", "open", "in_progress", "blocked", "done", "cancelled"] as const).map((state) => (

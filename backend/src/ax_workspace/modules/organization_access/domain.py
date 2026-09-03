@@ -31,7 +31,7 @@ SEED_PERSONAS: dict[PersonaId, Principal] = {
         PersonaId.JIHO,
         "지호 (팀장)",
         frozenset({"scax", "product"}),
-        frozenset({"work.read", "report.review", "meeting.followup.assign", "team.manage"}),
+        frozenset({"work.read", "work_request.decide", "report.review", "meeting.followup.assign", "team.manage"}),
     ),
     PersonaId.SORA: Principal(
         PersonaId.SORA,

@@ -1,7 +1,9 @@
 DATABASE_URL ?= postgresql+psycopg://ax:ax@localhost:54329/ax_demo
 POSTGRES_TEST_URL ?= postgresql+psycopg://ax:ax@localhost:54329/ax_test
+E2E_API_PORT ?= 8001
+E2E_FRONTEND_PORT ?= 5176
 
-.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo api mcp frontend-install frontend
+.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo api mcp frontend-install frontend api-e2e frontend-e2e e2e-work-request
 
 install:
 	cd backend && uv sync --all-groups
@@ -44,3 +46,12 @@ frontend-install:
 
 frontend:
 	cd frontend && npm run dev
+
+api-e2e:
+	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run uvicorn ax_workspace.entrypoints.http:app --host 127.0.0.1 --port "$(E2E_API_PORT)"
+
+frontend-e2e:
+	cd frontend && VITE_API_TARGET="http://127.0.0.1:$(E2E_API_PORT)" npm run dev -- --host 127.0.0.1 --port "$(E2E_FRONTEND_PORT)"
+
+e2e-work-request:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:work-request

@@ -118,6 +118,21 @@ export async function getActionInbox(personaId: string): Promise<WorkRequest[]> 
   return request<WorkRequest[]>("/api/action-inbox", personaId);
 }
 
+export async function getWorkRequestAssigneeCandidates(personaId: string): Promise<Persona[]> {
+  return request<Persona[]>("/api/work-request-assignee-candidates", personaId);
+}
+
+export async function createWorkRequest(
+  personaId: string,
+  title: string,
+  assigneeId: string,
+): Promise<WorkRequest> {
+  return request<WorkRequest>("/api/work-requests", personaId, {
+    body: JSON.stringify({ title, assignee_id: assigneeId }),
+    method: "POST",
+  });
+}
+
 export async function decideWorkRequest(
   personaId: string,
   requestId: string,
@@ -127,6 +142,18 @@ export async function decideWorkRequest(
 ): Promise<WorkRequest> {
   return request<WorkRequest>(`/api/work-requests/${requestId}/${action}`, personaId, {
     body: JSON.stringify({ expected_version: expectedVersion, reason: reason ?? null }),
+    method: "POST",
+  });
+}
+
+export async function negotiateWorkRequest(
+  personaId: string,
+  requestId: string,
+  expectedVersion: number,
+  conditions: Record<string, string>,
+): Promise<WorkRequest> {
+  return request<WorkRequest>(`/api/work-requests/${requestId}/negotiate`, personaId, {
+    body: JSON.stringify({ expected_version: expectedVersion, conditions }),
     method: "POST",
   });
 }

@@ -223,6 +223,35 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
+        @app.get("/api/work-requests")
+        def list_work_requests(
+            principal: Principal = Depends(developer_principal),
+        ) -> list[dict[str, object]]:
+            try:
+                return app.state.workflow_application.list_work_requests(principal)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/work-requests/{request_id}")
+        def get_work_request(
+            request_id: UUID,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.get_work_request(principal, request_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/work-request-assignee-candidates", response_model=list[PersonaResponse])
+        def work_request_assignee_candidates(
+            principal: Principal = Depends(developer_principal),
+        ) -> list[PersonaResponse]:
+            try:
+                candidates = app.state.workflow_application.work_request_assignee_candidates(principal)
+                return [PersonaResponse(**candidate) for candidate in candidates]
+            except Exception as error:
+                raise _runtime_error(error) from error
+
         @app.post("/api/work-requests/{request_id}/accept")
         def accept_work_request(
             request_id: UUID,

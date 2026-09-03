@@ -48,6 +48,23 @@ def test_mcp_facade_uses_direct_daily_report_operations(tmp_path) -> None:
     assert submitted["body"] == "MCP에서 수정한 초안"
 
 
+def test_mcp_facade_uses_the_work_request_public_operations(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url)
+    mina = McpReportsFacade(settings, "mina", ContractTestAiProvider())
+    jiho = McpReportsFacade(settings, "jiho", ContractTestAiProvider())
+
+    assert mina.work_request_assignee_candidates() == [{"id": "jiho", "display_name": "지호 (팀장)"}]
+    created = mina.create_work_request("MCP 업무 요청", "jiho")
+    assert mina.list_work_requests() == [created]
+    assert jiho.get_work_request(created["request_id"]) == created
+
+    accepted = jiho.accept_work_request(created["request_id"], created["version"])
+    assert accepted["task_id"]
+    assert jiho.list_work_requests()[0]["state"] == "accepted"
+
+
 def test_unbound_mcp_server_fails_closed_instead_of_accepting_a_caller_persona(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -72,6 +89,9 @@ def test_mcp_tool_exposure_is_bound_to_the_server_persona(
 
     assert "daily_report_generate_draft" in mina_tools
     assert "daily_report_generate_draft" not in sora_tools
+    assert "work_request_create" in mina_tools
+    assert "work_request_accept" in mina_tools
+    assert "work_request_create" not in sora_tools
     assert "start_daily_report" not in mina_tools
     assert all("persona" not in tool.name for tool in asyncio.run(create_mcp_server(settings).list_tools()))
 
@@ -102,6 +122,13 @@ def test_stdio_mcp_client_discovers_only_persona_bound_report_tools(tmp_path) ->
                     "daily_report_generate_draft",
                     "daily_report_history",
                     "daily_report_submit",
+                    "work_request_accept",
+                    "work_request_assignee_candidates",
+                    "work_request_create",
+                    "work_request_get",
+                    "work_request_list",
+                    "work_request_negotiate",
+                    "work_request_reject",
                 }
 
     asyncio.run(scenario())

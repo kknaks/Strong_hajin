@@ -46,3 +46,20 @@ class SqlAlchemyOrganizationRepository:
             organization_scope=frozenset(item["id"] for item in profile["organizations"]),
             capabilities=frozenset(profile["capabilities"]),
         )
+
+    def work_request_assignee_candidates(self, principal: Principal) -> list[dict[str, str]]:
+        """Return active decision-capable peers whose current org scope overlaps the requester."""
+        candidates: list[dict[str, str]] = []
+        member_ids = self._session.scalars(select(MemberRecord.id).order_by(MemberRecord.id))
+        for member_id in member_ids:
+            if member_id == str(principal.id):
+                continue
+            candidate = self.principal_for(member_id)
+            if candidate is None:
+                continue
+            if "work_request.decide" not in candidate.capabilities:
+                continue
+            if not principal.organization_scope.intersection(candidate.organization_scope):
+                continue
+            candidates.append({"id": str(candidate.id), "display_name": candidate.display_name})
+        return candidates
