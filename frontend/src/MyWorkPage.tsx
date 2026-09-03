@@ -11,6 +11,7 @@ import { isDirectTask, type DirectTask, type Persona, type TaskState } from "./v
 
 type MyWorkPageProps = {
   personaId: string;
+  canManageOwnTasks: boolean;
   canCreateWorkRequests: boolean;
   onError: (message: string | null) => void;
 };
@@ -28,6 +29,7 @@ const taskStateLabel: Record<TaskState, string> = {
 
 export function MyWorkPage({
   personaId,
+  canManageOwnTasks,
   canCreateWorkRequests,
   onError,
 }: MyWorkPageProps) {
@@ -148,20 +150,22 @@ export function MyWorkPage({
         </button>
       </div>
 
-      <div className="task-create">
-        <label className="sr-only" htmlFor="task-title">
-          업무 제목
-        </label>
-        <input
-          id="task-title"
-          onChange={(event) => setTitle(event.target.value)}
-          placeholder="직접 시작할 업무 제목"
-          value={title}
-        />
-        <button className="primary" disabled={busyAction !== null} onClick={() => void createTask()} type="button">
-          {busyAction === "create" ? "추가 중" : "업무 추가"}
-        </button>
-      </div>
+      {canManageOwnTasks && (
+        <div className="task-create">
+          <label className="sr-only" htmlFor="task-title">
+            업무 제목
+          </label>
+          <input
+            id="task-title"
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="직접 시작할 업무 제목"
+            value={title}
+          />
+          <button className="primary" disabled={busyAction !== null} onClick={() => void createTask()} type="button">
+            {busyAction === "create" ? "추가 중" : "업무 추가"}
+          </button>
+        </div>
+      )}
 
       {canCreateWorkRequests && (
         <section className="surface-card request-create">
@@ -222,7 +226,13 @@ export function MyWorkPage({
           <p className="empty-row">표시할 직접 생성 업무가 없습니다.</p>
         ) : (
           visibleTasks.map((task) => (
-            <TaskRow busy={busyAction !== null} key={task.task_id} onTransition={transitionTask} task={task} />
+            <TaskRow
+              busy={busyAction !== null}
+              canManageOwnTasks={canManageOwnTasks}
+              key={task.task_id}
+              onTransition={transitionTask}
+              task={task}
+            />
           ))
         )}
       </div>
@@ -232,11 +242,12 @@ export function MyWorkPage({
 
 type TaskRowProps = {
   busy: boolean;
+  canManageOwnTasks: boolean;
   task: DirectTask;
   onTransition: (task: DirectTask, action: TaskAction) => Promise<void>;
 };
 
-function TaskRow({ busy, task, onTransition }: TaskRowProps) {
+function TaskRow({ busy, canManageOwnTasks, task, onTransition }: TaskRowProps) {
   return (
     <article className="progress-row">
       <div>
@@ -244,33 +255,45 @@ function TaskRow({ busy, task, onTransition }: TaskRowProps) {
         {task.block_reason && <small>막힘 사유: {task.block_reason}</small>}
       </div>
       <span className="status completed">{taskStateLabel[task.state]}</span>
-      <div className="task-actions">
-        {task.state === "open" && (
-          <button disabled={busy} onClick={() => void onTransition(task, "start")} type="button">
-            시작
-          </button>
-        )}
-        {task.state === "in_progress" && (
-          <>
-            <button disabled={busy} onClick={() => void onTransition(task, "block")} type="button">
-              막힘
+      {canManageOwnTasks && (
+        <div className="task-actions">
+          {task.state === "open" && (
+            <button disabled={busy} onClick={() => void onTransition(task, "start")} type="button">
+              시작
             </button>
-            <button className="primary" disabled={busy} onClick={() => void onTransition(task, "complete")} type="button">
-              완료
+          )}
+          {task.state === "in_progress" && (
+            <>
+              <button disabled={busy} onClick={() => void onTransition(task, "block")} type="button">
+                막힘
+              </button>
+              <button
+                className="primary"
+                disabled={busy}
+                onClick={() => void onTransition(task, "complete")}
+                type="button"
+              >
+                완료
+              </button>
+            </>
+          )}
+          {task.state === "blocked" && (
+            <button
+              className="primary"
+              disabled={busy}
+              onClick={() => void onTransition(task, "resume")}
+              type="button"
+            >
+              재개
             </button>
-          </>
-        )}
-        {task.state === "blocked" && (
-          <button className="primary" disabled={busy} onClick={() => void onTransition(task, "resume")} type="button">
-            재개
-          </button>
-        )}
-        {task.state !== "done" && task.state !== "cancelled" && (
-          <button disabled={busy} onClick={() => void onTransition(task, "cancel")} type="button">
-            취소
-          </button>
-        )}
-      </div>
+          )}
+          {task.state !== "done" && task.state !== "cancelled" && (
+            <button disabled={busy} onClick={() => void onTransition(task, "cancel")} type="button">
+              취소
+            </button>
+          )}
+        </div>
+      )}
     </article>
   );
 }

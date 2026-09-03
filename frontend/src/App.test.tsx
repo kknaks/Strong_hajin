@@ -30,7 +30,7 @@ describe("product surfaces", () => {
           member_id: "mina",
           display_name: "민아 (구성원)",
           organizations: [],
-          capabilities: ["daily_report.generate", "work_request.decide"],
+          capabilities: ["daily_report.generate", "task.read", "task.self_manage", "work_request.decide"],
         });
       }
 
@@ -102,6 +102,46 @@ describe("product surfaces", () => {
       "/api/tasks/task-1/start",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("shows assigned work read-only when task.self_manage is not granted", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/developer/personas") {
+        return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      }
+      if (path === "/api/organization/me") {
+        return jsonResponse({
+          member_id: "mina",
+          display_name: "민아 (구성원)",
+          organizations: [],
+          capabilities: ["task.read"],
+        });
+      }
+      if (path === "/api/my-work") {
+        return jsonResponse([
+          {
+            task_id: "task-1",
+            title: "읽기 전용 업무",
+            state: "open",
+            version: 1,
+            block_reason: null,
+          },
+        ]);
+      }
+      if (path === "/api/actions" || path === "/api/action-inbox") return jsonResponse([]);
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
+
+    expect(await screen.findByText("읽기 전용 업무")).toBeTruthy();
+    expect(screen.queryByLabelText("업무 제목")).toBeNull();
+    expect(screen.queryByRole("button", { name: "업무 추가" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "시작" })).toBeNull();
   });
 
   it("creates a work request through the UI and projects it only after the assignee accepts", async () => {

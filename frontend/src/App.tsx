@@ -299,6 +299,7 @@ export default function App() {
           <MyWorkPage
             {...pageProps}
             canCreateWorkRequests={capabilities?.includes("work_request.create") ?? false}
+            canManageOwnTasks={capabilities?.includes("task.self_manage") ?? false}
           />
         )}
         {surface === "inbox" && (
