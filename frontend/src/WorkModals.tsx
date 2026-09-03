@@ -1,15 +1,27 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { createDirectTask, createWorkRequest, decideWorkRequest, negotiateWorkRequest } from "./api";
 import {
+  createDirectTask,
+  createWorkRequest,
+  decideWorkRequest,
+  detachTaskMaterial,
+  getTaskMaterials,
+  negotiateWorkRequest,
+  taskMaterialContentUrl,
+  uploadTaskMaterial,
+} from "./api";
+import {
+  dueDayText,
   formatMonthDay,
+  isOverdue,
   isoDateInSeoul,
   personName,
+  seoulToday,
   taskStateLabel,
   workRequestStateLabel,
 } from "./labels";
 import { ConfirmModal, Drawer } from "./Modal";
-import type { DirectTask, Persona, WorkRequest } from "./viewModels";
+import type { DirectTask, Persona, TaskMaterial, TaskMaterialKind, TaskPatch, WorkRequest } from "./viewModels";
 
 export type TaskAction = "start" | "block" | "resume" | "complete" | "cancel";
 
@@ -23,6 +35,22 @@ export function StatusText({ state, label }: { state: string; label?: string }) 
   return <span className={`status ${state}`}>{label ?? (state in taskStateLabel ? taskStateLabel[state as keyof typeof taskStateLabel] : state)}</span>;
 }
 
+export function DueText({ task, today }: { task: DirectTask; today: string }) {
+  if (!task.due_date) return <span className="t-meta">—</span>;
+  const overdue = isOverdue(task, today);
+  return (
+    <span className={overdue ? "due-text overdue" : "due-text"}>
+      {formatMonthDay(task.due_date)} <small>({dueDayText(task.due_date, today)})</small>
+    </span>
+  );
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size}B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(0)}KB`;
+  return `${(size / 1024 / 1024).toFixed(1)}MB`;
+}
+
 /* ---------------------------------------------------------------- task detail (drawer 840) */
 
 export function TaskDetailDrawer({
@@ -32,7 +60,10 @@ export function TaskDetailDrawer({
   canManage,
   busy,
   onTransition,
+  onUpdate,
   onAskAx,
+  onNotice,
+  onError,
   onClose,
 }: {
   task: DirectTask;
@@ -41,14 +72,69 @@ export function TaskDetailDrawer({
   canManage: boolean;
   busy: boolean;
   onTransition: (task: DirectTask, action: TaskAction, reason?: string) => Promise<void>;
+  onUpdate: (task: DirectTask, patch: TaskPatch) => Promise<void>;
   onAskAx?: (task: DirectTask) => void;
+  onNotice?: (message: string) => void;
+  onError: (message: string | null) => void;
   onClose: () => void;
 }) {
+  const today = seoulToday();
   const [isBlocking, setIsBlocking] = useState(false);
   const [blockReason, setBlockReason] = useState("");
   const [confirmCancel, setConfirmCancel] = useState(false);
-  const created = isoDateInSeoul(task.created_at);
-  const updated = isoDateInSeoul(task.updated_at);
+  const [title, setTitle] = useState(task.title);
+  const [description, setDescription] = useState(task.description ?? "");
+  const [startDate, setStartDate] = useState(task.start_date ?? "");
+  const [dueDate, setDueDate] = useState(task.due_date ?? "");
+  const [materials, setMaterials] = useState<TaskMaterial[] | null>(null);
+  const [uploading, setUploading] = useState<TaskMaterialKind | null>(null);
+  const inputFile = useRef<HTMLInputElement>(null);
+  const outputFile = useRef<HTMLInputElement>(null);
+  const closed = task.state === "cancelled";
+  const editable = canManage && !closed;
+  const dirty =
+    title.trim() !== task.title ||
+    description.trim() !== (task.description ?? "") ||
+    startDate !== (task.start_date ?? "") ||
+    dueDate !== (task.due_date ?? "");
+
+  useEffect(() => {
+    setTitle(task.title);
+    setDescription(task.description ?? "");
+    setStartDate(task.start_date ?? "");
+    setDueDate(task.due_date ?? "");
+  }, [task.task_id, task.version, task.title, task.description, task.start_date, task.due_date]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getTaskMaterials(task.task_id)
+      .then((items) => {
+        if (!cancelled) setMaterials(items);
+      })
+      .catch(() => {
+        if (!cancelled) setMaterials([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [task.task_id]);
+
+  const save = async () => {
+    if (!title.trim()) {
+      onError("업무 제목을 입력해 주세요.");
+      return;
+    }
+    if (startDate && dueDate && startDate > dueDate) {
+      onError("시작일은 기한보다 늦을 수 없습니다.");
+      return;
+    }
+    const patch: TaskPatch = {};
+    if (title.trim() !== task.title) patch.title = title.trim();
+    if (description.trim() !== (task.description ?? "")) patch.description = description.trim();
+    if (startDate !== (task.start_date ?? "")) patch.start_date = startDate || null;
+    if (dueDate !== (task.due_date ?? "")) patch.due_date = dueDate || null;
+    await onUpdate(task, patch);
+  };
 
   const submitBlock = async () => {
     const reason = blockReason.trim();
@@ -58,18 +144,99 @@ export function TaskDetailDrawer({
     setBlockReason("");
   };
 
+  const upload = async (kind: TaskMaterialKind, file: File | undefined) => {
+    if (!file) return;
+    setUploading(kind);
+    onError(null);
+    try {
+      const material = await uploadTaskMaterial(task.task_id, kind, file);
+      setMaterials((current) => [...(current ?? []), material]);
+      onNotice?.(`${kind === "input" ? "참고 자료" : "산출물"} '${material.name}'을 올렸습니다.`);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "파일을 올리지 못했습니다.");
+    } finally {
+      setUploading(null);
+      if (inputFile.current) inputFile.current.value = "";
+      if (outputFile.current) outputFile.current.value = "";
+    }
+  };
+
+  const detach = async (material: TaskMaterial) => {
+    onError(null);
+    try {
+      await detachTaskMaterial(task.task_id, material.material_id);
+      setMaterials((current) => (current ?? []).filter((item) => item.material_id !== material.material_id));
+      onNotice?.(`'${material.name}'을 업무에서 뗐습니다. 기록은 남습니다.`);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "자료를 떼지 못했습니다.");
+    }
+  };
+
+  const renderMaterials = (kind: TaskMaterialKind, ref: React.RefObject<HTMLInputElement | null>) => {
+    const items = (materials ?? []).filter((item) => item.kind === kind);
+    return (
+      <section className="drawer-section">
+        <div className="section-row">
+          <h4>{kind === "input" ? "참고 자료" : "산출물"}</h4>
+          {editable && (
+            <>
+              <input
+                aria-label={kind === "input" ? "참고 자료 파일" : "산출물 파일"}
+                className="sr-only"
+                onChange={(event) => void upload(kind, event.target.files?.[0])}
+                ref={ref}
+                type="file"
+              />
+              <button className="btn h30" disabled={uploading !== null || busy} onClick={() => ref.current?.click()} type="button">
+                {uploading === kind ? "올리는 중…" : "파일 추가"}
+              </button>
+            </>
+          )}
+        </div>
+        {materials === null ? (
+          <p className="t-meta">불러오는 중…</p>
+        ) : items.length === 0 ? (
+          <p className="t-meta">{kind === "input" ? "등록된 참고 자료가 없습니다." : "등록된 산출물이 없습니다."}</p>
+        ) : (
+          <ul className="material-list">
+            {items.map((item) => (
+              <li key={item.material_id}>
+                <a href={taskMaterialContentUrl(task.task_id, item.material_id)} rel="noreferrer" target="_blank">
+                  {item.name}
+                </a>
+                <span className="t-meta">
+                  {formatBytes(item.size_bytes)} · {formatMonthDay(isoDateInSeoul(item.created_at))}
+                </span>
+                {editable && (
+                  <button className="btn h30 ghost" onClick={() => void detach(item)} type="button">
+                    떼기
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    );
+  };
+
   return (
     <>
       <Drawer
         footer={
           canManage ? (
             <>
-              {task.state !== "done" && task.state !== "cancelled" && (
+              {!closed && (
                 <button className="btn h40 ghost" disabled={busy} onClick={() => setConfirmCancel(true)} type="button">
                   업무 취소
                 </button>
               )}
               <span className="spacer" />
+              {editable && dirty && (
+                <button className="btn h40" disabled={busy} onClick={() => void save()} type="button">
+                  변경 저장
+                </button>
+              )}
               {task.state === "in_progress" && (
                 <button className="btn h40" disabled={busy || isBlocking} onClick={() => setIsBlocking(true)} type="button">
                   막힘
@@ -90,7 +257,12 @@ export function TaskDetailDrawer({
                   재개
                 </button>
               )}
-              {(task.state === "done" || task.state === "cancelled") && (
+              {task.state === "done" && (
+                <button className="btn h40" disabled={busy} onClick={() => void onTransition(task, "resume")} type="button">
+                  다시 진행
+                </button>
+              )}
+              {closed && (
                 <button className="btn h40" onClick={onClose} type="button">
                   닫기
                 </button>
@@ -105,6 +277,7 @@ export function TaskDetailDrawer({
         headerExtra={
           <div className="chip-row">
             <StatusText state={task.state} />
+            {isOverdue(task, today) && <span className="badge danger">기한 초과</span>}
             <span className="badge outline">v{task.version}</span>
           </div>
         }
@@ -113,24 +286,48 @@ export function TaskDetailDrawer({
         onClose={onClose}
         title={task.title}
       >
-        <dl className="meta-grid columns">
-          <div>
-            <dt>담당자</dt>
-            <dd>{ownerName}</dd>
+        <div className="form-stack">
+          <div className="field">
+            <label htmlFor={`task-title-${task.task_id}`}>제목</label>
+            <input className="title-input" disabled={!editable} id={`task-title-${task.task_id}`} onChange={(event) => setTitle(event.target.value)} value={title} />
           </div>
-          <div>
-            <dt>요청자</dt>
-            <dd>{requesterName ?? "본인 생성"}</dd>
+          <dl className="meta-grid columns">
+            <div>
+              <dt>담당자</dt>
+              <dd>{ownerName}</dd>
+            </div>
+            <div>
+              <dt>요청자</dt>
+              <dd>{requesterName ?? "본인 생성"}</dd>
+            </div>
+            <div>
+              <dt>
+                <label htmlFor={`task-start-${task.task_id}`}>시작일</label>
+              </dt>
+              <dd>
+                <input disabled={!editable} id={`task-start-${task.task_id}`} onChange={(event) => setStartDate(event.target.value)} type="date" value={startDate} />
+              </dd>
+            </div>
+            <div>
+              <dt>
+                <label htmlFor={`task-due-${task.task_id}`}>기한</label>
+              </dt>
+              <dd>
+                <input disabled={!editable} id={`task-due-${task.task_id}`} onChange={(event) => setDueDate(event.target.value)} type="date" value={dueDate} />
+              </dd>
+            </div>
+          </dl>
+          <div className="field">
+            <label htmlFor={`task-description-${task.task_id}`}>업무 내용</label>
+            <textarea
+              disabled={!editable}
+              id={`task-description-${task.task_id}`}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="무엇을, 왜, 어디까지 할지 적어 두면 요청자와 AX가 같은 맥락을 봅니다."
+              value={description}
+            />
           </div>
-          <div>
-            <dt>시작일</dt>
-            <dd>{formatMonthDay(created)}</dd>
-          </div>
-          <div>
-            <dt>{task.state === "done" ? "완료일" : task.state === "cancelled" ? "취소일" : "최근 변경"}</dt>
-            <dd>{formatMonthDay(updated)}</dd>
-          </div>
-        </dl>
+        </div>
         {task.block_reason && (
           <section className="drawer-section">
             <h4>막힘 사유</h4>
@@ -163,14 +360,14 @@ export function TaskDetailDrawer({
             </div>
           </section>
         )}
+        {renderMaterials("input", inputFile)}
+        {renderMaterials("output", outputFile)}
         <section className="drawer-section">
-          <h4>다음 행동</h4>
+          <h4>기록</h4>
           <p>
-            {task.state === "open" && "시작을 누르면 진행 중으로 바뀌고 홈의 오늘 업무에 올라옵니다."}
-            {task.state === "in_progress" && "막히면 사유를 남겨 두고, 끝나면 완료 처리합니다. 완료한 업무는 일일보고 근거로 모입니다."}
-            {task.state === "blocked" && "막힘이 풀리면 재개하세요. 사유는 팀장 화면과 일일보고 근거에 그대로 남습니다."}
-            {task.state === "done" && "완료된 업무입니다. 오늘 기록이면 일일보고 초안에 자동으로 포함됩니다."}
-            {task.state === "cancelled" && "취소된 업무입니다. 다시 진행하려면 새 업무로 만드세요."}
+            {formatMonthDay(isoDateInSeoul(task.created_at))} 생성 · 최근 변경 {formatMonthDay(isoDateInSeoul(task.updated_at))}
+            {task.state === "done" && " · 완료됨"}
+            {task.state === "cancelled" && " · 취소됨"}
           </p>
         </section>
         {onAskAx && (
@@ -241,6 +438,11 @@ export function TaskQuickActions({
           재개
         </button>
       )}
+      {task.state === "done" && (
+        <button className="btn h30 ghost" disabled={busy} onClick={() => void onTransition(task, "resume")} type="button">
+          다시 진행
+        </button>
+      )}
       {isBlocking && (
         <div className="inline-reason">
           <label className="sr-only" htmlFor={`row-block-reason-${task.task_id}`}>
@@ -290,6 +492,7 @@ export function WorkRequestDetailDrawer({
   onNotice?: (message: string) => void;
   onClose: () => void;
 }) {
+  const today = seoulToday();
   const [mode, setMode] = useState<"negotiate" | "reject" | null>(null);
   const [note, setNote] = useState("");
   const [isWorking, setIsWorking] = useState(false);
@@ -385,10 +588,20 @@ export function WorkRequestDetailDrawer({
           <dd>{assigneeName}</dd>
         </div>
         <div>
+          <dt>희망 기한</dt>
+          <dd>{request.due_date ? `${formatMonthDay(request.due_date)} (${dueDayText(request.due_date, today)})` : "없음"}</dd>
+        </div>
+        <div>
           <dt>생성된 업무</dt>
           <dd>{request.task_id ? "수락 후 생성됨" : "아직 없음"}</dd>
         </div>
       </dl>
+      {request.description && (
+        <section className="drawer-section">
+          <h4>요청 내용</h4>
+          <p className="prewrap">{request.description}</p>
+        </section>
+      )}
       {condition && (
         <section className="drawer-section">
           <h4>협의 조건</h4>
@@ -401,7 +614,7 @@ export function WorkRequestDetailDrawer({
           {request.state === "accepted" && `${assigneeName === "나" ? "내" : `${assigneeName}의`} 업무에 “${request.title}”가 생성되었습니다.`}
           {request.state === "rejected" && "요청이 거절되어 업무가 생성되지 않았습니다."}
           {isOpen &&
-            `수락하면 ${assigneeName === "나" ? "내" : `${assigneeName}의`} 업무에 “${request.title}”가 생성됩니다. 거절하면 업무는 만들어지지 않습니다.`}
+            `수락하면 ${assigneeName === "나" ? "내" : `${assigneeName}의`} 업무에 “${request.title}”가 ${request.due_date ? `기한 ${formatMonthDay(request.due_date)}로 ` : ""}생성됩니다. 거절하면 업무는 만들어지지 않습니다.`}
         </blockquote>
       </section>
       {mode && (
@@ -445,7 +658,6 @@ export function conditionText(conditions: Record<string, unknown> | null): strin
 /* ---------------------------------------------------------------- create (drawer) */
 
 export function CreateWorkDrawer({
-  personaId,
   ownerName,
   canCreateTask,
   canCreateRequest,
@@ -454,7 +666,6 @@ export function CreateWorkDrawer({
   onError,
   onClose,
 }: {
-  personaId: string;
   ownerName: string;
   canCreateTask: boolean;
   canCreateRequest: boolean;
@@ -465,6 +676,9 @@ export function CreateWorkDrawer({
 }) {
   const [kind, setKind] = useState<"task" | "request">(canCreateTask ? "task" : "request");
   const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [dueDate, setDueDate] = useState("");
   const [assigneeId, setAssigneeId] = useState(assigneeCandidates[0]?.id ?? "");
   const [isWorking, setIsWorking] = useState(false);
 
@@ -478,14 +692,25 @@ export function CreateWorkDrawer({
       onError("담당 후보를 선택해 주세요.");
       return;
     }
+    if (kind === "task" && startDate && dueDate && startDate > dueDate) {
+      onError("시작일은 기한보다 늦을 수 없습니다.");
+      return;
+    }
     setIsWorking(true);
     onError(null);
     try {
       if (kind === "task") {
-        await createDirectTask(trimmed);
+        await createDirectTask(trimmed, {
+          description: description.trim() || undefined,
+          start_date: startDate || undefined,
+          due_date: dueDate || undefined,
+        });
         await onCreated(`'${trimmed}' 업무를 만들었습니다.`);
       } else {
-        const request = await createWorkRequest(trimmed, assigneeId);
+        const request = await createWorkRequest(trimmed, assigneeId, {
+          description: description.trim() || undefined,
+          due_date: dueDate || undefined,
+        });
         const assignee = assigneeCandidates.find((candidate) => candidate.id === assigneeId);
         await onCreated(`'${request.title}' 요청을 ${assignee ? personName(assignee.display_name) : "담당 후보"}에게 보냈습니다.`);
       }
@@ -532,7 +757,7 @@ export function CreateWorkDrawer({
             )}
           </div>
           <span className="t-meta">
-            {kind === "task" ? "내가 처리할 업무를 만듭니다. 승인 없이 바로 내 업무에 들어갑니다." : "동료가 수락해야 그 사람의 업무가 됩니다."}
+            {kind === "task" ? "내가 처리할 업무를 만듭니다. 승인 없이 바로 내 업무에 들어갑니다." : "동료가 수락해야 그 사람의 업무가 됩니다. 희망 기한을 함께 보낼 수 있습니다."}
           </span>
         </div>
       }
@@ -591,7 +816,34 @@ export function CreateWorkDrawer({
               </dd>
             </div>
           )}
+          {kind === "task" && (
+            <div>
+              <dt>
+                <label htmlFor="new-task-start">시작일</label>
+              </dt>
+              <dd>
+                <input id="new-task-start" onChange={(event) => setStartDate(event.target.value)} type="date" value={startDate} />
+              </dd>
+            </div>
+          )}
+          <div>
+            <dt>
+              <label htmlFor="new-task-due">{kind === "task" ? "기한" : "희망 기한"}</label>
+            </dt>
+            <dd>
+              <input id="new-task-due" onChange={(event) => setDueDate(event.target.value)} type="date" value={dueDate} />
+            </dd>
+          </div>
         </dl>
+        <div className="field">
+          <label htmlFor="new-task-description">{kind === "task" ? "업무 내용" : "요청 내용"}</label>
+          <textarea
+            id="new-task-description"
+            onChange={(event) => setDescription(event.target.value)}
+            placeholder={kind === "task" ? "무엇을, 왜, 어디까지 할지 적어 두세요." : "상대가 판단할 수 있게 배경과 기대 결과를 적어 주세요."}
+            value={description}
+          />
+        </div>
       </div>
     </Drawer>
   );

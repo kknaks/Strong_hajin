@@ -35,11 +35,7 @@ try {
   if (await page.getByRole("button", { name: "일일보고 작성" }).count()) {
     throw new Error("Jiho must not receive a daily-report CTA without report capability");
   }
-  await navigation.getByRole("button", { name: "판단" }).click();
-  const requestSection = page.locator(".decision-empty-state", { hasText: "확인이 필요한 요청" });
-  const requestCard = requestSection.locator("li", { hasText: title });
-  await requestCard.waitFor();
-  await requestCard.getByRole("button", { name: "수락" }).click();
+  await todayRequestCard.getByRole("button", { name: "수락" }).click();
   await navigation.getByRole("button", { name: "내 업무" }).click();
   const acceptedTask = page.locator("tr.progress-row", { hasText: title });
   await acceptedTask.waitFor();

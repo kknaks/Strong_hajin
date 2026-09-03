@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from uuid import UUID
 
 from sqlalchemy import or_, select
@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from ax_workspace.modules.work.application import TaskNotFound, TaskState
 from ax_workspace.platform.persistence import (
     TaskActivityRecord,
+    TaskMaterialRecord,
     TaskRecord,
     WorkRequestAuditEventRecord,
     WorkRequestRecord,
@@ -24,6 +25,10 @@ class SqlAlchemyTaskRepository:
         owner_id: str,
         title: str,
         causation_key: str | None = None,
+        *,
+        description: str | None = None,
+        start_date: date | None = None,
+        due_date: date | None = None,
     ) -> TaskRecord:
         if causation_key:
             existing = self.session.scalar(
@@ -32,7 +37,19 @@ class SqlAlchemyTaskRepository:
             if existing is not None:
                 return existing
         now = datetime.now(UTC)
-        task = TaskRecord(owner_id=owner_id, title=title, state=TaskState.OPEN, block_reason=None, version=1, created_at=now, updated_at=now, causation_key=causation_key)
+        task = TaskRecord(
+            owner_id=owner_id,
+            title=title,
+            state=TaskState.OPEN,
+            block_reason=None,
+            description=description,
+            start_date=start_date,
+            due_date=due_date,
+            version=1,
+            created_at=now,
+            updated_at=now,
+            causation_key=causation_key,
+        )
         self.session.add(task)
         self.session.flush()
         self.session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now))
@@ -89,6 +106,9 @@ class SqlAlchemyWorkRequestRepository:
         assignee_id: str,
         title: str,
         causation_key: str | None = None,
+        *,
+        description: str | None = None,
+        due_date: date | None = None,
     ) -> tuple[WorkRequestRecord, bool]:
         if causation_key:
             existing = self._session.scalar(
@@ -101,6 +121,8 @@ class SqlAlchemyWorkRequestRepository:
             requester_id=requester_id,
             assignee_id=assignee_id,
             title=title,
+            description=description,
+            due_date=due_date,
             state="pending",
             version=1,
             conditions=None,
@@ -121,6 +143,8 @@ class SqlAlchemyWorkRequestRepository:
         task = TaskRecord(
             owner_id=request.assignee_id,
             title=request.title,
+            description=request.description,
+            due_date=request.due_date,
             state=TaskState.OPEN,
             block_reason=None,
             version=1,
@@ -178,4 +202,46 @@ class SqlAlchemyWorkRequestRepository:
                 )
                 .order_by(WorkRequestRecord.created_at)
             )
+        )
+
+
+class SqlAlchemyTaskMaterialRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(
+        self,
+        *,
+        task_id: UUID,
+        kind: str,
+        name: str,
+        content_type: str,
+        size_bytes: int,
+        storage_key: str,
+        uploaded_by: str,
+    ) -> TaskMaterialRecord:
+        record = TaskMaterialRecord(
+            task_id=task_id,
+            kind=kind,
+            name=name,
+            content_type=content_type,
+            size_bytes=size_bytes,
+            storage_key=storage_key,
+            uploaded_by=uploaded_by,
+            created_at=datetime.now(UTC),
+        )
+        self._session.add(record)
+        self._session.flush()
+        return record
+
+    def list_for(self, task_id: UUID) -> list[TaskMaterialRecord]:
+        return list(
+            self._session.scalars(
+                select(TaskMaterialRecord).where(TaskMaterialRecord.task_id == task_id).order_by(TaskMaterialRecord.created_at)
+            )
+        )
+
+    def get(self, task_id: UUID, material_id: UUID) -> TaskMaterialRecord | None:
+        return self._session.scalar(
+            select(TaskMaterialRecord).where(TaskMaterialRecord.task_id == task_id, TaskMaterialRecord.id == material_id)
         )

@@ -467,3 +467,26 @@ button.metric-card:hover { border-color: var(--border-strong); background: var(-
 .profile-menu { display: grid; gap: 4px; margin: 0 4px 20px; }
 .profile-menu .btn { justify-content: flex-start; }
 @media (max-width: 900px) { .login-shell { grid-template-columns: 1fr; } .login-brand { display: none; } }
+
+/* ---------- task fields, materials, calendar week mode ---------- */
+.section-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.section-row h4 { margin: 0; }
+.material-list { display: grid; gap: 0; border: 1px solid var(--border-default); border-radius: 12px; overflow: hidden; }
+.material-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; min-height: 44px; padding: 6px 12px; border-bottom: 1px solid var(--border-subtle); font-size: 14px; }
+.material-list li:last-child { border-bottom: 0; }
+.material-list a { overflow: hidden; color: var(--text-primary); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.material-list a:hover { color: var(--action); text-decoration: underline; }
+.due-text { white-space: nowrap; }
+.due-text small { color: var(--text-tertiary); font-size: 12px; }
+.due-text.overdue, .due-text.overdue small { color: var(--danger); font-weight: 700; }
+.prewrap { white-space: pre-wrap; }
+.meta-grid.columns input[type="date"] { width: 100%; height: 34px; padding: 0 8px; font-size: 13px; }
+input[type="date"]:disabled { color: var(--text-secondary); }
+.calendar-grid.week .calendar-cell { min-height: 280px; }
+.calendar-page-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+
+.ax-context-chip { display: inline-flex; align-items: center; gap: 8px; width: max-content; max-width: 100%; height: 30px; padding: 0 6px 0 10px; border-radius: 999px; color: var(--action); background: var(--selected-bg); font-size: 12px; font-weight: 500; }
+.ax-context-chip > span:last-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ax-context-chip button { color: var(--action); font-size: 14px; }
+.ax-tool b { font-size: 12px; }
+.ax-tool p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

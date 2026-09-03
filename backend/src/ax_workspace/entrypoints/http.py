@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Literal
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
 from pydantic import BaseModel, Field
 
 from ax_workspace.modules.organization_access.domain import Principal, SEED_PERSONAS
@@ -24,6 +25,7 @@ from ax_workspace.modules.ax_execution.application import (
     RunNotFound,
 )
 from ax_workspace.modules.work.application import InvalidTaskTransition, TaskAccessDenied, TaskError, TaskNotFound, TaskState
+from ax_workspace.modules.work.materials import MaterialNotFound
 from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequestError
 from ax_workspace.modules.reports.application import DailyReportAccessDenied
 from ax_workspace.modules.ax_execution.conversations import ConversationError, ConversationQueueOverflow
@@ -64,6 +66,19 @@ class DecisionRequest(BaseModel):
 
 class CreateTaskRequest(BaseModel):
     title: str
+    description: str | None = None
+    start_date: date | None = None
+    due_date: date | None = None
+
+
+class UpdateTaskRequest(BaseModel):
+    expected_version: int
+    title: str | None = None
+    description: str | None = None
+    start_date: date | None = None
+    due_date: date | None = None
+    clear_start_date: bool = False
+    clear_due_date: bool = False
 
 
 class CreateConversationRequest(BaseModel):
@@ -85,6 +100,8 @@ class SendConversationMessageRequest(BaseModel):
 class CreateWorkRequestRequest(BaseModel):
     title: str
     assignee_id: str
+    description: str | None = None
+    due_date: date | None = None
 
 
 class WorkRequestDecisionRequest(BaseModel):
@@ -145,7 +162,7 @@ def _runtime_error(error: Exception) -> HTTPException:
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
     if isinstance(error, (InvalidDecision, InvalidWorkflowInput)):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
-    if isinstance(error, TaskNotFound):
+    if isinstance(error, (TaskNotFound, MaterialNotFound)):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
     if isinstance(error, (TaskAccessDenied, WorkRequestAccessDenied, DailyReportAccessDenied)):
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
@@ -369,7 +386,77 @@ def create_app(
         @app.post("/api/tasks", status_code=status.HTTP_201_CREATED)
         def create_self_task(request: CreateTaskRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
             try:
-                return app.state.workflow_application.create_self_task(principal, request.title)
+                return app.state.workflow_application.create_self_task(
+                    principal,
+                    request.title,
+                    description=request.description,
+                    start_date=request.start_date,
+                    due_date=request.due_date,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.patch("/api/tasks/{task_id}")
+        def update_task(task_id: UUID, request: UpdateTaskRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            changes: dict[str, object] = {}
+            if request.title is not None:
+                changes["title"] = request.title
+            if request.description is not None:
+                changes["description"] = request.description
+            if request.start_date is not None or request.clear_start_date:
+                changes["start_date"] = None if request.clear_start_date else request.start_date
+            if request.due_date is not None or request.clear_due_date:
+                changes["due_date"] = None if request.clear_due_date else request.due_date
+            try:
+                return app.state.workflow_application.update_task(principal, task_id, request.expected_version, changes)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/tasks/{task_id}/materials")
+        def list_task_materials(task_id: UUID, principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+            try:
+                return app.state.workflow_application.list_task_materials(principal, task_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/tasks/{task_id}/materials", status_code=status.HTTP_201_CREATED)
+        async def attach_task_material(
+            task_id: UUID,
+            kind: str = Form(...),
+            file: UploadFile = File(...),
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            data = await file.read()
+            try:
+                return app.state.workflow_application.attach_task_material(
+                    principal,
+                    task_id,
+                    kind=kind,
+                    name=file.filename or "material",
+                    content_type=file.content_type or "application/octet-stream",
+                    data=data,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/tasks/{task_id}/materials/{material_id}/content")
+        def task_material_content(task_id: UUID, material_id: UUID, principal: Principal = Depends(developer_principal)) -> Response:
+            try:
+                view, data = app.state.workflow_application.open_task_material(principal, task_id, material_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+            from urllib.parse import quote
+
+            return Response(
+                content=data,
+                media_type=str(view["content_type"]),
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(str(view['name']))}"},
+            )
+
+        @app.post("/api/tasks/{task_id}/materials/{material_id}/detach")
+        def detach_task_material(task_id: UUID, material_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.detach_task_material(principal, task_id, material_id)
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -396,9 +483,7 @@ def create_app(
             principal: Principal = Depends(developer_principal),
         ) -> dict[str, object]:
             try:
-                return app.state.workflow_application.create_work_request(
-                    principal, request.title, request.assignee_id
-                )
+                return app.state.workflow_application.create_work_request(principal, request.title, request.assignee_id, description=request.description, due_date=request.due_date)
             except Exception as error:
                 raise _runtime_error(error) from error
 

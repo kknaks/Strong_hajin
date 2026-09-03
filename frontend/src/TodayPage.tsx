@@ -10,8 +10,9 @@ import {
   getWorkRequestAssigneeCandidates,
   getWorkRequests,
   transitionDirectTask,
+  updateTask,
 } from "./api";
-import { formatLongDate, formatMonthDay, isoDateInSeoul, personName, seoulToday, workRequestStateLabel } from "./labels";
+import { dueDayText, formatLongDate, formatMonthDay, isoDateInSeoul, personName, seoulToday, workRequestStateLabel } from "./labels";
 import {
   isDirectTask,
   type ActionItem,
@@ -19,6 +20,7 @@ import {
   type DirectTask,
   type Persona,
   type ProductSurface,
+  type TaskPatch,
   type WorkRequest,
 } from "./viewModels";
 import {
@@ -147,6 +149,20 @@ export function TodayPage({
     }
   };
 
+  const updateTaskFields = async (task: DirectTask, patch: TaskPatch) => {
+    setBusy(true);
+    try {
+      await updateTask(task.task_id, task.version, patch);
+      await reload();
+      onError(null);
+      onNotice("업무 내용을 저장했습니다.");
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "업무를 저장하지 못했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const acceptRequest = async (request: WorkRequest) => {
     setBusy(true);
     try {
@@ -227,7 +243,7 @@ export function TodayPage({
       </section>
 
       <div className="metric-row">
-        <MetricCard icon="→" label="오늘 나에게 요청된 업무" onClick={() => onNavigate("inbox")} value={decisionCount} />
+        <MetricCard icon="→" label="오늘 나에게 요청된 업무" onClick={() => onNavigate("work")} value={decisionCount} />
         <MetricCard icon="▶" label="진행 중인 업무" onClick={() => onNavigate("work")} value={groups.inProgress.length} />
         <MetricCard icon="!" label="막힌 업무" onClick={() => onNavigate("work")} value={groups.blocked.length} />
         <MetricCard icon="○" label="시작 전 업무" onClick={() => onNavigate("work")} value={groups.startingToday.length} />
@@ -239,7 +255,7 @@ export function TodayPage({
             <h2>
               <span aria-hidden>☑</span> 오늘 나에게 요청된 업무
             </h2>
-            <button className="btn link" onClick={() => onNavigate("inbox")} type="button">
+            <button className="btn link" onClick={() => onNavigate("work")} type="button">
               전체보기
             </button>
           </div>
@@ -267,9 +283,10 @@ export function TodayPage({
                     )
                   }
                   as="li"
-                  date={formatMonthDay(today)}
+                  date={request.due_date ? `기한 ${formatMonthDay(request.due_date)} (${dueDayText(request.due_date, today)})` : formatMonthDay(today)}
                   key={request.request_id}
                   kicker="업무 요청"
+                  memo={request.description}
                   onOpen={() => setSelectedRequest(request)}
                   people={<PersonChip arrowTo={me} name={displayNameOf(personas, request.requester_id, "동료")} />}
                   status={<StatusText label={workRequestStateLabel[request.state]} state={request.state} />}
@@ -389,7 +406,10 @@ export function TodayPage({
           canManage={canManageOwnTasks}
           onAskAx={onAskAboutTask}
           onClose={() => setSelectedTask(null)}
+          onError={onError}
+          onNotice={onNotice}
           onTransition={transitionTask}
+          onUpdate={updateTaskFields}
           ownerName={me}
           requesterName={requesterByTask[selectedTask.task_id] ? displayNameOf(personas, requesterByTask[selectedTask.task_id]) : null}
           task={selectedTask}
@@ -419,7 +439,6 @@ export function TodayPage({
           }}
           onError={onError}
           ownerName={me}
-          personaId={personaId}
         />
       )}
     </>
@@ -432,6 +451,3 @@ function reportReminder(status: DailyReportStatus | null): string {
   return "오늘의 업무 기록을 확인한 뒤 일일보고 초안을 만들 수 있습니다.";
 }
 
-export function taskDateText(task: DirectTask): string {
-  return formatMonthDay(isoDateInSeoul(task.created_at));
-}

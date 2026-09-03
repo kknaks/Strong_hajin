@@ -68,9 +68,8 @@ try {
   await drawerActionCard.waitFor({ timeout: 20_000 });
 
   await page.getByRole("button", { name: "닫기", exact: true }).click();
-  await navigation.getByRole("button", { name: "판단" }).click();
-  const actionSection = page.locator(".decision-empty-state", { hasText: "확인이 필요한 변경" });
-  const actionCard = actionSection.locator(`li[data-action-id="${pending.action_id}"]`);
+  await navigation.getByRole("button", { name: "내 업무" }).click();
+  const actionCard = page.locator(`.decision-panel .task-card[data-action-id="${pending.action_id}"]`);
   await actionCard.waitFor();
   const approvalResponse = page.waitForResponse(
     (response) =>
@@ -103,10 +102,8 @@ try {
   }
 
   await switchAccount(page, "jiho");
-  await navigation.getByRole("button", { name: "판단" }).click();
-  const jihoRequestCard = page
-    .locator(".decision-empty-state", { hasText: "확인이 필요한 요청" })
-    .locator("li", { hasText: requestTitle });
+  await navigation.getByRole("button", { name: "오늘" }).click();
+  const jihoRequestCard = page.locator(".card-stack .task-card", { hasText: requestTitle });
   await jihoRequestCard.waitFor();
   const inboxRequest = await page.evaluate(async (requestId) => {
     const response = await fetch("/api/action-inbox", {

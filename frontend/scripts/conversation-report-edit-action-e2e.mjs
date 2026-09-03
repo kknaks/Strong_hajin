@@ -67,8 +67,8 @@ try {
   const pendingVersion = action.version;
   await page.locator(`.ax-action-card[data-action-id="${action.action_id}"]`).waitFor();
   await page.getByRole("button", { name: "닫기", exact: true }).click();
-  await navigation.getByRole("button", { name: "판단" }).click();
-  const actionCard = page.locator(`li[data-action-id="${action.action_id}"]`);
+  await navigation.getByRole("button", { name: "내 업무" }).click();
+  const actionCard = page.locator(`.decision-panel .task-card[data-action-id="${action.action_id}"]`);
   await actionCard.getByRole("button", { name: "승인" }).click();
   const history = await pollFor(
     page,

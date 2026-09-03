@@ -114,3 +114,14 @@ export function dayDifference(fromIso: string, toIso: string): number {
   const [y2, m2, d2] = toIso.split("-").map(Number);
   return Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86_400_000);
 }
+
+export function dueDayText(dueDate: string | null | undefined, today: string): string | null {
+  if (!dueDate) return null;
+  const diff = dayDifference(today, dueDate);
+  if (diff === 0) return "D-Day";
+  return diff > 0 ? `D-${diff}` : `D+${-diff}`;
+}
+
+export function isOverdue(task: { due_date?: string | null; state: string }, today: string): boolean {
+  return Boolean(task.due_date) && task.due_date! < today && task.state !== "done" && task.state !== "cancelled";
+}

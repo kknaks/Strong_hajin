@@ -182,6 +182,8 @@ class SqlAlchemyActionExecutor:
                 str(action.payload["title"]),
                 str(action.payload["assignee_id"]),
                 causation_key=str(action.id),
+                description=action.payload.get("description"),
+                due_date=_parse_date(action.payload.get("due_date")),
             )
         if action.action_type == "daily_report.edit":
             return DailyReportApplication(
@@ -209,6 +211,14 @@ class SqlAlchemyActionExecutor:
             return TaskApplication(SqlAlchemyTaskRepository(self._session)).create_self(
                 principal, str(action.payload["title"]), causation_key=str(action.id)
             )
+        if action.action_type == "task.update":
+            changes = dict(action.payload.get("changes", {}))
+            for field in ("start_date", "due_date"):
+                if field in changes:
+                    changes[field] = _parse_date(changes[field])
+            return TaskApplication(SqlAlchemyTaskRepository(self._session)).update(
+                UUID(str(action.payload["task_id"])), principal, int(action.payload["expected_version"]), changes
+            )
         if action.action_type == "task.transition":
             return TaskApplication(SqlAlchemyTaskRepository(self._session)).transition(
                 UUID(str(action.payload["task_id"])), principal, TaskState(str(action.payload["target"])),
@@ -221,3 +231,11 @@ class SqlAlchemyActionExecutor:
         if action.action_type == "work_request.negotiate":
             return WorkRequestApplication(SqlAlchemyWorkRequestRepository(self._session), OrganizationApplication(SqlAlchemyOrganizationRepository(self._session))).negotiate(principal, UUID(str(action.payload["request_id"])), int(action.payload["expected_version"]), dict(action.payload["conditions"]))
         raise ValueError("unsupported action type")
+
+
+def _parse_date(value: Any):
+    if value in (None, ""):
+        return None
+    from datetime import date
+
+    return date.fromisoformat(str(value))

@@ -1,4 +1,4 @@
-export type ProductSurface = "today" | "work" | "inbox" | "report" | "org";
+export type ProductSurface = "today" | "calendar" | "work" | "report" | "org";
 
 export type Persona = {
   id: string;
@@ -13,8 +13,32 @@ export type DirectTask = {
   state: TaskState;
   version: number;
   block_reason: string | null;
+  description?: string | null;
+  start_date?: string | null;
+  due_date?: string | null;
   created_at?: string;
   updated_at?: string;
+};
+
+export type TaskMaterialKind = "input" | "output";
+
+export type TaskMaterial = {
+  material_id: string;
+  task_id: string;
+  kind: TaskMaterialKind;
+  name: string;
+  content_type: string;
+  size_bytes: number;
+  uploaded_by: string;
+  created_at: string;
+  removed_at: string | null;
+};
+
+export type TaskPatch = {
+  title?: string;
+  description?: string;
+  start_date?: string | null;
+  due_date?: string | null;
 };
 
 type AcceptedAssignment = {
@@ -83,6 +107,8 @@ export type DailyReportStatus = {
 export type WorkRequest = {
   request_id: string;
   title: string;
+  description?: string | null;
+  due_date?: string | null;
   requester_id?: string;
   assignee_id?: string;
   state: "pending" | "negotiating" | "accepted" | "rejected";

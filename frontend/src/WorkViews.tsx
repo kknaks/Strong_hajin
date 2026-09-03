@@ -1,6 +1,6 @@
 import { useMemo, useState, type DragEvent, type ReactNode } from "react";
 
-import { addDays, dayDifference, formatMonthDay, isoDateInSeoul, seoulToday, taskStateLabel } from "./labels";
+import { addDays, dayDifference, dueDayText, formatMonthDay, isOverdue, isoDateInSeoul, seoulToday, taskStateLabel } from "./labels";
 import type { DirectTask, TaskState } from "./viewModels";
 import { StatusText, type TaskAction } from "./WorkModals";
 
@@ -130,10 +130,15 @@ export function TaskListRow({ task, onOpen, right }: { task: DirectTask; onOpen:
       <div className="cell-main">
         <b>{task.title}</b>
         <small className={task.block_reason ? "reason" : ""}>
-          {task.block_reason ? `막힘 사유: ${task.block_reason}` : `${formatMonthDay(isoDateInSeoul(task.created_at))} 시작`}
+          {task.block_reason
+            ? `막힘 사유: ${task.block_reason}`
+            : task.due_date
+              ? `기한 ${formatMonthDay(task.due_date)} (${dueDayText(task.due_date, seoulToday())})`
+              : `${formatMonthDay(task.start_date ?? isoDateInSeoul(task.created_at))} 시작`}
         </small>
       </div>
       <div className="task-row-right">
+        {isOverdue(task, seoulToday()) && <span className="badge danger">기한 초과</span>}
         <StatusText state={task.state} />
         {right}
       </div>
@@ -143,20 +148,35 @@ export function TaskListRow({ task, onOpen, right }: { task: DirectTask; onOpen:
 
 /* ---------------------------------------------------------------- calendar view (month) */
 
-function taskSpan(task: DirectTask, today: string): { start: string; end: string } {
-  const start = isoDateInSeoul(task.created_at) ?? today;
-  const end = task.state === "done" || task.state === "cancelled" ? (isoDateInSeoul(task.updated_at) ?? start) : today;
-  return { start, end: end < start ? start : end };
+/** Planned span when dates exist; otherwise the recorded lifecycle (created → completed or today). */
+export function taskSpan(task: DirectTask, today: string): { start: string; end: string; planned: boolean } {
+  const closed = task.state === "done" || task.state === "cancelled";
+  const start = task.start_date ?? isoDateInSeoul(task.created_at) ?? today;
+  const end = task.due_date ?? (closed ? (isoDateInSeoul(task.updated_at) ?? start) : today);
+  return { start, end: end < start ? start : end, planned: Boolean(task.start_date || task.due_date) };
 }
 
-export function TaskCalendar({ tasks, onOpen }: { tasks: DirectTask[]; onOpen: (task: DirectTask) => void }) {
+export function TaskCalendar({
+  tasks,
+  onOpen,
+  mode = "month",
+  onModeChange,
+}: {
+  tasks: DirectTask[];
+  onOpen: (task: DirectTask) => void;
+  mode?: "week" | "month";
+  onModeChange?: (mode: "week" | "month") => void;
+}) {
   const today = seoulToday();
-  const [cursor, setCursor] = useState(today.slice(0, 7));
-  const [year, month] = cursor.split("-").map(Number);
+  const [anchor, setAnchor] = useState(today);
+  const [year, month] = anchor.slice(0, 7).split("-").map(Number);
+  const cursor = anchor.slice(0, 7);
   const first = `${cursor}-01`;
   const firstWeekday = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
-  const gridStart = addDays(first, -firstWeekday);
-  const days = Array.from({ length: 42 }, (_, index) => addDays(gridStart, index));
+  const anchorWeekday = new Date(Date.UTC(year, month - 1, Number(anchor.slice(8)))).getUTCDay();
+  const gridStart = mode === "week" ? addDays(anchor, -anchorWeekday) : addDays(first, -firstWeekday);
+  const days = Array.from({ length: mode === "week" ? 7 : 42 }, (_, index) => addDays(gridStart, index));
+  const maxVisible = mode === "week" ? 8 : 3;
   const byDay = useMemo(() => {
     const map = new Map<string, Array<{ task: DirectTask; kind: "start" | "end" | "span" }>>();
     for (const task of tasks) {
@@ -174,38 +194,54 @@ export function TaskCalendar({ tasks, onOpen }: { tasks: DirectTask[]; onOpen: (
   }, [tasks, today]);
 
   const shift = (delta: number) => {
+    if (mode === "week") {
+      setAnchor(addDays(anchor, delta * 7));
+      return;
+    }
     const date = new Date(Date.UTC(year, month - 1 + delta, 1));
-    setCursor(date.toISOString().slice(0, 7));
+    setAnchor(date.toISOString().slice(0, 10));
   };
+  const rangeLabel =
+    mode === "week" ? `${formatMonthDay(days[0])} – ${formatMonthDay(days[6])}` : `${year}년 ${month}월`;
 
   return (
     <div className="calendar">
       <div className="calendar-toolbar">
         <div className="stepper">
-          <button aria-label="이전 달" className="btn h30 icon" onClick={() => shift(-1)} type="button">
+          <button aria-label={mode === "week" ? "이전 주" : "이전 달"} className="btn h30 icon" onClick={() => shift(-1)} type="button">
             ‹
           </button>
-          <b>
-            {year}년 {month}월
-          </b>
-          <button aria-label="다음 달" className="btn h30 icon" onClick={() => shift(1)} type="button">
+          <b>{rangeLabel}</b>
+          <button aria-label={mode === "week" ? "다음 주" : "다음 달"} className="btn h30 icon" onClick={() => shift(1)} type="button">
             ›
           </button>
         </div>
-        <button className="btn h30" onClick={() => setCursor(today.slice(0, 7))} type="button">
-          오늘
-        </button>
+        <div className="toolbar-group">
+          {onModeChange && (
+            <div aria-label="캘린더 보기" className="segmented" role="tablist">
+              <button aria-selected={mode === "week"} onClick={() => onModeChange("week")} role="tab" type="button">
+                주
+              </button>
+              <button aria-selected={mode === "month"} onClick={() => onModeChange("month")} role="tab" type="button">
+                월
+              </button>
+            </div>
+          )}
+          <button className="btn h30" onClick={() => setAnchor(today)} type="button">
+            오늘
+          </button>
+        </div>
       </div>
       <div className="calendar-weekdays">
         {["일", "월", "화", "수", "목", "금", "토"].map((label) => (
           <span key={label}>{label}</span>
         ))}
       </div>
-      <div className="calendar-grid">
+      <div className={mode === "week" ? "calendar-grid week" : "calendar-grid"}>
         {days.map((day) => {
-          const inMonth = day.startsWith(cursor);
+          const inMonth = mode === "week" || day.startsWith(cursor);
           const entries = byDay.get(day) ?? [];
-          const visible = entries.slice(0, 3);
+          const visible = entries.slice(0, maxVisible);
           return (
             <div className={["calendar-cell", inMonth ? "" : "outside", day === today ? "today" : ""].filter(Boolean).join(" ")} key={day}>
               <span className="calendar-day">{Number(day.slice(8))}</span>
@@ -222,7 +258,7 @@ export function TaskCalendar({ tasks, onOpen }: { tasks: DirectTask[]; onOpen: (
                     {task.title}
                   </button>
                 ))}
-              {inMonth && entries.length > 3 && <span className="calendar-more">+{entries.length - 3}개 더</span>}
+              {inMonth && entries.length > maxVisible && <span className="calendar-more">+{entries.length - maxVisible}개 더</span>}
             </div>
           );
         })}
@@ -272,7 +308,7 @@ export function TaskTimeline({ tasks, onOpen }: { tasks: DirectTask[]; onOpen: (
         </div>
         {tasks.length === 0 && <p className="empty-row">이 기간에 표시할 업무가 없습니다.</p>}
         {tasks.map((task) => {
-          const { start, end } = taskSpan(task, today);
+          const { start, end, planned } = taskSpan(task, today);
           const startIndex = Math.max(0, dayDifference(windowStart, start));
           const endIndex = Math.min(days.length - 1, dayDifference(windowStart, end));
           const visible = startIndex <= days.length - 1 && endIndex >= 0;
@@ -281,7 +317,8 @@ export function TaskTimeline({ tasks, onOpen }: { tasks: DirectTask[]; onOpen: (
               <button className="timeline-label-col timeline-title" onClick={() => onOpen(task)} type="button">
                 <b className={task.state === "cancelled" ? "cancelled-title" : ""}>{task.title}</b>
                 <small>
-                  {formatMonthDay(start)} → {task.state === "done" || task.state === "cancelled" ? formatMonthDay(end) : "진행 중"}
+                  {formatMonthDay(start)} → {planned || task.state === "done" || task.state === "cancelled" ? formatMonthDay(end) : "진행 중"}
+                  {task.due_date && ` · ${dueDayText(task.due_date, today)}`}
                 </small>
               </button>
               <div className="timeline-track">
@@ -321,6 +358,7 @@ const transitionFor: Partial<Record<TaskState, Partial<Record<TaskState, TaskAct
   open: { in_progress: "start" },
   in_progress: { blocked: "block", done: "complete" },
   blocked: { in_progress: "resume" },
+  done: { in_progress: "resume" },
 };
 
 export function TaskKanban({

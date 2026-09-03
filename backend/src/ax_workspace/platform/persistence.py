@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, Uuid, UniqueConstraint, create_engine, text
+from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Index, Integer, JSON, String, Text, Uuid, UniqueConstraint, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -376,10 +376,30 @@ class TaskRecord(Base):
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     state: Mapped[str] = mapped_column(String(40), nullable=False)
     block_reason: Mapped[str | None] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    start_date: Mapped[date | None] = mapped_column(Date)
+    due_date: Mapped[date | None] = mapped_column(Date)
     version: Mapped[int] = mapped_column(nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     causation_key: Mapped[str | None] = mapped_column(String(64), unique=True)
+
+
+class TaskMaterialRecord(Base):
+    """A reference document (input) or deliverable (output) attached to a Task; bytes live behind MaterialStorage."""
+
+    __tablename__ = "task_materials"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(200), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(300), nullable=False, unique=True)
+    uploaded_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class TaskActivityRecord(Base):
@@ -399,6 +419,8 @@ class WorkRequestRecord(Base):
     requester_id: Mapped[str] = mapped_column(String(100), nullable=False)
     assignee_id: Mapped[str] = mapped_column(String(100), nullable=False)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    due_date: Mapped[date | None] = mapped_column(Date)
     state: Mapped[str] = mapped_column(String(40), nullable=False)
     version: Mapped[int] = mapped_column(nullable=False, default=1)
     conditions: Mapped[dict | None] = mapped_column(JSON)

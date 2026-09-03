@@ -9,11 +9,13 @@ import {
   getWorkRequestAssigneeCandidates,
   getWorkRequests,
   transitionDirectTask,
+  updateTask,
 } from "./api";
-import { formatMonthDay, isoDateInSeoul, personName, seoulToday, taskStateLabel, workRequestStateLabel } from "./labels";
-import { isDirectTask, type ActionItem, type DirectTask, type Persona, type TaskState, type WorkRequest } from "./viewModels";
+import { dueDayText, formatMonthDay, isoDateInSeoul, personName, seoulToday, taskStateLabel, workRequestStateLabel } from "./labels";
+import { isDirectTask, type ActionItem, type DirectTask, type Persona, type TaskPatch, type TaskState, type WorkRequest } from "./viewModels";
 import {
   CreateWorkDrawer,
+  DueText,
   StatusText,
   TaskDetailDrawer,
   TaskQuickActions,
@@ -21,7 +23,7 @@ import {
   displayNameOf,
   type TaskAction,
 } from "./WorkModals";
-import { PersonChip, TaskCalendar, TaskCard, TaskKanban, TaskTimeline } from "./WorkViews";
+import { PersonChip, TaskCard, TaskKanban, TaskTimeline } from "./WorkViews";
 
 type MyWorkPageProps = {
   personaId: string;
@@ -38,13 +40,12 @@ type MyWorkPageProps = {
 };
 
 type TaskFilter = "all" | "active" | TaskState;
-type ViewMode = "list" | "calendar" | "timeline" | "kanban";
+type ViewMode = "list" | "timeline" | "kanban";
 
 const stateOrder: Record<TaskState, number> = { blocked: 0, in_progress: 1, open: 2, done: 3, cancelled: 4 };
 const views: Array<{ id: ViewMode; label: string }> = [
   { id: "list", label: "목록" },
   { id: "kanban", label: "칸반" },
-  { id: "calendar", label: "캘린더" },
   { id: "timeline", label: "타임라인" },
 ];
 
@@ -144,6 +145,20 @@ export function MyWorkPage({
     }
   };
 
+  const updateTaskFields = async (task: DirectTask, patch: TaskPatch) => {
+    setBusy(true);
+    try {
+      await updateTask(task.task_id, task.version, patch);
+      await reload();
+      onError(null);
+      onNotice("업무 내용을 저장했습니다.");
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "업무를 저장하지 못했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const decideAiAction = async (action: ActionItem, decision: "approve" | "reject") => {
     setBusy(true);
     try {
@@ -207,9 +222,10 @@ export function MyWorkPage({
                         판단하기
                       </button>
                     }
-                    date={formatMonthDay(today)}
+                    date={request.due_date ? `기한 ${formatMonthDay(request.due_date)} (${dueDayText(request.due_date, today)})` : formatMonthDay(today)}
                     key={request.request_id}
                     kicker="업무 요청"
+                    memo={request.description}
                     onOpen={() => setSelectedRequest(request)}
                     people={<PersonChip arrowTo={me} name={displayNameOf(personas, request.requester_id, "동료")} />}
                     status={<StatusText label={workRequestStateLabel[request.state]} state={request.state} />}
@@ -331,8 +347,6 @@ export function MyWorkPage({
               onTransition={transitionTask}
               tasks={filter === "active" ? sorted : visibleTasks}
             />
-          ) : view === "calendar" ? (
-            <TaskCalendar onOpen={setSelectedTask} tasks={filter === "active" ? sorted : visibleTasks} />
           ) : view === "timeline" ? (
             <TaskTimeline onOpen={setSelectedTask} tasks={filter === "active" ? sorted : visibleTasks} />
           ) : (
@@ -342,7 +356,7 @@ export function MyWorkPage({
                   <th>업무명</th>
                   <th className="center">상태</th>
                   <th className="center">시작일</th>
-                  <th className="center">종료일</th>
+                  <th className="center">기한</th>
                   <th className="center">담당자</th>
                   <th className="center">요청자</th>
                   <th className="end">액션</th>
@@ -371,16 +385,15 @@ export function MyWorkPage({
                   </tr>
                 )}
                 {visibleTasks.map((task) => {
-                  const closed = task.state === "done" || task.state === "cancelled";
                   return (
                     <TaskTableRow
                       actions={canManageOwnTasks && <TaskQuickActions busy={busy} onTransition={transitionTask} task={task} />}
-                      endDate={closed ? formatMonthDay(isoDateInSeoul(task.updated_at)) : "—"}
                       key={task.task_id}
                       onOpen={() => setSelectedTask(task)}
                       requester={requesterByTask[task.task_id] ? displayNameOf(personas, requesterByTask[task.task_id]) : "—"}
-                      startDate={formatMonthDay(isoDateInSeoul(task.created_at))}
+                      startDate={formatMonthDay(task.start_date ?? isoDateInSeoul(task.created_at))}
                       task={task}
+                      today={today}
                     />
                   );
                 })}
@@ -396,7 +409,10 @@ export function MyWorkPage({
           canManage={canManageOwnTasks}
           onAskAx={onAskAboutTask}
           onClose={() => setSelectedTask(null)}
+          onError={onError}
+          onNotice={onNotice}
           onTransition={transitionTask}
+          onUpdate={updateTaskFields}
           ownerName={me}
           requesterName={requesterByTask[selectedTask.task_id] ? displayNameOf(personas, requesterByTask[selectedTask.task_id]) : null}
           task={selectedTask}
@@ -427,7 +443,6 @@ export function MyWorkPage({
           }}
           onError={onError}
           ownerName={me}
-          personaId={personaId}
         />
       )}
     </section>
@@ -437,14 +452,14 @@ export function MyWorkPage({
 function TaskTableRow({
   task,
   startDate,
-  endDate,
+  today,
   requester,
   actions,
   onOpen,
 }: {
   task: DirectTask;
   startDate: string;
-  endDate: string;
+  today: string;
   requester: string;
   actions: React.ReactNode;
   onOpen: () => void;
@@ -467,7 +482,9 @@ function TaskTableRow({
         <StatusText state={task.state} />
       </td>
       <td className="center">{startDate}</td>
-      <td className="center">{endDate}</td>
+      <td className="center">
+        <DueText task={task} today={today} />
+      </td>
       <td className="center">나</td>
       <td className="center">{requester}</td>
       <td className="end">

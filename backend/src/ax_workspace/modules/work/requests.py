@@ -1,6 +1,7 @@
 """Direct WorkRequest lifecycle; it never creates WorkflowRun records."""
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -27,6 +28,9 @@ class WorkRequestRepository(Protocol):
         assignee_id: str,
         title: str,
         causation_key: str | None = None,
+        *,
+        description: str | None = None,
+        due_date: date | None = None,
     ) -> tuple[Any, bool]: ...
     def request(self, request_id: UUID, *, lock: bool = False) -> Any: ...
     def create_accepted_task(self, request: Any) -> Any: ...
@@ -51,14 +55,23 @@ class WorkRequestApplication:
         title: str,
         assignee_id: str,
         causation_key: str | None = None,
+        *,
+        description: str | None = None,
+        due_date: date | None = None,
     ) -> dict[str, Any]:
         self._require(principal, WORK_REQUEST_CREATE)
         if not title.strip():
             raise WorkRequestError("title is required")
         if not self._assignee_directory.is_work_request_assignee(principal, assignee_id):
             raise WorkRequestError("assignee is not an eligible assignee")
+        cleaned_description = (description or "").strip() or None
         request, created = self._repository.create_request(
-            str(principal.id), assignee_id, title.strip(), causation_key
+            str(principal.id),
+            assignee_id,
+            title.strip(),
+            causation_key,
+            description=cleaned_description,
+            due_date=due_date,
         )
         if created:
             self._repository.append_audit(request.id, str(principal.id), "work_request.created", {})
@@ -145,6 +158,8 @@ class WorkRequestApplication:
         return {
             "request_id": str(request.id),
             "title": request.title,
+            "description": getattr(request, "description", None),
+            "due_date": request.due_date.isoformat() if getattr(request, "due_date", None) else None,
             "requester_id": request.requester_id,
             "assignee_id": request.assignee_id,
             "state": request.state,

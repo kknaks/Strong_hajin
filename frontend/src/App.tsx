@@ -13,7 +13,7 @@ import {
   logout,
   sendConversationMessage,
 } from "./api";
-import { ActionInboxPage } from "./ActionInboxPage";
+import { CalendarPage } from "./CalendarPage";
 import { DailyReportPage } from "./DailyReportPage";
 import { executionStateText, personName } from "./labels";
 import { LoginPage } from "./LoginPage";
@@ -33,8 +33,8 @@ import {
 
 const navigation: ReadonlyArray<{ id: ProductSurface; label: string }> = [
   { id: "today", label: "오늘" },
+  { id: "calendar", label: "캘린더" },
   { id: "work", label: "내 업무" },
-  { id: "inbox", label: "판단" },
   { id: "report", label: "보고" },
   { id: "org", label: "조직" },
 ];
@@ -43,8 +43,8 @@ type LabeledContextReference = ConversationContextReference & { label?: string; 
 
 const surfaceLabel: Record<ProductSurface, string> = {
   today: "오늘",
+  calendar: "캘린더",
   work: "내 업무",
-  inbox: "판단",
   report: "보고",
   org: "조직",
 };
@@ -185,8 +185,8 @@ export default function App() {
     if (!isAxOpen) return;
     let cancelled = false;
     const loadContextOptions = async () => {
-      const wantsTasks = surface === "today" || surface === "work" || surface === "report";
-      const wantsRequests = (surface === "today" || surface === "inbox") && (capabilities?.includes("work_request.decide") ?? false);
+      const wantsTasks = surface === "today" || surface === "work" || surface === "calendar" || surface === "report";
+      const wantsRequests = (surface === "today" || surface === "work") && (capabilities?.includes("work_request.decide") ?? false);
       const [tasks, requests] = await Promise.all([
         wantsTasks ? getMyWork().then((items) => items.filter(isDirectTask)).catch(() => []) : Promise.resolve([]),
         wantsRequests ? getActionInbox().catch(() => []) : Promise.resolve([]),
@@ -295,6 +295,7 @@ export default function App() {
   }
 
   const currentPersonaName = session?.display_name ?? "사용자";
+  const selectedContext = contextOptions.find((item) => contextKey(item) === selectedContextKey);
   const has = (capability: string) => capabilities?.includes(capability) ?? false;
   const canReadActions = has("action.read");
   const canDecideActions = has("action.decide");
@@ -399,16 +400,8 @@ export default function App() {
             onNavigate={setSurface}
           />
         )}
+        {surface === "calendar" && <CalendarPage {...pageProps} {...sharedWorkProps} />}
         {surface === "work" && <MyWorkPage {...pageProps} {...sharedWorkProps} />}
-        {surface === "inbox" && (
-          <ActionInboxPage
-            {...pageProps}
-            canDecideActions={canDecideActions}
-            canDecideWorkRequests={has("work_request.decide")}
-            canReadActions={canReadActions}
-            personas={personas}
-          />
-        )}
         {surface === "report" && <DailyReportPage {...pageProps} personaName={currentPersonaName} />}
         {surface === "org" && <OrgPage {...pageProps} />}
       </section>
@@ -470,18 +463,16 @@ export default function App() {
             )}
           </div>
           <div className="ax-composer">
-            {contextOptions.length > 0 && (
-              <label className="ax-context" htmlFor="ax-context">
-                현재 화면 참고 자료
-                <select id="ax-context" onChange={(event) => setSelectedContextKey(event.target.value)} value={selectedContextKey}>
-                  <option value="">첨부하지 않음</option>
-                  {contextOptions.map((item) => (
-                    <option key={contextKey(item)} value={contextKey(item)}>
-                      {item.resource_type === "task" ? "업무" : "업무 요청"} · {item.label ?? item.resource_id.slice(0, 8)}
-                    </option>
-                  ))}
-                </select>
-              </label>
+            {selectedContext && (
+              <div className="ax-context-chip">
+                <span aria-hidden>📎</span>
+                <span>
+                  {selectedContext.resource_type === "task" ? "업무" : "업무 요청"} · {selectedContext.label ?? selectedContext.resource_id.slice(0, 8)}
+                </span>
+                <button aria-label="참고 자료 떼기" onClick={() => setSelectedContextKey("")} type="button">
+                  ×
+                </button>
+              </div>
             )}
             <label className="sr-only" htmlFor="ax-message">
               AX 메시지
@@ -586,13 +577,15 @@ function ToolTimeline({ tools }: { tools: Conversation["tool_invocations"] }) {
       </summary>
       <ol className="ax-tool-list">
         {tools.map((tool) => (
-          <li className={`ax-tool ${tool.state}`} key={`${tool.turn_id}-${tool.sequence}`}>
+          <li
+            className={`ax-tool ${tool.state}`}
+            key={`${tool.turn_id}-${tool.sequence}`}
+            title={`${tool.input_summary}${tool.latency_ms === null ? "" : ` · ${tool.latency_ms}ms`}`}
+          >
             <b>
               {tool.display_name} · {executionStateText(tool.state)}
             </b>
-            <p>{tool.input_summary}</p>
             <p>{tool.result_summary ?? tool.error_summary ?? "실행 중"}</p>
-            <p>{tool.latency_ms === null ? "소요 시간 기록 없음" : `${tool.latency_ms}ms`}</p>
           </li>
         ))}
       </ol>

@@ -39,6 +39,7 @@ DELEGATED_ACTION_CAPABILITIES = {
     "work_request.reject": WORK_REQUEST_DECIDE,
     "task.create_self": TASK_SELF_MANAGE,
     "task.transition": TASK_SELF_MANAGE,
+    "task.update": TASK_SELF_MANAGE,
 }
 
 
@@ -130,11 +131,11 @@ class McpReportsFacade:
     def get_work_request(self, request_id: str) -> dict[str, Any]:
         return self._application.get_work_request(self.principal, UUID(request_id))
 
-    def create_work_request(self, title: str, assignee_id: str) -> dict[str, Any]:
+    def create_work_request(self, title: str, assignee_id: str, due_date: str | None = None, description: str | None = None) -> dict[str, Any]:
         action = self._propose_chat_action(
             "work_request.create",
             "업무 요청 생성 확인",
-            {"title": title, "assignee_id": assignee_id},
+            {"title": title, "assignee_id": assignee_id, "due_date": due_date, "description": description},
         )
         if action is not None:
             return action
@@ -142,7 +143,9 @@ class McpReportsFacade:
             self.principal,
             title,
             assignee_id,
-            self._mutation_key("work_request.create", {"title": title, "assignee_id": assignee_id}),
+            self._mutation_key("work_request.create", {"title": title, "assignee_id": assignee_id, "due_date": due_date, "description": description}),
+            description=description,
+            due_date=_parse_iso_date(due_date),
         )
 
     def accept_work_request(self, request_id: str, expected_version: int) -> dict[str, Any]:
@@ -220,6 +223,22 @@ class McpReportsFacade:
         if capability not in principal.capabilities:
             raise McpDelegatedActionAccessDenied(f"{capability} capability is required")
         return principal
+
+    def update_task(self, task_id: str, expected_version: int, changes: dict[str, Any]) -> dict[str, Any]:
+        action = self._propose_chat_action(
+            "task.update", "업무 내용·일정 수정 확인",
+            {"task_id": task_id, "expected_version": expected_version, "changes": changes},
+        )
+        if action is not None:
+            return action
+        parsed = dict(changes)
+        for field in ("start_date", "due_date"):
+            if field in parsed:
+                parsed[field] = _parse_iso_date(parsed[field])
+        return self._application.update_task(self.principal, UUID(task_id), expected_version, parsed)
+
+    def list_task_materials(self, task_id: str) -> list[dict[str, Any]]:
+        return self._application.list_task_materials(self.principal, UUID(task_id))
 
     def transition_task(
         self,
@@ -329,9 +348,9 @@ def _register_work_request_create_tools(server: MCPServer, facade: McpReportsFac
     def work_request_assignee_candidates() -> list[dict[str, str]]:
         return facade.work_request_assignee_candidates()
 
-    @server.tool(description="Create a WorkRequest; it creates no Task until the assignee accepts.")
-    def work_request_create(title: str, assignee_id: str) -> dict[str, Any]:
-        return facade.create_work_request(title, assignee_id)
+    @server.tool(description="Create a WorkRequest with an optional ISO due_date and description; it creates no Task until the assignee accepts.")
+    def work_request_create(title: str, assignee_id: str, due_date: str | None = None, description: str | None = None) -> dict[str, Any]:
+        return facade.create_work_request(title, assignee_id, due_date, description)
 
 
 def _register_work_request_decision_tools(server: MCPServer, facade: McpReportsFacade) -> None:
@@ -360,12 +379,38 @@ def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
         def task_get(task_id: str) -> dict[str, Any]:
             return facade.get_task(task_id)
 
+        @server.tool(description="List reference documents (input) and deliverables (output) attached to a Task.")
+        def task_materials_list(task_id: str) -> list[dict[str, Any]]:
+            return facade.list_task_materials(task_id)
+
     if TASK_SELF_MANAGE not in facade.principal.capabilities:
         return
 
     @server.tool(description="Create a self-owned Task.")
     def task_create_self(title: str) -> dict[str, Any]:
         return facade.create_self_task(title)
+
+    @server.tool(description="Edit an owned Task's title, description, start_date, or due_date (ISO dates) using its required expected version.")
+    def task_update(
+        task_id: str,
+        expected_version: int,
+        title: str | None = None,
+        description: str | None = None,
+        start_date: str | None = None,
+        due_date: str | None = None,
+    ) -> dict[str, Any]:
+        changes: dict[str, Any] = {}
+        if title is not None:
+            changes["title"] = title
+        if description is not None:
+            changes["description"] = description
+        if start_date is not None:
+            changes["start_date"] = start_date or None
+        if due_date is not None:
+            changes["due_date"] = due_date or None
+        if not changes:
+            raise ValueError("at least one field is required")
+        return facade.update_task(task_id, expected_version, changes)
 
     def transition(
         name: str,
@@ -385,7 +430,7 @@ def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
 
     transition("task_start", "in_progress", "Start an open Task.")
     transition("task_block", "blocked", "Block a Task with a reason.", True)
-    transition("task_resume", "in_progress", "Resume a blocked Task.")
+    transition("task_resume", "in_progress", "Resume a blocked Task or reopen a completed one.")
     transition("task_complete", "done", "Complete an in-progress Task.")
     transition("task_cancel", "cancelled", "Cancel an active Task.")
 
@@ -396,3 +441,11 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def _parse_iso_date(value: Any):
+    if value in (None, ""):
+        return None
+    from datetime import date
+
+    return date.fromisoformat(str(value))

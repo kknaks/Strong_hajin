@@ -1,6 +1,8 @@
 """Composition root for the local workflow application."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from typing import Any, Callable, TypeVar
 import sys
 from uuid import UUID
@@ -28,10 +30,13 @@ from ax_workspace.platform.conversations import (
 )
 from ax_workspace.platform.actions import SqlAlchemyActionExecutor, SqlAlchemyActionRepository
 from ax_workspace.platform.reports import SqlAlchemyDailyReportDraftWorkflow, SqlAlchemyDailyReportRepository
+from ax_workspace.modules.work.materials import TaskMaterialApplication
 from ax_workspace.modules.work.application import TaskAccessDenied, TaskApplication, TaskState
 from ax_workspace.modules.work.requests import WorkRequestApplication
 from ax_workspace.platform.persistence import make_session_factory
+from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
 from ax_workspace.platform.work_tasks import (
+    SqlAlchemyTaskMaterialRepository,
     SqlAlchemyTaskRepository,
     SqlAlchemyWorkRecordSource,
     SqlAlchemyWorkRequestRepository,
@@ -48,6 +53,7 @@ class WorkflowApplication:
     def __init__(self, settings: Settings, report_provider: AiProvider | None = None) -> None:
         self._settings = settings
         self._session_factory = make_session_factory(settings.database_url)
+        self._material_storage = LocalDirectoryMaterialStorage(Path(settings.materials_dir))
         self._report_provider = report_provider or create_codex_cli_provider(settings)
 
     def _use(self, operation: Callable[[WorkflowRunStarter], T]) -> T:
@@ -177,13 +183,48 @@ class WorkflowApplication:
         principal: Principal,
         title: str,
         causation_key: str | None = None,
+        *,
+        description: str | None = None,
+        start_date: Any = None,
+        due_date: Any = None,
     ) -> dict[str, Any]:
         with self._session_factory() as session:
-            result = TaskApplication(SqlAlchemyTaskRepository(session)).create_self(
-                principal, title, causation_key
-            )
+            result = TaskApplication(SqlAlchemyTaskRepository(session)).create_self(principal, title, causation_key, description=description, start_date=start_date, due_date=due_date)
             session.commit()
             return result
+
+    def update_task(self, principal: Principal, task_id: UUID, expected_version: int, changes: dict[str, Any]) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = TaskApplication(SqlAlchemyTaskRepository(session)).update(task_id, principal, expected_version, changes)
+            session.commit()
+            return result
+
+    def list_task_materials(self, principal: Principal, task_id: UUID) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return self._materials(session).list(principal, task_id)
+
+    def attach_task_material(
+        self, principal: Principal, task_id: UUID, *, kind: str, name: str, content_type: str, data: bytes
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._materials(session).attach(principal, task_id, kind=kind, name=name, content_type=content_type, data=data)
+            session.commit()
+            return result
+
+    def open_task_material(self, principal: Principal, task_id: UUID, material_id: UUID) -> tuple[dict[str, Any], bytes]:
+        with self._session_factory() as session:
+            return self._materials(session).open(principal, task_id, material_id)
+
+    def detach_task_material(self, principal: Principal, task_id: UUID, material_id: UUID) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._materials(session).detach(principal, task_id, material_id)
+            session.commit()
+            return result
+
+    def _materials(self, session: Any) -> TaskMaterialApplication:
+        return TaskMaterialApplication(
+            SqlAlchemyTaskRepository(session), SqlAlchemyTaskMaterialRepository(session), self._material_storage
+        )
 
     def list_tasks(self, principal: Principal, *, include_closed: bool = False) -> list[dict[str, Any]]:
         with self._session_factory() as session:
@@ -199,10 +240,13 @@ class WorkflowApplication:
         title: str,
         assignee_id: str,
         causation_key: str | None = None,
+        *,
+        description: str | None = None,
+        due_date: Any = None,
     ) -> dict[str, Any]:
         with self._session_factory() as session:
             result = self._work_requests(session).create(
-                principal, title, assignee_id, causation_key
+                principal, title, assignee_id, causation_key, description=description, due_date=due_date
             )
             session.commit()
             return result

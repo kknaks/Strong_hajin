@@ -4,6 +4,9 @@ import type {
   DailyReportStatus,
   DirectTask,
   MyWorkItem,
+  TaskMaterial,
+  TaskMaterialKind,
+  TaskPatch,
   OrganizationProfile,
   Persona,
   ActionItem,
@@ -64,11 +67,53 @@ export async function getMyOrganizationProfile(): Promise<OrganizationProfile> {
   return request<OrganizationProfile>("/api/organization/me");
 }
 
-export async function createDirectTask(title: string): Promise<void> {
-  await request("/api/tasks", {
-    body: JSON.stringify({ title }),
+export async function createDirectTask(
+  title: string,
+  extra: { description?: string; start_date?: string | null; due_date?: string | null } = {},
+): Promise<DirectTask> {
+  return request<DirectTask>("/api/tasks", {
+    body: JSON.stringify({ title, ...extra }),
     method: "POST",
   });
+}
+
+export async function updateTask(taskId: string, expectedVersion: number, patch: TaskPatch): Promise<DirectTask> {
+  const body: Record<string, unknown> = { expected_version: expectedVersion };
+  if (patch.title !== undefined) body.title = patch.title;
+  if (patch.description !== undefined) body.description = patch.description;
+  if (patch.start_date !== undefined) {
+    if (patch.start_date) body.start_date = patch.start_date;
+    else body.clear_start_date = true;
+  }
+  if (patch.due_date !== undefined) {
+    if (patch.due_date) body.due_date = patch.due_date;
+    else body.clear_due_date = true;
+  }
+  return request<DirectTask>(`/api/tasks/${taskId}`, { body: JSON.stringify(body), method: "PATCH" });
+}
+
+export async function getTaskMaterials(taskId: string): Promise<TaskMaterial[]> {
+  return request<TaskMaterial[]>(`/api/tasks/${taskId}/materials`);
+}
+
+export async function uploadTaskMaterial(taskId: string, kind: TaskMaterialKind, file: File): Promise<TaskMaterial> {
+  const form = new FormData();
+  form.append("kind", kind);
+  form.append("file", file, file.name);
+  const response = await fetch(`/api/tasks/${taskId}/materials`, { body: form, credentials: "same-origin", method: "POST" });
+  if (!response.ok) {
+    const error = (await response.json().catch(() => ({}))) as ApiErrorBody;
+    throw new ApiError(response.status, typeof error.detail === "string" ? error.detail : response.statusText);
+  }
+  return response.json() as Promise<TaskMaterial>;
+}
+
+export function taskMaterialContentUrl(taskId: string, materialId: string): string {
+  return `/api/tasks/${taskId}/materials/${materialId}/content`;
+}
+
+export async function detachTaskMaterial(taskId: string, materialId: string): Promise<TaskMaterial> {
+  return request<TaskMaterial>(`/api/tasks/${taskId}/materials/${materialId}/detach`, { method: "POST" });
 }
 
 export async function transitionDirectTask(
@@ -158,9 +203,10 @@ export async function getWorkRequestAssigneeCandidates(): Promise<Persona[]> {
 export async function createWorkRequest(
   title: string,
   assigneeId: string,
+  extra: { description?: string; due_date?: string | null } = {},
 ): Promise<WorkRequest> {
   return request<WorkRequest>("/api/work-requests", {
-    body: JSON.stringify({ title, assignee_id: assigneeId }),
+    body: JSON.stringify({ title, assignee_id: assigneeId, ...extra }),
     method: "POST",
   });
 }

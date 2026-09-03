@@ -20,6 +20,7 @@ class Settings:
     conversation_queue_max_attempts: int = 3
     conversation_worker_concurrency: int = 4
     conversation_queue_backend: str = "null"
+    materials_dir: str = ".scax/materials"
 
     @property
     def developer_auth_enabled(self) -> bool:
@@ -43,4 +44,5 @@ class Settings:
                 os.getenv("AX_CONVERSATION_WORKER_CONCURRENCY", "4")
             ),
             conversation_queue_backend=os.getenv("AX_CONVERSATION_QUEUE_BACKEND", "pgmq"),
+            materials_dir=os.getenv("AX_MATERIALS_DIR", ".scax/materials"),
         )

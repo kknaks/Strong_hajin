@@ -343,9 +343,8 @@ describe("product surfaces", () => {
         );
       }),
     ).toHaveLength(0);
-    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "판단" }));
     expect(await screen.findByText("UI로 만든 업무 요청")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "수락" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "수락" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "수락" }));
 
     fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "내 업무" }));
@@ -394,10 +393,10 @@ describe("product surfaces", () => {
 
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "판단" }));
+    fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
 
     expect((await screen.findAllByText("업무 만들기")).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole("button", { name: "승인" }));
+    fireEvent.click(await screen.findByRole("button", { name: "승인" }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -535,9 +534,9 @@ describe("product surfaces", () => {
 
     const details = await screen.findByText("내 업무 조회 · 완료");
     fireEvent.click(details);
-    expect(await screen.findByText("현재 권한의 업무만 조회")).toBeTruthy();
+    expect(screen.getByTitle(/현재 권한의 업무만 조회/)).toBeTruthy();
     expect(screen.getByText("업무 2건")).toBeTruthy();
-    expect(screen.getByText("321ms")).toBeTruthy();
+    expect(screen.getByTitle(/321ms/)).toBeTruthy();
   });
 
   it("restores an existing daily-report draft and submission history for the selected date", async () => {
@@ -1399,11 +1398,11 @@ describe("product surfaces", () => {
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
     fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "내 업무" }));
-    fireEvent.click(await screen.findByRole("button", { name: "AX" }));
+    fireEvent.click(await screen.findByText("첨부할 현재 업무"));
+    fireEvent.click(await screen.findByRole("button", { name: /AX에게 이 업무 묻기/ }));
 
     await screen.findByText("업무 확인");
-    const context = await screen.findByLabelText("현재 화면 참고 자료");
-    fireEvent.change(context, { target: { value: "task:task-1:3" } });
+    expect(screen.getByText(/업무 · 첨부할 현재 업무/)).toBeTruthy();
     fireEvent.change(screen.getByLabelText("AX 메시지"), { target: { value: "이 업무를 이어서 진행할게" } });
 
     const send = screen.getByRole("button", { name: "대기열에 보내기" });

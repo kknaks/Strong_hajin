@@ -20,6 +20,10 @@ In a second terminal, run `make conversation-worker`; it is the separate PGMQ co
 
 `make reset-demo` is the only command that creates or drops the demo tables. Normal API startup never mutates the schema. After pulling a persistence schema change, stop the local API/worker and run `make reset-demo` before local journeys; Alembic revisions are intentionally not part of this milestone.
 
+## Task fields and materials
+
+A Task carries `description`, `start_date`, and `due_date` beside its state; the owner edits them with `PATCH /api/tasks/{id}` (`task.update`, no approval gate, `expected_version` required, start ≤ due). A WorkRequest carries an optional `due_date` and `description` that flow into the Task created on acceptance. Reference documents (`kind=input`) and deliverables (`kind=output`) are uploaded with `POST /api/tasks/{id}/materials` (multipart, 25MB), listed, downloaded from `/content`, and detached (the record and bytes stay for lineage). Bytes live behind the `MaterialStorage` port; the local adapter writes under `AX_MATERIALS_DIR` (default `backend/.scax/materials`, git-ignored) and an Azure Blob container adapter will implement the same port. Completed tasks can be reopened (`resume`); cancellation stays terminal.
+
 ## Login and sessions
 
 The browser authenticates with a server-side login session (`POST /api/auth/login` → HttpOnly `scax_session` cookie, `GET /api/auth/me`, `POST /api/auth/logout`). The session is the production credential boundary; authorization always resolves the session to an active Organization & Access principal. Only the `developer` credential provider is wired today: while `AX_PROFILE` is `development` or `test`, the login page offers a "누구로 로그인" account picker over the seeded personas (`mina`, `jiho`, `sora`, `minseok`). Google OIDC will plug into the same login route and session store as a second provider. The `X-Demo-Persona` header remains a development/test seam for API scripts and MCP tests only; it never overrides an active session, and production omits the developer routes entirely.
