@@ -4,6 +4,7 @@ import type {
   MyWorkItem,
   OrganizationProfile,
   Persona,
+  ActionItem,
   WorkRequest,
   Conversation,
   ConversationContextReference,
@@ -119,6 +120,10 @@ export async function getDailyReportHistory(
 
 export async function getActionInbox(personaId: string): Promise<WorkRequest[]> {
   return request<WorkRequest[]>("/api/action-inbox", personaId);
+}
+
+export async function getActions(personaId: string): Promise<ActionItem[]> {
+  return request<ActionItem[]>("/api/actions", personaId);
 }
 
 export async function getWorkRequestAssigneeCandidates(personaId: string): Promise<Persona[]> {

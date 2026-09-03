@@ -43,6 +43,7 @@ class SqlAlchemyDailyReportRepository:
         workflow_run_id: str,
         definition_version_id: str,
         body: str,
+        causation_key: str | None = None,
     ) -> ReportDraftRecord:
         report = self._session.scalar(
             select(DailyReportRecord).where(
@@ -77,11 +78,30 @@ class SqlAlchemyDailyReportRepository:
             body=body,
             workflow_run_id=UUID(workflow_run_id),
             definition_version_id=UUID(definition_version_id),
+            causation_key=causation_key,
         )
         self._session.add(draft)
         self._audit(report.id, owner_id, "daily_report.draft_generated", {"draft_id": str(draft.id), "version": draft.version})
         self._session.flush()
         return draft
+
+    def generated_draft_for_causation(
+        self,
+        owner_id: str,
+        causation_key: str,
+    ) -> tuple[ReportDraftRecord, str] | None:
+        draft = self._session.scalar(
+            select(ReportDraftRecord).where(
+                ReportDraftRecord.owner_id == owner_id,
+                ReportDraftRecord.causation_key == causation_key,
+            )
+        )
+        if draft is None:
+            return None
+        run = self._session.get(WorkflowRunRecord, draft.workflow_run_id)
+        if run is None:
+            raise ValueError("daily report generation provenance was not found")
+        return draft, run.state
 
     def edit_draft(
         self,

@@ -47,7 +47,11 @@ class McpReportsFacade:
         return self._principal
 
     def generate_daily_report_draft(self, report_date: str) -> dict[str, Any]:
-        return self._application.generate_daily_report_draft(self._principal, report_date)
+        return self._application.generate_daily_report_draft(
+            self._principal,
+            report_date,
+            self._mutation_key("daily_report.generate_draft", {"report_date": report_date}),
+        )
 
     def edit_daily_report(
         self,

@@ -16,7 +16,12 @@ from ax_workspace.modules.ax_execution.ai import AiGeneration
 from ax_workspace.modules.work.application import TaskAccessDenied
 from ax_workspace.modules.work.requests import WorkRequestAccessDenied
 from ax_workspace.modules.reports.application import DailyReportAccessDenied
-from ax_workspace.platform.persistence import TaskActivityRecord, make_session_factory
+from ax_workspace.platform.persistence import (
+    ActionItemRecord,
+    TaskActivityRecord,
+    WorkflowRunRecord,
+    make_session_factory,
+)
 from ax_workspace.platform.persistence import ConversationTurnRecord
 from ax_workspace.bootstrap.application import create_workflow_application
 
@@ -81,6 +86,30 @@ def test_mcp_facade_uses_direct_daily_report_operations(tmp_path) -> None:
         draft["report_id"], edited["draft_id"], edited["draft_version"]
     )
     assert submitted["body"] == "MCP에서 수정한 초안"
+
+
+def test_delegated_daily_report_generation_reuses_one_draft_and_workflow_run(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+    reset_database(database_url)
+    execution_id = uuid4()
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", str(execution_id))
+    facade = McpReportsFacade(
+        Settings(RuntimeProfile.TEST, database_url),
+        "mina",
+        ContractTestAiProvider(),
+    )
+
+    first = facade.generate_daily_report_draft("2026-09-03")
+    retried = facade.generate_daily_report_draft("2026-09-03")
+
+    assert retried["report_id"] == first["report_id"]
+    assert retried["draft_id"] == first["draft_id"]
+    assert retried["workflow_run_id"] == first["workflow_run_id"]
+    with make_session_factory(database_url)() as session:
+        assert session.query(WorkflowRunRecord).count() == 1
 
 
 def test_mcp_facade_uses_the_work_request_public_operations(tmp_path) -> None:
@@ -234,9 +263,24 @@ def test_mcp_hidden_tools_and_direct_facade_calls_share_capability_denial(tmp_pa
 def test_mcp_create_mutations_are_idempotent_within_a_server_bound_turn(tmp_path, monkeypatch) -> None:
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
-    monkeypatch.setenv("AX_MCP_CAUSATION_ID", str(uuid4()))
+    settings = Settings(RuntimeProfile.TEST, database_url)
+    application = create_workflow_application(settings, ContractTestAiProvider())
+    principal = application.authenticated_principal("mina")
+    conversation = application.create_conversation(principal, "idempotent action")
+    accepted = application.accept_conversation_message(
+        principal,
+        "업무를 만들어줘",
+        UUID(conversation["conversation_id"]),
+        [],
+        "idempotent-action-message",
+    )
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", str(accepted["turn_id"]))
+    with make_session_factory(database_url)() as session:
+        turn = session.get(ConversationTurnRecord, UUID(accepted["turn_id"]))
+        assert turn is not None
+        monkeypatch.setenv("AX_MCP_CAUSATION_ID", str(turn.execution_id))
     facade = McpReportsFacade(
-        Settings(RuntimeProfile.TEST, database_url),
+        settings,
         "mina",
         ContractTestAiProvider(),
     )
@@ -291,5 +335,54 @@ def test_delegated_chat_work_request_is_an_action_until_the_owner_approves(tmp_p
     )
     assert approved["state"] == "approved"
     assert approved["result"]["request_id"]
+    retried_approval = application.decide_action(
+        principal,
+        UUID(action["action_id"]),
+        action["version"],
+        "approve",
+    )
+    assert retried_approval == approved
+    assert len(application.list_work_requests(principal)) == 1
     timeline = application.conversation(principal, UUID(conversation["conversation_id"]))
     assert timeline["actions"][0]["action_id"] == action["action_id"]
+
+
+def test_delegated_action_rejects_unknown_or_cross_owner_execution_ids(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+    reset_database(database_url)
+    application = create_workflow_application(
+        Settings(RuntimeProfile.TEST, database_url),
+        ContractTestAiProvider(),
+    )
+    mina = application.authenticated_principal("mina")
+    jiho = application.authenticated_principal("jiho")
+    conversation = application.create_conversation(mina, "민아의 AX 대화")
+    application.accept_conversation_message(
+        mina,
+        "확인할 변경",
+        UUID(conversation["conversation_id"]),
+        [],
+        "mina-message",
+    )
+    with make_session_factory(database_url)() as session:
+        execution_id = session.scalar(select(ConversationTurnRecord.execution_id))
+        assert execution_id is not None
+
+    with pytest.raises(ValueError, match="execution was not found"):
+        application.propose_action(
+            jiho,
+            execution_id,
+            "task.create_self",
+            "권한 없는 제안",
+            {"title": "권한 없는 업무"},
+        )
+    with pytest.raises(ValueError, match="execution was not found"):
+        application.propose_action(
+            mina,
+            uuid4(),
+            "task.create_self",
+            "없는 실행 제안",
+            {"title": "없는 실행 업무"},
+        )
+    with make_session_factory(database_url)() as session:
+        assert session.query(ActionItemRecord).count() == 0

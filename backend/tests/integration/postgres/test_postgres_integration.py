@@ -15,6 +15,7 @@ from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.modules.ax_execution.application import InvalidDecision
 from ax_workspace.platform.workflow_runtime import LocalDemoToolDispatcher, SqlAlchemyUnitOfWork, workflow_service
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
+from ax_workspace.bootstrap.application import create_workflow_application
 from ax_workspace.entrypoints.conversation_worker import ConversationWorker
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.modules.ax_execution.ai import AiConversationResult, AiToolInvocation, ProviderRequestFailed
@@ -24,6 +25,7 @@ from ax_workspace.platform.persistence import (
     ConversationTurnRecord,
     ConversationMessageRecord,
     ConversationAuditEventRecord,
+    ActionItemRecord,
     EmploymentPeriodRecord,
     ToolInvocationRecord,
 )
@@ -34,9 +36,11 @@ class ConversationProvider:
         self.delay_seconds = delay_seconds
         self.failures = failures
         self.calls = 0
+        self.started = Event()
 
     def converse(self, request) -> AiConversationResult:
         self.calls += 1
+        self.started.set()
         if self.delay_seconds:
             time.sleep(self.delay_seconds)
         if self.calls <= self.failures:
@@ -282,6 +286,51 @@ def test_pgmq_heartbeat_keeps_a_slow_turn_invisible_to_a_second_worker() -> None
 
 
 @pytest.mark.integration
+def test_pgmq_redelivery_does_not_invoke_a_second_live_worker_when_heartbeat_is_lost() -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    client = _conversation_client(database_url)
+    conversation = client.post(
+        "/api/conversations",
+        headers={"X-Demo-Persona": "mina"},
+        json={"title": "실행 guard 대화"},
+    ).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={"X-Demo-Persona": "mina", "Idempotency-Key": "lost-heartbeat"},
+        json={"body": "실행 중인 응답", "context": []},
+    )
+    assert accepted.status_code == 202
+    settings = Settings(
+        RuntimeProfile.TEST,
+        database_url,
+        conversation_queue_visibility_timeout=1,
+        conversation_queue_backend="pgmq",
+    )
+    first_provider = ConversationProvider(delay_seconds=2)
+    second_provider = ConversationProvider()
+    first_worker = ConversationWorker(settings, provider=first_provider)
+    second_worker = ConversationWorker(settings, provider=second_provider)
+
+    async def no_heartbeat(message_id: int) -> None:
+        await asyncio.Event().wait()
+
+    first_worker._heartbeat = no_heartbeat  # type: ignore[method-assign]
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first = executor.submit(lambda: asyncio.run(first_worker.run_once()))
+        assert first_provider.started.wait(timeout=2)
+        time.sleep(1.15)
+        assert asyncio.run(second_worker.run_once()) is False
+        assert second_provider.calls == 0
+        assert first.result(timeout=3) is True
+    with make_session_factory(database_url)() as session:
+        turn = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"]))
+        assert turn is not None
+        assert turn.state == "completed"
+        assert _queue_count(session) == 0
+
+
+@pytest.mark.integration
 def test_pgmq_archives_after_the_configured_maximum_provider_attempts() -> None:
     database_url = _postgres_test_url()
     reset_database(database_url)
@@ -472,6 +521,55 @@ def test_pgmq_revalidates_a_stale_context_before_calling_the_provider() -> None:
         assert turn is not None
         assert turn.state == "failed"
         assert _queue_count(session) == 0
+
+
+@pytest.mark.integration
+def test_postgres_action_proposals_are_owner_bound_and_serialized_per_execution() -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url, conversation_queue_backend="pgmq")
+    client = _conversation_client(database_url)
+    conversation = client.post(
+        "/api/conversations",
+        headers={"X-Demo-Persona": "mina"},
+        json={"title": "Action ownership"},
+    ).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={"X-Demo-Persona": "mina", "Idempotency-Key": "action-owner"},
+        json={"body": "업무를 제안해줘", "context": []},
+    ).json()
+    with make_session_factory(database_url)() as session:
+        turn = session.get(ConversationTurnRecord, UUID(accepted["turn_id"]))
+        assert turn is not None
+        execution_id = turn.execution_id
+
+    application = create_workflow_application(settings, ConversationProvider())
+    mina = application.authenticated_principal("mina")
+    jiho = application.authenticated_principal("jiho")
+
+    def propose() -> dict[str, object]:
+        return application.propose_action(
+            mina,
+            execution_id,
+            "task.create_self",
+            "업무 생성 확인",
+            {"title": "동시 제안 업무"},
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first, second = [future.result(timeout=3) for future in [executor.submit(propose), executor.submit(propose)]]
+    assert first["action_id"] == second["action_id"]
+    with pytest.raises(ValueError, match="execution was not found"):
+        application.propose_action(
+            jiho,
+            execution_id,
+            "task.create_self",
+            "권한 없는 업무 생성",
+            {"title": "권한 없는 업무"},
+        )
+    with make_session_factory(database_url)() as session:
+        assert session.query(ActionItemRecord).count() == 1
 
 
 

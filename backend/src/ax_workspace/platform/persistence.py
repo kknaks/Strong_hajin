@@ -327,9 +327,12 @@ class ActionItemRecord(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     owner_id: Mapped[str] = mapped_column(String(100), nullable=False)
-    conversation_id: Mapped[UUID | None] = mapped_column(ForeignKey("conversations.id"))
-    turn_id: Mapped[UUID | None] = mapped_column(ForeignKey("conversation_turns.id"))
-    execution_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), nullable=False)
+    turn_id: Mapped[UUID] = mapped_column(ForeignKey("conversation_turns.id"), nullable=False)
+    execution_id: Mapped[UUID] = mapped_column(
+        ForeignKey("conversation_turns.execution_id"),
+        nullable=False,
+    )
     action_type: Mapped[str] = mapped_column(String(100), nullable=False)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
@@ -459,6 +462,9 @@ class DailyReportRecord(Base):
 
 class ReportDraftRecord(Base):
     __tablename__ = "report_drafts"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "causation_key", name="uq_report_draft_owner_causation"),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     owner_id: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -470,6 +476,7 @@ class ReportDraftRecord(Base):
     report_id: Mapped[UUID] = mapped_column(ForeignKey("daily_reports.id"), nullable=False)
     workflow_run_id: Mapped[UUID] = mapped_column(ForeignKey("workflow_runs.id"), nullable=False)
     definition_version_id: Mapped[UUID] = mapped_column(ForeignKey("workflow_definition_versions.id"), nullable=False)
+    causation_key: Mapped[str | None] = mapped_column(String(128))
 
 
 class ReportAuditEventRecord(Base):

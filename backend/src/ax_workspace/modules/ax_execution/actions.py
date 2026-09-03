@@ -70,6 +70,12 @@ class ActionApplication:
         action = self._repository.action(action_id, str(principal.id), lock=True)
         if action is None:
             raise ActionAccessDenied("action was not found")
+        resolved_state = "approved" if decision == "approve" else "rejected"
+        if action.state == resolved_state:
+            # A lost HTTP response (or an at-least-once worker replay) must not
+            # make the caller choose between a duplicate effect and a stale error.
+            # The persisted Action is the idempotency boundary for its effect.
+            return self._repository.view(action)
         if action.version != expected_version:
             raise ActionError("action version is stale")
         if action.state != "pending":

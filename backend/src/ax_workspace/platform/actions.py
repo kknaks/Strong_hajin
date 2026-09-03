@@ -19,6 +19,7 @@ from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepo
 from ax_workspace.platform.persistence import (
     ActionItemAuditEventRecord,
     ActionItemRecord,
+    ConversationRecord,
     ConversationTurnRecord,
 )
 from ax_workspace.platform.reports import SqlAlchemyDailyReportDraftWorkflow, SqlAlchemyDailyReportRepository
@@ -44,6 +45,17 @@ class SqlAlchemyActionRepository:
         payload_hash = hashlib.sha256(
             json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
+        turn = self._session.scalar(
+            select(ConversationTurnRecord)
+            .join(ConversationRecord, ConversationRecord.id == ConversationTurnRecord.conversation_id)
+            .where(
+                ConversationTurnRecord.execution_id == execution_id,
+                ConversationRecord.owner_id == owner_id,
+            )
+            .with_for_update()
+        )
+        if turn is None:
+            raise ValueError("delegated action execution was not found")
         existing = self._session.scalar(
             select(ActionItemRecord).where(
                 ActionItemRecord.execution_id == execution_id,
@@ -53,14 +65,11 @@ class SqlAlchemyActionRepository:
         )
         if existing is not None:
             return existing
-        turn = self._session.scalar(
-            select(ConversationTurnRecord).where(ConversationTurnRecord.execution_id == execution_id)
-        )
         now = datetime.now(UTC)
         action = ActionItemRecord(
             owner_id=owner_id,
-            conversation_id=turn.conversation_id if turn else None,
-            turn_id=turn.id if turn else None,
+            conversation_id=turn.conversation_id,
+            turn_id=turn.id,
             execution_id=execution_id,
             action_type=action_type,
             title=title,

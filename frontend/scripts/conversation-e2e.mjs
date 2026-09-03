@@ -41,7 +41,41 @@ try {
   await page.getByText("task list · completed").waitFor({ timeout: 90_000 });
   await conversations.nth(1).click();
   await page.waitForFunction(
-    () => [...document.querySelectorAll("details summary")].filter((item) => item.textContent === "task list · completed").length >= 2,
+    async () => {
+      const headers = { "X-Demo-Persona": "mina" };
+      const response = await fetch("/api/conversations", { headers });
+      const items = await response.json();
+      const first = items.find((conversation) =>
+        conversation.messages.some(
+          (message) => message.body === "첫 번째 대화의 두 번째 발화입니다. 같은 task_list를 다시 확인해줘.",
+        ),
+      );
+      if (!first) return false;
+      const firstMessage = first.messages.find(
+        (message) => message.body === "SCAX MCP의 task_list를 사용해 첫 번째 대화의 내 업무 수만 알려줘.",
+      );
+      const queuedMessage = first.messages.find(
+        (message) => message.body === "첫 번째 대화의 두 번째 발화입니다. 같은 task_list를 다시 확인해줘.",
+      );
+      if (!firstMessage?.turn_id || !queuedMessage?.turn_id || firstMessage.turn_id === queuedMessage.turn_id) {
+        return false;
+      }
+      const completedTurnIds = first.turns
+        .filter((turn) => turn.state === "completed")
+        .map((turn) => turn.turn_id);
+      if (
+        completedTurnIds.length < 2 ||
+        !completedTurnIds.includes(firstMessage.turn_id) ||
+        !completedTurnIds.includes(queuedMessage.turn_id)
+      ) {
+        return false;
+      }
+      return [firstMessage.turn_id, queuedMessage.turn_id].every((turnId) =>
+        first.tool_invocations.some(
+          (tool) => tool.turn_id === turnId && tool.tool_name === "task_list" && tool.state === "completed",
+        ),
+      );
+    },
     undefined,
     { timeout: 90_000 },
   );

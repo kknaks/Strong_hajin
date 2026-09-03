@@ -75,6 +75,19 @@ export type WorkRequest = {
   conditions: Record<string, unknown> | null;
 };
 
+export type ActionItem = {
+  action_id: string;
+  conversation_id: string | null;
+  turn_id: string | null;
+  action_type: string;
+  title: string;
+  state: "pending" | "approved" | "rejected";
+  version: number;
+  payload_summary: string;
+  result: Record<string, unknown> | null;
+  audit_ref: string | null;
+};
+
 export type Conversation = {
   conversation_id: string;
   title: string;
@@ -104,17 +117,7 @@ export type Conversation = {
     target_resource_version: string | null;
     audit_ref: string | null;
   }>;
-  actions?: Array<{
-    action_id: string;
-    turn_id: string | null;
-    action_type: string;
-    title: string;
-    state: "pending" | "approved" | "rejected";
-    version: number;
-    payload_summary: string;
-    result: Record<string, unknown> | null;
-    audit_ref: string | null;
-  }>;
+  actions?: ActionItem[];
 };
 
 export type ConversationContextReference = {

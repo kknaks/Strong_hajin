@@ -96,10 +96,19 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).authenticated_principal(persona_id)
 
-    def generate_daily_report_draft(self, principal: Principal, report_date: str) -> dict[str, Any]:
+    def generate_daily_report_draft(
+        self,
+        principal: Principal,
+        report_date: str,
+        causation_key: str | None = None,
+    ) -> dict[str, Any]:
         with self._session_factory() as session:
             try:
-                result = self._reports(session).generate_draft(principal, report_date)
+                result = self._reports(session).generate_draft(
+                    principal,
+                    report_date,
+                    causation_key,
+                )
                 session.commit()
                 return result
             except ProviderFailure:

@@ -17,7 +17,18 @@ class DailyReportAccessDenied(ValueError):
 
 
 class DailyReportRepository(Protocol):
-    def create_draft(self, owner_id: str, report_date: str, source_refs: list[dict[str, Any]], workflow_run_id: str, definition_version_id: str, body: str) -> Any: ...
+    def generated_draft_for_causation(self, owner_id: str, causation_key: str) -> tuple[Any, str] | None: ...
+
+    def create_draft(
+        self,
+        owner_id: str,
+        report_date: str,
+        source_refs: list[dict[str, Any]],
+        workflow_run_id: str,
+        definition_version_id: str,
+        body: str,
+        causation_key: str | None = None,
+    ) -> Any: ...
 
     def edit_draft(
         self,
@@ -46,11 +57,21 @@ class DailyReportApplication:
         self._reports = reports
         self._workflow = workflow
 
-    def generate_draft(self, principal: Principal, report_date: str) -> dict[str, Any]:
+    def generate_draft(
+        self,
+        principal: Principal,
+        report_date: str,
+        causation_key: str | None = None,
+    ) -> dict[str, Any]:
         self._require(principal, DAILY_REPORT_GENERATE)
         parsed_date = date.fromisoformat(report_date)
         if parsed_date > date.today():
             raise ValueError("report date cannot be in the future")
+        if causation_key:
+            existing = self._reports.generated_draft_for_causation(str(principal.id), causation_key)
+            if existing is not None:
+                draft, workflow_state = existing
+                return self._generated_view(draft, workflow_state)
         generated = self._workflow.run(principal, report_date)
         source_refs = generated["source_refs"]
         draft = self._reports.create_draft(
@@ -60,7 +81,12 @@ class DailyReportApplication:
             generated["run_id"],
             generated["definition_version_id"],
             generated["body"],
+            causation_key,
         )
+        return self._generated_view(draft, generated["state"])
+
+    @staticmethod
+    def _generated_view(draft: Any, workflow_state: str) -> dict[str, Any]:
         return {
             "report_id": str(draft.report_id),
             "draft_id": str(draft.id),
@@ -68,9 +94,9 @@ class DailyReportApplication:
             "body": draft.body,
             "status": draft.status,
             "source_refs": draft.source_refs,
-            "workflow_run_id": generated["run_id"],
-            "definition_version_id": generated["definition_version_id"],
-            "workflow_state": generated["state"],
+            "workflow_run_id": str(draft.workflow_run_id),
+            "definition_version_id": str(draft.definition_version_id),
+            "workflow_state": workflow_state,
             "submission_status": "unsubmitted",
         }
 

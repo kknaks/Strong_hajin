@@ -42,6 +42,7 @@ describe("product surfaces", () => {
       if (path === "/api/work-request-assignee-candidates") {
         return jsonResponse([{ id: "jiho", display_name: "지호 (팀장)" }]);
       }
+      if (path === "/api/actions") return jsonResponse([]);
 
       if (path === "/api/tasks/task-1/start" && init?.method === "POST") {
         taskState = "in_progress";
@@ -120,6 +121,7 @@ describe("product surfaces", () => {
       if (path === "/api/action-inbox") {
         return jsonResponse(personaId === "jiho" && request?.state === "pending" ? [request] : []);
       }
+      if (path === "/api/actions") return jsonResponse([]);
       if (path === "/api/work-requests/request-1/accept" && init?.method === "POST" && request) {
         request = { ...request, state: "accepted", version: 2, task_id: "task-1", assignment_state: "active" };
         return jsonResponse(request);
@@ -150,6 +152,55 @@ describe("product surfaces", () => {
 
     fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
     expect(await screen.findByText("UI로 만든 업무 요청")).toBeTruthy();
+  });
+
+  it("shows a pending AX action in the decision surface and decides it with its version", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/developer/personas") {
+        return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      }
+      if (path === "/api/my-work") return jsonResponse([]);
+      if (path === "/api/work-request-assignee-candidates") return jsonResponse([]);
+      if (path === "/api/action-inbox") return jsonResponse([]);
+      if (path === "/api/actions") {
+        return jsonResponse([
+          {
+            action_id: "action-1",
+            conversation_id: "conversation-1",
+            turn_id: "turn-1",
+            action_type: "task.create_self",
+            title: "업무 만들기",
+            state: "pending",
+            version: 4,
+            payload_summary: "업무 만들기",
+            result: null,
+            audit_ref: null,
+          },
+        ]);
+      }
+      if (path === "/api/actions/action-1/decide" && init?.method === "POST") {
+        return jsonResponse({ state: "approved" });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(within(navigation).getByRole("button", { name: "판단" }));
+
+    expect((await screen.findAllByText("업무 만들기")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "승인" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/actions/action-1/decide",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    const request = fetchMock.mock.calls.find(([path]) => path === "/api/actions/action-1/decide");
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ expected_version: 4, decision: "approve" });
   });
 
   it("keeps the AX composer enabled, sends an idempotent queued fragment, and attaches typed current-screen context", async () => {

@@ -1,11 +1,13 @@
 """PostgreSQL-backed persistence for AX conversation fragments and turns."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime
+import hashlib
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import Engine, func, select, text
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.ax_execution.ai import AiConversationRequest, AiConversationResult, ProviderFailure, ProviderRequestFailed
@@ -262,6 +264,9 @@ class SqlAlchemyConversationRepository:
         )
         if turn is None or turn.state in {"completed", "failed", "cancelled"}:
             return None
+        # The worker obtains a process-held advisory guard before this transition.
+        # A `running` row is therefore recoverable only after its prior owner dies
+        # and PostgreSQL releases that guard.
         if turn.state == "pending":
             turn.state = "running"
         try:
@@ -284,6 +289,34 @@ class SqlAlchemyConversationRepository:
             return False
         self.fail(turn, ProviderRequestFailed(message))
         return True
+
+    def complete_execution(
+        self,
+        execution: ConversationExecution,
+        result: AiConversationResult,
+    ) -> bool:
+        turn = self._execution_turn(execution, lock=True)
+        if turn is None:
+            return False
+        if turn.state == "running":
+            self.complete(turn, result)
+        return turn.state in {"completed", "failed", "cancelled"}
+
+    def fail_or_retry_execution(
+        self,
+        execution: ConversationExecution,
+        read_count: int,
+        max_attempts: int,
+        error: ProviderFailure,
+    ) -> bool:
+        """Returns whether the transport message has reached a terminal state."""
+        turn = self._execution_turn(execution, lock=True)
+        if turn is None or turn.state in {"completed", "failed", "cancelled"}:
+            return True
+        if read_count >= max_attempts:
+            self.fail(turn, error)
+            return True
+        return False
 
     def latest_session(self, conversation: ConversationRecord) -> str | None:
         return self._session.scalar(select(ConversationProviderSessionReferenceRecord.provider_session_ref).where(ConversationProviderSessionReferenceRecord.conversation_id == conversation.id).order_by(ConversationProviderSessionReferenceRecord.recorded_at.desc(), ConversationProviderSessionReferenceRecord.id.desc()))
@@ -377,6 +410,19 @@ class SqlAlchemyConversationRepository:
     def _turn(self, turn_id: UUID | None) -> ConversationTurnRecord | None:
         return self._session.get(ConversationTurnRecord, turn_id) if turn_id else None
 
+    def _execution_turn(
+        self,
+        execution: ConversationExecution,
+        *,
+        lock: bool = False,
+    ) -> ConversationTurnRecord | None:
+        statement = select(ConversationTurnRecord).where(
+            ConversationTurnRecord.id == execution.turn_id,
+            ConversationTurnRecord.conversation_id == execution.conversation_id,
+            ConversationTurnRecord.execution_id == execution.execution_id,
+        )
+        return self._session.scalar(statement.with_for_update() if lock else statement)
+
     def _queued_count(self, conversation_id: UUID) -> int:
         return int(self._session.scalar(select(func.count()).select_from(ConversationMessageRecord).where(ConversationMessageRecord.conversation_id == conversation_id, ConversationMessageRecord.role == "user", ConversationMessageRecord.turn_id.is_(None))) or 0)
 
@@ -395,6 +441,45 @@ class SqlAlchemyConversationRepository:
                 execution_id=turn.execution_id,
             )
         )
+
+
+class SqlAlchemyConversationExecutionGuard:
+    """Process-held PostgreSQL advisory guard for one provider execution.
+
+    Queue visibility is a transport concern.  This guard only prevents two live
+    workers from invoking a provider for the same durable turn after a visibility
+    timeout.  PostgreSQL releases it automatically when a crashed worker loses its
+    database connection, allowing a later redelivery to recover the running turn.
+    """
+
+    def __init__(self, engine: Engine) -> None:
+        self._engine = engine
+
+    @contextmanager
+    def hold(self, execution: ConversationExecution):
+        if self._engine.dialect.name != "postgresql":
+            yield True
+            return
+        lock_key = int.from_bytes(
+            hashlib.blake2b(str(execution.execution_id).encode(), digest_size=8).digest(),
+            byteorder="big",
+            signed=True,
+        )
+        with self._engine.connect() as connection:
+            acquired = bool(
+                connection.execute(
+                    text("SELECT pg_try_advisory_lock(:lock_key)"),
+                    {"lock_key": lock_key},
+                ).scalar_one()
+            )
+            try:
+                yield acquired
+            finally:
+                if acquired:
+                    connection.execute(
+                        text("SELECT pg_advisory_unlock(:lock_key)"),
+                        {"lock_key": lock_key},
+                    )
 
 
 class SqlAlchemyConversationContextResolver:

@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 
-import { decideWorkRequest, getActionInbox, negotiateWorkRequest } from "./api";
-import type { WorkRequest } from "./viewModels";
+import {
+  decideAction,
+  decideWorkRequest,
+  getActionInbox,
+  getActions,
+  negotiateWorkRequest,
+} from "./api";
+import type { ActionItem, WorkRequest } from "./viewModels";
 
 type ActionInboxPageProps = {
   personaId: string;
@@ -10,13 +16,19 @@ type ActionInboxPageProps = {
 
 export function ActionInboxPage({ personaId, onError }: ActionInboxPageProps) {
   const [requests, setRequests] = useState<WorkRequest[]>([]);
+  const [actions, setActions] = useState<ActionItem[]>([]);
   const [isWorking, setIsWorking] = useState(false);
   const [negotiatingRequestId, setNegotiatingRequestId] = useState<string | null>(null);
   const [conditions, setConditions] = useState("");
 
   async function refresh() {
     try {
-      setRequests(await getActionInbox(personaId));
+      const [nextRequests, nextActions] = await Promise.all([
+        getActionInbox(personaId),
+        getActions(personaId),
+      ]);
+      setRequests(nextRequests);
+      setActions(nextActions);
     } catch (error) {
       onError(error instanceof Error ? error.message : "판단함을 불러오지 못했습니다.");
     }
@@ -66,11 +78,61 @@ export function ActionInboxPage({ personaId, onError }: ActionInboxPageProps) {
     }
   }
 
+  async function decideActionItem(action: ActionItem, decision: "approve" | "reject") {
+    setIsWorking(true);
+    onError(null);
+    try {
+      await decideAction(personaId, action.action_id, action.version, decision);
+      await refresh();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "확인 항목을 처리하지 못했습니다.");
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
   return (
     <section className="page-surface">
       <p className="kicker">ACTIONS</p>
       <h2>판단</h2>
-      <p>내게 온 업무 요청을 수락하거나 거절합니다. 수락하기 전에는 내 업무에 생성되지 않습니다.</p>
+      <p>확인이 필요한 업무 요청과 AX가 제안한 변경을 검토합니다.</p>
+
+      <section className="surface-card decision-empty-state">
+        <h3>확인이 필요한 변경</h3>
+        {actions.filter((action) => action.state === "pending").length === 0 ? (
+          <p className="empty-row">현재 확인할 변경이 없습니다.</p>
+        ) : (
+          <ul className="evidence-list">
+            {actions
+              .filter((action) => action.state === "pending")
+              .map((action) => (
+                <li key={action.action_id}>
+                  <div>
+                    <b>{action.title}</b>
+                    <span>{action.payload_summary}</span>
+                    <small>AX 제안 · 버전 {action.version}</small>
+                  </div>
+                  <div>
+                    <button
+                      disabled={isWorking}
+                      onClick={() => void decideActionItem(action, "approve")}
+                      type="button"
+                    >
+                      승인
+                    </button>
+                    <button
+                      disabled={isWorking}
+                      onClick={() => void decideActionItem(action, "reject")}
+                      type="button"
+                    >
+                      거절
+                    </button>
+                  </div>
+                </li>
+              ))}
+          </ul>
+        )}
+      </section>
 
       <section className="surface-card decision-empty-state">
         <h3>확인이 필요한 요청</h3>
