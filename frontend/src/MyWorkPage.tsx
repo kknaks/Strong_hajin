@@ -8,14 +8,14 @@ type MyWorkPageProps = {
   onError: (message: string | null) => void;
 };
 
-type TaskAction = "start" | "block" | "resume" | "complete";
+type TaskAction = "start" | "block" | "resume" | "complete" | "cancel";
 type TaskFilter = "all" | TaskState;
 
 const taskStateLabel: Record<TaskState, string> = {
-  active: "열림",
+  open: "열림",
   in_progress: "진행 중",
   blocked: "막힘",
-  completed: "완료",
+  done: "완료",
   cancelled: "취소",
 };
 
@@ -104,7 +104,7 @@ export function MyWorkPage({ personaId, onError }: MyWorkPageProps) {
       </div>
 
       <div className="work-tabs" role="group" aria-label="업무 상태 필터">
-        {(["all", "active", "in_progress", "blocked", "completed", "cancelled"] as const).map((state) => (
+        {(["all", "open", "in_progress", "blocked", "done", "cancelled"] as const).map((state) => (
           <button
             className={filter === state ? "selected-filter" : ""}
             key={state}
@@ -144,7 +144,7 @@ function TaskRow({ busy, task, onTransition }: TaskRowProps) {
       </div>
       <span className="status completed">{taskStateLabel[task.state]}</span>
       <div className="task-actions">
-        {task.state === "active" && (
+        {task.state === "open" && (
           <button disabled={busy} onClick={() => void onTransition(task.task_id, "start")} type="button">
             시작
           </button>
@@ -162,6 +162,11 @@ function TaskRow({ busy, task, onTransition }: TaskRowProps) {
         {task.state === "blocked" && (
           <button className="primary" disabled={busy} onClick={() => void onTransition(task.task_id, "resume")} type="button">
             재개
+          </button>
+        )}
+        {task.state !== "done" && task.state !== "cancelled" && (
+          <button disabled={busy} onClick={() => void onTransition(task.task_id, "cancel")} type="button">
+            취소
           </button>
         )}
       </div>

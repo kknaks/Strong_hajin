@@ -62,7 +62,7 @@ def test_self_created_task_enters_my_work_and_only_allows_valid_lifecycle_transi
 
     assert created.status_code == 201
     task = created.json()
-    assert task["state"] == "active"
+    assert task["state"] == "open"
     assert client.get("/api/my-work", headers={"X-Demo-Persona": "mina"}).json()[0]["task_id"] == task["task_id"]
     assert client.post(f"/api/tasks/{task['task_id']}/complete", headers={"X-Demo-Persona": "mina"}).status_code == 422
     assert client.post(f"/api/tasks/{task['task_id']}/start", headers={"X-Demo-Persona": "mina"}).json()["state"] == "in_progress"
@@ -70,7 +70,31 @@ def test_self_created_task_enters_my_work_and_only_allows_valid_lifecycle_transi
         f"/api/tasks/{task['task_id']}/block", headers={"X-Demo-Persona": "mina"}, json={"reason": "고객 자료 대기"}
     ).json()["state"] == "blocked"
     assert client.post(f"/api/tasks/{task['task_id']}/resume", headers={"X-Demo-Persona": "mina"}).json()["state"] == "in_progress"
-    assert client.post(f"/api/tasks/{task['task_id']}/complete", headers={"X-Demo-Persona": "mina"}).json()["state"] == "completed"
+    completed = client.post(
+        f"/api/tasks/{task['task_id']}/complete",
+        headers={"X-Demo-Persona": "mina"},
+        json={"expected_version": 4},
+    )
+    assert completed.json()["state"] == "done"
+
+
+def test_task_cancel_and_stale_transition_leave_no_extra_mutation(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+    task = client.post("/api/tasks", headers={"X-Demo-Persona": "mina"}, json={"title": "취소할 업무"}).json()
+
+    stale = client.post(
+        f"/api/tasks/{task['task_id']}/start",
+        headers={"X-Demo-Persona": "mina"},
+        json={"expected_version": 99},
+    )
+    assert stale.status_code == 422
+    cancelled = client.post(
+        f"/api/tasks/{task['task_id']}/cancel",
+        headers={"X-Demo-Persona": "mina"},
+        json={"expected_version": 1},
+    )
+    assert cancelled.json()["state"] == "cancelled"
+    assert client.get("/api/my-work", headers={"X-Demo-Persona": "mina"}).json() == []
 
 
 def test_organization_profile_is_a_persisted_authorized_projection(tmp_path) -> None:

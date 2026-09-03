@@ -44,7 +44,7 @@ export async function createDirectTask(personaId: string, title: string): Promis
 export async function transitionDirectTask(
   personaId: string,
   taskId: string,
-  action: "start" | "block" | "resume" | "complete",
+  action: "start" | "block" | "resume" | "complete" | "cancel",
   reason?: string,
 ): Promise<void> {
   await request(`/api/tasks/${taskId}/${action}`, personaId, {

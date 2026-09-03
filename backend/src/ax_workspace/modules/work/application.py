@@ -9,10 +9,10 @@ from ax_workspace.modules.organization_access.domain import Principal
 
 
 class TaskState(StrEnum):
-    ACTIVE = "active"
+    OPEN = "open"
     IN_PROGRESS = "in_progress"
     BLOCKED = "blocked"
-    COMPLETED = "completed"
+    DONE = "done"
     CANCELLED = "cancelled"
 
 
@@ -38,13 +38,14 @@ class TaskApplication:
     def list_for(self, principal: Principal) -> list[dict[str, Any]]:
         return [self._view(task) for task in self.repository.tasks_for(str(principal.id))]
 
-    def transition(self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None = None) -> dict[str, Any]:
+    def transition(self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None = None, expected_version: int | None = None) -> dict[str, Any]:
         task = self.repository.task(task_id, str(principal.id))
         allowed = {
-            TaskState.ACTIVE: {TaskState.IN_PROGRESS, TaskState.CANCELLED},
-            TaskState.IN_PROGRESS: {TaskState.BLOCKED, TaskState.COMPLETED, TaskState.CANCELLED},
+            TaskState.OPEN: {TaskState.IN_PROGRESS, TaskState.CANCELLED},
+            TaskState.IN_PROGRESS: {TaskState.BLOCKED, TaskState.DONE, TaskState.CANCELLED},
             TaskState.BLOCKED: {TaskState.IN_PROGRESS, TaskState.CANCELLED},
         }
+        if expected_version is not None and task.version != expected_version: raise InvalidTaskTransition("task version is stale")
         if target not in allowed.get(TaskState(task.state), set()): raise InvalidTaskTransition("task state transition is not allowed")
         if target is TaskState.BLOCKED and not (reason or "").strip(): raise InvalidTaskTransition("block reason is required")
         task.state, task.block_reason, task.version = target, reason.strip() if target is TaskState.BLOCKED else None, task.version + 1

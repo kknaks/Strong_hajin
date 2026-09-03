@@ -5,7 +5,7 @@ export type Persona = {
   display_name: string;
 };
 
-export type TaskState = "active" | "in_progress" | "blocked" | "completed" | "cancelled";
+export type TaskState = "open" | "in_progress" | "blocked" | "done" | "cancelled";
 
 export type DirectTask = {
   task_id: string;

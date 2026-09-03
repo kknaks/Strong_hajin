@@ -14,7 +14,7 @@ describe("product surfaces", () => {
   });
 
   it("shows an authorized direct task on Today and advances it from My Work", async () => {
-    let taskState = "active";
+    let taskState = "open";
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
 

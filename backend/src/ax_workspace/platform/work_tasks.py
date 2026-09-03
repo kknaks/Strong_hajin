@@ -15,7 +15,7 @@ class SqlAlchemyTaskRepository:
 
     def create_self_task(self, owner_id: str, title: str) -> TaskRecord:
         now = datetime.now(UTC)
-        task = TaskRecord(owner_id=owner_id, title=title, state=TaskState.ACTIVE, block_reason=None, version=1, created_at=now, updated_at=now)
+        task = TaskRecord(owner_id=owner_id, title=title, state=TaskState.OPEN, block_reason=None, version=1, created_at=now, updated_at=now)
         self.session.add(task)
         self.session.flush()
         return task
@@ -26,7 +26,7 @@ class SqlAlchemyTaskRepository:
         return task
 
     def tasks_for(self, owner_id: str) -> list[TaskRecord]:
-        return list(self.session.scalars(select(TaskRecord).where(TaskRecord.owner_id == owner_id).where(TaskRecord.state.not_in([TaskState.COMPLETED, TaskState.CANCELLED])).order_by(TaskRecord.created_at)))
+        return list(self.session.scalars(select(TaskRecord).where(TaskRecord.owner_id == owner_id).where(TaskRecord.state.not_in([TaskState.DONE, TaskState.CANCELLED])).order_by(TaskRecord.created_at)))
 
     def touch(self, task: TaskRecord) -> None:
         task.updated_at = datetime.now(UTC)

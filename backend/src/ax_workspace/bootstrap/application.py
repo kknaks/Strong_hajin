@@ -69,9 +69,9 @@ class WorkflowApplication:
             session.commit()
             return result
 
-    def transition_task(self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None = None) -> dict[str, Any]:
+    def transition_task(self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None = None, expected_version: int | None = None) -> dict[str, Any]:
         with self._session_factory() as session:
-            result = TaskApplication(SqlAlchemyTaskRepository(session)).transition(task_id, principal, target, reason)
+            result = TaskApplication(SqlAlchemyTaskRepository(session)).transition(task_id, principal, target, reason, expected_version)
             session.commit()
             return result
 
