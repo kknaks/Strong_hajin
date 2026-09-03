@@ -83,7 +83,7 @@ export type WorkRequest = {
 
 export type ActionItem = {
   action_id: string;
-  conversation_id: string | null;
+  conversation_id: string;
   turn_id: string | null;
   action_type: string;
   title: string;

@@ -17,6 +17,8 @@ class DailyReportAccessDenied(ValueError):
 
 
 class DailyReportRepository(Protocol):
+    def serialize_generation_causation(self, owner_id: str, causation_key: str) -> None: ...
+
     def generated_draft_for_causation(self, owner_id: str, causation_key: str) -> tuple[Any, str] | None: ...
 
     def create_draft(
@@ -70,6 +72,11 @@ class DailyReportApplication:
         if parsed_date > date.today():
             raise ValueError("report date cannot be in the future")
         if causation_key:
+            # This is deliberately before both lookup and runtime execution.  The
+            # PostgreSQL adapter takes a transaction-scoped advisory lock, so a
+            # concurrent retry observes the committed provenance instead of
+            # starting a second provider-backed workflow run.
+            self._reports.serialize_generation_causation(str(principal.id), causation_key)
             existing = self._reports.generated_draft_for_causation(str(principal.id), causation_key)
             if existing is not None:
                 draft, workflow_state = existing

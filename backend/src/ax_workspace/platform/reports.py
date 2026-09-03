@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import hashlib
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.ax_execution.ai import (
@@ -34,6 +35,25 @@ class WorkRecordSourcePort(Protocol):
 class SqlAlchemyDailyReportRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
+
+    def serialize_generation_causation(self, owner_id: str, causation_key: str) -> None:
+        """Serialize one owner-scoped idempotent generation in this transaction.
+
+        The application keeps this transaction open while the safe runtime writes
+        its provenance.  A competing PostgreSQL request blocks here, then reads
+        the completed draft/run after the first transaction commits.  SQLite is a
+        fast contract double and has no equivalent advisory primitive.
+        """
+        if self._session.bind is None or self._session.bind.dialect.name != "postgresql":
+            return
+        digest = hashlib.blake2b(
+            f"daily-report:{owner_id}:{causation_key}".encode(), digest_size=8
+        ).digest()
+        lock_key = int.from_bytes(digest, byteorder="big", signed=True)
+        self._session.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_key)"),
+            {"lock_key": lock_key},
+        )
 
     def create_draft(
         self,

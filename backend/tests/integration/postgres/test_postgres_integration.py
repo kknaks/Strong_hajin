@@ -1,7 +1,7 @@
 import os
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event
+from threading import Event, Lock
 import time
 from uuid import UUID
 
@@ -18,7 +18,12 @@ from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.bootstrap.application import create_workflow_application
 from ax_workspace.entrypoints.conversation_worker import ConversationWorker
 from ax_workspace.entrypoints.http import create_app
-from ax_workspace.modules.ax_execution.ai import AiConversationResult, AiToolInvocation, ProviderRequestFailed
+from ax_workspace.modules.ax_execution.ai import (
+    AiConversationResult,
+    AiGeneration,
+    AiToolInvocation,
+    ProviderRequestFailed,
+)
 from ax_workspace.modules.ax_execution.conversations import ConversationExecution
 from ax_workspace.platform.conversation_queue import CONVERSATION_EXECUTION_QUEUE, PgmqConversationTurnQueue
 from ax_workspace.platform.persistence import (
@@ -64,6 +69,35 @@ class ConversationProvider:
         )
 
 
+class ConcurrentReportProvider:
+    """Makes a second report caller contend while the first holds its causal lock."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.started = Event()
+        self._lock = Lock()
+
+    def generate(self, request) -> AiGeneration:
+        with self._lock:
+            self.calls += 1
+        self.started.set()
+        time.sleep(0.25)
+        return AiGeneration(
+            provider_run_ref="concurrent-report-run",
+            provider_session_ref="concurrent-report-session",
+            body="동시 요청에도 하나의 보고 초안을 생성했습니다.",
+            requested_model="test-model",
+            observed_model="test-model",
+            requested_tier="test",
+            observed_tier="test",
+            latency_ms=1,
+            usage=None,
+        )
+
+    def converse(self, request):  # pragma: no cover - this double is report-only
+        raise AssertionError("report provider must not service conversation execution")
+
+
 def _conversation_client(database_url: str) -> TestClient:
     return TestClient(
         create_app(
@@ -89,6 +123,40 @@ def _postgres_test_url() -> str:
     if not database_url:
         pytest.skip("Set AX_POSTGRES_TEST_URL to run against a disposable PostgreSQL database")
     return database_url
+
+
+@pytest.mark.integration
+def test_postgres_serializes_concurrent_daily_report_causation_before_workflow_execution() -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url, conversation_queue_backend="pgmq")
+    provider = ConcurrentReportProvider()
+    first_application = create_workflow_application(settings, provider)
+    second_application = create_workflow_application(settings, provider)
+    first_principal = first_application.authenticated_principal("mina")
+    second_principal = second_application.authenticated_principal("mina")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            first_application.generate_daily_report_draft,
+            first_principal,
+            "2026-09-03",
+            "concurrent-report-causation",
+        )
+        assert provider.started.wait(timeout=2), "first caller did not enter the provider"
+        second = executor.submit(
+            second_application.generate_daily_report_draft,
+            second_principal,
+            "2026-09-03",
+            "concurrent-report-causation",
+        )
+        first_result = first.result(timeout=5)
+        second_result = second.result(timeout=5)
+
+    assert provider.calls == 1
+    assert first_result["report_id"] == second_result["report_id"]
+    assert first_result["draft_id"] == second_result["draft_id"]
+    assert first_result["workflow_run_id"] == second_result["workflow_run_id"]
 
 
 @pytest.mark.integration
@@ -331,6 +399,66 @@ def test_pgmq_redelivery_does_not_invoke_a_second_live_worker_when_heartbeat_is_
 
 
 @pytest.mark.integration
+def test_pgmq_guard_conflicts_do_not_spend_provider_attempt_budget() -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    client = _conversation_client(database_url)
+    conversation = client.post(
+        "/api/conversations",
+        headers={"X-Demo-Persona": "mina"},
+        json={"title": "guard conflict retry budget"},
+    ).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={"X-Demo-Persona": "mina", "Idempotency-Key": "guard-conflict-budget"},
+        json={"body": "provider 실패를 재시도합니다.", "context": []},
+    )
+    assert accepted.status_code == 202
+    settings = Settings(
+        RuntimeProfile.TEST,
+        database_url,
+        conversation_queue_visibility_timeout=1,
+        conversation_queue_max_attempts=2,
+        conversation_queue_backend="pgmq",
+    )
+    first_provider = ConversationProvider(delay_seconds=3.5, failures=1)
+    conflict_provider = ConversationProvider()
+    retry_provider = ConversationProvider(failures=1)
+    first_worker = ConversationWorker(settings, provider=first_provider)
+    conflicting_worker = ConversationWorker(settings, provider=conflict_provider)
+    retry_worker = ConversationWorker(settings, provider=retry_provider)
+
+    async def no_heartbeat(message_id: int) -> None:
+        await asyncio.Event().wait()
+
+    first_worker._heartbeat = no_heartbeat  # type: ignore[method-assign]
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first = executor.submit(lambda: asyncio.run(first_worker.run_once()))
+        if not first_provider.started.wait(timeout=2):
+            first.result(timeout=1)
+            raise AssertionError("first worker did not invoke the provider")
+        # Each visible redelivery is consumed by PGMQ, but both lose the
+        # execution guard and must not call the provider or use an attempt.
+        time.sleep(1.15)
+        assert asyncio.run(conflicting_worker.run_once()) is False
+        time.sleep(1.15)
+        assert asyncio.run(conflicting_worker.run_once()) is False
+        assert conflict_provider.calls == 0
+        assert first.result(timeout=5) is True
+
+    # The first actual call failed. The next claim is only the second actual
+    # attempt despite the preceding PGMQ redeliveries, so it becomes terminal.
+    assert asyncio.run(retry_worker.run_once()) is True
+    assert first_provider.calls == retry_provider.calls == 1
+    with make_session_factory(database_url)() as session:
+        turn = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"]))
+        assert turn is not None
+        assert turn.execution_attempt_count == 2
+        assert turn.state == "failed"
+        assert _queue_count(session) == 0
+
+
+@pytest.mark.integration
 def test_pgmq_archives_after_the_configured_maximum_provider_attempts() -> None:
     database_url = _postgres_test_url()
     reset_database(database_url)
@@ -364,6 +492,7 @@ def test_pgmq_archives_after_the_configured_maximum_provider_attempts() -> None:
         turn = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"]))
         assert turn is not None
         assert turn.state == "failed"
+        assert turn.execution_attempt_count == 2
         assert session.scalar(
             select(ConversationAuditEventRecord).where(
                 ConversationAuditEventRecord.turn_id == turn.id

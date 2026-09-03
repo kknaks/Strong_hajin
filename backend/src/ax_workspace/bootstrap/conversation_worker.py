@@ -31,7 +31,6 @@ from ax_workspace.platform.persistence import make_session_factory
 @dataclass(frozen=True, slots=True)
 class ClaimedTurn:
     message_id: int
-    read_count: int
     turn_id: UUID
     execution: ConversationExecution
     request: Any
@@ -121,7 +120,6 @@ class ConversationWorker:
             session.commit()
             return ClaimedTurn(
                 message.message_id,
-                message.read_count,
                 turn.id,
                 message.execution,
                 request,
@@ -177,7 +175,6 @@ class ConversationWorker:
             queue = self._queue_factory(session)
             terminal = SqlAlchemyConversationRepository(session, queue).fail_or_retry_execution(
                 claim.execution,
-                claim.read_count,
                 self._settings.conversation_queue_max_attempts,
                 error,
             )

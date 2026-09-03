@@ -33,6 +33,7 @@ For the browser WorkRequest journey, run the backend on port 8001, then start Vi
 ```sh
 DATABASE_URL=postgresql+psycopg://ax:ax@localhost:54329/ax_demo make api-e2e
 DATABASE_URL=postgresql+psycopg://ax:ax@localhost:54329/ax_demo make frontend-e2e
+make e2e-task-lifecycle
 make e2e-work-request
 make e2e-conversation
 make live-report-smoke

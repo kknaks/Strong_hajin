@@ -242,6 +242,9 @@ class ConversationTurnRecord(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     normalized_error: Mapped[str | None] = mapped_column(Text)
+    # Provider attempts are domain execution metadata. PGMQ `read_ct` also
+    # counts harmless redeliveries that lose the live-worker advisory guard.
+    execution_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class ConversationProviderSessionReferenceRecord(Base):

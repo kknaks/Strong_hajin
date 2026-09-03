@@ -3,7 +3,7 @@ POSTGRES_TEST_URL ?= postgresql+psycopg://ax:ax@localhost:54329/ax_test
 E2E_API_PORT ?= 8001
 E2E_FRONTEND_PORT ?= 5176
 
-.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo api conversation-worker mcp frontend-install frontend api-e2e frontend-e2e e2e-work-request e2e-conversation live-report-smoke
+.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo api conversation-worker mcp frontend-install frontend api-e2e frontend-e2e e2e-task-lifecycle e2e-work-request e2e-conversation live-report-smoke
 
 install:
 	cd backend && uv sync --all-groups
@@ -55,6 +55,9 @@ api-e2e:
 
 frontend-e2e:
 	cd frontend && VITE_API_TARGET="http://127.0.0.1:$(E2E_API_PORT)" npm run dev -- --host 127.0.0.1 --port "$(E2E_FRONTEND_PORT)"
+
+e2e-task-lifecycle:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:task-lifecycle
 
 e2e-work-request:
 	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:work-request

@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import Engine, func, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.ax_execution.ai import AiConversationRequest, AiConversationResult, ProviderFailure, ProviderRequestFailed
@@ -270,7 +271,12 @@ class SqlAlchemyConversationRepository:
         if turn.state == "pending":
             turn.state = "running"
         try:
-            return turn, self.request_for(turn, principal)
+            request = self.request_for(turn, principal)
+            # This is intentionally after the process-held advisory guard. Queue
+            # reads that merely contend with a live worker never consume a
+            # provider retry budget.
+            turn.execution_attempt_count += 1
+            return turn, request
         except ConversationError:
             self.fail(turn, ProviderRequestFailed("Conversation context is no longer authorized"))
             return None
@@ -305,7 +311,6 @@ class SqlAlchemyConversationRepository:
     def fail_or_retry_execution(
         self,
         execution: ConversationExecution,
-        read_count: int,
         max_attempts: int,
         error: ProviderFailure,
     ) -> bool:
@@ -313,7 +318,7 @@ class SqlAlchemyConversationRepository:
         turn = self._execution_turn(execution, lock=True)
         if turn is None or turn.state in {"completed", "failed", "cancelled"}:
             return True
-        if read_count >= max_attempts:
+        if turn.execution_attempt_count >= max_attempts:
             self.fail(turn, error)
             return True
         return False
@@ -391,6 +396,7 @@ class SqlAlchemyConversationRepository:
             "actions": [
                 {
                     "action_id": str(action.id),
+                    "conversation_id": str(action.conversation_id),
                     "turn_id": str(action.turn_id) if action.turn_id else None,
                     "action_type": action.action_type,
                     "title": action.title,
@@ -465,7 +471,12 @@ class SqlAlchemyConversationExecutionGuard:
             byteorder="big",
             signed=True,
         )
-        with self._engine.connect() as connection:
+        # Advisory locks are session-scoped.  Use a dedicated AUTOCOMMIT
+        # connection so holding it across Codex never leaves an idle database
+        # transaction that a timeout could abort.  If this connection dies,
+        # PostgreSQL releases the lock and a redelivery may resume; downstream
+        # Action/causation idempotency remains the split-brain effect boundary.
+        with self._engine.execution_options(isolation_level="AUTOCOMMIT").connect() as connection:
             acquired = bool(
                 connection.execute(
                     text("SELECT pg_try_advisory_lock(:lock_key)"),
@@ -475,11 +486,16 @@ class SqlAlchemyConversationExecutionGuard:
             try:
                 yield acquired
             finally:
-                if acquired:
-                    connection.execute(
-                        text("SELECT pg_advisory_unlock(:lock_key)"),
-                        {"lock_key": lock_key},
-                    )
+                if acquired and not connection.closed:
+                    try:
+                        connection.execute(
+                            text("SELECT pg_advisory_unlock(:lock_key)"),
+                            {"lock_key": lock_key},
+                        )
+                    except DBAPIError:
+                        # A broken guard connection has already lost its server
+                        # lock. Do not mask the provider's terminal persistence.
+                        pass
 
 
 class SqlAlchemyConversationContextResolver:
