@@ -34,8 +34,10 @@ def test_graph_rejects_unknown_edge_target() -> None:
         )
 
 
-def test_personas_see_different_capability_filtered_catalogs() -> None:
-    client = TestClient(create_app(Settings(RuntimeProfile.TEST, "postgresql+psycopg://unused")))
+def test_personas_see_different_capability_filtered_catalogs(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+    reset_database(database_url)
+    client = TestClient(create_app(Settings(RuntimeProfile.TEST, database_url)))
     mina = client.get("/api/catalog", headers={"X-Demo-Persona": "mina"}).json()
     admin = client.get("/api/catalog", headers={"X-Demo-Persona": "demo-admin"}).json()
     assert len(mina) < len(admin) == 9

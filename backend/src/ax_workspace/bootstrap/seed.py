@@ -59,7 +59,7 @@ def seed_catalog(session: Session) -> None:
 
 
 def _seed_organization_access(session: Session) -> None:
-    organizations = {"scax": "SCAX", "product": "제품팀", "legal": "법무팀", "finance": "재무팀"}
+    organizations = {"scax": "SCAX", "product": "제품팀", "legal": "법무팀", "finance": "재무팀", "people": "피플팀"}
     for organization_id, name in organizations.items():
         if session.get(OrganizationUnitRecord, organization_id) is None:
             session.add(OrganizationUnitRecord(id=organization_id, name=name))
