@@ -71,7 +71,7 @@ e2e-conversation-action:
 	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:conversation-action
 
 e2e-conversation-report-edit-action:
-	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" node frontend/scripts/conversation-report-edit-action-e2e.mjs
+	cd frontend && SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" node scripts/conversation-report-edit-action-e2e.mjs
 
 e2e-daily-report:
 	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:daily-report
