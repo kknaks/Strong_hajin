@@ -99,7 +99,7 @@ export default function App() {
 
         {surface === "today" && <TodayPage {...pageProps} onNavigate={setSurface} />}
         {surface === "work" && <MyWorkPage {...pageProps} />}
-        {surface === "inbox" && <ActionInboxPage />}
+        {surface === "inbox" && <ActionInboxPage {...pageProps} />}
         {surface === "report" && <DailyReportPage {...pageProps} />}
         {surface === "org" && <OrgPage {...pageProps} />}
       </section>

@@ -64,3 +64,12 @@ export type DailyReportHistory = {
     submitted_at: string;
   }>;
 };
+
+export type WorkRequest = {
+  request_id: string;
+  title: string;
+  state: "pending" | "negotiating" | "accepted" | "rejected";
+  version: number;
+  task_id: string | null;
+  assignment_state: string | null;
+};

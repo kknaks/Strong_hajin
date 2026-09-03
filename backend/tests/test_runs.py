@@ -260,6 +260,7 @@ def test_work_request_creates_a_task_only_after_the_assignee_accepts(tmp_path) -
     request = created.json()
     assert request["state"] == "pending"
     assert client.get("/api/my-work", headers={"X-Demo-Persona": "jiho"}).json() == []
+    assert client.get("/api/action-inbox", headers={"X-Demo-Persona": "jiho"}).json() == [request]
 
     accepted = client.post(
         f"/api/work-requests/{request['request_id']}/accept",

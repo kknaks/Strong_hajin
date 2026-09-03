@@ -16,6 +16,7 @@ class WorkRequestRepository(Protocol):
     def request(self, request_id: UUID, *, lock: bool = False) -> Any: ...
     def create_accepted_task(self, request: Any) -> Any: ...
     def append_audit(self, request_id: UUID, actor_id: str, event_type: str, payload: dict[str, Any]) -> None: ...
+    def inbox_for(self, assignee_id: str) -> list[Any]: ...
 
 
 class WorkRequestApplication:
@@ -45,6 +46,9 @@ class WorkRequestApplication:
         request.version += 1
         self._repository.append_audit(request.id, str(principal.id), "work_request.rejected", {"reason": reason.strip()})
         return self._view(request)
+
+    def inbox(self, principal: Principal) -> list[dict[str, Any]]:
+        return [self._view(request) for request in self._repository.inbox_for(str(principal.id))]
 
     def _decision_target(self, principal: Principal, request_id: UUID, expected_version: int) -> Any:
         request = self._repository.request(request_id, lock=True)

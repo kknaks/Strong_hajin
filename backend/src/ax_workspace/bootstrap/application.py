@@ -174,6 +174,10 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def work_request_inbox(self, principal: Principal) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return WorkRequestApplication(SqlAlchemyWorkRequestRepository(session)).inbox(principal)
+
     def transition_task(self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None = None, expected_version: int = 0) -> dict[str, Any]:
         with self._session_factory() as session:
             result = TaskApplication(SqlAlchemyTaskRepository(session)).transition(task_id, principal, target, reason, expected_version)

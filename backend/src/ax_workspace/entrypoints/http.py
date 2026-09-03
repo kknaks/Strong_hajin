@@ -231,6 +231,12 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
+        @app.get("/api/action-inbox")
+        def work_request_inbox(
+            principal: Principal = Depends(developer_principal),
+        ) -> list[dict[str, object]]:
+            return app.state.workflow_application.work_request_inbox(principal)
+
         @app.post("/api/work-requests/{request_id}/reject")
         def reject_work_request(
             request_id: UUID,

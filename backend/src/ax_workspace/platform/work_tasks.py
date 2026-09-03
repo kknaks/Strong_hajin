@@ -125,3 +125,15 @@ class SqlAlchemyWorkRequestRepository:
                 occurred_at=datetime.now(UTC),
             )
         )
+
+    def inbox_for(self, assignee_id: str) -> list[WorkRequestRecord]:
+        return list(
+            self._session.scalars(
+                select(WorkRequestRecord)
+                .where(
+                    WorkRequestRecord.assignee_id == assignee_id,
+                    WorkRequestRecord.state.in_(("pending", "negotiating")),
+                )
+                .order_by(WorkRequestRecord.created_at)
+            )
+        )

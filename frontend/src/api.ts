@@ -4,6 +4,7 @@ import type {
   MyWorkItem,
   OrganizationProfile,
   Persona,
+  WorkRequest,
 } from "./viewModels";
 
 type ApiErrorBody = {
@@ -111,4 +112,21 @@ export async function getDailyReportHistory(
   reportId: string,
 ): Promise<DailyReportHistory> {
   return request<DailyReportHistory>(`/api/daily-reports/${reportId}/history`, personaId);
+}
+
+export async function getActionInbox(personaId: string): Promise<WorkRequest[]> {
+  return request<WorkRequest[]>("/api/action-inbox", personaId);
+}
+
+export async function decideWorkRequest(
+  personaId: string,
+  requestId: string,
+  action: "accept" | "reject",
+  expectedVersion: number,
+  reason?: string,
+): Promise<WorkRequest> {
+  return request<WorkRequest>(`/api/work-requests/${requestId}/${action}`, personaId, {
+    body: JSON.stringify({ expected_version: expectedVersion, reason: reason ?? null }),
+    method: "POST",
+  });
 }
