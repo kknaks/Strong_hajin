@@ -73,6 +73,20 @@ def test_self_created_task_enters_my_work_and_only_allows_valid_lifecycle_transi
     assert client.post(f"/api/tasks/{task['task_id']}/complete", headers={"X-Demo-Persona": "mina"}).json()["state"] == "completed"
 
 
+def test_organization_profile_is_a_persisted_authorized_projection(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+
+    response = client.get("/api/organization/me", headers={"X-Demo-Persona": "mina"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "member_id": "mina",
+        "display_name": "민아 (구성원)",
+        "organizations": [{"id": "product", "name": "제품팀"}, {"id": "scax", "name": "SCAX"}],
+        "capabilities": ["daily_report.submit", "meeting.followup.request", "task.accept", "work.read"],
+    }
+
+
 def test_meeting_assignment_never_enters_my_work_before_the_selected_assignee_accepts(tmp_path) -> None:
     client = _client_with_seeded_database(tmp_path)
     started = client.post("/api/runs/meeting-followups", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()

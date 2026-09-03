@@ -141,6 +141,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         def my_work(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
             return app.state.workflow_application.my_work(principal)
 
+        @app.get("/api/organization/me")
+        def my_organization_profile(principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            return app.state.workflow_application.my_organization_profile(principal)
+
         @app.post("/api/tasks", status_code=status.HTTP_201_CREATED)
         def create_self_task(request: CreateTaskRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
             try:

@@ -7,6 +7,8 @@ from uuid import UUID
 from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.ax_execution.application import AccessDenied, WorkflowRunStarter
 from ax_workspace.modules.organization_access.domain import Principal
+from ax_workspace.modules.organization_access.application import OrganizationApplication
+from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
 from ax_workspace.modules.work.application import TaskApplication, TaskState
 from ax_workspace.platform.persistence import make_session_factory
 from ax_workspace.platform.work_tasks import SqlAlchemyTaskRepository
@@ -56,6 +58,10 @@ class WorkflowApplication:
         with self._session_factory() as session:
             direct_work = TaskApplication(SqlAlchemyTaskRepository(session)).list_for(principal)
         return [*direct_work, *workflow_work]
+
+    def my_organization_profile(self, principal: Principal) -> dict[str, Any]:
+        with self._session_factory() as session:
+            return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).my_profile(principal)
 
     def create_self_task(self, principal: Principal, title: str) -> dict[str, Any]:
         with self._session_factory() as session:

@@ -101,7 +101,7 @@ export default function App() {
         {surface === "work" && <MyWorkPage {...pageProps} />}
         {surface === "inbox" && <ActionInboxPage />}
         {surface === "report" && <DailyReportPage {...pageProps} />}
-        {surface === "org" && <OrgPage />}
+        {surface === "org" && <OrgPage {...pageProps} />}
       </section>
     </main>
   );

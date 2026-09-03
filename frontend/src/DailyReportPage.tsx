@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { generateDailyReportDraft, getMyWork } from "./api";
+import { getMyWork } from "./api";
 import { isDirectTask, type DirectTask } from "./viewModels";
 
 type DailyReportPageProps = {
@@ -10,8 +10,6 @@ type DailyReportPageProps = {
 
 export function DailyReportPage({ personaId, onError }: DailyReportPageProps) {
   const [evidence, setEvidence] = useState<DirectTask[]>([]);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [generationRequested, setGenerationRequested] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -30,19 +28,6 @@ export function DailyReportPage({ personaId, onError }: DailyReportPageProps) {
       cancelled = true;
     };
   }, [onError, personaId]);
-
-  const generateDraft = async () => {
-    setIsGenerating(true);
-    try {
-      await generateDailyReportDraft(personaId);
-      setGenerationRequested(true);
-      onError(null);
-    } catch (error) {
-      onError(error instanceof Error ? error.message : "보고 초안을 만들지 못했습니다.");
-    } finally {
-      setIsGenerating(false);
-    }
-  };
 
   return (
     <section className="page-surface">
@@ -74,16 +59,10 @@ export function DailyReportPage({ personaId, onError }: DailyReportPageProps) {
 
         <section className="surface-card">
           <h3>초안</h3>
-          <p>개인 일일보고 정의만 내부 생성 operation으로 호출합니다.</p>
-          <button className="primary" disabled={isGenerating} onClick={() => void generateDraft()} type="button">
-            {isGenerating ? "초안 생성 중" : "초안 만들기"}
-          </button>
-          {generationRequested && (
-            <p className="report-notice">
-              초안 생성 요청을 기록했습니다. 편집 가능한 초안과 제출 이력은 DailyReport 원장 slice에서
-              저장·제출 operation으로 연결됩니다.
-            </p>
-          )}
+          <p>
+            `daily_report.generate_draft` operation은 Reports application이 소유합니다. 내부의 초안 생성
+            pipeline만 versioned Workflow를 사용하며, 이 화면은 generic run을 직접 호출하지 않습니다.
+          </p>
         </section>
 
         <section className="surface-card">

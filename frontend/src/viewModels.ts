@@ -25,6 +25,9 @@ export type MyWorkItem = DirectTask | AcceptedAssignment;
 
 export const isDirectTask = (item: MyWorkItem): item is DirectTask => "task_id" in item;
 
-export type DailyReportGeneration = {
-  state: string;
+export type OrganizationProfile = {
+  member_id: string;
+  display_name: string;
+  organizations: Array<{ id: string; name: string }>;
+  capabilities: string[];
 };

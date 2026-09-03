@@ -11,6 +11,39 @@ class Base(DeclarativeBase):
     pass
 
 
+class OrganizationUnitRecord(Base):
+    __tablename__ = "organization_units"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+
+
+class MemberRecord(Base):
+    __tablename__ = "members"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    employment_state: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
+class MembershipRecord(Base):
+    __tablename__ = "memberships"
+    __table_args__ = (UniqueConstraint("member_id", "organization_id", name="uq_member_organization"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organization_units.id"), nullable=False)
+
+
+class AccessGrantRecord(Base):
+    __tablename__ = "access_grants"
+    __table_args__ = (UniqueConstraint("member_id", "capability", name="uq_member_capability"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    capability: Mapped[str] = mapped_column(String(120), nullable=False)
+
+
 class WorkflowDefinitionRecord(Base):
     __tablename__ = "workflow_definitions"
 
