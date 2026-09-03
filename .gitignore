@@ -9,3 +9,5 @@ artifacts/
 *.tsbuildinfo
 /backend/build/
 /backend/*.egg-info/
+/.scax/
+/backend/.scax/

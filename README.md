@@ -24,21 +24,9 @@ In a second terminal, run `make frontend`; the browser UI starts at `http://127.
 
 ## Current API slice
 
-The catalog and run endpoints use one `WorkflowRunStarter`, PostgreSQL repository, and unit of work. Starts are version-pinned to a seeded `WorkflowDefinitionVersion`; normal progression writes node execution, tool-result, human-decision, and append-only audit records.
+The product surface exposes direct Task and Reports operations. `POST /api/daily-reports/generate-draft` runs the persisted `daily-report-generation@1` metadata internally, then Reports owns `edit`, `submit`, and `history`; the browser and persona-bound MCP server use those same operations rather than a generic run console.
 
-- `GET /api/catalog` shows workflow definitions allowed for `X-Demo-Persona`.
-- `POST /api/runs/{workflow_id}` starts a run with `{ "input": { ... } }`.
-- `GET /api/inbox`, `POST /api/runs/{run_id}/decisions/{node_id}`, and `GET /api/my-work` demonstrate the human decision flow.
-
-The meeting-followup flow creates a `pending_acceptance` assignment after the requester chooses an assignee. It becomes visible in My Work only after that exact assignee accepts; rejection leaves it out of My Work. The daily-report confirmation and contract legal/finance `all` join use the same runtime, with local demo adapters standing in for external effects.
-
-The six non-golden definitions complete through the same local demo adapter and persisted runtime; real external adapters, production authentication, and the final timed demo rehearsal remain outside this slice.
-
-## Demo rehearsal
-
-After `make reset-demo`, run `make demo-rehearse`. It executes the daily-report confirmation, meeting-assignment acceptance, and contract legal/finance `all` join against the same PostgreSQL runtime and writes a reproducible audit summary to `artifacts/demo-rehearsal.json`.
-
-`make mcp-probe` launches a local stdio MCP client/server pair and records tool discovery, structured-result validation, a daily-report golden flow, and per-call latency to `artifacts/mcp-probe.json`. Its recorded `gpt-5.6-terra` / priority / low-tool / medium-authoring profile is a local protocol baseline—not a cloud Codex request—because cloud model traffic is excluded from this demo scope.
+The only production/development LLM adapter is `CodexCliProviderAdapter`. It invokes `codex exec` with an isolated runtime home, user config/rules/skills/plugins disabled, a read-only sandbox, `gpt-5.6-terra`, Fast tier, low reasoning, and a structured output schema. A missing CLI binary or authentication fails explicitly; deterministic providers are injected only by tests.
 
 `make verify` deliberately excludes PostgreSQL integration tests; its success is not PostgreSQL coverage. For an explicit, reproducible disposable-PostgreSQL proof, start the documented container and run:
 
@@ -46,8 +34,6 @@ After `make reset-demo`, run `make demo-rehearse`. It executes the daily-report 
 make postgres-up
 make test-postgres
 make reset-demo
-make demo-rehearse
-make mcp-probe
 ```
 
-`postgres-up` provisions a separate local `ax_test` database beside the app's `ax_demo` database. `test-postgres` resets only `POSTGRES_TEST_URL` (default: `ax_test`), refuses to run when it equals `DATABASE_URL`, and verifies the golden flows plus competing human-decision serialization. To use a different disposable local port, pass it consistently, for example `make test-postgres POSTGRES_TEST_URL=postgresql+psycopg://localhost:55432/ax_test` and `make reset-demo DATABASE_URL=postgresql+psycopg://localhost:55432/ax_demo`. Reset rejects remote, production-named, and non-demo/test URLs before connecting.
+`postgres-up` provisions a separate local `ax_test` database beside the app's `ax_demo` database. `test-postgres` resets only `POSTGRES_TEST_URL` (default: `ax_test`) and refuses to run when it equals `DATABASE_URL`. To use a different disposable local port, pass it consistently, for example `make test-postgres POSTGRES_TEST_URL=postgresql+psycopg://localhost:55432/ax_test` and `make reset-demo DATABASE_URL=postgresql+psycopg://localhost:55432/ax_demo`. Reset rejects remote, production-named, and non-demo/test URLs before connecting.

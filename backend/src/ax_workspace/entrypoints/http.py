@@ -17,6 +17,7 @@ from ax_workspace.modules.ax_execution.application import (
 from ax_workspace.modules.work.application import InvalidTaskTransition, TaskError, TaskNotFound, TaskState
 from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.ax_execution.domain import catalog_definitions
+from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
 
 
 class PersonaResponse(BaseModel):
@@ -47,6 +48,24 @@ class CreateTaskRequest(BaseModel):
     title: str
 
 
+class GenerateDailyReportDraftRequest(BaseModel):
+    report_date: str
+
+
+class EditDailyReportRequest(BaseModel):
+    draft_id: str
+    expected_version: int
+    body: str
+    include_source_refs: list[dict[str, object]] = Field(default_factory=list)
+    exclude_source_refs: list[dict[str, object]] = Field(default_factory=list)
+
+
+class SubmitDailyReportRequest(BaseModel):
+    draft_id: str
+    expected_version: int
+    reason: str | None = None
+
+
 class BlockTaskRequest(BaseModel):
     reason: str
     expected_version: int
@@ -70,12 +89,17 @@ def _runtime_error(error: Exception) -> HTTPException:
     raise error
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    report_provider: AiProvider | None = None,
+    technical_spike: bool = False,
+) -> FastAPI:
     settings = settings or Settings.from_environment()
     app = FastAPI(title="SCAX Workflow Catalog API", version="0.1.0")
     if settings.developer_auth_enabled:
         app.state.developer_auth = DeveloperAuthAdapter(settings)
-        app.state.workflow_application = create_workflow_application(settings)
+        app.state.workflow_application = create_workflow_application(settings, report_provider)
 
         @app.get("/api/developer/personas", response_model=list[PersonaResponse])
         def personas() -> list[PersonaResponse]:
@@ -83,6 +107,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         @app.get("/api/catalog", response_model=list[CatalogItemResponse])
         def catalog(principal: Principal = Depends(developer_principal)) -> list[CatalogItemResponse]:
+            if not technical_spike:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
             return [
                 CatalogItemResponse(
                     workflow_id=definition.workflow_id,
@@ -105,6 +131,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request: StartRunRequest,
             principal: Principal = Depends(developer_principal),
         ) -> dict[str, object]:
+            if not technical_spike:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
             try:
                 return app.state.workflow_application.start(workflow_id, principal, request.input)
             except Exception as error:
@@ -112,6 +140,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         @app.get("/api/runs/{run_id}")
         def get_run(run_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            if not technical_spike:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
             try:
                 return app.state.workflow_application.run(run_id, principal)
             except Exception as error:
@@ -119,12 +149,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         @app.get("/api/inbox")
         def inbox(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+            if not technical_spike:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
             return app.state.workflow_application.inbox(principal)
 
         @app.get("/api/meeting-assignment-candidates", response_model=list[PersonaResponse])
         def meeting_assignment_candidates(
             principal: Principal = Depends(developer_principal),
         ) -> list[PersonaResponse]:
+            if not technical_spike:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
             try:
                 return [PersonaResponse(**candidate) for candidate in app.state.workflow_application.meeting_assignment_candidates(principal)]
             except Exception as error:
@@ -137,6 +171,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request: DecisionRequest,
             principal: Principal = Depends(developer_principal),
         ) -> dict[str, object]:
+            if not technical_spike:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
             try:
                 return app.state.workflow_application.decide(run_id, node_id, principal, request.decision, request.rationale, request.payload)
             except Exception as error:
@@ -156,6 +192,61 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return app.state.workflow_application.create_self_task(principal, request.title)
             except Exception as error:
                 raise _runtime_error(error) from error
+
+        @app.post("/api/daily-reports/generate-draft", status_code=status.HTTP_201_CREATED)
+        def generate_daily_report_draft(request: GenerateDailyReportDraftRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.generate_daily_report_draft(principal, request.report_date)
+            except ProviderFailure as error:
+                raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
+            except ValueError as error:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+
+        @app.post("/api/daily-reports/{report_id}/edit")
+        def edit_daily_report(
+            report_id: str,
+            request: EditDailyReportRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.edit_daily_report(
+                    principal,
+                    report_id,
+                    request.draft_id,
+                    request.expected_version,
+                    request.body,
+                    request.include_source_refs,
+                    request.exclude_source_refs,
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+
+        @app.post("/api/daily-reports/{report_id}/submit", status_code=status.HTTP_201_CREATED)
+        def submit_daily_report(
+            report_id: str,
+            request: SubmitDailyReportRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.submit_daily_report(
+                    principal,
+                    report_id,
+                    request.draft_id,
+                    request.expected_version,
+                    request.reason,
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+
+        @app.get("/api/daily-reports/{report_id}/history")
+        def daily_report_history(
+            report_id: str,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.daily_report_history(principal, report_id)
+            except ValueError as error:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
 
         def task_transition(task_id: UUID, target: TaskState, principal: Principal, reason: str | None = None, expected_version: int = 0) -> dict[str, object]:
             try:

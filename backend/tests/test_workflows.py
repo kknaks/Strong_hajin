@@ -36,8 +36,8 @@ def test_graph_rejects_unknown_edge_target() -> None:
 
 def test_personas_see_different_capability_filtered_catalogs(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
-    reset_database(database_url)
-    client = TestClient(create_app(Settings(RuntimeProfile.TEST, database_url)))
+    reset_database(database_url, technical_spike=True)
+    client = TestClient(create_app(Settings(RuntimeProfile.TEST, database_url), technical_spike=True))
     mina = client.get("/api/catalog", headers={"X-Demo-Persona": "mina"}).json()
     admin = client.get("/api/catalog", headers={"X-Demo-Persona": "demo-admin"}).json()
     assert len(mina) < len(admin) == 9
@@ -46,9 +46,9 @@ def test_personas_see_different_capability_filtered_catalogs(tmp_path) -> None:
     assert contract["input_schema"]["required"] == ["contract_id"]
 
 
-def test_explicit_reset_creates_and_seeds_the_nine_definition_versions(tmp_path) -> None:
+def test_product_reset_installs_only_the_daily_report_generation_definition(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
     with create_engine(database_url).connect() as connection:
         versions = connection.execute(select(WorkflowDefinitionVersionRecord.version)).scalars().all()
-    assert versions == ["2026-09-demo.1"] * 9
+    assert versions == ["1"]

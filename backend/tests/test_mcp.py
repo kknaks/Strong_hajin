@@ -6,52 +6,77 @@ from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 import pytest
 
-from ax_workspace.modules.organization_access.domain import seeded_principal
-from ax_workspace.entrypoints.mcp import McpWorkflowFacade, create_mcp_server
-from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
+from ax_workspace.entrypoints.mcp import McpReportsFacade, create_mcp_server
+from ax_workspace.entrypoints.reset_demo import reset_database
+from ax_workspace.modules.ax_execution.ai import AiGeneration
 
 
-def test_mcp_facade_discovers_allowed_workflows_and_completes_a_golden_run(tmp_path) -> None:
+class ContractTestAiProvider:
+    def generate(self, request) -> AiGeneration:
+        return AiGeneration(
+            cli_run_ref="run_mcp_contract_test",
+            cli_thread_ref="thread_mcp_contract_test",
+            body="MCP에서 생성한 보고 초안입니다.",
+            requested_model="gpt-5.6-terra",
+            observed_model="gpt-5.6-terra",
+            requested_tier="fast",
+            observed_tier="fast",
+            latency_ms=1,
+            usage={"input_tokens": 1, "output_tokens": 1},
+        )
+
+
+def test_mcp_facade_uses_direct_daily_report_operations(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
-    facade = McpWorkflowFacade(Settings(RuntimeProfile.TEST, database_url), seeded_principal("mina"))
+    facade = McpReportsFacade(
+        Settings(RuntimeProfile.TEST, database_url),
+        "mina",
+        ContractTestAiProvider(),
+    )
 
-    catalog = facade.list_allowed_workflows()
-    assert "daily-report" in {item["workflow_id"] for item in catalog}
-    assert "contract-review" not in {item["workflow_id"] for item in catalog}
+    draft = facade.generate_daily_report_draft("2026-09-03")
+    assert draft["workflow_state"] == "completed"
+    assert draft["submission_status"] == "unsubmitted"
+    edited = facade.edit_daily_report(
+        draft["report_id"], draft["draft_id"], draft["draft_version"], "MCP에서 수정한 초안"
+    )
+    submitted = facade.submit_daily_report(
+        draft["report_id"], edited["draft_id"], edited["draft_version"]
+    )
+    assert submitted["body"] == "MCP에서 수정한 초안"
 
-    started = facade.start_workflow("daily-report", {})
-    assert started["state"] == "waiting_for_decision"
-    assert facade.list_decision_inbox()[0]["node_id"] == "confirm"
-    completed = facade.submit_decision(started["run_id"], "confirm", "accept")
-    assert completed["state"] == "completed"
 
-
-def test_unbound_mcp_server_fails_closed_instead_of_accepting_a_caller_persona(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unbound_mcp_server_fails_closed_instead_of_accepting_a_caller_persona(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("AX_MCP_PERSONA", raising=False)
 
     with pytest.raises(RuntimeError, match="AX_MCP_PERSONA"):
         create_mcp_server(Settings(RuntimeProfile.TEST, "sqlite:///:memory:"))
 
 
-def test_persona_bound_mcp_server_discovers_only_that_personas_start_tools() -> None:
-    mina_server = create_mcp_server(Settings(RuntimeProfile.TEST, "sqlite:///:memory:"), persona="mina")
-    admin_server = create_mcp_server(Settings(RuntimeProfile.TEST, "sqlite:///:memory:"), persona="demo-admin")
+def test_mcp_tool_exposure_is_bound_to_the_server_persona(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url)
 
-    mina_tools = {tool.name for tool in asyncio.run(mina_server.list_tools())}
-    admin_tools = {tool.name for tool in asyncio.run(admin_server.list_tools())}
+    monkeypatch.setenv("AX_MCP_PERSONA", "mina")
+    mina_tools = {tool.name for tool in asyncio.run(create_mcp_server(settings).list_tools())}
+    monkeypatch.setenv("AX_MCP_PERSONA", "sora")
+    sora_tools = {tool.name for tool in asyncio.run(create_mcp_server(settings).list_tools())}
 
-    assert "start_daily_report" in mina_tools
-    assert "start_contract_review" not in mina_tools
-    assert "start_contract_review" in admin_tools
-    assert "submit_my_workflow_decision" in mina_tools
-    assert "start_workflow" not in mina_tools
-    mina_schemas = {tool.name: tool.inputSchema for tool in asyncio.run(mina_server.list_tools())}
-    assert all("persona" not in schema.get("properties", {}) for schema in mina_schemas.values())
+    assert "daily_report_generate_draft" in mina_tools
+    assert "daily_report_generate_draft" not in sora_tools
+    assert "start_daily_report" not in mina_tools
+    assert all("persona" not in tool.name for tool in asyncio.run(create_mcp_server(settings).list_tools()))
 
 
-def test_stdio_mcp_client_discovers_and_starts_a_seeded_workflow(tmp_path) -> None:
+def test_stdio_mcp_client_discovers_only_persona_bound_report_tools(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
 
@@ -60,20 +85,23 @@ def test_stdio_mcp_client_discovers_and_starts_a_seeded_workflow(tmp_path) -> No
             command=sys.executable,
             args=["-m", "ax_workspace.entrypoints.mcp"],
             cwd=os.getcwd(),
-            env={**os.environ, "AX_PROFILE": "test", "DATABASE_URL": database_url, "AX_MCP_PERSONA": "mina"},
+            env={
+                **os.environ,
+                "AX_PROFILE": "test",
+                "DATABASE_URL": database_url,
+                "AX_MCP_PERSONA": "mina",
+            },
         )
         async with stdio_client(parameters) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
                 tools = await session.list_tools()
                 names = {tool.name for tool in tools.tools}
-                assert "start_daily_report" in names
-                assert "start_contract_review" not in names
-                assert "start_workflow" not in names
-                started = await session.call_tool(
-                    "start_daily_report",
-                    {"input_data": {}},
-                )
-                assert started.structuredContent["state"] == "waiting_for_decision"
+                assert names == {
+                    "daily_report_edit",
+                    "daily_report_generate_draft",
+                    "daily_report_history",
+                    "daily_report_submit",
+                }
 
     asyncio.run(scenario())

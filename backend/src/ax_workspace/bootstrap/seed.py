@@ -17,11 +17,18 @@ from ax_workspace.platform.persistence import (
     WorkflowDefinitionVersionRecord,
 )
 from ax_workspace.modules.ax_execution.domain import catalog_definitions
+from ax_workspace.modules.reports.workflow_metadata import content_hash, daily_report_generation_v1
 
 
 def seed_catalog(session: Session) -> None:
-    """Idempotently seed code-owned immutable definition versions after an explicit reset."""
+    """Install the product demo's persisted configuration after an explicit reset."""
     _seed_organization_access(session)
+    _install_daily_report_generation(session)
+    session.commit()
+
+
+def seed_technical_workflow_spike(session: Session) -> None:
+    """Install legacy generic examples only for isolated runtime regression tests."""
     for definition in catalog_definitions():
         record = session.get(WorkflowDefinitionRecord, definition.workflow_id)
         if record is None:
@@ -56,6 +63,39 @@ def seed_catalog(session: Session) -> None:
             )
         )
     session.commit()
+
+
+def _install_daily_report_generation(session: Session) -> None:
+    workflow_id = "daily-report-generation"
+    definition = daily_report_generation_v1()
+    if session.get(WorkflowDefinitionRecord, workflow_id) is None:
+        session.add(
+            WorkflowDefinitionRecord(
+                id=workflow_id,
+                title="개인 일일보고 초안 생성",
+                owner_id="scax",
+                scope="scax",
+            )
+        )
+    existing = session.scalar(
+        select(WorkflowDefinitionVersionRecord).where(
+            WorkflowDefinitionVersionRecord.workflow_id == workflow_id,
+            WorkflowDefinitionVersionRecord.version == "1",
+        )
+    )
+    if existing is None:
+        session.add(
+            WorkflowDefinitionVersionRecord(
+                workflow_id=workflow_id,
+                version="1",
+                definition=definition,
+                schema_version=definition["schema_version"],
+                status="published",
+                content_hash=content_hash(definition),
+                created_at=datetime.now(UTC),
+                published_at=datetime.now(UTC),
+            )
+        )
 
 
 def _seed_organization_access(session: Session) -> None:

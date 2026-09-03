@@ -1,15 +1,32 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-import { getMyWork } from "./api";
-import { isDirectTask, type DirectTask } from "./viewModels";
+import {
+  editDailyReport,
+  generateDailyReportDraft,
+  getDailyReportHistory,
+  getMyWork,
+  submitDailyReport,
+} from "./api";
+import { isDirectTask, type DailyReportDraft, type DailyReportHistory, type DirectTask } from "./viewModels";
 
 type DailyReportPageProps = {
   personaId: string;
   onError: (message: string | null) => void;
 };
 
+function localReportDate(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
+}
+
 export function DailyReportPage({ personaId, onError }: DailyReportPageProps) {
+  const [reportDate, setReportDate] = useState(localReportDate);
   const [evidence, setEvidence] = useState<DirectTask[]>([]);
+  const [draft, setDraft] = useState<DailyReportDraft | null>(null);
+  const [body, setBody] = useState("");
+  const [history, setHistory] = useState<DailyReportHistory | null>(null);
+  const [isWorking, setIsWorking] = useState(false);
+
+  const submitted = useMemo(() => history?.submissions.length ?? 0, [history]);
 
   useEffect(() => {
     let cancelled = false;
@@ -29,22 +46,85 @@ export function DailyReportPage({ personaId, onError }: DailyReportPageProps) {
     };
   }, [onError, personaId]);
 
+  async function generateDraft() {
+    setIsWorking(true);
+    onError(null);
+    try {
+      const nextDraft = await generateDailyReportDraft(personaId, reportDate);
+      setDraft(nextDraft);
+      setBody(nextDraft.body);
+      setHistory(await getDailyReportHistory(personaId, nextDraft.report_id));
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "초안을 생성하지 못했습니다.");
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
+  async function saveEdit() {
+    if (!draft) return;
+    setIsWorking(true);
+    onError(null);
+    try {
+      const nextDraft = await editDailyReport(
+        personaId,
+        draft.report_id,
+        draft.draft_id,
+        draft.draft_version,
+        body,
+      );
+      setDraft({ ...draft, ...nextDraft });
+      setBody(nextDraft.body);
+      setHistory(await getDailyReportHistory(personaId, draft.report_id));
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "초안을 저장하지 못했습니다.");
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
+  async function submit() {
+    if (!draft) return;
+    setIsWorking(true);
+    onError(null);
+    try {
+      await submitDailyReport(personaId, draft.report_id, draft.draft_id, draft.draft_version);
+      setHistory(await getDailyReportHistory(personaId, draft.report_id));
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "보고를 제출하지 못했습니다.");
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
   return (
     <section className="page-surface">
       <div className="card-title">
         <div>
           <p className="kicker">REPORTS · TODAY</p>
           <h2>개인 일일보고</h2>
-          <p>업무 기록을 근거로 초안을 만들고, 사람이 확인한 결과만 제출합니다.</p>
+          <p>오늘의 업무 활동을 근거로 초안을 만들고, 사람이 편집·확인한 내용만 제출합니다.</p>
         </div>
-        <time dateTime="2026-09-03">2026년 9월 3일</time>
+        <label>
+          보고일
+          <input type="date" value={reportDate} onChange={(event) => setReportDate(event.target.value)} />
+        </label>
       </div>
 
       <div className="report-grid">
         <section className="surface-card">
-          <h3>오늘의 근거</h3>
-          {evidence.length === 0 ? (
-            <p className="empty-row">수집된 직접 생성 업무가 없습니다.</p>
+          <h3>오늘의 업무 근거</h3>
+          {draft ? (
+            <ul className="evidence-list">
+              {draft.source_refs.map((source) => (
+                <li key={`${source.task_id}-${source.task_version}-${source.occurred_at}`}>
+                  <b>업무 활동</b>
+                  <span>{source.state}</span>
+                </li>
+              ))}
+            </ul>
+          ) : evidence.length === 0 ? (
+            <p className="empty-row">아직 확인할 업무 활동이 없습니다.</p>
           ) : (
             <ul className="evidence-list">
               {evidence.map((task) => (
@@ -55,24 +135,52 @@ export function DailyReportPage({ personaId, onError }: DailyReportPageProps) {
               ))}
             </ul>
           )}
+          <button type="button" disabled={isWorking || !reportDate} onClick={() => void generateDraft()}>
+            {isWorking ? "초안 생성 중…" : "근거로 초안 만들기"}
+          </button>
         </section>
 
         <section className="surface-card">
-          <h3>초안</h3>
-          <p>
-            `daily_report.generate_draft` operation은 Reports application이 소유합니다. 내부의 초안 생성
-            pipeline만 versioned Workflow를 사용하며, 이 화면은 generic run을 직접 호출하지 않습니다.
-          </p>
+          <h3>초안 편집</h3>
+          {draft ? (
+            <>
+              <textarea
+                aria-label="일일보고 초안"
+                value={body}
+                onChange={(event) => setBody(event.target.value)}
+                rows={8}
+              />
+              <button type="button" disabled={isWorking || !body.trim()} onClick={() => void saveEdit()}>
+                편집 저장
+              </button>
+            </>
+          ) : (
+            <p className="empty-row">초안을 만들면 여기서 내용을 편집할 수 있습니다.</p>
+          )}
         </section>
 
         <section className="surface-card">
           <h3>확인 및 제출</h3>
-          <p>초안을 편집하고 확인한 사람만 immutable 제출을 실행할 수 있습니다.</p>
+          <p>제출 후에는 해당 제출본의 본문과 근거가 변경되지 않습니다.</p>
+          <button type="button" disabled={isWorking || !draft} onClick={() => void submit()}>
+            보고 제출
+          </button>
         </section>
 
         <section className="surface-card">
           <h3>제출 이력</h3>
-          <p>제출본과 시점은 DailyReport 원장에서 조회합니다.</p>
+          {submitted === 0 ? (
+            <p className="empty-row">아직 제출한 버전이 없습니다.</p>
+          ) : (
+            <ol className="evidence-list">
+              {history?.submissions.map((submission) => (
+                <li key={submission.submission_id}>
+                  <b>제출 v{submission.version}</b>
+                  <span>{new Date(submission.submitted_at).toLocaleString("ko-KR")}</span>
+                </li>
+              ))}
+            </ol>
+          )}
         </section>
       </div>
     </section>

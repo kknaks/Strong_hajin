@@ -1,54 +1,202 @@
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+from uuid import UUID
 
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
+from ax_workspace.modules.ax_execution.ai import AiGeneration
+from ax_workspace.platform.persistence import (
+    ProviderCallRecord,
+    ReportDraftRecord,
+    WorkflowNodeExecutionRecord,
+    WorkflowRunRecord,
+    make_session_factory,
+)
 
 
-def _client_with_seeded_database(tmp_path) -> TestClient:
+class ContractTestAiProvider:
+    """A test-only provider double; development composition never uses it."""
+
+    def generate(self, request) -> AiGeneration:
+        assert "authorized evidence" in request.prompt
+        return AiGeneration(
+            cli_run_ref="run_contract_test",
+            cli_thread_ref="thread_contract_test",
+            body="오늘 처리한 업무를 확인했습니다.",
+            requested_model="gpt-5.6-terra",
+            observed_model="gpt-5.6-terra",
+            requested_tier="fast",
+            observed_tier="fast",
+            latency_ms=12,
+            usage={"input_tokens": 11, "output_tokens": 9},
+        )
+
+
+def _client_with_seeded_database(
+    tmp_path,
+    *,
+    report_provider=None,
+    technical_spike: bool = False,
+) -> TestClient:
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
-    reset_database(database_url)
-    return TestClient(create_app(Settings(RuntimeProfile.TEST, database_url)))
+    reset_database(database_url, technical_spike=technical_spike)
+    return TestClient(
+        create_app(
+            Settings(RuntimeProfile.TEST, database_url),
+            report_provider=report_provider,
+            technical_spike=technical_spike,
+        )
+    )
 
 
-def test_starting_daily_report_persists_a_version_pinned_run_and_waits_for_human_confirmation(tmp_path) -> None:
+def test_generate_draft_creates_a_report_owned_draft_from_authorized_task_events(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path, report_provider=ContractTestAiProvider())
+    task = client.post("/api/tasks", headers={"X-Demo-Persona": "mina"}, json={"title": "보고 근거 업무"}).json()
+    client.post(
+        f"/api/tasks/{task['task_id']}/start",
+        headers={"X-Demo-Persona": "mina"},
+        json={"expected_version": task["version"]},
+    )
+
+    response = client.post(
+        "/api/daily-reports/generate-draft",
+        headers={"X-Demo-Persona": "mina"},
+        json={"report_date": "2026-09-03"},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "draft"
+    assert body["report_id"]
+    assert body["draft_id"]
+    assert body["draft_version"] == 1
+    assert body["body"]
+    assert body["workflow_run_id"]
+    assert body["definition_version_id"]
+    assert body["workflow_state"] == "completed"
+    assert body["submission_status"] == "unsubmitted"
+    assert [item["task_version"] for item in body["source_refs"]] == [1, 2]
+    assert body["source_refs"][-1] == {
+        "task_id": task["task_id"],
+        "task_version": 2,
+        "state": "in_progress",
+        "occurred_at": body["source_refs"][-1]["occurred_at"],
+    }
+
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+    with make_session_factory(database_url)() as session:
+        draft = session.get(ReportDraftRecord, UUID(body["draft_id"]))
+        run = session.get(WorkflowRunRecord, UUID(body["workflow_run_id"]))
+        assert draft is not None
+        assert run is not None
+        assert draft.workflow_run_id == run.id
+        assert draft.definition_version_id == run.definition_version_id
+        assert run.state == "completed"
+        assert len(list(session.scalars(select(WorkflowNodeExecutionRecord).where(WorkflowNodeExecutionRecord.run_id == run.id)))) == 4
+        provider_call = session.scalar(
+            select(ProviderCallRecord).join(WorkflowNodeExecutionRecord).where(WorkflowNodeExecutionRecord.run_id == run.id)
+        )
+        assert provider_call is not None
+        assert provider_call.cli_run_ref == "run_contract_test"
+        assert provider_call.cli_thread_ref == "thread_contract_test"
+        assert provider_call.requested_model == "gpt-5.6-terra"
+        assert provider_call.requested_tier == "fast"
+        assert provider_call.observed_tier == "fast"
+
+
+def test_generate_draft_fails_explicitly_without_the_codex_cli_binary(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("ax_workspace.platform.codex_cli.shutil.which", lambda _: None)
     client = _client_with_seeded_database(tmp_path)
 
+    response = client.post(
+        "/api/daily-reports/generate-draft",
+        headers={"X-Demo-Persona": "mina"},
+        json={"report_date": "2026-09-03"},
+    )
+
+    assert response.status_code == 503
+    assert "binary is not available" in response.json()["detail"]
+
+
+def test_daily_report_edit_submit_and_history_are_report_owned_operations(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path, report_provider=ContractTestAiProvider())
+    generated = client.post(
+        "/api/daily-reports/generate-draft",
+        headers={"X-Demo-Persona": "mina"},
+        json={"report_date": "2026-09-03"},
+    ).json()
+
+    edited = client.post(
+        f"/api/daily-reports/{generated['report_id']}/edit",
+        headers={"X-Demo-Persona": "mina"},
+        json={
+            "draft_id": generated["draft_id"],
+            "expected_version": generated["draft_version"],
+            "body": "사람이 확인하고 보완한 보고입니다.",
+            "exclude_source_refs": [],
+            "include_source_refs": [],
+        },
+    )
+    assert edited.status_code == 200
+    edited_body = edited.json()
+    assert edited_body["draft_version"] == 2
+    assert edited_body["body"] == "사람이 확인하고 보완한 보고입니다."
+
+    submitted = client.post(
+        f"/api/daily-reports/{generated['report_id']}/submit",
+        headers={"X-Demo-Persona": "mina"},
+        json={
+            "draft_id": edited_body["draft_id"],
+            "expected_version": edited_body["draft_version"],
+            "reason": None,
+        },
+    )
+    assert submitted.status_code == 201
+    submitted_body = submitted.json()
+    assert submitted_body["submission_version"] == 1
+    assert submitted_body["body"] == "사람이 확인하고 보완한 보고입니다."
+
+    history = client.get(
+        f"/api/daily-reports/{generated['report_id']}/history",
+        headers={"X-Demo-Persona": "mina"},
+    )
+    assert history.status_code == 200
+    assert [item["version"] for item in history.json()["drafts"]] == [1, 2]
+    assert history.json()["submissions"][0]["body"] == "사람이 확인하고 보완한 보고입니다."
+
+    stale = client.post(
+        f"/api/daily-reports/{generated['report_id']}/edit",
+        headers={"X-Demo-Persona": "mina"},
+        json={
+            "draft_id": edited_body["draft_id"],
+            "expected_version": 1,
+            "body": "낡은 편집",
+        },
+    )
+    assert stale.status_code == 422
+
+
+def test_generate_draft_rejects_future_report_date(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+
+    response = client.post(
+        "/api/daily-reports/generate-draft",
+        headers={"X-Demo-Persona": "mina"},
+        json={"report_date": "2099-01-01"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_daily_report_does_not_expose_the_legacy_human_confirmation_run(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
     response = client.post(
         "/api/runs/daily-report",
         headers={"X-Demo-Persona": "mina"},
         json={"input": {}},
     )
-
-    assert response.status_code == 201
-    body = response.json()
-    assert body["workflow_id"] == "daily-report"
-    assert body["definition_version"] == "2026-09-demo.1"
-    assert body["state"] == "waiting_for_decision"
-    assert body["waiting_on"] == ["confirm"]
-    assert body["tool_results"][0]["tool_name"] == "work_record.lookup"
-
-
-def test_daily_report_submits_immutable_snapshot_only_after_human_acceptance(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path)
-    started = client.post("/api/runs/daily-report", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()
-
-    assert "daily_report.submit_snapshot" not in {item["tool_name"] for item in started["tool_results"]}
-    completed = client.post(
-        f"/api/runs/{started['run_id']}/decisions/confirm",
-        headers={"X-Demo-Persona": "mina"},
-        json={"decision": "accept", "rationale": "내용을 확인했습니다."},
-    )
-
-    assert completed.status_code == 200
-    body = completed.json()
-    assert body["state"] == "completed"
-    assert "daily_report.submit_snapshot" in {item["tool_name"] for item in body["tool_results"]}
-    event_types = [item["event_type"] for item in body["audit"]]
-    assert event_types[0] == "workflow_run.started"
-    assert "human_decision.requested" in event_types
-    assert "human_decision.accepted" in event_types
-    assert event_types[-1] == "workflow_run.completed"
+    assert response.status_code == 404
 
 
 def test_self_created_task_enters_my_work_and_only_allows_valid_lifecycle_transitions(tmp_path) -> None:
@@ -127,7 +275,7 @@ def test_organization_principal_projects_persona_specific_grants(tmp_path) -> No
 
 
 def test_meeting_assignment_never_enters_my_work_before_the_selected_assignee_accepts(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path)
+    client = _client_with_seeded_database(tmp_path, technical_spike=True)
     started = client.post("/api/runs/meeting-followups", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()
     assert started["waiting_on"] == ["choose-assignment"]
 
@@ -152,7 +300,7 @@ def test_meeting_assignment_never_enters_my_work_before_the_selected_assignee_ac
 
 
 def test_assignment_rejection_never_enters_my_work(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path)
+    client = _client_with_seeded_database(tmp_path, technical_spike=True)
     started = client.post("/api/runs/meeting-followups", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()
     client.post(
         f"/api/runs/{started['run_id']}/decisions/choose-assignment",
@@ -171,7 +319,7 @@ def test_assignment_rejection_never_enters_my_work(tmp_path) -> None:
 
 
 def test_meeting_assignment_candidates_are_limited_to_seeded_task_acceptors(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path)
+    client = _client_with_seeded_database(tmp_path, technical_spike=True)
 
     response = client.get("/api/meeting-assignment-candidates", headers={"X-Demo-Persona": "mina"})
 
@@ -183,7 +331,7 @@ def test_meeting_assignment_candidates_are_limited_to_seeded_task_acceptors(tmp_
 
 
 def test_meeting_assignment_rejects_a_seeded_persona_without_task_acceptance_capability(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path)
+    client = _client_with_seeded_database(tmp_path, technical_spike=True)
     started = client.post("/api/runs/meeting-followups", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()
 
     response = client.post(
@@ -197,7 +345,7 @@ def test_meeting_assignment_rejects_a_seeded_persona_without_task_acceptance_cap
 
 
 def test_only_the_selected_assignee_can_accept_an_assignment(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path)
+    client = _client_with_seeded_database(tmp_path, technical_spike=True)
     started = client.post("/api/runs/meeting-followups", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()
     client.post(
         f"/api/runs/{started['run_id']}/decisions/choose-assignment",
@@ -216,7 +364,7 @@ def test_only_the_selected_assignee_can_accept_an_assignment(tmp_path) -> None:
 
 
 def test_contract_effect_waits_for_both_independent_human_acceptances(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path)
+    client = _client_with_seeded_database(tmp_path, technical_spike=True)
     started = client.post(
         "/api/runs/contract-review",
         headers={"X-Demo-Persona": "demo-admin"},
@@ -242,7 +390,7 @@ def test_contract_effect_waits_for_both_independent_human_acceptances(tmp_path) 
 
 
 def test_contract_rejection_prevents_the_post_join_effect(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path)
+    client = _client_with_seeded_database(tmp_path, technical_spike=True)
     started = client.post(
         "/api/runs/contract-review",
         headers={"X-Demo-Persona": "demo-admin"},
@@ -260,7 +408,7 @@ def test_contract_rejection_prevents_the_post_join_effect(tmp_path) -> None:
 
 
 def test_assigned_contract_reviewer_can_view_but_unrelated_persona_cannot_view_the_run(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path)
+    client = _client_with_seeded_database(tmp_path, technical_spike=True)
     started = client.post(
         "/api/runs/contract-review",
         headers={"X-Demo-Persona": "demo-admin"},
@@ -277,11 +425,11 @@ def test_assigned_contract_reviewer_can_view_but_unrelated_persona_cannot_view_t
 
 def test_run_state_and_audit_are_recovered_by_a_fresh_application_instance(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
-    reset_database(database_url)
-    first_client = TestClient(create_app(Settings(RuntimeProfile.TEST, database_url)))
-    started = first_client.post("/api/runs/daily-report", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()
+    reset_database(database_url, technical_spike=True)
+    first_client = TestClient(create_app(Settings(RuntimeProfile.TEST, database_url), technical_spike=True))
+    started = first_client.post("/api/runs/weekly-report", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()
 
-    restarted_client = TestClient(create_app(Settings(RuntimeProfile.TEST, database_url)))
+    restarted_client = TestClient(create_app(Settings(RuntimeProfile.TEST, database_url), technical_spike=True))
     recovered = restarted_client.get(
         f"/api/runs/{started['run_id']}", headers={"X-Demo-Persona": "mina"}
     )
@@ -293,9 +441,8 @@ def test_run_state_and_audit_are_recovered_by_a_fresh_application_instance(tmp_p
 
 
 def test_all_nine_catalog_examples_complete_through_the_shared_runtime(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path)
+    client = _client_with_seeded_database(tmp_path, technical_spike=True)
     cases = (
-        ("daily-report", "mina", {}, (("confirm", "mina"),)),
         ("team-daily-rollup", "jiho", {}, (("confirm", "jiho"),)),
         ("weekly-report", "mina", {}, (("confirm", "mina"),)),
         ("monthly-close", "jiho", {}, (("confirm", "jiho"),)),

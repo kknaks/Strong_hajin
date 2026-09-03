@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.work.application import TaskNotFound, TaskState
-from ax_workspace.platform.persistence import TaskRecord
+from ax_workspace.platform.persistence import TaskActivityRecord, TaskRecord
 
 
 class SqlAlchemyTaskRepository:
@@ -18,6 +18,7 @@ class SqlAlchemyTaskRepository:
         task = TaskRecord(owner_id=owner_id, title=title, state=TaskState.OPEN, block_reason=None, version=1, created_at=now, updated_at=now)
         self.session.add(task)
         self.session.flush()
+        self.session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now))
         return task
 
     def task(self, task_id: UUID, owner_id: str, *, lock: bool = False) -> TaskRecord:
@@ -31,3 +32,27 @@ class SqlAlchemyTaskRepository:
 
     def touch(self, task: TaskRecord) -> None:
         task.updated_at = datetime.now(UTC)
+        self.session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=task.updated_at))
+
+
+class SqlAlchemyWorkRecordSource:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def list(self, principal, report_date: str) -> list[dict[str, object]]:
+        activities = self._session.scalars(
+            select(TaskActivityRecord)
+            .join(TaskRecord, TaskRecord.id == TaskActivityRecord.task_id)
+            .where(TaskRecord.owner_id == str(principal.id))
+            .order_by(TaskActivityRecord.occurred_at)
+        )
+        return [
+            {
+                "task_id": str(item.task_id),
+                "task_version": item.task_version,
+                "state": item.state,
+                "occurred_at": item.occurred_at.isoformat(),
+            }
+            for item in activities
+            if item.occurred_at.date().isoformat() == report_date
+        ]

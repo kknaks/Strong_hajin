@@ -57,6 +57,8 @@ class WorkflowDefinitionRecord(Base):
 
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String(100), nullable=False, default="scax")
+    scope: Mapped[str] = mapped_column(String(100), nullable=False, default="scax")
 
 
 class WorkflowDefinitionVersionRecord(Base):
@@ -67,7 +69,11 @@ class WorkflowDefinitionVersionRecord(Base):
     workflow_id: Mapped[str] = mapped_column(ForeignKey("workflow_definitions.id"), nullable=False)
     version: Mapped[str] = mapped_column(String(80), nullable=False)
     definition: Mapped[dict] = mapped_column(JSON, nullable=False)
+    schema_version: Mapped[int] = mapped_column(nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="published")
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class WorkflowRunRecord(Base):
@@ -93,9 +99,29 @@ class WorkflowNodeExecutionRecord(Base):
     run_id: Mapped[UUID] = mapped_column(ForeignKey("workflow_runs.id"), nullable=False)
     node_id: Mapped[str] = mapped_column(String(100), nullable=False)
     state: Mapped[str] = mapped_column(String(40), nullable=False)
+    input_snapshot: Mapped[dict | None] = mapped_column(JSON)
     result: Mapped[dict | None] = mapped_column(JSON)
+    normalized_error: Mapped[str | None] = mapped_column(Text)
+    retry_count: Mapped[int] = mapped_column(nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ProviderCallRecord(Base):
+    __tablename__ = "provider_calls"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    node_execution_id: Mapped[UUID] = mapped_column(ForeignKey("workflow_node_executions.id"), nullable=False)
+    cli_run_ref: Mapped[str | None] = mapped_column(String(200))
+    cli_thread_ref: Mapped[str | None] = mapped_column(String(200))
+    requested_model: Mapped[str] = mapped_column(String(120), nullable=False)
+    observed_model: Mapped[str | None] = mapped_column(String(120))
+    requested_tier: Mapped[str] = mapped_column(String(80), nullable=False)
+    observed_tier: Mapped[str | None] = mapped_column(String(80))
+    latency_ms: Mapped[int | None] = mapped_column(nullable=True)
+    usage: Mapped[dict | None] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    normalized_error: Mapped[str | None] = mapped_column(Text)
 
 
 class HumanDecisionRecord(Base):
@@ -157,6 +183,16 @@ class TaskRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class TaskActivityRecord(Base):
+    __tablename__ = "task_activities"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"), nullable=False)
+    task_version: Mapped[int] = mapped_column(nullable=False)
+    state: Mapped[str] = mapped_column(String(40), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class MeetingEvidenceRecord(Base):
     __tablename__ = "meeting_evidence"
 
@@ -167,12 +203,53 @@ class MeetingEvidenceRecord(Base):
 
 class DailyReportSubmissionRecord(Base):
     __tablename__ = "daily_report_submissions"
+    __table_args__ = (UniqueConstraint("report_id", "submission_version", name="uq_daily_report_submission_version"),)
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    run_id: Mapped[UUID] = mapped_column(ForeignKey("workflow_runs.id"), nullable=False, unique=True)
+    report_id: Mapped[UUID] = mapped_column(ForeignKey("daily_reports.id"), nullable=False)
+    submission_version: Mapped[int] = mapped_column(nullable=False)
     submitter_id: Mapped[str] = mapped_column(String(100), nullable=False)
-    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    report_date: Mapped[str] = mapped_column(String(10), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    source_refs: Mapped[list] = mapped_column(JSON, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
     submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DailyReportRecord(Base):
+    __tablename__ = "daily_reports"
+    __table_args__ = (UniqueConstraint("owner_id", "report_date", name="uq_daily_report_owner_date"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    owner_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    report_date: Mapped[str] = mapped_column(String(10), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
+class ReportDraftRecord(Base):
+    __tablename__ = "report_drafts"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    owner_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    report_date: Mapped[str] = mapped_column(String(10), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_refs: Mapped[list] = mapped_column(JSON, nullable=False)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    body: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    report_id: Mapped[UUID] = mapped_column(ForeignKey("daily_reports.id"), nullable=False)
+    workflow_run_id: Mapped[UUID] = mapped_column(ForeignKey("workflow_runs.id"), nullable=False)
+    definition_version_id: Mapped[UUID] = mapped_column(ForeignKey("workflow_definition_versions.id"), nullable=False)
+
+
+class ReportAuditEventRecord(Base):
+    __tablename__ = "report_audit_events"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    report_id: Mapped[UUID] = mapped_column(ForeignKey("daily_reports.id"), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class TaskAssignmentRecord(Base):

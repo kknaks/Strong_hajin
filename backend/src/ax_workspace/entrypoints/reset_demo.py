@@ -26,10 +26,10 @@ def _require_safe_demo_database(database_url: str) -> None:
     raise ValueError("reset_demo requires a safe local demo database URL")
 
 
-def reset_database(database_url: str) -> None:
+def reset_database(database_url: str, *, technical_spike: bool = False) -> None:
     """The only schema-mutating operation. Application startup never calls this."""
     _require_safe_demo_database(database_url)
-    _reset_database(database_url)
+    _reset_database(database_url, technical_spike=technical_spike)
 
 
 def main() -> None:
@@ -37,7 +37,7 @@ def main() -> None:
     if not settings.developer_auth_enabled:
         raise RuntimeError("reset_demo is available only in development and test profiles")
     reset_database(settings.database_url)
-    print("Demo schema reset and 9 workflow definitions seeded.")
+    print("Demo schema reset and daily-report-generation@1 installed.")
 
 
 if __name__ == "__main__":

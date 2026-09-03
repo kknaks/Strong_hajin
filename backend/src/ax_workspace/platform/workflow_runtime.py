@@ -12,12 +12,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ax_workspace.modules.organization_access.domain import PersonaId, Principal, SEED_PERSONAS
 from ax_workspace.modules.meetings.domain import pending_assignment_result
-from ax_workspace.modules.reports.domain import confirmed_submission_snapshot
 from ax_workspace.modules.work.domain import my_work_item
 from ax_workspace.platform.persistence import (
     AuditEventRecord,
     ContractApprovalRecord,
-    DailyReportSubmissionRecord,
     HumanDecisionRecord,
     MeetingEvidenceRecord,
     TaskAssignmentRecord,
@@ -282,17 +280,6 @@ class LocalDemoToolDispatcher:
             return "work_record.lookup", {
                 "records": [{"id": str(record.id), "title": record.title, "status": record.status} for record in records]
             }
-        if run.workflow_id == "daily-report" and node.id == "effect":
-            snapshot = confirmed_submission_snapshot(run.input_snapshot)
-            self.repository.session.add(
-                DailyReportSubmissionRecord(
-                    run_id=run.id,
-                    submitter_id=run.initiator_id,
-                    snapshot=snapshot,
-                    submitted_at=_now(),
-                )
-            )
-            return "daily_report.submit_snapshot", snapshot
         if run.workflow_id == "meeting-followups" and node.id == "collect":
             evidence = list(self.repository.session.scalars(select(MeetingEvidenceRecord)))
             return "meeting_evidence.lookup", {

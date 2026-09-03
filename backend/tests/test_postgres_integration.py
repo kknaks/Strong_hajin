@@ -6,27 +6,11 @@ from uuid import UUID
 import pytest
 
 from ax_workspace.modules.organization_access.domain import seeded_principal
-from ax_workspace.entrypoints.demo_rehearsal import run_golden_rehearsal
 from ax_workspace.platform.persistence import make_session_factory
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.modules.ax_execution.application import InvalidDecision, WorkflowRunStarter
 from ax_workspace.platform.workflow_runtime import LocalDemoToolDispatcher, SqlAlchemyUnitOfWork, workflow_service
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
-
-
-@pytest.mark.integration
-def test_postgres_golden_rehearsal_persists_all_domain_complete_flows() -> None:
-    database_url = os.getenv("AX_POSTGRES_TEST_URL")
-    if not database_url:
-        pytest.skip("Set AX_POSTGRES_TEST_URL to run against a disposable PostgreSQL database")
-    reset_database(database_url)
-
-    report = run_golden_rehearsal(Settings(RuntimeProfile.TEST, database_url))
-
-    assert {flow["state"] for flow in report["flows"].values()} == {"completed"}
-    assert report["flows"]["daily_report"]["tool_names"][-1] == "daily_report.submit_snapshot"
-    assert report["flows"]["meeting_followups"]["my_work_state"] == "active"
-    assert report["flows"]["contract_review"]["effect_after_legal"] is False
 
 
 @pytest.mark.integration
@@ -36,7 +20,7 @@ def test_postgres_serializes_competing_human_decisions_before_effect_commit(
     database_url = os.getenv("AX_POSTGRES_TEST_URL")
     if not database_url:
         pytest.skip("Set AX_POSTGRES_TEST_URL to run against a disposable PostgreSQL database")
-    reset_database(database_url)
+    reset_database(database_url, technical_spike=True)
     session_factory = make_session_factory(database_url)
     with SqlAlchemyUnitOfWork(session_factory) as uow:
         assert uow.workflows is not None

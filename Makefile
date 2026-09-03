@@ -1,7 +1,7 @@
 DATABASE_URL ?= postgresql+psycopg://ax:ax@localhost:54329/ax_demo
 POSTGRES_TEST_URL ?= postgresql+psycopg://ax:ax@localhost:54329/ax_test
 
-.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo api mcp frontend-install frontend demo-rehearse mcp-probe
+.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo api mcp frontend-install frontend
 
 install:
 	cd backend && uv sync --all-groups
@@ -44,9 +44,3 @@ frontend-install:
 
 frontend:
 	cd frontend && npm run dev
-
-demo-rehearse:
-	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.demo_rehearsal
-
-mcp-probe:
-	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.mcp_probe

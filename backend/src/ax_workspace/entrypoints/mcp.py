@@ -1,112 +1,134 @@
+"""Persona-bound MCP adapter for SCAX public product operations.
+
+The persona is process configuration, never a tool argument.  The server reads
+the current principal from the same Organization & Access projection used by
+HTTP and invokes local operations in-process.
+"""
 from __future__ import annotations
 
 import os
 from typing import Any
-from uuid import UUID
 
 from mcp.server.fastmcp import FastMCP
 
-from ax_workspace.modules.organization_access.domain import Principal, seeded_principal
-from ax_workspace.bootstrap.application import create_workflow_application
+from ax_workspace.bootstrap.application import WorkflowApplication, create_workflow_application
 from ax_workspace.bootstrap.settings import Settings
-from ax_workspace.modules.ax_execution.domain import catalog_definitions
+from ax_workspace.modules.organization_access.domain import Principal
+from ax_workspace.modules.ax_execution.ai import AiProvider
 
 
-class McpWorkflowFacade:
-    """MCP adapter over the application operation; no HTTP or separate demo runtime is used."""
+class McpReportsFacade:
+    """MCP transport adapter for canonical Reports application operations."""
 
-    def __init__(self, settings: Settings, principal: Principal) -> None:
-        if not settings.developer_auth_enabled:
-            raise RuntimeError("MCP demo adapter is available only in development and test profiles")
-        self._application = create_workflow_application(settings)
-        self._principal = principal
-
-    def list_allowed_workflows(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "workflow_id": definition.workflow_id,
-                "version": definition.version,
-                "title": definition.title,
-                "description": definition.description,
-                "required_scope": definition.required_scope,
-            }
-            for definition in catalog_definitions()
-            if definition.is_visible_to(self._principal)
-        ]
-
-    def start_workflow(self, workflow_id: str, input_data: dict[str, Any]) -> dict[str, Any]:
-        return self._application.start(workflow_id, self._principal, input_data)
-
-    def get_workflow_run(self, run_id: str) -> dict[str, Any]:
-        return self._application.run(UUID(run_id), self._principal)
-
-    def list_decision_inbox(self) -> list[dict[str, Any]]:
-        return self._application.inbox(self._principal)
-
-    def submit_decision(
+    def __init__(
         self,
-        run_id: str,
-        node_id: str,
-        decision: str,
-        rationale: str | None = None,
-        payload: dict[str, Any] | None = None,
+        settings: Settings,
+        persona_id: str,
+        report_provider: AiProvider | None = None,
+    ) -> None:
+        if not settings.developer_auth_enabled:
+            raise RuntimeError("MCP developer adapter is available only in development and test profiles")
+        self._application: WorkflowApplication = create_workflow_application(settings, report_provider)
+        self._principal: Principal = self._application.authenticated_principal(persona_id)
+
+    @property
+    def principal(self) -> Principal:
+        return self._principal
+
+    def generate_daily_report_draft(self, report_date: str) -> dict[str, Any]:
+        return self._application.generate_daily_report_draft(self._principal, report_date)
+
+    def edit_daily_report(
+        self,
+        report_id: str,
+        draft_id: str,
+        expected_version: int,
+        body: str,
+        include_source_refs: list[dict[str, Any]] | None = None,
+        exclude_source_refs: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        return self._application.decide(UUID(run_id), node_id, self._principal, decision, rationale, payload or {})
+        return self._application.edit_daily_report(
+            self._principal,
+            report_id,
+            draft_id,
+            expected_version,
+            body,
+            include_source_refs or [],
+            exclude_source_refs or [],
+        )
+
+    def submit_daily_report(
+        self,
+        report_id: str,
+        draft_id: str,
+        expected_version: int,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        return self._application.submit_daily_report(
+            self._principal, report_id, draft_id, expected_version, reason
+        )
+
+    def daily_report_history(self, report_id: str) -> dict[str, Any]:
+        return self._application.daily_report_history(self._principal, report_id)
 
 
-def create_mcp_server(settings: Settings | None = None, persona: str | None = None) -> FastMCP:
-    bound_persona = persona or os.getenv("AX_MCP_PERSONA")
+def create_mcp_server(settings: Settings | None = None) -> FastMCP:
+    bound_persona = os.getenv("AX_MCP_PERSONA")
     if not bound_persona:
         raise RuntimeError("AX_MCP_PERSONA must bind this MCP server to an allow-listed demo persona")
-    principal = seeded_principal(bound_persona)
-    facade = McpWorkflowFacade(settings or Settings.from_environment(), principal)
-    return _create_bound_persona_server(facade, principal)
+    facade = McpReportsFacade(settings or Settings.from_environment(), bound_persona)
+    return _create_bound_persona_server(facade)
 
 
-def _create_bound_persona_server(facade: McpWorkflowFacade, principal: Principal) -> FastMCP:
+def _create_bound_persona_server(facade: McpReportsFacade) -> FastMCP:
+    principal = facade.principal
     server = FastMCP(
-        f"SCAX Workflow Catalog — {principal.display_name}",
+        f"SCAX — {principal.display_name}",
         instructions=(
-            "This server is bound to one allow-listed demo persona. "
-            "Only its eligible workflow start tools are advertised; use the inbox tools for human gates."
+            "This server is bound to one delegated persona. Daily-report commands are direct "
+            "Reports operations and never expose workflow-run controls."
         ),
     )
-    for definition in catalog_definitions():
-        if definition.is_visible_to(principal):
-            _register_bound_start_tool(server, facade, definition.workflow_id, definition.title)
-
-    @server.tool(description="Read the persisted status and audit trail for a workflow run you may inspect.")
-    def get_my_workflow_run(run_id: str) -> dict[str, Any]:
-        return facade.get_workflow_run(run_id)
-
-    @server.tool(description="List decision gates currently assigned to this bound demo persona.")
-    def get_my_workflow_inbox() -> list[dict[str, Any]]:
-        return facade.list_decision_inbox()
-
-    @server.tool(description="Accept or reject a decision gate as this bound demo persona.")
-    def submit_my_workflow_decision(
-        run_id: str,
-        node_id: str,
-        decision: str,
-        rationale: str | None = None,
-        payload: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        return facade.submit_decision(run_id, node_id, decision, rationale, payload)
-
+    if "work.read" in principal.capabilities:
+        _register_daily_report_tools(server, facade)
     return server
 
 
-def _register_bound_start_tool(
-    server: FastMCP,
-    facade: McpWorkflowFacade,
-    workflow_id: str,
-    title: str,
-) -> None:
-    tool_name = f"start_{workflow_id.replace('-', '_')}"
+def _register_daily_report_tools(server: FastMCP, facade: McpReportsFacade) -> None:
+    @server.tool(description="Generate a personal daily-report draft from authorized Work activity for one date.")
+    def daily_report_generate_draft(report_date: str) -> dict[str, Any]:
+        return facade.generate_daily_report_draft(report_date)
 
-    @server.tool(name=tool_name, description=f"Start the {title} workflow as the bound demo persona.")
-    def start_bound_workflow(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
-        return facade.start_workflow(workflow_id, input_data or {})
+    @server.tool(description="Edit the current daily-report draft without rerunning generation.")
+    def daily_report_edit(
+        report_id: str,
+        draft_id: str,
+        expected_version: int,
+        body: str,
+        include_source_refs: list[dict[str, Any]] | None = None,
+        exclude_source_refs: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return facade.edit_daily_report(
+            report_id,
+            draft_id,
+            expected_version,
+            body,
+            include_source_refs,
+            exclude_source_refs,
+        )
+
+    @server.tool(description="Submit an immutable version of a daily report draft.")
+    def daily_report_submit(
+        report_id: str,
+        draft_id: str,
+        expected_version: int,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        return facade.submit_daily_report(report_id, draft_id, expected_version, reason)
+
+    @server.tool(description="Read the draft and immutable submission history of a daily report.")
+    def daily_report_history(report_id: str) -> dict[str, Any]:
+        return facade.daily_report_history(report_id)
 
 
 def main() -> None:

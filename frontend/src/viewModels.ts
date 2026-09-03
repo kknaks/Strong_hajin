@@ -31,3 +31,36 @@ export type OrganizationProfile = {
   organizations: Array<{ id: string; name: string }>;
   capabilities: string[];
 };
+
+export type DailyReportDraft = {
+  report_id: string;
+  draft_id: string;
+  draft_version: number;
+  body: string;
+  source_refs: Array<{
+    task_id: string;
+    task_version: number;
+    state: string;
+    occurred_at: string;
+  }>;
+  status: string;
+  workflow_run_id?: string;
+  definition_version_id?: string;
+  workflow_state?: string;
+  submission_status?: string;
+};
+
+export type DailyReportHistory = {
+  report_id: string;
+  report_date: string;
+  status: string;
+  drafts: Array<{ draft_id: string; version: number; body: string; source_refs: DailyReportDraft["source_refs"] }>;
+  submissions: Array<{
+    submission_id: string;
+    version: number;
+    body: string;
+    source_refs: DailyReportDraft["source_refs"];
+    reason: string | null;
+    submitted_at: string;
+  }>;
+};
