@@ -103,6 +103,19 @@ class WorkRecord(Base):
     status: Mapped[str] = mapped_column(String(40), nullable=False)
 
 
+class TaskRecord(Base):
+    __tablename__ = "tasks"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    owner_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    state: Mapped[str] = mapped_column(String(40), nullable=False)
+    block_reason: Mapped[str | None] = mapped_column(Text)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class MeetingEvidenceRecord(Base):
     __tablename__ = "meeting_evidence"
 

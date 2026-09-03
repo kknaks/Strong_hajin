@@ -14,6 +14,7 @@ from ax_workspace.modules.ax_execution.application import (
     InvalidWorkflowInput,
     RunNotFound,
 )
+from ax_workspace.modules.work.application import InvalidTaskTransition, TaskError, TaskNotFound, TaskState
 from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.ax_execution.domain import catalog_definitions
 
@@ -42,12 +43,24 @@ class DecisionRequest(BaseModel):
     payload: dict[str, object] = Field(default_factory=dict)
 
 
+class CreateTaskRequest(BaseModel):
+    title: str
+
+
+class BlockTaskRequest(BaseModel):
+    reason: str
+
+
 def _runtime_error(error: Exception) -> HTTPException:
     if isinstance(error, RunNotFound):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
     if isinstance(error, AccessDenied):
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
     if isinstance(error, (InvalidDecision, InvalidWorkflowInput)):
+        return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
+    if isinstance(error, TaskNotFound):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
+    if isinstance(error, (TaskError, InvalidTaskTransition)):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     raise error
 
@@ -127,6 +140,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         @app.get("/api/my-work")
         def my_work(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
             return app.state.workflow_application.my_work(principal)
+
+        @app.post("/api/tasks", status_code=status.HTTP_201_CREATED)
+        def create_self_task(request: CreateTaskRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.create_self_task(principal, request.title)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        def task_transition(task_id: UUID, target: TaskState, principal: Principal, reason: str | None = None) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.transition_task(task_id, principal, target, reason)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/tasks/{task_id}/start")
+        def start_task(task_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            return task_transition(task_id, TaskState.IN_PROGRESS, principal)
+
+        @app.post("/api/tasks/{task_id}/block")
+        def block_task(task_id: UUID, request: BlockTaskRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            return task_transition(task_id, TaskState.BLOCKED, principal, request.reason)
+
+        @app.post("/api/tasks/{task_id}/resume")
+        def resume_task(task_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            return task_transition(task_id, TaskState.IN_PROGRESS, principal)
+
+        @app.post("/api/tasks/{task_id}/complete")
+        def complete_task(task_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            return task_transition(task_id, TaskState.COMPLETED, principal)
 
     @app.get("/health")
     def health() -> dict[str, str]:

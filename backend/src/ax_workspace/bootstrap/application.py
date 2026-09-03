@@ -7,7 +7,9 @@ from uuid import UUID
 from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.ax_execution.application import AccessDenied, WorkflowRunStarter
 from ax_workspace.modules.organization_access.domain import Principal
+from ax_workspace.modules.work.application import TaskApplication, TaskState
 from ax_workspace.platform.persistence import make_session_factory
+from ax_workspace.platform.work_tasks import SqlAlchemyTaskRepository
 from ax_workspace.platform.workflow_runtime import SqlAlchemyUnitOfWork, workflow_service
 
 
@@ -50,7 +52,22 @@ class WorkflowApplication:
         return self._use(lambda service: service.decide(run_id, node_id, principal, decision, rationale, payload))
 
     def my_work(self, principal: Principal) -> list[dict[str, Any]]:
-        return self._use(lambda service: service.my_work(principal))
+        workflow_work = self._use(lambda service: service.my_work(principal))
+        with self._session_factory() as session:
+            direct_work = TaskApplication(SqlAlchemyTaskRepository(session)).list_for(principal)
+        return [*direct_work, *workflow_work]
+
+    def create_self_task(self, principal: Principal, title: str) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = TaskApplication(SqlAlchemyTaskRepository(session)).create_self(principal, title)
+            session.commit()
+            return result
+
+    def transition_task(self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None = None) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = TaskApplication(SqlAlchemyTaskRepository(session)).transition(task_id, principal, target, reason)
+            session.commit()
+            return result
 
 
 def create_workflow_application(settings: Settings) -> WorkflowApplication:
