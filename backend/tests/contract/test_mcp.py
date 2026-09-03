@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.mcp import McpReportsFacade, _create_bound_persona_server, create_mcp_server
@@ -18,7 +18,9 @@ from ax_workspace.modules.work.requests import WorkRequestAccessDenied
 from ax_workspace.modules.reports.application import DailyReportAccessDenied
 from ax_workspace.platform.persistence import (
     ActionItemRecord,
+    RoleCapabilityRecord,
     TaskActivityRecord,
+    TaskRecord,
     WorkflowRunRecord,
     make_session_factory,
 )
@@ -241,6 +243,109 @@ def test_stdio_mcp_server_supports_2026_discovery_and_persona_filtered_tools(tmp
                 assert "expected_version" in invalid_result.content[0].text
 
     asyncio.run(scenario())
+
+
+def test_stdio_mcp_tool_call_rechecks_a_revoked_capability(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url)
+    facade = McpReportsFacade(settings, "mina", ContractTestAiProvider())
+
+    async def scenario() -> None:
+        parameters = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "ax_workspace.entrypoints.mcp"],
+            cwd=os.getcwd(),
+            env={
+                **os.environ,
+                "AX_PROFILE": "test",
+                "DATABASE_URL": database_url,
+                "AX_MCP_PERSONA": "mina",
+            },
+        )
+        async with stdio_client(parameters) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                discovered = {tool.name for tool in (await session.list_tools()).tools}
+                assert "task_create_self" in discovered
+
+                with make_session_factory(database_url)() as database_session:
+                    database_session.execute(
+                        delete(RoleCapabilityRecord).where(
+                            RoleCapabilityRecord.role_id == "seed-role:mina",
+                            RoleCapabilityRecord.capability_id == "task.self_manage",
+                        )
+                    )
+                    database_session.commit()
+
+                result = await session.call_tool("task_create_self", {"title": "권한 회수 뒤 생성"})
+                assert result.is_error is True
+                assert "Error executing tool task_create_self" in result.content[0].text
+
+    asyncio.run(scenario())
+    with pytest.raises(TaskAccessDenied, match="task.self_manage"):
+        facade.create_self_task("권한 회수 뒤 생성")
+    with make_session_factory(database_url)() as session:
+        assert session.query(TaskRecord).count() == 0
+
+
+def test_delegated_stdio_mcp_tool_rechecks_capability_before_proposing_an_action(
+    tmp_path,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url)
+    application = create_workflow_application(settings, ContractTestAiProvider())
+    mina = application.authenticated_principal("mina")
+    conversation = application.create_conversation(mina, "delegated capability recheck")
+    accepted = application.accept_conversation_message(
+        mina,
+        "업무를 생성해줘",
+        UUID(conversation["conversation_id"]),
+        [],
+        "delegated-capability-recheck",
+    )
+    with make_session_factory(database_url)() as session:
+        turn = session.get(ConversationTurnRecord, UUID(accepted["turn_id"]))
+        assert turn is not None
+        execution_id = str(turn.execution_id)
+
+    async def scenario() -> None:
+        parameters = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "ax_workspace.entrypoints.mcp"],
+            cwd=os.getcwd(),
+            env={
+                **os.environ,
+                "AX_PROFILE": "test",
+                "DATABASE_URL": database_url,
+                "AX_MCP_PERSONA": "mina",
+                "AX_MCP_CAUSATION_ID": execution_id,
+            },
+        )
+        async with stdio_client(parameters) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                discovered = {tool.name for tool in (await session.list_tools()).tools}
+                assert "task_create_self" in discovered
+
+                with make_session_factory(database_url)() as database_session:
+                    database_session.execute(
+                        delete(RoleCapabilityRecord).where(
+                            RoleCapabilityRecord.role_id == "seed-role:mina",
+                            RoleCapabilityRecord.capability_id == "task.self_manage",
+                        )
+                    )
+                    database_session.commit()
+
+                result = await session.call_tool("task_create_self", {"title": "승인 제안도 금지"})
+                assert result.is_error is True
+                assert "Error executing tool task_create_self" in result.content[0].text
+
+    asyncio.run(scenario())
+    with make_session_factory(database_url)() as session:
+        assert session.query(TaskRecord).count() == 0
+        assert session.query(ActionItemRecord).count() == 0
 
 
 def test_mcp_hidden_tools_and_direct_facade_calls_share_capability_denial(tmp_path) -> None:

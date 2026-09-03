@@ -152,6 +152,32 @@ def test_action_routes_require_current_read_and_decide_capabilities(tmp_path) ->
         session.execute(
             delete(RoleCapabilityRecord).where(
                 RoleCapabilityRecord.role_id == "seed-role:mina",
+                RoleCapabilityRecord.capability_id == "action.decide",
+            )
+        )
+        session.commit()
+
+    read_only = {"X-Demo-Persona": "mina"}
+    readable_actions = client.get("/api/actions", headers=read_only)
+    assert readable_actions.status_code == 200
+    assert [item["action_id"] for item in readable_actions.json()] == [action["action_id"]]
+    conversation_actions = client.get(
+        f"/api/conversations/{conversation['conversation_id']}", headers=read_only
+    ).json()["actions"]
+    assert [item["action_id"] for item in conversation_actions] == [action["action_id"]]
+    assert (
+        client.post(
+            f"/api/actions/{action['action_id']}/decide",
+            headers=read_only,
+            json={"expected_version": action["version"], "decision": "approve"},
+        ).status_code
+        == 403
+    )
+
+    with make_session_factory(f"sqlite:///{tmp_path / 'demo.db'}")() as session:
+        session.execute(
+            delete(RoleCapabilityRecord).where(
+                RoleCapabilityRecord.role_id == "seed-role:mina",
                 RoleCapabilityRecord.capability_id == "action.read",
             )
         )
@@ -163,24 +189,6 @@ def test_action_routes_require_current_read_and_decide_capabilities(tmp_path) ->
         f"/api/conversations/{conversation['conversation_id']}", headers=revoked
     ).json()["actions"] == []
     assert client.get("/api/conversations", headers=revoked).json()[0]["actions"] == []
-
-    with make_session_factory(f"sqlite:///{tmp_path / 'demo.db'}")() as session:
-        session.execute(
-            delete(RoleCapabilityRecord).where(
-                RoleCapabilityRecord.role_id == "seed-role:mina",
-                RoleCapabilityRecord.capability_id == "action.decide",
-            )
-        )
-        session.commit()
-
-    assert (
-        client.post(
-            f"/api/actions/{action['action_id']}/decide",
-            headers=revoked,
-            json={"expected_version": action["version"], "decision": "approve"},
-        ).status_code
-        == 403
-    )
 
 
 def test_generate_draft_creates_a_report_owned_draft_from_authorized_task_events(tmp_path) -> None:

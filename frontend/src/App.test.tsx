@@ -431,6 +431,74 @@ describe("product surfaces", () => {
     expect(screen.queryByRole("button", { name: "거절" })).toBeNull();
   });
 
+  it("shows redacted Tool details and recorded latency in the AX timeline", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/developer/personas") {
+        return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      }
+      if (path === "/api/organization/me") {
+        return jsonResponse({
+          member_id: "mina",
+          display_name: "민아 (구성원)",
+          organizations: [],
+          capabilities: ["task.read"],
+        });
+      }
+      if (path === "/api/my-work") return jsonResponse([]);
+      if (path === "/api/conversations") {
+        return jsonResponse([
+          {
+            conversation_id: "conversation-1",
+            title: "업무 확인",
+            version: 1,
+            messages: [],
+            turns: [
+              {
+                turn_id: "turn-1",
+                state: "completed",
+                provider_run_ref: "provider-run-1",
+                provider_session_ref: "provider-session-1",
+                error: null,
+              },
+            ],
+            context_references: [],
+            tool_invocations: [
+              {
+                turn_id: "turn-1",
+                sequence: 1,
+                provider_call_id: "call-1",
+                tool_name: "task_list",
+                display_name: "내 업무 조회",
+                input_summary: "현재 권한의 업무만 조회",
+                state: "completed",
+                result_summary: "업무 2건",
+                error_summary: null,
+                latency_ms: 321,
+                target_resource_id: null,
+                target_resource_version: null,
+                audit_ref: null,
+              },
+            ],
+            actions: [],
+          },
+        ]);
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+
+    const details = await screen.findByText("내 업무 조회 · completed");
+    fireEvent.click(details);
+    expect(await screen.findByText("현재 권한의 업무만 조회")).toBeTruthy();
+    expect(screen.getByText("업무 2건")).toBeTruthy();
+    expect(screen.getByText("321ms")).toBeTruthy();
+  });
+
   it("restores an existing daily-report draft and submission history for the selected date", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
@@ -623,6 +691,256 @@ describe("product surfaces", () => {
     });
     expect(screen.getByText("새 대화의 현재 발화")).toBeTruthy();
     expect(screen.getByText("실행 중")).toBeTruthy();
+  });
+
+  it("applies only the latest overlapping Conversation list response", async () => {
+    const listResolvers: Array<(response: Response) => void> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/developer/personas") {
+        return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      }
+      if (path === "/api/organization/me") {
+        return jsonResponse({
+          member_id: "mina",
+          display_name: "민아 (구성원)",
+          organizations: [],
+          capabilities: [],
+        });
+      }
+      if (path === "/api/my-work") return jsonResponse([]);
+      if (path === "/api/conversations") {
+        return new Promise<Response>((resolve) => listResolvers.push(resolve));
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    await waitFor(() => expect(listResolvers).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "닫기" }));
+    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    await waitFor(() => expect(listResolvers).toHaveLength(2));
+
+    listResolvers[1](
+      jsonResponse([
+        {
+          conversation_id: "conversation-1",
+          title: "최신 목록",
+          version: 2,
+          messages: [],
+          turns: [],
+          context_references: [],
+          tool_invocations: [],
+          actions: [],
+        },
+      ]),
+    );
+    expect(await screen.findByRole("button", { name: "최신 목록" })).toBeTruthy();
+
+    listResolvers[0](
+      jsonResponse([
+        {
+          conversation_id: "conversation-1",
+          title: "오래된 목록",
+          version: 1,
+          messages: [],
+          turns: [],
+          context_references: [],
+          tool_invocations: [],
+          actions: [],
+        },
+      ]),
+    );
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "최신 목록" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "오래된 목록" })).toBeNull();
+    });
+  });
+
+  it("ignores an older overlapping active Conversation detail response", async () => {
+    const detailResolvers: Array<(response: Response) => void> = [];
+    const detail = (version: number, body: string, state: string) => ({
+      conversation_id: "conversation-1",
+      title: "상세 순서 확인",
+      version,
+      messages: [
+        {
+          message_id: `message-${version}`,
+          turn_id: "turn-1",
+          role: "user",
+          body,
+          sequence: 1,
+          state: "accepted",
+        },
+      ],
+      turns: [
+        {
+          turn_id: "turn-1",
+          state,
+          provider_run_ref: null,
+          provider_session_ref: null,
+          error: null,
+        },
+      ],
+      context_references: [],
+      tool_invocations: [],
+      actions: [],
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/developer/personas") {
+        return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      }
+      if (path === "/api/organization/me") {
+        return jsonResponse({
+          member_id: "mina",
+          display_name: "민아 (구성원)",
+          organizations: [],
+          capabilities: [],
+        });
+      }
+      if (path === "/api/my-work") return jsonResponse([]);
+      if (path === "/api/conversations") return jsonResponse([detail(1, "처음 상태", "running")]);
+      if (path === "/api/conversations/conversation-1") {
+        return new Promise<Response>((resolve) => detailResolvers.push(resolve));
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    await waitFor(() => expect(detailResolvers).toHaveLength(2), { timeout: 2_500 });
+
+    detailResolvers[1](jsonResponse(detail(3, "최신 상세 상태", "completed")));
+    expect(await screen.findByText("최신 상세 상태")).toBeTruthy();
+    detailResolvers[0](jsonResponse(detail(2, "오래된 상세 상태", "running")));
+
+    await waitFor(() => {
+      expect(screen.getByText("최신 상세 상태")).toBeTruthy();
+      expect(screen.queryByText("오래된 상세 상태")).toBeNull();
+    });
+  });
+
+  it("keeps an equal-version active detail when a later list snapshot is older", async () => {
+    const detailResolvers: Array<(response: Response) => void> = [];
+    const listResolvers: Array<(response: Response) => void> = [];
+    const conversation = (body: string, state: string, includeCompletedToolAndAction = false) => ({
+      conversation_id: "conversation-1",
+      title: "교차 요청 확인",
+      version: 1,
+      messages: [
+        {
+          message_id: `message-${body}`,
+          turn_id: "turn-1",
+          role: "user",
+          body,
+          sequence: 1,
+          state: "accepted",
+        },
+      ],
+      turns: [
+        {
+          turn_id: "turn-1",
+          state,
+          provider_run_ref: null,
+          provider_session_ref: null,
+          error: null,
+        },
+      ],
+      context_references: [],
+      tool_invocations: includeCompletedToolAndAction
+        ? [
+            {
+              turn_id: "turn-1",
+              sequence: 1,
+              provider_call_id: "call-1",
+              tool_name: "task_list",
+              display_name: "내 업무 조회",
+              input_summary: "권한 범위 내 업무",
+              state: "completed",
+              result_summary: "업무 1건",
+              error_summary: null,
+              latency_ms: null,
+              target_resource_id: null,
+              target_resource_version: null,
+              audit_ref: null,
+            },
+          ]
+        : [],
+      actions: includeCompletedToolAndAction
+        ? [
+            {
+              action_id: "action-1",
+              conversation_id: "conversation-1",
+              turn_id: "turn-1",
+              action_type: "task.create_self",
+              title: "최신 판단 카드",
+              state: "pending",
+              version: 1,
+              payload_summary: "최신 판단 카드",
+              result: null,
+              audit_ref: null,
+            },
+          ]
+        : [],
+    });
+    let listRequests = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/developer/personas") {
+        return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      }
+      if (path === "/api/organization/me") {
+        return jsonResponse({
+          member_id: "mina",
+          display_name: "민아 (구성원)",
+          organizations: [],
+          capabilities: [],
+        });
+      }
+      if (path === "/api/my-work") return jsonResponse([]);
+      if (path === "/api/conversations") {
+        listRequests += 1;
+        if (listRequests === 1) return jsonResponse([conversation("목록의 기존 상태", "running")]);
+        return new Promise<Response>((resolve) => listResolvers.push(resolve));
+      }
+      if (path === "/api/conversations/conversation-1") {
+        return new Promise<Response>((resolve) => detailResolvers.push(resolve));
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    await waitFor(() => expect(detailResolvers).toHaveLength(1), { timeout: 1_500 });
+    fireEvent.click(screen.getByRole("button", { name: "닫기" }));
+    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    await waitFor(() => expect(listResolvers).toHaveLength(1));
+
+    detailResolvers[0](jsonResponse(conversation("상세의 최신 상태", "completed", true)));
+    expect(await screen.findByText("상세의 최신 상태")).toBeTruthy();
+    listResolvers[0](jsonResponse([conversation("목록의 오래된 상태", "running")]));
+
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+
+    await waitFor(() => {
+      expect(screen.getByText("상세의 최신 상태")).toBeTruthy();
+      expect(screen.queryByText("목록의 오래된 상태")).toBeNull();
+      expect(screen.getAllByText("최신 판단 카드").length).toBeGreaterThanOrEqual(2);
+      expect(screen.getByText("내 업무 조회 · completed")).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "교차 요청 확인" }));
+    expect(screen.getByText("상세의 최신 상태")).toBeTruthy();
+    expect(screen.queryByText("목록의 오래된 상태")).toBeNull();
+    expect(screen.getAllByText("최신 판단 카드").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("내 업무 조회 · completed")).toBeTruthy();
   });
 
   it("keeps existing AX sessions when a new Conversation is created", async () => {

@@ -37,11 +37,18 @@ make e2e-task-lifecycle
 make e2e-work-request
 make e2e-conversation
 make e2e-conversation-action
+make e2e-conversation-report-edit-action
 make e2e-daily-report
 make live-report-smoke
 ```
 
 `api-e2e` listens on `127.0.0.1:8001`, while `frontend-e2e` configures Vite's `/api` proxy with `VITE_API_TARGET=http://127.0.0.1:8001` and listens on `127.0.0.1:5176`. This avoids accidentally validating the unrelated default API port 8000; `e2e-work-request` uses the UI itself to create a request, switch to the assignee, then accept it.
+
+The individual `e2e-*` targets do not reset data: they expect a running API, worker, and frontend on the documented E2E ports. In particular, `e2e-daily-report` requires the seeded Mina report date to be unsubmitted, so it is not intended to be run repeatedly against an already-submitted demo database. For repeatable clean-bootstrap acceptance evidence, use the composite command below. It starts PGMQ PostgreSQL if needed, performs exactly one explicit `reset-demo`, starts an isolated API/worker/frontend stack on ports `18111`/`15186`, runs the Task → WorkRequest → Conversation → Action → DailyReport browser journeys against that one seed, and stops only the processes it started. It fails before reset if either isolated port is occupied; override both ports when necessary.
+
+```sh
+make acceptance-e2e
+```
 
 Run `DATABASE_URL=postgresql+psycopg://ax:ax@localhost:54329/ax_demo make conversation-worker` alongside the two E2E servers before the conversation browser journeys. `make e2e-conversation` proves the production worker's Codex CLI path calls the persona-bound `task_list` MCP tool, keeps the composer usable while a follow-up is visibly queued in the same conversation, and switches between two independently executing conversations without leaking timeline state; the screenshot is written to `frontend/test-results/conversation-e2e.png`. `make e2e-conversation-action` proves a real Codex MCP `work_request_create` call ends as a pending ActionItem, then approves that exact Action from the general 판단 surface and verifies its shared resource id/audit plus Jiho's Task-free decision inbox projection; it writes `frontend/test-results/conversation-action-e2e.png`. `make e2e-daily-report` is the browser report journey: it creates and starts a real Task, calls the actual report-generation runtime through the Reports page, edits with the returned draft version, submits with the edited version, and re-enters the page to restore the immutable submission history; it writes `frontend/test-results/daily-report-e2e.png` and prints only resource/provenance identifiers. `make live-report-smoke` remains an opt-in DB-level real-Codex report proof: it creates a seeded Task activity, calls `daily_report.generate_draft`, and asserts the persisted WorkflowRun, four NodeRuns, and completed ProviderCall provenance without printing the generated body or prompt.
 

@@ -24,8 +24,26 @@ from ax_workspace.modules.organization_access.domain import (
     Principal,
     TASK_READ,
     TASK_SELF_MANAGE,
+    WORK_REQUEST_CREATE,
+    WORK_REQUEST_DECIDE,
 )
 from ax_workspace.modules.ax_execution.ai import AiProvider
+
+
+DELEGATED_ACTION_CAPABILITIES = {
+    "daily_report.edit": DAILY_REPORT_EDIT,
+    "daily_report.submit": DAILY_REPORT_SUBMIT,
+    "work_request.create": WORK_REQUEST_CREATE,
+    "work_request.accept": WORK_REQUEST_DECIDE,
+    "work_request.negotiate": WORK_REQUEST_DECIDE,
+    "work_request.reject": WORK_REQUEST_DECIDE,
+    "task.create_self": TASK_SELF_MANAGE,
+    "task.transition": TASK_SELF_MANAGE,
+}
+
+
+class McpDelegatedActionAccessDenied(RuntimeError):
+    pass
 
 
 class McpReportsFacade:
@@ -40,15 +58,15 @@ class McpReportsFacade:
         if not settings.developer_auth_enabled:
             raise RuntimeError("MCP developer adapter is available only in development and test profiles")
         self._application: WorkflowApplication = create_workflow_application(settings, report_provider)
-        self._principal: Principal = self._application.authenticated_principal(persona_id)
+        self._persona_id = persona_id
 
     @property
     def principal(self) -> Principal:
-        return self._principal
+        return self._application.authenticated_principal(self._persona_id)
 
     def generate_daily_report_draft(self, report_date: str) -> dict[str, Any]:
         return self._application.generate_daily_report_draft(
-            self._principal,
+            self.principal,
             report_date,
             self._mutation_key("daily_report.generate_draft", {"report_date": report_date}),
         )
@@ -74,7 +92,7 @@ class McpReportsFacade:
         if action is not None:
             return action
         return self._application.edit_daily_report(
-            self._principal,
+            self.principal,
             report_id,
             draft_id,
             expected_version,
@@ -97,20 +115,20 @@ class McpReportsFacade:
         if action is not None:
             return action
         return self._application.submit_daily_report(
-            self._principal, report_id, draft_id, expected_version, reason
+            self.principal, report_id, draft_id, expected_version, reason
         )
 
     def daily_report_history(self, report_id: str) -> dict[str, Any]:
-        return self._application.daily_report_history(self._principal, report_id)
+        return self._application.daily_report_history(self.principal, report_id)
 
     def work_request_assignee_candidates(self) -> list[dict[str, str]]:
-        return self._application.work_request_assignee_candidates(self._principal)
+        return self._application.work_request_assignee_candidates(self.principal)
 
     def list_work_requests(self) -> list[dict[str, Any]]:
-        return self._application.list_work_requests(self._principal)
+        return self._application.list_work_requests(self.principal)
 
     def get_work_request(self, request_id: str) -> dict[str, Any]:
-        return self._application.get_work_request(self._principal, UUID(request_id))
+        return self._application.get_work_request(self.principal, UUID(request_id))
 
     def create_work_request(self, title: str, assignee_id: str) -> dict[str, Any]:
         action = self._propose_chat_action(
@@ -121,7 +139,7 @@ class McpReportsFacade:
         if action is not None:
             return action
         return self._application.create_work_request(
-            self._principal,
+            self.principal,
             title,
             assignee_id,
             self._mutation_key("work_request.create", {"title": title, "assignee_id": assignee_id}),
@@ -131,7 +149,7 @@ class McpReportsFacade:
         action = self._propose_chat_action("work_request.accept", "업무 요청 수락 확인", {"request_id": request_id, "expected_version": expected_version})
         if action is not None:
             return action
-        return self._application.accept_work_request(self._principal, UUID(request_id), expected_version)
+        return self._application.accept_work_request(self.principal, UUID(request_id), expected_version)
 
     def negotiate_work_request(
         self, request_id: str, expected_version: int, conditions: dict[str, Any]
@@ -140,7 +158,7 @@ class McpReportsFacade:
         if action is not None:
             return action
         return self._application.negotiate_work_request(
-            self._principal, UUID(request_id), expected_version, conditions
+            self.principal, UUID(request_id), expected_version, conditions
         )
 
     def reject_work_request(
@@ -150,21 +168,21 @@ class McpReportsFacade:
         if action is not None:
             return action
         return self._application.reject_work_request(
-            self._principal, UUID(request_id), expected_version, reason
+            self.principal, UUID(request_id), expected_version, reason
         )
 
     def list_tasks(self) -> list[dict[str, Any]]:
-        return self._application.list_tasks(self._principal)
+        return self._application.list_tasks(self.principal)
 
     def get_task(self, task_id: str) -> dict[str, Any]:
-        return self._application.get_task(self._principal, UUID(task_id))
+        return self._application.get_task(self.principal, UUID(task_id))
 
     def create_self_task(self, title: str) -> dict[str, Any]:
         action = self._propose_chat_action("task.create_self", "업무 생성 확인", {"title": title})
         if action is not None:
             return action
         return self._application.create_self_task(
-            self._principal,
+            self.principal,
             title,
             self._mutation_key("task.create_self", {"title": title}),
         )
@@ -185,13 +203,23 @@ class McpReportsFacade:
         causation_id = os.getenv("AX_MCP_CAUSATION_ID")
         if not causation_id:
             return None
+        principal = self._principal_for_delegated_action(action_type)
         return self._application.propose_action(
-            self._principal,
+            principal,
             UUID(causation_id),
             action_type,
             title,
             payload,
         )
+
+    def _principal_for_delegated_action(self, action_type: str) -> Principal:
+        capability = DELEGATED_ACTION_CAPABILITIES.get(action_type)
+        if capability is None:
+            raise RuntimeError(f"delegated Action capability is not mapped for {action_type}")
+        principal = self.principal
+        if capability not in principal.capabilities:
+            raise McpDelegatedActionAccessDenied(f"{capability} capability is required")
+        return principal
 
     def transition_task(
         self,
@@ -210,7 +238,7 @@ class McpReportsFacade:
 
         return self._application.transition_task(
             UUID(task_id),
-            self._principal,
+            self.principal,
             TaskState(target),
             reason,
             expected_version,

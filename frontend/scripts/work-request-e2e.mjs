@@ -15,18 +15,31 @@ try {
   await page.getByLabel("요청할 업무").fill(title);
   await page.getByLabel("담당 후보").selectOption("jiho");
   await page.getByRole("button", { name: "업무 요청 보내기" }).click();
+  const jihoInboxResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/action-inbox") &&
+      response.request().headers()["x-demo-persona"] === "jiho",
+  );
   await page.getByLabel("사용자").selectOption("jiho");
+  const jihoInbox = await (await jihoInboxResponse).json();
+  if (!jihoInbox.some((request) => request.title === title && request.state === "pending")) {
+    throw new Error("Jiho did not receive the pending WorkRequest through the authorized inbox projection");
+  }
   await navigation.getByRole("button", { name: "오늘" }).click();
-  await page.getByText(title).waitFor();
+  const todayRequestCard = page.locator(".dashboard-columns .surface-card li", { hasText: title });
+  await todayRequestCard.waitFor();
   if (await page.getByRole("button", { name: "일일보고 작성" }).count()) {
     throw new Error("Jiho must not receive a daily-report CTA without report capability");
   }
   await navigation.getByRole("button", { name: "판단" }).click();
-  await page.getByText(title).waitFor();
-  await page.getByRole("button", { name: "수락" }).last().click();
+  const requestSection = page.locator(".decision-empty-state", { hasText: "확인이 필요한 요청" });
+  const requestCard = requestSection.locator("li", { hasText: title });
+  await requestCard.waitFor();
+  await requestCard.getByRole("button", { name: "수락" }).click();
   await navigation.getByRole("button", { name: "내 업무" }).click();
-  await page.getByText(title).waitFor();
-  await page.getByText("열림").last().waitFor();
+  const acceptedTask = page.locator("article.progress-row", { hasText: title });
+  await acceptedTask.waitFor();
+  await acceptedTask.getByText("열림", { exact: true }).waitFor();
   console.log(JSON.stringify({ title, result: "accepted task projected to My Work" }));
 } finally {
   await browser.close();

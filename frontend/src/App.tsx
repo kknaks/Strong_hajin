@@ -47,7 +47,9 @@ export default function App() {
   const [message, setMessage] = useState("");
   const [contextOptions, setContextOptions] = useState<ConversationContextReference[]>([]);
   const [selectedContextKey, setSelectedContextKey] = useState("");
-  const conversationListEpoch = useRef(0);
+  const activeConversationRef = useRef<Conversation | null>(null);
+  const listRequestGeneration = useRef(0);
+  const detailRequestGeneration = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,26 +85,50 @@ export default function App() {
   }, [personaId]);
 
   const refreshConversations = useCallback(async () => {
-    const requestEpoch = conversationListEpoch.current;
+    const requestGeneration = ++listRequestGeneration.current;
     const items = await getConversations(personaId);
-    if (requestEpoch !== conversationListEpoch.current) return;
-    setConversations(items);
-    setActiveConversation((current) => {
-      if (!current) return items[0] ?? null;
-      return items.find((item) => item.conversation_id === current.conversation_id) ?? items[0] ?? null;
-    });
+    if (requestGeneration !== listRequestGeneration.current) return;
+    const current = activeConversationRef.current;
+    const matchingItem = current
+      ? items.find((item) => item.conversation_id === current.conversation_id)
+      : undefined;
+    const nextActive = !current
+      ? items[0] ?? null
+      : !matchingItem
+        ? items[0] ?? null
+        : matchingItem.version > current.version
+          ? matchingItem
+          : current;
+    if (current && !matchingItem) detailRequestGeneration.current += 1;
+    activeConversationRef.current = nextActive;
+    setActiveConversation(nextActive);
+    setConversations(
+      items.map((item) =>
+        current && item.conversation_id === current.conversation_id && item.version <= current.version
+          ? current
+          : item,
+      ),
+    );
   }, [personaId]);
 
   const refreshActiveConversation = useCallback(async () => {
-    if (!activeConversation) return;
-    const next = await getConversation(personaId, activeConversation.conversation_id);
-    setActiveConversation((current) =>
-      current?.conversation_id === next.conversation_id ? next : current,
-    );
+    const active = activeConversationRef.current;
+    if (!active) return;
+    const conversationId = active.conversation_id;
+    const requestGeneration = ++detailRequestGeneration.current;
+    const next = await getConversation(personaId, conversationId);
+    if (requestGeneration !== detailRequestGeneration.current) return;
+    const current = activeConversationRef.current;
+    if (current?.conversation_id !== conversationId) return;
+    const projection = next.version >= current.version ? next : current;
+    activeConversationRef.current = projection;
+    setActiveConversation(projection);
     setConversations((items) =>
-      items.map((item) => (item.conversation_id === next.conversation_id ? next : item)),
+      items.map((item) =>
+        item.conversation_id === conversationId && item.version <= projection.version ? projection : item,
+      ),
     );
-  }, [activeConversation, personaId]);
+  }, [personaId]);
 
   useEffect(() => {
     if (!isAxOpen) return;
@@ -176,7 +202,9 @@ export default function App() {
   async function startConversation() {
     try {
       const conversation = await createConversation(personaId);
-      conversationListEpoch.current += 1;
+      listRequestGeneration.current += 1;
+      detailRequestGeneration.current += 1;
+      activeConversationRef.current = conversation;
       setConversations((items) => [
         conversation,
         ...items.filter((item) => item.conversation_id !== conversation.conversation_id),
@@ -272,10 +300,12 @@ export default function App() {
             사용자
             <select
               onChange={(event) => {
-                conversationListEpoch.current += 1;
+                listRequestGeneration.current += 1;
+                detailRequestGeneration.current += 1;
                 setSurface("today");
                 setCapabilities(null);
                 setConversations([]);
+                activeConversationRef.current = null;
                 setActiveConversation(null);
                 setPersonaId(event.target.value);
               }}
@@ -349,8 +379,13 @@ export default function App() {
             {conversations.map((conversation) => (
               <button
                 aria-pressed={activeConversation?.conversation_id === conversation.conversation_id}
+                data-conversation-id={conversation.conversation_id}
                 key={conversation.conversation_id}
-                onClick={() => setActiveConversation(conversation)}
+                onClick={() => {
+                  detailRequestGeneration.current += 1;
+                  activeConversationRef.current = conversation;
+                  setActiveConversation(conversation);
+                }}
                 type="button"
               >
                 {conversation.title}
@@ -432,12 +467,13 @@ function ConversationTimeline({
                 <summary>{tool.display_name} · {tool.state}</summary>
                 <p>{tool.input_summary}</p>
                 <p>{tool.result_summary ?? tool.error_summary ?? "실행 중"}</p>
+                <p>{tool.latency_ms === null ? "소요 시간 기록 없음" : `${tool.latency_ms}ms`}</p>
               </details>
             ))}
           {(conversation.actions ?? [])
             .filter((action) => action.turn_id === turn.turn_id)
             .map((action) => (
-              <section className="ax-action-card" key={action.action_id}>
+              <section className="ax-action-card" data-action-id={action.action_id} key={action.action_id}>
                 <b>{action.title}</b>
                 <p>{action.payload_summary}</p>
                 <small>{action.state === "pending" ? "확인 필요" : action.state === "approved" ? "승인됨" : "거절됨"}</small>

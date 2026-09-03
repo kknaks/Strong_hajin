@@ -1,5 +1,7 @@
 import { chromium } from "@playwright/test";
 
+import { pollFor } from "./e2e-helpers.mjs";
+
 const frontendUrl = process.env.SCAX_E2E_URL ?? "http://127.0.0.1:5176";
 const requestTitle = `AX 승인 업무 요청 ${Date.now()}`;
 
@@ -30,45 +32,50 @@ try {
   );
   await page.getByRole("button", { name: "보내기" }).click();
 
-  await page.waitForFunction(
-    async ({ conversationId, title }) => {
-      const response = await fetch(`/api/conversations/${conversationId}`, {
-        headers: { "X-Demo-Persona": "mina" },
-      });
-      if (!response.ok) return false;
-      const current = await response.json();
-      const action = current.actions?.find(
-        (item) => item.action_type === "work_request.create" && item.state === "pending",
-      );
-      const tool = current.tool_invocations.find(
-        (item) => item.tool_name === "work_request_create" && item.state === "completed",
-      );
-      return action && tool && action.payload_summary.includes(title);
-    },
-    { conversationId: conversation.conversation_id, title: requestTitle },
-    { timeout: 120_000 },
+  const pending = await pollFor(
+    page,
+    () =>
+      page.evaluate(async (conversationId) => {
+        const response = await fetch(`/api/conversations/${conversationId}`, {
+          headers: { "X-Demo-Persona": "mina" },
+        });
+        if (!response.ok) return null;
+        const current = await response.json();
+        const action = current.actions?.find(
+          (item) => item.action_type === "work_request.create" && item.state === "pending",
+        );
+        const tool = current.tool_invocations.find(
+          (item) => item.tool_name === "work_request_create" && item.state === "completed",
+        );
+        if (!action || !tool) return null;
+        return action;
+      }, conversation.conversation_id),
+    { timeout: 120_000, description: "the pending WorkRequest ActionItem and its completed MCP invocation" },
   );
-  await page.locator(".ax-action-card", { hasText: "업무 요청 생성 확인" }).waitFor({ timeout: 20_000 });
-
-  const pending = await page.evaluate(async (conversationId) => {
-    const response = await fetch(`/api/conversations/${conversationId}`, {
-      headers: { "X-Demo-Persona": "mina" },
-    });
-    const current = await response.json();
-    return current.actions.find((item) => item.action_type === "work_request.create" && item.state === "pending");
-  }, conversation.conversation_id);
   if (!pending?.action_id || !pending?.version) {
     throw new Error("Codex MCP write did not persist a pending ActionItem");
   }
+  const proposedAction = await page.evaluate(async (actionId) => {
+    const response = await fetch("/api/actions", { headers: { "X-Demo-Persona": "mina" } });
+    const actions = await response.json();
+    return actions.find((item) => item.action_id === actionId);
+  }, pending.action_id);
+  if (proposedAction?.payload_summary !== `업무 요청: ${requestTitle}`) {
+    throw new Error("Action proposal did not preserve the requested resource identity");
+  }
+  const drawerActionCard = page.locator(`.ax-action-card[data-action-id="${pending.action_id}"]`);
+  await drawerActionCard.waitFor({ timeout: 20_000 });
 
   await page.getByRole("button", { name: "닫기" }).click();
   await navigation.getByRole("button", { name: "판단" }).click();
-  await page.locator(".decision-empty-state", { hasText: "업무 요청 생성 확인" }).waitFor();
+  const actionSection = page.locator(".decision-empty-state", { hasText: "확인이 필요한 변경" });
+  const actionCard = actionSection.locator(`li[data-action-id="${pending.action_id}"]`);
+  await actionCard.waitFor();
   const approvalResponse = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/api/actions/${pending.action_id}/decide`) && response.request().method() === "POST",
   );
-  await page.getByRole("button", { name: "승인" }).click();
+  await actionCard.getByRole("button", { name: "승인" }).click();
   await approvalResponse;
 
   const approved = await page.evaluate(async ({ actionId, conversationId }) => {
@@ -96,7 +103,10 @@ try {
 
   await page.getByLabel("사용자").selectOption("jiho");
   await navigation.getByRole("button", { name: "판단" }).click();
-  await page.getByText(requestTitle).waitFor();
+  const jihoRequestCard = page
+    .locator(".decision-empty-state", { hasText: "확인이 필요한 요청" })
+    .locator("li", { hasText: requestTitle });
+  await jihoRequestCard.waitFor();
   const inboxRequest = await page.evaluate(async (requestId) => {
     const response = await fetch("/api/action-inbox", {
       headers: { "X-Demo-Persona": "jiho" },
@@ -104,7 +114,7 @@ try {
     const requests = await response.json();
     return requests.find((item) => item.request_id === requestId);
   }, approved.action.result.request_id);
-  if (inboxRequest?.state !== "pending" || inboxRequest.task_id !== null) {
+  if (inboxRequest?.title !== requestTitle || inboxRequest?.state !== "pending" || inboxRequest.task_id !== null) {
     throw new Error("Approved AX WorkRequest did not reach Jiho's decision inbox without a Task");
   }
 

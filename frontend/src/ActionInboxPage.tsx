@@ -115,7 +115,7 @@ export function ActionInboxPage({
             {actions
               .filter((action) => action.state === "pending")
               .map((action) => (
-                <li key={action.action_id}>
+                <li data-action-id={action.action_id} key={action.action_id}>
                   <div>
                     <b>{action.title}</b>
                     <span>{action.payload_summary}</span>
