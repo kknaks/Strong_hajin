@@ -11,6 +11,7 @@ import { isDirectTask, type DirectTask, type Persona, type TaskState } from "./v
 
 type MyWorkPageProps = {
   personaId: string;
+  canCreateWorkRequests: boolean;
   onError: (message: string | null) => void;
 };
 
@@ -25,7 +26,11 @@ const taskStateLabel: Record<TaskState, string> = {
   cancelled: "취소",
 };
 
-export function MyWorkPage({ personaId, onError }: MyWorkPageProps) {
+export function MyWorkPage({
+  personaId,
+  canCreateWorkRequests,
+  onError,
+}: MyWorkPageProps) {
   const [tasks, setTasks] = useState<DirectTask[]>([]);
   const [title, setTitle] = useState("");
   const [requestTitle, setRequestTitle] = useState("");
@@ -51,6 +56,14 @@ export function MyWorkPage({ personaId, onError }: MyWorkPageProps) {
   useEffect(() => {
     let cancelled = false;
 
+    if (!canCreateWorkRequests) {
+      setAssigneeCandidates([]);
+      setAssigneeId("");
+      return () => {
+        cancelled = true;
+      };
+    }
+
     void getWorkRequestAssigneeCandidates(personaId)
       .then((candidates) => {
         if (cancelled) return;
@@ -66,7 +79,7 @@ export function MyWorkPage({ personaId, onError }: MyWorkPageProps) {
     return () => {
       cancelled = true;
     };
-  }, [onError, personaId]);
+  }, [canCreateWorkRequests, onError, personaId]);
 
   const createTask = async () => {
     const trimmedTitle = title.trim();
@@ -150,44 +163,46 @@ export function MyWorkPage({ personaId, onError }: MyWorkPageProps) {
         </button>
       </div>
 
-      <section className="surface-card request-create">
-        <div>
-          <h3>동료에게 업무 요청</h3>
-          <p>수락 전에는 담당자의 내 업무에 생성되지 않습니다.</p>
-        </div>
-        <label htmlFor="work-request-title">요청할 업무</label>
-        <input
-          id="work-request-title"
-          onChange={(event) => setRequestTitle(event.target.value)}
-          placeholder="동료에게 요청할 업무 제목"
-          value={requestTitle}
-        />
-        <label htmlFor="work-request-assignee">담당 후보</label>
-        <select
-          disabled={assigneeCandidates.length === 0}
-          id="work-request-assignee"
-          onChange={(event) => setAssigneeId(event.target.value)}
-          value={assigneeId}
-        >
-          {assigneeCandidates.length === 0 ? (
-            <option value="">요청 가능한 동료가 없습니다.</option>
-          ) : (
-            assigneeCandidates.map((candidate) => (
-              <option key={candidate.id} value={candidate.id}>
-                {candidate.display_name}
-              </option>
-            ))
-          )}
-        </select>
-        <button
-          className="primary"
-          disabled={busyAction !== null || assigneeCandidates.length === 0}
-          onClick={() => void createRequest()}
-          type="button"
-        >
-          {busyAction === "request" ? "요청 중" : "업무 요청 보내기"}
-        </button>
-      </section>
+      {canCreateWorkRequests && (
+        <section className="surface-card request-create">
+          <div>
+            <h3>동료에게 업무 요청</h3>
+            <p>수락 전에는 담당자의 내 업무에 생성되지 않습니다.</p>
+          </div>
+          <label htmlFor="work-request-title">요청할 업무</label>
+          <input
+            id="work-request-title"
+            onChange={(event) => setRequestTitle(event.target.value)}
+            placeholder="동료에게 요청할 업무 제목"
+            value={requestTitle}
+          />
+          <label htmlFor="work-request-assignee">담당 후보</label>
+          <select
+            disabled={assigneeCandidates.length === 0}
+            id="work-request-assignee"
+            onChange={(event) => setAssigneeId(event.target.value)}
+            value={assigneeId}
+          >
+            {assigneeCandidates.length === 0 ? (
+              <option value="">요청 가능한 동료가 없습니다.</option>
+            ) : (
+              assigneeCandidates.map((candidate) => (
+                <option key={candidate.id} value={candidate.id}>
+                  {candidate.display_name}
+                </option>
+              ))
+            )}
+          </select>
+          <button
+            className="primary"
+            disabled={busyAction !== null || assigneeCandidates.length === 0}
+            onClick={() => void createRequest()}
+            type="button"
+          >
+            {busyAction === "request" ? "요청 중" : "업무 요청 보내기"}
+          </button>
+        </section>
+      )}
 
       <div className="work-tabs" role="group" aria-label="업무 상태 필터">
         {(["all", "open", "in_progress", "blocked", "done", "cancelled"] as const).map((state) => (

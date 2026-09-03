@@ -133,7 +133,7 @@ describe("product surfaces", () => {
           organizations: [],
           capabilities:
             personaId === "mina"
-              ? ["daily_report.generate"]
+              ? ["daily_report.generate", "work_request.create"]
               : ["work_request.decide"],
         });
       }
@@ -197,6 +197,14 @@ describe("product surfaces", () => {
       fetchMock.mock.calls.filter(([path, init]) => {
         return (
           String(path).startsWith("/api/daily-reports/status") &&
+          new Headers(init?.headers).get("X-Demo-Persona") === "jiho"
+        );
+      }),
+    ).toHaveLength(0);
+    expect(
+      fetchMock.mock.calls.filter(([path, init]) => {
+        return (
+          path === "/api/work-request-assignee-candidates" &&
           new Headers(init?.headers).get("X-Demo-Persona") === "jiho"
         );
       }),

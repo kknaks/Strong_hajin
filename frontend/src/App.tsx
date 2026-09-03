@@ -262,7 +262,13 @@ export default function App() {
           <span className="date-chip">2026년 9월 3일</span>
           <label className="persona-picker">
             사용자
-            <select onChange={(event) => setPersonaId(event.target.value)} value={personaId}>
+            <select
+              onChange={(event) => {
+                setCapabilities(null);
+                setPersonaId(event.target.value);
+              }}
+              value={personaId}
+            >
               {personas.map((persona) => (
                 <option key={persona.id} value={persona.id}>
                   {persona.display_name}
@@ -289,7 +295,12 @@ export default function App() {
             onNavigate={setSurface}
           />
         )}
-        {surface === "work" && <MyWorkPage {...pageProps} />}
+        {surface === "work" && (
+          <MyWorkPage
+            {...pageProps}
+            canCreateWorkRequests={capabilities?.includes("work_request.create") ?? false}
+          />
+        )}
         {surface === "inbox" && (
           <ActionInboxPage
             {...pageProps}
