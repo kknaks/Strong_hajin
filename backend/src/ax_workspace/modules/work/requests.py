@@ -145,6 +145,8 @@ class WorkRequestApplication:
         return {
             "request_id": str(request.id),
             "title": request.title,
+            "requester_id": request.requester_id,
+            "assignee_id": request.assignee_id,
             "state": request.state,
             "version": request.version,
             "task_id": str(task.id) if task else None,

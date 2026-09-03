@@ -1,5 +1,7 @@
 import { chromium } from "@playwright/test";
 
+import { loginAs, switchAccount } from "./e2e-helpers.mjs";
+
 const frontendUrl = process.env.SCAX_E2E_URL ?? "http://127.0.0.1:5176";
 const title = `Playwright 보고 근거 업무 ${Date.now()}`;
 const editedBody = `사람이 확인한 Playwright 일일보고 ${Date.now()}`;
@@ -13,16 +15,18 @@ const browser = await chromium.launch({
 try {
   const page = await browser.newPage();
   await page.goto(frontendUrl, { waitUntil: "domcontentloaded" });
+  await loginAs(page, "mina");
   const navigation = page.getByRole("navigation", { name: "제품 탐색" });
 
   await navigation.getByRole("button", { name: "내 업무" }).click();
   const createTaskResponse = page.waitForResponse(
     (response) => response.url().endsWith("/api/tasks") && response.request().method() === "POST",
   );
+  await page.getByRole("button", { name: "새 업무 추가" }).click();
   await page.getByLabel("업무 제목").fill(title);
-  await page.getByRole("button", { name: "업무 추가" }).click();
+  await page.getByRole("button", { name: "업무 추가", exact: true }).click();
   const createdTask = await (await createTaskResponse).json();
-  const taskRow = page.locator("article.progress-row", { hasText: title });
+  const taskRow = page.locator("tr.progress-row", { hasText: title });
   await taskRow.getByRole("button", { name: "시작" }).click();
   await taskRow.getByText("진행 중", { exact: true }).waitFor();
 

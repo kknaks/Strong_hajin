@@ -1,299 +1,478 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
-  createDirectTask,
-  createWorkRequest,
+  decideAction,
+  getActionInbox,
+  getActions,
   getMyWork,
+  getTasks,
   getWorkRequestAssigneeCandidates,
+  getWorkRequests,
   transitionDirectTask,
 } from "./api";
-import { isDirectTask, type DirectTask, type Persona, type TaskState } from "./viewModels";
+import { formatMonthDay, isoDateInSeoul, personName, seoulToday, taskStateLabel, workRequestStateLabel } from "./labels";
+import { isDirectTask, type ActionItem, type DirectTask, type Persona, type TaskState, type WorkRequest } from "./viewModels";
+import {
+  CreateWorkDrawer,
+  StatusText,
+  TaskDetailDrawer,
+  TaskQuickActions,
+  WorkRequestDetailDrawer,
+  displayNameOf,
+  type TaskAction,
+} from "./WorkModals";
+import { PersonChip, TaskCalendar, TaskCard, TaskKanban, TaskTimeline } from "./WorkViews";
 
 type MyWorkPageProps = {
   personaId: string;
+  personaName: string;
+  personas: Persona[];
   canManageOwnTasks: boolean;
   canCreateWorkRequests: boolean;
+  canDecideWorkRequests: boolean;
+  canReadActions: boolean;
+  canDecideActions: boolean;
+  onAskAboutTask: (task: DirectTask) => void;
+  onNotice: (message: string) => void;
   onError: (message: string | null) => void;
 };
 
-type TaskAction = "start" | "block" | "resume" | "complete" | "cancel";
-type TaskFilter = "all" | TaskState;
+type TaskFilter = "all" | "active" | TaskState;
+type ViewMode = "list" | "calendar" | "timeline" | "kanban";
 
-const taskStateLabel: Record<TaskState, string> = {
-  open: "열림",
-  in_progress: "진행 중",
-  blocked: "막힘",
-  done: "완료",
-  cancelled: "취소",
-};
+const stateOrder: Record<TaskState, number> = { blocked: 0, in_progress: 1, open: 2, done: 3, cancelled: 4 };
+const views: Array<{ id: ViewMode; label: string }> = [
+  { id: "list", label: "목록" },
+  { id: "kanban", label: "칸반" },
+  { id: "calendar", label: "캘린더" },
+  { id: "timeline", label: "타임라인" },
+];
 
 export function MyWorkPage({
   personaId,
+  personaName,
+  personas,
   canManageOwnTasks,
   canCreateWorkRequests,
+  canDecideWorkRequests,
+  canReadActions,
+  canDecideActions,
+  onAskAboutTask,
+  onNotice,
   onError,
 }: MyWorkPageProps) {
+  const me = personName(personaName);
   const [tasks, setTasks] = useState<DirectTask[]>([]);
-  const [title, setTitle] = useState("");
-  const [requestTitle, setRequestTitle] = useState("");
+  const [inbox, setInbox] = useState<WorkRequest[]>([]);
+  const [actions, setActions] = useState<ActionItem[]>([]);
+  const [allRequests, setAllRequests] = useState<WorkRequest[]>([]);
   const [assigneeCandidates, setAssigneeCandidates] = useState<Persona[]>([]);
-  const [assigneeId, setAssigneeId] = useState("");
-  const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [filter, setFilter] = useState<TaskFilter>("all");
+  const [busy, setBusy] = useState(false);
+  const [filter, setFilter] = useState<TaskFilter>("active");
+  const [view, setView] = useState<ViewMode>("list");
+  const [tab, setTab] = useState<"mine" | "sent">("mine");
+  const [selectedTask, setSelectedTask] = useState<DirectTask | null>(null);
+  const [selectedRequest, setSelectedRequest] = useState<WorkRequest | null>(null);
+  const [isCreating, setIsCreating] = useState(false);
 
   const reload = useCallback(async () => {
-    try {
-      const items = await getMyWork(personaId);
-      setTasks(items.filter(isDirectTask));
-      onError(null);
-    } catch (error) {
-      onError(error instanceof Error ? error.message : "내 업무를 불러오지 못했습니다.");
-    }
-  }, [onError, personaId]);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
+    const [work, closed, nextInbox, nextActions, requests] = await Promise.all([
+      getMyWork(),
+      getTasks(true).catch(() => [] as DirectTask[]),
+      canDecideWorkRequests ? getActionInbox() : Promise.resolve([]),
+      canReadActions ? getActions() : Promise.resolve([]),
+      getWorkRequests().catch(() => [] as WorkRequest[]),
+    ]);
+    const merged = new Map<string, DirectTask>();
+    for (const task of [...work.filter(isDirectTask), ...closed]) merged.set(task.task_id, { ...merged.get(task.task_id), ...task });
+    const nextTasks = [...merged.values()];
+    setTasks(nextTasks);
+    setInbox(nextInbox);
+    setActions(nextActions.filter((action) => action.state === "pending"));
+    setAllRequests(requests);
+    setSelectedTask((current) => (current ? nextTasks.find((task) => task.task_id === current.task_id) ?? null : null));
+    setSelectedRequest((current) =>
+      current ? [...nextInbox, ...requests].find((request) => request.request_id === current.request_id) ?? null : null,
+    );
+  }, [canDecideWorkRequests, canReadActions, personaId]);
 
   useEffect(() => {
     let cancelled = false;
+    void reload()
+      .then(() => {
+        if (!cancelled) onError(null);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) onError(error instanceof Error ? error.message : "내 업무를 불러오지 못했습니다.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [onError, reload]);
 
+  useEffect(() => {
     if (!canCreateWorkRequests) {
       setAssigneeCandidates([]);
-      setAssigneeId("");
-      return () => {
-        cancelled = true;
-      };
+      return;
     }
-
-    void getWorkRequestAssigneeCandidates(personaId)
+    let cancelled = false;
+    void getWorkRequestAssigneeCandidates()
       .then((candidates) => {
-        if (cancelled) return;
-        setAssigneeCandidates(candidates);
-        setAssigneeId(candidates[0]?.id ?? "");
+        if (!cancelled) setAssigneeCandidates(candidates);
       })
       .catch((error) => {
-        if (!cancelled) {
-          onError(error instanceof Error ? error.message : "업무 대상 후보를 불러오지 못했습니다.");
-        }
+        if (!cancelled) onError(error instanceof Error ? error.message : "업무 대상 후보를 불러오지 못했습니다.");
       });
-
     return () => {
       cancelled = true;
     };
   }, [canCreateWorkRequests, onError, personaId]);
 
-  const createTask = async () => {
-    const trimmedTitle = title.trim();
-    if (!trimmedTitle) {
-      onError("업무 제목을 입력해 주세요.");
-      return;
-    }
-
-    setBusyAction("create");
+  const transitionTask = async (task: DirectTask, action: TaskAction, reason?: string) => {
+    setBusy(true);
     try {
-      await createDirectTask(personaId, trimmedTitle);
-      setTitle("");
+      await transitionDirectTask(task.task_id, action, task.version, reason);
       await reload();
-    } catch (error) {
-      onError(error instanceof Error ? error.message : "업무를 만들지 못했습니다.");
-    } finally {
-      setBusyAction(null);
-    }
-  };
-
-  const transitionTask = async (task: DirectTask, action: TaskAction) => {
-    const reason = action === "block" ? window.prompt("막힘 사유를 입력해 주세요.")?.trim() : undefined;
-    if (action === "block" && !reason) return;
-
-    setBusyAction(task.task_id);
-    try {
-      await transitionDirectTask(personaId, task.task_id, action, task.version, reason);
-      await reload();
+      onError(null);
+      onNotice(
+        action === "start" ? "업무를 시작했습니다." : action === "complete" ? "완료 처리했습니다." : action === "block" ? "막힘으로 표시했습니다." : action === "resume" ? "업무를 재개했습니다." : "업무를 취소했습니다.",
+      );
     } catch (error) {
       onError(error instanceof Error ? error.message : "업무 상태를 바꾸지 못했습니다.");
     } finally {
-      setBusyAction(null);
+      setBusy(false);
     }
   };
 
-  const createRequest = async () => {
-    const trimmedTitle = requestTitle.trim();
-    if (!trimmedTitle || !assigneeId) {
-      onError("업무 제목과 담당 후보를 선택해 주세요.");
-      return;
-    }
-
-    setBusyAction("request");
+  const decideAiAction = async (action: ActionItem, decision: "approve" | "reject") => {
+    setBusy(true);
     try {
-      await createWorkRequest(personaId, trimmedTitle, assigneeId);
-      setRequestTitle("");
+      await decideAction(action.action_id, action.version, decision);
+      await reload();
+      onError(null);
+      onNotice(decision === "approve" ? `'${action.title}' 제안을 승인해 반영했습니다.` : `'${action.title}' 제안을 거절했습니다.`);
     } catch (error) {
-      onError(error instanceof Error ? error.message : "업무 요청을 만들지 못했습니다.");
+      onError(error instanceof Error ? error.message : "제안을 처리하지 못했습니다.");
     } finally {
-      setBusyAction(null);
+      setBusy(false);
     }
   };
 
-  const visibleTasks = filter === "all" ? tasks : tasks.filter((task) => task.state === filter);
+  const requesterByTask = useMemo(
+    () => Object.fromEntries(allRequests.filter((request) => request.task_id && request.requester_id).map((request) => [request.task_id as string, request.requester_id as string])),
+    [allRequests],
+  );
+  const sentRequests = allRequests.filter((request) => request.requester_id === personaId);
+  const sorted = useMemo(() => [...tasks].sort((left, right) => stateOrder[left.state] - stateOrder[right.state]), [tasks]);
+  const visibleTasks = useMemo(() => {
+    if (filter === "all") return sorted;
+    if (filter === "active") return sorted.filter((task) => task.state !== "done" && task.state !== "cancelled");
+    return sorted.filter((task) => task.state === filter);
+  }, [filter, sorted]);
+  const decisionCount = inbox.length + actions.length;
+  const canCreate = canManageOwnTasks || canCreateWorkRequests;
+  const today = seoulToday();
 
   return (
     <section className="page-surface">
-      <div className="card-title">
-        <div>
-          <p className="kicker">MY WORK</p>
-          <h2>내 업무</h2>
-          <p>직접 생성한 업무의 상태를 관리합니다.</p>
+      <div className="page-head">
+        <h1>내 업무</h1>
+        <div className="page-head-actions">
+          {canCreate && (
+            <button className="btn primary" onClick={() => setIsCreating(true)} type="button">
+              새 업무 추가
+            </button>
+          )}
         </div>
-        <button onClick={() => void reload()} type="button">
-          새로고침
-        </button>
       </div>
 
-      {canManageOwnTasks && (
-        <div className="task-create">
-          <label className="sr-only" htmlFor="task-title">
-            업무 제목
-          </label>
-          <input
-            id="task-title"
-            onChange={(event) => setTitle(event.target.value)}
-            placeholder="직접 시작할 업무 제목"
-            value={title}
-          />
-          <button className="primary" disabled={busyAction !== null} onClick={() => void createTask()} type="button">
-            {busyAction === "create" ? "추가 중" : "업무 추가"}
-          </button>
-        </div>
-      )}
-
-      {canCreateWorkRequests && (
-        <section className="surface-card request-create">
-          <div>
-            <h3>동료에게 업무 요청</h3>
-            <p>수락 전에는 담당자의 내 업무에 생성되지 않습니다.</p>
+      <div className="work-layout">
+        <aside>
+          <div className="column-head">
+            <h2>판단이 필요한 업무</h2>
+            {decisionCount > 0 && <span className="count-badge">{decisionCount}</span>}
           </div>
-          <label htmlFor="work-request-title">요청할 업무</label>
-          <input
-            id="work-request-title"
-            onChange={(event) => setRequestTitle(event.target.value)}
-            placeholder="동료에게 요청할 업무 제목"
-            value={requestTitle}
-          />
-          <label htmlFor="work-request-assignee">담당 후보</label>
-          <select
-            disabled={assigneeCandidates.length === 0}
-            id="work-request-assignee"
-            onChange={(event) => setAssigneeId(event.target.value)}
-            value={assigneeId}
-          >
-            {assigneeCandidates.length === 0 ? (
-              <option value="">요청 가능한 동료가 없습니다.</option>
+          <div className="decision-panel">
+            {decisionCount === 0 ? (
+              <div className="empty-state">
+                <b>판단할 항목이 없습니다</b>
+                <p>동료의 요청과 AX 제안이 오면 여기에 쌓입니다.</p>
+              </div>
             ) : (
-              assigneeCandidates.map((candidate) => (
-                <option key={candidate.id} value={candidate.id}>
-                  {candidate.display_name}
-                </option>
-              ))
+              <div className="card-stack">
+                {inbox.map((request) => (
+                  <TaskCard
+                    actions={
+                      <button className="btn h30 primary" onClick={() => setSelectedRequest(request)} type="button">
+                        판단하기
+                      </button>
+                    }
+                    date={formatMonthDay(today)}
+                    key={request.request_id}
+                    kicker="업무 요청"
+                    onOpen={() => setSelectedRequest(request)}
+                    people={<PersonChip arrowTo={me} name={displayNameOf(personas, request.requester_id, "동료")} />}
+                    status={<StatusText label={workRequestStateLabel[request.state]} state={request.state} />}
+                    title={request.title}
+                  />
+                ))}
+                {actions.map((action) => (
+                  <TaskCard
+                    actions={
+                      canDecideActions && (
+                        <>
+                          <button className="btn h30 primary" disabled={busy} onClick={() => void decideAiAction(action, "approve")} type="button">
+                            승인
+                          </button>
+                          <button className="btn h30" disabled={busy} onClick={() => void decideAiAction(action, "reject")} type="button">
+                            거절
+                          </button>
+                        </>
+                      )
+                    }
+                    badge={<span className="badge ai">AI</span>}
+                    data-action-id={action.action_id}
+                    date={formatMonthDay(today)}
+                    key={action.action_id}
+                    kicker="AX 제안"
+                    memo={action.payload_summary}
+                    people={<PersonChip arrowTo={me} name="AX" />}
+                    status={<StatusText label="확인 필요" state="pending" />}
+                    title={action.title}
+                  />
+                ))}
+              </div>
             )}
-          </select>
-          <button
-            className="primary"
-            disabled={busyAction !== null || assigneeCandidates.length === 0}
-            onClick={() => void createRequest()}
-            type="button"
-          >
-            {busyAction === "request" ? "요청 중" : "업무 요청 보내기"}
-          </button>
-        </section>
-      )}
+          </div>
+        </aside>
 
-      <div className="work-tabs" role="group" aria-label="업무 상태 필터">
-        {(["all", "open", "in_progress", "blocked", "done", "cancelled"] as const).map((state) => (
-          <button
-            className={filter === state ? "selected-filter" : ""}
-            key={state}
-            onClick={() => setFilter(state)}
-            type="button"
-          >
-            {state === "all" ? "전체" : taskStateLabel[state]}
-          </button>
-        ))}
-      </div>
+        <div>
+          <div className="list-toolbar">
+            <div className="page-tabs" role="tablist" aria-label="업무 관점">
+              <button aria-selected={tab === "mine"} onClick={() => setTab("mine")} role="tab" type="button">
+                할일
+              </button>
+              {canCreateWorkRequests && (
+                <button aria-selected={tab === "sent"} onClick={() => setTab("sent")} role="tab" type="button">
+                  보낸 업무
+                </button>
+              )}
+            </div>
+            {tab === "mine" && (
+              <div className="toolbar-group">
+                <label className="sr-only" htmlFor="task-state-filter">
+                  상태 필터
+                </label>
+                <select id="task-state-filter" onChange={(event) => setFilter(event.target.value as TaskFilter)} value={filter}>
+                  <option value="active">진행 중·시작 전·막힘</option>
+                  <option value="all">전체 상태</option>
+                  {(["open", "in_progress", "blocked", "done", "cancelled"] as const).map((state) => (
+                    <option key={state} value={state}>
+                      {taskStateLabel[state]}
+                    </option>
+                  ))}
+                </select>
+                <div aria-label="보기 방식" className="segmented" role="tablist">
+                  {views.map((item) => (
+                    <button aria-selected={view === item.id} key={item.id} onClick={() => setView(item.id)} role="tab" type="button">
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
 
-      <div className="surface-card">
-        {visibleTasks.length === 0 ? (
-          <p className="empty-row">표시할 직접 생성 업무가 없습니다.</p>
-        ) : (
-          visibleTasks.map((task) => (
-            <TaskRow
-              busy={busyAction !== null}
-              canManageOwnTasks={canManageOwnTasks}
-              key={task.task_id}
+          {tab === "sent" ? (
+            <table className="plain-table">
+              <thead>
+                <tr>
+                  <th>업무명</th>
+                  <th className="center">상태</th>
+                  <th className="center">담당자</th>
+                  <th className="center">요청자</th>
+                  <th className="end">액션</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sentRequests.length === 0 && (
+                  <tr>
+                    <td colSpan={5}>
+                      <div className="empty-state">
+                        <b>보낸 요청이 없습니다</b>
+                        <p>새 업무 추가에서 동료에게 요청할 수 있습니다.</p>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                {sentRequests.map((request) => (
+                  <tr className="openable" key={request.request_id} onClick={() => setSelectedRequest(request)}>
+                    <td className="title-cell">{request.title}</td>
+                    <td className="center">
+                      <StatusText label={workRequestStateLabel[request.state]} state={request.state} />
+                    </td>
+                    <td className="center">{displayNameOf(personas, request.assignee_id, "담당자")}</td>
+                    <td className="center">나</td>
+                    <td className="end">
+                      <button className="btn h30 ghost" onClick={() => setSelectedRequest(request)} type="button">
+                        상세보기
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : view === "kanban" ? (
+            <TaskKanban
+              busy={busy}
+              canManage={canManageOwnTasks}
+              onInvalidMove={onNotice}
+              onOpen={setSelectedTask}
               onTransition={transitionTask}
-              task={task}
+              tasks={filter === "active" ? sorted : visibleTasks}
             />
-          ))
-        )}
+          ) : view === "calendar" ? (
+            <TaskCalendar onOpen={setSelectedTask} tasks={filter === "active" ? sorted : visibleTasks} />
+          ) : view === "timeline" ? (
+            <TaskTimeline onOpen={setSelectedTask} tasks={filter === "active" ? sorted : visibleTasks} />
+          ) : (
+            <table className="plain-table">
+              <thead>
+                <tr>
+                  <th>업무명</th>
+                  <th className="center">상태</th>
+                  <th className="center">시작일</th>
+                  <th className="center">종료일</th>
+                  <th className="center">담당자</th>
+                  <th className="center">요청자</th>
+                  <th className="end">액션</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleTasks.length === 0 && (
+                  <tr>
+                    <td colSpan={7}>
+                      <div className="empty-state">
+                        <b>{filter === "active" || filter === "all" ? "등록된 업무가 없습니다" : "조건에 맞는 업무가 없습니다"}</b>
+                        <p>{filter === "active" || filter === "all" ? "오늘 할 일을 등록하면 여기에 쌓입니다." : "다른 상태를 선택해 보세요."}</p>
+                        {filter !== "active" && filter !== "all" ? (
+                          <button className="btn" onClick={() => setFilter("active")} type="button">
+                            필터 초기화
+                          </button>
+                        ) : (
+                          canManageOwnTasks && (
+                            <button className="btn" onClick={() => setIsCreating(true)} type="button">
+                              첫 업무 만들기
+                            </button>
+                          )
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                {visibleTasks.map((task) => {
+                  const closed = task.state === "done" || task.state === "cancelled";
+                  return (
+                    <TaskTableRow
+                      actions={canManageOwnTasks && <TaskQuickActions busy={busy} onTransition={transitionTask} task={task} />}
+                      endDate={closed ? formatMonthDay(isoDateInSeoul(task.updated_at)) : "—"}
+                      key={task.task_id}
+                      onOpen={() => setSelectedTask(task)}
+                      requester={requesterByTask[task.task_id] ? displayNameOf(personas, requesterByTask[task.task_id]) : "—"}
+                      startDate={formatMonthDay(isoDateInSeoul(task.created_at))}
+                      task={task}
+                    />
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
+
+      {selectedTask && (
+        <TaskDetailDrawer
+          busy={busy}
+          canManage={canManageOwnTasks}
+          onAskAx={onAskAboutTask}
+          onClose={() => setSelectedTask(null)}
+          onTransition={transitionTask}
+          ownerName={me}
+          requesterName={requesterByTask[selectedTask.task_id] ? displayNameOf(personas, requesterByTask[selectedTask.task_id]) : null}
+          task={selectedTask}
+        />
+      )}
+      {selectedRequest && (
+        <WorkRequestDetailDrawer
+          canDecide={canDecideWorkRequests}
+          onChanged={reload}
+          onClose={() => setSelectedRequest(null)}
+          onError={onError}
+          onNotice={onNotice}
+          personaId={personaId}
+          personas={personas}
+          request={selectedRequest}
+        />
+      )}
+      {isCreating && (
+        <CreateWorkDrawer
+          assigneeCandidates={assigneeCandidates}
+          canCreateRequest={canCreateWorkRequests}
+          canCreateTask={canManageOwnTasks}
+          onClose={() => setIsCreating(false)}
+          onCreated={async (message) => {
+            await reload();
+            onNotice(message);
+            if (message.includes("요청을")) setTab("sent");
+          }}
+          onError={onError}
+          ownerName={me}
+          personaId={personaId}
+        />
+      )}
     </section>
   );
 }
 
-type TaskRowProps = {
-  busy: boolean;
-  canManageOwnTasks: boolean;
+function TaskTableRow({
+  task,
+  startDate,
+  endDate,
+  requester,
+  actions,
+  onOpen,
+}: {
   task: DirectTask;
-  onTransition: (task: DirectTask, action: TaskAction) => Promise<void>;
-};
-
-function TaskRow({ busy, canManageOwnTasks, task, onTransition }: TaskRowProps) {
+  startDate: string;
+  endDate: string;
+  requester: string;
+  actions: React.ReactNode;
+  onOpen: () => void;
+}) {
   return (
-    <article className="progress-row">
-      <div>
-        <b>{task.title}</b>
-        {task.block_reason && <small>막힘 사유: {task.block_reason}</small>}
-      </div>
-      <span className="status completed">{taskStateLabel[task.state]}</span>
-      {canManageOwnTasks && (
-        <div className="task-actions">
-          {task.state === "open" && (
-            <button disabled={busy} onClick={() => void onTransition(task, "start")} type="button">
-              시작
-            </button>
-          )}
-          {task.state === "in_progress" && (
-            <>
-              <button disabled={busy} onClick={() => void onTransition(task, "block")} type="button">
-                막힘
-              </button>
-              <button
-                className="primary"
-                disabled={busy}
-                onClick={() => void onTransition(task, "complete")}
-                type="button"
-              >
-                완료
-              </button>
-            </>
-          )}
-          {task.state === "blocked" && (
-            <button
-              className="primary"
-              disabled={busy}
-              onClick={() => void onTransition(task, "resume")}
-              type="button"
-            >
-              재개
-            </button>
-          )}
-          {task.state !== "done" && task.state !== "cancelled" && (
-            <button disabled={busy} onClick={() => void onTransition(task, "cancel")} type="button">
-              취소
-            </button>
-          )}
+    <tr
+      className="progress-row openable"
+      onClick={(event) => {
+        if ((event.target as HTMLElement).closest("button, input, select, textarea, a, label")) return;
+        onOpen();
+      }}
+    >
+      <td className="title-cell">
+        <div className="cell-main">
+          <b className={task.state === "cancelled" ? "cancelled-title" : ""}>{task.title}</b>
+          {task.block_reason && <small className="reason">막힘 사유: {task.block_reason}</small>}
         </div>
-      )}
-    </article>
+      </td>
+      <td className="center">
+        <StatusText state={task.state} />
+      </td>
+      <td className="center">{startDate}</td>
+      <td className="center">{endDate}</td>
+      <td className="center">나</td>
+      <td className="center">{requester}</td>
+      <td className="end">
+        <div className="task-actions">{actions}</div>
+      </td>
+    </tr>
   );
 }

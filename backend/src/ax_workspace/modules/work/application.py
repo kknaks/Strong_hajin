@@ -35,7 +35,7 @@ class TaskAccessDenied(TaskError):
 class TaskRepository(Protocol):
     def create_self_task(self, owner_id: str, title: str, causation_key: str | None = None) -> Any: ...
     def task(self, task_id: UUID, owner_id: str, *, lock: bool = False) -> Any: ...
-    def tasks_for(self, owner_id: str) -> list[Any]: ...
+    def tasks_for(self, owner_id: str, *, include_closed: bool = False) -> list[Any]: ...
     def touch(self, task: Any) -> None: ...
 
 
@@ -56,9 +56,9 @@ class TaskApplication:
             self.repository.create_self_task(str(principal.id), title.strip(), causation_key)
         )
 
-    def list_for(self, principal: Principal) -> list[dict[str, Any]]:
+    def list_for(self, principal: Principal, *, include_closed: bool = False) -> list[dict[str, Any]]:
         self._require(principal, TASK_READ)
-        return [self._view(task) for task in self.repository.tasks_for(str(principal.id))]
+        return [self._view(task) for task in self.repository.tasks_for(str(principal.id), include_closed=include_closed)]
 
     def get(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
         self._require(principal, TASK_READ)
@@ -98,4 +98,16 @@ class TaskApplication:
 
     @staticmethod
     def _view(task: Any) -> dict[str, Any]:
-        return {"task_id": str(task.id), "title": task.title, "state": task.state, "version": task.version, "block_reason": task.block_reason}
+        return {
+            "task_id": str(task.id),
+            "title": task.title,
+            "state": task.state,
+            "version": task.version,
+            "block_reason": task.block_reason,
+            "created_at": _iso(getattr(task, "created_at", None)),
+            "updated_at": _iso(getattr(task, "updated_at", None)),
+        }
+
+
+def _iso(value: Any) -> str | None:
+    return value.isoformat() if hasattr(value, "isoformat") else None

@@ -346,7 +346,7 @@ class CodexCliProviderAdapter:
 
     @staticmethod
     def _tool_invocations(stdout: str) -> list[AiToolInvocation]:
-        """Fold Codex JSONL MCP/tool lifecycle events without retaining raw arguments or results."""
+        """Fold Codex JSONL MCP/tool lifecycle events into redacted, human-readable summaries."""
         calls: dict[str, dict[str, Any]] = {}
         order: list[str] = []
         for line in stdout.splitlines():
@@ -366,7 +366,7 @@ class CodexCliProviderAdapter:
                 calls[call_id] = {
                     "tool_name": tool_name,
                     "display_name": tool_name.replace("_", " "),
-                    "input_summary": "입력은 보안상 요약됨",
+                    "input_summary": "입력 정보 없음",
                     "state": "running",
                     "result_summary": None,
                     "error_summary": None,
@@ -374,16 +374,83 @@ class CodexCliProviderAdapter:
                 }
                 order.append(call_id)
             current = calls[call_id]
+            if isinstance(item.get("arguments"), dict):
+                current["input_summary"] = _summarize_tool_arguments(item["arguments"])
             status = str(item.get("status", ""))
-            if status in {"completed", "success"} or item_type.endswith("result"):
-                current["state"] = "completed"
-                current["result_summary"] = "도구 실행 완료"
-            elif status in {"failed", "error"} or item_type.endswith("failed") or item.get("error"):
+            if status in {"failed", "error"} or item_type.endswith("failed") or item.get("error"):
                 current["state"] = "failed"
-                current["error_summary"] = "도구 실행 실패"
+                current["error_summary"] = _summarize_tool_error(item.get("error"))
+            elif status in {"completed", "success"} or item_type.endswith("result"):
+                current["state"] = "completed"
+                current["result_summary"] = _summarize_tool_result(item.get("result"))
             if isinstance(item.get("duration_ms"), int):
                 current["latency_ms"] = item["duration_ms"]
         return [AiToolInvocation(provider_call_id=call_id, **calls[call_id]) for call_id in order]
+
+
+_SAFE_ARGUMENT_KEYS = frozenset(
+    {"title", "task_id", "request_id", "report_id", "draft_id", "expected_version", "assignee_id", "report_date", "state", "action", "limit"}
+)
+_RESULT_KEYS = ("title", "state", "status", "draft_version", "version", "task_id", "request_id", "report_id", "action_id")
+
+
+def _truncate(text: str, limit: int = 48) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _summarize_tool_arguments(arguments: dict[str, Any]) -> str:
+    """Keep identifiers and short titles; mask free text such as bodies, reasons, and notes."""
+    if not arguments:
+        return "입력 없음"
+    parts: list[str] = []
+    for key, value in arguments.items():
+        if key in _SAFE_ARGUMENT_KEYS and isinstance(value, (str, int, float, bool)):
+            parts.append(f"{key}={_truncate(str(value))}")
+        elif isinstance(value, list):
+            parts.append(f"{key}=[{len(value)}건]")
+        else:
+            parts.append(f"{key}=비공개")
+    return "입력: " + ", ".join(parts)
+
+
+def _summarize_tool_error(error: Any) -> str:
+    if isinstance(error, dict):
+        message = error.get("message") or error.get("detail") or error.get("code")
+        if message:
+            return f"실패: {_truncate(str(message), 80)}"
+    if isinstance(error, str) and error.strip():
+        return f"실패: {_truncate(error, 80)}"
+    return "도구 실행 실패"
+
+
+def _summarize_tool_result(result: Any) -> str:
+    """Summarize an MCP tool result without echoing raw payloads."""
+    payload: Any = None
+    if isinstance(result, dict):
+        payload = result.get("structured_content") or result.get("structuredContent")
+        if payload is None:
+            for content in result.get("content") or []:
+                if isinstance(content, dict) and isinstance(content.get("text"), str):
+                    try:
+                        payload = json.loads(content["text"])
+                    except json.JSONDecodeError:
+                        payload = content["text"]
+                    break
+        if result.get("isError") or result.get("is_error"):
+            return _summarize_tool_error(payload if isinstance(payload, str) else result.get("error"))
+    elif result is not None:
+        payload = result
+    if isinstance(payload, list):
+        return f"결과: {len(payload)}건 조회"
+    if isinstance(payload, dict):
+        facts = [f"{key}={_truncate(str(payload[key]), 32)}" for key in _RESULT_KEYS if key in payload and payload[key] not in (None, "")]
+        if facts:
+            return "결과: " + ", ".join(facts)
+        return f"결과: 항목 {len(payload)}개 수신"
+    if isinstance(payload, str) and payload.strip():
+        return f"결과: {_truncate(payload, 80)}"
+    return "결과 없음"
 
 
 def prepare_isolated_codex_home(runtime_home: Path, *, auth_file: Path) -> Path:

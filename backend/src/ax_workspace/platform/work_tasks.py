@@ -45,8 +45,11 @@ class SqlAlchemyTaskRepository:
             raise TaskNotFound("task was not found")
         return task
 
-    def tasks_for(self, owner_id: str) -> list[TaskRecord]:
-        return list(self.session.scalars(select(TaskRecord).where(TaskRecord.owner_id == owner_id).where(TaskRecord.state.not_in([TaskState.DONE, TaskState.CANCELLED])).order_by(TaskRecord.created_at)))
+    def tasks_for(self, owner_id: str, *, include_closed: bool = False) -> list[TaskRecord]:
+        statement = select(TaskRecord).where(TaskRecord.owner_id == owner_id)
+        if not include_closed:
+            statement = statement.where(TaskRecord.state.not_in([TaskState.DONE, TaskState.CANCELLED]))
+        return list(self.session.scalars(statement.order_by(TaskRecord.created_at)))
 
     def touch(self, task: TaskRecord) -> None:
         task.updated_at = datetime.now(UTC)

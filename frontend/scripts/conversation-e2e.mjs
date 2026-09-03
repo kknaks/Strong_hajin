@@ -1,6 +1,6 @@
 import { chromium } from "@playwright/test";
 
-import { pollFor } from "./e2e-helpers.mjs";
+import { pollFor, loginAs, switchAccount } from "./e2e-helpers.mjs";
 
 const frontendUrl = process.env.SCAX_E2E_URL ?? "http://127.0.0.1:5176";
 
@@ -13,6 +13,7 @@ const browser = await chromium.launch({
 try {
   const page = await browser.newPage();
   await page.goto(frontendUrl, { waitUntil: "domcontentloaded" });
+  await loginAs(page, "mina");
   await page.getByRole("button", { name: "AX" }).click();
   const newConversation = page.getByRole("button", { name: "새 AX 대화" });
   const createFirstConversation = page.waitForResponse(
@@ -50,7 +51,10 @@ try {
     if (count !== 0) throw new Error("Conversation state leaked across the active-session switch");
   });
   await conversationButton(firstConversation.conversation_id).click();
-  await page.getByText("task list · completed").waitFor({ timeout: 90_000 });
+  const toolSummary = page.getByText(/도구 \d+개 실행 · 완료/).first();
+  await toolSummary.waitFor({ timeout: 90_000 });
+  await toolSummary.click();
+  await page.getByText("task list · 완료").first().waitFor();
   await conversationButton(secondConversation.conversation_id).click();
   await pollFor(
     page,

@@ -8,12 +8,16 @@ import {
   getConversation,
   getConversations,
   getDeveloperPersonas,
-  getMyOrganizationProfile,
   getMyWork,
+  getSession,
+  logout,
   sendConversationMessage,
 } from "./api";
 import { ActionInboxPage } from "./ActionInboxPage";
 import { DailyReportPage } from "./DailyReportPage";
+import { executionStateText, personName } from "./labels";
+import { LoginPage } from "./LoginPage";
+import { Toast } from "./Modal";
 import { MyWorkPage } from "./MyWorkPage";
 import { OrgPage } from "./OrgPage";
 import { TodayPage } from "./TodayPage";
@@ -21,11 +25,11 @@ import {
   isDirectTask,
   type Conversation,
   type ConversationContextReference,
+  type DirectTask,
+  type OrganizationProfile,
   type Persona,
   type ProductSurface,
 } from "./viewModels";
-
-import "./task.css";
 
 const navigation: ReadonlyArray<{ id: ProductSurface; label: string }> = [
   { id: "today", label: "오늘" },
@@ -35,17 +39,30 @@ const navigation: ReadonlyArray<{ id: ProductSurface; label: string }> = [
   { id: "org", label: "조직" },
 ];
 
+type LabeledContextReference = ConversationContextReference & { label?: string; pinned?: boolean };
+
+const surfaceLabel: Record<ProductSurface, string> = {
+  today: "오늘",
+  work: "내 업무",
+  inbox: "판단",
+  report: "보고",
+  org: "조직",
+};
+
 export default function App() {
-  const [personaId, setPersonaId] = useState("mina");
+  const [session, setSession] = useState<OrganizationProfile | null | undefined>(undefined);
+  const personaId = session?.member_id ?? "";
   const [personas, setPersonas] = useState<Persona[]>([]);
-  const [capabilities, setCapabilities] = useState<string[] | null>(null);
+  const capabilities = session?.capabilities ?? null;
+  const organizationNames = session?.organizations.map((organization) => organization.name) ?? [];
   const [surface, setSurface] = useState<ProductSurface>("today");
   const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
   const [isAxOpen, setIsAxOpen] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [message, setMessage] = useState("");
-  const [contextOptions, setContextOptions] = useState<ConversationContextReference[]>([]);
+  const [contextOptions, setContextOptions] = useState<LabeledContextReference[]>([]);
   const [selectedContextKey, setSelectedContextKey] = useState("");
   const activeConversationRef = useRef<Conversation | null>(null);
   const listRequestGeneration = useRef(0);
@@ -53,45 +70,63 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-
-    void getDeveloperPersonas()
-      .then((availablePersonas) => {
-        if (cancelled) return;
-        setPersonas(availablePersonas.filter((persona) => persona.id !== "demo-admin"));
+    void getSession()
+      .then((profile) => {
+        if (!cancelled) setSession(profile);
       })
       .catch(() => {
-        if (!cancelled) setError("사용자 정보를 불러오지 못했습니다.");
+        if (!cancelled) {
+          setSession(null);
+          setError("세션을 확인하지 못했습니다. 서버 연결을 확인해 주세요.");
+        }
       });
-
     return () => {
       cancelled = true;
     };
   }, []);
 
   useEffect(() => {
+    if (!session) return;
     let cancelled = false;
-
-    void getMyOrganizationProfile(personaId)
-      .then((profile) => {
-        if (!cancelled) setCapabilities(profile.capabilities);
+    void getDeveloperPersonas()
+      .then((availablePersonas) => {
+        if (!cancelled) setPersonas(availablePersonas.filter((persona) => persona.id !== "demo-admin"));
       })
       .catch(() => {
-        if (!cancelled) setCapabilities([]);
+        if (!cancelled) setPersonas([]);
       });
-
     return () => {
       cancelled = true;
     };
-  }, [personaId]);
+  }, [session]);
+
+  function resetWorkspace() {
+    listRequestGeneration.current += 1;
+    detailRequestGeneration.current += 1;
+    setSurface("today");
+    setConversations([]);
+    activeConversationRef.current = null;
+    setActiveConversation(null);
+    setIsAxOpen(false);
+    setError(null);
+  }
+
+  async function endSession() {
+    try {
+      await logout();
+    } catch {
+      // The cookie is cleared server-side on a best-effort basis; the client forgets the session regardless.
+    }
+    resetWorkspace();
+    setSession(null);
+  }
 
   const refreshConversations = useCallback(async () => {
     const requestGeneration = ++listRequestGeneration.current;
-    const items = await getConversations(personaId);
+    const items = await getConversations();
     if (requestGeneration !== listRequestGeneration.current) return;
     const current = activeConversationRef.current;
-    const matchingItem = current
-      ? items.find((item) => item.conversation_id === current.conversation_id)
-      : undefined;
+    const matchingItem = current ? items.find((item) => item.conversation_id === current.conversation_id) : undefined;
     const nextActive = !current
       ? items[0] ?? null
       : !matchingItem
@@ -104,9 +139,7 @@ export default function App() {
     setActiveConversation(nextActive);
     setConversations(
       items.map((item) =>
-        current && item.conversation_id === current.conversation_id && item.version <= current.version
-          ? current
-          : item,
+        current && item.conversation_id === current.conversation_id && item.version <= current.version ? current : item,
       ),
     );
   }, [personaId]);
@@ -116,7 +149,7 @@ export default function App() {
     if (!active) return;
     const conversationId = active.conversation_id;
     const requestGeneration = ++detailRequestGeneration.current;
-    const next = await getConversation(personaId, conversationId);
+    const next = await getConversation(conversationId);
     if (requestGeneration !== detailRequestGeneration.current) return;
     const current = activeConversationRef.current;
     if (current?.conversation_id !== conversationId) return;
@@ -124,16 +157,13 @@ export default function App() {
     activeConversationRef.current = projection;
     setActiveConversation(projection);
     setConversations((items) =>
-      items.map((item) =>
-        item.conversation_id === conversationId && item.version <= projection.version ? projection : item,
-      ),
+      items.map((item) => (item.conversation_id === conversationId && item.version <= projection.version ? projection : item)),
     );
   }, [personaId]);
 
   useEffect(() => {
     if (!isAxOpen) return;
-    void refreshConversations()
-      .catch(() => setError("AX 대화를 불러오지 못했습니다."));
+    void refreshConversations().catch(() => setError("AX 대화를 불러오지 못했습니다."));
   }, [isAxOpen, refreshConversations]);
 
   const isProcessing = useMemo(
@@ -155,35 +185,21 @@ export default function App() {
     if (!isAxOpen) return;
     let cancelled = false;
     const loadContextOptions = async () => {
-      if (surface === "work") {
-        const tasks = (await getMyWork(personaId)).filter(isDirectTask);
-        if (!cancelled) {
-          setContextOptions(
-            tasks.map((task) => ({
-              resource_type: "task",
-              resource_id: task.task_id,
-              resource_version: task.version,
-              included: true,
-            })),
-          );
-        }
-        return;
-      }
-      if (surface === "inbox") {
-        const requests = await getActionInbox(personaId);
-        if (!cancelled) {
-          setContextOptions(
-            requests.map((request) => ({
-              resource_type: "work_request",
-              resource_id: request.request_id,
-              resource_version: request.version,
-              included: true,
-            })),
-          );
-        }
-        return;
-      }
-      if (!cancelled) setContextOptions([]);
+      const wantsTasks = surface === "today" || surface === "work" || surface === "report";
+      const wantsRequests = (surface === "today" || surface === "inbox") && (capabilities?.includes("work_request.decide") ?? false);
+      const [tasks, requests] = await Promise.all([
+        wantsTasks ? getMyWork().then((items) => items.filter(isDirectTask)).catch(() => []) : Promise.resolve([]),
+        wantsRequests ? getActionInbox().catch(() => []) : Promise.resolve([]),
+      ]);
+      if (cancelled) return;
+      const next: LabeledContextReference[] = [
+        ...tasks.map((task) => ({ resource_type: "task" as const, resource_id: task.task_id, resource_version: task.version, included: true, label: task.title })),
+        ...requests.map((request) => ({ resource_type: "work_request" as const, resource_id: request.request_id, resource_version: request.version, included: true, label: request.title })),
+      ];
+      setContextOptions((current) => {
+        const pinned = current.filter((item) => item.pinned && !next.some((candidate) => contextKey(candidate) === contextKey(item)));
+        return [...pinned, ...next];
+      });
     };
     void loadContextOptions().catch(() => {
       if (!cancelled) setError("현재 화면의 AX 참고 자료를 불러오지 못했습니다.");
@@ -191,7 +207,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [isAxOpen, personaId, surface]);
+  }, [capabilities, isAxOpen, personaId, surface]);
 
   useEffect(() => {
     if (!contextOptions.some((item) => contextKey(item) === selectedContextKey)) {
@@ -199,31 +215,56 @@ export default function App() {
     }
   }, [contextOptions, selectedContextKey]);
 
+  function adoptConversation(conversation: Conversation) {
+    listRequestGeneration.current += 1;
+    detailRequestGeneration.current += 1;
+    activeConversationRef.current = conversation;
+    setConversations((items) => [conversation, ...items.filter((item) => item.conversation_id !== conversation.conversation_id)]);
+    setActiveConversation(conversation);
+  }
+
   async function startConversation() {
     try {
-      const conversation = await createConversation(personaId);
-      listRequestGeneration.current += 1;
-      detailRequestGeneration.current += 1;
-      activeConversationRef.current = conversation;
-      setConversations((items) => [
-        conversation,
-        ...items.filter((item) => item.conversation_id !== conversation.conversation_id),
-      ]);
-      setActiveConversation(conversation);
+      adoptConversation(await createConversation());
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "새 대화를 만들지 못했습니다.");
     }
+  }
+
+  async function askAx(text: string) {
+    setIsAxOpen(true);
+    try {
+      const conversation = await createConversation();
+      adoptConversation(conversation);
+      await sendConversationMessage(conversation.conversation_id, text, [], createIdempotencyKey());
+      await refreshActiveConversation();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "AX에게 질문을 보내지 못했습니다.");
+    }
+  }
+
+  function askAboutTask(task: DirectTask) {
+    const reference: LabeledContextReference = {
+      resource_type: "task",
+      resource_id: task.task_id,
+      resource_version: task.version,
+      included: true,
+      label: task.title,
+      pinned: true,
+    };
+    setContextOptions((current) => (current.some((item) => contextKey(item) === contextKey(reference)) ? current : [reference, ...current]));
+    setSelectedContextKey(contextKey(reference));
+    setMessage((current) => (current.trim() ? current : `'${task.title}' 업무에 대해 알려줘.`));
+    setIsAxOpen(true);
   }
 
   async function sendMessage() {
     if (!message.trim() || !activeConversation) return;
     try {
       const selectedContext = contextOptions.find((item) => contextKey(item) === selectedContextKey);
-      await sendConversationMessage(
-        personaId,
-        activeConversation.conversation_id,
+      await sendConversationMessage(activeConversation.conversation_id,
         message,
-        selectedContext ? [selectedContext] : [],
+        selectedContext ? [stripLabel(selectedContext)] : [],
         createIdempotencyKey(),
       );
       setMessage("");
@@ -233,14 +274,11 @@ export default function App() {
     }
   }
 
-  async function decideConversationAction(
-    actionId: string,
-    expectedVersion: number,
-    decision: "approve" | "reject",
-  ) {
+  async function decideConversationAction(actionId: string, expectedVersion: number, decision: "approve" | "reject") {
     try {
-      await decideAction(personaId, actionId, expectedVersion, decision);
+      await decideAction(actionId, expectedVersion, decision);
       await refreshActiveConversation();
+      setToast(decision === "approve" ? "제안을 승인해 반영했습니다." : "제안을 거절했습니다.");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "AX 확인 항목을 처리하지 못했습니다.");
     }
@@ -249,81 +287,104 @@ export default function App() {
   async function cancelActiveConversation() {
     if (!activeConversation) return;
     try {
-      await cancelConversation(personaId, activeConversation.conversation_id, activeConversation.version);
+      await cancelConversation(activeConversation.conversation_id, activeConversation.version);
       await refreshActiveConversation();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "AX 실행을 취소하지 못했습니다.");
     }
   }
 
-  const currentPersona = personas.find((persona) => persona.id === personaId);
-  const currentPersonaName = currentPersona?.display_name ?? "사용자";
+  const currentPersonaName = session?.display_name ?? "사용자";
+  const has = (capability: string) => capabilities?.includes(capability) ?? false;
+  const canReadActions = has("action.read");
+  const canDecideActions = has("action.decide");
+  const visibleNavigation = navigation.filter((item) => item.id !== "report" || has("daily_report.generate"));
   const pageProps = { personaId, onError: setError };
-  const canReadActions = capabilities?.includes("action.read") ?? false;
-  const canDecideActions = capabilities?.includes("action.decide") ?? false;
-  const visibleNavigation = navigation.filter(
-    (item) => item.id !== "report" || capabilities?.includes("daily_report.generate"),
-  );
+  const sharedWorkProps = {
+    personaName: currentPersonaName,
+    personas,
+    canCreateWorkRequests: has("work_request.create"),
+    canDecideActions,
+    canDecideWorkRequests: has("work_request.decide"),
+    canManageOwnTasks: has("task.self_manage"),
+    canReadActions,
+    onAskAboutTask: askAboutTask,
+    onNotice: setToast,
+  };
+
+  if (session === undefined) {
+    return (
+      <main className="login-shell" aria-busy="true">
+        <section className="login-panel">
+          <p className="login-lead">세션을 확인하는 중…</p>
+        </section>
+      </main>
+    );
+  }
+  if (session === null) {
+    return (
+      <LoginPage
+        onLoggedIn={(profile) => {
+          resetWorkspace();
+          setSession(profile);
+        }}
+      />
+    );
+  }
 
   return (
     <main className="thesc-shell">
       <aside className="rail">
         <div className="wordmark">
-          <span className="wordmark-mark" />
-          SCAX AX
+          <span aria-hidden className="wordmark-mark">
+            SC
+          </span>
+          SCAX
         </div>
         <div className="profile">
-          <span className="avatar">{currentPersonaName.slice(0, 1)}</span>
+          <span className="avatar md">{personName(currentPersonaName).slice(0, 1)}</span>
           <div>
-            <b>{currentPersonaName}</b>
-            <small>워크스페이스</small>
+            <b>{personName(currentPersonaName)}</b>
+            <small>{organizationNames.length > 0 ? organizationNames.join(" · ") : "소속 없음"}</small>
           </div>
+        </div>
+        <div className="profile-menu">
+          <button className="btn h30 ghost" onClick={() => void endSession()} type="button">
+            로그아웃
+          </button>
         </div>
         <nav aria-label="제품 탐색">
           {visibleNavigation.map((item) => (
-            <button
-              className={surface === item.id ? "active" : ""}
-              key={item.id}
-              onClick={() => setSurface(item.id)}
-              type="button"
-            >
+            <button className={surface === item.id ? "active" : ""} key={item.id} onClick={() => setSurface(item.id)} type="button">
               {item.label}
             </button>
           ))}
         </nav>
+        <p className="rail-foot">SCAX · 업무 운영 시스템</p>
       </aside>
 
       <section className="canvas">
         <header className="canvas-topbar">
-          <span className="date-chip">2026년 9월 3일</span>
-          <label className="persona-picker">
-            사용자
-            <select
-              onChange={(event) => {
-                listRequestGeneration.current += 1;
-                detailRequestGeneration.current += 1;
-                setSurface("today");
-                setCapabilities(null);
-                setConversations([]);
-                activeConversationRef.current = null;
-                setActiveConversation(null);
-                setPersonaId(event.target.value);
-              }}
-              value={personaId}
-            >
-              {personas.map((persona) => (
-                <option key={persona.id} value={persona.id}>
-                  {persona.display_name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <nav aria-label="현재 위치" className="breadcrumb">
+            {surface === "today" ? (
+              <b>홈</b>
+            ) : (
+              <>
+                <button className="btn link" onClick={() => setSurface("today")} type="button">
+                  홈
+                </button>
+                <span aria-hidden>›</span>
+                <b>{surfaceLabel[surface]}</b>
+              </>
+            )}
+          </nav>
+          <span className="t-meta">{currentPersonaName}</span>
         </header>
 
         {error && (
           <div className="error-banner" role="alert">
             {error}
-            <button onClick={() => setError(null)} type="button">
+            <button className="btn h30 ghost" onClick={() => setError(null)} type="button">
               닫기
             </button>
           </div>
@@ -332,52 +393,55 @@ export default function App() {
         {surface === "today" && (
           <TodayPage
             {...pageProps}
-            canReadActions={canReadActions}
-            canDecideWorkRequests={capabilities?.includes("work_request.decide") ?? false}
-            canGenerateDailyReport={capabilities?.includes("daily_report.generate") ?? false}
+            {...sharedWorkProps}
+            canGenerateDailyReport={has("daily_report.generate")}
+            onAskAx={(text) => void askAx(text)}
             onNavigate={setSurface}
           />
         )}
-        {surface === "work" && (
-          <MyWorkPage
-            {...pageProps}
-            canCreateWorkRequests={capabilities?.includes("work_request.create") ?? false}
-            canManageOwnTasks={capabilities?.includes("task.self_manage") ?? false}
-          />
-        )}
+        {surface === "work" && <MyWorkPage {...pageProps} {...sharedWorkProps} />}
         {surface === "inbox" && (
           <ActionInboxPage
             {...pageProps}
             canDecideActions={canDecideActions}
-            canDecideWorkRequests={capabilities?.includes("work_request.decide") ?? false}
+            canDecideWorkRequests={has("work_request.decide")}
             canReadActions={canReadActions}
+            personas={personas}
           />
         )}
-        {surface === "report" && <DailyReportPage {...pageProps} />}
+        {surface === "report" && <DailyReportPage {...pageProps} personaName={currentPersonaName} />}
         {surface === "org" && <OrgPage {...pageProps} />}
       </section>
-      <button className="ax-launcher" onClick={() => setIsAxOpen(true)} type="button">
-        AX
-      </button>
+
+      {toast && <Toast message={toast} onClose={() => setToast(null)} />}
+
+      {!isAxOpen && (
+        <button className="ax-launcher" onClick={() => setIsAxOpen(true)} type="button">
+          <span aria-hidden>✦</span> AX
+        </button>
+      )}
       {isAxOpen && (
         <aside aria-label="AX 대화" className="ax-drawer">
           <header>
-            <b>AX</b>
-            <button onClick={() => setIsAxOpen(false)} type="button">
+            <div>
+              <b>AX 에이전트</b>
+              <small>
+                {surfaceLabel[surface]} 화면 · {personName(currentPersonaName)} · 허용된 업무 기능만 조회하고 변경은 승인 뒤 반영됩니다
+              </small>
+            </div>
+            <button className="btn h30 ghost" onClick={() => setIsAxOpen(false)} type="button">
               닫기
             </button>
           </header>
-          <button
-            aria-label="새 AX 대화"
-            className="primary"
-            onClick={() => void startConversation()}
-            type="button"
-          >
-            새 대화
-          </button>
+          <div className="ax-composer-actions">
+            <button aria-label="새 AX 대화" className="btn h30 ai" onClick={() => void startConversation()} type="button">
+              ✦ 새 대화
+            </button>
+          </div>
           <div className="ax-conversation-list">
             {conversations.map((conversation) => (
               <button
+                aria-label={conversation.title}
                 aria-pressed={activeConversation?.conversation_id === conversation.conversation_id}
                 data-conversation-id={conversation.conversation_id}
                 key={conversation.conversation_id}
@@ -386,50 +450,61 @@ export default function App() {
                   activeConversationRef.current = conversation;
                   setActiveConversation(conversation);
                 }}
+                title={conversationExcerpt(conversation)}
                 type="button"
               >
-                {conversation.title}
+                <b>{conversation.title}</b>
+                <small>{conversationSummary(conversation)}</small>
               </button>
             ))}
           </div>
           <div className="ax-messages">
-            {activeConversation && (
-              <ConversationTimeline
-                canDecideActions={canDecideActions}
-                conversation={activeConversation}
-                onDecide={decideConversationAction}
-              />
+            {activeConversation ? (
+              <ConversationTimeline canDecideActions={canDecideActions} conversation={activeConversation} onDecide={decideConversationAction} />
+            ) : (
+              <p className="ax-empty">
+                안녕하세요 {personName(currentPersonaName)}님!
+                <br />
+                새 대화를 만들고 업무에 대해 무엇이든 물어보세요.
+              </p>
             )}
           </div>
-          {isProcessing && activeConversation && (
-            <button onClick={() => void cancelActiveConversation()} type="button">
-              실행 취소
-            </button>
-          )}
-          {contextOptions.length > 0 && (
-            <label className="ax-context" htmlFor="ax-context">
-              현재 화면 참고 자료
-              <select
-                id="ax-context"
-                onChange={(event) => setSelectedContextKey(event.target.value)}
-                value={selectedContextKey}
-              >
-                <option value="">첨부하지 않음</option>
-                {contextOptions.map((item) => (
-                  <option key={contextKey(item)} value={contextKey(item)}>
-                    {item.resource_type === "task" ? "업무" : "업무 요청"} · {item.resource_id.slice(0, 8)}
-                  </option>
-                ))}
-              </select>
+          <div className="ax-composer">
+            {contextOptions.length > 0 && (
+              <label className="ax-context" htmlFor="ax-context">
+                현재 화면 참고 자료
+                <select id="ax-context" onChange={(event) => setSelectedContextKey(event.target.value)} value={selectedContextKey}>
+                  <option value="">첨부하지 않음</option>
+                  {contextOptions.map((item) => (
+                    <option key={contextKey(item)} value={contextKey(item)}>
+                      {item.resource_type === "task" ? "업무" : "업무 요청"} · {item.label ?? item.resource_id.slice(0, 8)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <label className="sr-only" htmlFor="ax-message">
+              AX 메시지
             </label>
-          )}
-          <label className="sr-only" htmlFor="ax-message">
-            AX 메시지
-          </label>
-          <textarea id="ax-message" onChange={(event) => setMessage(event.target.value)} value={message} />
-          <button className="primary" disabled={!activeConversation || !message.trim()} onClick={() => void sendMessage()} type="button">
-            {isProcessing ? "대기열에 보내기" : "보내기"}
-          </button>
+            <textarea
+              id="ax-message"
+              onChange={(event) => setMessage(event.target.value)}
+              placeholder={activeConversation ? "업무에 대해 질문하세요" : "먼저 새 대화를 만들어 주세요"}
+              value={message}
+            />
+            <div className="ax-composer-actions">
+              {isProcessing && activeConversation ? (
+                <button className="btn h30 ghost" onClick={() => void cancelActiveConversation()} type="button">
+                  실행 취소
+                </button>
+              ) : (
+                <span />
+              )}
+              <button className="btn primary" disabled={!activeConversation || !message.trim()} onClick={() => void sendMessage()} type="button">
+                {isProcessing ? "대기열에 보내기" : "보내기"}
+              </button>
+            </div>
+          </div>
         </aside>
       )}
     </main>
@@ -447,6 +522,10 @@ function ConversationTimeline({
 }) {
   const queuedMessages = conversation.messages.filter((item) => item.state === "queued");
 
+  if (conversation.turns.length === 0 && queuedMessages.length === 0) {
+    return <p className="ax-empty">아직 발화가 없습니다. 아래에 요청을 적어 보내 주세요.</p>;
+  }
+
   return (
     <>
       {conversation.turns.map((turn) => (
@@ -458,31 +537,24 @@ function ConversationTimeline({
                 {item.body}
               </p>
             ))}
-          <small className={`ax-turn-state ${turn.state}`}>{turn.state === "failed" ? "실패" : turn.state === "running" ? "실행 중" : turn.state === "pending" ? "대기 중" : "완료"}</small>
+          <small className={`ax-turn-state ${turn.state}`}>{executionStateText(turn.state)}</small>
           {turn.error && <p className="ax-turn-error">{turn.error}</p>}
-          {conversation.tool_invocations
-            .filter((tool) => tool.turn_id === turn.turn_id)
-            .map((tool) => (
-              <details key={`${tool.turn_id}-${tool.sequence}`}>
-                <summary>{tool.display_name} · {tool.state}</summary>
-                <p>{tool.input_summary}</p>
-                <p>{tool.result_summary ?? tool.error_summary ?? "실행 중"}</p>
-                <p>{tool.latency_ms === null ? "소요 시간 기록 없음" : `${tool.latency_ms}ms`}</p>
-              </details>
-            ))}
+          <ToolTimeline tools={conversation.tool_invocations.filter((tool) => tool.turn_id === turn.turn_id)} />
           {(conversation.actions ?? [])
             .filter((action) => action.turn_id === turn.turn_id)
             .map((action) => (
               <section className="ax-action-card" data-action-id={action.action_id} key={action.action_id}>
                 <b>{action.title}</b>
                 <p>{action.payload_summary}</p>
-                <small>{action.state === "pending" ? "확인 필요" : action.state === "approved" ? "승인됨" : "거절됨"}</small>
+                <small className={action.state}>
+                  {action.state === "pending" ? "확인 필요 · 승인해야 반영됩니다" : action.state === "approved" ? "승인됨" : "거절됨"}
+                </small>
                 {action.state === "pending" && canDecideActions && (
                   <div>
-                    <button onClick={() => void onDecide(action.action_id, action.version, "approve")} type="button">
+                    <button className="btn h30 primary" onClick={() => void onDecide(action.action_id, action.version, "approve")} type="button">
                       승인
                     </button>
-                    <button onClick={() => void onDecide(action.action_id, action.version, "reject")} type="button">
+                    <button className="btn h30" onClick={() => void onDecide(action.action_id, action.version, "reject")} type="button">
                       거절
                     </button>
                   </div>
@@ -498,6 +570,63 @@ function ConversationTimeline({
       ))}
     </>
   );
+}
+
+function ToolTimeline({ tools }: { tools: Conversation["tool_invocations"] }) {
+  if (tools.length === 0) return null;
+  const failed = tools.filter((tool) => tool.state === "failed" || tool.state === "denied").length;
+  const running = tools.filter((tool) => tool.state === "running" || tool.state === "pending").length;
+  const overall = running > 0 ? "실행 중" : failed > 0 ? `실패 ${failed}건` : "완료";
+  const names = [...new Set(tools.map((tool) => tool.display_name))].join(", ");
+  return (
+    <details className="ax-tools" open={running > 0}>
+      <summary>
+        도구 {tools.length}개 실행 · {overall}
+        <small>{names}</small>
+      </summary>
+      <ol className="ax-tool-list">
+        {tools.map((tool) => (
+          <li className={`ax-tool ${tool.state}`} key={`${tool.turn_id}-${tool.sequence}`}>
+            <b>
+              {tool.display_name} · {executionStateText(tool.state)}
+            </b>
+            <p>{tool.input_summary}</p>
+            <p>{tool.result_summary ?? tool.error_summary ?? "실행 중"}</p>
+            <p>{tool.latency_ms === null ? "소요 시간 기록 없음" : `${tool.latency_ms}ms`}</p>
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+}
+
+const summaryStateLabel: Record<string, string> = {
+  pending: "접수됨",
+  running: "실행 중",
+  completed: "완료",
+  failed: "실패",
+  cancelled: "취소됨",
+};
+
+function conversationExcerpt(conversation: Conversation): string {
+  const firstUserMessage = conversation.messages.find((item) => item.role === "user");
+  if (!firstUserMessage) return conversation.title;
+  return firstUserMessage.body.replace(/\s+/g, " ").trim();
+}
+
+function conversationSummary(conversation: Conversation): string {
+  const userMessages = conversation.messages.filter((item) => item.role === "user").length;
+  if (userMessages === 0) return "발화 없음";
+  const queued = conversation.messages.filter((item) => item.state === "queued").length;
+  if (queued > 0) return `발화 ${userMessages} · 대기열 ${queued}`;
+  const latestTurn = conversation.turns.at(-1);
+  const state = latestTurn ? summaryStateLabel[latestTurn.state] ?? latestTurn.state : "접수됨";
+  return `발화 ${userMessages} · ${state}`;
+}
+
+function stripLabel(reference: LabeledContextReference): ConversationContextReference {
+  const { label: _label, pinned: _pinned, ...rest } = reference;
+  return rest;
 }
 
 function contextKey(reference: ConversationContextReference): string {

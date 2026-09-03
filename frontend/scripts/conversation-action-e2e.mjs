@@ -1,6 +1,6 @@
 import { chromium } from "@playwright/test";
 
-import { pollFor } from "./e2e-helpers.mjs";
+import { pollFor, loginAs, switchAccount } from "./e2e-helpers.mjs";
 
 const frontendUrl = process.env.SCAX_E2E_URL ?? "http://127.0.0.1:5176";
 const requestTitle = `AX 승인 업무 요청 ${Date.now()}`;
@@ -14,6 +14,7 @@ const browser = await chromium.launch({
 try {
   const page = await browser.newPage();
   await page.goto(frontendUrl, { waitUntil: "domcontentloaded" });
+  await loginAs(page, "mina");
   const navigation = page.getByRole("navigation", { name: "제품 탐색" });
   await page.getByRole("button", { name: "AX" }).click();
 
@@ -66,7 +67,7 @@ try {
   const drawerActionCard = page.locator(`.ax-action-card[data-action-id="${pending.action_id}"]`);
   await drawerActionCard.waitFor({ timeout: 20_000 });
 
-  await page.getByRole("button", { name: "닫기" }).click();
+  await page.getByRole("button", { name: "닫기", exact: true }).click();
   await navigation.getByRole("button", { name: "판단" }).click();
   const actionSection = page.locator(".decision-empty-state", { hasText: "확인이 필요한 변경" });
   const actionCard = actionSection.locator(`li[data-action-id="${pending.action_id}"]`);
@@ -101,7 +102,7 @@ try {
     throw new Error("Action approval did not preserve the canonical Action/audit in both product projections");
   }
 
-  await page.getByLabel("사용자").selectOption("jiho");
+  await switchAccount(page, "jiho");
   await navigation.getByRole("button", { name: "판단" }).click();
   const jihoRequestCard = page
     .locator(".decision-empty-state", { hasText: "확인이 필요한 요청" })

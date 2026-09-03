@@ -8,6 +8,45 @@ const jsonResponse = (body: unknown) =>
     headers: { "Content-Type": "application/json" },
   });
 
+
+type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promise<unknown>;
+
+/** Wraps a persona-header based fetch mock with a login session so tests exercise the real auth gate. */
+function withSession(fetchMock: FetchImpl, initialPersona = "mina"): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
+  let current: string | null = initialPersona;
+  const withPersona = (init?: RequestInit): RequestInit => ({
+    ...init,
+    headers: { ...(init?.headers as Record<string, string> | undefined), ...(current ? { "X-Demo-Persona": current } : {}) },
+  });
+  return async (input, init) => {
+    const path = String(input);
+    if (path === "/api/auth/providers") {
+      const personas = await ((await fetchMock("/api/developer/personas", withPersona(init))) as Response).json();
+      return jsonResponse({ developer: true, oidc: false, accounts: personas });
+    }
+    if (path === "/api/auth/login") {
+      current = (JSON.parse(String(init?.body)) as { account: string }).account;
+      return (await fetchMock("/api/organization/me", withPersona({ ...init, method: "GET", body: undefined }))) as Response;
+    }
+    if (path === "/api/auth/logout") {
+      current = null;
+      return new Response(null, { status: 204 });
+    }
+    if (path === "/api/auth/me") {
+      if (!current) return new Response(JSON.stringify({ detail: "로그인이 필요합니다." }), { status: 401 });
+      return (await fetchMock("/api/organization/me", withPersona(init))) as Response;
+    }
+    return (await fetchMock(path, withPersona(init))) as Response;
+  };
+}
+
+async function switchAccount(personaId: string, displayName: string) {
+  fireEvent.click(screen.getByRole("button", { name: "로그아웃" }));
+  fireEvent.click(await screen.findByRole("radio", { name: (name) => name.startsWith(displayName) }));
+  fireEvent.click(screen.getByRole("button", { name: "로그인" }));
+  await screen.findByRole("navigation", { name: "제품 탐색" });
+}
+
 describe("product surfaces", () => {
   afterEach(() => {
     cleanup();
@@ -79,7 +118,7 @@ describe("product surfaces", () => {
 
       return new Response("not found", { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
 
@@ -132,11 +171,11 @@ describe("product surfaces", () => {
       if (path === "/api/actions" || path === "/api/action-inbox") return jsonResponse([]);
       return new Response("not found", { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
+    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "내 업무" }));
 
     expect(await screen.findByText("읽기 전용 업무")).toBeTruthy();
     expect(screen.queryByLabelText("업무 제목")).toBeNull();
@@ -170,17 +209,17 @@ describe("product surfaces", () => {
       }
       return new Response("not found", { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(within(navigation).getByRole("button", { name: "보고" }));
+    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "보고" }));
     expect(await screen.findByRole("heading", { name: "개인 일일보고" })).toBeTruthy();
 
-    fireEvent.change(screen.getByLabelText("사용자"), { target: { value: "jiho" } });
-    expect(await screen.findByRole("heading", { name: "오늘의 업무를 확인하세요" })).toBeTruthy();
+    await switchAccount("jiho", "지호 (팀장)");
+    expect(await screen.findByText(/반갑습니다 지호님!/)).toBeTruthy();
     await waitFor(() => {
-      expect(within(navigation).queryByRole("button", { name: "보고" })).toBeNull();
+      expect(within(screen.getByRole("navigation", { name: "제품 탐색" })).queryByRole("button", { name: "보고" })).toBeNull();
     });
     expect(
       fetchMock.mock.calls.filter(([path, init]) => {
@@ -257,11 +296,13 @@ describe("product surfaces", () => {
       }
       return new Response("not found", { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
+    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "내 업무" }));
+    fireEvent.click(await screen.findByRole("button", { name: "새 업무 추가" }));
+    fireEvent.click(screen.getByRole("tab", { name: "요청" }));
     await screen.findByLabelText("담당 후보");
     fireEvent.change(screen.getByLabelText("요청할 업무"), { target: { value: "UI로 만든 업무 요청" } });
     fireEvent.click(screen.getByRole("button", { name: "업무 요청 보내기" }));
@@ -273,12 +314,12 @@ describe("product surfaces", () => {
       );
     });
 
-    fireEvent.change(screen.getByLabelText("사용자"), { target: { value: "jiho" } });
+    await switchAccount("jiho", "지호 (팀장)");
     await waitFor(() => {
-      expect(within(navigation).queryByRole("button", { name: "보고" })).toBeNull();
+      expect(within(screen.getByRole("navigation", { name: "제품 탐색" })).queryByRole("button", { name: "보고" })).toBeNull();
     });
-    fireEvent.click(within(navigation).getByRole("button", { name: "오늘" }));
-    expect(await screen.findByText("오늘의 업무를 확인하세요")).toBeTruthy();
+    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "오늘" }));
+    expect(await screen.findByText(/반갑습니다 지호님!/)).toBeTruthy();
     expect(screen.queryByText("보고 리마인드")).toBeNull();
     expect(screen.queryByRole("button", { name: "일일보고 작성" })).toBeNull();
     expect(
@@ -302,12 +343,12 @@ describe("product surfaces", () => {
         );
       }),
     ).toHaveLength(0);
-    fireEvent.click(within(navigation).getByRole("button", { name: "판단" }));
+    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "판단" }));
     expect(await screen.findByText("UI로 만든 업무 요청")).toBeTruthy();
     expect(screen.getByRole("button", { name: "수락" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "수락" }));
 
-    fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
+    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "내 업무" }));
     expect(await screen.findByText("UI로 만든 업무 요청")).toBeTruthy();
   });
 
@@ -349,11 +390,11 @@ describe("product surfaces", () => {
       }
       return new Response("not found", { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(within(navigation).getByRole("button", { name: "판단" }));
+    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "판단" }));
 
     expect((await screen.findAllByText("업무 만들기")).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "승인" }));
@@ -420,11 +461,11 @@ describe("product surfaces", () => {
       }
       return new Response("not found", { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
     await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    fireEvent.click(await screen.findByRole("button", { name: "AX" }));
 
     expect((await screen.findAllByText("업무 만들기")).length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "승인" })).toBeNull();
@@ -486,13 +527,13 @@ describe("product surfaces", () => {
       }
       return new Response("not found", { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
     await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    fireEvent.click(await screen.findByRole("button", { name: "AX" }));
 
-    const details = await screen.findByText("내 업무 조회 · completed");
+    const details = await screen.findByText("내 업무 조회 · 완료");
     fireEvent.click(details);
     expect(await screen.findByText("현재 권한의 업무만 조회")).toBeTruthy();
     expect(screen.getByText("업무 2건")).toBeTruthy();
@@ -546,11 +587,11 @@ describe("product surfaces", () => {
       }
       return new Response("not found", { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(within(navigation).getByRole("button", { name: "보고" }));
+    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "보고" }));
 
     expect((await screen.findByLabelText("일일보고 초안") as HTMLTextAreaElement).value).toBe(
       "다시 연 보고 초안",
@@ -585,11 +626,11 @@ describe("product surfaces", () => {
       }
       return new Response("not found", { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(within(navigation).getByRole("button", { name: "보고" }));
+    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "보고" }));
     expect((await screen.findByRole("alert")).textContent).toContain("기존 날짜를 불러오지 못했습니다.");
 
     fireEvent.change(screen.getByLabelText("보고일"), { target: { value: "2026-09-02" } });
@@ -650,11 +691,11 @@ describe("product surfaces", () => {
       }
       return new Response("not found", { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
     await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    fireEvent.click(await screen.findByRole("button", { name: "AX" }));
     await waitFor(() => {
       expect(
         fetchMock.mock.calls.some(([path, init]) => path === "/api/conversations" && !init?.method),
@@ -714,14 +755,14 @@ describe("product surfaces", () => {
       }
       return new Response("not found", { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
     await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    fireEvent.click(await screen.findByRole("button", { name: "AX" }));
     await waitFor(() => expect(listResolvers).toHaveLength(1));
     fireEvent.click(screen.getByRole("button", { name: "닫기" }));
-    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    fireEvent.click(await screen.findByRole("button", { name: "AX" }));
     await waitFor(() => expect(listResolvers).toHaveLength(2));
 
     listResolvers[1](
@@ -809,11 +850,11 @@ describe("product surfaces", () => {
       }
       return new Response("not found", { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
     await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    fireEvent.click(await screen.findByRole("button", { name: "AX" }));
     await waitFor(() => expect(detailResolvers).toHaveLength(2), { timeout: 2_500 });
 
     detailResolvers[1](jsonResponse(detail(3, "최신 상세 상태", "completed")));
@@ -914,14 +955,14 @@ describe("product surfaces", () => {
       }
       return new Response("not found", { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
     await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    fireEvent.click(await screen.findByRole("button", { name: "AX" }));
     await waitFor(() => expect(detailResolvers).toHaveLength(1), { timeout: 1_500 });
     fireEvent.click(screen.getByRole("button", { name: "닫기" }));
-    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    fireEvent.click(await screen.findByRole("button", { name: "AX" }));
     await waitFor(() => expect(listResolvers).toHaveLength(1));
 
     detailResolvers[0](jsonResponse(conversation("상세의 최신 상태", "completed", true)));
@@ -934,13 +975,13 @@ describe("product surfaces", () => {
       expect(screen.getByText("상세의 최신 상태")).toBeTruthy();
       expect(screen.queryByText("목록의 오래된 상태")).toBeNull();
       expect(screen.getAllByText("최신 판단 카드").length).toBeGreaterThanOrEqual(2);
-      expect(screen.getByText("내 업무 조회 · completed")).toBeTruthy();
+      expect(screen.getByText("내 업무 조회 · 완료")).toBeTruthy();
     });
     fireEvent.click(screen.getByRole("button", { name: "교차 요청 확인" }));
     expect(screen.getByText("상세의 최신 상태")).toBeTruthy();
     expect(screen.queryByText("목록의 오래된 상태")).toBeNull();
     expect(screen.getAllByText("최신 판단 카드").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("내 업무 조회 · completed")).toBeTruthy();
+    expect(screen.getByText("내 업무 조회 · 완료")).toBeTruthy();
   });
 
   it("keeps existing AX sessions when a new Conversation is created", async () => {
@@ -986,11 +1027,11 @@ describe("product surfaces", () => {
       }
       return new Response("not found", { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
     await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    fireEvent.click(await screen.findByRole("button", { name: "AX" }));
     expect(await screen.findByRole("button", { name: "기존 대화" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "새 AX 대화" }));
 
@@ -1026,11 +1067,11 @@ describe("product surfaces", () => {
       }
       return new Response("not found", { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
     await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    fireEvent.click(await screen.findByRole("button", { name: "AX" }));
     await waitFor(() => expect(resolveConversationList).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "새 AX 대화" }));
     expect((await screen.findByRole("alert")).textContent).toContain("대화를 만들지 못했습니다.");
@@ -1101,18 +1142,17 @@ describe("product surfaces", () => {
       if (path === "/api/conversations" && personaId === "jiho") return jsonResponse([]);
       return new Response("not found", { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
-    await screen.findByRole("option", { name: "지호 (팀장)" });
-    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    fireEvent.click(await screen.findByRole("button", { name: "AX" }));
     await waitFor(() => expect(resolveMinaList).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "새 AX 대화" }));
     expect(await screen.findByText("민아의 현재 발화")).toBeTruthy();
 
-    fireEvent.change(screen.getByLabelText("사용자"), { target: { value: "jiho" } });
+    await switchAccount("jiho", "지호");
+    fireEvent.click(await screen.findByRole("button", { name: "AX" }));
     await waitFor(() => {
-      expect((screen.getByLabelText("사용자") as HTMLSelectElement).value).toBe("jiho");
       expect(screen.queryByText("민아의 현재 발화")).toBeNull();
     });
     resolveMinaList?.(
@@ -1162,15 +1202,15 @@ describe("product surfaces", () => {
       if (path === "/api/conversations/mina-conversation") return new Promise<Response>((resolve) => { resolveMinaDetail = resolve; });
       return new Response("not found", { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
-    await screen.findByRole("option", { name: "지호" });
-    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    fireEvent.click(await screen.findByRole("button", { name: "AX" }));
     const conversationButton = await screen.findByRole("button", { name: "민아의 비공개 대화" });
     fireEvent.click(conversationButton);
     await waitFor(() => expect(resolveMinaDetail).toBeTruthy(), { timeout: 2_500 });
-    fireEvent.change(screen.getByLabelText("사용자"), { target: { value: "jiho" } });
+    await switchAccount("jiho", "지호");
+    fireEvent.click(await screen.findByRole("button", { name: "AX" }));
     await waitFor(() => expect(resolveJihoList).toBeTruthy());
     resolveJihoList?.(jsonResponse([{
       ...minaConversation,
@@ -1193,7 +1233,7 @@ describe("product surfaces", () => {
       expect(screen.queryByRole("button", { name: "민아의 비공개 대화" })).toBeNull();
       expect(screen.getByRole("button", { name: "지호의 대화" })).toBeTruthy();
       expect(screen.queryByText("민아의 비공개 본문")).toBeNull();
-      expect(screen.queryByText("민아 도구 · completed")).toBeNull();
+      expect(screen.queryByText("민아 도구 · 완료")).toBeNull();
       expect(screen.queryByText("민아 판단")).toBeNull();
     });
   });
@@ -1270,11 +1310,11 @@ describe("product surfaces", () => {
       }
       return new Response("not found", { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
     await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    fireEvent.click(await screen.findByRole("button", { name: "AX" }));
     await waitFor(() => {
       expect(
         fetchMock.mock.calls.some(([path, init]) => path === "/api/conversations" && !init?.method),
@@ -1354,12 +1394,12 @@ describe("product surfaces", () => {
       if (path === "/api/conversations/conversation-1") return jsonResponse(conversation);
       return new Response("not found", { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
-    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "내 업무" }));
+    fireEvent.click(await screen.findByRole("button", { name: "AX" }));
 
     await screen.findByText("업무 확인");
     const context = await screen.findByLabelText("현재 화면 참고 자료");

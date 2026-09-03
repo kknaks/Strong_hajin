@@ -1,6 +1,6 @@
 import { chromium } from "@playwright/test";
 
-import { pollFor } from "./e2e-helpers.mjs";
+import { pollFor, loginAs, switchAccount } from "./e2e-helpers.mjs";
 
 const frontendUrl = process.env.SCAX_E2E_URL ?? "http://127.0.0.1:5176";
 const reportDate = "2026-09-02";
@@ -15,11 +15,13 @@ const browser = await chromium.launch({
 try {
   const page = await browser.newPage();
   await page.goto(frontendUrl, { waitUntil: "domcontentloaded" });
+  await loginAs(page, "mina");
   const navigation = page.getByRole("navigation", { name: "제품 탐색" });
   await navigation.getByRole("button", { name: "내 업무" }).click();
+  await page.getByRole("button", { name: "새 업무 추가" }).click();
   await page.getByLabel("업무 제목").fill(title);
-  await page.getByRole("button", { name: "업무 추가" }).click();
-  const task = page.locator("article.progress-row", { hasText: title });
+  await page.getByRole("button", { name: "업무 추가", exact: true }).click();
+  const task = page.locator("tr.progress-row", { hasText: title });
   await task.getByRole("button", { name: "시작" }).click();
   await navigation.getByRole("button", { name: "보고" }).click();
   await page.getByLabel("보고일").fill(reportDate);
@@ -64,7 +66,7 @@ try {
   );
   const pendingVersion = action.version;
   await page.locator(`.ax-action-card[data-action-id="${action.action_id}"]`).waitFor();
-  await page.getByRole("button", { name: "닫기" }).click();
+  await page.getByRole("button", { name: "닫기", exact: true }).click();
   await navigation.getByRole("button", { name: "판단" }).click();
   const actionCard = page.locator(`li[data-action-id="${action.action_id}"]`);
   await actionCard.getByRole("button", { name: "승인" }).click();

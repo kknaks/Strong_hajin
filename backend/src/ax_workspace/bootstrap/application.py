@@ -185,9 +185,9 @@ class WorkflowApplication:
             session.commit()
             return result
 
-    def list_tasks(self, principal: Principal) -> list[dict[str, Any]]:
+    def list_tasks(self, principal: Principal, *, include_closed: bool = False) -> list[dict[str, Any]]:
         with self._session_factory() as session:
-            return TaskApplication(SqlAlchemyTaskRepository(session)).list_for(principal)
+            return TaskApplication(SqlAlchemyTaskRepository(session)).list_for(principal, include_closed=include_closed)
 
     def get_task(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
         with self._session_factory() as session:
@@ -377,6 +377,14 @@ class WorkflowApplication:
             result = TaskApplication(SqlAlchemyTaskRepository(session)).transition(task_id, principal, target, reason, expected_version)
             session.commit()
             return result
+
+
+def create_auth_session_store(settings: Settings):
+    """Login sessions live beside the operational database; the entrypoint only sees this factory."""
+    from ax_workspace.platform.auth_sessions import SqlAlchemyAuthSessionStore
+    from ax_workspace.platform.persistence import make_session_factory
+
+    return SqlAlchemyAuthSessionStore(make_session_factory(settings.database_url))
 
 
 def create_workflow_application(

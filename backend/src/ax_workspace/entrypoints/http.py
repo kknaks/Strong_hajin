@@ -3,12 +3,20 @@ from __future__ import annotations
 from typing import Literal
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
 from ax_workspace.modules.organization_access.domain import Principal, SEED_PERSONAS
-from ax_workspace.entrypoints.http_auth import DeveloperAuthAdapter, developer_principal
-from ax_workspace.bootstrap.application import create_workflow_application
+from ax_workspace.entrypoints.http_auth import (
+    SESSION_COOKIE,
+    SESSION_MAX_AGE,
+    DeveloperAuthAdapter,
+    cookie_secure,
+    developer_principal,
+    session_id_from,
+    session_principal,
+)
+from ax_workspace.bootstrap.application import create_auth_session_store, create_workflow_application
 from ax_workspace.modules.ax_execution.application import (
     AccessDenied,
     InvalidDecision,
@@ -28,6 +36,11 @@ from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
 class PersonaResponse(BaseModel):
     id: str
     display_name: str
+
+
+class LoginRequest(BaseModel):
+    provider: Literal["developer"] = "developer"
+    account: str = Field(min_length=1, max_length=100)
 
 
 class CatalogItemResponse(BaseModel):
@@ -162,10 +175,57 @@ def create_app(
     if settings.developer_auth_enabled:
         app.state.developer_auth = DeveloperAuthAdapter(settings)
         app.state.workflow_application = create_workflow_application(settings, report_provider)
+        app.state.auth_sessions = create_auth_session_store(settings)
 
         @app.get("/api/developer/personas", response_model=list[PersonaResponse])
         def personas() -> list[PersonaResponse]:
             return [PersonaResponse(id=persona.id, display_name=persona.display_name) for persona in SEED_PERSONAS.values()]
+
+        @app.get("/api/auth/providers")
+        def auth_providers() -> dict[str, object]:
+            return {
+                "developer": settings.developer_auth_enabled,
+                "oidc": False,
+                "accounts": [
+                    {"id": persona.id, "display_name": persona.display_name} for persona in SEED_PERSONAS.values()
+                ]
+                if settings.developer_auth_enabled
+                else [],
+            }
+
+        @app.post("/api/auth/login")
+        def login(request: LoginRequest, response: Response) -> dict[str, object]:
+            allowed = app.state.developer_auth.authenticate(request.account)
+            try:
+                principal = app.state.workflow_application.authenticated_principal(str(allowed.id))
+            except LookupError as error:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active organization membership is required.") from error
+            session_id = app.state.auth_sessions.create(str(principal.id), app.state.developer_auth.provider_name)
+            response.set_cookie(
+                SESSION_COOKIE,
+                str(session_id),
+                max_age=SESSION_MAX_AGE,
+                httponly=True,
+                samesite="lax",
+                secure=cookie_secure(settings),
+                path="/",
+            )
+            return app.state.workflow_application.my_organization_profile(principal)
+
+        @app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+        def logout(request: Request, response: Response) -> Response:
+            session_id = session_id_from(request)
+            if session_id is not None:
+                app.state.auth_sessions.revoke(session_id)
+            response.delete_cookie(SESSION_COOKIE, path="/")
+            return Response(status_code=status.HTTP_204_NO_CONTENT, headers=dict(response.headers))
+
+        @app.get("/api/auth/me")
+        def auth_me(request: Request) -> dict[str, object]:
+            principal = session_principal(request)
+            if principal is None:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="로그인이 필요합니다.")
+            return app.state.workflow_application.my_organization_profile(principal)
 
         @app.get("/api/catalog", response_model=list[CatalogItemResponse])
         def catalog(principal: Principal = Depends(developer_principal)) -> list[CatalogItemResponse]:
@@ -314,9 +374,12 @@ def create_app(
                 raise _runtime_error(error) from error
 
         @app.get("/api/tasks")
-        def list_tasks(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+        def list_tasks(
+            include_closed: bool = False,
+            principal: Principal = Depends(developer_principal),
+        ) -> list[dict[str, object]]:
             try:
-                return app.state.workflow_application.list_tasks(principal)
+                return app.state.workflow_application.list_tasks(principal, include_closed=include_closed)
             except Exception as error:
                 raise _runtime_error(error) from error
 

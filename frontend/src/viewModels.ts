@@ -13,6 +13,8 @@ export type DirectTask = {
   state: TaskState;
   version: number;
   block_reason: string | null;
+  created_at?: string;
+  updated_at?: string;
 };
 
 type AcceptedAssignment = {
@@ -81,6 +83,8 @@ export type DailyReportStatus = {
 export type WorkRequest = {
   request_id: string;
   title: string;
+  requester_id?: string;
+  assignee_id?: string;
   state: "pending" | "negotiating" | "accepted" | "rejected";
   version: number;
   task_id: string | null;
