@@ -12,12 +12,13 @@ Prerequisites: Python 3.12+, [uv](https://docs.astral.sh/uv/), Docker.
 
 ```sh
 make install
+make web-install
 make postgres-up
 make reset-demo
 make api
 ```
 
-In a second terminal, run `make test`. The API starts at `http://127.0.0.1:8000`; Swagger is at `/docs`.
+In a second terminal, run `make web`; the browser UI starts at `http://127.0.0.1:5173` and proxies `/api` to FastAPI on port 8000. Run `AX_MCP_PERSONA=mina make mcp` in a third terminal to expose Mina’s dynamically filtered stdio MCP Tool set (or omit the variable for the generic delegated-persona adapter), and `make verify` in a fourth terminal for backend tests plus the production Vite build. The API itself starts at `http://127.0.0.1:8000`; Swagger is at `/docs`.
 
 `make reset-demo` is the only command that creates or drops the demo tables. Normal API startup never mutates the schema. `X-Demo-Persona` accepts only a seeded persona (`mina`, `jiho`, `sora`, `minseok`, `demo-admin`) while `AX_PROFILE` is `development` or `test`; production omits those routes entirely.
 
@@ -31,4 +32,12 @@ The catalog and run endpoints use one `WorkflowRunStarter`, PostgreSQL repositor
 
 The meeting-followup flow creates a `pending_acceptance` assignment after the requester chooses an assignee. It becomes visible in My Work only after that exact assignee accepts; rejection leaves it out of My Work. The daily-report confirmation and contract legal/finance `all` join use the same runtime, with local demo adapters standing in for external effects.
 
-MCP, React UI, the remaining six end-to-end demo paths, restart-recovery rehearsal, and the complete demo script remain to be implemented.
+The six non-golden definitions complete through the same local demo adapter and persisted runtime; real external adapters, production authentication, and the final timed demo rehearsal remain outside this slice.
+
+## Demo rehearsal
+
+After `make reset-demo`, run `make demo-rehearse`. It executes the daily-report confirmation, meeting-assignment acceptance, and contract legal/finance `all` join against the same PostgreSQL runtime and writes a reproducible audit summary to `artifacts/demo-rehearsal.json`.
+
+`make mcp-probe` launches a local stdio MCP client/server pair and records tool discovery, structured-result validation, a daily-report golden flow, and per-call latency to `artifacts/mcp-probe.json`. Its recorded `gpt-5.6-terra` / priority / low-tool / medium-authoring profile is a local protocol baseline—not a cloud Codex request—because cloud model traffic is excluded from this demo scope.
+
+To include the PostgreSQL integration test in a local clean-cluster rehearsal, export a disposable URL such as `AX_POSTGRES_TEST_URL=postgresql+psycopg://localhost:55432/ax_demo` before `make test`. The test deliberately calls the explicit reset command against that URL, so never point it at a non-demo database.

@@ -156,3 +156,69 @@ def test_contract_rejection_prevents_the_post_join_effect(tmp_path) -> None:
 
     assert rejected["state"] == "rejected"
     assert "contract.approve" not in {item["tool_name"] for item in rejected["tool_results"]}
+
+
+def test_assigned_contract_reviewer_can_view_but_unrelated_persona_cannot_view_the_run(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+    started = client.post(
+        "/api/runs/contract-review",
+        headers={"X-Demo-Persona": "demo-admin"},
+        json={"input": {"contract_id": "contract-visibility"}},
+    ).json()
+
+    reviewer = client.get(f"/api/runs/{started['run_id']}", headers={"X-Demo-Persona": "sora"})
+    unrelated = client.get(f"/api/runs/{started['run_id']}", headers={"X-Demo-Persona": "mina"})
+
+    assert reviewer.status_code == 200
+    assert reviewer.json()["waiting_on"] == ["legal", "finance"]
+    assert unrelated.status_code == 403
+
+
+def test_run_state_and_audit_are_recovered_by_a_fresh_application_instance(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+    reset_database(database_url)
+    first_client = TestClient(create_app(Settings(RuntimeProfile.TEST, database_url)))
+    started = first_client.post("/api/runs/daily-report", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()
+
+    restarted_client = TestClient(create_app(Settings(RuntimeProfile.TEST, database_url)))
+    recovered = restarted_client.get(
+        f"/api/runs/{started['run_id']}", headers={"X-Demo-Persona": "mina"}
+    )
+
+    assert recovered.status_code == 200
+    assert recovered.json()["state"] == "waiting_for_decision"
+    assert recovered.json()["waiting_on"] == ["confirm"]
+    assert recovered.json()["audit"][0]["event_type"] == "workflow_run.started"
+
+
+def test_all_nine_catalog_examples_complete_through_the_shared_runtime(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+    cases = (
+        ("daily-report", "mina", {}, (("confirm", "mina"),)),
+        ("team-daily-rollup", "jiho", {}, (("confirm", "jiho"),)),
+        ("weekly-report", "mina", {}, (("confirm", "mina"),)),
+        ("monthly-close", "jiho", {}, (("confirm", "jiho"),)),
+        ("meeting-followups", "mina", {}, (("choose-assignment", "mina"), ("accept-assignment", "mina"))),
+        ("onboarding", "demo-admin", {}, (("confirm", "demo-admin"),)),
+        ("offboarding", "demo-admin", {}, (("confirm", "demo-admin"),)),
+        ("customer-visit-report", "mina", {}, (("confirm", "mina"),)),
+        ("contract-review", "demo-admin", {"contract_id": "contract-19"}, (("legal", "sora"), ("finance", "minseok"))),
+    )
+
+    for workflow_id, starter, input_data, decisions in cases:
+        started = client.post(
+            f"/api/runs/{workflow_id}", headers={"X-Demo-Persona": starter}, json={"input": input_data}
+        )
+        assert started.status_code == 201, started.text
+        run_id = started.json()["run_id"]
+        result = started
+        for node_id, actor in decisions:
+            payload = {"assignee_id": "mina"} if node_id == "choose-assignment" else {}
+            result = client.post(
+                f"/api/runs/{run_id}/decisions/{node_id}",
+                headers={"X-Demo-Persona": actor},
+                json={"decision": "accept", "payload": payload},
+            )
+            assert result.status_code == 200, result.text
+        assert result.json()["state"] == "completed"
+        assert result.json()["tool_results"]

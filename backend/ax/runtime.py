@@ -420,6 +420,25 @@ class WorkflowRunStarter:
                 items.append({"run_id": str(run.id), "workflow_id": run.workflow_id, "node_id": node.id, "label": node.label})
         return items
 
+    def can_view(self, run_id: UUID, principal: Principal) -> bool:
+        """A starter or an assigned human gate participant may inspect the persisted run."""
+        run = self.repository.run(run_id)
+        if run.initiator_id == str(principal.id):
+            return True
+        definition = WorkflowDefinitionVersion.model_validate(self.repository.definition_for_run(run).definition)
+        if definition.is_visible_to(principal):
+            return True
+        for node in definition.nodes:
+            if node.kind is not NodeKind.HUMAN_GATE:
+                continue
+            if node.required_capability and node.required_capability in principal.capabilities:
+                if node.id != "accept-assignment":
+                    return True
+                assignment = self.repository.assignment_for_run(run.id)
+                if assignment is not None and assignment.assignee_id == str(principal.id):
+                    return True
+        return False
+
     def my_work(self, principal: Principal) -> list[dict[str, Any]]:
         return [
             {"assignment_id": str(item.id), "title": item.title, "state": item.state, "run_id": str(item.run_id)}

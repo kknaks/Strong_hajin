@@ -29,6 +29,7 @@ class CatalogItemResponse(BaseModel):
     version: str
     title: str
     description: str
+    input_schema: dict[str, object]
     graph: dict[str, object]
 
 
@@ -72,6 +73,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     version=definition.version,
                     title=definition.title,
                     description=definition.description,
+                    input_schema=definition.input_schema,
                     graph={
                         "nodes": [node.model_dump(mode="json") for node in definition.nodes],
                         "edges": [edge.model_dump(mode="json") for edge in definition.edges],
@@ -101,7 +103,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     assert uow.workflows is not None
                     service = WorkflowRunStarter(uow.workflows)
                     result = service.summary(run_id)
-                    if result["workflow_id"] not in {item.workflow_id for item in catalog_definitions() if item.is_visible_to(principal)}:
+                    if not service.can_view(run_id, principal):
                         raise AccessDenied("Principal cannot view this workflow run")
                     return result
             except Exception as error:

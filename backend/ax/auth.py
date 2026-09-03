@@ -62,6 +62,14 @@ SEED_PERSONAS: dict[PersonaId, Principal] = {
 }
 
 
+def seeded_principal(persona: str) -> Principal:
+    """Resolve an allow-listed development principal; callers never supply privileges."""
+    try:
+        return SEED_PERSONAS[PersonaId(persona)]
+    except ValueError as error:
+        raise ValueError("Select one of the seeded demo personas.") from error
+
+
 class DeveloperAuthAdapter:
     """A development-only adapter which never accepts caller-supplied privileges."""
 
@@ -71,7 +79,7 @@ class DeveloperAuthAdapter:
 
     def authenticate(self, persona: str | None) -> Principal:
         try:
-            return SEED_PERSONAS[PersonaId(persona or "")]
+            return seeded_principal(persona or "")
         except ValueError as error:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
