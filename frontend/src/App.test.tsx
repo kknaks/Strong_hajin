@@ -1138,6 +1138,7 @@ describe("product surfaces", () => {
 
   it("does not restore a stale persona's delayed Conversation detail, Action, or Tool after switching", async () => {
     let resolveMinaDetail: ((response: Response) => void) | undefined;
+    let resolveJihoList: ((response: Response) => void) | undefined;
     const minaConversation = {
       conversation_id: "mina-conversation",
       title: "민아의 비공개 대화",
@@ -1155,7 +1156,9 @@ describe("product surfaces", () => {
       if (path === "/api/organization/me") return jsonResponse({ member_id: personaId, display_name: personaId, organizations: [], capabilities: ["action.read"] });
       if (path === "/api/my-work" || path === "/api/actions") return jsonResponse([]);
       if (path === "/api/conversations" && personaId === "mina") return jsonResponse([minaConversation]);
-      if (path === "/api/conversations" && personaId === "jiho") return jsonResponse([]);
+      if (path === "/api/conversations" && personaId === "jiho") {
+        return new Promise<Response>((resolve) => { resolveJihoList = resolve; });
+      }
       if (path === "/api/conversations/mina-conversation") return new Promise<Response>((resolve) => { resolveMinaDetail = resolve; });
       return new Response("not found", { status: 404 });
     });
@@ -1168,6 +1171,14 @@ describe("product surfaces", () => {
     fireEvent.click(conversationButton);
     await waitFor(() => expect(resolveMinaDetail).toBeTruthy(), { timeout: 2_500 });
     fireEvent.change(screen.getByLabelText("사용자"), { target: { value: "jiho" } });
+    await waitFor(() => expect(resolveJihoList).toBeTruthy());
+    resolveJihoList?.(jsonResponse([{
+      ...minaConversation,
+      conversation_id: "jiho-conversation",
+      title: "지호의 대화",
+      turns: [],
+    }]));
+    await screen.findByRole("button", { name: "지호의 대화" });
     resolveMinaDetail?.(jsonResponse({
       ...minaConversation,
       messages: [{ message_id: "secret-message", turn_id: "turn-1", role: "user", body: "민아의 비공개 본문", sequence: 1, state: "accepted" }],
@@ -1177,6 +1188,7 @@ describe("product surfaces", () => {
     }));
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: "민아의 비공개 대화" })).toBeNull();
+      expect(screen.getByRole("button", { name: "지호의 대화" })).toBeTruthy();
       expect(screen.queryByText("민아의 비공개 본문")).toBeNull();
       expect(screen.queryByText("민아 도구 · completed")).toBeNull();
       expect(screen.queryByText("민아 판단")).toBeNull();

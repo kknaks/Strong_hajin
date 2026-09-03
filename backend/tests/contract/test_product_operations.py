@@ -331,6 +331,8 @@ def test_daily_report_edit_submit_and_history_are_report_owned_operations(tmp_pa
     )
     assert history.status_code == 200
     assert [item["version"] for item in history.json()["drafts"]] == [1, 2]
+    assert {item["workflow_run_id"] for item in history.json()["drafts"]} == {generated["workflow_run_id"]}
+    assert {item["definition_version_id"] for item in history.json()["drafts"]} == {generated["definition_version_id"]}
     assert history.json()["submissions"][0]["body"] == "사람이 확인하고 보완한 보고입니다."
 
     stale = client.post(
