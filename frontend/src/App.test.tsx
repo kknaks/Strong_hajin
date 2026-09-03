@@ -30,7 +30,7 @@ describe("product surfaces", () => {
           member_id: "mina",
           display_name: "민아 (구성원)",
           organizations: [],
-          capabilities: ["daily_report.generate"],
+          capabilities: ["daily_report.generate", "work_request.decide"],
         });
       }
 
@@ -131,7 +131,10 @@ describe("product surfaces", () => {
           member_id: personaId,
           display_name: personaId === "jiho" ? "지호 (팀장)" : "민아 (구성원)",
           organizations: [],
-          capabilities: personaId === "mina" ? ["daily_report.generate"] : [],
+          capabilities:
+            personaId === "mina"
+              ? ["daily_report.generate"]
+              : ["work_request.decide"],
         });
       }
       if (path === "/api/my-work") {
@@ -190,6 +193,14 @@ describe("product surfaces", () => {
     expect(await screen.findByText("오늘의 업무를 확인하세요")).toBeTruthy();
     expect(screen.queryByText("보고 리마인드")).toBeNull();
     expect(screen.queryByRole("button", { name: "일일보고 작성" })).toBeNull();
+    expect(
+      fetchMock.mock.calls.filter(([path, init]) => {
+        return (
+          String(path).startsWith("/api/daily-reports/status") &&
+          new Headers(init?.headers).get("X-Demo-Persona") === "jiho"
+        );
+      }),
+    ).toHaveLength(0);
     fireEvent.click(within(navigation).getByRole("button", { name: "판단" }));
     expect(await screen.findByText("UI로 만든 업무 요청")).toBeTruthy();
     expect(screen.getByRole("button", { name: "수락" })).toBeTruthy();

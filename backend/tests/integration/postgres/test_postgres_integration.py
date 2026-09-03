@@ -72,14 +72,28 @@ class ConversationProvider:
 class ConcurrentReportProvider:
     """Makes a second report caller contend while the first holds its causal lock."""
 
-    def __init__(self) -> None:
+    def __init__(self, database_url: str) -> None:
+        self._database_url = database_url
         self.calls = 0
         self.started = Event()
         self._lock = Lock()
+        self.idle_in_transaction_counts: list[int] = []
 
     def generate(self, request) -> AiGeneration:
         with self._lock:
             self.calls += 1
+        with make_session_factory(self._database_url)() as session:
+            self.idle_in_transaction_counts.append(
+                int(
+                    session.execute(
+                        text(
+                            "SELECT count(*) FROM pg_stat_activity "
+                            "WHERE datname = current_database() "
+                            "AND state = 'idle in transaction'"
+                        )
+                    ).scalar_one()
+                )
+            )
         self.started.set()
         time.sleep(0.25)
         return AiGeneration(
@@ -130,7 +144,7 @@ def test_postgres_serializes_concurrent_daily_report_causation_before_workflow_e
     database_url = _postgres_test_url()
     reset_database(database_url)
     settings = Settings(RuntimeProfile.TEST, database_url, conversation_queue_backend="pgmq")
-    provider = ConcurrentReportProvider()
+    provider = ConcurrentReportProvider(database_url)
     first_application = create_workflow_application(settings, provider)
     second_application = create_workflow_application(settings, provider)
     first_principal = first_application.authenticated_principal("mina")
@@ -154,6 +168,7 @@ def test_postgres_serializes_concurrent_daily_report_causation_before_workflow_e
         second_result = second.result(timeout=5)
 
     assert provider.calls == 1
+    assert provider.idle_in_transaction_counts == [0]
     assert first_result["report_id"] == second_result["report_id"]
     assert first_result["draft_id"] == second_result["draft_id"]
     assert first_result["workflow_run_id"] == second_result["workflow_run_id"]
@@ -677,17 +692,23 @@ def test_postgres_action_proposals_are_owner_bound_and_serialized_per_execution(
     mina = application.authenticated_principal("mina")
     jiho = application.authenticated_principal("jiho")
 
-    def propose() -> dict[str, object]:
+    def propose(title: str) -> dict[str, object]:
         return application.propose_action(
             mina,
             execution_id,
             "task.create_self",
             "업무 생성 확인",
-            {"title": "동시 제안 업무"},
+            {"title": title},
         )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        first, second = [future.result(timeout=3) for future in [executor.submit(propose), executor.submit(propose)]]
+        first, second = [
+            future.result(timeout=3)
+            for future in [
+                executor.submit(propose, "첫 번째 제안 업무"),
+                executor.submit(propose, "재실행에서 달라진 업무"),
+            ]
+        ]
     assert first["action_id"] == second["action_id"]
     with pytest.raises(ValueError, match="execution was not found"):
         application.propose_action(

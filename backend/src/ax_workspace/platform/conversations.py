@@ -397,7 +397,7 @@ class SqlAlchemyConversationRepository:
                 {
                     "action_id": str(action.id),
                     "conversation_id": str(action.conversation_id),
-                    "turn_id": str(action.turn_id) if action.turn_id else None,
+                    "turn_id": str(action.turn_id),
                     "action_type": action.action_type,
                     "title": action.title,
                     "state": action.state,

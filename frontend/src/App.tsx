@@ -284,12 +284,18 @@ export default function App() {
         {surface === "today" && (
           <TodayPage
             {...pageProps}
+            canDecideWorkRequests={capabilities?.includes("work_request.decide") ?? false}
             canGenerateDailyReport={capabilities?.includes("daily_report.generate") ?? false}
             onNavigate={setSurface}
           />
         )}
         {surface === "work" && <MyWorkPage {...pageProps} />}
-        {surface === "inbox" && <ActionInboxPage {...pageProps} />}
+        {surface === "inbox" && (
+          <ActionInboxPage
+            {...pageProps}
+            canDecideWorkRequests={capabilities?.includes("work_request.decide") ?? false}
+          />
+        )}
         {surface === "report" && <DailyReportPage {...pageProps} />}
         {surface === "org" && <OrgPage {...pageProps} />}
       </section>

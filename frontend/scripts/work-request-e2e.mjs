@@ -18,7 +18,9 @@ try {
   await page.getByLabel("사용자").selectOption("jiho");
   await navigation.getByRole("button", { name: "오늘" }).click();
   await page.getByText(title).waitFor();
-  await page.getByText("오늘의 업무 기록을 확인한 뒤 일일보고 초안을 만들 수 있습니다.").waitFor();
+  if (await page.getByRole("button", { name: "일일보고 작성" }).count()) {
+    throw new Error("Jiho must not receive a daily-report CTA without report capability");
+  }
   await navigation.getByRole("button", { name: "판단" }).click();
   await page.getByText(title).waitFor();
   await page.getByRole("button", { name: "수락" }).last().click();

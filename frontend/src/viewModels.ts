@@ -84,7 +84,7 @@ export type WorkRequest = {
 export type ActionItem = {
   action_id: string;
   conversation_id: string;
-  turn_id: string | null;
+  turn_id: string;
   action_type: string;
   title: string;
   state: "pending" | "approved" | "rejected";

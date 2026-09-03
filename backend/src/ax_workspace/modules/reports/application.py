@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import date
-from typing import Any, Protocol
+from typing import Any, ContextManager, Protocol
 
 from ax_workspace.modules.organization_access.domain import (
     DAILY_REPORT_EDIT,
@@ -17,7 +18,7 @@ class DailyReportAccessDenied(ValueError):
 
 
 class DailyReportRepository(Protocol):
-    def serialize_generation_causation(self, owner_id: str, causation_key: str) -> None: ...
+    def generation_causation(self, owner_id: str, causation_key: str) -> ContextManager[None]: ...
 
     def generated_draft_for_causation(self, owner_id: str, causation_key: str) -> tuple[Any, str] | None: ...
 
@@ -71,28 +72,32 @@ class DailyReportApplication:
         parsed_date = date.fromisoformat(report_date)
         if parsed_date > date.today():
             raise ValueError("report date cannot be in the future")
-        if causation_key:
-            # This is deliberately before both lookup and runtime execution.  The
-            # PostgreSQL adapter takes a transaction-scoped advisory lock, so a
-            # concurrent retry observes the committed provenance instead of
-            # starting a second provider-backed workflow run.
-            self._reports.serialize_generation_causation(str(principal.id), causation_key)
-            existing = self._reports.generated_draft_for_causation(str(principal.id), causation_key)
-            if existing is not None:
-                draft, workflow_state = existing
-                return self._generated_view(draft, workflow_state)
-        generated = self._workflow.run(principal, report_date)
-        source_refs = generated["source_refs"]
-        draft = self._reports.create_draft(
-            str(principal.id),
-            report_date,
-            source_refs,
-            generated["run_id"],
-            generated["definition_version_id"],
-            generated["body"],
-            causation_key,
+        causation_guard = (
+            self._reports.generation_causation(str(principal.id), causation_key)
+            if causation_key
+            else nullcontext()
         )
-        return self._generated_view(draft, generated["state"])
+        # The PostgreSQL adapter owns a separate AUTOCOMMIT advisory connection.
+        # It serializes lookup and workflow execution without retaining the report
+        # session's transaction while the external provider is running.
+        with causation_guard:
+            if causation_key:
+                existing = self._reports.generated_draft_for_causation(str(principal.id), causation_key)
+                if existing is not None:
+                    draft, workflow_state = existing
+                    return self._generated_view(draft, workflow_state)
+            generated = self._workflow.run(principal, report_date)
+            source_refs = generated["source_refs"]
+            draft = self._reports.create_draft(
+                str(principal.id),
+                report_date,
+                source_refs,
+                generated["run_id"],
+                generated["definition_version_id"],
+                generated["body"],
+                causation_key,
+            )
+            return self._generated_view(draft, generated["state"])
 
     @staticmethod
     def _generated_view(draft: Any, workflow_state: str) -> dict[str, Any]:

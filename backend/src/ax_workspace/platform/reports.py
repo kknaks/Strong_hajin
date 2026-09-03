@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime
 import hashlib
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.ax_execution.ai import (
@@ -36,24 +38,36 @@ class SqlAlchemyDailyReportRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def serialize_generation_causation(self, owner_id: str, causation_key: str) -> None:
-        """Serialize one owner-scoped idempotent generation in this transaction.
+    @contextmanager
+    def generation_causation(self, owner_id: str, causation_key: str):
+        """Hold a report causation guard outside the report transaction.
 
-        The application keeps this transaction open while the safe runtime writes
-        its provenance.  A competing PostgreSQL request blocks here, then reads
-        the completed draft/run after the first transaction commits.  SQLite is a
-        fast contract double and has no equivalent advisory primitive.
+        The connection is session-scoped and AUTOCOMMIT so the provider call
+        cannot be killed by an idle-in-transaction timeout. If that connection
+        fails PostgreSQL releases the guard; the unique report-draft causation
+        key still makes the business result idempotent, while the provider call
+        itself remains intentionally at-least-once around connection loss.
         """
         if self._session.bind is None or self._session.bind.dialect.name != "postgresql":
+            yield
             return
         digest = hashlib.blake2b(
             f"daily-report:{owner_id}:{causation_key}".encode(), digest_size=8
         ).digest()
         lock_key = int.from_bytes(digest, byteorder="big", signed=True)
-        self._session.execute(
-            text("SELECT pg_advisory_xact_lock(:lock_key)"),
-            {"lock_key": lock_key},
-        )
+        with self._session.bind.execution_options(isolation_level="AUTOCOMMIT").connect() as connection:
+            connection.execute(text("SELECT pg_advisory_lock(:lock_key)"), {"lock_key": lock_key})
+            try:
+                yield
+            finally:
+                if not connection.closed:
+                    try:
+                        connection.execute(
+                            text("SELECT pg_advisory_unlock(:lock_key)"),
+                            {"lock_key": lock_key},
+                        )
+                    except DBAPIError:
+                        pass
 
     def create_draft(
         self,
@@ -359,6 +373,11 @@ class SqlAlchemyDailyReportDraftWorkflow:
         try:
             for node in definition.definition["nodes"]:
                 execution = self._start_node(run.id, node, results)
+                if node["type"] == "llm.generate":
+                    # Persist the run and preceding node provenance before the
+                    # external call, then release this session's transaction.
+                    # The causation guard remains on its separate connection.
+                    self._session.commit()
                 result = self._execute_node(node, principal, report_date, results, execution)
                 execution.state = "completed"
                 execution.result = result

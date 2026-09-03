@@ -20,7 +20,7 @@ make api
 
 In a second terminal, run `make conversation-worker`; it is the separate PGMQ consumer and is the only process that invokes Codex for queued AX turns. In a third terminal, run `make frontend`; the browser UI starts at `http://127.0.0.1:5173` and proxies `/api` to FastAPI on port 8000. Run `AX_MCP_PERSONA=mina make mcp` in a fourth terminal to expose Mina’s dynamically filtered stdio MCP Tool set; this binding is required, so an unbound MCP server never lets a client select `demo-admin`. Run `make verify` in another terminal for non-integration backend tests, frontend behavior tests, and the production Vite build. The API itself starts at `http://127.0.0.1:8000`; Swagger is at `/docs`.
 
-`make reset-demo` is the only command that creates or drops the demo tables. Normal API startup never mutates the schema. `X-Demo-Persona` accepts only a seeded persona (`mina`, `jiho`, `sora`, `minseok`, `demo-admin`) while `AX_PROFILE` is `development` or `test`; production omits those routes entirely.
+`make reset-demo` is the only command that creates or drops the demo tables. Normal API startup never mutates the schema. After pulling a persistence schema change, stop the local API/worker and run `make reset-demo` before local journeys; Alembic revisions are intentionally not part of this milestone. `X-Demo-Persona` accepts only a seeded persona (`mina`, `jiho`, `sora`, `minseok`, `demo-admin`) while `AX_PROFILE` is `development` or `test`; production omits those routes entirely.
 
 ## Current API slice
 

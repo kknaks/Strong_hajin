@@ -11,10 +11,15 @@ import type { ActionItem, WorkRequest } from "./viewModels";
 
 type ActionInboxPageProps = {
   personaId: string;
+  canDecideWorkRequests: boolean;
   onError: (message: string | null) => void;
 };
 
-export function ActionInboxPage({ personaId, onError }: ActionInboxPageProps) {
+export function ActionInboxPage({
+  personaId,
+  canDecideWorkRequests,
+  onError,
+}: ActionInboxPageProps) {
   const [requests, setRequests] = useState<WorkRequest[]>([]);
   const [actions, setActions] = useState<ActionItem[]>([]);
   const [isWorking, setIsWorking] = useState(false);
@@ -24,7 +29,7 @@ export function ActionInboxPage({ personaId, onError }: ActionInboxPageProps) {
   async function refresh() {
     try {
       const [nextRequests, nextActions] = await Promise.all([
-        getActionInbox(personaId),
+        canDecideWorkRequests ? getActionInbox(personaId) : Promise.resolve([]),
         getActions(personaId),
       ]);
       setRequests(nextRequests);
@@ -36,7 +41,7 @@ export function ActionInboxPage({ personaId, onError }: ActionInboxPageProps) {
 
   useEffect(() => {
     void refresh();
-  }, [personaId]);
+  }, [canDecideWorkRequests, personaId]);
 
   async function decide(request: WorkRequest, action: "accept" | "reject") {
     setIsWorking(true);

@@ -42,6 +42,12 @@ class SqlAlchemyActionRepository:
         title: str,
         payload: dict[str, Any],
     ) -> ActionItemRecord:
+        """Return one recoverable effect slot per action type and turn execution.
+
+        A provider redelivery may produce a different payload for the same
+        delegated turn. It must reuse the first proposal rather than create a
+        second effect. Intentional repeated effects belong in a later turn.
+        """
         payload_hash = hashlib.sha256(
             json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -60,7 +66,6 @@ class SqlAlchemyActionRepository:
             select(ActionItemRecord).where(
                 ActionItemRecord.execution_id == execution_id,
                 ActionItemRecord.action_type == action_type,
-                ActionItemRecord.payload_hash == payload_hash,
             )
         )
         if existing is not None:

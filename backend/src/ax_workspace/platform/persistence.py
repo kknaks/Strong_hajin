@@ -325,7 +325,7 @@ class ActionItemRecord(Base):
 
     __tablename__ = "action_items"
     __table_args__ = (
-        UniqueConstraint("execution_id", "action_type", "payload_hash", name="uq_action_execution_payload"),
+        UniqueConstraint("execution_id", "action_type", name="uq_action_execution_type"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
