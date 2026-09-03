@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
@@ -1179,13 +1179,16 @@ describe("product surfaces", () => {
       turns: [],
     }]));
     await screen.findByRole("button", { name: "지호의 대화" });
-    resolveMinaDetail?.(jsonResponse({
-      ...minaConversation,
-      messages: [{ message_id: "secret-message", turn_id: "turn-1", role: "user", body: "민아의 비공개 본문", sequence: 1, state: "accepted" }],
-      turns: [{ turn_id: "turn-1", state: "completed", provider_run_ref: null, provider_session_ref: null, error: null }],
-      tool_invocations: [{ turn_id: "turn-1", sequence: 1, provider_call_id: null, tool_name: "task_list", display_name: "민아 도구", input_summary: "비공개", state: "completed", result_summary: "비공개 결과", error_summary: null, latency_ms: null, target_resource_id: null, target_resource_version: null, audit_ref: null }],
-      actions: [{ action_id: "secret-action", conversation_id: "mina-conversation", turn_id: "turn-1", action_type: "task.create_self", title: "민아 판단", state: "pending", version: 1, payload_summary: "비공개 변경", result: null, audit_ref: null }],
-    }));
+    await act(async () => {
+      resolveMinaDetail?.(jsonResponse({
+        ...minaConversation,
+        messages: [{ message_id: "secret-message", turn_id: "turn-1", role: "user", body: "민아의 비공개 본문", sequence: 1, state: "accepted" }],
+        turns: [{ turn_id: "turn-1", state: "completed", provider_run_ref: null, provider_session_ref: null, error: null }],
+        tool_invocations: [{ turn_id: "turn-1", sequence: 1, provider_call_id: null, tool_name: "task_list", display_name: "민아 도구", input_summary: "비공개", state: "completed", result_summary: "비공개 결과", error_summary: null, latency_ms: null, target_resource_id: null, target_resource_version: null, audit_ref: null }],
+        actions: [{ action_id: "secret-action", conversation_id: "mina-conversation", turn_id: "turn-1", action_type: "task.create_self", title: "민아 판단", state: "pending", version: 1, payload_summary: "비공개 변경", result: null, audit_ref: null }],
+      }));
+      await Promise.resolve();
+    });
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: "민아의 비공개 대화" })).toBeNull();
       expect(screen.getByRole("button", { name: "지호의 대화" })).toBeTruthy();
