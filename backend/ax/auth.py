@@ -29,7 +29,7 @@ SEED_PERSONAS: dict[PersonaId, Principal] = {
         PersonaId.MINA,
         "민아 (구성원)",
         frozenset({"scax", "product"}),
-        frozenset({"work.read", "daily_report.submit", "meeting.followup.request"}),
+        frozenset({"work.read", "daily_report.submit", "meeting.followup.request", "task.accept"}),
     ),
     PersonaId.JIHO: Principal(
         PersonaId.JIHO,
@@ -55,7 +55,7 @@ SEED_PERSONAS: dict[PersonaId, Principal] = {
         frozenset({"scax", "product", "legal", "finance", "people"}),
         frozenset({
             "work.read", "daily_report.submit", "meeting.followup.request",
-            "meeting.followup.assign", "report.review", "team.manage",
+            "meeting.followup.assign", "task.accept", "report.review", "team.manage",
             "contract.legal_review", "contract.finance_review", "demo.admin",
         }),
     ),
@@ -82,4 +82,3 @@ class DeveloperAuthAdapter:
 def developer_principal(request: Request) -> Principal:
     adapter: DeveloperAuthAdapter = request.app.state.developer_auth
     return adapter.authenticate(request.headers.get("X-Demo-Persona"))
-

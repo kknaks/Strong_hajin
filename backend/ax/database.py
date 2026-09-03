@@ -36,20 +36,25 @@ class WorkflowRunRecord(Base):
     definition_version_id: Mapped[UUID] = mapped_column(
         ForeignKey("workflow_definition_versions.id"), nullable=False
     )
+    workflow_id: Mapped[str] = mapped_column(String(100), nullable=False)
     initiator_id: Mapped[str] = mapped_column(String(100), nullable=False)
     state: Mapped[str] = mapped_column(String(40), nullable=False)
     input_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class WorkflowNodeExecutionRecord(Base):
     __tablename__ = "workflow_node_executions"
+    __table_args__ = (UniqueConstraint("run_id", "node_id", name="uq_workflow_run_node"),)
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     run_id: Mapped[UUID] = mapped_column(ForeignKey("workflow_runs.id"), nullable=False)
     node_id: Mapped[str] = mapped_column(String(100), nullable=False)
     state: Mapped[str] = mapped_column(String(40), nullable=False)
     result: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class HumanDecisionRecord(Base):
@@ -62,6 +67,8 @@ class HumanDecisionRecord(Base):
     principal_id: Mapped[str] = mapped_column(String(100), nullable=False)
     decision: Mapped[str] = mapped_column(String(40), nullable=False)
     rationale: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class ToolExecutionRecord(Base):
@@ -73,6 +80,7 @@ class ToolExecutionRecord(Base):
     )
     tool_name: Mapped[str] = mapped_column(String(200), nullable=False)
     result: Mapped[dict] = mapped_column(JSON, nullable=False)
+    executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class AuditEventRecord(Base):
@@ -83,6 +91,55 @@ class AuditEventRecord(Base):
     event_type: Mapped[str] = mapped_column(String(100), nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class WorkRecord(Base):
+    __tablename__ = "work_records"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    owner_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
+class MeetingEvidenceRecord(Base):
+    __tablename__ = "meeting_evidence"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    candidate_task: Mapped[str] = mapped_column(String(300), nullable=False)
+
+
+class DailyReportSubmissionRecord(Base):
+    __tablename__ = "daily_report_submissions"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("workflow_runs.id"), nullable=False, unique=True)
+    submitter_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TaskAssignmentRecord(Base):
+    __tablename__ = "task_assignments"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("workflow_runs.id"), nullable=False, unique=True)
+    assignee_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    state: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ContractApprovalRecord(Base):
+    __tablename__ = "contract_approvals"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("workflow_runs.id"), nullable=False, unique=True)
+    contract_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    state: Mapped[str] = mapped_column(String(40), nullable=False)
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 def make_session_factory(database_url: str):

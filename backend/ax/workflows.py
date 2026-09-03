@@ -160,10 +160,35 @@ def catalog_definitions() -> tuple[WorkflowDefinitionVersion, ...]:
         _linear_definition("team-daily-rollup", "팀 일일보고 취합", "팀의 일일보고를 검토해 취합합니다.", "scax", frozenset({"report.review"})),
         _linear_definition("weekly-report", "주간 업무보고", "주간 업무 증거를 정리하고 확인합니다.", "scax", common),
         _linear_definition("monthly-close", "월 마감 자료 취합", "마감 자료를 수집하고 승인합니다.", "scax", frozenset({"report.review"})),
-        _linear_definition("meeting-followups", "회의 후속업무 정리", "회의 증거에서 후속 업무를 배정합니다.", "scax", frozenset({"meeting.followup.request"})),
         _linear_definition("onboarding", "신규 입사 준비", "입사 준비 작업을 확인합니다.", "people", frozenset({"team.manage"})),
         _linear_definition("offboarding", "퇴사 처리", "퇴사 처리 작업을 확인합니다.", "people", frozenset({"team.manage"})),
         _linear_definition("customer-visit-report", "고객 방문 결과 보고", "방문 결과를 기록하고 제출합니다.", "scax", common),
+    )
+    meeting_followups = WorkflowDefinitionVersion(
+        workflow_id="meeting-followups",
+        version="2026-09-demo.1",
+        title="회의 후속업무 정리",
+        description="회의 증거에서 후보를 선택하고, 수행자의 수락 뒤에만 내 업무로 반영합니다.",
+        required_scope="scax",
+        required_capabilities=frozenset({"meeting.followup.request"}),
+        input_schema={"type": "object", "additionalProperties": False},
+        nodes=(
+            WorkflowNode(id="start", kind=NodeKind.START, label="시작"),
+            WorkflowNode(id="collect", kind=NodeKind.TOOL, label="회의 증거 조회"),
+            WorkflowNode(id="choose-assignment", kind=NodeKind.HUMAN_GATE, label="후속 업무 선택"),
+            WorkflowNode(id="create-assignment", kind=NodeKind.TOOL, label="수락 대기 업무 생성"),
+            WorkflowNode(id="accept-assignment", kind=NodeKind.HUMAN_GATE, label="수행자 수락", required_capability="task.accept"),
+            WorkflowNode(id="effect", kind=NodeKind.TOOL, label="내 업무 반영"),
+            WorkflowNode(id="end", kind=NodeKind.END, label="완료"),
+        ),
+        edges=(
+            WorkflowEdge(source="start", target="collect"),
+            WorkflowEdge(source="collect", target="choose-assignment"),
+            WorkflowEdge(source="choose-assignment", target="create-assignment"),
+            WorkflowEdge(source="create-assignment", target="accept-assignment"),
+            WorkflowEdge(source="accept-assignment", target="effect"),
+            WorkflowEdge(source="effect", target="end"),
+        ),
     )
     contract = WorkflowDefinitionVersion(
         workflow_id="contract-review",
@@ -192,5 +217,4 @@ def catalog_definitions() -> tuple[WorkflowDefinitionVersion, ...]:
             WorkflowEdge(source="effect", target="end"),
         ),
     )
-    return (*linear, contract)
-
+    return (*linear, meeting_followups, contract)

@@ -1,0 +1,158 @@
+from fastapi.testclient import TestClient
+
+from ax.api import create_app
+from ax.reset_demo import reset_database
+from ax.settings import RuntimeProfile, Settings
+
+
+def _client_with_seeded_database(tmp_path) -> TestClient:
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+    reset_database(database_url)
+    return TestClient(create_app(Settings(RuntimeProfile.TEST, database_url)))
+
+
+def test_starting_daily_report_persists_a_version_pinned_run_and_waits_for_human_confirmation(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+
+    response = client.post(
+        "/api/runs/daily-report",
+        headers={"X-Demo-Persona": "mina"},
+        json={"input": {}},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["workflow_id"] == "daily-report"
+    assert body["definition_version"] == "2026-09-demo.1"
+    assert body["state"] == "waiting_for_decision"
+    assert body["waiting_on"] == ["confirm"]
+    assert body["tool_results"][0]["tool_name"] == "work_record.lookup"
+
+
+def test_daily_report_submits_immutable_snapshot_only_after_human_acceptance(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+    started = client.post("/api/runs/daily-report", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()
+
+    assert "daily_report.submit_snapshot" not in {item["tool_name"] for item in started["tool_results"]}
+    completed = client.post(
+        f"/api/runs/{started['run_id']}/decisions/confirm",
+        headers={"X-Demo-Persona": "mina"},
+        json={"decision": "accept", "rationale": "내용을 확인했습니다."},
+    )
+
+    assert completed.status_code == 200
+    body = completed.json()
+    assert body["state"] == "completed"
+    assert "daily_report.submit_snapshot" in {item["tool_name"] for item in body["tool_results"]}
+    event_types = [item["event_type"] for item in body["audit"]]
+    assert event_types[0] == "workflow_run.started"
+    assert "human_decision.requested" in event_types
+    assert "human_decision.accepted" in event_types
+    assert event_types[-1] == "workflow_run.completed"
+
+
+def test_meeting_assignment_never_enters_my_work_before_the_selected_assignee_accepts(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+    started = client.post("/api/runs/meeting-followups", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()
+    assert started["waiting_on"] == ["choose-assignment"]
+
+    requested = client.post(
+        f"/api/runs/{started['run_id']}/decisions/choose-assignment",
+        headers={"X-Demo-Persona": "mina"},
+        json={"decision": "accept", "payload": {"assignee_id": "mina"}},
+    )
+    assert requested.status_code == 200
+    assert requested.json()["waiting_on"] == ["accept-assignment"]
+    assert client.get("/api/my-work", headers={"X-Demo-Persona": "mina"}).json() == []
+
+    inbox = client.get("/api/inbox", headers={"X-Demo-Persona": "mina"}).json()
+    assert {item["node_id"] for item in inbox} == {"accept-assignment"}
+    completed = client.post(
+        f"/api/runs/{started['run_id']}/decisions/accept-assignment",
+        headers={"X-Demo-Persona": "mina"},
+        json={"decision": "accept"},
+    )
+    assert completed.json()["state"] == "completed"
+    assert client.get("/api/my-work", headers={"X-Demo-Persona": "mina"}).json()[0]["state"] == "active"
+
+
+def test_assignment_rejection_never_enters_my_work(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+    started = client.post("/api/runs/meeting-followups", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()
+    client.post(
+        f"/api/runs/{started['run_id']}/decisions/choose-assignment",
+        headers={"X-Demo-Persona": "mina"},
+        json={"decision": "accept", "payload": {"assignee_id": "mina"}},
+    )
+
+    rejected = client.post(
+        f"/api/runs/{started['run_id']}/decisions/accept-assignment",
+        headers={"X-Demo-Persona": "mina"},
+        json={"decision": "reject", "rationale": "일정상 수락할 수 없습니다."},
+    )
+
+    assert rejected.json()["state"] == "rejected"
+    assert client.get("/api/my-work", headers={"X-Demo-Persona": "mina"}).json() == []
+
+
+def test_only_the_selected_assignee_can_accept_an_assignment(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+    started = client.post("/api/runs/meeting-followups", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()
+    client.post(
+        f"/api/runs/{started['run_id']}/decisions/choose-assignment",
+        headers={"X-Demo-Persona": "mina"},
+        json={"decision": "accept", "payload": {"assignee_id": "mina"}},
+    )
+
+    intruder = client.post(
+        f"/api/runs/{started['run_id']}/decisions/accept-assignment",
+        headers={"X-Demo-Persona": "demo-admin"},
+        json={"decision": "accept"},
+    )
+
+    assert intruder.status_code == 403
+    assert client.get("/api/my-work", headers={"X-Demo-Persona": "mina"}).json() == []
+
+
+def test_contract_effect_waits_for_both_independent_human_acceptances(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+    started = client.post(
+        "/api/runs/contract-review",
+        headers={"X-Demo-Persona": "demo-admin"},
+        json={"input": {"contract_id": "contract-17"}},
+    ).json()
+    assert set(started["waiting_on"]) == {"legal", "finance"}
+
+    legal = client.post(
+        f"/api/runs/{started['run_id']}/decisions/legal",
+        headers={"X-Demo-Persona": "sora"},
+        json={"decision": "accept"},
+    ).json()
+    assert legal["waiting_on"] == ["finance"]
+    assert "contract.approve" not in {item["tool_name"] for item in legal["tool_results"]}
+
+    completed = client.post(
+        f"/api/runs/{started['run_id']}/decisions/finance",
+        headers={"X-Demo-Persona": "minseok"},
+        json={"decision": "accept"},
+    ).json()
+    assert completed["state"] == "completed"
+    assert "contract.approve" in {item["tool_name"] for item in completed["tool_results"]}
+
+
+def test_contract_rejection_prevents_the_post_join_effect(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+    started = client.post(
+        "/api/runs/contract-review",
+        headers={"X-Demo-Persona": "demo-admin"},
+        json={"input": {"contract_id": "contract-18"}},
+    ).json()
+
+    rejected = client.post(
+        f"/api/runs/{started['run_id']}/decisions/legal",
+        headers={"X-Demo-Persona": "sora"},
+        json={"decision": "reject"},
+    ).json()
+
+    assert rejected["state"] == "rejected"
+    assert "contract.approve" not in {item["tool_name"] for item in rejected["tool_results"]}

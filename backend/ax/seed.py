@@ -5,7 +5,12 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ax.database import WorkflowDefinitionRecord, WorkflowDefinitionVersionRecord
+from ax.database import (
+    MeetingEvidenceRecord,
+    WorkRecord,
+    WorkflowDefinitionRecord,
+    WorkflowDefinitionVersionRecord,
+)
 from ax.workflows import catalog_definitions
 
 
@@ -28,7 +33,20 @@ def seed_catalog(session: Session) -> None:
                     version=definition.version,
                     definition=definition.model_dump(mode="json"),
                     created_at=datetime.now(UTC),
-                )
             )
+        )
+    if session.scalar(select(WorkRecord).where(WorkRecord.owner_id == "mina")) is None:
+        session.add_all(
+            [
+                WorkRecord(owner_id="mina", title="Catalog validation review", status="done"),
+                WorkRecord(owner_id="mina", title="Demo script preparation", status="in_progress"),
+            ]
+        )
+    if session.scalar(select(MeetingEvidenceRecord)) is None:
+        session.add(
+            MeetingEvidenceRecord(
+                title="Workflow catalog demo planning",
+                candidate_task="Prepare the demo rehearsal checklist",
+            )
+        )
     session.commit()
-
