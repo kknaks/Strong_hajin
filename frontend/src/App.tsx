@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   createConversation,
@@ -47,6 +47,7 @@ export default function App() {
   const [message, setMessage] = useState("");
   const [contextOptions, setContextOptions] = useState<ConversationContextReference[]>([]);
   const [selectedContextKey, setSelectedContextKey] = useState("");
+  const conversationListEpoch = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,18 +83,22 @@ export default function App() {
   }, [personaId]);
 
   const refreshConversations = useCallback(async () => {
+    const requestEpoch = conversationListEpoch.current;
     const items = await getConversations(personaId);
-    setConversations((current) => mergeConversationSnapshots(items, current));
+    if (requestEpoch !== conversationListEpoch.current) return;
+    setConversations(items);
     setActiveConversation((current) => {
       if (!current) return items[0] ?? null;
-      return items.find((item) => item.conversation_id === current.conversation_id) ?? current;
+      return items.find((item) => item.conversation_id === current.conversation_id) ?? items[0] ?? null;
     });
   }, [personaId]);
 
   const refreshActiveConversation = useCallback(async () => {
     if (!activeConversation) return;
     const next = await getConversation(personaId, activeConversation.conversation_id);
-    setActiveConversation(next);
+    setActiveConversation((current) =>
+      current?.conversation_id === next.conversation_id ? next : current,
+    );
     setConversations((items) =>
       items.map((item) => (item.conversation_id === next.conversation_id ? next : item)),
     );
@@ -102,9 +107,6 @@ export default function App() {
   useEffect(() => {
     if (!isAxOpen) return;
     void refreshConversations()
-      .then((items) => {
-        return items;
-      })
       .catch(() => setError("AX 대화를 불러오지 못했습니다."));
   }, [isAxOpen, refreshConversations]);
 
@@ -174,7 +176,11 @@ export default function App() {
   async function startConversation() {
     try {
       const conversation = await createConversation(personaId);
-      setConversations((items) => [conversation, ...items]);
+      conversationListEpoch.current += 1;
+      setConversations((items) => [
+        conversation,
+        ...items.filter((item) => item.conversation_id !== conversation.conversation_id),
+      ]);
       setActiveConversation(conversation);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "새 대화를 만들지 못했습니다.");
@@ -266,8 +272,11 @@ export default function App() {
             사용자
             <select
               onChange={(event) => {
+                conversationListEpoch.current += 1;
                 setSurface("today");
                 setCapabilities(null);
+                setConversations([]);
+                setActiveConversation(null);
                 setPersonaId(event.target.value);
               }}
               value={personaId}
@@ -351,6 +360,7 @@ export default function App() {
           <div className="ax-messages">
             {activeConversation && (
               <ConversationTimeline
+                canDecideActions={canDecideActions}
                 conversation={activeConversation}
                 onDecide={decideConversationAction}
               />
@@ -392,9 +402,11 @@ export default function App() {
 }
 
 function ConversationTimeline({
+  canDecideActions,
   conversation,
   onDecide,
 }: {
+  canDecideActions: boolean;
   conversation: Conversation;
   onDecide: (actionId: string, expectedVersion: number, decision: "approve" | "reject") => Promise<void>;
 }) {
@@ -429,7 +441,7 @@ function ConversationTimeline({
                 <b>{action.title}</b>
                 <p>{action.payload_summary}</p>
                 <small>{action.state === "pending" ? "확인 필요" : action.state === "approved" ? "승인됨" : "거절됨"}</small>
-                {action.state === "pending" && (
+                {action.state === "pending" && canDecideActions && (
                   <div>
                     <button onClick={() => void onDecide(action.action_id, action.version, "approve")} type="button">
                       승인
@@ -454,14 +466,6 @@ function ConversationTimeline({
 
 function contextKey(reference: ConversationContextReference): string {
   return `${reference.resource_type}:${reference.resource_id}:${reference.resource_version}`;
-}
-
-function mergeConversationSnapshots(
-  serverItems: Conversation[],
-  localItems: Conversation[],
-): Conversation[] {
-  const serverConversationIds = new Set(serverItems.map((item) => item.conversation_id));
-  return [...serverItems, ...localItems.filter((item) => !serverConversationIds.has(item.conversation_id))];
 }
 
 function createIdempotencyKey(): string {

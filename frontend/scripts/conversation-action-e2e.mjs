@@ -24,6 +24,7 @@ try {
     [
       "SCAX MCP에서 work_request_assignee_candidates를 먼저 호출한 뒤,",
       `work_request_create로 제목 '${requestTitle}'의 업무 요청을 authorized assignee jiho에게 생성해줘.`,
+      "반드시 work_request_create 도구를 실제로 호출해서 ActionItem을 저장해. 답변으로만 제안하지 마.",
       "이 변경은 ActionItem 제안으로 끝내고, 내가 화면에서 승인할 때까지 기다려.",
     ].join(" "),
   );

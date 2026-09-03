@@ -326,16 +326,20 @@ class SqlAlchemyConversationRepository:
     def latest_session(self, conversation: ConversationRecord) -> str | None:
         return self._session.scalar(select(ConversationProviderSessionReferenceRecord.provider_session_ref).where(ConversationProviderSessionReferenceRecord.conversation_id == conversation.id).order_by(ConversationProviderSessionReferenceRecord.recorded_at.desc(), ConversationProviderSessionReferenceRecord.id.desc()))
 
-    def view(self, conversation: ConversationRecord) -> dict[str, Any]:
+    def view(self, conversation: ConversationRecord, *, include_actions: bool = False) -> dict[str, Any]:
         messages = self._session.scalars(select(ConversationMessageRecord).where(ConversationMessageRecord.conversation_id == conversation.id).order_by(ConversationMessageRecord.sequence)).all()
         turns = self._session.scalars(select(ConversationTurnRecord).where(ConversationTurnRecord.conversation_id == conversation.id).order_by(ConversationTurnRecord.started_at, ConversationTurnRecord.id)).all()
         refs = self._session.scalars(select(ContextReferenceRecord).where(ContextReferenceRecord.conversation_id == conversation.id).order_by(ContextReferenceRecord.message_id, ContextReferenceRecord.id)).all()
         tools = self._session.scalars(select(ToolInvocationRecord).join(ConversationTurnRecord).where(ConversationTurnRecord.conversation_id == conversation.id).order_by(ConversationTurnRecord.started_at, ToolInvocationRecord.sequence)).all()
-        actions = self._session.scalars(
-            select(ActionItemRecord)
-            .where(ActionItemRecord.conversation_id == conversation.id)
-            .order_by(ActionItemRecord.created_at, ActionItemRecord.id)
-        ).all()
+        actions = (
+            self._session.scalars(
+                select(ActionItemRecord)
+                .where(ActionItemRecord.conversation_id == conversation.id)
+                .order_by(ActionItemRecord.created_at, ActionItemRecord.id)
+            ).all()
+            if include_actions
+            else []
+        )
         return {
             "conversation_id": str(conversation.id),
             "title": conversation.title,

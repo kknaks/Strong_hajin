@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
-from ax_workspace.modules.organization_access.domain import Principal
+from ax_workspace.modules.organization_access.domain import ACTION_READ, Principal
 
 
 class ConversationError(Exception):
@@ -74,7 +74,7 @@ class ConversationRepository(Protocol):
     def list_for(self, owner_id: str) -> list[Any]: ...
     def accept_fragment(self, conversation: Any, body: str, context: list[dict[str, str | bool]], idempotency_key: str | None) -> tuple[Any, Any | None, bool, int]: ...
     def cancel_active(self, conversation: Any, expected_version: int) -> Any: ...
-    def view(self, conversation: Any) -> dict[str, Any]: ...
+    def view(self, conversation: Any, *, include_actions: bool = False) -> dict[str, Any]: ...
 
 
 class ConversationApplication:
@@ -89,13 +89,13 @@ class ConversationApplication:
         self._context_resolver = context_resolver
 
     def create(self, principal: Principal, title: str = "새 대화") -> dict[str, Any]:
-        return self._repository.view(self._repository.create(str(principal.id), title.strip() or "새 대화"))
+        return self._view(principal, self._repository.create(str(principal.id), title.strip() or "새 대화"))
 
     def list(self, principal: Principal) -> list[dict[str, Any]]:
-        return [self._repository.view(item) for item in self._repository.list_for(str(principal.id))]
+        return [self._view(principal, item) for item in self._repository.list_for(str(principal.id))]
 
     def get(self, principal: Principal, conversation_id: UUID) -> dict[str, Any]:
-        return self._repository.view(self._owned(principal, conversation_id))
+        return self._view(principal, self._owned(principal, conversation_id))
 
     def accept_message(
         self,
@@ -124,9 +124,13 @@ class ConversationApplication:
         }
 
     def cancel(self, principal: Principal, conversation_id: UUID, expected_version: int) -> dict[str, Any]:
-        return self._repository.view(
+        return self._view(
+            principal,
             self._repository.cancel_active(self._owned(principal, conversation_id, lock=True), expected_version)
         )
+
+    def _view(self, principal: Principal, conversation: Any) -> dict[str, Any]:
+        return self._repository.view(conversation, include_actions=ACTION_READ in principal.capabilities)
 
     def _owned(self, principal: Principal, conversation_id: UUID, *, lock: bool = False) -> Any:
         conversation = self._repository.conversation(conversation_id, str(principal.id), lock=lock)

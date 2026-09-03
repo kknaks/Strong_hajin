@@ -368,6 +368,69 @@ describe("product surfaces", () => {
     expect(JSON.parse(String(request?.[1]?.body))).toEqual({ expected_version: 4, decision: "approve" });
   });
 
+  it("shows an AX ActionItem without decision controls when action.decide is not granted", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/developer/personas") {
+        return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      }
+      if (path === "/api/organization/me") {
+        return jsonResponse({
+          member_id: "mina",
+          display_name: "민아 (구성원)",
+          organizations: [],
+          capabilities: ["action.read"],
+        });
+      }
+      if (path === "/api/my-work") return jsonResponse([]);
+      if (path === "/api/conversations") {
+        return jsonResponse([
+          {
+            conversation_id: "conversation-1",
+            title: "권한 제한 대화",
+            version: 2,
+            messages: [],
+            turns: [
+              {
+                turn_id: "turn-1",
+                state: "completed",
+                provider_run_ref: null,
+                provider_session_ref: null,
+                error: null,
+              },
+            ],
+            context_references: [],
+            tool_invocations: [],
+            actions: [
+              {
+                action_id: "action-1",
+                conversation_id: "conversation-1",
+                turn_id: "turn-1",
+                action_type: "task.create_self",
+                title: "업무 만들기",
+                state: "pending",
+                version: 1,
+                payload_summary: "업무 만들기",
+                result: null,
+                audit_ref: null,
+              },
+            ],
+          },
+        ]);
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+
+    expect((await screen.findAllByText("업무 만들기")).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "승인" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "거절" })).toBeNull();
+  });
+
   it("restores an existing daily-report draft and submission history for the selected date", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
@@ -467,7 +530,7 @@ describe("product surfaces", () => {
     });
   });
 
-  it("keeps a newly created active Conversation when an older list response arrives late", async () => {
+  it("ignores a late same-id list snapshot after creating a Conversation", async () => {
     let resolveConversationList: ((response: Response) => void) | undefined;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
@@ -487,11 +550,29 @@ describe("product surfaces", () => {
         return jsonResponse({
           conversation_id: "new-conversation",
           title: "새 대화",
-          version: 1,
-          messages: [],
-          turns: [],
+          version: 2,
+          messages: [
+            {
+              message_id: "message-1",
+              turn_id: "turn-1",
+              role: "user",
+              body: "새 대화의 현재 발화",
+              sequence: 1,
+              state: "accepted",
+            },
+          ],
+          turns: [
+            {
+              turn_id: "turn-1",
+              state: "running",
+              provider_run_ref: null,
+              provider_session_ref: null,
+              error: null,
+            },
+          ],
           context_references: [],
           tool_invocations: [],
+          actions: [],
         });
       }
       if (path === "/api/conversations") {
@@ -506,6 +587,11 @@ describe("product surfaces", () => {
     render(<App />);
     await screen.findByRole("navigation", { name: "제품 탐색" });
     fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([path, init]) => path === "/api/conversations" && !init?.method),
+      ).toBe(true);
+    });
     fireEvent.click(screen.getByRole("button", { name: "새 AX 대화" }));
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -521,8 +607,8 @@ describe("product surfaces", () => {
     resolveConversationList?.(
       jsonResponse([
         {
-          conversation_id: "older-conversation",
-          title: "이전 대화",
+          conversation_id: "new-conversation",
+          title: "새 대화",
           version: 1,
           messages: [],
           turns: [],
@@ -532,10 +618,295 @@ describe("product surfaces", () => {
       ]),
     );
 
-    await screen.findByRole("button", { name: "이전 대화" });
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "새 대화" }).getAttribute("aria-pressed")).toBe("true");
     });
+    expect(screen.getByText("새 대화의 현재 발화")).toBeTruthy();
+    expect(screen.getByText("실행 중")).toBeTruthy();
+  });
+
+  it("keeps existing AX sessions when a new Conversation is created", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/developer/personas") {
+        return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      }
+      if (path === "/api/organization/me") {
+        return jsonResponse({
+          member_id: "mina",
+          display_name: "민아 (구성원)",
+          organizations: [],
+          capabilities: ["action.read"],
+        });
+      }
+      if (path === "/api/my-work") return jsonResponse([]);
+      if (path === "/api/conversations" && init?.method === "POST") {
+        return jsonResponse({
+          conversation_id: "new-conversation",
+          title: "새 대화",
+          version: 1,
+          messages: [],
+          turns: [],
+          context_references: [],
+          tool_invocations: [],
+          actions: [],
+        });
+      }
+      if (path === "/api/conversations") {
+        return jsonResponse([
+          {
+            conversation_id: "existing-conversation",
+            title: "기존 대화",
+            version: 1,
+            messages: [],
+            turns: [],
+            context_references: [],
+            tool_invocations: [],
+            actions: [],
+          },
+        ]);
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    expect(await screen.findByRole("button", { name: "기존 대화" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "새 AX 대화" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "기존 대화" })).toBeTruthy();
+      expect(screen.getAllByRole("button", { name: "새 대화" }).some((button) => button.getAttribute("aria-pressed") === "true")).toBe(true);
+    });
+  });
+
+  it("keeps an in-flight canonical Conversation list when creating a new session fails", async () => {
+    let resolveConversationList: ((response: Response) => void) | undefined;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/developer/personas") {
+        return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      }
+      if (path === "/api/organization/me") {
+        return jsonResponse({
+          member_id: "mina",
+          display_name: "민아 (구성원)",
+          organizations: [],
+          capabilities: ["action.read"],
+        });
+      }
+      if (path === "/api/my-work") return jsonResponse([]);
+      if (path === "/api/conversations" && init?.method === "POST") {
+        return new Response(JSON.stringify({ detail: "대화를 만들지 못했습니다." }), { status: 500 });
+      }
+      if (path === "/api/conversations") {
+        return new Promise<Response>((resolve) => {
+          resolveConversationList = resolve;
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    await waitFor(() => expect(resolveConversationList).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "새 AX 대화" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("대화를 만들지 못했습니다.");
+
+    resolveConversationList?.(
+      jsonResponse([
+        {
+          conversation_id: "existing-conversation",
+          title: "기존 대화",
+          version: 1,
+          messages: [],
+          turns: [],
+          context_references: [],
+          tool_invocations: [],
+          actions: [],
+        },
+      ]),
+    );
+    expect(await screen.findByRole("button", { name: "기존 대화" })).toBeTruthy();
+  });
+
+  it("invalidates an old persona's Conversation list and clears its local AX state on a persona switch", async () => {
+    let resolveMinaList: ((response: Response) => void) | undefined;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const personaId = new Headers(init?.headers).get("X-Demo-Persona");
+      if (path === "/api/developer/personas") {
+        return jsonResponse([
+          { id: "mina", display_name: "민아 (구성원)" },
+          { id: "jiho", display_name: "지호 (팀장)" },
+        ]);
+      }
+      if (path === "/api/organization/me") {
+        return jsonResponse({
+          member_id: personaId,
+          display_name: personaId === "jiho" ? "지호 (팀장)" : "민아 (구성원)",
+          organizations: [],
+          capabilities: ["action.read"],
+        });
+      }
+      if (path === "/api/my-work") return jsonResponse([]);
+      if (path === "/api/conversations" && init?.method === "POST") {
+        return jsonResponse({
+          conversation_id: "mina-conversation",
+          title: "민아의 임시 대화",
+          version: 1,
+          messages: [
+            {
+              message_id: "message-1",
+              turn_id: null,
+              role: "user",
+              body: "민아의 현재 발화",
+              sequence: 1,
+              state: "queued",
+            },
+          ],
+          turns: [],
+          context_references: [],
+          tool_invocations: [],
+          actions: [],
+        });
+      }
+      if (path === "/api/conversations" && personaId === "mina") {
+        return new Promise<Response>((resolve) => {
+          resolveMinaList = resolve;
+        });
+      }
+      if (path === "/api/conversations" && personaId === "jiho") return jsonResponse([]);
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("option", { name: "지호 (팀장)" });
+    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    await waitFor(() => expect(resolveMinaList).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "새 AX 대화" }));
+    expect(await screen.findByText("민아의 현재 발화")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("사용자"), { target: { value: "jiho" } });
+    await waitFor(() => {
+      expect((screen.getByLabelText("사용자") as HTMLSelectElement).value).toBe("jiho");
+      expect(screen.queryByText("민아의 현재 발화")).toBeNull();
+    });
+    resolveMinaList?.(
+      jsonResponse([
+        {
+          conversation_id: "mina-conversation",
+          title: "민아의 임시 대화",
+          version: 1,
+          messages: [],
+          turns: [],
+          context_references: [],
+          tool_invocations: [],
+          actions: [],
+        },
+      ]),
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "민아의 임시 대화" })).toBeNull();
+      expect(screen.queryByText("민아의 현재 발화")).toBeNull();
+    });
+  });
+
+  it("polls an open AX drawer until a completed turn projects its pending ActionItem", async () => {
+    let conversationReads = 0;
+    const runningConversation = {
+      conversation_id: "conversation-1",
+      title: "새 대화",
+      version: 2,
+      messages: [
+        {
+          message_id: "message-1",
+          turn_id: "turn-1",
+          role: "user",
+          body: "업무 요청을 만들어줘",
+          sequence: 1,
+          state: "accepted",
+        },
+      ],
+      turns: [
+        {
+          turn_id: "turn-1",
+          state: "running",
+          provider_run_ref: null,
+          provider_session_ref: null,
+          error: null,
+        },
+      ],
+      context_references: [],
+      tool_invocations: [],
+      actions: [],
+    };
+    const completedConversation = {
+      ...runningConversation,
+      version: 3,
+      turns: [{ ...runningConversation.turns[0], state: "completed" }],
+      actions: [
+        {
+          action_id: "action-1",
+          conversation_id: "conversation-1",
+          turn_id: "turn-1",
+          action_type: "work_request.create",
+          title: "업무 요청 생성 확인",
+          state: "pending",
+          version: 1,
+          payload_summary: "업무 요청: 고객 요청 확인",
+          result: null,
+          audit_ref: null,
+        },
+      ],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/developer/personas") {
+        return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      }
+      if (path === "/api/organization/me") {
+        return jsonResponse({
+          member_id: "mina",
+          display_name: "민아 (구성원)",
+          organizations: [],
+          capabilities: ["action.read", "action.decide", "work_request.create"],
+        });
+      }
+      if (path === "/api/my-work" || path === "/api/actions") return jsonResponse([]);
+      if (path === "/api/conversations" && init?.method === "POST") {
+        return jsonResponse(runningConversation);
+      }
+      if (path === "/api/conversations") return jsonResponse([]);
+      if (path === "/api/conversations/conversation-1") {
+        conversationReads += 1;
+        return jsonResponse(completedConversation);
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([path, init]) => path === "/api/conversations" && !init?.method),
+      ).toBe(true);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "새 AX 대화" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "새 대화" }).getAttribute("aria-pressed")).toBe("true");
+    });
+    expect(screen.getByText("실행 중")).toBeTruthy();
+    expect(await screen.findByText("업무 요청 생성 확인", {}, { timeout: 2_000 })).toBeTruthy();
+    expect(conversationReads).toBeGreaterThanOrEqual(1);
   });
 
   it("keeps the AX composer enabled, sends an idempotent queued fragment, and attaches typed current-screen context", async () => {

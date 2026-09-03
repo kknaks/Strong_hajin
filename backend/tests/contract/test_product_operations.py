@@ -152,13 +152,27 @@ def test_action_routes_require_current_read_and_decide_capabilities(tmp_path) ->
         session.execute(
             delete(RoleCapabilityRecord).where(
                 RoleCapabilityRecord.role_id == "seed-role:mina",
-                RoleCapabilityRecord.capability_id.in_(["action.read", "action.decide"]),
+                RoleCapabilityRecord.capability_id == "action.read",
             )
         )
         session.commit()
 
     revoked = {"X-Demo-Persona": "mina"}
     assert client.get("/api/actions", headers=revoked).status_code == 403
+    assert client.get(
+        f"/api/conversations/{conversation['conversation_id']}", headers=revoked
+    ).json()["actions"] == []
+    assert client.get("/api/conversations", headers=revoked).json()[0]["actions"] == []
+
+    with make_session_factory(f"sqlite:///{tmp_path / 'demo.db'}")() as session:
+        session.execute(
+            delete(RoleCapabilityRecord).where(
+                RoleCapabilityRecord.role_id == "seed-role:mina",
+                RoleCapabilityRecord.capability_id == "action.decide",
+            )
+        )
+        session.commit()
+
     assert (
         client.post(
             f"/api/actions/{action['action_id']}/decide",
