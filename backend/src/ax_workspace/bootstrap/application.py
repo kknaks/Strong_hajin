@@ -63,13 +63,17 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).my_profile(principal)
 
+    def authenticated_principal(self, persona_id: str) -> Principal:
+        with self._session_factory() as session:
+            return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).authenticated_principal(persona_id)
+
     def create_self_task(self, principal: Principal, title: str) -> dict[str, Any]:
         with self._session_factory() as session:
             result = TaskApplication(SqlAlchemyTaskRepository(session)).create_self(principal, title)
             session.commit()
             return result
 
-    def transition_task(self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None = None, expected_version: int | None = None) -> dict[str, Any]:
+    def transition_task(self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None = None, expected_version: int = 0) -> dict[str, Any]:
         with self._session_factory() as session:
             result = TaskApplication(SqlAlchemyTaskRepository(session)).transition(task_id, principal, target, reason, expected_version)
             session.commit()

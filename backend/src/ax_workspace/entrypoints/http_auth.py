@@ -25,4 +25,8 @@ class DeveloperAuthAdapter:
 
 def developer_principal(request: Request) -> Principal:
     adapter: DeveloperAuthAdapter = request.app.state.developer_auth
-    return adapter.authenticate(request.headers.get("X-Demo-Persona"))
+    allowed_persona = adapter.authenticate(request.headers.get("X-Demo-Persona"))
+    try:
+        return request.app.state.workflow_application.authenticated_principal(str(allowed_persona.id))
+    except LookupError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active organization membership is required.") from error

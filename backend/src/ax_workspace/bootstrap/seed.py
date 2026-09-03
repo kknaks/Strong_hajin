@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from ax_workspace.platform.persistence import (
     AccessGrantRecord,
+    EmploymentPeriodRecord,
     MemberRecord,
     MeetingEvidenceRecord,
     MembershipRecord,
@@ -69,6 +70,8 @@ def _seed_organization_access(session: Session) -> None:
         member_id = str(principal.id)
         if session.get(MemberRecord, member_id) is None:
             session.add(MemberRecord(id=member_id, display_name=principal.display_name, employment_state="active"))
+        if session.scalar(select(EmploymentPeriodRecord).where(EmploymentPeriodRecord.member_id == member_id)) is None:
+            session.add(EmploymentPeriodRecord(member_id=member_id, state="active"))
         for organization_id in principal.organization_scope:
             exists = session.scalar(
                 select(MembershipRecord).where(

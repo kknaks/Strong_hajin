@@ -8,6 +8,7 @@ from ax_workspace.modules.organization_access.domain import Principal
 
 class OrganizationRepository(Protocol):
     def profile_for(self, member_id: str) -> dict[str, Any] | None: ...
+    def principal_for(self, member_id: str) -> Principal | None: ...
 
 
 class OrganizationApplication:
@@ -19,3 +20,9 @@ class OrganizationApplication:
         if profile is None:
             raise LookupError("organization member was not found")
         return profile
+
+    def authenticated_principal(self, persona_id: str) -> Principal:
+        principal = self._repository.principal_for(persona_id)
+        if principal is None:
+            raise LookupError("active organization member was not found")
+        return principal

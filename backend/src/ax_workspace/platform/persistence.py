@@ -26,6 +26,14 @@ class MemberRecord(Base):
     employment_state: Mapped[str] = mapped_column(String(40), nullable=False)
 
 
+class EmploymentPeriodRecord(Base):
+    __tablename__ = "employment_periods"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False, unique=True)
+    state: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
 class MembershipRecord(Base):
     __tablename__ = "memberships"
     __table_args__ = (UniqueConstraint("member_id", "organization_id", name="uq_member_organization"),)
