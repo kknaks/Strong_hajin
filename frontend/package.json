@@ -10,6 +10,8 @@
     "e2e:task-lifecycle": "node scripts/task-lifecycle-e2e.mjs",
     "e2e:work-request": "node scripts/work-request-e2e.mjs",
     "e2e:conversation": "node scripts/conversation-e2e.mjs",
+    "e2e:conversation-action": "node scripts/conversation-action-e2e.mjs",
+    "e2e:daily-report": "node scripts/daily-report-e2e.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

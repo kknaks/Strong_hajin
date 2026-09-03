@@ -11,12 +11,16 @@ import type { ActionItem, WorkRequest } from "./viewModels";
 
 type ActionInboxPageProps = {
   personaId: string;
+  canReadActions: boolean;
+  canDecideActions: boolean;
   canDecideWorkRequests: boolean;
   onError: (message: string | null) => void;
 };
 
 export function ActionInboxPage({
   personaId,
+  canReadActions,
+  canDecideActions,
   canDecideWorkRequests,
   onError,
 }: ActionInboxPageProps) {
@@ -30,7 +34,7 @@ export function ActionInboxPage({
     try {
       const [nextRequests, nextActions] = await Promise.all([
         canDecideWorkRequests ? getActionInbox(personaId) : Promise.resolve([]),
-        getActions(personaId),
+        canReadActions ? getActions(personaId) : Promise.resolve([]),
       ]);
       setRequests(nextRequests);
       setActions(nextActions);
@@ -41,7 +45,7 @@ export function ActionInboxPage({
 
   useEffect(() => {
     void refresh();
-  }, [canDecideWorkRequests, personaId]);
+  }, [canDecideWorkRequests, canReadActions, personaId]);
 
   async function decide(request: WorkRequest, action: "accept" | "reject") {
     setIsWorking(true);
@@ -117,22 +121,24 @@ export function ActionInboxPage({
                     <span>{action.payload_summary}</span>
                     <small>AX 제안 · 버전 {action.version}</small>
                   </div>
-                  <div>
-                    <button
-                      disabled={isWorking}
-                      onClick={() => void decideActionItem(action, "approve")}
-                      type="button"
-                    >
-                      승인
-                    </button>
-                    <button
-                      disabled={isWorking}
-                      onClick={() => void decideActionItem(action, "reject")}
-                      type="button"
-                    >
-                      거절
-                    </button>
-                  </div>
+                  {canDecideActions && (
+                    <div>
+                      <button
+                        disabled={isWorking}
+                        onClick={() => void decideActionItem(action, "approve")}
+                        type="button"
+                      >
+                        승인
+                      </button>
+                      <button
+                        disabled={isWorking}
+                        onClick={() => void decideActionItem(action, "reject")}
+                        type="button"
+                      >
+                        거절
+                      </button>
+                    </div>
+                  )}
                 </li>
               ))}
           </ul>

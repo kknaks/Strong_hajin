@@ -3,7 +3,7 @@ POSTGRES_TEST_URL ?= postgresql+psycopg://ax:ax@localhost:54329/ax_test
 E2E_API_PORT ?= 8001
 E2E_FRONTEND_PORT ?= 5176
 
-.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo api conversation-worker mcp frontend-install frontend api-e2e frontend-e2e e2e-task-lifecycle e2e-work-request e2e-conversation live-report-smoke
+.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo api conversation-worker mcp frontend-install frontend api-e2e frontend-e2e e2e-task-lifecycle e2e-work-request e2e-conversation e2e-conversation-action e2e-daily-report live-report-smoke
 
 install:
 	cd backend && uv sync --all-groups
@@ -64,6 +64,12 @@ e2e-work-request:
 
 e2e-conversation:
 	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:conversation
+
+e2e-conversation-action:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:conversation-action
+
+e2e-daily-report:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:daily-report
 
 live-report-smoke:
 	cd backend && DATABASE_URL="$(DATABASE_URL)" SCAX_API_URL="http://127.0.0.1:$(E2E_API_PORT)" uv run python scripts/live_report_smoke.py

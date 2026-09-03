@@ -1,5 +1,5 @@
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 import pytest
@@ -112,6 +112,61 @@ def test_cancelled_conversation_holds_queued_fragments_until_a_later_send(tmp_pa
     )
     assert resumed.status_code == 202
     assert resumed.json()["queued"] is False
+
+
+def test_action_routes_require_current_read_and_decide_capabilities(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path, report_provider=ContractTestAiProvider())
+    application = client.app.state.workflow_application
+    mina = application.authenticated_principal("mina")
+    conversation = application.create_conversation(mina, "권한 회수 확인")
+    accepted = application.accept_conversation_message(
+        mina,
+        "확인이 필요한 변경",
+        UUID(conversation["conversation_id"]),
+        [],
+        "action-capability",
+    )
+    with make_session_factory(f"sqlite:///{tmp_path / 'demo.db'}")() as session:
+        turn = session.get(ConversationTurnRecord, UUID(accepted["turn_id"]))
+        assert turn is not None
+        action = application.propose_action(
+            mina,
+            turn.execution_id,
+            "task.create_self",
+            "업무 생성 확인",
+            {"title": "권한 회수 대상"},
+        )
+
+    no_capability = {"X-Demo-Persona": "sora"}
+    assert client.get("/api/actions", headers=no_capability).status_code == 403
+    assert (
+        client.post(
+            f"/api/actions/{action['action_id']}/decide",
+            headers=no_capability,
+            json={"expected_version": action["version"], "decision": "approve"},
+        ).status_code
+        == 403
+    )
+
+    with make_session_factory(f"sqlite:///{tmp_path / 'demo.db'}")() as session:
+        session.execute(
+            delete(RoleCapabilityRecord).where(
+                RoleCapabilityRecord.role_id == "seed-role:mina",
+                RoleCapabilityRecord.capability_id.in_(["action.read", "action.decide"]),
+            )
+        )
+        session.commit()
+
+    revoked = {"X-Demo-Persona": "mina"}
+    assert client.get("/api/actions", headers=revoked).status_code == 403
+    assert (
+        client.post(
+            f"/api/actions/{action['action_id']}/decide",
+            headers=revoked,
+            json={"expected_version": action["version"], "decision": "approve"},
+        ).status_code
+        == 403
+    )
 
 
 def test_generate_draft_creates_a_report_owned_draft_from_authorized_task_events(tmp_path) -> None:
@@ -658,6 +713,8 @@ def test_organization_profile_is_a_persisted_authorized_projection(tmp_path) -> 
         "organizations": [{"id": "product", "name": "제품팀"}, {"id": "scax", "name": "SCAX"}],
         "roles": ["민아 (구성원) 기본 역할"],
         "capabilities": [
+            "action.decide",
+            "action.read",
             "daily_report.edit",
             "daily_report.generate",
             "daily_report.read",

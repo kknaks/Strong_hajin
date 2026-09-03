@@ -29,6 +29,8 @@ DAILY_REPORT_READ = "daily_report.read"
 DAILY_REPORT_GENERATE = "daily_report.generate"
 DAILY_REPORT_EDIT = "daily_report.edit"
 DAILY_REPORT_SUBMIT = "daily_report.submit"
+ACTION_READ = "action.read"
+ACTION_DECIDE = "action.decide"
 
 
 SEED_PERSONAS: dict[PersonaId, Principal] = {
@@ -48,6 +50,8 @@ SEED_PERSONAS: dict[PersonaId, Principal] = {
             TASK_SELF_MANAGE,
             WORK_REQUEST_READ,
             WORK_REQUEST_CREATE,
+            ACTION_READ,
+            ACTION_DECIDE,
         }),
     ),
     PersonaId.JIHO: Principal(
@@ -63,6 +67,8 @@ SEED_PERSONAS: dict[PersonaId, Principal] = {
             "report.review",
             "meeting.followup.assign",
             "team.manage",
+            ACTION_READ,
+            ACTION_DECIDE,
         }),
     ),
     PersonaId.SORA: Principal(
@@ -86,6 +92,7 @@ SEED_PERSONAS: dict[PersonaId, Principal] = {
             DAILY_REPORT_SUBMIT, "meeting.followup.request",
             "meeting.followup.assign", "task.accept", TASK_READ, TASK_SELF_MANAGE,
             WORK_REQUEST_READ, WORK_REQUEST_CREATE, "report.review", "team.manage",
+            ACTION_READ, ACTION_DECIDE,
             "contract.legal_review", "contract.finance_review", "demo.admin",
         }),
     ),

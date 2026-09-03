@@ -7,7 +7,7 @@ from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select, text
+from sqlalchemy import event, select, text
 
 from ax_workspace.modules.organization_access.domain import seeded_principal
 from ax_workspace.platform.persistence import make_session_factory
@@ -701,14 +701,47 @@ def test_postgres_action_proposals_are_owner_bound_and_serialized_per_execution(
             {"title": title},
         )
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        first, second = [
-            future.result(timeout=3)
-            for future in [
-                executor.submit(propose, "첫 번째 제안 업무"),
-                executor.submit(propose, "재실행에서 달라진 업무"),
-            ]
-        ]
+    turn_lock_acquired = Event()
+    release_first_transaction = Event()
+    second_started = Event()
+    second_finished = Event()
+    blocked_first_lock = False
+    engine = application._session_factory.kw["bind"]
+
+    def hold_after_first_turn_lock(conn, cursor, statement, parameters, context, executemany):
+        nonlocal blocked_first_lock
+        if (
+            not blocked_first_lock
+            and "conversation_turns" in statement
+            and "JOIN conversations" in statement
+            and "FOR UPDATE" in statement
+        ):
+            blocked_first_lock = True
+            turn_lock_acquired.set()
+            assert release_first_transaction.wait(timeout=3), "test did not release the first Action proposal"
+
+    event.listen(engine, "after_cursor_execute", hold_after_first_turn_lock)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_future = executor.submit(propose, "첫 번째 제안 업무")
+            assert turn_lock_acquired.wait(timeout=3), "first proposal did not hold the ConversationTurn lock"
+
+            def propose_second() -> dict[str, object]:
+                second_started.set()
+                try:
+                    return propose("재실행에서 달라진 업무")
+                finally:
+                    second_finished.set()
+
+            second_future = executor.submit(propose_second)
+            assert second_started.wait(timeout=1), "second proposal did not enter the competing transaction"
+            assert not second_finished.wait(timeout=0.25), "second proposal bypassed the locked turn"
+            release_first_transaction.set()
+            first = first_future.result(timeout=3)
+            second = second_future.result(timeout=3)
+    finally:
+        event.remove(engine, "after_cursor_execute", hold_after_first_turn_lock)
+
     assert first["action_id"] == second["action_id"]
     with pytest.raises(ValueError, match="execution was not found"):
         application.propose_action(

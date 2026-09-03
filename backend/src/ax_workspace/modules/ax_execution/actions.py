@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 from uuid import UUID
 
-from ax_workspace.modules.organization_access.domain import Principal
+from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, ACTION_READ, Principal
 
 
 class ActionError(ValueError):
@@ -12,6 +12,10 @@ class ActionError(ValueError):
 
 
 class ActionAccessDenied(ActionError):
+    pass
+
+
+class ActionCapabilityDenied(ActionAccessDenied):
     pass
 
 
@@ -51,11 +55,13 @@ class ActionApplication:
         title: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
+        self._require(principal, ACTION_DECIDE)
         return self._repository.view(
             self._repository.propose(str(principal.id), execution_id, action_type, title, payload)
         )
 
     def list(self, principal: Principal) -> list[dict[str, Any]]:
+        self._require(principal, ACTION_READ)
         return [self._repository.view(action) for action in self._repository.list_for(str(principal.id))]
 
     def decide(
@@ -65,6 +71,7 @@ class ActionApplication:
         expected_version: int,
         decision: str,
     ) -> dict[str, Any]:
+        self._require(principal, ACTION_DECIDE)
         if decision not in {"approve", "reject"}:
             raise ActionError("action decision must be approve or reject")
         action = self._repository.action(action_id, str(principal.id), lock=True)
@@ -83,3 +90,8 @@ class ActionApplication:
         result = self._executor.execute(principal, action) if decision == "approve" else None
         self._repository.resolve(action, str(principal.id), decision, result)
         return self._repository.view(action)
+
+    @staticmethod
+    def _require(principal: Principal, capability: str) -> None:
+        if capability not in principal.capabilities:
+            raise ActionCapabilityDenied(f"{capability} capability is required")

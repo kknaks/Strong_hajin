@@ -83,10 +83,10 @@ export default function App() {
 
   const refreshConversations = useCallback(async () => {
     const items = await getConversations(personaId);
-    setConversations(items);
+    setConversations((current) => mergeConversationSnapshots(items, current));
     setActiveConversation((current) => {
       if (!current) return items[0] ?? null;
-      return items.find((item) => item.conversation_id === current.conversation_id) ?? items[0] ?? null;
+      return items.find((item) => item.conversation_id === current.conversation_id) ?? current;
     });
   }, [personaId]);
 
@@ -225,6 +225,8 @@ export default function App() {
   const currentPersona = personas.find((persona) => persona.id === personaId);
   const currentPersonaName = currentPersona?.display_name ?? "사용자";
   const pageProps = { personaId, onError: setError };
+  const canReadActions = capabilities?.includes("action.read") ?? false;
+  const canDecideActions = capabilities?.includes("action.decide") ?? false;
   const visibleNavigation = navigation.filter(
     (item) => item.id !== "report" || capabilities?.includes("daily_report.generate"),
   );
@@ -264,6 +266,7 @@ export default function App() {
             사용자
             <select
               onChange={(event) => {
+                setSurface("today");
                 setCapabilities(null);
                 setPersonaId(event.target.value);
               }}
@@ -290,6 +293,7 @@ export default function App() {
         {surface === "today" && (
           <TodayPage
             {...pageProps}
+            canReadActions={canReadActions}
             canDecideWorkRequests={capabilities?.includes("work_request.decide") ?? false}
             canGenerateDailyReport={capabilities?.includes("daily_report.generate") ?? false}
             onNavigate={setSurface}
@@ -305,7 +309,9 @@ export default function App() {
         {surface === "inbox" && (
           <ActionInboxPage
             {...pageProps}
+            canDecideActions={canDecideActions}
             canDecideWorkRequests={capabilities?.includes("work_request.decide") ?? false}
+            canReadActions={canReadActions}
           />
         )}
         {surface === "report" && <DailyReportPage {...pageProps} />}
@@ -448,6 +454,14 @@ function ConversationTimeline({
 
 function contextKey(reference: ConversationContextReference): string {
   return `${reference.resource_type}:${reference.resource_id}:${reference.resource_version}`;
+}
+
+function mergeConversationSnapshots(
+  serverItems: Conversation[],
+  localItems: Conversation[],
+): Conversation[] {
+  const serverConversationIds = new Set(serverItems.map((item) => item.conversation_id));
+  return [...serverItems, ...localItems.filter((item) => !serverConversationIds.has(item.conversation_id))];
 }
 
 function createIdempotencyKey(): string {

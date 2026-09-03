@@ -19,7 +19,7 @@ from ax_workspace.modules.work.application import InvalidTaskTransition, TaskAcc
 from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequestError
 from ax_workspace.modules.reports.application import DailyReportAccessDenied
 from ax_workspace.modules.ax_execution.conversations import ConversationError, ConversationQueueOverflow
-from ax_workspace.modules.ax_execution.actions import ActionAccessDenied, ActionError
+from ax_workspace.modules.ax_execution.actions import ActionAccessDenied, ActionCapabilityDenied, ActionError
 from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.ax_execution.domain import catalog_definitions
 from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
@@ -142,6 +142,8 @@ def _runtime_error(error: Exception) -> HTTPException:
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     if isinstance(error, ConversationError):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
+    if isinstance(error, ActionCapabilityDenied):
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
     if isinstance(error, ActionAccessDenied):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
     if isinstance(error, ActionError):
@@ -279,7 +281,10 @@ def create_app(
 
         @app.get("/api/actions")
         def actions(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
-            return app.state.workflow_application.actions(principal)
+            try:
+                return app.state.workflow_application.actions(principal)
+            except Exception as error:
+                raise _runtime_error(error) from error
 
         @app.post("/api/actions/{action_id}/decide")
         def decide_action(

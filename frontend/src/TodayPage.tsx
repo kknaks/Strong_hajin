@@ -12,6 +12,7 @@ import {
 
 type TodayPageProps = {
   personaId: string;
+  canReadActions: boolean;
   canDecideWorkRequests: boolean;
   canGenerateDailyReport: boolean;
   onError: (message: string | null) => void;
@@ -20,6 +21,7 @@ type TodayPageProps = {
 
 export function TodayPage({
   personaId,
+  canReadActions,
   canDecideWorkRequests,
   canGenerateDailyReport,
   onError,
@@ -35,7 +37,8 @@ export function TodayPage({
 
     const reportDate = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
     const requests = canDecideWorkRequests ? getActionInbox(personaId) : Promise.resolve([]);
-    void Promise.all([getMyWork(personaId), requests, getActions(personaId)])
+    const pendingActions = canReadActions ? getActions(personaId) : Promise.resolve([]);
+    void Promise.all([getMyWork(personaId), requests, pendingActions])
       .then(async ([work, inbox, pendingActions]) => {
         if (cancelled) return;
         setTasks(
@@ -68,7 +71,7 @@ export function TodayPage({
     return () => {
       cancelled = true;
     };
-  }, [canDecideWorkRequests, canGenerateDailyReport, onError, personaId]);
+  }, [canDecideWorkRequests, canGenerateDailyReport, canReadActions, onError, personaId]);
 
   return (
     <>

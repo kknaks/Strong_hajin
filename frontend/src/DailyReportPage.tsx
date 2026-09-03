@@ -54,6 +54,7 @@ export function DailyReportPage({ personaId, onError }: DailyReportPageProps) {
       setDraft(null);
       setBody("");
       setHistory(null);
+      onError(null);
       try {
         const status = await getDailyReportStatus(personaId, reportDate);
         if (cancelled) return;

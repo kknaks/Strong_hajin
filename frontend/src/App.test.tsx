@@ -144,6 +144,54 @@ describe("product surfaces", () => {
     expect(screen.queryByRole("button", { name: "시작" })).toBeNull();
   });
 
+  it("returns to Today before a switched persona can load a forbidden report surface", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const personaId = new Headers(init?.headers).get("X-Demo-Persona");
+      if (path === "/api/developer/personas") {
+        return jsonResponse([
+          { id: "mina", display_name: "민아 (구성원)" },
+          { id: "jiho", display_name: "지호 (팀장)" },
+        ]);
+      }
+      if (path === "/api/organization/me") {
+        return jsonResponse({
+          member_id: personaId,
+          display_name: personaId === "jiho" ? "지호 (팀장)" : "민아 (구성원)",
+          organizations: [],
+          capabilities: personaId === "mina" ? ["daily_report.generate"] : [],
+        });
+      }
+      if (path === "/api/my-work" || path === "/api/action-inbox" || path === "/api/actions") {
+        return jsonResponse([]);
+      }
+      if (path.startsWith("/api/daily-reports/status")) {
+        return jsonResponse({ report_date: "2026-09-03", status: "not_started", report_id: null });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(within(navigation).getByRole("button", { name: "보고" }));
+    expect(await screen.findByRole("heading", { name: "개인 일일보고" })).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("사용자"), { target: { value: "jiho" } });
+    expect(await screen.findByRole("heading", { name: "오늘의 업무를 확인하세요" })).toBeTruthy();
+    await waitFor(() => {
+      expect(within(navigation).queryByRole("button", { name: "보고" })).toBeNull();
+    });
+    expect(
+      fetchMock.mock.calls.filter(([path, init]) => {
+        return (
+          String(path).startsWith("/api/daily-reports/") &&
+          new Headers(init?.headers).get("X-Demo-Persona") === "jiho"
+        );
+      }),
+    ).toHaveLength(0);
+  });
+
   it("creates a work request through the UI and projects it only after the assignee accepts", async () => {
     let request: {
       request_id: string;
@@ -243,6 +291,11 @@ describe("product surfaces", () => {
     ).toHaveLength(0);
     expect(
       fetchMock.mock.calls.filter(([path, init]) => {
+        return path === "/api/actions" && new Headers(init?.headers).get("X-Demo-Persona") === "jiho";
+      }),
+    ).toHaveLength(0);
+    expect(
+      fetchMock.mock.calls.filter(([path, init]) => {
         return (
           path === "/api/work-request-assignee-candidates" &&
           new Headers(init?.headers).get("X-Demo-Persona") === "jiho"
@@ -269,7 +322,7 @@ describe("product surfaces", () => {
           member_id: "mina",
           display_name: "민아 (구성원)",
           organizations: [],
-          capabilities: ["daily_report.generate"],
+          capabilities: ["action.read", "action.decide", "daily_report.generate"],
         });
       }
       if (path === "/api/my-work") return jsonResponse([]);
@@ -376,6 +429,113 @@ describe("product surfaces", () => {
       "/api/daily-reports/report-1/history",
       expect.anything(),
     );
+  });
+
+  it("clears a stale report error as soon as the selected report date changes", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/developer/personas") {
+        return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      }
+      if (path === "/api/organization/me") {
+        return jsonResponse({
+          member_id: "mina",
+          display_name: "민아 (구성원)",
+          organizations: [],
+          capabilities: ["daily_report.generate"],
+        });
+      }
+      if (path === "/api/my-work" || path === "/api/action-inbox") return jsonResponse([]);
+      if (path.startsWith("/api/daily-reports/status?report_date=2026-09-03")) {
+        return new Response(JSON.stringify({ detail: "기존 날짜를 불러오지 못했습니다." }), { status: 500 });
+      }
+      if (path.startsWith("/api/daily-reports/status?report_date=2026-09-02")) {
+        return new Promise(() => {});
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(within(navigation).getByRole("button", { name: "보고" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("기존 날짜를 불러오지 못했습니다.");
+
+    fireEvent.change(screen.getByLabelText("보고일"), { target: { value: "2026-09-02" } });
+    await waitFor(() => {
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+  });
+
+  it("keeps a newly created active Conversation when an older list response arrives late", async () => {
+    let resolveConversationList: ((response: Response) => void) | undefined;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/developer/personas") {
+        return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      }
+      if (path === "/api/organization/me") {
+        return jsonResponse({
+          member_id: "mina",
+          display_name: "민아 (구성원)",
+          organizations: [],
+          capabilities: ["action.read", "action.decide"],
+        });
+      }
+      if (path === "/api/my-work" || path === "/api/actions") return jsonResponse([]);
+      if (path === "/api/conversations" && init?.method === "POST") {
+        return jsonResponse({
+          conversation_id: "new-conversation",
+          title: "새 대화",
+          version: 1,
+          messages: [],
+          turns: [],
+          context_references: [],
+          tool_invocations: [],
+        });
+      }
+      if (path === "/api/conversations") {
+        return new Promise<Response>((resolve) => {
+          resolveConversationList = resolve;
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    fireEvent.click(screen.getByRole("button", { name: "새 AX 대화" }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/conversations",
+        expect.objectContaining({ method: "POST" }),
+      );
+      expect(resolveConversationList).toBeTruthy();
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "새 대화" }).getAttribute("aria-pressed")).toBe("true");
+    });
+
+    resolveConversationList?.(
+      jsonResponse([
+        {
+          conversation_id: "older-conversation",
+          title: "이전 대화",
+          version: 1,
+          messages: [],
+          turns: [],
+          context_references: [],
+          tool_invocations: [],
+        },
+      ]),
+    );
+
+    await screen.findByRole("button", { name: "이전 대화" });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "새 대화" }).getAttribute("aria-pressed")).toBe("true");
+    });
   });
 
   it("keeps the AX composer enabled, sends an idempotent queued fragment, and attaches typed current-screen context", async () => {
