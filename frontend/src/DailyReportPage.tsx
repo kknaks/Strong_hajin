@@ -4,6 +4,7 @@ import {
   editDailyReport,
   generateDailyReportDraft,
   getDailyReportHistory,
+  getDailyReportStatus,
   getMyWork,
   submitDailyReport,
 } from "./api";
@@ -45,6 +46,48 @@ export function DailyReportPage({ personaId, onError }: DailyReportPageProps) {
       cancelled = true;
     };
   }, [onError, personaId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function restoreForSelectedDate() {
+      setDraft(null);
+      setBody("");
+      setHistory(null);
+      try {
+        const status = await getDailyReportStatus(personaId, reportDate);
+        if (cancelled) return;
+        if (!status.report_id) {
+          onError(null);
+          return;
+        }
+        const nextHistory = await getDailyReportHistory(personaId, status.report_id);
+        if (cancelled) return;
+        setHistory(nextHistory);
+        const latestDraft = nextHistory.drafts.at(-1);
+        if (!latestDraft) return;
+        setDraft({
+          report_id: nextHistory.report_id,
+          draft_id: latestDraft.draft_id,
+          draft_version: latestDraft.version,
+          body: latestDraft.body,
+          source_refs: latestDraft.source_refs,
+          status: nextHistory.status,
+        });
+        setBody(latestDraft.body);
+        onError(null);
+      } catch (error) {
+        if (!cancelled) {
+          onError(error instanceof Error ? error.message : "기존 보고 초안을 불러오지 못했습니다.");
+        }
+      }
+    }
+
+    void restoreForSelectedDate();
+    return () => {
+      cancelled = true;
+    };
+  }, [onError, personaId, reportDate]);
 
   async function generateDraft() {
     setIsWorking(true);

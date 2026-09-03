@@ -256,6 +256,69 @@ describe("product surfaces", () => {
     expect(JSON.parse(String(request?.[1]?.body))).toEqual({ expected_version: 4, decision: "approve" });
   });
 
+  it("restores an existing daily-report draft and submission history for the selected date", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/developer/personas") {
+        return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      }
+      if (path === "/api/organization/me") {
+        return jsonResponse({
+          member_id: "mina",
+          display_name: "민아 (구성원)",
+          organizations: [],
+          capabilities: ["daily_report.generate"],
+        });
+      }
+      if (path === "/api/my-work" || path === "/api/action-inbox" || path === "/api/actions") {
+        return jsonResponse([]);
+      }
+      if (path.startsWith("/api/daily-reports/status")) {
+        return jsonResponse({ report_date: "2026-09-03", status: "draft", report_id: "report-1" });
+      }
+      if (path === "/api/daily-reports/report-1/history") {
+        return jsonResponse({
+          report_id: "report-1",
+          report_date: "2026-09-03",
+          status: "draft",
+          drafts: [
+            {
+              draft_id: "draft-1",
+              version: 2,
+              body: "다시 연 보고 초안",
+              source_refs: [],
+            },
+          ],
+          submissions: [
+            {
+              submission_id: "submission-1",
+              version: 1,
+              body: "이전 제출본",
+              source_refs: [],
+              reason: null,
+              submitted_at: "2026-09-03T09:00:00+00:00",
+            },
+          ],
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(within(navigation).getByRole("button", { name: "보고" }));
+
+    expect((await screen.findByLabelText("일일보고 초안") as HTMLTextAreaElement).value).toBe(
+      "다시 연 보고 초안",
+    );
+    expect(screen.getByText("제출 v1")).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/daily-reports/report-1/history",
+      expect.anything(),
+    );
+  });
+
   it("keeps the AX composer enabled, sends an idempotent queued fragment, and attaches typed current-screen context", async () => {
     const conversation = {
       conversation_id: "conversation-1",
