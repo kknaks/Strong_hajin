@@ -1,10 +1,8 @@
 # ax-workspace
 
-SCAX의 모듈형 업무 제품 데모 저장소입니다. 개인 일일보고만 내부 동적 Workflow를 사용하며, 조직·업무·요청·판단은 각각의 고유 application operation으로 발전합니다.
+SCAX 상용 시스템의 독립 modular monolith 저장소입니다. 조직·업무·요청·판단·보고와 내장 AX 대화가 하나의 PostgreSQL 원장과 application operation 위에서 동작하며, 개인 일일보고 생성만 내부 동적 Workflow를 사용합니다. 로컬 실행은 별도 demo mode가 아니라 같은 production 경로를 `DeveloperAuthAdapter`와 seed로 검증하는 방식입니다.
 
-현재 실행 계약은 다음 Work Brief가 소유합니다.
-
-- `/Users/dante/git/Main/00_Inbox/Work Briefs/2026-09-03 - SCAX Workflow catalog demo.md`
+장기 설계와 진행 상태는 Obsidian vault의 `SCAX 상용 시스템 구축` Project Note와 `SCAX 상용 시스템 설계` 문서가 소유합니다. 첫 vertical slice의 실행 기록은 `02_PARA/04_Archives/Work Briefs/2026-09-03 - SCAX Workflow catalog demo.md`에 보관되어 있습니다. 디자인 시스템 참조본은 `docs/design/`에 있습니다.
 
 ## Local backend bootstrap
 
@@ -20,7 +18,11 @@ make api
 
 In a second terminal, run `make conversation-worker`; it is the separate PGMQ consumer and is the only process that invokes Codex for queued AX turns. In a third terminal, run `make frontend`; the browser UI starts at `http://127.0.0.1:5173` and proxies `/api` to FastAPI on port 8000. Run `AX_MCP_PERSONA=mina make mcp` in a fourth terminal to expose Mina’s dynamically filtered stdio MCP Tool set; this binding is required, so an unbound MCP server never lets a client select `demo-admin`. Run `make verify` in another terminal for non-integration backend tests, frontend behavior tests, and the production Vite build. The API itself starts at `http://127.0.0.1:8000`; Swagger is at `/docs`.
 
-`make reset-demo` is the only command that creates or drops the demo tables. Normal API startup never mutates the schema. After pulling a persistence schema change, stop the local API/worker and run `make reset-demo` before local journeys; Alembic revisions are intentionally not part of this milestone. `X-Demo-Persona` accepts only a seeded persona (`mina`, `jiho`, `sora`, `minseok`, `demo-admin`) while `AX_PROFILE` is `development` or `test`; production omits those routes entirely.
+`make reset-demo` is the only command that creates or drops the demo tables. Normal API startup never mutates the schema. After pulling a persistence schema change, stop the local API/worker and run `make reset-demo` before local journeys; Alembic revisions are intentionally not part of this milestone.
+
+## Login and sessions
+
+The browser authenticates with a server-side login session (`POST /api/auth/login` → HttpOnly `scax_session` cookie, `GET /api/auth/me`, `POST /api/auth/logout`). The session is the production credential boundary; authorization always resolves the session to an active Organization & Access principal. Only the `developer` credential provider is wired today: while `AX_PROFILE` is `development` or `test`, the login page offers a "누구로 로그인" account picker over the seeded personas (`mina`, `jiho`, `sora`, `minseok`). Google OIDC will plug into the same login route and session store as a second provider. The `X-Demo-Persona` header remains a development/test seam for API scripts and MCP tests only; it never overrides an active session, and production omits the developer routes entirely.
 
 ## Current API slice
 

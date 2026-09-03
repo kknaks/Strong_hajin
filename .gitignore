@@ -12,3 +12,4 @@ frontend/test-results/
 /backend/*.egg-info/
 /.scax/
 /backend/.scax/
+.playwright-mcp/

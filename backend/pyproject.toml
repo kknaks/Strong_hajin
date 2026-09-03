@@ -1,7 +1,7 @@
 [project]
 name = "ax-workspace"
 version = "0.1.0"
-description = "SCAX workflow catalog demo backend"
+description = "SCAX modular monolith backend"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115,<1",
