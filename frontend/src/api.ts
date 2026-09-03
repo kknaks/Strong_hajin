@@ -45,10 +45,11 @@ export async function transitionDirectTask(
   personaId: string,
   taskId: string,
   action: "start" | "block" | "resume" | "complete" | "cancel",
+  expectedVersion: number,
   reason?: string,
 ): Promise<void> {
   await request(`/api/tasks/${taskId}/${action}`, personaId, {
-    body: reason ? JSON.stringify({ reason }) : undefined,
+    body: JSON.stringify({ expected_version: expectedVersion, ...(reason ? { reason } : {}) }),
     method: "POST",
   });
 }

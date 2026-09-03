@@ -49,11 +49,11 @@ class CreateTaskRequest(BaseModel):
 
 class BlockTaskRequest(BaseModel):
     reason: str
-    expected_version: int | None = None
+    expected_version: int
 
 
 class TaskTransitionRequest(BaseModel):
-    expected_version: int | None = None
+    expected_version: int
 
 
 def _runtime_error(error: Exception) -> HTTPException:
@@ -157,27 +157,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except Exception as error:
                 raise _runtime_error(error) from error
 
-        def task_transition(task_id: UUID, target: TaskState, principal: Principal, reason: str | None = None, expected_version: int | None = None) -> dict[str, object]:
+        def task_transition(task_id: UUID, target: TaskState, principal: Principal, reason: str | None = None, expected_version: int = 0) -> dict[str, object]:
             try:
                 return app.state.workflow_application.transition_task(task_id, principal, target, reason, expected_version)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.post("/api/tasks/{task_id}/start")
-        def start_task(task_id: UUID, request: TaskTransitionRequest | None = None, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
-            return task_transition(task_id, TaskState.IN_PROGRESS, principal, expected_version=request.expected_version if request else None)
+        def start_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            return task_transition(task_id, TaskState.IN_PROGRESS, principal, expected_version=request.expected_version)
 
         @app.post("/api/tasks/{task_id}/block")
         def block_task(task_id: UUID, request: BlockTaskRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
             return task_transition(task_id, TaskState.BLOCKED, principal, request.reason, request.expected_version)
 
         @app.post("/api/tasks/{task_id}/resume")
-        def resume_task(task_id: UUID, request: TaskTransitionRequest | None = None, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
-            return task_transition(task_id, TaskState.IN_PROGRESS, principal, expected_version=request.expected_version if request else None)
+        def resume_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            return task_transition(task_id, TaskState.IN_PROGRESS, principal, expected_version=request.expected_version)
 
         @app.post("/api/tasks/{task_id}/complete")
-        def complete_task(task_id: UUID, request: TaskTransitionRequest | None = None, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
-            return task_transition(task_id, TaskState.DONE, principal, expected_version=request.expected_version if request else None)
+        def complete_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            return task_transition(task_id, TaskState.DONE, principal, expected_version=request.expected_version)
 
         @app.post("/api/tasks/{task_id}/cancel")
         def cancel_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:

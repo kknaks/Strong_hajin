@@ -64,12 +64,12 @@ def test_self_created_task_enters_my_work_and_only_allows_valid_lifecycle_transi
     task = created.json()
     assert task["state"] == "open"
     assert client.get("/api/my-work", headers={"X-Demo-Persona": "mina"}).json()[0]["task_id"] == task["task_id"]
-    assert client.post(f"/api/tasks/{task['task_id']}/complete", headers={"X-Demo-Persona": "mina"}).status_code == 422
-    assert client.post(f"/api/tasks/{task['task_id']}/start", headers={"X-Demo-Persona": "mina"}).json()["state"] == "in_progress"
+    assert client.post(f"/api/tasks/{task['task_id']}/complete", headers={"X-Demo-Persona": "mina"}, json={"expected_version": 1}).status_code == 422
+    assert client.post(f"/api/tasks/{task['task_id']}/start", headers={"X-Demo-Persona": "mina"}, json={"expected_version": 1}).json()["state"] == "in_progress"
     assert client.post(
-        f"/api/tasks/{task['task_id']}/block", headers={"X-Demo-Persona": "mina"}, json={"reason": "고객 자료 대기"}
+        f"/api/tasks/{task['task_id']}/block", headers={"X-Demo-Persona": "mina"}, json={"reason": "고객 자료 대기", "expected_version": 2}
     ).json()["state"] == "blocked"
-    assert client.post(f"/api/tasks/{task['task_id']}/resume", headers={"X-Demo-Persona": "mina"}).json()["state"] == "in_progress"
+    assert client.post(f"/api/tasks/{task['task_id']}/resume", headers={"X-Demo-Persona": "mina"}, json={"expected_version": 3}).json()["state"] == "in_progress"
     completed = client.post(
         f"/api/tasks/{task['task_id']}/complete",
         headers={"X-Demo-Persona": "mina"},
@@ -88,6 +88,10 @@ def test_task_cancel_and_stale_transition_leave_no_extra_mutation(tmp_path) -> N
         json={"expected_version": 99},
     )
     assert stale.status_code == 422
+    assert client.post(
+        f"/api/tasks/{task['task_id']}/start",
+        headers={"X-Demo-Persona": "mina"},
+    ).status_code == 422
     cancelled = client.post(
         f"/api/tasks/{task['task_id']}/cancel",
         headers={"X-Demo-Persona": "mina"},
@@ -109,6 +113,17 @@ def test_organization_profile_is_a_persisted_authorized_projection(tmp_path) -> 
         "organizations": [{"id": "product", "name": "제품팀"}, {"id": "scax", "name": "SCAX"}],
         "capabilities": ["daily_report.submit", "meeting.followup.request", "task.accept", "work.read"],
     }
+
+
+def test_organization_principal_projects_persona_specific_grants(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+
+    mina = client.get("/api/organization/me", headers={"X-Demo-Persona": "mina"}).json()
+    sora = client.get("/api/organization/me", headers={"X-Demo-Persona": "sora"}).json()
+
+    assert mina["organizations"] != sora["organizations"]
+    assert "work.read" in mina["capabilities"]
+    assert sora["capabilities"] == ["contract.legal_review"]
 
 
 def test_meeting_assignment_never_enters_my_work_before_the_selected_assignee_accepts(tmp_path) -> None:

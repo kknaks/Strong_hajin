@@ -58,13 +58,13 @@ export function MyWorkPage({ personaId, onError }: MyWorkPageProps) {
     }
   };
 
-  const transitionTask = async (taskId: string, action: TaskAction) => {
+  const transitionTask = async (task: DirectTask, action: TaskAction) => {
     const reason = action === "block" ? window.prompt("막힘 사유를 입력해 주세요.")?.trim() : undefined;
     if (action === "block" && !reason) return;
 
-    setBusyAction(taskId);
+    setBusyAction(task.task_id);
     try {
-      await transitionDirectTask(personaId, taskId, action, reason);
+      await transitionDirectTask(personaId, task.task_id, action, task.version, reason);
       await reload();
     } catch (error) {
       onError(error instanceof Error ? error.message : "업무 상태를 바꾸지 못했습니다.");
@@ -132,7 +132,7 @@ export function MyWorkPage({ personaId, onError }: MyWorkPageProps) {
 type TaskRowProps = {
   busy: boolean;
   task: DirectTask;
-  onTransition: (taskId: string, action: TaskAction) => Promise<void>;
+  onTransition: (task: DirectTask, action: TaskAction) => Promise<void>;
 };
 
 function TaskRow({ busy, task, onTransition }: TaskRowProps) {
@@ -145,27 +145,27 @@ function TaskRow({ busy, task, onTransition }: TaskRowProps) {
       <span className="status completed">{taskStateLabel[task.state]}</span>
       <div className="task-actions">
         {task.state === "open" && (
-          <button disabled={busy} onClick={() => void onTransition(task.task_id, "start")} type="button">
+          <button disabled={busy} onClick={() => void onTransition(task, "start")} type="button">
             시작
           </button>
         )}
         {task.state === "in_progress" && (
           <>
-            <button disabled={busy} onClick={() => void onTransition(task.task_id, "block")} type="button">
+            <button disabled={busy} onClick={() => void onTransition(task, "block")} type="button">
               막힘
             </button>
-            <button className="primary" disabled={busy} onClick={() => void onTransition(task.task_id, "complete")} type="button">
+            <button className="primary" disabled={busy} onClick={() => void onTransition(task, "complete")} type="button">
               완료
             </button>
           </>
         )}
         {task.state === "blocked" && (
-          <button className="primary" disabled={busy} onClick={() => void onTransition(task.task_id, "resume")} type="button">
+          <button className="primary" disabled={busy} onClick={() => void onTransition(task, "resume")} type="button">
             재개
           </button>
         )}
         {task.state !== "done" && task.state !== "cancelled" && (
-          <button disabled={busy} onClick={() => void onTransition(task.task_id, "cancel")} type="button">
+          <button disabled={busy} onClick={() => void onTransition(task, "cancel")} type="button">
             취소
           </button>
         )}

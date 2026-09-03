@@ -20,8 +20,9 @@ class SqlAlchemyTaskRepository:
         self.session.flush()
         return task
 
-    def task(self, task_id: UUID, owner_id: str) -> TaskRecord:
-        task = self.session.scalar(select(TaskRecord).where(TaskRecord.id == task_id, TaskRecord.owner_id == owner_id))
+    def task(self, task_id: UUID, owner_id: str, *, lock: bool = False) -> TaskRecord:
+        statement = select(TaskRecord).where(TaskRecord.id == task_id, TaskRecord.owner_id == owner_id)
+        task = self.session.scalar(statement.with_for_update() if lock else statement)
         if task is None: raise TaskNotFound("task was not found")
         return task
 
