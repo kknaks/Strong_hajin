@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import "./task.css";
 
 type Persona = { id: string; display_name: string };
 type GraphNode = { id: string; kind: string; label: string };
@@ -153,6 +154,18 @@ export default function App() {
     } finally { setBusy(null); }
   };
 
+  const transitionTask = async (taskId: string, action: "start" | "block" | "resume" | "complete") => {
+    const reason = action === "block" ? window.prompt("막힘 사유를 입력해 주세요.") : undefined;
+    if (action === "block" && !reason?.trim()) return;
+    setBusy(`task:${taskId}`);
+    try {
+      await api(`/api/tasks/${taskId}/${action}`, persona, { method: "POST", body: reason ? JSON.stringify({ reason }) : undefined });
+      await refresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "업무 상태를 바꾸지 못했습니다.");
+    } finally { setBusy(null); }
+  };
+
   const decide = async (item: InboxItem, decision: "accept" | "reject") => {
     setBusy(`${item.run_id}:${item.node_id}`);
     try {
@@ -186,7 +199,7 @@ export default function App() {
       {surface === "today" && <>
         <div className="dashboard-columns">
           <section className="surface-card requests"><div className="card-title"><h2>오늘 나에게 요청된 업무</h2><button onClick={() => setSurface("work")}>전체보기</button></div><div className="table-head"><span>내용</span><span>상태</span><span>요청 Workflow</span><span>판단</span></div>{inbox.length === 0 ? <p className="empty-row">지금 처리할 판단이 없습니다.</p> : inbox.map((item) => <article className="request-row" key={`${item.run_id}:${item.node_id}`}><b>{item.label}</b><span className="status waiting_for_decision">승인대기</span><small>{item.workflow_id}</small><div className="row-actions">{item.node_id === "choose-assignment" && <select value={assigneeId} onChange={(event) => setAssigneeId(event.target.value)}>{assignmentCandidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.display_name}</option>)}</select>}<button className="outline" disabled={busy !== null} onClick={() => void decide(item, "reject")}>검토하기</button><button className="primary" disabled={busy !== null || (item.node_id === "choose-assignment" && assignmentCandidates.length === 0)} onClick={() => void decide(item, "accept")}>{busy === `${item.run_id}:${item.node_id}` ? "저장 중" : "승인"}</button></div></article>)}</section>
-          <section className="surface-card progress-card"><div className="card-title"><h2>오늘 이어서 진행하는 업무</h2><button onClick={() => setSurface("work")}>전체보기</button></div><div className="work-tabs"><b>내 업무 {myWork.length}</b><span>참조 업무</span></div>{myWork.length === 0 ? <p className="empty-row">수락하거나 직접 만든 업무가 표시됩니다.</p> : myWork.map((assignment) => <article className="progress-row" key={assignment.assignment_id ?? assignment.task_id}><div><b>{assignment.title}</b><small>{assignment.task_id ? "직접 생성 업무" : "수락된 업무"}</small></div><span className="status completed">{assignment.state}</span><strong>{assignment.state === "active" ? "시작 전" : "진행 중"}</strong></article>)}</section>
+          <section className="surface-card progress-card"><div className="card-title"><h2>오늘 이어서 진행하는 업무</h2><button onClick={() => setSurface("work")}>전체보기</button></div><div className="work-tabs"><b>내 업무 {myWork.length}</b><span>참조 업무</span></div>{myWork.length === 0 ? <p className="empty-row">수락하거나 직접 만든 업무가 표시됩니다.</p> : myWork.map((assignment) => <article className="progress-row" key={assignment.assignment_id ?? assignment.task_id}><div><b>{assignment.title}</b><small>{assignment.task_id ? "직접 생성 업무" : "수락된 업무"}</small></div><span className="status completed">{assignment.state}</span>{assignment.task_id ? <div className="task-actions">{assignment.state === "active" && <button className="outline" disabled={busy !== null} onClick={() => void transitionTask(assignment.task_id!, "start")}>시작</button>}{assignment.state === "in_progress" && <><button className="outline" disabled={busy !== null} onClick={() => void transitionTask(assignment.task_id!, "block")}>막힘</button><button className="primary" disabled={busy !== null} onClick={() => void transitionTask(assignment.task_id!, "complete")}>완료</button></>}{assignment.state === "blocked" && <button className="primary" disabled={busy !== null} onClick={() => void transitionTask(assignment.task_id!, "resume")}>재개</button>}</div> : <strong>진행 중</strong>}</article>)}</section>
         </div>
         <section className="surface-card schedule"><div className="card-title"><h2>오늘 예정된 Workflow</h2><button onClick={() => setSurface("work")}>전체 업무 보기</button></div><div className="schedule-head"><span>순서</span><span>내용</span><span>설명</span><span /></div>{workflows.slice(0, 4).map((workflow, index) => <article className="schedule-row" key={workflow.workflow_id}><span>{String(index + 1).padStart(2, "0")}</span><b>{workflow.title}</b><small>{workflow.description}</small><button className="outline" onClick={() => { setSurface("work"); }}>업무 열기</button></article>)}</section>
       </>}
