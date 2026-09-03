@@ -186,6 +186,10 @@ describe("product surfaces", () => {
     await waitFor(() => {
       expect(within(navigation).queryByRole("button", { name: "보고" })).toBeNull();
     });
+    fireEvent.click(within(navigation).getByRole("button", { name: "오늘" }));
+    expect(await screen.findByText("오늘의 업무를 확인하세요")).toBeTruthy();
+    expect(screen.queryByText("보고 리마인드")).toBeNull();
+    expect(screen.queryByRole("button", { name: "일일보고 작성" })).toBeNull();
     fireEvent.click(within(navigation).getByRole("button", { name: "판단" }));
     expect(await screen.findByText("UI로 만든 업무 요청")).toBeTruthy();
     expect(screen.getByRole("button", { name: "수락" })).toBeTruthy();

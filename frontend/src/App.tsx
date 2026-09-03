@@ -281,7 +281,13 @@ export default function App() {
           </div>
         )}
 
-        {surface === "today" && <TodayPage {...pageProps} onNavigate={setSurface} />}
+        {surface === "today" && (
+          <TodayPage
+            {...pageProps}
+            canGenerateDailyReport={capabilities?.includes("daily_report.generate") ?? false}
+            onNavigate={setSurface}
+          />
+        )}
         {surface === "work" && <MyWorkPage {...pageProps} />}
         {surface === "inbox" && <ActionInboxPage {...pageProps} />}
         {surface === "report" && <DailyReportPage {...pageProps} />}

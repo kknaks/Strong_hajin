@@ -12,11 +12,17 @@ import {
 
 type TodayPageProps = {
   personaId: string;
+  canGenerateDailyReport: boolean;
   onError: (message: string | null) => void;
   onNavigate: (surface: ProductSurface) => void;
 };
 
-export function TodayPage({ personaId, onError, onNavigate }: TodayPageProps) {
+export function TodayPage({
+  personaId,
+  canGenerateDailyReport,
+  onError,
+  onNavigate,
+}: TodayPageProps) {
   const [tasks, setTasks] = useState<DirectTask[]>([]);
   const [requests, setRequests] = useState<WorkRequest[]>([]);
   const [actions, setActions] = useState<ActionItem[]>([]);
@@ -26,29 +32,28 @@ export function TodayPage({ personaId, onError, onNavigate }: TodayPageProps) {
     let cancelled = false;
 
     const reportDate = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
-    void Promise.allSettled([
-      getMyWork(personaId),
-      getActionInbox(personaId),
-      getActions(personaId),
-      getDailyReportStatus(personaId, reportDate),
-    ])
-      .then(([workResult, inboxResult, actionsResult, reportResult]) => {
+    void Promise.all([getMyWork(personaId), getActionInbox(personaId), getActions(personaId)])
+      .then(async ([work, inbox, pendingActions]) => {
         if (cancelled) return;
-        if (
-          workResult.status === "rejected" ||
-          inboxResult.status === "rejected" ||
-          actionsResult.status === "rejected"
-        ) {
-          throw new Error("오늘의 업무 projection을 불러오지 못했습니다.");
-        }
         setTasks(
-          workResult.value
+          work
             .filter(isDirectTask)
             .filter((task) => ["open", "in_progress", "blocked"].includes(task.state)),
         );
-        setRequests(inboxResult.value);
-        setActions(actionsResult.value.filter((action) => action.state === "pending"));
-        setReportStatus(reportResult.status === "fulfilled" ? reportResult.value : null);
+        setRequests(inbox);
+        setActions(pendingActions.filter((action) => action.state === "pending"));
+        if (!canGenerateDailyReport) {
+          setReportStatus(null);
+          onError(null);
+          return;
+        }
+        try {
+          setReportStatus(await getDailyReportStatus(personaId, reportDate));
+        } catch (error) {
+          if (!cancelled) {
+            throw error;
+          }
+        }
         onError(null);
       })
       .catch((error: unknown) => {
@@ -60,7 +65,7 @@ export function TodayPage({ personaId, onError, onNavigate }: TodayPageProps) {
     return () => {
       cancelled = true;
     };
-  }, [onError, personaId]);
+  }, [canGenerateDailyReport, onError, personaId]);
 
   return (
     <>
@@ -120,18 +125,20 @@ export function TodayPage({ personaId, onError, onNavigate }: TodayPageProps) {
         </section>
       </div>
 
-      <section className="surface-card schedule">
-        <div className="card-title">
-          <h2>보고 리마인드</h2>
-          <button onClick={() => onNavigate("report")} type="button">
-            보고 열기
+      {canGenerateDailyReport && (
+        <section className="surface-card schedule">
+          <div className="card-title">
+            <h2>보고 리마인드</h2>
+            <button onClick={() => onNavigate("report")} type="button">
+              보고 열기
+            </button>
+          </div>
+          <p>{reportReminder(reportStatus)}</p>
+          <button className="primary" onClick={() => onNavigate("report")} type="button">
+            일일보고 작성
           </button>
-        </div>
-        <p>{reportReminder(reportStatus)}</p>
-        <button className="primary" onClick={() => onNavigate("report")} type="button">
-          일일보고 작성
-        </button>
-      </section>
+        </section>
+      )}
     </>
   );
 }
