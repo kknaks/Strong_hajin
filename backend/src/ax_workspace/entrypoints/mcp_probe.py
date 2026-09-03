@@ -13,7 +13,7 @@ from typing import Any
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-from ax.settings import Settings
+from ax_workspace.bootstrap.settings import Settings
 
 
 CODEX_BASELINE_PROFILE = {
@@ -39,7 +39,7 @@ async def _run_protocol_probe(settings: Settings) -> dict[str, Any]:
     }
     parameters = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "ax.mcp_server"],
+        args=["-m", "ax_workspace.entrypoints.mcp"],
         cwd=os.getcwd(),
         env=environment,
     )

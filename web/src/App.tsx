@@ -41,6 +41,27 @@ const stateLabel: Record<string, string> = {
   rejected: "반려됨",
 };
 
+const auditLabel: Record<string, string> = {
+  "workflow_run.started": "업무가 시작되었습니다.",
+  "workflow_node.started": "업무 단계가 시작되었습니다.",
+  "workflow_node.completed": "업무 단계가 완료되었습니다.",
+  "human_decision.requested": "확인이 필요한 요청이 도착했습니다.",
+  "human_decision.accepted": "요청이 승인되었습니다.",
+  "human_decision.rejected": "요청이 반려되었습니다.",
+  "workflow_run.completed": "업무가 완료되었습니다.",
+  "workflow_run.rejected": "업무가 종료되었습니다.",
+};
+
+const resultLabel: Record<string, string> = {
+  "work_record.lookup": "업무 기록을 확인했습니다.",
+  "daily_report.submit_snapshot": "보고 내용을 저장했습니다.",
+  "meeting_evidence.lookup": "회의 기록을 확인했습니다.",
+  "task_assignment.request": "담당자 확인을 요청했습니다.",
+  "task_assignment.activate": "업무를 내 업무에 반영했습니다.",
+  "contract.extract": "계약 정보를 확인했습니다.",
+  "contract.approve": "계약 검토를 완료했습니다.",
+};
+
 export default function App() {
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [persona, setPersona] = useState("mina");
@@ -53,6 +74,7 @@ export default function App() {
   const [inputs, setInputs] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [surface, setSurface] = useState<"today" | "work" | "report" | "calendar" | "materials" | "org" | "settings">("today");
 
   const refresh = useCallback(async () => {
     try {
@@ -84,10 +106,18 @@ export default function App() {
 
   useEffect(() => {
     fetch("/api/developer/personas")
-      .then((response) => response.json() as Promise<Persona[]>)
-      .then(setPersonas)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`개발자 로그인 정보를 불러오지 못했습니다 (${response.status}).`);
+        const result: unknown = await response.json();
+        if (!Array.isArray(result)) throw new Error("개발자 로그인 정보 형식이 올바르지 않습니다.");
+        return (result as Persona[]).filter((item) => item.id !== "demo-admin");
+      })
+      .then((availablePersonas) => {
+        setPersonas(availablePersonas);
+        if (!availablePersonas.some((item) => item.id === persona)) setPersona(availablePersonas[0]?.id ?? "");
+      })
       .catch(() => setError("개발자 로그인 정보를 불러오지 못했습니다."));
-  }, []);
+  }, [persona]);
 
   useEffect(() => {
     void refresh();
@@ -127,45 +157,28 @@ export default function App() {
     }
   };
 
-  return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div className="brand"><span className="brand-mark">S</span><span>SCAX</span><span className="quiet">Workflow Catalog</span></div>
-        <label className="persona-picker">데모 사용자
-          <select value={persona} onChange={(event) => setPersona(event.target.value)}>
-            {personas.map((item) => <option key={item.id} value={item.id}>{item.display_name}</option>)}
-          </select>
-        </label>
-      </header>
+  const currentPersona = personas.find((item) => item.id === persona)?.display_name ?? "사용자";
+  const navigation = [
+    ["today", "오늘"], ["calendar", "캘린더"], ["work", "내 업무"], ["report", "보고"],
+    ["materials", "자료"], ["org", "조직"], ["settings", "설정"],
+  ] as const;
+  const visibleWorkflows = surface === "report" ? workflows.filter((workflow) => workflow.workflow_id.includes("report")) : workflows;
 
-      <section className="hero">
-        <div><p className="eyebrow">VERSION-PINNED WORKFLOW RUNTIME</p><h1>내 권한으로 시작하는<br />업무 흐름</h1><p>Catalog, Tool 실행, 사람 판단과 Audit을 하나의 runtime에서 확인합니다.</p></div>
-        <div className="hero-metrics"><strong>{workflows.length}</strong><span>허용된 Workflow</span><strong>{inbox.length}</strong><span>내 판단 Inbox</span></div>
-      </section>
-
+  return <main className="thesc-shell">
+    <aside className="rail"><div className="wordmark"><span className="wordmark-mark" />SCAX AX</div><div className="profile"><span className="avatar">{currentPersona.slice(0, 1)}</span><div><b>{currentPersona}</b><small>워크스페이스</small></div></div><nav>{navigation.map(([id, label]) => <button key={id} className={surface === id ? "active" : ""} onClick={() => { setSurface(id); setRun(null); }}>{label}</button>)}</nav></aside>
+    <section className="canvas">
+      <header className="canvas-topbar"><div><button className="date-chip" onClick={() => void refresh()}>2026년 9월 3일 · 새로고침</button></div><div className="top-actions"><label className="persona-picker">사용자<select value={persona} onChange={(event) => setPersona(event.target.value)}>{personas.map((item) => <option key={item.id} value={item.id}>{item.display_name}</option>)}</select></label><button className="new-work" onClick={() => setSurface("work")}>새 업무 추가</button></div></header>
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError(null)}>닫기</button></div>}
-
-      <div className="workspace-grid">
-        <section className="panel catalog-panel"><div className="panel-heading"><div><p className="eyebrow">CATALOG</p><h2>시작할 Workflow</h2></div><button className="ghost" onClick={() => void refresh()}>새로고침</button></div>
-          <div className="workflow-list">{workflows.map((workflow) => <article className="workflow-card" key={workflow.workflow_id}>
-            <div><span className="version">{workflow.version}</span><h3>{workflow.title}</h3><p>{workflow.description}</p>{(workflow.input_schema.required ?? []).map((field) => <label className="inline-input" key={field}>{field}<input value={inputs[`${workflow.workflow_id}:${field}`] ?? ""} placeholder={`${field} 입력`} onChange={(event) => setInputs({ ...inputs, [`${workflow.workflow_id}:${field}`]: event.target.value })} /></label>)}</div>
-            <button className="primary" disabled={busy !== null} onClick={() => void start(workflow)}>{busy === workflow.workflow_id ? "시작 중" : "실행"}</button>
-          </article>)}</div>
-        </section>
-
-        <section className="panel run-panel"><div className="panel-heading"><div><p className="eyebrow">RUN PROGRESS</p><h2>{selected?.title ?? "실행을 선택하세요"}</h2></div>{run && <span className={`status ${run.state}`}>{stateLabel[run.state] ?? run.state}</span>}</div>
-          {!run ? <div className="empty"><span>◎</span><p>Catalog에서 실행을 시작하면 version, graph, Tool 결과와 Audit이 여기에 표시됩니다.</p></div> : <>
-            <div className="run-meta"><code>{run.run_id}</code><span>definition {run.definition_version}</span></div>
-            <ol className="graph">{selected?.graph.nodes.map((node) => <li className={run.waiting_on.includes(node.id) ? "waiting" : ""} key={node.id}><span>{node.kind === "human_gate" ? "◇" : node.kind === "tool" ? "○" : "●"}</span><div><b>{node.label}</b><small>{node.kind}</small></div></li>)}</ol>
-            <div className="detail-grid"><div><h3>Tool results</h3>{run.tool_results.map((item) => <pre key={item.tool_name}>{item.tool_name}{"\n"}{JSON.stringify(item.result, null, 2)}</pre>)}</div><div><h3>Audit</h3><ul className="audit">{run.audit.map((item, index) => <li key={`${item.event_type}-${index}`}>{item.event_type}</li>)}</ul></div></div>
-          </>}
-        </section>
-
-        <aside className="panel inbox-panel"><div className="panel-heading"><div><p className="eyebrow">HUMAN INBOX</p><h2>내 판단</h2></div><span className="count">{inbox.length}</span></div>
-          {inbox.length === 0 ? <div className="empty compact"><span>✓</span><p>지금 처리할 판단이 없습니다.</p></div> : inbox.map((item) => <article className="inbox-card" key={`${item.run_id}:${item.node_id}`}><span className="workflow-tag">{item.workflow_id}</span><h3>{item.label}</h3>{item.node_id === "choose-assignment" ? <label className="inline-input">수행자<select value={assigneeId} onChange={(event) => setAssigneeId(event.target.value)}>{assignmentCandidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.display_name}</option>)}</select></label> : <p>증거를 검토한 뒤 결정하세요.</p>}<div className="actions"><button className="secondary" disabled={busy !== null} onClick={() => void decide(item, "reject")}>반려</button><button className="primary" disabled={busy !== null || (item.node_id === "choose-assignment" && assignmentCandidates.length === 0)} onClick={() => void decide(item, "accept")}>{busy === `${item.run_id}:${item.node_id}` ? "저장 중" : "수락"}</button></div></article>)}
-          <div className="my-work"><div className="panel-heading"><div><p className="eyebrow">MY WORK</p><h2>내 업무</h2></div><span className="count muted">{myWork.length}</span></div>{myWork.length === 0 ? <p className="my-work-empty">수락 후 활성화된 업무가 표시됩니다.</p> : myWork.map((assignment) => <article className="assignment-card" key={assignment.assignment_id}><span className="workflow-tag">{assignment.state}</span><h3>{assignment.title}</h3><p>수락된 TaskAssignment</p></article>)}</div>
-        </aside>
-      </div>
-    </main>
-  );
+      <section className="welcome"><span className="avatar large">{currentPersona.slice(0, 1)}</span><h1>반갑습니다 {currentPersona}님!</h1><p>오늘의 업무를 시작해볼까요?</p><button className="ask-bar" onClick={() => setSurface("work")}><span>✦</span> 업무 흐름을 시작하거나 현재 진행을 확인하세요 <b>→</b></button></section>
+      {surface === "today" && <>
+        <div className="dashboard-columns">
+          <section className="surface-card requests"><div className="card-title"><h2>오늘 나에게 요청된 업무</h2><button onClick={() => setSurface("work")}>전체보기</button></div><div className="table-head"><span>내용</span><span>상태</span><span>요청 Workflow</span><span>판단</span></div>{inbox.length === 0 ? <p className="empty-row">지금 처리할 판단이 없습니다.</p> : inbox.map((item) => <article className="request-row" key={`${item.run_id}:${item.node_id}`}><b>{item.label}</b><span className="status waiting_for_decision">승인대기</span><small>{item.workflow_id}</small><div className="row-actions">{item.node_id === "choose-assignment" && <select value={assigneeId} onChange={(event) => setAssigneeId(event.target.value)}>{assignmentCandidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.display_name}</option>)}</select>}<button className="outline" disabled={busy !== null} onClick={() => void decide(item, "reject")}>검토하기</button><button className="primary" disabled={busy !== null || (item.node_id === "choose-assignment" && assignmentCandidates.length === 0)} onClick={() => void decide(item, "accept")}>{busy === `${item.run_id}:${item.node_id}` ? "저장 중" : "승인"}</button></div></article>)}</section>
+          <section className="surface-card progress-card"><div className="card-title"><h2>오늘 이어서 진행하는 업무</h2><button onClick={() => setSurface("work")}>전체보기</button></div><div className="work-tabs"><b>내 업무 {myWork.length}</b><span>참조 업무</span></div>{myWork.length === 0 ? <p className="empty-row">수락 후 활성화된 업무가 표시됩니다.</p> : myWork.map((assignment) => <article className="progress-row" key={assignment.assignment_id}><div><b>{assignment.title}</b><small>수락된 TaskAssignment</small></div><span className="status completed">{assignment.state}</span><strong>진행 중</strong></article>)}</section>
+        </div>
+        <section className="surface-card schedule"><div className="card-title"><h2>오늘 예정된 Workflow</h2><button onClick={() => setSurface("work")}>전체 업무 보기</button></div><div className="schedule-head"><span>순서</span><span>내용</span><span>설명</span><span /></div>{workflows.slice(0, 4).map((workflow, index) => <article className="schedule-row" key={workflow.workflow_id}><span>{String(index + 1).padStart(2, "0")}</span><b>{workflow.title}</b><small>{workflow.description}</small><button className="outline" onClick={() => { setSurface("work"); }}>업무 열기</button></article>)}</section>
+      </>}
+      {surface !== "today" && <section className="surface-card workflow-surface"><div className="card-title"><div><p className="kicker">{surface.toUpperCase()}</p><h2>{surface === "work" ? "내 업무와 Workflow" : surface === "report" ? "보고 Workflow" : "현재 연결된 Workflow"}</h2></div><button onClick={() => void refresh()}>새로고침</button></div><div className="workflow-list">{visibleWorkflows.map((workflow) => <article className="workflow-card" key={workflow.workflow_id}><div><span className="version">{workflow.version}</span><h3>{workflow.title}</h3><p>{workflow.description}</p>{(workflow.input_schema.required ?? []).map((field) => <label className="inline-input" key={field}>{field}<input value={inputs[`${workflow.workflow_id}:${field}`] ?? ""} placeholder={`${field} 입력`} onChange={(event) => setInputs({ ...inputs, [`${workflow.workflow_id}:${field}`]: event.target.value })} /></label>)}</div><button className="primary" disabled={busy !== null} onClick={() => void start(workflow)}>{busy === workflow.workflow_id ? "시작 중" : "시작"}</button></article>)}</div></section>}
+      {run && <aside className="run-drawer"><div className="card-title"><div><p className="kicker">진행 현황</p><h2>{selected?.title}</h2></div><button onClick={() => setRun(null)}>닫기</button></div><span className={`status ${run.state}`}>{stateLabel[run.state] ?? run.state}</span><ol className="graph">{selected?.graph.nodes.map((node) => <li className={run.waiting_on.includes(node.id) ? "waiting" : ""} key={node.id}>{node.label}<small>{node.kind === "human_gate" ? "확인 단계" : node.kind === "tool" ? "자동 처리" : "업무 단계"}</small></li>)}</ol><h3>처리 결과</h3><ul className="result-list">{run.tool_results.map((item) => <li key={item.tool_name}><b>{resultLabel[item.tool_name] ?? "업무 처리가 완료되었습니다."}</b><span>처리 완료</span></li>)}</ul><h3>활동 기록</h3><ul className="audit">{run.audit.map((item, index) => <li key={`${item.event_type}-${index}`}>{auditLabel[item.event_type] ?? "업무 상태가 변경되었습니다."}</li>)}</ul></aside>}
+    </section>
+  </main>;
 }

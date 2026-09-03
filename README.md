@@ -50,4 +50,4 @@ make demo-rehearse
 make mcp-probe
 ```
 
-`test-postgres` resets the configured `POSTGRES_TEST_URL` (default: the local Docker `ax_demo` database) and verifies the golden flows plus competing human-decision serialization. To use a different disposable local port, pass it consistently, for example `make test-postgres POSTGRES_TEST_URL=postgresql+psycopg://localhost:55432/ax_demo` and `make reset-demo DATABASE_URL=postgresql+psycopg://localhost:55432/ax_demo`. Reset rejects remote, production-named, and non-demo URLs before connecting.
+`postgres-up` provisions a separate local `ax_test` database beside the app's `ax_demo` database. `test-postgres` resets only `POSTGRES_TEST_URL` (default: `ax_test`), refuses to run when it equals `DATABASE_URL`, and verifies the golden flows plus competing human-decision serialization. To use a different disposable local port, pass it consistently, for example `make test-postgres POSTGRES_TEST_URL=postgresql+psycopg://localhost:55432/ax_test` and `make reset-demo DATABASE_URL=postgresql+psycopg://localhost:55432/ax_demo`. Reset rejects remote, production-named, and non-demo/test URLs before connecting.

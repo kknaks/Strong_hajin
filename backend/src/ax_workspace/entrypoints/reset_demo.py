@@ -5,24 +5,24 @@ import re
 
 from sqlalchemy.engine import make_url
 
-from ax.database import Base, make_session_factory
-from ax.seed import seed_catalog
-from ax.settings import Settings
+from ax_workspace.platform.persistence import Base, make_session_factory
+from ax_workspace.bootstrap.seed import seed_catalog
+from ax_workspace.bootstrap.settings import Settings
 
 
 _LOCAL_POSTGRES_HOSTS = {"localhost", "127.0.0.1", "::1"}
-_DEMO_POSTGRES_DATABASE = re.compile(r"^ax_demo(?:_[a-z0-9_]+)?$")
-_DEMO_SQLITE_FILE = re.compile(r"^(?:ax_)?demo(?:[-_a-z0-9]*)?\.db$")
+_SAFE_POSTGRES_DATABASE = re.compile(r"^ax_(?:demo|test)(?:_[a-z0-9_]+)?$")
+_SAFE_SQLITE_FILE = re.compile(r"^(?:ax_)?(?:demo|test)(?:[-_a-z0-9]*)?\.db$")
 
 
 def _require_safe_demo_database(database_url: str) -> None:
     """Fail before connecting unless this is an explicitly named local demo database."""
     url = make_url(database_url)
     if url.drivername.startswith("postgresql"):
-        if url.host in _LOCAL_POSTGRES_HOSTS and url.database and _DEMO_POSTGRES_DATABASE.fullmatch(url.database):
+        if url.host in _LOCAL_POSTGRES_HOSTS and url.database and _SAFE_POSTGRES_DATABASE.fullmatch(url.database):
             return
     elif url.drivername == "sqlite":
-        if url.database == ":memory:" or (url.database and _DEMO_SQLITE_FILE.fullmatch(Path(url.database).name)):
+        if url.database == ":memory:" or (url.database and _SAFE_SQLITE_FILE.fullmatch(Path(url.database).name)):
             return
     raise ValueError("reset_demo requires a safe local demo database URL")
 

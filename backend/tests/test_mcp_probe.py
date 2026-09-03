@@ -1,6 +1,6 @@
-from ax.mcp_probe import run_protocol_probe
-from ax.reset_demo import reset_database
-from ax.settings import RuntimeProfile, Settings
+from ax_workspace.entrypoints.mcp_probe import run_protocol_probe
+from ax_workspace.entrypoints.reset_demo import reset_database
+from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 
 
 def test_mcp_protocol_probe_records_discovery_structured_output_and_a_golden_flow(tmp_path) -> None:

@@ -5,7 +5,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ax.auth import Principal
+from ax_workspace.modules.organization_access.domain import Principal
 
 
 class NodeKind(StrEnum):

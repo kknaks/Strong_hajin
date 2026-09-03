@@ -10,8 +10,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from ax.auth import PersonaId, Principal, SEED_PERSONAS
-from ax.database import (
+from ax_workspace.modules.organization_access.domain import PersonaId, Principal, SEED_PERSONAS
+from ax_workspace.modules.meetings.domain import pending_assignment_result
+from ax_workspace.modules.reports.domain import confirmed_submission_snapshot
+from ax_workspace.modules.work.domain import my_work_item
+from ax_workspace.platform.persistence import (
     AuditEventRecord,
     ContractApprovalRecord,
     DailyReportSubmissionRecord,
@@ -24,7 +27,14 @@ from ax.database import (
     WorkflowNodeExecutionRecord,
     WorkflowRunRecord,
 )
-from ax.workflows import NodeKind, WorkflowDefinitionVersion, WorkflowNode
+from ax_workspace.modules.ax_execution.domain import NodeKind, WorkflowDefinitionVersion, WorkflowNode
+from ax_workspace.modules.ax_execution.application import (
+    AccessDenied,
+    InvalidDecision,
+    InvalidWorkflowInput,
+    RunNotFound,
+    WorkflowRunStarter as ApplicationWorkflowRunStarter,
+)
 
 
 class RunState(StrEnum):
@@ -45,19 +55,19 @@ class RuntimeErrorBase(Exception):
     pass
 
 
-class AccessDenied(RuntimeErrorBase):
+class LegacyAccessDenied(RuntimeErrorBase):
     pass
 
 
-class RunNotFound(RuntimeErrorBase):
+class LegacyRunNotFound(RuntimeErrorBase):
     pass
 
 
-class InvalidWorkflowInput(RuntimeErrorBase):
+class LegacyInvalidWorkflowInput(RuntimeErrorBase):
     pass
 
 
-class InvalidDecision(RuntimeErrorBase):
+class LegacyInvalidDecision(RuntimeErrorBase):
     pass
 
 
@@ -273,7 +283,7 @@ class LocalDemoToolDispatcher:
                 "records": [{"id": str(record.id), "title": record.title, "status": record.status} for record in records]
             }
         if run.workflow_id == "daily-report" and node.id == "effect":
-            snapshot = {"input": run.input_snapshot, "submitted_after_human_confirmation": True}
+            snapshot = confirmed_submission_snapshot(run.input_snapshot)
             self.repository.session.add(
                 DailyReportSubmissionRecord(
                     run_id=run.id,
@@ -312,11 +322,7 @@ class LocalDemoToolDispatcher:
             )
             self.repository.session.add(assignment)
             self.repository.session.flush()
-            return "task_assignment.request", {
-                "assignment_id": str(assignment.id),
-                "assignee_id": str(assignee.id),
-                "state": assignment.state,
-            }
+            return "task_assignment.request", pending_assignment_result(assignment.id, str(assignee.id), assignment.state)
         if run.workflow_id == "meeting-followups" and node.id == "effect":
             assignment = self.repository.assignment_for_run(run.id)
             assert assignment is not None
@@ -451,10 +457,7 @@ class WorkflowRunStarter:
         return False
 
     def my_work(self, principal: Principal) -> list[dict[str, Any]]:
-        return [
-            {"assignment_id": str(item.id), "title": item.title, "state": item.state, "run_id": str(item.run_id)}
-            for item in self.repository.active_assignments_for(str(principal.id))
-        ]
+        return [my_work_item(item) for item in self.repository.active_assignments_for(str(principal.id))]
 
     def meeting_assignment_candidates(self, principal: Principal) -> list[dict[str, str]]:
         """Expose only real seed principals that can complete an assignment acceptance gate."""
@@ -529,3 +532,8 @@ class WorkflowRunStarter:
             raise InvalidWorkflowInput(f"input is missing required fields: {', '.join(missing)}")
         if definition.input_schema.get("additionalProperties") is False and input_data:
             raise InvalidWorkflowInput("input does not allow additional properties")
+
+
+def workflow_service(repository: SqlAlchemyWorkflowRepository) -> ApplicationWorkflowRunStarter:
+    """Compose the application use case with this platform's persistence and tool adapters."""
+    return ApplicationWorkflowRunStarter(repository, LocalDemoToolDispatcher(repository))

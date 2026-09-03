@@ -3,11 +3,11 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy import create_engine, select
 
-from ax.api import create_app
-from ax.database import WorkflowDefinitionVersionRecord
-from ax.reset_demo import reset_database
-from ax.settings import RuntimeProfile, Settings
-from ax.workflows import WorkflowDefinitionVersion, WorkflowEdge, WorkflowNode, NodeKind, catalog_definitions
+from ax_workspace.entrypoints.http import create_app
+from ax_workspace.platform.persistence import WorkflowDefinitionVersionRecord
+from ax_workspace.entrypoints.reset_demo import reset_database
+from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
+from ax_workspace.modules.ax_execution.domain import WorkflowDefinitionVersion, WorkflowEdge, WorkflowNode, NodeKind, catalog_definitions
 
 
 def test_catalog_contains_nine_version_pinned_valid_definitions() -> None:

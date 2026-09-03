@@ -49,9 +49,9 @@ wheels = [
 ]
 
 [[package]]
-name = "ax-workspace-api"
+name = "ax-workspace"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "mcp", extra = ["cli"] },

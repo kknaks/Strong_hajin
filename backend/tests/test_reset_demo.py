@@ -1,6 +1,6 @@
 import pytest
 
-from ax.reset_demo import main, reset_database
+from ax_workspace.entrypoints.reset_demo import main, reset_database
 
 
 @pytest.mark.parametrize(
@@ -18,6 +18,12 @@ def test_reset_rejects_non_demo_or_nonlocal_database_urls(database_url: str) -> 
 
 def test_reset_allows_an_explicit_demo_sqlite_database(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+
+    reset_database(database_url)
+
+
+def test_reset_allows_an_explicit_test_sqlite_database(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'ax_test.db'}"
 
     reset_database(database_url)
 

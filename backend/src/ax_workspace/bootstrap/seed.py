@@ -5,13 +5,13 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ax.database import (
+from ax_workspace.platform.persistence import (
     MeetingEvidenceRecord,
     WorkRecord,
     WorkflowDefinitionRecord,
     WorkflowDefinitionVersionRecord,
 )
-from ax.workflows import catalog_definitions
+from ax_workspace.modules.ax_execution.domain import catalog_definitions
 
 
 def seed_catalog(session: Session) -> None:
@@ -45,8 +45,8 @@ def seed_catalog(session: Session) -> None:
     if session.scalar(select(MeetingEvidenceRecord)) is None:
         session.add(
             MeetingEvidenceRecord(
-                title="Workflow catalog demo planning",
-                candidate_task="Prepare the demo rehearsal checklist",
+                title="주간 운영 회의",
+                candidate_task="회의 후속 업무 점검",
             )
         )
     session.commit()

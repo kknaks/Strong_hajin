@@ -1,8 +1,8 @@
 from fastapi.testclient import TestClient
 
-from ax.api import create_app
-from ax.reset_demo import reset_database
-from ax.settings import RuntimeProfile, Settings
+from ax_workspace.entrypoints.http import create_app
+from ax_workspace.entrypoints.reset_demo import reset_database
+from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 
 
 def _client_with_seeded_database(tmp_path) -> TestClient:

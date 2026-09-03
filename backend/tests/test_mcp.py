@@ -6,10 +6,10 @@ from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 import pytest
 
-from ax.auth import seeded_principal
-from ax.mcp_server import McpWorkflowFacade, create_mcp_server
-from ax.reset_demo import reset_database
-from ax.settings import RuntimeProfile, Settings
+from ax_workspace.modules.organization_access.domain import seeded_principal
+from ax_workspace.entrypoints.mcp import McpWorkflowFacade, create_mcp_server
+from ax_workspace.entrypoints.reset_demo import reset_database
+from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 
 
 def test_mcp_facade_discovers_allowed_workflows_and_completes_a_golden_run(tmp_path) -> None:
@@ -58,7 +58,7 @@ def test_stdio_mcp_client_discovers_and_starts_a_seeded_workflow(tmp_path) -> No
     async def scenario() -> None:
         parameters = StdioServerParameters(
             command=sys.executable,
-            args=["-m", "ax.mcp_server"],
+            args=["-m", "ax_workspace.entrypoints.mcp"],
             cwd=os.getcwd(),
             env={**os.environ, "AX_PROFILE": "test", "DATABASE_URL": database_url, "AX_MCP_PERSONA": "mina"},
         )

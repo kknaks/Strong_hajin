@@ -1,6 +1,6 @@
-from ax.demo_rehearsal import run_golden_rehearsal
-from ax.reset_demo import reset_database
-from ax.settings import RuntimeProfile, Settings
+from ax_workspace.entrypoints.demo_rehearsal import run_golden_rehearsal
+from ax_workspace.entrypoints.reset_demo import reset_database
+from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 
 
 def test_golden_rehearsal_completes_daily_meeting_and_contract_flows(tmp_path) -> None:

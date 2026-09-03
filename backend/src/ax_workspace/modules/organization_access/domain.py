@@ -3,10 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from fastapi import HTTPException, Request, status
-
-from ax.settings import Settings
-
 
 class PersonaId(StrEnum):
     MINA = "mina"
@@ -68,25 +64,3 @@ def seeded_principal(persona: str) -> Principal:
         return SEED_PERSONAS[PersonaId(persona)]
     except ValueError as error:
         raise ValueError("Select one of the seeded demo personas.") from error
-
-
-class DeveloperAuthAdapter:
-    """A development-only adapter which never accepts caller-supplied privileges."""
-
-    def __init__(self, settings: Settings) -> None:
-        if not settings.developer_auth_enabled:
-            raise RuntimeError("DeveloperAuthAdapter is forbidden outside development and test")
-
-    def authenticate(self, persona: str | None) -> Principal:
-        try:
-            return seeded_principal(persona or "")
-        except ValueError as error:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Select one of the seeded demo personas.",
-            ) from error
-
-
-def developer_principal(request: Request) -> Principal:
-    adapter: DeveloperAuthAdapter = request.app.state.developer_auth
-    return adapter.authenticate(request.headers.get("X-Demo-Persona"))
