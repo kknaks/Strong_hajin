@@ -5,6 +5,9 @@ import type {
   OrganizationProfile,
   Persona,
   WorkRequest,
+  Conversation,
+  ConversationContextReference,
+  ConversationMessageAcceptance,
 } from "./viewModels";
 
 type ApiErrorBody = {
@@ -154,6 +157,32 @@ export async function negotiateWorkRequest(
 ): Promise<WorkRequest> {
   return request<WorkRequest>(`/api/work-requests/${requestId}/negotiate`, personaId, {
     body: JSON.stringify({ expected_version: expectedVersion, conditions }),
+    method: "POST",
+  });
+}
+
+export async function getConversations(personaId: string): Promise<Conversation[]> {
+  return request<Conversation[]>("/api/conversations", personaId);
+}
+
+export async function getConversation(personaId: string, conversationId: string): Promise<Conversation> {
+  return request<Conversation>(`/api/conversations/${conversationId}`, personaId);
+}
+
+export async function createConversation(personaId: string, title = "새 대화"): Promise<Conversation> {
+  return request<Conversation>("/api/conversations", personaId, { body: JSON.stringify({ title }), method: "POST" });
+}
+
+export async function sendConversationMessage(
+  personaId: string,
+  conversationId: string,
+  body: string,
+  context: ConversationContextReference[],
+  idempotencyKey: string,
+): Promise<ConversationMessageAcceptance> {
+  return request<ConversationMessageAcceptance>(`/api/conversations/${conversationId}/messages`, personaId, {
+    body: JSON.stringify({ body, context }),
+    headers: { "Idempotency-Key": idempotencyKey },
     method: "POST",
   });
 }

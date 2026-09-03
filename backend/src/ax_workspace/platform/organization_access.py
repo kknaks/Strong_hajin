@@ -2,11 +2,23 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from datetime import UTC, datetime
+
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.organization_access.domain import PersonaId, Principal
-from ax_workspace.platform.persistence import AccessGrantRecord, EmploymentPeriodRecord, MemberRecord, MembershipRecord, OrganizationUnitRecord
+from ax_workspace.platform.persistence import (
+    AccessGrantRecord,
+    AppointmentRecord,
+    CapabilityRecord,
+    EmploymentPeriodRecord,
+    MemberRecord,
+    MembershipRecord,
+    OrganizationUnitRecord,
+    RoleCapabilityRecord,
+    RoleRecord,
+)
 
 
 class SqlAlchemyOrganizationRepository:
@@ -15,25 +27,66 @@ class SqlAlchemyOrganizationRepository:
 
     def profile_for(self, member_id: str) -> dict[str, Any] | None:
         member = self._session.get(MemberRecord, member_id)
-        employment = self._session.scalar(select(EmploymentPeriodRecord).where(EmploymentPeriodRecord.member_id == member_id))
+        now = datetime.now(UTC)
+        employment = self._session.scalar(
+            select(EmploymentPeriodRecord)
+            .where(
+                EmploymentPeriodRecord.member_id == member_id,
+                EmploymentPeriodRecord.state == "active",
+                EmploymentPeriodRecord.ended_at.is_(None),
+            )
+            .order_by(EmploymentPeriodRecord.started_at.desc())
+        )
         if member is None or member.employment_state != "active" or employment is None or employment.state != "active":
             return None
         organizations = self._session.execute(
             select(OrganizationUnitRecord.id, OrganizationUnitRecord.name)
             .join(MembershipRecord, MembershipRecord.organization_id == OrganizationUnitRecord.id)
-            .where(MembershipRecord.member_id == member_id)
+            .where(
+                MembershipRecord.member_id == member_id,
+                MembershipRecord.valid_from <= now,
+                or_(MembershipRecord.valid_until.is_(None), MembershipRecord.valid_until > now),
+            )
             .order_by(OrganizationUnitRecord.id)
         ).all()
-        capabilities = self._session.scalars(
-            select(AccessGrantRecord.capability)
-            .where(AccessGrantRecord.member_id == member_id)
-            .order_by(AccessGrantRecord.capability)
+        direct_capabilities = self._session.scalars(
+            select(CapabilityRecord.id)
+            .join(AccessGrantRecord, AccessGrantRecord.capability_id == CapabilityRecord.id)
+            .where(
+                AccessGrantRecord.member_id == member_id,
+                AccessGrantRecord.valid_from <= now,
+                AccessGrantRecord.revoked_at.is_(None),
+                or_(AccessGrantRecord.valid_until.is_(None), AccessGrantRecord.valid_until > now),
+            )
         ).all()
+        role_capabilities = self._session.scalars(
+            select(CapabilityRecord.id)
+            .join(RoleCapabilityRecord, RoleCapabilityRecord.capability_id == CapabilityRecord.id)
+            .join(RoleRecord, RoleRecord.id == RoleCapabilityRecord.role_id)
+            .join(AppointmentRecord, AppointmentRecord.role_id == RoleRecord.id)
+            .where(
+                AppointmentRecord.member_id == member_id,
+                AppointmentRecord.valid_from <= now,
+                or_(AppointmentRecord.valid_until.is_(None), AppointmentRecord.valid_until > now),
+            )
+        ).all()
+        roles = self._session.scalars(
+            select(RoleRecord.label)
+            .join(AppointmentRecord, AppointmentRecord.role_id == RoleRecord.id)
+            .where(
+                AppointmentRecord.member_id == member_id,
+                AppointmentRecord.valid_from <= now,
+                or_(AppointmentRecord.valid_until.is_(None), AppointmentRecord.valid_until > now),
+            )
+            .order_by(RoleRecord.id)
+        ).all()
+        capabilities = sorted(set(direct_capabilities).union(role_capabilities))
         return {
             "member_id": member.id,
             "display_name": member.display_name,
             "organizations": [{"id": item.id, "name": item.name} for item in organizations],
-            "capabilities": list(capabilities),
+            "roles": list(roles),
+            "capabilities": capabilities,
         }
 
     def principal_for(self, member_id: str) -> Principal | None:

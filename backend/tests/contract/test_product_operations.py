@@ -1,19 +1,29 @@
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
+import pytest
 
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
-from ax_workspace.modules.ax_execution.ai import AiGeneration
+from ax_workspace.modules.ax_execution.ai import AiConversationResult, AiGeneration, AiToolInvocation
 from ax_workspace.platform.persistence import (
     ProviderCallRecord,
     ReportDraftRecord,
+    ConversationMessageRecord,
+    ConversationTurnRecord,
+    AppointmentRecord,
+    CapabilityRecord,
+    ToolInvocationRecord,
     EmploymentPeriodRecord,
+    RoleCapabilityRecord,
+    RoleRecord,
     WorkflowNodeExecutionRecord,
     WorkflowRunRecord,
     make_session_factory,
 )
+from ax_workspace.entrypoints.mcp import McpReportsFacade
 
 
 class ContractTestAiProvider:
@@ -31,6 +41,25 @@ class ContractTestAiProvider:
             observed_tier="fast",
             latency_ms=12,
             usage={"input_tokens": 11, "output_tokens": 9},
+        )
+
+    def converse(self, request) -> AiConversationResult:
+        return AiConversationResult(
+            provider_run_ref="chat_turn_contract_test",
+            provider_session_ref="chat_session_contract_test",
+            body="업무 요청을 확인했습니다.",
+            tool_invocations=[
+                AiToolInvocation(
+                    provider_call_id="tool_call_contract_test",
+                    tool_name="work_request_list",
+                    display_name="업무 요청 조회",
+                    input_summary="현재 사용자 요청만 조회",
+                    state="completed",
+                    result_summary="1건 조회",
+                    error_summary=None,
+                    latency_ms=7,
+                )
+            ],
         )
 
 
@@ -227,6 +256,31 @@ def test_self_created_task_enters_my_work_and_only_allows_valid_lifecycle_transi
     assert completed.json()["state"] == "done"
 
 
+def test_task_and_work_request_capabilities_are_enforced_for_http_and_mcp(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+
+    task_denied = client.get("/api/tasks", headers={"X-Demo-Persona": "sora"})
+    request_denied = client.get("/api/work-requests", headers={"X-Demo-Persona": "sora"})
+
+    assert task_denied.status_code == 403
+    assert request_denied.status_code == 403
+
+    facade = McpReportsFacade(Settings(RuntimeProfile.TEST, database_url), "sora", ContractTestAiProvider())
+    with pytest.raises(Exception, match="task.read"):
+        facade.list_tasks()
+    with pytest.raises(Exception, match="work_request.read"):
+        facade.list_work_requests()
+
+    report_denied = client.post(
+        "/api/daily-reports/generate-draft",
+        headers={"X-Demo-Persona": "jiho"},
+        json={"report_date": "2026-09-03"},
+    )
+    assert report_denied.status_code == 403
+    assert "daily_report.generate" in report_denied.json()["detail"]
+
+
 def test_task_cancel_and_stale_transition_leave_no_extra_mutation(tmp_path) -> None:
     client = _client_with_seeded_database(tmp_path)
     task = client.post("/api/tasks", headers={"X-Demo-Persona": "mina"}, json={"title": "취소할 업무"}).json()
@@ -273,6 +327,172 @@ def test_work_request_creates_a_task_only_after_the_assignee_accepts(tmp_path) -
     assert accepted.json()["task_id"]
     assert accepted.json()["assignment_state"] == "active"
     assert client.get("/api/my-work", headers={"X-Demo-Persona": "jiho"}).json()[0]["task_id"] == accepted.json()["task_id"]
+
+
+def test_conversation_turn_persists_messages_context_provider_refs_and_tool_activity(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path, report_provider=ContractTestAiProvider())
+    created = client.post(
+        "/api/conversations",
+        headers={"X-Demo-Persona": "mina"},
+        json={"title": "업무 확인"},
+    )
+    assert created.status_code == 201
+
+    response = client.post(
+        f"/api/conversations/{created.json()['conversation_id']}/messages",
+        headers={"X-Demo-Persona": "mina"},
+        json={
+            "body": "내 업무 요청을 확인해 주세요.",
+            "context": [],
+        },
+    )
+
+    assert response.status_code == 202
+    accepted = response.json()
+    assert accepted["conversation_id"] == created.json()["conversation_id"]
+    assert accepted["queued"] is False
+    assert accepted["turn_id"]
+
+    pending = client.get(
+        f"/api/conversations/{created.json()['conversation_id']}",
+        headers={"X-Demo-Persona": "mina"},
+    ).json()
+    assert [message["role"] for message in pending["messages"]] == ["user"]
+    assert pending["turns"][0]["state"] == "pending"
+
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+    with make_session_factory(database_url)() as session:
+        assert session.scalar(select(ConversationTurnRecord)) is not None
+        assert len(list(session.scalars(select(ConversationMessageRecord)))) == 1
+        assert session.scalar(select(ToolInvocationRecord)) is None
+
+
+def test_conversation_queues_fragments_without_losing_their_original_order(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path, report_provider=ContractTestAiProvider())
+    created = client.post(
+        "/api/conversations",
+        headers={"X-Demo-Persona": "mina"},
+        json={"title": "큐 대화"},
+    ).json()
+    first = client.post(
+        f"/api/conversations/{created['conversation_id']}/messages",
+        headers={"X-Demo-Persona": "mina"},
+        json={"body": "첫 작업입니다.", "context": []},
+    )
+    assert first.status_code == 202
+    assert first.json()["queued"] is False
+
+    queued = client.post(
+        f"/api/conversations/{created['conversation_id']}/messages",
+        headers={"X-Demo-Persona": "mina"},
+        json={"body": "첫 작업이 끝나면 이어서 확인해 주세요.", "context": []},
+    )
+    assert queued.status_code == 202
+    assert queued.json()["queued"] is True
+    assert queued.json()["turn_id"] is None
+    assert queued.json()["queue_size"] == 1
+
+    accepted = client.get(
+        f"/api/conversations/{created['conversation_id']}",
+        headers={"X-Demo-Persona": "mina"},
+    ).json()
+    assert [message["state"] for message in accepted["messages"]] == [
+        "accepted",
+        "queued",
+    ]
+    assert [message["body"] for message in accepted["messages"]] == [
+        "첫 작업입니다.",
+        "첫 작업이 끝나면 이어서 확인해 주세요.",
+    ]
+
+
+def test_conversation_context_is_resolved_server_side_and_rejects_stale_or_unowned_refs(
+    tmp_path,
+) -> None:
+    client = _client_with_seeded_database(tmp_path)
+    task = client.post(
+        "/api/tasks",
+        headers={"X-Demo-Persona": "mina"},
+        json={"title": "서버가 읽어야 할 업무"},
+    ).json()
+    mina_conversation = client.post(
+        "/api/conversations",
+        headers={"X-Demo-Persona": "mina"},
+        json={"title": "근거 대화"},
+    ).json()
+
+    accepted = client.post(
+        f"/api/conversations/{mina_conversation['conversation_id']}/messages",
+        headers={"X-Demo-Persona": "mina"},
+        json={
+            "body": "이 업무를 확인해 주세요.",
+            "context": [
+                {
+                    "resource_type": "task",
+                    "resource_id": task["task_id"],
+                    "resource_version": task["version"],
+                    "included": True,
+                }
+            ],
+        },
+    )
+    assert accepted.status_code == 202
+    context = client.get(
+        f"/api/conversations/{mina_conversation['conversation_id']}",
+        headers={"X-Demo-Persona": "mina"},
+    ).json()["context_references"]
+    assert context == [
+        {
+            "message_id": accepted.json()["message_id"],
+            "turn_id": accepted.json()["turn_id"],
+            "resource_type": "task",
+            "resource_id": task["task_id"],
+            "resource_version": task["version"],
+            "summary": "업무: 서버가 읽어야 할 업무 (open)",
+            "included": True,
+        }
+    ]
+
+    stale = client.post(
+        f"/api/conversations/{mina_conversation['conversation_id']}/messages",
+        headers={"X-Demo-Persona": "mina"},
+        json={
+            "body": "오래된 근거입니다.",
+            "context": [
+                {
+                    "resource_type": "task",
+                    "resource_id": task["task_id"],
+                    "resource_version": task["version"] + 1,
+                    "included": True,
+                }
+            ],
+        },
+    )
+    assert stale.status_code == 422
+    assert "stale" in stale.json()["detail"]
+
+    jiho_conversation = client.post(
+        "/api/conversations",
+        headers={"X-Demo-Persona": "jiho"},
+        json={"title": "권한 밖 근거"},
+    ).json()
+    denied = client.post(
+        f"/api/conversations/{jiho_conversation['conversation_id']}/messages",
+        headers={"X-Demo-Persona": "jiho"},
+        json={
+            "body": "다른 사람 업무를 보겠습니다.",
+            "context": [
+                {
+                    "resource_type": "task",
+                    "resource_id": task["task_id"],
+                    "resource_version": task["version"],
+                    "included": True,
+                }
+            ],
+        },
+    )
+    assert denied.status_code == 422
+    assert "not found" in denied.json()["detail"]
 
 
 def test_work_request_uses_authorized_organization_candidates_and_rejects_an_out_of_scope_assignee(tmp_path) -> None:
@@ -375,8 +595,64 @@ def test_organization_profile_is_a_persisted_authorized_projection(tmp_path) -> 
         "member_id": "mina",
         "display_name": "민아 (구성원)",
         "organizations": [{"id": "product", "name": "제품팀"}, {"id": "scax", "name": "SCAX"}],
-        "capabilities": ["daily_report.submit", "meeting.followup.request", "task.accept", "work.read"],
+        "roles": ["민아 (구성원) 기본 역할"],
+        "capabilities": [
+            "daily_report.edit",
+            "daily_report.generate",
+            "daily_report.read",
+            "daily_report.submit",
+            "meeting.followup.request",
+            "task.accept",
+            "task.read",
+            "task.self_manage",
+            "work.read",
+            "work_request.create",
+            "work_request.read",
+        ],
     }
+
+
+def test_organization_seed_persists_appointment_role_capability_and_grant_ledger(tmp_path) -> None:
+    _client_with_seeded_database(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+
+    with make_session_factory(database_url)() as session:
+        appointment = session.scalar(
+            select(AppointmentRecord).where(AppointmentRecord.member_id == "mina")
+        )
+        assert appointment is not None
+        assert appointment.organization_id == "scax"
+        role = session.get(RoleRecord, appointment.role_id)
+        assert role is not None
+        assert session.scalar(
+            select(RoleCapabilityRecord).where(
+                RoleCapabilityRecord.role_id == role.id,
+                RoleCapabilityRecord.capability_id == "task.self_manage",
+            )
+        ) is not None
+        assert session.get(CapabilityRecord, "task.self_manage") is not None
+
+
+def test_expired_appointment_is_removed_from_the_server_principal_projection(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+    with make_session_factory(database_url)() as session:
+        appointment = session.scalar(
+            select(AppointmentRecord).where(AppointmentRecord.member_id == "mina")
+        )
+        assert appointment is not None
+        appointment.valid_until = datetime.now(UTC) - timedelta(seconds=1)
+        session.commit()
+
+    profile = client.get("/api/organization/me", headers={"X-Demo-Persona": "mina"})
+    denied = client.post(
+        "/api/daily-reports/generate-draft",
+        headers={"X-Demo-Persona": "mina"},
+        json={"report_date": "2026-09-03"},
+    )
+
+    assert "daily_report.generate" not in profile.json()["capabilities"]
+    assert denied.status_code == 403
 
 
 def test_organization_principal_projects_persona_specific_grants(tmp_path) -> None:

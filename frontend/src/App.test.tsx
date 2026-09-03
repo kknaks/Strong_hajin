@@ -151,4 +151,102 @@ describe("product surfaces", () => {
     fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
     expect(await screen.findByText("UI로 만든 업무 요청")).toBeTruthy();
   });
+
+  it("keeps the AX composer enabled, sends an idempotent queued fragment, and attaches typed current-screen context", async () => {
+    const conversation = {
+      conversation_id: "conversation-1",
+      title: "업무 확인",
+      version: 1,
+      messages: [
+        {
+          message_id: "message-1",
+          turn_id: "turn-1",
+          role: "user",
+          body: "현재 업무를 확인해줘",
+          sequence: 1,
+          state: "accepted",
+        },
+      ],
+      turns: [
+        {
+          turn_id: "turn-1",
+          state: "running",
+          provider_run_ref: null,
+          provider_session_ref: null,
+          error: null,
+        },
+      ],
+      context_references: [],
+      tool_invocations: [],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/developer/personas") {
+        return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      }
+      if (path === "/api/my-work") {
+        return jsonResponse([
+          {
+            task_id: "task-1",
+            title: "첨부할 현재 업무",
+            state: "in_progress",
+            version: 3,
+            block_reason: null,
+          },
+        ]);
+      }
+      if (path === "/api/work-request-assignee-candidates") return jsonResponse([]);
+      if (path === "/api/conversations") return jsonResponse([conversation]);
+      if (path === "/api/conversations/conversation-1" && init?.method === "POST") {
+        return jsonResponse({
+          conversation_id: "conversation-1",
+          message_id: "message-2",
+          turn_id: null,
+          queued: true,
+          queue_size: 1,
+        });
+      }
+      if (path === "/api/conversations/conversation-1") return jsonResponse(conversation);
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
+    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+
+    await screen.findByText("업무 확인");
+    const context = await screen.findByLabelText("현재 화면 참고 자료");
+    fireEvent.change(context, { target: { value: "task:task-1:3" } });
+    fireEvent.change(screen.getByLabelText("AX 메시지"), { target: { value: "이 업무를 이어서 진행할게" } });
+
+    const send = screen.getByRole("button", { name: "대기열에 보내기" });
+    expect(send.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(send);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/conversations/conversation-1/messages",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({ "Idempotency-Key": expect.any(String) }),
+        }),
+      );
+    });
+    const request = fetchMock.mock.calls.find(([path, init]) =>
+      path === "/api/conversations/conversation-1/messages" && init?.method === "POST",
+    );
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({
+      body: "이 업무를 이어서 진행할게",
+      context: [
+        {
+          resource_type: "task",
+          resource_id: "task-1",
+          resource_version: 3,
+          included: true,
+        },
+      ],
+    });
+  });
 });

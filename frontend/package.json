@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "test": "vitest run",
     "e2e:work-request": "node scripts/work-request-e2e.mjs",
+    "e2e:conversation": "node scripts/conversation-e2e.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

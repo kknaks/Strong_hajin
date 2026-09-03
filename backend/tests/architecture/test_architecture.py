@@ -7,7 +7,7 @@ from ax_workspace.entrypoints.http_auth import DeveloperAuthAdapter
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src" / "ax_workspace"
+PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "src" / "ax_workspace"
 
 
 def test_application_startup_never_mutates_schema(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -69,7 +69,7 @@ def test_reports_feature_does_not_embed_provider_policy_or_spawn_processes() -> 
 
 
 def test_frontend_is_the_only_canonical_ui_source_root() -> None:
-    repository_root = Path(__file__).resolve().parents[2]
+    repository_root = Path(__file__).resolve().parents[3]
 
     assert (repository_root / "frontend" / "package.json").is_file()
     assert not (repository_root / "web").exists()

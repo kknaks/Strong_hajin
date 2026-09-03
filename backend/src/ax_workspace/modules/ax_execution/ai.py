@@ -36,6 +36,45 @@ class AiGeneration:
 
 
 @dataclass(frozen=True, slots=True)
+class AiDelegatedToolContext:
+    """Server-bound delegated identity for tools; it is never prompt content."""
+
+    principal_id: str
+    causation_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class AiConversationRequest:
+    prompt: str
+    provider_session_ref: str | None
+    context_references: list[dict[str, str]]
+    delegated_tool_context: AiDelegatedToolContext
+
+
+@dataclass(frozen=True, slots=True)
+class AiToolInvocation:
+    provider_call_id: str | None
+    tool_name: str
+    display_name: str
+    input_summary: str
+    state: str
+    result_summary: str | None
+    error_summary: str | None
+    latency_ms: int | None
+    target_resource_id: str | None = None
+    target_resource_version: str | None = None
+    audit_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AiConversationResult:
+    provider_run_ref: str | None
+    provider_session_ref: str | None
+    body: str
+    tool_invocations: list[AiToolInvocation]
+
+
+@dataclass(frozen=True, slots=True)
 class AiProviderProvenance:
     provider_run_ref: str | None = None
     provider_session_ref: str | None = None
@@ -49,6 +88,7 @@ class AiProviderProvenance:
 
 class AiProvider(Protocol):
     def generate(self, request: AiGenerationRequest) -> AiGeneration: ...
+    def converse(self, request: AiConversationRequest) -> AiConversationResult: ...
 
 
 class ProviderFailure(RuntimeError):

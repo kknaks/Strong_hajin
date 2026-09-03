@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from typing import Literal
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
 from ax_workspace.modules.organization_access.domain import Principal, SEED_PERSONAS
@@ -14,8 +15,10 @@ from ax_workspace.modules.ax_execution.application import (
     InvalidWorkflowInput,
     RunNotFound,
 )
-from ax_workspace.modules.work.application import InvalidTaskTransition, TaskError, TaskNotFound, TaskState
-from ax_workspace.modules.work.requests import WorkRequestError
+from ax_workspace.modules.work.application import InvalidTaskTransition, TaskAccessDenied, TaskError, TaskNotFound, TaskState
+from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequestError
+from ax_workspace.modules.reports.application import DailyReportAccessDenied
+from ax_workspace.modules.ax_execution.conversations import ConversationError, ConversationQueueOverflow
 from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.ax_execution.domain import catalog_definitions
 from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
@@ -47,6 +50,22 @@ class DecisionRequest(BaseModel):
 
 class CreateTaskRequest(BaseModel):
     title: str
+
+
+class CreateConversationRequest(BaseModel):
+    title: str = "새 대화"
+
+
+class ConversationContextReferenceRequest(BaseModel):
+    resource_type: Literal["task", "work_request"]
+    resource_id: UUID
+    resource_version: int = Field(ge=1)
+    included: bool
+
+
+class SendConversationMessageRequest(BaseModel):
+    body: str
+    context: list[ConversationContextReferenceRequest] = Field(default_factory=list)
 
 
 class CreateWorkRequestRequest(BaseModel):
@@ -92,6 +111,11 @@ class TaskTransitionRequest(BaseModel):
 
 
 def _runtime_error(error: Exception) -> HTTPException:
+    if isinstance(error, ConversationQueueOverflow):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "conversation_queue_full", "queue_size": error.queue_size, "limit": error.limit},
+        )
     if isinstance(error, RunNotFound):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
     if isinstance(error, AccessDenied):
@@ -100,9 +124,13 @@ def _runtime_error(error: Exception) -> HTTPException:
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     if isinstance(error, TaskNotFound):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
+    if isinstance(error, (TaskAccessDenied, WorkRequestAccessDenied, DailyReportAccessDenied)):
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
     if isinstance(error, (TaskError, InvalidTaskTransition)):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     if isinstance(error, WorkRequestError):
+        return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
+    if isinstance(error, ConversationError):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     raise error
 
@@ -200,6 +228,28 @@ def create_app(
         def my_work(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
             return app.state.workflow_application.my_work(principal)
 
+        @app.get("/api/conversations")
+        def conversations(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+            return app.state.workflow_application.conversations(principal)
+
+        @app.post("/api/conversations", status_code=status.HTTP_201_CREATED)
+        def create_conversation(request: CreateConversationRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            return app.state.workflow_application.create_conversation(principal, request.title)
+
+        @app.get("/api/conversations/{conversation_id}")
+        def conversation(conversation_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.conversation(principal, conversation_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/conversations/{conversation_id}/messages", status_code=status.HTTP_202_ACCEPTED)
+        def send_conversation_message(conversation_id: UUID, request: SendConversationMessageRequest, principal: Principal = Depends(developer_principal), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.accept_conversation_message(principal, request.body, conversation_id, request.context, idempotency_key)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
         @app.get("/api/organization/me")
         def my_organization_profile(principal: Principal = Depends(developer_principal)) -> dict[str, object]:
             return app.state.workflow_application.my_organization_profile(principal)
@@ -208,6 +258,20 @@ def create_app(
         def create_self_task(request: CreateTaskRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
             try:
                 return app.state.workflow_application.create_self_task(principal, request.title)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/tasks")
+        def list_tasks(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+            try:
+                return app.state.workflow_application.list_tasks(principal)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/tasks/{task_id}")
+        def get_task(task_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.get_task(principal, task_id)
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -301,6 +365,8 @@ def create_app(
         def generate_daily_report_draft(request: GenerateDailyReportDraftRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
             try:
                 return app.state.workflow_application.generate_daily_report_draft(principal, request.report_date)
+            except DailyReportAccessDenied as error:
+                raise _runtime_error(error) from error
             except ProviderFailure as error:
                 raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
             except ValueError as error:
@@ -322,6 +388,8 @@ def create_app(
                     request.include_source_refs,
                     request.exclude_source_refs,
                 )
+            except DailyReportAccessDenied as error:
+                raise _runtime_error(error) from error
             except ValueError as error:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
 
@@ -339,6 +407,8 @@ def create_app(
                     request.expected_version,
                     request.reason,
                 )
+            except DailyReportAccessDenied as error:
+                raise _runtime_error(error) from error
             except ValueError as error:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
 
@@ -349,6 +419,8 @@ def create_app(
         ) -> dict[str, object]:
             try:
                 return app.state.workflow_application.daily_report_history(principal, report_id)
+            except DailyReportAccessDenied as error:
+                raise _runtime_error(error) from error
             except ValueError as error:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
 

@@ -75,6 +75,25 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 .evidence-list span, .report-notice { color: var(--text-secondary); font-size: 11px; }
 .decision-empty-state, .organization-seam { margin-top: 20px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.ax-launcher { position: fixed; right: 28px; bottom: 28px; width: 48px; height: 48px; border-radius: 50%; color: #fff; background: var(--accent-deep); box-shadow: 0 8px 20px rgba(79,99,239,.35); font-weight: 800; }
+.ax-drawer { position: fixed; z-index: 5; top: 13px; right: 12px; display: grid; grid-template-rows: auto auto auto 1fr auto auto; gap: 10px; width: min(390px, calc(100vw - 24px)); height: calc(100vh - 26px); padding: 16px; border: 1px solid var(--line-strong); border-radius: 18px; background: #fff; box-shadow: -12px 12px 40px rgba(32,42,69,.2); }
+.ax-drawer header { display: flex; justify-content: space-between; }
+.ax-conversation-list { display: flex; gap: 6px; overflow: auto; }
+.ax-conversation-list button { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; white-space: nowrap; }
+.ax-conversation-list button[aria-pressed="true"] { color: var(--accent-deep); border-color: var(--accent); background: var(--accent-tint); font-weight: 800; }
+.ax-messages { overflow: auto; }
+.ax-messages p { padding: 9px; border-radius: 8px; font-size: 12px; white-space: pre-wrap; }
+.ax-messages .user { background: var(--accent-tint); }
+.ax-messages .assistant { background: #f6f7fa; }
+.ax-messages .queued { border: 1px dashed #b6c0ff; color: var(--text-secondary); }
+.ax-messages details { margin: 6px 0; padding: 7px; border: 1px solid var(--line); border-radius: 7px; font-size: 11px; }
+.ax-turn { margin-bottom: 12px; }
+.ax-turn-state { color: var(--text-tertiary); font-size: 11px; }
+.ax-turn-state.running { color: var(--accent-deep); }
+.ax-turn-state.failed, .ax-turn-error { color: var(--danger); }
+.ax-context { display: grid; gap: 4px; color: var(--text-secondary); font-size: 11px; }
+.ax-context select { padding: 7px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+.ax-drawer textarea { min-height: 70px; resize: vertical; border: 1px solid var(--line-strong); border-radius: 7px; padding: 8px; }
 
 @media (max-width: 900px) {
   .thesc-shell { grid-template-columns: 1fr; }

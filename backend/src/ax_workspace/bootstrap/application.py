@@ -2,18 +2,31 @@
 from __future__ import annotations
 
 from typing import Any, Callable, TypeVar
+import sys
 from uuid import UUID
 
 from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.ax_execution.application import AccessDenied, WorkflowRunStarter
+from ax_workspace.modules.ax_execution.conversations import (
+    ConversationApplication,
+    ConversationContextReferenceInput,
+)
 from ax_workspace.modules.organization_access.domain import Principal
 from ax_workspace.modules.organization_access.application import OrganizationApplication
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
 from ax_workspace.modules.reports.application import DailyReportApplication
 from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
-from ax_workspace.platform.codex_cli import CodexCliProviderAdapter
+from ax_workspace.platform.codex_cli import CodexCliMcpServer, CodexCliProviderAdapter
+from ax_workspace.platform.conversation_queue import (
+    NullConversationExecutionQueue,
+    PgmqConversationTurnQueue,
+)
+from ax_workspace.platform.conversations import (
+    SqlAlchemyConversationContextResolver,
+    SqlAlchemyConversationRepository,
+)
 from ax_workspace.platform.reports import SqlAlchemyDailyReportDraftWorkflow, SqlAlchemyDailyReportRepository
-from ax_workspace.modules.work.application import TaskApplication, TaskState
+from ax_workspace.modules.work.application import TaskAccessDenied, TaskApplication, TaskState
 from ax_workspace.modules.work.requests import WorkRequestApplication
 from ax_workspace.platform.persistence import make_session_factory
 from ax_workspace.platform.work_tasks import (
@@ -31,8 +44,9 @@ class WorkflowApplication:
     """Transaction boundary shared by HTTP, MCP, and local rehearsal adapters."""
 
     def __init__(self, settings: Settings, report_provider: AiProvider | None = None) -> None:
+        self._settings = settings
         self._session_factory = make_session_factory(settings.database_url)
-        self._report_provider = report_provider or CodexCliProviderAdapter()
+        self._report_provider = report_provider or create_codex_cli_provider(settings)
 
     def _use(self, operation: Callable[[WorkflowRunStarter], T]) -> T:
         with SqlAlchemyUnitOfWork(self._session_factory) as uow:
@@ -66,7 +80,10 @@ class WorkflowApplication:
     def my_work(self, principal: Principal) -> list[dict[str, Any]]:
         workflow_work = self._use(lambda service: service.my_work(principal))
         with self._session_factory() as session:
-            direct_work = TaskApplication(SqlAlchemyTaskRepository(session)).list_for(principal)
+            try:
+                direct_work = TaskApplication(SqlAlchemyTaskRepository(session)).list_for(principal)
+            except TaskAccessDenied:
+                direct_work = []
         return [*direct_work, *workflow_work]
 
     def my_organization_profile(self, principal: Principal) -> dict[str, Any]:
@@ -140,25 +157,44 @@ class WorkflowApplication:
             ),
         )
 
-    def create_self_task(self, principal: Principal, title: str) -> dict[str, Any]:
+    def create_self_task(
+        self,
+        principal: Principal,
+        title: str,
+        causation_key: str | None = None,
+    ) -> dict[str, Any]:
         with self._session_factory() as session:
-            result = TaskApplication(SqlAlchemyTaskRepository(session)).create_self(principal, title)
+            result = TaskApplication(SqlAlchemyTaskRepository(session)).create_self(
+                principal, title, causation_key
+            )
             session.commit()
             return result
 
-    def create_work_request(self, principal: Principal, title: str, assignee_id: str) -> dict[str, Any]:
+    def list_tasks(self, principal: Principal) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return TaskApplication(SqlAlchemyTaskRepository(session)).list_for(principal)
+
+    def get_task(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
+        with self._session_factory() as session:
+            return TaskApplication(SqlAlchemyTaskRepository(session)).get(principal, task_id)
+
+    def create_work_request(
+        self,
+        principal: Principal,
+        title: str,
+        assignee_id: str,
+        causation_key: str | None = None,
+    ) -> dict[str, Any]:
         with self._session_factory() as session:
             result = self._work_requests(session).create(
-                principal, title, assignee_id
+                principal, title, assignee_id, causation_key
             )
             session.commit()
             return result
 
     def work_request_assignee_candidates(self, principal: Principal) -> list[dict[str, str]]:
         with self._session_factory() as session:
-            return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).work_request_assignee_candidates(
-                principal
-            )
+            return self._work_requests(session).assignee_candidates(principal)
 
     def list_work_requests(self, principal: Principal) -> list[dict[str, Any]]:
         with self._session_factory() as session:
@@ -202,11 +238,69 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return self._work_requests(session).inbox(principal)
 
+    def create_conversation(self, principal: Principal, title: str) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._conversations(session).create(principal, title)
+            session.commit()
+            return result
+
+    def conversations(self, principal: Principal) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return self._conversations(session).list(principal)
+
+    def conversation(self, principal: Principal, conversation_id: UUID) -> dict[str, Any]:
+        with self._session_factory() as session:
+            return self._conversations(session).get(principal, conversation_id)
+
+    def accept_conversation_message(
+        self,
+        principal: Principal,
+        body: str,
+        conversation_id: UUID,
+        context: list[Any],
+        idempotency_key: str | None,
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            references = [
+                ConversationContextReferenceInput(
+                    resource_type=item.resource_type,
+                    resource_id=str(item.resource_id),
+                    resource_version=item.resource_version,
+                    included=item.included,
+                )
+                for item in context
+            ]
+            result = self._conversations(session).accept_message(
+                principal,
+                conversation_id,
+                body,
+                references,
+                idempotency_key,
+            )
+            session.commit()
+            return result
+
     @staticmethod
     def _work_requests(session: Any) -> WorkRequestApplication:
         return WorkRequestApplication(
             SqlAlchemyWorkRequestRepository(session),
             OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
+        )
+
+    def _conversations(self, session: Any) -> ConversationApplication:
+        if self._settings.conversation_queue_backend == "pgmq":
+            queue = PgmqConversationTurnQueue(session)
+        elif self._settings.conversation_queue_backend == "null":
+            queue = NullConversationExecutionQueue()
+        else:
+            raise RuntimeError("Unknown AX conversation queue backend")
+        return ConversationApplication(
+            SqlAlchemyConversationRepository(
+                session,
+                queue,
+                self._settings.conversation_queue_max_fragments,
+            ),
+            SqlAlchemyConversationContextResolver(session),
         )
 
     def transition_task(self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None = None, expected_version: int = 0) -> dict[str, Any]:
@@ -221,3 +315,17 @@ def create_workflow_application(
     report_provider: AiProvider | None = None,
 ) -> WorkflowApplication:
     return WorkflowApplication(settings, report_provider)
+
+
+def create_codex_cli_provider(settings: Settings) -> CodexCliProviderAdapter:
+    """Compose the isolated CLI adapter with exactly one server-bound SCAX MCP."""
+    return CodexCliProviderAdapter(
+        scax_mcp_server=CodexCliMcpServer(
+            command=sys.executable,
+            arguments=("-m", "ax_workspace.entrypoints.mcp"),
+            environment={
+                "AX_PROFILE": str(settings.profile),
+                "DATABASE_URL": settings.database_url,
+            },
+        )
+    )

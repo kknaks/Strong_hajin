@@ -18,7 +18,7 @@ make reset-demo
 make api
 ```
 
-In a second terminal, run `make frontend`; the browser UI starts at `http://127.0.0.1:5173` and proxies `/api` to FastAPI on port 8000. Run `AX_MCP_PERSONA=mina make mcp` in a third terminal to expose Mina’s dynamically filtered stdio MCP Tool set; this binding is required, so an unbound MCP server never lets a client select `demo-admin`. Run `make verify` in a fourth terminal for non-integration backend tests, frontend behavior tests, and the production Vite build. The API itself starts at `http://127.0.0.1:8000`; Swagger is at `/docs`.
+In a second terminal, run `make conversation-worker`; it is the separate PGMQ consumer and is the only process that invokes Codex for queued AX turns. In a third terminal, run `make frontend`; the browser UI starts at `http://127.0.0.1:5173` and proxies `/api` to FastAPI on port 8000. Run `AX_MCP_PERSONA=mina make mcp` in a fourth terminal to expose Mina’s dynamically filtered stdio MCP Tool set; this binding is required, so an unbound MCP server never lets a client select `demo-admin`. Run `make verify` in another terminal for non-integration backend tests, frontend behavior tests, and the production Vite build. The API itself starts at `http://127.0.0.1:8000`; Swagger is at `/docs`.
 
 `make reset-demo` is the only command that creates or drops the demo tables. Normal API startup never mutates the schema. `X-Demo-Persona` accepts only a seeded persona (`mina`, `jiho`, `sora`, `minseok`, `demo-admin`) while `AX_PROFILE` is `development` or `test`; production omits those routes entirely.
 
@@ -34,9 +34,13 @@ For the browser WorkRequest journey, run the backend on port 8001, then start Vi
 DATABASE_URL=postgresql+psycopg://ax:ax@localhost:54329/ax_demo make api-e2e
 DATABASE_URL=postgresql+psycopg://ax:ax@localhost:54329/ax_demo make frontend-e2e
 make e2e-work-request
+make e2e-conversation
+make live-report-smoke
 ```
 
 `api-e2e` listens on `127.0.0.1:8001`, while `frontend-e2e` configures Vite's `/api` proxy with `VITE_API_TARGET=http://127.0.0.1:8001` and listens on `127.0.0.1:5176`. This avoids accidentally validating the unrelated default API port 8000; `e2e-work-request` uses the UI itself to create a request, switch to the assignee, then accept it.
+
+Run `DATABASE_URL=postgresql+psycopg://ax:ax@localhost:54329/ax_demo make conversation-worker` alongside the two E2E servers before `make e2e-conversation`. It proves the production worker's Codex CLI path calls the persona-bound `task_list` MCP tool, keeps the composer usable while a follow-up is visibly queued in the same conversation, and switches between two independently executing conversations without leaking timeline state; the screenshot is written to `frontend/test-results/conversation-e2e.png`. `make live-report-smoke` is an opt-in real-Codex report proof: it creates a seeded Task activity, calls `daily_report.generate_draft`, and asserts the persisted WorkflowRun, four NodeRuns, and completed ProviderCall provenance without printing the generated body or prompt.
 
 `make verify` deliberately excludes PostgreSQL integration tests; its success is not PostgreSQL coverage. For an explicit, reproducible disposable-PostgreSQL proof, start the documented container and run:
 

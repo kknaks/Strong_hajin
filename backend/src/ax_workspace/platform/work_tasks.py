@@ -19,9 +19,20 @@ from ax_workspace.platform.persistence import (
 class SqlAlchemyTaskRepository:
     def __init__(self, session: Session) -> None: self.session = session
 
-    def create_self_task(self, owner_id: str, title: str) -> TaskRecord:
+    def create_self_task(
+        self,
+        owner_id: str,
+        title: str,
+        causation_key: str | None = None,
+    ) -> TaskRecord:
+        if causation_key:
+            existing = self.session.scalar(
+                select(TaskRecord).where(TaskRecord.causation_key == causation_key)
+            )
+            if existing is not None:
+                return existing
         now = datetime.now(UTC)
-        task = TaskRecord(owner_id=owner_id, title=title, state=TaskState.OPEN, block_reason=None, version=1, created_at=now, updated_at=now)
+        task = TaskRecord(owner_id=owner_id, title=title, state=TaskState.OPEN, block_reason=None, version=1, created_at=now, updated_at=now, causation_key=causation_key)
         self.session.add(task)
         self.session.flush()
         self.session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now))
@@ -30,7 +41,8 @@ class SqlAlchemyTaskRepository:
     def task(self, task_id: UUID, owner_id: str, *, lock: bool = False) -> TaskRecord:
         statement = select(TaskRecord).where(TaskRecord.id == task_id, TaskRecord.owner_id == owner_id)
         task = self.session.scalar(statement.with_for_update() if lock else statement)
-        if task is None: raise TaskNotFound("task was not found")
+        if task is None:
+            raise TaskNotFound("task was not found")
         return task
 
     def tasks_for(self, owner_id: str) -> list[TaskRecord]:
@@ -68,7 +80,19 @@ class SqlAlchemyWorkRequestRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def create_request(self, requester_id: str, assignee_id: str, title: str) -> WorkRequestRecord:
+    def create_request(
+        self,
+        requester_id: str,
+        assignee_id: str,
+        title: str,
+        causation_key: str | None = None,
+    ) -> tuple[WorkRequestRecord, bool]:
+        if causation_key:
+            existing = self._session.scalar(
+                select(WorkRequestRecord).where(WorkRequestRecord.causation_key == causation_key)
+            )
+            if existing is not None:
+                return existing, False
         now = datetime.now(UTC)
         request = WorkRequestRecord(
             requester_id=requester_id,
@@ -79,10 +103,11 @@ class SqlAlchemyWorkRequestRepository:
             conditions=None,
             created_at=now,
             updated_at=now,
+            causation_key=causation_key,
         )
         self._session.add(request)
         self._session.flush()
-        return request
+        return request, True
 
     def request(self, request_id: UUID, *, lock: bool = False) -> WorkRequestRecord | None:
         statement = select(WorkRequestRecord).where(WorkRequestRecord.id == request_id)

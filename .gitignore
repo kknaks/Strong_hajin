@@ -6,6 +6,7 @@ __pycache__/
 node_modules/
 dist/
 artifacts/
+frontend/test-results/
 *.tsbuildinfo
 /backend/build/
 /backend/*.egg-info/

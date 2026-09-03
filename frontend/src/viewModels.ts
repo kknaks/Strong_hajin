@@ -74,3 +74,49 @@ export type WorkRequest = {
   assignment_state: string | null;
   conditions: Record<string, unknown> | null;
 };
+
+export type Conversation = {
+  conversation_id: string;
+  title: string;
+  version: number;
+  messages: Array<{
+    message_id: string;
+    turn_id: string | null;
+    role: "user" | "assistant";
+    body: string;
+    sequence: number;
+    state: "accepted" | "queued";
+  }>;
+  turns: Array<{ turn_id: string; state: string; provider_run_ref: string | null; provider_session_ref: string | null; error: string | null }>;
+  context_references: ConversationContextReference[];
+  tool_invocations: Array<{
+    turn_id: string;
+    sequence: number;
+    provider_call_id: string | null;
+    tool_name: string;
+    display_name: string;
+    input_summary: string;
+    state: string;
+    result_summary: string | null;
+    error_summary: string | null;
+    latency_ms: number | null;
+    target_resource_id: string | null;
+    target_resource_version: string | null;
+    audit_ref: string | null;
+  }>;
+};
+
+export type ConversationContextReference = {
+  resource_type: "task" | "work_request";
+  resource_id: string;
+  resource_version: number;
+  included: boolean;
+};
+
+export type ConversationMessageAcceptance = {
+  conversation_id: string;
+  message_id: string;
+  turn_id: string | null;
+  queued: boolean;
+  queue_size: number;
+};

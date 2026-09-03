@@ -7,11 +7,15 @@ from sqlalchemy.orm import Session
 
 from ax_workspace.platform.persistence import (
     AccessGrantRecord,
+    AppointmentRecord,
+    CapabilityRecord,
     EmploymentPeriodRecord,
     MemberRecord,
     MeetingEvidenceRecord,
     MembershipRecord,
     OrganizationUnitRecord,
+    RoleCapabilityRecord,
+    RoleRecord,
     WorkRecord,
     WorkflowDefinitionRecord,
     WorkflowDefinitionVersionRecord,
@@ -106,8 +110,23 @@ def _seed_organization_access(session: Session) -> None:
 
     from ax_workspace.modules.organization_access.domain import SEED_PERSONAS
 
+    direct_grant_capabilities = {
+        "task.accept",
+        "meeting.followup.request",
+        "meeting.followup.assign",
+        "demo.admin",
+    }
+
+    all_capabilities = sorted(
+        {capability for principal in SEED_PERSONAS.values() for capability in principal.capabilities}
+    )
+    for capability in all_capabilities:
+        if session.get(CapabilityRecord, capability) is None:
+            session.add(CapabilityRecord(id=capability, label=capability, version=1))
+
     for principal in SEED_PERSONAS.values():
         member_id = str(principal.id)
+        role_id = f"seed-role:{member_id}"
         if session.get(MemberRecord, member_id) is None:
             session.add(MemberRecord(id=member_id, display_name=principal.display_name, employment_state="active"))
         if session.scalar(select(EmploymentPeriodRecord).where(EmploymentPeriodRecord.member_id == member_id)) is None:
@@ -120,13 +139,45 @@ def _seed_organization_access(session: Session) -> None:
                 )
             )
             if exists is None:
-                session.add(MembershipRecord(member_id=member_id, organization_id=organization_id))
-        for capability in principal.capabilities:
-            exists = session.scalar(
-                select(AccessGrantRecord).where(
-                    AccessGrantRecord.member_id == member_id,
-                    AccessGrantRecord.capability == capability,
+                session.add(
+                    MembershipRecord(
+                        member_id=member_id,
+                        organization_id=organization_id,
+                        is_primary=organization_id == "scax",
+                    )
+                )
+        if session.get(RoleRecord, role_id) is None:
+            session.add(RoleRecord(id=role_id, label=f"{principal.display_name} 기본 역할", version=1))
+        if session.scalar(select(AppointmentRecord).where(AppointmentRecord.member_id == member_id)) is None:
+            session.add(
+                AppointmentRecord(
+                    member_id=member_id,
+                    organization_id="scax",
+                    role_id=role_id,
                 )
             )
-            if exists is None:
-                session.add(AccessGrantRecord(member_id=member_id, capability=capability))
+        for capability in principal.capabilities:
+            role_capability = session.scalar(
+                select(RoleCapabilityRecord).where(
+                    RoleCapabilityRecord.role_id == role_id,
+                    RoleCapabilityRecord.capability_id == capability,
+                )
+            )
+            if role_capability is None:
+                session.add(RoleCapabilityRecord(role_id=role_id, capability_id=capability, mapping_version=1))
+            if capability in direct_grant_capabilities:
+                exists = session.scalar(
+                    select(AccessGrantRecord).where(
+                        AccessGrantRecord.member_id == member_id,
+                        AccessGrantRecord.capability_id == capability,
+                    )
+                )
+                if exists is None:
+                    session.add(
+                        AccessGrantRecord(
+                            member_id=member_id,
+                            capability_id=capability,
+                            scope_organization_id="scax",
+                            granted_by_member_id=member_id,
+                        )
+                    )

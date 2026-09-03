@@ -3,8 +3,17 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Protocol
 
-from ax_workspace.modules.ax_execution.ai import AiGeneration, AiProvider
-from ax_workspace.modules.organization_access.domain import Principal
+from ax_workspace.modules.organization_access.domain import (
+    DAILY_REPORT_EDIT,
+    DAILY_REPORT_GENERATE,
+    DAILY_REPORT_READ,
+    DAILY_REPORT_SUBMIT,
+    Principal,
+)
+
+
+class DailyReportAccessDenied(ValueError):
+    pass
 
 
 class DailyReportRepository(Protocol):
@@ -38,6 +47,7 @@ class DailyReportApplication:
         self._workflow = workflow
 
     def generate_draft(self, principal: Principal, report_date: str) -> dict[str, Any]:
+        self._require(principal, DAILY_REPORT_GENERATE)
         parsed_date = date.fromisoformat(report_date)
         if parsed_date > date.today():
             raise ValueError("report date cannot be in the future")
@@ -74,6 +84,7 @@ class DailyReportApplication:
         include_source_refs: list[dict[str, Any]] | None = None,
         exclude_source_refs: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        self._require(principal, DAILY_REPORT_EDIT)
         draft = self._reports.edit_draft(
             str(principal.id),
             report_id,
@@ -93,6 +104,7 @@ class DailyReportApplication:
         expected_version: int,
         reason: str | None,
     ) -> dict[str, Any]:
+        self._require(principal, DAILY_REPORT_SUBMIT)
         submission = self._reports.submit(
             str(principal.id), report_id, draft_id, expected_version, reason
         )
@@ -107,7 +119,13 @@ class DailyReportApplication:
         }
 
     def history(self, principal: Principal, report_id: str) -> dict[str, Any]:
+        self._require(principal, DAILY_REPORT_READ)
         return self._reports.history(str(principal.id), report_id)
+
+    @staticmethod
+    def _require(principal: Principal, capability: str) -> None:
+        if capability not in principal.capabilities:
+            raise DailyReportAccessDenied(f"{capability} capability is required")
 
     @staticmethod
     def _draft_view(draft: Any) -> dict[str, Any]:

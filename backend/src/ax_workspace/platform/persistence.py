@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, JSON, String, Text, Uuid, UniqueConstraint, create_engine
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, Uuid, UniqueConstraint, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -30,8 +30,10 @@ class EmploymentPeriodRecord(Base):
     __tablename__ = "employment_periods"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False, unique=True)
+    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
     state: Mapped[str] = mapped_column(String(40), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class MembershipRecord(Base):
@@ -41,15 +43,60 @@ class MembershipRecord(Base):
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
     organization_id: Mapped[str] = mapped_column(ForeignKey("organization_units.id"), nullable=False)
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    is_primary: Mapped[bool] = mapped_column(nullable=False, default=False)
+
+
+class CapabilityRecord(Base):
+    __tablename__ = "capabilities"
+
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class RoleRecord(Base):
+    __tablename__ = "roles"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class RoleCapabilityRecord(Base):
+    __tablename__ = "role_capabilities"
+    __table_args__ = (UniqueConstraint("role_id", "capability_id", name="uq_role_capability"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    role_id: Mapped[str] = mapped_column(ForeignKey("roles.id"), nullable=False)
+    capability_id: Mapped[str] = mapped_column(ForeignKey("capabilities.id"), nullable=False)
+    mapping_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class AppointmentRecord(Base):
+    __tablename__ = "appointments"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organization_units.id"), nullable=False)
+    role_id: Mapped[str] = mapped_column(ForeignKey("roles.id"), nullable=False)
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AccessGrantRecord(Base):
     __tablename__ = "access_grants"
-    __table_args__ = (UniqueConstraint("member_id", "capability", name="uq_member_capability"),)
+    __table_args__ = (UniqueConstraint("member_id", "capability_id", name="uq_member_capability"),)
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
-    capability: Mapped[str] = mapped_column(String(120), nullable=False)
+    capability_id: Mapped[str] = mapped_column(ForeignKey("capabilities.id"), nullable=False)
+    scope_organization_id: Mapped[str | None] = mapped_column(ForeignKey("organization_units.id"))
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    granted_by_member_id: Mapped[str | None] = mapped_column(ForeignKey("members.id"))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class WorkflowDefinitionRecord(Base):
@@ -161,6 +208,115 @@ class AuditEventRecord(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ConversationRecord(Base):
+    __tablename__ = "conversations"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    owner_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ConversationTurnRecord(Base):
+    __tablename__ = "conversation_turns"
+    __table_args__ = (
+        Index(
+            "uq_conversation_active_turn",
+            "conversation_id",
+            unique=True,
+            postgresql_where=text("state IN ('pending', 'running')"),
+            sqlite_where=text("state IN ('pending', 'running')"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    execution_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), nullable=False, default=uuid4, unique=True
+    )
+    conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), nullable=False)
+    state: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_run_ref: Mapped[str | None] = mapped_column(String(200))
+    provider_session_ref: Mapped[str | None] = mapped_column(String(200))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    normalized_error: Mapped[str | None] = mapped_column(Text)
+
+
+class ConversationProviderSessionReferenceRecord(Base):
+    __tablename__ = "conversation_provider_session_references"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), nullable=False)
+    provider_session_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ConversationAuditEventRecord(Base):
+    __tablename__ = "conversation_audit_events"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), nullable=False)
+    turn_id: Mapped[UUID | None] = mapped_column(ForeignKey("conversation_turns.id"))
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ConversationMessageRecord(Base):
+    __tablename__ = "conversation_messages"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "sequence", name="uq_conversation_message_sequence"),
+        UniqueConstraint("conversation_id", "idempotency_key", name="uq_conversation_message_idempotency"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), nullable=False)
+    turn_id: Mapped[UUID | None] = mapped_column(ForeignKey("conversation_turns.id"))
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[str] = mapped_column(String(40), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ContextReferenceRecord(Base):
+    __tablename__ = "conversation_context_references"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), nullable=False)
+    turn_id: Mapped[UUID | None] = mapped_column(ForeignKey("conversation_turns.id"))
+    message_id: Mapped[UUID] = mapped_column(ForeignKey("conversation_messages.id"), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    resource_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    included: Mapped[bool] = mapped_column(nullable=False)
+
+
+class ToolInvocationRecord(Base):
+    __tablename__ = "tool_invocations"
+    __table_args__ = (UniqueConstraint("turn_id", "sequence", name="uq_tool_invocation_sequence"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    turn_id: Mapped[UUID] = mapped_column(ForeignKey("conversation_turns.id"), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider_call_id: Mapped[str | None] = mapped_column(String(200))
+    tool_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    input_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(String(40), nullable=False)
+    result_summary: Mapped[str | None] = mapped_column(Text)
+    error_summary: Mapped[str | None] = mapped_column(Text)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    target_resource_id: Mapped[str | None] = mapped_column(String(200))
+    target_resource_version: Mapped[str | None] = mapped_column(String(100))
+    audit_ref: Mapped[str | None] = mapped_column(String(200))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class WorkRecord(Base):
     __tablename__ = "work_records"
 
@@ -181,6 +337,7 @@ class TaskRecord(Base):
     version: Mapped[int] = mapped_column(nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    causation_key: Mapped[str | None] = mapped_column(String(64), unique=True)
 
 
 class TaskActivityRecord(Base):
@@ -205,6 +362,7 @@ class WorkRequestRecord(Base):
     conditions: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    causation_key: Mapped[str | None] = mapped_column(String(64), unique=True)
 
 
 class WorkRequestAuditEventRecord(Base):

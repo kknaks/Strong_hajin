@@ -1,12 +1,26 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { getDeveloperPersonas } from "./api";
+import {
+  createConversation,
+  getActionInbox,
+  getConversation,
+  getConversations,
+  getDeveloperPersonas,
+  getMyWork,
+  sendConversationMessage,
+} from "./api";
 import { ActionInboxPage } from "./ActionInboxPage";
 import { DailyReportPage } from "./DailyReportPage";
 import { MyWorkPage } from "./MyWorkPage";
 import { OrgPage } from "./OrgPage";
 import { TodayPage } from "./TodayPage";
-import type { Persona, ProductSurface } from "./viewModels";
+import {
+  isDirectTask,
+  type Conversation,
+  type ConversationContextReference,
+  type Persona,
+  type ProductSurface,
+} from "./viewModels";
 
 import "./task.css";
 
@@ -23,6 +37,12 @@ export default function App() {
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [surface, setSurface] = useState<ProductSurface>("today");
   const [error, setError] = useState<string | null>(null);
+  const [isAxOpen, setIsAxOpen] = useState(false);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
+  const [message, setMessage] = useState("");
+  const [contextOptions, setContextOptions] = useState<ConversationContextReference[]>([]);
+  const [selectedContextKey, setSelectedContextKey] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -40,6 +60,124 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  const refreshConversations = useCallback(async () => {
+    const items = await getConversations(personaId);
+    setConversations(items);
+    setActiveConversation((current) => {
+      if (!current) return items[0] ?? null;
+      return items.find((item) => item.conversation_id === current.conversation_id) ?? items[0] ?? null;
+    });
+  }, [personaId]);
+
+  const refreshActiveConversation = useCallback(async () => {
+    if (!activeConversation) return;
+    const next = await getConversation(personaId, activeConversation.conversation_id);
+    setActiveConversation(next);
+    setConversations((items) =>
+      items.map((item) => (item.conversation_id === next.conversation_id ? next : item)),
+    );
+  }, [activeConversation, personaId]);
+
+  useEffect(() => {
+    if (!isAxOpen) return;
+    void refreshConversations()
+      .then((items) => {
+        return items;
+      })
+      .catch(() => setError("AX 대화를 불러오지 못했습니다."));
+  }, [isAxOpen, refreshConversations]);
+
+  const isProcessing = useMemo(
+    () =>
+      activeConversation?.turns.some((turn) => turn.state === "pending" || turn.state === "running") ||
+      activeConversation?.messages.some((item) => item.state === "queued"),
+    [activeConversation],
+  );
+
+  useEffect(() => {
+    if (!isAxOpen || !isProcessing) return;
+    const timer = window.setInterval(() => {
+      void refreshActiveConversation().catch(() => setError("AX 상태를 갱신하지 못했습니다."));
+    }, 800);
+    return () => window.clearInterval(timer);
+  }, [isAxOpen, isProcessing, refreshActiveConversation]);
+
+  useEffect(() => {
+    if (!isAxOpen) return;
+    let cancelled = false;
+    const loadContextOptions = async () => {
+      if (surface === "work") {
+        const tasks = (await getMyWork(personaId)).filter(isDirectTask);
+        if (!cancelled) {
+          setContextOptions(
+            tasks.map((task) => ({
+              resource_type: "task",
+              resource_id: task.task_id,
+              resource_version: task.version,
+              included: true,
+            })),
+          );
+        }
+        return;
+      }
+      if (surface === "inbox") {
+        const requests = await getActionInbox(personaId);
+        if (!cancelled) {
+          setContextOptions(
+            requests.map((request) => ({
+              resource_type: "work_request",
+              resource_id: request.request_id,
+              resource_version: request.version,
+              included: true,
+            })),
+          );
+        }
+        return;
+      }
+      if (!cancelled) setContextOptions([]);
+    };
+    void loadContextOptions().catch(() => {
+      if (!cancelled) setError("현재 화면의 AX 참고 자료를 불러오지 못했습니다.");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAxOpen, personaId, surface]);
+
+  useEffect(() => {
+    if (!contextOptions.some((item) => contextKey(item) === selectedContextKey)) {
+      setSelectedContextKey("");
+    }
+  }, [contextOptions, selectedContextKey]);
+
+  async function startConversation() {
+    try {
+      const conversation = await createConversation(personaId);
+      setConversations((items) => [conversation, ...items]);
+      setActiveConversation(conversation);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "새 대화를 만들지 못했습니다.");
+    }
+  }
+
+  async function sendMessage() {
+    if (!message.trim() || !activeConversation) return;
+    try {
+      const selectedContext = contextOptions.find((item) => contextKey(item) === selectedContextKey);
+      await sendConversationMessage(
+        personaId,
+        activeConversation.conversation_id,
+        message,
+        selectedContext ? [selectedContext] : [],
+        createIdempotencyKey(),
+      );
+      setMessage("");
+      await refreshActiveConversation();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "AX 메시지를 접수하지 못했습니다.");
+    }
+  }
 
   const currentPersona = personas.find((persona) => persona.id === personaId);
   const currentPersonaName = currentPersona?.display_name ?? "사용자";
@@ -103,6 +241,111 @@ export default function App() {
         {surface === "report" && <DailyReportPage {...pageProps} />}
         {surface === "org" && <OrgPage {...pageProps} />}
       </section>
+      <button className="ax-launcher" onClick={() => setIsAxOpen(true)} type="button">
+        AX
+      </button>
+      {isAxOpen && (
+        <aside aria-label="AX 대화" className="ax-drawer">
+          <header>
+            <b>AX</b>
+            <button onClick={() => setIsAxOpen(false)} type="button">
+              닫기
+            </button>
+          </header>
+          <button
+            aria-label="새 AX 대화"
+            className="primary"
+            onClick={() => void startConversation()}
+            type="button"
+          >
+            새 대화
+          </button>
+          <div className="ax-conversation-list">
+            {conversations.map((conversation) => (
+              <button
+                aria-pressed={activeConversation?.conversation_id === conversation.conversation_id}
+                key={conversation.conversation_id}
+                onClick={() => setActiveConversation(conversation)}
+                type="button"
+              >
+                {conversation.title}
+              </button>
+            ))}
+          </div>
+          <div className="ax-messages">
+            {activeConversation && <ConversationTimeline conversation={activeConversation} />}
+          </div>
+          {contextOptions.length > 0 && (
+            <label className="ax-context" htmlFor="ax-context">
+              현재 화면 참고 자료
+              <select
+                id="ax-context"
+                onChange={(event) => setSelectedContextKey(event.target.value)}
+                value={selectedContextKey}
+              >
+                <option value="">첨부하지 않음</option>
+                {contextOptions.map((item) => (
+                  <option key={contextKey(item)} value={contextKey(item)}>
+                    {item.resource_type === "task" ? "업무" : "업무 요청"} · {item.resource_id.slice(0, 8)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <label className="sr-only" htmlFor="ax-message">
+            AX 메시지
+          </label>
+          <textarea id="ax-message" onChange={(event) => setMessage(event.target.value)} value={message} />
+          <button className="primary" disabled={!activeConversation || !message.trim()} onClick={() => void sendMessage()} type="button">
+            {isProcessing ? "대기열에 보내기" : "보내기"}
+          </button>
+        </aside>
+      )}
     </main>
   );
+}
+
+function ConversationTimeline({ conversation }: { conversation: Conversation }) {
+  const queuedMessages = conversation.messages.filter((item) => item.state === "queued");
+
+  return (
+    <>
+      {conversation.turns.map((turn) => (
+        <section className="ax-turn" key={turn.turn_id}>
+          {conversation.messages
+            .filter((item) => item.turn_id === turn.turn_id)
+            .map((item) => (
+              <p className={item.role} key={item.message_id}>
+                {item.body}
+              </p>
+            ))}
+          <small className={`ax-turn-state ${turn.state}`}>{turn.state === "failed" ? "실패" : turn.state === "running" ? "실행 중" : turn.state === "pending" ? "대기 중" : "완료"}</small>
+          {turn.error && <p className="ax-turn-error">{turn.error}</p>}
+          {conversation.tool_invocations
+            .filter((tool) => tool.turn_id === turn.turn_id)
+            .map((tool) => (
+              <details key={`${tool.turn_id}-${tool.sequence}`}>
+                <summary>{tool.display_name} · {tool.state}</summary>
+                <p>{tool.input_summary}</p>
+                <p>{tool.result_summary ?? tool.error_summary ?? "실행 중"}</p>
+              </details>
+            ))}
+        </section>
+      ))}
+      {queuedMessages.map((item) => (
+        <p className="user queued" key={item.message_id}>
+          {item.body} <small>대기 중</small>
+        </p>
+      ))}
+    </>
+  );
+}
+
+function contextKey(reference: ConversationContextReference): string {
+  return `${reference.resource_type}:${reference.resource_id}:${reference.resource_version}`;
+}
+
+function createIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `ax-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }

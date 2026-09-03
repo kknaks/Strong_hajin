@@ -7,14 +7,22 @@ HTTP and invokes local operations in-process.
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 from typing import Any
 from uuid import UUID
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 from ax_workspace.bootstrap.application import WorkflowApplication, create_workflow_application
 from ax_workspace.bootstrap.settings import Settings
-from ax_workspace.modules.organization_access.domain import Principal
+from ax_workspace.modules.organization_access.domain import (
+    DAILY_REPORT_EDIT,
+    DAILY_REPORT_GENERATE,
+    DAILY_REPORT_READ,
+    DAILY_REPORT_SUBMIT,
+    Principal,
+)
 from ax_workspace.modules.ax_execution.ai import AiProvider
 
 
@@ -82,7 +90,12 @@ class McpReportsFacade:
         return self._application.get_work_request(self._principal, UUID(request_id))
 
     def create_work_request(self, title: str, assignee_id: str) -> dict[str, Any]:
-        return self._application.create_work_request(self._principal, title, assignee_id)
+        return self._application.create_work_request(
+            self._principal,
+            title,
+            assignee_id,
+            self._mutation_key("work_request.create", {"title": title, "assignee_id": assignee_id}),
+        )
 
     def accept_work_request(self, request_id: str, expected_version: int) -> dict[str, Any]:
         return self._application.accept_work_request(self._principal, UUID(request_id), expected_version)
@@ -101,8 +114,45 @@ class McpReportsFacade:
             self._principal, UUID(request_id), expected_version, reason
         )
 
+    def list_tasks(self) -> list[dict[str, Any]]:
+        return self._application.list_tasks(self._principal)
 
-def create_mcp_server(settings: Settings | None = None) -> FastMCP:
+    def get_task(self, task_id: str) -> dict[str, Any]:
+        return self._application.get_task(self._principal, UUID(task_id))
+
+    def create_self_task(self, title: str) -> dict[str, Any]:
+        return self._application.create_self_task(
+            self._principal,
+            title,
+            self._mutation_key("task.create_self", {"title": title}),
+        )
+
+    def _mutation_key(self, operation: str, payload: dict[str, Any]) -> str | None:
+        causation_id = os.getenv("AX_MCP_CAUSATION_ID")
+        if not causation_id:
+            return None
+        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(f"{causation_id}:{operation}:{canonical}".encode()).hexdigest()
+
+    def transition_task(
+        self,
+        task_id: str,
+        target: str,
+        expected_version: int,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        from ax_workspace.modules.work.application import TaskState
+
+        return self._application.transition_task(
+            UUID(task_id),
+            self._principal,
+            TaskState(target),
+            reason,
+            expected_version,
+        )
+
+
+def create_mcp_server(settings: Settings | None = None) -> MCPServer:
     bound_persona = os.getenv("AX_MCP_PERSONA")
     if not bound_persona:
         raise RuntimeError("AX_MCP_PERSONA must bind this MCP server to an allow-listed demo persona")
@@ -110,59 +160,70 @@ def create_mcp_server(settings: Settings | None = None) -> FastMCP:
     return _create_bound_persona_server(facade)
 
 
-def _create_bound_persona_server(facade: McpReportsFacade) -> FastMCP:
+def _create_bound_persona_server(facade: McpReportsFacade) -> MCPServer:
     principal = facade.principal
-    server = FastMCP(
+    server = MCPServer(
         f"SCAX — {principal.display_name}",
         instructions=(
             "This server is bound to one delegated persona. Daily-report commands are direct "
             "Reports operations and never expose workflow-run controls."
         ),
     )
-    if "work.read" in principal.capabilities:
-        _register_daily_report_tools(server, facade)
-        _register_work_request_tools(server, facade)
+    _register_daily_report_tools(server, facade)
+    if "task.read" in principal.capabilities:
+        _register_task_tools(server, facade)
+    if "work_request.read" in principal.capabilities:
+        _register_work_request_read_tools(server, facade)
+    if "work_request.create" in principal.capabilities:
+        _register_work_request_create_tools(server, facade)
+    if "work_request.decide" in principal.capabilities:
+        _register_work_request_decision_tools(server, facade)
     return server
 
 
-def _register_daily_report_tools(server: FastMCP, facade: McpReportsFacade) -> None:
-    @server.tool(description="Generate a personal daily-report draft from authorized Work activity for one date.")
-    def daily_report_generate_draft(report_date: str) -> dict[str, Any]:
-        return facade.generate_daily_report_draft(report_date)
+def _register_daily_report_tools(server: MCPServer, facade: McpReportsFacade) -> None:
+    capabilities = facade.principal.capabilities
+    if DAILY_REPORT_GENERATE in capabilities:
+        @server.tool(description="Generate a personal daily-report draft from authorized Work activity for one date.")
+        def daily_report_generate_draft(report_date: str) -> dict[str, Any]:
+            return facade.generate_daily_report_draft(report_date)
 
-    @server.tool(description="Edit the current daily-report draft without rerunning generation.")
-    def daily_report_edit(
-        report_id: str,
-        draft_id: str,
-        expected_version: int,
-        body: str,
-        include_source_refs: list[dict[str, Any]] | None = None,
-        exclude_source_refs: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
-        return facade.edit_daily_report(
-            report_id,
-            draft_id,
-            expected_version,
-            body,
-            include_source_refs,
-            exclude_source_refs,
-        )
+    if DAILY_REPORT_EDIT in capabilities:
+        @server.tool(description="Edit the current daily-report draft without rerunning generation.")
+        def daily_report_edit(
+            report_id: str,
+            draft_id: str,
+            expected_version: int,
+            body: str,
+            include_source_refs: list[dict[str, Any]] | None = None,
+            exclude_source_refs: list[dict[str, Any]] | None = None,
+        ) -> dict[str, Any]:
+            return facade.edit_daily_report(
+                report_id,
+                draft_id,
+                expected_version,
+                body,
+                include_source_refs,
+                exclude_source_refs,
+            )
 
-    @server.tool(description="Submit an immutable version of a daily report draft.")
-    def daily_report_submit(
-        report_id: str,
-        draft_id: str,
-        expected_version: int,
-        reason: str | None = None,
-    ) -> dict[str, Any]:
-        return facade.submit_daily_report(report_id, draft_id, expected_version, reason)
+    if DAILY_REPORT_SUBMIT in capabilities:
+        @server.tool(description="Submit an immutable version of a daily report draft.")
+        def daily_report_submit(
+            report_id: str,
+            draft_id: str,
+            expected_version: int,
+            reason: str | None = None,
+        ) -> dict[str, Any]:
+            return facade.submit_daily_report(report_id, draft_id, expected_version, reason)
 
-    @server.tool(description="Read the draft and immutable submission history of a daily report.")
-    def daily_report_history(report_id: str) -> dict[str, Any]:
-        return facade.daily_report_history(report_id)
+    if DAILY_REPORT_READ in capabilities:
+        @server.tool(description="Read the draft and immutable submission history of a daily report.")
+        def daily_report_history(report_id: str) -> dict[str, Any]:
+            return facade.daily_report_history(report_id)
 
 
-def _register_work_request_tools(server: FastMCP, facade: McpReportsFacade) -> None:
+def _register_work_request_read_tools(server: MCPServer, facade: McpReportsFacade) -> None:
     @server.tool(description="List WorkRequests that the delegated persona requested or must decide.")
     def work_request_list() -> list[dict[str, Any]]:
         return facade.list_work_requests()
@@ -171,6 +232,7 @@ def _register_work_request_tools(server: FastMCP, facade: McpReportsFacade) -> N
     def work_request_get(request_id: str) -> dict[str, Any]:
         return facade.get_work_request(request_id)
 
+def _register_work_request_create_tools(server: MCPServer, facade: McpReportsFacade) -> None:
     @server.tool(description="List authorized organization-ledger assignee candidates for a new WorkRequest.")
     def work_request_assignee_candidates() -> list[dict[str, str]]:
         return facade.work_request_assignee_candidates()
@@ -179,6 +241,8 @@ def _register_work_request_tools(server: FastMCP, facade: McpReportsFacade) -> N
     def work_request_create(title: str, assignee_id: str) -> dict[str, Any]:
         return facade.create_work_request(title, assignee_id)
 
+
+def _register_work_request_decision_tools(server: MCPServer, facade: McpReportsFacade) -> None:
     @server.tool(description="Accept a visible WorkRequest using its required expected version.")
     def work_request_accept(request_id: str, expected_version: int) -> dict[str, Any]:
         return facade.accept_work_request(request_id, expected_version)
@@ -192,6 +256,42 @@ def _register_work_request_tools(server: FastMCP, facade: McpReportsFacade) -> N
     @server.tool(description="Reject a WorkRequest using its required expected version and reason.")
     def work_request_reject(request_id: str, expected_version: int, reason: str) -> dict[str, Any]:
         return facade.reject_work_request(request_id, expected_version, reason)
+
+
+def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
+    @server.tool(description="List the delegated principal's active Tasks.")
+    def task_list() -> list[dict[str, Any]]:
+        return facade.list_tasks()
+
+    @server.tool(description="Read one delegated principal Task.")
+    def task_get(task_id: str) -> dict[str, Any]:
+        return facade.get_task(task_id)
+
+    @server.tool(description="Create a self-owned Task.")
+    def task_create_self(title: str) -> dict[str, Any]:
+        return facade.create_self_task(title)
+
+    def transition(
+        name: str,
+        target: str,
+        description: str,
+        requires_reason: bool = False,
+    ) -> None:
+        @server.tool(description=description, name=name)
+        def task_transition(
+            task_id: str,
+            expected_version: int,
+            reason: str | None = None,
+        ) -> dict[str, Any]:
+            if requires_reason and not reason:
+                raise ValueError("reason is required")
+            return facade.transition_task(task_id, target, expected_version, reason)
+
+    transition("task_start", "in_progress", "Start an open Task.")
+    transition("task_block", "blocked", "Block a Task with a reason.", True)
+    transition("task_resume", "in_progress", "Resume a blocked Task.")
+    transition("task_complete", "done", "Complete an in-progress Task.")
+    transition("task_cancel", "cancelled", "Cancel an active Task.")
 
 
 def main() -> None:

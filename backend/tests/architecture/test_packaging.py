@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _run(*command: str, cwd: Path) -> subprocess.CompletedProcess[str]:

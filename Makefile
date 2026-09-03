@@ -3,7 +3,7 @@ POSTGRES_TEST_URL ?= postgresql+psycopg://ax:ax@localhost:54329/ax_test
 E2E_API_PORT ?= 8001
 E2E_FRONTEND_PORT ?= 5176
 
-.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo api mcp frontend-install frontend api-e2e frontend-e2e e2e-work-request
+.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo api conversation-worker mcp frontend-install frontend api-e2e frontend-e2e e2e-work-request e2e-conversation live-report-smoke
 
 install:
 	cd backend && uv sync --all-groups
@@ -37,6 +37,9 @@ reset-demo:
 api:
 	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run uvicorn ax_workspace.entrypoints.http:app --reload
 
+conversation-worker:
+	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.conversation_worker
+
 mcp:
 	@test -n "$$AX_MCP_PERSONA" || (echo "Set AX_MCP_PERSONA to a seeded demo persona"; exit 2)
 	cd backend && DATABASE_URL="$(DATABASE_URL)" AX_MCP_PERSONA="$$AX_MCP_PERSONA" uv run python -m ax_workspace.entrypoints.mcp
@@ -55,3 +58,9 @@ frontend-e2e:
 
 e2e-work-request:
 	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:work-request
+
+e2e-conversation:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:conversation
+
+live-report-smoke:
+	cd backend && DATABASE_URL="$(DATABASE_URL)" SCAX_API_URL="http://127.0.0.1:$(E2E_API_PORT)" uv run python scripts/live_report_smoke.py

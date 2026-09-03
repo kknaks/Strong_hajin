@@ -5,7 +5,7 @@ description = "SCAX workflow catalog demo backend"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115,<1",
-  "mcp[cli]>=1.26,<2",
+  "mcp[cli]>=2,<3",
   "pydantic>=2.9,<3",
   "sqlalchemy>=2.0,<3",
   "psycopg[binary]>=3.2,<4",
@@ -27,4 +27,10 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["integration: requires an explicit disposable PostgreSQL URL"]
+markers = [
+  "unit: deterministic domain/application tests without transport or SQL semantics",
+  "contract: public application, HTTP, MCP, or adapter contract tests",
+  "integration: requires an explicit disposable PostgreSQL URL",
+  "architecture: package and dependency-boundary assertions",
+  "e2e: golden user journeys",
+]
