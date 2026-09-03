@@ -317,6 +317,42 @@ class ToolInvocationRecord(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class ActionItemRecord(Base):
+    """A human confirmation owned by AX, not by the Workflow runtime."""
+
+    __tablename__ = "action_items"
+    __table_args__ = (
+        UniqueConstraint("execution_id", "action_type", "payload_hash", name="uq_action_execution_payload"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    owner_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    conversation_id: Mapped[UUID | None] = mapped_column(ForeignKey("conversations.id"))
+    turn_id: Mapped[UUID | None] = mapped_column(ForeignKey("conversation_turns.id"))
+    execution_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    action_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(40), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    result: Mapped[dict | None] = mapped_column(JSON)
+    audit_ref: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ActionItemAuditEventRecord(Base):
+    __tablename__ = "action_item_audit_events"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    action_id: Mapped[UUID] = mapped_column(ForeignKey("action_items.id"), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class WorkRecord(Base):
     __tablename__ = "work_records"
 

@@ -39,6 +39,12 @@ try {
   });
   await conversations.nth(0).click();
   await page.getByText("task list · completed").waitFor({ timeout: 90_000 });
+  await conversations.nth(1).click();
+  await page.waitForFunction(
+    () => [...document.querySelectorAll("details summary")].filter((item) => item.textContent === "task list · completed").length >= 2,
+    undefined,
+    { timeout: 90_000 },
+  );
   await page.screenshot({ path: "test-results/conversation-e2e.png", fullPage: true });
   console.log(
     JSON.stringify({

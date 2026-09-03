@@ -186,3 +186,26 @@ export async function sendConversationMessage(
     method: "POST",
   });
 }
+
+export async function decideAction(
+  personaId: string,
+  actionId: string,
+  expectedVersion: number,
+  decision: "approve" | "reject",
+): Promise<void> {
+  await request(`/api/actions/${actionId}/decide`, personaId, {
+    body: JSON.stringify({ expected_version: expectedVersion, decision }),
+    method: "POST",
+  });
+}
+
+export async function cancelConversation(
+  personaId: string,
+  conversationId: string,
+  expectedVersion: number,
+): Promise<void> {
+  await request(`/api/conversations/${conversationId}/cancel`, personaId, {
+    body: JSON.stringify({ expected_version: expectedVersion }),
+    method: "POST",
+  });
+}

@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ax_workspace.modules.ax_execution.ai import AiConversationRequest, AiConversationResult, ProviderFailure
+from ax_workspace.modules.ax_execution.ai import AiConversationRequest, AiConversationResult, ProviderFailure, ProviderRequestFailed
 from ax_workspace.modules.ax_execution.conversations import (
     ConversationContextReferenceInput,
     ConversationError,
@@ -19,6 +19,7 @@ from ax_workspace.modules.ax_execution.conversations import (
 from ax_workspace.modules.ax_execution.ai import AiDelegatedToolContext
 from ax_workspace.modules.organization_access.domain import Principal
 from ax_workspace.platform.persistence import (
+    ActionItemRecord,
     ContextReferenceRecord,
     ConversationMessageRecord,
     ConversationProviderSessionReferenceRecord,
@@ -140,6 +141,26 @@ class SqlAlchemyConversationRepository:
         turn.state = "cancelled"
         turn.completed_at = datetime.now(UTC)
 
+    def cancel_active(self, conversation: ConversationRecord, expected_version: int) -> ConversationRecord:
+        if conversation.version != expected_version:
+            raise ConversationError("conversation version is stale")
+        active = self._active_turn(conversation.id)
+        if active is None:
+            raise ConversationError("conversation has no active turn")
+        self.cancel(active)
+        conversation.version += 1
+        conversation.updated_at = datetime.now(UTC)
+        self._session.add(
+            ConversationAuditEventRecord(
+                conversation_id=conversation.id,
+                turn_id=active.id,
+                event_type="conversation.turn.cancelled",
+                payload={},
+                occurred_at=conversation.updated_at,
+            )
+        )
+        return conversation
+
     def drain(self, conversation: ConversationRecord) -> ConversationTurnRecord | None:
         if self._active_turn(conversation.id) is not None:
             return None
@@ -214,6 +235,56 @@ class SqlAlchemyConversationRepository:
             ),
         )
 
+    def owner_for_execution(self, execution: ConversationExecution) -> str | None:
+        turn = self._session.scalar(
+            select(ConversationTurnRecord).where(
+                ConversationTurnRecord.id == execution.turn_id,
+                ConversationTurnRecord.conversation_id == execution.conversation_id,
+                ConversationTurnRecord.execution_id == execution.execution_id,
+            )
+        )
+        if turn is None:
+            return None
+        conversation = self._session.get(ConversationRecord, turn.conversation_id)
+        return conversation.owner_id if conversation else None
+
+    def claim_execution(
+        self, execution: ConversationExecution, principal: Principal
+    ) -> tuple[ConversationTurnRecord, AiConversationRequest] | None:
+        turn = self._session.scalar(
+            select(ConversationTurnRecord)
+            .where(
+                ConversationTurnRecord.id == execution.turn_id,
+                ConversationTurnRecord.conversation_id == execution.conversation_id,
+                ConversationTurnRecord.execution_id == execution.execution_id,
+            )
+            .with_for_update()
+        )
+        if turn is None or turn.state in {"completed", "failed", "cancelled"}:
+            return None
+        if turn.state == "pending":
+            turn.state = "running"
+        try:
+            return turn, self.request_for(turn, principal)
+        except ConversationError:
+            self.fail(turn, ProviderRequestFailed("Conversation context is no longer authorized"))
+            return None
+
+    def fail_execution(self, execution: ConversationExecution, message: str) -> bool:
+        turn = self._session.scalar(
+            select(ConversationTurnRecord)
+            .where(
+                ConversationTurnRecord.id == execution.turn_id,
+                ConversationTurnRecord.conversation_id == execution.conversation_id,
+                ConversationTurnRecord.execution_id == execution.execution_id,
+            )
+            .with_for_update()
+        )
+        if turn is None or turn.state in {"completed", "failed", "cancelled"}:
+            return False
+        self.fail(turn, ProviderRequestFailed(message))
+        return True
+
     def latest_session(self, conversation: ConversationRecord) -> str | None:
         return self._session.scalar(select(ConversationProviderSessionReferenceRecord.provider_session_ref).where(ConversationProviderSessionReferenceRecord.conversation_id == conversation.id).order_by(ConversationProviderSessionReferenceRecord.recorded_at.desc(), ConversationProviderSessionReferenceRecord.id.desc()))
 
@@ -222,6 +293,11 @@ class SqlAlchemyConversationRepository:
         turns = self._session.scalars(select(ConversationTurnRecord).where(ConversationTurnRecord.conversation_id == conversation.id).order_by(ConversationTurnRecord.started_at, ConversationTurnRecord.id)).all()
         refs = self._session.scalars(select(ContextReferenceRecord).where(ContextReferenceRecord.conversation_id == conversation.id).order_by(ContextReferenceRecord.message_id, ContextReferenceRecord.id)).all()
         tools = self._session.scalars(select(ToolInvocationRecord).join(ConversationTurnRecord).where(ConversationTurnRecord.conversation_id == conversation.id).order_by(ConversationTurnRecord.started_at, ToolInvocationRecord.sequence)).all()
+        actions = self._session.scalars(
+            select(ActionItemRecord)
+            .where(ActionItemRecord.conversation_id == conversation.id)
+            .order_by(ActionItemRecord.created_at, ActionItemRecord.id)
+        ).all()
         return {
             "conversation_id": str(conversation.id),
             "title": conversation.title,
@@ -278,6 +354,20 @@ class SqlAlchemyConversationRepository:
                     "audit_ref": tool.audit_ref,
                 }
                 for tool in tools
+            ],
+            "actions": [
+                {
+                    "action_id": str(action.id),
+                    "turn_id": str(action.turn_id) if action.turn_id else None,
+                    "action_type": action.action_type,
+                    "title": action.title,
+                    "state": action.state,
+                    "version": action.version,
+                    "payload_summary": action.title,
+                    "result": action.result,
+                    "audit_ref": action.audit_ref,
+                }
+                for action in actions
             ],
         }
 

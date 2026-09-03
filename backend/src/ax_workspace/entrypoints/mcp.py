@@ -22,6 +22,8 @@ from ax_workspace.modules.organization_access.domain import (
     DAILY_REPORT_READ,
     DAILY_REPORT_SUBMIT,
     Principal,
+    TASK_READ,
+    TASK_SELF_MANAGE,
 )
 from ax_workspace.modules.ax_execution.ai import AiProvider
 
@@ -56,6 +58,17 @@ class McpReportsFacade:
         include_source_refs: list[dict[str, Any]] | None = None,
         exclude_source_refs: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        payload = {
+            "report_id": report_id,
+            "draft_id": draft_id,
+            "expected_version": expected_version,
+            "body": body,
+            "include_source_refs": include_source_refs or [],
+            "exclude_source_refs": exclude_source_refs or [],
+        }
+        action = self._propose_chat_action("daily_report.edit", "일일보고 초안 수정 확인", payload)
+        if action is not None:
+            return action
         return self._application.edit_daily_report(
             self._principal,
             report_id,
@@ -73,6 +86,12 @@ class McpReportsFacade:
         expected_version: int,
         reason: str | None = None,
     ) -> dict[str, Any]:
+        action = self._propose_chat_action(
+            "daily_report.submit", "일일보고 제출 확인",
+            {"report_id": report_id, "draft_id": draft_id, "expected_version": expected_version, "reason": reason},
+        )
+        if action is not None:
+            return action
         return self._application.submit_daily_report(
             self._principal, report_id, draft_id, expected_version, reason
         )
@@ -90,6 +109,13 @@ class McpReportsFacade:
         return self._application.get_work_request(self._principal, UUID(request_id))
 
     def create_work_request(self, title: str, assignee_id: str) -> dict[str, Any]:
+        action = self._propose_chat_action(
+            "work_request.create",
+            "업무 요청 생성 확인",
+            {"title": title, "assignee_id": assignee_id},
+        )
+        if action is not None:
+            return action
         return self._application.create_work_request(
             self._principal,
             title,
@@ -98,11 +124,17 @@ class McpReportsFacade:
         )
 
     def accept_work_request(self, request_id: str, expected_version: int) -> dict[str, Any]:
+        action = self._propose_chat_action("work_request.accept", "업무 요청 수락 확인", {"request_id": request_id, "expected_version": expected_version})
+        if action is not None:
+            return action
         return self._application.accept_work_request(self._principal, UUID(request_id), expected_version)
 
     def negotiate_work_request(
         self, request_id: str, expected_version: int, conditions: dict[str, Any]
     ) -> dict[str, Any]:
+        action = self._propose_chat_action("work_request.negotiate", "업무 요청 협의 확인", {"request_id": request_id, "expected_version": expected_version, "conditions": conditions})
+        if action is not None:
+            return action
         return self._application.negotiate_work_request(
             self._principal, UUID(request_id), expected_version, conditions
         )
@@ -110,6 +142,9 @@ class McpReportsFacade:
     def reject_work_request(
         self, request_id: str, expected_version: int, reason: str
     ) -> dict[str, Any]:
+        action = self._propose_chat_action("work_request.reject", "업무 요청 거절 확인", {"request_id": request_id, "expected_version": expected_version, "reason": reason})
+        if action is not None:
+            return action
         return self._application.reject_work_request(
             self._principal, UUID(request_id), expected_version, reason
         )
@@ -121,6 +156,9 @@ class McpReportsFacade:
         return self._application.get_task(self._principal, UUID(task_id))
 
     def create_self_task(self, title: str) -> dict[str, Any]:
+        action = self._propose_chat_action("task.create_self", "업무 생성 확인", {"title": title})
+        if action is not None:
+            return action
         return self._application.create_self_task(
             self._principal,
             title,
@@ -134,6 +172,23 @@ class McpReportsFacade:
         canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(f"{causation_id}:{operation}:{canonical}".encode()).hexdigest()
 
+    def _propose_chat_action(
+        self,
+        action_type: str,
+        title: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        causation_id = os.getenv("AX_MCP_CAUSATION_ID")
+        if not causation_id:
+            return None
+        return self._application.propose_action(
+            self._principal,
+            UUID(causation_id),
+            action_type,
+            title,
+            payload,
+        )
+
     def transition_task(
         self,
         task_id: str,
@@ -141,6 +196,12 @@ class McpReportsFacade:
         expected_version: int,
         reason: str | None = None,
     ) -> dict[str, Any]:
+        action = self._propose_chat_action(
+            "task.transition", "업무 상태 변경 확인",
+            {"task_id": task_id, "target": target, "expected_version": expected_version, "reason": reason},
+        )
+        if action is not None:
+            return action
         from ax_workspace.modules.work.application import TaskState
 
         return self._application.transition_task(
@@ -170,8 +231,7 @@ def _create_bound_persona_server(facade: McpReportsFacade) -> MCPServer:
         ),
     )
     _register_daily_report_tools(server, facade)
-    if "task.read" in principal.capabilities:
-        _register_task_tools(server, facade)
+    _register_task_tools(server, facade)
     if "work_request.read" in principal.capabilities:
         _register_work_request_read_tools(server, facade)
     if "work_request.create" in principal.capabilities:
@@ -259,13 +319,17 @@ def _register_work_request_decision_tools(server: MCPServer, facade: McpReportsF
 
 
 def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
-    @server.tool(description="List the delegated principal's active Tasks.")
-    def task_list() -> list[dict[str, Any]]:
-        return facade.list_tasks()
+    if TASK_READ in facade.principal.capabilities:
+        @server.tool(description="List the delegated principal's active Tasks.")
+        def task_list() -> list[dict[str, Any]]:
+            return facade.list_tasks()
 
-    @server.tool(description="Read one delegated principal Task.")
-    def task_get(task_id: str) -> dict[str, Any]:
-        return facade.get_task(task_id)
+        @server.tool(description="Read one delegated principal Task.")
+        def task_get(task_id: str) -> dict[str, Any]:
+            return facade.get_task(task_id)
+
+    if TASK_SELF_MANAGE not in facade.principal.capabilities:
+        return
 
     @server.tool(description="Create a self-owned Task.")
     def task_create_self(title: str) -> dict[str, Any]:

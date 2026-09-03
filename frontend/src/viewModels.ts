@@ -104,6 +104,17 @@ export type Conversation = {
     target_resource_version: string | null;
     audit_ref: string | null;
   }>;
+  actions?: Array<{
+    action_id: string;
+    turn_id: string | null;
+    action_type: string;
+    title: string;
+    state: "pending" | "approved" | "rejected";
+    version: number;
+    payload_summary: string;
+    result: Record<string, unknown> | null;
+    audit_ref: string | null;
+  }>;
 };
 
 export type ConversationContextReference = {

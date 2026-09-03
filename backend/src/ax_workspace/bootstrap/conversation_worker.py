@@ -6,15 +6,11 @@ from dataclasses import dataclass
 from typing import Any, Callable
 from uuid import UUID
 
+from ax_workspace.bootstrap.settings import Settings
 from sqlalchemy import select
 
-from ax_workspace.bootstrap.settings import Settings
-from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure, ProviderRequestFailed
-from ax_workspace.modules.ax_execution.conversations import (
-    ConversationError,
-    ConversationExecutionQueue,
-    ConversationQueueMessage,
-)
+from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
+from ax_workspace.modules.ax_execution.conversations import ConversationExecutionQueue, ConversationQueueMessage
 from ax_workspace.modules.organization_access.application import OrganizationApplication
 from ax_workspace.bootstrap.application import create_codex_cli_provider
 from ax_workspace.platform.conversation_queue import (
@@ -23,7 +19,7 @@ from ax_workspace.platform.conversation_queue import (
 )
 from ax_workspace.platform.conversations import SqlAlchemyConversationRepository
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
-from ax_workspace.platform.persistence import ConversationRecord, ConversationTurnRecord, make_session_factory
+from ax_workspace.platform.persistence import ConversationTurnRecord, make_session_factory
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,37 +93,26 @@ class ConversationWorker:
         queue: ConversationExecutionQueue,
         message: ConversationQueueMessage,
     ) -> ClaimedTurn | None:
-        turn = session.scalar(
-            select(ConversationTurnRecord)
-            .where(ConversationTurnRecord.id == message.execution.turn_id)
-            .with_for_update()
-        )
-        if turn is None or (
-            turn.id != message.execution.turn_id
-            or turn.conversation_id != message.execution.conversation_id
-            or turn.execution_id != message.execution.execution_id
-        ):
+        repository = SqlAlchemyConversationRepository(session, queue)
+        owner_id = repository.owner_for_execution(message.execution)
+        if owner_id is None:
             queue.archive(message.message_id)
             return None
-        if turn.state in {"completed", "failed", "cancelled"}:
-            queue.archive(message.message_id)
-            return None
-        if turn.state == "pending":
-            turn.state = "running"
         try:
-            conversation = session.get(ConversationRecord, turn.conversation_id)
-            assert conversation is not None
             principal = OrganizationApplication(
                 SqlAlchemyOrganizationRepository(session)
-            ).authenticated_principal(conversation.owner_id)
-            request = SqlAlchemyConversationRepository(session, queue).request_for(turn, principal)
-        except (ConversationError, LookupError):
-            SqlAlchemyConversationRepository(session, queue).fail(
-                turn,
-                ProviderRequestFailed("Conversation context is no longer authorized"),
+            ).authenticated_principal(owner_id)
+            claimed = repository.claim_execution(message.execution, principal)
+        except LookupError:
+            repository.fail_execution(
+                message.execution,
+                "Conversation owner is no longer authorized",
             )
+            claimed = None
+        if claimed is None:
             queue.archive(message.message_id)
             return None
+        turn, request = claimed
         return ClaimedTurn(message.message_id, message.read_count, turn.id, request)
 
     async def _execute(self, claim: ClaimedTurn) -> None:

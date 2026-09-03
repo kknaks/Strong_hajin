@@ -19,6 +19,7 @@ from ax_workspace.modules.work.application import InvalidTaskTransition, TaskAcc
 from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequestError
 from ax_workspace.modules.reports.application import DailyReportAccessDenied
 from ax_workspace.modules.ax_execution.conversations import ConversationError, ConversationQueueOverflow
+from ax_workspace.modules.ax_execution.actions import ActionAccessDenied, ActionError
 from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.ax_execution.domain import catalog_definitions
 from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
@@ -110,6 +111,15 @@ class TaskTransitionRequest(BaseModel):
     expected_version: int
 
 
+class ActionDecisionRequest(BaseModel):
+    expected_version: int
+    decision: Literal["approve", "reject"]
+
+
+class ConversationCancelRequest(BaseModel):
+    expected_version: int
+
+
 def _runtime_error(error: Exception) -> HTTPException:
     if isinstance(error, ConversationQueueOverflow):
         return HTTPException(
@@ -131,6 +141,10 @@ def _runtime_error(error: Exception) -> HTTPException:
     if isinstance(error, WorkRequestError):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     if isinstance(error, ConversationError):
+        return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
+    if isinstance(error, ActionAccessDenied):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
+    if isinstance(error, ActionError):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     raise error
 
@@ -247,6 +261,39 @@ def create_app(
         def send_conversation_message(conversation_id: UUID, request: SendConversationMessageRequest, principal: Principal = Depends(developer_principal), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, object]:
             try:
                 return app.state.workflow_application.accept_conversation_message(principal, request.body, conversation_id, request.context, idempotency_key)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/conversations/{conversation_id}/cancel")
+        def cancel_conversation(
+            conversation_id: UUID,
+            request: ConversationCancelRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.cancel_conversation_turn(
+                    principal, conversation_id, request.expected_version
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/actions")
+        def actions(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+            return app.state.workflow_application.actions(principal)
+
+        @app.post("/api/actions/{action_id}/decide")
+        def decide_action(
+            action_id: UUID,
+            request: ActionDecisionRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.decide_action(
+                    principal,
+                    action_id,
+                    request.expected_version,
+                    request.decision,
+                )
             except Exception as error:
                 raise _runtime_error(error) from error
 

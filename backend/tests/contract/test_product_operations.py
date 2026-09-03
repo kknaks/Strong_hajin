@@ -80,6 +80,40 @@ def _client_with_seeded_database(
     )
 
 
+def test_cancelled_conversation_holds_queued_fragments_until_a_later_send(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path, report_provider=ContractTestAiProvider())
+    headers = {"X-Demo-Persona": "mina"}
+    conversation = client.post("/api/conversations", headers=headers, json={"title": "취소"}).json()
+    first = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={**headers, "Idempotency-Key": "first"},
+        json={"body": "첫 발화", "context": []},
+    )
+    assert first.status_code == 202
+    queued = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={**headers, "Idempotency-Key": "queued"},
+        json={"body": "대기 발화", "context": []},
+    )
+    assert queued.json()["queued"] is True
+    current = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=headers).json()
+    cancelled = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/cancel",
+        headers=headers,
+        json={"expected_version": current["version"]},
+    )
+    assert cancelled.status_code == 200
+    held = cancelled.json()
+    assert [turn["state"] for turn in held["turns"]] == ["cancelled"]
+    resumed = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={**headers, "Idempotency-Key": "resume"},
+        json={"body": "다시 시작", "context": []},
+    )
+    assert resumed.status_code == 202
+    assert resumed.json()["queued"] is False
+
+
 def test_generate_draft_creates_a_report_owned_draft_from_authorized_task_events(tmp_path) -> None:
     client = _client_with_seeded_database(tmp_path, report_provider=ContractTestAiProvider())
     task = client.post("/api/tasks", headers={"X-Demo-Persona": "mina"}, json={"title": "보고 근거 업무"}).json()

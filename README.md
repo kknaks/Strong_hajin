@@ -42,6 +42,8 @@ make live-report-smoke
 
 Run `DATABASE_URL=postgresql+psycopg://ax:ax@localhost:54329/ax_demo make conversation-worker` alongside the two E2E servers before `make e2e-conversation`. It proves the production worker's Codex CLI path calls the persona-bound `task_list` MCP tool, keeps the composer usable while a follow-up is visibly queued in the same conversation, and switches between two independently executing conversations without leaking timeline state; the screenshot is written to `frontend/test-results/conversation-e2e.png`. `make live-report-smoke` is an opt-in real-Codex report proof: it creates a seeded Task activity, calls `daily_report.generate_draft`, and asserts the persisted WorkflowRun, four NodeRuns, and completed ProviderCall provenance without printing the generated body or prompt.
 
+The local stdio MCP server is a development-only delegated binding. It resolves the active Organization & Access principal for every canonical operation, but a long-lived external MCP process must reconnect after its developer persona's employment or grants change; the conversation worker also revalidates that owner and typed context immediately before execution.
+
 `make verify` deliberately excludes PostgreSQL integration tests; its success is not PostgreSQL coverage. For an explicit, reproducible disposable-PostgreSQL proof, start the documented container and run:
 
 ```sh

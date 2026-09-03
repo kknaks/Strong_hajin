@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   createConversation,
+  cancelConversation,
+  decideAction,
   getActionInbox,
   getConversation,
   getConversations,
@@ -179,6 +181,29 @@ export default function App() {
     }
   }
 
+  async function decideConversationAction(
+    actionId: string,
+    expectedVersion: number,
+    decision: "approve" | "reject",
+  ) {
+    try {
+      await decideAction(personaId, actionId, expectedVersion, decision);
+      await refreshActiveConversation();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "AX 확인 항목을 처리하지 못했습니다.");
+    }
+  }
+
+  async function cancelActiveConversation() {
+    if (!activeConversation) return;
+    try {
+      await cancelConversation(personaId, activeConversation.conversation_id, activeConversation.version);
+      await refreshActiveConversation();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "AX 실행을 취소하지 못했습니다.");
+    }
+  }
+
   const currentPersona = personas.find((persona) => persona.id === personaId);
   const currentPersonaName = currentPersona?.display_name ?? "사용자";
   const pageProps = { personaId, onError: setError };
@@ -273,8 +298,18 @@ export default function App() {
             ))}
           </div>
           <div className="ax-messages">
-            {activeConversation && <ConversationTimeline conversation={activeConversation} />}
+            {activeConversation && (
+              <ConversationTimeline
+                conversation={activeConversation}
+                onDecide={decideConversationAction}
+              />
+            )}
           </div>
+          {isProcessing && activeConversation && (
+            <button onClick={() => void cancelActiveConversation()} type="button">
+              실행 취소
+            </button>
+          )}
           {contextOptions.length > 0 && (
             <label className="ax-context" htmlFor="ax-context">
               현재 화면 참고 자료
@@ -305,7 +340,13 @@ export default function App() {
   );
 }
 
-function ConversationTimeline({ conversation }: { conversation: Conversation }) {
+function ConversationTimeline({
+  conversation,
+  onDecide,
+}: {
+  conversation: Conversation;
+  onDecide: (actionId: string, expectedVersion: number, decision: "approve" | "reject") => Promise<void>;
+}) {
   const queuedMessages = conversation.messages.filter((item) => item.state === "queued");
 
   return (
@@ -329,6 +370,25 @@ function ConversationTimeline({ conversation }: { conversation: Conversation }) 
                 <p>{tool.input_summary}</p>
                 <p>{tool.result_summary ?? tool.error_summary ?? "실행 중"}</p>
               </details>
+            ))}
+          {(conversation.actions ?? [])
+            .filter((action) => action.turn_id === turn.turn_id)
+            .map((action) => (
+              <section className="ax-action-card" key={action.action_id}>
+                <b>{action.title}</b>
+                <p>{action.payload_summary}</p>
+                <small>{action.state === "pending" ? "확인 필요" : action.state === "approved" ? "승인됨" : "거절됨"}</small>
+                {action.state === "pending" && (
+                  <div>
+                    <button onClick={() => void onDecide(action.action_id, action.version, "approve")} type="button">
+                      승인
+                    </button>
+                    <button onClick={() => void onDecide(action.action_id, action.version, "reject")} type="button">
+                      거절
+                    </button>
+                  </div>
+                )}
+              </section>
             ))}
         </section>
       ))}

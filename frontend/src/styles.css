@@ -84,6 +84,9 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 .ax-messages { overflow: auto; }
 .ax-messages p { padding: 9px; border-radius: 8px; font-size: 12px; white-space: pre-wrap; }
 .ax-messages .user { background: var(--accent-tint); }
+.ax-action-card { margin: 8px 0; padding: 9px; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff8e8; }
+.ax-action-card p { margin: 4px 0; padding: 0; background: transparent; }
+.ax-action-card button { margin: 7px 6px 0 0; }
 .ax-messages .assistant { background: #f6f7fa; }
 .ax-messages .queued { border: 1px dashed #b6c0ff; color: var(--text-secondary); }
 .ax-messages details { margin: 6px 0; padding: 7px; border: 1px solid var(--line); border-radius: 7px; font-size: 11px; }

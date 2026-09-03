@@ -1,20 +1,24 @@
 import asyncio
 import os
 import sys
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 import pytest
+from sqlalchemy import select
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
-from ax_workspace.entrypoints.mcp import McpReportsFacade, create_mcp_server
+from ax_workspace.entrypoints.mcp import McpReportsFacade, _create_bound_persona_server, create_mcp_server
+from ax_workspace.modules.organization_access.domain import PersonaId, Principal, TASK_READ, TASK_SELF_MANAGE
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.modules.ax_execution.ai import AiGeneration
 from ax_workspace.modules.work.application import TaskAccessDenied
 from ax_workspace.modules.work.requests import WorkRequestAccessDenied
 from ax_workspace.modules.reports.application import DailyReportAccessDenied
-from ax_workspace.platform.persistence import TaskActivityRecord, WorkRequestAuditEventRecord, make_session_factory
+from ax_workspace.platform.persistence import TaskActivityRecord, make_session_factory
+from ax_workspace.platform.persistence import ConversationTurnRecord
+from ax_workspace.bootstrap.application import create_workflow_application
 
 
 class ContractTestAiProvider:
@@ -30,6 +34,32 @@ class ContractTestAiProvider:
             latency_ms=1,
             usage={"input_tokens": 1, "output_tokens": 1},
         )
+
+
+class CapabilityFacade:
+    def __init__(self, principal: Principal) -> None:
+        self._principal = principal
+
+    @property
+    def principal(self) -> Principal:
+        return self._principal
+
+
+def test_task_tool_discovery_separates_read_from_self_manage() -> None:
+    read_only = CapabilityFacade(
+        Principal(PersonaId.MINA, "읽기", frozenset({"scax"}), frozenset({TASK_READ}))
+    )
+    manage_only = CapabilityFacade(
+        Principal(PersonaId.MINA, "관리", frozenset({"scax"}), frozenset({TASK_SELF_MANAGE}))
+    )
+
+    read_tools = {tool.name for tool in asyncio.run(_create_bound_persona_server(read_only).list_tools())}
+    manage_tools = {tool.name for tool in asyncio.run(_create_bound_persona_server(manage_only).list_tools())}
+
+    assert {"task_list", "task_get"} <= read_tools
+    assert "task_create_self" not in read_tools
+    assert {"task_create_self", "task_start", "task_cancel"} <= manage_tools
+    assert "task_list" not in manage_tools
 
 
 def test_mcp_facade_uses_direct_daily_report_operations(tmp_path) -> None:
@@ -204,31 +234,62 @@ def test_mcp_hidden_tools_and_direct_facade_calls_share_capability_denial(tmp_pa
 def test_mcp_create_mutations_are_idempotent_within_a_server_bound_turn(tmp_path, monkeypatch) -> None:
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
-    monkeypatch.setenv("AX_MCP_CAUSATION_ID", "turn-execution-1")
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", str(uuid4()))
     facade = McpReportsFacade(
         Settings(RuntimeProfile.TEST, database_url),
         "mina",
         ContractTestAiProvider(),
     )
 
-    first_task = facade.create_self_task("재시도해도 하나인 업무")
-    repeated_task = facade.create_self_task("재시도해도 하나인 업무")
-    first_request = facade.create_work_request("재시도해도 하나인 요청", "jiho")
-    repeated_request = facade.create_work_request("재시도해도 하나인 요청", "jiho")
+    first_action = facade.create_self_task("재시도해도 하나인 업무")
+    repeated_action = facade.create_self_task("재시도해도 하나인 업무")
 
-    assert repeated_task == first_task
-    assert repeated_request == first_request
-
+    assert first_action["state"] == "pending"
+    assert repeated_action["action_id"] == first_action["action_id"]
     with make_session_factory(database_url)() as session:
-        assert (
-            session.query(TaskActivityRecord)
-            .filter_by(task_id=UUID(first_task["task_id"]))
-            .count()
-            == 1
-        )
-        assert (
-            session.query(WorkRequestAuditEventRecord)
-            .filter_by(request_id=UUID(first_request["request_id"]))
-            .count()
-            == 1
-        )
+        assert session.query(TaskActivityRecord).count() == 0
+
+
+def test_delegated_chat_work_request_is_an_action_until_the_owner_approves(tmp_path, monkeypatch) -> None:
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url)
+    application = create_workflow_application(settings, ContractTestAiProvider())
+    principal = application.authenticated_principal("mina")
+    conversation = application.create_conversation(principal, "AX 확인")
+    application.accept_conversation_message(
+        principal,
+        "지호에게 업무 요청을 만들어줘",
+        UUID(conversation["conversation_id"]),
+        [],
+        "message-1",
+    )
+    with make_session_factory(database_url)() as session:
+        turn = session.scalar(select(ConversationTurnRecord))
+        assert turn is not None
+        execution_id = str(turn.execution_id)
+
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", execution_id)
+    action = McpReportsFacade(settings, "mina", ContractTestAiProvider()).create_work_request(
+        "승인이 필요한 업무 요청",
+        "jiho",
+    )
+    repeated_action = McpReportsFacade(settings, "mina", ContractTestAiProvider()).create_work_request(
+        "승인이 필요한 업무 요청",
+        "jiho",
+    )
+    assert action["state"] == "pending"
+    assert action["action_type"] == "work_request.create"
+    assert repeated_action["action_id"] == action["action_id"]
+    assert application.list_work_requests(principal) == []
+
+    approved = application.decide_action(
+        principal,
+        UUID(action["action_id"]),
+        action["version"],
+        "approve",
+    )
+    assert approved["state"] == "approved"
+    assert approved["result"]["request_id"]
+    timeline = application.conversation(principal, UUID(conversation["conversation_id"]))
+    assert timeline["actions"][0]["action_id"] == action["action_id"]

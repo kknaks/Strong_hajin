@@ -73,6 +73,7 @@ class ConversationRepository(Protocol):
     def conversation(self, conversation_id: UUID, owner_id: str, *, lock: bool = False) -> Any | None: ...
     def list_for(self, owner_id: str) -> list[Any]: ...
     def accept_fragment(self, conversation: Any, body: str, context: list[dict[str, str | bool]], idempotency_key: str | None) -> tuple[Any, Any | None, bool, int]: ...
+    def cancel_active(self, conversation: Any, expected_version: int) -> Any: ...
     def view(self, conversation: Any) -> dict[str, Any]: ...
 
 
@@ -121,6 +122,11 @@ class ConversationApplication:
             "queued": queued,
             "queue_size": queue_size,
         }
+
+    def cancel(self, principal: Principal, conversation_id: UUID, expected_version: int) -> dict[str, Any]:
+        return self._repository.view(
+            self._repository.cancel_active(self._owned(principal, conversation_id, lock=True), expected_version)
+        )
 
     def _owned(self, principal: Principal, conversation_id: UUID, *, lock: bool = False) -> Any:
         conversation = self._repository.conversation(conversation_id, str(principal.id), lock=lock)

@@ -11,6 +11,7 @@ from ax_workspace.modules.ax_execution.conversations import (
     ConversationApplication,
     ConversationContextReferenceInput,
 )
+from ax_workspace.modules.ax_execution.actions import ActionApplication
 from ax_workspace.modules.organization_access.domain import Principal
 from ax_workspace.modules.organization_access.application import OrganizationApplication
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
@@ -25,6 +26,7 @@ from ax_workspace.platform.conversations import (
     SqlAlchemyConversationContextResolver,
     SqlAlchemyConversationRepository,
 )
+from ax_workspace.platform.actions import SqlAlchemyActionExecutor, SqlAlchemyActionRepository
 from ax_workspace.platform.reports import SqlAlchemyDailyReportDraftWorkflow, SqlAlchemyDailyReportRepository
 from ax_workspace.modules.work.application import TaskAccessDenied, TaskApplication, TaskState
 from ax_workspace.modules.work.requests import WorkRequestApplication
@@ -280,6 +282,54 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def cancel_conversation_turn(
+        self, principal: Principal, conversation_id: UUID, expected_version: int
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._conversations(session).cancel(principal, conversation_id, expected_version)
+            session.commit()
+            return result
+
+    def propose_action(
+        self,
+        principal: Principal,
+        execution_id: UUID,
+        action_type: str,
+        title: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._actions(session).propose(
+                principal,
+                execution_id,
+                action_type,
+                title,
+                payload,
+            )
+            session.commit()
+            return result
+
+    def actions(self, principal: Principal) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return self._actions(session).list(principal)
+
+    def decide_action(
+        self,
+        principal: Principal,
+        action_id: UUID,
+        expected_version: int,
+        decision: str,
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._actions(session).decide(
+                principal,
+                action_id,
+                expected_version,
+                decision,
+            )
+            session.commit()
+            return result
+
     @staticmethod
     def _work_requests(session: Any) -> WorkRequestApplication:
         return WorkRequestApplication(
@@ -301,6 +351,12 @@ class WorkflowApplication:
                 self._settings.conversation_queue_max_fragments,
             ),
             SqlAlchemyConversationContextResolver(session),
+        )
+
+    def _actions(self, session: Any) -> ActionApplication:
+        return ActionApplication(
+            SqlAlchemyActionRepository(session),
+            SqlAlchemyActionExecutor(session, self._report_provider),
         )
 
     def transition_task(self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None = None, expected_version: int = 0) -> dict[str, Any]:
