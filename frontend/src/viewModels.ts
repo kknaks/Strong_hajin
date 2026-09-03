@@ -54,7 +54,14 @@ export type DailyReportHistory = {
   report_id: string;
   report_date: string;
   status: string;
-  drafts: Array<{ draft_id: string; version: number; body: string; source_refs: DailyReportDraft["source_refs"] }>;
+  drafts: Array<{
+    draft_id: string;
+    version: number;
+    body: string;
+    source_refs: DailyReportDraft["source_refs"];
+    workflow_run_id: string;
+    definition_version_id: string;
+  }>;
   submissions: Array<{
     submission_id: string;
     version: number;

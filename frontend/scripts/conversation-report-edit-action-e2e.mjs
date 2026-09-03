@@ -62,6 +62,7 @@ try {
     }),
     { timeout: 120_000, description: "the pending daily-report edit ActionItem" },
   );
+  const pendingVersion = action.version;
   await page.locator(`.ax-action-card[data-action-id="${action.action_id}"]`).waitFor();
   await page.getByRole("button", { name: "닫기" }).click();
   await navigation.getByRole("button", { name: "판단" }).click();
@@ -69,17 +70,24 @@ try {
   await actionCard.getByRole("button", { name: "승인" }).click();
   const history = await pollFor(
     page,
-    () => page.evaluate(async ({ actionId, reportId, version, body }) => {
+    () => page.evaluate(async ({ actionId, conversationId, reportId, version, body, workflowRunId, definitionVersionId }) => {
       const headers = { "X-Demo-Persona": "mina" };
-      const [actionsResponse, historyResponse] = await Promise.all([
-        fetch("/api/actions", { headers }), fetch(`/api/daily-reports/${reportId}/history`, { headers }),
+      const [actionsResponse, conversationResponse, historyResponse] = await Promise.all([
+        fetch("/api/actions", { headers }), fetch(`/api/conversations/${conversationId}`, { headers }), fetch(`/api/daily-reports/${reportId}/history`, { headers }),
       ]);
       const action = (await actionsResponse.json()).find((item) => item.action_id === actionId);
+      const conversationAction = (await conversationResponse.json()).actions.find((item) => item.action_id === actionId);
       const history = await historyResponse.json();
       const draft = history.drafts.at(-1);
-      return action?.state === "approved" && action.audit_ref && draft?.version > version && draft.body === body
+      const matchingProjection = [action, conversationAction].every((item) =>
+        item?.action_id === actionId && item.state === "approved" && item.version === version + 1 && item.audit_ref &&
+        item.audit_ref === action.audit_ref && JSON.stringify(item.result) === JSON.stringify(action.result),
+      );
+      const matchingResult = action?.result?.report_id === reportId && action.result?.draft_id === draft?.draft_id && action.result?.draft_version === version + 1;
+      const matchingDraft = draft?.version === version + 1 && draft.body === body && draft.workflow_run_id === workflowRunId && draft.definition_version_id === definitionVersionId;
+      return matchingProjection && matchingResult && matchingDraft
         ? { action, draft } : null;
-    }, { actionId: action.action_id, reportId: generated.report_id, version: generated.draft_version, body: editedBody }),
+    }, { actionId: action.action_id, conversationId: conversation.conversation_id, reportId: generated.report_id, version: pendingVersion, body: editedBody, workflowRunId: generated.workflow_run_id, definitionVersionId: generated.definition_version_id }),
     { timeout: 30_000, description: "the approved Action audit and incremented report draft" },
   );
   await page.screenshot({ path: "test-results/conversation-report-edit-action-e2e.png", fullPage: true });

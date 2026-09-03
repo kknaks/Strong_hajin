@@ -43,9 +43,10 @@ try {
 
   const conversationButton = (conversationId) =>
     page.locator(`.ax-conversation-list button[data-conversation-id="${conversationId}"]`);
+  const activeTimeline = page.locator(".ax-messages");
   await conversationButton(firstConversation.conversation_id).click();
-  await page.getByText("첫 번째 대화의 두 번째 발화입니다.").waitFor({ timeout: 20_000 });
-  await page.getByText("두 번째 대화의 내 업무 수만 알려줘.").count().then((count) => {
+  await activeTimeline.getByText("첫 번째 대화의 두 번째 발화입니다.").waitFor({ timeout: 20_000 });
+  await activeTimeline.getByText("두 번째 대화의 내 업무 수만 알려줘.").count().then((count) => {
     if (count !== 0) throw new Error("Conversation state leaked across the active-session switch");
   });
   await conversationButton(firstConversation.conversation_id).click();

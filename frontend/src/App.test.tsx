@@ -1136,6 +1136,53 @@ describe("product surfaces", () => {
     });
   });
 
+  it("does not restore a stale persona's delayed Conversation detail, Action, or Tool after switching", async () => {
+    let resolveMinaDetail: ((response: Response) => void) | undefined;
+    const minaConversation = {
+      conversation_id: "mina-conversation",
+      title: "민아의 비공개 대화",
+      version: 1,
+      messages: [],
+      turns: [{ turn_id: "turn-1", state: "running", provider_run_ref: null, provider_session_ref: null, error: null }],
+      context_references: [],
+      tool_invocations: [],
+      actions: [],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const personaId = new Headers(init?.headers).get("X-Demo-Persona");
+      if (path === "/api/developer/personas") return jsonResponse([{ id: "mina", display_name: "민아" }, { id: "jiho", display_name: "지호" }]);
+      if (path === "/api/organization/me") return jsonResponse({ member_id: personaId, display_name: personaId, organizations: [], capabilities: ["action.read"] });
+      if (path === "/api/my-work" || path === "/api/actions") return jsonResponse([]);
+      if (path === "/api/conversations" && personaId === "mina") return jsonResponse([minaConversation]);
+      if (path === "/api/conversations" && personaId === "jiho") return jsonResponse([]);
+      if (path === "/api/conversations/mina-conversation") return new Promise<Response>((resolve) => { resolveMinaDetail = resolve; });
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("option", { name: "지호" });
+    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    const conversationButton = await screen.findByRole("button", { name: "민아의 비공개 대화" });
+    fireEvent.click(conversationButton);
+    await waitFor(() => expect(resolveMinaDetail).toBeTruthy(), { timeout: 2_500 });
+    fireEvent.change(screen.getByLabelText("사용자"), { target: { value: "jiho" } });
+    resolveMinaDetail?.(jsonResponse({
+      ...minaConversation,
+      messages: [{ message_id: "secret-message", turn_id: "turn-1", role: "user", body: "민아의 비공개 본문", sequence: 1, state: "accepted" }],
+      turns: [{ turn_id: "turn-1", state: "completed", provider_run_ref: null, provider_session_ref: null, error: null }],
+      tool_invocations: [{ turn_id: "turn-1", sequence: 1, provider_call_id: null, tool_name: "task_list", display_name: "민아 도구", input_summary: "비공개", state: "completed", result_summary: "비공개 결과", error_summary: null, latency_ms: null, target_resource_id: null, target_resource_version: null, audit_ref: null }],
+      actions: [{ action_id: "secret-action", conversation_id: "mina-conversation", turn_id: "turn-1", action_type: "task.create_self", title: "민아 판단", state: "pending", version: 1, payload_summary: "비공개 변경", result: null, audit_ref: null }],
+    }));
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "민아의 비공개 대화" })).toBeNull();
+      expect(screen.queryByText("민아의 비공개 본문")).toBeNull();
+      expect(screen.queryByText("민아 도구 · completed")).toBeNull();
+      expect(screen.queryByText("민아 판단")).toBeNull();
+    });
+  });
+
   it("polls an open AX drawer until a completed turn projects its pending ActionItem", async () => {
     let conversationReads = 0;
     const runningConversation = {

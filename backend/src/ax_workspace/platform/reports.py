@@ -247,6 +247,8 @@ class SqlAlchemyDailyReportRepository:
                     "version": draft.version,
                     "body": draft.body,
                     "source_refs": draft.source_refs,
+                    "workflow_run_id": str(draft.workflow_run_id),
+                    "definition_version_id": str(draft.definition_version_id),
                 }
                 for draft in drafts
             ],
