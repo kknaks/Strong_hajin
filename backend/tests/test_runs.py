@@ -95,6 +95,32 @@ def test_assignment_rejection_never_enters_my_work(tmp_path) -> None:
     assert client.get("/api/my-work", headers={"X-Demo-Persona": "mina"}).json() == []
 
 
+def test_meeting_assignment_candidates_are_limited_to_seeded_task_acceptors(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+
+    response = client.get("/api/meeting-assignment-candidates", headers={"X-Demo-Persona": "mina"})
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {"id": "mina", "display_name": "민아 (구성원)"},
+        {"id": "demo-admin", "display_name": "데모 관리자"},
+    ]
+
+
+def test_meeting_assignment_rejects_a_seeded_persona_without_task_acceptance_capability(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+    started = client.post("/api/runs/meeting-followups", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()
+
+    response = client.post(
+        f"/api/runs/{started['run_id']}/decisions/choose-assignment",
+        headers={"X-Demo-Persona": "mina"},
+        json={"decision": "accept", "payload": {"assignee_id": "sora"}},
+    )
+
+    assert response.status_code == 422
+    assert client.get("/api/my-work", headers={"X-Demo-Persona": "sora"}).json() == []
+
+
 def test_only_the_selected_assignee_can_accept_an_assignment(tmp_path) -> None:
     client = _client_with_seeded_database(tmp_path)
     started = client.post("/api/runs/meeting-followups", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()

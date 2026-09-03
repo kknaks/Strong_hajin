@@ -115,6 +115,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 assert uow.workflows is not None
                 return WorkflowRunStarter(uow.workflows).inbox(principal)
 
+        @app.get("/api/meeting-assignment-candidates", response_model=list[PersonaResponse])
+        def meeting_assignment_candidates(
+            principal: Principal = Depends(developer_principal),
+        ) -> list[PersonaResponse]:
+            try:
+                with app.state.uow_factory() as uow:
+                    assert uow.workflows is not None
+                    return [
+                        PersonaResponse(**candidate)
+                        for candidate in WorkflowRunStarter(uow.workflows).meeting_assignment_candidates(principal)
+                    ]
+            except Exception as error:
+                raise _runtime_error(error) from error
+
         @app.post("/api/runs/{run_id}/decisions/{node_id}")
         def decide(
             run_id: UUID,

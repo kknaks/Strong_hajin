@@ -59,6 +59,7 @@ class WorkflowNodeExecutionRecord(Base):
 
 class HumanDecisionRecord(Base):
     __tablename__ = "human_decisions"
+    __table_args__ = (UniqueConstraint("node_execution_id", name="uq_human_decision_node_execution"),)
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     node_execution_id: Mapped[UUID] = mapped_column(

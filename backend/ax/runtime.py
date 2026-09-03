@@ -90,6 +90,15 @@ class SqlAlchemyWorkflowRepository:
             raise RunNotFound(f"Workflow run {run_id} was not found")
         return run
 
+    def locked_run(self, run_id: UUID) -> WorkflowRunRecord:
+        """Serialize a decision transition for one run on database backends that support row locks."""
+        run = self.session.scalar(
+            select(WorkflowRunRecord).where(WorkflowRunRecord.id == run_id).with_for_update()
+        )
+        if run is None:
+            raise RunNotFound(f"Workflow run {run_id} was not found")
+        return run
+
     def create_run(self, definition: WorkflowDefinitionVersionRecord, initiator_id: str, input_snapshot: dict[str, Any]) -> WorkflowRunRecord:
         now = _now()
         run = WorkflowRunRecord(
@@ -289,6 +298,8 @@ class LocalDemoToolDispatcher:
                 assignee = SEED_PERSONAS[PersonaId(assignee_id)]
             except (KeyError, ValueError) as error:
                 raise InvalidDecision("assignee_id must be a seeded demo persona") from error
+            if "task.accept" not in assignee.capabilities:
+                raise InvalidDecision("assignee_id must have task.accept capability")
             evidence = self.repository.session.scalar(select(MeetingEvidenceRecord))
             assert evidence is not None
             assignment = TaskAssignmentRecord(
@@ -361,7 +372,7 @@ class WorkflowRunStarter:
     ) -> dict[str, Any]:
         if decision not in {"accept", "reject"}:
             raise InvalidDecision("decision must be 'accept' or 'reject'")
-        run = self.repository.run(run_id)
+        run = self.repository.locked_run(run_id)
         if run.state != RunState.WAITING_FOR_DECISION:
             raise InvalidDecision("run is not waiting for a decision")
         definition = WorkflowDefinitionVersion.model_validate(self.repository.definition_for_run(run).definition)
@@ -443,6 +454,19 @@ class WorkflowRunStarter:
         return [
             {"assignment_id": str(item.id), "title": item.title, "state": item.state, "run_id": str(item.run_id)}
             for item in self.repository.active_assignments_for(str(principal.id))
+        ]
+
+    def meeting_assignment_candidates(self, principal: Principal) -> list[dict[str, str]]:
+        """Expose only real seed principals that can complete an assignment acceptance gate."""
+        definition_record = self.repository.definition_for_workflow("meeting-followups")
+        assert definition_record is not None
+        definition = WorkflowDefinitionVersion.model_validate(definition_record.definition)
+        if not definition.is_visible_to(principal):
+            raise AccessDenied("Principal cannot request a meeting assignment")
+        return [
+            {"id": str(candidate.id), "display_name": candidate.display_name}
+            for candidate in SEED_PERSONAS.values()
+            if "task.accept" in candidate.capabilities
         ]
 
     def _advance(self, run: WorkflowRunRecord, definition: WorkflowDefinitionVersion) -> None:

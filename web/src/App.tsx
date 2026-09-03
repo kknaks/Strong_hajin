@@ -47,6 +47,8 @@ export default function App() {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [inbox, setInbox] = useState<InboxItem[]>([]);
   const [myWork, setMyWork] = useState<Assignment[]>([]);
+  const [assignmentCandidates, setAssignmentCandidates] = useState<Persona[]>([]);
+  const [assigneeId, setAssigneeId] = useState("mina");
   const [run, setRun] = useState<Run | null>(null);
   const [inputs, setInputs] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
@@ -54,14 +56,19 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [catalog, nextInbox, nextMyWork] = await Promise.all([
+      const [catalog, nextInbox, nextMyWork, candidates] = await Promise.all([
         api<Workflow[]>("/api/catalog", persona),
         api<InboxItem[]>("/api/inbox", persona),
         api<Assignment[]>("/api/my-work", persona),
+        api<Persona[]>("/api/meeting-assignment-candidates", persona).catch(() => []),
       ]);
       setWorkflows(catalog);
       setInbox(nextInbox);
       setMyWork(nextMyWork);
+      setAssignmentCandidates(candidates);
+      if (candidates.length && !candidates.some((candidate) => candidate.id === assigneeId)) {
+        setAssigneeId(candidates[0].id);
+      }
       if (run) {
         try {
           setRun(await api<Run>(`/api/runs/${run.run_id}`, persona));
@@ -73,7 +80,7 @@ export default function App() {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "데이터를 불러오지 못했습니다.");
     }
-  }, [persona, run]);
+  }, [persona, run, assigneeId]);
 
   useEffect(() => {
     fetch("/api/developer/personas")
@@ -106,7 +113,7 @@ export default function App() {
   const decide = async (item: InboxItem, decision: "accept" | "reject") => {
     setBusy(`${item.run_id}:${item.node_id}`);
     try {
-      const payload = item.node_id === "choose-assignment" ? { assignee_id: "mina" } : {};
+      const payload = item.node_id === "choose-assignment" ? { assignee_id: assigneeId } : {};
       const updated = await api<Run>(`/api/runs/${item.run_id}/decisions/${item.node_id}`, persona, {
         method: "POST",
         body: JSON.stringify({ decision, payload }),
@@ -155,7 +162,7 @@ export default function App() {
         </section>
 
         <aside className="panel inbox-panel"><div className="panel-heading"><div><p className="eyebrow">HUMAN INBOX</p><h2>내 판단</h2></div><span className="count">{inbox.length}</span></div>
-          {inbox.length === 0 ? <div className="empty compact"><span>✓</span><p>지금 처리할 판단이 없습니다.</p></div> : inbox.map((item) => <article className="inbox-card" key={`${item.run_id}:${item.node_id}`}><span className="workflow-tag">{item.workflow_id}</span><h3>{item.label}</h3><p>{item.node_id === "choose-assignment" ? "민아에게 수행자 수락을 요청합니다." : "증거를 검토한 뒤 결정하세요."}</p><div className="actions"><button className="secondary" disabled={busy !== null} onClick={() => void decide(item, "reject")}>반려</button><button className="primary" disabled={busy !== null} onClick={() => void decide(item, "accept")}>{busy === `${item.run_id}:${item.node_id}` ? "저장 중" : "수락"}</button></div></article>)}
+          {inbox.length === 0 ? <div className="empty compact"><span>✓</span><p>지금 처리할 판단이 없습니다.</p></div> : inbox.map((item) => <article className="inbox-card" key={`${item.run_id}:${item.node_id}`}><span className="workflow-tag">{item.workflow_id}</span><h3>{item.label}</h3>{item.node_id === "choose-assignment" ? <label className="inline-input">수행자<select value={assigneeId} onChange={(event) => setAssigneeId(event.target.value)}>{assignmentCandidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.display_name}</option>)}</select></label> : <p>증거를 검토한 뒤 결정하세요.</p>}<div className="actions"><button className="secondary" disabled={busy !== null} onClick={() => void decide(item, "reject")}>반려</button><button className="primary" disabled={busy !== null || (item.node_id === "choose-assignment" && assignmentCandidates.length === 0)} onClick={() => void decide(item, "accept")}>{busy === `${item.run_id}:${item.node_id}` ? "저장 중" : "수락"}</button></div></article>)}
           <div className="my-work"><div className="panel-heading"><div><p className="eyebrow">MY WORK</p><h2>내 업무</h2></div><span className="count muted">{myWork.length}</span></div>{myWork.length === 0 ? <p className="my-work-empty">수락 후 활성화된 업무가 표시됩니다.</p> : myWork.map((assignment) => <article className="assignment-card" key={assignment.assignment_id}><span className="workflow-tag">{assignment.state}</span><h3>{assignment.title}</h3><p>수락된 TaskAssignment</p></article>)}</div>
         </aside>
       </div>
