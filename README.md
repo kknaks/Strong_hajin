@@ -28,6 +28,14 @@ The product surface exposes direct Task and Reports operations. `POST /api/daily
 
 The only production/development LLM adapter is `CodexCliProviderAdapter`. It invokes `codex exec` with an isolated runtime home, user config/rules/skills/plugins disabled, a read-only sandbox, `gpt-5.6-terra`, Fast tier, low reasoning, and a structured output schema. A missing CLI binary or authentication fails explicitly; deterministic providers are injected only by tests.
 
+For the browser WorkRequest journey, run the backend on port 8001, then start Vite with the matching proxy and execute the Playwright script:
+
+```sh
+DATABASE_URL=postgresql+psycopg://ax:ax@localhost:54329/ax_demo make api
+VITE_API_TARGET=http://127.0.0.1:8001 npm --prefix frontend run dev -- --host 127.0.0.1 --port 5176
+SCAX_E2E_URL=http://127.0.0.1:5176 npm --prefix frontend run e2e:work-request
+```
+
 `make verify` deliberately excludes PostgreSQL integration tests; its success is not PostgreSQL coverage. For an explicit, reproducible disposable-PostgreSQL proof, start the documented container and run:
 
 ```sh
