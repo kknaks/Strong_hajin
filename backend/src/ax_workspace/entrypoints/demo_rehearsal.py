@@ -8,8 +8,7 @@ from typing import Any, Callable, TypeVar
 from uuid import UUID
 
 from ax_workspace.modules.organization_access.domain import seeded_principal
-from ax_workspace.platform.persistence import make_session_factory
-from ax_workspace.platform.workflow_runtime import SqlAlchemyUnitOfWork, workflow_service
+from ax_workspace.bootstrap.application import create_workflow_application
 from ax_workspace.modules.ax_execution.application import WorkflowRunStarter
 from ax_workspace.bootstrap.settings import Settings
 
@@ -18,9 +17,7 @@ T = TypeVar("T")
 
 
 def _operation(settings: Settings, action: Callable[[WorkflowRunStarter], T]) -> T:
-    with SqlAlchemyUnitOfWork(make_session_factory(settings.database_url)) as uow:
-        assert uow.workflows is not None
-        return action(workflow_service(uow.workflows))
+    return create_workflow_application(settings).execute(action)
 
 
 def run_golden_rehearsal(settings: Settings) -> dict[str, Any]:

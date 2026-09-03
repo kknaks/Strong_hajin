@@ -7,9 +7,7 @@ from uuid import UUID
 from mcp.server.fastmcp import FastMCP
 
 from ax_workspace.modules.organization_access.domain import Principal, seeded_principal
-from ax_workspace.platform.persistence import make_session_factory
-from ax_workspace.platform.workflow_runtime import SqlAlchemyUnitOfWork, workflow_service
-from ax_workspace.modules.ax_execution.application import AccessDenied, WorkflowRunStarter
+from ax_workspace.bootstrap.application import create_workflow_application
 from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.ax_execution.domain import catalog_definitions
 
@@ -20,7 +18,7 @@ class McpWorkflowFacade:
     def __init__(self, settings: Settings, principal: Principal) -> None:
         if not settings.developer_auth_enabled:
             raise RuntimeError("MCP demo adapter is available only in development and test profiles")
-        self._session_factory = make_session_factory(settings.database_url)
+        self._application = create_workflow_application(settings)
         self._principal = principal
 
     def list_allowed_workflows(self) -> list[dict[str, Any]]:
@@ -37,23 +35,13 @@ class McpWorkflowFacade:
         ]
 
     def start_workflow(self, workflow_id: str, input_data: dict[str, Any]) -> dict[str, Any]:
-        with SqlAlchemyUnitOfWork(self._session_factory) as uow:
-            assert uow.workflows is not None
-            return workflow_service(uow.workflows).start(workflow_id, self._principal, input_data)
+        return self._application.start(workflow_id, self._principal, input_data)
 
     def get_workflow_run(self, run_id: str) -> dict[str, Any]:
-        with SqlAlchemyUnitOfWork(self._session_factory) as uow:
-            assert uow.workflows is not None
-            service = workflow_service(uow.workflows)
-            result = service.summary(UUID(run_id))
-            if not service.can_view(UUID(run_id), self._principal):
-                raise AccessDenied("Principal cannot view this workflow run")
-            return result
+        return self._application.run(UUID(run_id), self._principal)
 
     def list_decision_inbox(self) -> list[dict[str, Any]]:
-        with SqlAlchemyUnitOfWork(self._session_factory) as uow:
-            assert uow.workflows is not None
-            return workflow_service(uow.workflows).inbox(self._principal)
+        return self._application.inbox(self._principal)
 
     def submit_decision(
         self,
@@ -63,11 +51,7 @@ class McpWorkflowFacade:
         rationale: str | None = None,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        with SqlAlchemyUnitOfWork(self._session_factory) as uow:
-            assert uow.workflows is not None
-            return workflow_service(uow.workflows).decide(
-                UUID(run_id), node_id, self._principal, decision, rationale, payload or {}
-            )
+        return self._application.decide(UUID(run_id), node_id, self._principal, decision, rationale, payload or {})
 
 
 def create_mcp_server(settings: Settings | None = None, persona: str | None = None) -> FastMCP:

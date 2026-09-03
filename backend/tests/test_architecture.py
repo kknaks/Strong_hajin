@@ -49,3 +49,9 @@ def test_each_work_brief_feature_owns_non_placeholder_code() -> None:
     for name in ("organization_access", "work", "reports", "meetings", "ax_execution"):
         implementation = list((PACKAGE_ROOT / "modules" / name).glob("*.py"))
         assert any(path.name not in {"__init__.py"} for path in implementation), name
+
+
+def test_entrypoints_do_not_import_platform_implementations() -> None:
+    for module in (PACKAGE_ROOT / "entrypoints").glob("*.py"):
+        source = module.read_text(encoding="utf-8")
+        assert "ax_workspace.platform" not in source, module

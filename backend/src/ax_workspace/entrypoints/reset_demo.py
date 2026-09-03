@@ -5,8 +5,7 @@ import re
 
 from sqlalchemy.engine import make_url
 
-from ax_workspace.platform.persistence import Base, make_session_factory
-from ax_workspace.bootstrap.seed import seed_catalog
+from ax_workspace.bootstrap.reset import reset_database as _reset_database
 from ax_workspace.bootstrap.settings import Settings
 
 
@@ -30,12 +29,7 @@ def _require_safe_demo_database(database_url: str) -> None:
 def reset_database(database_url: str) -> None:
     """The only schema-mutating operation. Application startup never calls this."""
     _require_safe_demo_database(database_url)
-    session_factory = make_session_factory(database_url)
-    engine = session_factory.kw["bind"]
-    Base.metadata.drop_all(engine)
-    Base.metadata.create_all(engine)
-    with session_factory() as session:
-        seed_catalog(session)
+    _reset_database(database_url)
 
 
 def main() -> None:

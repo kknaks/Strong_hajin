@@ -7,14 +7,12 @@ from pydantic import BaseModel, Field
 
 from ax_workspace.modules.organization_access.domain import Principal, SEED_PERSONAS
 from ax_workspace.entrypoints.http_auth import DeveloperAuthAdapter, developer_principal
-from ax_workspace.platform.persistence import make_session_factory
-from ax_workspace.platform.workflow_runtime import SqlAlchemyUnitOfWork, workflow_service
+from ax_workspace.bootstrap.application import create_workflow_application
 from ax_workspace.modules.ax_execution.application import (
     AccessDenied,
     InvalidDecision,
     InvalidWorkflowInput,
     RunNotFound,
-    WorkflowRunStarter,
 )
 from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.ax_execution.domain import catalog_definitions
@@ -59,8 +57,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="SCAX Workflow Catalog API", version="0.1.0")
     if settings.developer_auth_enabled:
         app.state.developer_auth = DeveloperAuthAdapter(settings)
-        app.state.session_factory = make_session_factory(settings.database_url)
-        app.state.uow_factory = lambda: SqlAlchemyUnitOfWork(app.state.session_factory)
+        app.state.workflow_application = create_workflow_application(settings)
 
         @app.get("/api/developer/personas", response_model=list[PersonaResponse])
         def personas() -> list[PersonaResponse]:
@@ -91,42 +88,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             principal: Principal = Depends(developer_principal),
         ) -> dict[str, object]:
             try:
-                with app.state.uow_factory() as uow:
-                    assert uow.workflows is not None
-                    return workflow_service(uow.workflows).start(workflow_id, principal, request.input)
+                return app.state.workflow_application.start(workflow_id, principal, request.input)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.get("/api/runs/{run_id}")
         def get_run(run_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
             try:
-                with app.state.uow_factory() as uow:
-                    assert uow.workflows is not None
-                    service = workflow_service(uow.workflows)
-                    result = service.summary(run_id)
-                    if not service.can_view(run_id, principal):
-                        raise AccessDenied("Principal cannot view this workflow run")
-                    return result
+                return app.state.workflow_application.run(run_id, principal)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.get("/api/inbox")
         def inbox(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
-            with app.state.uow_factory() as uow:
-                assert uow.workflows is not None
-                return workflow_service(uow.workflows).inbox(principal)
+            return app.state.workflow_application.inbox(principal)
 
         @app.get("/api/meeting-assignment-candidates", response_model=list[PersonaResponse])
         def meeting_assignment_candidates(
             principal: Principal = Depends(developer_principal),
         ) -> list[PersonaResponse]:
             try:
-                with app.state.uow_factory() as uow:
-                    assert uow.workflows is not None
-                    return [
-                        PersonaResponse(**candidate)
-                        for candidate in workflow_service(uow.workflows).meeting_assignment_candidates(principal)
-                    ]
+                return [PersonaResponse(**candidate) for candidate in app.state.workflow_application.meeting_assignment_candidates(principal)]
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -138,19 +120,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             principal: Principal = Depends(developer_principal),
         ) -> dict[str, object]:
             try:
-                with app.state.uow_factory() as uow:
-                    assert uow.workflows is not None
-                    return workflow_service(uow.workflows).decide(
-                        run_id, node_id, principal, request.decision, request.rationale, request.payload
-                    )
+                return app.state.workflow_application.decide(run_id, node_id, principal, request.decision, request.rationale, request.payload)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.get("/api/my-work")
         def my_work(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
-            with app.state.uow_factory() as uow:
-                assert uow.workflows is not None
-                return workflow_service(uow.workflows).my_work(principal)
+            return app.state.workflow_application.my_work(principal)
 
     @app.get("/health")
     def health() -> dict[str, str]:
