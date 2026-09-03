@@ -1,7 +1,7 @@
 DATABASE_URL ?= postgresql+psycopg://ax:ax@localhost:54329/ax_demo
 POSTGRES_TEST_URL ?= postgresql+psycopg://ax:ax@localhost:54329/ax_test
 
-.PHONY: install test test-postgres web-build verify postgres-up postgres-down reset-demo api mcp web-install web demo-rehearse mcp-probe
+.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo api mcp frontend-install frontend demo-rehearse mcp-probe
 
 install:
 	cd backend && uv sync --all-groups
@@ -13,10 +13,13 @@ test-postgres:
 	@test "$(POSTGRES_TEST_URL)" != "$(DATABASE_URL)" || (echo "POSTGRES_TEST_URL must differ from DATABASE_URL" >&2; exit 2)
 	cd backend && AX_POSTGRES_TEST_URL="$(POSTGRES_TEST_URL)" uv run pytest -m integration
 
-web-build:
-	cd web && npm run build
+frontend-build:
+	cd frontend && npm run build
 
-verify: test web-build
+frontend-test:
+	cd frontend && npm test
+
+verify: test frontend-test frontend-build
 
 postgres-up:
 	docker compose up -d postgres
@@ -36,11 +39,11 @@ mcp:
 	@test -n "$$AX_MCP_PERSONA" || (echo "Set AX_MCP_PERSONA to a seeded demo persona"; exit 2)
 	cd backend && DATABASE_URL="$(DATABASE_URL)" AX_MCP_PERSONA="$$AX_MCP_PERSONA" uv run python -m ax_workspace.entrypoints.mcp
 
-web-install:
-	cd web && npm install
+frontend-install:
+	cd frontend && npm install
 
-web:
-	cd web && npm run dev
+frontend:
+	cd frontend && npm run dev
 
 demo-rehearse:
 	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.demo_rehearsal

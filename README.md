@@ -1,6 +1,6 @@
 # ax-workspace
 
-SCAX의 독립 Workflow catalog 제품 저장소입니다. `mediness-app`과 코드, 데이터베이스, API 또는 인증을 공유하지 않습니다.
+SCAX의 모듈형 업무 제품 데모 저장소입니다. 개인 일일보고만 내부 동적 Workflow를 사용하며, 조직·업무·요청·판단은 각각의 고유 application operation으로 발전합니다.
 
 현재 실행 계약은 다음 Work Brief가 소유합니다.
 
@@ -12,13 +12,13 @@ Prerequisites: Python 3.12+, [uv](https://docs.astral.sh/uv/), Docker.
 
 ```sh
 make install
-make web-install
+make frontend-install
 make postgres-up
 make reset-demo
 make api
 ```
 
-In a second terminal, run `make web`; the browser UI starts at `http://127.0.0.1:5173` and proxies `/api` to FastAPI on port 8000. Run `AX_MCP_PERSONA=mina make mcp` in a third terminal to expose Mina’s dynamically filtered stdio MCP Tool set; this binding is required, so an unbound MCP server never lets a client select `demo-admin`. Run `make verify` in a fourth terminal for the non-integration backend tests plus the production Vite build. The API itself starts at `http://127.0.0.1:8000`; Swagger is at `/docs`.
+In a second terminal, run `make frontend`; the browser UI starts at `http://127.0.0.1:5173` and proxies `/api` to FastAPI on port 8000. Run `AX_MCP_PERSONA=mina make mcp` in a third terminal to expose Mina’s dynamically filtered stdio MCP Tool set; this binding is required, so an unbound MCP server never lets a client select `demo-admin`. Run `make verify` in a fourth terminal for non-integration backend tests, frontend behavior tests, and the production Vite build. The API itself starts at `http://127.0.0.1:8000`; Swagger is at `/docs`.
 
 `make reset-demo` is the only command that creates or drops the demo tables. Normal API startup never mutates the schema. `X-Demo-Persona` accepts only a seeded persona (`mina`, `jiho`, `sora`, `minseok`, `demo-admin`) while `AX_PROFILE` is `development` or `test`; production omits those routes entirely.
 

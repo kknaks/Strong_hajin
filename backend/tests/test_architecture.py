@@ -55,3 +55,10 @@ def test_entrypoints_do_not_import_platform_implementations() -> None:
     for module in (PACKAGE_ROOT / "entrypoints").glob("*.py"):
         source = module.read_text(encoding="utf-8")
         assert "ax_workspace.platform" not in source, module
+
+
+def test_frontend_is_the_only_canonical_ui_source_root() -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+
+    assert (repository_root / "frontend" / "package.json").is_file()
+    assert not (repository_root / "web").exists()
