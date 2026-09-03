@@ -23,7 +23,7 @@ type Run = {
   audit: AuditEvent[];
 };
 type InboxItem = { run_id: string; workflow_id: string; node_id: string; label: string };
-type Assignment = { assignment_id: string; title: string; state: string; run_id: string };
+type Assignment = { assignment_id?: string; task_id?: string; title: string; state: string; run_id?: string };
 
 const api = async <T,>(path: string, persona: string, init: RequestInit = {}): Promise<T> => {
   const response = await fetch(path, {
@@ -72,6 +72,7 @@ export default function App() {
   const [assigneeId, setAssigneeId] = useState("mina");
   const [run, setRun] = useState<Run | null>(null);
   const [inputs, setInputs] = useState<Record<string, string>>({});
+  const [taskTitle, setTaskTitle] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [surface, setSurface] = useState<"today" | "work" | "report" | "calendar" | "materials" | "org" | "settings">("today");
@@ -140,6 +141,18 @@ export default function App() {
     }
   };
 
+  const createTask = async () => {
+    if (!taskTitle.trim()) return setError("업무 제목을 입력해 주세요.");
+    setBusy("create-task");
+    try {
+      await api("/api/tasks", persona, { method: "POST", body: JSON.stringify({ title: taskTitle }) });
+      setTaskTitle("");
+      await refresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "업무를 만들지 못했습니다.");
+    } finally { setBusy(null); }
+  };
+
   const decide = async (item: InboxItem, decision: "accept" | "reject") => {
     setBusy(`${item.run_id}:${item.node_id}`);
     try {
@@ -173,11 +186,11 @@ export default function App() {
       {surface === "today" && <>
         <div className="dashboard-columns">
           <section className="surface-card requests"><div className="card-title"><h2>오늘 나에게 요청된 업무</h2><button onClick={() => setSurface("work")}>전체보기</button></div><div className="table-head"><span>내용</span><span>상태</span><span>요청 Workflow</span><span>판단</span></div>{inbox.length === 0 ? <p className="empty-row">지금 처리할 판단이 없습니다.</p> : inbox.map((item) => <article className="request-row" key={`${item.run_id}:${item.node_id}`}><b>{item.label}</b><span className="status waiting_for_decision">승인대기</span><small>{item.workflow_id}</small><div className="row-actions">{item.node_id === "choose-assignment" && <select value={assigneeId} onChange={(event) => setAssigneeId(event.target.value)}>{assignmentCandidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.display_name}</option>)}</select>}<button className="outline" disabled={busy !== null} onClick={() => void decide(item, "reject")}>검토하기</button><button className="primary" disabled={busy !== null || (item.node_id === "choose-assignment" && assignmentCandidates.length === 0)} onClick={() => void decide(item, "accept")}>{busy === `${item.run_id}:${item.node_id}` ? "저장 중" : "승인"}</button></div></article>)}</section>
-          <section className="surface-card progress-card"><div className="card-title"><h2>오늘 이어서 진행하는 업무</h2><button onClick={() => setSurface("work")}>전체보기</button></div><div className="work-tabs"><b>내 업무 {myWork.length}</b><span>참조 업무</span></div>{myWork.length === 0 ? <p className="empty-row">수락 후 활성화된 업무가 표시됩니다.</p> : myWork.map((assignment) => <article className="progress-row" key={assignment.assignment_id}><div><b>{assignment.title}</b><small>수락된 TaskAssignment</small></div><span className="status completed">{assignment.state}</span><strong>진행 중</strong></article>)}</section>
+          <section className="surface-card progress-card"><div className="card-title"><h2>오늘 이어서 진행하는 업무</h2><button onClick={() => setSurface("work")}>전체보기</button></div><div className="work-tabs"><b>내 업무 {myWork.length}</b><span>참조 업무</span></div>{myWork.length === 0 ? <p className="empty-row">수락하거나 직접 만든 업무가 표시됩니다.</p> : myWork.map((assignment) => <article className="progress-row" key={assignment.assignment_id ?? assignment.task_id}><div><b>{assignment.title}</b><small>{assignment.task_id ? "직접 생성 업무" : "수락된 업무"}</small></div><span className="status completed">{assignment.state}</span><strong>{assignment.state === "active" ? "시작 전" : "진행 중"}</strong></article>)}</section>
         </div>
         <section className="surface-card schedule"><div className="card-title"><h2>오늘 예정된 Workflow</h2><button onClick={() => setSurface("work")}>전체 업무 보기</button></div><div className="schedule-head"><span>순서</span><span>내용</span><span>설명</span><span /></div>{workflows.slice(0, 4).map((workflow, index) => <article className="schedule-row" key={workflow.workflow_id}><span>{String(index + 1).padStart(2, "0")}</span><b>{workflow.title}</b><small>{workflow.description}</small><button className="outline" onClick={() => { setSurface("work"); }}>업무 열기</button></article>)}</section>
       </>}
-      {surface !== "today" && <section className="surface-card workflow-surface"><div className="card-title"><div><p className="kicker">{surface.toUpperCase()}</p><h2>{surface === "work" ? "내 업무와 Workflow" : surface === "report" ? "보고 Workflow" : "현재 연결된 Workflow"}</h2></div><button onClick={() => void refresh()}>새로고침</button></div><div className="workflow-list">{visibleWorkflows.map((workflow) => <article className="workflow-card" key={workflow.workflow_id}><div><span className="version">{workflow.version}</span><h3>{workflow.title}</h3><p>{workflow.description}</p>{(workflow.input_schema.required ?? []).map((field) => <label className="inline-input" key={field}>{field}<input value={inputs[`${workflow.workflow_id}:${field}`] ?? ""} placeholder={`${field} 입력`} onChange={(event) => setInputs({ ...inputs, [`${workflow.workflow_id}:${field}`]: event.target.value })} /></label>)}</div><button className="primary" disabled={busy !== null} onClick={() => void start(workflow)}>{busy === workflow.workflow_id ? "시작 중" : "시작"}</button></article>)}</div></section>}
+      {surface !== "today" && <section className="surface-card workflow-surface"><div className="card-title"><div><p className="kicker">{surface.toUpperCase()}</p><h2>{surface === "work" ? "내 업무와 Workflow" : surface === "report" ? "보고 Workflow" : "현재 연결된 Workflow"}</h2></div><button onClick={() => void refresh()}>새로고침</button></div>{surface === "work" && <div className="task-create"><input value={taskTitle} placeholder="직접 시작할 업무 제목" onChange={(event) => setTaskTitle(event.target.value)} /><button className="primary" disabled={busy !== null} onClick={() => void createTask()}>{busy === "create-task" ? "추가 중" : "업무 추가"}</button></div>}<div className="workflow-list">{visibleWorkflows.map((workflow) => <article className="workflow-card" key={workflow.workflow_id}><div><span className="version">{workflow.version}</span><h3>{workflow.title}</h3><p>{workflow.description}</p>{(workflow.input_schema.required ?? []).map((field) => <label className="inline-input" key={field}>{field}<input value={inputs[`${workflow.workflow_id}:${field}`] ?? ""} placeholder={`${field} 입력`} onChange={(event) => setInputs({ ...inputs, [`${workflow.workflow_id}:${field}`]: event.target.value })} /></label>)}</div><button className="primary" disabled={busy !== null} onClick={() => void start(workflow)}>{busy === workflow.workflow_id ? "시작 중" : "시작"}</button></article>)}</div></section>}
       {run && <aside className="run-drawer"><div className="card-title"><div><p className="kicker">진행 현황</p><h2>{selected?.title}</h2></div><button onClick={() => setRun(null)}>닫기</button></div><span className={`status ${run.state}`}>{stateLabel[run.state] ?? run.state}</span><ol className="graph">{selected?.graph.nodes.map((node) => <li className={run.waiting_on.includes(node.id) ? "waiting" : ""} key={node.id}>{node.label}<small>{node.kind === "human_gate" ? "확인 단계" : node.kind === "tool" ? "자동 처리" : "업무 단계"}</small></li>)}</ol><h3>처리 결과</h3><ul className="result-list">{run.tool_results.map((item) => <li key={item.tool_name}><b>{resultLabel[item.tool_name] ?? "업무 처리가 완료되었습니다."}</b><span>처리 완료</span></li>)}</ul><h3>활동 기록</h3><ul className="audit">{run.audit.map((item, index) => <li key={`${item.event_type}-${index}`}>{auditLabel[item.event_type] ?? "업무 상태가 변경되었습니다."}</li>)}</ul></aside>}
     </section>
   </main>;
