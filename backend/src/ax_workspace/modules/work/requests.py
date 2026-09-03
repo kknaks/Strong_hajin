@@ -47,6 +47,24 @@ class WorkRequestApplication:
         self._repository.append_audit(request.id, str(principal.id), "work_request.rejected", {"reason": reason.strip()})
         return self._view(request)
 
+    def negotiate(
+        self,
+        principal: Principal,
+        request_id: UUID,
+        expected_version: int,
+        conditions: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not conditions:
+            raise WorkRequestError("negotiation conditions are required")
+        request = self._decision_target(principal, request_id, expected_version)
+        request.state = "negotiating"
+        request.conditions = conditions
+        request.version += 1
+        self._repository.append_audit(
+            request.id, str(principal.id), "work_request.negotiated", {"conditions": conditions}
+        )
+        return self._view(request)
+
     def inbox(self, principal: Principal) -> list[dict[str, Any]]:
         return [self._view(request) for request in self._repository.inbox_for(str(principal.id))]
 
@@ -71,4 +89,5 @@ class WorkRequestApplication:
             "version": request.version,
             "task_id": str(task.id) if task else None,
             "assignment_state": "active" if task else None,
+            "conditions": request.conditions,
         }

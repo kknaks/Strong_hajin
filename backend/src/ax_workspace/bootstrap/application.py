@@ -174,6 +174,16 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def negotiate_work_request(
+        self, principal: Principal, request_id: UUID, expected_version: int, conditions: dict[str, Any]
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = WorkRequestApplication(SqlAlchemyWorkRequestRepository(session)).negotiate(
+                principal, request_id, expected_version, conditions
+            )
+            session.commit()
+            return result
+
     def work_request_inbox(self, principal: Principal) -> list[dict[str, Any]]:
         with self._session_factory() as session:
             return WorkRequestApplication(SqlAlchemyWorkRequestRepository(session)).inbox(principal)

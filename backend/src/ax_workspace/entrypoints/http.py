@@ -59,6 +59,11 @@ class WorkRequestDecisionRequest(BaseModel):
     reason: str | None = None
 
 
+class WorkRequestNegotiationRequest(BaseModel):
+    expected_version: int
+    conditions: dict[str, object]
+
+
 class GenerateDailyReportDraftRequest(BaseModel):
     report_date: str
 
@@ -246,6 +251,19 @@ def create_app(
             try:
                 return app.state.workflow_application.reject_work_request(
                     principal, request_id, request.expected_version, request.reason or ""
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/work-requests/{request_id}/negotiate")
+        def negotiate_work_request(
+            request_id: UUID,
+            request: WorkRequestNegotiationRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.negotiate_work_request(
+                    principal, request_id, request.expected_version, request.conditions
                 )
             except Exception as error:
                 raise _runtime_error(error) from error

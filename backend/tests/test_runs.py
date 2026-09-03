@@ -293,6 +293,33 @@ def test_work_request_rejection_never_creates_a_task(tmp_path) -> None:
     assert client.get("/api/my-work", headers={"X-Demo-Persona": "jiho"}).json() == []
 
 
+def test_work_request_negotiation_updates_conditions_and_requires_a_fresh_decision(tmp_path) -> None:
+    client = _client_with_seeded_database(tmp_path)
+    created = client.post(
+        "/api/work-requests",
+        headers={"X-Demo-Persona": "mina"},
+        json={"title": "일정 협의가 필요한 요청", "assignee_id": "jiho"},
+    ).json()
+
+    negotiated = client.post(
+        f"/api/work-requests/{created['request_id']}/negotiate",
+        headers={"X-Demo-Persona": "jiho"},
+        json={"expected_version": created["version"], "conditions": {"due_date": "2026-09-05"}},
+    )
+    assert negotiated.status_code == 200
+    assert negotiated.json()["state"] == "negotiating"
+    assert negotiated.json()["conditions"] == {"due_date": "2026-09-05"}
+    assert client.get("/api/my-work", headers={"X-Demo-Persona": "jiho"}).json() == []
+
+    accepted = client.post(
+        f"/api/work-requests/{created['request_id']}/accept",
+        headers={"X-Demo-Persona": "jiho"},
+        json={"expected_version": negotiated.json()["version"]},
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["task_id"]
+
+
 def test_organization_profile_is_a_persisted_authorized_projection(tmp_path) -> None:
     client = _client_with_seeded_database(tmp_path)
 
