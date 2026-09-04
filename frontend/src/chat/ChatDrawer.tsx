@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { personName } from "../labels";
 import type { Conversation, ConversationContextReference } from "../viewModels";
@@ -47,7 +47,6 @@ export function ChatDrawer({
   listStatus,
   isProcessing,
   localFragments,
-  canDecideActions,
   message,
   selectedContext,
   onMessageChange,
@@ -58,6 +57,7 @@ export function ChatDrawer({
   onSend,
   onCancel,
   onDecide,
+  onRetryTurn,
   onRetryFragment,
   onDiscardFragment,
   onRetryList,
@@ -69,7 +69,7 @@ export function ChatDrawer({
   listStatus: ListStatus;
   isProcessing: boolean;
   localFragments: LocalFragment[];
-  canDecideActions: boolean;
+  /** The unsent draft of the active conversation (kept per conversation by the owner). */
   message: string;
   selectedContext: LabeledContextReference | undefined;
   onMessageChange: (value: string) => void;
@@ -79,13 +79,22 @@ export function ChatDrawer({
   onSelect: (conversation: Conversation) => void;
   onSend: () => void;
   onCancel: () => void;
-  onDecide: (actionId: string, expectedVersion: number, decision: "approve" | "reject") => Promise<void>;
+  onDecide: (actionId: string, expectedVersion: number, decision: string) => Promise<void>;
+  onRetryTurn: (turnId: string) => void;
   onRetryFragment: (fragment: LocalFragment) => void;
   onDiscardFragment: (localId: string) => void;
   onRetryList: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [switcherOpen, setSwitcherOpen] = useState(true);
+  const composer = useRef<HTMLTextAreaElement>(null);
+  // Auto-grow: the browser resize handle is off; height follows content up to the CSS max-height, then scrolls inside.
+  useEffect(() => {
+    const element = composer.current;
+    if (!element) return;
+    element.style.height = "auto";
+    element.style.height = `${element.scrollHeight}px`;
+  }, [message, activeConversation?.conversation_id]);
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return conversations;
@@ -170,12 +179,12 @@ export function ChatDrawer({
 
       {activeConversation ? (
         <MessageList
-          canDecideActions={canDecideActions}
           conversation={activeConversation}
           localFragments={localFragments}
           onDecide={onDecide}
           onDiscardFragment={onDiscardFragment}
           onRetryFragment={onRetryFragment}
+          onRetryTurn={onRetryTurn}
         />
       ) : (
         <div className="ax-messages-wrap">
@@ -209,6 +218,8 @@ export function ChatDrawer({
         </label>
         <textarea
           id="ax-message"
+          ref={composer}
+          rows={2}
           onChange={(event) => onMessageChange(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {

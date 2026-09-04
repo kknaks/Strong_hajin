@@ -400,3 +400,7 @@ export async function uploadRequestEvidence(requestId: string, file: File): Prom
 export function requestAttachmentUrl(requestId: string, attachmentId: string): string {
   return `/api/work-requests/${requestId}/attachments/${attachmentId}/content`;
 }
+
+export async function retryConversationTurn(conversationId: string, turnId: string): Promise<{ conversation_id: string; turn_id: string; retry_of_turn_id: string }> {
+  return request(`/api/conversations/${conversationId}/turns/${turnId}/retry`, { method: "POST", body: "{}" });
+}

@@ -51,10 +51,10 @@ try {
     if (count !== 0) throw new Error("Conversation state leaked across the active-session switch");
   });
   await conversationButton(firstConversation.conversation_id).click();
-  const toolSummary = page.getByText(/도구 \d+개 실행 · 완료/).first();
+  const toolSummary = page.locator(".ax-rail.terminal .ax-rail-summary", { hasText: /✓ 완료 · 도구 \d+개/ }).first();
   await toolSummary.waitFor({ timeout: 90_000 });
   await toolSummary.click();
-  await page.getByText("task list · 완료").first().waitFor();
+  await page.locator(".ax-rail-tool.completed", { hasText: "task list" }).first().waitFor();
   await conversationButton(secondConversation.conversation_id).click();
   await pollFor(
     page,

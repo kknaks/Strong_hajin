@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
-from ax_workspace.modules.organization_access.domain import ACTION_READ, Principal
+from ax_workspace.modules.ax_execution.actions import action_commands
+from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, ACTION_READ, Principal
 
 
 class ConversationError(Exception):
@@ -77,6 +78,7 @@ class ConversationRepository(Protocol):
     def list_for(self, owner_id: str) -> list[Any]: ...
     def accept_fragment(self, conversation: Any, body: str, context: list[dict[str, str | bool]], idempotency_key: str | None) -> tuple[Any, Any | None, bool, int]: ...
     def cancel_active(self, conversation: Any, expected_version: int) -> Any: ...
+    def retry_turn(self, conversation: Any, failed_turn_id: UUID, actor_id: str) -> Any: ...
     def view(self, conversation: Any, *, include_actions: bool = False) -> dict[str, Any]: ...
 
 
@@ -132,8 +134,18 @@ class ConversationApplication:
             self._repository.cancel_active(self._owned(principal, conversation_id, lock=True), expected_version)
         )
 
+    def retry(self, principal: Principal, conversation_id: UUID, turn_id: UUID) -> dict[str, Any]:
+        """Re-submit a failed/cancelled turn as a new Turn with the original fragments and context (idempotent)."""
+        conversation = self._owned(principal, conversation_id, lock=True)
+        turn = self._repository.retry_turn(conversation, turn_id, str(principal.id))
+        return {"conversation_id": str(conversation.id), "turn_id": str(turn.id), "retry_of_turn_id": str(turn.retry_of_turn_id)}
+
     def _view(self, principal: Principal, conversation: Any) -> dict[str, Any]:
-        return self._repository.view(conversation, include_actions=ACTION_READ in principal.capabilities)
+        view = self._repository.view(conversation, include_actions=ACTION_READ in principal.capabilities)
+        # Approval commands come from the ledger + the caller's current capability, never inferred by the client.
+        for action in view.get("actions", []):
+            action["commands"] = action_commands(action.get("state"), ACTION_DECIDE in principal.capabilities)
+        return view
 
     def _owned(self, principal: Principal, conversation_id: UUID, *, lock: bool = False) -> Any:
         conversation = self._repository.conversation(conversation_id, str(principal.id), lock=lock)

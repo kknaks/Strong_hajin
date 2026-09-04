@@ -62,7 +62,13 @@ class ActionApplication:
 
     def list(self, principal: Principal) -> list[dict[str, Any]]:
         self._require(principal, ACTION_READ)
-        return [self._repository.view(action) for action in self._repository.list_for(str(principal.id))]
+        can_decide = ACTION_DECIDE in principal.capabilities
+        views = []
+        for action in self._repository.list_for(str(principal.id)):
+            view = self._repository.view(action)
+            view["commands"] = action_commands(view.get("state"), can_decide)
+            views.append(view)
+        return views
 
     def decide(
         self,
@@ -95,3 +101,14 @@ class ActionApplication:
     def _require(principal: Principal, capability: str) -> None:
         if capability not in principal.capabilities:
             raise ActionCapabilityDenied(f"{capability} capability is required")
+
+
+def action_commands(state: Any, can_decide: bool) -> list[dict[str, str]]:
+    """Server-provided approval commands (id, label, tone). The client repeats them verbatim and never infers
+    controls or wording from the action state."""
+    if state != "pending" or not can_decide:
+        return []
+    return [
+        {"id": "approve", "label": "승인", "tone": "primary"},
+        {"id": "reject", "label": "거절", "tone": "neutral"},
+    ]

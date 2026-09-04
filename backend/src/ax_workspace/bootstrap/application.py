@@ -419,6 +419,12 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def retry_conversation_turn(self, principal: Principal, conversation_id: UUID, turn_id: UUID) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._conversations(session).retry(principal, conversation_id, turn_id)
+            session.commit()
+            return result
+
     def cancel_conversation_turn(
         self, principal: Principal, conversation_id: UUID, expected_version: int
     ) -> dict[str, Any]:

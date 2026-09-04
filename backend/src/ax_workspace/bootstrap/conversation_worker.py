@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import logging
+import threading
 from typing import Any, Callable
 from uuid import UUID, uuid4
 
@@ -153,9 +154,11 @@ class ConversationWorker:
             claim = self._claim_message(message)
             if claim is None:
                 return False
-            heartbeat = asyncio.create_task(self._heartbeat(claim.message_id, claim.lease_token))
+            cancel = threading.Event()
+            heartbeat = asyncio.create_task(self._heartbeat(claim, cancel))
+            sink = _ProjectionSink(self, claim.execution)
             try:
-                result = await asyncio.to_thread(self._provider.converse, claim.request)
+                result = await asyncio.to_thread(self._provider.converse, claim.request, sink=sink, cancel=cancel)
             except ProviderFailure as error:
                 self._handle_failure(claim, error)
             finally:
@@ -168,18 +171,29 @@ class ConversationWorker:
                 self._complete(claim, result)
             return True
 
-    async def _heartbeat(self, message_id: str, lease_token: str) -> None:
+    async def _heartbeat(self, claim: ClaimedTurn, cancel: threading.Event) -> None:
+        """Extend the transport lease and watch for a DB-side cancellation, which stops the provider process."""
         interval = max(1, self._settings.conversation_queue_visibility_timeout // 2)
+        cancel_poll = 1.0
+        elapsed = 0.0
         while True:
-            await asyncio.sleep(interval)
+            await asyncio.sleep(cancel_poll)
+            elapsed += cancel_poll
             with self._sessions() as session:
-                # Fenced: a lost lease is not silently re-acquired by heartbeating.
-                self._queue_factory(session).extend_visibility(
-                    message_id,
-                    lease_token,
-                    self._settings.conversation_queue_visibility_timeout,
-                )
+                queue = self._queue_factory(session)
+                if SqlAlchemyConversationRepository(session, queue).is_cancelled(claim.execution):
+                    cancel.set()
+                if elapsed >= interval:
+                    elapsed = 0.0
+                    # Fenced: a lost lease is not silently re-acquired by heartbeating.
+                    queue.extend_visibility(claim.message_id, claim.lease_token, self._settings.conversation_queue_visibility_timeout)
                 session.commit()
+
+    def apply_event(self, execution: ConversationExecution, event: Any) -> None:
+        """Persist one observed provider event in its own short transaction (called from the provider thread)."""
+        with self._sessions() as session:
+            SqlAlchemyConversationRepository(session, self._queue_factory(session)).apply_event(execution, event)
+            session.commit()
 
     def _complete(self, claim: ClaimedTurn, result: Any) -> None:
         with self._sessions() as session:
@@ -204,6 +218,19 @@ class ConversationWorker:
             if terminal:
                 queue.archive(claim.message_id, claim.lease_token)
             else:
+                # The user sees `retrying` (not a silent stall) while the transport backs off.
+                SqlAlchemyConversationRepository(session, queue).mark_retrying(claim.execution)
                 delay = min(self._settings.conversation_queue_visibility_timeout, 2 ** max(0, claim.read_count - 1))
                 queue.release(claim.message_id, claim.lease_token, delay_seconds=delay, error=str(error)[:200])
             session.commit()
+
+
+class _ProjectionSink:
+    """AiEventSink that writes observed provider events into the Conversation projection."""
+
+    def __init__(self, worker: ConversationWorker, execution: ConversationExecution) -> None:
+        self._worker = worker
+        self._execution = execution
+
+    def accept(self, event: Any) -> None:
+        self._worker.apply_event(self._execution, event)

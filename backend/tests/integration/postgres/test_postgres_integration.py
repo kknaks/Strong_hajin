@@ -44,7 +44,7 @@ class ConversationProvider:
         self.calls = 0
         self.started = Event()
 
-    def converse(self, request) -> AiConversationResult:
+    def converse(self, request, *, sink=None, cancel=None) -> AiConversationResult:
         self.calls += 1
         self.started.set()
         if self.delay_seconds:
@@ -109,7 +109,7 @@ class ConcurrentReportProvider:
             usage=None,
         )
 
-    def converse(self, request):  # pragma: no cover - this double is report-only
+    def converse(self, request, *, sink=None, cancel=None):  # pragma: no cover - this double is report-only
         raise AssertionError("report provider must not service conversation execution")
 
 
@@ -1026,3 +1026,81 @@ def test_job_queue_expired_lease_is_fenced_out_even_before_reclaim() -> None:
         [again] = SqlAlchemyDurableJobQueue(session).claim(kind, limit=1, lease_seconds=30, worker_id="eager")
         assert again.attempt == 2 and SqlAlchemyDurableJobQueue(session).complete(again.job_id, again.lease_token) is True
         session.commit()
+
+
+@pytest.mark.integration
+def test_conversation_cancel_stops_the_provider_and_late_events_are_ignored() -> None:
+    """DB-first cancel: the API marks the turn cancelled, the worker's watcher sets the cancel token, the provider stops,
+    partial text stays with body_state=cancelled, and a late provider event cannot reopen or overwrite the turn."""
+    from datetime import UTC, datetime
+
+    from ax_workspace.modules.ax_execution.ai import AiProviderEvent, ProviderCancelled
+    from ax_workspace.platform.conversations import SqlAlchemyConversationRepository
+    from ax_workspace.platform.persistence import ConversationTurnRecord
+
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres", conversation_queue_visibility_timeout=4)
+    client = TestClient(create_app(settings))
+    release = Event()
+    observed_cancel = Event()
+
+    class BlockingProvider:
+        def converse(self, request, *, sink=None, cancel=None):
+            now = datetime.now(UTC)
+            sink.accept(AiProviderEvent("turn_started", now, provider_run_ref="run-c"))
+            sink.accept(AiProviderEvent("item_completed", now, item_id="m1", item_type="agent_message", text="부분 답변입니다."))
+            # Behave like the real adapter: keep running until the cancel token is set (or the test releases us).
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and not release.is_set():
+                if cancel is not None and cancel.is_set():
+                    observed_cancel.set()
+                    raise ProviderCancelled("cancelled by user")
+                time.sleep(0.1)
+            raise AssertionError("provider was never cancelled")
+
+    conversation = client.post("/api/conversations", headers={"X-Demo-Persona": "mina"}, json={"title": "취소 대화"}).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={"X-Demo-Persona": "mina", "Idempotency-Key": "cancel-me"},
+        json={"body": "오래 걸리는 질문", "context": []},
+    )
+    assert accepted.status_code == 202
+    worker = ConversationWorker(settings, provider=BlockingProvider())
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        running = executor.submit(lambda: asyncio.run(worker.run_once()))
+        # Partial text and the live progress are visible through the same hydrate query while the turn runs.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            view = client.get(f"/api/conversations/{conversation['conversation_id']}", headers={"X-Demo-Persona": "mina"}).json()
+            assistant = [m for m in view["messages"] if m["role"] == "assistant"]
+            if assistant and assistant[0]["body"] == "부분 답변입니다." and assistant[0]["body_state"] == "streaming":
+                break
+            time.sleep(0.1)
+        else:
+            release.set()
+            raise AssertionError("partial assistant text was not persisted while running")
+        assert view["turns"][0]["progress_state"] in {"preparing", "composing"} and view["turns"][0]["execution_started_at"]
+        cancelled = client.post(
+            f"/api/conversations/{conversation['conversation_id']}/cancel", headers={"X-Demo-Persona": "mina"}, json={"expected_version": view["version"]}
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        assert observed_cancel.wait(timeout=8), "the worker did not propagate the cancellation to the provider"
+        assert running.result(timeout=10) is True
+    view = client.get(f"/api/conversations/{conversation['conversation_id']}", headers={"X-Demo-Persona": "mina"}).json()
+    [turn] = view["turns"]
+    assert turn["state"] == "cancelled" and turn["progress_state"] == "cancelled" and turn["error"] is None
+    assistant = [m for m in view["messages"] if m["role"] == "assistant"][0]
+    assert assistant["body"] == "부분 답변입니다." and assistant["body_state"] == "cancelled"
+    # A late event for the terminal turn is ignored.
+    with make_session_factory(database_url)() as session:
+        record = session.get(ConversationTurnRecord, UUID(turn["turn_id"]))
+        execution = ConversationExecution(record.id, record.conversation_id, record.execution_id)
+        late = AiProviderEvent("item_completed", datetime.now(UTC), item_id="late", item_type="agent_message", text="늦게 도착한 본문")
+        assert SqlAlchemyConversationRepository(session, SqlAlchemyDurableJobQueue(session)).apply_event(execution, late) is False
+        session.commit()
+    view = client.get(f"/api/conversations/{conversation['conversation_id']}", headers={"X-Demo-Persona": "mina"}).json()
+    assert [m["body"] for m in view["messages"] if m["role"] == "assistant"] == ["부분 답변입니다."]
+    assert view["turns"][0]["state"] == "cancelled"
+    with make_session_factory(database_url)() as session:
+        assert _queue_count(session) == 0

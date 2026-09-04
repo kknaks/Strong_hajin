@@ -47,7 +47,7 @@ class ContractTestAiProvider:
             usage={"input_tokens": 11, "output_tokens": 9},
         )
 
-    def converse(self, request) -> AiConversationResult:
+    def converse(self, request, *, sink=None, cancel=None) -> AiConversationResult:
         return AiConversationResult(
             provider_run_ref="chat_turn_contract_test",
             provider_session_ref="chat_session_contract_test",

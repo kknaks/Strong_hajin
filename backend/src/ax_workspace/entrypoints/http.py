@@ -276,6 +276,13 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
+        @app.post("/api/conversations/{conversation_id}/turns/{turn_id}/retry", status_code=status.HTTP_202_ACCEPTED)
+        def retry_conversation_turn(conversation_id: UUID, turn_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.retry_conversation_turn(principal, conversation_id, turn_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
         @app.get("/api/actions")
         def actions(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
             try:

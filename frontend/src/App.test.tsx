@@ -434,6 +434,7 @@ describe("product surfaces", () => {
             action_type: "task.create_self",
             title: "업무 만들기",
             state: "pending",
+            commands: [{ id: "approve", label: "승인", tone: "primary" }, { id: "reject", label: "거절", tone: "neutral" }],
             version: 4,
             payload_summary: "업무 만들기",
             result: null,
@@ -506,6 +507,7 @@ describe("product surfaces", () => {
                 action_type: "task.create_self",
                 title: "업무 만들기",
                 state: "pending",
+                commands: [],
                 version: 1,
                 payload_summary: "업무 만들기",
                 result: null,
@@ -589,11 +591,12 @@ describe("product surfaces", () => {
     await screen.findByRole("navigation", { name: "제품 탐색" });
     fireEvent.click(await screen.findByRole("button", { name: "AX" }));
 
-    const details = await screen.findByText("내 업무 조회 · 완료");
-    fireEvent.click(details);
+    const receipt = (await screen.findByText("내 업무 조회")).closest(".ax-rail-tool") as HTMLElement;
+    expect(within(receipt).getByText("완료")).toBeTruthy();
+    fireEvent.click(receipt.closest("details")!.querySelector("summary")!);
     expect(screen.getByTitle(/현재 권한의 업무만 조회/)).toBeTruthy();
     expect(screen.getByText("업무 2건")).toBeTruthy();
-    expect(screen.getByTitle(/321ms/)).toBeTruthy();
+    expect(screen.getByText("321ms")).toBeTruthy();
   });
 
   it("restores an existing daily-report draft and submission history for the selected date", async () => {
@@ -787,7 +790,7 @@ describe("product surfaces", () => {
       expect(screen.getByRole("button", { name: "새 대화" }).getAttribute("aria-pressed")).toBe("true");
     });
     expect(screen.getByText("새 대화의 현재 발화")).toBeTruthy();
-    expect(screen.getByText("실행 중")).toBeTruthy();
+    expect(screen.getByText(/요청을 준비하는 중|대기열에서 기다리는 중/)).toBeTruthy();
   });
 
   it("applies only the latest overlapping Conversation list response", async () => {
@@ -978,6 +981,7 @@ describe("product surfaces", () => {
               action_type: "task.create_self",
               title: "최신 판단 카드",
               state: "pending",
+            commands: [{ id: "approve", label: "승인", tone: "primary" }, { id: "reject", label: "거절", tone: "neutral" }],
               version: 1,
               payload_summary: "최신 판단 카드",
               result: null,
@@ -1031,13 +1035,13 @@ describe("product surfaces", () => {
       expect(screen.getByText("상세의 최신 상태")).toBeTruthy();
       expect(screen.queryByText("목록의 오래된 상태")).toBeNull();
       expect(screen.getAllByText("최신 판단 카드").length).toBeGreaterThanOrEqual(2);
-      expect(screen.getByText("내 업무 조회 · 완료")).toBeTruthy();
+      expect(screen.getByText("내 업무 조회")).toBeTruthy();
     });
     fireEvent.click(screen.getByRole("button", { name: "교차 요청 확인" }));
     expect(screen.getByText("상세의 최신 상태")).toBeTruthy();
     expect(screen.queryByText("목록의 오래된 상태")).toBeNull();
     expect(screen.getAllByText("최신 판단 카드").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("내 업무 조회 · 완료")).toBeTruthy();
+    expect(screen.getByText("내 업무 조회")).toBeTruthy();
   });
 
   it("keeps existing AX sessions when a new Conversation is created", async () => {
@@ -1380,7 +1384,7 @@ describe("product surfaces", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "새 대화" }).getAttribute("aria-pressed")).toBe("true");
     });
-    expect(screen.getByText("실행 중")).toBeTruthy();
+    expect(screen.getByText(/요청을 준비하는 중|대기열에서 기다리는 중/)).toBeTruthy();
     expect(await screen.findByText("업무 요청 생성 확인", {}, { timeout: 2_000 })).toBeTruthy();
     expect(conversationReads).toBeGreaterThanOrEqual(1);
   });

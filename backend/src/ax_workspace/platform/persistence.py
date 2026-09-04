@@ -330,6 +330,16 @@ class ConversationTurnRecord(Base):
     # Provider attempts are domain execution metadata. The durable job's transport
     # attempt_count also counts harmless redeliveries that lose the live-worker guard.
     execution_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # User-facing lifecycle projection (queued/preparing/tool_running/composing/retrying/completed/failed/cancelled),
+    # persisted so re-entry hydrates the same state the live viewer saw. Only observed provider events feed it.
+    progress_state: Mapped[str] = mapped_column(String(30), nullable=False, default="queued")
+    current_tool_display_name: Mapped[str | None] = mapped_column(String(300))
+    execution_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    execution_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    usage: Mapped[dict | None] = mapped_column(JSON)
+    # Retry lineage: a retry is a new Turn that references the terminal one; the key makes one-click retry idempotent.
+    retry_of_turn_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    retry_key: Mapped[str | None] = mapped_column(String(200), unique=True)
 
 
 class ConversationProviderSessionReferenceRecord(Base):
@@ -366,6 +376,8 @@ class ConversationMessageRecord(Base):
     role: Mapped[str] = mapped_column(String(40), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     idempotency_key: Mapped[str | None] = mapped_column(String(200))
+    # user rows are always final; assistant rows move streaming -> final | failed | cancelled and keep partial text.
+    body_state: Mapped[str] = mapped_column(String(20), nullable=False, default="final")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

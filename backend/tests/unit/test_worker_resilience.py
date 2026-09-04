@@ -34,7 +34,7 @@ class _FlakyQueue:
 
 
 class _NoProvider:
-    def converse(self, request):  # pragma: no cover - never reached without jobs
+    def converse(self, request, *, sink=None, cancel=None):  # pragma: no cover - never reached without jobs
         raise AssertionError("no provider call expected")
 
 

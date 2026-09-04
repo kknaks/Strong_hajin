@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getActionInbox, getDeveloperPersonas, getMyWork, getSession, logout } from "./api";
 import { CalendarPage } from "./CalendarPage";
 import { ChatDrawer, contextKey, type LabeledContextReference } from "./chat/ChatDrawer";
-import { useConversations } from "./chat/useConversations";
+import { NEW_DRAFT_KEY, useConversations } from "./chat/useConversations";
 import { DailyReportPage } from "./DailyReportPage";
 import { personName } from "./labels";
 import { LoginPage } from "./LoginPage";
@@ -39,7 +39,6 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [isAxOpen, setIsAxOpen] = useState(false);
-  const [message, setMessage] = useState("");
   const [contextOptions, setContextOptions] = useState<LabeledContextReference[]>([]);
   const [selectedContextKey, setSelectedContextKey] = useState("");
   const reportError = useCallback((text: string) => setError(text), []);
@@ -81,7 +80,6 @@ export default function App() {
     chat.reset();
     setSurface("today");
     setIsAxOpen(false);
-    setMessage("");
     setContextOptions([]);
     setSelectedContextKey("");
     setError(null);
@@ -149,20 +147,22 @@ export default function App() {
     };
     setContextOptions((current) => (current.some((item) => contextKey(item) === contextKey(reference)) ? current : [reference, ...current]));
     setSelectedContextKey(contextKey(reference));
-    setMessage((current) => (current.trim() ? current : `'${task.title}' 업무에 대해 알려줘.`));
+    // Prefill only when that conversation's draft is empty; drafts stay per conversation.
+    if (!chat.draft.trim()) chat.setDraft(`'${task.title}' 업무에 대해 알려줘.`, chat.activeConversation?.conversation_id ?? NEW_DRAFT_KEY);
     setIsAxOpen(true);
   }
 
   async function sendMessage() {
-    if (!message.trim() || !chat.activeConversation) return;
+    if (!chat.draft.trim() || !chat.activeConversation) return;
     const selectedContext = contextOptions.find((item) => contextKey(item) === selectedContextKey);
-    const body = message;
-    setMessage("");
-    const accepted = await chat.send(chat.activeConversation.conversation_id, body, selectedContext ? [stripLabel(selectedContext)] : []);
-    if (!accepted) setMessage((current) => current || body);
+    const conversationId = chat.activeConversation.conversation_id;
+    const body = chat.draft;
+    chat.setDraft("", conversationId);
+    // The optimistic fragment carries the text from here; a rejected send keeps its own retry/discard controls.
+    await chat.send(conversationId, body, selectedContext ? [stripLabel(selectedContext)] : []);
   }
 
-  async function decideConversationAction(actionId: string, expectedVersion: number, decision: "approve" | "reject") {
+  async function decideConversationAction(actionId: string, expectedVersion: number, decision: string) {
     try {
       await chat.decide(actionId, expectedVersion, decision);
       setToast(decision === "approve" ? "제안을 승인해 반영했습니다." : "제안을 거절했습니다.");
@@ -294,20 +294,20 @@ export default function App() {
       {isAxOpen && (
         <ChatDrawer
           activeConversation={chat.activeConversation}
-          canDecideActions={canDecideActions}
           conversations={chat.conversations}
           isProcessing={chat.isProcessing}
           listStatus={chat.listStatus}
           localFragments={chat.localFragments}
-          message={message}
+          message={chat.draft}
           onCancel={() => void chat.cancelActive()}
           onClearContext={() => setSelectedContextKey("")}
           onClose={() => setIsAxOpen(false)}
           onDecide={decideConversationAction}
           onDiscardFragment={chat.discardFragment}
-          onMessageChange={setMessage}
+          onMessageChange={(value) => chat.setDraft(value)}
           onRetryFragment={(fragment) => void chat.retryFragment(fragment)}
           onRetryList={() => void chat.refreshConversations().catch(() => setError("AX 대화를 불러오지 못했습니다."))}
+          onRetryTurn={(turnId) => void chat.retryTurn(turnId)}
           onSelect={chat.select}
           onSend={() => void sendMessage()}
           onStart={() => void chat.start()}

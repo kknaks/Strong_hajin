@@ -209,6 +209,30 @@ export type ActionItem = {
   payload_summary: string;
   result: Record<string, unknown> | null;
   audit_ref: string | null;
+  /** Server-provided approval controls; rendered verbatim, never inferred from state on the client. */
+  commands?: ActionCommand[];
+};
+
+export type ActionCommand = { id: "approve" | "reject" | string; label: string; tone: "primary" | "neutral" | "danger" | string };
+
+export type TurnProgressState = "queued" | "preparing" | "tool_running" | "composing" | "retrying" | "completed" | "failed" | "cancelled";
+
+export type ConversationTurn = {
+  turn_id: string;
+  state: string;
+  progress_state?: TurnProgressState;
+  current_tool_display_name?: string | null;
+  attempt?: number;
+  queued_at?: string;
+  execution_started_at?: string | null;
+  execution_completed_at?: string | null;
+  queue_wait_ms?: number | null;
+  run_ms?: number | null;
+  retry_of_turn_id?: string | null;
+  usage?: Record<string, number> | null;
+  provider_run_ref: string | null;
+  provider_session_ref: string | null;
+  error: string | null;
 };
 
 export type Conversation = {
@@ -222,8 +246,11 @@ export type Conversation = {
     body: string;
     sequence: number;
     state: "accepted" | "queued";
+    body_state?: "final" | "streaming" | "failed" | "cancelled";
+    idempotency_key?: string | null;
+    created_at?: string;
   }>;
-  turns: Array<{ turn_id: string; state: string; provider_run_ref: string | null; provider_session_ref: string | null; error: string | null }>;
+  turns: ConversationTurn[];
   context_references: ConversationContextReference[];
   tool_invocations: Array<{
     turn_id: string;
@@ -236,6 +263,8 @@ export type Conversation = {
     result_summary: string | null;
     error_summary: string | null;
     latency_ms: number | null;
+    started_at?: string | null;
+    completed_at?: string | null;
     target_resource_id: string | null;
     target_resource_version: string | null;
     audit_ref: string | null;

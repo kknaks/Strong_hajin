@@ -7,22 +7,30 @@ no host config/rules/skills/plugins, and guaranteed temporary-file cleanup.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 from tempfile import TemporaryDirectory
+import threading
+import time
 from time import perf_counter
 from typing import Any, Callable
 
 from ax_workspace.modules.ax_execution.ai import (
     AiConversationRequest,
     AiConversationResult,
+    AiEventSink,
     AiGeneration,
+    AiProviderEvent,
     AiToolInvocation,
     AiGenerationRequest,
     AiProviderProvenance,
+    CancelToken,
+    ProviderCancelled,
     ProviderRequestFailed,
     ProviderUnavailable,
 )
@@ -134,8 +142,19 @@ class CodexCliProviderAdapter:
                 usage=usage,
             )
 
-    def converse(self, request: AiConversationRequest) -> AiConversationResult:
-        """Run one persisted Codex CLI conversation turn under the same isolated policy."""
+    def converse(
+        self,
+        request: AiConversationRequest,
+        *,
+        sink: AiEventSink | None = None,
+        cancel: CancelToken | None = None,
+    ) -> AiConversationResult:
+        """Run one persisted Codex CLI conversation turn under the same isolated policy.
+
+        `codex exec --json` JSONL is consumed while the process runs: each observed event is normalized and handed
+        to the sink immediately (agent messages arrive as completed items; no token deltas are fabricated). When the
+        cancel token is set the subprocess is stopped and ProviderCancelled is raised.
+        """
         binary = shutil.which(self._command_name)
         if binary is None and self._runner is _subprocess_runner:
             raise ProviderUnavailable("Codex CLI binary is not available")
@@ -148,28 +167,33 @@ class CodexCliProviderAdapter:
             work_dir = Path(temporary)
             output_path = work_dir / "assistant-message.txt"
             prompt = self._conversation_prompt(request)
+            ingest = CodexEventIngest(sink)
             started = perf_counter()
             try:
-                result = self._runner(
+                result = _invoke_runner(
+                    self._runner,
                     command,
                     self._conversation_arguments(request, output_path, prompt),
                     work_dir,
                     self._conversation_environment(request, runtime_home),
                     self._profile.timeout_seconds,
+                    ingest.consume_line,
+                    (lambda: cancel.is_set()) if cancel is not None else None,
                 )
             except subprocess.TimeoutExpired as error:
-                raise ProviderRequestFailed("Codex CLI conversation timed out") from error
+                raise ProviderRequestFailed("Codex CLI conversation timed out", ingest.provenance(request, started, self._profile)) from error
+            except EventIngestFailed as error:
+                # Persisting an observed event failed: the execution was stopped; the turn must not look complete.
+                raise ProviderRequestFailed("Codex CLI events could not be persisted", ingest.provenance(request, started, self._profile)) from error
             except OSError as error:
                 raise ProviderUnavailable("Codex CLI could not start") from error
-            latency_ms = int((perf_counter() - started) * 1000)
-            run_ref, session_ref, _, _, _ = self._provenance(result.stdout)
-            provenance = AiProviderProvenance(
-                provider_run_ref=run_ref,
-                provider_session_ref=session_ref or request.provider_session_ref,
-                requested_model=self._profile.model,
-                requested_tier=self._profile.service_tier,
-                latency_ms=latency_ms,
-            )
+            # A legacy runner returns the whole stdout at once; feed it through the same ingest path.
+            if not ingest.consumed_any and result.stdout:
+                for line in result.stdout.splitlines():
+                    ingest.consume_line(line)
+            provenance = ingest.provenance(request, started, self._profile)
+            if cancel is not None and cancel.is_set():
+                raise ProviderCancelled("Codex CLI conversation was cancelled", provenance)
             if result.returncode != 0:
                 raise ProviderRequestFailed("Codex CLI conversation failed", provenance)
             try:
@@ -179,10 +203,11 @@ class CodexCliProviderAdapter:
             if not body:
                 raise ProviderRequestFailed("Codex CLI returned an empty conversation response", provenance)
             return AiConversationResult(
-                run_ref,
-                session_ref or request.provider_session_ref,
+                ingest.run_ref,
+                ingest.session_ref or request.provider_session_ref,
                 body,
-                self._tool_invocations(result.stdout),
+                ingest.tool_invocations(),
+                usage=ingest.usage,
             )
 
     def _conversation_arguments(
@@ -346,46 +371,182 @@ class CodexCliProviderAdapter:
 
     @staticmethod
     def _tool_invocations(stdout: str) -> list[AiToolInvocation]:
-        """Fold Codex JSONL MCP/tool lifecycle events into redacted, human-readable summaries."""
-        calls: dict[str, dict[str, Any]] = {}
-        order: list[str] = []
+        """Fold a complete Codex JSONL transcript into redacted tool receipts (offline/legacy path)."""
+        ingest = CodexEventIngest(None)
         for line in stdout.splitlines():
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(event, dict):
-                continue
-            item = event.get("item") if isinstance(event.get("item"), dict) else event
-            item_type = str(item.get("type", event.get("type", "")))
-            if "tool" not in item_type and "mcp" not in item_type:
-                continue
-            call_id = str(item.get("id") or item.get("call_id") or event.get("item_id") or f"event-{len(order)}")
-            if call_id not in calls:
-                tool_name = str(item.get("tool") or item.get("name") or item.get("tool_name") or "Tool")
-                calls[call_id] = {
-                    "tool_name": tool_name,
-                    "display_name": tool_name.replace("_", " "),
-                    "input_summary": "입력 정보 없음",
-                    "state": "running",
-                    "result_summary": None,
-                    "error_summary": None,
-                    "latency_ms": None,
-                }
-                order.append(call_id)
-            current = calls[call_id]
-            if isinstance(item.get("arguments"), dict):
-                current["input_summary"] = _summarize_tool_arguments(item["arguments"])
-            status = str(item.get("status", ""))
-            if status in {"failed", "error"} or item_type.endswith("failed") or item.get("error"):
-                current["state"] = "failed"
-                current["error_summary"] = _summarize_tool_error(item.get("error"))
-            elif status in {"completed", "success"} or item_type.endswith("result"):
-                current["state"] = "completed"
-                current["result_summary"] = _summarize_tool_result(item.get("result"), tool_name=current["tool_name"])
-            if isinstance(item.get("duration_ms"), int):
-                current["latency_ms"] = item["duration_ms"]
-        return [AiToolInvocation(provider_call_id=call_id, **calls[call_id]) for call_id in order]
+            ingest.consume_line(line)
+        return ingest.tool_invocations()
+
+
+def _invoke_runner(runner, command, arguments, cwd, environment, timeout_seconds, on_line, should_cancel) -> ProcessResult:
+    """Call a streaming runner; fall back to the legacy 5-argument runner used by older tests."""
+    try:
+        return runner(command, arguments, cwd, environment, timeout_seconds, on_line=on_line, should_cancel=should_cancel)
+    except TypeError as error:
+        if "on_line" not in str(error) and "positional" not in str(error):
+            raise
+        return runner(command, arguments, cwd, environment, timeout_seconds)
+
+
+_TOOL_ITEM_TYPES = frozenset({"mcp_tool_call", "command_execution", "web_search", "file_change"})
+
+
+class CodexEventIngest:
+    """Normalizes `codex exec --json` lines into AiProviderEvents as they are observed.
+
+    Only facts present in the stream are emitted: agent_message text on item.completed, tool lifecycle on
+    item.started/item.completed, usage on turn.completed, error items. Timing is SCAX's observation clock: a tool's
+    latency is recorded only when both its start and its terminal event were observed.
+    """
+
+    def __init__(self, sink: AiEventSink | None) -> None:
+        self._sink = sink
+        self._calls: dict[str, dict[str, Any]] = {}
+        self._order: list[str] = []
+        self.run_ref: str | None = None
+        self.session_ref: str | None = None
+        self.observed_model: str | None = None
+        self.observed_tier: str | None = None
+        self.usage: dict[str, Any] | None = None
+        self.consumed_any = False
+        self.error_messages: list[str] = []
+
+    def provenance(self, request: AiConversationRequest, started: float, profile: CodexCliProfile) -> AiProviderProvenance:
+        return AiProviderProvenance(
+            provider_run_ref=self.run_ref,
+            provider_session_ref=self.session_ref or request.provider_session_ref,
+            requested_model=profile.model,
+            observed_model=self.observed_model,
+            requested_tier=profile.service_tier,
+            observed_tier=self.observed_tier,
+            latency_ms=int((perf_counter() - started) * 1000),
+            usage=self.usage,
+        )
+
+    def consume_line(self, line: str) -> None:
+        line = line.strip()
+        if not line:
+            return
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(event, dict):
+            return
+        self.consumed_any = True
+        now = datetime.now(UTC)
+        event_type = str(event.get("type", ""))
+        if isinstance(event.get("model"), str):
+            self.observed_model = event["model"]
+        if isinstance(event.get("service_tier"), str):
+            self.observed_tier = event["service_tier"]
+        if event_type == "thread.started":
+            self.session_ref = event.get("thread_id") or (event.get("thread") or {}).get("id") or self.session_ref
+            return
+        if event_type == "turn.started":
+            self.run_ref = event.get("turn_id") or (event.get("turn") or {}).get("id") or self.run_ref
+            self._emit(AiProviderEvent("turn_started", now, provider_run_ref=self.run_ref, provider_session_ref=self.session_ref))
+            return
+        if event_type in {"turn.completed", "turn.failed"}:
+            self.run_ref = event.get("turn_id") or (event.get("turn") or {}).get("id") or self.run_ref
+            if isinstance(event.get("usage"), dict):
+                self.usage = event["usage"]
+            error = event.get("error")
+            message = _summarize_tool_error(error) if error else None
+            self._emit(
+                AiProviderEvent(
+                    "turn_completed" if event_type == "turn.completed" else "turn_failed",
+                    now,
+                    provider_run_ref=self.run_ref,
+                    provider_session_ref=self.session_ref,
+                    usage=self.usage,
+                    error_message=message,
+                )
+            )
+            return
+        if event_type == "error":
+            message = _summarize_tool_error(event.get("message") or event.get("error") or event)
+            self.error_messages.append(message)
+            self._emit(AiProviderEvent("error", now, error_message=message))
+            return
+        if not event_type.startswith("item."):
+            return
+        item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        item_type = str(item.get("type", ""))
+        item_id = str(item.get("id") or event.get("item_id") or f"item-{len(self._order)}")
+        phase = event_type.split(".", 1)[1]  # started | updated | completed
+        if item_type == "agent_message":
+            text = item.get("text") if isinstance(item.get("text"), str) else None
+            if phase == "completed" and text:
+                self._emit(AiProviderEvent("item_completed", now, item_id=item_id, item_type=item_type, text=text))
+            return
+        if item_type == "error":
+            message = _summarize_tool_error(item.get("message"))
+            self.error_messages.append(message)
+            self._emit(AiProviderEvent("error", now, item_id=item_id, item_type=item_type, error_message=message))
+            return
+        if item_type == "reasoning":
+            return  # raw reasoning is never projected
+        if item_type not in _TOOL_ITEM_TYPES and "tool" not in item_type:
+            return
+        current = self._calls.get(item_id)
+        if current is None:
+            tool_name = str(item.get("tool") or item.get("name") or item.get("tool_name") or item_type)
+            current = {
+                "tool_name": tool_name,
+                "display_name": _display_name(item_type, tool_name, item),
+                "input_summary": "입력 정보 없음",
+                "state": "running",
+                "result_summary": None,
+                "error_summary": None,
+                "latency_ms": None,
+                "started_at": now if phase == "started" else None,
+                "completed_at": None,
+            }
+            self._calls[item_id] = current
+            self._order.append(item_id)
+        if isinstance(item.get("arguments"), dict):
+            current["input_summary"] = _summarize_tool_arguments(item["arguments"])
+        elif item_type == "command_execution" and isinstance(item.get("command"), str):
+            current["input_summary"] = f"명령: {_truncate(item['command'], 60)}"
+        status = str(item.get("status", ""))
+        if status in {"failed", "error", "declined"} or item.get("error"):
+            current["state"] = "failed"
+            current["error_summary"] = _summarize_tool_error(item.get("error") or status)
+        elif status in {"completed", "success"} or phase == "completed":
+            current["state"] = "completed"
+            current["result_summary"] = (
+                _summarize_tool_result(item.get("result"), tool_name=current["tool_name"])
+                if item_type == "mcp_tool_call"
+                else f"종료 코드 {item.get('exit_code')}" if item_type == "command_execution" and item.get("exit_code") is not None else "완료"
+            )
+        if current["state"] in {"completed", "failed"} and current["completed_at"] is None:
+            current["completed_at"] = now
+            if current["started_at"] is not None:
+                current["latency_ms"] = int((now - current["started_at"]).total_seconds() * 1000)
+        self._emit(AiProviderEvent(f"item_{phase}", now, item_id=item_id, item_type=item_type, tool=self._invocation(item_id)))
+
+    def _invocation(self, call_id: str) -> AiToolInvocation:
+        return AiToolInvocation(provider_call_id=call_id, **self._calls[call_id])
+
+    def tool_invocations(self) -> list[AiToolInvocation]:
+        return [self._invocation(call_id) for call_id in self._order]
+
+    def _emit(self, event: AiProviderEvent) -> None:
+        if self._sink is not None:
+            self._sink.accept(event)
+
+
+def _display_name(item_type: str, tool_name: str, item: dict[str, Any]) -> str:
+    if item_type == "mcp_tool_call":
+        return tool_name.replace("_", " ")
+    if item_type == "command_execution":
+        return "명령 실행"
+    if item_type == "web_search":
+        return "웹 검색"
+    if item_type == "file_change":
+        return "파일 변경"
+    return tool_name.replace("_", " ")
 
 
 _SAFE_ARGUMENT_KEYS = frozenset(
@@ -506,14 +667,98 @@ def _subprocess_runner(
     cwd: Path,
     environment: dict[str, str],
     timeout_seconds: int,
+    on_line: Callable[[str], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> ProcessResult:
-    completed = subprocess.run(
+    """Run the CLI in its own process group and stream stdout lines to `on_line` as they arrive.
+
+    Cancel and timeout stop the whole group (Codex spawns MCP child processes), so nothing is orphaned. A failing
+    `on_line` callback is not best-effort: the stream is stopped and EventIngestFailed is raised so the turn cannot
+    complete with missing persisted events.
+    """
+    process = subprocess.Popen(
         [command, *arguments],
-        capture_output=True,
-        check=False,
         cwd=cwd,
         env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=timeout_seconds,
+        bufsize=1,
+        start_new_session=True,
     )
-    return ProcessResult(completed.stdout, completed.stderr, completed.returncode)
+    stdout_lines: list[str] = []
+    stderr_chunks: list[str] = []
+    ingest_failure: list[BaseException] = []
+    deadline = time.monotonic() + timeout_seconds
+
+    def drain_stderr() -> None:
+        assert process.stderr is not None
+        for chunk in process.stderr:
+            stderr_chunks.append(chunk)
+
+    def drain_stdout() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            stdout_lines.append(line)
+            if on_line is not None and not ingest_failure:
+                try:
+                    on_line(line)
+                except Exception as error:  # noqa: BLE001 - recorded and surfaced; ingestion of further lines stops
+                    ingest_failure.append(error)
+
+    readers = [threading.Thread(target=drain_stdout, daemon=True), threading.Thread(target=drain_stderr, daemon=True)]
+    for reader in readers:
+        reader.start()
+    while process.poll() is None:
+        if ingest_failure:
+            _stop_process_group(process)
+            break
+        if should_cancel is not None and should_cancel():
+            _stop_process_group(process)
+            break
+        if time.monotonic() > deadline:
+            _stop_process_group(process)
+            for reader in readers:
+                reader.join(timeout=2)
+            raise subprocess.TimeoutExpired([command, *arguments], timeout_seconds)
+        time.sleep(0.05)
+    for reader in readers:
+        reader.join(timeout=5)
+    returncode = process.wait(timeout=5) if process.poll() is None else process.returncode
+    if ingest_failure:
+        raise EventIngestFailed("provider event could not be persisted") from ingest_failure[0]
+    return ProcessResult("".join(stdout_lines), "".join(stderr_chunks), returncode if returncode is not None else -1)
+
+
+class EventIngestFailed(RuntimeError):
+    """A sink/on_line callback failed while the provider was running; the execution was stopped."""
+
+
+def _stop_process_group(process: subprocess.Popen) -> None:
+    """Stop the Codex process and every child in its process group (SIGINT, SIGTERM, then SIGKILL) and reap it."""
+    try:
+        pgid = os.getpgid(process.pid)
+    except ProcessLookupError:
+        return
+    for signum, grace in ((signal.SIGINT, 3.0), (signal.SIGTERM, 3.0), (signal.SIGKILL, 3.0)):
+        if process.poll() is not None and signum is not signal.SIGKILL:
+            # The parent already exited; still sweep the group once so MCP children do not linger.
+            _signal_group(pgid, signum)
+            return
+        _signal_group(pgid, signum)
+        try:
+            process.wait(timeout=grace)
+            _signal_group(pgid, signal.SIGTERM if signum is signal.SIGINT else signum)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def _signal_group(pgid: int, signum: signal.Signals) -> None:
+    try:
+        os.killpg(pgid, signum)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        pass

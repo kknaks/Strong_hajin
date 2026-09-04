@@ -586,3 +586,38 @@ input[type="date"]:disabled { color: var(--text-secondary); }
   .ax-conversation-list { max-height: 110px; }
   .ax-composer textarea { min-height: 64px; }
 }
+
+/* ---- execution rail (in-place status + tool receipts), streaming body, composer auto-grow */
+.ax-rail { margin: 4px 24px 8px 0; padding: 8px 12px; border: 1px solid var(--border-default); border-radius: var(--radius-card); background: var(--surface); font-size: 12px; min-height: 34px; }
+.ax-rail-head { display: grid; grid-template-columns: 16px 1fr auto; align-items: center; gap: 8px; min-height: 18px; }
+.ax-rail-icon { color: var(--progress-accent); text-align: center; }
+.ax-rail-icon.spin { display: inline-block; animation: ax-rail-spin 1.2s linear infinite; }
+@keyframes ax-rail-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ax-rail-icon.spin { animation: none; } }
+.ax-rail-phrase { color: var(--text-primary); font-weight: 700; }
+.ax-rail-elapsed { color: var(--text-tertiary); font-variant-numeric: tabular-nums; min-width: 44px; text-align: right; }
+.ax-rail-tools { list-style: none; margin: 6px 0 0; padding: 6px 0 0; border-top: 1px dashed var(--border-subtle); display: grid; gap: 4px; }
+.ax-rail-tool { display: grid; grid-template-columns: auto auto 1fr auto; gap: 8px; align-items: center; padding-left: 24px; color: var(--text-secondary); }
+.ax-rail-tool-name { font-weight: 700; color: var(--text-primary); }
+.ax-rail-tool-state { color: var(--text-tertiary); }
+.ax-rail-tool.running .ax-rail-tool-state, .ax-rail-tool.pending .ax-rail-tool-state { color: var(--progress-text); }
+.ax-rail-tool.failed .ax-rail-tool-state, .ax-rail-tool.denied .ax-rail-tool-state { color: var(--danger); }
+.ax-rail-tool-result { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ax-rail-tool-time { color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.ax-rail.terminal { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 12px; background: var(--surface-sunken); }
+.ax-rail.terminal .ax-rail-details { flex: 1; min-width: 0; }
+.ax-rail.terminal summary { cursor: pointer; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 26px; color: var(--text-secondary); }
+.ax-rail.terminal.completed .ax-rail-summary { color: var(--text-secondary); }
+.ax-rail.terminal.failed .ax-rail-summary, .ax-rail-error { color: var(--danger-hover); }
+.ax-rail.terminal.cancelled .ax-rail-summary { color: var(--text-tertiary); }
+.ax-rail-none { margin: 6px 0 0; padding-left: 24px; color: var(--text-tertiary); }
+.ax-turn-lineage { display: block; margin: 0 0 6px; color: var(--text-tertiary); font-size: 11px; }
+.ax-messages .assistant.streaming { border-style: dashed; }
+.ax-messages .assistant.failed, .ax-messages .assistant.cancelled { color: var(--text-secondary); background: var(--surface-sunken); }
+.ax-streaming-mark { margin-left: 2px; color: var(--accent); animation: ax-blink 1s steps(2) infinite; }
+@keyframes ax-blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .ax-streaming-mark { animation: none; } }
+.ax-body-note { display: block; margin-top: 6px; color: var(--text-tertiary); font-size: 11px; }
+.ax-messages .ax-action-card small.approved { color: var(--action); }
+.ax-composer textarea { resize: none; min-height: 44px; max-height: 200px; overflow-y: auto; line-height: 1.5; }
+.ax-composer { position: sticky; bottom: 0; background: var(--surface); padding-top: 4px; }
