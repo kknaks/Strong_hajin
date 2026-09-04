@@ -16,6 +16,8 @@ from ax_workspace.modules.meetings.domain import (
     MeetingVersionConflict,
 )
 from ax_workspace.modules.meetings.recordings import RecordingStorage
+from ax_workspace.modules.meetings.refinement import RefinedTranscriptSegment
+from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment
 from ax_workspace.modules.organization_access.domain import MEETING_RECORD, Principal
 
 
@@ -54,8 +56,30 @@ class MeetingRepository(Protocol):
     def finalize_note(self, note: Any, actor_id: str) -> None: ...
     def create_recording(self, meeting: Any, actor_id: str, purpose: str) -> Any: ...
     def recording(self, meeting: Any, recording_id: UUID, *, lock: bool = False) -> Any | None: ...
+    def recording_by_id(self, recording_id: UUID, *, lock: bool = False) -> Any | None: ...
     def recordings(self, meeting: Any) -> list[Any]: ...
     def complete_recording(self, recording: Any, stored: Any) -> None: ...
+    def raw_transcript_for_provider(self, recording: Any, provider_reference: str) -> Any | None: ...
+    def create_raw_transcript(
+        self,
+        recording: Any,
+        *,
+        provider: str,
+        provider_reference: str,
+        segments: list[FinalTranscriptSegment],
+    ) -> Any: ...
+    def raw_transcript_segments(self, transcript: Any) -> list[Any]: ...
+    def raw_transcript(self, transcript_id: UUID, *, lock: bool = False) -> Any | None: ...
+    def latest_refinement(self, transcript: Any) -> Any | None: ...
+    def refinement_segments(self, refinement: Any) -> list[Any]: ...
+    def create_refinement(
+        self,
+        transcript: Any,
+        *,
+        provider_call_ref: str | None,
+        content_hash: str,
+        segments: list[RefinedTranscriptSegment],
+    ) -> Any: ...
 
 
 class MeetingApplication:
@@ -229,6 +253,98 @@ class MeetingApplication:
         self._repository.append_audit(meeting, str(principal.id), "meeting.recording_uploaded", "회의 녹음 업로드 완료", before_ref=f"meeting_recording:{recording.id}@{expected_version}")
         return self._recording_view(recording)
 
+    def record_final_transcript(
+        self,
+        *,
+        recording_id: UUID,
+        provider: str,
+        provider_reference: str,
+        segments: list[FinalTranscriptSegment],
+    ) -> dict[str, Any]:
+        """Worker-only canonical write for immutable async STT output.
+
+        The provider reference is an idempotency key. A redelivery returns the
+        original revision rather than changing raw text, even if the provider
+        later supplies different bytes.
+        """
+        if not provider.strip() or not provider_reference.strip():
+            raise MeetingError("final transcript provider provenance is required")
+        if not segments:
+            raise MeetingError("final transcript requires at least one segment")
+        try:
+            for segment in segments:
+                segment.validate()
+        except ValueError as error:
+            raise MeetingError(str(error)) from error
+        recording = self._repository.recording_by_id(recording_id, lock=True)
+        if recording is None:
+            raise MeetingNotFound("meeting recording was not found")
+        existing = self._repository.raw_transcript_for_provider(recording, provider_reference)
+        if existing is not None:
+            return self._raw_transcript_view(existing)
+        if recording.state not in {"uploaded", "transcribing"}:
+            raise MeetingError("only an uploaded recording can receive final transcript output")
+        transcript = self._repository.create_raw_transcript(
+            recording,
+            provider=provider.strip(),
+            provider_reference=provider_reference.strip(),
+            segments=segments,
+        )
+        self._repository.append_audit(
+            self._repository.meeting(recording.meeting_id),
+            recording.actor_id,
+            "meeting.transcript_finalized",
+            "회의 원본 STT 확정",
+            before_ref=f"meeting_recording:{recording.id}@{recording.version}",
+        )
+        return self._raw_transcript_view(transcript)
+
+    def refinement_input(self, transcript_id: UUID) -> dict[str, Any]:
+        """Read-only worker input. Existing completed refinement makes a retry a no-op."""
+        transcript = self._repository.raw_transcript(transcript_id)
+        if transcript is None:
+            raise MeetingNotFound("meeting raw transcript was not found")
+        existing = self._repository.latest_refinement(transcript)
+        if existing is not None and existing.state == "completed":
+            return {"completed": self._refinement_view(existing)}
+        raw_segments = self._repository.raw_transcript_segments(transcript)
+        return {
+            "transcript_revision_id": str(transcript.id),
+            "raw_segments": [
+                {
+                    "source_segment_key": segment.source_segment_key,
+                    "start_ms": segment.start_ms,
+                    "end_ms": segment.end_ms,
+                    "text": segment.text,
+                    "speaker_label": segment.speaker_label,
+                }
+                for segment in raw_segments
+            ],
+        }
+
+    def save_refinement(
+        self,
+        transcript_id: UUID,
+        *,
+        provider_call_ref: str | None,
+        content_hash: str,
+        segments: list[RefinedTranscriptSegment],
+    ) -> dict[str, Any]:
+        transcript = self._repository.raw_transcript(transcript_id, lock=True)
+        if transcript is None:
+            raise MeetingNotFound("meeting raw transcript was not found")
+        existing = self._repository.latest_refinement(transcript)
+        if existing is not None and existing.state == "completed":
+            return self._refinement_view(existing)
+        self._validate_refinement_coverage(self._repository.raw_transcript_segments(transcript), segments)
+        refinement = self._repository.create_refinement(
+            transcript,
+            provider_call_ref=provider_call_ref,
+            content_hash=content_hash,
+            segments=segments,
+        )
+        return self._refinement_view(refinement)
+
     def _owned_mutable_meeting(self, principal: Principal, meeting_id: UUID, expected_version: int) -> Any:
         meeting = self._repository.meeting(meeting_id, lock=True)
         if meeting is None:
@@ -308,6 +424,74 @@ class MeetingApplication:
             # A storage key or provider reference is never a browser capability.
             "storage_key": None,
         }
+
+    def _raw_transcript_view(self, transcript: Any) -> dict[str, Any]:
+        return {
+            "transcript_revision_id": str(transcript.id),
+            "recording_id": str(transcript.recording_id),
+            "revision": transcript.revision,
+            "state": transcript.state,
+            "source_kind": transcript.source_kind,
+            "provider": transcript.provider,
+            "segments": [
+                {
+                    "segment_id": str(segment.id),
+                    "source_segment_key": segment.source_segment_key,
+                    "start_ms": segment.start_ms,
+                    "end_ms": segment.end_ms,
+                    "text": segment.text,
+                    "speaker_label": segment.speaker_label,
+                    "confirmed_member_id": segment.confirmed_member_id,
+                }
+                for segment in self._repository.raw_transcript_segments(transcript)
+            ],
+        }
+
+    def _refinement_view(self, refinement: Any) -> dict[str, Any]:
+        return {
+            "refinement_revision_id": str(refinement.id),
+            "raw_transcript_revision_id": str(refinement.raw_transcript_revision_id),
+            "revision": refinement.revision,
+            "state": refinement.state,
+            "provider_call_ref": refinement.provider_call_ref,
+            "segments": [
+                {
+                    "segment_id": str(segment.id),
+                    "raw_start_segment_id": str(segment.raw_start_segment_id),
+                    "raw_end_segment_id": str(segment.raw_end_segment_id),
+                    "start_ms": segment.start_ms,
+                    "end_ms": segment.end_ms,
+                    "text": segment.text,
+                    "speaker_label": segment.speaker_label,
+                    "confirmed_member_id": segment.confirmed_member_id,
+                    "correction_kind": segment.correction_kind,
+                    "confidence": segment.confidence,
+                }
+                for segment in self._repository.refinement_segments(refinement)
+            ],
+        }
+
+    @staticmethod
+    def _validate_refinement_coverage(raw_segments: list[Any], refined_segments: list[RefinedTranscriptSegment]) -> None:
+        if not raw_segments or not refined_segments:
+            raise MeetingError("refinement must cover a non-empty raw transcript")
+        positions = {row.source_segment_key: index for index, row in enumerate(raw_segments)}
+        raw_by_key = {row.source_segment_key: row for row in raw_segments}
+        coverage: set[int] = set()
+        previous_start = -1
+        for segment in refined_segments:
+            if segment.raw_start_source_key not in positions or segment.raw_end_source_key not in positions:
+                raise MeetingError("refinement references an unknown raw source segment")
+            start = positions[segment.raw_start_source_key]
+            end = positions[segment.raw_end_source_key]
+            if start > end or start < previous_start:
+                raise MeetingError("refinement source ranges are not ordered")
+            if segment.start_ms < raw_by_key[segment.raw_start_source_key].start_ms or segment.end_ms > raw_by_key[segment.raw_end_source_key].end_ms:
+                raise MeetingError("refinement timestamp is outside its raw source range")
+            coverage.update(range(start, end + 1))
+            previous_start = start
+        if coverage != set(range(len(raw_segments))):
+            raise MeetingError("refinement must preserve coverage of every raw source segment")
 
     @staticmethod
     def _require(principal: Principal, capability: str) -> None:

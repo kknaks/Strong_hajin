@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from typing import Any
+import hashlib
 import sys
 from uuid import UUID
 
@@ -17,7 +18,7 @@ from ax_workspace.modules.organization_access.domain import Principal
 from ax_workspace.modules.organization_access.application import OrganizationApplication
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
 from ax_workspace.modules.reports.application import DailyReportApplication
-from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
+from ax_workspace.modules.ax_execution.ai import AiGenerationRequest, AiProvider, ProviderFailure
 from ax_workspace.platform.codex_cli import CodexCliMcpServer, CodexCliProviderAdapter
 from ax_workspace.platform.conversation_jobs import ConversationJobQueue
 from ax_workspace.platform.durable_jobs import MemoryDurableJobQueue, build_job_queue
@@ -33,6 +34,8 @@ from ax_workspace.modules.work.materials import TaskMaterialApplication
 from ax_workspace.modules.work.application import TaskAccessDenied, TaskApplication, TaskState
 from ax_workspace.modules.work.assignments import TaskAssignmentApplication
 from ax_workspace.modules.meetings.application import MeetingApplication
+from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment
+from ax_workspace.modules.meetings.refinement import build_refinement_prompt, parse_refinement, refinement_output_schema
 from ax_workspace.modules.work.requests import WorkRequestApplication
 from ax_workspace.platform.persistence import make_session_factory
 from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
@@ -152,6 +155,50 @@ class WorkflowApplication:
                 original_name=original_name,
                 content_type=content_type,
                 data=data,
+            )
+            session.commit()
+            return result
+
+    def record_final_meeting_transcript(
+        self,
+        *,
+        recording_id: UUID,
+        provider: str,
+        provider_reference: str,
+        segments: list[FinalTranscriptSegment],
+    ) -> dict[str, Any]:
+        """Internal worker seam; no HTTP caller can assert STT provenance."""
+        with self._session_factory() as session:
+            result = self._meetings(session).record_final_transcript(
+                recording_id=recording_id,
+                provider=provider,
+                provider_reference=provider_reference,
+                segments=segments,
+            )
+            session.commit()
+            return result
+
+    def refine_meeting_transcript(self, transcript_id: UUID) -> dict[str, Any]:
+        """Worker operation: read/claim plan (tx), call the provider (no tx), persist a derived revision (tx)."""
+        with self._session_factory() as session:
+            plan = self._meetings(session).refinement_input(transcript_id)
+            session.commit()
+        completed = plan.get("completed")
+        if completed is not None:
+            return completed
+        generation = self._report_provider.generate(
+            AiGenerationRequest(
+                prompt=build_refinement_prompt(plan["raw_segments"]),
+                output_schema=refinement_output_schema(),
+            )
+        )
+        segments = parse_refinement(generation.body)
+        with self._session_factory() as session:
+            result = self._meetings(session).save_refinement(
+                transcript_id,
+                provider_call_ref=generation.provider_run_ref,
+                content_hash=hashlib.sha256(generation.body.encode("utf-8")).hexdigest(),
+                segments=segments,
             )
             session.commit()
             return result

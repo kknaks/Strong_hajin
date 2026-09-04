@@ -317,7 +317,10 @@ class MeetingRawTranscriptRevisionRecord(Base):
     """An immutable STT result. Refinement and summary point at this rather than overwriting it."""
 
     __tablename__ = "meeting_raw_transcript_revisions"
-    __table_args__ = (UniqueConstraint("recording_id", "revision", name="uq_meeting_raw_transcript_revision"),)
+    __table_args__ = (
+        UniqueConstraint("recording_id", "revision", name="uq_meeting_raw_transcript_revision"),
+        UniqueConstraint("recording_id", "provider_reference", name="uq_meeting_raw_transcript_provider_ref"),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     recording_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_recordings.id"), nullable=False)

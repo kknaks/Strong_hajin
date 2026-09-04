@@ -8,6 +8,8 @@ from uuid import UUID
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment
+from ax_workspace.modules.meetings.refinement import RefinedTranscriptSegment
 from ax_workspace.platform.persistence import (
     ActivityEventRecord,
     EmploymentPeriodRecord,
@@ -15,6 +17,10 @@ from ax_workspace.platform.persistence import (
     MeetingNoteRecord,
     MeetingNoteVersionRecord,
     MeetingRecordingRecord,
+    MeetingRawTranscriptRevisionRecord,
+    MeetingRawTranscriptSegmentRecord,
+    MeetingTranscriptRefinementRevisionRecord,
+    MeetingTranscriptRefinementSegmentRecord,
     MeetingRecord,
     MemberRecord,
     MembershipRecord,
@@ -306,6 +312,174 @@ class SqlAlchemyMeetingRepository:
                 select(MeetingRecordingRecord)
                 .where(MeetingRecordingRecord.meeting_id == meeting.id)
                 .order_by(MeetingRecordingRecord.created_at, MeetingRecordingRecord.id)
+            )
+        )
+
+    def recording_by_id(self, recording_id: UUID, *, lock: bool = False) -> MeetingRecordingRecord | None:
+        statement = select(MeetingRecordingRecord).where(MeetingRecordingRecord.id == recording_id)
+        if lock:
+            statement = statement.with_for_update().execution_options(populate_existing=True)
+        return self._session.scalar(statement)
+
+    def raw_transcript_for_provider(
+        self,
+        recording: MeetingRecordingRecord,
+        provider_reference: str,
+    ) -> MeetingRawTranscriptRevisionRecord | None:
+        return self._session.scalar(
+            select(MeetingRawTranscriptRevisionRecord).where(
+                MeetingRawTranscriptRevisionRecord.recording_id == recording.id,
+                MeetingRawTranscriptRevisionRecord.provider_reference == provider_reference,
+            )
+        )
+
+    def create_raw_transcript(
+        self,
+        recording: MeetingRecordingRecord,
+        *,
+        provider: str,
+        provider_reference: str,
+        segments: list[FinalTranscriptSegment],
+    ) -> MeetingRawTranscriptRevisionRecord:
+        now = datetime.now(UTC)
+        latest = self._session.scalar(
+            select(MeetingRawTranscriptRevisionRecord.revision)
+            .where(MeetingRawTranscriptRevisionRecord.recording_id == recording.id)
+            .order_by(MeetingRawTranscriptRevisionRecord.revision.desc())
+            .limit(1)
+        )
+        transcript = MeetingRawTranscriptRevisionRecord(
+            recording_id=recording.id,
+            revision=(int(latest) if latest is not None else 0) + 1,
+            state="completed",
+            source_kind="async_final",
+            provider=provider,
+            provider_reference=provider_reference,
+            created_at=now,
+            finalized_at=now,
+        )
+        self._session.add(transcript)
+        self._session.flush()
+        for sequence, segment in enumerate(segments, start=1):
+            self._session.add(
+                MeetingRawTranscriptSegmentRecord(
+                    transcript_revision_id=transcript.id,
+                    sequence=sequence,
+                    source_segment_key=segment.source_segment_key.strip(),
+                    start_ms=segment.start_ms,
+                    end_ms=segment.end_ms,
+                    text=segment.text.strip(),
+                    speaker_label=segment.speaker_label.strip() if segment.speaker_label else None,
+                    confirmed_member_id=None,
+                    created_at=now,
+                )
+            )
+        recording.state = "transcribed"
+        recording.updated_at = now
+        self._session.flush()
+        return transcript
+
+    def raw_transcript_segments(
+        self,
+        transcript: MeetingRawTranscriptRevisionRecord,
+    ) -> list[MeetingRawTranscriptSegmentRecord]:
+        return list(
+            self._session.scalars(
+                select(MeetingRawTranscriptSegmentRecord)
+                .where(MeetingRawTranscriptSegmentRecord.transcript_revision_id == transcript.id)
+                .order_by(MeetingRawTranscriptSegmentRecord.sequence)
+            )
+        )
+
+    def raw_transcript(
+        self,
+        transcript_id: UUID,
+        *,
+        lock: bool = False,
+    ) -> MeetingRawTranscriptRevisionRecord | None:
+        statement = select(MeetingRawTranscriptRevisionRecord).where(
+            MeetingRawTranscriptRevisionRecord.id == transcript_id
+        )
+        if lock:
+            statement = statement.with_for_update().execution_options(populate_existing=True)
+        return self._session.scalar(statement)
+
+    def latest_refinement(
+        self,
+        transcript: MeetingRawTranscriptRevisionRecord,
+    ) -> MeetingTranscriptRefinementRevisionRecord | None:
+        return self._session.scalar(
+            select(MeetingTranscriptRefinementRevisionRecord)
+            .where(MeetingTranscriptRefinementRevisionRecord.raw_transcript_revision_id == transcript.id)
+            .order_by(MeetingTranscriptRefinementRevisionRecord.revision.desc())
+            .limit(1)
+        )
+
+    def create_refinement(
+        self,
+        transcript: MeetingRawTranscriptRevisionRecord,
+        *,
+        provider_call_ref: str | None,
+        content_hash: str,
+        segments: list[RefinedTranscriptSegment],
+    ) -> MeetingTranscriptRefinementRevisionRecord:
+        import hashlib
+
+        now = datetime.now(UTC)
+        latest = self.latest_refinement(transcript)
+        refinement = MeetingTranscriptRefinementRevisionRecord(
+            raw_transcript_revision_id=transcript.id,
+            revision=(int(latest.revision) if latest is not None else 0) + 1,
+            state="completed",
+            provider_call_ref=provider_call_ref,
+            content_hash=content_hash or hashlib.sha256(b"").hexdigest(),
+            created_at=now,
+            completed_at=now,
+        )
+        self._session.add(refinement)
+        self._session.flush()
+        raw_by_key = {
+            row.source_segment_key: row
+            for row in self.raw_transcript_segments(transcript)
+        }
+        for sequence, segment in enumerate(segments, start=1):
+            covered = [
+                raw_by_key[key]
+                for key in raw_by_key
+                if raw_by_key[segment.raw_start_source_key].sequence
+                <= raw_by_key[key].sequence
+                <= raw_by_key[segment.raw_end_source_key].sequence
+            ]
+            confirmed_ids = {row.confirmed_member_id for row in covered}
+            self._session.add(
+                MeetingTranscriptRefinementSegmentRecord(
+                    refinement_revision_id=refinement.id,
+                    sequence=sequence,
+                    raw_start_segment_id=raw_by_key[segment.raw_start_source_key].id,
+                    raw_end_segment_id=raw_by_key[segment.raw_end_source_key].id,
+                    start_ms=segment.start_ms,
+                    end_ms=segment.end_ms,
+                    text=segment.text,
+                    speaker_label=segment.speaker_label,
+                    # Human assignment wins over any model-provided turn label.
+                    confirmed_member_id=next(iter(confirmed_ids)) if len(confirmed_ids) == 1 else None,
+                    correction_kind=segment.correction_kind,
+                    confidence=segment.confidence,
+                    created_at=now,
+                )
+            )
+        self._session.flush()
+        return refinement
+
+    def refinement_segments(
+        self,
+        refinement: MeetingTranscriptRefinementRevisionRecord,
+    ) -> list[MeetingTranscriptRefinementSegmentRecord]:
+        return list(
+            self._session.scalars(
+                select(MeetingTranscriptRefinementSegmentRecord)
+                .where(MeetingTranscriptRefinementSegmentRecord.refinement_revision_id == refinement.id)
+                .order_by(MeetingTranscriptRefinementSegmentRecord.sequence)
             )
         )
 
