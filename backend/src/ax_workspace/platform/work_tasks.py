@@ -9,8 +9,11 @@ from sqlalchemy.orm import Session
 
 from ax_workspace.modules.work.application import TaskNotFound, TaskState
 from ax_workspace.modules.work.requests import (
+    DECISION_FACTS,
+    DECISION_VERSION,
     EVIDENCE_HASH,
     EVIDENCE_MANIFEST,
+    decision_facts,
     evidence_manifest,
     evidence_manifest_entry,
     evidence_manifest_hash,
@@ -447,6 +450,7 @@ class SqlAlchemyWorkRequestRepository:
         *,
         reason: str | None = None,
         conditions: dict | None = None,
+        expected_version: int | None = None,
     ) -> ReviewDecisionRecord | None:
         submission = self.current_submission(request)
         if submission is None:
@@ -463,8 +467,15 @@ class SqlAlchemyWorkRequestRepository:
             actor_member_id=actor_id,
             decision=decision,
             reason=reason,
-            # The basis is frozen beside whatever conditions the decision itself carried.
-            conditions={**(conditions or {}), EVIDENCE_HASH: evidence_manifest_hash(manifest), EVIDENCE_MANIFEST: manifest},
+            # What the server froze sits under its own key, beside whatever conditions the decision itself carried.
+            conditions={
+                **(conditions or {}),
+                DECISION_FACTS: {
+                    DECISION_VERSION: int(expected_version) if expected_version is not None else int(request.version),
+                    EVIDENCE_HASH: evidence_manifest_hash(manifest),
+                    EVIDENCE_MANIFEST: manifest,
+                },
+            },
             decided_at=now,
         )
         self._session.add(record)
@@ -602,7 +613,7 @@ class SqlAlchemyWorkRequestRepository:
                 {
                     "review_decision_id": str(d.id), "submission_id": str(d.submission_id), "actor_member_id": d.actor_member_id,
                     "decision": d.decision, "reason": d.reason, "conditions": d.conditions,
-                    "evidence_hash": (d.conditions or {}).get(EVIDENCE_HASH),
+                    "evidence_hash": decision_facts(d.conditions).get(EVIDENCE_HASH),
                     "decided_at": d.decided_at.isoformat(),
                 }
                 for d in decisions

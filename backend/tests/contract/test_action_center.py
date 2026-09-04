@@ -677,3 +677,83 @@ def test_an_empty_title_is_refused_and_a_date_is_only_removed_by_asking_to_remov
     assert removed.status_code == 200, removed.text
     rounds = _rounds(client, MINA, waiting["action_item_id"])
     assert rounds[1]["snapshot"]["due_date"] is None and rounds[1]["snapshot"]["description"] == "설명"
+
+
+def test_a_receipt_survives_the_basis_moving_underneath_it(tmp_path) -> None:
+    """A revision's receipt is pinned by the round it produced, not by a request version anyone may move."""
+    client, _ = _stack(tmp_path)
+    request = client.post(
+        "/api/work-requests", headers=MINA, json={"title": "영수증 유지", "assignee_id": "jiho", "description": "처음"}
+    ).json()
+    [item] = _pending(client, JIHO)
+    _command(client, JIHO, item["action_item_id"], "adjust", expected_version=item["expected_version"], reason="고쳐 주세요")
+    [waiting] = _pending(client, MINA)
+
+    revision = {"expected_version": waiting["expected_version"], "changes": {"title": "고친 요청"}}
+    assert _command(client, MINA, waiting["action_item_id"], "revise", **revision).status_code == 200
+    assert _command(client, MINA, waiting["action_item_id"], "revise", **revision).status_code == 200
+
+    # Someone adopts evidence on the new round, moving the request on.
+    adopted = client.post(
+        f"/api/work-requests/{request['request_id']}/evidence", headers=MINA, files={"file": ("근거.txt", b"one", "text/plain")}
+    )
+    assert adopted.status_code == 201 and adopted.json()["request_version"] > waiting["expected_version"]
+
+    # The lost-response retry is still the same answer, not a stale error.
+    replayed = _command(client, MINA, waiting["action_item_id"], "revise", **revision)
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.json()["submission_version"] == 2
+    assert [row["submission_version"] for row in _rounds(client, MINA, waiting["action_item_id"])] == [1, 2]
+    # A different revision on that settled round is still refused.
+    assert _command(
+        client, MINA, waiting["action_item_id"], "revise", expected_version=waiting["expected_version"], changes={"title": "보내지 않은 수정"}
+    ).status_code == 422
+
+
+def test_a_decision_keeps_the_server_facts_apart_from_the_conditions_a_person_wrote(tmp_path) -> None:
+    client, _ = _stack(tmp_path)
+    request = client.post("/api/work-requests", headers=MINA, json={"title": "조건 분리", "assignee_id": "jiho"}).json()
+    client.post(f"/api/work-requests/{request['request_id']}/evidence", headers=MINA, files={"file": ("근거.txt", b"one", "text/plain")})
+    # Read the item after the basis moved: the version it hands out is the one the answer will consume.
+    [item] = _pending(client, JIHO)
+    adjusted = _command(
+        client, JIHO, item["action_item_id"], "adjust",
+        expected_version=item["expected_version"], reason="기한을 늦춰 주세요", changes={"due_date": "2026-12-01"},
+    )
+    assert adjusted.status_code == 200, adjusted.text
+
+    timeline = client.get(f"/api/work-requests/{request['request_id']}/timeline", headers=JIHO).json()
+    [decision] = timeline["review_decisions"]
+    conditions = decision["conditions"]
+    # What the reviewer said stays at the top, where a client that renders conditions has always found it.
+    assert set(conditions) == {"note", "changes", "_decision"}
+    assert conditions["changes"] == {"due_date": "2026-12-01"} and conditions["note"] == "기한을 늦춰 주세요"
+    # What the server froze lives under one reserved key of its own.
+    facts = conditions["_decision"]
+    assert set(facts) == {"expected_version", "evidence_hash", "evidence_manifest"}
+    assert facts["expected_version"] == item["expected_version"]
+    assert decision["evidence_hash"] == facts["evidence_hash"]
+    assert [row["attachment_id"] for row in facts["evidence_manifest"]] == [row["attachment_id"] for row in timeline["submissions"][0]["evidence"]]
+    # The requester still reads the proposal the way they always did.
+    assert _pending(client, MINA)[0]["suggested_changes"] == {"due_date": "2026-12-01"}
+
+
+def test_a_revision_receipt_holds_to_the_version_it_actually_consumed(tmp_path) -> None:
+    """Evidence may move the request afterwards; that must not widen which requests count as this answer."""
+    client, _ = _stack(tmp_path)
+    request = client.post("/api/work-requests", headers=MINA, json={"title": "정확한 재전송", "assignee_id": "jiho"}).json()
+    [first] = _pending(client, JIHO)
+    _command(client, JIHO, first["action_item_id"], "adjust", expected_version=first["expected_version"], reason="고쳐 주세요")
+    [waiting] = _pending(client, MINA)
+    changes = {"title": "고친 요청"}
+
+    assert _command(client, MINA, waiting["action_item_id"], "revise", expected_version=waiting["expected_version"], changes=changes).status_code == 200
+    client.post(f"/api/work-requests/{request['request_id']}/evidence", headers=MINA, files={"file": ("근거.txt", b"one", "text/plain")})
+
+    # The original call, re-sent: still the same answer even though the request has moved on since.
+    assert _command(client, MINA, waiting["action_item_id"], "revise", expected_version=waiting["expected_version"], changes=changes).status_code == 200
+    # Any other version is a different request, not this answer coming back.
+    for version in (first["expected_version"], waiting["expected_version"] - 1, waiting["expected_version"] + 1, waiting["expected_version"] + 2):
+        stale = _command(client, MINA, waiting["action_item_id"], "revise", expected_version=version, changes=changes)
+        assert stale.status_code == 422, f"{version}: {stale.text}"
+    assert [row["submission_version"] for row in _rounds(client, MINA, waiting["action_item_id"])] == [1, 2]

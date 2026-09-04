@@ -242,6 +242,8 @@ export type ActionItem = {
   audit_ref: string | null;
   /** Server-provided approval controls; rendered verbatim, never inferred from state on the client. */
   commands?: ActionCommand[];
+  /** The target this confirmation answers has moved, so it can only be cleared away. */
+  obsolete?: boolean;
   /** Server-side presentation: the real work title, the operation kicker, and permission-safe preview rows. */
   subject?: string;
   operation_label?: string;

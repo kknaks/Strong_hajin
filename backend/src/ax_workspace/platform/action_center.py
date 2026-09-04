@@ -30,6 +30,7 @@ from ax_workspace.modules.organization_access.domain import (
 from ax_workspace.platform.actions import ActionPresenter
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
 from ax_workspace.modules.work.requests import (
+    DECISION_VERSION,
     EVIDENCE_HASH,
     REVISABLE_FIELDS,
     WorkRequestAccessDenied as ActionAccessDenied,
@@ -37,6 +38,7 @@ from ax_workspace.modules.work.requests import (
     evidence_manifest,
     evidence_manifest_entry,
     evidence_manifest_hash,
+    decision_facts,
     normalize_proposed_changes,
 )
 from ax_workspace.platform.persistence import (
@@ -188,7 +190,7 @@ class WorkRequestActionHandler:
                     "reason": decision.reason,
                     "suggested_changes": _suggested_changes(decision.conditions),
                     # The basis this answer was actually made on, frozen when it was made.
-                    "evidence_hash": (decision.conditions or {}).get(EVIDENCE_HASH),
+                    "evidence_hash": decision_facts(decision.conditions).get(EVIDENCE_HASH),
                     "decided_at": decision.decided_at.isoformat(),
                 }
             )
@@ -282,16 +284,26 @@ class WorkRequestActionHandler:
             targeted = int(payload["expected_version"])
         except (KeyError, TypeError, ValueError):
             return False
-        # Every one of these commands bumps the request exactly once, so this pins the resend to that single step.
-        if int(request.version) != targeted + 1:
-            return False
         submission = self._current_submission(decision_item)
         if submission is None:
             return False
         if command == "revise":
-            return submission.submitted_by == str(principal.id) and self._revision_produced(submission, payload)
+            # The round this payload produced is the receipt, and the version it consumed is recoverable from the
+            # adjustment it answered: nothing can move the request between that decision and this revision. So a later
+            # bump — someone adopting evidence on the new round — leaves the receipt intact, while a version this
+            # revision never consumed is still a different request.
+            return (
+                submission.submitted_by == str(principal.id)
+                and self._revision_consumed(submission) == targeted
+                and self._revision_produced(submission, payload)
+            )
         if command == "withdraw":
-            return request.state == "withdrawn" and request.requester_id == str(principal.id)
+            # Withdrawal is terminal: nothing can move the request afterwards, so the single step still pins it.
+            return (
+                request.state == "withdrawn"
+                and request.requester_id == str(principal.id)
+                and int(request.version) == targeted + 1
+            )
         decided = self._session.scalar(
             select(ReviewDecisionRecord)
             .where(ReviewDecisionRecord.submission_id == submission.id)
@@ -301,11 +313,31 @@ class WorkRequestActionHandler:
             return False
         if decided.decision != {"accept": "accept", "reject": "reject", "adjust": "negotiate"}.get(command):
             return False
+        # The version this answer actually consumed, frozen when it was made rather than inferred from where the
+        # request stands now.
+        if decision_facts(decided.conditions).get(DECISION_VERSION) != targeted:
+            return False
         if command == "accept":
             return True
         if (decided.reason or "") != str(payload.get("reason") or "").strip():
             return False
         return command != "adjust" or _suggested_changes(decided.conditions) == _proposed_changes(payload.get("changes"))
+
+    def _revision_consumed(self, submission: SubmissionRecord) -> int | None:
+        """The request version this revision answered, read from the adjustment that asked for it.
+
+        A negotiating request is closed to everything but a revision or a withdrawal, so the version one step past
+        that decision is exactly what the revision consumed.
+        """
+        if submission.revises_id is None:
+            return None
+        decided = self._session.scalar(
+            select(ReviewDecisionRecord)
+            .where(ReviewDecisionRecord.submission_id == submission.revises_id, ReviewDecisionRecord.decision == "negotiate")
+            .order_by(ReviewDecisionRecord.decided_at.desc())
+        )
+        consumed = decision_facts(decided.conditions).get(DECISION_VERSION) if decided else None
+        return int(consumed) + 1 if consumed is not None else None
 
     def _revision_produced(self, submission: SubmissionRecord, payload: dict[str, Any]) -> bool:
         """Would this payload, applied to the round it revised, have produced exactly the round that now stands?"""
@@ -540,7 +572,10 @@ class AxProposalActionHandler:
             current_question="AX가 준비한 변경을 승인할지 결정하세요" if record.state == "pending" else "이 제안은 이미 판단이 끝났습니다",
             preview=list(presented["preview"]),
             allowed_commands=(
-                [ActionCommand("approve", "승인", "primary"), ActionCommand("reject", "거절", "neutral")]
+                [
+                    *([] if presented.get("obsolete") else [ActionCommand("approve", "승인", "primary")]),
+                    ActionCommand("reject", "거절", "neutral"),
+                ]
                 if record.state == "pending" and ACTION_DECIDE in principal.capabilities and str(record.owner_id) == str(principal.id)
                 else []
             ),

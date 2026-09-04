@@ -138,16 +138,25 @@ def test_a_resent_mcp_command_is_the_same_receipt_and_a_stale_one_is_refused(tmp
     revise = {"changes": {"title": "1회차 수정"}}
     receipt = mina.run_action_command(waiting["action_item_id"], "revise", expected_version=waiting["expected_version"], **revise)
 
-    # The same call again is the same answer, not a second round.
+    # The same call again is the same answer, not a second round. A revision is identified by the round it produced,
+    # so an older version quoted alongside the same content is still that answer coming back.
     assert mina.run_action_command(waiting["action_item_id"], "revise", expected_version=waiting["expected_version"], **revise) == receipt
-    # An older version, or the right version with content this principal never sent, is a stale request.
+    # A version this revision never consumed is a different request, even with the same content.
     with pytest.raises(Exception, match="not available"):
         mina.run_action_command(waiting["action_item_id"], "revise", expected_version=first["expected_version"], **revise)
+    # Content this principal never sent is a different judgement, whatever version it quotes.
     with pytest.raises(Exception, match="not available"):
         mina.run_action_command(
             waiting["action_item_id"], "revise", expected_version=waiting["expected_version"], changes={"title": "보내지 않은 수정"}
         )
     assert [row["submission_version"] for row in mina.action_item_detail(waiting["action_item_id"])["rounds"]] == [1, 2]
+
+    # A decision is different: it is pinned to the version it actually consumed, so an older one never replays.
+    [second] = jiho.pending_action_items()
+    jiho.run_action_command(second["action_item_id"], "adjust", expected_version=second["expected_version"], **adjust)
+    assert jiho.run_action_command(second["action_item_id"], "adjust", expected_version=second["expected_version"], **adjust)["status"] == "awaiting_revision"
+    with pytest.raises(Exception, match="not available"):
+        jiho.run_action_command(second["action_item_id"], "adjust", expected_version=first["expected_version"], **adjust)
 
 
 def test_an_action_item_is_invisible_to_a_persona_it_does_not_belong_to(tmp_path) -> None:
@@ -770,3 +779,83 @@ def test_an_emptied_field_is_part_of_the_judgement_a_turn_prepares(tmp_path, mon
     assert approved.status_code == 200, approved.text
     rounds = client.get(f"/api/action-items/{waiting['action_item_id']}", headers=MINA).json()["rounds"]
     assert rounds[1]["snapshot"]["description"] is None and rounds[1]["snapshot"]["title"] == "설명 있는 요청"
+
+
+def test_a_confirmation_whose_target_moved_says_so_instead_of_failing_when_approved(tmp_path, monkeypatch) -> None:
+    """A pending confirmation is an answer to a moment. When that moment passes, the card says so before it is used."""
+    database_url, settings, client = _stack(tmp_path)
+    application = client.app.state.workflow_application
+    request = client.post("/api/work-requests", headers=MINA, json={"title": "지나간 확인", "assignee_id": "jiho"}).json()
+    jiho = _facade(settings, "jiho")
+    [item] = jiho.pending_action_items()
+    _delegated_turn(client, application, JIHO, "jiho", monkeypatch)
+    wrapper = jiho.run_action_command(item["action_item_id"], "accept", expected_version=item["expected_version"])
+
+    fresh = [row for row in client.get("/api/actions", headers=JIHO).json() if row["action_id"] == wrapper["action_id"]][0]
+    assert fresh["obsolete"] is False
+    assert [command["id"] for command in fresh["commands"]] == ["approve", "reject"]
+
+    # The basis moves: the request is no longer the one this confirmation answers.
+    client.post(f"/api/work-requests/{request['request_id']}/evidence", headers=MINA, files={"file": ("근거.txt", b"one", "text/plain")})
+
+    stale = [row for row in client.get("/api/actions", headers=JIHO).json() if row["action_id"] == wrapper["action_id"]][0]
+    assert stale["obsolete"] is True
+    # Only the way out is offered; approving is not something the person can be led into.
+    assert [command["id"] for command in stale["commands"]] == ["reject"]
+    assert any("바뀌" in row["value"] for row in stale["preview"]), stale["preview"]
+
+    # The same is true in the one judgement ledger.
+    [envelope] = [row for row in jiho.pending_action_items() if row["action_item_id"] == wrapper["action_id"]]
+    assert [command["id"] for command in envelope["allowed_commands"]] == ["reject"]
+
+    # A client that approves anyway is told what happened, not handed a raw version error.
+    refused = client.post(
+        f"/api/actions/{wrapper['action_id']}/decide", headers=JIHO,
+        json={"expected_version": wrapper["version"], "decision": "approve"},
+    )
+    assert refused.status_code == 422
+    assert "바뀌" in refused.text and "stale" not in refused.text
+    assert client.get("/api/my-work", headers=JIHO).json() == []
+    assert [row["state"] for row in client.get("/api/actions", headers=JIHO).json() if row["action_id"] == wrapper["action_id"]] == ["pending"]
+
+    # Clearing it away works, and the judgement itself is still there to be made afresh.
+    cleared = client.post(
+        f"/api/actions/{wrapper['action_id']}/decide", headers=JIHO,
+        json={"expected_version": wrapper["version"], "decision": "reject"},
+    )
+    assert cleared.status_code == 200 and cleared.json()["state"] == "rejected"
+    [again] = [row for row in jiho.pending_action_items() if row["kind"] == "work_request.acceptance"]
+    assert [command["id"] for command in again["allowed_commands"]] == ["accept", "adjust", "reject"]
+
+
+def test_a_confirmation_cannot_be_approved_when_its_target_can_no_longer_be_read(tmp_path, monkeypatch) -> None:
+    """You cannot approve what you cannot see: an unverifiable confirmation offers only the way out."""
+    database_url, settings, client = _stack(tmp_path)
+    application = client.app.state.workflow_application
+    client.post("/api/work-requests", headers=MINA, json={"title": "볼 수 없는 대상", "assignee_id": "jiho"})
+    jiho = _facade(settings, "jiho")
+    [item] = jiho.pending_action_items()
+    _delegated_turn(client, application, JIHO, "jiho", monkeypatch)
+    wrapper = jiho.run_action_command(item["action_item_id"], "accept", expected_version=item["expected_version"])
+
+    with make_session_factory(database_url)() as session:
+        for capability in ("work_request.read", "work_request.decide", "work_request.create"):
+            session.execute(
+                delete(RoleCapabilityRecord).where(
+                    RoleCapabilityRecord.role_id == "seed-role:jiho", RoleCapabilityRecord.capability_id == capability
+                )
+            )
+        session.commit()
+
+    withheld = [row for row in client.get("/api/actions", headers=JIHO).json() if row["action_id"] == wrapper["action_id"]][0]
+    assert withheld["obsolete"] is True
+    assert [command["id"] for command in withheld["commands"]] == ["reject"]
+    assert "볼 수 없는 대상" not in str(withheld)
+
+    refused = client.post(
+        f"/api/actions/{wrapper['action_id']}/decide", headers=JIHO,
+        json={"expected_version": wrapper["version"], "decision": "approve"},
+    )
+    assert refused.status_code in {403, 422}
+    assert client.get("/api/my-work", headers=JIHO).json() == []
+    assert [row["state"] for row in client.get("/api/actions", headers=JIHO).json() if row["action_id"] == wrapper["action_id"]] == ["pending"]

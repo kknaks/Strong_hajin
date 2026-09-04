@@ -56,7 +56,10 @@ class WorkRequestRepository(Protocol):
     def append_audit(self, request_id: UUID, actor_id: str, event_type: str, payload: dict[str, Any]) -> None: ...
     def inbox_for(self, assignee_id: str) -> list[Any]: ...
     def list_for(self, principal_id: str) -> list[Any]: ...
-    def record_decision(self, request: Any, actor_id: str, decision: str, *, reason: str | None = None, conditions: dict[str, Any] | None = None) -> Any: ...
+    def record_decision(
+        self, request: Any, actor_id: str, decision: str, *,
+        reason: str | None = None, conditions: dict[str, Any] | None = None, expected_version: int | None = None,
+    ) -> Any: ...
     def resubmit(self, request: Any, actor_id: str, snapshot: dict[str, Any]) -> Any: ...
     def withdraw(self, request: Any, actor_id: str) -> None: ...
     def current_submission(self, request: Any) -> Any: ...
@@ -78,9 +81,21 @@ class WorkRequestAssigneeDirectory(Protocol):
     def is_active_member(self, principal: Principal, member_id: str) -> bool: ...
 
 
-#: The reserved keys a decision's conditions carry so the basis it was made on can never change afterwards.
+#: One reserved key inside a decision's conditions for everything the server froze, so it never mixes with the note
+#: and structured changes a person wrote there. Callers keep reading their own conditions where they always were.
+DECISION_FACTS = "_decision"
+#: The facts kept under it: the version this answer consumed, and the basis it was made on.
+DECISION_VERSION = "expected_version"
 EVIDENCE_HASH = "evidence_hash"
 EVIDENCE_MANIFEST = "evidence_manifest"
+
+
+def decision_facts(conditions: Any) -> dict[str, Any]:
+    """What the server froze on a decision, whatever else its conditions carry."""
+    if not isinstance(conditions, dict):
+        return {}
+    facts = conditions.get(DECISION_FACTS)
+    return dict(facts) if isinstance(facts, dict) else {}
 
 
 def evidence_manifest_entry(attachment_id: Any, evidence_role: str, fixed_snapshot_ref: str) -> dict[str, str]:
@@ -192,7 +207,7 @@ class WorkRequestApplication:
         request = self._decision_target(principal, request_id, expected_version)
         request.state = "accepted"
         request.version += 1
-        self._repository.record_decision(request, str(principal.id), "accept")
+        self._repository.record_decision(request, str(principal.id), "accept", expected_version=expected_version)
         task = self._repository.create_accepted_task(request)
         self._repository.append_audit(request.id, str(principal.id), "work_request.accepted", {"task_id": str(task.id)})
         return self._view(request, task)
@@ -204,7 +219,7 @@ class WorkRequestApplication:
         request = self._decision_target(principal, request_id, expected_version)
         request.state = "rejected"
         request.version += 1
-        self._repository.record_decision(request, str(principal.id), "reject", reason=reason.strip())
+        self._repository.record_decision(request, str(principal.id), "reject", reason=reason.strip(), expected_version=expected_version)
         self._repository.append_audit(request.id, str(principal.id), "work_request.rejected", {"reason": reason.strip()})
         return self._view(request)
 
@@ -224,7 +239,10 @@ class WorkRequestApplication:
         request.state = "negotiating"
         request.conditions = conditions
         request.version += 1
-        self._repository.record_decision(request, str(principal.id), "negotiate", reason=str(conditions.get("note") or "") or None, conditions=conditions)
+        self._repository.record_decision(
+            request, str(principal.id), "negotiate",
+            reason=str(conditions.get("note") or "") or None, conditions=conditions, expected_version=expected_version,
+        )
         self._repository.append_audit(
             request.id, str(principal.id), "work_request.negotiated", {"conditions": conditions}
         )

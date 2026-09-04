@@ -82,7 +82,7 @@ class ActionApplication:
         views = []
         for action in self._repository.list_for(str(principal.id)):
             view = self._repository.view(action, principal)
-            view["commands"] = action_commands(view.get("state"), can_decide)
+            view["commands"] = action_commands(view.get("state"), can_decide, obsolete=bool(view.get("obsolete")))
             views.append(view)
         return views
 
@@ -121,12 +121,14 @@ class ActionApplication:
             raise ActionCapabilityDenied(f"{capability} capability is required")
 
 
-def action_commands(state: Any, can_decide: bool) -> list[dict[str, str]]:
+def action_commands(state: Any, can_decide: bool, *, obsolete: bool = False) -> list[dict[str, str]]:
     """Server-provided approval commands (id, label, tone). The client repeats them verbatim and never infers
-    controls or wording from the action state."""
+    controls or wording from the action state.
+
+    A proposal whose target has moved can only be cleared away: offering approval would lead a person into applying an
+    answer to something other than what they were shown.
+    """
     if state != "pending" or not can_decide:
         return []
-    return [
-        {"id": "approve", "label": "승인", "tone": "primary"},
-        {"id": "reject", "label": "거절", "tone": "neutral"},
-    ]
+    approve = [] if obsolete else [{"id": "approve", "label": "승인", "tone": "primary"}]
+    return [*approve, {"id": "reject", "label": "거절", "tone": "neutral"}]

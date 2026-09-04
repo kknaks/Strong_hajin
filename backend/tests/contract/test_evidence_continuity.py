@@ -146,9 +146,9 @@ def test_a_decision_freezes_the_evidence_it_was_made_on(tmp_path) -> None:
     after = client.get(f"/api/work-requests/{rid}/timeline", headers=JIHO).json()
     [decision] = after["review_decisions"]
     assert decision["evidence_hash"] == at_decision
-    assert {row["attachment_id"] for row in decision["conditions"]["evidence_manifest"]} == {row["attachment_id"] for row in first_round["evidence"]}
+    assert {row["attachment_id"] for row in decision["conditions"]["_decision"]["evidence_manifest"]} == {row["attachment_id"] for row in first_round["evidence"]}
     # The frozen manifest is the stable identity of the basis, not the row ids that happened to hold it.
-    assert set(decision["conditions"]["evidence_manifest"][0]) == {"attachment_id", "evidence_role", "fixed_snapshot_ref"}
+    assert set(decision["conditions"]["_decision"]["evidence_manifest"][0]) == {"attachment_id", "evidence_role", "fixed_snapshot_ref"}
     # An adjustment's own conditions survive alongside it.
     assert decision["reason"] == "근거를 더 주세요"
 
@@ -180,7 +180,7 @@ def test_the_same_basis_hashes_the_same_however_it_was_assembled(tmp_path) -> No
 
     timeline = client.get(f"/api/work-requests/{rid}/timeline", headers=JIHO).json()
     frozen = timeline["review_decisions"][0]["evidence_hash"]
-    entries = timeline["review_decisions"][0]["conditions"]["evidence_manifest"]
+    entries = timeline["review_decisions"][0]["conditions"]["_decision"]["evidence_manifest"]
     assert len(entries) == 3
     assert frozen == _expected_hash(entries)
     assert frozen == _expected_hash(list(reversed(entries)))
@@ -194,7 +194,7 @@ def test_the_same_basis_hashes_the_same_however_it_was_assembled(tmp_path) -> No
     _command(client, JIHO, empty_item["action_item_id"], "accept", expected_version=empty_item["expected_version"])
     empty = client.get(f"/api/work-requests/{bare['request_id']}/timeline", headers=JIHO).json()
     assert empty["review_decisions"][0]["evidence_hash"] == _expected_hash([])
-    assert empty["review_decisions"][0]["conditions"]["evidence_manifest"] == []
+    assert empty["review_decisions"][0]["conditions"]["_decision"]["evidence_manifest"] == []
 
 
 def test_the_judgement_ledger_reads_the_same_basis_the_request_timeline_does(tmp_path) -> None:
@@ -308,9 +308,9 @@ def test_every_way_of_answering_freezes_the_same_basis(tmp_path, monkeypatch) ->
         [decision] = timeline["review_decisions"]
         [round_one] = timeline["submissions"]
         assert decision["evidence_hash"] == frozen[door] == _expected_hash(round_one["evidence"]), door
-        assert [row["evidence_role"] for row in decision["conditions"]["evidence_manifest"]] == ["supporting"]
+        assert [row["evidence_role"] for row in decision["conditions"]["_decision"]["evidence_manifest"]] == ["supporting"]
         assert decision["reason"] == "거절"
-        manifests.append(decision["conditions"]["evidence_manifest"])
+        manifests.append(decision["conditions"]["_decision"]["evidence_manifest"])
     # The same bytes were adopted in all three, so the three bases differ only in which attachment row holds them.
     assert len({tuple((row["evidence_role"], row["fixed_snapshot_ref"]) for row in manifest) for manifest in manifests}) == 1
     assert len({tuple(row["attachment_id"] for row in manifest) for manifest in manifests}) == 3

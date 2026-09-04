@@ -13,7 +13,12 @@ from sqlalchemy.orm import Session
 from ax_workspace.modules.organization_access.application import OrganizationApplication
 from ax_workspace.modules.organization_access.domain import Principal
 from ax_workspace.modules.reports.application import DailyReportApplication
-from ax_workspace.modules.ax_execution.actions import ACTION_ITEM_COMMAND, ACTION_ITEM_COMMAND_TITLE, action_payload_hash
+from ax_workspace.modules.ax_execution.actions import (
+    ACTION_ITEM_COMMAND,
+    ACTION_ITEM_COMMAND_TITLE,
+    ActionError,
+    action_payload_hash,
+)
 from ax_workspace.modules.work.requests import WorkRequestApplication
 from ax_workspace.modules.work.application import TaskApplication, TaskError, TaskState
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
@@ -293,9 +298,12 @@ class SqlAlchemyActionExecutor:
         payload = action.payload or {}
         center = action_center_application(self._session, self)
         target = str(payload["action_item_id"])
-        if str(center.detail(principal, target).get("kind", "")).startswith("ax."):
+        envelope = center.detail(principal, target)
+        if envelope.get("expected_version") != payload.get("expected_version"):
+            raise ActionError("대상이 바뀌어 이 확인은 더 이상 쓸 수 없습니다. 판단을 다시 준비하세요")
+        if str(envelope.get("kind", "")).startswith("ax."):
             # The gate exists to put a person between AX and the effect; approving one gate must not open another.
-            raise ValueError("an AX proposal cannot be decided by another proposal")
+            raise ActionError("an AX proposal cannot be decided by another proposal")
         return center.execute(
             principal,
             target,
@@ -378,6 +386,8 @@ class ActionPresenter:
         kind = action.action_type
         fields: list[dict[str, str]] = []
         subject = action.title
+        # Only a confirmation of another judgement can go out of date; every other proposal carries its own effect.
+        obsolete = False
 
         if kind in _CREATION_KINDS:
             subject = action_subject_label(action)
@@ -421,7 +431,7 @@ class ActionPresenter:
             return self._action_item_command(action, payload, principal, fields)
 
         self._evidence(fields, action, principal)
-        return {"subject": subject, "operation_label": _OPERATION_LABELS.get(kind, kind), "preview": fields}
+        return {"subject": subject, "operation_label": _OPERATION_LABELS.get(kind, kind), "preview": fields, "obsolete": obsolete}
 
     def _action_item_command(
         self,
@@ -437,8 +447,14 @@ class ActionPresenter:
         """
         target = self._target_envelope(payload.get("action_item_id"), principal)
         if target is None:
-            # Not readable now, whatever was readable when the turn proposed it.
-            return {"subject": ACTION_ITEM_COMMAND_TITLE, "operation_label": "판단 확인", "preview": []}
+            # Not readable now, whatever was readable when the turn proposed it. Nobody can confirm a judgement they
+            # cannot see, so the card offers only the way out rather than an approval that would fail on use.
+            return {"subject": ACTION_ITEM_COMMAND_TITLE, "operation_label": "판단 확인", "preview": [], "obsolete": True}
+        # A confirmation answers one moment. If the target has moved since, approving it would apply an answer to
+        # something else, so the card says so rather than waiting to fail.
+        obsolete = target.get("expected_version") != payload.get("expected_version")
+        if obsolete:
+            fields.append({"id": "obsolete", "label": "상태", "value": "대상이 바뀌어 이 확인은 더 이상 쓸 수 없습니다", "kind": "state"})
         command = str(payload.get("command") or "")
         label = next((entry["label"] for entry in target.get("allowed_commands", []) if entry["id"] == command), command)
         fields.append({"id": "command", "label": "판단", "value": label, "kind": "state"})
@@ -455,6 +471,7 @@ class ActionPresenter:
             "subject": str(target.get("subject") or action.title),
             "operation_label": f"{target.get('operation_label', '판단')} 판단",
             "preview": fields,
+            "obsolete": obsolete,
         }
 
     def _target_envelope(self, action_item_id: Any, principal: Principal | None) -> dict[str, Any] | None:
