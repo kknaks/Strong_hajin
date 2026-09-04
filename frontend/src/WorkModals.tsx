@@ -19,6 +19,7 @@ import {
   resubmitWorkRequest,
   taskMaterialContentUrl,
   uploadCommentAttachment,
+  amendWorkRequest,
   uploadRequestEvidence,
   uploadTaskMaterial,
 } from "./api";
@@ -720,6 +721,8 @@ export function WorkRequestDetailDrawer({
   const isOpen = request.state === "pending" || request.state === "negotiating";
   const decidable = canDecide && isAssignee && isOpen;
   const canResubmit = isRequester && request.state === "negotiating";
+  // Improving one's own request needs nobody's permission, but only while it is still the assignee's to judge.
+  const canAmend = isRequester && request.state === "pending";
   const condition = conditionText(request.conditions);
 
   const loadTimeline = async () => {
@@ -825,6 +828,33 @@ export function WorkRequestDetailDrawer({
     }
   }
 
+  /** What the draft would change, in the shape the command takes. */
+  function revisionChanges(draft: { title: string; description: string; due_date: string }) {
+    const changes: { title?: string; description?: string; due_date?: string | null } = {};
+    if (draft.title.trim() !== request.title) changes.title = draft.title.trim();
+    if (draft.description.trim() !== (request.description ?? "")) changes.description = draft.description.trim();
+    if (draft.due_date !== (request.due_date ?? "")) changes.due_date = draft.due_date || null;
+    return changes;
+  }
+
+  function submitAmendment() {
+    if (!revision) return;
+    if (!revision.title.trim()) {
+      onError("업무 제목을 입력해 주세요.");
+      return;
+    }
+    const changes = revisionChanges(revision);
+    if (Object.keys(changes).length === 0) {
+      onError("바뀐 내용이 없어 수정할 수 없습니다.");
+      return;
+    }
+    void run(
+      () => amendWorkRequest(request.request_id, request.version, changes),
+      `'${request.title}' 요청을 수정했습니다. 같은 요청의 새 회차로 담당자가 최신 내용을 판단합니다.`,
+      "요청을 수정하지 못했습니다.",
+    );
+  }
+
   function submitRevision() {
     if (!revision) return;
     if (!revision.title.trim()) {
@@ -874,6 +904,26 @@ export function WorkRequestDetailDrawer({
             >
               수락
             </button>
+          </>
+        ) : canAmend ? (
+          <>
+            <button className="btn h40 ghost" onClick={onClose} type="button">
+              닫기
+            </button>
+            <span className="spacer" />
+            {revision ? (
+              <button className="btn h40 primary" disabled={isWorking} onClick={submitAmendment} type="button">
+                수정 제출
+              </button>
+            ) : (
+              <button
+                className="btn h40 primary"
+                onClick={() => setRevision({ title: request.title, description: request.description ?? "", due_date: request.due_date ?? "" })}
+                type="button"
+              >
+                요청 수정
+              </button>
+            )}
           </>
         ) : canResubmit ? (
           <>
@@ -968,7 +1018,7 @@ export function WorkRequestDetailDrawer({
 
       {revision && (
         <section className="drawer-section">
-          <h4>재상신 내용</h4>
+          <h4>{canAmend ? "수정 내용" : "재상신 내용"}</h4>
           <div className="form-stack">
             <div className="field">
               <label htmlFor="revision-title">요청할 업무</label>
@@ -981,7 +1031,35 @@ export function WorkRequestDetailDrawer({
               <label htmlFor="revision-description">요청 내용</label>
               <textarea id="revision-description" onChange={(event) => setRevision({ ...revision, description: event.target.value })} value={revision.description} />
             </div>
-            <p className="t-meta">재상신은 같은 요청의 새 회차입니다. 이전 회차와 판단은 그대로 남고 달라진 항목만 diff로 표시됩니다.</p>
+            <div aria-label="제출 전 변경 요약" className="revision-diff">
+              {Object.keys(revisionChanges(revision)).length === 0 ? (
+                <p className="t-meta">바뀐 내용이 없습니다.</p>
+              ) : (
+                <ul>
+                  {revisionChanges(revision).title !== undefined && (
+                    <li>
+                      <b>요청할 업무</b>: <s>{request.title}</s> → <b>{revision.title.trim()}</b>
+                    </li>
+                  )}
+                  {revisionChanges(revision).description !== undefined && (
+                    <li>
+                      <b>요청 내용</b>: <s>{request.description || "없음"}</s> → <b>{revision.description.trim() || "없음"}</b>
+                    </li>
+                  )}
+                  {revisionChanges(revision).due_date !== undefined && (
+                    <li>
+                      <b>희망 기한</b>: <s>{request.due_date ? formatDate(request.due_date) : "없음"}</s> →{" "}
+                      <b>{revision.due_date ? formatDate(revision.due_date) : "없음"}</b>
+                    </li>
+                  )}
+                </ul>
+              )}
+            </div>
+            <p className="t-meta">
+              {canAmend
+                ? "수정은 같은 요청의 새 회차입니다. 담당자는 최신 회차를 판단하고 이전 회차와 근거는 그대로 남습니다."
+                : "재상신은 같은 요청의 새 회차입니다. 이전 회차와 판단은 그대로 남고 달라진 항목만 diff로 표시됩니다."}
+            </p>
           </div>
         </section>
       )}

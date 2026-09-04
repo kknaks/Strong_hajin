@@ -50,6 +50,8 @@ class WorkRequestRepository(Protocol):
     def cc_member_ids(self, request: Any) -> list[str]: ...
     def derived_task_ids(self, requests: list[Any]) -> dict[UUID, UUID]: ...
     def adopt_evidence(self, submission: Any, attachment: Any, *, role: str, adopted_by: str) -> Any: ...
+    def amend(self, request: Any, actor_id: str, snapshot: dict[str, Any]) -> Any: ...
+    def audit_payloads(self, request_id: UUID, event_type: str) -> list[dict[str, Any]]: ...
     def evidence_count_for(self, submission: Any) -> int: ...
     def evidence_for(self, request: Any) -> list[tuple[Any, Any, Any]]: ...
     def create_accepted_task(self, request: Any) -> Any: ...
@@ -96,6 +98,23 @@ def decision_facts(conditions: Any) -> dict[str, Any]:
         return {}
     facts = conditions.get(DECISION_FACTS)
     return dict(facts) if isinstance(facts, dict) else {}
+
+
+def _amend_command(*, title: str | None, description: str | None, due_date: date | None, clear_due_date: bool) -> dict[str, Any]:
+    """The amendment as it was asked for, in one canonical form so a re-send compares to what was stored.
+
+    Only the fields the caller named are in it: naming a field and leaving it empty is an intent of its own.
+    """
+    command: dict[str, Any] = {}
+    if title is not None:
+        command["title"] = title.strip()
+    if description is not None:
+        command["description"] = description.strip()
+    if clear_due_date:
+        command["clear_due_date"] = True
+    elif due_date is not None:
+        command["due_date"] = due_date.isoformat()
+    return command
 
 
 def evidence_manifest_entry(attachment_id: Any, evidence_role: str, fixed_snapshot_ref: str) -> dict[str, str]:
@@ -248,6 +267,95 @@ class WorkRequestApplication:
         )
         return self._view(request)
 
+    def amend(
+        self,
+        principal: Principal,
+        request_id: UUID,
+        expected_version: int,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+        due_date: date | None = None,
+        clear_due_date: bool = False,
+    ) -> dict[str, Any]:
+        """The requester improving their own request before anyone has judged it.
+
+        Nobody asked for this, so it is not a ReviewDecision and never puts the question back on the requester: it adds
+        a round to the same WorkRequest and replaces what the assignee is looking at.
+        """
+        self._require(principal, WORK_REQUEST_CREATE)
+        request = self._repository.request(request_id, lock=True)
+        if request is None:
+            raise WorkRequestError("work request was not found")
+        if request.requester_id != str(principal.id):
+            raise WorkRequestAccessDenied("only the requester may amend their own request")
+        if request.state != "pending":
+            raise WorkRequestError("담당자가 판단하고 있는 요청만 수정할 수 있습니다")
+        command = _amend_command(title=title, description=description, due_date=due_date, clear_due_date=clear_due_date)
+        if request.version != expected_version:
+            # The same amendment coming back is that answer, not a stale one. This is judged on the command itself:
+            # once it has been applied the request no longer differs from it, so asking whether it still changes
+            # anything would refuse the very re-send it is meant to recognise.
+            if self._amendment_produced(request, str(principal.id), expected_version, command):
+                return self._view(request)
+            raise WorkRequestError("work request version is stale")
+        revised = self._revised_content(request, title=title, description=description, due_date=due_date, clear_due_date=clear_due_date)
+        submission = self._apply_round(request, str(principal.id), revised, self._repository.amend)
+        self._repository.append_audit(
+            request.id,
+            str(principal.id),
+            "work_request.amended",
+            {
+                "submission_version": submission.submission_version,
+                "submission_id": str(submission.id),
+                "expected_version": expected_version,
+                "command": command,
+            },
+        )
+        self._record_inheritance(request, str(principal.id), submission)
+        return self._view(request)
+
+    def _amendment_produced(self, request: Any, actor_id: str, expected_version: int, command: dict[str, Any]) -> bool:
+        """Did this exact command already produce the round that now stands?"""
+        current = self._repository.current_submission(request)
+        if current is None or current.submitted_by != actor_id:
+            return False
+        return any(
+            entry.get("submission_id") == str(current.id)
+            and entry.get("expected_version") == expected_version
+            and entry.get("command") == command
+            for entry in self._repository.audit_payloads(request.id, "work_request.amended")
+        )
+
+    def _revised_content(
+        self, request: Any, *, title: str | None, description: str | None, due_date: date | None, clear_due_date: bool
+    ) -> dict[str, Any]:
+        """What the request would become, refused when it names a field it cannot change or changes nothing."""
+        if title is not None and not title.strip():
+            raise WorkRequestError("title is required")
+        revised = {
+            "title": title.strip() if title is not None else request.title,
+            "description": (description.strip() or None) if description is not None else request.description,
+            "due_date": None if clear_due_date else (due_date if due_date is not None else request.due_date),
+        }
+        if revised == {"title": request.title, "description": request.description, "due_date": request.due_date}:
+            raise WorkRequestError("a revision must change something")
+        return revised
+
+    def _apply_round(self, request: Any, actor_id: str, revised: dict[str, Any], open_round: Any) -> Any:
+        request.title = revised["title"]
+        request.description = revised["description"]
+        request.due_date = revised["due_date"]
+        snapshot = {
+            "title": request.title,
+            "description": request.description,
+            "due_date": request.due_date.isoformat() if request.due_date else None,
+            "assignee_id": request.assignee_id,
+        }
+        submission = open_round(request, actor_id, snapshot)
+        request.version += 1
+        return submission
+
     def resubmit(
         self,
         principal: Principal,
@@ -270,47 +378,33 @@ class WorkRequestApplication:
             raise WorkRequestError("work request version is stale")
         if request.state != "negotiating":
             raise WorkRequestError("only a negotiating work request can be resubmitted")
-        if title is not None and not title.strip():
-            raise WorkRequestError("title is required")
         # Compare against the round being revised before touching it: a field repeated at its current value is not a
         # change, however the caller wrote it, and an empty round would give the reviewer nothing to answer.
-        revised = {
-            "title": title.strip() if title is not None else request.title,
-            "description": (description.strip() or None) if description is not None else request.description,
-            "due_date": None if clear_due_date else (due_date if due_date is not None else request.due_date),
-        }
-        if revised == {"title": request.title, "description": request.description, "due_date": request.due_date}:
-            raise WorkRequestError("a revision must change something")
-        request.title = revised["title"]
-        request.description = revised["description"]
-        request.due_date = revised["due_date"]
-        snapshot = {
-            "title": request.title,
-            "description": request.description,
-            "due_date": request.due_date.isoformat() if request.due_date else None,
-            "assignee_id": request.assignee_id,
-        }
-        submission = self._repository.resubmit(request, str(principal.id), snapshot)
+        revised = self._revised_content(request, title=title, description=description, due_date=due_date, clear_due_date=clear_due_date)
+        submission = self._apply_round(request, str(principal.id), revised, self._repository.resubmit)
         request.state = "pending"
         request.conditions = None
-        request.version += 1
         self._repository.append_audit(
             request.id, str(principal.id), "work_request.resubmitted", {"submission_version": submission.submission_version}
         )
-        # The basis the revision carried forward, recorded after the revision that carried it.
-        inherited = self._repository.evidence_count_for(submission)
-        if inherited:
-            self._repository.append_audit(
-                request.id,
-                str(principal.id),
-                "work_request.evidence_inherited",
-                {
-                    "inherited_count": inherited,
-                    "previous_submission_id": str(submission.revises_id),
-                    "new_submission_id": str(submission.id),
-                },
-            )
+        self._record_inheritance(request, str(principal.id), submission)
         return self._view(request)
+
+    def _record_inheritance(self, request: Any, actor_id: str, submission: Any) -> None:
+        """The basis a new round carried forward, recorded after the act that carried it."""
+        inherited = self._repository.evidence_count_for(submission)
+        if not inherited:
+            return
+        self._repository.append_audit(
+            request.id,
+            actor_id,
+            "work_request.evidence_inherited",
+            {
+                "inherited_count": inherited,
+                "previous_submission_id": str(submission.revises_id),
+                "new_submission_id": str(submission.id),
+            },
+        )
 
     def withdraw(self, principal: Principal, request_id: UUID, expected_version: int) -> dict[str, Any]:
         """The requester retracts their own request; no Task is created and the question leaves every ledger."""

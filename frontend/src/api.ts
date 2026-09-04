@@ -396,6 +396,20 @@ export async function uploadCommentAttachment(requestId: string, commentId: stri
   return uploadFile<RequestComment>(`/api/work-requests/${requestId}/comments/${commentId}/attachments`, file);
 }
 
+/** The requester improving their own request before anyone has judged it. Content only, never the assignee. */
+export async function amendWorkRequest(
+  requestId: string,
+  expectedVersion: number,
+  changes: { title?: string; description?: string; due_date?: string | null },
+): Promise<WorkRequest> {
+  const body: Record<string, unknown> = { expected_version: expectedVersion };
+  if (changes.title !== undefined) body.title = changes.title;
+  if (changes.description !== undefined) body.description = changes.description;
+  if (changes.due_date === null) body.clear_due_date = true;
+  else if (changes.due_date !== undefined) body.due_date = changes.due_date;
+  return request(`/api/work-requests/${requestId}/amend`, { method: "POST", body: JSON.stringify(body) });
+}
+
 export async function uploadRequestEvidence(requestId: string, file: File): Promise<RequestEvidence> {
   return uploadFile<RequestEvidence>(`/api/work-requests/${requestId}/evidence`, file);
 }

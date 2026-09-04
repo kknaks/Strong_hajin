@@ -514,7 +514,21 @@ class SqlAlchemyWorkRequestRepository:
         )
 
     def resubmit(self, request: WorkRequestRecord, actor_id: str, snapshot: dict) -> SubmissionRecord:
-        """A revision is a new SubjectVersion + Submission with a diff; the prior decision stays untouched."""
+        """A revision answers an adjustment: a new SubjectVersion + Submission with a diff; the prior decision stays."""
+        return self._open_round(request, actor_id, snapshot, event_kind="work_request.resubmitted", summary="재상신")
+
+    def amend(self, request: WorkRequestRecord, actor_id: str, snapshot: dict) -> SubmissionRecord:
+        """A requester improving their own open request: the same round trip, minus anyone having asked for it."""
+        return self._open_round(request, actor_id, snapshot, event_kind="work_request.amended", summary="수정")
+
+    def _open_round(
+        self, request: WorkRequestRecord, actor_id: str, snapshot: dict, *, event_kind: str, summary: str
+    ) -> SubmissionRecord:
+        """One new round on the same question: a frozen Submission, the basis carried forward, one open assignment.
+
+        Whatever the assignee was looking at stops being the question. If they had not answered yet that assignment is
+        superseded rather than left open, so at most one review is ever pending on this request.
+        """
         now = datetime.now(UTC)
         item = self.open_decision_item(request)
         previous = self.current_submission(request)
@@ -548,6 +562,12 @@ class SqlAlchemyWorkRequestRepository:
         previous_assignment = self._session.scalar(
             select(ReviewAssignmentRecord).where(ReviewAssignmentRecord.submission_id == previous.id).order_by(ReviewAssignmentRecord.assigned_at.desc())
         )
+        if previous_assignment is not None and previous_assignment.status == "pending":
+            previous_assignment.status = "superseded"
+        # The question is judged against this round, so the deadline shown on it is this round's, not the first one's.
+        item.due_at = (
+            datetime.combine(request.due_date, datetime.min.time(), tzinfo=UTC) if request.due_date else None
+        )
         self._session.add(
             ReviewAssignmentRecord(
                 submission_id=submission.id,
@@ -561,9 +581,10 @@ class SqlAlchemyWorkRequestRepository:
         item.status = "open"
         ledger = ActivityLedger(self._session)
         ledger.record(
-            target_type="work_request", target_id=str(request.id), event_kind="work_request.resubmitted", actor_id=actor_id,
+            target_type="work_request", target_id=str(request.id), event_kind=event_kind, actor_id=actor_id,
             before_ref=f"submission:{previous.id}", after_ref=f"submission:{submission.id}",
-            safe_summary=f"업무 요청 재상신 v{submission.submission_version}: {request.title}", request_thread_id=request.request_thread_id,
+            safe_summary=f"업무 요청 {summary} v{submission.submission_version}: {request.title}",
+            request_thread_id=request.request_thread_id,
         )
         if inherited:
             ledger.record(
@@ -684,6 +705,17 @@ class SqlAlchemyWorkRequestRepository:
                 occurred_at=datetime.now(UTC),
             )
         )
+
+    def audit_payloads(self, request_id: UUID, event_type: str) -> list[dict]:
+        """What was recorded for one kind of command on this request, oldest first."""
+        return [
+            dict(row.payload or {})
+            for row in self._session.scalars(
+                select(WorkRequestAuditEventRecord)
+                .where(WorkRequestAuditEventRecord.request_id == request_id, WorkRequestAuditEventRecord.event_type == event_type)
+                .order_by(WorkRequestAuditEventRecord.occurred_at, WorkRequestAuditEventRecord.id)
+            )
+        ]
 
     def inbox_for(self, assignee_id: str) -> list[WorkRequestRecord]:
         return list(

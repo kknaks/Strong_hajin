@@ -618,6 +618,13 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def amend_work_request(self, principal: Principal, request_id: UUID, expected_version: int, **changes: Any) -> dict[str, Any]:
+        """The requester's own improvement to a request nobody has judged yet."""
+        with self._session_factory() as session:
+            result = self._work_requests(session).amend(principal, request_id, expected_version, **changes)
+            session.commit()
+            return result
+
     def work_request_cc_candidates(self, principal: Principal) -> list[dict[str, str]]:
         with self._session_factory() as session:
             return self._work_requests(session).cc_candidates(principal)

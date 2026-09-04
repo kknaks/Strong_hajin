@@ -44,6 +44,7 @@ DELEGATED_ACTION_CAPABILITIES = {
     "daily_report.edit": DAILY_REPORT_EDIT,
     "daily_report.submit": DAILY_REPORT_SUBMIT,
     "work_request.create": WORK_REQUEST_CREATE,
+    "work_request.amend": WORK_REQUEST_CREATE,
     "work_request.accept": WORK_REQUEST_DECIDE,
     "work_request.negotiate": WORK_REQUEST_DECIDE,
     "work_request.reject": WORK_REQUEST_DECIDE,
@@ -159,6 +160,25 @@ class McpReportsFacade:
         return self._application.resubmit_work_request(
             self.principal, UUID(request_id), expected_version, title=title, description=description, due_date=_parse_iso_date(due_date)
         )
+
+    def amend_work_request(
+        self, request_id: str, expected_version: int, title: str | None, description: str | None, due_date: str | None,
+        clear_due_date: bool = False,
+    ) -> dict[str, Any]:
+        payload = {
+            "request_id": request_id, "expected_version": expected_version,
+            "title": title, "description": description, "due_date": due_date, "clear_due_date": clear_due_date,
+        }
+        action = self._propose_chat_action("work_request.amend", "요청 수정 확인", payload)
+        if action is not None:
+            return action
+        return self._application.amend_work_request(
+            self.principal, UUID(request_id), expected_version,
+            title=title, description=description, due_date=_parse_iso_date(due_date), clear_due_date=clear_due_date,
+        )
+
+    def work_request_history(self, request_id: str) -> dict[str, Any]:
+        return self._application.work_request_timeline(self.principal, UUID(request_id))
 
     def get_work_request(self, request_id: str) -> dict[str, Any]:
         return self._application.get_work_request(self.principal, UUID(request_id))
@@ -544,10 +564,35 @@ def _register_work_request_read_tools(server: MCPServer, facade: McpReportsFacad
     def work_request_get(request_id: str) -> dict[str, Any]:
         return facade.get_work_request(request_id)
 
+    @server.tool(
+        annotations=_READ_ONLY_TOOL,
+        description=(
+            "Read the whole history of one WorkRequest the delegated persona may see: every round with its frozen "
+            "content, what changed between rounds, the evidence each round stands on, and every decision with its "
+            "reason. Use it to explain how a request got to where it is, not only what it says now."
+        ),
+        structured_output=True,
+    )
+    def work_request_history(request_id: str) -> dict[str, Any]:
+        return facade.work_request_history(request_id)
+
 def _register_work_request_create_tools(server: MCPServer, facade: McpReportsFacade) -> None:
     @server.tool(description="List authorized organization-ledger assignee candidates for a new WorkRequest.")
     def work_request_assignee_candidates() -> list[dict[str, str]]:
         return facade.work_request_assignee_candidates()
+
+    @server.tool(
+        description=(
+            "Improve a WorkRequest you sent that the assignee has not judged yet, using its required expected version. "
+            "Title, description and due date only — the assignee and the cc list are relationships, not content. It "
+            "adds a round to the same request and replaces what the assignee is looking at."
+        )
+    )
+    def work_request_amend(
+        request_id: str, expected_version: int, title: str | None = None, description: str | None = None,
+        due_date: str | None = None, clear_due_date: bool = False,
+    ) -> dict[str, Any]:
+        return facade.amend_work_request(request_id, expected_version, title, description, due_date, clear_due_date)
 
     @server.tool(description="Create a WorkRequest with an optional ISO due_date and description; it creates no Task until the assignee accepts.")
     def work_request_create(

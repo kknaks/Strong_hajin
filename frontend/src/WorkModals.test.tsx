@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Persona, WorkRequest } from "./viewModels";
@@ -12,6 +12,7 @@ vi.mock("./api", () => ({
   decideWorkRequest: vi.fn(),
   negotiateWorkRequest: vi.fn(),
   uploadRequestEvidence: vi.fn(),
+  amendWorkRequest: vi.fn(),
 }));
 
 import * as api from "./api";
@@ -235,5 +236,54 @@ describe("adopting evidence", () => {
     await waitFor(() => expect(props.onChanged).toHaveBeenCalled());
     expect(vi.mocked(api.getWorkRequestTimeline).mock.calls.length).toBeGreaterThan(1);
     expect(props.onNotice).toHaveBeenCalledWith(expect.stringContaining("근거.txt"));
+  });
+});
+
+describe("amending a request nobody has judged yet", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  const pending = { ...request, state: "pending", version: 4, conditions: null } as WorkRequest;
+
+  it("offers 요청 수정 to the requester only while the request is still open", async () => {
+    vi.mocked(api.getWorkRequestTimeline).mockResolvedValue(emptyTimeline as never);
+    for (const [state, personaId, offered] of [
+      ["pending", "mina", true],
+      ["pending", "jiho", false],
+      ["negotiating", "mina", false],
+      ["accepted", "mina", false],
+      ["withdrawn", "mina", false],
+    ] as const) {
+      cleanup();
+      renderDrawer({ request: { ...pending, state } as WorkRequest, personaId });
+      await screen.findAllByText(/근거 자료/);
+      expect(screen.queryByRole("button", { name: "요청 수정" }) !== null).toBe(offered);
+    }
+  });
+
+  it("shows what will change before sending, and sends only the fields that differ", async () => {
+    vi.mocked(api.getWorkRequestTimeline).mockResolvedValue(emptyTimeline as never);
+    vi.mocked(api.amendWorkRequest).mockResolvedValue({ ...pending, title: "보강한 요청", version: 5 } as never);
+    const { props } = renderDrawer({ request: pending, personaId: "mina" });
+
+    fireEvent.click(await screen.findByRole("button", { name: "요청 수정" }));
+    const title = (await screen.findByLabelText("요청할 업무")) as HTMLInputElement;
+    expect(title.value).toBe("견적 재검토");
+    // Nothing has changed yet, so there is nothing to send.
+    expect(screen.getByText(/바뀐 내용이 없습니다/)).toBeTruthy();
+
+    fireEvent.change(title, { target: { value: "보강한 요청" } });
+    const summary = screen.getByLabelText("제출 전 변경 요약");
+    expect(within(summary).getByText(/견적 재검토/)).toBeTruthy();
+    expect(within(summary).getByText(/보강한 요청/)).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "수정 제출" }));
+    });
+    await waitFor(() => expect(api.amendWorkRequest).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.amendWorkRequest).mock.calls[0]).toEqual(["request-1", 4, { title: "보강한 요청" }]);
+    await waitFor(() => expect(props.onChanged).toHaveBeenCalled());
   });
 });

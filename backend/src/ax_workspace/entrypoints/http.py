@@ -188,6 +188,18 @@ class ActionCommandRequest(BaseModel):
     changes: dict[str, object] | None = None
 
 
+class WorkRequestAmendRequest(BaseModel):
+    """What a requester may change on their own open request. Assignee and cc are relationships, not content."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int
+    title: str | None = None
+    description: str | None = None
+    due_date: date | None = None
+    clear_due_date: bool = False
+
+
 class WorkRequestResubmitRequest(BaseModel):
     expected_version: int
     title: str | None = None
@@ -788,6 +800,20 @@ def create_app(
         ) -> dict[str, object]:
             try:
                 return app.state.workflow_application.resubmit_work_request(
+                    principal, request_id, request.expected_version,
+                    title=request.title, description=request.description, due_date=request.due_date, clear_due_date=request.clear_due_date,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/work-requests/{request_id}/amend")
+        def amend_work_request(
+            request_id: UUID,
+            request: WorkRequestAmendRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.amend_work_request(
                     principal, request_id, request.expected_version,
                     title=request.title, description=request.description, due_date=request.due_date, clear_due_date=request.clear_due_date,
                 )

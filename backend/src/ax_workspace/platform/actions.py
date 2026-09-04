@@ -285,6 +285,19 @@ class SqlAlchemyActionExecutor:
             return WorkRequestApplication(SqlAlchemyWorkRequestRepository(self._session), OrganizationApplication(SqlAlchemyOrganizationRepository(self._session))).reject(principal, UUID(str(action.payload["request_id"])), int(action.payload["expected_version"]), str(action.payload["reason"]))
         if action.action_type == ACTION_ITEM_COMMAND:
             return self._run_action_item_command(principal, action)
+        if action.action_type == "work_request.amend":
+            return WorkRequestApplication(
+                SqlAlchemyWorkRequestRepository(self._session),
+                OrganizationApplication(SqlAlchemyOrganizationRepository(self._session)),
+            ).amend(
+                principal,
+                UUID(str(action.payload["request_id"])),
+                int(action.payload["expected_version"]),
+                title=action.payload.get("title"),
+                description=action.payload.get("description"),
+                due_date=_parse_date(action.payload.get("due_date")),
+                clear_due_date=bool(action.payload.get("clear_due_date")),
+            )
         if action.action_type == "work_request.negotiate":
             return WorkRequestApplication(SqlAlchemyWorkRequestRepository(self._session), OrganizationApplication(SqlAlchemyOrganizationRepository(self._session))).negotiate(principal, UUID(str(action.payload["request_id"])), int(action.payload["expected_version"]), dict(action.payload["conditions"]))
         raise ValueError("unsupported action type")
@@ -339,6 +352,7 @@ _OPERATION_LABELS: dict[str, str] = {
     "work_request.accept": "요청 수락",
     "work_request.reject": "요청 거절",
     "work_request.negotiate": "요청 조건 협의",
+    "work_request.amend": "요청 수정",
     "daily_report.edit": "일일보고 수정",
     "daily_report.submit": "일일보고 제출",
 }
@@ -423,6 +437,13 @@ class ActionPresenter:
                 self._text(fields, "reason", "사유", payload.get("reason"))
         elif kind in {"task.assignment.decline", "work_request.reject", "daily_report.submit"}:
             self._text(fields, "reason", "사유", payload.get("reason"))
+        elif kind == "work_request.amend":
+            self._text(fields, "title", "제목", payload.get("title"))
+            self._text(fields, "description", "설명", payload.get("description"))
+            if payload.get("clear_due_date"):
+                fields.append({"id": "due_date", "label": "기한", "value": "없앰", "kind": "state"})
+            else:
+                self._date(fields, "due_date", "기한", payload.get("due_date"))
         elif kind == "work_request.negotiate":
             conditions = dict(payload.get("conditions") or {})
             self._date(fields, "due_date", "제안 기한", conditions.get("due_date"))
