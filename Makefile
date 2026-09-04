@@ -5,7 +5,7 @@ E2E_FRONTEND_PORT ?= 5176
 ACCEPTANCE_API_PORT ?= 18111
 ACCEPTANCE_FRONTEND_PORT ?= 15186
 
-.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo api conversation-worker material-worker mcp frontend-install frontend api-e2e frontend-e2e e2e-task-lifecycle e2e-work-request e2e-conversation e2e-conversation-action e2e-conversation-report-edit-action e2e-daily-report e2e-material-search acceptance-e2e live-report-smoke
+.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo api conversation-worker material-worker mcp frontend-install frontend api-e2e frontend-e2e e2e-task-lifecycle e2e-work-request e2e-conversation e2e-conversation-action e2e-conversation-report-edit-action e2e-daily-report e2e-material-search local-stack acceptance-e2e live-report-smoke
 
 install:
 	cd backend && uv sync --all-groups
@@ -60,6 +60,31 @@ api-e2e:
 
 frontend-e2e:
 	cd frontend && VITE_API_TARGET="http://127.0.0.1:$(E2E_API_PORT)" npm run dev -- --host 127.0.0.1 --port "$(E2E_FRONTEND_PORT)"
+
+# The complete local stack for a manual walkthrough or the individual e2e-* targets: waits for PostgreSQL, then starts
+# the API, conversation worker, material worker, and frontend together and stops them together (Ctrl+C). Every required
+# process is listed here so none can be forgotten; acceptance-e2e uses the same four processes on isolated ports.
+# It never resets the database.
+local-stack:
+	@set -eu; \
+		pids=""; \
+		stop_process_tree() { \
+			for child in $$(pgrep -P "$$1" 2>/dev/null || true); do stop_process_tree "$$child"; done; \
+			kill -TERM "$$1" 2>/dev/null || true; \
+		}; \
+		cleanup() { for pid in $$pids; do stop_process_tree "$$pid"; done; for pid in $$pids; do wait "$$pid" 2>/dev/null || true; done; }; \
+		trap cleanup EXIT INT TERM; \
+		$(MAKE) postgres-up; \
+		$(MAKE) api-e2e & pids="$$pids $$!"; \
+		$(MAKE) conversation-worker & pids="$$pids $$!"; \
+		$(MAKE) material-worker & pids="$$pids $$!"; \
+		$(MAKE) frontend-e2e & pids="$$pids $$!"; \
+		for attempt in $$(seq 1 60); do curl -fsS "http://127.0.0.1:$(E2E_API_PORT)/api/auth/providers" >/dev/null 2>&1 && curl -fsS "http://127.0.0.1:$(E2E_FRONTEND_PORT)" >/dev/null 2>&1 && break; sleep 1; done; \
+		curl -fsS "http://127.0.0.1:$(E2E_API_PORT)/api/auth/providers" >/dev/null; \
+		curl -fsS "http://127.0.0.1:$(E2E_FRONTEND_PORT)" >/dev/null; \
+		for pid in $$pids; do kill -0 "$$pid" 2>/dev/null || { echo "a required SCAX process exited during startup" >&2; exit 1; }; done; \
+		echo "SCAX local stack ready: API http://127.0.0.1:$(E2E_API_PORT) · frontend http://127.0.0.1:$(E2E_FRONTEND_PORT) · conversation worker · material worker (Ctrl+C stops all)"; \
+		wait
 
 e2e-task-lifecycle:
 	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:task-lifecycle

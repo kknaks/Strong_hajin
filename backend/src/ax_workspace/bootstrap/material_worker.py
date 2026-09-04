@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any, Callable
 from uuid import UUID, uuid4
+
+from sqlalchemy.exc import SQLAlchemyError
 
 from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.jobs.domain import JOB_KIND_MATERIAL_EXTRACTION, ClaimedJob, DurableJobQueue
@@ -17,6 +20,9 @@ from ax_workspace.platform.durable_jobs import MemoryDurableJobQueue, build_job_
 from ax_workspace.platform.material_extraction import PypdfTextExtractor, SqlAlchemyMaterialExtractionRepository
 from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
 from ax_workspace.platform.persistence import make_session_factory
+
+FAILURE_BACKOFF_SECONDS = 2.0
+logger = logging.getLogger(__name__)
 
 
 class MaterialExtractionWorker:
@@ -42,11 +48,20 @@ class MaterialExtractionWorker:
         self._stopping = asyncio.Event()
 
     async def run(self) -> None:
+        failures = 0
         while not self._stopping.is_set():
-            processed = await self.run_once()
+            try:
+                processed = await self.run_once()
+                failures = 0
+            except SQLAlchemyError:
+                # A database outage or schema reset must not kill the process; programming errors still propagate.
+                failures += 1
+                logger.exception("material worker poll failed (attempt %d); retrying after backoff", failures)
+                processed = False
+            delay = 0.25 if failures == 0 else min(30.0, FAILURE_BACKOFF_SECONDS * 2 ** min(failures - 1, 4))
             if not processed:
                 try:
-                    await asyncio.wait_for(self._stopping.wait(), timeout=0.25)
+                    await asyncio.wait_for(self._stopping.wait(), timeout=delay)
                 except TimeoutError:
                     pass
 
