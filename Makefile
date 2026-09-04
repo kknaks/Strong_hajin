@@ -61,10 +61,10 @@ api-e2e:
 frontend-e2e:
 	cd frontend && VITE_API_TARGET="http://127.0.0.1:$(E2E_API_PORT)" npm run dev -- --host 127.0.0.1 --port "$(E2E_FRONTEND_PORT)"
 
-# The complete local stack for a manual walkthrough or the individual e2e-* targets: waits for PostgreSQL, then starts
-# the API, conversation worker, material worker, and frontend together and stops them together (Ctrl+C). Every required
-# process is listed here so none can be forgotten; acceptance-e2e uses the same four processes on isolated ports.
-# It never resets the database.
+# The complete local stack for a manual walkthrough or the individual e2e-* targets: waits for PostgreSQL, refuses to
+# start on an uninitialized schema (run reset-demo first; this target never resets), then starts the API, conversation
+# worker, material worker, and frontend together, supervises them (if any one exits, the rest are stopped and the
+# target fails), and stops them all on Ctrl+C. acceptance-e2e uses the same four processes on isolated ports.
 local-stack:
 	@set -eu; \
 		pids=""; \
@@ -75,16 +75,23 @@ local-stack:
 		cleanup() { for pid in $$pids; do stop_process_tree "$$pid"; done; for pid in $$pids; do wait "$$pid" 2>/dev/null || true; done; }; \
 		trap cleanup EXIT INT TERM; \
 		$(MAKE) postgres-up; \
-		$(MAKE) api-e2e & pids="$$pids $$!"; \
-		$(MAKE) conversation-worker & pids="$$pids $$!"; \
-		$(MAKE) material-worker & pids="$$pids $$!"; \
-		$(MAKE) frontend-e2e & pids="$$pids $$!"; \
+		if ! docker compose exec -T postgres psql -U ax -d "$$(printf '%s' "$(DATABASE_URL)" | sed -E 's#.*/([^/?]+)(\?.*)?$$#\1#')" -tAc "SELECT to_regclass('durable_jobs')" 2>/dev/null | grep -q durable_jobs; then \
+			echo "SCAX schema is not initialized in $(DATABASE_URL). Run 'make reset-demo' once (it is the only command that creates or drops tables), then 'make local-stack' again." >&2; \
+			exit 2; \
+		fi; \
+		names=""; \
+		$(MAKE) api-e2e & pids="$$pids $$!"; names="$$names api"; \
+		$(MAKE) conversation-worker & pids="$$pids $$!"; names="$$names conversation-worker"; \
+		$(MAKE) material-worker & pids="$$pids $$!"; names="$$names material-worker"; \
+		$(MAKE) frontend-e2e & pids="$$pids $$!"; names="$$names frontend"; \
 		for attempt in $$(seq 1 60); do curl -fsS "http://127.0.0.1:$(E2E_API_PORT)/api/auth/providers" >/dev/null 2>&1 && curl -fsS "http://127.0.0.1:$(E2E_FRONTEND_PORT)" >/dev/null 2>&1 && break; sleep 1; done; \
 		curl -fsS "http://127.0.0.1:$(E2E_API_PORT)/api/auth/providers" >/dev/null; \
 		curl -fsS "http://127.0.0.1:$(E2E_FRONTEND_PORT)" >/dev/null; \
-		for pid in $$pids; do kill -0 "$$pid" 2>/dev/null || { echo "a required SCAX process exited during startup" >&2; exit 1; }; done; \
+		check_alive() { i=0; for pid in $$pids; do i=$$((i+1)); if ! kill -0 "$$pid" 2>/dev/null; then echo "SCAX local stack: required process #$$i ($$(printf '%s' "$$names" | awk -v n=$$i '{print $$n}')) exited; stopping the rest" >&2; return 1; fi; done; }; \
+		check_alive || exit 1; \
 		echo "SCAX local stack ready: API http://127.0.0.1:$(E2E_API_PORT) · frontend http://127.0.0.1:$(E2E_FRONTEND_PORT) · conversation worker · material worker (Ctrl+C stops all)"; \
-		wait
+		while check_alive; do sleep 2; done; \
+		exit 1
 
 e2e-task-lifecycle:
 	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:task-lifecycle

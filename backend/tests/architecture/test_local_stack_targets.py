@@ -21,8 +21,13 @@ def test_stack_and_acceptance_targets_start_every_required_process() -> None:
         recipe = _recipe(target)
         missing = [process for process in REQUIRED_PROCESS_TARGETS if not re.search(rf"\$\(MAKE\)[^\n;]*\b{re.escape(process)}\b", recipe)]
         assert not missing, f"{target} does not start {missing}"
-    assert "reset-demo" not in _recipe("local-stack"), "local-stack must never reset the database"
-    assert "postgres-up" in _recipe("local-stack")
+    recipe = _recipe("local-stack")
+    assert not re.search(r"\$\(MAKE\)[^\n;]*\breset-demo\b", recipe), "local-stack must never reset the database"
+    assert "postgres-up" in recipe
+    # Fail fast on an uninitialized schema instead of starting an API that cannot serve.
+    assert "to_regclass('durable_jobs')" in recipe and "not initialized" in recipe
+    # Supervise: an early exit of any required process stops the rest and fails the target (plain `wait` cannot see it).
+    assert "check_alive" in recipe and "kill -0" in recipe and "while check_alive; do" in recipe
 
 
 def test_stack_target_is_declared_phony_and_documented() -> None:
