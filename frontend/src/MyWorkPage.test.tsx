@@ -137,12 +137,12 @@ describe("work relation information architecture", () => {
   it("shows the assignment section only with the capability and never mixes it with requests", async () => {
     renderPage();
     await openRelationTab();
-    expect(screen.queryByLabelText("조직 업무")).toBeNull();
+    expect(screen.queryByLabelText("내가 지정한 업무")).toBeNull();
     cleanup();
 
     renderPage({ canAssignTasks: true });
     await openRelationTab();
-    const assignments = within(screen.getByLabelText("조직 업무"));
+    const assignments = within(screen.getByLabelText("내가 지정한 업무"));
     expect(assignments.getByText("내가 담당자를 지정한 업무가 없습니다")).toBeTruthy();
     expect(assignments.queryByText("내가 보낸 요청")).toBeNull();
   });

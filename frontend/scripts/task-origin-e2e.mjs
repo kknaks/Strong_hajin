@@ -143,7 +143,7 @@ try {
   await switchAccount(page, "jiho");
   await navigation.getByRole("button", { name: "내 업무" }).click();
   await page.getByRole("tab", { name: "요청·배정" }).click();
-  await page.locator("section[aria-label='조직 업무']").locator("tr", { hasText: assigned }).first().click();
+  await page.locator("section[aria-label='내가 지정한 업무']").locator("tr", { hasText: assigned }).first().click();
   const assignerDrawer = page.getByRole("dialog", { name: "업무 상세" });
   await assignerDrawer.waitFor({ timeout: 20_000 });
   const assignerSideRole = ((await assignerDrawer.locator("[aria-label='업무 출처']").first().textContent()) ?? "").replace(/\s+/g, " ");

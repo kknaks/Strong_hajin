@@ -355,9 +355,9 @@ export function MyWorkPage({
               />
             )}
             {canAssignTasks && (
-              <section aria-label="조직 업무" className="sent-section">
+              <section aria-label="내가 지정한 업무" className="sent-section">
                 <h2 className="section-title">
-                  조직 업무 <small>내가 담당자를 지정한 업무. 수락하면 그 사람의 업무가 됩니다</small>
+                  내가 지정한 업무 <small>이미 넘긴 업무입니다. 수락하면 그 사람의 업무가 됩니다</small>
                 </h2>
                 <table className="plain-table">
                   <thead>
