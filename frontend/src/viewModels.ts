@@ -90,6 +90,14 @@ export type TaskLineage = {
 export type TaskMaterialKind = "input" | "output";
 
 export type TaskMaterial = {
+  /** Where the artifact lives when it is not a file SCAX holds. */
+  url?: string | null;
+  /** Nothing was fetched and no revision was pinned, so it may change under the reader. */
+  mutable_source?: boolean;
+  /** Another thing inside SCAX, resolved for this reader. Absent when they may not open it. */
+  resource?: { type: string; id: string; title: string } | null;
+  /** `file` (SCAX holds the bytes), `external_link` (a URL), `resource_ref` (something inside the product). */
+  source_kind?: string;
   material_id: string;
   task_id: string;
   kind: TaskMaterialKind;

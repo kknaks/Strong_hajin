@@ -21,6 +21,10 @@ from ax_workspace.modules.work.material_extraction import (
 )
 
 MATERIAL_KINDS = frozenset({"input", "output"})
+#: A link is only a link when it can be opened. Anything else is a mistake or an attempt at something else.
+LINK_SCHEMES = frozenset({"http", "https"})
+#: The things inside SCAX a Task may point at. Each is resolved by its own module's authorized read.
+REFERENCE_TYPES = frozenset({"task", "meeting"})
 MAX_MATERIAL_BYTES = 25 * 1024 * 1024
 
 
@@ -39,10 +43,30 @@ class MaterialStorage(Protocol):
 
 class AttachmentRepository(Protocol):
     def add_file(self, *, storage_key: str, name: str, content_type: str, size_bytes: int, integrity_ref: str, provenance: str, uploaded_by: str) -> Any: ...
+    def add_link(self, *, url: str, name: str, provenance: str, uploaded_by: str) -> Any: ...
+    def add_reference(self, *, resource_type: str, resource_id: str, name: str, provenance: str, uploaded_by: str) -> Any: ...
     def bind(self, *, attachment_id: UUID, context_type: str, context_id: str, role: str, bound_by: str) -> Any: ...
     def bindings_for(self, context_type: str, context_id: str) -> list[tuple[Any, Any]]: ...
     def binding(self, context_type: str, context_id: str, binding_id: UUID) -> tuple[Any, Any] | None: ...
     def unbind(self, binding: Any) -> None: ...
+
+
+def _link_url(url: str) -> str:
+    """A material link must be openable and must carry no secret of its own."""
+    from urllib.parse import urlsplit
+
+    cleaned = (url or "").strip()
+    if not cleaned:
+        raise MaterialError("material url is required")
+    parts = urlsplit(cleaned)
+    if parts.scheme.lower() not in LINK_SCHEMES or not parts.netloc:
+        raise MaterialError("material url must be an http(s) address")
+    if "@" in parts.netloc:
+        # Credentials belong to the connected service, never to a material row.
+        raise MaterialError("material url must not carry credentials")
+    if len(cleaned) > 500:
+        raise MaterialError("material url is too long")
+    return cleaned
 
 
 def store_file(
@@ -78,6 +102,16 @@ def store_file(
     )
 
 
+class ResourceReferencePort(Protocol):
+    """Resolving a referenced resource, through the owning module's own authorization.
+
+    Returns the title when this principal may read it, and None when they may not — never a stored copy of a title
+    they have lost access to.
+    """
+
+    def title(self, principal: Principal, resource_type: str, resource_id: str) -> str | None: ...
+
+
 class TaskMaterialApplication:
     def __init__(
         self,
@@ -87,6 +121,7 @@ class TaskMaterialApplication:
         extractions: MaterialExtractionRepository | None = None,
         extraction_queue: MaterialExtractionQueue | None = None,
         retriever: MaterialRetriever | None = None,
+        references: ResourceReferencePort | None = None,
     ) -> None:
         self._tasks = tasks
         self._attachments = attachments
@@ -94,13 +129,17 @@ class TaskMaterialApplication:
         self._extractions = extractions
         self._extraction_queue = extraction_queue
         self._retriever = retriever
+        self._references = references
 
     def list(self, principal: Principal, task_id: UUID) -> list[dict[str, Any]]:
         self._require(principal, TASK_READ)
         self._tasks.task(task_id, str(principal.id))
         active = [(binding, attachment) for binding, attachment in self._attachments.bindings_for("task", str(task_id)) if binding.unbound_at is None]
         extractions = self._extractions.for_attachments([attachment.id for _, attachment in active]) if self._extractions else {}
-        return [self._view(binding, attachment, extractions.get(attachment.id)) for binding, attachment in active]
+        return [
+            self._view(binding, attachment, extractions.get(attachment.id), principal=principal, references=self._references)
+            for binding, attachment in active
+        ]
 
     def search(self, principal: Principal, task_id: UUID, query: str, *, limit: int = 5) -> dict[str, Any]:
         """SPEC-006 `material.search` scoped to one Task: authorization (active assignment + live binding) is re-checked here,
@@ -121,7 +160,16 @@ class TaskMaterialApplication:
             if extraction is not None and extraction.status == "completed" and extraction.integrity_ref == attachment.integrity_ref:
                 searchable[extraction.id] = (binding, attachment, extraction)
             else:
-                unavailable.append({"material_id": str(binding.id), "name": attachment.name, "kind": binding.role, "extraction": extraction_view(extraction)})
+                unavailable.append(
+                    {
+                        "material_id": str(binding.id),
+                        "name": attachment.name,
+                        "kind": binding.role,
+                        # Why it could not be read: a link has no content to extract, a file may still be pending.
+                        "reason": attachment.source_kind if attachment.source_kind != "file" else "extraction",
+                        "extraction": extraction_view(extraction),
+                    }
+                )
         hits = self._retriever.search(list(searchable), cleaned, limit=max(1, min(limit, MAX_SEARCH_HITS)))
         results = []
         for hit in hits:
@@ -153,6 +201,63 @@ class TaskMaterialApplication:
             "unavailable_materials": unavailable,
         }
 
+    def attach_link(self, principal: Principal, task_id: UUID, *, kind: str, url: str, label: str) -> dict[str, Any]:
+        """Point a Task at work that lives somewhere else.
+
+        Nothing is fetched and no revision is pinned, so this is a changeable link and every surface says so. A
+        different URL is a different material, never a rewrite of the one someone already looked at.
+        """
+        self._require(principal, TASK_SELF_MANAGE)
+        task = self._tasks.task(task_id, str(principal.id), lock=True)
+        if kind not in MATERIAL_KINDS:
+            raise MaterialError("material kind must be input or output")
+        clean_url = _link_url(url)
+        clean_label = label.strip()[:300]
+        if not clean_label:
+            raise MaterialError("material label is required")
+        attachment = self._attachments.add_link(
+            url=clean_url, name=clean_label,
+            provenance=f"link by {principal.id} on task {task.id}", uploaded_by=str(principal.id),
+        )
+        binding = self._attachments.bind(
+            attachment_id=attachment.id, context_type="task", context_id=str(task.id), role=kind, bound_by=str(principal.id)
+        )
+        self._tasks.record_activity(
+            task, str(principal.id), "task.material_attached",
+            f"{'참고 자료' if kind == 'input' else '산출물'} 링크 연결: {clean_label}",
+        )
+        # A link has no content to extract, so no extraction is requested and search reports it as unreadable.
+        return self._view(binding, attachment, None, principal=principal, references=self._references)
+
+    def attach_reference(self, principal: Principal, task_id: UUID, *, kind: str, resource_type: str, resource_id: str) -> dict[str, Any]:
+        """Point a Task at another thing inside SCAX, but only at something this person may already read."""
+        self._require(principal, TASK_SELF_MANAGE)
+        task = self._tasks.task(task_id, str(principal.id), lock=True)
+        if kind not in MATERIAL_KINDS:
+            raise MaterialError("material kind must be input or output")
+        if resource_type not in REFERENCE_TYPES:
+            raise MaterialError(f"material reference type must be one of {sorted(REFERENCE_TYPES)}")
+        if resource_type == "task" and str(resource_id) == str(task.id):
+            raise MaterialError("a task cannot reference itself")
+        if self._references is None:
+            raise MaterialError("material references are not available")
+        title = self._references.title(principal, resource_type, str(resource_id))
+        if title is None:
+            # Refusing the same way for "not readable" and "not there" leaves nothing to probe for.
+            raise MaterialNotFound("referenced resource was not found")
+        attachment = self._attachments.add_reference(
+            resource_type=resource_type, resource_id=str(resource_id), name=title,
+            provenance=f"reference by {principal.id} on task {task.id}", uploaded_by=str(principal.id),
+        )
+        binding = self._attachments.bind(
+            attachment_id=attachment.id, context_type="task", context_id=str(task.id), role=kind, bound_by=str(principal.id)
+        )
+        self._tasks.record_activity(
+            task, str(principal.id), "task.material_attached",
+            f"{'참고 자료' if kind == 'input' else '산출물'} 연결: {title}",
+        )
+        return self._view(binding, attachment, None, principal=principal, references=self._references)
+
     def attach(self, principal: Principal, task_id: UUID, *, kind: str, name: str, content_type: str, data: bytes) -> dict[str, Any]:
         self._require(principal, TASK_SELF_MANAGE)
         task = self._tasks.task(task_id, str(principal.id), lock=True)
@@ -178,7 +283,7 @@ class TaskMaterialApplication:
             extraction = self._extractions.request(attachment)
             if extraction.status == "queued" and self._extraction_queue is not None:
                 self._extraction_queue.enqueue(MaterialExtractionJob(extraction.id, attachment.id))
-        return self._view(binding, attachment, extraction)
+        return self._view(binding, attachment, extraction, principal=principal, references=self._references)
 
     def open(self, principal: Principal, task_id: UUID, binding_id: UUID) -> tuple[dict[str, Any], bytes]:
         self._require(principal, TASK_READ)
@@ -189,7 +294,7 @@ class TaskMaterialApplication:
         binding, attachment = found
         if attachment.source_kind != "file":
             raise MaterialError("only file attachments have downloadable content")
-        return self._view(binding, attachment, self._extraction_for(attachment)), self._storage.get(attachment.source_ref)
+        return self._view(binding, attachment, self._extraction_for(attachment), principal=principal, references=self._references), self._storage.get(attachment.source_ref)
 
     def detach(self, principal: Principal, task_id: UUID, binding_id: UUID) -> dict[str, Any]:
         """Unbinding keeps the Attachment and bytes; the binding records when it left the Task."""
@@ -201,7 +306,7 @@ class TaskMaterialApplication:
         binding, attachment = found
         self._attachments.unbind(binding)
         self._tasks.record_activity(task, str(principal.id), "task.material_detached", f"자료 해제: {attachment.name}")
-        return self._view(binding, attachment, self._extraction_for(attachment))
+        return self._view(binding, attachment, self._extraction_for(attachment), principal=principal, references=self._references)
 
     def _extraction_for(self, attachment: Any) -> Any | None:
         if self._extractions is None:
@@ -214,17 +319,36 @@ class TaskMaterialApplication:
             raise TaskAccessDenied(f"{capability} capability is required")
 
     @staticmethod
-    def _view(binding: Any, attachment: Any, extraction: Any | None = None) -> dict[str, Any]:
+    def _view(
+        binding: Any,
+        attachment: Any,
+        extraction: Any | None = None,
+        *,
+        principal: Principal | None = None,
+        references: ResourceReferencePort | None = None,
+    ) -> dict[str, Any]:
+        resource = None
+        name = attachment.name
+        if attachment.source_kind == "resource_ref":
+            resource_type, _, resource_id = str(attachment.source_ref).partition(":")
+            title = references.title(principal, resource_type, resource_id) if references and principal else None
+            # The stored name is a fallback; a reader who may not open it is never handed the title.
+            resource = {"type": resource_type, "id": resource_id, "title": title} if title else None
+            name = title or "볼 수 없는 자료"
         return {
             "extraction": extraction_view(extraction),
             "material_id": str(binding.id),
             "attachment_id": str(attachment.id),
             "task_id": binding.context_id,
             "kind": binding.role,
-            "name": attachment.name,
+            "name": name,
+            "resource": resource,
             "content_type": attachment.content_type,
             "size_bytes": int(attachment.size_bytes),
             "source_kind": attachment.source_kind,
+            "url": attachment.source_ref if attachment.source_kind == "external_link" else None,
+            # SCAX did not read it and pinned no revision, so it must not be mistaken for a frozen artifact.
+            "mutable_source": attachment.source_kind != "file",
             "integrity_ref": attachment.integrity_ref,
             "uploaded_by": attachment.uploaded_by,
             "created_at": binding.bound_at.isoformat(),

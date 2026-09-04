@@ -1064,6 +1064,57 @@ class SqlAlchemyAttachmentRepository:
         self._session.flush()
         return record
 
+    def add_link(self, *, url: str, name: str, provenance: str, uploaded_by: str) -> AttachmentRecord:
+        """ERD ATTACHMENT with `source_kind=external_link`: the URL is the artifact, and SCAX holds none of its bytes.
+
+        One URL is one artifact identity, so the same link used on two Tasks is two bindings on one Attachment. The
+        integrity ref records only when it was observed — never a content hash, because nothing was read.
+        """
+        existing = self._session.scalar(select(AttachmentRecord).where(AttachmentRecord.source_ref == url))
+        if existing is not None:
+            return existing
+        now = datetime.now(UTC)
+        record = AttachmentRecord(
+            source_kind="external_link",
+            source_ref=url,
+            name=name,
+            content_type="text/uri-list",
+            size_bytes=0,
+            provenance=provenance,
+            integrity_ref=f"observed:{now.isoformat()}",
+            uploaded_by=uploaded_by,
+            created_at=now,
+        )
+        self._session.add(record)
+        self._session.flush()
+        return record
+
+    def add_reference(self, *, resource_type: str, resource_id: str, name: str, provenance: str, uploaded_by: str) -> AttachmentRecord:
+        """ERD ATTACHMENT with `source_kind=resource_ref`: another thing inside SCAX, named by what it is.
+
+        The stored name is a fallback only. Every read resolves the reference through the owning module's own
+        authorization, so a reader who may not open it is never handed its title.
+        """
+        source_ref = f"{resource_type}:{resource_id}"
+        existing = self._session.scalar(select(AttachmentRecord).where(AttachmentRecord.source_ref == source_ref))
+        if existing is not None:
+            return existing
+        now = datetime.now(UTC)
+        record = AttachmentRecord(
+            source_kind="resource_ref",
+            source_ref=source_ref,
+            name=name,
+            content_type="application/vnd.scax.resource-ref",
+            size_bytes=0,
+            provenance=provenance,
+            integrity_ref=f"observed:{now.isoformat()}",
+            uploaded_by=uploaded_by,
+            created_at=now,
+        )
+        self._session.add(record)
+        self._session.flush()
+        return record
+
     def bind(self, *, attachment_id: UUID, context_type: str, context_id: str, role: str, bound_by: str) -> AttachmentBindingRecord:
         binding = AttachmentBindingRecord(
             attachment_id=attachment_id, context_type=context_type, context_id=context_id, role=role, bound_by=bound_by, bound_at=datetime.now(UTC)

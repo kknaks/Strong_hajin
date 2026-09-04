@@ -11,7 +11,10 @@ vi.mock("./api", () => ({
   removeChecklistItem: vi.fn(),
   uploadTaskMaterial: vi.fn(),
   detachTaskMaterial: vi.fn(),
-  taskMaterialContentUrl: () => "",
+  attachTaskMaterialLink: vi.fn(),
+  attachTaskMaterialReference: vi.fn(),
+  getTasks: vi.fn(),
+  taskMaterialContentUrl: (taskId: string, materialId: string) => `/api/tasks/${taskId}/materials/${materialId}/content`,
   addWorkRequestComment: vi.fn(),
   getWorkRequestTimeline: vi.fn(),
   uploadCommentAttachment: vi.fn(),
@@ -348,5 +351,163 @@ describe("what a task detail says about where it came from", () => {
     expect(within(chip).getByText(/AX가 만든 업무/)).toBeTruthy();
     expect(chip.textContent).toContain("AX 제안에서 생성됨");
     expect(chip.textContent).not.toContain("생성자");
+  });
+});
+
+describe("materials that live somewhere else", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  const link = {
+    material_id: "m1",
+    attachment_id: "a1",
+    task_id: "task-1",
+    kind: "input" as const,
+    name: "설계 문서",
+    content_type: "text/uri-list",
+    size_bytes: 0,
+    source_kind: "external_link",
+    url: "https://docs.example.com/spec",
+    mutable_source: true,
+    integrity_ref: "observed:2026-09-05T00:00:00Z",
+    uploaded_by: "mina",
+    created_at: "2026-09-05T00:00:00Z",
+    removed_at: null,
+    extraction: null,
+  };
+
+  function renderWithMaterials(materials: unknown[]) {
+    vi.mocked(api.getTaskMaterials).mockResolvedValue(materials as never);
+    vi.mocked(api.getTask).mockResolvedValue({ ...task, checklist: [] } as never);
+    render(
+      <TaskDetailDrawer busy={false} canManage onClose={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} onTransition={vi.fn()} onUpdate={vi.fn()} ownerName="민아" task={task as never} />,
+    );
+  }
+
+  it("opens a linked material where it lives and says it can change", async () => {
+    renderWithMaterials([link]);
+    const anchor = (await screen.findByRole("link", { name: "설계 문서" })) as HTMLAnchorElement;
+    expect(anchor.href).toBe("https://docs.example.com/spec");
+    expect(anchor.rel).toContain("noreferrer");
+    const row = anchor.closest("li") as HTMLElement;
+    // Nothing was fetched and no revision was pinned, so it must not look like a frozen file.
+    expect(within(row).getByText("변경 가능한 링크")).toBeTruthy();
+    expect(row.textContent).not.toContain("0 B");
+  });
+
+  it("attaches a link with the words a person reads", async () => {
+    vi.mocked(api.attachTaskMaterialLink).mockResolvedValue(link as never);
+    renderWithMaterials([]);
+
+    // Both sections offer it; this is the 참고 자료 one.
+    const inputSection = (await screen.findByText("참고 자료")).closest("section") as HTMLElement;
+    fireEvent.click(within(inputSection).getByRole("button", { name: "링크 추가" }));
+    fireEvent.change(screen.getByLabelText("참고 자료 링크 주소"), { target: { value: "https://docs.example.com/spec" } });
+    fireEvent.change(screen.getByLabelText("참고 자료 링크 이름"), { target: { value: "설계 문서" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "연결" }));
+    });
+
+    await waitFor(() => expect(api.attachTaskMaterialLink).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.attachTaskMaterialLink).mock.calls[0]).toEqual([
+      "task-1",
+      "input",
+      { url: "https://docs.example.com/spec", label: "설계 문서" },
+    ]);
+    expect(await screen.findByRole("link", { name: "설계 문서" })).toBeTruthy();
+  });
+
+  it("still downloads a file material through the server", async () => {
+    const file = { ...link, material_id: "m2", name: "견적서.pdf", source_kind: "file", url: null, mutable_source: false, size_bytes: 2048 };
+    renderWithMaterials([file]);
+    const anchor = (await screen.findByRole("link", { name: "견적서.pdf" })) as HTMLAnchorElement;
+    expect(anchor.href).toContain("/api/tasks/task-1/materials/m2/content");
+    expect(screen.queryByText("변경 가능한 링크")).toBeNull();
+  });
+});
+
+describe("materials that point at other work in SCAX", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  const reference = {
+    material_id: "m3",
+    attachment_id: "a3",
+    task_id: "task-1",
+    kind: "input" as const,
+    name: "먼저 한 업무",
+    content_type: "application/vnd.scax.resource-ref",
+    size_bytes: 0,
+    source_kind: "resource_ref",
+    url: null,
+    resource: { type: "task", id: "task-9", title: "먼저 한 업무" },
+    mutable_source: true,
+    integrity_ref: "observed:2026-09-05T00:00:00Z",
+    uploaded_by: "mina",
+    created_at: "2026-09-05T00:00:00Z",
+    removed_at: null,
+    extraction: null,
+  };
+
+  function renderWithMaterials(materials: unknown[], onOpenTask?: (taskId: string) => void) {
+    vi.mocked(api.getTaskMaterials).mockResolvedValue(materials as never);
+    vi.mocked(api.getTask).mockResolvedValue({ ...task, checklist: [] } as never);
+    render(
+      <TaskDetailDrawer
+        busy={false}
+        canManage
+        onClose={vi.fn()}
+        onError={vi.fn()}
+        onNotice={vi.fn()}
+        onOpenTask={onOpenTask}
+        onTransition={vi.fn()}
+        onUpdate={vi.fn()}
+        ownerName="민아"
+        task={task as never}
+      />,
+    );
+  }
+
+  it("opens the referenced work inside the product instead of leaving for a URL", async () => {
+    const onOpenTask = vi.fn();
+    renderWithMaterials([reference], onOpenTask);
+    const open = await screen.findByRole("button", { name: "먼저 한 업무" });
+    fireEvent.click(open);
+    expect(onOpenTask).toHaveBeenCalledWith("task-9");
+    expect(screen.queryByRole("link", { name: "먼저 한 업무" })).toBeNull();
+  });
+
+  it("says a reference is withheld rather than showing a title the reader cannot open", async () => {
+    renderWithMaterials([{ ...reference, name: "볼 수 없는 자료", resource: null }]);
+    await screen.findByText("볼 수 없는 자료");
+    expect(screen.queryByRole("button", { name: "먼저 한 업무" })).toBeNull();
+    expect(document.body.textContent).not.toContain("먼저 한 업무");
+  });
+
+  it("connects another task as a reference", async () => {
+    vi.mocked(api.getTasks).mockResolvedValue([
+      { task_id: "task-9", title: "먼저 한 업무", state: "done", version: 1, block_reason: null },
+    ] as never);
+    vi.mocked(api.attachTaskMaterialReference).mockResolvedValue(reference as never);
+    renderWithMaterials([]);
+
+    const inputSection = (await screen.findByText("참고 자료")).closest("section") as HTMLElement;
+    fireEvent.click(within(inputSection).getByRole("button", { name: "업무 연결" }));
+    const picker = (await screen.findByLabelText("참고 자료로 연결할 업무")) as HTMLSelectElement;
+    fireEvent.change(picker, { target: { value: "task-9" } });
+    await act(async () => {
+      fireEvent.click(within(inputSection).getByRole("button", { name: "연결" }));
+    });
+
+    await waitFor(() => expect(api.attachTaskMaterialReference).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.attachTaskMaterialReference).mock.calls[0]).toEqual([
+      "task-1",
+      "input",
+      { resource_type: "task", resource_id: "task-9" },
+    ]);
   });
 });

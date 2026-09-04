@@ -21,6 +21,9 @@ import {
   uploadCommentAttachment,
   amendWorkRequest,
   uploadRequestEvidence,
+  attachTaskMaterialLink,
+  attachTaskMaterialReference,
+  getTasks,
   uploadTaskMaterial,
 } from "./api";
 import {
@@ -109,6 +112,7 @@ export function originSentence(origin: TaskOrigin): string | null {
 }
 
 export function TaskDetailDrawer({
+  onOpenTask,
   task,
   ownerName,
   onOpenSource,
@@ -121,6 +125,8 @@ export function TaskDetailDrawer({
   onError,
   onClose,
 }: {
+  /** Open another Task this one points at, inside the product rather than through a URL. */
+  onOpenTask?: (taskId: string) => void;
   task: DirectTask;
   ownerName: string;
   /** Navigate to the resource the origin names. Absent when the source is withheld. */
@@ -147,6 +153,9 @@ export function TaskDetailDrawer({
   const [newStep, setNewStep] = useState("");
   const addingStep = useRef(false);
   const [uploading, setUploading] = useState<TaskMaterialKind | null>(null);
+  const [linkDraft, setLinkDraft] = useState<{ kind: TaskMaterialKind; url: string; label: string } | null>(null);
+  const [refDraft, setRefDraft] = useState<{ kind: TaskMaterialKind; taskId: string } | null>(null);
+  const [refChoices, setRefChoices] = useState<DirectTask[] | null>(null);
   const inputFile = useRef<HTMLInputElement>(null);
   const outputFile = useRef<HTMLInputElement>(null);
   const closed = task.state === "cancelled";
@@ -292,6 +301,60 @@ export function TaskDetailDrawer({
     }
   };
 
+  const attachLink = async (kind: TaskMaterialKind) => {
+    const draft = linkDraft;
+    if (!draft || !draft.url.trim() || !draft.label.trim()) {
+      onError("링크 주소와 이름을 모두 적어 주세요.");
+      return;
+    }
+    setUploading(kind);
+    onError(null);
+    try {
+      const material = await attachTaskMaterialLink(task.task_id, kind, { url: draft.url.trim(), label: draft.label.trim() });
+      setMaterials((current) => [...(current ?? []), material]);
+      setLinkDraft(null);
+      onNotice?.(`${kind === "input" ? "참고 자료" : "산출물"} 링크 '${material.name}'을 연결했습니다.`);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "링크를 연결하지 못했습니다.");
+    } finally {
+      setUploading(null);
+    }
+  };
+
+  const openReferencePicker = async (kind: TaskMaterialKind) => {
+    if (refDraft?.kind === kind) {
+      setRefDraft(null);
+      return;
+    }
+    setRefDraft({ kind, taskId: "" });
+    if (refChoices === null) {
+      try {
+        setRefChoices((await getTasks(true)).filter((item) => item.task_id !== task.task_id));
+      } catch {
+        setRefChoices([]);
+      }
+    }
+  };
+
+  const attachReference = async (kind: TaskMaterialKind) => {
+    if (!refDraft?.taskId) {
+      onError("연결할 업무를 골라 주세요.");
+      return;
+    }
+    setUploading(kind);
+    onError(null);
+    try {
+      const material = await attachTaskMaterialReference(task.task_id, kind, { resource_type: "task", resource_id: refDraft.taskId });
+      setMaterials((current) => [...(current ?? []), material]);
+      setRefDraft(null);
+      onNotice?.(`${kind === "input" ? "참고 자료" : "산출물"}로 '${material.name}'을 연결했습니다.`);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "업무를 연결하지 못했습니다.");
+    } finally {
+      setUploading(null);
+    }
+  };
+
   const detach = async (material: TaskMaterial) => {
     onError(null);
     try {
@@ -322,9 +385,80 @@ export function TaskDetailDrawer({
               <button className="btn h30" disabled={uploading !== null || busy} onClick={() => ref.current?.click()} type="button">
                 {uploading === kind ? "올리는 중…" : "파일 추가"}
               </button>
+              <button
+                className="btn h30 ghost"
+                disabled={uploading !== null || busy}
+                onClick={() => setLinkDraft(linkDraft?.kind === kind ? null : { kind, url: "", label: "" })}
+                type="button"
+              >
+                링크 추가
+              </button>
+              <button className="btn h30 ghost" disabled={uploading !== null || busy} onClick={() => void openReferencePicker(kind)} type="button">
+                업무 연결
+              </button>
             </>
           )}
         </div>
+        {editable && refDraft?.kind === kind && (
+          /* Another thing inside SCAX: chosen from what this person may already read, never typed as an id. */
+          <div className="form-stack link-draft">
+            <div className="field">
+              <label htmlFor={`material-ref-${kind}`}>{kind === "input" ? "참고 자료" : "산출물"}로 연결할 업무</label>
+              <select
+                id={`material-ref-${kind}`}
+                onChange={(event) => setRefDraft({ ...refDraft, taskId: event.target.value })}
+                value={refDraft.taskId}
+              >
+                <option value="">업무 고르기</option>
+                {(refChoices ?? []).map((choice) => (
+                  <option key={choice.task_id} value={choice.task_id}>
+                    {choice.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="row-actions">
+              <button className="btn h30 primary" disabled={uploading !== null || busy} onClick={() => void attachReference(kind)} type="button">
+                연결
+              </button>
+              <button className="btn h30 ghost" onClick={() => setRefDraft(null)} type="button">
+                취소
+              </button>
+            </div>
+          </div>
+        )}
+        {editable && linkDraft?.kind === kind && (
+          /* A link is not a file: SCAX records where the work lives and the words a person reads, nothing more. */
+          <div className="form-stack link-draft">
+            <div className="field">
+              <label htmlFor={`material-link-url-${kind}`}>{kind === "input" ? "참고 자료" : "산출물"} 링크 주소</label>
+              <input
+                id={`material-link-url-${kind}`}
+                inputMode="url"
+                onChange={(event) => setLinkDraft({ ...linkDraft, url: event.target.value })}
+                placeholder="https://"
+                value={linkDraft.url}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor={`material-link-label-${kind}`}>{kind === "input" ? "참고 자료" : "산출물"} 링크 이름</label>
+              <input
+                id={`material-link-label-${kind}`}
+                onChange={(event) => setLinkDraft({ ...linkDraft, label: event.target.value })}
+                placeholder="사람이 읽는 이름"
+                value={linkDraft.label}
+              />
+            </div>
+            <div className="row-actions">
+              <button className="btn h30 primary" disabled={uploading !== null || busy} onClick={() => void attachLink(kind)} type="button">
+                연결
+              </button>
+              <button className="btn h30 ghost" onClick={() => setLinkDraft(null)} type="button">
+                취소
+              </button>
+            </div>
+          </div>
+        )}
         {materials === null ? (
           <p className="t-meta">불러오는 중…</p>
         ) : items.length === 0 ? (
@@ -333,11 +467,26 @@ export function TaskDetailDrawer({
           <ul className="material-list">
             {items.map((item) => (
               <li key={item.material_id}>
-                <a href={taskMaterialContentUrl(task.task_id, item.material_id)} rel="noreferrer" target="_blank">
-                  {item.name}
-                </a>
+                {item.source_kind === "resource_ref" ? (
+                  /* It lives inside the product, so it opens inside the product — and only when it resolved. */
+                  item.resource && onOpenTask ? (
+                    <button className="btn link" onClick={() => onOpenTask(item.resource!.id)} type="button">
+                      {item.name}
+                    </button>
+                  ) : (
+                    <span>{item.name}</span>
+                  )
+                ) : (
+                  <a href={item.url ?? taskMaterialContentUrl(task.task_id, item.material_id)} rel="noreferrer" target="_blank">
+                    {item.name}
+                  </a>
+                )}
+                {/* SCAX holds no bytes and pinned no revision, so the reader is told it can move under them. */}
+                {item.mutable_source && <span className="badge outline">변경 가능한 링크</span>}
                 <span className="t-meta">
-                  {formatBytes(item.size_bytes)} · {formatDate(isoDateInSeoul(item.created_at))}
+                  {item.mutable_source
+                    ? formatDate(isoDateInSeoul(item.created_at))
+                    : `${formatBytes(item.size_bytes)} · ${formatDate(isoDateInSeoul(item.created_at))}`}
                 </span>
                 <ExtractionStatus extraction={item.extraction ?? null} />
                 {editable && (

@@ -132,6 +132,26 @@ class UpdateTaskRequest(BaseModel):
     clear_due_date: bool = False
 
 
+class TaskMaterialLinkRequest(BaseModel):
+    """Work that lives somewhere else: a URL and the words a person reads, never a file and never a credential."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["input", "output"]
+    url: str = Field(min_length=1, max_length=500)
+    label: str = Field(min_length=1, max_length=300)
+
+
+class TaskMaterialReferenceRequest(BaseModel):
+    """Another thing inside SCAX. What may be referenced is decided by the module that owns it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["input", "output"]
+    resource_type: Literal["task", "meeting"]
+    resource_id: UUID
+
+
 class CreateConversationRequest(BaseModel):
     title: str = "새 대화"
 
@@ -709,6 +729,32 @@ def create_app(
                     name=file.filename or "material",
                     content_type=file.content_type or "application/octet-stream",
                     data=data,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/tasks/{task_id}/materials/links", status_code=status.HTTP_201_CREATED)
+        def attach_task_material_link(
+            task_id: UUID,
+            request: TaskMaterialLinkRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.attach_task_material_link(
+                    principal, task_id, kind=request.kind, url=request.url, label=request.label
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/tasks/{task_id}/materials/references", status_code=status.HTTP_201_CREATED)
+        def attach_task_material_reference(
+            task_id: UUID,
+            request: TaskMaterialReferenceRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.attach_task_material_reference(
+                    principal, task_id, kind=request.kind, resource_type=request.resource_type, resource_id=str(request.resource_id)
                 )
             except Exception as error:
                 raise _runtime_error(error) from error

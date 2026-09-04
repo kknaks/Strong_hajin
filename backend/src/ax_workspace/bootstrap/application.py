@@ -62,6 +62,31 @@ from ax_workspace.platform.meetings import SqlAlchemyMeetingRepository
 
 
 
+class _SessionResourceReferences:
+    """Resolves a referenced resource by asking the module that owns it, inside the caller's own session.
+
+    Never a stored copy: if the principal may not read it now, there is no title to give them.
+    """
+
+    def __init__(self, application: "WorkflowApplication", session: Any) -> None:
+        self._application = application
+        self._session = session
+
+    def title(self, principal: Principal, resource_type: str, resource_id: str) -> str | None:
+        try:
+            identifier = UUID(str(resource_id))
+        except (TypeError, ValueError):
+            return None
+        try:
+            if resource_type == "task":
+                return str(self._application._tasks(self._session).get(principal, identifier)["title"])
+            if resource_type == "meeting":
+                return str(self._application._meetings(self._session).get(principal, identifier)["title"])
+        except Exception:
+            return None
+        return None
+
+
 class WorkflowApplication:
     """Transaction boundary shared by HTTP, MCP, and local rehearsal adapters."""
 
@@ -465,6 +490,24 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def attach_task_material_reference(
+        self, principal: Principal, task_id: UUID, *, kind: str, resource_type: str, resource_id: str
+    ) -> dict[str, Any]:
+        """Point a Task at another thing inside SCAX, resolved through that thing's own authorization."""
+        with self._session_factory() as session:
+            result = self._materials(session).attach_reference(
+                principal, task_id, kind=kind, resource_type=resource_type, resource_id=resource_id
+            )
+            session.commit()
+            return result
+
+    def attach_task_material_link(self, principal: Principal, task_id: UUID, *, kind: str, url: str, label: str) -> dict[str, Any]:
+        """Point a Task at work that lives somewhere else. No bytes are held and no revision is pinned."""
+        with self._session_factory() as session:
+            result = self._materials(session).attach_link(principal, task_id, kind=kind, url=url, label=label)
+            session.commit()
+            return result
+
     def list_task_materials(self, principal: Principal, task_id: UUID) -> list[dict[str, Any]]:
         with self._session_factory() as session:
             return self._materials(session).list(principal, task_id)
@@ -515,6 +558,7 @@ class WorkflowApplication:
             extractions,
             self._material_queue(session),
             LexicalMaterialRetriever(extractions),
+            _SessionResourceReferences(self, session),
         )
 
     def assign_task(self, principal: Principal, title: str, assignee_id: str, **fields: Any) -> dict[str, Any]:

@@ -124,6 +124,30 @@ export function taskMaterialContentUrl(taskId: string, materialId: string): stri
   return `/api/tasks/${taskId}/materials/${materialId}/content`;
 }
 
+/** Point a Task at work that lives somewhere else. No bytes are held and no revision is pinned. */
+export async function attachTaskMaterialLink(
+  taskId: string,
+  kind: TaskMaterialKind,
+  link: { url: string; label: string },
+): Promise<TaskMaterial> {
+  return request<TaskMaterial>(`/api/tasks/${taskId}/materials/links`, {
+    method: "POST",
+    body: JSON.stringify({ kind, url: link.url, label: link.label }),
+  });
+}
+
+/** Point a Task at another thing inside SCAX. What may be referenced is decided by the module that owns it. */
+export async function attachTaskMaterialReference(
+  taskId: string,
+  kind: TaskMaterialKind,
+  target: { resource_type: "task" | "meeting"; resource_id: string },
+): Promise<TaskMaterial> {
+  return request<TaskMaterial>(`/api/tasks/${taskId}/materials/references`, {
+    method: "POST",
+    body: JSON.stringify({ kind, ...target }),
+  });
+}
+
 export async function detachTaskMaterial(taskId: string, materialId: string): Promise<TaskMaterial> {
   return request<TaskMaterial>(`/api/tasks/${taskId}/materials/${materialId}/detach`, { method: "POST" });
 }
