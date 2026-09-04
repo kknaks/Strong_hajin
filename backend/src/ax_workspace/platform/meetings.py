@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment
 from ax_workspace.modules.meetings.refinement import RefinedTranscriptSegment
+from ax_workspace.modules.meetings.summary import SummaryStatement
 from ax_workspace.platform.persistence import (
     ActivityEventRecord,
     EmploymentPeriodRecord,
@@ -21,6 +22,8 @@ from ax_workspace.platform.persistence import (
     MeetingRawTranscriptSegmentRecord,
     MeetingTranscriptRefinementRevisionRecord,
     MeetingTranscriptRefinementSegmentRecord,
+    MeetingSummaryEvidenceRecord,
+    MeetingSummarySuggestionRecord,
     MeetingRecord,
     MemberRecord,
     MembershipRecord,
@@ -480,6 +483,101 @@ class SqlAlchemyMeetingRepository:
                 select(MeetingTranscriptRefinementSegmentRecord)
                 .where(MeetingTranscriptRefinementSegmentRecord.refinement_revision_id == refinement.id)
                 .order_by(MeetingTranscriptRefinementSegmentRecord.sequence)
+            )
+        )
+
+    def refinement(
+        self,
+        refinement_id: UUID,
+        *,
+        lock: bool = False,
+    ) -> MeetingTranscriptRefinementRevisionRecord | None:
+        statement = select(MeetingTranscriptRefinementRevisionRecord).where(
+            MeetingTranscriptRefinementRevisionRecord.id == refinement_id
+        )
+        if lock:
+            statement = statement.with_for_update().execution_options(populate_existing=True)
+        return self._session.scalar(statement)
+
+    def summary_for_refinement(
+        self,
+        refinement: MeetingTranscriptRefinementRevisionRecord,
+        kind: str,
+    ) -> MeetingSummarySuggestionRecord | None:
+        return self._session.scalar(
+            select(MeetingSummarySuggestionRecord).where(
+                MeetingSummarySuggestionRecord.refinement_revision_id == refinement.id,
+                MeetingSummarySuggestionRecord.kind == kind,
+            )
+        )
+
+    def create_summary(
+        self,
+        refinement: MeetingTranscriptRefinementRevisionRecord,
+        *,
+        kind: str,
+        body: str,
+        provider_call_ref: str | None,
+        content_hash: str,
+        statements: list[SummaryStatement],
+    ) -> MeetingSummarySuggestionRecord:
+        now = datetime.now(UTC)
+        raw = self._session.get(
+            MeetingRawTranscriptRevisionRecord,
+            refinement.raw_transcript_revision_id,
+        )
+        if raw is None:
+            raise ValueError("refinement raw transcript was not found")
+        recording = self._session.get(MeetingRecordingRecord, raw.recording_id)
+        if recording is None:
+            raise ValueError("summary recording was not found")
+        summary = MeetingSummarySuggestionRecord(
+            meeting_id=recording.meeting_id,
+            raw_transcript_revision_id=raw.id,
+            refinement_revision_id=refinement.id,
+            kind=kind,
+            state="completed",
+            body=body,
+            provider_call_ref=provider_call_ref,
+            content_hash=content_hash,
+            created_at=now,
+            completed_at=now,
+        )
+        self._session.add(summary)
+        self._session.flush()
+        refined = {segment.sequence: segment for segment in self.refinement_segments(refinement)}
+        raw_by_id = {
+            segment.id: segment
+            for segment in self.raw_transcript_segments(raw)
+        }
+        for index, statement in enumerate(statements, start=1):
+            start = refined[statement.refinement_start_sequence]
+            end = refined[statement.refinement_end_sequence]
+            self._session.add(
+                MeetingSummaryEvidenceRecord(
+                    summary_id=summary.id,
+                    statement_index=index,
+                    statement_kind=statement.kind,
+                    statement_text=statement.text,
+                    refinement_start_segment_id=start.id,
+                    refinement_end_segment_id=end.id,
+                    raw_start_segment_id=raw_by_id[start.raw_start_segment_id].id,
+                    raw_end_segment_id=raw_by_id[end.raw_end_segment_id].id,
+                    created_at=now,
+                )
+            )
+        self._session.flush()
+        return summary
+
+    def summary_evidence(
+        self,
+        summary: MeetingSummarySuggestionRecord,
+    ) -> list[MeetingSummaryEvidenceRecord]:
+        return list(
+            self._session.scalars(
+                select(MeetingSummaryEvidenceRecord)
+                .where(MeetingSummaryEvidenceRecord.summary_id == summary.id)
+                .order_by(MeetingSummaryEvidenceRecord.statement_index)
             )
         )
 

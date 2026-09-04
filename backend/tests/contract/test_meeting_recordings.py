@@ -21,16 +21,25 @@ class RefinementProvider:
 
     def generate(self, request) -> AiGeneration:
         self.calls += 1
-        assert "Never invent or normalize names, numbers, dates" in request.prompt
-        return AiGeneration(
-            provider_run_ref="codex-run-refinement-test",
-            provider_session_ref=None,
-            body=(
+        if "statements" in request.output_schema["properties"]:
+            assert "Do not invent facts, names, numbers, dates" in request.prompt
+            body = (
+                '{"body":"## 논의 요약\\n일정을 논의했습니다.","statements":['
+                '{"kind":"summary","text":"일정을 논의했습니다.",'
+                '"refinement_start_sequence":1,"refinement_end_sequence":1}]}'
+            )
+        else:
+            assert "Never invent or normalize names, numbers, dates" in request.prompt
+            body = (
                 '{"segments":[{"raw_start_source_key":"provider-segment-1",'
                 '"raw_end_source_key":"provider-segment-2","start_ms":0,"end_ms":3000,'
                 '"text":"안녕하세요. 일정을 논의합니다.","speaker_label":null,'
                 '"correction_kind":"merge","confidence":0.92}]}'
-            ),
+            )
+        return AiGeneration(
+            provider_run_ref="codex-run-refinement-test",
+            provider_session_ref=None,
+            body=body,
             requested_model="test",
             observed_model="test",
             requested_tier="test",
@@ -240,3 +249,54 @@ def test_refinement_is_a_versioned_provenance_layer_and_never_overwrites_raw_stt
     # The raw source remains an immutable provider record rather than being replaced by the readable projection.
     assert raw["segments"][0]["text"] == "안녕 하세요"
     assert raw["segments"][1]["text"] == "일정을 논의 합니다"
+
+
+def test_final_summary_is_pinned_to_refinement_with_raw_evidence(tmp_path) -> None:
+    provider = RefinementProvider()
+    client = _client(tmp_path, provider=provider)
+    meeting = _meeting(client)
+    headers = {"X-Demo-Persona": "mina"}
+    started = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/start",
+        headers=headers,
+        json={"purpose": "요약 테스트"},
+    ).json()
+    stopped = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/{started['recording_id']}/stop",
+        headers=headers,
+        data={"expected_version": str(started["version"])},
+        files={"audio": ("raw.webm", b"audio", "audio/webm")},
+    )
+    assert stopped.status_code == 200
+    application = client.app.state.workflow_application
+    raw = application.record_final_meeting_transcript(
+        recording_id=UUID(started["recording_id"]),
+        provider="soniox",
+        provider_reference="async:summary-source",
+        segments=[
+            FinalTranscriptSegment("provider-segment-1", 0, 1_500, "안녕 하세요", "Speaker 1"),
+            FinalTranscriptSegment("provider-segment-2", 1_500, 3_000, "일정을 논의 합니다", "Speaker 1"),
+        ],
+    )
+    refined = application.refine_meeting_transcript(UUID(raw["transcript_revision_id"]))
+
+    summary = application.summarize_meeting_transcript(UUID(refined["refinement_revision_id"]))
+    replay = application.summarize_meeting_transcript(UUID(refined["refinement_revision_id"]))
+
+    assert provider.calls == 2
+    assert replay == summary
+    assert summary["kind"] == "final"
+    assert summary["state"] == "completed"
+    assert summary["raw_transcript_revision_id"] == raw["transcript_revision_id"]
+    assert summary["refinement_revision_id"] == refined["refinement_revision_id"]
+    assert summary["evidence"] == [
+        {
+            "statement_index": 1,
+            "kind": "summary",
+            "text": "일정을 논의했습니다.",
+            "refinement_start_segment_id": refined["segments"][0]["segment_id"],
+            "refinement_end_segment_id": refined["segments"][0]["segment_id"],
+            "raw_start_segment_id": raw["segments"][0]["segment_id"],
+            "raw_end_segment_id": raw["segments"][1]["segment_id"],
+        }
+    ]

@@ -17,6 +17,7 @@ from ax_workspace.modules.meetings.domain import (
 )
 from ax_workspace.modules.meetings.recordings import RecordingStorage
 from ax_workspace.modules.meetings.refinement import RefinedTranscriptSegment
+from ax_workspace.modules.meetings.summary import SummaryStatement
 from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment
 from ax_workspace.modules.organization_access.domain import MEETING_RECORD, Principal
 
@@ -71,6 +72,7 @@ class MeetingRepository(Protocol):
     def raw_transcript_segments(self, transcript: Any) -> list[Any]: ...
     def raw_transcript(self, transcript_id: UUID, *, lock: bool = False) -> Any | None: ...
     def latest_refinement(self, transcript: Any) -> Any | None: ...
+    def refinement(self, refinement_id: UUID, *, lock: bool = False) -> Any | None: ...
     def refinement_segments(self, refinement: Any) -> list[Any]: ...
     def create_refinement(
         self,
@@ -80,6 +82,18 @@ class MeetingRepository(Protocol):
         content_hash: str,
         segments: list[RefinedTranscriptSegment],
     ) -> Any: ...
+    def summary_for_refinement(self, refinement: Any, kind: str) -> Any | None: ...
+    def create_summary(
+        self,
+        refinement: Any,
+        *,
+        kind: str,
+        body: str,
+        provider_call_ref: str | None,
+        content_hash: str,
+        statements: list[SummaryStatement],
+    ) -> Any: ...
+    def summary_evidence(self, summary: Any) -> list[Any]: ...
 
 
 class MeetingApplication:
@@ -345,6 +359,57 @@ class MeetingApplication:
         )
         return self._refinement_view(refinement)
 
+    def summary_input(self, refinement_id: UUID, *, kind: str) -> dict[str, Any]:
+        if kind not in {"provisional", "final"}:
+            raise MeetingError("summary kind is invalid")
+        refinement = self._repository.refinement(refinement_id)
+        if refinement is None or refinement.state != "completed":
+            raise MeetingNotFound("completed transcript refinement was not found")
+        existing = self._repository.summary_for_refinement(refinement, kind)
+        if existing is not None and existing.state == "completed":
+            return {"completed": self._summary_view(existing)}
+        return {
+            "refinement_revision_id": str(refinement.id),
+            "kind": kind,
+            "segments": [
+                {
+                    "sequence": segment.sequence,
+                    "text": segment.text,
+                    "speaker_label": segment.speaker_label,
+                    "start_ms": segment.start_ms,
+                    "end_ms": segment.end_ms,
+                }
+                for segment in self._repository.refinement_segments(refinement)
+            ],
+        }
+
+    def save_summary(
+        self,
+        refinement_id: UUID,
+        *,
+        kind: str,
+        body: str,
+        provider_call_ref: str | None,
+        content_hash: str,
+        statements: list[SummaryStatement],
+    ) -> dict[str, Any]:
+        refinement = self._repository.refinement(refinement_id, lock=True)
+        if refinement is None or refinement.state != "completed":
+            raise MeetingNotFound("completed transcript refinement was not found")
+        existing = self._repository.summary_for_refinement(refinement, kind)
+        if existing is not None and existing.state == "completed":
+            return self._summary_view(existing)
+        self._validate_summary_evidence(self._repository.refinement_segments(refinement), statements)
+        summary = self._repository.create_summary(
+            refinement,
+            kind=kind,
+            body=body,
+            provider_call_ref=provider_call_ref,
+            content_hash=content_hash,
+            statements=statements,
+        )
+        return self._summary_view(summary)
+
     def _owned_mutable_meeting(self, principal: Principal, meeting_id: UUID, expected_version: int) -> Any:
         meeting = self._repository.meeting(meeting_id, lock=True)
         if meeting is None:
@@ -471,6 +536,30 @@ class MeetingApplication:
             ],
         }
 
+    def _summary_view(self, summary: Any) -> dict[str, Any]:
+        return {
+            "summary_id": str(summary.id),
+            "meeting_id": str(summary.meeting_id),
+            "raw_transcript_revision_id": str(summary.raw_transcript_revision_id),
+            "refinement_revision_id": str(summary.refinement_revision_id),
+            "kind": summary.kind,
+            "state": summary.state,
+            "body": summary.body,
+            "provider_call_ref": summary.provider_call_ref,
+            "evidence": [
+                {
+                    "statement_index": row.statement_index,
+                    "kind": row.statement_kind,
+                    "text": row.statement_text,
+                    "refinement_start_segment_id": str(row.refinement_start_segment_id),
+                    "refinement_end_segment_id": str(row.refinement_end_segment_id),
+                    "raw_start_segment_id": str(row.raw_start_segment_id),
+                    "raw_end_segment_id": str(row.raw_end_segment_id),
+                }
+                for row in self._repository.summary_evidence(summary)
+            ],
+        }
+
     @staticmethod
     def _validate_refinement_coverage(raw_segments: list[Any], refined_segments: list[RefinedTranscriptSegment]) -> None:
         if not raw_segments or not refined_segments:
@@ -492,6 +581,18 @@ class MeetingApplication:
             previous_start = start
         if coverage != set(range(len(raw_segments))):
             raise MeetingError("refinement must preserve coverage of every raw source segment")
+
+    @staticmethod
+    def _validate_summary_evidence(refined_segments: list[Any], statements: list[SummaryStatement]) -> None:
+        if not statements:
+            raise MeetingError("summary requires at least one evidence-bound statement")
+        sequences = {segment.sequence for segment in refined_segments}
+        for statement in statements:
+            if (
+                statement.refinement_start_sequence not in sequences
+                or statement.refinement_end_sequence not in sequences
+            ):
+                raise MeetingError("summary statement references an unknown refined segment")
 
     @staticmethod
     def _require(principal: Principal, capability: str) -> None:

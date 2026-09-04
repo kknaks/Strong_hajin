@@ -36,6 +36,7 @@ from ax_workspace.modules.work.assignments import TaskAssignmentApplication
 from ax_workspace.modules.meetings.application import MeetingApplication
 from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment
 from ax_workspace.modules.meetings.refinement import build_refinement_prompt, parse_refinement, refinement_output_schema
+from ax_workspace.modules.meetings.summary import build_summary_prompt, parse_summary, summary_output_schema
 from ax_workspace.modules.work.requests import WorkRequestApplication
 from ax_workspace.platform.persistence import make_session_factory
 from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
@@ -199,6 +200,33 @@ class WorkflowApplication:
                 provider_call_ref=generation.provider_run_ref,
                 content_hash=hashlib.sha256(generation.body.encode("utf-8")).hexdigest(),
                 segments=segments,
+            )
+            session.commit()
+            return result
+
+    def summarize_meeting_transcript(self, refinement_id: UUID, *, kind: str = "final") -> dict[str, Any]:
+        """Worker operation with a provider call outside every database transaction."""
+        with self._session_factory() as session:
+            plan = self._meetings(session).summary_input(refinement_id, kind=kind)
+            session.commit()
+        completed = plan.get("completed")
+        if completed is not None:
+            return completed
+        generation = self._report_provider.generate(
+            AiGenerationRequest(
+                prompt=build_summary_prompt(plan["segments"], kind=kind),
+                output_schema=summary_output_schema(),
+            )
+        )
+        body, statements = parse_summary(generation.body)
+        with self._session_factory() as session:
+            result = self._meetings(session).save_summary(
+                refinement_id,
+                kind=kind,
+                body=body,
+                provider_call_ref=generation.provider_run_ref,
+                content_hash=hashlib.sha256(generation.body.encode("utf-8")).hexdigest(),
+                statements=statements,
             )
             session.commit()
             return result

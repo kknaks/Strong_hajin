@@ -393,6 +393,48 @@ class MeetingTranscriptRefinementSegmentRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class MeetingSummarySuggestionRecord(Base):
+    """Derived Meeting reading aid. Adoption is a separate append to MeetingNoteVersion."""
+
+    __tablename__ = "meeting_summary_suggestions"
+    __table_args__ = (
+        UniqueConstraint("refinement_revision_id", "kind", name="uq_meeting_summary_refinement_kind"),
+        Index("ix_meeting_summary_meeting_created", "meeting_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False)
+    raw_transcript_revision_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_revisions.id"), nullable=False)
+    refinement_revision_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_transcript_refinement_revisions.id"), nullable=False)
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)  # provisional | final
+    state: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
+    body: Mapped[str | None] = mapped_column(Text)
+    provider_call_ref: Mapped[str | None] = mapped_column(String(300))
+    content_hash: Mapped[str | None] = mapped_column(String(64))
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error_detail: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MeetingSummaryEvidenceRecord(Base):
+    """Every generated statement carries a refinement span and its raw span for citation navigation."""
+
+    __tablename__ = "meeting_summary_evidence"
+    __table_args__ = (UniqueConstraint("summary_id", "statement_index", name="uq_meeting_summary_statement"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    summary_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_summary_suggestions.id"), nullable=False)
+    statement_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    statement_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    statement_text: Mapped[str] = mapped_column(Text, nullable=False)
+    refinement_start_segment_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_transcript_refinement_segments.id"), nullable=False)
+    refinement_end_segment_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_transcript_refinement_segments.id"), nullable=False)
+    raw_start_segment_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_segments.id"), nullable=False)
+    raw_end_segment_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_segments.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class WorkflowDefinitionRecord(Base):
     __tablename__ = "workflow_definitions"
 
