@@ -78,6 +78,8 @@ try {
   }, task.task_id);
   if (stored.progress.done !== 1 || stored.progress.total !== 2) throw new Error(`server progress mismatch: ${JSON.stringify(stored.progress)}`);
 
+  await page.screenshot({ path: "test-results/task-checklist-e2e.png", fullPage: true });
+
   // Really sign in as someone else: the session decides who is asking, so a header cannot fake it.
   await page.getByRole("dialog", { name: "업무 상세" }).getByRole("button", { name: "상세 닫기" }).click();
   await page.getByRole("dialog").waitFor({ state: "detached", timeout: 10_000 });
@@ -85,7 +87,6 @@ try {
   const otherStatus = await page.evaluate(async (taskId) => (await fetch(`/api/tasks/${taskId}`)).status, task.task_id);
   if (otherStatus !== 404) throw new Error(`another member could read the task: ${otherStatus}`);
 
-  await page.screenshot({ path: "test-results/task-checklist-e2e.png", fullPage: true });
   console.log(JSON.stringify({ result: "task checklist added, checked, removed and restored", task_id: task.task_id, ...stored, pending_judgements: ledger }));
 } finally {
   await browser.close();
