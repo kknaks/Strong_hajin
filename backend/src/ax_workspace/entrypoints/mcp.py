@@ -13,10 +13,13 @@ from typing import Any
 from uuid import UUID
 
 from mcp.server import MCPServer
+from mcp.types import ToolAnnotations
 
 from ax_workspace.bootstrap.application import WorkflowApplication, create_workflow_application
 from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.organization_access.domain import (
+    ACTION_DECIDE,
+    ACTION_READ,
     DAILY_REPORT_EDIT,
     DAILY_REPORT_GENERATE,
     DAILY_REPORT_READ,
@@ -27,6 +30,7 @@ from ax_workspace.modules.organization_access.domain import (
     TASK_SELF_MANAGE,
     WORK_REQUEST_CREATE,
     WORK_REQUEST_DECIDE,
+    WORK_REQUEST_READ,
 )
 from ax_workspace.modules.ax_execution.ai import AiProvider
 
@@ -45,6 +49,20 @@ DELEGATED_ACTION_CAPABILITIES = {
     "task.assignment.accept": TASK_SELF_MANAGE,
     "task.assignment.decline": TASK_SELF_MANAGE,
 }
+
+
+#: A judgement kind is reachable when the persona holds a capability that can put its questions in front of them:
+#: WorkRequests (as requester or reviewer), AX gated proposals, and direct Task assignments.
+ACTION_ITEM_READ_CAPABILITIES = frozenset(
+    {WORK_REQUEST_READ, WORK_REQUEST_CREATE, WORK_REQUEST_DECIDE, ACTION_READ, ACTION_DECIDE, TASK_READ, TASK_SELF_MANAGE}
+)
+#: Answering is narrower than reading: these are the capabilities the canonical handlers require to run a command.
+ACTION_ITEM_COMMAND_CAPABILITIES = frozenset({WORK_REQUEST_CREATE, WORK_REQUEST_DECIDE, ACTION_DECIDE, TASK_SELF_MANAGE})
+
+_READ_ONLY_TOOL = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
+#: A command is not read-only and may withdraw, reject or decline, so it is marked destructive even though the canonical
+#: payload-aware receipt makes re-sending the same answer safe.
+_COMMAND_TOOL = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False)
 
 
 class McpDelegatedActionAccessDenied(RuntimeError):
@@ -182,6 +200,29 @@ class McpReportsFacade:
         return self._application.reject_work_request(
             self.principal, UUID(request_id), expected_version, reason
         )
+
+    def pending_action_items(self) -> list[dict[str, Any]]:
+        return self._application.pending_action_items(self.principal)
+
+    def action_item_detail(self, action_item_id: str) -> dict[str, Any]:
+        return self._application.action_item_detail(self.principal, action_item_id)
+
+    def run_action_command(
+        self,
+        action_item_id: str,
+        command: str,
+        *,
+        expected_version: int | None = None,
+        reason: str | None = None,
+        changes: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """The same payload HTTP sends: omitted fields are absent, never null, so the server sees one request shape."""
+        payload = {
+            key: value
+            for key, value in (("expected_version", expected_version), ("reason", reason), ("changes", changes))
+            if value is not None
+        }
+        return self._application.run_action_command(self.principal, action_item_id, command, payload)
 
     def list_tasks(self) -> list[dict[str, Any]]:
         return self._application.list_tasks(self.principal)
@@ -321,9 +362,14 @@ def _create_bound_persona_server(facade: McpReportsFacade) -> MCPServer:
         f"SCAX — {principal.display_name}",
         instructions=(
             "This server is bound to one delegated persona. Daily-report commands are direct "
-            "Reports operations and never expose workflow-run controls."
+            "Reports operations and never expose workflow-run controls. "
+            "Every human judgement — a WorkRequest, a Task assignment, an AX gated proposal — is one ActionItem: read "
+            "it with action_item_list and action_item_get, and answer it with action_item_command using only the "
+            "allowed_commands the server put on that item. Never decide from the kind or the status, and never use the "
+            "deprecated per-kind decision tools for a new judgement."
         ),
     )
+    _register_action_item_tools(server, facade)
     _register_daily_report_tools(server, facade)
     _register_task_tools(server, facade)
     if "work_request.read" in principal.capabilities:
@@ -333,6 +379,62 @@ def _create_bound_persona_server(facade: McpReportsFacade) -> MCPServer:
     if "work_request.decide" in principal.capabilities:
         _register_work_request_decision_tools(server, facade)
     return server
+
+
+def _register_action_item_tools(server: MCPServer, facade: McpReportsFacade) -> None:
+    """The one judgement ledger. Policy is the server's envelope; this adapter adds no transition of its own."""
+    capabilities = facade.principal.capabilities
+    if not (ACTION_ITEM_READ_CAPABILITIES & capabilities):
+        return
+
+    @server.tool(
+        annotations=_READ_ONLY_TOOL,
+        description=(
+            "List every judgement the delegated persona owes an answer on right now, whatever raised it (WorkRequest, "
+            "Task assignment, AX proposal). Each item carries the server's own subject, question, permission-safe "
+            "preview, allowed_commands and expected_version."
+        ),
+        structured_output=True,
+    )
+    def action_item_list() -> list[dict[str, Any]]:
+        return facade.pending_action_items()
+
+    @server.tool(
+        annotations=_READ_ONLY_TOOL,
+        description=(
+            "Read one ActionItem the delegated persona may see: its current question and allowed_commands, the "
+            "immutable rounds with their frozen content, diff and decisions, the reviewer's suggested_changes, and the "
+            "discussion. An ActionItem the persona is not part of is refused rather than described."
+        ),
+        structured_output=True,
+    )
+    def action_item_get(action_item_id: str) -> dict[str, Any]:
+        return facade.action_item_detail(action_item_id)
+
+    if not (ACTION_ITEM_COMMAND_CAPABILITIES & capabilities):
+        return
+
+    @server.tool(
+        annotations=_COMMAND_TOOL,
+        description=(
+            "Answer one ActionItem by running a command the server offered on it in allowed_commands; a command it did "
+            "not offer is refused. Pass expected_version from the item. `reason` is required by the commands whose "
+            "requires_reason is true (adjust, reject, decline). `changes` carries a WorkRequest adjustment's optional "
+            "structured proposal (title, description, due_date) or a revision's new values (title, description, "
+            "due_date, clear_due_date). Re-sending the identical call returns the same receipt instead of acting twice."
+        ),
+        structured_output=True,
+    )
+    def action_item_command(
+        action_item_id: str,
+        command: str,
+        expected_version: int | None = None,
+        reason: str | None = None,
+        changes: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return facade.run_action_command(
+            action_item_id, command, expected_version=expected_version, reason=reason, changes=changes
+        )
 
 
 def _register_daily_report_tools(server: MCPServer, facade: McpReportsFacade) -> None:
@@ -391,7 +493,11 @@ def _register_work_request_create_tools(server: MCPServer, facade: McpReportsFac
     def work_request_assignee_candidates() -> list[dict[str, str]]:
         return facade.work_request_assignee_candidates()
 
-    @server.tool(description="Revise a negotiating WorkRequest you sent (new submission version with diff) using its required expected version.")
+    @server.tool(description=(
+            "Deprecated: use action_item_command with the `revise` command on the ActionItem instead. Kept for existing "
+            "callers. Revise a negotiating WorkRequest you sent (new submission version with diff) using its required "
+            "expected version."
+        ))
     def work_request_resubmit(
         request_id: str, expected_version: int, title: str | None = None, description: str | None = None, due_date: str | None = None
     ) -> dict[str, Any]:
@@ -405,17 +511,26 @@ def _register_work_request_create_tools(server: MCPServer, facade: McpReportsFac
 
 
 def _register_work_request_decision_tools(server: MCPServer, facade: McpReportsFacade) -> None:
-    @server.tool(description="Accept a visible WorkRequest using its required expected version.")
+    @server.tool(description=(
+            "Deprecated: use action_item_command with the `accept` command on the ActionItem instead. Kept for existing "
+            "callers. Accept a visible WorkRequest using its required expected version."
+        ))
     def work_request_accept(request_id: str, expected_version: int) -> dict[str, Any]:
         return facade.accept_work_request(request_id, expected_version)
 
-    @server.tool(description="Return a WorkRequest for conditions negotiation using its required expected version.")
+    @server.tool(description=(
+            "Deprecated: use action_item_command with the `adjust` command on the ActionItem instead. Kept for existing "
+            "callers. Return a WorkRequest for conditions negotiation using its required expected version."
+        ))
     def work_request_negotiate(
         request_id: str, expected_version: int, conditions: dict[str, Any]
     ) -> dict[str, Any]:
         return facade.negotiate_work_request(request_id, expected_version, conditions)
 
-    @server.tool(description="Reject a WorkRequest using its required expected version and reason.")
+    @server.tool(description=(
+            "Deprecated: use action_item_command with the `reject` command on the ActionItem instead. Kept for existing "
+            "callers. Reject a WorkRequest using its required expected version and reason."
+        ))
     def work_request_reject(request_id: str, expected_version: int, reason: str) -> dict[str, Any]:
         return facade.reject_work_request(request_id, expected_version, reason)
 
@@ -451,15 +566,24 @@ def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
     def task_create_self(title: str) -> dict[str, Any]:
         return facade.create_self_task(title)
 
-    @server.tool(description="List Task assignments waiting for the delegated persona's acceptance.")
+    @server.tool(description=(
+        "Deprecated: use action_item_list, which returns assignments alongside every other judgement in one ledger. "
+        "Kept for existing callers. List Task assignments waiting for the delegated persona's acceptance."
+    ))
     def task_assignment_inbox() -> list[dict[str, Any]]:
         return facade.task_assignment_inbox()
 
-    @server.tool(description="Accept a pending Task assignment so the Task enters the persona's My Work.")
+    @server.tool(description=(
+        "Deprecated: use action_item_command with the `accept` command on the ActionItem instead. Kept for existing "
+        "callers. Accept a pending Task assignment so the Task enters the persona's My Work."
+    ))
     def task_assignment_accept(assignment_id: str) -> dict[str, Any]:
         return facade.decide_task_assignment(assignment_id, "accept")
 
-    @server.tool(description="Decline a pending Task assignment with a reason; the Task never enters My Work.")
+    @server.tool(description=(
+        "Deprecated: use action_item_command with the `decline` command on the ActionItem instead. Kept for existing "
+        "callers. Decline a pending Task assignment with a reason; the Task never enters My Work."
+    ))
     def task_assignment_decline(assignment_id: str, reason: str) -> dict[str, Any]:
         if not reason.strip():
             raise ValueError("reason is required")

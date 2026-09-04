@@ -191,6 +191,9 @@ def test_stdio_mcp_client_discovers_only_persona_bound_report_tools(tmp_path) ->
                 tools = await session.list_tools()
                 names = {tool.name for tool in tools.tools}
                 assert names == {
+                    "action_item_command",
+                    "action_item_get",
+                    "action_item_list",
                     "daily_report_edit",
                     "daily_report_generate_draft",
                     "daily_report_history",
