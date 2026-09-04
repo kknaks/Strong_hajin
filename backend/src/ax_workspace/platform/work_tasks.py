@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.work.application import TaskNotFound, TaskState
@@ -26,6 +26,7 @@ from ax_workspace.platform.persistence import (
     WorkRequestAuditEventRecord,
     WorkRequestRecord,
     TaskAssignmentRecord,
+    TaskChecklistItemRecord,
     ResourceRelationshipRecord,
     EvidenceRecord,
 )
@@ -154,6 +155,42 @@ class SqlAlchemyTaskRepository:
             after_ref=f"task:{task.id}@1", safe_summary=f"업무 생성: {title}",
         )
         return task
+
+    # ---- checklist: steps inside one Task ----
+
+    def checklist_for(self, task_id: UUID) -> list[TaskChecklistItemRecord]:
+        return list(
+            self.session.scalars(
+                select(TaskChecklistItemRecord)
+                .where(TaskChecklistItemRecord.task_id == task_id)
+                .order_by(TaskChecklistItemRecord.position, TaskChecklistItemRecord.created_at)
+            )
+        )
+
+    def add_checklist_item(self, task_id: UUID, text: str) -> TaskChecklistItemRecord:
+        """A new step always lands last; positions are never reused so removing one cannot reorder the rest."""
+        now = datetime.now(UTC)
+        highest = self.session.scalar(
+            select(func.max(TaskChecklistItemRecord.position)).where(TaskChecklistItemRecord.task_id == task_id)
+        )
+        record = TaskChecklistItemRecord(
+            task_id=task_id, text=text, position=int(highest or 0) + 1, done=False, created_at=now, updated_at=now
+        )
+        self.session.add(record)
+        self.session.flush()
+        return record
+
+    def checklist_item(self, task_id: UUID, item_id: UUID, *, lock: bool = False) -> TaskChecklistItemRecord | None:
+        statement = select(TaskChecklistItemRecord).where(
+            TaskChecklistItemRecord.id == item_id, TaskChecklistItemRecord.task_id == task_id
+        )
+        return self.session.scalar(
+            statement.with_for_update().execution_options(populate_existing=True) if lock else statement
+        )
+
+    def remove_checklist_item(self, item: TaskChecklistItemRecord) -> None:
+        self.session.delete(item)
+        self.session.flush()
 
     def record_activity(self, task: TaskRecord, actor_id: str, event_kind: str, summary: str, *, before_ref: str | None = None, reason: str | None = None) -> None:
         ActivityLedger(self.session).record(

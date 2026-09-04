@@ -551,6 +551,23 @@ class TaskRecord(Base):
     )
 
 
+class TaskChecklistItemRecord(Base):
+    """A step inside one Task. Not a Task: no assignment, no lineage, no judgement — it lives and dies with its Task."""
+
+    __tablename__ = "task_checklist_items"
+    __table_args__ = (Index("ix_task_checklist_items_task_position", "task_id", "position"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"), nullable=False, index=True)
+    text: Mapped[str] = mapped_column(String(300), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    done: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    completed_by: Mapped[str | None] = mapped_column(String(100))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class RequestThreadRecord(Base):
     """ERD REQUEST_THREAD — the continuity of exactly one WorkRequest: comments, submissions, decisions, and the derived Task."""
 

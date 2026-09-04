@@ -1,7 +1,7 @@
 """Public commands for a principal's directly owned tasks."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any, Protocol
 from uuid import UUID
@@ -47,6 +47,10 @@ class TaskRepository(Protocol):
     def task(self, task_id: UUID, owner_id: str, *, lock: bool = False) -> Any: ...
     def tasks_for(self, owner_id: str, *, include_closed: bool = False) -> list[Any]: ...
     def touch(self, task: Any) -> None: ...
+    def checklist_for(self, task_id: UUID) -> list[Any]: ...
+    def add_checklist_item(self, task_id: UUID, text: str) -> Any: ...
+    def checklist_item(self, task_id: UUID, item_id: UUID, *, lock: bool = False) -> Any: ...
+    def remove_checklist_item(self, item: Any) -> None: ...
     def record_activity(self, task: Any, actor_id: str, event_kind: str, summary: str, *, before_ref: str | None = None, reason: str | None = None) -> None: ...
 
 
@@ -122,7 +126,7 @@ class TaskApplication:
 
     def get(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
         self._require(principal, TASK_READ)
-        return self._view(self.repository.task(task_id, str(principal.id)))
+        return self._with_checklist(self.repository.task(task_id, str(principal.id)))
 
     def transition(
         self,
@@ -166,6 +170,59 @@ class TaskApplication:
     def _require(principal: Principal, capability: str) -> None:
         if capability not in principal.capabilities:
             raise TaskAccessDenied(f"{capability} capability is required")
+
+    # ---- checklist: the steps inside one Task ----
+
+    def add_checklist_item(self, principal: Principal, task_id: UUID, text: str) -> dict[str, Any]:
+        """Only the person who holds the Task may add a step, and the text must say something."""
+        self._require(principal, TASK_SELF_MANAGE)
+        task = self.repository.task(task_id, str(principal.id))
+        cleaned = " ".join(text.split())
+        if not cleaned:
+            raise TaskError("checklist item text is required")
+        item = self.repository.add_checklist_item(task.id, cleaned[:300])
+        self.repository.record_activity(task, str(principal.id), "task.checklist.added", f"체크리스트 추가: {cleaned[:80]}")
+        return _checklist_view(item)
+
+    def update_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID, *, text: str | None = None, done: bool | None = None) -> dict[str, Any]:
+        """Checking a step records who did it and when; unchecking clears those facts rather than keeping a stale actor."""
+        self._require(principal, TASK_SELF_MANAGE)
+        task = self.repository.task(task_id, str(principal.id))
+        item = self.repository.checklist_item(task.id, item_id, lock=True)
+        if item is None:
+            raise TaskNotFound("checklist item was not found")
+        if text is not None:
+            cleaned = " ".join(text.split())
+            if not cleaned:
+                raise TaskError("checklist item text is required")
+            item.text = cleaned[:300]
+        if done is not None and done != item.done:
+            item.done = done
+            item.completed_by = str(principal.id) if done else None
+            item.completed_at = datetime.now(UTC) if done else None
+            self.repository.record_activity(
+                task, str(principal.id), "task.checklist.checked" if done else "task.checklist.unchecked",
+                f"체크리스트 {'완료' if done else '해제'}: {item.text[:80]}",
+            )
+        item.updated_at = datetime.now(UTC)
+        return _checklist_view(item)
+
+    def remove_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID) -> None:
+        self._require(principal, TASK_SELF_MANAGE)
+        task = self.repository.task(task_id, str(principal.id))
+        item = self.repository.checklist_item(task.id, item_id, lock=True)
+        if item is None:
+            raise TaskNotFound("checklist item was not found")
+        self.repository.record_activity(task, str(principal.id), "task.checklist.removed", f"체크리스트 삭제: {item.text[:80]}")
+        self.repository.remove_checklist_item(item)
+
+    def _with_checklist(self, task: Any) -> dict[str, Any]:
+        items = [_checklist_view(item) for item in self.repository.checklist_for(task.id)]
+        return {
+            **self._view(task),
+            "checklist": items,
+            "checklist_progress": {"done": sum(1 for item in items if item["done"]), "total": len(items)},
+        }
 
     @staticmethod
     def _view(task: Any) -> dict[str, Any]:
@@ -227,3 +284,14 @@ def _iso(value: Any) -> str | None:
 
 def _str(value: Any) -> str | None:
     return str(value) if value is not None else None
+
+
+def _checklist_view(item: Any) -> dict[str, Any]:
+    return {
+        "item_id": str(item.id),
+        "text": item.text,
+        "position": int(item.position),
+        "done": bool(item.done),
+        "completed_by": item.completed_by,
+        "completed_at": _iso(getattr(item, "completed_at", None)),
+    }

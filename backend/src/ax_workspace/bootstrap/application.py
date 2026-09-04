@@ -581,6 +581,23 @@ class WorkflowApplication:
             SqlAlchemyActionExecutor(session, self._report_provider),
         )
 
+    def add_task_checklist_item(self, principal: Principal, task_id: UUID, text: str) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = TaskApplication(SqlAlchemyTaskRepository(session)).add_checklist_item(principal, task_id, text)
+            session.commit()
+            return result
+
+    def update_task_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID, **fields: Any) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = TaskApplication(SqlAlchemyTaskRepository(session)).update_checklist_item(principal, task_id, item_id, **fields)
+            session.commit()
+            return result
+
+    def remove_task_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID) -> None:
+        with self._session_factory() as session:
+            TaskApplication(SqlAlchemyTaskRepository(session)).remove_checklist_item(principal, task_id, item_id)
+            session.commit()
+
     def transition_task(self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None = None, expected_version: int = 0) -> dict[str, Any]:
         with self._session_factory() as session:
             result = TaskApplication(SqlAlchemyTaskRepository(session)).transition(task_id, principal, target, reason, expected_version)

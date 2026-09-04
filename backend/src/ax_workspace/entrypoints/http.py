@@ -147,6 +147,15 @@ class CommentRequest(BaseModel):
     body: str = Field(min_length=1, max_length=4000)
 
 
+class ChecklistItemRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=300)
+
+
+class ChecklistItemPatch(BaseModel):
+    text: str | None = Field(default=None, max_length=300)
+    done: bool | None = None
+
+
 class ActionCommandRequest(BaseModel):
     """What a command needs from the caller; the server decides which command is available at all."""
 
@@ -678,6 +687,32 @@ def create_app(
         ) -> dict[str, object]:
             try:
                 return app.state.workflow_application.add_work_request_comment(principal, request_id, request.body, idempotency_key)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/tasks/{task_id}/checklist", status_code=status.HTTP_201_CREATED)
+        def add_task_checklist_item(task_id: UUID, request: ChecklistItemRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.add_task_checklist_item(principal, task_id, request.text)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.patch("/api/tasks/{task_id}/checklist/{item_id}")
+        def update_task_checklist_item(
+            task_id: UUID, item_id: UUID, request: ChecklistItemPatch, principal: Principal = Depends(developer_principal)
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.update_task_checklist_item(
+                    principal, task_id, item_id, **request.model_dump(exclude_none=True)
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.delete("/api/tasks/{task_id}/checklist/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+        def remove_task_checklist_item(task_id: UUID, item_id: UUID, principal: Principal = Depends(developer_principal)) -> Response:
+            try:
+                app.state.workflow_application.remove_task_checklist_item(principal, task_id, item_id)
+                return Response(status_code=status.HTTP_204_NO_CONTENT)
             except Exception as error:
                 raise _runtime_error(error) from error
 
