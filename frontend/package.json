@@ -9,6 +9,7 @@
     "test": "vitest run",
     "e2e:task-lifecycle": "node scripts/task-lifecycle-e2e.mjs",
     "e2e:work-request": "node scripts/work-request-e2e.mjs",
+    "e2e:work-relations": "node scripts/work-relations-e2e.mjs",
     "e2e:conversation": "node scripts/conversation-e2e.mjs",
     "e2e:conversation-action": "node scripts/conversation-action-e2e.mjs",
     "e2e:chat-lifecycle": "node scripts/chat-lifecycle-e2e.mjs",

@@ -262,6 +262,8 @@ export function MyWorkPage({
     for (const candidate of [...ccCandidates, ...assignCandidates, ...assigneeCandidates]) if (!merged.has(candidate.id)) merged.set(candidate.id, candidate);
     return [...merged.values()];
   }, [assignCandidates, assigneeCandidates, ccCandidates, personas]);
+  // Relationship projections over the server-authorized list: nothing here widens what the API already returned.
+  const requestsToMe = allRequests.filter((request) => request.assignee_id === personaId);
   const sentRequests = allRequests.filter((request) => request.requester_id === personaId);
   const ccRequests = allRequests.filter((request) => request.cc_member_ids?.includes(personaId));
   const sorted = useMemo(() => [...tasks].sort((left, right) => stateOrder[left.state] - stateOrder[right.state]), [tasks]);
@@ -392,9 +394,9 @@ export function MyWorkPage({
               <button aria-selected={tab === "mine"} onClick={() => setTab("mine")} role="tab" type="button">
                 할일
               </button>
-              {(canCreateWorkRequests || canAssignTasks || ccRequests.length > 0) && (
+              {(canCreateWorkRequests || canAssignTasks || requestsToMe.length > 0 || ccRequests.length > 0) && (
                 <button aria-selected={tab === "sent"} onClick={() => setTab("sent")} role="tab" type="button">
-                  보낸 업무
+                  요청·배정
                 </button>
               )}
             </div>
@@ -425,10 +427,32 @@ export function MyWorkPage({
 
           {tab === "sent" ? (
             <>
+            <RequestRelationSection
+              emptyHint="동료가 보낸 요청이 도착하면 여기에 쌓입니다."
+              emptyTitle="내게 요청된 업무가 없습니다"
+              hint="판단이 끝난 요청도 기록으로 남습니다"
+              label="내게 요청된 업무"
+              onOpen={setSelectedRequest}
+              people={people}
+              personaId={personaId}
+              requests={requestsToMe}
+            />
+            {canCreateWorkRequests && (
+              <RequestRelationSection
+                emptyHint="새 업무 추가에서 동료에게 요청할 수 있습니다."
+                emptyTitle="내가 요청한 업무가 없습니다"
+                hint="조정 요청을 받으면 상세에서 내용을 고쳐 재상신합니다"
+                label="내가 요청한 업무"
+                onOpen={setSelectedRequest}
+                people={people}
+                personaId={personaId}
+                requests={sentRequests}
+              />
+            )}
             {canAssignTasks && (
-              <section aria-label="배정한 업무" className="sent-section">
+              <section aria-label="내가 배정한 업무" className="sent-section">
                 <h2 className="section-title">
-                  배정한 업무 <small>수락하면 그 사람의 업무가 됩니다</small>
+                  내가 배정한 업무 <small>수락하면 그 사람의 업무가 됩니다</small>
                 </h2>
                 <table className="plain-table">
                   <thead>
@@ -445,7 +469,7 @@ export function MyWorkPage({
                       <tr>
                         <td colSpan={5}>
                           <div className="empty-state">
-                            <b>배정한 업무가 없습니다</b>
+                            <b>내가 배정한 업무가 없습니다</b>
                             <p>새 업무 추가에서 담당자를 팀원으로 고르면 배정됩니다.</p>
                           </div>
                         </td>
@@ -471,83 +495,17 @@ export function MyWorkPage({
                 </table>
               </section>
             )}
-            {canCreateWorkRequests && (
-            <section aria-label="보낸 요청" className="sent-section">
-            {canAssignTasks && <h2 className="section-title">보낸 요청</h2>}
-            <table className="plain-table">
-              <thead>
-                <tr>
-                  <th>업무명</th>
-                  <th className="center">상태</th>
-                  <th className="center">담당자</th>
-                  <th className="center">요청자</th>
-                  <th className="end">액션</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sentRequests.length === 0 && (
-                  <tr>
-                    <td colSpan={5}>
-                      <div className="empty-state">
-                        <b>보낸 요청이 없습니다</b>
-                        <p>새 업무 추가에서 동료에게 요청할 수 있습니다.</p>
-                      </div>
-                    </td>
-                  </tr>
-                )}
-                {sentRequests.map((request) => (
-                  <tr className="openable" key={request.request_id} onClick={() => setSelectedRequest(request)}>
-                    <td className="title-cell">{request.title}</td>
-                    <td className="center">
-                      <StatusText label={workRequestStateLabel[request.state]} state={request.state} />
-                    </td>
-                    <td className="center">{displayNameOf(people, request.assignee_id, "담당자")}</td>
-                    <td className="center">나</td>
-                    <td className="end">
-                      <button className="btn h30 ghost" onClick={() => setSelectedRequest(request)} type="button">
-                        상세보기
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            </section>
-            )}
             {ccRequests.length > 0 && (
-              <section aria-label="참조된 요청" className="sent-section">
-                <h2 className="section-title">
-                  참조된 요청 <small>읽고 논의할 수 있지만 판단은 담당자가 합니다</small>
-                </h2>
-                <table className="plain-table">
-                  <thead>
-                    <tr>
-                      <th>업무명</th>
-                      <th className="center">상태</th>
-                      <th className="center">담당자</th>
-                      <th className="center">요청자</th>
-                      <th className="end">액션</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {ccRequests.map((request) => (
-                      <tr className="openable" key={request.request_id} onClick={() => setSelectedRequest(request)}>
-                        <td className="title-cell">{request.title}</td>
-                        <td className="center">
-                          <StatusText label={workRequestStateLabel[request.state]} state={request.state} />
-                        </td>
-                        <td className="center">{displayNameOf(people, request.assignee_id, "담당자")}</td>
-                        <td className="center">{displayNameOf(people, request.requester_id, "요청자")}</td>
-                        <td className="end">
-                          <button className="btn h30 ghost" onClick={() => setSelectedRequest(request)} type="button">
-                            상세보기
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </section>
+              <RequestRelationSection
+                emptyHint=""
+                emptyTitle=""
+                hint="읽고 논의할 수 있지만 판단은 담당자가 합니다"
+                label="참조된 업무"
+                onOpen={setSelectedRequest}
+                people={people}
+                personaId={personaId}
+                requests={ccRequests}
+              />
             )}
             </>
           ) : view === "kanban" ? (
@@ -717,5 +675,76 @@ function TaskTableRow({
         <div className="task-actions">{actions}</div>
       </td>
     </tr>
+  );
+}
+
+/**
+ * One canonical WorkRequest relationship, listed persistently. These are not AX Actions: they live in the ledger, keep
+ * their resolved history, and every row opens the same detail drawer where the round history and decisions are shown.
+ */
+function RequestRelationSection({
+  label,
+  hint,
+  requests,
+  emptyTitle,
+  emptyHint,
+  people,
+  personaId,
+  onOpen,
+}: {
+  label: string;
+  hint: string;
+  requests: WorkRequest[];
+  emptyTitle: string;
+  emptyHint: string;
+  people: Persona[];
+  personaId: string;
+  onOpen: (request: WorkRequest) => void;
+}) {
+  const who = (memberId: string | null | undefined, fallback: string) => (memberId === personaId ? "나" : displayNameOf(people, memberId, fallback));
+  return (
+    <section aria-label={label} className="sent-section">
+      <h2 className="section-title">
+        {label} {hint && <small>{hint}</small>}
+      </h2>
+      <table className="plain-table">
+        <thead>
+          <tr>
+            <th>업무명</th>
+            <th className="center">상태</th>
+            <th className="center">담당자</th>
+            <th className="center">요청자</th>
+            <th className="end">액션</th>
+          </tr>
+        </thead>
+        <tbody>
+          {requests.length === 0 && (
+            <tr>
+              <td colSpan={5}>
+                <div className="empty-state">
+                  <b>{emptyTitle}</b>
+                  <p>{emptyHint}</p>
+                </div>
+              </td>
+            </tr>
+          )}
+          {requests.map((request) => (
+            <tr className="openable" key={request.request_id} onClick={() => onOpen(request)}>
+              <td className="title-cell">{request.title}</td>
+              <td className="center">
+                <StatusText label={workRequestStateLabel[request.state]} state={request.state} />
+              </td>
+              <td className="center">{who(request.assignee_id, "담당자")}</td>
+              <td className="center">{who(request.requester_id, "요청자")}</td>
+              <td className="end">
+                <button className="btn h30 ghost" onClick={() => onOpen(request)} type="button">
+                  상세보기
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
   );
 }

@@ -525,7 +525,7 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .comment-list li b { font-size: 13px; }
 .comment-list li p { margin-top: 4px; color: var(--text-secondary); font-size: 14px; }
 
-/* ---- 보낸 업무 sections, 참조자 picker, comment attachments */
+/* ---- 요청·배정 relationship sections, 참조자 picker, comment attachments */
 .sent-section + .sent-section { margin-top: 28px; }
 .sent-section .section-title { margin-top: 0; }
 .cc-picker { border: 0; padding: 0; margin: 0; min-width: 0; }

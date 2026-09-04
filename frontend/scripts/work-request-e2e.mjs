@@ -16,7 +16,7 @@ try {
   const navigation = page.getByRole("navigation", { name: "제품 탐색" });
   await navigation.getByRole("button", { name: "내 업무" }).click();
   await page.getByRole("button", { name: "새 업무 추가" }).click();
-  await page.getByRole("tab", { name: "요청" }).click();
+  await page.getByRole("tab", { name: "요청", exact: true }).click();
   await page.getByLabel("요청할 업무").fill(title);
   await page.getByLabel("담당 후보").selectOption("jiho");
   await page.getByRole("button", { name: "업무 요청 보내기" }).click();
