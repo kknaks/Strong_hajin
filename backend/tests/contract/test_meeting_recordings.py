@@ -335,3 +335,74 @@ def test_summary_evidence_rejects_a_range_with_a_missing_refinement_sequence() -
             [SimpleNamespace(sequence=1), SimpleNamespace(sequence=3)],
             [SummaryStatement("summary", "근거 없는 중간 구간은 안 됩니다.", 1, 3)],
         )
+
+
+def test_human_speaker_mapping_is_a_separate_revision_and_overrides_refinement_label(tmp_path) -> None:
+    provider = RefinementProvider()
+    client = _client(tmp_path, provider=provider)
+    meeting = _meeting(client)
+    headers = {"X-Demo-Persona": "mina"}
+    started = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/start",
+        headers=headers,
+        json={"purpose": "화자 확인"},
+    ).json()
+    assert client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/{started['recording_id']}/stop",
+        headers=headers,
+        data={"expected_version": str(started["version"])},
+        files={"audio": ("raw.webm", b"audio", "audio/webm")},
+    ).status_code == 200
+    application = client.app.state.workflow_application
+    raw = application.record_final_meeting_transcript(
+        recording_id=UUID(started["recording_id"]),
+        provider="soniox",
+        provider_reference="async:speaker-source",
+        segments=[
+            FinalTranscriptSegment("provider-segment-1", 0, 1_500, "안녕하세요", "Speaker 1"),
+            FinalTranscriptSegment("provider-segment-2", 1_500, 3_000, "일정을 논의합니다", "Speaker 1"),
+        ],
+    )
+    assert raw["segments"][0]["confirmed_member_id"] is None
+    assigned = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/speaker-assignments",
+        headers=headers,
+        json={
+            "transcript_revision_id": raw["transcript_revision_id"],
+            "speaker_label": "Speaker 1",
+            "member_id": "jiho",
+            "scope": "speaker_track",
+            "raw_start_source_key": "provider-segment-1",
+            "raw_end_source_key": "provider-segment-2",
+        },
+    )
+    assert assigned.status_code == 201, assigned.text
+    assert assigned.json() == {
+        "speaker_assignment_id": assigned.json()["speaker_assignment_id"],
+        "transcript_revision_id": raw["transcript_revision_id"],
+        "speaker_label": "Speaker 1",
+        "member_id": "jiho",
+        "scope": "speaker_track",
+        "raw_start_segment_id": raw["segments"][0]["segment_id"],
+        "raw_end_segment_id": raw["segments"][1]["segment_id"],
+        "source_audio_start_ms": 0,
+        "source_audio_end_ms": 3_000,
+        "source": "human_confirmed",
+        "state": "active",
+    }
+    refined = application.refine_meeting_transcript(UUID(raw["transcript_revision_id"]))
+    assert refined["segments"][0]["speaker_label"] is None  # provider did not assert a member identity
+    assert refined["segments"][0]["confirmed_member_id"] == "jiho"  # human mapping wins
+    denied = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/speaker-assignments",
+        headers={"X-Demo-Persona": "sora"},
+        json={
+            "transcript_revision_id": raw["transcript_revision_id"],
+            "speaker_label": "Speaker 1",
+            "member_id": "sora",
+            "scope": "segment_range",
+            "raw_start_source_key": "provider-segment-1",
+            "raw_end_source_key": "provider-segment-1",
+        },
+    )
+    assert denied.status_code in {403, 404}

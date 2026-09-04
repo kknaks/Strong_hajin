@@ -95,6 +95,15 @@ class AdoptMeetingSummaryRequest(BaseModel):
     expected_version: int = Field(ge=1)
 
 
+class AssignMeetingSpeakerRequest(BaseModel):
+    transcript_revision_id: UUID
+    speaker_label: str = Field(min_length=1, max_length=100)
+    member_id: str = Field(min_length=1, max_length=100)
+    scope: Literal["segment_range", "speaker_track"]
+    raw_start_source_key: str = Field(min_length=1, max_length=200)
+    raw_end_source_key: str = Field(min_length=1, max_length=200)
+
+
 class AssignTaskRequest(BaseModel):
     title: str
     assignee_id: str
@@ -468,6 +477,26 @@ def create_app(
                     meeting_id,
                     summary_id,
                     request.expected_version,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/meetings/{meeting_id}/speaker-assignments", status_code=status.HTTP_201_CREATED)
+        def assign_meeting_speaker(
+            meeting_id: UUID,
+            request: AssignMeetingSpeakerRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.assign_meeting_speaker_identity(
+                    principal,
+                    meeting_id,
+                    request.transcript_revision_id,
+                    speaker_label=request.speaker_label,
+                    member_id=request.member_id,
+                    scope=request.scope,
+                    raw_start_source_key=request.raw_start_source_key,
+                    raw_end_source_key=request.raw_end_source_key,
                 )
             except Exception as error:
                 raise _runtime_error(error) from error
