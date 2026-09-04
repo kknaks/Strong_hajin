@@ -68,7 +68,7 @@ try {
     throw new Error(`terminal rail is missing observed timings: ${JSON.stringify(timings)}`);
   }
   if ((await page.locator(".ax-rail.terminal details[open]").count()) !== 0) throw new Error("terminal rail did not collapse");
-  const answer = page.locator(".ax-messages p.assistant[data-body-state='final']").first();
+  const answer = page.locator(".ax-messages .assistant[data-body-state='final']").first();
   await answer.waitFor({ timeout: 10_000 });
   const answerText = ((await answer.textContent()) ?? "").trim();
   if (!answerText) throw new Error("final assistant body is empty");
@@ -88,8 +88,15 @@ try {
   if (turn.progress_state !== "completed" || turn.run_ms == null || turn.queue_wait_ms == null || turn.execution_started_at == null) {
     throw new Error(`projection lacks lifecycle facts: ${JSON.stringify(turn)}`);
   }
-  if (!assistant || assistant.body_state !== "final" || assistant.body.trim() !== answerText) {
-    throw new Error("assistant body in the projection does not match the rendered final answer");
+  // The body is rendered as Markdown: compare the text content with the emphasis/code markers removed and make sure
+  // no raw Markdown syntax leaks into the rendered answer.
+  const plain = (text) => text.replace(/[*_`\s]/g, "");
+  if (!assistant || assistant.body_state !== "final" || plain(assistant.body) !== plain(answerText)) {
+    throw new Error(`assistant body in the projection does not match the rendered final answer: ${JSON.stringify({ projected: assistant?.body, rendered: answerText })}`);
+  }
+  if (/\*\*/.test(answerText)) throw new Error(`raw Markdown emphasis leaked into the rendered answer: ${JSON.stringify(answerText)}`);
+  if (/\*\*/.test(assistant.body) && (await answer.locator("strong").count()) === 0) {
+    throw new Error("projected emphasis was not rendered as <strong>");
   }
   const tool = projection.tool_invocations.find((item) => item.turn_id === turn.turn_id && item.tool_name === "task_list");
   if (!tool || tool.state !== "completed" || tool.started_at == null || tool.completed_at == null || tool.latency_ms == null) {
@@ -117,7 +124,7 @@ try {
   await conversationButton(first.conversation_id).click();
   await page.locator(".ax-messages").getByText(prompt).first().waitFor({ timeout: 10_000 });
   await page.locator(".ax-rail.terminal .ax-rail-summary", { hasText: /✓ 완료 · 도구 \d+개/ }).first().waitFor({ timeout: 10_000 });
-  const restored = ((await page.locator(".ax-messages p.assistant[data-body-state='final']").first().textContent()) ?? "").trim();
+  const restored = ((await page.locator(".ax-messages .assistant[data-body-state='final']").first().textContent()) ?? "").trim();
   if (restored !== answerText) throw new Error("final answer did not survive re-entry from the projection");
 
   await page.screenshot({ path: "test-results/chat-lifecycle-e2e.png", fullPage: true });

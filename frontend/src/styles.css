@@ -386,7 +386,7 @@ button.metric-card:hover { border-color: var(--border-strong); background: var(-
 .ax-messages { flex: 1; min-height: 0; overflow: auto; }
 .ax-messages p { margin: 0 0 8px; padding: 10px 12px; border-radius: 12px; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ax-messages .user { margin-left: 24px; color: #fff; background: var(--text-primary); border-bottom-right-radius: 4px; }
-.ax-messages .assistant { margin-right: 24px; border: 1px solid var(--border-default); background: #fff; border-bottom-left-radius: 4px; }
+.ax-messages .assistant { margin: 0 24px 8px 0; padding: 10px 12px; border: 1px solid var(--border-default); border-radius: 12px; border-bottom-left-radius: 4px; background: #fff; font-size: 14px; overflow-wrap: anywhere; }
 .ax-messages .queued { margin-left: 24px; border: 1px dashed var(--accent); color: var(--text-secondary); background: #fff; }
 .ax-messages .queued small { margin-left: 6px; color: var(--text-tertiary); }
 .ax-empty { padding: 48px 16px; color: var(--text-tertiary); text-align: center; font-size: 14px; }
@@ -621,3 +621,25 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .ax-messages .ax-action-card small.approved { color: var(--action); }
 .ax-composer textarea { resize: none; min-height: 44px; max-height: 200px; overflow-y: auto; line-height: 1.5; }
 .ax-composer { position: sticky; bottom: 0; background: var(--surface); padding-top: 4px; }
+
+/* Assistant Markdown: compact chat typography on DS v2 tokens; raw HTML is never rendered. */
+.ax-md { display: inline; }
+.ax-md > :first-child { margin-top: 0; }
+.ax-md > :last-child { margin-bottom: 0; }
+.ax-md p, .ax-md .ax-md-heading { margin: 0 0 6px; padding: 0; border: 0; border-radius: 0; background: none; font-size: 14px; line-height: 1.55; white-space: pre-wrap; }
+.ax-md .ax-md-heading { font-weight: 600; }
+.ax-md strong { font-weight: 600; color: var(--text-primary); }
+.ax-md ul, .ax-md ol { margin: 0 0 6px; padding-left: 20px; }
+.ax-md li { margin: 2px 0; line-height: 1.5; }
+.ax-md li > p { margin: 0; }
+.ax-md a { color: var(--action); text-decoration: underline; text-underline-offset: 2px; }
+.ax-md a:hover { color: var(--action-hover); }
+.ax-md code { padding: 1px 5px; border-radius: var(--radius-chip); background: var(--surface-sunken); border: 1px solid var(--border-subtle); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+.ax-md pre { margin: 0 0 6px; padding: 8px 10px; border-radius: var(--radius-card); background: var(--surface-sunken); border: 1px solid var(--border-subtle); overflow-x: auto; font-size: 12.5px; line-height: 1.5; }
+.ax-md pre code { padding: 0; border: 0; background: none; }
+.ax-md blockquote { margin: 0 0 6px; padding: 2px 10px; border-left: 3px solid var(--border-strong); color: var(--text-secondary); }
+.ax-md hr { margin: 8px 0; border: 0; border-top: 1px solid var(--border-default); }
+.ax-md table { margin: 0 0 6px; border-collapse: collapse; font-size: 13px; }
+.ax-md th, .ax-md td { padding: 4px 8px; border: 1px solid var(--border-default); text-align: left; }
+.ax-md th { background: var(--surface-sunken); font-weight: 600; }
+.ax-messages .assistant.failed .ax-md, .ax-messages .assistant.cancelled .ax-md { color: var(--text-secondary); }

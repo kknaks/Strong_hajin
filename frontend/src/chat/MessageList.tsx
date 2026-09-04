@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { formatMonthDay, isoDateInSeoul } from "../labels";
+import { AssistantMarkdown } from "./AssistantMarkdown";
 import type { ActionItem, Conversation, ConversationTurn, MaterialEvidence } from "../viewModels";
 import type { LocalFragment } from "./useConversations";
 
@@ -145,8 +146,8 @@ function ConversationTimeline({
             {messages
               .filter((item) => item.role === "assistant" && (item.body || item.body_state === "streaming"))
               .map((item) => (
-                <p className={`assistant ${item.body_state ?? "final"}`} data-body-state={item.body_state ?? "final"} key={item.message_id}>
-                  {item.body}
+                <div className={`assistant ${item.body_state ?? "final"}`} data-body-state={item.body_state ?? "final"} key={item.message_id}>
+                  <AssistantMarkdown body={item.body} />
                   {item.body_state === "streaming" && (
                     <span aria-hidden className="ax-streaming-mark">
                       ▍
@@ -154,7 +155,7 @@ function ConversationTimeline({
                   )}
                   {item.body_state === "failed" && <small className="ax-body-note">답변이 완성되지 않았습니다</small>}
                   {item.body_state === "cancelled" && <small className="ax-body-note">취소 시점까지의 답변</small>}
-                </p>
+                </div>
               ))}
             <EvidenceCards evidence={evidence} />
             {actions.map((action) => (

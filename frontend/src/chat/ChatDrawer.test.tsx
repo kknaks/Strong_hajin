@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Conversation, ConversationTurn } from "../viewModels";
 import { ChatDrawer } from "./ChatDrawer";
+import { AssistantMarkdown } from "./AssistantMarkdown";
 import { ExecutionRail, MessageList } from "./MessageList";
 import type { LocalFragment } from "./useConversations";
 
@@ -218,7 +219,7 @@ describe("MessageList", () => {
     render(<MessageList {...listProps} conversation={active} localFragments={[]} />);
     expect(screen.queryByRole("button", { name: "다시 시도" })).toBeNull(); // a retry already exists
     expect(screen.getByText("이전 실패한 요청의 다시 시도")).toBeTruthy();
-    const streaming = screen.getByText("작성 중인 답");
+    const streaming = screen.getByText("작성 중인 답").closest(".assistant") as HTMLElement;
     expect(streaming.getAttribute("data-body-state")).toBe("streaming");
     expect(screen.getByText("답변 작성 중")).toBeTruthy();
   });
@@ -357,5 +358,63 @@ describe("useConversations", () => {
     });
     expect(result.current.activeConversation?.conversation_id).toBe("c3");
     expect(result.current.draft).toBe("아직 대화 없음");
+  });
+});
+
+describe("AssistantMarkdown", () => {
+  const listProps = { onDecide: noop, onRetryTurn: vi.fn(), onRetryFragment: vi.fn(), onDiscardFragment: vi.fn() };
+  afterEach(cleanup);
+
+  it("renders emphasis, lists, links, and code semantically instead of showing the syntax", () => {
+    const body = "현재 내 업무는 **0개**입니다.\n\n- 첫째 `task_list`\n- 둘째\n\n1. 하나\n2. 둘\n\n[업무 보기](https://scax.example/tasks)\n\n```\nselect 1\n```";
+    const { container } = render(<AssistantMarkdown body={body} />);
+    expect(container.textContent).not.toContain("**");
+    expect(screen.getByText("0개").tagName).toBe("STRONG");
+    expect(container.querySelectorAll("ul > li")).toHaveLength(2);
+    expect(container.querySelectorAll("ol > li")).toHaveLength(2);
+    expect(screen.getByText("task_list").tagName).toBe("CODE");
+    const link = screen.getByRole("link", { name: "업무 보기" }) as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("https://scax.example/tasks");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(container.querySelector("pre > code")?.textContent).toContain("select 1");
+  });
+
+  it("never renders injected HTML or script-bearing links", () => {
+    const onerror = vi.fn();
+    vi.stubGlobal("__pwned", onerror);
+    const body = 'before <img src="x" onerror="window.__pwned()"> <script>window.__pwned()</script> after\n\n<a href="javascript:window.__pwned()">click</a>\n\n[js](javascript:window.__pwned()) [ok](https://example.com)\n\n<div onclick="window.__pwned()">tag</div>';
+    const { container } = render(<AssistantMarkdown body={body} />);
+    expect(container.querySelector("img, script, div[onclick], [onerror], [onclick]")).toBeNull();
+    for (const anchor of Array.from(container.querySelectorAll("a"))) {
+      expect(anchor.getAttribute("href") ?? "").not.toMatch(/^javascript:/i);
+    }
+    expect(screen.getByRole("link", { name: "ok" }).getAttribute("href")).toBe("https://example.com");
+    expect(container.textContent).toContain("before");
+    expect(container.textContent).toContain("after");
+    expect(container.innerHTML).not.toContain("<script");
+    expect(onerror).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the streaming caret and the body-state note outside the Markdown content", () => {
+    const streaming = conversation("c1", "새 대화", "질문", {
+      messages: [
+        { message_id: "m1", turn_id: "c1-t1", role: "user", body: "질문", sequence: 1, state: "accepted" },
+        { message_id: "m2", turn_id: "c1-t1", role: "assistant", body: "**부분** 답변", sequence: 2, state: "accepted", body_state: "streaming" },
+      ],
+      turns: [turn("c1-t1", { state: "running", progress_state: "composing", execution_completed_at: null, run_ms: null })],
+    });
+    const { container } = render(<MessageList {...listProps} conversation={streaming} localFragments={[]} />);
+    const bubble = container.querySelector(".assistant[data-body-state='streaming']") as HTMLElement;
+    expect(bubble.querySelector(".ax-md strong")?.textContent).toBe("부분");
+    expect(bubble.querySelector(".ax-md .ax-streaming-mark")).toBeNull();
+    expect(bubble.querySelector(":scope > .ax-streaming-mark")).toBeTruthy();
+    const cancelled = { ...streaming, messages: [streaming.messages[0], { ...streaming.messages[1], body_state: "cancelled" as const }], turns: [turn("c1-t1", { state: "cancelled", progress_state: "cancelled" })] };
+    cleanup();
+    const second = render(<MessageList {...listProps} conversation={cancelled} localFragments={[]} />).container;
+    const note = second.querySelector(".assistant .ax-body-note") as HTMLElement;
+    expect(note.textContent).toBe("취소 시점까지의 답변");
+    expect(note.closest(".ax-md")).toBeNull();
   });
 });
