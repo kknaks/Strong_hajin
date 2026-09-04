@@ -257,10 +257,11 @@ def test_every_way_of_answering_freezes_the_same_basis(tmp_path, monkeypatch) ->
 
     # 1) the per-kind REST endpoint the product kept for compatibility
     legacy = client.post("/api/work-requests", headers=MINA, json={"title": "구 endpoint", "assignee_id": "jiho"}).json()
-    _adopt(client, MINA, legacy["request_id"], "근거.txt", b"one")
+    adopted = _adopt(client, MINA, legacy["request_id"], "근거.txt", b"one").json()
+    # Adopting moved the request on, so the answer names the version that now stands.
     assert client.post(
         f"/api/work-requests/{legacy['request_id']}/reject", headers=JIHO,
-        json={"expected_version": legacy["version"], "reason": "거절"},
+        json={"expected_version": adopted["request_version"], "reason": "거절"},
     ).status_code == 200
     legacy_timeline = client.get(f"/api/work-requests/{legacy['request_id']}/timeline", headers=JIHO).json()
     frozen["legacy"] = legacy_timeline["review_decisions"][0]["evidence_hash"]
@@ -329,3 +330,92 @@ def test_every_kind_of_judgement_answers_the_same_round_shape(tmp_path) -> None:
                 assert "evidence" in round_view and "evidence_hash" in round_view, envelope["kind"]
                 for decision in round_view["decisions"]:
                     assert "evidence_hash" in decision, envelope["kind"]
+
+
+def test_inheriting_a_basis_records_the_copy_instead_of_a_new_adoption(tmp_path) -> None:
+    """A copied adoption keeps its own author and moment; the copy itself is what the revision is credited with."""
+    client, database_url, _ = _stack(tmp_path)
+    from ax_workspace.platform.persistence import ActivityEventRecord, WorkRequestAuditEventRecord
+
+    request = client.post("/api/work-requests", headers=MINA, json={"title": "출처 보존", "assignee_id": "jiho"}).json()
+    rid = request["request_id"]
+    _adopt(client, JIHO, rid, "담당자근거.txt", b"basis")
+    _adopt(client, MINA, rid, "요청자근거.txt", b"support")
+
+    [item] = _pending(client, JIHO)
+    _command(client, JIHO, item["action_item_id"], "adjust", expected_version=item["expected_version"], reason="조정")
+    [waiting] = _pending(client, MINA)
+    _command(client, MINA, waiting["action_item_id"], "revise", expected_version=waiting["expected_version"], changes={"description": "보강"})
+
+    with make_session_factory(database_url)() as session:
+        rows = sorted(session.scalars(select(EvidenceRecord)).all(), key=lambda row: (str(row.submission_id), row.adopted_by))
+        by_attachment: dict[str, list] = {}
+        for row in rows:
+            by_attachment.setdefault(str(row.attachment_id), []).append(row)
+        assert len(by_attachment) == 2
+        for original, inherited in by_attachment.values():
+            # The copy says what actually happened: this person adopted this file at that moment, once.
+            assert inherited.adopted_by == original.adopted_by
+            assert inherited.adopted_at == original.adopted_at
+            assert inherited.id != original.id and inherited.submission_id != original.submission_id
+
+        # The revision is credited with the copy, as its own append-only fact.
+        [inheritance] = [row for row in session.scalars(select(ActivityEventRecord)) if row.event_kind == "work_request.evidence_inherited"]
+        assert inheritance.actor_id == "mina"
+        assert "2" in inheritance.safe_summary
+        submissions = {str(row.submission_id) for row in rows}
+        assert inheritance.before_ref is not None and inheritance.before_ref.split(":")[1] in submissions
+        assert inheritance.after_ref is not None and inheritance.after_ref.split(":")[1] in submissions
+        assert inheritance.before_ref != inheritance.after_ref
+        # Only the two real adoptions are audited as adoptions.
+        adoptions = [row for row in session.scalars(select(WorkRequestAuditEventRecord)) if row.event_type == "work_request.evidence_adopted"]
+        assert [row.actor_id for row in adoptions] == ["jiho", "mina"]
+
+    timeline = client.get(f"/api/work-requests/{rid}/timeline", headers=MINA).json()
+    assert [row["event_kind"] for row in timeline["activity"]].count("work_request.evidence_inherited") == 1
+
+
+def test_the_flat_evidence_list_is_ordered_the_same_way_every_time(tmp_path) -> None:
+    client, _, _ = _stack(tmp_path)
+    request = client.post("/api/work-requests", headers=MINA, json={"title": "정렬", "assignee_id": "jiho"}).json()
+    rid = request["request_id"]
+    for name in ("가.txt", "나.txt", "다.txt"):
+        _adopt(client, MINA, rid, name, name.encode())
+    [item] = _pending(client, JIHO)
+    _command(client, JIHO, item["action_item_id"], "adjust", expected_version=item["expected_version"], reason="조정")
+    [waiting] = _pending(client, MINA)
+    _command(client, MINA, waiting["action_item_id"], "revise", expected_version=waiting["expected_version"], changes={"description": "보강"})
+
+    # Inherited rows share their source's adoption time, so the order must not rest on that alone.
+    reads = [
+        [(row["submission_version"], row["name"], row["evidence_id"]) for row in client.get(f"/api/work-requests/{rid}/timeline", headers=MINA).json()["evidence"]]
+        for _ in range(3)
+    ]
+    assert reads[0] == reads[1] == reads[2]
+    assert [row[0] for row in reads[0]] == [1, 1, 1, 2, 2, 2]
+    assert [row[1] for row in reads[0][:3]] == ["가.txt", "나.txt", "다.txt"]
+
+
+def test_adopting_evidence_moves_the_request_on_so_an_open_reviewer_is_not_deciding_blind(tmp_path) -> None:
+    client, _, _ = _stack(tmp_path)
+    request = client.post("/api/work-requests", headers=MINA, json={"title": "버전 이동", "assignee_id": "jiho"}).json()
+    rid = request["request_id"]
+    [before] = _pending(client, JIHO)
+
+    adopted = _adopt(client, MINA, rid, "뒤늦은근거.txt", b"late")
+    assert adopted.status_code == 201, adopted.text
+    assert adopted.json()["request_version"] == before["expected_version"] + 1
+
+    # The reviewer who opened the item before the basis moved cannot answer with what they saw.
+    stale = _command(client, JIHO, before["action_item_id"], "accept", expected_version=before["expected_version"])
+    assert stale.status_code == 422, stale.text
+    assert client.get("/api/my-work", headers=JIHO).json() == []
+
+    # Reading it again shows the new basis and the version that answers it.
+    [after] = _pending(client, JIHO)
+    assert after["expected_version"] == before["expected_version"] + 1
+    accepted = _command(client, JIHO, after["action_item_id"], "accept", expected_version=after["expected_version"])
+    assert accepted.status_code == 200, accepted.text
+    timeline = client.get(f"/api/work-requests/{rid}/timeline", headers=JIHO).json()
+    assert timeline["review_decisions"][0]["evidence_hash"] == timeline["submissions"][0]["evidence_hash"]
+    assert len(timeline["submissions"][0]["evidence"]) == 1

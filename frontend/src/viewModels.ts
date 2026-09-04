@@ -431,7 +431,12 @@ export type RequestEvidence = {
   fixed_snapshot_ref: string;
   adopted_by: string;
   adopted_at: string;
+  /** The request version adopting this produced: the basis moved, so an open reviewer's version is now stale. */
+  request_version?: number;
 };
+
+/** One line of a round's basis: the attachment and its integrity, never the row that adopted it. */
+export type EvidenceManifestEntry = { attachment_id: string; evidence_role: string; fixed_snapshot_ref: string };
 
 export type RequestTimeline = {
   request: WorkRequest;
@@ -448,9 +453,12 @@ export type RequestTimeline = {
     snapshot: Record<string, unknown>;
     subject_version: number | null;
     diff: Record<string, { before: unknown; after: unknown }> | null;
+    /** What this round currently stands on, and the identity of that set. */
+    evidence: EvidenceManifestEntry[];
+    evidence_hash: string | null;
   }>;
   review_assignments: Array<{ review_assignment_id: string; submission_id: string; reviewer_member_id: string; status: string; assigned_at: string }>;
-  review_decisions: Array<{ review_decision_id: string; submission_id: string; actor_member_id: string; decision: string; reason: string | null; conditions: Record<string, unknown> | null; decided_at: string }>;
+  review_decisions: Array<{ review_decision_id: string; submission_id: string; actor_member_id: string; decision: string; reason: string | null; conditions: Record<string, unknown> | null; evidence_hash: string | null; decided_at: string }>;
   activity: Array<{ event_kind: string; actor_id: string; safe_summary: string; reason: string | null; occurred_at: string }>;
 };
 

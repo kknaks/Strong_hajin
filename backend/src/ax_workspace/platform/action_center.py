@@ -192,10 +192,11 @@ class WorkRequestActionHandler:
                     "decided_at": decision.decided_at.isoformat(),
                 }
             )
+        bases = self._evidence([submission.id for submission in submissions])
         rows = []
         for submission in submissions:
             version = self._session.get(SubjectVersionRecord, submission.subject_version_id)
-            basis = self._evidence(submission)
+            basis = bases.get(submission.id, [])
             rows.append(
                 {
                     "submission_id": str(submission.id),
@@ -212,12 +213,14 @@ class WorkRequestActionHandler:
             )
         return rows
 
-    def _evidence(self, submission: SubmissionRecord) -> list[dict[str, str]]:
-        """What this round currently stands on, in the one canonical form every surface reads."""
-        return evidence_manifest(
-            evidence_manifest_entry(row.attachment_id, row.evidence_role, row.fixed_snapshot_ref)
-            for row in self._session.scalars(select(EvidenceRecord).where(EvidenceRecord.submission_id == submission.id))
-        )
+    def _evidence(self, submission_ids: list[UUID]) -> dict[UUID, list[dict[str, str]]]:
+        """What each round currently stands on, in the one canonical form every surface reads, in one query."""
+        if not submission_ids:
+            return {}
+        grouped: dict[UUID, list[dict[str, str]]] = {submission_id: [] for submission_id in submission_ids}
+        for row in self._session.scalars(select(EvidenceRecord).where(EvidenceRecord.submission_id.in_(submission_ids))):
+            grouped[row.submission_id].append(evidence_manifest_entry(row.attachment_id, row.evidence_role, row.fixed_snapshot_ref))
+        return {submission_id: evidence_manifest(entries) for submission_id, entries in grouped.items()}
 
     def normalize(self, item: tuple[Any, Any], command: str, payload: dict[str, Any]) -> dict[str, Any]:
         normalized: dict[str, Any] = {"expected_version": _required_version(payload)}

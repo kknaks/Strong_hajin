@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import date
+from datetime import UTC, date, datetime
 import hashlib
 import json
 from typing import Any, Protocol
@@ -379,6 +379,9 @@ class WorkRequestApplication:
         self._attachments.bind(attachment_id=attachment.id, context_type="submission", context_id=str(submission.id), role="supplemental", bound_by=str(principal.id))
         role = "decision_basis" if str(principal.id) == request.assignee_id else "supporting"
         evidence = self._repository.adopt_evidence(submission, attachment, role=role, adopted_by=str(principal.id))
+        # The basis a reviewer is looking at just changed, so the version they opened must no longer answer it.
+        request.version += 1
+        request.updated_at = datetime.now(UTC)
         self._repository.append_audit(request.id, str(principal.id), "work_request.evidence_adopted", {"evidence_id": str(evidence.id), "name": attachment.name})
         return {
             "evidence_id": str(evidence.id),
@@ -390,6 +393,7 @@ class WorkRequestApplication:
             "size_bytes": int(attachment.size_bytes),
             "evidence_role": evidence.evidence_role,
             "fixed_snapshot_ref": evidence.fixed_snapshot_ref,
+            "request_version": int(request.version),
             "adopted_by": evidence.adopted_by,
             "adopted_at": evidence.adopted_at.isoformat(),
         }

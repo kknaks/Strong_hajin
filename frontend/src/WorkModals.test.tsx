@@ -176,3 +176,64 @@ describe("request round history", () => {
     expect(diff.textContent).toContain("새 제목");
   });
 });
+
+describe("adopting evidence", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  const pending = { ...request, state: "pending", version: 3 } as WorkRequest;
+
+  it("offers to adopt evidence only while the round is still open to it", async () => {
+    vi.mocked(api.getWorkRequestTimeline).mockResolvedValue(emptyTimeline as never);
+    for (const [state, offered] of [
+      ["pending", true],
+      ["negotiating", false],
+      ["accepted", false],
+      ["rejected", false],
+      ["withdrawn", false],
+    ] as const) {
+      cleanup();
+      renderDrawer({ request: { ...request, state } as WorkRequest, personaId: "mina" });
+      await screen.findAllByText(/근거 자료/);
+      expect(screen.queryByLabelText("근거 자료 파일") !== null).toBe(offered);
+    }
+
+    // Nor is it offered to someone who is neither the requester nor the assignee.
+    cleanup();
+    renderDrawer({ request: pending, personaId: "demo-admin" });
+    await screen.findAllByText(/근거 자료/);
+    expect(screen.queryByLabelText("근거 자료 파일")).toBeNull();
+  });
+
+  it("settles the request version after adopting, so the same person can decide right away", async () => {
+    vi.mocked(api.getWorkRequestTimeline).mockResolvedValue(emptyTimeline as never);
+    vi.mocked(api.uploadRequestEvidence).mockResolvedValue({
+      evidence_id: "evidence-1",
+      submission_id: "submission-1",
+      submission_version: 1,
+      attachment_id: "attachment-1",
+      name: "근거.txt",
+      content_type: "text/plain",
+      size_bytes: 4,
+      evidence_role: "supporting",
+      fixed_snapshot_ref: "sha256:abc",
+      adopted_by: "mina",
+      adopted_at: "2026-09-05T00:00:00Z",
+      request_version: 4,
+    } as never);
+    const { props } = renderDrawer({ request: pending, personaId: "mina" });
+    const field = (await screen.findByLabelText("근거 자료 파일")) as HTMLInputElement;
+
+    await act(async () => {
+      fireEvent.change(field, { target: { files: [new File(["body"], "근거.txt", { type: "text/plain" })] } });
+    });
+
+    await waitFor(() => expect(api.uploadRequestEvidence).toHaveBeenCalledTimes(1));
+    // Adopting moves the request on, so the drawer takes the new version before anything is decided on it.
+    await waitFor(() => expect(props.onChanged).toHaveBeenCalled());
+    expect(vi.mocked(api.getWorkRequestTimeline).mock.calls.length).toBeGreaterThan(1);
+    expect(props.onNotice).toHaveBeenCalledWith(expect.stringContaining("근거.txt"));
+  });
+});

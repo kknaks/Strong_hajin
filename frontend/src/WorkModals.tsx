@@ -714,7 +714,8 @@ export function WorkRequestDetailDrawer({
   const isAssignee = request.assignee_id === personaId;
   const isRequester = request.requester_id === personaId;
   const isCc = !isAssignee && !isRequester;
-  const canAdoptEvidence = (isAssignee || isRequester) && request.state !== "rejected";
+  // A basis may only grow while the round is still open to it; every other state is already judged or closed.
+  const canAdoptEvidence = (isAssignee || isRequester) && request.state === "pending";
   const assigneeName = isAssignee ? "나" : displayNameOf(personas, request.assignee_id, "담당자");
   const isOpen = request.state === "pending" || request.state === "negotiating";
   const decidable = canDecide && isAssignee && isOpen;
@@ -813,6 +814,8 @@ export function WorkRequestDetailDrawer({
     try {
       const evidence = await uploadRequestEvidence(request.request_id, file);
       onNotice?.(`'${evidence.name}'을 ${evidence.submission_version}회차의 ${evidence.evidence_role === "decision_basis" ? "판단 근거" : "보조 자료"}로 채택했습니다.`);
+      // The basis moved the request on, so take the new version before anything here is decided on it.
+      await onChanged();
       await loadTimeline();
     } catch (error) {
       onError(error instanceof Error ? error.message : "근거 자료를 올리지 못했습니다.");

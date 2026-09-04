@@ -533,7 +533,7 @@ class SqlAlchemyWorkRequestRepository:
         )
         self._session.add(submission)
         self._session.flush()
-        self._inherit_evidence(previous, submission, now)
+        self._inherit_evidence(request, previous, submission, actor_id)
         previous_assignment = self._session.scalar(
             select(ReviewAssignmentRecord).where(ReviewAssignmentRecord.submission_id == previous.id).order_by(ReviewAssignmentRecord.assigned_at.desc())
         )
@@ -567,7 +567,7 @@ class SqlAlchemyWorkRequestRepository:
         assignments = list(self._session.scalars(select(ReviewAssignmentRecord).where(ReviewAssignmentRecord.submission_id.in_(submission_ids)).order_by(ReviewAssignmentRecord.assigned_at))) if submission_ids else []
         decisions = list(self._session.scalars(select(ReviewDecisionRecord).where(ReviewDecisionRecord.submission_id.in_(submission_ids)).order_by(ReviewDecisionRecord.decided_at))) if submission_ids else []
         events = ActivityLedger(self._session).for_thread(request.request_thread_id) if request.request_thread_id else []
-        bases = {s.id: self.evidence_manifest_for(s) for s in submissions}
+        bases = self.evidence_manifests_for(submission_ids)
         return {
             "request_thread_id": str(request.request_thread_id) if request.request_thread_id else None,
             "decision_item": {"decision_item_id": str(item.id), "kind": item.kind, "status": item.status, "due_at": item.due_at.isoformat() if item.due_at else None} if item else None,
@@ -748,15 +748,22 @@ class SqlAlchemyWorkRequestRepository:
         self._session.flush()
         return record
 
-    def _inherit_evidence(self, previous: SubmissionRecord, submission: SubmissionRecord, now: datetime) -> None:
+    def _inherit_evidence(
+        self, request: WorkRequestRecord, previous: SubmissionRecord, submission: SubmissionRecord, actor_id: str
+    ) -> None:
         """Carry the previous round's basis into the new one as its own rows.
 
-        Append-only: no attachment or byte is copied, only the adoption. Each round then owns an independent set that
-        starts from the last one, so adding evidence later never reaches back into a round already judged.
+        Append-only: no attachment or byte is copied, only the adoption. Each copy keeps the author and moment of the
+        adoption it repeats, so no row ever claims that someone adopted something at a time they did nothing. The copy
+        itself is the revising actor's doing, and it is recorded as that: one event naming who revised, how much was
+        carried, and between which rounds.
         """
-        for source in self._session.scalars(
-            select(EvidenceRecord).where(EvidenceRecord.submission_id == previous.id).order_by(EvidenceRecord.adopted_at, EvidenceRecord.id)
-        ):
+        sources = list(
+            self._session.scalars(
+                select(EvidenceRecord).where(EvidenceRecord.submission_id == previous.id).order_by(EvidenceRecord.adopted_at, EvidenceRecord.id)
+            )
+        )
+        for source in sources:
             self._session.add(
                 EvidenceRecord(
                     submission_id=submission.id,
@@ -765,17 +772,33 @@ class SqlAlchemyWorkRequestRepository:
                     fixed_snapshot_ref=source.fixed_snapshot_ref,
                     mutable_source=source.mutable_source,
                     adopted_by=source.adopted_by,
-                    adopted_at=now,
+                    adopted_at=source.adopted_at,
                 )
             )
         self._session.flush()
+        if not sources:
+            return
+        ActivityLedger(self._session).record(
+            target_type="work_request", target_id=str(request.id), event_kind="work_request.evidence_inherited",
+            actor_id=actor_id, before_ref=f"submission:{previous.id}", after_ref=f"submission:{submission.id}",
+            safe_summary=f"이전 회차 근거 {len(sources)}건을 새 회차로 이어받음: {request.title}",
+            request_thread_id=request.request_thread_id,
+        )
 
     def evidence_manifest_for(self, submission: SubmissionRecord) -> list[dict[str, str]]:
         """The basis this Submission currently stands on, in canonical order."""
-        return evidence_manifest(
-            evidence_manifest_entry(row.attachment_id, row.evidence_role, row.fixed_snapshot_ref)
-            for row in self._session.scalars(select(EvidenceRecord).where(EvidenceRecord.submission_id == submission.id))
-        )
+        return self.evidence_manifests_for([submission.id]).get(submission.id, [])
+
+    def evidence_manifests_for(self, submission_ids: list[UUID]) -> dict[UUID, list[dict[str, str]]]:
+        """Every round's basis in one read, so a timeline does not fan out per round."""
+        if not submission_ids:
+            return {}
+        grouped: dict[UUID, list[dict[str, str]]] = {submission_id: [] for submission_id in submission_ids}
+        for row in self._session.scalars(select(EvidenceRecord).where(EvidenceRecord.submission_id.in_(submission_ids))):
+            grouped[row.submission_id].append(
+                evidence_manifest_entry(row.attachment_id, row.evidence_role, row.fixed_snapshot_ref)
+            )
+        return {submission_id: evidence_manifest(entries) for submission_id, entries in grouped.items()}
 
     def evidence_for(self, request: WorkRequestRecord) -> list[tuple[EvidenceRecord, AttachmentRecord, SubmissionRecord]]:
         item = self.open_decision_item(request)
@@ -786,7 +809,7 @@ class SqlAlchemyWorkRequestRepository:
             .join(AttachmentRecord, AttachmentRecord.id == EvidenceRecord.attachment_id)
             .join(SubmissionRecord, SubmissionRecord.id == EvidenceRecord.submission_id)
             .where(SubmissionRecord.decision_item_id == item.id)
-            .order_by(EvidenceRecord.adopted_at)
+            .order_by(SubmissionRecord.submission_version, EvidenceRecord.adopted_at, EvidenceRecord.id)
         ).all()
         return [(evidence, attachment, submission) for evidence, attachment, submission in rows]
 

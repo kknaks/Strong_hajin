@@ -1,8 +1,10 @@
 import os
 import asyncio
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event, Lock, Thread
 import time
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -1428,3 +1430,53 @@ def test_postgres_rejects_a_task_whose_source_does_not_exist() -> None:
             )
             session.commit()
         assert "foreign key" in str(raised.value).lower()
+
+
+@pytest.mark.integration
+def test_postgres_serializes_adopting_evidence_against_deciding_on_it() -> None:
+    """Whoever wins the row, the basis a decision froze is exactly the basis that round was standing on."""
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url, materials_dir=tempfile.mkdtemp())
+    client = TestClient(create_app(settings))
+    mina = {"X-Demo-Persona": "mina"}
+    jiho = {"X-Demo-Persona": "jiho"}
+
+    for attempt, head_start in enumerate((0.0, 0.05)):
+        request = client.post("/api/work-requests", headers=mina, json={"title": f"경합 {attempt}", "assignee_id": "jiho"}).json()
+        item = [row for row in client.get("/api/action-items", headers=jiho).json() if row["resource"]["id"] == request["request_id"]][0]
+        gate = Barrier(2)
+
+        def adopt() -> Any:
+            gate.wait()
+            time.sleep(head_start)
+            return client.post(
+                f"/api/work-requests/{request['request_id']}/evidence",
+                headers=mina,
+                files={"file": (f"근거{attempt}.txt", b"race", "text/plain")},
+            )
+
+        def decide() -> Any:
+            gate.wait()
+            return client.post(
+                f"/api/action-items/{item['action_item_id']}/commands/accept",
+                headers=jiho,
+                json={"expected_version": item["expected_version"]},
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            adopted, decided = executor.submit(adopt), executor.submit(decide)
+            adoption, decision = adopted.result(), decided.result()
+
+        timeline = client.get(f"/api/work-requests/{request['request_id']}/timeline", headers=jiho).json()
+        [round_one] = timeline["submissions"]
+        if adoption.status_code == 201:
+            # The adoption landed first, so the reviewer's version was stale and nothing was decided on the old basis.
+            assert decision.status_code == 422, decision.text
+            assert len(round_one["evidence"]) == 1 and timeline["review_decisions"] == []
+        else:
+            # The decision landed first, so the round was closed to new evidence.
+            assert adoption.status_code == 422 and decision.status_code == 200
+            assert len(round_one["evidence"]) == 0
+            [frozen] = timeline["review_decisions"]
+            assert frozen["evidence_hash"] == round_one["evidence_hash"]
