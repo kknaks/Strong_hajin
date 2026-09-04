@@ -720,6 +720,37 @@ class SqlAlchemyWorkRequestRepository:
             )
         )
 
+    def rebuild_relationships(self) -> int:
+        """Rebuild the access projection from the canonical rows it is derived from.
+
+        `ResourceRelationship` says who may reach a resource; it never decides who sent or holds the work. Because it
+        is derived, it must be reconstructible — this is that reconstruction, and the contract test proves the rebuilt
+        set equals the one the writes produced.
+        """
+        existing = {
+            (row.member_id, row.resource_type, row.resource_id, row.relationship_kind)
+            for row in self._session.scalars(select(ResourceRelationshipRecord))
+            if row.valid_until is None
+        }
+        added = 0
+        for request in self._session.scalars(select(WorkRequestRecord)):
+            wanted = [(request.requester_id, "requester"), (request.assignee_id, "assignee")]
+            wanted += [(member_id, "cc") for member_id in self.cc_member_ids(request)]
+            for member_id, kind in wanted:
+                key = (member_id, "work_request", str(request.id), kind)
+                if key in existing:
+                    continue
+                self._session.add(
+                    ResourceRelationshipRecord(
+                        member_id=member_id, resource_type="work_request", resource_id=str(request.id),
+                        relationship_kind=kind, valid_from=request.created_at,
+                    )
+                )
+                existing.add(key)
+                added += 1
+        self._session.flush()
+        return added
+
     def audit_payloads(self, request_id: UUID, event_type: str) -> list[dict]:
         """What was recorded for one kind of command on this request, oldest first."""
         return [

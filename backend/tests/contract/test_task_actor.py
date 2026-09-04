@@ -171,3 +171,51 @@ def test_only_someone_who_may_assign_can_change_the_holder(tmp_path) -> None:
 
     rows = _assignments(database_url, task_id)
     assert [row.status for row in rows] == ["pending"] and rows[0].assignee_id == "mina"
+
+
+def test_the_relationship_table_is_a_projection_that_can_be_rebuilt(tmp_path) -> None:
+    """`ResourceRelationship` says who may reach a resource. It never decides who sent or holds the work."""
+    client, application, database_url = _stack(tmp_path)
+    from ax_workspace.platform.persistence import ResourceRelationshipRecord
+    from ax_workspace.platform.work_tasks import SqlAlchemyWorkRequestRepository
+
+    request = client.post(
+        "/api/work-requests",
+        headers=MINA,
+        json={"title": "관계가 붙는 요청", "assignee_id": "jiho", "cc_member_ids": ["demo-admin"]},
+    ).json()
+    assigned = application.assign_task(application.authenticated_principal("jiho"), "배정한 업무", "mina")
+
+    def relationships(session) -> set[tuple[str, str, str, str]]:
+        return {
+            (row.member_id, row.resource_type, row.resource_id, row.relationship_kind)
+            for row in session.scalars(select(ResourceRelationshipRecord))
+            if row.valid_until is None
+        }
+
+    with make_session_factory(database_url)() as session:
+        before = relationships(session)
+    assert ("mina", "work_request", request["request_id"], "requester") in before
+    assert ("jiho", "work_request", request["request_id"], "assignee") in before
+    assert ("demo-admin", "work_request", request["request_id"], "cc") in before
+
+    # Throw away everything this table derives from the canonical rows, and rebuild it: it comes back the same.
+    # `cc` is not derived — being copied in is itself an access relationship, and this table is where it lives.
+    with make_session_factory(database_url)() as session:
+        for row in session.scalars(select(ResourceRelationshipRecord)):
+            if row.relationship_kind in {"requester", "assignee"}:
+                session.delete(row)
+        session.flush()
+        assert relationships(session) == {("demo-admin", "work_request", request["request_id"], "cc")}
+        assert SqlAlchemyWorkRequestRepository(session).rebuild_relationships() == 2
+        assert relationships(session) == before
+        # Rebuilding again changes nothing: it reconstructs, it does not accumulate.
+        assert SqlAlchemyWorkRequestRepository(session).rebuild_relationships() == 0
+        assert relationships(session) == before
+        session.commit()
+
+    # Who put someone on it and who holds it never came from this table, so wiping it changed neither answer.
+    task = client.get(f"/api/tasks/{assigned['task']['task_id']}", headers=JIHO).json()
+    assert task["origin"]["actor"] == {"member_id": "jiho", "display_name": "지호 (팀장)"}
+    assert task["assignee"] == {"member_id": "mina", "display_name": "민아 (구성원)"}
+    assert client.get(f"/api/work-requests/{request['request_id']}/timeline", headers={"X-Demo-Persona": "demo-admin"}).status_code == 200
