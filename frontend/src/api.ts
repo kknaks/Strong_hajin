@@ -195,10 +195,6 @@ export async function getWorkRequests(): Promise<WorkRequest[]> {
   return request<WorkRequest[]>("/api/work-requests");
 }
 
-export async function getActionInbox(): Promise<WorkRequest[]> {
-  return request<WorkRequest[]>("/api/action-inbox");
-}
-
 export async function getActions(): Promise<ActionItem[]> {
   return request<ActionItem[]>("/api/actions");
 }
@@ -362,10 +358,6 @@ export async function assignTask(
   extra: { description?: string; start_date?: string; due_date?: string } = {},
 ): Promise<TaskAssignment> {
   return request<TaskAssignment>("/api/tasks/assign", { body: JSON.stringify({ title, assignee_id: assigneeId, ...extra }), method: "POST" });
-}
-
-export async function getTaskAssignmentInbox(): Promise<TaskAssignment[]> {
-  return request<TaskAssignment[]>("/api/task-assignments/inbox");
 }
 
 export async function getSentTaskAssignments(): Promise<TaskAssignment[]> {

@@ -185,9 +185,12 @@ describe("adjustment and resubmission", () => {
     expect(within(history).getByText(/이전 회차는 수정되지 않습니다/)).toBeTruthy();
     expect(history.querySelectorAll(".round-row")).toHaveLength(2);
     const second = history.querySelector('[data-submission-version="2"]') as HTMLElement;
-    expect(within(second).getByText("견적 재검토 (기한 조정)")).toBeTruthy();
-    expect(within(second).getByText("2026-09-20")).toBeTruthy(); // the value it replaced is still shown
+    // Each round carries its own frozen content, and the diff still names what it replaced.
+    expect(within(second.querySelector(".round-snapshot") as HTMLElement).getByText("견적 재검토 (기한 조정)")).toBeTruthy();
+    expect(within(second.querySelector(".round-diff") as HTMLElement).getByText("2026-09-20")).toBeTruthy();
     const first = history.querySelector('[data-submission-version="1"]') as HTMLElement;
+    expect(within(first.querySelector(".round-snapshot") as HTMLElement).getByText("견적 재검토")).toBeTruthy();
+    expect(within(first.querySelector(".round-snapshot") as HTMLElement).getByText("처음 설명")).toBeTruthy();
     expect(within(first).getByText(/조정 요청 · 기한을 늦춰 주세요/)).toBeTruthy();
   });
 });

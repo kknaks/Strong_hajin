@@ -363,13 +363,6 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
-        @app.get("/api/task-assignments/inbox")
-        def task_assignment_inbox(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
-            try:
-                return app.state.workflow_application.task_assignment_inbox(principal)
-            except Exception as error:
-                raise _runtime_error(error) from error
-
         @app.get("/api/task-assignments/sent")
         def sent_task_assignments(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
             try:
@@ -639,12 +632,6 @@ def create_app(
                 )
             except Exception as error:
                 raise _runtime_error(error) from error
-
-        @app.get("/api/action-inbox")
-        def work_request_inbox(
-            principal: Principal = Depends(developer_principal),
-        ) -> list[dict[str, object]]:
-            return app.state.workflow_application.work_request_inbox(principal)
 
         @app.post("/api/work-requests/{request_id}/reject")
         def reject_work_request(

@@ -69,13 +69,15 @@ try {
 
   await page.getByRole("button", { name: "닫기", exact: true }).click();
   await navigation.getByRole("button", { name: "내 업무" }).click();
-  const actionCard = page.locator(`.decision-panel .task-card[data-action-id="${pending.action_id}"]`);
-  await actionCard.waitFor();
+  // The proposal reaches the one judgement ledger and is approved through the one command path.
+  const actionCard = page.locator(`.decision-panel .task-card[data-action-item-id="${pending.action_id}"]`);
+  await actionCard.waitFor({ timeout: 20_000 });
   const approvalResponse = page.waitForResponse(
     (response) =>
-      response.url().endsWith(`/api/actions/${pending.action_id}/decide`) && response.request().method() === "POST",
+      response.url().endsWith(`/api/action-items/${pending.action_id}/commands/approve`) && response.request().method() === "POST",
   );
-  await actionCard.getByRole("button", { name: "승인" }).click();
+  await actionCard.getByRole("button", { name: "판단하기" }).click();
+  await page.getByRole("dialog", { name: "판단 상세" }).getByRole("button", { name: "승인" }).click();
   await approvalResponse;
 
   const approved = await page.evaluate(async ({ actionId, conversationId }) => {
@@ -105,15 +107,12 @@ try {
   await navigation.getByRole("button", { name: "오늘" }).click();
   const jihoRequestCard = page.locator(".card-stack .task-card", { hasText: requestTitle });
   await jihoRequestCard.waitFor();
-  const inboxRequest = await page.evaluate(async (requestId) => {
-    const response = await fetch("/api/action-inbox", {
-      headers: { "X-Demo-Persona": "jiho" },
-    });
-    const requests = await response.json();
-    return requests.find((item) => item.request_id === requestId);
+  const judgement = await page.evaluate(async (requestId) => {
+    const items = await (await fetch("/api/action-items", { headers: { "X-Demo-Persona": "jiho" } })).json();
+    return items.find((item) => item.resource.type === "work_request" && item.resource.id === requestId);
   }, approved.action.result.request_id);
-  if (inboxRequest?.title !== requestTitle || inboxRequest?.state !== "pending" || inboxRequest.task_id !== null) {
-    throw new Error("Approved AX WorkRequest did not reach Jiho's decision inbox without a Task");
+  if (judgement?.subject !== requestTitle || judgement?.status !== "awaiting_review" || judgement?.kind !== "work_request.acceptance") {
+    throw new Error(`Approved AX WorkRequest did not become Jiho's judgement without a Task: ${JSON.stringify(judgement)}`);
   }
 
   await page.screenshot({ path: "test-results/conversation-action-e2e.png", fullPage: true });

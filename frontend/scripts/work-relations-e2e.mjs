@@ -33,11 +33,12 @@ try {
   await navigation.getByRole("button", { name: "내 업무" }).click();
   const jihoCard = page.locator(".decision-panel .task-card", { hasText: title });
   await jihoCard.waitFor({ timeout: 20_000 });
+  // The adjustment runs through the canonical judgement drawer.
   await jihoCard.getByRole("button", { name: "판단하기" }).click();
-  const jihoDrawer = page.getByRole("dialog", { name: "업무 요청 상세" });
+  const jihoDrawer = page.getByRole("dialog", { name: "판단 상세" });
   await jihoDrawer.getByRole("button", { name: "조정 요청" }).click();
-  await jihoDrawer.getByPlaceholder("예: 9월 15일까지면 가능").fill(condition);
-  await jihoDrawer.getByRole("button", { name: "조건 보내기" }).click();
+  await jihoDrawer.getByLabel("조정 요청 사유").fill(condition);
+  await jihoDrawer.getByRole("button", { name: "조정 요청 확정" }).click();
   await page.getByRole("dialog").waitFor({ state: "detached", timeout: 20_000 });
 
   // The requester finds it under the renamed tab, in the section for what they asked for.

@@ -104,6 +104,14 @@ function RoundHistory({ rounds, personas }: { rounds: ActionRound[]; personas: P
                 {nameOf(personas, round.submitted_by)} · {formatDateTime(round.submitted_at)}
               </span>
             </div>
+            <dl className="round-snapshot">
+              {REVISABLE.filter((field) => fieldValue(round.snapshot, field.id)).map((field) => (
+                <div className="round-snapshot-row" key={field.id}>
+                  <dt>{field.label}</dt>
+                  <dd>{field.type === "date" ? formatDate(fieldValue(round.snapshot, field.id)) : fieldValue(round.snapshot, field.id)}</dd>
+                </div>
+              ))}
+            </dl>
             {round.diff && Object.keys(round.diff).length > 0 && (
               <dl className="round-diff">
                 {Object.entries(round.diff).map(([field, change]) => (

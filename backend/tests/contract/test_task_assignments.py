@@ -62,9 +62,9 @@ def test_manager_assignment_enters_my_work_only_after_the_assignee_accepts(tmp_p
     assert client.get(f"/api/tasks/{task_id}", headers=MINA).status_code == 404
     assert client.post(f"/api/tasks/{task_id}/start", headers=MINA, json={"expected_version": 1}).status_code == 404
 
-    inbox = client.get("/api/task-assignments/inbox", headers=MINA).json()
-    assert [item["assignment_id"] for item in inbox] == [assignment["assignment_id"]]
-    assert inbox[0]["task"]["title"] == "분기 보고 정리"
+    # The assignment is one judgement in the canonical ledger, not a private inbox.
+    [judgement] = [item for item in client.get("/api/action-items", headers=MINA).json() if item["kind"] == "task.assignment"]
+    assert judgement["action_item_id"] == assignment["assignment_id"] and judgement["subject"] == "분기 보고 정리"
     # Only the assignee may answer.
     assert client.post(f"/api/task-assignments/{assignment['assignment_id']}/accept", headers=JIHO).status_code == 404
 
@@ -76,7 +76,7 @@ def test_manager_assignment_enters_my_work_only_after_the_assignee_accepts(tmp_p
     assert my_work[task_id]["due_date"] == "2026-09-30"
     started = client.post(f"/api/tasks/{task_id}/start", headers=MINA, json={"expected_version": 1})
     assert started.status_code == 200
-    assert client.get("/api/task-assignments/inbox", headers=MINA).json() == []
+    assert [item for item in client.get("/api/action-items", headers=MINA).json() if item["kind"] == "task.assignment"] == []
     sent = client.get("/api/task-assignments/sent", headers=JIHO).json()
     assert sent[0]["status"] == "active" and sent[0]["task"]["state"] == "in_progress"
     # Acceptance is a recorded review decision on the assignment's ActionItem.

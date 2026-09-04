@@ -6,13 +6,11 @@ import type { WorkRequest } from "./viewModels";
 vi.mock("./api", () => ({
   getMyWork: vi.fn(),
   getTasks: vi.fn(),
-  getActionInbox: vi.fn(),
   getActionItems: vi.fn(),
   getActionItem: vi.fn(),
   runActionCommand: vi.fn(),
   getActions: vi.fn(),
   getWorkRequests: vi.fn(),
-  getTaskAssignmentInbox: vi.fn(),
   getSentTaskAssignments: vi.fn(),
   getWorkRequestAssigneeCandidates: vi.fn(),
   getWorkRequestCcCandidates: vi.fn(),
@@ -59,19 +57,16 @@ const requests: WorkRequest[] = [
   request({ request_id: "cc-me", title: "참조로 받은 요청", requester_id: "jiho", assignee_id: "sora", cc_member_ids: ["mina"] }),
 ];
 
-function renderPage(overrides: Record<string, unknown> = {}, mocks: { inbox?: WorkRequest[]; actions?: unknown[]; judgements?: unknown[] } = {}) {
+function renderPage(overrides: Record<string, unknown> = {}, mocks: { actions?: unknown[]; judgements?: unknown[] } = {}) {
   vi.mocked(api.getMyWork).mockResolvedValue([]);
   vi.mocked(api.getTasks).mockResolvedValue([]);
-  vi.mocked(api.getActionInbox).mockResolvedValue([]);
   vi.mocked(api.getActionItems).mockResolvedValue([]);
   vi.mocked(api.getActions).mockResolvedValue([]);
   vi.mocked(api.getWorkRequests).mockResolvedValue(requests);
-  vi.mocked(api.getTaskAssignmentInbox).mockResolvedValue([]);
   vi.mocked(api.getSentTaskAssignments).mockResolvedValue([]);
   vi.mocked(api.getWorkRequestAssigneeCandidates).mockResolvedValue([]);
   vi.mocked(api.getWorkRequestCcCandidates).mockResolvedValue([]);
   vi.mocked(api.getTaskAssignmentCandidates).mockResolvedValue([]);
-  if (mocks.inbox) vi.mocked(api.getActionInbox).mockResolvedValue(mocks.inbox as never);
   if (mocks.actions) vi.mocked(api.getActions).mockResolvedValue(mocks.actions as never);
   if (mocks.judgements) vi.mocked(api.getActionItems).mockResolvedValue(mocks.judgements as never);
   const props = {
@@ -174,7 +169,7 @@ describe("work relation information architecture", () => {
       { action_item_id: "ai-1", kind: "work_request.acceptance", status: "awaiting_review", subject: "내게 온 검토 요청", operation_label: "업무 요청", current_question: "이 업무 요청을 수락할지 결정하세요", preview: [], allowed_commands: [], submission_version: 1, waiting_on: { member_id: "mina", display_name: "민아 (구성원)" }, resource: { type: "work_request", id: "to-me" }, expected_version: 1 },
       { action_item_id: "ai-2", kind: "ax.task.create_self", status: "awaiting_review", subject: "AX가 제안한 업무", operation_label: "업무 생성", current_question: "AX가 준비한 변경을 승인할지 결정하세요", preview: [], allowed_commands: [], submission_version: 1, waiting_on: { member_id: "mina", display_name: "민아 (구성원)" }, resource: { type: "action", id: "action-1" }, expected_version: 1 },
     ];
-    renderPage({}, { inbox: [requests[0]], actions: axAction, judgements });
+    renderPage({}, { actions: axAction, judgements });
     await screen.findByText("AX가 제안한 업무");
     const inbox = within(document.querySelector(".decision-panel") as HTMLElement);
     // A canonical WorkRequest is labelled as a request, never as an AX proposal.

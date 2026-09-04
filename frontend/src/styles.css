@@ -664,6 +664,10 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .round-list { display: grid; gap: 10px; margin: 8px 0 0; padding: 0; list-style: none; }
 .round-row { padding: 10px 12px; border: 1px solid var(--border-default); border-radius: var(--radius-card); background: var(--surface); }
 .round-head { display: flex; align-items: baseline; gap: 8px; justify-content: space-between; }
+.round-snapshot { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 6px 0 0; font-size: 12.5px; }
+.round-snapshot-row { display: contents; }
+.round-snapshot-row dt { color: var(--text-tertiary); white-space: nowrap; }
+.round-snapshot-row dd { margin: 0; overflow-wrap: anywhere; }
 .round-diff { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 8px 0 0; padding: 8px 10px; border-radius: var(--radius-chip); background: var(--surface-sunken); font-size: 12.5px; }
 .round-diff-row { display: contents; }
 .round-diff-row dt { color: var(--text-tertiary); white-space: nowrap; }

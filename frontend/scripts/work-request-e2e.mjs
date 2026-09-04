@@ -1,6 +1,6 @@
 import { chromium } from "@playwright/test";
 
-import { loginAs, switchAccount } from "./e2e-helpers.mjs";
+import { loginAs, pollFor, switchAccount } from "./e2e-helpers.mjs";
 
 const frontendUrl = process.env.SCAX_E2E_URL ?? "http://127.0.0.1:5176";
 const title = `Playwright 업무 요청 ${Date.now()}`;
@@ -20,15 +20,16 @@ try {
   await page.getByLabel("요청할 업무").fill(title);
   await page.getByLabel("담당 후보").selectOption("jiho");
   await page.getByRole("button", { name: "업무 요청 보내기" }).click();
-  const jihoInboxResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith("/api/action-inbox"),
-  );
   await switchAccount(page, "jiho");
-  const jihoInbox = await (await jihoInboxResponse).json();
-  if (!jihoInbox.some((request) => request.title === title && request.state === "pending")) {
-    throw new Error("Jiho did not receive the pending WorkRequest through the authorized inbox projection");
-  }
+  const judgement = await pollFor(
+    page,
+    () =>
+      page.evaluate(async (subject) => {
+        const items = await (await fetch("/api/action-items", { headers: { "X-Demo-Persona": "jiho" } })).json();
+        return items.find((item) => item.subject === subject && item.status === "awaiting_review") ?? null;
+      }, title),
+    { timeout: 20_000, description: "the request to reach Jiho's canonical judgement ledger" },
+  );
   await navigation.getByRole("button", { name: "오늘" }).click();
   const todayRequestCard = page.locator(".card-stack .task-card", { hasText: title });
   await todayRequestCard.waitFor();
@@ -38,7 +39,10 @@ try {
   // A double submit through the real UI: Enter, an auto-repeat Enter, and a click before React disables the button.
   // Exactly one comment must exist afterwards (client guard plus the server idempotency key).
   const commentBody = `논의 추가 ${Date.now()}`;
-  await todayRequestCard.getByRole("button", { name: "검토하기" }).click();
+  // The discussion thread lives on the request itself, reached from the persistent relationship tab.
+  await navigation.getByRole("button", { name: "내 업무" }).click();
+  await page.getByRole("tab", { name: "요청·배정" }).click();
+  await page.locator("section[aria-label='내게 요청된 업무']").locator("tr", { hasText: title }).getByRole("button", { name: "상세보기" }).click();
   const requestDrawer = page.getByRole("dialog", { name: "업무 요청 상세" });
   await requestDrawer.waitFor();
   const commentField = requestDrawer.getByPlaceholder("무엇이 걸리는지 남긴다");
@@ -62,14 +66,20 @@ try {
   const storedComments = await page.evaluate(async ({ requestId, body }) => {
     const timeline = await (await fetch(`/api/work-requests/${requestId}/timeline`, { headers: { "X-Demo-Persona": "jiho" } })).json();
     return timeline.comments.filter((item) => item.body === body);
-  }, { requestId: jihoInbox.find((item) => item.title === title).request_id, body: commentBody });
+  }, { requestId: judgement.resource.id, body: commentBody });
   if (storedComments.length !== 1 || commentPosts.length !== 1) {
     throw new Error(`double submit produced ${commentPosts.length} POSTs and ${storedComments.length} comments`);
   }
   await requestDrawer.getByRole("button", { name: "상세 닫기" }).click();
 
-  await todayRequestCard.getByRole("button", { name: "수락" }).click();
-  await navigation.getByRole("button", { name: "내 업무" }).click();
+  // The judgement itself runs through the one command path.
+  await page.getByRole("tab", { name: "할일" }).click();
+  const judgementCard = page.locator(`.decision-panel .task-card[data-action-item-id="${judgement.action_item_id}"]`);
+  await judgementCard.waitFor({ timeout: 20_000 });
+  await judgementCard.getByRole("button", { name: "판단하기" }).click();
+  const judgementDrawer = page.getByRole("dialog", { name: "판단 상세" });
+  await judgementDrawer.getByRole("button", { name: "수락" }).click();
+  await page.getByRole("dialog").waitFor({ state: "detached", timeout: 20_000 });
   const acceptedTask = page.locator("tr.progress-row", { hasText: title });
   await acceptedTask.waitFor();
   await acceptedTask.getByText("시작 전", { exact: true }).waitFor();

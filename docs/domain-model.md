@@ -22,6 +22,17 @@
 
 Projection: `GET /api/organization/tree`, `GET /api/organization/units/{id}/members`(하위 조직 포함, 재직자만), `GET /api/organization/me`.
 
+## 판단 통합 (ActionItem) — 현재 상태
+
+사람 판단이 필요한 경로는 업무 요청, 직접 배정, AX 변경 제안 세 가지이고, 셋 다 하나의 판단 계약을 쓴다.
+
+- **하나의 질문 = 하나의 ActionItem.** 조정 요청과 재상신은 identity를 유지한 채 immutable Submission을 추가한다. 서로 독립적으로 판단·거절될 수 있는 질문만 새 ActionItem이다.
+- **Query/Command 경로 하나.** `GET /api/action-items`(현재 principal이 답해야 하는 것만), `GET /api/action-items/{id}`(회차·diff·ReviewDecision), `POST /api/action-items/{id}/commands/{command}`.
+- **Envelope는 server가 만든다.** `subject`, `operation_label`, `current_question`, 권한 안전 `preview`, `allowed_commands`(필요하면 `requires_reason`), `waiting_on`, `submission_version`, `resource`. client는 kind로 command·필드·권한을 추론하지 않는다.
+- **Command는 소유 모듈의 application operation에 위임한다.** 수락/거절/조정/재상신/철회는 `WorkRequestApplication`, 배정 수락/거절은 `TaskAssignmentApplication`, AX 승인/거절은 `ActionApplication`이 실행한다. 권한은 envelope 자체다: server가 그 principal에게 제시하지 않은 command는 실행되지 않는다.
+- **판단 API는 하나다.** kind별 판단 원장이었던 `GET /api/action-inbox`와 `GET /api/task-assignments/inbox`는 제거했다. 남은 kind별 endpoint(`POST /api/work-requests/{id}/accept|reject|negotiate|resubmit`, `POST /api/task-assignments/{id}/accept|decline`, `POST /api/actions/{id}/decide`)는 같은 application operation을 부르는 얇은 호출구다.
+- **아직 남은 것.** 저장소는 `decision_items`(요청)와 `action_items`(AX 제안), `task_assignments`(배정)로 나뉘어 있다. 이것은 의도된 이중 모델이 아니라 진행 중인 통합의 중간 상태이고, 판단 표면에서는 이미 하나로 보인다. `action_items`를 canonical ActionItem으로 흡수하고 배정에도 Submission 행을 만드는 것이 남은 작업이다.
+
 ## 판단·요청 연속성·업무 (Work)
 
 | ERD | 테이블 | 비고 |
@@ -29,13 +40,13 @@ Projection: `GET /api/organization/tree`, `GET /api/organization/units/{id}/memb
 | REQUEST_THREAD | `request_threads` | WorkRequest와 1:1, 댓글·회차·판단·파생 Task의 연속성 |
 | WORK_REQUEST | `work_requests` | `request_thread_id`, `subject_id`, `organization_context_id`, `due_date`, `description`. **Delta**: `workflow_run_ref`를 두지 않는다(Decision Log 2026-09-03: 요청·판단은 WorkflowRun 없이 Work 모듈이 직접 처리) |
 | SUBJECT / SUBJECT_VERSION | `subjects`, `subject_versions` | 요청 payload의 고정 버전(`content_hash`, `snapshot`) |
-| ACTION_ITEM(사람 판단 항목) | `decision_items` | 이름만 다르다: `action_items`는 AX 채팅 제안 승인 카드가 이미 쓰고 있어 `decision_items`로 둔다. `kind=work_request.acceptance`, status open→awaiting_revision→resolved |
+| ACTION_ITEM(사람 판단 항목) | `decision_items` | 사람 판단이 필요한 모든 경로의 canonical 모델이다. 하나의 독립 판단 질문 = ActionItem 하나이고, 조정·수정·재상신은 새 ActionItem이 아니라 새 Submission이다. `kind`는 `work_request.acceptance`, `task.assignment.acceptance` 등이며 status는 open→awaiting_revision→resolved. **Delta**: 테이블 이름은 역사적 이유로 `decision_items`이고 AX 제안은 아직 `action_items`에 남아 있다. 이 분리는 의도된 설계가 아니라 통합이 끝나지 않은 상태이며, 두 원장은 `GET /api/action-items` 하나의 query·command 경로 뒤에 감춰져 있다 |
 | SUBMISSION | `submissions` | 회차(`submission_version`), `revises_id`, `payload_hash`, `diff`, decision policy snapshot |
 | REVIEW_ASSIGNMENT | `review_assignments` | Submission당 history, active 최대 1, `supersedes_assignment_id` |
 | REVIEW_DECISION | `review_decisions` | accept/negotiate/reject를 assignment·submission·actor에 바인딩한 immutable 사실 |
 | TASK | `tasks` | `description`, `start_date`, `due_date`, `organization_unit_id`(귀속), `origin_kind`(direct/request_effect/assignment), `visibility`, lineage(`request_thread_id`, `source_work_request_id`, `source_decision_item_id`, `source_submission_id`, `source_review_decision_id`, `source_action_item_id`, `source_task_id`) |
-| TASK_ASSIGNMENT | `task_assignments` | 모든 Task에 1행 이상: `assignment_kind` self(직접 생성)·request_effect(요청 수락)·direct(관리자 배정), `status` pending/active/declined/superseded, `assigned_by`, source refs. 내 업무·업무 조작은 **active assignment**를 통해서만 가능하다. direct 배정은 `task.assign` capability(팀장·관리자)가 자기 조직(하위 포함) 구성원에게 하고, `task.assignment.acceptance` DecisionItem(+Submission·ReviewAssignment)이 열려 assignee가 수락/거절한다. 거절은 사유가 필수이고 Task를 cancelled로 닫는다. API: `POST /api/tasks/assign`, `GET /api/task-assignment-candidates`, `GET /api/task-assignments/inbox|sent`, `POST /api/task-assignments/{id}/accept|decline`; MCP `task_assign`, `task_assignment_inbox|accept|decline` |
-| TRIGGER / ACTION / AGENT_RUN / TOOL_DEFINITION / ACTION_TOOL_BINDING | `conversations`, `conversation_turns`, `tool_invocations`, `provider_calls`, `action_items`(AX 제안) | **Delta**: Conversation/Turn 모델로 대체하고 실행 전달은 확장 없는 `durable_jobs` 테이블(FIFO head·lease·fencing token)이 맡는다. Action은 `action_items`(제안→승인→실행 결과), Tool은 persona-bound MCP discovery |
+| TASK_ASSIGNMENT | `task_assignments` | 모든 Task에 1행 이상: `assignment_kind` self(직접 생성)·request_effect(요청 수락)·direct(관리자 배정), `status` pending/active/declined/superseded, `assigned_by`, source refs. 내 업무·업무 조작은 **active assignment**를 통해서만 가능하다. direct 배정은 `task.assign` capability(팀장·관리자)가 자기 조직(하위 포함) 구성원에게 하고, `task.assignment.acceptance` DecisionItem(+Submission·ReviewAssignment)이 열려 assignee가 수락/거절한다. 거절은 사유가 필수이고 Task를 cancelled로 닫는다. API: `POST /api/tasks/assign`, `GET /api/task-assignment-candidates`, `GET /api/task-assignments/sent`, `POST /api/task-assignments/{id}/accept|decline`; 판단은 canonical `GET /api/action-items`와 `POST /api/action-items/{id}/commands/accept|decline`로 한다; MCP `task_assign`, `task_assignment_inbox|accept|decline` |
+| TRIGGER / ACTION / AGENT_RUN / TOOL_DEFINITION / ACTION_TOOL_BINDING | `conversations`, `conversation_turns`, `tool_invocations`, `provider_calls`, `action_items`(AX 제안) | **Delta**: Conversation/Turn 모델로 대체하고 실행 전달은 확장 없는 `durable_jobs` 테이블(FIFO head·lease·fencing token)이 맡는다. Tool은 persona-bound MCP discovery. AX 제안은 `action_items`에 저장하지만 사람이 판단하는 표면에서는 canonical ActionItem 하나로만 보인다: 판단 목록·상세·command는 `GET /api/action-items`, `GET /api/action-items/{id}`, `POST /api/action-items/{id}/commands/{command}`를 쓴다. `action_items`를 canonical 판단 모델로 흡수하는 것이 남은 작업이다 |
 | WORKFLOW_DEFINITION / VERSION / RUN | `workflow_definitions`, `workflow_definition_versions`, `workflow_runs`, `workflow_node_executions` | 개인 일일보고 생성만 사용 |
 | WORKFLOW_SCOPE | — | future direction(ERD §3) |
 
