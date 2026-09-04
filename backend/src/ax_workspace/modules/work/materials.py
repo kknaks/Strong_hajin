@@ -11,6 +11,14 @@ from uuid import UUID, uuid4
 
 from ax_workspace.modules.organization_access.domain import Principal, TASK_READ, TASK_SELF_MANAGE
 from ax_workspace.modules.work.application import TaskAccessDenied, TaskError, TaskRepository
+from ax_workspace.modules.work.material_extraction import (
+    MAX_SEARCH_HITS,
+    MaterialExtractionJob,
+    MaterialExtractionQueue,
+    MaterialExtractionRepository,
+    MaterialRetriever,
+    extraction_view,
+)
 
 MATERIAL_KINDS = frozenset({"input", "output"})
 MAX_MATERIAL_BYTES = 25 * 1024 * 1024
@@ -71,15 +79,79 @@ def store_file(
 
 
 class TaskMaterialApplication:
-    def __init__(self, tasks: TaskRepository, attachments: AttachmentRepository, storage: MaterialStorage) -> None:
+    def __init__(
+        self,
+        tasks: TaskRepository,
+        attachments: AttachmentRepository,
+        storage: MaterialStorage,
+        extractions: MaterialExtractionRepository | None = None,
+        extraction_queue: MaterialExtractionQueue | None = None,
+        retriever: MaterialRetriever | None = None,
+    ) -> None:
         self._tasks = tasks
         self._attachments = attachments
         self._storage = storage
+        self._extractions = extractions
+        self._extraction_queue = extraction_queue
+        self._retriever = retriever
 
     def list(self, principal: Principal, task_id: UUID) -> list[dict[str, Any]]:
         self._require(principal, TASK_READ)
         self._tasks.task(task_id, str(principal.id))
-        return [self._view(binding, attachment) for binding, attachment in self._attachments.bindings_for("task", str(task_id)) if binding.unbound_at is None]
+        active = [(binding, attachment) for binding, attachment in self._attachments.bindings_for("task", str(task_id)) if binding.unbound_at is None]
+        extractions = self._extractions.for_attachments([attachment.id for _, attachment in active]) if self._extractions else {}
+        return [self._view(binding, attachment, extractions.get(attachment.id)) for binding, attachment in active]
+
+    def search(self, principal: Principal, task_id: UUID, query: str, *, limit: int = 5) -> dict[str, Any]:
+        """SPEC-006 `material.search` scoped to one Task: authorization (active assignment + live binding) is re-checked here,
+        before ranking, and only bounded excerpts with the source identity leave."""
+        self._require(principal, TASK_READ)
+        task = self._tasks.task(task_id, str(principal.id))
+        cleaned = " ".join(query.split())
+        if not cleaned:
+            raise MaterialError("search query is required")
+        if self._extractions is None or self._retriever is None:
+            raise MaterialError("material search is not available")
+        active = [(binding, attachment) for binding, attachment in self._attachments.bindings_for("task", str(task_id)) if binding.unbound_at is None]
+        extractions = self._extractions.for_attachments([attachment.id for _, attachment in active])
+        searchable: dict[UUID, tuple[Any, Any, Any]] = {}
+        unavailable: list[dict[str, Any]] = []
+        for binding, attachment in active:
+            extraction = extractions.get(attachment.id)
+            if extraction is not None and extraction.status == "completed" and extraction.integrity_ref == attachment.integrity_ref:
+                searchable[extraction.id] = (binding, attachment, extraction)
+            else:
+                unavailable.append({"material_id": str(binding.id), "name": attachment.name, "kind": binding.role, "extraction": extraction_view(extraction)})
+        hits = self._retriever.search(list(searchable), cleaned, limit=max(1, min(limit, MAX_SEARCH_HITS)))
+        results = []
+        for hit in hits:
+            binding, attachment, extraction = searchable[hit.extraction_id]
+            results.append(
+                {
+                    "material_id": str(binding.id),
+                    "attachment_id": str(attachment.id),
+                    "chunk_id": str(hit.chunk_id),
+                    "task_id": str(task.id),
+                    "kind": binding.role,
+                    "name": attachment.name,
+                    "content_type": attachment.content_type,
+                    "integrity_ref": attachment.integrity_ref,
+                    "extraction_id": str(extraction.id),
+                    "sequence": hit.sequence,
+                    "page": hit.page,
+                    "excerpt": hit.excerpt,
+                    "matched_tokens": hit.matched_tokens,
+                    "origin": f"/api/tasks/{task.id}/materials/{binding.id}/content",
+                }
+            )
+        return {
+            "task_id": str(task.id),
+            "task_title": task.title,
+            "query": cleaned,
+            "results": results,
+            "searched_materials": len(searchable),
+            "unavailable_materials": unavailable,
+        }
 
     def attach(self, principal: Principal, task_id: UUID, *, kind: str, name: str, content_type: str, data: bytes) -> dict[str, Any]:
         self._require(principal, TASK_SELF_MANAGE)
@@ -100,7 +172,13 @@ class TaskMaterialApplication:
         )
         binding = self._attachments.bind(attachment_id=attachment.id, context_type="task", context_id=str(task.id), role=kind, bound_by=str(principal.id))
         self._tasks.record_activity(task, str(principal.id), "task.material_attached", f"{'참고 자료' if kind == 'input' else '산출물'} 등록: {clean_name}")
-        return self._view(binding, attachment)
+        extraction = None
+        if self._extractions is not None:
+            # Same transaction as the attachment/binding: the job exists exactly when the material does.
+            extraction = self._extractions.request(attachment)
+            if extraction.status == "queued" and self._extraction_queue is not None:
+                self._extraction_queue.enqueue(MaterialExtractionJob(extraction.id, attachment.id))
+        return self._view(binding, attachment, extraction)
 
     def open(self, principal: Principal, task_id: UUID, binding_id: UUID) -> tuple[dict[str, Any], bytes]:
         self._require(principal, TASK_READ)
@@ -111,7 +189,7 @@ class TaskMaterialApplication:
         binding, attachment = found
         if attachment.source_kind != "file":
             raise MaterialError("only file attachments have downloadable content")
-        return self._view(binding, attachment), self._storage.get(attachment.source_ref)
+        return self._view(binding, attachment, self._extraction_for(attachment)), self._storage.get(attachment.source_ref)
 
     def detach(self, principal: Principal, task_id: UUID, binding_id: UUID) -> dict[str, Any]:
         """Unbinding keeps the Attachment and bytes; the binding records when it left the Task."""
@@ -123,7 +201,12 @@ class TaskMaterialApplication:
         binding, attachment = found
         self._attachments.unbind(binding)
         self._tasks.record_activity(task, str(principal.id), "task.material_detached", f"자료 해제: {attachment.name}")
-        return self._view(binding, attachment)
+        return self._view(binding, attachment, self._extraction_for(attachment))
+
+    def _extraction_for(self, attachment: Any) -> Any | None:
+        if self._extractions is None:
+            return None
+        return self._extractions.for_attachments([attachment.id]).get(attachment.id)
 
     @staticmethod
     def _require(principal: Principal, capability: str) -> None:
@@ -131,8 +214,9 @@ class TaskMaterialApplication:
             raise TaskAccessDenied(f"{capability} capability is required")
 
     @staticmethod
-    def _view(binding: Any, attachment: Any) -> dict[str, Any]:
+    def _view(binding: Any, attachment: Any, extraction: Any | None = None) -> dict[str, Any]:
         return {
+            "extraction": extraction_view(extraction),
             "material_id": str(binding.id),
             "attachment_id": str(attachment.id),
             "task_id": binding.context_id,

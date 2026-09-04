@@ -28,6 +28,7 @@ import {
   type OrganizationProfile,
   type Persona,
   type ProductSurface,
+  type MaterialEvidence,
 } from "./viewModels";
 
 const navigation: ReadonlyArray<{ id: ProductSurface; label: string }> = [
@@ -531,6 +532,7 @@ function ConversationTimeline({
           <small className={`ax-turn-state ${turn.state}`}>{executionStateText(turn.state)}</small>
           {turn.error && <p className="ax-turn-error">{turn.error}</p>}
           <ToolTimeline tools={conversation.tool_invocations.filter((tool) => tool.turn_id === turn.turn_id)} />
+          <EvidenceCards evidence={(conversation.material_evidence ?? []).filter((item) => item.turn_id === turn.turn_id)} />
           {(conversation.actions ?? [])
             .filter((action) => action.turn_id === turn.turn_id)
             .map((action) => (
@@ -560,6 +562,35 @@ function ConversationTimeline({
         </p>
       ))}
     </>
+  );
+}
+
+/** Material excerpts the turn actually retrieved through the authorized search; each card opens the same origin as the Task drawer. */
+function EvidenceCards({ evidence }: { evidence: MaterialEvidence[] }) {
+  if (evidence.length === 0) return null;
+  return (
+    <section aria-label="근거 자료" className="ax-evidence">
+      <b>
+        근거 자료 {evidence.length}개 <small>· 첨부 내용에서 실제로 읽은 구간</small>
+      </b>
+      <ol className="ax-evidence-list">
+        {evidence.map((item) => (
+          <li className="ax-evidence-card" data-material-id={item.material_id} key={item.evidence_id}>
+            <div className="ax-evidence-head">
+              <span className="ax-evidence-name">{item.name}</span>
+              <span className="t-meta">
+                {item.page ? `${item.page}쪽 · ` : ""}
+                {item.integrity_ref.replace("sha256:", "").slice(0, 8)}
+              </span>
+              <a className="btn h30 ghost" href={item.origin} rel="noreferrer" target="_blank">
+                원본 열기
+              </a>
+            </div>
+            <blockquote>{item.excerpt}</blockquote>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Index, Integer, JSON, String, Text, Uuid, UniqueConstraint, create_engine, text
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Identity, Index, Integer, JSON, String, Text, Uuid, UniqueConstraint, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 
@@ -327,8 +327,8 @@ class ConversationTurnRecord(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     normalized_error: Mapped[str | None] = mapped_column(Text)
-    # Provider attempts are domain execution metadata. PGMQ `read_ct` also
-    # counts harmless redeliveries that lose the live-worker advisory guard.
+    # Provider attempts are domain execution metadata. The durable job's transport
+    # attempt_count also counts harmless redeliveries that lose the live-worker guard.
     execution_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
@@ -662,6 +662,65 @@ class EvidenceRecord(Base):
     adopted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class MaterialExtractionRecord(Base):
+    """Derived projection of one Attachment version: extraction lifecycle (queued/running/completed/failed/unsupported)."""
+
+    __tablename__ = "material_extractions"
+    __table_args__ = (UniqueConstraint("attachment_id", "integrity_ref", name="uq_material_extraction_version"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    attachment_id: Mapped[UUID] = mapped_column(ForeignKey("attachments.id"), nullable=False, index=True)
+    integrity_ref: Mapped[str] = mapped_column(String(80), nullable=False)
+    extractor: Mapped[str | None] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    failure_reason: Mapped[str | None] = mapped_column(String(40))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    char_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    page_count: Mapped[int | None] = mapped_column(Integer)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MaterialChunkRecord(Base):
+    """Bounded searchable span of extracted text; identity = (extraction, sequence)."""
+
+    __tablename__ = "material_chunks"
+    __table_args__ = (UniqueConstraint("extraction_id", "sequence", name="uq_material_chunk_sequence"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    extraction_id: Mapped[UUID] = mapped_column(ForeignKey("material_extractions.id"), nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    page: Mapped[int | None] = mapped_column(Integer)
+    char_start: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    char_end: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class ConversationMaterialEvidenceRecord(Base):
+    """Material excerpts a delegated AX turn actually retrieved (SPEC-008 evidence card)."""
+
+    __tablename__ = "conversation_material_evidence"
+    __table_args__ = (UniqueConstraint("turn_id", "chunk_id", name="uq_conversation_material_evidence"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    turn_id: Mapped[UUID] = mapped_column(ForeignKey("conversation_turns.id"), nullable=False, index=True)
+    conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), nullable=False, index=True)
+    execution_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    task_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    material_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    attachment_id: Mapped[UUID] = mapped_column(ForeignKey("attachments.id"), nullable=False)
+    chunk_id: Mapped[UUID] = mapped_column(ForeignKey("material_chunks.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+    integrity_ref: Mapped[str] = mapped_column(String(80), nullable=False)
+    page: Mapped[int | None] = mapped_column(Integer)
+    excerpt: Mapped[str] = mapped_column(Text, nullable=False)
+    query: Mapped[str] = mapped_column(String(300), nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class TaskActivityRecord(Base):
     __tablename__ = "task_activities"
 
@@ -783,6 +842,41 @@ class ReportAuditEventRecord(Base):
     event_type: Mapped[str] = mapped_column(String(100), nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DurableJobRecord(Base):
+    """Extension-free PostgreSQL job transport row (see modules.jobs.domain). Domain state lives elsewhere."""
+
+    __tablename__ = "durable_jobs"
+    __table_args__ = (
+        Index("ix_durable_jobs_kind_state", "kind", "state"),
+        Index("ix_durable_jobs_ordering", "kind", "ordering_key", "sequence"),
+        Index(
+            "uq_durable_jobs_active_idempotency",
+            "kind",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("state IN ('queued', 'running')"),
+            sqlite_where=text("state IN ('queued', 'running')"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    sequence: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), Identity(), nullable=False, unique=True)
+    kind: Mapped[str] = mapped_column(String(60), nullable=False)
+    ordering_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lease_token: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    leased_by: Mapped[str | None] = mapped_column(String(200))
+    last_error: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AuthSessionRecord(Base):

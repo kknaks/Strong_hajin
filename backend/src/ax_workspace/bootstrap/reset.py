@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from ax_workspace.bootstrap.seed import seed_catalog
-from ax_workspace.platform.conversation_queue import ensure_conversation_queue
 from ax_workspace.platform.persistence import Base, make_session_factory
 from sqlalchemy import text
 
@@ -19,8 +18,5 @@ def reset_database(database_url: str) -> None:
     else:
         Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
-    if engine.dialect.name == "postgresql":
-        with engine.begin() as connection:
-            ensure_conversation_queue(connection)
     with session_factory() as session:
         seed_catalog(session)

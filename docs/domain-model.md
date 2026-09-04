@@ -35,7 +35,7 @@ Projection: `GET /api/organization/tree`, `GET /api/organization/units/{id}/memb
 | REVIEW_DECISION | `review_decisions` | accept/negotiate/reject를 assignment·submission·actor에 바인딩한 immutable 사실 |
 | TASK | `tasks` | `description`, `start_date`, `due_date`, `organization_unit_id`(귀속), `origin_kind`(direct/request_effect/assignment), `visibility`, lineage(`request_thread_id`, `source_work_request_id`, `source_decision_item_id`, `source_submission_id`, `source_review_decision_id`, `source_action_item_id`, `source_task_id`) |
 | TASK_ASSIGNMENT | `task_assignments` | 모든 Task에 1행 이상: `assignment_kind` self(직접 생성)·request_effect(요청 수락)·direct(관리자 배정), `status` pending/active/declined/superseded, `assigned_by`, source refs. 내 업무·업무 조작은 **active assignment**를 통해서만 가능하다. direct 배정은 `task.assign` capability(팀장·관리자)가 자기 조직(하위 포함) 구성원에게 하고, `task.assignment.acceptance` DecisionItem(+Submission·ReviewAssignment)이 열려 assignee가 수락/거절한다. 거절은 사유가 필수이고 Task를 cancelled로 닫는다. API: `POST /api/tasks/assign`, `GET /api/task-assignment-candidates`, `GET /api/task-assignments/inbox|sent`, `POST /api/task-assignments/{id}/accept|decline`; MCP `task_assign`, `task_assignment_inbox|accept|decline` |
-| TRIGGER / ACTION / AGENT_RUN / TOOL_DEFINITION / ACTION_TOOL_BINDING | `conversations`, `conversation_turns`, `tool_invocations`, `provider_calls`, `action_items`(AX 제안) | **Delta**: PGMQ Conversation/Turn 모델로 대체. Action은 `action_items`(제안→승인→실행 결과), Tool은 persona-bound MCP discovery |
+| TRIGGER / ACTION / AGENT_RUN / TOOL_DEFINITION / ACTION_TOOL_BINDING | `conversations`, `conversation_turns`, `tool_invocations`, `provider_calls`, `action_items`(AX 제안) | **Delta**: Conversation/Turn 모델로 대체하고 실행 전달은 확장 없는 `durable_jobs` 테이블(FIFO head·lease·fencing token)이 맡는다. Action은 `action_items`(제안→승인→실행 결과), Tool은 persona-bound MCP discovery |
 | WORKFLOW_DEFINITION / VERSION / RUN | `workflow_definitions`, `workflow_definition_versions`, `workflow_runs`, `workflow_node_executions` | 개인 일일보고 생성만 사용 |
 | WORKFLOW_SCOPE | — | future direction(ERD §3) |
 
@@ -48,6 +48,8 @@ Projections: `GET /api/work-requests/{id}/timeline`(request_timeline: 회차·�
 | COMMENT | `comments` | RequestThread 논의, 상태 전이 없음 |
 | ATTACHMENT | `attachments` | `source_kind` file/link, `source_ref`(storage key), `integrity_ref` sha256, `provenance`, `lifecycle` |
 | ATTACHMENT_BINDING | `attachment_bindings` | context task/comment/submission × role input/output/discussion/supplemental. Task 자료 API(`/api/tasks/{id}/materials`)는 task 바인딩의 projection, 댓글 첨부(`POST /api/work-requests/{id}/comments/{comment_id}/attachments`, 작성자만)는 comment×discussion, 근거 파일은 submission×supplemental 바인딩 |
+| (MATERIAL projection, SPEC-006) | `material_extractions`, `material_chunks` | Attachment 버전(`integrity_ref`)별 추출 lifecycle(queued/running/completed/failed/unsupported, 실패 이유 코드)과 bounded chunk. 원본은 Attachment이고 이 둘은 파생 projection이다. `GET /api/tasks/{id}/materials/search`·MCP `task_material_search`가 active assignment·live binding을 재검증한 뒤 lexical retrieval(port 교체 가능)로 excerpt·파일명·integrity·origin만 반환한다 |
+| (SPEC-008 evidence card) | `conversation_material_evidence` | delegated AX turn이 `task_material_search`로 실제 읽은 구간을 turn·execution에 묶어 기록(bounded excerpt, origin). 대화 view `material_evidence[]` → 근거 카드 |
 | EVIDENCE | `evidence` | `POST /api/work-requests/{id}/evidence`(요청자·담당자만)로 현재 Submission에 채택. `evidence_role`은 담당자면 decision_basis, 요청자면 supporting. `fixed_snapshot_ref`=attachment sha256, `mutable_source=false`. timeline `evidence[]`로 회차별 노출, 참여자(cc 포함)는 `GET /api/work-requests/{id}/attachments/{attachment_id}/content`로 열람 |
 | ACTIVITY_EVENT | `activity_events` | append-only, `safe_summary`·before/after ref·actor·reason. Task 생성/상태/수정/자료/배정/배정 수락·거절, WorkRequest 생성/판단/재상신이 기록 |
 | (기존) | `task_activities`, `work_request_audit_events`, `action_item_audit_events`, `report_audit_events` | 첫 slice의 module 감사 로그. `task_activities`는 일일보고 source_refs가 참조하므로 유지 |
@@ -57,6 +59,7 @@ Projections: `GET /api/work-requests/{id}/timeline`(request_timeline: 회차·�
 - `auth_sessions`: 로그인 세션(HttpOnly cookie).
 - `daily_reports`, `report_drafts`, `daily_report_submissions`: 보고 SPEC 영역.
 - `workflow_definitions`, `workflow_definition_versions`, `workflow_runs`, `workflow_node_executions`, `provider_calls`: 개인 일일보고 생성 runtime.
+- `durable_jobs`: Conversation Turn과 material extraction이 공유하는 표준 PostgreSQL job transport(`modules/jobs`). ordering_key별 absolute earliest non-terminal job만 claim 가능, `FOR UPDATE SKIP LOCKED`, lease + fencing token, at-least-once 전달, idempotency key당 활성 job 1개. 2026-09-04에 PGMQ를 대체했다(Azure Flexible Server 미지원 extension).
 
 기술 spike 잔재(`work_records`, `contract_approvals`, `meeting_evidence`, run 기반 `task_assignments`, generic workflow catalog/run/decision API, `technical_spike` 모드)는 2026-09-04에 제거했다.
 

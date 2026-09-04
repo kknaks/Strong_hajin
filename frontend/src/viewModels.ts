@@ -68,6 +68,38 @@ export type TaskMaterial = {
   uploaded_by: string;
   created_at: string;
   removed_at: string | null;
+  extraction?: MaterialExtraction | null;
+};
+
+export type MaterialExtraction = {
+  extraction_id: string;
+  status: "queued" | "running" | "completed" | "failed" | "unsupported";
+  extractor: string | null;
+  failure_reason: string | null;
+  failure_text: string | null;
+  chunk_count: number;
+  char_count: number;
+  page_count: number | null;
+  attempt_count: number;
+  requested_at: string | null;
+  completed_at: string | null;
+};
+
+export type MaterialEvidence = {
+  evidence_id: string;
+  turn_id: string;
+  task_id: string;
+  material_id: string;
+  attachment_id: string;
+  chunk_id: string;
+  name: string;
+  integrity_ref: string;
+  page: number | null;
+  excerpt: string;
+  query: string;
+  rank: number;
+  origin: string;
+  recorded_at: string;
 };
 
 export type TaskPatch = {
@@ -209,6 +241,7 @@ export type Conversation = {
     audit_ref: string | null;
   }>;
   actions?: ActionItem[];
+  material_evidence?: MaterialEvidence[];
 };
 
 export type ConversationContextReference = {

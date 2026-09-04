@@ -19,10 +19,8 @@ from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepo
 from ax_workspace.modules.reports.application import DailyReportApplication
 from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
 from ax_workspace.platform.codex_cli import CodexCliMcpServer, CodexCliProviderAdapter
-from ax_workspace.platform.conversation_queue import (
-    NullConversationExecutionQueue,
-    PgmqConversationTurnQueue,
-)
+from ax_workspace.platform.conversation_jobs import ConversationJobQueue
+from ax_workspace.platform.durable_jobs import MemoryDurableJobQueue, build_job_queue
 from ax_workspace.platform.conversations import (
     SqlAlchemyConversationContextResolver,
     SqlAlchemyConversationRepository,
@@ -35,6 +33,12 @@ from ax_workspace.modules.work.assignments import TaskAssignmentApplication
 from ax_workspace.modules.work.requests import WorkRequestApplication
 from ax_workspace.platform.persistence import make_session_factory
 from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
+from ax_workspace.modules.work.material_extraction import LexicalMaterialRetriever
+from ax_workspace.platform.material_extraction import (
+    MaterialJobQueue,
+    SqlAlchemyMaterialEvidenceRepository,
+    SqlAlchemyMaterialExtractionRepository,
+)
 from ax_workspace.platform.work_tasks import (
     SqlAlchemyTaskAssignmentRepository,
     SqlAlchemyAttachmentRepository,
@@ -54,6 +58,8 @@ class WorkflowApplication:
         self._settings = settings
         self._session_factory = make_session_factory(settings.database_url)
         self._material_storage = LocalDirectoryMaterialStorage(Path(settings.materials_dir))
+        # One in-process job store per application when the memory backend is selected (tests); postgres joins each session.
+        self.memory_job_queue: MemoryDurableJobQueue | None = MemoryDurableJobQueue() if settings.job_queue_backend == "memory" else None
         self._report_provider = report_provider or create_codex_cli_provider(settings)
 
     def my_work(self, principal: Principal) -> list[dict[str, Any]]:
@@ -199,9 +205,31 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def search_task_materials(self, principal: Principal, task_id: UUID, query: str, *, limit: int = 5, execution_id: UUID | None = None) -> dict[str, Any]:
+        """`material.search` for one Task. With a delegated execution id the hits are also recorded as that turn's evidence."""
+        with self._session_factory() as session:
+            result = self._materials(session).search(principal, task_id, query, limit=limit)
+            if execution_id is not None and result["results"]:
+                SqlAlchemyMaterialEvidenceRepository(session).record(execution_id, str(principal.id), task_id, result["query"], result["results"])
+                session.commit()
+            return result
+
+    def job_queue(self, session: Any):
+        """The shared durable job transport bound to this session (postgres) or this application (memory)."""
+        return build_job_queue(self._settings.job_queue_backend, session, self.memory_job_queue)
+
+    def _material_queue(self, session: Any) -> MaterialJobQueue:
+        return MaterialJobQueue(self.job_queue(session))
+
     def _materials(self, session: Any) -> TaskMaterialApplication:
+        extractions = SqlAlchemyMaterialExtractionRepository(session)
         return TaskMaterialApplication(
-            SqlAlchemyTaskRepository(session), SqlAlchemyAttachmentRepository(session), self._material_storage
+            SqlAlchemyTaskRepository(session),
+            SqlAlchemyAttachmentRepository(session),
+            self._material_storage,
+            extractions,
+            self._material_queue(session),
+            LexicalMaterialRetriever(extractions),
         )
 
     def assign_task(self, principal: Principal, title: str, assignee_id: str, **fields: Any) -> dict[str, Any]:
@@ -449,16 +477,10 @@ class WorkflowApplication:
         )
 
     def _conversations(self, session: Any) -> ConversationApplication:
-        if self._settings.conversation_queue_backend == "pgmq":
-            queue = PgmqConversationTurnQueue(session)
-        elif self._settings.conversation_queue_backend == "null":
-            queue = NullConversationExecutionQueue()
-        else:
-            raise RuntimeError("Unknown AX conversation queue backend")
         return ConversationApplication(
             SqlAlchemyConversationRepository(
                 session,
-                queue,
+                ConversationJobQueue(self.job_queue(session)),
                 self._settings.conversation_queue_max_fragments,
             ),
             SqlAlchemyConversationContextResolver(session),

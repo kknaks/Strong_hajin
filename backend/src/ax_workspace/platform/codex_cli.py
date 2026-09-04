@@ -382,16 +382,16 @@ class CodexCliProviderAdapter:
                 current["error_summary"] = _summarize_tool_error(item.get("error"))
             elif status in {"completed", "success"} or item_type.endswith("result"):
                 current["state"] = "completed"
-                current["result_summary"] = _summarize_tool_result(item.get("result"))
+                current["result_summary"] = _summarize_tool_result(item.get("result"), tool_name=current["tool_name"])
             if isinstance(item.get("duration_ms"), int):
                 current["latency_ms"] = item["duration_ms"]
         return [AiToolInvocation(provider_call_id=call_id, **calls[call_id]) for call_id in order]
 
 
 _SAFE_ARGUMENT_KEYS = frozenset(
-    {"title", "task_id", "request_id", "report_id", "draft_id", "expected_version", "assignee_id", "report_date", "state", "action", "limit"}
+    {"title", "task_id", "request_id", "report_id", "draft_id", "expected_version", "assignee_id", "report_date", "state", "action", "limit", "query"}
 )
-_RESULT_KEYS = ("title", "state", "status", "draft_version", "version", "task_id", "request_id", "report_id", "action_id")
+_RESULT_KEYS = ("title", "state", "status", "draft_version", "version", "task_id", "request_id", "report_id", "action_id", "searched_materials")
 
 
 def _truncate(text: str, limit: int = 48) -> str:
@@ -424,8 +424,15 @@ def _summarize_tool_error(error: Any) -> str:
     return "도구 실행 실패"
 
 
-def _summarize_tool_result(result: Any) -> str:
-    """Summarize an MCP tool result without echoing raw payloads."""
+_CONTENT_BEARING_TOOLS = frozenset({"task_material_search"})
+
+
+def _summarize_tool_result(result: Any, *, tool_name: str = "") -> str:
+    """Summarize an MCP tool result without echoing raw payloads.
+
+    Tools whose results carry document text never fall back to echoing a string payload, whatever the transport's
+    serialization shape; their evidence is projected separately as bounded excerpts.
+    """
     payload: Any = None
     if isinstance(result, dict):
         payload = result.get("structured_content") or result.get("structuredContent")
@@ -443,6 +450,18 @@ def _summarize_tool_result(result: Any) -> str:
         payload = result
     if isinstance(payload, list):
         return f"결과: {len(payload)}건 조회"
+    if isinstance(payload, dict) and isinstance(payload.get("results"), list) and "searched_materials" in payload:
+        # material.search: report counts and file names only; excerpts stay out of the timeline.
+        names = sorted({str(item.get("name", "")) for item in payload["results"] if isinstance(item, dict)} - {""})
+        unavailable = payload.get("unavailable_materials") if isinstance(payload.get("unavailable_materials"), list) else []
+        summary = f"결과: 자료 {int(payload['searched_materials'])}개 검색, 관련 구간 {len(payload['results'])}건"
+        if names:
+            summary += f" ({_truncate(', '.join(names), 60)})"
+        if unavailable:
+            summary += f", 읽지 못한 자료 {len(unavailable)}개"
+        return summary
+    if tool_name in _CONTENT_BEARING_TOOLS:
+        return "결과 수신 (자료 내용은 근거 카드에만 표시)"
     if isinstance(payload, dict):
         facts = [f"{key}={_truncate(str(payload[key]), 32)}" for key in _RESULT_KEYS if key in payload and payload[key] not in (None, "")]
         if facts:

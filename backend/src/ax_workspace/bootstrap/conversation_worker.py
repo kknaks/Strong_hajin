@@ -1,10 +1,10 @@
-"""Separate PGMQ-backed process for AX conversation execution."""
+"""Separate process that executes AX conversation turns delivered by the durable job transport."""
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
 from typing import Any, Callable
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from ax_workspace.bootstrap.settings import Settings
 
@@ -16,10 +16,8 @@ from ax_workspace.modules.ax_execution.conversations import (
 )
 from ax_workspace.modules.organization_access.application import OrganizationApplication
 from ax_workspace.bootstrap.application import create_codex_cli_provider
-from ax_workspace.platform.conversation_queue import (
-    NullConversationExecutionQueue,
-    PgmqConversationTurnQueue,
-)
+from ax_workspace.platform.conversation_jobs import ConversationJobQueue
+from ax_workspace.platform.durable_jobs import MemoryDurableJobQueue, build_job_queue
 from ax_workspace.platform.conversations import (
     SqlAlchemyConversationExecutionGuard,
     SqlAlchemyConversationRepository,
@@ -30,14 +28,18 @@ from ax_workspace.platform.persistence import make_session_factory
 
 @dataclass(frozen=True, slots=True)
 class ClaimedTurn:
-    message_id: int
+    message_id: str
+    lease_token: str
+    read_count: int
     turn_id: UUID
     execution: ConversationExecution
     request: Any
 
+GUARD_CONFLICT_RELEASE_SECONDS = 1
+
 
 class ConversationWorker:
-    """Consumes one visible PGMQ head per Conversation group at a time."""
+    """Claims at most one durable job per Conversation (the earliest non-terminal head) at a time."""
 
     def __init__(
         self,
@@ -50,14 +52,12 @@ class ConversationWorker:
         self._sessions = make_session_factory(settings.database_url)
         self._execution_guard = SqlAlchemyConversationExecutionGuard(self._sessions.kw["bind"])
         self._provider = provider or create_codex_cli_provider(settings)
+        self._worker_id = f"conversation-worker:{uuid4().hex[:12]}"
         if queue_factory is not None:
             self._queue_factory = queue_factory
-        elif settings.conversation_queue_backend == "pgmq":
-            self._queue_factory = lambda session: PgmqConversationTurnQueue(session)
-        elif settings.conversation_queue_backend == "null":
-            self._queue_factory = lambda session: NullConversationExecutionQueue()
         else:
-            raise RuntimeError("Unknown AX conversation queue backend")
+            memory = MemoryDurableJobQueue() if settings.job_queue_backend == "memory" else None
+            self._queue_factory = lambda session: ConversationJobQueue(build_job_queue(settings.job_queue_backend, session, memory), worker_id=self._worker_id)
         self._stopping = asyncio.Event()
 
     async def run(self) -> None:
@@ -98,7 +98,7 @@ class ConversationWorker:
             repository = SqlAlchemyConversationRepository(session, queue)
             owner_id = repository.owner_for_execution(message.execution)
             if owner_id is None:
-                queue.archive(message.message_id)
+                queue.archive(message.message_id, message.lease_token)
                 session.commit()
                 return None
             try:
@@ -113,13 +113,15 @@ class ConversationWorker:
                 )
                 claimed = None
             if claimed is None:
-                queue.archive(message.message_id)
+                queue.archive(message.message_id, message.lease_token)
                 session.commit()
                 return None
             turn, request = claimed
             session.commit()
             return ClaimedTurn(
                 message.message_id,
+                message.lease_token,
+                message.read_count,
                 turn.id,
                 message.execution,
                 request,
@@ -128,13 +130,16 @@ class ConversationWorker:
     async def _execute(self, message: ConversationQueueMessage) -> bool:
         with self._execution_guard.hold(message.execution) as acquired:
             if not acquired:
-                # A live worker owns this turn.  Do not consume the redelivery;
-                # its original queue receipt remains responsible for archival.
+                # A live worker owns this turn (defense in depth beside the lease). Hand the job back so the
+                # next claim, after the live worker finishes, can finalize it; never invoke the provider here.
+                with self._sessions() as session:
+                    self._queue_factory(session).release(message.message_id, message.lease_token, delay_seconds=GUARD_CONFLICT_RELEASE_SECONDS, error="execution guard held by a live worker")
+                    session.commit()
                 return False
             claim = self._claim_message(message)
             if claim is None:
                 return False
-            heartbeat = asyncio.create_task(self._heartbeat(claim.message_id))
+            heartbeat = asyncio.create_task(self._heartbeat(claim.message_id, claim.lease_token))
             try:
                 result = await asyncio.to_thread(self._provider.converse, claim.request)
             except ProviderFailure as error:
@@ -149,13 +154,15 @@ class ConversationWorker:
                 self._complete(claim, result)
             return True
 
-    async def _heartbeat(self, message_id: int) -> None:
+    async def _heartbeat(self, message_id: str, lease_token: str) -> None:
         interval = max(1, self._settings.conversation_queue_visibility_timeout // 2)
         while True:
             await asyncio.sleep(interval)
             with self._sessions() as session:
+                # Fenced: a lost lease is not silently re-acquired by heartbeating.
                 self._queue_factory(session).extend_visibility(
                     message_id,
+                    lease_token,
                     self._settings.conversation_queue_visibility_timeout,
                 )
                 session.commit()
@@ -163,11 +170,13 @@ class ConversationWorker:
     def _complete(self, claim: ClaimedTurn, result: Any) -> None:
         with self._sessions() as session:
             queue = self._queue_factory(session)
+            # Domain result first (idempotent on turn state); the transport write is fenced by our lease token and
+            # is simply skipped when the lease was reclaimed - the next claimer sees the terminal turn and finalizes.
             SqlAlchemyConversationRepository(session, queue).complete_execution(
                 claim.execution,
                 result,
             )
-            queue.archive(claim.message_id)
+            queue.archive(claim.message_id, claim.lease_token)
             session.commit()
 
     def _handle_failure(self, claim: ClaimedTurn, error: ProviderFailure) -> None:
@@ -179,5 +188,8 @@ class ConversationWorker:
                 error,
             )
             if terminal:
-                queue.archive(claim.message_id)
+                queue.archive(claim.message_id, claim.lease_token)
+            else:
+                delay = min(self._settings.conversation_queue_visibility_timeout, 2 ** max(0, claim.read_count - 1))
+                queue.release(claim.message_id, claim.lease_token, delay_seconds=delay, error=str(error)[:200])
             session.commit()

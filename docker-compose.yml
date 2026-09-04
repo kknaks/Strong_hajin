@@ -1,6 +1,7 @@
 services:
   postgres:
-    image: ghcr.io/pgmq/pg16-pgmq:v1.12.0
+    # Vanilla PostgreSQL, pinned. No extensions are required: the durable job transport is a standard table.
+    image: postgres:16.6
     environment:
       POSTGRES_DB: ax_demo
       POSTGRES_USER: ax
@@ -13,8 +14,7 @@ services:
       timeout: 3s
       retries: 20
     volumes:
-      - ax_demo_pgmq_postgres:/var/lib/postgresql/data
+      - ax_demo_postgres:/var/lib/postgresql/data
 
 volumes:
   ax_demo_postgres:
-  ax_demo_pgmq_postgres:

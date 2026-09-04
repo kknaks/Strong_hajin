@@ -414,6 +414,15 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
+        @app.get("/api/tasks/{task_id}/materials/search")
+        def search_task_materials(
+            task_id: UUID, q: str, limit: int = 5, principal: Principal = Depends(developer_principal)
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.search_task_materials(principal, task_id, q, limit=limit)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
         @app.get("/api/tasks/{task_id}/materials/{material_id}/content")
         def task_material_content(task_id: UUID, material_id: UUID, principal: Principal = Depends(developer_principal)) -> Response:
             try:

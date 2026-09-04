@@ -46,13 +46,14 @@ class ConversationExecution:
 
 @dataclass(frozen=True, slots=True)
 class ConversationQueueMessage:
-    message_id: int
+    message_id: str
+    lease_token: str
     read_count: int
     execution: ConversationExecution
 
 
 class ConversationExecutionQueue(Protocol):
-    """Transport port. Queue visibility/retry state is not Conversation domain state."""
+    """Transport port. Lease/retry state is not Conversation domain state; every write is fenced by the lease token."""
 
     def enqueue(self, execution: ConversationExecution) -> None: ...
 
@@ -63,9 +64,11 @@ class ConversationExecutionQueue(Protocol):
         quantity: int,
     ) -> list[ConversationQueueMessage]: ...
 
-    def archive(self, message_id: int) -> None: ...
+    def archive(self, message_id: str, lease_token: str) -> bool: ...
 
-    def extend_visibility(self, message_id: int, visibility_timeout_seconds: int) -> None: ...
+    def release(self, message_id: str, lease_token: str, *, delay_seconds: int, error: str | None = None) -> bool: ...
+
+    def extend_visibility(self, message_id: str, lease_token: str, visibility_timeout_seconds: int) -> bool: ...
 
 
 class ConversationRepository(Protocol):

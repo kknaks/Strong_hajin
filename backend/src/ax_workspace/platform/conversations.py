@@ -24,6 +24,7 @@ from ax_workspace.modules.organization_access.domain import Principal
 from ax_workspace.platform.persistence import (
     ActionItemRecord,
     ContextReferenceRecord,
+    ConversationMaterialEvidenceRecord,
     ConversationMessageRecord,
     ConversationProviderSessionReferenceRecord,
     ConversationRecord,
@@ -340,7 +341,31 @@ class SqlAlchemyConversationRepository:
             if include_actions
             else []
         )
+        evidence = self._session.scalars(
+            select(ConversationMaterialEvidenceRecord)
+            .where(ConversationMaterialEvidenceRecord.conversation_id == conversation.id)
+            .order_by(ConversationMaterialEvidenceRecord.recorded_at, ConversationMaterialEvidenceRecord.rank)
+        ).all()
         return {
+            "material_evidence": [
+                {
+                    "evidence_id": str(item.id),
+                    "turn_id": str(item.turn_id),
+                    "task_id": str(item.task_id),
+                    "material_id": str(item.material_id),
+                    "attachment_id": str(item.attachment_id),
+                    "chunk_id": str(item.chunk_id),
+                    "name": item.name,
+                    "integrity_ref": item.integrity_ref,
+                    "page": item.page,
+                    "excerpt": item.excerpt,
+                    "query": item.query,
+                    "rank": item.rank,
+                    "origin": f"/api/tasks/{item.task_id}/materials/{item.material_id}/content",
+                    "recorded_at": item.recorded_at.isoformat(),
+                }
+                for item in evidence
+            ],
             "conversation_id": str(conversation.id),
             "title": conversation.title,
             "version": conversation.version,

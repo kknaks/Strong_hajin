@@ -28,7 +28,7 @@ import {
   workRequestStateLabel,
 } from "./labels";
 import { ConfirmModal, Drawer } from "./Modal";
-import type { DirectTask, Persona, RequestTimeline, TaskMaterial, TaskMaterialKind, TaskPatch, WorkRequest } from "./viewModels";
+import type { DirectTask, MaterialExtraction, Persona, RequestTimeline, TaskMaterial, TaskMaterialKind, TaskPatch, WorkRequest } from "./viewModels";
 
 export type TaskAction = "start" | "block" | "resume" | "complete" | "cancel";
 
@@ -48,6 +48,31 @@ export function DueText({ task, today }: { task: DirectTask; today: string }) {
   return (
     <span className={overdue ? "due-text overdue" : "due-text"}>
       {formatMonthDay(task.due_date)} <small>({dueDayText(task.due_date, today)})</small>
+    </span>
+  );
+}
+
+/** Content extraction state of a material: what AX can search, what it could not read, and why. */
+export function ExtractionStatus({ extraction }: { extraction: MaterialExtraction | null }) {
+  if (!extraction) return <span className="badge outline extraction-status" data-status="none">내용 색인 없음</span>;
+  if (extraction.status === "completed") {
+    return (
+      <span className="badge ai extraction-status" data-status="completed" title={`${extraction.chunk_count}개 구간 · ${extraction.char_count.toLocaleString()}자`}>
+        내용 검색 가능
+      </span>
+    );
+  }
+  if (extraction.status === "queued" || extraction.status === "running") {
+    return (
+      <span className="badge neutral extraction-status" data-status={extraction.status}>
+        {extraction.status === "queued" ? "내용 추출 대기" : "내용 추출 중"}
+      </span>
+    );
+  }
+  return (
+    <span className="badge danger extraction-status" data-status={extraction.status} title={extraction.failure_text ?? undefined}>
+      {extraction.status === "unsupported" ? "검색 미지원 형식" : "내용을 읽지 못함"}
+      {extraction.failure_text ? ` · ${extraction.failure_text}` : ""}
     </span>
   );
 }
@@ -125,6 +150,24 @@ export function TaskDetailDrawer({
       cancelled = true;
     };
   }, [task.task_id]);
+
+  // Extraction runs in a separate worker; poll while any material is still queued/running so the status settles in view.
+  const extractionPending = (materials ?? []).some((item) => item.extraction && (item.extraction.status === "queued" || item.extraction.status === "running"));
+  useEffect(() => {
+    if (!extractionPending) return;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void getTaskMaterials(task.task_id)
+        .then((items) => {
+          if (!cancelled) setMaterials(items);
+        })
+        .catch(() => undefined);
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [extractionPending, task.task_id]);
 
   const save = async () => {
     if (!title.trim()) {
@@ -214,6 +257,7 @@ export function TaskDetailDrawer({
                 <span className="t-meta">
                   {formatBytes(item.size_bytes)} · {formatMonthDay(isoDateInSeoul(item.created_at))}
                 </span>
+                <ExtractionStatus extraction={item.extraction ?? null} />
                 {editable && (
                   <button className="btn h30 ghost" onClick={() => void detach(item)} type="button">
                     떼기
@@ -380,7 +424,15 @@ export function TaskDetailDrawer({
         {onAskAx && (
           <section className="drawer-section">
             <h4>AX</h4>
-            <button className="btn ai" onClick={() => onAskAx(task)} type="button">
+            <button
+              className="btn ai"
+              onClick={() => {
+                // Hand the task to the AX panel and close this drawer; the drawer would otherwise cover the panel.
+                onAskAx(task);
+                onClose();
+              }}
+              type="button"
+            >
               ✦ AX에게 이 업무 묻기
             </button>
           </section>

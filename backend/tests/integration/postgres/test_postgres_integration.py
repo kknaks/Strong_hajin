@@ -23,7 +23,10 @@ from ax_workspace.modules.ax_execution.ai import (
     ProviderRequestFailed,
 )
 from ax_workspace.modules.ax_execution.conversations import ConversationExecution
-from ax_workspace.platform.conversation_queue import CONVERSATION_EXECUTION_QUEUE, PgmqConversationTurnQueue
+from ax_workspace.modules.jobs.domain import JOB_KIND_CONVERSATION_TURN, JOB_KIND_MATERIAL_EXTRACTION, JobEnvelope
+from ax_workspace.platform.conversation_jobs import ConversationJobQueue
+from ax_workspace.platform.durable_jobs import SqlAlchemyDurableJobQueue
+from ax_workspace.platform.persistence import DurableJobRecord
 from ax_workspace.platform.persistence import (
     ConversationTurnRecord,
     ConversationMessageRecord,
@@ -116,18 +119,30 @@ def _conversation_client(database_url: str) -> TestClient:
             Settings(
                 RuntimeProfile.TEST,
                 database_url,
-                conversation_queue_backend="pgmq",
+                job_queue_backend="postgres",
             )
         )
     )
 
 
-def _queue_count(session) -> int:
+def _queue_count(session, kind: str = JOB_KIND_CONVERSATION_TURN) -> int:
+    """Non-terminal (queued/running) durable jobs of one kind; completed/failed rows stay for audit."""
     return int(
         session.execute(
-            text(f"SELECT count(*) FROM pgmq.q_{CONVERSATION_EXECUTION_QUEUE}")
+            text("SELECT count(*) FROM durable_jobs WHERE kind = :kind AND state IN ('queued', 'running')"),
+            {"kind": kind},
         ).scalar_one()
     )
+
+
+def _drain(worker, *, timeout: float = 4.0) -> bool:
+    """Run a worker until it claims something or the deadline passes (lease/backoff windows are time based)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if asyncio.run(worker.run_once()):
+            return True
+        time.sleep(0.1)
+    return False
 
 
 def _postgres_test_url() -> str:
@@ -141,7 +156,7 @@ def _postgres_test_url() -> str:
 def test_postgres_serializes_concurrent_daily_report_causation_before_workflow_execution() -> None:
     database_url = _postgres_test_url()
     reset_database(database_url)
-    settings = Settings(RuntimeProfile.TEST, database_url, conversation_queue_backend="pgmq")
+    settings = Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres")
     provider = ConcurrentReportProvider(database_url)
     first_application = create_workflow_application(settings, provider)
     second_application = create_workflow_application(settings, provider)
@@ -173,7 +188,7 @@ def test_postgres_serializes_concurrent_daily_report_causation_before_workflow_e
 
 
 @pytest.mark.integration
-def test_pgmq_enqueue_and_domain_turn_commit_atomically_then_parallel_groups_archive() -> None:
+def test_job_queue_enqueue_and_domain_turn_commit_atomically_then_parallel_groups_archive() -> None:
     database_url = _postgres_test_url()
     reset_database(database_url)
     client = _conversation_client(database_url)
@@ -212,7 +227,7 @@ def test_pgmq_enqueue_and_domain_turn_commit_atomically_then_parallel_groups_arc
             database_url,
             conversation_queue_visibility_timeout=1,
             conversation_worker_concurrency=2,
-            conversation_queue_backend="pgmq",
+            job_queue_backend="postgres",
         ),
         provider=provider,
     )
@@ -233,7 +248,7 @@ def test_pgmq_enqueue_and_domain_turn_commit_atomically_then_parallel_groups_arc
 
 
 @pytest.mark.integration
-def test_pgmq_enqueue_failure_rolls_back_the_domain_message_and_turn(
+def test_job_queue_enqueue_failure_rolls_back_the_domain_message_and_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database_url = _postgres_test_url()
@@ -245,11 +260,11 @@ def test_pgmq_enqueue_failure_rolls_back_the_domain_message_and_turn(
         json={"title": "원자성 대화"},
     ).json()
 
-    def reject_enqueue(self, execution) -> None:
-        raise RuntimeError("PGMQ enqueue unavailable")
+    def reject_enqueue(self, job) -> None:
+        raise RuntimeError("job transport unavailable")
 
-    monkeypatch.setattr(PgmqConversationTurnQueue, "enqueue", reject_enqueue)
-    with pytest.raises(RuntimeError, match="PGMQ enqueue unavailable"):
+    monkeypatch.setattr(SqlAlchemyDurableJobQueue, "enqueue", reject_enqueue)
+    with pytest.raises(RuntimeError, match="job transport unavailable"):
         client.post(
             f"/api/conversations/{conversation['conversation_id']}/messages",
             headers={"X-Demo-Persona": "mina", "Idempotency-Key": "atomic-failure"},
@@ -276,7 +291,7 @@ def test_pgmq_enqueue_failure_rolls_back_the_domain_message_and_turn(
 
 
 @pytest.mark.integration
-def test_pgmq_retries_visibility_timeout_and_ignores_a_duplicate_terminal_turn() -> None:
+def test_job_queue_retries_visibility_timeout_and_ignores_a_duplicate_terminal_turn() -> None:
     database_url = _postgres_test_url()
     reset_database(database_url)
     client = _conversation_client(database_url)
@@ -299,13 +314,13 @@ def test_pgmq_retries_visibility_timeout_and_ignores_a_duplicate_terminal_turn()
             database_url,
             conversation_queue_visibility_timeout=1,
             conversation_queue_max_attempts=2,
-            conversation_queue_backend="pgmq",
+            job_queue_backend="postgres",
         ),
         provider=retry_provider,
     )
     assert asyncio.run(retry_worker.run_once()) is True
     with session_factory() as session:
-        assert _queue_count(session) == 1
+        assert _queue_count(session) == 1  # released back to queued with a backoff, not terminal
         assert session.scalar(
             select(ConversationTurnRecord).order_by(ConversationTurnRecord.started_at.desc())
         ).state == "running"
@@ -319,7 +334,8 @@ def test_pgmq_retries_visibility_timeout_and_ignores_a_duplicate_terminal_turn()
         assert turn is not None
         assert turn.state == "completed"
         assert len(list(session.scalars(select(ToolInvocationRecord)))) == 1
-        PgmqConversationTurnQueue(session).enqueue(
+        # A duplicate delivery for a terminal turn (idempotency key freed by completion) is consumed without a provider call.
+        ConversationJobQueue(SqlAlchemyDurableJobQueue(session)).enqueue(
             ConversationExecution(turn.id, turn.conversation_id, turn.execution_id)
         )
         session.commit()
@@ -330,7 +346,7 @@ def test_pgmq_retries_visibility_timeout_and_ignores_a_duplicate_terminal_turn()
 
 
 @pytest.mark.integration
-def test_pgmq_heartbeat_keeps_a_slow_turn_invisible_to_a_second_worker() -> None:
+def test_job_queue_heartbeat_keeps_a_slow_turn_invisible_to_a_second_worker() -> None:
     database_url = _postgres_test_url()
     reset_database(database_url)
     client = _conversation_client(database_url)
@@ -349,7 +365,7 @@ def test_pgmq_heartbeat_keeps_a_slow_turn_invisible_to_a_second_worker() -> None
         RuntimeProfile.TEST,
         database_url,
         conversation_queue_visibility_timeout=2,
-        conversation_queue_backend="pgmq",
+        job_queue_backend="postgres",
     )
     first_worker = ConversationWorker(
         settings,
@@ -367,7 +383,7 @@ def test_pgmq_heartbeat_keeps_a_slow_turn_invisible_to_a_second_worker() -> None
 
 
 @pytest.mark.integration
-def test_pgmq_redelivery_does_not_invoke_a_second_live_worker_when_heartbeat_is_lost() -> None:
+def test_job_queue_redelivery_does_not_invoke_a_second_live_worker_when_heartbeat_is_lost() -> None:
     database_url = _postgres_test_url()
     reset_database(database_url)
     client = _conversation_client(database_url)
@@ -386,14 +402,14 @@ def test_pgmq_redelivery_does_not_invoke_a_second_live_worker_when_heartbeat_is_
         RuntimeProfile.TEST,
         database_url,
         conversation_queue_visibility_timeout=1,
-        conversation_queue_backend="pgmq",
+        job_queue_backend="postgres",
     )
     first_provider = ConversationProvider(delay_seconds=2)
     second_provider = ConversationProvider()
     first_worker = ConversationWorker(settings, provider=first_provider)
     second_worker = ConversationWorker(settings, provider=second_provider)
 
-    async def no_heartbeat(message_id: int) -> None:
+    async def no_heartbeat(message_id: str, lease_token: str) -> None:
         await asyncio.Event().wait()
 
     first_worker._heartbeat = no_heartbeat  # type: ignore[method-assign]
@@ -401,6 +417,8 @@ def test_pgmq_redelivery_does_not_invoke_a_second_live_worker_when_heartbeat_is_
         first = executor.submit(lambda: asyncio.run(first_worker.run_once()))
         assert first_provider.started.wait(timeout=2)
         time.sleep(1.15)
+        # The lease expired, so the second worker reclaims the job (new fencing token) but loses the execution
+        # guard: it releases the job without calling the provider.
         assert asyncio.run(second_worker.run_once()) is False
         assert second_provider.calls == 0
         assert first.result(timeout=3) is True
@@ -408,11 +426,26 @@ def test_pgmq_redelivery_does_not_invoke_a_second_live_worker_when_heartbeat_is_
         turn = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"]))
         assert turn is not None
         assert turn.state == "completed"
+        # The first worker's transport write was fenced out (stale token); the domain turn is complete anyway.
+        job = session.scalar(select(DurableJobRecord).where(DurableJobRecord.kind == JOB_KIND_CONVERSATION_TURN))
+        assert job is not None and job.state == "queued" and job.attempt_count == 2
+    # The next claim (after the 1s guard-conflict release) sees the terminal turn and finalizes the transport
+    # row without another provider call; run_once reports False because no provider work happened.
+    deadline = time.monotonic() + 4
+    while time.monotonic() < deadline:
+        asyncio.run(second_worker.run_once())
+        with make_session_factory(database_url)() as session:
+            if _queue_count(session) == 0:
+                break
+        time.sleep(0.1)
+    assert second_provider.calls == 0
+    with make_session_factory(database_url)() as session:
         assert _queue_count(session) == 0
+        assert len(list(session.scalars(select(ToolInvocationRecord)))) == 1
 
 
 @pytest.mark.integration
-def test_pgmq_guard_conflicts_do_not_spend_provider_attempt_budget() -> None:
+def test_job_queue_guard_conflicts_do_not_spend_provider_attempt_budget() -> None:
     database_url = _postgres_test_url()
     reset_database(database_url)
     client = _conversation_client(database_url)
@@ -432,7 +465,7 @@ def test_pgmq_guard_conflicts_do_not_spend_provider_attempt_budget() -> None:
         database_url,
         conversation_queue_visibility_timeout=1,
         conversation_queue_max_attempts=2,
-        conversation_queue_backend="pgmq",
+        job_queue_backend="postgres",
     )
     first_provider = ConversationProvider(delay_seconds=3.5, failures=1)
     conflict_provider = ConversationProvider()
@@ -441,7 +474,7 @@ def test_pgmq_guard_conflicts_do_not_spend_provider_attempt_budget() -> None:
     conflicting_worker = ConversationWorker(settings, provider=conflict_provider)
     retry_worker = ConversationWorker(settings, provider=retry_provider)
 
-    async def no_heartbeat(message_id: int) -> None:
+    async def no_heartbeat(message_id: str, lease_token: str) -> None:
         await asyncio.Event().wait()
 
     first_worker._heartbeat = no_heartbeat  # type: ignore[method-assign]
@@ -450,8 +483,8 @@ def test_pgmq_guard_conflicts_do_not_spend_provider_attempt_budget() -> None:
         if not first_provider.started.wait(timeout=2):
             first.result(timeout=1)
             raise AssertionError("first worker did not invoke the provider")
-        # Each visible redelivery is consumed by PGMQ, but both lose the
-        # execution guard and must not call the provider or use an attempt.
+        # Each expired lease is reclaimed, but both reclaims lose the execution guard and must not call
+        # the provider or spend a domain attempt; they hand the job back with a short delay.
         time.sleep(1.15)
         assert asyncio.run(conflicting_worker.run_once()) is False
         time.sleep(1.15)
@@ -459,9 +492,9 @@ def test_pgmq_guard_conflicts_do_not_spend_provider_attempt_budget() -> None:
         assert conflict_provider.calls == 0
         assert first.result(timeout=5) is True
 
-    # The first actual call failed. The next claim is only the second actual
-    # attempt despite the preceding PGMQ redeliveries, so it becomes terminal.
-    assert asyncio.run(retry_worker.run_once()) is True
+    # The first actual call failed (its transport release was fenced out). The next claim is only the second
+    # actual attempt despite the preceding redeliveries, so it becomes terminal.
+    assert _drain(retry_worker) is True
     assert first_provider.calls == retry_provider.calls == 1
     with make_session_factory(database_url)() as session:
         turn = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"]))
@@ -472,7 +505,7 @@ def test_pgmq_guard_conflicts_do_not_spend_provider_attempt_budget() -> None:
 
 
 @pytest.mark.integration
-def test_pgmq_archives_after_the_configured_maximum_provider_attempts() -> None:
+def test_job_queue_archives_after_the_configured_maximum_provider_attempts() -> None:
     database_url = _postgres_test_url()
     reset_database(database_url)
     client = _conversation_client(database_url)
@@ -493,7 +526,7 @@ def test_pgmq_archives_after_the_configured_maximum_provider_attempts() -> None:
             database_url,
             conversation_queue_visibility_timeout=1,
             conversation_queue_max_attempts=2,
-            conversation_queue_backend="pgmq",
+            job_queue_backend="postgres",
         ),
         provider=ConversationProvider(failures=2),
     )
@@ -514,7 +547,7 @@ def test_pgmq_archives_after_the_configured_maximum_provider_attempts() -> None:
 
 
 @pytest.mark.integration
-def test_pgmq_fifo_drain_preserves_queued_fragments_for_one_conversation() -> None:
+def test_job_queue_fifo_drain_preserves_queued_fragments_for_one_conversation() -> None:
     database_url = _postgres_test_url()
     reset_database(database_url)
     client = _conversation_client(database_url)
@@ -536,7 +569,7 @@ def test_pgmq_fifo_drain_preserves_queued_fragments_for_one_conversation() -> No
     assert first.status_code == second.status_code == 202
     assert second.json()["queued"] is True
     worker = ConversationWorker(
-        Settings(RuntimeProfile.TEST, database_url, conversation_queue_backend="pgmq"),
+        Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres"),
         provider=ConversationProvider(),
     )
     assert asyncio.run(worker.run_once()) is True
@@ -566,7 +599,7 @@ def test_pgmq_fifo_drain_preserves_queued_fragments_for_one_conversation() -> No
 
 
 @pytest.mark.integration
-def test_pgmq_marks_inactive_owner_as_terminal_authorization_failure() -> None:
+def test_job_queue_marks_inactive_owner_as_terminal_authorization_failure() -> None:
     database_url = _postgres_test_url()
     reset_database(database_url)
     client = _conversation_client(database_url)
@@ -592,7 +625,7 @@ def test_pgmq_marks_inactive_owner_as_terminal_authorization_failure() -> None:
         session.commit()
     owner_provider = ConversationProvider()
     owner_worker = ConversationWorker(
-        Settings(RuntimeProfile.TEST, database_url, conversation_queue_backend="pgmq"),
+        Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres"),
         provider=owner_provider,
     )
     assert asyncio.run(owner_worker.run_once()) is False
@@ -614,7 +647,7 @@ def test_pgmq_marks_inactive_owner_as_terminal_authorization_failure() -> None:
 
 
 @pytest.mark.integration
-def test_pgmq_revalidates_a_stale_context_before_calling_the_provider() -> None:
+def test_job_queue_revalidates_a_stale_context_before_calling_the_provider() -> None:
     database_url = _postgres_test_url()
     reset_database(database_url)
     client = _conversation_client(database_url)
@@ -653,7 +686,7 @@ def test_pgmq_revalidates_a_stale_context_before_calling_the_provider() -> None:
 
     provider = ConversationProvider()
     worker = ConversationWorker(
-        Settings(RuntimeProfile.TEST, database_url, conversation_queue_backend="pgmq"),
+        Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres"),
         provider=provider,
     )
     assert asyncio.run(worker.run_once()) is False
@@ -669,7 +702,7 @@ def test_pgmq_revalidates_a_stale_context_before_calling_the_provider() -> None:
 def test_postgres_action_proposals_are_owner_bound_and_serialized_per_execution() -> None:
     database_url = _postgres_test_url()
     reset_database(database_url)
-    settings = Settings(RuntimeProfile.TEST, database_url, conversation_queue_backend="pgmq")
+    settings = Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres")
     client = _conversation_client(database_url)
     conversation = client.post(
         "/api/conversations",
@@ -751,3 +784,245 @@ def test_postgres_action_proposals_are_owner_bound_and_serialized_per_execution(
         )
     with make_session_factory(database_url)() as session:
         assert session.query(ActionItemRecord).count() == 1
+
+
+
+# ---- shared durable job transport: correctness is only claimed here, against real PostgreSQL ----
+
+
+def _job(kind: str, ordering_key: str, idem: str) -> JobEnvelope:
+    return JobEnvelope(kind=kind, ordering_key=ordering_key, idempotency_key=idem, payload={"k": idem})
+
+
+@pytest.mark.integration
+def test_job_queue_fifo_head_blocks_later_jobs_of_the_same_key_even_while_locked() -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    sessions = make_session_factory(database_url)
+    kind = "test.fifo"
+    with sessions() as session:
+        queue = SqlAlchemyDurableJobQueue(session)
+        first = queue.enqueue(_job(kind, "A", "a-1"))
+        queue.enqueue(_job(kind, "A", "a-2"))
+        other = queue.enqueue(_job(kind, "B", "b-1"))
+        session.commit()
+    # Hold a row lock on the head of key A in another transaction without claiming it.
+    holder = sessions()
+    holder.execute(text("SELECT id FROM durable_jobs WHERE id = :id FOR UPDATE"), {"id": first})
+    try:
+        with sessions() as session:
+            claimed = SqlAlchemyDurableJobQueue(session).claim(kind, limit=10, lease_seconds=30, worker_id="w1")
+            session.commit()
+        # SKIP LOCKED skips the locked head, and the second job of key A must NOT be claimed in its place.
+        assert [job.job_id for job in claimed] == [other]
+    finally:
+        holder.rollback()
+        holder.close()
+    with sessions() as session:
+        claimed = SqlAlchemyDurableJobQueue(session).claim(kind, limit=10, lease_seconds=30, worker_id="w2")
+        session.commit()
+    assert [job.job_id for job in claimed] == [first]
+    # While a-1 is running (leased), a-2 is still blocked.
+    with sessions() as session:
+        assert SqlAlchemyDurableJobQueue(session).claim(kind, limit=10, lease_seconds=30, worker_id="w3") == []
+        session.commit()
+
+
+@pytest.mark.integration
+def test_job_queue_concurrent_claimers_never_share_a_job() -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    sessions = make_session_factory(database_url)
+    kind = "test.concurrency"
+    with sessions() as session:
+        queue = SqlAlchemyDurableJobQueue(session)
+        for index in range(40):
+            queue.enqueue(_job(kind, f"key-{index}", f"idem-{index}"))
+        session.commit()
+
+    def claim_all(worker_id: str) -> list[str]:
+        seen: list[str] = []
+        while True:
+            with sessions() as session:
+                jobs = SqlAlchemyDurableJobQueue(session).claim(kind, limit=5, lease_seconds=30, worker_id=worker_id)
+                session.commit()
+            if not jobs:
+                return seen
+            seen.extend(str(job.job_id) for job in jobs)
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = [future.result(timeout=20) for future in [executor.submit(claim_all, f"w{n}") for n in range(4)]]
+    flat = [job_id for result in results for job_id in result]
+    assert len(flat) == 40 and len(set(flat)) == 40
+
+
+@pytest.mark.integration
+def test_job_queue_lease_expiry_reclaims_and_fencing_rejects_the_stale_owner() -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    sessions = make_session_factory(database_url)
+    kind = "test.fencing"
+    with sessions() as session:
+        SqlAlchemyDurableJobQueue(session).enqueue(_job(kind, "K", "k-1"))
+        session.commit()
+    with sessions() as session:
+        [first] = SqlAlchemyDurableJobQueue(session).claim(kind, limit=1, lease_seconds=1, worker_id="slow")
+        session.commit()
+    with sessions() as session:
+        assert SqlAlchemyDurableJobQueue(session).claim(kind, limit=1, lease_seconds=1, worker_id="eager") == []
+        session.commit()
+    time.sleep(1.1)
+    with sessions() as session:
+        [second] = SqlAlchemyDurableJobQueue(session).claim(kind, limit=1, lease_seconds=30, worker_id="eager")
+        session.commit()
+    assert second.job_id == first.job_id and second.attempt == 2 and second.lease_token != first.lease_token
+    with sessions() as session:
+        queue = SqlAlchemyDurableJobQueue(session)
+        # The slow worker's writes are all rejected: it cannot heartbeat, complete, fail, or release someone else's lease.
+        assert queue.extend_lease(first.job_id, first.lease_token, 30) is False
+        assert queue.complete(first.job_id, first.lease_token) is False
+        assert queue.fail(first.job_id, first.lease_token, error="stale") is False
+        assert queue.release(first.job_id, first.lease_token, delay_seconds=0) is False
+        assert queue.complete(second.job_id, second.lease_token) is True
+        session.commit()
+    with sessions() as session:
+        job = session.scalar(select(DurableJobRecord).where(DurableJobRecord.id == first.job_id))
+        assert job is not None and job.state == "completed" and job.attempt_count == 2
+        # Terminal rows accept no further transport writes.
+        assert SqlAlchemyDurableJobQueue(session).complete(second.job_id, second.lease_token) is False
+
+
+@pytest.mark.integration
+def test_job_queue_idempotency_key_allows_one_active_job_and_release_delays_visibility() -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    sessions = make_session_factory(database_url)
+    kind = "test.idempotency"
+    with sessions() as session:
+        queue = SqlAlchemyDurableJobQueue(session)
+        first = queue.enqueue(_job(kind, "K", "same"))
+        assert queue.enqueue(_job(kind, "K", "same")) == first
+        session.commit()
+        assert session.scalar(text("SELECT count(*) FROM durable_jobs WHERE kind = :kind"), {"kind": kind}) == 1
+    with sessions() as session:
+        [claimed] = SqlAlchemyDurableJobQueue(session).claim(kind, limit=1, lease_seconds=30, worker_id="w")
+        assert SqlAlchemyDurableJobQueue(session).release(claimed.job_id, claimed.lease_token, delay_seconds=2, error="try later") is True
+        session.commit()
+    with sessions() as session:
+        assert SqlAlchemyDurableJobQueue(session).claim(kind, limit=1, lease_seconds=30, worker_id="w") == []
+        # Still active (queued with a future available_at): the same idempotency key is not duplicated.
+        assert SqlAlchemyDurableJobQueue(session).enqueue(_job(kind, "K", "same")) == first
+        session.commit()
+    time.sleep(2.1)
+    with sessions() as session:
+        [again] = SqlAlchemyDurableJobQueue(session).claim(kind, limit=1, lease_seconds=30, worker_id="w")
+        assert again.attempt == 2
+        assert SqlAlchemyDurableJobQueue(session).complete(again.job_id, again.lease_token) is True
+        session.commit()
+    with sessions() as session:
+        # Once terminal, the key may be used again by a new job.
+        assert SqlAlchemyDurableJobQueue(session).enqueue(_job(kind, "K", "same")) != first
+        session.commit()
+
+
+@pytest.mark.integration
+def test_job_queue_concurrent_enqueues_with_one_active_key_return_the_same_job_without_failing() -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    sessions = make_session_factory(database_url)
+    kind = "test.enqueue-race"
+    gate = Event()
+
+    def enqueue(worker: int) -> str:
+        with sessions() as session:
+            queue = SqlAlchemyDurableJobQueue(session)
+            gate.wait(timeout=5)
+            job_id = queue.enqueue(_job(kind, "K", "same-key"))
+            # Something else in the caller's transaction must still succeed: the transaction is not poisoned.
+            session.execute(text("SELECT 1"))
+            session.commit()
+            return str(job_id)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(enqueue, n) for n in range(8)]
+        time.sleep(0.2)
+        gate.set()
+        ids = {future.result(timeout=20) for future in futures}
+    assert len(ids) == 1
+    with sessions() as session:
+        assert session.scalar(text("SELECT count(*) FROM durable_jobs WHERE kind = :kind"), {"kind": kind}) == 1
+        [claimed] = SqlAlchemyDurableJobQueue(session).claim(kind, limit=5, lease_seconds=30, worker_id="w")
+        assert SqlAlchemyDurableJobQueue(session).complete(claimed.job_id, claimed.lease_token) is True
+        session.commit()
+    with sessions() as session:
+        row = session.scalar(select(DurableJobRecord).where(DurableJobRecord.id == claimed.job_id))
+        assert row is not None and row.state == "completed" and row.lease_token is None and row.leased_by is None
+
+
+@pytest.mark.integration
+def test_material_upload_enqueues_in_the_same_transaction_and_the_worker_indexes_once(tmp_path) -> None:
+    from ax_workspace.bootstrap.material_worker import MaterialExtractionWorker
+    from ax_workspace.platform.persistence import MaterialChunkRecord, MaterialExtractionRecord
+
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres", materials_dir=str(tmp_path / "materials"), material_queue_visibility_timeout=1)
+    client = TestClient(create_app(settings))
+    task = client.post("/api/tasks", headers={"X-Demo-Persona": "mina"}, json={"title": "PG 자료"}).json()
+    body = ("납기일은 2026-09-30입니다. 공급사는 한빛상사입니다. " * 30).encode()
+    uploaded = client.post(
+        f"/api/tasks/{task['task_id']}/materials", headers={"X-Demo-Persona": "mina"}, data={"kind": "input"}, files={"file": ("견적.md", body, "text/markdown")}
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    sessions = make_session_factory(database_url)
+    with sessions() as session:
+        assert _queue_count(session, JOB_KIND_MATERIAL_EXTRACTION) == 1
+        extraction = session.scalar(select(MaterialExtractionRecord))
+        assert extraction is not None and extraction.status == "queued"
+
+    worker = MaterialExtractionWorker(settings)
+    assert asyncio.run(worker.run_once()) is True
+    with sessions() as session:
+        extraction = session.scalar(select(MaterialExtractionRecord))
+        assert extraction.status == "completed" and extraction.chunk_count >= 1
+        chunk_count = len(session.scalars(select(MaterialChunkRecord)).all())
+        assert _queue_count(session, JOB_KIND_MATERIAL_EXTRACTION) == 0
+        # A duplicate delivery of the same extraction (at-least-once) is consumed without re-indexing.
+        SqlAlchemyDurableJobQueue(session).enqueue(
+            JobEnvelope(JOB_KIND_MATERIAL_EXTRACTION, str(extraction.id), f"{JOB_KIND_MATERIAL_EXTRACTION}:{extraction.id}", {"extraction_id": str(extraction.id), "attachment_id": str(extraction.attachment_id)})
+        )
+        session.commit()
+    assert asyncio.run(worker.run_once()) is True
+    with sessions() as session:
+        assert len(session.scalars(select(MaterialChunkRecord)).all()) == chunk_count
+        assert _queue_count(session, JOB_KIND_MATERIAL_EXTRACTION) == 0
+    search = client.get(f"/api/tasks/{task['task_id']}/materials/search", headers={"X-Demo-Persona": "mina"}, params={"q": "공급사"}).json()
+    assert {hit["name"] for hit in search["results"]} == {"견적.md"}
+
+
+@pytest.mark.integration
+def test_job_queue_expired_lease_is_fenced_out_even_before_reclaim() -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    sessions = make_session_factory(database_url)
+    kind = "test.expired-fence"
+    with sessions() as session:
+        SqlAlchemyDurableJobQueue(session).enqueue(_job(kind, "K", "k-1"))
+        session.commit()
+    with sessions() as session:
+        [claimed] = SqlAlchemyDurableJobQueue(session).claim(kind, limit=1, lease_seconds=1, worker_id="slow")
+        session.commit()
+    time.sleep(1.1)
+    with sessions() as session:
+        queue = SqlAlchemyDurableJobQueue(session)
+        assert queue.extend_lease(claimed.job_id, claimed.lease_token, 30) is False
+        assert queue.complete(claimed.job_id, claimed.lease_token) is False
+        assert queue.fail(claimed.job_id, claimed.lease_token, error="late") is False
+        assert queue.release(claimed.job_id, claimed.lease_token, delay_seconds=0) is False
+        session.commit()
+    with sessions() as session:
+        job = session.scalar(select(DurableJobRecord).where(DurableJobRecord.id == claimed.job_id))
+        assert job.state == "running" and job.attempt_count == 1  # left for a fresh claim
+        [again] = SqlAlchemyDurableJobQueue(session).claim(kind, limit=1, lease_seconds=30, worker_id="eager")
+        assert again.attempt == 2 and SqlAlchemyDurableJobQueue(session).complete(again.job_id, again.lease_token) is True
+        session.commit()

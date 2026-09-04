@@ -539,3 +539,15 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .btn.ghost.on { border-color: var(--accent); color: var(--action); }
 .grant-list { list-style: none; margin: 0 0 12px; padding: 0 0 12px; border-bottom: 1px solid var(--border-subtle); display: grid; gap: 8px; }
 .grant-list li { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+
+/* ---- material extraction status and AX evidence cards */
+.material-list .extraction-status { margin-left: 4px; white-space: nowrap; }
+.ax-evidence { margin: 8px 24px 8px 0; padding: 10px 12px; border: 1px solid var(--border-default); border-left: 3px solid var(--accent); border-radius: var(--radius-card); background: var(--surface); font-size: 12px; }
+.ax-evidence > b { display: block; color: var(--text-primary); }
+.ax-evidence > b small { color: var(--text-tertiary); font-weight: 400; }
+.ax-evidence-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; }
+.ax-evidence-card { padding: 8px 10px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-sunken); }
+.ax-evidence-head { display: flex; align-items: center; gap: 8px; }
+.ax-evidence-head .ax-evidence-name { font-weight: 700; color: var(--text-primary); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ax-evidence-head a.btn { text-decoration: none; }
+.ax-evidence-card blockquote { margin: 6px 0 0; padding: 0 0 0 10px; border-left: 2px solid var(--border-default); color: var(--text-secondary); font-size: 12px; line-height: 1.5; white-space: pre-wrap; }

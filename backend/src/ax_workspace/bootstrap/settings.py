@@ -19,8 +19,11 @@ class Settings:
     conversation_queue_visibility_timeout: int = 120
     conversation_queue_max_attempts: int = 3
     conversation_worker_concurrency: int = 4
-    conversation_queue_backend: str = "null"
+    job_queue_backend: str = "memory"
     materials_dir: str = ".scax/materials"
+    material_queue_visibility_timeout: int = 120
+    material_queue_max_attempts: int = 3
+    material_worker_concurrency: int = 2
 
     @property
     def developer_auth_enabled(self) -> bool:
@@ -43,6 +46,29 @@ class Settings:
             conversation_worker_concurrency=int(
                 os.getenv("AX_CONVERSATION_WORKER_CONCURRENCY", "4")
             ),
-            conversation_queue_backend=os.getenv("AX_CONVERSATION_QUEUE_BACKEND", "pgmq"),
+            job_queue_backend=_job_queue_backend_from_environment(),
             materials_dir=os.getenv("AX_MATERIALS_DIR", ".scax/materials"),
+            material_queue_visibility_timeout=int(os.getenv("AX_MATERIAL_QUEUE_VISIBILITY_TIMEOUT", "120")),
+            material_queue_max_attempts=int(os.getenv("AX_MATERIAL_QUEUE_MAX_ATTEMPTS", "3")),
+            material_worker_concurrency=int(os.getenv("AX_MATERIAL_WORKER_CONCURRENCY", "2")),
         )
+
+
+JOB_QUEUE_BACKENDS = ("postgres", "memory")
+
+
+def _job_queue_backend_from_environment() -> str:
+    """Fail fast on the removed PGMQ transport or its legacy variable instead of silently falling back."""
+    legacy = os.getenv("AX_CONVERSATION_QUEUE_BACKEND")
+    if legacy is not None:
+        raise RuntimeError(
+            "AX_CONVERSATION_QUEUE_BACKEND is no longer supported (PGMQ was removed). "
+            "Set AX_JOB_QUEUE_BACKEND=postgres for the shared durable job table, or memory for in-process tests."
+        )
+    value = os.getenv("AX_JOB_QUEUE_BACKEND", "postgres").strip().lower()
+    if value not in JOB_QUEUE_BACKENDS:
+        raise RuntimeError(
+            f"AX_JOB_QUEUE_BACKEND={value!r} is not supported; use one of {', '.join(JOB_QUEUE_BACKENDS)}. "
+            "The pgmq transport was removed and null is only an explicit in-code test configuration."
+        )
+    return value
