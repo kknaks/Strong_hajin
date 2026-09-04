@@ -248,6 +248,23 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def assign_meeting_speaker_identity(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        transcript_revision_id: UUID,
+        **fields: Any,
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._meetings(session).assign_speaker_identity(
+                principal,
+                meeting_id,
+                transcript_revision_id,
+                **fields,
+            )
+            session.commit()
+            return result
+
     def organization_tree(self, principal: Principal) -> list[dict[str, Any]]:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).organization_tree(principal)

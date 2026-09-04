@@ -355,6 +355,33 @@ class MeetingRawTranscriptSegmentRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class MeetingSpeakerIdentityAssignmentRecord(Base):
+    """Human-confirmed mapping of an anonymous STT track; it never rewrites provider raw text."""
+
+    __tablename__ = "meeting_speaker_identity_assignments"
+    __table_args__ = (
+        Index("ix_meeting_speaker_assignment_transcript_label", "transcript_revision_id", "speaker_label"),
+        Index("ix_meeting_speaker_assignment_meeting", "meeting_id", "confirmed_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False)
+    transcript_revision_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_revisions.id"), nullable=False)
+    speaker_label: Mapped[str] = mapped_column(String(100), nullable=False)
+    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(30), nullable=False)  # segment_range | speaker_track
+    raw_start_segment_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_segments.id"), nullable=False)
+    raw_end_segment_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_segments.id"), nullable=False)
+    source_audio_start_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_audio_end_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    source: Mapped[str] = mapped_column(String(40), nullable=False, default="human_confirmed")
+    state: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
+    confirmed_by: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_by: Mapped[str | None] = mapped_column(ForeignKey("members.id"))
+
+
 class MeetingTranscriptRefinementRevisionRecord(Base):
     """A derived, versioned reading layer over one raw STT revision; it can never mutate the raw source."""
 

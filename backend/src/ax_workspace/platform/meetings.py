@@ -24,6 +24,7 @@ from ax_workspace.platform.persistence import (
     MeetingTranscriptRefinementSegmentRecord,
     MeetingSummaryEvidenceRecord,
     MeetingSummarySuggestionRecord,
+    MeetingSpeakerIdentityAssignmentRecord,
     MeetingRecord,
     MemberRecord,
     MembershipRecord,
@@ -603,6 +604,53 @@ class SqlAlchemyMeetingRepository:
         if lock:
             statement = statement.with_for_update().execution_options(populate_existing=True)
         return self._session.scalar(statement)
+
+    def speaker_assignments(
+        self,
+        transcript: MeetingRawTranscriptRevisionRecord,
+    ) -> list[MeetingSpeakerIdentityAssignmentRecord]:
+        return list(
+            self._session.scalars(
+                select(MeetingSpeakerIdentityAssignmentRecord)
+                .where(
+                    MeetingSpeakerIdentityAssignmentRecord.transcript_revision_id == transcript.id,
+                    MeetingSpeakerIdentityAssignmentRecord.state == "active",
+                )
+                .order_by(MeetingSpeakerIdentityAssignmentRecord.confirmed_at, MeetingSpeakerIdentityAssignmentRecord.id)
+            )
+        )
+
+    def assign_speaker_identity(
+        self,
+        meeting: MeetingRecord,
+        transcript: MeetingRawTranscriptRevisionRecord,
+        *,
+        speaker_label: str,
+        member_id: str,
+        scope: str,
+        raw_start_segment: MeetingRawTranscriptSegmentRecord,
+        raw_end_segment: MeetingRawTranscriptSegmentRecord,
+        confirmed_by: str,
+    ) -> MeetingSpeakerIdentityAssignmentRecord:
+        now = datetime.now(UTC)
+        assignment = MeetingSpeakerIdentityAssignmentRecord(
+            meeting_id=meeting.id,
+            transcript_revision_id=transcript.id,
+            speaker_label=speaker_label,
+            member_id=member_id,
+            scope=scope,
+            raw_start_segment_id=raw_start_segment.id,
+            raw_end_segment_id=raw_end_segment.id,
+            source_audio_start_ms=raw_start_segment.start_ms,
+            source_audio_end_ms=raw_end_segment.end_ms,
+            source="human_confirmed",
+            state="active",
+            confirmed_by=confirmed_by,
+            confirmed_at=now,
+        )
+        self._session.add(assignment)
+        self._session.flush()
+        return assignment
 
     def adopt_summary(
         self,

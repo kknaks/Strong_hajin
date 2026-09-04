@@ -102,6 +102,19 @@ class MeetingRepository(Protocol):
     def summary_evidence(self, summary: Any) -> list[Any]: ...
     def summary(self, meeting: Any, summary_id: UUID, *, lock: bool = False) -> Any | None: ...
     def adopt_summary(self, summary: Any, note_version: Any, actor_id: str) -> None: ...
+    def speaker_assignments(self, transcript: Any) -> list[Any]: ...
+    def assign_speaker_identity(
+        self,
+        meeting: Any,
+        transcript: Any,
+        *,
+        speaker_label: str,
+        member_id: str,
+        scope: str,
+        raw_start_segment: Any,
+        raw_end_segment: Any,
+        confirmed_by: str,
+    ) -> Any: ...
 
 
 class MeetingApplication:
@@ -462,6 +475,48 @@ class MeetingApplication:
         )
         return {"summary": self._summary_view(summary), "note": self._note_view(note, current=note_version)}
 
+    def assign_speaker_identity(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        transcript_revision_id: UUID,
+        *,
+        speaker_label: str,
+        member_id: str,
+        scope: str,
+        raw_start_source_key: str,
+        raw_end_source_key: str,
+    ) -> dict[str, Any]:
+        meeting = self._note_target(principal, meeting_id)
+        transcript = self._repository.raw_transcript(transcript_revision_id)
+        if transcript is None:
+            raise MeetingNotFound("meeting raw transcript was not found")
+        recording = self._repository.recording_by_id(transcript.recording_id)
+        if recording is None or recording.meeting_id != meeting.id:
+            raise MeetingNotFound("meeting raw transcript was not found")
+        if scope not in {"segment_range", "speaker_track"} or not speaker_label.strip():
+            raise MeetingError("speaker mapping scope and label are required")
+        if not self._repository.is_active_member_in_organization(member_id, meeting.organization_id):
+            raise MeetingError("speaker mapping member is not active in the meeting organization")
+        raw_segments = self._repository.raw_transcript_segments(transcript)
+        by_key = {segment.source_segment_key: segment for segment in raw_segments}
+        start = by_key.get(raw_start_source_key)
+        end = by_key.get(raw_end_source_key)
+        if start is None or end is None or start.sequence > end.sequence:
+            raise MeetingError("speaker mapping source range is invalid")
+        assignment = self._repository.assign_speaker_identity(
+            meeting,
+            transcript,
+            speaker_label=speaker_label.strip(),
+            member_id=member_id,
+            scope=scope,
+            raw_start_segment=start,
+            raw_end_segment=end,
+            confirmed_by=str(principal.id),
+        )
+        self._repository.append_audit(meeting, str(principal.id), "meeting.speaker_confirmed", "회의 화자 확인")
+        return self._speaker_assignment_view(assignment)
+
     def _owned_mutable_meeting(self, principal: Principal, meeting_id: UUID, expected_version: int) -> Any:
         meeting = self._repository.meeting(meeting_id, lock=True)
         if meeting is None:
@@ -543,6 +598,8 @@ class MeetingApplication:
         }
 
     def _raw_transcript_view(self, transcript: Any) -> dict[str, Any]:
+        segments = self._repository.raw_transcript_segments(transcript)
+        confirmed = self._confirmed_members_for_raw_segments(transcript, segments)
         return {
             "transcript_revision_id": str(transcript.id),
             "recording_id": str(transcript.recording_id),
@@ -558,13 +615,16 @@ class MeetingApplication:
                     "end_ms": segment.end_ms,
                     "text": segment.text,
                     "speaker_label": segment.speaker_label,
-                    "confirmed_member_id": segment.confirmed_member_id,
+                    "confirmed_member_id": confirmed.get(segment.id),
                 }
-                for segment in self._repository.raw_transcript_segments(transcript)
+                for segment in segments
             ],
         }
 
     def _refinement_view(self, refinement: Any) -> dict[str, Any]:
+        raw_transcript = self._repository.raw_transcript(refinement.raw_transcript_revision_id)
+        raw_segments = self._repository.raw_transcript_segments(raw_transcript) if raw_transcript is not None else []
+        confirmed = self._confirmed_members_for_raw_segments(raw_transcript, raw_segments) if raw_transcript is not None else {}
         return {
             "refinement_revision_id": str(refinement.id),
             "raw_transcript_revision_id": str(refinement.raw_transcript_revision_id),
@@ -580,13 +640,46 @@ class MeetingApplication:
                     "end_ms": segment.end_ms,
                     "text": segment.text,
                     "speaker_label": segment.speaker_label,
-                    "confirmed_member_id": segment.confirmed_member_id,
+                    "confirmed_member_id": self._confirmed_member_for_refined_span(segment, raw_segments, confirmed),
                     "correction_kind": segment.correction_kind,
                     "confidence": segment.confidence,
                 }
                 for segment in self._repository.refinement_segments(refinement)
             ],
         }
+
+    def _confirmed_members_for_raw_segments(self, transcript: Any, segments: list[Any]) -> dict[UUID, str | None]:
+        if transcript is None:
+            return {}
+        by_id = {segment.id: segment for segment in segments}
+        result: dict[UUID, str | None] = {segment.id: segment.confirmed_member_id for segment in segments}
+        for assignment in self._repository.speaker_assignments(transcript):
+            start = by_id.get(assignment.raw_start_segment_id)
+            end = by_id.get(assignment.raw_end_segment_id)
+            if start is None or end is None:
+                continue
+            for segment in segments:
+                if assignment.scope == "speaker_track":
+                    applies = segment.speaker_label == assignment.speaker_label
+                else:
+                    applies = start.sequence <= segment.sequence <= end.sequence
+                if applies:
+                    result[segment.id] = assignment.member_id
+        return result
+
+    @staticmethod
+    def _confirmed_member_for_refined_span(segment: Any, raw_segments: list[Any], confirmed: dict[UUID, str | None]) -> str | None:
+        by_id = {row.id: row for row in raw_segments}
+        start = by_id.get(segment.raw_start_segment_id)
+        end = by_id.get(segment.raw_end_segment_id)
+        if start is None or end is None:
+            return segment.confirmed_member_id
+        member_ids = {
+            confirmed.get(row.id)
+            for row in raw_segments
+            if start.sequence <= row.sequence <= end.sequence
+        }
+        return next(iter(member_ids)) if len(member_ids) == 1 else None
 
     def _summary_view(self, summary: Any) -> dict[str, Any]:
         return {
@@ -627,6 +720,22 @@ class MeetingApplication:
             }
             for row in self._repository.summary_evidence(summary)
         ]
+
+    @staticmethod
+    def _speaker_assignment_view(assignment: Any) -> dict[str, Any]:
+        return {
+            "speaker_assignment_id": str(assignment.id),
+            "transcript_revision_id": str(assignment.transcript_revision_id),
+            "speaker_label": assignment.speaker_label,
+            "member_id": assignment.member_id,
+            "scope": assignment.scope,
+            "raw_start_segment_id": str(assignment.raw_start_segment_id),
+            "raw_end_segment_id": str(assignment.raw_end_segment_id),
+            "source_audio_start_ms": assignment.source_audio_start_ms,
+            "source_audio_end_ms": assignment.source_audio_end_ms,
+            "source": assignment.source,
+            "state": assignment.state,
+        }
 
     @staticmethod
     def _validate_refinement_coverage(raw_segments: list[Any], refined_segments: list[RefinedTranscriptSegment]) -> None:
