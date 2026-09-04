@@ -71,13 +71,45 @@ try {
   if (requesterText.includes("지호")) throw new Error("the assignee's own name is reported as the origin actor");
   await assigneeDrawer.getByRole("button", { name: "상세 닫기" }).click();
 
-  // The requester navigates the other way: their request resolves to the derived Task after the reload.
+  // The requester navigates the other way, in the browser: request → derived Task, read-only.
   await switchAccount(page, "mina");
-  const derived = await page.evaluate(async (title) => {
+  await navigation.getByRole("button", { name: "내 업무" }).click();
+  await page.getByRole("tab", { name: "요청·배정" }).click();
+  await page
+    .locator("section[aria-label='내가 요청한 업무']")
+    .locator("tr", { hasText: requested })
+    .getByRole("button", { name: "상세보기" })
+    .click();
+  const requestDrawer = page.getByRole("dialog", { name: "업무 요청 상세" });
+  await requestDrawer.getByRole("button", { name: "파생 업무 보기" }).click();
+  const readOnlyTask = page.getByRole("dialog", { name: "업무 상세" });
+  await readOnlyTask.waitFor({ timeout: 20_000 });
+  if (!(await readOnlyTask.textContent())?.includes(requested)) throw new Error("the requester did not open the derived task");
+  // Reading is not holding: the workspace is absent and the title cannot be edited.
+  if (await readOnlyTask.locator("section[aria-label='체크리스트']").count()) throw new Error("a read-only viewer was given the holder's checklist");
+  if (await readOnlyTask.getByText("참고 자료").count()) throw new Error("a read-only viewer was given the holder's materials");
+  if (!(await readOnlyTask.locator("input.title-input").isDisabled())) throw new Error("a read-only viewer can edit the title");
+
+  // And back again: the allowed source returns to the request it came from.
+  await readOnlyTask.getByRole("button", { name: requested }).click();
+  await page.getByRole("dialog", { name: "업무 요청 상세" }).waitFor({ timeout: 20_000 });
+  await page.getByRole("dialog", { name: "업무 요청 상세" }).getByRole("button", { name: "상세 닫기" }).click();
+
+  // The assigner reads their own side without holding the work either.
+  await switchAccount(page, "jiho");
+  const assignerView = await page.evaluate(async (title) => {
     const rows = await (await fetch("/api/work-requests")).json();
-    return rows.find((row) => row.title === title) ?? null;
+    const request = rows.find((row) => row.title === title);
+    if (!request?.task_id) return null;
+    const task = await (await fetch(`/api/tasks/${request.task_id}`)).json();
+    return { access: task.access, role: task.origin?.actor_role, actor: task.origin?.actor?.member_id, source: task.origin?.source?.id ?? null };
   }, requested);
-  if (!derived?.task_id) throw new Error(`the request did not resolve to its derived task: ${JSON.stringify(derived)}`);
+  if (assignerView?.access !== "owner" || assignerView.role !== "요청자" || assignerView.actor !== "mina") {
+    throw new Error(`the assignee's own view is wrong: ${JSON.stringify(assignerView)}`);
+  }
+
+  await switchAccount(page, "mina");
+  await navigation.getByRole("button", { name: "내 업무" }).click();
 
   // The assignee of a direct assignment sees the assigner, never themselves.
   await navigation.getByRole("button", { name: "내 업무" }).click();
@@ -107,7 +139,13 @@ try {
   }
 
   await page.screenshot({ path: "test-results/task-origin-e2e.png", fullPage: true });
-  console.log(JSON.stringify({ result: "task origin reads the same from every side after a reload", requested_task_id: derived.task_id, assigned_origin: assignedOrigin }));
+  console.log(
+    JSON.stringify({
+      result: "requester, assigner and assignee read one origin, and navigation works both ways",
+      assigner_view: assignerView,
+      assigned_origin: assignedOrigin,
+    }),
+  );
 } finally {
   await browser.close();
 }

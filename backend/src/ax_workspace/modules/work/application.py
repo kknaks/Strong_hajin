@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import Any, Protocol
 from uuid import UUID
 
-from ax_workspace.modules.organization_access.domain import Principal, TASK_READ, TASK_SELF_MANAGE
+from ax_workspace.modules.organization_access.domain import Principal, TASK_READ, TASK_SELF_MANAGE, WORK_REQUEST_READ
 
 
 class TaskState(StrEnum):
@@ -46,6 +46,7 @@ class TaskRepository(Protocol):
         source_action_item_id: UUID | None = None,
     ) -> Any: ...
     def task(self, task_id: UUID, owner_id: str, *, lock: bool = False) -> Any: ...
+    def task_by_id(self, task_id: UUID) -> Any | None: ...
     def tasks_for(self, owner_id: str, *, include_closed: bool = False) -> list[Any]: ...
     def touch(self, task: Any) -> None: ...
     def checklist_for(self, task_id: UUID) -> list[Any]: ...
@@ -141,8 +142,25 @@ class TaskApplication:
         return views
 
     def get(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
+        """The holder's workspace, or a read-only view for someone related through the Task's source.
+
+        A requester is not the assignee: they may see the work their request produced, but reading it is not holding
+        it. The read-only view carries no checklist and grants no command; the mutating routes keep their own guard.
+        """
         self._require(principal, TASK_READ)
-        return self._with_checklist(self.repository.task(task_id, str(principal.id)), principal)
+        try:
+            return {**self._with_checklist(self.repository.task(task_id, str(principal.id)), principal), "access": "owner"}
+        except TaskNotFound:
+            return {**self._related_view(principal, task_id), "access": "read_only"}
+
+    def _related_view(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
+        task = self.repository.task_by_id(task_id)
+        if task is None or task.source_work_request_id is None:
+            raise TaskNotFound("task was not found")
+        # The only relationship that opens someone else's Task is one the request module itself grants.
+        if task.source_work_request_id not in self._readable_request_ids(principal, {task.source_work_request_id}):
+            raise TaskNotFound("task was not found")
+        return {**self._view(task), "origin": self._origin_projection(principal, [task]).get(task.id)}
 
     def transition(
         self,
@@ -223,16 +241,17 @@ class TaskApplication:
         return projections
 
     def _readable_request_ids(self, principal: Principal, request_ids: set[Any]) -> set[Any]:
-        """A Task can be readable while the request behind it is not; participation decides, not the Task."""
+        """Which of these requests this principal may actually read.
+
+        Both halves are required. Holding the Task, or even being its assignee, is not permission to read the request
+        behind it: that resource belongs to the request module, so its own capability must be held as well as a
+        relationship to the request.
+        """
         wanted = {request_id for request_id in request_ids if request_id is not None}
-        if not wanted or self._requests is None:
+        if not wanted or self._requests is None or WORK_REQUEST_READ not in principal.capabilities:
             return set()
         member_id = str(principal.id)
-        readable = set()
-        for request in self._requests.list_for(member_id):
-            if request.id in wanted:
-                readable.add(request.id)
-        return readable
+        return {request.id for request in self._requests.list_for(member_id) if request.id in wanted}
 
     def _actor(self, member_id: Any) -> dict[str, str] | None:
         if not member_id:

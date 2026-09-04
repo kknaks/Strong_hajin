@@ -25,6 +25,8 @@ export type DirectTask = {
   lineage?: TaskLineage;
   /** Where this Task came from, decided and authorized by the server. Never derived on the client. */
   origin?: TaskOrigin | null;
+  /** "owner" holds the task; "read_only" may look at it through a source they are allowed to read. */
+  access?: "owner" | "read_only";
   /** Steps inside this Task. Present on the detail read, not on list projections. */
   checklist?: ChecklistItem[];
   checklist_progress?: { done: number; total: number };

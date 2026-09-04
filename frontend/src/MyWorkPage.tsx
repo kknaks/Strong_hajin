@@ -5,6 +5,7 @@ import {
   acceptTaskAssignment,
   declineTaskAssignment,
   getActionItems,
+  getTask,
   getMyWork,
   getSentTaskAssignments,
   getTaskAssignmentCandidates,
@@ -76,6 +77,7 @@ export function MyWorkPage({
   const [tasks, setTasks] = useState<DirectTask[]>([]);
   const [actionItems, setActionItems] = useState<ActionItemEnvelope[]>([]);
   const [selectedActionItem, setSelectedActionItem] = useState<ActionItemEnvelope | null>(null);
+  const [relatedTask, setRelatedTask] = useState<DirectTask | null>(null);
   const [allRequests, setAllRequests] = useState<WorkRequest[]>([]);
   const [assigneeCandidates, setAssigneeCandidates] = useState<Persona[]>([]);
   const [assignCandidates, setAssignCandidates] = useState<Persona[]>([]);
@@ -213,6 +215,30 @@ export function MyWorkPage({
   const requestsToMe = allRequests.filter((request) => request.assignee_id === personaId);
   const sentRequests = allRequests.filter((request) => request.requester_id === personaId);
   const ccRequests = allRequests.filter((request) => request.cc_member_ids?.includes(personaId));
+  /** Open the Task a request produced. The server decides what this principal may see; the client only asks. */
+  const openDerivedTask = async (taskId: string) => {
+    onError(null);
+    try {
+      setRelatedTask(await getTask(taskId));
+      setSelectedRequest(null);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "파생 업무를 열지 못했습니다.");
+    }
+  };
+
+  const openSource = async (source: { type: string; id: string }) => {
+    if (source.type !== "work_request") return;
+    onError(null);
+    try {
+      const request = (await getWorkRequests()).find((row) => row.request_id === source.id) ?? null;
+      setSelectedTask(null);
+      setRelatedTask(null);
+      setSelectedRequest(request);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "출처를 열지 못했습니다.");
+    }
+  };
+
   const sorted = useMemo(() => [...tasks].sort((left, right) => stateOrder[left.state] - stateOrder[right.state]), [tasks]);
   const visibleTasks = useMemo(() => {
     if (filter === "all") return sorted;
@@ -452,9 +478,24 @@ export function MyWorkPage({
           onError={onError}
           onNotice={onNotice}
           onTransition={transitionTask}
+          onOpenSource={selectedTask.origin?.source ? (source) => void openSource(source) : undefined}
           onUpdate={updateTaskFields}
           ownerName={me}
           task={selectedTask}
+        />
+      )}
+      {relatedTask && (
+        <TaskDetailDrawer
+          busy={busy}
+          canManage={false}
+          onClose={() => setRelatedTask(null)}
+          onError={onError}
+          onNotice={onNotice}
+          onOpenSource={relatedTask.origin?.source ? (source) => void openSource(source) : undefined}
+          onTransition={async () => undefined}
+          onUpdate={async () => undefined}
+          ownerName={relatedTask.origin?.actor ? personName(relatedTask.origin.actor.display_name) : me}
+          task={relatedTask}
         />
       )}
       {selectedActionItem && (
@@ -471,6 +512,7 @@ export function MyWorkPage({
       {selectedRequest && (
         <WorkRequestDetailDrawer
           canDecide={canDecideWorkRequests}
+          onOpenDerivedTask={(taskId) => void openDerivedTask(taskId)}
           onChanged={reload}
           onClose={() => setSelectedRequest(null)}
           onError={onError}

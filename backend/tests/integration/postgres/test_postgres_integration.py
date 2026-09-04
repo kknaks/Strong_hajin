@@ -1388,3 +1388,43 @@ def test_postgres_serializes_two_simultaneous_ax_approvals_into_one_effect() -> 
         assert int(session.execute(text("SELECT count(*) FROM tasks WHERE title = '동시 승인 업무'")).scalar_one()) == 1
     assert client.get("/api/actions", headers=jiho).json()[0]["state"] == "approved"
     assert [row for row in client.get("/api/action-items", headers=jiho).json() if row["kind"] == "ax.task.create_self"] == []
+
+
+@pytest.mark.integration
+def test_postgres_rejects_a_task_whose_source_does_not_exist() -> None:
+    """A source reference is a foreign key, not a loose id. The database refuses a link that points nowhere."""
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    factory = make_session_factory(database_url)
+    columns = {
+        "source_work_request_id": "work_requests",
+        "source_decision_item_id": "decision_items",
+        "source_submission_id": "submissions",
+        "source_review_decision_id": "review_decisions",
+        "source_action_item_id": "action_items",
+        "source_task_id": "tasks",
+    }
+    for column, target in columns.items():
+        with factory() as session:
+            with pytest.raises(Exception) as raised:
+                session.execute(
+                    text(
+                        "INSERT INTO tasks (id, owner_id, title, state, origin_kind, visibility, version, created_at, updated_at, "
+                        f"{column}) VALUES (gen_random_uuid(), 'mina', 'dangling', 'open', 'direct', 'scope_default', 1, now(), now(), "
+                        "gen_random_uuid())"
+                    )
+                )
+                session.commit()
+            assert "foreign key" in str(raised.value).lower(), f"{column} does not reference {target}"
+
+    # The same guard on the assignment ledger.
+    with factory() as session:
+        with pytest.raises(Exception) as raised:
+            session.execute(
+                text(
+                    "INSERT INTO task_assignments (id, task_id, assignee_id, assigned_by, assignment_kind, status, created_at, "
+                    "source_work_request_id) VALUES (gen_random_uuid(), gen_random_uuid(), 'mina', 'jiho', 'direct', 'pending', now(), gen_random_uuid())"
+                )
+            )
+            session.commit()
+        assert "foreign key" in str(raised.value).lower()

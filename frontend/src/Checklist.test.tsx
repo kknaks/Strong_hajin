@@ -208,6 +208,43 @@ describe("task origin", () => {
     expect(within(row).getByText(/견적 재검토/)).toBeTruthy();
   });
 
+  it("offers no link when the source is withheld, and one when it is allowed", async () => {
+    vi.mocked(api.getTaskMaterials).mockResolvedValue([]);
+    const withheld = { ...task, origin: { kind: "work_request", actor_role: "요청자", actor: { member_id: "mina", display_name: "민아 (구성원)" }, source: null } };
+    vi.mocked(api.getTask).mockResolvedValue({ ...withheld, checklist: [] } as never);
+    const onOpenSource = vi.fn();
+    const { rerender } = render(
+      <TaskDetailDrawer busy={false} canManage onClose={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} onOpenSource={onOpenSource} onTransition={vi.fn()} onUpdate={vi.fn()} ownerName="민아" task={withheld as never} />,
+    );
+    await screen.findByText("요청자");
+    expect(screen.queryByRole("button", { name: /출처 보기|견적/ })).toBeNull();
+
+    const allowed = { ...task, origin: { ...withheld.origin, source: { type: "work_request", id: "r1", title: "견적 재검토" } } };
+    rerender(
+      <TaskDetailDrawer busy={false} canManage onClose={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} onOpenSource={onOpenSource} onTransition={vi.fn()} onUpdate={vi.fn()} ownerName="민아" task={allowed as never} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "견적 재검토" }));
+    expect(onOpenSource).toHaveBeenCalledWith({ type: "work_request", id: "r1", title: "견적 재검토" });
+  });
+
+  it("shows a read-only task as a record, not as a workspace", async () => {
+    const readOnly = {
+      ...task,
+      access: "read_only" as const,
+      origin: { kind: "work_request", actor_role: "요청자", actor: { member_id: "mina", display_name: "민아 (구성원)" }, source: { type: "work_request", id: "r1", title: "견적 재검토" } },
+    };
+    vi.mocked(api.getTask).mockResolvedValue(readOnly as never);
+    render(
+      <TaskDetailDrawer busy={false} canManage={false} onClose={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} onTransition={vi.fn()} onUpdate={vi.fn()} ownerName="민아" task={readOnly as never} />,
+    );
+    await screen.findByText("요청자");
+    // The holder's workspace is absent, and the materials are never even fetched.
+    expect(screen.queryByLabelText("체크리스트")).toBeNull();
+    expect(screen.queryByText("참고 자료")).toBeNull();
+    expect(api.getTaskMaterials).not.toHaveBeenCalled();
+    expect((screen.getByLabelText("제목") as HTMLInputElement).disabled).toBe(true);
+  });
+
   it("names the assigner for a direct assignment and shows no source when one is withheld", async () => {
     const assigned = {
       ...task,

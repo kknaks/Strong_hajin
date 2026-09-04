@@ -214,6 +214,10 @@ class SqlAlchemyTaskRepository:
         member = self.session.get(MemberRecord, member_id)
         return member.display_name if member is not None else None
 
+    def task_by_id(self, task_id: UUID) -> TaskRecord | None:
+        """The Task itself, with no holder scope. Callers must decide separately who may see it."""
+        return self.session.get(TaskRecord, task_id)
+
     def origin_facts(self, tasks: list[TaskRecord]) -> dict[UUID, dict[str, Any]]:
         """Raw origin facts per Task, straight from the canonical columns; the application decides what may be shown."""
         if not tasks:

@@ -101,6 +101,7 @@ function formatBytes(size: number): string {
 export function TaskDetailDrawer({
   task,
   ownerName,
+  onOpenSource,
   canManage,
   busy,
   onTransition,
@@ -112,6 +113,8 @@ export function TaskDetailDrawer({
 }: {
   task: DirectTask;
   ownerName: string;
+  /** Navigate to the resource the origin names. Absent when the source is withheld. */
+  onOpenSource?: (source: { type: string; id: string }) => void;
   canManage: boolean;
   busy: boolean;
   onTransition: (task: DirectTask, action: TaskAction, reason?: string) => Promise<void>;
@@ -137,7 +140,8 @@ export function TaskDetailDrawer({
   const inputFile = useRef<HTMLInputElement>(null);
   const outputFile = useRef<HTMLInputElement>(null);
   const closed = task.state === "cancelled";
-  const editable = canManage && !closed;
+  const readOnly = task.access === "read_only";
+  const editable = canManage && !closed && !readOnly;
   const dirty =
     title.trim() !== task.title ||
     description.trim() !== (task.description ?? "") ||
@@ -167,6 +171,7 @@ export function TaskDetailDrawer({
   }, [task.task_id]);
 
   useEffect(() => {
+    if (readOnly) return;
     let cancelled = false;
     void getTaskMaterials(task.task_id)
       .then((items) => {
@@ -289,6 +294,7 @@ export function TaskDetailDrawer({
   };
 
   const renderMaterials = (kind: TaskMaterialKind, ref: React.RefObject<HTMLInputElement | null>) => {
+    if (readOnly) return null;
     const items = (materials ?? []).filter((item) => item.kind === kind);
     return (
       <section className="drawer-section">
@@ -417,7 +423,14 @@ export function TaskDetailDrawer({
               <dt>{task.origin?.actor_role ?? "요청자"}</dt>
               <dd>
                 {task.origin?.actor ? personName(task.origin.actor.display_name) : "본인 생성"}
-                {task.origin?.source?.title && <small className="t-meta"> · {task.origin.source.title}</small>}
+                {task.origin?.source &&
+                  (onOpenSource ? (
+                    <button className="btn link" onClick={() => onOpenSource(task.origin!.source!)} type="button">
+                      {task.origin.source.title ?? "출처 보기"}
+                    </button>
+                  ) : (
+                    <small className="t-meta"> · {task.origin.source.title}</small>
+                  ))}
               </dd>
             </div>
             <div>
@@ -433,6 +446,7 @@ export function TaskDetailDrawer({
               </dd>
             </div>
           </dl>
+          {!readOnly && (
           <section aria-label="체크리스트" className="drawer-section">
             <h4>
               체크리스트{" "}
@@ -490,6 +504,7 @@ export function TaskDetailDrawer({
               </div>
             )}
           </section>
+          )}
           <div className="field">
             <label htmlFor={`task-description-${task.task_id}`}>업무 내용</label>
             <textarea
@@ -660,6 +675,7 @@ const decisionLabel: Record<string, string> = { accept: "수락", negotiate: "�
 
 export function WorkRequestDetailDrawer({
   request,
+  onOpenDerivedTask,
   personaId,
   personas,
   canDecide,
@@ -669,6 +685,8 @@ export function WorkRequestDetailDrawer({
   onClose,
 }: {
   request: WorkRequest;
+  /** Open the Task this request produced, through the server's own authorized read. */
+  onOpenDerivedTask?: (taskId: string) => void;
   personaId: string;
   personas: Persona[];
   canDecide: boolean;
@@ -907,7 +925,19 @@ export function WorkRequestDetailDrawer({
         </div>
         <div>
           <dt>생성된 업무</dt>
-          <dd>{request.task_id ? "수락 후 생성됨" : "아직 없음"}</dd>
+          <dd>
+            {request.task_id ? (
+              onOpenDerivedTask ? (
+                <button className="btn link" onClick={() => onOpenDerivedTask(request.task_id!)} type="button">
+                  파생 업무 보기
+                </button>
+              ) : (
+                "수락 후 생성됨"
+              )
+            ) : (
+              "아직 없음"
+            )}
+          </dd>
         </div>
         {request.cc_member_ids && request.cc_member_ids.length > 0 && (
           <div>
