@@ -6,7 +6,7 @@ from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ax_workspace.modules.organization_access.domain import Principal, SEED_PERSONAS
 from ax_workspace.entrypoints.http_auth import (
@@ -25,6 +25,7 @@ from ax_workspace.modules.actions.domain import ActionError as ActionCenterError
 from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequestError, WorkRequestIdempotencyConflict
 from ax_workspace.modules.reports.application import DailyReportAccessDenied
 from ax_workspace.modules.meetings.domain import MeetingAccessDenied, MeetingError, MeetingNotFound
+from ax_workspace.modules.meetings.transcription import TranscriptionFailure
 from ax_workspace.modules.ax_execution.conversations import ConversationError, ConversationQueueOverflow
 from ax_workspace.modules.ax_execution.actions import ActionAccessDenied, ActionCapabilityDenied, ActionError
 from ax_workspace.bootstrap.settings import Settings
@@ -89,6 +90,11 @@ class FinalizeMeetingNoteRequest(BaseModel):
 
 class StartMeetingRecordingRequest(BaseModel):
     purpose: str = Field(min_length=1, max_length=300)
+
+
+class MeetingRealtimeCredentialRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_session_duration_seconds: int = Field(default=3_600, ge=1, le=18_000)
 
 
 class AdoptMeetingSummaryRequest(BaseModel):
@@ -237,6 +243,9 @@ def _runtime_error(error: Exception) -> HTTPException:
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
     if isinstance(error, (TaskError, InvalidTaskTransition, MeetingError)):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
+    if isinstance(error, TranscriptionFailure):
+        status_code = status.HTTP_503_SERVICE_UNAVAILABLE if error.code == "provider_unavailable" else status.HTTP_422_UNPROCESSABLE_ENTITY
+        return HTTPException(status_code=status_code, detail={"code": error.code, "retryable": error.retryable})
     if isinstance(error, ActionNotFound):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
     if isinstance(error, ActionCenterError):
@@ -460,6 +469,23 @@ def create_app(
                     original_name=audio.filename or "recording",
                     content_type=audio.content_type or "application/octet-stream",
                     data=data,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/meetings/{meeting_id}/recordings/{recording_id}/realtime-credential")
+        def meeting_realtime_credential(
+            meeting_id: UUID,
+            recording_id: UUID,
+            request: MeetingRealtimeCredentialRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.meeting_realtime_credential(
+                    principal,
+                    meeting_id,
+                    recording_id,
+                    request.max_session_duration_seconds,
                 )
             except Exception as error:
                 raise _runtime_error(error) from error

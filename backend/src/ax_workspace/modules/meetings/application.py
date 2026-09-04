@@ -18,7 +18,7 @@ from ax_workspace.modules.meetings.domain import (
 from ax_workspace.modules.meetings.recordings import RecordingStorage
 from ax_workspace.modules.meetings.refinement import RefinedTranscriptSegment
 from ax_workspace.modules.meetings.summary import SummaryStatement
-from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment
+from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment, RealtimeTranscriptionKeyIssuer
 from ax_workspace.modules.organization_access.domain import MEETING_RECORD, Principal
 
 
@@ -118,9 +118,15 @@ class MeetingRepository(Protocol):
 
 
 class MeetingApplication:
-    def __init__(self, repository: MeetingRepository, recording_storage: RecordingStorage) -> None:
+    def __init__(
+        self,
+        repository: MeetingRepository,
+        recording_storage: RecordingStorage,
+        realtime_key_issuer: RealtimeTranscriptionKeyIssuer,
+    ) -> None:
         self._repository = repository
         self._recording_storage = recording_storage
+        self._realtime_key_issuer = realtime_key_issuer
 
     def list(self, principal: Principal) -> list[dict[str, Any]]:
         """Calendar-safe projection: concealed private meetings contribute only a time busy block."""
@@ -287,6 +293,32 @@ class MeetingApplication:
         self._repository.complete_recording(recording, stored)
         self._repository.append_audit(meeting, str(principal.id), "meeting.recording_uploaded", "회의 녹음 업로드 완료", before_ref=f"meeting_recording:{recording.id}@{expected_version}")
         return self._recording_view(recording)
+
+    def issue_realtime_credential(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        recording_id: UUID,
+        max_session_duration_seconds: int,
+    ) -> dict[str, Any]:
+        meeting = self._recording_target(principal, meeting_id)
+        recording = self._repository.recording(meeting, recording_id)
+        if recording is None or recording.state != "recording":
+            raise MeetingNotFound("active meeting recording was not found")
+        if recording.actor_id != str(principal.id):
+            raise MeetingAccessDenied("only the recording initiator may open its realtime stream")
+        credential = self._realtime_key_issuer.issue(
+            client_reference_id=recording.provider_client_reference_id,
+            max_session_duration_seconds=max_session_duration_seconds,
+        )
+        return {
+            "temporary_key": credential.temporary_key,
+            "expires_at": _iso(credential.expires_at),
+            "client_reference_id": credential.client_reference_id,
+            "websocket_url": credential.websocket_url,
+            "model": credential.model,
+            "enable_speaker_diarization": credential.enable_speaker_diarization,
+        }
 
     def record_final_transcript(
         self,

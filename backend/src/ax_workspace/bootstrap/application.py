@@ -41,6 +41,7 @@ from ax_workspace.modules.work.requests import WorkRequestApplication
 from ax_workspace.platform.persistence import make_session_factory
 from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
 from ax_workspace.platform.recordings import LocalDirectoryRecordingStorage
+from ax_workspace.platform.soniox import SonioxTranscriptionAdapter
 from ax_workspace.modules.work.material_extraction import LexicalMaterialRetriever
 from ax_workspace.platform.material_extraction import (
     MaterialJobQueue,
@@ -68,6 +69,7 @@ class WorkflowApplication:
         self._session_factory = make_session_factory(settings.database_url)
         self._material_storage = LocalDirectoryMaterialStorage(Path(settings.materials_dir))
         self._recording_storage = LocalDirectoryRecordingStorage(Path(settings.recordings_dir))
+        self._soniox = SonioxTranscriptionAdapter()
         # One in-process job store per application when the memory backend is selected (tests); postgres joins each session.
         self.memory_job_queue: MemoryDurableJobQueue | None = MemoryDurableJobQueue() if settings.job_queue_backend == "memory" else None
         self._report_provider = report_provider or create_codex_cli_provider(settings)
@@ -159,6 +161,21 @@ class WorkflowApplication:
             )
             session.commit()
             return result
+
+    def meeting_realtime_credential(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        recording_id: UUID,
+        max_session_duration_seconds: int,
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            return self._meetings(session).issue_realtime_credential(
+                principal,
+                meeting_id,
+                recording_id,
+                max_session_duration_seconds,
+            )
 
     def record_final_meeting_transcript(
         self,
@@ -358,7 +375,11 @@ class WorkflowApplication:
         )
 
     def _meetings(self, session: Any) -> MeetingApplication:
-        return MeetingApplication(SqlAlchemyMeetingRepository(session), self._recording_storage)
+        return MeetingApplication(
+            SqlAlchemyMeetingRepository(session),
+            self._recording_storage,
+            self._soniox,
+        )
 
     def create_self_task(
         self,

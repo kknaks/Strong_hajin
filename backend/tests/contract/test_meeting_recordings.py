@@ -140,6 +140,36 @@ def test_recording_start_rechecks_the_current_recording_capability_and_meeting_r
     assert denied.status_code in {403, 404}
 
 
+def test_realtime_credential_rechecks_recording_access_and_never_accepts_a_client_reference(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("SONIOX_API_KEY", raising=False)
+    client = _client(tmp_path)
+    meeting = _meeting(client)
+    started = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/start",
+        headers={"X-Demo-Persona": "mina"},
+        json={"purpose": "실시간 전사"},
+    ).json()
+    unavailable = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/{started['recording_id']}/realtime-credential",
+        headers={"X-Demo-Persona": "mina"},
+        json={"max_session_duration_seconds": 900, "client_reference_id": "client-must-not-control-this"},
+    )
+    assert unavailable.status_code == 422  # unknown client_reference_id is rejected before any provider call
+    missing_key = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/{started['recording_id']}/realtime-credential",
+        headers={"X-Demo-Persona": "mina"},
+        json={"max_session_duration_seconds": 900},
+    )
+    assert missing_key.status_code == 503
+    assert missing_key.json()["detail"] == {"code": "provider_unavailable", "retryable": False}
+    denied = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/{started['recording_id']}/realtime-credential",
+        headers={"X-Demo-Persona": "jiho"},
+        json={"max_session_duration_seconds": 900},
+    )
+    assert denied.status_code == 403
+
+
 def test_final_raw_transcript_is_immutable_and_idempotent_by_provider_reference(tmp_path) -> None:
     client = _client(tmp_path)
     meeting = _meeting(client)
