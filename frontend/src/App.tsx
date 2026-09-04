@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { getActionInbox, getDeveloperPersonas, getMyWork, getSession, logout } from "./api";
+import { getDeveloperPersonas, getMyWork, getSession, getWorkRequests, logout } from "./api";
 import { CalendarPage } from "./CalendarPage";
 import { ChatDrawer, contextKey, type LabeledContextReference } from "./chat/ChatDrawer";
 import { NEW_DRAFT_KEY, useConversations } from "./chat/useConversations";
@@ -111,7 +111,7 @@ export default function App() {
     const wantsRequests = (surface === "today" || surface === "work") && (capabilities?.includes("work_request.decide") ?? false);
     const [tasks, requests] = await Promise.all([
       wantsTasks ? getMyWork() : Promise.resolve([]),
-      wantsRequests ? getActionInbox() : Promise.resolve([]),
+      wantsRequests ? getWorkRequests() : Promise.resolve([]),
     ]);
     if (generation !== contextGeneration.current) return;
     const next: LabeledContextReference[] = [

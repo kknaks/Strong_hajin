@@ -7,6 +7,9 @@ vi.mock("./api", () => ({
   getMyWork: vi.fn(),
   getTasks: vi.fn(),
   getActionInbox: vi.fn(),
+  getActionItems: vi.fn(),
+  getActionItem: vi.fn(),
+  runActionCommand: vi.fn(),
   getActions: vi.fn(),
   getWorkRequests: vi.fn(),
   getTaskAssignmentInbox: vi.fn(),
@@ -56,10 +59,11 @@ const requests: WorkRequest[] = [
   request({ request_id: "cc-me", title: "참조로 받은 요청", requester_id: "jiho", assignee_id: "sora", cc_member_ids: ["mina"] }),
 ];
 
-function renderPage(overrides: Record<string, unknown> = {}, mocks: { inbox?: WorkRequest[]; actions?: unknown[] } = {}) {
+function renderPage(overrides: Record<string, unknown> = {}, mocks: { inbox?: WorkRequest[]; actions?: unknown[]; judgements?: unknown[] } = {}) {
   vi.mocked(api.getMyWork).mockResolvedValue([]);
   vi.mocked(api.getTasks).mockResolvedValue([]);
   vi.mocked(api.getActionInbox).mockResolvedValue([]);
+  vi.mocked(api.getActionItems).mockResolvedValue([]);
   vi.mocked(api.getActions).mockResolvedValue([]);
   vi.mocked(api.getWorkRequests).mockResolvedValue(requests);
   vi.mocked(api.getTaskAssignmentInbox).mockResolvedValue([]);
@@ -69,6 +73,7 @@ function renderPage(overrides: Record<string, unknown> = {}, mocks: { inbox?: Wo
   vi.mocked(api.getTaskAssignmentCandidates).mockResolvedValue([]);
   if (mocks.inbox) vi.mocked(api.getActionInbox).mockResolvedValue(mocks.inbox as never);
   if (mocks.actions) vi.mocked(api.getActions).mockResolvedValue(mocks.actions as never);
+  if (mocks.judgements) vi.mocked(api.getActionItems).mockResolvedValue(mocks.judgements as never);
   const props = {
     personaId: "mina",
     personaName: "민아 (구성원)",
@@ -164,15 +169,19 @@ describe("work relation information architecture", () => {
         commands: [{ id: "approve", label: "승인", tone: "primary" }],
       },
     ];
-    renderPage({}, { inbox: [requests[0]], actions: axAction });
-    // The transient AX proposal lives in the decision inbox...
-    await screen.findByText("내게 온 검토 요청");
+    // Both origins reach the one judgement ledger, each labelled by the server.
+    const judgements = [
+      { action_item_id: "ai-1", kind: "work_request.acceptance", status: "awaiting_review", subject: "내게 온 검토 요청", operation_label: "업무 요청", current_question: "이 업무 요청을 수락할지 결정하세요", preview: [], allowed_commands: [], submission_version: 1, waiting_on: { member_id: "mina", display_name: "민아 (구성원)" }, resource: { type: "work_request", id: "to-me" }, expected_version: 1 },
+      { action_item_id: "ai-2", kind: "ax.task.create_self", status: "awaiting_review", subject: "AX가 제안한 업무", operation_label: "업무 생성", current_question: "AX가 준비한 변경을 승인할지 결정하세요", preview: [], allowed_commands: [], submission_version: 1, waiting_on: { member_id: "mina", display_name: "민아 (구성원)" }, resource: { type: "action", id: "action-1" }, expected_version: 1 },
+    ];
+    renderPage({}, { inbox: [requests[0]], actions: axAction, judgements });
+    await screen.findByText("AX가 제안한 업무");
     const inbox = within(document.querySelector(".decision-panel") as HTMLElement);
-    expect(inbox.getByText("AX가 제안한 업무")).toBeTruthy();
-    // ...and a canonical WorkRequest there is labelled as a request, never as an AX Action.
+    // A canonical WorkRequest is labelled as a request, never as an AX proposal.
     const requestCard = inbox.getByText("내게 온 검토 요청").closest(".task-card") as HTMLElement;
     expect(requestCard.querySelector(".task-card-kicker")?.textContent).toBe("업무 요청");
     expect(requestCard.querySelector(".badge.ai")).toBeNull();
+    expect((inbox.getByText("AX가 제안한 업무").closest(".task-card") as HTMLElement).querySelector(".task-card-kicker")?.textContent).toBe("업무 생성");
 
     // The persistent relationship tab holds canonical rows only; the AX proposal stays in the decision panel.
     await openRelationTab();

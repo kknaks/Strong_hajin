@@ -32,11 +32,54 @@ function withSession(fetchMock: FetchImpl, initialPersona = "mina"): (input: Req
       current = null;
       return new Response(null, { status: 204 });
     }
+    if (path === "/api/action-items") {
+      // The unified judgement ledger is on every work surface; tests that care about it mock it explicitly.
+      const response = (await fetchMock(path, withPersona(init))) as Response;
+      return response.ok ? response : jsonResponse([]);
+    }
     if (path === "/api/auth/me") {
       if (!current) return new Response(JSON.stringify({ detail: "로그인이 필요합니다." }), { status: 401 });
       return (await fetchMock("/api/organization/me", withPersona(init))) as Response;
     }
     return (await fetchMock(path, withPersona(init))) as Response;
+  };
+}
+
+/** One judgement in the unified ledger, as the server projects it. */
+function judgement(overrides: Record<string, unknown>) {
+  return {
+    action_item_id: "action-item-1",
+    kind: "work_request.acceptance",
+    status: "awaiting_review",
+    subject: "판단할 일",
+    operation_label: "업무 요청",
+    current_question: "이 업무 요청을 수락할지 결정하세요",
+    preview: [],
+    allowed_commands: [{ id: "accept", label: "수락", tone: "primary", requires_reason: false }],
+    submission_version: 1,
+    waiting_on: { member_id: "mina", display_name: "민아 (구성원)" },
+    resource: { type: "work_request", id: "request-1" },
+    expected_version: 1,
+    ...overrides,
+  };
+}
+
+function judgementDetail(overrides: Record<string, unknown>) {
+  const item = judgement(overrides);
+  return {
+    ...item,
+    rounds: [
+      {
+        submission_id: "submission-1",
+        submission_version: 1,
+        submitted_by: "jiho",
+        submitted_at: "2026-09-03T00:00:00Z",
+        content_hash: "hash-1",
+        snapshot: { title: item.subject },
+        diff: null,
+        decisions: [],
+      },
+    ],
   };
 }
 
@@ -80,16 +123,19 @@ describe("product surfaces", () => {
       }
       if (path === "/api/tasks?include_closed=true") return jsonResponse([]);
       if (path === "/api/work-requests") return jsonResponse([]);
-      if (path === "/api/task-assignments/inbox") {
+      if (path === "/api/action-items") {
         return jsonResponse(
           assignmentStatus === "pending"
-            ? [{ assignment_id: "as-1", assignment_kind: "direct", status: "pending", assignee_id: "mina", assigned_by: "jiho", decline_reason: null, created_at: "2026-09-04T00:00:00Z", accepted_at: null, declined_at: null, task: assignedTask }]
+            ? [judgement({ action_item_id: "as-1", kind: "task.assignment", subject: "분기 보고 정리", operation_label: "업무 배정", current_question: "이 업무 배정을 수락할지 결정하세요", resource: { type: "task", id: "task-9" } })]
             : [],
         );
       }
-      if (path === "/api/task-assignments/as-1/accept" && init?.method === "POST") {
+      if (path === "/api/action-items/as-1") {
+        return jsonResponse(judgementDetail({ action_item_id: "as-1", kind: "task.assignment", subject: "분기 보고 정리", operation_label: "업무 배정", resource: { type: "task", id: "task-9" } }));
+      }
+      if (path === "/api/action-items/as-1/commands/accept" && init?.method === "POST") {
         assignmentStatus = "active";
-        return jsonResponse({ assignment_id: "as-1", status: "active", task: assignedTask });
+        return jsonResponse(judgement({ action_item_id: "as-1", kind: "task.assignment", status: "resolved", allowed_commands: [] }));
       }
       if (path.startsWith("/api/daily-reports/status")) return jsonResponse({ report_date: seoulTodayForTest(), status: "not_started", report_id: null });
       return new Response("not found", { status: 404 });
@@ -104,9 +150,12 @@ describe("product surfaces", () => {
     // Not in My Work before acceptance.
     expect(screen.queryAllByRole("row", { name: /분기 보고 정리/ })).toHaveLength(0);
 
-    fireEvent.click(within(panel).getByRole("button", { name: "배정 수락" }));
+    // The same drawer and the same command path as every other judgement.
+    fireEvent.click(within(panel).getByRole("button", { name: "판단하기" }));
+    const drawer = await screen.findByRole("dialog", { name: "판단 상세" });
+    fireEvent.click(await within(drawer).findByRole("button", { name: "수락" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/task-assignments/as-1/accept", expect.objectContaining({ method: "POST" })));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/action-items/as-1/commands/accept", expect.objectContaining({ method: "POST" })));
     await waitFor(() => expect(within(panel).queryByText("분기 보고 정리")).toBeNull());
     expect(await screen.findByRole("row", { name: /분기 보고 정리/ })).toBeTruthy();
   });
@@ -146,19 +195,8 @@ describe("product surfaces", () => {
       if (path === "/api/work-request-assignee-candidates") {
         return jsonResponse([{ id: "jiho", display_name: "지호 (팀장)" }]);
       }
-      if (path === "/api/actions") return jsonResponse([]);
-      if (path === "/api/action-inbox") {
-        return jsonResponse([
-          {
-            request_id: "request-1",
-            title: "오늘 확인할 업무 요청",
-            state: "pending",
-            version: 1,
-            task_id: null,
-            assignment_state: null,
-            conditions: null,
-          },
-        ]);
+      if (path === "/api/action-items") {
+        return jsonResponse([judgement({ action_item_id: "request-1", subject: "오늘 확인할 업무 요청", resource: { type: "work_request", id: "request-1" } })]);
       }
       if (path.startsWith("/api/daily-reports/status")) {
         return jsonResponse({
@@ -343,13 +381,19 @@ describe("product surfaces", () => {
         };
         return jsonResponse(request);
       }
-      if (path === "/api/action-inbox") {
-        return jsonResponse(personaId === "jiho" && request?.state === "pending" ? [request] : []);
+      if (path === "/api/action-items") {
+        return jsonResponse(
+          personaId === "jiho" && request?.state === "pending"
+            ? [judgement({ action_item_id: "request-1", subject: request.title, resource: { type: "work_request", id: "request-1" }, waiting_on: { member_id: "jiho", display_name: "지호 (팀장)" } })]
+            : [],
+        );
       }
-      if (path === "/api/actions") return jsonResponse([]);
-      if (path === "/api/work-requests/request-1/accept" && init?.method === "POST" && request) {
+      if (path === "/api/action-items/request-1") {
+        return jsonResponse(judgementDetail({ action_item_id: "request-1", subject: request?.title ?? "", resource: { type: "work_request", id: "request-1" } }));
+      }
+      if (path === "/api/action-items/request-1/commands/accept" && init?.method === "POST" && request) {
         request = { ...request, state: "accepted", version: 2, task_id: "task-1", assignment_state: "active" };
-        return jsonResponse(request);
+        return jsonResponse(judgement({ action_item_id: "request-1", status: "resolved", allowed_commands: [] }));
       }
       return new Response("not found", { status: 404 });
     });
@@ -401,49 +445,50 @@ describe("product surfaces", () => {
       }),
     ).toHaveLength(0);
     expect(await screen.findByText("UI로 만든 업무 요청")).toBeTruthy();
-    expect(await screen.findByRole("button", { name: "수락" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "수락" }));
+    fireEvent.click(await screen.findByRole("button", { name: "판단하기" }));
+    const acceptDrawer = await screen.findByRole("dialog", { name: "판단 상세" });
+    fireEvent.click(await within(acceptDrawer).findByRole("button", { name: "수락" }));
 
     fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "내 업무" }));
     expect(await screen.findByText("UI로 만든 업무 요청")).toBeTruthy();
   });
 
-  it("shows a pending AX action in the decision surface and decides it with its version", async () => {
+  it("decides an AX proposal through the same judgement drawer and command path as every other kind", async () => {
+    let decided: string | null = null;
+    const proposal = {
+      action_item_id: "action-1",
+      kind: "ax.task.create_self",
+      subject: "AX가 만든 업무",
+      operation_label: "업무 생성",
+      current_question: "AX가 준비한 변경을 승인할지 결정하세요",
+      resource: { type: "action", id: "action-1" },
+      expected_version: 4,
+      preview: [{ id: "assignee", label: "담당", value: "민아 (구성원)", kind: "person" }],
+      allowed_commands: [
+        { id: "approve", label: "승인", tone: "primary", requires_reason: false },
+        { id: "reject", label: "거절", tone: "neutral", requires_reason: false },
+      ],
+    };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
-      if (path === "/api/developer/personas") {
-        return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
-      }
+      if (path === "/api/developer/personas") return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
       if (path === "/api/organization/me") {
         return jsonResponse({
           member_id: "mina",
           display_name: "민아 (구성원)",
           organizations: [],
-          capabilities: ["action.read", "action.decide", "daily_report.generate"],
+          capabilities: ["action.read", "action.decide", "task.read", "daily_report.generate"],
         });
       }
       if (path === "/api/my-work") return jsonResponse([]);
+      if (path === "/api/tasks?include_closed=true") return jsonResponse([]);
+      if (path === "/api/work-requests") return jsonResponse([]);
       if (path === "/api/work-request-assignee-candidates") return jsonResponse([]);
-      if (path === "/api/action-inbox") return jsonResponse([]);
-      if (path === "/api/actions") {
-        return jsonResponse([
-          {
-            action_id: "action-1",
-            conversation_id: "conversation-1",
-            turn_id: "turn-1",
-            action_type: "task.create_self",
-            title: "업무 만들기",
-            state: "pending",
-            commands: [{ id: "approve", label: "승인", tone: "primary" }, { id: "reject", label: "거절", tone: "neutral" }],
-            version: 4,
-            payload_summary: "업무 만들기",
-            result: null,
-            audit_ref: null,
-          },
-        ]);
-      }
-      if (path === "/api/actions/action-1/decide" && init?.method === "POST") {
-        return jsonResponse({ state: "approved" });
+      if (path === "/api/action-items") return jsonResponse(decided ? [] : [judgement(proposal)]);
+      if (path === "/api/action-items/action-1") return jsonResponse(judgementDetail(proposal));
+      if (path === "/api/action-items/action-1/commands/approve" && init?.method === "POST") {
+        decided = String(init?.body);
+        return jsonResponse(judgement({ ...proposal, status: "resolved", allowed_commands: [] }));
       }
       return new Response("not found", { status: 404 });
     });
@@ -453,17 +498,20 @@ describe("product surfaces", () => {
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
     fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
 
-    expect((await screen.findAllByText("업무 만들기")).length).toBeGreaterThan(0);
-    fireEvent.click(await screen.findByRole("button", { name: "승인" }));
+    // The proposal is one judgement among the rest, labelled by the server, not by the client.
+    const panel = (await screen.findByText("판단이 필요한 업무")).closest("aside") as HTMLElement;
+    expect(await within(panel).findByText("AX가 만든 업무")).toBeTruthy();
+    expect(within(panel).getByText("업무 생성")).toBeTruthy();
 
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/actions/action-1/decide",
-        expect.objectContaining({ method: "POST" }),
-      );
-    });
-    const request = fetchMock.mock.calls.find(([path]) => path === "/api/actions/action-1/decide");
-    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ expected_version: 4, decision: "approve" });
+    fireEvent.click(within(panel).getByRole("button", { name: "판단하기" }));
+    const drawer = await screen.findByRole("dialog", { name: "판단 상세" });
+    expect(within(drawer).getByText("AX가 준비한 변경을 승인할지 결정하세요")).toBeTruthy();
+    expect(within(drawer).getByText("담당")).toBeTruthy(); // the server's preview row
+    fireEvent.click(within(drawer).getByRole("button", { name: "승인" }));
+
+    await waitFor(() => expect(decided).not.toBeNull());
+    expect(JSON.parse(String(decided))).toEqual({ expected_version: 4 });
+    await waitFor(() => expect(within(panel).queryByText("AX가 만든 업무")).toBeNull());
   });
 
   it("shows an AX ActionItem without decision controls when action.decide is not granted", async () => {
@@ -1537,6 +1585,9 @@ describe("product surfaces", () => {
         return jsonResponse(approved ? [{ task_id: "task-9", title: "AX가 만든 업무", state: "open", version: 1, block_reason: null }] : []);
       }
       if (path === "/api/actions") return jsonResponse([action()]);
+      if (path === "/api/action-items") {
+        return jsonResponse(approved ? [] : [judgement({ action_item_id: "action-9", kind: "ax.task.create_self", subject: "AX가 만든 업무", operation_label: "업무 생성", resource: { type: "action", id: "action-9" } })]);
+      }
       if (path === "/api/conversations") return jsonResponse([{ ...conversation, actions: [action()] }]);
       if (path === "/api/conversations/conversation-1") return jsonResponse({ ...conversation, version: approved ? 4 : 3, actions: [action()] });
       if (path === "/api/actions/action-9/decide" && init?.method === "POST") {
@@ -1558,8 +1609,10 @@ describe("product surfaces", () => {
     fireEvent.click(screen.getByRole("button", { name: "AX" }));
     const card = (await screen.findByText("AX가 만든 업무", { selector: ".ax-action-card b" })).closest(".ax-action-card") as HTMLElement;
     expect(within(card).getByText("담당")).toBeTruthy(); // server preview row, not inferred from action_type
-    // The decision inbox on the page uses the same presentation for the same Action.
-    expect(within(document.querySelector(".decision-panel") as HTMLElement).getByText("담당")).toBeTruthy();
+    // The same judgement is also in the unified decision ledger, labelled by the server.
+    const panel = document.querySelector(".decision-panel") as HTMLElement;
+    expect(within(panel).getByText("AX가 만든 업무")).toBeTruthy();
+    expect(within(panel).getByText("업무 생성")).toBeTruthy();
     fireEvent.click(within(card).getByRole("button", { name: "승인" }));
 
     await waitFor(() => {
@@ -1603,6 +1656,16 @@ describe("product surfaces", () => {
       if (path === "/api/tasks?include_closed=true") return jsonResponse([]);
       if (path === "/api/work-requests") return jsonResponse([]);
       if (path === "/api/actions") return jsonResponse([action()]);
+      if (path === "/api/action-items/action-7") {
+        return jsonResponse(judgementDetail({ action_item_id: "action-7", kind: "ax.task.create_self", subject: "분기 리포트 정리", operation_label: "업무 생성", resource: { type: "action", id: "action-7" }, allowed_commands: [{ id: "approve", label: "승인", tone: "primary", requires_reason: false }] }));
+      }
+      if (path === "/api/action-items/action-7/commands/approve" && init?.method === "POST") {
+        approved = true;
+        return jsonResponse(judgement({ action_item_id: "action-7", status: "resolved", allowed_commands: [] }));
+      }
+      if (path === "/api/action-items") {
+        return jsonResponse(approved ? [] : [judgement({ action_item_id: "action-7", kind: "ax.task.create_self", subject: "분기 리포트 정리", operation_label: "업무 생성", resource: { type: "action", id: "action-7" } })]);
+      }
       if (path === "/api/action-inbox") return jsonResponse([]);
       if (path === "/api/actions/action-7/decide" && init?.method === "POST") {
         approved = true;
@@ -1616,12 +1679,14 @@ describe("product surfaces", () => {
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
     fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
     const card = (await screen.findByText("분기 리포트 정리")).closest(".task-card") as HTMLElement;
-    expect(card.querySelector(".task-card-kicker")?.textContent).toBe("AX 제안 · 업무 생성");
-    fireEvent.click(within(card).getByRole("button", { name: "승인" }));
+    expect(card.querySelector(".task-card-kicker")?.textContent).toBe("업무 생성");
+    fireEvent.click(within(card).getByRole("button", { name: "판단하기" }));
+    const drawer = await screen.findByRole("dialog", { name: "판단 상세" });
+    fireEvent.click(await within(drawer).findByRole("button", { name: "승인" }));
 
-    // The notice names what was actually created, matching the card the approver just read.
-    expect(await screen.findByText("'분기 리포트 정리' 제안을 승인해 반영했습니다.")).toBeTruthy();
-    expect(screen.queryByText(/'업무 생성 확인' 제안을/)).toBeNull();
+    // The notice names what was actually judged, matching the card the approver just read.
+    expect(await screen.findByText("'분기 리포트 정리' 판단을 반영했습니다.")).toBeTruthy();
+    expect(screen.queryByText(/'업무 생성 확인'/)).toBeNull();
   });
   it("waits for every affected projection to settle before reporting an approval, and keeps the surface state", async () => {
     let approved = false;

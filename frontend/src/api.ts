@@ -1,4 +1,6 @@
 import type {
+  ActionItemDetail,
+  ActionItemEnvelope,
   DailyReportDraft,
   DailyReportHistory,
   DailyReportStatus,
@@ -407,4 +409,23 @@ export function requestAttachmentUrl(requestId: string, attachmentId: string): s
 
 export async function retryConversationTurn(conversationId: string, turnId: string): Promise<{ conversation_id: string; turn_id: string; retry_of_turn_id: string }> {
   return request(`/api/conversations/${conversationId}/turns/${turnId}/retry`, { method: "POST", body: "{}" });
+}
+
+export async function getActionItems(): Promise<ActionItemEnvelope[]> {
+  return request<ActionItemEnvelope[]>("/api/action-items");
+}
+
+export async function getActionItem(actionItemId: string): Promise<ActionItemDetail> {
+  return request<ActionItemDetail>(`/api/action-items/${actionItemId}`);
+}
+
+export async function runActionCommand(
+  actionItemId: string,
+  command: string,
+  payload: { expected_version?: number | null; reason?: string; changes?: Record<string, unknown> } = {},
+): Promise<ActionItemEnvelope> {
+  return request<ActionItemEnvelope>(`/api/action-items/${actionItemId}/commands/${command}`, {
+    body: JSON.stringify(payload),
+    method: "POST",
+  });
 }

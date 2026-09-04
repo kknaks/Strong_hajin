@@ -217,9 +217,39 @@ export type ActionItem = {
   preview?: ActionPreviewField[];
 };
 
+/** One independent judgement question, whatever raised it. The server decides everything the client renders. */
+export type ActionItemEnvelope = {
+  action_item_id: string;
+  kind: string;
+  status: "awaiting_review" | "awaiting_revision" | "resolved";
+  subject: string;
+  operation_label: string;
+  current_question: string;
+  preview: ActionPreviewField[];
+  allowed_commands: ActionCommand[];
+  submission_version: number;
+  waiting_on: { member_id: string; display_name: string } | null;
+  resource: { type: string; id: string };
+  expected_version: number | null;
+};
+
+/** One immutable round: the frozen content that was judged, what changed since the previous round, and the answers. */
+export type ActionRound = {
+  submission_id: string;
+  submission_version: number;
+  submitted_by: string;
+  submitted_at: string;
+  content_hash: string;
+  snapshot: Record<string, unknown>;
+  diff: Record<string, { before: unknown; after: unknown }> | null;
+  decisions: Array<{ review_decision_id: string; actor_member_id: string; decision: string; reason: string | null; decided_at: string }>;
+};
+
+export type ActionItemDetail = ActionItemEnvelope & { rounds: ActionRound[] };
+
 export type ActionPreviewField = { id: string; label: string; value: string; kind: "text" | "date" | "person" | "people" | "state" | string };
 
-export type ActionCommand = { id: "approve" | "reject" | string; label: string; tone: "primary" | "neutral" | "danger" | string };
+export type ActionCommand = { id: string; label: string; tone: "primary" | "neutral" | "danger" | string; requires_reason?: boolean };
 
 export type TurnProgressState = "queued" | "preparing" | "tool_running" | "composing" | "retrying" | "completed" | "failed" | "cancelled";
 

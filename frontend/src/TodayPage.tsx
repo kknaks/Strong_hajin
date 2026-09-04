@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ActionCommandButtons, ActionPreviewDetails, actionKicker, actionSubject } from "./ActionPreview";
+import { ActionItemCard, ActionItemDrawer } from "./ActionCenter";
 
 import {
-  decideAction,
   decideWorkRequest,
-  getActionInbox,
-  getActions,
+  getActionItems,
   getDailyReportStatus,
   getMyWork,
   getWorkRequestAssigneeCandidates,
@@ -15,7 +13,7 @@ import {
 } from "./api";
 import { dueDayText, formatLongDate, formatDate, isoDateInSeoul, personName, seoulToday, workRequestStateLabel } from "./labels";
 import {
-  type ActionItem,
+  type ActionItemEnvelope,
   type DailyReportStatus,
   type DirectTask,
   type Persona,
@@ -75,8 +73,8 @@ export function TodayPage({
   const today = seoulToday();
   const me = personName(personaName);
   const [tasks, setTasks] = useState<DirectTask[]>([]);
-  const [requests, setRequests] = useState<WorkRequest[]>([]);
-  const [actions, setActions] = useState<ActionItem[]>([]);
+  const [actionItems, setActionItems] = useState<ActionItemEnvelope[]>([]);
+  const [selectedActionItem, setSelectedActionItem] = useState<ActionItemEnvelope | null>(null);
   const [requesterByTask, setRequesterByTask] = useState<Record<string, string>>({});
   const [reportStatus, setReportStatus] = useState<DailyReportStatus | null>(null);
   const [prompt, setPrompt] = useState("");
@@ -87,23 +85,21 @@ export function TodayPage({
   const [busy, setBusy] = useState(false);
 
   const reload = useCallback(async () => {
-    const [work, inbox, pendingActions, related] = await Promise.all([
+    const [work, judgements, related] = await Promise.all([
       getMyWork(),
-      canDecideWorkRequests ? getActionInbox() : Promise.resolve([]),
-      canReadActions ? getActions() : Promise.resolve([]),
+      getActionItems(),
       getWorkRequests().catch(() => [] as WorkRequest[]),
     ]);
     const nextTasks = work.filter((task) => ["open", "in_progress", "blocked"].includes(task.state));
     setTasks(nextTasks);
-    setRequests(inbox);
-    setActions(pendingActions.filter((action) => action.state === "pending"));
+    setActionItems(judgements);
     setRequesterByTask(
       Object.fromEntries(related.filter((request) => request.task_id && request.requester_id).map((request) => [request.task_id as string, request.requester_id as string])),
     );
     setSelectedTask((current) => (current ? nextTasks.find((task) => task.task_id === current.task_id) ?? null : null));
-    setSelectedRequest((current) => (current ? inbox.find((request) => request.request_id === current.request_id) ?? null : null));
+    setSelectedRequest((current) => (current ? related.find((request) => request.request_id === current.request_id) ?? null : null));
     setReportStatus(canGenerateDailyReport ? await getDailyReportStatus(today) : null);
-  }, [canDecideWorkRequests, canGenerateDailyReport, canReadActions, personaId, today]);
+  }, [canGenerateDailyReport, personaId, today]);
 
   useEffect(() => {
     let cancelled = false;
@@ -187,29 +183,6 @@ export function TodayPage({
     }
   };
 
-  const decideAiAction = async (action: ActionItem, decision: string) => {
-    setBusy(true);
-    try {
-      await decideAction(action.action_id, action.version, decision as "approve" | "reject");
-    } catch (error) {
-      onError(error instanceof Error ? error.message : "제안을 처리하지 못했습니다.");
-      setBusy(false);
-      return;
-    }
-    onError(null);
-    // The decision is persisted. Wait for every affected projection to settle before claiming it is reflected;
-    // a refresh failure surfaces as a retryable stale banner, not as a failed decision.
-    const reflected = await onDecided();
-    const subject = actionSubject(action);
-    onNotice(
-      decision === "approve"
-        ? reflected
-          ? `'${subject}' 제안을 승인해 반영했습니다.`
-          : `'${subject}' 제안을 승인했습니다.`
-        : `'${subject}' 제안을 거절했습니다.`,
-    );
-    setBusy(false);
-  };
 
   const groups = useMemo(
     () => ({
@@ -219,7 +192,7 @@ export function TodayPage({
     }),
     [tasks],
   );
-  const decisionCount = requests.length + actions.length;
+  const decisionCount = actionItems.length;
   const canCreate = canManageOwnTasks || canCreateWorkRequests;
 
   return (
@@ -288,49 +261,8 @@ export function TodayPage({
             </div>
           ) : (
             <ul className="card-stack surface-card-list">
-              {requests.map((request) => (
-                <TaskCard
-                  actions={
-                    canDecideWorkRequests && (
-                      <>
-                        <button className="btn h30 primary" disabled={busy} onClick={() => void acceptRequest(request)} type="button">
-                          수락
-                        </button>
-                        <button className="btn h30" onClick={() => setSelectedRequest(request)} type="button">
-                          검토하기
-                        </button>
-                      </>
-                    )
-                  }
-                  as="li"
-                  date={request.due_date ? `기한 ${formatDate(request.due_date)} (${dueDayText(request.due_date, today)})` : formatDate(today)}
-                  key={request.request_id}
-                  kicker="업무 요청"
-                  memo={request.description}
-                  onOpen={() => setSelectedRequest(request)}
-                  people={<PersonChip arrowTo={me} name={displayNameOf(personas, request.requester_id, "동료")} />}
-                  status={<StatusText label={workRequestStateLabel[request.state]} state={request.state} />}
-                  title={request.title}
-                />
-              ))}
-              {actions.map((action) => (
-                <TaskCard
-                  actions={
-                    <>
-                      <ActionPreviewDetails action={action} />
-                      <ActionCommandButtons commands={action.commands} disabled={busy} onCommand={(commandId) => void decideAiAction(action, commandId)} />
-                    </>
-                  }
-                  as="li"
-                  badge={<span className="badge ai">AI</span>}
-                  data-action-id={action.action_id}
-                  date={formatDate(today)}
-                  key={action.action_id}
-                  kicker={actionKicker(action)}
-                  people={<PersonChip arrowTo={me} name="AX" />}
-                  status={<StatusText label="확인 필요" state="pending" />}
-                  title={actionSubject(action)}
-                />
+              {actionItems.map((item) => (
+                <ActionItemCard item={item} key={item.action_item_id} personas={personas} onOpen={setSelectedActionItem} />
               ))}
             </ul>
           )}
@@ -426,6 +358,17 @@ export function TodayPage({
           ownerName={me}
           requesterName={requesterByTask[selectedTask.task_id] ? displayNameOf(personas, requesterByTask[selectedTask.task_id]) : null}
           task={selectedTask}
+        />
+      )}
+      {selectedActionItem && (
+        <ActionItemDrawer
+          actionItemId={selectedActionItem?.action_item_id ?? ""}
+          key={selectedActionItem?.action_item_id}
+          onClose={() => setSelectedActionItem(null)}
+          onDone={onDecided}
+          onError={onError}
+          onNotice={onNotice}
+          personas={personas}
         />
       )}
       {selectedRequest && (
