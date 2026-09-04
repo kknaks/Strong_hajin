@@ -353,9 +353,9 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return self._work_requests(session).open_attachment(principal, request_id, attachment_id)
 
-    def add_work_request_comment(self, principal: Principal, request_id: UUID, body: str) -> dict[str, Any]:
+    def add_work_request_comment(self, principal: Principal, request_id: UUID, body: str, idempotency_key: str | None = None) -> dict[str, Any]:
         with self._session_factory() as session:
-            result = self._work_requests(session).add_comment(principal, request_id, body)
+            result = self._work_requests(session).add_comment(principal, request_id, body, idempotency_key=idempotency_key)
             session.commit()
             return result
 

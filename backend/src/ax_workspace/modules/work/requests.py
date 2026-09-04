@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date
 from typing import Any, Protocol
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from ax_workspace.modules.organization_access.domain import (
     Principal,
@@ -14,8 +14,17 @@ from ax_workspace.modules.organization_access.domain import (
 from ax_workspace.modules.work.materials import AttachmentRepository, MaterialNotFound, MaterialStorage, store_file
 
 
+def comment_identity(request_thread_id: UUID, author_id: str, idempotency_key: str) -> UUID:
+    """Deterministic Comment id for one logical submit, so a duplicate POST lands on the same primary key."""
+    return uuid5(NAMESPACE_URL, f"scax:work-request-comment:{request_thread_id}:{author_id}:{idempotency_key}")
+
+
 class WorkRequestError(Exception):
     pass
+
+
+class WorkRequestIdempotencyConflict(WorkRequestError):
+    """A comment idempotency key was reused with different content."""
 
 
 class WorkRequestAccessDenied(WorkRequestError):
@@ -49,9 +58,10 @@ class WorkRequestRepository(Protocol):
 
 
 class CommentRepository(Protocol):
-    def add(self, request_thread_id: UUID, author_id: str, body: str) -> Any: ...
+    def add(self, request_thread_id: UUID, author_id: str, body: str, *, comment_id: UUID | None = None) -> Any: ...
     def list_for(self, request_thread_id: UUID) -> list[Any]: ...
     def comment(self, request_thread_id: UUID, comment_id: UUID) -> Any: ...
+    def lock_thread(self, request_thread_id: UUID) -> None: ...
 
 
 class WorkRequestAssigneeDirectory(Protocol):
@@ -299,8 +309,13 @@ class WorkRequestApplication:
             raise MaterialNotFound("attachment was not found")
         return _attachment_view(attachment), self._storage.get(attachment.source_ref)
 
-    def add_comment(self, principal: Principal, request_id: UUID, body: str) -> dict[str, Any]:
-        """Discussion only: a comment never changes the request state or counts as a decision."""
+    def add_comment(self, principal: Principal, request_id: UUID, body: str, *, idempotency_key: str | None = None) -> dict[str, Any]:
+        """Discussion only: a comment never changes the request state or counts as a decision.
+
+        With an Idempotency-Key the Comment id is derived from thread + author + key, so a retried or double-submitted
+        post resolves to the same row instead of a second comment. Concurrent posts of the same key are serialized on
+        the RequestThread, and reusing a key for different text is a conflict rather than a silent overwrite.
+        """
         self._require(principal, WORK_REQUEST_READ)
         if self._comments is None:
             raise WorkRequestError("comments are not available")
@@ -310,7 +325,22 @@ class WorkRequestApplication:
         text = body.strip()
         if not text:
             raise WorkRequestError("comment body is required")
-        return self._comment_view(self._comments.add(request.request_thread_id, str(principal.id), text), [])
+        if not idempotency_key:
+            return self._comment_view(self._comments.add(request.request_thread_id, str(principal.id), text), [])
+        comment_id = comment_identity(request.request_thread_id, str(principal.id), idempotency_key)
+        # Serialize same-key posts that arrive together; the second one then sees the first.
+        self._comments.lock_thread(request.request_thread_id)
+        existing = self._comments.comment(request.request_thread_id, comment_id)
+        if existing is not None:
+            if existing.body != text:
+                raise WorkRequestIdempotencyConflict("comment idempotency key was reused with different content")
+            return self._comment_view(existing, self._comment_attachments(existing))
+        return self._comment_view(self._comments.add(request.request_thread_id, str(principal.id), text, comment_id=comment_id), [])
+
+    def _comment_attachments(self, comment: Any) -> list[dict[str, Any]]:
+        if self._attachments is None:
+            return []
+        return [_attachment_view(attachment) for _, attachment in self._attachments.bindings_for_many("comment", [str(comment.id)])]
 
     def _participant_request(self, principal: Principal, request_id: UUID) -> Any:
         request = self._repository.request(request_id)

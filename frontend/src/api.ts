@@ -327,8 +327,12 @@ export async function getWorkRequestTimeline(requestId: string): Promise<Request
   return request<RequestTimeline>(`/api/work-requests/${requestId}/timeline`);
 }
 
-export async function addWorkRequestComment(requestId: string, body: string): Promise<RequestComment> {
-  return request<RequestComment>(`/api/work-requests/${requestId}/comments`, { body: JSON.stringify({ body }), method: "POST" });
+export async function addWorkRequestComment(requestId: string, body: string, idempotencyKey: string): Promise<RequestComment> {
+  return request<RequestComment>(`/api/work-requests/${requestId}/comments`, {
+    body: JSON.stringify({ body }),
+    headers: { "Idempotency-Key": idempotencyKey },
+    method: "POST",
+  });
 }
 
 export async function resubmitWorkRequest(

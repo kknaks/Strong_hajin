@@ -848,11 +848,17 @@ class SqlAlchemyCommentRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def add(self, request_thread_id: UUID, author_id: str, body: str) -> CommentRecord:
+    def add(self, request_thread_id: UUID, author_id: str, body: str, *, comment_id: UUID | None = None) -> CommentRecord:
         record = CommentRecord(request_thread_id=request_thread_id, author_member_id=author_id, body=body, created_at=datetime.now(UTC))
+        if comment_id is not None:
+            record.id = comment_id
         self._session.add(record)
         self._session.flush()
         return record
+
+    def lock_thread(self, request_thread_id: UUID) -> None:
+        """Serialize same-thread comment writes so two simultaneous posts of one key cannot both insert."""
+        self._session.execute(select(RequestThreadRecord.id).where(RequestThreadRecord.id == request_thread_id).with_for_update())
 
     def list_for(self, request_thread_id: UUID) -> list[CommentRecord]:
         return list(

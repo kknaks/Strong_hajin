@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createIdempotencyKey } from "./idempotency";
 
 import {
   addWorkRequestComment,
@@ -562,6 +563,9 @@ export function WorkRequestDetailDrawer({
   const [commentFile, setCommentFile] = useState<File | null>(null);
   const [isUploadingEvidence, setIsUploadingEvidence] = useState(false);
   const commentFileInput = useRef<HTMLInputElement>(null);
+  // Synchronous guards: React state cannot close the window between two events in the same tick.
+  const submittingComment = useRef(false);
+  const commentKey = useRef<{ key: string; body: string } | null>(null);
   const evidenceInput = useRef<HTMLInputElement>(null);
   const [revision, setRevision] = useState<{ title: string; description: string; due_date: string } | null>(null);
   const nameOf = (id: string) => (id === personaId ? "나" : displayNameOf(personas, id, id));
@@ -630,14 +634,25 @@ export function WorkRequestDetailDrawer({
     );
   }
 
+  /**
+   * One logical submit, however many times it is triggered. `submittingComment` is a ref, so a second Enter or a click
+   * arriving in the same tick is refused before React has re-rendered the disabled button. The idempotency key is
+   * generated once for the text being sent and reused while that text is unchanged, so a retry after a failure
+   * resolves to the same server comment instead of a second one.
+   */
   async function submitComment() {
     const text = comment.trim();
-    if (!text) return;
+    if (!text || submittingComment.current) return;
+    submittingComment.current = true;
+    if (!commentKey.current || commentKey.current.body !== text) {
+      commentKey.current = { key: createIdempotencyKey(), body: text };
+    }
     setIsWorking(true);
     onError(null);
     try {
-      const created = await addWorkRequestComment(request.request_id, text);
+      const created = await addWorkRequestComment(request.request_id, text, commentKey.current.key);
       if (commentFile) await uploadCommentAttachment(request.request_id, created.comment_id, commentFile);
+      commentKey.current = null;
       setComment("");
       setCommentFile(null);
       if (commentFileInput.current) commentFileInput.current.value = "";
@@ -645,6 +660,7 @@ export function WorkRequestDetailDrawer({
     } catch (error) {
       onError(error instanceof Error ? error.message : "댓글을 남기지 못했습니다.");
     } finally {
+      submittingComment.current = false;
       setIsWorking(false);
     }
   }
@@ -964,7 +980,10 @@ export function WorkRequestDetailDrawer({
             id={`comment-${request.request_id}`}
             onChange={(event) => setComment(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter") void submitComment();
+              if (event.key !== "Enter") return;
+              event.preventDefault();
+              if (event.repeat || event.nativeEvent.isComposing) return;
+              void submitComment();
             }}
             placeholder="무엇이 걸리는지 남긴다"
             value={comment}

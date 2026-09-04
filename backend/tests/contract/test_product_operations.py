@@ -811,3 +811,42 @@ def test_organization_principal_projects_persona_specific_grants(tmp_path) -> No
     assert mina["organizations"] != sora["organizations"]
     assert "work.read" in mina["capabilities"]
     assert sora["capabilities"] == ["contract.legal_review"]
+
+
+def test_repeated_comment_post_with_one_idempotency_key_creates_a_single_comment(tmp_path) -> None:
+    """A double submit (two POSTs through the same React state window) must not become two comments."""
+    client = _client_with_seeded_database(tmp_path)
+    request = client.post(
+        "/api/work-requests",
+        headers={"X-Demo-Persona": "mina"},
+        json={"title": "논의가 필요한 요청", "assignee_id": "jiho"},
+    ).json()
+    url = f"/api/work-requests/{request['request_id']}/comments"
+    headers = {"X-Demo-Persona": "mina", "Idempotency-Key": "comment-submit-1"}
+
+    first = client.post(url, headers=headers, json={"body": "논의 추가"})
+    second = client.post(url, headers=headers, json={"body": "논의 추가"})
+    assert first.status_code == 201 and second.status_code == 201
+    assert first.json()["comment_id"] == second.json()["comment_id"]
+    timeline = client.get(f"/api/work-requests/{request['request_id']}/timeline", headers={"X-Demo-Persona": "mina"}).json()
+    assert [item["body"] for item in timeline["comments"]] == ["논의 추가"]
+
+    # Reusing the key for different text is a conflict, never a silent overwrite of the stored comment.
+    conflicting = client.post(url, headers=headers, json={"body": "다른 내용"})
+    assert conflicting.status_code == 409, conflicting.text
+    timeline = client.get(f"/api/work-requests/{request['request_id']}/timeline", headers={"X-Demo-Persona": "mina"}).json()
+    assert [item["body"] for item in timeline["comments"]] == ["논의 추가"]
+
+    # A different key is a different logical submit, and the same text may legitimately be said twice.
+    again = client.post(url, headers={**headers, "Idempotency-Key": "comment-submit-2"}, json={"body": "논의 추가"})
+    assert again.status_code == 201 and again.json()["comment_id"] != first.json()["comment_id"]
+    # The key is scoped per author: another participant's identical key is their own comment.
+    other = client.post(url, headers={"X-Demo-Persona": "jiho", "Idempotency-Key": "comment-submit-1"}, json={"body": "논의 추가"})
+    assert other.status_code == 201 and other.json()["comment_id"] != first.json()["comment_id"]
+    timeline = client.get(f"/api/work-requests/{request['request_id']}/timeline", headers={"X-Demo-Persona": "mina"}).json()
+    assert len(timeline["comments"]) == 3
+
+    # Without a key the old behaviour is unchanged: every post is its own comment.
+    plain = client.post(url, headers={"X-Demo-Persona": "mina"}, json={"body": "키 없는 발언"})
+    assert plain.status_code == 201
+    assert len(client.get(f"/api/work-requests/{request['request_id']}/timeline", headers={"X-Demo-Persona": "mina"}).json()["comments"]) == 4

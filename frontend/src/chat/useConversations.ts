@@ -9,6 +9,7 @@ import {
   retryConversationTurn,
   sendConversationMessage,
 } from "../api";
+import { createIdempotencyKey } from "../idempotency";
 import type { Conversation, ConversationContextReference } from "../viewModels";
 
 /**
@@ -33,10 +34,7 @@ export type ListStatus = "idle" | "loading" | "ready" | "error";
 /** Draft key used before any conversation exists; moved onto the conversation when one is created. */
 export const NEW_DRAFT_KEY = "__new__";
 
-export function createIdempotencyKey(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
-  return `ax-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
+export { createIdempotencyKey };
 
 export function useConversations({ personaId, isOpen, onError }: { personaId: string; isOpen: boolean; onError: (message: string) => void }) {
   const [conversations, setConversations] = useState<Conversation[]>([]);

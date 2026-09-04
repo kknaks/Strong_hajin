@@ -21,7 +21,7 @@ from ax_workspace.entrypoints.http_auth import (
 from ax_workspace.bootstrap.application import create_auth_session_store, create_workflow_application
 from ax_workspace.modules.work.application import InvalidTaskTransition, TaskAccessDenied, TaskError, TaskNotFound, TaskState
 from ax_workspace.modules.work.materials import MaterialNotFound
-from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequestError
+from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequestError, WorkRequestIdempotencyConflict
 from ax_workspace.modules.reports.application import DailyReportAccessDenied
 from ax_workspace.modules.ax_execution.conversations import ConversationError, ConversationQueueOverflow
 from ax_workspace.modules.ax_execution.actions import ActionAccessDenied, ActionCapabilityDenied, ActionError
@@ -162,6 +162,8 @@ def _runtime_error(error: Exception) -> HTTPException:
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
     if isinstance(error, (TaskError, InvalidTaskTransition)):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
+    if isinstance(error, WorkRequestIdempotencyConflict):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
     if isinstance(error, WorkRequestError):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     if isinstance(error, ConversationError):
@@ -515,9 +517,14 @@ def create_app(
                 raise _runtime_error(error) from error
 
         @app.post("/api/work-requests/{request_id}/comments", status_code=status.HTTP_201_CREATED)
-        def add_work_request_comment(request_id: UUID, request: CommentRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def add_work_request_comment(
+            request_id: UUID,
+            request: CommentRequest,
+            principal: Principal = Depends(developer_principal),
+            idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        ) -> dict[str, object]:
             try:
-                return app.state.workflow_application.add_work_request_comment(principal, request_id, request.body)
+                return app.state.workflow_application.add_work_request_comment(principal, request_id, request.body, idempotency_key)
             except Exception as error:
                 raise _runtime_error(error) from error
 

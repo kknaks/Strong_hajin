@@ -1,7 +1,7 @@
 import os
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event, Lock
+from threading import Barrier, Event, Lock, Thread
 import time
 from uuid import UUID
 
@@ -1104,3 +1104,41 @@ def test_conversation_cancel_stops_the_provider_and_late_events_are_ignored() ->
     assert view["turns"][0]["state"] == "cancelled"
     with make_session_factory(database_url)() as session:
         assert _queue_count(session) == 0
+
+
+@pytest.mark.integration
+def test_postgres_serializes_two_simultaneous_comment_posts_of_the_same_key_into_one_row() -> None:
+    """The real double-submit: two requests in flight at once, which SQLite's no-op row lock cannot exercise."""
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    client = _conversation_client(database_url)
+    request = client.post(
+        "/api/work-requests",
+        headers={"X-Demo-Persona": "mina"},
+        json={"title": "동시 논의", "assignee_id": "jiho"},
+    ).json()
+    url = f"/api/work-requests/{request['request_id']}/comments"
+    headers = {"X-Demo-Persona": "mina", "Idempotency-Key": "double-submit"}
+    barrier = Barrier(2)
+    results: list[tuple[int, str | None]] = []
+    lock = Lock()
+
+    def post() -> None:
+        barrier.wait(timeout=10)
+        response = client.post(url, headers=headers, json={"body": "논의 추가"})
+        with lock:
+            results.append((response.status_code, response.json().get("comment_id") if response.status_code == 201 else None))
+
+    threads = [Thread(target=post) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+
+    assert [status for status, _ in results] == [201, 201], results
+    assert len({comment_id for _, comment_id in results}) == 1, results
+    with make_session_factory(database_url)() as session:
+        stored = session.execute(text("SELECT count(*) FROM comments WHERE body = '논의 추가'")).scalar_one()
+    assert int(stored) == 1
+    timeline = client.get(f"/api/work-requests/{request['request_id']}/timeline", headers={"X-Demo-Persona": "mina"}).json()
+    assert [item["body"] for item in timeline["comments"]] == ["논의 추가"]
