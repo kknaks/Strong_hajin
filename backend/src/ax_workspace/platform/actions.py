@@ -19,6 +19,7 @@ from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepo
 from ax_workspace.platform.persistence import (
     ActionItemAuditEventRecord,
     ActionItemRecord,
+    ConversationMaterialEvidenceRecord,
     ConversationRecord,
     ConversationTurnRecord,
 )
@@ -299,6 +300,8 @@ class ActionPresenter:
     def __init__(self, session: Session) -> None:
         self._session = session
         self._name_cache: dict[str, dict[str, str]] = {}
+        self._evidence_cache: dict[UUID, list[ConversationMaterialEvidenceRecord]] = {}
+        self._readable_task_cache: dict[tuple[str, UUID], bool] = {}
 
     def present(self, action: ActionItemRecord, principal: Principal | None) -> dict[str, Any]:
         payload = action.payload or {}
@@ -345,7 +348,52 @@ class ActionPresenter:
             self._date(fields, "due_date", "제안 기한", conditions.get("due_date"))
             self._text(fields, "note", "메모", conditions.get("note") or conditions.get("reason"))
 
+        self._evidence(fields, action, principal)
         return {"subject": subject, "operation_label": _OPERATION_LABELS.get(kind, kind), "preview": fields}
+
+    def _evidence(self, fields: list[dict[str, str]], action: ActionItemRecord, principal: Principal | None) -> None:
+        """Attachments the proposing turn actually read, so the approver sees what the proposal is grounded in.
+
+        These are links, not fields the command creates: no current command attaches files. Access is re-checked per
+        approver against the owning Task, so evidence from a Task they can no longer read disappears from the preview.
+        """
+        if principal is None:
+            return
+        # Dedupe by material, not by file name: two distinct attachments may share a name and both are real sources.
+        seen: set[UUID] = set()
+        names: list[str] = []
+        for item in self._turn_evidence(action.turn_id):
+            if item.material_id in seen or not self._can_read_task(principal, item.task_id):
+                continue
+            seen.add(item.material_id)
+            names.append(item.name)
+        if names:
+            fields.append({"id": "evidence", "label": "근거 자료", "value": ", ".join(names), "kind": "evidence"})
+
+    def _turn_evidence(self, turn_id: UUID) -> list[ConversationMaterialEvidenceRecord]:
+        cached = self._evidence_cache.get(turn_id)
+        if cached is None:
+            cached = list(
+                self._session.scalars(
+                    select(ConversationMaterialEvidenceRecord)
+                    .where(ConversationMaterialEvidenceRecord.turn_id == turn_id)
+                    .order_by(ConversationMaterialEvidenceRecord.rank, ConversationMaterialEvidenceRecord.id)
+                )
+            )
+            self._evidence_cache[turn_id] = cached
+        return cached
+
+    def _can_read_task(self, principal: Principal, task_id: UUID) -> bool:
+        key = (str(principal.id), task_id)
+        cached = self._readable_task_cache.get(key)
+        if cached is None:
+            try:
+                TaskApplication(SqlAlchemyTaskRepository(self._session)).get(principal, task_id)
+                cached = True
+            except (TaskError, ValueError):
+                cached = False
+            self._readable_task_cache[key] = cached
+        return cached
 
     @staticmethod
     def _text(fields: list[dict[str, str]], field_id: str, label: str, value: Any) -> None:

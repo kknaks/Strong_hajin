@@ -182,3 +182,56 @@ def test_evidence_recording_fails_closed_for_a_turn_the_principal_does_not_own(t
         turn = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"]))
         with pytest.raises(ValueError, match="another principal"):
             SqlAlchemyMaterialEvidenceRepository(session).record(turn.execution_id, "jiho", UUID(int=1), "q", [])
+
+
+def test_action_preview_links_the_attachments_the_turn_read_and_hides_them_from_other_principals(tmp_path, monkeypatch) -> None:
+    """The approver sees which attachments grounded the proposal, re-checked against their own Task access."""
+    client, application, worker, settings = _stack(tmp_path)
+    task = client.post("/api/tasks", headers=MINA, json={"title": "견적 검토"}).json()
+    _upload(client, task["task_id"], "견적.md", BRIEF.encode(), "text/markdown")
+    assert asyncio.run(worker.run_once()) is True
+    conversation = client.post("/api/conversations", headers=MINA, json={"title": "근거 설명"}).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={**MINA, "Idempotency-Key": "evidence-action"},
+        json={"body": "첨부자료를 근거로 후속 업무를 제안해줘", "context": []},
+    )
+    with make_session_factory(settings.database_url)() as session:
+        execution_id = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"])).execution_id
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", str(execution_id))
+    McpReportsFacade(settings, "mina").search_task_materials(task["task_id"], "공급사 납기일", 3)
+
+    mina = application.authenticated_principal("mina")
+    jiho = application.authenticated_principal("jiho")
+    proposed = application.propose_action(mina, execution_id, "task.create_self", "업무 생성 확인", {"title": "후속 업무"})
+    assert {row["id"]: row["value"] for row in proposed["preview"]}["evidence"] == "견적.md"
+    # The same row reaches both the chat projection and the decision inbox.
+    assert {row["id"]: row["value"] for row in client.get("/api/actions", headers=MINA).json()[0]["preview"]}["evidence"] == "견적.md"
+    projected = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()["actions"][0]
+    assert {row["id"] for row in projected["preview"]} >= {"evidence"}
+
+    from ax_workspace.platform.actions import ActionPresenter
+    from ax_workspace.platform.persistence import ActionItemRecord
+
+    with make_session_factory(settings.database_url)() as session:
+        record = session.get(ActionItemRecord, UUID(proposed["action_id"]))
+        presenter = ActionPresenter(session)
+        assert any(row["id"] == "evidence" for row in presenter.present(record, mina)["preview"])
+        # Jiho holds no assignment on Mina's Task, so the linked evidence leaves the preview entirely.
+        rows = presenter.present(record, jiho)["preview"]
+        assert not any(row["id"] == "evidence" for row in rows)
+        assert "견적.md" not in str(rows)
+
+
+def test_action_preview_has_no_evidence_row_when_the_turn_read_nothing(tmp_path) -> None:
+    client, application, worker, settings = _stack(tmp_path)
+    conversation = client.post("/api/conversations", headers=MINA, json={"title": "근거 없음"}).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={**MINA, "Idempotency-Key": "no-evidence"},
+        json={"body": "그냥 업무 하나 만들어줘", "context": []},
+    )
+    with make_session_factory(settings.database_url)() as session:
+        execution_id = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"])).execution_id
+    proposed = application.propose_action(application.authenticated_principal("mina"), execution_id, "task.create_self", "업무 생성 확인", {"title": "후속 업무"})
+    assert [row["id"] for row in proposed["preview"]] == ["assignee"]

@@ -655,5 +655,6 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .ax-preview-row { display: contents; }
 .ax-preview-row dt { color: var(--text-tertiary); font-weight: 500; white-space: nowrap; }
 .ax-preview-row dd { margin: 0; color: var(--text-primary); overflow-wrap: anywhere; white-space: pre-wrap; }
+.ax-preview-row.evidence dd { color: var(--text-secondary); }
 .task-card-actions .ax-preview { flex: 1 1 100%; margin: 0 0 4px; }
 .error-banner.stale { background: var(--progress-tint); color: var(--progress-text); border-color: var(--progress-accent); }

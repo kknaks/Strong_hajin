@@ -460,7 +460,43 @@ describe("ActionResultCard", () => {
       ["기한", "2026/09/30"],
     ]);
     expect((card.querySelector(".ax-preview") as HTMLDetailsElement).open).toBe(true); // pending: open for review
+    // Rows mix created fields with linked grounds, so the summary must not claim every row gets applied.
+    expect((card.querySelector(".ax-preview > summary") as HTMLElement).textContent).toBe("상세 보기 · 승인 전 확인할 3개 항목");
     expect(within(card).getByRole("button", { name: "승인" })).toBeTruthy();
+  });
+
+  it("shows the attachments the turn read as a linked evidence row, exactly as the server sent them", () => {
+    const grounded = conversation("c1", "새 대화", "첨부를 근거로 제안해줘", {
+      actions: [
+        {
+          action_id: "a3",
+          conversation_id: "c1",
+          turn_id: "c1-t1",
+          action_type: "task.create_self",
+          title: "업무 생성 확인",
+          subject: "견적 재검토 후속",
+          operation_label: "업무 생성",
+          preview: [
+            { id: "assignee", label: "담당", value: "민아 (구성원)", kind: "person" },
+            { id: "evidence", label: "근거 자료", value: "견적.md, 계약서.pdf", kind: "evidence" },
+          ],
+          state: "pending",
+          version: 1,
+          payload_summary: "업무 생성 확인",
+          result: null,
+          audit_ref: null,
+          commands: [{ id: "approve", label: "승인", tone: "primary" }],
+        },
+      ],
+    });
+    const { container } = render(<MessageList {...listProps} conversation={grounded} localFragments={[]} />);
+    const card = container.querySelector(".ax-action-card") as HTMLElement;
+    const row = card.querySelector(".ax-preview-row.evidence") as HTMLElement;
+    expect(row.querySelector("dt")?.textContent).toBe("근거 자료");
+    expect(row.querySelector("dd")?.textContent).toBe("견적.md, 계약서.pdf");
+    // The row is rendered verbatim: the client neither reformats file names nor invents a link target.
+    expect(row.querySelector("a")).toBeNull();
+    expect(card.querySelectorAll(".ax-preview-row")).toHaveLength(2);
   });
 
   it("does not infer preview rows or commands from the action type when the server sends none", () => {

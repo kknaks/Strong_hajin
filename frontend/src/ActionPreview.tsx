@@ -19,7 +19,7 @@ export function ActionPreviewDetails({ action, defaultOpen = false }: { action: 
   return (
     <details className="ax-preview" data-action-preview={action.action_id} open={defaultOpen || undefined}>
       <summary>
-        상세 보기 <small>· 승인 시 반영되는 {rows.length}개 항목</small>
+        상세 보기 <small>· 승인 전 확인할 {rows.length}개 항목</small>
       </summary>
       <dl className="ax-preview-list">
         {rows.map((row) => (
