@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "test": "vitest run",
     "e2e:task-lifecycle": "node scripts/task-lifecycle-e2e.mjs",
+    "e2e:task-checklist": "node scripts/task-checklist-e2e.mjs",
     "e2e:work-request": "node scripts/work-request-e2e.mjs",
     "e2e:work-relations": "node scripts/work-relations-e2e.mjs",
     "e2e:action-item": "node scripts/action-item-e2e.mjs",
