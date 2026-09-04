@@ -729,8 +729,38 @@ class MeetingApplication:
         if include_note:
             note = self._repository.note(meeting)
             result["note"] = self._note_view(note) if note is not None else None
-            result["recordings"] = [self._recording_view(recording) for recording in self._repository.recordings(meeting)]
+            recordings, summaries = self._recording_records(meeting)
+            result["recordings"] = recordings
+            result["summaries"] = summaries
         return result
+
+    def _recording_records(self, meeting: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Each recording with the transcript layers built on it, and every summary those layers produced.
+
+        The layering is kept visible rather than flattened: the immutable raw revision, the versioned refinement that
+        points back at it, and the human speaker confirmations that outrank both. A caller that never asks for detail
+        never reaches any of this, because this runs only behind the same authorization as the meeting itself.
+        """
+        recordings: list[dict[str, Any]] = []
+        summaries: list[dict[str, Any]] = []
+        for recording in self._repository.recordings(meeting):
+            view = self._recording_view(recording)
+            transcript = self._repository.latest_raw_transcript_for_recording(recording)
+            refinement = self._repository.latest_refinement(transcript) if transcript is not None else None
+            view["raw_transcript"] = self._raw_transcript_view(transcript) if transcript is not None else None
+            view["refinement"] = self._refinement_view(refinement) if refinement is not None else None
+            view["speaker_assignments"] = (
+                [self._speaker_assignment_view(assignment) for assignment in self._repository.speaker_assignments(transcript)]
+                if transcript is not None
+                else []
+            )
+            recordings.append(view)
+            if refinement is not None:
+                for kind in ("provisional", "final"):
+                    summary = self._repository.summary_for_refinement(refinement, kind)
+                    if summary is not None:
+                        summaries.append(self._summary_view(summary))
+        return recordings, summaries
 
     def _note_view(self, note: Any, *, current: Any | None = None) -> dict[str, Any]:
         versions = self._repository.note_versions(note)

@@ -835,3 +835,100 @@ def test_worker_drops_late_provider_result_when_heartbeat_loses_its_fenced_lease
         assert recording is not None and recording.state == "transcribing"
     reclaimed = queue.claim(JOB_KIND_MEETING_FINALIZE, limit=1, lease_seconds=2, worker_id="recovery")
     assert len(reclaimed) == 1
+
+
+def test_meeting_detail_carries_the_whole_record_for_someone_allowed_to_read_it(tmp_path) -> None:
+    """One authorized read gives the UI everything it renders: note, recordings, transcript layers, summaries.
+
+    The layering stays visible in the projection — immutable raw STT under a versioned refinement under an
+    evidence-bound summary — so a client can show the refined transcript by default and still reach the original.
+    """
+    provider = RefinementProvider()
+    client = _client(tmp_path, provider=provider)
+    meeting = _meeting(client)
+    mina = {"X-Demo-Persona": "mina"}
+    started = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/start", headers=mina, json={"purpose": "상세 확인"}
+    ).json()
+    client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/{started['recording_id']}/stop",
+        headers=mina,
+        data={"expected_version": str(started["version"])},
+        files={"audio": ("raw.webm", b"audio", "audio/webm")},
+    )
+    application = client.app.state.workflow_application
+    raw = application.record_final_meeting_transcript(
+        recording_id=UUID(started["recording_id"]),
+        provider="soniox",
+        provider_reference="async:detail-source",
+        segments=[
+            FinalTranscriptSegment("provider-segment-1", 0, 1_500, "안녕 하세요", "Speaker 1"),
+            FinalTranscriptSegment("provider-segment-2", 1_500, 3_000, "일정을 논의 합니다", "Speaker 1"),
+        ],
+    )
+    refined = application.refine_meeting_transcript(UUID(raw["transcript_revision_id"]))
+    summary = application.summarize_meeting_transcript(UUID(refined["refinement_revision_id"]))
+
+    detail = client.get(f"/api/meetings/{meeting['meeting_id']}", headers=mina)
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+
+    [recording] = body["recordings"]
+    assert recording["recording_id"] == started["recording_id"]
+    # The raw transcript is the source truth and stays reachable.
+    assert recording["raw_transcript"]["transcript_revision_id"] == raw["transcript_revision_id"]
+    assert [segment["text"] for segment in recording["raw_transcript"]["segments"]] == ["안녕 하세요", "일정을 논의 합니다"]
+    # The refinement is a derived projection that points back at the raw segments it covers.
+    assert recording["refinement"]["refinement_revision_id"] == refined["refinement_revision_id"]
+    assert recording["refinement"]["raw_transcript_revision_id"] == raw["transcript_revision_id"]
+    assert recording["refinement"]["segments"][0]["raw_start_segment_id"] == raw["segments"][0]["segment_id"]
+    # Speaker confirmations belong to the transcript, not to the summary.
+    assert recording["speaker_assignments"] == []
+
+    # Summaries hang off the meeting with their evidence, so a click can scroll to the segment it came from.
+    [projected_summary] = body["summaries"]
+    assert projected_summary["summary_id"] == summary["summary_id"]
+    assert projected_summary["kind"] == "final" and projected_summary["state"] == "completed"
+    assert projected_summary["evidence"][0]["raw_start_ms"] == 0
+    assert projected_summary["evidence"][0]["refinement_start_segment_id"] == refined["segments"][0]["segment_id"]
+
+    # A storage key or provider file handle is never a browser capability.
+    assert recording["storage_key"] is None
+    assert "provider_reference" not in recording
+
+
+def test_meeting_detail_stays_closed_to_someone_without_a_relationship(tmp_path) -> None:
+    """A private meeting leaks nothing through the detail read, and only a busy block through the calendar."""
+    provider = RefinementProvider()
+    client = _client(tmp_path, provider=provider)
+    meeting = _meeting(client)
+    mina = {"X-Demo-Persona": "mina"}
+    started = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/start", headers=mina, json={"purpose": "비공개"}
+    ).json()
+    client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/{started['recording_id']}/stop",
+        headers=mina,
+        data={"expected_version": str(started["version"])},
+        files={"audio": ("raw.webm", b"audio", "audio/webm")},
+    )
+    application = client.app.state.workflow_application
+    raw = application.record_final_meeting_transcript(
+        recording_id=UUID(started["recording_id"]),
+        provider="soniox",
+        provider_reference="async:private-source",
+        segments=[
+            FinalTranscriptSegment("provider-segment-1", 0, 1_500, "비밀 논의 입니다", "Speaker 1"),
+            FinalTranscriptSegment("provider-segment-2", 1_500, 3_000, "공개 하지 않습니다", "Speaker 1"),
+        ],
+    )
+    refined = application.refine_meeting_transcript(UUID(raw["transcript_revision_id"]))
+    application.summarize_meeting_transcript(UUID(refined["refinement_revision_id"]))
+
+    outsider = {"X-Demo-Persona": "sora"}
+    assert client.get(f"/api/meetings/{meeting['meeting_id']}", headers=outsider).status_code == 404
+    listed = client.get("/api/meetings", headers=outsider).json()
+    assert [row["kind"] for row in listed] == ["busy"]
+    # The busy block carries time and nothing else: no title, transcript, summary or attendee count.
+    assert set(listed[0]) == {"kind", "starts_at", "ends_at"}
+    assert "비밀 논의" not in str(listed)
