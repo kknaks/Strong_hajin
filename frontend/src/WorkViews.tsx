@@ -148,7 +148,9 @@ export function TaskListRow({ task, onOpen, right }: { task: DirectTask; onOpen:
             ? `막힘 사유: ${task.block_reason}`
             : task.due_date
               ? `기한 ${formatDate(task.due_date)} (${dueDayText(task.due_date, seoulToday())})`
-              : `${formatDate(task.start_date ?? isoDateInSeoul(task.created_at))} 시작`}
+              : task.start_date
+                ? `${formatDate(task.start_date)} 시작`
+                : `${formatDate(isoDateInSeoul(task.created_at))} 등록`}
         </small>
       </div>
       <div className="task-row-right">

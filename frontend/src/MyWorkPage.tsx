@@ -16,7 +16,7 @@ import {
   transitionDirectTask,
   updateTask,
 } from "./api";
-import { dueDayText, formatDate, isoDateInSeoul, personName, seoulToday, taskStateLabel, workRequestStateLabel } from "./labels";
+import { dueDayText, formatDate, personName, seoulToday, taskStateLabel, workRequestStateLabel } from "./labels";
 import { type ActionItemEnvelope, type DirectTask, type Persona, type TaskAssignment, type TaskPatch, type TaskState, type WorkRequest } from "./viewModels";
 import {
   CreateWorkDrawer,
@@ -467,7 +467,7 @@ export function MyWorkPage({
                       key={task.task_id}
                       onOpen={() => setSelectedTask(task)}
                       requester={task.origin?.actor ? personName(task.origin.actor.display_name) : "—"}
-                      startDate={formatDate(task.start_date ?? isoDateInSeoul(task.created_at))}
+                      startDate={task.start_date ? formatDate(task.start_date) : "—"}
                       task={task}
                       today={today}
                     />

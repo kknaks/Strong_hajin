@@ -57,7 +57,7 @@ const requests: WorkRequest[] = [
   request({ request_id: "cc-me", title: "참조로 받은 요청", requester_id: "jiho", assignee_id: "sora", cc_member_ids: ["mina"] }),
 ];
 
-function renderPage(overrides: Record<string, unknown> = {}, mocks: { actions?: unknown[]; judgements?: unknown[] } = {}) {
+function renderPage(overrides: Record<string, unknown> = {}, mocks: { actions?: unknown[]; judgements?: unknown[]; work?: unknown[] } = {}) {
   vi.mocked(api.getMyWork).mockResolvedValue([]);
   vi.mocked(api.getTasks).mockResolvedValue([]);
   vi.mocked(api.getActionItems).mockResolvedValue([]);
@@ -69,6 +69,7 @@ function renderPage(overrides: Record<string, unknown> = {}, mocks: { actions?: 
   vi.mocked(api.getTaskAssignmentCandidates).mockResolvedValue([]);
   if (mocks.actions) vi.mocked(api.getActions).mockResolvedValue(mocks.actions as never);
   if (mocks.judgements) vi.mocked(api.getActionItems).mockResolvedValue(mocks.judgements as never);
+  if (mocks.work) vi.mocked(api.getMyWork).mockResolvedValue(mocks.work as never);
   const props = {
     personaId: "mina",
     personaName: "민아 (구성원)",
@@ -212,5 +213,38 @@ describe("work relation information architecture", () => {
     await waitFor(() => expect(within(drawer).getByRole("button", { name: "재상신" })).toBeTruthy());
     // The existing round history is still on screen while editing.
     expect(within(drawer).getAllByText(/기한을 늦춰 주세요/).length).toBeGreaterThan(0);
+  });
+});
+
+describe("what the list says about dates", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("shows the start date a task actually has, and says nothing when it has none", async () => {
+    const started = {
+      task_id: "t1",
+      title: "시작일이 있는 업무",
+      state: "in_progress",
+      version: 1,
+      block_reason: null,
+      start_date: "2026-09-01",
+      due_date: null,
+      created_at: "2026-08-20T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+    };
+    const undated = { ...started, task_id: "t2", title: "시작일이 없는 업무", start_date: null };
+    renderPage({}, { work: [started, undated] });
+
+    const withDate = (await screen.findByText("시작일이 있는 업무")).closest("tr") as HTMLElement;
+    expect(within(withDate).getByText("2026/09/01")).toBeTruthy();
+
+    // A task nobody scheduled has no start date. The day it was created is not one.
+    const without = screen.getByText("시작일이 없는 업무").closest("tr") as HTMLElement;
+    expect(within(without).queryByText("2026/08/20")).toBeNull();
+    expect(within(without).getAllByText("—").length).toBeGreaterThan(0);
+    // The scheduled task keeps its own date, so the two rows do not read the same.
+    expect(within(withDate).queryByText("2026/08/20")).toBeNull();
   });
 });
