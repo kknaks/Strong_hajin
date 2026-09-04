@@ -1,5 +1,9 @@
 import type {
   ActionItemDetail,
+  CalendarEntry,
+  MeetingDetail,
+  MeetingNote,
+  MeetingSummary,
   ChecklistItem,
   ActionItemEnvelope,
   DailyReportDraft,
@@ -437,4 +441,52 @@ export async function updateChecklistItem(
 
 export async function removeChecklistItem(taskId: string, itemId: string): Promise<void> {
   await request(`/api/tasks/${taskId}/checklist/${itemId}`, { method: "DELETE" });
+}
+
+export async function getCalendarEntries(): Promise<CalendarEntry[]> {
+  return request<CalendarEntry[]>("/api/meetings");
+}
+
+export async function getMeeting(meetingId: string): Promise<MeetingDetail> {
+  return request<MeetingDetail>(`/api/meetings/${meetingId}`);
+}
+
+export async function createMeeting(input: {
+  organization_id: string;
+  title: string;
+  starts_at: string;
+  ends_at: string;
+  visibility: "public" | "private";
+  attendee_ids: string[];
+}): Promise<MeetingDetail> {
+  return request<MeetingDetail>("/api/meetings", { body: JSON.stringify(input), method: "POST" });
+}
+
+export async function createMeetingNote(meetingId: string, body: string): Promise<MeetingNote> {
+  return request<MeetingNote>(`/api/meetings/${meetingId}/note`, { body: JSON.stringify({ body }), method: "POST" });
+}
+
+export async function saveMeetingNote(meetingId: string, expectedVersion: number, body: string): Promise<MeetingNote> {
+  return request<MeetingNote>(`/api/meetings/${meetingId}/note`, {
+    body: JSON.stringify({ expected_version: expectedVersion, body }),
+    method: "PATCH",
+  });
+}
+
+export async function finalizeMeetingNote(meetingId: string, expectedVersion: number): Promise<MeetingNote> {
+  return request<MeetingNote>(`/api/meetings/${meetingId}/note/finalize`, {
+    body: JSON.stringify({ expected_version: expectedVersion }),
+    method: "POST",
+  });
+}
+
+export async function adoptMeetingSummary(
+  meetingId: string,
+  summaryId: string,
+  expectedVersion: number,
+): Promise<{ summary: MeetingSummary; note: MeetingNote }> {
+  return request<{ summary: MeetingSummary; note: MeetingNote }>(`/api/meetings/${meetingId}/summaries/${summaryId}/adopt`, {
+    body: JSON.stringify({ expected_version: expectedVersion }),
+    method: "POST",
+  });
 }

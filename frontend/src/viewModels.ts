@@ -410,3 +410,107 @@ export type RequestTimeline = {
   review_decisions: Array<{ review_decision_id: string; submission_id: string; actor_member_id: string; decision: string; reason: string | null; conditions: Record<string, unknown> | null; decided_at: string }>;
   activity: Array<{ event_kind: string; actor_id: string; safe_summary: string; reason: string | null; occurred_at: string }>;
 };
+
+/* ---- Meeting: the calendar entry SCAX owns, and the record it accumulates ---- */
+
+/** A calendar row is either a meeting the caller may read, or a bare busy block that leaks nothing else. */
+export type CalendarEntry = MeetingSummaryRow | { kind: "busy"; starts_at: string; ends_at: string };
+
+export type MeetingSummaryRow = {
+  kind: "meeting";
+  meeting_id: string;
+  organization_id: string;
+  owner_id: string;
+  title: string;
+  starts_at: string;
+  ends_at: string;
+  visibility: "public" | "private";
+  lifecycle: string;
+  version: number;
+  attendees: Array<{ member_id: string; display_name: string }>;
+};
+
+export type MeetingNoteVersion = {
+  version_id: string;
+  version: number;
+  body: string;
+  created_by: string;
+  created_at: string;
+  source_evidence: Array<Record<string, unknown>>;
+};
+
+export type MeetingNote = {
+  note_id: string;
+  lifecycle: string;
+  version: number;
+  body: string;
+  versions: MeetingNoteVersion[];
+  finalized_at: string | null;
+  finalized_by: string | null;
+};
+
+/** Immutable provider output. Never edited; the refinement below is a projection of it. */
+export type RawTranscriptSegment = {
+  segment_id: string;
+  source_segment_key: string;
+  start_ms: number;
+  end_ms: number;
+  text: string;
+  speaker_label: string | null;
+  confirmed_member_id: string | null;
+};
+
+export type RefinedTranscriptSegment = RawTranscriptSegment & {
+  raw_start_segment_id: string;
+  raw_end_segment_id: string;
+  correction_kind: string | null;
+  confidence: number | null;
+};
+
+export type MeetingRecording = {
+  recording_id: string;
+  meeting_id: string;
+  purpose: string;
+  state: "not_started" | "recording" | "uploaded" | "transcribing" | "transcribed" | "failed" | "deleted" | string;
+  version: number;
+  content_type: string | null;
+  original_name: string | null;
+  size_bytes: number | null;
+  sha256: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  storage_key: null;
+  raw_transcript: { transcript_revision_id: string; revision: number; state: string; provider: string; segments: RawTranscriptSegment[] } | null;
+  refinement: { refinement_revision_id: string; raw_transcript_revision_id: string; revision: number; state: string; segments: RefinedTranscriptSegment[] } | null;
+  speaker_assignments: Array<{ speaker_assignment_id: string; speaker_label: string; member_id: string; scope: string; state: string }>;
+};
+
+export type MeetingSummaryEvidence = {
+  statement_index: number;
+  kind: string;
+  text: string;
+  refinement_start_segment_id: string;
+  refinement_end_segment_id: string;
+  raw_start_segment_id: string;
+  raw_end_segment_id: string;
+  raw_start_ms: number;
+  raw_end_ms: number;
+};
+
+export type MeetingSummary = {
+  summary_id: string;
+  meeting_id: string;
+  raw_transcript_revision_id: string;
+  refinement_revision_id: string;
+  kind: "provisional" | "final" | string;
+  state: "pending" | "adopted" | "dismissed" | "superseded" | "failed" | "completed" | string;
+  version: number;
+  body: string;
+  evidence: MeetingSummaryEvidence[];
+};
+
+export type MeetingDetail = MeetingSummaryRow & {
+  note: MeetingNote | null;
+  recordings: MeetingRecording[];
+  summaries: MeetingSummary[];
+};

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { getMyWork, getTasks, transitionDirectTask, updateTask } from "./api";
-import { personName } from "./labels";
-import type { DirectTask, Persona, TaskPatch } from "./viewModels";
+import { getCalendarEntries, getMyWork, getTasks, transitionDirectTask, updateTask } from "./api";
+import { formatDateTime, personName } from "./labels";
+import { MeetingDrawer } from "./MeetingDrawer";
+import type { CalendarEntry, DirectTask, Persona, TaskPatch } from "./viewModels";
 import { TaskDetailDrawer, type TaskAction } from "./WorkModals";
 import { TaskCalendar } from "./WorkViews";
 
@@ -18,11 +19,32 @@ type CalendarPageProps = {
   onRegisterRefresh?: (refresh: (() => Promise<void>) | null) => void;
 };
 
-export function CalendarPage({ personaName, canManageOwnTasks, onAskAboutTask, onNotice, onError, onRegisterRefresh }: CalendarPageProps) {
+export function CalendarPage({ personaId, personaName, canManageOwnTasks, onAskAboutTask, onNotice, onError, onRegisterRefresh }: CalendarPageProps) {
   const [tasks, setTasks] = useState<DirectTask[]>([]);
   const [mode, setMode] = useState<"week" | "month">("month");
   const [selected, setSelected] = useState<DirectTask | null>(null);
   const [busy, setBusy] = useState(false);
+  const [view, setView] = useState<"calendar" | "meetings">("calendar");
+  const [entries, setEntries] = useState<CalendarEntry[] | null>(null);
+  const [selectedMeeting, setSelectedMeeting] = useState<string | null>(null);
+
+  const loadMeetings = useCallback(async () => {
+    setEntries(await getCalendarEntries());
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getCalendarEntries()
+      .then((rows) => {
+        if (!cancelled) setEntries(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setEntries([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [personaName]);
 
   const reload = useCallback(async () => {
     const [work, closed] = await Promise.all([getMyWork(), getTasks(true).catch(() => [] as DirectTask[])]);
@@ -86,10 +108,34 @@ export function CalendarPage({ personaName, canManageOwnTasks, onAskAboutTask, o
       <div className="page-head">
         <div>
           <h1>캘린더</h1>
-          <p>시작일과 기한이 있는 업무는 그 기간으로, 없는 업무는 만든 날부터 표시합니다. 일간 뷰는 시간 배치 일정이 생기면 열립니다.</p>
+          <p>시작일과 기한이 있는 업무는 그 기간으로, 없는 업무는 만든 날부터 표시합니다. 회의는 SCAX가 직접 소유합니다.</p>
+        </div>
+        <div className="page-head-actions">
+          <div aria-label="캘린더 표시 방식" className="segmented" role="tablist">
+            <button aria-selected={view === "calendar"} onClick={() => setView("calendar")} role="tab" type="button">
+              캘린더 보기
+            </button>
+            <button aria-selected={view === "meetings"} onClick={() => setView("meetings")} role="tab" type="button">
+              회의 목록
+            </button>
+          </div>
         </div>
       </div>
-      <TaskCalendar mode={mode} onModeChange={setMode} onOpen={setSelected} tasks={tasks} />
+      {view === "calendar" ? (
+        <TaskCalendar mode={mode} onModeChange={setMode} onOpen={setSelected} tasks={tasks} />
+      ) : (
+        <MeetingList entries={entries} onOpen={setSelectedMeeting} />
+      )}
+      {selectedMeeting && (
+        <MeetingDrawer
+          meetingId={selectedMeeting}
+          onChanged={loadMeetings}
+          onClose={() => setSelectedMeeting(null)}
+          onError={onError}
+          onNotice={onNotice}
+          personaId={personaId}
+        />
+      )}
       {selected && (
         <TaskDetailDrawer
           busy={busy}
@@ -105,5 +151,50 @@ export function CalendarPage({ personaName, canManageOwnTasks, onAskAboutTask, o
         />
       )}
     </section>
+  );
+}
+
+/**
+ * The meeting list shows exactly what the server allowed. A concealed private meeting arrives as a busy block with a
+ * time and nothing else, and is rendered as such rather than as a meeting with hidden fields.
+ */
+function MeetingList({ entries, onOpen }: { entries: CalendarEntry[] | null; onOpen: (meetingId: string) => void }) {
+  if (entries === null) return <p className="t-meta">회의를 불러오는 중…</p>;
+  if (entries.length === 0) {
+    return (
+      <div className="empty-state">
+        <b>회의가 없습니다</b>
+        <p>일정이 잡히면 여기에 쌓입니다.</p>
+      </div>
+    );
+  }
+  return (
+    <ul aria-label="회의 목록" className="meeting-list">
+      {entries.map((entry, index) =>
+        entry.kind === "meeting" ? (
+          <li className="meeting-row openable" data-meeting-id={entry.meeting_id} key={entry.meeting_id} onClick={() => onOpen(entry.meeting_id)}>
+            <div className="cell-main">
+              <b>{entry.title}</b>
+              <small>
+                {formatDateTime(entry.starts_at)} · {entry.visibility === "public" ? "조직 공개" : "비공개"} ·{" "}
+                {entry.attendees.map((attendee) => personName(attendee.display_name)).join(", ") || "참석자 없음"}
+              </small>
+            </div>
+            <button className="btn h30 ghost" onClick={() => onOpen(entry.meeting_id)} type="button">
+              상세보기
+            </button>
+          </li>
+        ) : (
+          <li className="meeting-row busy" key={`busy-${index}`}>
+            <div className="cell-main">
+              <b>다른 일정</b>
+              <small>
+                {formatDateTime(entry.starts_at)} · 이 시간에 다른 일정이 있습니다
+              </small>
+            </div>
+          </li>
+        ),
+      )}
+    </ul>
   );
 }
