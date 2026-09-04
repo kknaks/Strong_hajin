@@ -6,7 +6,14 @@ from enum import StrEnum
 from typing import Any, Protocol
 from uuid import UUID
 
-from ax_workspace.modules.organization_access.domain import Principal, TASK_READ, TASK_SELF_MANAGE, WORK_REQUEST_READ
+from ax_workspace.modules.organization_access.domain import (
+    ACTION_READ,
+    Principal,
+    TASK_ASSIGN,
+    TASK_READ,
+    TASK_SELF_MANAGE,
+    WORK_REQUEST_READ,
+)
 
 
 class TaskState(StrEnum):
@@ -60,10 +67,11 @@ class TaskRepository(Protocol):
 
 
 class TaskApplication:
-    def __init__(self, repository: TaskRepository, requests: Any | None = None) -> None:
+    def __init__(self, repository: TaskRepository, requests: Any | None = None, actions: Any | None = None) -> None:
         self.repository = repository
-        # Reading a Task's origin may need the request behind it, always through that module's own authorized list.
+        # Reading a Task's origin may need the resource behind it, always through that module's own authorized lookup.
         self._requests = requests
+        self._actions = actions
 
     def create_self(
         self,
@@ -135,10 +143,18 @@ class TaskApplication:
         tasks = self.repository.tasks_for(str(principal.id), include_closed=include_closed)
         progress = self.repository.checklist_progress_for([task.id for task in tasks])
         origins = self._origin_projection(principal, tasks)
+        assignees = self._assignee_projection(tasks)
         views = []
         for task in tasks:
             done, total = progress.get(task.id, (0, 0))
-            views.append({**self._view(task), "checklist_progress": {"done": done, "total": total}, "origin": origins.get(task.id)})
+            views.append(
+                {
+                    **self._view(task),
+                    "checklist_progress": {"done": done, "total": total},
+                    "origin": origins.get(task.id),
+                    "assignee": assignees.get(task.id),
+                }
+            )
         return views
 
     def get(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
@@ -154,13 +170,27 @@ class TaskApplication:
             return {**self._related_view(principal, task_id), "access": "read_only"}
 
     def _related_view(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
+        """Read-only access for the two relationships that earn it: the requester, and the assigner.
+
+        Each needs its own capability as well as the relationship — reading someone else's work is never implied by
+        holding a neighbouring resource.
+        """
         task = self.repository.task_by_id(task_id)
-        if task is None or task.source_work_request_id is None:
+        if task is None:
             raise TaskNotFound("task was not found")
-        # The only relationship that opens someone else's Task is one the request module itself grants.
-        if task.source_work_request_id not in self._readable_request_ids(principal, {task.source_work_request_id}):
+        related = False
+        if task.source_work_request_id is not None:
+            related = task.source_work_request_id in self._readable_request_ids(principal, {task.source_work_request_id})
+        if not related and TASK_ASSIGN in principal.capabilities:
+            facts = self.repository.origin_facts([task]).get(task.id, {})
+            related = facts.get("assignment_kind") == "direct" and facts.get("assigned_by") == str(principal.id)
+        if not related:
             raise TaskNotFound("task was not found")
-        return {**self._view(task), "origin": self._origin_projection(principal, [task]).get(task.id)}
+        return {
+            **self._view(task),
+            "origin": self._origin_projection(principal, [task]).get(task.id),
+            "assignee": self._assignee_projection([task]).get(task.id),
+        }
 
     def transition(
         self,
@@ -205,6 +235,11 @@ class TaskApplication:
         if capability not in principal.capabilities:
             raise TaskAccessDenied(f"{capability} capability is required")
 
+    def _assignee_projection(self, tasks: list[Any]) -> dict[UUID, dict[str, str] | None]:
+        """The person holding each Task right now, read from its active assignment rather than from any caller's list."""
+        facts = self.repository.origin_facts(tasks)
+        return {task.id: self._actor(facts.get(task.id, {}).get("assignee_id") or task.owner_id) for task in tasks}
+
     def _origin_projection(self, principal: Principal, tasks: list[Any]) -> dict[UUID, dict[str, Any]]:
         """Where each Task came from, and which role that actor actually played.
 
@@ -228,6 +263,9 @@ class TaskApplication:
                     if request_id in readable_requests
                     else None
                 )
+            elif task.source_action_item_id is not None:
+                kind, actor_role, actor_id = "self_created", "생성자", task.owner_id
+                source = self._action_item_source(principal, task.source_action_item_id)
             elif fact.get("assignment_kind") == "direct":
                 kind, actor_role, actor_id, source = "direct_assignment", "배정자", fact.get("assigned_by"), None
             else:
@@ -252,6 +290,15 @@ class TaskApplication:
             return set()
         member_id = str(principal.id)
         return {request.id for request in self._requests.list_for(member_id) if request.id in wanted}
+
+    def _action_item_source(self, principal: Principal, action_item_id: Any) -> dict[str, Any] | None:
+        """The AX proposal a Task came from, when this principal holds the action capability and owns that proposal."""
+        if self._actions is None or ACTION_READ not in principal.capabilities:
+            return None
+        action = self._actions.action(action_item_id, str(principal.id))
+        if action is None:
+            return None
+        return {"type": "action_item", "id": str(action.id), "title": action.title}
 
     def _actor(self, member_id: Any) -> dict[str, str] | None:
         if not member_id:
@@ -310,6 +357,7 @@ class TaskApplication:
             "checklist": items,
             "checklist_progress": {"done": sum(1 for item in items if item["done"]), "total": len(items)},
             "origin": self._origin_projection(principal, [task]).get(task.id),
+            "assignee": self._assignee_projection([task]).get(task.id),
         }
 
     @staticmethod

@@ -25,8 +25,10 @@ export type DirectTask = {
   lineage?: TaskLineage;
   /** Where this Task came from, decided and authorized by the server. Never derived on the client. */
   origin?: TaskOrigin | null;
-  /** "owner" holds the task; "read_only" may look at it through a source they are allowed to read. */
+  /** "owner" holds the task; "read_only" may look at it through a relationship they are allowed to read. */
   access?: "owner" | "read_only";
+  /** Who holds the work right now, projected from the active assignment by the server. */
+  assignee?: { member_id: string; display_name: string } | null;
   /** Steps inside this Task. Present on the detail read, not on list projections. */
   checklist?: ChecklistItem[];
   checklist_progress?: { done: number; total: number };
@@ -260,6 +262,8 @@ export type ActionItemEnvelope = {
   waiting_on: { member_id: string; display_name: string } | null;
   resource: { type: string; id: string };
   expected_version: number | null;
+  /** The Task this proposal produced, when it produced one. */
+  derived_task_id?: string | null;
 };
 
 /** One immutable round: the frozen content that was judged, what changed since the previous round, and the answers. */
@@ -274,7 +278,7 @@ export type ActionRound = {
   decisions: Array<{ review_decision_id: string; actor_member_id: string; decision: string; reason: string | null; decided_at: string }>;
 };
 
-export type ActionItemDetail = ActionItemEnvelope & { rounds: ActionRound[] };
+export type ActionItemDetail = ActionItemEnvelope & { rounds: ActionRound[]; derived_task_id?: string | null };
 
 export type ActionPreviewField = { id: string; label: string; value: string; kind: "text" | "date" | "person" | "people" | "state" | string };
 

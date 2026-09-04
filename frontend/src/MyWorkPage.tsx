@@ -226,10 +226,17 @@ export function MyWorkPage({
     }
   };
 
+  /** Follow a Task back to whatever the server said its source is. Only sources it allowed ever reach here. */
   const openSource = async (source: { type: string; id: string }) => {
-    if (source.type !== "work_request") return;
     onError(null);
     try {
+      if (source.type === "action_item") {
+        setSelectedTask(null);
+        setRelatedTask(null);
+        setSelectedActionItem({ action_item_id: source.id } as ActionItemEnvelope);
+        return;
+      }
+      if (source.type !== "work_request") return;
       const request = (await getWorkRequests()).find((row) => row.request_id === source.id) ?? null;
       setSelectedTask(null);
       setRelatedTask(null);
@@ -372,7 +379,7 @@ export function MyWorkPage({
                       </tr>
                     )}
                     {sentAssignments.map((assignment) => (
-                      <tr key={assignment.assignment_id}>
+                      <tr className="openable" key={assignment.assignment_id} onClick={() => void openDerivedTask(assignment.task.task_id)}>
                         <td className="title-cell">{assignment.task.title}</td>
                         <td className="center">
                           <StatusText
@@ -480,7 +487,7 @@ export function MyWorkPage({
           onTransition={transitionTask}
           onOpenSource={selectedTask.origin?.source ? (source) => void openSource(source) : undefined}
           onUpdate={updateTaskFields}
-          ownerName={me}
+          ownerName={selectedTask.assignee ? personName(selectedTask.assignee.display_name) : me}
           task={selectedTask}
         />
       )}
@@ -494,7 +501,7 @@ export function MyWorkPage({
           onOpenSource={relatedTask.origin?.source ? (source) => void openSource(source) : undefined}
           onTransition={async () => undefined}
           onUpdate={async () => undefined}
-          ownerName={relatedTask.origin?.actor ? personName(relatedTask.origin.actor.display_name) : me}
+          ownerName={relatedTask.assignee ? personName(relatedTask.assignee.display_name) : "미할당"}
           task={relatedTask}
         />
       )}
@@ -506,6 +513,10 @@ export function MyWorkPage({
           onDone={onDecided}
           onError={onError}
           onNotice={onNotice}
+          onOpenDerivedTask={(taskId) => {
+            setSelectedActionItem(null);
+            void openDerivedTask(taskId);
+          }}
           personas={people}
         />
       )}

@@ -95,21 +95,17 @@ try {
   await page.getByRole("dialog", { name: "업무 요청 상세" }).waitFor({ timeout: 20_000 });
   await page.getByRole("dialog", { name: "업무 요청 상세" }).getByRole("button", { name: "상세 닫기" }).click();
 
-  // The assigner reads their own side without holding the work either.
-  await switchAccount(page, "jiho");
-  const assignerView = await page.evaluate(async (title) => {
+  // The requester's own view of the same Task: the holder is the other person, not themselves.
+  const requesterView = await page.evaluate(async (title) => {
     const rows = await (await fetch("/api/work-requests")).json();
     const request = rows.find((row) => row.title === title);
     if (!request?.task_id) return null;
     const task = await (await fetch(`/api/tasks/${request.task_id}`)).json();
-    return { access: task.access, role: task.origin?.actor_role, actor: task.origin?.actor?.member_id, source: task.origin?.source?.id ?? null };
+    return { access: task.access, role: task.origin?.actor_role, actor: task.origin?.actor?.member_id, assignee: task.assignee?.member_id };
   }, requested);
-  if (assignerView?.access !== "owner" || assignerView.role !== "요청자" || assignerView.actor !== "mina") {
-    throw new Error(`the assignee's own view is wrong: ${JSON.stringify(assignerView)}`);
+  if (requesterView?.access !== "read_only" || requesterView.actor !== "mina" || requesterView.assignee !== "jiho") {
+    throw new Error(`the requester's view is wrong: ${JSON.stringify(requesterView)}`);
   }
-
-  await switchAccount(page, "mina");
-  await navigation.getByRole("button", { name: "내 업무" }).click();
 
   // The assignee of a direct assignment sees the assigner, never themselves.
   await navigation.getByRole("button", { name: "내 업무" }).click();
@@ -138,11 +134,36 @@ try {
     throw new Error(`list projection disagrees with the detail: ${JSON.stringify(assignedOrigin)}`);
   }
 
+  // The assigner follows the work he handed out, in the browser, from the list where he handed it out.
+  await switchAccount(page, "jiho");
+  await navigation.getByRole("button", { name: "내 업무" }).click();
+  await page.getByRole("tab", { name: "요청·배정" }).click();
+  await page.locator("section[aria-label='내가 배정한 업무']").locator("tr", { hasText: assigned }).first().click();
+  const assignerDrawer = page.getByRole("dialog", { name: "업무 상세" });
+  await assignerDrawer.waitFor({ timeout: 20_000 });
+  const assignerSideRole = ((await assignerDrawer.locator(".meta-grid div", { hasText: "배정자" }).first().textContent()) ?? "").replace(/\s+/g, " ");
+  const assignerSideHolder = ((await assignerDrawer.locator(".meta-grid div", { hasText: "담당자" }).first().textContent()) ?? "").replace(/\s+/g, " ");
+  if (!assignerSideRole.includes("지호")) throw new Error(`the assigner is not named: ${JSON.stringify(assignerSideRole)}`);
+  if (!assignerSideHolder.includes("민아")) throw new Error(`the current holder is not named: ${JSON.stringify(assignerSideHolder)}`);
+  if (await assignerDrawer.locator("section[aria-label='체크리스트']").count()) throw new Error("the assigner was given the holder's checklist");
+  if (!(await assignerDrawer.locator("input.title-input").isDisabled())) throw new Error("the assigner can edit the holder's task");
+  const assignerAccess = await page.evaluate(async (title) => {
+    const rows = await (await fetch("/api/task-assignments/sent")).json();
+    const row = rows.find((entry) => entry.task.title === title);
+    const task = await (await fetch(`/api/tasks/${row.task.task_id}`)).json();
+    return { access: task.access, role: task.origin?.actor_role, actor: task.origin?.actor?.member_id, assignee: task.assignee?.member_id };
+  }, assigned);
+  if (assignerAccess?.access !== "read_only" || assignerAccess.actor !== "jiho" || assignerAccess.assignee !== "mina") {
+    throw new Error(`the assigner's read is wrong: ${JSON.stringify(assignerAccess)}`);
+  }
+  await assignerDrawer.getByRole("button", { name: "상세 닫기" }).click();
+
   await page.screenshot({ path: "test-results/task-origin-e2e.png", fullPage: true });
   console.log(
     JSON.stringify({
       result: "requester, assigner and assignee read one origin, and navigation works both ways",
-      assigner_view: assignerView,
+      requester_view: requesterView,
+      assigner_read: assignerAccess,
       assigned_origin: assignedOrigin,
     }),
   );

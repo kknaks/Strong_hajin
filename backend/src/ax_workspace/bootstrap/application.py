@@ -785,7 +785,11 @@ class WorkflowApplication:
 
     def _tasks(self, session: Any) -> TaskApplication:
         """Tasks with the request module attached, so a Task's origin can name a requester it is allowed to name."""
-        return TaskApplication(SqlAlchemyTaskRepository(session), SqlAlchemyWorkRequestRepository(session))
+        return TaskApplication(
+            SqlAlchemyTaskRepository(session),
+            SqlAlchemyWorkRequestRepository(session),
+            SqlAlchemyActionRepository(session),
+        )
 
     def _work_requests(self, session: Any) -> WorkRequestApplication:
         return WorkRequestApplication(

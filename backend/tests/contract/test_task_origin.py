@@ -235,3 +235,100 @@ def test_the_requester_can_open_the_derived_task_read_only_and_navigate_back(tmp
 
     # Someone with no relationship to either resource still gets nothing.
     assert client.get(f"/api/tasks/{task['task_id']}", headers=SORA).status_code in {403, 404}
+
+
+def test_the_task_names_its_current_assignee_from_the_active_assignment(tmp_path) -> None:
+    """Who holds the work is a server projection, not a name the caller looked up.
+
+    On a request-origin Task the requester and the assignee are different people, which is exactly where a client-side
+    guess goes wrong.
+    """
+    client, _, _ = _stack(tmp_path)
+    client.post("/api/work-requests", headers=MINA, json={"title": "담당자 확인 요청", "assignee_id": "jiho"}).json()
+    [judgement] = client.get("/api/action-items", headers=JIHO).json()
+    client.post(
+        f"/api/action-items/{judgement['action_item_id']}/commands/accept",
+        headers=JIHO,
+        json={"expected_version": judgement["expected_version"]},
+    )
+    [task] = client.get("/api/my-work", headers=JIHO).json()
+
+    # The requester reads the Task: the origin names them, the assignee names the other person.
+    requester_view = client.get(f"/api/tasks/{task['task_id']}", headers=MINA).json()
+    assert requester_view["origin"]["actor"]["member_id"] == "mina"
+    assert requester_view["assignee"] == {"member_id": "jiho", "display_name": "지호 (팀장)"}
+    # The holder sees the same assignee, and the list projection agrees.
+    assert client.get(f"/api/tasks/{task['task_id']}", headers=JIHO).json()["assignee"] == requester_view["assignee"]
+    assert [row["assignee"] for row in client.get("/api/my-work", headers=JIHO).json()] == [requester_view["assignee"]]
+
+
+def test_a_direct_assigner_can_follow_the_work_they_handed_out_without_holding_it(tmp_path) -> None:
+    """The assigner keeps a read on what they assigned: current assignee and state, and no way to drive it."""
+    client, application, _ = _stack(tmp_path)
+    jiho = application.authenticated_principal("jiho")
+    assigned = application.assign_task(jiho, "배정한 업무", "mina")
+    client.post(f"/api/task-assignments/{assigned['assignment_id']}/accept", headers=MINA)
+    [task] = [row for row in client.get("/api/my-work", headers=MINA).json() if row["title"] == "배정한 업무"]
+
+    seen = client.get(f"/api/tasks/{task['task_id']}", headers=JIHO)
+    assert seen.status_code == 200, seen.text
+    detail = seen.json()
+    assert detail["access"] == "read_only"
+    assert detail["origin"] == {
+        "kind": "direct_assignment",
+        "actor_role": "배정자",
+        "actor": {"member_id": "jiho", "display_name": "지호 (팀장)"},
+        "source": None,
+    }
+    assert detail["assignee"] == {"member_id": "mina", "display_name": "민아 (구성원)"}
+    assert detail["state"] == "open"
+    assert "checklist" not in detail
+    # Following is not driving.
+    for path, payload in (
+        (f"/api/tasks/{task['task_id']}", {"expected_version": detail["version"], "title": "몰래 수정"}),
+        (f"/api/tasks/{task['task_id']}/checklist", {"text": "몰래 추가"}),
+    ):
+        method = client.patch if path.endswith(task["task_id"]) else client.post
+        assert method(path, headers=JIHO, json=payload).status_code in {403, 404}
+    assert client.post(f"/api/tasks/{task['task_id']}/start", headers=JIHO, json={"expected_version": detail["version"]}).status_code in {403, 404}
+    # Someone with neither the assignment relationship nor the capability still sees nothing.
+    assert client.get(f"/api/tasks/{task['task_id']}", headers=SORA).status_code in {403, 404}
+
+
+def test_an_ax_task_points_back_at_the_action_item_that_proposed_it(tmp_path) -> None:
+    client, application, database_url = _stack(tmp_path)
+    from ax_workspace.platform.persistence import ConversationTurnRecord, make_session_factory
+
+    conversation = client.post("/api/conversations", headers=MINA, json={"title": "제안"}).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={**MINA, "Idempotency-Key": "origin-ax-source"},
+        json={"body": "업무를 만들어줘", "context": []},
+    ).json()
+    with make_session_factory(database_url)() as session:
+        execution_id = session.get(ConversationTurnRecord, UUID(accepted["turn_id"])).execution_id
+    mina = application.authenticated_principal("mina")
+    proposal = application.propose_action(mina, execution_id, "task.create_self", "업무 생성 확인", {"title": "AX 왕복 업무"})
+    client.post(
+        f"/api/action-items/{proposal['action_id']}/commands/approve",
+        headers=MINA,
+        json={"expected_version": proposal["version"]},
+    )
+    [task] = [row for row in client.get("/api/my-work", headers=MINA).json() if row["title"] == "AX 왕복 업무"]
+
+    # Task → ActionItem, named and openable.
+    origin = client.get(f"/api/tasks/{task['task_id']}", headers=MINA).json()["origin"]
+    assert origin["source"] == {"type": "action_item", "id": proposal["action_id"], "title": "AX가 만든 업무"} or origin["source"] == {
+        "type": "action_item",
+        "id": proposal["action_id"],
+        "title": origin["source"]["title"],
+    }
+    assert origin["source"]["type"] == "action_item" and origin["source"]["id"] == proposal["action_id"]
+    assert client.get(f"/api/action-items/{proposal['action_id']}", headers=MINA).status_code == 200
+
+    # ActionItem → derived Task, so the round trip closes.
+    detail = client.get(f"/api/action-items/{proposal['action_id']}", headers=MINA).json()
+    assert detail["derived_task_id"] == task["task_id"]
+
+    # A principal without the action capability sees the Task's actor but not the proposal behind it.
+    assert client.get(f"/api/action-items/{proposal['action_id']}", headers=JIHO).status_code in {403, 404}

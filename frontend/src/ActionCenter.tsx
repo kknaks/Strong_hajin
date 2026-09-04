@@ -207,9 +207,12 @@ export function ActionItemDrawer({
   onDone,
   onError,
   onNotice,
+  onOpenDerivedTask,
 }: {
   actionItemId: string;
   personas: Persona[];
+  /** Open the Task this judgement produced, closing the round trip from the Task's own source link. */
+  onOpenDerivedTask?: (taskId: string) => void;
   onClose: () => void;
   /** Settles every affected projection and reports whether all of them succeeded. */
   onDone: () => Promise<boolean>;
@@ -369,6 +372,14 @@ export function ActionItemDrawer({
                 />
               </div>
             </section>
+          )}
+          {detail.derived_task_id && onOpenDerivedTask && (
+            <p className="t-meta">
+              이 판단으로 생긴 업무{" "}
+              <button className="btn link" onClick={() => onOpenDerivedTask(detail.derived_task_id!)} type="button">
+                업무 보기
+              </button>
+            </p>
           )}
           <RoundHistory personas={personas} rounds={detail.rounds} />
           {detail.status === "resolved" && <p className="t-meta">이 질문은 이미 판단이 끝났습니다. 기록으로만 남습니다.</p>}

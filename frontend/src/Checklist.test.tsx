@@ -227,6 +227,24 @@ describe("task origin", () => {
     expect(onOpenSource).toHaveBeenCalledWith({ type: "work_request", id: "r1", title: "견적 재검토" });
   });
 
+  it("names the holder from the server projection, not from the origin actor", async () => {
+    // On a request-origin task these are different people, which is where a client-side guess went wrong.
+    const requested = {
+      ...task,
+      access: "read_only" as const,
+      assignee: { member_id: "jiho", display_name: "지호 (팀장)" },
+      origin: { kind: "work_request", actor_role: "요청자", actor: { member_id: "mina", display_name: "민아 (구성원)" }, source: null },
+    };
+    vi.mocked(api.getTask).mockResolvedValue(requested as never);
+    render(
+      <TaskDetailDrawer busy={false} canManage={false} onClose={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} onTransition={vi.fn()} onUpdate={vi.fn()} ownerName="지호" task={requested as never} />,
+    );
+    const assigneeRow = (await screen.findByText("담당자")).closest("div") as HTMLElement;
+    expect(within(assigneeRow).getByText("지호")).toBeTruthy();
+    const originRow = (await screen.findByText("요청자")).closest("div") as HTMLElement;
+    expect(within(originRow).getByText("민아")).toBeTruthy();
+  });
+
   it("shows a read-only task as a record, not as a workspace", async () => {
     const readOnly = {
       ...task,

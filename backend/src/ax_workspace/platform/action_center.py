@@ -355,7 +355,13 @@ class AxProposalActionHandler:
             waiting_on=self._members.waiting_on(str(record.owner_id)),
             resource={"type": "action", "id": str(record.id)},
             expected_version=int(record.version),
+            # Closing the round trip: the Task this proposal produced, if it produced one.
+            extra={"derived_task_id": self._derived_task_id(record)},
         )
+
+    def _derived_task_id(self, record: ActionItemRecord) -> str | None:
+        task_id = self._session.scalar(select(TaskRecord.id).where(TaskRecord.source_action_item_id == record.id))
+        return str(task_id) if task_id else None
 
 
 class TaskAssignmentActionHandler:
