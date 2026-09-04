@@ -282,7 +282,7 @@ class SqlAlchemyDailyReportRepository:
         statement = select(DailyReportRecord).where(
             DailyReportRecord.id == UUID(report_id), DailyReportRecord.owner_id == owner_id
         )
-        report = self._session.scalar(statement.with_for_update() if lock else statement)
+        report = self._session.scalar(statement.with_for_update().execution_options(populate_existing=True) if lock else statement)
         if report is None:
             raise ValueError("daily report was not found")
         return report
@@ -291,7 +291,7 @@ class SqlAlchemyDailyReportRepository:
         statement = select(ReportDraftRecord).where(
             ReportDraftRecord.id == UUID(draft_id), ReportDraftRecord.report_id == report_id
         )
-        draft = self._session.scalar(statement.with_for_update() if lock else statement)
+        draft = self._session.scalar(statement.with_for_update().execution_options(populate_existing=True) if lock else statement)
         if draft is None:
             raise ValueError("daily report draft was not found")
         return draft

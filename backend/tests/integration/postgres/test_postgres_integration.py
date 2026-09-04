@@ -1142,3 +1142,128 @@ def test_postgres_serializes_two_simultaneous_comment_posts_of_the_same_key_into
     assert int(stored) == 1
     timeline = client.get(f"/api/work-requests/{request['request_id']}/timeline", headers={"X-Demo-Persona": "mina"}).json()
     assert [item["body"] for item in timeline["comments"]] == ["논의 추가"]
+
+
+@pytest.mark.integration
+def test_postgres_serializes_two_simultaneous_judgements_into_one_effect() -> None:
+    """Two people (or two tabs) answering the same question at once must produce one Task and one decision."""
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    client = _conversation_client(database_url)
+    client.post("/api/work-requests", headers={"X-Demo-Persona": "mina"}, json={"title": "동시 판단 요청", "assignee_id": "jiho"})
+    [item] = client.get("/api/action-items", headers={"X-Demo-Persona": "jiho"}).json()
+    url = f"/api/action-items/{item['action_item_id']}/commands/accept"
+    body = {"expected_version": item["expected_version"]}
+    barrier = Barrier(2)
+    results: list[tuple[int, str]] = []
+    lock = Lock()
+
+    def accept() -> None:
+        barrier.wait(timeout=10)
+        response = client.post(url, headers={"X-Demo-Persona": "jiho"}, json=body)
+        with lock:
+            results.append((response.status_code, response.text[:200]))
+
+    threads = [Thread(target=accept) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+
+    assert sorted(status for status, _ in results) == [200, 422], results  # one answer, one stale-version refusal
+    with make_session_factory(database_url)() as session:
+        assert int(session.execute(text("SELECT count(*) FROM tasks WHERE title = '동시 판단 요청'")).scalar_one()) == 1
+        assert int(session.execute(text("SELECT count(*) FROM review_decisions")).scalar_one()) == 1
+    assert client.get("/api/action-items", headers={"X-Demo-Persona": "jiho"}).json() == []
+
+
+@pytest.mark.integration
+def test_postgres_keeps_every_earlier_round_byte_identical_after_a_revision() -> None:
+    """A revision adds a round. It never edits the content, the hash, or the decision of an earlier one."""
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    client = _conversation_client(database_url)
+    mina = {"X-Demo-Persona": "mina"}
+    jiho = {"X-Demo-Persona": "jiho"}
+    client.post("/api/work-requests", headers=mina, json={"title": "원래 제목", "assignee_id": "jiho", "description": "원래 설명"})
+    [item] = client.get("/api/action-items", headers=jiho).json()
+    action_item_id = item["action_item_id"]
+
+    client.post(
+        f"/api/action-items/{action_item_id}/commands/adjust",
+        headers=jiho,
+        json={"expected_version": item["expected_version"], "reason": "기한을 늦춰 주세요"},
+    )
+    first_round = client.get(f"/api/action-items/{action_item_id}", headers=mina).json()["rounds"][0]
+
+    [waiting] = client.get("/api/action-items", headers=mina).json()
+    revised = client.post(
+        f"/api/action-items/{action_item_id}/commands/revise",
+        headers=mina,
+        json={"expected_version": waiting["expected_version"], "changes": {"title": "고친 제목", "description": "고친 설명"}},
+    )
+    assert revised.status_code == 200, revised.text
+
+    rounds = client.get(f"/api/action-items/{action_item_id}", headers=mina).json()["rounds"]
+    assert [row["submission_version"] for row in rounds] == [1, 2]
+    # The stored first round is exactly what it was before the revision existed.
+    assert rounds[0] == first_round
+    assert rounds[0]["snapshot"]["title"] == "원래 제목" and rounds[0]["content_hash"] != rounds[1]["content_hash"]
+    assert rounds[1]["diff"]["description"] == {"before": "원래 설명", "after": "고친 설명"}
+
+    # One ActionItem, two immutable submissions, one decision so far; the reviewer owes the new round.
+    with make_session_factory(database_url)() as session:
+        assert int(session.execute(text("SELECT count(*) FROM decision_items")).scalar_one()) == 1
+        assert int(session.execute(text("SELECT count(*) FROM submissions")).scalar_one()) == 2
+        assert int(session.execute(text("SELECT count(*) FROM review_decisions")).scalar_one()) == 1
+        active = session.execute(text("SELECT count(*) FROM review_assignments WHERE status = 'pending'")).scalar_one()
+        assert int(active) == 1
+    [current] = client.get("/api/action-items", headers=jiho).json()
+    assert current["action_item_id"] == action_item_id and current["submission_version"] == 2
+
+
+@pytest.mark.integration
+def test_postgres_serializes_two_simultaneous_ax_approvals_into_one_effect() -> None:
+    """The same lost-update guard on the AX path: two approvals in flight produce one Task and one approval."""
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres")
+    client = _conversation_client(database_url)
+    jiho = {"X-Demo-Persona": "jiho"}
+    conversation = client.post("/api/conversations", headers=jiho, json={"title": "동시 승인"}).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={**jiho, "Idempotency-Key": "concurrent-approve"},
+        json={"body": "제안해줘", "context": []},
+    ).json()
+    with make_session_factory(database_url)() as session:
+        execution_id = session.get(ConversationTurnRecord, UUID(accepted["turn_id"])).execution_id
+    application = create_workflow_application(settings, ConversationProvider())
+    application.propose_action(
+        application.authenticated_principal("jiho"), execution_id, "task.create_self", "업무 생성 확인", {"title": "동시 승인 업무"}
+    )
+    [item] = [row for row in client.get("/api/action-items", headers=jiho).json() if row["kind"] == "ax.task.create_self"]
+    url = f"/api/action-items/{item['action_item_id']}/commands/approve"
+    body = {"expected_version": item["expected_version"]}
+    barrier = Barrier(2)
+    results: list[int] = []
+    lock = Lock()
+
+    def approve() -> None:
+        barrier.wait(timeout=10)
+        response = client.post(url, headers=jiho, json=body)
+        with lock:
+            results.append(response.status_code)
+
+    threads = [Thread(target=approve) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+
+    # Both callers get an answer; only one effect exists. The persisted Action is the idempotency boundary.
+    assert results == [200, 200], results
+    with make_session_factory(database_url)() as session:
+        assert int(session.execute(text("SELECT count(*) FROM tasks WHERE title = '동시 승인 업무'")).scalar_one()) == 1
+    assert client.get("/api/actions", headers=jiho).json()[0]["state"] == "approved"
+    assert [row for row in client.get("/api/action-items", headers=jiho).json() if row["kind"] == "ax.task.create_self"] == []

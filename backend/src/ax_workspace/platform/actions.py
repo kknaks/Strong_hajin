@@ -101,7 +101,7 @@ class SqlAlchemyActionRepository:
             ActionItemRecord.id == action_id,
             ActionItemRecord.owner_id == owner_id,
         )
-        return self._session.scalar(statement.with_for_update() if lock else statement)
+        return self._session.scalar(statement.with_for_update().execution_options(populate_existing=True) if lock else statement)
 
     def list_for(self, owner_id: str) -> list[ActionItemRecord]:
         return list(

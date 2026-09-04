@@ -65,7 +65,7 @@ class SqlAlchemyConversationRepository:
 
     def conversation(self, conversation_id: UUID, owner_id: str, *, lock: bool = False) -> ConversationRecord | None:
         statement = select(ConversationRecord).where(ConversationRecord.id == conversation_id, ConversationRecord.owner_id == owner_id)
-        return self._session.scalar(statement.with_for_update() if lock else statement)
+        return self._session.scalar(statement.with_for_update().execution_options(populate_existing=True) if lock else statement)
 
     def list_for(self, owner_id: str) -> list[ConversationRecord]:
         return list(self._session.scalars(select(ConversationRecord).where(ConversationRecord.owner_id == owner_id).order_by(ConversationRecord.updated_at.desc(), ConversationRecord.id)))
@@ -661,7 +661,7 @@ class SqlAlchemyConversationRepository:
             ConversationTurnRecord.conversation_id == execution.conversation_id,
             ConversationTurnRecord.execution_id == execution.execution_id,
         )
-        return self._session.scalar(statement.with_for_update() if lock else statement)
+        return self._session.scalar(statement.with_for_update().execution_options(populate_existing=True) if lock else statement)
 
     def _queued_count(self, conversation_id: UUID) -> int:
         return int(self._session.scalar(select(func.count()).select_from(ConversationMessageRecord).where(ConversationMessageRecord.conversation_id == conversation_id, ConversationMessageRecord.role == "user", ConversationMessageRecord.turn_id.is_(None))) or 0)

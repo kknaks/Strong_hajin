@@ -168,7 +168,7 @@ class SqlAlchemyTaskRepository:
     def task(self, task_id: UUID, owner_id: str, *, lock: bool = False) -> TaskRecord:
         """A task is the owner's to read or drive only while they hold an active TaskAssignment for it."""
         statement = self._held_by(owner_id).where(TaskRecord.id == task_id)
-        task = self.session.scalar(statement.with_for_update(of=TaskRecord) if lock else statement)
+        task = self.session.scalar(statement.with_for_update(of=TaskRecord).execution_options(populate_existing=True) if lock else statement)
         if task is None:
             raise TaskNotFound("task was not found")
         return task
@@ -485,7 +485,7 @@ class SqlAlchemyWorkRequestRepository:
 
     def request(self, request_id: UUID, *, lock: bool = False) -> WorkRequestRecord | None:
         statement = select(WorkRequestRecord).where(WorkRequestRecord.id == request_id)
-        return self._session.scalar(statement.with_for_update() if lock else statement)
+        return self._session.scalar(statement.with_for_update().execution_options(populate_existing=True) if lock else statement)
 
     def create_accepted_task(self, request: WorkRequestRecord) -> TaskRecord:
         now = datetime.now(UTC)
@@ -718,7 +718,7 @@ class SqlAlchemyTaskAssignmentRepository:
 
     def assignment(self, assignment_id: UUID, *, lock: bool = False) -> TaskAssignmentRecord | None:
         statement = select(TaskAssignmentRecord).where(TaskAssignmentRecord.id == assignment_id)
-        return self._session.scalar(statement.with_for_update() if lock else statement)
+        return self._session.scalar(statement.with_for_update().execution_options(populate_existing=True) if lock else statement)
 
     def task_for(self, assignment: TaskAssignmentRecord) -> TaskRecord:
         task = self._session.get(TaskRecord, assignment.task_id)
