@@ -32,6 +32,7 @@ from ax_workspace.platform.reports import SqlAlchemyDailyReportDraftWorkflow, Sq
 from ax_workspace.modules.work.materials import TaskMaterialApplication
 from ax_workspace.modules.work.application import TaskAccessDenied, TaskApplication, TaskState
 from ax_workspace.modules.work.assignments import TaskAssignmentApplication
+from ax_workspace.modules.meetings.application import MeetingApplication
 from ax_workspace.modules.work.requests import WorkRequestApplication
 from ax_workspace.platform.persistence import make_session_factory
 from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
@@ -49,6 +50,7 @@ from ax_workspace.platform.work_tasks import (
     SqlAlchemyWorkRecordSource,
     SqlAlchemyWorkRequestRepository,
 )
+from ax_workspace.platform.meetings import SqlAlchemyMeetingRepository
 
 
 
@@ -71,6 +73,56 @@ class WorkflowApplication:
                 return TaskApplication(SqlAlchemyTaskRepository(session)).list_for(principal)
             except TaskAccessDenied:
                 return []
+
+    def list_meetings(self, principal: Principal) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return self._meetings(session).list(principal)
+
+    def get_meeting(self, principal: Principal, meeting_id: UUID) -> dict[str, Any]:
+        with self._session_factory() as session:
+            return self._meetings(session).get(principal, meeting_id)
+
+    def create_meeting(self, principal: Principal, **fields: Any) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._meetings(session).create(principal, **fields)
+            session.commit()
+            return result
+
+    def update_meeting(self, principal: Principal, meeting_id: UUID, expected_version: int, changes: dict[str, Any]) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._meetings(session).update(principal, meeting_id, expected_version, changes)
+            session.commit()
+            return result
+
+    def share_meeting(self, principal: Principal, meeting_id: UUID, member_id: str, expected_version: int) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._meetings(session).share(principal, meeting_id, member_id, expected_version)
+            session.commit()
+            return result
+
+    def revoke_meeting_share(self, principal: Principal, meeting_id: UUID, member_id: str, expected_version: int) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._meetings(session).revoke_share(principal, meeting_id, member_id, expected_version)
+            session.commit()
+            return result
+
+    def create_meeting_note(self, principal: Principal, meeting_id: UUID, body: str) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._meetings(session).create_note(principal, meeting_id, body)
+            session.commit()
+            return result
+
+    def save_meeting_note(self, principal: Principal, meeting_id: UUID, expected_version: int, body: str) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._meetings(session).save_note(principal, meeting_id, expected_version, body)
+            session.commit()
+            return result
+
+    def finalize_meeting_note(self, principal: Principal, meeting_id: UUID, expected_version: int) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._meetings(session).finalize_note(principal, meeting_id, expected_version)
+            session.commit()
+            return result
 
     def organization_tree(self, principal: Principal) -> list[dict[str, Any]]:
         with self._session_factory() as session:
@@ -163,6 +215,10 @@ class WorkflowApplication:
                 self._report_provider,
             ),
         )
+
+    @staticmethod
+    def _meetings(session: Any) -> MeetingApplication:
+        return MeetingApplication(SqlAlchemyMeetingRepository(session))
 
     def create_self_task(
         self,

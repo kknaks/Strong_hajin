@@ -137,3 +137,42 @@ describe("work request comments", () => {
     expect(vi.mocked(api.addWorkRequestComment).mock.calls[2][2]).not.toBe(firstKey);
   });
 });
+
+describe("request round history", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("formats dates inside a round diff instead of showing the stored ISO value", async () => {
+    vi.mocked(api.getWorkRequestTimeline).mockResolvedValue({
+      ...emptyTimeline,
+      submissions: [
+        { submission_id: "s1", submission_version: 1, revises_id: null, submitted_by: "mina", submitted_at: "2026-09-01T00:00:00Z", snapshot: {}, subject_version: null, diff: null },
+        {
+          submission_id: "s2",
+          submission_version: 2,
+          revises_id: "s1",
+          submitted_by: "mina",
+          submitted_at: "2026-09-03T00:00:00Z",
+          snapshot: {},
+          subject_version: null,
+          diff: { due_date: { before: "2026-09-20", after: "2026-09-30" }, title: { before: "이전 제목", after: "새 제목" } },
+        },
+      ],
+    } as never);
+    const { container } = renderDrawer();
+    await screen.findByText(/2회차|제출 v2|s2/i).catch(() => null);
+    const diff = await waitFor(() => {
+      const found = container.querySelector(".diff-list");
+      if (!found) throw new Error("diff not rendered");
+      return found as HTMLElement;
+    });
+    expect(diff.textContent).toContain("2026/09/20");
+    expect(diff.textContent).toContain("2026/09/30");
+    expect(diff.textContent).not.toMatch(/2026-09-\d\d/);
+    // Non-date fields are untouched.
+    expect(diff.textContent).toContain("이전 제목");
+    expect(diff.textContent).toContain("새 제목");
+  });
+});

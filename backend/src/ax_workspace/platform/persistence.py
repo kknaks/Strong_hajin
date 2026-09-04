@@ -221,6 +221,70 @@ class ResourceRelationshipRecord(Base):
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class MeetingRecord(Base):
+    """The stable Meeting identity; note, recording, and transcript lifecycles hang from it."""
+
+    __tablename__ = "meetings"
+    __table_args__ = (Index("ix_meetings_organization_starts_at", "organization_id", "starts_at"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organization_units.id"), nullable=False)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    visibility: Mapped[str] = mapped_column(String(20), nullable=False, default="private")
+    lifecycle: Mapped[str] = mapped_column(String(20), nullable=False, default="scheduled")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MeetingAttendeeRecord(Base):
+    """Attendance is distinct from an explicit share: it says a person belongs in the meeting."""
+
+    __tablename__ = "meeting_attendees"
+    __table_args__ = (UniqueConstraint("meeting_id", "member_id", name="uq_meeting_attendee"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False, index=True)
+    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    invited_by: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    attendance_state: Mapped[str] = mapped_column(String(20), nullable=False, default="invited")
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MeetingNoteRecord(Base):
+    """One stable note identity per Meeting; content is only ever written as a version below."""
+
+    __tablename__ = "meeting_notes"
+    __table_args__ = (UniqueConstraint("meeting_id", name="uq_meeting_note"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False)
+    lifecycle: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    current_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finalized_by: Mapped[str | None] = mapped_column(ForeignKey("members.id"))
+
+
+class MeetingNoteVersionRecord(Base):
+    """Immutable human-authored note version, including the evidence refs it deliberately used."""
+
+    __tablename__ = "meeting_note_versions"
+    __table_args__ = (UniqueConstraint("note_id", "version", name="uq_meeting_note_version"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    note_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_notes.id"), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    source_evidence: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    created_by: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class WorkflowDefinitionRecord(Base):
     __tablename__ = "workflow_definitions"
 

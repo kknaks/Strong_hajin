@@ -32,6 +32,10 @@ DAILY_REPORT_EDIT = "daily_report.edit"
 DAILY_REPORT_SUBMIT = "daily_report.submit"
 ACTION_READ = "action.read"
 ACTION_DECIDE = "action.decide"
+MEETING_READ = "meeting.read"
+MEETING_READ_PRIVATE = "meeting.read.private"
+MEETING_MANAGE = "meeting.manage"
+MEETING_SHARE = "meeting.share"
 
 
 SEED_PERSONAS: dict[PersonaId, Principal] = {
@@ -46,6 +50,9 @@ SEED_PERSONAS: dict[PersonaId, Principal] = {
             DAILY_REPORT_EDIT,
             DAILY_REPORT_SUBMIT,
             "meeting.followup.request",
+            MEETING_READ,
+            MEETING_MANAGE,
+            MEETING_SHARE,
             "task.accept",
             TASK_READ,
             TASK_SELF_MANAGE,
@@ -67,6 +74,9 @@ SEED_PERSONAS: dict[PersonaId, Principal] = {
             TASK_SELF_MANAGE,
             "report.review",
             "meeting.followup.assign",
+            MEETING_READ,
+            MEETING_MANAGE,
+            MEETING_SHARE,
             "team.manage",
             TASK_ASSIGN,
             ACTION_READ,
@@ -77,13 +87,13 @@ SEED_PERSONAS: dict[PersonaId, Principal] = {
         PersonaId.SORA,
         "소라 (법무)",
         frozenset({"scax", "legal"}),
-        frozenset({"contract.legal_review"}),
+        frozenset({"contract.legal_review", MEETING_READ}),
     ),
     PersonaId.MINSEOK: Principal(
         PersonaId.MINSEOK,
         "민석 (재무)",
         frozenset({"scax", "finance"}),
-        frozenset({"contract.finance_review"}),
+        frozenset({"contract.finance_review", MEETING_READ}),
     ),
     PersonaId.DEMO_ADMIN: Principal(
         PersonaId.DEMO_ADMIN,
@@ -92,7 +102,8 @@ SEED_PERSONAS: dict[PersonaId, Principal] = {
         frozenset({
             "work.read", DAILY_REPORT_READ, DAILY_REPORT_GENERATE, DAILY_REPORT_EDIT,
             DAILY_REPORT_SUBMIT, "meeting.followup.request",
-            "meeting.followup.assign", "task.accept", TASK_READ, TASK_SELF_MANAGE, TASK_ASSIGN,
+            "meeting.followup.assign", MEETING_READ, MEETING_READ_PRIVATE, MEETING_MANAGE, MEETING_SHARE,
+            "task.accept", TASK_READ, TASK_SELF_MANAGE, TASK_ASSIGN,
             WORK_REQUEST_READ, WORK_REQUEST_CREATE, "report.review", "team.manage",
             ACTION_READ, ACTION_DECIDE,
             "contract.legal_review", "contract.finance_review", "demo.admin",

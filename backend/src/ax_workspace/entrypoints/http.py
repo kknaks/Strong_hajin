@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 from urllib.parse import quote
 from uuid import UUID
@@ -24,6 +24,7 @@ from ax_workspace.modules.work.materials import MaterialNotFound
 from ax_workspace.modules.actions.domain import ActionError as ActionCenterError, ActionNotFound
 from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequestError, WorkRequestIdempotencyConflict
 from ax_workspace.modules.reports.application import DailyReportAccessDenied
+from ax_workspace.modules.meetings.domain import MeetingAccessDenied, MeetingError, MeetingNotFound
 from ax_workspace.modules.ax_execution.conversations import ConversationError, ConversationQueueOverflow
 from ax_workspace.modules.ax_execution.actions import ActionAccessDenied, ActionCapabilityDenied, ActionError
 from ax_workspace.bootstrap.settings import Settings
@@ -45,6 +46,45 @@ class CreateTaskRequest(BaseModel):
     description: str | None = None
     start_date: date | None = None
     due_date: date | None = None
+
+
+class CreateMeetingRequest(BaseModel):
+    organization_id: str = Field(min_length=1, max_length=100)
+    title: str = Field(min_length=1, max_length=300)
+    starts_at: datetime
+    ends_at: datetime
+    visibility: Literal["public", "private"] = "private"
+    attendee_ids: list[str] = Field(default_factory=list)
+
+
+class UpdateMeetingRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    title: str | None = Field(default=None, max_length=300)
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    visibility: Literal["public", "private"] | None = None
+
+
+class MeetingShareRequest(BaseModel):
+    member_id: str = Field(min_length=1, max_length=100)
+    expected_version: int = Field(ge=1)
+
+
+class MeetingRevokeShareRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+
+
+class CreateMeetingNoteRequest(BaseModel):
+    body: str = Field(min_length=1)
+
+
+class SaveMeetingNoteRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    body: str = Field(min_length=1)
+
+
+class FinalizeMeetingNoteRequest(BaseModel):
+    expected_version: int = Field(ge=1)
 
 
 class AssignTaskRequest(BaseModel):
@@ -165,11 +205,11 @@ def _runtime_error(error: Exception) -> HTTPException:
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "conversation_queue_full", "queue_size": error.queue_size, "limit": error.limit},
         )
-    if isinstance(error, (TaskNotFound, MaterialNotFound)):
+    if isinstance(error, (TaskNotFound, MaterialNotFound, MeetingNotFound)):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
-    if isinstance(error, (TaskAccessDenied, WorkRequestAccessDenied, DailyReportAccessDenied)):
+    if isinstance(error, (TaskAccessDenied, WorkRequestAccessDenied, DailyReportAccessDenied, MeetingAccessDenied)):
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
-    if isinstance(error, (TaskError, InvalidTaskTransition)):
+    if isinstance(error, (TaskError, InvalidTaskTransition, MeetingError)):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     if isinstance(error, ActionNotFound):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
@@ -255,6 +295,113 @@ def create_app(
         @app.get("/api/my-work")
         def my_work(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
             return app.state.workflow_application.my_work(principal)
+
+        @app.get("/api/meetings")
+        def list_meetings(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+            return app.state.workflow_application.list_meetings(principal)
+
+        @app.post("/api/meetings", status_code=status.HTTP_201_CREATED)
+        def create_meeting(
+            request: CreateMeetingRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.create_meeting(
+                    principal,
+                    organization_id=request.organization_id,
+                    title=request.title,
+                    starts_at=request.starts_at,
+                    ends_at=request.ends_at,
+                    visibility=request.visibility,
+                    attendee_ids=request.attendee_ids,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/meetings/{meeting_id}")
+        def get_meeting(meeting_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.get_meeting(principal, meeting_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.patch("/api/meetings/{meeting_id}")
+        def update_meeting(
+            meeting_id: UUID,
+            request: UpdateMeetingRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            changes = request.model_dump(exclude={"expected_version"}, exclude_none=True)
+            try:
+                return app.state.workflow_application.update_meeting(
+                    principal, meeting_id, request.expected_version, changes
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/meetings/{meeting_id}/shares")
+        def share_meeting(
+            meeting_id: UUID,
+            request: MeetingShareRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.share_meeting(
+                    principal, meeting_id, request.member_id, request.expected_version
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.delete("/api/meetings/{meeting_id}/shares/{member_id}")
+        def revoke_meeting_share(
+            meeting_id: UUID,
+            member_id: str,
+            request: MeetingRevokeShareRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.revoke_meeting_share(
+                    principal, meeting_id, member_id, request.expected_version
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/meetings/{meeting_id}/note", status_code=status.HTTP_201_CREATED)
+        def create_meeting_note(
+            meeting_id: UUID,
+            request: CreateMeetingNoteRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.create_meeting_note(principal, meeting_id, request.body)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.patch("/api/meetings/{meeting_id}/note")
+        def save_meeting_note(
+            meeting_id: UUID,
+            request: SaveMeetingNoteRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.save_meeting_note(
+                    principal, meeting_id, request.expected_version, request.body
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/meetings/{meeting_id}/note/finalize")
+        def finalize_meeting_note(
+            meeting_id: UUID,
+            request: FinalizeMeetingNoteRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.finalize_meeting_note(
+                    principal, meeting_id, request.expected_version
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
 
         @app.get("/api/conversations")
         def conversations(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
