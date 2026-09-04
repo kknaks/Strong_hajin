@@ -23,7 +23,9 @@ from ax_workspace.platform.persistence import (
     ConversationTurnRecord,
 )
 from ax_workspace.platform.reports import SqlAlchemyDailyReportDraftWorkflow, SqlAlchemyDailyReportRepository
+from ax_workspace.modules.work.assignments import TaskAssignmentApplication
 from ax_workspace.platform.work_tasks import (
+    SqlAlchemyTaskAssignmentRepository,
     SqlAlchemyTaskRepository,
     SqlAlchemyWorkRecordSource,
     SqlAlchemyWorkRequestRepository,
@@ -162,6 +164,8 @@ class SqlAlchemyActionRepository:
             return f"업무 요청: {action.payload['title']}"
         if action.action_type == "daily_report.edit":
             return "일일보고 초안 수정"
+        if action.action_type == "task.assign":
+            return f"업무 배정: {action.payload['title']} → {action.payload['assignee_id']}"
         return action.action_type
 
 
@@ -184,6 +188,7 @@ class SqlAlchemyActionExecutor:
                 causation_key=str(action.id),
                 description=action.payload.get("description"),
                 due_date=_parse_date(action.payload.get("due_date")),
+                cc_member_ids=list(action.payload.get("cc_member_ids") or []),
             )
         if action.action_type == "daily_report.edit":
             return DailyReportApplication(
@@ -219,6 +224,18 @@ class SqlAlchemyActionExecutor:
             return TaskApplication(SqlAlchemyTaskRepository(self._session)).update(
                 UUID(str(action.payload["task_id"])), principal, int(action.payload["expected_version"]), changes
             )
+        if action.action_type == "task.assign":
+            return self._assignments().assign(
+                principal, str(action.payload["title"]), str(action.payload["assignee_id"]),
+                description=action.payload.get("description"),
+                start_date=_parse_date(action.payload.get("start_date")),
+                due_date=_parse_date(action.payload.get("due_date")),
+                causation_key=str(action.id),
+            )
+        if action.action_type == "task.assignment.accept":
+            return self._assignments().accept(principal, UUID(str(action.payload["assignment_id"])))
+        if action.action_type == "task.assignment.decline":
+            return self._assignments().decline(principal, UUID(str(action.payload["assignment_id"])), str(action.payload.get("reason") or ""))
         if action.action_type == "task.transition":
             return TaskApplication(SqlAlchemyTaskRepository(self._session)).transition(
                 UUID(str(action.payload["task_id"])), principal, TaskState(str(action.payload["target"])),
@@ -231,6 +248,12 @@ class SqlAlchemyActionExecutor:
         if action.action_type == "work_request.negotiate":
             return WorkRequestApplication(SqlAlchemyWorkRequestRepository(self._session), OrganizationApplication(SqlAlchemyOrganizationRepository(self._session))).negotiate(principal, UUID(str(action.payload["request_id"])), int(action.payload["expected_version"]), dict(action.payload["conditions"]))
         raise ValueError("unsupported action type")
+
+    def _assignments(self) -> TaskAssignmentApplication:
+        return TaskAssignmentApplication(
+            SqlAlchemyTaskAssignmentRepository(self._session),
+            OrganizationApplication(SqlAlchemyOrganizationRepository(self._session)),
+        )
 
 
 def _parse_date(value: Any):

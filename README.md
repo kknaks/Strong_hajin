@@ -20,6 +20,14 @@ In a second terminal, run `make conversation-worker`; it is the separate PGMQ co
 
 `make reset-demo` is the only command that creates or drops the demo tables. Normal API startup never mutates the schema. After pulling a persistence schema change, stop the local API/worker and run `make reset-demo` before local journeys; Alembic revisions are intentionally not part of this milestone.
 
+## Assignments, cc, and evidence
+
+- Every task holds a `task_assignments` row (self, request_effect, or direct). My Work lists only tasks with an **active** assignment.
+- A member with `task.assign` (지호 팀장, 데모 관리자) can assign a task to someone in their own units via 새 업무 추가 → 담당자. It shows up in the assignee's 판단이 필요한 업무 panel until they accept or decline (reason required); the assigner tracks it under 보낸 업무 → 배정한 업무.
+- A work request can carry 참조자(cc). cc members read the request, its timeline and comments, and can attach files to their own comments, but never decide.
+- Requester and assignee can adopt files as evidence for the current submission (근거 자료). Evidence is pinned to the submission by sha256 and shown per 회차 in the request drawer.
+- Capabilities come from `access_grants` only: role grants apply the role's capability mapping at the pinned `role_capability_version`; grants created by a standard rule end with the appointment that produced them. 조직 → 내 권한 shows the grants.
+
 ## Task fields and materials
 
 A Task carries `description`, `start_date`, and `due_date` beside its state; the owner edits them with `PATCH /api/tasks/{id}` (`task.update`, no approval gate, `expected_version` required, start ≤ due). A WorkRequest carries an optional `due_date` and `description` that flow into the Task created on acceptance. Reference documents (`kind=input`) and deliverables (`kind=output`) are uploaded with `POST /api/tasks/{id}/materials` (multipart, 25MB), listed, downloaded from `/content`, and detached (the record and bytes stay for lineage). Bytes live behind the `MaterialStorage` port; the local adapter writes under `AX_MATERIALS_DIR` (default `backend/.scax/materials`, git-ignored) and an Azure Blob container adapter will implement the same port. Completed tasks can be reopened (`resume`); cancellation stays terminal.

@@ -15,7 +15,6 @@ from ax_workspace.platform.persistence import (
     JobAssignmentRecord,
     JobRecord,
     MemberRecord,
-    MeetingEvidenceRecord,
     MembershipRecord,
     OrganizationUnitRecord,
     OrganizationUnitTypeRecord,
@@ -23,11 +22,9 @@ from ax_workspace.platform.persistence import (
     RoleCapabilityRecord,
     RoleRecord,
     StandardGrantRuleRecord,
-    WorkRecord,
     WorkflowDefinitionRecord,
     WorkflowDefinitionVersionRecord,
 )
-from ax_workspace.modules.ax_execution.domain import catalog_definitions
 from ax_workspace.modules.reports.workflow_metadata import content_hash, daily_report_generation_v1
 
 
@@ -35,44 +32,6 @@ def seed_catalog(session: Session) -> None:
     """Install the product demo's persisted configuration after an explicit reset."""
     _seed_organization_access(session)
     _install_daily_report_generation(session)
-    session.commit()
-
-
-def seed_technical_workflow_spike(session: Session) -> None:
-    """Install legacy generic examples only for isolated runtime regression tests."""
-    for definition in catalog_definitions():
-        record = session.get(WorkflowDefinitionRecord, definition.workflow_id)
-        if record is None:
-            session.add(WorkflowDefinitionRecord(id=definition.workflow_id, title=definition.title))
-        exists = session.scalar(
-            select(WorkflowDefinitionVersionRecord).where(
-                WorkflowDefinitionVersionRecord.workflow_id == definition.workflow_id,
-                WorkflowDefinitionVersionRecord.version == definition.version,
-            )
-        )
-        if exists is None:
-            session.add(
-                WorkflowDefinitionVersionRecord(
-                    workflow_id=definition.workflow_id,
-                    version=definition.version,
-                    definition=definition.model_dump(mode="json"),
-                    created_at=datetime.now(UTC),
-            )
-        )
-    if session.scalar(select(WorkRecord).where(WorkRecord.owner_id == "mina")) is None:
-        session.add_all(
-            [
-                WorkRecord(owner_id="mina", title="Catalog validation review", status="done"),
-                WorkRecord(owner_id="mina", title="Demo script preparation", status="in_progress"),
-            ]
-        )
-    if session.scalar(select(MeetingEvidenceRecord)) is None:
-        session.add(
-            MeetingEvidenceRecord(
-                title="주간 운영 회의",
-                candidate_task="회의 후속 업무 점검",
-            )
-        )
     session.commit()
 
 
@@ -176,13 +135,6 @@ def _seed_organization_access(session: Session) -> None:
 
     from ax_workspace.modules.organization_access.domain import SEED_PERSONAS
 
-    direct_grant_capabilities = {
-        "task.accept",
-        "meeting.followup.request",
-        "meeting.followup.assign",
-        "demo.admin",
-    }
-
     all_capabilities = sorted(
         {capability for principal in SEED_PERSONAS.values() for capability in principal.capabilities}
     )
@@ -231,18 +183,18 @@ def _seed_organization_access(session: Session) -> None:
                     appointment_kind="primary",
                 )
             )
-        if position_id:
-            rule_id = f"standard:{position_id}:{role_id}"
-            if session.get(StandardGrantRuleRecord, rule_id) is None:
-                session.add(
-                    StandardGrantRuleRecord(
-                        id=rule_id,
-                        trigger_kind="appointment",
-                        trigger_source_ref=position_id,
-                        role_id=role_id,
-                        scope_template="descendants",
-                    )
+        # ERD STANDARD_GRANT_RULE: the appointment (a position, or plain membership) fixes which role is granted and at what scope.
+        rule_id = f"standard:{position_id or 'member'}:{role_id}"
+        if session.get(StandardGrantRuleRecord, rule_id) is None:
+            session.add(
+                StandardGrantRuleRecord(
+                    id=rule_id,
+                    trigger_kind="appointment",
+                    trigger_source_ref=position_id or "member",
+                    role_id=role_id,
+                    scope_template="descendants",
                 )
+            )
         for capability in principal.capabilities:
             role_capability = session.scalar(
                 select(RoleCapabilityRecord).where(
@@ -252,24 +204,23 @@ def _seed_organization_access(session: Session) -> None:
             )
             if role_capability is None:
                 session.add(RoleCapabilityRecord(role_id=role_id, capability_id=capability, mapping_version=1))
-            if capability in direct_grant_capabilities:
-                exists = session.scalar(
-                    select(AccessGrantRecord).where(
-                        AccessGrantRecord.member_id == member_id,
-                        AccessGrantRecord.capability_id == capability,
-                    )
+        # ERD ACCESS_GRANT: the role is granted as a snapshot (role_capability_version) at the appointment's unit scope.
+        grant = session.scalar(
+            select(AccessGrantRecord).where(AccessGrantRecord.member_id == member_id, AccessGrantRecord.role_id == role_id)
+        )
+        if grant is None:
+            session.add(
+                AccessGrantRecord(
+                    member_id=member_id,
+                    capability_id=None,
+                    role_id=role_id,
+                    role_capability_version=1,
+                    scope_kind="unit",
+                    scope_organization_id=primary_unit,
+                    scope_ref=primary_unit,
+                    include_descendants=True,
+                    granted_by_member_id="system",
+                    origin_rule_id=rule_id,
+                    origin_rule_version=1,
                 )
-                if exists is None:
-                    session.add(
-                        AccessGrantRecord(
-                            member_id=member_id,
-                            capability_id=capability,
-                            role_id=role_id,
-                            role_capability_version=1,
-                            scope_kind="unit",
-                            scope_organization_id="scax",
-                            scope_ref="scax",
-                            include_descendants=True,
-                            granted_by_member_id=member_id,
-                        )
-                    )
+            )

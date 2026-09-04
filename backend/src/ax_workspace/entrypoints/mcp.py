@@ -22,6 +22,7 @@ from ax_workspace.modules.organization_access.domain import (
     DAILY_REPORT_READ,
     DAILY_REPORT_SUBMIT,
     Principal,
+    TASK_ASSIGN,
     TASK_READ,
     TASK_SELF_MANAGE,
     WORK_REQUEST_CREATE,
@@ -40,6 +41,9 @@ DELEGATED_ACTION_CAPABILITIES = {
     "task.create_self": TASK_SELF_MANAGE,
     "task.transition": TASK_SELF_MANAGE,
     "task.update": TASK_SELF_MANAGE,
+    "task.assign": TASK_ASSIGN,
+    "task.assignment.accept": TASK_SELF_MANAGE,
+    "task.assignment.decline": TASK_SELF_MANAGE,
 }
 
 
@@ -136,21 +140,21 @@ class McpReportsFacade:
     def get_work_request(self, request_id: str) -> dict[str, Any]:
         return self._application.get_work_request(self.principal, UUID(request_id))
 
-    def create_work_request(self, title: str, assignee_id: str, due_date: str | None = None, description: str | None = None) -> dict[str, Any]:
-        action = self._propose_chat_action(
-            "work_request.create",
-            "업무 요청 생성 확인",
-            {"title": title, "assignee_id": assignee_id, "due_date": due_date, "description": description},
-        )
+    def create_work_request(
+        self, title: str, assignee_id: str, due_date: str | None = None, description: str | None = None, cc_member_ids: list[str] | None = None
+    ) -> dict[str, Any]:
+        payload = {"title": title, "assignee_id": assignee_id, "due_date": due_date, "description": description, "cc_member_ids": list(cc_member_ids or [])}
+        action = self._propose_chat_action("work_request.create", "업무 요청 생성 확인", payload)
         if action is not None:
             return action
         return self._application.create_work_request(
             self.principal,
             title,
             assignee_id,
-            self._mutation_key("work_request.create", {"title": title, "assignee_id": assignee_id, "due_date": due_date, "description": description}),
+            self._mutation_key("work_request.create", payload),
             description=description,
             due_date=_parse_iso_date(due_date),
+            cc_member_ids=list(cc_member_ids or []),
         )
 
     def accept_work_request(self, request_id: str, expected_version: int) -> dict[str, Any]:
@@ -244,6 +248,33 @@ class McpReportsFacade:
 
     def list_task_materials(self, task_id: str) -> list[dict[str, Any]]:
         return self._application.list_task_materials(self.principal, UUID(task_id))
+
+    def task_assignment_candidates(self) -> list[dict[str, str]]:
+        return self._application.task_assignment_candidates(self.principal)
+
+    def task_assignment_inbox(self) -> list[dict[str, Any]]:
+        return self._application.task_assignment_inbox(self.principal)
+
+    def assign_task(self, title: str, assignee_id: str, description: str | None, start_date: str | None, due_date: str | None) -> dict[str, Any]:
+        payload = {"title": title, "assignee_id": assignee_id, "description": description, "start_date": start_date, "due_date": due_date}
+        action = self._propose_chat_action("task.assign", f"업무 배정 확인: {title}", payload)
+        if action is not None:
+            return action
+        return self._application.assign_task(
+            self.principal, title, assignee_id,
+            description=description, start_date=_parse_iso_date(start_date), due_date=_parse_iso_date(due_date),
+        )
+
+    def decide_task_assignment(self, assignment_id: str, decision: str, reason: str | None = None) -> dict[str, Any]:
+        action = self._propose_chat_action(
+            f"task.assignment.{decision}", "업무 배정 수락 확인" if decision == "accept" else "업무 배정 거절 확인",
+            {"assignment_id": assignment_id, "reason": reason},
+        )
+        if action is not None:
+            return action
+        if decision == "accept":
+            return self._application.accept_task_assignment(self.principal, UUID(assignment_id))
+        return self._application.decline_task_assignment(self.principal, UUID(assignment_id), reason or "")
 
     def transition_task(
         self,
@@ -360,8 +391,10 @@ def _register_work_request_create_tools(server: MCPServer, facade: McpReportsFac
         return facade.resubmit_work_request(request_id, expected_version, title, description, due_date)
 
     @server.tool(description="Create a WorkRequest with an optional ISO due_date and description; it creates no Task until the assignee accepts.")
-    def work_request_create(title: str, assignee_id: str, due_date: str | None = None, description: str | None = None) -> dict[str, Any]:
-        return facade.create_work_request(title, assignee_id, due_date, description)
+    def work_request_create(
+        title: str, assignee_id: str, due_date: str | None = None, description: str | None = None, cc_member_ids: list[str] | None = None
+    ) -> dict[str, Any]:
+        return facade.create_work_request(title, assignee_id, due_date, description, cc_member_ids)
 
 
 def _register_work_request_decision_tools(server: MCPServer, facade: McpReportsFacade) -> None:
@@ -400,6 +433,29 @@ def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
     @server.tool(description="Create a self-owned Task.")
     def task_create_self(title: str) -> dict[str, Any]:
         return facade.create_self_task(title)
+
+    @server.tool(description="List Task assignments waiting for the delegated persona's acceptance.")
+    def task_assignment_inbox() -> list[dict[str, Any]]:
+        return facade.task_assignment_inbox()
+
+    @server.tool(description="Accept a pending Task assignment so the Task enters the persona's My Work.")
+    def task_assignment_accept(assignment_id: str) -> dict[str, Any]:
+        return facade.decide_task_assignment(assignment_id, "accept")
+
+    @server.tool(description="Decline a pending Task assignment with a reason; the Task never enters My Work.")
+    def task_assignment_decline(assignment_id: str, reason: str) -> dict[str, Any]:
+        if not reason.strip():
+            raise ValueError("reason is required")
+        return facade.decide_task_assignment(assignment_id, "decline", reason)
+
+    if TASK_ASSIGN in facade.principal.capabilities:
+        @server.tool(description="List members within the delegated persona's units who can be assigned a Task.")
+        def task_assignment_candidates() -> list[dict[str, str]]:
+            return facade.task_assignment_candidates()
+
+        @server.tool(description="Assign a new Task to a member (ISO dates optional); it stays pending until they accept.")
+        def task_assign(title: str, assignee_id: str, description: str | None = None, start_date: str | None = None, due_date: str | None = None) -> dict[str, Any]:
+            return facade.assign_task(title, assignee_id, description, start_date, due_date)
 
     @server.tool(description="Edit an owned Task's title, description, start_date, or due_date (ISO dates) using its required expected version.")
     def task_update(

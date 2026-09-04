@@ -54,6 +54,7 @@ const capabilityLabel: Record<string, string> = {
   "meeting.followup.request": "회의 후속 업무 요청",
   "task.read": "업무 열람",
   "task.accept": "배정 수락",
+  "task.assign": "업무 배정",
   "task.self_manage": "내 업무 관리",
   "work.read": "업무 원장 열람",
   "work_request.create": "업무 요청 보내기",

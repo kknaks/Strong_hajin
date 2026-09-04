@@ -37,6 +37,39 @@ class AttachmentRepository(Protocol):
     def unbind(self, binding: Any) -> None: ...
 
 
+def store_file(
+    attachments: AttachmentRepository,
+    storage: MaterialStorage,
+    *,
+    key_prefix: str,
+    name: str,
+    content_type: str,
+    data: bytes,
+    provenance: str,
+    uploaded_by: str,
+) -> Any:
+    """Persist bytes behind the storage port and record the ERD Attachment with its integrity hash."""
+    clean_name = name.strip().replace("/", "_").replace("\\", "_")[:300]
+    if not clean_name:
+        raise MaterialError("file name is required")
+    if not data:
+        raise MaterialError("file content is empty")
+    if len(data) > MAX_MATERIAL_BYTES:
+        raise MaterialError("file exceeds the 25MB limit")
+    media_type = content_type or "application/octet-stream"
+    storage_key = f"{key_prefix}/{uuid4()}"
+    storage.put(storage_key, data, media_type)
+    return attachments.add_file(
+        storage_key=storage_key,
+        name=clean_name,
+        content_type=media_type,
+        size_bytes=len(data),
+        integrity_ref=f"sha256:{hashlib.sha256(data).hexdigest()}",
+        provenance=provenance,
+        uploaded_by=uploaded_by,
+    )
+
+
 class TaskMaterialApplication:
     def __init__(self, tasks: TaskRepository, attachments: AttachmentRepository, storage: MaterialStorage) -> None:
         self._tasks = tasks
@@ -60,17 +93,10 @@ class TaskMaterialApplication:
             raise MaterialError("material content is empty")
         if len(data) > MAX_MATERIAL_BYTES:
             raise MaterialError("material exceeds the 25MB limit")
-        media_type = content_type or "application/octet-stream"
-        storage_key = f"tasks/{task.id}/{uuid4()}"
-        self._storage.put(storage_key, data, media_type)
-        attachment = self._attachments.add_file(
-            storage_key=storage_key,
-            name=clean_name,
-            content_type=media_type,
-            size_bytes=len(data),
-            integrity_ref=f"sha256:{hashlib.sha256(data).hexdigest()}",
-            provenance=f"upload by {principal.id} to task {task.id}",
-            uploaded_by=str(principal.id),
+        attachment = store_file(
+            self._attachments, self._storage,
+            key_prefix=f"tasks/{task.id}", name=clean_name, content_type=content_type, data=data,
+            provenance=f"upload by {principal.id} to task {task.id}", uploaded_by=str(principal.id),
         )
         binding = self._attachments.bind(attachment_id=attachment.id, context_type="task", context_id=str(task.id), role=kind, bound_by=str(principal.id))
         self._tasks.record_activity(task, str(principal.id), "task.material_attached", f"{'참고 자료' if kind == 'input' else '산출물'} 등록: {clean_name}")

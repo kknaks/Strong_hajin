@@ -14,7 +14,6 @@ import {
 } from "./api";
 import { dueDayText, formatLongDate, formatMonthDay, isoDateInSeoul, personName, seoulToday, workRequestStateLabel } from "./labels";
 import {
-  isDirectTask,
   type ActionItem,
   type DailyReportStatus,
   type DirectTask,
@@ -89,7 +88,7 @@ export function TodayPage({
       canReadActions ? getActions() : Promise.resolve([]),
       getWorkRequests().catch(() => [] as WorkRequest[]),
     ]);
-    const nextTasks = work.filter(isDirectTask).filter((task) => ["open", "in_progress", "blocked"].includes(task.state));
+    const nextTasks = work.filter((task) => ["open", "in_progress", "blocked"].includes(task.state));
     setTasks(nextTasks);
     setRequests(inbox);
     setActions(pendingActions.filter((action) => action.state === "pending"));

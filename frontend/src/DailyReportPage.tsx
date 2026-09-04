@@ -13,7 +13,6 @@ import {
 import { formatKoreanDate, personName, seoulToday, taskStateLabel } from "./labels";
 import { StatusText } from "./WorkModals";
 import {
-  isDirectTask,
   type DailyReportDraft,
   type DailyReportHistory,
   type DirectTask,
@@ -85,7 +84,7 @@ export function DailyReportPage({ personaId, personaName, onError }: DailyReport
     let cancelled = false;
 
     void getTasks()
-      .catch(async () => (await getMyWork()).filter(isDirectTask))
+      .catch(async () => getMyWork())
       .then((items) => {
         if (!cancelled) setEvidence(items);
       })

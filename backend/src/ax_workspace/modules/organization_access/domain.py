@@ -22,6 +22,7 @@ class Principal:
 
 TASK_READ = "task.read"
 TASK_SELF_MANAGE = "task.self_manage"
+TASK_ASSIGN = "task.assign"
 WORK_REQUEST_READ = "work_request.read"
 WORK_REQUEST_CREATE = "work_request.create"
 WORK_REQUEST_DECIDE = "work_request.decide"
@@ -67,6 +68,7 @@ SEED_PERSONAS: dict[PersonaId, Principal] = {
             "report.review",
             "meeting.followup.assign",
             "team.manage",
+            TASK_ASSIGN,
             ACTION_READ,
             ACTION_DECIDE,
         }),
@@ -90,7 +92,7 @@ SEED_PERSONAS: dict[PersonaId, Principal] = {
         frozenset({
             "work.read", DAILY_REPORT_READ, DAILY_REPORT_GENERATE, DAILY_REPORT_EDIT,
             DAILY_REPORT_SUBMIT, "meeting.followup.request",
-            "meeting.followup.assign", "task.accept", TASK_READ, TASK_SELF_MANAGE,
+            "meeting.followup.assign", "task.accept", TASK_READ, TASK_SELF_MANAGE, TASK_ASSIGN,
             WORK_REQUEST_READ, WORK_REQUEST_CREATE, "report.review", "team.manage",
             ACTION_READ, ACTION_DECIDE,
             "contract.legal_review", "contract.finance_review", "demo.admin",

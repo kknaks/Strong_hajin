@@ -21,7 +21,29 @@ export type DirectTask = {
   organization_unit_id?: string | null;
   origin_kind?: string;
   visibility?: string;
+  assignment?: TaskAssignmentSummary | null;
   lineage?: TaskLineage;
+};
+
+export type TaskAssignmentSummary = {
+  assignment_id: string;
+  kind: "self" | "request_effect" | "direct";
+  status: "pending" | "active" | "declined" | "superseded";
+  assigned_by: string;
+  accepted_at: string | null;
+};
+
+export type TaskAssignment = {
+  assignment_id: string;
+  assignment_kind: "self" | "request_effect" | "direct";
+  status: "pending" | "active" | "declined" | "superseded";
+  assignee_id: string;
+  assigned_by: string;
+  decline_reason: string | null;
+  created_at: string;
+  accepted_at: string | null;
+  declined_at: string | null;
+  task: DirectTask;
 };
 
 export type TaskLineage = {
@@ -55,20 +77,29 @@ export type TaskPatch = {
   due_date?: string | null;
 };
 
-type AcceptedAssignment = {
-  assignment_id: string;
-  title: string;
-  state: string;
+
+export type AccessGrant = {
+  grant_id: string;
+  role_id: string | null;
+  role_label: string | null;
+  capability_id: string | null;
+  role_capability_version: number | null;
+  scope_kind: string;
+  scope_ref: string | null;
+  scope_name: string | null;
+  include_descendants: boolean;
+  origin_rule_id: string | null;
+  granted_by: string | null;
+  valid_from: string;
+  valid_until: string | null;
 };
-
-export type MyWorkItem = DirectTask | AcceptedAssignment;
-
-export const isDirectTask = (item: MyWorkItem): item is DirectTask => "task_id" in item;
 
 export type OrganizationProfile = {
   member_id: string;
   display_name: string;
   organizations: Array<{ id: string; name: string }>;
+  roles?: string[];
+  grants?: AccessGrant[];
   capabilities: string[];
 };
 
@@ -127,6 +158,7 @@ export type WorkRequest = {
   due_date?: string | null;
   requester_id?: string;
   assignee_id?: string;
+  cc_member_ids?: string[];
   state: "pending" | "negotiating" | "accepted" | "rejected";
   version: number;
   task_id: string | null;
@@ -215,18 +247,43 @@ export type OrganizationMember = {
   jobs: string[];
 };
 
+export type RequestAttachment = {
+  attachment_id: string;
+  name: string;
+  content_type: string;
+  size_bytes: number;
+  uploaded_by: string;
+  created_at: string;
+};
+
 export type RequestComment = {
   comment_id: string;
   author_member_id: string;
   body: string;
   created_at: string;
   edited_at: string | null;
+  attachments?: RequestAttachment[];
+};
+
+export type RequestEvidence = {
+  evidence_id: string;
+  submission_id: string;
+  submission_version: number;
+  attachment_id: string;
+  name: string;
+  content_type: string;
+  size_bytes: number;
+  evidence_role: "supporting" | "decision_basis" | string;
+  fixed_snapshot_ref: string;
+  adopted_by: string;
+  adopted_at: string;
 };
 
 export type RequestTimeline = {
   request: WorkRequest;
   request_thread_id: string | null;
   comments: RequestComment[];
+  evidence?: RequestEvidence[];
   decision_item: { decision_item_id: string; kind: string; status: string; due_at: string | null } | null;
   submissions: Array<{
     submission_id: string;

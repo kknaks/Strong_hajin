@@ -26,10 +26,10 @@ def _require_safe_demo_database(database_url: str) -> None:
     raise ValueError("reset_demo requires a safe local demo database URL")
 
 
-def reset_database(database_url: str, *, technical_spike: bool = False) -> None:
+def reset_database(database_url: str) -> None:
     """The only schema-mutating operation. Application startup never calls this."""
     _require_safe_demo_database(database_url)
-    _reset_database(database_url, technical_spike=technical_spike)
+    _reset_database(database_url)
 
 
 def main() -> None:

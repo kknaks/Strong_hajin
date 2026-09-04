@@ -11,6 +11,7 @@ from ax_workspace.modules.organization_access.domain import (
     WORK_REQUEST_DECIDE,
     WORK_REQUEST_READ,
 )
+from ax_workspace.modules.work.materials import AttachmentRepository, MaterialNotFound, MaterialStorage, store_file
 
 
 class WorkRequestError(Exception):
@@ -31,8 +32,12 @@ class WorkRequestRepository(Protocol):
         *,
         description: str | None = None,
         due_date: date | None = None,
+        cc_member_ids: list[str] | None = None,
     ) -> tuple[Any, bool]: ...
     def request(self, request_id: UUID, *, lock: bool = False) -> Any: ...
+    def cc_member_ids(self, request: Any) -> list[str]: ...
+    def adopt_evidence(self, submission: Any, attachment: Any, *, role: str, adopted_by: str) -> Any: ...
+    def evidence_for(self, request: Any) -> list[tuple[Any, Any, Any]]: ...
     def create_accepted_task(self, request: Any) -> Any: ...
     def append_audit(self, request_id: UUID, actor_id: str, event_type: str, payload: dict[str, Any]) -> None: ...
     def inbox_for(self, assignee_id: str) -> list[Any]: ...
@@ -46,11 +51,14 @@ class WorkRequestRepository(Protocol):
 class CommentRepository(Protocol):
     def add(self, request_thread_id: UUID, author_id: str, body: str) -> Any: ...
     def list_for(self, request_thread_id: UUID) -> list[Any]: ...
+    def comment(self, request_thread_id: UUID, comment_id: UUID) -> Any: ...
 
 
 class WorkRequestAssigneeDirectory(Protocol):
     def work_request_assignee_candidates(self, principal: Principal) -> list[dict[str, str]]: ...
     def is_work_request_assignee(self, principal: Principal, assignee_id: str) -> bool: ...
+    def member_candidates(self, principal: Principal) -> list[dict[str, str]]: ...
+    def is_active_member(self, principal: Principal, member_id: str) -> bool: ...
 
 
 class WorkRequestApplication:
@@ -59,10 +67,14 @@ class WorkRequestApplication:
         repository: WorkRequestRepository,
         assignee_directory: WorkRequestAssigneeDirectory,
         comments: CommentRepository | None = None,
+        attachments: AttachmentRepository | None = None,
+        storage: MaterialStorage | None = None,
     ) -> None:
         self._repository = repository
         self._assignee_directory = assignee_directory
         self._comments = comments
+        self._attachments = attachments
+        self._storage = storage
 
     def create(
         self,
@@ -73,12 +85,20 @@ class WorkRequestApplication:
         *,
         description: str | None = None,
         due_date: date | None = None,
+        cc_member_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         self._require(principal, WORK_REQUEST_CREATE)
         if not title.strip():
             raise WorkRequestError("title is required")
         if not self._assignee_directory.is_work_request_assignee(principal, assignee_id):
             raise WorkRequestError("assignee is not an eligible assignee")
+        cc: list[str] = []
+        for member_id in cc_member_ids or []:
+            if member_id in {str(principal.id), assignee_id} or member_id in cc:
+                continue
+            if not self._assignee_directory.is_active_member(principal, member_id):
+                raise WorkRequestError(f"cc member {member_id} is not an active member")
+            cc.append(member_id)
         cleaned_description = (description or "").strip() or None
         request, created = self._repository.create_request(
             str(principal.id),
@@ -87,6 +107,7 @@ class WorkRequestApplication:
             causation_key,
             description=cleaned_description,
             due_date=due_date,
+            cc_member_ids=cc,
         )
         if created:
             self._repository.append_audit(request.id, str(principal.id), "work_request.created", {})
@@ -183,12 +204,100 @@ class WorkRequestApplication:
     def timeline(self, principal: Principal, request_id: UUID) -> dict[str, Any]:
         self._require(principal, WORK_REQUEST_READ)
         request = self._participant_request(principal, request_id)
-        comments = (
-            [self._comment_view(item) for item in self._comments.list_for(request.request_thread_id)]
-            if self._comments is not None and request.request_thread_id is not None
-            else []
+        comments = self._comment_views(request)
+        evidence = [
+            {
+                "evidence_id": str(item.id),
+                "submission_id": str(submission.id),
+                "submission_version": submission.submission_version,
+                "attachment_id": str(attachment.id),
+                "name": attachment.name,
+                "content_type": attachment.content_type,
+                "size_bytes": int(attachment.size_bytes),
+                "evidence_role": item.evidence_role,
+                "fixed_snapshot_ref": item.fixed_snapshot_ref,
+                "adopted_by": item.adopted_by,
+                "adopted_at": item.adopted_at.isoformat(),
+            }
+            for item, attachment, submission in self._repository.evidence_for(request)
+        ]
+        return {"request": self._view(request), "comments": comments, "evidence": evidence, **self._repository.timeline(request)}
+
+    def _comment_views(self, request: Any) -> list[dict[str, Any]]:
+        if self._comments is None or request.request_thread_id is None:
+            return []
+        comments = self._comments.list_for(request.request_thread_id)
+        bound: dict[str, list[dict[str, Any]]] = {}
+        if self._attachments is not None and comments:
+            for binding, attachment in self._attachments.bindings_for_many("comment", [str(item.id) for item in comments]):
+                bound.setdefault(binding.context_id, []).append(_attachment_view(attachment))
+        return [self._comment_view(item, bound.get(str(item.id), [])) for item in comments]
+
+    def attach_to_comment(self, principal: Principal, request_id: UUID, comment_id: UUID, *, name: str, content_type: str, data: bytes) -> dict[str, Any]:
+        """Bind a file to one's own comment (ERD ATTACHMENT_BINDING context=comment, role=discussion)."""
+        self._require(principal, WORK_REQUEST_READ)
+        if self._comments is None or self._attachments is None or self._storage is None:
+            raise WorkRequestError("attachments are not available")
+        request = self._participant_request(principal, request_id)
+        comment = self._comments.comment(request.request_thread_id, comment_id) if request.request_thread_id else None
+        if comment is None:
+            raise WorkRequestError("comment was not found")
+        if comment.author_member_id != str(principal.id):
+            raise WorkRequestError("only the comment author may attach files")
+        attachment = store_file(
+            self._attachments, self._storage,
+            key_prefix=f"work_requests/{request.id}/comments", name=name, content_type=content_type, data=data,
+            provenance=f"work_request:{request.id}:comment:{comment.id}", uploaded_by=str(principal.id),
         )
-        return {"request": self._view(request), "comments": comments, **self._repository.timeline(request)}
+        self._attachments.bind(attachment_id=attachment.id, context_type="comment", context_id=str(comment.id), role="discussion", bound_by=str(principal.id))
+        return self._comment_view(comment, [_attachment_view(item) for _, item in self._attachments.bindings_for("comment", str(comment.id))])
+
+    def add_evidence(self, principal: Principal, request_id: UUID, *, name: str, content_type: str, data: bytes) -> dict[str, Any]:
+        """Adopt a file as Evidence for the current Submission: the reviewer adopts decision basis, the requester supplies support."""
+        self._require(principal, WORK_REQUEST_READ)
+        if self._attachments is None or self._storage is None:
+            raise WorkRequestError("attachments are not available")
+        request = self._repository.request(request_id, lock=True)
+        if request is None:
+            raise WorkRequestError("work request was not found")
+        if str(principal.id) not in {request.requester_id, request.assignee_id}:
+            raise WorkRequestError("only the requester or the assignee may adopt evidence")
+        submission = self._repository.current_submission(request)
+        if submission is None:
+            raise WorkRequestError("work request has no submission to attach evidence to")
+        attachment = store_file(
+            self._attachments, self._storage,
+            key_prefix=f"work_requests/{request.id}/evidence", name=name, content_type=content_type, data=data,
+            provenance=f"work_request:{request.id}:submission:{submission.id}", uploaded_by=str(principal.id),
+        )
+        self._attachments.bind(attachment_id=attachment.id, context_type="submission", context_id=str(submission.id), role="supplemental", bound_by=str(principal.id))
+        role = "decision_basis" if str(principal.id) == request.assignee_id else "supporting"
+        evidence = self._repository.adopt_evidence(submission, attachment, role=role, adopted_by=str(principal.id))
+        self._repository.append_audit(request.id, str(principal.id), "work_request.evidence_adopted", {"evidence_id": str(evidence.id), "name": attachment.name})
+        return {
+            "evidence_id": str(evidence.id),
+            "submission_id": str(submission.id),
+            "submission_version": submission.submission_version,
+            "attachment_id": str(attachment.id),
+            "name": attachment.name,
+            "content_type": attachment.content_type,
+            "size_bytes": int(attachment.size_bytes),
+            "evidence_role": evidence.evidence_role,
+            "fixed_snapshot_ref": evidence.fixed_snapshot_ref,
+            "adopted_by": evidence.adopted_by,
+            "adopted_at": evidence.adopted_at.isoformat(),
+        }
+
+    def open_attachment(self, principal: Principal, request_id: UUID, attachment_id: UUID) -> tuple[dict[str, Any], bytes]:
+        """Any participant (requester, assignee, cc) may read files that belong to this request's thread."""
+        self._require(principal, WORK_REQUEST_READ)
+        if self._attachments is None or self._storage is None:
+            raise WorkRequestError("attachments are not available")
+        request = self._participant_request(principal, request_id)
+        attachment = self._attachments.attachment(attachment_id)
+        if attachment is None or not str(attachment.provenance).startswith(f"work_request:{request.id}:"):
+            raise MaterialNotFound("attachment was not found")
+        return _attachment_view(attachment), self._storage.get(attachment.source_ref)
 
     def add_comment(self, principal: Principal, request_id: UUID, body: str) -> dict[str, Any]:
         """Discussion only: a comment never changes the request state or counts as a decision."""
@@ -201,24 +310,29 @@ class WorkRequestApplication:
         text = body.strip()
         if not text:
             raise WorkRequestError("comment body is required")
-        return self._comment_view(self._comments.add(request.request_thread_id, str(principal.id), text))
+        return self._comment_view(self._comments.add(request.request_thread_id, str(principal.id), text), [])
 
     def _participant_request(self, principal: Principal, request_id: UUID) -> Any:
         request = self._repository.request(request_id)
         if request is None:
             raise WorkRequestError("work request was not found")
-        if str(principal.id) not in {request.requester_id, request.assignee_id}:
+        if not self._is_participant(principal, request):
             raise WorkRequestError("principal cannot read this work request")
         return request
 
+    def _is_participant(self, principal: Principal, request: Any) -> bool:
+        member_id = str(principal.id)
+        return member_id in {request.requester_id, request.assignee_id} or member_id in self._repository.cc_member_ids(request)
+
     @staticmethod
-    def _comment_view(comment: Any) -> dict[str, Any]:
+    def _comment_view(comment: Any, attachments: list[dict[str, Any]]) -> dict[str, Any]:
         return {
             "comment_id": str(comment.id),
             "author_member_id": comment.author_member_id,
             "body": comment.body,
             "created_at": comment.created_at.isoformat(),
             "edited_at": comment.edited_at.isoformat() if comment.edited_at else None,
+            "attachments": attachments,
         }
 
     def inbox(self, principal: Principal) -> list[dict[str, Any]]:
@@ -231,16 +345,15 @@ class WorkRequestApplication:
 
     def get(self, principal: Principal, request_id: UUID) -> dict[str, Any]:
         self._require(principal, WORK_REQUEST_READ)
-        request = self._repository.request(request_id)
-        if request is None:
-            raise WorkRequestError("work request was not found")
-        if str(principal.id) not in {request.requester_id, request.assignee_id}:
-            raise WorkRequestError("principal cannot read this work request")
-        return self._view(request)
+        return self._view(self._participant_request(principal, request_id))
 
     def assignee_candidates(self, principal: Principal) -> list[dict[str, str]]:
         self._require(principal, WORK_REQUEST_CREATE)
         return self._assignee_directory.work_request_assignee_candidates(principal)
+
+    def cc_candidates(self, principal: Principal) -> list[dict[str, str]]:
+        self._require(principal, WORK_REQUEST_CREATE)
+        return self._assignee_directory.member_candidates(principal)
 
     def _decision_target(self, principal: Principal, request_id: UUID, expected_version: int) -> Any:
         request = self._repository.request(request_id, lock=True)
@@ -270,9 +383,21 @@ class WorkRequestApplication:
             "due_date": request.due_date.isoformat() if getattr(request, "due_date", None) else None,
             "requester_id": request.requester_id,
             "assignee_id": request.assignee_id,
+            "cc_member_ids": self._repository.cc_member_ids(request),
             "state": request.state,
             "version": request.version,
             "task_id": str(task.id) if task else None,
             "assignment_state": "active" if task else None,
             "conditions": request.conditions,
         }
+
+
+def _attachment_view(attachment: Any) -> dict[str, Any]:
+    return {
+        "attachment_id": str(attachment.id),
+        "name": attachment.name,
+        "content_type": attachment.content_type,
+        "size_bytes": int(attachment.size_bytes),
+        "uploaded_by": attachment.uploaded_by,
+        "created_at": attachment.created_at.isoformat(),
+    }

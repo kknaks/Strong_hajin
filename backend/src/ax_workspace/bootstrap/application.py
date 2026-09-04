@@ -3,12 +3,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from typing import Any, Callable, TypeVar
+from typing import Any
 import sys
 from uuid import UUID
 
 from ax_workspace.bootstrap.settings import Settings
-from ax_workspace.modules.ax_execution.application import AccessDenied, WorkflowRunStarter
 from ax_workspace.modules.ax_execution.conversations import (
     ConversationApplication,
     ConversationContextReferenceInput,
@@ -32,20 +31,20 @@ from ax_workspace.platform.actions import SqlAlchemyActionExecutor, SqlAlchemyAc
 from ax_workspace.platform.reports import SqlAlchemyDailyReportDraftWorkflow, SqlAlchemyDailyReportRepository
 from ax_workspace.modules.work.materials import TaskMaterialApplication
 from ax_workspace.modules.work.application import TaskAccessDenied, TaskApplication, TaskState
+from ax_workspace.modules.work.assignments import TaskAssignmentApplication
 from ax_workspace.modules.work.requests import WorkRequestApplication
 from ax_workspace.platform.persistence import make_session_factory
 from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
 from ax_workspace.platform.work_tasks import (
+    SqlAlchemyTaskAssignmentRepository,
     SqlAlchemyAttachmentRepository,
     SqlAlchemyCommentRepository,
     SqlAlchemyTaskRepository,
     SqlAlchemyWorkRecordSource,
     SqlAlchemyWorkRequestRepository,
 )
-from ax_workspace.platform.workflow_runtime import SqlAlchemyUnitOfWork, workflow_service
 
 
-T = TypeVar("T")
 
 
 class WorkflowApplication:
@@ -57,43 +56,13 @@ class WorkflowApplication:
         self._material_storage = LocalDirectoryMaterialStorage(Path(settings.materials_dir))
         self._report_provider = report_provider or create_codex_cli_provider(settings)
 
-    def _use(self, operation: Callable[[WorkflowRunStarter], T]) -> T:
-        with SqlAlchemyUnitOfWork(self._session_factory) as uow:
-            assert uow.workflows is not None
-            return operation(workflow_service(uow.workflows))
-
-    def execute(self, operation: Callable[[WorkflowRunStarter], T]) -> T:
-        """Run a local composition-owned operation in one application transaction."""
-        return self._use(operation)
-
-    def start(self, workflow_id: str, principal: Principal, input_data: dict[str, Any]) -> dict[str, Any]:
-        return self._use(lambda service: service.start(workflow_id, principal, input_data))
-
-    def run(self, run_id: UUID, principal: Principal) -> dict[str, Any]:
-        def operation(service: WorkflowRunStarter) -> dict[str, Any]:
-            result = service.summary(run_id)
-            if not service.can_view(run_id, principal):
-                raise AccessDenied("Principal cannot view this workflow run")
-            return result
-        return self._use(operation)
-
-    def inbox(self, principal: Principal) -> list[dict[str, Any]]:
-        return self._use(lambda service: service.inbox(principal))
-
-    def meeting_assignment_candidates(self, principal: Principal) -> list[dict[str, str]]:
-        return self._use(lambda service: service.meeting_assignment_candidates(principal))
-
-    def decide(self, run_id: UUID, node_id: str, principal: Principal, decision: str, rationale: str | None, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._use(lambda service: service.decide(run_id, node_id, principal, decision, rationale, payload))
-
     def my_work(self, principal: Principal) -> list[dict[str, Any]]:
-        workflow_work = self._use(lambda service: service.my_work(principal))
+        """ERD work_inbox projection: tasks the principal currently holds an active assignment for."""
         with self._session_factory() as session:
             try:
-                direct_work = TaskApplication(SqlAlchemyTaskRepository(session)).list_for(principal)
+                return TaskApplication(SqlAlchemyTaskRepository(session)).list_for(principal)
             except TaskAccessDenied:
-                direct_work = []
-        return [*direct_work, *workflow_work]
+                return []
 
     def organization_tree(self, principal: Principal) -> list[dict[str, Any]]:
         with self._session_factory() as session:
@@ -235,6 +204,43 @@ class WorkflowApplication:
             SqlAlchemyTaskRepository(session), SqlAlchemyAttachmentRepository(session), self._material_storage
         )
 
+    def assign_task(self, principal: Principal, title: str, assignee_id: str, **fields: Any) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._assignments(session).assign(principal, title, assignee_id, **fields)
+            session.commit()
+            return result
+
+    def task_assignment_candidates(self, principal: Principal) -> list[dict[str, str]]:
+        with self._session_factory() as session:
+            return self._assignments(session).candidates(principal)
+
+    def task_assignment_inbox(self, principal: Principal) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return self._assignments(session).inbox(principal)
+
+    def sent_task_assignments(self, principal: Principal) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return self._assignments(session).sent(principal)
+
+    def accept_task_assignment(self, principal: Principal, assignment_id: UUID) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._assignments(session).accept(principal, assignment_id)
+            session.commit()
+            return result
+
+    def decline_task_assignment(self, principal: Principal, assignment_id: UUID, reason: str) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._assignments(session).decline(principal, assignment_id, reason)
+            session.commit()
+            return result
+
+    @staticmethod
+    def _assignments(session: Any) -> TaskAssignmentApplication:
+        return TaskAssignmentApplication(
+            SqlAlchemyTaskAssignmentRepository(session),
+            OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
+        )
+
     def list_tasks(self, principal: Principal, *, include_closed: bool = False) -> list[dict[str, Any]]:
         with self._session_factory() as session:
             return TaskApplication(SqlAlchemyTaskRepository(session)).list_for(principal, include_closed=include_closed)
@@ -252,10 +258,11 @@ class WorkflowApplication:
         *,
         description: str | None = None,
         due_date: Any = None,
+        cc_member_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         with self._session_factory() as session:
             result = self._work_requests(session).create(
-                principal, title, assignee_id, causation_key, description=description, due_date=due_date
+                principal, title, assignee_id, causation_key, description=description, due_date=due_date, cc_member_ids=cc_member_ids
             )
             session.commit()
             return result
@@ -297,6 +304,26 @@ class WorkflowApplication:
             result = self._work_requests(session).resubmit(principal, request_id, expected_version, **changes)
             session.commit()
             return result
+
+    def work_request_cc_candidates(self, principal: Principal) -> list[dict[str, str]]:
+        with self._session_factory() as session:
+            return self._work_requests(session).cc_candidates(principal)
+
+    def attach_to_work_request_comment(self, principal: Principal, request_id: UUID, comment_id: UUID, **file: Any) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._work_requests(session).attach_to_comment(principal, request_id, comment_id, **file)
+            session.commit()
+            return result
+
+    def add_work_request_evidence(self, principal: Principal, request_id: UUID, **file: Any) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._work_requests(session).add_evidence(principal, request_id, **file)
+            session.commit()
+            return result
+
+    def open_work_request_attachment(self, principal: Principal, request_id: UUID, attachment_id: UUID) -> tuple[dict[str, Any], bytes]:
+        with self._session_factory() as session:
+            return self._work_requests(session).open_attachment(principal, request_id, attachment_id)
 
     def add_work_request_comment(self, principal: Principal, request_id: UUID, body: str) -> dict[str, Any]:
         with self._session_factory() as session:
@@ -412,12 +439,13 @@ class WorkflowApplication:
             session.commit()
             return result
 
-    @staticmethod
-    def _work_requests(session: Any) -> WorkRequestApplication:
+    def _work_requests(self, session: Any) -> WorkRequestApplication:
         return WorkRequestApplication(
             SqlAlchemyWorkRequestRepository(session),
             OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
             SqlAlchemyCommentRepository(session),
+            SqlAlchemyAttachmentRepository(session),
+            self._material_storage,
         )
 
     def _conversations(self, session: Any) -> ConversationApplication:

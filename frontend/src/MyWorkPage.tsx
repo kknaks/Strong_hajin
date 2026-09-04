@@ -1,18 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
+  acceptTaskAssignment,
   decideAction,
+  declineTaskAssignment,
   getActionInbox,
   getActions,
   getMyWork,
+  getSentTaskAssignments,
+  getTaskAssignmentCandidates,
+  getTaskAssignmentInbox,
   getTasks,
   getWorkRequestAssigneeCandidates,
+  getWorkRequestCcCandidates,
   getWorkRequests,
   transitionDirectTask,
   updateTask,
 } from "./api";
 import { dueDayText, formatMonthDay, isoDateInSeoul, personName, seoulToday, taskStateLabel, workRequestStateLabel } from "./labels";
-import { isDirectTask, type ActionItem, type DirectTask, type Persona, type TaskPatch, type TaskState, type WorkRequest } from "./viewModels";
+import { type ActionItem, type DirectTask, type Persona, type TaskAssignment, type TaskPatch, type TaskState, type WorkRequest } from "./viewModels";
 import {
   CreateWorkDrawer,
   DueText,
@@ -30,6 +36,7 @@ type MyWorkPageProps = {
   personaName: string;
   personas: Persona[];
   canManageOwnTasks: boolean;
+  canAssignTasks?: boolean;
   canCreateWorkRequests: boolean;
   canDecideWorkRequests: boolean;
   canReadActions: boolean;
@@ -54,6 +61,7 @@ export function MyWorkPage({
   personaName,
   personas,
   canManageOwnTasks,
+  canAssignTasks = false,
   canCreateWorkRequests,
   canDecideWorkRequests,
   canReadActions,
@@ -68,6 +76,11 @@ export function MyWorkPage({
   const [actions, setActions] = useState<ActionItem[]>([]);
   const [allRequests, setAllRequests] = useState<WorkRequest[]>([]);
   const [assigneeCandidates, setAssigneeCandidates] = useState<Persona[]>([]);
+  const [assignCandidates, setAssignCandidates] = useState<Persona[]>([]);
+  const [ccCandidates, setCcCandidates] = useState<Persona[]>([]);
+  const [assignmentInbox, setAssignmentInbox] = useState<TaskAssignment[]>([]);
+  const [sentAssignments, setSentAssignments] = useState<TaskAssignment[]>([]);
+  const [declining, setDeclining] = useState<{ id: string; reason: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState<TaskFilter>("active");
   const [view, setView] = useState<ViewMode>("list");
@@ -77,25 +90,29 @@ export function MyWorkPage({
   const [isCreating, setIsCreating] = useState(false);
 
   const reload = useCallback(async () => {
-    const [work, closed, nextInbox, nextActions, requests] = await Promise.all([
+    const [work, closed, nextInbox, nextActions, requests, nextAssignmentInbox, nextSent] = await Promise.all([
       getMyWork(),
       getTasks(true).catch(() => [] as DirectTask[]),
       canDecideWorkRequests ? getActionInbox() : Promise.resolve([]),
       canReadActions ? getActions() : Promise.resolve([]),
       getWorkRequests().catch(() => [] as WorkRequest[]),
+      canManageOwnTasks ? getTaskAssignmentInbox().catch(() => [] as TaskAssignment[]) : Promise.resolve([] as TaskAssignment[]),
+      canAssignTasks ? getSentTaskAssignments().catch(() => [] as TaskAssignment[]) : Promise.resolve([] as TaskAssignment[]),
     ]);
     const merged = new Map<string, DirectTask>();
-    for (const task of [...work.filter(isDirectTask), ...closed]) merged.set(task.task_id, { ...merged.get(task.task_id), ...task });
+    for (const task of [...work, ...closed]) merged.set(task.task_id, { ...merged.get(task.task_id), ...task });
     const nextTasks = [...merged.values()];
     setTasks(nextTasks);
     setInbox(nextInbox);
     setActions(nextActions.filter((action) => action.state === "pending"));
     setAllRequests(requests);
+    setAssignmentInbox(nextAssignmentInbox);
+    setSentAssignments(nextSent);
     setSelectedTask((current) => (current ? nextTasks.find((task) => task.task_id === current.task_id) ?? null : null));
     setSelectedRequest((current) =>
       current ? [...nextInbox, ...requests].find((request) => request.request_id === current.request_id) ?? null : null,
     );
-  }, [canDecideWorkRequests, canReadActions, personaId]);
+  }, [canAssignTasks, canDecideWorkRequests, canManageOwnTasks, canReadActions, personaId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -117,6 +134,13 @@ export function MyWorkPage({
       return;
     }
     let cancelled = false;
+    void getWorkRequestCcCandidates()
+      .then((candidates) => {
+        if (!cancelled) setCcCandidates(candidates);
+      })
+      .catch(() => {
+        if (!cancelled) setCcCandidates([]);
+      });
     void getWorkRequestAssigneeCandidates()
       .then((candidates) => {
         if (!cancelled) setAssigneeCandidates(candidates);
@@ -128,6 +152,40 @@ export function MyWorkPage({
       cancelled = true;
     };
   }, [canCreateWorkRequests, onError, personaId]);
+
+  useEffect(() => {
+    if (!canAssignTasks) {
+      setAssignCandidates([]);
+      return;
+    }
+    let cancelled = false;
+    void getTaskAssignmentCandidates()
+      .then((candidates) => {
+        if (!cancelled) setAssignCandidates(candidates);
+      })
+      .catch(() => {
+        if (!cancelled) setAssignCandidates([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canAssignTasks, personaId]);
+
+  const answerAssignment = async (assignment: TaskAssignment, decision: "accept" | "decline", reason?: string) => {
+    setBusy(true);
+    try {
+      if (decision === "accept") await acceptTaskAssignment(assignment.assignment_id);
+      else await declineTaskAssignment(assignment.assignment_id, reason ?? "");
+      setDeclining(null);
+      await reload();
+      onError(null);
+      onNotice(decision === "accept" ? `'${assignment.task.title}' 배정을 수락했습니다. 내 업무에 들어왔습니다.` : `'${assignment.task.title}' 배정을 거절했습니다.`);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "배정을 처리하지 못했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const transitionTask = async (task: DirectTask, action: TaskAction, reason?: string) => {
     setBusy(true);
@@ -177,14 +235,21 @@ export function MyWorkPage({
     () => Object.fromEntries(allRequests.filter((request) => request.task_id && request.requester_id).map((request) => [request.task_id as string, request.requester_id as string])),
     [allRequests],
   );
+  // cc·배정 후보는 로그인 계정 목록에 없는 구성원(예: 관리자)을 포함하므로 이름 해석용 목록을 합친다.
+  const people = useMemo(() => {
+    const merged = new Map(personas.map((persona) => [persona.id, persona]));
+    for (const candidate of [...ccCandidates, ...assignCandidates, ...assigneeCandidates]) if (!merged.has(candidate.id)) merged.set(candidate.id, candidate);
+    return [...merged.values()];
+  }, [assignCandidates, assigneeCandidates, ccCandidates, personas]);
   const sentRequests = allRequests.filter((request) => request.requester_id === personaId);
+  const ccRequests = allRequests.filter((request) => request.cc_member_ids?.includes(personaId));
   const sorted = useMemo(() => [...tasks].sort((left, right) => stateOrder[left.state] - stateOrder[right.state]), [tasks]);
   const visibleTasks = useMemo(() => {
     if (filter === "all") return sorted;
     if (filter === "active") return sorted.filter((task) => task.state !== "done" && task.state !== "cancelled");
     return sorted.filter((task) => task.state === filter);
   }, [filter, sorted]);
-  const decisionCount = inbox.length + actions.length;
+  const decisionCount = inbox.length + actions.length + assignmentInbox.length;
   const canCreate = canManageOwnTasks || canCreateWorkRequests;
   const today = seoulToday();
 
@@ -211,10 +276,55 @@ export function MyWorkPage({
             {decisionCount === 0 ? (
               <div className="empty-state">
                 <b>판단할 항목이 없습니다</b>
-                <p>동료의 요청과 AX 제안이 오면 여기에 쌓입니다.</p>
+                <p>동료의 요청, 관리자의 배정, AX 제안이 오면 여기에 쌓입니다.</p>
               </div>
             ) : (
               <div className="card-stack">
+                {assignmentInbox.map((assignment) => (
+                  <TaskCard
+                    actions={
+                      declining?.id === assignment.assignment_id ? (
+                        <div className="inline-reason" style={{ padding: 0 }}>
+                          <label className="sr-only" htmlFor={`decline-${assignment.assignment_id}`}>
+                            거절 사유
+                          </label>
+                          <input
+                            autoFocus
+                            id={`decline-${assignment.assignment_id}`}
+                            onChange={(event) => setDeclining({ id: assignment.assignment_id, reason: event.target.value })}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" && declining.reason.trim()) void answerAssignment(assignment, "decline", declining.reason.trim());
+                            }}
+                            placeholder="거절 사유를 적어 주세요"
+                            value={declining.reason}
+                          />
+                          <button className="btn h30 danger" disabled={busy || !declining.reason.trim()} onClick={() => void answerAssignment(assignment, "decline", declining.reason.trim())} type="button">
+                            거절 확정
+                          </button>
+                          <button className="btn h30 ghost" onClick={() => setDeclining(null)} type="button">
+                            취소
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <button className="btn h30 primary" disabled={busy} onClick={() => void answerAssignment(assignment, "accept")} type="button">
+                            배정 수락
+                          </button>
+                          <button className="btn h30" disabled={busy} onClick={() => setDeclining({ id: assignment.assignment_id, reason: "" })} type="button">
+                            거절
+                          </button>
+                        </>
+                      )
+                    }
+                    date={assignment.task.due_date ? `기한 ${formatMonthDay(assignment.task.due_date)} (${dueDayText(assignment.task.due_date, today)})` : formatMonthDay(isoDateInSeoul(assignment.created_at))}
+                    key={assignment.assignment_id}
+                    kicker="업무 배정"
+                    memo={assignment.task.description}
+                    people={<PersonChip arrowTo={me} name={displayNameOf(people, assignment.assigned_by, "관리자")} />}
+                    status={<StatusText label="수락 대기" state="pending" />}
+                    title={assignment.task.title}
+                  />
+                ))}
                 {inbox.map((request) => (
                   <TaskCard
                     actions={
@@ -227,7 +337,7 @@ export function MyWorkPage({
                     kicker="업무 요청"
                     memo={request.description}
                     onOpen={() => setSelectedRequest(request)}
-                    people={<PersonChip arrowTo={me} name={displayNameOf(personas, request.requester_id, "동료")} />}
+                    people={<PersonChip arrowTo={me} name={displayNameOf(people, request.requester_id, "동료")} />}
                     status={<StatusText label={workRequestStateLabel[request.state]} state={request.state} />}
                     title={request.title}
                   />
@@ -268,7 +378,7 @@ export function MyWorkPage({
               <button aria-selected={tab === "mine"} onClick={() => setTab("mine")} role="tab" type="button">
                 할일
               </button>
-              {canCreateWorkRequests && (
+              {(canCreateWorkRequests || canAssignTasks || ccRequests.length > 0) && (
                 <button aria-selected={tab === "sent"} onClick={() => setTab("sent")} role="tab" type="button">
                   보낸 업무
                 </button>
@@ -300,6 +410,56 @@ export function MyWorkPage({
           </div>
 
           {tab === "sent" ? (
+            <>
+            {canAssignTasks && (
+              <section aria-label="배정한 업무" className="sent-section">
+                <h2 className="section-title">
+                  배정한 업무 <small>수락하면 그 사람의 업무가 됩니다</small>
+                </h2>
+                <table className="plain-table">
+                  <thead>
+                    <tr>
+                      <th>업무명</th>
+                      <th className="center">배정 상태</th>
+                      <th className="center">업무 상태</th>
+                      <th className="center">담당자</th>
+                      <th className="center">기한</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sentAssignments.length === 0 && (
+                      <tr>
+                        <td colSpan={5}>
+                          <div className="empty-state">
+                            <b>배정한 업무가 없습니다</b>
+                            <p>새 업무 추가에서 담당자를 팀원으로 고르면 배정됩니다.</p>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    {sentAssignments.map((assignment) => (
+                      <tr key={assignment.assignment_id}>
+                        <td className="title-cell">{assignment.task.title}</td>
+                        <td className="center">
+                          <StatusText
+                            label={assignment.status === "pending" ? "수락 대기" : assignment.status === "active" ? "수락됨" : assignment.status === "declined" ? `거절됨${assignment.decline_reason ? ` · ${assignment.decline_reason}` : ""}` : assignment.status}
+                            state={assignment.status === "pending" ? "pending" : assignment.status === "active" ? "accepted" : "rejected"}
+                          />
+                        </td>
+                        <td className="center">
+                          <StatusText state={assignment.task.state} />
+                        </td>
+                        <td className="center">{displayNameOf(people, assignment.assignee_id, "담당자")}</td>
+                        <td className="center">{assignment.task.due_date ? formatMonthDay(assignment.task.due_date) : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </section>
+            )}
+            {canCreateWorkRequests && (
+            <section aria-label="보낸 요청" className="sent-section">
+            {canAssignTasks && <h2 className="section-title">보낸 요청</h2>}
             <table className="plain-table">
               <thead>
                 <tr>
@@ -327,7 +487,7 @@ export function MyWorkPage({
                     <td className="center">
                       <StatusText label={workRequestStateLabel[request.state]} state={request.state} />
                     </td>
-                    <td className="center">{displayNameOf(personas, request.assignee_id, "담당자")}</td>
+                    <td className="center">{displayNameOf(people, request.assignee_id, "담당자")}</td>
                     <td className="center">나</td>
                     <td className="end">
                       <button className="btn h30 ghost" onClick={() => setSelectedRequest(request)} type="button">
@@ -338,6 +498,44 @@ export function MyWorkPage({
                 ))}
               </tbody>
             </table>
+            </section>
+            )}
+            {ccRequests.length > 0 && (
+              <section aria-label="참조된 요청" className="sent-section">
+                <h2 className="section-title">
+                  참조된 요청 <small>읽고 논의할 수 있지만 판단은 담당자가 합니다</small>
+                </h2>
+                <table className="plain-table">
+                  <thead>
+                    <tr>
+                      <th>업무명</th>
+                      <th className="center">상태</th>
+                      <th className="center">담당자</th>
+                      <th className="center">요청자</th>
+                      <th className="end">액션</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ccRequests.map((request) => (
+                      <tr className="openable" key={request.request_id} onClick={() => setSelectedRequest(request)}>
+                        <td className="title-cell">{request.title}</td>
+                        <td className="center">
+                          <StatusText label={workRequestStateLabel[request.state]} state={request.state} />
+                        </td>
+                        <td className="center">{displayNameOf(people, request.assignee_id, "담당자")}</td>
+                        <td className="center">{displayNameOf(people, request.requester_id, "요청자")}</td>
+                        <td className="end">
+                          <button className="btn h30 ghost" onClick={() => setSelectedRequest(request)} type="button">
+                            상세보기
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </section>
+            )}
+            </>
           ) : view === "kanban" ? (
             <TaskKanban
               busy={busy}
@@ -390,7 +588,13 @@ export function MyWorkPage({
                       actions={canManageOwnTasks && <TaskQuickActions busy={busy} onTransition={transitionTask} task={task} />}
                       key={task.task_id}
                       onOpen={() => setSelectedTask(task)}
-                      requester={requesterByTask[task.task_id] ? displayNameOf(personas, requesterByTask[task.task_id]) : "—"}
+                      requester={
+                        requesterByTask[task.task_id]
+                          ? displayNameOf(people, requesterByTask[task.task_id])
+                          : task.assignment?.kind === "direct"
+                            ? `${displayNameOf(people, task.assignment.assigned_by, "관리자")} (배정)`
+                            : "—"
+                      }
                       startDate={formatMonthDay(task.start_date ?? isoDateInSeoul(task.created_at))}
                       task={task}
                       today={today}
@@ -414,7 +618,13 @@ export function MyWorkPage({
           onTransition={transitionTask}
           onUpdate={updateTaskFields}
           ownerName={me}
-          requesterName={requesterByTask[selectedTask.task_id] ? displayNameOf(personas, requesterByTask[selectedTask.task_id]) : null}
+          requesterName={
+            requesterByTask[selectedTask.task_id]
+              ? displayNameOf(people, requesterByTask[selectedTask.task_id])
+              : selectedTask.assignment?.kind === "direct"
+                ? `${displayNameOf(people, selectedTask.assignment.assigned_by, "관리자")} (배정)`
+                : null
+          }
           task={selectedTask}
         />
       )}
@@ -426,20 +636,22 @@ export function MyWorkPage({
           onError={onError}
           onNotice={onNotice}
           personaId={personaId}
-          personas={personas}
+          personas={people}
           request={selectedRequest}
         />
       )}
       {isCreating && (
         <CreateWorkDrawer
+          assignCandidates={canAssignTasks ? assignCandidates : []}
           assigneeCandidates={assigneeCandidates}
+          ccCandidates={ccCandidates}
           canCreateRequest={canCreateWorkRequests}
           canCreateTask={canManageOwnTasks}
           onClose={() => setIsCreating(false)}
           onCreated={async (message) => {
             await reload();
             onNotice(message);
-            if (message.includes("요청을")) setTab("sent");
+            if (message.includes("요청을") || message.includes("배정했습니다")) setTab("sent");
           }}
           onError={onError}
           ownerName={me}

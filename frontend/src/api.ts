@@ -3,16 +3,17 @@ import type {
   DailyReportHistory,
   DailyReportStatus,
   DirectTask,
-  MyWorkItem,
   OrganizationMember,
   OrganizationUnitNode,
   RequestComment,
+  RequestEvidence,
   RequestTimeline,
   TaskMaterial,
   TaskMaterialKind,
   TaskPatch,
   OrganizationProfile,
   Persona,
+  TaskAssignment,
   ActionItem,
   WorkRequest,
   Conversation,
@@ -55,8 +56,8 @@ export async function getDeveloperPersonas(): Promise<Persona[]> {
   return request<Persona[]>("/api/developer/personas");
 }
 
-export async function getMyWork(): Promise<MyWorkItem[]> {
-  return request<MyWorkItem[]>("/api/my-work");
+export async function getMyWork(): Promise<DirectTask[]> {
+  return request<DirectTask[]>("/api/my-work");
 }
 
 export async function getTasks(includeClosed = false): Promise<DirectTask[]> {
@@ -207,7 +208,7 @@ export async function getWorkRequestAssigneeCandidates(): Promise<Persona[]> {
 export async function createWorkRequest(
   title: string,
   assigneeId: string,
-  extra: { description?: string; due_date?: string | null } = {},
+  extra: { description?: string; due_date?: string | null; cc_member_ids?: string[] } = {},
 ): Promise<WorkRequest> {
   return request<WorkRequest>("/api/work-requests", {
     body: JSON.stringify({ title, assignee_id: assigneeId, ...extra }),
@@ -343,4 +344,59 @@ export async function resubmitWorkRequest(
     else body.clear_due_date = true;
   }
   return request<WorkRequest>(`/api/work-requests/${requestId}/resubmit`, { body: JSON.stringify(body), method: "POST" });
+}
+
+export async function getTaskAssignmentCandidates(): Promise<Persona[]> {
+  return request<Persona[]>("/api/task-assignment-candidates");
+}
+
+export async function assignTask(
+  title: string,
+  assigneeId: string,
+  extra: { description?: string; start_date?: string; due_date?: string } = {},
+): Promise<TaskAssignment> {
+  return request<TaskAssignment>("/api/tasks/assign", { body: JSON.stringify({ title, assignee_id: assigneeId, ...extra }), method: "POST" });
+}
+
+export async function getTaskAssignmentInbox(): Promise<TaskAssignment[]> {
+  return request<TaskAssignment[]>("/api/task-assignments/inbox");
+}
+
+export async function getSentTaskAssignments(): Promise<TaskAssignment[]> {
+  return request<TaskAssignment[]>("/api/task-assignments/sent");
+}
+
+export async function acceptTaskAssignment(assignmentId: string): Promise<TaskAssignment> {
+  return request<TaskAssignment>(`/api/task-assignments/${assignmentId}/accept`, { method: "POST", body: "{}" });
+}
+
+export async function declineTaskAssignment(assignmentId: string, reason: string): Promise<TaskAssignment> {
+  return request<TaskAssignment>(`/api/task-assignments/${assignmentId}/decline`, { method: "POST", body: JSON.stringify({ reason }) });
+}
+
+export async function getWorkRequestCcCandidates(): Promise<Persona[]> {
+  return request<Persona[]>("/api/work-request-cc-candidates");
+}
+
+async function uploadFile<T>(path: string, file: File): Promise<T> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const response = await fetch(path, { body: form, credentials: "same-origin", method: "POST" });
+  if (!response.ok) {
+    const error = (await response.json().catch(() => ({}))) as ApiErrorBody;
+    throw new ApiError(response.status, typeof error.detail === "string" ? error.detail : response.statusText);
+  }
+  return response.json() as Promise<T>;
+}
+
+export async function uploadCommentAttachment(requestId: string, commentId: string, file: File): Promise<RequestComment> {
+  return uploadFile<RequestComment>(`/api/work-requests/${requestId}/comments/${commentId}/attachments`, file);
+}
+
+export async function uploadRequestEvidence(requestId: string, file: File): Promise<RequestEvidence> {
+  return uploadFile<RequestEvidence>(`/api/work-requests/${requestId}/evidence`, file);
+}
+
+export function requestAttachmentUrl(requestId: string, attachmentId: string): string {
+  return `/api/work-requests/${requestId}/attachments/${attachmentId}/content`;
 }

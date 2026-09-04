@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Index, Integer, JSON, String, Text, Uuid, UniqueConstraint, create_engine, text
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 
 class Base(DeclarativeBase):
@@ -191,7 +191,7 @@ class AccessGrantRecord(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
-    capability_id: Mapped[str] = mapped_column(ForeignKey("capabilities.id"), nullable=False)
+    capability_id: Mapped[str | None] = mapped_column(ForeignKey("capabilities.id"))
     role_id: Mapped[str | None] = mapped_column(ForeignKey("roles.id"))
     role_capability_version: Mapped[int | None] = mapped_column(Integer)
     scope_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="unit")
@@ -291,43 +291,6 @@ class ProviderCallRecord(Base):
     usage: Mapped[dict | None] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(40), nullable=False)
     normalized_error: Mapped[str | None] = mapped_column(Text)
-
-
-class HumanDecisionRecord(Base):
-    __tablename__ = "human_decisions"
-    __table_args__ = (UniqueConstraint("node_execution_id", name="uq_human_decision_node_execution"),)
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    node_execution_id: Mapped[UUID] = mapped_column(
-        ForeignKey("workflow_node_executions.id"), nullable=False
-    )
-    principal_id: Mapped[str] = mapped_column(String(100), nullable=False)
-    decision: Mapped[str] = mapped_column(String(40), nullable=False)
-    rationale: Mapped[str | None] = mapped_column(Text)
-    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
-    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
-class ToolExecutionRecord(Base):
-    __tablename__ = "tool_executions"
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    node_execution_id: Mapped[UUID] = mapped_column(
-        ForeignKey("workflow_node_executions.id"), nullable=False
-    )
-    tool_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    result: Mapped[dict] = mapped_column(JSON, nullable=False)
-    executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
-class AuditEventRecord(Base):
-    __tablename__ = "audit_events"
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    run_id: Mapped[UUID] = mapped_column(ForeignKey("workflow_runs.id"), nullable=False)
-    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
-    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
-    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class ConversationRecord(Base):
@@ -481,15 +444,6 @@ class ActionItemAuditEventRecord(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class WorkRecord(Base):
-    __tablename__ = "work_records"
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    owner_id: Mapped[str] = mapped_column(String(100), nullable=False)
-    title: Mapped[str] = mapped_column(String(300), nullable=False)
-    status: Mapped[str] = mapped_column(String(40), nullable=False)
-
-
 class TaskRecord(Base):
     __tablename__ = "tasks"
 
@@ -516,6 +470,9 @@ class TaskRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     causation_key: Mapped[str | None] = mapped_column(String(64), unique=True)
+    assignments: Mapped[list["TaskAssignmentRecord"]] = relationship(
+        "TaskAssignmentRecord", order_by="TaskAssignmentRecord.created_at", lazy="selectin"
+    )
 
 
 class RequestThreadRecord(Base):
@@ -748,24 +705,29 @@ class WorkRequestAuditEventRecord(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class WorkRequestTaskAssignmentRecord(Base):
-    __tablename__ = "work_request_task_assignments"
-    __table_args__ = (UniqueConstraint("request_id", name="uq_work_request_assignment"),)
+class TaskAssignmentRecord(Base):
+    """ERD TASK_ASSIGNMENT — who assigned whom to a Task, and whether the assignee has accepted that responsibility.
+
+    assignment_kind: self (owner created it), request_effect (WorkRequest accepted), direct (manager assigned; pending until accepted).
+    """
+
+    __tablename__ = "task_assignments"
+    __table_args__ = (Index("ix_task_assignments_assignee_status", "assignee_id", "status"),)
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    request_id: Mapped[UUID] = mapped_column(ForeignKey("work_requests.id"), nullable=False)
-    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"), nullable=False, unique=True)
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"), nullable=False, index=True)
     assignee_id: Mapped[str] = mapped_column(String(100), nullable=False)
-    state: Mapped[str] = mapped_column(String(40), nullable=False)
-    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
-class MeetingEvidenceRecord(Base):
-    __tablename__ = "meeting_evidence"
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    title: Mapped[str] = mapped_column(String(300), nullable=False)
-    candidate_task: Mapped[str] = mapped_column(String(300), nullable=False)
+    assigned_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    assignment_kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
+    source_work_request_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    source_decision_item_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    source_review_decision_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    decline_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    declined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class DailyReportSubmissionRecord(Base):
@@ -821,28 +783,6 @@ class ReportAuditEventRecord(Base):
     event_type: Mapped[str] = mapped_column(String(100), nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
-class TaskAssignmentRecord(Base):
-    __tablename__ = "task_assignments"
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    run_id: Mapped[UUID] = mapped_column(ForeignKey("workflow_runs.id"), nullable=False, unique=True)
-    assignee_id: Mapped[str] = mapped_column(String(100), nullable=False)
-    title: Mapped[str] = mapped_column(String(300), nullable=False)
-    state: Mapped[str] = mapped_column(String(40), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-
-class ContractApprovalRecord(Base):
-    __tablename__ = "contract_approvals"
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    run_id: Mapped[UUID] = mapped_column(ForeignKey("workflow_runs.id"), nullable=False, unique=True)
-    contract_id: Mapped[str] = mapped_column(String(100), nullable=False)
-    state: Mapped[str] = mapped_column(String(40), nullable=False)
-    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class AuthSessionRecord(Base):

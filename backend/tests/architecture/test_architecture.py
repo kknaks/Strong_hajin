@@ -30,7 +30,7 @@ def test_production_has_no_developer_login_surface() -> None:
 
 def test_developer_auth_only_accepts_seeded_personas() -> None:
     client = TestClient(create_app(Settings(RuntimeProfile.TEST, "postgresql+psycopg://unused")))
-    assert client.get("/api/catalog", headers={"X-Demo-Persona": "invented-admin"}).status_code == 401
+    assert client.get("/api/my-work", headers={"X-Demo-Persona": "invented-admin"}).status_code == 401
 
 
 def test_domain_and_application_modules_do_not_import_inbound_or_sqlalchemy_adapters() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from typing import Literal
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
@@ -18,12 +19,6 @@ from ax_workspace.entrypoints.http_auth import (
     session_principal,
 )
 from ax_workspace.bootstrap.application import create_auth_session_store, create_workflow_application
-from ax_workspace.modules.ax_execution.application import (
-    AccessDenied,
-    InvalidDecision,
-    InvalidWorkflowInput,
-    RunNotFound,
-)
 from ax_workspace.modules.work.application import InvalidTaskTransition, TaskAccessDenied, TaskError, TaskNotFound, TaskState
 from ax_workspace.modules.work.materials import MaterialNotFound
 from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequestError
@@ -31,7 +26,6 @@ from ax_workspace.modules.reports.application import DailyReportAccessDenied
 from ax_workspace.modules.ax_execution.conversations import ConversationError, ConversationQueueOverflow
 from ax_workspace.modules.ax_execution.actions import ActionAccessDenied, ActionCapabilityDenied, ActionError
 from ax_workspace.bootstrap.settings import Settings
-from ax_workspace.modules.ax_execution.domain import catalog_definitions
 from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
 
 
@@ -45,30 +39,23 @@ class LoginRequest(BaseModel):
     account: str = Field(min_length=1, max_length=100)
 
 
-class CatalogItemResponse(BaseModel):
-    workflow_id: str
-    version: str
-    title: str
-    description: str
-    input_schema: dict[str, object]
-    graph: dict[str, object]
-
-
-class StartRunRequest(BaseModel):
-    input: dict[str, object]
-
-
-class DecisionRequest(BaseModel):
-    decision: str
-    rationale: str | None = None
-    payload: dict[str, object] = Field(default_factory=dict)
-
-
 class CreateTaskRequest(BaseModel):
     title: str
     description: str | None = None
     start_date: date | None = None
     due_date: date | None = None
+
+
+class AssignTaskRequest(BaseModel):
+    title: str
+    assignee_id: str
+    description: str | None = None
+    start_date: date | None = None
+    due_date: date | None = None
+
+
+class DeclineTaskAssignmentRequest(BaseModel):
+    reason: str
 
 
 class UpdateTaskRequest(BaseModel):
@@ -102,6 +89,7 @@ class CreateWorkRequestRequest(BaseModel):
     assignee_id: str
     description: str | None = None
     due_date: date | None = None
+    cc_member_ids: list[str] = []
 
 
 class WorkRequestDecisionRequest(BaseModel):
@@ -168,12 +156,6 @@ def _runtime_error(error: Exception) -> HTTPException:
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "conversation_queue_full", "queue_size": error.queue_size, "limit": error.limit},
         )
-    if isinstance(error, RunNotFound):
-        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
-    if isinstance(error, AccessDenied):
-        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
-    if isinstance(error, (InvalidDecision, InvalidWorkflowInput)):
-        return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     if isinstance(error, (TaskNotFound, MaterialNotFound)):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
     if isinstance(error, (TaskAccessDenied, WorkRequestAccessDenied, DailyReportAccessDenied)):
@@ -197,7 +179,6 @@ def create_app(
     settings: Settings | None = None,
     *,
     report_provider: AiProvider | None = None,
-    technical_spike: bool = False,
 ) -> FastAPI:
     settings = settings or Settings.from_environment()
     app = FastAPI(title="SCAX Workflow Catalog API", version="0.1.0")
@@ -255,79 +236,6 @@ def create_app(
             if principal is None:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="로그인이 필요합니다.")
             return app.state.workflow_application.my_organization_profile(principal)
-
-        @app.get("/api/catalog", response_model=list[CatalogItemResponse])
-        def catalog(principal: Principal = Depends(developer_principal)) -> list[CatalogItemResponse]:
-            if not technical_spike:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-            return [
-                CatalogItemResponse(
-                    workflow_id=definition.workflow_id,
-                    version=definition.version,
-                    title=definition.title,
-                    description=definition.description,
-                    input_schema=definition.input_schema,
-                    graph={
-                        "nodes": [node.model_dump(mode="json") for node in definition.nodes],
-                        "edges": [edge.model_dump(mode="json") for edge in definition.edges],
-                    },
-                )
-                for definition in catalog_definitions()
-                if definition.is_visible_to(principal)
-            ]
-
-        @app.post("/api/runs/{workflow_id}", status_code=status.HTTP_201_CREATED)
-        def start_run(
-            workflow_id: str,
-            request: StartRunRequest,
-            principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
-            if not technical_spike:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-            try:
-                return app.state.workflow_application.start(workflow_id, principal, request.input)
-            except Exception as error:
-                raise _runtime_error(error) from error
-
-        @app.get("/api/runs/{run_id}")
-        def get_run(run_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
-            if not technical_spike:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-            try:
-                return app.state.workflow_application.run(run_id, principal)
-            except Exception as error:
-                raise _runtime_error(error) from error
-
-        @app.get("/api/inbox")
-        def inbox(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
-            if not technical_spike:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-            return app.state.workflow_application.inbox(principal)
-
-        @app.get("/api/meeting-assignment-candidates", response_model=list[PersonaResponse])
-        def meeting_assignment_candidates(
-            principal: Principal = Depends(developer_principal),
-        ) -> list[PersonaResponse]:
-            if not technical_spike:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-            try:
-                return [PersonaResponse(**candidate) for candidate in app.state.workflow_application.meeting_assignment_candidates(principal)]
-            except Exception as error:
-                raise _runtime_error(error) from error
-
-        @app.post("/api/runs/{run_id}/decisions/{node_id}")
-        def decide(
-            run_id: UUID,
-            node_id: str,
-            request: DecisionRequest,
-            principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
-            if not technical_spike:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-            try:
-                return app.state.workflow_application.decide(run_id, node_id, principal, request.decision, request.rationale, request.payload)
-            except Exception as error:
-                raise _runtime_error(error) from error
 
         @app.get("/api/my-work")
         def my_work(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
@@ -413,6 +321,53 @@ def create_app(
                     start_date=request.start_date,
                     due_date=request.due_date,
                 )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/tasks/assign", status_code=status.HTTP_201_CREATED)
+        def assign_task(request: AssignTaskRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.assign_task(
+                    principal, request.title, request.assignee_id,
+                    description=request.description, start_date=request.start_date, due_date=request.due_date,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/task-assignment-candidates", response_model=list[PersonaResponse])
+        def task_assignment_candidates(principal: Principal = Depends(developer_principal)) -> list[PersonaResponse]:
+            try:
+                return [PersonaResponse(**candidate) for candidate in app.state.workflow_application.task_assignment_candidates(principal)]
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/task-assignments/inbox")
+        def task_assignment_inbox(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+            try:
+                return app.state.workflow_application.task_assignment_inbox(principal)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/task-assignments/sent")
+        def sent_task_assignments(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+            try:
+                return app.state.workflow_application.sent_task_assignments(principal)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/task-assignments/{assignment_id}/accept")
+        def accept_task_assignment(assignment_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.accept_task_assignment(principal, assignment_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/task-assignments/{assignment_id}/decline")
+        def decline_task_assignment(
+            assignment_id: UUID, request: DeclineTaskAssignmentRequest, principal: Principal = Depends(developer_principal)
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.decline_task_assignment(principal, assignment_id, request.reason)
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -503,7 +458,10 @@ def create_app(
             principal: Principal = Depends(developer_principal),
         ) -> dict[str, object]:
             try:
-                return app.state.workflow_application.create_work_request(principal, request.title, request.assignee_id, description=request.description, due_date=request.due_date)
+                return app.state.workflow_application.create_work_request(
+                    principal, request.title, request.assignee_id,
+                    description=request.description, due_date=request.due_date, cc_member_ids=request.cc_member_ids,
+                )
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -546,6 +504,52 @@ def create_app(
                 return app.state.workflow_application.add_work_request_comment(principal, request_id, request.body)
             except Exception as error:
                 raise _runtime_error(error) from error
+
+        @app.get("/api/work-request-cc-candidates", response_model=list[PersonaResponse])
+        def work_request_cc_candidates(principal: Principal = Depends(developer_principal)) -> list[PersonaResponse]:
+            try:
+                return [PersonaResponse(**candidate) for candidate in app.state.workflow_application.work_request_cc_candidates(principal)]
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/work-requests/{request_id}/comments/{comment_id}/attachments", status_code=status.HTTP_201_CREATED)
+        async def attach_to_work_request_comment(
+            request_id: UUID, comment_id: UUID, file: UploadFile = File(...), principal: Principal = Depends(developer_principal)
+        ) -> dict[str, object]:
+            data = await file.read()
+            try:
+                return app.state.workflow_application.attach_to_work_request_comment(
+                    principal, request_id, comment_id,
+                    name=file.filename or "attachment", content_type=file.content_type or "application/octet-stream", data=data,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/work-requests/{request_id}/evidence", status_code=status.HTTP_201_CREATED)
+        async def add_work_request_evidence(
+            request_id: UUID, file: UploadFile = File(...), principal: Principal = Depends(developer_principal)
+        ) -> dict[str, object]:
+            data = await file.read()
+            try:
+                return app.state.workflow_application.add_work_request_evidence(
+                    principal, request_id,
+                    name=file.filename or "evidence", content_type=file.content_type or "application/octet-stream", data=data,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/work-requests/{request_id}/attachments/{attachment_id}/content")
+        def work_request_attachment_content(request_id: UUID, attachment_id: UUID, principal: Principal = Depends(developer_principal)) -> Response:
+            try:
+                view, data = app.state.workflow_application.open_work_request_attachment(principal, request_id, attachment_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+            filename = quote(str(view["name"]))
+            return Response(
+                content=data,
+                media_type=str(view["content_type"]),
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+            )
 
         @app.get("/api/work-requests/{request_id}/timeline")
         def work_request_timeline(request_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:

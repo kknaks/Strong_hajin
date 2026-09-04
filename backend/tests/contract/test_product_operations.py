@@ -71,15 +71,13 @@ def _client_with_seeded_database(
     tmp_path,
     *,
     report_provider=None,
-    technical_spike: bool = False,
 ) -> TestClient:
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
-    reset_database(database_url, technical_spike=technical_spike)
+    reset_database(database_url)
     return TestClient(
         create_app(
             Settings(RuntimeProfile.TEST, database_url),
             report_provider=report_provider,
-            technical_spike=technical_spike,
         )
     )
 
@@ -735,7 +733,10 @@ def test_organization_profile_is_a_persisted_authorized_projection(tmp_path) -> 
     response = client.get("/api/organization/me", headers={"X-Demo-Persona": "mina"})
 
     assert response.status_code == 200
-    assert response.json() == {
+    body = response.json()
+    grants = body.pop("grants")
+    assert len(grants) == 1 and grants[0]["role_id"] == "seed-role:mina" and grants[0]["scope_ref"] == "product"
+    assert body == {
         "member_id": "mina",
         "display_name": "민아 (구성원)",
         "organizations": [{"id": "product", "name": "제품팀"}, {"id": "scax", "name": "SCAX"}],
@@ -810,201 +811,3 @@ def test_organization_principal_projects_persona_specific_grants(tmp_path) -> No
     assert mina["organizations"] != sora["organizations"]
     assert "work.read" in mina["capabilities"]
     assert sora["capabilities"] == ["contract.legal_review"]
-
-
-def test_meeting_assignment_never_enters_my_work_before_the_selected_assignee_accepts(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path, technical_spike=True)
-    started = client.post("/api/runs/meeting-followups", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()
-    assert started["waiting_on"] == ["choose-assignment"]
-
-    requested = client.post(
-        f"/api/runs/{started['run_id']}/decisions/choose-assignment",
-        headers={"X-Demo-Persona": "mina"},
-        json={"decision": "accept", "payload": {"assignee_id": "mina"}},
-    )
-    assert requested.status_code == 200
-    assert requested.json()["waiting_on"] == ["accept-assignment"]
-    assert client.get("/api/my-work", headers={"X-Demo-Persona": "mina"}).json() == []
-
-    inbox = client.get("/api/inbox", headers={"X-Demo-Persona": "mina"}).json()
-    assert {item["node_id"] for item in inbox} == {"accept-assignment"}
-    completed = client.post(
-        f"/api/runs/{started['run_id']}/decisions/accept-assignment",
-        headers={"X-Demo-Persona": "mina"},
-        json={"decision": "accept"},
-    )
-    assert completed.json()["state"] == "completed"
-    assert client.get("/api/my-work", headers={"X-Demo-Persona": "mina"}).json()[0]["state"] == "active"
-
-
-def test_assignment_rejection_never_enters_my_work(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path, technical_spike=True)
-    started = client.post("/api/runs/meeting-followups", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()
-    client.post(
-        f"/api/runs/{started['run_id']}/decisions/choose-assignment",
-        headers={"X-Demo-Persona": "mina"},
-        json={"decision": "accept", "payload": {"assignee_id": "mina"}},
-    )
-
-    rejected = client.post(
-        f"/api/runs/{started['run_id']}/decisions/accept-assignment",
-        headers={"X-Demo-Persona": "mina"},
-        json={"decision": "reject", "rationale": "일정상 수락할 수 없습니다."},
-    )
-
-    assert rejected.json()["state"] == "rejected"
-    assert client.get("/api/my-work", headers={"X-Demo-Persona": "mina"}).json() == []
-
-
-def test_meeting_assignment_candidates_are_limited_to_seeded_task_acceptors(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path, technical_spike=True)
-
-    response = client.get("/api/meeting-assignment-candidates", headers={"X-Demo-Persona": "mina"})
-
-    assert response.status_code == 200
-    assert response.json() == [
-        {"id": "mina", "display_name": "민아 (구성원)"},
-        {"id": "demo-admin", "display_name": "데모 관리자"},
-    ]
-
-
-def test_meeting_assignment_rejects_a_seeded_persona_without_task_acceptance_capability(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path, technical_spike=True)
-    started = client.post("/api/runs/meeting-followups", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()
-
-    response = client.post(
-        f"/api/runs/{started['run_id']}/decisions/choose-assignment",
-        headers={"X-Demo-Persona": "mina"},
-        json={"decision": "accept", "payload": {"assignee_id": "sora"}},
-    )
-
-    assert response.status_code == 422
-    assert client.get("/api/my-work", headers={"X-Demo-Persona": "sora"}).json() == []
-
-
-def test_only_the_selected_assignee_can_accept_an_assignment(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path, technical_spike=True)
-    started = client.post("/api/runs/meeting-followups", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()
-    client.post(
-        f"/api/runs/{started['run_id']}/decisions/choose-assignment",
-        headers={"X-Demo-Persona": "mina"},
-        json={"decision": "accept", "payload": {"assignee_id": "mina"}},
-    )
-
-    intruder = client.post(
-        f"/api/runs/{started['run_id']}/decisions/accept-assignment",
-        headers={"X-Demo-Persona": "demo-admin"},
-        json={"decision": "accept"},
-    )
-
-    assert intruder.status_code == 403
-    assert client.get("/api/my-work", headers={"X-Demo-Persona": "mina"}).json() == []
-
-
-def test_contract_effect_waits_for_both_independent_human_acceptances(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path, technical_spike=True)
-    started = client.post(
-        "/api/runs/contract-review",
-        headers={"X-Demo-Persona": "demo-admin"},
-        json={"input": {"contract_id": "contract-17"}},
-    ).json()
-    assert set(started["waiting_on"]) == {"legal", "finance"}
-
-    legal = client.post(
-        f"/api/runs/{started['run_id']}/decisions/legal",
-        headers={"X-Demo-Persona": "sora"},
-        json={"decision": "accept"},
-    ).json()
-    assert legal["waiting_on"] == ["finance"]
-    assert "contract.approve" not in {item["tool_name"] for item in legal["tool_results"]}
-
-    completed = client.post(
-        f"/api/runs/{started['run_id']}/decisions/finance",
-        headers={"X-Demo-Persona": "minseok"},
-        json={"decision": "accept"},
-    ).json()
-    assert completed["state"] == "completed"
-    assert "contract.approve" in {item["tool_name"] for item in completed["tool_results"]}
-
-
-def test_contract_rejection_prevents_the_post_join_effect(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path, technical_spike=True)
-    started = client.post(
-        "/api/runs/contract-review",
-        headers={"X-Demo-Persona": "demo-admin"},
-        json={"input": {"contract_id": "contract-18"}},
-    ).json()
-
-    rejected = client.post(
-        f"/api/runs/{started['run_id']}/decisions/legal",
-        headers={"X-Demo-Persona": "sora"},
-        json={"decision": "reject"},
-    ).json()
-
-    assert rejected["state"] == "rejected"
-    assert "contract.approve" not in {item["tool_name"] for item in rejected["tool_results"]}
-
-
-def test_assigned_contract_reviewer_can_view_but_unrelated_persona_cannot_view_the_run(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path, technical_spike=True)
-    started = client.post(
-        "/api/runs/contract-review",
-        headers={"X-Demo-Persona": "demo-admin"},
-        json={"input": {"contract_id": "contract-visibility"}},
-    ).json()
-
-    reviewer = client.get(f"/api/runs/{started['run_id']}", headers={"X-Demo-Persona": "sora"})
-    unrelated = client.get(f"/api/runs/{started['run_id']}", headers={"X-Demo-Persona": "mina"})
-
-    assert reviewer.status_code == 200
-    assert reviewer.json()["waiting_on"] == ["legal", "finance"]
-    assert unrelated.status_code == 403
-
-
-def test_run_state_and_audit_are_recovered_by_a_fresh_application_instance(tmp_path) -> None:
-    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
-    reset_database(database_url, technical_spike=True)
-    first_client = TestClient(create_app(Settings(RuntimeProfile.TEST, database_url), technical_spike=True))
-    started = first_client.post("/api/runs/weekly-report", headers={"X-Demo-Persona": "mina"}, json={"input": {}}).json()
-
-    restarted_client = TestClient(create_app(Settings(RuntimeProfile.TEST, database_url), technical_spike=True))
-    recovered = restarted_client.get(
-        f"/api/runs/{started['run_id']}", headers={"X-Demo-Persona": "mina"}
-    )
-
-    assert recovered.status_code == 200
-    assert recovered.json()["state"] == "waiting_for_decision"
-    assert recovered.json()["waiting_on"] == ["confirm"]
-    assert recovered.json()["audit"][0]["event_type"] == "workflow_run.started"
-
-
-def test_all_nine_catalog_examples_complete_through_the_shared_runtime(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path, technical_spike=True)
-    cases = (
-        ("team-daily-rollup", "jiho", {}, (("confirm", "jiho"),)),
-        ("weekly-report", "mina", {}, (("confirm", "mina"),)),
-        ("monthly-close", "jiho", {}, (("confirm", "jiho"),)),
-        ("meeting-followups", "mina", {}, (("choose-assignment", "mina"), ("accept-assignment", "mina"))),
-        ("onboarding", "demo-admin", {}, (("confirm", "demo-admin"),)),
-        ("offboarding", "demo-admin", {}, (("confirm", "demo-admin"),)),
-        ("customer-visit-report", "mina", {}, (("confirm", "mina"),)),
-        ("contract-review", "demo-admin", {"contract_id": "contract-19"}, (("legal", "sora"), ("finance", "minseok"))),
-    )
-
-    for workflow_id, starter, input_data, decisions in cases:
-        started = client.post(
-            f"/api/runs/{workflow_id}", headers={"X-Demo-Persona": starter}, json={"input": input_data}
-        )
-        assert started.status_code == 201, started.text
-        run_id = started.json()["run_id"]
-        result = started
-        for node_id, actor in decisions:
-            payload = {"assignee_id": "mina"} if node_id == "choose-assignment" else {}
-            result = client.post(
-                f"/api/runs/{run_id}/decisions/{node_id}",
-                headers={"X-Demo-Persona": actor},
-                json={"decision": "accept", "payload": payload},
-            )
-            assert result.status_code == 200, result.text
-        assert result.json()["state"] == "completed"
-        assert result.json()["tool_results"]

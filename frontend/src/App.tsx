@@ -22,7 +22,6 @@ import { MyWorkPage } from "./MyWorkPage";
 import { OrgPage } from "./OrgPage";
 import { TodayPage } from "./TodayPage";
 import {
-  isDirectTask,
   type Conversation,
   type ConversationContextReference,
   type DirectTask,
@@ -188,7 +187,7 @@ export default function App() {
       const wantsTasks = surface === "today" || surface === "work" || surface === "calendar" || surface === "report";
       const wantsRequests = (surface === "today" || surface === "work") && (capabilities?.includes("work_request.decide") ?? false);
       const [tasks, requests] = await Promise.all([
-        wantsTasks ? getMyWork().then((items) => items.filter(isDirectTask)).catch(() => []) : Promise.resolve([]),
+        wantsTasks ? getMyWork().catch(() => []) : Promise.resolve([]),
         wantsRequests ? getActionInbox().catch(() => []) : Promise.resolve([]),
       ]);
       if (cancelled) return;
@@ -308,6 +307,7 @@ export default function App() {
     canDecideActions,
     canDecideWorkRequests: has("work_request.decide"),
     canManageOwnTasks: has("task.self_manage"),
+    canAssignTasks: has("task.assign"),
     canReadActions,
     onAskAboutTask: askAboutTask,
     onNotice: setToast,

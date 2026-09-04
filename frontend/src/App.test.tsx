@@ -57,6 +57,60 @@ describe("product surfaces", () => {
     vi.unstubAllGlobals();
   });
 
+  it("shows a pending manager assignment in the decision panel and moves it into My Work on accept", async () => {
+    let assignmentStatus: "pending" | "active" = "pending";
+    const assignedTask = {
+      task_id: "task-9",
+      title: "분기 보고 정리",
+      state: "open",
+      version: 1,
+      block_reason: null,
+      description: "지난 분기 수치",
+      due_date: "2026-09-30",
+      origin_kind: "assignment",
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/developer/personas") return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }, { id: "jiho", display_name: "지호 (팀장)" }]);
+      if (path === "/api/organization/me") {
+        return jsonResponse({ member_id: "mina", display_name: "민아 (구성원)", organizations: [], capabilities: ["task.read", "task.self_manage"] });
+      }
+      if (path === "/api/my-work") {
+        return jsonResponse(assignmentStatus === "active" ? [{ ...assignedTask, assignment: { assignment_id: "as-1", kind: "direct", status: "active", assigned_by: "jiho", accepted_at: "2026-09-04T00:00:00Z" } }] : []);
+      }
+      if (path === "/api/tasks?include_closed=true") return jsonResponse([]);
+      if (path === "/api/work-requests") return jsonResponse([]);
+      if (path === "/api/task-assignments/inbox") {
+        return jsonResponse(
+          assignmentStatus === "pending"
+            ? [{ assignment_id: "as-1", assignment_kind: "direct", status: "pending", assignee_id: "mina", assigned_by: "jiho", decline_reason: null, created_at: "2026-09-04T00:00:00Z", accepted_at: null, declined_at: null, task: assignedTask }]
+            : [],
+        );
+      }
+      if (path === "/api/task-assignments/as-1/accept" && init?.method === "POST") {
+        assignmentStatus = "active";
+        return jsonResponse({ assignment_id: "as-1", status: "active", task: assignedTask });
+      }
+      if (path.startsWith("/api/daily-reports/status")) return jsonResponse({ report_date: seoulTodayForTest(), status: "not_started", report_id: null });
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", withSession(fetchMock));
+
+    render(<App />);
+    fireEvent.click(within(await screen.findByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "내 업무" }));
+    const panel = (await screen.findByText("판단이 필요한 업무")).closest("aside") as HTMLElement;
+    expect(await within(panel).findByText("분기 보고 정리")).toBeTruthy();
+    expect(within(panel).getByText("업무 배정")).toBeTruthy();
+    // Not in My Work before acceptance.
+    expect(screen.queryAllByRole("row", { name: /분기 보고 정리/ })).toHaveLength(0);
+
+    fireEvent.click(within(panel).getByRole("button", { name: "배정 수락" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/task-assignments/as-1/accept", expect.objectContaining({ method: "POST" })));
+    await waitFor(() => expect(within(panel).queryByText("분기 보고 정리")).toBeNull());
+    expect(await screen.findByRole("row", { name: /분기 보고 정리/ })).toBeTruthy();
+  });
+
   it("shows an authorized direct task on Today and advances it from My Work", async () => {
     let taskState = "open";
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -86,7 +140,6 @@ describe("product surfaces", () => {
             version: 1,
             block_reason: null,
           },
-          { assignment_id: "assignment-1", title: "수락된 배정", state: "active" },
         ]);
       }
 

@@ -226,6 +226,20 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
                 내 권한 <small>{profile.capabilities.length}개</small>
               </h2>
               <div className="decision-panel">
+                {profile.grants && profile.grants.length > 0 && (
+                  <ul className="grant-list" aria-label="권한 부여">
+                    {profile.grants.map((grant) => (
+                      <li key={grant.grant_id}>
+                        <b>{grant.role_label ?? grant.capability_id ?? grant.role_id}</b>
+                        <span className="t-meta">
+                          {grant.scope_name ?? grant.scope_ref ?? "전체"}
+                          {grant.include_descendants ? " 이하" : ""} · {grant.origin_rule_id ? "보직 표준 부여" : "직접 부여"}
+                          {grant.role_capability_version ? ` · 역할 v${grant.role_capability_version} 고정` : ""}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 <ul className="capability-list">
                   {profile.capabilities.map((capability) => (
                     <li key={capability}>

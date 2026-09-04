@@ -183,6 +183,7 @@ class TaskApplication:
             "organization_unit_id": getattr(task, "organization_unit_id", None),
             "origin_kind": getattr(task, "origin_kind", "direct"),
             "visibility": getattr(task, "visibility", "scope_default"),
+            "assignment": _assignment_view(getattr(task, "assignments", None)),
             "lineage": {
                 "request_thread_id": _str(getattr(task, "request_thread_id", None)),
                 "source_work_request_id": _str(getattr(task, "source_work_request_id", None)),
@@ -193,6 +194,19 @@ class TaskApplication:
                 "source_task_id": _str(getattr(task, "source_task_id", None)),
             },
         }
+
+
+def _assignment_view(assignments: Any) -> dict[str, Any] | None:
+    if not assignments:
+        return None
+    current = assignments[-1]
+    return {
+        "assignment_id": str(current.id),
+        "kind": current.assignment_kind,
+        "status": current.status,
+        "assigned_by": current.assigned_by,
+        "accepted_at": _iso(current.accepted_at),
+    }
 
 
 def validate_schedule(start_date: date | None, due_date: date | None) -> None:

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { getMyWork, getTasks, transitionDirectTask, updateTask } from "./api";
 import { personName } from "./labels";
-import { isDirectTask, type DirectTask, type Persona, type TaskPatch } from "./viewModels";
+import type { DirectTask, Persona, TaskPatch } from "./viewModels";
 import { TaskDetailDrawer, type TaskAction } from "./WorkModals";
 import { TaskCalendar } from "./WorkViews";
 
@@ -25,7 +25,7 @@ export function CalendarPage({ personaName, canManageOwnTasks, onAskAboutTask, o
   const reload = useCallback(async () => {
     const [work, closed] = await Promise.all([getMyWork(), getTasks(true).catch(() => [] as DirectTask[])]);
     const merged = new Map<string, DirectTask>();
-    for (const task of [...work.filter(isDirectTask), ...closed]) merged.set(task.task_id, { ...merged.get(task.task_id), ...task });
+    for (const task of [...work, ...closed]) merged.set(task.task_id, { ...merged.get(task.task_id), ...task });
     const next = [...merged.values()];
     setTasks(next);
     setSelected((current) => (current ? next.find((task) => task.task_id === current.task_id) ?? null : null));

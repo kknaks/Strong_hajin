@@ -25,7 +25,9 @@ from ax_workspace.platform.persistence import (
     TaskRecord,
     WorkRequestAuditEventRecord,
     WorkRequestRecord,
-    WorkRequestTaskAssignmentRecord,
+    TaskAssignmentRecord,
+    ResourceRelationshipRecord,
+    EvidenceRecord,
 )
 import hashlib
 import json
@@ -141,6 +143,11 @@ class SqlAlchemyTaskRepository:
         )
         self.session.add(task)
         self.session.flush()
+        self.session.add(
+            TaskAssignmentRecord(
+                task_id=task.id, assignee_id=owner_id, assigned_by=owner_id, assignment_kind="self", status="active", created_at=now, accepted_at=now
+            )
+        )
         self.session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now))
         ActivityLedger(self.session).record(
             target_type="task", target_id=str(task.id), event_kind="task.created", actor_id=owner_id,
@@ -159,17 +166,26 @@ class SqlAlchemyTaskRepository:
         return ActivityLedger(self.session).for_target("task", str(task_id))
 
     def task(self, task_id: UUID, owner_id: str, *, lock: bool = False) -> TaskRecord:
-        statement = select(TaskRecord).where(TaskRecord.id == task_id, TaskRecord.owner_id == owner_id)
-        task = self.session.scalar(statement.with_for_update() if lock else statement)
+        """A task is the owner's to read or drive only while they hold an active TaskAssignment for it."""
+        statement = self._held_by(owner_id).where(TaskRecord.id == task_id)
+        task = self.session.scalar(statement.with_for_update(of=TaskRecord) if lock else statement)
         if task is None:
             raise TaskNotFound("task was not found")
         return task
 
     def tasks_for(self, owner_id: str, *, include_closed: bool = False) -> list[TaskRecord]:
-        statement = select(TaskRecord).where(TaskRecord.owner_id == owner_id)
+        statement = self._held_by(owner_id)
         if not include_closed:
             statement = statement.where(TaskRecord.state.not_in([TaskState.DONE, TaskState.CANCELLED]))
         return list(self.session.scalars(statement.order_by(TaskRecord.created_at)))
+
+    @staticmethod
+    def _held_by(owner_id: str):
+        return (
+            select(TaskRecord)
+            .join(TaskAssignmentRecord, TaskAssignmentRecord.task_id == TaskRecord.id)
+            .where(TaskRecord.owner_id == owner_id, TaskAssignmentRecord.assignee_id == owner_id, TaskAssignmentRecord.status == "active")
+        )
 
     def touch(self, task: TaskRecord) -> None:
         task.updated_at = datetime.now(UTC)
@@ -212,6 +228,7 @@ class SqlAlchemyWorkRequestRepository:
         *,
         description: str | None = None,
         due_date: date | None = None,
+        cc_member_ids: list[str] | None = None,
     ) -> tuple[WorkRequestRecord, bool]:
         if causation_key:
             existing = self._session.scalar(
@@ -245,6 +262,11 @@ class SqlAlchemyWorkRequestRepository:
         self._session.add(subject)
         self._session.flush()
         request.subject_id = subject.id
+        # ERD RESOURCE_RELATIONSHIP: requester, assignee, and cc members hold period-bound relationships to the request.
+        for member_id, kind in [(requester_id, "requester"), (assignee_id, "assignee"), *[(cc, "cc") for cc in (cc_member_ids or [])]]:
+            self._session.add(
+                ResourceRelationshipRecord(member_id=member_id, resource_type="work_request", resource_id=str(request.id), relationship_kind=kind, valid_from=now)
+            )
         snapshot = {"title": title, "description": description, "due_date": due_date.isoformat() if due_date else None, "assignee_id": assignee_id}
         version = SubjectVersionRecord(subject_id=subject.id, version=1, content_hash=_content_hash(snapshot), snapshot=snapshot, captured_at=now)
         self._session.add(version)
@@ -477,11 +499,16 @@ class SqlAlchemyWorkRequestRepository:
             TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now)
         )
         self._session.add(
-            WorkRequestTaskAssignmentRecord(
-                request_id=request.id,
+            TaskAssignmentRecord(
                 task_id=task.id,
                 assignee_id=request.assignee_id,
-                state="active",
+                assigned_by=request.requester_id,
+                assignment_kind="request_effect",
+                status="active",
+                source_work_request_id=request.id,
+                source_decision_item_id=item.id if item else None,
+                source_review_decision_id=decision.id if decision else None,
+                created_at=now,
                 accepted_at=now,
             )
         )
@@ -511,6 +538,17 @@ class SqlAlchemyWorkRequestRepository:
         )
 
     def list_for(self, principal_id: str) -> list[WorkRequestRecord]:
+        cc_ids = [
+            UUID(resource_id)
+            for resource_id in self._session.scalars(
+                select(ResourceRelationshipRecord.resource_id).where(
+                    ResourceRelationshipRecord.member_id == principal_id,
+                    ResourceRelationshipRecord.resource_type == "work_request",
+                    ResourceRelationshipRecord.relationship_kind == "cc",
+                    ResourceRelationshipRecord.valid_until.is_(None),
+                )
+            )
+        ]
         return list(
             self._session.scalars(
                 select(WorkRequestRecord)
@@ -518,11 +556,225 @@ class SqlAlchemyWorkRequestRepository:
                     or_(
                         WorkRequestRecord.requester_id == principal_id,
                         WorkRequestRecord.assignee_id == principal_id,
+                        WorkRequestRecord.id.in_(cc_ids) if cc_ids else False,
                     )
                 )
                 .order_by(WorkRequestRecord.created_at)
             )
         )
+
+    def cc_member_ids(self, request: WorkRequestRecord) -> list[str]:
+        return list(
+            self._session.scalars(
+                select(ResourceRelationshipRecord.member_id)
+                .where(
+                    ResourceRelationshipRecord.resource_type == "work_request",
+                    ResourceRelationshipRecord.resource_id == str(request.id),
+                    ResourceRelationshipRecord.relationship_kind == "cc",
+                    ResourceRelationshipRecord.valid_until.is_(None),
+                )
+                .order_by(ResourceRelationshipRecord.member_id)
+            )
+        )
+
+    def adopt_evidence(self, submission: SubmissionRecord, attachment: AttachmentRecord, *, role: str, adopted_by: str) -> EvidenceRecord:
+        """ERD EVIDENCE: an attachment explicitly adopted as basis for one Submission, pinned by its integrity hash."""
+        record = EvidenceRecord(
+            submission_id=submission.id,
+            attachment_id=attachment.id,
+            evidence_role=role,
+            fixed_snapshot_ref=attachment.integrity_ref,
+            mutable_source=False,
+            adopted_by=adopted_by,
+            adopted_at=datetime.now(UTC),
+        )
+        self._session.add(record)
+        self._session.flush()
+        return record
+
+    def evidence_for(self, request: WorkRequestRecord) -> list[tuple[EvidenceRecord, AttachmentRecord, SubmissionRecord]]:
+        item = self.open_decision_item(request)
+        if item is None:
+            return []
+        rows = self._session.execute(
+            select(EvidenceRecord, AttachmentRecord, SubmissionRecord)
+            .join(AttachmentRecord, AttachmentRecord.id == EvidenceRecord.attachment_id)
+            .join(SubmissionRecord, SubmissionRecord.id == EvidenceRecord.submission_id)
+            .where(SubmissionRecord.decision_item_id == item.id)
+            .order_by(EvidenceRecord.adopted_at)
+        ).all()
+        return [(evidence, attachment, submission) for evidence, attachment, submission in rows]
+
+
+class SqlAlchemyTaskAssignmentRepository:
+    """ERD TASK_ASSIGNMENT + assignment-acceptance ActionItem for manager-assigned Tasks."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def create_assigned_task(
+        self,
+        assigner_id: str,
+        assignee_id: str,
+        title: str,
+        *,
+        description: str | None = None,
+        start_date: date | None = None,
+        due_date: date | None = None,
+        causation_key: str | None = None,
+    ) -> tuple[TaskRecord, TaskAssignmentRecord]:
+        if causation_key:
+            existing = self._session.scalar(select(TaskRecord).where(TaskRecord.causation_key == causation_key))
+            if existing is not None:
+                return existing, existing.assignments[-1]
+        now = datetime.now(UTC)
+        task = TaskRecord(
+            owner_id=assignee_id,
+            title=title,
+            state=TaskState.OPEN,
+            block_reason=None,
+            description=description,
+            start_date=start_date,
+            due_date=due_date,
+            organization_unit_id=_primary_unit(self._session, assignee_id),
+            origin_kind="assignment",
+            version=1,
+            created_at=now,
+            updated_at=now,
+            causation_key=causation_key,
+        )
+        self._session.add(task)
+        self._session.flush()
+        subject = SubjectRecord(subject_type="task", owning_resource_type="task", owning_resource_id=str(task.id), created_at=now)
+        self._session.add(subject)
+        self._session.flush()
+        snapshot = {
+            "title": title,
+            "description": description,
+            "start_date": start_date.isoformat() if start_date else None,
+            "due_date": due_date.isoformat() if due_date else None,
+            "assignee_id": assignee_id,
+            "assigned_by": assigner_id,
+        }
+        version = SubjectVersionRecord(subject_id=subject.id, version=1, content_hash=_content_hash(snapshot), snapshot=snapshot, captured_at=now)
+        self._session.add(version)
+        assignment = TaskAssignmentRecord(
+            task_id=task.id, assignee_id=assignee_id, assigned_by=assigner_id, assignment_kind="direct", status="pending", created_at=now
+        )
+        self._session.add(assignment)
+        self._session.flush()
+        item = DecisionItemRecord(
+            kind="task.assignment.acceptance",
+            subject_id=subject.id,
+            context_type="task",
+            context_id=str(task.id),
+            effect_identity=f"task_assignment.activate:{assignment.id}",
+            status="open",
+            due_at=datetime.combine(due_date, datetime.min.time(), tzinfo=UTC) if due_date else None,
+            created_at=now,
+        )
+        self._session.add(item)
+        self._session.flush()
+        assignment.source_decision_item_id = item.id
+        submission = SubmissionRecord(
+            decision_item_id=item.id,
+            subject_version_id=version.id,
+            submission_version=1,
+            submitted_by=assigner_id,
+            payload_hash=version.content_hash,
+            decision_policy_snapshot={"decisions": ["accept", "reject"], "reason_required_for": ["reject"]},
+            submitted_at=now,
+        )
+        self._session.add(submission)
+        self._session.flush()
+        self._session.add(ReviewAssignmentRecord(submission_id=submission.id, reviewer_member_id=assignee_id, status="pending", assigned_at=now, due_at=item.due_at))
+        self._session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now))
+        ActivityLedger(self._session).record(
+            target_type="task", target_id=str(task.id), event_kind="task.assigned", actor_id=assigner_id,
+            after_ref=f"task_assignment:{assignment.id}", safe_summary=f"업무 배정: {title} → {assignee_id}",
+        )
+        self._session.flush()
+        self._session.refresh(task)
+        return task, assignment
+
+    def assignment(self, assignment_id: UUID, *, lock: bool = False) -> TaskAssignmentRecord | None:
+        statement = select(TaskAssignmentRecord).where(TaskAssignmentRecord.id == assignment_id)
+        return self._session.scalar(statement.with_for_update() if lock else statement)
+
+    def task_for(self, assignment: TaskAssignmentRecord) -> TaskRecord:
+        task = self._session.get(TaskRecord, assignment.task_id)
+        assert task is not None
+        return task
+
+    def pending_for(self, assignee_id: str) -> list[tuple[TaskAssignmentRecord, TaskRecord]]:
+        rows = self._session.execute(
+            select(TaskAssignmentRecord, TaskRecord)
+            .join(TaskRecord, TaskRecord.id == TaskAssignmentRecord.task_id)
+            .where(TaskAssignmentRecord.assignee_id == assignee_id, TaskAssignmentRecord.status == "pending")
+            .order_by(TaskAssignmentRecord.created_at)
+        ).all()
+        return [(assignment, task) for assignment, task in rows]
+
+    def assigned_by(self, assigner_id: str) -> list[tuple[TaskAssignmentRecord, TaskRecord]]:
+        rows = self._session.execute(
+            select(TaskAssignmentRecord, TaskRecord)
+            .join(TaskRecord, TaskRecord.id == TaskAssignmentRecord.task_id)
+            .where(TaskAssignmentRecord.assigned_by == assigner_id, TaskAssignmentRecord.assignment_kind == "direct")
+            .order_by(TaskAssignmentRecord.created_at.desc())
+        ).all()
+        return [(assignment, task) for assignment, task in rows]
+
+    def decide(self, assignment: TaskAssignmentRecord, actor_id: str, decision: str, *, reason: str | None = None) -> ReviewDecisionRecord:
+        """Acceptance activates the assignment; rejection closes it and cancels the never-entered Task."""
+        now = datetime.now(UTC)
+        task = self.task_for(assignment)
+        item = self._session.get(DecisionItemRecord, assignment.source_decision_item_id) if assignment.source_decision_item_id else None
+        submission = (
+            self._session.scalar(select(SubmissionRecord).where(SubmissionRecord.decision_item_id == item.id).order_by(SubmissionRecord.submission_version.desc()))
+            if item
+            else None
+        )
+        review = (
+            self._session.scalar(
+                select(ReviewAssignmentRecord)
+                .where(ReviewAssignmentRecord.submission_id == submission.id, ReviewAssignmentRecord.status == "pending")
+                .order_by(ReviewAssignmentRecord.assigned_at.desc())
+            )
+            if submission
+            else None
+        )
+        assert item is not None and submission is not None and review is not None, "assignment acceptance item is missing"
+        review.status = "decided"
+        record = ReviewDecisionRecord(
+            review_assignment_id=review.id, submission_id=submission.id, actor_member_id=actor_id, decision=decision, reason=reason, decided_at=now
+        )
+        self._session.add(record)
+        item.status = "resolved"
+        item.resolved_at = now
+        self._session.flush()
+        assignment.source_review_decision_id = record.id
+        if decision == "accept":
+            assignment.status = "active"
+            assignment.accepted_at = now
+            task.source_decision_item_id = item.id
+            task.source_review_decision_id = record.id
+            summary = f"배정 수락: {task.title}"
+        else:
+            assignment.status = "declined"
+            assignment.declined_at = now
+            assignment.decline_reason = reason
+            task.state = TaskState.CANCELLED
+            task.version += 1
+            task.updated_at = now
+            self._session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now))
+            summary = f"배정 거절: {task.title}"
+        ActivityLedger(self._session).record(
+            target_type="task", target_id=str(task.id), event_kind=f"task.assignment_{decision}ed", actor_id=actor_id,
+            before_ref=f"task_assignment:{assignment.id}", after_ref=f"review_decision:{record.id}", reason=reason, safe_summary=summary,
+        )
+        self._session.flush()
+        self._session.refresh(task)
+        return record
 
 
 class SqlAlchemyAttachmentRepository:
@@ -577,6 +829,20 @@ class SqlAlchemyAttachmentRepository:
     def unbind(self, binding: AttachmentBindingRecord) -> None:
         binding.unbound_at = datetime.now(UTC)
 
+    def attachment(self, attachment_id: UUID) -> AttachmentRecord | None:
+        return self._session.get(AttachmentRecord, attachment_id)
+
+    def bindings_for_many(self, context_type: str, context_ids: list[str]) -> list[tuple[AttachmentBindingRecord, AttachmentRecord]]:
+        if not context_ids:
+            return []
+        rows = self._session.execute(
+            select(AttachmentBindingRecord, AttachmentRecord)
+            .join(AttachmentRecord, AttachmentRecord.id == AttachmentBindingRecord.attachment_id)
+            .where(AttachmentBindingRecord.context_type == context_type, AttachmentBindingRecord.context_id.in_(context_ids), AttachmentBindingRecord.unbound_at.is_(None))
+            .order_by(AttachmentBindingRecord.bound_at)
+        ).all()
+        return [(binding, attachment) for binding, attachment in rows]
+
 
 class SqlAlchemyCommentRepository:
     def __init__(self, session: Session) -> None:
@@ -592,3 +858,6 @@ class SqlAlchemyCommentRepository:
         return list(
             self._session.scalars(select(CommentRecord).where(CommentRecord.request_thread_id == request_thread_id).order_by(CommentRecord.created_at))
         )
+
+    def comment(self, request_thread_id: UUID, comment_id: UUID) -> CommentRecord | None:
+        return self._session.scalar(select(CommentRecord).where(CommentRecord.id == comment_id, CommentRecord.request_thread_id == request_thread_id))

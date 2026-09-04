@@ -55,44 +55,76 @@ class SqlAlchemyOrganizationRepository:
             )
             .order_by(OrganizationUnitRecord.id)
         ).all()
-        direct_capabilities = self._session.scalars(
-            select(CapabilityRecord.id)
-            .join(AccessGrantRecord, AccessGrantRecord.capability_id == CapabilityRecord.id)
-            .where(
-                AccessGrantRecord.member_id == member_id,
-                AccessGrantRecord.valid_from <= now,
-                AccessGrantRecord.revoked_at.is_(None),
-                or_(AccessGrantRecord.valid_until.is_(None), AccessGrantRecord.valid_until > now),
+        appointments = list(
+            self._session.scalars(
+                select(AppointmentRecord).where(
+                    AppointmentRecord.member_id == member_id,
+                    AppointmentRecord.valid_from <= now,
+                    or_(AppointmentRecord.valid_until.is_(None), AppointmentRecord.valid_until > now),
+                )
             )
-        ).all()
-        role_capabilities = self._session.scalars(
-            select(CapabilityRecord.id)
-            .join(RoleCapabilityRecord, RoleCapabilityRecord.capability_id == CapabilityRecord.id)
-            .join(RoleRecord, RoleRecord.id == RoleCapabilityRecord.role_id)
-            .join(AppointmentRecord, AppointmentRecord.role_id == RoleRecord.id)
-            .where(
-                AppointmentRecord.member_id == member_id,
-                AppointmentRecord.valid_from <= now,
-                or_(AppointmentRecord.valid_until.is_(None), AppointmentRecord.valid_until > now),
+        )
+        appointed_roles = {item.role_id for item in appointments}
+        grants = list(
+            self._session.scalars(
+                select(AccessGrantRecord)
+                .where(
+                    AccessGrantRecord.member_id == member_id,
+                    AccessGrantRecord.valid_from <= now,
+                    AccessGrantRecord.revoked_at.is_(None),
+                    or_(AccessGrantRecord.valid_until.is_(None), AccessGrantRecord.valid_until > now),
+                )
+                .order_by(AccessGrantRecord.valid_from)
             )
-        ).all()
-        roles = self._session.scalars(
-            select(RoleRecord.label)
-            .join(AppointmentRecord, AppointmentRecord.role_id == RoleRecord.id)
-            .where(
-                AppointmentRecord.member_id == member_id,
-                AppointmentRecord.valid_from <= now,
-                or_(AppointmentRecord.valid_until.is_(None), AppointmentRecord.valid_until > now),
-            )
-            .order_by(RoleRecord.id)
-        ).all()
-        capabilities = sorted(set(direct_capabilities).union(role_capabilities))
+        )
+        capabilities: set[str] = set()
+        effective_grants: list[AccessGrantRecord] = []
+        for grant in grants:
+            # A grant materialized by a standard rule exists because of an appointment; it ends with that appointment.
+            if grant.origin_rule_id is not None and grant.role_id not in appointed_roles:
+                continue
+            effective_grants.append(grant)
+            if grant.capability_id:
+                capabilities.add(grant.capability_id)
+            if grant.role_id:
+                # Role snapshot: only mappings that existed at the pinned role_capability_version apply.
+                pinned = grant.role_capability_version or 1
+                capabilities.update(
+                    self._session.scalars(
+                        select(RoleCapabilityRecord.capability_id).where(
+                            RoleCapabilityRecord.role_id == grant.role_id, RoleCapabilityRecord.mapping_version <= pinned
+                        )
+                    )
+                )
+        role_ids = sorted(appointed_roles | {grant.role_id for grant in effective_grants if grant.role_id})
+        role_labels = {item.id: item.label for item in self._session.scalars(select(RoleRecord).where(RoleRecord.id.in_(role_ids)))} if role_ids else {}
+        roles = [role_labels[role_id] for role_id in role_ids if role_id in role_labels]
+        unit_names = {item.id: item.name for item in self._session.scalars(select(OrganizationUnitRecord))}
+        capabilities = sorted(capabilities)
         return {
             "member_id": member.id,
             "display_name": member.display_name,
             "organizations": [{"id": item.id, "name": item.name} for item in organizations],
-            "roles": list(roles),
+            "roles": roles,
             "capabilities": capabilities,
+            "grants": [
+                {
+                    "grant_id": str(grant.id),
+                    "role_id": grant.role_id,
+                    "role_label": role_labels.get(grant.role_id or "", None),
+                    "capability_id": grant.capability_id,
+                    "role_capability_version": grant.role_capability_version,
+                    "scope_kind": grant.scope_kind,
+                    "scope_ref": grant.scope_ref,
+                    "scope_name": unit_names.get(grant.scope_ref or "", grant.scope_ref),
+                    "include_descendants": grant.include_descendants,
+                    "origin_rule_id": grant.origin_rule_id,
+                    "granted_by": grant.granted_by_member_id,
+                    "valid_from": grant.valid_from.isoformat(),
+                    "valid_until": grant.valid_until.isoformat() if grant.valid_until else None,
+                }
+                for grant in effective_grants
+            ],
         }
 
     def principal_for(self, member_id: str) -> Principal | None:
@@ -123,6 +155,30 @@ class SqlAlchemyOrganizationRepository:
             candidates.append({"id": str(candidate.id), "display_name": candidate.display_name})
         return candidates
 
+
+    def member_candidates(self, principal: Principal) -> list[dict[str, str]]:
+        """Every active member other than the principal (참조자 후보); the org tree stays the navigation boundary."""
+        return [
+            {"id": str(member["member_id"]), "display_name": str(member["display_name"])}
+            for member in self.unit_members("scax", include_descendants=True)
+            if str(member["member_id"]) != str(principal.id)
+        ]
+
+    def task_assignment_candidates(self, principal: Principal) -> list[dict[str, str]]:
+        """Active members in the assigner's own units (descendants included) who can run a Task themselves."""
+        scope = set(principal.organization_scope)
+        units = [unit for unit in scope if unit != "scax"] or sorted(scope)
+        seen: dict[str, str] = {}
+        for unit_id in units:
+            for member in self.unit_members(unit_id, include_descendants=True):
+                member_id = str(member["member_id"])
+                if member_id == str(principal.id) or member_id in seen:
+                    continue
+                candidate = self.principal_for(member_id)
+                if candidate is None or "task.self_manage" not in candidate.capabilities:
+                    continue
+                seen[member_id] = candidate.display_name
+        return [{"id": member_id, "display_name": name} for member_id, name in sorted(seen.items())]
 
     # ---- read-only organization navigation (ERD member_organization_view projection) ----
 

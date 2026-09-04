@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import {
   addWorkRequestComment,
+  assignTask,
   createDirectTask,
   createWorkRequest,
   decideWorkRequest,
@@ -9,8 +10,11 @@ import {
   getTaskMaterials,
   getWorkRequestTimeline,
   negotiateWorkRequest,
+  requestAttachmentUrl,
   resubmitWorkRequest,
   taskMaterialContentUrl,
+  uploadCommentAttachment,
+  uploadRequestEvidence,
   uploadTaskMaterial,
 } from "./api";
 import {
@@ -503,11 +507,17 @@ export function WorkRequestDetailDrawer({
   const [isWorking, setIsWorking] = useState(false);
   const [timeline, setTimeline] = useState<RequestTimeline | null>(null);
   const [comment, setComment] = useState("");
+  const [commentFile, setCommentFile] = useState<File | null>(null);
+  const [isUploadingEvidence, setIsUploadingEvidence] = useState(false);
+  const commentFileInput = useRef<HTMLInputElement>(null);
+  const evidenceInput = useRef<HTMLInputElement>(null);
   const [revision, setRevision] = useState<{ title: string; description: string; due_date: string } | null>(null);
   const nameOf = (id: string) => (id === personaId ? "나" : displayNameOf(personas, id, id));
   const requesterName = nameOf(request.requester_id ?? "");
   const isAssignee = request.assignee_id === personaId;
   const isRequester = request.requester_id === personaId;
+  const isCc = !isAssignee && !isRequester;
+  const canAdoptEvidence = (isAssignee || isRequester) && request.state !== "rejected";
   const assigneeName = isAssignee ? "나" : displayNameOf(personas, request.assignee_id, "담당자");
   const isOpen = request.state === "pending" || request.state === "negotiating";
   const decidable = canDecide && isAssignee && isOpen;
@@ -574,13 +584,32 @@ export function WorkRequestDetailDrawer({
     setIsWorking(true);
     onError(null);
     try {
-      await addWorkRequestComment(request.request_id, text);
+      const created = await addWorkRequestComment(request.request_id, text);
+      if (commentFile) await uploadCommentAttachment(request.request_id, created.comment_id, commentFile);
       setComment("");
+      setCommentFile(null);
+      if (commentFileInput.current) commentFileInput.current.value = "";
       await loadTimeline();
     } catch (error) {
       onError(error instanceof Error ? error.message : "댓글을 남기지 못했습니다.");
     } finally {
       setIsWorking(false);
+    }
+  }
+
+  async function uploadEvidence(file: File | undefined) {
+    if (!file) return;
+    setIsUploadingEvidence(true);
+    onError(null);
+    try {
+      const evidence = await uploadRequestEvidence(request.request_id, file);
+      onNotice?.(`'${evidence.name}'을 ${evidence.submission_version}회차의 ${evidence.evidence_role === "decision_basis" ? "판단 근거" : "보조 자료"}로 채택했습니다.`);
+      await loadTimeline();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "근거 자료를 올리지 못했습니다.");
+    } finally {
+      setIsUploadingEvidence(false);
+      if (evidenceInput.current) evidenceInput.current.value = "";
     }
   }
 
@@ -689,7 +718,14 @@ export function WorkRequestDetailDrawer({
           <dt>생성된 업무</dt>
           <dd>{request.task_id ? "수락 후 생성됨" : "아직 없음"}</dd>
         </div>
+        {request.cc_member_ids && request.cc_member_ids.length > 0 && (
+          <div>
+            <dt>참조자</dt>
+            <dd>{request.cc_member_ids.map((id) => nameOf(id)).join(", ")}</dd>
+          </div>
+        )}
       </dl>
+      {isCc && <p className="t-meta">참조자로 받은 요청입니다. 읽고 논의할 수 있지만 판단은 {assigneeName}가 합니다.</p>}
       {request.description && !revision && (
         <section className="drawer-section">
           <h4>요청 내용</h4>
@@ -809,6 +845,38 @@ export function WorkRequestDetailDrawer({
       )}
 
       <section className="drawer-section">
+        <div className="section-row">
+          <h4>
+            근거 자료 <span className="t-meta">· {timeline?.evidence?.length ?? 0}개 · 회차에 고정되며 해시로 봉인됩니다</span>
+          </h4>
+          {canAdoptEvidence && (
+            <>
+              <input aria-label="근거 자료 파일" className="sr-only" onChange={(event) => void uploadEvidence(event.target.files?.[0])} ref={evidenceInput} type="file" />
+              <button className="btn h30" disabled={isUploadingEvidence || isWorking} onClick={() => evidenceInput.current?.click()} type="button">
+                {isUploadingEvidence ? "올리는 중…" : isAssignee ? "판단 근거 추가" : "보조 자료 추가"}
+              </button>
+            </>
+          )}
+        </div>
+        {timeline && timeline.evidence && timeline.evidence.length > 0 ? (
+          <ul className="material-list">
+            {timeline.evidence.map((item) => (
+              <li key={item.evidence_id}>
+                <a href={requestAttachmentUrl(request.request_id, item.attachment_id)} rel="noreferrer" target="_blank">
+                  {item.name}
+                </a>
+                <span className="t-meta">
+                  {item.submission_version}회차 · {item.evidence_role === "decision_basis" ? "판단 근거" : "보조 자료"} · {nameOf(item.adopted_by)} · {formatBytes(item.size_bytes)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="t-meta">채택된 근거 자료가 없습니다.</p>
+        )}
+      </section>
+
+      <section className="drawer-section">
         <h4>
           논의 <span className="t-meta">· {timeline?.comments.length ?? 0}개 · 댓글은 상태를 바꾸지 않습니다</span>
         </h4>
@@ -818,6 +886,18 @@ export function WorkRequestDetailDrawer({
               <li key={item.comment_id}>
                 <b>{nameOf(item.author_member_id)}</b> <span className="t-meta">{formatMonthDay(isoDateInSeoul(item.created_at))}</span>
                 <p className="prewrap">{item.body}</p>
+                {item.attachments && item.attachments.length > 0 && (
+                  <ul className="attachment-row">
+                    {item.attachments.map((attachment) => (
+                      <li key={attachment.attachment_id}>
+                        <a href={requestAttachmentUrl(request.request_id, attachment.attachment_id)} rel="noreferrer" target="_blank">
+                          📎 {attachment.name}
+                        </a>
+                        <span className="t-meta"> {formatBytes(attachment.size_bytes)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </li>
             ))}
           </ul>
@@ -837,6 +917,22 @@ export function WorkRequestDetailDrawer({
             placeholder="무엇이 걸리는지 남긴다"
             value={comment}
           />
+          <input
+            aria-label="댓글 첨부 파일"
+            className="sr-only"
+            onChange={(event) => setCommentFile(event.target.files?.[0] ?? null)}
+            ref={commentFileInput}
+            type="file"
+          />
+          <button
+            aria-label={commentFile ? `첨부: ${commentFile.name}` : "파일 첨부"}
+            className={commentFile ? "btn ghost on" : "btn ghost"}
+            onClick={() => commentFileInput.current?.click()}
+            title={commentFile ? commentFile.name : "파일 첨부"}
+            type="button"
+          >
+            📎{commentFile ? ` ${commentFile.name.length > 14 ? `${commentFile.name.slice(0, 12)}…` : commentFile.name}` : ""}
+          </button>
           <button className="btn" disabled={isWorking || !comment.trim()} onClick={() => void submitComment()} type="button">
             남기기
           </button>
@@ -861,6 +957,8 @@ export function CreateWorkDrawer({
   canCreateTask,
   canCreateRequest,
   assigneeCandidates,
+  assignCandidates = [],
+  ccCandidates = [],
   onCreated,
   onError,
   onClose,
@@ -869,6 +967,8 @@ export function CreateWorkDrawer({
   canCreateTask: boolean;
   canCreateRequest: boolean;
   assigneeCandidates: Persona[];
+  assignCandidates?: Persona[];
+  ccCandidates?: Persona[];
   onCreated: (notice: string) => Promise<void> | void;
   onError: (message: string | null) => void;
   onClose: () => void;
@@ -879,7 +979,10 @@ export function CreateWorkDrawer({
   const [startDate, setStartDate] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [assigneeId, setAssigneeId] = useState(assigneeCandidates[0]?.id ?? "");
+  const [taskOwnerId, setTaskOwnerId] = useState("me");
+  const [ccIds, setCcIds] = useState<string[]>([]);
   const [isWorking, setIsWorking] = useState(false);
+  const assignTarget = taskOwnerId === "me" ? null : assignCandidates.find((candidate) => candidate.id === taskOwnerId) ?? null;
 
   async function submit() {
     const trimmed = title.trim();
@@ -898,7 +1001,14 @@ export function CreateWorkDrawer({
     setIsWorking(true);
     onError(null);
     try {
-      if (kind === "task") {
+      if (kind === "task" && assignTarget) {
+        await assignTask(trimmed, assignTarget.id, {
+          description: description.trim() || undefined,
+          start_date: startDate || undefined,
+          due_date: dueDate || undefined,
+        });
+        await onCreated(`'${trimmed}' 업무를 ${personName(assignTarget.display_name)}에게 배정했습니다. 수락하면 그 사람의 업무가 됩니다.`);
+      } else if (kind === "task") {
         await createDirectTask(trimmed, {
           description: description.trim() || undefined,
           start_date: startDate || undefined,
@@ -909,6 +1019,7 @@ export function CreateWorkDrawer({
         const request = await createWorkRequest(trimmed, assigneeId, {
           description: description.trim() || undefined,
           due_date: dueDate || undefined,
+          cc_member_ids: ccIds.filter((id) => id !== assigneeId),
         });
         const assignee = assigneeCandidates.find((candidate) => candidate.id === assigneeId);
         await onCreated(`'${request.title}' 요청을 ${assignee ? personName(assignee.display_name) : "담당 후보"}에게 보냈습니다.`);
@@ -937,7 +1048,7 @@ export function CreateWorkDrawer({
             onClick={() => void submit()}
             type="button"
           >
-            {isWorking ? "만드는 중…" : kind === "task" ? "업무 추가" : "업무 요청 보내기"}
+            {isWorking ? "만드는 중…" : kind === "task" ? (assignTarget ? "업무 배정" : "업무 추가") : "업무 요청 보내기"}
           </button>
         </>
       }
@@ -956,7 +1067,11 @@ export function CreateWorkDrawer({
             )}
           </div>
           <span className="t-meta">
-            {kind === "task" ? "내가 처리할 업무를 만듭니다. 승인 없이 바로 내 업무에 들어갑니다." : "동료가 수락해야 그 사람의 업무가 됩니다. 희망 기한을 함께 보낼 수 있습니다."}
+            {kind === "task"
+              ? assignTarget
+                ? "팀원에게 배정합니다. 그 사람이 수락해야 업무가 됩니다."
+                : "내가 처리할 업무를 만듭니다. 승인 없이 바로 내 업무에 들어갑니다."
+              : "동료가 수락해야 그 사람의 업무가 됩니다. 희망 기한을 함께 보낼 수 있습니다."}
           </span>
         </div>
       }
@@ -984,12 +1099,30 @@ export function CreateWorkDrawer({
         <dl className="meta-grid columns">
           <div>
             <dt>상태</dt>
-            <dd>{kind === "task" ? <StatusText state="open" /> : <StatusText label="판단 대기" state="pending" />}</dd>
+            <dd>{kind === "task" ? assignTarget ? <StatusText label="수락 대기" state="pending" /> : <StatusText state="open" /> : <StatusText label="판단 대기" state="pending" />}</dd>
           </div>
-          <div>
-            <dt>{kind === "task" ? "담당자" : "요청자"}</dt>
-            <dd>{ownerName}</dd>
-          </div>
+          {kind === "task" && assignCandidates.length > 0 ? (
+            <div>
+              <dt>
+                <label htmlFor="new-task-owner">담당자</label>
+              </dt>
+              <dd>
+                <select id="new-task-owner" onChange={(event) => setTaskOwnerId(event.target.value)} value={taskOwnerId}>
+                  <option value="me">{ownerName} (나)</option>
+                  {assignCandidates.map((candidate) => (
+                    <option key={candidate.id} value={candidate.id}>
+                      {candidate.display_name}
+                    </option>
+                  ))}
+                </select>
+              </dd>
+            </div>
+          ) : (
+            <div>
+              <dt>{kind === "task" ? "담당자" : "요청자"}</dt>
+              <dd>{ownerName}</dd>
+            </div>
+          )}
           {kind === "request" && (
             <div>
               <dt>
@@ -1034,6 +1167,29 @@ export function CreateWorkDrawer({
             </dd>
           </div>
         </dl>
+        {kind === "request" && ccCandidates.length > 0 && (
+          <fieldset className="field cc-picker">
+            <legend>참조자</legend>
+            <div className="chip-row">
+              {ccCandidates
+                .filter((candidate) => candidate.id !== assigneeId)
+                .map((candidate) => {
+                  const checked = ccIds.includes(candidate.id);
+                  return (
+                    <label className={checked ? "chip-toggle on" : "chip-toggle"} key={candidate.id}>
+                      <input
+                        checked={checked}
+                        onChange={(event) => setCcIds((current) => (event.target.checked ? [...current, candidate.id] : current.filter((id) => id !== candidate.id)))}
+                        type="checkbox"
+                      />
+                      {personName(candidate.display_name)}
+                    </label>
+                  );
+                })}
+            </div>
+            <p className="t-meta">참조자는 요청을 읽고 논의할 수 있지만 판단하지 않습니다.</p>
+          </fieldset>
+        )}
         <div className="field">
           <label htmlFor="new-task-description">{kind === "task" ? "업무 내용" : "요청 내용"}</label>
           <textarea

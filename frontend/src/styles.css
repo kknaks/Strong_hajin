@@ -524,3 +524,18 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .comment-list li { padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: var(--radius-card); font-size: 14px; }
 .comment-list li b { font-size: 13px; }
 .comment-list li p { margin-top: 4px; color: var(--text-secondary); font-size: 14px; }
+
+/* ---- 보낸 업무 sections, 참조자 picker, comment attachments */
+.sent-section + .sent-section { margin-top: 28px; }
+.sent-section .section-title { margin-top: 0; }
+.cc-picker { border: 0; padding: 0; margin: 0; min-width: 0; }
+.cc-picker legend { padding: 0; margin-bottom: 6px; font-size: 13px; font-weight: 700; color: var(--text-secondary); }
+.chip-toggle { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border: 1px solid var(--border-default); border-radius: 999px; background: var(--surface); font-size: 13px; color: var(--text-secondary); cursor: pointer; }
+.chip-toggle input { margin: 0; accent-color: var(--action); }
+.chip-toggle.on { border-color: var(--accent); background: #f1f2fe; color: var(--action); }
+.attachment-row { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 13px; }
+.attachment-row a { color: var(--action); text-decoration: none; }
+.attachment-row a:hover { text-decoration: underline; }
+.btn.ghost.on { border-color: var(--accent); color: var(--action); }
+.grant-list { list-style: none; margin: 0 0 12px; padding: 0 0 12px; border-bottom: 1px solid var(--border-subtle); display: grid; gap: 8px; }
+.grant-list li { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
