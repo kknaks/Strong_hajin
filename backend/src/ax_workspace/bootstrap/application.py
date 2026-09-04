@@ -378,7 +378,12 @@ class WorkflowApplication:
 
     def _action_center(self, session: Any) -> ActionCenterApplication:
         return ActionCenterApplication(
-            action_handlers(session, work_requests=self._work_requests(session), actions=self._actions(session))
+            action_handlers(
+                session,
+                work_requests=self._work_requests(session),
+                actions=self._actions(session),
+                assignments=self._assignments(session),
+            )
         )
 
     def work_request_timeline(self, principal: Principal, request_id: UUID) -> dict[str, Any]:

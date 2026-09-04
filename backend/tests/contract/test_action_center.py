@@ -244,3 +244,31 @@ def test_an_ax_proposal_runs_its_effect_exactly_once_through_the_same_command_pa
     assert [task["title"] for task in client.get("/api/my-work", headers=JIHO).json()] == ["AX가 만든 업무"]
     assert client.get("/api/actions", headers=JIHO).json()[0]["state"] == "approved"
     assert proposal["action_id"] == item["action_item_id"]
+
+
+def test_a_direct_assignment_is_the_same_kind_of_question_in_the_same_ledger(tmp_path) -> None:
+    client, application = _stack(tmp_path)
+    jiho = application.authenticated_principal("jiho")
+    assigned = application.assign_task(jiho, "배정된 업무", "mina", description="맡아 주세요")
+
+    [item] = [row for row in _pending(client, MINA) if row["kind"] == "task.assignment"]
+    assert item["subject"] == "배정된 업무" and item["operation_label"] == "업무 배정"
+    assert item["current_question"] == "이 업무 배정을 수락할지 결정하세요"
+    assert [command["id"] for command in item["allowed_commands"]] == ["accept", "decline"]
+    assert [command["requires_reason"] for command in item["allowed_commands"]] == [False, True]
+    assert {row["label"] for row in item["preview"]} >= {"설명", "배정자"}
+    assert item["waiting_on"] == {"member_id": "mina", "display_name": "민아 (구성원)"}
+    # The assigner is not the one who owes an answer.
+    assert [row for row in _pending(client, JIHO) if row["kind"] == "task.assignment"] == []
+
+    accepted = _command(client, MINA, item["action_item_id"], "accept")
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["status"] == "resolved"
+    assert [task["title"] for task in client.get("/api/my-work", headers=MINA).json()] == ["배정된 업무"]
+    assert [row for row in _pending(client, MINA) if row["kind"] == "task.assignment"] == []
+    assert assigned["task"]["title"] == "배정된 업무"
+
+    # A re-sent accept is a receipt, and a declined-after-accepted command is refused rather than guessed at.
+    assert _command(client, MINA, item["action_item_id"], "accept").status_code == 200
+    assert _command(client, MINA, item["action_item_id"], "decline", reason="역시 어렵습니다").status_code == 422
+    assert len(client.get("/api/my-work", headers=MINA).json()) == 1

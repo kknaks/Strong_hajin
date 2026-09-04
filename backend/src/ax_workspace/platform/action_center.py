@@ -20,7 +20,13 @@ from ax_workspace.modules.actions.domain import (
     ActionEnvelope,
     ActionError,
 )
-from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, WORK_REQUEST_DECIDE, Principal
+from ax_workspace.modules.organization_access.domain import (
+    ACTION_DECIDE,
+    TASK_READ,
+    TASK_SELF_MANAGE,
+    WORK_REQUEST_DECIDE,
+    Principal,
+)
 from ax_workspace.platform.actions import ActionPresenter
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
 from ax_workspace.modules.work.requests import WorkRequestAccessDenied as ActionAccessDenied
@@ -32,6 +38,8 @@ from ax_workspace.platform.persistence import (
     ReviewDecisionRecord,
     SubjectVersionRecord,
     SubmissionRecord,
+    TaskAssignmentRecord,
+    TaskRecord,
     WorkRequestRecord,
 )
 
@@ -350,13 +358,122 @@ class AxProposalActionHandler:
         )
 
 
-def action_handlers(session: Session, *, work_requests: Any, actions: Any) -> list[Any]:
+class TaskAssignmentActionHandler:
+    """A direct assignment: the assignee decides whether to take the work on.
+
+    There is one round by construction — the assigner proposes once — so the assignment row is its own submission.
+    """
+
+    def __init__(self, session: Session, assignments: Any) -> None:
+        self._session = session
+        self._members = MemberDirectory(session)
+        self._assignments = assignments
+
+    def pending(self, principal: Principal) -> list[ActionEnvelope]:
+        if TASK_READ not in principal.capabilities:
+            return []
+        rows = self._session.execute(
+            select(TaskAssignmentRecord, TaskRecord)
+            .join(TaskRecord, TaskRecord.id == TaskAssignmentRecord.task_id)
+            .where(TaskAssignmentRecord.assignee_id == str(principal.id), TaskAssignmentRecord.status == "pending")
+            .order_by(TaskAssignmentRecord.created_at)
+        ).all()
+        return [self.envelope((assignment, task), principal) for assignment, task in rows]
+
+    def find(self, action_item_id: str) -> tuple[Any, Any] | None:
+        try:
+            assignment = self._session.get(TaskAssignmentRecord, UUID(action_item_id))
+        except ValueError:
+            return None
+        if assignment is None:
+            return None
+        task = self._session.get(TaskRecord, assignment.task_id)
+        return (assignment, task) if task is not None else None
+
+    def envelope(self, item: tuple[Any, Any], principal: Principal) -> ActionEnvelope:
+        assignment, task = item
+        pending = assignment.status == "pending"
+        mine = str(assignment.assignee_id) == str(principal.id)
+        preview: list[dict[str, str]] = []
+        if task.description:
+            preview.append({"id": "description", "label": "설명", "value": str(task.description), "kind": "text"})
+        assigner = self._members.waiting_on(assignment.assigned_by)
+        if assigner:
+            preview.append({"id": "assigner", "label": "배정자", "value": assigner["display_name"], "kind": "person"})
+        if task.due_date:
+            preview.append({"id": "due_date", "label": "기한", "value": task.due_date.isoformat(), "kind": "date"})
+        return ActionEnvelope(
+            action_item_id=str(assignment.id),
+            kind="task.assignment",
+            status=AWAITING_REVIEW if pending else RESOLVED,
+            subject=str(task.title),
+            operation_label="업무 배정",
+            current_question="이 업무 배정을 수락할지 결정하세요" if pending else "이 배정은 이미 판단이 끝났습니다",
+            preview=preview,
+            allowed_commands=(
+                [ActionCommand("accept", "수락", "primary"), ActionCommand("decline", "거절", "danger", requires_reason=True)]
+                if pending and mine and TASK_SELF_MANAGE in principal.capabilities
+                else []
+            ),
+            submission_version=1,
+            waiting_on=self._members.waiting_on(assignment.assignee_id if pending else None),
+            resource={"type": "task", "id": str(task.id)},
+            expected_version=int(task.version),
+        )
+
+    def rounds(self, item: tuple[Any, Any], principal: Principal) -> list[dict[str, Any]]:
+        assignment, task = item
+        if str(assignment.assignee_id) != str(principal.id) and str(assignment.assigned_by) != str(principal.id):
+            raise ActionAccessDenied("principal cannot read this action item")
+        decided_at = assignment.accepted_at or assignment.declined_at
+        return [
+            {
+                "submission_id": str(assignment.id),
+                "submission_version": 1,
+                "submitted_by": assignment.assigned_by,
+                "submitted_at": assignment.created_at.isoformat(),
+                "content_hash": "",
+                "snapshot": {"title": task.title, "description": task.description, "due_date": task.due_date.isoformat() if task.due_date else None},
+                "diff": None,
+                "decisions": [
+                    {
+                        "review_decision_id": str(assignment.id),
+                        "actor_member_id": str(assignment.assignee_id),
+                        "decision": "accept" if assignment.accepted_at else "decline",
+                        "reason": assignment.decline_reason,
+                        "decided_at": decided_at.isoformat(),
+                    }
+                ]
+                if decided_at
+                else [],
+            }
+        ]
+
+    def execute(self, principal: Principal, item: tuple[Any, Any], command: str, payload: dict[str, Any]) -> None:
+        assignment, _ = item
+        if command == "accept":
+            self._assignments.accept(principal, assignment.id)
+        else:
+            self._assignments.decline(principal, assignment.id, str(payload.get("reason") or ""))
+
+    def is_replay(self, item: tuple[Any, Any], principal: Principal, command: str) -> bool:
+        assignment, _ = item
+        if str(assignment.assignee_id) != str(principal.id):
+            return False
+        return (command == "accept" and assignment.status == "active") or (command == "decline" and assignment.status == "declined")
+
+
+def action_handlers(session: Session, *, work_requests: Any, actions: Any, assignments: Any) -> list[Any]:
     """Every origin that can put a question to a person, in the order a person should meet them.
 
     The module applications are passed in rather than rebuilt here, so every command runs the same operation the rest of
     the product runs, with that module's own rules and audit.
     """
-    return [WorkRequestActionHandler(session, work_requests), AxProposalActionHandler(session, actions)]
+    return [
+        WorkRequestActionHandler(session, work_requests),
+        TaskAssignmentActionHandler(session, assignments),
+        AxProposalActionHandler(session, actions),
+    ]
 
 
 def decision_item_id(session: Session, request_id: UUID) -> UUID | None:
