@@ -36,6 +36,7 @@ MEETING_READ = "meeting.read"
 MEETING_READ_PRIVATE = "meeting.read.private"
 MEETING_MANAGE = "meeting.manage"
 MEETING_SHARE = "meeting.share"
+MEETING_RECORD = "meeting.record"
 
 
 SEED_PERSONAS: dict[PersonaId, Principal] = {
@@ -53,6 +54,7 @@ SEED_PERSONAS: dict[PersonaId, Principal] = {
             MEETING_READ,
             MEETING_MANAGE,
             MEETING_SHARE,
+            MEETING_RECORD,
             "task.accept",
             TASK_READ,
             TASK_SELF_MANAGE,
@@ -77,6 +79,7 @@ SEED_PERSONAS: dict[PersonaId, Principal] = {
             MEETING_READ,
             MEETING_MANAGE,
             MEETING_SHARE,
+            MEETING_RECORD,
             "team.manage",
             TASK_ASSIGN,
             ACTION_READ,
@@ -102,7 +105,7 @@ SEED_PERSONAS: dict[PersonaId, Principal] = {
         frozenset({
             "work.read", DAILY_REPORT_READ, DAILY_REPORT_GENERATE, DAILY_REPORT_EDIT,
             DAILY_REPORT_SUBMIT, "meeting.followup.request",
-            "meeting.followup.assign", MEETING_READ, MEETING_READ_PRIVATE, MEETING_MANAGE, MEETING_SHARE,
+            "meeting.followup.assign", MEETING_READ, MEETING_READ_PRIVATE, MEETING_MANAGE, MEETING_SHARE, MEETING_RECORD,
             "task.accept", TASK_READ, TASK_SELF_MANAGE, TASK_ASSIGN,
             WORK_REQUEST_READ, WORK_REQUEST_CREATE, "report.review", "team.manage",
             ACTION_READ, ACTION_DECIDE,

@@ -87,6 +87,10 @@ class FinalizeMeetingNoteRequest(BaseModel):
     expected_version: int = Field(ge=1)
 
 
+class StartMeetingRecordingRequest(BaseModel):
+    purpose: str = Field(min_length=1, max_length=300)
+
+
 class AssignTaskRequest(BaseModel):
     title: str
     assignee_id: str
@@ -408,6 +412,41 @@ def create_app(
             try:
                 return app.state.workflow_application.finalize_meeting_note(
                     principal, meeting_id, request.expected_version
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/meetings/{meeting_id}/recordings/start", status_code=status.HTTP_201_CREATED)
+        def start_meeting_recording(
+            meeting_id: UUID,
+            request: StartMeetingRecordingRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.start_meeting_recording(
+                    principal, meeting_id, request.purpose
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/meetings/{meeting_id}/recordings/{recording_id}/stop")
+        async def stop_meeting_recording(
+            meeting_id: UUID,
+            recording_id: UUID,
+            expected_version: int = Form(ge=1),
+            audio: UploadFile = File(...),
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                data = await audio.read()
+                return app.state.workflow_application.stop_meeting_recording(
+                    principal,
+                    meeting_id,
+                    recording_id,
+                    expected_version,
+                    original_name=audio.filename or "recording",
+                    content_type=audio.content_type or "application/octet-stream",
+                    data=data,
                 )
             except Exception as error:
                 raise _runtime_error(error) from error

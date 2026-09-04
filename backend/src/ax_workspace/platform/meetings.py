@@ -14,6 +14,7 @@ from ax_workspace.platform.persistence import (
     MeetingAttendeeRecord,
     MeetingNoteRecord,
     MeetingNoteVersionRecord,
+    MeetingRecordingRecord,
     MeetingRecord,
     MemberRecord,
     MembershipRecord,
@@ -264,3 +265,58 @@ class SqlAlchemyMeetingRepository:
         note.lifecycle = "finalized"
         note.finalized_at = datetime.now(UTC)
         note.finalized_by = actor_id
+
+    def create_recording(self, meeting: MeetingRecord, actor_id: str, purpose: str) -> MeetingRecordingRecord:
+        now = datetime.now(UTC)
+        recording = MeetingRecordingRecord(
+            meeting_id=meeting.id,
+            actor_id=actor_id,
+            purpose=purpose,
+            state="recording",
+            version=1,
+            provider_client_reference_id="pending",
+            started_at=now,
+            ended_at=None,
+            created_at=now,
+            updated_at=now,
+        )
+        self._session.add(recording)
+        self._session.flush()
+        recording.provider_client_reference_id = f"meeting-recording:{recording.id}"
+        return recording
+
+    def recording(
+        self,
+        meeting: MeetingRecord,
+        recording_id: UUID,
+        *,
+        lock: bool = False,
+    ) -> MeetingRecordingRecord | None:
+        statement = select(MeetingRecordingRecord).where(
+            MeetingRecordingRecord.id == recording_id,
+            MeetingRecordingRecord.meeting_id == meeting.id,
+        )
+        if lock:
+            statement = statement.with_for_update().execution_options(populate_existing=True)
+        return self._session.scalar(statement)
+
+    def recordings(self, meeting: MeetingRecord) -> list[MeetingRecordingRecord]:
+        return list(
+            self._session.scalars(
+                select(MeetingRecordingRecord)
+                .where(MeetingRecordingRecord.meeting_id == meeting.id)
+                .order_by(MeetingRecordingRecord.created_at, MeetingRecordingRecord.id)
+            )
+        )
+
+    def complete_recording(self, recording: MeetingRecordingRecord, stored: Any) -> None:
+        now = datetime.now(UTC)
+        recording.storage_key = stored.storage_key
+        recording.original_name = stored.original_name
+        recording.content_type = stored.content_type
+        recording.size_bytes = stored.size_bytes
+        recording.sha256 = stored.sha256
+        recording.state = "uploaded"
+        recording.version += 1
+        recording.ended_at = now
+        recording.updated_at = now

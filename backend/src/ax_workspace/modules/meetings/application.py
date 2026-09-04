@@ -15,7 +15,8 @@ from ax_workspace.modules.meetings.domain import (
     MeetingNotFound,
     MeetingVersionConflict,
 )
-from ax_workspace.modules.organization_access.domain import Principal
+from ax_workspace.modules.meetings.recordings import RecordingStorage
+from ax_workspace.modules.organization_access.domain import MEETING_RECORD, Principal
 
 
 MEETING_READ = "meeting.read"
@@ -51,11 +52,16 @@ class MeetingRepository(Protocol):
     def append_note_version(self, note: Any, body: str, author_id: str, source_evidence: list[dict[str, Any]] | None = None) -> Any: ...
     def note_versions(self, note: Any) -> list[Any]: ...
     def finalize_note(self, note: Any, actor_id: str) -> None: ...
+    def create_recording(self, meeting: Any, actor_id: str, purpose: str) -> Any: ...
+    def recording(self, meeting: Any, recording_id: UUID, *, lock: bool = False) -> Any | None: ...
+    def recordings(self, meeting: Any) -> list[Any]: ...
+    def complete_recording(self, recording: Any, stored: Any) -> None: ...
 
 
 class MeetingApplication:
-    def __init__(self, repository: MeetingRepository) -> None:
+    def __init__(self, repository: MeetingRepository, recording_storage: RecordingStorage) -> None:
         self._repository = repository
+        self._recording_storage = recording_storage
 
     def list(self, principal: Principal) -> list[dict[str, Any]]:
         """Calendar-safe projection: concealed private meetings contribute only a time busy block."""
@@ -184,6 +190,45 @@ class MeetingApplication:
         self._repository.append_audit(meeting, str(principal.id), "meeting.note_finalized", "회의록 확정")
         return self._note_view(note)
 
+    def start_recording(self, principal: Principal, meeting_id: UUID, purpose: str) -> dict[str, Any]:
+        meeting = self._recording_target(principal, meeting_id)
+        if not purpose.strip():
+            raise MeetingError("recording purpose is required")
+        recording = self._repository.create_recording(meeting, str(principal.id), purpose.strip())
+        self._repository.append_audit(meeting, str(principal.id), "meeting.recording_started", "회의 녹음 시작")
+        return self._recording_view(recording)
+
+    def stop_recording(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        recording_id: UUID,
+        expected_version: int,
+        *,
+        original_name: str,
+        content_type: str,
+        data: bytes,
+    ) -> dict[str, Any]:
+        meeting = self._recording_target(principal, meeting_id)
+        recording = self._repository.recording(meeting, recording_id, lock=True)
+        if recording is None:
+            raise MeetingNotFound("meeting recording was not found")
+        if recording.actor_id != str(principal.id):
+            raise MeetingAccessDenied("only the recording initiator may stop this recording")
+        if recording.version != expected_version:
+            raise MeetingVersionConflict("meeting recording version is stale")
+        if recording.state != "recording":
+            raise MeetingError("only a recording in progress can be stopped")
+        stored = self._recording_storage.put(
+            recording_id=str(recording.id),
+            original_name=original_name,
+            content_type=content_type,
+            data=data,
+        )
+        self._repository.complete_recording(recording, stored)
+        self._repository.append_audit(meeting, str(principal.id), "meeting.recording_uploaded", "회의 녹음 업로드 완료", before_ref=f"meeting_recording:{recording.id}@{expected_version}")
+        return self._recording_view(recording)
+
     def _owned_mutable_meeting(self, principal: Principal, meeting_id: UUID, expected_version: int) -> Any:
         meeting = self._repository.meeting(meeting_id, lock=True)
         if meeting is None:
@@ -201,6 +246,16 @@ class MeetingApplication:
             raise MeetingNotFound("meeting was not found")
         if str(principal.id) != meeting.owner_id and str(principal.id) not in self._repository.attendee_ids(meeting):
             raise MeetingAccessDenied("only an attendee may edit the meeting note")
+        return meeting
+
+    def _recording_target(self, principal: Principal, meeting_id: UUID) -> Any:
+        self._require(principal, MEETING_RECORD)
+        meeting = self._repository.meeting(meeting_id)
+        if meeting is None or not self._can_read_detail(principal, meeting):
+            raise MeetingNotFound("meeting was not found")
+        member_id = str(principal.id)
+        if member_id != meeting.owner_id and member_id not in self._repository.attendee_ids(meeting):
+            raise MeetingAccessDenied("only a meeting owner or attendee may record")
         return meeting
 
     def _can_read_detail(self, principal: Principal, meeting: Any) -> bool:
@@ -223,6 +278,7 @@ class MeetingApplication:
         if include_note:
             note = self._repository.note(meeting)
             result["note"] = self._note_view(note) if note is not None else None
+            result["recordings"] = [self._recording_view(recording) for recording in self._repository.recordings(meeting)]
         return result
 
     def _note_view(self, note: Any, *, current: Any | None = None) -> dict[str, Any]:
@@ -233,6 +289,24 @@ class MeetingApplication:
             "body": latest.body if latest is not None else "",
             "versions": [{"version_id": str(version.id), "version": version.version, "body": version.body, "created_by": version.created_by, "created_at": _iso(version.created_at), "source_evidence": list(version.source_evidence or [])} for version in versions],
             "finalized_at": _iso(note.finalized_at), "finalized_by": note.finalized_by,
+        }
+
+    @staticmethod
+    def _recording_view(recording: Any) -> dict[str, Any]:
+        return {
+            "recording_id": str(recording.id),
+            "meeting_id": str(recording.meeting_id),
+            "purpose": recording.purpose,
+            "state": recording.state,
+            "version": recording.version,
+            "content_type": recording.content_type,
+            "original_name": recording.original_name,
+            "size_bytes": recording.size_bytes,
+            "sha256": recording.sha256,
+            "started_at": _iso(recording.started_at),
+            "ended_at": _iso(recording.ended_at),
+            # A storage key or provider reference is never a browser capability.
+            "storage_key": None,
         }
 
     @staticmethod

@@ -753,6 +753,7 @@ def test_organization_profile_is_a_persisted_authorized_projection(tmp_path) -> 
             "meeting.followup.request",
             "meeting.manage",
             "meeting.read",
+            "meeting.record",
             "meeting.share",
             "task.accept",
             "task.read",

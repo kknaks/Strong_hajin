@@ -36,6 +36,7 @@ from ax_workspace.modules.meetings.application import MeetingApplication
 from ax_workspace.modules.work.requests import WorkRequestApplication
 from ax_workspace.platform.persistence import make_session_factory
 from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
+from ax_workspace.platform.recordings import LocalDirectoryRecordingStorage
 from ax_workspace.modules.work.material_extraction import LexicalMaterialRetriever
 from ax_workspace.platform.material_extraction import (
     MaterialJobQueue,
@@ -62,6 +63,7 @@ class WorkflowApplication:
         self._settings = settings
         self._session_factory = make_session_factory(settings.database_url)
         self._material_storage = LocalDirectoryMaterialStorage(Path(settings.materials_dir))
+        self._recording_storage = LocalDirectoryRecordingStorage(Path(settings.recordings_dir))
         # One in-process job store per application when the memory backend is selected (tests); postgres joins each session.
         self.memory_job_queue: MemoryDurableJobQueue | None = MemoryDurableJobQueue() if settings.job_queue_backend == "memory" else None
         self._report_provider = report_provider or create_codex_cli_provider(settings)
@@ -121,6 +123,36 @@ class WorkflowApplication:
     def finalize_meeting_note(self, principal: Principal, meeting_id: UUID, expected_version: int) -> dict[str, Any]:
         with self._session_factory() as session:
             result = self._meetings(session).finalize_note(principal, meeting_id, expected_version)
+            session.commit()
+            return result
+
+    def start_meeting_recording(self, principal: Principal, meeting_id: UUID, purpose: str) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._meetings(session).start_recording(principal, meeting_id, purpose)
+            session.commit()
+            return result
+
+    def stop_meeting_recording(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        recording_id: UUID,
+        expected_version: int,
+        *,
+        original_name: str,
+        content_type: str,
+        data: bytes,
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._meetings(session).stop_recording(
+                principal,
+                meeting_id,
+                recording_id,
+                expected_version,
+                original_name=original_name,
+                content_type=content_type,
+                data=data,
+            )
             session.commit()
             return result
 
@@ -216,9 +248,8 @@ class WorkflowApplication:
             ),
         )
 
-    @staticmethod
-    def _meetings(session: Any) -> MeetingApplication:
-        return MeetingApplication(SqlAlchemyMeetingRepository(session))
+    def _meetings(self, session: Any) -> MeetingApplication:
+        return MeetingApplication(SqlAlchemyMeetingRepository(session), self._recording_storage)
 
     def create_self_task(
         self,

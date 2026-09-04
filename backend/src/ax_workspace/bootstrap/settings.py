@@ -21,6 +21,7 @@ class Settings:
     conversation_worker_concurrency: int = 4
     job_queue_backend: str = "memory"
     materials_dir: str = ".scax/materials"
+    recordings_dir: str = ".scax/recordings"
     material_queue_visibility_timeout: int = 120
     material_queue_max_attempts: int = 3
     material_worker_concurrency: int = 2
@@ -48,6 +49,7 @@ class Settings:
             ),
             job_queue_backend=_job_queue_backend_from_environment(),
             materials_dir=os.getenv("AX_MATERIALS_DIR", ".scax/materials"),
+            recordings_dir=os.getenv("AX_RECORDINGS_DIR", ".scax/recordings"),
             material_queue_visibility_timeout=int(os.getenv("AX_MATERIAL_QUEUE_VISIBILITY_TIMEOUT", "120")),
             material_queue_max_attempts=int(os.getenv("AX_MATERIAL_QUEUE_MAX_ATTEMPTS", "3")),
             material_worker_concurrency=int(os.getenv("AX_MATERIAL_WORKER_CONCURRENCY", "2")),

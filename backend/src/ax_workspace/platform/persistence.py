@@ -285,6 +285,111 @@ class MeetingNoteVersionRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class MeetingRecordingRecord(Base):
+    """Audio object metadata. Bytes live behind RecordingStorage, never in this operational database."""
+
+    __tablename__ = "meeting_recordings"
+    __table_args__ = (Index("ix_meeting_recordings_meeting_created", "meeting_id", "created_at"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False)
+    actor_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(300), nullable=False)
+    state: Mapped[str] = mapped_column(String(30), nullable=False, default="not_started")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    storage_key: Mapped[str | None] = mapped_column(String(500))
+    original_name: Mapped[str | None] = mapped_column(String(300))
+    content_type: Mapped[str | None] = mapped_column(String(200))
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    sha256: Mapped[str | None] = mapped_column(String(64))
+    provider_client_reference_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    provider_file_ref: Mapped[str | None] = mapped_column(String(300))
+    provider_transcription_ref: Mapped[str | None] = mapped_column(String(300))
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error_detail: Mapped[str | None] = mapped_column(String(500))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MeetingRawTranscriptRevisionRecord(Base):
+    """An immutable STT result. Refinement and summary point at this rather than overwriting it."""
+
+    __tablename__ = "meeting_raw_transcript_revisions"
+    __table_args__ = (UniqueConstraint("recording_id", "revision", name="uq_meeting_raw_transcript_revision"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    recording_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_recordings.id"), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(30), nullable=False, default="processing")
+    source_kind: Mapped[str] = mapped_column(String(40), nullable=False, default="async_final")
+    provider: Mapped[str | None] = mapped_column(String(80))
+    provider_reference: Mapped[str | None] = mapped_column(String(300))
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MeetingRawTranscriptSegmentRecord(Base):
+    """Provider-produced final segment. Text and offsets are immutable once the raw revision completes."""
+
+    __tablename__ = "meeting_raw_transcript_segments"
+    __table_args__ = (
+        UniqueConstraint("transcript_revision_id", "sequence", name="uq_meeting_raw_transcript_segment_sequence"),
+        UniqueConstraint("transcript_revision_id", "source_segment_key", name="uq_meeting_raw_transcript_source_key"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    transcript_revision_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_revisions.id"), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_segment_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    start_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    speaker_label: Mapped[str | None] = mapped_column(String(100))
+    confirmed_member_id: Mapped[str | None] = mapped_column(ForeignKey("members.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MeetingTranscriptRefinementRevisionRecord(Base):
+    """A derived, versioned reading layer over one raw STT revision; it can never mutate the raw source."""
+
+    __tablename__ = "meeting_transcript_refinement_revisions"
+    __table_args__ = (UniqueConstraint("raw_transcript_revision_id", "revision", name="uq_meeting_refinement_revision"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    raw_transcript_revision_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_revisions.id"), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
+    provider_call_ref: Mapped[str | None] = mapped_column(String(300))
+    content_hash: Mapped[str | None] = mapped_column(String(64))
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MeetingTranscriptRefinementSegmentRecord(Base):
+    """Strict refinement output with a raw segment/time span and correction provenance per rendered turn."""
+
+    __tablename__ = "meeting_transcript_refinement_segments"
+    __table_args__ = (UniqueConstraint("refinement_revision_id", "sequence", name="uq_meeting_refinement_segment_sequence"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    refinement_revision_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_transcript_refinement_revisions.id"), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    raw_start_segment_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_segments.id"), nullable=False)
+    raw_end_segment_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_segments.id"), nullable=False)
+    start_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    speaker_label: Mapped[str | None] = mapped_column(String(100))
+    confirmed_member_id: Mapped[str | None] = mapped_column(ForeignKey("members.id"))
+    correction_kind: Mapped[str] = mapped_column(String(40), nullable=False, default="none")
+    confidence: Mapped[float | None] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class WorkflowDefinitionRecord(Base):
     __tablename__ = "workflow_definitions"
 
