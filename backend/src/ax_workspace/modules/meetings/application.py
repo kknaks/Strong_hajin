@@ -51,7 +51,13 @@ class MeetingRepository(Protocol):
     def touch(self, meeting: Any) -> None: ...
     def append_audit(self, meeting: Any, actor_id: str, event_kind: str, summary: str, *, before_ref: str | None = None) -> None: ...
     def note(self, meeting: Any, *, lock: bool = False) -> Any | None: ...
-    def create_note(self, meeting: Any, body: str, author_id: str) -> Any: ...
+    def create_note(
+        self,
+        meeting: Any,
+        body: str,
+        author_id: str,
+        source_evidence: list[dict[str, Any]] | None = None,
+    ) -> Any: ...
     def append_note_version(self, note: Any, body: str, author_id: str, source_evidence: list[dict[str, Any]] | None = None) -> Any: ...
     def note_versions(self, note: Any) -> list[Any]: ...
     def finalize_note(self, note: Any, actor_id: str) -> None: ...
@@ -94,6 +100,8 @@ class MeetingRepository(Protocol):
         statements: list[SummaryStatement],
     ) -> Any: ...
     def summary_evidence(self, summary: Any) -> list[Any]: ...
+    def summary(self, meeting: Any, summary_id: UUID, *, lock: bool = False) -> Any | None: ...
+    def adopt_summary(self, summary: Any, note_version: Any, actor_id: str) -> None: ...
 
 
 class MeetingApplication:
@@ -410,6 +418,50 @@ class MeetingApplication:
         )
         return self._summary_view(summary)
 
+    def adopt_summary(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        summary_id: UUID,
+        expected_version: int,
+    ) -> dict[str, Any]:
+        """Human adoption appends a NoteVersion; it never mutates a suggestion or transcript."""
+        meeting = self._note_target(principal, meeting_id)
+        summary = self._repository.summary(meeting, summary_id, lock=True)
+        if summary is None or summary.state not in {"completed", "adopted"}:
+            raise MeetingNotFound("meeting summary suggestion was not found")
+        if summary.version != expected_version:
+            raise MeetingVersionConflict("meeting summary version is stale")
+        if summary.state == "adopted":
+            return {"summary": self._summary_view(summary), "note": self._note_view(self._repository.note(meeting))}
+        note = self._repository.note(meeting, lock=True)
+        if note is not None and note.lifecycle == "finalized":
+            raise MeetingError("a finalized meeting note cannot adopt a summary")
+        if note is None:
+            note = self._repository.create_note(
+                meeting,
+                summary.body or "",
+                str(principal.id),
+                source_evidence=self._summary_source_evidence(summary),
+            )
+            note_version = self._repository.note_versions(note)[-1]
+        else:
+            note_version = self._repository.append_note_version(
+                note,
+                summary.body or "",
+                str(principal.id),
+                source_evidence=self._summary_source_evidence(summary),
+            )
+        self._repository.adopt_summary(summary, note_version, str(principal.id))
+        self._repository.append_audit(
+            meeting,
+            str(principal.id),
+            "meeting.summary_adopted",
+            "AI 회의 요약 채택",
+            before_ref=f"meeting_summary:{summary.id}@{expected_version}",
+        )
+        return {"summary": self._summary_view(summary), "note": self._note_view(note, current=note_version)}
+
     def _owned_mutable_meeting(self, principal: Principal, meeting_id: UUID, expected_version: int) -> Any:
         meeting = self._repository.meeting(meeting_id, lock=True)
         if meeting is None:
@@ -544,6 +596,7 @@ class MeetingApplication:
             "refinement_revision_id": str(summary.refinement_revision_id),
             "kind": summary.kind,
             "state": summary.state,
+            "version": summary.version,
             "body": summary.body,
             "provider_call_ref": summary.provider_call_ref,
             "evidence": [
@@ -555,10 +608,25 @@ class MeetingApplication:
                     "refinement_end_segment_id": str(row.refinement_end_segment_id),
                     "raw_start_segment_id": str(row.raw_start_segment_id),
                     "raw_end_segment_id": str(row.raw_end_segment_id),
+                    "raw_start_ms": row.raw_start_ms,
+                    "raw_end_ms": row.raw_end_ms,
                 }
                 for row in self._repository.summary_evidence(summary)
             ],
         }
+
+    def _summary_source_evidence(self, summary: Any) -> list[dict[str, Any]]:
+        return [
+            {
+                "summary_id": str(summary.id),
+                "statement_index": row.statement_index,
+                "raw_start_segment_id": str(row.raw_start_segment_id),
+                "raw_end_segment_id": str(row.raw_end_segment_id),
+                "raw_start_ms": row.raw_start_ms,
+                "raw_end_ms": row.raw_end_ms,
+            }
+            for row in self._repository.summary_evidence(summary)
+        ]
 
     @staticmethod
     def _validate_refinement_coverage(raw_segments: list[Any], refined_segments: list[RefinedTranscriptSegment]) -> None:
@@ -593,6 +661,9 @@ class MeetingApplication:
                 or statement.refinement_end_sequence not in sequences
             ):
                 raise MeetingError("summary statement references an unknown refined segment")
+            expected = set(range(statement.refinement_start_sequence, statement.refinement_end_sequence + 1))
+            if not expected.issubset(sequences):
+                raise MeetingError("summary statement must reference a contiguous refined segment range")
 
     @staticmethod
     def _require(principal: Principal, capability: str) -> None:

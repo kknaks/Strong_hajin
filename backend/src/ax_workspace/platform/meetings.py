@@ -217,7 +217,13 @@ class SqlAlchemyMeetingRepository:
             statement = statement.with_for_update().execution_options(populate_existing=True)
         return self._session.scalar(statement)
 
-    def create_note(self, meeting: MeetingRecord, body: str, author_id: str) -> MeetingNoteRecord:
+    def create_note(
+        self,
+        meeting: MeetingRecord,
+        body: str,
+        author_id: str,
+        source_evidence: list[dict[str, Any]] | None = None,
+    ) -> MeetingNoteRecord:
         now = datetime.now(UTC)
         note = MeetingNoteRecord(
             meeting_id=meeting.id,
@@ -234,7 +240,7 @@ class SqlAlchemyMeetingRepository:
                 note_id=note.id,
                 version=1,
                 body=body,
-                source_evidence=[],
+                source_evidence=source_evidence or [],
                 created_by=author_id,
                 created_at=now,
             )
@@ -563,6 +569,8 @@ class SqlAlchemyMeetingRepository:
                     refinement_end_segment_id=end.id,
                     raw_start_segment_id=raw_by_id[start.raw_start_segment_id].id,
                     raw_end_segment_id=raw_by_id[end.raw_end_segment_id].id,
+                    raw_start_ms=raw_by_id[start.raw_start_segment_id].start_ms,
+                    raw_end_ms=raw_by_id[end.raw_end_segment_id].end_ms,
                     created_at=now,
                 )
             )
@@ -580,6 +588,34 @@ class SqlAlchemyMeetingRepository:
                 .order_by(MeetingSummaryEvidenceRecord.statement_index)
             )
         )
+
+    def summary(
+        self,
+        meeting: MeetingRecord,
+        summary_id: UUID,
+        *,
+        lock: bool = False,
+    ) -> MeetingSummarySuggestionRecord | None:
+        statement = select(MeetingSummarySuggestionRecord).where(
+            MeetingSummarySuggestionRecord.id == summary_id,
+            MeetingSummarySuggestionRecord.meeting_id == meeting.id,
+        )
+        if lock:
+            statement = statement.with_for_update().execution_options(populate_existing=True)
+        return self._session.scalar(statement)
+
+    def adopt_summary(
+        self,
+        summary: MeetingSummarySuggestionRecord,
+        note_version: MeetingNoteVersionRecord,
+        actor_id: str,
+    ) -> None:
+        summary.state = "adopted"
+        summary.version += 1
+        summary.adopted_note_version_id = note_version.id
+        summary.adopted_by = actor_id
+        summary.adopted_at = datetime.now(UTC)
+        self._session.flush()
 
     def complete_recording(self, recording: MeetingRecordingRecord, stored: Any) -> None:
         now = datetime.now(UTC)

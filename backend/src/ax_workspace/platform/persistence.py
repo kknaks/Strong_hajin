@@ -408,6 +408,7 @@ class MeetingSummarySuggestionRecord(Base):
     refinement_revision_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_transcript_refinement_revisions.id"), nullable=False)
     kind: Mapped[str] = mapped_column(String(30), nullable=False)  # provisional | final
     state: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     body: Mapped[str | None] = mapped_column(Text)
     provider_call_ref: Mapped[str | None] = mapped_column(String(300))
     content_hash: Mapped[str | None] = mapped_column(String(64))
@@ -415,6 +416,9 @@ class MeetingSummarySuggestionRecord(Base):
     error_detail: Mapped[str | None] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    adopted_note_version_id: Mapped[UUID | None] = mapped_column(ForeignKey("meeting_note_versions.id"))
+    adopted_by: Mapped[str | None] = mapped_column(ForeignKey("members.id"))
+    adopted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class MeetingSummaryEvidenceRecord(Base):
@@ -432,6 +436,8 @@ class MeetingSummaryEvidenceRecord(Base):
     refinement_end_segment_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_transcript_refinement_segments.id"), nullable=False)
     raw_start_segment_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_segments.id"), nullable=False)
     raw_end_segment_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_segments.id"), nullable=False)
+    raw_start_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    raw_end_ms: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

@@ -2,14 +2,18 @@
 from __future__ import annotations
 
 import hashlib
+from types import SimpleNamespace
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.modules.ax_execution.ai import AiConversationResult, AiGeneration
+from ax_workspace.modules.meetings.application import MeetingApplication, MeetingError
+from ax_workspace.modules.meetings.summary import SummaryStatement
 from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment
 
 
@@ -298,5 +302,36 @@ def test_final_summary_is_pinned_to_refinement_with_raw_evidence(tmp_path) -> No
             "refinement_end_segment_id": refined["segments"][0]["segment_id"],
             "raw_start_segment_id": raw["segments"][0]["segment_id"],
             "raw_end_segment_id": raw["segments"][1]["segment_id"],
+            "raw_start_ms": 0,
+            "raw_end_ms": 3_000,
         }
     ]
+    adopted = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/summaries/{summary['summary_id']}/adopt",
+        headers=headers,
+        json={"expected_version": summary["version"]},
+    )
+    assert adopted.status_code == 200, adopted.text
+    adopted_body = adopted.json()
+    assert adopted_body["summary"]["state"] == "adopted"
+    assert adopted_body["summary"]["version"] == summary["version"] + 1
+    assert adopted_body["note"]["version"] == 1
+    assert adopted_body["note"]["body"] == summary["body"]
+    assert adopted_body["note"]["versions"][0]["source_evidence"] == [
+        {
+            "summary_id": summary["summary_id"],
+            "statement_index": 1,
+            "raw_start_segment_id": raw["segments"][0]["segment_id"],
+            "raw_end_segment_id": raw["segments"][1]["segment_id"],
+            "raw_start_ms": 0,
+            "raw_end_ms": 3_000,
+        }
+    ]
+
+
+def test_summary_evidence_rejects_a_range_with_a_missing_refinement_sequence() -> None:
+    with pytest.raises(MeetingError, match="contiguous"):
+        MeetingApplication._validate_summary_evidence(
+            [SimpleNamespace(sequence=1), SimpleNamespace(sequence=3)],
+            [SummaryStatement("summary", "근거 없는 중간 구간은 안 됩니다.", 1, 3)],
+        )

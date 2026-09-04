@@ -231,6 +231,23 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def adopt_meeting_summary(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        summary_id: UUID,
+        expected_version: int,
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._meetings(session).adopt_summary(
+                principal,
+                meeting_id,
+                summary_id,
+                expected_version,
+            )
+            session.commit()
+            return result
+
     def organization_tree(self, principal: Principal) -> list[dict[str, Any]]:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).organization_tree(principal)

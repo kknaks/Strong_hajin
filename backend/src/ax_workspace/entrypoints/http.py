@@ -91,6 +91,10 @@ class StartMeetingRecordingRequest(BaseModel):
     purpose: str = Field(min_length=1, max_length=300)
 
 
+class AdoptMeetingSummaryRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+
+
 class AssignTaskRequest(BaseModel):
     title: str
     assignee_id: str
@@ -447,6 +451,23 @@ def create_app(
                     original_name=audio.filename or "recording",
                     content_type=audio.content_type or "application/octet-stream",
                     data=data,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/meetings/{meeting_id}/summaries/{summary_id}/adopt")
+        def adopt_meeting_summary(
+            meeting_id: UUID,
+            summary_id: UUID,
+            request: AdoptMeetingSummaryRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.adopt_meeting_summary(
+                    principal,
+                    meeting_id,
+                    summary_id,
+                    request.expected_version,
                 )
             except Exception as error:
                 raise _runtime_error(error) from error
