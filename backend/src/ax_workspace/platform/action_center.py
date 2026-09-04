@@ -30,9 +30,13 @@ from ax_workspace.modules.organization_access.domain import (
 from ax_workspace.platform.actions import ActionPresenter
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
 from ax_workspace.modules.work.requests import (
+    EVIDENCE_HASH,
     REVISABLE_FIELDS,
     WorkRequestAccessDenied as ActionAccessDenied,
     WorkRequestError,
+    evidence_manifest,
+    evidence_manifest_entry,
+    evidence_manifest_hash,
     normalize_proposed_changes,
 )
 from ax_workspace.platform.persistence import (
@@ -40,6 +44,7 @@ from ax_workspace.platform.persistence import (
     DecisionItemRecord,
     ResourceRelationshipRecord,
     ReviewAssignmentRecord,
+    EvidenceRecord,
     ReviewDecisionRecord,
     SubjectVersionRecord,
     SubmissionRecord,
@@ -182,12 +187,15 @@ class WorkRequestActionHandler:
                     "decision": decision.decision,
                     "reason": decision.reason,
                     "suggested_changes": _suggested_changes(decision.conditions),
+                    # The basis this answer was actually made on, frozen when it was made.
+                    "evidence_hash": (decision.conditions or {}).get(EVIDENCE_HASH),
                     "decided_at": decision.decided_at.isoformat(),
                 }
             )
         rows = []
         for submission in submissions:
             version = self._session.get(SubjectVersionRecord, submission.subject_version_id)
+            basis = self._evidence(submission)
             rows.append(
                 {
                     "submission_id": str(submission.id),
@@ -197,10 +205,19 @@ class WorkRequestActionHandler:
                     "content_hash": submission.payload_hash,
                     "snapshot": dict(version.snapshot) if version else {},
                     "diff": submission.diff,
+                    "evidence": basis,
+                    "evidence_hash": evidence_manifest_hash(basis),
                     "decisions": decisions.get(submission.id, []),
                 }
             )
         return rows
+
+    def _evidence(self, submission: SubmissionRecord) -> list[dict[str, str]]:
+        """What this round currently stands on, in the one canonical form every surface reads."""
+        return evidence_manifest(
+            evidence_manifest_entry(row.attachment_id, row.evidence_role, row.fixed_snapshot_ref)
+            for row in self._session.scalars(select(EvidenceRecord).where(EvidenceRecord.submission_id == submission.id))
+        )
 
     def normalize(self, item: tuple[Any, Any], command: str, payload: dict[str, Any]) -> dict[str, Any]:
         normalized: dict[str, Any] = {"expected_version": _required_version(payload)}
@@ -451,6 +468,9 @@ class AxProposalActionHandler:
             {
                 "submission_id": str(item.id),
                 "submission_version": 1,
+                # An AX proposal is judged on the payload the turn prepared; it adopts no Evidence of its own.
+                "evidence": [],
+                "evidence_hash": None,
                 "submitted_by": "ax",
                 "submitted_at": item.created_at.isoformat(),
                 "content_hash": item.payload_hash,
@@ -462,6 +482,7 @@ class AxProposalActionHandler:
                         "actor_member_id": str(item.owner_id),
                         "decision": item.state,
                         "reason": None,
+                        "evidence_hash": None,
                         "decided_at": item.decided_at.isoformat(),
                     }
                 ]
@@ -605,6 +626,9 @@ class TaskAssignmentActionHandler:
             {
                 "submission_id": str(assignment.id),
                 "submission_version": 1,
+                # A direct assignment is answered on the spot; it adopts no Evidence of its own.
+                "evidence": [],
+                "evidence_hash": None,
                 "submitted_by": assignment.assigned_by,
                 "submitted_at": assignment.created_at.isoformat(),
                 "content_hash": "",
@@ -616,6 +640,7 @@ class TaskAssignmentActionHandler:
                         "actor_member_id": str(assignment.assignee_id),
                         "decision": "accept" if assignment.accepted_at else "decline",
                         "reason": assignment.decline_reason,
+                        "evidence_hash": None,
                         "decided_at": decided_at.isoformat(),
                     }
                 ]

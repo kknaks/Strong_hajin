@@ -1,7 +1,10 @@
 """Direct WorkRequest lifecycle; it never creates WorkflowRun records."""
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date
+import hashlib
+import json
 from typing import Any, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -56,6 +59,7 @@ class WorkRequestRepository(Protocol):
     def resubmit(self, request: Any, actor_id: str, snapshot: dict[str, Any]) -> Any: ...
     def withdraw(self, request: Any, actor_id: str) -> None: ...
     def current_submission(self, request: Any) -> Any: ...
+    def active_assignment(self, submission: Any) -> Any: ...
     def timeline(self, request: Any) -> dict[str, Any]: ...
 
 
@@ -71,6 +75,34 @@ class WorkRequestAssigneeDirectory(Protocol):
     def is_work_request_assignee(self, principal: Principal, assignee_id: str) -> bool: ...
     def member_candidates(self, principal: Principal) -> list[dict[str, str]]: ...
     def is_active_member(self, principal: Principal, member_id: str) -> bool: ...
+
+
+#: The reserved keys a decision's conditions carry so the basis it was made on can never change afterwards.
+EVIDENCE_HASH = "evidence_hash"
+EVIDENCE_MANIFEST = "evidence_manifest"
+
+
+def evidence_manifest_entry(attachment_id: Any, evidence_role: str, fixed_snapshot_ref: str) -> dict[str, str]:
+    """One line of a basis. Identity is the attachment and its integrity, never the Evidence row that adopted it."""
+    return {
+        "attachment_id": str(attachment_id),
+        "evidence_role": str(evidence_role),
+        "fixed_snapshot_ref": str(fixed_snapshot_ref),
+    }
+
+
+def evidence_manifest(entries: Iterable[dict[str, str]]) -> list[dict[str, str]]:
+    """The canonical form of a basis: a set, ordered so the same set always reads the same."""
+    return sorted(
+        (dict(entry) for entry in entries),
+        key=lambda entry: (entry["attachment_id"], entry["evidence_role"], entry["fixed_snapshot_ref"]),
+    )
+
+
+def evidence_manifest_hash(entries: Iterable[dict[str, str]]) -> str:
+    """The identity of a basis, independent of the order its rows were written in. An empty basis has one too."""
+    canonical = json.dumps(evidence_manifest(entries), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 #: The only fields a reviewer may propose changing, which is exactly what a revision is allowed to answer with.
@@ -336,6 +368,9 @@ class WorkRequestApplication:
         submission = self._repository.current_submission(request)
         if submission is None:
             raise WorkRequestError("work request has no submission to attach evidence to")
+        if self._repository.active_assignment(submission) is None:
+            # The basis of a round a person already judged is history. A new round is how the basis grows.
+            raise WorkRequestError("이 회차는 이미 판단이 끝났습니다. 수정안을 재상신한 뒤 새 회차에 근거를 추가하세요")
         attachment = store_file(
             self._attachments, self._storage,
             key_prefix=f"work_requests/{request.id}/evidence", name=name, content_type=content_type, data=data,

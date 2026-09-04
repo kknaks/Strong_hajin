@@ -8,6 +8,13 @@ from sqlalchemy import Integer, func, or_, select
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.work.application import TaskNotFound, TaskState
+from ax_workspace.modules.work.requests import (
+    EVIDENCE_HASH,
+    EVIDENCE_MANIFEST,
+    evidence_manifest,
+    evidence_manifest_entry,
+    evidence_manifest_hash,
+)
 from ax_workspace.platform.persistence import (
     ActivityEventRecord,
     AttachmentBindingRecord,
@@ -449,13 +456,15 @@ class SqlAlchemyWorkRequestRepository:
             return None
         now = datetime.now(UTC)
         assignment.status = "decided"
+        manifest = self.evidence_manifest_for(submission)
         record = ReviewDecisionRecord(
             review_assignment_id=assignment.id,
             submission_id=submission.id,
             actor_member_id=actor_id,
             decision=decision,
             reason=reason,
-            conditions=conditions,
+            # The basis is frozen beside whatever conditions the decision itself carried.
+            conditions={**(conditions or {}), EVIDENCE_HASH: evidence_manifest_hash(manifest), EVIDENCE_MANIFEST: manifest},
             decided_at=now,
         )
         self._session.add(record)
@@ -524,6 +533,7 @@ class SqlAlchemyWorkRequestRepository:
         )
         self._session.add(submission)
         self._session.flush()
+        self._inherit_evidence(previous, submission, now)
         previous_assignment = self._session.scalar(
             select(ReviewAssignmentRecord).where(ReviewAssignmentRecord.submission_id == previous.id).order_by(ReviewAssignmentRecord.assigned_at.desc())
         )
@@ -557,6 +567,7 @@ class SqlAlchemyWorkRequestRepository:
         assignments = list(self._session.scalars(select(ReviewAssignmentRecord).where(ReviewAssignmentRecord.submission_id.in_(submission_ids)).order_by(ReviewAssignmentRecord.assigned_at))) if submission_ids else []
         decisions = list(self._session.scalars(select(ReviewDecisionRecord).where(ReviewDecisionRecord.submission_id.in_(submission_ids)).order_by(ReviewDecisionRecord.decided_at))) if submission_ids else []
         events = ActivityLedger(self._session).for_thread(request.request_thread_id) if request.request_thread_id else []
+        bases = {s.id: self.evidence_manifest_for(s) for s in submissions}
         return {
             "request_thread_id": str(request.request_thread_id) if request.request_thread_id else None,
             "decision_item": {"decision_item_id": str(item.id), "kind": item.kind, "status": item.status, "due_at": item.due_at.isoformat() if item.due_at else None} if item else None,
@@ -570,6 +581,8 @@ class SqlAlchemyWorkRequestRepository:
                     "snapshot": versions[s.subject_version_id].snapshot if s.subject_version_id in versions else {},
                     "subject_version": versions[s.subject_version_id].version if s.subject_version_id in versions else None,
                     "diff": s.diff,
+                    "evidence": bases[s.id],
+                    "evidence_hash": evidence_manifest_hash(bases[s.id]),
                 }
                 for s in submissions
             ],
@@ -578,7 +591,12 @@ class SqlAlchemyWorkRequestRepository:
                 for a in assignments
             ],
             "review_decisions": [
-                {"review_decision_id": str(d.id), "submission_id": str(d.submission_id), "actor_member_id": d.actor_member_id, "decision": d.decision, "reason": d.reason, "conditions": d.conditions, "decided_at": d.decided_at.isoformat()}
+                {
+                    "review_decision_id": str(d.id), "submission_id": str(d.submission_id), "actor_member_id": d.actor_member_id,
+                    "decision": d.decision, "reason": d.reason, "conditions": d.conditions,
+                    "evidence_hash": (d.conditions or {}).get(EVIDENCE_HASH),
+                    "decided_at": d.decided_at.isoformat(),
+                }
                 for d in decisions
             ],
             "activity": [
@@ -729,6 +747,35 @@ class SqlAlchemyWorkRequestRepository:
         self._session.add(record)
         self._session.flush()
         return record
+
+    def _inherit_evidence(self, previous: SubmissionRecord, submission: SubmissionRecord, now: datetime) -> None:
+        """Carry the previous round's basis into the new one as its own rows.
+
+        Append-only: no attachment or byte is copied, only the adoption. Each round then owns an independent set that
+        starts from the last one, so adding evidence later never reaches back into a round already judged.
+        """
+        for source in self._session.scalars(
+            select(EvidenceRecord).where(EvidenceRecord.submission_id == previous.id).order_by(EvidenceRecord.adopted_at, EvidenceRecord.id)
+        ):
+            self._session.add(
+                EvidenceRecord(
+                    submission_id=submission.id,
+                    attachment_id=source.attachment_id,
+                    evidence_role=source.evidence_role,
+                    fixed_snapshot_ref=source.fixed_snapshot_ref,
+                    mutable_source=source.mutable_source,
+                    adopted_by=source.adopted_by,
+                    adopted_at=now,
+                )
+            )
+        self._session.flush()
+
+    def evidence_manifest_for(self, submission: SubmissionRecord) -> list[dict[str, str]]:
+        """The basis this Submission currently stands on, in canonical order."""
+        return evidence_manifest(
+            evidence_manifest_entry(row.attachment_id, row.evidence_role, row.fixed_snapshot_ref)
+            for row in self._session.scalars(select(EvidenceRecord).where(EvidenceRecord.submission_id == submission.id))
+        )
 
     def evidence_for(self, request: WorkRequestRecord) -> list[tuple[EvidenceRecord, AttachmentRecord, SubmissionRecord]]:
         item = self.open_decision_item(request)
