@@ -264,6 +264,8 @@ export type ActionItemEnvelope = {
   expected_version: number | null;
   /** The Task this proposal produced, when it produced one. */
   derived_task_id?: string | null;
+  /** Fields the last reviewer asked to have changed. A proposal, never an edit: the round still holds what was sent. */
+  suggested_changes?: Record<string, string>;
 };
 
 /** One immutable round: the frozen content that was judged, what changed since the previous round, and the answers. */
@@ -275,10 +277,31 @@ export type ActionRound = {
   content_hash: string;
   snapshot: Record<string, unknown>;
   diff: Record<string, { before: unknown; after: unknown }> | null;
-  decisions: Array<{ review_decision_id: string; actor_member_id: string; decision: string; reason: string | null; decided_at: string }>;
+  decisions: Array<{
+    review_decision_id: string;
+    actor_member_id: string;
+    decision: string;
+    reason: string | null;
+    decided_at: string;
+    suggested_changes?: Record<string, string>;
+  }>;
 };
 
-export type ActionItemDetail = ActionItemEnvelope & { rounds: ActionRound[]; derived_task_id?: string | null };
+/** One comment on the judgement. The discussion travels with the ActionItem and never moves it. */
+export type ActionDiscussionEntry = {
+  comment_id: string;
+  author_member_id: string;
+  body: string;
+  created_at: string;
+  edited_at: string | null;
+  attachments: Array<{ attachment_id: string; name: string }>;
+};
+
+export type ActionItemDetail = ActionItemEnvelope & {
+  rounds: ActionRound[];
+  derived_task_id?: string | null;
+  discussion?: ActionDiscussionEntry[];
+};
 
 export type ActionPreviewField = { id: string; label: string; value: string; kind: "text" | "date" | "person" | "people" | "state" | string };
 

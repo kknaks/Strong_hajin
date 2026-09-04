@@ -972,8 +972,7 @@ export function WorkRequestDetailDrawer({
               <input id="revision-title" onChange={(event) => setRevision({ ...revision, title: event.target.value })} value={revision.title} />
             </div>
             <div className="field">
-              <label htmlFor="revision-due">희망 기한</label>
-              <DateField hideLabel id="revision-due" label="희망 기한" onChange={(next) => setRevision({ ...revision, due_date: next })} value={revision.due_date} />
+              <DateField id="revision-due" label="희망 기한" onChange={(next) => setRevision({ ...revision, due_date: next })} value={revision.due_date} />
             </div>
             <div className="field">
               <label htmlFor="revision-description">요청 내용</label>

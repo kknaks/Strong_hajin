@@ -272,3 +272,112 @@ def test_a_direct_assignment_is_the_same_kind_of_question_in_the_same_ledger(tmp
     assert _command(client, MINA, item["action_item_id"], "accept").status_code == 200
     assert _command(client, MINA, item["action_item_id"], "decline", reason="역시 어렵습니다").status_code == 422
     assert len(client.get("/api/my-work", headers=MINA).json()) == 1
+
+
+def test_an_adjustment_carries_an_optional_structured_change_proposal_the_requester_answers(tmp_path) -> None:
+    """조정 요청은 필수 사유 위에 '무엇을 이렇게 바꿔 달라'는 구조화 제안을 남길 수 있다."""
+    client, _ = _stack(tmp_path)
+    client.post(
+        "/api/work-requests",
+        headers=MINA,
+        json={"title": "제안이 붙는 요청", "assignee_id": "jiho", "description": "처음 설명", "due_date": "2026-09-10"},
+    )
+    [first] = _pending(client, JIHO)
+
+    adjusted = _command(
+        client,
+        JIHO,
+        first["action_item_id"],
+        "adjust",
+        expected_version=first["expected_version"],
+        reason="기한과 제목을 함께 손봐 주세요",
+        changes={"title": "제안대로 고친 요청", "due_date": "2026-09-30"},
+    )
+    assert adjusted.status_code == 200, adjusted.text
+
+    # The requester meets the proposal as a field-level ask, not as prose buried in the reason.
+    [waiting] = _pending(client, MINA)
+    assert waiting["suggested_changes"] == {"title": "제안대로 고친 요청", "due_date": "2026-09-30"}
+    detail = client.get(f"/api/action-items/{waiting['action_item_id']}", headers=MINA).json()
+    assert detail["suggested_changes"] == {"title": "제안대로 고친 요청", "due_date": "2026-09-30"}
+    # It is a proposal, not an edit: the current round still holds what the requester actually submitted.
+    assert detail["rounds"][0]["snapshot"]["title"] == "제안이 붙는 요청"
+    assert detail["rounds"][0]["decisions"][0]["suggested_changes"] == {"title": "제안대로 고친 요청", "due_date": "2026-09-30"}
+    assert detail["rounds"][0]["decisions"][0]["reason"] == "기한과 제목을 함께 손봐 주세요"
+
+    # Applying it is the requester's own revision, and it clears the ask.
+    revised = _command(
+        client,
+        MINA,
+        waiting["action_item_id"],
+        "revise",
+        expected_version=waiting["expected_version"],
+        changes={"title": "제안대로 고친 요청", "due_date": "2026-09-30"},
+    )
+    assert revised.status_code == 200, revised.text
+    assert revised.json()["suggested_changes"] == {}
+    [second] = _pending(client, JIHO)
+    assert second["subject"] == "제안대로 고친 요청" and second["suggested_changes"] == {}
+
+    # A reason-only adjustment stays legal and simply carries no proposal.
+    plain = _command(client, JIHO, second["action_item_id"], "adjust", expected_version=second["expected_version"], reason="설명만 더 주세요")
+    assert plain.status_code == 200, plain.text
+    assert _pending(client, MINA)[0]["suggested_changes"] == {}
+
+
+def test_a_resent_command_returns_the_same_receipt_instead_of_a_second_effect(tmp_path) -> None:
+    """A lost response must not force the caller to choose between a duplicate Task and a stale error."""
+    client, _ = _stack(tmp_path)
+    client.post("/api/work-requests", headers=MINA, json={"title": "한 번만 수락될 요청", "assignee_id": "jiho"})
+    [item] = _pending(client, JIHO)
+
+    first = _command(client, JIHO, item["action_item_id"], "accept", expected_version=item["expected_version"])
+    assert first.status_code == 200, first.text
+    resent = _command(client, JIHO, item["action_item_id"], "accept", expected_version=item["expected_version"])
+    assert resent.status_code == 200, resent.text
+    assert resent.json()["status"] == "resolved" and resent.json()["action_item_id"] == item["action_item_id"]
+    assert [task["title"] for task in client.get("/api/my-work", headers=JIHO).json()] == ["한 번만 수락될 요청"]
+
+    # Only the decision that was actually made replays; a different answer to a settled question is still refused.
+    assert _command(client, JIHO, item["action_item_id"], "reject", expected_version=item["expected_version"], reason="역시 아니오").status_code == 422
+    detail = client.get(f"/api/action-items/{item['action_item_id']}", headers=JIHO).json()
+    assert [decision["decision"] for decision in detail["rounds"][0]["decisions"]] == ["accept"]
+
+
+def test_the_discussion_stays_on_one_action_item_across_rounds_and_never_moves_it(tmp_path) -> None:
+    """댓글과 전체 논의는 ActionItem에 유지되고 상태를 직접 바꾸지 않는다."""
+    client, _ = _stack(tmp_path)
+    request = client.post("/api/work-requests", headers=MINA, json={"title": "논의가 붙는 요청", "assignee_id": "jiho"}).json()
+    asked = client.post(f"/api/work-requests/{request['request_id']}/comments", headers=JIHO, json={"body": "예산 근거가 있나요?"})
+    assert asked.status_code == 201, asked.text
+    [item] = _pending(client, JIHO)
+
+    # Commenting is not a judgement: the question is still open and still Jiho's.
+    assert _pending(client, JIHO)[0]["status"] == "awaiting_review"
+    discussion = client.get(f"/api/action-items/{item['action_item_id']}", headers=JIHO).json()["discussion"]
+    assert [row["body"] for row in discussion] == ["예산 근거가 있나요?"]
+
+    _command(client, JIHO, item["action_item_id"], "adjust", expected_version=item["expected_version"], reason="근거를 붙여 주세요")
+    [waiting] = _pending(client, MINA)
+    answered = client.post(f"/api/work-requests/{request['request_id']}/comments", headers=MINA, json={"body": "9월 견적서를 붙였습니다"})
+    assert answered.status_code == 201, answered.text
+    _command(client, MINA, waiting["action_item_id"], "revise", expected_version=waiting["expected_version"], changes={"description": "근거 추가"})
+
+    # The same thread, with the same comment identities, survives the round it was written before.
+    after = client.get(f"/api/action-items/{item['action_item_id']}", headers=JIHO).json()
+    assert [row["comment_id"] for row in after["discussion"]] == [asked.json()["comment_id"], answered.json()["comment_id"]]
+    assert [row["author_member_id"] for row in after["discussion"]] == ["jiho", "mina"]
+    assert len(after["rounds"]) == 2
+
+
+def test_the_detail_offers_commands_only_to_the_principal_the_item_waits_on(tmp_path) -> None:
+    client, _ = _stack(tmp_path)
+    client.post("/api/work-requests", headers=MINA, json={"title": "차례가 있는 요청", "assignee_id": "jiho"})
+    [item] = _pending(client, JIHO)
+
+    # Both participants read the same question; only the one whose turn it is is offered a way to answer it.
+    mine = client.get(f"/api/action-items/{item['action_item_id']}", headers=JIHO).json()
+    theirs = client.get(f"/api/action-items/{item['action_item_id']}", headers=MINA).json()
+    assert [command["id"] for command in mine["allowed_commands"]] == ["accept", "adjust", "reject"]
+    assert theirs["allowed_commands"] == [] and theirs["waiting_on"]["member_id"] == "jiho"
+    assert theirs["subject"] == mine["subject"] and theirs["status"] == mine["status"]

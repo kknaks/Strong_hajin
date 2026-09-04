@@ -49,6 +49,33 @@ def _parse_date(value: Any):
 
     return date.fromisoformat(str(value)) if value else None
 
+#: The fields a reviewer may propose changing, which is exactly what the requester may then revise.
+_PROPOSABLE_FIELDS = ("title", "description", "due_date")
+
+
+def _proposed_changes(value: Any) -> dict[str, Any]:
+    """An adjustment's optional structured ask, kept to the fields a revision can actually answer."""
+    if not value:
+        return {}
+    if not isinstance(value, dict):
+        raise ActionError("변경 제안은 필드별로 적어 주세요")
+    unknown = sorted(set(value) - set(_PROPOSABLE_FIELDS))
+    if unknown:
+        # Silently dropping a field would let a client believe it asked for something it did not.
+        raise ActionError(f"변경 제안할 수 없는 항목입니다: {', '.join(unknown)}")
+    proposed = {field: str(value[field]).strip() for field in _PROPOSABLE_FIELDS if str(value.get(field) or "").strip()}
+    if "due_date" in proposed:
+        _parse_date(proposed["due_date"])
+    return proposed
+
+
+def _suggested_changes(conditions: Any) -> dict[str, Any]:
+    """The proposal a negotiate decision carries; a reason-only adjustment has none."""
+    if not isinstance(conditions, dict):
+        return {}
+    return _proposed_changes(conditions.get("changes"))
+
+
 WORK_REQUEST_ACCEPTANCE = "work_request.acceptance"
 
 _QUESTIONS = {
@@ -119,6 +146,7 @@ class WorkRequestActionHandler:
                     "actor_member_id": decision.actor_member_id,
                     "decision": decision.decision,
                     "reason": decision.reason,
+                    "suggested_changes": _suggested_changes(decision.conditions),
                     "decided_at": decision.decided_at.isoformat(),
                 }
             )
@@ -148,7 +176,9 @@ class WorkRequestActionHandler:
         elif command == "reject":
             self._work_requests.reject(principal, request.id, expected_version, reason)
         elif command == "adjust":
-            self._work_requests.negotiate(principal, request.id, expected_version, {"note": reason})
+            proposed = _proposed_changes(payload.get("changes"))
+            conditions = {"note": reason, **({"changes": proposed} if proposed else {})}
+            self._work_requests.negotiate(principal, request.id, expected_version, conditions)
         elif command == "withdraw":
             self._work_requests.withdraw(principal, request.id, expected_version)
         elif command == "revise":
@@ -168,8 +198,28 @@ class WorkRequestActionHandler:
             raise ActionError(f"unsupported command {command}")
 
     def is_replay(self, item: tuple[Any, Any], principal: Principal, command: str) -> bool:
-        """An answered request cannot be answered again; the caller reads the resolved item instead."""
-        return False
+        """A re-send of the answer this principal already gave is a receipt, not a second effect.
+
+        Only the decision actually recorded replays; a different answer to a settled question is still refused, so a
+        lost response cannot be turned into a way to change one's mind.
+        """
+        decision_item, request = item
+        submission = self._current_submission(decision_item)
+        if submission is None:
+            return False
+        if command == "revise":
+            # The revision itself is the record: this submission exists because this principal already sent it.
+            return int(submission.submission_version) > 1 and submission.submitted_by == str(principal.id)
+        if command == "withdraw":
+            return request.state == "withdrawn" and request.requester_id == str(principal.id)
+        decided = self._session.scalar(
+            select(ReviewDecisionRecord)
+            .where(ReviewDecisionRecord.submission_id == submission.id)
+            .order_by(ReviewDecisionRecord.decided_at.desc())
+        )
+        if decided is None or decided.actor_member_id != str(principal.id):
+            return False
+        return decided.decision == {"accept": "accept", "reject": "reject", "adjust": "negotiate"}.get(command)
 
     def _require_participant(self, request: Any, principal: Principal) -> None:
         member_id = str(principal.id)
@@ -241,7 +291,22 @@ class WorkRequestActionHandler:
             waiting_on=self._members.waiting_on(actor),
             resource={"type": "work_request", "id": str(request.id)},
             expected_version=int(request.version),
+            extra={"suggested_changes": self._suggested_changes(submission)},
         )
+
+    def discussion(self, item: tuple[Any, Any], principal: Principal) -> list[dict[str, Any]]:
+        _, request = item
+        self._require_participant(request, principal)
+        return self._work_requests.discussion(principal, request.id)
+
+    def _suggested_changes(self, submission: SubmissionRecord) -> dict[str, Any]:
+        """What the last reviewer asked to be changed on the round still awaiting an answer."""
+        decided = self._session.scalar(
+            select(ReviewDecisionRecord)
+            .where(ReviewDecisionRecord.submission_id == submission.id, ReviewDecisionRecord.decision == "negotiate")
+            .order_by(ReviewDecisionRecord.decided_at.desc())
+        )
+        return _suggested_changes(decided.conditions if decided else None)
 
     def _preview(self, submission: SubmissionRecord, request: WorkRequestRecord) -> list[dict[str, str]]:
         """Read the frozen Submission, not the mutable request row: this is what is actually being judged."""
@@ -319,6 +384,10 @@ class AxProposalActionHandler:
 
     def execute(self, principal: Principal, item: Any, command: str, payload: dict[str, Any]) -> None:
         self._actions.decide(principal, item.id, int(payload.get("expected_version") or item.version), command)
+
+    def discussion(self, item: Any, principal: Principal) -> list[dict[str, Any]]:
+        """An AX proposal is judged on its preview and evidence; it carries no comment thread."""
+        return []
 
     def is_replay(self, item: Any, principal: Principal, command: str) -> bool:
         """The persisted Action is the idempotency boundary; a repeat of the decision it already holds is a receipt."""
@@ -461,6 +530,10 @@ class TaskAssignmentActionHandler:
             self._assignments.accept(principal, assignment.id)
         else:
             self._assignments.decline(principal, assignment.id, str(payload.get("reason") or ""))
+
+    def discussion(self, item: tuple[Any, Any], principal: Principal) -> list[dict[str, Any]]:
+        """A direct assignment is answered on the spot; it carries no comment thread."""
+        return []
 
     def is_replay(self, item: tuple[Any, Any], principal: Principal, command: str) -> bool:
         assignment, _ = item

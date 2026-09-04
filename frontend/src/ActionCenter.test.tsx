@@ -91,9 +91,10 @@ describe("adjustment and resubmission", () => {
     renderDrawer(adjusted);
     const drawer = await screen.findByRole("dialog", { name: "판단 상세" });
     expect(within(drawer).getByText("조정 요청에 답해 수정안을 다시 보낼지 결정하세요")).toBeTruthy();
-    // The reason that sent it back is visible on first open, in the round history.
-    expect(within(drawer).getByText(/기한을 늦춰 주세요/)).toBeTruthy();
-    expect(within(drawer).getByText(/지호/)).toBeTruthy();
+    // The reason that sent it back is visible on first open, both as the ask and in the round it was decided on.
+    expect(within(within(drawer).getByLabelText("조정 요청")).getByText(/기한을 늦춰 주세요/)).toBeTruthy();
+    expect(within(within(drawer).getByLabelText("회차 기록")).getByText(/기한을 늦춰 주세요/)).toBeTruthy();
+    expect(within(drawer).getAllByText(/지호/).length).toBeGreaterThan(0);
     expect(within(drawer).getByRole("button", { name: "수정안 재상신" })).toBeTruthy();
     expect(within(drawer).getByRole("button", { name: "요청 철회" })).toBeTruthy();
     expect(within(drawer).queryByRole("button", { name: "수락" })).toBeNull();
@@ -202,5 +203,100 @@ describe("adjustment and resubmission", () => {
     expect(within(first.querySelector(".round-snapshot") as HTMLElement).getByText("견적 재검토")).toBeTruthy();
     expect(within(first.querySelector(".round-snapshot") as HTMLElement).getByText("처음 설명")).toBeTruthy();
     expect(within(first).getByText(/조정 요청 · 기한을 늦춰 주세요/)).toBeTruthy();
+  });
+});
+
+describe("the structured change proposal and the discussion", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  const proposed = {
+    ...adjusted,
+    suggested_changes: { title: "견적 재검토 (기한 조정)", due_date: "2026-09-30" },
+    rounds: [
+      {
+        ...adjusted.rounds[0],
+        decisions: [
+          {
+            ...adjusted.rounds[0].decisions[0],
+            suggested_changes: { title: "견적 재검토 (기한 조정)", due_date: "2026-09-30" },
+          },
+        ],
+      },
+    ],
+  };
+
+  it("puts the reason and the fields the reviewer asked to change on the requester's first screen", async () => {
+    renderDrawer(proposed);
+    const drawer = await screen.findByRole("dialog", { name: "판단 상세" });
+    const ask = within(drawer).getByLabelText("조정 요청");
+    expect(within(ask).getByText(/기한을 늦춰 주세요/)).toBeTruthy();
+    // The proposal is field-level, and its dates read the way every other date does.
+    expect(within(ask).getByText("요청할 업무")).toBeTruthy();
+    expect(within(ask).getByText("견적 재검토 (기한 조정)")).toBeTruthy();
+    expect(within(ask).getByText("2026/09/30")).toBeTruthy();
+    expect(ask.textContent).not.toMatch(/2026-09-30/);
+    // It is a proposal, not an edit: the current round is still what the requester submitted.
+    expect(within(drawer).getByLabelText("회차 기록").textContent).toContain("견적 재검토");
+  });
+
+  it("fills the revision form from the proposal without sending it, leaving the requester the last word", async () => {
+    renderDrawer(proposed);
+    const drawer = await screen.findByRole("dialog", { name: "판단 상세" });
+    fireEvent.click(within(drawer).getByRole("button", { name: "수정안 재상신" }));
+    fireEvent.click(await within(drawer).findByRole("button", { name: "제안대로 채우기" }));
+
+    expect((within(drawer).getByLabelText("요청할 업무") as HTMLInputElement).value).toBe("견적 재검토 (기한 조정)");
+    expect((within(drawer).getByLabelText("희망 기한") as HTMLInputElement).value).toBe("2026/09/30");
+    // Untouched fields keep the round's own value rather than being blanked by the proposal.
+    expect((within(drawer).getByLabelText("요청 내용") as HTMLTextAreaElement).value).toBe("처음 설명");
+    expect(api.runActionCommand).not.toHaveBeenCalled();
+
+    fireEvent.click(within(drawer).getByRole("button", { name: "수정안 재상신" }));
+    await waitFor(() => expect(api.runActionCommand).toHaveBeenCalled());
+    expect(vi.mocked(api.runActionCommand).mock.calls[0]).toEqual([
+      "item-1",
+      "revise",
+      { expected_version: 2, changes: { title: "견적 재검토 (기한 조정)", due_date: "2026-09-30" } },
+    ]);
+  });
+
+  it("lets the reviewer attach a structured proposal to the required reason, and sends only what was filled", async () => {
+    renderDrawer({
+      ...adjusted,
+      status: "awaiting_review",
+      allowed_commands: [{ id: "adjust", label: "조정 요청", tone: "neutral", requires_reason: true }],
+    });
+    const drawer = await screen.findByRole("dialog", { name: "판단 상세" });
+    fireEvent.click(within(drawer).getByRole("button", { name: "조정 요청" }));
+    fireEvent.change(await within(drawer).findByLabelText("조정 요청 사유"), { target: { value: "기한을 늦춰 주세요" } });
+    fireEvent.change(within(drawer).getByLabelText("제안: 희망 기한"), { target: { value: "2026/09/30" } });
+    fireEvent.click(within(drawer).getByRole("button", { name: "조정 요청 확정" }));
+
+    await waitFor(() => expect(api.runActionCommand).toHaveBeenCalled());
+    expect(vi.mocked(api.runActionCommand).mock.calls[0]).toEqual([
+      "item-1",
+      "adjust",
+      { expected_version: 2, reason: "기한을 늦춰 주세요", changes: { due_date: "2026-09-30" } },
+    ]);
+  });
+
+  it("keeps the discussion on the judgement without turning it into a control", async () => {
+    renderDrawer({
+      ...proposed,
+      discussion: [
+        { comment_id: "c1", author_member_id: "jiho", body: "예산 근거가 있나요?", created_at: "2026-09-03T02:00:00Z", edited_at: null, attachments: [] },
+        { comment_id: "c2", author_member_id: "mina", body: "9월 견적서를 붙였습니다", created_at: "2026-09-03T03:00:00Z", edited_at: null, attachments: [] },
+      ],
+    });
+    const drawer = await screen.findByRole("dialog", { name: "판단 상세" });
+    const discussion = within(drawer).getByLabelText("논의");
+    expect(within(discussion).getByText("예산 근거가 있나요?")).toBeTruthy();
+    expect(within(discussion).getByText(/지호/)).toBeTruthy();
+    expect(within(discussion).getByText("9월 견적서를 붙였습니다")).toBeTruthy();
+    // Talking is not judging: the discussion offers no command of its own.
+    expect(within(discussion).queryAllByRole("button")).toHaveLength(0);
   });
 });

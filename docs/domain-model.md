@@ -28,7 +28,10 @@ Projection: `GET /api/organization/tree`, `GET /api/organization/units/{id}/memb
 
 - **하나의 질문 = 하나의 ActionItem.** 조정 요청과 재상신은 identity를 유지한 채 immutable Submission을 추가한다. 서로 독립적으로 판단·거절될 수 있는 질문만 새 ActionItem이다.
 - **Query/Command 경로 하나.** `GET /api/action-items`(현재 principal이 답해야 하는 것만), `GET /api/action-items/{id}`(회차·diff·ReviewDecision), `POST /api/action-items/{id}/commands/{command}`.
-- **Envelope는 server가 만든다.** `subject`, `operation_label`, `current_question`, 권한 안전 `preview`, `allowed_commands`(필요하면 `requires_reason`), `waiting_on`, `submission_version`, `resource`. client는 kind로 command·필드·권한을 추론하지 않는다.
+- **Envelope는 server가 만든다.** `subject`, `operation_label`, `current_question`, 권한 안전 `preview`, `allowed_commands`(필요하면 `requires_reason`), `waiting_on`, `submission_version`, `resource`, 그리고 직전 조정이 남긴 `suggested_changes`. client는 kind로 command·필드·권한을 추론하지 않는다.
+- **조정 요청은 사유가 필수, 변경 제안은 선택이다.** 담당자는 필수 사유에 더해 요청자가 실제로 고칠 수 있는 필드(제목·설명·기한)만 구조화해 제안할 수 있고, 그 제안은 해당 회차 ReviewDecision의 `conditions.changes`에 남는다. 제안은 편집이 아니다: 회차 snapshot은 요청자가 실제로 제출한 내용 그대로이고, 반영 여부는 요청자의 재상신으로만 결정된다.
+- **논의는 판단을 움직이지 않는다.** 댓글 thread는 ActionItem 상세(`discussion`)에 회차와 무관하게 유지되며, 댓글을 쓰는 것으로는 status도 `waiting_on`도 바뀌지 않는다.
+- **재전송은 영수증이다.** 이미 이 principal이 낸 답을 다시 보내면 두 번째 effect 없이 현재 envelope를 돌려준다(수락/거절/조정은 기록된 ReviewDecision, 재상신은 그가 제출한 최신 Submission, 철회는 withdrawn 상태가 근거다). 결정이 끝난 질문에 **다른** 답을 보내는 것은 여전히 거절된다.
 - **Command는 소유 모듈의 application operation에 위임한다.** 수락/거절/조정/재상신/철회는 `WorkRequestApplication`, 배정 수락/거절은 `TaskAssignmentApplication`, AX 승인/거절은 `ActionApplication`이 실행한다. 권한은 envelope 자체다: server가 그 principal에게 제시하지 않은 command는 실행되지 않는다.
 - **판단 API는 하나다.** kind별 판단 원장이었던 `GET /api/action-inbox`와 `GET /api/task-assignments/inbox`는 제거했다. 남은 kind별 endpoint(`POST /api/work-requests/{id}/accept|reject|negotiate|resubmit`, `POST /api/task-assignments/{id}/accept|decline`, `POST /api/actions/{id}/decide`)는 같은 application operation을 부르는 얇은 호출구다.
 - **아직 남은 것.** 저장소는 `decision_items`(요청)와 `action_items`(AX 제안), `task_assignments`(배정)로 나뉘어 있다. 이것은 의도된 이중 모델이 아니라 진행 중인 통합의 중간 상태이고, 판단 표면에서는 이미 하나로 보인다. `action_items`를 canonical ActionItem으로 흡수하고 배정에도 Submission 행을 만드는 것이 남은 작업이다.

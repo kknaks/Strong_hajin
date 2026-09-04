@@ -2,10 +2,18 @@ import { useEffect, useMemo, useState } from "react";
 
 import { getActionItem, runActionCommand } from "./api";
 import { ActionPreviewDetails } from "./ActionPreview";
+import { DateField } from "./DateField";
 import { formatDate, formatDateTime, personName } from "./labels";
 import { Drawer } from "./Modal";
 import { StatusText } from "./WorkModals";
-import type { ActionCommand, ActionItemDetail, ActionItemEnvelope, ActionRound, Persona } from "./viewModels";
+import type {
+  ActionCommand,
+  ActionDiscussionEntry,
+  ActionItemDetail,
+  ActionItemEnvelope,
+  ActionRound,
+  Persona,
+} from "./viewModels";
 
 /**
  * One judgement, however it was raised. Everything here is the server's projection: the subject, the question, the
@@ -146,30 +154,112 @@ function RoundHistory({ rounds, personas }: { rounds: ActionRound[]; personas: P
 }
 
 /**
+ * What the reviewer asked for, on the requester's first screen: the required reason, and the fields they proposed
+ * changing. It is a proposal — the round below still holds exactly what the requester submitted.
+ */
+function AdjustmentAsk({
+  reason,
+  suggested,
+  actor,
+  personas,
+}: {
+  reason: string | null;
+  suggested: Record<string, string>;
+  actor: string;
+  personas: Persona[];
+}) {
+  const fields = REVISABLE.filter((field) => suggested[field.id]);
+  if (!reason && fields.length === 0) return null;
+  return (
+    <section aria-label="조정 요청" className="drawer-section adjustment-ask">
+      <h4>
+        조정 요청 <small className="t-meta">· {nameOf(personas, actor)}</small>
+      </h4>
+      {reason && <p className="adjustment-reason">{reason}</p>}
+      {fields.length > 0 && (
+        <dl className="round-snapshot">
+          {fields.map((field) => (
+            <div className="round-snapshot-row" key={field.id}>
+              <dt>{field.label}</dt>
+              <dd>{displayValue(field.id, suggested[field.id])}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </section>
+  );
+}
+
+/** The comment thread. It travels with the judgement and never moves it, so it carries no control of its own. */
+function Discussion({ entries, personas }: { entries: ActionDiscussionEntry[]; personas: Persona[] }) {
+  if (entries.length === 0) return null;
+  return (
+    <section aria-label="논의" className="drawer-section">
+      <h4>
+        논의 <small className="t-meta">· {entries.length}건 · 상태를 바꾸지 않습니다</small>
+      </h4>
+      <ol className="discussion-list">
+        {entries.map((entry) => (
+          <li className="discussion-row" key={entry.comment_id}>
+            <div className="round-head">
+              <b>{nameOf(personas, entry.author_member_id)}</b>
+              <span className="t-meta">{formatDateTime(entry.created_at)}</span>
+            </div>
+            <p className="discussion-body">{entry.body}</p>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+/**
  * The revision form: prefilled with the round being revised, with the diff shown before it is sent. A revision that
  * changes nothing is not a round, so the submit stays disabled until something differs.
  */
 function RevisionForm({
   round,
   draft,
+  suggested,
   onChange,
 }: {
   round: ActionRound;
   draft: Record<string, string>;
+  /** The reviewer's proposal, offered as a starting point. Applying it is the requester's own act. */
+  suggested: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
 }) {
   const changed = REVISABLE.filter((field) => draft[field.id] !== fieldValue(round.snapshot, field.id));
+  const proposedFields = REVISABLE.filter((field) => suggested[field.id]);
   return (
     <section aria-label="수정안" className="drawer-section">
-      <h4>수정안</h4>
+      <h4>
+        수정안
+        {proposedFields.length > 0 && (
+          <button
+            className="btn h30 ghost"
+            onClick={() => onChange({ ...draft, ...Object.fromEntries(proposedFields.map((field) => [field.id, suggested[field.id]])) })}
+            type="button"
+          >
+            제안대로 채우기
+          </button>
+        )}
+      </h4>
       <div className="form-grid">
         {REVISABLE.map((field) => (
           <div key={field.id}>
-            <label htmlFor={`revision-${field.id}`}>{field.label}</label>
+            {field.type !== "date" && <label htmlFor={`revision-${field.id}`}>{field.label}</label>}
             {field.type === "textarea" ? (
               <textarea
                 id={`revision-${field.id}`}
                 onChange={(event) => onChange({ ...draft, [field.id]: event.target.value })}
+                value={draft[field.id] ?? ""}
+              />
+            ) : field.type === "date" ? (
+              <DateField
+                id={`revision-${field.id}`}
+                label={field.label}
+                onChange={(next) => onChange({ ...draft, [field.id]: next })}
                 value={draft[field.id] ?? ""}
               />
             ) : (
@@ -223,6 +313,7 @@ export function ActionItemDrawer({
   const [busy, setBusy] = useState(false);
   const [reasonFor, setReasonFor] = useState<ActionCommand | null>(null);
   const [reason, setReason] = useState("");
+  const [proposal, setProposal] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<Record<string, string> | null>(null);
 
   useEffect(() => {
@@ -265,6 +356,17 @@ export function ActionItemDrawer({
     );
   }, [draft, latest]);
 
+  /** Only the proposal fields the reviewer actually filled are sent; an untouched field asks for nothing. */
+  const filledProposal = useMemo(
+    () => Object.fromEntries(REVISABLE.filter((field) => (proposal[field.id] ?? "").trim()).map((field) => [field.id, proposal[field.id]])),
+    [proposal],
+  );
+  const suggested = detail?.suggested_changes ?? {};
+  /** The adjustment that sent this back, read from the round it was decided on. */
+  const adjustment = useMemo(
+    () => (latest?.decisions ?? []).filter((decision) => decision.decision === "negotiate").at(-1) ?? null,
+    [latest],
+  );
   const commands = detail?.allowed_commands ?? [];
   return (
     <Drawer
@@ -291,7 +393,7 @@ export function ActionItemDrawer({
               <button
                 className={reasonFor.tone === "danger" ? "btn h40 danger" : "btn h40 primary"}
                 disabled={busy || !reason.trim()}
-                onClick={() => void run(reasonFor, { reason })}
+                onClick={() => void run(reasonFor, { reason, ...(Object.keys(filledProposal).length ? { changes: filledProposal } : {}) })}
                 type="button"
               >
                 {reasonFor.label} 확정
@@ -355,7 +457,15 @@ export function ActionItemDrawer({
             action={{ action_id: detail.action_item_id, preview: detail.preview } as never}
             defaultOpen
           />
-          {draft && latest ? <RevisionForm draft={draft} onChange={setDraft} round={latest} /> : null}
+          {detail.status === "awaiting_revision" && adjustment && (
+            <AdjustmentAsk
+              actor={adjustment.actor_member_id}
+              personas={personas}
+              reason={adjustment.reason}
+              suggested={suggested}
+            />
+          )}
+          {draft && latest ? <RevisionForm draft={draft} onChange={setDraft} round={latest} suggested={suggested} /> : null}
           {reasonFor && (
             <section className="drawer-section">
               <h4>{reasonFor.label} 사유</h4>
@@ -371,6 +481,31 @@ export function ActionItemDrawer({
                   value={reason}
                 />
               </div>
+              {reasonFor.id === "adjust" && (
+                <div className="form-grid proposal-grid">
+                  {REVISABLE.map((field) => (
+                    <div key={field.id}>
+                      {field.type !== "date" && <label htmlFor={`proposal-${field.id}`}>제안: {field.label}</label>}
+                      {field.type === "date" ? (
+                        <DateField
+                          id={`proposal-${field.id}`}
+                          label={`제안: ${field.label}`}
+                          onChange={(next) => setProposal({ ...proposal, [field.id]: next })}
+                          value={proposal[field.id] ?? ""}
+                        />
+                      ) : (
+                        <input
+                          id={`proposal-${field.id}`}
+                          onChange={(event) => setProposal({ ...proposal, [field.id]: event.target.value })}
+                          placeholder="선택 사항"
+                          type="text"
+                          value={proposal[field.id] ?? ""}
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
           )}
           {detail.derived_task_id && onOpenDerivedTask && (
@@ -381,6 +516,7 @@ export function ActionItemDrawer({
               </button>
             </p>
           )}
+          <Discussion entries={detail.discussion ?? []} personas={personas} />
           <RoundHistory personas={personas} rounds={detail.rounds} />
           {detail.status === "resolved" && <p className="t-meta">이 질문은 이미 판단이 끝났습니다. 기록으로만 남습니다.</p>}
           {detail.resource.type === "work_request" && detail.rounds.length > 0 && (

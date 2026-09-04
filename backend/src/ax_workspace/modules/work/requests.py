@@ -254,6 +254,11 @@ class WorkRequestApplication:
         ]
         return {"request": self._view(request), "comments": comments, "evidence": evidence, **self._repository.timeline(request)}
 
+    def discussion(self, principal: Principal, request_id: UUID) -> list[dict[str, Any]]:
+        """The comment thread on one request, for a participant. Reading or writing it never moves the judgement."""
+        self._require(principal, WORK_REQUEST_READ)
+        return self._comment_views(self._participant_request(principal, request_id))
+
     def _comment_views(self, request: Any) -> list[dict[str, Any]]:
         if self._comments is None or request.request_thread_id is None:
             return []

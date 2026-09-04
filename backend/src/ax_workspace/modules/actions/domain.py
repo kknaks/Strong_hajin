@@ -96,6 +96,10 @@ class ActionKindHandler(Protocol):
         """Every immutable Submission with its frozen content, diff and decisions, oldest first."""
         ...
 
+    def discussion(self, item: Any, principal: Principal) -> list[dict[str, Any]]:
+        """Comments on this question, in the order they were written. Talking never moves the item."""
+        ...
+
     def execute(self, principal: Principal, item: Any, command: str, payload: dict[str, Any]) -> None:
         """Run the owning module's operation for this command."""
         ...
@@ -124,7 +128,11 @@ class ActionCenterApplication:
     def detail(self, principal: Principal, action_item_id: str) -> dict[str, Any]:
         handler, item = self._locate(action_item_id)
         envelope = handler.envelope(item, principal)
-        return {**envelope.as_dict(), "rounds": handler.rounds(item, principal)}
+        return {
+            **envelope.as_dict(),
+            "rounds": handler.rounds(item, principal),
+            "discussion": handler.discussion(item, principal),
+        }
 
     def execute(self, principal: Principal, action_item_id: str, command: str, payload: dict[str, Any]) -> dict[str, Any]:
         handler, item = self._locate(action_item_id)
