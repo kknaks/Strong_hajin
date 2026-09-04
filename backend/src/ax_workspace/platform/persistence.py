@@ -1012,6 +1012,27 @@ class ConversationMaterialEvidenceRecord(Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class TaskVersionRecord(Base):
+    """An immutable picture of one Task at one version, frozen in the transaction that made that version.
+
+    It refers to artifacts rather than copying them: a material line carries the Attachment identity and its integrity
+    hash, never bytes or extracted text. So history stays cheap and an artifact keeps exactly one identity.
+    """
+
+    __tablename__ = "task_versions"
+    __table_args__ = (UniqueConstraint("task_id", "version", name="uq_task_version"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: What made this version, in the same words the activity ledger uses.
+    change_kind: Mapped[str] = mapped_column(String(60), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class TaskActivityRecord(Base):
     __tablename__ = "task_activities"
 

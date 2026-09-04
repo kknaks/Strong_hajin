@@ -59,11 +59,13 @@ class TaskRepository(Protocol):
     def checklist_for(self, task_id: UUID) -> list[Any]: ...
     def checklist_progress_for(self, task_ids: list[UUID]) -> dict[UUID, tuple[int, int]]: ...
     def origin_facts(self, tasks: list[Any]) -> dict[UUID, dict[str, Any]]: ...
+    def versions_for(self, task_id: UUID) -> list[Any]: ...
     def member_display_name(self, member_id: str) -> str | None: ...
     def add_checklist_item(self, task_id: UUID, text: str) -> Any: ...
     def checklist_item(self, task_id: UUID, item_id: UUID, *, lock: bool = False) -> Any: ...
     def remove_checklist_item(self, item: Any) -> None: ...
     def record_activity(self, task: Any, actor_id: str, event_kind: str, summary: str, *, before_ref: str | None = None, reason: str | None = None) -> None: ...
+    def touch(self, task: Any) -> None: ...
 
 
 class ActionSourcePort(Protocol):
@@ -253,6 +255,41 @@ class TaskApplication:
         if capability not in principal.capabilities:
             raise TaskAccessDenied(f"{capability} capability is required")
 
+    def history(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
+        """How this Task got to where it is, for anyone who may read the Task itself."""
+        self._readable(principal, task_id)
+        return {
+            "task_id": str(task_id),
+            "versions": [
+                {
+                    "version": int(row.version),
+                    "change_kind": row.change_kind,
+                    "actor_id": row.actor_id,
+                    "reason": row.reason,
+                    "captured_at": row.captured_at.isoformat(),
+                    "snapshot": dict(row.snapshot),
+                }
+                for row in self.repository.versions_for(task_id)
+            ],
+        }
+
+    def history_diff(self, principal: Principal, task_id: UUID, before: int, after: int) -> dict[str, Any]:
+        """What changed between two versions. Only what actually moved is named."""
+        self._readable(principal, task_id)
+        frozen = {int(row.version): dict(row.snapshot) for row in self.repository.versions_for(task_id)}
+        if before not in frozen or after not in frozen:
+            raise TaskError("that version does not exist on this task")
+        return {"task_id": str(task_id), "from": before, "to": after, "changes": _snapshot_diff(frozen[before], frozen[after])}
+
+    def _moved(self, task: Any) -> None:
+        """A change to what the Task contains moves the Task itself, so history has a version to freeze it at."""
+        task.version += 1
+        self.repository.touch(task)
+
+    def _readable(self, principal: Principal, task_id: UUID) -> None:
+        """History is read by exactly the people who may read the Task; it opens no new door."""
+        self.get(principal, task_id)
+
     def _assignee_projection(self, tasks: list[Any]) -> dict[UUID, dict[str, str] | None]:
         """The person holding each Task right now, read from its active assignment rather than from any caller's list."""
         facts = self.repository.origin_facts(tasks)
@@ -341,8 +378,9 @@ class TaskApplication:
         if not cleaned:
             raise TaskError("checklist item text is required")
         item = self.repository.add_checklist_item(task.id, cleaned[:300])
+        self._moved(task)
         self.repository.record_activity(task, str(principal.id), "task.checklist.added", f"체크리스트 추가: {cleaned[:80]}")
-        return _checklist_view(item)
+        return _checklist_view(item, task)
 
     def update_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID, *, text: str | None = None, done: bool | None = None) -> dict[str, Any]:
         """Checking a step records who did it and when; unchecking clears those facts rather than keeping a stale actor."""
@@ -355,17 +393,24 @@ class TaskApplication:
             cleaned = " ".join(text.split())
             if not cleaned:
                 raise TaskError("checklist item text is required")
+            before = item.text
             item.text = cleaned[:300]
+            if before != item.text:
+                self._moved(task)
+                self.repository.record_activity(
+                    task, str(principal.id), "task.checklist.edited", f"체크리스트 수정: {before[:40]} → {item.text[:40]}"
+                )
         if done is not None and done != item.done:
             item.done = done
             item.completed_by = str(principal.id) if done else None
             item.completed_at = datetime.now(UTC) if done else None
+            self._moved(task)
             self.repository.record_activity(
                 task, str(principal.id), "task.checklist.checked" if done else "task.checklist.unchecked",
                 f"체크리스트 {'완료' if done else '해제'}: {item.text[:80]}",
             )
         item.updated_at = datetime.now(UTC)
-        return _checklist_view(item)
+        return _checklist_view(item, task)
 
     def remove_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID) -> None:
         self._require(principal, TASK_SELF_MANAGE)
@@ -373,8 +418,9 @@ class TaskApplication:
         item = self.repository.checklist_item(task.id, item_id, lock=True)
         if item is None:
             raise TaskNotFound("checklist item was not found")
-        self.repository.record_activity(task, str(principal.id), "task.checklist.removed", f"체크리스트 삭제: {item.text[:80]}")
         self.repository.remove_checklist_item(item)
+        self._moved(task)
+        self.repository.record_activity(task, str(principal.id), "task.checklist.removed", f"체크리스트 삭제: {item.text[:80]}")
 
     def _with_checklist(self, task: Any, principal: Principal) -> dict[str, Any]:
         items = [_checklist_view(item) for item in self.repository.checklist_for(task.id)]
@@ -433,6 +479,30 @@ def validate_schedule(start_date: date | None, due_date: date | None) -> None:
         raise TaskError("start date cannot be later than the due date")
 
 
+#: Snapshot fields compared as plain values; lists of things get their own comparison.
+_DIFFABLE_FIELDS = ("title", "description", "state", "block_reason", "start_date", "due_date")
+
+
+def _snapshot_diff(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    changes: dict[str, Any] = {}
+    for field in _DIFFABLE_FIELDS:
+        if before.get(field) != after.get(field):
+            changes[field] = {"before": before.get(field), "after": after.get(field)}
+    for field, key in (("checklist", "text"), ("materials", "attachment_id")):
+        was = [row[key] for row in before.get(field) or []]
+        now = [row[key] for row in after.get(field) or []]
+        added = [item for item in now if item not in was]
+        removed = [item for item in was if item not in now]
+        if added or removed:
+            changes[field] = {"added": added, "removed": removed}
+    if (before.get("assignment") or {}).get("assignee_id") != (after.get("assignment") or {}).get("assignee_id"):
+        changes["assignee"] = {
+            "before": (before.get("assignment") or {}).get("assignee_id"),
+            "after": (after.get("assignment") or {}).get("assignee_id"),
+        }
+    return changes
+
+
 def _clean_text(value: Any) -> str | None:
     if value is None:
         return None
@@ -448,8 +518,10 @@ def _str(value: Any) -> str | None:
     return str(value) if value is not None else None
 
 
-def _checklist_view(item: Any) -> dict[str, Any]:
+def _checklist_view(item: Any, task: Any = None) -> dict[str, Any]:
+    """A step, and — when a change produced it — the Task version that change moved it to."""
     return {
+        **({"task_version": int(task.version)} if task is not None else {}),
         "item_id": str(item.id),
         "text": item.text,
         "position": int(item.position),

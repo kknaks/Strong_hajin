@@ -508,6 +508,14 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def task_history(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
+        with self._session_factory() as session:
+            return self._tasks(session).history(principal, task_id)
+
+    def task_history_diff(self, principal: Principal, task_id: UUID, before: int, after: int) -> dict[str, Any]:
+        with self._session_factory() as session:
+            return self._tasks(session).history_diff(principal, task_id, before, after)
+
     def list_task_materials(self, principal: Principal, task_id: UUID) -> list[dict[str, Any]]:
         with self._session_factory() as session:
             return self._materials(session).list(principal, task_id)

@@ -45,20 +45,38 @@ function renderDrawer(items: ReturnType<typeof step>[], canManage = true) {
   vi.mocked(api.getTaskMaterials).mockResolvedValue([]);
   vi.mocked(api.getTask).mockResolvedValue({ ...task, checklist: items } as never);
   const onError = vi.fn();
-  render(
+  const onChanged = vi.fn();
+  const onUpdate = vi.fn();
+  const view = render(
     <TaskDetailDrawer
       busy={false}
       canManage={canManage}
+      onChanged={onChanged}
       onClose={vi.fn()}
       onError={onError}
       onNotice={vi.fn()}
       onTransition={vi.fn()}
-      onUpdate={vi.fn()}
+      onUpdate={onUpdate}
       ownerName="민아"
       task={task}
     />,
   );
-  return { onError };
+  const rerenderWith = (next: DirectTask) =>
+    view.rerender(
+      <TaskDetailDrawer
+        busy={false}
+        canManage={canManage}
+        onChanged={onChanged}
+        onClose={vi.fn()}
+        onError={onError}
+        onNotice={vi.fn()}
+        onTransition={vi.fn()}
+        onUpdate={onUpdate}
+        ownerName="민아"
+        task={next}
+      />,
+    );
+  return { onError, onChanged, onUpdate, rerenderWith };
 }
 
 describe("task checklist", () => {
@@ -176,6 +194,79 @@ describe("task checklist", () => {
     expect(container.textContent).toBe("");
     rerender(<ChecklistCue />);
     expect(container.textContent).toBe("");
+  });
+
+  it("settles the version the server moved, so the next edit is not refused as stale", async () => {
+    // A checklist change is a change to the task: the server freezes a new version for it. A drawer that keeps
+    // holding the version it opened with would send a stale expected_version on the very next save.
+    vi.mocked(api.addChecklistItem).mockResolvedValue(step("i9", "제출하기", 1) as never);
+    vi.mocked(api.updateChecklistItem).mockResolvedValue(step("i9", "제출하기", 1, true) as never);
+    vi.mocked(api.removeChecklistItem).mockResolvedValue(undefined as never);
+    const { onChanged } = renderDrawer([]);
+    const section = await screen.findByLabelText("체크리스트");
+
+    fireEvent.change(within(section).getByLabelText("체크리스트 단계"), { target: { value: "제출하기" } });
+    fireEvent.click(within(section).getByRole("button", { name: "추가" }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(within(section).getByRole("checkbox", { name: "제출하기" }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(within(section).getByRole("button", { name: "제출하기 삭제" }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(3));
+  });
+
+  it("still accepts the next step while the previous one's refresh is in flight", async () => {
+    let release: ((value: unknown) => void) | null = null;
+    vi.mocked(api.addChecklistItem)
+      .mockResolvedValueOnce(step("i1", "자료 모으기", 1) as never)
+      .mockResolvedValueOnce(step("i2", "초안 쓰기", 2) as never);
+    const { onChanged } = renderDrawer([]);
+    vi.mocked(onChanged).mockImplementation(() => new Promise((resolve) => {
+      release = () => resolve(undefined);
+    }));
+    const section = await screen.findByLabelText("체크리스트");
+    const field = within(section).getByLabelText("체크리스트 단계");
+
+    fireEvent.change(field, { target: { value: "자료 모으기" } });
+    fireEvent.click(within(section).getByRole("button", { name: "추가" }));
+    await waitFor(() => expect(release).not.toBeNull()); // the refresh has not come back yet
+
+    fireEvent.change(field, { target: { value: "초안 쓰기" } });
+    fireEvent.click(within(section).getByRole("button", { name: "추가" }));
+    await waitFor(() => expect(api.addChecklistItem).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(within(section).getByText("초안 쓰기")).toBeTruthy());
+    await act(async () => {
+      release?.(undefined);
+    });
+  });
+
+  it("does not claim the task moved when the server refused the change", async () => {
+    vi.mocked(api.removeChecklistItem).mockRejectedValue(new Error("서버 오류"));
+    const { onChanged, onError } = renderDrawer([step("i1", "자료 모으기", 1)]);
+    const section = await screen.findByLabelText("체크리스트");
+
+    fireEvent.click(within(section).getByRole("button", { name: "자료 모으기 삭제" }));
+    await waitFor(() => expect(onError).toHaveBeenCalledWith("서버 오류"));
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it("keeps what the user is still typing when only the version moved", async () => {
+    vi.mocked(api.addChecklistItem).mockResolvedValue(step("i9", "제출하기", 1) as never);
+    const { rerenderWith, onUpdate } = renderDrawer([]);
+    const section = await screen.findByLabelText("체크리스트");
+    const titleField = document.querySelector("input.title-input") as HTMLInputElement;
+    fireEvent.change(titleField, { target: { value: "아직 저장하지 않은 제목" } });
+
+    fireEvent.change(within(section).getByLabelText("체크리스트 단계"), { target: { value: "제출하기" } });
+    fireEvent.click(within(section).getByRole("button", { name: "추가" }));
+    // The refresh comes back with the same fields at a new version: nothing the user wrote was overwritten.
+    rerenderWith({ ...task, version: 2 });
+
+    expect(titleField.value).toBe("아직 저장하지 않은 제목");
+    fireEvent.click(screen.getByRole("button", { name: "변경 저장" }));
+    await waitFor(() => expect(onUpdate).toHaveBeenCalled());
+    expect(vi.mocked(onUpdate).mock.calls[0][0].version).toBe(2); // and the save carries the version the server has
   });
 
   it("is read-only for someone who cannot manage the task", async () => {

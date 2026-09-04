@@ -182,7 +182,9 @@ export function TaskDetailDrawer({
     setDescription(task.description ?? "");
     setStartDate(task.start_date ?? "");
     setDueDate(task.due_date ?? "");
-  }, [task.task_id, task.version, task.title, task.description, task.start_date, task.due_date]);
+    // Deliberately not keyed on `task.version`: a checklist or material change moves the version without moving
+    // any of these fields, and resetting there would wipe an edit the person is still writing.
+  }, [task.task_id, task.title, task.description, task.start_date, task.due_date]);
 
   // The checklist is only on the detail read, so a task opened from a list projection loads it here.
   useEffect(() => {
@@ -232,21 +234,36 @@ export function TaskDetailDrawer({
     };
   }, [extractionPending, task.task_id]);
 
+  // Checklist and material changes are changes to the Task, so the server freezes a new version for each one.
+  // Settle it here, or the next save from this open drawer is refused as stale.
+  async function settleVersion() {
+    try {
+      await onChanged?.();
+    } catch {
+      // The change itself succeeded; a refresh that failed must not be reported as a failed change.
+    }
+  }
+
   async function addStep() {
     const text = newStep.trim();
     if (!text || addingStep.current) return;
     addingStep.current = true;
     onError(null);
+    let added = false;
     try {
       const created = await addChecklistItem(task.task_id, text);
       setChecklist((current) => [...(current ?? []), created]);
       // Clear only what was sent: a fast typist may already be writing the next step while this one is in flight.
       setNewStep((current) => (current.trim() === text ? "" : current));
+      added = true;
     } catch (error) {
       onError(error instanceof Error ? error.message : "체크리스트 단계를 추가하지 못했습니다.");
     } finally {
       addingStep.current = false;
     }
+    // The refresh is not part of the add: holding the guard across it would swallow the next step someone
+    // submits while it is still in flight.
+    if (added) await settleVersion();
   }
 
   async function toggleStep(item: ChecklistItem, done: boolean) {
@@ -254,6 +271,7 @@ export function TaskDetailDrawer({
     try {
       const updated = await updateChecklistItem(task.task_id, item.item_id, { done });
       setChecklist((current) => (current ?? []).map((row) => (row.item_id === item.item_id ? updated : row)));
+      await settleVersion();
     } catch (error) {
       onError(error instanceof Error ? error.message : "체크리스트를 갱신하지 못했습니다.");
     }
@@ -264,6 +282,7 @@ export function TaskDetailDrawer({
     try {
       await removeChecklistItem(task.task_id, item.item_id);
       setChecklist((current) => (current ?? []).filter((row) => row.item_id !== item.item_id));
+      await settleVersion();
     } catch (error) {
       onError(error instanceof Error ? error.message : "체크리스트 단계를 삭제하지 못했습니다.");
     }
@@ -301,6 +320,7 @@ export function TaskDetailDrawer({
     try {
       const material = await uploadTaskMaterial(task.task_id, kind, file);
       setMaterials((current) => [...(current ?? []), material]);
+      await settleVersion();
       onNotice?.(`${kind === "input" ? "참고 자료" : "산출물"} '${material.name}'을 올렸습니다.`);
     } catch (error) {
       onError(error instanceof Error ? error.message : "파일을 올리지 못했습니다.");
@@ -323,6 +343,7 @@ export function TaskDetailDrawer({
       const material = await attachTaskMaterialLink(task.task_id, kind, { url: draft.url.trim(), label: draft.label.trim() });
       setMaterials((current) => [...(current ?? []), material]);
       setLinkDraft(null);
+      await settleVersion();
       onNotice?.(`${kind === "input" ? "참고 자료" : "산출물"} 링크 '${material.name}'을 연결했습니다.`);
     } catch (error) {
       onError(error instanceof Error ? error.message : "링크를 연결하지 못했습니다.");
@@ -388,6 +409,7 @@ export function TaskDetailDrawer({
       const material = await attachTaskMaterialReference(task.task_id, kind, { resource_type: "task", resource_id: refDraft.taskId });
       setMaterials((current) => [...(current ?? []), material]);
       setRefDraft(null);
+      await settleVersion();
       onNotice?.(`${kind === "input" ? "참고 자료" : "산출물"}로 '${material.name}'을 연결했습니다.`);
     } catch (error) {
       onError(error instanceof Error ? error.message : "업무를 연결하지 못했습니다.");
@@ -401,6 +423,7 @@ export function TaskDetailDrawer({
     try {
       await detachTaskMaterial(task.task_id, material.material_id);
       setMaterials((current) => (current ?? []).filter((item) => item.material_id !== material.material_id));
+      await settleVersion();
       onNotice?.(`'${material.name}'을 업무에서 뗐습니다. 기록은 남습니다.`);
     } catch (error) {
       onError(error instanceof Error ? error.message : "자료를 떼지 못했습니다.");

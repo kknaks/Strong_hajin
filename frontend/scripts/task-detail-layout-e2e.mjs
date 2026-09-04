@@ -88,10 +88,12 @@ try {
   // The calendar is still reachable, and the value crossing the API stays ISO.
   await drawer.getByRole("button", { name: "기한 달력 열기" }).waitFor();
   await dueField.fill("2026/10/15");
-  const saved = await page.evaluate(async ({ taskId, version }) => {
-    const response = await fetch(`/api/tasks/${taskId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expected_version: version, due_date: "2026-10-15" }) });
+  const saved = await page.evaluate(async (taskId) => {
+    // The steps added above are changes to the task, so its version has moved since it was created: read it back.
+    const current = await (await fetch(`/api/tasks/${taskId}`)).json();
+    const response = await fetch(`/api/tasks/${taskId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expected_version: current.version, due_date: "2026-10-15" }) });
     return { status: response.status, body: await response.json() };
-  }, { taskId: task.task_id, version: task.version });
+  }, task.task_id);
   if (saved.status !== 200 || saved.body.due_date !== "2026-10-15") throw new Error(`API boundary is not ISO: ${JSON.stringify(saved)}`);
 
   await page.screenshot({ path: "test-results/task-detail-layout-e2e.png" });

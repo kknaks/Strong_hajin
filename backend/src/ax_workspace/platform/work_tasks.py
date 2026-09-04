@@ -38,6 +38,7 @@ from ax_workspace.platform.persistence import (
     MemberRecord,
     TaskAssignmentRecord,
     TaskChecklistItemRecord,
+    TaskVersionRecord,
     ResourceRelationshipRecord,
     EvidenceRecord,
 )
@@ -178,6 +179,7 @@ class SqlAlchemyTaskRepository:
             target_type="task", target_id=str(task.id), event_kind="task.created", actor_id=owner_id,
             after_ref=f"task:{task.id}@1", safe_summary=f"업무 생성: {title}",
         )
+        self.capture_version(task, owner_id, "task.created")
         return task
 
     # ---- checklist: steps inside one Task ----
@@ -281,10 +283,93 @@ class SqlAlchemyTaskRepository:
         return {request_id: task_id for request_id, task_id in rows}
 
     def record_activity(self, task: TaskRecord, actor_id: str, event_kind: str, summary: str, *, before_ref: str | None = None, reason: str | None = None) -> None:
+        """One seam for every meaningful change: the ledger line a person reads, and the snapshot they can go back to."""
         ActivityLedger(self.session).record(
             target_type="task", target_id=str(task.id), event_kind=event_kind, actor_id=actor_id,
             before_ref=before_ref, after_ref=f"task:{task.id}@{task.version}", reason=reason, safe_summary=summary,
             request_thread_id=task.request_thread_id,
+        )
+        self.capture_version(task, actor_id, event_kind, reason)
+
+    def capture_version(self, task: TaskRecord, actor_id: str, change_kind: str, reason: str | None = None) -> None:
+        """Freeze the Task as it now is, in the transaction that made it so.
+
+        One row per version: a change that did not move the version has nothing new to freeze.
+        """
+        existing = self.session.scalar(
+            select(TaskVersionRecord).where(TaskVersionRecord.task_id == task.id, TaskVersionRecord.version == task.version)
+        )
+        if existing is not None:
+            return
+        self.session.add(
+            TaskVersionRecord(
+                task_id=task.id,
+                version=task.version,
+                change_kind=change_kind,
+                actor_id=actor_id,
+                reason=reason,
+                snapshot=self.task_snapshot(task),
+                captured_at=datetime.now(UTC),
+            )
+        )
+        self.session.flush()
+
+    def task_snapshot(self, task: TaskRecord) -> dict:
+        """What the Task is right now, including what a current screen may hide later.
+
+        Materials are referenced, never copied: the Attachment identity and its integrity hash are enough to say what
+        was attached, and the bytes keep exactly one home.
+        """
+        checklist = [
+            {"item_id": str(item.id), "text": item.text, "position": item.position, "done": bool(item.done)}
+            for item in self.checklist_for(task.id)
+        ]
+        materials = [
+            {
+                "material_id": str(binding.id),
+                "attachment_id": str(attachment.id),
+                "kind": binding.role,
+                "name": attachment.name,
+                "source_kind": attachment.source_kind,
+                "integrity_ref": attachment.integrity_ref,
+            }
+            for binding, attachment in SqlAlchemyAttachmentRepository(self.session).bindings_for("task", str(task.id))
+            if binding.unbound_at is None
+        ]
+        assignment = self.session.scalar(
+            select(TaskAssignmentRecord).where(
+                TaskAssignmentRecord.task_id == task.id, TaskAssignmentRecord.status.in_(("active", "pending"))
+            )
+        )
+        return {
+            "title": task.title,
+            "description": task.description,
+            "state": task.state,
+            "block_reason": task.block_reason,
+            "start_date": task.start_date.isoformat() if task.start_date else None,
+            "due_date": task.due_date.isoformat() if task.due_date else None,
+            "created_by_actor_id": task.created_by_actor_id,
+            "source_work_request_id": str(task.source_work_request_id) if task.source_work_request_id else None,
+            "assignment": (
+                {
+                    "assignment_id": str(assignment.id),
+                    "assignee_id": assignment.assignee_id,
+                    "assigned_by": assignment.assigned_by,
+                    "kind": assignment.assignment_kind,
+                    "status": assignment.status,
+                }
+                if assignment
+                else None
+            ),
+            "checklist": checklist,
+            "materials": materials,
+        }
+
+    def versions_for(self, task_id: UUID) -> list[TaskVersionRecord]:
+        return list(
+            self.session.scalars(
+                select(TaskVersionRecord).where(TaskVersionRecord.task_id == task_id).order_by(TaskVersionRecord.version)
+            )
         )
 
     def activity_for(self, task_id: UUID) -> list[ActivityEventRecord]:
@@ -707,6 +792,8 @@ class SqlAlchemyWorkRequestRepository:
                 accepted_at=now,
             )
         )
+        self._session.flush()
+        SqlAlchemyTaskRepository(self._session).capture_version(task, request.assignee_id, "task.created")
         return task
 
     def append_audit(self, request_id: UUID, actor_id: str, event_type: str, payload: dict) -> None:
@@ -961,6 +1048,7 @@ class SqlAlchemyTaskAssignmentRepository:
         )
         self._session.add(assignment)
         self._session.flush()
+        SqlAlchemyTaskRepository(self._session).capture_version(task, assigner_id, "task.created")
         item = DecisionItemRecord(
             kind="task.assignment.acceptance",
             subject_id=subject.id,

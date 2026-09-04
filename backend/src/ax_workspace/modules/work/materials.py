@@ -222,6 +222,7 @@ class TaskMaterialApplication:
         binding = self._attachments.bind(
             attachment_id=attachment.id, context_type="task", context_id=str(task.id), role=kind, bound_by=str(principal.id)
         )
+        self._moved(task)
         self._tasks.record_activity(
             task, str(principal.id), "task.material_attached",
             f"{'참고 자료' if kind == 'input' else '산출물'} 링크 연결: {clean_label}",
@@ -252,6 +253,7 @@ class TaskMaterialApplication:
         binding = self._attachments.bind(
             attachment_id=attachment.id, context_type="task", context_id=str(task.id), role=kind, bound_by=str(principal.id)
         )
+        self._moved(task)
         self._tasks.record_activity(
             task, str(principal.id), "task.material_attached",
             f"{'참고 자료' if kind == 'input' else '산출물'} 연결: {title}",
@@ -276,6 +278,7 @@ class TaskMaterialApplication:
             provenance=f"upload by {principal.id} to task {task.id}", uploaded_by=str(principal.id),
         )
         binding = self._attachments.bind(attachment_id=attachment.id, context_type="task", context_id=str(task.id), role=kind, bound_by=str(principal.id))
+        self._moved(task)
         self._tasks.record_activity(task, str(principal.id), "task.material_attached", f"{'참고 자료' if kind == 'input' else '산출물'} 등록: {clean_name}")
         extraction = None
         if self._extractions is not None:
@@ -305,8 +308,14 @@ class TaskMaterialApplication:
             raise MaterialNotFound("material was not found")
         binding, attachment = found
         self._attachments.unbind(binding)
+        self._moved(task)
         self._tasks.record_activity(task, str(principal.id), "task.material_detached", f"자료 해제: {attachment.name}")
         return self._view(binding, attachment, self._extraction_for(attachment), principal=principal, references=self._references)
+
+    def _moved(self, task: Any) -> None:
+        """Attaching or detaching changes what the Task contains, so the Task moves on and history freezes it."""
+        task.version += 1
+        self._tasks.touch(task)
 
     def _extraction_for(self, attachment: Any) -> Any | None:
         if self._extractions is None:

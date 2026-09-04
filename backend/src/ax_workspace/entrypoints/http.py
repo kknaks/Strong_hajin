@@ -743,6 +743,25 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
+        @app.get("/api/tasks/{task_id}/history")
+        def task_history(task_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.task_history(principal, task_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/tasks/{task_id}/history/diff")
+        def task_history_diff(
+            task_id: UUID,
+            from_version: int = Query(alias="from", ge=1),
+            to_version: int = Query(alias="to", ge=1),
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.task_history_diff(principal, task_id, from_version, to_version)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
         @app.post("/api/tasks/{task_id}/reassign")
         def reassign_task(
             task_id: UUID,
