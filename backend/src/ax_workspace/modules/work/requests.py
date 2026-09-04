@@ -45,6 +45,7 @@ class WorkRequestRepository(Protocol):
     ) -> tuple[Any, bool]: ...
     def request(self, request_id: UUID, *, lock: bool = False) -> Any: ...
     def cc_member_ids(self, request: Any) -> list[str]: ...
+    def derived_task_ids(self, requests: list[Any]) -> dict[UUID, UUID]: ...
     def adopt_evidence(self, submission: Any, attachment: Any, *, role: str, adopted_by: str) -> Any: ...
     def evidence_for(self, request: Any) -> list[tuple[Any, Any, Any]]: ...
     def create_accepted_task(self, request: Any) -> Any: ...
@@ -391,11 +392,14 @@ class WorkRequestApplication:
 
     def list(self, principal: Principal) -> list[dict[str, Any]]:
         self._require(principal, WORK_REQUEST_READ)
-        return [self._view(request) for request in self._repository.list_for(str(principal.id))]
+        requests = self._repository.list_for(str(principal.id))
+        derived = self._repository.derived_task_ids(requests)
+        return [self._view(request, task_id=derived.get(request.id)) for request in requests]
 
     def get(self, principal: Principal, request_id: UUID) -> dict[str, Any]:
         self._require(principal, WORK_REQUEST_READ)
-        return self._view(self._participant_request(principal, request_id))
+        request = self._participant_request(principal, request_id)
+        return self._view(request, task_id=self._repository.derived_task_ids([request]).get(request.id))
 
     def assignee_candidates(self, principal: Principal) -> list[dict[str, str]]:
         self._require(principal, WORK_REQUEST_CREATE)
@@ -422,7 +426,7 @@ class WorkRequestApplication:
         if capability not in principal.capabilities:
             raise WorkRequestAccessDenied(f"{capability} capability is required")
 
-    def _view(self, request: Any, task: Any | None = None) -> dict[str, Any]:
+    def _view(self, request: Any, task: Any | None = None, *, task_id: Any | None = None) -> dict[str, Any]:
         submission = self._repository.current_submission(request)
         return {
             "request_id": str(request.id),
@@ -436,8 +440,8 @@ class WorkRequestApplication:
             "cc_member_ids": self._repository.cc_member_ids(request),
             "state": request.state,
             "version": request.version,
-            "task_id": str(task.id) if task else None,
-            "assignment_state": "active" if task else None,
+            "task_id": str(task.id) if task else (str(task_id) if task_id else None),
+            "assignment_state": "active" if task or task_id else None,
             "conditions": request.conditions,
         }
 

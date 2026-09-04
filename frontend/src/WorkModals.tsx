@@ -101,7 +101,6 @@ function formatBytes(size: number): string {
 export function TaskDetailDrawer({
   task,
   ownerName,
-  requesterName,
   canManage,
   busy,
   onTransition,
@@ -113,7 +112,6 @@ export function TaskDetailDrawer({
 }: {
   task: DirectTask;
   ownerName: string;
-  requesterName?: string | null;
   canManage: boolean;
   busy: boolean;
   onTransition: (task: DirectTask, action: TaskAction, reason?: string) => Promise<void>;
@@ -416,8 +414,11 @@ export function TaskDetailDrawer({
               <dd>{ownerName}</dd>
             </div>
             <div>
-              <dt>요청자</dt>
-              <dd>{requesterName ?? "본인 생성"}</dd>
+              <dt>{task.origin?.actor_role ?? "요청자"}</dt>
+              <dd>
+                {task.origin?.actor ? personName(task.origin.actor.display_name) : "본인 생성"}
+                {task.origin?.source?.title && <small className="t-meta"> · {task.origin.source.title}</small>}
+              </dd>
             </div>
             <div>
               <dt>시작일</dt>

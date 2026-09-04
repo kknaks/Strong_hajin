@@ -708,6 +708,16 @@ class ActionItemAuditEventRecord(Base):
 
 class TaskRecord(Base):
     __tablename__ = "tasks"
+    # One accepted request produces exactly one Task. The uniqueness lives with the FK that carries the link.
+    __table_args__ = (
+        Index(
+            "uq_tasks_source_work_request",
+            "source_work_request_id",
+            unique=True,
+            sqlite_where=text("source_work_request_id IS NOT NULL"),
+            postgresql_where=text("source_work_request_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     owner_id: Mapped[str] = mapped_column(String(100), nullable=False)

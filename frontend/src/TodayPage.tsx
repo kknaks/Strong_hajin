@@ -75,7 +75,6 @@ export function TodayPage({
   const [tasks, setTasks] = useState<DirectTask[]>([]);
   const [actionItems, setActionItems] = useState<ActionItemEnvelope[]>([]);
   const [selectedActionItem, setSelectedActionItem] = useState<ActionItemEnvelope | null>(null);
-  const [requesterByTask, setRequesterByTask] = useState<Record<string, string>>({});
   const [reportStatus, setReportStatus] = useState<DailyReportStatus | null>(null);
   const [prompt, setPrompt] = useState("");
   const [selectedTask, setSelectedTask] = useState<DirectTask | null>(null);
@@ -93,9 +92,6 @@ export function TodayPage({
     const nextTasks = work.filter((task) => ["open", "in_progress", "blocked"].includes(task.state));
     setTasks(nextTasks);
     setActionItems(judgements);
-    setRequesterByTask(
-      Object.fromEntries(related.filter((request) => request.task_id && request.requester_id).map((request) => [request.task_id as string, request.requester_id as string])),
-    );
     setSelectedTask((current) => (current ? nextTasks.find((task) => task.task_id === current.task_id) ?? null : null));
     setSelectedRequest((current) => (current ? related.find((request) => request.request_id === current.request_id) ?? null : null));
     setReportStatus(canGenerateDailyReport ? await getDailyReportStatus(today) : null);
@@ -356,7 +352,6 @@ export function TodayPage({
           onTransition={transitionTask}
           onUpdate={updateTaskFields}
           ownerName={me}
-          requesterName={requesterByTask[selectedTask.task_id] ? displayNameOf(personas, requesterByTask[selectedTask.task_id]) : null}
           task={selectedTask}
         />
       )}

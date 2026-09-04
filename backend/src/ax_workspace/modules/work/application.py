@@ -43,12 +43,15 @@ class TaskRepository(Protocol):
         description: str | None = None,
         start_date: date | None = None,
         due_date: date | None = None,
+        source_action_item_id: UUID | None = None,
     ) -> Any: ...
     def task(self, task_id: UUID, owner_id: str, *, lock: bool = False) -> Any: ...
     def tasks_for(self, owner_id: str, *, include_closed: bool = False) -> list[Any]: ...
     def touch(self, task: Any) -> None: ...
     def checklist_for(self, task_id: UUID) -> list[Any]: ...
     def checklist_progress_for(self, task_ids: list[UUID]) -> dict[UUID, tuple[int, int]]: ...
+    def origin_facts(self, tasks: list[Any]) -> dict[UUID, dict[str, Any]]: ...
+    def member_display_name(self, member_id: str) -> str | None: ...
     def add_checklist_item(self, task_id: UUID, text: str) -> Any: ...
     def checklist_item(self, task_id: UUID, item_id: UUID, *, lock: bool = False) -> Any: ...
     def remove_checklist_item(self, item: Any) -> None: ...
@@ -56,8 +59,10 @@ class TaskRepository(Protocol):
 
 
 class TaskApplication:
-    def __init__(self, repository: TaskRepository) -> None:
+    def __init__(self, repository: TaskRepository, requests: Any | None = None) -> None:
         self.repository = repository
+        # Reading a Task's origin may need the request behind it, always through that module's own authorized list.
+        self._requests = requests
 
     def create_self(
         self,
@@ -68,6 +73,7 @@ class TaskApplication:
         description: str | None = None,
         start_date: date | None = None,
         due_date: date | None = None,
+        source_action_item_id: UUID | None = None,
     ) -> dict[str, Any]:
         self._require(principal, TASK_SELF_MANAGE)
         if not title.strip():
@@ -78,6 +84,7 @@ class TaskApplication:
                 str(principal.id),
                 title.strip(),
                 causation_key,
+                source_action_item_id=source_action_item_id,
                 description=_clean_text(description),
                 start_date=start_date,
                 due_date=due_date,
@@ -126,15 +133,16 @@ class TaskApplication:
         self._require(principal, TASK_READ)
         tasks = self.repository.tasks_for(str(principal.id), include_closed=include_closed)
         progress = self.repository.checklist_progress_for([task.id for task in tasks])
+        origins = self._origin_projection(principal, tasks)
         views = []
         for task in tasks:
             done, total = progress.get(task.id, (0, 0))
-            views.append({**self._view(task), "checklist_progress": {"done": done, "total": total}})
+            views.append({**self._view(task), "checklist_progress": {"done": done, "total": total}, "origin": origins.get(task.id)})
         return views
 
     def get(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
         self._require(principal, TASK_READ)
-        return self._with_checklist(self.repository.task(task_id, str(principal.id)))
+        return self._with_checklist(self.repository.task(task_id, str(principal.id)), principal)
 
     def transition(
         self,
@@ -178,6 +186,58 @@ class TaskApplication:
     def _require(principal: Principal, capability: str) -> None:
         if capability not in principal.capabilities:
             raise TaskAccessDenied(f"{capability} capability is required")
+
+    def _origin_projection(self, principal: Principal, tasks: list[Any]) -> dict[UUID, dict[str, Any]]:
+        """Where each Task came from, and which role that actor actually played.
+
+        Requester, assigner, assignee and administrator are different things. A Task created by accepting a request
+        names the requester even though the acceptance created the row; a directly assigned Task names the assigner,
+        never the assignee; a self-created Task names its creator. An administrator capability is not provenance.
+
+        The source resource is included only when this principal may read it. When it may not, the actor label still
+        stands — that is the Task's own fact — but the source is withheld rather than partially disclosed.
+        """
+        facts = self.repository.origin_facts(tasks)
+        readable_requests = self._readable_request_ids(principal, {fact["source_work_request_id"] for fact in facts.values()})
+        projections: dict[UUID, dict[str, Any]] = {}
+        for task in tasks:
+            fact = facts.get(task.id, {})
+            request_id = fact.get("source_work_request_id")
+            if request_id is not None:
+                kind, actor_role, actor_id = "work_request", "요청자", fact.get("request_requester_id")
+                source = (
+                    {"type": "work_request", "id": str(request_id), "title": fact.get("request_title")}
+                    if request_id in readable_requests
+                    else None
+                )
+            elif fact.get("assignment_kind") == "direct":
+                kind, actor_role, actor_id, source = "direct_assignment", "배정자", fact.get("assigned_by"), None
+            else:
+                kind, actor_role, actor_id, source = "self_created", "생성자", task.owner_id, None
+            projections[task.id] = {
+                "kind": kind,
+                "actor_role": actor_role,
+                "actor": self._actor(actor_id),
+                "source": source,
+            }
+        return projections
+
+    def _readable_request_ids(self, principal: Principal, request_ids: set[Any]) -> set[Any]:
+        """A Task can be readable while the request behind it is not; participation decides, not the Task."""
+        wanted = {request_id for request_id in request_ids if request_id is not None}
+        if not wanted or self._requests is None:
+            return set()
+        member_id = str(principal.id)
+        readable = set()
+        for request in self._requests.list_for(member_id):
+            if request.id in wanted:
+                readable.add(request.id)
+        return readable
+
+    def _actor(self, member_id: Any) -> dict[str, str] | None:
+        if not member_id:
+            return None
+        return {"member_id": str(member_id), "display_name": self.repository.member_display_name(str(member_id)) or str(member_id)}
 
     # ---- checklist: the steps inside one Task ----
 
@@ -224,12 +284,13 @@ class TaskApplication:
         self.repository.record_activity(task, str(principal.id), "task.checklist.removed", f"체크리스트 삭제: {item.text[:80]}")
         self.repository.remove_checklist_item(item)
 
-    def _with_checklist(self, task: Any) -> dict[str, Any]:
+    def _with_checklist(self, task: Any, principal: Principal) -> dict[str, Any]:
         items = [_checklist_view(item) for item in self.repository.checklist_for(task.id)]
         return {
             **self._view(task),
             "checklist": items,
             "checklist_progress": {"done": sum(1 for item in items if item["done"]), "total": len(items)},
+            "origin": self._origin_projection(principal, [task]).get(task.id),
         }
 
     @staticmethod

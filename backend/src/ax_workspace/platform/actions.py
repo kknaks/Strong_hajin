@@ -217,15 +217,15 @@ class SqlAlchemyActionExecutor:
                 SqlAlchemyDailyReportDraftWorkflow(self._session, SqlAlchemyWorkRecordSource(self._session), self._report_provider),
             ).submit(principal, str(action.payload["report_id"]), str(action.payload["draft_id"]), int(action.payload["expected_version"]), action.payload.get("reason"))
         if action.action_type == "task.create_self":
-            return TaskApplication(SqlAlchemyTaskRepository(self._session)).create_self(
-                principal, str(action.payload["title"]), causation_key=str(action.id)
+            return TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session)).create_self(
+                principal, str(action.payload["title"]), causation_key=str(action.id), source_action_item_id=action.id
             )
         if action.action_type == "task.update":
             changes = dict(action.payload.get("changes", {}))
             for field in ("start_date", "due_date"):
                 if field in changes:
                     changes[field] = _parse_date(changes[field])
-            return TaskApplication(SqlAlchemyTaskRepository(self._session)).update(
+            return TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session)).update(
                 UUID(str(action.payload["task_id"])), principal, int(action.payload["expected_version"]), changes
             )
         if action.action_type == "task.assign":
@@ -241,7 +241,7 @@ class SqlAlchemyActionExecutor:
         if action.action_type == "task.assignment.decline":
             return self._assignments().decline(principal, UUID(str(action.payload["assignment_id"])), str(action.payload.get("reason") or ""))
         if action.action_type == "task.transition":
-            return TaskApplication(SqlAlchemyTaskRepository(self._session)).transition(
+            return TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session)).transition(
                 UUID(str(action.payload["task_id"])), principal, TaskState(str(action.payload["target"])),
                 action.payload.get("reason"), int(action.payload["expected_version"])
             )
@@ -388,7 +388,7 @@ class ActionPresenter:
         cached = self._readable_task_cache.get(key)
         if cached is None:
             try:
-                TaskApplication(SqlAlchemyTaskRepository(self._session)).get(principal, task_id)
+                TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session)).get(principal, task_id)
                 cached = True
             except (TaskError, ValueError):
                 cached = False
@@ -435,6 +435,6 @@ class ActionPresenter:
         if principal is None or task_id in (None, ""):
             return None
         try:
-            return str(TaskApplication(SqlAlchemyTaskRepository(self._session)).get(principal, UUID(str(task_id)))["title"])
+            return str(TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session)).get(principal, UUID(str(task_id)))["title"])
         except (TaskError, ValueError):
             return None

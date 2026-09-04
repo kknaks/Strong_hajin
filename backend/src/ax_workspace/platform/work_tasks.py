@@ -25,6 +25,7 @@ from ax_workspace.platform.persistence import (
     TaskRecord,
     WorkRequestAuditEventRecord,
     WorkRequestRecord,
+    MemberRecord,
     TaskAssignmentRecord,
     TaskChecklistItemRecord,
     ResourceRelationshipRecord,
@@ -119,6 +120,7 @@ class SqlAlchemyTaskRepository:
         description: str | None = None,
         start_date: date | None = None,
         due_date: date | None = None,
+        source_action_item_id: UUID | None = None,
     ) -> TaskRecord:
         if causation_key:
             existing = self.session.scalar(
@@ -141,6 +143,7 @@ class SqlAlchemyTaskRepository:
             created_at=now,
             updated_at=now,
             causation_key=causation_key,
+            source_action_item_id=source_action_item_id,
         )
         self.session.add(task)
         self.session.flush()
@@ -206,6 +209,51 @@ class SqlAlchemyTaskRepository:
     def remove_checklist_item(self, item: TaskChecklistItemRecord) -> None:
         self.session.delete(item)
         self.session.flush()
+
+    def member_display_name(self, member_id: str) -> str | None:
+        member = self.session.get(MemberRecord, member_id)
+        return member.display_name if member is not None else None
+
+    def origin_facts(self, tasks: list[TaskRecord]) -> dict[UUID, dict[str, Any]]:
+        """Raw origin facts per Task, straight from the canonical columns; the application decides what may be shown."""
+        if not tasks:
+            return {}
+        request_ids = [task.source_work_request_id for task in tasks if task.source_work_request_id is not None]
+        requests = {
+            row.id: row
+            for row in (
+                self.session.scalars(select(WorkRequestRecord).where(WorkRequestRecord.id.in_(request_ids))).all() if request_ids else []
+            )
+        }
+        assignments: dict[UUID, TaskAssignmentRecord] = {}
+        for assignment in self.session.scalars(
+            select(TaskAssignmentRecord)
+            .where(TaskAssignmentRecord.task_id.in_([task.id for task in tasks]))
+            .order_by(TaskAssignmentRecord.created_at)
+        ).all():
+            assignments.setdefault(assignment.task_id, assignment)
+        facts: dict[UUID, dict[str, Any]] = {}
+        for task in tasks:
+            assignment = assignments.get(task.id)
+            request = requests.get(task.source_work_request_id) if task.source_work_request_id else None
+            facts[task.id] = {
+                "source_work_request_id": task.source_work_request_id,
+                "request_requester_id": request.requester_id if request is not None else None,
+                "request_title": request.title if request is not None else None,
+                "assignment_kind": assignment.assignment_kind if assignment is not None else None,
+                "assigned_by": assignment.assigned_by if assignment is not None else None,
+                "assignee_id": assignment.assignee_id if assignment is not None else None,
+            }
+        return facts
+
+    def derived_task_ids(self, request_ids: list[UUID]) -> dict[UUID, UUID]:
+        """WorkRequest → Task, read back through the Task's own source FK rather than a column on the request."""
+        if not request_ids:
+            return {}
+        rows = self.session.execute(
+            select(TaskRecord.source_work_request_id, TaskRecord.id).where(TaskRecord.source_work_request_id.in_(request_ids))
+        ).all()
+        return {request_id: task_id for request_id, task_id in rows}
 
     def record_activity(self, task: TaskRecord, actor_id: str, event_kind: str, summary: str, *, before_ref: str | None = None, reason: str | None = None) -> None:
         ActivityLedger(self.session).record(
@@ -633,6 +681,21 @@ class SqlAlchemyWorkRequestRepository:
                 .order_by(WorkRequestRecord.created_at)
             )
         )
+
+    def derived_task_ids(self, requests: list[WorkRequestRecord]) -> dict[UUID, UUID]:
+        """The Task a request produced, read back through the Task's own source FK.
+
+        The link lives in one place. Nothing is mirrored onto the request row, so a reload or a new session resolves
+        the same edge instead of depending on whatever a list response happened to carry.
+        """
+        if not requests:
+            return {}
+        rows = self._session.execute(
+            select(TaskRecord.source_work_request_id, TaskRecord.id).where(
+                TaskRecord.source_work_request_id.in_([request.id for request in requests])
+            )
+        ).all()
+        return {request_id: task_id for request_id, task_id in rows}
 
     def cc_member_ids(self, request: WorkRequestRecord) -> list[str]:
         return list(

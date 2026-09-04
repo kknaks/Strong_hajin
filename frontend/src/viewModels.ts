@@ -23,9 +23,23 @@ export type DirectTask = {
   visibility?: string;
   assignment?: TaskAssignmentSummary | null;
   lineage?: TaskLineage;
+  /** Where this Task came from, decided and authorized by the server. Never derived on the client. */
+  origin?: TaskOrigin | null;
   /** Steps inside this Task. Present on the detail read, not on list projections. */
   checklist?: ChecklistItem[];
   checklist_progress?: { done: number; total: number };
+};
+
+/**
+ * The Task's provenance as the server resolved it. `actor_role` already says which role the actor played, so no
+ * surface has to decide whether a member id means requester, assigner or assignee. `source` is absent when the
+ * caller may not read the resource behind it.
+ */
+export type TaskOrigin = {
+  kind: "self_created" | "work_request" | "direct_assignment" | string;
+  actor_role: string;
+  actor: { member_id: string; display_name: string } | null;
+  source: { type: string; id: string; title: string | null } | null;
 };
 
 /** One step inside a Task: no assignment, no lineage, no judgement. */

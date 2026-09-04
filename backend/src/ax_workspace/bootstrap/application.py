@@ -79,7 +79,7 @@ class WorkflowApplication:
         """ERD work_inbox projection: tasks the principal currently holds an active assignment for."""
         with self._session_factory() as session:
             try:
-                return TaskApplication(SqlAlchemyTaskRepository(session)).list_for(principal)
+                return self._tasks(session).list_for(principal)
             except TaskAccessDenied:
                 return []
 
@@ -455,13 +455,13 @@ class WorkflowApplication:
         due_date: Any = None,
     ) -> dict[str, Any]:
         with self._session_factory() as session:
-            result = TaskApplication(SqlAlchemyTaskRepository(session)).create_self(principal, title, causation_key, description=description, start_date=start_date, due_date=due_date)
+            result = self._tasks(session).create_self(principal, title, causation_key, description=description, start_date=start_date, due_date=due_date)
             session.commit()
             return result
 
     def update_task(self, principal: Principal, task_id: UUID, expected_version: int, changes: dict[str, Any]) -> dict[str, Any]:
         with self._session_factory() as session:
-            result = TaskApplication(SqlAlchemyTaskRepository(session)).update(task_id, principal, expected_version, changes)
+            result = self._tasks(session).update(task_id, principal, expected_version, changes)
             session.commit()
             return result
 
@@ -556,11 +556,11 @@ class WorkflowApplication:
 
     def list_tasks(self, principal: Principal, *, include_closed: bool = False) -> list[dict[str, Any]]:
         with self._session_factory() as session:
-            return TaskApplication(SqlAlchemyTaskRepository(session)).list_for(principal, include_closed=include_closed)
+            return self._tasks(session).list_for(principal, include_closed=include_closed)
 
     def get_task(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
         with self._session_factory() as session:
-            return TaskApplication(SqlAlchemyTaskRepository(session)).get(principal, task_id)
+            return self._tasks(session).get(principal, task_id)
 
     def create_work_request(
         self,
@@ -783,6 +783,10 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def _tasks(self, session: Any) -> TaskApplication:
+        """Tasks with the request module attached, so a Task's origin can name a requester it is allowed to name."""
+        return TaskApplication(SqlAlchemyTaskRepository(session), SqlAlchemyWorkRequestRepository(session))
+
     def _work_requests(self, session: Any) -> WorkRequestApplication:
         return WorkRequestApplication(
             SqlAlchemyWorkRequestRepository(session),
@@ -810,24 +814,24 @@ class WorkflowApplication:
 
     def add_task_checklist_item(self, principal: Principal, task_id: UUID, text: str) -> dict[str, Any]:
         with self._session_factory() as session:
-            result = TaskApplication(SqlAlchemyTaskRepository(session)).add_checklist_item(principal, task_id, text)
+            result = self._tasks(session).add_checklist_item(principal, task_id, text)
             session.commit()
             return result
 
     def update_task_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID, **fields: Any) -> dict[str, Any]:
         with self._session_factory() as session:
-            result = TaskApplication(SqlAlchemyTaskRepository(session)).update_checklist_item(principal, task_id, item_id, **fields)
+            result = self._tasks(session).update_checklist_item(principal, task_id, item_id, **fields)
             session.commit()
             return result
 
     def remove_task_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID) -> None:
         with self._session_factory() as session:
-            TaskApplication(SqlAlchemyTaskRepository(session)).remove_checklist_item(principal, task_id, item_id)
+            self._tasks(session).remove_checklist_item(principal, task_id, item_id)
             session.commit()
 
     def transition_task(self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None = None, expected_version: int = 0) -> dict[str, Any]:
         with self._session_factory() as session:
-            result = TaskApplication(SqlAlchemyTaskRepository(session)).transition(task_id, principal, target, reason, expected_version)
+            result = self._tasks(session).transition(task_id, principal, target, reason, expected_version)
             session.commit()
             return result
 

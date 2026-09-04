@@ -181,3 +181,46 @@ describe("task checklist", () => {
     expect(within(section).queryByRole("button", { name: "자료 모으기 삭제" })).toBeNull();
   });
 });
+
+describe("task origin", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("renders the role the server named, not a guess from a member id", async () => {
+    const requested = {
+      ...task,
+      origin: {
+        kind: "work_request",
+        actor_role: "요청자",
+        actor: { member_id: "mina", display_name: "민아 (구성원)" },
+        source: { type: "work_request", id: "r1", title: "견적 재검토" },
+      },
+    };
+    vi.mocked(api.getTaskMaterials).mockResolvedValue([]);
+    vi.mocked(api.getTask).mockResolvedValue({ ...requested, checklist: [] } as never);
+    render(
+      <TaskDetailDrawer busy={false} canManage onClose={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} onTransition={vi.fn()} onUpdate={vi.fn()} ownerName="민아" task={requested as never} />,
+    );
+    const row = (await screen.findByText("요청자")).closest("div") as HTMLElement;
+    expect(within(row).getByText("민아")).toBeTruthy();
+    expect(within(row).getByText(/견적 재검토/)).toBeTruthy();
+  });
+
+  it("names the assigner for a direct assignment and shows no source when one is withheld", async () => {
+    const assigned = {
+      ...task,
+      origin: { kind: "direct_assignment", actor_role: "배정자", actor: { member_id: "jiho", display_name: "지호 (팀장)" }, source: null },
+    };
+    vi.mocked(api.getTaskMaterials).mockResolvedValue([]);
+    vi.mocked(api.getTask).mockResolvedValue({ ...assigned, checklist: [] } as never);
+    render(
+      <TaskDetailDrawer busy={false} canManage onClose={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} onTransition={vi.fn()} onUpdate={vi.fn()} ownerName="민아" task={assigned as never} />,
+    );
+    const row = (await screen.findByText("배정자")).closest("div") as HTMLElement;
+    expect(within(row).getByText("지호")).toBeTruthy();
+    expect(screen.queryByText("요청자")).toBeNull();
+    expect(row.querySelector(".t-meta")).toBeNull(); // nothing stands in for a source the caller may not read
+  });
+});

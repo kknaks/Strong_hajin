@@ -203,10 +203,6 @@ export function MyWorkPage({
   };
 
 
-  const requesterByTask = useMemo(
-    () => Object.fromEntries(allRequests.filter((request) => request.task_id && request.requester_id).map((request) => [request.task_id as string, request.requester_id as string])),
-    [allRequests],
-  );
   // cc·배정 후보는 로그인 계정 목록에 없는 구성원(예: 관리자)을 포함하므로 이름 해석용 목록을 합친다.
   const people = useMemo(() => {
     const merged = new Map(personas.map((persona) => [persona.id, persona]));
@@ -402,7 +398,7 @@ export function MyWorkPage({
                   <th className="center">시작일</th>
                   <th className="center">기한</th>
                   <th className="center">담당자</th>
-                  <th className="center">요청자</th>
+                  <th className="center">출처</th>
                   <th className="end">액션</th>
                 </tr>
               </thead>
@@ -434,13 +430,7 @@ export function MyWorkPage({
                       actions={canManageOwnTasks && <TaskQuickActions busy={busy} onTransition={transitionTask} task={task} />}
                       key={task.task_id}
                       onOpen={() => setSelectedTask(task)}
-                      requester={
-                        requesterByTask[task.task_id]
-                          ? displayNameOf(people, requesterByTask[task.task_id])
-                          : task.assignment?.kind === "direct"
-                            ? `${displayNameOf(people, task.assignment.assigned_by, "관리자")} (배정)`
-                            : "—"
-                      }
+                      requester={task.origin?.actor ? personName(task.origin.actor.display_name) : "—"}
                       startDate={formatDate(task.start_date ?? isoDateInSeoul(task.created_at))}
                       task={task}
                       today={today}
@@ -464,13 +454,6 @@ export function MyWorkPage({
           onTransition={transitionTask}
           onUpdate={updateTaskFields}
           ownerName={me}
-          requesterName={
-            requesterByTask[selectedTask.task_id]
-              ? displayNameOf(people, requesterByTask[selectedTask.task_id])
-              : selectedTask.assignment?.kind === "direct"
-                ? `${displayNameOf(people, selectedTask.assignment.assigned_by, "관리자")} (배정)`
-                : null
-          }
           task={selectedTask}
         />
       )}
