@@ -381,3 +381,95 @@ def test_the_detail_offers_commands_only_to_the_principal_the_item_waits_on(tmp_
     assert [command["id"] for command in mine["allowed_commands"]] == ["accept", "adjust", "reject"]
     assert theirs["allowed_commands"] == [] and theirs["waiting_on"]["member_id"] == "jiho"
     assert theirs["subject"] == mine["subject"] and theirs["status"] == mine["status"]
+
+
+def _rounds(client, headers, action_item_id: str) -> list[dict]:
+    return client.get(f"/api/action-items/{action_item_id}", headers=headers).json()["rounds"]
+
+
+def test_only_the_answer_just_given_replays_and_a_stale_resend_is_refused(tmp_path) -> None:
+    """A receipt must prove it is *this* answer coming back, not merely an answer of the same shape."""
+    client, _ = _stack(tmp_path)
+    client.post("/api/work-requests", headers=MINA, json={"title": "두 번 조정될 요청", "assignee_id": "jiho", "description": "처음 설명"})
+    [round_one] = _pending(client, JIHO)
+    item_id = round_one["action_item_id"]
+
+    first_adjust = {"expected_version": round_one["expected_version"], "reason": "1회차 사유", "changes": {"title": "1회차 제안"}}
+    assert _command(client, JIHO, item_id, "adjust", **first_adjust).status_code == 200
+    [awaiting] = _pending(client, MINA)
+    first_revise = {"expected_version": awaiting["expected_version"], "changes": {"title": "1회차 수정"}}
+    assert _command(client, MINA, item_id, "revise", **first_revise).status_code == 200
+
+    [round_two] = _pending(client, JIHO)
+    second_adjust = {"expected_version": round_two["expected_version"], "reason": "2회차 사유", "changes": {"title": "2회차 제안"}}
+    assert _command(client, JIHO, item_id, "adjust", **second_adjust).status_code == 200
+    [awaiting_again] = _pending(client, MINA)
+    second_revise = {"expected_version": awaiting_again["expected_version"], "changes": {"title": "2회차 수정"}}
+    assert _command(client, MINA, item_id, "revise", **second_revise).status_code == 200
+
+    before = _rounds(client, MINA, item_id)
+    assert [row["submission_version"] for row in before] == [1, 2, 3]
+
+    # A round-one command arriving late carries a version and a payload that no longer describe anything current.
+    assert _command(client, MINA, item_id, "revise", **first_revise).status_code == 422
+    assert _command(client, JIHO, item_id, "adjust", **first_adjust).status_code == 422
+    # Even the right version with the wrong content is not this principal's answer.
+    assert _command(client, MINA, item_id, "revise", expected_version=awaiting_again["expected_version"], changes={"title": "보내지 않은 수정"}).status_code == 422
+    assert _command(client, JIHO, item_id, "adjust", expected_version=round_two["expected_version"], reason="보내지 않은 사유").status_code == 422
+
+    # Only the answer that was actually just given comes back as a receipt.
+    replayed = _command(client, MINA, item_id, "revise", **second_revise)
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.json()["action_item_id"] == item_id and replayed.json()["submission_version"] == 3
+
+    after = _rounds(client, MINA, item_id)
+    assert [row["submission_version"] for row in after] == [1, 2, 3]
+    assert [len(row["decisions"]) for row in after] == [len(row["decisions"]) for row in before]
+    assert [row["content_hash"] for row in after] == [row["content_hash"] for row in before]
+
+    # Accepting settles it, and that acceptance replays without producing a second Task.
+    [final] = _pending(client, JIHO)
+    accept = {"expected_version": final["expected_version"]}
+    assert _command(client, JIHO, item_id, "accept", **accept).status_code == 200
+    assert _command(client, JIHO, item_id, "accept", **accept).status_code == 200
+    assert len(client.get("/api/my-work", headers=JIHO).json()) == 1
+    # A stale acceptance, against the version the request had before it was accepted, is not a receipt either.
+    assert _command(client, JIHO, item_id, "accept", expected_version=final["expected_version"] - 1).status_code == 422
+
+
+def test_a_revision_that_changes_nothing_is_refused_however_it_is_written(tmp_path) -> None:
+    """The UI disables the button; the server is what makes an empty round impossible."""
+    client, _ = _stack(tmp_path)
+    client.post(
+        "/api/work-requests",
+        headers=MINA,
+        json={"title": "그대로인 요청", "assignee_id": "jiho", "description": "처음 설명", "due_date": "2026-09-10"},
+    )
+    [item] = _pending(client, JIHO)
+    _command(client, JIHO, item["action_item_id"], "adjust", expected_version=item["expected_version"], reason="다시 봐 주세요")
+    [waiting] = _pending(client, MINA)
+
+    # Every field repeated at its current value is as empty a revision as sending no fields at all.
+    for changes in ({}, {"title": "그대로인 요청"}, {"title": "그대로인 요청", "description": "처음 설명", "due_date": "2026-09-10"}):
+        refused = _command(client, MINA, waiting["action_item_id"], "revise", expected_version=waiting["expected_version"], changes=changes)
+        assert refused.status_code == 422, f"{changes} was accepted: {refused.text}"
+
+    # The same question is still waiting on the same round, untouched.
+    [still] = _pending(client, MINA)
+    assert still["action_item_id"] == waiting["action_item_id"] and still["expected_version"] == waiting["expected_version"]
+    assert [row["submission_version"] for row in _rounds(client, MINA, waiting["action_item_id"])] == [1]
+
+    # The REST route the request module owns refuses it on the same grounds, not just the command path.
+    request_id = still["resource"]["id"]
+    direct = client.post(
+        f"/api/work-requests/{request_id}/resubmit",
+        headers=MINA,
+        json={"expected_version": still["expected_version"], "title": "그대로인 요청"},
+    )
+    assert direct.status_code == 422, direct.text
+    assert [row["submission_version"] for row in _rounds(client, MINA, waiting["action_item_id"])] == [1]
+
+    # A real change still goes through and is the only thing that makes a new round.
+    accepted = _command(client, MINA, waiting["action_item_id"], "revise", expected_version=waiting["expected_version"], changes={"title": "정말 바뀐 요청"})
+    assert accepted.status_code == 200, accepted.text
+    assert [row["submission_version"] for row in _rounds(client, MINA, waiting["action_item_id"])] == [1, 2]

@@ -197,19 +197,27 @@ class WorkRequestActionHandler:
         else:  # pragma: no cover - the envelope already refused anything else
             raise ActionError(f"unsupported command {command}")
 
-    def is_replay(self, item: tuple[Any, Any], principal: Principal, command: str) -> bool:
+    def is_replay(self, item: tuple[Any, Any], principal: Principal, command: str, payload: dict[str, Any]) -> bool:
         """A re-send of the answer this principal already gave is a receipt, not a second effect.
 
-        Only the decision actually recorded replays; a different answer to a settled question is still refused, so a
-        lost response cannot be turned into a way to change one's mind.
+        The bar is that this exact request produced the state the item is in now: it aimed at the version the command
+        actually consumed, and its content is what the stored decision or submission records. An older round's command
+        of the same shape, or the same version with different content, is a stale request and is refused — a lost
+        response can never become a way to change one's mind or to replay a superseded round.
         """
         decision_item, request = item
+        try:
+            targeted = int(payload["expected_version"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        # Every one of these commands bumps the request exactly once, so this pins the resend to that single step.
+        if int(request.version) != targeted + 1:
+            return False
         submission = self._current_submission(decision_item)
         if submission is None:
             return False
         if command == "revise":
-            # The revision itself is the record: this submission exists because this principal already sent it.
-            return int(submission.submission_version) > 1 and submission.submitted_by == str(principal.id)
+            return submission.submitted_by == str(principal.id) and self._revision_produced(submission, payload)
         if command == "withdraw":
             return request.state == "withdrawn" and request.requester_id == str(principal.id)
         decided = self._session.scalar(
@@ -219,7 +227,35 @@ class WorkRequestActionHandler:
         )
         if decided is None or decided.actor_member_id != str(principal.id):
             return False
-        return decided.decision == {"accept": "accept", "reject": "reject", "adjust": "negotiate"}.get(command)
+        if decided.decision != {"accept": "accept", "reject": "reject", "adjust": "negotiate"}.get(command):
+            return False
+        if command == "accept":
+            return True
+        if (decided.reason or "") != str(payload.get("reason") or "").strip():
+            return False
+        return command != "adjust" or _suggested_changes(decided.conditions) == _proposed_changes(payload.get("changes"))
+
+    def _revision_produced(self, submission: SubmissionRecord, payload: dict[str, Any]) -> bool:
+        """Would this payload, applied to the round it revised, have produced exactly the round that now stands?"""
+        if submission.revises_id is None:
+            return False
+        previous = self._session.get(SubmissionRecord, submission.revises_id)
+        current_version = self._session.get(SubjectVersionRecord, submission.subject_version_id)
+        previous_version = self._session.get(SubjectVersionRecord, previous.subject_version_id) if previous else None
+        if current_version is None or previous_version is None:
+            return False
+        changes = dict(payload.get("changes") or {})
+        revised = dict(previous_version.snapshot)
+        if changes.get("title") is not None:
+            revised["title"] = str(changes["title"]).strip()
+        if changes.get("description") is not None:
+            revised["description"] = str(changes["description"]).strip() or None
+        if changes.get("clear_due_date"):
+            revised["due_date"] = None
+        elif changes.get("due_date") is not None:
+            parsed = _parse_date(changes["due_date"])
+            revised["due_date"] = parsed.isoformat() if parsed else None
+        return revised == dict(current_version.snapshot)
 
     def _require_participant(self, request: Any, principal: Principal) -> None:
         member_id = str(principal.id)
@@ -389,7 +425,7 @@ class AxProposalActionHandler:
         """An AX proposal is judged on its preview and evidence; it carries no comment thread."""
         return []
 
-    def is_replay(self, item: Any, principal: Principal, command: str) -> bool:
+    def is_replay(self, item: Any, principal: Principal, command: str, payload: dict[str, Any]) -> bool:
         """The persisted Action is the idempotency boundary; a repeat of the decision it already holds is a receipt."""
         if str(item.owner_id) != str(principal.id) or ACTION_DECIDE not in principal.capabilities:
             return False
@@ -535,11 +571,19 @@ class TaskAssignmentActionHandler:
         """A direct assignment is answered on the spot; it carries no comment thread."""
         return []
 
-    def is_replay(self, item: tuple[Any, Any], principal: Principal, command: str) -> bool:
+    def is_replay(self, item: tuple[Any, Any], principal: Principal, command: str, payload: dict[str, Any]) -> bool:
+        """One assignment is answered once, so the stored status is the receipt — with the reason it was declined for."""
         assignment, _ = item
         if str(assignment.assignee_id) != str(principal.id):
             return False
-        return (command == "accept" and assignment.status == "active") or (command == "decline" and assignment.status == "declined")
+        if command == "accept":
+            return assignment.status == "active"
+        # A decline carries a required reason; a re-send that says something else is a new answer, not a receipt.
+        return (
+            command == "decline"
+            and assignment.status == "declined"
+            and (assignment.decline_reason or "") == str(payload.get("reason") or "").strip()
+        )
 
 
 def action_handlers(session: Session, *, work_requests: Any, actions: Any, assignments: Any) -> list[Any]:

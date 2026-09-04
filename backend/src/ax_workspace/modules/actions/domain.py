@@ -104,8 +104,11 @@ class ActionKindHandler(Protocol):
         """Run the owning module's operation for this command."""
         ...
 
-    def is_replay(self, item: Any, principal: Principal, command: str) -> bool:
-        """True when this command already produced the item's current outcome, so a re-send is a receipt."""
+    def is_replay(self, item: Any, principal: Principal, command: str, payload: dict[str, Any]) -> bool:
+        """True when *this exact payload* already produced the item's current outcome, so a re-send is a receipt.
+
+        The payload matters: a command of the same shape from an earlier round is a stale request, not a receipt.
+        """
         ...
 
 
@@ -139,7 +142,7 @@ class ActionCenterApplication:
         offered = {entry.id: entry for entry in handler.envelope(item, principal).allowed_commands}
         if command not in offered:
             # A lost response must not force the caller to choose between a duplicate effect and a stale error.
-            if handler.is_replay(item, principal, command):
+            if handler.is_replay(item, principal, command, payload):
                 return handler.envelope(item, principal).as_dict()
             raise ActionError(f"'{command}' is not available on this action item right now")
         if offered[command].requires_reason and not str(payload.get("reason") or "").strip():

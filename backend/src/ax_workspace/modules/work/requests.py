@@ -188,16 +188,20 @@ class WorkRequestApplication:
             raise WorkRequestError("work request version is stale")
         if request.state != "negotiating":
             raise WorkRequestError("only a negotiating work request can be resubmitted")
-        if title is not None:
-            if not title.strip():
-                raise WorkRequestError("title is required")
-            request.title = title.strip()
-        if description is not None:
-            request.description = description.strip() or None
-        if clear_due_date:
-            request.due_date = None
-        elif due_date is not None:
-            request.due_date = due_date
+        if title is not None and not title.strip():
+            raise WorkRequestError("title is required")
+        # Compare against the round being revised before touching it: a field repeated at its current value is not a
+        # change, however the caller wrote it, and an empty round would give the reviewer nothing to answer.
+        revised = {
+            "title": title.strip() if title is not None else request.title,
+            "description": (description.strip() or None) if description is not None else request.description,
+            "due_date": None if clear_due_date else (due_date if due_date is not None else request.due_date),
+        }
+        if revised == {"title": request.title, "description": request.description, "due_date": request.due_date}:
+            raise WorkRequestError("a revision must change something")
+        request.title = revised["title"]
+        request.description = revised["description"]
+        request.due_date = revised["due_date"]
         snapshot = {
             "title": request.title,
             "description": request.description,
