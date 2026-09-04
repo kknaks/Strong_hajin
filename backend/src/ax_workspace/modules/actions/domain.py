@@ -100,6 +100,14 @@ class ActionKindHandler(Protocol):
         """Comments on this question, in the order they were written. Talking never moves the item."""
         ...
 
+    def normalize(self, item: Any, command: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """The canonical payload this command will actually act on, or an error if it carries fields it does not own.
+
+        One shape, so the same judgement always looks the same: to the person confirming it, to the effect that runs
+        it, and to the identity check that decides whether a re-send is the same judgement or a different one.
+        """
+        ...
+
     def execute(self, principal: Principal, item: Any, command: str, payload: dict[str, Any]) -> None:
         """Run the owning module's operation for this command."""
         ...
@@ -137,6 +145,12 @@ class ActionCenterApplication:
             "discussion": handler.discussion(item, principal),
         }
 
+    def normalize(self, principal: Principal, action_item_id: str, command: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """What this command would actually do, checked against the policy that offered it."""
+        handler, item = self._locate(action_item_id)
+        self._offered(handler, item, principal, command, payload)
+        return handler.normalize(item, command, payload)
+
     def execute(self, principal: Principal, action_item_id: str, command: str, payload: dict[str, Any]) -> dict[str, Any]:
         handler, item = self._locate(action_item_id)
         offered = {entry.id: entry for entry in handler.envelope(item, principal).allowed_commands}
@@ -147,8 +161,15 @@ class ActionCenterApplication:
             raise ActionError(f"'{command}' is not available on this action item right now")
         if offered[command].requires_reason and not str(payload.get("reason") or "").strip():
             raise ActionError(f"'{command}' requires a reason")
-        handler.execute(principal, item, command, payload)
+        handler.execute(principal, item, command, handler.normalize(item, command, payload))
         return handler.envelope(handler.find(action_item_id), principal).as_dict()
+
+    def _offered(self, handler: ActionKindHandler, item: Any, principal: Principal, command: str, payload: dict[str, Any]) -> None:
+        offered = {entry.id: entry for entry in handler.envelope(item, principal).allowed_commands}
+        if command not in offered:
+            raise ActionError(f"'{command}' is not available on this action item right now")
+        if offered[command].requires_reason and not str(payload.get("reason") or "").strip():
+            raise ActionError(f"'{command}' requires a reason")
 
     def _locate(self, action_item_id: str) -> tuple[ActionKindHandler, Any]:
         for handler in self._handlers:

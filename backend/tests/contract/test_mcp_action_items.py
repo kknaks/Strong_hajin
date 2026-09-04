@@ -43,6 +43,26 @@ def _tools(settings, persona: str, monkeypatch):
     return asyncio.run(create_mcp_server(settings).list_tools())
 
 
+def _mina_proposal(client, application) -> dict:
+    """A gated AX proposal owned by 민아, which 지호 has no relationship to at all."""
+    from uuid import UUID
+
+    from ax_workspace.platform.persistence import ConversationTurnRecord
+
+    conversation = client.post("/api/conversations", headers=MINA, json={"title": "민아의 대화"}).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={**MINA, "Idempotency-Key": "mina-proposal"},
+        json={"body": "제안해줘", "context": []},
+    )
+    assert accepted.status_code == 202, accepted.text
+    with make_session_factory(application._settings.database_url)() as session:
+        execution_id = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"])).execution_id
+    return application.propose_action(
+        application.authenticated_principal("mina"), execution_id, "task.create_self", "업무 생성 확인", {"title": "민아의 비밀 업무"}
+    )
+
+
 def test_action_item_tools_read_exactly_what_the_product_reads(tmp_path) -> None:
     database_url, settings, client = _stack(tmp_path)
     created = client.post(
@@ -467,10 +487,6 @@ def test_stdio_delegated_command_returns_a_pending_confirmation_and_changes_noth
                 assert result.structured_content["state"] == "pending"
                 assert result.structured_content["action_type"] == "action_item.command"
 
-                # An unauthorized item and an unknown id are the same answer: no existence oracle on the wire.
-                unknown = await session.call_tool("action_item_get", {"action_item_id": "11111111-1111-4111-8111-111111111111"})
-                mina_only = await session.call_tool("action_item_get", {"action_item_id": item["action_item_id"]})
-                assert unknown.is_error is True
                 return result.structured_content["action_id"]
 
     action_id = asyncio.run(scenario())
@@ -485,3 +501,227 @@ def test_stdio_delegated_command_returns_a_pending_confirmation_and_changes_noth
     )
     assert approved.status_code == 200, approved.text
     assert [task["title"] for task in client.get("/api/my-work", headers=JIHO).json()] == ["stdio 위임 판단"]
+
+
+def test_one_turn_holds_one_judgement_and_the_receipt_is_the_whole_payload(tmp_path, monkeypatch) -> None:
+    """A receipt must prove the same judgement, not merely the same target and verb."""
+    database_url, settings, client = _stack(tmp_path)
+    application = client.app.state.workflow_application
+    client.post("/api/work-requests", headers=MINA, json={"title": "한 턴 한 판단", "assignee_id": "jiho"})
+    jiho = _facade(settings, "jiho")
+    [item] = jiho.pending_action_items()
+    _delegated_turn(client, application, JIHO, "jiho", monkeypatch)
+
+    first = jiho.run_action_command(
+        item["action_item_id"], "adjust", expected_version=item["expected_version"],
+        reason="기한을 늦춰 주세요", changes={"due_date": "2026-12-01"},
+    )
+    assert first["state"] == "pending"
+
+    # The identical call — including a reason that only differs by surrounding space — is the same receipt.
+    same = jiho.run_action_command(
+        item["action_item_id"], "adjust", expected_version=item["expected_version"],
+        reason="  기한을 늦춰 주세요  ", changes={"due_date": "2026-12-01"},
+    )
+    assert same["action_id"] == first["action_id"] and same["payload_hash"] == first["payload_hash"]
+
+    # Anything else about the judgement is a different judgement, and is refused rather than answered with this one.
+    for label, kwargs in (
+        ("다른 사유", {"reason": "역시 안 되겠습니다", "changes": {"due_date": "2026-12-01"}}),
+        ("다른 제안", {"reason": "기한을 늦춰 주세요", "changes": {"due_date": "2026-12-24"}}),
+        ("제안 없음", {"reason": "기한을 늦춰 주세요"}),
+        ("다른 버전", {"reason": "기한을 늦춰 주세요", "changes": {"due_date": "2026-12-01"}, "expected_version": item["expected_version"] + 1}),
+    ):
+        payload = {"expected_version": item["expected_version"], **kwargs}
+        with pytest.raises(Exception, match="다른 판단"):
+            jiho.run_action_command(item["action_item_id"], "adjust", **payload)
+    with pytest.raises(Exception, match="다른 판단"):
+        jiho.run_action_command(item["action_item_id"], "reject", expected_version=item["expected_version"], reason="기한을 늦춰 주세요")
+
+    # The stored confirmation never moved.
+    unchanged = jiho.run_action_command(
+        item["action_item_id"], "adjust", expected_version=item["expected_version"],
+        reason="기한을 늦춰 주세요", changes={"due_date": "2026-12-01"},
+    )
+    assert unchanged["action_id"] == first["action_id"] and unchanged["payload_hash"] == first["payload_hash"]
+    assert unchanged["version"] == first["version"] and unchanged["state"] == "pending"
+
+
+def test_a_delegated_server_only_advertises_a_command_it_could_actually_run(tmp_path, monkeypatch) -> None:
+    """Discovery is a promise. In a turn the command needs both a judgement capability and the authority to gate it."""
+    database_url, settings, client = _stack(tmp_path)
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", "00000000-0000-4000-8000-000000000000")
+    assert "action_item_command" in {tool.name for tool in _tools(settings, "jiho", monkeypatch)}
+
+    with make_session_factory(database_url)() as session:
+        session.execute(
+            delete(RoleCapabilityRecord).where(
+                RoleCapabilityRecord.role_id == "seed-role:jiho", RoleCapabilityRecord.capability_id == "action.decide"
+            )
+        )
+        session.commit()
+
+    # Without the authority to raise a confirmation, a delegated turn could never run the command it was offered.
+    delegated = {tool.name for tool in _tools(settings, "jiho", monkeypatch)}
+    assert "action_item_command" not in delegated
+    assert {"action_item_list", "action_item_get"} <= delegated
+
+    # Outside a turn the same persona still commands directly, so the tool stays.
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
+    assert "action_item_command" in {tool.name for tool in _tools(settings, "jiho", monkeypatch)}
+
+
+def test_a_pending_confirmation_says_nothing_about_work_the_approver_may_no_longer_read(tmp_path, monkeypatch) -> None:
+    database_url, settings, client = _stack(tmp_path)
+    application = client.app.state.workflow_application
+    client.post(
+        "/api/work-requests", headers=MINA,
+        json={"title": "기밀 예산 검토", "assignee_id": "jiho", "description": "내부 한도"},
+    )
+    jiho = _facade(settings, "jiho")
+    [item] = jiho.pending_action_items()
+    _delegated_turn(client, application, JIHO, "jiho", monkeypatch)
+    wrapper = jiho.run_action_command(item["action_item_id"], "accept", expected_version=item["expected_version"])
+
+    # While the approver can read the work, the card is the work's own presentation.
+    card = [row for row in client.get("/api/actions", headers=JIHO).json() if row["action_id"] == wrapper["action_id"]][0]
+    assert card["subject"] == "기밀 예산 검토"
+    assert {row["id"] for row in card["preview"]} >= {"command"}
+    # Nothing stored on the row itself carries the work's words or the wire ids.
+    assert "기밀 예산 검토" not in card["title"] and "기밀 예산 검토" not in card["payload_summary"]
+    assert item["action_item_id"] not in card["title"] and item["action_item_id"] not in card["payload_summary"]
+
+    with make_session_factory(database_url)() as session:
+        for capability in ("work_request.read", "work_request.decide", "work_request.create"):
+            session.execute(
+                delete(RoleCapabilityRecord).where(
+                    RoleCapabilityRecord.role_id == "seed-role:jiho", RoleCapabilityRecord.capability_id == capability
+                )
+            )
+        session.commit()
+
+    # Once they may not read it, the card says nothing about it — not even the title it used to have.
+    withheld = [row for row in client.get("/api/actions", headers=JIHO).json() if row["action_id"] == wrapper["action_id"]][0]
+    assert "기밀 예산" not in str(withheld)
+    assert withheld["preview"] == []
+
+
+def test_an_action_item_no_one_may_read_answers_exactly_like_one_that_does_not_exist(tmp_path) -> None:
+    database_url, settings, client = _stack(tmp_path)
+    application = client.app.state.workflow_application
+    # An AX proposal owned by 민아; 지호 is not part of it and must not learn that it exists.
+    proposal = _mina_proposal(client, application)
+
+    async def scenario() -> tuple:
+        parameters = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "ax_workspace.entrypoints.mcp"],
+            cwd=os.getcwd(),
+            env={**os.environ, "AX_PROFILE": "test", "DATABASE_URL": database_url, "AX_MCP_PERSONA": "jiho"},
+        )
+        async with stdio_client(parameters) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                unknown = await session.call_tool("action_item_get", {"action_item_id": "11111111-1111-4111-8111-111111111111"})
+                withheld = await session.call_tool("action_item_get", {"action_item_id": proposal["action_id"]})
+                return unknown, withheld
+
+    unknown, withheld = asyncio.run(scenario())
+    assert unknown.is_error is True and withheld.is_error is True
+    assert withheld.structured_content is None
+    # The same answer, word for word: nothing distinguishes a withheld item from one that was never there.
+    assert [block.text for block in withheld.content] == [block.text for block in unknown.content]
+    body = " ".join(block.text for block in withheld.content)
+    assert proposal["action_id"] not in body and "민아" not in body
+    assert "task.create_self" not in body and "ax." not in body
+
+
+def test_a_command_may_only_carry_the_fields_its_own_kind_owns_over_stdio(tmp_path) -> None:
+    database_url, settings, client = _stack(tmp_path)
+    client.post("/api/work-requests", headers=MINA, json={"title": "필드 계약", "assignee_id": "jiho"})
+    [item] = _facade(settings, "jiho").pending_action_items()
+
+    async def scenario() -> tuple:
+        parameters = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "ax_workspace.entrypoints.mcp"],
+            cwd=os.getcwd(),
+            env={**os.environ, "AX_PROFILE": "test", "DATABASE_URL": database_url, "AX_MCP_PERSONA": "jiho"},
+        )
+        async with stdio_client(parameters) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                bad = await session.call_tool(
+                    "action_item_command",
+                    {
+                        "action_item_id": item["action_item_id"],
+                        "command": "adjust",
+                        "expected_version": item["expected_version"],
+                        "reason": "담당을 바꿔 주세요",
+                        "changes": {"assignee_id": "sora"},
+                    },
+                )
+                good = await session.call_tool(
+                    "action_item_command",
+                    {
+                        "action_item_id": item["action_item_id"],
+                        "command": "adjust",
+                        "expected_version": item["expected_version"],
+                        "reason": "기한을 늦춰 주세요",
+                        "changes": {"due_date": "2026-12-01"},
+                    },
+                )
+                return bad, good
+
+    bad, good = asyncio.run(scenario())
+    assert bad.is_error is True
+    assert good.is_error is not True and good.structured_content["status"] == "awaiting_revision"
+    detail = client.get(f"/api/action-items/{item['action_item_id']}", headers=MINA).json()
+    assert [row["submission_version"] for row in detail["rounds"]] == [1]
+    assert detail["rounds"][0]["decisions"][0]["suggested_changes"] == {"due_date": "2026-12-01"}
+
+
+def test_a_pending_confirmation_survives_a_target_that_moved_or_authority_that_was_taken(tmp_path, monkeypatch) -> None:
+    """An approval that can no longer be applied leaves the confirmation waiting, not half-done."""
+    database_url, settings, client = _stack(tmp_path)
+    application = client.app.state.workflow_application
+    client.post("/api/work-requests", headers=MINA, json={"title": "움직인 대상", "assignee_id": "jiho"})
+    client.post("/api/work-requests", headers=MINA, json={"title": "회수된 권한", "assignee_id": "jiho"})
+    jiho = _facade(settings, "jiho")
+    items = {row["subject"]: row for row in jiho.pending_action_items()}
+    _delegated_turn(client, application, JIHO, "jiho", monkeypatch)
+
+    moved = items["움직인 대상"]
+    wrapper = jiho.run_action_command(moved["action_item_id"], "accept", expected_version=moved["expected_version"])
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
+    jiho.run_action_command(moved["action_item_id"], "adjust", expected_version=moved["expected_version"], reason="먼저 조정")
+
+    refused = client.post(
+        f"/api/actions/{wrapper['action_id']}/decide", headers=JIHO,
+        json={"expected_version": wrapper["version"], "decision": "approve"},
+    )
+    assert refused.status_code == 422, refused.text
+    still = [row for row in client.get("/api/actions", headers=JIHO).json() if row["action_id"] == wrapper["action_id"]][0]
+    assert still["state"] == "pending" and still["version"] == wrapper["version"]
+    assert client.get("/api/my-work", headers=JIHO).json() == []
+
+    # The same holds when the authority to make the judgement is taken away between proposal and approval.
+    revoked = items["회수된 권한"]
+    _delegated_turn(client, application, JIHO, "jiho", monkeypatch)
+    second = jiho.run_action_command(revoked["action_item_id"], "accept", expected_version=revoked["expected_version"])
+    with make_session_factory(database_url)() as session:
+        session.execute(
+            delete(RoleCapabilityRecord).where(
+                RoleCapabilityRecord.role_id == "seed-role:jiho", RoleCapabilityRecord.capability_id == "work_request.decide"
+            )
+        )
+        session.commit()
+    denied = client.post(
+        f"/api/actions/{second['action_id']}/decide", headers=JIHO,
+        json={"expected_version": second["version"], "decision": "approve"},
+    )
+    assert denied.status_code in {403, 422}, denied.text
+    pending = [row for row in client.get("/api/actions", headers=JIHO).json() if row["action_id"] == second["action_id"]][0]
+    assert pending["state"] == "pending"
+    assert [row["state"] for row in client.get("/api/work-requests", headers=MINA).json()] == ["negotiating", "pending"]
+    assert client.get("/api/my-work", headers=JIHO).json() == []

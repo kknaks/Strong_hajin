@@ -653,6 +653,11 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return self._action_center(session).detail(principal, action_item_id)
 
+    def normalize_action_command(self, principal: Principal, action_item_id: str, command: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """The canonical form of a command, for a caller that must store or compare it before it runs."""
+        with self._session_factory() as session:
+            return self._action_center(session).normalize(principal, action_item_id, command, payload)
+
     def run_action_command(self, principal: Principal, action_item_id: str, command: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self._session_factory() as session:
             result = self._action_center(session).execute(principal, action_item_id, command, payload)

@@ -32,7 +32,11 @@ from ax_workspace.modules.organization_access.domain import (
     WORK_REQUEST_DECIDE,
     WORK_REQUEST_READ,
 )
-from ax_workspace.modules.ax_execution.actions import ACTION_ITEM_COMMAND
+from ax_workspace.modules.ax_execution.actions import (
+    ACTION_ITEM_COMMAND,
+    ACTION_ITEM_COMMAND_TITLE,
+    action_payload_hash,
+)
 from ax_workspace.modules.ax_execution.ai import AiProvider
 
 
@@ -245,18 +249,19 @@ class McpReportsFacade:
         detail = self._application.action_item_detail(principal, action_item_id)
         if str(detail.get("kind", "")).startswith("ax."):
             raise McpDelegatedActionAccessDenied("AX 제안은 사람이 승인합니다")
-        if command not in {entry["id"] for entry in detail.get("allowed_commands", [])}:
-            raise McpDelegatedActionAccessDenied(f"'{command}' is not available on this action item right now")
+        # The server decides what this command actually carries, so what is stored is what will run.
+        canonical = {
+            "action_item_id": action_item_id,
+            "command": command,
+            **self._application.normalize_action_command(principal, action_item_id, command, payload),
+        }
         proposed = self._application.propose_action(
-            principal,
-            UUID(causation_id),
-            ACTION_ITEM_COMMAND,
-            f"판단 확인: {detail.get('subject', '')}",
-            {"action_item_id": action_item_id, "command": command, **payload},
+            principal, UUID(causation_id), ACTION_ITEM_COMMAND, ACTION_ITEM_COMMAND_TITLE, canonical
         )
-        # One confirmation slot per turn: a retry of this call gets its own receipt back, a different judgement is told
-        # to wait for the next turn rather than being answered with someone else's confirmation.
-        if proposed.get("payload_summary") != f"판단 확인: {command} · {action_item_id}":
+        # One confirmation slot per turn. A retry of this exact judgement gets its own receipt; anything else — a
+        # different item, command, version, reason or proposal — is a different judgement and waits for the next turn
+        # rather than being answered with someone else's confirmation.
+        if proposed.get("payload_hash") != action_payload_hash(canonical):
             raise McpDelegatedActionAccessDenied(
                 "이 턴에는 이미 사람이 확인할 다른 판단이 있습니다. 그 판단이 처리된 뒤 다시 요청하세요"
             )
@@ -418,6 +423,20 @@ def _create_bound_persona_server(facade: McpReportsFacade) -> MCPServer:
     return server
 
 
+def _command_capabilities(facade: McpReportsFacade) -> frozenset[str]:
+    """Discovery is a promise the server can keep.
+
+    Inside a delegated turn a command does not run: it raises a confirmation for a person, which needs `action.decide`
+    as well as the authority for the judgement itself — and an AX proposal is never the turn's to decide, so its
+    capability alone is not enough either.
+    """
+    if not os.getenv("AX_MCP_CAUSATION_ID"):
+        return ACTION_ITEM_COMMAND_CAPABILITIES
+    if ACTION_DECIDE not in facade.principal.capabilities:
+        return frozenset()
+    return ACTION_ITEM_COMMAND_CAPABILITIES - {ACTION_DECIDE}
+
+
 def _register_action_item_tools(server: MCPServer, facade: McpReportsFacade) -> None:
     """The one judgement ledger. Policy is the server's envelope; this adapter adds no transition of its own."""
     capabilities = facade.principal.capabilities
@@ -448,7 +467,7 @@ def _register_action_item_tools(server: MCPServer, facade: McpReportsFacade) -> 
     def action_item_get(action_item_id: str) -> dict[str, Any]:
         return facade.action_item_detail(action_item_id)
 
-    if not (ACTION_ITEM_COMMAND_CAPABILITIES & capabilities):
+    if not (_command_capabilities(facade) & capabilities):
         return
 
     @server.tool(

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from typing import Any, Protocol
+import hashlib
+import json
 from uuid import UUID
 
 from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, ACTION_READ, Principal
@@ -41,6 +43,15 @@ class ActionRepository(Protocol):
 #: The generic gated wrapper a delegated turn proposes when it wants a judgement made on an ActionItem.
 #: The turn prepares the answer; only a person approving this Action applies it through the canonical command path.
 ACTION_ITEM_COMMAND = "action_item.command"
+#: The stored title of such a wrapper. The work it judges is named only when the reader may still read it, so nothing
+#: on the row itself outlives their access to it.
+ACTION_ITEM_COMMAND_TITLE = "판단 확인"
+
+
+def action_payload_hash(payload: dict[str, Any]) -> str:
+    """The identity of a proposed effect. Callers compare this, never a display string."""
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 class ActionExecutor(Protocol):
@@ -90,9 +101,11 @@ class ActionApplication:
             raise ActionAccessDenied("action was not found")
         resolved_state = "approved" if decision == "approve" else "rejected"
         if action.state == resolved_state:
-            # A lost HTTP response (or an at-least-once worker replay) must not
-            # make the caller choose between a duplicate effect and a stale error.
-            # The persisted Action is the idempotency boundary for its effect.
+            # A lost HTTP response (or an at-least-once worker replay) must not make the caller choose between a
+            # duplicate effect and a stale error. The receipt is for *this* decision though: deciding bumps the Action
+            # exactly once, so only the version this outcome actually consumed replays.
+            if action.version != expected_version + 1:
+                raise ActionError("action version is stale")
             return self._repository.view(action, principal)
         if action.version != expected_version:
             raise ActionError("action version is stale")

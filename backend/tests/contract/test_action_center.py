@@ -578,3 +578,45 @@ def test_a_legacy_negotiate_cannot_leave_the_ledger_unreadable(tmp_path) -> None
     assert fine.status_code == 200, fine.text
     [waiting] = _pending(client, MINA)
     assert waiting["suggested_changes"] == {"due_date": "2026-12-01"}
+
+
+def test_an_adjustment_may_only_propose_the_fields_an_adjustment_owns(tmp_path) -> None:
+    client, _ = _stack(tmp_path)
+    client.post("/api/work-requests", headers=MINA, json={"title": "제안 필드", "assignee_id": "jiho"})
+    [item] = _pending(client, JIHO)
+
+    refused = _command(
+        client, JIHO, item["action_item_id"], "adjust",
+        expected_version=item["expected_version"], reason="담당을 바꿔 주세요", changes={"assignee_id": "sora"},
+    )
+    assert refused.status_code == 422 and "assignee_id" in refused.text
+    # Nothing moved: the question is still the reviewer's, on the same round, with no decision recorded.
+    [again] = _pending(client, JIHO)
+    assert again["expected_version"] == item["expected_version"]
+    assert _rounds(client, JIHO, item["action_item_id"])[0]["decisions"] == []
+    assert client.get("/api/action-items", headers=MINA).status_code == 200
+
+
+def test_an_ax_approval_replays_only_on_the_version_it_consumed(tmp_path) -> None:
+    """The Action's own approval door holds the same exact-version contract as the judgement it gates."""
+    client, application = _stack(tmp_path)
+    proposal = _ax_proposal(client, application, MINA, "mina", "task.create_self", "업무 생성 확인", {"title": "AX 업무"})
+    decided = client.post(
+        f"/api/actions/{proposal['action_id']}/decide", headers=MINA,
+        json={"expected_version": proposal["version"], "decision": "approve"},
+    )
+    assert decided.status_code == 200, decided.text
+
+    receipt = client.post(
+        f"/api/actions/{proposal['action_id']}/decide", headers=MINA,
+        json={"expected_version": proposal["version"], "decision": "approve"},
+    )
+    assert receipt.status_code == 200 and receipt.json()["state"] == "approved"
+    # A version this decision never consumed is stale, even though the outcome happens to match.
+    for version in (proposal["version"] + 1, proposal["version"] + 2, proposal["version"] - 1):
+        stale = client.post(
+            f"/api/actions/{proposal['action_id']}/decide", headers=MINA,
+            json={"expected_version": version, "decision": "approve"},
+        )
+        assert stale.status_code == 422, f"{version}: {stale.text}"
+    assert len(client.get("/api/my-work", headers=MINA).json()) == 1

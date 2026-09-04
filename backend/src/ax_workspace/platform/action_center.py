@@ -82,9 +82,17 @@ def _revision_changes(value: Any) -> dict[str, Any]:
     unknown = sorted(set(value) - set(REVISABLE_FIELDS))
     if unknown:
         raise ActionError(f"수정안에서 바꿀 수 없는 항목입니다: {', '.join(unknown)}")
-    if value.get("due_date") and not str(value.get("clear_due_date") or ""):
-        _parse_date(value["due_date"])
-    return dict(value)
+    changes: dict[str, Any] = {}
+    for field in ("title", "description", "due_date"):
+        text = str(value.get(field) or "").strip()
+        if text:
+            changes[field] = text
+    if value.get("clear_due_date"):
+        changes["clear_due_date"] = True
+        changes.pop("due_date", None)
+    elif "due_date" in changes:
+        _parse_date(changes["due_date"])
+    return changes
 
 
 def _suggested_changes(conditions: Any) -> dict[str, Any]:
@@ -185,6 +193,23 @@ class WorkRequestActionHandler:
             )
         return rows
 
+    def normalize(self, item: tuple[Any, Any], command: str, payload: dict[str, Any]) -> dict[str, Any]:
+        normalized: dict[str, Any] = {"expected_version": _required_version(payload)}
+        reason = str(payload.get("reason") or "").strip()
+        if reason:
+            normalized["reason"] = reason
+        if command == "adjust":
+            proposed = _proposed_changes(payload.get("changes"))
+            if proposed:
+                normalized["changes"] = proposed
+        elif command == "revise":
+            revision = _revision_changes(payload.get("changes"))
+            if revision:
+                normalized["changes"] = revision
+        elif payload.get("changes"):
+            raise ActionError(f"'{command}'은(는) 변경 항목을 받지 않습니다")
+        return normalized
+
     def execute(self, principal: Principal, item: tuple[Any, Any], command: str, payload: dict[str, Any]) -> None:
         _, request = item
         expected_version = _required_version(payload)
@@ -200,7 +225,7 @@ class WorkRequestActionHandler:
         elif command == "withdraw":
             self._work_requests.withdraw(principal, request.id, expected_version)
         elif command == "revise":
-            changes = _revision_changes(payload.get("changes"))
+            changes = dict(payload.get("changes") or {})
             if not changes:
                 raise ActionError("수정안에는 바뀐 내용이 있어야 합니다")
             self._work_requests.resubmit(
@@ -436,6 +461,12 @@ class AxProposalActionHandler:
             }
         ]
 
+    def normalize(self, item: Any, command: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """An approval carries nothing but the version it answers: the effect is the payload the turn already prepared."""
+        if payload.get("changes") or str(payload.get("reason") or "").strip():
+            raise ActionError("AX 제안 판단은 사유나 변경 항목을 받지 않습니다")
+        return {"expected_version": _required_version(payload)}
+
     def execute(self, principal: Principal, item: Any, command: str, payload: dict[str, Any]) -> None:
         self._actions.decide(principal, item.id, _required_version(payload), command)
 
@@ -583,6 +614,15 @@ class TaskAssignmentActionHandler:
                 else [],
             }
         ]
+
+    def normalize(self, item: tuple[Any, Any], command: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("changes"):
+            raise ActionError("배정 판단은 변경 항목을 받지 않습니다")
+        normalized: dict[str, Any] = {"expected_version": _required_version(payload)}
+        reason = str(payload.get("reason") or "").strip()
+        if reason:
+            normalized["reason"] = reason
+        return normalized
 
     def execute(self, principal: Principal, item: tuple[Any, Any], command: str, payload: dict[str, Any]) -> None:
         assignment, task = item

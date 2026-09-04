@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from ax_workspace.modules.organization_access.application import OrganizationApplication
 from ax_workspace.modules.organization_access.domain import Principal
 from ax_workspace.modules.reports.application import DailyReportApplication
-from ax_workspace.modules.ax_execution.actions import ACTION_ITEM_COMMAND
+from ax_workspace.modules.ax_execution.actions import ACTION_ITEM_COMMAND, ACTION_ITEM_COMMAND_TITLE, action_payload_hash
 from ax_workspace.modules.work.requests import WorkRequestApplication
 from ax_workspace.modules.work.application import TaskApplication, TaskError, TaskState
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
@@ -53,9 +53,7 @@ class SqlAlchemyActionRepository:
         delegated turn. It must reuse the first proposal rather than create a
         second effect. Intentional repeated effects belong in a later turn.
         """
-        payload_hash = hashlib.sha256(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
+        payload_hash = action_payload_hash(payload)
         turn = self._session.scalar(
             select(ConversationTurnRecord)
             .join(ConversationRecord, ConversationRecord.id == ConversationTurnRecord.conversation_id)
@@ -149,6 +147,7 @@ class SqlAlchemyActionRepository:
             "title": action.title,
             "state": action.state,
             "version": action.version,
+            "payload_hash": action.payload_hash,
             "payload_summary": self._summary(action),
             "result": action.result,
             "audit_ref": action.audit_ref,
@@ -175,8 +174,8 @@ class SqlAlchemyActionRepository:
         if action.action_type == "task.assign":
             return f"업무 배정: {action.payload['title']} → {action.payload['assignee_id']}"
         if action.action_type == ACTION_ITEM_COMMAND:
-            # Machine-readable, so a caller can tell which pending confirmation this turn's slot actually holds.
-            return f"판단 확인: {action.payload['command']} · {action.payload['action_item_id']}"
+            # Deliberately says nothing about the target: the row outlives the reader's access to the work it names.
+            return ACTION_ITEM_COMMAND_TITLE
         return action.action_type
 
 
@@ -438,7 +437,8 @@ class ActionPresenter:
         """
         target = self._target_envelope(payload.get("action_item_id"), principal)
         if target is None:
-            return {"subject": str(action.title), "operation_label": "판단 확인", "preview": []}
+            # Not readable now, whatever was readable when the turn proposed it.
+            return {"subject": ACTION_ITEM_COMMAND_TITLE, "operation_label": "판단 확인", "preview": []}
         command = str(payload.get("command") or "")
         label = next((entry["label"] for entry in target.get("allowed_commands", []) if entry["id"] == command), command)
         fields.append({"id": "command", "label": "판단", "value": label, "kind": "state"})
