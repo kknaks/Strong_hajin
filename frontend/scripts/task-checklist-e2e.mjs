@@ -32,12 +32,12 @@ try {
   await navigation.getByRole("button", { name: "내 업무" }).click();
   await page.getByRole("row", { name: new RegExp(title) }).click();
   const drawer = page.getByRole("dialog", { name: "업무 상세" });
-  const checklist = drawer.getByLabel("체크리스트");
+  const checklist = drawer.locator('section[aria-label="체크리스트"]');
   await checklist.waitFor({ timeout: 20_000 });
   await checklist.getByText("아직 단계가 없습니다.", { exact: false }).waitFor();
 
   // Add three steps through the field, one with Enter and the rest with the button.
-  const field = checklist.getByLabel("체크리스트 단계");
+  const field = checklist.locator('input[id^="checklist-"]');
   await field.fill("자료 모으기");
   await field.press("Enter");
   for (const step of ["초안 쓰기", "검토 요청"]) {
@@ -59,7 +59,7 @@ try {
   await checklist.getByText("· 1/2").waitFor({ timeout: 10_000 });
   await drawer.getByRole("button", { name: "상세 닫기" }).click();
   await page.getByRole("row", { name: new RegExp(title) }).click();
-  const reopened = page.getByRole("dialog", { name: "업무 상세" }).getByLabel("체크리스트");
+  const reopened = page.getByRole("dialog", { name: "업무 상세" }).locator('section[aria-label="체크리스트"]');
   await reopened.getByText("· 1/2").waitFor({ timeout: 20_000 });
   const after = await reopened.locator(".checklist-item span").allTextContents();
   if (after.join("|") !== "자료 모으기|초안 쓰기") throw new Error(`checklist did not survive re-open: ${JSON.stringify(after)}`);

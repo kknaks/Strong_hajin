@@ -75,7 +75,7 @@ local-stack:
 		cleanup() { for pid in $$pids; do stop_process_tree "$$pid"; done; for pid in $$pids; do wait "$$pid" 2>/dev/null || true; done; }; \
 		trap cleanup EXIT INT TERM; \
 		$(MAKE) postgres-up; \
-		if ! docker compose exec -T postgres psql -U ax -d "$$(printf '%s' "$(DATABASE_URL)" | sed -E 's#.*/([^/?]+)(\?.*)?$$#\1#')" -tAc "SELECT to_regclass('durable_jobs'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_turns' AND column_name = 'progress_state')" 2>/dev/null | grep -q 'durable_jobs|progress_state'; then \
+		if ! docker compose exec -T postgres psql -U ax -d "$$(printf '%s' "$(DATABASE_URL)" | sed -E 's#.*/([^/?]+)(\?.*)?$$#\1#')" -tAc "SELECT to_regclass('durable_jobs'), to_regclass('task_checklist_items'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_turns' AND column_name = 'progress_state')" 2>/dev/null | grep -q 'durable_jobs|task_checklist_items|progress_state'; then \
 			echo "SCAX schema is not initialized or is behind the current code in $(DATABASE_URL). Run 'make reset-demo' once (it is the only command that creates or drops tables), then 'make local-stack' again." >&2; \
 			exit 2; \
 		fi; \
