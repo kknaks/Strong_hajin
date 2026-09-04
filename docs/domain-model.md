@@ -100,6 +100,17 @@ Projections: `GET /api/work-requests/{id}/timeline`(request_timeline: 회차·�
 
 기술 spike 잔재(`work_records`, `contract_approvals`, `meeting_evidence`, run 기반 `task_assignments`, generic workflow catalog/run/decision API, `technical_spike` 모드)는 2026-09-04에 제거했다.
 
+## 완료·검수·알림 — 결정됨, 아직 구현하지 않음
+
+2026-09-05 설계 논의에서 확정한 경계다. 코드에는 아직 없고, 착수 전에 정본 Work Brief의 Scope에 반영해야 한다.
+
+- **알림은 판단이 아니다.** `확인 필요` ActionItem 원장에는 *지금 이 사람이 답해야 하고, 답하면 상태가 바뀌는 것*만 들어간다. "완료됐으니 알기만 하면 되는 일"을 ActionItem으로 만들면 `allowed_commands`가 빈 유령 판단이 생기고 판단 카운트가 오염된다. 알림은 `activity_events`(append-only 사실 정본) 위의 파생 projection이고, 대상자는 `resource_relationships`(requester·assignee·cc, 필요하면 watcher)에서 파생한다. 알림용 사실을 따로 쓰지 않는다.
+- **완료는 전이가 아니라 질문을 연다.** request·direct로 생긴 Task는 담당자의 완료가 곧 종결이 아니라 immutable TaskDelivery 제출이고, 확인 주체에게 **별도 결과 ActionItem**이 열린다. 승인 Execution만 Task를 `done`으로 만들고, 보완 요청은 같은 결과 ActionItem을 `awaiting_revision`으로 두고 Task를 `in_progress`로 되돌린다. 보완 제출은 새 ActionItem이 아니라 같은 ActionItem의 새 Submission이다. 최초 수락 ActionItem과 결과 확인 ActionItem은 서로 독립적으로 판단·거절될 수 있는 다른 질문이므로 절대 합치지 않는다.
+- **확인 주체는 출처에서 나오고, 정책으로 바꿀 수 있다.** 기본값은 `self → 검수 없음`, `request_effect → 요청자`, `direct → 배정한 관리자`(`task_assignments.assigned_by`)다. 배정자와 담당자가 같으면 자기 승인이 되므로 검수 없음으로 접는다. 정책은 조직 설정으로 덮어쓸 수 있게 하되, `CompletionPolicyPort` 하나가 완료 제출 시점에 이를 해석하고 **역할이 아니라 구체적인 사람으로 확정해 `ReviewAssignment.reviewer_member_id`에 동결**한다. 조직 개편이 나도 이미 열린 확인 건의 담당이 조용히 바뀌지 않는다.
+- **정책은 질문이 열릴 때 얼린다.** `submissions.decision_policy_snapshot`이 이미 그 자리다(현재 값은 가능한 결정과 사유 필수 여부뿐). 완료 검수 정책·다중 리뷰어 quorum도 여기에 동결한다. 정책이 바뀌어도 이미 열린 판단은 열릴 때의 규칙으로 끝난다.
+- **여러 명이 함께 판단하는 것은 스키마가 이미 감당한다.** `review_assignments`는 Submission당 1..N이고 `review_decisions`는 (assignment, submission, actor)에 묶인다. 막고 있는 것은 "pending assignment는 항상 하나"라는 구현 불변식과 quorum 해석의 부재뿐이다. 다만 **독립적인 결재 *단계*를 한 ActionItem에 배열로 넣지 않는다** — 따로 판단·거절될 수 있는 질문은 따로 ActionItem이다.
+- **이것은 설정 가능한 workflow 엔진이 아니다.** 상태 기계·전이 조건·유형별 정책까지는 티켓 workflow와 같은 문제를 푼다. 다르게 두는 것은 (1) 일의 상태와 사람의 판단을 두 축으로 분리하고, (2) 회차·근거를 동결해 "승인할 때 무엇을 보고 있었나"에 답하고, (3) 누가 답해야 하는지를 가변 필드가 아니라 이력 있는 행으로 두고, (4) 정책을 실행 시점에 읽지 않고 질문 시점에 얼리는 것이다. generic workflow catalog/run/decision API는 2026-09-04에 걷어냈고 되돌리지 않는다. 조직이 고를 수 있는 것은 협상 불가능한 불변식(판단을 합치지 않는다·self 업무에 남의 승인을 강제하지 않는다·자기 자신을 승인하지 않는다) 위층뿐이다.
+
 ## 남은 Delta 결정
 
 1. Task 재배정(superseded)·배정 위임 정책, 배정 협의(negotiate) 여부.
