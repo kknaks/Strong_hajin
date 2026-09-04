@@ -332,3 +332,92 @@ def test_an_ax_task_points_back_at_the_action_item_that_proposed_it(tmp_path) ->
 
     # A principal without the action capability sees the Task's actor but not the proposal behind it.
     assert client.get(f"/api/action-items/{proposal['action_id']}", headers=JIHO).status_code in {403, 404}
+
+
+def _ax_execution(client, application, database_url, key: str) -> UUID:
+    from ax_workspace.platform.persistence import ConversationTurnRecord, make_session_factory
+
+    conversation = client.post("/api/conversations", headers=MINA, json={"title": "제안"}).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={**MINA, "Idempotency-Key": key},
+        json={"body": "업무를 만들어줘", "context": []},
+    ).json()
+    with make_session_factory(database_url)() as session:
+        return session.get(ConversationTurnRecord, UUID(accepted["turn_id"])).execution_id
+
+
+def test_a_follow_up_proposal_on_an_ax_created_task_still_previews_its_target(tmp_path) -> None:
+    """The preview reads the target Task, and that Task's own origin points back at an ActionItem.
+
+    Both directions run in one request, so the action layer must hand the task layer a real authorized Action
+    lookup rather than itself.
+    """
+    client, application, database_url = _stack(tmp_path)
+    mina = application.authenticated_principal("mina")
+    created = application.propose_action(
+        mina, _ax_execution(client, application, database_url, "follow-up-1"), "task.create_self", "업무 생성 확인", {"title": "AX가 만든 원본 업무"}
+    )
+    client.post(f"/api/action-items/{created['action_id']}/commands/approve", headers=MINA, json={"expected_version": created["version"]})
+    [task] = [row for row in client.get("/api/my-work", headers=MINA).json() if row["title"] == "AX가 만든 원본 업무"]
+
+    # A second proposal that edits that same Task; its preview has to resolve the target title.
+    follow_up = application.propose_action(
+        mina,
+        _ax_execution(client, application, database_url, "follow-up-2"),
+        "task.update",
+        "업무 수정 확인",
+        {"task_id": task["task_id"], "expected_version": task["version"], "changes": {"due_date": "2026-10-01"}},
+    )
+    assert follow_up["subject"] == "AX가 만든 원본 업무"
+    assert {row["label"]: row["value"] for row in follow_up["preview"]}["대상 업무"] == "AX가 만든 원본 업무"
+
+    detail = client.get(f"/api/action-items/{follow_up['action_id']}", headers=MINA)
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["subject"] == "AX가 만든 원본 업무"
+    listed = client.get("/api/actions", headers=MINA)
+    assert listed.status_code == 200, listed.text
+    assert "업무 수정 확인" in [row["title"] for row in listed.json()]
+
+
+def test_the_source_label_is_the_work_that_was_created_not_the_proposal_label(tmp_path) -> None:
+    client, application, database_url = _stack(tmp_path)
+    mina = application.authenticated_principal("mina")
+    proposal = application.propose_action(
+        mina, _ax_execution(client, application, database_url, "label-1"), "task.create_self", "업무 생성 확인", {"title": "AX 왕복 업무"}
+    )
+    client.post(f"/api/action-items/{proposal['action_id']}/commands/approve", headers=MINA, json={"expected_version": proposal["version"]})
+    [task] = [row for row in client.get("/api/my-work", headers=MINA).json() if row["title"] == "AX 왕복 업무"]
+
+    origin = client.get(f"/api/tasks/{task['task_id']}", headers=MINA).json()["origin"]
+    # The label names the work, not the internal confirmation wording.
+    assert origin["source"] == {"type": "action_item", "id": proposal["action_id"], "title": "AX 왕복 업무"}
+    assert "업무 생성 확인" not in str(origin)
+
+
+def test_without_the_action_capability_the_task_reads_but_its_proposal_does_not(tmp_path) -> None:
+    client, application, database_url = _stack(tmp_path)
+    from ax_workspace.modules.organization_access.domain import ACTION_READ, Principal
+    from ax_workspace.modules.work.application import TaskApplication
+    from ax_workspace.platform.actions import SqlAlchemyActionRepository
+    from ax_workspace.platform.persistence import make_session_factory
+    from ax_workspace.platform.work_tasks import SqlAlchemyTaskRepository, SqlAlchemyWorkRequestRepository
+
+    mina = application.authenticated_principal("mina")
+    proposal = application.propose_action(
+        mina, _ax_execution(client, application, database_url, "withheld-1"), "task.create_self", "업무 생성 확인", {"title": "권한 없는 왕복 업무"}
+    )
+    client.post(f"/api/action-items/{proposal['action_id']}/commands/approve", headers=MINA, json={"expected_version": proposal["version"]})
+    [task] = [row for row in client.get("/api/my-work", headers=MINA).json() if row["title"] == "권한 없는 왕복 업무"]
+
+    limited = Principal(mina.id, mina.display_name, mina.organization_scope, frozenset(mina.capabilities - {ACTION_READ}))
+    with make_session_factory(database_url)() as session:
+        tasks = TaskApplication(
+            SqlAlchemyTaskRepository(session), SqlAlchemyWorkRequestRepository(session), SqlAlchemyActionRepository(session)
+        )
+        view = tasks.get(limited, UUID(task["task_id"]))
+
+    # The Task is theirs to read; the proposal behind it is not, so no source and no title leak.
+    assert view["title"] == "권한 없는 왕복 업무" and view["access"] == "owner"
+    assert view["origin"]["kind"] == "self_created" and view["origin"]["source"] is None
+    assert proposal["action_id"] not in str(view["origin"])

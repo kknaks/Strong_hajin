@@ -103,6 +103,9 @@ class SqlAlchemyActionRepository:
         )
         return self._session.scalar(statement.with_for_update().execution_options(populate_existing=True) if lock else statement)
 
+    def subject_label(self, action: ActionItemRecord) -> str:
+        return action_subject_label(action)
+
     def list_for(self, owner_id: str) -> list[ActionItemRecord]:
         return list(
             self._session.scalars(
@@ -217,7 +220,7 @@ class SqlAlchemyActionExecutor:
                 SqlAlchemyDailyReportDraftWorkflow(self._session, SqlAlchemyWorkRecordSource(self._session), self._report_provider),
             ).submit(principal, str(action.payload["report_id"]), str(action.payload["draft_id"]), int(action.payload["expected_version"]), action.payload.get("reason"))
         if action.action_type == "task.create_self":
-            return TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session), self).create_self(
+            return TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session), SqlAlchemyActionRepository(self._session)).create_self(
                 principal, str(action.payload["title"]), causation_key=str(action.id), source_action_item_id=action.id
             )
         if action.action_type == "task.update":
@@ -225,7 +228,7 @@ class SqlAlchemyActionExecutor:
             for field in ("start_date", "due_date"):
                 if field in changes:
                     changes[field] = _parse_date(changes[field])
-            return TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session), self).update(
+            return TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session), SqlAlchemyActionRepository(self._session)).update(
                 UUID(str(action.payload["task_id"])), principal, int(action.payload["expected_version"]), changes
             )
         if action.action_type == "task.assign":
@@ -241,7 +244,7 @@ class SqlAlchemyActionExecutor:
         if action.action_type == "task.assignment.decline":
             return self._assignments().decline(principal, UUID(str(action.payload["assignment_id"])), str(action.payload.get("reason") or ""))
         if action.action_type == "task.transition":
-            return TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session), self).transition(
+            return TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session), SqlAlchemyActionRepository(self._session)).transition(
                 UUID(str(action.payload["task_id"])), principal, TaskState(str(action.payload["target"])),
                 action.payload.get("reason"), int(action.payload["expected_version"])
             )
@@ -286,6 +289,16 @@ _OPERATION_LABELS: dict[str, str] = {
 }
 _TASK_STATE_LABELS: dict[str, str] = {"open": "대기", "in_progress": "진행 중", "blocked": "막힘", "done": "완료", "cancelled": "취소"}
 _UNKNOWN_MEMBER = "확인할 수 없는 구성원"
+_CREATION_KINDS = {"task.create_self", "work_request.create", "task.assign"}
+
+
+def action_subject_label(action: ActionItemRecord) -> str:
+    """What the proposal is about, in the words of the work itself rather than the confirmation wording."""
+    if action.action_type in _CREATION_KINDS:
+        title = (action.payload or {}).get("title")
+        if title:
+            return str(title)
+    return str(action.title)
 
 
 class ActionPresenter:
@@ -309,8 +322,8 @@ class ActionPresenter:
         fields: list[dict[str, str]] = []
         subject = action.title
 
-        if kind in {"task.create_self", "work_request.create", "task.assign"}:
-            subject = str(payload.get("title") or action.title)
+        if kind in _CREATION_KINDS:
+            subject = action_subject_label(action)
             self._text(fields, "description", "설명", payload.get("description"))
             if kind == "work_request.create":
                 self._person(fields, "requester", "요청자", action.owner_id, principal)
@@ -388,7 +401,7 @@ class ActionPresenter:
         cached = self._readable_task_cache.get(key)
         if cached is None:
             try:
-                TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session), self).get(principal, task_id)
+                TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session), SqlAlchemyActionRepository(self._session)).get(principal, task_id)
                 cached = True
             except (TaskError, ValueError):
                 cached = False
@@ -435,6 +448,6 @@ class ActionPresenter:
         if principal is None or task_id in (None, ""):
             return None
         try:
-            return str(TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session), self).get(principal, UUID(str(task_id)))["title"])
+            return str(TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session), SqlAlchemyActionRepository(self._session)).get(principal, UUID(str(task_id)))["title"])
         except (TaskError, ValueError):
             return None

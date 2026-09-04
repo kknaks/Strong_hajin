@@ -66,8 +66,26 @@ class TaskRepository(Protocol):
     def record_activity(self, task: Any, actor_id: str, event_kind: str, summary: str, *, before_ref: str | None = None, reason: str | None = None) -> None: ...
 
 
+class ActionSourcePort(Protocol):
+    """The authorized Action lookup a Task's origin needs. Passing anything else is a type error, not a 500."""
+
+    def action(self, action_id: UUID, owner_id: str, *, lock: bool = False) -> Any: ...
+    def subject_label(self, action: Any) -> str: ...
+
+
+class WorkRequestSourcePort(Protocol):
+    """The authorized WorkRequest lookup a Task's origin needs."""
+
+    def list_for(self, principal_id: str) -> list[Any]: ...
+
+
 class TaskApplication:
-    def __init__(self, repository: TaskRepository, requests: Any | None = None, actions: Any | None = None) -> None:
+    def __init__(
+        self,
+        repository: TaskRepository,
+        requests: WorkRequestSourcePort | None = None,
+        actions: ActionSourcePort | None = None,
+    ) -> None:
         self.repository = repository
         # Reading a Task's origin may need the resource behind it, always through that module's own authorized lookup.
         self._requests = requests
@@ -298,7 +316,8 @@ class TaskApplication:
         action = self._actions.action(action_item_id, str(principal.id))
         if action is None:
             return None
-        return {"type": "action_item", "id": str(action.id), "title": action.title}
+        # The label names the work that was created, not the internal confirmation wording.
+        return {"type": "action_item", "id": str(action.id), "title": self._actions.subject_label(action)}
 
     def _actor(self, member_id: Any) -> dict[str, str] | None:
         if not member_id:
