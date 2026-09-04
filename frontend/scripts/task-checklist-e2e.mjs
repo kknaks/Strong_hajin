@@ -46,7 +46,7 @@ try {
     // Let the list settle before the next add, so the row nodes are not replaced under the next action.
     await checklist.locator(".checklist-item", { hasText: step }).waitFor({ timeout: 10_000 });
   }
-  await checklist.getByText("· 0/3").waitFor({ timeout: 10_000 });
+  await checklist.locator(".checklist-progress[data-done='0'][data-total='3']").waitFor({ timeout: 10_000 });
   const texts = await checklist.locator(".checklist-item span").allTextContents();
   if (texts.join("|") !== "자료 모으기|초안 쓰기|검토 요청") throw new Error(`unexpected order: ${JSON.stringify(texts)}`);
 
@@ -55,18 +55,18 @@ try {
   const secondStep = checklist.getByRole("checkbox", { name: "초안 쓰기" });
   await secondStep.waitFor({ state: "visible", timeout: 10_000 });
   await secondStep.click();
-  await checklist.getByText("· 1/3").waitFor({ timeout: 10_000 });
+  await checklist.locator(".checklist-progress[data-done='1'][data-total='3']").waitFor({ timeout: 10_000 });
   if (!(await secondStep.isChecked())) throw new Error("the checkbox did not follow the server's answer");
   const doneCount = await checklist.locator(".checklist-item.done").count();
   if (doneCount !== 1) throw new Error(`expected one finished step, found ${doneCount}`);
 
   // Remove one, then confirm the state survives closing and re-opening the drawer.
   await checklist.getByRole("button", { name: "검토 요청 삭제" }).click();
-  await checklist.getByText("· 1/2").waitFor({ timeout: 10_000 });
+  await checklist.locator(".checklist-progress[data-done='1'][data-total='2']").waitFor({ timeout: 10_000 });
   await drawer.getByRole("button", { name: "상세 닫기" }).click();
   await page.getByRole("row", { name: new RegExp(title) }).click();
   const reopened = page.getByRole("dialog", { name: "업무 상세" }).locator('section[aria-label="체크리스트"]');
-  await reopened.getByText("· 1/2").waitFor({ timeout: 20_000 });
+  await reopened.locator(".checklist-progress[data-done='1'][data-total='2']").waitFor({ timeout: 20_000 });
   const after = await reopened.locator(".checklist-item span").allTextContents();
   if (after.join("|") !== "자료 모으기|초안 쓰기") throw new Error(`checklist did not survive re-open: ${JSON.stringify(after)}`);
 
