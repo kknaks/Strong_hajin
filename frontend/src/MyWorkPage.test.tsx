@@ -113,12 +113,12 @@ describe("work relation information architecture", () => {
     renderPage();
     await openRelationTab();
 
-    const toMe = within(screen.getByLabelText("내게 요청된 업무"));
+    const toMe = within(screen.getByLabelText("받은 업무"));
     expect(toMe.getByText("내게 온 검토 요청")).toBeTruthy();
     expect(toMe.getByText("이미 판단한 요청")).toBeTruthy(); // resolved history stays visible
     expect(toMe.queryByText("내가 보낸 요청")).toBeNull();
 
-    const byMe = within(screen.getByLabelText("내가 요청한 업무"));
+    const byMe = within(screen.getByLabelText("보낸 업무"));
     expect(byMe.getByText("내가 보낸 요청")).toBeTruthy();
     expect(byMe.queryByText("내게 온 검토 요청")).toBeNull();
 
@@ -126,22 +126,24 @@ describe("work relation information architecture", () => {
     expect(cc.getByText("참조로 받은 요청")).toBeTruthy();
     expect(cc.queryByText("내가 보낸 요청")).toBeNull();
 
-    // Roles are read from each row, and the viewer is named as 나 on their own side.
+    // Each list names the other party, from the side the reader is on — never a fixed role column.
     const row = byMe.getByText("내가 보낸 요청").closest("tr") as HTMLElement;
     expect(within(row).getByText("지호")).toBeTruthy(); // display names are shortened by personName
-    expect(within(row).getByText("나")).toBeTruthy();
+    expect(within(row).queryByText("나")).toBeNull(); // the reader is not their own counterpart
+    expect(within(screen.getByLabelText("보낸 업무")).getByText("담당자")).toBeTruthy();
+    expect(within(screen.getByLabelText("받은 업무")).getByText("보낸 사람")).toBeTruthy();
   });
 
   it("shows the assignment section only with the capability and never mixes it with requests", async () => {
     renderPage();
     await openRelationTab();
-    expect(screen.queryByLabelText("내가 배정한 업무")).toBeNull();
+    expect(screen.queryByLabelText("조직 업무")).toBeNull();
     cleanup();
 
     renderPage({ canAssignTasks: true });
     await openRelationTab();
-    const assignments = within(screen.getByLabelText("내가 배정한 업무"));
-    expect(assignments.getByText("내가 배정한 업무가 없습니다")).toBeTruthy();
+    const assignments = within(screen.getByLabelText("조직 업무"));
+    expect(assignments.getByText("내가 담당자를 지정한 업무가 없습니다")).toBeTruthy();
     expect(assignments.queryByText("내가 보낸 요청")).toBeNull();
   });
 
@@ -180,7 +182,7 @@ describe("work relation information architecture", () => {
 
     // The persistent relationship tab holds canonical rows only; the AX proposal stays in the decision panel.
     await openRelationTab();
-    for (const label of ["내게 요청된 업무", "내가 요청한 업무", "참조된 업무"]) {
+    for (const label of ["받은 업무", "보낸 업무", "참조된 업무"]) {
       expect(within(screen.getByLabelText(label)).queryByText("AX가 제안한 업무")).toBeNull();
     }
     expect(within(document.querySelector(".decision-panel") as HTMLElement).getByText("AX가 제안한 업무")).toBeTruthy();
@@ -201,8 +203,8 @@ describe("work relation information architecture", () => {
     renderPage();
     await openRelationTab();
 
-    // 내 업무 → 요청·배정 → 내가 요청한 업무 → 상세 → 내용 고쳐 재상신
-    const row = within(screen.getByLabelText("내가 요청한 업무")).getByText("내가 보낸 요청").closest("tr") as HTMLElement;
+    // 내 업무 → 요청·배정 → 보낸 업무 → 상세 → 내용 고쳐 재상신
+    const row = within(screen.getByLabelText("보낸 업무")).getByText("내가 보낸 요청").closest("tr") as HTMLElement;
     fireEvent.click(within(row).getByRole("button", { name: "상세보기" }));
     const drawer = await screen.findByRole("dialog", { name: "업무 요청 상세" });
     expect(within(drawer).getByRole("button", { name: "내용 고쳐 재상신" })).toBeTruthy();

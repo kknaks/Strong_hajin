@@ -3,7 +3,7 @@ import { chromium } from "@playwright/test";
 import { loginAs, switchAccount } from "./e2e-helpers.mjs";
 
 // The requester's visible path for a negotiated request:
-// 내 업무 → 요청·배정 → 내가 요청한 업무 → 상세 → 내용 고쳐 재상신, with the round history preserved.
+// 내 업무 → 요청·배정 → 보낸 업무 → 상세 → 내용 고쳐 재상신, with the round history preserved.
 const frontendUrl = process.env.SCAX_E2E_URL ?? "http://127.0.0.1:5176";
 const title = `관계 IA 요청 ${Date.now()}`;
 const revisedTitle = `${title} (조정 반영)`;
@@ -50,12 +50,12 @@ try {
     throw new Error("the misleading 보낸 업무 tab is still present");
   }
   await relationTab.click();
-  const sentSection = page.locator("section[aria-label='내가 요청한 업무']");
+  const sentSection = page.locator("section[aria-label='보낸 업무']");
   await sentSection.waitFor();
   const row = sentSection.locator("tr", { hasText: title });
   await row.waitFor({ timeout: 20_000 });
   // The request the assignee is negotiating must not be filed as something requested of me.
-  if (await page.locator("section[aria-label='내게 요청된 업무']").locator("tr", { hasText: title }).count()) {
+  if (await page.locator("section[aria-label='받은 업무']").locator("tr", { hasText: title }).count()) {
     throw new Error("a request the persona sent was also listed as requested of them");
   }
   await row.getByRole("button", { name: "상세보기" }).click();
@@ -74,7 +74,7 @@ try {
 
   // Same canonical request, new round: it stays in the same section under the new title.
   await page.getByRole("tab", { name: "요청·배정" }).click();
-  await page.locator("section[aria-label='내가 요청한 업무']").locator("tr", { hasText: revisedTitle }).waitFor({ timeout: 20_000 });
+  await page.locator("section[aria-label='보낸 업무']").locator("tr", { hasText: revisedTitle }).waitFor({ timeout: 20_000 });
   const rounds = await page.evaluate(async (requestTitle) => {
     const list = await (await fetch("/api/work-requests", { headers: { "X-Demo-Persona": "mina" } })).json();
     const found = list.find((item) => item.title === requestTitle);

@@ -42,7 +42,7 @@ try {
   // The discussion thread lives on the request itself, reached from the persistent relationship tab.
   await navigation.getByRole("button", { name: "내 업무" }).click();
   await page.getByRole("tab", { name: "요청·배정" }).click();
-  await page.locator("section[aria-label='내게 요청된 업무']").locator("tr", { hasText: title }).getByRole("button", { name: "상세보기" }).click();
+  await page.locator("section[aria-label='받은 업무']").locator("tr", { hasText: title }).getByRole("button", { name: "상세보기" }).click();
   const requestDrawer = page.getByRole("dialog", { name: "업무 요청 상세" });
   await requestDrawer.waitFor();
   const commentField = requestDrawer.getByPlaceholder("무엇이 걸리는지 남긴다");

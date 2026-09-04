@@ -35,7 +35,7 @@ import {
 } from "./labels";
 import { DateField } from "./DateField";
 import { ConfirmModal, Drawer } from "./Modal";
-import type { ChecklistItem, DirectTask, MaterialExtraction, Persona, RequestTimeline, TaskMaterial, TaskMaterialKind, TaskPatch, WorkRequest } from "./viewModels";
+import type { ChecklistItem, DirectTask, MaterialExtraction, Persona, RequestTimeline, TaskMaterial, TaskMaterialKind, TaskOrigin, TaskPatch, WorkRequest } from "./viewModels";
 
 export type TaskAction = "start" | "block" | "resume" | "complete" | "cancel";
 
@@ -98,6 +98,15 @@ function formatBytes(size: number): string {
 }
 
 /* ---------------------------------------------------------------- task detail (drawer 840) */
+
+/** How a Task came to this person, in a sentence. Never the raw role the server used to classify it. */
+export function originSentence(origin: TaskOrigin): string | null {
+  const actor = origin.actor ? personName(origin.actor.display_name) : null;
+  if (actor && origin.kind === "work_request") return `${actor}가 보낸 업무`;
+  if (actor && origin.kind === "direct_assignment") return `${actor}가 담당자를 지정함`;
+  if (actor) return `${actor}가 만든 업무`;
+  return origin.source ? "AX 제안에서 생성됨" : null;
+}
 
 export function TaskDetailDrawer({
   task,
@@ -411,6 +420,21 @@ export function TaskDetailDrawer({
         title={task.title}
       >
         <div className="form-stack">
+          {task.origin && (
+            /* Only a real counterpart or a real source is named, and it is named as what happened rather than as a
+               role column. A task nobody handed over has neither. */
+            <p aria-label="업무 출처" className="origin-chip">
+              {originSentence(task.origin) && <span className="badge outline">{originSentence(task.origin)}</span>}
+              {task.origin.source &&
+                (onOpenSource ? (
+                  <button className="btn link" onClick={() => onOpenSource(task.origin!.source!)} type="button">
+                    {task.origin.source.title ?? "출처 보기"}
+                  </button>
+                ) : (
+                  <small className="t-meta">{task.origin.source.title}</small>
+                ))}
+            </p>
+          )}
           <div className="field">
             <label htmlFor={`task-title-${task.task_id}`}>제목</label>
             <input className="title-input" disabled={!editable} id={`task-title-${task.task_id}`} onChange={(event) => setTitle(event.target.value)} value={title} />
@@ -419,20 +443,6 @@ export function TaskDetailDrawer({
             <div>
               <dt>담당자</dt>
               <dd>{ownerName}</dd>
-            </div>
-            <div>
-              <dt>{task.origin?.actor_role ?? "요청자"}</dt>
-              <dd>
-                {task.origin?.actor ? personName(task.origin.actor.display_name) : "본인 생성"}
-                {task.origin?.source &&
-                  (onOpenSource ? (
-                    <button className="btn link" onClick={() => onOpenSource(task.origin!.source!)} type="button">
-                      {task.origin.source.title ?? "출처 보기"}
-                    </button>
-                  ) : (
-                    <small className="t-meta"> · {task.origin.source.title}</small>
-                  ))}
-              </dd>
             </div>
             <div>
               <dt>시작일</dt>

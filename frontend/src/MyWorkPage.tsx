@@ -332,9 +332,10 @@ export function MyWorkPage({
             <>
             <RequestRelationSection
               emptyHint="동료가 보낸 요청이 도착하면 여기에 쌓입니다."
-              emptyTitle="내게 요청된 업무가 없습니다"
+              emptyTitle="받은 업무가 없습니다"
+              counterpart="requester"
               hint="판단이 끝난 요청도 기록으로 남습니다"
-              label="내게 요청된 업무"
+              label="받은 업무"
               onOpen={setSelectedRequest}
               people={people}
               personaId={personaId}
@@ -342,10 +343,11 @@ export function MyWorkPage({
             />
             {canCreateWorkRequests && (
               <RequestRelationSection
-                emptyHint="새 업무 추가에서 동료에게 요청할 수 있습니다."
-                emptyTitle="내가 요청한 업무가 없습니다"
+                counterpart="assignee"
+                emptyHint="새 업무 추가에서 동료에게 업무를 보낼 수 있습니다."
+                emptyTitle="보낸 업무가 없습니다"
                 hint="조정 요청을 받으면 상세에서 내용을 고쳐 재상신합니다"
-                label="내가 요청한 업무"
+                label="보낸 업무"
                 onOpen={setSelectedRequest}
                 people={people}
                 personaId={personaId}
@@ -353,15 +355,15 @@ export function MyWorkPage({
               />
             )}
             {canAssignTasks && (
-              <section aria-label="내가 배정한 업무" className="sent-section">
+              <section aria-label="조직 업무" className="sent-section">
                 <h2 className="section-title">
-                  내가 배정한 업무 <small>수락하면 그 사람의 업무가 됩니다</small>
+                  조직 업무 <small>내가 담당자를 지정한 업무. 수락하면 그 사람의 업무가 됩니다</small>
                 </h2>
                 <table className="plain-table">
                   <thead>
                     <tr>
                       <th>업무명</th>
-                      <th className="center">배정 상태</th>
+                      <th className="center">수락 상태</th>
                       <th className="center">업무 상태</th>
                       <th className="center">담당자</th>
                       <th className="center">기한</th>
@@ -370,10 +372,10 @@ export function MyWorkPage({
                   <tbody>
                     {sentAssignments.length === 0 && (
                       <tr>
-                        <td colSpan={5}>
+                        <td colSpan={4}>
                           <div className="empty-state">
-                            <b>내가 배정한 업무가 없습니다</b>
-                            <p>새 업무 추가에서 담당자를 팀원으로 고르면 배정됩니다.</p>
+                            <b>내가 담당자를 지정한 업무가 없습니다</b>
+                            <p>새 업무 추가에서 담당자를 팀원으로 고르면 그 사람에게 갑니다.</p>
                           </div>
                         </td>
                       </tr>
@@ -402,6 +404,7 @@ export function MyWorkPage({
               <RequestRelationSection
                 emptyHint=""
                 emptyTitle=""
+                counterpart="both"
                 hint="읽고 논의할 수 있지만 판단은 담당자가 합니다"
                 label="참조된 업무"
                 onOpen={setSelectedRequest}
@@ -615,6 +618,7 @@ function RequestRelationSection({
   people,
   personaId,
   onOpen,
+  counterpart,
 }: {
   label: string;
   hint: string;
@@ -624,8 +628,11 @@ function RequestRelationSection({
   people: Persona[];
   personaId: string;
   onOpen: (request: WorkRequest) => void;
+  /** Which side of the request the reader is not on. A list names the other party, never a fixed role column. */
+  counterpart: "requester" | "assignee" | "both";
 }) {
   const who = (memberId: string | null | undefined, fallback: string) => (memberId === personaId ? "나" : displayNameOf(people, memberId, fallback));
+  const counterpartLabel = counterpart === "requester" ? "보낸 사람" : counterpart === "assignee" ? "담당자" : "보낸 사람 → 담당자";
   return (
     <section aria-label={label} className="sent-section">
       <h2 className="section-title">
@@ -636,8 +643,7 @@ function RequestRelationSection({
           <tr>
             <th>업무명</th>
             <th className="center">상태</th>
-            <th className="center">담당자</th>
-            <th className="center">요청자</th>
+            <th className="center">{counterpartLabel}</th>
             <th className="end">액션</th>
           </tr>
         </thead>
@@ -658,8 +664,11 @@ function RequestRelationSection({
               <td className="center">
                 <StatusText label={workRequestStateLabel[request.state]} state={request.state} />
               </td>
-              <td className="center">{who(request.assignee_id, "담당자")}</td>
-              <td className="center">{who(request.requester_id, "요청자")}</td>
+              <td className="center">
+                {counterpart === "both"
+                  ? `${who(request.requester_id, "보낸 사람")} → ${who(request.assignee_id, "담당자")}`
+                  : who(counterpart === "requester" ? request.requester_id : request.assignee_id, counterpartLabel)}
+              </td>
               <td className="end">
                 <button className="btn h30 ghost" onClick={() => onOpen(request)} type="button">
                   상세보기

@@ -61,6 +61,17 @@ def _primary_unit(session: Session, member_id: str) -> str | None:
     return membership.organization_id if membership else None
 
 
+def _person(session: Session, member_id: str) -> str:
+    """A ledger line reads as a sentence about people, so it names them rather than their ids.
+
+    `민아 (구성원)` reads as `민아` inside a sentence; the role belongs to the org surface, not to every line.
+    """
+    member = session.get(MemberRecord, member_id)
+    if member is None:
+        return member_id
+    return member.display_name.split(" (")[0].strip() or member.display_name
+
+
 def _content_hash(payload: dict) -> str:
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -412,7 +423,9 @@ class SqlAlchemyWorkRequestRepository:
         )
         ActivityLedger(self._session).record(
             target_type="work_request", target_id=str(request.id), event_kind="work_request.created", actor_id=requester_id,
-            after_ref=f"work_request:{request.id}@1", safe_summary=f"업무 요청 생성: {title}", request_thread_id=thread.id,
+            after_ref=f"work_request:{request.id}@1",
+            safe_summary=f"{_person(self._session, requester_id)}가 {_person(self._session, assignee_id)}에게 업무를 보냄: {title}",
+            request_thread_id=thread.id,
         )
         return request, True
 
@@ -944,7 +957,8 @@ class SqlAlchemyTaskAssignmentRepository:
         self._session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now))
         ActivityLedger(self._session).record(
             target_type="task", target_id=str(task.id), event_kind="task.assigned", actor_id=assigner_id,
-            after_ref=f"task_assignment:{assignment.id}", safe_summary=f"업무 배정: {title} → {assignee_id}",
+            after_ref=f"task_assignment:{assignment.id}",
+            safe_summary=f"{_person(self._session, assigner_id)}가 담당자를 {_person(self._session, assignee_id)}로 지정함: {title}",
         )
         self._session.flush()
         self._session.refresh(task)

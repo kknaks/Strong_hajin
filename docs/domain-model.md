@@ -100,6 +100,25 @@ Projections: `GET /api/work-requests/{id}/timeline`(request_timeline: 회차·�
 
 기술 spike 잔재(`work_records`, `contract_approvals`, `meeting_evidence`, run 기반 `task_assignments`, generic workflow catalog/run/decision API, `technical_spike` 모드)는 2026-09-04에 제거했다.
 
+## Actor 용어 3층과 금지 별칭
+
+같은 사람을 가리키는 말이 층마다 달라서 생기는 혼선을 막는다. **아래로만 번역하고, 위로 거슬러 올라가 새 사실을 만들지 않는다.**
+
+| 층 | 무엇 | 예 |
+|---|---|---|
+| Canonical domain | 저장된 사실. 이것만이 정본이다 | `work_requests.requester_id`·`assignee_id`, `task_assignments.assignee_id`·`assigned_by`·`assignment_kind`, `tasks.source_work_request_id`·`source_action_item_id` |
+| Internal projection | 정본에서 해소한 읽기 전용 계산값. 저장하지 않는다 | `TaskOrigin{kind, actor_role, actor, source}`, `assignee`, `TaskApplication._origin_projection` |
+| UI | 읽는 사람의 자리에서 본 상대 | 담당자, 보낸 사람, 출처 chip, "A가 B에게 요청/배정" |
+
+**해소 규칙.** Task는 자기 자신에 대한 사실만 갖는다. 요청자는 `source_work_request_id`로 연결된 WorkRequest에서, 현재 담당자는 active TaskAssignment에서, 지정·변경 actor는 그 TaskAssignment의 `assigned_by`에서 해소한다(셀프 생성은 상대가 없다). `ResourceRelationship`은 접근 관계와 후보 projection일 뿐 WorkRequest·TaskAssignment 정본을 대신하지 않는다.
+
+**금지 별칭.**
+- Task에 requester·assigner·creator를 **고정 역할 칼럼처럼 다루지 않는다.** 상대가 없는 업무에 `생성자: 본인`을 채워 넣는 것은 사실이 아니라 합성이다. 상대가 없으면 `origin`은 아예 없다.
+- 일반 Task 상세·수정 화면에 요청자/배정자 고정 metadata 행을 두지 않는다. 담당자 하나와, 있을 때만 나타나는 출처 chip으로 말한다.
+- 목록은 읽는 사람의 반대편만 이름한다: 받은 업무는 보낸 사람, 보낸 업무는 담당자. 두 역할을 나란히 고정 칼럼으로 두지 않는다.
+- requester·assigner·creator는 generic edit field가 아니다. 담당자 변경도 일반 수정이 아니라 별도 command다.
+- canonical role과 audit(누가 언제 무엇을 했는지)은 그대로 보존한다. 관리자·감사 화면에서만 역할을 명시적으로 드러낸다.
+
 ## 완료·검수·알림 — 결정됨, 아직 구현하지 않음
 
 2026-09-05 설계 논의에서 확정한 경계다. 코드에는 아직 없고, 착수 전에 정본 Work Brief의 Scope에 반영해야 한다.
@@ -113,6 +132,7 @@ Projections: `GET /api/work-requests/{id}/timeline`(request_timeline: 회차·�
 
 ## 남은 Delta 결정
 
-1. Task 재배정(superseded)·배정 위임 정책, 배정 협의(negotiate) 여부.
-2. Evidence를 외부 링크(`source_kind=link`, `mutable_source=true`)로 채택하는 경로.
-3. ERD 문서(mediness) §3·§4의 WorkflowRun 전제와 이 구현의 Conversation 실행 모델 차이는 ERD §10 구현 Delta로 기록했다. SPEC-001/002 본문 동기화는 후속.
+1. **`tasks.owner_id` 제거와 `created_by` 도입.** 현재 Task는 `owner_id`로 현재 담당자를 복제해 들고 있는데, 정본은 active TaskAssignment다. Task가 직접 소유해야 하는 것은 `created_by`뿐이다. projection·UI는 이미 정본에서 해소하도록 정리했으므로(2026-09-05) 남은 것은 schema/domain delta이고, 별도 unit으로 처리한다.
+2. Task 재배정(superseded)·배정 위임 정책, 배정 협의(negotiate) 여부.
+3. Evidence를 외부 링크(`source_kind=link`, `mutable_source=true`)로 채택하는 경로.
+4. ERD 문서(mediness) §3·§4의 WorkflowRun 전제와 이 구현의 Conversation 실행 모델 차이는 ERD §10 구현 Delta로 기록했다. SPEC-001/002 본문 동기화는 후속.

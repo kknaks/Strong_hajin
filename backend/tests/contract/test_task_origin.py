@@ -34,18 +34,17 @@ def _origin(client, headers, task_id: str) -> dict:
     return client.get(f"/api/tasks/{task_id}", headers=headers).json()["origin"]
 
 
-def test_a_self_created_task_names_its_creator_not_a_requester(tmp_path) -> None:
+def test_a_task_i_made_for_myself_has_no_counterpart_to_name(tmp_path) -> None:
+    """Nobody asked for it and nobody assigned it, so there is no requester and no assigner to invent."""
     client, _, _ = _stack(tmp_path)
     task = client.post("/api/tasks", headers=MINA, json={"title": "내가 만든 업무"}).json()
 
-    origin = _origin(client, MINA, task["task_id"])
-    assert origin["kind"] == "self_created"
-    assert origin["actor_role"] == "생성자"
-    assert origin["actor"] == {"member_id": "mina", "display_name": "민아 (구성원)"}
-    assert origin["source"] is None
-    # The list projection carries the same answer, so no surface has to ask twice.
+    assert _origin(client, MINA, task["task_id"]) is None
+    # The list projection says the same thing, so no surface has to invent a label of its own.
     [listed] = [row for row in client.get("/api/my-work", headers=MINA).json() if row["task_id"] == task["task_id"]]
-    assert listed["origin"] == origin
+    assert listed["origin"] is None
+    # The canonical record still says exactly what happened: mina assigned this to herself.
+    assert listed["assignee"] == {"member_id": "mina", "display_name": "민아 (구성원)"}
 
 
 def test_an_accepted_request_names_the_requester_and_survives_a_new_session(tmp_path) -> None:
@@ -118,7 +117,10 @@ def test_an_approved_ax_proposal_records_the_action_item_it_came_from(tmp_path) 
     [task] = [row for row in client.get("/api/my-work", headers=MINA).json() if row["title"] == "AX가 만든 업무"]
     detail = _fresh_client(database_url, tmp_path).get(f"/api/tasks/{task['task_id']}", headers=MINA).json()
     assert detail["lineage"]["source_action_item_id"] == proposal["action_id"]
+    # AX prepared it and mina approved it: the source is worth showing, but she is not her own counterpart.
     assert detail["origin"]["kind"] == "self_created"
+    assert detail["origin"]["actor"] is None and detail["origin"]["actor_role"] is None
+    assert detail["origin"]["source"]["type"] == "action_item"
 
 
 def test_the_origin_source_is_hidden_from_someone_who_cannot_read_it(tmp_path) -> None:
@@ -419,5 +421,24 @@ def test_without_the_action_capability_the_task_reads_but_its_proposal_does_not(
 
     # The Task is theirs to read; the proposal behind it is not, so no source and no title leak.
     assert view["title"] == "권한 없는 왕복 업무" and view["access"] == "owner"
-    assert view["origin"]["kind"] == "self_created" and view["origin"]["source"] is None
-    assert proposal["action_id"] not in str(view["origin"])
+    # No readable source and no counterpart: there is nothing left to say about where it came from.
+    assert view["origin"] is None
+
+
+def test_the_activity_says_who_did_what_to_whom(tmp_path) -> None:
+    """A ledger line reads as a sentence about people, not as a field dump."""
+    client, application, database_url = _stack(tmp_path)
+    from ax_workspace.platform.persistence import ActivityEventRecord, make_session_factory
+    from sqlalchemy import select
+
+    jiho = application.authenticated_principal("jiho")
+    application.assign_task(jiho, "배정한 업무", "mina")
+    client.post("/api/work-requests", headers=MINA, json={"title": "요청한 업무", "assignee_id": "jiho"})
+    client.post("/api/tasks", headers=MINA, json={"title": "내가 만든 업무"})
+
+    with make_session_factory(database_url)() as session:
+        summaries = {row.event_kind: row.safe_summary for row in session.scalars(select(ActivityEventRecord))}
+    assert summaries["task.assigned"] == "지호가 담당자를 민아로 지정함: 배정한 업무"
+    assert summaries["work_request.created"] == "민아가 지호에게 업무를 보냄: 요청한 업무"
+    # A task nobody handed over says only what happened, with no second party invented.
+    assert summaries["task.created"] == "업무 생성: 내가 만든 업무"

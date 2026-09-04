@@ -282,12 +282,18 @@ class TaskApplication:
                     else None
                 )
             elif task.source_action_item_id is not None:
-                kind, actor_role, actor_id = "self_created", "생성자", task.owner_id
+                # AX prepared it and the holder approved it: the proposal is worth naming, the holder is not a
+                # counterpart to themselves.
+                kind, actor_role, actor_id = "self_created", None, None
                 source = self._action_item_source(principal, task.source_action_item_id)
             elif fact.get("assignment_kind") == "direct":
                 kind, actor_role, actor_id, source = "direct_assignment", "배정자", fact.get("assigned_by"), None
             else:
-                kind, actor_role, actor_id, source = "self_created", "생성자", task.owner_id, None
+                kind, actor_role, actor_id, source = "self_created", None, None, None
+            if actor_id is None and source is None:
+                # Nobody asked for it and nobody assigned it. There is no origin to state, and inventing one would
+                # put a person in a role they never played.
+                continue
             projections[task.id] = {
                 "kind": kind,
                 "actor_role": actor_role,

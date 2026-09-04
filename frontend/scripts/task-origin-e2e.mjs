@@ -62,13 +62,16 @@ try {
   await page.reload({ waitUntil: "domcontentloaded" });
   await navigation.getByRole("button", { name: "내 업무" }).click();
   const assigneeDrawer = await openTask(page, requested);
-  const requesterRow = assigneeDrawer.locator(".meta-grid div", { hasText: "요청자" }).first();
-  await requesterRow.waitFor({ timeout: 20_000 });
-  const requesterText = ((await requesterRow.textContent()) ?? "").replace(/\s+/g, " ");
-  if (!requesterText.includes("요청자") || !requesterText.includes("민아")) {
-    throw new Error(`assignee does not see the requester: ${JSON.stringify(requesterText)}`);
+  const originChip = assigneeDrawer.locator("[aria-label='업무 출처']").first();
+  await originChip.waitFor({ timeout: 20_000 });
+  const originText = ((await originChip.textContent()) ?? "").replace(/\s+/g, " ");
+  // What happened, in a sentence — never the role column the server classified it under.
+  if (!originText.includes("민아가 보낸 업무")) {
+    throw new Error(`assignee does not see who sent the work: ${JSON.stringify(originText)}`);
   }
-  if (requesterText.includes("지호")) throw new Error("the assignee's own name is reported as the origin actor");
+  if (originText.includes("요청자") || originText.includes("지호")) {
+    throw new Error(`the origin chip names a role or the holder themselves: ${JSON.stringify(originText)}`);
+  }
   await assigneeDrawer.getByRole("button", { name: "상세 닫기" }).click();
 
   // The requester navigates the other way, in the browser: request → derived Task, read-only.
@@ -76,7 +79,7 @@ try {
   await navigation.getByRole("button", { name: "내 업무" }).click();
   await page.getByRole("tab", { name: "요청·배정" }).click();
   await page
-    .locator("section[aria-label='내가 요청한 업무']")
+    .locator("section[aria-label='보낸 업무']")
     .locator("tr", { hasText: requested })
     .getByRole("button", { name: "상세보기" })
     .click();
@@ -115,13 +118,15 @@ try {
   await page.reload({ waitUntil: "domcontentloaded" });
   await navigation.getByRole("button", { name: "내 업무" }).click();
   const assignedDrawer = await openTask(page, assigned);
-  const assignerRow = assignedDrawer.locator(".meta-grid div", { hasText: "배정자" }).first();
-  await assignerRow.waitFor({ timeout: 20_000 });
-  const assignerText = ((await assignerRow.textContent()) ?? "").replace(/\s+/g, " ");
-  if (!assignerText.includes("배정자") || !assignerText.includes("지호")) {
-    throw new Error(`assignee does not see the assigner: ${JSON.stringify(assignerText)}`);
+  const assignedChip = assignedDrawer.locator("[aria-label='업무 출처']").first();
+  await assignedChip.waitFor({ timeout: 20_000 });
+  const assignedText = ((await assignedChip.textContent()) ?? "").replace(/\s+/g, " ");
+  if (!assignedText.includes("지호가 담당자를 지정함")) {
+    throw new Error(`assignee does not see who put them on it: ${JSON.stringify(assignedText)}`);
   }
-  if (assignerText.includes("민아")) throw new Error("the assignee is reported as the assigner");
+  if (assignedText.includes("배정자") || assignedText.includes("민아")) {
+    throw new Error(`the origin chip names a role or the holder themselves: ${JSON.stringify(assignedText)}`);
+  }
   await assignedDrawer.getByRole("button", { name: "상세 닫기" }).click();
 
   // A self-created task names its creator, and the whole answer comes from the server.
@@ -138,10 +143,10 @@ try {
   await switchAccount(page, "jiho");
   await navigation.getByRole("button", { name: "내 업무" }).click();
   await page.getByRole("tab", { name: "요청·배정" }).click();
-  await page.locator("section[aria-label='내가 배정한 업무']").locator("tr", { hasText: assigned }).first().click();
+  await page.locator("section[aria-label='조직 업무']").locator("tr", { hasText: assigned }).first().click();
   const assignerDrawer = page.getByRole("dialog", { name: "업무 상세" });
   await assignerDrawer.waitFor({ timeout: 20_000 });
-  const assignerSideRole = ((await assignerDrawer.locator(".meta-grid div", { hasText: "배정자" }).first().textContent()) ?? "").replace(/\s+/g, " ");
+  const assignerSideRole = ((await assignerDrawer.locator("[aria-label='업무 출처']").first().textContent()) ?? "").replace(/\s+/g, " ");
   const assignerSideHolder = ((await assignerDrawer.locator(".meta-grid div", { hasText: "담당자" }).first().textContent()) ?? "").replace(/\s+/g, " ");
   if (!assignerSideRole.includes("지호")) throw new Error(`the assigner is not named: ${JSON.stringify(assignerSideRole)}`);
   if (!assignerSideHolder.includes("민아")) throw new Error(`the current holder is not named: ${JSON.stringify(assignerSideHolder)}`);

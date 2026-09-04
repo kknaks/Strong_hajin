@@ -203,9 +203,9 @@ describe("task origin", () => {
     render(
       <TaskDetailDrawer busy={false} canManage onClose={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} onTransition={vi.fn()} onUpdate={vi.fn()} ownerName="민아" task={requested as never} />,
     );
-    const row = (await screen.findByText("요청자")).closest("div") as HTMLElement;
-    expect(within(row).getByText("민아")).toBeTruthy();
-    expect(within(row).getByText(/견적 재검토/)).toBeTruthy();
+    const chip = await screen.findByLabelText("업무 출처");
+    expect(chip.textContent).toContain("민아가 보낸 업무");
+    expect(within(chip).getByText(/견적 재검토/)).toBeTruthy();
   });
 
   it("offers no link when the source is withheld, and one when it is allowed", async () => {
@@ -216,7 +216,8 @@ describe("task origin", () => {
     const { rerender } = render(
       <TaskDetailDrawer busy={false} canManage onClose={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} onOpenSource={onOpenSource} onTransition={vi.fn()} onUpdate={vi.fn()} ownerName="민아" task={withheld as never} />,
     );
-    await screen.findByText("요청자");
+    const chip = await screen.findByLabelText("업무 출처");
+    expect(chip.textContent).toContain("민아가 보낸 업무");
     expect(screen.queryByRole("button", { name: /출처 보기|견적/ })).toBeNull();
 
     const allowed = { ...task, origin: { ...withheld.origin, source: { type: "work_request", id: "r1", title: "견적 재검토" } } };
@@ -241,8 +242,8 @@ describe("task origin", () => {
     );
     const assigneeRow = (await screen.findByText("담당자")).closest("div") as HTMLElement;
     expect(within(assigneeRow).getByText("지호")).toBeTruthy();
-    const originRow = (await screen.findByText("요청자")).closest("div") as HTMLElement;
-    expect(within(originRow).getByText("민아")).toBeTruthy();
+    const chip = await screen.findByLabelText("업무 출처");
+    expect(chip.textContent).toContain("민아가 보낸 업무");
   });
 
   it("shows a read-only task as a record, not as a workspace", async () => {
@@ -255,7 +256,7 @@ describe("task origin", () => {
     render(
       <TaskDetailDrawer busy={false} canManage={false} onClose={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} onTransition={vi.fn()} onUpdate={vi.fn()} ownerName="민아" task={readOnly as never} />,
     );
-    await screen.findByText("요청자");
+    await screen.findByLabelText("업무 출처");
     // The holder's workspace is absent, and the materials are never even fetched.
     expect(screen.queryByLabelText("체크리스트")).toBeNull();
     expect(screen.queryByText("참고 자료")).toBeNull();
@@ -273,9 +274,79 @@ describe("task origin", () => {
     render(
       <TaskDetailDrawer busy={false} canManage onClose={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} onTransition={vi.fn()} onUpdate={vi.fn()} ownerName="민아" task={assigned as never} />,
     );
-    const row = (await screen.findByText("배정자")).closest("div") as HTMLElement;
-    expect(within(row).getByText("지호")).toBeTruthy();
+    const chip = await screen.findByLabelText("업무 출처");
+    expect(chip.textContent).toContain("지호가 담당자를 지정함");
+    expect(chip.textContent).not.toContain("배정자");
+    expect(chip.querySelector(".t-meta")).toBeNull(); // nothing stands in for a source the caller may not read
+  });
+});
+
+describe("what a task detail says about where it came from", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  function renderTask(overrides: Record<string, unknown>, onOpenSource?: () => void) {
+    const detail = { ...task, ...overrides };
+    vi.mocked(api.getTaskMaterials).mockResolvedValue([]);
+    vi.mocked(api.getTask).mockResolvedValue({ ...detail, checklist: [] } as never);
+    render(
+      <TaskDetailDrawer
+        busy={false}
+        canManage
+        onClose={vi.fn()}
+        onError={vi.fn()}
+        onNotice={vi.fn()}
+        onOpenSource={onOpenSource}
+        onTransition={vi.fn()}
+        onUpdate={vi.fn()}
+        ownerName="민아"
+        task={detail as never}
+      />,
+    );
+  }
+
+  it("says nothing about a requester or an assigner when nobody played those parts", async () => {
+    renderTask({ origin: null });
+    await screen.findByLabelText("업무 상세");
+    // The holder is always named; a counterpart is only named when there is one.
+    expect(screen.getByText("담당자")).toBeTruthy();
     expect(screen.queryByText("요청자")).toBeNull();
-    expect(row.querySelector(".t-meta")).toBeNull(); // nothing stands in for a source the caller may not read
+    expect(screen.queryByText("배정자")).toBeNull();
+    expect(screen.queryByText("생성자")).toBeNull();
+    expect(screen.queryByText("본인 생성")).toBeNull();
+    expect(screen.queryByLabelText("업무 출처")).toBeNull();
+  });
+
+  it("shows the counterpart and the source as one chip, in the role the server named", async () => {
+    renderTask(
+      {
+        origin: {
+          kind: "work_request",
+          actor_role: "요청자",
+          actor: { member_id: "jiho", display_name: "지호 (팀장)" },
+          source: { type: "work_request", id: "r1", title: "견적 재검토" },
+        },
+      },
+      vi.fn(),
+    );
+    const chip = await screen.findByLabelText("업무 출처");
+    // What happened, not which column the server classified it under.
+    expect(chip.textContent).toContain("지호가 보낸 업무");
+    expect(chip.textContent).not.toContain("요청자");
+    expect(within(chip).getByRole("button", { name: /견적 재검토/ })).toBeTruthy();
+    // It is a chip beside the work, not a fixed metadata row pretending every task has one.
+    expect(screen.queryByRole("term", { name: "요청자" })).toBeNull();
+  });
+
+  it("keeps the source chip readable when only the proposal behind it survives", async () => {
+    renderTask({
+      origin: { kind: "self_created", actor_role: null, actor: null, source: { type: "action_item", id: "a1", title: "AX가 만든 업무" } },
+    });
+    const chip = await screen.findByLabelText("업무 출처");
+    expect(within(chip).getByText(/AX가 만든 업무/)).toBeTruthy();
+    expect(chip.textContent).toContain("AX 제안에서 생성됨");
+    expect(chip.textContent).not.toContain("생성자");
   });
 });
