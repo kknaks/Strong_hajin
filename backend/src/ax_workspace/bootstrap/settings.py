@@ -25,6 +25,9 @@ class Settings:
     material_queue_visibility_timeout: int = 120
     material_queue_max_attempts: int = 3
     material_worker_concurrency: int = 2
+    meeting_queue_visibility_timeout: int = 120
+    meeting_queue_max_attempts: int = 3
+    meeting_worker_concurrency: int = 1
 
     @property
     def developer_auth_enabled(self) -> bool:
@@ -53,6 +56,9 @@ class Settings:
             material_queue_visibility_timeout=int(os.getenv("AX_MATERIAL_QUEUE_VISIBILITY_TIMEOUT", "120")),
             material_queue_max_attempts=int(os.getenv("AX_MATERIAL_QUEUE_MAX_ATTEMPTS", "3")),
             material_worker_concurrency=int(os.getenv("AX_MATERIAL_WORKER_CONCURRENCY", "2")),
+            meeting_queue_visibility_timeout=int(os.getenv("AX_MEETING_QUEUE_VISIBILITY_TIMEOUT", "120")),
+            meeting_queue_max_attempts=int(os.getenv("AX_MEETING_QUEUE_MAX_ATTEMPTS", "3")),
+            meeting_worker_concurrency=int(os.getenv("AX_MEETING_WORKER_CONCURRENCY", "1")),
         )
 
 

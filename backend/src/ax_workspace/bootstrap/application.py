@@ -37,6 +37,7 @@ from ax_workspace.modules.meetings.application import MeetingApplication
 from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment
 from ax_workspace.modules.meetings.refinement import build_refinement_prompt, parse_refinement, refinement_output_schema
 from ax_workspace.modules.meetings.summary import build_summary_prompt, parse_summary, summary_output_schema
+from ax_workspace.modules.meetings.jobs import MeetingFinalizationJob, MeetingFinalizationQueue
 from ax_workspace.modules.work.requests import WorkRequestApplication
 from ax_workspace.platform.persistence import make_session_factory
 from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
@@ -159,6 +160,7 @@ class WorkflowApplication:
                 content_type=content_type,
                 data=data,
             )
+            self._meeting_queue(session).enqueue(MeetingFinalizationJob(recording_id))
             session.commit()
             return result
 
@@ -184,6 +186,7 @@ class WorkflowApplication:
         provider: str,
         provider_reference: str,
         segments: list[FinalTranscriptSegment],
+        finalization_lease_token: UUID | None = None,
     ) -> dict[str, Any]:
         """Internal worker seam; no HTTP caller can assert STT provenance."""
         with self._session_factory() as session:
@@ -192,11 +195,63 @@ class WorkflowApplication:
                 provider=provider,
                 provider_reference=provider_reference,
                 segments=segments,
+                finalization_lease_token=finalization_lease_token,
             )
             session.commit()
             return result
 
-    def refine_meeting_transcript(self, transcript_id: UUID) -> dict[str, Any]:
+    def meeting_finalization_input(
+        self,
+        recording_id: UUID,
+        *,
+        lease_token: UUID,
+        stale_after_seconds: int,
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._meetings(session).finalization_input(
+                recording_id,
+                lease_token=lease_token,
+                stale_after_seconds=stale_after_seconds,
+            )
+            session.commit()
+            return result
+
+    def fail_meeting_finalization(self, recording_id: UUID, *, lease_token: UUID, code: str) -> None:
+        with self._session_factory() as session:
+            self._meetings(session).fail_finalization(recording_id, lease_token=lease_token, code=code)
+            session.commit()
+
+    def retry_meeting_finalization(self, recording_id: UUID, *, lease_token: UUID, code: str) -> None:
+        with self._session_factory() as session:
+            self._meetings(session).retry_finalization(recording_id, lease_token=lease_token, code=code)
+            session.commit()
+
+    def record_meeting_finalization_cleanup_warning(
+        self,
+        recording_id: UUID,
+        *,
+        lease_token: UUID,
+        warnings: tuple[str, ...],
+    ) -> None:
+        with self._session_factory() as session:
+            self._meetings(session).record_finalization_cleanup_warning(
+                recording_id,
+                lease_token=lease_token,
+                warnings=warnings,
+            )
+            session.commit()
+
+    def complete_meeting_finalization(self, recording_id: UUID, *, lease_token: UUID) -> None:
+        with self._session_factory() as session:
+            self._meetings(session).complete_finalization(recording_id, lease_token=lease_token)
+            session.commit()
+
+    def refine_meeting_transcript(
+        self,
+        transcript_id: UUID,
+        *,
+        finalization_lease_token: UUID | None = None,
+    ) -> dict[str, Any]:
         """Worker operation: read/claim plan (tx), call the provider (no tx), persist a derived revision (tx)."""
         with self._session_factory() as session:
             plan = self._meetings(session).refinement_input(transcript_id)
@@ -217,11 +272,18 @@ class WorkflowApplication:
                 provider_call_ref=generation.provider_run_ref,
                 content_hash=hashlib.sha256(generation.body.encode("utf-8")).hexdigest(),
                 segments=segments,
+                finalization_lease_token=finalization_lease_token,
             )
             session.commit()
             return result
 
-    def summarize_meeting_transcript(self, refinement_id: UUID, *, kind: str = "final") -> dict[str, Any]:
+    def summarize_meeting_transcript(
+        self,
+        refinement_id: UUID,
+        *,
+        kind: str = "final",
+        finalization_lease_token: UUID | None = None,
+    ) -> dict[str, Any]:
         """Worker operation with a provider call outside every database transaction."""
         with self._session_factory() as session:
             plan = self._meetings(session).summary_input(refinement_id, kind=kind)
@@ -244,6 +306,7 @@ class WorkflowApplication:
                 provider_call_ref=generation.provider_run_ref,
                 content_hash=hashlib.sha256(generation.body.encode("utf-8")).hexdigest(),
                 statements=statements,
+                finalization_lease_token=finalization_lease_token,
             )
             session.commit()
             return result
@@ -436,6 +499,9 @@ class WorkflowApplication:
     def job_queue(self, session: Any):
         """The shared durable job transport bound to this session (postgres) or this application (memory)."""
         return build_job_queue(self._settings.job_queue_backend, session, self.memory_job_queue)
+
+    def _meeting_queue(self, session: Any) -> MeetingFinalizationQueue:
+        return MeetingFinalizationQueue(self.job_queue(session))
 
     def _material_queue(self, session: Any) -> MaterialJobQueue:
         return MaterialJobQueue(self.job_queue(session))

@@ -13,6 +13,7 @@ from uuid import UUID
 
 JOB_KIND_CONVERSATION_TURN = "conversation.turn"
 JOB_KIND_MATERIAL_EXTRACTION = "material.extraction"
+JOB_KIND_MEETING_FINALIZE = "meeting.recording.finalize"
 
 TERMINAL_JOB_STATES = frozenset({"completed", "failed"})
 

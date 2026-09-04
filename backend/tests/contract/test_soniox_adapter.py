@@ -72,16 +72,22 @@ def test_soniox_final_token_parser_preserves_anonymous_labels_and_offsets() -> N
 
 
 def test_async_error_prefers_soniox_error_type_and_keeps_request_reference() -> None:
-    responses = iter(
-        [
-            _Response({"id": "file-1"}),
-            _Response({"id": "transcription-1"}),
-            _Response({"status": "error", "status_code": 500, "error_type": "unauthenticated", "request_id": "req-42"}),
-            _Response({}),  # best-effort transcription cleanup
-            _Response({}),  # best-effort file cleanup
-        ]
-    )
-    adapter = SonioxTranscriptionAdapter(api_key="secret", opener=lambda *_args, **_kwargs: next(responses), sleeper=lambda _seconds: None)
+    calls = 0
+
+    def opener(_request, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _Response({"id": "file-1"})
+        if calls == 2:
+            return _Response({"id": "transcription-1"})
+        if calls == 3:
+            return _Response({"status": "error", "status_code": 500, "error_type": "unauthenticated", "request_id": "req-42"})
+        if calls == 4:
+            raise HTTPError("https://api.soniox.com/v1/transcriptions/transcription-1", 500, "error", {}, BytesIO(b'{"error_type":"internal_error"}'))
+        return _Response({})
+
+    adapter = SonioxTranscriptionAdapter(api_key="secret", opener=opener, sleeper=lambda _seconds: None)
 
     with pytest.raises(TranscriptionFailure) as error:
         adapter.transcribe(data=b"audio", original_name="meeting.webm", content_type="audio/webm", client_reference_id="meeting-recording:1")
@@ -89,6 +95,7 @@ def test_async_error_prefers_soniox_error_type_and_keeps_request_reference() -> 
     assert error.value.code == "provider_auth_error"
     assert error.value.provider_reference == "transcription-1"
     assert error.value.provider_request_id == "req-42"
+    assert error.value.cleanup_warnings == ("cleanup:transcriptions:provider_request_failed",)
 
 
 def test_async_success_returns_cleanup_warning_for_auditable_follow_up() -> None:

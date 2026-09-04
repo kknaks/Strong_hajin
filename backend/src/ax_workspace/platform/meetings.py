@@ -343,6 +343,17 @@ class SqlAlchemyMeetingRepository:
             )
         )
 
+    def latest_raw_transcript_for_recording(
+        self,
+        recording: MeetingRecordingRecord,
+    ) -> MeetingRawTranscriptRevisionRecord | None:
+        return self._session.scalar(
+            select(MeetingRawTranscriptRevisionRecord)
+            .where(MeetingRawTranscriptRevisionRecord.recording_id == recording.id)
+            .order_by(MeetingRawTranscriptRevisionRecord.revision.desc())
+            .limit(1)
+        )
+
     def create_raw_transcript(
         self,
         recording: MeetingRecordingRecord,
@@ -384,8 +395,6 @@ class SqlAlchemyMeetingRepository:
                     created_at=now,
                 )
             )
-        recording.state = "transcribed"
-        recording.updated_at = now
         self._session.flush()
         return transcript
 
@@ -676,3 +685,43 @@ class SqlAlchemyMeetingRepository:
         recording.version += 1
         recording.ended_at = now
         recording.updated_at = now
+
+    def mark_recording_transcribing(self, recording: MeetingRecordingRecord, lease_token: UUID) -> None:
+        recording.state = "transcribing"
+        recording.version += 1
+        recording.finalization_attempt += 1
+        recording.finalization_lease_token = lease_token
+        recording.finalization_started_at = datetime.now(UTC)
+        recording.error_code = None
+        recording.error_detail = None
+        recording.updated_at = datetime.now(UTC)
+        self._session.flush()
+
+    def complete_recording_finalization(self, recording: MeetingRecordingRecord) -> None:
+        recording.state = "transcribed"
+        recording.version += 1
+        recording.finalization_lease_token = None
+        recording.finalization_started_at = None
+        recording.error_code = None
+        recording.error_detail = None
+        recording.updated_at = datetime.now(UTC)
+        self._session.flush()
+
+    def mark_recording_failed(self, recording: MeetingRecordingRecord, code: str) -> None:
+        recording.state = "failed"
+        recording.version += 1
+        recording.error_code = code[:80]
+        recording.error_detail = None
+        recording.finalization_lease_token = None
+        recording.finalization_started_at = None
+        recording.updated_at = datetime.now(UTC)
+        self._session.flush()
+
+    def mark_recording_retryable(self, recording: MeetingRecordingRecord, code: str) -> None:
+        recording.state = "uploaded"
+        recording.error_code = code[:80]
+        recording.error_detail = None
+        recording.finalization_lease_token = None
+        recording.finalization_started_at = None
+        recording.updated_at = datetime.now(UTC)
+        self._session.flush()

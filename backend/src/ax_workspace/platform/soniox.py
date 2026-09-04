@@ -86,6 +86,7 @@ class SonioxTranscriptionAdapter(RealtimeTranscriptionKeyIssuer, FinalTranscribe
         transcription_id: str | None = None
         result: FinalTranscriptionResult | None = None
         cleanup_warnings: list[str] = []
+        failure: TranscriptionFailure | None = None
         try:
             file_id = self._upload(data, original_name, content_type)
             created = self._request_json(
@@ -120,6 +121,8 @@ class SonioxTranscriptionAdapter(RealtimeTranscriptionKeyIssuer, FinalTranscribe
                 self._sleeper(self._poll_seconds)
             if result is None:
                 raise TranscriptionFailure("provider_timeout", retryable=True, provider_reference=transcription_id)
+        except TranscriptionFailure as error:
+            failure = error
         finally:
             if transcription_id is not None:
                 warning = self._delete(f"/transcriptions/{transcription_id}")
@@ -129,6 +132,14 @@ class SonioxTranscriptionAdapter(RealtimeTranscriptionKeyIssuer, FinalTranscribe
                 warning = self._delete(f"/files/{file_id}")
                 if warning is not None:
                     cleanup_warnings.append(warning)
+        if failure is not None:
+            raise TranscriptionFailure(
+                failure.code,
+                retryable=failure.retryable,
+                provider_reference=failure.provider_reference,
+                provider_request_id=failure.provider_request_id,
+                cleanup_warnings=tuple(cleanup_warnings),
+            ) from failure
         if result is None:  # defensive: the loop either returns a result or raises.
             raise TranscriptionFailure("provider_request_failed", retryable=True)
         return replace(result, cleanup_warnings=tuple(cleanup_warnings))

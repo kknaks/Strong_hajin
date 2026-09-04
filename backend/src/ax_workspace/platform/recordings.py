@@ -47,3 +47,11 @@ class LocalDirectoryRecordingStorage:
             size_bytes=len(data),
             sha256=hashlib.sha256(data).hexdigest(),
         )
+
+    def get(self, key: str) -> bytes:
+        if not key.startswith("meetings/recordings/") or not _RECORDING_ID.match(key.rsplit("/", 1)[-1]):
+            raise ValueError("invalid recording storage key")
+        path = (self._root / key).resolve()
+        if self._root not in path.parents or not path.is_file():
+            raise FileNotFoundError(key)
+        return path.read_bytes()

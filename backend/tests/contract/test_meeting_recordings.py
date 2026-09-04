@@ -2,19 +2,37 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
+import threading
+import time
 from types import SimpleNamespace
-from uuid import UUID
+from datetime import UTC, datetime, timedelta
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
-from ax_workspace.modules.ax_execution.ai import AiConversationResult, AiGeneration
-from ax_workspace.modules.meetings.application import MeetingApplication, MeetingError
+from ax_workspace.modules.ax_execution.ai import AiConversationResult, AiGeneration, ProviderUnavailable
+from ax_workspace.bootstrap.meeting_worker import MeetingFinalizationWorker
+from ax_workspace.modules.meetings.jobs import JOB_KIND_MEETING_FINALIZE, MeetingFinalizationJob, MeetingFinalizationQueue
+from ax_workspace.platform.durable_jobs import MemoryDurableJobQueue
+from ax_workspace.modules.meetings.application import MeetingApplication, MeetingError, MeetingVersionConflict
+from ax_workspace.platform.persistence import (
+    ActivityEventRecord,
+    MeetingRawTranscriptRevisionRecord,
+    MeetingRecordingRecord,
+    make_session_factory,
+)
 from ax_workspace.modules.meetings.summary import SummaryStatement
-from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment
+from ax_workspace.modules.meetings.transcription import (
+    FinalTranscriptSegment,
+    FinalTranscriptionResult,
+    TranscriptionFailure,
+)
 
 
 class RefinementProvider:
@@ -54,6 +72,53 @@ class RefinementProvider:
 
     def converse(self, request, *, sink=None, cancel=None) -> AiConversationResult:  # pragma: no cover - test never chats
         raise AssertionError("refinement must use structured generation, not chat")
+
+
+class FailingMeetingProvider:
+    def generate(self, request) -> AiGeneration:
+        raise ProviderUnavailable("Codex CLI is unavailable")
+
+    def converse(self, request, *, sink=None, cancel=None) -> AiConversationResult:  # pragma: no cover - test never chats
+        raise AssertionError("meeting finalization must use structured generation")
+
+
+class CompleteTranscriber:
+    def transcribe(self, *, data, original_name, content_type, client_reference_id) -> FinalTranscriptionResult:
+        del data, original_name, content_type, client_reference_id
+        return FinalTranscriptionResult(
+            provider_reference="soniox:complete",
+            provider_file_ref="soniox:file",
+            segments=(
+                FinalTranscriptSegment("provider-segment-1", 0, 1_500, "원본 전사"),
+                FinalTranscriptSegment("provider-segment-2", 1_500, 3_000, "일정 논의"),
+            ),
+        )
+
+
+class CleanupFailingTranscriber:
+    def transcribe(self, *, data, original_name, content_type, client_reference_id) -> FinalTranscriptionResult:
+        del data, original_name, content_type, client_reference_id
+        raise TranscriptionFailure(
+            "provider_request_failed",
+            retryable=False,
+            cleanup_warnings=("cleanup:transcriptions:provider_request_failed",),
+        )
+
+
+class SlowCompleteTranscriber(CompleteTranscriber):
+    def __init__(self) -> None:
+        self.started = threading.Event()
+
+    def transcribe(self, **kwargs) -> FinalTranscriptionResult:
+        self.started.set()
+        time.sleep(3.2)
+        return super().transcribe(**kwargs)
+
+
+class LeaseRejectingQueue(MemoryDurableJobQueue):
+    def extend_lease(self, job_id, lease_token, lease_seconds) -> bool:
+        del job_id, lease_token, lease_seconds
+        return False
 
 
 def _client(tmp_path, *, provider=None) -> TestClient:
@@ -228,7 +293,9 @@ def test_final_raw_transcript_is_immutable_and_idempotent_by_provider_reference(
         },
     ]
     detail = client.get(f"/api/meetings/{meeting['meeting_id']}", headers=headers).json()
-    assert detail["recordings"][0]["state"] == "transcribed"
+    # Raw STT is immutable provenance, not pipeline completion. Refinement and
+    # final summary still have to be produced by the durable worker.
+    assert detail["recordings"][0]["state"] == "uploaded"
 
 
 def test_refinement_is_a_versioned_provenance_layer_and_never_overwrites_raw_stt(tmp_path) -> None:
@@ -436,3 +503,335 @@ def test_human_speaker_mapping_is_a_separate_revision_and_overrides_refinement_l
         },
     )
     assert denied.status_code in {403, 404}
+
+
+def test_expired_finalization_claim_is_reclaimed_and_stale_worker_cannot_persist_raw_transcript(tmp_path) -> None:
+    client = _client(tmp_path)
+    meeting = _meeting(client)
+    headers = {"X-Demo-Persona": "mina"}
+    started = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/start",
+        headers=headers,
+        json={"purpose": "crash recovery"},
+    ).json()
+    assert client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/{started['recording_id']}/stop",
+        headers=headers,
+        data={"expected_version": str(started["version"])},
+        files={"audio": ("raw.webm", b"audio", "audio/webm")},
+    ).status_code == 200
+    application = client.app.state.workflow_application
+    first_lease = uuid4()
+    first = application.meeting_finalization_input(
+        UUID(started["recording_id"]), lease_token=first_lease, stale_after_seconds=60
+    )
+    assert first["reclaimed_stale_attempt"] is False
+    assert application.meeting_finalization_input(
+        UUID(started["recording_id"]), lease_token=uuid4(), stale_after_seconds=60
+    ) == {"contended": True}
+
+    database_url = f"sqlite:///{tmp_path / 'ax_demo.db'}"
+    with make_session_factory(database_url)() as session:
+        recording = session.get(MeetingRecordingRecord, UUID(started["recording_id"]))
+        assert recording is not None
+        recording.finalization_started_at = datetime.now(UTC) - timedelta(seconds=120)
+        session.commit()
+
+    replacement_lease = uuid4()
+    reclaimed = application.meeting_finalization_input(
+        UUID(started["recording_id"]), lease_token=replacement_lease, stale_after_seconds=60
+    )
+    assert reclaimed["reclaimed_stale_attempt"] is True
+    with pytest.raises(MeetingVersionConflict, match="lease is stale"):
+        application.record_final_meeting_transcript(
+            recording_id=UUID(started["recording_id"]),
+            provider="soniox",
+            provider_reference="async:stale-worker",
+            segments=[FinalTranscriptSegment("old", 0, 500, "늦은 결과")],
+            finalization_lease_token=first_lease,
+        )
+    completed = application.record_final_meeting_transcript(
+        recording_id=UUID(started["recording_id"]),
+        provider="soniox",
+        provider_reference="async:replacement-worker",
+        segments=[FinalTranscriptSegment("new", 0, 500, "새 worker 결과")],
+        finalization_lease_token=replacement_lease,
+    )
+    assert completed["segments"][0]["text"] == "새 worker 결과"
+
+
+def test_finalization_resumes_from_raw_then_refinement_and_completes_only_after_final_summary(tmp_path) -> None:
+    provider = RefinementProvider()
+    client = _client(tmp_path, provider=provider)
+    meeting = _meeting(client)
+    headers = {"X-Demo-Persona": "mina"}
+    started = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/start",
+        headers=headers,
+        json={"purpose": "stage resume"},
+    ).json()
+    client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/{started['recording_id']}/stop",
+        headers=headers,
+        data={"expected_version": str(started["version"])},
+        files={"audio": ("raw.webm", b"audio", "audio/webm")},
+    ).raise_for_status()
+    recording_id = UUID(started["recording_id"])
+    application = client.app.state.workflow_application
+    raw_lease = uuid4()
+    assert application.meeting_finalization_input(recording_id, lease_token=raw_lease, stale_after_seconds=60)["stage"] == "transcribe"
+    raw = application.record_final_meeting_transcript(
+        recording_id=recording_id,
+        provider="soniox",
+        provider_reference="async:raw-before-crash",
+        segments=[
+            FinalTranscriptSegment("provider-segment-1", 0, 1_500, "안녕하세요"),
+            FinalTranscriptSegment("provider-segment-2", 1_500, 3_000, "일정을 논의합니다."),
+        ],
+        finalization_lease_token=raw_lease,
+    )
+
+    database_url = f"sqlite:///{tmp_path / 'ax_demo.db'}"
+    with make_session_factory(database_url)() as session:
+        recording = session.get(MeetingRecordingRecord, recording_id)
+        assert recording is not None and recording.state == "transcribing"
+        recording.finalization_started_at = datetime.now(UTC) - timedelta(seconds=120)
+        session.commit()
+
+    refinement_lease = uuid4()
+    plan = application.meeting_finalization_input(recording_id, lease_token=refinement_lease, stale_after_seconds=60)
+    assert plan == {
+        "stage": "refinement",
+        "transcript_revision_id": raw["transcript_revision_id"],
+        "reclaimed_stale_attempt": True,
+    }
+    with pytest.raises(MeetingVersionConflict, match="lease is stale"):
+        application.refine_meeting_transcript(
+            UUID(raw["transcript_revision_id"]), finalization_lease_token=raw_lease
+        )
+    refinement = application.refine_meeting_transcript(
+        UUID(raw["transcript_revision_id"]), finalization_lease_token=refinement_lease
+    )
+
+    with make_session_factory(database_url)() as session:
+        recording = session.get(MeetingRecordingRecord, recording_id)
+        assert recording is not None and recording.state == "transcribing"
+        recording.finalization_started_at = datetime.now(UTC) - timedelta(seconds=120)
+        session.commit()
+
+    summary_lease = uuid4()
+    plan = application.meeting_finalization_input(recording_id, lease_token=summary_lease, stale_after_seconds=60)
+    assert plan == {
+        "stage": "summary",
+        "refinement_revision_id": refinement["refinement_revision_id"],
+        "reclaimed_stale_attempt": True,
+    }
+    with pytest.raises(MeetingVersionConflict, match="lease is stale"):
+        application.summarize_meeting_transcript(
+            UUID(refinement["refinement_revision_id"]), finalization_lease_token=refinement_lease
+        )
+    application.summarize_meeting_transcript(
+        UUID(refinement["refinement_revision_id"]), finalization_lease_token=summary_lease
+    )
+    application.complete_meeting_finalization(recording_id, lease_token=summary_lease)
+    detail = client.get(f"/api/meetings/{meeting['meeting_id']}", headers=headers).json()
+    assert detail["recordings"][0]["state"] == "transcribed"
+
+
+def test_stale_finalization_lease_cannot_fail_retry_or_write_cleanup_warning(tmp_path) -> None:
+    client = _client(tmp_path)
+    meeting = _meeting(client)
+    headers = {"X-Demo-Persona": "mina"}
+    started = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/start",
+        headers=headers,
+        json={"purpose": "fenced failure writes"},
+    ).json()
+    client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/{started['recording_id']}/stop",
+        headers=headers,
+        data={"expected_version": str(started["version"])},
+        files={"audio": ("raw.webm", b"audio", "audio/webm")},
+    ).raise_for_status()
+    application = client.app.state.workflow_application
+    old_lease = uuid4()
+    application.meeting_finalization_input(UUID(started["recording_id"]), lease_token=old_lease, stale_after_seconds=0)
+    replacement_lease = uuid4()
+    application.meeting_finalization_input(
+        UUID(started["recording_id"]), lease_token=replacement_lease, stale_after_seconds=0
+    )
+
+    with pytest.raises(MeetingVersionConflict, match="lease is stale"):
+        application.retry_meeting_finalization(
+            UUID(started["recording_id"]), lease_token=old_lease, code="provider_timeout"
+        )
+    with pytest.raises(MeetingVersionConflict, match="lease is stale"):
+        application.fail_meeting_finalization(
+            UUID(started["recording_id"]), lease_token=old_lease, code="provider_timeout"
+        )
+    with pytest.raises(MeetingVersionConflict, match="lease is stale"):
+        application.record_meeting_finalization_cleanup_warning(
+            UUID(started["recording_id"]),
+            lease_token=old_lease,
+            warnings=("cleanup:files:provider_request_failed",),
+        )
+
+    application.fail_meeting_finalization(
+        UUID(started["recording_id"]), lease_token=replacement_lease, code="provider_timeout"
+    )
+    with make_session_factory(f"sqlite:///{tmp_path / 'ax_demo.db'}")() as session:
+        recording = session.get(MeetingRecordingRecord, UUID(started["recording_id"]))
+        assert recording is not None
+        assert recording.state == "failed"
+        assert recording.error_code == "provider_timeout"
+
+
+def test_worker_records_codex_failure_and_provider_cleanup_warning_instead_of_completing_silently(tmp_path) -> None:
+    client = _client(tmp_path)
+    meeting = _meeting(client)
+    headers = {"X-Demo-Persona": "mina"}
+    started = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/start",
+        headers=headers,
+        json={"purpose": "Codex failure"},
+    ).json()
+    client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/{started['recording_id']}/stop",
+        headers=headers,
+        data={"expected_version": str(started["version"])},
+        files={"audio": ("raw.webm", b"audio", "audio/webm")},
+    ).raise_for_status()
+    settings = Settings(
+        RuntimeProfile.TEST,
+        f"sqlite:///{tmp_path / 'ax_demo.db'}",
+        recordings_dir=str(tmp_path / "recordings"),
+        meeting_queue_max_attempts=1,
+    )
+    worker = MeetingFinalizationWorker(
+        settings,
+        transcriber=CompleteTranscriber(),
+        provider=FailingMeetingProvider(),
+    )
+    assert worker.process(UUID(started["recording_id"]), lease_token=uuid4(), attempt=1) == "failed"
+    with make_session_factory(settings.database_url)() as session:
+        recording = session.get(MeetingRecordingRecord, UUID(started["recording_id"]))
+        assert recording is not None
+        assert recording.state == "failed"
+        assert recording.error_code == "meeting_ai_provider_failed"
+
+    # A Soniox error with an unsuccessful cleanup persists the warning before terminal failure.
+    second = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/start",
+        headers=headers,
+        json={"purpose": "cleanup warning"},
+    ).json()
+    client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/{second['recording_id']}/stop",
+        headers=headers,
+        data={"expected_version": str(second["version"])},
+        files={"audio": ("raw-2.webm", b"audio", "audio/webm")},
+    ).raise_for_status()
+    cleanup_worker = MeetingFinalizationWorker(
+        settings,
+        transcriber=CleanupFailingTranscriber(),
+        provider=FailingMeetingProvider(),
+    )
+    assert cleanup_worker.process(UUID(second["recording_id"]), lease_token=uuid4(), attempt=1) == "failed"
+    with make_session_factory(settings.database_url)() as session:
+        recording = session.get(MeetingRecordingRecord, UUID(second["recording_id"]))
+        assert recording is not None
+        assert recording.state == "failed"
+        event_kinds = set(
+            session.scalars(
+                select(ActivityEventRecord.event_kind).where(ActivityEventRecord.target_id == str(meeting["meeting_id"]))
+            )
+        )
+        assert "meeting.transcription_failed" in event_kinds
+        assert "meeting.transcription_provider_cleanup_warning" in event_kinds
+
+
+def test_worker_heartbeats_long_transcription_before_visibility_timeout_and_prevents_reclaim(tmp_path) -> None:
+    provider = RefinementProvider()
+    client = _client(tmp_path, provider=provider)
+    meeting = _meeting(client)
+    headers = {"X-Demo-Persona": "mina"}
+    started = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/start",
+        headers=headers,
+        json={"purpose": "heartbeat"},
+    ).json()
+    client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/{started['recording_id']}/stop",
+        headers=headers,
+        data={"expected_version": str(started["version"])},
+        files={"audio": ("heartbeat.webm", b"audio", "audio/webm")},
+    ).raise_for_status()
+    settings = Settings(
+        RuntimeProfile.TEST,
+        f"sqlite:///{tmp_path / 'ax_demo.db'}",
+        recordings_dir=str(tmp_path / "recordings"),
+        meeting_queue_visibility_timeout=2,
+        meeting_worker_concurrency=1,
+    )
+    queue = MemoryDurableJobQueue()
+    MeetingFinalizationQueue(queue).enqueue(MeetingFinalizationJob(UUID(started["recording_id"])))
+    transcriber = SlowCompleteTranscriber()
+    worker = MeetingFinalizationWorker(
+        settings,
+        provider=provider,
+        transcriber=transcriber,
+        queue_factory=lambda _session: queue,
+    )
+
+    async def scenario() -> None:
+        running = asyncio.create_task(worker.run_once())
+        assert await asyncio.to_thread(transcriber.started.wait, 2)
+        # The original two-second visibility interval elapsed, but heartbeat
+        # extended the fenced job. A second worker cannot issue Soniox work.
+        await asyncio.sleep(2.2)
+        assert queue.claim(JOB_KIND_MEETING_FINALIZE, limit=1, lease_seconds=2, worker_id="second") == []
+        assert await running is True
+
+    asyncio.run(scenario())
+    assert queue.snapshot()[0]["state"] == "completed", queue.snapshot()
+
+
+def test_worker_drops_late_provider_result_when_heartbeat_loses_its_fenced_lease(tmp_path) -> None:
+    provider = RefinementProvider()
+    client = _client(tmp_path, provider=provider)
+    meeting = _meeting(client)
+    headers = {"X-Demo-Persona": "mina"}
+    started = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/start",
+        headers=headers,
+        json={"purpose": "lost heartbeat"},
+    ).json()
+    client.post(
+        f"/api/meetings/{meeting['meeting_id']}/recordings/{started['recording_id']}/stop",
+        headers=headers,
+        data={"expected_version": str(started["version"])},
+        files={"audio": ("lost-heartbeat.webm", b"audio", "audio/webm")},
+    ).raise_for_status()
+    settings = Settings(
+        RuntimeProfile.TEST,
+        f"sqlite:///{tmp_path / 'ax_demo.db'}",
+        recordings_dir=str(tmp_path / "recordings"),
+        meeting_queue_visibility_timeout=2,
+    )
+    queue = LeaseRejectingQueue()
+    MeetingFinalizationQueue(queue).enqueue(MeetingFinalizationJob(UUID(started["recording_id"])))
+    worker = MeetingFinalizationWorker(
+        settings,
+        provider=provider,
+        transcriber=SlowCompleteTranscriber(),
+        queue_factory=lambda _session: queue,
+    )
+    assert asyncio.run(worker.run_once()) is True
+    # No raw result is persisted after heartbeat failure, and the durable job
+    # remains recoverable by a new owner once its original visibility expires.
+    with make_session_factory(settings.database_url)() as session:
+        assert session.scalar(select(MeetingRawTranscriptRevisionRecord).where(MeetingRawTranscriptRevisionRecord.recording_id == UUID(started["recording_id"]))) is None
+        recording = session.get(MeetingRecordingRecord, UUID(started["recording_id"]))
+        assert recording is not None and recording.state == "transcribing"
+    reclaimed = queue.claim(JOB_KIND_MEETING_FINALIZE, limit=1, lease_seconds=2, worker_id="recovery")
+    assert len(reclaimed) == 1

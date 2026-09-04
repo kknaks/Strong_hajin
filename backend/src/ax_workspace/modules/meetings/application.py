@@ -5,7 +5,7 @@ audit facts; HTTP, MCP, Calendar, Materials, and AX call these commands rather t
 """
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -67,6 +67,7 @@ class MeetingRepository(Protocol):
     def recordings(self, meeting: Any) -> list[Any]: ...
     def complete_recording(self, recording: Any, stored: Any) -> None: ...
     def raw_transcript_for_provider(self, recording: Any, provider_reference: str) -> Any | None: ...
+    def latest_raw_transcript_for_recording(self, recording: Any) -> Any | None: ...
     def create_raw_transcript(
         self,
         recording: Any,
@@ -115,6 +116,10 @@ class MeetingRepository(Protocol):
         raw_end_segment: Any,
         confirmed_by: str,
     ) -> Any: ...
+    def mark_recording_transcribing(self, recording: Any, lease_token: UUID) -> None: ...
+    def complete_recording_finalization(self, recording: Any) -> None: ...
+    def mark_recording_failed(self, recording: Any, code: str) -> None: ...
+    def mark_recording_retryable(self, recording: Any, code: str) -> None: ...
 
 
 class MeetingApplication:
@@ -320,6 +325,116 @@ class MeetingApplication:
             "enable_speaker_diarization": credential.enable_speaker_diarization,
         }
 
+    def finalization_input(
+        self,
+        recording_id: UUID,
+        *,
+        lease_token: UUID,
+        stale_after_seconds: int,
+    ) -> dict[str, Any]:
+        """Worker claim: move an uploaded recording into transcribing in a short transaction."""
+        recording = self._repository.recording_by_id(recording_id, lock=True)
+        if recording is None:
+            raise MeetingNotFound("meeting recording was not found")
+        if recording.state == "transcribed":
+            return {"completed": True}
+        reclaiming_stale_attempt = False
+        if recording.state == "transcribing":
+            started = recording.finalization_started_at
+            if started is not None and started.tzinfo is None:
+                started = started.replace(tzinfo=UTC)
+            if started is not None and datetime.now(UTC) - started < timedelta(seconds=stale_after_seconds):
+                return {"contended": True}
+            reclaiming_stale_attempt = True
+        if recording.state not in {"uploaded", "transcribing"} or not recording.storage_key:
+            raise MeetingError("meeting recording cannot be finalized")
+        self._repository.mark_recording_transcribing(recording, lease_token)
+        raw = self._repository.latest_raw_transcript_for_recording(recording)
+        if raw is not None:
+            refinement = self._repository.latest_refinement(raw)
+            if refinement is not None and refinement.state == "completed":
+                summary = self._repository.summary_for_refinement(refinement, "final")
+                if summary is not None and summary.state == "completed":
+                    # Crash after derived saves but before the recording state transition.
+                    self._repository.complete_recording_finalization(recording)
+                    return {"completed": True}
+                return {
+                    "stage": "summary",
+                    "refinement_revision_id": str(refinement.id),
+                    "reclaimed_stale_attempt": reclaiming_stale_attempt,
+                }
+            return {
+                "stage": "refinement",
+                "transcript_revision_id": str(raw.id),
+                "reclaimed_stale_attempt": reclaiming_stale_attempt,
+            }
+        return {
+            "stage": "transcribe",
+            "recording_id": str(recording.id),
+            "storage_key": recording.storage_key,
+            "original_name": recording.original_name or "recording",
+            "content_type": recording.content_type or "application/octet-stream",
+            "client_reference_id": recording.provider_client_reference_id,
+            "reclaimed_stale_attempt": reclaiming_stale_attempt,
+        }
+
+    def complete_finalization(self, recording_id: UUID, *, lease_token: UUID) -> None:
+        """Mark the Recording complete only after immutable raw, refinement, and final summary exist."""
+        recording = self._repository.recording_by_id(recording_id, lock=True)
+        if recording is None:
+            raise MeetingNotFound("meeting recording was not found")
+        self._require_finalization_lease(recording, lease_token)
+        raw = self._repository.latest_raw_transcript_for_recording(recording)
+        refinement = raw and self._repository.latest_refinement(raw)
+        summary = refinement and self._repository.summary_for_refinement(refinement, "final")
+        if raw is None or refinement is None or refinement.state != "completed" or summary is None or summary.state != "completed":
+            raise MeetingError("meeting transcript pipeline is incomplete")
+        self._repository.complete_recording_finalization(recording)
+
+    def fail_finalization(self, recording_id: UUID, *, lease_token: UUID, code: str) -> None:
+        recording = self._repository.recording_by_id(recording_id, lock=True)
+        if recording is None:
+            raise MeetingNotFound("meeting recording was not found")
+        self._require_finalization_lease(recording, lease_token)
+        self._repository.mark_recording_failed(recording, code)
+        meeting = self._repository.meeting(recording.meeting_id)
+        if meeting is not None:
+            self._repository.append_audit(meeting, recording.actor_id, "meeting.transcription_failed", "회의 전사 실패")
+
+    def retry_finalization(self, recording_id: UUID, *, lease_token: UUID, code: str) -> None:
+        recording = self._repository.recording_by_id(recording_id, lock=True)
+        if recording is None:
+            raise MeetingNotFound("meeting recording was not found")
+        self._require_finalization_lease(recording, lease_token)
+        self._repository.mark_recording_retryable(recording, code)
+
+    def record_finalization_cleanup_warning(
+        self,
+        recording_id: UUID,
+        *,
+        lease_token: UUID,
+        warnings: tuple[str, ...],
+    ) -> None:
+        if not warnings:
+            return
+        recording = self._repository.recording_by_id(recording_id, lock=True)
+        if recording is None:
+            raise MeetingNotFound("meeting recording was not found")
+        self._require_finalization_lease(recording, lease_token)
+        meeting = self._repository.meeting(recording.meeting_id)
+        if meeting is not None:
+            self._repository.append_audit(
+                meeting,
+                recording.actor_id,
+                "meeting.transcription_provider_cleanup_warning",
+                "외부 전사 정리 확인 필요",
+            )
+
+    @staticmethod
+    def _require_finalization_lease(recording: Any, lease_token: UUID) -> None:
+        if recording.finalization_lease_token != lease_token:
+            raise MeetingVersionConflict("meeting recording finalization lease is stale")
+
     def record_final_transcript(
         self,
         *,
@@ -327,6 +442,7 @@ class MeetingApplication:
         provider: str,
         provider_reference: str,
         segments: list[FinalTranscriptSegment],
+        finalization_lease_token: UUID | None = None,
     ) -> dict[str, Any]:
         """Worker-only canonical write for immutable async STT output.
 
@@ -346,6 +462,8 @@ class MeetingApplication:
         recording = self._repository.recording_by_id(recording_id, lock=True)
         if recording is None:
             raise MeetingNotFound("meeting recording was not found")
+        if finalization_lease_token is not None and recording.finalization_lease_token != finalization_lease_token:
+            raise MeetingVersionConflict("meeting recording finalization lease is stale")
         existing = self._repository.raw_transcript_for_provider(recording, provider_reference)
         if existing is not None:
             return self._raw_transcript_view(existing)
@@ -396,10 +514,16 @@ class MeetingApplication:
         provider_call_ref: str | None,
         content_hash: str,
         segments: list[RefinedTranscriptSegment],
+        finalization_lease_token: UUID | None = None,
     ) -> dict[str, Any]:
         transcript = self._repository.raw_transcript(transcript_id, lock=True)
         if transcript is None:
             raise MeetingNotFound("meeting raw transcript was not found")
+        if finalization_lease_token is not None:
+            recording = self._repository.recording_by_id(transcript.recording_id, lock=True)
+            if recording is None:
+                raise MeetingNotFound("meeting recording was not found")
+            self._require_finalization_lease(recording, finalization_lease_token)
         existing = self._repository.latest_refinement(transcript)
         if existing is not None and existing.state == "completed":
             return self._refinement_view(existing)
@@ -445,10 +569,17 @@ class MeetingApplication:
         provider_call_ref: str | None,
         content_hash: str,
         statements: list[SummaryStatement],
+        finalization_lease_token: UUID | None = None,
     ) -> dict[str, Any]:
         refinement = self._repository.refinement(refinement_id, lock=True)
         if refinement is None or refinement.state != "completed":
             raise MeetingNotFound("completed transcript refinement was not found")
+        if finalization_lease_token is not None:
+            raw = self._repository.raw_transcript(refinement.raw_transcript_revision_id)
+            recording = raw and self._repository.recording_by_id(raw.recording_id, lock=True)
+            if recording is None:
+                raise MeetingNotFound("meeting recording was not found")
+            self._require_finalization_lease(recording, finalization_lease_token)
         existing = self._repository.summary_for_refinement(refinement, kind)
         if existing is not None and existing.state == "completed":
             return self._summary_view(existing)
