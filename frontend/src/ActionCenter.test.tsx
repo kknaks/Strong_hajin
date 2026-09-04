@@ -114,6 +114,11 @@ describe("adjustment and resubmission", () => {
     fireEvent.change(title, { target: { value: "견적 재검토 (기한 조정)" } });
     const summary = within(drawer).getByLabelText("제출 전 변경 요약");
     expect(within(summary).getByText(/견적 재검토 \(기한 조정\)/)).toBeTruthy();
+    // A changed due date in the pre-submit summary is formatted too, never raw ISO.
+    fireEvent.change(within(drawer).getByLabelText("희망 기한"), { target: { value: "2026-10-15" } });
+    expect(within(summary).getByText("2026/09/20")).toBeTruthy();
+    expect(within(summary).getByText("2026/10/15")).toBeTruthy();
+    expect(summary.textContent).not.toMatch(/2026-\d\d-\d\d/);
     expect(submit.hasAttribute("disabled")).toBe(false);
 
     fireEvent.click(submit);
@@ -122,7 +127,7 @@ describe("adjustment and resubmission", () => {
     expect(vi.mocked(api.runActionCommand).mock.calls[0]).toEqual([
       "item-1",
       "revise",
-      { expected_version: 2, changes: { title: "견적 재검토 (기한 조정)" } },
+      { expected_version: 2, changes: { title: "견적 재검토 (기한 조정)", due_date: "2026-10-15" } },
     ]);
   });
 
@@ -187,7 +192,12 @@ describe("adjustment and resubmission", () => {
     const second = history.querySelector('[data-submission-version="2"]') as HTMLElement;
     // Each round carries its own frozen content, and the diff still names what it replaced.
     expect(within(second.querySelector(".round-snapshot") as HTMLElement).getByText("견적 재검토 (기한 조정)")).toBeTruthy();
-    expect(within(second.querySelector(".round-diff") as HTMLElement).getByText("2026-09-20")).toBeTruthy();
+    // Read-only dates are YYYY/MM/DD everywhere, including inside a diff.
+    const diff = second.querySelector(".round-diff") as HTMLElement;
+    expect(within(diff).getByText("2026/09/20")).toBeTruthy();
+    expect(within(diff).getByText("2026/09/30")).toBeTruthy();
+    expect(diff.textContent).not.toMatch(/2026-09-\d\d/);
+    expect((second.querySelector(".round-snapshot") as HTMLElement).textContent).not.toMatch(/2026-09-\d\d/);
     const first = history.querySelector('[data-submission-version="1"]') as HTMLElement;
     expect(within(first.querySelector(".round-snapshot") as HTMLElement).getByText("견적 재검토")).toBeTruthy();
     expect(within(first.querySelector(".round-snapshot") as HTMLElement).getByText("처음 설명")).toBeTruthy();

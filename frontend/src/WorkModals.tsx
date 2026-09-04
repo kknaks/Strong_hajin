@@ -33,6 +33,13 @@ import type { DirectTask, MaterialExtraction, Persona, RequestTimeline, TaskMate
 
 export type TaskAction = "start" | "block" | "resume" | "complete" | "cancel";
 
+/** One diff cell: date fields go through the shared formatter so no raw ISO reaches a read-only surface. */
+function diffValue(field: string, value: unknown): string {
+  const text = value === null || value === undefined || value === "" ? "" : String(value);
+  if (!text) return "—";
+  return field === "due_date" || field === "start_date" ? formatDate(text) : text;
+}
+
 export function displayNameOf(personas: Persona[], id: string | null | undefined, fallback = "알 수 없음"): string {
   if (!id) return fallback;
   const persona = personas.find((item) => item.id === id);
@@ -893,7 +900,7 @@ export function WorkRequestDetailDrawer({
                       {Object.entries(submission.diff).map(([key, change]) => (
                         <li key={key}>
                           <span className="t-meta">{key === "title" ? "제목" : key === "description" ? "내용" : key === "due_date" ? "기한" : key}</span>
-                          <s>{String(change.before ?? "—")}</s> → <b>{String(change.after ?? "—")}</b>
+                          <s>{diffValue(key, change.before)}</s> → <b>{diffValue(key, change.after)}</b>
                         </li>
                       ))}
                     </ul>

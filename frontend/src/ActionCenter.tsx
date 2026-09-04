@@ -51,6 +51,13 @@ function fieldValue(snapshot: Record<string, unknown>, id: string): string {
   return value === null || value === undefined ? "" : String(value);
 }
 
+/** Read-only display of one revisable field: dates go through the shared formatter, never raw ISO. */
+function displayValue(fieldId: string, value: unknown): string {
+  const text = value === null || value === undefined || value === "" ? "" : String(value);
+  if (!text) return "없음";
+  return REVISABLE.find((field) => field.id === fieldId)?.type === "date" ? formatDate(text) : text;
+}
+
 export function ActionItemCard({
   item,
   personas,
@@ -108,7 +115,7 @@ function RoundHistory({ rounds, personas }: { rounds: ActionRound[]; personas: P
               {REVISABLE.filter((field) => fieldValue(round.snapshot, field.id)).map((field) => (
                 <div className="round-snapshot-row" key={field.id}>
                   <dt>{field.label}</dt>
-                  <dd>{field.type === "date" ? formatDate(fieldValue(round.snapshot, field.id)) : fieldValue(round.snapshot, field.id)}</dd>
+                  <dd>{displayValue(field.id, fieldValue(round.snapshot, field.id))}</dd>
                 </div>
               ))}
             </dl>
@@ -118,7 +125,7 @@ function RoundHistory({ rounds, personas }: { rounds: ActionRound[]; personas: P
                   <div className="round-diff-row" key={field}>
                     <dt>{REVISABLE.find((entry) => entry.id === field)?.label ?? field}</dt>
                     <dd>
-                      <s>{String(change.before ?? "없음")}</s> → <b>{String(change.after ?? "없음")}</b>
+                      <s>{displayValue(field, change.before)}</s> → <b>{displayValue(field, change.after)}</b>
                     </dd>
                   </div>
                 ))}
@@ -183,7 +190,7 @@ function RevisionForm({
           <ul>
             {changed.map((field) => (
               <li key={field.id}>
-                <b>{field.label}</b>: <s>{fieldValue(round.snapshot, field.id) || "없음"}</s> → <b>{draft[field.id] || "없음"}</b>
+                <b>{field.label}</b>: <s>{displayValue(field.id, fieldValue(round.snapshot, field.id))}</s> → <b>{displayValue(field.id, draft[field.id])}</b>
               </li>
             ))}
           </ul>
