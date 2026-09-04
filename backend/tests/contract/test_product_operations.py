@@ -751,6 +751,9 @@ def test_organization_profile_is_a_persisted_authorized_projection(tmp_path) -> 
             "daily_report.read",
             "daily_report.submit",
             "meeting.followup.request",
+            "meeting.manage",
+            "meeting.read",
+            "meeting.share",
             "task.accept",
             "task.read",
             "task.self_manage",
@@ -812,7 +815,7 @@ def test_organization_principal_projects_persona_specific_grants(tmp_path) -> No
 
     assert mina["organizations"] != sora["organizations"]
     assert "work.read" in mina["capabilities"]
-    assert sora["capabilities"] == ["contract.legal_review"]
+    assert sora["capabilities"] == ["contract.legal_review", "meeting.read"]
 
 
 def test_repeated_comment_post_with_one_idempotency_key_creates_a_single_comment(tmp_path) -> None:
