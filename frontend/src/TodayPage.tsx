@@ -45,9 +45,11 @@ type TodayPageProps = {
   onAskAx: (message: string) => void;
   onAskAboutTask: (task: DirectTask) => void;
   onNotice: (message: string) => void;
+  /** Settles every projection an approved effect may have changed. Never throws; returns false when a read failed. */
+  onDecided: () => Promise<boolean>;
   onError: (message: string | null) => void;
-  /** Application-wide projection revision: bumped after an approved AX effect so the current view re-reads without remounting. */
-  revision?: number;
+  /** Registers this surface's reload so the shell can await it after an approved AX effect (no remount). */
+  onRegisterRefresh?: (refresh: (() => Promise<void>) | null) => void;
   onNavigate: (surface: ProductSurface) => void;
 };
 
@@ -65,8 +67,9 @@ export function TodayPage({
   onAskAx,
   onAskAboutTask,
   onNotice,
+  onDecided,
   onError,
-  revision = 0,
+  onRegisterRefresh,
   onNavigate,
 }: TodayPageProps) {
   const today = seoulToday();
@@ -114,8 +117,13 @@ export function TodayPage({
     return () => {
       cancelled = true;
     };
-    // `revision` is not read inside; it is the invalidation signal that re-runs this read.
-  }, [onError, reload, revision]);
+  }, [onError, reload]);
+
+  // The shell awaits this to know the visible projection has settled; re-reading in place keeps filter/view state.
+  useEffect(() => {
+    onRegisterRefresh?.(reload);
+    return () => onRegisterRefresh?.(null);
+  }, [onRegisterRefresh, reload]);
 
   useEffect(() => {
     if (!canCreateWorkRequests) {
@@ -183,14 +191,24 @@ export function TodayPage({
     setBusy(true);
     try {
       await decideAction(action.action_id, action.version, decision as "approve" | "reject");
-      await reload();
-      onError(null);
-      onNotice(decision === "approve" ? `'${action.title}' 제안을 승인해 반영했습니다.` : `'${action.title}' 제안을 거절했습니다.`);
     } catch (error) {
       onError(error instanceof Error ? error.message : "제안을 처리하지 못했습니다.");
-    } finally {
       setBusy(false);
+      return;
     }
+    onError(null);
+    // The decision is persisted. Wait for every affected projection to settle before claiming it is reflected;
+    // a refresh failure surfaces as a retryable stale banner, not as a failed decision.
+    const reflected = await onDecided();
+    const subject = actionSubject(action);
+    onNotice(
+      decision === "approve"
+        ? reflected
+          ? `'${subject}' 제안을 승인해 반영했습니다.`
+          : `'${subject}' 제안을 승인했습니다.`
+        : `'${subject}' 제안을 거절했습니다.`,
+    );
+    setBusy(false);
   };
 
   const groups = useMemo(

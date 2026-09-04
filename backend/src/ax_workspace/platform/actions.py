@@ -298,6 +298,7 @@ class ActionPresenter:
 
     def __init__(self, session: Session) -> None:
         self._session = session
+        self._name_cache: dict[str, dict[str, str]] = {}
 
     def present(self, action: ActionItemRecord, principal: Principal | None) -> dict[str, Any]:
         payload = action.payload or {}
@@ -364,15 +365,22 @@ class ActionPresenter:
         fields.append({"id": field_id, "label": label, "value": self._names(principal).get(str(member_id), _UNKNOWN_MEMBER), "kind": "person"})
 
     def _names(self, principal: Principal | None) -> dict[str, str]:
+        """Names visible to THIS principal.
+
+        The cache is keyed by principal id: one presenter instance is reused for every Action in a view, and two
+        principals may ask the same instance (a worker loop, a shared session). An unkeyed cache would hand the first
+        principal's candidate list to the second and widen what they can see.
+        """
         if principal is None:
             return {}
-        cached = getattr(self, "_name_cache", None)
+        key = str(principal.id)
+        cached = self._name_cache.get(key)
         if cached is not None:
             return cached
         organization = OrganizationApplication(SqlAlchemyOrganizationRepository(self._session))
         names = {str(member["id"]): str(member["display_name"]) for member in organization.member_candidates(principal)}
-        names[str(principal.id)] = principal.display_name
-        self._name_cache = names
+        names[key] = principal.display_name
+        self._name_cache[key] = names
         return names
 
     def _readable_task_title(self, task_id: Any, principal: Principal | None) -> str | None:

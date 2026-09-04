@@ -14,11 +14,11 @@ type CalendarPageProps = {
   onAskAboutTask: (task: DirectTask) => void;
   onNotice: (message: string) => void;
   onError: (message: string | null) => void;
-  /** Application-wide projection revision: bumped after an approved AX effect so the current view re-reads without remounting. */
-  revision?: number;
+  /** Registers this surface's reload so the shell can await it after an approved AX effect (no remount). */
+  onRegisterRefresh?: (refresh: (() => Promise<void>) | null) => void;
 };
 
-export function CalendarPage({ personaName, canManageOwnTasks, onAskAboutTask, onNotice, onError, revision = 0 }: CalendarPageProps) {
+export function CalendarPage({ personaName, canManageOwnTasks, onAskAboutTask, onNotice, onError, onRegisterRefresh }: CalendarPageProps) {
   const [tasks, setTasks] = useState<DirectTask[]>([]);
   const [mode, setMode] = useState<"week" | "month">("month");
   const [selected, setSelected] = useState<DirectTask | null>(null);
@@ -45,8 +45,13 @@ export function CalendarPage({ personaName, canManageOwnTasks, onAskAboutTask, o
     return () => {
       cancelled = true;
     };
-    // `revision` is not read inside; it is the invalidation signal that re-runs this read.
-  }, [onError, reload, revision]);
+  }, [onError, reload]);
+
+  // The shell awaits this to know the visible projection has settled; re-reading in place keeps filter/view state.
+  useEffect(() => {
+    onRegisterRefresh?.(reload);
+    return () => onRegisterRefresh?.(null);
+  }, [onRegisterRefresh, reload]);
 
   const transition = async (task: DirectTask, action: TaskAction, reason?: string) => {
     setBusy(true);

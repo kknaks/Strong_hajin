@@ -91,11 +91,25 @@ export function formatDuration(ms: number | null | undefined): string | null {
   return clamped < 1000 ? `${Math.round(clamped)}ms` : `${Math.floor(clamped / 1000)}s`;
 }
 
+/** Read-only month label (calendar headers): YYYY/MM, the same numeric grammar as formatDate. */
+export function formatMonth(year: number, month: number): string {
+  return `${String(year).padStart(4, "0")}/${String(month).padStart(2, "0")}`;
+}
+
 export function isoDateInSeoul(value: string | undefined | null): string | null {
   if (!value) return null;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
   return date.toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
+}
+
+/** Read-only timestamp: YYYY/MM/DD HH:MM in Seoul. Use it wherever the time of day carries meaning. */
+export function formatDateTime(value: string | null | undefined): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  const time = date.toLocaleTimeString("en-GB", { timeZone: "Asia/Seoul", hour: "2-digit", minute: "2-digit" });
+  return `${formatDate(isoDateInSeoul(value))} ${time}`;
 }
 
 /** Hero date: YYYY/MM/DD with the weekday as a secondary cue. */

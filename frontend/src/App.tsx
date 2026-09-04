@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getActionInbox, getDeveloperPersonas, getMyWork, getSession, logout } from "./api";
 import { CalendarPage } from "./CalendarPage";
@@ -41,10 +41,14 @@ export default function App() {
   const [isAxOpen, setIsAxOpen] = useState(false);
   const [contextOptions, setContextOptions] = useState<LabeledContextReference[]>([]);
   const [selectedContextKey, setSelectedContextKey] = useState("");
-  // Application-wide projection revision: an approved AX effect bumps it so the current surface and the AX context
-  // candidates re-read their queries in place (no page remount, so filters/views survive).
-  const [projectionRevision, setProjectionRevision] = useState(0);
+  // Settlement seam: the visible surface registers its own reload here, so an approved AX effect can re-read every
+  // affected projection in place and the shell can await the result. No page remount, so filters and views survive.
+  const surfaceRefresh = useRef<(() => Promise<void>) | null>(null);
+  const registerSurfaceRefresh = useCallback((refresh: (() => Promise<void>) | null) => {
+    surfaceRefresh.current = refresh;
+  }, []);
   const [staleProjection, setStaleProjection] = useState<string | null>(null);
+  const contextGeneration = useRef(0);
   const reportError = useCallback((text: string) => setError(text), []);
   const chat = useConversations({ personaId, isOpen: isAxOpen, onError: reportError });
 
@@ -100,33 +104,37 @@ export default function App() {
   }
 
   // Current-screen context references: typed resource pointers the server re-validates; the browser never sends content.
+  // Failures propagate to the caller: a post-approval refresh must not quietly present an empty candidate list.
+  const loadContextOptions = useCallback(async () => {
+    const generation = ++contextGeneration.current;
+    const wantsTasks = surface === "today" || surface === "work" || surface === "calendar" || surface === "report";
+    const wantsRequests = (surface === "today" || surface === "work") && (capabilities?.includes("work_request.decide") ?? false);
+    const [tasks, requests] = await Promise.all([
+      wantsTasks ? getMyWork() : Promise.resolve([]),
+      wantsRequests ? getActionInbox() : Promise.resolve([]),
+    ]);
+    if (generation !== contextGeneration.current) return;
+    const next: LabeledContextReference[] = [
+      ...tasks.map((task) => ({ resource_type: "task" as const, resource_id: task.task_id, resource_version: task.version, included: true, label: task.title })),
+      ...requests.map((request) => ({ resource_type: "work_request" as const, resource_id: request.request_id, resource_version: request.version, included: true, label: request.title })),
+    ];
+    setContextOptions((current) => {
+      const pinned = current.filter((item) => item.pinned && !next.some((candidate) => contextKey(candidate) === contextKey(item)));
+      return [...pinned, ...next];
+    });
+  }, [capabilities, surface]);
+
   useEffect(() => {
     if (!isAxOpen) return;
     let cancelled = false;
-    const loadContextOptions = async () => {
-      const wantsTasks = surface === "today" || surface === "work" || surface === "calendar" || surface === "report";
-      const wantsRequests = (surface === "today" || surface === "work") && (capabilities?.includes("work_request.decide") ?? false);
-      const [tasks, requests] = await Promise.all([
-        wantsTasks ? getMyWork().catch(() => []) : Promise.resolve([]),
-        wantsRequests ? getActionInbox().catch(() => []) : Promise.resolve([]),
-      ]);
-      if (cancelled) return;
-      const next: LabeledContextReference[] = [
-        ...tasks.map((task) => ({ resource_type: "task" as const, resource_id: task.task_id, resource_version: task.version, included: true, label: task.title })),
-        ...requests.map((request) => ({ resource_type: "work_request" as const, resource_id: request.request_id, resource_version: request.version, included: true, label: request.title })),
-      ];
-      setContextOptions((current) => {
-        const pinned = current.filter((item) => item.pinned && !next.some((candidate) => contextKey(candidate) === contextKey(item)));
-        return [...pinned, ...next];
-      });
-    };
     void loadContextOptions().catch(() => {
+      // A persona switch invalidates this read; its failure must not surface against the new persona.
       if (!cancelled) setError("현재 화면의 AX 참고 자료를 불러오지 못했습니다.");
     });
     return () => {
       cancelled = true;
     };
-  }, [capabilities, isAxOpen, personaId, surface, projectionRevision]);
+  }, [isAxOpen, loadContextOptions, personaId]);
 
   useEffect(() => {
     if (!contextOptions.some((item) => contextKey(item) === selectedContextKey)) {
@@ -166,17 +174,22 @@ export default function App() {
     await chat.send(conversationId, body, selectedContext ? [stripLabel(selectedContext)] : []);
   }
 
-  /** Re-read every projection that an approved effect may have changed: the current surface, AX context candidates, and
-   *  the active conversation. A failure here is reported as a stale screen with a retry, never as a failed approval. */
-  async function refreshProjections() {
-    setProjectionRevision((current) => current + 1);
-    try {
-      await chat.refreshActiveConversation();
-      setStaleProjection(null);
-    } catch {
-      setStaleProjection("승인은 반영되었지만 화면을 갱신하지 못했습니다.");
-    }
-  }
+  /**
+   * Settles every projection a decided Action may have changed: the visible surface, the AX context candidates, and
+   * the active conversation. Never throws, so a read failure is never mistaken for a failed decision. Returns whether
+   * every read settled; callers use that to choose between reflected-on-screen and persisted-only wording, and a
+   * failure raises the retryable stale-screen banner.
+   */
+  const refreshProjections = useCallback(async () => {
+    const settled = await Promise.allSettled([
+      surfaceRefresh.current ? surfaceRefresh.current() : Promise.resolve(),
+      loadContextOptions(),
+      chat.refreshActiveConversation(),
+    ]);
+    const failed = settled.some((result) => result.status === "rejected");
+    setStaleProjection(failed ? "판단은 저장되었지만 화면을 갱신하지 못했습니다." : null);
+    return !failed;
+  }, [chat, loadContextOptions]);
 
   async function decideConversationAction(actionId: string, expectedVersion: number, decision: string) {
     try {
@@ -185,8 +198,15 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : "AX 확인 항목을 처리하지 못했습니다.");
       return;
     }
-    setToast(decision === "approve" ? "제안을 승인해 반영했습니다." : "제안을 거절했습니다.");
-    await refreshProjections();
+    // The decision is persisted; claim it is reflected on screen only when every affected projection settled.
+    const reflected = await refreshProjections();
+    setToast(
+      decision === "approve"
+        ? reflected
+          ? "제안을 승인해 반영했습니다."
+          : "제안을 승인했습니다."
+        : "제안을 거절했습니다.",
+    );
   }
 
   const currentPersonaName = session?.display_name ?? "사용자";
@@ -194,7 +214,7 @@ export default function App() {
   const has = (capability: string) => capabilities?.includes(capability) ?? false;
   const canReadActions = has("action.read");
   const visibleNavigation = navigation.filter((item) => item.id !== "report" || has("daily_report.generate"));
-  const pageProps = { personaId, onError: setError, revision: projectionRevision };
+  const pageProps = { personaId, onError: setError, onRegisterRefresh: registerSurfaceRefresh };
   const sharedWorkProps = {
     personaName: currentPersonaName,
     personas,
@@ -205,6 +225,7 @@ export default function App() {
     canReadActions,
     onAskAboutTask: askAboutTask,
     onNotice: setToast,
+    onDecided: refreshProjections,
   };
 
   if (session === undefined) {

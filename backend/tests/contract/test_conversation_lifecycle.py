@@ -204,3 +204,32 @@ def test_action_preview_is_structured_and_permission_safe(tmp_path) -> None:
     assert hidden["subject"] == "업무 상태 변경 확인", "a Task the approver cannot read must not leak its title"
     assert hidden["preview"] == [{"id": "target", "label": "변경 상태", "value": "진행 중", "kind": "state"}]
     assert "지호의 업무" not in str(hidden)
+
+
+def test_one_presenter_never_reuses_another_principals_visible_names(tmp_path) -> None:
+    """A reused presenter must resolve names per principal, not hand the first caller's candidate list to the next."""
+    provider = ScriptedProvider()
+    client, worker = _stack(tmp_path, provider)
+    conversation_id, turn_id = _send(client, MINA, "요청을 만들어줘", "k-5")
+    application = client.app.state.workflow_application
+    from ax_workspace.platform.actions import ActionPresenter
+    from ax_workspace.platform.persistence import ActionItemRecord, ConversationTurnRecord, make_session_factory
+
+    with make_session_factory(application._settings.database_url)() as session:
+        execution_id = session.get(ConversationTurnRecord, UUID(turn_id)).execution_id
+    mina = application.authenticated_principal("mina")
+    jiho = application.authenticated_principal("jiho")
+    proposed = application.propose_action(mina, execution_id, "work_request.create", "업무 요청 생성 확인", {"title": "공용 요청", "assignee_id": "jiho"})
+
+    with make_session_factory(application._settings.database_url)() as session:
+        record = session.get(ActionItemRecord, UUID(proposed["action_id"]))
+        presenter = ActionPresenter(session)
+        first = presenter.present(record, mina)
+        second = presenter.present(record, jiho)
+        # Each principal is named as themselves; the requester row is resolved through that principal's own visibility.
+        assert {row["id"]: row["value"] for row in first["preview"]}["requester"] == "민아 (구성원)"
+        assert {row["id"]: row["value"] for row in second["preview"]}["requester"] == "민아 (구성원)"
+        assert presenter._names(mina) is not presenter._names(jiho)
+        assert presenter._names(mina)["mina"] == "민아 (구성원)" and presenter._names(jiho)["jiho"] == "지호 (팀장)"
+        # The cache is keyed, so a second principal never receives the first principal's map.
+        assert set(presenter._name_cache) == {"mina", "jiho"}

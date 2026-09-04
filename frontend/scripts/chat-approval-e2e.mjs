@@ -81,7 +81,7 @@ try {
   const taskCard = page.locator(".canvas .task-card, .canvas .task-row, .canvas tr", { hasText: taskTitle }).first();
   await taskCard.waitFor({ timeout: 20_000 });
   if ((await filter.inputValue()) !== "all") throw new Error("the My Work filter was reset (page remounted)");
-  if ((await page.getByText("승인은 반영되었지만 화면을 갱신하지 못했습니다.").count()) !== 0) {
+  if ((await page.getByText("판단은 저장되었지만 화면을 갱신하지 못했습니다.").count()) !== 0) {
     throw new Error("projection refresh reported a failure after a successful approval");
   }
   await card.locator("small.approved").waitFor({ timeout: 10_000 });

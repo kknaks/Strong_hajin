@@ -1,6 +1,6 @@
 import { useMemo, useState, type DragEvent, type ReactNode } from "react";
 
-import { addDays, dayDifference, dueDayText, formatDate, isOverdue, isoDateInSeoul, seoulToday, taskStateLabel } from "./labels";
+import { addDays, dayDifference, dueDayText, formatDate, formatMonth, isOverdue, isoDateInSeoul, seoulToday, taskStateLabel } from "./labels";
 import type { DirectTask, TaskState } from "./viewModels";
 import { StatusText, type TaskAction } from "./WorkModals";
 
@@ -202,7 +202,7 @@ export function TaskCalendar({
     setAnchor(date.toISOString().slice(0, 10));
   };
   const rangeLabel =
-    mode === "week" ? `${formatDate(days[0])} – ${formatDate(days[6])}` : `${year}년 ${month}월`;
+    mode === "week" ? `${formatDate(days[0])} – ${formatDate(days[6])}` : formatMonth(year, month);
 
   return (
     <div className="calendar">

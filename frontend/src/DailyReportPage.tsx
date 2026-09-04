@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   editDailyReport,
@@ -10,7 +10,7 @@ import {
   getTasks,
   submitDailyReport,
 } from "./api";
-import { formatDate, personName, seoulToday, taskStateLabel } from "./labels";
+import { formatDate, formatDateTime, personName, seoulToday, taskStateLabel } from "./labels";
 import { StatusText } from "./WorkModals";
 import {
   type DailyReportDraft,
@@ -23,8 +23,8 @@ type DailyReportPageProps = {
   personaId: string;
   personaName: string;
   onError: (message: string | null) => void;
-  /** Application-wide projection revision: an approved AX report effect re-reads the draft in place. */
-  revision?: number;
+  /** Registers this surface's reload so the shell can await it after an approved AX effect (no remount). */
+  onRegisterRefresh?: (refresh: (() => Promise<void>) | null) => void;
 };
 
 type ReportPhase = "not_started" | "draft" | "submitted";
@@ -41,7 +41,7 @@ const phaseTone: Record<ReportPhase, string> = {
   submitted: "ai",
 };
 
-export function DailyReportPage({ personaId, personaName, onError, revision = 0 }: DailyReportPageProps) {
+export function DailyReportPage({ personaId, personaName, onError, onRegisterRefresh }: DailyReportPageProps) {
   const [reportDate, setReportDate] = useState(seoulToday);
   const [evidence, setEvidence] = useState<DirectTask[]>([]);
   const [draft, setDraft] = useState<DailyReportDraft | null>(null);
@@ -101,50 +101,66 @@ export function DailyReportPage({ personaId, personaName, onError, revision = 0 
     };
   }, [onError, personaId]);
 
+  const isDirtyRef = useRef(false);
+  isDirtyRef.current = isDirty;
+
+  /**
+   * Re-reads the report for the selected date. `reset` clears the editor first (a new date or persona starts clean);
+   * a plain refresh keeps an unsaved edit so an approved effect elsewhere never discards what the user is typing.
+   * Throws on failure so the caller can decide between an inline error and a retryable stale banner.
+   */
+  const loadReport = useCallback(
+    async ({ reset = false, shouldApply = () => true }: { reset?: boolean; shouldApply?: () => boolean } = {}) => {
+      if (reset) {
+        setDraft(null);
+        setBody("");
+        setHistory(null);
+        setNotice(null);
+      }
+      const status = await getDailyReportStatus(reportDate);
+      if (!shouldApply()) return;
+      if (!status.report_id) {
+        if (!reset) {
+          setDraft(null);
+          setHistory(null);
+        }
+        return;
+      }
+      const nextHistory = await getDailyReportHistory(status.report_id);
+      if (!shouldApply()) return;
+      setHistory(nextHistory);
+      const latestDraft = nextHistory.drafts.at(-1);
+      if (!latestDraft) return;
+      setDraft({
+        report_id: nextHistory.report_id,
+        draft_id: latestDraft.draft_id,
+        draft_version: latestDraft.version,
+        body: latestDraft.body,
+        source_refs: latestDraft.source_refs,
+        status: nextHistory.status,
+      });
+      setBody((current) => (reset || !isDirtyRef.current ? latestDraft.body : current));
+    },
+    [reportDate],
+  );
+
   useEffect(() => {
     let cancelled = false;
-
-    async function restoreForSelectedDate() {
-      setDraft(null);
-      setBody("");
-      setHistory(null);
-      setNotice(null);
-      onError(null);
-      try {
-        const status = await getDailyReportStatus(reportDate);
-        if (cancelled) return;
-        if (!status.report_id) {
-          onError(null);
-          return;
-        }
-        const nextHistory = await getDailyReportHistory(status.report_id);
-        if (cancelled) return;
-        setHistory(nextHistory);
-        const latestDraft = nextHistory.drafts.at(-1);
-        if (!latestDraft) return;
-        setDraft({
-          report_id: nextHistory.report_id,
-          draft_id: latestDraft.draft_id,
-          draft_version: latestDraft.version,
-          body: latestDraft.body,
-          source_refs: latestDraft.source_refs,
-          status: nextHistory.status,
-        });
-        setBody(latestDraft.body);
-        onError(null);
-      } catch (error) {
-        if (!cancelled) {
-          onError(error instanceof Error ? error.message : "기존 보고 초안을 불러오지 못했습니다.");
-        }
-      }
-    }
-
-    void restoreForSelectedDate();
+    onError(null);
+    void loadReport({ reset: true, shouldApply: () => !cancelled }).catch((error: unknown) => {
+      if (!cancelled) onError(error instanceof Error ? error.message : "기존 보고 초안을 불러오지 못했습니다.");
+    });
     return () => {
       cancelled = true;
     };
-    // `revision` is not read inside; it is the invalidation signal that re-runs this read.
-  }, [onError, personaId, reportDate, revision]);
+  }, [loadReport, onError, personaId]);
+
+  // The shell awaits this after an approved AX effect; unsaved editor text is preserved.
+  const refreshReport = useCallback(() => loadReport(), [loadReport]);
+  useEffect(() => {
+    onRegisterRefresh?.(refreshReport);
+    return () => onRegisterRefresh?.(null);
+  }, [onRegisterRefresh, refreshReport]);
 
   async function generateDraft() {
     if (draft && isDirty && !window.confirm("저장하지 않은 편집 내용이 있습니다. 새 초안을 만들면 편집 중인 내용은 사라집니다. 계속할까요?")) {
@@ -345,7 +361,7 @@ export function DailyReportPage({ personaId, personaName, onError, revision = 0 
                   <p>{submission.body}</p>
                   {submission.reason && <small>정정 사유: {submission.reason}</small>}
                 </div>
-                <span>{new Date(submission.submitted_at).toLocaleString("ko-KR")}</span>
+                <span>{formatDateTime(submission.submitted_at)}</span>
               </li>
             ))}
           </ol>
