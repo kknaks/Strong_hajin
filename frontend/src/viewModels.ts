@@ -23,6 +23,19 @@ export type DirectTask = {
   visibility?: string;
   assignment?: TaskAssignmentSummary | null;
   lineage?: TaskLineage;
+  /** Steps inside this Task. Present on the detail read, not on list projections. */
+  checklist?: ChecklistItem[];
+  checklist_progress?: { done: number; total: number };
+};
+
+/** One step inside a Task: no assignment, no lineage, no judgement. */
+export type ChecklistItem = {
+  item_id: string;
+  text: string;
+  position: number;
+  done: boolean;
+  completed_by: string | null;
+  completed_at: string | null;
 };
 
 export type TaskAssignmentSummary = {

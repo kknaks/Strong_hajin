@@ -8,7 +8,11 @@ import {
   createWorkRequest,
   decideWorkRequest,
   detachTaskMaterial,
+  addChecklistItem,
+  getTask,
   getTaskMaterials,
+  removeChecklistItem,
+  updateChecklistItem,
   getWorkRequestTimeline,
   negotiateWorkRequest,
   requestAttachmentUrl,
@@ -29,7 +33,7 @@ import {
   workRequestStateLabel,
 } from "./labels";
 import { ConfirmModal, Drawer } from "./Modal";
-import type { DirectTask, MaterialExtraction, Persona, RequestTimeline, TaskMaterial, TaskMaterialKind, TaskPatch, WorkRequest } from "./viewModels";
+import type { ChecklistItem, DirectTask, MaterialExtraction, Persona, RequestTimeline, TaskMaterial, TaskMaterialKind, TaskPatch, WorkRequest } from "./viewModels";
 
 export type TaskAction = "start" | "block" | "resume" | "complete" | "cancel";
 
@@ -127,6 +131,9 @@ export function TaskDetailDrawer({
   const [startDate, setStartDate] = useState(task.start_date ?? "");
   const [dueDate, setDueDate] = useState(task.due_date ?? "");
   const [materials, setMaterials] = useState<TaskMaterial[] | null>(null);
+  const [checklist, setChecklist] = useState<ChecklistItem[] | null>(task.checklist ?? null);
+  const [newStep, setNewStep] = useState("");
+  const addingStep = useRef(false);
   const [uploading, setUploading] = useState<TaskMaterialKind | null>(null);
   const inputFile = useRef<HTMLInputElement>(null);
   const outputFile = useRef<HTMLInputElement>(null);
@@ -144,6 +151,21 @@ export function TaskDetailDrawer({
     setStartDate(task.start_date ?? "");
     setDueDate(task.due_date ?? "");
   }, [task.task_id, task.version, task.title, task.description, task.start_date, task.due_date]);
+
+  // The checklist is only on the detail read, so a task opened from a list projection loads it here.
+  useEffect(() => {
+    let cancelled = false;
+    void getTask(task.task_id)
+      .then((detail) => {
+        if (!cancelled) setChecklist(detail.checklist ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setChecklist([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [task.task_id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -176,6 +198,42 @@ export function TaskDetailDrawer({
       window.clearInterval(timer);
     };
   }, [extractionPending, task.task_id]);
+
+  async function addStep() {
+    const text = newStep.trim();
+    if (!text || addingStep.current) return;
+    addingStep.current = true;
+    onError(null);
+    try {
+      const created = await addChecklistItem(task.task_id, text);
+      setChecklist((current) => [...(current ?? []), created]);
+      setNewStep("");
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "체크리스트 단계를 추가하지 못했습니다.");
+    } finally {
+      addingStep.current = false;
+    }
+  }
+
+  async function toggleStep(item: ChecklistItem, done: boolean) {
+    onError(null);
+    try {
+      const updated = await updateChecklistItem(task.task_id, item.item_id, { done });
+      setChecklist((current) => (current ?? []).map((row) => (row.item_id === item.item_id ? updated : row)));
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "체크리스트를 갱신하지 못했습니다.");
+    }
+  }
+
+  async function removeStep(item: ChecklistItem) {
+    onError(null);
+    try {
+      await removeChecklistItem(task.task_id, item.item_id);
+      setChecklist((current) => (current ?? []).filter((row) => row.item_id !== item.item_id));
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "체크리스트 단계를 삭제하지 못했습니다.");
+    }
+  }
 
   const save = async () => {
     if (!title.trim()) {
@@ -387,6 +445,59 @@ export function TaskDetailDrawer({
             />
           </div>
         </div>
+        <section aria-label="체크리스트" className="drawer-section">
+          <h4>
+            체크리스트{" "}
+            <small className="t-meta">
+              {checklist === null ? "· 불러오는 중" : `· ${checklist.filter((item) => item.done).length}/${checklist.length}`}
+            </small>
+          </h4>
+          {checklist !== null && checklist.length > 0 && (
+            <ul className="checklist">
+              {checklist.map((item) => (
+                <li className={item.done ? "checklist-item done" : "checklist-item"} data-item-id={item.item_id} key={item.item_id}>
+                  <label>
+                    <input
+                      checked={item.done}
+                      disabled={!canManage || busy}
+                      onChange={(event) => void toggleStep(item, event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>{item.text}</span>
+                  </label>
+                  {canManage && (
+                    <button aria-label={`${item.text} 삭제`} className="btn h30 ghost" onClick={() => void removeStep(item)} type="button">
+                      삭제
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+          {checklist !== null && checklist.length === 0 && <p className="t-meta">아직 단계가 없습니다. 이 업무를 쪼개서 적어 두세요.</p>}
+          {canManage && (
+            <div className="inline-reason" style={{ padding: "8px 0 0" }}>
+              <label className="sr-only" htmlFor={`checklist-${task.task_id}`}>
+                체크리스트 단계
+              </label>
+              <input
+                id={`checklist-${task.task_id}`}
+                onChange={(event) => setNewStep(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  event.preventDefault();
+                  if (event.repeat || event.nativeEvent.isComposing) return;
+                  void addStep();
+                }}
+                placeholder="이 업무를 끝내려면 무엇을 해야 하나"
+                value={newStep}
+              />
+              <button className="btn" disabled={busy || !newStep.trim()} onClick={() => void addStep()} type="button">
+                추가
+              </button>
+            </div>
+          )}
+        </section>
         {task.block_reason && (
           <section className="drawer-section">
             <h4>막힘 사유</h4>

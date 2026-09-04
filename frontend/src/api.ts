@@ -1,5 +1,6 @@
 import type {
   ActionItemDetail,
+  ChecklistItem,
   ActionItemEnvelope,
   DailyReportDraft,
   DailyReportHistory,
@@ -420,4 +421,20 @@ export async function runActionCommand(
     body: JSON.stringify(payload),
     method: "POST",
   });
+}
+
+export async function addChecklistItem(taskId: string, text: string): Promise<ChecklistItem> {
+  return request<ChecklistItem>(`/api/tasks/${taskId}/checklist`, { body: JSON.stringify({ text }), method: "POST" });
+}
+
+export async function updateChecklistItem(
+  taskId: string,
+  itemId: string,
+  patch: { text?: string; done?: boolean },
+): Promise<ChecklistItem> {
+  return request<ChecklistItem>(`/api/tasks/${taskId}/checklist/${itemId}`, { body: JSON.stringify(patch), method: "PATCH" });
+}
+
+export async function removeChecklistItem(taskId: string, itemId: string): Promise<void> {
+  await request(`/api/tasks/${taskId}/checklist/${itemId}`, { method: "DELETE" });
 }
