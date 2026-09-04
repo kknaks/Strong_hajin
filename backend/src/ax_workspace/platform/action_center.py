@@ -83,15 +83,24 @@ def _revision_changes(value: Any) -> dict[str, Any]:
     if unknown:
         raise ActionError(f"수정안에서 바꿀 수 없는 항목입니다: {', '.join(unknown)}")
     changes: dict[str, Any] = {}
-    for field in ("title", "description", "due_date"):
-        text = str(value.get(field) or "").strip()
-        if text:
-            changes[field] = text
+    if "title" in value:
+        # A request always has a title, so emptying it is a mistake rather than a change.
+        title = str(value["title"] or "").strip()
+        if not title:
+            raise ActionError("요청할 업무 제목은 비울 수 없습니다")
+        changes["title"] = title
+    if "description" in value:
+        # Naming the description and leaving it empty is how a requester removes it: presence is the intent.
+        changes["description"] = str(value["description"] or "").strip()
     if value.get("clear_due_date"):
         changes["clear_due_date"] = True
-        changes.pop("due_date", None)
-    elif "due_date" in changes:
-        _parse_date(changes["due_date"])
+    elif "due_date" in value:
+        # An empty date is refused rather than dropped: a revision that succeeded must have done everything it named.
+        due_date = str(value["due_date"] or "").strip()
+        if not due_date:
+            raise ActionError("기한은 clear_due_date로만 지웁니다")
+        _parse_date(due_date)
+        changes["due_date"] = due_date
     return changes
 
 

@@ -725,3 +725,48 @@ def test_a_pending_confirmation_survives_a_target_that_moved_or_authority_that_w
     assert pending["state"] == "pending"
     assert [row["state"] for row in client.get("/api/work-requests", headers=MINA).json()] == ["negotiating", "pending"]
     assert client.get("/api/my-work", headers=JIHO).json() == []
+
+
+def test_an_emptied_field_is_part_of_the_judgement_a_turn_prepares(tmp_path, monkeypatch) -> None:
+    """Clearing a field is a decision. It must survive normalization and must change what the receipt is for."""
+    database_url, settings, client = _stack(tmp_path)
+    application = client.app.state.workflow_application
+    client.post(
+        "/api/work-requests",
+        headers=MINA,
+        json={"title": "설명 있는 요청", "assignee_id": "jiho", "description": "지워질 설명"},
+    )
+    jiho, mina = _facade(settings, "jiho"), _facade(settings, "mina")
+    [item] = jiho.pending_action_items()
+    jiho.run_action_command(item["action_item_id"], "adjust", expected_version=item["expected_version"], reason="설명을 빼 주세요")
+    [waiting] = mina.pending_action_items()
+
+    # The canonical form keeps the field the caller named, empty value and all.
+    canonical = application.normalize_action_command(
+        application.authenticated_principal("mina"), waiting["action_item_id"], "revise",
+        {"expected_version": waiting["expected_version"], "changes": {"description": ""}},
+    )
+    assert canonical["changes"] == {"description": ""}
+
+    _delegated_turn(client, application, MINA, "mina", monkeypatch)
+    wrapper = mina.run_action_command(
+        waiting["action_item_id"], "revise", expected_version=waiting["expected_version"], changes={"description": ""}
+    )
+    assert wrapper["state"] == "pending"
+    # Clearing the description and leaving it alone are different judgements, so they are different receipts.
+    with pytest.raises(Exception, match="다른 판단"):
+        mina.run_action_command(
+            waiting["action_item_id"], "revise", expected_version=waiting["expected_version"], changes={"title": "다른 수정"}
+        )
+    same = mina.run_action_command(
+        waiting["action_item_id"], "revise", expected_version=waiting["expected_version"], changes={"description": "  "}
+    )
+    assert same["action_id"] == wrapper["action_id"] and same["payload_hash"] == wrapper["payload_hash"]
+
+    approved = client.post(
+        f"/api/actions/{wrapper['action_id']}/decide", headers=MINA,
+        json={"expected_version": wrapper["version"], "decision": "approve"},
+    )
+    assert approved.status_code == 200, approved.text
+    rounds = client.get(f"/api/action-items/{waiting['action_item_id']}", headers=MINA).json()["rounds"]
+    assert rounds[1]["snapshot"]["description"] is None and rounds[1]["snapshot"]["title"] == "설명 있는 요청"

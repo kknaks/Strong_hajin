@@ -620,3 +620,60 @@ def test_an_ax_approval_replays_only_on_the_version_it_consumed(tmp_path) -> Non
         )
         assert stale.status_code == 422, f"{version}: {stale.text}"
     assert len(client.get("/api/my-work", headers=MINA).json()) == 1
+
+
+def test_a_revision_can_clear_the_description_by_saying_it_is_empty(tmp_path) -> None:
+    """An explicitly empty description is a change — the requester removing it — not an absent field."""
+    client, _ = _stack(tmp_path)
+    client.post(
+        "/api/work-requests",
+        headers=MINA,
+        json={"title": "설명 지우기", "assignee_id": "jiho", "description": "지워질 설명", "due_date": "2026-09-30"},
+    )
+    [item] = _pending(client, JIHO)
+    _command(client, JIHO, item["action_item_id"], "adjust", expected_version=item["expected_version"], reason="설명을 빼 주세요")
+    [waiting] = _pending(client, MINA)
+
+    cleared = _command(
+        client, MINA, waiting["action_item_id"], "revise",
+        expected_version=waiting["expected_version"], changes={"description": ""},
+    )
+    assert cleared.status_code == 200, cleared.text
+    rounds = _rounds(client, MINA, waiting["action_item_id"])
+    assert [row["submission_version"] for row in rounds] == [1, 2]
+    assert rounds[1]["snapshot"]["description"] is None
+    assert rounds[1]["snapshot"]["title"] == "설명 지우기" and rounds[1]["snapshot"]["due_date"] == "2026-09-30"
+    assert rounds[1]["diff"]["description"] == {"before": "지워질 설명", "after": None}
+
+
+def test_an_empty_title_is_refused_and_a_date_is_only_removed_by_asking_to_remove_it(tmp_path) -> None:
+    client, _ = _stack(tmp_path)
+    client.post(
+        "/api/work-requests",
+        headers=MINA,
+        json={"title": "필드 계약", "assignee_id": "jiho", "description": "설명", "due_date": "2026-09-30"},
+    )
+    [item] = _pending(client, JIHO)
+    _command(client, JIHO, item["action_item_id"], "adjust", expected_version=item["expected_version"], reason="고쳐 주세요")
+    [waiting] = _pending(client, MINA)
+    revise = lambda changes: _command(
+        client, MINA, waiting["action_item_id"], "revise", expected_version=waiting["expected_version"], changes=changes
+    )
+
+    # A request must keep a title, and an empty date is not how a date is removed.
+    empty_title = revise({"title": ""})
+    assert empty_title.status_code == 422 and "제목" in empty_title.text
+    assert revise({"title": "   "}).status_code == 422
+    empty_date = revise({"due_date": ""})
+    assert empty_date.status_code == 422 and "기한" in empty_date.text
+    # Naming the date and leaving it empty stays an error even when the revision does change something else, so it is
+    # never quietly dropped from an answer that otherwise succeeded.
+    beside_a_real_change = revise({"title": "정말 바뀐 제목", "due_date": ""})
+    assert beside_a_real_change.status_code == 422 and "기한" in beside_a_real_change.text
+    assert revise({"title": "정말 바뀐 제목", "due_date": None}).status_code == 422
+    assert [row["submission_version"] for row in _rounds(client, MINA, waiting["action_item_id"])] == [1]
+
+    removed = revise({"clear_due_date": True})
+    assert removed.status_code == 200, removed.text
+    rounds = _rounds(client, MINA, waiting["action_item_id"])
+    assert rounds[1]["snapshot"]["due_date"] is None and rounds[1]["snapshot"]["description"] == "설명"
