@@ -207,7 +207,8 @@ export function TaskDetailDrawer({
     try {
       const created = await addChecklistItem(task.task_id, text);
       setChecklist((current) => [...(current ?? []), created]);
-      setNewStep("");
+      // Clear only what was sent: a fast typist may already be writing the next step while this one is in flight.
+      setNewStep((current) => (current.trim() === text ? "" : current));
     } catch (error) {
       onError(error instanceof Error ? error.message : "체크리스트 단계를 추가하지 못했습니다.");
     } finally {

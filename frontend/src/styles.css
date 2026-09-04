@@ -688,5 +688,6 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .checklist-item input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--action); flex: none; }
 .checklist-item span { overflow-wrap: anywhere; }
 .checklist-item.done span { color: var(--text-tertiary); text-decoration: line-through; }
-.checklist-item .btn { visibility: hidden; flex: none; }
-.checklist-item:hover .btn, .checklist-item:focus-within .btn { visibility: visible; }
+/* The delete stays reachable: hover-only reveal would strand touch and keyboard users. */
+.checklist-item .btn { flex: none; color: var(--text-tertiary); opacity: 0.65; }
+.checklist-item:hover .btn, .checklist-item:focus-within .btn { opacity: 1; }

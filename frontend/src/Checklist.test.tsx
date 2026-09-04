@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { DirectTask } from "./viewModels";
@@ -93,6 +93,28 @@ describe("task checklist", () => {
     await waitFor(() => expect((field as HTMLInputElement).value).toBe(""));
     expect(within(section).getByText("제출하기")).toBeTruthy();
     await waitFor(() => expect(within(section).getByText("· 0/1")).toBeTruthy());
+  });
+
+  it("does not wipe what the user typed while the previous step was still being saved", async () => {
+    let release: ((value: unknown) => void) | null = null;
+    vi.mocked(api.addChecklistItem).mockImplementation(() => new Promise((resolve) => {
+      release = () => resolve(step("i1", "자료 모으기", 1) as never);
+    }));
+    renderDrawer([]);
+    const section = await screen.findByLabelText("체크리스트");
+    const field = within(section).getByLabelText("체크리스트 단계") as HTMLInputElement;
+
+    fireEvent.change(field, { target: { value: "자료 모으기" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    await waitFor(() => expect(release).not.toBeNull());
+    // The next step is typed before the first one comes back.
+    fireEvent.change(field, { target: { value: "초안 쓰기" } });
+    await act(async () => {
+      release?.(undefined);
+    });
+
+    await waitFor(() => expect(within(section).getByText("자료 모으기")).toBeTruthy());
+    expect(field.value).toBe("초안 쓰기"); // the in-progress text survived
   });
 
   it("checks a step off and moves the progress with the server's answer", async () => {

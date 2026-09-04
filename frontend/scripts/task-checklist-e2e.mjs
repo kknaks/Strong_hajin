@@ -1,6 +1,6 @@
 import { chromium } from "@playwright/test";
 
-import { loginAs } from "./e2e-helpers.mjs";
+import { loginAs, switchAccount } from "./e2e-helpers.mjs";
 
 // A Task's checklist through the real UI: add steps, check one off, remove one, and confirm it survives a re-open
 // and never leaks into another person's view or the judgement ledger.
@@ -43,14 +43,20 @@ try {
   for (const step of ["초안 쓰기", "검토 요청"]) {
     await field.fill(step);
     await checklist.getByRole("button", { name: "추가" }).click();
+    // Let the list settle before the next add, so the row nodes are not replaced under the next action.
+    await checklist.locator(".checklist-item", { hasText: step }).waitFor({ timeout: 10_000 });
   }
   await checklist.getByText("· 0/3").waitFor({ timeout: 10_000 });
   const texts = await checklist.locator(".checklist-item span").allTextContents();
   if (texts.join("|") !== "자료 모으기|초안 쓰기|검토 요청") throw new Error(`unexpected order: ${JSON.stringify(texts)}`);
 
   // Check one off; the progress and the strike-through follow the server's answer.
-  await checklist.getByRole("checkbox", { name: "초안 쓰기" }).check();
+  // The box is controlled by the server's answer, so it flips only after the PATCH lands.
+  const secondStep = checklist.getByRole("checkbox", { name: "초안 쓰기" });
+  await secondStep.waitFor({ state: "visible", timeout: 10_000 });
+  await secondStep.click();
   await checklist.getByText("· 1/3").waitFor({ timeout: 10_000 });
+  if (!(await secondStep.isChecked())) throw new Error("the checkbox did not follow the server's answer");
   const doneCount = await checklist.locator(".checklist-item.done").count();
   if (doneCount !== 1) throw new Error(`expected one finished step, found ${doneCount}`);
 
@@ -65,14 +71,19 @@ try {
   if (after.join("|") !== "자료 모으기|초안 쓰기") throw new Error(`checklist did not survive re-open: ${JSON.stringify(after)}`);
 
   // The steps are the Task's own: they are not judgements and not visible to someone without the Task.
-  const ledger = await page.evaluate(async () => (await (await fetch("/api/action-items", { headers: { "X-Demo-Persona": "mina" } })).json()).length);
+  const ledger = await page.evaluate(async () => (await (await fetch("/api/action-items")).json()).length);
   const stored = await page.evaluate(async (taskId) => {
-    const mine = await (await fetch(`/api/tasks/${taskId}`, { headers: { "X-Demo-Persona": "mina" } })).json();
-    const other = await fetch(`/api/tasks/${taskId}`, { headers: { "X-Demo-Persona": "jiho" } });
-    return { progress: mine.checklist_progress, items: mine.checklist.map((row) => row.text), otherStatus: other.status };
+    const mine = await (await fetch(`/api/tasks/${taskId}`)).json();
+    return { progress: mine.checklist_progress, items: mine.checklist.map((row) => row.text) };
   }, task.task_id);
-  if (stored.otherStatus !== 404) throw new Error(`another member could read the task: ${stored.otherStatus}`);
   if (stored.progress.done !== 1 || stored.progress.total !== 2) throw new Error(`server progress mismatch: ${JSON.stringify(stored.progress)}`);
+
+  // Really sign in as someone else: the session decides who is asking, so a header cannot fake it.
+  await page.getByRole("dialog", { name: "업무 상세" }).getByRole("button", { name: "상세 닫기" }).click();
+  await page.getByRole("dialog").waitFor({ state: "detached", timeout: 10_000 });
+  await switchAccount(page, "jiho");
+  const otherStatus = await page.evaluate(async (taskId) => (await fetch(`/api/tasks/${taskId}`)).status, task.task_id);
+  if (otherStatus !== 404) throw new Error(`another member could read the task: ${otherStatus}`);
 
   await page.screenshot({ path: "test-results/task-checklist-e2e.png", fullPage: true });
   console.log(JSON.stringify({ result: "task checklist added, checked, removed and restored", task_id: task.task_id, ...stored, pending_judgements: ledger }));
