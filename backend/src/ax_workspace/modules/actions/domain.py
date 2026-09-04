@@ -69,6 +69,14 @@ class ActionEnvelope:
         }
 
 
+class ActionError(Exception):
+    """The command cannot be run as asked."""
+
+
+class ActionNotFound(ActionError):
+    pass
+
+
 class ActionKindHandler(Protocol):
     """Each origin keeps its own business rules; only the judgement shape is shared."""
 
@@ -76,9 +84,33 @@ class ActionKindHandler(Protocol):
         """ActionItems of this kind that `principal` must answer now."""
         ...
 
+    def find(self, action_item_id: str) -> Any | None:
+        """The stored item behind this id, or None when another kind owns it."""
+        ...
+
+    def envelope(self, item: Any, principal: Principal) -> ActionEnvelope:
+        """How this item looks to `principal` right now, pending or not."""
+        ...
+
+    def rounds(self, item: Any, principal: Principal) -> list[dict[str, Any]]:
+        """Every immutable Submission with its frozen content, diff and decisions, oldest first."""
+        ...
+
+    def execute(self, principal: Principal, item: Any, command: str, payload: dict[str, Any]) -> None:
+        """Run the owning module's operation for this command."""
+        ...
+
+    def is_replay(self, item: Any, principal: Principal, command: str) -> bool:
+        """True when this command already produced the item's current outcome, so a re-send is a receipt."""
+        ...
+
 
 class ActionCenterApplication:
-    """The one query behind `판단할 일`: every kind, one envelope, ordered by how long it has waited."""
+    """The one query and the one command path behind `판단할 일`.
+
+    Authorization is the envelope itself: a command runs only if the server offered it to this principal on this item,
+    so a kind cannot be talked into an operation its policy did not allow.
+    """
 
     def __init__(self, handlers: list[ActionKindHandler]) -> None:
         self._handlers = handlers
@@ -88,3 +120,28 @@ class ActionCenterApplication:
         for handler in self._handlers:
             items.extend(handler.pending(principal))
         return [item.as_dict() for item in items]
+
+    def detail(self, principal: Principal, action_item_id: str) -> dict[str, Any]:
+        handler, item = self._locate(action_item_id)
+        envelope = handler.envelope(item, principal)
+        return {**envelope.as_dict(), "rounds": handler.rounds(item, principal)}
+
+    def execute(self, principal: Principal, action_item_id: str, command: str, payload: dict[str, Any]) -> dict[str, Any]:
+        handler, item = self._locate(action_item_id)
+        offered = {entry.id: entry for entry in handler.envelope(item, principal).allowed_commands}
+        if command not in offered:
+            # A lost response must not force the caller to choose between a duplicate effect and a stale error.
+            if handler.is_replay(item, principal, command):
+                return handler.envelope(item, principal).as_dict()
+            raise ActionError(f"'{command}' is not available on this action item right now")
+        if offered[command].requires_reason and not str(payload.get("reason") or "").strip():
+            raise ActionError(f"'{command}' requires a reason")
+        handler.execute(principal, item, command, payload)
+        return handler.envelope(handler.find(action_item_id), principal).as_dict()
+
+    def _locate(self, action_item_id: str) -> tuple[ActionKindHandler, Any]:
+        for handler in self._handlers:
+            item = handler.find(action_item_id)
+            if item is not None:
+                return handler, item
+        raise ActionNotFound("action item was not found")

@@ -15,20 +15,31 @@ from sqlalchemy.orm import Session
 from ax_workspace.modules.actions.domain import (
     AWAITING_REVIEW,
     AWAITING_REVISION,
+    RESOLVED,
     ActionCommand,
     ActionEnvelope,
+    ActionError,
 )
 from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, WORK_REQUEST_DECIDE, Principal
 from ax_workspace.platform.actions import ActionPresenter
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
+from ax_workspace.modules.work.requests import WorkRequestAccessDenied as ActionAccessDenied
 from ax_workspace.platform.persistence import (
     ActionItemRecord,
     DecisionItemRecord,
+    ResourceRelationshipRecord,
     ReviewAssignmentRecord,
+    ReviewDecisionRecord,
     SubjectVersionRecord,
     SubmissionRecord,
     WorkRequestRecord,
 )
+
+
+def _parse_date(value: Any):
+    from datetime import date
+
+    return date.fromisoformat(str(value)) if value else None
 
 WORK_REQUEST_ACCEPTANCE = "work_request.acceptance"
 
@@ -55,11 +66,116 @@ class MemberDirectory:
 
 
 class WorkRequestActionHandler:
-    """WorkRequest acceptance: the reviewer answers a Submission, or the requester answers an adjustment."""
+    """WorkRequest acceptance: the reviewer answers a Submission, or the requester answers an adjustment.
 
-    def __init__(self, session: Session) -> None:
+    Commands delegate to `WorkRequestApplication`; the acceptance rules, the version check and the Task effect all stay
+    in the work module. This class only decides which command the current principal may reach.
+    """
+
+    def __init__(self, session: Session, work_requests: Any) -> None:
         self._session = session
         self._members = MemberDirectory(session)
+        self._work_requests = work_requests
+
+    def find(self, action_item_id: str) -> tuple[Any, Any] | None:
+        try:
+            item = self._session.get(DecisionItemRecord, UUID(action_item_id))
+        except ValueError:
+            return None
+        if item is None or item.kind != WORK_REQUEST_ACCEPTANCE:
+            return None
+        request = self._session.scalar(select(WorkRequestRecord).where(WorkRequestRecord.subject_id == item.subject_id))
+        return (item, request) if request is not None else None
+
+    def envelope(self, item: tuple[Any, Any], principal: Principal) -> ActionEnvelope:
+        decision_item, request = item
+        return self._build(decision_item, request, principal, pending_only=False)
+
+    def rounds(self, item: tuple[Any, Any], principal: Principal) -> list[dict[str, Any]]:
+        decision_item, request = item
+        self._require_participant(request, principal)
+        submissions = self._session.scalars(
+            select(SubmissionRecord)
+            .where(SubmissionRecord.decision_item_id == decision_item.id)
+            .order_by(SubmissionRecord.submission_version)
+        ).all()
+        decisions: dict[Any, list[dict[str, Any]]] = {}
+        for decision in self._session.scalars(
+            select(ReviewDecisionRecord)
+            .where(ReviewDecisionRecord.submission_id.in_([submission.id for submission in submissions]))
+            .order_by(ReviewDecisionRecord.decided_at)
+        ).all():
+            decisions.setdefault(decision.submission_id, []).append(
+                {
+                    "review_decision_id": str(decision.id),
+                    "actor_member_id": decision.actor_member_id,
+                    "decision": decision.decision,
+                    "reason": decision.reason,
+                    "decided_at": decision.decided_at.isoformat(),
+                }
+            )
+        rows = []
+        for submission in submissions:
+            version = self._session.get(SubjectVersionRecord, submission.subject_version_id)
+            rows.append(
+                {
+                    "submission_id": str(submission.id),
+                    "submission_version": int(submission.submission_version),
+                    "submitted_by": submission.submitted_by,
+                    "submitted_at": submission.submitted_at.isoformat(),
+                    "content_hash": submission.payload_hash,
+                    "snapshot": dict(version.snapshot) if version else {},
+                    "diff": submission.diff,
+                    "decisions": decisions.get(submission.id, []),
+                }
+            )
+        return rows
+
+    def execute(self, principal: Principal, item: tuple[Any, Any], command: str, payload: dict[str, Any]) -> None:
+        _, request = item
+        expected_version = int(payload.get("expected_version") or request.version)
+        reason = str(payload.get("reason") or "").strip()
+        if command == "accept":
+            self._work_requests.accept(principal, request.id, expected_version)
+        elif command == "reject":
+            self._work_requests.reject(principal, request.id, expected_version, reason)
+        elif command == "adjust":
+            self._work_requests.negotiate(principal, request.id, expected_version, {"note": reason})
+        elif command == "withdraw":
+            self._work_requests.withdraw(principal, request.id, expected_version)
+        elif command == "revise":
+            changes = dict(payload.get("changes") or {})
+            if not changes:
+                raise ActionError("수정안에는 바뀐 내용이 있어야 합니다")
+            self._work_requests.resubmit(
+                principal,
+                request.id,
+                expected_version,
+                title=changes.get("title"),
+                description=changes.get("description"),
+                due_date=_parse_date(changes.get("due_date")),
+                clear_due_date=bool(changes.get("clear_due_date")),
+            )
+        else:  # pragma: no cover - the envelope already refused anything else
+            raise ActionError(f"unsupported command {command}")
+
+    def is_replay(self, item: tuple[Any, Any], principal: Principal, command: str) -> bool:
+        """An answered request cannot be answered again; the caller reads the resolved item instead."""
+        return False
+
+    def _require_participant(self, request: Any, principal: Principal) -> None:
+        member_id = str(principal.id)
+        if member_id in {request.requester_id, request.assignee_id}:
+            return
+        related = self._session.scalars(
+            select(ResourceRelationshipRecord.member_id).where(
+                ResourceRelationshipRecord.resource_type == "work_request",
+                ResourceRelationshipRecord.resource_id == str(request.id),
+                ResourceRelationshipRecord.valid_until.is_(None),
+            )
+        ).all()
+        if member_id not in set(related):
+            raise ActionAccessDenied("principal cannot read this action item")
 
     def pending(self, principal: Principal) -> list[ActionEnvelope]:
         rows = self._session.execute(
@@ -73,17 +189,20 @@ class WorkRequestActionHandler:
         ).all()
         envelopes = []
         for item, request in rows:
-            envelope = self._envelope(item, request, principal)
+            envelope = self._build(item, request, principal, pending_only=True)
             if envelope is not None:
                 envelopes.append(envelope)
         return envelopes
 
-    def _envelope(self, item: DecisionItemRecord, request: WorkRequestRecord, principal: Principal) -> ActionEnvelope | None:
+    def _build(self, item: DecisionItemRecord, request: WorkRequestRecord, principal: Principal, *, pending_only: bool) -> Any:
         submission = self._current_submission(item)
         if submission is None:
             return None
-        status = AWAITING_REVISION if item.status == AWAITING_REVISION else AWAITING_REVIEW
-        if status == AWAITING_REVIEW:
+        resolved = item.status not in {"open", AWAITING_REVISION}
+        status = RESOLVED if resolved else AWAITING_REVISION if item.status == AWAITING_REVISION else AWAITING_REVIEW
+        if status == RESOLVED:
+            actor, allowed = None, []
+        elif status == AWAITING_REVIEW:
             assignment = self._active_assignment(submission)
             actor = assignment.reviewer_member_id if assignment else None
             commands = [
@@ -96,6 +215,10 @@ class WorkRequestActionHandler:
             actor = request.requester_id
             allowed = [ActionCommand("revise", "수정안 재상신", "primary"), ActionCommand("withdraw", "요청 철회", "neutral")]
         if actor != str(principal.id):
+            if pending_only:
+                return None
+            allowed = []
+        if pending_only and not allowed:
             return None
         return ActionEnvelope(
             action_item_id=str(item.id),
@@ -103,7 +226,7 @@ class WorkRequestActionHandler:
             status=status,
             subject=str(request.title),
             operation_label="업무 요청",
-            current_question=_QUESTIONS[(WORK_REQUEST_ACCEPTANCE, status)],
+            current_question=_QUESTIONS.get((WORK_REQUEST_ACCEPTANCE, status), "이 요청은 이미 판단이 끝났습니다"),
             preview=self._preview(submission, request),
             allowed_commands=allowed,
             submission_version=int(submission.submission_version),
@@ -147,10 +270,53 @@ class WorkRequestActionHandler:
 class AxProposalActionHandler:
     """A gated AX proposal: the owner approves or rejects the effect the turn prepared."""
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, actions: Any) -> None:
         self._session = session
         self._presenter = ActionPresenter(session)
         self._members = MemberDirectory(session)
+        self._actions = actions
+
+    def find(self, action_item_id: str) -> Any | None:
+        try:
+            return self._session.get(ActionItemRecord, UUID(action_item_id))
+        except ValueError:
+            return None
+
+    def rounds(self, item: Any, principal: Principal) -> list[dict[str, Any]]:
+        """A gated proposal is prepared once; its single round is the payload the turn produced."""
+        if str(item.owner_id) != str(principal.id):
+            raise ActionAccessDenied("principal cannot read this action item")
+        return [
+            {
+                "submission_id": str(item.id),
+                "submission_version": 1,
+                "submitted_by": "ax",
+                "submitted_at": item.created_at.isoformat(),
+                "content_hash": item.payload_hash,
+                "snapshot": dict(item.payload),
+                "diff": None,
+                "decisions": [
+                    {
+                        "review_decision_id": str(item.id),
+                        "actor_member_id": str(item.owner_id),
+                        "decision": item.state,
+                        "reason": None,
+                        "decided_at": item.decided_at.isoformat(),
+                    }
+                ]
+                if item.decided_at
+                else [],
+            }
+        ]
+
+    def execute(self, principal: Principal, item: Any, command: str, payload: dict[str, Any]) -> None:
+        self._actions.decide(principal, item.id, int(payload.get("expected_version") or item.version), command)
+
+    def is_replay(self, item: Any, principal: Principal, command: str) -> bool:
+        """The persisted Action is the idempotency boundary; a repeat of the decision it already holds is a receipt."""
+        if str(item.owner_id) != str(principal.id) or ACTION_DECIDE not in principal.capabilities:
+            return False
+        return item.state == {"approve": "approved", "reject": "rejected"}.get(command)
 
     def pending(self, principal: Principal) -> list[ActionEnvelope]:
         if ACTION_DECIDE not in principal.capabilities:
@@ -160,19 +326,23 @@ class AxProposalActionHandler:
             .where(ActionItemRecord.owner_id == str(principal.id), ActionItemRecord.state == "pending")
             .order_by(ActionItemRecord.created_at)
         ).all()
-        return [self._envelope(record, principal) for record in records]
+        return [self.envelope(record, principal) for record in records]
 
-    def _envelope(self, record: ActionItemRecord, principal: Principal) -> ActionEnvelope:
+    def envelope(self, record: ActionItemRecord, principal: Principal) -> ActionEnvelope:
         presented = self._presenter.present(record, principal)
         return ActionEnvelope(
             action_item_id=str(record.id),
             kind=f"ax.{record.action_type}",
-            status=AWAITING_REVIEW,
+            status=AWAITING_REVIEW if record.state == "pending" else RESOLVED,
             subject=str(presented["subject"]),
             operation_label=str(presented["operation_label"]),
-            current_question="AX가 준비한 변경을 승인할지 결정하세요",
+            current_question="AX가 준비한 변경을 승인할지 결정하세요" if record.state == "pending" else "이 제안은 이미 판단이 끝났습니다",
             preview=list(presented["preview"]),
-            allowed_commands=[ActionCommand("approve", "승인", "primary"), ActionCommand("reject", "거절", "neutral")],
+            allowed_commands=(
+                [ActionCommand("approve", "승인", "primary"), ActionCommand("reject", "거절", "neutral")]
+                if record.state == "pending" and ACTION_DECIDE in principal.capabilities and str(record.owner_id) == str(principal.id)
+                else []
+            ),
             submission_version=1,
             waiting_on=self._members.waiting_on(str(record.owner_id)),
             resource={"type": "action", "id": str(record.id)},
@@ -180,9 +350,13 @@ class AxProposalActionHandler:
         )
 
 
-def action_handlers(session: Session) -> list[Any]:
-    """Every origin that can put a question to a person, in the order a person should meet them."""
-    return [WorkRequestActionHandler(session), AxProposalActionHandler(session)]
+def action_handlers(session: Session, *, work_requests: Any, actions: Any) -> list[Any]:
+    """Every origin that can put a question to a person, in the order a person should meet them.
+
+    The module applications are passed in rather than rebuilt here, so every command runs the same operation the rest of
+    the product runs, with that module's own rules and audit.
+    """
+    return [WorkRequestActionHandler(session, work_requests), AxProposalActionHandler(session, actions)]
 
 
 def decision_item_id(session: Session, request_id: UUID) -> UUID | None:

@@ -364,7 +364,22 @@ class WorkflowApplication:
     def pending_action_items(self, principal: Principal) -> list[dict[str, Any]]:
         """Every judgement this principal owes right now, whatever raised it."""
         with self._session_factory() as session:
-            return ActionCenterApplication(action_handlers(session)).pending(principal)
+            return self._action_center(session).pending(principal)
+
+    def action_item_detail(self, principal: Principal, action_item_id: str) -> dict[str, Any]:
+        with self._session_factory() as session:
+            return self._action_center(session).detail(principal, action_item_id)
+
+    def run_action_command(self, principal: Principal, action_item_id: str, command: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._action_center(session).execute(principal, action_item_id, command, payload)
+            session.commit()
+            return result
+
+    def _action_center(self, session: Any) -> ActionCenterApplication:
+        return ActionCenterApplication(
+            action_handlers(session, work_requests=self._work_requests(session), actions=self._actions(session))
+        )
 
     def work_request_timeline(self, principal: Principal, request_id: UUID) -> dict[str, Any]:
         with self._session_factory() as session:

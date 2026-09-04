@@ -21,6 +21,7 @@ from ax_workspace.entrypoints.http_auth import (
 from ax_workspace.bootstrap.application import create_auth_session_store, create_workflow_application
 from ax_workspace.modules.work.application import InvalidTaskTransition, TaskAccessDenied, TaskError, TaskNotFound, TaskState
 from ax_workspace.modules.work.materials import MaterialNotFound
+from ax_workspace.modules.actions.domain import ActionError as ActionCenterError, ActionNotFound
 from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequestError, WorkRequestIdempotencyConflict
 from ax_workspace.modules.reports.application import DailyReportAccessDenied
 from ax_workspace.modules.ax_execution.conversations import ConversationError, ConversationQueueOverflow
@@ -106,6 +107,14 @@ class CommentRequest(BaseModel):
     body: str = Field(min_length=1, max_length=4000)
 
 
+class ActionCommandRequest(BaseModel):
+    """What a command needs from the caller; the server decides which command is available at all."""
+
+    expected_version: int | None = None
+    reason: str | None = Field(default=None, max_length=4000)
+    changes: dict[str, object] | None = None
+
+
 class WorkRequestResubmitRequest(BaseModel):
     expected_version: int
     title: str | None = None
@@ -161,6 +170,10 @@ def _runtime_error(error: Exception) -> HTTPException:
     if isinstance(error, (TaskAccessDenied, WorkRequestAccessDenied, DailyReportAccessDenied)):
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
     if isinstance(error, (TaskError, InvalidTaskTransition)):
+        return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
+    if isinstance(error, ActionNotFound):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
+    if isinstance(error, ActionCenterError):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     if isinstance(error, WorkRequestIdempotencyConflict):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
@@ -532,6 +545,22 @@ def create_app(
         def pending_action_items(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
             try:
                 return app.state.workflow_application.pending_action_items(principal)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/action-items/{action_item_id}")
+        def action_item_detail(action_item_id: str, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.action_item_detail(principal, action_item_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/action-items/{action_item_id}/commands/{command}")
+        def run_action_command(
+            action_item_id: str, command: str, request: ActionCommandRequest, principal: Principal = Depends(developer_principal)
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.run_action_command(principal, action_item_id, command, request.model_dump(exclude_none=True))
             except Exception as error:
                 raise _runtime_error(error) from error
 

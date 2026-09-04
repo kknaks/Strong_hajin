@@ -21,6 +21,7 @@ export const workRequestStateLabel: Record<WorkRequest["state"], string> = {
   negotiating: "협의 중",
   accepted: "수락됨",
   rejected: "거절됨",
+  withdrawn: "철회됨",
 };
 
 export const workRequestStateTone: Record<WorkRequest["state"], string> = {
@@ -28,6 +29,7 @@ export const workRequestStateTone: Record<WorkRequest["state"], string> = {
   negotiating: "accent",
   accepted: "success",
   rejected: "muted",
+  withdrawn: "muted",
 };
 
 const executionStateLabel: Record<string, string> = {

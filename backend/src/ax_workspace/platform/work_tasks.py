@@ -370,6 +370,25 @@ class SqlAlchemyWorkRequestRepository:
         )
         return record
 
+    def withdraw(self, request: WorkRequestRecord, actor_id: str) -> None:
+        """The submitter retracts the question. Not a ReviewDecision: nobody judged it, so the round stays open-ended."""
+        now = datetime.now(UTC)
+        item = self.open_decision_item(request)
+        submission = self.current_submission(request)
+        if submission is not None:
+            assignment = self.active_assignment(submission)
+            if assignment is not None:
+                assignment.status = "cancelled"
+        if item is not None:
+            item.status = "resolved"
+            item.resolved_at = now
+        self._session.flush()
+        ActivityLedger(self._session).record(
+            target_type="work_request", target_id=str(request.id), event_kind="work_request.withdrawn", actor_id=actor_id,
+            before_ref=f"submission:{submission.id}" if submission else None,
+            safe_summary=f"업무 요청 철회: {request.title}", request_thread_id=request.request_thread_id,
+        )
+
     def resubmit(self, request: WorkRequestRecord, actor_id: str, snapshot: dict) -> SubmissionRecord:
         """A revision is a new SubjectVersion + Submission with a diff; the prior decision stays untouched."""
         now = datetime.now(UTC)

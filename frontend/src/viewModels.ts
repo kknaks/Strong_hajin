@@ -191,7 +191,7 @@ export type WorkRequest = {
   requester_id?: string;
   assignee_id?: string;
   cc_member_ids?: string[];
-  state: "pending" | "negotiating" | "accepted" | "rejected";
+  state: "pending" | "negotiating" | "accepted" | "rejected" | "withdrawn";
   version: number;
   task_id: string | null;
   assignment_state: string | null;

@@ -53,6 +53,7 @@ class WorkRequestRepository(Protocol):
     def list_for(self, principal_id: str) -> list[Any]: ...
     def record_decision(self, request: Any, actor_id: str, decision: str, *, reason: str | None = None, conditions: dict[str, Any] | None = None) -> Any: ...
     def resubmit(self, request: Any, actor_id: str, snapshot: dict[str, Any]) -> Any: ...
+    def withdraw(self, request: Any, actor_id: str) -> None: ...
     def current_submission(self, request: Any) -> Any: ...
     def timeline(self, request: Any) -> dict[str, Any]: ...
 
@@ -209,6 +210,25 @@ class WorkRequestApplication:
         self._repository.append_audit(
             request.id, str(principal.id), "work_request.resubmitted", {"submission_version": submission.submission_version}
         )
+        return self._view(request)
+
+    def withdraw(self, principal: Principal, request_id: UUID, expected_version: int) -> dict[str, Any]:
+        """The requester retracts their own request; no Task is created and the question leaves every ledger."""
+        self._require(principal, WORK_REQUEST_CREATE)
+        request = self._repository.request(request_id, lock=True)
+        if request is None:
+            raise WorkRequestError("work request was not found")
+        if request.requester_id != str(principal.id):
+            raise WorkRequestError("only the requester may withdraw")
+        if request.version != expected_version:
+            raise WorkRequestError("work request version is stale")
+        if request.state not in {"pending", "negotiating"}:
+            raise WorkRequestError("only an open work request can be withdrawn")
+        request.state = "withdrawn"
+        request.conditions = None
+        request.version += 1
+        self._repository.withdraw(request, str(principal.id))
+        self._repository.append_audit(request.id, str(principal.id), "work_request.withdrawn", {})
         return self._view(request)
 
     def timeline(self, principal: Principal, request_id: UUID) -> dict[str, Any]:
