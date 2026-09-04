@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import Integer, func, or_, select
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.work.application import TaskNotFound, TaskState
@@ -166,6 +166,21 @@ class SqlAlchemyTaskRepository:
                 .order_by(TaskChecklistItemRecord.position, TaskChecklistItemRecord.created_at)
             )
         )
+
+    def checklist_progress_for(self, task_ids: list[UUID]) -> dict[UUID, tuple[int, int]]:
+        """Done/total per Task in one query, so a list projection never fans out per row."""
+        if not task_ids:
+            return {}
+        rows = self.session.execute(
+            select(
+                TaskChecklistItemRecord.task_id,
+                func.count(TaskChecklistItemRecord.id),
+                func.sum(func.cast(TaskChecklistItemRecord.done, Integer)),
+            )
+            .where(TaskChecklistItemRecord.task_id.in_(task_ids))
+            .group_by(TaskChecklistItemRecord.task_id)
+        ).all()
+        return {task_id: (int(done or 0), int(total or 0)) for task_id, total, done in rows}
 
     def add_checklist_item(self, task_id: UUID, text: str) -> TaskChecklistItemRecord:
         """A new step always lands last; positions are never reused so removing one cannot reorder the rest."""

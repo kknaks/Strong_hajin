@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DateField } from "./DateField";
 
 import {
   editDailyReport,
@@ -232,10 +233,7 @@ export function DailyReportPage({ personaId, personaName, onError, onRegisterRef
           <p>오늘의 업무 활동을 근거로 초안을 만들고, 사람이 편집·확인한 내용만 제출합니다.</p>
         </div>
         <div className="page-head-actions">
-          <label>
-            보고일
-            <input type="date" value={reportDate} onChange={(event) => setReportDate(event.target.value)} />
-          </label>
+          <DateField id="report-date" label="보고일" onChange={(next) => next && setReportDate(next)} value={reportDate} />
         </div>
       </div>
 

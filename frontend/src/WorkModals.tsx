@@ -32,6 +32,7 @@ import {
   taskStateLabel,
   workRequestStateLabel,
 } from "./labels";
+import { DateField } from "./DateField";
 import { ConfirmModal, Drawer } from "./Modal";
 import type { ChecklistItem, DirectTask, MaterialExtraction, Persona, RequestTimeline, TaskMaterial, TaskMaterialKind, TaskPatch, WorkRequest } from "./viewModels";
 
@@ -419,86 +420,88 @@ export function TaskDetailDrawer({
               <dd>{requesterName ?? "본인 생성"}</dd>
             </div>
             <div>
-              <dt>
-                <label htmlFor={`task-start-${task.task_id}`}>시작일</label>
-              </dt>
+              <dt>시작일</dt>
               <dd>
-                <input disabled={!editable} id={`task-start-${task.task_id}`} onChange={(event) => setStartDate(event.target.value)} type="date" value={startDate} />
+                <DateField disabled={!editable} hideLabel id={`task-start-${task.task_id}`} label="시작일" onChange={setStartDate} value={startDate} />
               </dd>
             </div>
             <div>
-              <dt>
-                <label htmlFor={`task-due-${task.task_id}`}>기한</label>
-              </dt>
+              <dt>기한</dt>
               <dd>
-                <input disabled={!editable} id={`task-due-${task.task_id}`} onChange={(event) => setDueDate(event.target.value)} type="date" value={dueDate} />
+                <DateField disabled={!editable} hideLabel id={`task-due-${task.task_id}`} label="기한" onChange={setDueDate} value={dueDate} />
               </dd>
             </div>
           </dl>
+          <section aria-label="체크리스트" className="drawer-section">
+            <h4>
+              체크리스트{" "}
+              {checklist === null ? (
+                <small className="t-meta">· 불러오는 중</small>
+              ) : (
+                <span className="checklist-progress" data-done={checklist.filter((item) => item.done).length} data-total={checklist.length}>
+                  {checklist.filter((item) => item.done).length}/{checklist.length}
+                </span>
+              )}
+            </h4>
+            {checklist !== null && checklist.length > 0 && (
+              <ul className="checklist">
+                {checklist.map((item) => (
+                  <li className={item.done ? "checklist-item done" : "checklist-item"} data-item-id={item.item_id} key={item.item_id}>
+                    <label>
+                      <input
+                        checked={item.done}
+                        disabled={!canManage || busy}
+                        onChange={(event) => void toggleStep(item, event.target.checked)}
+                        type="checkbox"
+                      />
+                      <span>{item.text}</span>
+                    </label>
+                    {canManage && (
+                      <button aria-label={`${item.text} 삭제`} className="btn h30 ghost" onClick={() => void removeStep(item)} type="button">
+                        삭제
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {checklist !== null && checklist.length === 0 && <p className="t-meta">아직 단계가 없습니다. 이 업무를 쪼개서 적어 두세요.</p>}
+            {canManage && (
+              <div className="inline-reason" style={{ padding: "8px 0 0" }}>
+                <label className="sr-only" htmlFor={`checklist-${task.task_id}`}>
+                  체크리스트 단계
+                </label>
+                <input
+                  id={`checklist-${task.task_id}`}
+                  onChange={(event) => setNewStep(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") return;
+                    event.preventDefault();
+                    if (event.repeat || event.nativeEvent.isComposing) return;
+                    void addStep();
+                  }}
+                  placeholder="이 업무를 끝내려면 무엇을 해야 하나"
+                  value={newStep}
+                />
+                <button className="btn" disabled={busy || !newStep.trim()} onClick={() => void addStep()} type="button">
+                  추가
+                </button>
+              </div>
+            )}
+          </section>
           <div className="field">
             <label htmlFor={`task-description-${task.task_id}`}>업무 내용</label>
             <textarea
+              className="task-description"
               disabled={!editable}
               id={`task-description-${task.task_id}`}
+              rows={4}
               onChange={(event) => setDescription(event.target.value)}
               placeholder="무엇을, 왜, 어디까지 할지 적어 두면 요청자와 AX가 같은 맥락을 봅니다."
               value={description}
             />
           </div>
         </div>
-        <section aria-label="체크리스트" className="drawer-section">
-          <h4>
-            체크리스트{" "}
-            <small className="t-meta">
-              {checklist === null ? "· 불러오는 중" : `· ${checklist.filter((item) => item.done).length}/${checklist.length}`}
-            </small>
-          </h4>
-          {checklist !== null && checklist.length > 0 && (
-            <ul className="checklist">
-              {checklist.map((item) => (
-                <li className={item.done ? "checklist-item done" : "checklist-item"} data-item-id={item.item_id} key={item.item_id}>
-                  <label>
-                    <input
-                      checked={item.done}
-                      disabled={!canManage || busy}
-                      onChange={(event) => void toggleStep(item, event.target.checked)}
-                      type="checkbox"
-                    />
-                    <span>{item.text}</span>
-                  </label>
-                  {canManage && (
-                    <button aria-label={`${item.text} 삭제`} className="btn h30 ghost" onClick={() => void removeStep(item)} type="button">
-                      삭제
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-          {checklist !== null && checklist.length === 0 && <p className="t-meta">아직 단계가 없습니다. 이 업무를 쪼개서 적어 두세요.</p>}
-          {canManage && (
-            <div className="inline-reason" style={{ padding: "8px 0 0" }}>
-              <label className="sr-only" htmlFor={`checklist-${task.task_id}`}>
-                체크리스트 단계
-              </label>
-              <input
-                id={`checklist-${task.task_id}`}
-                onChange={(event) => setNewStep(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key !== "Enter") return;
-                  event.preventDefault();
-                  if (event.repeat || event.nativeEvent.isComposing) return;
-                  void addStep();
-                }}
-                placeholder="이 업무를 끝내려면 무엇을 해야 하나"
-                value={newStep}
-              />
-              <button className="btn" disabled={busy || !newStep.trim()} onClick={() => void addStep()} type="button">
-                추가
-              </button>
-            </div>
-          )}
-        </section>
         {task.block_reason && (
           <section className="drawer-section">
             <h4>막힘 사유</h4>
@@ -939,7 +942,7 @@ export function WorkRequestDetailDrawer({
             </div>
             <div className="field">
               <label htmlFor="revision-due">희망 기한</label>
-              <input id="revision-due" onChange={(event) => setRevision({ ...revision, due_date: event.target.value })} type="date" value={revision.due_date} />
+              <DateField hideLabel id="revision-due" label="희망 기한" onChange={(next) => setRevision({ ...revision, due_date: next })} value={revision.due_date} />
             </div>
             <div className="field">
               <label htmlFor="revision-description">요청 내용</label>
@@ -1344,7 +1347,7 @@ export function CreateWorkDrawer({
                 <label htmlFor="new-task-start">시작일</label>
               </dt>
               <dd>
-                <input id="new-task-start" onChange={(event) => setStartDate(event.target.value)} type="date" value={startDate} />
+                <DateField hideLabel id="new-task-start" label="시작일" onChange={setStartDate} value={startDate} />
               </dd>
             </div>
           )}
@@ -1353,7 +1356,7 @@ export function CreateWorkDrawer({
               <label htmlFor="new-task-due">{kind === "task" ? "기한" : "희망 기한"}</label>
             </dt>
             <dd>
-              <input id="new-task-due" onChange={(event) => setDueDate(event.target.value)} type="date" value={dueDate} />
+              <DateField hideLabel id="new-task-due" label="기한" onChange={setDueDate} value={dueDate} />
             </dd>
           </div>
         </dl>

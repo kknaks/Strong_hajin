@@ -691,3 +691,16 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 /* The delete stays reachable: hover-only reveal would strand touch and keyboard users. */
 .checklist-item .btn { flex: none; color: var(--text-tertiary); opacity: 0.65; }
 .checklist-item:hover .btn, .checklist-item:focus-within .btn { opacity: 1; }
+
+/* ---- date field: the visible string is ours, the calendar stays the platform's */
+.date-field { display: grid; gap: 4px; }
+.date-field-control { display: flex; align-items: center; gap: 4px; }
+.date-field-control input[type="text"] { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; }
+.date-field-picker { flex: none; padding: 0 8px; font-size: 13px; line-height: 1; }
+
+/* ---- checklist cue on list surfaces, and the progress chip in the drawer */
+.checklist-cue { margin-left: 8px; padding: 1px 6px; border-radius: var(--radius-chip); background: var(--surface-sunken); color: var(--text-tertiary); font-size: 11.5px; font-weight: 500; white-space: nowrap; }
+.checklist-cue.complete { background: var(--progress-tint); color: var(--progress-text); }
+.checklist-progress { padding: 1px 7px; border-radius: var(--radius-chip); background: var(--selected-bg); color: var(--action); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+/* The description must not push the steps out of the first screen. */
+.form-stack .field textarea.task-description { min-height: 84px; max-height: 132px; }

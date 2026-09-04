@@ -65,7 +65,7 @@ describe("task checklist", () => {
   it("lists the steps in order with progress, and marks the finished ones", async () => {
     renderDrawer([step("i1", "자료 모으기", 1, true), step("i2", "초안 쓰기", 2), step("i3", "검토 요청", 3)]);
     const section = await screen.findByLabelText("체크리스트");
-    await waitFor(() => expect(within(section).getByText("· 1/3")).toBeTruthy());
+    await waitFor(() => expect(within(section).getByText("1/3")).toBeTruthy());
     expect(Array.from(section.querySelectorAll(".checklist-item span")).map((node) => node.textContent)).toEqual([
       "자료 모으기",
       "초안 쓰기",
@@ -92,7 +92,7 @@ describe("task checklist", () => {
     expect(vi.mocked(api.addChecklistItem).mock.calls[0]).toEqual(["task-1", "제출하기"]);
     await waitFor(() => expect((field as HTMLInputElement).value).toBe(""));
     expect(within(section).getByText("제출하기")).toBeTruthy();
-    await waitFor(() => expect(within(section).getByText("· 0/1")).toBeTruthy());
+    await waitFor(() => expect(within(section).getByText("0/1")).toBeTruthy());
   });
 
   it("does not wipe what the user typed while the previous step was still being saved", async () => {
@@ -121,11 +121,11 @@ describe("task checklist", () => {
     vi.mocked(api.updateChecklistItem).mockResolvedValue(step("i2", "초안 쓰기", 2, true) as never);
     renderDrawer([step("i1", "자료 모으기", 1), step("i2", "초안 쓰기", 2)]);
     const section = await screen.findByLabelText("체크리스트");
-    await waitFor(() => expect(within(section).getByText("· 0/2")).toBeTruthy());
+    await waitFor(() => expect(within(section).getByText("0/2")).toBeTruthy());
 
     fireEvent.click(within(section).getByRole("checkbox", { name: "초안 쓰기" }));
     await waitFor(() => expect(api.updateChecklistItem).toHaveBeenCalledWith("task-1", "i2", { done: true }));
-    await waitFor(() => expect(within(section).getByText("· 1/2")).toBeTruthy());
+    await waitFor(() => expect(within(section).getByText("1/2")).toBeTruthy());
     expect((section.querySelector('[data-item-id="i2"]') as HTMLElement).className).toContain("done");
   });
 
@@ -136,11 +136,41 @@ describe("task checklist", () => {
 
     fireEvent.click(within(section).getByRole("button", { name: "자료 모으기 삭제" }));
     await waitFor(() => expect(section.querySelector('[data-item-id="i1"]')).toBeNull());
-    await waitFor(() => expect(within(section).getByText("· 0/1")).toBeTruthy());
+    await waitFor(() => expect(within(section).getByText("0/1")).toBeTruthy());
 
     fireEvent.click(within(section).getByRole("button", { name: "초안 쓰기 삭제" }));
     await waitFor(() => expect(onError).toHaveBeenCalledWith("서버 오류"));
     expect(section.querySelector('[data-item-id="i2"]')).toBeTruthy(); // still there, because the server refused
+  });
+
+  it("puts the checklist above the description so it is on the first screen, with progress in the header", async () => {
+    renderDrawer([step("i1", "자료 모으기", 1, true), step("i2", "초안 쓰기", 2)]);
+    const section = await screen.findByLabelText("체크리스트");
+    // The count reads as a chip, not buried in the item list.
+    const chip = section.querySelector(".checklist-progress") as HTMLElement;
+    expect(chip.textContent).toBe("1/2");
+    expect(chip.getAttribute("data-done")).toBe("1");
+    expect(chip.getAttribute("data-total")).toBe("2");
+    // The add control ships with the section rather than after a long description field.
+    expect(within(section).getByLabelText("체크리스트 단계")).toBeTruthy();
+
+    const description = document.getElementById("task-description-task-1") as HTMLElement;
+    const order = section.compareDocumentPosition(description);
+    expect(order & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy(); // checklist comes first in the document
+    expect((description as HTMLTextAreaElement).rows).toBe(4); // and the description cannot grow past it
+  });
+
+  it("shows a compact cue on list rows only when the task actually has steps", async () => {
+    const { ChecklistCue } = await import("./WorkViews");
+    const { container, rerender } = render(<ChecklistCue progress={{ done: 1, total: 3 }} />);
+    expect(container.textContent).toBe("☐ 1/3");
+    rerender(<ChecklistCue progress={{ done: 3, total: 3 }} />);
+    expect(container.textContent).toBe("☑ 3/3");
+    expect(container.querySelector(".checklist-cue.complete")).toBeTruthy();
+    rerender(<ChecklistCue progress={{ done: 0, total: 0 }} />);
+    expect(container.textContent).toBe("");
+    rerender(<ChecklistCue />);
+    expect(container.textContent).toBe("");
   });
 
   it("is read-only for someone who cannot manage the task", async () => {

@@ -124,11 +124,25 @@ export function CollapsibleGroup({
 
 /* ---------------------------------------------------------------- list rows used on home */
 
+/** Compact cue that a Task has steps inside it, and how far along they are. Hidden when there are none. */
+export function ChecklistCue({ progress }: { progress?: { done: number; total: number } }) {
+  if (!progress || progress.total === 0) return null;
+  const complete = progress.done === progress.total;
+  return (
+    <span className={complete ? "checklist-cue complete" : "checklist-cue"} title={`체크리스트 ${progress.done}/${progress.total}`}>
+      {complete ? "☑" : "☐"} {progress.done}/{progress.total}
+    </span>
+  );
+}
+
 export function TaskListRow({ task, onOpen, right }: { task: DirectTask; onOpen: () => void; right?: ReactNode }) {
   return (
     <li className="task-row openable" onClick={onOpen}>
       <div className="cell-main">
-        <b>{task.title}</b>
+        <b>
+          {task.title}
+          <ChecklistCue progress={task.checklist_progress} />
+        </b>
         <small className={task.block_reason ? "reason" : ""}>
           {task.block_reason
             ? `막힘 사유: ${task.block_reason}`

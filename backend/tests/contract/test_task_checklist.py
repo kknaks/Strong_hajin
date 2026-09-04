@@ -106,3 +106,21 @@ def test_a_checklist_item_is_not_a_task_and_never_reaches_the_judgement_ledger(t
     assert client.get("/api/action-items", headers=MINA).json() == []
     # Empty text is refused, and the text is bounded.
     assert client.post(f"/api/tasks/{task['task_id']}/checklist", headers=MINA, json={"text": "   "}).status_code == 422
+
+
+def test_the_task_list_carries_the_checklist_count_without_its_items(tmp_path) -> None:
+    """A list needs enough for a progress cue and no more; the items stay on the detail read."""
+    client = _client(tmp_path)
+    empty = _task(client)
+    tracked = client.post("/api/tasks", headers=MINA, json={"title": "체크리스트 있는 업무"}).json()
+    url = f"/api/tasks/{tracked['task_id']}/checklist"
+    first = client.post(url, headers=MINA, json={"text": "자료 모으기"}).json()
+    client.post(url, headers=MINA, json={"text": "초안 쓰기"})
+    client.patch(f"{url}/{first['item_id']}", headers=MINA, json={"done": True})
+
+    rows = {row["task_id"]: row for row in client.get("/api/my-work", headers=MINA).json()}
+    assert rows[tracked["task_id"]]["checklist_progress"] == {"done": 1, "total": 2}
+    assert rows[empty["task_id"]]["checklist_progress"] == {"done": 0, "total": 0}
+    assert "checklist" not in rows[tracked["task_id"]]
+    # The detail read still carries the items themselves.
+    assert [row["text"] for row in client.get(f"/api/tasks/{tracked['task_id']}", headers=MINA).json()["checklist"]] == ["자료 모으기", "초안 쓰기"]

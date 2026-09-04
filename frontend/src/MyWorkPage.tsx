@@ -27,7 +27,7 @@ import {
   displayNameOf,
   type TaskAction,
 } from "./WorkModals";
-import { PersonChip, TaskCard, TaskKanban, TaskTimeline } from "./WorkViews";
+import { ChecklistCue, PersonChip, TaskCard, TaskKanban, TaskTimeline } from "./WorkViews";
 
 type MyWorkPageProps = {
   personaId: string;
@@ -543,7 +543,10 @@ function TaskTableRow({
     >
       <td className="title-cell">
         <div className="cell-main">
-          <b className={task.state === "cancelled" ? "cancelled-title" : ""}>{task.title}</b>
+          <b className={task.state === "cancelled" ? "cancelled-title" : ""}>
+            {task.title}
+            <ChecklistCue progress={task.checklist_progress} />
+          </b>
           {task.block_reason && <small className="reason">막힘 사유: {task.block_reason}</small>}
         </div>
       </td>

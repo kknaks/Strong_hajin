@@ -48,6 +48,7 @@ class TaskRepository(Protocol):
     def tasks_for(self, owner_id: str, *, include_closed: bool = False) -> list[Any]: ...
     def touch(self, task: Any) -> None: ...
     def checklist_for(self, task_id: UUID) -> list[Any]: ...
+    def checklist_progress_for(self, task_ids: list[UUID]) -> dict[UUID, tuple[int, int]]: ...
     def add_checklist_item(self, task_id: UUID, text: str) -> Any: ...
     def checklist_item(self, task_id: UUID, item_id: UUID, *, lock: bool = False) -> Any: ...
     def remove_checklist_item(self, item: Any) -> None: ...
@@ -121,8 +122,15 @@ class TaskApplication:
         return self._view(task)
 
     def list_for(self, principal: Principal, *, include_closed: bool = False) -> list[dict[str, Any]]:
+        """The list carries the checklist count, not its items: enough for a progress cue, cheap enough for a table."""
         self._require(principal, TASK_READ)
-        return [self._view(task) for task in self.repository.tasks_for(str(principal.id), include_closed=include_closed)]
+        tasks = self.repository.tasks_for(str(principal.id), include_closed=include_closed)
+        progress = self.repository.checklist_progress_for([task.id for task in tasks])
+        views = []
+        for task in tasks:
+            done, total = progress.get(task.id, (0, 0))
+            views.append({**self._view(task), "checklist_progress": {"done": done, "total": total}})
+        return views
 
     def get(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
         self._require(principal, TASK_READ)
