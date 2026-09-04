@@ -32,6 +32,7 @@ from ax_workspace.modules.organization_access.domain import (
     WORK_REQUEST_DECIDE,
     WORK_REQUEST_READ,
 )
+from ax_workspace.modules.ax_execution.actions import ACTION_ITEM_COMMAND
 from ax_workspace.modules.ax_execution.ai import AiProvider
 
 
@@ -212,17 +213,54 @@ class McpReportsFacade:
         action_item_id: str,
         command: str,
         *,
-        expected_version: int | None = None,
+        expected_version: int,
         reason: str | None = None,
         changes: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """The same payload HTTP sends: omitted fields are absent, never null, so the server sees one request shape."""
-        payload = {
-            key: value
-            for key, value in (("expected_version", expected_version), ("reason", reason), ("changes", changes))
-            if value is not None
-        }
+        payload: dict[str, Any] = {"expected_version": expected_version}
+        for key, value in (("reason", reason), ("changes", changes)):
+            if value is not None:
+                payload[key] = value
+        gated = self._propose_action_item_command(action_item_id, command, payload)
+        if gated is not None:
+            return gated
         return self._application.run_action_command(self.principal, action_item_id, command, payload)
+
+    def _propose_action_item_command(
+        self, action_item_id: str, command: str, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Inside a delegated turn a judgement is prepared for a person, never made by the turn itself.
+
+        Outside one — a direct admin or test caller — the canonical operation runs as before.
+        """
+        causation_id = os.getenv("AX_MCP_CAUSATION_ID")
+        if not causation_id:
+            return None
+        principal = self.principal
+        if ACTION_DECIDE not in principal.capabilities:
+            raise McpDelegatedActionAccessDenied(f"{ACTION_DECIDE} capability is required")
+        # The server envelope is the policy, so refuse here what it would refuse there — and never let the turn
+        # approve an AX proposal, which is the very gate that puts a person in front of this effect.
+        detail = self._application.action_item_detail(principal, action_item_id)
+        if str(detail.get("kind", "")).startswith("ax."):
+            raise McpDelegatedActionAccessDenied("AX 제안은 사람이 승인합니다")
+        if command not in {entry["id"] for entry in detail.get("allowed_commands", [])}:
+            raise McpDelegatedActionAccessDenied(f"'{command}' is not available on this action item right now")
+        proposed = self._application.propose_action(
+            principal,
+            UUID(causation_id),
+            ACTION_ITEM_COMMAND,
+            f"판단 확인: {detail.get('subject', '')}",
+            {"action_item_id": action_item_id, "command": command, **payload},
+        )
+        # One confirmation slot per turn: a retry of this call gets its own receipt back, a different judgement is told
+        # to wait for the next turn rather than being answered with someone else's confirmation.
+        if proposed.get("payload_summary") != f"판단 확인: {command} · {action_item_id}":
+            raise McpDelegatedActionAccessDenied(
+                "이 턴에는 이미 사람이 확인할 다른 판단이 있습니다. 그 판단이 처리된 뒤 다시 요청하세요"
+            )
+        return proposed
 
     def list_tasks(self) -> list[dict[str, Any]]:
         return self._application.list_tasks(self.principal)
@@ -365,8 +403,9 @@ def _create_bound_persona_server(facade: McpReportsFacade) -> MCPServer:
             "Reports operations and never expose workflow-run controls. "
             "Every human judgement — a WorkRequest, a Task assignment, an AX gated proposal — is one ActionItem: read "
             "it with action_item_list and action_item_get, and answer it with action_item_command using only the "
-            "allowed_commands the server put on that item. Never decide from the kind or the status, and never use the "
-            "deprecated per-kind decision tools for a new judgement."
+            "allowed_commands the server put on that item. Never decide from the kind or the status; there is no other "
+            "way to accept, adjust, reject, revise, withdraw or decline anything. Inside a delegated chat turn the "
+            "command does not take effect: it returns a pending confirmation for the person to approve."
         ),
     )
     _register_action_item_tools(server, facade)
@@ -376,8 +415,6 @@ def _create_bound_persona_server(facade: McpReportsFacade) -> MCPServer:
         _register_work_request_read_tools(server, facade)
     if "work_request.create" in principal.capabilities:
         _register_work_request_create_tools(server, facade)
-    if "work_request.decide" in principal.capabilities:
-        _register_work_request_decision_tools(server, facade)
     return server
 
 
@@ -428,7 +465,7 @@ def _register_action_item_tools(server: MCPServer, facade: McpReportsFacade) -> 
     def action_item_command(
         action_item_id: str,
         command: str,
-        expected_version: int | None = None,
+        expected_version: int,
         reason: str | None = None,
         changes: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -493,46 +530,11 @@ def _register_work_request_create_tools(server: MCPServer, facade: McpReportsFac
     def work_request_assignee_candidates() -> list[dict[str, str]]:
         return facade.work_request_assignee_candidates()
 
-    @server.tool(description=(
-            "Deprecated: use action_item_command with the `revise` command on the ActionItem instead. Kept for existing "
-            "callers. Revise a negotiating WorkRequest you sent (new submission version with diff) using its required "
-            "expected version."
-        ))
-    def work_request_resubmit(
-        request_id: str, expected_version: int, title: str | None = None, description: str | None = None, due_date: str | None = None
-    ) -> dict[str, Any]:
-        return facade.resubmit_work_request(request_id, expected_version, title, description, due_date)
-
     @server.tool(description="Create a WorkRequest with an optional ISO due_date and description; it creates no Task until the assignee accepts.")
     def work_request_create(
         title: str, assignee_id: str, due_date: str | None = None, description: str | None = None, cc_member_ids: list[str] | None = None
     ) -> dict[str, Any]:
         return facade.create_work_request(title, assignee_id, due_date, description, cc_member_ids)
-
-
-def _register_work_request_decision_tools(server: MCPServer, facade: McpReportsFacade) -> None:
-    @server.tool(description=(
-            "Deprecated: use action_item_command with the `accept` command on the ActionItem instead. Kept for existing "
-            "callers. Accept a visible WorkRequest using its required expected version."
-        ))
-    def work_request_accept(request_id: str, expected_version: int) -> dict[str, Any]:
-        return facade.accept_work_request(request_id, expected_version)
-
-    @server.tool(description=(
-            "Deprecated: use action_item_command with the `adjust` command on the ActionItem instead. Kept for existing "
-            "callers. Return a WorkRequest for conditions negotiation using its required expected version."
-        ))
-    def work_request_negotiate(
-        request_id: str, expected_version: int, conditions: dict[str, Any]
-    ) -> dict[str, Any]:
-        return facade.negotiate_work_request(request_id, expected_version, conditions)
-
-    @server.tool(description=(
-            "Deprecated: use action_item_command with the `reject` command on the ActionItem instead. Kept for existing "
-            "callers. Reject a WorkRequest using its required expected version and reason."
-        ))
-    def work_request_reject(request_id: str, expected_version: int, reason: str) -> dict[str, Any]:
-        return facade.reject_work_request(request_id, expected_version, reason)
 
 
 def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
@@ -565,29 +567,6 @@ def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
     @server.tool(description="Create a self-owned Task.")
     def task_create_self(title: str) -> dict[str, Any]:
         return facade.create_self_task(title)
-
-    @server.tool(description=(
-        "Deprecated: use action_item_list, which returns assignments alongside every other judgement in one ledger. "
-        "Kept for existing callers. List Task assignments waiting for the delegated persona's acceptance."
-    ))
-    def task_assignment_inbox() -> list[dict[str, Any]]:
-        return facade.task_assignment_inbox()
-
-    @server.tool(description=(
-        "Deprecated: use action_item_command with the `accept` command on the ActionItem instead. Kept for existing "
-        "callers. Accept a pending Task assignment so the Task enters the persona's My Work."
-    ))
-    def task_assignment_accept(assignment_id: str) -> dict[str, Any]:
-        return facade.decide_task_assignment(assignment_id, "accept")
-
-    @server.tool(description=(
-        "Deprecated: use action_item_command with the `decline` command on the ActionItem instead. Kept for existing "
-        "callers. Decline a pending Task assignment with a reason; the Task never enters My Work."
-    ))
-    def task_assignment_decline(assignment_id: str, reason: str) -> dict[str, Any]:
-        if not reason.strip():
-            raise ValueError("reason is required")
-        return facade.decide_task_assignment(assignment_id, "decline", reason)
 
     if TASK_ASSIGN in facade.principal.capabilities:
         @server.tool(description="List members within the delegated persona's units who can be assigned a Task.")

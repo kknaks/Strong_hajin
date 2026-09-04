@@ -160,11 +160,14 @@ def test_mcp_tool_exposure_is_bound_to_the_server_persona(
     assert "task_create_self" in mina_tools
     assert "task_start" in mina_tools
     assert "work_request_create" in mina_tools
+    # Judgement has one surface: the per-kind decision tools are not registered for anyone.
     assert "work_request_accept" not in mina_tools
+    assert "action_item_command" in mina_tools
     assert "work_request_create" not in sora_tools
     assert "task_create_self" not in sora_tools
     assert "daily_report_submit" not in jiho_tools
-    assert "work_request_accept" in jiho_tools
+    assert "work_request_accept" not in jiho_tools
+    assert "action_item_command" in jiho_tools
     assert "start_daily_report" not in mina_tools
     assert all("persona" not in tool.name for tool in asyncio.run(create_mcp_server(settings).list_tools()))
 
@@ -202,10 +205,6 @@ def test_stdio_mcp_client_discovers_only_persona_bound_report_tools(tmp_path) ->
                     "work_request_create",
                     "work_request_get",
                     "work_request_list",
-                    "work_request_resubmit",
-                    "task_assignment_accept",
-                    "task_assignment_decline",
-                    "task_assignment_inbox",
                     "task_block",
                     "task_cancel",
                     "task_complete",
@@ -244,7 +243,8 @@ def test_stdio_mcp_server_supports_2026_discovery_and_persona_filtered_tools(tmp
                 assert "2026-07-28" in discovery.supported_versions
                 assert discovery.capabilities.tools is not None
                 names = {tool.name for tool in (await session.list_tools()).tools}
-                assert "work_request_accept" in names
+                assert "action_item_command" in names
+                assert "work_request_accept" not in names
                 assert "daily_report_submit" not in names
 
                 invalid_result = await session.call_tool("task_start", {})

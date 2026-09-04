@@ -29,7 +29,12 @@ from ax_workspace.modules.organization_access.domain import (
 )
 from ax_workspace.platform.actions import ActionPresenter
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
-from ax_workspace.modules.work.requests import WorkRequestAccessDenied as ActionAccessDenied
+from ax_workspace.modules.work.requests import (
+    REVISABLE_FIELDS,
+    WorkRequestAccessDenied as ActionAccessDenied,
+    WorkRequestError,
+    normalize_proposed_changes,
+)
 from ax_workspace.platform.persistence import (
     ActionItemRecord,
     DecisionItemRecord,
@@ -49,24 +54,37 @@ def _parse_date(value: Any):
 
     return date.fromisoformat(str(value)) if value else None
 
-#: The fields a reviewer may propose changing, which is exactly what the requester may then revise.
-_PROPOSABLE_FIELDS = ("title", "description", "due_date")
+def _required_version(payload: dict[str, Any]) -> int:
+    """Every command answers a version it was shown. Without one there is no stale-write check at all."""
+    value = payload.get("expected_version")
+    if value is None or isinstance(value, bool):
+        raise ActionError("expected_version is required")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as error:
+        raise ActionError("expected_version must be an integer") from error
 
 
 def _proposed_changes(value: Any) -> dict[str, Any]:
-    """An adjustment's optional structured ask, kept to the fields a revision can actually answer."""
+    """An adjustment's optional structured ask. The work module owns the allow-list, so every writer agrees with it."""
+    try:
+        return normalize_proposed_changes(value)
+    except WorkRequestError as error:
+        raise ActionError(str(error)) from error
+
+
+def _revision_changes(value: Any) -> dict[str, Any]:
+    """What a revision may change. A field it does not own is refused, never dropped from a successful answer."""
     if not value:
         return {}
     if not isinstance(value, dict):
-        raise ActionError("변경 제안은 필드별로 적어 주세요")
-    unknown = sorted(set(value) - set(_PROPOSABLE_FIELDS))
+        raise ActionError("수정안은 필드별로 적어 주세요")
+    unknown = sorted(set(value) - set(REVISABLE_FIELDS))
     if unknown:
-        # Silently dropping a field would let a client believe it asked for something it did not.
-        raise ActionError(f"변경 제안할 수 없는 항목입니다: {', '.join(unknown)}")
-    proposed = {field: str(value[field]).strip() for field in _PROPOSABLE_FIELDS if str(value.get(field) or "").strip()}
-    if "due_date" in proposed:
-        _parse_date(proposed["due_date"])
-    return proposed
+        raise ActionError(f"수정안에서 바꿀 수 없는 항목입니다: {', '.join(unknown)}")
+    if value.get("due_date") and not str(value.get("clear_due_date") or ""):
+        _parse_date(value["due_date"])
+    return dict(value)
 
 
 def _suggested_changes(conditions: Any) -> dict[str, Any]:
@@ -169,7 +187,7 @@ class WorkRequestActionHandler:
 
     def execute(self, principal: Principal, item: tuple[Any, Any], command: str, payload: dict[str, Any]) -> None:
         _, request = item
-        expected_version = int(payload.get("expected_version") or request.version)
+        expected_version = _required_version(payload)
         reason = str(payload.get("reason") or "").strip()
         if command == "accept":
             self._work_requests.accept(principal, request.id, expected_version)
@@ -182,7 +200,7 @@ class WorkRequestActionHandler:
         elif command == "withdraw":
             self._work_requests.withdraw(principal, request.id, expected_version)
         elif command == "revise":
-            changes = dict(payload.get("changes") or {})
+            changes = _revision_changes(payload.get("changes"))
             if not changes:
                 raise ActionError("수정안에는 바뀐 내용이 있어야 합니다")
             self._work_requests.resubmit(
@@ -419,7 +437,7 @@ class AxProposalActionHandler:
         ]
 
     def execute(self, principal: Principal, item: Any, command: str, payload: dict[str, Any]) -> None:
-        self._actions.decide(principal, item.id, int(payload.get("expected_version") or item.version), command)
+        self._actions.decide(principal, item.id, _required_version(payload), command)
 
     def discussion(self, item: Any, principal: Principal) -> list[dict[str, Any]]:
         """An AX proposal is judged on its preview and evidence; it carries no comment thread."""
@@ -429,7 +447,13 @@ class AxProposalActionHandler:
         """The persisted Action is the idempotency boundary; a repeat of the decision it already holds is a receipt."""
         if str(item.owner_id) != str(principal.id) or ACTION_DECIDE not in principal.capabilities:
             return False
-        return item.state == {"approve": "approved", "reject": "rejected"}.get(command)
+        if item.state != {"approve": "approved", "reject": "rejected"}.get(command):
+            return False
+        # Deciding bumps the Action exactly once, so only the version this decision consumed is a receipt.
+        try:
+            return int(item.version) == _required_version(payload) + 1
+        except ActionError:
+            return False
 
     def pending(self, principal: Principal) -> list[ActionEnvelope]:
         if ACTION_DECIDE not in principal.capabilities:
@@ -561,7 +585,10 @@ class TaskAssignmentActionHandler:
         ]
 
     def execute(self, principal: Principal, item: tuple[Any, Any], command: str, payload: dict[str, Any]) -> None:
-        assignment, _ = item
+        assignment, task = item
+        # The assignment carries no version of its own; the Task version the envelope showed is what is being answered.
+        if int(task.version) != _required_version(payload):
+            raise ActionError("task version is stale")
         if command == "accept":
             self._assignments.accept(principal, assignment.id)
         else:
@@ -572,18 +599,23 @@ class TaskAssignmentActionHandler:
         return []
 
     def is_replay(self, item: tuple[Any, Any], principal: Principal, command: str, payload: dict[str, Any]) -> bool:
-        """One assignment is answered once, so the stored status is the receipt — with the reason it was declined for."""
-        assignment, _ = item
+        """One assignment is answered once, so the stored status is the receipt — pinned to the Task version it moved.
+
+        The assignment has no version column of its own, so the Task's is the contract the envelope hands out:
+        accepting leaves it where it was, declining cancels the Task and moves it exactly one version on.
+        """
+        assignment, task = item
         if str(assignment.assignee_id) != str(principal.id):
             return False
+        try:
+            targeted = _required_version(payload)
+        except ActionError:
+            return False
         if command == "accept":
-            return assignment.status == "active"
-        # A decline carries a required reason; a re-send that says something else is a new answer, not a receipt.
-        return (
-            command == "decline"
-            and assignment.status == "declined"
-            and (assignment.decline_reason or "") == str(payload.get("reason") or "").strip()
-        )
+            return assignment.status == "active" and int(task.version) == targeted
+        if command != "decline" or assignment.status != "declined":
+            return False
+        return int(task.version) == targeted + 1 and (assignment.decline_reason or "") == str(payload.get("reason") or "").strip()
 
 
 def action_handlers(session: Session, *, work_requests: Any, actions: Any, assignments: Any) -> list[Any]:

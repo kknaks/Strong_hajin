@@ -194,20 +194,12 @@ def test_the_server_tells_a_delegated_turn_to_judge_through_the_one_ledger(tmp_p
     monkeypatch.setenv("AX_MCP_PERSONA", "jiho")
     _, settings, _ = _stack(tmp_path)
     server = create_mcp_server(settings)
-    tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
 
-    assert "action_item" in (server.instructions or "")
-    # The per-kind decision tools stay for compatibility, but they say where judgement actually belongs.
-    for name in ("work_request_accept", "work_request_negotiate", "work_request_reject"):
-        assert "Deprecated" in tools[name].description and "action_item_command" in tools[name].description
-    for name in ("task_assignment_accept", "task_assignment_decline", "task_assignment_inbox"):
-        assert "Deprecated" in tools[name].description and "action_item" in tools[name].description
-
-    # The requester side lives on the persona that may create requests.
-    monkeypatch.setenv("AX_MCP_PERSONA", "mina")
-    requester = {tool.name: tool for tool in asyncio.run(create_mcp_server(settings).list_tools())}
-    assert "Deprecated" in requester["work_request_resubmit"].description
-    assert "action_item_command" in requester["work_request_resubmit"].description
+    instructions = server.instructions or ""
+    assert "action_item_list" in instructions and "action_item_command" in instructions
+    # It says the two things a delegated turn must not get wrong: policy comes from the item, and it does not decide.
+    assert "allowed_commands" in instructions
+    assert "pending confirmation" in instructions
 
 
 def test_stdio_client_runs_the_ledger_and_keeps_it_bound_to_the_server_persona(tmp_path) -> None:
@@ -292,3 +284,204 @@ def test_a_capability_revoked_after_discovery_is_refused_at_call_time(tmp_path) 
     assert client.get("/api/work-requests", headers=MINA).json()[0]["state"] == "pending"
     with make_session_factory(database_url)() as session:
         assert session.query(TaskRecord).count() == 0
+
+
+def _delegated_turn(client, application, headers, persona: str, monkeypatch) -> str:
+    """Bind the facade to a real delegated turn, the way the conversation worker does."""
+    from uuid import UUID
+
+    from ax_workspace.platform.persistence import ConversationTurnRecord
+
+    conversation = client.post("/api/conversations", headers=headers, json={"title": "위임 턴"}).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={**headers, "Idempotency-Key": f"delegated-{persona}"},
+        json={"body": "판단해줘", "context": []},
+    )
+    assert accepted.status_code == 202, accepted.text
+    with make_session_factory(application._settings.database_url)() as session:
+        execution_id = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"])).execution_id
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", str(execution_id))
+    return str(execution_id)
+
+
+def _application(tmp_path_client):
+    return tmp_path_client.app.state.workflow_application
+
+
+def test_a_delegated_turn_proposes_a_judgement_for_a_person_instead_of_making_it(tmp_path, monkeypatch) -> None:
+    """Inside a chat turn the model may prepare a judgement; only a person may actually make it."""
+    database_url, settings, client = _stack(tmp_path)
+    application = client.app.state.workflow_application
+    client.post("/api/work-requests", headers=MINA, json={"title": "턴이 제안하는 판단", "assignee_id": "jiho"})
+    jiho = _facade(settings, "jiho")
+    [item] = jiho.pending_action_items()
+
+    _delegated_turn(client, application, JIHO, "jiho", monkeypatch)
+    gated = jiho.run_action_command(
+        item["action_item_id"], "accept", expected_version=item["expected_version"]
+    )
+    # A wrapper Action to confirm, not the effect.
+    assert gated["state"] == "pending" and gated["action_type"] == "action_item.command"
+    assert client.get("/api/work-requests", headers=MINA).json()[0]["state"] == "pending"
+    assert client.get("/api/my-work", headers=JIHO).json() == []
+    assert jiho.pending_action_items()[0]["action_item_id"] == item["action_item_id"]
+
+    # The card a person sees is the target's own permission-safe presentation, never the raw payload.
+    assert gated["subject"] == "턴이 제안하는 판단"
+    assert gated["operation_label"] == "업무 요청 판단"
+    preview = {row["id"]: row["value"] for row in gated["preview"]}
+    assert preview["command"] == "수락"
+    # The card shows the work, not the wire: no raw ids or payload keys leak into it.
+    assert item["action_item_id"] not in " ".join(f"{row['label']}{row['value']}" for row in gated["preview"])
+
+    # Re-sending the identical call is the same wrapper, not a second one.
+    again = jiho.run_action_command(item["action_item_id"], "accept", expected_version=item["expected_version"])
+    assert again["action_id"] == gated["action_id"]
+
+    # Only the person's approval applies the effect, exactly once.
+    approved = client.post(
+        f"/api/actions/{gated['action_id']}/decide",
+        headers=JIHO,
+        json={"expected_version": gated["version"], "decision": "approve"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert client.get("/api/work-requests", headers=MINA).json()[0]["state"] == "accepted"
+    assert [task["title"] for task in client.get("/api/my-work", headers=JIHO).json()] == ["턴이 제안하는 판단"]
+    replayed = client.post(
+        f"/api/actions/{gated['action_id']}/decide",
+        headers=JIHO,
+        json={"expected_version": gated["version"], "decision": "approve"},
+    )
+    assert replayed.status_code == 200 and len(client.get("/api/my-work", headers=JIHO).json()) == 1
+
+
+def test_a_delegated_turn_can_never_approve_an_ax_proposal_including_its_own(tmp_path, monkeypatch) -> None:
+    """The gate exists to put a person between AX and the effect; AX may not step over it."""
+    database_url, settings, client = _stack(tmp_path)
+    application = client.app.state.workflow_application
+    _delegated_turn(client, application, MINA, "mina", monkeypatch)
+    mina = _facade(settings, "mina")
+
+    gate = mina.create_work_request("AX가 스스로 승인하려는 요청", "jiho")
+    assert gate["state"] == "pending"
+    [proposal] = [item for item in mina.pending_action_items() if item["kind"].startswith("ax.")]
+
+    with pytest.raises(Exception, match="사람"):
+        mina.run_action_command(proposal["action_item_id"], "approve", expected_version=proposal["expected_version"])
+    # Nothing happened: no WorkRequest, and the gate is still waiting for a person.
+    assert client.get("/api/work-requests", headers=MINA).json() == []
+    assert mina.pending_action_items()[0]["status"] == "awaiting_review"
+
+    # A wrapper the turn proposes is itself an AX proposal, so the same rule blocks self-approving it.
+    client.post("/api/tasks/assign", headers=JIHO, json={"title": "래퍼 확인", "assignee_id": "mina"})
+    [incoming] = [row for row in mina.pending_action_items() if row["subject"] == "래퍼 확인"]
+    wrapper = mina.run_action_command(incoming["action_item_id"], "accept", expected_version=incoming["expected_version"])
+    assert wrapper["state"] == "pending"
+    [wrapped] = [row for row in mina.pending_action_items() if row["action_item_id"] == wrapper["action_id"]]
+    with pytest.raises(Exception, match="사람"):
+        mina.run_action_command(wrapped["action_item_id"], "approve", expected_version=wrapped["expected_version"])
+    assert client.get("/api/my-work", headers=MINA).json() == []
+
+
+def test_a_direct_admin_or_test_caller_outside_a_chat_turn_still_commands_canonically(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
+    database_url, settings, client = _stack(tmp_path)
+    client.post("/api/work-requests", headers=MINA, json={"title": "직접 호출", "assignee_id": "jiho"})
+    jiho = _facade(settings, "jiho")
+    [item] = jiho.pending_action_items()
+    assert jiho.run_action_command(item["action_item_id"], "accept", expected_version=item["expected_version"])["status"] == "resolved"
+    assert [task["title"] for task in client.get("/api/my-work", headers=JIHO).json()] == ["직접 호출"]
+
+
+def test_the_command_tool_requires_the_version_it_is_answering(tmp_path, monkeypatch) -> None:
+    _, settings, client = _stack(tmp_path)
+    client.post("/api/work-requests", headers=MINA, json={"title": "버전 필수", "assignee_id": "jiho"})
+    tools = {tool.name: tool for tool in _tools(settings, "jiho", monkeypatch)}
+    schema = tools["action_item_command"].input_schema
+    assert set(schema["required"]) == {"action_item_id", "command", "expected_version"}
+    assert schema["properties"]["expected_version"]["type"] == "integer"
+
+
+def test_only_the_one_judgement_surface_is_registered(tmp_path, monkeypatch) -> None:
+    """A second way to decide is a second policy; the per-kind decision tools are gone, not merely labelled."""
+    _, settings, _ = _stack(tmp_path)
+    for persona in ("jiho", "mina"):
+        names = {tool.name for tool in _tools(settings, persona, monkeypatch)}
+        assert ACTION_ITEM_TOOLS <= names
+        assert not (names & {
+            "work_request_accept",
+            "work_request_negotiate",
+            "work_request_reject",
+            "work_request_resubmit",
+            "task_assignment_inbox",
+            "task_assignment_accept",
+            "task_assignment_decline",
+        })
+
+
+def test_stdio_delegated_command_returns_a_pending_confirmation_and_changes_nothing(tmp_path) -> None:
+    database_url, settings, client = _stack(tmp_path)
+    application = client.app.state.workflow_application
+    client.post("/api/work-requests", headers=MINA, json={"title": "stdio 위임 판단", "assignee_id": "jiho"})
+    [item] = _facade(settings, "jiho").pending_action_items()
+
+    from uuid import UUID
+
+    from ax_workspace.platform.persistence import ConversationTurnRecord
+
+    conversation = client.post("/api/conversations", headers=JIHO, json={"title": "stdio 턴"}).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={**JIHO, "Idempotency-Key": "stdio-delegated"},
+        json={"body": "판단해줘", "context": []},
+    )
+    with make_session_factory(database_url)() as session:
+        execution_id = str(session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"])).execution_id)
+
+    async def scenario() -> str:
+        parameters = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "ax_workspace.entrypoints.mcp"],
+            cwd=os.getcwd(),
+            env={
+                **os.environ,
+                "AX_PROFILE": "test",
+                "DATABASE_URL": database_url,
+                "AX_MCP_PERSONA": "jiho",
+                "AX_MCP_CAUSATION_ID": execution_id,
+            },
+        )
+        async with stdio_client(parameters) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "action_item_command",
+                    {
+                        "action_item_id": item["action_item_id"],
+                        "command": "accept",
+                        "expected_version": item["expected_version"],
+                    },
+                )
+                assert result.is_error is not True, result.content
+                assert result.structured_content["state"] == "pending"
+                assert result.structured_content["action_type"] == "action_item.command"
+
+                # An unauthorized item and an unknown id are the same answer: no existence oracle on the wire.
+                unknown = await session.call_tool("action_item_get", {"action_item_id": "11111111-1111-4111-8111-111111111111"})
+                mina_only = await session.call_tool("action_item_get", {"action_item_id": item["action_item_id"]})
+                assert unknown.is_error is True
+                return result.structured_content["action_id"]
+
+    action_id = asyncio.run(scenario())
+    # The judgement did not happen: no Task, and the question is still Jiho's to answer.
+    assert client.get("/api/my-work", headers=JIHO).json() == []
+    assert client.get("/api/work-requests", headers=MINA).json()[0]["state"] == "pending"
+    action = [row for row in client.get("/api/actions", headers=JIHO).json() if row["action_id"] == action_id][0]
+    assert action["state"] == "pending" and action["subject"] == "stdio 위임 판단"
+
+    approved = client.post(
+        f"/api/actions/{action_id}/decide", headers=JIHO, json={"expected_version": action["version"], "decision": "approve"}
+    )
+    assert approved.status_code == 200, approved.text
+    assert [task["title"] for task in client.get("/api/my-work", headers=JIHO).json()] == ["stdio 위임 판단"]

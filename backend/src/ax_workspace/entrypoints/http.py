@@ -182,7 +182,8 @@ class ChecklistItemPatch(BaseModel):
 class ActionCommandRequest(BaseModel):
     """What a command needs from the caller; the server decides which command is available at all."""
 
-    expected_version: int | None = None
+    #: Always required: a command answers the version it was shown, so a stale write cannot slip through.
+    expected_version: int
     reason: str | None = Field(default=None, max_length=4000)
     changes: dict[str, object] | None = None
 

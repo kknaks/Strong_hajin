@@ -261,7 +261,7 @@ def test_a_direct_assignment_is_the_same_kind_of_question_in_the_same_ledger(tmp
     # The assigner is not the one who owes an answer.
     assert [row for row in _pending(client, JIHO) if row["kind"] == "task.assignment"] == []
 
-    accepted = _command(client, MINA, item["action_item_id"], "accept")
+    accepted = _command(client, MINA, item["action_item_id"], "accept", expected_version=item["expected_version"])
     assert accepted.status_code == 200, accepted.text
     assert accepted.json()["status"] == "resolved"
     assert [task["title"] for task in client.get("/api/my-work", headers=MINA).json()] == ["배정된 업무"]
@@ -269,8 +269,8 @@ def test_a_direct_assignment_is_the_same_kind_of_question_in_the_same_ledger(tmp
     assert assigned["task"]["title"] == "배정된 업무"
 
     # A re-sent accept is a receipt, and a declined-after-accepted command is refused rather than guessed at.
-    assert _command(client, MINA, item["action_item_id"], "accept").status_code == 200
-    assert _command(client, MINA, item["action_item_id"], "decline", reason="역시 어렵습니다").status_code == 422
+    assert _command(client, MINA, item["action_item_id"], "accept", expected_version=item["expected_version"]).status_code == 200
+    assert _command(client, MINA, item["action_item_id"], "decline", expected_version=item["expected_version"], reason="역시 어렵습니다").status_code == 422
     assert len(client.get("/api/my-work", headers=MINA).json()) == 1
 
 
@@ -473,3 +473,108 @@ def test_a_revision_that_changes_nothing_is_refused_however_it_is_written(tmp_pa
     accepted = _command(client, MINA, waiting["action_item_id"], "revise", expected_version=waiting["expected_version"], changes={"title": "정말 바뀐 요청"})
     assert accepted.status_code == 200, accepted.text
     assert [row["submission_version"] for row in _rounds(client, MINA, waiting["action_item_id"])] == [1, 2]
+
+
+def test_every_command_must_name_the_version_it_is_answering(tmp_path) -> None:
+    """Optimistic concurrency is the contract, not an option: a command without a version is refused."""
+    client, _ = _stack(tmp_path)
+    client.post("/api/work-requests", headers=MINA, json={"title": "버전 계약", "assignee_id": "jiho"})
+    [item] = _pending(client, JIHO)
+
+    missing = client.post(f"/api/action-items/{item['action_item_id']}/commands/accept", headers=JIHO, json={})
+    assert missing.status_code == 422, missing.text
+    assert _command(client, JIHO, item["action_item_id"], "accept", expected_version=item["expected_version"] - 1).status_code == 422
+    assert _command(client, JIHO, item["action_item_id"], "accept", expected_version=item["expected_version"] + 1).status_code == 422
+    assert client.get("/api/my-work", headers=JIHO).json() == []
+    assert _command(client, JIHO, item["action_item_id"], "accept", expected_version=item["expected_version"]).status_code == 200
+
+
+def test_a_revision_may_only_change_the_fields_a_revision_owns(tmp_path) -> None:
+    client, _ = _stack(tmp_path)
+    client.post("/api/work-requests", headers=MINA, json={"title": "허용 필드", "assignee_id": "jiho"})
+    [item] = _pending(client, JIHO)
+    _command(client, JIHO, item["action_item_id"], "adjust", expected_version=item["expected_version"], reason="고쳐 주세요")
+    [waiting] = _pending(client, MINA)
+
+    # A field a revision does not own is refused rather than quietly dropped from a successful-looking answer.
+    refused = _command(
+        client, MINA, waiting["action_item_id"], "revise",
+        expected_version=waiting["expected_version"], changes={"title": "고친 제목", "assignee_id": "sora"},
+    )
+    assert refused.status_code == 422, refused.text
+    assert "assignee_id" in refused.text
+    assert [row["submission_version"] for row in _rounds(client, MINA, waiting["action_item_id"])] == [1]
+    # The fields it does own still work, clear_due_date included.
+    accepted = _command(
+        client, MINA, waiting["action_item_id"], "revise",
+        expected_version=waiting["expected_version"], changes={"title": "고친 제목", "clear_due_date": True},
+    )
+    assert accepted.status_code == 200, accepted.text
+
+
+def test_a_direct_assignment_answers_on_the_task_version_it_was_shown(tmp_path) -> None:
+    client, _ = _stack(tmp_path)
+    client.post("/api/tasks/assign", headers=JIHO, json={"title": "배정 A", "assignee_id": "mina"})
+    client.post("/api/tasks/assign", headers=JIHO, json={"title": "배정 B", "assignee_id": "mina"})
+    items = {row["subject"]: row for row in _pending(client, MINA)}
+    accept_target, decline_target = items["배정 A"], items["배정 B"]
+
+    assert _command(client, MINA, accept_target["action_item_id"], "accept").status_code == 422
+    assert _command(client, MINA, accept_target["action_item_id"], "accept", expected_version=accept_target["expected_version"] + 1).status_code == 422
+    assert _command(client, MINA, accept_target["action_item_id"], "accept", expected_version=accept_target["expected_version"]).status_code == 200
+    # Acceptance leaves the Task version alone, so the same call replays as a receipt.
+    replay = _command(client, MINA, accept_target["action_item_id"], "accept", expected_version=accept_target["expected_version"])
+    assert replay.status_code == 200 and replay.json()["status"] == "resolved"
+
+    # A decline cancels the Task, which moves it one version on; only that exact relation replays.
+    assert _command(client, MINA, decline_target["action_item_id"], "decline", expected_version=decline_target["expected_version"], reason="여력 없음").status_code == 200
+    receipt = _command(client, MINA, decline_target["action_item_id"], "decline", expected_version=decline_target["expected_version"], reason="여력 없음")
+    assert receipt.status_code == 200 and receipt.json()["status"] == "resolved"
+    assert _command(client, MINA, decline_target["action_item_id"], "decline", expected_version=decline_target["expected_version"], reason="다른 사유").status_code == 422
+    assert _command(client, MINA, decline_target["action_item_id"], "decline", expected_version=decline_target["expected_version"] + 1, reason="여력 없음").status_code == 422
+    assert [task["title"] for task in client.get("/api/my-work", headers=MINA).json()] == ["배정 A"]
+
+
+def test_an_ax_proposal_answers_on_the_version_it_was_shown(tmp_path) -> None:
+    client, application = _stack(tmp_path)
+    proposal = _ax_proposal(client, application, MINA, "mina", "task.create_self", "업무 생성 확인", {"title": "AX 업무"})
+    [item] = _pending(client, MINA)
+    assert item["action_item_id"] == proposal["action_id"]
+
+    assert _command(client, MINA, item["action_item_id"], "approve").status_code == 422
+    assert _command(client, MINA, item["action_item_id"], "approve", expected_version=item["expected_version"] + 1).status_code == 422
+    assert client.get("/api/my-work", headers=MINA).json() == []
+    assert _command(client, MINA, item["action_item_id"], "approve", expected_version=item["expected_version"]).status_code == 200
+    replay = _command(client, MINA, item["action_item_id"], "approve", expected_version=item["expected_version"])
+    assert replay.status_code == 200 and replay.json()["status"] == "resolved"
+    # The version the effect actually consumed is the only one that replays.
+    assert _command(client, MINA, item["action_item_id"], "approve", expected_version=item["expected_version"] + 1).status_code == 422
+    assert [task["title"] for task in client.get("/api/my-work", headers=MINA).json()] == ["AX 업무"]
+
+
+def test_a_legacy_negotiate_cannot_leave_the_ledger_unreadable(tmp_path) -> None:
+    """The compatibility endpoint writes what the canonical reader can read, or it does not write at all."""
+    client, _ = _stack(tmp_path)
+    request = client.post("/api/work-requests", headers=MINA, json={"title": "원장 보호", "assignee_id": "jiho"}).json()
+
+    poisoned = client.post(
+        f"/api/work-requests/{request['request_id']}/negotiate",
+        headers=JIHO,
+        json={"expected_version": request["version"], "conditions": {"note": "조정", "changes": {"assignee_id": "sora", "priority": "high"}}},
+    )
+    assert poisoned.status_code == 422, poisoned.text
+
+    # Both sides can still read their judgement ledger, and the request was not moved.
+    assert client.get("/api/action-items", headers=MINA).status_code == 200
+    assert client.get("/api/action-items", headers=JIHO).status_code == 200
+    assert client.get("/api/work-requests", headers=MINA).json()[0]["state"] == "pending"
+
+    # A proposal the canonical path accepts goes through the legacy endpoint too, and stays readable.
+    fine = client.post(
+        f"/api/work-requests/{request['request_id']}/negotiate",
+        headers=JIHO,
+        json={"expected_version": request["version"], "conditions": {"note": "조정", "changes": {"due_date": "2026-12-01"}}},
+    )
+    assert fine.status_code == 200, fine.text
+    [waiting] = _pending(client, MINA)
+    assert waiting["suggested_changes"] == {"due_date": "2026-12-01"}

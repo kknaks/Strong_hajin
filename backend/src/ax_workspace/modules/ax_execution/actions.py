@@ -38,6 +38,11 @@ class ActionRepository(Protocol):
     def view(self, action: Any, principal: Principal | None = None) -> dict[str, Any]: ...
 
 
+#: The generic gated wrapper a delegated turn proposes when it wants a judgement made on an ActionItem.
+#: The turn prepares the answer; only a person approving this Action applies it through the canonical command path.
+ACTION_ITEM_COMMAND = "action_item.command"
+
+
 class ActionExecutor(Protocol):
     def execute(self, principal: Principal, action: Any) -> dict[str, Any]: ...
 

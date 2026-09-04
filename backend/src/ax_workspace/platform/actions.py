@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from ax_workspace.modules.organization_access.application import OrganizationApplication
 from ax_workspace.modules.organization_access.domain import Principal
 from ax_workspace.modules.reports.application import DailyReportApplication
+from ax_workspace.modules.ax_execution.actions import ACTION_ITEM_COMMAND
 from ax_workspace.modules.work.requests import WorkRequestApplication
 from ax_workspace.modules.work.application import TaskApplication, TaskError, TaskState
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
@@ -173,7 +174,33 @@ class SqlAlchemyActionRepository:
             return "일일보고 초안 수정"
         if action.action_type == "task.assign":
             return f"업무 배정: {action.payload['title']} → {action.payload['assignee_id']}"
+        if action.action_type == ACTION_ITEM_COMMAND:
+            # Machine-readable, so a caller can tell which pending confirmation this turn's slot actually holds.
+            return f"판단 확인: {action.payload['command']} · {action.payload['action_item_id']}"
         return action.action_type
+
+
+def action_center_application(session: Session, executor: Any) -> Any:
+    """The one judgement application, built here so the wrapper runs exactly what HTTP and the UI run."""
+    # Imported late: the ActionCenter presents AX proposals through this module.
+    from ax_workspace.modules.ax_execution.actions import ActionApplication
+    from ax_workspace.modules.actions.domain import ActionCenterApplication
+    from ax_workspace.platform.action_center import action_handlers
+
+    return ActionCenterApplication(
+        action_handlers(
+            session,
+            work_requests=WorkRequestApplication(
+                SqlAlchemyWorkRequestRepository(session),
+                OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
+            ),
+            actions=ActionApplication(SqlAlchemyActionRepository(session), executor),
+            assignments=TaskAssignmentApplication(
+                SqlAlchemyTaskAssignmentRepository(session),
+                OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
+            ),
+        )
+    )
 
 
 class SqlAlchemyActionExecutor:
@@ -252,9 +279,30 @@ class SqlAlchemyActionExecutor:
             return WorkRequestApplication(SqlAlchemyWorkRequestRepository(self._session), OrganizationApplication(SqlAlchemyOrganizationRepository(self._session))).accept(principal, UUID(str(action.payload["request_id"])), int(action.payload["expected_version"]))
         if action.action_type == "work_request.reject":
             return WorkRequestApplication(SqlAlchemyWorkRequestRepository(self._session), OrganizationApplication(SqlAlchemyOrganizationRepository(self._session))).reject(principal, UUID(str(action.payload["request_id"])), int(action.payload["expected_version"]), str(action.payload["reason"]))
+        if action.action_type == ACTION_ITEM_COMMAND:
+            return self._run_action_item_command(principal, action)
         if action.action_type == "work_request.negotiate":
             return WorkRequestApplication(SqlAlchemyWorkRequestRepository(self._session), OrganizationApplication(SqlAlchemyOrganizationRepository(self._session))).negotiate(principal, UUID(str(action.payload["request_id"])), int(action.payload["expected_version"]), dict(action.payload["conditions"]))
         raise ValueError("unsupported action type")
+
+    def _run_action_item_command(self, principal: Principal, action: ActionItemRecord) -> dict[str, Any]:
+        """Apply the judgement a delegated turn prepared, through the one canonical command path.
+
+        The approving person's own authority is what runs it: the ActionCenter re-checks that the command is still
+        offered to them on that item and that the version they are answering is still the current one.
+        """
+        payload = action.payload or {}
+        center = action_center_application(self._session, self)
+        target = str(payload["action_item_id"])
+        if str(center.detail(principal, target).get("kind", "")).startswith("ax."):
+            # The gate exists to put a person between AX and the effect; approving one gate must not open another.
+            raise ValueError("an AX proposal cannot be decided by another proposal")
+        return center.execute(
+            principal,
+            target,
+            str(payload["command"]),
+            {key: payload[key] for key in ("expected_version", "reason", "changes") if key in payload},
+        )
 
     def _assignments(self) -> TaskAssignmentApplication:
         return TaskAssignmentApplication(
@@ -299,6 +347,16 @@ def action_subject_label(action: ActionItemRecord) -> str:
         if title:
             return str(title)
     return str(action.title)
+
+
+class _NoEffectExecutor:
+    """Reading a judgement never runs one; the presenter builds the ledger with an executor that refuses to act."""
+
+    def execute(self, principal: Principal, action: ActionItemRecord) -> dict[str, Any]:
+        raise ValueError("the presenter never executes an action")
+
+
+_NO_EFFECT_EXECUTOR = _NoEffectExecutor()
 
 
 class ActionPresenter:
@@ -360,9 +418,53 @@ class ActionPresenter:
             conditions = dict(payload.get("conditions") or {})
             self._date(fields, "due_date", "제안 기한", conditions.get("due_date"))
             self._text(fields, "note", "메모", conditions.get("note") or conditions.get("reason"))
+        elif kind == ACTION_ITEM_COMMAND:
+            return self._action_item_command(action, payload, principal, fields)
 
         self._evidence(fields, action, principal)
         return {"subject": subject, "operation_label": _OPERATION_LABELS.get(kind, kind), "preview": fields}
+
+    def _action_item_command(
+        self,
+        action: ActionItemRecord,
+        payload: dict[str, Any],
+        principal: Principal | None,
+        fields: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        """A judgement a delegated turn prepared, shown as the target's own permission-safe card.
+
+        The approver sees the work being judged and the answer that would be given — never the raw wire payload, and
+        never more of the target than that person may already read.
+        """
+        target = self._target_envelope(payload.get("action_item_id"), principal)
+        if target is None:
+            return {"subject": str(action.title), "operation_label": "판단 확인", "preview": []}
+        command = str(payload.get("command") or "")
+        label = next((entry["label"] for entry in target.get("allowed_commands", []) if entry["id"] == command), command)
+        fields.append({"id": "command", "label": "판단", "value": label, "kind": "state"})
+        self._text(fields, "question", "질문", target.get("current_question"))
+        self._text(fields, "reason", "사유", payload.get("reason"))
+        changes = dict(payload.get("changes") or {})
+        self._text(fields, "changes_title", "제안 제목", changes.get("title"))
+        self._text(fields, "changes_description", "제안 설명", changes.get("description"))
+        self._date(fields, "changes_due_date", "제안 기한", changes.get("due_date"))
+        # The target's own preview rows are already permission-safe for this principal.
+        fields.extend(target.get("preview", []))
+        self._evidence(fields, action, principal)
+        return {
+            "subject": str(target.get("subject") or action.title),
+            "operation_label": f"{target.get('operation_label', '판단')} 판단",
+            "preview": fields,
+        }
+
+    def _target_envelope(self, action_item_id: Any, principal: Principal | None) -> dict[str, Any] | None:
+        if principal is None or not action_item_id:
+            return None
+        try:
+            return action_center_application(self._session, _NO_EFFECT_EXECUTOR).detail(principal, str(action_item_id))
+        except Exception:
+            # The approver cannot read the target: say nothing about it rather than widen what they may see.
+            return None
 
     def _evidence(self, fields: list[dict[str, str]], action: ActionItemRecord, principal: Principal | None) -> None:
         """Attachments the proposing turn actually read, so the approver sees what the proposal is grounded in.

@@ -73,6 +73,35 @@ class WorkRequestAssigneeDirectory(Protocol):
     def is_active_member(self, principal: Principal, member_id: str) -> bool: ...
 
 
+#: The only fields a reviewer may propose changing, which is exactly what a revision is allowed to answer with.
+PROPOSABLE_FIELDS = ("title", "description", "due_date")
+#: A revision may additionally drop the date entirely.
+REVISABLE_FIELDS = (*PROPOSABLE_FIELDS, "clear_due_date")
+
+
+def normalize_proposed_changes(value: Any) -> dict[str, str]:
+    """One allow-list and one date contract for every path that writes a structured proposal.
+
+    Silently dropping a field would let a caller believe it asked for something it did not, and would let a legacy
+    endpoint store conditions the canonical reader refuses — which is how one bad write can make a whole ledger
+    unreadable. So an unknown field is an error at the point of writing.
+    """
+    if not value:
+        return {}
+    if not isinstance(value, dict):
+        raise WorkRequestError("변경 제안은 필드별로 적어 주세요")
+    unknown = sorted(set(value) - set(PROPOSABLE_FIELDS))
+    if unknown:
+        raise WorkRequestError(f"변경 제안할 수 없는 항목입니다: {', '.join(unknown)}")
+    proposed = {field: str(value[field]).strip() for field in PROPOSABLE_FIELDS if str(value.get(field) or "").strip()}
+    if "due_date" in proposed:
+        try:
+            date.fromisoformat(proposed["due_date"])
+        except ValueError as error:
+            raise WorkRequestError("제안 기한은 YYYY-MM-DD 형식이어야 합니다") from error
+    return proposed
+
+
 class WorkRequestApplication:
     def __init__(
         self,
@@ -156,6 +185,8 @@ class WorkRequestApplication:
         self._require(principal, WORK_REQUEST_DECIDE)
         if not conditions:
             raise WorkRequestError("negotiation conditions are required")
+        # Whatever wrote this — the canonical command or the compatibility endpoint — the ledger must stay readable.
+        normalize_proposed_changes(conditions.get("changes"))
         request = self._decision_target(principal, request_id, expected_version)
         request.state = "negotiating"
         request.conditions = conditions
