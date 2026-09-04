@@ -1,35 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-import {
-  createConversation,
-  cancelConversation,
-  decideAction,
-  getActionInbox,
-  getConversation,
-  getConversations,
-  getDeveloperPersonas,
-  getMyWork,
-  getSession,
-  logout,
-  sendConversationMessage,
-} from "./api";
+import { getActionInbox, getDeveloperPersonas, getMyWork, getSession, logout } from "./api";
 import { CalendarPage } from "./CalendarPage";
+import { ChatDrawer, contextKey, type LabeledContextReference } from "./chat/ChatDrawer";
+import { useConversations } from "./chat/useConversations";
 import { DailyReportPage } from "./DailyReportPage";
-import { executionStateText, personName } from "./labels";
+import { personName } from "./labels";
 import { LoginPage } from "./LoginPage";
 import { Toast } from "./Modal";
 import { MyWorkPage } from "./MyWorkPage";
 import { OrgPage } from "./OrgPage";
 import { TodayPage } from "./TodayPage";
-import {
-  type Conversation,
-  type ConversationContextReference,
-  type DirectTask,
-  type OrganizationProfile,
-  type Persona,
-  type ProductSurface,
-  type MaterialEvidence,
-} from "./viewModels";
+import type { ConversationContextReference, DirectTask, OrganizationProfile, Persona, ProductSurface } from "./viewModels";
 
 const navigation: ReadonlyArray<{ id: ProductSurface; label: string }> = [
   { id: "today", label: "오늘" },
@@ -38,8 +20,6 @@ const navigation: ReadonlyArray<{ id: ProductSurface; label: string }> = [
   { id: "report", label: "보고" },
   { id: "org", label: "조직" },
 ];
-
-type LabeledContextReference = ConversationContextReference & { label?: string; pinned?: boolean };
 
 const surfaceLabel: Record<ProductSurface, string> = {
   today: "오늘",
@@ -59,14 +39,11 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [isAxOpen, setIsAxOpen] = useState(false);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [message, setMessage] = useState("");
   const [contextOptions, setContextOptions] = useState<LabeledContextReference[]>([]);
   const [selectedContextKey, setSelectedContextKey] = useState("");
-  const activeConversationRef = useRef<Conversation | null>(null);
-  const listRequestGeneration = useRef(0);
-  const detailRequestGeneration = useRef(0);
+  const reportError = useCallback((text: string) => setError(text), []);
+  const chat = useConversations({ personaId, isOpen: isAxOpen, onError: reportError });
 
   useEffect(() => {
     let cancelled = false;
@@ -101,13 +78,12 @@ export default function App() {
   }, [session]);
 
   function resetWorkspace() {
-    listRequestGeneration.current += 1;
-    detailRequestGeneration.current += 1;
+    chat.reset();
     setSurface("today");
-    setConversations([]);
-    activeConversationRef.current = null;
-    setActiveConversation(null);
     setIsAxOpen(false);
+    setMessage("");
+    setContextOptions([]);
+    setSelectedContextKey("");
     setError(null);
   }
 
@@ -121,66 +97,7 @@ export default function App() {
     setSession(null);
   }
 
-  const refreshConversations = useCallback(async () => {
-    const requestGeneration = ++listRequestGeneration.current;
-    const items = await getConversations();
-    if (requestGeneration !== listRequestGeneration.current) return;
-    const current = activeConversationRef.current;
-    const matchingItem = current ? items.find((item) => item.conversation_id === current.conversation_id) : undefined;
-    const nextActive = !current
-      ? items[0] ?? null
-      : !matchingItem
-        ? items[0] ?? null
-        : matchingItem.version > current.version
-          ? matchingItem
-          : current;
-    if (current && !matchingItem) detailRequestGeneration.current += 1;
-    activeConversationRef.current = nextActive;
-    setActiveConversation(nextActive);
-    setConversations(
-      items.map((item) =>
-        current && item.conversation_id === current.conversation_id && item.version <= current.version ? current : item,
-      ),
-    );
-  }, [personaId]);
-
-  const refreshActiveConversation = useCallback(async () => {
-    const active = activeConversationRef.current;
-    if (!active) return;
-    const conversationId = active.conversation_id;
-    const requestGeneration = ++detailRequestGeneration.current;
-    const next = await getConversation(conversationId);
-    if (requestGeneration !== detailRequestGeneration.current) return;
-    const current = activeConversationRef.current;
-    if (current?.conversation_id !== conversationId) return;
-    const projection = next.version >= current.version ? next : current;
-    activeConversationRef.current = projection;
-    setActiveConversation(projection);
-    setConversations((items) =>
-      items.map((item) => (item.conversation_id === conversationId && item.version <= projection.version ? projection : item)),
-    );
-  }, [personaId]);
-
-  useEffect(() => {
-    if (!isAxOpen) return;
-    void refreshConversations().catch(() => setError("AX 대화를 불러오지 못했습니다."));
-  }, [isAxOpen, refreshConversations]);
-
-  const isProcessing = useMemo(
-    () =>
-      activeConversation?.turns.some((turn) => turn.state === "pending" || turn.state === "running") ||
-      activeConversation?.messages.some((item) => item.state === "queued"),
-    [activeConversation],
-  );
-
-  useEffect(() => {
-    if (!isAxOpen || !isProcessing) return;
-    const timer = window.setInterval(() => {
-      void refreshActiveConversation().catch(() => setError("AX 상태를 갱신하지 못했습니다."));
-    }, 800);
-    return () => window.clearInterval(timer);
-  }, [isAxOpen, isProcessing, refreshActiveConversation]);
-
+  // Current-screen context references: typed resource pointers the server re-validates; the browser never sends content.
   useEffect(() => {
     if (!isAxOpen) return;
     let cancelled = false;
@@ -215,32 +132,10 @@ export default function App() {
     }
   }, [contextOptions, selectedContextKey]);
 
-  function adoptConversation(conversation: Conversation) {
-    listRequestGeneration.current += 1;
-    detailRequestGeneration.current += 1;
-    activeConversationRef.current = conversation;
-    setConversations((items) => [conversation, ...items.filter((item) => item.conversation_id !== conversation.conversation_id)]);
-    setActiveConversation(conversation);
-  }
-
-  async function startConversation() {
-    try {
-      adoptConversation(await createConversation());
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "새 대화를 만들지 못했습니다.");
-    }
-  }
-
   async function askAx(text: string) {
     setIsAxOpen(true);
-    try {
-      const conversation = await createConversation();
-      adoptConversation(conversation);
-      await sendConversationMessage(conversation.conversation_id, text, [], createIdempotencyKey());
-      await refreshActiveConversation();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "AX에게 질문을 보내지 못했습니다.");
-    }
+    const conversation = await chat.start();
+    if (conversation) await chat.send(conversation.conversation_id, text, []);
   }
 
   function askAboutTask(task: DirectTask) {
@@ -259,38 +154,20 @@ export default function App() {
   }
 
   async function sendMessage() {
-    if (!message.trim() || !activeConversation) return;
-    try {
-      const selectedContext = contextOptions.find((item) => contextKey(item) === selectedContextKey);
-      await sendConversationMessage(activeConversation.conversation_id,
-        message,
-        selectedContext ? [stripLabel(selectedContext)] : [],
-        createIdempotencyKey(),
-      );
-      setMessage("");
-      await refreshActiveConversation();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "AX 메시지를 접수하지 못했습니다.");
-    }
+    if (!message.trim() || !chat.activeConversation) return;
+    const selectedContext = contextOptions.find((item) => contextKey(item) === selectedContextKey);
+    const body = message;
+    setMessage("");
+    const accepted = await chat.send(chat.activeConversation.conversation_id, body, selectedContext ? [stripLabel(selectedContext)] : []);
+    if (!accepted) setMessage((current) => current || body);
   }
 
   async function decideConversationAction(actionId: string, expectedVersion: number, decision: "approve" | "reject") {
     try {
-      await decideAction(actionId, expectedVersion, decision);
-      await refreshActiveConversation();
+      await chat.decide(actionId, expectedVersion, decision);
       setToast(decision === "approve" ? "제안을 승인해 반영했습니다." : "제안을 거절했습니다.");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "AX 확인 항목을 처리하지 못했습니다.");
-    }
-  }
-
-  async function cancelActiveConversation() {
-    if (!activeConversation) return;
-    try {
-      await cancelConversation(activeConversation.conversation_id, activeConversation.version);
-      await refreshActiveConversation();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "AX 실행을 취소하지 못했습니다.");
     }
   }
 
@@ -415,249 +292,35 @@ export default function App() {
         </button>
       )}
       {isAxOpen && (
-        <aside aria-label="AX 대화" className="ax-drawer">
-          <header>
-            <div>
-              <b>AX 에이전트</b>
-              <small>
-                {surfaceLabel[surface]} 화면 · {personName(currentPersonaName)} · 허용된 업무 기능만 조회하고 변경은 승인 뒤 반영됩니다
-              </small>
-            </div>
-            <button className="btn h30 ghost" onClick={() => setIsAxOpen(false)} type="button">
-              닫기
-            </button>
-          </header>
-          <div className="ax-composer-actions">
-            <button aria-label="새 AX 대화" className="btn h30 ai" onClick={() => void startConversation()} type="button">
-              ✦ 새 대화
-            </button>
-          </div>
-          <div className="ax-conversation-list">
-            {conversations.map((conversation) => (
-              <button
-                aria-label={conversation.title}
-                aria-pressed={activeConversation?.conversation_id === conversation.conversation_id}
-                data-conversation-id={conversation.conversation_id}
-                key={conversation.conversation_id}
-                onClick={() => {
-                  detailRequestGeneration.current += 1;
-                  activeConversationRef.current = conversation;
-                  setActiveConversation(conversation);
-                }}
-                title={conversationExcerpt(conversation)}
-                type="button"
-              >
-                <b>{conversation.title}</b>
-                <small>{conversationSummary(conversation)}</small>
-              </button>
-            ))}
-          </div>
-          <div className="ax-messages">
-            {activeConversation ? (
-              <ConversationTimeline canDecideActions={canDecideActions} conversation={activeConversation} onDecide={decideConversationAction} />
-            ) : (
-              <p className="ax-empty">
-                안녕하세요 {personName(currentPersonaName)}님!
-                <br />
-                새 대화를 만들고 업무에 대해 무엇이든 물어보세요.
-              </p>
-            )}
-          </div>
-          <div className="ax-composer">
-            {selectedContext && (
-              <div className="ax-context-chip">
-                <span aria-hidden>📎</span>
-                <span>
-                  {selectedContext.resource_type === "task" ? "업무" : "업무 요청"} · {selectedContext.label ?? selectedContext.resource_id.slice(0, 8)}
-                </span>
-                <button aria-label="참고 자료 떼기" onClick={() => setSelectedContextKey("")} type="button">
-                  ×
-                </button>
-              </div>
-            )}
-            <label className="sr-only" htmlFor="ax-message">
-              AX 메시지
-            </label>
-            <textarea
-              id="ax-message"
-              onChange={(event) => setMessage(event.target.value)}
-              placeholder={activeConversation ? "업무에 대해 질문하세요" : "먼저 새 대화를 만들어 주세요"}
-              value={message}
-            />
-            <div className="ax-composer-actions">
-              {isProcessing && activeConversation ? (
-                <button className="btn h30 ghost" onClick={() => void cancelActiveConversation()} type="button">
-                  실행 취소
-                </button>
-              ) : (
-                <span />
-              )}
-              <button className="btn primary" disabled={!activeConversation || !message.trim()} onClick={() => void sendMessage()} type="button">
-                {isProcessing ? "대기열에 보내기" : "보내기"}
-              </button>
-            </div>
-          </div>
-        </aside>
+        <ChatDrawer
+          activeConversation={chat.activeConversation}
+          canDecideActions={canDecideActions}
+          conversations={chat.conversations}
+          isProcessing={chat.isProcessing}
+          listStatus={chat.listStatus}
+          localFragments={chat.localFragments}
+          message={message}
+          onCancel={() => void chat.cancelActive()}
+          onClearContext={() => setSelectedContextKey("")}
+          onClose={() => setIsAxOpen(false)}
+          onDecide={decideConversationAction}
+          onDiscardFragment={chat.discardFragment}
+          onMessageChange={setMessage}
+          onRetryFragment={(fragment) => void chat.retryFragment(fragment)}
+          onRetryList={() => void chat.refreshConversations().catch(() => setError("AX 대화를 불러오지 못했습니다."))}
+          onSelect={chat.select}
+          onSend={() => void sendMessage()}
+          onStart={() => void chat.start()}
+          personaName={currentPersonaName}
+          selectedContext={selectedContext}
+          surfaceLabel={surfaceLabel[surface]}
+        />
       )}
     </main>
   );
 }
 
-function ConversationTimeline({
-  canDecideActions,
-  conversation,
-  onDecide,
-}: {
-  canDecideActions: boolean;
-  conversation: Conversation;
-  onDecide: (actionId: string, expectedVersion: number, decision: "approve" | "reject") => Promise<void>;
-}) {
-  const queuedMessages = conversation.messages.filter((item) => item.state === "queued");
-
-  if (conversation.turns.length === 0 && queuedMessages.length === 0) {
-    return <p className="ax-empty">아직 발화가 없습니다. 아래에 요청을 적어 보내 주세요.</p>;
-  }
-
-  return (
-    <>
-      {conversation.turns.map((turn) => (
-        <section className="ax-turn" key={turn.turn_id}>
-          {conversation.messages
-            .filter((item) => item.turn_id === turn.turn_id)
-            .map((item) => (
-              <p className={item.role} key={item.message_id}>
-                {item.body}
-              </p>
-            ))}
-          <small className={`ax-turn-state ${turn.state}`}>{executionStateText(turn.state)}</small>
-          {turn.error && <p className="ax-turn-error">{turn.error}</p>}
-          <ToolTimeline tools={conversation.tool_invocations.filter((tool) => tool.turn_id === turn.turn_id)} />
-          <EvidenceCards evidence={(conversation.material_evidence ?? []).filter((item) => item.turn_id === turn.turn_id)} />
-          {(conversation.actions ?? [])
-            .filter((action) => action.turn_id === turn.turn_id)
-            .map((action) => (
-              <section className="ax-action-card" data-action-id={action.action_id} key={action.action_id}>
-                <b>{action.title}</b>
-                <p>{action.payload_summary}</p>
-                <small className={action.state}>
-                  {action.state === "pending" ? "확인 필요 · 승인해야 반영됩니다" : action.state === "approved" ? "승인됨" : "거절됨"}
-                </small>
-                {action.state === "pending" && canDecideActions && (
-                  <div>
-                    <button className="btn h30 primary" onClick={() => void onDecide(action.action_id, action.version, "approve")} type="button">
-                      승인
-                    </button>
-                    <button className="btn h30" onClick={() => void onDecide(action.action_id, action.version, "reject")} type="button">
-                      거절
-                    </button>
-                  </div>
-                )}
-              </section>
-            ))}
-        </section>
-      ))}
-      {queuedMessages.map((item) => (
-        <p className="user queued" key={item.message_id}>
-          {item.body} <small>대기 중</small>
-        </p>
-      ))}
-    </>
-  );
-}
-
-/** Material excerpts the turn actually retrieved through the authorized search; each card opens the same origin as the Task drawer. */
-function EvidenceCards({ evidence }: { evidence: MaterialEvidence[] }) {
-  if (evidence.length === 0) return null;
-  return (
-    <section aria-label="근거 자료" className="ax-evidence">
-      <b>
-        근거 자료 {evidence.length}개 <small>· 첨부 내용에서 실제로 읽은 구간</small>
-      </b>
-      <ol className="ax-evidence-list">
-        {evidence.map((item) => (
-          <li className="ax-evidence-card" data-material-id={item.material_id} key={item.evidence_id}>
-            <div className="ax-evidence-head">
-              <span className="ax-evidence-name">{item.name}</span>
-              <span className="t-meta">
-                {item.page ? `${item.page}쪽 · ` : ""}
-                {item.integrity_ref.replace("sha256:", "").slice(0, 8)}
-              </span>
-              <a className="btn h30 ghost" href={item.origin} rel="noreferrer" target="_blank">
-                원본 열기
-              </a>
-            </div>
-            <blockquote>{item.excerpt}</blockquote>
-          </li>
-        ))}
-      </ol>
-    </section>
-  );
-}
-
-function ToolTimeline({ tools }: { tools: Conversation["tool_invocations"] }) {
-  if (tools.length === 0) return null;
-  const failed = tools.filter((tool) => tool.state === "failed" || tool.state === "denied").length;
-  const running = tools.filter((tool) => tool.state === "running" || tool.state === "pending").length;
-  const overall = running > 0 ? "실행 중" : failed > 0 ? `실패 ${failed}건` : "완료";
-  const names = [...new Set(tools.map((tool) => tool.display_name))].join(", ");
-  return (
-    <details className="ax-tools" open={running > 0}>
-      <summary>
-        도구 {tools.length}개 실행 · {overall}
-        <small>{names}</small>
-      </summary>
-      <ol className="ax-tool-list">
-        {tools.map((tool) => (
-          <li
-            className={`ax-tool ${tool.state}`}
-            key={`${tool.turn_id}-${tool.sequence}`}
-            title={`${tool.input_summary}${tool.latency_ms === null ? "" : ` · ${tool.latency_ms}ms`}`}
-          >
-            <b>
-              {tool.display_name} · {executionStateText(tool.state)}
-            </b>
-            <p>{tool.result_summary ?? tool.error_summary ?? "실행 중"}</p>
-          </li>
-        ))}
-      </ol>
-    </details>
-  );
-}
-
-const summaryStateLabel: Record<string, string> = {
-  pending: "접수됨",
-  running: "실행 중",
-  completed: "완료",
-  failed: "실패",
-  cancelled: "취소됨",
-};
-
-function conversationExcerpt(conversation: Conversation): string {
-  const firstUserMessage = conversation.messages.find((item) => item.role === "user");
-  if (!firstUserMessage) return conversation.title;
-  return firstUserMessage.body.replace(/\s+/g, " ").trim();
-}
-
-function conversationSummary(conversation: Conversation): string {
-  const userMessages = conversation.messages.filter((item) => item.role === "user").length;
-  if (userMessages === 0) return "발화 없음";
-  const queued = conversation.messages.filter((item) => item.state === "queued").length;
-  if (queued > 0) return `발화 ${userMessages} · 대기열 ${queued}`;
-  const latestTurn = conversation.turns.at(-1);
-  const state = latestTurn ? summaryStateLabel[latestTurn.state] ?? latestTurn.state : "접수됨";
-  return `발화 ${userMessages} · ${state}`;
-}
-
 function stripLabel(reference: LabeledContextReference): ConversationContextReference {
   const { label: _label, pinned: _pinned, ...rest } = reference;
   return rest;
-}
-
-function contextKey(reference: ConversationContextReference): string {
-  return `${reference.resource_type}:${reference.resource_id}:${reference.resource_version}`;
-}
-
-function createIdempotencyKey(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
-  return `ax-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }

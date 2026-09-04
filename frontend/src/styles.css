@@ -551,3 +551,38 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .ax-evidence-head .ax-evidence-name { font-weight: 700; color: var(--text-primary); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ax-evidence-head a.btn { text-decoration: none; }
 .ax-evidence-card blockquote { margin: 6px 0 0; padding: 0 0 0 10px; border-left: 2px solid var(--border-default); color: var(--text-secondary); font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
+
+/* ---- AX drawer: vertical session switcher, bottom-aware timeline, composer rows */
+.ax-sessions { display: grid; flex: none; gap: 6px; }
+.ax-sessions-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ax-sessions-toggle { padding: 0; font-size: 13px; font-weight: 700; color: var(--text-secondary); }
+.ax-sessions-search { height: 30px; font-size: 13px; }
+.ax-sessions-state { margin: 0; padding: 8px 10px; border: 1px dashed var(--border-default); border-radius: var(--radius-card); color: var(--text-tertiary); font-size: 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ax-sessions-state.error { color: var(--danger); border-color: var(--danger-accent); }
+.ax-conversation-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; max-height: 148px; overflow-y: auto; }
+.ax-conversation-list li { display: contents; }
+.ax-conversation-list button { display: grid; grid-template-columns: 1fr auto; column-gap: 8px; width: 100%; max-width: none; padding: 6px 10px; border: 1px solid var(--border-default); border-radius: var(--radius-card); background: var(--surface); text-align: left; }
+.ax-conversation-list button b { grid-column: 1; font-size: 13px; }
+.ax-conversation-list button small { grid-column: 2; grid-row: 1; white-space: nowrap; }
+.ax-conversation-list button .ax-session-excerpt { grid-column: 1 / -1; overflow: hidden; color: var(--text-tertiary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.ax-conversation-list button[aria-pressed="true"] { border-color: transparent; background: var(--selected-bg); }
+.ax-conversation-list button[aria-pressed="true"] b { color: var(--action); }
+.ax-messages-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ax-messages-wrap .ax-messages { flex: 1; min-height: 0; overflow: auto; }
+.ax-new-messages { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); height: 30px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--border-default); background: var(--text-primary); color: #fff; font-size: 12px; font-weight: 700; box-shadow: var(--shadow-md); }
+.ax-queue { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 6px; }
+.ax-queue li.queued { margin: 0 0 0 24px; padding: 10px 12px; border-radius: 12px; border: 1px dashed var(--accent); color: var(--text-secondary); background: #fff; font-size: 14px; white-space: pre-wrap; }
+.ax-queue-index { display: inline-block; margin-right: 8px; padding: 0 6px; border-radius: 999px; background: var(--selected-bg); color: var(--action); font-size: 11px; font-weight: 700; }
+.ax-messages p.local.sending { opacity: 0.7; }
+.ax-messages p.local.failed { color: var(--text-secondary); background: var(--danger-tint); border: 1px solid var(--danger-accent); }
+.ax-fragment-actions { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.ax-fragment-actions small { color: var(--danger); margin-right: auto; }
+.ax-tool .ax-tool-meta { display: block; margin-top: 2px; color: var(--text-tertiary); font-size: 11px; }
+.ax-card-kicker { display: block; margin-bottom: 2px; color: var(--action); font-size: 11px; font-weight: 700; letter-spacing: 0.02em; }
+.ax-context-row { display: grid; gap: 4px; }
+.ax-context-row small { color: var(--text-tertiary); font-size: 11px; }
+@media (max-width: 720px) {
+  .ax-drawer { width: 100vw; padding: 12px; }
+  .ax-conversation-list { max-height: 110px; }
+  .ax-composer textarea { min-height: 64px; }
+}
