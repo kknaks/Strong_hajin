@@ -419,3 +419,56 @@ def test_adopting_evidence_moves_the_request_on_so_an_open_reviewer_is_not_decid
     timeline = client.get(f"/api/work-requests/{rid}/timeline", headers=JIHO).json()
     assert timeline["review_decisions"][0]["evidence_hash"] == timeline["submissions"][0]["evidence_hash"]
     assert len(timeline["submissions"][0]["evidence"]) == 1
+
+
+def test_the_inheritance_is_recorded_in_both_ledgers_after_the_act_that_caused_it(tmp_path) -> None:
+    """A revision carries the basis forward; both trails say so, and neither shows the effect before the cause."""
+    client, database_url, _ = _stack(tmp_path)
+    from ax_workspace.platform.persistence import WorkRequestAuditEventRecord
+
+    request = client.post("/api/work-requests", headers=MINA, json={"title": "원인과 결과", "assignee_id": "jiho"}).json()
+    rid = request["request_id"]
+    _adopt(client, MINA, rid, "근거1.txt", b"one")
+    _adopt(client, JIHO, rid, "근거2.txt", b"two")
+    [item] = _pending(client, JIHO)
+    _command(client, JIHO, item["action_item_id"], "adjust", expected_version=item["expected_version"], reason="조정")
+    [waiting] = _pending(client, MINA)
+    _command(client, MINA, waiting["action_item_id"], "revise", expected_version=waiting["expected_version"], changes={"description": "보강"})
+
+    # The public timeline reads in the order things happened: the revision, then what it carried forward.
+    activity = [row["event_kind"] for row in client.get(f"/api/work-requests/{rid}/timeline", headers=MINA).json()["activity"]]
+    assert activity == [
+        "work_request.created",
+        "work_request.negotiate",
+        "work_request.resubmitted",
+        "work_request.evidence_inherited",
+    ]
+
+    with make_session_factory(database_url)() as session:
+        audit = [
+            (row.event_type, row.actor_id, row.payload)
+            for row in session.scalars(select(WorkRequestAuditEventRecord).order_by(WorkRequestAuditEventRecord.occurred_at, WorkRequestAuditEventRecord.id))
+        ]
+        kinds = [row[0] for row in audit]
+        assert kinds.index("work_request.evidence_inherited") == kinds.index("work_request.resubmitted") + 1
+        [(_, actor, payload)] = [row for row in audit if row[0] == "work_request.evidence_inherited"]
+        assert actor == "mina"
+        assert payload["inherited_count"] == 2
+        rounds = {row["submission_version"]: row["submission_id"] for row in client.get(f"/api/work-requests/{rid}/timeline", headers=MINA).json()["submissions"]}
+        assert payload["previous_submission_id"] == rounds[1]
+        assert payload["new_submission_id"] == rounds[2]
+
+    # A revision that had nothing to carry says nothing in either trail.
+    bare = client.post("/api/work-requests", headers=MINA, json={"title": "빈 상속", "assignee_id": "jiho"}).json()
+    [empty] = [row for row in _pending(client, JIHO) if row["subject"] == "빈 상속"]
+    _command(client, JIHO, empty["action_item_id"], "adjust", expected_version=empty["expected_version"], reason="조정")
+    [empty_waiting] = [row for row in _pending(client, MINA) if row["subject"] == "빈 상속"]
+    _command(client, MINA, empty_waiting["action_item_id"], "revise", expected_version=empty_waiting["expected_version"], changes={"description": "보강"})
+    bare_activity = [row["event_kind"] for row in client.get(f"/api/work-requests/{bare['request_id']}/timeline", headers=MINA).json()["activity"]]
+    assert "work_request.evidence_inherited" not in bare_activity
+    with make_session_factory(database_url)() as session:
+        inherited = [
+            row for row in session.scalars(select(WorkRequestAuditEventRecord).where(WorkRequestAuditEventRecord.request_id == UUID(bare["request_id"])))
+            if row.event_type == "work_request.evidence_inherited"
+        ]
+        assert inherited == []

@@ -533,7 +533,7 @@ class SqlAlchemyWorkRequestRepository:
         )
         self._session.add(submission)
         self._session.flush()
-        self._inherit_evidence(request, previous, submission, actor_id)
+        inherited = self._inherit_evidence(previous, submission)
         previous_assignment = self._session.scalar(
             select(ReviewAssignmentRecord).where(ReviewAssignmentRecord.submission_id == previous.id).order_by(ReviewAssignmentRecord.assigned_at.desc())
         )
@@ -548,11 +548,19 @@ class SqlAlchemyWorkRequestRepository:
             )
         )
         item.status = "open"
-        ActivityLedger(self._session).record(
+        ledger = ActivityLedger(self._session)
+        ledger.record(
             target_type="work_request", target_id=str(request.id), event_kind="work_request.resubmitted", actor_id=actor_id,
             before_ref=f"submission:{previous.id}", after_ref=f"submission:{submission.id}",
             safe_summary=f"업무 요청 재상신 v{submission.submission_version}: {request.title}", request_thread_id=request.request_thread_id,
         )
+        if inherited:
+            ledger.record(
+                target_type="work_request", target_id=str(request.id), event_kind="work_request.evidence_inherited",
+                actor_id=actor_id, before_ref=f"submission:{previous.id}", after_ref=f"submission:{submission.id}",
+                safe_summary=f"이전 회차 근거 {inherited}건을 새 회차로 이어받음: {request.title}",
+                request_thread_id=request.request_thread_id,
+            )
         return submission
 
     def timeline(self, request: WorkRequestRecord) -> dict:
@@ -748,15 +756,12 @@ class SqlAlchemyWorkRequestRepository:
         self._session.flush()
         return record
 
-    def _inherit_evidence(
-        self, request: WorkRequestRecord, previous: SubmissionRecord, submission: SubmissionRecord, actor_id: str
-    ) -> None:
-        """Carry the previous round's basis into the new one as its own rows.
+    def _inherit_evidence(self, previous: SubmissionRecord, submission: SubmissionRecord) -> int:
+        """Carry the previous round's basis into the new one as its own rows, and say how much was carried.
 
         Append-only: no attachment or byte is copied, only the adoption. Each copy keeps the author and moment of the
         adoption it repeats, so no row ever claims that someone adopted something at a time they did nothing. The copy
-        itself is the revising actor's doing, and it is recorded as that: one event naming who revised, how much was
-        carried, and between which rounds.
+        itself is the revising actor's doing and is recorded as that by the caller, after the revision it follows from.
         """
         sources = list(
             self._session.scalars(
@@ -776,14 +781,11 @@ class SqlAlchemyWorkRequestRepository:
                 )
             )
         self._session.flush()
-        if not sources:
-            return
-        ActivityLedger(self._session).record(
-            target_type="work_request", target_id=str(request.id), event_kind="work_request.evidence_inherited",
-            actor_id=actor_id, before_ref=f"submission:{previous.id}", after_ref=f"submission:{submission.id}",
-            safe_summary=f"이전 회차 근거 {len(sources)}건을 새 회차로 이어받음: {request.title}",
-            request_thread_id=request.request_thread_id,
-        )
+        return len(sources)
+
+    def evidence_count_for(self, submission: SubmissionRecord) -> int:
+        """How many adoptions this round holds. Right after a revision that is exactly what it inherited."""
+        return len(list(self._session.scalars(select(EvidenceRecord).where(EvidenceRecord.submission_id == submission.id))))
 
     def evidence_manifest_for(self, submission: SubmissionRecord) -> list[dict[str, str]]:
         """The basis this Submission currently stands on, in canonical order."""

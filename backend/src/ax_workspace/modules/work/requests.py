@@ -50,6 +50,7 @@ class WorkRequestRepository(Protocol):
     def cc_member_ids(self, request: Any) -> list[str]: ...
     def derived_task_ids(self, requests: list[Any]) -> dict[UUID, UUID]: ...
     def adopt_evidence(self, submission: Any, attachment: Any, *, role: str, adopted_by: str) -> Any: ...
+    def evidence_count_for(self, submission: Any) -> int: ...
     def evidence_for(self, request: Any) -> list[tuple[Any, Any, Any]]: ...
     def create_accepted_task(self, request: Any) -> Any: ...
     def append_audit(self, request_id: UUID, actor_id: str, event_type: str, payload: dict[str, Any]) -> None: ...
@@ -278,6 +279,19 @@ class WorkRequestApplication:
         self._repository.append_audit(
             request.id, str(principal.id), "work_request.resubmitted", {"submission_version": submission.submission_version}
         )
+        # The basis the revision carried forward, recorded after the revision that carried it.
+        inherited = self._repository.evidence_count_for(submission)
+        if inherited:
+            self._repository.append_audit(
+                request.id,
+                str(principal.id),
+                "work_request.evidence_inherited",
+                {
+                    "inherited_count": inherited,
+                    "previous_submission_id": str(submission.revises_id),
+                    "new_submission_id": str(submission.id),
+                },
+            )
         return self._view(request)
 
     def withdraw(self, principal: Principal, request_id: UUID, expected_version: int) -> dict[str, Any]:
