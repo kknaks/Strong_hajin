@@ -170,7 +170,7 @@ describe("ExecutionRail", () => {
     const rail = container.querySelector(".ax-rail") as HTMLElement;
     expect(rail.className).toContain("terminal");
     expect(within(rail).getByText("✕ 실패")).toBeTruthy();
-    expect((container.querySelector(".ax-rail-timings") as HTMLElement).textContent).toBe("· 실행 12.3s · 대기 1.0s");
+    expect((container.querySelector(".ax-rail-timings") as HTMLElement).textContent).toBe("· 실행 12s · 대기 1s");
     expect((container.querySelector(".ax-rail-timings") as HTMLElement).getAttribute("aria-hidden")).toBe("true");
     expect(within(rail).getByText("provider failed")).toBeTruthy();
     expect((rail.querySelector("details") as HTMLDetailsElement).open).toBe(false);
@@ -416,5 +416,64 @@ describe("AssistantMarkdown", () => {
     const note = second.querySelector(".assistant .ax-body-note") as HTMLElement;
     expect(note.textContent).toBe("취소 시점까지의 답변");
     expect(note.closest(".ax-md")).toBeNull();
+  });
+});
+
+describe("ActionResultCard", () => {
+  afterEach(cleanup);
+  const listProps = { onDecide: noop, onRetryTurn: vi.fn(), onRetryFragment: vi.fn(), onDiscardFragment: vi.fn() };
+
+  it("titles the card with the real work title, shows the server operation kicker, and lists only server preview rows", () => {
+    const pending = conversation("c1", "새 대화", "업무 요청을 만들어줘", {
+      actions: [
+        {
+          action_id: "a1",
+          conversation_id: "c1",
+          turn_id: "c1-t1",
+          action_type: "work_request.create",
+          title: "업무 요청 생성 확인",
+          subject: "견적서 재검토",
+          operation_label: "업무 요청",
+          preview: [
+            { id: "description", label: "설명", value: "9월 견적 재검토", kind: "text" },
+            { id: "assignee", label: "요청 대상", value: "지호 (팀장)", kind: "person" },
+            { id: "due_date", label: "기한", value: "2026-09-30", kind: "date" },
+          ],
+          state: "pending",
+          version: 1,
+          payload_summary: "업무 요청: 견적서 재검토",
+          result: null,
+          audit_ref: null,
+          commands: [{ id: "approve", label: "승인", tone: "primary" }, { id: "reject", label: "거절", tone: "neutral" }],
+        },
+      ],
+    });
+    const { container } = render(<MessageList {...listProps} conversation={pending} localFragments={[]} />);
+    const card = container.querySelector(".ax-action-card") as HTMLElement;
+    expect(card.querySelector("b")?.textContent).toBe("견적서 재검토");
+    expect(card.querySelector(".ax-card-kicker")?.textContent).toBe("AX 제안 · 업무 요청 · 승인 필요");
+    expect(within(card).queryByText("업무 요청 생성 확인")).toBeNull(); // the operation title is not the subject
+    const rows = Array.from(card.querySelectorAll(".ax-preview-row")).map((row) => [row.querySelector("dt")?.textContent, row.querySelector("dd")?.textContent]);
+    expect(rows).toEqual([
+      ["설명", "9월 견적 재검토"],
+      ["요청 대상", "지호 (팀장)"],
+      ["기한", "2026/09/30"],
+    ]);
+    expect((card.querySelector(".ax-preview") as HTMLDetailsElement).open).toBe(true); // pending: open for review
+    expect(within(card).getByRole("button", { name: "승인" })).toBeTruthy();
+  });
+
+  it("does not infer preview rows or commands from the action type when the server sends none", () => {
+    const bare = conversation("c1", "새 대화", "업무 만들어줘", {
+      actions: [
+        { action_id: "a2", conversation_id: "c1", turn_id: "c1-t1", action_type: "task.create_self", title: "업무 생성 확인", state: "approved", version: 2, payload_summary: "업무 생성 확인", result: { task_id: "t1" }, audit_ref: "a2", commands: [] },
+      ],
+    });
+    const { container } = render(<MessageList {...listProps} conversation={bare} localFragments={[]} />);
+    const card = container.querySelector(".ax-action-card") as HTMLElement;
+    expect(card.querySelector("b")?.textContent).toBe("업무 생성 확인"); // falls back to the canonical title only
+    expect(card.querySelector(".ax-preview")).toBeNull();
+    expect(card.querySelectorAll("button")).toHaveLength(0);
+    expect(card.querySelector(".ax-card-kicker")?.textContent).toBe("AX 제안");
   });
 });

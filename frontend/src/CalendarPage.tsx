@@ -14,9 +14,11 @@ type CalendarPageProps = {
   onAskAboutTask: (task: DirectTask) => void;
   onNotice: (message: string) => void;
   onError: (message: string | null) => void;
+  /** Application-wide projection revision: bumped after an approved AX effect so the current view re-reads without remounting. */
+  revision?: number;
 };
 
-export function CalendarPage({ personaName, canManageOwnTasks, onAskAboutTask, onNotice, onError }: CalendarPageProps) {
+export function CalendarPage({ personaName, canManageOwnTasks, onAskAboutTask, onNotice, onError, revision = 0 }: CalendarPageProps) {
   const [tasks, setTasks] = useState<DirectTask[]>([]);
   const [mode, setMode] = useState<"week" | "month">("month");
   const [selected, setSelected] = useState<DirectTask | null>(null);
@@ -43,7 +45,8 @@ export function CalendarPage({ personaName, canManageOwnTasks, onAskAboutTask, o
     return () => {
       cancelled = true;
     };
-  }, [onError, reload]);
+    // `revision` is not read inside; it is the invalidation signal that re-runs this read.
+  }, [onError, reload, revision]);
 
   const transition = async (task: DirectTask, action: TaskAction, reason?: string) => {
     setBusy(true);

@@ -1,6 +1,6 @@
 import { useMemo, useState, type DragEvent, type ReactNode } from "react";
 
-import { addDays, dayDifference, dueDayText, formatMonthDay, isOverdue, isoDateInSeoul, seoulToday, taskStateLabel } from "./labels";
+import { addDays, dayDifference, dueDayText, formatDate, isOverdue, isoDateInSeoul, seoulToday, taskStateLabel } from "./labels";
 import type { DirectTask, TaskState } from "./viewModels";
 import { StatusText, type TaskAction } from "./WorkModals";
 
@@ -133,8 +133,8 @@ export function TaskListRow({ task, onOpen, right }: { task: DirectTask; onOpen:
           {task.block_reason
             ? `막힘 사유: ${task.block_reason}`
             : task.due_date
-              ? `기한 ${formatMonthDay(task.due_date)} (${dueDayText(task.due_date, seoulToday())})`
-              : `${formatMonthDay(task.start_date ?? isoDateInSeoul(task.created_at))} 시작`}
+              ? `기한 ${formatDate(task.due_date)} (${dueDayText(task.due_date, seoulToday())})`
+              : `${formatDate(task.start_date ?? isoDateInSeoul(task.created_at))} 시작`}
         </small>
       </div>
       <div className="task-row-right">
@@ -202,7 +202,7 @@ export function TaskCalendar({
     setAnchor(date.toISOString().slice(0, 10));
   };
   const rangeLabel =
-    mode === "week" ? `${formatMonthDay(days[0])} – ${formatMonthDay(days[6])}` : `${year}년 ${month}월`;
+    mode === "week" ? `${formatDate(days[0])} – ${formatDate(days[6])}` : `${year}년 ${month}월`;
 
   return (
     <div className="calendar">
@@ -284,7 +284,7 @@ export function TaskTimeline({ tasks, onOpen }: { tasks: DirectTask[]; onOpen: (
             ‹
           </button>
           <b>
-            {formatMonthDay(windowStart)} – {formatMonthDay(windowEnd)}
+            {formatDate(windowStart)} – {formatDate(windowEnd)}
           </b>
           <button aria-label="다음 2주" className="btn h30 icon" onClick={() => setOffset((value) => value + 1)} type="button">
             ›
@@ -317,7 +317,7 @@ export function TaskTimeline({ tasks, onOpen }: { tasks: DirectTask[]; onOpen: (
               <button className="timeline-label-col timeline-title" onClick={() => onOpen(task)} type="button">
                 <b className={task.state === "cancelled" ? "cancelled-title" : ""}>{task.title}</b>
                 <small>
-                  {formatMonthDay(start)} → {planned || task.state === "done" || task.state === "cancelled" ? formatMonthDay(end) : "진행 중"}
+                  {formatDate(start)} → {planned || task.state === "done" || task.state === "cancelled" ? formatDate(end) : "진행 중"}
                   {task.due_date && ` · ${dueDayText(task.due_date, today)}`}
                 </small>
               </button>
@@ -431,7 +431,7 @@ export function TaskKanban({
                 >
                   <b>{task.title}</b>
                   <small className={task.block_reason ? "reason" : ""}>
-                    {task.block_reason ? `막힘 사유: ${task.block_reason}` : `${formatMonthDay(isoDateInSeoul(task.created_at))} 시작 · v${task.version}`}
+                    {task.block_reason ? `막힘 사유: ${task.block_reason}` : `${formatDate(isoDateInSeoul(task.created_at))} 시작 · v${task.version}`}
                   </small>
                 </article>
               ))}

@@ -1034,13 +1034,13 @@ describe("product surfaces", () => {
     await waitFor(() => {
       expect(screen.getByText("상세의 최신 상태")).toBeTruthy();
       expect(screen.queryByText("목록의 오래된 상태")).toBeNull();
-      expect(screen.getAllByText("최신 판단 카드").length).toBeGreaterThanOrEqual(2);
+      expect(screen.getAllByText("최신 판단 카드").length).toBeGreaterThanOrEqual(1);
       expect(screen.getByText("내 업무 조회")).toBeTruthy();
     });
     fireEvent.click(screen.getByRole("button", { name: "교차 요청 확인" }));
     expect(screen.getByText("상세의 최신 상태")).toBeTruthy();
     expect(screen.queryByText("목록의 오래된 상태")).toBeNull();
-    expect(screen.getAllByText("최신 판단 카드").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("최신 판단 카드").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("내 업무 조회")).toBeTruthy();
   });
 
@@ -1493,5 +1493,83 @@ describe("product surfaces", () => {
         },
       ],
     });
+  });
+  it("re-reads the current My Work projection after approving an AX action from the chat without losing the view filter", async () => {
+    let approved = false;
+    const myWorkReads: number[] = [];
+    const conversation = {
+      conversation_id: "conversation-1",
+      title: "새 대화",
+      version: 3,
+      messages: [{ message_id: "m1", turn_id: "turn-1", role: "user", body: "업무 하나 만들어줘", sequence: 1, state: "accepted" }],
+      turns: [{ turn_id: "turn-1", state: "completed", progress_state: "completed", provider_run_ref: null, provider_session_ref: null, error: null }],
+      context_references: [],
+      tool_invocations: [],
+      actions: [] as unknown[],
+    };
+    const action = () => ({
+      action_id: "action-9",
+      conversation_id: "conversation-1",
+      turn_id: "turn-1",
+      action_type: "task.create_self",
+      title: "업무 생성 확인",
+      subject: "AX가 만든 업무",
+      operation_label: "업무 생성",
+      preview: [{ id: "assignee", label: "담당", value: "민아 (구성원)", kind: "person" }],
+      state: approved ? "approved" : "pending",
+      version: approved ? 2 : 1,
+      payload_summary: "업무 생성 확인",
+      result: approved ? { task_id: "task-9" } : null,
+      audit_ref: approved ? "action-9" : null,
+      commands: approved ? [] : [{ id: "approve", label: "승인", tone: "primary" }, { id: "reject", label: "거절", tone: "neutral" }],
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/developer/personas") return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      if (path === "/api/organization/me") {
+        return jsonResponse({ member_id: "mina", display_name: "민아 (구성원)", organizations: [], capabilities: ["task.read", "task.self_manage", "action.read", "action.decide"] });
+      }
+      if (path === "/api/my-work") {
+        myWorkReads.push(Date.now());
+        return jsonResponse(approved ? [{ task_id: "task-9", title: "AX가 만든 업무", state: "open", version: 1, block_reason: null }] : []);
+      }
+      if (path === "/api/actions") return jsonResponse([action()]);
+      if (path === "/api/conversations") return jsonResponse([{ ...conversation, actions: [action()] }]);
+      if (path === "/api/conversations/conversation-1") return jsonResponse({ ...conversation, version: approved ? 4 : 3, actions: [action()] });
+      if (path === "/api/actions/action-9/decide" && init?.method === "POST") {
+        approved = true;
+        return jsonResponse(action());
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", withSession(fetchMock));
+
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
+    const filter = (await screen.findByLabelText(/상태/)) as HTMLSelectElement;
+    fireEvent.change(filter, { target: { value: "all" } });
+    expect(filter.value).toBe("all");
+    const readsBeforeApproval = myWorkReads.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    const card = (await screen.findByText("AX가 만든 업무", { selector: ".ax-action-card b" })).closest(".ax-action-card") as HTMLElement;
+    expect(within(card).getByText("담당")).toBeTruthy(); // server preview row, not inferred from action_type
+    // The decision inbox on the page uses the same presentation for the same Action.
+    expect(within(document.querySelector(".decision-panel") as HTMLElement).getByText("담당")).toBeTruthy();
+    fireEvent.click(within(card).getByRole("button", { name: "승인" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith("/api/actions/action-9/decide", expect.objectContaining({ method: "POST" }));
+    });
+    // The current surface re-reads its projection and shows the created task by its real title...
+    await waitFor(() => expect(myWorkReads.length).toBeGreaterThan(readsBeforeApproval));
+    await waitFor(() => {
+      const onWorkSurface = screen.getAllByText("AX가 만든 업무").filter((node) => !node.closest(".ax-action-card") && !node.closest(".decision-panel"));
+      expect(onWorkSurface.length).toBeGreaterThan(0);
+    });
+    // ...without a remount: the filter the user chose is still selected.
+    expect((screen.getByLabelText(/상태/) as HTMLSelectElement).value).toBe("all");
+    expect(screen.queryByText("승인은 반영되었지만 화면을 갱신하지 못했습니다.")).toBeNull();
   });
 });

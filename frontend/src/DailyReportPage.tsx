@@ -10,7 +10,7 @@ import {
   getTasks,
   submitDailyReport,
 } from "./api";
-import { formatKoreanDate, personName, seoulToday, taskStateLabel } from "./labels";
+import { formatDate, personName, seoulToday, taskStateLabel } from "./labels";
 import { StatusText } from "./WorkModals";
 import {
   type DailyReportDraft,
@@ -23,6 +23,8 @@ type DailyReportPageProps = {
   personaId: string;
   personaName: string;
   onError: (message: string | null) => void;
+  /** Application-wide projection revision: an approved AX report effect re-reads the draft in place. */
+  revision?: number;
 };
 
 type ReportPhase = "not_started" | "draft" | "submitted";
@@ -39,7 +41,7 @@ const phaseTone: Record<ReportPhase, string> = {
   submitted: "ai",
 };
 
-export function DailyReportPage({ personaId, personaName, onError }: DailyReportPageProps) {
+export function DailyReportPage({ personaId, personaName, onError, revision = 0 }: DailyReportPageProps) {
   const [reportDate, setReportDate] = useState(seoulToday);
   const [evidence, setEvidence] = useState<DirectTask[]>([]);
   const [draft, setDraft] = useState<DailyReportDraft | null>(null);
@@ -141,7 +143,8 @@ export function DailyReportPage({ personaId, personaName, onError }: DailyReport
     return () => {
       cancelled = true;
     };
-  }, [onError, personaId, reportDate]);
+    // `revision` is not read inside; it is the invalidation signal that re-runs this read.
+  }, [onError, personaId, reportDate, revision]);
 
   async function generateDraft() {
     if (draft && isDirty && !window.confirm("저장하지 않은 편집 내용이 있습니다. 새 초안을 만들면 편집 중인 내용은 사라집니다. 계속할까요?")) {
@@ -222,7 +225,7 @@ export function DailyReportPage({ personaId, personaName, onError }: DailyReport
 
       <div className="report-status">
         <span>
-          {personName(personaName)} · {formatKoreanDate(reportDate)}
+          {personName(personaName)} · {formatDate(reportDate)}
         </span>
         <span className={`badge ${phaseTone[phase]}`}>{phaseLabel[phase]}</span>
         {draft && <span className="badge outline">초안 v{draft.draft_version}</span>}

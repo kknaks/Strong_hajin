@@ -74,15 +74,21 @@ export function seoulToday(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
 }
 
-export function formatKoreanDate(isoDate: string): string {
-  const [year, month, day] = isoDate.split("-").map(Number);
-  if (!year || !month || !day) return isoDate;
-  return `${year}년 ${month}월 ${day}일`;
+/** Read-only calendar dates are shown as YYYY/MM/DD on every surface; inputs and API/DB values stay ISO YYYY-MM-DD. */
+export function formatDate(isoDate: string | null | undefined): string {
+  if (!isoDate) return "—";
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(isoDate);
+  return match ? `${match[1]}/${match[2]}/${match[3]}` : isoDate;
 }
 
-export function formatShortDate(isoDate: string): string {
-  const [, month, day] = isoDate.split("-");
-  return month && day ? `${month}.${day}` : isoDate;
+/**
+ * Observed durations: below one second in milliseconds, from one second on as whole seconds (floored, so a live
+ * counter never claims more than was observed). Stored values keep their millisecond precision.
+ */
+export function formatDuration(ms: number | null | undefined): string | null {
+  if (ms === null || ms === undefined || Number.isNaN(ms)) return null;
+  const clamped = Math.max(0, ms);
+  return clamped < 1000 ? `${Math.round(clamped)}ms` : `${Math.floor(clamped / 1000)}s`;
 }
 
 export function isoDateInSeoul(value: string | undefined | null): string | null {
@@ -92,16 +98,12 @@ export function isoDateInSeoul(value: string | undefined | null): string | null 
   return date.toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
 }
 
-export function formatMonthDay(isoDate: string | null | undefined): string {
-  if (!isoDate) return "—";
-  const [, month, day] = isoDate.split("-");
-  return month && day ? `${month}월 ${day}일` : isoDate;
-}
-
+/** Hero date: YYYY/MM/DD with the weekday as a secondary cue. */
 export function formatLongDate(isoDate: string): string {
   const [year, month, day] = isoDate.split("-").map(Number);
+  if (!year || !month || !day) return isoDate;
   const weekday = ["일", "월", "화", "수", "목", "금", "토"][new Date(Date.UTC(year, month - 1, day)).getUTCDay()];
-  return `${month}월 ${day}일 ${weekday}요일`;
+  return `${formatDate(isoDate)} ${weekday}요일`;
 }
 
 export function addDays(isoDate: string, days: number): string {

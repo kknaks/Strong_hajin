@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ActionCommandButtons, ActionPreviewDetails, actionKicker, actionSubject } from "./ActionPreview";
 
 import {
   decideAction,
@@ -12,7 +13,7 @@ import {
   transitionDirectTask,
   updateTask,
 } from "./api";
-import { dueDayText, formatLongDate, formatMonthDay, isoDateInSeoul, personName, seoulToday, workRequestStateLabel } from "./labels";
+import { dueDayText, formatLongDate, formatDate, isoDateInSeoul, personName, seoulToday, workRequestStateLabel } from "./labels";
 import {
   type ActionItem,
   type DailyReportStatus,
@@ -37,7 +38,6 @@ type TodayPageProps = {
   personaName: string;
   personas: Persona[];
   canReadActions: boolean;
-  canDecideActions: boolean;
   canDecideWorkRequests: boolean;
   canManageOwnTasks: boolean;
   canCreateWorkRequests: boolean;
@@ -46,6 +46,8 @@ type TodayPageProps = {
   onAskAboutTask: (task: DirectTask) => void;
   onNotice: (message: string) => void;
   onError: (message: string | null) => void;
+  /** Application-wide projection revision: bumped after an approved AX effect so the current view re-reads without remounting. */
+  revision?: number;
   onNavigate: (surface: ProductSurface) => void;
 };
 
@@ -56,7 +58,6 @@ export function TodayPage({
   personaName,
   personas,
   canReadActions,
-  canDecideActions,
   canDecideWorkRequests,
   canManageOwnTasks,
   canCreateWorkRequests,
@@ -65,6 +66,7 @@ export function TodayPage({
   onAskAboutTask,
   onNotice,
   onError,
+  revision = 0,
   onNavigate,
 }: TodayPageProps) {
   const today = seoulToday();
@@ -112,7 +114,8 @@ export function TodayPage({
     return () => {
       cancelled = true;
     };
-  }, [onError, reload]);
+    // `revision` is not read inside; it is the invalidation signal that re-runs this read.
+  }, [onError, reload, revision]);
 
   useEffect(() => {
     if (!canCreateWorkRequests) {
@@ -176,10 +179,10 @@ export function TodayPage({
     }
   };
 
-  const decideAiAction = async (action: ActionItem, decision: "approve" | "reject") => {
+  const decideAiAction = async (action: ActionItem, decision: string) => {
     setBusy(true);
     try {
-      await decideAction(action.action_id, action.version, decision);
+      await decideAction(action.action_id, action.version, decision as "approve" | "reject");
       await reload();
       onError(null);
       onNotice(decision === "approve" ? `'${action.title}' 제안을 승인해 반영했습니다.` : `'${action.title}' 제안을 거절했습니다.`);
@@ -282,7 +285,7 @@ export function TodayPage({
                     )
                   }
                   as="li"
-                  date={request.due_date ? `기한 ${formatMonthDay(request.due_date)} (${dueDayText(request.due_date, today)})` : formatMonthDay(today)}
+                  date={request.due_date ? `기한 ${formatDate(request.due_date)} (${dueDayText(request.due_date, today)})` : formatDate(today)}
                   key={request.request_id}
                   kicker="업무 요청"
                   memo={request.description}
@@ -295,27 +298,20 @@ export function TodayPage({
               {actions.map((action) => (
                 <TaskCard
                   actions={
-                    canDecideActions && (
-                      <>
-                        <button className="btn h30 primary" disabled={busy} onClick={() => void decideAiAction(action, "approve")} type="button">
-                          승인
-                        </button>
-                        <button className="btn h30" disabled={busy} onClick={() => void decideAiAction(action, "reject")} type="button">
-                          거절
-                        </button>
-                      </>
-                    )
+                    <>
+                      <ActionPreviewDetails action={action} />
+                      <ActionCommandButtons commands={action.commands} disabled={busy} onCommand={(commandId) => void decideAiAction(action, commandId)} />
+                    </>
                   }
                   as="li"
                   badge={<span className="badge ai">AI</span>}
                   data-action-id={action.action_id}
-                  date={formatMonthDay(today)}
+                  date={formatDate(today)}
                   key={action.action_id}
-                  kicker="AX 제안"
-                  memo={action.payload_summary}
+                  kicker={actionKicker(action)}
                   people={<PersonChip arrowTo={me} name="AX" />}
                   status={<StatusText label="확인 필요" state="pending" />}
-                  title={action.title}
+                  title={actionSubject(action)}
                 />
               ))}
             </ul>

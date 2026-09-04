@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ActionCommandButtons, ActionPreviewDetails, actionKicker, actionSubject } from "./ActionPreview";
 
 import {
   acceptTaskAssignment,
@@ -17,7 +18,7 @@ import {
   transitionDirectTask,
   updateTask,
 } from "./api";
-import { dueDayText, formatMonthDay, isoDateInSeoul, personName, seoulToday, taskStateLabel, workRequestStateLabel } from "./labels";
+import { dueDayText, formatDate, isoDateInSeoul, personName, seoulToday, taskStateLabel, workRequestStateLabel } from "./labels";
 import { type ActionItem, type DirectTask, type Persona, type TaskAssignment, type TaskPatch, type TaskState, type WorkRequest } from "./viewModels";
 import {
   CreateWorkDrawer,
@@ -40,10 +41,11 @@ type MyWorkPageProps = {
   canCreateWorkRequests: boolean;
   canDecideWorkRequests: boolean;
   canReadActions: boolean;
-  canDecideActions: boolean;
   onAskAboutTask: (task: DirectTask) => void;
   onNotice: (message: string) => void;
   onError: (message: string | null) => void;
+  /** Application-wide projection revision: bumped after an approved AX effect so the current view re-reads without remounting. */
+  revision?: number;
 };
 
 type TaskFilter = "all" | "active" | TaskState;
@@ -65,10 +67,10 @@ export function MyWorkPage({
   canCreateWorkRequests,
   canDecideWorkRequests,
   canReadActions,
-  canDecideActions,
   onAskAboutTask,
   onNotice,
   onError,
+  revision = 0,
 }: MyWorkPageProps) {
   const me = personName(personaName);
   const [tasks, setTasks] = useState<DirectTask[]>([]);
@@ -126,7 +128,8 @@ export function MyWorkPage({
     return () => {
       cancelled = true;
     };
-  }, [onError, reload]);
+    // `revision` is not read inside; it is the invalidation signal that re-runs this read.
+  }, [onError, reload, revision]);
 
   useEffect(() => {
     if (!canCreateWorkRequests) {
@@ -217,10 +220,10 @@ export function MyWorkPage({
     }
   };
 
-  const decideAiAction = async (action: ActionItem, decision: "approve" | "reject") => {
+  const decideAiAction = async (action: ActionItem, decision: string) => {
     setBusy(true);
     try {
-      await decideAction(action.action_id, action.version, decision);
+      await decideAction(action.action_id, action.version, decision as "approve" | "reject");
       await reload();
       onError(null);
       onNotice(decision === "approve" ? `'${action.title}' 제안을 승인해 반영했습니다.` : `'${action.title}' 제안을 거절했습니다.`);
@@ -316,7 +319,7 @@ export function MyWorkPage({
                         </>
                       )
                     }
-                    date={assignment.task.due_date ? `기한 ${formatMonthDay(assignment.task.due_date)} (${dueDayText(assignment.task.due_date, today)})` : formatMonthDay(isoDateInSeoul(assignment.created_at))}
+                    date={assignment.task.due_date ? `기한 ${formatDate(assignment.task.due_date)} (${dueDayText(assignment.task.due_date, today)})` : formatDate(isoDateInSeoul(assignment.created_at))}
                     key={assignment.assignment_id}
                     kicker="업무 배정"
                     memo={assignment.task.description}
@@ -332,7 +335,7 @@ export function MyWorkPage({
                         판단하기
                       </button>
                     }
-                    date={request.due_date ? `기한 ${formatMonthDay(request.due_date)} (${dueDayText(request.due_date, today)})` : formatMonthDay(today)}
+                    date={request.due_date ? `기한 ${formatDate(request.due_date)} (${dueDayText(request.due_date, today)})` : formatDate(today)}
                     key={request.request_id}
                     kicker="업무 요청"
                     memo={request.description}
@@ -345,26 +348,19 @@ export function MyWorkPage({
                 {actions.map((action) => (
                   <TaskCard
                     actions={
-                      canDecideActions && (
-                        <>
-                          <button className="btn h30 primary" disabled={busy} onClick={() => void decideAiAction(action, "approve")} type="button">
-                            승인
-                          </button>
-                          <button className="btn h30" disabled={busy} onClick={() => void decideAiAction(action, "reject")} type="button">
-                            거절
-                          </button>
-                        </>
-                      )
+                      <>
+                        <ActionPreviewDetails action={action} />
+                        <ActionCommandButtons commands={action.commands} disabled={busy} onCommand={(commandId) => void decideAiAction(action, commandId)} />
+                      </>
                     }
                     badge={<span className="badge ai">AI</span>}
                     data-action-id={action.action_id}
-                    date={formatMonthDay(today)}
+                    date={formatDate(today)}
                     key={action.action_id}
-                    kicker="AX 제안"
-                    memo={action.payload_summary}
+                    kicker={actionKicker(action)}
                     people={<PersonChip arrowTo={me} name="AX" />}
                     status={<StatusText label="확인 필요" state="pending" />}
-                    title={action.title}
+                    title={actionSubject(action)}
                   />
                 ))}
               </div>
@@ -450,7 +446,7 @@ export function MyWorkPage({
                           <StatusText state={assignment.task.state} />
                         </td>
                         <td className="center">{displayNameOf(people, assignment.assignee_id, "담당자")}</td>
-                        <td className="center">{assignment.task.due_date ? formatMonthDay(assignment.task.due_date) : "—"}</td>
+                        <td className="center">{assignment.task.due_date ? formatDate(assignment.task.due_date) : "—"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -595,7 +591,7 @@ export function MyWorkPage({
                             ? `${displayNameOf(people, task.assignment.assigned_by, "관리자")} (배정)`
                             : "—"
                       }
-                      startDate={formatMonthDay(task.start_date ?? isoDateInSeoul(task.created_at))}
+                      startDate={formatDate(task.start_date ?? isoDateInSeoul(task.created_at))}
                       task={task}
                       today={today}
                     />

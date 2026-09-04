@@ -79,7 +79,7 @@ class ConversationRepository(Protocol):
     def accept_fragment(self, conversation: Any, body: str, context: list[dict[str, str | bool]], idempotency_key: str | None) -> tuple[Any, Any | None, bool, int]: ...
     def cancel_active(self, conversation: Any, expected_version: int) -> Any: ...
     def retry_turn(self, conversation: Any, failed_turn_id: UUID, actor_id: str) -> Any: ...
-    def view(self, conversation: Any, *, include_actions: bool = False) -> dict[str, Any]: ...
+    def view(self, conversation: Any, *, include_actions: bool = False, principal: Any = None) -> dict[str, Any]: ...
 
 
 class ConversationApplication:
@@ -141,7 +141,7 @@ class ConversationApplication:
         return {"conversation_id": str(conversation.id), "turn_id": str(turn.id), "retry_of_turn_id": str(turn.retry_of_turn_id)}
 
     def _view(self, principal: Principal, conversation: Any) -> dict[str, Any]:
-        view = self._repository.view(conversation, include_actions=ACTION_READ in principal.capabilities)
+        view = self._repository.view(conversation, include_actions=ACTION_READ in principal.capabilities, principal=principal)
         # Approval commands come from the ledger + the caller's current capability, never inferred by the client.
         for action in view.get("actions", []):
             action["commands"] = action_commands(action.get("state"), ACTION_DECIDE in principal.capabilities)

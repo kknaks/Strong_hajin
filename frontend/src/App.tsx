@@ -41,6 +41,10 @@ export default function App() {
   const [isAxOpen, setIsAxOpen] = useState(false);
   const [contextOptions, setContextOptions] = useState<LabeledContextReference[]>([]);
   const [selectedContextKey, setSelectedContextKey] = useState("");
+  // Application-wide projection revision: an approved AX effect bumps it so the current surface and the AX context
+  // candidates re-read their queries in place (no page remount, so filters/views survive).
+  const [projectionRevision, setProjectionRevision] = useState(0);
+  const [staleProjection, setStaleProjection] = useState<string | null>(null);
   const reportError = useCallback((text: string) => setError(text), []);
   const chat = useConversations({ personaId, isOpen: isAxOpen, onError: reportError });
 
@@ -122,7 +126,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [capabilities, isAxOpen, personaId, surface]);
+  }, [capabilities, isAxOpen, personaId, surface, projectionRevision]);
 
   useEffect(() => {
     if (!contextOptions.some((item) => contextKey(item) === selectedContextKey)) {
@@ -162,27 +166,39 @@ export default function App() {
     await chat.send(conversationId, body, selectedContext ? [stripLabel(selectedContext)] : []);
   }
 
+  /** Re-read every projection that an approved effect may have changed: the current surface, AX context candidates, and
+   *  the active conversation. A failure here is reported as a stale screen with a retry, never as a failed approval. */
+  async function refreshProjections() {
+    setProjectionRevision((current) => current + 1);
+    try {
+      await chat.refreshActiveConversation();
+      setStaleProjection(null);
+    } catch {
+      setStaleProjection("승인은 반영되었지만 화면을 갱신하지 못했습니다.");
+    }
+  }
+
   async function decideConversationAction(actionId: string, expectedVersion: number, decision: string) {
     try {
       await chat.decide(actionId, expectedVersion, decision);
-      setToast(decision === "approve" ? "제안을 승인해 반영했습니다." : "제안을 거절했습니다.");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "AX 확인 항목을 처리하지 못했습니다.");
+      return;
     }
+    setToast(decision === "approve" ? "제안을 승인해 반영했습니다." : "제안을 거절했습니다.");
+    await refreshProjections();
   }
 
   const currentPersonaName = session?.display_name ?? "사용자";
   const selectedContext = contextOptions.find((item) => contextKey(item) === selectedContextKey);
   const has = (capability: string) => capabilities?.includes(capability) ?? false;
   const canReadActions = has("action.read");
-  const canDecideActions = has("action.decide");
   const visibleNavigation = navigation.filter((item) => item.id !== "report" || has("daily_report.generate"));
-  const pageProps = { personaId, onError: setError };
+  const pageProps = { personaId, onError: setError, revision: projectionRevision };
   const sharedWorkProps = {
     personaName: currentPersonaName,
     personas,
     canCreateWorkRequests: has("work_request.create"),
-    canDecideActions,
     canDecideWorkRequests: has("work_request.decide"),
     canManageOwnTasks: has("task.self_manage"),
     canAssignTasks: has("task.assign"),
@@ -265,6 +281,14 @@ export default function App() {
             {error}
             <button className="btn h30 ghost" onClick={() => setError(null)} type="button">
               닫기
+            </button>
+          </div>
+        )}
+        {staleProjection && (
+          <div className="error-banner stale" role="status">
+            {staleProjection}
+            <button className="btn h30" onClick={() => void refreshProjections()} type="button">
+              다시 불러오기
             </button>
           </div>
         )}

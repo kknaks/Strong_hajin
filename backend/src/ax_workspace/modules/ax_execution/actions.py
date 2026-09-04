@@ -35,7 +35,7 @@ class ActionRepository(Protocol):
 
     def resolve(self, action: Any, actor_id: str, decision: str, result: dict[str, Any] | None) -> None: ...
 
-    def view(self, action: Any) -> dict[str, Any]: ...
+    def view(self, action: Any, principal: Principal | None = None) -> dict[str, Any]: ...
 
 
 class ActionExecutor(Protocol):
@@ -57,7 +57,7 @@ class ActionApplication:
     ) -> dict[str, Any]:
         self._require(principal, ACTION_DECIDE)
         return self._repository.view(
-            self._repository.propose(str(principal.id), execution_id, action_type, title, payload)
+            self._repository.propose(str(principal.id), execution_id, action_type, title, payload), principal
         )
 
     def list(self, principal: Principal) -> list[dict[str, Any]]:
@@ -65,7 +65,7 @@ class ActionApplication:
         can_decide = ACTION_DECIDE in principal.capabilities
         views = []
         for action in self._repository.list_for(str(principal.id)):
-            view = self._repository.view(action)
+            view = self._repository.view(action, principal)
             view["commands"] = action_commands(view.get("state"), can_decide)
             views.append(view)
         return views
@@ -88,14 +88,14 @@ class ActionApplication:
             # A lost HTTP response (or an at-least-once worker replay) must not
             # make the caller choose between a duplicate effect and a stale error.
             # The persisted Action is the idempotency boundary for its effect.
-            return self._repository.view(action)
+            return self._repository.view(action, principal)
         if action.version != expected_version:
             raise ActionError("action version is stale")
         if action.state != "pending":
             raise ActionError("action is no longer pending")
         result = self._executor.execute(principal, action) if decision == "approve" else None
         self._repository.resolve(action, str(principal.id), decision, result)
-        return self._repository.view(action)
+        return self._repository.view(action, principal)
 
     @staticmethod
     def _require(principal: Principal, capability: str) -> None:

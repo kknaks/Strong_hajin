@@ -19,7 +19,7 @@ import {
 } from "./api";
 import {
   dueDayText,
-  formatMonthDay,
+  formatDate,
   isOverdue,
   isoDateInSeoul,
   personName,
@@ -47,7 +47,7 @@ export function DueText({ task, today }: { task: DirectTask; today: string }) {
   const overdue = isOverdue(task, today);
   return (
     <span className={overdue ? "due-text overdue" : "due-text"}>
-      {formatMonthDay(task.due_date)} <small>({dueDayText(task.due_date, today)})</small>
+      {formatDate(task.due_date)} <small>({dueDayText(task.due_date, today)})</small>
     </span>
   );
 }
@@ -255,7 +255,7 @@ export function TaskDetailDrawer({
                   {item.name}
                 </a>
                 <span className="t-meta">
-                  {formatBytes(item.size_bytes)} · {formatMonthDay(isoDateInSeoul(item.created_at))}
+                  {formatBytes(item.size_bytes)} · {formatDate(isoDateInSeoul(item.created_at))}
                 </span>
                 <ExtractionStatus extraction={item.extraction ?? null} />
                 {editable && (
@@ -416,7 +416,7 @@ export function TaskDetailDrawer({
         <section className="drawer-section">
           <h4>기록</h4>
           <p>
-            {formatMonthDay(isoDateInSeoul(task.created_at))} 생성 · 최근 변경 {formatMonthDay(isoDateInSeoul(task.updated_at))}
+            {formatDate(isoDateInSeoul(task.created_at))} 생성 · 최근 변경 {formatDate(isoDateInSeoul(task.updated_at))}
             {task.state === "done" && " · 완료됨"}
             {task.state === "cancelled" && " · 취소됨"}
           </p>
@@ -764,7 +764,7 @@ export function WorkRequestDetailDrawer({
         </div>
         <div>
           <dt>희망 기한</dt>
-          <dd>{request.due_date ? `${formatMonthDay(request.due_date)} (${dueDayText(request.due_date, today)})` : "없음"}</dd>
+          <dd>{request.due_date ? `${formatDate(request.due_date)} (${dueDayText(request.due_date, today)})` : "없음"}</dd>
         </div>
         <div>
           <dt>생성된 업무</dt>
@@ -822,7 +822,7 @@ export function WorkRequestDetailDrawer({
             {request.state === "accepted" && `${assigneeName === "나" ? "내" : `${assigneeName}의`} 업무에 “${request.title}”가 생성되었습니다.`}
             {request.state === "rejected" && "요청이 거절되어 업무가 생성되지 않았습니다."}
             {isOpen &&
-              `수락하면 ${assigneeName === "나" ? "내" : `${assigneeName}의`} 업무에 “${request.title}”가 ${request.due_date ? `기한 ${formatMonthDay(request.due_date)}로 ` : ""}생성됩니다. 거절하면 업무는 만들어지지 않습니다.`}
+              `수락하면 ${assigneeName === "나" ? "내" : `${assigneeName}의`} 업무에 “${request.title}”가 ${request.due_date ? `기한 ${formatDate(request.due_date)}로 ` : ""}생성됩니다. 거절하면 업무는 만들어지지 않습니다.`}
           </blockquote>
         </section>
       )}
@@ -868,7 +868,7 @@ export function WorkRequestDetailDrawer({
                   <div className="timeline-item-head">
                     <b>{submission.submission_version}회차</b>
                     <span className="t-meta">
-                      {nameOf(submission.submitted_by)} · {formatMonthDay(isoDateInSeoul(submission.submitted_at))}
+                      {nameOf(submission.submitted_by)} · {formatDate(isoDateInSeoul(submission.submitted_at))}
                       {assignment && ` · 판단자 ${nameOf(assignment.reviewer_member_id)}`}
                     </span>
                   </div>
@@ -936,7 +936,7 @@ export function WorkRequestDetailDrawer({
           <ul className="comment-list">
             {timeline.comments.map((item) => (
               <li key={item.comment_id}>
-                <b>{nameOf(item.author_member_id)}</b> <span className="t-meta">{formatMonthDay(isoDateInSeoul(item.created_at))}</span>
+                <b>{nameOf(item.author_member_id)}</b> <span className="t-meta">{formatDate(isoDateInSeoul(item.created_at))}</span>
                 <p className="prewrap">{item.body}</p>
                 {item.attachments && item.attachments.length > 0 && (
                   <ul className="attachment-row">

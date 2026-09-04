@@ -11,6 +11,7 @@ from sqlalchemy import Engine, delete, func, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
+from ax_workspace.platform.actions import SqlAlchemyActionRepository
 from ax_workspace.modules.ax_execution.ai import (
     AiConversationRequest,
     AiConversationResult,
@@ -525,7 +526,7 @@ class SqlAlchemyConversationRepository:
     def latest_session(self, conversation: ConversationRecord) -> str | None:
         return self._session.scalar(select(ConversationProviderSessionReferenceRecord.provider_session_ref).where(ConversationProviderSessionReferenceRecord.conversation_id == conversation.id).order_by(ConversationProviderSessionReferenceRecord.recorded_at.desc(), ConversationProviderSessionReferenceRecord.id.desc()))
 
-    def view(self, conversation: ConversationRecord, *, include_actions: bool = False) -> dict[str, Any]:
+    def view(self, conversation: ConversationRecord, *, include_actions: bool = False, principal: Any = None) -> dict[str, Any]:
         messages = self._session.scalars(select(ConversationMessageRecord).where(ConversationMessageRecord.conversation_id == conversation.id).order_by(ConversationMessageRecord.sequence)).all()
         turns = self._session.scalars(select(ConversationTurnRecord).where(ConversationTurnRecord.conversation_id == conversation.id).order_by(ConversationTurnRecord.started_at, ConversationTurnRecord.id)).all()
         refs = self._session.scalars(select(ContextReferenceRecord).where(ContextReferenceRecord.conversation_id == conversation.id).order_by(ContextReferenceRecord.message_id, ContextReferenceRecord.id)).all()
@@ -539,6 +540,7 @@ class SqlAlchemyConversationRepository:
             if include_actions
             else []
         )
+        action_repository = SqlAlchemyActionRepository(self._session)
         evidence = self._session.scalars(
             select(ConversationMaterialEvidenceRecord)
             .where(ConversationMaterialEvidenceRecord.conversation_id == conversation.id)
@@ -638,21 +640,8 @@ class SqlAlchemyConversationRepository:
                 }
                 for tool in tools
             ],
-            "actions": [
-                {
-                    "action_id": str(action.id),
-                    "conversation_id": str(action.conversation_id),
-                    "turn_id": str(action.turn_id),
-                    "action_type": action.action_type,
-                    "title": action.title,
-                    "state": action.state,
-                    "version": action.version,
-                    "payload_summary": action.title,
-                    "result": action.result,
-                    "audit_ref": action.audit_ref,
-                }
-                for action in actions
-            ],
+            # Same canonical row and presentation as GET /api/actions: the chat card and the decision inbox never diverge.
+            "actions": [action_repository.view(action, principal) for action in actions] if actions else [],
         }
 
     def _active_turn(self, conversation_id: UUID) -> ConversationTurnRecord | None:

@@ -154,3 +154,53 @@ def test_action_commands_come_from_the_server_and_follow_capability(tmp_path, mo
     assert view["actions"][0]["version"] == canonical["version"] == projected["version"] + 1
     assert view["actions"][0]["result"] == canonical["result"] and view["actions"][0]["audit_ref"] == canonical["audit_ref"]
     assert view["actions"][0]["commands"] == [] and canonical["commands"] == []
+
+
+def test_action_preview_is_structured_and_permission_safe(tmp_path) -> None:
+    provider = ScriptedProvider()
+    client, worker = _stack(tmp_path, provider)
+    conversation_id, turn_id = _send(client, MINA, "업무 요청을 만들어줘", "k-4")
+    application = client.app.state.workflow_application
+    from ax_workspace.platform.persistence import ConversationTurnRecord, make_session_factory
+
+    with make_session_factory(application._settings.database_url)() as session:
+        execution_id = session.get(ConversationTurnRecord, UUID(turn_id)).execution_id
+    mina = application.authenticated_principal("mina")
+    jiho = application.authenticated_principal("jiho")
+
+    # Creation-type Actions: the subject is the real work title; the operation is a separate label; only fields that are
+    # actually in the command appear, members are named through the principal's organization visibility.
+    action = application.propose_action(
+        mina, execution_id, "work_request.create", "업무 요청 생성 확인",
+        {"title": "견적서 재검토", "assignee_id": "jiho", "description": "9월 견적 재검토", "due_date": "2026-09-30", "cc_member_ids": ["sora", "no-such-member"]},
+    )
+    assert action["subject"] == "견적서 재검토" and action["operation_label"] == "업무 요청" and action["title"] == "업무 요청 생성 확인"
+    assert action["preview"] == [
+        {"id": "description", "label": "설명", "value": "9월 견적 재검토", "kind": "text"},
+        {"id": "requester", "label": "요청자", "value": "민아 (구성원)", "kind": "person"},
+        {"id": "assignee", "label": "요청 대상", "value": "지호 (팀장)", "kind": "person"},
+        {"id": "due_date", "label": "기한", "value": "2026-09-30", "kind": "date"},
+        {"id": "cc", "label": "참조자", "value": "소라 (법무), 확인할 수 없는 구성원", "kind": "people"},
+    ]
+    assert "assignee_id" not in str(action["preview"]) and "no-such-member" not in str(action["preview"])
+    # The chat projection and the decision inbox carry the identical presentation.
+    projected = client.get(f"/api/conversations/{conversation_id}", headers=MINA).json()["actions"][0]
+    canonical = client.get("/api/actions", headers=MINA).json()[0]
+    for key in ("subject", "operation_label", "preview"):
+        assert projected[key] == canonical[key] == action[key]
+    assert projected["commands"] == canonical["commands"] != []
+
+    # Resource-referencing Actions: the referenced Task title is shown only when the approver can read that Task.
+    own = application.create_self_task(mina, "민아의 업무")
+    other = application.create_self_task(jiho, "지호의 업무")
+    readable = application.propose_action(mina, execution_id, "task.update", "업무 수정 확인", {"task_id": own["task_id"], "expected_version": own["version"], "changes": {"due_date": "2026-10-01"}})
+    assert readable["subject"] == "민아의 업무"
+    assert readable["preview"] == [
+        {"id": "task", "label": "대상 업무", "value": "민아의 업무", "kind": "text"},
+        {"id": "due_date", "label": "기한", "value": "2026-10-01", "kind": "date"},
+    ]
+    # Another Action type on the same execution has its own slot; this one references a Task the approver cannot read.
+    hidden = application.propose_action(mina, execution_id, "task.transition", "업무 상태 변경 확인", {"task_id": other["task_id"], "expected_version": other["version"], "target": "in_progress"})
+    assert hidden["subject"] == "업무 상태 변경 확인", "a Task the approver cannot read must not leak its title"
+    assert hidden["preview"] == [{"id": "target", "label": "변경 상태", "value": "진행 중", "kind": "state"}]
+    assert "지호의 업무" not in str(hidden)

@@ -408,8 +408,8 @@ button.metric-card:hover { border-color: var(--border-strong); background: var(-
 .ax-action-card { margin: 8px 24px 8px 0; padding: 12px 16px; border: 1px solid var(--border-default); border-left: 3px solid var(--accent); border-radius: var(--radius-card); background: var(--selected-bg); }
 .ax-action-card b { display: block; font-size: 14px; }
 .ax-action-card p { margin: 4px 0 0; padding: 0; border: 0; background: transparent; color: var(--text-secondary); font-size: 13px; }
-.ax-action-card small { display: block; margin-top: 8px; color: var(--action); font-size: 12px; font-weight: 700; }
-.ax-action-card small.rejected { color: var(--text-tertiary); }
+.ax-action-card > small { display: block; margin-top: 8px; color: var(--action); font-size: 12px; font-weight: 700; }
+.ax-action-card > small.rejected { color: var(--text-tertiary); }
 .ax-action-card > div { display: flex; gap: 8px; margin-top: 12px; }
 .ax-composer { display: grid; flex: none; gap: 8px; }
 .ax-composer textarea { min-height: 80px; }
@@ -618,7 +618,7 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 @keyframes ax-blink { 50% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .ax-streaming-mark { animation: none; } }
 .ax-body-note { display: block; margin-top: 6px; color: var(--text-tertiary); font-size: 11px; }
-.ax-messages .ax-action-card small.approved { color: var(--action); }
+.ax-messages .ax-action-card > small.approved { color: var(--action); }
 .ax-composer textarea { resize: none; min-height: 44px; max-height: 200px; overflow-y: auto; line-height: 1.5; }
 .ax-composer { position: sticky; bottom: 0; background: var(--surface); padding-top: 4px; }
 
@@ -643,3 +643,17 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .ax-md th, .ax-md td { padding: 4px 8px; border: 1px solid var(--border-default); text-align: left; }
 .ax-md th { background: var(--surface-sunken); font-weight: 600; }
 .ax-messages .assistant.failed .ax-md, .ax-messages .assistant.cancelled .ax-md { color: var(--text-secondary); }
+
+/* Action preview: server-provided label/value rows shared by the chat card and the decision inbox. */
+.ax-preview { margin: 6px 0 4px; font-size: 12.5px; }
+.ax-preview > summary { cursor: pointer; color: var(--action); font-weight: 500; list-style: none; }
+.ax-preview > summary::-webkit-details-marker { display: none; }
+.ax-preview > summary::before { content: "▸ "; color: var(--text-tertiary); }
+.ax-preview[open] > summary::before { content: "▾ "; }
+.ax-preview > summary small { display: inline; margin: 0; color: var(--text-tertiary); font-size: 11.5px; font-weight: 400; }
+.ax-preview-list { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 6px 0 0; padding: 8px 10px; border: 1px solid var(--border-subtle); border-radius: var(--radius-card); background: var(--surface-sunken); }
+.ax-preview-row { display: contents; }
+.ax-preview-row dt { color: var(--text-tertiary); font-weight: 500; white-space: nowrap; }
+.ax-preview-row dd { margin: 0; color: var(--text-primary); overflow-wrap: anywhere; white-space: pre-wrap; }
+.task-card-actions .ax-preview { flex: 1 1 100%; margin: 0 0 4px; }
+.error-banner.stale { background: var(--progress-tint); color: var(--progress-text); border-color: var(--progress-accent); }

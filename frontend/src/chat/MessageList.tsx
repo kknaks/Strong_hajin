@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
-import { formatMonthDay, isoDateInSeoul } from "../labels";
+import { ActionCommandButtons, ActionPreviewDetails, actionKicker, actionSubject } from "../ActionPreview";
+import { formatDate, formatDuration, isoDateInSeoul } from "../labels";
 import { AssistantMarkdown } from "./AssistantMarkdown";
 import type { ActionItem, Conversation, ConversationTurn, MaterialEvidence } from "../viewModels";
 import type { LocalFragment } from "./useConversations";
@@ -211,11 +212,6 @@ const stateLabel: Record<string, string> = {
 
 const toolStateLabel: Record<string, string> = { running: "실행 중", pending: "대기", completed: "완료", failed: "실패", denied: "거부" };
 
-function formatSeconds(ms: number | null | undefined): string | null {
-  if (ms === null || ms === undefined) return null;
-  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
-}
-
 function useNow(active: boolean): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -243,8 +239,8 @@ export function ExecutionRail({ turn, tools, onRetry }: { turn: ConversationTurn
   const startedAt = turn.execution_started_at ? Date.parse(turn.execution_started_at) : null;
   const queuedAt = turn.queued_at ? Date.parse(turn.queued_at) : null;
   const liveElapsed = startedAt !== null ? now - startedAt : queuedAt !== null ? now - queuedAt : null;
-  const elapsedText = terminal ? formatSeconds(turn.run_ms) : liveElapsed !== null ? formatSeconds(Math.max(0, liveElapsed)) : null;
-  const waitText = formatSeconds(turn.queue_wait_ms);
+  const elapsedText = terminal ? formatDuration(turn.run_ms) : liveElapsed !== null ? formatDuration(Math.max(0, liveElapsed)) : null;
+  const waitText = formatDuration(turn.queue_wait_ms);
   const phrase =
     progress === "tool_running" && turn.current_tool_display_name
       ? `${stateLabel.tool_running} · ${turn.current_tool_display_name}`
@@ -259,9 +255,9 @@ export function ExecutionRail({ turn, tools, onRetry }: { turn: ConversationTurn
     const running = tool.state === "running" || tool.state === "pending";
     const timing = running
       ? startedMs !== null
-        ? formatSeconds(Math.max(0, now - startedMs))
+        ? formatDuration(Math.max(0, now - startedMs))
         : null
-      : formatSeconds(tool.latency_ms);
+      : formatDuration(tool.latency_ms);
     return (
       <li className={`ax-rail-tool ${tool.state}`} key={`${tool.turn_id}-${tool.sequence}`} title={tool.input_summary}>
         <span className="ax-rail-tool-name">{tool.display_name}</span>
@@ -330,27 +326,20 @@ export function ExecutionRail({ turn, tools, onRetry }: { turn: ConversationTurn
 /* ---------------------------------------------------------------- canonical action result card */
 
 function ActionResultCard({ action, onDecide }: { action: ActionItem; onDecide: (actionId: string, expectedVersion: number, decision: string) => Promise<void> }) {
-  const commands = action.commands ?? [];
   return (
     <section className="ax-action-card" data-action-id={action.action_id} data-state={action.state}>
-      <span className="ax-card-kicker">{action.state === "pending" ? "AX 제안 · 승인 필요" : "AX 제안 결과"}</span>
-      <b>{action.title}</b>
-      <p>{action.payload_summary}</p>
+      <span className="ax-card-kicker">
+        {actionKicker(action)}
+        {action.state === "pending" ? " · 승인 필요" : ""}
+      </span>
+      <b>{actionSubject(action)}</b>
+      <ActionPreviewDetails action={action} defaultOpen={action.state === "pending"} />
       <small className={action.state}>
         {action.state === "pending" ? "확인 필요 · 승인해야 반영됩니다" : action.state === "approved" ? "승인됨 · 원장에 반영됨" : "거절됨"}
       </small>
-      {commands.length > 0 && (
+      {(action.commands?.length ?? 0) > 0 && (
         <div>
-          {commands.map((command) => (
-            <button
-              className={`btn h30 ${command.tone === "primary" ? "primary" : command.tone === "danger" ? "danger" : ""}`}
-              key={command.id}
-              onClick={() => void onDecide(action.action_id, action.version, command.id)}
-              type="button"
-            >
-              {command.label}
-            </button>
-          ))}
+          <ActionCommandButtons commands={action.commands} onCommand={(commandId) => void onDecide(action.action_id, action.version, commandId)} />
         </div>
       )}
     </section>
@@ -372,7 +361,7 @@ function EvidenceCards({ evidence }: { evidence: MaterialEvidence[] }) {
               <span className="ax-evidence-name">{item.name}</span>
               <span className="t-meta">
                 {item.page ? `${item.page}쪽 · ` : ""}
-                {item.integrity_ref.replace("sha256:", "").slice(0, 8)} · {formatMonthDay(isoDateInSeoul(item.recorded_at))}
+                {item.integrity_ref.replace("sha256:", "").slice(0, 8)} · {formatDate(isoDateInSeoul(item.recorded_at))}
               </span>
               <a className="btn h30 ghost" href={item.origin} rel="noreferrer" target="_blank">
                 원본 열기

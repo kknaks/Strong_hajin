@@ -193,13 +193,11 @@ export function useConversations({ personaId, isOpen, onError }: { personaId: st
   const retryFragment = useCallback((fragment: LocalFragment) => send(fragment.conversation_id, fragment.body, fragment.context, fragment), [send]);
   const discardFragment = useCallback((localId: string) => setLocalFragments((items) => items.filter((item) => item.local_id !== localId)), []);
 
-  const decide = useCallback(
-    async (actionId: string, expectedVersion: number, decision: string) => {
-      await decideAction(actionId, expectedVersion, decision as "approve" | "reject");
-      await refreshActiveConversation();
-    },
-    [refreshActiveConversation],
-  );
+  /** Executes the canonical effect exactly once (server idempotency). Projection refresh is the caller's step so a
+   *  failed re-read is never mistaken for a failed approval. */
+  const decide = useCallback(async (actionId: string, expectedVersion: number, decision: string) => {
+    await decideAction(actionId, expectedVersion, decision as "approve" | "reject");
+  }, []);
 
   const cancelActive = useCallback(async () => {
     const active = activeConversationRef.current;

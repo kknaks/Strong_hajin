@@ -12,6 +12,7 @@
     "e2e:conversation": "node scripts/conversation-e2e.mjs",
     "e2e:conversation-action": "node scripts/conversation-action-e2e.mjs",
     "e2e:chat-lifecycle": "node scripts/chat-lifecycle-e2e.mjs",
+    "e2e:chat-approval": "node scripts/chat-approval-e2e.mjs",
     "e2e:daily-report": "node scripts/daily-report-e2e.mjs",
     "e2e:material-search": "node scripts/material-search-e2e.mjs",
     "preview": "vite preview"

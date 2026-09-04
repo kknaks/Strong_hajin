@@ -14,7 +14,7 @@ from ax_workspace.modules.organization_access.application import OrganizationApp
 from ax_workspace.modules.organization_access.domain import Principal
 from ax_workspace.modules.reports.application import DailyReportApplication
 from ax_workspace.modules.work.requests import WorkRequestApplication
-from ax_workspace.modules.work.application import TaskApplication, TaskState
+from ax_workspace.modules.work.application import TaskApplication, TaskError, TaskState
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
 from ax_workspace.platform.persistence import (
     ActionItemAuditEventRecord,
@@ -35,6 +35,7 @@ from ax_workspace.platform.work_tasks import (
 class SqlAlchemyActionRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
+        self._presenter = ActionPresenter(session)
 
     def propose(
         self,
@@ -133,7 +134,8 @@ class SqlAlchemyActionRepository:
         action.decided_at = datetime.now(UTC)
         self._audit(action, actor_id, f"action.{action.state}", {"result": result or {}})
 
-    def view(self, action: ActionItemRecord) -> dict[str, Any]:
+    def view(self, action: ActionItemRecord, principal: Principal | None = None) -> dict[str, Any]:
+        """Canonical Action row plus its structured, permission-safe presentation for `principal`."""
         return {
             "action_id": str(action.id),
             "conversation_id": str(action.conversation_id),
@@ -145,6 +147,7 @@ class SqlAlchemyActionRepository:
             "payload_summary": self._summary(action),
             "result": action.result,
             "audit_ref": action.audit_ref,
+            **self._presenter.present(action, principal),
         }
 
     def _audit(self, action: ActionItemRecord, actor_id: str, event_type: str, payload: dict[str, Any]) -> None:
@@ -262,3 +265,120 @@ def _parse_date(value: Any):
     from datetime import date
 
     return date.fromisoformat(str(value))
+
+
+# ---- structured, permission-safe Action presentation -------------------------------------------------------------
+
+_OPERATION_LABELS: dict[str, str] = {
+    "task.create_self": "업무 생성",
+    "work_request.create": "업무 요청",
+    "task.assign": "업무 배정",
+    "task.update": "업무 수정",
+    "task.transition": "업무 상태 변경",
+    "task.assignment.accept": "배정 수락",
+    "task.assignment.decline": "배정 거절",
+    "work_request.accept": "요청 수락",
+    "work_request.reject": "요청 거절",
+    "work_request.negotiate": "요청 조건 협의",
+    "daily_report.edit": "일일보고 수정",
+    "daily_report.submit": "일일보고 제출",
+}
+_TASK_STATE_LABELS: dict[str, str] = {"open": "대기", "in_progress": "진행 중", "blocked": "막힘", "done": "완료", "cancelled": "취소"}
+_UNKNOWN_MEMBER = "확인할 수 없는 구성원"
+
+
+class ActionPresenter:
+    """Server-side preview of what approving an Action will actually do.
+
+    The client renders `subject`, `operation_label`, and `preview` label/value rows verbatim and never derives fields or
+    controls from `action_type` or the raw payload. Only fields present in the actual command are emitted; member names
+    are resolved through the principal's organization visibility and referenced Tasks only when the principal can read
+    them, so the preview never widens what the approver may see.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def present(self, action: ActionItemRecord, principal: Principal | None) -> dict[str, Any]:
+        payload = action.payload or {}
+        kind = action.action_type
+        fields: list[dict[str, str]] = []
+        subject = action.title
+
+        if kind in {"task.create_self", "work_request.create", "task.assign"}:
+            subject = str(payload.get("title") or action.title)
+            self._text(fields, "description", "설명", payload.get("description"))
+            if kind == "work_request.create":
+                self._person(fields, "requester", "요청자", action.owner_id, principal)
+                self._person(fields, "assignee", "요청 대상", payload.get("assignee_id"), principal)
+            elif kind == "task.assign":
+                self._person(fields, "assignee", "담당 후보", payload.get("assignee_id"), principal)
+            else:
+                self._person(fields, "assignee", "담당", action.owner_id, principal)
+            self._date(fields, "start_date", "시작일", payload.get("start_date"))
+            self._date(fields, "due_date", "기한", payload.get("due_date"))
+            cc = [str(member) for member in payload.get("cc_member_ids") or []]
+            if cc:
+                names = self._names(principal)
+                fields.append({"id": "cc", "label": "참조자", "value": ", ".join(names.get(member, _UNKNOWN_MEMBER) for member in cc), "kind": "people"})
+        elif kind in {"task.update", "task.transition"}:
+            task_title = self._readable_task_title(payload.get("task_id"), principal)
+            if task_title is not None:
+                subject = task_title
+                fields.append({"id": "task", "label": "대상 업무", "value": task_title, "kind": "text"})
+            if kind == "task.update":
+                changes = dict(payload.get("changes") or {})
+                self._text(fields, "title", "제목", changes.get("title"))
+                self._text(fields, "description", "설명", changes.get("description"))
+                self._date(fields, "start_date", "시작일", changes.get("start_date"))
+                self._date(fields, "due_date", "기한", changes.get("due_date"))
+            else:
+                target = str(payload.get("target") or "")
+                if target:
+                    fields.append({"id": "target", "label": "변경 상태", "value": _TASK_STATE_LABELS.get(target, target), "kind": "state"})
+                self._text(fields, "reason", "사유", payload.get("reason"))
+        elif kind in {"task.assignment.decline", "work_request.reject", "daily_report.submit"}:
+            self._text(fields, "reason", "사유", payload.get("reason"))
+        elif kind == "work_request.negotiate":
+            conditions = dict(payload.get("conditions") or {})
+            self._date(fields, "due_date", "제안 기한", conditions.get("due_date"))
+            self._text(fields, "note", "메모", conditions.get("note") or conditions.get("reason"))
+
+        return {"subject": subject, "operation_label": _OPERATION_LABELS.get(kind, kind), "preview": fields}
+
+    @staticmethod
+    def _text(fields: list[dict[str, str]], field_id: str, label: str, value: Any) -> None:
+        if value in (None, ""):
+            return
+        fields.append({"id": field_id, "label": label, "value": str(value), "kind": "text"})
+
+    @staticmethod
+    def _date(fields: list[dict[str, str]], field_id: str, label: str, value: Any) -> None:
+        if value in (None, ""):
+            return
+        fields.append({"id": field_id, "label": label, "value": str(value), "kind": "date"})
+
+    def _person(self, fields: list[dict[str, str]], field_id: str, label: str, member_id: Any, principal: Principal | None) -> None:
+        if member_id in (None, ""):
+            return
+        fields.append({"id": field_id, "label": label, "value": self._names(principal).get(str(member_id), _UNKNOWN_MEMBER), "kind": "person"})
+
+    def _names(self, principal: Principal | None) -> dict[str, str]:
+        if principal is None:
+            return {}
+        cached = getattr(self, "_name_cache", None)
+        if cached is not None:
+            return cached
+        organization = OrganizationApplication(SqlAlchemyOrganizationRepository(self._session))
+        names = {str(member["id"]): str(member["display_name"]) for member in organization.member_candidates(principal)}
+        names[str(principal.id)] = principal.display_name
+        self._name_cache = names
+        return names
+
+    def _readable_task_title(self, task_id: Any, principal: Principal | None) -> str | None:
+        if principal is None or task_id in (None, ""):
+            return None
+        try:
+            return str(TaskApplication(SqlAlchemyTaskRepository(self._session)).get(principal, UUID(str(task_id)))["title"])
+        except (TaskError, ValueError):
+            return None

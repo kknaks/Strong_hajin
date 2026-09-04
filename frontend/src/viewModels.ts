@@ -211,7 +211,13 @@ export type ActionItem = {
   audit_ref: string | null;
   /** Server-provided approval controls; rendered verbatim, never inferred from state on the client. */
   commands?: ActionCommand[];
+  /** Server-side presentation: the real work title, the operation kicker, and permission-safe preview rows. */
+  subject?: string;
+  operation_label?: string;
+  preview?: ActionPreviewField[];
 };
+
+export type ActionPreviewField = { id: string; label: string; value: string; kind: "text" | "date" | "person" | "people" | "state" | string };
 
 export type ActionCommand = { id: "approve" | "reject" | string; label: string; tone: "primary" | "neutral" | "danger" | string };
 
