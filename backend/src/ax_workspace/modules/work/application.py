@@ -256,7 +256,8 @@ class TaskApplication:
     def _assignee_projection(self, tasks: list[Any]) -> dict[UUID, dict[str, str] | None]:
         """The person holding each Task right now, read from its active assignment rather than from any caller's list."""
         facts = self.repository.origin_facts(tasks)
-        return {task.id: self._actor(facts.get(task.id, {}).get("assignee_id") or task.owner_id) for task in tasks}
+        # No fallback: if no assignment is open, nobody holds it, and inventing a holder would be a guess.
+        return {task.id: self._actor(facts.get(task.id, {}).get("assignee_id")) for task in tasks}
 
     def _origin_projection(self, principal: Principal, tasks: list[Any]) -> dict[UUID, dict[str, Any]]:
         """Where each Task came from, and which role that actor actually played.

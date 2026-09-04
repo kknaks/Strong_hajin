@@ -720,7 +720,9 @@ class TaskRecord(Base):
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    owner_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    #: The one actor relationship a Task owns: who created it. Who sent the work is on the WorkRequest, and who holds
+    #: it now is on the active TaskAssignment; neither is copied here.
+    created_by_actor_id: Mapped[str] = mapped_column(String(100), nullable=False)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     state: Mapped[str] = mapped_column(String(40), nullable=False)
     block_reason: Mapped[str | None] = mapped_column(Text)
@@ -1065,12 +1067,15 @@ class TaskAssignmentRecord(Base):
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"), nullable=False, index=True)
     assignee_id: Mapped[str] = mapped_column(String(100), nullable=False)
-    assigned_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    #: Who put this person on the work. Empty when nobody did — a self assignment has no assigner.
+    assigned_by: Mapped[str | None] = mapped_column(String(100))
     assignment_kind: Mapped[str] = mapped_column(String(30), nullable=False)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
     source_work_request_id: Mapped[UUID | None] = mapped_column(ForeignKey("work_requests.id"))
     source_decision_item_id: Mapped[UUID | None] = mapped_column(ForeignKey("decision_items.id"))
     source_review_decision_id: Mapped[UUID | None] = mapped_column(ForeignKey("review_decisions.id"))
+    #: The assignment this one replaced, so a change of holder reads as an append-only chain.
+    supersedes_assignment_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     decline_reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -148,6 +148,19 @@ export async function attachTaskMaterialReference(
   });
 }
 
+/** Move work that is already underway to someone else. Its own command, never a Task field edit. */
+export async function reassignTask(
+  taskId: string,
+  expectedVersion: number,
+  assigneeId: string,
+  reason?: string,
+): Promise<TaskAssignment> {
+  return request<TaskAssignment>(`/api/tasks/${taskId}/reassign`, {
+    method: "POST",
+    body: JSON.stringify({ expected_version: expectedVersion, assignee_id: assigneeId, ...(reason ? { reason } : {}) }),
+  });
+}
+
 export async function detachTaskMaterial(taskId: string, materialId: string): Promise<TaskMaterial> {
   return request<TaskMaterial>(`/api/tasks/${taskId}/materials/${materialId}/detach`, { method: "POST" });
 }

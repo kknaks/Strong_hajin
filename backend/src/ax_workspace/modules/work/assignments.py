@@ -6,7 +6,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from ax_workspace.modules.organization_access.domain import Principal, TASK_ASSIGN, TASK_READ, TASK_SELF_MANAGE
-from ax_workspace.modules.work.application import TaskAccessDenied, TaskApplication, TaskError, TaskNotFound, validate_schedule, _clean_text, _iso
+from ax_workspace.modules.work.application import InvalidTaskTransition, TaskAccessDenied, TaskApplication, TaskError, TaskNotFound, validate_schedule, _clean_text, _iso
 
 
 class TaskAssignmentRepository(Protocol):
@@ -18,6 +18,9 @@ class TaskAssignmentRepository(Protocol):
     def pending_for(self, assignee_id: str) -> list[tuple[Any, Any]]: ...
     def assigned_by(self, assigner_id: str) -> list[tuple[Any, Any]]: ...
     def decide(self, assignment: Any, actor_id: str, decision: str, *, reason: str | None = None) -> Any: ...
+    def task_by_id(self, task_id: UUID) -> Any: ...
+    def active_assignment_for(self, task_id: UUID, *, lock: bool = False) -> Any: ...
+    def reassign(self, task: Any, current: Any, assigner_id: str, assignee_id: str, reason: str | None) -> Any: ...
 
 
 class TaskAssigneeDirectory(Protocol):
@@ -59,6 +62,30 @@ class TaskAssignmentApplication:
             description=_clean_text(description), start_date=start_date, due_date=due_date, causation_key=causation_key,
         )
         return self._view(assignment, task)
+
+    def reassign(self, principal: Principal, task_id: UUID, expected_version: int, assignee_id: str, reason: str | None = None) -> dict[str, Any]:
+        """Put someone else on work that is already underway.
+
+        Changing who holds the work is its own command, never a field on the Task edit form: it moves a relationship,
+        and the person taking it on still gets to accept or decline.
+        """
+        self._require(principal, TASK_ASSIGN)
+        task = self._repository.task_by_id(task_id)
+        if task is None:
+            raise TaskNotFound("task was not found")
+        current = self._repository.active_assignment_for(task_id, lock=True)
+        if current is None:
+            raise TaskError("this task has nobody to move it from")
+        if task.version != expected_version:
+            raise InvalidTaskTransition("task version is stale")
+        if assignee_id == current.assignee_id:
+            raise TaskError("that person already holds this task")
+        # Taking the work on yourself is not assigning to yourself: the candidate list is about who you may put on
+        # someone else's work, and one may always take it back.
+        if assignee_id != str(principal.id) and not self._directory.is_task_assignee(principal, assignee_id):
+            raise TaskError("assignee is not within your assignment scope")
+        appended = self._repository.reassign(task, current, str(principal.id), assignee_id, (reason or "").strip() or None)
+        return self._view(appended, task)
 
     def inbox(self, principal: Principal) -> list[dict[str, Any]]:
         """Assignments waiting for my acceptance (ERD work_inbox: 배정 수락)."""

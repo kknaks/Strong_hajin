@@ -118,6 +118,16 @@ class AssignTaskRequest(BaseModel):
     due_date: date | None = None
 
 
+class ReassignTaskRequest(BaseModel):
+    """Moving the work to someone else. Its own command, so the Task edit form never carries an assignee field."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int
+    assignee_id: str = Field(min_length=1, max_length=100)
+    reason: str | None = Field(default=None, max_length=4000)
+
+
 class DeclineTaskAssignmentRequest(BaseModel):
     reason: str
 
@@ -729,6 +739,19 @@ def create_app(
                     name=file.filename or "material",
                     content_type=file.content_type or "application/octet-stream",
                     data=data,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/tasks/{task_id}/reassign")
+        def reassign_task(
+            task_id: UUID,
+            request: ReassignTaskRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.reassign_task(
+                    principal, task_id, request.expected_version, request.assignee_id, request.reason
                 )
             except Exception as error:
                 raise _runtime_error(error) from error

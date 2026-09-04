@@ -561,6 +561,13 @@ class WorkflowApplication:
             _SessionResourceReferences(self, session),
         )
 
+    def reassign_task(self, principal: Principal, task_id: UUID, expected_version: int, assignee_id: str, reason: str | None = None) -> dict[str, Any]:
+        """Put someone else on work that is already underway. Its own command, never a Task field edit."""
+        with self._session_factory() as session:
+            result = self._assignments(session).reassign(principal, task_id, expected_version, assignee_id, reason)
+            session.commit()
+            return result
+
     def assign_task(self, principal: Principal, title: str, assignee_id: str, **fields: Any) -> dict[str, Any]:
         with self._session_factory() as session:
             result = self._assignments(session).assign(principal, title, assignee_id, **fields)

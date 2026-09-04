@@ -40,6 +40,7 @@ from ax_workspace.platform.persistence import (
     ConversationTurnRecord,
     ConversationAuditEventRecord,
     ToolInvocationRecord,
+    TaskAssignmentRecord,
     TaskRecord,
     WorkRequestRecord,
 )
@@ -762,7 +763,15 @@ class SqlAlchemyConversationContextResolver:
         reference: ConversationContextReferenceInput,
     ) -> dict[str, str | bool]:
         record = self._session.get(TaskRecord, UUID(reference.resource_id))
-        if record is None or record.owner_id != str(principal.id):
+        # Holding the work is the active assignment, never a column on the Task.
+        held = record is not None and self._session.scalar(
+            select(TaskAssignmentRecord).where(
+                TaskAssignmentRecord.task_id == record.id,
+                TaskAssignmentRecord.assignee_id == str(principal.id),
+                TaskAssignmentRecord.status == "active",
+            )
+        )
+        if record is None or not held:
             raise ConversationError("context resource was not found")
         if record.version != reference.resource_version:
             raise ConversationError("context resource is stale")

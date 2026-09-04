@@ -29,7 +29,7 @@ def test_direct_task_and_accepted_request_carry_an_active_assignment(tmp_path) -
         "assignment_id": accepted_task["assignment"]["assignment_id"],
         "kind": "request_effect",
         "status": "active",
-        "assigned_by": "mina",
+        "assigned_by": None,
         "accepted_at": accepted_task["assignment"]["accepted_at"],
     }
     with make_session_factory(database_url)() as session:

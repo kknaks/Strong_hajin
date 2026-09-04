@@ -487,6 +487,8 @@ export function MyWorkPage({
           onClose={() => setSelectedTask(null)}
           onError={onError}
           onNotice={onNotice}
+          canAssign={Boolean(canAssignTasks)}
+          onChanged={reload}
           onOpenTask={(taskId) => void openDerivedTask(taskId)}
           onTransition={transitionTask}
           onOpenSource={selectedTask.origin?.source ? (source) => void openSource(source) : undefined}

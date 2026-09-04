@@ -684,6 +684,7 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .discussion-body { margin: 4px 0 0; font-size: 12.5px; overflow-wrap: anywhere; }
 .revision-diff { margin-top: 10px; padding: 8px 10px; border: 1px solid var(--border-subtle); border-radius: var(--radius-card); background: var(--surface-sunken); font-size: 12.5px; }
 .revision-diff ul { margin: 0; padding-left: 18px; }
+.handover { margin: 0 0 8px; }
 .link-draft { margin: 8px 0 4px; padding: 10px; border: 1px solid var(--border-subtle); border-radius: var(--radius-card); background: var(--surface-sunken); }
 .link-draft .row-actions { display: flex; gap: 8px; }
 

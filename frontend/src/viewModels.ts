@@ -60,7 +60,8 @@ export type TaskAssignmentSummary = {
   assignment_id: string;
   kind: "self" | "request_effect" | "direct";
   status: "pending" | "active" | "declined" | "superseded";
-  assigned_by: string;
+  /** Who put this person on the work. Empty when nobody did — a self assignment has no assigner. */
+  assigned_by: string | null;
   accepted_at: string | null;
 };
 
@@ -69,7 +70,8 @@ export type TaskAssignment = {
   assignment_kind: "self" | "request_effect" | "direct";
   status: "pending" | "active" | "declined" | "superseded";
   assignee_id: string;
-  assigned_by: string;
+  /** Who put this person on the work. Empty when nobody did — a self assignment has no assigner. */
+  assigned_by: string | null;
   decline_reason: string | null;
   created_at: string;
   accepted_at: string | null;

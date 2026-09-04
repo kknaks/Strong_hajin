@@ -14,6 +14,8 @@ vi.mock("./api", () => ({
   attachTaskMaterialLink: vi.fn(),
   attachTaskMaterialReference: vi.fn(),
   getTasks: vi.fn(),
+  getTaskAssignmentCandidates: vi.fn(),
+  reassignTask: vi.fn(),
   taskMaterialContentUrl: (taskId: string, materialId: string) => `/api/tasks/${taskId}/materials/${materialId}/content`,
   addWorkRequestComment: vi.fn(),
   getWorkRequestTimeline: vi.fn(),
@@ -509,5 +511,66 @@ describe("materials that point at other work in SCAX", () => {
       "input",
       { resource_type: "task", resource_id: "task-9" },
     ]);
+  });
+});
+
+describe("changing who holds the work", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  function renderDrawer(props: Record<string, unknown> = {}) {
+    vi.mocked(api.getTaskMaterials).mockResolvedValue([]);
+    vi.mocked(api.getTask).mockResolvedValue({ ...task, checklist: [] } as never);
+    const onNotice = vi.fn();
+    render(
+      <TaskDetailDrawer
+        busy={false}
+        canManage
+        onClose={vi.fn()}
+        onError={vi.fn()}
+        onNotice={onNotice}
+        onTransition={vi.fn()}
+        onUpdate={vi.fn()}
+        ownerName="민아"
+        task={task as never}
+        {...props}
+      />,
+    );
+    return { onNotice };
+  }
+
+  it("is its own command, never a field on the task form", async () => {
+    vi.mocked(api.getTaskAssignmentCandidates).mockResolvedValue([{ id: "jiho", display_name: "지호 (팀장)" }] as never);
+    renderDrawer({ canAssign: true });
+    await screen.findByLabelText("업무 상세");
+    // The edit form has no assignee input; moving the work is a separate action.
+    expect(screen.queryByLabelText("담당자 변경 대상")).toBeNull();
+    expect(screen.getByRole("button", { name: "담당자 변경" })).toBeTruthy();
+  });
+
+  it("moves the work to someone else with a reason and the version it was shown", async () => {
+    vi.mocked(api.getTaskAssignmentCandidates).mockResolvedValue([{ id: "jiho", display_name: "지호 (팀장)" }] as never);
+    vi.mocked(api.reassignTask).mockResolvedValue({ assignment_id: "as-2", assignee_id: "jiho" } as never);
+    const onChanged = vi.fn();
+    const { onNotice } = renderDrawer({ canAssign: true, onChanged });
+
+    fireEvent.click(await screen.findByRole("button", { name: "담당자 변경" }));
+    fireEvent.change(await screen.findByLabelText("담당자 변경 대상"), { target: { value: "jiho" } });
+    fireEvent.change(screen.getByLabelText("담당자 변경 사유"), { target: { value: "제가 이어서 합니다" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "변경" }));
+    });
+
+    await waitFor(() => expect(api.reassignTask).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.reassignTask).mock.calls[0]).toEqual(["task-1", 1, "jiho", "제가 이어서 합니다"]);
+    expect(onNotice).toHaveBeenCalledWith(expect.stringContaining("담당자"));
+  });
+
+  it("is not offered to someone who may not put people on work", async () => {
+    renderDrawer({ canAssign: false });
+    await screen.findByLabelText("업무 상세");
+    expect(screen.queryByRole("button", { name: "담당자 변경" })).toBeNull();
   });
 });

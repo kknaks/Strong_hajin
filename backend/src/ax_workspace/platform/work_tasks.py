@@ -151,7 +151,7 @@ class SqlAlchemyTaskRepository:
                 return existing
         now = datetime.now(UTC)
         task = TaskRecord(
-            owner_id=owner_id,
+            created_by_actor_id=owner_id,
             title=title,
             state=TaskState.OPEN,
             block_reason=None,
@@ -170,7 +170,7 @@ class SqlAlchemyTaskRepository:
         self.session.flush()
         self.session.add(
             TaskAssignmentRecord(
-                task_id=task.id, assignee_id=owner_id, assigned_by=owner_id, assignment_kind="self", status="active", created_at=now, accepted_at=now
+                task_id=task.id, assignee_id=owner_id, assigned_by=None, assignment_kind="self", status="active", created_at=now, accepted_at=now
             )
         )
         self.session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now))
@@ -309,7 +309,7 @@ class SqlAlchemyTaskRepository:
         return (
             select(TaskRecord)
             .join(TaskAssignmentRecord, TaskAssignmentRecord.task_id == TaskRecord.id)
-            .where(TaskRecord.owner_id == owner_id, TaskAssignmentRecord.assignee_id == owner_id, TaskAssignmentRecord.status == "active")
+            .where(TaskAssignmentRecord.assignee_id == owner_id, TaskAssignmentRecord.status == "active")
         )
 
     def touch(self, task: TaskRecord) -> None:
@@ -325,7 +325,8 @@ class SqlAlchemyWorkRecordSource:
         activities = self._session.scalars(
             select(TaskActivityRecord)
             .join(TaskRecord, TaskRecord.id == TaskActivityRecord.task_id)
-            .where(TaskRecord.owner_id == str(principal.id))
+            .join(TaskAssignmentRecord, TaskAssignmentRecord.task_id == TaskRecord.id)
+            .where(TaskAssignmentRecord.assignee_id == str(principal.id), TaskAssignmentRecord.status == "active")
             .order_by(TaskActivityRecord.occurred_at)
         )
         return [
@@ -670,7 +671,7 @@ class SqlAlchemyWorkRequestRepository:
             select(ReviewDecisionRecord).where(ReviewDecisionRecord.submission_id == submission.id).order_by(ReviewDecisionRecord.decided_at.desc())
         ) if submission else None
         task = TaskRecord(
-            owner_id=request.assignee_id,
+            created_by_actor_id=request.assignee_id,
             title=request.title,
             description=request.description,
             due_date=request.due_date,
@@ -696,7 +697,7 @@ class SqlAlchemyWorkRequestRepository:
             TaskAssignmentRecord(
                 task_id=task.id,
                 assignee_id=request.assignee_id,
-                assigned_by=request.requester_id,
+                assigned_by=None,
                 assignment_kind="request_effect",
                 status="active",
                 source_work_request_id=request.id,
@@ -895,7 +896,7 @@ class SqlAlchemyTaskAssignmentRepository:
                 return existing, existing.assignments[-1]
         now = datetime.now(UTC)
         task = TaskRecord(
-            owner_id=assignee_id,
+            created_by_actor_id=assigner_id,
             title=title,
             state=TaskState.OPEN,
             block_reason=None,
@@ -990,6 +991,55 @@ class SqlAlchemyTaskAssignmentRepository:
             .order_by(TaskAssignmentRecord.created_at.desc())
         ).all()
         return [(assignment, task) for assignment, task in rows]
+
+    def task_by_id(self, task_id: UUID) -> TaskRecord | None:
+        """The Task itself, with no holder scope. Callers decide separately who may act on it."""
+        return self._session.get(TaskRecord, task_id)
+
+    def active_assignment_for(self, task_id: UUID, *, lock: bool = False) -> TaskAssignmentRecord | None:
+        """Who holds this Task right now. At most one assignment is ever open on it."""
+        statement = select(TaskAssignmentRecord).where(
+            TaskAssignmentRecord.task_id == task_id, TaskAssignmentRecord.status.in_(("active", "pending"))
+        )
+        return self._session.scalar(
+            statement.with_for_update().execution_options(populate_existing=True) if lock else statement
+        )
+
+    def reassign(self, task: TaskRecord, current: TaskAssignmentRecord, assigner_id: str, assignee_id: str, reason: str | None) -> TaskAssignmentRecord:
+        """Move the work to someone else: the assignment that was open is closed and a new one is appended.
+
+        Nothing is written over. The row that was there keeps saying who held it and until when, and the new row says
+        who put this person on it and which assignment it replaced.
+        """
+        now = datetime.now(UTC)
+        previous_assignee = current.assignee_id
+        current.status = "superseded"
+        current.superseded_at = now
+        appended = TaskAssignmentRecord(
+            task_id=task.id,
+            assignee_id=assignee_id,
+            assigned_by=assigner_id,
+            assignment_kind="direct",
+            status="pending",
+            supersedes_assignment_id=current.id,
+            created_at=now,
+        )
+        self._session.add(appended)
+        # Flush before the ledger line so the appended assignment has an id to point at.
+        self._session.flush()
+        task.version += 1
+        task.updated_at = now
+        self._session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now))
+        ActivityLedger(self._session).record(
+            target_type="task", target_id=str(task.id), event_kind="task.reassigned", actor_id=assigner_id,
+            before_ref=f"task_assignment:{current.id}", after_ref=f"task_assignment:{appended.id}", reason=reason,
+            safe_summary=(
+                f"{_person(self._session, assigner_id)}가 담당자를 {_person(self._session, previous_assignee)}에서 "
+                f"{_person(self._session, assignee_id)}로 바꿈: {task.title}"
+            ),
+        )
+        self._session.flush()
+        return appended
 
     def decide(self, assignment: TaskAssignmentRecord, actor_id: str, decision: str, *, reason: str | None = None) -> ReviewDecisionRecord:
         """Acceptance activates the assignment; rejection closes it and cancels the never-entered Task."""

@@ -38,6 +38,8 @@ from ax_workspace.platform.persistence import (
     ConversationAuditEventRecord,
     ActionItemRecord,
     EmploymentPeriodRecord,
+    TaskAssignmentRecord,
+    TaskRecord,
     ToolInvocationRecord,
 )
 
@@ -1411,7 +1413,7 @@ def test_postgres_rejects_a_task_whose_source_does_not_exist() -> None:
             with pytest.raises(Exception) as raised:
                 session.execute(
                     text(
-                        "INSERT INTO tasks (id, owner_id, title, state, origin_kind, visibility, version, created_at, updated_at, "
+                        "INSERT INTO tasks (id, created_by_actor_id, title, state, origin_kind, visibility, version, created_at, updated_at, "
                         f"{column}) VALUES (gen_random_uuid(), 'mina', 'dangling', 'open', 'direct', 'scope_default', 1, now(), now(), "
                         "gen_random_uuid())"
                     )
@@ -1480,3 +1482,60 @@ def test_postgres_serializes_adopting_evidence_against_deciding_on_it() -> None:
             assert len(round_one["evidence"]) == 0
             [frozen] = timeline["review_decisions"]
             assert frozen["evidence_hash"] == round_one["evidence_hash"]
+
+
+@pytest.mark.integration
+def test_postgres_keeps_one_open_assignment_per_task_through_a_handover() -> None:
+    """The holder is the open assignment, so two people must never be able to hold one Task at once."""
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url, materials_dir=tempfile.mkdtemp())
+    app = create_app(settings)
+    client = TestClient(app)
+    application = app.state.workflow_application
+    mina = {"X-Demo-Persona": "mina"}
+    jiho = {"X-Demo-Persona": "jiho"}
+
+    task_id = application.assign_task(application.authenticated_principal("jiho"), "옮겨질 업무", "mina")["task"]["task_id"]
+    [item] = [row for row in client.get("/api/action-items", headers=mina).json() if row["subject"] == "옮겨질 업무"]
+    client.post(
+        f"/api/action-items/{item['action_item_id']}/commands/accept",
+        headers=mina,
+        json={"expected_version": item["expected_version"]},
+    )
+    version = client.get(f"/api/tasks/{task_id}", headers=mina).json()["version"]
+
+    # Two people try to move the same Task at the same moment; the row lock decides, and only one lands.
+    gate = Barrier(2)
+
+    def hand_over(target: str) -> Any:
+        gate.wait()
+        return client.post(
+            f"/api/tasks/{task_id}/reassign",
+            headers=jiho,
+            json={"expected_version": version, "assignee_id": target},
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first, second = executor.submit(hand_over, "jiho"), executor.submit(hand_over, "demo-admin")
+        outcomes = sorted([first.result().status_code, second.result().status_code])
+    assert outcomes == [200, 422], outcomes
+
+    factory = make_session_factory(database_url)
+    with factory() as session:
+        rows = list(
+            session.scalars(
+                select(TaskAssignmentRecord)
+                .where(TaskAssignmentRecord.task_id == UUID(task_id))
+                .order_by(TaskAssignmentRecord.created_at, TaskAssignmentRecord.id)
+            )
+        )
+    open_rows = [row for row in rows if row.status in {"active", "pending"}]
+    assert len(open_rows) == 1, [(row.assignee_id, row.status) for row in rows]
+    assert open_rows[0].supersedes_assignment_id is not None
+    assert [row.status for row in rows[:-1]] == ["superseded"]
+    # The Task itself never learned a second holder: it has no such column to learn one with.
+    with factory() as session:
+        task = session.get(TaskRecord, UUID(task_id))
+        assert task.created_by_actor_id == "jiho"
+        assert not hasattr(task, "owner_id")

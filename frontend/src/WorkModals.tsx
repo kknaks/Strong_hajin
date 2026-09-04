@@ -23,7 +23,9 @@ import {
   uploadRequestEvidence,
   attachTaskMaterialLink,
   attachTaskMaterialReference,
+  getTaskAssignmentCandidates,
   getTasks,
+  reassignTask,
   uploadTaskMaterial,
 } from "./api";
 import {
@@ -113,6 +115,8 @@ export function originSentence(origin: TaskOrigin): string | null {
 
 export function TaskDetailDrawer({
   onOpenTask,
+  canAssign = false,
+  onChanged,
   task,
   ownerName,
   onOpenSource,
@@ -127,6 +131,10 @@ export function TaskDetailDrawer({
 }: {
   /** Open another Task this one points at, inside the product rather than through a URL. */
   onOpenTask?: (taskId: string) => void;
+  /** Whether this person may put someone else on work. Moving it is a command of its own, not a form field. */
+  canAssign?: boolean;
+  /** Settles the projections after the holder changed. */
+  onChanged?: () => Promise<void> | void;
   task: DirectTask;
   ownerName: string;
   /** Navigate to the resource the origin names. Absent when the source is withheld. */
@@ -156,6 +164,8 @@ export function TaskDetailDrawer({
   const [linkDraft, setLinkDraft] = useState<{ kind: TaskMaterialKind; url: string; label: string } | null>(null);
   const [refDraft, setRefDraft] = useState<{ kind: TaskMaterialKind; taskId: string } | null>(null);
   const [refChoices, setRefChoices] = useState<DirectTask[] | null>(null);
+  const [handover, setHandover] = useState<{ assigneeId: string; reason: string } | null>(null);
+  const [handoverChoices, setHandoverChoices] = useState<Persona[] | null>(null);
   const inputFile = useRef<HTMLInputElement>(null);
   const outputFile = useRef<HTMLInputElement>(null);
   const closed = task.state === "cancelled";
@@ -318,6 +328,37 @@ export function TaskDetailDrawer({
       onError(error instanceof Error ? error.message : "링크를 연결하지 못했습니다.");
     } finally {
       setUploading(null);
+    }
+  };
+
+  const openHandover = async () => {
+    if (handover) {
+      setHandover(null);
+      return;
+    }
+    setHandover({ assigneeId: "", reason: "" });
+    if (handoverChoices === null) {
+      try {
+        setHandoverChoices(await getTaskAssignmentCandidates());
+      } catch {
+        setHandoverChoices([]);
+      }
+    }
+  };
+
+  const submitHandover = async () => {
+    if (!handover?.assigneeId) {
+      onError("옮길 담당자를 골라 주세요.");
+      return;
+    }
+    onError(null);
+    try {
+      await reassignTask(task.task_id, task.version, handover.assigneeId, handover.reason.trim() || undefined);
+      setHandover(null);
+      onNotice?.("담당자를 바꿨습니다. 새 담당자가 수락하면 그 사람의 업무가 됩니다.");
+      await onChanged?.();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "담당자를 바꾸지 못했습니다.");
     }
   };
 
@@ -569,6 +610,50 @@ export function TaskDetailDrawer({
         title={task.title}
       >
         <div className="form-stack">
+          {canAssign && !readOnly && (
+            /* Moving the work is its own act, so it is a command here rather than a field in the form below. */
+            <div className="handover">
+              <button className="btn h30 ghost" onClick={() => void openHandover()} type="button">
+                담당자 변경
+              </button>
+              {handover && (
+                <div className="form-stack link-draft">
+                  <div className="field">
+                    <label htmlFor={`task-handover-${task.task_id}`}>담당자 변경 대상</label>
+                    <select
+                      id={`task-handover-${task.task_id}`}
+                      onChange={(event) => setHandover({ ...handover, assigneeId: event.target.value })}
+                      value={handover.assigneeId}
+                    >
+                      <option value="">담당자 고르기</option>
+                      {(handoverChoices ?? []).map((choice) => (
+                        <option key={choice.id} value={choice.id}>
+                          {personName(choice.display_name)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label htmlFor={`task-handover-reason-${task.task_id}`}>담당자 변경 사유</label>
+                    <input
+                      id={`task-handover-reason-${task.task_id}`}
+                      onChange={(event) => setHandover({ ...handover, reason: event.target.value })}
+                      placeholder="왜 옮기는지 적어 두면 이력에 남습니다"
+                      value={handover.reason}
+                    />
+                  </div>
+                  <div className="row-actions">
+                    <button className="btn h30 primary" disabled={busy} onClick={() => void submitHandover()} type="button">
+                      변경
+                    </button>
+                    <button className="btn h30 ghost" onClick={() => setHandover(null)} type="button">
+                      취소
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           {task.origin && (
             /* Only a real counterpart or a real source is named, and it is named as what happened rather than as a
                role column. A task nobody handed over has neither. */
