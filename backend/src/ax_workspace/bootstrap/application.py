@@ -25,6 +25,8 @@ from ax_workspace.platform.conversations import (
     SqlAlchemyConversationContextResolver,
     SqlAlchemyConversationRepository,
 )
+from ax_workspace.modules.actions.domain import ActionCenterApplication
+from ax_workspace.platform.action_center import action_handlers
 from ax_workspace.platform.actions import SqlAlchemyActionExecutor, SqlAlchemyActionRepository
 from ax_workspace.platform.reports import SqlAlchemyDailyReportDraftWorkflow, SqlAlchemyDailyReportRepository
 from ax_workspace.modules.work.materials import TaskMaterialApplication
@@ -358,6 +360,11 @@ class WorkflowApplication:
             result = self._work_requests(session).add_comment(principal, request_id, body, idempotency_key=idempotency_key)
             session.commit()
             return result
+
+    def pending_action_items(self, principal: Principal) -> list[dict[str, Any]]:
+        """Every judgement this principal owes right now, whatever raised it."""
+        with self._session_factory() as session:
+            return ActionCenterApplication(action_handlers(session)).pending(principal)
 
     def work_request_timeline(self, principal: Principal, request_id: UUID) -> dict[str, Any]:
         with self._session_factory() as session:

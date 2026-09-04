@@ -528,6 +528,13 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
+        @app.get("/api/action-items")
+        def pending_action_items(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+            try:
+                return app.state.workflow_application.pending_action_items(principal)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
         @app.get("/api/work-request-cc-candidates", response_model=list[PersonaResponse])
         def work_request_cc_candidates(principal: Principal = Depends(developer_principal)) -> list[PersonaResponse]:
             try:
