@@ -107,6 +107,9 @@ e2e-task-checklist:
 e2e-chat-checklist:
 	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:chat-checklist
 
+e2e-chat-recovery:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:chat-recovery
+
 e2e-relation-graph:
 	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:relation-graph
 

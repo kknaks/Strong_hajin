@@ -126,6 +126,54 @@ def test_failed_turn_keeps_partial_text_and_retry_creates_a_linked_idempotent_tu
     assert client.post(f"/api/conversations/{conversation_id}/turns/{turn_id}/retry", headers=JIHO).status_code == 422
 
 
+def test_cancelling_a_turn_keeps_what_was_said_and_ignores_what_came_after(tmp_path) -> None:
+    """Stopping is a decision the ledger makes first; the provider's later words do not undo it."""
+    from threading import Thread
+
+    release = Event()
+    provider = ScriptedProvider(release=release)
+    client, worker = _stack(tmp_path, provider)
+    conversation_id, turn_id = _send(client, MINA, "오래 걸리는 요청", "k-cancel")
+
+    running = Thread(target=lambda: asyncio.run(worker.run_once()))
+    running.start()
+    try:
+        for _ in range(50):
+            view = client.get(f"/api/conversations/{conversation_id}", headers=MINA).json()
+            if view["turns"][0]["progress_state"] in {"tool_running", "preparing"}:
+                break
+            time.sleep(0.1)
+        current = client.get(f"/api/conversations/{conversation_id}", headers=MINA).json()
+        cancelled = client.post(
+            f"/api/conversations/{conversation_id}/cancel",
+            headers=MINA,
+            json={"expected_version": current["version"]},
+        )
+        assert cancelled.status_code in {200, 202}, cancelled.text
+
+        view = client.get(f"/api/conversations/{conversation_id}", headers=MINA).json()
+        assert view["turns"][0]["state"] == "cancelled" and view["turns"][0]["progress_state"] == "cancelled"
+        # What was already said stays, marked for what it is.
+        assistant = [message for message in view["messages"] if message["role"] == "assistant"]
+        assert assistant[0]["body"] == "먼저 업무를 조회합니다." and assistant[0]["body_state"] == "cancelled"
+    finally:
+        release.set()
+        running.join(timeout=15)
+
+    # The provider kept talking after the decision; none of it moved the turn.
+    settled = client.get(f"/api/conversations/{conversation_id}", headers=MINA).json()
+    assert settled["turns"][0]["state"] == "cancelled"
+    assistant = [message for message in settled["messages"] if message["role"] == "assistant"]
+    assert assistant[0]["body"] == "먼저 업무를 조회합니다." and assistant[0]["body_state"] == "cancelled"
+    assert all(message["body"] != "내 업무는 3개입니다." for message in settled["messages"])
+
+    # A stopped turn can be tried again, as a new turn that says what it came from.
+    retried = client.post(f"/api/conversations/{conversation_id}/turns/{turn_id}/retry", headers=MINA)
+    assert retried.status_code == 202, retried.text
+    view = client.get(f"/api/conversations/{conversation_id}", headers=MINA).json()
+    assert view["turns"][1]["retry_of_turn_id"] == turn_id
+
+
 def test_action_commands_come_from_the_server_and_follow_capability(tmp_path, monkeypatch) -> None:
     provider = ScriptedProvider()
     client, worker = _stack(tmp_path, provider)

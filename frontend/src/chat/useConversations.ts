@@ -32,6 +32,31 @@ export type LocalFragment = {
 export type ListStatus = "idle" | "loading" | "ready" | "error";
 
 /** Draft key used before any conversation exists; moved onto the conversation when one is created. */
+const DRAFT_STORAGE_KEY = "scax.ax.drafts";
+
+/** Unsent drafts survive a reload for the person who typed them; anything unreadable is simply no drafts. */
+function readStoredDrafts(): Record<string, string> {
+  try {
+    const stored = window.localStorage.getItem(DRAFT_STORAGE_KEY);
+    const parsed = stored ? (JSON.parse(stored) as unknown) : null;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>).filter(([, value]) => typeof value === "string"),
+    ) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredDrafts(drafts: Record<string, string>): void {
+  try {
+    const kept = Object.fromEntries(Object.entries(drafts).filter(([, value]) => value.trim() !== ""));
+    window.localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(kept));
+  } catch {
+    // A browser that refuses storage keeps the draft for this page only; nothing else changes.
+  }
+}
+
 export const NEW_DRAFT_KEY = "__new__";
 
 export { createIdempotencyKey };
@@ -41,7 +66,9 @@ export function useConversations({ personaId, isOpen, onError }: { personaId: st
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [listStatus, setListStatus] = useState<ListStatus>("idle");
   const [localFragments, setLocalFragments] = useState<LocalFragment[]>([]);
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // What someone typed and has not sent yet, per conversation. It is a convenience for this browser only: it never
+  // reaches the server, and a browser that refuses storage simply loses it rather than breaking the chat.
+  const [drafts, setDrafts] = useState<Record<string, string>>(readStoredDrafts);
   const activeConversationRef = useRef<Conversation | null>(null);
   const listRequestGeneration = useRef(0);
   const detailRequestGeneration = useRef(0);
@@ -54,6 +81,7 @@ export function useConversations({ personaId, isOpen, onError }: { personaId: st
     setActiveConversation(null);
     setLocalFragments([]);
     setDrafts({});
+    writeStoredDrafts({});
     setListStatus("idle");
   }, []);
 
@@ -224,7 +252,15 @@ export function useConversations({ personaId, isOpen, onError }: { personaId: st
   );
 
   const draftKey = activeConversation?.conversation_id ?? NEW_DRAFT_KEY;
-  const setDraft = useCallback((value: string, key?: string) => setDrafts((current) => ({ ...current, [key ?? draftKey]: value })), [draftKey]);
+  const setDraft = useCallback(
+    (value: string, key?: string) =>
+      setDrafts((current) => {
+        const next = { ...current, [key ?? draftKey]: value };
+        writeStoredDrafts(next);
+        return next;
+      }),
+    [draftKey],
+  );
 
   return {
     conversations,

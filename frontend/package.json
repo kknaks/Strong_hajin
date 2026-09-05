@@ -15,6 +15,7 @@
     "e2e:task-delivery": "node scripts/task-delivery-e2e.mjs",
     "e2e:subtask": "node scripts/subtask-e2e.mjs",
     "e2e:relation-graph": "node scripts/relation-graph-e2e.mjs",
+    "e2e:chat-recovery": "node scripts/chat-recovery-e2e.mjs",
     "e2e:chat-checklist": "node scripts/chat-checklist-e2e.mjs",
     "e2e:task-detail-layout": "node scripts/task-detail-layout-e2e.mjs",
     "e2e:task-origin": "node scripts/task-origin-e2e.mjs",

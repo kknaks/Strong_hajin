@@ -382,6 +382,18 @@ describe("useConversations", () => {
     expect(result.current.activeConversation?.messages.filter((item) => item.body === "새 질문")).toHaveLength(1);
   });
 
+  it("keeps an unsent draft through a reload, and forgets it once the conversation is left behind", () => {
+    window.localStorage.clear();
+    const first = renderHook(() => useConversations({ personaId: "mina", isOpen: true, onError: vi.fn() }));
+    act(() => first.result.current.setDraft("돌아와도 남는 초안", "c1"));
+
+    // A fresh mount — the same person, the same browser — starts with what they had typed.
+    const second = renderHook(() => useConversations({ personaId: "mina", isOpen: true, onError: vi.fn() }));
+    expect(JSON.parse(window.localStorage.getItem("scax.ax.drafts") ?? "{}")).toEqual({ c1: "돌아와도 남는 초안" });
+    act(() => second.result.current.setDraft("", "c1"));
+    expect(JSON.parse(window.localStorage.getItem("scax.ax.drafts") ?? "{}")).toEqual({});
+  });
+
   it("keeps one unsent draft per conversation and moves a pre-conversation draft onto the created session", async () => {
     const first = conversation("c1", "첫 대화", "a");
     const second = conversation("c2", "둘째 대화", "b");
