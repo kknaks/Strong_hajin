@@ -119,6 +119,8 @@ def _suggested_changes(conditions: Any) -> dict[str, Any]:
 
 
 WORK_REQUEST_ACCEPTANCE = "work_request.acceptance"
+#: The result question: opened by a delivery report, answered by the person who asked for the work.
+DELIVERY_REVIEW = "task.delivery.review"
 
 _QUESTIONS = {
     (WORK_REQUEST_ACCEPTANCE, AWAITING_REVIEW): "이 업무 요청을 수락할지 결정하세요",
@@ -730,17 +732,214 @@ class TaskAssignmentActionHandler:
         return int(task.version) == targeted + 1 and (assignment.decline_reason or "") == str(payload.get("reason") or "").strip()
 
 
-def action_handlers(session: Session, *, work_requests: Any, actions: Any, assignments: Any) -> list[Any]:
+class TaskDeliveryActionHandler:
+    """A result handed over, and the person who asked for it deciding whether it is what they wanted.
+
+    This is not the question that created the Task — that one was answered when the request was accepted. It has its
+    own identity, its own words, and its own rounds: every report is another Submission on the same question.
+    """
+
+    def __init__(self, session: Session, tasks: Any) -> None:
+        self._session = session
+        self._members = MemberDirectory(session)
+        self._tasks = tasks
+
+    def pending(self, principal: Principal) -> list[ActionEnvelope]:
+        if TASK_READ not in principal.capabilities:
+            return []
+        rows = self._session.execute(
+            select(DecisionItemRecord, SubmissionRecord, ReviewAssignmentRecord)
+            .join(SubmissionRecord, SubmissionRecord.decision_item_id == DecisionItemRecord.id)
+            .join(ReviewAssignmentRecord, ReviewAssignmentRecord.submission_id == SubmissionRecord.id)
+            .where(
+                DecisionItemRecord.kind == DELIVERY_REVIEW,
+                ReviewAssignmentRecord.reviewer_member_id == str(principal.id),
+                ReviewAssignmentRecord.status == "pending",
+            )
+            .order_by(SubmissionRecord.submitted_at)
+        ).all()
+        envelopes = []
+        for item, _submission, _assignment in rows:
+            found = self.find(str(item.id))
+            if found is not None:
+                envelopes.append(self.envelope(found, principal))
+        return envelopes
+
+    def find(self, action_item_id: str) -> tuple[Any, Any] | None:
+        try:
+            item = self._session.get(DecisionItemRecord, UUID(action_item_id))
+        except ValueError:
+            return None
+        if item is None or item.kind != DELIVERY_REVIEW:
+            return None
+        task = self._session.get(TaskRecord, UUID(str(item.context_id)))
+        return (item, task) if task is not None else None
+
+    def envelope(self, item: tuple[Any, Any], principal: Principal) -> ActionEnvelope:
+        decision_item, task = item
+        submissions = self._tasks.repository.delivery_submissions(decision_item)
+        latest = submissions[-1]
+        snapshot = self._tasks.repository.delivery_snapshot(latest)
+        reviewer_id = self._reviewer(latest)
+        answered = [row for row in self._tasks.repository.delivery_decisions([latest.id])]
+        waiting = not answered
+        mine = str(principal.id) == reviewer_id
+        preview: list[dict[str, str]] = [
+            {"id": "summary", "label": "결과 요약", "value": str(snapshot.get("summary") or ""), "kind": "text"},
+            {"id": "reporter", "label": "보고자", "value": self._members.waiting_on(latest.submitted_by)["display_name"], "kind": "person"},
+        ]
+        outputs = snapshot.get("outputs") or []
+        if outputs:
+            preview.append({"id": "outputs", "label": "산출물", "value": ", ".join(str(row["name"]) for row in outputs), "kind": "text"})
+        steps = snapshot.get("checklist") or []
+        if steps:
+            done = sum(1 for row in steps if row.get("done"))
+            preview.append({"id": "checklist", "label": "체크리스트", "value": f"{done}/{len(steps)} 완료", "kind": "text"})
+        if task.due_date:
+            preview.append({"id": "due_date", "label": "기한", "value": task.due_date.isoformat(), "kind": "date"})
+        # What the reviewer is looking at was frozen when it was reported; say so when the work has moved since.
+        if int(snapshot.get("task_version") or 0) + 1 != int(task.version) and waiting:
+            preview.append({"id": "stale", "label": "안내", "value": "보고 이후 업무가 변경되었습니다", "kind": "state"})
+        return ActionEnvelope(
+            action_item_id=str(decision_item.id),
+            kind="task.delivery",
+            status=AWAITING_REVIEW if waiting else RESOLVED,
+            subject=str(task.title),
+            operation_label="업무 결과 확인",
+            current_question=(
+                "요청한 결과가 충족됐는지 확인하세요" if waiting else "이 결과는 이미 판단이 끝났습니다"
+            ),
+            preview=preview,
+            allowed_commands=(
+                [
+                    ActionCommand("accept", "완료 인정", "primary"),
+                    ActionCommand("request_changes", "보완 요청", "neutral", requires_reason=True),
+                ]
+                if waiting and mine and TASK_READ in principal.capabilities
+                else []
+            ),
+            submission_version=int(latest.submission_version),
+            waiting_on=self._members.waiting_on(reviewer_id if waiting else None),
+            resource={"type": "task", "id": str(task.id)},
+            expected_version=int(task.version),
+        )
+
+    def rounds(self, item: tuple[Any, Any], principal: Principal) -> list[dict[str, Any]]:
+        decision_item, task = item
+        self._require_participant(decision_item, task, principal)
+        submissions = self._tasks.repository.delivery_submissions(decision_item)
+        decisions = self._tasks.repository.delivery_decisions([row.id for row in submissions])
+        rows = []
+        for submission in submissions:
+            rows.append(
+                {
+                    "submission_id": str(submission.id),
+                    "submission_version": int(submission.submission_version),
+                    "submitted_by": submission.submitted_by,
+                    "submitted_at": submission.submitted_at.isoformat(),
+                    "content_hash": submission.payload_hash,
+                    "snapshot": self._tasks.repository.delivery_snapshot(submission),
+                    "diff": submission.diff,
+                    # A delivery stands on the outputs named in its own snapshot, not on adopted Evidence rows.
+                    "evidence": [],
+                    "evidence_hash": None,
+                    "decisions": [
+                        {
+                            "review_decision_id": str(row.id),
+                            "actor_member_id": row.actor_member_id,
+                            "decision": row.decision,
+                            "reason": row.reason,
+                            "evidence_hash": None,
+                            "decided_at": row.decided_at.isoformat(),
+                        }
+                        for row in decisions
+                        if row.submission_id == submission.id
+                    ],
+                }
+            )
+        return rows
+
+    def normalize(self, item: tuple[Any, Any], command: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("changes"):
+            raise ActionError("결과 확인은 변경 항목을 받지 않습니다")
+        normalized: dict[str, Any] = {"expected_version": _required_version(payload)}
+        reason = str(payload.get("reason") or "").strip()
+        if command == "request_changes" and not reason:
+            raise ActionError("보완 요청에는 사유가 필요합니다")
+        if reason:
+            normalized["reason"] = reason
+        return normalized
+
+    def execute(self, principal: Principal, item: tuple[Any, Any], command: str, payload: dict[str, Any]) -> None:
+        decision_item, task = item
+        if str(principal.id) != self._reviewer(self._latest(decision_item)):
+            raise ActionAccessDenied("principal cannot decide this action item")
+        expected = _required_version(payload)
+        if int(task.version) != expected:
+            raise ActionError("task version is stale")
+        submission = self._latest(decision_item)
+        if command == "accept":
+            self._tasks.accept_delivery(principal, task, submission, expected)
+            return
+        self._tasks.request_delivery_changes(principal, task, submission, expected, str(payload.get("reason") or ""))
+
+    def discussion(self, item: tuple[Any, Any], principal: Principal) -> list[dict[str, Any]]:
+        """The discussion lives on the request thread this work came from, not on the result question."""
+        return []
+
+    def is_replay(self, item: tuple[Any, Any], principal: Principal, command: str, payload: dict[str, Any]) -> bool:
+        """The answer that was given is the receipt, pinned to the Task version it actually consumed."""
+        decision_item, task = item
+        submission = self._latest(decision_item)
+        try:
+            targeted = _required_version(payload)
+        except ActionError:
+            return False
+        decided = "accept" if command == "accept" else "negotiate"
+        for row in self._tasks.repository.delivery_decisions([submission.id]):
+            if row.actor_member_id != str(principal.id) or row.decision != decided:
+                continue
+            if int(decision_facts(row.conditions).get(DECISION_VERSION) or -1) != targeted:
+                continue
+            if decided == "negotiate" and (row.reason or "") != str(payload.get("reason") or "").strip():
+                continue
+            return True
+        return False
+
+    def _latest(self, decision_item: Any) -> Any:
+        return self._tasks.repository.delivery_submissions(decision_item)[-1]
+
+    def _reviewer(self, submission: Any) -> str | None:
+        assignment = self._session.scalar(
+            select(ReviewAssignmentRecord)
+            .where(ReviewAssignmentRecord.submission_id == submission.id)
+            .order_by(ReviewAssignmentRecord.assigned_at.desc())
+        )
+        return str(assignment.reviewer_member_id) if assignment is not None else None
+
+    def _require_participant(self, decision_item: Any, task: Any, principal: Principal) -> None:
+        submissions = self._tasks.repository.delivery_submissions(decision_item)
+        people = {str(row.submitted_by) for row in submissions} | {
+            reviewer for reviewer in (self._reviewer(row) for row in submissions) if reviewer
+        }
+        if str(principal.id) not in people:
+            raise ActionAccessDenied("principal cannot read this action item")
+
+
+def action_handlers(session: Session, *, work_requests: Any, actions: Any, assignments: Any, tasks: Any = None) -> list[Any]:
     """Every origin that can put a question to a person, in the order a person should meet them.
 
     The module applications are passed in rather than rebuilt here, so every command runs the same operation the rest of
     the product runs, with that module's own rules and audit.
     """
-    return [
+    handlers: list[Any] = [
         WorkRequestActionHandler(session, work_requests),
         TaskAssignmentActionHandler(session, assignments),
-        AxProposalActionHandler(session, actions),
     ]
+    if tasks is not None:
+        handlers.append(TaskDeliveryActionHandler(session, tasks))
+    handlers.append(AxProposalActionHandler(session, actions))
+    return handlers
 
 
 def decision_item_id(session: Session, request_id: UUID) -> UUID | None:

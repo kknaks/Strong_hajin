@@ -4,6 +4,7 @@ export const taskStateLabel: Record<TaskState, string> = {
   open: "시작 전",
   in_progress: "진행 중",
   blocked: "막힘",
+  completion_submitted: "완료 확인 대기",
   done: "완료",
   cancelled: "취소",
 };
@@ -12,6 +13,7 @@ export const taskStateTone: Record<TaskState, string> = {
   open: "neutral",
   in_progress: "accent",
   blocked: "danger",
+  completion_submitted: "accent",
   done: "success",
   cancelled: "muted",
 };

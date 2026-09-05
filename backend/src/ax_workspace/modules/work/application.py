@@ -20,6 +20,8 @@ class TaskState(StrEnum):
     OPEN = "open"
     IN_PROGRESS = "in_progress"
     BLOCKED = "blocked"
+    #: Handed over and waiting for the person who asked to say whether it is what they wanted. Not done.
+    COMPLETION_SUBMITTED = "completion_submitted"
     DONE = "done"
     CANCELLED = "cancelled"
 
@@ -60,6 +62,14 @@ class TaskRepository(Protocol):
     def checklist_progress_for(self, task_ids: list[UUID]) -> dict[UUID, tuple[int, int]]: ...
     def origin_facts(self, tasks: list[Any]) -> dict[UUID, dict[str, Any]]: ...
     def versions_for(self, task_id: UUID) -> list[Any]: ...
+    def delivery_item(self, task: Any) -> Any: ...
+    def delivery_submissions(self, item: Any) -> list[Any]: ...
+    def delivery_snapshot(self, submission: Any) -> dict[str, Any]: ...
+    def delivery_decisions(self, submission_ids: list[UUID]) -> list[Any]: ...
+    def open_delivery_round(self, task: Any, reporter_id: str, reviewer_id: str, snapshot: dict[str, Any]) -> Any: ...
+    def record_delivery_decision(
+        self, submission: Any, actor_id: str, decision: str, *, reason: str | None = None, expected_version: int
+    ) -> Any: ...
     def references_for(self, task_id: UUID, *, include_released: bool = False) -> list[Any]: ...
     def reference(self, task_id: UUID, reference_id: UUID) -> Any: ...
     def add_reference(self, task_id: UUID, referenced_task_id: UUID, created_by: str) -> Any: ...
@@ -85,6 +95,7 @@ class WorkRequestSourcePort(Protocol):
     """The authorized WorkRequest lookup a Task's origin needs."""
 
     def list_for(self, principal_id: str) -> list[Any]: ...
+    def request(self, request_id: UUID, *, lock: bool = False) -> Any: ...
 
 
 class TaskApplication:
@@ -93,11 +104,14 @@ class TaskApplication:
         repository: TaskRepository,
         requests: WorkRequestSourcePort | None = None,
         actions: ActionSourcePort | None = None,
+        attachments: Any = None,
     ) -> None:
         self.repository = repository
         # Reading a Task's origin may need the resource behind it, always through that module's own authorized lookup.
         self._requests = requests
         self._actions = actions
+        # Delivery reports name outputs that are already bound to this Task; nothing new is uploaded by reporting.
+        self._attachments = attachments
 
     def create_self(
         self,
@@ -231,7 +245,144 @@ class TaskApplication:
             **self._view(task),
             "origin": self._origin_projection(principal, [task]).get(task.id),
             "assignee": self._assignee_projection([task]).get(task.id),
+            # The person who asked for the work may follow where their request got to, without holding the work.
+            "delivery": self.delivery_view(principal, task),
         }
+
+    # ---- delivery: reporting what was handed over, and the answer the person who asked gives ----
+
+    def requires_completion_review(self, task: Any) -> bool:
+        """Work someone else asked for is finished when they say so, not when the holder says so."""
+        return getattr(task, "source_work_request_id", None) is not None
+
+    def submit_completion(
+        self,
+        principal: Principal,
+        task_id: UUID,
+        expected_version: int,
+        *,
+        summary: str,
+        output_material_ids: list[UUID] | None = None,
+    ) -> dict[str, Any]:
+        """Hand the work over: freeze what was delivered and put it in front of the person who asked for it."""
+        self._require(principal, TASK_SELF_MANAGE)
+        task = self.repository.task(task_id, str(principal.id), lock=True)
+        if not self.requires_completion_review(task):
+            raise TaskError("이 업무는 완료 보고 없이 바로 완료 처리합니다")
+        if int(task.version) != expected_version:
+            raise InvalidTaskTransition("task version is stale")
+        if TaskState(task.state) not in {TaskState.IN_PROGRESS, TaskState.BLOCKED}:
+            raise InvalidTaskTransition("완료 보고는 진행 중인 업무에서만 할 수 있습니다")
+        clean_summary = " ".join(str(summary or "").split())
+        if not clean_summary:
+            raise TaskError("완료 보고에는 결과 요약이 필요합니다")
+        reviewer_id = self._requester_of(task)
+        if reviewer_id is None:
+            raise TaskError("이 업무의 요청자를 찾을 수 없습니다")
+        snapshot = self._delivery_snapshot(principal, task, clean_summary[:2000], output_material_ids or [])
+        submission = self.repository.open_delivery_round(task, str(principal.id), reviewer_id, snapshot)
+        task.state = TaskState.COMPLETION_SUBMITTED
+        task.block_reason = None
+        task.version += 1
+        self.repository.touch(task)
+        self.repository.record_activity(
+            task, str(principal.id), "task.completion_submitted", f"완료 보고: {clean_summary[:80]}"
+        )
+        return {**self._view(task), "delivery": self.delivery_view(principal, task)}
+
+    def accept_delivery(self, principal: Principal, task: Any, submission: Any, expected_version: int) -> None:
+        """The person who asked says this is what they wanted. Only this closes the work."""
+        if TaskState(task.state) is not TaskState.COMPLETION_SUBMITTED:
+            raise InvalidTaskTransition("확인할 완료 보고가 없습니다")
+        self.repository.record_delivery_decision(
+            submission, str(principal.id), "accept", expected_version=expected_version
+        )
+        task.state = TaskState.DONE
+        task.version += 1
+        self.repository.touch(task)
+        self.repository.record_activity(task, str(principal.id), "task.completion_accepted", f"결과 완료 인정: {task.title}")
+
+    def request_delivery_changes(self, principal: Principal, task: Any, submission: Any, expected_version: int, reason: str) -> None:
+        """Say what is still missing. The work goes on; the question stays open for the next report."""
+        clean = " ".join(str(reason or "").split())
+        if not clean:
+            raise TaskError("보완 요청에는 사유가 필요합니다")
+        if TaskState(task.state) is not TaskState.COMPLETION_SUBMITTED:
+            raise InvalidTaskTransition("확인할 완료 보고가 없습니다")
+        self.repository.record_delivery_decision(
+            submission, str(principal.id), "negotiate", reason=clean[:1000], expected_version=expected_version
+        )
+        task.state = TaskState.IN_PROGRESS
+        task.version += 1
+        self.repository.touch(task)
+        self.repository.record_activity(
+            task, str(principal.id), "task.completion_changes_requested", f"보완 요청: {clean[:80]}", reason=clean[:1000]
+        )
+
+    def delivery_view(self, principal: Principal, task: Any) -> dict[str, Any] | None:
+        """Where this work stands with the person who asked for it, for anyone who may read the Task."""
+        item = self.repository.delivery_item(task)
+        if item is None:
+            return None
+        submissions = self.repository.delivery_submissions(item)
+        if not submissions:
+            return None
+        latest = submissions[-1]
+        decisions = self.repository.delivery_decisions([row.id for row in submissions])
+        answered = [row for row in decisions if row.submission_id == latest.id]
+        last = decisions[-1] if decisions else None
+        status = (
+            "awaiting_review"
+            if not answered
+            else "resolved"
+            if any(row.decision == "accept" for row in answered)
+            else "awaiting_revision"
+        )
+        return {
+            "action_item_id": str(item.id),
+            "status": status,
+            "rounds": len(submissions),
+            "reported_by": latest.submitted_by,
+            "reported_at": _iso(latest.submitted_at),
+            "summary": self.repository.delivery_snapshot(latest).get("summary"),
+            "last_reason": last.reason if last is not None and last.decision != "accept" else None,
+        }
+
+    def _delivery_snapshot(self, principal: Principal, task: Any, summary: str, output_material_ids: list[UUID]) -> dict[str, Any]:
+        """What was handed over, as it was: the Task's own words, its steps, and the outputs named by identity."""
+        wanted = {str(item) for item in output_material_ids}
+        outputs = []
+        for binding, attachment in self._attachments.bindings_for("task", str(task.id)) if self._attachments else []:
+            if binding.unbound_at is not None or str(binding.id) not in wanted:
+                continue
+            outputs.append(
+                {
+                    "material_id": str(binding.id),
+                    "attachment_id": str(attachment.id),
+                    "name": attachment.name,
+                    "kind": binding.role,
+                    "integrity_ref": attachment.integrity_ref,
+                }
+            )
+        if len(outputs) != len(wanted):
+            raise TaskError("이 업무에 없는 산출물은 완료 보고에 담을 수 없습니다")
+        return {
+            "summary": summary,
+            "task_version": int(task.version),
+            "task_title": task.title,
+            "reported_at": _iso(datetime.now(UTC)),
+            "checklist": [
+                {"item_id": str(item.id), "text": item.text, "done": bool(item.done)}
+                for item in self.repository.checklist_for(task.id)
+            ],
+            "outputs": outputs,
+        }
+
+    def _requester_of(self, task: Any) -> str | None:
+        if self._requests is None or getattr(task, "source_work_request_id", None) is None:
+            return None
+        request = self._requests.request(task.source_work_request_id)
+        return str(request.requester_id) if request is not None else None
 
     def transition(
         self,
@@ -247,9 +398,13 @@ class TaskApplication:
             TaskState.OPEN: {TaskState.IN_PROGRESS, TaskState.CANCELLED},
             TaskState.IN_PROGRESS: {TaskState.BLOCKED, TaskState.DONE, TaskState.CANCELLED},
             TaskState.BLOCKED: {TaskState.IN_PROGRESS, TaskState.CANCELLED},
+            # Waiting for the person who asked: only their answer moves it on, so no command does from here.
+            TaskState.COMPLETION_SUBMITTED: {TaskState.CANCELLED},
             # A mistaken completion can be reopened; cancellation stays terminal.
             TaskState.DONE: {TaskState.IN_PROGRESS},
         }
+        if target is TaskState.DONE and self.requires_completion_review(task):
+            raise InvalidTaskTransition("이 업무는 요청자의 확인이 필요합니다. 완료 보고로 제출하세요")
         if task.version != expected_version:
             raise InvalidTaskTransition("task version is stale")
         if target not in allowed.get(TaskState(task.state), set()):
@@ -519,6 +674,7 @@ class TaskApplication:
             "checklist": items,
             "checklist_progress": {"done": sum(1 for item in items if item["done"]), "total": len(items)},
             "references": self.references(principal, task),
+            "delivery": self.delivery_view(principal, task),
             "origin": self._origin_projection(principal, [task]).get(task.id),
             "assignee": self._assignee_projection([task]).get(task.id),
         }

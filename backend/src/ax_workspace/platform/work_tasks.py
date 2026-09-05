@@ -277,6 +277,139 @@ class SqlAlchemyTaskRepository:
         reference.released_by = actor_id
         self.session.flush()
 
+    # ---- delivery: what was handed over, and the question it puts to the person who asked ----
+
+    #: The one question a delivery report opens, kept apart from the acceptance question that created the Task.
+    DELIVERY_KIND = "task.delivery.review"
+
+    def delivery_item(self, task: TaskRecord) -> DecisionItemRecord | None:
+        return self.session.scalar(
+            select(DecisionItemRecord)
+            .where(
+                DecisionItemRecord.kind == self.DELIVERY_KIND,
+                DecisionItemRecord.context_type == "task",
+                DecisionItemRecord.context_id == str(task.id),
+            )
+            .order_by(DecisionItemRecord.created_at)
+        )
+
+    def delivery_submissions(self, item: DecisionItemRecord) -> list[SubmissionRecord]:
+        return list(
+            self.session.scalars(
+                select(SubmissionRecord)
+                .where(SubmissionRecord.decision_item_id == item.id)
+                .order_by(SubmissionRecord.submission_version)
+            )
+        )
+
+    def delivery_snapshot(self, submission: SubmissionRecord) -> dict:
+        version = self.session.get(SubjectVersionRecord, submission.subject_version_id)
+        return dict(version.snapshot) if version is not None else {}
+
+    def delivery_decisions(self, submission_ids: list[UUID]) -> list[ReviewDecisionRecord]:
+        if not submission_ids:
+            return []
+        return list(
+            self.session.scalars(
+                select(ReviewDecisionRecord)
+                .where(ReviewDecisionRecord.submission_id.in_(submission_ids))
+                .order_by(ReviewDecisionRecord.decided_at)
+            )
+        )
+
+    def open_delivery_round(self, task: TaskRecord, reporter_id: str, reviewer_id: str, snapshot: dict) -> SubmissionRecord:
+        """Freeze this report and put it in front of the reviewer, as another round of the same question."""
+        now = datetime.now(UTC)
+        item = self.delivery_item(task)
+        if item is None:
+            subject = SubjectRecord(
+                subject_type="task_delivery", owning_resource_type="task", owning_resource_id=str(task.id), created_at=now
+            )
+            self.session.add(subject)
+            self.session.flush()
+            item = DecisionItemRecord(
+                kind=self.DELIVERY_KIND,
+                subject_id=subject.id,
+                context_type="task",
+                context_id=str(task.id),
+                effect_identity=f"task.delivery.accept:{task.id}",
+                status="open",
+                due_at=datetime.combine(task.due_date, datetime.min.time(), tzinfo=UTC) if task.due_date else None,
+                created_at=now,
+            )
+            self.session.add(item)
+            self.session.flush()
+        previous = self.delivery_submissions(item)
+        previous_snapshot = self.delivery_snapshot(previous[-1]) if previous else {}
+        version = SubjectVersionRecord(
+            subject_id=item.subject_id,
+            version=len(previous) + 1,
+            content_hash=_content_hash(snapshot),
+            snapshot=snapshot,
+            captured_at=now,
+        )
+        self.session.add(version)
+        self.session.flush()
+        diff = {
+            key: {"before": previous_snapshot.get(key), "after": snapshot.get(key)}
+            for key in snapshot
+            if previous and previous_snapshot.get(key) != snapshot.get(key)
+        }
+        submission = SubmissionRecord(
+            decision_item_id=item.id,
+            subject_version_id=version.id,
+            submission_version=len(previous) + 1,
+            revises_id=previous[-1].id if previous else None,
+            submitted_by=reporter_id,
+            payload_hash=version.content_hash,
+            decision_policy_snapshot={"decisions": ["accept", "negotiate"], "reason_required_for": ["negotiate"]},
+            diff=diff or None,
+            submitted_at=now,
+        )
+        self.session.add(submission)
+        self.session.flush()
+        if previous:
+            open_assignment = self.session.scalar(
+                select(ReviewAssignmentRecord)
+                .where(ReviewAssignmentRecord.submission_id == previous[-1].id, ReviewAssignmentRecord.status == "pending")
+            )
+            if open_assignment is not None:
+                open_assignment.status = "superseded"
+        self.session.add(
+            ReviewAssignmentRecord(
+                submission_id=submission.id, reviewer_member_id=reviewer_id, status="pending", assigned_at=now, due_at=item.due_at
+            )
+        )
+        item.status = "open"
+        self.session.flush()
+        return submission
+
+    def record_delivery_decision(
+        self, submission: SubmissionRecord, actor_id: str, decision: str, *, reason: str | None = None, expected_version: int
+    ) -> ReviewDecisionRecord:
+        now = datetime.now(UTC)
+        assignment = self.session.scalar(
+            select(ReviewAssignmentRecord)
+            .where(ReviewAssignmentRecord.submission_id == submission.id, ReviewAssignmentRecord.status == "pending")
+        )
+        if assignment is not None:
+            assignment.status = "answered"
+        record = ReviewDecisionRecord(
+            submission_id=submission.id,
+            review_assignment_id=assignment.id if assignment is not None else None,
+            actor_member_id=actor_id,
+            decision=decision,
+            reason=reason,
+            conditions={DECISION_FACTS: {DECISION_VERSION: expected_version}},
+            decided_at=now,
+        )
+        self.session.add(record)
+        item = self.session.get(DecisionItemRecord, submission.decision_item_id)
+        if item is not None:
+            item.status = "resolved" if decision == "accept" else "open"
+        self.session.flush()
+        return record
+
     def seed_checklist(self, task: TaskRecord, texts: list[str] | None, author_id: str) -> None:
         """Steps written with the work itself. They belong to version 1, so no version moves for them."""
         for text in texts or []:

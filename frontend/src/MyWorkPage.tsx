@@ -51,7 +51,8 @@ type MyWorkPageProps = {
 type TaskFilter = "all" | "active" | TaskState;
 type ViewMode = "list" | "timeline" | "kanban";
 
-const stateOrder: Record<TaskState, number> = { blocked: 0, in_progress: 1, open: 2, done: 3, cancelled: 4 };
+// Waiting on someone else's confirmation sits with the work in flight, not with what is finished.
+const stateOrder: Record<TaskState, number> = { blocked: 0, in_progress: 1, completion_submitted: 2, open: 3, done: 4, cancelled: 5 };
 const views: Array<{ id: ViewMode; label: string }> = [
   { id: "list", label: "목록" },
   { id: "kanban", label: "칸반" },

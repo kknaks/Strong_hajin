@@ -716,6 +716,13 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .checklist-item .step-edit { flex: 1; min-width: 0; height: 30px; font-size: 13px; }
 .checklist-item:hover .btn, .checklist-item:focus-within .btn { opacity: 1; }
 
+/* ---- a banner inside a drawer: what this work is waiting on, or what it still needs */
+.drawer-section.notice { padding: 12px; border: 1px solid var(--border-default); border-radius: 12px; background: var(--surface-sunken); }
+.drawer-section.notice h4 { margin: 0 0 4px; }
+.drawer-section.notice p { margin: 0; font-size: 13px; }
+.drawer-section.notice.danger { border-color: var(--danger-accent); background: var(--danger-tint); }
+.drawer-section.notice.danger h4 { color: var(--danger-hover); }
+
 /* ---- activity and history: what happened, newest first, with the diff one click away */
 .activity-list { display: grid; gap: 2px; margin: 8px 0 0; padding: 0; list-style: none; }
 .activity-list > li { padding: 8px; border-radius: var(--radius-chip); border-bottom: 1px solid var(--border-subtle); }

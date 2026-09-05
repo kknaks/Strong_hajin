@@ -5,7 +5,21 @@ export type Persona = {
   display_name: string;
 };
 
-export type TaskState = "open" | "in_progress" | "blocked" | "done" | "cancelled";
+export type TaskState = "open" | "in_progress" | "blocked" | "completion_submitted" | "done" | "cancelled";
+
+/**
+ * Where requested work stands with the person who asked for it. Present only on Tasks whose completion they confirm.
+ * `awaiting_review` means reported and waiting; `awaiting_revision` means they said what is still missing.
+ */
+export type TaskDelivery = {
+  action_item_id: string;
+  status: "awaiting_review" | "awaiting_revision" | "resolved";
+  rounds: number;
+  reported_by: string;
+  reported_at: string | null;
+  summary: string | null;
+  last_reason: string | null;
+};
 
 export type DirectTask = {
   task_id: string;
@@ -33,6 +47,8 @@ export type DirectTask = {
   checklist?: ChecklistItem[];
   /** Earlier work this Task points at. Present on the detail read. */
   references?: TaskReference[];
+  /** The result question this Task's completion opens, when someone else asked for the work. */
+  delivery?: TaskDelivery | null;
   checklist_progress?: { done: number; total: number };
 };
 

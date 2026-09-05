@@ -78,6 +78,18 @@ export async function getTask(taskId: string): Promise<DirectTask> {
   return request<DirectTask>(`/api/tasks/${taskId}`);
 }
 
+/** Hand requested work back: what was delivered, and which of this Task's outputs it stands on. */
+export async function submitTaskCompletion(
+  taskId: string,
+  expectedVersion: number,
+  body: { summary: string; output_material_ids: string[] },
+): Promise<DirectTask> {
+  return request<DirectTask>(`/api/tasks/${taskId}/completion-report`, {
+    body: JSON.stringify({ expected_version: expectedVersion, ...body }),
+    method: "POST",
+  });
+}
+
 export async function addTaskReference(taskId: string, referencedTaskId: string): Promise<TaskReference> {
   return request<TaskReference>(`/api/tasks/${taskId}/references`, {
     body: JSON.stringify({ referenced_task_id: referencedTaskId }),

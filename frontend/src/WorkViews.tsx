@@ -468,6 +468,8 @@ const kanbanColumns: Array<{ state: TaskState; title: string }> = [
   { state: "open", title: "시작 전" },
   { state: "in_progress", title: "진행 중" },
   { state: "blocked", title: "막힘" },
+  // Reported and waiting on the person who asked: in flight, not finished.
+  { state: "completion_submitted", title: "완료 확인 대기" },
   { state: "done", title: "완료" },
 ];
 

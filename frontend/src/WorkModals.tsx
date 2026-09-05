@@ -11,6 +11,7 @@ import {
   addChecklistItem,
   addTaskReference,
   releaseTaskReference,
+  submitTaskCompletion,
   reorderChecklist,
   getTask,
   getTaskHistory,
@@ -55,6 +56,7 @@ import type {
   TaskHistory,
   TaskHistoryDiff,
   TaskMaterial,
+  TaskDelivery,
   TaskMaterialKind,
   TaskReference,
   TaskOrigin,
@@ -339,8 +341,11 @@ export function TaskDetailDrawer({
   const [uploading, setUploading] = useState<TaskMaterialKind | null>(null);
   const [linkDraft, setLinkDraft] = useState<{ kind: TaskMaterialKind; url: string; label: string } | null>(null);
   const [references, setReferences] = useState<TaskReference[]>(task.references ?? []);
+  // Where this work stands with the person who asked for it. Only the detail read carries it, so it lives here.
+  const [delivery, setDelivery] = useState<TaskDelivery | null>(task.delivery ?? null);
   const [refDraft, setRefDraft] = useState<string | null>(null);
   const [refChoices, setRefChoices] = useState<DirectTask[] | null>(null);
+  const [report, setReport] = useState<{ summary: string; outputs: string[] } | null>(null);
   const [handover, setHandover] = useState<{ assigneeId: string; reason: string } | null>(null);
   const [handoverChoices, setHandoverChoices] = useState<Persona[] | null>(null);
   const inputFile = useRef<HTMLInputElement>(null);
@@ -376,6 +381,7 @@ export function TaskDetailDrawer({
         if (cancelled) return;
         setChecklist(detail.checklist ?? []);
         setReferences(detail.references ?? []);
+        setDelivery(detail.delivery ?? null);
       })
       .catch(() => {
         if (!cancelled) setChecklist([]);
@@ -383,7 +389,7 @@ export function TaskDetailDrawer({
     return () => {
       cancelled = true;
     };
-  }, [task.task_id]);
+  }, [task.task_id, task.version]);
 
   useEffect(() => {
     if (readOnly) return;
@@ -547,6 +553,32 @@ export function TaskDetailDrawer({
   };
 
   const openSteps = (checklist ?? []).filter((item) => !item.done).length;
+  // Work someone else asked for is finished when they say so; this drawer reports, it does not close.
+  const reviewed = Boolean(delivery) || task.origin?.kind === "work_request";
+  const awaitingReview = task.state === "completion_submitted";
+  const requesterName = task.origin?.actor ? personName(task.origin.actor.display_name) : "요청자";
+
+  const submitReport = async () => {
+    const summary = report?.summary.trim() ?? "";
+    if (!summary) {
+      onError("무엇을 어디까지 했는지 적어 주세요.");
+      return;
+    }
+    onError(null);
+    try {
+      const updated = await submitTaskCompletion(task.task_id, current.version, {
+        summary,
+        output_material_ids: report?.outputs ?? [],
+      });
+      setReport(null);
+      setDelivery(updated.delivery ?? null);
+      moved(updated.version);
+      await settleVersion();
+      onNotice?.(`완료 보고를 보냈습니다. ${requesterName}의 확인을 기다립니다.`);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "완료 보고를 보내지 못했습니다.");
+    }
+  };
 
   /** Unfinished steps are worth saying out loud, but whether they matter is the holder's call, not a rule. */
   const complete = async () => {
@@ -828,9 +860,19 @@ export function TaskDetailDrawer({
                   시작
                 </button>
               )}
-              {task.state === "in_progress" && (
+              {task.state === "in_progress" && !reviewed && (
                 <button className="btn h40 primary" disabled={busy} onClick={() => void complete()} type="button">
                   완료 처리
+                </button>
+              )}
+              {(task.state === "in_progress" || task.state === "blocked") && reviewed && (
+                <button
+                  className="btn h40 primary"
+                  disabled={busy}
+                  onClick={() => setReport(report ? null : { summary: delivery?.summary ?? "", outputs: [] })}
+                  type="button"
+                >
+                  완료 보고
                 </button>
               )}
               {task.state === "blocked" && (
@@ -867,6 +909,75 @@ export function TaskDetailDrawer({
         onClose={onClose}
         title={task.title}
       >
+        {awaitingReview && (
+          <section aria-label="완료 확인 대기" className="drawer-section notice">
+            <h4>완료 확인 대기</h4>
+            <p>
+              {requesterName}에게 결과 확인을 요청했습니다. {requesterName}가 완료로 인정하면 이 업무가 완료됩니다.
+            </p>
+            {delivery?.summary && <p className="prewrap t-meta">보고한 결과: {delivery.summary}</p>}
+          </section>
+        )}
+        {delivery?.status === "awaiting_revision" && delivery.last_reason && (
+          <section aria-label="보완 필요" className="drawer-section notice danger">
+            <h4>보완 필요</h4>
+            <p className="prewrap">{delivery.last_reason}</p>
+            <p className="t-meta">{delivery.rounds}번째 보고까지 진행했습니다. 보완한 뒤 다시 완료 보고를 보내세요.</p>
+          </section>
+        )}
+        {report !== null && (
+          <section aria-label="완료 보고" className="drawer-section">
+            <h4>완료 보고</h4>
+            <div className="field">
+              <label htmlFor={`delivery-summary-${task.task_id}`}>결과 요약</label>
+              <textarea
+                id={`delivery-summary-${task.task_id}`}
+                onChange={(event) => setReport({ ...report, summary: event.target.value })}
+                placeholder="무엇을 어디까지 했는지, 요청한 내용을 어떻게 충족했는지 적어 주세요."
+                rows={3}
+                value={report.summary}
+              />
+            </div>
+            {(materials ?? []).filter((item) => item.kind === "output").length > 0 && (
+              <fieldset className="field cc-picker">
+                <legend>보고에 담을 산출물</legend>
+                <div className="chip-row">
+                  {(materials ?? [])
+                    .filter((item) => item.kind === "output")
+                    .map((item) => {
+                      const checked = report.outputs.includes(item.material_id);
+                      return (
+                        <label className={checked ? "chip-toggle on" : "chip-toggle"} key={item.material_id}>
+                          <input
+                            checked={checked}
+                            onChange={(event) =>
+                              setReport({
+                                ...report,
+                                outputs: event.target.checked
+                                  ? [...report.outputs, item.material_id]
+                                  : report.outputs.filter((id) => id !== item.material_id),
+                              })
+                            }
+                            type="checkbox"
+                          />
+                          {item.name}
+                        </label>
+                      );
+                    })}
+                </div>
+                <p className="t-meta">고른 산출물은 보고 시점의 무결성 값으로 고정되어 함께 남습니다.</p>
+              </fieldset>
+            )}
+            <div className="row-actions">
+              <button className="btn h30 primary" disabled={busy} onClick={() => void submitReport()} type="button">
+                보고 보내기
+              </button>
+              <button className="btn h30 ghost" onClick={() => setReport(null)} type="button">
+                취소
+              </button>
+            </div>
+          </section>
+        )}
         <div className="form-stack">
           {canAssign && !readOnly && (
             /* Moving the work is its own act, so it is a command here rather than a field in the form below. */

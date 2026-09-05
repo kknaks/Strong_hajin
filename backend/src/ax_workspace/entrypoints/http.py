@@ -223,6 +223,14 @@ class ChecklistItemPatch(BaseModel):
     expected_task_version: int | None = None
 
 
+class TaskCompletionReportRequest(BaseModel):
+    """Handing work over: what was delivered, and which of this Task's outputs it stands on."""
+
+    expected_version: int
+    summary: str = Field(min_length=1, max_length=2000)
+    output_material_ids: list[UUID] = []
+
+
 class TaskReferenceRequest(BaseModel):
     """Earlier work this Task points at. One meaning only: `참고`, never a kind of causal relation."""
 
@@ -774,6 +782,18 @@ def create_app(
                     name=file.filename or "material",
                     content_type=file.content_type or "application/octet-stream",
                     data=data,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/tasks/{task_id}/completion-report")
+        def submit_task_completion(
+            task_id: UUID, request: TaskCompletionReportRequest, principal: Principal = Depends(developer_principal)
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.submit_task_completion(
+                    principal, task_id, request.expected_version,
+                    summary=request.summary, output_material_ids=request.output_material_ids,
                 )
             except Exception as error:
                 raise _runtime_error(error) from error

@@ -33,6 +33,7 @@ from ax_workspace.platform.reports import SqlAlchemyDailyReportDraftWorkflow, Sq
 from ax_workspace.modules.work.assignments import TaskAssignmentApplication
 from ax_workspace.platform.work_tasks import (
     caused_by,
+    SqlAlchemyAttachmentRepository,
     SqlAlchemyTaskAssignmentRepository,
     SqlAlchemyTaskRepository,
     SqlAlchemyWorkRecordSource,
@@ -205,6 +206,12 @@ def action_center_application(session: Session, executor: Any) -> Any:
             assignments=TaskAssignmentApplication(
                 SqlAlchemyTaskAssignmentRepository(session),
                 OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
+            ),
+            tasks=TaskApplication(
+                SqlAlchemyTaskRepository(session),
+                SqlAlchemyWorkRequestRepository(session),
+                SqlAlchemyActionRepository(session),
+                SqlAlchemyAttachmentRepository(session),
             ),
         )
     )

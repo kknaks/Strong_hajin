@@ -550,6 +550,16 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def submit_task_completion(
+        self, principal: Principal, task_id: UUID, expected_version: int, *, summary: str, output_material_ids: list[UUID] | None = None
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._tasks(session).submit_completion(
+                principal, task_id, expected_version, summary=summary, output_material_ids=output_material_ids
+            )
+            session.commit()
+            return result
+
     def task_history(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
         with self._session_factory() as session:
             return self._tasks(session).history(principal, task_id)
@@ -783,6 +793,7 @@ class WorkflowApplication:
                 work_requests=self._work_requests(session),
                 actions=self._actions(session),
                 assignments=self._assignments(session),
+                tasks=self._tasks(session),
             )
         )
 
@@ -906,6 +917,7 @@ class WorkflowApplication:
             SqlAlchemyTaskRepository(session),
             SqlAlchemyWorkRequestRepository(session),
             SqlAlchemyActionRepository(session),
+            SqlAlchemyAttachmentRepository(session),
         )
 
     def _work_requests(self, session: Any) -> WorkRequestApplication:
