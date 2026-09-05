@@ -104,6 +104,19 @@ export async function releaseTaskReference(taskId: string, referenceId: string):
   return request<{ reference_id: string; task_version: number }>(`/api/tasks/${taskId}/references/${referenceId}`, { method: "DELETE" });
 }
 
+/** Turn a followup a meeting produced into ordinary work. Pressing twice is a receipt, not a second Task. */
+export async function promoteMeetingFollowup(
+  meetingId: string,
+  summaryId: string,
+  statementIndex: number,
+  body: { kind: "task" | "work_request"; title?: string; assignee_id?: string },
+): Promise<{ already_promoted: boolean; task: DirectTask | null; work_request: WorkRequest | null }> {
+  return request(`/api/meetings/${meetingId}/summaries/${summaryId}/statements/${statementIndex}/promote`, {
+    body: JSON.stringify(body),
+    method: "POST",
+  });
+}
+
 export async function graphSearch(query: string, limit = 20): Promise<{ query: string; nodes: GraphNode[]; truncated: boolean }> {
   return request<{ query: string; nodes: GraphNode[]; truncated: boolean }>(
     `/api/graph/search?q=${encodeURIComponent(query)}&limit=${limit}`,

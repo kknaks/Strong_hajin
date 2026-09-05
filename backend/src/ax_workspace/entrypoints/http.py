@@ -104,6 +104,14 @@ class MeetingRealtimeCredentialRequest(BaseModel):
     max_session_duration_seconds: int = Field(default=3_600, ge=1, le=18_000)
 
 
+class MeetingFollowupPromotionRequest(BaseModel):
+    """Acting on a followup candidate: my own work, or a request to someone else."""
+
+    kind: str = "task"
+    title: str | None = None
+    assignee_id: str | None = None
+
+
 class AdoptMeetingSummaryRequest(BaseModel):
     expected_version: int = Field(ge=1)
 
@@ -582,6 +590,26 @@ def create_app(
                 )
             except Exception as error:
                 raise _runtime_error(error) from error
+
+        @app.post("/api/meetings/{meeting_id}/summaries/{summary_id}/statements/{statement_index}/promote")
+        def promote_meeting_followup(
+            meeting_id: UUID,
+            summary_id: UUID,
+            statement_index: int,
+            request: MeetingFollowupPromotionRequest,
+            response: Response,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                result = app.state.workflow_application.promote_meeting_followup(
+                    principal, meeting_id, summary_id, statement_index,
+                    kind=request.kind, title=request.title, assignee_id=request.assignee_id,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+            # A second press is a receipt for the work that already exists, not a second piece of work.
+            response.status_code = status.HTTP_200_OK if result["already_promoted"] else status.HTTP_201_CREATED
+            return result
 
         @app.post("/api/meetings/{meeting_id}/summaries/{summary_id}/adopt")
         def adopt_meeting_summary(

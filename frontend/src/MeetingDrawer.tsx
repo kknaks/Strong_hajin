@@ -1,9 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { adoptMeetingSummary, createMeetingNote, finalizeMeetingNote, getMeeting, saveMeetingNote } from "./api";
+import { promoteMeetingFollowup, adoptMeetingSummary, createMeetingNote, finalizeMeetingNote, getMeeting, saveMeetingNote } from "./api";
 import { formatDateTime, personName } from "./labels";
 import { Drawer } from "./Modal";
-import type { MeetingDetail, MeetingRecording, MeetingSummary, RawTranscriptSegment, RefinedTranscriptSegment } from "./viewModels";
+import type {
+  MeetingDetail,
+  MeetingRecording,
+  MeetingSummary,
+  MeetingSummaryStatement,
+  RawTranscriptSegment,
+  RefinedTranscriptSegment,
+} from "./viewModels";
 
 /**
  * One meeting's whole record, read through a single authorized projection.
@@ -93,6 +100,7 @@ export function MeetingDrawer({
   onChanged,
   onError,
   onNotice,
+  onOpenTask,
 }: {
   meetingId: string;
   personaId: string;
@@ -100,6 +108,8 @@ export function MeetingDrawer({
   onChanged: () => Promise<void> | void;
   onError: (message: string | null) => void;
   onNotice?: (message: string) => void;
+  /** Open the work a followup became, inside the product rather than through a URL. */
+  onOpenTask?: (taskId: string) => void;
 }) {
   const [meeting, setMeeting] = useState<MeetingDetail | null>(null);
   const [body, setBody] = useState("");
@@ -173,6 +183,28 @@ export function MeetingDrawer({
       await onChanged();
     } catch (error) {
       onError(error instanceof Error ? error.message : "회의록을 확정하지 못했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** A followup is a candidate until someone decides. Deciding makes ordinary work that keeps this meeting as context. */
+  async function promote(summary: MeetingSummary, statement: MeetingSummaryStatement) {
+    if (!meeting || busy) return;
+    setBusy(true);
+    onError(null);
+    try {
+      const result = await promoteMeetingFollowup(meeting.meeting_id, summary.summary_id, statement.statement_index, {
+        kind: "task",
+        title: statement.text,
+      });
+      await load();
+      onNotice?.(
+        result.already_promoted ? "이미 업무로 만들어 둔 후속입니다." : `'${result.task?.title ?? statement.text}'을 내 업무로 만들었습니다.`,
+      );
+      await onChanged();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "후속 업무를 만들지 못했습니다.");
     } finally {
       setBusy(false);
     }
@@ -352,6 +384,35 @@ export function MeetingDrawer({
                           <span>{evidence.text}</span>
                         </li>
                       ))}
+                    </ul>
+                  )}
+                  {(summary.statements ?? []).filter((statement) => statement.kind === "followup").length > 0 && (
+                    <ul aria-label="후속 업무 후보" className="summary-followups">
+                      {(summary.statements ?? [])
+                        .filter((statement) => statement.kind === "followup")
+                        .map((statement) => (
+                          <li key={`${summary.summary_id}-followup-${statement.statement_index}`}>
+                            <span>{statement.text}</span>
+                            {statement.promoted ? (
+                              <button
+                                className="btn link"
+                                onClick={() => statement.promoted_task_id && onOpenTask?.(statement.promoted_task_id)}
+                                type="button"
+                              >
+                                만든 업무 열기
+                              </button>
+                            ) : (
+                              <button
+                                className="btn h30"
+                                disabled={busy}
+                                onClick={() => void promote(summary, statement)}
+                                type="button"
+                              >
+                                내 업무로 만들기
+                              </button>
+                            )}
+                          </li>
+                        ))}
                     </ul>
                   )}
                   {summary.state !== "adopted" && meeting.note?.lifecycle !== "finalized" && (

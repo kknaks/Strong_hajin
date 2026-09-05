@@ -31,10 +31,6 @@ export type Persona = {
 
 export type TaskState = "open" | "in_progress" | "blocked" | "completion_submitted" | "done" | "cancelled";
 
-/**
- * Where requested work stands with the person who asked for it. Present only on Tasks whose completion they confirm.
- * `awaiting_review` means reported and waiting; `awaiting_revision` means they said what is still missing.
- */
 /** One part of a larger Task: a Task of its own, with its own holder, dates and state. */
 export type TaskChild = {
   task_id: string;
@@ -44,6 +40,10 @@ export type TaskChild = {
   assignee?: { member_id: string; display_name: string } | null;
 };
 
+/**
+ * Where requested work stands with the person who asked for it. Present only on Tasks whose completion they confirm.
+ * `awaiting_review` means reported and waiting; `awaiting_revision` means they said what is still missing.
+ */
 export type TaskDelivery = {
   action_item_id: string;
   status: "awaiting_review" | "awaiting_revision" | "resolved";
@@ -678,6 +678,18 @@ export type MeetingSummaryEvidence = {
   raw_end_ms: number;
 };
 
+/** One generated statement, and — for a followup — whether someone already turned it into work. */
+export type MeetingSummaryStatement = {
+  statement_index: number;
+  kind: string;
+  text: string;
+  raw_start_ms: number;
+  raw_end_ms: number;
+  promoted: boolean;
+  promoted_task_id?: string | null;
+  promoted_work_request_id?: string | null;
+};
+
 export type MeetingSummary = {
   summary_id: string;
   meeting_id: string;
@@ -688,6 +700,7 @@ export type MeetingSummary = {
   version: number;
   body: string;
   evidence: MeetingSummaryEvidence[];
+  statements?: MeetingSummaryStatement[];
 };
 
 export type MeetingDetail = MeetingSummaryRow & {

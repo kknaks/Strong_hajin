@@ -471,6 +471,26 @@ class MeetingSummaryEvidenceRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class MeetingFollowupPromotionRecord(Base):
+    """A followup someone decided to act on, and the work it became.
+
+    A summary statement is a candidate, not work. This row exists only after a person promoted it, so the same
+    candidate is never turned into two Tasks and the meeting can say which of its candidates were acted on.
+    """
+
+    __tablename__ = "meeting_followup_promotions"
+    __table_args__ = (UniqueConstraint("summary_id", "statement_index", name="uq_meeting_followup_promotion"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False, index=True)
+    summary_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_summary_suggestions.id"), nullable=False)
+    statement_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id"))
+    work_request_id: Mapped[UUID | None] = mapped_column(ForeignKey("work_requests.id"))
+    promoted_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    promoted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class WorkflowDefinitionRecord(Base):
     __tablename__ = "workflow_definitions"
 

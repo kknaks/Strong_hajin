@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { getCalendarEntries, getMyWork, getTasks, transitionDirectTask, updateTask } from "./api";
+import { getCalendarEntries, getMyWork, getTask, getTasks, transitionDirectTask, updateTask } from "./api";
 import { formatDateTime, personName } from "./labels";
 import { MeetingDrawer } from "./MeetingDrawer";
 import type { CalendarEntry, DirectTask, Persona, TaskPatch } from "./viewModels";
@@ -133,6 +133,13 @@ export function CalendarPage({ personaId, personaName, canManageOwnTasks, onAskA
           onClose={() => setSelectedMeeting(null)}
           onError={onError}
           onNotice={onNotice}
+          onOpenTask={(taskId) => {
+            // The work a followup became is opened here, where the person already is.
+            setSelectedMeeting(null);
+            void getTask(taskId)
+              .then(setSelected)
+              .catch((error: unknown) => onError(error instanceof Error ? error.message : "업무를 열지 못했습니다."));
+          }}
           personaId={personaId}
         />
       )}

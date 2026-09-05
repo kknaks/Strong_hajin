@@ -604,6 +604,55 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def promote_meeting_followup(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        summary_id: UUID,
+        statement_index: int,
+        *,
+        kind: str,
+        title: str | None = None,
+        assignee_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Turn a followup candidate into ordinary work, once, keeping the meeting it came from as its context.
+
+        The meeting module decides whether this person may act on this statement; the work modules make the work with
+        their own rules. Nothing here creates a second path into either ledger.
+        """
+        with self._session_factory() as session:
+            meetings = self._meetings(session)
+            candidate = meetings.followup_candidate(principal, meeting_id, summary_id, statement_index)
+            existing = candidate["promotion"]
+            if existing is not None:
+                return {
+                    "already_promoted": True,
+                    "task": self._tasks(session).get(principal, existing.task_id) if existing.task_id else None,
+                    "work_request": (
+                        self._work_requests(session).get(principal, existing.work_request_id)
+                        if existing.work_request_id
+                        else None
+                    ),
+                }
+            wanted = " ".join(str(title or candidate["statement"].statement_text).split())[:300]
+            if kind == "work_request":
+                if not assignee_id:
+                    raise MeetingError("요청으로 만들려면 담당 후보가 필요합니다")
+                created = self._work_requests(session).create(principal, wanted, assignee_id)
+                meetings.record_followup_promotion(principal, candidate, work_request_id=UUID(created["request_id"]))
+                session.commit()
+                return {"already_promoted": False, "work_request": created, "task": None}
+            if kind != "task":
+                raise MeetingError("후속 업무는 내 업무 또는 업무 요청으로만 만들 수 있습니다")
+            created = self._tasks(session).create_self(principal, wanted)
+            # The meeting travels with the work as the context it came from, through the ordinary material reference.
+            self._materials(session).attach_reference(
+                principal, UUID(created["task_id"]), kind="input", resource_type="meeting", resource_id=str(meeting_id)
+            )
+            meetings.record_followup_promotion(principal, candidate, task_id=UUID(created["task_id"]))
+            session.commit()
+            return {"already_promoted": False, "task": self._tasks(session).get(principal, UUID(created["task_id"])), "work_request": None}
+
     def _graph(self, session: Any) -> GraphApplication:
         return GraphApplication(_SessionGraphSource(self, session))
 

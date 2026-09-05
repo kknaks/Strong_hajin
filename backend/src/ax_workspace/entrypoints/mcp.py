@@ -24,6 +24,7 @@ from ax_workspace.modules.organization_access.domain import (
     DAILY_REPORT_GENERATE,
     DAILY_REPORT_READ,
     DAILY_REPORT_SUBMIT,
+    MEETING_READ,
     Principal,
     TASK_ASSIGN,
     TASK_READ,
@@ -381,6 +382,12 @@ class McpReportsFacade:
                 parsed[field] = _parse_iso_date(parsed[field])
         return self._application.update_task(self.principal, UUID(task_id), expected_version, parsed)
 
+    def list_meetings(self) -> list[dict[str, Any]]:
+        return self._application.calendar_entries(self.principal)
+
+    def get_meeting(self, meeting_id: str) -> dict[str, Any]:
+        return self._application.get_meeting(self.principal, UUID(meeting_id))
+
     def graph_search(self, query: str, limit: int = 20) -> dict[str, Any]:
         """Inside a delegated turn, what this finds becomes that turn's own record of where it looked."""
         causation_id = os.getenv("AX_MCP_CAUSATION_ID")
@@ -536,6 +543,7 @@ def _create_bound_persona_server(facade: McpReportsFacade) -> MCPServer:
     _register_action_item_tools(server, facade)
     _register_daily_report_tools(server, facade)
     _register_task_tools(server, facade)
+    _register_meeting_tools(server, facade)
     if "work_request.read" in principal.capabilities:
         _register_work_request_read_tools(server, facade)
     if "work_request.create" in principal.capabilities:
@@ -703,6 +711,33 @@ def _register_work_request_create_tools(server: MCPServer, facade: McpReportsFac
         return facade.create_work_request(
             title, assignee_id, due_date, description, cc_member_ids, checklist, reference_task_ids
         )
+
+
+def _register_meeting_tools(server: MCPServer, facade: McpReportsFacade) -> None:
+    if MEETING_READ not in facade.principal.capabilities:
+        return
+
+    @server.tool(
+        description=(
+            "List the meetings the delegated persona may see. A meeting they may not open appears as a busy block "
+            "with times only — no title, attendees, note or transcript."
+        ),
+        annotations=_READ_ONLY_TOOL,
+        structured_output=True,
+    )
+    def meeting_list() -> dict[str, Any]:
+        return {"entries": facade.list_meetings()}
+
+    @server.tool(
+        description=(
+            "Read one meeting the delegated persona may open: its note, recordings, transcript state and any summary "
+            "suggestions with the statements they stand on."
+        ),
+        annotations=_READ_ONLY_TOOL,
+        structured_output=True,
+    )
+    def meeting_get(meeting_id: str) -> dict[str, Any]:
+        return facade.get_meeting(meeting_id)
 
 
 def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:

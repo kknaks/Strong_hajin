@@ -9,6 +9,7 @@ vi.mock("./api", () => ({
   saveMeetingNote: vi.fn(),
   finalizeMeetingNote: vi.fn(),
   adoptMeetingSummary: vi.fn(),
+  promoteMeetingFollowup: vi.fn(),
 }));
 
 import * as api from "./api";
@@ -103,6 +104,10 @@ const recordedMeeting = () =>
             raw_end_ms: 3_000,
           },
         ],
+        statements: [
+          { statement_index: 1, kind: "summary", text: "일정을 논의했습니다.", raw_start_ms: 0, raw_end_ms: 3_000, promoted: false },
+          { statement_index: 2, kind: "followup", text: "지호가 계약서를 검토한다", raw_start_ms: 0, raw_end_ms: 3_000, promoted: false },
+        ],
       },
     ],
   });
@@ -115,6 +120,50 @@ function renderDrawer(detail: MeetingDetail) {
   render(<MeetingDrawer meetingId={detail.meeting_id} onChanged={onChanged} onClose={vi.fn()} onError={onError} onNotice={onNotice} personaId="mina" />);
   return { onError, onNotice, onChanged };
 }
+
+describe("회의에서 나온 후속 업무", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("offers to make a candidate into work, and says so once someone did", async () => {
+    vi.mocked(api.promoteMeetingFollowup).mockResolvedValue({
+      already_promoted: false,
+      task: { task_id: "task-9", title: "지호가 계약서를 검토한다" },
+      work_request: null,
+    } as never);
+    const { onNotice } = renderDrawer(recordedMeeting());
+    const candidates = await screen.findByLabelText("후속 업무 후보");
+    const row = within(candidates).getByRole("listitem");
+    expect(row.textContent).toContain("지호가 계약서를 검토한다");
+    // A decision is a decision, not a summary line: only followups are offered.
+    expect(within(candidates).getAllByRole("listitem")).toHaveLength(1);
+
+    vi.mocked(api.getMeeting).mockResolvedValue({
+      ...recordedMeeting(),
+      summaries: [
+        {
+          ...recordedMeeting().summaries[0],
+          statements: [
+            { statement_index: 1, kind: "summary", text: "일정을 논의했습니다.", raw_start_ms: 0, raw_end_ms: 3_000, promoted: false },
+            { statement_index: 2, kind: "followup", text: "지호가 계약서를 검토한다", raw_start_ms: 0, raw_end_ms: 3_000, promoted: true, promoted_task_id: "task-9" },
+          ],
+        },
+      ],
+    } as never);
+    fireEvent.click(within(row).getByRole("button", { name: "내 업무로 만들기" }));
+
+    await waitFor(() =>
+      expect(api.promoteMeetingFollowup).toHaveBeenCalledWith("m1", "s1", 2, { kind: "task", title: "지호가 계약서를 검토한다" }),
+    );
+    await waitFor(() => expect(onNotice).toHaveBeenCalled());
+    // Once it is work, the candidate stops offering to make it again and points at the work instead.
+    const after = within(await screen.findByLabelText("후속 업무 후보")).getByRole("listitem");
+    expect(within(after).getByRole("button", { name: "만든 업무 열기" })).toBeTruthy();
+    expect(within(after).queryByRole("button", { name: "내 업무로 만들기" })).toBeNull();
+  });
+});
 
 describe("meeting note lifecycle", () => {
   afterEach(() => {

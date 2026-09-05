@@ -101,6 +101,10 @@ class MeetingRepository(Protocol):
         statements: list[SummaryStatement],
     ) -> Any: ...
     def summary_evidence(self, summary: Any) -> list[Any]: ...
+    def followup_promotions(self, summary: Any) -> list[Any]: ...
+    def record_followup_promotion(
+        self, meeting: Any, summary: Any, statement_index: int, *, task_id: Any = None, work_request_id: Any = None, promoted_by: str
+    ) -> Any: ...
     def summary(self, meeting: Any, summary_id: UUID, *, lock: bool = False) -> Any | None: ...
     def adopt_summary(self, summary: Any, note_version: Any, actor_id: str) -> None: ...
     def speaker_assignments(self, transcript: Any) -> list[Any]: ...
@@ -874,6 +878,77 @@ class MeetingApplication:
         }
         return next(iter(member_ids)) if len(member_ids) == 1 else None
 
+    def _statement_views(self, summary: Any) -> list[dict[str, Any]]:
+        """Each generated statement, and — for a followup — whether someone has already acted on it."""
+        promoted = {row.statement_index: row for row in self._repository.followup_promotions(summary)}
+        rows = []
+        for row in self._repository.summary_evidence(summary):
+            promotion = promoted.get(row.statement_index)
+            rows.append(
+                {
+                    "statement_index": row.statement_index,
+                    "kind": row.statement_kind,
+                    "text": row.statement_text,
+                    "raw_start_ms": row.raw_start_ms,
+                    "raw_end_ms": row.raw_end_ms,
+                    "promoted": promotion is not None,
+                    "promoted_task_id": str(promotion.task_id) if promotion is not None and promotion.task_id else None,
+                    "promoted_work_request_id": (
+                        str(promotion.work_request_id) if promotion is not None and promotion.work_request_id else None
+                    ),
+                }
+            )
+        return rows
+
+    def followup_candidate(self, principal: Principal, meeting_id: UUID, summary_id: UUID, statement_index: int) -> dict[str, Any]:
+        """One statement someone may act on: readable meeting, completed summary, and a followup — nothing else."""
+        meeting = self._repository.meeting(meeting_id)
+        if meeting is None or not self._can_read_detail(principal, meeting):
+            raise MeetingNotFound("meeting was not found")
+        summary = self._repository.summary(meeting, summary_id)
+        if summary is None or summary.state not in {"completed", "adopted"}:
+            raise MeetingNotFound("meeting summary suggestion was not found")
+        statement = next(
+            (row for row in self._repository.summary_evidence(summary) if row.statement_index == statement_index), None
+        )
+        if statement is None:
+            raise MeetingNotFound("summary statement was not found")
+        if statement.statement_kind != "followup":
+            raise MeetingError("후속 업무 후보만 업무로 만들 수 있습니다")
+        existing = next(
+            (row for row in self._repository.followup_promotions(summary) if row.statement_index == statement_index), None
+        )
+        return {
+            "meeting": meeting,
+            "summary": summary,
+            "statement": statement,
+            "promotion": existing,
+        }
+
+    def record_followup_promotion(
+        self,
+        principal: Principal,
+        candidate: dict[str, Any],
+        *,
+        task_id: Any = None,
+        work_request_id: Any = None,
+    ) -> Any:
+        promotion = self._repository.record_followup_promotion(
+            candidate["meeting"],
+            candidate["summary"],
+            int(candidate["statement"].statement_index),
+            task_id=task_id,
+            work_request_id=work_request_id,
+            promoted_by=str(principal.id),
+        )
+        self._repository.append_audit(
+            candidate["meeting"],
+            str(principal.id),
+            "meeting.followup_promoted",
+            f"후속 업무 생성: {candidate['statement'].statement_text[:80]}",
+        )
+        return promotion
+
     def _summary_view(self, summary: Any) -> dict[str, Any]:
         return {
             "summary_id": str(summary.id),
@@ -885,6 +960,7 @@ class MeetingApplication:
             "version": summary.version,
             "body": summary.body,
             "provider_call_ref": summary.provider_call_ref,
+            "statements": self._statement_views(summary),
             "evidence": [
                 {
                     "statement_index": row.statement_index,

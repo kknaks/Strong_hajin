@@ -716,6 +716,11 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .checklist-item .step-edit { flex: 1; min-width: 0; height: 30px; font-size: 13px; }
 .checklist-item:hover .btn, .checklist-item:focus-within .btn { opacity: 1; }
 
+/* ---- followups a meeting produced, before anyone decided they are work */
+.summary-followups { display: grid; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
+.summary-followups li { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.summary-followups li span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
 /* ---- what a turn actually looked at, before the answer it gave */
 .ax-search-path { margin: 8px 0; padding: 8px 10px; border: 1px solid var(--border-subtle); border-radius: 10px; background: var(--surface-sunken); font-size: 12px; }
 .ax-search-path b { display: block; font-size: 12px; }

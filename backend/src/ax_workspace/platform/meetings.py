@@ -15,6 +15,7 @@ from ax_workspace.platform.persistence import (
     ActivityEventRecord,
     EmploymentPeriodRecord,
     MeetingAttendeeRecord,
+    MeetingFollowupPromotionRecord,
     MeetingNoteRecord,
     MeetingNoteVersionRecord,
     MeetingRecordingRecord,
@@ -586,6 +587,39 @@ class SqlAlchemyMeetingRepository:
             )
         self._session.flush()
         return summary
+
+    def followup_promotions(self, summary: MeetingSummarySuggestionRecord) -> list[MeetingFollowupPromotionRecord]:
+        return list(
+            self._session.scalars(
+                select(MeetingFollowupPromotionRecord)
+                .where(MeetingFollowupPromotionRecord.summary_id == summary.id)
+                .order_by(MeetingFollowupPromotionRecord.statement_index)
+            )
+        )
+
+    def record_followup_promotion(
+        self,
+        meeting: MeetingRecord,
+        summary: MeetingSummarySuggestionRecord,
+        statement_index: int,
+        *,
+        task_id: Any = None,
+        work_request_id: Any = None,
+        promoted_by: str,
+    ) -> MeetingFollowupPromotionRecord:
+        """Written only after a person decided; the unique pair is what stops a candidate becoming two Tasks."""
+        record = MeetingFollowupPromotionRecord(
+            meeting_id=meeting.id,
+            summary_id=summary.id,
+            statement_index=statement_index,
+            task_id=task_id,
+            work_request_id=work_request_id,
+            promoted_by=promoted_by,
+            promoted_at=datetime.now(UTC),
+        )
+        self._session.add(record)
+        self._session.flush()
+        return record
 
     def summary_evidence(
         self,
