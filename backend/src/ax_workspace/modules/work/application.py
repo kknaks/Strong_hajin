@@ -105,6 +105,7 @@ class TaskApplication:
         start_date: date | None = None,
         due_date: date | None = None,
         source_action_item_id: UUID | None = None,
+        checklist: list[str] | None = None,
     ) -> dict[str, Any]:
         self._require(principal, TASK_SELF_MANAGE)
         if not title.strip():
@@ -119,6 +120,7 @@ class TaskApplication:
                 description=_clean_text(description),
                 start_date=start_date,
                 due_date=due_date,
+                checklist=clean_checklist(checklist),
             )
         )
 
@@ -542,6 +544,26 @@ def _assignment_view(assignments: Any) -> dict[str, Any] | None:
         "assigned_by": current.assigned_by,
         "accepted_at": _iso(current.accepted_at),
     }
+
+
+#: A checklist written with the work itself. Bounded so a creation payload cannot become a data dump.
+MAX_INITIAL_STEPS = 50
+
+
+def clean_checklist(texts: Any) -> list[str]:
+    """The steps someone actually wrote: blank lines are not steps, and the order is theirs."""
+    if not texts:
+        return []
+    if isinstance(texts, str) or not isinstance(texts, (list, tuple)):
+        raise TaskError("checklist must be a list of steps")
+    cleaned = []
+    for text in texts:
+        step = " ".join(str(text).split())
+        if step:
+            cleaned.append(step[:300])
+    if len(cleaned) > MAX_INITIAL_STEPS:
+        raise TaskError(f"a new task can start with at most {MAX_INITIAL_STEPS} steps")
+    return cleaned
 
 
 def validate_schedule(start_date: date | None, due_date: date | None) -> None:

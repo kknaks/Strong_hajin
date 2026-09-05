@@ -143,6 +143,7 @@ class SqlAlchemyTaskRepository:
         start_date: date | None = None,
         due_date: date | None = None,
         source_action_item_id: UUID | None = None,
+        checklist: list[str] | None = None,
     ) -> TaskRecord:
         if causation_key:
             existing = self.session.scalar(
@@ -179,6 +180,7 @@ class SqlAlchemyTaskRepository:
             target_type="task", target_id=str(task.id), event_kind="task.created", actor_id=owner_id,
             after_ref=f"task:{task.id}@1", safe_summary=f"업무 생성: {title}",
         )
+        self.seed_checklist(task, checklist, owner_id)
         self.capture_version(task, owner_id, "task.created")
         return task
 
@@ -219,6 +221,11 @@ class SqlAlchemyTaskRepository:
         self.session.add(record)
         self.session.flush()
         return record
+
+    def seed_checklist(self, task: TaskRecord, texts: list[str] | None, author_id: str) -> None:
+        """Steps written with the work itself. They belong to version 1, so no version moves for them."""
+        for text in texts or []:
+            self.add_checklist_item(task.id, text, author_id)
 
     def checklist_item(self, task_id: UUID, item_id: UUID, *, lock: bool = False) -> TaskChecklistItemRecord | None:
         """A step still on the list. An archived one answers as one that is not there."""
@@ -471,6 +478,7 @@ class SqlAlchemyWorkRequestRepository:
         description: str | None = None,
         due_date: date | None = None,
         cc_member_ids: list[str] | None = None,
+        checklist: list[str] | None = None,
     ) -> tuple[WorkRequestRecord, bool]:
         if causation_key:
             existing = self._session.scalar(
@@ -494,6 +502,7 @@ class SqlAlchemyWorkRequestRepository:
             state="pending",
             version=1,
             conditions=None,
+            initial_checklist=list(checklist) if checklist else None,
             created_at=now,
             updated_at=now,
             causation_key=causation_key,
@@ -824,7 +833,10 @@ class SqlAlchemyWorkRequestRepository:
             )
         )
         self._session.flush()
-        SqlAlchemyTaskRepository(self._session).capture_version(task, request.assignee_id, "task.created")
+        tasks = SqlAlchemyTaskRepository(self._session)
+        # The steps came with the request, so they were written by the person who asked, not by the one accepting.
+        tasks.seed_checklist(task, list(request.initial_checklist or []), request.requester_id)
+        tasks.capture_version(task, request.assignee_id, "task.created")
         return task
 
     def append_audit(self, request_id: UUID, actor_id: str, event_type: str, payload: dict) -> None:
@@ -1038,6 +1050,7 @@ class SqlAlchemyTaskAssignmentRepository:
         start_date: date | None = None,
         due_date: date | None = None,
         causation_key: str | None = None,
+        checklist: list[str] | None = None,
     ) -> tuple[TaskRecord, TaskAssignmentRecord]:
         if causation_key:
             existing = self._session.scalar(select(TaskRecord).where(TaskRecord.causation_key == causation_key))
@@ -1079,7 +1092,9 @@ class SqlAlchemyTaskAssignmentRepository:
         )
         self._session.add(assignment)
         self._session.flush()
-        SqlAlchemyTaskRepository(self._session).capture_version(task, assigner_id, "task.created")
+        tasks = SqlAlchemyTaskRepository(self._session)
+        tasks.seed_checklist(task, checklist, assigner_id)
+        tasks.capture_version(task, assigner_id, "task.created")
         item = DecisionItemRecord(
             kind="task.assignment.acceptance",
             subject_id=subject.id,

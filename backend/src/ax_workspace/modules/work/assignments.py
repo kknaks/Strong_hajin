@@ -6,12 +6,12 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from ax_workspace.modules.organization_access.domain import Principal, TASK_ASSIGN, TASK_READ, TASK_SELF_MANAGE
-from ax_workspace.modules.work.application import InvalidTaskTransition, TaskAccessDenied, TaskApplication, TaskError, TaskNotFound, validate_schedule, _clean_text, _iso
+from ax_workspace.modules.work.application import InvalidTaskTransition, TaskAccessDenied, TaskApplication, TaskError, TaskNotFound, validate_schedule, clean_checklist, _clean_text, _iso
 
 
 class TaskAssignmentRepository(Protocol):
     def create_assigned_task(
-        self, assigner_id: str, assignee_id: str, title: str, *, description: str | None = None, start_date: date | None = None, due_date: date | None = None, causation_key: str | None = None
+        self, assigner_id: str, assignee_id: str, title: str, *, description: str | None = None, start_date: date | None = None, due_date: date | None = None, causation_key: str | None = None, checklist: list[str] | None = None
     ) -> tuple[Any, Any]: ...
     def assignment(self, assignment_id: UUID, *, lock: bool = False) -> Any: ...
     def task_for(self, assignment: Any) -> Any: ...
@@ -47,6 +47,7 @@ class TaskAssignmentApplication:
         start_date: date | None = None,
         due_date: date | None = None,
         causation_key: str | None = None,
+        checklist: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create a Task for someone else. It enters their My Work only after they accept the assignment."""
         self._require(principal, TASK_ASSIGN)
@@ -60,6 +61,7 @@ class TaskAssignmentApplication:
         task, assignment = self._repository.create_assigned_task(
             str(principal.id), assignee_id, title.strip(),
             description=_clean_text(description), start_date=start_date, due_date=due_date, causation_key=causation_key,
+            checklist=clean_checklist(checklist),
         )
         return self._view(assignment, task)
 

@@ -188,9 +188,13 @@ class McpReportsFacade:
         return self._application.get_work_request(self.principal, UUID(request_id))
 
     def create_work_request(
-        self, title: str, assignee_id: str, due_date: str | None = None, description: str | None = None, cc_member_ids: list[str] | None = None
+        self, title: str, assignee_id: str, due_date: str | None = None, description: str | None = None,
+        cc_member_ids: list[str] | None = None, checklist: list[str] | None = None,
     ) -> dict[str, Any]:
-        payload = {"title": title, "assignee_id": assignee_id, "due_date": due_date, "description": description, "cc_member_ids": list(cc_member_ids or [])}
+        payload = {
+            "title": title, "assignee_id": assignee_id, "due_date": due_date, "description": description,
+            "cc_member_ids": list(cc_member_ids or []), "checklist": list(checklist or []),
+        }
         action = self._propose_chat_action("work_request.create", "업무 요청 생성 확인", payload)
         if action is not None:
             return action
@@ -202,6 +206,7 @@ class McpReportsFacade:
             description=description,
             due_date=_parse_iso_date(due_date),
             cc_member_ids=list(cc_member_ids or []),
+            checklist=list(checklist or []),
         )
 
     def accept_work_request(self, request_id: str, expected_version: int) -> dict[str, Any]:
@@ -300,14 +305,18 @@ class McpReportsFacade:
     def task_history(self, task_id: str) -> dict[str, Any]:
         return self._application.task_history(self.principal, UUID(task_id))
 
-    def create_self_task(self, title: str) -> dict[str, Any]:
-        action = self._propose_chat_action("task.create_self", "업무 생성 확인", {"title": title})
+    def create_self_task(self, title: str, checklist: list[str] | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"title": title}
+        if checklist:
+            payload["checklist"] = list(checklist)
+        action = self._propose_chat_action("task.create_self", "업무 생성 확인", payload)
         if action is not None:
             return action
         return self._application.create_self_task(
             self.principal,
             title,
-            self._mutation_key("task.create_self", {"title": title}),
+            self._mutation_key("task.create_self", payload),
+            checklist=list(checklist or []),
         )
 
     def _mutation_key(self, operation: str, payload: dict[str, Any]) -> str | None:
@@ -413,14 +422,21 @@ class McpReportsFacade:
     def task_assignment_inbox(self) -> list[dict[str, Any]]:
         return self._application.task_assignment_inbox(self.principal)
 
-    def assign_task(self, title: str, assignee_id: str, description: str | None, start_date: str | None, due_date: str | None) -> dict[str, Any]:
-        payload = {"title": title, "assignee_id": assignee_id, "description": description, "start_date": start_date, "due_date": due_date}
+    def assign_task(
+        self, title: str, assignee_id: str, description: str | None, start_date: str | None, due_date: str | None,
+        checklist: list[str] | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "title": title, "assignee_id": assignee_id, "description": description,
+            "start_date": start_date, "due_date": due_date, "checklist": list(checklist or []),
+        }
         action = self._propose_chat_action("task.assign", f"업무 배정 확인: {title}", payload)
         if action is not None:
             return action
         return self._application.assign_task(
             self.principal, title, assignee_id,
             description=description, start_date=_parse_iso_date(start_date), due_date=_parse_iso_date(due_date),
+            checklist=list(checklist or []),
         )
 
     def decide_task_assignment(self, assignment_id: str, decision: str, reason: str | None = None) -> dict[str, Any]:
@@ -643,9 +659,10 @@ def _register_work_request_create_tools(server: MCPServer, facade: McpReportsFac
 
     @server.tool(description="Create a WorkRequest with an optional ISO due_date and description; it creates no Task until the assignee accepts.")
     def work_request_create(
-        title: str, assignee_id: str, due_date: str | None = None, description: str | None = None, cc_member_ids: list[str] | None = None
+        title: str, assignee_id: str, due_date: str | None = None, description: str | None = None,
+        cc_member_ids: list[str] | None = None, checklist: list[str] | None = None,
     ) -> dict[str, Any]:
-        return facade.create_work_request(title, assignee_id, due_date, description, cc_member_ids)
+        return facade.create_work_request(title, assignee_id, due_date, description, cc_member_ids, checklist)
 
 
 def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
@@ -731,9 +748,9 @@ def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
     def task_checklist_reorder(task_id: str, item_ids: list[str]) -> dict[str, Any]:
         return facade.reorder_checklist(task_id, item_ids)
 
-    @server.tool(description="Create a self-owned Task.")
-    def task_create_self(title: str) -> dict[str, Any]:
-        return facade.create_self_task(title)
+    @server.tool(description="Create a self-owned Task, optionally with the first steps of its checklist in order.")
+    def task_create_self(title: str, checklist: list[str] | None = None) -> dict[str, Any]:
+        return facade.create_self_task(title, checklist)
 
     if TASK_ASSIGN in facade.principal.capabilities:
         @server.tool(description="List members within the delegated persona's units who can be assigned a Task.")
@@ -741,8 +758,11 @@ def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
             return facade.task_assignment_candidates()
 
         @server.tool(description="Assign a new Task to a member (ISO dates optional); it stays pending until they accept.")
-        def task_assign(title: str, assignee_id: str, description: str | None = None, start_date: str | None = None, due_date: str | None = None) -> dict[str, Any]:
-            return facade.assign_task(title, assignee_id, description, start_date, due_date)
+        def task_assign(
+            title: str, assignee_id: str, description: str | None = None, start_date: str | None = None,
+            due_date: str | None = None, checklist: list[str] | None = None,
+        ) -> dict[str, Any]:
+            return facade.assign_task(title, assignee_id, description, start_date, due_date, checklist)
 
     @server.tool(description="Edit an owned Task's title, description, start_date, or due_date (ISO dates) using its required expected version.")
     def task_update(

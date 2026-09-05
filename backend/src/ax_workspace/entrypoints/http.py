@@ -47,6 +47,8 @@ class CreateTaskRequest(BaseModel):
     description: str | None = None
     start_date: date | None = None
     due_date: date | None = None
+    #: Steps someone already knows about, in the order they wrote them.
+    checklist: list[str] = []
 
 
 class CreateMeetingRequest(BaseModel):
@@ -116,6 +118,7 @@ class AssignTaskRequest(BaseModel):
     description: str | None = None
     start_date: date | None = None
     due_date: date | None = None
+    checklist: list[str] = []
 
 
 class ReassignTaskRequest(BaseModel):
@@ -184,6 +187,8 @@ class CreateWorkRequestRequest(BaseModel):
     description: str | None = None
     due_date: date | None = None
     cc_member_ids: list[str] = []
+    #: Steps the requester already knows about. They become the accepted Task's checklist.
+    checklist: list[str] = []
 
 
 class WorkRequestDecisionRequest(BaseModel):
@@ -673,6 +678,7 @@ def create_app(
                     description=request.description,
                     start_date=request.start_date,
                     due_date=request.due_date,
+                    checklist=request.checklist,
                 )
             except Exception as error:
                 raise _runtime_error(error) from error
@@ -683,6 +689,7 @@ def create_app(
                 return app.state.workflow_application.assign_task(
                     principal, request.title, request.assignee_id,
                     description=request.description, start_date=request.start_date, due_date=request.due_date,
+                    checklist=request.checklist,
                 )
             except Exception as error:
                 raise _runtime_error(error) from error
@@ -874,6 +881,7 @@ def create_app(
                 return app.state.workflow_application.create_work_request(
                     principal, request.title, request.assignee_id,
                     description=request.description, due_date=request.due_date, cc_member_ids=request.cc_member_ids,
+                    checklist=request.checklist,
                 )
             except Exception as error:
                 raise _runtime_error(error) from error

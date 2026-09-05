@@ -1840,6 +1840,8 @@ export function CreateWorkDrawer({
   const [assigneeId, setAssigneeId] = useState(assigneeCandidates[0]?.id ?? "");
   const [taskOwnerId, setTaskOwnerId] = useState("me");
   const [ccIds, setCcIds] = useState<string[]>([]);
+  const [steps, setSteps] = useState<string[]>([]);
+  const [newStep, setNewStep] = useState("");
   const [isWorking, setIsWorking] = useState(false);
   const assignTarget = taskOwnerId === "me" ? null : assignCandidates.find((candidate) => candidate.id === taskOwnerId) ?? null;
 
@@ -1860,11 +1862,14 @@ export function CreateWorkDrawer({
     setIsWorking(true);
     onError(null);
     try {
+      // Steps written here belong to the work from the start, in the order they were written.
+      const checklist = steps.length > 0 ? steps : undefined;
       if (kind === "task" && assignTarget) {
         await assignTask(trimmed, assignTarget.id, {
           description: description.trim() || undefined,
           start_date: startDate || undefined,
           due_date: dueDate || undefined,
+          checklist,
         });
         await onCreated(`'${trimmed}' 업무를 ${personName(assignTarget.display_name)}에게 배정했습니다. 수락하면 그 사람의 업무가 됩니다.`);
       } else if (kind === "task") {
@@ -1872,6 +1877,7 @@ export function CreateWorkDrawer({
           description: description.trim() || undefined,
           start_date: startDate || undefined,
           due_date: dueDate || undefined,
+          checklist,
         });
         await onCreated(`'${trimmed}' 업무를 만들었습니다.`);
       } else {
@@ -1879,6 +1885,7 @@ export function CreateWorkDrawer({
           description: description.trim() || undefined,
           due_date: dueDate || undefined,
           cc_member_ids: ccIds.filter((id) => id !== assigneeId),
+          checklist,
         });
         const assignee = assigneeCandidates.find((candidate) => candidate.id === assigneeId);
         await onCreated(`'${request.title}' 요청을 ${assignee ? personName(assignee.display_name) : "담당 후보"}에게 보냈습니다.`);
@@ -1889,6 +1896,13 @@ export function CreateWorkDrawer({
     } finally {
       setIsWorking(false);
     }
+  }
+
+  function appendStep() {
+    const step = newStep.trim();
+    if (!step) return;
+    setSteps((current) => [...current, step]);
+    setNewStep("");
   }
 
   const titleInputId = kind === "task" ? "task-title" : "work-request-title";
@@ -2049,6 +2063,51 @@ export function CreateWorkDrawer({
             <p className="t-meta">참조자는 요청을 읽고 논의할 수 있지만 판단하지 않습니다.</p>
           </fieldset>
         )}
+        <fieldset aria-label="시작 단계" className="field cc-picker">
+          <legend>시작 단계</legend>
+          {steps.length > 0 && (
+            <ul className="checklist">
+              {steps.map((step, index) => (
+                <li className="checklist-item" key={`${step}-${index}`}>
+                  <span>{step}</span>
+                  <button
+                    aria-label={`${step} 빼기`}
+                    className="btn h30 ghost"
+                    onClick={() => setSteps((current) => current.filter((_, position) => position !== index))}
+                    type="button"
+                  >
+                    빼기
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="inline-reason" style={{ padding: "8px 0 0" }}>
+            <label className="sr-only" htmlFor="new-task-step">
+              추가할 단계
+            </label>
+            <input
+              id="new-task-step"
+              onChange={(event) => setNewStep(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                if (event.repeat || event.nativeEvent.isComposing) return;
+                appendStep();
+              }}
+              placeholder={kind === "task" ? "이 업무를 끝내려면 무엇을 해야 하나" : "부탁할 일을 단계로 적어 두면 그대로 넘어갑니다"}
+              value={newStep}
+            />
+            <button className="btn" disabled={!newStep.trim()} onClick={appendStep} type="button">
+              단계 추가
+            </button>
+          </div>
+          <p className="t-meta">
+            {kind === "task"
+              ? "지금 아는 단계만 적어도 됩니다. 나중에 업무 상세에서 더할 수 있습니다."
+              : "여기 적은 단계는 상대가 수락한 업무의 체크리스트가 됩니다."}
+          </p>
+        </fieldset>
         <div className="field">
           <label htmlFor="new-task-description">{kind === "task" ? "업무 내용" : "요청 내용"}</label>
           <textarea

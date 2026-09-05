@@ -478,9 +478,13 @@ class WorkflowApplication:
         description: str | None = None,
         start_date: Any = None,
         due_date: Any = None,
+        checklist: list[str] | None = None,
     ) -> dict[str, Any]:
         with self._session_factory() as session:
-            result = self._tasks(session).create_self(principal, title, causation_key, description=description, start_date=start_date, due_date=due_date)
+            result = self._tasks(session).create_self(
+                principal, title, causation_key,
+                description=description, start_date=start_date, due_date=due_date, checklist=checklist,
+            )
             session.commit()
             return result
 
@@ -631,10 +635,12 @@ class WorkflowApplication:
         description: str | None = None,
         due_date: Any = None,
         cc_member_ids: list[str] | None = None,
+        checklist: list[str] | None = None,
     ) -> dict[str, Any]:
         with self._session_factory() as session:
             result = self._work_requests(session).create(
-                principal, title, assignee_id, causation_key, description=description, due_date=due_date, cc_member_ids=cc_member_ids
+                principal, title, assignee_id, causation_key,
+                description=description, due_date=due_date, cc_member_ids=cc_member_ids, checklist=checklist,
             )
             session.commit()
             return result

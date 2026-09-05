@@ -1,0 +1,110 @@
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("./api", () => ({
+  createDirectTask: vi.fn(),
+  createWorkRequest: vi.fn(),
+  assignTask: vi.fn(),
+  getTask: vi.fn(),
+  getTaskMaterials: vi.fn(),
+  addChecklistItem: vi.fn(),
+  reorderChecklist: vi.fn(),
+  updateChecklistItem: vi.fn(),
+  removeChecklistItem: vi.fn(),
+  uploadTaskMaterial: vi.fn(),
+  detachTaskMaterial: vi.fn(),
+  attachTaskMaterialLink: vi.fn(),
+  attachTaskMaterialReference: vi.fn(),
+  getTasks: vi.fn(),
+  getTaskAssignmentCandidates: vi.fn(),
+  reassignTask: vi.fn(),
+  taskMaterialContentUrl: () => "",
+  addWorkRequestComment: vi.fn(),
+  getWorkRequestTimeline: vi.fn(),
+  getTaskHistory: vi.fn(),
+  getTaskHistoryDiff: vi.fn(),
+  uploadCommentAttachment: vi.fn(),
+  uploadRequestEvidence: vi.fn(),
+  requestAttachmentUrl: () => "",
+  resubmitWorkRequest: vi.fn(),
+  decideWorkRequest: vi.fn(),
+  negotiateWorkRequest: vi.fn(),
+  amendWorkRequest: vi.fn(),
+}));
+
+import * as api from "./api";
+import { CreateWorkDrawer } from "./WorkModals";
+
+const jiho = { id: "jiho", display_name: "지호 (팀장)", role: "manager" } as never;
+
+function renderDrawer() {
+  const onCreated = vi.fn();
+  render(
+    <CreateWorkDrawer
+      assigneeCandidates={[jiho]}
+      assignCandidates={[jiho]}
+      canCreateRequest
+      canCreateTask
+      ccCandidates={[]}
+      onClose={vi.fn()}
+      onCreated={onCreated}
+      onError={vi.fn()}
+      ownerName="민아"
+    />,
+  );
+  return { onCreated };
+}
+
+const addStep = (text: string) => {
+  const steps = screen.getByLabelText("시작 단계");
+  fireEvent.change(within(steps).getByLabelText("추가할 단계"), { target: { value: text } });
+  fireEvent.click(within(steps).getByRole("button", { name: "단계 추가" }));
+};
+
+describe("writing down the first steps with the work", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("sends the steps a person listed, in their order, with a new task", async () => {
+    vi.mocked(api.createDirectTask).mockResolvedValue({ task_id: "task-1" } as never);
+    renderDrawer();
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "단계까지 아는 업무" } });
+    addStep("자료 모으기");
+    addStep("초안 쓰기");
+    // What was typed is visible before anything is sent, and can be taken back out.
+    const steps = screen.getByLabelText("시작 단계");
+    expect(within(steps).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
+      expect.stringContaining("자료 모으기"),
+      expect.stringContaining("초안 쓰기"),
+    ]);
+    addStep("잘못 적은 단계");
+    fireEvent.click(within(steps).getByRole("button", { name: "잘못 적은 단계 빼기" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "업무 추가" }));
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalled());
+    expect(vi.mocked(api.createDirectTask).mock.calls[0][1]?.checklist).toEqual(["자료 모으기", "초안 쓰기"]);
+  });
+
+  it("sends them with a request too, so the steps survive into the accepted work", async () => {
+    vi.mocked(api.createWorkRequest).mockResolvedValue({ title: "부탁한 업무" } as never);
+    renderDrawer();
+    fireEvent.click(screen.getByRole("tab", { name: "요청" }));
+    fireEvent.change(screen.getByLabelText("요청할 업무"), { target: { value: "부탁한 업무" } });
+    addStep("현황 파악");
+
+    fireEvent.click(screen.getByRole("button", { name: "업무 요청 보내기" }));
+    await waitFor(() => expect(api.createWorkRequest).toHaveBeenCalled());
+    expect(vi.mocked(api.createWorkRequest).mock.calls[0][2]?.checklist).toEqual(["현황 파악"]);
+  });
+
+  it("sends nothing about steps when nobody wrote any", async () => {
+    vi.mocked(api.createDirectTask).mockResolvedValue({ task_id: "task-1" } as never);
+    renderDrawer();
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "단계 없는 업무" } });
+    fireEvent.click(screen.getByRole("button", { name: "업무 추가" }));
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalled());
+    expect(vi.mocked(api.createDirectTask).mock.calls[0][1]?.checklist).toBeUndefined();
+  });
+});

@@ -229,6 +229,7 @@ class SqlAlchemyActionExecutor:
                 description=action.payload.get("description"),
                 due_date=_parse_date(action.payload.get("due_date")),
                 cc_member_ids=list(action.payload.get("cc_member_ids") or []),
+                checklist=list(action.payload.get("checklist") or []),
             )
         if action.action_type == "daily_report.edit":
             return DailyReportApplication(
@@ -254,7 +255,8 @@ class SqlAlchemyActionExecutor:
             ).submit(principal, str(action.payload["report_id"]), str(action.payload["draft_id"]), int(action.payload["expected_version"]), action.payload.get("reason"))
         if action.action_type == "task.create_self":
             return TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session), SqlAlchemyActionRepository(self._session)).create_self(
-                principal, str(action.payload["title"]), causation_key=str(action.id), source_action_item_id=action.id
+                principal, str(action.payload["title"]), causation_key=str(action.id), source_action_item_id=action.id,
+                checklist=list(action.payload.get("checklist") or []),
             )
         if action.action_type == "task.update":
             changes = dict(action.payload.get("changes", {}))
@@ -273,6 +275,7 @@ class SqlAlchemyActionExecutor:
                 start_date=_parse_date(action.payload.get("start_date")),
                 due_date=_parse_date(action.payload.get("due_date")),
                 causation_key=str(action.id),
+                checklist=list(action.payload.get("checklist") or []),
             )
         if action.action_type == "task.assignment.accept":
             return self._assignments().accept(principal, UUID(str(action.payload["assignment_id"])))
@@ -447,6 +450,12 @@ class ActionPresenter:
                 self._person(fields, "assignee", "담당", action.owner_id, principal)
             self._date(fields, "start_date", "시작일", payload.get("start_date"))
             self._date(fields, "due_date", "기한", payload.get("due_date"))
+            steps = [str(step) for step in payload.get("checklist") or []]
+            if steps:
+                fields.append({
+                    "id": "checklist", "label": "체크리스트",
+                    "value": f"{len(steps)}단계 · " + " → ".join(steps), "kind": "text",
+                })
             cc = [str(member) for member in payload.get("cc_member_ids") or []]
             if cc:
                 names = self._names(principal)

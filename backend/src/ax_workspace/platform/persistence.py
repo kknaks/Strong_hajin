@@ -1067,6 +1067,9 @@ class WorkRequestRecord(Base):
     state: Mapped[str] = mapped_column(String(40), nullable=False)
     version: Mapped[int] = mapped_column(nullable=False, default=1)
     conditions: Mapped[dict | None] = mapped_column(JSON)
+    #: The steps the requester already knew about, in order. Creation content, not something a round negotiates:
+    #: they become the accepted Task's checklist, written by the person who asked.
+    initial_checklist: Mapped[list | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     causation_key: Mapped[str | None] = mapped_column(String(64), unique=True)

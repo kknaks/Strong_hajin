@@ -14,6 +14,7 @@ from ax_workspace.modules.organization_access.domain import (
     WORK_REQUEST_DECIDE,
     WORK_REQUEST_READ,
 )
+from ax_workspace.modules.work.application import clean_checklist
 from ax_workspace.modules.work.materials import AttachmentRepository, MaterialNotFound, MaterialStorage, store_file
 
 
@@ -45,6 +46,7 @@ class WorkRequestRepository(Protocol):
         description: str | None = None,
         due_date: date | None = None,
         cc_member_ids: list[str] | None = None,
+        checklist: list[str] | None = None,
     ) -> tuple[Any, bool]: ...
     def request(self, request_id: UUID, *, lock: bool = False) -> Any: ...
     def cc_member_ids(self, request: Any) -> list[str]: ...
@@ -194,6 +196,7 @@ class WorkRequestApplication:
         description: str | None = None,
         due_date: date | None = None,
         cc_member_ids: list[str] | None = None,
+        checklist: list[str] | None = None,
     ) -> dict[str, Any]:
         self._require(principal, WORK_REQUEST_CREATE)
         if not title.strip():
@@ -216,6 +219,8 @@ class WorkRequestApplication:
             description=cleaned_description,
             due_date=due_date,
             cc_member_ids=cc,
+            # The steps travel with the request and become the accepted Task's own checklist.
+            checklist=clean_checklist(checklist),
         )
         if created:
             self._repository.append_audit(request.id, str(principal.id), "work_request.created", {})

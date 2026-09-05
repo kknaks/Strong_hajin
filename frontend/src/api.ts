@@ -91,7 +91,7 @@ export async function getMyOrganizationProfile(): Promise<OrganizationProfile> {
 
 export async function createDirectTask(
   title: string,
-  extra: { description?: string; start_date?: string | null; due_date?: string | null } = {},
+  extra: { description?: string; start_date?: string | null; due_date?: string | null; checklist?: string[] } = {},
 ): Promise<DirectTask> {
   return request<DirectTask>("/api/tasks", {
     body: JSON.stringify({ title, ...extra }),
@@ -258,7 +258,7 @@ export async function getWorkRequestAssigneeCandidates(): Promise<Persona[]> {
 export async function createWorkRequest(
   title: string,
   assigneeId: string,
-  extra: { description?: string; due_date?: string | null; cc_member_ids?: string[] } = {},
+  extra: { description?: string; due_date?: string | null; cc_member_ids?: string[]; checklist?: string[] } = {},
 ): Promise<WorkRequest> {
   return request<WorkRequest>("/api/work-requests", {
     body: JSON.stringify({ title, assignee_id: assigneeId, ...extra }),
@@ -407,7 +407,7 @@ export async function getTaskAssignmentCandidates(): Promise<Persona[]> {
 export async function assignTask(
   title: string,
   assigneeId: string,
-  extra: { description?: string; start_date?: string; due_date?: string } = {},
+  extra: { description?: string; start_date?: string; due_date?: string; checklist?: string[] } = {},
 ): Promise<TaskAssignment> {
   return request<TaskAssignment>("/api/tasks/assign", { body: JSON.stringify({ title, assignee_id: assigneeId, ...extra }), method: "POST" });
 }
