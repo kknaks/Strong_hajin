@@ -41,6 +41,7 @@ class MaterialNotFound(MaterialError):
 class MaterialStorage(Protocol):
     def put(self, key: str, data: bytes, content_type: str) -> None: ...
     def get(self, key: str) -> bytes: ...
+    def delete(self, key: str) -> None: ...
 
 
 class AttachmentRepository(Protocol):
@@ -299,7 +300,14 @@ class TaskMaterialApplication:
         binding, attachment = found
         if attachment.source_kind != "file":
             raise MaterialError("only file attachments have downloadable content")
-        return self._view(binding, attachment, self._extraction_for(attachment), principal=principal, references=self._references), self._storage.get(attachment.source_ref)
+        if getattr(attachment, "lifecycle", "available") == "purged":
+            raise MaterialNotFound("이 자료는 완전히 삭제되어 더 이상 내려받을 수 없습니다")
+        try:
+            data = self._storage.get(attachment.source_ref)
+        except FileNotFoundError as error:
+            # The row says a file is there and the store disagrees: say so plainly rather than failing as a bug.
+            raise MaterialNotFound("자료 원본을 찾을 수 없습니다") from error
+        return self._view(binding, attachment, self._extraction_for(attachment), principal=principal, references=self._references), data
 
     def detach(self, principal: Principal, task_id: UUID, binding_id: UUID) -> dict[str, Any]:
         """Unbinding keeps the Attachment and bytes; the binding records when it left the Task."""
@@ -366,6 +374,8 @@ class TaskMaterialApplication:
             # SCAX did not read it and pinned no revision, so it must not be mistaken for a frozen artifact.
             "mutable_source": attachment.source_kind != "file",
             "integrity_ref": attachment.integrity_ref,
+            # The file itself was destroyed on request; the material stays as a fact of the Task, unreadable.
+            "purged": getattr(attachment, "lifecycle", "available") == "purged",
             "uploaded_by": attachment.uploaded_by,
             "created_at": binding.bound_at.isoformat(),
             "removed_at": binding.unbound_at.isoformat() if binding.unbound_at else None,

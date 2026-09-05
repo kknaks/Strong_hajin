@@ -90,9 +90,9 @@ def test_pdf_extraction_reports_pages_encryption_corruption_and_empty_text() -> 
     assert good.status == "completed" and good.page_count == 1 and good.chunks[0].page == 1
     assert "Delivery 2026-09-30" in good.chunks[0].text
     locked = extractor.extract(name="locked.pdf", content_type="application/pdf", data=_text_pdf("secret", encrypt="pw"))
-    assert (locked.status, locked.failure_reason) == ("failed", "encrypted_pdf")
+    assert (locked.status, locked.failure_reason) == ("failed", "encrypted_document")
     corrupt = extractor.extract(name="broken.pdf", content_type="application/pdf", data=b"%PDF-1.4 garbage without xref")
-    assert (corrupt.status, corrupt.failure_reason) == ("failed", "corrupt_pdf")
+    assert (corrupt.status, corrupt.failure_reason) == ("failed", "corrupt_document")
     blank = extractor.extract(name="blank.pdf", content_type="application/pdf", data=_text_pdf())
     assert (blank.status, blank.failure_reason) == ("failed", "empty_content")
 

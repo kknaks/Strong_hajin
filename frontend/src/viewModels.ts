@@ -225,7 +225,8 @@ export type TaskMaterial = {
 
 export type MaterialExtraction = {
   extraction_id: string;
-  status: "queued" | "running" | "completed" | "failed" | "unsupported";
+  /** `needs_ocr`: a scan with no text layer — unreadable, not empty. `purged`: the file itself was destroyed. */
+  status: "queued" | "running" | "completed" | "failed" | "unsupported" | "needs_ocr" | "purged";
   extractor: string | null;
   failure_reason: string | null;
   failure_text: string | null;

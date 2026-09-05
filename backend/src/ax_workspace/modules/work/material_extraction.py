@@ -26,7 +26,11 @@ FAILURE_REASONS = {
     "corrupt_pdf": "손상된 PDF 파일입니다",
     "not_utf8_text": "UTF-8 텍스트가 아닙니다",
     "extractor_error": "추출 중 오류가 반복되어 중단했습니다",
-    "unsupported_format": "지원하지 않는 형식입니다 (UTF-8 텍스트·Markdown·텍스트 PDF만 지원)",
+    "unsupported_format": "지원하지 않는 형식입니다 (UTF-8 텍스트·Markdown·PDF·DOCX·XLSX·PPTX만 지원)",
+    "needs_ocr": "스캔 문서로 보입니다 — 텍스트 층이 없어 내용을 읽을 수 없습니다 (OCR 미도입)",
+    "encrypted_document": "암호가 걸린 문서는 읽을 수 없습니다",
+    "corrupt_document": "손상된 문서 파일입니다",
+    "budget_exceeded": "문서가 너무 크거나 구조가 안전하지 않아 읽지 않았습니다",
 }
 
 
@@ -37,13 +41,30 @@ class ExtractedChunk:
     char_start: int
     char_end: int
     page: int | None = None
+    #: Which block this span came from, so a hit can name the part of the document a person would recognise.
+    block_sequence: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractedBlock:
+    """One part of the document as it is actually shaped. Chunks are derived from these, never the other way round."""
+
+    sequence: int
+    kind: str
+    text: str
+    locator_label: str | None = None
+    page: int | None = None
+    sheet: str | None = None
+    slide: int | None = None
+    row: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ExtractionOutcome:
-    status: str  # completed | failed | unsupported
+    status: str  # completed | failed | unsupported | needs_ocr
     extractor: str | None
     chunks: tuple[ExtractedChunk, ...] = ()
+    blocks: tuple[ExtractedBlock, ...] = ()
     failure_reason: str | None = None
     char_count: int = 0
     page_count: int | None = None

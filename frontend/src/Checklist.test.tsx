@@ -570,6 +570,27 @@ describe("what a task detail says about where it came from", () => {
   });
 });
 
+describe("문서 상태", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("says a scan could not be read instead of showing it as an empty success", async () => {
+    const { ExtractionStatus } = await import("./WorkModals");
+    const { container, rerender } = render(
+      <ExtractionStatus
+        extraction={{ status: "needs_ocr", chunk_count: 0, char_count: 0, failure_text: "스캔 문서로 보입니다", page_count: 3 } as never}
+      />,
+    );
+    expect(container.textContent).toContain("스캔 문서");
+    expect(container.querySelector(".badge.danger")).toBeNull(); // it is not a failure of ours
+
+    rerender(<ExtractionStatus extraction={{ status: "purged", chunk_count: 0, char_count: 0, failure_text: null } as never} />);
+    expect(container.textContent).toContain("완전 삭제됨");
+  });
+});
+
 describe("materials that live somewhere else", () => {
   afterEach(() => {
     cleanup();

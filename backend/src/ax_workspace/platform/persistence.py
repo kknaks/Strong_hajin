@@ -990,12 +990,19 @@ class MaterialExtractionRecord(Base):
     """Derived projection of one Attachment version: extraction lifecycle (queued/running/completed/failed/unsupported)."""
 
     __tablename__ = "material_extractions"
-    __table_args__ = (UniqueConstraint("attachment_id", "integrity_ref", name="uq_material_extraction_version"),)
+    #: One extraction per (file version, parser version): a newer parser adds a row, it does not rewrite the old one.
+    __table_args__ = (
+        UniqueConstraint("attachment_id", "integrity_ref", "parser_version", name="uq_material_extraction_version"),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     attachment_id: Mapped[UUID] = mapped_column(ForeignKey("attachments.id"), nullable=False, index=True)
     integrity_ref: Mapped[str] = mapped_column(String(80), nullable=False)
     extractor: Mapped[str | None] = mapped_column(String(20))
+    parser_version: Mapped[str] = mapped_column(String(40), nullable=False, default="1")
+    #: Set when a newer parser version replaced this reading. The row and its blocks stay, so what an older answer
+    #: stood on can still be pointed at.
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
     failure_reason: Mapped[str | None] = mapped_column(String(40))
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -1007,6 +1014,30 @@ class MaterialExtractionRecord(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class MaterialBlockRecord(Base):
+    """The document as it is actually shaped: one row per paragraph, table, sheet row, slide or page.
+
+    Chunks for search are derived from these, so re-indexing never needs the original bytes again, and a citation can
+    point at a part of the document a person would recognise. Blocks belong to one extraction of one file version.
+    """
+
+    __tablename__ = "material_blocks"
+    __table_args__ = (UniqueConstraint("extraction_id", "sequence", name="uq_material_block_sequence"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    extraction_id: Mapped[UUID] = mapped_column(ForeignKey("material_extractions.id"), nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: paragraph | table | header | footer | sheet_row | slide_text | slide_table | notes | page
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    #: Where in the document this came from, in the words a reader would use ("표 2", "3쪽", "매출 시트 12행").
+    locator_label: Mapped[str | None] = mapped_column(String(120))
+    page: Mapped[int | None] = mapped_column(Integer)
+    sheet: Mapped[str | None] = mapped_column(String(120))
+    slide: Mapped[int | None] = mapped_column(Integer)
+    row: Mapped[int | None] = mapped_column(Integer)
+
+
 class MaterialChunkRecord(Base):
     """Bounded searchable span of extracted text; identity = (extraction, sequence)."""
 
@@ -1015,6 +1046,8 @@ class MaterialChunkRecord(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     extraction_id: Mapped[UUID] = mapped_column(ForeignKey("material_extractions.id"), nullable=False, index=True)
+    #: The block this span was derived from, so a hit can name the part of the document it came from.
+    block_id: Mapped[UUID | None] = mapped_column(ForeignKey("material_blocks.id"))
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     page: Mapped[int | None] = mapped_column(Integer)
     char_start: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

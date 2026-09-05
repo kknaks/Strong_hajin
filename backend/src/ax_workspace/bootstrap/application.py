@@ -30,7 +30,7 @@ from ax_workspace.modules.actions.domain import ActionCenterApplication
 from ax_workspace.platform.action_center import action_handlers
 from ax_workspace.platform.actions import SqlAlchemyActionExecutor, SqlAlchemyActionRepository
 from ax_workspace.platform.reports import SqlAlchemyDailyReportDraftWorkflow, SqlAlchemyDailyReportRepository
-from ax_workspace.modules.work.materials import TaskMaterialApplication
+from ax_workspace.modules.work.materials import MaterialError, MaterialNotFound, TaskMaterialApplication
 from ax_workspace.modules.work.graph import GraphApplication
 from ax_workspace.modules.work.application import TaskAccessDenied, TaskApplication, TaskState
 from ax_workspace.modules.work.assignments import TaskAssignmentApplication
@@ -40,17 +40,27 @@ from ax_workspace.modules.meetings.refinement import build_refinement_prompt, pa
 from ax_workspace.modules.meetings.summary import build_summary_prompt, parse_summary, summary_output_schema
 from ax_workspace.modules.meetings.jobs import MeetingFinalizationJob, MeetingFinalizationQueue
 from ax_workspace.modules.work.requests import WorkRequestApplication
-from ax_workspace.platform.persistence import make_session_factory
+from sqlalchemy import delete, select
+
+from ax_workspace.platform.persistence import (
+    AttachmentRecord,
+    ConversationMaterialEvidenceRecord,
+    MaterialBlockRecord,
+    MaterialChunkRecord,
+    MaterialExtractionRecord,
+    make_session_factory,
+)
 from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
 from ax_workspace.platform.recordings import LocalDirectoryRecordingStorage
 from ax_workspace.platform.soniox import SonioxTranscriptionAdapter
-from ax_workspace.modules.work.material_extraction import LexicalMaterialRetriever
+from ax_workspace.modules.work.material_extraction import LexicalMaterialRetriever, MaterialExtractionJob
 from ax_workspace.platform.material_extraction import (
     MaterialJobQueue,
     SqlAlchemyMaterialEvidenceRepository,
     SqlAlchemyMaterialExtractionRepository,
 )
 from ax_workspace.platform.work_tasks import (
+    ActivityLedger,
     SqlAlchemyGraphReceiptRepository,
     SqlAlchemyTaskAssignmentRepository,
     SqlAlchemyAttachmentRepository,
@@ -652,6 +662,68 @@ class WorkflowApplication:
             meetings.record_followup_promotion(principal, candidate, task_id=UUID(created["task_id"]))
             session.commit()
             return {"already_promoted": False, "task": self._tasks(session).get(principal, UUID(created["task_id"])), "work_request": None}
+
+    def reextract_material(self, *, attachment_id: UUID, parser_version: str) -> dict[str, Any]:
+        """Read a file again with a newer parser. The older reading is superseded, never rewritten."""
+        with self._session_factory() as session:
+            attachment = session.get(AttachmentRecord, attachment_id)
+            if attachment is None:
+                raise MaterialNotFound("attachment was not found")
+            extractions = SqlAlchemyMaterialExtractionRepository(session)
+            extraction = extractions.request(attachment, parser_version=parser_version)
+            self._material_queue(session).enqueue(MaterialExtractionJob(extraction.id, attachment.id))
+            session.commit()
+            return {"extraction_id": str(extraction.id), "parser_version": parser_version}
+
+    def purge_attachment(self, principal: Principal, attachment_id: UUID, *, reason: str) -> dict[str, Any]:
+        """Destroy a file's content everywhere, keeping the fact that answers once cited it.
+
+        Bytes, blocks and chunks go. The evidence rows a delegated turn recorded stay, with their excerpts blanked:
+        a person can still see that an answer stood on this file, and nobody can read what it said.
+        """
+        if "demo.admin" not in principal.capabilities and "team.manage" not in principal.capabilities:
+            raise MaterialError("자료를 완전히 삭제할 권한이 없습니다")
+        if not str(reason or "").strip():
+            raise MaterialError("삭제 사유가 필요합니다")
+        with self._session_factory() as session:
+            attachment = session.get(AttachmentRecord, attachment_id)
+            if attachment is None:
+                raise MaterialNotFound("attachment was not found")
+            extraction_ids = [
+                row.id
+                for row in session.scalars(
+                    select(MaterialExtractionRecord).where(MaterialExtractionRecord.attachment_id == attachment.id)
+                )
+            ]
+            if extraction_ids:
+                session.execute(delete(MaterialChunkRecord).where(MaterialChunkRecord.extraction_id.in_(extraction_ids)))
+                session.execute(delete(MaterialBlockRecord).where(MaterialBlockRecord.extraction_id.in_(extraction_ids)))
+                for row in session.scalars(
+                    select(MaterialExtractionRecord).where(MaterialExtractionRecord.id.in_(extraction_ids))
+                ):
+                    row.status = "purged"
+                    row.chunk_count = 0
+                    row.char_count = 0
+            for evidence in session.scalars(
+                select(ConversationMaterialEvidenceRecord).where(
+                    ConversationMaterialEvidenceRecord.attachment_id == attachment.id
+                )
+            ):
+                # The row is the record that an answer cited this file; the text it quoted is gone.
+                evidence.excerpt = ""
+            if attachment.source_kind == "file":
+                self._material_storage.delete(attachment.source_ref)
+            attachment.lifecycle = "purged"
+            ActivityLedger(session).record(
+                target_type="attachment",
+                target_id=str(attachment.id),
+                event_kind="attachment.purged",
+                actor_id=str(principal.id),
+                reason=str(reason).strip()[:500],
+                safe_summary=f"자료 완전 삭제: {attachment.name}",
+            )
+            session.commit()
+            return {"attachment_id": str(attachment.id), "state": "purged"}
 
     def _graph(self, session: Any) -> GraphApplication:
         return GraphApplication(_SessionGraphSource(self, session))

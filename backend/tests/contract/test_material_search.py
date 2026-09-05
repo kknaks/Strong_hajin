@@ -72,7 +72,7 @@ def test_failures_are_explainable_states_not_silent_success(tmp_path) -> None:
     by_name = {item["name"]: item["extraction"] for item in client.get(f"/api/tasks/{task['task_id']}/materials", headers=MINA).json()}
     assert (by_name["scan.png"]["status"], by_name["scan.png"]["failure_reason"]) == ("unsupported", "unsupported_format")
     assert (by_name["legacy.txt"]["status"], by_name["legacy.txt"]["failure_reason"]) == ("failed", "not_utf8_text")
-    assert (by_name["broken.pdf"]["status"], by_name["broken.pdf"]["failure_reason"]) == ("failed", "corrupt_pdf")
+    assert (by_name["broken.pdf"]["status"], by_name["broken.pdf"]["failure_reason"]) == ("failed", "corrupt_document")
     assert all(item["failure_text"] for item in by_name.values())
     # Nothing searchable, but the unavailable files are named so AX can say it could not read them.
     search = client.get(f"/api/tasks/{task['task_id']}/materials/search", headers=MINA, params={"q": "납기일"}).json()

@@ -265,6 +265,21 @@ export function ExtractionStatus({ extraction }: { extraction: MaterialExtractio
       </span>
     );
   }
+  if (extraction.status === "needs_ocr") {
+    // A scan is not an empty document. Say it could not be read rather than letting a search look exhaustive.
+    return (
+      <span className="badge neutral extraction-status" data-status="needs_ocr" title={extraction.failure_text ?? undefined}>
+        스캔 문서 · 내용 검색 불가
+      </span>
+    );
+  }
+  if (extraction.status === "purged") {
+    return (
+      <span className="badge outline extraction-status" data-status="purged">
+        완전 삭제됨
+      </span>
+    );
+  }
   return (
     <span className="badge danger extraction-status" data-status={extraction.status} title={extraction.failure_text ?? undefined}>
       {extraction.status === "unsupported" ? "검색 미지원 형식" : "내용을 읽지 못함"}

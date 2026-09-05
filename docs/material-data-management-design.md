@@ -93,4 +93,16 @@ parser는 `needs_ocr`(이미지 있음, 텍스트 없음)와 `empty`를 구분�
 | 9 | B2(block 테이블 + chunk 파생) 채택 | 채택 |
 | 10 | 전사 검색 index(C2/C3) 도입 시점 | Task 범위 검색으로 충분한 동안 보류 |
 
-결정이 나면 다음 change unit에서 `material_blocks` 도입, Office parser → extraction 연결(`MaterialTextExtractor`가 `DocumentParser`를 위임), `needs_ocr` 상태 UI, Azure Blob adapter 순으로 진행한다.
+## 8. 확정된 결정과 구현 상태 (2026-09-06)
+
+사용자가 1·6·7·9를 확정했고 나머지는 위 제안 기본값을 따른다. 8(retention 기간)은 법적 확인이 필요해 여전히 미정이다.
+
+| # | 결정 | 구현 |
+|---|---|---|
+| 1 | DOCX/PPTX 표는 전체 1 block, XLSX는 행 단위 — 유지 | parser 그대로, `material_blocks.kind`로 보존 |
+| 6 | parser 업그레이드 시 이전 extraction 보존(superseded), chunk는 교체 | `material_extractions.parser_version`·`superseded_at`, unique는 (attachment, integrity_ref, parser_version) |
+| 7 | 원본 purge 시 evidence excerpt는 redact(행 유지, 텍스트 삭제) | `purge_attachment`가 bytes·block·chunk를 지우고 evidence excerpt를 비운다 |
+| 9 | B2(block 테이블 + chunk 파생) 채택 | `material_blocks` 도입, chunk는 block에서 파생되고 `block_id`로 출처를 가리킨다 |
+| 8 | retention 기간 | **미정** — 법정 보존 기간 확인 뒤 별도 결정. 현재는 자동 삭제 없음 |
+
+Azure Blob adapter와 전사 index(C2/C3)는 실행 큐 13번(운영 gate)에 남는다.

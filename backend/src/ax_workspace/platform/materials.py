@@ -33,3 +33,8 @@ class LocalDirectoryMaterialStorage:
         if not path.is_file():
             raise FileNotFoundError(key)
         return path.read_bytes()
+
+    def delete(self, key: str) -> None:
+        """Destroy the bytes. Already gone is success: purging must be safe to repeat."""
+        path = self._path(key)
+        path.unlink(missing_ok=True)
