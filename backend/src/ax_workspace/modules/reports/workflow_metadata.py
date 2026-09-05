@@ -12,6 +12,8 @@ from typing import Any
 
 
 SAFE_NODE_TYPES = frozenset({"operation.query", "template.render", "llm.generate", "output.validate"})
+#: What a definition gets when it does not say; naming them explicitly is how a different graph stays runnable.
+DEFAULT_OUTPUTS = {"body": "validate.body", "source_refs": "sources.source_refs"}
 ALLOWED_OPERATIONS = frozenset({"work_record.list"})
 DAILY_REPORT_PROVIDER_PROFILE = "codex-cli:gpt-5.6-terra:fast:low"
 
@@ -45,6 +47,7 @@ def daily_report_generation_v1() -> dict[str, Any]:
                 "inputs": ["generate"],
             },
         ],
+        "outputs": dict(DEFAULT_OUTPUTS),
     }
     validate_definition(definition)
     return definition
@@ -72,6 +75,15 @@ def validate_definition(definition: dict[str, Any]) -> None:
         if not isinstance(inputs, list) or any(input_id not in seen for input_id in inputs):
             raise ValueError("workflow metadata inputs must reference preceding nodes")
         seen.add(node_id)
+
+    # The definition also says which node's field is the answer, so the runtime never hardcodes a node name.
+    outputs = definition.get("outputs", DEFAULT_OUTPUTS)
+    if not isinstance(outputs, dict) or not outputs:
+        raise ValueError("workflow metadata outputs must map a name to <node>.<field>")
+    for name, reference in outputs.items():
+        node_id, _, field = str(reference).partition(".")
+        if not isinstance(name, str) or node_id not in seen or not field:
+            raise ValueError("workflow metadata outputs must reference a declared node field")
 
 
 def content_hash(definition: dict[str, Any]) -> str:

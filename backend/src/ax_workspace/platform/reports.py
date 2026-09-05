@@ -15,7 +15,7 @@ from ax_workspace.modules.ax_execution.ai import (
     AiProvider,
     ProviderFailure,
 )
-from ax_workspace.modules.reports.workflow_metadata import validate_definition
+from ax_workspace.modules.reports.workflow_metadata import ALLOWED_OPERATIONS, DEFAULT_OUTPUTS, validate_definition
 from ax_workspace.platform.persistence import (
     DailyReportSubmissionRecord,
     DailyReportRecord,
@@ -346,15 +346,17 @@ class SqlAlchemyDailyReportDraftWorkflow:
         self._provider = provider
 
     def run(self, principal: Any, report_date: str) -> dict[str, Any]:
+        # Whichever version is published right now: a new one is installed as data, not as a code change.
         definition = self._session.scalar(
-            select(WorkflowDefinitionVersionRecord).where(
+            select(WorkflowDefinitionVersionRecord)
+            .where(
                 WorkflowDefinitionVersionRecord.workflow_id == "daily-report-generation",
-                WorkflowDefinitionVersionRecord.version == "1",
                 WorkflowDefinitionVersionRecord.status == "published",
             )
+            .order_by(WorkflowDefinitionVersionRecord.published_at.desc(), WorkflowDefinitionVersionRecord.created_at.desc())
         )
         if definition is None:
-            raise RuntimeError("daily-report-generation@1 is not installed")
+            raise RuntimeError("no published daily-report-generation workflow is installed")
         validate_definition(definition.definition)
 
         now = datetime.now(UTC)
@@ -400,13 +402,22 @@ class SqlAlchemyDailyReportDraftWorkflow:
             self._session.flush()
             raise RuntimeError(f"daily report workflow failed: {type(error).__name__}") from error
 
+        outputs = definition.definition.get("outputs", DEFAULT_OUTPUTS)
         return {
             "run_id": str(run.id),
             "definition_version_id": str(definition.id),
             "state": run.state,
-            "body": results["validate"]["body"],
-            "source_refs": results["sources"]["source_refs"],
+            # Which node holds the answer is the definition's decision, not a name written into the runtime.
+            **{name: self._resolve_output(results, reference) for name, reference in outputs.items()},
         }
+
+    @staticmethod
+    def _resolve_output(results: dict[str, Any], reference: str) -> Any:
+        node_id, _, field = str(reference).partition(".")
+        produced = results.get(node_id)
+        if produced is None or field not in produced:
+            raise ValueError(f"workflow output {reference} was not produced")
+        return produced[field]
 
     def _start_node(
         self,
@@ -439,19 +450,32 @@ class SqlAlchemyDailyReportDraftWorkflow:
         execution: WorkflowNodeExecutionRecord,
     ) -> dict[str, Any]:
         node_type = node["type"]
+        # A node reads what its declared inputs produced. The runtime knows the building blocks; the definition
+        # knows the wiring, so renaming or reordering nodes is a change to the data and not to this code.
+        inputs = [results[input_id] for input_id in node.get("inputs", [])]
         if node_type == "operation.query":
+            if node.get("operation") not in ALLOWED_OPERATIONS:
+                raise ValueError("workflow metadata references an unregistered operation")
             return {"source_refs": self._sources.list(principal, report_date)}
         if node_type == "template.render":
-            source_refs = results["sources"]["source_refs"]
+            source_refs = self._require_field(inputs, "source_refs", node)
             return {"rendered_prompt": self._render_prompt(report_date, source_refs)}
         if node_type == "llm.generate":
-            return self._generate(execution, results["render"]["rendered_prompt"])
+            return self._generate(execution, self._require_field(inputs, "rendered_prompt", node))
         if node_type == "output.validate":
-            body = results["generate"]["body"].strip()
+            body = str(self._require_field(inputs, "body", node)).strip()
             if not body:
                 raise ValueError("daily report provider returned an empty draft")
             return {"body": body}
         raise ValueError(f"unregistered node type: {node_type}")
+
+    @staticmethod
+    def _require_field(inputs: list[dict[str, Any]], field: str, node: dict[str, Any]) -> Any:
+        """What this node needs, from whichever declared input actually produced it."""
+        for produced in inputs:
+            if field in produced:
+                return produced[field]
+        raise ValueError(f"workflow node {node['id']} has no input producing {field}")
 
     def _generate(self, execution: WorkflowNodeExecutionRecord, rendered_prompt: str) -> dict[str, Any]:
         try:
