@@ -165,6 +165,7 @@ class SqlAlchemyTaskRepository:
         source_action_item_id: UUID | None = None,
         checklist: list[str] | None = None,
         references: list[UUID] | None = None,
+        parent_task_id: UUID | None = None,
     ) -> TaskRecord:
         if causation_key:
             existing = self.session.scalar(
@@ -178,6 +179,7 @@ class SqlAlchemyTaskRepository:
             title=title,
             state=TaskState.OPEN,
             block_reason=None,
+            parent_task_id=parent_task_id,
             description=description,
             start_date=start_date,
             due_date=due_date,
@@ -245,6 +247,21 @@ class SqlAlchemyTaskRepository:
         self.session.add(record)
         self.session.flush()
         return record
+
+    # ---- subtasks: work inside work, one level deep ----
+
+    def children_of(self, task_id: UUID) -> list[TaskRecord]:
+        return list(
+            self.session.scalars(
+                select(TaskRecord)
+                .where(TaskRecord.parent_task_id == task_id)
+                .order_by(TaskRecord.created_at, TaskRecord.id)
+            )
+        )
+
+    def open_children_of(self, task_id: UUID) -> list[TaskRecord]:
+        """Children that are neither done nor cancelled: the ones that still hold their parent open."""
+        return [task for task in self.children_of(task_id) if task.state not in {TaskState.DONE, TaskState.CANCELLED}]
 
     # ---- references: earlier work this Task points at ----
 
@@ -594,6 +611,7 @@ class SqlAlchemyTaskRepository:
             "checklist": checklist,
             "materials": materials,
             "references": references,
+            "children": [str(child.id) for child in self.children_of(task.id)],
         }
 
     def versions_for(self, task_id: UUID) -> list[TaskVersionRecord]:
@@ -1264,6 +1282,7 @@ class SqlAlchemyTaskAssignmentRepository:
         due_date: date | None = None,
         causation_key: str | None = None,
         checklist: list[str] | None = None,
+        parent_task_id: UUID | None = None,
     ) -> tuple[TaskRecord, TaskAssignmentRecord]:
         if causation_key:
             existing = self._session.scalar(select(TaskRecord).where(TaskRecord.causation_key == causation_key))
@@ -1275,6 +1294,7 @@ class SqlAlchemyTaskAssignmentRepository:
             title=title,
             state=TaskState.OPEN,
             block_reason=None,
+            parent_task_id=parent_task_id,
             description=description,
             start_date=start_date,
             due_date=due_date,

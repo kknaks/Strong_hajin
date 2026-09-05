@@ -29,9 +29,11 @@ class TaskAssigneeDirectory(Protocol):
 
 
 class TaskAssignmentApplication:
-    def __init__(self, repository: TaskAssignmentRepository, directory: TaskAssigneeDirectory) -> None:
+    def __init__(self, repository: TaskAssignmentRepository, directory: TaskAssigneeDirectory, tasks: Any = None) -> None:
         self._repository = repository
         self._directory = directory
+        # Assigning a part of something needs the Task module's own rules about what may be a parent.
+        self._tasks = tasks
 
     def candidates(self, principal: Principal) -> list[dict[str, str]]:
         self._require(principal, TASK_ASSIGN)
@@ -48,6 +50,7 @@ class TaskAssignmentApplication:
         due_date: date | None = None,
         causation_key: str | None = None,
         checklist: list[str] | None = None,
+        parent_task_id: UUID | None = None,
     ) -> dict[str, Any]:
         """Create a Task for someone else. It enters their My Work only after they accept the assignment."""
         self._require(principal, TASK_ASSIGN)
@@ -58,11 +61,15 @@ class TaskAssignmentApplication:
         if not self._directory.is_task_assignee(principal, assignee_id):
             raise TaskError("assignee is not within your assignment scope")
         validate_schedule(start_date, due_date)
+        parent = self._tasks.parent_for(principal, parent_task_id) if parent_task_id is not None else None
         task, assignment = self._repository.create_assigned_task(
             str(principal.id), assignee_id, title.strip(),
             description=_clean_text(description), start_date=start_date, due_date=due_date, causation_key=causation_key,
             checklist=clean_checklist(checklist),
+            parent_task_id=parent.id if parent is not None else None,
         )
+        if parent is not None:
+            self._tasks.record_subtask(principal, parent, task)
         return self._view(assignment, task)
 
     def reassign(self, principal: Principal, task_id: UUID, expected_version: int, assignee_id: str, reason: str | None = None) -> dict[str, Any]:

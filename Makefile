@@ -107,6 +107,9 @@ e2e-task-checklist:
 e2e-chat-checklist:
 	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:chat-checklist
 
+e2e-subtask:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:subtask
+
 e2e-task-delivery:
 	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:task-delivery
 

@@ -11,6 +11,15 @@ export type TaskState = "open" | "in_progress" | "blocked" | "completion_submitt
  * Where requested work stands with the person who asked for it. Present only on Tasks whose completion they confirm.
  * `awaiting_review` means reported and waiting; `awaiting_revision` means they said what is still missing.
  */
+/** One part of a larger Task: a Task of its own, with its own holder, dates and state. */
+export type TaskChild = {
+  task_id: string;
+  title: string;
+  state: TaskState;
+  due_date?: string | null;
+  assignee?: { member_id: string; display_name: string } | null;
+};
+
 export type TaskDelivery = {
   action_item_id: string;
   status: "awaiting_review" | "awaiting_revision" | "resolved";
@@ -49,6 +58,11 @@ export type DirectTask = {
   references?: TaskReference[];
   /** The result question this Task's completion opens, when someone else asked for the work. */
   delivery?: TaskDelivery | null;
+  /** The work this one is a part of, named just enough to know what it belongs to. */
+  parent?: { task_id: string; title: string; state: TaskState } | null;
+  /** The parts of this work this reader may see. A subtask is a Task, not a checklist line. */
+  children?: TaskChild[];
+  child_progress?: { done: number; total: number };
   checklist_progress?: { done: number; total: number };
 };
 

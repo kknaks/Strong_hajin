@@ -71,6 +71,8 @@ class TaskRepository(Protocol):
         self, submission: Any, actor_id: str, decision: str, *, reason: str | None = None, expected_version: int
     ) -> Any: ...
     def references_for(self, task_id: UUID, *, include_released: bool = False) -> list[Any]: ...
+    def children_of(self, task_id: UUID) -> list[Any]: ...
+    def open_children_of(self, task_id: UUID) -> list[Any]: ...
     def reference(self, task_id: UUID, reference_id: UUID) -> Any: ...
     def add_reference(self, task_id: UUID, referenced_task_id: UUID, created_by: str) -> Any: ...
     def release_reference(self, reference: Any, actor_id: str) -> None: ...
@@ -125,11 +127,13 @@ class TaskApplication:
         source_action_item_id: UUID | None = None,
         checklist: list[str] | None = None,
         reference_task_ids: list[UUID] | None = None,
+        parent_task_id: UUID | None = None,
     ) -> dict[str, Any]:
         self._require(principal, TASK_SELF_MANAGE)
         if not title.strip():
             raise TaskError("title is required")
         validate_schedule(start_date, due_date)
+        parent = self.parent_for(principal, parent_task_id)
         task = self.repository.create_self_task(
             str(principal.id),
             title.strip(),
@@ -141,8 +145,37 @@ class TaskApplication:
             checklist=clean_checklist(checklist),
             # Pointers written with the work belong to its first version, so they are frozen with it.
             references=self._readable_tasks(principal, reference_task_ids),
+            parent_task_id=parent.id if parent is not None else None,
         )
+        if parent is not None:
+            self.record_subtask(principal, parent, task)
         return self._view(task)
+
+    def parent_for(self, principal: Principal, parent_task_id: UUID | None) -> Any | None:
+        """The work this one is part of: readable by this person, still open, and not already a part of something.
+
+        One level only for now, so a child never becomes a parent. Nothing is its own parent, and work that is over
+        takes no new parts.
+        """
+        if parent_task_id is None:
+            return None
+        if not self._may_read(principal, parent_task_id):
+            raise TaskNotFound("task was not found")
+        parent = self.repository.task_by_id(parent_task_id)
+        if parent is None:
+            raise TaskNotFound("task was not found")
+        if getattr(parent, "parent_task_id", None) is not None:
+            raise TaskError("하위 업무 아래에 다시 하위 업무를 둘 수 없습니다")
+        if TaskState(parent.state) in {TaskState.DONE, TaskState.CANCELLED}:
+            raise TaskError("이미 끝난 업무에는 하위 업무를 추가할 수 없습니다")
+        return parent
+
+    def record_subtask(self, principal: Principal, parent: Any, child: Any) -> None:
+        """Breaking work down changes the parent too, so the parent moves on and says what was added."""
+        self._moved(parent)
+        self.repository.record_activity(
+            parent, str(principal.id), "task.subtask_added", f"하위 업무 추가: {child.title[:80]}"
+        )
 
     def _readable_tasks(self, principal: Principal, task_ids: list[UUID] | None) -> list[UUID]:
         """Work this person may already open. Anything else is refused rather than quietly dropped."""
@@ -239,6 +272,9 @@ class TaskApplication:
         if not related and TASK_ASSIGN in principal.capabilities:
             facts = self.repository.origin_facts([task]).get(task.id, {})
             related = facts.get("assignment_kind") == "direct" and facts.get("assigned_by") == str(principal.id)
+        if not related and getattr(task, "parent_task_id", None) is not None:
+            # Whoever may read the whole may read its parts: breaking work down does not hide it from them.
+            related = self._may_read(principal, task.parent_task_id)
         if not related:
             raise TaskNotFound("task was not found")
         return {
@@ -249,7 +285,67 @@ class TaskApplication:
             "delivery": self.delivery_view(principal, task),
         }
 
+    # ---- subtasks: the work inside this work ----
+
+    def _may_read(self, principal: Principal, task_id: UUID) -> bool:
+        """Whether this person may open that work at all — as its holder, or through a relationship that earns it."""
+        try:
+            self.get(principal, task_id)
+        except (TaskNotFound, TaskAccessDenied):
+            return False
+        return True
+
+    def _hierarchy_view(self, principal: Principal, task: Any) -> dict[str, Any]:
+        """What this work is part of, and what is part of it — each read through the permission it needs.
+
+        A child names its parent so the person holding it knows what it belongs to, and no more than that. A parent
+        lists the children this person may read; a count of work they cannot see would be a side channel.
+        """
+        children = [] if getattr(task, "parent_task_id", None) is not None else self._readable_children(principal, task)
+        return {
+            "parent": self._parent_summary(principal, task),
+            "children": children,
+            "child_progress": {
+                "done": sum(1 for row in children if row["state"] in {TaskState.DONE, TaskState.CANCELLED}),
+                "total": len(children),
+            },
+        }
+
+    def _readable_children(self, principal: Principal, task: Any) -> list[dict[str, Any]]:
+        rows = []
+        for child in self.repository.children_of(task.id):
+            # Reading the parent is what earns a place in this list; nothing is counted that cannot be named.
+            if not self._may_read(principal, child.id):
+                continue
+            rows.append(
+                {
+                    "task_id": str(child.id),
+                    "title": child.title,
+                    "state": child.state,
+                    "due_date": _iso(child.due_date),
+                    "assignee": self._assignee_projection([child]).get(child.id),
+                }
+            )
+        return rows
+
+    def _parent_summary(self, principal: Principal, task: Any) -> dict[str, Any] | None:
+        parent_id = getattr(task, "parent_task_id", None)
+        if parent_id is None:
+            return None
+        parent = self.repository.task_by_id(parent_id)
+        if parent is None:
+            return None
+        # Enough to know what this work belongs to. Reading the parent itself still needs its own permission.
+        return {"task_id": str(parent.id), "title": parent.title, "state": parent.state}
+
     # ---- delivery: reporting what was handed over, and the answer the person who asked gives ----
+
+    def _require_children_finished(self, task: Any) -> None:
+        """Work is not finished while its parts are not, and the refusal names what is still open."""
+        remaining = self.repository.open_children_of(task.id)
+        if remaining:
+            names = ", ".join(str(child.title) for child in remaining[:3])
+            raise InvalidTaskTransition(f"끝나지 않은 하위 업무가 있습니다: {names}")
 
     def requires_completion_review(self, task: Any) -> bool:
         """Work someone else asked for is finished when they say so, not when the holder says so."""
@@ -294,6 +390,7 @@ class TaskApplication:
         """The person who asked says this is what they wanted. Only this closes the work."""
         if TaskState(task.state) is not TaskState.COMPLETION_SUBMITTED:
             raise InvalidTaskTransition("확인할 완료 보고가 없습니다")
+        self._require_children_finished(task)
         self.repository.record_delivery_decision(
             submission, str(principal.id), "accept", expected_version=expected_version
         )
@@ -405,6 +502,8 @@ class TaskApplication:
         }
         if target is TaskState.DONE and self.requires_completion_review(task):
             raise InvalidTaskTransition("이 업무는 요청자의 확인이 필요합니다. 완료 보고로 제출하세요")
+        if target is TaskState.DONE:
+            self._require_children_finished(task)
         if task.version != expected_version:
             raise InvalidTaskTransition("task version is stale")
         if target not in allowed.get(TaskState(task.state), set()):
@@ -675,6 +774,7 @@ class TaskApplication:
             "checklist_progress": {"done": sum(1 for item in items if item["done"]), "total": len(items)},
             "references": self.references(principal, task),
             "delivery": self.delivery_view(principal, task),
+            **self._hierarchy_view(principal, task),
             "origin": self._origin_projection(principal, [task]).get(task.id),
             "assignee": self._assignee_projection([task]).get(task.id),
         }

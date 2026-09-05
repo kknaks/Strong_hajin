@@ -206,6 +206,12 @@ def action_center_application(session: Session, executor: Any) -> Any:
             assignments=TaskAssignmentApplication(
                 SqlAlchemyTaskAssignmentRepository(session),
                 OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
+                TaskApplication(
+                    SqlAlchemyTaskRepository(session),
+                    SqlAlchemyWorkRequestRepository(session),
+                    SqlAlchemyActionRepository(session),
+                    SqlAlchemyAttachmentRepository(session),
+                ),
             ),
             tasks=TaskApplication(
                 SqlAlchemyTaskRepository(session),
@@ -272,6 +278,7 @@ class SqlAlchemyActionExecutor:
                 principal, str(action.payload["title"]), causation_key=str(action.id), source_action_item_id=action.id,
                 checklist=list(action.payload.get("checklist") or []),
                 reference_task_ids=[UUID(str(item)) for item in action.payload.get("reference_task_ids") or []],
+                parent_task_id=UUID(str(action.payload["parent_task_id"])) if action.payload.get("parent_task_id") else None,
             )
         if action.action_type == "task.update":
             changes = dict(action.payload.get("changes", {}))
@@ -374,6 +381,12 @@ class SqlAlchemyActionExecutor:
         return TaskAssignmentApplication(
             SqlAlchemyTaskAssignmentRepository(self._session),
             OrganizationApplication(SqlAlchemyOrganizationRepository(self._session)),
+            TaskApplication(
+                SqlAlchemyTaskRepository(self._session),
+                SqlAlchemyWorkRequestRepository(self._session),
+                SqlAlchemyActionRepository(self._session),
+                SqlAlchemyAttachmentRepository(self._session),
+            ),
         )
 
 
@@ -474,6 +487,11 @@ class ActionPresenter:
                 if hidden:
                     value = f"{value} · 볼 수 없는 업무 {hidden}건".strip(" ·")
                 fields.append({"id": "references", "label": "참고 업무", "value": value, "kind": "text"})
+            if payload.get("parent_task_id"):
+                parent_title = self._readable_task_title(payload.get("parent_task_id"), principal)
+                fields.append({
+                    "id": "parent", "label": "상위 업무", "value": parent_title or "볼 수 없는 업무", "kind": "text",
+                })
             steps = [str(step) for step in payload.get("checklist") or []]
             if steps:
                 fields.append({

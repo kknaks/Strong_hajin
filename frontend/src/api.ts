@@ -116,7 +116,14 @@ export async function getMyOrganizationProfile(): Promise<OrganizationProfile> {
 
 export async function createDirectTask(
   title: string,
-  extra: { description?: string; start_date?: string | null; due_date?: string | null; checklist?: string[]; reference_task_ids?: string[] } = {},
+  extra: {
+    description?: string;
+    start_date?: string | null;
+    due_date?: string | null;
+    checklist?: string[];
+    reference_task_ids?: string[];
+    parent_task_id?: string;
+  } = {},
 ): Promise<DirectTask> {
   return request<DirectTask>("/api/tasks", {
     body: JSON.stringify({ title, ...extra }),

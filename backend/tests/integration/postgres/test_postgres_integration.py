@@ -1613,3 +1613,42 @@ def test_postgres_lets_only_one_of_two_edits_of_the_same_step_land() -> None:
         two = executor.submit(check, current[other["item_id"]])
         assert sorted([one.result().status_code, two.result().status_code]) == [200, 200]
     assert client.get(f"/api/tasks/{task_id}", headers=mina).json()["checklist_progress"] == {"done": 2, "total": 2}
+
+
+@pytest.mark.integration
+def test_postgres_will_not_finish_work_while_a_part_of_it_is_still_open() -> None:
+    """Closing a parent races against a part being added to it; whichever answer comes back is true afterwards."""
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url, materials_dir=tempfile.mkdtemp())
+    client = TestClient(create_app(settings))
+    mina = {"X-Demo-Persona": "mina"}
+
+    parent = client.post("/api/tasks", headers=mina, json={"title": "마감할 업무"}).json()
+    client.post(f"/api/tasks/{parent['task_id']}/start", headers=mina, json={"expected_version": parent["version"]})
+    running = client.get(f"/api/tasks/{parent['task_id']}", headers=mina).json()
+
+    gate = Barrier(2)
+
+    def add_child() -> Any:
+        gate.wait()
+        return client.post("/api/tasks", headers=mina, json={"title": "늦게 붙는 하위 업무", "parent_task_id": parent["task_id"]})
+
+    def finish_parent() -> Any:
+        gate.wait()
+        return client.post(f"/api/tasks/{parent['task_id']}/complete", headers=mina, json={"expected_version": running["version"]})
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        child, done = executor.submit(add_child), executor.submit(finish_parent)
+        outcomes = (child.result(), done.result())
+
+    view = client.get(f"/api/tasks/{parent['task_id']}", headers=mina).json()
+    if outcomes[1].status_code == 200:
+        # Finishing landed: the parent is closed, and the part was either created first or refused for that reason.
+        assert view["state"] == "done"
+        assert outcomes[0].status_code in {201, 422}
+    else:
+        # The part landed first, so finishing is refused — and it says what is still open.
+        assert outcomes[0].status_code == 201
+        assert view["state"] == "in_progress"
+        assert "늦게 붙는 하위 업무" in outcomes[1].text or "stale" in outcomes[1].text

@@ -226,6 +226,7 @@ def test_stdio_mcp_client_discovers_only_persona_bound_report_tools(tmp_path) ->
                     "task_materials_list",
                     "task_resume",
                     "task_start",
+                    "task_subtask_list",
                     "task_update",
                 }
 

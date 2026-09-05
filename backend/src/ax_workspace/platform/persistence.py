@@ -740,6 +740,9 @@ class TaskRecord(Base):
     source_review_decision_id: Mapped[UUID | None] = mapped_column(ForeignKey("review_decisions.id"))
     source_action_item_id: Mapped[UUID | None] = mapped_column(ForeignKey("action_items.id"))
     source_task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id"))
+    #: The work this one is a part of. One level only for now: a child never becomes a parent, and the parent is
+    #: context and a place to see progress — never the truth about this Task's own state.
+    parent_task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id"), index=True)
     version: Mapped[int] = mapped_column(nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

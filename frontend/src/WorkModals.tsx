@@ -56,6 +56,7 @@ import type {
   TaskHistory,
   TaskHistoryDiff,
   TaskMaterial,
+  TaskChild,
   TaskDelivery,
   TaskMaterialKind,
   TaskReference,
@@ -343,6 +344,10 @@ export function TaskDetailDrawer({
   const [references, setReferences] = useState<TaskReference[]>(task.references ?? []);
   // Where this work stands with the person who asked for it. Only the detail read carries it, so it lives here.
   const [delivery, setDelivery] = useState<TaskDelivery | null>(task.delivery ?? null);
+  // The parts of this work, and what it is a part of. Both come from the detail read.
+  const [children, setChildren] = useState<TaskChild[]>(task.children ?? []);
+  const [parentTask, setParentTask] = useState(task.parent ?? null);
+  const [newChild, setNewChild] = useState<string | null>(null);
   const [refDraft, setRefDraft] = useState<string | null>(null);
   const [refChoices, setRefChoices] = useState<DirectTask[] | null>(null);
   const [report, setReport] = useState<{ summary: string; outputs: string[] } | null>(null);
@@ -382,6 +387,8 @@ export function TaskDetailDrawer({
         setChecklist(detail.checklist ?? []);
         setReferences(detail.references ?? []);
         setDelivery(detail.delivery ?? null);
+        setChildren(detail.children ?? []);
+        setParentTask(detail.parent ?? null);
       })
       .catch(() => {
         if (!cancelled) setChecklist([]);
@@ -666,6 +673,25 @@ export function TaskDetailDrawer({
       await onChanged?.();
     } catch (error) {
       onError(error instanceof Error ? error.message : "담당자를 바꾸지 못했습니다.");
+    }
+  };
+
+  /** Break this work into a part of its own: a Task, not a checklist line. */
+  const addSubtask = async () => {
+    const title = (newChild ?? "").trim();
+    if (!title) {
+      onError("하위 업무 제목을 입력해 주세요.");
+      return;
+    }
+    onError(null);
+    try {
+      const created = await createDirectTask(title, { parent_task_id: task.task_id });
+      setChildren((rows) => [...rows, { task_id: created.task_id, title: created.title, state: created.state, due_date: created.due_date ?? null, assignee: created.assignee ?? null }]);
+      setNewChild(null);
+      await settleVersion();
+      onNotice?.(`하위 업무 '${created.title}'을 만들었습니다.`);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "하위 업무를 만들지 못했습니다.");
     }
   };
 
@@ -1223,6 +1249,83 @@ export function TaskDetailDrawer({
                 입력 취소
               </button>
             </div>
+          </section>
+        )}
+        {parentTask && (
+          <section aria-label="상위 업무" className="drawer-section notice">
+            <h4>상위 업무</h4>
+            <p>
+              이 업무는{" "}
+              <button
+                aria-label={`${parentTask.title} 열기`}
+                className="btn link"
+                onClick={() => onOpenTask?.(parentTask.task_id)}
+                type="button"
+              >
+                {parentTask.title}
+              </button>{" "}
+              의 하위 업무입니다. <span className="t-meta">{taskStateLabel[parentTask.state]}</span>
+            </p>
+          </section>
+        )}
+        {!readOnly && !parentTask && (
+          /* One level only: a part of the work does not itself get parts. */
+          <section aria-label="하위 업무" className="drawer-section">
+            <div className="section-row">
+              <h4>
+                하위 업무{" "}
+                <span className="checklist-progress" data-done={task.child_progress?.done ?? children.filter((row) => row.state === "done" || row.state === "cancelled").length} data-total={children.length}>
+                  {children.filter((row) => row.state === "done" || row.state === "cancelled").length}/{children.length}
+                </span>
+              </h4>
+              {editable && (
+                <button className="btn h30 ghost" disabled={busy} onClick={() => setNewChild(newChild === null ? "" : null)} type="button">
+                  {newChild === null ? "하위 업무 추가" : "추가 취소"}
+                </button>
+              )}
+            </div>
+            {children.length > 0 ? (
+              <ul className="material-list">
+                {children.map((row) => (
+                  <li key={row.task_id}>
+                    <button aria-label={`${row.title} 열기`} className="btn link" onClick={() => onOpenTask?.(row.task_id)} type="button">
+                      {row.title}
+                    </button>
+                    <span className="t-meta">
+                      {taskStateLabel[row.state]}
+                      {row.due_date ? ` · ${formatDate(row.due_date)}` : ""}
+                      {row.assignee ? ` · ${personName(row.assignee.display_name)}` : ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="t-meta">하위 업무가 없습니다. 따로 담당자나 기한이 필요한 일이면 하위 업무로 나누세요.</p>
+            )}
+            {editable && newChild !== null && (
+              <div className="inline-reason" style={{ padding: "8px 0 0" }}>
+                <label className="sr-only" htmlFor={`subtask-title-${task.task_id}`}>
+                  하위 업무 제목
+                </label>
+                <input
+                  autoFocus
+                  id={`subtask-title-${task.task_id}`}
+                  onChange={(event) => setNewChild(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") return;
+                    event.preventDefault();
+                    if (event.repeat || event.nativeEvent.isComposing) return;
+                    void addSubtask();
+                  }}
+                  placeholder="따로 맡길 만한 일을 적어 주세요"
+                  value={newChild}
+                />
+                <button className="btn" disabled={busy || !newChild.trim()} onClick={() => void addSubtask()} type="button">
+                  만들기
+                </button>
+              </div>
+            )}
+            <p className="t-meta">체크리스트는 이 업무 안의 단계이고, 하위 업무는 따로 맡고 따로 끝나는 업무입니다.</p>
           </section>
         )}
         {!readOnly && (

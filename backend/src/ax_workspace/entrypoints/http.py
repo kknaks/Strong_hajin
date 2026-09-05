@@ -51,6 +51,8 @@ class CreateTaskRequest(BaseModel):
     checklist: list[str] = []
     #: Earlier work this task points at as context.
     reference_task_ids: list[UUID] = []
+    #: The work this one is a part of. One level only: a subtask cannot have subtasks of its own.
+    parent_task_id: UUID | None = None
 
 
 class CreateMeetingRequest(BaseModel):
@@ -121,6 +123,7 @@ class AssignTaskRequest(BaseModel):
     start_date: date | None = None
     due_date: date | None = None
     checklist: list[str] = []
+    parent_task_id: UUID | None = None
 
 
 class ReassignTaskRequest(BaseModel):
@@ -698,6 +701,7 @@ def create_app(
                     due_date=request.due_date,
                     checklist=request.checklist,
                     reference_task_ids=request.reference_task_ids,
+                    parent_task_id=request.parent_task_id,
                 )
             except Exception as error:
                 raise _runtime_error(error) from error
@@ -708,7 +712,7 @@ def create_app(
                 return app.state.workflow_application.assign_task(
                     principal, request.title, request.assignee_id,
                     description=request.description, start_date=request.start_date, due_date=request.due_date,
-                    checklist=request.checklist,
+                    checklist=request.checklist, parent_task_id=request.parent_task_id,
                 )
             except Exception as error:
                 raise _runtime_error(error) from error

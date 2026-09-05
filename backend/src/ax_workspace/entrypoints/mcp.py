@@ -309,13 +309,19 @@ class McpReportsFacade:
         return self._application.task_history(self.principal, UUID(task_id))
 
     def create_self_task(
-        self, title: str, checklist: list[str] | None = None, reference_task_ids: list[str] | None = None
+        self,
+        title: str,
+        checklist: list[str] | None = None,
+        reference_task_ids: list[str] | None = None,
+        parent_task_id: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"title": title}
         if checklist:
             payload["checklist"] = list(checklist)
         if reference_task_ids:
             payload["reference_task_ids"] = list(reference_task_ids)
+        if parent_task_id:
+            payload["parent_task_id"] = parent_task_id
         action = self._propose_chat_action("task.create_self", "업무 생성 확인", payload)
         if action is not None:
             return action
@@ -325,6 +331,7 @@ class McpReportsFacade:
             self._mutation_key("task.create_self", payload),
             checklist=list(checklist or []),
             reference_task_ids=[UUID(item) for item in reference_task_ids or []],
+            parent_task_id=UUID(parent_task_id) if parent_task_id else None,
         )
 
     def _mutation_key(self, operation: str, payload: dict[str, Any]) -> str | None:
@@ -373,6 +380,15 @@ class McpReportsFacade:
             if field in parsed:
                 parsed[field] = _parse_iso_date(parsed[field])
         return self._application.update_task(self.principal, UUID(task_id), expected_version, parsed)
+
+    def task_subtasks(self, task_id: str) -> dict[str, Any]:
+        task = self._application.get_task(self.principal, UUID(task_id))
+        return {
+            "task_id": task_id,
+            "parent": task.get("parent"),
+            "children": task.get("children", []),
+            "progress": task.get("child_progress"),
+        }
 
     def task_checklist(self, task_id: str) -> dict[str, Any]:
         task = self._application.get_task(self.principal, UUID(task_id))
@@ -698,6 +714,17 @@ def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
             return facade.task_history(task_id)
 
         @server.tool(
+            description=(
+                "Read the parts of one Task: the subtasks under it that this persona may see, with who holds each "
+                "and where it stands. A parent is context and progress, never the truth about a part's own state."
+            ),
+            annotations=_READ_ONLY_TOOL,
+            structured_output=True,
+        )
+        def task_subtask_list(task_id: str) -> dict[str, Any]:
+            return facade.task_subtasks(task_id)
+
+        @server.tool(
             description="Read the steps inside one Task, in order, with how many are finished.",
             annotations=_READ_ONLY_TOOL,
             structured_output=True,
@@ -761,14 +788,18 @@ def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
 
     @server.tool(
         description=(
-            "Create a self-owned Task, optionally with the first steps of its checklist in order and earlier Tasks "
-            "to point at as context (`참고 업무` — a pointer, never a claim about cause or a grant of access)."
+            "Create a self-owned Task, optionally with the first steps of its checklist in order, earlier Tasks to "
+            "point at as context (`참고 업무` — a pointer, never a claim about cause or a grant of access), and a "
+            "`parent_task_id` to make it a part of larger work (one level only)."
         )
     )
     def task_create_self(
-        title: str, checklist: list[str] | None = None, reference_task_ids: list[str] | None = None
+        title: str,
+        checklist: list[str] | None = None,
+        reference_task_ids: list[str] | None = None,
+        parent_task_id: str | None = None,
     ) -> dict[str, Any]:
-        return facade.create_self_task(title, checklist, reference_task_ids)
+        return facade.create_self_task(title, checklist, reference_task_ids, parent_task_id)
 
     if TASK_ASSIGN in facade.principal.capabilities:
         @server.tool(description="List members within the delegated persona's units who can be assigned a Task.")

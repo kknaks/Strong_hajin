@@ -504,12 +504,13 @@ class WorkflowApplication:
         due_date: Any = None,
         checklist: list[str] | None = None,
         reference_task_ids: list[UUID] | None = None,
+        parent_task_id: UUID | None = None,
     ) -> dict[str, Any]:
         with self._session_factory() as session:
             result = self._tasks(session).create_self(
                 principal, title, causation_key,
                 description=description, start_date=start_date, due_date=due_date, checklist=checklist,
-                reference_task_ids=reference_task_ids,
+                reference_task_ids=reference_task_ids, parent_task_id=parent_task_id,
             )
             session.commit()
             return result
@@ -658,11 +659,11 @@ class WorkflowApplication:
             session.commit()
             return result
 
-    @staticmethod
-    def _assignments(session: Any) -> TaskAssignmentApplication:
+    def _assignments(self, session: Any) -> TaskAssignmentApplication:
         return TaskAssignmentApplication(
             SqlAlchemyTaskAssignmentRepository(session),
             OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
+            self._tasks(session),
         )
 
     def list_tasks(self, principal: Principal, *, include_closed: bool = False) -> list[dict[str, Any]]:
