@@ -32,6 +32,7 @@ from ax_workspace.platform.persistence import (
 from ax_workspace.platform.reports import SqlAlchemyDailyReportDraftWorkflow, SqlAlchemyDailyReportRepository
 from ax_workspace.modules.work.assignments import TaskAssignmentApplication
 from ax_workspace.platform.work_tasks import (
+    caused_by,
     SqlAlchemyTaskAssignmentRepository,
     SqlAlchemyTaskRepository,
     SqlAlchemyWorkRecordSource,
@@ -217,6 +218,11 @@ class SqlAlchemyActionExecutor:
         self._report_provider = report_provider
 
     def execute(self, principal: Principal, action: ActionItemRecord) -> dict[str, Any]:
+        # Everything this approval causes says which confirmation carried it; the actor stays the approver.
+        with caused_by(f"action_item:{action.id}"):
+            return self._execute(principal, action)
+
+    def _execute(self, principal: Principal, action: ActionItemRecord) -> dict[str, Any]:
         if action.action_type == "work_request.create":
             return WorkRequestApplication(
                 SqlAlchemyWorkRequestRepository(self._session),

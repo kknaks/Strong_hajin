@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 from uuid import UUID
@@ -77,6 +79,21 @@ def _content_hash(payload: dict) -> str:
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
 
 
+#: Set for the duration of one approved AX confirmation, so every ledger line that confirmation causes can say so.
+#: The actor is always the person who approved; this names only the decision the change travelled through.
+_CAUSATION: ContextVar[str | None] = ContextVar("activity_causation_ref", default=None)
+
+
+@contextmanager
+def caused_by(causation_ref: str | None):
+    """Mark everything written inside this block as carried here by `causation_ref`."""
+    token = _CAUSATION.set(causation_ref)
+    try:
+        yield
+    finally:
+        _CAUSATION.reset(token)
+
+
 class ActivityLedger:
     """Append-only ERD ActivityEvent writer shared by Work repositories."""
 
@@ -108,6 +125,7 @@ class ActivityLedger:
                 before_ref=before_ref,
                 after_ref=after_ref,
                 reason=reason,
+                causation_ref=_CAUSATION.get(),
                 safe_summary=safe_summary[:300],
                 occurred_at=datetime.now(UTC),
             )

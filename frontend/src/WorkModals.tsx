@@ -180,6 +180,7 @@ export function TaskHistorySection({ task }: { task: DirectTask }) {
                   <b>{row.actor ? personName(row.actor.display_name) : "알 수 없음"}</b>
                   <span className="t-meta">{formatDateTime(row.occurred_at)}</span>
                   {version !== null && <span className="badge outline">v{version}</span>}
+                  {row.causation?.kind === "action_item" && <span className="badge ai">AX를 통해</span>}
                 </div>
                 <p>{row.summary}</p>
                 {row.reason && <p className="t-meta">사유: {row.reason}</p>}

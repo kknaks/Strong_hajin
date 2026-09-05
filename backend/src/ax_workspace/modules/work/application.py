@@ -288,6 +288,7 @@ class TaskApplication:
                 "summary": row.safe_summary,
                 "reason": row.reason,
                 "version": _version_of(row.after_ref),
+                "causation": _causation(getattr(row, "causation_ref", None)),
                 "occurred_at": row.occurred_at.isoformat(),
             }
             for row in self.repository.activity_for(task_id)
@@ -573,6 +574,14 @@ def validate_schedule(start_date: date | None, due_date: date | None) -> None:
 
 #: Snapshot fields compared as plain values; lists of things get their own comparison.
 _DIFFABLE_FIELDS = ("title", "description", "state", "block_reason", "start_date", "due_date")
+
+
+def _causation(causation_ref: str | None) -> dict[str, str] | None:
+    """What carried a change here, as kind and id. Never a claim that something other than a person acted."""
+    if not causation_ref or ":" not in causation_ref:
+        return None
+    kind, _, identifier = causation_ref.partition(":")
+    return {"kind": kind, "id": identifier}
 
 
 def _version_of(after_ref: str | None) -> int | None:

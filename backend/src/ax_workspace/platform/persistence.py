@@ -894,6 +894,9 @@ class ActivityEventRecord(Base):
     before_ref: Mapped[str | None] = mapped_column(String(200))
     after_ref: Mapped[str | None] = mapped_column(String(200))
     reason: Mapped[str | None] = mapped_column(Text)
+    #: What carried this change here, as `<kind>:<id>` — an approved AX confirmation, say. The actor stays the
+    #: person who approved it; this only says which decision it travelled through.
+    causation_ref: Mapped[str | None] = mapped_column(String(200))
     safe_summary: Mapped[str] = mapped_column(String(300), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

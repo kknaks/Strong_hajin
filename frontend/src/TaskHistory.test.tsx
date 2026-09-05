@@ -161,6 +161,30 @@ describe("task history", () => {
     expect(within(rows[2]).queryByRole("button", { name: "변경 내용" })).toBeNull();
   });
 
+  it("says a change came through an AX confirmation without making AX the actor", async () => {
+    renderDrawer();
+    const section = await screen.findByLabelText("활동·이력");
+    vi.mocked(api.getTaskHistory).mockResolvedValue({
+      ...history,
+      activity: [
+        {
+          ...history.activity[0],
+          event_kind: "task.checklist.added",
+          summary: "체크리스트 추가: AX가 제안한 단계",
+          causation: { kind: "action_item", id: "action-9" },
+        },
+        history.activity[1],
+      ],
+    } as never);
+    fireEvent.click(within(section).getByRole("button", { name: "이력 보기" }));
+    const rows = await within(section).findAllByRole("listitem");
+
+    // The person is still the one who did it; the badge only says what it travelled through.
+    expect(rows[0].textContent).toContain("지호");
+    expect(within(rows[0]).getByText("AX를 통해")).toBeTruthy();
+    expect(within(rows[1]).queryByText("AX를 통해")).toBeNull();
+  });
+
   it("narrows to the kind of change someone is looking for, without changing what the server sent", async () => {
     renderDrawer();
     const section = await screen.findByLabelText("활동·이력");

@@ -205,3 +205,42 @@ def test_a_delegated_turn_reads_the_same_history_and_no_more(tmp_path) -> None:
         assert "task" in str(error).lower() or "not" in str(error).lower()
     else:
         raise AssertionError("a stranger read a task history through MCP")
+
+
+def test_a_change_made_through_ax_names_the_person_and_the_confirmation_they_approved(tmp_path, monkeypatch) -> None:
+    """AX is not an actor. The person who approved is, and the ledger says which confirmation carried it."""
+    from ax_workspace.entrypoints.mcp import McpReportsFacade
+    from ax_workspace.platform.persistence import ConversationTurnRecord
+
+    client, _, database_url = _stack(tmp_path)
+    settings = Settings(RuntimeProfile.TEST, database_url, materials_dir=str(tmp_path / "materials"))
+    task_id = client.post("/api/tasks", headers=MINA, json={"title": "AX가 도울 업무"}).json()["task_id"]
+
+    conversation = client.post("/api/conversations", headers=MINA, json={"title": "위임 턴"}).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={**MINA, "Idempotency-Key": "history-causation"},
+        json={"body": "단계 추가해줘", "context": []},
+    )
+    with make_session_factory(database_url)() as session:
+        execution_id = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"])).execution_id
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", str(execution_id))
+    proposed = McpReportsFacade(settings, "mina").add_checklist_item(task_id, "AX가 제안한 단계")
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
+
+    [card] = [row for row in client.get("/api/actions", headers=MINA).json() if row["action_id"] == proposed["action_id"]]
+    client.post(
+        f"/api/actions/{proposed['action_id']}/decide",
+        headers=MINA,
+        json={"decision": "approve", "expected_version": card["version"]},
+    )
+
+    activity = _history(client, task_id).json()["activity"]
+    [through_ax] = [row for row in activity if row["event_kind"] == "task.checklist.added"]
+    assert through_ax["actor"]["member_id"] == "mina"  # the person, never the assistant
+    assert through_ax["causation"] == {"kind": "action_item", "id": proposed["action_id"]}
+
+    # A change someone made directly carries no such link, so the badge cannot appear where it did not happen.
+    client.post(f"/api/tasks/{task_id}/checklist", headers=MINA, json={"text": "직접 적은 단계"})
+    direct = [row for row in _history(client, task_id).json()["activity"] if row["event_kind"] == "task.checklist.added"]
+    assert [row["causation"] for row in direct].count(None) == 1

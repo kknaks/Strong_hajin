@@ -53,6 +53,8 @@ export type TaskHistory = {
     reason: string | null;
     /** The version this line produced, so a reader can open exactly that snapshot. */
     version: number | null;
+    /** What carried this change here — an approved AX confirmation, say. Never a claim that AX acted. */
+    causation?: { kind: string; id: string } | null;
     occurred_at: string;
   }>;
 };

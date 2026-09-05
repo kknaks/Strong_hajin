@@ -99,8 +99,20 @@ try {
   await page.getByRole("complementary", { name: "AX 대화" }).getByRole("button", { name: "닫기" }).click();
   await navigation.getByRole("button", { name: "내 업무" }).click();
   await page.getByRole("row", { name: new RegExp(taskTitle) }).click();
-  const checklist = page.getByRole("dialog", { name: "업무 상세" }).locator('section[aria-label="체크리스트"]');
+  const drawer = page.getByRole("dialog", { name: "업무 상세" });
+  const checklist = drawer.locator('section[aria-label="체크리스트"]');
   await checklist.locator(".checklist-item", { hasText: stepText }).waitFor({ timeout: 20_000 });
+
+  // The history says a person did it, and that it came through the confirmation they approved.
+  const historySection = drawer.locator("section[aria-label='활동·이력']");
+  const openHistory = historySection.getByRole("button", { name: "이력 보기" });
+  await openHistory.scrollIntoViewIfNeeded();
+  await openHistory.click();
+  const line = historySection.locator("ol.activity-list > li", { hasText: "체크리스트 추가" }).first();
+  await line.waitFor({ timeout: 20_000 });
+  const lineText = ((await line.textContent()) ?? "").replace(/\s+/g, " ");
+  if (!lineText.includes("민아")) throw new Error(`the history does not name the person: ${JSON.stringify(lineText)}`);
+  if (!lineText.includes("AX를 통해")) throw new Error(`the history does not say it came through AX: ${JSON.stringify(lineText)}`);
 
   await page.screenshot({ path: "test-results/chat-checklist-e2e.png", fullPage: true });
   console.log(JSON.stringify({ result: "AX proposed a checklist step, a person approved it, and it landed once", task_id: task.task_id, action_id: pending.action_id, steps: after.steps, task_version: after.version }));
