@@ -176,6 +176,8 @@ class SqlAlchemyActionRepository:
             return f"업무 요청: {action.payload['title']}"
         if action.action_type == "daily_report.edit":
             return "일일보고 초안 수정"
+        if action.action_type.startswith("task.checklist."):
+            return _OPERATION_LABELS.get(action.action_type, action.action_type)
         if action.action_type == "task.assign":
             return f"업무 배정: {action.payload['title']} → {action.payload['assignee_id']}"
         if action.action_type == ACTION_ITEM_COMMAND:
@@ -262,6 +264,8 @@ class SqlAlchemyActionExecutor:
             return TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session), SqlAlchemyActionRepository(self._session)).update(
                 UUID(str(action.payload["task_id"])), principal, int(action.payload["expected_version"]), changes
             )
+        if action.action_type.startswith("task.checklist."):
+            return self._run_checklist_command(principal, action)
         if action.action_type == "task.assign":
             return self._assignments().assign(
                 principal, str(action.payload["title"]), str(action.payload["assignee_id"]),
@@ -301,6 +305,30 @@ class SqlAlchemyActionExecutor:
         if action.action_type == "work_request.negotiate":
             return WorkRequestApplication(SqlAlchemyWorkRequestRepository(self._session), OrganizationApplication(SqlAlchemyOrganizationRepository(self._session))).negotiate(principal, UUID(str(action.payload["request_id"])), int(action.payload["expected_version"]), dict(action.payload["conditions"]))
         raise ValueError("unsupported action type")
+
+    def _run_checklist_command(self, principal: Principal, action: ActionItemRecord) -> dict[str, Any]:
+        """A checklist change a delegated turn prepared, applied once by the person who approved it."""
+        tasks = TaskApplication(
+            SqlAlchemyTaskRepository(self._session),
+            SqlAlchemyWorkRequestRepository(self._session),
+            SqlAlchemyActionRepository(self._session),
+        )
+        payload = dict(action.payload)
+        task_id = UUID(str(payload["task_id"]))
+        if action.action_type == "task.checklist.add":
+            return tasks.add_checklist_item(principal, task_id, str(payload["text"]))
+        if action.action_type == "task.checklist.reorder":
+            return tasks.reorder_checklist(principal, task_id, [UUID(str(item)) for item in payload["item_ids"]])
+        item_id = UUID(str(payload["item_id"]))
+        expected_version = int(payload["expected_version"])
+        if action.action_type == "task.checklist.archive":
+            return tasks.archive_checklist_item(principal, task_id, item_id, expected_version=expected_version)
+        changes: dict[str, Any] = {"expected_version": expected_version}
+        if payload.get("text") is not None:
+            changes["text"] = str(payload["text"])
+        if payload.get("done") is not None:
+            changes["done"] = bool(payload["done"])
+        return tasks.update_checklist_item(principal, task_id, item_id, **changes)
 
     def _run_action_item_command(self, principal: Principal, action: ActionItemRecord) -> dict[str, Any]:
         """Apply the judgement a delegated turn prepared, through the one canonical command path.
@@ -355,6 +383,10 @@ _OPERATION_LABELS: dict[str, str] = {
     "work_request.amend": "요청 수정",
     "daily_report.edit": "일일보고 수정",
     "daily_report.submit": "일일보고 제출",
+    "task.checklist.add": "체크리스트 단계 추가",
+    "task.checklist.update": "체크리스트 단계 수정",
+    "task.checklist.archive": "체크리스트 단계 정리",
+    "task.checklist.reorder": "체크리스트 순서 변경",
 }
 _TASK_STATE_LABELS: dict[str, str] = {"open": "대기", "in_progress": "진행 중", "blocked": "막힘", "done": "완료", "cancelled": "취소"}
 _UNKNOWN_MEMBER = "확인할 수 없는 구성원"
@@ -435,6 +467,26 @@ class ActionPresenter:
                 if target:
                     fields.append({"id": "target", "label": "변경 상태", "value": _TASK_STATE_LABELS.get(target, target), "kind": "state"})
                 self._text(fields, "reason", "사유", payload.get("reason"))
+        elif kind.startswith("task.checklist."):
+            task_title = self._readable_task_title(payload.get("task_id"), principal)
+            if task_title is not None:
+                subject = task_title
+                fields.append({"id": "task", "label": "대상 업무", "value": task_title, "kind": "text"})
+            if kind == "task.checklist.add":
+                self._text(fields, "text", "추가할 단계", payload.get("text"))
+            elif kind == "task.checklist.update":
+                self._text(fields, "text", "고칠 내용", payload.get("text"))
+                if payload.get("done") is not None:
+                    fields.append({
+                        "id": "done", "label": "완료 여부",
+                        "value": "완료로 표시" if payload.get("done") else "완료 해제", "kind": "state",
+                    })
+            elif kind == "task.checklist.reorder":
+                fields.append({
+                    "id": "order", "label": "새 순서",
+                    "value": f"{len(payload.get('item_ids') or [])}단계를 다시 정렬", "kind": "text",
+                })
+            self._checklist_step(fields, payload, principal)
         elif kind in {"task.assignment.decline", "work_request.reject", "daily_report.submit"}:
             self._text(fields, "reason", "사유", payload.get("reason"))
         elif kind == "work_request.amend":
@@ -453,6 +505,24 @@ class ActionPresenter:
 
         self._evidence(fields, action, principal)
         return {"subject": subject, "operation_label": _OPERATION_LABELS.get(kind, kind), "preview": fields, "obsolete": obsolete}
+
+    def _checklist_step(self, fields: list[dict[str, str]], payload: dict[str, Any], principal: Principal | None) -> None:
+        """Which step is being changed, named by its own words rather than by an id nobody can read."""
+        item_id = payload.get("item_id")
+        task_id = payload.get("task_id")
+        if not item_id or not task_id or principal is None:
+            return
+        from ax_workspace.platform.work_tasks import SqlAlchemyTaskRepository
+
+        repository = SqlAlchemyTaskRepository(self._session)
+        try:
+            task = repository.task(UUID(str(task_id)), str(principal.id))
+        except Exception:  # not this person's task: the card says nothing about it
+            return
+        for item in repository.checklist_for(task.id, include_archived=True):
+            if str(item.id) == str(item_id):
+                fields.append({"id": "step", "label": "대상 단계", "value": item.text, "kind": "text"})
+                return
 
     def _action_item_command(
         self,

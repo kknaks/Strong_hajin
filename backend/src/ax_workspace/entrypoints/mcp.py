@@ -54,6 +54,10 @@ DELEGATED_ACTION_CAPABILITIES = {
     "task.assign": TASK_ASSIGN,
     "task.assignment.accept": TASK_SELF_MANAGE,
     "task.assignment.decline": TASK_SELF_MANAGE,
+    "task.checklist.add": TASK_SELF_MANAGE,
+    "task.checklist.update": TASK_SELF_MANAGE,
+    "task.checklist.archive": TASK_SELF_MANAGE,
+    "task.checklist.reorder": TASK_SELF_MANAGE,
 }
 
 
@@ -353,6 +357,46 @@ class McpReportsFacade:
                 parsed[field] = _parse_iso_date(parsed[field])
         return self._application.update_task(self.principal, UUID(task_id), expected_version, parsed)
 
+    def task_checklist(self, task_id: str) -> dict[str, Any]:
+        task = self._application.get_task(self.principal, UUID(task_id))
+        return {"task_id": task_id, "checklist": task.get("checklist", []), "progress": task.get("checklist_progress")}
+
+    def add_checklist_item(self, task_id: str, text: str) -> dict[str, Any]:
+        action = self._propose_chat_action("task.checklist.add", "체크리스트 단계 추가 확인", {"task_id": task_id, "text": text})
+        if action is not None:
+            return action
+        return self._application.add_task_checklist_item(self.principal, UUID(task_id), text)
+
+    def update_checklist_item(
+        self, task_id: str, item_id: str, expected_version: int, text: str | None = None, done: bool | None = None
+    ) -> dict[str, Any]:
+        payload = {"task_id": task_id, "item_id": item_id, "expected_version": expected_version, "text": text, "done": done}
+        action = self._propose_chat_action("task.checklist.update", "체크리스트 단계 수정 확인", payload)
+        if action is not None:
+            return action
+        changes: dict[str, Any] = {"expected_version": expected_version}
+        if text is not None:
+            changes["text"] = text
+        if done is not None:
+            changes["done"] = done
+        return self._application.update_task_checklist_item(self.principal, UUID(task_id), UUID(item_id), **changes)
+
+    def archive_checklist_item(self, task_id: str, item_id: str, expected_version: int) -> dict[str, Any]:
+        payload = {"task_id": task_id, "item_id": item_id, "expected_version": expected_version}
+        action = self._propose_chat_action("task.checklist.archive", "체크리스트 단계 정리 확인", payload)
+        if action is not None:
+            return action
+        return self._application.archive_task_checklist_item(
+            self.principal, UUID(task_id), UUID(item_id), expected_version=expected_version
+        )
+
+    def reorder_checklist(self, task_id: str, item_ids: list[str]) -> dict[str, Any]:
+        payload = {"task_id": task_id, "item_ids": list(item_ids)}
+        action = self._propose_chat_action("task.checklist.reorder", "체크리스트 순서 변경 확인", payload)
+        if action is not None:
+            return action
+        return self._application.reorder_task_checklist(self.principal, UUID(task_id), [UUID(item) for item in item_ids])
+
     def list_task_materials(self, task_id: str) -> list[dict[str, Any]]:
         return self._application.list_task_materials(self.principal, UUID(task_id))
 
@@ -625,6 +669,14 @@ def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
         def task_history(task_id: str) -> dict[str, Any]:
             return facade.task_history(task_id)
 
+        @server.tool(
+            description="Read the steps inside one Task, in order, with how many are finished.",
+            annotations=_READ_ONLY_TOOL,
+            structured_output=True,
+        )
+        def task_checklist_list(task_id: str) -> dict[str, Any]:
+            return facade.task_checklist(task_id)
+
         @server.tool(description="List reference documents (input) and deliverables (output) attached to a Task, with their content extraction status.")
         def task_materials_list(task_id: str) -> list[dict[str, Any]]:
             return facade.list_task_materials(task_id)
@@ -641,6 +693,43 @@ def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
 
     if TASK_SELF_MANAGE not in facade.principal.capabilities:
         return
+
+    @server.tool(
+        description="Add a step to a Task's checklist. It lands last in the list.",
+        annotations=_COMMAND_TOOL,
+        structured_output=True,
+    )
+    def task_checklist_add(task_id: str, text: str) -> dict[str, Any]:
+        return facade.add_checklist_item(task_id, text)
+
+    @server.tool(
+        description=(
+            "Change one step: its text, whether it is done, or both. Answer the step's own `expected_version` from "
+            "`task_checklist_list`, so an edit someone else already made is refused rather than overwritten."
+        ),
+        annotations=_COMMAND_TOOL,
+        structured_output=True,
+    )
+    def task_checklist_update(
+        task_id: str, item_id: str, expected_version: int, text: str | None = None, done: bool | None = None
+    ) -> dict[str, Any]:
+        return facade.update_checklist_item(task_id, item_id, expected_version, text, done)
+
+    @server.tool(
+        description="Take a step off the checklist. It stays in the Task's history rather than being deleted.",
+        annotations=_COMMAND_TOOL,
+        structured_output=True,
+    )
+    def task_checklist_archive(task_id: str, item_id: str, expected_version: int) -> dict[str, Any]:
+        return facade.archive_checklist_item(task_id, item_id, expected_version)
+
+    @server.tool(
+        description="Put the steps in a new order. Pass every step on the list exactly once, in the order they should read.",
+        annotations=_COMMAND_TOOL,
+        structured_output=True,
+    )
+    def task_checklist_reorder(task_id: str, item_ids: list[str]) -> dict[str, Any]:
+        return facade.reorder_checklist(task_id, item_ids)
 
     @server.tool(description="Create a self-owned Task.")
     def task_create_self(title: str) -> dict[str, Any]:
