@@ -899,10 +899,11 @@ class WorkflowApplication:
             session.commit()
             return result
 
-    def remove_task_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID) -> None:
+    def remove_task_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID) -> dict[str, Any]:
         with self._session_factory() as session:
-            self._tasks(session).remove_checklist_item(principal, task_id, item_id)
+            result = self._tasks(session).remove_checklist_item(principal, task_id, item_id)
             session.commit()
+            return result
 
     def transition_task(self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None = None, expected_version: int = 0) -> dict[str, Any]:
         with self._session_factory() as session:

@@ -26,6 +26,8 @@ import type {
   Conversation,
   ConversationContextReference,
   ConversationMessageAcceptance,
+  TaskHistory,
+  TaskHistoryDiff,
 } from "./viewModels";
 
 type ApiErrorBody = {
@@ -73,6 +75,14 @@ export async function getTasks(includeClosed = false): Promise<DirectTask[]> {
 
 export async function getTask(taskId: string): Promise<DirectTask> {
   return request<DirectTask>(`/api/tasks/${taskId}`);
+}
+
+export async function getTaskHistory(taskId: string): Promise<TaskHistory> {
+  return request<TaskHistory>(`/api/tasks/${taskId}/history`);
+}
+
+export async function getTaskHistoryDiff(taskId: string, from: number, to: number): Promise<TaskHistoryDiff> {
+  return request<TaskHistoryDiff>(`/api/tasks/${taskId}/history/diff?from=${from}&to=${to}`);
 }
 
 export async function getMyOrganizationProfile(): Promise<OrganizationProfile> {
@@ -490,8 +500,8 @@ export async function updateChecklistItem(
   return request<ChecklistItem>(`/api/tasks/${taskId}/checklist/${itemId}`, { body: JSON.stringify(patch), method: "PATCH" });
 }
 
-export async function removeChecklistItem(taskId: string, itemId: string): Promise<void> {
-  await request(`/api/tasks/${taskId}/checklist/${itemId}`, { method: "DELETE" });
+export async function removeChecklistItem(taskId: string, itemId: string): Promise<{ task_version: number }> {
+  return request<{ task_version: number }>(`/api/tasks/${taskId}/checklist/${itemId}`, { method: "DELETE" });
 }
 
 export async function getCalendarEntries(): Promise<CalendarEntry[]> {

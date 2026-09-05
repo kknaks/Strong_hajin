@@ -1111,9 +1111,13 @@ class SqlAlchemyTaskAssignmentRepository:
         ).all()
         return [(assignment, task) for assignment, task in rows]
 
-    def task_by_id(self, task_id: UUID) -> TaskRecord | None:
-        """The Task itself, with no holder scope. Callers decide separately who may act on it."""
-        return self._session.get(TaskRecord, task_id)
+    def task_by_id(self, task_id: UUID, *, lock: bool = False) -> TaskRecord | None:
+        """The Task itself, with no holder scope. Callers decide separately who may act on it.
+
+        `lock` takes the Task row before anything is read off it, so two commands racing for the same Task cannot
+        both pass a version check that was true only before the other one committed.
+        """
+        return self._session.get(TaskRecord, task_id, with_for_update=lock or None)
 
     def active_assignment_for(self, task_id: UUID, *, lock: bool = False) -> TaskAssignmentRecord | None:
         """Who holds this Task right now. At most one assignment is ever open on it."""
@@ -1157,6 +1161,7 @@ class SqlAlchemyTaskAssignmentRepository:
                 f"{_person(self._session, assignee_id)}로 바꿈: {task.title}"
             ),
         )
+        SqlAlchemyTaskRepository(self._session).capture_version(task, assigner_id, "task.reassigned", reason)
         self._session.flush()
         return appended
 

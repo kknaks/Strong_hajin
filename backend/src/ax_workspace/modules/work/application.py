@@ -60,6 +60,7 @@ class TaskRepository(Protocol):
     def checklist_progress_for(self, task_ids: list[UUID]) -> dict[UUID, tuple[int, int]]: ...
     def origin_facts(self, tasks: list[Any]) -> dict[UUID, dict[str, Any]]: ...
     def versions_for(self, task_id: UUID) -> list[Any]: ...
+    def activity_for(self, task_id: UUID) -> list[Any]: ...
     def member_display_name(self, member_id: str) -> str | None: ...
     def add_checklist_item(self, task_id: UUID, text: str) -> Any: ...
     def checklist_item(self, task_id: UUID, item_id: UUID, *, lock: bool = False) -> Any: ...
@@ -271,7 +272,25 @@ class TaskApplication:
                 }
                 for row in self.repository.versions_for(task_id)
             ],
+            "activity": self._activity(task_id),
         }
+
+    def _activity(self, task_id: UUID) -> list[dict[str, Any]]:
+        """What happened, newest first, in the words the ledger already froze — never re-derived from the snapshots."""
+        rows = [
+            {
+                "event_kind": row.event_kind,
+                "actor": self._actor(row.actor_id),
+                "actor_kind": row.actor_kind,
+                "summary": row.safe_summary,
+                "reason": row.reason,
+                "version": _version_of(row.after_ref),
+                "occurred_at": row.occurred_at.isoformat(),
+            }
+            for row in self.repository.activity_for(task_id)
+        ]
+        rows.sort(key=lambda row: (row["occurred_at"], row["version"] or 0), reverse=True)
+        return rows
 
     def history_diff(self, principal: Principal, task_id: UUID, before: int, after: int) -> dict[str, Any]:
         """What changed between two versions. Only what actually moved is named."""
@@ -412,7 +431,7 @@ class TaskApplication:
         item.updated_at = datetime.now(UTC)
         return _checklist_view(item, task)
 
-    def remove_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID) -> None:
+    def remove_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID) -> dict[str, Any]:
         self._require(principal, TASK_SELF_MANAGE)
         task = self.repository.task(task_id, str(principal.id))
         item = self.repository.checklist_item(task.id, item_id, lock=True)
@@ -421,6 +440,7 @@ class TaskApplication:
         self.repository.remove_checklist_item(item)
         self._moved(task)
         self.repository.record_activity(task, str(principal.id), "task.checklist.removed", f"체크리스트 삭제: {item.text[:80]}")
+        return {"task_version": int(task.version)}
 
     def _with_checklist(self, task: Any, principal: Principal) -> dict[str, Any]:
         items = [_checklist_view(item) for item in self.repository.checklist_for(task.id)]
@@ -481,6 +501,14 @@ def validate_schedule(start_date: date | None, due_date: date | None) -> None:
 
 #: Snapshot fields compared as plain values; lists of things get their own comparison.
 _DIFFABLE_FIELDS = ("title", "description", "state", "block_reason", "start_date", "due_date")
+
+
+def _version_of(after_ref: str | None) -> int | None:
+    """Ledger lines point at the version they produced (`task:<id>@<n>`), so a reader can open that snapshot."""
+    if not after_ref or "@" not in after_ref:
+        return None
+    tail = after_ref.rsplit("@", 1)[1]
+    return int(tail) if tail.isdigit() else None
 
 
 def _snapshot_diff(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:

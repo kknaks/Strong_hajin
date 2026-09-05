@@ -293,6 +293,9 @@ class McpReportsFacade:
     def get_task(self, task_id: str) -> dict[str, Any]:
         return self._application.get_task(self.principal, UUID(task_id))
 
+    def task_history(self, task_id: str) -> dict[str, Any]:
+        return self._application.task_history(self.principal, UUID(task_id))
+
     def create_self_task(self, title: str) -> dict[str, Any]:
         action = self._propose_chat_action("task.create_self", "업무 생성 확인", {"title": title})
         if action is not None:
@@ -610,6 +613,17 @@ def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
         @server.tool(description="Read one delegated principal Task.")
         def task_get(task_id: str) -> dict[str, Any]:
             return facade.get_task(task_id)
+
+        @server.tool(
+            description=(
+                "Read how one Task got to where it is: every frozen version with what changed it, and the activity in "
+                "the words the ledger recorded. Read-only, and only for a Task the delegated persona may already read."
+            ),
+            annotations=_READ_ONLY_TOOL,
+            structured_output=True,
+        )
+        def task_history(task_id: str) -> dict[str, Any]:
+            return facade.task_history(task_id)
 
         @server.tool(description="List reference documents (input) and deliverables (output) attached to a Task, with their content extraction status.")
         def task_materials_list(task_id: str) -> list[dict[str, Any]]:

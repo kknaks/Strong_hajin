@@ -34,6 +34,37 @@ export type DirectTask = {
   checklist_progress?: { done: number; total: number };
 };
 
+/** How a Task got to where it is: one frozen picture per version, and the ledger lines that produced them. */
+export type TaskHistory = {
+  task_id: string;
+  versions: Array<{
+    version: number;
+    change_kind: string;
+    actor_id: string;
+    reason: string | null;
+    captured_at: string;
+    snapshot: Record<string, unknown>;
+  }>;
+  activity: Array<{
+    event_kind: string;
+    actor: { member_id: string; display_name: string } | null;
+    actor_kind: string;
+    summary: string;
+    reason: string | null;
+    /** The version this line produced, so a reader can open exactly that snapshot. */
+    version: number | null;
+    occurred_at: string;
+  }>;
+};
+
+/** What actually moved between two versions. Only the fields the server says changed are present. */
+export type TaskHistoryDiff = {
+  task_id: string;
+  from: number;
+  to: number;
+  changes: Record<string, { before?: unknown; after?: unknown; added?: string[]; removed?: string[] }>;
+};
+
 /**
  * The Task's provenance as the server resolved it. `actor_role` already says which role the actor played, so no
  * surface has to decide whether a member id means requester, assigner or assignee. `source` is absent when the
@@ -48,6 +79,8 @@ export type TaskOrigin = {
 
 /** One step inside a Task: no assignment, no lineage, no judgement. */
 export type ChecklistItem = {
+  /** The Task version this step's change moved the Task to. Only mutation answers carry it. */
+  task_version?: number;
   item_id: string;
   text: string;
   position: number;
@@ -110,6 +143,8 @@ export type TaskMaterial = {
   created_at: string;
   removed_at: string | null;
   extraction?: MaterialExtraction | null;
+  /** The Task version this attach or detach moved the Task to. Only mutation answers carry it. */
+  task_version?: number;
 };
 
 export type MaterialExtraction = {

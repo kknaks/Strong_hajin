@@ -228,7 +228,7 @@ class TaskMaterialApplication:
             f"{'참고 자료' if kind == 'input' else '산출물'} 링크 연결: {clean_label}",
         )
         # A link has no content to extract, so no extraction is requested and search reports it as unreadable.
-        return self._view(binding, attachment, None, principal=principal, references=self._references)
+        return self._moved_view(task, binding, attachment, None, principal=principal, references=self._references)
 
     def attach_reference(self, principal: Principal, task_id: UUID, *, kind: str, resource_type: str, resource_id: str) -> dict[str, Any]:
         """Point a Task at another thing inside SCAX, but only at something this person may already read."""
@@ -258,7 +258,7 @@ class TaskMaterialApplication:
             task, str(principal.id), "task.material_attached",
             f"{'참고 자료' if kind == 'input' else '산출물'} 연결: {title}",
         )
-        return self._view(binding, attachment, None, principal=principal, references=self._references)
+        return self._moved_view(task, binding, attachment, None, principal=principal, references=self._references)
 
     def attach(self, principal: Principal, task_id: UUID, *, kind: str, name: str, content_type: str, data: bytes) -> dict[str, Any]:
         self._require(principal, TASK_SELF_MANAGE)
@@ -286,7 +286,7 @@ class TaskMaterialApplication:
             extraction = self._extractions.request(attachment)
             if extraction.status == "queued" and self._extraction_queue is not None:
                 self._extraction_queue.enqueue(MaterialExtractionJob(extraction.id, attachment.id))
-        return self._view(binding, attachment, extraction, principal=principal, references=self._references)
+        return self._moved_view(task, binding, attachment, extraction, principal=principal, references=self._references)
 
     def open(self, principal: Principal, task_id: UUID, binding_id: UUID) -> tuple[dict[str, Any], bytes]:
         self._require(principal, TASK_READ)
@@ -310,7 +310,12 @@ class TaskMaterialApplication:
         self._attachments.unbind(binding)
         self._moved(task)
         self._tasks.record_activity(task, str(principal.id), "task.material_detached", f"자료 해제: {attachment.name}")
-        return self._view(binding, attachment, self._extraction_for(attachment), principal=principal, references=self._references)
+        return self._moved_view(task, binding, attachment, self._extraction_for(attachment), principal=principal, references=self._references)
+
+    def _moved_view(self, task: Any, binding: Any, attachment: Any, extraction: Any, *, principal: Any, references: Any) -> dict[str, Any]:
+        """A mutation answers with the material and the Task version it moved to, so an open screen is not left stale."""
+        view = self._view(binding, attachment, extraction, principal=principal, references=references)
+        return {**view, "task_version": int(task.version)}
 
     def _moved(self, task: Any) -> None:
         """Attaching or detaching changes what the Task contains, so the Task moves on and history freezes it."""

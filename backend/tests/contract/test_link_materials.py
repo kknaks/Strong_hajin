@@ -49,9 +49,13 @@ def test_a_task_can_point_at_work_that_lives_somewhere_else(tmp_path) -> None:
     assert not material["integrity_ref"].startswith("sha256:")
 
     [listed] = client.get(f"/api/tasks/{task_id}/materials", headers=MINA).json()
-    assert {key: value for key, value in listed.items() if key != "created_at"} == {
-        key: value for key, value in material.items() if key != "created_at"
+    # The same material either way. Only the attach answer carries the Task version it moved to; a read has none.
+    assert material["task_version"] == 2
+    volatile = {"created_at", "task_version"}
+    assert {key: value for key, value in listed.items() if key not in volatile} == {
+        key: value for key, value in material.items() if key not in volatile
     }
+    assert "task_version" not in listed
     with make_session_factory(database_url)() as session:
         [row] = session.scalars(select(AttachmentRecord)).all()
         assert row.source_kind == "external_link" and row.source_ref == "https://docs.example.com/spec/v2"

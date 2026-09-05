@@ -938,11 +938,11 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
-        @app.delete("/api/tasks/{task_id}/checklist/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
-        def remove_task_checklist_item(task_id: UUID, item_id: UUID, principal: Principal = Depends(developer_principal)) -> Response:
+        @app.delete("/api/tasks/{task_id}/checklist/{item_id}")
+        def remove_task_checklist_item(task_id: UUID, item_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            # Removing a step moves the Task, so the answer carries the version it moved to rather than nothing.
             try:
-                app.state.workflow_application.remove_task_checklist_item(principal, task_id, item_id)
-                return Response(status_code=status.HTTP_204_NO_CONTENT)
+                return app.state.workflow_application.remove_task_checklist_item(principal, task_id, item_id)
             except Exception as error:
                 raise _runtime_error(error) from error
 

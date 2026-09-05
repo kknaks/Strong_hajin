@@ -216,6 +216,25 @@ describe("task checklist", () => {
     await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(3));
   });
 
+  it("saves with the version the server just answered, without waiting for the refresh", async () => {
+    // The refresh never comes back here. The mutation's own answer is enough: an edit made right after a step
+    // must not be refused for carrying the version the drawer was opened at.
+    vi.mocked(api.addChecklistItem).mockResolvedValue({ ...step("i9", "제출하기", 1), task_version: 2 } as never);
+    const { onChanged, onUpdate } = renderDrawer([]);
+    vi.mocked(onChanged).mockImplementation(() => new Promise(() => {}));
+    const section = await screen.findByLabelText("체크리스트");
+    fireEvent.change(within(section).getByLabelText("체크리스트 단계"), { target: { value: "제출하기" } });
+    fireEvent.click(within(section).getByRole("button", { name: "추가" }));
+    await waitFor(() => expect(within(section).getByText("제출하기")).toBeTruthy());
+
+    const titleField = document.querySelector("input.title-input") as HTMLInputElement;
+    fireEvent.change(titleField, { target: { value: "바로 이어서 고친 제목" } });
+    fireEvent.click(screen.getByRole("button", { name: "변경 저장" }));
+    await waitFor(() => expect(onUpdate).toHaveBeenCalled());
+    expect(vi.mocked(onUpdate).mock.calls[0][0].version).toBe(2);
+    expect(vi.mocked(onUpdate).mock.calls[0][1]).toEqual({ title: "바로 이어서 고친 제목" });
+  });
+
   it("still accepts the next step while the previous one's refresh is in flight", async () => {
     let release: ((value: unknown) => void) | null = null;
     vi.mocked(api.addChecklistItem)

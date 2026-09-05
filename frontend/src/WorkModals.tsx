@@ -10,6 +10,8 @@ import {
   detachTaskMaterial,
   addChecklistItem,
   getTask,
+  getTaskHistory,
+  getTaskHistoryDiff,
   getTaskMaterials,
   removeChecklistItem,
   updateChecklistItem,
@@ -31,6 +33,7 @@ import {
 import {
   dueDayText,
   formatDate,
+  formatDateTime,
   isOverdue,
   isoDateInSeoul,
   personName,
@@ -40,7 +43,20 @@ import {
 } from "./labels";
 import { DateField } from "./DateField";
 import { ConfirmModal, Drawer } from "./Modal";
-import type { ChecklistItem, DirectTask, MaterialExtraction, Persona, RequestTimeline, TaskMaterial, TaskMaterialKind, TaskOrigin, TaskPatch, WorkRequest } from "./viewModels";
+import type {
+  ChecklistItem,
+  DirectTask,
+  MaterialExtraction,
+  Persona,
+  RequestTimeline,
+  TaskHistory,
+  TaskHistoryDiff,
+  TaskMaterial,
+  TaskMaterialKind,
+  TaskOrigin,
+  TaskPatch,
+  WorkRequest,
+} from "./viewModels";
 
 export type TaskAction = "start" | "block" | "resume" | "complete" | "cancel";
 
@@ -49,6 +65,131 @@ function diffValue(field: string, value: unknown): string {
   const text = value === null || value === undefined || value === "" ? "" : String(value);
   if (!text) return "—";
   return field === "due_date" || field === "start_date" ? formatDate(text) : text;
+}
+
+/** The words a person reads for each snapshot field a diff can name. */
+const HISTORY_FIELD_LABEL: Record<string, string> = {
+  title: "제목",
+  description: "업무 내용",
+  state: "상태",
+  block_reason: "막힘 사유",
+  start_date: "시작일",
+  due_date: "기한",
+  assignee: "담당자",
+  checklist: "체크리스트",
+  materials: "참고 자료",
+};
+
+/**
+ * How this Task got here: the ledger lines, newest first, and — on request — what actually changed between the
+ * version before a line and the version it produced. Nothing is fetched until someone asks, because most people
+ * open a Task to work on it rather than to audit it.
+ */
+export function TaskHistorySection({ task }: { task: DirectTask }) {
+  const [open, setOpen] = useState(false);
+  const [history, setHistory] = useState<TaskHistory | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [diffs, setDiffs] = useState<Record<number, TaskHistoryDiff | "loading" | string>>({});
+
+  // A version the drawer settled while this was open means there is a new line to read.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setFailure(null);
+    void getTaskHistory(task.task_id)
+      .then((loaded) => {
+        if (!cancelled) setHistory(loaded);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setHistory(null);
+        setFailure(error instanceof Error ? error.message : "이력을 불러오지 못했습니다.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, task.task_id, task.version]);
+
+  const openDiff = async (version: number) => {
+    if (diffs[version] && diffs[version] !== "loading") {
+      setDiffs(({ [version]: _closed, ...rest }) => rest);
+      return;
+    }
+    setDiffs((current) => ({ ...current, [version]: "loading" }));
+    try {
+      const diff = await getTaskHistoryDiff(task.task_id, version - 1, version);
+      setDiffs((current) => ({ ...current, [version]: diff }));
+    } catch (error) {
+      setDiffs((current) => ({ ...current, [version]: error instanceof Error ? error.message : "변경 내용을 불러오지 못했습니다." }));
+    }
+  };
+
+  return (
+    <section aria-label="활동·이력" className="drawer-section">
+      <div className="section-row">
+        <h4>활동·이력</h4>
+        <button className="btn h30 ghost" onClick={() => setOpen((current) => !current)} type="button">
+          {open ? "이력 접기" : "이력 보기"}
+        </button>
+      </div>
+      <p className="t-meta">
+        {formatDate(isoDateInSeoul(task.created_at))} 생성 · 최근 변경 {formatDate(isoDateInSeoul(task.updated_at))}
+        {task.state === "done" && " · 완료됨"}
+        {task.state === "cancelled" && " · 취소됨"}
+      </p>
+      {open && failure && <p className="danger-text">{failure}</p>}
+      {open && !failure && history === null && <p className="t-meta">불러오는 중…</p>}
+      {open && history !== null && history.activity.length === 0 && <p className="t-meta">아직 기록이 없습니다.</p>}
+      {open && history !== null && history.activity.length > 0 && (
+        <ol className="activity-list">
+          {history.activity.map((row, index) => {
+            const version = row.version;
+            const diff = version === null ? undefined : diffs[version];
+            return (
+              <li data-version={version ?? undefined} key={`${row.occurred_at}-${index}`}>
+                <div className="activity-line">
+                  <b>{row.actor ? personName(row.actor.display_name) : "알 수 없음"}</b>
+                  <span className="t-meta">{formatDateTime(row.occurred_at)}</span>
+                  {version !== null && <span className="badge outline">v{version}</span>}
+                </div>
+                <p>{row.summary}</p>
+                {row.reason && <p className="t-meta">사유: {row.reason}</p>}
+                {version !== null && version > 1 && (
+                  <button className="btn h30 ghost" onClick={() => void openDiff(version)} type="button">
+                    변경 내용
+                  </button>
+                )}
+                {diff === "loading" && <p className="t-meta">변경 내용을 불러오는 중…</p>}
+                {typeof diff === "string" && diff !== "loading" && <p className="danger-text">{diff}</p>}
+                {diff && typeof diff !== "string" && (
+                  <dl aria-label="변경 내용" className="diff-grid" role="group">
+                    {Object.entries(diff.changes).map(([field, change]) => (
+                      <div key={field}>
+                        <dt>{HISTORY_FIELD_LABEL[field] ?? field}</dt>
+                        <dd>
+                          {change.added || change.removed ? (
+                            <>
+                              {(change.added ?? []).length > 0 && <span>추가: {(change.added ?? []).join(", ")}</span>}
+                              {(change.removed ?? []).length > 0 && <span>빠짐: {(change.removed ?? []).join(", ")}</span>}
+                            </>
+                          ) : (
+                            <>
+                              <span className="t-meta">{diffValue(field, change.before)}</span> → <span>{diffValue(field, change.after)}</span>
+                            </>
+                          )}
+                        </dd>
+                      </div>
+                    ))}
+                    {Object.keys(diff.changes).length === 0 && <p className="t-meta">이 버전에서 바뀐 내용이 없습니다.</p>}
+                  </dl>
+                )}
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </section>
+  );
 }
 
 export function displayNameOf(personas: Persona[], id: string | null | undefined, fallback = "알 수 없음"): string {
@@ -168,6 +309,11 @@ export function TaskDetailDrawer({
   const [handoverChoices, setHandoverChoices] = useState<Persona[] | null>(null);
   const inputFile = useRef<HTMLInputElement>(null);
   const outputFile = useRef<HTMLInputElement>(null);
+  // A checklist or material change moves the Task's version, and every mutation answers with the version it moved
+  // to. Hold that here so the very next save carries it, without waiting for the parent's refresh to come back.
+  const [settledVersion, setSettledVersion] = useState(task.version);
+  useEffect(() => setSettledVersion(task.version), [task.task_id, task.version]);
+  const current = settledVersion > task.version ? { ...task, version: settledVersion } : task;
   const closed = task.state === "cancelled";
   const readOnly = task.access === "read_only";
   const editable = canManage && !closed && !readOnly;
@@ -236,6 +382,11 @@ export function TaskDetailDrawer({
 
   // Checklist and material changes are changes to the Task, so the server freezes a new version for each one.
   // Settle it here, or the next save from this open drawer is refused as stale.
+  /** Take the version a mutation answered with, so this drawer stops holding the one it opened at. */
+  function moved(version: number | undefined) {
+    if (typeof version === "number") setSettledVersion((held) => (version > held ? version : held));
+  }
+
   async function settleVersion() {
     try {
       await onChanged?.();
@@ -252,7 +403,8 @@ export function TaskDetailDrawer({
     let added = false;
     try {
       const created = await addChecklistItem(task.task_id, text);
-      setChecklist((current) => [...(current ?? []), created]);
+      setChecklist((rows) => [...(rows ?? []), created]);
+      moved(created.task_version);
       // Clear only what was sent: a fast typist may already be writing the next step while this one is in flight.
       setNewStep((current) => (current.trim() === text ? "" : current));
       added = true;
@@ -270,7 +422,8 @@ export function TaskDetailDrawer({
     onError(null);
     try {
       const updated = await updateChecklistItem(task.task_id, item.item_id, { done });
-      setChecklist((current) => (current ?? []).map((row) => (row.item_id === item.item_id ? updated : row)));
+      setChecklist((rows) => (rows ?? []).map((row) => (row.item_id === item.item_id ? updated : row)));
+      moved(updated.task_version);
       await settleVersion();
     } catch (error) {
       onError(error instanceof Error ? error.message : "체크리스트를 갱신하지 못했습니다.");
@@ -280,8 +433,9 @@ export function TaskDetailDrawer({
   async function removeStep(item: ChecklistItem) {
     onError(null);
     try {
-      await removeChecklistItem(task.task_id, item.item_id);
-      setChecklist((current) => (current ?? []).filter((row) => row.item_id !== item.item_id));
+      const removed = await removeChecklistItem(task.task_id, item.item_id);
+      setChecklist((rows) => (rows ?? []).filter((row) => row.item_id !== item.item_id));
+      moved(removed?.task_version);
       await settleVersion();
     } catch (error) {
       onError(error instanceof Error ? error.message : "체크리스트 단계를 삭제하지 못했습니다.");
@@ -302,13 +456,13 @@ export function TaskDetailDrawer({
     if (description.trim() !== (task.description ?? "")) patch.description = description.trim();
     if (startDate !== (task.start_date ?? "")) patch.start_date = startDate || null;
     if (dueDate !== (task.due_date ?? "")) patch.due_date = dueDate || null;
-    await onUpdate(task, patch);
+    await onUpdate(current, patch);
   };
 
   const submitBlock = async () => {
     const reason = blockReason.trim();
     if (!reason) return;
-    await onTransition(task, "block", reason);
+    await onTransition(current, "block", reason);
     setIsBlocking(false);
     setBlockReason("");
   };
@@ -319,7 +473,8 @@ export function TaskDetailDrawer({
     onError(null);
     try {
       const material = await uploadTaskMaterial(task.task_id, kind, file);
-      setMaterials((current) => [...(current ?? []), material]);
+      setMaterials((rows) => [...(rows ?? []), material]);
+      moved(material.task_version);
       await settleVersion();
       onNotice?.(`${kind === "input" ? "참고 자료" : "산출물"} '${material.name}'을 올렸습니다.`);
     } catch (error) {
@@ -341,7 +496,8 @@ export function TaskDetailDrawer({
     onError(null);
     try {
       const material = await attachTaskMaterialLink(task.task_id, kind, { url: draft.url.trim(), label: draft.label.trim() });
-      setMaterials((current) => [...(current ?? []), material]);
+      setMaterials((rows) => [...(rows ?? []), material]);
+      moved(material.task_version);
       setLinkDraft(null);
       await settleVersion();
       onNotice?.(`${kind === "input" ? "참고 자료" : "산출물"} 링크 '${material.name}'을 연결했습니다.`);
@@ -374,7 +530,7 @@ export function TaskDetailDrawer({
     }
     onError(null);
     try {
-      await reassignTask(task.task_id, task.version, handover.assigneeId, handover.reason.trim() || undefined);
+      await reassignTask(task.task_id, current.version, handover.assigneeId, handover.reason.trim() || undefined);
       setHandover(null);
       onNotice?.("담당자를 바꿨습니다. 새 담당자가 수락하면 그 사람의 업무가 됩니다.");
       await onChanged?.();
@@ -407,7 +563,8 @@ export function TaskDetailDrawer({
     onError(null);
     try {
       const material = await attachTaskMaterialReference(task.task_id, kind, { resource_type: "task", resource_id: refDraft.taskId });
-      setMaterials((current) => [...(current ?? []), material]);
+      setMaterials((rows) => [...(rows ?? []), material]);
+      moved(material.task_version);
       setRefDraft(null);
       await settleVersion();
       onNotice?.(`${kind === "input" ? "참고 자료" : "산출물"}로 '${material.name}'을 연결했습니다.`);
@@ -421,8 +578,9 @@ export function TaskDetailDrawer({
   const detach = async (material: TaskMaterial) => {
     onError(null);
     try {
-      await detachTaskMaterial(task.task_id, material.material_id);
-      setMaterials((current) => (current ?? []).filter((item) => item.material_id !== material.material_id));
+      const detached = await detachTaskMaterial(task.task_id, material.material_id);
+      setMaterials((rows) => (rows ?? []).filter((item) => item.material_id !== material.material_id));
+      moved(detached.task_version);
       await settleVersion();
       onNotice?.(`'${material.name}'을 업무에서 뗐습니다. 기록은 남습니다.`);
     } catch (error) {
@@ -589,22 +747,22 @@ export function TaskDetailDrawer({
                 </button>
               )}
               {task.state === "open" && (
-                <button className="btn h40 primary" disabled={busy} onClick={() => void onTransition(task, "start")} type="button">
+                <button className="btn h40 primary" disabled={busy} onClick={() => void onTransition(current, "start")} type="button">
                   시작
                 </button>
               )}
               {task.state === "in_progress" && (
-                <button className="btn h40 primary" disabled={busy} onClick={() => void onTransition(task, "complete")} type="button">
+                <button className="btn h40 primary" disabled={busy} onClick={() => void onTransition(current, "complete")} type="button">
                   완료 처리
                 </button>
               )}
               {task.state === "blocked" && (
-                <button className="btn h40 primary" disabled={busy} onClick={() => void onTransition(task, "resume")} type="button">
+                <button className="btn h40 primary" disabled={busy} onClick={() => void onTransition(current, "resume")} type="button">
                   재개
                 </button>
               )}
               {task.state === "done" && (
-                <button className="btn h40" disabled={busy} onClick={() => void onTransition(task, "resume")} type="button">
+                <button className="btn h40" disabled={busy} onClick={() => void onTransition(current, "resume")} type="button">
                   다시 진행
                 </button>
               )}
@@ -624,7 +782,7 @@ export function TaskDetailDrawer({
           <div className="chip-row">
             <StatusText state={task.state} />
             {isOverdue(task, today) && <span className="badge danger">기한 초과</span>}
-            <span className="badge outline">v{task.version}</span>
+            <span className="badge outline">v{current.version}</span>
           </div>
         }
         kicker="업무 상세"
@@ -820,14 +978,7 @@ export function TaskDetailDrawer({
         )}
         {renderMaterials("input", inputFile)}
         {renderMaterials("output", outputFile)}
-        <section className="drawer-section">
-          <h4>기록</h4>
-          <p>
-            {formatDate(isoDateInSeoul(task.created_at))} 생성 · 최근 변경 {formatDate(isoDateInSeoul(task.updated_at))}
-            {task.state === "done" && " · 완료됨"}
-            {task.state === "cancelled" && " · 취소됨"}
-          </p>
-        </section>
+        <TaskHistorySection task={task} />
         {onAskAx && (
           <section className="drawer-section">
             <h4>AX</h4>
@@ -854,7 +1005,7 @@ export function TaskDetailDrawer({
           onClose={() => setConfirmCancel(false)}
           onConfirm={() => {
             setConfirmCancel(false);
-            void onTransition(task, "cancel");
+            void onTransition(current, "cancel");
           }}
           title="업무를 취소할까요?"
         />

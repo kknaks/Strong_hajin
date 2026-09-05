@@ -145,3 +145,57 @@ def test_history_is_read_by_the_same_people_who_may_read_the_task(tmp_path) -> N
     stranger = _history(client, task_id, SORA)
     assert stranger.status_code in {403, 404}
     assert "요청한 업무" not in stranger.text
+
+
+def test_history_reads_as_sentences_about_people_not_event_codes(tmp_path) -> None:
+    """The list of versions answers "what changed"; the activity answers "what happened", in words."""
+    client, _, _ = _stack(tmp_path)
+    task_id = client.post("/api/tasks", headers=MINA, json={"title": "설명이 필요한 업무"}).json()["task_id"]
+    client.post(f"/api/tasks/{task_id}/checklist", headers=MINA, json={"text": "자료 모으기"})
+    started = client.get(f"/api/tasks/{task_id}", headers=MINA).json()
+    client.post(f"/api/tasks/{task_id}/start", headers=MINA, json={"expected_version": started["version"]})
+    running = client.get(f"/api/tasks/{task_id}", headers=MINA).json()
+    blocked = client.post(
+        f"/api/tasks/{task_id}/block",
+        headers=MINA,
+        json={"expected_version": running["version"], "reason": "자료를 기다립니다"},
+    )
+    assert blocked.status_code == 200, blocked.text
+
+    history = _history(client, task_id).json()
+    activity = history["activity"]
+    # Newest first, because the question is almost always what just happened.
+    assert [row["version"] for row in activity] == [4, 3, 2, 1]
+    assert [row["event_kind"] for row in activity] == [
+        "task.state_changed", "task.state_changed", "task.checklist.added", "task.created",
+    ]
+    # A person, not a member id, and the reason they gave.
+    assert activity[0]["actor"] == {"member_id": "mina", "display_name": "민아 (구성원)"}
+    assert activity[0]["reason"] == "자료를 기다립니다"
+    assert "체크리스트 추가: 자료 모으기" in activity[2]["summary"]
+    assert activity[3]["occurred_at"] <= activity[0]["occurred_at"]
+    # Each line says which version it produced, so a reader can open exactly that snapshot.
+    assert {row["version"] for row in activity} <= {row["version"] for row in history["versions"]}
+
+
+def test_a_delegated_turn_reads_the_same_history_and_no_more(tmp_path) -> None:
+    """`task_history` is the MCP window onto the same authorized projection — read-only, and no wider."""
+    from ax_workspace.entrypoints.mcp import McpReportsFacade
+
+    client, _, database_url = _stack(tmp_path)
+    settings = Settings(RuntimeProfile.TEST, database_url, materials_dir=str(tmp_path / "materials"))
+    task_id = client.post("/api/tasks", headers=MINA, json={"title": "AX가 설명할 업무"}).json()["task_id"]
+    client.post(f"/api/tasks/{task_id}/checklist", headers=MINA, json={"text": "자료 모으기"})
+
+    mina = McpReportsFacade(settings, "mina")
+    history = mina.task_history(task_id)
+    assert [row["version"] for row in history["versions"]] == [1, 2]
+    assert history["activity"][0]["event_kind"] == "task.checklist.added"
+
+    sora = McpReportsFacade(settings, "sora")
+    try:
+        sora.task_history(task_id)
+    except Exception as error:  # the same answer the REST surface gives a stranger
+        assert "task" in str(error).lower() or "not" in str(error).lower()
+    else:
+        raise AssertionError("a stranger read a task history through MCP")

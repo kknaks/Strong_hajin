@@ -68,14 +68,16 @@ def test_an_item_can_be_renamed_and_removed_without_touching_the_others(tmp_path
     assert client.patch(f"{url}/{first['item_id']}", headers=MINA, json={"text": "   "}).status_code == 422
 
     removed = client.delete(f"{url}/{second['item_id']}", headers=MINA)
-    assert removed.status_code == 204, removed.text
+    # Removing a step moves the Task, so the answer says which version it moved to.
+    assert removed.status_code == 200, removed.text
+    assert removed.json()["task_version"] == client.get(f"/api/tasks/{task['task_id']}", headers=MINA).json()["version"]
     view = client.get(f"/api/tasks/{task['task_id']}", headers=MINA).json()
     assert [item["text"] for item in view["checklist"]] == ["자료 정리하기", "검토 요청"]
     # Removing the middle item leaves the survivors' order intact and a new item still lands last.
     assert [item["position"] for item in view["checklist"]] == [1, 3]
     fourth = client.post(url, headers=MINA, json={"text": "제출"}).json()
     assert fourth["position"] == 4
-    assert client.delete(f"{url}/{third['item_id']}", headers=MINA).status_code == 204
+    assert client.delete(f"{url}/{third['item_id']}", headers=MINA).status_code == 200
     assert client.delete(f"{url}/{third['item_id']}", headers=MINA).status_code == 404
 
 

@@ -706,6 +706,21 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .checklist-item .btn { flex: none; color: var(--text-tertiary); opacity: 0.65; }
 .checklist-item:hover .btn, .checklist-item:focus-within .btn { opacity: 1; }
 
+/* ---- activity and history: what happened, newest first, with the diff one click away */
+.activity-list { display: grid; gap: 2px; margin: 8px 0 0; padding: 0; list-style: none; }
+.activity-list > li { padding: 8px; border-radius: var(--radius-chip); border-bottom: 1px solid var(--border-subtle); }
+.activity-list > li:last-child { border-bottom: 0; }
+.activity-list > li:hover { background: var(--surface-sunken); }
+.activity-list p { margin: 2px 0 0; font-size: 13px; overflow-wrap: anywhere; }
+.activity-line { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.activity-line b { font-weight: 600; }
+.activity-list .btn { margin-top: 6px; }
+.diff-grid { display: grid; gap: 4px; margin: 8px 0 0; padding: 8px; border: 1px solid var(--border-subtle); border-radius: var(--radius-chip); background: var(--surface-sunken); font-size: 13px; }
+.diff-grid > div { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 8px; }
+.diff-grid dt { color: var(--text-tertiary); }
+.diff-grid dd { margin: 0; overflow-wrap: anywhere; }
+.diff-grid dd span + span { margin-left: 8px; }
+
 /* ---- date field: the visible string is ours, the calendar stays the platform's */
 .date-field { display: grid; gap: 4px; }
 .date-field-control { display: flex; align-items: center; gap: 4px; }
