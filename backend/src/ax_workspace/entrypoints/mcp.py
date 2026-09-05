@@ -190,10 +190,12 @@ class McpReportsFacade:
     def create_work_request(
         self, title: str, assignee_id: str, due_date: str | None = None, description: str | None = None,
         cc_member_ids: list[str] | None = None, checklist: list[str] | None = None,
+        reference_task_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         payload = {
             "title": title, "assignee_id": assignee_id, "due_date": due_date, "description": description,
             "cc_member_ids": list(cc_member_ids or []), "checklist": list(checklist or []),
+            "reference_task_ids": list(reference_task_ids or []),
         }
         action = self._propose_chat_action("work_request.create", "업무 요청 생성 확인", payload)
         if action is not None:
@@ -207,6 +209,7 @@ class McpReportsFacade:
             due_date=_parse_iso_date(due_date),
             cc_member_ids=list(cc_member_ids or []),
             checklist=list(checklist or []),
+            reference_task_ids=[UUID(item) for item in reference_task_ids or []],
         )
 
     def accept_work_request(self, request_id: str, expected_version: int) -> dict[str, Any]:
@@ -305,10 +308,14 @@ class McpReportsFacade:
     def task_history(self, task_id: str) -> dict[str, Any]:
         return self._application.task_history(self.principal, UUID(task_id))
 
-    def create_self_task(self, title: str, checklist: list[str] | None = None) -> dict[str, Any]:
+    def create_self_task(
+        self, title: str, checklist: list[str] | None = None, reference_task_ids: list[str] | None = None
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {"title": title}
         if checklist:
             payload["checklist"] = list(checklist)
+        if reference_task_ids:
+            payload["reference_task_ids"] = list(reference_task_ids)
         action = self._propose_chat_action("task.create_self", "업무 생성 확인", payload)
         if action is not None:
             return action
@@ -317,6 +324,7 @@ class McpReportsFacade:
             title,
             self._mutation_key("task.create_self", payload),
             checklist=list(checklist or []),
+            reference_task_ids=[UUID(item) for item in reference_task_ids or []],
         )
 
     def _mutation_key(self, operation: str, payload: dict[str, Any]) -> str | None:
@@ -661,8 +669,11 @@ def _register_work_request_create_tools(server: MCPServer, facade: McpReportsFac
     def work_request_create(
         title: str, assignee_id: str, due_date: str | None = None, description: str | None = None,
         cc_member_ids: list[str] | None = None, checklist: list[str] | None = None,
+        reference_task_ids: list[str] | None = None,
     ) -> dict[str, Any]:
-        return facade.create_work_request(title, assignee_id, due_date, description, cc_member_ids, checklist)
+        return facade.create_work_request(
+            title, assignee_id, due_date, description, cc_member_ids, checklist, reference_task_ids
+        )
 
 
 def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
@@ -748,9 +759,16 @@ def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
     def task_checklist_reorder(task_id: str, item_ids: list[str]) -> dict[str, Any]:
         return facade.reorder_checklist(task_id, item_ids)
 
-    @server.tool(description="Create a self-owned Task, optionally with the first steps of its checklist in order.")
-    def task_create_self(title: str, checklist: list[str] | None = None) -> dict[str, Any]:
-        return facade.create_self_task(title, checklist)
+    @server.tool(
+        description=(
+            "Create a self-owned Task, optionally with the first steps of its checklist in order and earlier Tasks "
+            "to point at as context (`참고 업무` — a pointer, never a claim about cause or a grant of access)."
+        )
+    )
+    def task_create_self(
+        title: str, checklist: list[str] | None = None, reference_task_ids: list[str] | None = None
+    ) -> dict[str, Any]:
+        return facade.create_self_task(title, checklist, reference_task_ids)
 
     if TASK_ASSIGN in facade.principal.capabilities:
         @server.tool(description="List members within the delegated persona's units who can be assigned a Task.")

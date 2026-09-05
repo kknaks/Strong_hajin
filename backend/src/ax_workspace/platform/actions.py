@@ -236,6 +236,7 @@ class SqlAlchemyActionExecutor:
                 due_date=_parse_date(action.payload.get("due_date")),
                 cc_member_ids=list(action.payload.get("cc_member_ids") or []),
                 checklist=list(action.payload.get("checklist") or []),
+                reference_task_ids=[UUID(str(item)) for item in action.payload.get("reference_task_ids") or []],
             )
         if action.action_type == "daily_report.edit":
             return DailyReportApplication(
@@ -263,6 +264,7 @@ class SqlAlchemyActionExecutor:
             return TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session), SqlAlchemyActionRepository(self._session)).create_self(
                 principal, str(action.payload["title"]), causation_key=str(action.id), source_action_item_id=action.id,
                 checklist=list(action.payload.get("checklist") or []),
+                reference_task_ids=[UUID(str(item)) for item in action.payload.get("reference_task_ids") or []],
             )
         if action.action_type == "task.update":
             changes = dict(action.payload.get("changes", {}))
@@ -456,6 +458,15 @@ class ActionPresenter:
                 self._person(fields, "assignee", "담당", action.owner_id, principal)
             self._date(fields, "start_date", "시작일", payload.get("start_date"))
             self._date(fields, "due_date", "기한", payload.get("due_date"))
+            pointers = [str(item) for item in payload.get("reference_task_ids") or []]
+            if pointers:
+                titles = [self._readable_task_title(item, principal) for item in pointers]
+                named = [title for title in titles if title]
+                hidden = len(titles) - len(named)
+                value = " · ".join(named) if named else ""
+                if hidden:
+                    value = f"{value} · 볼 수 없는 업무 {hidden}건".strip(" ·")
+                fields.append({"id": "references", "label": "참고 업무", "value": value, "kind": "text"})
             steps = [str(step) for step in payload.get("checklist") or []]
             if steps:
                 fields.append({

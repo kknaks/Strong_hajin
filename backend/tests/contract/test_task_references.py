@@ -148,3 +148,38 @@ def test_a_task_is_no_longer_stored_as_a_generic_attachment_reference(tmp_path) 
     assert refused.status_code == 422
     assert "참고 업무" in refused.text
     assert client.get(f"/api/tasks/{current}/materials", headers=MINA).json() == []
+
+
+def test_a_turn_can_propose_work_that_points_at_earlier_work(tmp_path, monkeypatch) -> None:
+    """AX may prepare the pointer; the person approving sees which work it names before anything is created."""
+    from ax_workspace.entrypoints.mcp import McpReportsFacade
+    from ax_workspace.platform.persistence import ConversationTurnRecord
+
+    client, _, database_url = _stack(tmp_path)
+    settings = Settings(RuntimeProfile.TEST, database_url, materials_dir=str(tmp_path / "materials"))
+    earlier = _task(client, "1분기 정산")
+
+    conversation = client.post("/api/conversations", headers=MINA, json={"title": "위임 턴"}).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={**MINA, "Idempotency-Key": "reference-turn"},
+        json={"body": "후속 업무 만들어줘", "context": []},
+    )
+    with make_session_factory(database_url)() as session:
+        execution_id = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"])).execution_id
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", str(execution_id))
+    proposed = McpReportsFacade(settings, "mina").create_self_task("2분기 정산", None, [earlier])
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
+
+    [card] = [row for row in client.get("/api/actions", headers=MINA).json() if row["action_id"] == proposed["action_id"]]
+    [row] = [field for field in card["preview"] if field["id"] == "references"]
+    assert row["value"] == "1분기 정산"
+
+    client.post(
+        f"/api/actions/{proposed['action_id']}/decide",
+        headers=MINA,
+        json={"decision": "approve", "expected_version": card["version"]},
+    )
+    [created] = [task for task in client.get("/api/my-work", headers=MINA).json() if task["title"] == "2분기 정산"]
+    view = client.get(f"/api/tasks/{created['task_id']}", headers=MINA).json()
+    assert [reference["task"]["title"] for reference in view["references"]] == ["1분기 정산"]
