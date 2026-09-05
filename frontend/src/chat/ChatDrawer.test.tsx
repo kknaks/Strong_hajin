@@ -83,6 +83,55 @@ function renderDrawer(overrides: Partial<Parameters<typeof ChatDrawer>[0]> = {})
   return { ...render(<ChatDrawer {...props} />), props };
 }
 
+describe("찾아본 연결", () => {
+  afterEach(cleanup);
+
+  it("shows the steps a turn actually walked, and nothing when it walked none", async () => {
+    const base = conversation("c9", "관계 질문", "이 업무가 어디서 왔는지 알려줘");
+    const walked = {
+      ...base,
+      graph_receipts: [
+        { receipt_id: "r1", turn_id: base.turns[0].turn_id, sequence: 1, kind: "node" as const, node_ref: "task:t1", node_title: "분기 마감", observed_at: "2026-09-06T00:00:00Z" },
+        {
+          receipt_id: "r2",
+          turn_id: base.turns[0].turn_id,
+          sequence: 2,
+          kind: "edge" as const,
+          edge_kind: "produced",
+          from_ref: "work_request:r1",
+          from_title: "분기 마감 요청",
+          to_ref: "task:t1",
+          to_title: "분기 마감",
+          observed_at: "2026-09-06T00:00:01Z",
+        },
+      ],
+    };
+    const { container, rerender } = render(
+      <MessageList
+        conversation={walked as never}
+        localFragments={[]}
+        onDecide={vi.fn()}
+        onDiscardFragment={vi.fn()}
+        onRetryFragment={vi.fn()}
+        onRetryTurn={vi.fn()}
+      />,
+    );
+    const path = container.querySelector("section.ax-search-path") as HTMLElement;
+    expect(path.textContent).toContain("분기 마감 요청 → 분기 마감");
+    expect(path.textContent).toContain("만든 업무");
+
+    rerender(<MessageList
+        conversation={base as never}
+        localFragments={[]}
+        onDecide={vi.fn()}
+        onDiscardFragment={vi.fn()}
+        onRetryFragment={vi.fn()}
+        onRetryTurn={vi.fn()}
+      />);
+    expect(container.querySelector("section.ax-search-path")).toBeNull();
+  });
+});
+
 describe("ChatDrawer session switcher", () => {
   afterEach(cleanup);
 

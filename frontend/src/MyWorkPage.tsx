@@ -46,6 +46,9 @@ type MyWorkPageProps = {
   onError: (message: string | null) => void;
   /** Registers this surface's reload so the shell can await it after an approved AX effect (no remount). */
   onRegisterRefresh?: (refresh: (() => Promise<void>) | null) => void;
+  /** Open this Task as soon as the page mounts — how another surface hands a person over to the work itself. */
+  focusTaskId?: string | null;
+  onFocusHandled?: () => void;
 };
 
 type TaskFilter = "all" | "active" | TaskState;
@@ -73,6 +76,8 @@ export function MyWorkPage({
   onDecided,
   onError,
   onRegisterRefresh,
+  focusTaskId,
+  onFocusHandled,
 }: MyWorkPageProps) {
   const me = personName(personaName);
   const [tasks, setTasks] = useState<DirectTask[]>([]);
@@ -226,6 +231,12 @@ export function MyWorkPage({
       onError(error instanceof Error ? error.message : "파생 업무를 열지 못했습니다.");
     }
   };
+
+  // Another surface handed this person to one piece of work: open it, once, and let that surface forget it.
+  useEffect(() => {
+    if (!focusTaskId) return;
+    void openDerivedTask(focusTaskId).finally(() => onFocusHandled?.());
+  }, [focusTaskId]);
 
   /** Follow a Task back to whatever the server said its source is. Only sources it allowed ever reach here. */
   const openSource = async (source: { type: string; id: string }) => {

@@ -1002,6 +1002,33 @@ class MaterialChunkRecord(Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
 
 
+class ConversationGraphReceiptRecord(Base):
+    """Nodes and connections a delegated AX turn actually looked at, in the order it looked at them.
+
+    Only what a graph tool really returned is written here — never a guess about how things relate, and never a name
+    the asking persona could not already read. It is a receipt of a walk, not a stored graph.
+    """
+
+    __tablename__ = "conversation_graph_receipts"
+    __table_args__ = (UniqueConstraint("turn_id", "sequence", name="uq_conversation_graph_receipt"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    turn_id: Mapped[UUID] = mapped_column(ForeignKey("conversation_turns.id"), nullable=False, index=True)
+    conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), nullable=False, index=True)
+    execution_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: `node` for something found, `edge` for a connection walked.
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    node_ref: Mapped[str | None] = mapped_column(String(120))
+    node_title: Mapped[str | None] = mapped_column(String(300))
+    edge_kind: Mapped[str | None] = mapped_column(String(40))
+    from_ref: Mapped[str | None] = mapped_column(String(120))
+    from_title: Mapped[str | None] = mapped_column(String(300))
+    to_ref: Mapped[str | None] = mapped_column(String(120))
+    to_title: Mapped[str | None] = mapped_column(String(300))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ConversationMaterialEvidenceRecord(Base):
     """Material excerpts a delegated AX turn actually retrieved (SPEC-008 evidence card)."""
 

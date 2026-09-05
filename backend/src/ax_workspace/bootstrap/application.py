@@ -31,6 +31,7 @@ from ax_workspace.platform.action_center import action_handlers
 from ax_workspace.platform.actions import SqlAlchemyActionExecutor, SqlAlchemyActionRepository
 from ax_workspace.platform.reports import SqlAlchemyDailyReportDraftWorkflow, SqlAlchemyDailyReportRepository
 from ax_workspace.modules.work.materials import TaskMaterialApplication
+from ax_workspace.modules.work.graph import GraphApplication
 from ax_workspace.modules.work.application import TaskAccessDenied, TaskApplication, TaskState
 from ax_workspace.modules.work.assignments import TaskAssignmentApplication
 from ax_workspace.modules.meetings.application import MeetingApplication
@@ -50,6 +51,7 @@ from ax_workspace.platform.material_extraction import (
     SqlAlchemyMaterialExtractionRepository,
 )
 from ax_workspace.platform.work_tasks import (
+    SqlAlchemyGraphReceiptRepository,
     SqlAlchemyTaskAssignmentRepository,
     SqlAlchemyAttachmentRepository,
     SqlAlchemyCommentRepository,
@@ -85,6 +87,47 @@ class _SessionResourceReferences:
         except Exception:
             return None
         return None
+
+
+class _SessionGraphSource:
+    """The graph's window onto the ledgers: every read is the owning module's own authorized operation."""
+
+    def __init__(self, application: "WorkflowApplication", session: Any) -> None:
+        self._application = application
+        self._session = session
+
+    def readable_tasks(self, principal: Principal, *, query: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        rows = self._application._tasks(self._session).list_for(principal, include_closed=True)
+        return [row for row in rows if not query or query.lower() in str(row["title"]).lower()][:limit]
+
+    def readable_task(self, principal: Principal, task_id: UUID) -> dict[str, Any] | None:
+        try:
+            return self._application._tasks(self._session).get(principal, task_id)
+        except Exception:
+            return None
+
+    def readable_requests(self, principal: Principal, *, query: str | None = None) -> list[dict[str, Any]]:
+        try:
+            rows = self._application._work_requests(self._session).list(principal)
+        except Exception:
+            return []
+        return [row for row in rows if not query or query.lower() in str(row["title"]).lower()]
+
+    def readable_request(self, principal: Principal, request_id: UUID) -> dict[str, Any] | None:
+        try:
+            return self._application._work_requests(self._session).get(principal, request_id)
+        except Exception:
+            return None
+
+    def task_materials(self, principal: Principal, task_id: UUID) -> list[dict[str, Any]]:
+        try:
+            return self._application._materials(self._session).list(principal, task_id)
+        except Exception:
+            return []
+
+    def person(self, member_id: str) -> dict[str, Any] | None:
+        name = SqlAlchemyTaskRepository(self._session).member_display_name(member_id)
+        return {"member_id": member_id, "display_name": name or member_id}
 
 
 class _SessionTaskReferences:
@@ -559,6 +602,48 @@ class WorkflowApplication:
                 principal, task_id, expected_version, summary=summary, output_material_ids=output_material_ids
             )
             session.commit()
+            return result
+
+    def _graph(self, session: Any) -> GraphApplication:
+        return GraphApplication(_SessionGraphSource(self, session))
+
+    def graph_search(self, principal: Principal, query: str, limit: int = 20, *, execution_id: UUID | None = None) -> dict[str, Any]:
+        """Find work to walk from. In a delegated turn the hits become that turn's own record of what it looked at."""
+        with self._session_factory() as session:
+            result = self._graph(session).search(principal, query, limit=limit)
+            if execution_id is not None and result["nodes"]:
+                SqlAlchemyGraphReceiptRepository(session).record(
+                    execution_id,
+                    str(principal.id),
+                    [
+                        {"kind": "node", "node_ref": f"{row['kind']}:{row['id']}", "node_title": row["title"]}
+                        for row in result["nodes"]
+                    ],
+                )
+                session.commit()
+            return result
+
+    def graph_neighbors(self, principal: Principal, node: str, limit: int = 20, *, execution_id: UUID | None = None) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._graph(session).neighbors(principal, node, limit=limit)
+            if execution_id is not None and result["edges"]:
+                titles = {f"{row['kind']}:{row['id']}": row["title"] for row in result["nodes"]}
+                SqlAlchemyGraphReceiptRepository(session).record(
+                    execution_id,
+                    str(principal.id),
+                    [
+                        {
+                            "kind": "edge",
+                            "edge_kind": row["kind"],
+                            "from_ref": row["from"],
+                            "from_title": titles.get(row["from"]),
+                            "to_ref": row["to"],
+                            "to_title": titles.get(row["to"]),
+                        }
+                        for row in result["edges"]
+                    ],
+                )
+                session.commit()
             return result
 
     def task_history(self, principal: Principal, task_id: UUID) -> dict[str, Any]:

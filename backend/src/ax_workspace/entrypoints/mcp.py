@@ -381,6 +381,19 @@ class McpReportsFacade:
                 parsed[field] = _parse_iso_date(parsed[field])
         return self._application.update_task(self.principal, UUID(task_id), expected_version, parsed)
 
+    def graph_search(self, query: str, limit: int = 20) -> dict[str, Any]:
+        """Inside a delegated turn, what this finds becomes that turn's own record of where it looked."""
+        causation_id = os.getenv("AX_MCP_CAUSATION_ID")
+        return self._application.graph_search(
+            self.principal, query, limit, execution_id=UUID(causation_id) if causation_id else None
+        )
+
+    def graph_neighbors(self, node: str, limit: int = 20) -> dict[str, Any]:
+        causation_id = os.getenv("AX_MCP_CAUSATION_ID")
+        return self._application.graph_neighbors(
+            self.principal, node, limit, execution_id=UUID(causation_id) if causation_id else None
+        )
+
     def task_subtasks(self, task_id: str) -> dict[str, Any]:
         task = self._application.get_task(self.principal, UUID(task_id))
         return {
@@ -712,6 +725,29 @@ def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
         )
         def task_history(task_id: str) -> dict[str, Any]:
             return facade.task_history(task_id)
+
+        @server.tool(
+            description=(
+                "Find work by name — Tasks and work requests this persona may already read — as graph nodes to "
+                "walk from. Returns `<kind>:<id>` references, never anything they may not open."
+            ),
+            annotations=_READ_ONLY_TOOL,
+            structured_output=True,
+        )
+        def graph_search(query: str, limit: int = 20) -> dict[str, Any]:
+            return facade.graph_search(query, limit)
+
+        @server.tool(
+            description=(
+                "Follow one hop from a node (`task:<id>` or `work_request:<id>`): who asked, who holds it, the work "
+                "it became, its parts, the work it points at and its materials. Each neighbour is re-checked against "
+                "what this persona may read, so a connection never grants access."
+            ),
+            annotations=_READ_ONLY_TOOL,
+            structured_output=True,
+        )
+        def graph_neighbors(node: str, limit: int = 20) -> dict[str, Any]:
+            return facade.graph_neighbors(node, limit)
 
         @server.tool(
             description=(

@@ -1,4 +1,28 @@
-export type ProductSurface = "today" | "calendar" | "work" | "report" | "org";
+export type ProductSurface = "today" | "calendar" | "work" | "report" | "org" | "graph";
+
+/** One thing in the relation graph. Nodes are canonical resources, never a graph-only record. */
+export type GraphNode = { kind: "person" | "work_request" | "task" | "material"; id: string; title: string; state?: string | null };
+
+/** How two things are connected, as the ledgers already record it. */
+export type GraphEdge = { kind: string; from: string; to: string };
+
+/** One observed step of a turn's walk: something it found, or a connection it followed. */
+export type GraphReceipt = {
+  receipt_id: string;
+  turn_id: string;
+  sequence: number;
+  kind: "node" | "edge";
+  node_ref?: string | null;
+  node_title?: string | null;
+  edge_kind?: string | null;
+  from_ref?: string | null;
+  from_title?: string | null;
+  to_ref?: string | null;
+  to_title?: string | null;
+  observed_at: string;
+};
+
+export type GraphNeighborhood = { center: GraphNode; nodes: GraphNode[]; edges: GraphEdge[]; truncated: boolean };
 
 export type Persona = {
   id: string;
@@ -467,6 +491,8 @@ export type Conversation = {
   }>;
   actions?: ActionItem[];
   material_evidence?: MaterialEvidence[];
+  /** Where each turn actually walked in the relation graph, in the order the tools returned it. */
+  graph_receipts?: GraphReceipt[];
 };
 
 export type ConversationContextReference = {

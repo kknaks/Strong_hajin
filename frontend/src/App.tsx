@@ -10,6 +10,7 @@ import { LoginPage } from "./LoginPage";
 import { Toast } from "./Modal";
 import { MyWorkPage } from "./MyWorkPage";
 import { OrgPage } from "./OrgPage";
+import { RelationGraphPage } from "./RelationGraphPage";
 import { TodayPage } from "./TodayPage";
 import type { ConversationContextReference, DirectTask, OrganizationProfile, Persona, ProductSurface } from "./viewModels";
 
@@ -19,6 +20,7 @@ const navigation: ReadonlyArray<{ id: ProductSurface; label: string }> = [
   { id: "work", label: "내 업무" },
   { id: "report", label: "보고" },
   { id: "org", label: "조직" },
+  { id: "graph", label: "관계 탐색" },
 ];
 
 const surfaceLabel: Record<ProductSurface, string> = {
@@ -27,10 +29,12 @@ const surfaceLabel: Record<ProductSurface, string> = {
   work: "내 업무",
   report: "보고",
   org: "조직",
+  graph: "관계 탐색",
 };
 
 export default function App() {
   const [session, setSession] = useState<OrganizationProfile | null | undefined>(undefined);
+  const [focusTaskId, setFocusTaskId] = useState<string | null>(null);
   const personaId = session?.member_id ?? "";
   const [personas, setPersonas] = useState<Persona[]>([]);
   const capabilities = session?.capabilities ?? null;
@@ -213,7 +217,12 @@ export default function App() {
   const selectedContext = contextOptions.find((item) => contextKey(item) === selectedContextKey);
   const has = (capability: string) => capabilities?.includes(capability) ?? false;
   const canReadActions = has("action.read");
-  const visibleNavigation = navigation.filter((item) => item.id !== "report" || has("daily_report.generate"));
+  const visibleNavigation = navigation.filter((item) => {
+    if (item.id === "report") return has("daily_report.generate");
+    // Following how work connects across people is a manager's read, not everyone's.
+    if (item.id === "graph") return has("team.manage");
+    return true;
+  });
   const pageProps = { personaId, onError: setError, onRegisterRefresh: registerSurfaceRefresh };
   const sharedWorkProps = {
     personaName: currentPersonaName,
@@ -324,9 +333,25 @@ export default function App() {
           />
         )}
         {surface === "calendar" && <CalendarPage {...pageProps} {...sharedWorkProps} />}
-        {surface === "work" && <MyWorkPage {...pageProps} {...sharedWorkProps} />}
+        {surface === "work" && (
+          <MyWorkPage
+            {...pageProps}
+            {...sharedWorkProps}
+            focusTaskId={focusTaskId}
+            onFocusHandled={() => setFocusTaskId(null)}
+          />
+        )}
         {surface === "report" && <DailyReportPage {...pageProps} personaName={currentPersonaName} />}
         {surface === "org" && <OrgPage {...pageProps} />}
+        {surface === "graph" && (
+          <RelationGraphPage
+            onError={setError}
+            onOpenTask={(taskId) => {
+              setSurface("work");
+              setFocusTaskId(taskId);
+            }}
+          />
+        )}
       </section>
 
       {toast && <Toast message={toast} onClose={() => setToast(null)} />}

@@ -273,8 +273,10 @@ class TaskApplication:
             facts = self.repository.origin_facts([task]).get(task.id, {})
             related = facts.get("assignment_kind") == "direct" and facts.get("assigned_by") == str(principal.id)
         if not related and getattr(task, "parent_task_id", None) is not None:
-            # Whoever may read the whole may read its parts: breaking work down does not hide it from them.
-            related = self._may_read(principal, task.parent_task_id)
+            # Whoever holds the whole, or put someone on it, may read its parts. Reading the parent through a
+            # relationship does not reach inside it — how the holder broke the work up is their workspace, the same
+            # way their checklist and materials are.
+            related = self._manages(principal, task.parent_task_id)
         if not related:
             raise TaskNotFound("task was not found")
         return {
@@ -286,6 +288,21 @@ class TaskApplication:
         }
 
     # ---- subtasks: the work inside this work ----
+
+    def _manages(self, principal: Principal, task_id: UUID) -> bool:
+        """Holding the work, or having put someone on it — the two ways of being responsible for it."""
+        try:
+            self.repository.task(task_id, str(principal.id))
+            return True
+        except TaskNotFound:
+            pass
+        if TASK_ASSIGN not in principal.capabilities:
+            return False
+        parent = self.repository.task_by_id(task_id)
+        if parent is None:
+            return False
+        facts = self.repository.origin_facts([parent]).get(parent.id, {})
+        return facts.get("assignment_kind") == "direct" and facts.get("assigned_by") == str(principal.id)
 
     def _may_read(self, principal: Principal, task_id: UUID) -> bool:
         """Whether this person may open that work at all — as its holder, or through a relationship that earns it."""

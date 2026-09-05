@@ -716,6 +716,19 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .checklist-item .step-edit { flex: 1; min-width: 0; height: 30px; font-size: 13px; }
 .checklist-item:hover .btn, .checklist-item:focus-within .btn { opacity: 1; }
 
+/* ---- what a turn actually looked at, before the answer it gave */
+.ax-search-path { margin: 8px 0; padding: 8px 10px; border: 1px solid var(--border-subtle); border-radius: 10px; background: var(--surface-sunken); font-size: 12px; }
+.ax-search-path b { display: block; font-size: 12px; }
+.ax-search-path small { color: var(--text-tertiary); font-weight: 500; }
+.ax-path-list { margin: 6px 0 0; padding: 0 0 0 4px; list-style: none; display: grid; gap: 2px; }
+.ax-path-list li { overflow-wrap: anywhere; }
+
+/* ---- relation graph: search on one side, one hop of connections on the other */
+.graph-layout { display: grid; grid-template-columns: minmax(0, 320px) minmax(0, 1fr); gap: 16px; margin-top: 16px; align-items: start; }
+.graph-layout .drawer-section { border: 1px solid var(--border-default); border-radius: 12px; padding: 12px; background: var(--surface); }
+.graph-layout .material-list li { grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto; }
+@media (max-width: 900px) { .graph-layout { grid-template-columns: minmax(0, 1fr); } }
+
 /* ---- a banner inside a drawer: what this work is waiting on, or what it still needs */
 .drawer-section.notice { padding: 12px; border: 1px solid var(--border-default); border-radius: 12px; background: var(--surface-sunken); }
 .drawer-section.notice h4 { margin: 0 0 4px; }

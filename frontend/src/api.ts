@@ -29,6 +29,8 @@ import type {
   TaskHistory,
   TaskHistoryDiff,
   TaskReference,
+  GraphNode,
+  GraphNeighborhood,
 } from "./viewModels";
 
 type ApiErrorBody = {
@@ -100,6 +102,16 @@ export async function addTaskReference(taskId: string, referencedTaskId: string)
 /** Stop pointing at it. The record keeps the pointer, so this is a release rather than a deletion. */
 export async function releaseTaskReference(taskId: string, referenceId: string): Promise<{ reference_id: string; task_version: number }> {
   return request<{ reference_id: string; task_version: number }>(`/api/tasks/${taskId}/references/${referenceId}`, { method: "DELETE" });
+}
+
+export async function graphSearch(query: string, limit = 20): Promise<{ query: string; nodes: GraphNode[]; truncated: boolean }> {
+  return request<{ query: string; nodes: GraphNode[]; truncated: boolean }>(
+    `/api/graph/search?q=${encodeURIComponent(query)}&limit=${limit}`,
+  );
+}
+
+export async function graphNeighbors(node: string, limit = 20): Promise<GraphNeighborhood> {
+  return request<GraphNeighborhood>(`/api/graph/neighbors?node=${encodeURIComponent(node)}&limit=${limit}`);
 }
 
 export async function getTaskHistory(taskId: string): Promise<TaskHistory> {

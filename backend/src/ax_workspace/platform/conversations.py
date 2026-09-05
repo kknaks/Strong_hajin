@@ -33,6 +33,7 @@ from ax_workspace.modules.organization_access.domain import Principal
 from ax_workspace.platform.persistence import (
     ActionItemRecord,
     ContextReferenceRecord,
+    ConversationGraphReceiptRecord,
     ConversationMaterialEvidenceRecord,
     ConversationMessageRecord,
     ConversationProviderSessionReferenceRecord,
@@ -547,7 +548,30 @@ class SqlAlchemyConversationRepository:
             .where(ConversationMaterialEvidenceRecord.conversation_id == conversation.id)
             .order_by(ConversationMaterialEvidenceRecord.recorded_at, ConversationMaterialEvidenceRecord.rank)
         ).all()
+        graph_steps = self._session.scalars(
+            select(ConversationGraphReceiptRecord)
+            .where(ConversationGraphReceiptRecord.conversation_id == conversation.id)
+            .order_by(ConversationGraphReceiptRecord.observed_at, ConversationGraphReceiptRecord.sequence)
+        ).all()
         return {
+            # Where each turn actually walked: observed steps only, in the order they were observed.
+            "graph_receipts": [
+                {
+                    "receipt_id": str(item.id),
+                    "turn_id": str(item.turn_id),
+                    "sequence": int(item.sequence),
+                    "kind": item.kind,
+                    "node_ref": item.node_ref,
+                    "node_title": item.node_title,
+                    "edge_kind": item.edge_kind,
+                    "from_ref": item.from_ref,
+                    "from_title": item.from_title,
+                    "to_ref": item.to_ref,
+                    "to_title": item.to_title,
+                    "observed_at": item.observed_at.isoformat(),
+                }
+                for item in graph_steps
+            ],
             "material_evidence": [
                 {
                     "evidence_id": str(item.id),

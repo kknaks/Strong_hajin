@@ -210,6 +210,8 @@ def test_stdio_mcp_client_discovers_only_persona_bound_report_tools(tmp_path) ->
                     "work_request_get",
                     "work_request_history",
                     "work_request_list",
+                    "graph_neighbors",
+                    "graph_search",
                     "task_block",
                     "task_cancel",
                     "task_complete",

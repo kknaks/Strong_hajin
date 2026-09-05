@@ -20,6 +20,7 @@ from ax_workspace.entrypoints.http_auth import (
 )
 from ax_workspace.bootstrap.application import create_auth_session_store, create_workflow_application
 from ax_workspace.modules.work.application import InvalidTaskTransition, TaskAccessDenied, TaskError, TaskNotFound, TaskState
+from ax_workspace.modules.work.graph import GraphAccessDenied, GraphError, GraphNotFound
 from ax_workspace.modules.work.materials import MaterialNotFound
 from ax_workspace.modules.actions.domain import ActionError as ActionCenterError, ActionNotFound
 from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequestError, WorkRequestIdempotencyConflict
@@ -323,6 +324,12 @@ def _runtime_error(error: Exception) -> HTTPException:
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "conversation_queue_full", "queue_size": error.queue_size, "limit": error.limit},
         )
+    if isinstance(error, GraphNotFound):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
+    if isinstance(error, GraphAccessDenied):
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
+    if isinstance(error, GraphError):
+        return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     if isinstance(error, (TaskNotFound, MaterialNotFound, MeetingNotFound)):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
     if isinstance(error, (TaskAccessDenied, WorkRequestAccessDenied, DailyReportAccessDenied, MeetingAccessDenied)):
@@ -817,6 +824,20 @@ def create_app(
         ) -> dict[str, object]:
             try:
                 return app.state.workflow_application.release_task_reference(principal, task_id, reference_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/graph/search")
+        def graph_search(q: str, limit: int = 20, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.graph_search(principal, q, limit)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/graph/neighbors")
+        def graph_neighbors(node: str, limit: int = 20, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.graph_neighbors(principal, node, limit)
             except Exception as error:
                 raise _runtime_error(error) from error
 

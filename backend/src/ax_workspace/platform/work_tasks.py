@@ -96,6 +96,60 @@ def caused_by(causation_ref: str | None):
         _CAUSATION.reset(token)
 
 
+class SqlAlchemyGraphReceiptRepository:
+    """Where a delegated turn actually walked, in the order it walked. Only observed steps are written."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def record(self, execution_id: UUID, principal_id: str, steps: list[dict[str, Any]]) -> int:
+        from ax_workspace.platform.persistence import ConversationGraphReceiptRecord, ConversationRecord, ConversationTurnRecord
+
+        turn = self._session.scalar(select(ConversationTurnRecord).where(ConversationTurnRecord.execution_id == execution_id))
+        if turn is None:
+            raise ValueError("delegated conversation execution was not found")
+        conversation = self._session.get(ConversationRecord, turn.conversation_id)
+        if conversation is None or str(conversation.owner_id) != principal_id:  # fail closed
+            raise ValueError("delegated conversation belongs to another principal")
+        highest = self._session.scalar(
+            select(func.max(ConversationGraphReceiptRecord.sequence)).where(ConversationGraphReceiptRecord.turn_id == turn.id)
+        )
+        now = datetime.now(UTC)
+        written = 0
+        for offset, step in enumerate(steps, start=1):
+            self._session.add(
+                ConversationGraphReceiptRecord(
+                    turn_id=turn.id,
+                    conversation_id=turn.conversation_id,
+                    execution_id=execution_id,
+                    sequence=int(highest or 0) + offset,
+                    kind=str(step["kind"]),
+                    node_ref=step.get("node_ref"),
+                    node_title=step.get("node_title"),
+                    edge_kind=step.get("edge_kind"),
+                    from_ref=step.get("from_ref"),
+                    from_title=step.get("from_title"),
+                    to_ref=step.get("to_ref"),
+                    to_title=step.get("to_title"),
+                    observed_at=now,
+                )
+            )
+            written += 1
+        self._session.flush()
+        return written
+
+    def for_conversation(self, conversation_id: UUID) -> list[Any]:
+        from ax_workspace.platform.persistence import ConversationGraphReceiptRecord
+
+        return list(
+            self._session.scalars(
+                select(ConversationGraphReceiptRecord)
+                .where(ConversationGraphReceiptRecord.conversation_id == conversation_id)
+                .order_by(ConversationGraphReceiptRecord.observed_at, ConversationGraphReceiptRecord.sequence)
+            )
+        )
+
+
 class ActivityLedger:
     """Append-only ERD ActivityEvent writer shared by Work repositories."""
 

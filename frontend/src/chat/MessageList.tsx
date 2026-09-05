@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { ActionCommandButtons, ActionPreviewDetails, actionKicker, actionSubject } from "../ActionPreview";
 import { formatDate, formatDuration, isoDateInSeoul } from "../labels";
 import { AssistantMarkdown } from "./AssistantMarkdown";
-import type { ActionItem, Conversation, ConversationTurn, MaterialEvidence } from "../viewModels";
+import type { ActionItem, Conversation, ConversationTurn, GraphReceipt, MaterialEvidence } from "../viewModels";
 import type { LocalFragment } from "./useConversations";
 
 const BOTTOM_SLACK_PX = 24;
@@ -131,6 +131,7 @@ function ConversationTimeline({
         const messages = conversation.messages.filter((item) => item.turn_id === turn.turn_id);
         const tools = conversation.tool_invocations.filter((tool) => tool.turn_id === turn.turn_id);
         const evidence = (conversation.material_evidence ?? []).filter((item) => item.turn_id === turn.turn_id);
+        const walked = (conversation.graph_receipts ?? []).filter((item) => item.turn_id === turn.turn_id);
         const actions = (conversation.actions ?? []).filter((action) => action.turn_id === turn.turn_id);
         const retried = conversation.turns.find((item) => item.retry_of_turn_id === turn.turn_id);
         return (
@@ -158,6 +159,7 @@ function ConversationTimeline({
                   {item.body_state === "cancelled" && <small className="ax-body-note">취소 시점까지의 답변</small>}
                 </div>
               ))}
+            <SearchPath steps={walked} />
             <EvidenceCards evidence={evidence} />
             {actions.map((action) => (
               <ActionResultCard action={action} key={action.action_id} onDecide={onDecide} />
@@ -347,6 +349,49 @@ function ActionResultCard({ action, onDecide }: { action: ActionItem; onDecide: 
 }
 
 /** Material excerpts the turn actually retrieved through the authorized search; each card opens the same origin as the Task drawer. */
+/** What a connection meant, in the words a person reads. Unknown kinds keep their own name rather than a guess. */
+const EDGE_SENTENCE: Record<string, string> = {
+  produced: "만든 업무",
+  requested: "보낸 요청",
+  asked_of: "요청받은 사람",
+  holds: "담당",
+  parent_of: "하위 업무",
+  refers_to: "참고 업무",
+  has_material: "자료",
+};
+
+/**
+ * 찾아본 연결: the steps this turn actually took, in the order the tools returned them.
+ *
+ * Nothing here is inferred — a connection appears only because a graph tool returned it for this persona, and it is
+ * restored from the server on re-entry rather than held in the page.
+ */
+function SearchPath({ steps }: { steps: GraphReceipt[] }) {
+  if (steps.length === 0) return null;
+  const found = steps.filter((step) => step.kind === "node");
+  const edges = steps.filter((step) => step.kind === "edge");
+  return (
+    <section aria-label="찾아본 연결" className="ax-search-path">
+      <b>
+        찾아본 연결 {edges.length + found.length}단계 <small>· 실제로 조회한 것만</small>
+      </b>
+      <ol className="ax-path-list">
+        {found.length > 0 && (
+          <li key="found">
+            <span className="t-meta">찾음</span> {found.map((step) => step.node_title).filter(Boolean).join(", ")}
+          </li>
+        )}
+        {edges.map((step) => (
+          <li key={step.receipt_id}>
+            <span className="t-meta">{EDGE_SENTENCE[step.edge_kind ?? ""] ?? step.edge_kind}</span>{" "}
+            {step.from_title ?? step.from_ref} → {step.to_title ?? step.to_ref}
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 function EvidenceCards({ evidence }: { evidence: MaterialEvidence[] }) {
   if (evidence.length === 0) return null;
   return (
