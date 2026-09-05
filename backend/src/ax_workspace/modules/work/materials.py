@@ -23,8 +23,10 @@ from ax_workspace.modules.work.material_extraction import (
 MATERIAL_KINDS = frozenset({"input", "output"})
 #: A link is only a link when it can be opened. Anything else is a mistake or an attempt at something else.
 LINK_SCHEMES = frozenset({"http", "https"})
-#: The things inside SCAX a Task may point at. Each is resolved by its own module's authorized read.
-REFERENCE_TYPES = frozenset({"task", "meeting"})
+#: The things a Task may point at through a material binding, each resolved by its own module's authorized read.
+#: SCAX Tasks are deliberately not here: pointing at earlier work is a `참고 업무` reference with a real foreign key,
+#: not an attachment that happens to name a task.
+REFERENCE_TYPES = frozenset({"meeting"})
 MAX_MATERIAL_BYTES = 25 * 1024 * 1024
 
 
@@ -236,10 +238,10 @@ class TaskMaterialApplication:
         task = self._tasks.task(task_id, str(principal.id), lock=True)
         if kind not in MATERIAL_KINDS:
             raise MaterialError("material kind must be input or output")
+        if resource_type == "task":
+            raise MaterialError("업무는 자료가 아니라 참고 업무로 연결하세요")
         if resource_type not in REFERENCE_TYPES:
             raise MaterialError(f"material reference type must be one of {sorted(REFERENCE_TYPES)}")
-        if resource_type == "task" and str(resource_id) == str(task.id):
-            raise MaterialError("a task cannot reference itself")
         if self._references is None:
             raise MaterialError("material references are not available")
         title = self._references.title(principal, resource_type, str(resource_id))

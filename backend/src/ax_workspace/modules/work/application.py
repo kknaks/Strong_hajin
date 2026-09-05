@@ -60,6 +60,10 @@ class TaskRepository(Protocol):
     def checklist_progress_for(self, task_ids: list[UUID]) -> dict[UUID, tuple[int, int]]: ...
     def origin_facts(self, tasks: list[Any]) -> dict[UUID, dict[str, Any]]: ...
     def versions_for(self, task_id: UUID) -> list[Any]: ...
+    def references_for(self, task_id: UUID, *, include_released: bool = False) -> list[Any]: ...
+    def reference(self, task_id: UUID, reference_id: UUID) -> Any: ...
+    def add_reference(self, task_id: UUID, referenced_task_id: UUID, created_by: str) -> Any: ...
+    def release_reference(self, reference: Any, actor_id: str) -> None: ...
     def activity_for(self, task_id: UUID) -> list[Any]: ...
     def member_display_name(self, member_id: str) -> str | None: ...
     def add_checklist_item(self, task_id: UUID, text: str, created_by: str) -> Any: ...
@@ -106,23 +110,36 @@ class TaskApplication:
         due_date: date | None = None,
         source_action_item_id: UUID | None = None,
         checklist: list[str] | None = None,
+        reference_task_ids: list[UUID] | None = None,
     ) -> dict[str, Any]:
         self._require(principal, TASK_SELF_MANAGE)
         if not title.strip():
             raise TaskError("title is required")
         validate_schedule(start_date, due_date)
-        return self._view(
-            self.repository.create_self_task(
-                str(principal.id),
-                title.strip(),
-                causation_key,
-                source_action_item_id=source_action_item_id,
-                description=_clean_text(description),
-                start_date=start_date,
-                due_date=due_date,
-                checklist=clean_checklist(checklist),
-            )
+        task = self.repository.create_self_task(
+            str(principal.id),
+            title.strip(),
+            causation_key,
+            source_action_item_id=source_action_item_id,
+            description=_clean_text(description),
+            start_date=start_date,
+            due_date=due_date,
+            checklist=clean_checklist(checklist),
+            # Pointers written with the work belong to its first version, so they are frozen with it.
+            references=self._readable_tasks(principal, reference_task_ids),
         )
+        return self._view(task)
+
+    def _readable_tasks(self, principal: Principal, task_ids: list[UUID] | None) -> list[UUID]:
+        """Work this person may already open. Anything else is refused rather than quietly dropped."""
+        wanted: list[UUID] = []
+        for task_id in task_ids or []:
+            identifier = task_id if isinstance(task_id, UUID) else UUID(str(task_id))
+            if identifier in wanted:
+                continue
+            self.repository.task(identifier, str(principal.id))
+            wanted.append(identifier)
+        return wanted
 
     def update(
         self,
@@ -501,9 +518,78 @@ class TaskApplication:
             **self._view(task),
             "checklist": items,
             "checklist_progress": {"done": sum(1 for item in items if item["done"]), "total": len(items)},
+            "references": self.references(principal, task),
             "origin": self._origin_projection(principal, [task]).get(task.id),
             "assignee": self._assignee_projection([task]).get(task.id),
         }
+
+    # ---- references: earlier work this Task points at ----
+
+    def references(self, principal: Principal, task: Any) -> list[dict[str, Any]]:
+        """Pointers this Task holds, each resolved now through the same read the referenced work itself requires.
+
+        The pointer is a fact of this Task, so it stays visible; what it points at is shown only to someone who may
+        already open that work. Nobody gains access by being pointed at.
+        """
+        return [
+            {
+                "reference_id": str(row.id),
+                "created_by": row.created_by,
+                "created_at": _iso(row.created_at),
+                "task": self._referenced_view(principal, row.referenced_task_id),
+            }
+            for row in self.repository.references_for(task.id)
+        ]
+
+    def _referenced_view(self, principal: Principal, referenced_task_id: UUID) -> dict[str, Any] | None:
+        try:
+            referenced = self.repository.task(referenced_task_id, str(principal.id))
+        except TaskNotFound:
+            return None
+        return {
+            "task_id": str(referenced.id),
+            "title": referenced.title,
+            "state": referenced.state,
+            "due_date": _iso(referenced.due_date),
+            "assignee": self._assignee_projection([referenced]).get(referenced.id),
+        }
+
+    def add_reference(self, principal: Principal, task_id: UUID, referenced_task_id: UUID) -> dict[str, Any]:
+        """Point at work that came before. Only at work this person may already read, and never at itself."""
+        task = self._holding(principal, task_id, None)
+        if referenced_task_id == task.id:
+            raise TaskError("a task cannot refer to itself")
+        # Reading it here is the permission check: work you cannot open is work you cannot point at.
+        referenced = self.repository.task(referenced_task_id, str(principal.id))
+        if any(row.referenced_task_id == referenced.id for row in self.repository.references_for(task.id)):
+            raise TaskError("this task already refers to that work")
+        record = self.repository.add_reference(task.id, referenced.id, str(principal.id))
+        self._moved(task)
+        self.repository.record_activity(
+            task, str(principal.id), "task.reference_added", f"참고 업무 연결: {referenced.title[:80]}"
+        )
+        return {
+            "reference_id": str(record.id),
+            "created_by": record.created_by,
+            "created_at": _iso(record.created_at),
+            "task": self._referenced_view(principal, referenced.id),
+            "task_version": int(task.version),
+        }
+
+    def release_reference(self, principal: Principal, task_id: UUID, reference_id: UUID) -> dict[str, Any]:
+        """Stop pointing at it. The row closes rather than disappearing, so history still shows it was there."""
+        task = self._holding(principal, task_id, None)
+        record = self.repository.reference(task.id, reference_id)
+        if record is None:
+            raise TaskNotFound("reference was not found")
+        referenced = self._referenced_view(principal, record.referenced_task_id)
+        self.repository.release_reference(record, str(principal.id))
+        self._moved(task)
+        self.repository.record_activity(
+            task, str(principal.id), "task.reference_released",
+            f"참고 업무 해제: {(referenced or {}).get('title', '볼 수 없는 업무')[:80]}",
+        )
+        return {"reference_id": str(record.id), "task_version": int(task.version)}
 
     @staticmethod
     def _view(task: Any) -> dict[str, Any]:

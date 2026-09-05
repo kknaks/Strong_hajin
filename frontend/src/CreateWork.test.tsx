@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./api", () => ({
   createDirectTask: vi.fn(),
+  addTaskReference: vi.fn(),
+  releaseTaskReference: vi.fn(),
   createWorkRequest: vi.fn(),
   assignTask: vi.fn(),
   getTask: vi.fn(),
@@ -97,6 +99,41 @@ describe("writing down the first steps with the work", () => {
     fireEvent.click(screen.getByRole("button", { name: "업무 요청 보내기" }));
     await waitFor(() => expect(api.createWorkRequest).toHaveBeenCalled());
     expect(vi.mocked(api.createWorkRequest).mock.calls[0][2]?.checklist).toEqual(["현황 파악"]);
+  });
+
+  it("points the new work at earlier work chosen from what this person can read", async () => {
+    vi.mocked(api.getTasks).mockResolvedValue([
+      { task_id: "task-0", title: "1분기 정산" },
+      { task_id: "task-8", title: "다른 업무" },
+    ] as never);
+    vi.mocked(api.createDirectTask).mockResolvedValue({ task_id: "task-1" } as never);
+    renderDrawer();
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "2분기 정산" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "참고 업무 연결" }));
+    await waitFor(() => expect(api.getTasks).toHaveBeenCalled());
+    fireEvent.change(await screen.findByLabelText("연결할 이전 업무"), { target: { value: "task-0" } });
+    fireEvent.click(screen.getByRole("button", { name: "연결" }));
+    expect(screen.getByText("1분기 정산")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "업무 추가" }));
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalled());
+    expect(vi.mocked(api.createDirectTask).mock.calls[0][1]?.reference_task_ids).toEqual(["task-0"]);
+  });
+
+  it("sends the same pointers with a request, so they travel to the work it becomes", async () => {
+    vi.mocked(api.getTasks).mockResolvedValue([{ task_id: "task-0", title: "지난 분기 보고" }] as never);
+    vi.mocked(api.createWorkRequest).mockResolvedValue({ title: "이번 분기 보고" } as never);
+    renderDrawer();
+    fireEvent.click(screen.getByRole("tab", { name: "요청" }));
+    fireEvent.change(screen.getByLabelText("요청할 업무"), { target: { value: "이번 분기 보고" } });
+    fireEvent.click(screen.getByRole("button", { name: "참고 업무 연결" }));
+    fireEvent.change(await screen.findByLabelText("연결할 이전 업무"), { target: { value: "task-0" } });
+    fireEvent.click(screen.getByRole("button", { name: "연결" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "업무 요청 보내기" }));
+    await waitFor(() => expect(api.createWorkRequest).toHaveBeenCalled());
+    expect(vi.mocked(api.createWorkRequest).mock.calls[0][2]?.reference_task_ids).toEqual(["task-0"]);
   });
 
   it("sends nothing about steps when nobody wrote any", async () => {

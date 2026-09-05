@@ -144,29 +144,57 @@ def _reference(client, task_id: str, headers=MINA, **body):
     return client.post(f"/api/tasks/{task_id}/materials/references", headers=headers, json=body)
 
 
-def test_a_task_can_point_at_another_thing_inside_scax(tmp_path) -> None:
-    client, database_url = _stack(tmp_path)
-    subject = _task(client, "먼저 한 업무")
-    task_id = _task(client, "이어서 하는 업무")
+def _meeting(client, title: str = "설계 회의") -> str:
+    created = client.post(
+        "/api/meetings",
+        headers=MINA,
+        json={
+            "organization_id": "scax",
+            "title": title,
+            "starts_at": "2026-09-10T01:00:00Z",
+            "ends_at": "2026-09-10T02:00:00Z",
+            "visibility": "private",
+            "attendee_ids": [],
+        },
+    )
+    assert created.status_code == 201, created.text
+    return created.json()["meeting_id"]
 
-    attached = _reference(client, task_id, kind="input", resource_type="task", resource_id=subject)
+
+def test_a_task_can_point_at_another_thing_inside_scax(tmp_path) -> None:
+    """A material reference points at a thing SCAX holds. Earlier work is not one of them — that is a 참고 업무."""
+    client, database_url = _stack(tmp_path)
+    meeting_id = _meeting(client, "설계 회의")
+    task_id = _task(client, "회의에서 나온 업무")
+
+    attached = _reference(client, task_id, kind="input", resource_type="meeting", resource_id=meeting_id)
     assert attached.status_code == 201, attached.text
     material = attached.json()
     assert material["source_kind"] == "resource_ref" and material["kind"] == "input"
     # The reference resolves now, through the same authorization the resource itself uses.
-    assert material["resource"] == {"type": "task", "id": subject, "title": "먼저 한 업무"}
-    assert material["name"] == "먼저 한 업무" and material["url"] is None
+    assert material["resource"] == {"type": "meeting", "id": meeting_id, "title": "설계 회의"}
+    assert material["name"] == "설계 회의" and material["url"] is None
     assert material["mutable_source"] is True and material["size_bytes"] == 0
 
     with make_session_factory(database_url)() as session:
         [row] = [item for item in session.scalars(select(AttachmentRecord)).all() if item.source_kind == "resource_ref"]
-        assert row.source_ref == f"task:{subject}"
+        assert row.source_ref == f"meeting:{meeting_id}"
 
-    # Renaming the referenced work is not a rewrite of this material; the reference still resolves to the truth.
-    version = client.get(f"/api/tasks/{subject}", headers=MINA).json()["version"]
-    client.patch(f"/api/tasks/{subject}", headers=MINA, json={"expected_version": version, "title": "이름이 바뀐 업무"})
+    # Renaming the referenced meeting is not a rewrite of this material; the reference still resolves to the truth.
+    current = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()
+    renamed = client.patch(
+        f"/api/meetings/{meeting_id}",
+        headers=MINA,
+        json={
+            "expected_version": current["version"],
+            "title": "이름이 바뀐 회의",
+            "starts_at": "2026-09-10T01:00:00Z",
+            "ends_at": "2026-09-10T02:00:00Z",
+        },
+    )
+    assert renamed.status_code == 200, renamed.text
     [listed] = [row for row in client.get(f"/api/tasks/{task_id}/materials", headers=MINA).json() if row["source_kind"] == "resource_ref"]
-    assert listed["resource"]["title"] == "이름이 바뀐 업무"
+    assert listed["resource"]["title"] == "이름이 바뀐 회의"
 
 
 def test_a_reference_can_only_point_at_something_the_person_may_read(tmp_path) -> None:
@@ -174,35 +202,29 @@ def test_a_reference_can_only_point_at_something_the_person_may_read(tmp_path) -
     mine = _task(client, "내 업무")
     theirs = client.post("/api/tasks", headers=JIHO, json={"title": "지호의 업무"}).json()["task_id"]
 
-    refused = _reference(client, mine, kind="input", resource_type="task", resource_id=theirs)
-    assert refused.status_code in {403, 404, 422}, refused.text
-    assert client.get(f"/api/tasks/{mine}/materials", headers=MINA).json() == []
-
     for label, body in (
+        ("업무는 자료가 아니라 참고 업무다", {"kind": "input", "resource_type": "task", "resource_id": theirs}),
+        ("내 업무도 마찬가지", {"kind": "input", "resource_type": "task", "resource_id": mine}),
         ("알 수 없는 종류", {"kind": "input", "resource_type": "workflow", "resource_id": mine}),
-        ("없는 자원", {"kind": "input", "resource_type": "task", "resource_id": "11111111-1111-4111-8111-111111111111"}),
-        ("자기 자신", {"kind": "input", "resource_type": "task", "resource_id": mine}),
+        ("없는 자원", {"kind": "input", "resource_type": "meeting", "resource_id": "11111111-1111-4111-8111-111111111111"}),
     ):
         assert _reference(client, mine, **body).status_code in {403, 404, 422}, label
     assert client.get(f"/api/tasks/{mine}/materials", headers=MINA).json() == []
 
 
-def test_a_reference_says_nothing_about_work_the_reader_may_no_longer_open(tmp_path) -> None:
-    """A material row must not become a way to read a title you lost access to."""
+def test_a_reference_says_nothing_about_a_resource_the_reader_may_not_open(tmp_path) -> None:
+    """A material row must not become a way to read the title of something you have no access to."""
     client, _ = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "비밀 요청", "assignee_id": "jiho"}).json()
-    [item] = client.get("/api/action-items", headers=JIHO).json()
-    client.post(
-        f"/api/action-items/{item['action_item_id']}/commands/accept", headers=JIHO,
-        json={"expected_version": item["expected_version"]},
-    )
-    [derived] = [row for row in client.get("/api/my-work", headers=JIHO).json() if row["title"] == "비밀 요청"]
-
-    # 지호 holds the derived task and may reference it from another task of his own.
-    holder_task = client.post("/api/tasks", headers=JIHO, json={"title": "지호의 정리 업무"}).json()["task_id"]
-    attached = _reference(client, holder_task, JIHO, kind="input", resource_type="task", resource_id=derived["task_id"])
+    private_meeting = _meeting(client, "비공개 회의")
+    holder_task = _task(client, "회의 정리 업무")
+    attached = _reference(client, holder_task, kind="input", resource_type="meeting", resource_id=private_meeting)
     assert attached.status_code == 201, attached.text
-    assert attached.json()["resource"]["title"] == "비밀 요청"
+    assert attached.json()["resource"]["title"] == "비공개 회의"
 
-    # Someone with no relationship to the holder's task cannot read the material list at all.
+    # Someone with no relationship to the task cannot read the material list at all.
     assert client.get(f"/api/tasks/{holder_task}/materials", headers={"X-Demo-Persona": "sora"}).status_code in {403, 404, 422}
+
+    # And someone who holds a task but may not open the meeting is told so rather than given its title.
+    other_task = client.post("/api/tasks", headers=JIHO, json={"title": "지호의 업무"}).json()["task_id"]
+    refused = _reference(client, other_task, JIHO, kind="input", resource_type="meeting", resource_id=private_meeting)
+    assert refused.status_code in {403, 404, 422}

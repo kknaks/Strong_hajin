@@ -40,7 +40,9 @@ from ax_workspace.platform.persistence import (
     MemberRecord,
     TaskAssignmentRecord,
     TaskChecklistItemRecord,
+    TaskReferenceRecord,
     TaskVersionRecord,
+    WorkRequestReferenceRecord,
     ResourceRelationshipRecord,
     EvidenceRecord,
 )
@@ -162,6 +164,7 @@ class SqlAlchemyTaskRepository:
         due_date: date | None = None,
         source_action_item_id: UUID | None = None,
         checklist: list[str] | None = None,
+        references: list[UUID] | None = None,
     ) -> TaskRecord:
         if causation_key:
             existing = self.session.scalar(
@@ -199,6 +202,9 @@ class SqlAlchemyTaskRepository:
             after_ref=f"task:{task.id}@1", safe_summary=f"업무 생성: {title}",
         )
         self.seed_checklist(task, checklist, owner_id)
+        for referenced_task_id in references or []:
+            self.add_reference(task.id, referenced_task_id, owner_id)
+        # Everything written with the work belongs to version 1, so the first snapshot already holds it.
         self.capture_version(task, owner_id, "task.created")
         return task
 
@@ -239,6 +245,37 @@ class SqlAlchemyTaskRepository:
         self.session.add(record)
         self.session.flush()
         return record
+
+    # ---- references: earlier work this Task points at ----
+
+    def references_for(self, task_id: UUID, *, include_released: bool = False) -> list[TaskReferenceRecord]:
+        statement = select(TaskReferenceRecord).where(TaskReferenceRecord.task_id == task_id)
+        if not include_released:
+            statement = statement.where(TaskReferenceRecord.released_at.is_(None))
+        return list(self.session.scalars(statement.order_by(TaskReferenceRecord.created_at)))
+
+    def reference(self, task_id: UUID, reference_id: UUID) -> TaskReferenceRecord | None:
+        """An open pointer. A released one answers as one that is not there."""
+        return self.session.scalar(
+            select(TaskReferenceRecord).where(
+                TaskReferenceRecord.id == reference_id,
+                TaskReferenceRecord.task_id == task_id,
+                TaskReferenceRecord.released_at.is_(None),
+            )
+        )
+
+    def add_reference(self, task_id: UUID, referenced_task_id: UUID, created_by: str) -> TaskReferenceRecord:
+        record = TaskReferenceRecord(
+            task_id=task_id, referenced_task_id=referenced_task_id, created_by=created_by, created_at=datetime.now(UTC)
+        )
+        self.session.add(record)
+        self.session.flush()
+        return record
+
+    def release_reference(self, reference: TaskReferenceRecord, actor_id: str) -> None:
+        reference.released_at = datetime.now(UTC)
+        reference.released_by = actor_id
+        self.session.flush()
 
     def seed_checklist(self, task: TaskRecord, texts: list[str] | None, author_id: str) -> None:
         """Steps written with the work itself. They belong to version 1, so no version moves for them."""
@@ -392,6 +429,10 @@ class SqlAlchemyTaskRepository:
             for binding, attachment in SqlAlchemyAttachmentRepository(self.session).bindings_for("task", str(task.id))
             if binding.unbound_at is None
         ]
+        references = [
+            {"reference_id": str(row.id), "referenced_task_id": str(row.referenced_task_id), "created_by": row.created_by}
+            for row in self.references_for(task.id)
+        ]
         assignment = self.session.scalar(
             select(TaskAssignmentRecord).where(
                 TaskAssignmentRecord.task_id == task.id, TaskAssignmentRecord.status.in_(("active", "pending"))
@@ -419,6 +460,7 @@ class SqlAlchemyTaskRepository:
             ),
             "checklist": checklist,
             "materials": materials,
+            "references": references,
         }
 
     def versions_for(self, task_id: UUID) -> list[TaskVersionRecord]:
@@ -497,6 +539,7 @@ class SqlAlchemyWorkRequestRepository:
         due_date: date | None = None,
         cc_member_ids: list[str] | None = None,
         checklist: list[str] | None = None,
+        reference_task_ids: list[UUID] | None = None,
     ) -> tuple[WorkRequestRecord, bool]:
         if causation_key:
             existing = self._session.scalar(
@@ -527,6 +570,13 @@ class SqlAlchemyWorkRequestRepository:
         )
         self._session.add(request)
         self._session.flush()
+        for referenced_task_id in reference_task_ids or []:
+            self._session.add(
+                WorkRequestReferenceRecord(
+                    work_request_id=request.id, referenced_task_id=referenced_task_id,
+                    created_by=requester_id, created_at=now,
+                )
+            )
         subject = SubjectRecord(subject_type="payload", owning_resource_type="work_request", owning_resource_id=str(request.id), created_at=now)
         self._session.add(subject)
         self._session.flush()
@@ -854,8 +904,20 @@ class SqlAlchemyWorkRequestRepository:
         tasks = SqlAlchemyTaskRepository(self._session)
         # The steps came with the request, so they were written by the person who asked, not by the one accepting.
         tasks.seed_checklist(task, list(request.initial_checklist or []), request.requester_id)
+        # So did the earlier work they pointed at: the pointer travels, the permission to open it does not.
+        for reference in self.request_references(request.id):
+            tasks.add_reference(task.id, reference.referenced_task_id, request.requester_id)
         tasks.capture_version(task, request.assignee_id, "task.created")
         return task
+
+    def request_references(self, request_id: UUID) -> list[WorkRequestReferenceRecord]:
+        return list(
+            self._session.scalars(
+                select(WorkRequestReferenceRecord)
+                .where(WorkRequestReferenceRecord.work_request_id == request_id)
+                .order_by(WorkRequestReferenceRecord.created_at)
+            )
+        )
 
     def append_audit(self, request_id: UUID, actor_id: str, event_type: str, payload: dict) -> None:
         self._session.add(

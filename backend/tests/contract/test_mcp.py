@@ -124,7 +124,10 @@ def test_mcp_facade_uses_the_work_request_public_operations(tmp_path) -> None:
     assert mina.work_request_assignee_candidates() == [{"id": "jiho", "display_name": "지호 (팀장)"}]
     created = mina.create_work_request("MCP 업무 요청", "jiho")
     assert mina.list_work_requests() == [created]
-    assert jiho.get_work_request(created["request_id"]) == created
+    # The detail read adds the earlier work pointed at; everything else is the same row the list gave.
+    detail = jiho.get_work_request(created["request_id"])
+    assert detail["references"] == []
+    assert {key: value for key, value in detail.items() if key != "references"} == created
 
     accepted = jiho.accept_work_request(created["request_id"], created["version"])
     assert accepted["task_id"]

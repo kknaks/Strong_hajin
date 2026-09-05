@@ -704,27 +704,13 @@ describe("materials that point at other work in SCAX", () => {
     expect(document.body.textContent).not.toContain("먼저 한 업무");
   });
 
-  it("connects another task as a reference", async () => {
-    vi.mocked(api.getTasks).mockResolvedValue([
-      { task_id: "task-9", title: "먼저 한 업무", state: "done", version: 1, block_reason: null },
-    ] as never);
-    vi.mocked(api.attachTaskMaterialReference).mockResolvedValue(reference as never);
+  it("no longer offers work as a material: earlier work is connected as 참고 업무 instead", async () => {
     renderWithMaterials([]);
-
     const inputSection = (await screen.findByText("참고 자료")).closest("section") as HTMLElement;
-    fireEvent.click(within(inputSection).getByRole("button", { name: "업무 연결" }));
-    const picker = (await screen.findByLabelText("참고 자료로 연결할 업무")) as HTMLSelectElement;
-    fireEvent.change(picker, { target: { value: "task-9" } });
-    await act(async () => {
-      fireEvent.click(within(inputSection).getByRole("button", { name: "연결" }));
-    });
-
-    await waitFor(() => expect(api.attachTaskMaterialReference).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(api.attachTaskMaterialReference).mock.calls[0]).toEqual([
-      "task-1",
-      "input",
-      { resource_type: "task", resource_id: "task-9" },
-    ]);
+    expect(within(inputSection).queryByRole("button", { name: "업무 연결" })).toBeNull();
+    // The one place that connects work to work is its own section.
+    const references = screen.getByLabelText("참고 업무");
+    expect(within(references).getByRole("button", { name: "업무 연결" })).toBeTruthy();
   });
 });
 

@@ -36,6 +36,7 @@ class WorkRequestAccessDenied(WorkRequestError):
 
 
 class WorkRequestRepository(Protocol):
+    def request_references(self, request_id: UUID) -> list[Any]: ...
     def create_request(
         self,
         requester_id: str,
@@ -171,6 +172,12 @@ def normalize_proposed_changes(value: Any) -> dict[str, str]:
     return proposed
 
 
+class TaskReferenceViewPort(Protocol):
+    """Reading a referenced Task through the Work module's own authorization: None when this person may not."""
+
+    def view(self, principal: Principal, task_id: UUID) -> dict[str, Any] | None: ...
+
+
 class WorkRequestApplication:
     def __init__(
         self,
@@ -179,12 +186,14 @@ class WorkRequestApplication:
         comments: CommentRepository | None = None,
         attachments: AttachmentRepository | None = None,
         storage: MaterialStorage | None = None,
+        references: "TaskReferenceViewPort | None" = None,
     ) -> None:
         self._repository = repository
         self._assignee_directory = assignee_directory
         self._comments = comments
         self._attachments = attachments
         self._storage = storage
+        self._references = references
 
     def create(
         self,
@@ -197,6 +206,7 @@ class WorkRequestApplication:
         due_date: date | None = None,
         cc_member_ids: list[str] | None = None,
         checklist: list[str] | None = None,
+        reference_task_ids: list[UUID] | None = None,
     ) -> dict[str, Any]:
         self._require(principal, WORK_REQUEST_CREATE)
         if not title.strip():
@@ -221,6 +231,8 @@ class WorkRequestApplication:
             cc_member_ids=cc,
             # The steps travel with the request and become the accepted Task's own checklist.
             checklist=clean_checklist(checklist),
+            # So does the earlier work pointed at — but only work this person may actually read right now.
+            reference_task_ids=self._readable_references(principal, reference_task_ids),
         )
         if created:
             self._repository.append_audit(request.id, str(principal.id), "work_request.created", {})
@@ -609,7 +621,38 @@ class WorkRequestApplication:
     def get(self, principal: Principal, request_id: UUID) -> dict[str, Any]:
         self._require(principal, WORK_REQUEST_READ)
         request = self._participant_request(principal, request_id)
-        return self._view(request, task_id=self._repository.derived_task_ids([request]).get(request.id))
+        return {
+            **self._view(request, task_id=self._repository.derived_task_ids([request]).get(request.id)),
+            "references": self._references_view(principal, request),
+        }
+
+    def _readable_references(self, principal: Principal, task_ids: list[UUID] | None) -> list[UUID]:
+        """You may point at work you can open. Anything else is refused rather than silently dropped."""
+        wanted: list[UUID] = []
+        for task_id in task_ids or []:
+            identifier = task_id if isinstance(task_id, UUID) else UUID(str(task_id))
+            if identifier in wanted:
+                continue
+            if self._references is None or self._references.view(principal, identifier) is None:
+                raise WorkRequestError("참고 업무로 연결할 수 없는 업무입니다")
+            wanted.append(identifier)
+        return wanted
+
+    def _references_view(self, principal: Principal, request: Any) -> list[dict[str, Any]]:
+        """Earlier work the requester pointed at, each resolved now through that work's own authorization.
+
+        Being copied into a request is not permission to read what it points at: someone who may not open the
+        referenced work sees that a pointer exists and nothing about the work itself.
+        """
+        rows = self._repository.request_references(request.id)
+        return [
+            {
+                "reference_id": str(row.id),
+                "created_by": row.created_by,
+                "task": self._references.view(principal, row.referenced_task_id) if self._references else None,
+            }
+            for row in rows
+        ]
 
     def assignee_candidates(self, principal: Principal) -> list[dict[str, str]]:
         self._require(principal, WORK_REQUEST_CREATE)

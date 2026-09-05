@@ -49,6 +49,8 @@ class CreateTaskRequest(BaseModel):
     due_date: date | None = None
     #: Steps someone already knows about, in the order they wrote them.
     checklist: list[str] = []
+    #: Earlier work this task points at as context.
+    reference_task_ids: list[UUID] = []
 
 
 class CreateMeetingRequest(BaseModel):
@@ -189,6 +191,8 @@ class CreateWorkRequestRequest(BaseModel):
     cc_member_ids: list[str] = []
     #: Steps the requester already knows about. They become the accepted Task's checklist.
     checklist: list[str] = []
+    #: Earlier work the requester points at as context. It travels to the Task the acceptance creates.
+    reference_task_ids: list[UUID] = []
 
 
 class WorkRequestDecisionRequest(BaseModel):
@@ -217,6 +221,12 @@ class ChecklistItemPatch(BaseModel):
     #: The step's own version, so two people editing two different steps are never in conflict.
     expected_version: int | None = None
     expected_task_version: int | None = None
+
+
+class TaskReferenceRequest(BaseModel):
+    """Earlier work this Task points at. One meaning only: `참고`, never a kind of causal relation."""
+
+    referenced_task_id: UUID
 
 
 class ChecklistArchiveRequest(BaseModel):
@@ -679,6 +689,7 @@ def create_app(
                     start_date=request.start_date,
                     due_date=request.due_date,
                     checklist=request.checklist,
+                    reference_task_ids=request.reference_task_ids,
                 )
             except Exception as error:
                 raise _runtime_error(error) from error
@@ -764,6 +775,24 @@ def create_app(
                     content_type=file.content_type or "application/octet-stream",
                     data=data,
                 )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/tasks/{task_id}/references", status_code=status.HTTP_201_CREATED)
+        def add_task_reference(
+            task_id: UUID, request: TaskReferenceRequest, principal: Principal = Depends(developer_principal)
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.add_task_reference(principal, task_id, request.referenced_task_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.delete("/api/tasks/{task_id}/references/{reference_id}")
+        def release_task_reference(
+            task_id: UUID, reference_id: UUID, principal: Principal = Depends(developer_principal)
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.release_task_reference(principal, task_id, reference_id)
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -881,7 +910,7 @@ def create_app(
                 return app.state.workflow_application.create_work_request(
                     principal, request.title, request.assignee_id,
                     description=request.description, due_date=request.due_date, cc_member_ids=request.cc_member_ids,
-                    checklist=request.checklist,
+                    checklist=request.checklist, reference_task_ids=request.reference_task_ids,
                 )
             except Exception as error:
                 raise _runtime_error(error) from error

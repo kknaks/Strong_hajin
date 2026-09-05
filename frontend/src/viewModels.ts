@@ -31,7 +31,22 @@ export type DirectTask = {
   assignee?: { member_id: string; display_name: string } | null;
   /** Steps inside this Task. Present on the detail read, not on list projections. */
   checklist?: ChecklistItem[];
+  /** Earlier work this Task points at. Present on the detail read. */
+  references?: TaskReference[];
   checklist_progress?: { done: number; total: number };
+};
+
+/**
+ * Earlier work a Task points at. One meaning only — `참고` — and the pointer never grants access: `task` is absent
+ * when the reader may not open what it points at.
+ */
+export type TaskReference = {
+  reference_id: string;
+  created_by: string;
+  created_at?: string;
+  task: { task_id: string; title: string; state: TaskState; due_date?: string | null; assignee?: { member_id: string; display_name: string } | null } | null;
+  /** The Task version this connection or release moved the Task to. Only mutation answers carry it. */
+  task_version?: number;
 };
 
 /** How a Task got to where it is: one frozen picture per version, and the ledger lines that produced them. */

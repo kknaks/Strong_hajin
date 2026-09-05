@@ -10,6 +10,7 @@
     "e2e:task-lifecycle": "node scripts/task-lifecycle-e2e.mjs",
     "e2e:task-checklist": "node scripts/task-checklist-e2e.mjs",
     "e2e:task-history": "node scripts/task-history-e2e.mjs",
+    "e2e:task-reference": "node scripts/task-reference-e2e.mjs",
     "e2e:chat-checklist": "node scripts/chat-checklist-e2e.mjs",
     "e2e:task-detail-layout": "node scripts/task-detail-layout-e2e.mjs",
     "e2e:task-origin": "node scripts/task-origin-e2e.mjs",

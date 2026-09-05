@@ -9,6 +9,8 @@ import {
   decideWorkRequest,
   detachTaskMaterial,
   addChecklistItem,
+  addTaskReference,
+  releaseTaskReference,
   reorderChecklist,
   getTask,
   getTaskHistory,
@@ -54,6 +56,7 @@ import type {
   TaskHistoryDiff,
   TaskMaterial,
   TaskMaterialKind,
+  TaskReference,
   TaskOrigin,
   TaskPatch,
   WorkRequest,
@@ -335,7 +338,8 @@ export function TaskDetailDrawer({
   const addingStep = useRef(false);
   const [uploading, setUploading] = useState<TaskMaterialKind | null>(null);
   const [linkDraft, setLinkDraft] = useState<{ kind: TaskMaterialKind; url: string; label: string } | null>(null);
-  const [refDraft, setRefDraft] = useState<{ kind: TaskMaterialKind; taskId: string } | null>(null);
+  const [references, setReferences] = useState<TaskReference[]>(task.references ?? []);
+  const [refDraft, setRefDraft] = useState<string | null>(null);
   const [refChoices, setRefChoices] = useState<DirectTask[] | null>(null);
   const [handover, setHandover] = useState<{ assigneeId: string; reason: string } | null>(null);
   const [handoverChoices, setHandoverChoices] = useState<Persona[] | null>(null);
@@ -369,7 +373,9 @@ export function TaskDetailDrawer({
     let cancelled = false;
     void getTask(task.task_id)
       .then((detail) => {
-        if (!cancelled) setChecklist(detail.checklist ?? []);
+        if (cancelled) return;
+        setChecklist(detail.checklist ?? []);
+        setReferences(detail.references ?? []);
       })
       .catch(() => {
         if (!cancelled) setChecklist([]);
@@ -631,12 +637,12 @@ export function TaskDetailDrawer({
     }
   };
 
-  const openReferencePicker = async (kind: TaskMaterialKind) => {
-    if (refDraft?.kind === kind) {
+  const openReferencePicker = async () => {
+    if (refDraft !== null) {
       setRefDraft(null);
       return;
     }
-    setRefDraft({ kind, taskId: "" });
+    setRefDraft("");
     if (refChoices === null) {
       try {
         setRefChoices((await getTasks(true)).filter((item) => item.task_id !== task.task_id));
@@ -646,24 +652,34 @@ export function TaskDetailDrawer({
     }
   };
 
-  const attachReference = async (kind: TaskMaterialKind) => {
-    if (!refDraft?.taskId) {
+  /** Point at earlier work. It is context, not a claim about cause, and it hands out no access. */
+  const connectReference = async () => {
+    if (!refDraft) {
       onError("연결할 업무를 골라 주세요.");
       return;
     }
-    setUploading(kind);
     onError(null);
     try {
-      const material = await attachTaskMaterialReference(task.task_id, kind, { resource_type: "task", resource_id: refDraft.taskId });
-      setMaterials((rows) => [...(rows ?? []), material]);
-      moved(material.task_version);
+      const created = await addTaskReference(task.task_id, refDraft);
+      setReferences((rows) => [...rows, created]);
       setRefDraft(null);
+      moved(created.task_version);
       await settleVersion();
-      onNotice?.(`${kind === "input" ? "참고 자료" : "산출물"}로 '${material.name}'을 연결했습니다.`);
+      onNotice?.(`'${created.task?.title ?? "업무"}'를 참고 업무로 연결했습니다.`);
     } catch (error) {
       onError(error instanceof Error ? error.message : "업무를 연결하지 못했습니다.");
-    } finally {
-      setUploading(null);
+    }
+  };
+
+  const releaseReference = async (reference: TaskReference) => {
+    onError(null);
+    try {
+      const released = await releaseTaskReference(task.task_id, reference.reference_id);
+      setReferences((rows) => rows.filter((row) => row.reference_id !== reference.reference_id));
+      moved(released.task_version);
+      await settleVersion();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "참고 업무 연결을 해제하지 못했습니다.");
     }
   };
 
@@ -707,40 +723,9 @@ export function TaskDetailDrawer({
               >
                 링크 추가
               </button>
-              <button className="btn h30 ghost" disabled={uploading !== null || busy} onClick={() => void openReferencePicker(kind)} type="button">
-                업무 연결
-              </button>
             </>
           )}
         </div>
-        {editable && refDraft?.kind === kind && (
-          /* Another thing inside SCAX: chosen from what this person may already read, never typed as an id. */
-          <div className="form-stack link-draft">
-            <div className="field">
-              <label htmlFor={`material-ref-${kind}`}>{kind === "input" ? "참고 자료" : "산출물"}로 연결할 업무</label>
-              <select
-                id={`material-ref-${kind}`}
-                onChange={(event) => setRefDraft({ ...refDraft, taskId: event.target.value })}
-                value={refDraft.taskId}
-              >
-                <option value="">업무 고르기</option>
-                {(refChoices ?? []).map((choice) => (
-                  <option key={choice.task_id} value={choice.task_id}>
-                    {choice.title}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="row-actions">
-              <button className="btn h30 primary" disabled={uploading !== null || busy} onClick={() => void attachReference(kind)} type="button">
-                연결
-              </button>
-              <button className="btn h30 ghost" onClick={() => setRefDraft(null)} type="button">
-                취소
-              </button>
-            </div>
-          </div>
-        )}
         {editable && linkDraft?.kind === kind && (
           /* A link is not a file: SCAX records where the work lives and the words a person reads, nothing more. */
           <div className="form-stack link-draft">
@@ -1127,6 +1112,78 @@ export function TaskDetailDrawer({
                 입력 취소
               </button>
             </div>
+          </section>
+        )}
+        {!readOnly && (
+          <section aria-label="참고 업무" className="drawer-section">
+            <div className="section-row">
+              <h4>
+                참고 업무 <span className="t-meta">· 맥락으로 이어 둔 이전 업무입니다</span>
+              </h4>
+              {editable && (
+                <button className="btn h30 ghost" disabled={busy} onClick={() => void openReferencePicker()} type="button">
+                  {refDraft === null ? "업무 연결" : "연결 취소"}
+                </button>
+              )}
+            </div>
+            {references.length > 0 ? (
+              <ul className="material-list">
+                {references.map((reference) => (
+                  <li key={reference.reference_id}>
+                    {reference.task ? (
+                      <button
+                        aria-label={`${reference.task.title} 열기`}
+                        className="btn link"
+                        onClick={() => onOpenTask?.(reference.task!.task_id)}
+                        type="button"
+                      >
+                        {reference.task.title}
+                      </button>
+                    ) : (
+                      // The pointer is a fact of this task; what it points at is not this reader's to see.
+                      <span className="t-meta">볼 수 없는 업무</span>
+                    )}
+                    <span className="t-meta">
+                      {reference.task ? taskStateLabel[reference.task.state] : "권한 없음"}
+                      {reference.task?.due_date ? ` · ${formatDate(reference.task.due_date)}` : ""}
+                      {reference.task?.assignee ? ` · ${personName(reference.task.assignee.display_name)}` : ""}
+                    </span>
+                    {editable && (
+                      <button
+                        aria-label={`${reference.task?.title ?? "볼 수 없는 업무"} 연결 해제`}
+                        className="btn h30 ghost"
+                        onClick={() => void releaseReference(reference)}
+                        type="button"
+                      >
+                        연결 해제
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="t-meta">연결된 업무가 없습니다. 이어지는 업무라면 이전 업무를 연결해 두세요.</p>
+            )}
+            {editable && refDraft !== null && (
+              <div className="form-stack link-draft">
+                <div className="field">
+                  <label htmlFor={`task-reference-${task.task_id}`}>연결할 업무</label>
+                  <select id={`task-reference-${task.task_id}`} onChange={(event) => setRefDraft(event.target.value)} value={refDraft}>
+                    <option value="">업무 고르기</option>
+                    {(refChoices ?? []).map((choice) => (
+                      <option key={choice.task_id} value={choice.task_id}>
+                        {choice.title}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="row-actions">
+                  <button className="btn h30 primary" disabled={busy || !refDraft} onClick={() => void connectReference()} type="button">
+                    연결
+                  </button>
+                </div>
+              </div>
+            )}
           </section>
         )}
         {renderMaterials("input", inputFile)}
@@ -1871,6 +1928,9 @@ export function CreateWorkDrawer({
   const [ccIds, setCcIds] = useState<string[]>([]);
   const [steps, setSteps] = useState<string[]>([]);
   const [newStep, setNewStep] = useState("");
+  const [linkedTasks, setLinkedTasks] = useState<DirectTask[]>([]);
+  const [referenceDraft, setReferenceDraft] = useState<string | null>(null);
+  const [referenceChoices, setReferenceChoices] = useState<DirectTask[] | null>(null);
   const [isWorking, setIsWorking] = useState(false);
   const assignTarget = taskOwnerId === "me" ? null : assignCandidates.find((candidate) => candidate.id === taskOwnerId) ?? null;
 
@@ -1893,6 +1953,8 @@ export function CreateWorkDrawer({
     try {
       // Steps written here belong to the work from the start, in the order they were written.
       const checklist = steps.length > 0 ? steps : undefined;
+      // Earlier work pointed at here travels with the request into the Task the acceptance creates.
+      const reference_task_ids = linkedTasks.length > 0 ? linkedTasks.map((row) => row.task_id) : undefined;
       if (kind === "task" && assignTarget) {
         await assignTask(trimmed, assignTarget.id, {
           description: description.trim() || undefined,
@@ -1907,6 +1969,7 @@ export function CreateWorkDrawer({
           start_date: startDate || undefined,
           due_date: dueDate || undefined,
           checklist,
+          reference_task_ids,
         });
         await onCreated(`'${trimmed}' 업무를 만들었습니다.`);
       } else {
@@ -1915,6 +1978,7 @@ export function CreateWorkDrawer({
           due_date: dueDate || undefined,
           cc_member_ids: ccIds.filter((id) => id !== assigneeId),
           checklist,
+          reference_task_ids,
         });
         const assignee = assigneeCandidates.find((candidate) => candidate.id === assigneeId);
         await onCreated(`'${request.title}' 요청을 ${assignee ? personName(assignee.display_name) : "담당 후보"}에게 보냈습니다.`);
@@ -1925,6 +1989,28 @@ export function CreateWorkDrawer({
     } finally {
       setIsWorking(false);
     }
+  }
+
+  async function openReferences() {
+    if (referenceDraft !== null) {
+      setReferenceDraft(null);
+      return;
+    }
+    setReferenceDraft("");
+    if (referenceChoices === null) {
+      try {
+        setReferenceChoices(await getTasks(true));
+      } catch {
+        setReferenceChoices([]);
+      }
+    }
+  }
+
+  function linkReference() {
+    const chosen = (referenceChoices ?? []).find((row) => row.task_id === referenceDraft);
+    if (!chosen || linkedTasks.some((row) => row.task_id === chosen.task_id)) return;
+    setLinkedTasks((current) => [...current, chosen]);
+    setReferenceDraft(null);
   }
 
   function appendStep() {
@@ -2092,6 +2178,56 @@ export function CreateWorkDrawer({
             <p className="t-meta">참조자는 요청을 읽고 논의할 수 있지만 판단하지 않습니다.</p>
           </fieldset>
         )}
+        <fieldset aria-label="참고 업무" className="field cc-picker">
+          <legend>참고 업무</legend>
+          {linkedTasks.length > 0 && (
+            <ul className="checklist">
+              {linkedTasks.map((row) => (
+                <li className="checklist-item" key={row.task_id}>
+                  <span>{row.title}</span>
+                  <button
+                    aria-label={`${row.title} 빼기`}
+                    className="btn h30 ghost"
+                    onClick={() => setLinkedTasks((current) => current.filter((item) => item.task_id !== row.task_id))}
+                    type="button"
+                  >
+                    빼기
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="row-actions" style={{ padding: "8px 0 0" }}>
+            <button className="btn h30 ghost" onClick={() => void openReferences()} type="button">
+              {referenceDraft === null ? "참고 업무 연결" : "연결 취소"}
+            </button>
+          </div>
+          {referenceDraft !== null && (
+            <div className="form-stack link-draft">
+              <div className="field">
+                <label htmlFor="new-task-reference">연결할 이전 업무</label>
+                <select id="new-task-reference" onChange={(event) => setReferenceDraft(event.target.value)} value={referenceDraft}>
+                  <option value="">업무 고르기</option>
+                  {(referenceChoices ?? []).map((choice) => (
+                    <option key={choice.task_id} value={choice.task_id}>
+                      {choice.title}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="row-actions">
+                <button className="btn h30 primary" disabled={!referenceDraft} onClick={linkReference} type="button">
+                  연결
+                </button>
+              </div>
+            </div>
+          )}
+          <p className="t-meta">
+            {kind === "task"
+              ? "이어지는 업무라면 이전 업무를 맥락으로 연결해 두세요. 인과관계를 주장하지 않습니다."
+              : "여기 연결한 업무는 상대가 수락한 업무에도 그대로 이어집니다. 볼 수 있는 사람에게만 보입니다."}
+          </p>
+        </fieldset>
         <fieldset aria-label="시작 단계" className="field cc-picker">
           <legend>시작 단계</legend>
           {steps.length > 0 && (

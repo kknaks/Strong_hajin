@@ -1022,6 +1022,49 @@ class ConversationMaterialEvidenceRecord(Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class TaskReferenceRecord(Base):
+    """One Task pointing at another as context — `참고 업무`.
+
+    It says only that someone found the other work worth looking at. There is no kind of relation to choose, and
+    pointing never grants access: every read re-checks whether this person may open the work being pointed at.
+    Letting go of a pointer closes the row rather than deleting it, so history still shows it was there.
+    """
+
+    __tablename__ = "task_references"
+    __table_args__ = (
+        Index(
+            "uq_task_reference_active",
+            "task_id",
+            "referenced_task_id",
+            unique=True,
+            sqlite_where=text("released_at IS NULL"),
+            postgresql_where=text("released_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"), nullable=False, index=True)
+    #: An explicit foreign key, so the database itself answers whether the referenced work still exists.
+    referenced_task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"), nullable=False, index=True)
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    released_by: Mapped[str | None] = mapped_column(String(100))
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WorkRequestReferenceRecord(Base):
+    """Earlier work a requester pointed at. On acceptance the same pointers become the new Task's references."""
+
+    __tablename__ = "work_request_references"
+    __table_args__ = (UniqueConstraint("work_request_id", "referenced_task_id", name="uq_work_request_reference"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    work_request_id: Mapped[UUID] = mapped_column(ForeignKey("work_requests.id"), nullable=False, index=True)
+    referenced_task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"), nullable=False, index=True)
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class TaskVersionRecord(Base):
     """An immutable picture of one Task at one version, frozen in the transaction that made that version.
 

@@ -28,6 +28,7 @@ import type {
   ConversationMessageAcceptance,
   TaskHistory,
   TaskHistoryDiff,
+  TaskReference,
 } from "./viewModels";
 
 type ApiErrorBody = {
@@ -77,6 +78,18 @@ export async function getTask(taskId: string): Promise<DirectTask> {
   return request<DirectTask>(`/api/tasks/${taskId}`);
 }
 
+export async function addTaskReference(taskId: string, referencedTaskId: string): Promise<TaskReference> {
+  return request<TaskReference>(`/api/tasks/${taskId}/references`, {
+    body: JSON.stringify({ referenced_task_id: referencedTaskId }),
+    method: "POST",
+  });
+}
+
+/** Stop pointing at it. The record keeps the pointer, so this is a release rather than a deletion. */
+export async function releaseTaskReference(taskId: string, referenceId: string): Promise<{ reference_id: string; task_version: number }> {
+  return request<{ reference_id: string; task_version: number }>(`/api/tasks/${taskId}/references/${referenceId}`, { method: "DELETE" });
+}
+
 export async function getTaskHistory(taskId: string): Promise<TaskHistory> {
   return request<TaskHistory>(`/api/tasks/${taskId}/history`);
 }
@@ -91,7 +104,7 @@ export async function getMyOrganizationProfile(): Promise<OrganizationProfile> {
 
 export async function createDirectTask(
   title: string,
-  extra: { description?: string; start_date?: string | null; due_date?: string | null; checklist?: string[] } = {},
+  extra: { description?: string; start_date?: string | null; due_date?: string | null; checklist?: string[]; reference_task_ids?: string[] } = {},
 ): Promise<DirectTask> {
   return request<DirectTask>("/api/tasks", {
     body: JSON.stringify({ title, ...extra }),
@@ -258,7 +271,7 @@ export async function getWorkRequestAssigneeCandidates(): Promise<Persona[]> {
 export async function createWorkRequest(
   title: string,
   assigneeId: string,
-  extra: { description?: string; due_date?: string | null; cc_member_ids?: string[]; checklist?: string[] } = {},
+  extra: { description?: string; due_date?: string | null; cc_member_ids?: string[]; checklist?: string[]; reference_task_ids?: string[] } = {},
 ): Promise<WorkRequest> {
   return request<WorkRequest>("/api/work-requests", {
     body: JSON.stringify({ title, assignee_id: assigneeId, ...extra }),

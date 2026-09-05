@@ -87,6 +87,30 @@ class _SessionResourceReferences:
         return None
 
 
+class _SessionTaskReferences:
+    """Reads a referenced Task through the Work module itself, so a pointer never becomes permission."""
+
+    def __init__(self, application: "WorkflowApplication", session: Any) -> None:
+        self._application = application
+        self._session = session
+
+    def view(self, principal: Principal, task_id: UUID) -> dict[str, Any] | None:
+        try:
+            task = self._application._tasks(self._session).get(principal, task_id)
+        except Exception:
+            return None
+        if task.get("access") != "owner":
+            # Reading it through a relationship is not the same as being able to point at it as your own context.
+            return None
+        return {
+            "task_id": task["task_id"],
+            "title": task["title"],
+            "state": task["state"],
+            "due_date": task.get("due_date"),
+            "assignee": task.get("assignee"),
+        }
+
+
 class WorkflowApplication:
     """Transaction boundary shared by HTTP, MCP, and local rehearsal adapters."""
 
@@ -479,11 +503,13 @@ class WorkflowApplication:
         start_date: Any = None,
         due_date: Any = None,
         checklist: list[str] | None = None,
+        reference_task_ids: list[UUID] | None = None,
     ) -> dict[str, Any]:
         with self._session_factory() as session:
             result = self._tasks(session).create_self(
                 principal, title, causation_key,
                 description=description, start_date=start_date, due_date=due_date, checklist=checklist,
+                reference_task_ids=reference_task_ids,
             )
             session.commit()
             return result
@@ -509,6 +535,18 @@ class WorkflowApplication:
         """Point a Task at work that lives somewhere else. No bytes are held and no revision is pinned."""
         with self._session_factory() as session:
             result = self._materials(session).attach_link(principal, task_id, kind=kind, url=url, label=label)
+            session.commit()
+            return result
+
+    def add_task_reference(self, principal: Principal, task_id: UUID, referenced_task_id: UUID) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._tasks(session).add_reference(principal, task_id, referenced_task_id)
+            session.commit()
+            return result
+
+    def release_task_reference(self, principal: Principal, task_id: UUID, reference_id: UUID) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._tasks(session).release_reference(principal, task_id, reference_id)
             session.commit()
             return result
 
@@ -636,11 +674,13 @@ class WorkflowApplication:
         due_date: Any = None,
         cc_member_ids: list[str] | None = None,
         checklist: list[str] | None = None,
+        reference_task_ids: list[UUID] | None = None,
     ) -> dict[str, Any]:
         with self._session_factory() as session:
             result = self._work_requests(session).create(
                 principal, title, assignee_id, causation_key,
                 description=description, due_date=due_date, cc_member_ids=cc_member_ids, checklist=checklist,
+                reference_task_ids=reference_task_ids,
             )
             session.commit()
             return result
@@ -875,6 +915,7 @@ class WorkflowApplication:
             SqlAlchemyCommentRepository(session),
             SqlAlchemyAttachmentRepository(session),
             self._material_storage,
+            _SessionTaskReferences(self, session),
         )
 
     def _conversations(self, session: Any) -> ConversationApplication:
