@@ -164,12 +164,92 @@ export function TaskListRow({ task, onOpen, right }: { task: DirectTask; onOpen:
 
 /* ---------------------------------------------------------------- calendar view (month) */
 
-/** Planned span when dates exist; otherwise the recorded lifecycle (created → completed or today). */
-export function taskSpan(task: DirectTask, today: string): { start: string; end: string; planned: boolean } {
-  const closed = task.state === "done" || task.state === "cancelled";
-  const start = task.start_date ?? isoDateInSeoul(task.created_at) ?? today;
-  const end = task.due_date ?? (closed ? (isoDateInSeoul(task.updated_at) ?? start) : today);
-  return { start, end: end < start ? start : end, planned: Boolean(task.start_date || task.due_date) };
+/**
+ * Where a Task sits on a calendar, from its planned dates alone.
+ *
+ * Both dates give a range that includes both ends; one date gives that single day. A Task with neither is not on the
+ * calendar at all — when it was written down is not a plan, and "until today" is not a deadline.
+ */
+export function taskSpan(task: DirectTask): { start: string; end: string } | null {
+  const start = task.start_date ?? task.due_date ?? null;
+  const end = task.due_date ?? task.start_date ?? null;
+  if (!start || !end) return null;
+  // The server refuses a start after a due date; the renderer does not quietly correct one.
+  return { start, end: end < start ? start : end };
+}
+
+export type CalendarSegment = {
+  task: DirectTask;
+  /** 1-based grid column of the first day this week shows, and how many days it covers here. */
+  column: number;
+  length: number;
+  lane: number;
+  continuesBefore: boolean;
+  continuesAfter: boolean;
+  span: { start: string; end: string };
+};
+
+/**
+ * One bar per Task per week: clipped to the week, marked where it continues, and placed in a lane it keeps for as
+ * long as nothing else needs it. Bars past `maxLanes` are not dropped silently — each day counts what it is hiding.
+ */
+export function weekSegments(
+  tasks: DirectTask[],
+  days: string[],
+  maxLanes: number,
+): { segments: CalendarSegment[]; hiddenByDay: Record<string, number> } {
+  const weekStart = days[0];
+  const weekEnd = days[days.length - 1];
+  const placed: CalendarSegment[] = [];
+  const hiddenByDay: Record<string, number> = {};
+  // Longest first, then by start, so the bars that shape the week take the top lanes and stay put.
+  const candidates = tasks
+    .map((task) => ({ task, span: taskSpan(task) }))
+    .filter((row): row is { task: DirectTask; span: { start: string; end: string } } => row.span !== null)
+    .filter((row) => row.span.start <= weekEnd && row.span.end >= weekStart);
+  const lanes: Array<string | null> = [];
+
+  for (const { task, span } of candidates) {
+    const from = span.start < weekStart ? weekStart : span.start;
+    const to = span.end > weekEnd ? weekEnd : span.end;
+    const column = days.indexOf(from) + 1;
+    const length = days.indexOf(to) - days.indexOf(from) + 1;
+    let lane = lanes.findIndex((occupiedUntil) => occupiedUntil === null || occupiedUntil < from);
+    if (lane === -1) {
+      lane = lanes.length;
+      lanes.push(null);
+    }
+    if (lane >= maxLanes) {
+      for (let offset = 0; offset < length; offset += 1) {
+        const day = days[column - 1 + offset];
+        hiddenByDay[day] = (hiddenByDay[day] ?? 0) + 1;
+      }
+      continue;
+    }
+    lanes[lane] = to;
+    placed.push({
+      task,
+      column,
+      length,
+      lane,
+      continuesBefore: span.start < weekStart,
+      continuesAfter: span.end > weekEnd,
+      span,
+    });
+  }
+  return { segments: placed, hiddenByDay };
+}
+
+/** What a bar says out loud: the work, what it covers, and where it stands. */
+function segmentLabel(segment: CalendarSegment): string {
+  const { span, task } = segment;
+  const dates =
+    span.start === span.end
+      ? task.due_date && !task.start_date
+        ? `${formatDate(span.start)} 기한`
+        : `${formatDate(span.start)} 시작`
+      : `${formatDate(span.start)} – ${formatDate(span.end)}`;
+  return `${task.title} · ${dates} · ${taskStateLabel[task.state]}`;
 }
 
 export function TaskCalendar({
@@ -177,14 +257,17 @@ export function TaskCalendar({
   onOpen,
   mode = "month",
   onModeChange,
+  anchorDate,
 }: {
   tasks: DirectTask[];
   onOpen: (task: DirectTask) => void;
   mode?: "week" | "month";
   onModeChange?: (mode: "week" | "month") => void;
+  /** Where the grid opens. Defaults to today; tests and deep links can start elsewhere. */
+  anchorDate?: string;
 }) {
   const today = seoulToday();
-  const [anchor, setAnchor] = useState(today);
+  const [anchor, setAnchor] = useState(anchorDate ?? today);
   const [year, month] = anchor.slice(0, 7).split("-").map(Number);
   const cursor = anchor.slice(0, 7);
   const first = `${cursor}-01`;
@@ -192,22 +275,12 @@ export function TaskCalendar({
   const anchorWeekday = new Date(Date.UTC(year, month - 1, Number(anchor.slice(8)))).getUTCDay();
   const gridStart = mode === "week" ? addDays(anchor, -anchorWeekday) : addDays(first, -firstWeekday);
   const days = Array.from({ length: mode === "week" ? 7 : 42 }, (_, index) => addDays(gridStart, index));
-  const maxVisible = mode === "week" ? 8 : 3;
-  const byDay = useMemo(() => {
-    const map = new Map<string, Array<{ task: DirectTask; kind: "start" | "end" | "span" }>>();
-    for (const task of tasks) {
-      const { start, end } = taskSpan(task, today);
-      const length = dayDifference(start, end);
-      for (let offset = 0; offset <= length; offset += 1) {
-        const day = addDays(start, offset);
-        const kind = offset === 0 ? "start" : offset === length && (task.state === "done" || task.state === "cancelled") ? "end" : "span";
-        const list = map.get(day) ?? [];
-        list.push({ task, kind });
-        map.set(day, list);
-      }
-    }
-    return map;
-  }, [tasks, today]);
+  const maxLanes = mode === "week" ? 8 : 3;
+  const weeks = useMemo(() => {
+    const rows: string[][] = [];
+    for (let index = 0; index < days.length; index += 7) rows.push(days.slice(index, index + 7));
+    return rows.map((week) => ({ days: week, ...weekSegments(tasks, week, maxLanes) }));
+  }, [tasks, days.join(","), maxLanes]);
 
   const shift = (delta: number) => {
     if (mode === "week") {
@@ -253,31 +326,54 @@ export function TaskCalendar({
           <span key={label}>{label}</span>
         ))}
       </div>
-      <div className={mode === "week" ? "calendar-grid week" : "calendar-grid"}>
-        {days.map((day) => {
-          const inMonth = mode === "week" || day.startsWith(cursor);
-          const entries = byDay.get(day) ?? [];
-          const visible = entries.slice(0, maxVisible);
-          return (
-            <div className={["calendar-cell", inMonth ? "" : "outside", day === today ? "today" : ""].filter(Boolean).join(" ")} key={day}>
-              <span className="calendar-day">{Number(day.slice(8))}</span>
-              {inMonth &&
-                visible.map(({ task, kind }) => (
+      <div aria-label="업무 캘린더" className={mode === "week" ? "calendar-grid week" : "calendar-grid"} role="grid">
+        {weeks.map((week) => (
+          <div className="calendar-week" key={week.days[0]}>
+            <div className="calendar-days">
+              {week.days.map((day) => {
+                const inMonth = mode === "week" || day.startsWith(cursor);
+                const hidden = inMonth ? week.hiddenByDay[day] ?? 0 : 0;
+                return (
+                  <div
+                    className={["calendar-cell", inMonth ? "" : "outside", day === today ? "today" : ""].filter(Boolean).join(" ")}
+                    key={day}
+                    role="gridcell"
+                  >
+                    <span className="calendar-day">{Number(day.slice(8))}</span>
+                    {hidden > 0 && <span className="calendar-more">+{hidden}개 더</span>}
+                  </div>
+                );
+              })}
+            </div>
+            {/* One bar per task per week, laid over the day cells so a range reads as a single piece of work. */}
+            <div className="calendar-bars">
+              {week.segments
+                .filter((segment) => mode === "week" || week.days[segment.column - 1].startsWith(cursor) || segment.length > 1)
+                .map((segment) => (
                   <button
-                    className={`calendar-chip ${task.state} ${kind}`}
-                    key={`${task.task_id}-${kind}`}
-                    onClick={() => onOpen(task)}
-                    title={`${task.title} · ${taskStateLabel[task.state]}`}
+                    aria-label={segmentLabel(segment)}
+                    className={[
+                      "calendar-chip",
+                      segment.task.state,
+                      segment.continuesBefore ? "continues-before" : "",
+                      segment.continuesAfter ? "continues-after" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                    key={`${segment.task.task_id}-${segment.column}`}
+                    onClick={() => onOpen(segment.task)}
+                    style={{ gridColumn: `${segment.column} / span ${segment.length}`, gridRow: segment.lane + 1 }}
+                    title={segmentLabel(segment)}
                     type="button"
                   >
-                    {kind === "end" ? "✓ " : ""}
-                    {task.title}
+                    {segment.continuesBefore ? "‹ " : ""}
+                    {segment.task.title}
+                    {segment.continuesAfter ? " ›" : ""}
                   </button>
                 ))}
-              {inMonth && entries.length > maxVisible && <span className="calendar-more">+{entries.length - maxVisible}개 더</span>}
             </div>
-          );
-        })}
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -324,16 +420,21 @@ export function TaskTimeline({ tasks, onOpen }: { tasks: DirectTask[]; onOpen: (
         </div>
         {tasks.length === 0 && <p className="empty-row">이 기간에 표시할 업무가 없습니다.</p>}
         {tasks.map((task) => {
-          const { start, end, planned } = taskSpan(task, today);
-          const startIndex = Math.max(0, dayDifference(windowStart, start));
-          const endIndex = Math.min(days.length - 1, dayDifference(windowStart, end));
-          const visible = startIndex <= days.length - 1 && endIndex >= 0;
+          // A bar needs planned dates. Work nobody has scheduled still belongs on this list, without a made-up span.
+          const span = taskSpan(task);
+          const startIndex = span ? Math.max(0, dayDifference(windowStart, span.start)) : 0;
+          const endIndex = span ? Math.min(days.length - 1, dayDifference(windowStart, span.end)) : -1;
+          const visible = Boolean(span) && startIndex <= days.length - 1 && endIndex >= 0;
           return (
             <div className="timeline-row" key={task.task_id}>
               <button className="timeline-label-col timeline-title" onClick={() => onOpen(task)} type="button">
                 <b className={task.state === "cancelled" ? "cancelled-title" : ""}>{task.title}</b>
                 <small>
-                  {formatDate(start)} → {planned || task.state === "done" || task.state === "cancelled" ? formatDate(end) : "진행 중"}
+                  {span
+                    ? span.start === span.end
+                      ? formatDate(span.start)
+                      : `${formatDate(span.start)} → ${formatDate(span.end)}`
+                    : "날짜 없음"}
                   {task.due_date && ` · ${dueDayText(task.due_date, today)}`}
                 </small>
               </button>

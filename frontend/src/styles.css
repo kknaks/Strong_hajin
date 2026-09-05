@@ -262,9 +262,14 @@ button.metric-card:hover { border-color: var(--border-strong); background: var(-
 .calendar-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0; }
 .stepper { display: inline-flex; align-items: center; gap: 8px; }
 .stepper b { min-width: 120px; text-align: center; font-size: 15px; }
-.calendar-weekdays, .calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.calendar-weekdays { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
 .calendar-weekdays span { padding: 8px 0; color: var(--text-tertiary); text-align: center; font-size: 12px; font-weight: 700; }
-.calendar-grid { border: 1px solid var(--border-strong); border-radius: 12px; overflow: hidden; }
+.calendar-grid { display: grid; border: 1px solid var(--border-strong); border-radius: 12px; overflow: hidden; }
+/* Each week is one band: day cells underneath, and the bars laid over them so a range reads as one piece of work. */
+.calendar-week { position: relative; }
+.calendar-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.calendar-bars { position: absolute; top: 28px; right: 0; left: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; padding: 0 2px; pointer-events: none; }
+.calendar-bars .calendar-chip { pointer-events: auto; }
 .calendar-cell { display: grid; align-content: start; gap: 4px; min-height: 96px; padding: 8px; border-right: 1px solid var(--border-subtle); border-bottom: 1px solid var(--border-subtle); background: var(--surface); }
 .calendar-cell:nth-child(7n) { border-right: 0; }
 .calendar-cell.outside { background: var(--surface-sunken); }
@@ -277,7 +282,9 @@ button.metric-card:hover { border-color: var(--border-strong); background: var(-
 .calendar-chip.done { color: var(--action); background: var(--selected-bg); border-left-color: var(--accent); }
 .calendar-chip.blocked { color: var(--danger); background: var(--danger-tint); border-left-color: var(--danger-accent); }
 .calendar-chip.cancelled { color: var(--text-tertiary); text-decoration: line-through; border-left-color: var(--text-disabled); }
-.calendar-chip.span { opacity: 0.7; }
+/* A bar that runs past the edge of the week says so on that side rather than looking like it ended there. */
+.calendar-chip.continues-before { border-left-width: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.calendar-chip.continues-after { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .calendar-more { color: var(--text-tertiary); font-size: 11px; }
 
 /* timeline */
@@ -483,6 +490,8 @@ button.metric-card:hover { border-color: var(--border-strong); background: var(-
 .meta-grid.columns input[type="date"] { width: 100%; height: 34px; padding: 0 8px; font-size: 13px; }
 input[type="date"]:disabled { color: var(--text-secondary); }
 .calendar-grid.week .calendar-cell { min-height: 280px; }
+.calendar-cell .calendar-more { position: absolute; bottom: 4px; }
+.calendar-days .calendar-cell { position: relative; }
 .calendar-page-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 
 .ax-context-chip { display: inline-flex; align-items: center; gap: 8px; width: max-content; max-width: 100%; height: 30px; padding: 0 6px 0 10px; border-radius: 999px; color: var(--action); background: var(--selected-bg); font-size: 12px; font-weight: 500; }

@@ -108,7 +108,7 @@ export function CalendarPage({ personaId, personaName, canManageOwnTasks, onAskA
       <div className="page-head">
         <div>
           <h1>캘린더</h1>
-          <p>시작일과 기한이 있는 업무는 그 기간으로, 없는 업무는 만든 날부터 표시합니다. 회의는 SCAX가 직접 소유합니다.</p>
+          <p>업무는 계획한 날짜로만 표시합니다. 시작일과 기한이 모두 있으면 그 기간, 하나만 있으면 그 날 하루, 없으면 캘린더에 두지 않습니다. 회의는 SCAX가 직접 소유합니다.</p>
         </div>
         <div className="page-head-actions">
           <div aria-label="캘린더 표시 방식" className="segmented" role="tablist">
