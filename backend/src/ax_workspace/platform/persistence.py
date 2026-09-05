@@ -760,8 +760,15 @@ class TaskChecklistItemRecord(Base):
     text: Mapped[str] = mapped_column(String(300), nullable=False)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     done: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: `active` or `archived`. A step someone no longer needs leaves the list without leaving the record.
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    #: Its own optimistic-concurrency counter, so two people editing two steps never conflict over one Task.
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)
     completed_by: Mapped[str | None] = mapped_column(String(100))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_by: Mapped[str | None] = mapped_column(String(100))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

@@ -184,14 +184,12 @@ class SqlAlchemyTaskRepository:
 
     # ---- checklist: steps inside one Task ----
 
-    def checklist_for(self, task_id: UUID) -> list[TaskChecklistItemRecord]:
-        return list(
-            self.session.scalars(
-                select(TaskChecklistItemRecord)
-                .where(TaskChecklistItemRecord.task_id == task_id)
-                .order_by(TaskChecklistItemRecord.position, TaskChecklistItemRecord.created_at)
-            )
-        )
+    def checklist_for(self, task_id: UUID, *, include_archived: bool = False) -> list[TaskChecklistItemRecord]:
+        """The steps on the list. Archived ones are off it, and only history asks for them."""
+        statement = select(TaskChecklistItemRecord).where(TaskChecklistItemRecord.task_id == task_id)
+        if not include_archived:
+            statement = statement.where(TaskChecklistItemRecord.state == "active")
+        return list(self.session.scalars(statement.order_by(TaskChecklistItemRecord.position, TaskChecklistItemRecord.created_at)))
 
     def checklist_progress_for(self, task_ids: list[UUID]) -> dict[UUID, tuple[int, int]]:
         """Done/total per Task in one query, so a list projection never fans out per row."""
@@ -203,35 +201,58 @@ class SqlAlchemyTaskRepository:
                 func.count(TaskChecklistItemRecord.id),
                 func.sum(func.cast(TaskChecklistItemRecord.done, Integer)),
             )
-            .where(TaskChecklistItemRecord.task_id.in_(task_ids))
+            .where(TaskChecklistItemRecord.task_id.in_(task_ids), TaskChecklistItemRecord.state == "active")
             .group_by(TaskChecklistItemRecord.task_id)
         ).all()
         return {task_id: (int(done or 0), int(total or 0)) for task_id, total, done in rows}
 
-    def add_checklist_item(self, task_id: UUID, text: str) -> TaskChecklistItemRecord:
-        """A new step always lands last; positions are never reused so removing one cannot reorder the rest."""
+    def add_checklist_item(self, task_id: UUID, text: str, created_by: str) -> TaskChecklistItemRecord:
+        """A new step always lands last; positions are never reused so archiving one cannot reorder the rest."""
         now = datetime.now(UTC)
         highest = self.session.scalar(
             select(func.max(TaskChecklistItemRecord.position)).where(TaskChecklistItemRecord.task_id == task_id)
         )
         record = TaskChecklistItemRecord(
-            task_id=task_id, text=text, position=int(highest or 0) + 1, done=False, created_at=now, updated_at=now
+            task_id=task_id, text=text, position=int(highest or 0) + 1, done=False, state="active", version=1,
+            created_by=created_by, created_at=now, updated_at=now,
         )
         self.session.add(record)
         self.session.flush()
         return record
 
     def checklist_item(self, task_id: UUID, item_id: UUID, *, lock: bool = False) -> TaskChecklistItemRecord | None:
+        """A step still on the list. An archived one answers as one that is not there."""
         statement = select(TaskChecklistItemRecord).where(
-            TaskChecklistItemRecord.id == item_id, TaskChecklistItemRecord.task_id == task_id
+            TaskChecklistItemRecord.id == item_id,
+            TaskChecklistItemRecord.task_id == task_id,
+            TaskChecklistItemRecord.state == "active",
         )
         return self.session.scalar(
             statement.with_for_update().execution_options(populate_existing=True) if lock else statement
         )
 
-    def remove_checklist_item(self, item: TaskChecklistItemRecord) -> None:
-        self.session.delete(item)
+    def archive_checklist_item(self, item: TaskChecklistItemRecord, actor_id: str) -> None:
+        """Off the list, still in the record: what someone wrote and checked is not erased by tidying up."""
+        now = datetime.now(UTC)
+        item.state = "archived"
+        item.archived_by = actor_id
+        item.archived_at = now
+        item.version += 1
+        item.updated_at = now
         self.session.flush()
+
+    def reorder_checklist(self, items: list[TaskChecklistItemRecord], ordered_ids: list[UUID]) -> list[TaskChecklistItemRecord]:
+        """Rewrite the whole order in one go, so no two steps can end up claiming the same place."""
+        now = datetime.now(UTC)
+        by_id = {item.id: item for item in items}
+        for position, item_id in enumerate(ordered_ids, start=1):
+            item = by_id[item_id]
+            if item.position != position:
+                item.position = position
+                item.version += 1
+                item.updated_at = now
+        self.session.flush()
+        return [by_id[item_id] for item_id in ordered_ids]
 
     def member_display_name(self, member_id: str) -> str | None:
         member = self.session.get(MemberRecord, member_id)
@@ -321,8 +342,18 @@ class SqlAlchemyTaskRepository:
         was attached, and the bytes keep exactly one home.
         """
         checklist = [
-            {"item_id": str(item.id), "text": item.text, "position": item.position, "done": bool(item.done)}
-            for item in self.checklist_for(task.id)
+            {
+                "item_id": str(item.id),
+                "text": item.text,
+                "position": item.position,
+                "done": bool(item.done),
+                "state": item.state,
+                "version": int(item.version),
+                "created_by": item.created_by,
+                "completed_by": item.completed_by,
+            }
+            # History keeps the steps a current screen hides, so an archived one is part of what the Task then was.
+            for item in self.checklist_for(task.id, include_archived=True)
         ]
         materials = [
             {

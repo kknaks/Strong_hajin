@@ -56,15 +56,16 @@ class TaskRepository(Protocol):
     def task_by_id(self, task_id: UUID) -> Any | None: ...
     def tasks_for(self, owner_id: str, *, include_closed: bool = False) -> list[Any]: ...
     def touch(self, task: Any) -> None: ...
-    def checklist_for(self, task_id: UUID) -> list[Any]: ...
+    def checklist_for(self, task_id: UUID, *, include_archived: bool = False) -> list[Any]: ...
     def checklist_progress_for(self, task_ids: list[UUID]) -> dict[UUID, tuple[int, int]]: ...
     def origin_facts(self, tasks: list[Any]) -> dict[UUID, dict[str, Any]]: ...
     def versions_for(self, task_id: UUID) -> list[Any]: ...
     def activity_for(self, task_id: UUID) -> list[Any]: ...
     def member_display_name(self, member_id: str) -> str | None: ...
-    def add_checklist_item(self, task_id: UUID, text: str) -> Any: ...
+    def add_checklist_item(self, task_id: UUID, text: str, created_by: str) -> Any: ...
     def checklist_item(self, task_id: UUID, item_id: UUID, *, lock: bool = False) -> Any: ...
-    def remove_checklist_item(self, item: Any) -> None: ...
+    def archive_checklist_item(self, item: Any, actor_id: str) -> None: ...
+    def reorder_checklist(self, items: list[Any], ordered_ids: list[UUID]) -> list[Any]: ...
     def record_activity(self, task: Any, actor_id: str, event_kind: str, summary: str, *, before_ref: str | None = None, reason: str | None = None) -> None: ...
     def touch(self, task: Any) -> None: ...
 
@@ -389,25 +390,38 @@ class TaskApplication:
 
     # ---- checklist: the steps inside one Task ----
 
-    def add_checklist_item(self, principal: Principal, task_id: UUID, text: str) -> dict[str, Any]:
+    def add_checklist_item(
+        self, principal: Principal, task_id: UUID, text: str, *, expected_task_version: int | None = None
+    ) -> dict[str, Any]:
         """Only the person who holds the Task may add a step, and the text must say something."""
-        self._require(principal, TASK_SELF_MANAGE)
-        task = self.repository.task(task_id, str(principal.id))
+        task = self._holding(principal, task_id, expected_task_version)
         cleaned = " ".join(text.split())
         if not cleaned:
             raise TaskError("checklist item text is required")
-        item = self.repository.add_checklist_item(task.id, cleaned[:300])
+        item = self.repository.add_checklist_item(task.id, cleaned[:300], str(principal.id))
         self._moved(task)
         self.repository.record_activity(task, str(principal.id), "task.checklist.added", f"체크리스트 추가: {cleaned[:80]}")
         return _checklist_view(item, task)
 
-    def update_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID, *, text: str | None = None, done: bool | None = None) -> dict[str, Any]:
+    def update_checklist_item(
+        self,
+        principal: Principal,
+        task_id: UUID,
+        item_id: UUID,
+        *,
+        text: str | None = None,
+        done: bool | None = None,
+        expected_version: int | None = None,
+        expected_task_version: int | None = None,
+    ) -> dict[str, Any]:
         """Checking a step records who did it and when; unchecking clears those facts rather than keeping a stale actor."""
-        self._require(principal, TASK_SELF_MANAGE)
-        task = self.repository.task(task_id, str(principal.id))
+        task = self._holding(principal, task_id, expected_task_version)
         item = self.repository.checklist_item(task.id, item_id, lock=True)
         if item is None:
             raise TaskNotFound("checklist item was not found")
+        # The guard is on the step, not the Task: two people checking two different steps are not in conflict.
+        if expected_version is not None and int(item.version) != expected_version:
+            raise TaskError("checklist item version is stale")
         if text is not None:
             cleaned = " ".join(text.split())
             if not cleaned:
@@ -415,6 +429,7 @@ class TaskApplication:
             before = item.text
             item.text = cleaned[:300]
             if before != item.text:
+                item.version += 1
                 self._moved(task)
                 self.repository.record_activity(
                     task, str(principal.id), "task.checklist.edited", f"체크리스트 수정: {before[:40]} → {item.text[:40]}"
@@ -423,6 +438,7 @@ class TaskApplication:
             item.done = done
             item.completed_by = str(principal.id) if done else None
             item.completed_at = datetime.now(UTC) if done else None
+            item.version += 1
             self._moved(task)
             self.repository.record_activity(
                 task, str(principal.id), "task.checklist.checked" if done else "task.checklist.unchecked",
@@ -431,16 +447,50 @@ class TaskApplication:
         item.updated_at = datetime.now(UTC)
         return _checklist_view(item, task)
 
-    def remove_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID) -> dict[str, Any]:
-        self._require(principal, TASK_SELF_MANAGE)
-        task = self.repository.task(task_id, str(principal.id))
+    def archive_checklist_item(
+        self,
+        principal: Principal,
+        task_id: UUID,
+        item_id: UUID,
+        *,
+        expected_version: int | None = None,
+        expected_task_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Take a step off the list without erasing that it was ever there."""
+        task = self._holding(principal, task_id, expected_task_version)
         item = self.repository.checklist_item(task.id, item_id, lock=True)
         if item is None:
             raise TaskNotFound("checklist item was not found")
-        self.repository.remove_checklist_item(item)
+        if expected_version is not None and int(item.version) != expected_version:
+            raise TaskError("checklist item version is stale")
+        self.repository.archive_checklist_item(item, str(principal.id))
         self._moved(task)
-        self.repository.record_activity(task, str(principal.id), "task.checklist.removed", f"체크리스트 삭제: {item.text[:80]}")
-        return {"task_version": int(task.version)}
+        self.repository.record_activity(task, str(principal.id), "task.checklist.archived", f"체크리스트 정리: {item.text[:80]}")
+        return _checklist_view(item, task)
+
+    def reorder_checklist(
+        self, principal: Principal, task_id: UUID, item_ids: list[UUID], *, expected_task_version: int | None = None
+    ) -> dict[str, Any]:
+        """Put the steps in the order the work happens. The whole order is rewritten, never one step nudged."""
+        task = self._holding(principal, task_id, expected_task_version)
+        items = self.repository.checklist_for(task.id)
+        wanted = list(item_ids)
+        if len(wanted) != len(set(wanted)) or {item.id for item in items} != set(wanted):
+            raise TaskError("the new order must list every step on this checklist exactly once")
+        ordered = self.repository.reorder_checklist(items, wanted)
+        self._moved(task)
+        self.repository.record_activity(
+            task, str(principal.id), "task.checklist.reordered", f"체크리스트 순서 변경: {len(ordered)}단계"
+        )
+        return {"task_version": int(task.version), "checklist": [_checklist_view(item) for item in ordered]}
+
+    def _holding(self, principal: Principal, task_id: UUID, expected_task_version: int | None) -> Any:
+        """The Task this person may change, locked, with the version they answered checked before anything moves."""
+        self._require(principal, TASK_SELF_MANAGE)
+        task = self.repository.task(task_id, str(principal.id), lock=True)
+        if expected_task_version is not None and int(task.version) != expected_task_version:
+            raise TaskError("task version is stale")
+        return task
 
     def _with_checklist(self, task: Any, principal: Principal) -> dict[str, Any]:
         items = [_checklist_view(item) for item in self.repository.checklist_for(task.id)]
@@ -554,6 +604,9 @@ def _checklist_view(item: Any, task: Any = None) -> dict[str, Any]:
         "text": item.text,
         "position": int(item.position),
         "done": bool(item.done),
+        "state": item.state,
+        "version": int(item.version),
+        "created_by": item.created_by,
         "completed_by": item.completed_by,
         "completed_at": _iso(getattr(item, "completed_at", None)),
     }

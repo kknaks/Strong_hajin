@@ -9,6 +9,7 @@ import {
   decideWorkRequest,
   detachTaskMaterial,
   addChecklistItem,
+  reorderChecklist,
   getTask,
   getTaskHistory,
   getTaskHistoryDiff,
@@ -293,6 +294,7 @@ export function TaskDetailDrawer({
   const [isBlocking, setIsBlocking] = useState(false);
   const [blockReason, setBlockReason] = useState("");
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [confirmUnfinished, setConfirmUnfinished] = useState(false);
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description ?? "");
   const [startDate, setStartDate] = useState(task.start_date ?? "");
@@ -300,6 +302,7 @@ export function TaskDetailDrawer({
   const [materials, setMaterials] = useState<TaskMaterial[] | null>(null);
   const [checklist, setChecklist] = useState<ChecklistItem[] | null>(task.checklist ?? null);
   const [newStep, setNewStep] = useState("");
+  const [editingStep, setEditingStep] = useState<{ itemId: string; text: string } | null>(null);
   const addingStep = useRef(false);
   const [uploading, setUploading] = useState<TaskMaterialKind | null>(null);
   const [linkDraft, setLinkDraft] = useState<{ kind: TaskMaterialKind; url: string; label: string } | null>(null);
@@ -421,24 +424,73 @@ export function TaskDetailDrawer({
   async function toggleStep(item: ChecklistItem, done: boolean) {
     onError(null);
     try {
-      const updated = await updateChecklistItem(task.task_id, item.item_id, { done });
+      const updated = await updateChecklistItem(task.task_id, item.item_id, { done, expected_version: item.version });
       setChecklist((rows) => (rows ?? []).map((row) => (row.item_id === item.item_id ? updated : row)));
       moved(updated.task_version);
       await settleVersion();
     } catch (error) {
-      onError(error instanceof Error ? error.message : "체크리스트를 갱신하지 못했습니다.");
+      await refuseStepChange(error, "체크리스트를 갱신하지 못했습니다.");
+    }
+  }
+
+  async function renameStep(item: ChecklistItem, text: string) {
+    const cleaned = text.trim();
+    setEditingStep(null);
+    if (!cleaned || cleaned === item.text) return;
+    onError(null);
+    try {
+      const updated = await updateChecklistItem(task.task_id, item.item_id, { text: cleaned, expected_version: item.version });
+      setChecklist((rows) => (rows ?? []).map((row) => (row.item_id === item.item_id ? updated : row)));
+      moved(updated.task_version);
+      await settleVersion();
+    } catch (error) {
+      await refuseStepChange(error, "단계 내용을 고치지 못했습니다.");
+    }
+  }
+
+  async function moveStep(item: ChecklistItem, direction: -1 | 1) {
+    const rows = checklist ?? [];
+    const from = rows.findIndex((row) => row.item_id === item.item_id);
+    const to = from + direction;
+    if (from < 0 || to < 0 || to >= rows.length) return;
+    const order = rows.map((row) => row.item_id);
+    [order[from], order[to]] = [order[to], order[from]];
+    onError(null);
+    try {
+      const reordered = await reorderChecklist(task.task_id, order);
+      setChecklist(reordered.checklist);
+      moved(reordered.task_version);
+      await settleVersion();
+    } catch (error) {
+      await refuseStepChange(error, "순서를 바꾸지 못했습니다.");
     }
   }
 
   async function removeStep(item: ChecklistItem) {
     onError(null);
     try {
-      const removed = await removeChecklistItem(task.task_id, item.item_id);
+      const removed = await removeChecklistItem(task.task_id, item.item_id, item.version);
       setChecklist((rows) => (rows ?? []).filter((row) => row.item_id !== item.item_id));
       moved(removed?.task_version);
       await settleVersion();
     } catch (error) {
-      onError(error instanceof Error ? error.message : "체크리스트 단계를 삭제하지 못했습니다.");
+      await refuseStepChange(error, "체크리스트 단계를 삭제하지 못했습니다.");
+    }
+  }
+
+  /**
+   * A refused change must not stay on screen as if it had landed. Re-read the list so the person sees what the
+   * server actually has, and say what happened — a stale version means someone else got there first.
+   */
+  async function refuseStepChange(error: unknown, fallback: string) {
+    const message = error instanceof Error ? error.message : fallback;
+    const conflict = message.includes("stale") ? "다른 사람이 이 단계를 먼저 고쳤습니다." : message;
+    try {
+      const detail = await getTask(task.task_id);
+      setChecklist(detail.checklist ?? []);
+      onError(`${conflict} 목록을 다시 불러왔습니다.`);
+    } catch {
+      onError(message);
     }
   }
 
@@ -457,6 +509,17 @@ export function TaskDetailDrawer({
     if (startDate !== (task.start_date ?? "")) patch.start_date = startDate || null;
     if (dueDate !== (task.due_date ?? "")) patch.due_date = dueDate || null;
     await onUpdate(current, patch);
+  };
+
+  const openSteps = (checklist ?? []).filter((item) => !item.done).length;
+
+  /** Unfinished steps are worth saying out loud, but whether they matter is the holder's call, not a rule. */
+  const complete = async () => {
+    if (openSteps > 0) {
+      setConfirmUnfinished(true);
+      return;
+    }
+    await onTransition(current, "complete");
   };
 
   const submitBlock = async () => {
@@ -752,7 +815,7 @@ export function TaskDetailDrawer({
                 </button>
               )}
               {task.state === "in_progress" && (
-                <button className="btn h40 primary" disabled={busy} onClick={() => void onTransition(current, "complete")} type="button">
+                <button className="btn h40 primary" disabled={busy} onClick={() => void complete()} type="button">
                   완료 처리
                 </button>
               )}
@@ -886,21 +949,82 @@ export function TaskDetailDrawer({
             </h4>
             {checklist !== null && checklist.length > 0 && (
               <ul className="checklist">
-                {checklist.map((item) => (
+                {checklist.map((item, index) => (
                   <li className={item.done ? "checklist-item done" : "checklist-item"} data-item-id={item.item_id} key={item.item_id}>
-                    <label>
-                      <input
-                        checked={item.done}
-                        disabled={!canManage || busy}
-                        onChange={(event) => void toggleStep(item, event.target.checked)}
-                        type="checkbox"
-                      />
-                      <span>{item.text}</span>
-                    </label>
-                    {canManage && (
-                      <button aria-label={`${item.text} 삭제`} className="btn h30 ghost" onClick={() => void removeStep(item)} type="button">
-                        삭제
-                      </button>
+                    {editingStep?.itemId === item.item_id ? (
+                      <>
+                        <label className="sr-only" htmlFor={`step-text-${item.item_id}`}>
+                          단계 내용
+                        </label>
+                        <input
+                          autoFocus
+                          className="step-edit"
+                          id={`step-text-${item.item_id}`}
+                          onBlur={() => void renameStep(item, editingStep.text)}
+                          onChange={(event) => setEditingStep({ itemId: item.item_id, text: event.target.value })}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              if (event.nativeEvent.isComposing) return;
+                              void renameStep(item, editingStep.text);
+                            }
+                            if (event.key === "Escape") setEditingStep(null);
+                          }}
+                          value={editingStep.text}
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <label>
+                          <input
+                            checked={item.done}
+                            disabled={!canManage || busy}
+                            onChange={(event) => void toggleStep(item, event.target.checked)}
+                            type="checkbox"
+                          />
+                          <span>{item.text}</span>
+                        </label>
+                        {canManage && (
+                          <>
+                            {/* Order moves with buttons, not only with a pointer: a drag would strand keyboard and touch. */}
+                            <button
+                              aria-label={`${item.text} 위로`}
+                              className="btn h30 ghost"
+                              disabled={busy || index === 0}
+                              onClick={() => void moveStep(item, -1)}
+                              type="button"
+                            >
+                              ↑
+                            </button>
+                            <button
+                              aria-label={`${item.text} 아래로`}
+                              className="btn h30 ghost"
+                              disabled={busy || index === checklist.length - 1}
+                              onClick={() => void moveStep(item, 1)}
+                              type="button"
+                            >
+                              ↓
+                            </button>
+                            <button
+                              aria-label={`${item.text} 수정`}
+                              className="btn h30 ghost"
+                              onClick={() => setEditingStep({ itemId: item.item_id, text: item.text })}
+                              type="button"
+                            >
+                              수정
+                            </button>
+                            <button
+                              aria-label={`${item.text} 삭제`}
+                              className="btn h30 ghost"
+                              onClick={() => void removeStep(item)}
+                              title="목록에서 빼고 이 업무의 기록에는 남깁니다"
+                              type="button"
+                            >
+                              삭제
+                            </button>
+                          </>
+                        )}
+                      </>
                     )}
                   </li>
                 ))}
@@ -996,6 +1120,19 @@ export function TaskDetailDrawer({
           </section>
         )}
       </Drawer>
+      {confirmUnfinished && (
+        <ConfirmModal
+          busy={busy}
+          confirmLabel="그래도 완료"
+          description={`아직 끝나지 않은 단계가 ${openSteps}개 있습니다. 그대로 이 업무를 완료할까요?`}
+          onClose={() => setConfirmUnfinished(false)}
+          onConfirm={() => {
+            setConfirmUnfinished(false);
+            void onTransition(current, "complete");
+          }}
+          title="남은 단계가 있습니다"
+        />
+      )}
       {confirmCancel && (
         <ConfirmModal
           busy={busy}

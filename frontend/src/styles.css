@@ -703,7 +703,8 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .checklist-item span { overflow-wrap: anywhere; }
 .checklist-item.done span { color: var(--text-tertiary); text-decoration: line-through; }
 /* The delete stays reachable: hover-only reveal would strand touch and keyboard users. */
-.checklist-item .btn { flex: none; color: var(--text-tertiary); opacity: 0.65; }
+.checklist-item .btn { flex: none; padding: 0 8px; color: var(--text-tertiary); opacity: 0.65; }
+.checklist-item .step-edit { flex: 1; min-width: 0; height: 30px; font-size: 13px; }
 .checklist-item:hover .btn, .checklist-item:focus-within .btn { opacity: 1; }
 
 /* ---- activity and history: what happened, newest first, with the diff one click away */

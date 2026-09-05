@@ -85,6 +85,11 @@ export type ChecklistItem = {
   text: string;
   position: number;
   done: boolean;
+  /** `active` while it is on the list; `archived` once someone took it off. */
+  state?: string;
+  /** The step's own concurrency counter: answer it and two people editing two steps never collide. */
+  version?: number;
+  created_by?: string;
   completed_by: string | null;
   completed_at: string | null;
 };

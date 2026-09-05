@@ -7,6 +7,7 @@ vi.mock("./api", () => ({
   getTask: vi.fn(),
   getTaskMaterials: vi.fn(),
   addChecklistItem: vi.fn(),
+  reorderChecklist: vi.fn(),
   updateChecklistItem: vi.fn(),
   removeChecklistItem: vi.fn(),
   uploadTaskMaterial: vi.fn(),
@@ -32,11 +33,14 @@ import { TaskDetailDrawer } from "./WorkModals";
 
 const task: DirectTask = { task_id: "task-1", title: "분기 보고 준비", state: "open", version: 1, block_reason: null };
 
-const step = (id: string, text: string, position: number, done = false) => ({
+const step = (id: string, text: string, position: number, done = false, version = 1) => ({
   item_id: id,
   text,
   position,
   done,
+  state: "active",
+  version,
+  created_by: "mina",
   completed_by: done ? "mina" : null,
   completed_at: done ? "2026-09-04T01:00:00Z" : null,
 });
@@ -147,7 +151,7 @@ describe("task checklist", () => {
     await waitFor(() => expect(within(section).getByText("0/2")).toBeTruthy());
 
     fireEvent.click(within(section).getByRole("checkbox", { name: "초안 쓰기" }));
-    await waitFor(() => expect(api.updateChecklistItem).toHaveBeenCalledWith("task-1", "i2", { done: true }));
+    await waitFor(() => expect(api.updateChecklistItem).toHaveBeenCalledWith("task-1", "i2", { done: true, expected_version: 1 }));
     await waitFor(() => expect(within(section).getByText("1/2")).toBeTruthy());
     expect((section.querySelector('[data-item-id="i2"]') as HTMLElement).className).toContain("done");
   });
@@ -162,7 +166,7 @@ describe("task checklist", () => {
     await waitFor(() => expect(within(section).getByText("0/1")).toBeTruthy());
 
     fireEvent.click(within(section).getByRole("button", { name: "초안 쓰기 삭제" }));
-    await waitFor(() => expect(onError).toHaveBeenCalledWith("서버 오류"));
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.stringContaining("서버 오류")));
     expect(section.querySelector('[data-item-id="i2"]')).toBeTruthy(); // still there, because the server refused
   });
 
@@ -266,7 +270,7 @@ describe("task checklist", () => {
     const section = await screen.findByLabelText("체크리스트");
 
     fireEvent.click(within(section).getByRole("button", { name: "자료 모으기 삭제" }));
-    await waitFor(() => expect(onError).toHaveBeenCalledWith("서버 오류"));
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.stringContaining("서버 오류")));
     expect(onChanged).not.toHaveBeenCalled();
   });
 
@@ -286,6 +290,106 @@ describe("task checklist", () => {
     fireEvent.click(screen.getByRole("button", { name: "변경 저장" }));
     await waitFor(() => expect(onUpdate).toHaveBeenCalled());
     expect(vi.mocked(onUpdate).mock.calls[0][0].version).toBe(2); // and the save carries the version the server has
+  });
+
+  it("answers the step's own version, so two people editing two steps never collide", async () => {
+    vi.mocked(api.updateChecklistItem).mockResolvedValue(step("i2", "초안 쓰기", 2, true, 3) as never);
+    renderDrawer([step("i1", "자료 모으기", 1, false, 4), step("i2", "초안 쓰기", 2, false, 2)]);
+    const section = await screen.findByLabelText("체크리스트");
+
+    fireEvent.click(within(section).getByRole("checkbox", { name: "초안 쓰기" }));
+    await waitFor(() =>
+      expect(api.updateChecklistItem).toHaveBeenCalledWith("task-1", "i2", { done: true, expected_version: 2 }),
+    );
+  });
+
+  it("re-reads the list instead of leaving a step showing what the server refused", async () => {
+    vi.mocked(api.updateChecklistItem).mockRejectedValue(new Error("checklist item version is stale"));
+    const { onError } = renderDrawer([step("i1", "자료 모으기", 1)]);
+    const section = await screen.findByLabelText("체크리스트");
+    // What the server has by the time the refusal comes back.
+    vi.mocked(api.getTask).mockResolvedValue({ ...task, checklist: [step("i1", "다른 사람이 고친 내용", 1, true, 5)] } as never);
+
+    fireEvent.click(within(section).getByRole("checkbox", { name: "자료 모으기" }));
+    await waitFor(() => expect(onError).toHaveBeenCalled());
+    expect(vi.mocked(onError).mock.calls.at(-1)?.[0]).toContain("다른 사람이 이 단계를 먼저 고쳤습니다");
+    // What the server actually has is on screen, not the change that failed.
+    await waitFor(() => expect(within(section).getByText("다른 사람이 고친 내용")).toBeTruthy());
+  });
+
+  it("lets someone rename a step in place", async () => {
+    vi.mocked(api.updateChecklistItem).mockResolvedValue(step("i1", "자료 정리하기", 1, false, 2) as never);
+    renderDrawer([step("i1", "자료 모으기", 1)]);
+    const section = await screen.findByLabelText("체크리스트");
+
+    fireEvent.click(within(section).getByRole("button", { name: "자료 모으기 수정" }));
+    const field = within(section).getByLabelText("단계 내용") as HTMLInputElement;
+    expect(field.value).toBe("자료 모으기");
+    fireEvent.change(field, { target: { value: "자료 정리하기" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    await waitFor(() =>
+      expect(api.updateChecklistItem).toHaveBeenCalledWith("task-1", "i1", { text: "자료 정리하기", expected_version: 1 }),
+    );
+    await waitFor(() => expect(within(section).getByText("자료 정리하기")).toBeTruthy());
+    expect(within(section).queryByLabelText("단계 내용")).toBeNull();
+
+    // Escape leaves the step as it was and sends nothing.
+    fireEvent.click(within(section).getByRole("button", { name: "자료 정리하기 수정" }));
+    fireEvent.change(within(section).getByLabelText("단계 내용"), { target: { value: "취소될 내용" } });
+    fireEvent.keyDown(within(section).getByLabelText("단계 내용"), { key: "Escape" });
+    expect(api.updateChecklistItem).toHaveBeenCalledTimes(1);
+    expect(within(section).getByText("자료 정리하기")).toBeTruthy();
+  });
+
+  it("moves a step with the keyboard and sends the whole order", async () => {
+    vi.mocked(api.reorderChecklist).mockResolvedValue({
+      task_version: 4,
+      checklist: [step("i2", "초안 쓰기", 1), step("i1", "자료 모으기", 2), step("i3", "검토 요청", 3)],
+    } as never);
+    renderDrawer([step("i1", "자료 모으기", 1), step("i2", "초안 쓰기", 2), step("i3", "검토 요청", 3)]);
+    const section = await screen.findByLabelText("체크리스트");
+
+    // The first step cannot move up, and the last cannot move down.
+    expect((within(section).getByRole("button", { name: "자료 모으기 위로" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(section).getByRole("button", { name: "검토 요청 아래로" }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(within(section).getByRole("button", { name: "초안 쓰기 위로" }));
+    await waitFor(() => expect(api.reorderChecklist).toHaveBeenCalledWith("task-1", ["i2", "i1", "i3"]));
+    await waitFor(() =>
+      expect(Array.from(section.querySelectorAll(".checklist-item span")).map((node) => node.textContent)).toEqual([
+        "초안 쓰기",
+        "자료 모으기",
+        "검토 요청",
+      ]),
+    );
+  });
+
+  it("warns before completing work whose steps are not finished, and still lets it through", async () => {
+    const running = { ...task, state: "in_progress" as const };
+    vi.mocked(api.getTaskMaterials).mockResolvedValue([]);
+    vi.mocked(api.getTask).mockResolvedValue({ ...running, checklist: [step("i1", "자료 모으기", 1), step("i2", "초안 쓰기", 2, true)] } as never);
+    const onTransition = vi.fn();
+    render(
+      <TaskDetailDrawer
+        busy={false}
+        canManage
+        onClose={vi.fn()}
+        onError={vi.fn()}
+        onNotice={vi.fn()}
+        onTransition={onTransition}
+        onUpdate={vi.fn()}
+        ownerName="민아"
+        task={running}
+      />,
+    );
+    await screen.findByLabelText("체크리스트");
+
+    fireEvent.click(screen.getByRole("button", { name: "완료 처리" }));
+    expect(onTransition).not.toHaveBeenCalled();
+    // It says what is unfinished rather than refusing, because whether that matters is the person's call.
+    expect(screen.getByText(/아직 끝나지 않은 단계가 1개/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "그래도 완료" }));
+    await waitFor(() => expect(onTransition).toHaveBeenCalledWith(expect.objectContaining({ task_id: "task-1" }), "complete"));
   });
 
   it("is read-only for someone who cannot manage the task", async () => {

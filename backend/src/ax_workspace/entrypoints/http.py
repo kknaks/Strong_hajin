@@ -202,11 +202,28 @@ class CommentRequest(BaseModel):
 
 class ChecklistItemRequest(BaseModel):
     text: str = Field(min_length=1, max_length=300)
+    #: Optional: a caller that is showing a Task may answer the version it showed.
+    expected_task_version: int | None = None
 
 
 class ChecklistItemPatch(BaseModel):
     text: str | None = Field(default=None, max_length=300)
     done: bool | None = None
+    #: The step's own version, so two people editing two different steps are never in conflict.
+    expected_version: int | None = None
+    expected_task_version: int | None = None
+
+
+class ChecklistArchiveRequest(BaseModel):
+    expected_version: int | None = None
+    expected_task_version: int | None = None
+
+
+class ChecklistOrderRequest(BaseModel):
+    """The whole order, every step exactly once. Nudging one step would let two claim the same place."""
+
+    item_ids: list[UUID] = Field(min_length=1)
+    expected_task_version: int | None = None
 
 
 class ActionCommandRequest(BaseModel):
@@ -923,7 +940,9 @@ def create_app(
         @app.post("/api/tasks/{task_id}/checklist", status_code=status.HTTP_201_CREATED)
         def add_task_checklist_item(task_id: UUID, request: ChecklistItemRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
             try:
-                return app.state.workflow_application.add_task_checklist_item(principal, task_id, request.text)
+                return app.state.workflow_application.add_task_checklist_item(
+                    principal, task_id, request.text, request.expected_task_version
+                )
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -938,11 +957,31 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
-        @app.delete("/api/tasks/{task_id}/checklist/{item_id}")
-        def remove_task_checklist_item(task_id: UUID, item_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
-            # Removing a step moves the Task, so the answer carries the version it moved to rather than nothing.
+        @app.post("/api/tasks/{task_id}/checklist/order")
+        def reorder_task_checklist(
+            task_id: UUID, request: ChecklistOrderRequest, principal: Principal = Depends(developer_principal)
+        ) -> dict[str, object]:
             try:
-                return app.state.workflow_application.remove_task_checklist_item(principal, task_id, item_id)
+                return app.state.workflow_application.reorder_task_checklist(
+                    principal, task_id, request.item_ids, expected_task_version=request.expected_task_version
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.delete("/api/tasks/{task_id}/checklist/{item_id}")
+        def archive_task_checklist_item(
+            task_id: UUID,
+            item_id: UUID,
+            expected_version: int | None = None,
+            expected_task_version: int | None = None,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            # Taking a step off the list moves the Task, so the answer carries the version it moved to.
+            try:
+                return app.state.workflow_application.archive_task_checklist_item(
+                    principal, task_id, item_id,
+                    expected_version=expected_version, expected_task_version=expected_task_version,
+                )
             except Exception as error:
                 raise _runtime_error(error) from error
 

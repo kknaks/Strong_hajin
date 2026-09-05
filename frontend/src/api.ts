@@ -495,13 +495,26 @@ export async function addChecklistItem(taskId: string, text: string): Promise<Ch
 export async function updateChecklistItem(
   taskId: string,
   itemId: string,
-  patch: { text?: string; done?: boolean },
+  patch: { text?: string; done?: boolean; expected_version?: number },
 ): Promise<ChecklistItem> {
   return request<ChecklistItem>(`/api/tasks/${taskId}/checklist/${itemId}`, { body: JSON.stringify(patch), method: "PATCH" });
 }
 
-export async function removeChecklistItem(taskId: string, itemId: string): Promise<{ task_version: number }> {
-  return request<{ task_version: number }>(`/api/tasks/${taskId}/checklist/${itemId}`, { method: "DELETE" });
+/** Taking a step off the list. The record keeps it, so this is an archive rather than a deletion. */
+export async function removeChecklistItem(taskId: string, itemId: string, expectedVersion?: number): Promise<ChecklistItem> {
+  const query = expectedVersion === undefined ? "" : `?expected_version=${expectedVersion}`;
+  return request<ChecklistItem>(`/api/tasks/${taskId}/checklist/${itemId}${query}`, { method: "DELETE" });
+}
+
+/** The whole order, every step exactly once: one step nudged on its own could collide with another. */
+export async function reorderChecklist(
+  taskId: string,
+  itemIds: string[],
+): Promise<{ task_version: number; checklist: ChecklistItem[] }> {
+  return request<{ task_version: number; checklist: ChecklistItem[] }>(`/api/tasks/${taskId}/checklist/order`, {
+    body: JSON.stringify({ item_ids: itemIds }),
+    method: "POST",
+  });
 }
 
 export async function getCalendarEntries(): Promise<CalendarEntry[]> {

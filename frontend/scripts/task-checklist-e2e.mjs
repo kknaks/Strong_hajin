@@ -60,7 +60,32 @@ try {
   const doneCount = await checklist.locator(".checklist-item.done").count();
   if (doneCount !== 1) throw new Error(`expected one finished step, found ${doneCount}`);
 
-  // Remove one, then confirm the state survives closing and re-opening the drawer.
+  // Rename a step in place; the version the server answers is what the next change carries.
+  await checklist.getByRole("button", { name: "초안 쓰기 수정" }).click();
+  const editor = checklist.locator("input.step-edit");
+  await editor.fill("초안 다시 쓰기");
+  await editor.press("Enter");
+  await checklist.locator(".checklist-item", { hasText: "초안 다시 쓰기" }).waitFor({ timeout: 10_000 });
+
+  // Move it with the keyboard-reachable control, and the whole order is what the server stores.
+  await checklist.getByRole("button", { name: "초안 다시 쓰기 위로" }).click();
+  await page.waitForFunction(
+    () => {
+      const rows = Array.from(document.querySelectorAll('section[aria-label="체크리스트"] .checklist-item span'));
+      return rows.map((node) => node.textContent).join("|") === "초안 다시 쓰기|자료 모으기|검토 요청";
+    },
+    undefined,
+    { timeout: 10_000 },
+  );
+  const storedOrder = await page.evaluate(async (taskId) => {
+    const mine = await (await fetch(`/api/tasks/${taskId}`)).json();
+    return mine.checklist.map((row) => `${row.position}:${row.text}`);
+  }, task.task_id);
+  if (storedOrder.join("|") !== "1:초안 다시 쓰기|2:자료 모으기|3:검토 요청") {
+    throw new Error(`the server stored a different order: ${JSON.stringify(storedOrder)}`);
+  }
+
+  // Take one off the list, then confirm the state survives closing and re-opening the drawer.
   await checklist.getByRole("button", { name: "검토 요청 삭제" }).click();
   await checklist.locator(".checklist-progress[data-done='1'][data-total='2']").waitFor({ timeout: 10_000 });
   await drawer.getByRole("button", { name: "상세 닫기" }).click();
@@ -68,7 +93,16 @@ try {
   const reopened = page.getByRole("dialog", { name: "업무 상세" }).locator('section[aria-label="체크리스트"]');
   await reopened.locator(".checklist-progress[data-done='1'][data-total='2']").waitFor({ timeout: 20_000 });
   const after = await reopened.locator(".checklist-item span").allTextContents();
-  if (after.join("|") !== "자료 모으기|초안 쓰기") throw new Error(`checklist did not survive re-open: ${JSON.stringify(after)}`);
+  if (after.join("|") !== "초안 다시 쓰기|자료 모으기") throw new Error(`checklist did not survive re-open: ${JSON.stringify(after)}`);
+
+  // The step that left the list is still in what the Task was, marked as archived rather than erased.
+  const archived = await page.evaluate(async (taskId) => {
+    const history = await (await fetch(`/api/tasks/${taskId}/history`)).json();
+    const latest = history.versions[history.versions.length - 1].snapshot.checklist;
+    return { states: latest.map((row) => `${row.text}:${row.state}`), events: history.activity.map((row) => row.event_kind) };
+  }, task.task_id);
+  if (!archived.states.includes("검토 요청:archived")) throw new Error(`the archived step is missing: ${JSON.stringify(archived.states)}`);
+  if (!archived.events.includes("task.checklist.reordered")) throw new Error(`the reorder left no record: ${JSON.stringify(archived.events)}`);
 
   // The steps are the Task's own: they are not judgements and not visible to someone without the Task.
   const ledger = await page.evaluate(async () => (await (await fetch("/api/action-items")).json()).length);
@@ -87,7 +121,7 @@ try {
   const otherStatus = await page.evaluate(async (taskId) => (await fetch(`/api/tasks/${taskId}`)).status, task.task_id);
   if (otherStatus !== 404) throw new Error(`another member could read the task: ${otherStatus}`);
 
-  console.log(JSON.stringify({ result: "task checklist added, checked, removed and restored", task_id: task.task_id, ...stored, pending_judgements: ledger }));
+  console.log(JSON.stringify({ result: "task checklist added, checked, renamed, reordered, archived and restored", task_id: task.task_id, ...stored, pending_judgements: ledger }));
 } finally {
   await browser.close();
 }

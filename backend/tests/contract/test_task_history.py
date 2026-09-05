@@ -96,9 +96,15 @@ def test_a_snapshot_keeps_what_the_current_screen_hides(tmp_path) -> None:
     assert client.get(f"/api/tasks/{task_id}/materials", headers=MINA).json() == []
 
     versions = _history(client, task_id).json()["versions"]
-    # The current version has neither; the versions that had them still do.
-    assert versions[-1]["snapshot"]["checklist"] == [] and versions[-1]["snapshot"]["materials"] == []
-    assert any(row["snapshot"]["checklist"] and row["snapshot"]["checklist"][0]["text"] == "자료 모으기" for row in versions)
+    # The step left the list without leaving the record; the material's binding is gone from the newest picture.
+    assert [step["state"] for step in versions[-1]["snapshot"]["checklist"]] == ["archived"]
+    assert versions[-1]["snapshot"]["materials"] == []
+    # And the versions that had them as they were still do.
+    assert any(
+        row["snapshot"]["checklist"] and row["snapshot"]["checklist"][0]["state"] == "active"
+        and row["snapshot"]["checklist"][0]["text"] == "자료 모으기"
+        for row in versions
+    )
     assert any(row["snapshot"]["materials"] for row in versions)
 
 

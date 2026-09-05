@@ -1539,3 +1539,77 @@ def test_postgres_keeps_one_open_assignment_per_task_through_a_handover() -> Non
         task = session.get(TaskRecord, UUID(task_id))
         assert task.created_by_actor_id == "jiho"
         assert not hasattr(task, "owner_id")
+
+
+@pytest.mark.integration
+def test_postgres_keeps_one_order_when_two_people_rearrange_the_same_checklist() -> None:
+    """Order is rewritten wholesale under the Task row lock, so no two steps can end up in the same place."""
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url, materials_dir=tempfile.mkdtemp())
+    client = TestClient(create_app(settings))
+    mina = {"X-Demo-Persona": "mina"}
+
+    task_id = client.post("/api/tasks", headers=mina, json={"title": "순서가 흔들릴 업무"}).json()["task_id"]
+    url = f"/api/tasks/{task_id}/checklist"
+    steps = [client.post(url, headers=mina, json={"text": text}).json() for text in ("하나", "둘", "셋")]
+    ids = [step["item_id"] for step in steps]
+
+    gate = Barrier(2)
+
+    def rearrange(order: list[str]) -> Any:
+        gate.wait()
+        return client.post(f"{url}/order", headers=mina, json={"item_ids": order})
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(rearrange, [ids[2], ids[1], ids[0]])
+        second = executor.submit(rearrange, [ids[1], ids[0], ids[2]])
+        assert sorted([first.result().status_code, second.result().status_code]) == [200, 200]
+
+    view = client.get(f"/api/tasks/{task_id}", headers=mina).json()
+    positions = [row["position"] for row in view["checklist"]]
+    assert positions == [1, 2, 3], view["checklist"]
+    # Both rearrangements landed, one after the other, and each moved the Task exactly once.
+    assert view["version"] == 6
+
+
+@pytest.mark.integration
+def test_postgres_lets_only_one_of_two_edits_of_the_same_step_land() -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url, materials_dir=tempfile.mkdtemp())
+    client = TestClient(create_app(settings))
+    mina = {"X-Demo-Persona": "mina"}
+
+    task_id = client.post("/api/tasks", headers=mina, json={"title": "동시에 고쳐질 업무"}).json()["task_id"]
+    url = f"/api/tasks/{task_id}/checklist"
+    item = client.post(url, headers=mina, json={"text": "자료 모으기"}).json()
+
+    gate = Barrier(2)
+
+    def edit(text: str) -> Any:
+        gate.wait()
+        return client.patch(f"{url}/{item['item_id']}", headers=mina, json={"expected_version": 1, "text": text})
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first, second = executor.submit(edit, "먼저"), executor.submit(edit, "나중")
+        outcomes = sorted([first.result().status_code, second.result().status_code])
+    assert outcomes == [200, 422], outcomes
+
+    [row] = client.get(f"/api/tasks/{task_id}", headers=mina).json()["checklist"]
+    assert row["text"] in {"먼저", "나중"} and row["version"] == 2
+
+    # Checking two different steps at once is not a conflict: the guard is on the step, not the Task.
+    other = client.post(url, headers=mina, json={"text": "초안 쓰기"}).json()
+    ready = Barrier(2)
+
+    def check(step: dict) -> Any:
+        ready.wait()
+        return client.patch(f"{url}/{step['item_id']}", headers=mina, json={"expected_version": step["version"], "done": True})
+
+    current = {step["item_id"]: step for step in client.get(f"/api/tasks/{task_id}", headers=mina).json()["checklist"]}
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        one = executor.submit(check, current[row["item_id"]])
+        two = executor.submit(check, current[other["item_id"]])
+        assert sorted([one.result().status_code, two.result().status_code]) == [200, 200]
+    assert client.get(f"/api/tasks/{task_id}", headers=mina).json()["checklist_progress"] == {"done": 2, "total": 2}

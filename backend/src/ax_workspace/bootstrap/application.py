@@ -887,9 +887,11 @@ class WorkflowApplication:
             SqlAlchemyActionExecutor(session, self._report_provider),
         )
 
-    def add_task_checklist_item(self, principal: Principal, task_id: UUID, text: str) -> dict[str, Any]:
+    def add_task_checklist_item(
+        self, principal: Principal, task_id: UUID, text: str, expected_task_version: int | None = None
+    ) -> dict[str, Any]:
         with self._session_factory() as session:
-            result = self._tasks(session).add_checklist_item(principal, task_id, text)
+            result = self._tasks(session).add_checklist_item(principal, task_id, text, expected_task_version=expected_task_version)
             session.commit()
             return result
 
@@ -899,9 +901,15 @@ class WorkflowApplication:
             session.commit()
             return result
 
-    def remove_task_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID) -> dict[str, Any]:
+    def archive_task_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID, **fields: Any) -> dict[str, Any]:
         with self._session_factory() as session:
-            result = self._tasks(session).remove_checklist_item(principal, task_id, item_id)
+            result = self._tasks(session).archive_checklist_item(principal, task_id, item_id, **fields)
+            session.commit()
+            return result
+
+    def reorder_task_checklist(self, principal: Principal, task_id: UUID, item_ids: list[UUID], **fields: Any) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._tasks(session).reorder_checklist(principal, task_id, item_ids, **fields)
             session.commit()
             return result
 
