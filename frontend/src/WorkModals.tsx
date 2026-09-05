@@ -86,8 +86,21 @@ const HISTORY_FIELD_LABEL: Record<string, string> = {
  * version before a line and the version it produced. Nothing is fetched until someone asks, because most people
  * open a Task to work on it rather than to audit it.
  */
+//: What a person is usually looking for when they open the history, and which ledger kinds answer it.
+const HISTORY_FILTERS: Array<{ id: string; label: string; match: (kind: string) => boolean }> = [
+  { id: "all", label: "전체", match: () => true },
+  {
+    id: "core",
+    label: "내용·상태",
+    match: (kind) => kind.startsWith("task.") && !kind.startsWith("task.checklist.") && !kind.startsWith("task.material_"),
+  },
+  { id: "checklist", label: "체크리스트", match: (kind) => kind.startsWith("task.checklist.") },
+  { id: "materials", label: "자료", match: (kind) => kind.startsWith("task.material_") },
+];
+
 export function TaskHistorySection({ task }: { task: DirectTask }) {
   const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState("all");
   const [history, setHistory] = useState<TaskHistory | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [diffs, setDiffs] = useState<Record<number, TaskHistoryDiff | "loading" | string>>({});
@@ -142,8 +155,23 @@ export function TaskHistorySection({ task }: { task: DirectTask }) {
       {open && !failure && history === null && <p className="t-meta">불러오는 중…</p>}
       {open && history !== null && history.activity.length === 0 && <p className="t-meta">아직 기록이 없습니다.</p>}
       {open && history !== null && history.activity.length > 0 && (
+        <div className="chip-row">
+          {HISTORY_FILTERS.map((option) => (
+            <button
+              aria-pressed={filter === option.id}
+              className={filter === option.id ? "btn h30" : "btn h30 ghost"}
+              key={option.id}
+              onClick={() => setFilter(option.id)}
+              type="button"
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {open && history !== null && history.activity.length > 0 && (
         <ol className="activity-list">
-          {history.activity.map((row, index) => {
+          {history.activity.filter((row) => (HISTORY_FILTERS.find((option) => option.id === filter) ?? HISTORY_FILTERS[0]).match(row.event_kind)).map((row, index) => {
             const version = row.version;
             const diff = version === null ? undefined : diffs[version];
             return (

@@ -63,6 +63,72 @@ function renderDrawer(detail: ActionItemDetail, onDone = vi.fn().mockResolvedVal
   return { onNotice, onClose, onDone };
 }
 
+describe("what each round stood on", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("says what a round's basis is and whether the answer was given on that same basis", async () => {
+    renderDrawer({
+      ...adjusted,
+      rounds: [
+        {
+          ...adjusted.rounds[0],
+          evidence: [
+            { attachment_id: "a1", evidence_role: "decision_basis", fixed_snapshot_ref: "sha256:aaa" },
+            { attachment_id: "a2", evidence_role: "supplemental", fixed_snapshot_ref: "sha256:bbb" },
+          ],
+          evidence_hash: "sha256:round-basis",
+          decisions: [
+            {
+              review_decision_id: "d1",
+              actor_member_id: "jiho",
+              decision: "negotiate",
+              reason: "기한을 늦춰 주세요",
+              decided_at: "2026-09-03T02:00:00Z",
+              evidence_hash: "sha256:round-basis",
+            },
+          ],
+        },
+        {
+          ...adjusted.rounds[0],
+          submission_id: "s2",
+          submission_version: 2,
+          evidence: [{ attachment_id: "a3", evidence_role: "decision_basis", fixed_snapshot_ref: "sha256:ccc" }],
+          evidence_hash: "sha256:now",
+          decisions: [
+            {
+              review_decision_id: "d2",
+              actor_member_id: "jiho",
+              decision: "accept",
+              reason: null,
+              decided_at: "2026-09-04T02:00:00Z",
+              evidence_hash: "sha256:before",
+            },
+          ],
+        },
+      ],
+    });
+    const history = within(await screen.findByRole("dialog", { name: "판단 상세" })).getByLabelText("회차 기록");
+
+    const first = history.querySelector('[data-submission-version="1"]') as HTMLElement;
+    expect(within(first).getByText(/근거 2건/)).toBeTruthy();
+    expect(within(first).getByText(/판단 근거 1 · 보조 1/)).toBeTruthy();
+    expect(within(first).getByText(/판단 당시 근거와 같습니다/)).toBeTruthy();
+
+    // The second answer was given before the basis moved, and that is said plainly rather than implied.
+    const second = history.querySelector('[data-submission-version="2"]') as HTMLElement;
+    expect(within(second).getByText(/판단 뒤 근거가 달라졌습니다/)).toBeTruthy();
+  });
+
+  it("says a round stood on nothing rather than leaving the line out", async () => {
+    renderDrawer(adjusted);
+    const history = within(await screen.findByRole("dialog", { name: "판단 상세" })).getByLabelText("회차 기록");
+    expect(within(history).getByText(/근거 없음/)).toBeTruthy();
+  });
+});
+
 describe("judgement card", () => {
   afterEach(() => {
     cleanup();

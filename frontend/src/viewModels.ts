@@ -329,6 +329,9 @@ export type ActionRound = {
   content_hash: string;
   snapshot: Record<string, unknown>;
   diff: Record<string, { before: unknown; after: unknown }> | null;
+  /** What this round currently stands on, in the canonical manifest form the hash is computed from. */
+  evidence?: EvidenceManifestEntry[];
+  evidence_hash?: string | null;
   decisions: Array<{
     review_decision_id: string;
     actor_member_id: string;
@@ -336,6 +339,8 @@ export type ActionRound = {
     reason: string | null;
     decided_at: string;
     suggested_changes?: Record<string, string>;
+    /** The basis the answer was actually given on, frozen when it was given. */
+    evidence_hash?: string | null;
   }>;
 };
 

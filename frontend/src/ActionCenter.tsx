@@ -103,6 +103,23 @@ export function ActionItemCard({
   );
 }
 
+/**
+ * What a round stands on, and whether the answer given on it was given on the same thing. The manifest carries
+ * identities rather than names, so this counts and compares instead of pretending to list documents.
+ */
+function basisLine(round: ActionRound): string {
+  const evidence = round.evidence ?? [];
+  if (evidence.length === 0) return "근거 없음";
+  const basis = evidence.filter((entry) => entry.evidence_role === "decision_basis").length;
+  const parts = [`근거 ${evidence.length}건`, `판단 근거 ${basis} · 보조 ${evidence.length - basis}`];
+  const answered = round.decisions.filter((decision) => decision.evidence_hash);
+  if (answered.length > 0) {
+    const same = answered.every((decision) => decision.evidence_hash === round.evidence_hash);
+    parts.push(same ? "판단 당시 근거와 같습니다" : "판단 뒤 근거가 달라졌습니다");
+  }
+  return parts.join(" · ");
+}
+
 function RoundHistory({ rounds, personas }: { rounds: ActionRound[]; personas: Persona[] }) {
   if (rounds.length === 0) return null;
   return (
@@ -139,6 +156,7 @@ function RoundHistory({ rounds, personas }: { rounds: ActionRound[]; personas: P
                 ))}
               </dl>
             )}
+            <p className="round-basis t-meta">{basisLine(round)}</p>
             {round.decisions.map((decision) => (
               <p className="round-decision" key={decision.review_decision_id}>
                 <b>{nameOf(personas, decision.actor_member_id)}</b> {decisionLabel[decision.decision] ?? decision.decision}

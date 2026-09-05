@@ -161,6 +161,32 @@ describe("task history", () => {
     expect(within(rows[2]).queryByRole("button", { name: "변경 내용" })).toBeNull();
   });
 
+  it("narrows to the kind of change someone is looking for, without changing what the server sent", async () => {
+    renderDrawer();
+    const section = await screen.findByLabelText("활동·이력");
+    vi.mocked(api.getTaskHistory).mockResolvedValue({
+      ...history,
+      activity: [
+        { ...history.activity[0], event_kind: "task.material_attached", summary: "참고 자료 등록: 설계.pdf", version: 5 },
+        { ...history.activity[0], event_kind: "task.checklist.added", summary: "체크리스트 추가: 자료 모으기", version: 4 },
+        ...history.activity,
+      ],
+    } as never);
+    fireEvent.click(within(section).getByRole("button", { name: "이력 보기" }));
+    expect(await within(section).findAllByRole("listitem")).toHaveLength(5);
+
+    fireEvent.click(within(section).getByRole("button", { name: "체크리스트" }));
+    const steps = within(section).getAllByRole("listitem");
+    expect(steps).toHaveLength(1);
+    expect(steps[0].textContent).toContain("체크리스트 추가");
+
+    fireEvent.click(within(section).getByRole("button", { name: "내용·상태" }));
+    expect(within(section).getAllByRole("listitem")).toHaveLength(3);
+
+    fireEvent.click(within(section).getByRole("button", { name: "전체" }));
+    expect(within(section).getAllByRole("listitem")).toHaveLength(5);
+  });
+
   it("says so instead of showing an empty list when the history cannot be read", async () => {
     renderDrawer(false);
     vi.mocked(api.getTaskHistory).mockRejectedValue(new Error("이 업무를 볼 수 없습니다"));
