@@ -64,6 +64,14 @@ def _dataset(tmp_path):
     _write(target, "memberships", [{"member_key": "ds-han", "unit_key": "ds-team", "kind": "primary", "valid_from": "", "valid_until": ""}])
     _write(target, "appointments", [{"member_key": "ds-han", "unit_key": "ds-team", "position_key": "ds-lead", "kind": "primary", "valid_from": "", "valid_until": ""}])
     _write(target, "job_assignments", [{"member_key": "ds-han", "job_key": "ds-growth", "kind": "primary"}])
+    _write(target, "projects", [
+        {"key": "ds-hanbit", "name": "한빛 통합 마케팅", "unit_key": "ds-div", "state": "active", "starts_on": "2026-09-01"},
+    ])
+    # 담당 기간은 원문이 말하지 않으면 비워 둔다.
+    _write(target, "project_assignments", [
+        {"member_key": "ds-han", "project_key": "ds-hanbit", "kind": "lead"},
+        {"member_key": "ds-noh", "project_key": "ds-hanbit", "kind": "member"},
+    ])
     _write(target, "logins", [{"member_key": "ds-han", "email": "Han@Example.Test"}])
     return target
 
@@ -111,6 +119,8 @@ def test_what_a_person_may_do_comes_from_their_role_and_not_from_having_a_login(
         held = {
             (grant.role_id, grant.scope_ref, grant.origin_rule_id)
             for grant in session.scalars(select(AccessGrantRecord).where(AccessGrantRecord.member_id == "ds-han"))
+            # 프로젝트 배정이 만든 것은 조직 축이 아니다. 여기서 보는 것은 조직이 준 것뿐이다.
+            if grant.scope_kind != "project"
         }
         # 보직이 주는 역할과 그 사람 자신의 역할이 함께 남는다. 하나가 다른 하나를 덮어쓰지 않는다.
         assert held == {
@@ -206,6 +216,30 @@ def test_nobody_is_asked_to_decide_something_they_could_never_open(tmp_path) -> 
         json={"assignee_id": "ds-noh", "title": "답할 수 없는 사람에게"},
     )
     assert refused.status_code == 422, refused.text
+
+
+def test_a_dataset_can_carry_projects_and_who_is_on_them(tmp_path) -> None:
+    """프로젝트와 그 사람들도 dataset이 나른다. 권한은 여기서도 제품의 표준 규칙이 만든다."""
+    database_url = _database(tmp_path)
+    first = import_into(database_url, read_tables(_dataset(tmp_path)), password=PASSWORD)
+    assert first.created["projects"] == 1 and first.created["project_assignments"] == 2
+
+    from ax_workspace.platform.persistence import ProjectAssignmentRecord, ProjectRecord
+
+    with make_session_factory(database_url)() as session:
+        project = session.scalar(select(ProjectRecord).where(ProjectRecord.external_key == "ds-hanbit"))
+        assert project is not None and project.organization_unit_id == "ds-div"
+        joined = session.scalars(select(ProjectAssignmentRecord).where(ProjectAssignmentRecord.project_id == project.id)).all()
+        assert {row.member_id: row.assignment_kind for row in joined} == {"ds-han": "lead", "ds-noh": "member"}
+        # 원문이 담당 기간을 말하지 않았으므로 비어 있다.
+        assert all(row.valid_from is None and row.valid_until is None for row in joined)
+        grants = session.scalars(
+            select(AccessGrantRecord).where(AccessGrantRecord.member_id == "ds-noh", AccessGrantRecord.scope_kind == "project")
+        ).all()
+        assert [grant.scope_ref for grant in grants] == [str(project.id)]
+
+    second = import_into(database_url, read_tables(tmp_path / "dataset"), password=PASSWORD)
+    assert "projects" not in second.created and "project_assignments" not in second.created
 
 
 def test_an_imported_person_can_sign_in_and_see_their_own_work(tmp_path) -> None:

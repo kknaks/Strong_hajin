@@ -101,6 +101,18 @@ SCAX_DATASET_PASSWORD=... make dataset-import TARGET=~/scax-datasets/actual
 
 `employment_type`은 원문이 사람별로 말할 때만 채운다. 조직도가 팀 단위 인원수로만 말하는 경우에는 비워 두고 추정하지 않는다.
 
+`projects`·`project_assignments`는 부서를 가로질러 묶이는 일과 그 사람들을 나른다. 소유 조직은 책임 소재일 뿐 참여 자격을 제한하지 않으며, 담당 기간은 없을 수 있다. 배정은 조직 보직과 같은 STANDARD_GRANT_RULE 경로로 그 프로젝트 범위의 grant를 만든다.
+
+## 예제 업무 (scenario)
+
+조직은 정본이고 그 위의 업무는 아니다. `make scenario`가 이미 들어와 있는 조직 위에 같은 성격의 예제 업무를 만든다 — 날짜 단위 실무, 고객사 프로젝트의 계층과 기한, 고객사와의 월간 미팅. 모든 행이 제품의 정식 command를 그 사람으로서 지나가므로 actor·회차·활동 이력·권한이 전부 진짜이고, 두 번 돌려도 한 번 돌린 것과 같다.
+
+```sh
+make reset-catalog
+SCAX_DATASET_PASSWORD=... make dataset-import TARGET=~/scax-datasets/thesc
+make scenario
+```
+
 The local stdio MCP server is a development-only delegated binding. It resolves the active Organization & Access principal for every canonical operation, but a long-lived external MCP process must reconnect after its developer persona's employment or grants change; the conversation worker also revalidates that owner and typed context immediately before execution.
 
 `make verify` deliberately excludes PostgreSQL integration tests; its success is not PostgreSQL coverage. For an explicit, reproducible disposable-PostgreSQL proof, start the documented container and run:

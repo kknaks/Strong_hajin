@@ -119,6 +119,29 @@ def test_work_can_join_a_project_later_and_its_parts_come_along(client: TestClie
     assert alone.status_code == 422, alone.text
 
 
+def test_a_project_member_sees_the_parts_they_could_already_open(client: TestClient) -> None:
+    """추적은 부분을 보는 일이다. 이미 따로 열 수 있는 하위 업무를 목록에서만 감추면 추적이 되지 않는다.
+
+    감추던 것은 요청자·배정자 관계를 위한 규칙이었다. 같은 프로젝트의 하위 업무는 그 자체로 읽히므로 여기서
+    빼면 접근만 남고 쓸모가 사라진다. 읽을 수 없는 부분은 여전히 이름도 개수도 나오지 않는다.
+    """
+    project = _project(client)
+    parent = client.post(
+        "/api/tasks", headers=MINA, json={"title": "한빛 9월 통합 마케팅", "project_id": project["project_id"]}
+    ).json()
+    client.post("/api/tasks", headers=MINA, json={"title": "홈페이지 디자인 기획", "parent_task_id": parent["task_id"]})
+    client.post(f"/api/projects/{project['project_id']}/members", headers=JIHO, json={"member_id": "hyeon"})
+
+    seen = client.get(f"/api/tasks/{parent['task_id']}", headers=HYEON)
+    assert seen.status_code == 200, seen.text
+    body = seen.json()
+    assert body["access"] == "read_only"
+    assert [child["title"] for child in body["children"]] == ["홈페이지 디자인 기획"]
+    assert body["child_progress"] == {"done": 0, "total": 1}
+    # 안을 열어 준 것은 아니다: 그 사람의 작업 공간인 체크리스트는 여전히 오지 않는다.
+    assert "checklist" not in body
+
+
 def test_the_screen_is_told_what_it_may_do_rather_than_guessing(client: TestClient) -> None:
     """화면이 권한을 추측해 버튼을 그리면 눌러야 아는 거절이 된다. 서버가 먼저 말한다."""
     project = _project(client)

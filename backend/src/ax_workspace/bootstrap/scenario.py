@@ -50,7 +50,10 @@ class OwnWork:
 
 @dataclass(frozen=True, slots=True)
 class ProjectWork:
-    """대분류 아래 세부 항목이 붙는, 기한 있는 진행형 업무."""
+    """대분류 아래 세부 항목이 붙는, 기한 있는 진행형 업무.
+
+    `project`는 dataset이 만든 프로젝트의 외부 key다. 비어 있으면 프로젝트 없는 일이 되며, 그것이 더 흔하다.
+    """
 
     owner: str
     title: str
@@ -58,6 +61,7 @@ class ProjectWork:
     starts_in: int
     days: int
     children: tuple[tuple[str, int, int], ...]
+    project: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +148,15 @@ def build(application: Any, plan: "ScenarioPlan", *, today: date | None = None) 
         principal = acting(item.owner)
         if principal is None:
             continue
+        project_id = None
+        if item.project:
+            found = [row for row in application.list_projects(principal) if row.get("external_key") == item.project]
+            if not found:
+                result.skipped.append(f"업무 '{item.title}' · 프로젝트({item.project})를 찾을 수 없습니다")
+            else:
+                from uuid import UUID as _UUID
+
+                project_id = _UUID(str(found[0]["project_id"]))
         parent = existing(principal, item.title)
         if parent is None:
             parent = application.create_self_task(
@@ -152,6 +165,7 @@ def build(application: Any, plan: "ScenarioPlan", *, today: date | None = None) 
                 description=item.description,
                 start_date=day + timedelta(days=item.starts_in),
                 due_date=day + timedelta(days=item.starts_in + item.days),
+                project_id=project_id,
             )
             result.track("tasks", made=True)
         else:

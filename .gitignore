@@ -15,6 +15,7 @@ frontend/test-results/
 .playwright-mcp/
 
 # 전달받은 자료와 거기서 만든 dataset·목록은 저장소가 소유하지 않는다.
-datasets/
+# 경로를 저장소 뿌리에 고정한다 — 고정하지 않으면 `modules/datasets/` 같은 소스 디렉터리까지 삼킨다.
+/datasets/
 *-inventory.json
 *.dataset/

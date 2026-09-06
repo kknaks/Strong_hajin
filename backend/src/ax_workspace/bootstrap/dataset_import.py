@@ -19,6 +19,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ax_workspace.bootstrap.seed import install_role_catalog
 from ax_workspace.modules.organization_access.catalog import ROLE_TEMPLATES_BY_KEY, RoleTemplate
 from ax_workspace.modules.organization_access.credentials import hash_password, normalize_email
 from ax_workspace.platform.persistence import (
@@ -35,6 +36,8 @@ from ax_workspace.platform.persistence import (
     OrganizationUnitRecord,
     OrganizationUnitTypeRecord,
     PositionDefinitionRecord,
+    ProjectAssignmentRecord,
+    ProjectRecord,
     RoleRecord,
     StandardGrantRuleRecord,
 )
@@ -69,6 +72,11 @@ def _text(row: dict[str, str], column: str) -> str:
     return (row.get(column) or "").strip()
 
 
+def _day(value: str) -> date | None:
+    """사람이 적은 날짜. 빈 칸은 오늘이 되지 않고 그대로 비어 있다."""
+    return date.fromisoformat(value) if value else None
+
+
 def _moment(value: str) -> datetime | None:
     """A date someone wrote, at the start of that day. An empty cell stays empty rather than becoming today."""
     if not value:
@@ -94,6 +102,8 @@ def import_dataset(session: Session, rows: dict[str, list[dict[str, str]]], *, p
     session.flush()
     _import_links(session, rows, implied, result)
     _import_appointments(session, rows, roles, result)
+    session.flush()
+    _import_projects(session, rows, result)
     session.flush()
     _import_logins(session, rows, roles, password, result)
     session.flush()
@@ -175,8 +185,6 @@ def _install_roles(session: Session, rows: dict[str, list[dict[str, str]]], resu
     It is the same installation the seed does, so an import never leaves a role that exists but grants nothing. A
     role the organization has made its own is left exactly as it is: an import proposes, it does not rewrite.
     """
-    from ax_workspace.bootstrap.seed import install_role_catalog
-
     named = {_text(row, "role_key") for row in rows.get("members", [])}
     named |= {_text(row, "role_key") for row in rows.get("positions", [])}
     templates: dict[str, RoleTemplate] = {}
@@ -393,6 +401,72 @@ def _root_of(session: Session, unit_key: str) -> str:
             return current
         current = unit.parent_id
     return unit_key
+
+
+def _import_projects(session: Session, rows: dict[str, list[dict[str, str]]], result: ImportResult) -> None:
+    """프로젝트와 그 사람들. 배정은 조직 단위를 묻지 않고, 권한은 제품의 표준 규칙이 만든다."""
+    if not rows.get("projects") and not rows.get("project_assignments"):
+        return
+    from ax_workspace.platform.projects import PROJECT_ROLE_KEY, grant_project_access
+
+    template = ROLE_TEMPLATES_BY_KEY[PROJECT_ROLE_KEY]
+    if session.get(RoleRecord, template.role_id) is None:
+        install_role_catalog(session, [template])
+        session.flush()
+
+    known: dict[str, ProjectRecord] = {}
+    for row in rows.get("projects", []):
+        key = _text(row, "key")
+        unit = _text(row, "unit_key")
+        project = session.scalar(select(ProjectRecord).where(ProjectRecord.external_key == key))
+        if project is None:
+            project = ProjectRecord(
+                name=_text(row, "name"),
+                description=_text(row, "description") or None,
+                organization_unit_id=unit,
+                state=_text(row, "state") or "active",
+                starts_on=_day(_text(row, "starts_on")),
+                ends_on=_day(_text(row, "ends_on")),
+                external_key=key,
+                created_by_actor_id="dataset",
+            )
+            session.add(project)
+            session.flush()
+            result.track("projects", made=True)
+        else:
+            project.name, project.organization_unit_id = _text(row, "name"), unit
+            result.track("projects", made=False)
+        known[key] = project
+
+    for row in rows.get("project_assignments", []):
+        member_key, project_key = _text(row, "member_key"), _text(row, "project_key")
+        project = known.get(project_key) or session.scalar(
+            select(ProjectRecord).where(ProjectRecord.external_key == project_key)
+        )
+        if project is None:
+            result.skipped.append(f"project_assignments:{member_key} · 없는 프로젝트({project_key})")
+            continue
+        exists = session.scalar(
+            select(ProjectAssignmentRecord).where(
+                ProjectAssignmentRecord.project_id == project.id,
+                ProjectAssignmentRecord.member_id == member_key,
+            )
+        )
+        if exists is not None:
+            result.track("project_assignments", made=False)
+            continue
+        session.add(
+            ProjectAssignmentRecord(
+                project_id=project.id,
+                member_id=member_key,
+                assignment_kind=_text(row, "kind") or "member",
+                valid_from=_moment(_text(row, "valid_from")),
+                valid_until=_moment(_text(row, "valid_until")),
+                assigned_by_member_id="dataset",
+            )
+        )
+        grant_project_access(session, project_id=project.id, member_id=member_key, granted_by="dataset")
+        result.track("project_assignments", made=True)
 
 
 def _import_logins(

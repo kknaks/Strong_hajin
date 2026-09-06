@@ -357,10 +357,20 @@ class TaskApplication:
             related = self._manages(principal, task.parent_task_id)
         if not related:
             raise TaskNotFound("task was not found")
+        # 안을 열어 주는 것이 아니라, 이미 따로 열 수 있는 것을 목록에서만 감추지 않는 것이다. 같은 프로젝트의
+        # 하위 업무는 그 자체로 읽히므로, 여기서 숨기면 추적이 되지 않으면서 접근만 남는다. 읽을 수 없는 부분은
+        # 여전히 이름도 개수도 나오지 않는다.
+        children = [] if getattr(task, "parent_task_id", None) is not None else self._readable_children(principal, task)
         return {
             **self._view(task),
             "origin": self._origin_projection(principal, [task]).get(task.id),
             "assignee": self._assignee_projection([task]).get(task.id),
+            "parent": self._parent_summary(principal, task),
+            "children": children,
+            "child_progress": {
+                "done": sum(1 for row in children if row["state"] in {TaskState.DONE, TaskState.CANCELLED}),
+                "total": len(children),
+            },
             # The person who asked for the work may follow where their request got to, without holding the work.
             "delivery": self.delivery_view(principal, task),
         }
