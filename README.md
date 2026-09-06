@@ -107,10 +107,26 @@ SCAX_DATASET_PASSWORD=... make dataset-import TARGET=~/scax-datasets/actual
 
 조직은 정본이고 그 위의 업무는 아니다. `make scenario`가 이미 들어와 있는 조직 위에 같은 성격의 예제 업무를 만든다 — 날짜 단위 실무, 고객사 프로젝트의 계층과 기한, 고객사와의 월간 미팅. 모든 행이 제품의 정식 command를 그 사람으로서 지나가므로 actor·회차·활동 이력·권한이 전부 진짜이고, 두 번 돌려도 한 번 돌린 것과 같다.
 
+계획은 dataset과 같은 이유로 저장소 밖에 둔다. 계획 파일은 실제 구성원의 key와 고객사 이름을 가리키므로, 저장소는 계약과 loader만 갖고 계획 자체는 갖지 않는다. 저장소 안을 가리키면 명령이 거절한다.
+
 ```sh
 make reset-catalog
 SCAX_DATASET_PASSWORD=... make dataset-import TARGET=~/scax-datasets/thesc
-make scenario
+make scenario PLAN=~/scax-datasets/thesc/scenario.yaml
+```
+
+계획 파일은 `ScenarioPlan`의 절 이름을 그대로 쓰는 YAML이다. 맨 위 `people`이 사람 key에 이름을 붙이고, 아래 절들은 그 이름만 쓴다.
+
+```yaml
+people:
+  hr_lead: m-abc
+own_work:
+  - owner: hr_lead
+    title: 9월 채용 공고 3건 게시
+    description: 직무기술서 확인 후 게시한다.
+    starts_in: 1
+    days: 4
+    checklist: [공고 초안, 게시]
 ```
 
 The local stdio MCP server is a development-only delegated binding. It resolves the active Organization & Access principal for every canonical operation, but a long-lived external MCP process must reconnect after its developer persona's employment or grants change; the conversation worker also revalidates that owner and typed context immediately before execution.

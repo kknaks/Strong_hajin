@@ -59,7 +59,7 @@ reindex-search:
 
 # 들어와 있는 조직 위에 예제 업무를 만든다. 모두 제품의 정식 command를 그 사람으로서 지나간다.
 scenario:
-	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.scenario $(or $(PLAN),thesc)
+	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.scenario "$(PLAN)"
 
 dataset-inspect:
 	@test -n "$(SOURCE)" || (echo "SOURCE=<전달받은 폴더 경로> 를 지정하세요" >&2; exit 2)
