@@ -984,6 +984,17 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
+        @app.get("/api/graph/overview")
+        def graph_overview(
+            view: Literal["member", "team"] = "member",
+            limit: int = 40,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.graph_overview(principal, view=view, limit=limit)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
         @app.get("/api/graph/search")
         def graph_search(q: str, limit: int = 20, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
             try:

@@ -178,3 +178,89 @@ def test_a_turn_keeps_a_record_of_where_it_actually_walked(tmp_path, monkeypatch
     # Nothing is written for a walk that was not taken.
     other = client.post("/api/conversations", headers=JIHO, json={"title": "다른 대화"}).json()
     assert client.get(f"/api/conversations/{other['conversation_id']}", headers=JIHO).json()["graph_receipts"] == []
+
+
+def test_the_first_screen_is_already_a_graph_of_what_this_person_is_connected_to(tmp_path) -> None:
+    """빈 검색 상자가 아니라, 지금 연결되어 있는 것들이 먼저 보인다."""
+    client, _ = _stack(tmp_path)
+    title = "첫 화면에 보일 업무"
+    _journey(client, title)
+    meeting = client.post(
+        "/api/meetings",
+        headers=JIHO,
+        json={
+            "organization_id": "scax",
+            "title": "그래프에 보일 회의",
+            "starts_at": "2026-09-10T01:00:00Z",
+            "ends_at": "2026-09-10T02:00:00Z",
+            "visibility": "private",
+            "attendee_ids": ["mina"],
+        },
+    ).json()
+
+    overview = client.get("/api/graph/overview", headers=JIHO).json()
+    kinds = {node["kind"] for node in overview["nodes"]}
+    assert {"person", "team", "task", "work_request", "meeting"} <= kinds
+    assert overview["center"] == {"kind": "person", "id": "jiho", "title": "지호 (팀장)", "state": None}
+    assert meeting["meeting_id"] in {node["id"] for node in overview["nodes"] if node["kind"] == "meeting"}
+    # 자기가 속한 팀은 원장에 있는 소속에서 나온다.
+    assert "product" in {node["id"] for node in overview["nodes"] if node["kind"] == "team"}
+
+    # 모든 edge는 어느 쪽에서 읽느냐만 다르고, 어느 원장이 말하는 사실인지 함께 온다.
+    holds = next(edge for edge in overview["edges"] if edge["kind"] == "holds")
+    assert (holds["label"], holds["inverse_label"], holds["provenance"]) == ("담당함", "담당자", "task_assignment")
+    assert all(edge.get("provenance") for edge in overview["edges"])
+    assert overview["available_views"] == ["member", "team"]
+
+
+def test_grouping_by_team_reads_the_same_answer_one_level_up(tmp_path) -> None:
+    client, _ = _stack(tmp_path)
+    _journey(client, "팀으로 묶어 볼 업무")
+    grouped = client.get("/api/graph/overview", headers=JIHO, params={"view": "team"}).json()
+
+    assert grouped["view"] == "team"
+    # 사람은 자기 팀으로 접힌다. 팀 node는 조직 원장의 canonical unit이다.
+    assert not any(node["kind"] == "person" for node in grouped["nodes"])
+    assert "team:product" in {f"{node['kind']}:{node['id']}" for node in grouped["nodes"]}
+    # 같은 팀 안에서만 이어지는 연결은 그 팀의 내부 사정이므로 감춘다.
+    assert all(edge["from"] != edge["to"] for edge in grouped["edges"])
+    # 같은 방향·종류의 연결은 개수로 접힌다.
+    assert all(edge.get("count", 1) >= 1 for edge in grouped["edges"])
+
+
+def test_a_meeting_says_who_was_there_and_what_came_out_of_it(tmp_path) -> None:
+    client, _ = _stack(tmp_path)
+    meeting = client.post(
+        "/api/meetings",
+        headers=MINA,
+        json={
+            "organization_id": "scax",
+            "title": "연결을 볼 회의",
+            "starts_at": "2026-09-10T01:00:00Z",
+            "ends_at": "2026-09-10T02:00:00Z",
+            "visibility": "private",
+            "attendee_ids": ["jiho"],
+        },
+    ).json()
+
+    neighbors = client.get("/api/graph/neighbors", headers=MINA, params={"node": f"meeting:{meeting['meeting_id']}"}).json()
+    assert neighbors["center"]["kind"] == "meeting"
+    kinds = {(edge["kind"], edge["from"], edge["to"]) for edge in neighbors["edges"]}
+    assert ("owns_meeting", "person:mina", f"meeting:{meeting['meeting_id']}") in kinds
+    assert ("attended", "person:jiho", f"meeting:{meeting['meeting_id']}") in kinds
+
+    # 볼 수 없는 회의는 이웃 조회에서도 존재를 말하지 않는다.
+    assert client.get("/api/graph/neighbors", headers=SORA, params={"node": f"meeting:{meeting['meeting_id']}"}).status_code in {403, 404}
+
+
+def test_a_person_node_shows_only_the_connections_the_asker_may_already_read(tmp_path) -> None:
+    client, _ = _stack(tmp_path)
+    title = "민아만 아는 업무"
+    client.post("/api/tasks", headers=MINA, json={"title": title})
+
+    mine = client.get("/api/graph/neighbors", headers=MINA, params={"node": "person:mina"}).json()
+    assert title in {node["title"] for node in mine["nodes"]}
+    assert "team:product" in {f"{node['kind']}:{node['id']}" for node in mine["nodes"]}
+
+    theirs = client.get("/api/graph/neighbors", headers=JIHO, params={"node": "person:mina"}).json()
+    assert title not in str(theirs)

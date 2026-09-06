@@ -143,6 +143,49 @@ class _SessionGraphSource:
         name = SqlAlchemyTaskRepository(self._session).member_display_name(member_id)
         return {"member_id": member_id, "display_name": name or member_id}
 
+    def readable_meetings(self, principal: Principal, *, query: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        try:
+            rows = self._application._meetings(self._session).list(principal)
+        except Exception:
+            return []
+        meetings = [row for row in rows if row.get("kind") == "meeting"]
+        return [row for row in meetings if not query or query.lower() in str(row.get("title") or "").lower()][:limit]
+
+    def readable_meeting(self, principal: Principal, meeting_id: UUID) -> dict[str, Any] | None:
+        try:
+            return self._application._meetings(self._session).get(principal, meeting_id)
+        except Exception:
+            return None
+
+    def meeting_followup_tasks(self, principal: Principal, meeting_id: UUID) -> list[dict[str, Any]]:
+        """Work that came out of this meeting, read as work — a promotion nobody may open is simply not there."""
+        detail = self.readable_meeting(principal, meeting_id)
+        if detail is None:
+            return []
+        tasks: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for summary in detail.get("summaries") or []:
+            for statement in summary.get("statements") or []:
+                task_id = statement.get("promoted_task_id")
+                if not task_id or str(task_id) in seen:
+                    continue
+                seen.add(str(task_id))
+                task = self.readable_task(principal, UUID(str(task_id)))
+                if task is not None:
+                    tasks.append(task)
+        return tasks
+
+    def member_units(self, member_id: str) -> list[dict[str, Any]]:
+        repository = SqlAlchemyOrganizationRepository(self._session)
+        profile = repository.profile_for(member_id)
+        return list(profile["organizations"]) if profile else []
+
+    def unit_members(self, unit_id: str) -> list[dict[str, Any]]:
+        return [
+            {"member_id": str(member["member_id"]), "display_name": str(member["display_name"])}
+            for member in SqlAlchemyOrganizationRepository(self._session).unit_members(unit_id, include_descendants=False)
+        ]
+
 
 class _SessionTaskReferences:
     """Reads a referenced Task through the Work module itself, so a pointer never becomes permission."""
@@ -803,6 +846,10 @@ class WorkflowApplication:
 
     def _graph(self, session: Any) -> GraphApplication:
         return GraphApplication(_SessionGraphSource(self, session))
+
+    def graph_overview(self, principal: Principal, *, view: str = "member", limit: int = 40) -> dict[str, Any]:
+        with self._session_factory() as session:
+            return GraphApplication(_SessionGraphSource(self, session)).overview(principal, view=view, limit=limit)
 
     def graph_search(self, principal: Principal, query: str, limit: int = 20, *, execution_id: UUID | None = None) -> dict[str, Any]:
         """Find work to walk from. In a delegated turn the hits become that turn's own record of what it looked at."""

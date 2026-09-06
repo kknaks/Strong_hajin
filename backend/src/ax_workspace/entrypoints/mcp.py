@@ -388,6 +388,9 @@ class McpReportsFacade:
     def get_meeting(self, meeting_id: str) -> dict[str, Any]:
         return self._application.get_meeting(self.principal, UUID(meeting_id))
 
+    def graph_overview(self, view: str = "member", limit: int = 20) -> dict[str, Any]:
+        return self._application.graph_overview(self.principal, view=view, limit=limit)
+
     def graph_search(self, query: str, limit: int = 20) -> dict[str, Any]:
         """Inside a delegated turn, what this finds becomes that turn's own record of where it looked."""
         causation_id = os.getenv("AX_MCP_CAUSATION_ID")
@@ -760,6 +763,17 @@ def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
         )
         def task_history(task_id: str) -> dict[str, Any]:
             return facade.task_history(task_id)
+
+        @server.tool(
+            description=(
+                "The delegated principal's own connections as a bounded graph: what they hold, asked for, were asked "
+                "for, and sat in. Read-only, and never wider than what they may already read."
+            ),
+            annotations=_READ_ONLY_TOOL,
+            structured_output=True,
+        )
+        def graph_overview(view: str = "member", limit: int = 20) -> dict[str, Any]:
+            return facade.graph_overview(view, limit)
 
         @server.tool(
             description=(
