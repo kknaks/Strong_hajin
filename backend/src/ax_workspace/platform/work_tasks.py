@@ -692,6 +692,19 @@ class SqlAlchemyTaskRepository:
             statement = statement.where(TaskRecord.state.not_in([TaskState.DONE, TaskState.CANCELLED]))
         return list(self.session.scalars(statement.order_by(TaskRecord.created_at)))
 
+    def tasks_held_by_members(self, member_ids: frozenset[str], *, include_closed: bool = False) -> list[TaskRecord]:
+        """Every task those people currently hold. Used only for an organization-wide read, never to act on them."""
+        if not member_ids:
+            return []
+        statement = (
+            select(TaskRecord)
+            .join(TaskAssignmentRecord, TaskAssignmentRecord.task_id == TaskRecord.id)
+            .where(TaskAssignmentRecord.assignee_id.in_(member_ids), TaskAssignmentRecord.status == "active")
+        )
+        if not include_closed:
+            statement = statement.where(TaskRecord.state.not_in([TaskState.DONE, TaskState.CANCELLED]))
+        return list(self.session.scalars(statement.order_by(TaskRecord.created_at)))
+
     @staticmethod
     def _held_by(owner_id: str):
         return (

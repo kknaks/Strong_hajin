@@ -7,6 +7,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from ax_workspace.modules.organization_access.domain import (
+    WORK_READ_ALL,
     ACTION_READ,
     Principal,
     TASK_ASSIGN,
@@ -57,6 +58,7 @@ class TaskRepository(Protocol):
     def task(self, task_id: UUID, owner_id: str, *, lock: bool = False) -> Any: ...
     def task_by_id(self, task_id: UUID) -> Any | None: ...
     def tasks_for(self, owner_id: str, *, include_closed: bool = False) -> list[Any]: ...
+    def tasks_held_by_members(self, member_ids: frozenset[str], *, include_closed: bool = False) -> list[Any]: ...
     def touch(self, task: Any) -> None: ...
     def checklist_for(self, task_id: UUID, *, include_archived: bool = False) -> list[Any]: ...
     def checklist_progress_for(self, task_ids: list[UUID]) -> dict[UUID, tuple[int, int]]: ...
@@ -100,6 +102,12 @@ class WorkRequestSourcePort(Protocol):
     def request(self, request_id: UUID, *, lock: bool = False) -> Any: ...
 
 
+class MemberScopePort(Protocol):
+    """Which people sit inside a set of organization units. Nothing else about them."""
+
+    def member_ids_in(self, units: frozenset[str]) -> frozenset[str]: ...
+
+
 class TaskApplication:
     def __init__(
         self,
@@ -107,8 +115,11 @@ class TaskApplication:
         requests: WorkRequestSourcePort | None = None,
         actions: ActionSourcePort | None = None,
         attachments: Any = None,
+        member_scope: MemberScopePort | None = None,
     ) -> None:
         self.repository = repository
+        # Resolving an organization-wide read to the people it covers; never used to widen anything else.
+        self._member_scope = member_scope
         # Reading a Task's origin may need the resource behind it, always through that module's own authorized lookup.
         self._requests = requests
         self._actions = actions
@@ -225,10 +236,28 @@ class TaskApplication:
         )
         return self._view(task)
 
-    def list_for(self, principal: Principal, *, include_closed: bool = False) -> list[dict[str, Any]]:
-        """The list carries the checklist count, not its items: enough for a progress cue, cheap enough for a table."""
+    def list_for(
+        self,
+        principal: Principal,
+        *,
+        include_closed: bool = False,
+        include_organization: bool = False,
+    ) -> list[dict[str, Any]]:
+        """The list carries the checklist count, not its items: enough for a progress cue, cheap enough for a table.
+
+        `내 업무` is what this person holds and stays that way. The organization's work is a different question, asked
+        by a different surface, and answered only for someone whose read authority covers it.
+        """
         self._require(principal, TASK_READ)
         tasks = self.repository.tasks_for(str(principal.id), include_closed=include_closed)
+        held = {task.id for task in tasks}
+        organization = self._organization_scope_members(principal) if include_organization else frozenset()
+        if organization:
+            tasks = tasks + [
+                task
+                for task in self.repository.tasks_held_by_members(organization, include_closed=include_closed)
+                if task.id not in held
+            ]
         progress = self.repository.checklist_progress_for([task.id for task in tasks])
         origins = self._origin_projection(principal, tasks)
         assignees = self._assignee_projection(tasks)
@@ -272,6 +301,8 @@ class TaskApplication:
         if not related and TASK_ASSIGN in principal.capabilities:
             facts = self.repository.origin_facts([task]).get(task.id, {})
             related = facts.get("assignment_kind") == "direct" and facts.get("assigned_by") == str(principal.id)
+        if not related and self._reads_the_organization(principal, task):
+            related = True
         if not related and getattr(task, "parent_task_id", None) is not None:
             # Whoever holds the whole, or put someone on it, may read its parts. Reading the parent through a
             # relationship does not reach inside it — how the holder broke the work up is their workspace, the same
@@ -286,6 +317,20 @@ class TaskApplication:
             # The person who asked for the work may follow where their request got to, without holding the work.
             "delivery": self.delivery_view(principal, task),
         }
+
+    def _organization_scope_members(self, principal: Principal) -> frozenset[str]:
+        """The people whose work this person may read because of where their read authority reaches."""
+        if self._member_scope is None or WORK_READ_ALL not in principal.capabilities:
+            return frozenset()
+        return self._member_scope.member_ids_in(principal.scope_for(WORK_READ_ALL))
+
+    def _reads_the_organization(self, principal: Principal, task: Any) -> bool:
+        """Reading the organization's work is a read. It never becomes holding the work or deciding for its holder."""
+        members = self._organization_scope_members(principal)
+        if not members:
+            return False
+        holder = self._assignee_projection([task]).get(task.id) or {}
+        return str(holder.get("member_id") or task.created_by_actor_id) in members
 
     # ---- subtasks: the work inside this work ----
 

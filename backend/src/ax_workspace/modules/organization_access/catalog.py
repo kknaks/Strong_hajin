@@ -43,6 +43,7 @@ class UnknownCapability(ValueError):
 
 CAPABILITIES: tuple[CapabilitySpec, ...] = (
     CapabilitySpec("work.read", "업무 읽기", "work"),
+    CapabilitySpec("work.read.all", "조직 전체 업무 조회", "work"),
     CapabilitySpec("task.read", "업무 상세 읽기", "work"),
     CapabilitySpec("task.self_manage", "내 업무 관리", "work"),
     CapabilitySpec("task.accept", "배정 수락·거절", "work"),
@@ -130,7 +131,7 @@ ROLE_TEMPLATES: tuple[RoleTemplate, ...] = (
         "executive",
         "대표",
         1,
-        _PEOPLE_CAPABILITIES + ("work_request.decide", "meeting.read.private"),
+        _PEOPLE_CAPABILITIES + ("work_request.decide", "meeting.read.private", "work.read.all"),
         scope_template="organization",
     ),
 )

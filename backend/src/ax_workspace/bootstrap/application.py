@@ -890,7 +890,7 @@ class WorkflowApplication:
 
     def list_tasks(self, principal: Principal, *, include_closed: bool = False) -> list[dict[str, Any]]:
         with self._session_factory() as session:
-            return self._tasks(session).list_for(principal, include_closed=include_closed)
+            return self._tasks(session).list_for(principal, include_closed=include_closed, include_organization=True)
 
     def get_task(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
         with self._session_factory() as session:
@@ -1141,6 +1141,7 @@ class WorkflowApplication:
             SqlAlchemyWorkRequestRepository(session),
             SqlAlchemyActionRepository(session),
             SqlAlchemyAttachmentRepository(session),
+            SqlAlchemyOrganizationRepository(session),
         )
 
     def _work_requests(self, session: Any) -> WorkRequestApplication:

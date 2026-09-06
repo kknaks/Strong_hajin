@@ -55,6 +55,8 @@ class Principal:
 
 
 TASK_READ = "task.read"
+#: 조직 전체 업무 조회. 읽을 수 있다는 것이지 남의 판단을 대신할 수 있다는 뜻이 아니다.
+WORK_READ_ALL = "work.read.all"
 TASK_SELF_MANAGE = "task.self_manage"
 TASK_ASSIGN = "task.assign"
 WORK_REQUEST_READ = "work_request.read"

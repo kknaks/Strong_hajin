@@ -201,6 +201,27 @@ class SqlAlchemyOrganizationRepository:
             return None
         return LocalCredential(member_id=record.member_id, email=record.email, password_hash=record.password_hash)
 
+    def member_ids_in(self, units: frozenset[str]) -> frozenset[str]:
+        """Active members whose current membership sits in one of these units."""
+        if not units:
+            return frozenset()
+        now = datetime.now(UTC)
+        active = set(
+            self._session.scalars(
+                select(EmploymentPeriodRecord.member_id).where(
+                    EmploymentPeriodRecord.state == "active", EmploymentPeriodRecord.ended_at.is_(None)
+                )
+            )
+        )
+        rows = self._session.scalars(
+            select(MembershipRecord.member_id).where(
+                MembershipRecord.organization_id.in_(units),
+                MembershipRecord.valid_from <= now,
+                or_(MembershipRecord.valid_until.is_(None), MembershipRecord.valid_until > now),
+            )
+        )
+        return frozenset(member_id for member_id in rows if member_id in active)
+
     def member_directory(self) -> list[dict[str, str]]:
         """Every active member's name, so the product can say who did what. It carries no capability."""
         return [

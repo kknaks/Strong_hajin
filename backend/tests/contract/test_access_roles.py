@@ -160,3 +160,40 @@ def test_a_leads_authority_stops_where_it_was_granted(tmp_path) -> None:
 
     assert [item["id"] for item in client.get("/api/task-assignment-candidates", headers=jiho).json()] == ["mina", "minseok"]
     assert client.post("/api/tasks/assign", headers=jiho, json={"title": "다른 팀 일", "assignee_id": "minseok"}).status_code == 201
+
+
+def test_the_executive_reads_the_organizations_work_but_never_decides_for_its_holder(tmp_path) -> None:
+    """전체 조회는 읽기다. 남의 판단을 대신하는 권한이 아니다.
+
+    대표 may open the work anyone in the company is holding, and see it listed. That is where it stops: the work is
+    still its holder's, the judgement waiting on someone else is still theirs, and a personal conversation is not
+    work at all.
+    """
+    from fastapi.testclient import TestClient
+
+    from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
+    from ax_workspace.entrypoints.http import create_app
+
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+    reset_database(database_url)
+    client = TestClient(create_app(Settings(RuntimeProfile.TEST, database_url)))
+    mina, yuna, jiho = ({"X-Demo-Persona": name} for name in ("mina", "yuna", "jiho"))
+
+    task = client.post("/api/tasks", headers=mina, json={"title": "민아가 들고 있는 일"}).json()
+    conversation = client.post("/api/conversations", headers=mina, json={"title": "민아의 개인 대화"}).json()
+
+    detail = client.get(f"/api/tasks/{task['task_id']}", headers=yuna)
+    assert detail.status_code == 200 and detail.json()["access"] == "read_only"
+    assert task["task_id"] in {row["task_id"] for row in client.get("/api/tasks", headers=yuna).json()}
+    # 팀장 leads 제품팀 but has no organization-wide read: he still only sees what a relationship earns him.
+    assert client.get(f"/api/tasks/{task['task_id']}", headers=jiho).status_code == 404
+
+    # Reading is not holding: the work cannot be driven or closed by the reader.
+    moved = client.post(
+        f"/api/tasks/{task['task_id']}/start", headers=yuna, json={"expected_version": task["version"]}
+    )
+    assert moved.status_code in {403, 404}
+    assert client.get("/api/my-work", headers=yuna).json() == []
+    # A personal conversation is not the organization's work, and is not listed or readable at all.
+    assert client.get(f"/api/conversations/{conversation['conversation_id']}", headers=yuna).status_code in {403, 404, 422}
+    assert client.get("/api/conversations", headers=yuna).json() == []
