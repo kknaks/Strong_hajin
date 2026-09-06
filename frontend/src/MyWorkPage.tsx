@@ -36,6 +36,8 @@ type MyWorkPageProps = {
   personas: Persona[];
   canManageOwnTasks: boolean;
   canAssignTasks?: boolean;
+  /** Whether this person may read the work other people in the organization are holding. */
+  canReadOrganizationWork?: boolean;
   canCreateWorkRequests: boolean;
   canDecideWorkRequests: boolean;
   canReadActions: boolean;
@@ -68,6 +70,7 @@ export function MyWorkPage({
   personas,
   canManageOwnTasks,
   canAssignTasks = false,
+  canReadOrganizationWork = false,
   canCreateWorkRequests,
   canDecideWorkRequests,
   canReadActions,
@@ -92,7 +95,8 @@ export function MyWorkPage({
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState<TaskFilter>("active");
   const [view, setView] = useState<ViewMode>("list");
-  const [tab, setTab] = useState<"mine" | "sent">("mine");
+  const [tab, setTab] = useState<"mine" | "sent" | "organization">("mine");
+  const [organizationTasks, setOrganizationTasks] = useState<DirectTask[]>([]);
   const [selectedTask, setSelectedTask] = useState<DirectTask | null>(null);
   const [selectedRequest, setSelectedRequest] = useState<WorkRequest | null>(null);
   const [isCreating, setIsCreating] = useState(false);
@@ -105,8 +109,13 @@ export function MyWorkPage({
       getWorkRequests().catch(() => [] as WorkRequest[]),
       canAssignTasks ? getSentTaskAssignments().catch(() => [] as TaskAssignment[]) : Promise.resolve([] as TaskAssignment[]),
     ]);
+    // 할일 is what this person holds. Someone who may read the organization's work sees the rest in its own tab,
+    // never mixed into their own list.
+    const held = new Set(work.map((task) => task.task_id));
+    const mine = closed.filter((task) => held.has(task.task_id) || (task.assignee?.member_id ?? personaId) === personaId);
+    setOrganizationTasks(closed.filter((task) => !held.has(task.task_id) && (task.assignee?.member_id ?? personaId) !== personaId));
     const merged = new Map<string, DirectTask>();
-    for (const task of [...work, ...closed]) merged.set(task.task_id, { ...merged.get(task.task_id), ...task });
+    for (const task of [...work, ...mine]) merged.set(task.task_id, { ...merged.get(task.task_id), ...task });
     const nextTasks = [...merged.values()];
     setTasks(nextTasks);
     setActionItems(judgements);
@@ -314,6 +323,11 @@ export function MyWorkPage({
                   요청·배정
                 </button>
               )}
+              {canReadOrganizationWork && (
+                <button aria-selected={tab === "organization"} onClick={() => setTab("organization")} role="tab" type="button">
+                  조직 업무
+                </button>
+              )}
             </div>
             {tab === "mine" && (
               <div className="toolbar-group">
@@ -340,7 +354,43 @@ export function MyWorkPage({
             )}
           </div>
 
-          {tab === "sent" ? (
+          {tab === "organization" ? (
+            <section aria-label="조직 업무" className="sent-section">
+              <h2 className="section-title">
+                조직 업무 <small>조직 사람들이 지금 들고 있는 업무입니다. 읽기만 하며, 옮기고 끝내는 것은 담당자의 몫입니다</small>
+              </h2>
+              <table className="plain-table">
+                <thead>
+                  <tr>
+                    <th>업무명</th>
+                    <th className="center">담당자</th>
+                    <th className="center">상태</th>
+                    <th className="center">기한</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {organizationTasks.length === 0 && (
+                    <tr>
+                      <td colSpan={4}>
+                        <div className="empty-state">
+                          <b>조직에 진행 중인 다른 업무가 없습니다</b>
+                          <p>누군가 업무를 맡으면 여기에서 보입니다.</p>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  {organizationTasks.map((task) => (
+                    <tr className="openable" data-organization-task={task.task_id} key={task.task_id} onClick={() => setSelectedTask(task)}>
+                      <td className="title-cell">{task.title}</td>
+                      <td className="center">{displayNameOf(people, task.assignee?.member_id, "담당자 없음")}</td>
+                      <td className="center">{taskStateLabel[task.state] ?? task.state}</td>
+                      <td className="center">{task.due_date ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+          ) : tab === "sent" ? (
             <>
             <RequestRelationSection
               emptyHint="동료가 보낸 요청이 도착하면 여기에 쌓입니다."

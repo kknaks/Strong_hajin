@@ -231,6 +231,7 @@ export default function App() {
     canDecideWorkRequests: has("work_request.decide"),
     canManageOwnTasks: has("task.self_manage"),
     canAssignTasks: has("task.assign"),
+    canReadOrganizationWork: has("work.read.all"),
     canReadActions,
     onAskAboutTask: askAboutTask,
     onNotice: setToast,
