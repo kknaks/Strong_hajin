@@ -531,6 +531,27 @@ export type Conversation = {
   material_evidence?: MaterialEvidence[];
   /** Where each turn actually walked in the relation graph, in the order the tools returned it. */
   graph_receipts?: GraphReceipt[];
+  /** The canonical things a turn read and named, so each item in an answer opens its own detail. */
+  answer_resources?: AnswerResource[];
+};
+
+/**
+ * One thing an answer points at.
+ *
+ * The server keeps the canonical id and the version its tools saw, and re-reads the title through the owning module
+ * every time — so nothing here was guessed from the answer's text, and a reference someone may no longer open is
+ * simply absent rather than shown greyed out.
+ */
+export type AnswerResource = {
+  reference_id: string;
+  turn_id: string;
+  sequence: number;
+  resource_type: "task" | "meeting" | "work_request" | "material" | "report";
+  resource_id: string;
+  resource_version: number | null;
+  parent_resource_id: string | null;
+  title: string;
+  state: string | null;
 };
 
 export type ConversationContextReference = {

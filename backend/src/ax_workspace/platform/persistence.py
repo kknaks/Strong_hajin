@@ -1099,6 +1099,34 @@ class ConversationGraphReceiptRecord(Base):
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ConversationAnswerResourceRecord(Base):
+    """Which canonical things a delegated turn actually read and named, in the order it named them.
+
+    An answer that lists work is a list of resources, not a paragraph a client should parse: each row keeps the id and
+    the version a tool really returned, so every item opens its own detail. Nothing here is shown without asking the
+    owning module again at read time — a person who has since lost access sees no title and no count.
+    """
+
+    __tablename__ = "conversation_answer_resources"
+    __table_args__ = (
+        UniqueConstraint("turn_id", "resource_type", "resource_id", name="uq_conversation_answer_resource"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    turn_id: Mapped[UUID] = mapped_column(ForeignKey("conversation_turns.id"), nullable=False, index=True)
+    conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), nullable=False, index=True)
+    execution_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: `task` | `meeting` | `work_request` | `material` | `report`
+    resource_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    #: The version the tool saw, when that resource has one. It says what the answer stood on, not what is true now.
+    resource_version: Mapped[int | None] = mapped_column(Integer)
+    #: The task a material was read through, so the reference can be reopened where it is actually bound.
+    parent_resource_id: Mapped[str | None] = mapped_column(String(120))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ConversationMaterialEvidenceRecord(Base):
     """Material excerpts a delegated AX turn actually retrieved (SPEC-008 evidence card)."""
 

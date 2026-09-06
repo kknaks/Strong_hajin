@@ -33,6 +33,7 @@ from ax_workspace.modules.organization_access.domain import Principal
 from ax_workspace.platform.persistence import (
     ActionItemRecord,
     ContextReferenceRecord,
+    ConversationAnswerResourceRecord,
     ConversationGraphReceiptRecord,
     ConversationMaterialEvidenceRecord,
     ConversationMessageRecord,
@@ -553,7 +554,26 @@ class SqlAlchemyConversationRepository:
             .where(ConversationGraphReceiptRecord.conversation_id == conversation.id)
             .order_by(ConversationGraphReceiptRecord.observed_at, ConversationGraphReceiptRecord.sequence)
         ).all()
+        answer_resources = self._session.scalars(
+            select(ConversationAnswerResourceRecord)
+            .where(ConversationAnswerResourceRecord.conversation_id == conversation.id)
+            .order_by(ConversationAnswerResourceRecord.observed_at, ConversationAnswerResourceRecord.sequence)
+        ).all()
         return {
+            # Canonical ids a turn read and named. They carry no title here: the application asks the owning module
+            # for that at read time, so a reference someone may no longer open simply is not there.
+            "answer_resources": [
+                {
+                    "reference_id": str(item.id),
+                    "turn_id": str(item.turn_id),
+                    "sequence": int(item.sequence),
+                    "resource_type": item.resource_type,
+                    "resource_id": item.resource_id,
+                    "resource_version": item.resource_version,
+                    "parent_resource_id": item.parent_resource_id,
+                }
+                for item in answer_resources
+            ],
             # Where each turn actually walked: observed steps only, in the order they were observed.
             "graph_receipts": [
                 {

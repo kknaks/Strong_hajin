@@ -17,9 +17,22 @@ type CalendarPageProps = {
   onError: (message: string | null) => void;
   /** Registers this surface's reload so the shell can await it after an approved AX effect (no remount). */
   onRegisterRefresh?: (refresh: (() => Promise<void>) | null) => void;
+  /** Arriving from an answer or a graph: open this meeting, with this person's access applied again. */
+  focusMeetingId?: string | null;
+  onMeetingFocusHandled?: () => void;
 };
 
-export function CalendarPage({ personaId, personaName, canManageOwnTasks, onAskAboutTask, onNotice, onError, onRegisterRefresh }: CalendarPageProps) {
+export function CalendarPage({
+  personaId,
+  personaName,
+  canManageOwnTasks,
+  onAskAboutTask,
+  onNotice,
+  onError,
+  onRegisterRefresh,
+  focusMeetingId,
+  onMeetingFocusHandled,
+}: CalendarPageProps) {
   const [tasks, setTasks] = useState<DirectTask[]>([]);
   const [mode, setMode] = useState<"week" | "month">("month");
   const [selected, setSelected] = useState<DirectTask | null>(null);
@@ -27,6 +40,13 @@ export function CalendarPage({ personaId, personaName, canManageOwnTasks, onAskA
   const [view, setView] = useState<"calendar" | "meetings">("calendar");
   const [entries, setEntries] = useState<CalendarEntry[] | null>(null);
   const [selectedMeeting, setSelectedMeeting] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!focusMeetingId) return;
+    setView("meetings");
+    setSelectedMeeting(focusMeetingId);
+    onMeetingFocusHandled?.();
+  }, [focusMeetingId, onMeetingFocusHandled]);
 
   const loadMeetings = useCallback(async () => {
     setEntries(await getCalendarEntries());

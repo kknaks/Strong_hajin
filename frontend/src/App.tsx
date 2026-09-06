@@ -38,6 +38,7 @@ export default function App() {
   const personaId = session?.member_id ?? "";
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [graphFocus, setGraphFocus] = useState<string | null>(null);
+  const [focusMeetingId, setFocusMeetingId] = useState<string | null>(null);
   const capabilities = session?.capabilities ?? null;
   const organizationNames = session?.organizations.map((organization) => organization.name) ?? [];
   const [surface, setSurface] = useState<ProductSurface>("today");
@@ -335,7 +336,14 @@ export default function App() {
             onNavigate={setSurface}
           />
         )}
-        {surface === "calendar" && <CalendarPage {...pageProps} {...sharedWorkProps} />}
+        {surface === "calendar" && (
+          <CalendarPage
+            {...pageProps}
+            {...sharedWorkProps}
+            focusMeetingId={focusMeetingId}
+            onMeetingFocusHandled={() => setFocusMeetingId(null)}
+          />
+        )}
         {surface === "work" && (
           <MyWorkPage
             {...pageProps}
@@ -381,6 +389,29 @@ export default function App() {
           onDiscardFragment={chat.discardFragment}
           onMessageChange={(value) => chat.setDraft(value)}
           onRetryFragment={(fragment) => void chat.retryFragment(fragment)}
+          onOpenResource={(resource) => {
+            // Each item opens where it lives. The surface reads it again with this person's access.
+            if (resource.resource_type === "task") {
+              setSurface("work");
+              setFocusTaskId(resource.resource_id);
+              return;
+            }
+            if (resource.resource_type === "work_request") {
+              setSurface("work");
+              return;
+            }
+            if (resource.resource_type === "meeting") {
+              setSurface("calendar");
+              setFocusMeetingId(resource.resource_id);
+              return;
+            }
+            if (resource.resource_type === "material" && resource.parent_resource_id) {
+              setSurface("work");
+              setFocusTaskId(resource.parent_resource_id);
+              return;
+            }
+            if (resource.resource_type === "report") setSurface("report");
+          }}
           onOpenGraph={(nodeRef) => {
             // The card is one turn's picture; the surface re-applies this person's access to whatever it draws next.
             setGraphFocus(nodeRef);

@@ -461,6 +461,11 @@ button.metric-card:hover { border-color: var(--border-strong); background: var(-
 .login-oidc { justify-content: center; }
 .google-mark { display: inline-grid; width: 18px; height: 18px; place-items: center; border: 1px solid var(--border-strong); border-radius: 50%; font-size: 11px; font-weight: 700; }
 .login-hint { margin-top: -8px; color: var(--text-tertiary); font-size: 12px; }
+.ax-answer-resources { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--border-default); border-radius: var(--radius-card); background: var(--surface-default); }
+.ax-resource-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.ax-resource-list li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ax-resource-kind { padding: 1px 6px; border-radius: var(--radius-chip); background: var(--surface-sunken); color: var(--text-tertiary); font-size: 11px; font-weight: 700; }
+.ax-resource-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; }
 .graph-canvas-shell { display: grid; gap: 6px; }
 .graph-canvas { width: 100%; border: 1px solid var(--border-default); border-radius: var(--radius-card); background: var(--surface-default); }
 .member-access { margin-top: 16px; display: grid; gap: 10px; }

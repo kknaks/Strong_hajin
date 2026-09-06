@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 
 import { ActionCommandButtons, ActionPreviewDetails, actionKicker, actionSubject } from "../ActionPreview";
-import { formatDate, formatDuration, isoDateInSeoul } from "../labels";
+import { formatDate, formatDuration, isoDateInSeoul, taskStateLabel } from "../labels";
 import { AssistantMarkdown } from "./AssistantMarkdown";
 import { GraphCanvas } from "../GraphCanvas";
-import type { ActionItem, Conversation, ConversationTurn, GraphEdge, GraphNode, GraphReceipt, MaterialEvidence } from "../viewModels";
+import type { ActionItem, AnswerResource, Conversation, ConversationTurn, GraphEdge, GraphNode, GraphReceipt, MaterialEvidence } from "../viewModels";
 import type { LocalFragment } from "./useConversations";
 
 const BOTTOM_SLACK_PX = 24;
@@ -27,6 +27,7 @@ export function MessageList({
   onRetryFragment,
   onDiscardFragment,
   onOpenGraph,
+  onOpenResource,
 }: {
   conversation: Conversation | null;
   localFragments: LocalFragment[];
@@ -36,6 +37,8 @@ export function MessageList({
   onDiscardFragment: (localId: string) => void;
   /** Continue this turn's picture on the full graph surface, centred on one node. */
   onOpenGraph?: (nodeRef: string) => void;
+  /** Open one thing the answer points at, in the surface that owns it. */
+  onOpenResource?: (resource: AnswerResource) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
@@ -95,6 +98,7 @@ export function MessageList({
             onDecide={onDecide}
             onDiscardFragment={onDiscardFragment}
             onOpenGraph={onOpenGraph}
+            onOpenResource={onOpenResource}
             onRetryFragment={onRetryFragment}
             onRetryTurn={onRetryTurn}
           />
@@ -117,6 +121,7 @@ function ConversationTimeline({
   onRetryFragment,
   onDiscardFragment,
   onOpenGraph,
+  onOpenResource,
 }: {
   conversation: Conversation;
   localFragments: LocalFragment[];
@@ -125,6 +130,7 @@ function ConversationTimeline({
   onRetryFragment: (fragment: LocalFragment) => void;
   onDiscardFragment: (localId: string) => void;
   onOpenGraph?: (nodeRef: string) => void;
+  onOpenResource?: (resource: AnswerResource) => void;
 }) {
   const queuedMessages = conversation.messages.filter((item) => item.state === "queued");
 
@@ -140,6 +146,7 @@ function ConversationTimeline({
         const evidence = (conversation.material_evidence ?? []).filter((item) => item.turn_id === turn.turn_id);
         const walked = (conversation.graph_receipts ?? []).filter((item) => item.turn_id === turn.turn_id);
         const actions = (conversation.actions ?? []).filter((action) => action.turn_id === turn.turn_id);
+        const named = (conversation.answer_resources ?? []).filter((item) => item.turn_id === turn.turn_id);
         const retried = conversation.turns.find((item) => item.retry_of_turn_id === turn.turn_id);
         return (
           <section className="ax-turn" data-turn-id={turn.turn_id} key={turn.turn_id}>
@@ -166,6 +173,7 @@ function ConversationTimeline({
                   {item.body_state === "cancelled" && <small className="ax-body-note">취소 시점까지의 답변</small>}
                 </div>
               ))}
+            <AnswerResources onOpen={onOpenResource} resources={named} />
             <SearchPath onOpenGraph={onOpenGraph} steps={walked} />
             <EvidenceCards evidence={evidence} />
             {actions.map((action) => (
@@ -423,6 +431,45 @@ function SearchPath({ steps, onOpenGraph }: { steps: GraphReceipt[]; onOpenGraph
           <li key={step.receipt_id}>
             <span className="t-meta">{EDGE_SENTENCE[step.edge_kind ?? ""] ?? step.edge_kind}</span>{" "}
             {step.from_title ?? step.from_ref} → {step.to_title ?? step.to_ref}
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+const RESOURCE_LABEL: Record<string, string> = {
+  task: "업무",
+  meeting: "회의",
+  work_request: "업무 요청",
+  material: "자료",
+  report: "보고",
+};
+
+/**
+ * 답변이 가리키는 것들: canonical ids the turn actually read, in the order it read them.
+ *
+ * Each row is one resource with its own way in — nothing here was parsed out of the answer text, and a reference the
+ * reader may no longer open never arrives from the server at all.
+ */
+function AnswerResources({ resources, onOpen }: { resources: AnswerResource[]; onOpen?: (resource: AnswerResource) => void }) {
+  if (resources.length === 0) return null;
+  return (
+    <section aria-label="답변이 가리키는 것" className="ax-answer-resources">
+      <b>
+        답변이 가리키는 것 {resources.length}개 <small>· 실제로 조회한 정본</small>
+      </b>
+      <ol className="ax-resource-list">
+        {resources.map((resource) => (
+          <li data-resource={`${resource.resource_type}:${resource.resource_id}`} key={resource.reference_id}>
+            <span className="ax-resource-kind">{RESOURCE_LABEL[resource.resource_type] ?? resource.resource_type}</span>
+            <span className="ax-resource-title">{resource.title}</span>
+            {resource.state && <span className="t-meta">{taskStateLabel[resource.state as keyof typeof taskStateLabel] ?? resource.state}</span>}
+            {onOpen && (
+              <button className="btn h30" onClick={() => onOpen(resource)} type="button">
+                상세 열기
+              </button>
+            )}
           </li>
         ))}
       </ol>

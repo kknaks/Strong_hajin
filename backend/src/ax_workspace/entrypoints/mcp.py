@@ -159,7 +159,14 @@ class McpReportsFacade:
         return self._application.work_request_assignee_candidates(self.principal)
 
     def list_work_requests(self) -> list[dict[str, Any]]:
-        return self._application.list_work_requests(self.principal)
+        requests = self._application.list_work_requests(self.principal)
+        self._remember(
+            [
+                {"resource_type": "work_request", "resource_id": str(row["request_id"]), "resource_version": row.get("version")}
+                for row in requests
+            ]
+        )
+        return requests
 
     def resubmit_work_request(self, request_id: str, expected_version: int, title: str | None, description: str | None, due_date: str | None) -> dict[str, Any]:
         return self._application.resubmit_work_request(
@@ -186,7 +193,11 @@ class McpReportsFacade:
         return self._application.work_request_timeline(self.principal, UUID(request_id))
 
     def get_work_request(self, request_id: str) -> dict[str, Any]:
-        return self._application.get_work_request(self.principal, UUID(request_id))
+        request = self._application.get_work_request(self.principal, UUID(request_id))
+        self._remember(
+            [{"resource_type": "work_request", "resource_id": str(request["request_id"]), "resource_version": request.get("version")}]
+        )
+        return request
 
     def create_work_request(
         self, title: str, assignee_id: str, due_date: str | None = None, description: str | None = None,
@@ -300,11 +311,24 @@ class McpReportsFacade:
             )
         return proposed
 
+    def _remember(self, references: list[dict[str, Any]]) -> None:
+        """Inside a delegated turn, what a read returned becomes something the answer can point at, item by item."""
+        causation_id = os.getenv("AX_MCP_CAUSATION_ID")
+        if not causation_id or not references:
+            return
+        self._application.record_answer_resources(self.principal, UUID(causation_id), references)
+
     def list_tasks(self) -> list[dict[str, Any]]:
-        return self._application.list_tasks(self.principal)
+        tasks = self._application.list_tasks(self.principal)
+        self._remember(
+            [{"resource_type": "task", "resource_id": str(row["task_id"]), "resource_version": row.get("version")} for row in tasks]
+        )
+        return tasks
 
     def get_task(self, task_id: str) -> dict[str, Any]:
-        return self._application.get_task(self.principal, UUID(task_id))
+        task = self._application.get_task(self.principal, UUID(task_id))
+        self._remember([{"resource_type": "task", "resource_id": str(task["task_id"]), "resource_version": task.get("version")}])
+        return task
 
     def task_history(self, task_id: str) -> dict[str, Any]:
         return self._application.task_history(self.principal, UUID(task_id))
@@ -383,10 +407,22 @@ class McpReportsFacade:
         return self._application.update_task(self.principal, UUID(task_id), expected_version, parsed)
 
     def list_meetings(self) -> list[dict[str, Any]]:
-        return self._application.calendar_entries(self.principal)
+        entries = self._application.calendar_entries(self.principal)
+        self._remember(
+            [
+                {"resource_type": "meeting", "resource_id": str(row["meeting_id"]), "resource_version": row.get("version")}
+                for row in entries
+                if row.get("kind") == "meeting"
+            ]
+        )
+        return entries
 
     def get_meeting(self, meeting_id: str) -> dict[str, Any]:
-        return self._application.get_meeting(self.principal, UUID(meeting_id))
+        meeting = self._application.get_meeting(self.principal, UUID(meeting_id))
+        self._remember(
+            [{"resource_type": "meeting", "resource_id": str(meeting["meeting_id"]), "resource_version": meeting.get("version")}]
+        )
+        return meeting
 
     def graph_overview(self, view: str = "member", limit: int = 20) -> dict[str, Any]:
         return self._application.graph_overview(self.principal, view=view, limit=limit)
@@ -454,7 +490,14 @@ class McpReportsFacade:
         return self._application.reorder_task_checklist(self.principal, UUID(task_id), [UUID(item) for item in item_ids])
 
     def list_task_materials(self, task_id: str) -> list[dict[str, Any]]:
-        return self._application.list_task_materials(self.principal, UUID(task_id))
+        materials = self._application.list_task_materials(self.principal, UUID(task_id))
+        self._remember(
+            [
+                {"resource_type": "material", "resource_id": str(row["material_id"]), "parent_resource_id": task_id}
+                for row in materials
+            ]
+        )
+        return materials
 
     def task_assignment_candidates(self) -> list[dict[str, str]]:
         return self._application.task_assignment_candidates(self.principal)

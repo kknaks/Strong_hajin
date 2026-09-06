@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { personName } from "../labels";
-import type { Conversation, ConversationContextReference } from "../viewModels";
+import type { AnswerResource, Conversation, ConversationContextReference } from "../viewModels";
 import { MessageList } from "./MessageList";
 import type { ListStatus, LocalFragment } from "./useConversations";
 
@@ -62,6 +62,7 @@ export function ChatDrawer({
   onDiscardFragment,
   onRetryList,
   onOpenGraph,
+  onOpenResource,
 }: {
   personaName: string;
   surfaceLabel: string;
@@ -87,6 +88,8 @@ export function ChatDrawer({
   onRetryList: () => void;
   /** Continue a turn's fixed picture on the full graph surface. */
   onOpenGraph?: (nodeRef: string) => void;
+  /** Open one thing an answer points at, in the surface that owns it. */
+  onOpenResource?: (resource: AnswerResource) => void;
 }) {
   const [query, setQuery] = useState("");
   const [switcherOpen, setSwitcherOpen] = useState(true);
@@ -187,6 +190,7 @@ export function ChatDrawer({
           onDecide={onDecide}
           onDiscardFragment={onDiscardFragment}
           onOpenGraph={onOpenGraph}
+          onOpenResource={onOpenResource}
           onRetryFragment={onRetryFragment}
           onRetryTurn={onRetryTurn}
         />

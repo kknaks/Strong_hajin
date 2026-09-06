@@ -138,6 +138,55 @@ class SqlAlchemyGraphReceiptRepository:
         self._session.flush()
         return written
 
+    def record_resources(self, execution_id: UUID, principal_id: str, references: list[dict[str, Any]]) -> int:
+        """What this turn read and named. Recording the same thing twice in one turn is one reference, not two."""
+        from ax_workspace.platform.persistence import (
+            ConversationAnswerResourceRecord,
+            ConversationRecord,
+            ConversationTurnRecord,
+        )
+
+        turn = self._session.scalar(select(ConversationTurnRecord).where(ConversationTurnRecord.execution_id == execution_id))
+        if turn is None:
+            raise ValueError("delegated conversation execution was not found")
+        conversation = self._session.get(ConversationRecord, turn.conversation_id)
+        if conversation is None or str(conversation.owner_id) != principal_id:  # fail closed
+            raise ValueError("delegated conversation belongs to another principal")
+        existing = {
+            (row.resource_type, row.resource_id)
+            for row in self._session.scalars(
+                select(ConversationAnswerResourceRecord).where(ConversationAnswerResourceRecord.turn_id == turn.id)
+            )
+        }
+        highest = self._session.scalar(
+            select(func.max(ConversationAnswerResourceRecord.sequence)).where(
+                ConversationAnswerResourceRecord.turn_id == turn.id
+            )
+        )
+        now = datetime.now(UTC)
+        written = 0
+        for reference in references:
+            key = (str(reference["resource_type"]), str(reference["resource_id"]))
+            if key in existing:
+                continue
+            existing.add(key)
+            written += 1
+            self._session.add(
+                ConversationAnswerResourceRecord(
+                    turn_id=turn.id,
+                    conversation_id=turn.conversation_id,
+                    execution_id=execution_id,
+                    sequence=int(highest or 0) + written,
+                    resource_type=key[0],
+                    resource_id=key[1],
+                    resource_version=reference.get("resource_version"),
+                    parent_resource_id=(str(reference["parent_resource_id"]) if reference.get("parent_resource_id") else None),
+                    observed_at=now,
+                )
+            )
+        self._session.flush()
+        return written
+
     def for_conversation(self, conversation_id: UUID) -> list[Any]:
         from ax_workspace.platform.persistence import ConversationGraphReceiptRecord
 

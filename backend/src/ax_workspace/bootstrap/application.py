@@ -100,6 +100,50 @@ class _SessionResourceReferences:
         return None
 
 
+class _SessionAnswerResources:
+    """What a turn named, read back through the module that owns each thing — every time, for whoever is asking now."""
+
+    def __init__(self, application: "WorkflowApplication", session: Any) -> None:
+        self._source = _SessionGraphSource(application, session)
+        self._application = application
+        self._session = session
+
+    def resolve(self, principal: Principal, references: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        resolved: list[dict[str, Any]] = []
+        for reference in references:
+            kind = str(reference["resource_type"])
+            identifier = str(reference["resource_id"])
+            title, state = self._read(principal, kind, identifier, reference.get("parent_resource_id"))
+            if title is None:
+                # Readable when the turn ran, not now. It leaves no title and no gap that could be counted.
+                continue
+            resolved.append({**reference, "title": title, "state": state})
+        return resolved
+
+    def _read(self, principal: Principal, kind: str, identifier: str, parent: Any) -> tuple[str | None, str | None]:
+        try:
+            if kind == "task":
+                task = self._source.readable_task(principal, UUID(identifier))
+                return (str(task["title"]), task.get("state")) if task else (None, None)
+            if kind == "work_request":
+                request = self._source.readable_request(principal, UUID(identifier))
+                return (str(request["title"]), request.get("state")) if request else (None, None)
+            if kind == "meeting":
+                meeting = self._source.readable_meeting(principal, UUID(identifier))
+                return (str(meeting["title"]), meeting.get("visibility")) if meeting else (None, None)
+            if kind == "material" and parent:
+                for material in self._source.task_materials(principal, UUID(str(parent))):
+                    if str(material["material_id"]) == identifier:
+                        return str(material["name"]), str(material.get("kind") or "")
+                return (None, None)
+            if kind == "report":
+                report = self._application.daily_report_history(principal, identifier)
+                return (f"{report['report_date']} 일일보고", report.get("status"))
+        except Exception:
+            return (None, None)
+        return (None, None)
+
+
 class _SessionGraphSource:
     """The graph's window onto the ledgers: every read is the owning module's own authorized operation."""
 
@@ -894,6 +938,26 @@ class WorkflowApplication:
                 session.commit()
             return result
 
+    def record_answer_resources(
+        self,
+        principal: Principal,
+        execution_id: UUID,
+        references: list[dict[str, Any]],
+    ) -> int:
+        """Keep the canonical things a delegated turn just read, so its answer can point at each of them.
+
+        Only ids and versions the authorized read already returned are kept. Nothing here decides what may be shown:
+        that is asked again, of the owning module, every time the conversation is read.
+        """
+        if not references:
+            return 0
+        with self._session_factory() as session:
+            written = SqlAlchemyGraphReceiptRepository(session).record_resources(
+                execution_id, str(principal.id), references
+            )
+            session.commit()
+            return written
+
     def task_history(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
         with self._session_factory() as session:
             return self._tasks(session).history(principal, task_id)
@@ -1273,6 +1337,7 @@ class WorkflowApplication:
                 self._settings.conversation_queue_max_fragments,
             ),
             SqlAlchemyConversationContextResolver(session),
+            _SessionAnswerResources(self, session),
         )
 
     def _actions(self, session: Any) -> ActionApplication:

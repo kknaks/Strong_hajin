@@ -82,6 +82,16 @@ class ConversationRepository(Protocol):
     def view(self, conversation: Any, *, include_actions: bool = False, principal: Any = None) -> dict[str, Any]: ...
 
 
+class AnswerResourcePort(Protocol):
+    """Reading back what a turn named, through the module that owns each thing.
+
+    It is asked again every time the conversation is read: a reference is a canonical id, and whether it may be shown
+    — and under what title — is the owning module's answer now, not what was true when the turn ran.
+    """
+
+    def resolve(self, principal: Principal, references: list[dict[str, Any]]) -> list[dict[str, Any]]: ...
+
+
 class ConversationApplication:
     """API-facing command/query service. It never invokes a provider."""
 
@@ -89,9 +99,11 @@ class ConversationApplication:
         self,
         repository: ConversationRepository,
         context_resolver: ConversationContextResolver,
+        answer_resources: AnswerResourcePort | None = None,
     ) -> None:
         self._repository = repository
         self._context_resolver = context_resolver
+        self._answer_resources = answer_resources
 
     def create(self, principal: Principal, title: str = "새 대화") -> dict[str, Any]:
         return self._view(principal, self._repository.create(str(principal.id), title.strip() or "새 대화"))
@@ -145,6 +157,10 @@ class ConversationApplication:
         # Approval commands come from the ledger + the caller's current capability, never inferred by the client.
         for action in view.get("actions", []):
             action["commands"] = action_commands(action.get("state"), ACTION_DECIDE in principal.capabilities)
+        references = view.get("answer_resources") or []
+        view["answer_resources"] = (
+            self._answer_resources.resolve(principal, references) if self._answer_resources is not None else []
+        )
         return view
 
     def _owned(self, principal: Principal, conversation_id: UUID, *, lock: bool = False) -> Any:

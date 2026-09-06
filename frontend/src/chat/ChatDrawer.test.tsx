@@ -574,3 +574,66 @@ describe("ActionResultCard", () => {
     expect(card.querySelector(".ax-card-kicker")?.textContent).toBe("AX 제안");
   });
 });
+
+describe("답변이 가리키는 것", () => {
+  afterEach(cleanup);
+
+  it("lists each thing the turn read as its own way in, and nothing when it read none", async () => {
+    const base = conversation("c10", "오늘 업무", "제품팀장이 오늘 하는 업무 알려줘");
+    const named = {
+      ...base,
+      answer_resources: [
+        {
+          reference_id: "a1",
+          turn_id: base.turns[0].turn_id,
+          sequence: 1,
+          resource_type: "task" as const,
+          resource_id: "task-1",
+          resource_version: 3,
+          parent_resource_id: null,
+          title: "분기 마감 정리",
+          state: "in_progress",
+        },
+        {
+          reference_id: "a2",
+          turn_id: base.turns[0].turn_id,
+          sequence: 2,
+          resource_type: "meeting" as const,
+          resource_id: "meeting-1",
+          resource_version: 1,
+          parent_resource_id: null,
+          title: "주간 회의",
+          state: "private",
+        },
+      ],
+    };
+    const onOpenResource = vi.fn();
+    const { container, rerender } = render(
+      <MessageList
+        conversation={named as never}
+        localFragments={[]}
+        onDecide={vi.fn()}
+        onDiscardFragment={vi.fn()}
+        onOpenResource={onOpenResource}
+        onRetryFragment={vi.fn()}
+        onRetryTurn={vi.fn()}
+      />,
+    );
+    const listed = container.querySelector("section.ax-answer-resources") as HTMLElement;
+    expect(listed.textContent).toContain("분기 마감 정리");
+    expect(listed.textContent).toContain("주간 회의");
+    // The item opens the canonical thing by its own id — not by anything parsed out of the answer text.
+    fireEvent.click(listed.querySelectorAll("button")[0]);
+    expect(onOpenResource).toHaveBeenCalledWith(expect.objectContaining({ resource_type: "task", resource_id: "task-1" }));
+
+    rerender(<MessageList
+        conversation={base as never}
+        localFragments={[]}
+        onDecide={vi.fn()}
+        onDiscardFragment={vi.fn()}
+        onRetryFragment={vi.fn()}
+        onRetryTurn={vi.fn()}
+      />);
+    expect(container.querySelector("section.ax-answer-resources")).toBeNull();
+  });
+});
