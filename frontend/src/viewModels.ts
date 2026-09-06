@@ -1,10 +1,25 @@
 export type ProductSurface = "today" | "calendar" | "work" | "report" | "org" | "graph";
 
 /** One thing in the relation graph. Nodes are canonical resources, never a graph-only record. */
-export type GraphNode = { kind: "person" | "work_request" | "task" | "material"; id: string; title: string; state?: string | null };
+export type GraphNodeKind = "person" | "team" | "work_request" | "task" | "material" | "meeting";
 
-/** How two things are connected, as the ledgers already record it. */
-export type GraphEdge = { kind: string; from: string; to: string };
+export type GraphNode = { kind: GraphNodeKind; id: string; title: string; state?: string | null };
+
+/**
+ * How two things are connected, as the ledgers already record it.
+ *
+ * `label`/`inverse_label` are the same edge read from either end — wording, not a second connection — and
+ * `provenance` names the ledger that states it. `count` appears only when an answer was grouped one level up.
+ */
+export type GraphEdge = {
+  kind: string;
+  from: string;
+  to: string;
+  label?: string;
+  inverse_label?: string;
+  provenance?: string;
+  count?: number;
+};
 
 /** One observed step of a turn's walk: something it found, or a connection it followed. */
 export type GraphReceipt = {
@@ -23,6 +38,9 @@ export type GraphReceipt = {
 };
 
 export type GraphNeighborhood = { center: GraphNode; nodes: GraphNode[]; edges: GraphEdge[]; truncated: boolean };
+
+/** The first screen: what this person is already connected to, at the chosen level of grouping. */
+export type GraphOverview = GraphNeighborhood & { view: "member" | "team"; available_views: Array<"member" | "team"> };
 
 export type Persona = {
   id: string;

@@ -35,6 +35,7 @@ import type {
   TaskReference,
   GraphNode,
   GraphNeighborhood,
+  GraphOverview,
 } from "./viewModels";
 
 type ApiErrorBody = {
@@ -120,6 +121,11 @@ export async function promoteMeetingFollowup(
     body: JSON.stringify(body),
     method: "POST",
   });
+}
+
+/** The first screen of 관계 탐색: bounded, authorized, and already a graph. */
+export async function graphOverview(view: "member" | "team" = "member"): Promise<GraphOverview> {
+  return request<GraphOverview>(`/api/graph/overview?view=${view}`);
 }
 
 export async function graphSearch(query: string, limit = 20): Promise<{ query: string; nodes: GraphNode[]; truncated: boolean }> {

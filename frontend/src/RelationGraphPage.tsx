@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-import { graphNeighbors, graphSearch } from "./api";
-import type { GraphNeighborhood, GraphNode } from "./viewModels";
+import { graphNeighbors, graphOverview, graphSearch } from "./api";
+import { GraphCanvas, KIND_LABEL } from "./GraphCanvas";
+import type { GraphNeighborhood, GraphNode, GraphOverview } from "./viewModels";
 import { personName, taskStateLabel } from "./labels";
 
 /** What a connection means, in the words a person would use rather than the name of the edge. */
@@ -15,12 +16,7 @@ const EDGE_SENTENCE: Record<string, { incoming: string; outgoing: string }> = {
   has_material: { incoming: "붙어 있는 업무", outgoing: "참고 자료·산출물" },
 };
 
-const KIND_LABEL: Record<string, string> = {
-  person: "사람",
-  work_request: "업무 요청",
-  task: "업무",
-  material: "자료",
-};
+const VIEW_LABEL: Record<string, string> = { member: "구성원 보기", team: "팀으로 묶기" };
 
 /**
  * 관계 탐색: search for something, then follow one hop at a time.
@@ -31,14 +27,55 @@ const KIND_LABEL: Record<string, string> = {
 export function RelationGraphPage({
   onOpenTask,
   onError,
+  focusNodeRef,
+  onFocusHandled,
 }: {
   onOpenTask: (taskId: string) => void;
   onError: (message: string | null) => void;
+  /** Arriving from a chat card: start centred here, with this person's access applied again. */
+  focusNodeRef?: string | null;
+  onFocusHandled?: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<{ nodes: GraphNode[]; truncated: boolean } | null>(null);
   const [around, setAround] = useState<GraphNeighborhood | null>(null);
+  const [overview, setOverview] = useState<GraphOverview | null>(null);
+  const [view, setView] = useState<"member" | "team">("member");
   const [busy, setBusy] = useState(false);
+  const [loadingGraph, setLoadingGraph] = useState(true);
+
+  // 첫 화면은 빈 검색 상자가 아니라 지금 이어져 있는 것들이다.
+  const loadOverview = useCallback(
+    async (next: "member" | "team") => {
+      setLoadingGraph(true);
+      try {
+        setOverview(await graphOverview(next));
+        onError(null);
+      } catch (error) {
+        onError(error instanceof Error ? error.message : "관계를 불러오지 못했습니다.");
+      } finally {
+        setLoadingGraph(false);
+      }
+    },
+    [onError],
+  );
+
+  useEffect(() => {
+    void loadOverview(view);
+  }, [loadOverview, view]);
+
+  useEffect(() => {
+    if (!focusNodeRef) return;
+    setBusy(true);
+    onError(null);
+    void graphNeighbors(focusNodeRef)
+      .then(setAround)
+      .catch((error: unknown) => onError(error instanceof Error ? error.message : "연결을 불러오지 못했습니다."))
+      .finally(() => {
+        setBusy(false);
+        onFocusHandled?.();
+      });
+  }, [focusNodeRef, onError, onFocusHandled]);
 
   const search = async () => {
     const text = query.trim();
@@ -102,6 +139,46 @@ export function RelationGraphPage({
           찾기
         </button>
       </div>
+
+      <section aria-label="관계 그래프" className="drawer-section">
+        <div className="section-row">
+          <h4>
+            {around ? `${around.center.kind === "person" ? personName(around.center.title) : around.center.title} 중심` : "지금 이어져 있는 것들"}
+          </h4>
+          <div aria-label="표현 수준" className="segmented" role="tablist">
+            {(overview?.available_views ?? ["member", "team"]).map((item) => (
+              <button
+                aria-selected={view === item}
+                disabled={loadingGraph || around !== null}
+                key={item}
+                onClick={() => setView(item)}
+                role="tab"
+                type="button"
+              >
+                {VIEW_LABEL[item] ?? item}
+              </button>
+            ))}
+          </div>
+          {around && (
+            <button className="btn h30" onClick={() => setAround(null)} type="button">
+              첫 화면으로
+            </button>
+          )}
+        </div>
+        {around === null && overview === null ? (
+          <p className="t-meta">관계를 불러오는 중…</p>
+        ) : (
+          <GraphCanvas
+            centerRef={around ? `${around.center.kind}:${around.center.id}` : undefined}
+            edges={(around ?? overview)?.edges ?? []}
+            nodes={(around ?? overview)?.nodes ?? []}
+            onSelect={(node) => void walk(node)}
+          />
+        )}
+        <p className="t-meta">
+          노드를 누르면 그 지점을 중심으로 한 걸음 더 따라갑니다. 볼 수 있는 것만 그려지고, 따라가도 권한은 늘지 않습니다.
+        </p>
+      </section>
 
       <div className="graph-layout">
         <section aria-label="검색 결과" className="drawer-section">

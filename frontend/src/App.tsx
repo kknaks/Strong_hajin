@@ -37,6 +37,7 @@ export default function App() {
   const [focusTaskId, setFocusTaskId] = useState<string | null>(null);
   const personaId = session?.member_id ?? "";
   const [personas, setPersonas] = useState<Persona[]>([]);
+  const [graphFocus, setGraphFocus] = useState<string | null>(null);
   const capabilities = session?.capabilities ?? null;
   const organizationNames = session?.organizations.map((organization) => organization.name) ?? [];
   const [surface, setSurface] = useState<ProductSurface>("today");
@@ -219,8 +220,9 @@ export default function App() {
   const canReadActions = has("action.read");
   const visibleNavigation = navigation.filter((item) => {
     if (item.id === "report") return has("daily_report.generate");
-    // Following how work connects across people is a manager's read, not everyone's.
-    if (item.id === "graph") return has("team.manage");
+    // Following how work connects is a read like any other: everyone who may read work may follow it, and the
+    // server still answers only with what that person could already reach.
+    if (item.id === "graph") return has("task.read") || has("work_request.read");
     return true;
   });
   const pageProps = { personaId, onError: setError, onRegisterRefresh: registerSurfaceRefresh };
@@ -346,7 +348,9 @@ export default function App() {
         {surface === "org" && <OrgPage {...pageProps} />}
         {surface === "graph" && (
           <RelationGraphPage
+            focusNodeRef={graphFocus}
             onError={setError}
+            onFocusHandled={() => setGraphFocus(null)}
             onOpenTask={(taskId) => {
               setSurface("work");
               setFocusTaskId(taskId);
@@ -377,6 +381,11 @@ export default function App() {
           onDiscardFragment={chat.discardFragment}
           onMessageChange={(value) => chat.setDraft(value)}
           onRetryFragment={(fragment) => void chat.retryFragment(fragment)}
+          onOpenGraph={(nodeRef) => {
+            // The card is one turn's picture; the surface re-applies this person's access to whatever it draws next.
+            setGraphFocus(nodeRef);
+            setSurface("graph");
+          }}
           onRetryList={() => void chat.refreshConversations().catch(() => setError("AX 대화를 불러오지 못했습니다."))}
           onRetryTurn={(turnId) => void chat.retryTurn(turnId)}
           onSelect={chat.select}

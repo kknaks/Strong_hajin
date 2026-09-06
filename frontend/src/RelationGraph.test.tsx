@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("./api", () => ({ graphSearch: vi.fn(), graphNeighbors: vi.fn() }));
+vi.mock("./api", () => ({ graphSearch: vi.fn(), graphNeighbors: vi.fn(), graphOverview: vi.fn() }));
 
 import * as api from "./api";
 import { RelationGraphPage } from "./RelationGraphPage";
@@ -9,7 +9,24 @@ import { RelationGraphPage } from "./RelationGraphPage";
 const task = { kind: "task", id: "task-1", title: "분기 마감", state: "in_progress" };
 const request = { kind: "work_request", id: "req-1", title: "분기 마감 요청", state: "accepted" };
 
+const overview = {
+  center: { kind: "person", id: "mina", title: "민아 (구성원)", state: null },
+  nodes: [
+    { kind: "person", id: "mina", title: "민아 (구성원)", state: null },
+    { kind: "team", id: "product", title: "제품팀", state: null },
+    task,
+  ],
+  edges: [
+    { kind: "belongs_to", from: "person:mina", to: "team:product", label: "소속", inverse_label: "구성원", provenance: "membership" },
+    { kind: "holds", from: "person:mina", to: "task:task-1", label: "담당함", inverse_label: "담당자", provenance: "task_assignment" },
+  ],
+  truncated: false,
+  view: "member",
+  available_views: ["member", "team"],
+};
+
 function renderPage(onOpenTask = vi.fn()) {
+  vi.mocked(api.graphOverview).mockResolvedValue(overview as never);
   render(<RelationGraphPage onError={vi.fn()} onOpenTask={onOpenTask} />);
   return { onOpenTask };
 }
@@ -70,5 +87,28 @@ describe("관계 탐색", () => {
     fireEvent.change(screen.getByLabelText("무엇을 찾을까요"), { target: { value: "분기" } });
     fireEvent.click(screen.getByRole("button", { name: "찾기" }));
     expect(await screen.findByText(/더 있습니다/)).toBeTruthy();
+  });
+});
+
+
+describe("첫 화면", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("shows what this person is already connected to, before anyone searches", async () => {
+    renderPage();
+    await waitFor(() => expect(api.graphOverview).toHaveBeenCalledWith("member"));
+    const graph = await screen.findByLabelText("관계 그래프");
+    expect(within(graph).getByText("지금 이어져 있는 것들")).toBeTruthy();
+    expect(api.graphSearch).not.toHaveBeenCalled();
+  });
+
+  it("reads the same answer one level up when someone groups by team", async () => {
+    renderPage();
+    await waitFor(() => expect(api.graphOverview).toHaveBeenCalledWith("member"));
+    fireEvent.click(screen.getByRole("tab", { name: "팀으로 묶기" }));
+    await waitFor(() => expect(api.graphOverview).toHaveBeenCalledWith("team"));
   });
 });

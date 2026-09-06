@@ -461,6 +461,8 @@ button.metric-card:hover { border-color: var(--border-strong); background: var(-
 .login-oidc { justify-content: center; }
 .google-mark { display: inline-grid; width: 18px; height: 18px; place-items: center; border: 1px solid var(--border-strong); border-radius: 50%; font-size: 11px; font-weight: 700; }
 .login-hint { margin-top: -8px; color: var(--text-tertiary); font-size: 12px; }
+.graph-canvas-shell { display: grid; gap: 6px; }
+.graph-canvas { width: 100%; border: 1px solid var(--border-default); border-radius: var(--radius-card); background: var(--surface-default); }
 .member-access { margin-top: 16px; display: grid; gap: 10px; }
 .member-access .grant-list li { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .grant-form { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border-default); border-radius: var(--radius-card); background: var(--surface-sunken); }

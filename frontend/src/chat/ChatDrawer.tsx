@@ -61,6 +61,7 @@ export function ChatDrawer({
   onRetryFragment,
   onDiscardFragment,
   onRetryList,
+  onOpenGraph,
 }: {
   personaName: string;
   surfaceLabel: string;
@@ -84,6 +85,8 @@ export function ChatDrawer({
   onRetryFragment: (fragment: LocalFragment) => void;
   onDiscardFragment: (localId: string) => void;
   onRetryList: () => void;
+  /** Continue a turn's fixed picture on the full graph surface. */
+  onOpenGraph?: (nodeRef: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [switcherOpen, setSwitcherOpen] = useState(true);
@@ -183,6 +186,7 @@ export function ChatDrawer({
           localFragments={localFragments}
           onDecide={onDecide}
           onDiscardFragment={onDiscardFragment}
+          onOpenGraph={onOpenGraph}
           onRetryFragment={onRetryFragment}
           onRetryTurn={onRetryTurn}
         />

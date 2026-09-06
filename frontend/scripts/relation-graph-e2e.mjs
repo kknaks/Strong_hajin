@@ -1,6 +1,6 @@
 import { chromium } from "@playwright/test";
 
-import { loginAs, pollFor } from "./e2e-helpers.mjs";
+import { loginAs, pollFor, signOut } from "./e2e-helpers.mjs";
 
 // 관계 탐색: a manager searches for work and follows how it came about — request → work → its parts and materials —
 // then opens the work itself. Every hop is the server's authorized answer, and AX walks the same graph through MCP.
@@ -29,7 +29,7 @@ try {
     });
   }, title);
 
-  await page.getByRole("button", { name: "로그아웃" }).click();
+  await signOut(page);
   await loginAs(page, "jiho");
   const judgement = await pollFor(
     page,
@@ -61,9 +61,54 @@ try {
     return { taskId: task.task_id, childId: child.task_id };
   }, { actionItemId: judgement.action_item_id, expectedVersion: judgement.expected_version, subject: title });
 
-  // The manager follows it from the search box.
+  // The first screen is already a graph of what this person is connected to — not an empty search box.
   await page.reload({ waitUntil: "domcontentloaded" });
   await navigation.getByRole("button", { name: "관계 탐색" }).click();
+  const canvas = page.locator("section[aria-label='관계 그래프']");
+  await canvas.waitFor({ timeout: 20_000 });
+  await pollFor(page, async () => ((await canvas.textContent()) ?? "").includes("지금 이어져 있는 것들"), {
+    timeout: 20_000,
+    description: "첫 진입 그래프",
+  });
+  // The picture is actually drawn, not just described: WebGL rendered it with the nodes the server sent.
+  const drawnNodes = await pollFor(
+    page,
+    async () => {
+      const element = canvas.locator(".graph-canvas[data-drawn='true']");
+      return (await element.count()) > 0 ? Number(await element.getAttribute("data-node-count")) : null;
+    },
+    { timeout: 20_000, description: "그래프가 실제로 그려지는 것" },
+  );
+  if (!drawnNodes || drawnNodes < 2) throw new Error(`the graph drew too little to be a graph: ${drawnNodes}`);
+  const overview = await page.evaluate(async () => {
+    const [member, team] = await Promise.all([
+      (await fetch("/api/graph/overview?view=member")).json(),
+      (await fetch("/api/graph/overview?view=team")).json(),
+    ]);
+    return {
+      kinds: [...new Set(member.nodes.map((node) => node.kind))].sort(),
+      provenance: member.edges.every((edge) => Boolean(edge.provenance)),
+      teamHasPeople: team.nodes.some((node) => node.kind === "person"),
+      teamNodes: team.nodes.filter((node) => node.kind === "team").map((node) => node.id),
+      internalEdges: team.edges.filter((edge) => edge.from === edge.to).length,
+    };
+  });
+  if (!overview.kinds.includes("team") || !overview.kinds.includes("task")) {
+    throw new Error(`the first screen is missing node kinds: ${JSON.stringify(overview)}`);
+  }
+  if (!overview.provenance) throw new Error("an edge arrived without saying which ledger states it");
+  if (overview.teamHasPeople || overview.internalEdges > 0 || overview.teamNodes.length === 0) {
+    throw new Error(`grouping by team did not read one level up: ${JSON.stringify(overview)}`);
+  }
+  // 표현 수준 전환은 같은 인가된 답을 다시 그린다.
+  await canvas.getByRole("tab", { name: "팀으로 묶기" }).click();
+  await pollFor(page, async () => (await canvas.getByRole("tab", { name: "팀으로 묶기" }).getAttribute("aria-selected")) === "true", {
+    timeout: 15_000,
+    description: "팀으로 묶기 전환",
+  });
+  await canvas.getByRole("tab", { name: "구성원 보기" }).click();
+
+  // The manager follows it from the search box.
   await page.getByLabel("무엇을 찾을까요").fill(title);
   await page.getByRole("button", { name: "찾기" }).click();
   const results = page.locator("section[aria-label='검색 결과']");
@@ -93,7 +138,7 @@ try {
 
   // Someone who may not read this work finds none of it, and cannot walk into it.
   await page.getByRole("dialog").waitFor({ state: "detached", timeout: 20_000 });
-  await page.getByRole("button", { name: "로그아웃" }).click();
+  await signOut(page);
   await loginAs(page, "mina");
   const hidden = await page.evaluate(async ({ childId, subject }) => {
     const found = await (await fetch(`/api/graph/search?q=${encodeURIComponent(subject + " 하위")}`)).json();
@@ -105,7 +150,15 @@ try {
   }
 
   await page.screenshot({ path: "test-results/relation-graph-e2e.png", fullPage: true });
-  console.log(JSON.stringify({ result: "a manager followed request → work → parts and materials, and opened the work", task_id: built.taskId }));
+  console.log(
+    JSON.stringify({
+      result: "the first screen was already a graph, grouped by team, then followed request → work → parts and materials",
+      task_id: built.taskId,
+      node_kinds: overview.kinds,
+      team_nodes: overview.teamNodes,
+      drawn_nodes: drawnNodes,
+    }),
+  );
 } finally {
   await browser.close();
 }

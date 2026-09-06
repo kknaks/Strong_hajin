@@ -3,7 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { ActionCommandButtons, ActionPreviewDetails, actionKicker, actionSubject } from "../ActionPreview";
 import { formatDate, formatDuration, isoDateInSeoul } from "../labels";
 import { AssistantMarkdown } from "./AssistantMarkdown";
-import type { ActionItem, Conversation, ConversationTurn, GraphReceipt, MaterialEvidence } from "../viewModels";
+import { GraphCanvas } from "../GraphCanvas";
+import type { ActionItem, Conversation, ConversationTurn, GraphEdge, GraphNode, GraphReceipt, MaterialEvidence } from "../viewModels";
 import type { LocalFragment } from "./useConversations";
 
 const BOTTOM_SLACK_PX = 24;
@@ -25,6 +26,7 @@ export function MessageList({
   onRetryTurn,
   onRetryFragment,
   onDiscardFragment,
+  onOpenGraph,
 }: {
   conversation: Conversation | null;
   localFragments: LocalFragment[];
@@ -32,6 +34,8 @@ export function MessageList({
   onRetryTurn: (turnId: string) => void;
   onRetryFragment: (fragment: LocalFragment) => void;
   onDiscardFragment: (localId: string) => void;
+  /** Continue this turn's picture on the full graph surface, centred on one node. */
+  onOpenGraph?: (nodeRef: string) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
@@ -90,6 +94,7 @@ export function MessageList({
             localFragments={localFragments}
             onDecide={onDecide}
             onDiscardFragment={onDiscardFragment}
+            onOpenGraph={onOpenGraph}
             onRetryFragment={onRetryFragment}
             onRetryTurn={onRetryTurn}
           />
@@ -111,6 +116,7 @@ function ConversationTimeline({
   onRetryTurn,
   onRetryFragment,
   onDiscardFragment,
+  onOpenGraph,
 }: {
   conversation: Conversation;
   localFragments: LocalFragment[];
@@ -118,6 +124,7 @@ function ConversationTimeline({
   onRetryTurn: (turnId: string) => void;
   onRetryFragment: (fragment: LocalFragment) => void;
   onDiscardFragment: (localId: string) => void;
+  onOpenGraph?: (nodeRef: string) => void;
 }) {
   const queuedMessages = conversation.messages.filter((item) => item.state === "queued");
 
@@ -159,7 +166,7 @@ function ConversationTimeline({
                   {item.body_state === "cancelled" && <small className="ax-body-note">취소 시점까지의 답변</small>}
                 </div>
               ))}
-            <SearchPath steps={walked} />
+            <SearchPath onOpenGraph={onOpenGraph} steps={walked} />
             <EvidenceCards evidence={evidence} />
             {actions.map((action) => (
               <ActionResultCard action={action} key={action.action_id} onDecide={onDecide} />
@@ -366,15 +373,46 @@ const EDGE_SENTENCE: Record<string, string> = {
  * Nothing here is inferred — a connection appears only because a graph tool returned it for this persona, and it is
  * restored from the server on re-entry rather than held in the page.
  */
-function SearchPath({ steps }: { steps: GraphReceipt[] }) {
+function SearchPath({ steps, onOpenGraph }: { steps: GraphReceipt[]; onOpenGraph?: (nodeRef: string) => void }) {
   if (steps.length === 0) return null;
   const found = steps.filter((step) => step.kind === "node");
   const edges = steps.filter((step) => step.kind === "edge");
+  // The picture is this turn's, fixed: the nodes and edges its tools actually returned, and nothing else.
+  const seen = new Map<string, GraphNode>();
+  const add = (ref: string | null | undefined, title: string | null | undefined) => {
+    if (!ref || seen.has(ref)) return;
+    const [kind, ...rest] = ref.split(":");
+    seen.set(ref, { kind: kind as GraphNode["kind"], id: rest.join(":"), title: title ?? ref, state: null });
+  };
+  for (const step of steps) {
+    add(step.node_ref, step.node_title);
+    add(step.from_ref, step.from_title);
+    add(step.to_ref, step.to_title);
+  }
+  const graphEdges: GraphEdge[] = edges
+    .filter((step) => step.from_ref && step.to_ref)
+    .map((step) => ({
+      kind: step.edge_kind ?? "",
+      from: String(step.from_ref),
+      to: String(step.to_ref),
+      label: EDGE_SENTENCE[step.edge_kind ?? ""] ?? step.edge_kind ?? "",
+    }));
+  const center = steps.find((step) => step.kind === "node")?.node_ref ?? graphEdges[0]?.from;
   return (
     <section aria-label="찾아본 연결" className="ax-search-path">
       <b>
         찾아본 연결 {edges.length + found.length}단계 <small>· 실제로 조회한 것만</small>
       </b>
+      {seen.size > 0 && (
+        <>
+          <GraphCanvas edges={graphEdges} height={180} interactive={false} nodes={[...seen.values()]} />
+          {onOpenGraph && center && (
+            <button className="btn h30" onClick={() => onOpenGraph(String(center))} type="button">
+              전체 그래프로 보기
+            </button>
+          )}
+        </>
+      )}
       <ol className="ax-path-list">
         {found.length > 0 && (
           <li key="found">
