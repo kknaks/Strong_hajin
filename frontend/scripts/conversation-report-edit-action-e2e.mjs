@@ -24,7 +24,8 @@ try {
   const task = page.locator("tr.progress-row", { hasText: title });
   await task.getByRole("button", { name: "시작" }).click();
   await navigation.getByRole("button", { name: "보고" }).click();
-  await page.getByLabel("보고일").fill(reportDate);
+  // 달력 버튼도 같은 말로 이름 붙어 있으므로 필드를 정확히 가리킨다.
+  await page.getByLabel("보고일", { exact: true }).fill(reportDate);
   const generatedResponse = page.waitForResponse((response) =>
     response.url().endsWith("/api/daily-reports/generate-draft") && response.request().method() === "POST",
   );
@@ -68,8 +69,14 @@ try {
   await page.locator(`.ax-action-card[data-action-id="${action.action_id}"]`).waitFor();
   await page.getByRole("button", { name: "닫기", exact: true }).click();
   await navigation.getByRole("button", { name: "내 업무" }).click();
-  const actionCard = page.locator(`.decision-panel .task-card[data-action-id="${action.action_id}"]`);
-  await actionCard.getByRole("button", { name: "승인" }).click();
+  // 판단은 한 곳에서 한다: AX가 준비한 확인도 다른 판단과 같은 카드·같은 상세에서 결정한다.
+  const actionCard = page.locator(`.decision-panel .task-card[data-action-item-id="${action.action_id}"]`);
+  await actionCard.waitFor({ timeout: 20_000 });
+  await actionCard.getByRole("button", { name: "판단하기" }).click();
+  const decisionDrawer = page.getByRole("dialog", { name: "판단 상세" });
+  await decisionDrawer.waitFor({ timeout: 20_000 });
+  await decisionDrawer.getByRole("button", { name: "승인" }).click();
+  await page.getByRole("dialog").waitFor({ state: "detached", timeout: 20_000 });
   const history = await pollFor(
     page,
     () => page.evaluate(async ({ actionId, conversationId, reportId, version, body, workflowRunId, definitionVersionId }) => {
