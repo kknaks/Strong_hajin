@@ -13,3 +13,8 @@ frontend/test-results/
 /.scax/
 /backend/.scax/
 .playwright-mcp/
+
+# 전달받은 자료와 거기서 만든 dataset·목록은 저장소가 소유하지 않는다.
+datasets/
+*-inventory.json
+*.dataset/
