@@ -15,6 +15,7 @@ from ax_workspace.modules.ax_execution.conversations import (
 )
 from ax_workspace.modules.ax_execution.actions import ActionApplication
 from ax_workspace.modules.organization_access.domain import Principal
+from ax_workspace.modules.organization_access.administration import AccessAdministration
 from ax_workspace.modules.organization_access.application import OrganizationApplication
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
 from ax_workspace.modules.reports.application import DailyReportApplication
@@ -474,6 +475,54 @@ class WorkflowApplication:
     def authenticate_with_password(self, email: str, password: str) -> Principal:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).authenticate_with_password(email, password)
+
+    def grant_access_role(
+        self,
+        principal: Principal,
+        *,
+        member_id: str,
+        role_id: str,
+        scope_kind: str = "unit",
+        scope_ref: str = "scax",
+        include_descendants: bool = True,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = AccessAdministration(SqlAlchemyOrganizationRepository(session)).grant_role(
+                principal,
+                member_id=member_id,
+                role_id=role_id,
+                scope_kind=scope_kind,
+                scope_ref=scope_ref,
+                include_descendants=include_descendants,
+                reason=reason,
+            )
+            session.commit()
+            return result
+
+    def revoke_access_grant(self, principal: Principal, grant_id: UUID, *, reason: str | None = None) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = AccessAdministration(SqlAlchemyOrganizationRepository(session)).revoke_grant(
+                principal, grant_id, reason=reason
+            )
+            session.commit()
+            return result
+
+    def set_role_capabilities(
+        self,
+        principal: Principal,
+        role_id: str,
+        capabilities: list[str],
+        *,
+        expected_version: int,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = AccessAdministration(SqlAlchemyOrganizationRepository(session)).set_role_capabilities(
+                principal, role_id, capabilities, expected_version=expected_version, reason=reason
+            )
+            session.commit()
+            return result
 
     def member_directory(self, principal: Principal) -> list[dict[str, Any]]:
         with self._session_factory() as session:

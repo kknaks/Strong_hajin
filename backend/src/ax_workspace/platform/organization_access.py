@@ -5,13 +5,14 @@ from uuid import UUID
 
 from datetime import UTC, datetime
 
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.organization_access.credentials import LocalCredential, normalize_email
 from ax_workspace.modules.organization_access.domain import TASK_ASSIGN, Grant, Principal
 from ax_workspace.platform.persistence import (
     AccessGrantRecord,
+    ActivityEventRecord,
     AppointmentRecord,
     CapabilityRecord,
     EmploymentPeriodRecord,
@@ -200,6 +201,129 @@ class SqlAlchemyOrganizationRepository:
         if record is None:
             return None
         return LocalCredential(member_id=record.member_id, email=record.email, password_hash=record.password_hash)
+
+    # ---- access administration (ERD ACCESS_GRANT / ROLE_CAPABILITY writes) ----
+
+    def member_units(self, member_id: str) -> frozenset[str]:
+        now = datetime.now(UTC)
+        return frozenset(
+            self._session.scalars(
+                select(MembershipRecord.organization_id).where(
+                    MembershipRecord.member_id == member_id,
+                    MembershipRecord.valid_from <= now,
+                    or_(MembershipRecord.valid_until.is_(None), MembershipRecord.valid_until > now),
+                )
+            )
+        )
+
+    def role_exists(self, role_id: str) -> bool:
+        return self._session.get(RoleRecord, role_id) is not None
+
+    def role_version(self, role_id: str) -> int | None:
+        role = self._session.get(RoleRecord, role_id)
+        return None if role is None else role.version
+
+    def add_role_grant(
+        self,
+        *,
+        member_id: str,
+        role_id: str,
+        scope_kind: str,
+        scope_ref: str,
+        include_descendants: bool,
+        granted_by: str,
+    ) -> dict[str, Any]:
+        role = self._session.get(RoleRecord, role_id)
+        grant = AccessGrantRecord(
+            member_id=member_id,
+            role_id=role_id,
+            # The grant pins the role as it is now: a later change to the role does not travel backwards into it.
+            role_capability_version=role.version if role is not None else 1,
+            scope_kind=scope_kind,
+            scope_organization_id=scope_ref if scope_kind == "unit" else "scax",
+            scope_ref=scope_ref,
+            include_descendants=include_descendants,
+            granted_by_member_id=granted_by,
+        )
+        self._session.add(grant)
+        self._session.flush()
+        return {
+            "grant_id": str(grant.id),
+            "member_id": member_id,
+            "role_id": role_id,
+            "scope_kind": scope_kind,
+            "scope_ref": scope_ref,
+            "include_descendants": include_descendants,
+            "role_capability_version": grant.role_capability_version,
+        }
+
+    def grant(self, grant_id: UUID) -> AccessGrantRecord | None:
+        return self._session.get(AccessGrantRecord, grant_id)
+
+    def revoke_grant(self, grant_id: UUID) -> None:
+        grant = self._session.get(AccessGrantRecord, grant_id)
+        if grant is not None and grant.revoked_at is None:
+            grant.revoked_at = datetime.now(UTC)
+            self._session.flush()
+
+    def replace_role_capabilities(self, role_id: str, capabilities: list[str]) -> int:
+        """A new mapping version, and the role marked as the organization's own from now on."""
+        role = self._session.get(RoleRecord, role_id)
+        if role is None:
+            raise LookupError(role_id)
+        version = role.version + 1
+        self._session.execute(delete(RoleCapabilityRecord).where(RoleCapabilityRecord.role_id == role_id))
+        for capability in capabilities:
+            self._session.add(
+                RoleCapabilityRecord(role_id=role_id, capability_id=capability, mapping_version=version)
+            )
+        role.version = version
+        role.customized_at = datetime.now(UTC)
+        # Grants that pinned an older snapshot would otherwise keep the previous meaning forever; the organization
+        # changed what the role means, so the grants that carry that role move with it.
+        self._session.execute(
+            update(AccessGrantRecord)
+            .where(AccessGrantRecord.role_id == role_id, AccessGrantRecord.revoked_at.is_(None))
+            .values(role_capability_version=version)
+        )
+        self._session.flush()
+        return version
+
+    def members_administering(self, unit: str) -> set[str]:
+        """Everyone who can still administer access covering this unit, as the ledger stands right now."""
+        administering: set[str] = set()
+        for member_id in self._session.scalars(select(MemberRecord.id)):
+            principal = self.principal_for(member_id)
+            if principal is not None and principal.allows("organization.manage", unit=unit):
+                administering.add(member_id)
+        return administering
+
+    def append_access_audit(
+        self,
+        *,
+        target_type: str,
+        target_id: str,
+        event_kind: str,
+        actor_id: str,
+        summary: str,
+        reason: str | None,
+        before_ref: str | None = None,
+        after_ref: str | None = None,
+    ) -> None:
+        self._session.add(
+            ActivityEventRecord(
+                target_type=target_type,
+                target_id=target_id,
+                event_kind=event_kind,
+                actor_id=actor_id,
+                before_ref=before_ref,
+                after_ref=after_ref,
+                reason=reason,
+                safe_summary=summary[:300],
+                occurred_at=datetime.now(UTC),
+            )
+        )
+        self._session.flush()
 
     def member_ids_in(self, units: frozenset[str]) -> frozenset[str]:
         """Active members whose current membership sits in one of these units."""

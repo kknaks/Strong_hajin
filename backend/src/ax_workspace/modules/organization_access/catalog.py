@@ -54,6 +54,7 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
     CapabilitySpec("action.read", "판단 항목 읽기", "work"),
     CapabilitySpec("action.decide", "판단 항목 결정", "work"),
     CapabilitySpec("team.manage", "팀 관리", "organization"),
+    CapabilitySpec("organization.manage", "역할·권한 관리", "organization"),
     CapabilitySpec("report.review", "보고 확인", "report"),
     CapabilitySpec("daily_report.read", "일일보고 읽기", "report"),
     CapabilitySpec("daily_report.generate", "일일보고 초안 생성", "report"),
@@ -114,6 +115,7 @@ _LEAD_CAPABILITIES = (
 _PEOPLE_CAPABILITIES = _MEMBER_CAPABILITIES + (
     "task.assign",
     "team.manage",
+    "organization.manage",
     "report.review",
     "meeting.followup.assign",
     # 인사 담당자 answers for the data about people, which is why deleting a file for good sits here.

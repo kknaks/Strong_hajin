@@ -8,6 +8,13 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from ax_workspace.modules.organization_access.administration import (
+    AccessAdministrationDenied,
+    AccessAdministrationError,
+    AccessNotFound,
+    AccessVersionConflict,
+)
+from ax_workspace.modules.organization_access.catalog import UnknownCapability
 from ax_workspace.modules.organization_access.credentials import AuthenticationFailed
 from ax_workspace.modules.organization_access.domain import Principal
 from ax_workspace.entrypoints.http_auth import (
@@ -37,6 +44,28 @@ from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
 class MemberResponse(BaseModel):
     id: str
     display_name: str
+
+
+class GrantAccessRoleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    member_id: str = Field(min_length=1, max_length=100)
+    role_id: str = Field(min_length=1, max_length=100)
+    scope_kind: Literal["unit", "organization"] = "unit"
+    scope_ref: str = Field(default="scax", min_length=1, max_length=100)
+    include_descendants: bool = True
+    reason: str = Field(min_length=1, max_length=300)
+
+
+class RevokeAccessGrantRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=1, max_length=300)
+
+
+class SetRoleCapabilitiesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=1)
+    capabilities: list[str] = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=300)
 
 
 class LoginRequest(BaseModel):
@@ -349,6 +378,14 @@ def _runtime_error(error: Exception) -> HTTPException:
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "conversation_queue_full", "queue_size": error.queue_size, "limit": error.limit},
         )
+    if isinstance(error, AccessNotFound):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
+    if isinstance(error, AccessAdministrationDenied):
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
+    if isinstance(error, AccessVersionConflict):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    if isinstance(error, (AccessAdministrationError, UnknownCapability)):
+        return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     if isinstance(error, GraphNotFound):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
     if isinstance(error, GraphAccessDenied):
@@ -749,6 +786,47 @@ def create_app(
         @app.get("/api/organization/members", response_model=list[MemberResponse])
         def organization_members(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
             return app.state.workflow_application.member_directory(principal)
+
+        @app.post("/api/access/grants", status_code=status.HTTP_201_CREATED)
+        def grant_access_role(
+            request: GrantAccessRoleRequest, principal: Principal = Depends(developer_principal)
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.grant_access_role(
+                    principal,
+                    member_id=request.member_id,
+                    role_id=request.role_id,
+                    scope_kind=request.scope_kind,
+                    scope_ref=request.scope_ref,
+                    include_descendants=request.include_descendants,
+                    reason=request.reason,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/access/grants/{grant_id}/revoke")
+        def revoke_access_grant(
+            grant_id: UUID, request: RevokeAccessGrantRequest, principal: Principal = Depends(developer_principal)
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.revoke_access_grant(principal, grant_id, reason=request.reason)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.patch("/api/access/roles/{role_id}")
+        def set_role_capabilities(
+            role_id: str, request: SetRoleCapabilitiesRequest, principal: Principal = Depends(developer_principal)
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.set_role_capabilities(
+                    principal,
+                    role_id,
+                    request.capabilities,
+                    expected_version=request.expected_version,
+                    reason=request.reason,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
 
         @app.get("/api/organization/tree")
         def organization_tree(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
