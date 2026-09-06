@@ -571,6 +571,7 @@ class SqlAlchemyConversationRepository:
                     "resource_id": item.resource_id,
                     "resource_version": item.resource_version,
                     "parent_resource_id": item.parent_resource_id,
+                    "source_locator": item.source_locator,
                 }
                 for item in answer_resources
             ],

@@ -96,6 +96,23 @@ def caused_by(causation_ref: str | None):
         _CAUSATION.reset(token)
 
 
+def _clean_locator(value: Any) -> dict[str, Any] | None:
+    """도구가 말해 준 자리만 남긴다 — 쪽·절·구간처럼 그 자료가 스스로 부르는 이름.
+
+    원문이나 발췌는 여기 오지 않는다. 근거는 자리를 가리키는 것이지 내용을 옮겨 적는 것이 아니며, 옮겨 적으면
+    권한이 회수된 뒤에도 그 글이 남는다. 알아듣지 못하는 모양은 통째로 버리고 없는 것으로 둔다.
+    """
+    if not isinstance(value, dict):
+        return None
+    allowed = ("page", "section", "start", "end", "anchor", "sheet", "cell")
+    cleaned = {
+        key: (int(value[key]) if key in {"page", "start", "end"} and str(value[key]).lstrip("-").isdigit() else str(value[key])[:120])
+        for key in allowed
+        if value.get(key) not in (None, "")
+    }
+    return cleaned or None
+
+
 class SqlAlchemyGraphReceiptRepository:
     """Where a delegated turn actually walked, in the order it walked. Only observed steps are written."""
 
@@ -181,6 +198,7 @@ class SqlAlchemyGraphReceiptRepository:
                     resource_id=key[1],
                     resource_version=reference.get("resource_version"),
                     parent_resource_id=(str(reference["parent_resource_id"]) if reference.get("parent_resource_id") else None),
+                    source_locator=_clean_locator(reference.get("source_locator")),
                     observed_at=now,
                 )
             )

@@ -505,9 +505,25 @@ class McpReportsFacade:
     def search_task_materials(self, task_id: str, query: str, limit: int = 5) -> dict[str, Any]:
         """Authorized excerpt search. Inside a delegated chat turn the hits become that turn's material evidence."""
         causation_id = os.getenv("AX_MCP_CAUSATION_ID")
-        return self._application.search_task_materials(
+        found = self._application.search_task_materials(
             self.principal, UUID(task_id), query, limit=limit, execution_id=UUID(causation_id) if causation_id else None
         )
+        # 답이 가리키는 것에도 이 자료가 들어가고, 원문의 어디였는지가 함께 간다. 발췌는 근거 카드가 갖고
+        # 여기에는 자리만 남는다 — 같은 글을 두 곳에 복제하지 않는다.
+        seen: dict[str, dict[str, Any]] = {}
+        for hit in found.get("results") or []:
+            material_id = str(hit.get("material_id") or "")
+            if not material_id or material_id in seen:
+                continue
+            locator = {"page": hit["page"]} if hit.get("page") else None
+            seen[material_id] = {
+                "resource_type": "material",
+                "resource_id": material_id,
+                "parent_resource_id": task_id,
+                "source_locator": locator,
+            }
+        self._remember(list(seen.values()))
+        return found
 
     def task_assignment_inbox(self) -> list[dict[str, Any]]:
         return self._application.task_assignment_inbox(self.principal)

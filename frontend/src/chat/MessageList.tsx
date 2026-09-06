@@ -427,7 +427,18 @@ function SearchPathSteps({ steps }: { steps: GraphReceipt[] }) {
  * a picture of one turn — nothing to pan, zoom or filter — and `전체 그래프로 보기` hands the centre to the full
  * surface, which applies this person's access again from the start.
  */
-function TurnGraph({ steps, onOpenGraph }: { steps: GraphReceipt[]; onOpenGraph?: (nodeRef: string) => void }) {
+function TurnGraph({
+  steps,
+  onOpenGraph,
+  onPeek,
+  resources,
+}: {
+  steps: GraphReceipt[];
+  onOpenGraph?: (nodeRef: string) => void;
+  /** 그림의 node를 누르면 근거 행을 누른 것과 같은 자리가 열린다 — 같은 정본이므로 다른 문이 있을 이유가 없다. */
+  onPeek?: (resource: AnswerResource) => void;
+  resources?: AnswerResource[];
+}) {
   if (steps.length === 0) return null;
   const seen = new Map<string, GraphNode>();
   const add = (ref: string | null | undefined, title: string | null | undefined) => {
@@ -452,7 +463,22 @@ function TurnGraph({ steps, onOpenGraph }: { steps: GraphReceipt[]; onOpenGraph?
   const center = steps.find((step) => step.kind === "node")?.node_ref ?? edges[0]?.from;
   return (
     <section aria-label="이 답의 관계" className="ax-turn-graph">
-      <GraphCanvas edges={edges} height={180} interactive={false} nodes={[...seen.values()]} />
+      <GraphCanvas
+        edges={edges}
+        height={180}
+        interactive={false}
+        nodes={[...seen.values()]}
+        onSelect={
+          onPeek
+            ? (node) => {
+                const found = (resources ?? []).find(
+                  (row) => row.resource_type === node.kind && row.resource_id === node.id,
+                );
+                if (found) onPeek(found);
+              }
+            : undefined
+        }
+      />
       {onOpenGraph && center && (
         <button className="btn h30" onClick={() => onOpenGraph(String(center))} type="button">
           전체 그래프로 보기
@@ -460,6 +486,18 @@ function TurnGraph({ steps, onOpenGraph }: { steps: GraphReceipt[]; onOpenGraph?
       )}
     </section>
   );
+}
+
+/** 원문의 어디였는지를 사람이 읽는 말로. 도구가 말해 준 자리만 쓰고 없으면 아무것도 쓰지 않는다. */
+function locatorText(locator: AnswerResource["source_locator"]): string {
+  if (!locator) return "";
+  const parts = [
+    locator.page ? `${locator.page}쪽` : "",
+    locator.sheet ?? "",
+    locator.cell ?? "",
+    locator.section ?? "",
+  ].filter(Boolean);
+  return parts.join(" · ");
 }
 
 const RESOURCE_LABEL: Record<string, string> = {
@@ -503,7 +541,12 @@ function AnswerResources({
             <li data-resource={ref} key={resource.reference_id}>
               <span className="ax-resource-kind">{RESOURCE_LABEL[resource.resource_type] ?? resource.resource_type}</span>
               <span className="ax-resource-title">{resource.title}</span>
+              {locatorText(resource.source_locator) && (
+                <span className="t-meta">{locatorText(resource.source_locator)}</span>
+              )}
               {resource.state && <span className="t-meta">{taskStateLabel[resource.state as keyof typeof taskStateLabel] ?? resource.state}</span>}
+              {/* 답이 딛고 선 뒤로 바뀌었으면 링크를 열기 전에 말한다. 무엇이 달라졌는지는 상세가 말한다. */}
+              {resource.changed_since && <span className="ax-resource-changed">답변 뒤 바뀜</span>}
               {onOpen && (
                 <button className="btn h30" onClick={() => onOpen(resource)} type="button">
                   상세 열기
@@ -561,7 +604,7 @@ function AnswerEvidence({
       <div className="ax-evidence-body">
         <AnswerResources onOpen={onOpen} provenance={walkedTo(steps)} resources={resources} />
         <EvidenceCards evidence={evidence} />
-        <TurnGraph onOpenGraph={onOpenGraph} steps={steps} />
+        <TurnGraph onOpenGraph={onOpenGraph} onPeek={onOpen} resources={resources} steps={steps} />
       </div>
     </details>
   );

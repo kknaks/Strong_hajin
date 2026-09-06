@@ -5,10 +5,12 @@ kept as canonical ids and the versions the tools saw, in the order they were rea
 is read back, each reference is asked of the module that owns it. A person who has since lost access to one of them
 sees no title, no placeholder and no count.
 """
+import asyncio
 from uuid import UUID
 
 from fastapi.testclient import TestClient
 
+from ax_workspace.bootstrap.material_worker import MaterialExtractionWorker
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.mcp import McpReportsFacade
@@ -23,7 +25,8 @@ def _stack(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
     settings = Settings(RuntimeProfile.TEST, database_url, materials_dir=str(tmp_path / "materials"))
-    return TestClient(create_app(settings)), settings, database_url
+    app = create_app(settings)
+    return TestClient(app), settings, database_url, app.state.workflow_application
 
 
 def _delegated_turn(client, database_url, headers, title: str) -> tuple[dict, str]:
@@ -39,7 +42,7 @@ def _delegated_turn(client, database_url, headers, title: str) -> tuple[dict, st
 
 
 def test_what_a_turn_read_becomes_something_each_answer_item_can_open(tmp_path, monkeypatch) -> None:
-    client, settings, database_url = _stack(tmp_path)
+    client, settings, database_url, application = _stack(tmp_path)
     first = client.post("/api/tasks", headers=MINA, json={"title": "먼저 읽은 업무"}).json()
     second = client.post("/api/tasks", headers=MINA, json={"title": "다음에 읽은 업무"}).json()
     meeting = client.post(
@@ -76,8 +79,68 @@ def test_what_a_turn_read_becomes_something_each_answer_item_can_open(tmp_path, 
     assert [row["sequence"] for row in references] == sorted(row["sequence"] for row in references)
 
 
+def test_a_reference_says_where_in_the_source_and_whether_it_moved_since(tmp_path, monkeypatch) -> None:
+    """근거는 자리를 가리키는 것이지 내용을 옮겨 적는 것이 아니다. 그리고 그 뒤에 바뀌었으면 말해야 한다.
+
+    링크를 열기 전에 무엇이 달라졌을 수 있는지 사람이 알아야 한다. 감추면 답을 계속 지금의 사실로 읽게 된다.
+    """
+    client, settings, database_url, application = _stack(tmp_path)
+    task = client.post("/api/tasks", headers=MINA, json={"title": "회차가 움직일 업무"}).json()
+    conversation, execution_id = _delegated_turn(client, database_url, MINA, "version-drift")
+
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", execution_id)
+    McpReportsFacade(settings, "mina").get_task(task["task_id"])
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
+
+    [before] = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()["answer_resources"]
+    assert before["resource_version"] == task["version"] and before["changed_since"] is False
+    assert before["source_locator"] is None, "말해 주지 않은 자리를 지어냈습니다"
+
+    client.patch(
+        f"/api/tasks/{task['task_id']}",
+        headers=MINA,
+        json={"expected_version": task["version"], "title": "회차가 움직인 업무"},
+    )
+    [after] = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()["answer_resources"]
+    # 답이 딛고 선 회차는 그대로이고, 지금 회차가 달라졌다는 사실이 함께 온다.
+    assert after["resource_version"] == task["version"]
+    assert after["current_version"] == task["version"] + 1
+    assert after["changed_since"] is True
+    assert after["title"] == "회차가 움직인 업무"
+
+
+def test_a_material_the_answer_read_says_which_page_without_repeating_the_text(tmp_path, monkeypatch) -> None:
+    """자료를 읽고 답했으면 그 자료도 답이 가리키는 것이다. 어디였는지는 함께 가고, 원문은 가지 않는다.
+
+    같은 글을 두 곳에 복제하면 권한이 회수된 뒤에도 한쪽에 남는다. 발췌는 근거 카드가 갖고 여기에는 자리만 둔다.
+    """
+    client, settings, database_url, application = _stack(tmp_path)
+    task = client.post("/api/tasks", headers=MINA, json={"title": "자료가 붙은 업무"}).json()
+    uploaded = client.post(
+        f"/api/tasks/{task['task_id']}/materials",
+        headers=MINA,
+        data={"kind": "input"},
+        files={"file": ("견적.md", "# briefing\n\n공급사는 한빛상사이고 납기일은 2026-09-30입니다.\n".encode(), "text/markdown")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    worker = MaterialExtractionWorker(settings, queue_factory=lambda session: application.memory_job_queue)
+    assert asyncio.run(worker.run_once()) is True
+
+    conversation, execution_id = _delegated_turn(client, database_url, MINA, "material-locator")
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", execution_id)
+    found = McpReportsFacade(settings, "mina").search_task_materials(task["task_id"], "납기일")
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
+    assert found["results"], "자료에서 아무것도 찾지 못했습니다"
+
+    named = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()["answer_resources"]
+    [material] = [row for row in named if row["resource_type"] == "material"]
+    assert material["title"] == "견적.md" and material["parent_resource_id"] == task["task_id"]
+    # 원문은 여기 없다. 있다면 발췌가 두 곳에 남는다.
+    assert "한빛상사" not in str(material) and "납기일" not in str(material)
+
+
 def test_a_reference_is_asked_of_its_owner_again_every_time_it_is_read(tmp_path, monkeypatch) -> None:
-    client, settings, database_url = _stack(tmp_path)
+    client, settings, database_url, application = _stack(tmp_path)
     meeting = client.post(
         "/api/meetings",
         headers=JIHO,
@@ -117,7 +180,7 @@ def test_a_reference_is_asked_of_its_owner_again_every_time_it_is_read(tmp_path,
 
 
 def test_a_turn_records_nothing_for_a_conversation_that_is_not_its_own(tmp_path, monkeypatch) -> None:
-    client, settings, database_url = _stack(tmp_path)
+    client, settings, database_url, application = _stack(tmp_path)
     task = client.post("/api/tasks", headers=MINA, json={"title": "남의 대화"}).json()
     conversation, execution_id = _delegated_turn(client, database_url, MINA, "not-mine")
 
@@ -139,7 +202,7 @@ def test_a_follow_up_starts_from_what_this_conversation_already_read(tmp_path, m
     """
     from ax_workspace.platform.codex_cli import CodexCliProviderAdapter
 
-    client, settings, database_url = _stack(tmp_path)
+    client, settings, database_url, application = _stack(tmp_path)
     kept = client.post("/api/tasks", headers=MINA, json={"title": "이어서 물어볼 업무"}).json()
     meeting = client.post(
         "/api/meetings",
@@ -217,7 +280,7 @@ def test_a_stored_walk_is_checked_again_before_it_is_shown(tmp_path, monkeypatch
     A receipt keeps what a tool returned. Whether the reader may still see it is asked again at display time, so a
     revoked share leaves neither a title nor a step someone could count.
     """
-    client, settings, database_url = _stack(tmp_path)
+    client, settings, database_url, application = _stack(tmp_path)
     meeting = client.post(
         "/api/meetings",
         headers=JIHO,
@@ -255,7 +318,7 @@ def test_a_stored_walk_is_checked_again_before_it_is_shown(tmp_path, monkeypatch
 
 def test_a_tool_receipt_stops_naming_what_the_reader_may_no_longer_open(tmp_path, monkeypatch) -> None:
     """도구 영수증에 적힌 제목도 표시 전에 다시 확인한다. 호출한 사실은 남고, 이름은 사라진다."""
-    client, settings, database_url = _stack(tmp_path)
+    client, settings, database_url, application = _stack(tmp_path)
     task = client.post("/api/tasks", headers=JIHO, json={"title": "요약에 남을 업무"}).json()
     conversation, execution_id = _delegated_turn(client, database_url, JIHO, "summary-turn")
 

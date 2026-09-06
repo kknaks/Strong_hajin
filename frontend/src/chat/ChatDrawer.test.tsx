@@ -715,6 +715,104 @@ describe("근거", () => {
   });
 });
 
+describe("근거를 열어도 대화는 그대로", () => {
+  afterEach(cleanup);
+
+  it("정본을 그 자리에서 읽고, 쓰다 만 문장과 대화가 사라지지 않는다", async () => {
+    const named = {
+      reference_id: "a1",
+      turn_id: "c1-t1",
+      sequence: 1,
+      resource_type: "task" as const,
+      resource_id: "task-1",
+      resource_version: 2,
+      parent_resource_id: null,
+      title: "분기 마감",
+      state: "in_progress",
+    };
+    const openFully = vi.fn();
+    const { props } = renderDrawer({
+      message: "쓰다 만 문장",
+      onOpenResource: openFully,
+      activeConversation: {
+        ...conversation("c1", "견적 검토", "견적서 납기일을 알려줘"),
+        answer_resources: [named],
+      } as never,
+    });
+    expect(props.message).toBe("쓰다 만 문장");
+
+    // 근거는 접혀 있다 — 답이 먼저 읽히도록.
+    const panel = document.querySelector("details.ax-answer-evidence") as HTMLDetailsElement;
+    fireEvent.click(panel.querySelector("summary") as HTMLElement);
+    fireEvent.click(screen.getByRole("button", { name: "상세 열기" }));
+    const peek = await screen.findByLabelText("근거 상세");
+    expect(peek).toBeTruthy();
+    // 대화를 떠나지 않았다: 목록도 쓰다 만 문장도 그대로다.
+    expect((screen.getByLabelText("AX 메시지") as HTMLTextAreaElement).value).toBe("쓰다 만 문장");
+    expect(screen.getByRole("button", { name: "견적 검토" })).toBeTruthy();
+    // 화면 이동은 별도 CTA이며 여기서 저절로 일어나지 않는다.
+    expect(openFully).not.toHaveBeenCalled();
+  });
+});
+
+describe("근거가 딛고 선 것", () => {
+  afterEach(cleanup);
+
+  it("원문의 어디였는지를 말하고, 답변 뒤에 바뀌었으면 열기 전에 알려 준다", async () => {
+    const base = conversation("c14", "자료 질문", "견적서에 납기일이 뭐라고 되어 있어?");
+    const turnId = base.turns[0].turn_id;
+    const grounded = {
+      ...base,
+      answer_resources: [
+        {
+          reference_id: "a1",
+          turn_id: turnId,
+          sequence: 1,
+          resource_type: "material" as const,
+          resource_id: "m1",
+          resource_version: null,
+          parent_resource_id: "t1",
+          title: "견적서.pdf",
+          state: null,
+          source_locator: { page: 12 },
+        },
+        {
+          reference_id: "a2",
+          turn_id: turnId,
+          sequence: 2,
+          resource_type: "task" as const,
+          resource_id: "t1",
+          resource_version: 3,
+          parent_resource_id: null,
+          title: "분기 마감",
+          state: "in_progress",
+          current_version: 5,
+          changed_since: true,
+        },
+      ],
+    };
+    const { container } = render(
+      <MessageList
+        conversation={grounded as never}
+        localFragments={[]}
+        onDecide={vi.fn()}
+        onDiscardFragment={vi.fn()}
+        onRetryFragment={vi.fn()}
+        onRetryTurn={vi.fn()}
+      />,
+    );
+    const material = container.querySelector('li[data-resource="material:m1"]') as HTMLElement;
+    expect(material.textContent).toContain("12쪽");
+    // 자리만 말하고 원문은 오지 않는다. 발췌는 근거 카드가 갖는다.
+    expect(material.textContent).not.toContain("납기일");
+
+    const task = container.querySelector('li[data-resource="task:t1"]') as HTMLElement;
+    expect(task.querySelector(".ax-resource-changed")?.textContent).toBe("답변 뒤 바뀜");
+    // 바뀌지 않은 것에는 그 말이 붙지 않는다.
+    expect(material.querySelector(".ax-resource-changed")).toBeNull();
+  });
+});
+
 describe("실행 영수증", () => {
   afterEach(cleanup);
 

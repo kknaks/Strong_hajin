@@ -601,6 +601,12 @@ export type AnswerResource = {
   parent_resource_id: string | null;
   title: string;
   state: string | null;
+  /** 원문의 어디였는지 — 쪽·절처럼 그 자료가 스스로 부르는 자리. 없는 것이 정상이다. */
+  source_locator?: { page?: number; section?: string; sheet?: string; cell?: string; anchor?: string } | null;
+  /** 지금의 회차. 회차를 갖지 않는 것에는 없다. */
+  current_version?: number | null;
+  /** 답이 딛고 선 뒤로 바뀌었는가. 숨기지 않고 말한다. */
+  changed_since?: boolean;
 };
 
 export type ConversationContextReference = {

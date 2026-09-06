@@ -1175,6 +1175,9 @@ class ConversationAnswerResourceRecord(Base):
     resource_version: Mapped[int | None] = mapped_column(Integer)
     #: The task a material was read through, so the reference can be reopened where it is actually bound.
     parent_resource_id: Mapped[str | None] = mapped_column(String(120))
+    #: 원문의 어디였는지 — 쪽, 절, 구간처럼 그 자료가 스스로 부르는 자리다. 도구가 말해 준 만큼만 담고,
+    #: 원문이나 발췌는 여기 복제하지 않는다. 없을 수 있으며 없는 것이 정상이다.
+    source_locator: Mapped[dict | None] = mapped_column(JSON)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

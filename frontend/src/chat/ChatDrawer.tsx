@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { personName } from "../labels";
 import type { AnswerResource, Conversation, ConversationContextReference } from "../viewModels";
+import { ResourcePeek } from "./ResourcePeek";
 import { MessageList } from "./MessageList";
 import type { ListStatus, LocalFragment } from "./useConversations";
 
@@ -92,6 +93,8 @@ export function ChatDrawer({
   onOpenResource?: (resource: AnswerResource) => void;
 }) {
   const [query, setQuery] = useState("");
+  /** 대화를 떠나지 않고 들여다보는 근거 하나. 대화가 바뀌면 함께 닫힌다. */
+  const [peeked, setPeeked] = useState<AnswerResource | null>(null);
   const [switcherOpen, setSwitcherOpen] = useState(true);
   const composer = useRef<HTMLTextAreaElement>(null);
   // Auto-grow: the browser resize handle is off; height follows content up to the CSS max-height, then scrolls inside.
@@ -101,6 +104,8 @@ export function ChatDrawer({
     element.style.height = "auto";
     element.style.height = `${element.scrollHeight}px`;
   }, [message, activeConversation?.conversation_id]);
+  // 다른 대화로 옮기면 들여다보던 근거는 그 대화의 것이 아니다.
+  useEffect(() => setPeeked(null), [activeConversation?.conversation_id]);
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return conversations;
@@ -184,16 +189,30 @@ export function ChatDrawer({
       </section>
 
       {activeConversation ? (
-        <MessageList
-          conversation={activeConversation}
-          localFragments={localFragments}
-          onDecide={onDecide}
-          onDiscardFragment={onDiscardFragment}
-          onOpenGraph={onOpenGraph}
-          onOpenResource={onOpenResource}
-          onRetryFragment={onRetryFragment}
-          onRetryTurn={onRetryTurn}
-        />
+        <>
+          <MessageList
+            conversation={activeConversation}
+            localFragments={localFragments}
+            onDecide={onDecide}
+            onDiscardFragment={onDiscardFragment}
+            onOpenGraph={onOpenGraph}
+            // 근거를 확인하려고 대화를 떠나지 않는다. 그 자리에서 정본을 다시 읽고, 닫으면 스크롤도 쓰다 만
+            // 문장도 접어 둔 영수증도 그대로다.
+            onOpenResource={setPeeked}
+            onRetryFragment={onRetryFragment}
+            onRetryTurn={onRetryTurn}
+          />
+          {peeked && (
+            <ResourcePeek
+              onClose={() => setPeeked(null)}
+              onOpenFully={(resource) => {
+                setPeeked(null);
+                onOpenResource?.(resource);
+              }}
+              resource={peeked}
+            />
+          )}
+        </>
       ) : (
         <div className="ax-messages-wrap">
           <div className="ax-messages">

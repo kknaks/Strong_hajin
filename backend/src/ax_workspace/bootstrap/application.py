@@ -122,8 +122,34 @@ class _SessionAnswerResources:
             if title is None:
                 # Readable when the turn ran, not now. It leaves no title and no gap that could be counted.
                 continue
-            resolved.append({**reference, "title": title, "state": state})
+            # 답이 딛고 선 회차와 지금의 회차가 다를 수 있다. 그것은 숨길 일이 아니라 말할 일이다 — 사람이
+            # 링크를 열기 전에 무엇이 달라졌을 수 있는지 알아야 한다. 지금 회차를 알 수 없으면 말하지 않는다.
+            seen = reference.get("resource_version")
+            current = self._current_version(principal, kind, identifier)
+            resolved.append({
+                **reference,
+                "title": title,
+                "state": state,
+                "current_version": current,
+                "changed_since": bool(seen and current and int(current) != int(seen)),
+            })
         return resolved
+
+    def _current_version(self, principal: Principal, kind: str, identifier: str) -> int | None:
+        """지금의 회차. 회차를 갖지 않는 것에는 없는 것이 정상이다."""
+        try:
+            if kind == "task":
+                task = self._source.readable_task(principal, UUID(identifier))
+                return int(task["version"]) if task and task.get("version") is not None else None
+            if kind == "work_request":
+                request = self._source.readable_request(principal, UUID(identifier))
+                return int(request["version"]) if request and request.get("version") is not None else None
+            if kind == "meeting":
+                meeting = self._source.readable_meeting(principal, UUID(identifier))
+                return int(meeting["version"]) if meeting and meeting.get("version") is not None else None
+        except Exception:
+            return None
+        return None
 
     def readable_titles(self, principal: Principal, refs: list[str]) -> dict[str, str]:
         """The name each of these still has for this person. Anything they may no longer open is simply missing."""
