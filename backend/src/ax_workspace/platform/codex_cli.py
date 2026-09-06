@@ -287,15 +287,49 @@ class CodexCliProviderAdapter:
             "AX_MCP_CAUSATION_ID": request.delegated_tool_context.causation_id,
         }
 
-    @staticmethod
-    def _conversation_prompt(request: AiConversationRequest) -> str:
-        if not request.context_references:
-            return request.prompt
-        references = "\n".join(
-            f"- {item.get('resource_type', 'resource')}:{item.get('resource_id', '')}: {item.get('summary', '')}"
-            for item in request.context_references
-        )
-        return f"Context references authorized for this turn:\n{references}\n\nUser message:\n{request.prompt}"
+    #: How to answer a question about people, teams and work. It is guidance to the provider, not a pipeline: the
+    #: model chooses its tools, and nothing here runs on its behalf. What it must not do is invent a connection.
+    RELATIONSHIP_POLICY = (
+        "SCAX 관계 질문 지침:\n"
+        "- 사람·팀·업무·회의·자료가 어떻게 이어져 있는지 묻는 질문은 `graph_search`로 시작 node를 찾고,"
+        " `graph_neighbors`로 명시된 관계만 넓힌 뒤, 필요한 것만 소유 도구(`task_get`·`meeting_get`·"
+        "`work_request_get`·`task_materials_list`)로 읽는다.\n"
+        "- 문서 본문이나 회의 발화를 찾아야 하는 질문은 `task_material_search`로 시작 node를 얻은 뒤 같은 순서로 넓힌다.\n"
+        "- 도구가 돌려주지 않은 관계는 말하지 않는다. 관계를 그림이나 표로 지어내지 말고, 조회한 것만 근거로 답한다.\n"
+        "- 여러 개를 나열할 때는 도구가 준 canonical id의 대상만 말한다."
+    )
+
+    @classmethod
+    def _conversation_prompt(cls, request: AiConversationRequest) -> str:
+        """The turn as the provider sees it: policy, what this conversation already stands on, then the message.
+
+        Everything above the message is server-built from the canonical conversation and re-authorized for this
+        principal, so a follow-up like `그중 기한이 가장 빠른 것` has real ids to start from whether or not the
+        provider kept a checkpoint of its own.
+        """
+        sections: list[str] = [cls.RELATIONSHIP_POLICY]
+        if request.recent_exchanges:
+            told = "\n".join(
+                f"- {'사용자' if item.get('role') == 'user' else 'AX'}: {item.get('body', '')}"
+                for item in request.recent_exchanges
+            )
+            sections.append(f"이 대화에서 지금까지 오간 말(요약이 아니라 실제 발화, 최근 순):\n{told}")
+        if request.seed_references:
+            seeds = "\n".join(
+                f"- {item.get('ref', '')}: {item.get('title', '')}" for item in request.seed_references
+            )
+            sections.append(
+                "이 대화의 이전 turn이 실제로 조회한 것들(지금 권한으로 다시 확인함). 이어지는 질문의 시작 node 후보다:\n"
+                f"{seeds}"
+            )
+        if request.context_references:
+            references = "\n".join(
+                f"- {item.get('resource_type', 'resource')}:{item.get('resource_id', '')}: {item.get('summary', '')}"
+                for item in request.context_references
+            )
+            sections.append(f"Context references authorized for this turn:\n{references}")
+        sections.append(f"User message:\n{request.prompt}")
+        return "\n\n".join(sections)
 
     def _arguments(
         self,

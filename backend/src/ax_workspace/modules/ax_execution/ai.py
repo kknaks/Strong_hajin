@@ -50,6 +50,11 @@ class AiConversationRequest:
     provider_session_ref: str | None
     context_references: list[dict[str, str]]
     delegated_tool_context: AiDelegatedToolContext
+    #: Canonical things earlier turns of this conversation actually read, re-checked for this principal just now.
+    #: A follow-up that says "그중" starts from these ids rather than from whatever the provider remembers.
+    seed_references: tuple[dict[str, str], ...] = ()
+    #: A bounded retelling of the conversation so far, used when the provider has no checkpoint of its own.
+    recent_exchanges: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

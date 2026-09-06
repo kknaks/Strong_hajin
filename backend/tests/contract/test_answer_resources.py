@@ -129,3 +129,83 @@ def test_a_turn_records_nothing_for_a_conversation_that_is_not_its_own(tmp_path,
         pass
     monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
     assert client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()["answer_resources"] == []
+
+
+def test_a_follow_up_starts_from_what_this_conversation_already_read(tmp_path, monkeypatch) -> None:
+    """`그중`은 provider의 기억이 아니라 이 대화가 실제로 읽은 canonical id에서 출발한다.
+
+    The seeds are re-read for whoever is asking now, so a follow-up cannot inherit access to something that has since
+    been taken away — and when the provider kept no checkpoint, what was said is rebuilt from the conversation itself.
+    """
+    from ax_workspace.platform.codex_cli import CodexCliProviderAdapter
+
+    client, settings, database_url = _stack(tmp_path)
+    kept = client.post("/api/tasks", headers=MINA, json={"title": "이어서 물어볼 업무"}).json()
+    meeting = client.post(
+        "/api/meetings",
+        headers=JIHO,
+        json={
+            "organization_id": "scax", "title": "뒤에 공유가 끊길 회의",
+            "starts_at": "2026-09-10T01:00:00Z", "ends_at": "2026-09-10T02:00:00Z",
+            "visibility": "private", "attendee_ids": [],
+        },
+    ).json()
+    client.post(
+        f"/api/meetings/{meeting['meeting_id']}/shares",
+        headers=JIHO,
+        json={"member_id": "mina", "expected_version": meeting["version"]},
+    )
+    conversation, execution_id = _delegated_turn(client, database_url, MINA, "seed-turn")
+
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", execution_id)
+    facade = McpReportsFacade(settings, "mina")
+    facade.get_task(kept["task_id"])
+    facade.get_meeting(meeting["meeting_id"])
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
+
+    application = client.app.state.workflow_application
+    mina = application.authenticated_principal("mina")
+    pack = application.conversation_context_pack(mina, UUID(conversation["conversation_id"]), include_exchanges=True)
+    assert [row["ref"] for row in pack["seeds"]] == [f"task:{kept['task_id']}", f"meeting:{meeting['meeting_id']}"]
+    # No provider checkpoint: what was actually said is rebuilt from the canonical conversation.
+    assert any("오늘 하는 일 알려줘" in row["body"] for row in pack["exchanges"])
+
+    current = client.get(f"/api/meetings/{meeting['meeting_id']}", headers=JIHO).json()
+    client.request(
+        "DELETE",
+        f"/api/meetings/{meeting['meeting_id']}/shares/mina",
+        headers=JIHO,
+        json={"expected_version": current["version"]},
+    )
+    after = application.conversation_context_pack(mina, UUID(conversation["conversation_id"]), include_exchanges=False)
+    assert [row["ref"] for row in after["seeds"]] == [f"task:{kept['task_id']}"]
+    assert after["exchanges"] == []
+
+    # The provider is told the order to work in, and is handed those ids rather than being asked to remember them.
+    prompt = CodexCliProviderAdapter._conversation_prompt(
+        __import__("dataclasses").replace(
+            _request_for(client, database_url, conversation),
+            seed_references=tuple(after["seeds"]),
+            recent_exchanges=(),
+        )
+    )
+    assert "graph_search" in prompt and "graph_neighbors" in prompt
+    assert f"task:{kept['task_id']}" in prompt
+    assert meeting["meeting_id"] not in prompt
+
+
+def _request_for(client, database_url: str, conversation: dict):
+    """The request the worker would hand the provider for this conversation's latest turn."""
+    from ax_workspace.platform.conversations import SqlAlchemyConversationRepository
+    from ax_workspace.platform.persistence import ConversationTurnRecord
+    from sqlalchemy import select
+
+    application = client.app.state.workflow_application
+    principal = application.authenticated_principal("mina")
+    with make_session_factory(database_url)() as session:
+        turn = session.scalars(
+            select(ConversationTurnRecord)
+            .where(ConversationTurnRecord.conversation_id == UUID(conversation["conversation_id"]))
+            .order_by(ConversationTurnRecord.started_at.desc())
+        ).first()
+        return SqlAlchemyConversationRepository(session, None).request_for(turn, principal)

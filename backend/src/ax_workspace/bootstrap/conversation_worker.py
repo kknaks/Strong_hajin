@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 import threading
 from typing import Any, Callable
@@ -19,7 +19,7 @@ from ax_workspace.modules.ax_execution.conversations import (
     ConversationQueueMessage,
 )
 from ax_workspace.modules.organization_access.application import OrganizationApplication
-from ax_workspace.bootstrap.application import create_codex_cli_provider
+from ax_workspace.bootstrap.application import create_codex_cli_provider, create_workflow_application
 from ax_workspace.platform.conversation_jobs import ConversationJobQueue
 from ax_workspace.platform.durable_jobs import MemoryDurableJobQueue, build_job_queue
 from ax_workspace.platform.conversations import (
@@ -58,6 +58,8 @@ class ConversationWorker:
         self._sessions = make_session_factory(settings.database_url)
         self._execution_guard = SqlAlchemyConversationExecutionGuard(self._sessions.kw["bind"])
         self._provider = provider or create_codex_cli_provider(settings)
+        # Rebuilding the turn's context from the canonical conversation, not from the provider's memory.
+        self._application = create_workflow_application(settings)
         self._worker_id = f"conversation-worker:{uuid4().hex[:12]}"
         if queue_factory is not None:
             self._queue_factory = queue_factory
@@ -133,6 +135,19 @@ class ConversationWorker:
                 return None
             turn, request = claimed
             session.commit()
+        # What this conversation already stands on, re-checked for this person right now. Provider memory is an
+        # optimization; the canonical conversation is what a turn is actually built from.
+        pack = self._application.conversation_context_pack(
+            principal,
+            message.execution.conversation_id,
+            include_exchanges=request.provider_session_ref is None,
+        )
+        request = replace(
+            request,
+            seed_references=tuple(pack["seeds"]),
+            recent_exchanges=tuple(pack["exchanges"]),
+        )
+        with self._sessions() as session:
             return ClaimedTurn(
                 message.message_id,
                 message.lease_token,

@@ -485,14 +485,17 @@ const RESOURCE_LABEL: Record<string, string> = {
  * reader may no longer open never arrives from the server at all.
  */
 function AnswerResources({ resources, onOpen }: { resources: AnswerResource[]; onOpen?: (resource: AnswerResource) => void }) {
+  const [showAll, setShowAll] = useState(false);
   if (resources.length === 0) return null;
+  // A turn can read a lot. The answer stays the main content: the rest are one press away, never hidden.
+  const shown = showAll ? resources : resources.slice(0, 6);
   return (
     <section aria-label="답변이 가리키는 것" className="ax-answer-resources">
       <b>
         답변이 가리키는 것 {resources.length}개 <small>· 실제로 조회한 정본</small>
       </b>
       <ol className="ax-resource-list">
-        {resources.map((resource) => (
+        {shown.map((resource) => (
           <li data-resource={`${resource.resource_type}:${resource.resource_id}`} key={resource.reference_id}>
             <span className="ax-resource-kind">{RESOURCE_LABEL[resource.resource_type] ?? resource.resource_type}</span>
             <span className="ax-resource-title">{resource.title}</span>
@@ -505,6 +508,11 @@ function AnswerResources({ resources, onOpen }: { resources: AnswerResource[]; o
           </li>
         ))}
       </ol>
+      {resources.length > shown.length && (
+        <button className="btn link" onClick={() => setShowAll(true)} type="button">
+          {resources.length - shown.length}개 더 보기
+        </button>
+      )}
     </section>
   );
 }

@@ -938,6 +938,67 @@ class WorkflowApplication:
                 session.commit()
             return result
 
+    def conversation_context_pack(
+        self,
+        principal: Principal,
+        conversation_id: UUID,
+        *,
+        include_exchanges: bool,
+        seeds: int = 12,
+        exchanges: int = 6,
+    ) -> dict[str, Any]:
+        """What this conversation can stand on without asking the provider to remember anything.
+
+        The seeds are canonical ids earlier turns actually read, asked of their owning modules again for whoever is
+        asking now — a follow-up that says "그중" starts from these rather than from a provider checkpoint. The
+        exchanges are a bounded retelling of what was said, used when there is no checkpoint at all.
+        """
+        with self._session_factory() as session:
+            conversations = SqlAlchemyConversationRepository(
+                session,
+                ConversationJobQueue(self.job_queue(session)),
+                self._settings.conversation_queue_max_fragments,
+            )
+            conversation = conversations.conversation(conversation_id, str(principal.id))
+            if conversation is None:
+                return {"seeds": [], "exchanges": []}
+            view = conversations.view(conversation)
+            resolver = _SessionAnswerResources(self, session)
+            references = list(view.get("answer_resources") or [])
+            for step in view.get("graph_receipts") or []:
+                node_ref = step.get("node_ref")
+                if step.get("kind") != "node" or not node_ref or ":" not in str(node_ref):
+                    continue
+                kind, _, identifier = str(node_ref).partition(":")
+                references.append({"resource_type": kind, "resource_id": identifier, "resource_version": None, "parent_resource_id": None})
+            seen: set[tuple[str, str]] = set()
+            deduped = []
+            for reference in references:
+                key = (str(reference["resource_type"]), str(reference["resource_id"]))
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append(reference)
+            resolved = resolver.resolve(principal, deduped[-seeds:])
+            pack: dict[str, Any] = {
+                "seeds": [
+                    {
+                        "ref": f"{row['resource_type']}:{row['resource_id']}",
+                        "title": str(row["title"]),
+                        "version": str(row.get("resource_version") or ""),
+                    }
+                    for row in resolved
+                ],
+                "exchanges": [],
+            }
+            if include_exchanges:
+                pack["exchanges"] = [
+                    {"role": str(message["role"]), "body": str(message["body"])[:400]}
+                    for message in (view.get("messages") or [])[-exchanges:]
+                    if str(message.get("body") or "").strip()
+                ]
+            return pack
+
     def record_answer_resources(
         self,
         principal: Principal,
