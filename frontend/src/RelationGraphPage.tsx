@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { graphNeighbors, graphOverview, graphSearch } from "./api";
 import { EDGE_SENTENCE, GraphCanvas, KIND_COLOR, KIND_LABEL, KIND_SOURCE, refOf, type GraphControls } from "./GraphCanvas";
-import type { GraphEdge, GraphNeighborhood, GraphNode, GraphOverview } from "./viewModels";
+import type { GraphEdge, GraphNeighborhood, GraphNode, GraphOverview, GraphView } from "./viewModels";
 import { personName, taskStateLabel, workRequestStateLabel } from "./labels";
 
 /** What a connection means, in the words a person would use rather than the name of the edge. */
-const VIEW_LABEL: Record<string, string> = { member: "구성원 보기", team: "팀으로 묶기" };
+const VIEW_LABEL: Record<string, string> = { member: "구성원 보기", team: "팀으로 묶기", project: "프로젝트로 묶기" };
 
 /** A node's state in the words its own ledger uses — a task's state, a request's, a meeting's visibility. */
 const OTHER_STATE_LABEL: Record<string, string> = { private: "비공개 회의", public: "조직 공개 회의", input: "참고 자료", output: "산출물" };
@@ -41,7 +41,7 @@ export function RelationGraphPage({
   const [results, setResults] = useState<{ nodes: GraphNode[]; truncated: boolean } | null>(null);
   const [around, setAround] = useState<GraphNeighborhood | null>(null);
   const [overview, setOverview] = useState<GraphOverview | null>(null);
-  const [view, setView] = useState<"member" | "team">("member");
+  const [view, setView] = useState<GraphView>("member");
   const [busy, setBusy] = useState(false);
   const [loadingGraph, setLoadingGraph] = useState(true);
   const [selected, setSelected] = useState<GraphNode | null>(null);
@@ -52,7 +52,7 @@ export function RelationGraphPage({
 
   // 첫 화면은 빈 검색 상자가 아니라 지금 이어져 있는 것들이다.
   const loadOverview = useCallback(
-    async (next: "member" | "team") => {
+    async (next: GraphView) => {
       setLoadingGraph(true);
       try {
         setOverview(await graphOverview(next));

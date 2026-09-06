@@ -12,6 +12,7 @@ from ax_workspace.entrypoints.reset_demo import reset_database
 
 MINA = {"X-Demo-Persona": "mina"}
 JIHO = {"X-Demo-Persona": "jiho"}
+HYEON = {"X-Demo-Persona": "hyeon"}  # 인사 — 제품팀 밖
 SORA = {"X-Demo-Persona": "sora"}
 ADMIN = {"X-Demo-Persona": "yuna"}
 
@@ -226,6 +227,47 @@ def test_grouping_by_team_reads_the_same_answer_one_level_up(tmp_path) -> None:
     assert all(edge["from"] != edge["to"] for edge in grouped["edges"])
     # 같은 방향·종류의 연결은 개수로 접힌다.
     assert all(edge.get("count", 1) >= 1 for edge in grouped["edges"])
+
+
+def test_grouping_by_project_folds_work_and_leaves_the_rest_alone(tmp_path) -> None:
+    """프로젝트로 묶으면 그 프로젝트의 일이 하나로 접힌다. 프로젝트 없는 일은 접히지 않고 그대로 남는다.
+
+    팀 보기가 사람을 접는 것과 같은 동작이되 접히는 것이 다르다 — 프로젝트는 사람이 아니라 일을 묶는다.
+    """
+    client, _ = _stack(tmp_path)
+    # 프로젝트가 하나도 없으면 프로젝트로 묶는 것을 제안하지도 않는다.
+    assert client.get("/api/graph/overview", headers=JIHO).json()["available_views"] == ["member", "team"]
+
+    project = client.post(
+        "/api/projects", headers=JIHO, json={"name": "한빛 통합 마케팅", "organization_unit_id": "product"}
+    ).json()
+    inside = client.post(
+        "/api/tasks", headers=JIHO, json={"title": "홈페이지 디자인 기획", "project_id": project["project_id"]}
+    )
+    assert inside.status_code == 201, inside.text
+    client.post("/api/tasks", headers=JIHO, json={"title": "프로젝트 없는 실무"})
+
+    assert "project" in client.get("/api/graph/overview", headers=JIHO).json()["available_views"]
+    grouped = client.get("/api/graph/overview", headers=JIHO, params={"view": "project"}).json()
+    assert grouped["view"] == "project"
+    refs = {f"{node['kind']}:{node['id']}" for node in grouped["nodes"]}
+    assert f"project:{project['project_id']}" in refs
+    titles = {node["title"] for node in grouped["nodes"]}
+    assert "홈페이지 디자인 기획" not in titles, "프로젝트의 일이 접히지 않았습니다"
+    assert "프로젝트 없는 실무" in titles, "프로젝트 없는 일까지 사라졌습니다"
+
+
+def test_a_project_someone_may_not_read_never_folds_their_view(tmp_path) -> None:
+    """읽을 수 없는 프로젝트로는 접지 않는다. 접었다면 그 프로젝트의 이름이 드러났을 것이다."""
+    client, _ = _stack(tmp_path)
+    project = client.post(
+        "/api/projects", headers=JIHO, json={"name": "이름이 새면 안 되는 프로젝트", "organization_unit_id": "product"}
+    ).json()
+    client.post("/api/tasks", headers=JIHO, json={"title": "그 안의 일", "project_id": project["project_id"]})
+
+    outsider = client.get("/api/graph/overview", headers=HYEON, params={"view": "project"}).json()
+    assert "이름이 새면 안 되는 프로젝트" not in {node["title"] for node in outsider["nodes"]}
+    assert "project" not in outsider["available_views"]
 
 
 def test_a_meeting_says_who_was_there_and_what_came_out_of_it(tmp_path) -> None:

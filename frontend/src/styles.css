@@ -63,6 +63,8 @@ a { color: var(--action); text-decoration: none; }
 .wordmark { display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 17px; font-weight: 700; letter-spacing: 0; }
 .wordmark-mark { display: grid; width: 28px; height: 28px; place-items: center; border-radius: 8px; color: #fff; background: var(--action); font-size: 11px; font-weight: 700; }
 .profile { display: flex; align-items: center; gap: 8px; margin: 24px 4px 20px; min-width: 0; }
+/* flex 자식은 기본적으로 자기 내용보다 작아지지 않는다. 소속이 여섯 곳인 사람에게는 이 한 줄이 본문을 덮는다. */
+.profile > div { min-width: 0; }
 .profile b, .profile small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .profile b { font-size: 14px; font-weight: 700; }
 .profile small { color: var(--text-tertiary); font-size: 12px; }
@@ -865,3 +867,25 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .summary-evidence { display: grid; gap: 4px; margin: 8px 0; padding: 0; list-style: none; font-size: 12.5px; }
 .summary-evidence li { display: flex; gap: 8px; align-items: baseline; }
 .summary-evidence .btn.link { flex: none; font-variant-numeric: tabular-nums; }
+
+/* 프로젝트: 왼쪽에 무엇이 있는지, 오른쪽에 누가 하고 무엇이 남았는지. */
+.project-page { display: grid; gap: 16px; }
+.project-layout { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.project-list { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border-default); border-radius: var(--radius-card); background: var(--surface-default); }
+.project-list-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.project-list ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.project-new { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-sunken); }
+.project-row { display: grid; gap: 2px; width: 100%; padding: 8px 10px; border: 1px solid transparent; border-radius: 8px; background: none; text-align: left; cursor: pointer; font: inherit; color: inherit; }
+.project-row:hover { background: var(--surface-sunken); }
+.project-row.on { border-color: var(--border-strong); background: var(--surface-sunken); }
+.project-row-name { font-size: 13px; font-weight: 600; }
+.project-detail { display: grid; gap: 14px; padding: 16px 18px; border: 1px solid var(--border-default); border-radius: var(--radius-card); background: var(--surface-default); }
+.project-detail.empty { display: grid; place-content: center; min-height: 200px; }
+.project-detail h3 { margin: 0; font-size: 18px; }
+.project-detail section { display: grid; gap: 8px; }
+.project-members, .project-tasks { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.project-members li, .project-tasks li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.project-tasks li.child { padding-left: 18px; }
+.project-tasks li.child::before { content: "└"; color: var(--text-tertiary); }
+.project-member-kind { padding: 1px 6px; border-radius: var(--radius-chip); background: var(--surface-sunken); color: var(--text-tertiary); font-size: 11px; font-weight: 700; }
+.project-join { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

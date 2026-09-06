@@ -16,7 +16,7 @@ from ax_workspace.modules.organization_access.domain import (
 )
 
 #: What may be at either end of a connection. Each is read through the module that owns it.
-NODE_KINDS = ("person", "team", "work_request", "task", "material", "meeting", "report")
+NODE_KINDS = ("person", "team", "project", "work_request", "task", "material", "meeting", "report")
 #: How far one answer may reach, so a screen and a delegated turn get the same bounded thing.
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 50
@@ -35,6 +35,7 @@ RELATIONS: dict[str, dict[str, str]] = {
     "refers_to": {"label": "참고함", "inverse": "참고됨", "provenance": "task_reference"},
     "has_material": {"label": "자료", "inverse": "붙은 업무", "provenance": "attachment_binding"},
     "belongs_to": {"label": "소속", "inverse": "구성원", "provenance": "membership"},
+    "part_of": {"label": "이 프로젝트의 일", "inverse": "프로젝트", "provenance": "task"},
     "attended": {"label": "참석", "inverse": "참석자", "provenance": "meeting_attendee"},
     "owns_meeting": {"label": "소집", "inverse": "소집자", "provenance": "meeting"},
     "followed_up": {"label": "후속 업무", "inverse": "나온 회의", "provenance": "meeting_followup_promotion"},
@@ -64,6 +65,7 @@ class GraphSourcePort(Protocol):
     def task_materials(self, principal: Principal, task_id: UUID) -> list[dict[str, Any]]: ...
     def person(self, member_id: str) -> dict[str, Any] | None: ...
     def readable_meetings(self, principal: Principal, *, query: str | None = None, limit: int = 50) -> list[dict[str, Any]]: ...
+    def readable_projects(self, principal: Principal) -> list[dict[str, Any]]: ...
     def readable_meeting(self, principal: Principal, meeting_id: UUID) -> dict[str, Any] | None: ...
     def meeting_followup_tasks(self, principal: Principal, meeting_id: UUID) -> list[dict[str, Any]]: ...
     def member_units(self, member_id: str) -> list[dict[str, Any]]: ...
@@ -325,8 +327,8 @@ class GraphApplication:
         could reach by asking one thing at a time.
         """
         self._require(principal)
-        if view not in {"member", "team"}:
-            raise GraphError("표현 수준은 구성원 보기 또는 팀으로 묶기입니다")
+        if view not in {"member", "team", "project"}:
+            raise GraphError("표현 수준은 구성원 보기, 팀으로 묶기, 프로젝트로 묶기입니다")
         me = self._person_node(self._source.person(str(principal.id)) or {"member_id": str(principal.id), "display_name": str(principal.id)})
         nodes: dict[str, dict[str, Any]] = {self._ref(me): me}
         edges: list[dict[str, Any]] = []
@@ -378,8 +380,55 @@ class GraphApplication:
         answer = self._bounded(me, nodes, edges, min(max(1, int(limit)), MAX_OVERVIEW_LIMIT), cap=MAX_OVERVIEW_LIMIT)
         answer["view"] = view
         # A grouping the product has no ledger for is not offered at all, rather than invented from titles.
-        answer["available_views"] = ["member", "team"]
-        return self._as_teams(answer) if view == "team" else answer
+        # 프로젝트는 읽을 수 있는 프로젝트가 하나라도 있을 때만 표현 수준으로 제안한다.
+        answer["available_views"] = ["member", "team"] + (["project"] if self._source.readable_projects(principal) else [])
+        if view == "team":
+            return self._as_teams(answer)
+        return self._as_projects(principal, answer) if view == "project" else answer
+
+    def _as_projects(self, principal: Principal, answer: dict[str, Any]) -> dict[str, Any]:
+        """같은 답을 프로젝트 층에서 읽는다: 업무가 자기 프로젝트로 접힌다.
+
+        팀 보기가 사람을 팀으로 접는 것과 같은 동작이되 접히는 것이 다르다 — 프로젝트는 사람이 아니라 일을 묶기
+        때문이다. 프로젝트에 매달리지 않은 업무는 접히지 않고 자기 자리에 그대로 남는다. 대부분의 일이 그렇고,
+        없는 프로젝트를 만들어 넣지 않는다.
+        """
+        readable = {str(project["project_id"]): project for project in self._source.readable_projects(principal)}
+        by_ref = {self._ref(node): node for node in answer["nodes"]}
+        project_of: dict[str, str] = {}
+        for node in answer["nodes"]:
+            if node["kind"] != "task":
+                continue
+            project_id = str(node.get("project_id") or "")
+            # 읽을 수 없는 프로젝트로는 접지 않는다. 접었다면 그 프로젝트의 이름이 드러났을 것이다.
+            if project_id not in readable:
+                continue
+            project_of[self._ref(node)] = f"project:{project_id}"
+            by_ref[f"project:{project_id}"] = self._project_node(readable[project_id])
+
+        def moved(ref: str) -> str:
+            return project_of.get(ref, ref)
+
+        grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for edge in answer["edges"]:
+            source, target = moved(edge["from"]), moved(edge["to"])
+            if source == target:
+                continue
+            key = (edge["kind"], source, target)
+            existing = grouped.get(key)
+            if existing is None:
+                grouped[key] = {**edge, "from": source, "to": target, "count": 1}
+            else:
+                existing["count"] += 1
+        edges = list(grouped.values())
+        named = {row["from"] for row in edges} | {row["to"] for row in edges} | {moved(self._ref(answer["center"]))}
+        return {
+            **answer,
+            "center": by_ref.get(moved(self._ref(answer["center"])), answer["center"]),
+            "nodes": [node for ref, node in by_ref.items() if ref in named],
+            "edges": edges,
+            "view": "project",
+        }
 
     def _as_teams(self, answer: dict[str, Any]) -> dict[str, Any]:
         """The same authorized answer, read one level up: people become the team they sit in.
@@ -484,6 +533,8 @@ class GraphApplication:
             "state": task.get("state"),
             # Where this sits in time, as the ledger plans it — never a synthesized date.
             "date": task.get("due_date") or task.get("start_date"),
+            # 어느 프로젝트의 일인가. 프로젝트로 묶어 볼 때 이 값으로 접는다.
+            "project_id": task.get("project_id"),
         }
 
     @staticmethod
@@ -519,6 +570,16 @@ class GraphApplication:
     @staticmethod
     def _team_node(unit: dict[str, Any]) -> dict[str, Any]:
         return {"kind": "team", "id": str(unit["id"]), "title": str(unit.get("name") or unit["id"]), "state": None, "date": None}
+
+    @staticmethod
+    def _project_node(project: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "kind": "project",
+            "id": str(project["project_id"]),
+            "title": str(project.get("name") or project["project_id"]),
+            "state": project.get("state"),
+            "date": project.get("ends_on") or project.get("starts_on"),
+        }
 
     @staticmethod
     def _person_node(person: dict[str, Any]) -> dict[str, Any]:

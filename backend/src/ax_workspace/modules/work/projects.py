@@ -160,6 +160,8 @@ class ProjectApplication:
         return {
             **self._view(project),
             "organization_unit_name": units.get(project.organization_unit_id),
+            # 무엇을 할 수 있는지는 서버가 말한다. 화면이 권한을 추측해 버튼을 그리면 눌러야 아는 거절이 된다.
+            "may_manage": principal.allows(PROJECT_MANAGE, unit=project.organization_unit_id, project=str(project.id)),
             "members": [
                 {**self._assignment_view(row), "display_name": names.get(row.member_id, row.member_id)}
                 for row in assignments

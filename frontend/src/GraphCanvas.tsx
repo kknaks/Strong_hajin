@@ -18,6 +18,7 @@ import type { GraphEdge, GraphNode } from "./viewModels";
 export const KIND_COLOR: Record<string, string> = {
   person: "#7181f8",
   team: "#7181f8",
+  project: "#5a63c9",
   work_request: "#9a78df",
   task: "#33aaff",
   material: "#4da885",
@@ -28,6 +29,7 @@ export const KIND_COLOR: Record<string, string> = {
 export const KIND_LABEL: Record<string, string> = {
   person: "사람",
   team: "팀",
+  project: "프로젝트",
   work_request: "업무 요청",
   task: "업무",
   material: "자료·산출물",
@@ -65,6 +67,7 @@ export const EDGE_SENTENCE: Record<string, { incoming: string; outgoing: string 
 export const KIND_SOURCE: Record<string, string> = {
   person: "Member + Membership + Appointment",
   team: "OrganizationUnit + Membership 집계",
+  project: "Project + ProjectAssignment",
   work_request: "WorkRequest",
   task: "Task + TaskAssignment",
   material: "Attachment + AttachmentBinding",
@@ -168,7 +171,7 @@ export function GraphCanvas({
           color: KIND_COLOR[node.kind] ?? "#868e96",
           kind: node.kind,
           // Only the centre and the teams claim a label unconditionally; the rest are placed by label density.
-          forceLabel: ref === centerRef || node.kind === "team",
+          forceLabel: ref === centerRef || node.kind === "team" || node.kind === "project",
         });
       });
       for (const edge of edges) {

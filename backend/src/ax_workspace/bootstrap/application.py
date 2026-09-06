@@ -212,6 +212,13 @@ class _SessionGraphSource:
         name = SqlAlchemyTaskRepository(self._session).member_display_name(member_id)
         return {"member_id": member_id, "display_name": name or member_id}
 
+    def readable_projects(self, principal: Principal) -> list[dict[str, Any]]:
+        """그래프가 프로젝트로 묶을 때 묻는 것. 판정은 프로젝트 모듈이 한다."""
+        try:
+            return self._application._projects(self._session).list(principal)
+        except Exception:
+            return []
+
     def readable_meetings(self, principal: Principal, *, query: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         try:
             rows = self._application._meetings(self._session).list(principal)

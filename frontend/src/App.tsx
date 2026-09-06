@@ -10,6 +10,7 @@ import { LoginPage } from "./LoginPage";
 import { Toast } from "./Modal";
 import { MyWorkPage } from "./MyWorkPage";
 import { OrgPage } from "./OrgPage";
+import { ProjectPage } from "./ProjectPage";
 import { RelationGraphPage } from "./RelationGraphPage";
 import { TodayPage } from "./TodayPage";
 import type { ConversationContextReference, DirectTask, OrganizationProfile, Persona, ProductSurface } from "./viewModels";
@@ -19,6 +20,7 @@ const navigation: ReadonlyArray<{ id: ProductSurface; label: string }> = [
   { id: "calendar", label: "캘린더" },
   { id: "work", label: "내 업무" },
   { id: "report", label: "보고" },
+  { id: "project", label: "프로젝트" },
   { id: "org", label: "조직" },
   { id: "graph", label: "관계 탐색" },
 ];
@@ -28,6 +30,7 @@ const surfaceLabel: Record<ProductSurface, string> = {
   calendar: "캘린더",
   work: "내 업무",
   report: "보고",
+  project: "프로젝트",
   org: "조직",
   graph: "관계 탐색",
 };
@@ -274,7 +277,10 @@ export default function App() {
           <span className="avatar md">{personName(currentPersonaName).slice(0, 1)}</span>
           <div>
             <b>{personName(currentPersonaName)}</b>
-            <small>{organizationNames.length > 0 ? organizationNames.join(" · ") : "소속 없음"}</small>
+            {/* 소속이 여럿이면 한 줄에 다 담기지 않는다. 잘라서 보여 주고 전체는 hover로 읽는다. */}
+            <small title={organizationNames.join(" · ")}>
+              {organizationNames.length > 0 ? organizationNames.join(" · ") : "소속 없음"}
+            </small>
           </div>
         </div>
         <div className="profile-menu">
@@ -353,6 +359,7 @@ export default function App() {
           />
         )}
         {surface === "report" && <DailyReportPage {...pageProps} personaName={currentPersonaName} />}
+        {surface === "project" && <ProjectPage {...pageProps} />}
         {surface === "org" && <OrgPage {...pageProps} />}
         {surface === "graph" && (
           <RelationGraphPage

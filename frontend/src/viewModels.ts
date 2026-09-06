@@ -1,7 +1,7 @@
-export type ProductSurface = "today" | "calendar" | "work" | "report" | "org" | "graph";
+export type ProductSurface = "today" | "calendar" | "work" | "report" | "project" | "org" | "graph";
 
 /** One thing in the relation graph. Nodes are canonical resources, never a graph-only record. */
-export type GraphNodeKind = "person" | "team" | "work_request" | "task" | "material" | "meeting" | "report";
+export type GraphNodeKind = "person" | "team" | "project" | "work_request" | "task" | "material" | "meeting" | "report";
 
 export type GraphNode = {
   kind: GraphNodeKind;
@@ -10,6 +10,8 @@ export type GraphNode = {
   state?: string | null;
   /** Where the ledger plans this in time (deadline, meeting day, report date). Absent when it plans none. */
   date?: string | null;
+  /** 어느 프로젝트의 일인가. 업무 node에만 있고, 비어 있는 것이 정상이다. */
+  project_id?: string | null;
 };
 
 /**
@@ -47,7 +49,45 @@ export type GraphReceipt = {
 export type GraphNeighborhood = { center: GraphNode; nodes: GraphNode[]; edges: GraphEdge[]; truncated: boolean };
 
 /** The first screen: what this person is already connected to, at the chosen level of grouping. */
-export type GraphOverview = GraphNeighborhood & { view: "member" | "team"; available_views: Array<"member" | "team"> };
+export type GraphView = "member" | "team" | "project";
+export type GraphOverview = GraphNeighborhood & { view: GraphView; available_views: GraphView[] };
+
+/** 부서를 가로질러 묶이는 일 하나. 소유 조직은 책임 소재이지 참여 자격이 아니다. */
+export type Project = {
+  project_id: string;
+  name: string;
+  description: string | null;
+  organization_unit_id: string;
+  organization_unit_name?: string | null;
+  state: string;
+  /** 기간은 없을 수 있다 — 시작만 정해지고 끝은 아직 없는 일이 흔하다. */
+  starts_on: string | null;
+  ends_on: string | null;
+  external_key: string | null;
+  version: number;
+};
+
+export type ProjectMember = {
+  member_id: string;
+  display_name: string;
+  assignment_kind: "lead" | "member";
+  valid_from: string | null;
+  valid_until: string | null;
+};
+
+export type ProjectDetail = Project & {
+  /** 이 프로젝트의 담당자를 붙이고 뗄 수 있는가. 서버가 판정하고 화면은 그대로 따른다. */
+  may_manage: boolean;
+  members: ProjectMember[];
+  tasks: Array<{
+    task_id: string;
+    title: string;
+    state: string;
+    start_date: string | null;
+    due_date: string | null;
+    parent_task_id: string | null;
+  }>;
+};
 
 export type Persona = {
   id: string;
@@ -285,6 +325,8 @@ export type TaskPatch = {
   description?: string;
   start_date?: string | null;
   due_date?: string | null;
+  /** 어느 프로젝트의 일로 둘 것인가. `null`이면 프로젝트에서 뗀다. */
+  project_id?: string | null;
 };
 
 

@@ -227,6 +227,9 @@ class UpdateTaskRequest(BaseModel):
     due_date: date | None = None
     clear_start_date: bool = False
     clear_due_date: bool = False
+    #: 이 업무를 어느 프로젝트의 것으로 둘 것인가. 떼려면 `clear_project`를 쓴다.
+    project_id: UUID | None = None
+    clear_project: bool = False
 
 
 class TaskMaterialLinkRequest(BaseModel):
@@ -1026,6 +1029,8 @@ def create_app(
                 changes["start_date"] = None if request.clear_start_date else request.start_date
             if request.due_date is not None or request.clear_due_date:
                 changes["due_date"] = None if request.clear_due_date else request.due_date
+            if request.project_id is not None or request.clear_project:
+                changes["project_id"] = None if request.clear_project else request.project_id
             try:
                 return app.state.workflow_application.update_task(principal, task_id, request.expected_version, changes)
             except Exception as error:
@@ -1090,7 +1095,7 @@ def create_app(
 
         @app.get("/api/graph/overview")
         def graph_overview(
-            view: Literal["member", "team"] = "member",
+            view: Literal["member", "team", "project"] = "member",
             limit: int = 120,
             principal: Principal = Depends(developer_principal),
         ) -> dict[str, object]:

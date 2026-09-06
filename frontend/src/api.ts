@@ -36,6 +36,10 @@ import type {
   GraphNode,
   GraphNeighborhood,
   GraphOverview,
+  GraphView,
+  Project,
+  ProjectDetail,
+  ProjectMember,
 } from "./viewModels";
 
 type ApiErrorBody = {
@@ -124,7 +128,7 @@ export async function promoteMeetingFollowup(
 }
 
 /** The first screen of 관계 탐색: bounded, authorized, and already a graph. */
-export async function graphOverview(view: "member" | "team" = "member"): Promise<GraphOverview> {
+export async function graphOverview(view: GraphView = "member"): Promise<GraphOverview> {
   return request<GraphOverview>(`/api/graph/overview?view=${view}`);
 }
 
@@ -159,6 +163,7 @@ export async function createDirectTask(
     checklist?: string[];
     reference_task_ids?: string[];
     parent_task_id?: string;
+    project_id?: string;
   } = {},
 ): Promise<DirectTask> {
   return request<DirectTask>("/api/tasks", {
@@ -178,6 +183,10 @@ export async function updateTask(taskId: string, expectedVersion: number, patch:
   if (patch.due_date !== undefined) {
     if (patch.due_date) body.due_date = patch.due_date;
     else body.clear_due_date = true;
+  }
+  if (patch.project_id !== undefined) {
+    if (patch.project_id) body.project_id = patch.project_id;
+    else body.clear_project = true;
   }
   return request<DirectTask>(`/api/tasks/${taskId}`, { body: JSON.stringify(body), method: "PATCH" });
 }
@@ -462,6 +471,32 @@ export async function login(email: string, password: string): Promise<Organizati
 
 export async function logout(): Promise<void> {
   await request<void>("/api/auth/logout", { method: "POST" });
+}
+
+export async function listProjects(): Promise<Project[]> {
+  return request<Project[]>("/api/projects");
+}
+
+export async function getProject(projectId: string): Promise<ProjectDetail> {
+  return request<ProjectDetail>(`/api/projects/${projectId}`);
+}
+
+export async function createProject(body: {
+  name: string;
+  organization_unit_id: string;
+  description?: string | null;
+  starts_on?: string | null;
+  ends_on?: string | null;
+}): Promise<Project> {
+  return request<Project>("/api/projects", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function assignToProject(projectId: string, body: { member_id: string; kind: "lead" | "member" }): Promise<ProjectMember> {
+  return request<ProjectMember>(`/api/projects/${projectId}/members`, { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function releaseFromProject(projectId: string, memberId: string): Promise<void> {
+  await request<void>(`/api/projects/${projectId}/members/${memberId}`, { method: "DELETE" });
 }
 
 export async function getOrganizationTree(): Promise<OrganizationUnitNode[]> {

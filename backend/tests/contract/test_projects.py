@@ -90,6 +90,48 @@ def test_the_grant_says_which_rule_made_it_and_ends_when_the_assignment_does(cli
     assert client.get(f"/api/tasks/{task.json()['task_id']}", headers=HYEON).status_code == 404
 
 
+def test_work_can_join_a_project_later_and_its_parts_come_along(client: TestClient) -> None:
+    """일이 먼저 있고 프로젝트가 나중에 생기는 것이 보통이다. 상위 업무가 옮겨 가면 그 안의 일도 함께 간다."""
+    parent = client.post("/api/tasks", headers=MINA, json={"title": "한빛 9월 통합 마케팅"}).json()
+    child = client.post(
+        "/api/tasks", headers=MINA, json={"title": "홈페이지 디자인 기획", "parent_task_id": parent["task_id"]}
+    ).json()
+    assert parent["project_id"] is None and child["project_id"] is None
+
+    project = _project(client)
+    # 하위 업무가 붙으면서 상위 업무의 회차가 올라간다. 지금 값으로 답한다.
+    current = client.get(f"/api/tasks/{parent['task_id']}", headers=MINA).json()
+    moved = client.patch(
+        f"/api/tasks/{parent['task_id']}",
+        headers=MINA,
+        json={"expected_version": current["version"], "project_id": project["project_id"]},
+    )
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["project_id"] == project["project_id"]
+    assert client.get(f"/api/tasks/{child['task_id']}", headers=MINA).json()["project_id"] == project["project_id"]
+
+    # 하위 업무만 따로 옮기지는 못한다. 그러면 한 일의 부분들이 서로 다른 프로젝트에 흩어진다.
+    alone = client.patch(
+        f"/api/tasks/{child['task_id']}",
+        headers=MINA,
+        json={"expected_version": child["version"], "clear_project": True},
+    )
+    assert alone.status_code == 422, alone.text
+
+
+def test_the_screen_is_told_what_it_may_do_rather_than_guessing(client: TestClient) -> None:
+    """화면이 권한을 추측해 버튼을 그리면 눌러야 아는 거절이 된다. 서버가 먼저 말한다."""
+    project = _project(client)
+    client.post(f"/api/projects/{project['project_id']}/members", headers=JIHO, json={"member_id": "hyeon"})
+
+    assert client.get(f"/api/projects/{project['project_id']}", headers=JIHO).json()["may_manage"] is True
+    # 현우는 이 프로젝트에 붙어 있어 읽지만, 사람을 붙이고 떼는 것은 그 프로젝트를 소유한 조직의 일이다.
+    outside = client.get(f"/api/projects/{project['project_id']}", headers=HYEON).json()
+    assert outside["may_manage"] is False
+    refused = client.post(f"/api/projects/{project['project_id']}/members", headers=HYEON, json={"member_id": "mina"})
+    assert refused.status_code == 403, refused.text
+
+
 def test_a_project_cannot_be_a_back_door_into_work_that_is_not_in_it(client: TestClient) -> None:
     """읽을 수 없는 프로젝트에 일을 밀어 넣어 그 프로젝트 사람들에게 보이게 할 수 없다."""
     project = _project(client)

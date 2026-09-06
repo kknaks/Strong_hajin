@@ -242,9 +242,17 @@ class TaskApplication:
             raise InvalidTaskTransition("task version is stale")
         if TaskState(task.state) is TaskState.CANCELLED:
             raise TaskError("cancelled tasks cannot be edited")
-        unknown = set(changes) - {"title", "description", "start_date", "due_date"}
+        unknown = set(changes) - {"title", "description", "start_date", "due_date", "project_id"}
         if unknown:
             raise TaskError(f"unsupported task fields: {sorted(unknown)}")
+        if "project_id" in changes:
+            if getattr(task, "parent_task_id", None) is not None:
+                # 하위 업무는 자기 프로젝트를 따로 갖지 않는다. 상위 업무가 옮겨 가면 함께 간다.
+                raise TaskError("하위 업무의 프로젝트는 상위 업무를 따릅니다")
+            wanted = changes["project_id"]
+            task.project_id = self.project_for(principal, UUID(str(wanted))) if wanted else None
+            for child in self.repository.children_of(task.id):
+                child.project_id = task.project_id
         if "title" in changes:
             title = str(changes["title"] or "").strip()
             if not title:
