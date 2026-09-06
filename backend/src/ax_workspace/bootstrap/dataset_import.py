@@ -407,11 +407,11 @@ def _import_projects(session: Session, rows: dict[str, list[dict[str, str]]], re
     """프로젝트와 그 사람들. 배정은 조직 단위를 묻지 않고, 권한은 제품의 표준 규칙이 만든다."""
     if not rows.get("projects") and not rows.get("project_assignments"):
         return
-    from ax_workspace.platform.projects import PROJECT_ROLE_KEY, grant_project_access
+    from ax_workspace.platform.projects import PROJECT_ROLE_KEYS, grant_project_access
 
-    template = ROLE_TEMPLATES_BY_KEY[PROJECT_ROLE_KEY]
-    if session.get(RoleRecord, template.role_id) is None:
-        install_role_catalog(session, [template])
+    wanted = [ROLE_TEMPLATES_BY_KEY[key] for key in sorted(set(PROJECT_ROLE_KEYS.values()))]
+    if any(session.get(RoleRecord, template.role_id) is None for template in wanted):
+        install_role_catalog(session, wanted)
         session.flush()
 
     known: dict[str, ProjectRecord] = {}
@@ -465,7 +465,9 @@ def _import_projects(session: Session, rows: dict[str, list[dict[str, str]]], re
                 assigned_by_member_id="dataset",
             )
         )
-        grant_project_access(session, project_id=project.id, member_id=member_key, granted_by="dataset")
+        grant_project_access(
+            session, project_id=project.id, member_id=member_key, granted_by="dataset", kind=_text(row, "kind") or "member"
+        )
         result.track("project_assignments", made=True)
 
 

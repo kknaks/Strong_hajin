@@ -1398,6 +1398,130 @@ class SqlAlchemyTaskAssignmentRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
+    def create_unheld_task(
+        self,
+        creator_id: str,
+        title: str,
+        *,
+        project_id: UUID,
+        description: str | None = None,
+        start_date: date | None = None,
+        due_date: date | None = None,
+        organization_unit_id: str | None = None,
+    ) -> TaskRecord:
+        """아직 누구의 것도 아닌 일. 프로젝트 계획에는 있으나 사람이 정해지지 않은 상태다.
+
+        배정 행이 하나도 없다는 것이 곧 `담당자 미정`이다. `미정`이라는 이름의 가짜 담당자를 만들지 않는다.
+        """
+        now = datetime.now(UTC)
+        task = TaskRecord(
+            created_by_actor_id=creator_id,
+            title=title,
+            state=TaskState.OPEN,
+            block_reason=None,
+            project_id=project_id,
+            description=description,
+            start_date=start_date,
+            due_date=due_date,
+            organization_unit_id=organization_unit_id,
+            origin_kind="project_plan",
+            version=1,
+            created_at=now,
+            updated_at=now,
+        )
+        self._session.add(task)
+        self._session.flush()
+        self._session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now))
+        ActivityLedger(self._session).record(
+            target_type="task", target_id=str(task.id), event_kind="task.created", actor_id=creator_id,
+            after_ref=f"task:{task.id}@1", safe_summary=f"프로젝트 업무 생성: {title}",
+        )
+        SqlAlchemyTaskRepository(self._session).capture_version(task, creator_id, "task.created")
+        return task
+
+    def hand_to(self, task: TaskRecord, assigner_id: str, assignee_id: str) -> TaskAssignmentRecord:
+        """아직 아무도 들지 않은 일에 첫 사람을 붙인다. 그 사람이 수락해야 자기 업무가 된다.
+
+        배정과 똑같이 판단 항목을 함께 만든다. 만들지 않으면 붙였다는 사실이 그 사람에게 닿지 않고, 자기
+        판단함에 없는 일을 수락할 방법이 없다.
+        """
+        now = datetime.now(UTC)
+        subject = self._session.scalar(
+            select(SubjectRecord).where(
+                SubjectRecord.owning_resource_type == "task", SubjectRecord.owning_resource_id == str(task.id)
+            )
+        )
+        if subject is None:
+            subject = SubjectRecord(
+                subject_type="task", owning_resource_type="task", owning_resource_id=str(task.id), created_at=now
+            )
+            self._session.add(subject)
+            self._session.flush()
+        appended = TaskAssignmentRecord(
+            task_id=task.id,
+            assignee_id=assignee_id,
+            assigned_by=assigner_id,
+            assignment_kind="direct",
+            status="pending",
+            created_at=now,
+        )
+        self._session.add(appended)
+        self._session.flush()
+        item = DecisionItemRecord(
+            kind="task.assignment.acceptance",
+            subject_id=subject.id,
+            context_type="task",
+            context_id=str(task.id),
+            effect_identity=f"task_assignment.activate:{appended.id}",
+            status="open",
+            due_at=datetime.combine(task.due_date, datetime.min.time(), tzinfo=UTC) if task.due_date else None,
+            created_at=now,
+        )
+        self._session.add(item)
+        self._session.flush()
+        appended.source_decision_item_id = item.id
+        # 판단은 무엇에 대한 판단인지를 가리켜야 한다: 지금 이 회차의 Task가 그 대상이다.
+        snapshot = {
+            "title": task.title,
+            "description": task.description,
+            "start_date": task.start_date.isoformat() if task.start_date else None,
+            "due_date": task.due_date.isoformat() if task.due_date else None,
+            "assignee_id": assignee_id,
+            "assigned_by": assigner_id,
+        }
+        version = SubjectVersionRecord(
+            subject_id=subject.id,
+            version=task.version,
+            content_hash=_content_hash(snapshot),
+            snapshot=snapshot,
+            captured_at=now,
+        )
+        self._session.add(version)
+        self._session.flush()
+        submission = SubmissionRecord(
+            decision_item_id=item.id,
+            subject_version_id=version.id,
+            submission_version=1,
+            submitted_by=assigner_id,
+            payload_hash=version.content_hash,
+            decision_policy_snapshot={"decisions": ["accept", "reject"], "reason_required_for": ["reject"]},
+            submitted_at=now,
+        )
+        self._session.add(submission)
+        self._session.flush()
+        self._session.add(
+            ReviewAssignmentRecord(
+                submission_id=submission.id, reviewer_member_id=assignee_id, status="pending", assigned_at=now, due_at=item.due_at
+            )
+        )
+        ActivityLedger(self._session).record(
+            target_type="task", target_id=str(task.id), event_kind="task.assignment.offered", actor_id=assigner_id,
+            after_ref=f"task_assignment:{appended.id}",
+            safe_summary=f"{_person(self._session, assigner_id)}가 {_person(self._session, assignee_id)}에게 담당을 맡김: {task.title}",
+        )
+        self._session.flush()
+        return appended
+
     def create_assigned_task(
         self,
         assigner_id: str,

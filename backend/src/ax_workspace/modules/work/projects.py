@@ -18,6 +18,7 @@ from uuid import UUID
 from ax_workspace.modules.organization_access.domain import (
     PROJECT_MANAGE,
     PROJECT_READ,
+    TASK_ASSIGN,
     Principal,
 )
 
@@ -182,6 +183,27 @@ class ProjectApplication:
     def readable_project_ids(self, principal: Principal) -> frozenset[str]:
         """업무 읽기가 물어보는 것: 이 사람의 프로젝트 범위가 닿는 프로젝트들."""
         return self._readable(principal)
+
+    def assignable_members(self, principal: Principal) -> list[dict[str, str]]:
+        """이 사람이 배정할 수 있는 프로젝트의 사람들. 어느 부서인지는 묻지 않는다.
+
+        배정 권한이 닿는 프로젝트에 함께 붙어 있는 사람들이며, 자기 자신은 빼고 돌려준다. 조직 축에서 오는
+        후보와 합치는 일은 배정 모듈이 한 곳에서 한다 — 여기서는 프로젝트가 아는 것만 말한다.
+        """
+        reach = principal.projects_for(TASK_ASSIGN) if TASK_ASSIGN in principal.capabilities else frozenset()
+        if not reach:
+            return []
+        found: dict[str, str] = {}
+        for project_id in sorted(reach):
+            for row in self._repository.assignments_for(UUID(project_id)):
+                if row.member_id == str(principal.id) or row.member_id in found:
+                    continue
+                found[row.member_id] = ""
+        names = self._repository.member_names(sorted(found))
+        return [{"id": member_id, "display_name": names.get(member_id, member_id)} for member_id in sorted(found)]
+
+    def may_assign_in(self, principal: Principal, project_id: UUID) -> bool:
+        return principal.allows(TASK_ASSIGN, project=str(project_id))
 
     # ---- internals ----
 

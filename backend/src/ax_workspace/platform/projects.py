@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import or_, select
@@ -25,7 +26,13 @@ from ax_workspace.platform.persistence import (
 )
 
 #: 프로젝트에 붙은 사람이 그 프로젝트에서 갖는 역할. 조직 안에서 갖던 것은 그대로 두고 여기에 더해진다.
+#: 담당과 참여가 다른 말이 되려면 갖는 것도 달라야 한다 — 담당은 그 프로젝트 안에서 일을 만들고 사람을 붙인다.
 PROJECT_ROLE_KEY = "project-participant"
+PROJECT_ROLE_KEYS = {"lead": "project-lead", "member": PROJECT_ROLE_KEY}
+
+
+def _role_key(kind: str) -> str:
+    return PROJECT_ROLE_KEYS.get(kind, PROJECT_ROLE_KEY)
 
 
 class SqlAlchemyProjectRepository:
@@ -102,7 +109,9 @@ class SqlAlchemyProjectRepository:
         )
         self._session.add(assignment)
         self._session.flush()
-        grant_project_access(self._session, project_id=project_id, member_id=member_id, granted_by=assigned_by)
+        grant_project_access(
+            self._session, project_id=project_id, member_id=member_id, granted_by=assigned_by, kind=kind
+        )
         return assignment
 
     def remove_assignment(self, assignment: ProjectAssignmentRecord) -> None:
@@ -139,9 +148,8 @@ class SqlAlchemyProjectRepository:
         return {row.id: row.name for row in self._session.scalars(select(OrganizationUnitRecord))}
 
 
-def _project_rule(session: Session) -> str:
+def _project_rule(session: Session, template: Any) -> str:
     """ERD STANDARD_GRANT_RULE — 프로젝트에 배정되면 그 프로젝트 범위의 역할이 따라온다."""
-    template = ROLE_TEMPLATES_BY_KEY[PROJECT_ROLE_KEY]
     if session.get(RoleRecord, template.role_id) is None:
         # 역할이 아직 설치되지 않았다면 배정만으로 권한을 지어내지 않는다.
         raise LookupError(f"{template.role_id} 역할이 설치되지 않았습니다")
@@ -160,9 +168,11 @@ def _project_rule(session: Session) -> str:
     return rule_id
 
 
-def grant_project_access(session: Session, *, project_id: UUID, member_id: str, granted_by: str | None) -> None:
+def grant_project_access(
+    session: Session, *, project_id: UUID, member_id: str, granted_by: str | None, kind: str = "member"
+) -> None:
     """배정이 만든 권한. 조직 단위 grant와 나란히 서고 서로를 대신하지 않는다."""
-    template = ROLE_TEMPLATES_BY_KEY[PROJECT_ROLE_KEY]
+    template = ROLE_TEMPLATES_BY_KEY[_role_key(kind)]
     scope_ref = str(project_id)
     existing = session.scalar(
         select(AccessGrantRecord).where(
@@ -185,7 +195,7 @@ def grant_project_access(session: Session, *, project_id: UUID, member_id: str, 
             scope_ref=scope_ref,
             include_descendants=False,
             granted_by_member_id=granted_by,
-            origin_rule_id=_project_rule(session),
+            origin_rule_id=_project_rule(session, template),
             origin_rule_version=1,
         )
     )
@@ -193,13 +203,14 @@ def grant_project_access(session: Session, *, project_id: UUID, member_id: str, 
 
 
 def revoke_project_access(session: Session, *, project_id: UUID, member_id: str) -> None:
-    """프로젝트에서 빠지면 그 프로젝트로 얻었던 권한도 끝난다. 조직 안에서 갖던 것은 건드리지 않는다."""
-    template = ROLE_TEMPLATES_BY_KEY[PROJECT_ROLE_KEY]
+    """프로젝트에서 빠지면 그 프로젝트로 얻었던 권한도 끝난다. 담당이든 참여든 그 프로젝트의 것만이며,
+    조직 안에서 갖던 것은 건드리지 않는다."""
+    role_ids = {ROLE_TEMPLATES_BY_KEY[key].role_id for key in PROJECT_ROLE_KEYS.values()}
     now = datetime.now(UTC)
     for grant in session.scalars(
         select(AccessGrantRecord).where(
             AccessGrantRecord.member_id == member_id,
-            AccessGrantRecord.role_id == template.role_id,
+            AccessGrantRecord.role_id.in_(sorted(role_ids)),
             AccessGrantRecord.scope_ref == str(project_id),
             AccessGrantRecord.revoked_at.is_(None),
         )

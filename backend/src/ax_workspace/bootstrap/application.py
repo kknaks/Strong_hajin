@@ -58,6 +58,7 @@ from ax_workspace.platform.recordings import LocalDirectoryRecordingStorage
 from ax_workspace.platform.soniox import SonioxTranscriptionAdapter
 from ax_workspace.modules.work.material_extraction import LexicalMaterialRetriever, MaterialExtractionJob
 from ax_workspace.modules.work.projects import ProjectApplication
+from ax_workspace.modules.work.search import matches
 from ax_workspace.platform.projects import SqlAlchemyProjectRepository
 from ax_workspace.platform.material_extraction import (
     MaterialJobQueue,
@@ -181,7 +182,7 @@ class _SessionGraphSource:
         rows = self._application._tasks(self._session).list_for(
             principal, include_closed=True, include_organization=True
         )
-        return [row for row in rows if not query or query.lower() in str(row["title"]).lower()][:limit]
+        return [row for row in rows if not query or matches(query, str(row["title"]))][:limit]
 
     def readable_task(self, principal: Principal, task_id: UUID) -> dict[str, Any] | None:
         try:
@@ -194,7 +195,7 @@ class _SessionGraphSource:
             rows = self._application._work_requests(self._session).list(principal)
         except Exception:
             return []
-        return [row for row in rows if not query or query.lower() in str(row["title"]).lower()]
+        return [row for row in rows if not query or matches(query, str(row["title"]))]
 
     def readable_request(self, principal: Principal, request_id: UUID) -> dict[str, Any] | None:
         try:
@@ -225,7 +226,7 @@ class _SessionGraphSource:
         except Exception:
             return []
         meetings = [row for row in rows if row.get("kind") == "meeting"]
-        return [row for row in meetings if not query or query.lower() in str(row.get("title") or "").lower()][:limit]
+        return [row for row in meetings if not query or matches(query, str(row.get("title") or ""))][:limit]
 
     def readable_meeting(self, principal: Principal, meeting_id: UUID) -> dict[str, Any] | None:
         try:
@@ -1169,6 +1170,12 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return self._assignments(session).candidates(principal)
 
+    def plan_project_work(self, principal: Principal, project_id: UUID, title: str, **fields: Any) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._assignments(session).plan_project_work(principal, project_id, title, **fields)
+            session.commit()
+            return result
+
     def task_assignment_inbox(self, principal: Principal) -> list[dict[str, Any]]:
         with self._session_factory() as session:
             return self._assignments(session).inbox(principal)
@@ -1194,6 +1201,7 @@ class WorkflowApplication:
             SqlAlchemyTaskAssignmentRepository(session),
             OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
             self._tasks(session),
+            self._projects(session),
         )
 
     # ---- 프로젝트: 부서를 가로질러 묶이는 일 ----

@@ -142,6 +142,78 @@ def test_a_project_member_sees_the_parts_they_could_already_open(client: TestCli
     assert "checklist" not in body
 
 
+def test_work_can_sit_on_a_project_before_anyone_holds_it(client: TestClient) -> None:
+    """무슨 일이 있는지와 누가 하는지는 다른 질문이다. 계획을 먼저 펼치고 사람을 나중에 붙인다.
+
+    배정 행이 하나도 없다는 것이 곧 `담당자 미정`이다. `미정`이라는 이름의 가짜 담당자를 만들지 않는다.
+    """
+    project = _project(client)
+    client.post(f"/api/projects/{project['project_id']}/members", headers=JIHO, json={"member_id": "jiho", "kind": "lead"})
+
+    planned = client.post(
+        f"/api/projects/{project['project_id']}/tasks",
+        headers=JIHO,
+        json={"title": "플레이스 썸네일 이미지 제작", "due_date": "2026-09-30"},
+    )
+    assert planned.status_code == 201, planned.text
+    task_id = planned.json()["task_id"]
+    assert planned.json()["project_id"] == project["project_id"]
+
+    detail = client.get(f"/api/tasks/{task_id}", headers=JIHO).json()
+    assert detail["assignee"] is None, "아무도 들지 않은 일에 담당자가 생겼습니다"
+    # 아무도 들고 있지 않으므로 누구의 내 업무에도 들어가지 않는다.
+    assert task_id not in {row["task_id"] for row in client.get("/api/my-work", headers=JIHO).json()}
+    # 프로젝트에는 있다 — 계획은 거기에 있다.
+    assert task_id in {row["task_id"] for row in client.get(f"/api/projects/{project['project_id']}", headers=JIHO).json()["tasks"]}
+
+    # 담당이 사람을 붙인다. 옮겨 올 자리가 없다는 이유로 거절하지 않는다.
+    handed = client.post(
+        f"/api/tasks/{task_id}/reassign",
+        headers=JIHO,
+        json={"expected_version": detail["version"], "assignee_id": "mina"},
+    )
+    assert handed.status_code == 200, handed.text
+    # 그래도 그 사람이 수락해야 자기 업무가 된다.
+    assert handed.json()["status"] == "pending"
+    assert task_id not in {row["task_id"] for row in client.get("/api/my-work", headers=MINA).json()}
+    # 붙였다는 사실이 그 사람의 판단함에 닿는다. 닿지 않으면 수락할 방법이 없다.
+    [item] = [row for row in client.get("/api/action-items", headers=MINA).json() if row["subject"] == "플레이스 썸네일 이미지 제작"]
+    accepted = client.post(
+        f"/api/action-items/{item['action_item_id']}/commands/accept",
+        headers=MINA,
+        json={"expected_version": item["expected_version"]},
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert task_id in {row["task_id"] for row in client.get("/api/my-work", headers=MINA).json()}
+
+
+def test_a_project_lead_may_put_work_on_someone_from_another_unit(client: TestClient) -> None:
+    """프로젝트 담당은 그 프로젝트 안에서 일을 만들 수 있어야 한다. 그러지 못하면 프로젝트는 같이 보는 묶음에 그친다."""
+    project = _project(client)
+    client.post(f"/api/projects/{project['project_id']}/members", headers=JIHO, json={"member_id": "jiho", "kind": "lead"})
+    # 현우는 제품팀 밖 사람이다. 조직 축으로는 지호의 배정 범위에 없다.
+    assert "hyeon" not in {row["id"] for row in client.get("/api/task-assignment-candidates", headers=JIHO).json()}
+
+    client.post(f"/api/projects/{project['project_id']}/members", headers=JIHO, json={"member_id": "hyeon"})
+    assert "hyeon" in {row["id"] for row in client.get("/api/task-assignment-candidates", headers=JIHO).json()}
+
+    planned = client.post(
+        f"/api/projects/{project['project_id']}/tasks", headers=JIHO, json={"title": "썸네일 제작"}
+    ).json()
+    handed = client.post(
+        f"/api/tasks/{planned['task_id']}/reassign",
+        headers=JIHO,
+        json={"expected_version": planned["version"], "assignee_id": "hyeon"},
+    )
+    assert handed.status_code == 200, handed.text
+
+    # 프로젝트 참여자는 배정하지 못한다. 담당과 참여가 다른 말이어야 하는 이유다.
+    refused = client.post(
+        f"/api/projects/{project['project_id']}/tasks", headers=HYEON, json={"title": "참여자가 올리는 일"}
+    )
+    assert refused.status_code == 422, refused.text
+
+
 def test_the_screen_is_told_what_it_may_do_rather_than_guessing(client: TestClient) -> None:
     """화면이 권한을 추측해 버튼을 그리면 눌러야 아는 거절이 된다. 서버가 먼저 말한다."""
     project = _project(client)

@@ -11,6 +11,8 @@ import re
 from typing import Any, Protocol
 from uuid import UUID
 
+from ax_workspace.modules.work.search import folded
+
 SUPPORTED_EXTRACTORS = ("text", "markdown", "pdf")
 MAX_TEXT_CHARS = 200_000
 CHUNK_CHARS = 1_000
@@ -156,7 +158,9 @@ _TOKEN = re.compile(r"[0-9A-Za-z가-힣]+")
 
 def query_tokens(query: str) -> list[str]:
     tokens: list[str] = []
-    for raw in _TOKEN.findall(query.lower()):
+    # `[가-힣]`는 합쳐진 글자만 맞는다. 자모가 풀린 채로 들어온 질의는 토큰이 하나도 나오지 않으므로,
+    # 자르기 전에 모양을 맞춘다.
+    for raw in _TOKEN.findall(folded(query)):
         if len(raw) < 2:
             continue
         tokens.append(raw)
@@ -167,7 +171,7 @@ def query_tokens(query: str) -> list[str]:
 
 
 def score_text(text: str, tokens: list[str]) -> tuple[int, int]:
-    lowered = text.lower()
+    lowered = folded(text)
     matched = 0
     occurrences = 0
     for token in tokens:

@@ -126,8 +126,13 @@ _PEOPLE_CAPABILITIES = _MEMBER_CAPABILITIES + (
 )
 
 #: 프로젝트에 붙은 사람이 그 프로젝트 안에서 갖는 것. 조직 안에서 갖던 것을 대신하지 않고 그 위에 더해진다.
-#: 읽기까지만이다 — 남의 업무를 대신 판단하거나 배정하는 것은 조직이 정하는 일로 남는다.
+#: 참여자는 읽기까지다 — 남의 업무를 대신 판단하는 것은 그 사람 본인의 몫으로 남는다.
 _PROJECT_PARTICIPANT_CAPABILITIES = ("project.read", "work.read", "task.read", "work_request.read")
+#: 담당은 그 프로젝트 안에서 일을 만들 수 있어야 한다. 그러지 못하면 프로젝트는 같이 보는 묶음에 그치고,
+#: 실제로 일을 시키려면 조직 축으로 돌아가야 해서 부서를 가로지르는 프로젝트를 만든 이유가 사라진다.
+#: 배정에는 이미 안전장치가 있다 — 받는 사람이 수락해야 자기 업무가 되고 거절도 사유와 함께 남는다.
+#: 판단(`work_request.decide`)은 주지 않는다. 요청을 받을지는 받는 사람 본인의 것이다.
+_PROJECT_LEAD_CAPABILITIES = _PROJECT_PARTICIPANT_CAPABILITIES + ("task.assign",)
 
 ROLE_TEMPLATES: tuple[RoleTemplate, ...] = (
     # Someone who comes to meetings and nothing else — an outside adviser, a contractor between engagements.
@@ -136,6 +141,7 @@ ROLE_TEMPLATES: tuple[RoleTemplate, ...] = (
     RoleTemplate("team-lead", "팀장", 1, _LEAD_CAPABILITIES + ("project.read", "project.manage")),
     # 프로젝트 배정이 부르는 역할. 어느 프로젝트에 닿는지는 grant의 범위가 말한다.
     RoleTemplate("project-participant", "프로젝트 참여자", 1, _PROJECT_PARTICIPANT_CAPABILITIES, scope_template="project"),
+    RoleTemplate("project-lead", "프로젝트 담당자", 1, _PROJECT_LEAD_CAPABILITIES, scope_template="project"),
     RoleTemplate("people-manager", "인사 담당자", 1, _PEOPLE_CAPABILITIES),
     # 대표 is appointed at the company, so the same role reaches the whole organization rather than one unit's subtree.
     RoleTemplate(

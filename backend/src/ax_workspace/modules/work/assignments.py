@@ -21,6 +21,8 @@ class TaskAssignmentRepository(Protocol):
     def task_by_id(self, task_id: UUID, *, lock: bool = False) -> Any: ...
     def active_assignment_for(self, task_id: UUID, *, lock: bool = False) -> Any: ...
     def reassign(self, task: Any, current: Any, assigner_id: str, assignee_id: str, reason: str | None) -> Any: ...
+    def hand_to(self, task: Any, assigner_id: str, assignee_id: str) -> Any: ...
+    def create_unheld_task(self, creator_id: str, title: str, **fields: Any) -> Any: ...
 
 
 class TaskAssigneeDirectory(Protocol):
@@ -28,16 +30,45 @@ class TaskAssigneeDirectory(Protocol):
     def is_task_assignee(self, principal: Principal, assignee_id: str) -> bool: ...
 
 
+class ProjectAssigneePort(Protocol):
+    """프로젝트 축이 아는 것: 이 사람이 배정할 수 있는 프로젝트의 사람들."""
+
+    def assignable_members(self, principal: Principal) -> list[dict[str, str]]: ...
+    def may_assign_in(self, principal: Principal, project_id: UUID) -> bool: ...
+    def readable_project_ids(self, principal: Principal) -> frozenset[str]: ...
+
+
 class TaskAssignmentApplication:
-    def __init__(self, repository: TaskAssignmentRepository, directory: TaskAssigneeDirectory, tasks: Any = None) -> None:
+    def __init__(
+        self,
+        repository: TaskAssignmentRepository,
+        directory: TaskAssigneeDirectory,
+        tasks: Any = None,
+        projects: ProjectAssigneePort | None = None,
+    ) -> None:
         self._repository = repository
         self._directory = directory
         # Assigning a part of something needs the Task module's own rules about what may be a parent.
         self._tasks = tasks
+        self._projects = projects
 
     def candidates(self, principal: Principal) -> list[dict[str, str]]:
         self._require(principal, TASK_ASSIGN)
-        return self._directory.task_assignment_candidates(principal)
+        return self._assignable(principal)
+
+    def _assignable(self, principal: Principal) -> list[dict[str, str]]:
+        """배정할 수 있는 사람 — 조직 축과 프로젝트 축을 여기 한 곳에서 합친다.
+
+        목록과 판정이 같은 곳에서 나와야 한다. 읽기에서 두 곳이 각자 판정하다 조용히 어긋난 적이 있고, 그때는
+        자기 팀 프로젝트에 일을 매달지 못하는 모양으로 드러났다.
+        """
+        rows = {row["id"]: row for row in self._directory.task_assignment_candidates(principal)}
+        for row in self._projects.assignable_members(principal) if self._projects is not None else []:
+            rows.setdefault(row["id"], row)
+        return [rows[member_id] for member_id in sorted(rows)]
+
+    def _may_put_on(self, principal: Principal, assignee_id: str) -> bool:
+        return any(row["id"] == assignee_id for row in self._assignable(principal))
 
     def assign(
         self,
@@ -58,7 +89,7 @@ class TaskAssignmentApplication:
             raise TaskError("title is required")
         if assignee_id == str(principal.id):
             raise TaskError("use a self-owned task instead of assigning yourself")
-        if not self._directory.is_task_assignee(principal, assignee_id):
+        if not self._may_put_on(principal, assignee_id):
             raise TaskError("assignee is not within your assignment scope")
         validate_schedule(start_date, due_date)
         parent = self._tasks.parent_for(principal, parent_task_id) if parent_task_id is not None else None
@@ -72,6 +103,37 @@ class TaskAssignmentApplication:
             self._tasks.record_subtask(principal, parent, task)
         return self._view(assignment, task)
 
+    def plan_project_work(
+        self,
+        principal: Principal,
+        project_id: UUID,
+        title: str,
+        *,
+        description: str | None = None,
+        start_date: date | None = None,
+        due_date: date | None = None,
+    ) -> dict[str, Any]:
+        """프로젝트 계획에 일을 올린다. 사람은 아직 정하지 않는다.
+
+        무슨 일이 있는지와 누가 하는지는 다른 질문이다. 계획을 먼저 펼치고 사람을 나중에 붙이는 것이 프로젝트가
+        움직이는 방식이며, 배정 행이 하나도 없다는 것이 곧 `담당자 미정`이다.
+        """
+        self._require(principal, TASK_ASSIGN)
+        if self._projects is None or not self._projects.may_assign_in(principal, project_id):
+            raise TaskError("이 프로젝트에 업무를 올릴 수 있는 자격이 없습니다")
+        if not title.strip():
+            raise TaskError("title is required")
+        validate_schedule(start_date, due_date)
+        task = self._repository.create_unheld_task(
+            str(principal.id),
+            title.strip(),
+            project_id=project_id,
+            description=(description or "").strip() or None,
+            start_date=start_date,
+            due_date=due_date,
+        )
+        return TaskApplication._view(task)
+
     def reassign(self, principal: Principal, task_id: UUID, expected_version: int, assignee_id: str, reason: str | None = None) -> dict[str, Any]:
         """Put someone else on work that is already underway.
 
@@ -84,17 +146,21 @@ class TaskAssignmentApplication:
         if task is None:
             raise TaskNotFound("task was not found")
         current = self._repository.active_assignment_for(task_id, lock=True)
-        if current is None:
-            raise TaskError("this task has nobody to move it from")
         if task.version != expected_version:
             raise InvalidTaskTransition("task version is stale")
-        if assignee_id == current.assignee_id:
+        if current is not None and assignee_id == current.assignee_id:
             raise TaskError("that person already holds this task")
         # Taking the work on yourself is not assigning to yourself: the candidate list is about who you may put on
         # someone else's work, and one may always take it back.
-        if assignee_id != str(principal.id) and not self._directory.is_task_assignee(principal, assignee_id):
+        if assignee_id != str(principal.id) and not self._may_put_on(principal, assignee_id):
             raise TaskError("assignee is not within your assignment scope")
-        appended = self._repository.reassign(task, current, str(principal.id), assignee_id, (reason or "").strip() or None)
+        # 아직 아무도 들지 않은 일이면 옮기는 것이 아니라 처음 붙이는 것이다. 옮겨 올 자리가 없다는 이유로
+        # 거절하면 프로젝트에만 있고 사람이 정해지지 않은 일에 담당자를 줄 방법이 없어진다.
+        appended = (
+            self._repository.hand_to(task, str(principal.id), assignee_id)
+            if current is None
+            else self._repository.reassign(task, current, str(principal.id), assignee_id, (reason or "").strip() or None)
+        )
         return self._view(appended, task)
 
     def inbox(self, principal: Principal) -> list[dict[str, Any]]:

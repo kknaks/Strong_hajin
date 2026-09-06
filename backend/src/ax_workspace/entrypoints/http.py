@@ -102,6 +102,14 @@ class CreateProjectRequest(BaseModel):
     external_key: str | None = Field(default=None, max_length=200)
 
 
+class PlanProjectWorkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(min_length=1, max_length=300)
+    description: str | None = None
+    start_date: date | None = None
+    due_date: date | None = None
+
+
 class AssignToProjectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     member_id: str = Field(min_length=1, max_length=100)
@@ -944,6 +952,25 @@ def create_app(
         def get_project(project_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
             try:
                 return app.state.workflow_application.get_project(principal, project_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/projects/{project_id}/tasks", status_code=status.HTTP_201_CREATED)
+        def plan_project_work(
+            project_id: UUID,
+            request: PlanProjectWorkRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            """프로젝트 계획에 일을 올린다. 사람은 아직 정하지 않는다."""
+            try:
+                return app.state.workflow_application.plan_project_work(
+                    principal,
+                    project_id,
+                    request.title,
+                    description=request.description,
+                    start_date=request.start_date,
+                    due_date=request.due_date,
+                )
             except Exception as error:
                 raise _runtime_error(error) from error
 
