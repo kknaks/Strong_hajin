@@ -13,7 +13,7 @@ from ax_workspace.entrypoints.reset_demo import reset_database
 MINA = {"X-Demo-Persona": "mina"}
 JIHO = {"X-Demo-Persona": "jiho"}
 SORA = {"X-Demo-Persona": "sora"}
-ADMIN = {"X-Demo-Persona": "demo-admin"}
+ADMIN = {"X-Demo-Persona": "yuna"}
 
 
 def _stack(tmp_path):

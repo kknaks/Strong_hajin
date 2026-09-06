@@ -182,7 +182,7 @@ def test_the_relationship_table_is_a_projection_that_can_be_rebuilt(tmp_path) ->
     request = client.post(
         "/api/work-requests",
         headers=MINA,
-        json={"title": "관계가 붙는 요청", "assignee_id": "jiho", "cc_member_ids": ["demo-admin"]},
+        json={"title": "관계가 붙는 요청", "assignee_id": "jiho", "cc_member_ids": ["yuna"]},
     ).json()
     assigned = application.assign_task(application.authenticated_principal("jiho"), "배정한 업무", "mina")
 
@@ -197,7 +197,7 @@ def test_the_relationship_table_is_a_projection_that_can_be_rebuilt(tmp_path) ->
         before = relationships(session)
     assert ("mina", "work_request", request["request_id"], "requester") in before
     assert ("jiho", "work_request", request["request_id"], "assignee") in before
-    assert ("demo-admin", "work_request", request["request_id"], "cc") in before
+    assert ("yuna", "work_request", request["request_id"], "cc") in before
 
     # Throw away everything this table derives from the canonical rows, and rebuild it: it comes back the same.
     # `cc` is not derived — being copied in is itself an access relationship, and this table is where it lives.
@@ -206,7 +206,7 @@ def test_the_relationship_table_is_a_projection_that_can_be_rebuilt(tmp_path) ->
             if row.relationship_kind in {"requester", "assignee"}:
                 session.delete(row)
         session.flush()
-        assert relationships(session) == {("demo-admin", "work_request", request["request_id"], "cc")}
+        assert relationships(session) == {("yuna", "work_request", request["request_id"], "cc")}
         assert SqlAlchemyWorkRequestRepository(session).rebuild_relationships() == 2
         assert relationships(session) == before
         # Rebuilding again changes nothing: it reconstructs, it does not accumulate.
@@ -218,4 +218,4 @@ def test_the_relationship_table_is_a_projection_that_can_be_rebuilt(tmp_path) ->
     task = client.get(f"/api/tasks/{assigned['task']['task_id']}", headers=JIHO).json()
     assert task["origin"]["actor"] == {"member_id": "jiho", "display_name": "지호 (팀장)"}
     assert task["assignee"] == {"member_id": "mina", "display_name": "민아 (구성원)"}
-    assert client.get(f"/api/work-requests/{request['request_id']}/timeline", headers={"X-Demo-Persona": "demo-admin"}).status_code == 200
+    assert client.get(f"/api/work-requests/{request['request_id']}/timeline", headers={"X-Demo-Persona": "yuna"}).status_code == 200

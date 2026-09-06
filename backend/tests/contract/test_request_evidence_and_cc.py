@@ -9,7 +9,7 @@ from ax_workspace.platform.persistence import AttachmentBindingRecord, EvidenceR
 
 MINA = {"X-Demo-Persona": "mina"}
 JIHO = {"X-Demo-Persona": "jiho"}
-ADMIN = {"X-Demo-Persona": "demo-admin"}
+ADMIN = {"X-Demo-Persona": "yuna"}
 SORA = {"X-Demo-Persona": "sora"}
 
 
@@ -23,19 +23,19 @@ def _client(tmp_path) -> tuple[TestClient, str]:
 def test_cc_members_can_read_and_discuss_but_never_decide(tmp_path) -> None:
     client, database_url = _client(tmp_path)
     candidates = client.get("/api/work-request-cc-candidates", headers=MINA)
-    assert candidates.status_code == 200 and "demo-admin" in {item["id"] for item in candidates.json()}
+    assert candidates.status_code == 200 and "yuna" in {item["id"] for item in candidates.json()}
     created = client.post(
         "/api/work-requests", headers=MINA,
-        json={"title": "계약 초안 검토", "assignee_id": "jiho", "cc_member_ids": ["demo-admin", "mina", "jiho", "demo-admin"]},
+        json={"title": "계약 초안 검토", "assignee_id": "jiho", "cc_member_ids": ["yuna", "mina", "jiho", "yuna"]},
     )
     assert created.status_code == 201, created.text
     request = created.json()
-    assert request["cc_member_ids"] == ["demo-admin"]
+    assert request["cc_member_ids"] == ["yuna"]
     with make_session_factory(database_url)() as session:
         kinds = session.execute(
             select(ResourceRelationshipRecord.member_id, ResourceRelationshipRecord.relationship_kind).where(ResourceRelationshipRecord.resource_id == request["request_id"])
         ).all()
-        assert set(kinds) == {("mina", "requester"), ("jiho", "assignee"), ("demo-admin", "cc")}
+        assert set(kinds) == {("mina", "requester"), ("jiho", "assignee"), ("yuna", "cc")}
     rid = request["request_id"]
     # cc sees it in the list, can read the timeline and comment…
     assert rid in {item["request_id"] for item in client.get("/api/work-requests", headers=ADMIN).json()}
@@ -52,7 +52,7 @@ def test_cc_members_can_read_and_discuss_but_never_decide(tmp_path) -> None:
 
 def test_evidence_is_adopted_for_the_current_submission_and_pinned_by_hash(tmp_path) -> None:
     client, database_url = _client(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "견적 승인", "assignee_id": "jiho", "cc_member_ids": ["demo-admin"]}).json()
+    request = client.post("/api/work-requests", headers=MINA, json={"title": "견적 승인", "assignee_id": "jiho", "cc_member_ids": ["yuna"]}).json()
     rid = request["request_id"]
     supporting = client.post(f"/api/work-requests/{rid}/evidence", headers=MINA, files={"file": ("견적서.pdf", b"quote-v1", "application/pdf")})
     assert supporting.status_code == 201, supporting.text

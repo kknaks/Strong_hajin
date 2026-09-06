@@ -228,7 +228,7 @@ def test_action_preview_is_structured_and_permission_safe(tmp_path) -> None:
         {"id": "requester", "label": "요청자", "value": "민아 (구성원)", "kind": "person"},
         {"id": "assignee", "label": "요청 대상", "value": "지호 (팀장)", "kind": "person"},
         {"id": "due_date", "label": "기한", "value": "2026-09-30", "kind": "date"},
-        {"id": "cc", "label": "참조자", "value": "소라 (법무), 확인할 수 없는 구성원", "kind": "people"},
+        {"id": "cc", "label": "참조자", "value": "소라 (법무 자문), 확인할 수 없는 구성원", "kind": "people"},
     ]
     assert "assignee_id" not in str(action["preview"]) and "no-such-member" not in str(action["preview"])
     # The chat projection and the decision inbox carry the identical presentation.

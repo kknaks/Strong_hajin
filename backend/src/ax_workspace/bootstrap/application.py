@@ -697,7 +697,7 @@ class WorkflowApplication:
         Bytes, blocks and chunks go. The evidence rows a delegated turn recorded stay, with their excerpts blanked:
         a person can still see that an answer stood on this file, and nobody can read what it said.
         """
-        if "demo.admin" not in principal.capabilities and "team.manage" not in principal.capabilities:
+        if "material.purge" not in principal.capabilities:
             raise MaterialError("자료를 완전히 삭제할 권한이 없습니다")
         if not str(reason or "").strip():
             raise MaterialError("삭제 사유가 필요합니다")

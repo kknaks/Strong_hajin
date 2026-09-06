@@ -121,7 +121,7 @@ def test_mcp_facade_uses_the_work_request_public_operations(tmp_path) -> None:
     mina = McpReportsFacade(settings, "mina", ContractTestAiProvider())
     jiho = McpReportsFacade(settings, "jiho", ContractTestAiProvider())
 
-    assert mina.work_request_assignee_candidates() == [{"id": "jiho", "display_name": "지호 (팀장)"}]
+    assert mina.work_request_assignee_candidates() == [{"id": "jiho", "display_name": "지호 (팀장)"}, {"id": "yuna", "display_name": "유나 (대표)"}]
     created = mina.create_work_request("MCP 업무 요청", "jiho")
     assert mina.list_work_requests() == [created]
     # The detail read adds the earlier work pointed at; everything else is the same row the list gave.
@@ -298,7 +298,7 @@ def test_stdio_mcp_tool_call_rechecks_a_revoked_capability(tmp_path) -> None:
                 with make_session_factory(database_url)() as database_session:
                     database_session.execute(
                         delete(RoleCapabilityRecord).where(
-                            RoleCapabilityRecord.role_id == "seed-role:mina",
+                            RoleCapabilityRecord.role_id == "role:member",
                             RoleCapabilityRecord.capability_id == "task.self_manage",
                         )
                     )
@@ -358,7 +358,7 @@ def test_delegated_stdio_mcp_tool_rechecks_capability_before_proposing_an_action
                 with make_session_factory(database_url)() as database_session:
                     database_session.execute(
                         delete(RoleCapabilityRecord).where(
-                            RoleCapabilityRecord.role_id == "seed-role:mina",
+                            RoleCapabilityRecord.role_id == "role:member",
                             RoleCapabilityRecord.capability_id == "task.self_manage",
                         )
                     )

@@ -67,16 +67,16 @@ def test_grant_evaluates_the_role_capability_snapshot_not_the_live_role(tmp_path
     client, database_url = _client(tmp_path)
     profile = client.get("/api/organization/me", headers=MINA).json()
     assert "task.assign" not in profile["capabilities"]
-    assert profile["grants"][0]["role_capability_version"] == 1 and profile["grants"][0]["origin_rule_id"] == "standard:member:seed-role:mina"
+    assert profile["grants"][0]["role_capability_version"] == 1 and profile["grants"][0]["origin_rule_id"] == "standard:member:role:member"
     with make_session_factory(database_url)() as session:
         # The role gains a capability later (mapping version 2); mina's grant is pinned at version 1.
-        session.add(RoleCapabilityRecord(role_id="seed-role:mina", capability_id="task.assign", mapping_version=2))
+        session.add(RoleCapabilityRecord(role_id="role:member", capability_id="task.assign", mapping_version=2))
         session.commit()
     assert "task.assign" not in client.get("/api/organization/me", headers=MINA).json()["capabilities"]
     with make_session_factory(database_url)() as session:
         session.add(
             AccessGrantRecord(
-                member_id="mina", role_id="seed-role:mina", role_capability_version=2,
+                member_id="mina", role_id="role:member", role_capability_version=2,
                 scope_kind="unit", scope_organization_id="product", scope_ref="product", include_descendants=True, granted_by_member_id="jiho",
             )
         )
@@ -90,10 +90,10 @@ def test_revoking_the_grant_removes_capabilities_while_the_appointment_remains(t
     client, database_url = _client(tmp_path)
     with make_session_factory(database_url)() as session:
         grant = session.scalar(select(AccessGrantRecord).where(AccessGrantRecord.member_id == "mina"))
-        assert grant is not None and grant.capability_id is None and grant.role_id == "seed-role:mina"
+        assert grant is not None and grant.capability_id is None and grant.role_id == "role:member"
         grant.revoked_at = datetime.now(UTC)
         session.commit()
     profile = client.get("/api/organization/me", headers=MINA).json()
     assert profile["capabilities"] == [] and profile["grants"] == []
-    assert profile["roles"] == ["민아 (구성원) 기본 역할"]  # the appointment still exists; only the grant is gone
+    assert profile["roles"] == ["구성원"]  # the appointment still exists; only the grant is gone
     assert client.get("/api/tasks", headers=MINA).status_code == 403

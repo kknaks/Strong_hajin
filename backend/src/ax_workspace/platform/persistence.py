@@ -154,6 +154,11 @@ class RoleRecord(Base):
     version: Mapped[int] = mapped_column(nullable=False, default=1)
     sensitivity: Mapped[str] = mapped_column(String(20), nullable=False, default="normal")
     lifecycle: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    #: Which product recommendation this role was installed from, and at which revision of it.
+    template_key: Mapped[str | None] = mapped_column(String(100))
+    template_version: Mapped[int | None] = mapped_column()
+    #: Set once the organization changes the role. After that the product proposes; it does not rewrite.
+    customized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class RoleCapabilityRecord(Base):

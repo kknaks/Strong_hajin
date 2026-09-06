@@ -23,7 +23,7 @@ def test_production_has_no_developer_login_surface() -> None:
     app = create_app(Settings(RuntimeProfile.PRODUCTION, "postgresql+psycopg://unused"))
     client = TestClient(app)
     assert client.post("/api/auth/login", json={"email": "a@b.c", "password": "x"}).status_code == 404
-    assert client.get("/api/catalog", headers={"X-Demo-Persona": "demo-admin"}).status_code == 404
+    assert client.get("/api/catalog", headers={"X-Demo-Persona": "yuna"}).status_code == 404
     with pytest.raises(RuntimeError, match="forbidden"):
         DeveloperAuthAdapter(Settings(RuntimeProfile.PRODUCTION, "postgresql+psycopg://unused"))
 
@@ -42,7 +42,7 @@ def test_production_exposes_no_persona_surface_at_all(tmp_path) -> None:
 
     client = TestClient(app)
     for path in ("/api/developer/personas", "/api/my-work", "/api/graph/search?q=x"):
-        assert client.get(path, headers={"X-Demo-Persona": "demo-admin"}).status_code == 404
+        assert client.get(path, headers={"X-Demo-Persona": "yuna"}).status_code == 404
 
 
 def test_the_development_seam_names_a_member_and_never_invents_one(tmp_path) -> None:

@@ -296,7 +296,7 @@ def test_a_capability_revoked_after_discovery_is_refused_at_call_time(tmp_path) 
                 with make_session_factory(database_url)() as database_session:
                     database_session.execute(
                         delete(RoleCapabilityRecord).where(
-                            RoleCapabilityRecord.role_id == "seed-role:jiho",
+                            RoleCapabilityRecord.role_id == "role:team-lead",
                             RoleCapabilityRecord.capability_id == "work_request.decide",
                         )
                     )
@@ -565,7 +565,7 @@ def test_a_delegated_server_only_advertises_a_command_it_could_actually_run(tmp_
     with make_session_factory(database_url)() as session:
         session.execute(
             delete(RoleCapabilityRecord).where(
-                RoleCapabilityRecord.role_id == "seed-role:jiho", RoleCapabilityRecord.capability_id == "action.decide"
+                RoleCapabilityRecord.role_id == "role:team-lead", RoleCapabilityRecord.capability_id == "action.decide"
             )
         )
         session.commit()
@@ -604,7 +604,7 @@ def test_a_pending_confirmation_says_nothing_about_work_the_approver_may_no_long
         for capability in ("work_request.read", "work_request.decide", "work_request.create"):
             session.execute(
                 delete(RoleCapabilityRecord).where(
-                    RoleCapabilityRecord.role_id == "seed-role:jiho", RoleCapabilityRecord.capability_id == capability
+                    RoleCapabilityRecord.role_id == "role:team-lead", RoleCapabilityRecord.capability_id == capability
                 )
             )
         session.commit()
@@ -721,7 +721,7 @@ def test_a_pending_confirmation_survives_a_target_that_moved_or_authority_that_w
     with make_session_factory(database_url)() as session:
         session.execute(
             delete(RoleCapabilityRecord).where(
-                RoleCapabilityRecord.role_id == "seed-role:jiho", RoleCapabilityRecord.capability_id == "work_request.decide"
+                RoleCapabilityRecord.role_id == "role:team-lead", RoleCapabilityRecord.capability_id == "work_request.decide"
             )
         )
         session.commit()
@@ -842,7 +842,7 @@ def test_a_confirmation_cannot_be_approved_when_its_target_can_no_longer_be_read
         for capability in ("work_request.read", "work_request.decide", "work_request.create"):
             session.execute(
                 delete(RoleCapabilityRecord).where(
-                    RoleCapabilityRecord.role_id == "seed-role:jiho", RoleCapabilityRecord.capability_id == capability
+                    RoleCapabilityRecord.role_id == "role:team-lead", RoleCapabilityRecord.capability_id == capability
                 )
             )
         session.commit()

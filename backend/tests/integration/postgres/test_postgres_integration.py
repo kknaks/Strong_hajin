@@ -1516,7 +1516,7 @@ def test_postgres_keeps_one_open_assignment_per_task_through_a_handover() -> Non
         )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        first, second = executor.submit(hand_over, "jiho"), executor.submit(hand_over, "demo-admin")
+        first, second = executor.submit(hand_over, "jiho"), executor.submit(hand_over, "yuna")
         outcomes = sorted([first.result().status_code, second.result().status_code])
     assert outcomes == [200, 422], outcomes
 

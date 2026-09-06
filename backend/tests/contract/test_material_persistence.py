@@ -173,7 +173,7 @@ def test_purging_a_file_removes_its_content_but_not_that_it_was_cited(tmp_path) 
     _drain(worker)
 
     purged = application.purge_attachment(
-        application.authenticated_principal("demo-admin"), UUID(material["attachment_id"]), reason="개인정보 삭제 요청"
+        application.authenticated_principal("yuna"), UUID(material["attachment_id"]), reason="개인정보 삭제 요청"
     )
     assert purged["state"] == "purged"
 

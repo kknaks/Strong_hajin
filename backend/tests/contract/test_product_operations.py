@@ -153,7 +153,7 @@ def test_action_routes_require_current_read_and_decide_capabilities(tmp_path) ->
     with make_session_factory(f"sqlite:///{tmp_path / 'demo.db'}")() as session:
         session.execute(
             delete(RoleCapabilityRecord).where(
-                RoleCapabilityRecord.role_id == "seed-role:mina",
+                RoleCapabilityRecord.role_id == "role:member",
                 RoleCapabilityRecord.capability_id == "action.decide",
             )
         )
@@ -179,7 +179,7 @@ def test_action_routes_require_current_read_and_decide_capabilities(tmp_path) ->
     with make_session_factory(f"sqlite:///{tmp_path / 'demo.db'}")() as session:
         session.execute(
             delete(RoleCapabilityRecord).where(
-                RoleCapabilityRecord.role_id == "seed-role:mina",
+                RoleCapabilityRecord.role_id == "role:member",
                 RoleCapabilityRecord.capability_id == "action.read",
             )
         )
@@ -648,7 +648,8 @@ def test_work_request_uses_authorized_organization_candidates_and_rejects_an_out
     )
 
     assert candidates.status_code == 200
-    assert candidates.json() == [{"id": "jiho", "display_name": "지호 (팀장)"}]
+    # 판단할 수 있고 같은 조직에 있는 사람들: 팀장과 대표.
+    assert candidates.json() == [{"id": "jiho", "display_name": "지호 (팀장)"}, {"id": "yuna", "display_name": "유나 (대표)"}]
 
     rejected = client.post(
         "/api/work-requests",
@@ -737,12 +738,12 @@ def test_organization_profile_is_a_persisted_authorized_projection(tmp_path) -> 
     assert response.status_code == 200
     body = response.json()
     grants = body.pop("grants")
-    assert len(grants) == 1 and grants[0]["role_id"] == "seed-role:mina" and grants[0]["scope_ref"] == "product"
+    assert len(grants) == 1 and grants[0]["role_id"] == "role:member" and grants[0]["scope_ref"] == "product"
     assert body == {
         "member_id": "mina",
         "display_name": "민아 (구성원)",
         "organizations": [{"id": "product", "name": "제품팀"}, {"id": "scax", "name": "SCAX"}],
-        "roles": ["민아 (구성원) 기본 역할"],
+        "roles": ["구성원"],
         "capabilities": [
             "action.decide",
             "action.read",
@@ -774,7 +775,8 @@ def test_organization_seed_persists_appointment_role_capability_and_grant_ledger
             select(AppointmentRecord).where(AppointmentRecord.member_id == "mina")
         )
         assert appointment is not None
-        assert appointment.organization_id == "scax"
+        # 배정은 그 사람이 실제로 앉아 있는 조직에 걸린다.
+        assert appointment.organization_id == "product"
         role = session.get(RoleRecord, appointment.role_id)
         assert role is not None
         assert session.scalar(
@@ -816,7 +818,8 @@ def test_organization_principal_projects_persona_specific_grants(tmp_path) -> No
 
     assert mina["organizations"] != sora["organizations"]
     assert "work.read" in mina["capabilities"]
-    assert sora["capabilities"] == ["contract.legal_review", "meeting.read"]
+    # 외부 참여자는 회의만 읽는다.
+    assert sora["capabilities"] == ["meeting.read"]
 
 
 def test_repeated_comment_post_with_one_idempotency_key_creates_a_single_comment(tmp_path) -> None:

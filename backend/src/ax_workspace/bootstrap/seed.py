@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ax_workspace.modules.organization_access.catalog import (
+    CAPABILITIES,
+    ROLE_TEMPLATES,
+    ROLE_TEMPLATES_BY_KEY,
+    RoleTemplate,
+    validate,
+)
 from ax_workspace.modules.organization_access.credentials import hash_password, normalize_email
 from ax_workspace.platform.persistence import (
     AccessGrantRecord,
@@ -129,14 +137,30 @@ POSITION_DEFINITIONS = [
 GRADES = [("staff", "사원", 0), ("associate", "대리", 1), ("manager", "과장", 2), ("senior-manager", "차장", 3), ("director", "부장", 4)]
 JOBS = [("planning", "기획"), ("engineering", "개발"), ("legal", "법무"), ("finance", "재무"), ("people", "인사")]
 
-# persona -> (grade, job, primary unit, position)
-PERSONA_PLACEMENT = {
-    "mina": ("associate", "planning", "product", None),
-    "jiho": ("senior-manager", "planning", "product", "team-lead"),
-    "sora": ("manager", "legal", "legal", None),
-    "minseok": ("manager", "finance", "finance", None),
-    "demo-admin": ("director", "people", "people", None),
-}
+@dataclass(frozen=True, slots=True)
+class SeededMember:
+    """One person in the demo organization: where they sit, and which recommended role came with that."""
+
+    id: str
+    display_name: str
+    unit: str
+    grade: str
+    job: str
+    role_key: str
+    position: str | None = None
+    #: Units this person also belongs to, beyond their own unit and the company.
+    additional_units: tuple[str, ...] = ()
+
+
+SEEDED_MEMBERS: tuple[SeededMember, ...] = (
+    SeededMember("yuna", "유나 (대표)", "scax", "director", "planning", "executive", position="ceo"),
+    SeededMember("jiho", "지호 (팀장)", "product", "senior-manager", "planning", "team-lead", position="team-lead"),
+    SeededMember("mina", "민아 (구성원)", "product", "associate", "planning", "member"),
+    SeededMember("hyeon", "현우 (인사)", "people", "director", "people", "people-manager"),
+    # 외부 법률 자문: 회의에만 참여하고 업무 원장에는 들어오지 않는다.
+    SeededMember("sora", "소라 (법무 자문)", "legal", "manager", "legal", "guest"),
+    SeededMember("minseok", "민석 (재무)", "finance", "manager", "finance", "member"),
+)
 
 
 def _seed_organization_access(session: Session) -> None:
@@ -160,94 +184,128 @@ def _seed_organization_access(session: Session) -> None:
             session.add(JobRecord(id=job_id, name=name))
     session.flush()
 
-    from ax_workspace.modules.organization_access.domain import SEED_PERSONAS
+    for capability in CAPABILITIES:
+        record = session.get(CapabilityRecord, capability.id)
+        if record is None:
+            session.add(CapabilityRecord(id=capability.id, label=capability.label, version=1, group=capability.group))
+        else:
+            record.label, record.group = capability.label, capability.group
+    for template in ROLE_TEMPLATES:
+        _install_role_template(session, template)
+    session.flush()
 
-    all_capabilities = sorted(
-        {capability for principal in SEED_PERSONAS.values() for capability in principal.capabilities}
-    )
-    for capability in all_capabilities:
-        if session.get(CapabilityRecord, capability) is None:
-            session.add(CapabilityRecord(id=capability, label=capability, version=1, group=capability.split(".")[0]))
-
-    for principal in SEED_PERSONAS.values():
-        member_id = str(principal.id)
-        role_id = f"seed-role:{member_id}"
-        grade_id, job_id, primary_unit, position_id = PERSONA_PLACEMENT[member_id]
-        if session.get(MemberRecord, member_id) is None:
-            session.add(MemberRecord(id=member_id, display_name=principal.display_name, employment_state="active", account_ref=f"developer:{member_id}"))
-        if session.scalar(select(EmploymentPeriodRecord).where(EmploymentPeriodRecord.member_id == member_id)) is None:
-            session.add(EmploymentPeriodRecord(member_id=member_id, state="active"))
-        for organization_id in principal.organization_scope:
+    for member in SEEDED_MEMBERS:
+        template = ROLE_TEMPLATES_BY_KEY[member.role_key]
+        if session.get(MemberRecord, member.id) is None:
+            session.add(
+                MemberRecord(
+                    id=member.id,
+                    display_name=member.display_name,
+                    employment_state="active",
+                    account_ref=f"local:{demo_email(member.id)}",
+                )
+            )
+        if session.scalar(select(EmploymentPeriodRecord).where(EmploymentPeriodRecord.member_id == member.id)) is None:
+            session.add(EmploymentPeriodRecord(member_id=member.id, state="active"))
+        for organization_id in sorted({"scax", member.unit, *member.additional_units}):
             exists = session.scalar(
                 select(MembershipRecord).where(
-                    MembershipRecord.member_id == member_id,
+                    MembershipRecord.member_id == member.id,
                     MembershipRecord.organization_id == organization_id,
                 )
             )
             if exists is None:
-                is_primary = organization_id == primary_unit
+                is_primary = organization_id == member.unit
                 session.add(
                     MembershipRecord(
-                        member_id=member_id,
+                        member_id=member.id,
                         organization_id=organization_id,
                         is_primary=is_primary,
                         membership_kind="primary" if is_primary else "additional",
                     )
                 )
-        if session.scalar(select(GradeAssignmentRecord).where(GradeAssignmentRecord.member_id == member_id)) is None:
-            session.add(GradeAssignmentRecord(member_id=member_id, grade_id=grade_id))
-        if session.scalar(select(JobAssignmentRecord).where(JobAssignmentRecord.member_id == member_id)) is None:
-            session.add(JobAssignmentRecord(member_id=member_id, job_id=job_id, assignment_kind="primary"))
-        if session.get(RoleRecord, role_id) is None:
-            session.add(RoleRecord(id=role_id, label=f"{principal.display_name} 기본 역할", version=1))
-        if session.scalar(select(AppointmentRecord).where(AppointmentRecord.member_id == member_id)) is None:
+        if session.scalar(select(GradeAssignmentRecord).where(GradeAssignmentRecord.member_id == member.id)) is None:
+            session.add(GradeAssignmentRecord(member_id=member.id, grade_id=member.grade))
+        if session.scalar(select(JobAssignmentRecord).where(JobAssignmentRecord.member_id == member.id)) is None:
+            session.add(JobAssignmentRecord(member_id=member.id, job_id=member.job, assignment_kind="primary"))
+        if session.scalar(select(AppointmentRecord).where(AppointmentRecord.member_id == member.id)) is None:
             session.add(
                 AppointmentRecord(
-                    member_id=member_id,
-                    organization_id=primary_unit if position_id else "scax",
-                    role_id=role_id,
-                    position_definition_id=position_id,
+                    member_id=member.id,
+                    organization_id=member.unit,
+                    role_id=template.role_id,
+                    position_definition_id=member.position,
                     appointment_kind="primary",
                 )
             )
-        # ERD STANDARD_GRANT_RULE: the appointment (a position, or plain membership) fixes which role is granted and at what scope.
-        rule_id = f"standard:{position_id or 'member'}:{role_id}"
+        # ERD STANDARD_GRANT_RULE: the appointment — a position, or plain membership — fixes which role is granted
+        # and how wide it reaches. 대표 is appointed at the company, so that role covers the whole organization.
+        rule_id = f"standard:{member.position or 'member'}:{template.role_id}"
         if session.get(StandardGrantRuleRecord, rule_id) is None:
             session.add(
                 StandardGrantRuleRecord(
                     id=rule_id,
                     trigger_kind="appointment",
-                    trigger_source_ref=position_id or "member",
-                    role_id=role_id,
-                    scope_template="descendants",
+                    trigger_source_ref=member.position or "member",
+                    role_id=template.role_id,
+                    scope_template=template.scope_template,
                 )
             )
-        for capability in principal.capabilities:
-            role_capability = session.scalar(
-                select(RoleCapabilityRecord).where(
-                    RoleCapabilityRecord.role_id == role_id,
-                    RoleCapabilityRecord.capability_id == capability,
-                )
-            )
-            if role_capability is None:
-                session.add(RoleCapabilityRecord(role_id=role_id, capability_id=capability, mapping_version=1))
-        # ERD ACCESS_GRANT: the role is granted as a snapshot (role_capability_version) at the appointment's unit scope.
+        # ERD ACCESS_GRANT: the role is granted as a snapshot (role_capability_version) at the appointment's scope.
+        organization_wide = template.scope_template == "organization"
         grant = session.scalar(
-            select(AccessGrantRecord).where(AccessGrantRecord.member_id == member_id, AccessGrantRecord.role_id == role_id)
+            select(AccessGrantRecord).where(
+                AccessGrantRecord.member_id == member.id, AccessGrantRecord.role_id == template.role_id
+            )
         )
         if grant is None:
             session.add(
                 AccessGrantRecord(
-                    member_id=member_id,
+                    member_id=member.id,
                     capability_id=None,
-                    role_id=role_id,
-                    role_capability_version=1,
-                    scope_kind="unit",
-                    scope_organization_id=primary_unit,
-                    scope_ref=primary_unit,
+                    role_id=template.role_id,
+                    role_capability_version=template.version,
+                    scope_kind="organization" if organization_wide else "unit",
+                    scope_organization_id="scax" if organization_wide else member.unit,
+                    scope_ref="scax" if organization_wide else member.unit,
                     include_descendants=True,
                     granted_by_member_id="system",
                     origin_rule_id=rule_id,
                     origin_rule_version=1,
+                )
+            )
+
+
+def _install_role_template(session: Session, template: RoleTemplate) -> None:
+    """Install a recommended role once. A role the organization has changed is left exactly as it is.
+
+    A product update may propose new capabilities, but it never silently widens a role someone here decided on:
+    `customized_at` is the organization saying "this role is ours now".
+    """
+    validate(template)
+    role = session.get(RoleRecord, template.role_id)
+    if role is None:
+        session.add(
+            RoleRecord(
+                id=template.role_id,
+                label=template.label,
+                version=template.version,
+                template_key=template.key,
+                template_version=template.version,
+            )
+        )
+    elif role.customized_at is not None:
+        return
+    for capability in template.capabilities:
+        exists = session.scalar(
+            select(RoleCapabilityRecord).where(
+                RoleCapabilityRecord.role_id == template.role_id,
+                RoleCapabilityRecord.capability_id == capability,
+            )
+        )
+        if exists is None:
+            session.add(
+                RoleCapabilityRecord(
+                    role_id=template.role_id, capability_id=capability, mapping_version=template.version
                 )
             )

@@ -9,7 +9,7 @@ from ax_workspace.platform.persistence import DecisionItemRecord, ReviewDecision
 
 MINA = {"X-Demo-Persona": "mina"}
 JIHO = {"X-Demo-Persona": "jiho"}
-ADMIN = {"X-Demo-Persona": "demo-admin"}
+ADMIN = {"X-Demo-Persona": "yuna"}
 
 
 def _client(tmp_path) -> tuple[TestClient, str]:
@@ -42,8 +42,8 @@ def test_manager_assignment_enters_my_work_only_after_the_assignee_accepts(tmp_p
     client, database_url = _client(tmp_path)
     candidates = client.get("/api/task-assignment-candidates", headers=JIHO)
     assert candidates.status_code == 200
-    # jiho leads 제품팀; demo-admin also holds a 제품팀 membership, sora (법무팀) does not appear.
-    assert [item["id"] for item in candidates.json()] == ["demo-admin", "mina"]
+    # jiho leads 제품팀, so the people he may put work on are that team's — 대표도 다른 팀 사람도 여기 없다.
+    assert [item["id"] for item in candidates.json()] == ["mina"]
     assert client.get("/api/task-assignment-candidates", headers=MINA).status_code == 403
 
     assigned = client.post(
