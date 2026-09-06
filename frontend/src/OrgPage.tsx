@@ -1,8 +1,22 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { getMyOrganizationProfile, getOrganizationTree, getOrganizationUnitMembers } from "./api";
+import {
+  getInstalledAccessRoles,
+  getMemberAccess,
+  getMyOrganizationProfile,
+  getOrganizationTree,
+  getOrganizationUnitMembers,
+  grantAccessRole,
+  revokeAccessGrant,
+} from "./api";
 import { capabilityText, personName } from "./labels";
-import type { OrganizationMember, OrganizationProfile, OrganizationUnitNode } from "./viewModels";
+import type {
+  InstalledAccessRole,
+  MemberAccess,
+  OrganizationMember,
+  OrganizationProfile,
+  OrganizationUnitNode,
+} from "./viewModels";
 
 type OrgPageProps = {
   personaId: string;
@@ -16,6 +30,13 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
   const [members, setMembers] = useState<OrganizationMember[] | null>(null);
   const [selectedMember, setSelectedMember] = useState<OrganizationMember | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [roles, setRoles] = useState<InstalledAccessRole[] | null>(null);
+  const [access, setAccess] = useState<MemberAccess | null>(null);
+  const [grantRole, setGrantRole] = useState("");
+  const [grantScope, setGrantScope] = useState("");
+  const [grantReason, setGrantReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const administers = (profile?.capabilities ?? []).includes("organization.manage");
 
   useEffect(() => {
     let cancelled = false;
@@ -51,6 +72,73 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
       cancelled = true;
     };
   }, [onError, selectedUnit]);
+
+  useEffect(() => {
+    if (!administers) return;
+    let cancelled = false;
+    void getInstalledAccessRoles()
+      .then((items) => {
+        if (!cancelled) setRoles(items);
+      })
+      .catch(() => {
+        if (!cancelled) setRoles([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [administers]);
+
+  const loadAccess = useCallback(
+    async (memberId: string | null) => {
+      if (!administers || !memberId) {
+        setAccess(null);
+        return;
+      }
+      setAccess(await getMemberAccess(memberId).catch(() => null));
+    },
+    [administers],
+  );
+
+  useEffect(() => {
+    void loadAccess(selectedMember?.member_id ?? null);
+  }, [loadAccess, selectedMember]);
+
+  async function grant() {
+    if (!selectedMember || !grantRole || !grantScope || !grantReason.trim() || busy) return;
+    setBusy(true);
+    onError(null);
+    try {
+      await grantAccessRole({
+        member_id: selectedMember.member_id,
+        role_id: grantRole,
+        scope_kind: grantScope === "scax" ? "organization" : "unit",
+        scope_ref: grantScope,
+        include_descendants: true,
+        reason: grantReason.trim(),
+      });
+      setGrantReason("");
+      await loadAccess(selectedMember.member_id);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "권한을 부여하지 못했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revoke(grantId: string) {
+    if (!selectedMember || busy) return;
+    const reason = grantReason.trim() || "권한 회수";
+    setBusy(true);
+    onError(null);
+    try {
+      await revokeAccessGrant(grantId, reason);
+      await loadAccess(selectedMember.member_id);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "권한을 회수하지 못했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   const childrenOf = useMemo(() => {
     const map = new Map<string | null, OrganizationUnitNode[]>();
@@ -207,9 +295,76 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
                   <dd>{selectedMember.jobs.join(", ") || "—"}</dd>
                 </div>
               </dl>
-              <p className="t-meta" style={{ marginTop: 12 }}>
-                권한·비공개 업무·인사 이력은 별도 권한이 없으면 표시하지 않습니다.
-              </p>
+              {administers ? (
+                <section aria-label="구성원 권한" className="member-access">
+                  <h3 className="t-item">권한</h3>
+                  {access === null ? (
+                    <p className="t-meta">권한을 불러오는 중…</p>
+                  ) : (
+                    <>
+                      <ul className="grant-list" aria-label="부여된 권한">
+                        {access.grants.length === 0 && <li className="t-meta">부여된 권한이 없습니다.</li>}
+                        {access.grants.map((item) => (
+                          <li data-grant={item.grant_id} key={item.grant_id}>
+                            <b>{item.role_label ?? item.capability_id ?? item.role_id}</b>
+                            <span className="t-meta">
+                              {item.scope_name ?? item.scope_ref ?? "전체"}
+                              {item.include_descendants ? " 이하" : ""} · {item.origin_rule_id ? "보직 표준 부여" : "직접 부여"}
+                            </span>
+                            {!item.origin_rule_id && (
+                              <button className="btn h30" disabled={busy} onClick={() => void revoke(item.grant_id)} type="button">
+                                회수
+                              </button>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="grant-form">
+                        <label className="field" htmlFor="grant-role">
+                          <span>역할</span>
+                          <select id="grant-role" onChange={(event) => setGrantRole(event.target.value)} value={grantRole}>
+                            <option value="">역할 선택</option>
+                            {(roles ?? []).map((role) => (
+                              <option key={role.role_id} value={role.role_id}>
+                                {role.label}
+                                {role.customized ? " (수정됨)" : ""}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="field" htmlFor="grant-scope">
+                          <span>범위</span>
+                          <select id="grant-scope" onChange={(event) => setGrantScope(event.target.value)} value={grantScope}>
+                            <option value="">범위 선택</option>
+                            {units.map((unit) => (
+                              <option key={unit.id} value={unit.id}>
+                                {unit.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="field" htmlFor="grant-reason">
+                          <span>사유</span>
+                          <input id="grant-reason" onChange={(event) => setGrantReason(event.target.value)} value={grantReason} />
+                        </label>
+                        <button
+                          className="btn h30 primary"
+                          disabled={busy || !grantRole || !grantScope || !grantReason.trim()}
+                          onClick={() => void grant()}
+                          type="button"
+                        >
+                          권한 부여
+                        </button>
+                      </div>
+                      <p className="t-meta">부여와 회수는 사유와 함께 기록되고, 조직을 관리할 사람이 아무도 남지 않는 회수는 거절됩니다.</p>
+                    </>
+                  )}
+                </section>
+              ) : (
+                <p className="t-meta" style={{ marginTop: 12 }}>
+                  권한·비공개 업무·인사 이력은 별도 권한이 없으면 표시하지 않습니다.
+                </p>
+              )}
             </div>
           ) : (
             <div className="decision-panel">

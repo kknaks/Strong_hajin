@@ -479,6 +479,14 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).authenticate_with_password(email, password)
 
+    def installed_access_roles(self, principal: Principal) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return AccessAdministration(SqlAlchemyOrganizationRepository(session)).installed_roles(principal)
+
+    def member_access(self, principal: Principal, member_id: str) -> dict[str, Any]:
+        with self._session_factory() as session:
+            return AccessAdministration(SqlAlchemyOrganizationRepository(session)).member_access(principal, member_id)
+
     def grant_access_role(
         self,
         principal: Principal,

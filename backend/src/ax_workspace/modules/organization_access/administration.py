@@ -39,6 +39,8 @@ class AccessAdministrationRepository(Protocol):
     def principal_for(self, member_id: str) -> Principal | None: ...
     def member_units(self, member_id: str) -> frozenset[str]: ...
     def role_exists(self, role_id: str) -> bool: ...
+    def installed_roles(self) -> list[dict[str, Any]]: ...
+    def profile_for(self, member_id: str) -> dict[str, Any] | None: ...
     def role_version(self, role_id: str) -> int | None: ...
     def add_role_grant(
         self,
@@ -71,6 +73,27 @@ class AccessAdministrationRepository(Protocol):
 class AccessAdministration:
     def __init__(self, repository: AccessAdministrationRepository) -> None:
         self._repository = repository
+
+    # ---- queries --------------------------------------------------------
+
+    def installed_roles(self, principal: Principal) -> list[dict[str, Any]]:
+        """The roles this organization actually has, as they are now — not the product's recommendation."""
+        self._require_authority_over_unit(principal, ORGANIZATION_ROOT)
+        return self._repository.installed_roles()
+
+    def member_access(self, principal: Principal, member_id: str) -> dict[str, Any]:
+        """What one person may do and where, for someone whose authority covers them."""
+        self._require_authority_over_member(principal, member_id)
+        profile = self._repository.profile_for(member_id)
+        if profile is None:
+            raise AccessNotFound("재직 중인 구성원을 찾을 수 없습니다")
+        return {
+            "member_id": profile["member_id"],
+            "display_name": profile["display_name"],
+            "roles": profile["roles"],
+            "capabilities": profile["capabilities"],
+            "grants": profile["grants"],
+        }
 
     # ---- commands -------------------------------------------------------
 

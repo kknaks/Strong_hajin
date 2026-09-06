@@ -787,6 +787,20 @@ def create_app(
         def organization_members(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
             return app.state.workflow_application.member_directory(principal)
 
+        @app.get("/api/access/roles")
+        def installed_access_roles(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+            try:
+                return app.state.workflow_application.installed_access_roles(principal)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/access/members/{member_id}")
+        def member_access(member_id: str, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.member_access(principal, member_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
         @app.post("/api/access/grants", status_code=status.HTTP_201_CREATED)
         def grant_access_role(
             request: GrantAccessRoleRequest, principal: Principal = Depends(developer_principal)

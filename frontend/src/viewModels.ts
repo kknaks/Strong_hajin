@@ -279,6 +279,25 @@ export type AccessGrant = {
   valid_until: string | null;
 };
 
+/** A role as this organization actually has it — not the product's recommendation. */
+export type InstalledAccessRole = {
+  role_id: string;
+  label: string;
+  version: number;
+  template_key: string | null;
+  customized: boolean;
+  capabilities: string[];
+};
+
+/** What one person may do and where, read by someone who administers access for them. */
+export type MemberAccess = {
+  member_id: string;
+  display_name: string;
+  roles: string[];
+  capabilities: string[];
+  grants: AccessGrant[];
+};
+
 export type OrganizationProfile = {
   member_id: string;
   display_name: string;

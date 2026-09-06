@@ -216,6 +216,26 @@ class SqlAlchemyOrganizationRepository:
             )
         )
 
+    def installed_roles(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "role_id": role.id,
+                "label": role.label,
+                "version": role.version,
+                "template_key": role.template_key,
+                "customized": role.customized_at is not None,
+                "capabilities": sorted(
+                    self._session.scalars(
+                        select(RoleCapabilityRecord.capability_id).where(
+                            RoleCapabilityRecord.role_id == role.id,
+                            RoleCapabilityRecord.mapping_version <= role.version,
+                        )
+                    )
+                ),
+            }
+            for role in self._session.scalars(select(RoleRecord).order_by(RoleRecord.id))
+        ]
+
     def role_exists(self, role_id: str) -> bool:
         return self._session.get(RoleRecord, role_id) is not None
 

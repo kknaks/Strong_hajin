@@ -138,3 +138,27 @@ def test_the_same_refusals_hold_over_http(tmp_path) -> None:
     last = client.post(f"/api/access/grants/{own}/revoke", headers=yuna, json={"reason": "스스로 회수"})
     assert last.status_code == 422 and "관리" in last.json()["detail"]
     assert client.get("/api/organization/me", headers=yuna).status_code == 200
+
+
+def test_the_admin_surface_only_answers_for_people_you_may_administer(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    from ax_workspace.entrypoints.http import create_app
+
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+    reset_database(database_url)
+    client = TestClient(create_app(Settings(RuntimeProfile.TEST, database_url)))
+
+    roles = client.get("/api/access/roles", headers={"X-Demo-Persona": "yuna"})
+    assert roles.status_code == 200
+    installed = {role["role_id"]: role for role in roles.json()}
+    assert installed["role:member"]["customized"] is False and installed["role:member"]["version"] == 1
+    assert "task.self_manage" in installed["role:member"]["capabilities"]
+
+    mina = client.get("/api/access/members/mina", headers={"X-Demo-Persona": "yuna"})
+    assert mina.status_code == 200 and mina.json()["roles"] == ["구성원"]
+    assert [grant["scope_ref"] for grant in mina.json()["grants"]] == ["product"]
+
+    # 팀장 administers nobody: the same questions are refused rather than answered emptily.
+    assert client.get("/api/access/roles", headers={"X-Demo-Persona": "jiho"}).status_code == 403
+    assert client.get("/api/access/members/mina", headers={"X-Demo-Persona": "jiho"}).status_code == 403

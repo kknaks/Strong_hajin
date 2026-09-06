@@ -3,6 +3,8 @@ import type {
   CalendarEntry,
   MeetingDetail,
   MeetingNote,
+  InstalledAccessRole,
+  MemberAccess,
   MeetingRealtimeCredential,
   MeetingRecordingHandle,
   MeetingSummary,
@@ -400,6 +402,34 @@ export type AuthProviders = {
   local: boolean;
   oidc: boolean;
 };
+
+/** The roles this organization actually has, as they are now. Only for someone who administers access. */
+export async function getInstalledAccessRoles(): Promise<InstalledAccessRole[]> {
+  return request<InstalledAccessRole[]>("/api/access/roles");
+}
+
+export async function getMemberAccess(memberId: string): Promise<MemberAccess> {
+  return request<MemberAccess>(`/api/access/members/${memberId}`);
+}
+
+/** Widen someone's authority, at a named scope, with a reason that is kept with the change. */
+export async function grantAccessRole(input: {
+  member_id: string;
+  role_id: string;
+  scope_kind: "unit" | "organization";
+  scope_ref: string;
+  include_descendants: boolean;
+  reason: string;
+}): Promise<{ grant_id: string }> {
+  return request<{ grant_id: string }>("/api/access/grants", { body: JSON.stringify(input), method: "POST" });
+}
+
+export async function revokeAccessGrant(grantId: string, reason: string): Promise<{ grant_id: string }> {
+  return request<{ grant_id: string }>(`/api/access/grants/${grantId}/revoke`, {
+    body: JSON.stringify({ reason }),
+    method: "POST",
+  });
+}
 
 export async function getAuthProviders(): Promise<AuthProviders> {
   return request<AuthProviders>("/api/auth/providers");
