@@ -7,6 +7,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from ax_workspace.modules.organization_access.domain import (
+    PROJECT_READ,
     WORK_READ_ALL,
     ACTION_READ,
     Principal,
@@ -59,6 +60,7 @@ class TaskRepository(Protocol):
     def task_by_id(self, task_id: UUID) -> Any | None: ...
     def tasks_for(self, owner_id: str, *, include_closed: bool = False) -> list[Any]: ...
     def tasks_held_by_members(self, member_ids: frozenset[str], *, include_closed: bool = False) -> list[Any]: ...
+    def tasks_in_projects(self, project_ids: frozenset[str], *, include_closed: bool = False) -> list[Any]: ...
     def touch(self, task: Any) -> None: ...
     def checklist_for(self, task_id: UUID, *, include_archived: bool = False) -> list[Any]: ...
     def checklist_progress_for(self, task_ids: list[UUID]) -> dict[UUID, tuple[int, int]]: ...
@@ -108,6 +110,12 @@ class MemberScopePort(Protocol):
     def member_ids_in(self, units: frozenset[str]) -> frozenset[str]: ...
 
 
+class ProjectScopePort(Protocol):
+    """어느 프로젝트를 이 사람이 읽을 수 있는가. 판정은 프로젝트 모듈 한 곳에만 있다."""
+
+    def readable_project_ids(self, principal: Principal) -> frozenset[str]: ...
+
+
 class TaskApplication:
     def __init__(
         self,
@@ -116,8 +124,11 @@ class TaskApplication:
         actions: ActionSourcePort | None = None,
         attachments: Any = None,
         member_scope: MemberScopePort | None = None,
+        projects: ProjectScopePort | None = None,
     ) -> None:
         self.repository = repository
+        # 어느 프로젝트에 일을 매달 수 있는지는 프로젝트 모듈이 답한다. 여기서 다시 계산하지 않는다.
+        self._projects = projects
         # Resolving an organization-wide read to the people it covers; never used to widen anything else.
         self._member_scope = member_scope
         # Reading a Task's origin may need the resource behind it, always through that module's own authorized lookup.
@@ -139,12 +150,14 @@ class TaskApplication:
         checklist: list[str] | None = None,
         reference_task_ids: list[UUID] | None = None,
         parent_task_id: UUID | None = None,
+        project_id: UUID | None = None,
     ) -> dict[str, Any]:
         self._require(principal, TASK_SELF_MANAGE)
         if not title.strip():
             raise TaskError("title is required")
         validate_schedule(start_date, due_date)
         parent = self.parent_for(principal, parent_task_id)
+        project = self.project_for(principal, project_id, parent)
         task = self.repository.create_self_task(
             str(principal.id),
             title.strip(),
@@ -157,10 +170,26 @@ class TaskApplication:
             # Pointers written with the work belong to its first version, so they are frozen with it.
             references=self._readable_tasks(principal, reference_task_ids),
             parent_task_id=parent.id if parent is not None else None,
+            project_id=project,
         )
         if parent is not None:
             self.record_subtask(principal, parent, task)
         return self._view(task)
+
+    def project_for(self, principal: Principal, project_id: UUID | None, parent: Any = None) -> UUID | None:
+        """어느 프로젝트의 일로 둘 것인가. 하위 업무는 묻지 않고 상위 업무를 따른다.
+
+        프로젝트를 말하지 않는 것이 정상이고, 말한다면 그 프로젝트를 읽을 수 있는 사람이어야 한다 — 읽을 수 없는
+        프로젝트에 일을 밀어 넣어 그 프로젝트를 아는 사람들에게 보이게 할 수는 없다.
+        """
+        if parent is not None:
+            return getattr(parent, "project_id", None)
+        if project_id is None:
+            return None
+        readable = self._projects.readable_project_ids(principal) if self._projects is not None else frozenset()
+        if str(project_id) not in readable:
+            raise TaskNotFound("project was not found")
+        return project_id
 
     def parent_for(self, principal: Principal, parent_task_id: UUID | None) -> Any | None:
         """The work this one is part of: readable by this person, still open, and not already a part of something.
@@ -251,13 +280,23 @@ class TaskApplication:
         self._require(principal, TASK_READ)
         tasks = self.repository.tasks_for(str(principal.id), include_closed=include_closed)
         held = {task.id for task in tasks}
-        organization = self._organization_scope_members(principal) if include_organization else frozenset()
-        if organization:
-            tasks = tasks + [
-                task
-                for task in self.repository.tasks_held_by_members(organization, include_closed=include_closed)
-                if task.id not in held
-            ]
+        if include_organization:
+            organization = self._organization_scope_members(principal)
+            if organization:
+                tasks = tasks + [
+                    task
+                    for task in self.repository.tasks_held_by_members(organization, include_closed=include_closed)
+                    if task.id not in held
+                ]
+                held |= {task.id for task in tasks}
+            # 그리고 이 사람이 함께 하는 프로젝트의 업무. 담당자가 다른 부서 사람이어도 같은 프로젝트면 보인다.
+            projects = self._project_scope(principal)
+            if projects:
+                tasks = tasks + [
+                    task
+                    for task in self.repository.tasks_in_projects(projects, include_closed=include_closed)
+                    if task.id not in held
+                ]
         progress = self.repository.checklist_progress_for([task.id for task in tasks])
         origins = self._origin_projection(principal, tasks)
         assignees = self._assignee_projection(tasks)
@@ -301,7 +340,7 @@ class TaskApplication:
         if not related and TASK_ASSIGN in principal.capabilities:
             facts = self.repository.origin_facts([task]).get(task.id, {})
             related = facts.get("assignment_kind") == "direct" and facts.get("assigned_by") == str(principal.id)
-        if not related and self._reads_the_organization(principal, task):
+        if not related and self._may_read_beyond_holding(principal, task):
             related = True
         if not related and getattr(task, "parent_task_id", None) is not None:
             # Whoever holds the whole, or put someone on it, may read its parts. Reading the parent through a
@@ -324,13 +363,30 @@ class TaskApplication:
             return frozenset()
         return self._member_scope.member_ids_in(principal.scope_for(WORK_READ_ALL))
 
-    def _reads_the_organization(self, principal: Principal, task: Any) -> bool:
-        """Reading the organization's work is a read. It never becomes holding the work or deciding for its holder."""
+    def _project_scope(self, principal: Principal) -> frozenset[str]:
+        """업무를 읽게 해 주는 프로젝트 범위 — 실제로 그 프로젝트에 배정된 것만이다.
+
+        프로젝트를 볼 수 있다는 것과 그 안의 업무를 읽는다는 것은 다르다. 팀장은 자기 팀이 소유한 프로젝트를
+        찾고 관리할 수 있지만, 그 안의 일을 읽으려면 자기도 그 프로젝트에 붙어야 한다.
+        """
+        if PROJECT_READ not in principal.capabilities:
+            return frozenset()
+        return principal.projects_for(PROJECT_READ)
+
+    def _may_read_beyond_holding(self, principal: Principal, task: Any) -> bool:
+        """자기 것이 아닌 업무를 읽는 두 가지 길 — 조직 범위, 그리고 프로젝트 범위.
+
+        한 자리에서 함께 판정한다. 두 곳에서 각자 판정하면 한쪽만 고쳤을 때 조용히 새거나 조용히 막힌다.
+        """
+        projects = self._project_scope(principal)
+        if projects and str(getattr(task, "project_id", None) or "") in projects:
+            return True
         members = self._organization_scope_members(principal)
         if not members:
             return False
         holder = self._assignee_projection([task]).get(task.id) or {}
         return str(holder.get("member_id") or task.created_by_actor_id) in members
+
 
     # ---- subtasks: the work inside this work ----
 
@@ -923,6 +979,8 @@ class TaskApplication:
             "created_at": _iso(getattr(task, "created_at", None)),
             "updated_at": _iso(getattr(task, "updated_at", None)),
             "organization_unit_id": getattr(task, "organization_unit_id", None),
+            # 어느 프로젝트의 일인가. 비어 있는 것이 정상이다.
+            "project_id": _str(getattr(task, "project_id", None)),
             "origin_kind": getattr(task, "origin_kind", "direct"),
             "visibility": getattr(task, "visibility", "scope_default"),
             "assignment": _assignment_view(getattr(task, "assignments", None)),

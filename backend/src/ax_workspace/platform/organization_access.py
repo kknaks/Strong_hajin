@@ -154,7 +154,13 @@ class SqlAlchemyOrganizationRepository:
         grants: list[Grant] = []
         for row in profile["grants"]:
             scope_ref = str(row["scope_ref"] or "")
-            if row["scope_kind"] == "organization":
+            projects: frozenset[str] = frozenset()
+            if row["scope_kind"] == "project":
+                # 프로젝트는 조직 단위가 아니다. 조직 축은 비어 있고 프로젝트 축만 닿는다 — 그래서 프로젝트에
+                # 붙었다는 이유로 그 사람의 부서 밖 업무가 함께 열리지 않는다.
+                units = frozenset()
+                projects = frozenset({scope_ref})
+            elif row["scope_kind"] == "organization":
                 # 조직 전체는 이 사람의 조직 전체다. 한 데이터베이스에 회사가 둘 있어도 한쪽의 대표가 다른 쪽을
                 # 읽지 않는다.
                 root = self.organization_root(near=scope_ref) or scope_ref
@@ -170,6 +176,7 @@ class SqlAlchemyOrganizationRepository:
                         scope_kind=str(row["scope_kind"]),
                         scope_ref=scope_ref,
                         units=units,
+                        projects=projects,
                         role_id=row["role_id"],
                         role_capability_version=row["role_capability_version"],
                         origin_rule_id=row["origin_rule_id"],

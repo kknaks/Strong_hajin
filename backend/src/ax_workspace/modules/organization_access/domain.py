@@ -16,6 +16,8 @@ class Grant:
     scope_kind: str
     scope_ref: str
     units: frozenset[str]
+    #: 프로젝트로 준 권한이 닿는 프로젝트들. 조직 단위와 나란한 두 번째 축이며, 한쪽이 다른 쪽을 대신하지 않는다.
+    projects: frozenset[str] = frozenset()
     role_id: str | None = None
     role_capability_version: int | None = None
     origin_rule_id: str | None = None
@@ -46,12 +48,23 @@ class Principal:
                 reach |= grant.units
         return frozenset(reach)
 
-    def allows(self, capability: str, *, unit: str | None = None) -> bool:
+    def projects_for(self, capability: str) -> frozenset[str]:
+        """Every project this capability reaches. A project grant carries no unit, and a unit grant no project."""
+        reach: set[str] = set()
+        for grant in self.grants:
+            if grant.capability == capability:
+                reach |= grant.projects
+        return frozenset(reach)
+
+    def allows(self, capability: str, *, unit: str | None = None, project: str | None = None) -> bool:
+        """어디에서 할 수 있는지를 묻는다. 두 축 중 하나라도 닿으면 된다 — 프로젝트 담당은 부서와 무관하다."""
         if capability not in self.capabilities:
             return False
-        if unit is None:
+        if unit is None and project is None:
             return True
-        return unit in self.scope_for(capability)
+        if unit is not None and unit in self.scope_for(capability):
+            return True
+        return project is not None and project in self.projects_for(capability)
 
 
 TASK_READ = "task.read"
@@ -59,6 +72,10 @@ TASK_READ = "task.read"
 WORK_READ_ALL = "work.read.all"
 TASK_SELF_MANAGE = "task.self_manage"
 TASK_ASSIGN = "task.assign"
+#: 프로젝트를 만들고 사람을 붙인다. 조직 단위 관리와 다른 권한이다 — 프로젝트는 부서를 가로지른다.
+PROJECT_MANAGE = "project.manage"
+#: 프로젝트를 읽는다. 어느 프로젝트를 읽는지는 grant의 범위가 정한다.
+PROJECT_READ = "project.read"
 WORK_REQUEST_READ = "work_request.read"
 WORK_REQUEST_CREATE = "work_request.create"
 WORK_REQUEST_DECIDE = "work_request.decide"

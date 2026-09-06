@@ -48,6 +48,8 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
     CapabilitySpec("task.self_manage", "내 업무 관리", "work"),
     CapabilitySpec("task.accept", "배정 수락·거절", "work"),
     CapabilitySpec("task.assign", "업무 배정", "work"),
+    CapabilitySpec("project.read", "프로젝트 조회", "work"),
+    CapabilitySpec("project.manage", "프로젝트 관리", "work"),
     CapabilitySpec("work_request.read", "업무 요청 읽기", "work"),
     CapabilitySpec("work_request.create", "업무 요청 보내기", "work"),
     CapabilitySpec("work_request.decide", "업무 요청 판단", "work"),
@@ -113,6 +115,7 @@ _LEAD_CAPABILITIES = (
 )
 
 _PEOPLE_CAPABILITIES = _MEMBER_CAPABILITIES + (
+    "project.read",
     "task.assign",
     "team.manage",
     "organization.manage",
@@ -122,18 +125,24 @@ _PEOPLE_CAPABILITIES = _MEMBER_CAPABILITIES + (
     "material.purge",
 )
 
+#: 프로젝트에 붙은 사람이 그 프로젝트 안에서 갖는 것. 조직 안에서 갖던 것을 대신하지 않고 그 위에 더해진다.
+#: 읽기까지만이다 — 남의 업무를 대신 판단하거나 배정하는 것은 조직이 정하는 일로 남는다.
+_PROJECT_PARTICIPANT_CAPABILITIES = ("project.read", "work.read", "task.read", "work_request.read")
+
 ROLE_TEMPLATES: tuple[RoleTemplate, ...] = (
     # Someone who comes to meetings and nothing else — an outside adviser, a contractor between engagements.
     RoleTemplate("guest", "외부 참여자", 1, ("meeting.read",)),
-    RoleTemplate("member", "구성원", 1, _MEMBER_CAPABILITIES),
-    RoleTemplate("team-lead", "팀장", 1, _LEAD_CAPABILITIES),
+    RoleTemplate("member", "구성원", 1, _MEMBER_CAPABILITIES + ("project.read",)),
+    RoleTemplate("team-lead", "팀장", 1, _LEAD_CAPABILITIES + ("project.read", "project.manage")),
+    # 프로젝트 배정이 부르는 역할. 어느 프로젝트에 닿는지는 grant의 범위가 말한다.
+    RoleTemplate("project-participant", "프로젝트 참여자", 1, _PROJECT_PARTICIPANT_CAPABILITIES, scope_template="project"),
     RoleTemplate("people-manager", "인사 담당자", 1, _PEOPLE_CAPABILITIES),
     # 대표 is appointed at the company, so the same role reaches the whole organization rather than one unit's subtree.
     RoleTemplate(
         "executive",
         "대표",
         1,
-        _PEOPLE_CAPABILITIES + ("work_request.decide", "meeting.read.private", "work.read.all"),
+        _PEOPLE_CAPABILITIES + ("work_request.decide", "meeting.read.private", "work.read.all", "project.read", "project.manage"),
         scope_template="organization",
     ),
 )

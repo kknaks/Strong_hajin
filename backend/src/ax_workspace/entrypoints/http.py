@@ -34,6 +34,7 @@ from ax_workspace.modules.actions.domain import ActionError as ActionCenterError
 from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequestError, WorkRequestIdempotencyConflict
 from ax_workspace.modules.reports.application import DailyReportAccessDenied
 from ax_workspace.modules.meetings.domain import MeetingAccessDenied, MeetingError, MeetingNotFound
+from ax_workspace.modules.work.projects import ProjectAccessDenied, ProjectError, ProjectNotFound
 from ax_workspace.modules.meetings.transcription import TranscriptionFailure, FinalTranscriptSegment
 from ax_workspace.modules.ax_execution.conversations import ConversationError, ConversationQueueOverflow
 from ax_workspace.modules.ax_execution.actions import ActionAccessDenied, ActionCapabilityDenied, ActionError
@@ -86,6 +87,27 @@ class CreateTaskRequest(BaseModel):
     reference_task_ids: list[UUID] = []
     #: The work this one is a part of. One level only: a subtask cannot have subtasks of its own.
     parent_task_id: UUID | None = None
+    #: 어느 프로젝트의 일인가. 비어 있는 것이 정상이며, 하위 업무는 상위 업무의 프로젝트를 따른다.
+    project_id: UUID | None = None
+
+
+class CreateProjectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=300)
+    organization_unit_id: str = Field(min_length=1, max_length=100)
+    description: str | None = None
+    #: 기간은 없을 수 있다. 시작만 정해지고 끝은 아직 없는 일이 흔하다.
+    starts_on: date | None = None
+    ends_on: date | None = None
+    external_key: str | None = Field(default=None, max_length=200)
+
+
+class AssignToProjectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    member_id: str = Field(min_length=1, max_length=100)
+    kind: Literal["lead", "member"] = "member"
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
 
 
 class CreateMeetingRequest(BaseModel):
@@ -393,6 +415,12 @@ def _runtime_error(error: Exception) -> HTTPException:
     if isinstance(error, GraphAccessDenied):
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
     if isinstance(error, GraphError):
+        return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
+    if isinstance(error, ProjectAccessDenied):
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
+    if isinstance(error, ProjectNotFound):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
+    if isinstance(error, ProjectError):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     if isinstance(error, (TaskNotFound, MaterialNotFound, MeetingNotFound)):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
@@ -880,9 +908,71 @@ def create_app(
                     checklist=request.checklist,
                     reference_task_ids=request.reference_task_ids,
                     parent_task_id=request.parent_task_id,
+                    project_id=request.project_id,
                 )
             except Exception as error:
                 raise _runtime_error(error) from error
+
+        # ---- 프로젝트: 조직 단위와 나란한 두 번째 축 ----
+
+        @app.get("/api/projects")
+        def list_projects(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+            try:
+                return app.state.workflow_application.list_projects(principal)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/projects", status_code=status.HTTP_201_CREATED)
+        def create_project(request: CreateProjectRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.create_project(
+                    principal,
+                    name=request.name,
+                    organization_unit_id=request.organization_unit_id,
+                    description=request.description,
+                    starts_on=request.starts_on,
+                    ends_on=request.ends_on,
+                    external_key=request.external_key,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/projects/{project_id}")
+        def get_project(project_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.get_project(principal, project_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/projects/{project_id}/members", status_code=status.HTTP_201_CREATED)
+        def assign_to_project(
+            project_id: UUID,
+            request: AssignToProjectRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.assign_to_project(
+                    principal,
+                    project_id,
+                    request.member_id,
+                    kind=request.kind,
+                    valid_from=request.valid_from,
+                    valid_until=request.valid_until,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.delete("/api/projects/{project_id}/members/{member_id}", status_code=status.HTTP_204_NO_CONTENT)
+        def release_from_project(
+            project_id: UUID,
+            member_id: str,
+            principal: Principal = Depends(developer_principal),
+        ) -> Response:
+            try:
+                app.state.workflow_application.release_from_project(principal, project_id, member_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
 
         @app.post("/api/tasks/assign", status_code=status.HTTP_201_CREATED)
         def assign_task(request: AssignTaskRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:

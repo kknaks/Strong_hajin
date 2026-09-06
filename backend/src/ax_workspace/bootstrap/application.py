@@ -57,6 +57,8 @@ from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
 from ax_workspace.platform.recordings import LocalDirectoryRecordingStorage
 from ax_workspace.platform.soniox import SonioxTranscriptionAdapter
 from ax_workspace.modules.work.material_extraction import LexicalMaterialRetriever, MaterialExtractionJob
+from ax_workspace.modules.work.projects import ProjectApplication
+from ax_workspace.platform.projects import SqlAlchemyProjectRepository
 from ax_workspace.platform.material_extraction import (
     MaterialJobQueue,
     SqlAlchemyMaterialEvidenceRepository,
@@ -787,12 +789,13 @@ class WorkflowApplication:
         checklist: list[str] | None = None,
         reference_task_ids: list[UUID] | None = None,
         parent_task_id: UUID | None = None,
+        project_id: UUID | None = None,
     ) -> dict[str, Any]:
         with self._session_factory() as session:
             result = self._tasks(session).create_self(
                 principal, title, causation_key,
                 description=description, start_date=start_date, due_date=due_date, checklist=checklist,
-                reference_task_ids=reference_task_ids, parent_task_id=parent_task_id,
+                reference_task_ids=reference_task_ids, parent_task_id=parent_task_id, project_id=project_id,
             )
             session.commit()
             return result
@@ -1186,6 +1189,33 @@ class WorkflowApplication:
             self._tasks(session),
         )
 
+    # ---- 프로젝트: 부서를 가로질러 묶이는 일 ----
+
+    def create_project(self, principal: Principal, **fields: Any) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._projects(session).create(principal, **fields)
+            session.commit()
+            return result
+
+    def list_projects(self, principal: Principal) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return self._projects(session).list(principal)
+
+    def get_project(self, principal: Principal, project_id: UUID) -> dict[str, Any]:
+        with self._session_factory() as session:
+            return self._projects(session).get(principal, project_id)
+
+    def assign_to_project(self, principal: Principal, project_id: UUID, member_id: str, **fields: Any) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._projects(session).assign(principal, project_id, member_id, **fields)
+            session.commit()
+            return result
+
+    def release_from_project(self, principal: Principal, project_id: UUID, member_id: str) -> None:
+        with self._session_factory() as session:
+            self._projects(session).release(principal, project_id, member_id)
+            session.commit()
+
     def list_tasks(self, principal: Principal, *, include_closed: bool = False) -> list[dict[str, Any]]:
         with self._session_factory() as session:
             return self._tasks(session).list_for(principal, include_closed=include_closed, include_organization=True)
@@ -1440,7 +1470,11 @@ class WorkflowApplication:
             SqlAlchemyActionRepository(session),
             SqlAlchemyAttachmentRepository(session),
             SqlAlchemyOrganizationRepository(session),
+            self._projects(session),
         )
+
+    def _projects(self, session: Any) -> ProjectApplication:
+        return ProjectApplication(SqlAlchemyProjectRepository(session))
 
     def _work_requests(self, session: Any) -> WorkRequestApplication:
         return WorkRequestApplication(

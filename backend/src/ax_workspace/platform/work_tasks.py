@@ -269,6 +269,7 @@ class SqlAlchemyTaskRepository:
         checklist: list[str] | None = None,
         references: list[UUID] | None = None,
         parent_task_id: UUID | None = None,
+        project_id: UUID | None = None,
     ) -> TaskRecord:
         if causation_key:
             existing = self.session.scalar(
@@ -283,6 +284,7 @@ class SqlAlchemyTaskRepository:
             state=TaskState.OPEN,
             block_reason=None,
             parent_task_id=parent_task_id,
+            project_id=project_id,
             description=description,
             start_date=start_date,
             due_date=due_date,
@@ -750,6 +752,15 @@ class SqlAlchemyTaskRepository:
             .join(TaskAssignmentRecord, TaskAssignmentRecord.task_id == TaskRecord.id)
             .where(TaskAssignmentRecord.assignee_id.in_(member_ids), TaskAssignmentRecord.status == "active")
         )
+        if not include_closed:
+            statement = statement.where(TaskRecord.state.not_in([TaskState.DONE, TaskState.CANCELLED]))
+        return list(self.session.scalars(statement.order_by(TaskRecord.created_at)))
+
+    def tasks_in_projects(self, project_ids: frozenset[str], *, include_closed: bool = False) -> list[TaskRecord]:
+        """이 프로젝트들의 업무 전부. 누가 들고 있는지는 묻지 않는다 — 프로젝트가 부서를 가로지르는 이유다."""
+        if not project_ids:
+            return []
+        statement = select(TaskRecord).where(TaskRecord.project_id.in_([UUID(str(item)) for item in project_ids]))
         if not include_closed:
             statement = statement.where(TaskRecord.state.not_in([TaskState.DONE, TaskState.CANCELLED]))
         return list(self.session.scalars(statement.order_by(TaskRecord.created_at)))

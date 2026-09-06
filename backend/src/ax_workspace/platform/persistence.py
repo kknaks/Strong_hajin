@@ -745,6 +745,53 @@ class ActionItemAuditEventRecord(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ProjectRecord(Base):
+    """부서를 가로질러 묶이는 일 하나.
+
+    소유 조직 단위는 이 프로젝트가 누구 것인지를 말할 뿐, 누가 참여할 수 있는지를 제한하지 않는다 — 마케팅 한 건에
+    국내사업부 AE와 비주얼디자인팀 디자이너가 함께 붙는다.
+
+    기간은 비어 있을 수 있다. 시작만 정해지고 끝은 아직 없는 일이 흔하다.
+    """
+
+    __tablename__ = "projects"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    #: 이 프로젝트를 소유한 조직 단위. 참여 자격이 아니라 책임 소재다.
+    organization_unit_id: Mapped[str] = mapped_column(ForeignKey("organization_units.id"), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    starts_on: Mapped[date | None] = mapped_column(Date)
+    ends_on: Mapped[date | None] = mapped_column(Date)
+    #: 사람이 정한 읽을 수 있는 key. dataset이 같은 프로젝트를 다시 가리킬 때 쓴다.
+    external_key: Mapped[str | None] = mapped_column(String(200), unique=True)
+    created_by_actor_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
+
+
+class ProjectAssignmentRecord(Base):
+    """구성원 ↔ 프로젝트. 직급·직무·보직과 같은 모양이며, 조직 단위를 묻지 않는다.
+
+    유효기간은 있을 수도 없을 수도 있다. 원문이 말하지 않으면 비워 두고, 비어 있는 것을 `지금부터 계속`으로 읽는다.
+    """
+
+    __tablename__ = "project_assignments"
+    __table_args__ = (UniqueConstraint("project_id", "member_id", name="uq_project_assignment"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False, index=True)
+    #: `lead`는 이 프로젝트를 책임지는 사람, `member`는 함께 하는 사람.
+    assignment_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="member")
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    assigned_by_member_id: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
+
+
 class TaskRecord(Base):
     __tablename__ = "tasks"
     # One accepted request produces exactly one Task. The uniqueness lives with the FK that carries the link.
@@ -782,6 +829,8 @@ class TaskRecord(Base):
     #: The work this one is a part of. One level only for now: a child never becomes a parent, and the parent is
     #: context and a place to see progress — never the truth about this Task's own state.
     parent_task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id"), index=True)
+    #: 어느 프로젝트의 일인가. 비어 있는 것이 정상이다 — 프로젝트 없이 하는 일이 조직에는 더 많다.
+    project_id: Mapped[UUID | None] = mapped_column(ForeignKey("projects.id"), index=True)
     version: Mapped[int] = mapped_column(nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

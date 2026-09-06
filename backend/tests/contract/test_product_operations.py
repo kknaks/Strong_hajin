@@ -756,6 +756,8 @@ def test_organization_profile_is_a_persisted_authorized_projection(tmp_path) -> 
             "meeting.read",
             "meeting.record",
             "meeting.share",
+            # 프로젝트를 볼 수 있다는 것뿐이다. 어느 프로젝트인지는 grant의 범위가 정한다.
+            "project.read",
             "task.accept",
             "task.read",
             "task.self_manage",
