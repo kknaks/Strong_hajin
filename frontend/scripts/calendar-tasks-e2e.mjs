@@ -14,9 +14,15 @@ const weeksAhead = 8 + (Math.floor(stamp / 1000) % 40);
 const iso = (date) => date.toISOString().slice(0, 10);
 const shift = (date, days) => new Date(date.getTime() + days * 86_400_000);
 const todayUtc = new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`);
-const target = shift(todayUtc, weeksAhead * 7);
-// Sunday of that week: the grid's first column.
-const weekStart = shift(target, -target.getUTCDay());
+// The month grid draws only the weeks that touch its month, so the week this run plans into must have a week before
+// it and a week after it inside the same month. Otherwise the half of a boundary-crossing bar that belongs to the
+// neighbouring week has no row to be drawn on, and the run fails for the calendar it landed on rather than for the code.
+const sundayOf = (date) => shift(date, -date.getUTCDay());
+let weekStart = sundayOf(shift(todayUtc, weeksAhead * 7));
+const month = (date) => date.toISOString().slice(0, 7);
+while (month(shift(weekStart, -2)) !== month(shift(weekStart, 1)) || month(shift(weekStart, 8)) !== month(shift(weekStart, 1))) {
+  weekStart = shift(weekStart, 7);
+}
 const day = (offset) => iso(shift(weekStart, offset));
 const monthLabel = `${day(1).slice(0, 4)}/${day(1).slice(5, 7)}`;
 
