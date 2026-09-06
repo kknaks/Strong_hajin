@@ -577,10 +577,14 @@ class CodexEventIngest:
             # 실패한 MCP 호출은 이유를 결과 안에 담아 온다. 그것을 버리고 `failed`만 남기면 사람이 실행 rail에서
             # 무엇이 잘못됐는지 알 수 없다 — 모델은 같은 응답을 그대로 받는데 사람만 못 본다.
             reason = item.get("error")
-            current["error_summary"] = (
-                _summarize_tool_result(item["result"], tool_name=current["tool_name"])
-                if reason in (None, "") and item.get("result") is not None
-                else _summarize_tool_error(reason or status)
+            if reason in (None, "") and isinstance(item.get("result"), dict):
+                # 실패한 호출의 이유는 결과 안에 있다. 다만 내용을 담고 다니는 도구의 정상 결과를 실패 자리에
+                # 그대로 쓰지는 않는다 — 그러면 무엇이 잘못됐는지 대신 `결과 수신`이라고 적힌다.
+                payload = item["result"]
+                carried = payload.get("isError") or payload.get("is_error")
+                reason = _summarize_tool_result(payload) if carried else None
+            current["error_summary"] = reason if isinstance(reason, str) and reason.startswith("실패") else _summarize_tool_error(
+                reason or item.get("error") or status
             )
         elif status in {"completed", "success"} or phase == "completed":
             current["state"] = "completed"

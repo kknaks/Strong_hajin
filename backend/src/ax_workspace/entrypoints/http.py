@@ -1207,11 +1207,19 @@ def create_app(
         def search_materials(
             q: str,
             limit: int = 5,
+            registered_from: date | None = None,
+            registered_until: date | None = None,
             principal: Principal = Depends(developer_principal),
         ) -> dict[str, object]:
-            """어느 업무의 자료인지 모를 때. 읽을 수 있는 업무에 붙은 것만 찾는다."""
+            """어느 업무의 자료인지 모를 때. 읽을 수 있는 업무에 붙은 것만 찾는다.
+
+            `registered_*`는 자료가 등록된 때의 조건이지 본문에 적힌 날짜가 아니다.
+            """
             try:
-                return app.state.workflow_application.search_task_materials(principal, None, q, limit=limit)
+                return app.state.workflow_application.search_task_materials(
+                    principal, None, q, limit=limit,
+                    registered_from=registered_from, registered_until=registered_until,
+                )
             except Exception as error:
                 raise _runtime_error(error) from error
 

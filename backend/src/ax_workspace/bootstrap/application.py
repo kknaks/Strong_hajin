@@ -1169,14 +1169,27 @@ class WorkflowApplication:
             session.commit()
             return result
 
-    def search_task_materials(self, principal: Principal, task_id: UUID | None, query: str, *, limit: int = 5, execution_id: UUID | None = None) -> dict[str, Any]:
+    def search_task_materials(
+        self,
+        principal: Principal,
+        task_id: UUID | None,
+        query: str,
+        *,
+        limit: int = 5,
+        execution_id: UUID | None = None,
+        registered_from: Any = None,
+        registered_until: Any = None,
+    ) -> dict[str, Any]:
         """`material.search`. 시작점이 있으면 그 업무에서, 없으면 읽을 수 있는 업무 전부에서 찾는다.
 
         위임된 turn이면 찾은 것이 그 turn의 근거로도 남는다. 시작점 없이 찾은 결과는 각 줄이 자기 업무를 말하므로
         근거도 그 업무에 붙는다.
         """
         with self._session_factory() as session:
-            result = self._materials(session).search(principal, task_id, query, limit=limit)
+            result = self._materials(session).search(
+                principal, task_id, query, limit=limit,
+                registered_from=registered_from, registered_until=registered_until,
+            )
             if execution_id is not None and result["results"]:
                 evidence = SqlAlchemyMaterialEvidenceRepository(session)
                 by_task: dict[str, list[dict[str, Any]]] = {}

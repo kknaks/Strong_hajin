@@ -321,3 +321,78 @@ def test_an_index_made_with_older_rules_is_rebuilt_and_only_once(tmp_path) -> No
     with make_session_factory(database_url)() as session:
         # 원문은 그대로다. 바뀐 것은 찾기 위한 형태뿐이다.
         assert {chunk.id: chunk.text for chunk in session.scalars(select(MaterialChunkRecord))} == original
+
+
+def test_when_a_material_was_registered_is_a_different_question_from_what_it_says(tmp_path) -> None:
+    """`지난달 등록한 자료`와 `8월 실적을 언급한 자료`는 다른 질문이다.
+
+    날짜를 검색어에 섞으면 둘이 하나로 뭉개진다. 등록 시각은 조건이고, 본문의 날짜는 찾을 말이다.
+    """
+    from datetime import UTC, date, datetime
+
+    from sqlalchemy import select
+
+    from ax_workspace.platform.persistence import AttachmentRecord, make_session_factory
+
+    client, application, worker, settings = _stack(tmp_path)
+    task = client.post("/api/tasks", headers=MINA, json={"title": "월간 정리"}).json()
+    august = _upload(
+        client, task["task_id"], "8월정리.md",
+        "# 8월 정리\n\n지난 실적을 모았습니다. 공급사는 한빛상사입니다.\n".encode(), "text/markdown",
+    ).json()
+    september = _upload(
+        client, task["task_id"], "9월정리.md",
+        "# 9월 정리\n\n8월 실적을 다시 봅니다. 공급사는 한빛상사입니다.\n".encode(), "text/markdown",
+    ).json()
+    while asyncio.run(worker.run_once()):
+        pass
+
+    # 8월에 등록된 자료 하나, 9월에 등록된 자료 하나로 만든다.
+    with make_session_factory(settings.database_url)() as session:
+        for row in session.scalars(select(AttachmentRecord)):
+            row.created_at = datetime(2026, 8, 20, tzinfo=UTC) if row.name == "8월정리.md" else datetime(2026, 9, 3, tzinfo=UTC)
+        session.commit()
+
+    # 등록 시각으로 묻는다: 8월에 등록된 것만.
+    registered = client.get(
+        "/api/materials/search",
+        headers=MINA,
+        params={"q": "한빛상사", "registered_from": "2026-08-01", "registered_until": "2026-08-31"},
+    ).json()
+    assert {row["name"] for row in registered["results"]} == {"8월정리.md"}
+    # 무엇으로 좁혔는지 답이 말한다.
+    assert registered["registered_from"] == "2026-08-01" and registered["registered_until"] == "2026-08-31"
+
+    # 본문에서 `8월 실적`을 묻는다: 9월에 등록된 자료가 그것을 말한다.
+    mentioned = client.get("/api/materials/search", headers=MINA, params={"q": "8월 실적"}).json()
+    assert "9월정리.md" in {row["name"] for row in mentioned["results"]}
+    assert mentioned["registered_from"] is None
+
+    # 조건을 주지 않으면 둘 다 나온다.
+    both = client.get("/api/materials/search", headers=MINA, params={"q": "한빛상사"}).json()
+    assert {row["name"] for row in both["results"]} == {"8월정리.md", "9월정리.md"}
+    assert august["material_id"] and september["material_id"]
+
+
+def test_the_turn_carries_the_time_it_was_asked_so_the_model_never_guesses(tmp_path) -> None:
+    """`지난달`이 언제인지는 서버가 아는 사실이다. 큐에서 기다리다 달이 바뀌어도 물은 때는 물은 때다."""
+    from datetime import UTC, datetime
+
+    from ax_workspace.modules.ax_execution.ai import AiConversationRequest, AiDelegatedToolContext
+    from ax_workspace.platform.codex_cli import CodexCliProviderAdapter
+
+    asked = datetime(2026, 9, 3, 1, 30, tzinfo=UTC)
+    prompt = CodexCliProviderAdapter._conversation_prompt(
+        AiConversationRequest(
+            prompt="지난달 등록한 자료 알려줘",
+            provider_session_ref=None,
+            context_references=[],
+            delegated_tool_context=AiDelegatedToolContext(principal_id="mina", causation_id="c"),
+            asked_at=asked,
+        )
+    )
+    # 서울 시각으로 읽는다: UTC 01:30은 그날 오전 10:30이다.
+    assert "2026-09-03 10:30 (Asia/Seoul)" in prompt
+    assert "다른 곳에서 지금 시각을 짐작하지 않는다" in prompt
+    # 등록 시각 조건과 본문 검색어를 섞지 말라는 것도 함께 간다.
+    assert "날짜를 본문 검색어에 섞지 않는다" in prompt
