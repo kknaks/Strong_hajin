@@ -1203,6 +1203,18 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
+        @app.get("/api/materials/search")
+        def search_materials(
+            q: str,
+            limit: int = 5,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            """어느 업무의 자료인지 모를 때. 읽을 수 있는 업무에 붙은 것만 찾는다."""
+            try:
+                return app.state.workflow_application.search_task_materials(principal, None, q, limit=limit)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
         @app.get("/api/tasks/{task_id}/materials/search")
         def search_task_materials(
             task_id: UUID, q: str, limit: int = 5, principal: Principal = Depends(developer_principal)

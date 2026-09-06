@@ -196,6 +196,24 @@ class _SessionAnswerResources:
         return (None, None)
 
 
+class _SessionReadableWork:
+    """자료 검색이 묻는 것: 이 사람이 읽을 수 있는 업무는 무엇인가.
+
+    답은 업무 모듈이 이미 아는 것 — 자기가 든 것, 조직 범위로 읽는 것, 함께 하는 프로젝트의 것. 자료 검색이
+    그 판정을 다시 하지 않는다.
+    """
+
+    def __init__(self, application: "WorkflowApplication", session: Any) -> None:
+        self._application = application
+        self._session = session
+
+    def readable_task_ids(self, principal: Principal) -> list[str]:
+        rows = self._application._tasks(self._session).list_for(
+            principal, include_closed=True, include_organization=True
+        )
+        return [str(row["task_id"]) for row in rows]
+
+
 class _SessionGraphSource:
     """The graph's window onto the ledgers: every read is the owning module's own authorized operation."""
 
@@ -1148,12 +1166,21 @@ class WorkflowApplication:
             session.commit()
             return result
 
-    def search_task_materials(self, principal: Principal, task_id: UUID, query: str, *, limit: int = 5, execution_id: UUID | None = None) -> dict[str, Any]:
-        """`material.search` for one Task. With a delegated execution id the hits are also recorded as that turn's evidence."""
+    def search_task_materials(self, principal: Principal, task_id: UUID | None, query: str, *, limit: int = 5, execution_id: UUID | None = None) -> dict[str, Any]:
+        """`material.search`. 시작점이 있으면 그 업무에서, 없으면 읽을 수 있는 업무 전부에서 찾는다.
+
+        위임된 turn이면 찾은 것이 그 turn의 근거로도 남는다. 시작점 없이 찾은 결과는 각 줄이 자기 업무를 말하므로
+        근거도 그 업무에 붙는다.
+        """
         with self._session_factory() as session:
             result = self._materials(session).search(principal, task_id, query, limit=limit)
             if execution_id is not None and result["results"]:
-                SqlAlchemyMaterialEvidenceRepository(session).record(execution_id, str(principal.id), task_id, result["query"], result["results"])
+                evidence = SqlAlchemyMaterialEvidenceRepository(session)
+                by_task: dict[str, list[dict[str, Any]]] = {}
+                for hit in result["results"]:
+                    by_task.setdefault(str(hit["task_id"]), []).append(hit)
+                for anchor, hits in by_task.items():
+                    evidence.record(execution_id, str(principal.id), UUID(anchor), result["query"], hits)
                 session.commit()
             return result
 
@@ -1177,6 +1204,7 @@ class WorkflowApplication:
             self._material_queue(session),
             LexicalMaterialRetriever(extractions),
             _SessionResourceReferences(self, session),
+            _SessionReadableWork(self, session),
         )
 
     def reassign_task(self, principal: Principal, task_id: UUID, expected_version: int, assignee_id: str, reason: str | None = None) -> dict[str, Any]:

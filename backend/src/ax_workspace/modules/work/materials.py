@@ -115,6 +115,12 @@ class ResourceReferencePort(Protocol):
     def title(self, principal: Principal, resource_type: str, resource_id: str) -> str | None: ...
 
 
+class ReadableWorkPort(Protocol):
+    """이 사람이 읽을 수 있는 업무들. 자료 검색은 그 업무들에 붙은 것만 본다."""
+
+    def readable_task_ids(self, principal: Principal) -> list[str]: ...
+
+
 class TaskMaterialApplication:
     def __init__(
         self,
@@ -125,8 +131,11 @@ class TaskMaterialApplication:
         extraction_queue: MaterialExtractionQueue | None = None,
         retriever: MaterialRetriever | None = None,
         references: ResourceReferencePort | None = None,
+        readable_work: ReadableWorkPort | None = None,
     ) -> None:
         self._tasks = tasks
+        # 어느 업무를 읽을 수 있는지는 업무 모듈이 답한다. 자료 검색이 스스로 다시 계산하지 않는다.
+        self._readable_work = readable_work
         self._attachments = attachments
         self._storage = storage
         self._extractions = extractions
@@ -144,17 +153,33 @@ class TaskMaterialApplication:
             for binding, attachment in active
         ]
 
-    def search(self, principal: Principal, task_id: UUID, query: str, *, limit: int = 5) -> dict[str, Any]:
-        """SPEC-006 `material.search` scoped to one Task: authorization (active assignment + live binding) is re-checked here,
-        before ranking, and only bounded excerpts with the source identity leave."""
+    def search(self, principal: Principal, task_id: UUID | None, query: str, *, limit: int = 5) -> dict[str, Any]:
+        """`material.search`. 어느 업무의 자료인지 알면 그 업무에서, 모르면 읽을 수 있는 업무 전부에서 찾는다.
+
+        어느 자료에 있는지 모르는 채로 묻는 것이 자료 검색의 보통이다. 시작점을 대라고 요구하면 아는 사람만 찾을
+        수 있고, 그것은 검색이 아니라 조회다.
+
+        시작점이 넓어져도 권한은 넓어지지 않는다. 볼 수 있는 업무는 업무 모듈이 답하고, 그 업무에 지금 살아 있는
+        binding만 본다 — 여기서 하는 일은 순위를 매기는 것뿐이다.
+        """
         self._require(principal, TASK_READ)
-        task = self._tasks.task(task_id, str(principal.id))
+        task = self._tasks.task(task_id, str(principal.id)) if task_id is not None else None
         cleaned = " ".join(query.split())
         if not cleaned:
             raise MaterialError("search query is required")
         if self._extractions is None or self._retriever is None:
             raise MaterialError("material search is not available")
-        active = [(binding, attachment) for binding, attachment in self._attachments.bindings_for("task", str(task_id)) if binding.unbound_at is None]
+        if task is not None:
+            anchors = [str(task.id)]
+        elif self._readable_work is not None:
+            anchors = self._readable_work.readable_task_ids(principal)
+        else:
+            raise MaterialError("material search needs a task")
+        active = [
+            (binding, attachment)
+            for binding, attachment in self._attachments.bindings_for_many("task", anchors)
+            if binding.unbound_at is None
+        ]
         extractions = self._extractions.for_attachments([attachment.id for _, attachment in active])
         searchable: dict[UUID, tuple[Any, Any, Any]] = {}
         unavailable: list[dict[str, Any]] = []
@@ -182,7 +207,7 @@ class TaskMaterialApplication:
                     "material_id": str(binding.id),
                     "attachment_id": str(attachment.id),
                     "chunk_id": str(hit.chunk_id),
-                    "task_id": str(task.id),
+                    "task_id": binding.context_id,
                     "kind": binding.role,
                     "name": attachment.name,
                     "content_type": attachment.content_type,
@@ -192,12 +217,13 @@ class TaskMaterialApplication:
                     "page": hit.page,
                     "excerpt": hit.excerpt,
                     "matched_tokens": hit.matched_tokens,
-                    "origin": f"/api/tasks/{task.id}/materials/{binding.id}/content",
+                    "origin": f"/api/tasks/{binding.context_id}/materials/{binding.id}/content",
                 }
             )
         return {
-            "task_id": str(task.id),
-            "task_title": task.title,
+            # 시작점을 대지 않았으면 답에도 시작점이 없다. 결과의 각 줄이 자기 업무를 말한다.
+            "task_id": str(task.id) if task is not None else None,
+            "task_title": task.title if task is not None else None,
             "query": cleaned,
             "results": results,
             "searched_materials": len(searchable),

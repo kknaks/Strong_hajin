@@ -235,3 +235,50 @@ def test_action_preview_has_no_evidence_row_when_the_turn_read_nothing(tmp_path)
         execution_id = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"])).execution_id
     proposed = application.propose_action(application.authenticated_principal("mina"), execution_id, "task.create_self", "업무 생성 확인", {"title": "후속 업무"})
     assert [row["id"] for row in proposed["preview"]] == ["assignee"]
+
+
+def test_searching_without_naming_the_work_finds_what_this_person_may_read(tmp_path) -> None:
+    """어느 자료에 있는지 모르는 채로 묻는 것이 자료 검색의 보통이다.
+
+    시작점을 대라고 요구하면 이미 아는 사람만 찾을 수 있고, 그것은 검색이 아니라 조회다. 시작점이 넓어져도
+    권한은 넓어지지 않는다 — 읽을 수 있는 업무에 지금 살아 있는 binding만 본다.
+    """
+    client, application, worker, settings = _stack(tmp_path)
+    mine = client.post("/api/tasks", headers=MINA, json={"title": "내 견적 검토"}).json()
+    theirs = client.post("/api/tasks", headers=JIHO, json={"title": "남의 견적 검토"}).json()
+    _upload(client, mine["task_id"], "내견적.md", BRIEF.encode(), "text/markdown")
+    _upload(client, theirs["task_id"], "남견적.md", BRIEF.encode(), "text/markdown", headers=JIHO)
+    while asyncio.run(worker.run_once()):
+        pass
+
+    found = client.get("/api/materials/search", headers=MINA, params={"q": "한빛상사"})
+    assert found.status_code == 200, found.text
+    body = found.json()
+    # 시작점을 대지 않았으므로 답에도 시작점이 없다. 각 줄이 자기 업무를 말한다.
+    assert body["task_id"] is None and body["task_title"] is None
+    assert {row["name"] for row in body["results"]} == {"내견적.md"}
+    assert {row["task_id"] for row in body["results"]} == {mine["task_id"]}
+    # 남의 자료는 이름도 건수도 나오지 않는다.
+    assert "남견적" not in found.text
+
+    # 지호에게는 정확히 반대로 보인다.
+    theirs_found = client.get("/api/materials/search", headers=JIHO, params={"q": "한빛상사"}).json()
+    assert {row["name"] for row in theirs_found["results"]} == {"남견적.md"}
+
+
+def test_naming_the_work_still_scopes_the_search_to_it(tmp_path) -> None:
+    """시작점을 알면 거기서만 찾는다. 넓게 찾는 길이 생겼다고 좁게 찾는 길이 사라지지 않는다."""
+    client, application, worker, settings = _stack(tmp_path)
+    one = client.post("/api/tasks", headers=MINA, json={"title": "첫 업무"}).json()
+    two = client.post("/api/tasks", headers=MINA, json={"title": "두 번째 업무"}).json()
+    _upload(client, one["task_id"], "첫견적.md", BRIEF.encode(), "text/markdown")
+    _upload(client, two["task_id"], "둘째견적.md", BRIEF.encode(), "text/markdown")
+    while asyncio.run(worker.run_once()):
+        pass
+
+    scoped = client.get(f"/api/tasks/{one['task_id']}/materials/search", headers=MINA, params={"q": "한빛상사"}).json()
+    assert scoped["task_id"] == one["task_id"]
+    assert {row["name"] for row in scoped["results"]} == {"첫견적.md"}
+
+    wide = client.get("/api/materials/search", headers=MINA, params={"q": "한빛상사"}).json()
+    assert {row["name"] for row in wide["results"]} == {"첫견적.md", "둘째견적.md"}
