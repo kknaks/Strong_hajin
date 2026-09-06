@@ -50,6 +50,7 @@ from ax_workspace.platform.persistence import (
     MaterialBlockRecord,
     MaterialChunkRecord,
     MaterialExtractionRecord,
+    OrganizationUnitRecord,
     make_session_factory,
 )
 from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
@@ -266,9 +267,16 @@ class _SessionGraphSource:
         return owners
 
     def member_units(self, member_id: str) -> list[dict[str, Any]]:
+        """이 사람이 속한 단위들. 어디가 위인지도 함께 온다 — 회사와 팀은 이름이 아니라 자리로 구분한다."""
         repository = SqlAlchemyOrganizationRepository(self._session)
         profile = repository.profile_for(member_id)
-        return list(profile["organizations"]) if profile else []
+        if not profile:
+            return []
+        units = []
+        for row in profile["organizations"]:
+            record = self._session.get(OrganizationUnitRecord, str(row["id"]))
+            units.append({**row, "parent_id": record.parent_id if record is not None else None})
+        return units
 
     def unit_members(self, unit_id: str) -> list[dict[str, Any]]:
         return [
@@ -627,7 +635,7 @@ class WorkflowApplication:
         member_id: str,
         role_id: str,
         scope_kind: str = "unit",
-        scope_ref: str = "scax",
+        scope_ref: str | None = None,
         include_descendants: bool = True,
         reason: str | None = None,
     ) -> dict[str, Any]:

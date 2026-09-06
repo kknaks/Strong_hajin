@@ -392,8 +392,11 @@ class GraphApplication:
         for node in answer["nodes"]:
             if node["kind"] != "person":
                 continue
-            units = [unit for unit in self._source.member_units(node["id"]) if str(unit["id"]) != "scax"]
-            unit = units[0] if units else {"id": "scax", "name": "SCAX"}
+            units = [unit for unit in self._source.member_units(node["id"]) if str(unit.get("parent_id") or "")]
+            if not units:
+                # 어디에도 묶이지 않는 사람은 자기 자리에 그대로 둔다. 없는 팀을 만들어 넣지 않는다.
+                continue
+            unit = units[0]
             team_of[self._ref(node)] = f"team:{unit['id']}"
             by_ref[f"team:{unit['id']}"] = self._team_node(unit)
 

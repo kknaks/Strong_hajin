@@ -49,23 +49,34 @@ def demo_email(member_id: str) -> str:
     return normalize_email(f"{member_id}@{DEMO_EMAIL_DOMAIN}")
 
 
-def seed_catalog(session: Session) -> None:
-    """Install the product demo's persisted configuration after an explicit reset."""
-    _seed_organization_access(session)
-    _seed_local_credentials(session)
+def seed_catalog(session: Session, *, demo_organization: bool = True) -> None:
+    """Install what a fresh SCAX needs, and — unless told otherwise — the example organization it ships with.
+
+    The two are separable on purpose. A real organization arrives through `dataset import`, and it should not have to
+    live next to an example company in the same tree. `demo_organization=False` installs only the product's own
+    catalog: the kinds of unit that may exist, the capabilities the product implements, the roles it recommends, and
+    the workflow definitions it runs.
+    """
+    _seed_product_catalog(session)
+    if demo_organization:
+        _seed_demo_organization(session)
+        _seed_local_credentials(session)
     _install_daily_report_generation(session)
     session.commit()
 
 
 def _seed_local_credentials(session: Session) -> None:
-    """Give every seeded member an ordinary email/password login, so the demo signs in like the product does."""
-    for member_id in session.scalars(select(MemberRecord.id).order_by(MemberRecord.id)):
-        if session.get(MemberCredentialRecord, member_id) is not None:
+    """Give each seeded member an ordinary email/password login, so the demo signs in like the product does.
+
+    Only the people this seed created. A known password is never handed to someone who arrived another way.
+    """
+    for member in SEEDED_MEMBERS:
+        if session.get(MemberCredentialRecord, member.id) is not None:
             continue
         session.add(
             MemberCredentialRecord(
-                member_id=member_id,
-                email=demo_email(member_id),
+                member_id=member.id,
+                email=demo_email(member.id),
                 password_hash=hash_password(DEMO_PASSWORD),
             )
         )
@@ -164,10 +175,17 @@ SEEDED_MEMBERS: tuple[SeededMember, ...] = (
 )
 
 
-def _seed_organization_access(session: Session) -> None:
+def _seed_product_catalog(session: Session) -> None:
+    """제품 자신의 것: 어떤 종류의 조직이 있을 수 있는지, 어떤 기능 권한이 구현되어 있는지, 어떤 역할을 권하는지."""
     for type_id, name, order in ORGANIZATION_UNIT_TYPES:
         if session.get(OrganizationUnitTypeRecord, type_id) is None:
             session.add(OrganizationUnitTypeRecord(id=type_id, name=name, display_order=order))
+    install_role_catalog(session, ROLE_TEMPLATES)
+    session.flush()
+
+
+def _seed_demo_organization(session: Session) -> None:
+    """예시 회사 하나. 실제 조직은 `dataset import`로 들어오며, 그때는 이것 없이 시작할 수 있다."""
     for unit_id, name, type_id, parent_id, order in ORGANIZATION_UNITS:
         unit = session.get(OrganizationUnitRecord, unit_id)
         if unit is None:
@@ -183,9 +201,6 @@ def _seed_organization_access(session: Session) -> None:
     for job_id, name in JOBS:
         if session.get(JobRecord, job_id) is None:
             session.add(JobRecord(id=job_id, name=name))
-    session.flush()
-
-    install_role_catalog(session, ROLE_TEMPLATES)
     session.flush()
 
     for member in SEEDED_MEMBERS:
@@ -234,7 +249,7 @@ def _seed_organization_access(session: Session) -> None:
             )
         # ERD STANDARD_GRANT_RULE: the appointment — a position, or plain membership — fixes which role is granted
         # and how wide it reaches. 대표 is appointed at the company, so that role covers the whole organization.
-        rule_id = f"standard:{member.position or 'member'}:{template.role_id}"
+        rule_id = f"standard:appointment:{member.position or 'member'}:{template.role_id}"
         if session.get(StandardGrantRuleRecord, rule_id) is None:
             session.add(
                 StandardGrantRuleRecord(

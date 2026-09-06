@@ -30,7 +30,7 @@ def _organization(target: Path) -> None:
     _write(target, "jobs", [{"key": "planning", "name": "기획"}])
     _write(target, "positions", [{"key": "head", "name": "본부장", "unit_type": "division", "slot": "head", "role_key": "team-lead"}])
     _write(target, "members", [
-        {"key": "a", "display_name": "가", "employment_state": "active", "primary_unit_key": "sales", "role_key": "member", "grade_key": "manager", "employed_from": "", "employed_until": ""},
+        {"key": "a", "display_name": "가", "employment_state": "active", "employment_type": "", "primary_unit_key": "sales", "role_key": "member", "grade_key": "manager", "employed_from": "", "employed_until": ""},
     ])
     _write(target, "memberships", [{"member_key": "a", "unit_key": "sales", "kind": "primary", "valid_from": "", "valid_until": ""}])
     _write(target, "appointments", [{"member_key": "a", "unit_key": "sales", "position_key": "head", "kind": "primary", "valid_from": "", "valid_until": ""}])
@@ -66,9 +66,9 @@ def test_a_dataset_that_holds_together_passes_and_one_that_does_not_says_where(t
     assert validate(read_tables(target)).ok
 
     _write(target, "members", [
-        {"key": "a", "display_name": "가", "employment_state": "active", "primary_unit_key": "sales", "role_key": "member", "grade_key": "manager", "employed_from": "", "employed_until": ""},
-        {"key": "a", "display_name": "또 가", "employment_state": "active", "primary_unit_key": "sales", "role_key": "member", "grade_key": "", "employed_from": "", "employed_until": ""},
-        {"key": "b", "display_name": "나", "employment_state": "퇴사", "primary_unit_key": "없는팀", "role_key": "member", "grade_key": "", "employed_from": "어제", "employed_until": ""},
+        {"key": "a", "display_name": "가", "employment_state": "active", "employment_type": "", "primary_unit_key": "sales", "role_key": "member", "grade_key": "manager", "employed_from": "", "employed_until": ""},
+        {"key": "a", "display_name": "또 가", "employment_state": "active", "employment_type": "", "primary_unit_key": "sales", "role_key": "member", "grade_key": "", "employed_from": "", "employed_until": ""},
+        {"key": "b", "display_name": "나", "employment_state": "퇴사", "employment_type": "", "primary_unit_key": "없는팀", "role_key": "member", "grade_key": "", "employed_from": "어제", "employed_until": ""},
     ])
     report = validate(read_tables(target))
     kinds = {(problem.table, problem.column, problem.kind) for problem in report.problems}

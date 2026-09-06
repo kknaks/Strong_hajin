@@ -52,7 +52,8 @@ class GrantAccessRoleRequest(BaseModel):
     member_id: str = Field(min_length=1, max_length=100)
     role_id: str = Field(min_length=1, max_length=100)
     scope_kind: Literal["unit", "organization"] = "unit"
-    scope_ref: str = Field(default="scax", min_length=1, max_length=100)
+    #: 비워 두면 그 조직 전체다. 회사 이름은 고객마다 다르므로 client가 미리 알고 있지 않는다.
+    scope_ref: str | None = Field(default=None, min_length=1, max_length=100)
     include_descendants: bool = True
     reason: str = Field(min_length=1, max_length=300)
 

@@ -45,7 +45,9 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
         if (cancelled) return;
         setProfile(nextProfile);
         setUnits(tree);
-        setSelectedUnit((current) => current ?? nextProfile.organizations.find((item) => item.id !== "scax")?.id ?? tree[0]?.id ?? null);
+        // 회사 이름은 고객마다 다르다. 꼭대기는 위로 더 올라갈 곳이 없는 단위이지 특정한 이름이 아니다.
+        const root = tree.find((unit) => !unit.parent_id)?.id ?? null;
+        setSelectedUnit((current) => current ?? nextProfile.organizations.find((item) => item.id !== root)?.id ?? tree[0]?.id ?? null);
         onError(null);
       })
       .catch((error: unknown) => {
@@ -111,7 +113,7 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
       await grantAccessRole({
         member_id: selectedMember.member_id,
         role_id: grantRole,
-        scope_kind: grantScope === "scax" ? "organization" : "unit",
+        scope_kind: grantScope === rootUnitId ? "organization" : "unit",
         scope_ref: grantScope,
         include_descendants: true,
         reason: grantReason.trim(),
@@ -151,6 +153,8 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
     return map;
   }, [units]);
   const unitById = useMemo(() => new Map(units.map((unit) => [unit.id, unit])), [units]);
+  /** 조직 전체를 뜻하는 단위. 이름이 아니라 자리로 찾는다. */
+  const rootUnitId = useMemo(() => units.find((unit) => !unit.parent_id)?.id ?? null, [units]);
   const selected = selectedUnit ? unitById.get(selectedUnit) : undefined;
 
   const renderUnit = (unit: OrganizationUnitNode, depth: number) => {

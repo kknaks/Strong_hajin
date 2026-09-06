@@ -27,6 +27,7 @@ from ax_workspace.platform.persistence import (
     PositionDefinitionRecord,
     RoleCapabilityRecord,
     RoleRecord,
+    StandardGrantRuleRecord,
 )
 
 
@@ -80,12 +81,21 @@ class SqlAlchemyOrganizationRepository:
                 .order_by(AccessGrantRecord.valid_from)
             )
         )
+        # 보직이 만든 grant는 그 보직과 함께 끝나고, 소속이 만든 grant는 소속이 있는 동안 남는다. 어느 쪽인지는
+        # 그 grant를 만든 규칙이 말한다 — grant에 규칙이 적혀 있다는 사실만으로 보직을 요구하지 않는다.
+        rule_ids = {str(grant.origin_rule_id) for grant in grants if grant.origin_rule_id}
+        appointment_rules = {
+            rule.id
+            for rule in self._session.scalars(
+                select(StandardGrantRuleRecord).where(StandardGrantRuleRecord.id.in_(rule_ids))
+            )
+            if rule.trigger_kind == "appointment"
+        } if rule_ids else set()
         capabilities: set[str] = set()
         effective_grants: list[AccessGrantRecord] = []
         granted_capabilities: dict[UUID, set[str]] = {}
         for grant in grants:
-            # A grant materialized by a standard rule exists because of an appointment; it ends with that appointment.
-            if grant.origin_rule_id is not None and grant.role_id not in appointed_roles:
+            if grant.origin_rule_id in appointment_rules and grant.role_id not in appointed_roles:
                 continue
             effective_grants.append(grant)
             carried = granted_capabilities.setdefault(grant.id, set())
@@ -141,12 +151,14 @@ class SqlAlchemyOrganizationRepository:
         if profile is None:
             return None
         descendants = self._unit_descendants()
-        every_unit = frozenset(descendants)
         grants: list[Grant] = []
         for row in profile["grants"]:
             scope_ref = str(row["scope_ref"] or "")
             if row["scope_kind"] == "organization":
-                units = every_unit
+                # 조직 전체는 이 사람의 조직 전체다. 한 데이터베이스에 회사가 둘 있어도 한쪽의 대표가 다른 쪽을
+                # 읽지 않는다.
+                root = self.organization_root(near=scope_ref) or scope_ref
+                units = descendants.get(root, frozenset({root}))
             elif row["include_descendants"]:
                 units = descendants.get(scope_ref, frozenset({scope_ref}))
             else:
@@ -259,7 +271,8 @@ class SqlAlchemyOrganizationRepository:
             # The grant pins the role as it is now: a later change to the role does not travel backwards into it.
             role_capability_version=role.version if role is not None else 1,
             scope_kind=scope_kind,
-            scope_organization_id=scope_ref if scope_kind == "unit" else "scax",
+            # 조직 전체에 주는 것이면 그 조직의 실제 꼭대기에 붙는다. 이름을 미리 알고 있지 않는다.
+            scope_organization_id=scope_ref if scope_kind == "unit" else self.organization_root(near=scope_ref),
             scope_ref=scope_ref,
             include_descendants=include_descendants,
             granted_by_member_id=granted_by,
@@ -393,19 +406,63 @@ class SqlAlchemyOrganizationRepository:
             if row.member_id in active
         ]
 
+    def organization_root(self, *, near: str | None = None) -> str | None:
+        """이 조직의 꼭대기. 회사 이름이 무엇이든, 위로 더 올라갈 곳이 없는 단위가 그 자리다.
+
+        `near`를 주면 그 단위에서 위로 올라가 만나는 꼭대기를 돌려준다. 한 데이터베이스에 뿌리가 여럿일 수
+        있으므로 — 예시 회사 옆에 실제 조직이 들어온 경우 — 누구의 꼭대기인지 물을 수 있어야 한다.
+        """
+        if near:
+            seen: set[str] = set()
+            current: str | None = near
+            while current and current not in seen:
+                seen.add(current)
+                unit = self._session.get(OrganizationUnitRecord, current)
+                if unit is None:
+                    return None
+                if unit.parent_id is None:
+                    return unit.id
+                current = unit.parent_id
+            return near
+        return self._session.scalar(
+            select(OrganizationUnitRecord.id)
+            .where(OrganizationUnitRecord.parent_id.is_(None))
+            .order_by(OrganizationUnitRecord.display_order, OrganizationUnitRecord.id)
+        )
+
+    def _active_member_names(self) -> list[dict[str, str]]:
+        """재직 중인 사람의 이름. 조직의 꼭대기가 무엇으로 불리든 이 목록은 같다."""
+        rows = self._session.execute(
+            select(MemberRecord.id, MemberRecord.display_name)
+            .join(EmploymentPeriodRecord, EmploymentPeriodRecord.member_id == MemberRecord.id)
+            .where(
+                MemberRecord.employment_state == "active",
+                EmploymentPeriodRecord.state == "active",
+                EmploymentPeriodRecord.ended_at.is_(None),
+            )
+            .order_by(MemberRecord.id)
+        ).all()
+        return [{"id": str(member_id), "display_name": str(name)} for member_id, name in rows]
+
     def member_directory(self) -> list[dict[str, str]]:
         """Every active member's name, so the product can say who did what. It carries no capability."""
-        return [
-            {"id": str(member["member_id"]), "display_name": str(member["display_name"])}
-            for member in self.unit_members("scax", include_descendants=True)
-        ]
+        return self._active_member_names()
+
+    def _can_answer(self, member_id: str) -> bool:
+        """이 사람이 요청을 받아 스스로 답할 수 있는가 — 들어올 문이 있는가.
+
+        조직 전체가 원장에 있어도 로그인은 일부만 갖는다. 답할 수 없는 사람에게 판단을 맡기면 그 요청은 영영
+        기다린다. 명부·과거 업무·회의 참석자·graph node로는 그대로 보이고, 여기서만 후보에서 빠진다.
+        """
+        member = self._session.get(MemberRecord, member_id)
+        return member is not None and bool(member.account_ref)
 
     def work_request_assignee_candidates(self, principal: Principal) -> list[dict[str, str]]:
         """Return active decision-capable peers whose current org scope overlaps the requester."""
         candidates: list[dict[str, str]] = []
         member_ids = self._session.scalars(select(MemberRecord.id).order_by(MemberRecord.id))
         for member_id in member_ids:
-            if member_id == str(principal.id):
+            if member_id == str(principal.id) or not self._can_answer(member_id):
                 continue
             candidate = self.principal_for(member_id)
             if candidate is None:
@@ -420,11 +477,7 @@ class SqlAlchemyOrganizationRepository:
 
     def member_candidates(self, principal: Principal) -> list[dict[str, str]]:
         """Every active member other than the principal (참조자 후보); the org tree stays the navigation boundary."""
-        return [
-            {"id": str(member["member_id"]), "display_name": str(member["display_name"])}
-            for member in self.unit_members("scax", include_descendants=True)
-            if str(member["member_id"]) != str(principal.id)
-        ]
+        return [member for member in self._active_member_names() if member["id"] != str(principal.id)]
 
     def task_assignment_candidates(self, principal: Principal) -> list[dict[str, str]]:
         """Active members inside the scope this person's assign authority was granted at, who can run a Task themselves.
@@ -437,7 +490,7 @@ class SqlAlchemyOrganizationRepository:
         for unit_id in units:
             for member in self.unit_members(unit_id, include_descendants=True):
                 member_id = str(member["member_id"])
-                if member_id == str(principal.id) or member_id in seen:
+                if member_id == str(principal.id) or member_id in seen or not self._can_answer(member_id):
                     continue
                 candidate = self.principal_for(member_id)
                 if candidate is None or "task.self_manage" not in candidate.capabilities:

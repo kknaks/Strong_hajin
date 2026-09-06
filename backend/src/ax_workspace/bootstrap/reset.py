@@ -6,7 +6,7 @@ from ax_workspace.platform.persistence import Base, make_session_factory
 from sqlalchemy import text
 
 
-def reset_database(database_url: str) -> None:
+def reset_database(database_url: str, *, demo_organization: bool = True) -> None:
     session_factory = make_session_factory(database_url)
     engine = session_factory.kw["bind"]
     if engine.dialect.name == "postgresql":
@@ -19,4 +19,4 @@ def reset_database(database_url: str) -> None:
         Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     with session_factory() as session:
-        seed_catalog(session)
+        seed_catalog(session, demo_organization=demo_organization)

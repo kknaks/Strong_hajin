@@ -33,4 +33,5 @@ def test_reset_command_is_forbidden_in_production_profile(monkeypatch: pytest.Mo
     monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
 
     with pytest.raises(RuntimeError, match="development and test"):
-        main()
+        # 인자를 명시해 pytest 자신의 argv가 이 명령의 것으로 읽히지 않게 한다.
+        main([])

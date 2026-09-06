@@ -196,12 +196,18 @@ def _import_members(session: Session, rows: dict[str, list[dict[str, str]]], res
     for row in rows.get("members", []):
         key = _text(row, "key")
         state = _text(row, "employment_state")
+        kind = _text(row, "employment_type") or None
         member = session.get(MemberRecord, key)
         if member is None:
-            session.add(MemberRecord(id=key, display_name=_text(row, "display_name"), employment_state=state))
+            session.add(
+                MemberRecord(id=key, display_name=_text(row, "display_name"), employment_state=state, employment_type=kind)
+            )
             result.track("members", made=True)
         else:
             member.display_name, member.employment_state = _text(row, "display_name"), state
+            # 비어 있는 칸은 지우는 말이 아니다. 원문이 말하지 않는 것을 없앴다고 기록하지 않는다.
+            if kind is not None:
+                member.employment_type = kind
             result.track("members", made=False)
         if session.scalar(select(EmploymentPeriodRecord).where(EmploymentPeriodRecord.member_id == key)) is None:
             session.add(
@@ -272,9 +278,12 @@ def _import_appointments(
 ) -> None:
     """A position held at a unit, and the standard role that comes with holding it.
 
-    Which role an appointment carries is the position's answer when it has one, and otherwise the person's own. The
-    rule that says so is written down as the product's own STANDARD_GRANT_RULE, so the grant that follows can point
-    at where it came from instead of being an unexplained row.
+    Two different things are true about someone at once, and both are written down. The position they hold carries
+    the role that comes with that position; the person carries the role their organization gave them. 인사총무팀장은
+    팀장이면서 인사 담당자다 — 보직이 그 사람의 역할을 덮어쓰지 않는다.
+
+    The rule behind each grant is written down as the product's own STANDARD_GRANT_RULE, so a grant can say where it
+    came from and, later, whether it ends with a position or lasts as long as the person is here.
     """
     member_roles = {_text(row, "key"): _text(row, "role_key") for row in rows.get("members", [])}
     position_roles = {_text(row, "key"): _text(row, "role_key") for row in rows.get("positions", [])}
@@ -285,7 +294,7 @@ def _import_appointments(
         if template is None:
             result.skipped.append(f"appointments:{member_key}@{unit_key} · 역할을 알 수 없어 보직을 만들지 않았습니다")
             continue
-        rule_id = _standard_rule(session, template, position_key or "member")
+        rule_id = _standard_rule(session, template, "appointment", position_key or "member")
         exists = session.scalar(
             select(AppointmentRecord).where(
                 AppointmentRecord.member_id == member_key,
@@ -310,27 +319,29 @@ def _import_appointments(
             result.track("appointments", made=False)
         _grant(session, member_key, template, unit_key, rule_id, result)
 
-    # 보직 없는 사람도 자기 역할은 갖는다. 그 역할은 자기가 속한 곳까지 닿는다.
-    appointed = {_text(row, "member_key") for row in rows.get("appointments", [])}
+    # 그리고 모든 사람은 자기 역할을 갖는다. 보직을 맡았다고 그 사람이 원래 하던 일이 사라지지 않는다.
+    # 이 grant는 보직이 아니라 소속이 만든 것이므로 보직이 끝나도 남는다.
     for row in rows.get("members", []):
         member_key = _text(row, "key")
-        if member_key in appointed:
-            continue
         template = roles.get(_text(row, "role_key"))
         unit_key = _text(row, "primary_unit_key")
         if template is None or not unit_key:
             continue
-        _grant(session, member_key, template, unit_key, _standard_rule(session, template, "member"), result)
+        _grant(session, member_key, template, unit_key, _standard_rule(session, template, "membership", "member"), result)
 
 
-def _standard_rule(session: Session, template: RoleTemplate, source_ref: str) -> str:
-    """ERD STANDARD_GRANT_RULE: what holding this position, or simply being here, suggests."""
-    rule_id = f"standard:{source_ref}:{template.role_id}"
+def _standard_rule(session: Session, template: RoleTemplate, trigger_kind: str, source_ref: str) -> str:
+    """ERD STANDARD_GRANT_RULE: what holding this position, or simply being here, suggests.
+
+    무엇이 이 역할을 불러왔는지가 이름에 들어 있다. 같은 보직 이름과 같은 역할이라도 보직이 부른 것과 소속이 부른
+    것은 끝나는 조건이 다르므로 한 규칙으로 합치지 않는다.
+    """
+    rule_id = f"standard:{trigger_kind}:{source_ref}:{template.role_id}"
     if session.get(StandardGrantRuleRecord, rule_id) is None:
         session.add(
             StandardGrantRuleRecord(
                 id=rule_id,
-                trigger_kind="appointment" if source_ref != "member" else "membership",
+                trigger_kind=trigger_kind,
                 trigger_source_ref=source_ref,
                 role_id=template.role_id,
                 scope_template=template.scope_template,

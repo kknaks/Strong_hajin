@@ -44,6 +44,8 @@ class MemberRecord(Base):
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
     employment_state: Mapped[str] = mapped_column(String(40), nullable=False)
+    #: 정규직·시간제처럼 어떤 형태로 일하는지. 출처가 말하지 않으면 비어 있고, 추정해서 채우지 않는다.
+    employment_type: Mapped[str | None] = mapped_column(String(40))
     account_ref: Mapped[str | None] = mapped_column(String(200))
     record_status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))

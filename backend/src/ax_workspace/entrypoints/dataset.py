@@ -231,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
     if destination.is_relative_to(repository):
         print(f"목록도 저장소 밖에 써야 합니다: {destination}", file=sys.stderr)
         return 2
+    destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     summary = report["summary"]

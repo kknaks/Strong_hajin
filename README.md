@@ -93,7 +93,13 @@ SCAX_DATASET_PASSWORD=... make dataset-import TARGET=~/scax-datasets/actual
 
 `import`는 검증을 통과한 dataset을 제품의 원장에 넣는다. 조직을 만드는 두 번째 길이 아니라 제품이 이미 쓰는 행을 사람이 정한 key로 다시 찾아 쓰는 adapter이므로, 두 번 넣어도 한 번 넣은 것과 같다. 한 transaction이라 적용할 수 없는 dataset은 아무것도 남기지 않는다. 넣을 수 있는 대상은 `reset-demo`가 지울 수 있는 로컬 demo DB뿐이다.
 
-권한은 조직이 정한다. 그 사람의 역할(`members.role_key`)과 보직에 따라오는 역할(`positions.role_key`)이 APPOINTMENT와 ACCESS_GRANT를 만들고, `logins`는 들어오는 문만 만든다. 비밀번호는 dataset에 두지 않고 `SCAX_DATASET_PASSWORD`로 준다. 주지 않으면 로그인을 절반만 만들지 않고 "하지 않은 것"으로 보고한다.
+실제 조직을 들여올 때는 `make reset-catalog`으로 시작한다. 제품 자신의 것(조직 단위 종류 · 기능 권한 · 권장 역할 · workflow definition)만 설치하고 예시 회사는 만들지 않으므로, 실제 조직이 예시 회사 옆에 나란히 서지 않는다. `make reset-demo`는 예시 회사까지 함께 만드는 기존 동작 그대로이며 모든 browser journey가 그것을 쓴다.
+
+권한은 조직이 정한다. 그 사람의 역할(`members.role_key`)과 보직에 따라오는 역할(`positions.role_key`)이 APPOINTMENT와 ACCESS_GRANT를 만들고, `logins`는 들어오는 문만 만든다. 두 역할은 서로를 덮어쓰지 않는다 — 인사총무팀장은 팀장이면서 인사 담당자다. 보직이 만든 grant는 그 보직과 함께 끝나고 소속이 만든 grant는 소속이 있는 동안 남으며, 어느 쪽인지는 그 grant를 만든 STANDARD_GRANT_RULE이 말한다. 비밀번호는 dataset에 두지 않고 `SCAX_DATASET_PASSWORD`로 준다. 주지 않으면 로그인을 절반만 만들지 않고 "하지 않은 것"으로 보고한다.
+
+조직 전체가 원장에 있어도 로그인은 일부만 갖는다. 답할 수 없는 사람은 업무 요청과 배정의 수행 후보에서 빠지고 그렇게 만들려는 시도는 원장이 거절하므로, 판단이 영영 기다리는 항목이 생기지 않는다. 명부·과거 업무·회의 참석자·graph node로는 그대로 보인다.
+
+`employment_type`은 원문이 사람별로 말할 때만 채운다. 조직도가 팀 단위 인원수로만 말하는 경우에는 비워 두고 추정하지 않는다.
 
 The local stdio MCP server is a development-only delegated binding. It resolves the active Organization & Access principal for every canonical operation, but a long-lived external MCP process must reconnect after its developer persona's employment or grants change; the conversation worker also revalidates that owner and typed context immediately before execution.
 

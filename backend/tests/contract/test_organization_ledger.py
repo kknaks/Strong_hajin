@@ -67,7 +67,7 @@ def test_grant_evaluates_the_role_capability_snapshot_not_the_live_role(tmp_path
     client, database_url = _client(tmp_path)
     profile = client.get("/api/organization/me", headers=MINA).json()
     assert "task.assign" not in profile["capabilities"]
-    assert profile["grants"][0]["role_capability_version"] == 1 and profile["grants"][0]["origin_rule_id"] == "standard:member:role:member"
+    assert profile["grants"][0]["role_capability_version"] == 1 and profile["grants"][0]["origin_rule_id"] == "standard:appointment:member:role:member"
     with make_session_factory(database_url)() as session:
         # The role gains a capability later (mapping version 2); mina's grant is pinned at version 1.
         session.add(RoleCapabilityRecord(role_id="role:member", capability_id="task.assign", mapping_version=2))

@@ -16,7 +16,6 @@ from ax_workspace.modules.organization_access.catalog import CAPABILITY_IDS, Unk
 from ax_workspace.modules.organization_access.domain import Principal
 
 ORGANIZATION_MANAGE = "organization.manage"
-ORGANIZATION_ROOT = "scax"
 
 
 class AccessAdministrationError(Exception):
@@ -38,6 +37,7 @@ class AccessVersionConflict(Exception):
 class AccessAdministrationRepository(Protocol):
     def principal_for(self, member_id: str) -> Principal | None: ...
     def member_units(self, member_id: str) -> frozenset[str]: ...
+    def organization_root(self, *, near: str | None = None) -> str | None: ...
     def role_exists(self, role_id: str) -> bool: ...
     def installed_roles(self) -> list[dict[str, Any]]: ...
     def profile_for(self, member_id: str) -> dict[str, Any] | None: ...
@@ -78,7 +78,7 @@ class AccessAdministration:
 
     def installed_roles(self, principal: Principal) -> list[dict[str, Any]]:
         """The roles this organization actually has, as they are now — not the product's recommendation."""
-        self._require_authority_over_unit(principal, ORGANIZATION_ROOT)
+        self._require_authority_over_unit(principal, self._root())
         return self._repository.installed_roles()
 
     def member_access(self, principal: Principal, member_id: str) -> dict[str, Any]:
@@ -104,12 +104,14 @@ class AccessAdministration:
         member_id: str,
         role_id: str,
         scope_kind: str = "unit",
-        scope_ref: str = ORGANIZATION_ROOT,
+        scope_ref: str | None = None,
         include_descendants: bool = True,
         reason: str | None = None,
     ) -> dict[str, Any]:
+        # 범위를 말하지 않으면 조직 전체다. 그 조직이 무엇으로 불리는지는 원장이 안다.
+        scope_ref = scope_ref or self._root()
         self._require_authority_over_member(principal, member_id)
-        self._require_authority_over_unit(principal, scope_ref if scope_kind == "unit" else ORGANIZATION_ROOT)
+        self._require_authority_over_unit(principal, scope_ref if scope_kind == "unit" else self._root())
         if not self._repository.role_exists(role_id):
             raise AccessNotFound("역할을 찾을 수 없습니다")
         if self._repository.principal_for(member_id) is None:
@@ -162,7 +164,7 @@ class AccessAdministration:
         reason: str | None = None,
     ) -> dict[str, Any]:
         """What a role means is the organization's to decide — within what the product can actually do."""
-        self._require_authority_over_unit(principal, ORGANIZATION_ROOT)
+        self._require_authority_over_unit(principal, self._root())
         current = self._repository.role_version(role_id)
         if current is None:
             raise AccessNotFound("역할을 찾을 수 없습니다")
@@ -192,6 +194,13 @@ class AccessAdministration:
         if not any(principal.allows(ORGANIZATION_MANAGE, unit=unit) for unit in units):
             raise AccessAdministrationDenied("이 구성원의 권한을 바꿀 수 있는 범위가 아닙니다")
 
+    def _root(self) -> str:
+        """이 조직의 꼭대기. 상수로 알고 있지 않고 원장에 묻는다 — 회사 이름은 고객마다 다르다."""
+        root = self._repository.organization_root()
+        if root is None:
+            raise AccessNotFound("조직이 아직 없습니다")
+        return root
+
     def _require_authority_over_unit(self, principal: Principal, unit: str) -> None:
         if not principal.allows(ORGANIZATION_MANAGE, unit=unit):
             raise AccessAdministrationDenied("이 범위의 권한을 바꿀 수 있는 자격이 없습니다")
@@ -202,7 +211,7 @@ class AccessAdministration:
         This runs after the write and raises, so the caller's transaction is the thing that undoes it: a check made
         before the change would be answering about a state that no longer exists by the time it lands.
         """
-        remaining = self._repository.members_administering(ORGANIZATION_ROOT)
+        remaining = self._repository.members_administering(self._root())
         if not remaining:
             if changed_member is not None and changed_member == str(principal.id):
                 raise AccessAdministrationError("자기 자신의 마지막 관리 권한은 이렇게 회수할 수 없습니다")
