@@ -36,6 +36,7 @@ from ax_workspace.modules.work.graph import GraphApplication
 from ax_workspace.modules.work.application import TaskAccessDenied, TaskApplication, TaskState
 from ax_workspace.modules.work.assignments import TaskAssignmentApplication
 from ax_workspace.modules.meetings.application import MeetingApplication
+from ax_workspace.modules.meetings.domain import MeetingError
 from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment
 from ax_workspace.modules.meetings.refinement import build_refinement_prompt, parse_refinement, refinement_output_schema
 from ax_workspace.modules.meetings.summary import build_summary_prompt, parse_summary, summary_output_schema

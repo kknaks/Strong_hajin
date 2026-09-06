@@ -154,6 +154,25 @@ def test_asking_someone_else_goes_through_the_request_ledger(tmp_path) -> None:
     assert client.get(f"/api/work-requests/{request_id}", headers=MINA).json()["state"] == "pending"
 
 
+def test_asking_nobody_is_refused_in_words_rather_than_breaking(tmp_path) -> None:
+    """말이 되지 않는 요청은 거절이지 고장이 아니다."""
+    client, made = _stack_with_summary(tmp_path, "부탁할 사람이 빠진 회의")
+    meeting_id = made["meeting"]["meeting_id"]
+    detail = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()
+    [candidate] = [row for row in detail["summaries"][0]["statements"] if row["kind"] == "followup"]
+    path = f"/api/meetings/{meeting_id}/summaries/{made['summary_id']}/statements/{candidate['statement_index']}/promote"
+
+    nobody = client.post(path, headers=MINA, json={"kind": "work_request", "title": "계약서 검토"})
+    assert nobody.status_code == 422, nobody.text
+    assert "담당 후보" in nobody.json()["detail"]
+
+    neither = client.post(path, headers=MINA, json={"kind": "report", "title": "계약서 검토"})
+    assert neither.status_code == 422, neither.text
+
+    # 거절된 뒤에도 원래 길은 그대로 열려 있다.
+    assert client.post(path, headers=MINA, json={"kind": "task", "title": "계약서 검토"}).status_code == 201
+
+
 def test_only_someone_who_may_read_the_meeting_may_act_on_it(tmp_path) -> None:
     client, made = _stack_with_summary(tmp_path, "권한을 보는 회의")
     meeting_id = made["meeting"]["meeting_id"]
