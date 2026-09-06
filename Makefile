@@ -4,6 +4,9 @@ SONIOX_ENV_FILE ?= $(HOME)/.config/soniox/env
 # the feature reports itself unavailable; it never falls back to a stub that pretends to transcribe.
 SONIOX_ENV = set -a; [ -f "$(SONIOX_ENV_FILE)" ] && . "$(SONIOX_ENV_FILE)"; set +a;
 POSTGRES_TEST_URL ?= postgresql+psycopg://ax:ax@localhost:54329/ax_test
+# Acceptance는 자기 데이터베이스에서 돈다. reset으로 시작하는 suite가 사람이 쓰던 DATABASE_URL의
+# 조직·자료를 지우지 않게 한다.
+ACCEPTANCE_DATABASE_URL ?= postgresql+psycopg://ax:ax@localhost:54329/ax_test_acceptance
 E2E_API_PORT ?= 8001
 E2E_FRONTEND_PORT ?= 5176
 ACCEPTANCE_API_PORT ?= 18111
@@ -33,6 +36,7 @@ postgres-up:
 	docker compose up -d postgres
 	@until docker compose exec -T postgres pg_isready -U ax -d ax_demo >/dev/null 2>&1; do sleep 1; done
 	@docker compose exec -T postgres sh -ec 'psql -U ax -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = '\''ax_test'\''" | grep -q 1 || psql -U ax -d postgres -c "CREATE DATABASE ax_test"'
+	@docker compose exec -T postgres sh -ec 'psql -U ax -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = '\''ax_test_acceptance'\''" | grep -q 1 || psql -U ax -d postgres -c "CREATE DATABASE ax_test_acceptance"'
 
 postgres-down:
 	docker compose down
@@ -224,7 +228,7 @@ e2e-graph-question:
 acceptance-e2e:
 	@set -eu; \
 		acceptance_dir="$$(mktemp -d)"; \
-		api_pid=""; worker_pid=""; material_pid=""; frontend_pid=""; \
+		api_pid=""; worker_pid=""; material_pid=""; meeting_pid=""; frontend_pid=""; \
 		stop_process_tree() { \
 			for child in $$(pgrep -P "$$1" 2>/dev/null || true); do stop_process_tree "$$child"; done; \
 			kill -TERM "$$1" 2>/dev/null || true; \
@@ -245,11 +249,11 @@ acceptance-e2e:
 			fi; \
 		done; \
 		$(MAKE) postgres-up; \
-		$(MAKE) reset-demo; \
-		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" api-e2e >"$$acceptance_dir/api.log" 2>&1 & api_pid=$$!; \
-		$(MAKE) conversation-worker >"$$acceptance_dir/worker.log" 2>&1 & worker_pid=$$!; \
-		$(MAKE) material-worker >"$$acceptance_dir/material-worker.log" 2>&1 & material_pid=$$!; \
-		$(MAKE) meeting-worker >"$$acceptance_dir/meeting-worker.log" 2>&1 & meeting_pid=$$!; \
+		$(MAKE) DATABASE_URL="$(ACCEPTANCE_DATABASE_URL)" reset-demo; \
+		$(MAKE) DATABASE_URL="$(ACCEPTANCE_DATABASE_URL)" E2E_API_PORT="$(ACCEPTANCE_API_PORT)" api-e2e >"$$acceptance_dir/api.log" 2>&1 & api_pid=$$!; \
+		$(MAKE) DATABASE_URL="$(ACCEPTANCE_DATABASE_URL)" conversation-worker >"$$acceptance_dir/worker.log" 2>&1 & worker_pid=$$!; \
+		$(MAKE) DATABASE_URL="$(ACCEPTANCE_DATABASE_URL)" material-worker >"$$acceptance_dir/material-worker.log" 2>&1 & material_pid=$$!; \
+		$(MAKE) DATABASE_URL="$(ACCEPTANCE_DATABASE_URL)" meeting-worker >"$$acceptance_dir/meeting-worker.log" 2>&1 & meeting_pid=$$!; \
 		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" frontend-e2e >"$$acceptance_dir/frontend.log" 2>&1 & frontend_pid=$$!; \
 		for attempt in $$(seq 1 60); do curl -fsS "http://127.0.0.1:$(ACCEPTANCE_API_PORT)/api/auth/providers" >/dev/null && curl -fsS "http://127.0.0.1:$(ACCEPTANCE_FRONTEND_PORT)" >/dev/null && break; sleep 1; done; \
 		curl -fsS "http://127.0.0.1:$(ACCEPTANCE_API_PORT)/api/auth/providers" >/dev/null; \
