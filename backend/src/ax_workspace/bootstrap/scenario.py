@@ -50,10 +50,23 @@ class OwnWork:
 
 @dataclass(frozen=True, slots=True)
 class ProjectWork:
-    """대분류 아래 세부 항목이 붙는, 기한 있는 진행형 업무.
+    """프로젝트에 바로 쌓이는 일들.
 
-    `project`는 dataset이 만든 프로젝트의 외부 key다. 비어 있으면 프로젝트 없는 일이 되며, 그것이 더 흔하다.
+    프로젝트가 이미 그 묶음의 이름이므로 그 아래에 같은 이름의 업무를 하나 더 두지 않는다. 우산 업무를 두면
+    프로젝트와 같은 말을 두 번 하게 되고, 어느 쪽이 정본인지 흐려진다.
+
+    `project`는 dataset이 만든 프로젝트의 외부 key다.
     """
+
+    owner: str
+    project: str
+    #: (제목, 시작까지 며칠, 며칠 걸림)
+    items: tuple[tuple[str, int, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CompositeWork:
+    """부분으로 나뉘는 업무 하나. 프로젝트가 아니라 한 사람이 든 일이 안에서 갈라지는 경우다."""
 
     owner: str
     title: str
@@ -61,7 +74,6 @@ class ProjectWork:
     starts_in: int
     days: int
     children: tuple[tuple[str, int, int], ...]
-    project: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,15 +160,30 @@ def build(application: Any, plan: "ScenarioPlan", *, today: date | None = None) 
         principal = acting(item.owner)
         if principal is None:
             continue
-        project_id = None
-        if item.project:
-            found = [row for row in application.list_projects(principal) if row.get("external_key") == item.project]
-            if not found:
-                result.skipped.append(f"업무 '{item.title}' · 프로젝트({item.project})를 찾을 수 없습니다")
-            else:
-                from uuid import UUID as _UUID
+        found = [row for row in application.list_projects(principal) if row.get("external_key") == item.project]
+        if not found:
+            result.skipped.append(f"프로젝트 업무 · 프로젝트({item.project})를 찾을 수 없습니다")
+            continue
+        from uuid import UUID as _UUID
 
-                project_id = _UUID(str(found[0]["project_id"]))
+        project_id = _UUID(str(found[0]["project_id"]))
+        for title, starts_in, days in item.items:
+            if existing(principal, title) is not None:
+                result.track("project_tasks", made=False)
+                continue
+            application.create_self_task(
+                principal,
+                title,
+                start_date=day + timedelta(days=starts_in),
+                due_date=day + timedelta(days=starts_in + days),
+                project_id=project_id,
+            )
+            result.track("project_tasks", made=True)
+
+    for item in plan.composite_work:
+        principal = acting(item.owner)
+        if principal is None:
+            continue
         parent = existing(principal, item.title)
         if parent is None:
             parent = application.create_self_task(
@@ -165,7 +192,6 @@ def build(application: Any, plan: "ScenarioPlan", *, today: date | None = None) 
                 description=item.description,
                 start_date=day + timedelta(days=item.starts_in),
                 due_date=day + timedelta(days=item.starts_in + item.days),
-                project_id=project_id,
             )
             result.track("tasks", made=True)
         else:
@@ -311,6 +337,7 @@ def _walk_to(application: Any, principal: Principal, task: dict[str, Any], targe
 class ScenarioPlan:
     own_work: tuple[OwnWork, ...] = ()
     project_work: tuple[ProjectWork, ...] = ()
+    composite_work: tuple[CompositeWork, ...] = ()
     asks: tuple[Ask, ...] = ()
     handouts: tuple[Handout, ...] = ()
     gatherings: tuple[Gathering, ...] = ()
