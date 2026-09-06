@@ -242,6 +242,32 @@ def test_grouping_by_team_reads_the_same_answer_one_level_up(tmp_path) -> None:
     assert all(edge.get("count", 1) >= 1 for edge in grouped["edges"])
 
 
+def test_someone_who_sits_only_at_the_top_stays_where_they_are(tmp_path) -> None:
+    """접는 것은 팀이 있는 사람까지다. 회사 뿌리에만 있는 사람에게 없는 팀을 만들어 붙이지 않는다."""
+    client, _ = _stack(tmp_path)
+    _journey(client, "대표가 들어오는 업무")
+    starts = "2026-09-20T01:00:00+00:00"
+    client.post(
+        "/api/meetings",
+        headers=JIHO,
+        json={
+            "organization_id": "scax", "title": "대표가 참석하는 회의",
+            "starts_at": starts, "ends_at": "2026-09-20T02:00:00+00:00",
+            "visibility": "private", "attendee_ids": ["yuna"],
+        },
+    )
+
+    member = client.get("/api/graph/overview", headers=JIHO).json()
+    grouped = client.get("/api/graph/overview", headers=JIHO, params={"view": "team"}).json()
+
+    people = lambda answer: {node["id"] for node in answer["nodes"] if node["kind"] == "person"}
+    # 팀에 앉은 사람은 사라지고 그 팀이 대신 선다.
+    assert "jiho" in people(member) and "jiho" not in people(grouped)
+    assert "product" in {node["id"] for node in grouped["nodes"] if node["kind"] == "team"}
+    # 대표는 회사 아래 팀에 앉아 있지 않으므로 자기 자리에 그대로 남는다.
+    assert "yuna" in people(member) and "yuna" in people(grouped)
+
+
 def test_grouping_by_project_folds_work_and_leaves_the_rest_alone(tmp_path) -> None:
     """프로젝트로 묶으면 그 프로젝트의 일이 하나로 접힌다. 프로젝트 없는 일은 접히지 않고 그대로 남는다.
 

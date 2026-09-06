@@ -166,7 +166,8 @@ try {
     return {
       kinds: [...new Set(member.nodes.map((node) => node.kind))].sort(),
       provenance: member.edges.every((edge) => Boolean(edge.provenance)),
-      teamHasPeople: team.nodes.some((node) => node.kind === "person"),
+      memberPeople: member.nodes.filter((node) => node.kind === "person").map((node) => node.id).sort(),
+      teamPeople: team.nodes.filter((node) => node.kind === "person").map((node) => node.id).sort(),
       teamNodes: team.nodes.filter((node) => node.kind === "team").map((node) => node.id),
       internalEdges: team.edges.filter((edge) => edge.from === edge.to).length,
     };
@@ -175,7 +176,9 @@ try {
     throw new Error(`the first screen is missing node kinds: ${JSON.stringify(overview)}`);
   }
   if (!overview.provenance) throw new Error("an edge arrived without saying which ledger states it");
-  if (overview.teamHasPeople || overview.internalEdges > 0 || overview.teamNodes.length === 0) {
+  // 팀에 앉은 사람은 그 팀으로 접힌다. 회사 뿌리에만 있는 사람(대표)은 없는 팀을 만들어 넣지 않고 그대로 둔다.
+  const folded = overview.memberPeople.filter((id) => !overview.teamPeople.includes(id));
+  if (folded.length === 0 || overview.internalEdges > 0 || overview.teamNodes.length === 0) {
     throw new Error(`grouping by team did not read one level up: ${JSON.stringify(overview)}`);
   }
   // 표현 수준 전환은 같은 인가된 답을 다시 그린다.
