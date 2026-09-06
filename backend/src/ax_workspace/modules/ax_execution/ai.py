@@ -55,6 +55,10 @@ class AiConversationRequest:
     seed_references: tuple[dict[str, str], ...] = ()
     #: A bounded retelling of the conversation so far, used when the provider has no checkpoint of its own.
     recent_exchanges: tuple[dict[str, str], ...] = ()
+    #: 이 질문이 접수된 시각과 그것을 읽을 시간대. `지난달`이 언제인지는 모델이 짐작할 것이 아니라 서버가 아는
+    #: 사실이며, 큐에서 기다리다 달이 바뀌어도 물은 때는 물은 때다.
+    asked_at: datetime | None = None
+    timezone_name: str = "Asia/Seoul"
 
 
 @dataclass(frozen=True, slots=True)

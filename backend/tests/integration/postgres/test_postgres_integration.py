@@ -1651,3 +1651,85 @@ def test_postgres_will_not_finish_work_while_a_part_of_it_is_still_open() -> Non
         assert outcomes[0].status_code == 201
         assert view["state"] == "in_progress"
         assert "늦게 붙는 하위 업무" in outcomes[1].text or "stale" in outcomes[1].text
+
+
+@pytest.mark.integration
+def test_postgres_keyword_search_stays_bounded_across_many_materials(tmp_path) -> None:
+    """`LIMIT`만으로 비용이 제한됐다고 보지 않는다 — 계획을 읽고, application이 받은 양을 본다.
+
+    허용된 자료의 chunk를 전부 가져와 Python에서 고르면 자료가 늘어날수록 한 번의 검색이 읽는 양도 함께 늘어난다.
+    조건·순위·개수가 데이터베이스 안에서 끝나야 하며, 여러 자료를 가로지를 때 본문 조건이 그 일을 한다.
+    """
+    from datetime import UTC, datetime
+
+    from sqlalchemy import text as sql_text
+
+    from ax_workspace.entrypoints.reset_demo import reset_database
+    from ax_workspace.platform.korean import analyzer
+    from ax_workspace.platform.material_extraction import SqlChunkIndex
+    from ax_workspace.platform.persistence import (
+        AttachmentRecord,
+        MaterialChunkRecord,
+        MaterialExtractionRecord,
+        make_session_factory,
+    )
+
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    korean = analyzer()
+    factory = make_session_factory(database_url)
+    wanted = "공급사는 한빛상사이고 납기일은 2026-09-30입니다"
+    noise = "회의 일정 조율과 진행 상황 정리"
+
+    extraction_ids = []
+    with factory() as session:
+        now = datetime.now(UTC)
+        for index in range(60):
+            attachment = AttachmentRecord(
+                name=f"자료{index}.md", content_type="text/markdown", size_bytes=10,
+                integrity_ref=f"sha256:{index}", source_ref=f"local:index-fixture-{index}",
+                source_kind="file", uploaded_by="mina", provenance="upload", created_at=now,
+            )
+            session.add(attachment)
+            session.flush()
+            extraction = MaterialExtractionRecord(
+                attachment_id=attachment.id, status="completed", extractor="markdown",
+                integrity_ref=attachment.integrity_ref, chunk_count=0, char_count=0, requested_at=now,
+            )
+            session.add(extraction)
+            session.flush()
+            extraction_ids.append(extraction.id)
+            for sequence in range(40):
+                # 찾는 낱말은 딱 한 자료의 한 구간에만 있다.
+                body = wanted if (index == 7 and sequence == 3) else noise
+                session.add(
+                    MaterialChunkRecord(
+                        extraction_id=extraction.id, sequence=sequence, char_start=0, char_end=len(body),
+                        text=body, search_text=korean.index_text(body), analyzer_version=korean.version,
+                    )
+                )
+        session.commit()
+        session.execute(sql_text("ANALYZE material_chunks"))
+        session.commit()
+
+    with factory() as session:
+        found = SqlChunkIndex(session).top_matches(extraction_ids, korean.tokens("한빛상사"), limit=5)
+        # application이 받은 것은 답뿐이다. 2400개 중 하나.
+        assert [chunk.sequence for chunk in found] == [3]
+
+        plan = "\n".join(
+            row[0]
+            for row in session.execute(
+                sql_text(
+                    """
+                    EXPLAIN (ANALYZE, BUFFERS)
+                    SELECT id FROM material_chunks
+                    WHERE to_tsvector('simple', coalesce(search_text, '')) @@ to_tsquery('simple', '한빛상사')
+                    LIMIT 5
+                    """
+                )
+            )
+        )
+        # 본문 조건은 색인이 답한다. 2400개를 훑지 않는다.
+        assert "ix_material_chunks_search" in plan, plan
+        assert "Seq Scan on material_chunks" not in plan, plan

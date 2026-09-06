@@ -15,6 +15,7 @@ import shutil
 import signal
 import subprocess
 from tempfile import TemporaryDirectory
+from zoneinfo import ZoneInfo
 import threading
 import time
 from time import perf_counter
@@ -299,7 +300,12 @@ class CodexCliProviderAdapter:
         "`work_request_get`·`task_materials_list`)로 읽는다.\n"
         "- 문서 본문이나 회의 발화를 찾아야 하는 질문은 `task_material_search`로 시작 node를 얻은 뒤 같은 순서로 넓힌다.\n"
         "- 도구가 돌려주지 않은 관계는 말하지 않는다. 관계를 그림이나 표로 지어내지 말고, 조회한 것만 근거로 답한다.\n"
-        "- 여러 개를 나열할 때는 도구가 준 canonical id의 대상만 말한다."
+        "- 여러 개를 나열할 때는 도구가 준 canonical id의 대상만 말한다.\n"
+        "- 자료 안의 내용을 묻는 질문은 `task_material_search`로 시작한다. 어느 업무의 자료인지 모르면 `task_id`를"
+        " 대지 않는다 — 읽을 수 있는 자료 전부에서 찾는다. 한 번에 못 찾으면 같은 뜻의 다른 말이나 줄임말로 두세 번까지"
+        " 다시 찾고, 그래도 없으면 없다고 말한다. 찾지 못한 것을 지어내지 않는다.\n"
+        "- 날짜는 두 가지로 갈린다. `지난달 등록한 자료`는 등록 시각의 조건이고 `8월 실적을 언급한 자료`는 본문에"
+        " 찾을 말이다. 날짜를 본문 검색어에 섞지 않는다."
     )
 
     @classmethod
@@ -311,6 +317,13 @@ class CodexCliProviderAdapter:
         provider kept a checkpoint of its own.
         """
         sections: list[str] = [cls.RELATIONSHIP_POLICY]
+        if request.asked_at is not None:
+            # 지금이 언제인지는 모델이 짐작할 것이 아니다. 큐에서 기다리다 달이 바뀌어도 물은 때는 물은 때다.
+            local = request.asked_at.astimezone(ZoneInfo(request.timezone_name))
+            sections.append(
+                f"이 질문이 접수된 시각: {local.strftime('%Y-%m-%d %H:%M')} ({request.timezone_name}).\n"
+                "`오늘`·`어제`·`지난달`은 이 시각을 기준으로 해석한다. 다른 곳에서 지금 시각을 짐작하지 않는다."
+            )
         if request.recent_exchanges:
             told = "\n".join(
                 f"- {'사용자' if item.get('role') == 'user' else 'AX'}: {item.get('body', '')}"

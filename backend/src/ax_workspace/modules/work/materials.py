@@ -6,6 +6,7 @@ ledger keeps the artifact identity, integrity hash, provenance, and where it is 
 from __future__ import annotations
 
 import hashlib
+from datetime import UTC, date
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
@@ -115,6 +116,19 @@ class ResourceReferencePort(Protocol):
     def title(self, principal: Principal, resource_type: str, resource_id: str) -> str | None: ...
 
 
+def _registered_within(attachment: Any, since: date | None, until: date | None) -> bool:
+    """자료가 등록된 때가 그 사이인가. 시작은 포함하고 끝은 그날까지 포함한다 — 사람이 날짜를 말하는 방식이다."""
+    if since is None and until is None:
+        return True
+    when = getattr(attachment, "created_at", None)
+    if when is None:
+        return False
+    day = when.astimezone(UTC).date()
+    if since is not None and day < since:
+        return False
+    return not (until is not None and day > until)
+
+
 class ReadableWorkPort(Protocol):
     """이 사람이 읽을 수 있는 업무들. 자료 검색은 그 업무들에 붙은 것만 본다."""
 
@@ -153,7 +167,16 @@ class TaskMaterialApplication:
             for binding, attachment in active
         ]
 
-    def search(self, principal: Principal, task_id: UUID | None, query: str, *, limit: int = 5) -> dict[str, Any]:
+    def search(
+        self,
+        principal: Principal,
+        task_id: UUID | None,
+        query: str,
+        *,
+        limit: int = 5,
+        registered_from: date | None = None,
+        registered_until: date | None = None,
+    ) -> dict[str, Any]:
         """`material.search`. 어느 업무의 자료인지 알면 그 업무에서, 모르면 읽을 수 있는 업무 전부에서 찾는다.
 
         어느 자료에 있는지 모르는 채로 묻는 것이 자료 검색의 보통이다. 시작점을 대라고 요구하면 아는 사람만 찾을
@@ -161,6 +184,9 @@ class TaskMaterialApplication:
 
         시작점이 넓어져도 권한은 넓어지지 않는다. 볼 수 있는 업무는 업무 모듈이 답하고, 그 업무에 지금 살아 있는
         binding만 본다 — 여기서 하는 일은 순위를 매기는 것뿐이다.
+
+        `registered_*`는 자료가 등록된 때의 조건이지 본문에 적힌 날짜가 아니다. `지난달 등록한 자료`와 `8월
+        실적을 언급한 자료`는 다른 질문이며, 날짜를 검색어에 섞으면 둘이 하나로 뭉개진다.
         """
         self._require(principal, TASK_READ)
         task = self._tasks.task(task_id, str(principal.id)) if task_id is not None else None
@@ -178,7 +204,7 @@ class TaskMaterialApplication:
         active = [
             (binding, attachment)
             for binding, attachment in self._attachments.bindings_for_many("task", anchors)
-            if binding.unbound_at is None
+            if binding.unbound_at is None and _registered_within(attachment, registered_from, registered_until)
         ]
         extractions = self._extractions.for_attachments([attachment.id for _, attachment in active])
         searchable: dict[UUID, tuple[Any, Any, Any]] = {}
@@ -225,6 +251,9 @@ class TaskMaterialApplication:
             "task_id": str(task.id) if task is not None else None,
             "task_title": task.title if task is not None else None,
             "query": cleaned,
+            # 실제로 무엇으로 좁혔는지 남긴다. 답이 어떤 조건 위에 서 있는지 사람이 알아야 한다.
+            "registered_from": registered_from.isoformat() if registered_from else None,
+            "registered_until": registered_until.isoformat() if registered_until else None,
             "results": results,
             "searched_materials": len(searchable),
             "unavailable_materials": unavailable,

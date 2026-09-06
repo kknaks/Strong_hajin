@@ -115,6 +115,16 @@ make scenario
 
 The local stdio MCP server is a development-only delegated binding. It resolves the active Organization & Access principal for every canonical operation, but a long-lived external MCP process must reconnect after its developer persona's employment or grants change; the conversation worker also revalidates that owner and typed context immediately before execution.
 
+## 자료 검색
+
+자료 검색은 제목·파일명이 아니라 추출된 본문을 찾는다. 한국어는 조사가 낱말에 붙어 있어 글자 그대로 비교하면 `견적서를`이 `견적서`를 만나지 못하므로, 문서와 질문에 같은 형태소 분석(Kiwi)을 적용한다. 같은 낱말이 자리에 따라 다르게 갈리는 경우(`납기일은` → `납·기일`, `납기일` → `납기·일`)를 위해 어절에서 조사를 뗀 형태도 함께 색인하고, 갈리면 다른 것이 되는 제품 코드·문서 번호는 원문 그대로도 남긴다. 낱말은 통째로만 맞는다 — `일`은 `일정`이 아니다.
+
+조건·순위·개수는 데이터베이스 안에서 끝난다. PostgreSQL에서는 `tsvector` + GIN 색인이, 그 밖에서는 같은 열을 훑는 방식이 답하며 application으로는 답만 온다. 2,400개 구간에 하나만 있는 낱말을 찾는 통합 test가 실행 계획으로 색인 사용과 순차 스캔 부재를 확인한다.
+
+분석 규칙은 version을 갖는다(`kiwi-<lib>-r<rules>`). 규칙이 바뀌면 그 규칙으로 만든 색인은 질문과 만나지 못하므로 `make reindex-search`로 다시 만든다. 원문은 건드리지 않고 찾기 위한 형태만 바뀌며, 여러 번 돌려도 한 번 돌린 것과 같다.
+
+시작점을 대지 않으면 읽을 수 있는 업무 전부에서 찾는다. 시작점이 넓어져도 권한은 넓어지지 않는다.
+
 `make verify` deliberately excludes PostgreSQL integration tests; its success is not PostgreSQL coverage. For an explicit, reproducible disposable-PostgreSQL proof, start the documented container and run:
 
 ```sh

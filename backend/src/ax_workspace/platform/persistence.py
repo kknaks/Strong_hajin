@@ -1110,7 +1110,15 @@ class MaterialChunkRecord(Base):
     """Bounded searchable span of extracted text; identity = (extraction, sequence)."""
 
     __tablename__ = "material_chunks"
-    __table_args__ = (UniqueConstraint("extraction_id", "sequence", name="uq_material_chunk_sequence"),)
+    __table_args__ = (
+        UniqueConstraint("extraction_id", "sequence", name="uq_material_chunk_sequence"),
+        # 찾는 일을 데이터베이스가 색인으로 한다. PostgreSQL에서만 만들어지며, 없는 곳에서는 같은 열을 훑는다.
+        Index(
+            "ix_material_chunks_search",
+            text("to_tsvector('simple', coalesce(search_text, ''))"),
+            postgresql_using="gin",
+        ).ddl_if(dialect="postgresql"),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     extraction_id: Mapped[UUID] = mapped_column(ForeignKey("material_extractions.id"), nullable=False, index=True)
@@ -1121,6 +1129,11 @@ class MaterialChunkRecord(Base):
     char_start: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     char_end: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    #: 찾기 위한 형태 — 본문을 문서와 질문에 같은 규칙으로 잘라 이어 붙인 낱말들. 원문은 위의 `text`가 갖고
+    #: 여기에는 사람이 읽을 것이 없다. 데이터베이스가 이 열을 색인한다.
+    search_text: Mapped[str | None] = mapped_column(Text)
+    #: 어떤 분석 규칙으로 만들었는지. 규칙이 바뀌면 이 값이 달라지고 그 색인은 다시 만들어야 한다.
+    analyzer_version: Mapped[str | None] = mapped_column(String(40))
 
 
 class ConversationGraphReceiptRecord(Base):

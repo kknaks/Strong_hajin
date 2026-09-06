@@ -6,13 +6,13 @@ from io import BytesIO
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import case, delete, func, literal, literal_column, select
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.jobs.domain import JOB_KIND_MATERIAL_EXTRACTION, DurableJobQueue, JobEnvelope
 from dataclasses import replace
-from typing import Any
 
+from ax_workspace.platform.korean import analyzer
 from ax_workspace.modules.work.material_extraction import (
     MAX_TEXT_CHARS,
     ExtractedChunk,
@@ -262,6 +262,7 @@ class SqlAlchemyMaterialExtractionRepository:
             self._session.add(record)
             self._session.flush()
             block_ids[block.sequence] = record.id
+        korean = analyzer()
         for chunk in outcome.chunks:
             self._session.add(
                 MaterialChunkRecord(
@@ -272,6 +273,9 @@ class SqlAlchemyMaterialExtractionRepository:
                     char_start=chunk.char_start,
                     char_end=chunk.char_end,
                     text=chunk.text,
+                    # 문서를 질문과 같은 규칙으로 잘라 둔다. 이 열이 색인되고, 원문은 그대로 남는다.
+                    search_text=korean.index_text(chunk.text),
+                    analyzer_version=korean.version,
                 )
             )
         extraction.status = "completed"
@@ -307,6 +311,75 @@ class SqlAlchemyMaterialExtractionRepository:
                 select(MaterialChunkRecord).where(MaterialChunkRecord.extraction_id.in_(extraction_ids)).order_by(MaterialChunkRecord.extraction_id, MaterialChunkRecord.sequence)
             )
         )
+
+
+def reindex_stale_chunks(session: Session, *, limit: int = 500) -> int:
+    """분석 규칙이 바뀐 뒤 남아 있는 색인을 다시 만든다.
+
+    같은 규칙으로 만든 것은 다시 만들지 않는다 — 여러 번 돌려도 한 번 돌린 것과 같다. 원문(`text`)은 건드리지
+    않고 찾기 위한 형태만 바꾼다. 다시 만들지 못한 것은 그대로 남아 다음 차례를 기다린다.
+    """
+    korean = analyzer()
+    stale = list(
+        session.scalars(
+            select(MaterialChunkRecord)
+            .where(
+                (MaterialChunkRecord.analyzer_version.is_(None))
+                | (MaterialChunkRecord.analyzer_version != korean.version)
+            )
+            .limit(limit)
+        )
+    )
+    for chunk in stale:
+        chunk.search_text = korean.index_text(chunk.text)
+        chunk.analyzer_version = korean.version
+    session.flush()
+    return len(stale)
+
+
+class SqlChunkIndex:
+    """찾는 일을 데이터베이스 안에서 끝낸다.
+
+    PostgreSQL에서는 `tsvector`와 GIN 색인이 조건과 순위를 맡는다. 색인이 없는 곳에서는 같은 열을 좁히고 맞은
+    낱말 수로 줄을 세운다 — 어느 쪽이든 조건·순위·개수가 데이터베이스 안에서 끝나고 application으로는 답만 온다.
+    허용된 자료의 chunk를 전부 가져와 Python에서 고르면 자료가 늘어날수록 한 번의 검색이 읽는 양도 함께 늘어난다.
+
+    낱말은 문서를 색인할 때 쓴 것과 같은 규칙으로 만든 것이며, 그 규칙이 바뀌면 `analyzer_version`이 달라진다.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def top_matches(self, extraction_ids: list[UUID], tokens: list[str], *, limit: int) -> list[MaterialChunkRecord]:
+        safe = [token for token in tokens if token.strip()][:24]
+        if not extraction_ids or not safe:
+            return []
+        indexed = func.coalesce(MaterialChunkRecord.search_text, "")
+        scope = MaterialChunkRecord.extraction_id.in_(extraction_ids)
+        if self._session.bind is not None and self._session.bind.dialect.name == "postgresql":
+            # `simple`은 문자열이 아니라 검색 설정의 이름이다. 문자열로 넘기면 함수가 그런 것을 모른다고 답한다.
+            config = literal_column("'simple'::regconfig")
+            document = func.to_tsvector(config, indexed)
+            terms = func.to_tsquery(config, " | ".join(safe))
+            statement = (
+                select(MaterialChunkRecord)
+                .where(scope, document.op("@@")(terms))
+                .order_by(func.ts_rank(document, terms).desc(), MaterialChunkRecord.sequence)
+                .limit(limit)
+            )
+        else:
+            # 낱말 통째로만 맞힌다. 부분문자열로 맞히면 `일`이 `일정`에 맞아 관계없는 자료가 섞인다.
+            score = sum(
+                (case((indexed.like(f"% {token} %"), 1), else_=0) for token in safe),
+                literal(0),
+            )
+            statement = (
+                select(MaterialChunkRecord)
+                .where(scope, score > 0)
+                .order_by(score.desc(), MaterialChunkRecord.sequence)
+                .limit(limit)
+            )
+        return list(self._session.scalars(statement))
 
 
 # ---- transport --------------------------------------------------------------------------------------------------

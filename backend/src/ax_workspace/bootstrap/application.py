@@ -60,8 +60,11 @@ from ax_workspace.modules.work.material_extraction import LexicalMaterialRetriev
 from ax_workspace.modules.work.projects import ProjectApplication
 from ax_workspace.modules.work.search import matches
 from ax_workspace.platform.projects import SqlAlchemyProjectRepository
+from ax_workspace.platform.korean import install as install_korean_analyzer
 from ax_workspace.platform.material_extraction import (
     MaterialJobQueue,
+    SqlChunkIndex,
+    reindex_stale_chunks,
     SqlAlchemyMaterialEvidenceRepository,
     SqlAlchemyMaterialExtractionRepository,
 )
@@ -1184,6 +1187,13 @@ class WorkflowApplication:
                 session.commit()
             return result
 
+    def reindex_material_search(self, *, limit: int = 500) -> int:
+        """분석 규칙이 바뀌었을 때 옛 색인을 다시 만든다. 여러 번 불러도 한 번 부른 것과 같다."""
+        with self._session_factory() as session:
+            written = reindex_stale_chunks(session, limit=limit)
+            session.commit()
+            return written
+
     def job_queue(self, session: Any):
         """The shared durable job transport bound to this session (postgres) or this application (memory)."""
         return build_job_queue(self._settings.job_queue_backend, session, self.memory_job_queue)
@@ -1202,7 +1212,7 @@ class WorkflowApplication:
             self._material_storage,
             extractions,
             self._material_queue(session),
-            LexicalMaterialRetriever(extractions),
+            LexicalMaterialRetriever(extractions, SqlChunkIndex(session)),
             _SessionResourceReferences(self, session),
             _SessionReadableWork(self, session),
         )
@@ -1617,6 +1627,8 @@ def create_workflow_application(
     settings: Settings,
     report_provider: AiProvider | None = None,
 ) -> WorkflowApplication:
+    # 문서와 질문에 같은 분석을 적용한다 — 색인은 이미 그 규칙으로 만들어져 있다.
+    install_korean_analyzer()
     return WorkflowApplication(settings, report_provider)
 
 

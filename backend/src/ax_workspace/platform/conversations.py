@@ -261,6 +261,8 @@ class SqlAlchemyConversationRepository:
         return AiConversationRequest(
             prompt="\n".join(fragment.body for fragment in fragments),
             provider_session_ref=turn.provider_session_ref,
+            # 물은 때는 물은 때다. 큐에서 기다리다 달이 바뀌어도 `지난달`의 뜻은 달라지지 않는다.
+            asked_at=turn.started_at,
             context_references=[
                 {
                     "resource_type": str(item["resource_type"]),

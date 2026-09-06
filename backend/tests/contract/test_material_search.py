@@ -282,3 +282,42 @@ def test_naming_the_work_still_scopes_the_search_to_it(tmp_path) -> None:
 
     wide = client.get("/api/materials/search", headers=MINA, params={"q": "한빛상사"}).json()
     assert {row["name"] for row in wide["results"]} == {"첫견적.md", "둘째견적.md"}
+
+
+def test_an_index_made_with_older_rules_is_rebuilt_and_only_once(tmp_path) -> None:
+    """분석 규칙이 바뀌면 그 규칙으로 만든 색인은 더 이상 질문과 만나지 못한다. 다시 만들어야 한다.
+
+    다시 만드는 일은 여러 번 불러도 한 번 부른 것과 같아야 하고, 원문은 건드리지 않아야 한다 — 찾기 위한
+    형태만 바뀐다.
+    """
+    from sqlalchemy import select
+
+    from ax_workspace.platform.persistence import MaterialChunkRecord, make_session_factory
+
+    client, application, worker, settings = _stack(tmp_path)
+    task = client.post("/api/tasks", headers=MINA, json={"title": "견적 검토"}).json()
+    _upload(client, task["task_id"], "견적.md", BRIEF.encode(), "text/markdown")
+    assert asyncio.run(worker.run_once()) is True
+
+    database_url = settings.database_url
+    with make_session_factory(database_url)() as session:
+        chunks = list(session.scalars(select(MaterialChunkRecord)))
+        original = {chunk.id: chunk.text for chunk in chunks}
+        # 옛 규칙으로 만들어진 것처럼 되돌린다.
+        for chunk in chunks:
+            chunk.search_text = "옛 규칙"
+            chunk.analyzer_version = "kiwi-0.0.0-r0"
+        session.commit()
+
+    assert client.get(f"/api/tasks/{task['task_id']}/materials/search", headers=MINA, params={"q": "한빛상사"}).json()["results"] == []
+
+    rebuilt = application.reindex_material_search()
+    assert rebuilt == len(original)
+    # 두 번째는 할 일이 없다.
+    assert application.reindex_material_search() == 0
+
+    found = client.get(f"/api/tasks/{task['task_id']}/materials/search", headers=MINA, params={"q": "한빛상사"}).json()
+    assert found["results"], "다시 만든 색인으로도 찾지 못했습니다"
+    with make_session_factory(database_url)() as session:
+        # 원문은 그대로다. 바뀐 것은 찾기 위한 형태뿐이다.
+        assert {chunk.id: chunk.text for chunk in session.scalars(select(MaterialChunkRecord))} == original

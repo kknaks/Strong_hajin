@@ -156,7 +156,19 @@ def chunk_text(text: str, *, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERL
 _TOKEN = re.compile(r"[0-9A-Za-z가-힣]+")
 
 
+#: 질문을 낱말로 만드는 규칙. 문서를 색인할 때 쓴 것과 같은 것이어야 하며, 주지 않으면 아래의 단순한 규칙을 쓴다.
+_analyze: Any = None
+
+
+def use_analyzer(analyzer: Any) -> None:
+    """문서와 질문에 같은 분석을 적용한다. 한쪽만 분석하면 찾을 수 있는 것과 없는 것이 이유 없이 갈린다."""
+    global _analyze
+    _analyze = analyzer
+
+
 def query_tokens(query: str) -> list[str]:
+    if _analyze is not None:
+        return _analyze.tokens(query)
     tokens: list[str] = []
     # `[가-힣]`는 합쳐진 글자만 맞는다. 자모가 풀린 채로 들어온 질의는 토큰이 하나도 나오지 않으므로,
     # 자르기 전에 모양을 맞춘다.
@@ -213,16 +225,37 @@ class MaterialRetriever(Protocol):
     def search(self, extraction_ids: list[UUID], query: str, *, limit: int) -> list[MaterialHit]: ...
 
 
-class LexicalMaterialRetriever:
-    """Bounded lexical retrieval over stored chunks. Swap this port for another ranking without touching authorization."""
+class ChunkIndexPort(Protocol):
+    """찾는 일을 데이터베이스에게 맡기는 자리.
 
-    def __init__(self, repository: MaterialExtractionRepository) -> None:
+    허용된 자료의 chunk를 전부 application으로 가져와 Python에서 고르면, 자료가 늘어날수록 한 번의 검색이
+    읽어야 하는 양이 함께 늘어난다. 조건과 순위와 개수 제한을 데이터베이스 안에서 끝내고, 여기로는 답만 온다.
+    """
+
+    def top_matches(self, extraction_ids: list[UUID], tokens: list[str], *, limit: int) -> list[Any]: ...
+
+
+class LexicalMaterialRetriever:
+    """Bounded lexical retrieval. 순위와 개수는 색인이 정하고, 여기서는 사람이 읽을 발췌만 만든다."""
+
+    def __init__(self, repository: MaterialExtractionRepository, index: ChunkIndexPort | None = None) -> None:
         self._repository = repository
+        self._index = index
 
     def search(self, extraction_ids: list[UUID], query: str, *, limit: int) -> list[MaterialHit]:
         tokens = query_tokens(query)
         if not tokens or not extraction_ids:
             return []
+        bounded = max(1, min(limit, MAX_SEARCH_HITS))
+        if self._index is not None:
+            return [
+                MaterialHit(
+                    chunk.id, chunk.extraction_id, chunk.sequence, chunk.page, excerpt(chunk.text, tokens),
+                    *score_text(chunk.text, tokens),
+                )
+                for chunk in self._index.top_matches(extraction_ids, tokens, limit=bounded)
+            ]
+        # 색인이 없는 곳에서도 답은 나와야 한다. 같은 순위 규칙을 여기서 쓴다.
         scored: list[tuple[tuple[int, int], Any]] = []
         for chunk in self._repository.chunks_for(extraction_ids):
             matched, occurrences = score_text(chunk.text, tokens)
@@ -231,7 +264,7 @@ class LexicalMaterialRetriever:
         scored.sort(key=lambda item: (-item[0][0], -item[0][1], item[1].sequence))
         return [
             MaterialHit(chunk.id, chunk.extraction_id, chunk.sequence, chunk.page, excerpt(chunk.text, tokens), matched, occurrences)
-            for (matched, occurrences), chunk in scored[: max(1, min(limit, MAX_SEARCH_HITS))]
+            for (matched, occurrences), chunk in scored[:bounded]
         ]
 
 
