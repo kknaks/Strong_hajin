@@ -115,6 +115,19 @@ def test_a_search_answers_with_bounded_results(tmp_path) -> None:
     assert client.get("/api/graph/search", headers=JIHO, params={"q": "  "}).status_code == 422
 
 
+def test_a_person_is_a_place_to_start_from(tmp_path) -> None:
+    """누군가의 일을 물으면 그 사람에서 걸어 나간다. 이름은 명부가 이미 모두에게 열어 둔 것이다."""
+    client, _ = _stack(tmp_path)
+
+    found = client.get("/api/graph/search", headers=JIHO, params={"q": "민아"}).json()
+
+    people = [node for node in found["nodes"] if node["kind"] == "person"]
+    assert people and all("민아" in node["title"] for node in people)
+    # 그리고 그 자리에서 한 걸음 나갈 수 있다 — 나가는 연결은 거기서 다시 판정된다.
+    around = client.get("/api/graph/neighbors", headers=JIHO, params={"node": f"person:{people[0]['id']}"})
+    assert around.status_code == 200
+
+
 def test_a_delegated_turn_walks_the_same_authorized_graph(tmp_path, monkeypatch) -> None:
     from ax_workspace.entrypoints.mcp import McpReportsFacade
 

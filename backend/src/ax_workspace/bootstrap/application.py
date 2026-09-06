@@ -237,6 +237,16 @@ class _SessionGraphSource:
         except Exception:
             return None
 
+    def people(self, principal: Principal, *, query: str) -> list[dict[str, Any]]:
+        """이름으로 사람을 찾는다. 명부는 활동 중인 구성원 누구에게나 이름과 id까지만 열려 있다."""
+        rows = OrganizationApplication(SqlAlchemyOrganizationRepository(self._session)).member_directory(principal)
+        # graph의 사람 node는 `member_id`로 말한다. 명부는 `id`로 말하므로 여기서 한 번 맞춘다.
+        return [
+            {"member_id": row["id"], "display_name": row["display_name"]}
+            for row in rows
+            if matches(query, str(row["display_name"]))
+        ]
+
     def readable_requests(self, principal: Principal, *, query: str | None = None) -> list[dict[str, Any]]:
         try:
             rows = self._application._work_requests(self._session).list(principal)
