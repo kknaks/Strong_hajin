@@ -111,3 +111,52 @@ def test_how_far_a_role_reaches_comes_from_where_the_person_was_appointed(tmp_pa
     assert (grants["yuna"].scope_kind, grants["yuna"].scope_ref, grants["yuna"].role_id) == ("organization", "scax", "role:executive")
     # 팀장's authority is their own team and what sits under it — not the company.
     assert (grants["jiho"].scope_kind, grants["jiho"].scope_ref, grants["jiho"].include_descendants) == ("unit", "product", True)
+
+
+def test_a_leads_authority_stops_where_it_was_granted(tmp_path) -> None:
+    """한 팀의 팀장 권한은 다른 팀으로 새지 않는다.
+
+    Being a member of a team and having authority over it are different facts. 지호 leads 제품팀; putting him in
+    개발팀 as well must not let him put work on 개발팀's people. Only a grant scoped there does that.
+    """
+    from fastapi.testclient import TestClient
+
+    from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
+    from ax_workspace.entrypoints.http import create_app
+    from ax_workspace.platform.persistence import MembershipRecord
+
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+    reset_database(database_url)
+    factory = make_session_factory(database_url)
+    client = TestClient(create_app(Settings(RuntimeProfile.TEST, database_url)))
+    jiho = {"X-Demo-Persona": "jiho"}
+
+    with factory() as session:
+        # 민석 moves into 개발팀, and 지호 is added to it as an ordinary member — no authority there.
+        session.add(MembershipRecord(member_id="minseok", organization_id="engineering", membership_kind="additional"))
+        session.add(MembershipRecord(member_id="jiho", organization_id="engineering", membership_kind="additional"))
+        session.commit()
+
+    candidates = [item["id"] for item in client.get("/api/task-assignment-candidates", headers=jiho).json()]
+    assert candidates == ["mina"], candidates
+    refused = client.post("/api/tasks/assign", headers=jiho, json={"title": "다른 팀 일", "assignee_id": "minseok"})
+    assert refused.status_code == 422 and "scope" in refused.json()["detail"]
+
+    with factory() as session:
+        # 개발팀 asks him to cover for them: an explicit grant, at that unit, is what changes the answer.
+        session.add(
+            AccessGrantRecord(
+                member_id="jiho",
+                role_id="role:team-lead",
+                role_capability_version=1,
+                scope_kind="unit",
+                scope_organization_id="engineering",
+                scope_ref="engineering",
+                include_descendants=True,
+                granted_by_member_id="yuna",
+            )
+        )
+        session.commit()
+
+    assert [item["id"] for item in client.get("/api/task-assignment-candidates", headers=jiho).json()] == ["mina", "minseok"]
+    assert client.post("/api/tasks/assign", headers=jiho, json={"title": "다른 팀 일", "assignee_id": "minseok"}).status_code == 201

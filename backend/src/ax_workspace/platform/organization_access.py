@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from datetime import UTC, datetime
 
@@ -8,7 +9,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.organization_access.credentials import LocalCredential, normalize_email
-from ax_workspace.modules.organization_access.domain import Principal
+from ax_workspace.modules.organization_access.domain import TASK_ASSIGN, Grant, Principal
 from ax_workspace.platform.persistence import (
     AccessGrantRecord,
     AppointmentRecord,
@@ -81,23 +82,28 @@ class SqlAlchemyOrganizationRepository:
         )
         capabilities: set[str] = set()
         effective_grants: list[AccessGrantRecord] = []
+        granted_capabilities: dict[UUID, set[str]] = {}
         for grant in grants:
             # A grant materialized by a standard rule exists because of an appointment; it ends with that appointment.
             if grant.origin_rule_id is not None and grant.role_id not in appointed_roles:
                 continue
             effective_grants.append(grant)
+            carried = granted_capabilities.setdefault(grant.id, set())
             if grant.capability_id:
                 capabilities.add(grant.capability_id)
+                carried.add(grant.capability_id)
             if grant.role_id:
                 # Role snapshot: only mappings that existed at the pinned role_capability_version apply.
                 pinned = grant.role_capability_version or 1
-                capabilities.update(
+                mapped = set(
                     self._session.scalars(
                         select(RoleCapabilityRecord.capability_id).where(
                             RoleCapabilityRecord.role_id == grant.role_id, RoleCapabilityRecord.mapping_version <= pinned
                         )
                     )
                 )
+                capabilities.update(mapped)
+                carried.update(mapped)
         role_ids = sorted(appointed_roles | {grant.role_id for grant in effective_grants if grant.role_id})
         role_labels = {item.id: item.label for item in self._session.scalars(select(RoleRecord).where(RoleRecord.id.in_(role_ids)))} if role_ids else {}
         roles = [role_labels[role_id] for role_id in role_ids if role_id in role_labels]
@@ -120,6 +126,7 @@ class SqlAlchemyOrganizationRepository:
                     "scope_ref": grant.scope_ref,
                     "scope_name": unit_names.get(grant.scope_ref or "", grant.scope_ref),
                     "include_descendants": grant.include_descendants,
+                    "capabilities": sorted(granted_capabilities.get(grant.id, set())),
                     "origin_rule_id": grant.origin_rule_id,
                     "granted_by": grant.granted_by_member_id,
                     "valid_from": grant.valid_from.isoformat(),
@@ -133,12 +140,58 @@ class SqlAlchemyOrganizationRepository:
         profile = self.profile_for(member_id)
         if profile is None:
             return None
+        descendants = self._unit_descendants()
+        every_unit = frozenset(descendants)
+        grants: list[Grant] = []
+        for row in profile["grants"]:
+            scope_ref = str(row["scope_ref"] or "")
+            if row["scope_kind"] == "organization":
+                units = every_unit
+            elif row["include_descendants"]:
+                units = descendants.get(scope_ref, frozenset({scope_ref}))
+            else:
+                units = frozenset({scope_ref})
+            for capability in row["capabilities"]:
+                grants.append(
+                    Grant(
+                        capability=capability,
+                        scope_kind=str(row["scope_kind"]),
+                        scope_ref=scope_ref,
+                        units=units,
+                        role_id=row["role_id"],
+                        role_capability_version=row["role_capability_version"],
+                        origin_rule_id=row["origin_rule_id"],
+                    )
+                )
         return Principal(
             id=member_id,
             display_name=str(profile["display_name"]),
             organization_scope=frozenset(item["id"] for item in profile["organizations"]),
             capabilities=frozenset(profile["capabilities"]),
+            grants=tuple(grants),
         )
+
+    def _unit_descendants(self) -> dict[str, frozenset[str]]:
+        """Each unit with everything under it, so a scoped grant can be resolved to the units it actually reaches."""
+        children: dict[str, list[str]] = {}
+        unit_ids: list[str] = []
+        for unit_id, parent_id in self._session.execute(
+            select(OrganizationUnitRecord.id, OrganizationUnitRecord.parent_id)
+        ).all():
+            unit_ids.append(unit_id)
+            if parent_id is not None:
+                children.setdefault(parent_id, []).append(unit_id)
+        resolved: dict[str, frozenset[str]] = {}
+        for unit_id in unit_ids:
+            reach = {unit_id}
+            stack = [unit_id]
+            while stack:
+                for child in children.get(stack.pop(), []):
+                    if child not in reach:
+                        reach.add(child)
+                        stack.append(child)
+            resolved[unit_id] = frozenset(reach)
+        return resolved
 
     def credential_for_email(self, email: str) -> LocalCredential | None:
         record = self._session.scalar(
@@ -182,9 +235,12 @@ class SqlAlchemyOrganizationRepository:
         ]
 
     def task_assignment_candidates(self, principal: Principal) -> list[dict[str, str]]:
-        """Active members in the assigner's own units (descendants included) who can run a Task themselves."""
-        scope = set(principal.organization_scope)
-        units = [unit for unit in scope if unit != "scax"] or sorted(scope)
+        """Active members inside the scope this person's assign authority was granted at, who can run a Task themselves.
+
+        Belonging to a team is not the same as having authority over it: the reach comes from the grant, so a lead of
+        one team never gains the ability to put work on another team by also being a member of it.
+        """
+        units = sorted(principal.scope_for(TASK_ASSIGN))
         seen: dict[str, str] = {}
         for unit_id in units:
             for member in self.unit_members(unit_id, include_descendants=True):
