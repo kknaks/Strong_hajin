@@ -499,8 +499,14 @@ def _import_logins(
         result.track("logins", made=True)
 
 
-def import_into(database_url: str, rows: dict[str, list[dict[str, str]]], *, password: str | None = None) -> ImportResult:
-    """One transaction: either the whole dataset is in, or the database is exactly as it was."""
+def import_into(
+    database_url: str, rows: dict[str, list[dict[str, str]]], *, password: str | None = None, dry_run: bool = False
+) -> ImportResult:
+    """One transaction: either the whole dataset is in, or the database is exactly as it was.
+
+    `dry_run`은 그 하나의 transaction을 끝까지 지나간 뒤 되돌린다. 무엇이 새로 생기고 무엇이 그대로인지는
+    실제로 넣어 봐야 알 수 있는 것이고, 따로 세어 보는 두 번째 코드를 두면 그 코드가 틀릴 자리가 생긴다.
+    """
     from ax_workspace.platform.persistence import make_session_factory
 
     with make_session_factory(database_url)() as session:
@@ -509,5 +515,8 @@ def import_into(database_url: str, rows: dict[str, list[dict[str, str]]], *, pas
         except Exception:
             session.rollback()
             raise
-        session.commit()
+        if dry_run:
+            session.rollback()
+        else:
+            session.commit()
     return result

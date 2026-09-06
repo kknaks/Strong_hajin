@@ -108,6 +108,27 @@ def test_the_same_dataset_twice_leaves_the_same_organization(tmp_path) -> None:
         assert [row.organization_id for row in memberships] == ["ds-team"] and memberships[0].is_primary
 
 
+def test_a_dry_run_says_what_would_happen_and_leaves_the_database_alone(tmp_path) -> None:
+    """예상 결과는 세어 본 것이 아니라 실제로 넣어 본 것이다 — 그리고 되돌린다."""
+    database_url = _database(tmp_path)
+    rows = read_tables(_dataset(tmp_path))
+
+    preview = import_into(database_url, rows, password=PASSWORD, dry_run=True)
+
+    assert preview.created["organization_units"] == 2 and preview.created["members"] == 2
+    with make_session_factory(database_url)() as session:
+        # 되돌렸으므로 아무것도 남지 않는다.
+        assert session.get(MemberRecord, "ds-han") is None
+
+    # 그리고 진짜로 넣으면 예상한 그대로다.
+    applied = import_into(database_url, rows, password=PASSWORD)
+    assert applied.created == preview.created
+
+    # 이미 들어와 있는 것 위에서의 예상도 마찬가지로 정확하다.
+    again = import_into(database_url, rows, password=PASSWORD, dry_run=True)
+    assert _counted(again) == 0 and again.unchanged["members"] == 2
+
+
 def test_what_a_person_may_do_comes_from_their_role_and_not_from_having_a_login(tmp_path) -> None:
     database_url = _database(tmp_path)
     import_into(database_url, read_tables(_dataset(tmp_path)), password=PASSWORD)

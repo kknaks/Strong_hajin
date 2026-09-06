@@ -121,11 +121,13 @@ def read_tables(target: Path) -> dict[str, list[dict[str, str]]]:
     return rows
 
 
-def apply_dataset(target: Path, rows: dict[str, list[dict[str, str]]], *, password: str | None) -> int:
+def apply_dataset(target: Path, rows: dict[str, list[dict[str, str]]], *, password: str | None, dry_run: bool = False) -> int:
     """Write the dataset into the local demo database, all of it or none of it.
 
     The import is only ever pointed at a database this repository is willing to reset, and it is one transaction:
     a dataset that turns out to be unapplicable leaves nothing behind for someone to clean up by hand.
+
+    `dry_run`은 그 transaction을 되돌려, 무엇이 생기고 무엇이 그대로일지만 말하고 아무것도 바꾸지 않는다.
     """
     from ax_workspace.bootstrap.dataset_import import DatasetImportError, import_into
     from ax_workspace.bootstrap.settings import Settings
@@ -142,11 +144,11 @@ def apply_dataset(target: Path, rows: dict[str, list[dict[str, str]]], *, passwo
         return 2
 
     try:
-        result = import_into(settings.database_url, rows, password=password)
+        result = import_into(settings.database_url, rows, password=password, dry_run=dry_run)
     except DatasetImportError as error:
         print(str(error), file=sys.stderr)
         return 1
-    print(json.dumps({"dataset": str(target), **result.as_dict()}, ensure_ascii=False, indent=2))
+    print(json.dumps({"dataset": str(target), "dry_run": dry_run, **result.as_dict()}, ensure_ascii=False, indent=2))
     for note in result.skipped:
         print(f"\n하지 않은 것: {note}")
     return 0
@@ -175,6 +177,11 @@ def main(argv: list[str] | None = None) -> int:
         "--password",
         default=os.environ.get("SCAX_DATASET_PASSWORD"),
         help="the one local password every imported login gets; without it no login is made",
+    )
+    apply.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="넣어 본 뒤 되돌린다 — 무엇이 생기고 무엇이 그대로일지만 말하고 데이터베이스는 그대로다",
     )
 
     arguments = parser.parse_args(argv)
@@ -213,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
             for problem in problems[:20]:
                 print(f"  - {problem}", file=sys.stderr)
             return 1
-        return apply_dataset(target, rows, password=arguments.password)
+        return apply_dataset(target, rows, password=arguments.password, dry_run=arguments.dry_run)
 
     source = arguments.source.expanduser().resolve()
     if not source.is_dir():

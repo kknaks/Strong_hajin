@@ -9,7 +9,7 @@ E2E_FRONTEND_PORT ?= 5176
 ACCEPTANCE_API_PORT ?= 18111
 ACCEPTANCE_FRONTEND_PORT ?= 15186
 
-.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo reset-catalog sync-demo-schema dataset-init dataset-validate dataset-import dataset-inspect scenario reindex-search api conversation-worker material-worker meeting-worker mcp frontend-install frontend api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-conversation-report-edit-action e2e-daily-report e2e-material-search e2e-meeting-live-transcript e2e-access-roles e2e-graph-question local-stack acceptance-e2e live-report-smoke soniox-smoke
+.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo reset-catalog sync-demo-schema dataset-init dataset-validate dataset-preview dataset-import dataset-inspect scenario reindex-search api conversation-worker material-worker meeting-worker mcp frontend-install frontend api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-conversation-report-edit-action e2e-daily-report e2e-material-search e2e-meeting-live-transcript e2e-access-roles e2e-graph-question local-stack acceptance-e2e live-report-smoke soniox-smoke
 
 install:
 	cd backend && uv sync --all-groups
@@ -52,6 +52,11 @@ dataset-import:
 	@test -n "$(TARGET)" || (echo "TARGET=<dataset 경로> 를 지정하세요" >&2; exit 2)
 	@test -n "$(SCAX_DATASET_PASSWORD)" || echo "SCAX_DATASET_PASSWORD가 없으면 로그인은 만들지 않고 넘어갑니다" >&2
 	cd backend && DATABASE_URL="$(DATABASE_URL)" SCAX_DATASET_PASSWORD="$(SCAX_DATASET_PASSWORD)" uv run python -m ax_workspace.entrypoints.dataset import "$(TARGET)" $(DATASET_ARGS)
+
+# 넣어 본 뒤 되돌린다. 무엇이 생기고 무엇이 그대로일지만 말하고 데이터베이스는 그대로다.
+dataset-preview:
+	@test -n "$(TARGET)" || (echo "TARGET=<dataset 경로> 를 지정하세요" >&2; exit 2)
+	cd backend && DATABASE_URL="$(DATABASE_URL)" SCAX_DATASET_PASSWORD="$(SCAX_DATASET_PASSWORD)" uv run python -m ax_workspace.entrypoints.dataset import "$(TARGET)" --dry-run
 
 # 분석 규칙이 바뀐 뒤 자료 검색 색인을 다시 만든다. 여러 번 돌려도 한 번 돌린 것과 같다.
 reindex-search:

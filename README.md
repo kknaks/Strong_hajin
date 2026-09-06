@@ -84,6 +84,7 @@ Run `DATABASE_URL=postgresql+psycopg://ax:ax@localhost:54329/ax_demo make conver
 make dataset-inspect SOURCE=~/Downloads/thesc DATASET_ARGS="--hide-names"   # 열지 않고 분류만
 make dataset-init TARGET=~/scax-datasets/actual DATASET_ARGS="--name 조직 --as-of 2026-09-02"
 make dataset-validate TARGET=~/scax-datasets/actual
+make dataset-preview TARGET=~/scax-datasets/actual                          # 넣어 본 뒤 되돌린다
 SCAX_DATASET_PASSWORD=... make dataset-import TARGET=~/scax-datasets/actual
 ```
 
