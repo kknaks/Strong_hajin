@@ -76,6 +76,20 @@ make acceptance-e2e
 
 Run `DATABASE_URL=postgresql+psycopg://ax:ax@localhost:54329/ax_demo make conversation-worker` alongside the two E2E servers before the conversation browser journeys. `make e2e-conversation` proves the production worker's Codex CLI path calls the persona-bound `task_list` MCP tool, keeps the composer usable while a follow-up is visibly queued in the same conversation, and switches between two independently executing conversations without leaking timeline state; the screenshot is written to `frontend/test-results/conversation-e2e.png`. `make e2e-conversation-action` proves a real Codex MCP `work_request_create` call ends as a pending ActionItem, then approves that exact Action from the general 판단 surface and verifies its shared resource id/audit plus Jiho's Task-free decision inbox projection; it writes `frontend/test-results/conversation-action-e2e.png`. `make e2e-daily-report` is the browser report journey: it creates and starts a real Task, calls the actual report-generation runtime through the Reports page, edits with the returned draft version, submits with the edited version, and re-enters the page to restore the immutable submission history; it writes `frontend/test-results/daily-report-e2e.png` and prints only resource/provenance identifiers. `make e2e-access-roles` is the scope journey: 구성원 · 팀장 · 대표 each sign in with their own address and see exactly what their roles and scoped grants allow — the 대표 reads the organization's work read-only and a private meeting they were not part of, the 팀장 does neither, and nobody else's work reaches 할일 or 내 업무. It also drives the access admin surface on the 조직 page: the 대표 widens a member's authority at a named scope with a reason, then takes it back in the same place. `make live-report-smoke` remains an opt-in DB-level real-Codex report proof: it creates a seeded Task activity, calls `daily_report.generate_draft`, and asserts the persisted WorkflowRun, four NodeRuns, and completed ProviderCall provenance without printing the generated body or prompt.
 
+## 실제 조직·업무 자료 (dataset)
+
+전달받은 자료와 거기서 만든 데이터는 이 저장소가 소유하지 않는다. 저장소는 계약(schema)과 도구만 갖고, 데이터는 Git 밖 폴더에 둔다.
+
+```sh
+make dataset-inspect SOURCE=~/Downloads/thesc DATASET_ARGS="--hide-names"   # 열지 않고 분류만
+make dataset-init TARGET=~/scax-datasets/actual DATASET_ARGS="--name 조직 --as-of 2026-09-02"
+make dataset-validate TARGET=~/scax-datasets/actual
+```
+
+`inspect`는 파일을 열지 않는다. 경로가 말하는 것만으로 `deny`(계정·비밀번호 자료) · `metadata-only`(읽을 수 없는 형식이나 너무 큰 파일) · `manual-review`(기본) · `import`(사람이 `--allow`로 올린 것)을 정하고, 목록을 원본 폴더 옆에 쓴다. 허용 목록이 deny를 이기지 못하며, macOS가 분해해서 저장한 한글 파일명(NFD)도 같은 이름으로 취급한다.
+
+`init`은 빈 CSV header와 manifest를, `validate`는 키 중복·없는 참조·허용되지 않은 값·날짜 형식·순환을 확인한다. 검증 결과는 어느 파일 몇 번째 줄 어느 열인지만 말하고 셀 값은 출력하지 않는다. 두 명령 모두 저장소 안을 가리키면 거절한다.
+
 The local stdio MCP server is a development-only delegated binding. It resolves the active Organization & Access principal for every canonical operation, but a long-lived external MCP process must reconnect after its developer persona's employment or grants change; the conversation worker also revalidates that owner and typed context immediately before execution.
 
 `make verify` deliberately excludes PostgreSQL integration tests; its success is not PostgreSQL coverage. For an explicit, reproducible disposable-PostgreSQL proof, start the documented container and run:
