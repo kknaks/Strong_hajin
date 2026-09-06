@@ -143,7 +143,7 @@ class GraphApplication:
                 edges.append(self._edge("parent_of", self._ref(node), self._ref(center)))
 
         for child in task.get("children") or []:
-            node = {"kind": "task", "id": str(child["task_id"]), "title": str(child["title"]), "state": child.get("state")}
+            node = self._task_node(child)
             nodes[self._ref(node)] = node
             edges.append(self._edge("parent_of", self._ref(center), self._ref(node)))
 
@@ -151,7 +151,7 @@ class GraphApplication:
             referenced = reference.get("task")
             if not referenced:
                 continue
-            node = {"kind": "task", "id": str(referenced["task_id"]), "title": str(referenced["title"]), "state": referenced.get("state")}
+            node = self._task_node(referenced)
             nodes[self._ref(node)] = node
             edges.append(self._edge("refers_to", self._ref(center), self._ref(node)))
 
@@ -352,8 +352,15 @@ class GraphApplication:
         for meeting in self._source.readable_meetings(principal):
             node = self._meeting_node(meeting)
             nodes[self._ref(node)] = node
+            owner = str(meeting.get("owner_id") or "")
+            if owner:
+                # A meeting somebody called is connected to them even when nobody else was put on it.
+                self._add_person(nodes, owner)
+                edges.append(self._edge("owns_meeting", f"person:{owner}", self._ref(node)))
             for attendee in meeting.get("attendees") or []:
                 member_id = str(attendee["member_id"])
+                if member_id == owner:
+                    continue
                 self._add_person(nodes, member_id)
                 edges.append(self._edge("attended", f"person:{member_id}", self._ref(node)))
         for report in self._source.own_reports(principal, limit=2):
@@ -467,7 +474,14 @@ class GraphApplication:
 
     @staticmethod
     def _task_node(task: dict[str, Any]) -> dict[str, Any]:
-        return {"kind": "task", "id": str(task["task_id"]), "title": str(task["title"]), "state": task.get("state")}
+        return {
+            "kind": "task",
+            "id": str(task["task_id"]),
+            "title": str(task["title"]),
+            "state": task.get("state"),
+            # Where this sits in time, as the ledger plans it — never a synthesized date.
+            "date": task.get("due_date") or task.get("start_date"),
+        }
 
     @staticmethod
     def _meeting_node(meeting: dict[str, Any]) -> dict[str, Any]:
@@ -476,11 +490,18 @@ class GraphApplication:
             "id": str(meeting["meeting_id"]),
             "title": str(meeting.get("title") or "회의"),
             "state": str(meeting.get("visibility") or ""),
+            "date": str(meeting["starts_at"])[:10] if meeting.get("starts_at") else None,
         }
 
     @staticmethod
     def _report_node(report: dict[str, Any]) -> dict[str, Any]:
-        return {"kind": "report", "id": str(report["report_id"]), "title": str(report["title"]), "state": report.get("state")}
+        return {
+            "kind": "report",
+            "id": str(report["report_id"]),
+            "title": str(report["title"]),
+            "state": report.get("state"),
+            "date": report.get("date"),
+        }
 
     @staticmethod
     def _material_node(material: dict[str, Any]) -> dict[str, Any]:
@@ -489,19 +510,26 @@ class GraphApplication:
             "id": str(material["material_id"]),
             "title": str(material["name"]),
             "state": str(material.get("kind") or ""),
+            "date": None,
         }
 
     @staticmethod
     def _team_node(unit: dict[str, Any]) -> dict[str, Any]:
-        return {"kind": "team", "id": str(unit["id"]), "title": str(unit.get("name") or unit["id"]), "state": None}
+        return {"kind": "team", "id": str(unit["id"]), "title": str(unit.get("name") or unit["id"]), "state": None, "date": None}
 
     @staticmethod
     def _person_node(person: dict[str, Any]) -> dict[str, Any]:
-        return {"kind": "person", "id": str(person["member_id"]), "title": str(person["display_name"]), "state": None}
+        return {"kind": "person", "id": str(person["member_id"]), "title": str(person["display_name"]), "state": None, "date": None}
 
     @staticmethod
     def _request_node(request: dict[str, Any]) -> dict[str, Any]:
-        return {"kind": "work_request", "id": str(request["request_id"]), "title": str(request["title"]), "state": request.get("state")}
+        return {
+            "kind": "work_request",
+            "id": str(request["request_id"]),
+            "title": str(request["title"]),
+            "state": request.get("state"),
+            "date": request.get("due_date"),
+        }
 
     def _add_person(self, nodes: dict[str, dict[str, Any]], member_id: str) -> None:
         person = self._source.person(member_id) or {"member_id": member_id, "display_name": member_id}

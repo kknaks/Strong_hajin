@@ -108,6 +108,7 @@ export function GraphCanvas({
     if (!element) return;
     let cancelled = false;
     let renderer: { kill: () => void } | null = null;
+    const observers: ResizeObserver[] = [];
 
     const draw = (
       Graph: typeof import("graphology").default,
@@ -252,6 +253,15 @@ export function GraphCanvas({
         return sigma;
       }
 
+      // The card grows to fill the page after this mounts; without being told, Sigma keeps drawing into the size it
+      // first saw and the picture sits in a corner.
+      const observer = new ResizeObserver(() => {
+        sigma.resize();
+        sigma.refresh();
+      });
+      observer.observe(element);
+      observers.push(observer);
+
       sigma.on("enterNode", ({ node }: { node: string }) => {
         hovered = node;
         element.style.cursor = "pointer";
@@ -308,6 +318,7 @@ export function GraphCanvas({
       cancelled = true;
       refresh.current = null;
       ready.current?.(null);
+      observers.forEach((observer) => observer.disconnect());
       renderer?.kill();
     };
   }, [nodes, edges, centerRef, interactive]);

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { graphNeighbors, graphOverview, graphSearch } from "./api";
 import { GraphCanvas, KIND_COLOR, KIND_LABEL, KIND_SOURCE, refOf, type GraphControls } from "./GraphCanvas";
 import type { GraphEdge, GraphNeighborhood, GraphNode, GraphOverview } from "./viewModels";
-import { personName, taskStateLabel } from "./labels";
+import { personName, taskStateLabel, workRequestStateLabel } from "./labels";
 
 /** What a connection means, in the words a person would use rather than the name of the edge. */
 const EDGE_SENTENCE: Record<string, { incoming: string; outgoing: string }> = {
@@ -17,6 +17,14 @@ const EDGE_SENTENCE: Record<string, { incoming: string; outgoing: string }> = {
 };
 
 const VIEW_LABEL: Record<string, string> = { member: "구성원 보기", team: "팀으로 묶기" };
+
+/** A node's state in the words its own ledger uses — a task's state, a request's, a meeting's visibility. */
+const OTHER_STATE_LABEL: Record<string, string> = { private: "비공개 회의", public: "조직 공개 회의", input: "참고 자료", output: "산출물" };
+const stateText = (state: string): string =>
+  taskStateLabel[state as keyof typeof taskStateLabel] ??
+  workRequestStateLabel[state as keyof typeof workRequestStateLabel] ??
+  OTHER_STATE_LABEL[state] ??
+  state;
 
 /**
  * 관계 탐색: search for something, then follow one hop at a time.
@@ -48,6 +56,8 @@ export function RelationGraphPage({
   const [loadingGraph, setLoadingGraph] = useState(true);
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const [hidden, setHidden] = useState<Set<GraphNode["kind"]>>(new Set());
+  const [hiddenStates, setHiddenStates] = useState<Set<string>>(new Set());
+  const [within, setWithin] = useState<"all" | "7" | "30">("all");
   const [controls, setControls] = useState<GraphControls | null>(null);
 
   // 첫 화면은 빈 검색 상자가 아니라 지금 이어져 있는 것들이다.
@@ -146,14 +156,33 @@ export function RelationGraphPage({
     return (Object.keys(KIND_LABEL) as GraphNode["kind"][]).filter((kind) => present.has(kind));
   }, [shown]);
 
-  // Hiding a kind is a way of looking, not a different question: the answer is the same, drawn with less in it.
+  const states = useMemo(() => {
+    const present = new Set(
+      (shown?.nodes ?? []).map((node) => node.state).filter((state): state is string => Boolean(state)),
+    );
+    return [...present].sort();
+  }, [shown]);
+
+  /**
+   * Narrowing is a way of looking, not a different question: the same authorized answer is drawn with less in it,
+   * and nothing new is asked of the server. A thing the ledger plans no date for is never hidden by a period —
+   * it is not late, it is undated.
+   */
   const visible = useMemo(() => {
     if (!shown) return null;
-    if (hidden.size === 0) return shown;
-    const nodes = shown.nodes.filter((node) => !hidden.has(node.kind));
+    if (hidden.size === 0 && hiddenStates.size === 0 && within === "all") return shown;
+    const days = within === "all" ? null : Number(within);
+    const now = Date.now();
+    const nodes = shown.nodes.filter((node) => {
+      if (hidden.has(node.kind)) return false;
+      if (node.state && hiddenStates.has(node.state)) return false;
+      if (days === null || !node.date) return true;
+      const when = Date.parse(`${node.date}T00:00:00Z`);
+      return Number.isNaN(when) ? true : Math.abs(when - now) <= days * 86_400_000;
+    });
     const kept = new Set(nodes.map((node) => refOf(node)));
     return { ...shown, nodes, edges: shown.edges.filter((edge) => kept.has(edge.from) && kept.has(edge.to)) };
-  }, [hidden, shown]);
+  }, [hidden, hiddenStates, shown, within]);
 
   return (
     <div className="page graph-page">
@@ -246,7 +275,7 @@ export function RelationGraphPage({
               )}
             </div>
 
-            <div aria-label="종류 필터" className="graph-overlay filters" role="group">
+            <div aria-label="좁혀 보기" className="graph-overlay filters" role="group">
               {kinds.map((kind) => (
                 <button
                   aria-pressed={!hidden.has(kind)}
@@ -265,6 +294,32 @@ export function RelationGraphPage({
                   <i style={{ background: KIND_COLOR[kind] }} /> {KIND_LABEL[kind]}
                 </button>
               ))}
+              {states.map((state) => (
+                <button
+                  aria-pressed={!hiddenStates.has(state)}
+                  className={hiddenStates.has(state) ? "graph-filter state" : "graph-filter state active"}
+                  key={state}
+                  onClick={() =>
+                    setHiddenStates((current) => {
+                      const next = new Set(current);
+                      if (next.has(state)) next.delete(state);
+                      else next.add(state);
+                      return next;
+                    })
+                  }
+                  type="button"
+                >
+                  {stateText(state)}
+                </button>
+              ))}
+              <label className="graph-filter period">
+                <span className="sr-only">기간</span>
+                <select onChange={(event) => setWithin(event.target.value as "all" | "7" | "30")} value={within}>
+                  <option value="all">기간 전체</option>
+                  <option value="7">앞뒤 7일</option>
+                  <option value="30">앞뒤 30일</option>
+                </select>
+              </label>
             </div>
 
             <div aria-hidden className="graph-overlay legend">
@@ -299,9 +354,7 @@ export function RelationGraphPage({
                   <span className="ax-resource-kind">{KIND_LABEL[selected.kind] ?? selected.kind}</span>
                   <b>{selected.kind === "person" ? personName(selected.title) : selected.title}</b>
                   {selected.state && (
-                    <span className="t-meta">
-                      {taskStateLabel[selected.state as keyof typeof taskStateLabel] ?? selected.state}
-                    </span>
+                    <span className="t-meta">{stateText(selected.state)}</span>
                   )}
                   <button aria-label="상세 닫기" className="btn link graph-detail-close" onClick={() => setSelected(null)} type="button">
                     ✕

@@ -3,7 +3,14 @@ export type ProductSurface = "today" | "calendar" | "work" | "report" | "org" | 
 /** One thing in the relation graph. Nodes are canonical resources, never a graph-only record. */
 export type GraphNodeKind = "person" | "team" | "work_request" | "task" | "material" | "meeting" | "report";
 
-export type GraphNode = { kind: GraphNodeKind; id: string; title: string; state?: string | null };
+export type GraphNode = {
+  kind: GraphNodeKind;
+  id: string;
+  title: string;
+  state?: string | null;
+  /** Where the ledger plans this in time (deadline, meeting day, report date). Absent when it plans none. */
+  date?: string | null;
+};
 
 /**
  * How two things are connected, as the ledgers already record it.

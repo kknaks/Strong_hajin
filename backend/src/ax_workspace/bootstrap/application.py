@@ -248,6 +248,7 @@ class _SessionGraphSource:
                 "report_id": str(report["report_id"]),
                 "title": f"{report['report_date']} 일일보고",
                 "state": str(report.get("status") or ""),
+                "date": str(report["report_date"]),
                 "task_ids": [str(source["task_id"]) for source in report.get("source_refs") or []],
             }
             for report in reports

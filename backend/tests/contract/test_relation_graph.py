@@ -201,7 +201,7 @@ def test_the_first_screen_is_already_a_graph_of_what_this_person_is_connected_to
     overview = client.get("/api/graph/overview", headers=JIHO).json()
     kinds = {node["kind"] for node in overview["nodes"]}
     assert {"person", "team", "task", "work_request", "meeting"} <= kinds
-    assert overview["center"] == {"kind": "person", "id": "jiho", "title": "지호 (팀장)", "state": None}
+    assert overview["center"] == {"kind": "person", "id": "jiho", "title": "지호 (팀장)", "state": None, "date": None}
     assert meeting["meeting_id"] in {node["id"] for node in overview["nodes"] if node["kind"] == "meeting"}
     # 자기가 속한 팀은 원장에 있는 소속에서 나온다.
     assert "product" in {node["id"] for node in overview["nodes"] if node["kind"] == "team"}
@@ -316,3 +316,29 @@ def _today() -> str:
     from ax_workspace.platform.work_tasks import business_date
 
     return business_date(datetime.now(UTC))
+
+
+def test_each_node_says_where_it_sits_in_time_when_the_ledger_plans_one(tmp_path) -> None:
+    """기간으로 좁혀 보려면 날짜가 필요하다. 그 날짜는 원장이 계획한 것이지 만들어 낸 것이 아니다."""
+    client, _ = _stack(tmp_path)
+    dated = client.post(
+        "/api/tasks", headers=MINA, json={"title": "기한이 있는 업무", "due_date": "2026-09-30"}
+    ).json()
+    client.post("/api/tasks", headers=MINA, json={"title": "날짜가 없는 업무"})
+    meeting = client.post(
+        "/api/meetings",
+        headers=MINA,
+        json={
+            "organization_id": "scax", "title": "시간이 정해진 회의",
+            "starts_at": "2026-09-10T01:00:00Z", "ends_at": "2026-09-10T02:00:00Z",
+            "visibility": "private", "attendee_ids": [],
+        },
+    ).json()
+
+    nodes = {f"{node['kind']}:{node['id']}": node for node in client.get("/api/graph/overview", headers=MINA).json()["nodes"]}
+    assert nodes[f"task:{dated['task_id']}"]["date"] == "2026-09-30"
+    assert nodes[f"meeting:{meeting['meeting_id']}"]["date"] == "2026-09-10"
+    # 계획한 날짜가 없으면 없는 채로 둔다 — 만든 날짜를 계획인 척하지 않는다.
+    undated = [node for node in nodes.values() if node["kind"] == "task" and node["title"] == "날짜가 없는 업무"]
+    assert undated and undated[0]["date"] is None
+    assert nodes["person:mina"]["date"] is None

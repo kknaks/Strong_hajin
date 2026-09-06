@@ -113,7 +113,7 @@ try {
   await navigation.getByRole("button", { name: "관계 탐색" }).click();
   const canvas = page.locator("section[aria-label='관계 그래프']");
   await canvas.waitFor({ timeout: 20_000 });
-  await pollFor(page, async () => ((await canvas.textContent()) ?? "").includes("지금 이어져 있는 것들"), {
+  await pollFor(page, async () => ((await canvas.textContent()) ?? "").includes("첫 화면 · 구성원 보기"), {
     timeout: 20_000,
     description: "첫 진입 그래프",
   });
@@ -179,12 +179,13 @@ try {
     throw new Error(`grouping by team did not read one level up: ${JSON.stringify(overview)}`);
   }
   // 표현 수준 전환은 같은 인가된 답을 다시 그린다.
-  await canvas.getByRole("tab", { name: "팀으로 묶기" }).click();
-  await pollFor(page, async () => (await canvas.getByRole("tab", { name: "팀으로 묶기" }).getAttribute("aria-selected")) === "true", {
+  const views = page.getByRole("tablist", { name: "표현 수준" });
+  await views.getByRole("tab", { name: "팀으로 묶기" }).click();
+  await pollFor(page, async () => (await views.getByRole("tab", { name: "팀으로 묶기" }).getAttribute("aria-selected")) === "true", {
     timeout: 15_000,
     description: "팀으로 묶기 전환",
   });
-  await canvas.getByRole("tab", { name: "구성원 보기" }).click();
+  await views.getByRole("tab", { name: "구성원 보기" }).click();
 
   // The manager follows it from the search box.
   await page.getByLabel("무엇을 찾을까요").fill(title);

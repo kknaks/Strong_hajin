@@ -14,7 +14,7 @@ const overview = {
   nodes: [
     { kind: "person", id: "mina", title: "민아 (구성원)", state: null },
     { kind: "team", id: "product", title: "제품팀", state: null },
-    task,
+    { ...task, date: "2099-01-01" },
   ],
   edges: [
     { kind: "belongs_to", from: "person:mina", to: "team:product", label: "소속", inverse_label: "구성원", provenance: "membership" },
@@ -128,10 +128,27 @@ describe("보는 방식", () => {
     const graph = await screen.findByLabelText("관계 그래프");
     await waitFor(() => expect(within(graph).getByText(/3개 노드 · 2개 연결/)).toBeTruthy());
 
-    const filters = within(graph).getByLabelText("종류 필터");
+    const filters = within(graph).getByLabelText("좁혀 보기");
     fireEvent.click(within(filters).getByRole("button", { name: /팀/ }));
 
     // The same authorized answer, drawn with less in it — no new request went out.
+    await waitFor(() => expect(within(graph).getByText(/2개 노드 · 1개 연결/)).toBeTruthy());
+    expect(api.graphOverview).toHaveBeenCalledTimes(1);
+  });
+
+  it("narrows by state and by period, and never hides what the ledger plans no date for", async () => {
+    renderPage();
+    const graph = await screen.findByLabelText("관계 그래프");
+    await waitFor(() => expect(within(graph).getByText(/3개 노드 · 2개 연결/)).toBeTruthy());
+    const filters = within(graph).getByLabelText("좁혀 보기");
+
+    // 진행 중인 업무만 빼면 그 업무와 그 연결이 사라진다.
+    fireEvent.click(within(filters).getByRole("button", { name: "진행 중" }));
+    await waitFor(() => expect(within(graph).getByText(/2개 노드 · 1개 연결/)).toBeTruthy());
+    fireEvent.click(within(filters).getByRole("button", { name: "진행 중" }));
+
+    // 날짜가 없는 사람·팀은 기간으로 좁혀도 남는다. 기한이 먼 업무만 빠진다.
+    fireEvent.change(within(filters).getByRole("combobox"), { target: { value: "7" } });
     await waitFor(() => expect(within(graph).getByText(/2개 노드 · 1개 연결/)).toBeTruthy());
     expect(api.graphOverview).toHaveBeenCalledTimes(1);
   });
