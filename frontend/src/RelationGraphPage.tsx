@@ -46,8 +46,6 @@ export function RelationGraphPage({
   const [loadingGraph, setLoadingGraph] = useState(true);
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const [hidden, setHidden] = useState<Set<GraphNode["kind"]>>(new Set());
-  const [hiddenStates, setHiddenStates] = useState<Set<string>>(new Set());
-  const [within, setWithin] = useState<"all" | "7" | "30">("all");
   const [controls, setControls] = useState<GraphControls | null>(null);
 
   // 첫 화면은 빈 검색 상자가 아니라 지금 이어져 있는 것들이다.
@@ -146,33 +144,20 @@ export function RelationGraphPage({
     return (Object.keys(KIND_LABEL) as GraphNode["kind"][]).filter((kind) => present.has(kind));
   }, [shown]);
 
-  const states = useMemo(() => {
-    const present = new Set(
-      (shown?.nodes ?? []).map((node) => node.state).filter((state): state is string => Boolean(state)),
-    );
-    return [...present].sort();
-  }, [shown]);
-
   /**
-   * Narrowing is a way of looking, not a different question: the same authorized answer is drawn with less in it,
-   * and nothing new is asked of the server. A thing the ledger plans no date for is never hidden by a period —
-   * it is not late, it is undated.
+   * 표시할 node 종류를 고르는 것은 보는 방법이지 다른 질문이 아니다. 같은 인가된 답을 덜 그릴 뿐이고 서버에
+   * 새로 묻는 것이 없다.
+   *
+   * 상태·기간 같은 범용 조건은 여기 두지 않는다. 그것은 개발자용 query builder에 가깝고, 질문에 맞는 타입별
+   * 조건은 Tool이 내부 계약으로 가진다. 각 제품 화면의 고유 목록 filter는 그 화면이 따로 갖는다.
    */
   const visible = useMemo(() => {
     if (!shown) return null;
-    if (hidden.size === 0 && hiddenStates.size === 0 && within === "all") return shown;
-    const days = within === "all" ? null : Number(within);
-    const now = Date.now();
-    const nodes = shown.nodes.filter((node) => {
-      if (hidden.has(node.kind)) return false;
-      if (node.state && hiddenStates.has(node.state)) return false;
-      if (days === null || !node.date) return true;
-      const when = Date.parse(`${node.date}T00:00:00Z`);
-      return Number.isNaN(when) ? true : Math.abs(when - now) <= days * 86_400_000;
-    });
+    if (hidden.size === 0) return shown;
+    const nodes = shown.nodes.filter((node) => !hidden.has(node.kind));
     const kept = new Set(nodes.map((node) => refOf(node)));
     return { ...shown, nodes, edges: shown.edges.filter((edge) => kept.has(edge.from) && kept.has(edge.to)) };
-  }, [hidden, hiddenStates, shown, within]);
+  }, [hidden, shown]);
 
   return (
     <div className="page graph-page">
@@ -284,32 +269,6 @@ export function RelationGraphPage({
                   <i style={{ background: KIND_COLOR[kind] }} /> {KIND_LABEL[kind]}
                 </button>
               ))}
-              {states.map((state) => (
-                <button
-                  aria-pressed={!hiddenStates.has(state)}
-                  className={hiddenStates.has(state) ? "graph-filter state" : "graph-filter state active"}
-                  key={state}
-                  onClick={() =>
-                    setHiddenStates((current) => {
-                      const next = new Set(current);
-                      if (next.has(state)) next.delete(state);
-                      else next.add(state);
-                      return next;
-                    })
-                  }
-                  type="button"
-                >
-                  {stateText(state)}
-                </button>
-              ))}
-              <label className="graph-filter period">
-                <span className="sr-only">기간</span>
-                <select onChange={(event) => setWithin(event.target.value as "all" | "7" | "30")} value={within}>
-                  <option value="all">기간 전체</option>
-                  <option value="7">앞뒤 7일</option>
-                  <option value="30">앞뒤 30일</option>
-                </select>
-              </label>
             </div>
 
             <div aria-hidden className="graph-overlay legend">

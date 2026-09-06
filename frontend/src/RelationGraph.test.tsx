@@ -136,19 +136,24 @@ describe("보는 방식", () => {
     expect(api.graphOverview).toHaveBeenCalledTimes(1);
   });
 
-  it("narrows by state and by period, and never hides what the ledger plans no date for", async () => {
+  it("offers nothing but node type: the common surface is not a query builder", async () => {
+    /**
+     * 설계 정본: 공통 관계 탐색 UI는 기본 이름·제목 검색과 화면에 표시할 node type 선택만 제공한다.
+     *
+     * 상태·기간 같은 범용 조건은 실제 업무 탐색보다 개발자용 query builder에 가깝다. 질문에 맞는 타입별 조건은
+     * Tool이 내부 계약으로 갖고, 각 제품 화면의 고유 목록 filter는 그 화면이 따로 갖는다.
+     */
     renderPage();
     const graph = await screen.findByLabelText("관계 그래프");
-    await waitFor(() => expect(within(graph).getByText(/3개 노드 · 2개 연결/)).toBeTruthy());
     const filters = within(graph).getByLabelText("좁혀 보기");
 
-    // 진행 중인 업무만 빼면 그 업무와 그 연결이 사라진다.
-    fireEvent.click(within(filters).getByRole("button", { name: "진행 중" }));
-    await waitFor(() => expect(within(graph).getByText(/2개 노드 · 1개 연결/)).toBeTruthy());
-    fireEvent.click(within(filters).getByRole("button", { name: "진행 중" }));
+    expect(within(filters).queryByRole("combobox")).toBeNull();
+    const offered = within(filters).getAllByRole("button").map((button) => button.textContent?.trim());
+    expect(offered).toEqual(["사람", "팀", "업무"]);
+    expect(offered).not.toContain("진행 중");
 
-    // 날짜가 없는 사람·팀은 기간으로 좁혀도 남는다. 기한이 먼 업무만 빠진다.
-    fireEvent.change(within(filters).getByRole("combobox"), { target: { value: "7" } });
+    // 종류를 끄는 것은 여전히 보는 방법이다: 같은 답을 덜 그릴 뿐 서버에 새로 묻지 않는다.
+    fireEvent.click(within(filters).getByRole("button", { name: "업무" }));
     await waitFor(() => expect(within(graph).getByText(/2개 노드 · 1개 연결/)).toBeTruthy());
     expect(api.graphOverview).toHaveBeenCalledTimes(1);
   });

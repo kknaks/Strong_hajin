@@ -499,8 +499,6 @@ button.metric-card:hover { border-color: var(--border-strong); background: var(-
 .graph-filter { height: 28px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid var(--border-default); border-radius: var(--radius-chip); background: var(--surface-default); color: var(--text-tertiary); font-size: 11px; font-weight: 700; cursor: pointer; }
 .graph-filter.active { border-color: var(--accent); color: var(--text-primary); background: var(--selected-bg); }
 .graph-filter.state { font-weight: 650; }
-.graph-filter.period { padding: 0 4px 0 8px; }
-.graph-filter.period select { height: 24px; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; font-size: 11px; font-weight: 700; }
 .graph-filter i, .graph-overlay.legend i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .graph-overlay.legend { left: 14px; bottom: 14px; display: flex; gap: 12px; padding: 8px 11px; border: 1px solid var(--border-default); border-radius: var(--radius-chip); background: var(--surface-default); color: var(--text-tertiary); font-size: 10px; }
 .graph-overlay.legend span { display: inline-flex; align-items: center; gap: 5px; }
