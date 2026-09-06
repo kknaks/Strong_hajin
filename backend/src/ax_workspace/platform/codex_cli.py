@@ -125,11 +125,11 @@ class CodexCliProviderAdapter:
                 raise ProviderRequestFailed("Codex CLI generation failed", provenance)
             try:
                 payload = json.loads(output_path.read_text(encoding="utf-8"))
-                body = payload["body"].strip()
-            except (OSError, json.JSONDecodeError, KeyError, AttributeError) as error:
+                body = _structured_body(payload, request.output_schema)
+            except (OSError, json.JSONDecodeError, KeyError, AttributeError, TypeError) as error:
                 raise ProviderRequestFailed("Codex CLI returned invalid structured output", provenance) from error
             if not body:
-                raise ProviderRequestFailed("Codex CLI returned an empty daily report", provenance)
+                raise ProviderRequestFailed("Codex CLI returned an empty generation", provenance)
             return AiGeneration(
                 provider_run_ref=run_ref,
                 provider_session_ref=thread_ref,
@@ -376,6 +376,18 @@ class CodexCliProviderAdapter:
         for line in stdout.splitlines():
             ingest.consume_line(line)
         return ingest.tool_invocations()
+
+
+def _structured_body(payload: Any, output_schema: dict[str, Any]) -> str:
+    """Hand back what the caller asked for.
+
+    The daily report asks for a single text field and wants that text. Every other caller — Meeting refinement and
+    summary — passes its own schema and parses the structure itself, so unwrapping a `body` key that its schema never
+    mentioned would turn every one of those generations into an invalid response.
+    """
+    if list(output_schema.get("properties", {})) == ["body"]:
+        return payload["body"].strip()
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _invoke_runner(runner, command, arguments, cwd, environment, timeout_seconds, on_line, should_cancel) -> ProcessResult:

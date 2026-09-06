@@ -166,3 +166,40 @@ def test_codex_cli_conversation_injects_only_server_bound_scax_mcp_context(tmp_p
             ),
         )
     )
+
+
+def test_a_structured_schema_comes_back_as_its_own_structure_not_a_report_body(tmp_path) -> None:
+    """Only the daily report asks for one text field. A caller that asked for segments must get segments.
+
+    The Meeting refinement and summary pass their own schemas; if the adapter insisted on the report's `body` key
+    every one of those calls would fail as an invalid provider response no matter what the model returned.
+    """
+    auth_file = tmp_path / "host-auth.json"
+    auth_file.write_text("{}", encoding="utf-8")
+    produced = {"segments": [{"text": "안녕하세요.", "start_ms": 0, "end_ms": 900}]}
+
+    def runner(command: str, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: int) -> ProcessResult:
+        schema = json.loads(Path(arguments[arguments.index("--output-schema") + 1]).read_text(encoding="utf-8"))
+        assert schema["required"] == ["segments"]
+        Path(arguments[arguments.index("--output-last-message") + 1]).write_text(
+            json.dumps(produced, ensure_ascii=False), encoding="utf-8"
+        )
+        return ProcessResult(json.dumps({"type": "turn.completed", "turn_id": "turn_1"}), "", 0)
+
+    provider = CodexCliProviderAdapter(
+        CodexCliProfile(runtime_home=tmp_path / "runtime", auth_file=auth_file),
+        runner=runner,
+    )
+    result = provider.generate(
+        AiGenerationRequest(
+            prompt="정제해 주세요",
+            output_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"segments": {"type": "array", "items": {"type": "object"}}},
+                "required": ["segments"],
+            },
+        )
+    )
+
+    assert json.loads(result.body) == produced

@@ -114,6 +114,22 @@ try {
     throw new Error(`The file's reading did not supersede the live one: ${final.revision} <= ${duringRecording.revision}`);
   }
 
+  // The rest of the pipeline runs on the file's reading, not the live one: refine, then summarize with evidence.
+  const finished = await pollFor(
+    page,
+    async () => {
+      const detail = await page.evaluate(async (meetingId) => (await fetch(`/api/meetings/${meetingId}`)).json(), meeting.meeting_id);
+      const recording = detail.recordings?.[0];
+      if (recording?.state === "failed") throw new Error("the meeting finalization pipeline failed after the upload");
+      const summary = (detail.summaries ?? []).find((candidate) => candidate.kind === "final" && candidate.state === "completed");
+      return recording?.state === "transcribed" && recording.refinement && summary ? { recording, summary } : null;
+    },
+    { timeout: 300_000, description: "the refined transcript and the final summary the file's reading produced" },
+  );
+  if (finished.summary.evidence.length === 0 || !finished.summary.body.trim()) {
+    throw new Error(`The summary carries no evidence back to the transcript: ${JSON.stringify(finished.summary)}`);
+  }
+
   console.log(
     JSON.stringify(
       {
@@ -122,6 +138,8 @@ try {
         live_revision: duringRecording.revision,
         final_segments: final.segments.length,
         final_revision: final.revision,
+        refined_segments: finished.recording.refinement.segments.length,
+        summary_evidence: finished.summary.evidence.length,
       },
       null,
       2,
