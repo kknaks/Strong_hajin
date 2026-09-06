@@ -57,7 +57,7 @@ const requests: WorkRequest[] = [
   request({ request_id: "cc-me", title: "참조로 받은 요청", requester_id: "jiho", assignee_id: "sora", cc_member_ids: ["mina"] }),
 ];
 
-function renderPage(overrides: Record<string, unknown> = {}, mocks: { actions?: unknown[]; judgements?: unknown[]; work?: unknown[] } = {}) {
+function renderPage(overrides: Record<string, unknown> = {}, mocks: { actions?: unknown[]; judgements?: unknown[]; work?: unknown[]; requests?: unknown[] } = {}) {
   vi.mocked(api.getMyWork).mockResolvedValue([]);
   vi.mocked(api.getTasks).mockResolvedValue([]);
   vi.mocked(api.getActionItems).mockResolvedValue([]);
@@ -70,6 +70,7 @@ function renderPage(overrides: Record<string, unknown> = {}, mocks: { actions?: 
   if (mocks.actions) vi.mocked(api.getActions).mockResolvedValue(mocks.actions as never);
   if (mocks.judgements) vi.mocked(api.getActionItems).mockResolvedValue(mocks.judgements as never);
   if (mocks.work) vi.mocked(api.getMyWork).mockResolvedValue(mocks.work as never);
+  if (mocks.requests) vi.mocked(api.getWorkRequests).mockResolvedValue(mocks.requests as never);
   const props = {
     personaId: "mina",
     personaName: "민아 (구성원)",
@@ -108,6 +109,18 @@ describe("work relation information architecture", () => {
     renderPage();
     expect(await screen.findByRole("tab", { name: "요청·배정" })).toBeTruthy();
     expect(screen.queryByRole("tab", { name: "보낸 업무" })).toBeNull();
+  });
+
+  it("keeps the 참조 section standing when nothing has been referenced yet", async () => {
+    // 참조는 이 제품이 가진 관계 하나이지, 하나라도 있어야 생기는 자리가 아니다. 옆의 두 덩어리처럼 비어 있어도
+    // 자리를 지켜야 아직 참조로 받은 요청이 없는 사람도 그런 자리가 있다는 것을 안다.
+    renderPage({}, { requests: [] });
+    await openRelationTab();
+
+    const cc = within(screen.getByLabelText("참조된 업무"));
+    expect(cc.getByText("참조된 업무가 없습니다")).toBeTruthy();
+    expect(screen.getByLabelText("받은 업무")).toBeTruthy();
+    expect(screen.getByLabelText("보낸 업무")).toBeTruthy();
   });
 
   it("splits the one authorized list into the four canonical relationships", async () => {

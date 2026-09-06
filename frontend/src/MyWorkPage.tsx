@@ -462,19 +462,19 @@ export function MyWorkPage({
                 </table>
               </section>
             )}
-            {ccRequests.length > 0 && (
-              <RequestRelationSection
-                emptyHint=""
-                emptyTitle=""
-                counterpart="both"
-                hint="읽고 논의할 수 있지만 판단은 담당자가 합니다"
-                label="참조된 업무"
-                onOpen={setSelectedRequest}
-                people={people}
-                personaId={personaId}
-                requests={ccRequests}
-              />
-            )}
+            {/* 참조는 이 제품이 가진 관계 하나이지 있을 때만 생기는 것이 아니다. 옆의 두 덩어리와 같은 규칙으로
+                자리를 지켜야, 참조로 받은 요청이 아직 없는 사람도 그런 자리가 있다는 것을 안다. */}
+            <RequestRelationSection
+              counterpart="both"
+              emptyHint="동료가 나를 참조자로 넣어 보낸 요청이 여기에 쌓입니다."
+              emptyTitle="참조된 업무가 없습니다"
+              hint="읽고 논의할 수 있지만 판단은 담당자가 합니다"
+              label="참조된 업무"
+              onOpen={setSelectedRequest}
+              people={people}
+              personaId={personaId}
+              requests={ccRequests}
+            />
             </>
           ) : view === "kanban" ? (
             <TaskKanban
