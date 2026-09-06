@@ -91,6 +91,8 @@ class AnswerResourcePort(Protocol):
 
     def resolve(self, principal: Principal, references: list[dict[str, Any]]) -> list[dict[str, Any]]: ...
 
+    def readable_titles(self, principal: Principal, refs: list[str]) -> dict[str, str]: ...
+
 
 class ConversationApplication:
     """API-facing command/query service. It never invokes a provider."""
@@ -161,7 +163,39 @@ class ConversationApplication:
         view["answer_resources"] = (
             self._answer_resources.resolve(principal, references) if self._answer_resources is not None else []
         )
+        view["graph_receipts"] = self._readable_steps(principal, view.get("graph_receipts") or [])
         return view
+
+    def _readable_steps(self, principal: Principal, steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """A stored walk is asked about again before it is shown.
+
+        A receipt keeps the name a tool returned at the time. Whether this person may still see that name is not a
+        stored fact: a step whose ends are no longer readable is dropped whole, so a revoked share leaves neither a
+        label nor a countable gap.
+        """
+        if self._answer_resources is None or not steps:
+            return steps
+        refs = {
+            str(ref)
+            for step in steps
+            for ref in (step.get("node_ref"), step.get("from_ref"), step.get("to_ref"))
+            if ref
+        }
+        titles = self._answer_resources.readable_titles(principal, sorted(refs))
+        kept: list[dict[str, Any]] = []
+        for step in steps:
+            ends = [str(ref) for ref in (step.get("node_ref"), step.get("from_ref"), step.get("to_ref")) if ref]
+            if any(ref not in titles for ref in ends):
+                continue
+            kept.append(
+                {
+                    **step,
+                    "node_title": titles.get(str(step.get("node_ref"))) if step.get("node_ref") else step.get("node_title"),
+                    "from_title": titles.get(str(step.get("from_ref"))) if step.get("from_ref") else step.get("from_title"),
+                    "to_title": titles.get(str(step.get("to_ref"))) if step.get("to_ref") else step.get("to_title"),
+                }
+            )
+        return kept
 
     def _owned(self, principal: Principal, conversation_id: UUID, *, lock: bool = False) -> Any:
         conversation = self._repository.conversation(conversation_id, str(principal.id), lock=lock)

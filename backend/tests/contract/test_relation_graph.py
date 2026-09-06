@@ -264,3 +264,55 @@ def test_a_person_node_shows_only_the_connections_the_asker_may_already_read(tmp
 
     theirs = client.get("/api/graph/neighbors", headers=JIHO, params={"node": "person:mina"}).json()
     assert title not in str(theirs)
+
+
+def test_a_report_stands_on_the_work_it_was_written_from(tmp_path) -> None:
+    """보고–출처는 초안이 실제로 담은 업무에서만 나온다. 남의 보고는 그래프에 없다."""
+    client, application = _stack(tmp_path)
+    task = client.post("/api/tasks", headers=MINA, json={"title": "보고에 담길 업무"}).json()
+    client.post(f"/api/tasks/{task['task_id']}/start", headers=MINA, json={"expected_version": task["version"]})
+    generated = client.post("/api/daily-reports/generate-draft", headers=MINA, json={"report_date": _today()})
+    assert generated.status_code in {200, 201}, generated.text
+    report_id = generated.json()["report_id"]
+
+    around = client.get("/api/graph/neighbors", headers=MINA, params={"node": f"report:{report_id}"}).json()
+    assert around["center"]["kind"] == "report"
+    cited = [edge for edge in around["edges"] if edge["kind"] == "cites"]
+    assert cited and cited[0]["to"] == f"task:{task['task_id']}"
+    assert (cited[0]["label"], cited[0]["inverse_label"], cited[0]["provenance"]) == (
+        "근거로 삼은 업무",
+        "이 업무를 담은 보고",
+        "daily_report_draft",
+    )
+    # The same fact reads from the work's side too.
+    from_task = client.get("/api/graph/neighbors", headers=MINA, params={"node": f"task:{task['task_id']}"}).json()
+    assert any(edge["kind"] == "cites" and edge["from"] == f"report:{report_id}" for edge in from_task["edges"])
+
+    # A report is its writer's own. Nobody else can walk into it, and it never names them.
+    denied = client.get("/api/graph/neighbors", headers=JIHO, params={"node": f"report:{report_id}"})
+    assert denied.status_code in {403, 404}
+    assert "보고" not in str(client.get("/api/graph/overview", headers=JIHO).json())
+
+
+def test_a_file_says_which_work_carries_it(tmp_path) -> None:
+    client, _ = _stack(tmp_path)
+    task = client.post("/api/tasks", headers=MINA, json={"title": "자료가 붙은 업무"}).json()
+    material = client.post(
+        f"/api/tasks/{task['task_id']}/materials/links",
+        headers=MINA,
+        json={"kind": "output", "url": "https://docs.example.com/spec", "label": "설계 문서"},
+    ).json()
+
+    around = client.get("/api/graph/neighbors", headers=MINA, params={"node": f"material:{material['material_id']}"}).json()
+    assert around["center"]["kind"] == "material" and around["center"]["title"] == "설계 문서"
+    assert any(edge["kind"] == "has_material" and edge["from"] == f"task:{task['task_id']}" for edge in around["edges"])
+    # Someone who cannot read the work cannot reach the file through it either.
+    assert client.get("/api/graph/neighbors", headers=JIHO, params={"node": f"material:{material['material_id']}"}).status_code in {403, 404}
+
+
+def _today() -> str:
+    from datetime import UTC, datetime
+
+    from ax_workspace.platform.work_tasks import business_date
+
+    return business_date(datetime.now(UTC))

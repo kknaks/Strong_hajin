@@ -1,7 +1,7 @@
 export type ProductSurface = "today" | "calendar" | "work" | "report" | "org" | "graph";
 
 /** One thing in the relation graph. Nodes are canonical resources, never a graph-only record. */
-export type GraphNodeKind = "person" | "team" | "work_request" | "task" | "material" | "meeting";
+export type GraphNodeKind = "person" | "team" | "work_request" | "task" | "material" | "meeting" | "report";
 
 export type GraphNode = { kind: GraphNodeKind; id: string; title: string; state?: string | null };
 

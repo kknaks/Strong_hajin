@@ -16,7 +16,7 @@ from ax_workspace.modules.organization_access.domain import (
 )
 
 #: What may be at either end of a connection. Each is read through the module that owns it.
-NODE_KINDS = ("person", "team", "work_request", "task", "material", "meeting")
+NODE_KINDS = ("person", "team", "work_request", "task", "material", "meeting", "report")
 #: How far one answer may reach, so a screen and a delegated turn get the same bounded thing.
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 50
@@ -36,6 +36,7 @@ RELATIONS: dict[str, dict[str, str]] = {
     "attended": {"label": "참석", "inverse": "참석자", "provenance": "meeting_attendee"},
     "owns_meeting": {"label": "소집", "inverse": "소집자", "provenance": "meeting"},
     "followed_up": {"label": "후속 업무", "inverse": "나온 회의", "provenance": "meeting_followup_promotion"},
+    "cites": {"label": "근거로 삼은 업무", "inverse": "이 업무를 담은 보고", "provenance": "daily_report_draft"},
 }
 
 
@@ -64,6 +65,8 @@ class GraphSourcePort(Protocol):
     def readable_meeting(self, principal: Principal, meeting_id: UUID) -> dict[str, Any] | None: ...
     def meeting_followup_tasks(self, principal: Principal, meeting_id: UUID) -> list[dict[str, Any]]: ...
     def member_units(self, member_id: str) -> list[dict[str, Any]]: ...
+    def own_reports(self, principal: Principal, *, limit: int = 3) -> list[dict[str, Any]]: ...
+    def material_owners(self, principal: Principal, material_id: str) -> list[dict[str, Any]]: ...
     def unit_members(self, unit_id: str) -> list[dict[str, Any]]: ...
 
 
@@ -98,6 +101,10 @@ class GraphApplication:
             return self._meeting_neighbors(principal, UUID(identifier), limit)
         if kind == "person":
             return self._person_neighbors(principal, identifier, limit)
+        if kind == "report":
+            return self._report_neighbors(principal, identifier, limit)
+        if kind == "material":
+            return self._material_neighbors(principal, identifier, limit)
         if kind == "team":
             return self._team_neighbors(principal, identifier, limit)
         raise GraphError(f"{kind}에서는 아직 연결을 따라갈 수 없습니다")
@@ -147,14 +154,17 @@ class GraphApplication:
             edges.append(self._edge("refers_to", self._ref(center), self._ref(node)))
 
         for material in self._source.task_materials(principal, task_id):
-            node = {
-                "kind": "material",
-                "id": str(material["material_id"]),
-                "title": str(material["name"]),
-                "state": str(material.get("kind") or ""),
-            }
+            node = self._material_node(material)
             nodes[self._ref(node)] = node
             edges.append(self._edge("has_material", self._ref(center), self._ref(node)))
+
+        # A report this person wrote from this work is part of how the work connects, for them.
+        for report in self._source.own_reports(principal, limit=5):
+            if str(task_id) not in report["task_ids"]:
+                continue
+            node = self._report_node(report)
+            nodes[self._ref(node)] = node
+            edges.append(self._edge("cites", self._ref(node), self._ref(center)))
 
         return self._bounded(center, nodes, edges, limit)
 
@@ -206,6 +216,51 @@ class GraphApplication:
             node = self._task_node(task)
             nodes[self._ref(node)] = node
             edges.append(self._edge("followed_up", self._ref(center), self._ref(node)))
+        return self._bounded(center, nodes, edges, limit)
+
+    # ---- one hop from a report, and from a file ----
+
+    def _report_neighbors(self, principal: Principal, report_id: str, limit: int) -> dict[str, Any]:
+        """A report stands on the work it was written from. Only the writer's own reports are here at all."""
+        report = next((row for row in self._source.own_reports(principal, limit=20) if str(row["report_id"]) == report_id), None)
+        if report is None:
+            raise GraphNotFound("daily report was not found")
+        center = self._report_node(report)
+        nodes: dict[str, dict[str, Any]] = {self._ref(center): center}
+        edges: list[dict[str, Any]] = []
+        self._add_person(nodes, str(principal.id))
+        edges.append(self._edge("holds", f"person:{principal.id}", self._ref(center)))
+        for task_id in report["task_ids"]:
+            task = self._source.readable_task(principal, UUID(str(task_id)))
+            if task is None:
+                continue
+            node = self._task_node(task)
+            nodes[self._ref(node)] = node
+            edges.append(self._edge("cites", self._ref(center), self._ref(node)))
+        return self._bounded(center, nodes, edges, limit)
+
+    def _material_neighbors(self, principal: Principal, material_id: str, limit: int) -> dict[str, Any]:
+        owners = self._source.material_owners(principal, material_id)
+        if not owners:
+            raise GraphNotFound("material was not found")
+        material = next(
+            (
+                row
+                for task in owners
+                for row in self._source.task_materials(principal, UUID(str(task["task_id"])))
+                if str(row["material_id"]) == material_id
+            ),
+            None,
+        )
+        if material is None:
+            raise GraphNotFound("material was not found")
+        center = self._material_node(material)
+        nodes: dict[str, dict[str, Any]] = {self._ref(center): center}
+        edges: list[dict[str, Any]] = []
+        for task in owners:
+            node = self._task_node(task)
+            nodes[self._ref(node)] = node
+            edges.append(self._edge("has_material", self._ref(node), self._ref(center)))
         return self._bounded(center, nodes, edges, limit)
 
     # ---- one hop from a person, and from the team they sit in ----
@@ -299,6 +354,17 @@ class GraphApplication:
                 member_id = str(attendee["member_id"])
                 self._add_person(nodes, member_id)
                 edges.append(self._edge("attended", f"person:{member_id}", self._ref(node)))
+        for report in self._source.own_reports(principal, limit=2):
+            node = self._report_node(report)
+            edges_for_report = [
+                self._edge("cites", self._ref(node), f"task:{task_id}")
+                for task_id in report["task_ids"]
+                if f"task:{task_id}" in nodes
+            ]
+            if not edges_for_report:
+                continue
+            nodes[self._ref(node)] = node
+            edges.extend(edges_for_report)
 
         answer = self._bounded(me, nodes, edges, limit)
         answer["view"] = view
@@ -400,6 +466,19 @@ class GraphApplication:
             "id": str(meeting["meeting_id"]),
             "title": str(meeting.get("title") or "회의"),
             "state": str(meeting.get("visibility") or ""),
+        }
+
+    @staticmethod
+    def _report_node(report: dict[str, Any]) -> dict[str, Any]:
+        return {"kind": "report", "id": str(report["report_id"]), "title": str(report["title"]), "state": report.get("state")}
+
+    @staticmethod
+    def _material_node(material: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "kind": "material",
+            "id": str(material["material_id"]),
+            "title": str(material["name"]),
+            "state": str(material.get("kind") or ""),
         }
 
     @staticmethod

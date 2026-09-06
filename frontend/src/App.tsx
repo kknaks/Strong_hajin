@@ -370,6 +370,10 @@ export default function App() {
                 setSurface("org");
                 return;
               }
+              if (node.kind === "report") {
+                setSurface("report");
+                return;
+              }
               if (node.kind === "work_request" || node.kind === "material") setSurface("work");
             }}
             onOpenTask={(taskId) => {

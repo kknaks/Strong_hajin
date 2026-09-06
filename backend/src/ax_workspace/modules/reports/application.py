@@ -50,6 +50,8 @@ class DailyReportRepository(Protocol):
 
     def status_for_date(self, owner_id: str, report_date: str) -> dict[str, Any]: ...
 
+    def recent(self, owner_id: str, *, limit: int = 3) -> list[dict[str, Any]]: ...
+
 
 class DailyReportDraftWorkflowPort(Protocol):
     def run(self, principal: Principal, report_date: str) -> dict[str, Any]: ...
@@ -157,6 +159,11 @@ class DailyReportApplication:
             "source_refs": submission.source_refs,
             "submitted_at": submission.submitted_at.isoformat(),
         }
+
+    def recent(self, principal: Principal, *, limit: int = 3) -> list[dict[str, Any]]:
+        """A person's own recent reports. Reading a report is reading one's own; nobody else's is listed here."""
+        self._require(principal, DAILY_REPORT_READ)
+        return self._reports.recent(str(principal.id), limit=limit)
 
     def history(self, principal: Principal, report_id: str) -> dict[str, Any]:
         self._require(principal, DAILY_REPORT_READ)

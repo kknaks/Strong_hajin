@@ -209,3 +209,45 @@ def _request_for(client, database_url: str, conversation: dict):
             .order_by(ConversationTurnRecord.started_at.desc())
         ).first()
         return SqlAlchemyConversationRepository(session, None).request_for(turn, principal)
+
+
+def test_a_stored_walk_is_checked_again_before_it_is_shown(tmp_path, monkeypatch) -> None:
+    """권한이 끊기면 그때 걸었던 발자국도 이름을 남기지 않는다.
+
+    A receipt keeps what a tool returned. Whether the reader may still see it is asked again at display time, so a
+    revoked share leaves neither a title nor a step someone could count.
+    """
+    client, settings, database_url = _stack(tmp_path)
+    meeting = client.post(
+        "/api/meetings",
+        headers=JIHO,
+        json={
+            "organization_id": "scax", "title": "발자국에 남을 회의",
+            "starts_at": "2026-09-10T01:00:00Z", "ends_at": "2026-09-10T02:00:00Z",
+            "visibility": "private", "attendee_ids": [],
+        },
+    ).json()
+    client.post(
+        f"/api/meetings/{meeting['meeting_id']}/shares",
+        headers=JIHO,
+        json={"member_id": "mina", "expected_version": meeting["version"]},
+    )
+    conversation, execution_id = _delegated_turn(client, database_url, MINA, "walk-turn")
+
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", execution_id)
+    McpReportsFacade(settings, "mina").graph_neighbors(f"meeting:{meeting['meeting_id']}")
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
+    walked = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()["graph_receipts"]
+    assert walked and any("발자국에 남을 회의" in str(step) for step in walked)
+
+    # 민아 is taken off the meeting. The stored steps are still rows; none of them reaches her screen.
+    current = client.get(f"/api/meetings/{meeting['meeting_id']}", headers=JIHO).json()
+    client.request(
+        "DELETE",
+        f"/api/meetings/{meeting['meeting_id']}/shares/mina",
+        headers=JIHO,
+        json={"expected_version": current["version"]},
+    )
+    after = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()
+    assert "발자국에 남을 회의" not in str(after)
+    assert all(f"meeting:{meeting['meeting_id']}" not in str(step) for step in after["graph_receipts"])

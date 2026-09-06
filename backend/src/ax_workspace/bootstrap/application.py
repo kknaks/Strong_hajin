@@ -18,7 +18,7 @@ from ax_workspace.modules.organization_access.domain import Principal
 from ax_workspace.modules.organization_access.administration import AccessAdministration
 from ax_workspace.modules.organization_access.application import OrganizationApplication
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
-from ax_workspace.modules.reports.application import DailyReportApplication
+from ax_workspace.modules.reports.application import DailyReportAccessDenied, DailyReportApplication
 from ax_workspace.modules.ax_execution.ai import AiGenerationRequest, AiProvider, ProviderFailure
 from ax_workspace.platform.codex_cli import CodexCliMcpServer, CodexCliProviderAdapter
 from ax_workspace.platform.conversation_jobs import ConversationJobQueue
@@ -120,6 +120,27 @@ class _SessionAnswerResources:
             resolved.append({**reference, "title": title, "state": state})
         return resolved
 
+    def readable_titles(self, principal: Principal, refs: list[str]) -> dict[str, str]:
+        """The name each of these still has for this person. Anything they may no longer open is simply missing."""
+        people = {
+            str(row["id"]): str(row["display_name"])
+            for row in self._application.member_directory(principal)
+        }
+        units = {str(row["id"]): str(row["name"]) for row in self._application.organization_tree(principal)}
+        titles: dict[str, str] = {}
+        for ref in refs:
+            kind, _, identifier = str(ref).partition(":")
+            if kind == "person" and identifier in people:
+                titles[ref] = people[identifier]
+                continue
+            if kind == "team" and identifier in units:
+                titles[ref] = units[identifier]
+                continue
+            title, _state = self._read(principal, kind, identifier, None)
+            if title is not None:
+                titles[ref] = title
+        return titles
+
     def _read(self, principal: Principal, kind: str, identifier: str, parent: Any) -> tuple[str | None, str | None]:
         try:
             if kind == "task":
@@ -218,6 +239,29 @@ class _SessionGraphSource:
                 if task is not None:
                     tasks.append(task)
         return tasks
+
+    def own_reports(self, principal: Principal, *, limit: int = 3) -> list[dict[str, Any]]:
+        """This person's own daily reports and the work each one was written from. A report is nobody else's to read."""
+        reports = self._application.daily_report_recent(principal, limit=limit)
+        return [
+            {
+                "report_id": str(report["report_id"]),
+                "title": f"{report['report_date']} 일일보고",
+                "state": str(report.get("status") or ""),
+                "task_ids": [str(source["task_id"]) for source in report.get("source_refs") or []],
+            }
+            for report in reports
+        ]
+
+    def material_owners(self, principal: Principal, material_id: str) -> list[dict[str, Any]]:
+        """The work this file is bound to, among the work this person may read."""
+        owners: list[dict[str, Any]] = []
+        for task in self.readable_tasks(principal, limit=50):
+            for material in self.task_materials(principal, UUID(str(task["task_id"]))):
+                if str(material["material_id"]) == material_id:
+                    owners.append(task)
+                    break
+        return owners
 
     def member_units(self, member_id: str) -> list[dict[str, Any]]:
         repository = SqlAlchemyOrganizationRepository(self._session)
@@ -691,6 +735,14 @@ class WorkflowApplication:
     def daily_report_history(self, principal: Principal, report_id: str) -> dict[str, Any]:
         with self._session_factory() as session:
             return self._reports(session).history(principal, report_id)
+
+    def daily_report_recent(self, principal: Principal, *, limit: int = 3) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            try:
+                return self._reports(session).recent(principal, limit=limit)
+            except DailyReportAccessDenied:
+                # Someone who may not read reports has none to connect; that is an answer, not a failure.
+                return []
 
     def daily_report_status(self, principal: Principal, report_date: str) -> dict[str, Any]:
         with self._session_factory() as session:

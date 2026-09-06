@@ -265,6 +265,34 @@ class SqlAlchemyDailyReportRepository:
             ],
         }
 
+    def recent(self, owner_id: str, *, limit: int = 3) -> list[dict[str, Any]]:
+        """The last few reports this person wrote, each with the work its newest draft was written from."""
+        reports = list(
+            self._session.scalars(
+                select(DailyReportRecord)
+                .where(DailyReportRecord.owner_id == owner_id)
+                .order_by(DailyReportRecord.report_date.desc())
+                .limit(max(1, limit))
+            )
+        )
+        answer: list[dict[str, Any]] = []
+        for report in reports:
+            draft = self._session.scalar(
+                select(ReportDraftRecord)
+                .where(ReportDraftRecord.report_id == report.id)
+                .order_by(ReportDraftRecord.version.desc())
+                .limit(1)
+            )
+            answer.append(
+                {
+                    "report_id": str(report.id),
+                    "report_date": report.report_date,
+                    "status": report.status,
+                    "source_refs": list(draft.source_refs or []) if draft is not None else [],
+                }
+            )
+        return answer
+
     def status_for_date(self, owner_id: str, report_date: str) -> dict[str, Any]:
         report = self._session.scalar(
             select(DailyReportRecord).where(
