@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { ActionCommandButtons, ActionPreviewDetails, actionKicker, actionSubject } from "../ActionPreview";
 import { formatDate, formatDuration, isoDateInSeoul, taskStateLabel } from "../labels";
 import { AssistantMarkdown } from "./AssistantMarkdown";
-import { GraphCanvas } from "../GraphCanvas";
+import { EDGE_LABEL, EDGE_SENTENCE, GraphCanvas } from "../GraphCanvas";
 import type { ActionItem, AnswerResource, Conversation, ConversationTurn, GraphEdge, GraphNode, GraphReceipt, MaterialEvidence } from "../viewModels";
 import type { LocalFragment } from "./useConversations";
 
@@ -173,9 +173,13 @@ function ConversationTimeline({
                   {item.body_state === "cancelled" && <small className="ax-body-note">취소 시점까지의 답변</small>}
                 </div>
               ))}
-            <TurnGraph onOpenGraph={onOpenGraph} steps={walked} />
-            <AnswerResources onOpen={onOpenResource} resources={named} />
-            <EvidenceCards evidence={evidence} />
+            <AnswerEvidence
+              evidence={evidence}
+              onOpen={onOpenResource}
+              onOpenGraph={onOpenGraph}
+              resources={named}
+              steps={walked}
+            />
             {actions.map((action) => (
               <ActionResultCard action={action} key={action.action_id} onDecide={onDecide} />
             ))}
@@ -383,18 +387,6 @@ function ActionResultCard({ action, onDecide }: { action: ActionItem; onDecide: 
   );
 }
 
-/** Material excerpts the turn actually retrieved through the authorized search; each card opens the same origin as the Task drawer. */
-/** What a connection meant, in the words a person reads. Unknown kinds keep their own name rather than a guess. */
-const EDGE_SENTENCE: Record<string, string> = {
-  produced: "만든 업무",
-  requested: "보낸 요청",
-  asked_of: "요청받은 사람",
-  holds: "담당",
-  parent_of: "하위 업무",
-  refers_to: "참고 업무",
-  has_material: "자료",
-};
-
 /**
  * 찾아본 연결: the steps this turn actually took, in the order the tools returned them.
  *
@@ -419,7 +411,7 @@ function SearchPathSteps({ steps }: { steps: GraphReceipt[] }) {
         )}
         {edges.map((step) => (
           <li key={step.receipt_id}>
-            <span className="t-meta">{EDGE_SENTENCE[step.edge_kind ?? ""] ?? step.edge_kind}</span>{" "}
+            <span className="t-meta">{EDGE_LABEL[step.edge_kind ?? ""] ?? step.edge_kind}</span>{" "}
             {step.from_title ?? step.from_ref} → {step.to_title ?? step.to_ref}
           </li>
         ))}
@@ -454,7 +446,7 @@ function TurnGraph({ steps, onOpenGraph }: { steps: GraphReceipt[]; onOpenGraph?
       kind: step.edge_kind ?? "",
       from: String(step.from_ref),
       to: String(step.to_ref),
-      label: EDGE_SENTENCE[step.edge_kind ?? ""] ?? step.edge_kind ?? "",
+      label: EDGE_LABEL[step.edge_kind ?? ""] ?? step.edge_kind ?? "",
     }));
   if (seen.size === 0) return null;
   const center = steps.find((step) => step.kind === "node")?.node_ref ?? edges[0]?.from;
@@ -484,7 +476,16 @@ const RESOURCE_LABEL: Record<string, string> = {
  * Each row is one resource with its own way in — nothing here was parsed out of the answer text, and a reference the
  * reader may no longer open never arrives from the server at all.
  */
-function AnswerResources({ resources, onOpen }: { resources: AnswerResource[]; onOpen?: (resource: AnswerResource) => void }) {
+function AnswerResources({
+  resources,
+  onOpen,
+  provenance,
+}: {
+  resources: AnswerResource[];
+  onOpen?: (resource: AnswerResource) => void;
+  /** For each canonical ref, the connection the turn actually walked to reach it. Absent when it was reached directly. */
+  provenance?: Map<string, string>;
+}) {
   const [showAll, setShowAll] = useState(false);
   if (resources.length === 0) return null;
   // A turn can read a lot. The answer stays the main content: the rest are one press away, never hidden.
@@ -492,21 +493,26 @@ function AnswerResources({ resources, onOpen }: { resources: AnswerResource[]; o
   return (
     <section aria-label="답변이 가리키는 것" className="ax-answer-resources">
       <b>
-        답변이 가리키는 것 {resources.length}개 <small>· 실제로 조회한 정본</small>
+        읽은 정본 {resources.length}개 <small>· 실제로 조회한 것</small>
       </b>
       <ol className="ax-resource-list">
-        {shown.map((resource) => (
-          <li data-resource={`${resource.resource_type}:${resource.resource_id}`} key={resource.reference_id}>
-            <span className="ax-resource-kind">{RESOURCE_LABEL[resource.resource_type] ?? resource.resource_type}</span>
-            <span className="ax-resource-title">{resource.title}</span>
-            {resource.state && <span className="t-meta">{taskStateLabel[resource.state as keyof typeof taskStateLabel] ?? resource.state}</span>}
-            {onOpen && (
-              <button className="btn h30" onClick={() => onOpen(resource)} type="button">
-                상세 열기
-              </button>
-            )}
-          </li>
-        ))}
+        {shown.map((resource) => {
+          const ref = `${resource.resource_type}:${resource.resource_id}`;
+          const why = provenance?.get(ref);
+          return (
+            <li data-resource={ref} key={resource.reference_id}>
+              <span className="ax-resource-kind">{RESOURCE_LABEL[resource.resource_type] ?? resource.resource_type}</span>
+              <span className="ax-resource-title">{resource.title}</span>
+              {resource.state && <span className="t-meta">{taskStateLabel[resource.state as keyof typeof taskStateLabel] ?? resource.state}</span>}
+              {onOpen && (
+                <button className="btn h30" onClick={() => onOpen(resource)} type="button">
+                  상세 열기
+                </button>
+              )}
+              {why && <span className="ax-resource-why t-meta">{why}</span>}
+            </li>
+          );
+        })}
       </ol>
       {resources.length > shown.length && (
         <button className="btn link" onClick={() => setShowAll(true)} type="button">
@@ -515,6 +521,71 @@ function AnswerResources({ resources, onOpen }: { resources: AnswerResource[]; o
       )}
     </section>
   );
+}
+
+/**
+ * 이 답이 무엇 위에 서 있는지, 한 줄로 먼저.
+ *
+ * 근거는 답 아래 따로따로 쌓이는 세 덩어리가 아니라 답에 붙은 한 줄이다. 접힌 상태에서 그 줄은 얼마나 많은 것을
+ * 딛고 있는지만 말하고, 펼치면 읽은 정본·인용한 구간·걸어간 경로가 같은 자리에서 이어진다. 답이 언제나 먼저
+ * 읽히도록 기본은 접힘이다.
+ *
+ * 세는 것은 화면에 실제로 도달한 것뿐이다. 지금 이 사람이 볼 수 없는 것은 서버에서 아예 오지 않으므로 여기에서도
+ * 세지 않는다. 볼 수 없는 것의 개수는 그 자체로 존재를 알리는 말이 된다.
+ */
+function AnswerEvidence({
+  resources,
+  evidence,
+  steps,
+  onOpen,
+  onOpenGraph,
+}: {
+  resources: AnswerResource[];
+  evidence: MaterialEvidence[];
+  steps: GraphReceipt[];
+  onOpen?: (resource: AnswerResource) => void;
+  onOpenGraph?: (nodeRef: string) => void;
+}) {
+  if (resources.length === 0 && evidence.length === 0 && steps.length === 0) return null;
+  const counts = [
+    resources.length ? `정본 ${resources.length}건` : null,
+    evidence.length ? `인용 ${evidence.length}곳` : null,
+    steps.length ? `연결 ${steps.length}단계` : null,
+  ].filter(Boolean);
+  return (
+    <details className="ax-answer-evidence">
+      <summary>
+        <span className="ax-evidence-kicker">근거</span>
+        <span className="ax-evidence-counts">{counts.join(" · ")}</span>
+      </summary>
+      <div className="ax-evidence-body">
+        <AnswerResources onOpen={onOpen} provenance={walkedTo(steps)} resources={resources} />
+        <EvidenceCards evidence={evidence} />
+        <TurnGraph onOpenGraph={onOpenGraph} steps={steps} />
+      </div>
+    </details>
+  );
+}
+
+/**
+ * 각 정본을 어떤 연결로 만났는지. 걸어간 edge 그대로이며, 없으면 줄도 없다.
+ *
+ * 제목만 있는 목록은 봤다는 주장이지 근거가 아니다. 여기서 붙는 한 줄은 tool이 돌려준 edge를 사람이 읽는 말로
+ * 옮긴 것뿐이고, 추론해서 만든 관계는 하나도 들어가지 않는다. 같은 것에 여러 연결이 닿으면 먼저 걸어간 것이 그
+ * 자리를 갖는다.
+ */
+function walkedTo(steps: GraphReceipt[]): Map<string, string> {
+  const lines = new Map<string, string>();
+  for (const step of steps) {
+    if (step.kind !== "edge" || !step.from_ref || !step.to_ref) continue;
+    const kind = step.edge_kind ?? "";
+    const sentence = EDGE_SENTENCE[kind] ?? { incoming: kind, outgoing: kind };
+    const to = String(step.to_ref);
+    const from = String(step.from_ref);
+    if (!lines.has(to)) lines.set(to, `${sentence.incoming} · ${step.from_title ?? from}`);
+    if (!lines.has(from)) lines.set(from, `${sentence.outgoing} · ${step.to_title ?? to}`);
+  }
+  return lines;
 }
 
 function EvidenceCards({ evidence }: { evidence: MaterialEvidence[] }) {

@@ -643,6 +643,78 @@ describe("답변이 가리키는 것", () => {
   });
 });
 
+describe("근거", () => {
+  afterEach(cleanup);
+
+  it("says in one line what the answer stands on, and why each thing is there once opened", async () => {
+    const base = conversation("c12", "관계 질문", "이 업무가 어디서 왔는지 알려줘");
+    const turnId = base.turns[0].turn_id;
+    const grounded = {
+      ...base,
+      graph_receipts: [
+        {
+          receipt_id: "r1",
+          turn_id: turnId,
+          sequence: 1,
+          kind: "edge" as const,
+          edge_kind: "produced",
+          from_ref: "work_request:wr1",
+          from_title: "분기 마감 요청",
+          to_ref: "task:t1",
+          to_title: "분기 마감",
+          observed_at: "2026-09-06T00:00:00Z",
+        },
+      ],
+      answer_resources: [
+        {
+          reference_id: "a1",
+          turn_id: turnId,
+          sequence: 1,
+          resource_type: "task" as const,
+          resource_id: "t1",
+          resource_version: 2,
+          parent_resource_id: null,
+          title: "분기 마감",
+          state: "in_progress",
+        },
+      ],
+    };
+    const { container } = render(
+      <MessageList
+        conversation={grounded as never}
+        localFragments={[]}
+        onDecide={vi.fn()}
+        onDiscardFragment={vi.fn()}
+        onRetryFragment={vi.fn()}
+        onRetryTurn={vi.fn()}
+      />,
+    );
+    // 답이 먼저 읽히도록 기본은 접힘이고, 한 줄이 딛고 있는 것의 크기를 말한다.
+    const panel = container.querySelector("details.ax-answer-evidence") as HTMLDetailsElement;
+    expect(panel.open).toBe(false);
+    expect(panel.querySelector("summary")?.textContent).toContain("정본 1건");
+    expect(panel.querySelector("summary")?.textContent).toContain("연결 1단계");
+    // 제목만으로는 근거가 아니다: 실제로 걸어간 edge가 그 자리에 문장으로 붙는다.
+    const row = panel.querySelector('li[data-resource="task:t1"]') as HTMLElement;
+    expect(row.querySelector(".ax-resource-why")?.textContent).toBe("이 업무를 만든 요청 · 분기 마감 요청");
+  });
+
+  it("counts only what reached the screen, and stays away entirely when a turn stood on nothing", async () => {
+    const base = conversation("c13", "인사", "안녕");
+    const { container } = render(
+      <MessageList
+        conversation={base as never}
+        localFragments={[]}
+        onDecide={vi.fn()}
+        onDiscardFragment={vi.fn()}
+        onRetryFragment={vi.fn()}
+        onRetryTurn={vi.fn()}
+      />,
+    );
+    expect(container.querySelector("details.ax-answer-evidence")).toBeNull();
+  });
+});
+
 describe("실행 영수증", () => {
   afterEach(cleanup);
 

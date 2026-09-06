@@ -1,21 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { graphNeighbors, graphOverview, graphSearch } from "./api";
-import { GraphCanvas, KIND_COLOR, KIND_LABEL, KIND_SOURCE, refOf, type GraphControls } from "./GraphCanvas";
+import { EDGE_SENTENCE, GraphCanvas, KIND_COLOR, KIND_LABEL, KIND_SOURCE, refOf, type GraphControls } from "./GraphCanvas";
 import type { GraphEdge, GraphNeighborhood, GraphNode, GraphOverview } from "./viewModels";
 import { personName, taskStateLabel, workRequestStateLabel } from "./labels";
 
 /** What a connection means, in the words a person would use rather than the name of the edge. */
-const EDGE_SENTENCE: Record<string, { incoming: string; outgoing: string }> = {
-  produced: { incoming: "이 업무를 만든 요청", outgoing: "이 요청이 만든 업무" },
-  requested: { incoming: "이 요청을 보낸 사람", outgoing: "보낸 요청" },
-  asked_of: { incoming: "요청받은 사람", outgoing: "요청받은 사람" },
-  holds: { incoming: "담당", outgoing: "담당 중인 업무" },
-  parent_of: { incoming: "상위 업무", outgoing: "하위 업무" },
-  refers_to: { incoming: "이 업무를 참고한 업무", outgoing: "참고 업무" },
-  has_material: { incoming: "붙어 있는 업무", outgoing: "참고 자료·산출물" },
-};
-
 const VIEW_LABEL: Record<string, string> = { member: "구성원 보기", team: "팀으로 묶기" };
 
 /** A node's state in the words its own ledger uses — a task's state, a request's, a meeting's visibility. */

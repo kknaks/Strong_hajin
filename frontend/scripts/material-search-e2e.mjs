@@ -124,6 +124,13 @@ try {
   }
 
   // The evidence card is visible in the drawer and its origin serves the uploaded bytes to the authorized user.
+  // 인용은 답에 붙은 근거 줄 안에 있다: 답이 먼저 읽히고, 한 번 펼치면 읽은 구간이 그대로 나온다.
+  const grounds = page.locator("details.ax-answer-evidence").last();
+  await grounds.waitFor({ timeout: 20_000 });
+  if ((await grounds.locator("summary").textContent())?.includes("인용") !== true) {
+    throw new Error("the one-line evidence bar did not count the quoted passages");
+  }
+  await grounds.locator("summary").click();
   const card = page.locator(`.ax-evidence-card[data-material-id="${indexed.material_id}"]`).first();
   await card.waitFor({ timeout: 20_000 });
   await card.getByText(fileName).waitFor();

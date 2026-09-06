@@ -468,6 +468,18 @@ button.metric-card:hover { border-color: var(--border-strong); background: var(-
 .ax-resource-list li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ax-resource-kind { padding: 1px 6px; border-radius: var(--radius-chip); background: var(--surface-sunken); color: var(--text-tertiary); font-size: 11px; font-weight: 700; }
 .ax-resource-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; }
+.ax-resource-why { flex-basis: 100%; padding-left: 2px; font-size: 11px; }
+/* 근거: 접혀 있을 때는 한 줄, 펼치면 같은 자리에서 정본·인용·경로가 이어진다. */
+.ax-answer-evidence { margin: 6px 24px 8px 0; border: 1px solid var(--border-subtle); border-radius: var(--radius-card); background: var(--surface); }
+.ax-answer-evidence > summary { display: flex; align-items: center; gap: 8px; padding: 7px 12px; cursor: pointer; list-style: none; font-size: 12px; }
+.ax-answer-evidence > summary::-webkit-details-marker { display: none; }
+.ax-answer-evidence > summary::after { content: "펼치기"; margin-left: auto; color: var(--text-tertiary); font-size: 11px; }
+.ax-answer-evidence[open] > summary::after { content: "접기"; }
+.ax-answer-evidence[open] > summary { border-bottom: 1px solid var(--border-subtle); }
+.ax-evidence-kicker { padding: 1px 6px; border-radius: var(--radius-chip); background: var(--surface-sunken); color: var(--text-secondary); font-size: 11px; font-weight: 700; }
+.ax-evidence-counts { color: var(--text-tertiary); }
+.ax-evidence-body { display: grid; gap: 8px; padding: 10px 12px; }
+.ax-evidence-body > .ax-evidence { margin: 0; }
 /* 관계 탐색: the picture fills the page and everything else floats over it, the way a map reads. */
 .graph-page { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: 12px; min-height: calc(100vh - 120px); }
 .graph-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

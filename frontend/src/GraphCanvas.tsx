@@ -35,6 +35,32 @@ export const KIND_LABEL: Record<string, string> = {
   report: "보고",
 };
 
+/** 한 연결을 그림 위에 적을 때의 짧은 이름. 그리는 자리는 좁으므로 방향은 화살표가 말한다. */
+export const EDGE_LABEL: Record<string, string> = {
+  produced: "만든 업무",
+  requested: "보낸 요청",
+  asked_of: "요청받은 사람",
+  holds: "담당",
+  parent_of: "하위 업무",
+  refers_to: "참고 업무",
+  has_material: "자료",
+};
+
+/**
+ * 같은 연결을 문장으로 읽을 때의 이름. 어느 쪽에서 보느냐로 말이 달라지므로 방향마다 따로 둔다.
+ *
+ * 모르는 종류는 지어내지 않고 자기 이름을 그대로 쓴다.
+ */
+export const EDGE_SENTENCE: Record<string, { incoming: string; outgoing: string }> = {
+  produced: { incoming: "이 업무를 만든 요청", outgoing: "이 요청이 만든 업무" },
+  requested: { incoming: "이 요청을 보낸 사람", outgoing: "보낸 요청" },
+  asked_of: { incoming: "요청받은 사람", outgoing: "요청받은 사람" },
+  holds: { incoming: "담당", outgoing: "담당 중인 업무" },
+  parent_of: { incoming: "상위 업무", outgoing: "하위 업무" },
+  refers_to: { incoming: "이 업무를 참고한 업무", outgoing: "참고 업무" },
+  has_material: { incoming: "붙어 있는 업무", outgoing: "참고 자료·산출물" },
+};
+
 /** 정본이 어디에 있는지. 그래프는 이 원장들의 읽기 투영이고 자기 행을 갖지 않는다. */
 export const KIND_SOURCE: Record<string, string> = {
   person: "Member + Membership + Appointment",

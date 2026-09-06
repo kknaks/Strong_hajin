@@ -81,7 +81,20 @@ try {
   if ((await receipt.locator("summary").textContent())?.includes("연결") !== true) {
     throw new Error("the one-line receipt did not say how many steps the turn walked");
   }
-  await page.locator("section[aria-label='이 답의 관계']").last().waitFor({ timeout: 20_000 });
+  // 근거는 답에 붙은 한 줄로 먼저 오고, 펼쳐야 정본·인용·경로가 나온다.
+  const grounds = page.locator("details.ax-answer-evidence").last();
+  await grounds.waitFor({ timeout: 20_000 });
+  if (await grounds.evaluate((element) => element.open)) throw new Error("the evidence panel was not folded away behind the answer");
+  const groundsLine = (await grounds.locator("summary").textContent()) ?? "";
+  if (!groundsLine.includes("정본") || !groundsLine.includes("연결")) {
+    throw new Error(`the one-line evidence bar did not say what the answer stands on: ${groundsLine}`);
+  }
+  await grounds.locator("summary").click();
+  await grounds.locator("section[aria-label='이 답의 관계']").waitFor({ timeout: 20_000 });
+  // 제목만 있는 목록은 봤다는 주장이다. 실제로 걸어간 연결이 그 자리에 문장으로 붙어야 근거가 된다.
+  if ((await grounds.locator(".ax-resource-why").count()) === 0) {
+    throw new Error("no read resource said which connection the turn walked to reach it");
+  }
   await page.screenshot({ path: "test-results/graph-question-turn1.png", fullPage: false });
 
   // Turn 2: `그중 …`. The seeds come from what this conversation read, not from provider memory.
@@ -117,7 +130,9 @@ try {
   await page.screenshot({ path: "test-results/graph-question-turn2.png", fullPage: false });
 
   // The card hands the centre to the full surface, which applies this person's access again from the start.
-  await page.locator("section[aria-label='이 답의 관계']").last().getByRole("button", { name: "전체 그래프로 보기" }).click();
+  const lastGrounds = page.locator("details.ax-answer-evidence").last();
+  if (!(await lastGrounds.evaluate((element) => element.open))) await lastGrounds.locator("summary").click();
+  await lastGrounds.locator("section[aria-label='이 답의 관계']").getByRole("button", { name: "전체 그래프로 보기" }).click();
   const surface = page.locator("section[aria-label='관계 그래프']");
   await surface.waitFor({ timeout: 30_000 });
   await pollFor(page, async () => ((await surface.textContent()) ?? "").includes("중심"), {
