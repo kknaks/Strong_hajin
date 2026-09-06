@@ -28,6 +28,23 @@ def test_production_has_no_developer_login_surface() -> None:
         DeveloperAuthAdapter(Settings(RuntimeProfile.PRODUCTION, "postgresql+psycopg://unused"))
 
 
+def test_production_exposes_no_persona_surface_at_all(tmp_path) -> None:
+    """Not two examples: every route the production app registers, and none of them is a way in without an identity.
+
+    The real login is Google OIDC and is not built yet. Until it is, production must have no door at all rather than
+    a development one left ajar.
+    """
+    app = create_app(Settings(RuntimeProfile.PRODUCTION, "postgresql+psycopg://unused"))
+    paths = {getattr(route, "path", "") for route in app.routes}
+    assert not any("developer" in path or "persona" in path for path in paths), sorted(paths)
+    # And nothing carrying work data is registered either, so a missing session cannot fall through to data.
+    assert not any(path.startswith(("/api/tasks", "/api/work-requests", "/api/meetings", "/api/graph")) for path in paths)
+
+    client = TestClient(app)
+    for path in ("/api/developer/personas", "/api/my-work", "/api/graph/search?q=x"):
+        assert client.get(path, headers={"X-Demo-Persona": "demo-admin"}).status_code == 404
+
+
 def test_developer_auth_only_accepts_seeded_personas() -> None:
     client = TestClient(create_app(Settings(RuntimeProfile.TEST, "postgresql+psycopg://unused")))
     assert client.get("/api/my-work", headers={"X-Demo-Persona": "invented-admin"}).status_code == 401
