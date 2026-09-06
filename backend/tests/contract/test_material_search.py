@@ -284,6 +284,43 @@ def test_naming_the_work_still_scopes_the_search_to_it(tmp_path) -> None:
     assert {row["name"] for row in wide["results"]} == {"첫견적.md", "둘째견적.md"}
 
 
+def test_the_files_of_work_someone_may_read_are_not_hidden_from_them(tmp_path) -> None:
+    """본문은 찾히는데 그 파일의 목록은 없는 자리가 있으면 안 된다.
+
+    프로젝트로 읽는 업무의 자료도 같은 자격으로 본다. 자료 목록·열기·그 업무 안에서의 검색이 전부 업무 모듈의
+    같은 판정 위에 서고, 붙이고 떼는 것은 여전히 그 업무를 든 사람의 일이다.
+    """
+    client, application, worker, settings = _stack(tmp_path)
+    project = client.post(
+        "/api/projects", headers=JIHO, json={"name": "한빛 통합 마케팅", "organization_unit_id": "product"}
+    ).json()
+    task = client.post(
+        "/api/tasks", headers=JIHO, json={"title": "홈페이지 카테고리 정리", "project_id": project["project_id"]}
+    ).json()
+    _upload(client, task["task_id"], "간트.md", BRIEF.encode(), "text/markdown", headers=JIHO)
+    while asyncio.run(worker.run_once()):
+        pass
+
+    # 프로젝트에 붙기 전에는 업무도 자료도 없는 것과 같다.
+    assert client.get(f"/api/tasks/{task['task_id']}/materials", headers=MINA).status_code == 404
+    assert client.get("/api/materials/search", headers=MINA, params={"q": "한빛상사"}).json()["results"] == []
+
+    client.post(f"/api/projects/{project['project_id']}/members", headers=JIHO, json={"member_id": "mina"})
+
+    listed = client.get(f"/api/tasks/{task['task_id']}/materials", headers=MINA)
+    assert listed.status_code == 200, listed.text
+    [material] = listed.json()
+    assert material["name"] == "간트.md"
+    # 넓은 검색이 찾아 주는 것과 그 업무를 대고 묻는 것이 같은 답이다.
+    wide = client.get("/api/materials/search", headers=MINA, params={"q": "한빛상사"}).json()
+    scoped = client.get(f"/api/tasks/{task['task_id']}/materials/search", headers=MINA, params={"q": "한빛상사"}).json()
+    assert {row["name"] for row in wide["results"]} == {row["name"] for row in scoped["results"]} == {"간트.md"}
+    assert client.get(f"/api/tasks/{task['task_id']}/materials/{material['material_id']}/content", headers=MINA).status_code == 200
+    # 읽는 것이 붙이고 떼는 것으로 번지지 않는다.
+    assert client.post(f"/api/tasks/{task['task_id']}/materials/{material['material_id']}/detach", headers=MINA).status_code == 404
+    assert _upload(client, task["task_id"], "끼워넣기.md", BRIEF.encode(), "text/markdown", headers=MINA).status_code == 404
+
+
 def test_an_index_made_with_older_rules_is_rebuilt_and_only_once(tmp_path) -> None:
     """분석 규칙이 바뀌면 그 규칙으로 만든 색인은 더 이상 질문과 만나지 못한다. 다시 만들어야 한다.
 

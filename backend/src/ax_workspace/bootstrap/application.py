@@ -216,6 +216,10 @@ class _SessionReadableWork:
         )
         return [str(row["task_id"]) for row in rows]
 
+    def may_read_task(self, principal: Principal, task_id: UUID) -> bool:
+        """한 업무를 두고 묻는 답과 전체를 두고 묻는 답이 같은 곳에서 나온다."""
+        return str(task_id) in set(self.readable_task_ids(principal))
+
 
 class _SessionGraphSource:
     """The graph's window onto the ledgers: every read is the owning module's own authorized operation."""

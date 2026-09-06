@@ -130,9 +130,14 @@ def _registered_within(attachment: Any, since: date | None, until: date | None) 
 
 
 class ReadableWorkPort(Protocol):
-    """이 사람이 읽을 수 있는 업무들. 자료 검색은 그 업무들에 붙은 것만 본다."""
+    """이 사람이 읽을 수 있는 업무들. 자료는 그 업무들에 붙은 것만 본다.
+
+    한 업무를 읽을 수 있는지와 읽을 수 있는 업무가 무엇인지는 같은 판정이어야 한다. 둘이 갈리면 본문은
+    검색되는데 그 파일의 목록은 없는 자리가 생긴다.
+    """
 
     def readable_task_ids(self, principal: Principal) -> list[str]: ...
+    def may_read_task(self, principal: Principal, task_id: UUID) -> bool: ...
 
 
 class TaskMaterialApplication:
@@ -159,7 +164,7 @@ class TaskMaterialApplication:
 
     def list(self, principal: Principal, task_id: UUID) -> list[dict[str, Any]]:
         self._require(principal, TASK_READ)
-        self._tasks.task(task_id, str(principal.id))
+        self._readable(principal, task_id)
         active = [(binding, attachment) for binding, attachment in self._attachments.bindings_for("task", str(task_id)) if binding.unbound_at is None]
         extractions = self._extractions.for_attachments([attachment.id for _, attachment in active]) if self._extractions else {}
         return [
@@ -189,7 +194,7 @@ class TaskMaterialApplication:
         실적을 언급한 자료`는 다른 질문이며, 날짜를 검색어에 섞으면 둘이 하나로 뭉개진다.
         """
         self._require(principal, TASK_READ)
-        task = self._tasks.task(task_id, str(principal.id)) if task_id is not None else None
+        task = self._readable(principal, task_id) if task_id is not None else None
         cleaned = " ".join(query.split())
         if not cleaned:
             raise MaterialError("search query is required")
@@ -348,7 +353,7 @@ class TaskMaterialApplication:
 
     def open(self, principal: Principal, task_id: UUID, binding_id: UUID) -> tuple[dict[str, Any], bytes]:
         self._require(principal, TASK_READ)
-        self._tasks.task(task_id, str(principal.id))
+        self._readable(principal, task_id)
         found = self._attachments.binding("task", str(task_id), binding_id)
         if found is None or found[0].unbound_at is not None:
             raise MaterialNotFound("material was not found")
@@ -391,6 +396,19 @@ class TaskMaterialApplication:
         if self._extractions is None:
             return None
         return self._extractions.for_attachments([attachment.id]).get(attachment.id)
+
+    def _readable(self, principal: Principal, task_id: UUID) -> Any:
+        """이 업무를 읽을 수 있는가. 판정은 업무 모듈에 있고, 자료는 그 답을 쓴다.
+
+        자기가 든 업무만이 아니다 — 조직 범위나 함께 하는 프로젝트로 읽는 업무의 자료도 같은 자격으로 본다.
+        붙이고 떼는 것은 여전히 그 업무를 든 사람의 일이며 여기서 넓어지지 않는다.
+        """
+        if self._readable_work is not None and self._readable_work.may_read_task(principal, task_id):
+            task = self._tasks.task_by_id(task_id)
+            if task is not None:
+                return task
+        # 읽을 수 없는 업무는 없는 업무와 같은 말로 끝난다.
+        return self._tasks.task(task_id, str(principal.id))
 
     @staticmethod
     def _require(principal: Principal, capability: str) -> None:
