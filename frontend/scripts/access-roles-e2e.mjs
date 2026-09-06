@@ -1,6 +1,6 @@
 import { chromium } from "@playwright/test";
 
-import { loginAs, pollFor, switchAccount } from "./e2e-helpers.mjs";
+import { loginAs, pollFor, quickLoginAs, switchAccount } from "./e2e-helpers.mjs";
 
 /**
  * 같은 원장, 다른 범위: 대표 · 팀장 · 구성원이 각자 볼 수 있는 것만 본다.
@@ -74,8 +74,16 @@ try {
   const leadMeeting = await page.evaluate(async (meetingId) => (await fetch(`/api/meetings/${meetingId}`)).status, created.meeting.meeting_id);
   if (leadMeeting === 200) throw new Error("a team lead could read a private meeting they were not part of");
 
-  // 대표: 조직의 업무를 읽는다 — 읽기까지만.
-  await switchAccount(page, "yuna");
+  // 대표: 조직의 업무를 읽는다 — 읽기까지만. 로컬 데모 계정 버튼 한 번으로 들어가되, 지나가는 길은 진짜 로그인이다.
+  await page.getByRole("button", { name: "로그아웃" }).click();
+  const signedIn = page.waitForResponse(
+    (response) => response.url().endsWith("/api/auth/login") && response.request().method() === "POST",
+  );
+  await quickLoginAs(page, "yuna");
+  const loginResponse = await signedIn;
+  if (loginResponse.status() !== 200 || (await loginResponse.json()).member_id !== "yuna") {
+    throw new Error(`the shortcut did not sign in through the login route: ${loginResponse.status()}`);
+  }
   await page.getByRole("navigation", { name: "제품 탐색" }).getByRole("button", { name: "업무" }).click();
   await page.getByRole("tab", { name: "조직 업무" }).click();
   const row = page.locator(`[data-organization-task="${created.task.task_id}"]`);

@@ -404,9 +404,12 @@ export async function cancelConversation(
 }
 
 export type AuthProviders = {
-  /** Email and password sign-in. It never says who has an account. */
+  /** Email and password sign-in. */
   local: boolean;
   oidc: boolean;
+  /** Local demo only: the accounts `reset-demo` installed, offered as a way to skip typing. */
+  demo_accounts?: Array<{ member_id: string; email: string; display_name: string }>;
+  demo_password?: string;
 };
 
 /** The roles this organization actually has, as they are now. Only for someone who administers access. */

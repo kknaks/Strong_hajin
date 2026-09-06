@@ -37,6 +37,7 @@ from ax_workspace.modules.meetings.domain import MeetingAccessDenied, MeetingErr
 from ax_workspace.modules.meetings.transcription import TranscriptionFailure, FinalTranscriptSegment
 from ax_workspace.modules.ax_execution.conversations import ConversationError, ConversationQueueOverflow
 from ax_workspace.modules.ax_execution.actions import ActionAccessDenied, ActionCapabilityDenied, ActionError
+from ax_workspace.bootstrap.seed import DEMO_EMAIL_DOMAIN, DEMO_PASSWORD, SEEDED_MEMBERS
 from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
 
@@ -434,8 +435,20 @@ def create_app(
 
         @app.get("/api/auth/providers")
         def auth_providers() -> dict[str, object]:
-            """Which ways of proving who you are exist here. It never lists who has an account."""
-            return {"local": settings.local_login_enabled, "oidc": False}
+            """Which ways of proving who you are exist here — and, on a developer machine, the demo's own accounts.
+
+            The shortcut list is the local demo's own accounts and the one password `reset-demo` gave them, which the
+            README already prints. It is a way to skip typing, not a way to skip signing in: pressing one still posts
+            the same credentials to the same login route and gets an ordinary session. Production returns neither.
+            """
+            answer: dict[str, object] = {"local": settings.local_login_enabled, "oidc": False}
+            if settings.local_login_enabled:
+                accounts = app.state.workflow_application.demo_accounts(DEMO_EMAIL_DOMAIN)
+                # Read as an organization — 대표 first, then the team — rather than in identifier order.
+                order = {member.id: index for index, member in enumerate(SEEDED_MEMBERS)}
+                answer["demo_accounts"] = sorted(accounts, key=lambda row: (order.get(str(row["member_id"]), len(order)), row["member_id"]))
+                answer["demo_password"] = DEMO_PASSWORD
+            return answer
 
         if settings.local_login_enabled:
 

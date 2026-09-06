@@ -23,6 +23,12 @@ export async function loginAs(page, accountId) {
   await page.getByRole("navigation", { name: "제품 탐색" }).waitFor();
 }
 
+/** Signs in with the local demo shortcut — one press, and still a real sign-in through the same route. */
+export async function quickLoginAs(page, accountId) {
+  await page.locator(`[data-demo-account="${accountId}"]`).click();
+  await page.getByRole("navigation", { name: "제품 탐색" }).waitFor();
+}
+
 /** Signs the current account out and signs in as another seeded account. */
 export async function switchAccount(page, accountId) {
   await signOut(page);

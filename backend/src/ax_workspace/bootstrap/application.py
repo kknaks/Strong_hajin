@@ -578,6 +578,10 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def demo_accounts(self, email_domain: str) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).demo_accounts(email_domain)
+
     def member_directory(self, principal: Principal) -> list[dict[str, Any]]:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).member_directory(principal)

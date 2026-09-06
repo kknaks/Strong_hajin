@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
 
 import { getAuthProviders, login, type AuthProviders } from "./api";
+import { personName } from "./labels";
 import type { OrganizationProfile } from "./viewModels";
 
 /**
  * Signing in is proving who you are, and nothing more.
  *
- * The page never lists who has an account and never offers to become someone else: an address and a password go to the
- * server, and what that person may then do is read from the Organization & Access ledger, not from this form.
+ * An address and a password go to the server, and what that person may then do is read from the Organization & Access
+ * ledger, not from this form. On a developer machine the server also hands over the demo's own accounts, and pressing
+ * one fills this same form and submits it — a way to skip typing, not a way to skip signing in. Nothing here can make
+ * someone else's session: becoming another person still means signing out and signing in as them.
  */
 export function LoginPage({ onLoggedIn }: { onLoggedIn: (profile: OrganizationProfile) => void }) {
   const [providers, setProviders] = useState<AuthProviders | null>(null);
@@ -30,17 +33,27 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: (profile: OrganizationPr
     };
   }, []);
 
-  async function submit() {
-    if (!email.trim() || !password) return;
+  async function submit(credentials?: { email: string; password: string }) {
+    const address = (credentials?.email ?? email).trim();
+    const secret = credentials?.password ?? password;
+    if (!address || !secret) return;
     setIsWorking(true);
     setError(null);
     try {
-      onLoggedIn(await login(email.trim(), password));
+      onLoggedIn(await login(address, secret));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "로그인하지 못했습니다.");
     } finally {
       setIsWorking(false);
     }
+  }
+
+  /** Fill the form with a demo account and sign in with it, so what is being sent stays visible. */
+  async function signInAs(account: { email: string }) {
+    const secret = providers?.demo_password ?? "";
+    setEmail(account.email);
+    setPassword(secret);
+    await submit({ email: account.email, password: secret });
   }
 
   return (
@@ -61,6 +74,38 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: (profile: OrganizationPr
           <span aria-hidden className="google-mark">G</span> Google 계정으로 로그인
         </button>
         <p className="login-hint">Google 로그인은 조직 SSO 연결 뒤에 열립니다.</p>
+
+        {(providers?.demo_accounts?.length ?? 0) > 0 && (
+          <section aria-label="로컬 데모 계정" className="login-demo">
+            <div className="login-divider">
+              <span>로컬 실행 전용 · 바로 로그인</span>
+            </div>
+            <ul className="demo-account-list">
+              {(providers?.demo_accounts ?? []).map((account) => (
+                <li key={account.member_id}>
+                  <button
+                    className="demo-account"
+                    data-demo-account={account.member_id}
+                    disabled={isWorking}
+                    onClick={() => void signInAs(account)}
+                    type="button"
+                  >
+                    <span aria-hidden className="avatar xs">
+                      {personName(account.display_name).slice(0, 1)}
+                    </span>
+                    <span className="demo-account-main">
+                      <b>{account.display_name}</b>
+                      <small className="t-meta">{account.email}</small>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <p className="login-hint">
+              데모 계정과 공용 비밀번호로 실제 로그인합니다. 다른 사람으로 보려면 로그아웃하고 다시 고르세요.
+            </p>
+          </section>
+        )}
 
         {providers?.local && (
           <form

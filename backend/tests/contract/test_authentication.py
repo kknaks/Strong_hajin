@@ -74,10 +74,35 @@ def test_the_login_route_does_not_exist_in_production(tmp_path) -> None:
     assert "/api/auth/login" not in paths
 
 
-def test_the_sign_in_page_is_never_told_who_has_an_account(tmp_path) -> None:
-    client, _ = _stack(tmp_path)
+def test_the_demo_offers_its_own_accounts_as_a_shortcut_and_production_offers_nothing(tmp_path) -> None:
+    """로컬에서는 한 번에 로그인하되, 지나가는 길은 여전히 진짜 로그인이다.
+
+    On a developer machine the page is handed the demo's own accounts and the one password `reset-demo` gave them —
+    a way to skip typing. It is not a way in: the shortcut posts those credentials to the same login route.
+    """
+    client, database_url = _stack(tmp_path)
     providers = client.get("/api/auth/providers").json()
-    assert providers == {"local": True, "oidc": False}
+    assert providers["local"] is True and providers["oidc"] is False
+    assert {account["member_id"] for account in providers["demo_accounts"]} == {"yuna", "jiho", "mina", "hyeon", "sora", "minseok"}
+    assert {account["email"] for account in providers["demo_accounts"]} == {demo_email(member) for member in ("yuna", "jiho", "mina", "hyeon", "sora", "minseok")}
+    assert providers["demo_password"] == DEMO_PASSWORD
+    # 그 자격으로 실제 로그인 route를 지나야 세션이 생긴다.
+    shortcut = providers["demo_accounts"][0]
+    signed_in = client.post("/api/auth/login", json={"email": shortcut["email"], "password": providers["demo_password"]})
+    assert signed_in.status_code == 200 and signed_in.json()["member_id"] == shortcut["member_id"]
+
+    # 데모 도메인 밖의 계정은 목록에 오르지 않는다 — 로컬 DB에 실제 계정을 만들어도 이름이 새지 않는다.
+    with make_session_factory(database_url)() as session:
+        session.get(MemberCredentialRecord, "minseok").email = "real.person@example.com"
+        session.commit()
+    listed = client.get("/api/auth/providers").json()["demo_accounts"]
+    assert "minseok" not in {account["member_id"] for account in listed}
+    assert "real.person@example.com" not in str(listed)
+
+
+def test_production_is_offered_no_accounts_and_no_route(tmp_path) -> None:
+    client, _ = _stack(tmp_path, RuntimeProfile.PRODUCTION)
+    assert client.get("/api/auth/providers").status_code == 404
     assert "/api/developer/personas" not in {route.path for route in client.app.routes}
 
 

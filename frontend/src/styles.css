@@ -467,6 +467,14 @@ button.metric-card:hover { border-color: var(--border-strong); background: var(-
 .member-access .grant-list li { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .grant-form { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border-default); border-radius: var(--radius-card); background: var(--surface-sunken); }
 .grant-form select, .grant-form input { height: 32px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); font: inherit; background: var(--surface-default); color: var(--text-primary); }
+.login-demo { display: grid; gap: 10px; }
+.demo-account-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.demo-account { display: flex; align-items: baseline; gap: 10px; width: 100%; height: 38px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); background: var(--surface-default); color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.demo-account:hover:not(:disabled) { border-color: transparent; background: var(--selected-bg); }
+.demo-account:disabled { opacity: 0.6; cursor: default; }
+.demo-account-main { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.demo-account-main b { font-size: 14px; font-weight: 500; white-space: nowrap; }
+.demo-account-main small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .login-local { display: grid; gap: 16px; }
 .login-local input { height: 40px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); font: inherit; background: var(--surface-default); color: var(--text-primary); }
 .login-divider { display: flex; align-items: center; gap: 12px; color: var(--text-tertiary); font-size: 12px; font-weight: 700; }

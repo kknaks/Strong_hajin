@@ -14,7 +14,6 @@ from ax_workspace.platform.persistence import (
     AccessGrantRecord,
     ActivityEventRecord,
     AppointmentRecord,
-    CapabilityRecord,
     EmploymentPeriodRecord,
     GradeAssignmentRecord,
     GradeRecord,
@@ -365,6 +364,34 @@ class SqlAlchemyOrganizationRepository:
             )
         )
         return frozenset(member_id for member_id in rows if member_id in active)
+
+    def demo_accounts(self, email_domain: str) -> list[dict[str, str]]:
+        """The local demo's own accounts, for the sign-in shortcut on a developer machine.
+
+        Only credentials at the demo domain are listed, so a real account someone adds to a local database is not
+        enumerated alongside them. Everything here is what `reset-demo` installed and the README already prints.
+        """
+        active = set(
+            self._session.scalars(
+                select(EmploymentPeriodRecord.member_id).where(
+                    EmploymentPeriodRecord.state == "active", EmploymentPeriodRecord.ended_at.is_(None)
+                )
+            )
+        )
+        rows = self._session.execute(
+            select(MemberCredentialRecord.member_id, MemberCredentialRecord.email, MemberRecord.display_name)
+            .join(MemberRecord, MemberRecord.id == MemberCredentialRecord.member_id)
+            .where(
+                MemberCredentialRecord.email.endswith(f"@{email_domain}"),
+                MemberRecord.employment_state == "active",
+            )
+            .order_by(MemberRecord.id)
+        ).all()
+        return [
+            {"member_id": row.member_id, "email": row.email, "display_name": row.display_name}
+            for row in rows
+            if row.member_id in active
+        ]
 
     def member_directory(self) -> list[dict[str, str]]:
         """Every active member's name, so the product can say who did what. It carries no capability."""
