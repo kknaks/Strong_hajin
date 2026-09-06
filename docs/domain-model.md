@@ -67,6 +67,8 @@ Projection: `GET /api/organization/tree`, `GET /api/organization/units/{id}/memb
 - **command는 자기 kind가 받는 필드만 받는다.** `revise`의 `changes`는 `title`·`description`·`due_date`·`clear_due_date`, `adjust`의 제안은 `title`·`description`·`due_date`만 받고 그 밖의 키는 조용히 버리지 않고 거절한다. AX 제안 판단은 사유·변경 항목을 받지 않고, 배정 판단은 변경 항목을 받지 않는다. 각 handler의 `normalize`가 이 계약을 소유하므로 REST·MCP·위임 wrapper가 모두 같은 것을 저장하고 같은 것을 실행한다. MCP JSON schema는 generic command 특성상 `changes`를 object로만 표현하므로 server validation이 계약의 정본이다.
 - **아직 남은 것.** 저장소는 `decision_items`(요청)와 `action_items`(AX 제안), `task_assignments`(배정)로 나뉘어 있다. 이것은 의도된 이중 모델이 아니라 진행 중인 통합의 중간 상태이고, 판단 표면에서는 이미 하나로 보인다. `action_items`를 canonical ActionItem으로 흡수하고 배정에도 Submission 행을 만드는 것이 남은 작업이다.
 
+- **로컬 스키마는 지우지 않고 맞춘다.** 개발 중 모델이 앞서 나가면 `make sync-demo-schema`가 없는 테이블과 컬럼만 더한다. 삭제·타입 변경처럼 데이터를 잃을 수 있는 것은 실행하지 않고 사람이 결정할 항목으로 출력한다(`make reset-demo`는 여전히 파괴적이며 명시적으로 부를 때만 쓴다). 운영 migration(Alembic baseline)과 배포는 별도 gate다.
+
 ## 판단·요청 연속성·업무 (Work)
 
 | ERD | 테이블 | 비고 |

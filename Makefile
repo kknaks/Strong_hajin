@@ -6,7 +6,7 @@ E2E_FRONTEND_PORT ?= 5176
 ACCEPTANCE_API_PORT ?= 18111
 ACCEPTANCE_FRONTEND_PORT ?= 15186
 
-.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo api conversation-worker material-worker meeting-worker mcp frontend-install frontend api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-conversation-report-edit-action e2e-daily-report e2e-material-search local-stack acceptance-e2e live-report-smoke soniox-smoke
+.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo sync-demo-schema api conversation-worker material-worker meeting-worker mcp frontend-install frontend api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-conversation-report-edit-action e2e-daily-report e2e-material-search local-stack acceptance-e2e live-report-smoke soniox-smoke
 
 install:
 	cd backend && uv sync --all-groups
@@ -33,6 +33,9 @@ postgres-up:
 
 postgres-down:
 	docker compose down
+
+sync-demo-schema:
+	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.sync_demo_schema
 
 reset-demo:
 	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.reset_demo
