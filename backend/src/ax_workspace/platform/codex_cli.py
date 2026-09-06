@@ -290,7 +290,10 @@ class CodexCliProviderAdapter:
     #: How to answer a question about people, teams and work. It is guidance to the provider, not a pipeline: the
     #: model chooses its tools, and nothing here runs on its behalf. What it must not do is invent a connection.
     RELATIONSHIP_POLICY = (
-        "SCAX 관계 질문 지침:\n"
+        "SCAX 조회 지침:\n"
+        "- 목록 하나로 답할 수 있는 질문은 소유 도구를 바로 부르고 거기서 멈춘다. `내 업무`는 `task_list`,"
+        " `나에게 온 요청`은 `work_request_list`, `내 회의`는 `list_meetings`다. 관계를 묻지 않은 질문에"
+        " graph를 걷지 않는다 — 이미 답이 손에 있는데 더 걷는 것은 답을 늦출 뿐이다.\n"
         "- 사람·팀·업무·회의·자료가 어떻게 이어져 있는지 묻는 질문은 `graph_search`로 시작 node를 찾고,"
         " `graph_neighbors`로 명시된 관계만 넓힌 뒤, 필요한 것만 소유 도구(`task_get`·`meeting_get`·"
         "`work_request_get`·`task_materials_list`)로 읽는다.\n"
@@ -558,7 +561,14 @@ class CodexEventIngest:
         status = str(item.get("status", ""))
         if status in {"failed", "error", "declined"} or item.get("error"):
             current["state"] = "failed"
-            current["error_summary"] = _summarize_tool_error(item.get("error") or status)
+            # 실패한 MCP 호출은 이유를 결과 안에 담아 온다. 그것을 버리고 `failed`만 남기면 사람이 실행 rail에서
+            # 무엇이 잘못됐는지 알 수 없다 — 모델은 같은 응답을 그대로 받는데 사람만 못 본다.
+            reason = item.get("error")
+            current["error_summary"] = (
+                _summarize_tool_result(item["result"], tool_name=current["tool_name"])
+                if reason in (None, "") and item.get("result") is not None
+                else _summarize_tool_error(reason or status)
+            )
         elif status in {"completed", "success"} or phase == "completed":
             current["state"] = "completed"
             current["result_summary"] = (
