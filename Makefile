@@ -9,7 +9,7 @@ E2E_FRONTEND_PORT ?= 5176
 ACCEPTANCE_API_PORT ?= 18111
 ACCEPTANCE_FRONTEND_PORT ?= 15186
 
-.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo sync-demo-schema dataset-init dataset-validate dataset-inspect api conversation-worker material-worker meeting-worker mcp frontend-install frontend api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-conversation-report-edit-action e2e-daily-report e2e-material-search e2e-meeting-live-transcript e2e-access-roles e2e-graph-question local-stack acceptance-e2e live-report-smoke soniox-smoke
+.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo sync-demo-schema dataset-init dataset-validate dataset-import dataset-inspect api conversation-worker material-worker meeting-worker mcp frontend-install frontend api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-conversation-report-edit-action e2e-daily-report e2e-material-search e2e-meeting-live-transcript e2e-access-roles e2e-graph-question local-stack acceptance-e2e live-report-smoke soniox-smoke
 
 install:
 	cd backend && uv sync --all-groups
@@ -47,6 +47,11 @@ dataset-validate:
 	cd backend && uv run python -m ax_workspace.entrypoints.dataset validate "$(TARGET)"
 
 # 전달받은 자료를 열지 않고 살펴본다. SOURCE 는 저장소 밖 폴더여야 하고, 목록도 그 옆에 쓴다.
+# 검증을 통과한 dataset만, 그리고 이 저장소가 reset할 수 있는 로컬 demo DB에만 들어간다.
+dataset-import:
+	@test -n "$(TARGET)" || (echo "TARGET=<dataset 경로> 를 지정하세요" >&2; exit 2)
+	cd backend && uv run python -m ax_workspace.entrypoints.dataset import "$(TARGET)" $(DATASET_ARGS)
+
 dataset-inspect:
 	@test -n "$(SOURCE)" || (echo "SOURCE=<전달받은 폴더 경로> 를 지정하세요" >&2; exit 2)
 	cd backend && uv run python -m ax_workspace.entrypoints.dataset inspect "$(SOURCE)" $(DATASET_ARGS)

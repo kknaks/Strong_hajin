@@ -84,11 +84,16 @@ Run `DATABASE_URL=postgresql+psycopg://ax:ax@localhost:54329/ax_demo make conver
 make dataset-inspect SOURCE=~/Downloads/thesc DATASET_ARGS="--hide-names"   # 열지 않고 분류만
 make dataset-init TARGET=~/scax-datasets/actual DATASET_ARGS="--name 조직 --as-of 2026-09-02"
 make dataset-validate TARGET=~/scax-datasets/actual
+SCAX_DATASET_PASSWORD=... make dataset-import TARGET=~/scax-datasets/actual
 ```
 
 `inspect`는 파일을 열지 않는다. 경로가 말하는 것만으로 `deny`(계정·비밀번호 자료) · `metadata-only`(읽을 수 없는 형식이나 너무 큰 파일) · `manual-review`(기본) · `import`(사람이 `--allow`로 올린 것)을 정하고, 목록을 원본 폴더 옆에 쓴다. 허용 목록이 deny를 이기지 못하며, macOS가 분해해서 저장한 한글 파일명(NFD)도 같은 이름으로 취급한다.
 
 `init`은 빈 CSV header와 manifest를, `validate`는 키 중복·없는 참조·허용되지 않은 값·날짜 형식·순환을 확인한다. 검증 결과는 어느 파일 몇 번째 줄 어느 열인지만 말하고 셀 값은 출력하지 않는다. 두 명령 모두 저장소 안을 가리키면 거절한다.
+
+`import`는 검증을 통과한 dataset을 제품의 원장에 넣는다. 조직을 만드는 두 번째 길이 아니라 제품이 이미 쓰는 행을 사람이 정한 key로 다시 찾아 쓰는 adapter이므로, 두 번 넣어도 한 번 넣은 것과 같다. 한 transaction이라 적용할 수 없는 dataset은 아무것도 남기지 않는다. 넣을 수 있는 대상은 `reset-demo`가 지울 수 있는 로컬 demo DB뿐이다.
+
+권한은 조직이 정한다. 그 사람의 역할(`members.role_key`)과 보직에 따라오는 역할(`positions.role_key`)이 APPOINTMENT와 ACCESS_GRANT를 만들고, `logins`는 들어오는 문만 만든다. 비밀번호는 dataset에 두지 않고 `SCAX_DATASET_PASSWORD`로 준다. 주지 않으면 로그인을 절반만 만들지 않고 "하지 않은 것"으로 보고한다.
 
 The local stdio MCP server is a development-only delegated binding. It resolves the active Organization & Access principal for every canonical operation, but a long-lived external MCP process must reconnect after its developer persona's employment or grants change; the conversation worker also revalidates that owner and typed context immediately before execution.
 

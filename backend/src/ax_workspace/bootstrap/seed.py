@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -184,14 +185,7 @@ def _seed_organization_access(session: Session) -> None:
             session.add(JobRecord(id=job_id, name=name))
     session.flush()
 
-    for capability in CAPABILITIES:
-        record = session.get(CapabilityRecord, capability.id)
-        if record is None:
-            session.add(CapabilityRecord(id=capability.id, label=capability.label, version=1, group=capability.group))
-        else:
-            record.label, record.group = capability.label, capability.group
-    for template in ROLE_TEMPLATES:
-        _install_role_template(session, template)
+    install_role_catalog(session, ROLE_TEMPLATES)
     session.flush()
 
     for member in SEEDED_MEMBERS:
@@ -274,6 +268,22 @@ def _seed_organization_access(session: Session) -> None:
                     origin_rule_version=1,
                 )
             )
+
+
+def install_role_catalog(session: Session, templates: Iterable[RoleTemplate]) -> None:
+    """이 제품이 아는 권한 전부와, 요청된 역할들을 설치한다.
+
+    권한 목록은 제품의 것이므로 언제나 최신으로 맞춘다. 역할은 권하는 것이고, 조직이 자기 것으로 만든 역할
+    (`customized_at`)은 손대지 않는다. seed와 dataset import가 같은 이 한 곳을 쓴다.
+    """
+    for capability in CAPABILITIES:
+        record = session.get(CapabilityRecord, capability.id)
+        if record is None:
+            session.add(CapabilityRecord(id=capability.id, label=capability.label, version=1, group=capability.group))
+        else:
+            record.label, record.group = capability.label, capability.group
+    for template in templates:
+        _install_role_template(session, template)
 
 
 def _install_role_template(session: Session, template: RoleTemplate) -> None:

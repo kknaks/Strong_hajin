@@ -6,13 +6,20 @@ It writes its result next to that folder, never here: the repository owns the sc
     uv run python -m ax_workspace.entrypoints.dataset inspect ~/Downloads/thesc
     uv run python -m ax_workspace.entrypoints.dataset inspect ~/Downloads/thesc --allow "*월간 업무보고*" --out inventory.json
 
-Nothing here opens a file. Content only ever enters through a later command, and only for what someone has allowed.
+`init` and `validate` shape and check a dataset without touching any database. `import` applies a dataset that
+already validates, and only ever to a local demo database; it is safe to run twice.
+
+    uv run python -m ax_workspace.entrypoints.dataset import ~/scax-dataset --password "$SCAX_DATASET_PASSWORD"
+
+Nothing here opens a delivered file. Content only ever enters through a later command, and only for what someone has
+allowed.
 """
 from __future__ import annotations
 
 import argparse
 from datetime import UTC, datetime
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -114,6 +121,37 @@ def read_tables(target: Path) -> dict[str, list[dict[str, str]]]:
     return rows
 
 
+def apply_dataset(target: Path, rows: dict[str, list[dict[str, str]]], *, password: str | None) -> int:
+    """Write the dataset into the local demo database, all of it or none of it.
+
+    The import is only ever pointed at a database this repository is willing to reset, and it is one transaction:
+    a dataset that turns out to be unapplicable leaves nothing behind for someone to clean up by hand.
+    """
+    from ax_workspace.bootstrap.dataset_import import DatasetImportError, import_into
+    from ax_workspace.bootstrap.settings import Settings
+    from ax_workspace.entrypoints.reset_demo import require_safe_demo_database
+
+    settings = Settings.from_environment()
+    if not settings.developer_auth_enabled:
+        print("dataset import는 개발·테스트 프로파일에서만 씁니다", file=sys.stderr)
+        return 2
+    try:
+        require_safe_demo_database(settings.database_url)
+    except ValueError:
+        print(f"이 데이터베이스에는 넣지 않습니다: {settings.database_url}", file=sys.stderr)
+        return 2
+
+    try:
+        result = import_into(settings.database_url, rows, password=password)
+    except DatasetImportError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    print(json.dumps({"dataset": str(target), **result.as_dict()}, ensure_ascii=False, indent=2))
+    for note in result.skipped:
+        print(f"\n하지 않은 것: {note}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="dataset", description="Look at delivered material without opening it.")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -131,10 +169,18 @@ def main(argv: list[str] | None = None) -> int:
     check = commands.add_parser("validate", help="check a dataset without touching any database")
     check.add_argument("target", type=Path)
 
+    apply = commands.add_parser("import", help="apply a validated dataset to the local demo database")
+    apply.add_argument("target", type=Path)
+    apply.add_argument(
+        "--password",
+        default=os.environ.get("SCAX_DATASET_PASSWORD"),
+        help="the one local password every imported login gets; without it no login is made",
+    )
+
     arguments = parser.parse_args(argv)
     repository = Path(__file__).resolve().parents[4]
 
-    if arguments.command in {"init", "validate"}:
+    if arguments.command in {"init", "validate", "import"}:
         target = arguments.target.expanduser().resolve()
         if target.is_relative_to(repository):
             print(f"dataset은 저장소 밖에 두어야 합니다: {target}", file=sys.stderr)
@@ -152,14 +198,22 @@ def main(argv: list[str] | None = None) -> int:
         looping = cycles(rows.get("organization_units", []), key="key", parent="parent_key")
         problems = [str(problem) for problem in report.problems]
         problems.extend(f"organization_units · {key} 가 자기 아래에 들어갑니다" for key in looping)
-        print(
-            json.dumps(
-                {"dataset": str(target), "rows": report.counts, "problems": problems[:200], "problem_count": len(problems)},
-                ensure_ascii=False,
-                indent=2,
+        if arguments.command == "validate":
+            print(
+                json.dumps(
+                    {"dataset": str(target), "rows": report.counts, "problems": problems[:200], "problem_count": len(problems)},
+                    ensure_ascii=False,
+                    indent=2,
+                )
             )
-        )
-        return 0 if not problems else 1
+            return 0 if not problems else 1
+        # 검사를 통과하지 못한 dataset은 절반만 들어가지 않는다. 하나도 쓰지 않고 멈춘다.
+        if problems:
+            print(f"먼저 dataset을 고쳐야 합니다. {len(problems)}건:", file=sys.stderr)
+            for problem in problems[:20]:
+                print(f"  - {problem}", file=sys.stderr)
+            return 1
+        return apply_dataset(target, rows, password=arguments.password)
 
     source = arguments.source.expanduser().resolve()
     if not source.is_dir():

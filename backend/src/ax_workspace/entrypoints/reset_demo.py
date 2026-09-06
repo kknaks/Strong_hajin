@@ -14,7 +14,7 @@ _SAFE_POSTGRES_DATABASE = re.compile(r"^ax_(?:demo|test)(?:_[a-z0-9_]+)?$")
 _SAFE_SQLITE_FILE = re.compile(r"^(?:ax_)?(?:demo|test)(?:[-_a-z0-9]*)?\.db$")
 
 
-def _require_safe_demo_database(database_url: str) -> None:
+def require_safe_demo_database(database_url: str) -> None:
     """Fail before connecting unless this is an explicitly named local demo database."""
     url = make_url(database_url)
     if url.drivername.startswith("postgresql"):
@@ -28,7 +28,7 @@ def _require_safe_demo_database(database_url: str) -> None:
 
 def reset_database(database_url: str) -> None:
     """The only schema-mutating operation. Application startup never calls this."""
-    _require_safe_demo_database(database_url)
+    require_safe_demo_database(database_url)
     _reset_database(database_url)
 
 
