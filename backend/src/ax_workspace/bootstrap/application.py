@@ -108,7 +108,10 @@ class _SessionGraphSource:
         self._session = session
 
     def readable_tasks(self, principal: Principal, *, query: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
-        rows = self._application._tasks(self._session).list_for(principal, include_closed=True)
+        # Following connections is a read surface like any other: it shows exactly what this person may read.
+        rows = self._application._tasks(self._session).list_for(
+            principal, include_closed=True, include_organization=True
+        )
         return [row for row in rows if not query or query.lower() in str(row["title"]).lower()][:limit]
 
     def readable_task(self, principal: Principal, task_id: UUID) -> dict[str, Any] | None:
