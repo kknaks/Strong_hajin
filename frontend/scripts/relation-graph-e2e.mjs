@@ -61,6 +61,53 @@ try {
     return { taskId: task.task_id, childId: child.task_id };
   }, { actionItemId: judgement.action_item_id, expectedVersion: judgement.expected_version, subject: title });
 
+  // Enough connected work that the first screen is a real graph rather than a handful of dots: the label placement,
+  // the hover highlight and the detail panel all have to hold at this size.
+  await page.evaluate(async (stampValue) => {
+    const post = (path, body) =>
+      fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((response) => response.json());
+    for (let index = 0; index < 6; index += 1) {
+      await post("/api/tasks", { title: `제품팀 진행 업무 ${index + 1} ${stampValue}` });
+    }
+    const starts = new Date(Date.now() + 3_600_000);
+    for (const [index, attendees] of [["mina"], ["mina", "yuna"], ["yuna"]].entries()) {
+      await post("/api/meetings", {
+        organization_id: "scax",
+        title: `연결이 보일 회의 ${index + 1} ${stampValue}`,
+        starts_at: new Date(starts.getTime() + index * 3_600_000).toISOString(),
+        ends_at: new Date(starts.getTime() + (index + 1) * 3_600_000).toISOString(),
+        visibility: "private",
+        attendee_ids: attendees,
+      });
+    }
+  }, stamp);
+
+  // Work that came from other people, so the first screen has more than one hub: 민아 sends three requests and 지호
+  // accepts them, exactly the way the product does it.
+  await signOut(page);
+  await loginAs(page, "mina");
+  await page.evaluate(async (stampValue) => {
+    for (let index = 0; index < 3; index += 1) {
+      await fetch("/api/work-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: `민아가 보낸 요청 ${index + 1} ${stampValue}`, assignee_id: "jiho" }),
+      });
+    }
+  }, stamp);
+  await signOut(page);
+  await loginAs(page, "jiho");
+  await page.evaluate(async (stampValue) => {
+    const items = await (await fetch("/api/action-items")).json();
+    for (const item of items.filter((row) => String(row.subject).includes(`민아가 보낸 요청`) && String(row.subject).includes(String(stampValue)))) {
+      await fetch(`/api/action-items/${item.action_item_id}/commands/accept`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expected_version: item.expected_version }),
+      });
+    }
+  }, stamp);
+
   // The first screen is already a graph of what this person is connected to — not an empty search box.
   await page.reload({ waitUntil: "domcontentloaded" });
   await navigation.getByRole("button", { name: "관계 탐색" }).click();
@@ -79,7 +126,38 @@ try {
     },
     { timeout: 20_000, description: "그래프가 실제로 그려지는 것" },
   );
-  if (!drawnNodes || drawnNodes < 2) throw new Error(`the graph drew too little to be a graph: ${drawnNodes}`);
+  if (!drawnNodes || drawnNodes < 23) throw new Error(`the graph drew too little to be a graph: ${drawnNodes}`);
+  await page.screenshot({ path: "test-results/relation-graph-overview.png", fullPage: false });
+
+  // Hovering a node lights its direct connections and dims the rest — the picture actually changes, it is not a class
+  // toggled on an element nobody can see.
+  const surface = canvas.locator(".graph-canvas");
+  const canvasBox = await surface.boundingBox();
+  const before = await surface.screenshot();
+  // Walk the surface until the pointer is actually over a node — the cursor is the renderer saying so.
+  let hoveredAt = null;
+  for (let column = 1; column < 12 && !hoveredAt; column += 1) {
+    for (let row = 1; row < 9 && !hoveredAt; row += 1) {
+      const point = {
+        x: canvasBox.x + (canvasBox.width * column) / 12,
+        y: canvasBox.y + (canvasBox.height * row) / 9,
+      };
+      await page.mouse.move(point.x, point.y);
+      await page.waitForTimeout(60);
+      if ((await surface.evaluate((element) => element.style.cursor)) === "pointer") hoveredAt = point;
+    }
+  }
+  if (!hoveredAt) throw new Error("the pointer never found a node on the canvas");
+  const hoverChanged = await pollFor(
+    page,
+    async () => {
+      const now = await surface.screenshot();
+      return Buffer.compare(before, now) !== 0 ? now.length : null;
+    },
+    { timeout: 10_000, description: "hover가 이웃을 밝히고 나머지를 흐리게 하는 것" },
+  );
+  await page.screenshot({ path: "test-results/relation-graph-hover.png", fullPage: false });
+  await page.mouse.move(canvasBox.x + 4, canvasBox.y + 4);
   const overview = await page.evaluate(async () => {
     const [member, team] = await Promise.all([
       (await fetch("/api/graph/overview?view=member")).json(),
@@ -113,6 +191,18 @@ try {
   await page.getByRole("button", { name: "찾기" }).click();
   const results = page.locator("section[aria-label='검색 결과']");
   await results.locator(`li[data-node^="task:"]`).first().getByRole("button").click();
+
+  // Choosing a node from the search fills the right panel with its canonical source and its connections' provenance.
+  const detail = page.getByLabel("선택한 노드");
+  await pollFor(page, async () => ((await detail.textContent()) ?? "").includes("Task + TaskAssignment"), {
+    timeout: 20_000,
+    description: "선택한 노드의 정본과 연결",
+  });
+  const detailText = ((await detail.textContent()) ?? "").replace(/\s+/g, " ");
+  if (!detailText.includes("Task + TaskAssignment")) throw new Error(`the detail panel did not name the ledger: ${detailText}`);
+  if (!/출처 \S+/.test(detailText)) throw new Error(`a connection arrived without its provenance: ${detailText}`);
+  if ((await detail.locator("[data-relation]").count()) === 0) throw new Error("the selected node listed no connections");
+  await page.screenshot({ path: "test-results/relation-graph-detail.png", fullPage: false });
 
   const around = page.locator("section[aria-label='연결']");
   await around.locator("li").first().waitFor({ timeout: 20_000 });

@@ -359,6 +359,19 @@ export default function App() {
             focusNodeRef={graphFocus}
             onError={setError}
             onFocusHandled={() => setGraphFocus(null)}
+            onOpenNode={(node) => {
+              // Each kind opens where it lives; the surface reads it again with this person's access.
+              if (node.kind === "meeting") {
+                setFocusMeetingId(node.id);
+                setSurface("calendar");
+                return;
+              }
+              if (node.kind === "person" || node.kind === "team") {
+                setSurface("org");
+                return;
+              }
+              if (node.kind === "work_request" || node.kind === "material") setSurface("work");
+            }}
             onOpenTask={(taskId) => {
               setSurface("work");
               setFocusTaskId(taskId);

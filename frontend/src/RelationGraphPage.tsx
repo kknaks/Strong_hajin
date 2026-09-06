@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { graphNeighbors, graphOverview, graphSearch } from "./api";
-import { GraphCanvas, KIND_LABEL } from "./GraphCanvas";
-import type { GraphNeighborhood, GraphNode, GraphOverview } from "./viewModels";
+import { GraphCanvas, KIND_LABEL, KIND_SOURCE, refOf } from "./GraphCanvas";
+import type { GraphEdge, GraphNeighborhood, GraphNode, GraphOverview } from "./viewModels";
 import { personName, taskStateLabel } from "./labels";
 
 /** What a connection means, in the words a person would use rather than the name of the edge. */
@@ -26,11 +26,14 @@ const VIEW_LABEL: Record<string, string> = { member: "구성원 보기", team: "
  */
 export function RelationGraphPage({
   onOpenTask,
+  onOpenNode,
   onError,
   focusNodeRef,
   onFocusHandled,
 }: {
   onOpenTask: (taskId: string) => void;
+  /** Open whatever this node stands for, in the surface that owns it. */
+  onOpenNode?: (node: GraphNode) => void;
   onError: (message: string | null) => void;
   /** Arriving from a chat card: start centred here, with this person's access applied again. */
   focusNodeRef?: string | null;
@@ -43,6 +46,7 @@ export function RelationGraphPage({
   const [view, setView] = useState<"member" | "team">("member");
   const [busy, setBusy] = useState(false);
   const [loadingGraph, setLoadingGraph] = useState(true);
+  const [selected, setSelected] = useState<GraphNode | null>(null);
 
   // 첫 화면은 빈 검색 상자가 아니라 지금 이어져 있는 것들이다.
   const loadOverview = useCallback(
@@ -99,7 +103,10 @@ export function RelationGraphPage({
     setBusy(true);
     onError(null);
     try {
-      setAround(await graphNeighbors(`${node.kind}:${node.id}`));
+      const neighbourhood = await graphNeighbors(`${node.kind}:${node.id}`);
+      setAround(neighbourhood);
+      // Centring on something selects it, so the panel reads that node's connections from the answer just loaded.
+      setSelected(neighbourhood.nodes.find((row) => refOf(row) === refOf(neighbourhood.center)) ?? neighbourhood.center);
     } catch (error) {
       onError(error instanceof Error ? error.message : "연결을 불러오지 못했습니다.");
     } finally {
@@ -107,8 +114,30 @@ export function RelationGraphPage({
     }
   };
 
-  const nodeOf = (ref: string): GraphNode | undefined => (around?.nodes ?? []).find((row) => `${row.kind}:${row.id}` === ref);
-  const centerRef = around ? `${around.center.kind}:${around.center.id}` : "";
+  const shown = around ?? overview;
+  const nodeOf = (ref: string): GraphNode | undefined => (shown?.nodes ?? []).find((row) => refOf(row) === ref);
+  const centerRef = around ? refOf(around.center) : "";
+
+  /** Every connection this node has in the answer on screen, read from its side. */
+  const connectionsOf = (node: GraphNode): Array<{ edge: GraphEdge; other: GraphNode; incoming: boolean }> => {
+    const ref = refOf(node);
+    return (shown?.edges ?? [])
+      .filter((edge) => edge.from === ref || edge.to === ref)
+      .map((edge) => {
+        const incoming = edge.to === ref;
+        const other = nodeOf(incoming ? edge.from : edge.to);
+        return other ? { edge, other, incoming } : null;
+      })
+      .filter((row): row is { edge: GraphEdge; other: GraphNode; incoming: boolean } => row !== null);
+  };
+
+  const openOriginal = (node: GraphNode) => {
+    if (node.kind === "task") {
+      onOpenTask(node.id);
+      return;
+    }
+    onOpenNode?.(node);
+  };
 
   return (
     <div className="page">
@@ -167,16 +196,75 @@ export function RelationGraphPage({
         </div>
         {around === null && overview === null ? (
           <p className="t-meta">관계를 불러오는 중…</p>
+        ) : (shown?.nodes.length ?? 0) === 0 ? (
+          <div className="empty-state">
+            <b>아직 이어진 것이 없습니다</b>
+            <p>업무를 맡거나 요청을 주고받으면 여기에서 이어집니다. 볼 수 있는 범위 안에서만 그립니다.</p>
+          </div>
         ) : (
-          <GraphCanvas
-            centerRef={around ? `${around.center.kind}:${around.center.id}` : undefined}
-            edges={(around ?? overview)?.edges ?? []}
-            nodes={(around ?? overview)?.nodes ?? []}
-            onSelect={(node) => void walk(node)}
-          />
+          <div className="graph-with-detail">
+            <GraphCanvas
+              centerRef={centerRef || undefined}
+              edges={shown?.edges ?? []}
+              nodes={shown?.nodes ?? []}
+              onSelect={setSelected}
+              selectedRef={selected ? refOf(selected) : null}
+            />
+            <aside aria-label="선택한 노드" className="graph-detail">
+              {selected === null ? (
+                <p className="t-meta">
+                  노드에 마우스를 올리면 그 지점의 직접 연결만 밝아집니다. 눌러서 고르면 여기에서 정본과 연결을 봅니다.
+                </p>
+              ) : (
+                <>
+                  <div className="graph-detail-head">
+                    <span className="ax-resource-kind">{KIND_LABEL[selected.kind] ?? selected.kind}</span>
+                    <b>{selected.kind === "person" ? personName(selected.title) : selected.title}</b>
+                    {selected.state && (
+                      <span className="t-meta">
+                        {taskStateLabel[selected.state as keyof typeof taskStateLabel] ?? selected.state}
+                      </span>
+                    )}
+                  </div>
+                  <dl className="meta-grid">
+                    <div>
+                      <dt>정본</dt>
+                      <dd>{KIND_SOURCE[selected.kind] ?? selected.kind}</dd>
+                    </div>
+                  </dl>
+                  <h5 className="t-meta">직접 연결 {connectionsOf(selected).length}개</h5>
+                  <ul className="graph-relations">
+                    {connectionsOf(selected).map(({ edge, other, incoming }) => (
+                      <li data-relation={edge.kind} key={`${edge.kind}:${edge.from}:${edge.to}`}>
+                        <button className="btn link" onClick={() => setSelected(other)} type="button">
+                          {other.kind === "person" ? personName(other.title) : other.title}
+                        </button>
+                        <span className="t-meta">
+                          {(incoming ? edge.inverse_label : edge.label) ?? edge.kind}
+                          {edge.count && edge.count > 1 ? ` ×${edge.count}` : ""} · 출처 {edge.provenance ?? edge.kind}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="graph-detail-actions">
+                    <button className="btn h30" disabled={busy} onClick={() => void walk(selected)} type="button">
+                      이 지점 중심으로
+                    </button>
+                    {(selected.kind === "task" || onOpenNode) && (
+                      <button className="btn h30 primary" onClick={() => openOriginal(selected)} type="button">
+                        {KIND_LABEL[selected.kind] ?? "원본"} 상세 열기
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </aside>
+          </div>
         )}
         <p className="t-meta">
-          노드를 누르면 그 지점을 중심으로 한 걸음 더 따라갑니다. 볼 수 있는 것만 그려지고, 따라가도 권한은 늘지 않습니다.
+          {shown?.truncated
+            ? "연결이 더 있습니다. 한 번에 보여 주는 수를 넘었습니다 — 한 지점을 중심으로 두면 그 주변을 다 볼 수 있습니다."
+            : "노드를 누르면 오른쪽에서 정본과 연결을 봅니다. 볼 수 있는 것만 그려지고, 따라가도 권한은 늘지 않습니다."}
         </p>
       </section>
 
@@ -192,7 +280,12 @@ export function RelationGraphPage({
               <ul className="material-list">
                 {results.nodes.map((node) => (
                   <li data-node={`${node.kind}:${node.id}`} key={`${node.kind}:${node.id}`}>
-                    <button aria-label={`${node.title} 중심으로 보기`} className="btn link" onClick={() => void walk(node)} type="button">
+                    <button
+                      aria-label={`${node.title} 중심으로 보기`}
+                      className="btn link"
+                      onClick={() => void walk(node)}
+                      type="button"
+                    >
                       {node.title}
                     </button>
                     <span className="t-meta">

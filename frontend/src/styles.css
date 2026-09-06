@@ -466,6 +466,15 @@ button.metric-card:hover { border-color: var(--border-strong); background: var(-
 .ax-resource-list li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ax-resource-kind { padding: 1px 6px; border-radius: var(--radius-chip); background: var(--surface-sunken); color: var(--text-tertiary); font-size: 11px; font-weight: 700; }
 .ax-resource-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; }
+.graph-with-detail { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; align-items: start; }
+.graph-detail { display: grid; gap: 10px; align-content: start; padding: 12px; border: 1px solid var(--border-default); border-radius: var(--radius-card); background: var(--surface-sunken); max-height: 460px; overflow-y: auto; }
+.graph-detail-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.graph-detail-head b { font-size: 14px; }
+.graph-relations { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.graph-relations li { display: grid; gap: 2px; padding-bottom: 6px; border-bottom: 1px solid var(--border-subtle); }
+.graph-relations li:last-child { border-bottom: 0; }
+.graph-detail-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 1100px) { .graph-with-detail { grid-template-columns: minmax(0, 1fr); } }
 .graph-canvas-shell { display: grid; gap: 6px; }
 .graph-canvas { width: 100%; border: 1px solid var(--border-default); border-radius: var(--radius-card); background: var(--surface-default); }
 .member-access { margin-top: 16px; display: grid; gap: 10px; }
