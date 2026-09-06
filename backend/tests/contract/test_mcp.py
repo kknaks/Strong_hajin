@@ -10,7 +10,7 @@ from sqlalchemy import delete, select
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.mcp import McpReportsFacade, _create_bound_persona_server, create_mcp_server
-from ax_workspace.modules.organization_access.domain import PersonaId, Principal, TASK_READ, TASK_SELF_MANAGE
+from ax_workspace.modules.organization_access.domain import Principal, TASK_READ, TASK_SELF_MANAGE
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.modules.ax_execution.ai import AiGeneration
 from ax_workspace.modules.work.application import TaskAccessDenied
@@ -54,10 +54,10 @@ class CapabilityFacade:
 
 def test_task_tool_discovery_separates_read_from_self_manage() -> None:
     read_only = CapabilityFacade(
-        Principal(PersonaId.MINA, "읽기", frozenset({"scax"}), frozenset({TASK_READ}))
+        Principal("mina", "읽기", frozenset({"scax"}), frozenset({TASK_READ}))
     )
     manage_only = CapabilityFacade(
-        Principal(PersonaId.MINA, "관리", frozenset({"scax"}), frozenset({TASK_SELF_MANAGE}))
+        Principal("mina", "관리", frozenset({"scax"}), frozenset({TASK_SELF_MANAGE}))
     )
 
     read_tools = {tool.name for tool in asyncio.run(_create_bound_persona_server(read_only).list_tools())}

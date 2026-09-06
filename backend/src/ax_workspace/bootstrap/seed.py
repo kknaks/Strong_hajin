@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ax_workspace.modules.organization_access.credentials import hash_password, normalize_email
 from ax_workspace.platform.persistence import (
     AccessGrantRecord,
     AppointmentRecord,
@@ -14,6 +15,7 @@ from ax_workspace.platform.persistence import (
     GradeRecord,
     JobAssignmentRecord,
     JobRecord,
+    MemberCredentialRecord,
     MemberRecord,
     MembershipRecord,
     OrganizationUnitRecord,
@@ -28,11 +30,36 @@ from ax_workspace.platform.persistence import (
 from ax_workspace.modules.reports.workflow_metadata import content_hash, daily_report_generation_v1
 
 
+# The local demo's shared password. It exists only behind `reset_demo`, which refuses anything but a local demo
+# database, and the login route that accepts it is not registered in the production profile.
+DEMO_PASSWORD = "scax-demo-1234"
+DEMO_EMAIL_DOMAIN = "scax.example"
+
+
+def demo_email(member_id: str) -> str:
+    return normalize_email(f"{member_id}@{DEMO_EMAIL_DOMAIN}")
+
+
 def seed_catalog(session: Session) -> None:
     """Install the product demo's persisted configuration after an explicit reset."""
     _seed_organization_access(session)
+    _seed_local_credentials(session)
     _install_daily_report_generation(session)
     session.commit()
+
+
+def _seed_local_credentials(session: Session) -> None:
+    """Give every seeded member an ordinary email/password login, so the demo signs in like the product does."""
+    for member_id in session.scalars(select(MemberRecord.id).order_by(MemberRecord.id)):
+        if session.get(MemberCredentialRecord, member_id) is not None:
+            continue
+        session.add(
+            MemberCredentialRecord(
+                member_id=member_id,
+                email=demo_email(member_id),
+                password_hash=hash_password(DEMO_PASSWORD),
+            )
+        )
 
 
 def _install_daily_report_generation(session: Session) -> None:

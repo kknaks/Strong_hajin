@@ -66,8 +66,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function getDeveloperPersonas(): Promise<Persona[]> {
-  return request<Persona[]>("/api/developer/personas");
+/** Names for ids, so the product can say who did what. Any signed-in member may read it; it opens nothing else. */
+export async function getMemberDirectory(): Promise<Persona[]> {
+  return request<Persona[]>("/api/organization/members");
 }
 
 export async function getMyWork(): Promise<DirectTask[]> {
@@ -395,9 +396,9 @@ export async function cancelConversation(
 }
 
 export type AuthProviders = {
-  developer: boolean;
+  /** Email and password sign-in. It never says who has an account. */
+  local: boolean;
   oidc: boolean;
-  accounts: Persona[];
 };
 
 export async function getAuthProviders(): Promise<AuthProviders> {
@@ -413,9 +414,9 @@ export async function getSession(): Promise<OrganizationProfile | null> {
   }
 }
 
-export async function login(account: string): Promise<OrganizationProfile> {
+export async function login(email: string, password: string): Promise<OrganizationProfile> {
   return request<OrganizationProfile>("/api/auth/login", {
-    body: JSON.stringify({ provider: "developer", account }),
+    body: JSON.stringify({ email, password }),
     method: "POST",
   });
 }

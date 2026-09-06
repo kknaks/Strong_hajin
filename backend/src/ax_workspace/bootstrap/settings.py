@@ -33,6 +33,11 @@ class Settings:
     def developer_auth_enabled(self) -> bool:
         return self.profile in {RuntimeProfile.DEVELOPMENT, RuntimeProfile.TEST}
 
+    @property
+    def local_login_enabled(self) -> bool:
+        """Email/password sign-in. Production proves identity through an external provider instead."""
+        return self.profile is not RuntimeProfile.PRODUCTION
+
     @classmethod
     def from_environment(cls) -> "Settings":
         return cls(

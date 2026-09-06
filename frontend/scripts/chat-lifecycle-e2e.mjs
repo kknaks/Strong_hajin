@@ -117,9 +117,9 @@ try {
   // The session survives the reload; log in again only if the login screen is shown.
   await Promise.race([
     page.getByRole("navigation", { name: "제품 탐색" }).waitFor(),
-    page.getByRole("radio", { name: /^민아/ }).waitFor(),
+    page.getByLabel("이메일").waitFor(),
   ]);
-  if ((await page.getByRole("radio", { name: /^민아/ }).count()) > 0) await loginAs(page, "mina");
+  if ((await page.getByLabel("이메일").count()) > 0) await loginAs(page, "mina");
   await page.getByRole("button", { name: "AX" }).click();
   await conversationButton(first.conversation_id).click();
   await page.locator(".ax-messages").getByText(prompt).first().waitFor({ timeout: 10_000 });

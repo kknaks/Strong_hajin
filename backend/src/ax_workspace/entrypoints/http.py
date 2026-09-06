@@ -8,7 +8,8 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from ax_workspace.modules.organization_access.domain import Principal, SEED_PERSONAS
+from ax_workspace.modules.organization_access.credentials import AuthenticationFailed
+from ax_workspace.modules.organization_access.domain import Principal
 from ax_workspace.entrypoints.http_auth import (
     SESSION_COOKIE,
     SESSION_MAX_AGE,
@@ -33,14 +34,14 @@ from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
 
 
-class PersonaResponse(BaseModel):
+class MemberResponse(BaseModel):
     id: str
     display_name: str
 
 
 class LoginRequest(BaseModel):
-    provider: Literal["developer"] = "developer"
-    account: str = Field(min_length=1, max_length=100)
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=1, max_length=200)
 
 
 class CreateTaskRequest(BaseModel):
@@ -394,40 +395,32 @@ def create_app(
         app.state.workflow_application = create_workflow_application(settings, report_provider)
         app.state.auth_sessions = create_auth_session_store(settings)
 
-        @app.get("/api/developer/personas", response_model=list[PersonaResponse])
-        def personas() -> list[PersonaResponse]:
-            return [PersonaResponse(id=persona.id, display_name=persona.display_name) for persona in SEED_PERSONAS.values()]
-
         @app.get("/api/auth/providers")
         def auth_providers() -> dict[str, object]:
-            return {
-                "developer": settings.developer_auth_enabled,
-                "oidc": False,
-                "accounts": [
-                    {"id": persona.id, "display_name": persona.display_name} for persona in SEED_PERSONAS.values()
-                ]
-                if settings.developer_auth_enabled
-                else [],
-            }
+            """Which ways of proving who you are exist here. It never lists who has an account."""
+            return {"local": settings.local_login_enabled, "oidc": False}
 
-        @app.post("/api/auth/login")
-        def login(request: LoginRequest, response: Response) -> dict[str, object]:
-            allowed = app.state.developer_auth.authenticate(request.account)
-            try:
-                principal = app.state.workflow_application.authenticated_principal(str(allowed.id))
-            except LookupError as error:
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active organization membership is required.") from error
-            session_id = app.state.auth_sessions.create(str(principal.id), app.state.developer_auth.provider_name)
-            response.set_cookie(
-                SESSION_COOKIE,
-                str(session_id),
-                max_age=SESSION_MAX_AGE,
-                httponly=True,
-                samesite="lax",
-                secure=cookie_secure(settings),
-                path="/",
-            )
-            return app.state.workflow_application.my_organization_profile(principal)
+        if settings.local_login_enabled:
+
+            @app.post("/api/auth/login")
+            def login(request: LoginRequest, response: Response) -> dict[str, object]:
+                try:
+                    principal = app.state.workflow_application.authenticate_with_password(
+                        request.email, request.password
+                    )
+                except AuthenticationFailed as error:
+                    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error)) from error
+                session_id = app.state.auth_sessions.create(str(principal.id), "local")
+                response.set_cookie(
+                    SESSION_COOKIE,
+                    str(session_id),
+                    max_age=SESSION_MAX_AGE,
+                    httponly=True,
+                    samesite="lax",
+                    secure=cookie_secure(settings),
+                    path="/",
+                )
+                return app.state.workflow_application.my_organization_profile(principal)
 
         @app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
         def logout(request: Request, response: Response) -> Response:
@@ -753,6 +746,10 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
+        @app.get("/api/organization/members", response_model=list[MemberResponse])
+        def organization_members(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+            return app.state.workflow_application.member_directory(principal)
+
         @app.get("/api/organization/tree")
         def organization_tree(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
             return app.state.workflow_application.organization_tree(principal)
@@ -792,10 +789,10 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
-        @app.get("/api/task-assignment-candidates", response_model=list[PersonaResponse])
-        def task_assignment_candidates(principal: Principal = Depends(developer_principal)) -> list[PersonaResponse]:
+        @app.get("/api/task-assignment-candidates", response_model=list[MemberResponse])
+        def task_assignment_candidates(principal: Principal = Depends(developer_principal)) -> list[MemberResponse]:
             try:
-                return [PersonaResponse(**candidate) for candidate in app.state.workflow_application.task_assignment_candidates(principal)]
+                return [MemberResponse(**candidate) for candidate in app.state.workflow_application.task_assignment_candidates(principal)]
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -1158,10 +1155,10 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
-        @app.get("/api/work-request-cc-candidates", response_model=list[PersonaResponse])
-        def work_request_cc_candidates(principal: Principal = Depends(developer_principal)) -> list[PersonaResponse]:
+        @app.get("/api/work-request-cc-candidates", response_model=list[MemberResponse])
+        def work_request_cc_candidates(principal: Principal = Depends(developer_principal)) -> list[MemberResponse]:
             try:
-                return [PersonaResponse(**candidate) for candidate in app.state.workflow_application.work_request_cc_candidates(principal)]
+                return [MemberResponse(**candidate) for candidate in app.state.workflow_application.work_request_cc_candidates(principal)]
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -1211,13 +1208,13 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
-        @app.get("/api/work-request-assignee-candidates", response_model=list[PersonaResponse])
+        @app.get("/api/work-request-assignee-candidates", response_model=list[MemberResponse])
         def work_request_assignee_candidates(
             principal: Principal = Depends(developer_principal),
-        ) -> list[PersonaResponse]:
+        ) -> list[MemberResponse]:
             try:
                 candidates = app.state.workflow_application.work_request_assignee_candidates(principal)
-                return [PersonaResponse(**candidate) for candidate in candidates]
+                return [MemberResponse(**candidate) for candidate in candidates]
             except Exception as error:
                 raise _runtime_error(error) from error
 

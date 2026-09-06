@@ -12,19 +12,19 @@ export async function pollFor(page, probe, { timeout = 30_000, description }) {
 }
 
 
-/** Logs in through the local login page as the given seeded account. */
+/** The password every seeded demo account shares; it exists only behind `make reset-demo`. */
+export const DEMO_PASSWORD = "scax-demo-1234";
+
+/** Signs in through the ordinary email/password form as the given seeded account. */
 export async function loginAs(page, accountId) {
-  await page.getByRole("radio", { name: new RegExp(`^${accountLabel(accountId)}`) }).check();
+  await page.getByLabel("이메일").fill(`${accountId}@scax.example`);
+  await page.getByLabel("비밀번호").fill(DEMO_PASSWORD);
   await page.getByRole("button", { name: "로그인", exact: true }).click();
   await page.getByRole("navigation", { name: "제품 탐색" }).waitFor();
 }
 
-/** Logs the current account out and logs in as another seeded account. */
+/** Signs the current account out and signs in as another seeded account. */
 export async function switchAccount(page, accountId) {
   await page.getByRole("button", { name: "로그아웃" }).click();
   await loginAs(page, accountId);
-}
-
-function accountLabel(accountId) {
-  return { mina: "민아", jiho: "지호", sora: "소라", minseok: "민석" }[accountId] ?? accountId;
 }

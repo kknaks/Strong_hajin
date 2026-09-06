@@ -11,7 +11,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event, select, text
 
-from ax_workspace.modules.organization_access.domain import seeded_principal
 from ax_workspace.platform.persistence import make_session_factory
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings

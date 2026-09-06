@@ -22,7 +22,7 @@ def test_application_startup_never_mutates_schema(monkeypatch: pytest.MonkeyPatc
 def test_production_has_no_developer_login_surface() -> None:
     app = create_app(Settings(RuntimeProfile.PRODUCTION, "postgresql+psycopg://unused"))
     client = TestClient(app)
-    assert client.get("/api/developer/personas").status_code == 404
+    assert client.post("/api/auth/login", json={"email": "a@b.c", "password": "x"}).status_code == 404
     assert client.get("/api/catalog", headers={"X-Demo-Persona": "demo-admin"}).status_code == 404
     with pytest.raises(RuntimeError, match="forbidden"):
         DeveloperAuthAdapter(Settings(RuntimeProfile.PRODUCTION, "postgresql+psycopg://unused"))
@@ -45,9 +45,16 @@ def test_production_exposes_no_persona_surface_at_all(tmp_path) -> None:
         assert client.get(path, headers={"X-Demo-Persona": "demo-admin"}).status_code == 404
 
 
-def test_developer_auth_only_accepts_seeded_personas() -> None:
-    client = TestClient(create_app(Settings(RuntimeProfile.TEST, "postgresql+psycopg://unused")))
-    assert client.get("/api/my-work", headers={"X-Demo-Persona": "invented-admin"}).status_code == 401
+def test_the_development_seam_names_a_member_and_never_invents_one(tmp_path) -> None:
+    """The header says who a test is acting as. Whether that person exists and still works here is the ledger's answer."""
+    from ax_workspace.entrypoints.reset_demo import reset_database
+
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+    reset_database(database_url)
+    client = TestClient(create_app(Settings(RuntimeProfile.TEST, database_url)))
+    assert client.get("/api/my-work", headers={"X-Demo-Persona": "invented-admin"}).status_code == 403
+    assert client.get("/api/my-work", headers={"X-Demo-Persona": ""}).status_code == 401
+    assert client.get("/api/my-work", headers={"X-Demo-Persona": "mina"}).status_code == 200
 
 
 def test_domain_and_application_modules_do_not_import_inbound_or_sqlalchemy_adapters() -> None:

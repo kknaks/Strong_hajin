@@ -3,11 +3,18 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from ax_workspace.modules.organization_access.credentials import (
+    AuthenticationFailed,
+    LocalCredential,
+    verify_password,
+)
 from ax_workspace.modules.organization_access.domain import Principal
 
 
 class OrganizationRepository(Protocol):
     def profile_for(self, member_id: str) -> dict[str, Any] | None: ...
+    def credential_for_email(self, email: str) -> LocalCredential | None: ...
+    def member_directory(self) -> list[dict[str, str]]: ...
     def principal_for(self, member_id: str) -> Principal | None: ...
     def work_request_assignee_candidates(self, principal: Principal) -> list[dict[str, str]]: ...
     def task_assignment_candidates(self, principal: Principal) -> list[dict[str, str]]: ...
@@ -25,6 +32,24 @@ class OrganizationApplication:
         if profile is None:
             raise LookupError("organization member was not found")
         return profile
+
+    def authenticate_with_password(self, email: str, password: str) -> Principal:
+        """Prove who someone is. What they may then do is read from the ledger, never from the login.
+
+        Unknown address, wrong password and ended membership all fail the same way: an attacker who guesses addresses
+        must not learn which of them belong to someone who works here.
+        """
+        credential = self._repository.credential_for_email(email)
+        if credential is None or not verify_password(password, credential.password_hash):
+            raise AuthenticationFailed("이메일 또는 비밀번호가 올바르지 않습니다.")
+        principal = self._repository.principal_for(credential.member_id)
+        if principal is None:
+            raise AuthenticationFailed("이메일 또는 비밀번호가 올바르지 않습니다.")
+        return principal
+
+    def member_directory(self, principal: Principal) -> list[dict[str, str]]:
+        """Names only. Any active member may put a name to an id; it opens nothing else."""
+        return self._repository.member_directory()
 
     def authenticated_principal(self, persona_id: str) -> Principal:
         principal = self._repository.principal_for(persona_id)

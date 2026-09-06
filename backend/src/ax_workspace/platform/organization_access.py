@@ -7,7 +7,8 @@ from datetime import UTC, datetime
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from ax_workspace.modules.organization_access.domain import PersonaId, Principal
+from ax_workspace.modules.organization_access.credentials import LocalCredential, normalize_email
+from ax_workspace.modules.organization_access.domain import Principal
 from ax_workspace.platform.persistence import (
     AccessGrantRecord,
     AppointmentRecord,
@@ -17,6 +18,7 @@ from ax_workspace.platform.persistence import (
     GradeRecord,
     JobAssignmentRecord,
     JobRecord,
+    MemberCredentialRecord,
     MemberRecord,
     MembershipRecord,
     OrganizationUnitRecord,
@@ -132,11 +134,26 @@ class SqlAlchemyOrganizationRepository:
         if profile is None:
             return None
         return Principal(
-            id=PersonaId(member_id),
+            id=member_id,
             display_name=str(profile["display_name"]),
             organization_scope=frozenset(item["id"] for item in profile["organizations"]),
             capabilities=frozenset(profile["capabilities"]),
         )
+
+    def credential_for_email(self, email: str) -> LocalCredential | None:
+        record = self._session.scalar(
+            select(MemberCredentialRecord).where(MemberCredentialRecord.email == normalize_email(email))
+        )
+        if record is None:
+            return None
+        return LocalCredential(member_id=record.member_id, email=record.email, password_hash=record.password_hash)
+
+    def member_directory(self) -> list[dict[str, str]]:
+        """Every active member's name, so the product can say who did what. It carries no capability."""
+        return [
+            {"id": str(member["member_id"]), "display_name": str(member["display_name"])}
+            for member in self.unit_members("scax", include_descendants=True)
+        ]
 
     def work_request_assignee_candidates(self, principal: Principal) -> list[dict[str, str]]:
         """Return active decision-capable peers whose current org scope overlaps the requester."""

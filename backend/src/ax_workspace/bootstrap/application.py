@@ -467,9 +467,17 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).my_profile(principal)
 
-    def authenticated_principal(self, persona_id: str) -> Principal:
+    def authenticated_principal(self, member_id: str) -> Principal:
         with self._session_factory() as session:
-            return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).authenticated_principal(persona_id)
+            return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).authenticated_principal(member_id)
+
+    def authenticate_with_password(self, email: str, password: str) -> Principal:
+        with self._session_factory() as session:
+            return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).authenticate_with_password(email, password)
+
+    def member_directory(self, principal: Principal) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).member_directory(principal)
 
     def generate_daily_report_draft(
         self,

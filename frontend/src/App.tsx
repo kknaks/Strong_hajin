@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { getDeveloperPersonas, getMyWork, getSession, getWorkRequests, logout } from "./api";
+import { getMemberDirectory, getMyWork, getSession, getWorkRequests, logout } from "./api";
 import { CalendarPage } from "./CalendarPage";
 import { ChatDrawer, contextKey, type LabeledContextReference } from "./chat/ChatDrawer";
 import { NEW_DRAFT_KEY, useConversations } from "./chat/useConversations";
@@ -76,9 +76,9 @@ export default function App() {
   useEffect(() => {
     if (!session) return;
     let cancelled = false;
-    void getDeveloperPersonas()
-      .then((availablePersonas) => {
-        if (!cancelled) setPersonas(availablePersonas.filter((persona) => persona.id !== "demo-admin"));
+    void getMemberDirectory()
+      .then((members) => {
+        if (!cancelled) setPersonas(members);
       })
       .catch(() => {
         if (!cancelled) setPersonas([]);

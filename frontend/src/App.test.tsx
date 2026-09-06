@@ -20,12 +20,10 @@ function withSession(fetchMock: FetchImpl, initialPersona = "mina"): (input: Req
   });
   return async (input, init) => {
     const path = String(input);
-    if (path === "/api/auth/providers") {
-      const personas = await ((await fetchMock("/api/developer/personas", withPersona(init))) as Response).json();
-      return jsonResponse({ developer: true, oidc: false, accounts: personas });
-    }
+    if (path === "/api/auth/providers") return jsonResponse({ local: true, oidc: false });
     if (path === "/api/auth/login") {
-      current = (JSON.parse(String(init?.body)) as { account: string }).account;
+      // The demo signs in with an ordinary address; the member it belongs to is what the session then carries.
+      current = (JSON.parse(String(init?.body)) as { email: string }).email.split("@")[0];
       return (await fetchMock("/api/organization/me", withPersona({ ...init, method: "GET", body: undefined }))) as Response;
     }
     if (path === "/api/auth/logout") {
@@ -87,9 +85,10 @@ function seoulTodayForTest(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
 }
 
-async function switchAccount(personaId: string, displayName: string) {
+async function switchAccount(personaId: string) {
   fireEvent.click(screen.getByRole("button", { name: "로그아웃" }));
-  fireEvent.click(await screen.findByRole("radio", { name: (name) => name.startsWith(displayName) }));
+  fireEvent.change(await screen.findByLabelText("이메일"), { target: { value: `${personaId}@scax.example` } });
+  fireEvent.change(screen.getByLabelText("비밀번호"), { target: { value: "scax-demo-1234" } });
   fireEvent.click(screen.getByRole("button", { name: "로그인" }));
   await screen.findByRole("navigation", { name: "제품 탐색" });
 }
@@ -114,7 +113,7 @@ describe("product surfaces", () => {
     };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
-      if (path === "/api/developer/personas") return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }, { id: "jiho", display_name: "지호 (팀장)" }]);
+      if (path === "/api/organization/members") return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }, { id: "jiho", display_name: "지호 (팀장)" }]);
       if (path === "/api/organization/me") {
         return jsonResponse({ member_id: "mina", display_name: "민아 (구성원)", organizations: [], capabilities: ["task.read", "task.self_manage"] });
       }
@@ -165,7 +164,7 @@ describe("product surfaces", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
 
-      if (path === "/api/developer/personas") {
+      if (path === "/api/organization/members") {
         return jsonResponse([
           { id: "mina", display_name: "민아 (구성원)" },
           { id: "demo-admin", display_name: "데모 관리자" },
@@ -241,7 +240,7 @@ describe("product surfaces", () => {
   it("shows assigned work read-only when task.self_manage is not granted", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
-      if (path === "/api/developer/personas") {
+      if (path === "/api/organization/members") {
         return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
       }
       if (path === "/api/organization/me") {
@@ -282,7 +281,7 @@ describe("product surfaces", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       const personaId = new Headers(init?.headers).get("X-Demo-Persona");
-      if (path === "/api/developer/personas") {
+      if (path === "/api/organization/members") {
         return jsonResponse([
           { id: "mina", display_name: "민아 (구성원)" },
           { id: "jiho", display_name: "지호 (팀장)" },
@@ -311,7 +310,7 @@ describe("product surfaces", () => {
     fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "보고" }));
     expect(await screen.findByRole("heading", { name: "개인 일일보고" })).toBeTruthy();
 
-    await switchAccount("jiho", "지호 (팀장)");
+    await switchAccount("jiho");
     expect(await screen.findByText(/반갑습니다 지호님!/)).toBeTruthy();
     await waitFor(() => {
       expect(within(screen.getByRole("navigation", { name: "제품 탐색" })).queryByRole("button", { name: "보고" })).toBeNull();
@@ -342,7 +341,7 @@ describe("product surfaces", () => {
       const headers = new Headers(init?.headers);
       const personaId = headers.get("X-Demo-Persona");
 
-      if (path === "/api/developer/personas") {
+      if (path === "/api/organization/members") {
         return jsonResponse([
           { id: "mina", display_name: "민아 (구성원)" },
           { id: "jiho", display_name: "지호 (팀장)" },
@@ -415,7 +414,7 @@ describe("product surfaces", () => {
       );
     });
 
-    await switchAccount("jiho", "지호 (팀장)");
+    await switchAccount("jiho");
     await waitFor(() => {
       expect(within(screen.getByRole("navigation", { name: "제품 탐색" })).queryByRole("button", { name: "보고" })).toBeNull();
     });
@@ -471,7 +470,7 @@ describe("product surfaces", () => {
     };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
-      if (path === "/api/developer/personas") return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      if (path === "/api/organization/members") return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
       if (path === "/api/organization/me") {
         return jsonResponse({
           member_id: "mina",
@@ -517,7 +516,7 @@ describe("product surfaces", () => {
   it("shows an AX ActionItem without decision controls when action.decide is not granted", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
-      if (path === "/api/developer/personas") {
+      if (path === "/api/organization/members") {
         return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
       }
       if (path === "/api/organization/me") {
@@ -581,7 +580,7 @@ describe("product surfaces", () => {
   it("shows redacted Tool details and recorded latency in the AX timeline", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
-      if (path === "/api/developer/personas") {
+      if (path === "/api/organization/members") {
         return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
       }
       if (path === "/api/organization/me") {
@@ -650,7 +649,7 @@ describe("product surfaces", () => {
   it("restores an existing daily-report draft and submission history for the selected date", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
-      if (path === "/api/developer/personas") {
+      if (path === "/api/organization/members") {
         return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
       }
       if (path === "/api/organization/me") {
@@ -716,7 +715,7 @@ describe("product surfaces", () => {
   it("clears a stale report error as soon as the selected report date changes", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
-      if (path === "/api/developer/personas") {
+      if (path === "/api/organization/members") {
         return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
       }
       if (path === "/api/organization/me") {
@@ -753,7 +752,7 @@ describe("product surfaces", () => {
     let resolveConversationList: ((response: Response) => void) | undefined;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
-      if (path === "/api/developer/personas") {
+      if (path === "/api/organization/members") {
         return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
       }
       if (path === "/api/organization/me") {
@@ -848,7 +847,7 @@ describe("product surfaces", () => {
     const listResolvers: Array<(response: Response) => void> = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
-      if (path === "/api/developer/personas") {
+      if (path === "/api/organization/members") {
         return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
       }
       if (path === "/api/organization/me") {
@@ -942,7 +941,7 @@ describe("product surfaces", () => {
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
-      if (path === "/api/developer/personas") {
+      if (path === "/api/organization/members") {
         return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
       }
       if (path === "/api/organization/me") {
@@ -1044,7 +1043,7 @@ describe("product surfaces", () => {
     let listRequests = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
-      if (path === "/api/developer/personas") {
+      if (path === "/api/organization/members") {
         return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
       }
       if (path === "/api/organization/me") {
@@ -1098,7 +1097,7 @@ describe("product surfaces", () => {
   it("keeps existing AX sessions when a new Conversation is created", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
-      if (path === "/api/developer/personas") {
+      if (path === "/api/organization/members") {
         return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
       }
       if (path === "/api/organization/me") {
@@ -1156,7 +1155,7 @@ describe("product surfaces", () => {
     let resolveConversationList: ((response: Response) => void) | undefined;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
-      if (path === "/api/developer/personas") {
+      if (path === "/api/organization/members") {
         return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
       }
       if (path === "/api/organization/me") {
@@ -1209,7 +1208,7 @@ describe("product surfaces", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       const personaId = new Headers(init?.headers).get("X-Demo-Persona");
-      if (path === "/api/developer/personas") {
+      if (path === "/api/organization/members") {
         return jsonResponse([
           { id: "mina", display_name: "민아 (구성원)" },
           { id: "jiho", display_name: "지호 (팀장)" },
@@ -1261,7 +1260,7 @@ describe("product surfaces", () => {
     fireEvent.click(screen.getByRole("button", { name: "새 AX 대화" }));
     expect(await screen.findByText("민아의 현재 발화")).toBeTruthy();
 
-    await switchAccount("jiho", "지호");
+    await switchAccount("jiho");
     fireEvent.click(await screen.findByRole("button", { name: "AX" }));
     await waitFor(() => {
       expect(screen.queryByText("민아의 현재 발화")).toBeNull();
@@ -1303,7 +1302,7 @@ describe("product surfaces", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       const personaId = new Headers(init?.headers).get("X-Demo-Persona");
-      if (path === "/api/developer/personas") return jsonResponse([{ id: "mina", display_name: "민아" }, { id: "jiho", display_name: "지호" }]);
+      if (path === "/api/organization/members") return jsonResponse([{ id: "mina", display_name: "민아" }, { id: "jiho", display_name: "지호" }]);
       if (path === "/api/organization/me") return jsonResponse({ member_id: personaId, display_name: personaId, organizations: [], capabilities: ["action.read"] });
       if (path === "/api/my-work" || path === "/api/actions") return jsonResponse([]);
       if (path === "/api/conversations" && personaId === "mina") return jsonResponse([minaConversation]);
@@ -1320,7 +1319,7 @@ describe("product surfaces", () => {
     const conversationButton = await screen.findByRole("button", { name: "민아의 비공개 대화" });
     fireEvent.click(conversationButton);
     await waitFor(() => expect(resolveMinaDetail).toBeTruthy(), { timeout: 2_500 });
-    await switchAccount("jiho", "지호");
+    await switchAccount("jiho");
     fireEvent.click(await screen.findByRole("button", { name: "AX" }));
     await waitFor(() => expect(resolveJihoList).toBeTruthy());
     resolveJihoList?.(jsonResponse([{
@@ -1399,7 +1398,7 @@ describe("product surfaces", () => {
     };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
-      if (path === "/api/developer/personas") {
+      if (path === "/api/organization/members") {
         return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
       }
       if (path === "/api/organization/me") {
@@ -1469,7 +1468,7 @@ describe("product surfaces", () => {
     };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
-      if (path === "/api/developer/personas") {
+      if (path === "/api/organization/members") {
         return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
       }
       if (path === "/api/organization/me") {
@@ -1576,7 +1575,7 @@ describe("product surfaces", () => {
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
-      if (path === "/api/developer/personas") return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      if (path === "/api/organization/members") return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
       if (path === "/api/organization/me") {
         return jsonResponse({ member_id: "mina", display_name: "민아 (구성원)", organizations: [], capabilities: ["task.read", "task.self_manage", "action.read", "action.decide"] });
       }
@@ -1648,7 +1647,7 @@ describe("product surfaces", () => {
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
-      if (path === "/api/developer/personas") return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      if (path === "/api/organization/members") return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
       if (path === "/api/organization/me") {
         return jsonResponse({ member_id: "mina", display_name: "민아 (구성원)", organizations: [], capabilities: ["task.read", "task.self_manage", "action.read", "action.decide"] });
       }
@@ -1721,7 +1720,7 @@ describe("product surfaces", () => {
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
-      if (path === "/api/developer/personas") return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      if (path === "/api/organization/members") return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
       if (path === "/api/organization/me") {
         return jsonResponse({ member_id: "mina", display_name: "민아 (구성원)", organizations: [], capabilities: ["task.read", "task.self_manage", "action.read", "action.decide"] });
       }
@@ -1811,7 +1810,7 @@ describe("product surfaces", () => {
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
-      if (path === "/api/developer/personas") return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      if (path === "/api/organization/members") return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
       if (path === "/api/organization/me") {
         return jsonResponse({ member_id: "mina", display_name: "민아 (구성원)", organizations: [], capabilities: ["task.read", "task.self_manage", "action.read", "action.decide"] });
       }

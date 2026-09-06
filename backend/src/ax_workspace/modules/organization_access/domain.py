@@ -14,7 +14,13 @@ class PersonaId(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Principal:
-    id: PersonaId
+    """An authenticated person, as the Organization & Access ledger sees them.
+
+    `id` is a plain member identity, not a login kind: which credential proved who this is says nothing about what they
+    may do, and the same person keeps the same identity whichever provider they signed in with.
+    """
+
+    id: str
     display_name: str
     organization_scope: frozenset[str]
     capabilities: frozenset[str]
@@ -113,11 +119,3 @@ SEED_PERSONAS: dict[PersonaId, Principal] = {
         }),
     ),
 }
-
-
-def seeded_principal(persona: str) -> Principal:
-    """Resolve an allow-listed development principal; callers never supply privileges."""
-    try:
-        return SEED_PERSONAS[PersonaId(persona)]
-    except ValueError as error:
-        raise ValueError("Select one of the seeded demo personas.") from error

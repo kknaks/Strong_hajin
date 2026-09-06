@@ -1,12 +1,18 @@
 import { useEffect, useState } from "react";
 
 import { getAuthProviders, login, type AuthProviders } from "./api";
-import { personName } from "./labels";
 import type { OrganizationProfile } from "./viewModels";
 
+/**
+ * Signing in is proving who you are, and nothing more.
+ *
+ * The page never lists who has an account and never offers to become someone else: an address and a password go to the
+ * server, and what that person may then do is read from the Organization & Access ledger, not from this form.
+ */
 export function LoginPage({ onLoggedIn }: { onLoggedIn: (profile: OrganizationProfile) => void }) {
   const [providers, setProviders] = useState<AuthProviders | null>(null);
-  const [account, setAccount] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isWorking, setIsWorking] = useState(false);
 
@@ -14,9 +20,7 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: (profile: OrganizationPr
     let cancelled = false;
     void getAuthProviders()
       .then((next) => {
-        if (cancelled) return;
-        setProviders(next);
-        setAccount(next.accounts[0]?.id ?? "");
+        if (!cancelled) setProviders(next);
       })
       .catch(() => {
         if (!cancelled) setError("로그인 방법을 불러오지 못했습니다. 서버 연결을 확인해 주세요.");
@@ -27,11 +31,11 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: (profile: OrganizationPr
   }, []);
 
   async function submit() {
-    if (!account) return;
+    if (!email.trim() || !password) return;
     setIsWorking(true);
     setError(null);
     try {
-      onLoggedIn(await login(account));
+      onLoggedIn(await login(email.trim(), password));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "로그인하지 못했습니다.");
     } finally {
@@ -58,32 +62,38 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: (profile: OrganizationPr
         </button>
         <p className="login-hint">Google 로그인은 조직 SSO 연결 뒤에 열립니다.</p>
 
-        {providers?.developer && (
+        {providers?.local && (
           <form
-            className="login-dev"
+            className="login-local"
             onSubmit={(event) => {
               event.preventDefault();
               void submit();
             }}
           >
             <div className="login-divider">
-              <span>로컬 실행 전용</span>
+              <span>이메일로 로그인</span>
             </div>
-            <fieldset className="account-list">
-              <legend>누구로 로그인할까요?</legend>
-              {providers.accounts
-                .filter((item) => item.id !== "demo-admin")
-                .map((item) => (
-                  <label className={account === item.id ? "account-option selected" : "account-option"} key={item.id}>
-                    <input checked={account === item.id} name="account" onChange={() => setAccount(item.id)} type="radio" value={item.id} />
-                    <span className="avatar md" aria-hidden>
-                      {personName(item.display_name).slice(0, 1)}
-                    </span>
-                    <span className="account-name">{item.display_name}</span>
-                  </label>
-                ))}
-            </fieldset>
-            <button className="btn h40 primary" disabled={isWorking || !account} type="submit">
+            <label className="field" htmlFor="login-email">
+              <span>이메일</span>
+              <input
+                autoComplete="username"
+                id="login-email"
+                onChange={(event) => setEmail(event.target.value)}
+                type="email"
+                value={email}
+              />
+            </label>
+            <label className="field" htmlFor="login-password">
+              <span>비밀번호</span>
+              <input
+                autoComplete="current-password"
+                id="login-password"
+                onChange={(event) => setPassword(event.target.value)}
+                type="password"
+                value={password}
+              />
+            </label>
+            <button className="btn h40 primary" disabled={isWorking || !email.trim() || !password} type="submit">
               {isWorking ? "로그인 중…" : "로그인"}
             </button>
           </form>
