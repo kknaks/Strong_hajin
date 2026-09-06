@@ -251,3 +251,45 @@ def test_a_stored_walk_is_checked_again_before_it_is_shown(tmp_path, monkeypatch
     after = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()
     assert "발자국에 남을 회의" not in str(after)
     assert all(f"meeting:{meeting['meeting_id']}" not in str(step) for step in after["graph_receipts"])
+
+
+def test_a_tool_receipt_stops_naming_what_the_reader_may_no_longer_open(tmp_path, monkeypatch) -> None:
+    """도구 영수증에 적힌 제목도 표시 전에 다시 확인한다. 호출한 사실은 남고, 이름은 사라진다."""
+    client, settings, database_url = _stack(tmp_path)
+    task = client.post("/api/tasks", headers=JIHO, json={"title": "요약에 남을 업무"}).json()
+    conversation, execution_id = _delegated_turn(client, database_url, JIHO, "summary-turn")
+
+    from ax_workspace.platform.persistence import ToolInvocationRecord, ConversationTurnRecord
+    from sqlalchemy import select
+
+    with make_session_factory(database_url)() as session:
+        turn = session.scalars(
+            select(ConversationTurnRecord).where(ConversationTurnRecord.execution_id == UUID(execution_id))
+        ).one()
+        session.add(
+            ToolInvocationRecord(
+                turn_id=turn.id,
+                sequence=1,
+                provider_call_id="call-1",
+                tool_name="task_get",
+                display_name="업무 조회",
+                input_summary="입력: task_id",
+                state="completed",
+                result_summary=f"결과: title=요약에 남을 업무, state=open, task_id={task['task_id']}",
+            )
+        )
+        session.commit()
+
+    seen = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=JIHO).json()["tool_invocations"]
+    assert any("요약에 남을 업무" in str(row["result_summary"]) for row in seen)
+
+    # 지호 hands the work to 민아 and keeps no relationship to it.
+    client.post(
+        f"/api/tasks/{task['task_id']}/reassign",
+        headers=JIHO,
+        json={"expected_version": task["version"], "assignee_id": "mina", "reason": "인수인계"},
+    )
+    after = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=JIHO).json()
+    hidden = [row for row in after["tool_invocations"] if row["tool_name"] == "task_get"]
+    assert hidden and hidden[0]["result_summary"] == "결과를 볼 수 없습니다"
+    assert "요약에 남을 업무" not in str(after["tool_invocations"])

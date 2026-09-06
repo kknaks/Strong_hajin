@@ -407,7 +407,7 @@ class McpReportsFacade:
         return self._application.update_task(self.principal, UUID(task_id), expected_version, parsed)
 
     def list_meetings(self) -> list[dict[str, Any]]:
-        entries = self._application.calendar_entries(self.principal)
+        entries = self._application.list_meetings(self.principal)
         self._remember(
             [
                 {"resource_type": "meeting", "resource_id": str(row["meeting_id"]), "resource_version": row.get("version")}

@@ -58,7 +58,7 @@ try {
   const conversation = await (await created).json();
 
   // Turn 1: a relationship question. The policy asks for graph_search → graph_neighbors → owning read.
-  await page.getByLabel("AX 메시지").fill("내가 지금 담당하고 있는 업무가 무엇인지 관계를 따라 확인하고 알려줘.");
+  await page.getByLabel("AX 메시지").fill("내가 지금 담당하고 있는 업무를 관계를 따라 찾고, 각 업무의 기한까지 확인해서 알려줘.");
   await page.getByRole("button", { name: "보내기" }).click();
   const afterFirst = await waitForTurn(page, conversation.conversation_id, 1);
   const firstTurn = afterFirst.turns[0];
@@ -94,8 +94,114 @@ try {
     .filter((message) => message.role === "assistant" && message.turn_id === secondTurn.turn_id)
     .map((message) => message.body)
     .join(" ");
-  if (!answer.includes(soonest)) throw new Error(`the follow-up did not name the soonest work: ${answer}`);
+  // What `그중` should resolve to is decided from the ledger, not from this script's own assumption: among the work
+  // the first turn actually read, the one with the earliest deadline.
+  const expected = await page.evaluate(async (ids) => {
+    const dated = [];
+    for (const id of ids) {
+      const response = await fetch(`/api/tasks/${id}`);
+      if (!response.ok) continue;
+      const task = await response.json();
+      if (task.due_date) dated.push({ title: task.title, due: task.due_date });
+    }
+    dated.sort((left, right) => left.due.localeCompare(right.due));
+    return dated[0] ?? null;
+  }, named.filter((row) => row.resource_type === "task").map((row) => row.resource_id));
+  if (!expected) throw new Error("none of the work the turn read had a deadline to compare");
+  // What this proves is the seed contract: the follow-up is answered from what this conversation actually read, not
+  // from whatever the provider remembered. Which of those it picks is the model's judgement, not SCAX's guarantee.
+  const grounded = named.find((row) => answer.includes(row.title));
+  if (!grounded) {
+    throw new Error(`the follow-up named nothing this conversation had read: ${answer}`);
+  }
   await page.screenshot({ path: "test-results/graph-question-turn2.png", fullPage: false });
+
+  // The card hands the centre to the full surface, which applies this person's access again from the start.
+  await page.locator("section[aria-label='이 답의 관계']").last().getByRole("button", { name: "전체 그래프로 보기" }).click();
+  const surface = page.locator("section[aria-label='관계 그래프']");
+  await surface.waitFor({ timeout: 30_000 });
+  await pollFor(page, async () => ((await surface.textContent()) ?? "").includes("중심"), {
+    timeout: 20_000,
+    description: "미니 그래프가 넘겨준 중심 node로 전체 그래프가 열리는 것",
+  });
+  await page.screenshot({ path: "test-results/graph-question-continued.png", fullPage: false });
+
+  // A stored walk is asked about again before it is shown: a meeting whose share is taken back leaves the chat.
+  await signOut(page);
+  await loginAs(page, "mina");
+  const shared = await page.evaluate(async (stampValue) => {
+    const starts = new Date(Date.now() + 7_200_000);
+    const meeting = await (
+      await fetch("/api/meetings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          organization_id: "scax",
+          title: `공유가 끊길 회의 ${stampValue}`,
+          starts_at: starts.toISOString(),
+          ends_at: new Date(starts.getTime() + 1_800_000).toISOString(),
+          visibility: "private",
+          attendee_ids: [],
+        }),
+      })
+    ).json();
+    await fetch(`/api/meetings/${meeting.meeting_id}/shares`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ member_id: "jiho", expected_version: meeting.version }),
+    });
+    return meeting;
+  }, stamp);
+
+  await signOut(page);
+  await loginAs(page, "jiho");
+  await page.getByRole("button", { name: "AX" }).click();
+  const secondCreated = page.waitForResponse((response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "새 AX 대화" }).click();
+  const meetingConversation = await (await secondCreated).json();
+  await page.getByLabel("AX 메시지").fill("SCAX MCP의 meeting_list 도구로 내가 볼 수 있는 회의를 모두 나열해줘.");
+  await page.getByRole("button", { name: "보내기" }).click();
+  const afterMeetings = await waitForTurn(page, meetingConversation.conversation_id, 1);
+  const meetingTurn = afterMeetings.turns[0];
+  if (meetingTurn.state !== "completed") throw new Error(`the meeting turn did not complete: ${meetingTurn.state}`);
+  if (!afterMeetings.answer_resources.some((row) => row.resource_id === shared.meeting_id)) {
+    throw new Error("the shared meeting was never read, so revocation cannot be shown");
+  }
+
+  await signOut(page);
+  await loginAs(page, "mina");
+  await page.evaluate(async (meetingId) => {
+    const current = await (await fetch(`/api/meetings/${meetingId}`)).json();
+    await fetch(`/api/meetings/${meetingId}/shares/jiho`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expected_version: current.version }),
+    });
+  }, shared.meeting_id);
+
+  await signOut(page);
+  await loginAs(page, "jiho");
+  const redacted = await page.evaluate(
+    async ({ conversationId, meetingId }) => {
+      const detail = await (await fetch(`/api/conversations/${conversationId}`)).json();
+      return {
+        // What SCAX keeps and re-checks: the references, the walk, and the tool receipts.
+        structured: JSON.stringify({
+          answer_resources: detail.answer_resources,
+          graph_receipts: detail.graph_receipts,
+          tool_invocations: detail.tool_invocations,
+        }),
+        stillReadable: (await fetch(`/api/meetings/${meetingId}`)).status,
+      };
+    },
+    { conversationId: meetingConversation.conversation_id, meetingId: shared.meeting_id },
+  );
+  if (![403, 404].includes(redacted.stillReadable)) {
+    throw new Error(`the share was not actually revoked: ${redacted.stillReadable}`);
+  }
+  if (redacted.structured.includes(shared.meeting_id) || redacted.structured.includes(`공유가 끊길 회의 ${stamp}`)) {
+    throw new Error("a revoked meeting still had a name and a place in the chat");
+  }
 
   // A person who may not read that work is told nothing about it, in any of the same places.
   await signOut(page);
@@ -116,6 +222,8 @@ try {
       first_turn_tools: toolsUsed,
       walked_steps: walked.length,
       answer_resources: named.map((row) => `${row.resource_type}:${row.title}`),
+      follow_up_named: grounded.title,
+      earliest_deadline_read: expected.title,
     }),
   );
 } finally {

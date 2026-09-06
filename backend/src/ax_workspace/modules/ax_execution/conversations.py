@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -164,7 +165,41 @@ class ConversationApplication:
             self._answer_resources.resolve(principal, references) if self._answer_resources is not None else []
         )
         view["graph_receipts"] = self._readable_steps(principal, view.get("graph_receipts") or [])
+        view["tool_invocations"] = self._readable_tool_results(principal, view.get("tool_invocations") or [])
         return view
+
+    #: `task_id=<uuid>` and its siblings inside a tool receipt's summary; the ids are what can be re-checked.
+    _RESOURCE_IN_SUMMARY = re.compile(
+        r"\b(task|meeting|work_request|material|report)_id=([0-9a-fA-F-]{36})"
+    )
+
+    def _readable_tool_results(self, principal: Principal, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """A tool receipt keeps what a tool returned, including titles. Those are re-checked before they are shown.
+
+        The receipt itself stays — that the turn called something is a fact about the turn — but the summary of a
+        resource this person may no longer read is withheld rather than kept as a label nobody could otherwise see.
+        """
+        if self._answer_resources is None or not tools:
+            return tools
+        refs = {
+            f"{kind}:{identifier}"
+            for tool in tools
+            for kind, identifier in self._RESOURCE_IN_SUMMARY.findall(str(tool.get("result_summary") or ""))
+        }
+        if not refs:
+            return tools
+        titles = self._answer_resources.readable_titles(principal, sorted(refs))
+        redacted: list[dict[str, Any]] = []
+        for tool in tools:
+            named = [
+                f"{kind}:{identifier}"
+                for kind, identifier in self._RESOURCE_IN_SUMMARY.findall(str(tool.get("result_summary") or ""))
+            ]
+            if named and any(ref not in titles for ref in named):
+                redacted.append({**tool, "result_summary": "결과를 볼 수 없습니다"})
+            else:
+                redacted.append(tool)
+        return redacted
 
     def _readable_steps(self, principal: Principal, steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """A stored walk is asked about again before it is shown.

@@ -108,3 +108,34 @@ def test_meeting_note_appends_immutable_versions_and_rejects_stale_write(tmp_pat
         "안건: 권한 모델 확인",
         "안건: 권한 모델 확인\n결정: private busy projection",
     ]
+
+
+def test_the_meeting_tools_actually_answer_for_the_persona_they_are_bound_to(tmp_path) -> None:
+    """도구 목록에 있다는 것과 실제로 답한다는 것은 다르다.
+
+    Discovery alone proved nothing: `meeting_list` was calling a method that does not exist and failed every time it
+    was used. This calls both meeting tools the way a delegated turn does, and checks the answer is that persona's.
+    """
+    from ax_workspace.entrypoints.mcp import McpReportsFacade
+
+    client = _client(tmp_path)
+    database_url = client.app.state.workflow_application._settings.database_url
+    settings = Settings(RuntimeProfile.TEST, database_url)
+    mine = client.post(
+        "/api/meetings",
+        headers={"X-Demo-Persona": "mina"},
+        json={
+            "organization_id": "scax", "title": "도구가 답해야 할 회의",
+            "starts_at": "2026-09-10T01:00:00Z", "ends_at": "2026-09-10T02:00:00Z",
+            "visibility": "private", "attendee_ids": [],
+        },
+    ).json()
+
+    facade = McpReportsFacade(settings, "mina")
+    listed = facade.list_meetings()
+    assert any(row.get("meeting_id") == mine["meeting_id"] for row in listed if row.get("kind") == "meeting")
+    assert facade.get_meeting(mine["meeting_id"])["title"] == "도구가 답해야 할 회의"
+
+    # Someone who may not read it gets a busy block at most, and never its title.
+    other = McpReportsFacade(settings, "jiho").list_meetings()
+    assert all(row.get("title") != "도구가 답해야 할 회의" for row in other)
