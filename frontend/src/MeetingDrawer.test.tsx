@@ -10,13 +10,21 @@ vi.mock("./api", () => ({
   finalizeMeetingNote: vi.fn(),
   adoptMeetingSummary: vi.fn(),
   promoteMeetingFollowup: vi.fn(),
+  startMeetingRecording: vi.fn(),
+  stopMeetingRecording: vi.fn(),
+  meetingRealtimeCredential: vi.fn(),
+  appendMeetingRealtimeSegments: vi.fn(),
 }));
 
+vi.mock("./liveTranscription", () => ({ startLiveTranscription: vi.fn() }));
+
 import * as api from "./api";
+import { startLiveTranscription } from "./liveTranscription";
 import { MeetingDrawer } from "./MeetingDrawer";
 
 const rawSegment = (id: string, start: number, text: string) => ({
   segment_id: id,
+  sequence: start / 1_500 + 1,
   source_segment_key: `provider-${id}`,
   start_ms: start,
   end_ms: start + 1_500,
@@ -66,6 +74,7 @@ const recordedMeeting = () =>
           transcript_revision_id: "t1",
           revision: 1,
           state: "final",
+          source_kind: "async_final",
           provider: "soniox",
           segments: [rawSegment("raw-1", 0, "안녕 하세요"), rawSegment("raw-2", 1_500, "일정을 논의 합니다")],
         },
@@ -284,5 +293,85 @@ describe("meeting transcript and summary", () => {
     fireEvent.click(within(summarySection).getByRole("button", { name: "회의록으로 채택" }));
     await waitFor(() => expect(api.adoptMeetingSummary).toHaveBeenCalledWith("m1", "s1", 1));
     await waitFor(() => expect(onNotice).toHaveBeenCalledWith("AI 요약을 회의록 v2로 채택했습니다."));
+  });
+});
+
+describe("recording a meeting from the browser", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  const handle = {
+    recording_id: "r-live",
+    meeting_id: "m1",
+    purpose: "회의 녹음",
+    state: "recording",
+    version: 1,
+    content_type: null,
+    original_name: null,
+    size_bytes: null,
+    sha256: null,
+    started_at: "2026-09-10T01:00:00Z",
+    ended_at: null,
+    storage_key: null,
+  };
+
+  it("opens a recording, streams into it, and lets the file's own reading replace the live text", async () => {
+    vi.mocked(api.startMeetingRecording).mockResolvedValue(handle as never);
+    vi.mocked(api.meetingRealtimeCredential).mockResolvedValue({
+      temporary_key: "temp",
+      expires_at: "2026-09-10T02:00:00Z",
+      client_reference_id: "meeting-recording:r-live",
+      websocket_url: "wss://stt-rt.example/transcribe-websocket",
+      model: "stt-rt-v5",
+      enable_speaker_diarization: true,
+    } as never);
+    const stop = vi.fn().mockResolvedValue(new Blob(["audio"], { type: "audio/webm" }));
+    let settle: ((segments: unknown[]) => void) | null = null;
+    let provisional: ((text: string) => void) | null = null;
+    vi.mocked(startLiveTranscription).mockImplementation(async (options) => {
+      settle = options.onSettled as never;
+      provisional = options.onProvisional as never;
+      return { stop };
+    });
+    vi.mocked(api.stopMeetingRecording).mockResolvedValue({ ...handle, state: "uploaded", version: 2 } as never);
+
+    const { onNotice } = renderDrawer(meeting());
+    fireEvent.click(await screen.findByRole("button", { name: "녹음 시작" }));
+    await waitFor(() => expect(startLiveTranscription).toHaveBeenCalled());
+    expect(api.meetingRealtimeCredential).toHaveBeenCalledWith("m1", "r-live", 3_600);
+
+    settle!([{ source_segment_key: "live:1:0", start_ms: 0, end_ms: 900, text: "안녕하세요.", speaker_label: "Speaker 1" }]);
+    provisional!("일정을");
+    const stream = await screen.findByLabelText("실시간 대화록");
+    await waitFor(() => expect(stream.textContent).toContain("안녕하세요."));
+    // What is still being said is shown as unsettled, not written into the transcript beside settled speech.
+    expect(within(stream).getByText("일정을").getAttribute("data-provisional")).toBe("true");
+    expect(stream.textContent).toContain("실시간 전사는 임시 기록입니다");
+    // The meeting cannot be walked away from mid-recording.
+    expect(screen.getByRole("button", { name: "닫기" }).hasAttribute("disabled")).toBe(true);
+
+    vi.mocked(api.getMeeting).mockResolvedValue(recordedMeeting() as never);
+    fireEvent.click(screen.getByRole("button", { name: "녹음 종료" }));
+    await waitFor(() => expect(api.stopMeetingRecording).toHaveBeenCalled());
+    expect(stop).toHaveBeenCalled();
+    const [, recordingId, version, audio] = vi.mocked(api.stopMeetingRecording).mock.calls[0];
+    expect([recordingId, version]).toEqual(["r-live", 1]);
+    expect((audio as Blob).type).toBe("audio/webm");
+    await waitFor(() => expect(screen.queryByLabelText("실시간 대화록")).toBeNull());
+    await waitFor(() => expect(onNotice).toHaveBeenCalledWith(expect.stringContaining("원본 전사는 파일에서")));
+  });
+
+  it("keeps the recording when the live stream cannot be opened, and says which part failed", async () => {
+    vi.mocked(api.startMeetingRecording).mockResolvedValue(handle as never);
+    vi.mocked(api.meetingRealtimeCredential).mockRejectedValue(new Error("실시간 전사 키를 발급하지 못했습니다"));
+
+    renderDrawer(meeting());
+    fireEvent.click(await screen.findByRole("button", { name: "녹음 시작" }));
+    const stream = await screen.findByLabelText("실시간 대화록");
+    await waitFor(() => expect(stream.textContent).toContain("실시간 전사 키를 발급하지 못했습니다"));
+    expect(stream.textContent).toContain("녹음은 계속됩니다");
+    expect(screen.getByRole("button", { name: "녹음 종료" })).toBeTruthy();
   });
 });

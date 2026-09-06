@@ -26,7 +26,7 @@ from ax_workspace.modules.actions.domain import ActionError as ActionCenterError
 from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequestError, WorkRequestIdempotencyConflict
 from ax_workspace.modules.reports.application import DailyReportAccessDenied
 from ax_workspace.modules.meetings.domain import MeetingAccessDenied, MeetingError, MeetingNotFound
-from ax_workspace.modules.meetings.transcription import TranscriptionFailure
+from ax_workspace.modules.meetings.transcription import TranscriptionFailure, FinalTranscriptSegment
 from ax_workspace.modules.ax_execution.conversations import ConversationError, ConversationQueueOverflow
 from ax_workspace.modules.ax_execution.actions import ActionAccessDenied, ActionCapabilityDenied, ActionError
 from ax_workspace.bootstrap.settings import Settings
@@ -97,6 +97,22 @@ class FinalizeMeetingNoteRequest(BaseModel):
 
 class StartMeetingRecordingRequest(BaseModel):
     purpose: str = Field(min_length=1, max_length=300)
+
+
+class RealtimeSegmentRequest(BaseModel):
+    """One settled span of live transcription. Partials never reach the server."""
+
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=2000)
+    start_ms: int = Field(ge=0)
+    end_ms: int = Field(ge=0)
+    speaker_label: str | None = Field(default=None, max_length=80)
+    source_segment_key: str | None = Field(default=None, max_length=120)
+
+
+class RealtimeSegmentsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    segments: list[RealtimeSegmentRequest] = Field(min_length=1)
 
 
 class MeetingRealtimeCredentialRequest(BaseModel):
@@ -570,6 +586,30 @@ def create_app(
                     original_name=audio.filename or "recording",
                     content_type=audio.content_type or "application/octet-stream",
                     data=data,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/meetings/{meeting_id}/recordings/{recording_id}/realtime-segments")
+        def append_meeting_live_transcript(
+            meeting_id: UUID,
+            recording_id: UUID,
+            request: RealtimeSegmentsRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            segments = [
+                FinalTranscriptSegment(
+                    segment.source_segment_key or f"realtime:{index}:{segment.start_ms}",
+                    segment.start_ms,
+                    segment.end_ms,
+                    segment.text,
+                    segment.speaker_label,
+                )
+                for index, segment in enumerate(request.segments, start=1)
+            ]
+            try:
+                return app.state.workflow_application.append_meeting_live_transcript(
+                    principal, meeting_id, recording_id, segments
                 )
             except Exception as error:
                 raise _runtime_error(error) from error

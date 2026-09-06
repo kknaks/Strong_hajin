@@ -281,6 +281,14 @@ class WorkflowApplication:
                 max_session_duration_seconds,
             )
 
+    def append_meeting_live_transcript(
+        self, principal: Principal, meeting_id: UUID, recording_id: UUID, segments: list[Any]
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._meetings(session).append_live_transcript(principal, meeting_id, recording_id, segments)
+            session.commit()
+            return result
+
     def record_final_meeting_transcript(
         self,
         *,

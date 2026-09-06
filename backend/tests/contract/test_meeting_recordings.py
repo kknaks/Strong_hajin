@@ -275,6 +275,7 @@ def test_final_raw_transcript_is_immutable_and_idempotent_by_provider_reference(
     assert first["segments"] == [
         {
             "segment_id": first["segments"][0]["segment_id"],
+            "sequence": 1,
             "source_segment_key": "provider-segment-1",
             "start_ms": 0,
             "end_ms": 1_500,
@@ -284,6 +285,7 @@ def test_final_raw_transcript_is_immutable_and_idempotent_by_provider_reference(
         },
         {
             "segment_id": first["segments"][1]["segment_id"],
+            "sequence": 2,
             "source_segment_key": "provider-segment-2",
             "start_ms": 1_500,
             "end_ms": 3_000,

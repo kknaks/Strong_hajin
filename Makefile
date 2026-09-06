@@ -1,12 +1,15 @@
 DATABASE_URL ?= postgresql+psycopg://ax:ax@localhost:54329/ax_demo
 SONIOX_ENV_FILE ?= $(HOME)/.config/soniox/env
+# Load the Soniox key from the same file the vault's transcribe skill uses, without ever printing it. Absent file =
+# the feature reports itself unavailable; it never falls back to a stub that pretends to transcribe.
+SONIOX_ENV = set -a; [ -f "$(SONIOX_ENV_FILE)" ] && . "$(SONIOX_ENV_FILE)"; set +a;
 POSTGRES_TEST_URL ?= postgresql+psycopg://ax:ax@localhost:54329/ax_test
 E2E_API_PORT ?= 8001
 E2E_FRONTEND_PORT ?= 5176
 ACCEPTANCE_API_PORT ?= 18111
 ACCEPTANCE_FRONTEND_PORT ?= 15186
 
-.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo sync-demo-schema api conversation-worker material-worker meeting-worker mcp frontend-install frontend api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-conversation-report-edit-action e2e-daily-report e2e-material-search local-stack acceptance-e2e live-report-smoke soniox-smoke
+.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo sync-demo-schema api conversation-worker material-worker meeting-worker mcp frontend-install frontend api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-conversation-report-edit-action e2e-daily-report e2e-material-search e2e-meeting-live-transcript local-stack acceptance-e2e live-report-smoke soniox-smoke
 
 install:
 	cd backend && uv sync --all-groups
@@ -41,7 +44,7 @@ reset-demo:
 	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.reset_demo
 
 api:
-	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run uvicorn ax_workspace.entrypoints.http:app --reload
+	@$(SONIOX_ENV) cd backend && DATABASE_URL="$(DATABASE_URL)" uv run uvicorn ax_workspace.entrypoints.http:app --reload
 
 conversation-worker:
 	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.conversation_worker
@@ -50,7 +53,7 @@ material-worker:
 	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.material_worker
 
 meeting-worker:
-	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.meeting_worker
+	@$(SONIOX_ENV) cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.meeting_worker
 
 mcp:
 	@test -n "$$AX_MCP_PERSONA" || (echo "Set AX_MCP_PERSONA to a seeded demo persona"; exit 2)
@@ -63,7 +66,7 @@ frontend:
 	cd frontend && npm run dev
 
 api-e2e:
-	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run uvicorn ax_workspace.entrypoints.http:app --host 127.0.0.1 --port "$(E2E_API_PORT)"
+	@$(SONIOX_ENV) cd backend && DATABASE_URL="$(DATABASE_URL)" uv run uvicorn ax_workspace.entrypoints.http:app --host 127.0.0.1 --port "$(E2E_API_PORT)"
 
 frontend-e2e:
 	cd frontend && VITE_API_TARGET="http://127.0.0.1:$(E2E_API_PORT)" npm run dev -- --host 127.0.0.1 --port "$(E2E_FRONTEND_PORT)"
@@ -167,6 +170,10 @@ e2e-daily-report:
 e2e-material-search:
 	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:material-search
 
+# Real microphone path: Chrome plays a wav into getUserMedia, Soniox transcribes it live, the file's reading replaces it.
+e2e-meeting-live-transcript:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:meeting-live-transcript
+
 acceptance-e2e:
 	@set -eu; \
 		acceptance_dir="$$(mktemp -d)"; \
@@ -217,7 +224,7 @@ acceptance-e2e:
 
 # Opt-in: needs a real SONIOX_API_KEY. Prints provider request ids and durations only.
 soniox-smoke:
-	@cd backend && set -a; [ -f "$(SONIOX_ENV_FILE)" ] && . "$(SONIOX_ENV_FILE)"; set +a; uv run python scripts/soniox_smoke.py
+	@cd backend && $(SONIOX_ENV) uv run python scripts/soniox_smoke.py
 
 live-report-smoke:
 	cd backend && DATABASE_URL="$(DATABASE_URL)" SCAX_API_URL="http://127.0.0.1:$(E2E_API_PORT)" uv run python scripts/live_report_smoke.py

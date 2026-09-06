@@ -3,6 +3,8 @@ import type {
   CalendarEntry,
   MeetingDetail,
   MeetingNote,
+  MeetingRealtimeCredential,
+  MeetingRecordingHandle,
   MeetingSummary,
   ChecklistItem,
   ActionItemEnvelope,
@@ -609,6 +611,66 @@ export async function finalizeMeetingNote(meetingId: string, expectedVersion: nu
     body: JSON.stringify({ expected_version: expectedVersion }),
     method: "POST",
   });
+}
+
+/** Open a recording. The server decides whether this person may record this meeting; the browser only asks. */
+export async function startMeetingRecording(meetingId: string, purpose: string): Promise<MeetingRecordingHandle> {
+  return request<MeetingRecordingHandle>(`/api/meetings/${meetingId}/recordings/start`, {
+    body: JSON.stringify({ purpose }),
+    method: "POST",
+  });
+}
+
+/**
+ * A restricted, short-lived key for this one recording's live stream.
+ *
+ * The long-lived provider key never reaches a browser: this returns a temporary key bound to this recording, so the
+ * worst a captured page can do is stream into the session it was already allowed to open.
+ */
+export async function meetingRealtimeCredential(
+  meetingId: string,
+  recordingId: string,
+  maxSessionDurationSeconds: number,
+): Promise<MeetingRealtimeCredential> {
+  return request<MeetingRealtimeCredential>(`/api/meetings/${meetingId}/recordings/${recordingId}/realtime-credential`, {
+    body: JSON.stringify({ max_session_duration_seconds: maxSessionDurationSeconds }),
+    method: "POST",
+  });
+}
+
+/** Append what the live stream has settled on. Partial tokens are still changing, so they never come here. */
+export async function appendMeetingRealtimeSegments(
+  meetingId: string,
+  recordingId: string,
+  segments: Array<{ source_segment_key?: string | null; start_ms: number; end_ms: number; text: string; speaker_label?: string | null }>,
+): Promise<{ transcript_revision_id: string; source_kind: string; segment_count: number }> {
+  return request(`/api/meetings/${meetingId}/recordings/${recordingId}/realtime-segments`, {
+    body: JSON.stringify({ segments }),
+    method: "POST",
+  });
+}
+
+/** Close the recording by handing over the audio itself; the authoritative reading is made from this file, not the stream. */
+export async function stopMeetingRecording(
+  meetingId: string,
+  recordingId: string,
+  expectedVersion: number,
+  audio: Blob,
+  fileName: string,
+): Promise<MeetingRecordingHandle> {
+  const form = new FormData();
+  form.append("expected_version", String(expectedVersion));
+  form.append("audio", audio, fileName);
+  const response = await fetch(`/api/meetings/${meetingId}/recordings/${recordingId}/stop`, {
+    body: form,
+    credentials: "same-origin",
+    method: "POST",
+  });
+  if (!response.ok) {
+    const error = (await response.json().catch(() => ({}))) as ApiErrorBody;
+    throw new ApiError(response.status, typeof error.detail === "string" ? error.detail : response.statusText);
+  }
+  return response.json() as Promise<MeetingRecordingHandle>;
 }
 
 export async function adoptMeetingSummary(

@@ -1,10 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { promoteMeetingFollowup, adoptMeetingSummary, createMeetingNote, finalizeMeetingNote, getMeeting, saveMeetingNote } from "./api";
+import {
+  promoteMeetingFollowup,
+  adoptMeetingSummary,
+  appendMeetingRealtimeSegments,
+  createMeetingNote,
+  finalizeMeetingNote,
+  getMeeting,
+  meetingRealtimeCredential,
+  saveMeetingNote,
+  startMeetingRecording,
+  stopMeetingRecording,
+} from "./api";
+import { startLiveTranscription, type LiveTranscriptionSession, type SettledSegment } from "./liveTranscription";
 import { formatDateTime, personName } from "./labels";
 import { Drawer } from "./Modal";
 import type {
   MeetingDetail,
+  MeetingRecordingHandle,
   MeetingRecording,
   MeetingSummary,
   MeetingSummaryStatement,
@@ -36,6 +49,15 @@ const noteStatusLabel: Record<string, string> = {
   saved: "저장됨",
   conflict: "다른 곳에서 먼저 저장되었습니다. 최신 내용을 불러온 뒤 다시 저장하세요.",
   failed: "저장하지 못했습니다.",
+};
+
+/** A recording this browser is holding open: the server's handle, plus what the live stream has settled on so far. */
+type LiveRecording = {
+  handle: MeetingRecordingHandle;
+  session: LiveTranscriptionSession | null;
+  settled: SettledSegment[];
+  provisional: string;
+  error: string | null;
 };
 
 function offset(ms: number): string {
@@ -117,6 +139,7 @@ export function MeetingDrawer({
   const [showRaw, setShowRaw] = useState(false);
   const [highlighted, setHighlighted] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [live, setLive] = useState<LiveRecording | null>(null);
   const segmentNodes = useRef(new Map<string, HTMLLIElement>());
 
   const load = async () => {
@@ -146,7 +169,11 @@ export function MeetingDrawer({
     () => new Map((meeting?.attendees ?? []).map((attendee) => [attendee.member_id, attendee.display_name])),
     [meeting],
   );
-  const recording = meeting?.recordings?.[0] ?? null;
+  const recording =
+    (live ? meeting?.recordings?.find((candidate) => candidate.recording_id === live.handle.recording_id) : null) ??
+    meeting?.recordings?.[0] ??
+    null;
+  const canRecord = live === null && (recording === null || recording.state !== "recording");
   const dirty = meeting !== null && body !== (meeting.note?.body ?? "");
 
   async function saveNote() {
@@ -183,6 +210,65 @@ export function MeetingDrawer({
       await onChanged();
     } catch (error) {
       onError(error instanceof Error ? error.message : "회의록을 확정하지 못했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Start recording, then start listening.
+   *
+   * The recording is what the meeting keeps; the live stream is a convenience laid over it. If the stream cannot be
+   * opened the recording still stands, so the person is told what failed and can still stop and keep the audio.
+   */
+  async function startRecording() {
+    if (!meeting || busy || !canRecord) return;
+    setBusy(true);
+    onError(null);
+    let handle: MeetingRecordingHandle;
+    try {
+      handle = await startMeetingRecording(meeting.meeting_id, "회의 녹음");
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "녹음을 시작하지 못했습니다.");
+      setBusy(false);
+      return;
+    }
+    setLive({ handle, session: null, settled: [], provisional: "", error: null });
+    try {
+      const credential = await meetingRealtimeCredential(meeting.meeting_id, handle.recording_id, 3_600);
+      const session = await startLiveTranscription({
+        credential,
+        append: (segments) => appendMeetingRealtimeSegments(meeting.meeting_id, handle.recording_id, segments),
+        onSettled: (segments) =>
+          setLive((current) => (current ? { ...current, settled: [...current.settled, ...segments] } : current)),
+        onProvisional: (text) => setLive((current) => (current ? { ...current, provisional: text } : current)),
+        onError: (message) => setLive((current) => (current ? { ...current, error: message } : current)),
+      });
+      setLive((current) => (current ? { ...current, session } : current));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "실시간 전사를 시작하지 못했습니다.";
+      setLive((current) => (current ? { ...current, error: `${message} 녹음은 계속됩니다.` } : current));
+    } finally {
+      setBusy(false);
+      await load();
+      await onChanged();
+    }
+  }
+
+  /** Stop listening, hand the audio over, and let the authoritative reading be made from the file. */
+  async function stopRecording() {
+    if (!meeting || !live || busy) return;
+    setBusy(true);
+    onError(null);
+    try {
+      const audio = (await live.session?.stop()) ?? new Blob([], { type: "audio/webm" });
+      await stopMeetingRecording(meeting.meeting_id, live.handle.recording_id, live.handle.version, audio, "recording.webm");
+      setLive(null);
+      await load();
+      onNotice?.("녹음을 종료했습니다. 원본 전사는 파일에서 다시 만들어집니다.");
+      await onChanged();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "녹음을 종료하지 못했습니다.");
     } finally {
       setBusy(false);
     }
@@ -239,7 +325,7 @@ export function MeetingDrawer({
     <Drawer
       footer={
         <>
-          <button className="btn h40 ghost" onClick={onClose} type="button">
+          <button className="btn h40 ghost" disabled={live !== null} onClick={onClose} title={live ? "녹음을 종료한 뒤 닫을 수 있습니다." : undefined} type="button">
             닫기
           </button>
           <span className="spacer" />
@@ -323,7 +409,44 @@ export function MeetingDrawer({
           </section>
 
           <section aria-label="녹음" className="drawer-section">
-            <h4>녹음과 전사</h4>
+            <h4>
+              녹음과 전사
+              {canRecord && (
+                <button className="btn h30" disabled={busy} onClick={() => void startRecording()} type="button">
+                  녹음 시작
+                </button>
+              )}
+              {live && (
+                <button className="btn h30 primary" disabled={busy} onClick={() => void stopRecording()} type="button">
+                  녹음 종료
+                </button>
+              )}
+            </h4>
+            {live && (
+              <div aria-label="실시간 대화록" className="live-transcript" data-live-state={live.session ? "streaming" : "opening"}>
+                <p className="t-meta">
+                  실시간 전사는 임시 기록입니다. 녹음을 종료하면 파일에서 만든 원본 전사가 이 자리를 대신합니다.
+                </p>
+                {live.error && <p className="danger-text">{live.error}</p>}
+                <ol className="transcript">
+                  {live.settled.map((segment) => (
+                    <li className="transcript-line" data-live-segment={segment.source_segment_key} key={segment.source_segment_key}>
+                      <span className="transcript-meta">
+                        <b>{segment.speaker_label ?? "화자 미상"}</b>
+                        <span className="t-meta">{offset(segment.start_ms)}</span>
+                      </span>
+                      <span className="transcript-text">{segment.text}</span>
+                    </li>
+                  ))}
+                </ol>
+                {live.provisional && (
+                  <p className="live-provisional" data-provisional="true">
+                    {live.provisional}
+                  </p>
+                )}
+                {live.settled.length === 0 && !live.provisional && <p className="t-meta">아직 들은 말이 없습니다.</p>}
+              </div>
+            )}
             {!recording ? (
               <p className="t-meta">아직 녹음이 없습니다.</p>
             ) : (

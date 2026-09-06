@@ -68,6 +68,8 @@ class MeetingRepository(Protocol):
     def complete_recording(self, recording: Any, stored: Any) -> None: ...
     def raw_transcript_for_provider(self, recording: Any, provider_reference: str) -> Any | None: ...
     def latest_raw_transcript_for_recording(self, recording: Any) -> Any | None: ...
+
+    def latest_recorded_raw_transcript(self, recording: Any) -> Any | None: ...
     def create_raw_transcript(
         self,
         recording: Any,
@@ -101,6 +103,8 @@ class MeetingRepository(Protocol):
         statements: list[SummaryStatement],
     ) -> Any: ...
     def summary_evidence(self, summary: Any) -> list[Any]: ...
+    def live_transcript(self, recording: Any) -> Any: ...
+    def append_live_segments(self, recording: Any, *, provider: str, segments: list[Any]) -> Any: ...
     def followup_promotions(self, summary: Any) -> list[Any]: ...
     def record_followup_promotion(
         self, meeting: Any, summary: Any, statement_index: int, *, task_id: Any = None, work_request_id: Any = None, promoted_by: str
@@ -353,7 +357,8 @@ class MeetingApplication:
         if recording.state not in {"uploaded", "transcribing"} or not recording.storage_key:
             raise MeetingError("meeting recording cannot be finalized")
         self._repository.mark_recording_transcribing(recording, lease_token)
-        raw = self._repository.latest_raw_transcript_for_recording(recording)
+        # Only a reading of the file counts as this recording's transcript; the live stream heard the room, not the file.
+        raw = self._repository.latest_recorded_raw_transcript(recording)
         if raw is not None:
             refinement = self._repository.latest_refinement(raw)
             if refinement is not None and refinement.state == "completed":
@@ -388,7 +393,7 @@ class MeetingApplication:
         if recording is None:
             raise MeetingNotFound("meeting recording was not found")
         self._require_finalization_lease(recording, lease_token)
-        raw = self._repository.latest_raw_transcript_for_recording(recording)
+        raw = self._repository.latest_recorded_raw_transcript(recording)
         refinement = raw and self._repository.latest_refinement(raw)
         summary = refinement and self._repository.summary_for_refinement(refinement, "final")
         if raw is None or refinement is None or refinement.state != "completed" or summary is None or summary.state != "completed":
@@ -539,6 +544,41 @@ class MeetingApplication:
             segments=segments,
         )
         return self._refinement_view(refinement)
+
+    def append_live_transcript(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        recording_id: UUID,
+        segments: list[FinalTranscriptSegment],
+    ) -> dict[str, Any]:
+        """Write down what the live stream has settled on, while the recording is still open.
+
+        Only settled tokens reach here — a partial is still changing, so writing it would be recording a guess. The
+        file's own reading happens afterwards and is a separate, authoritative revision; this one never becomes it.
+        """
+        meeting = self._recording_target(principal, meeting_id)
+        if not segments:
+            raise MeetingError("실시간 전사에는 확정된 구간이 필요합니다")
+        try:
+            for segment in segments:
+                segment.validate()
+        except ValueError as error:
+            raise MeetingError(str(error)) from error
+        recording = self._repository.recording_by_id(recording_id, lock=True)
+        if recording is None or recording.meeting_id != meeting.id:
+            raise MeetingNotFound("meeting recording was not found")
+        if str(recording.actor_id) != str(principal.id):
+            raise MeetingAccessDenied("only the recording initiator may write its live transcript")
+        if recording.state != "recording":
+            raise MeetingError("이 녹음은 이미 끝났습니다. 실시간 전사는 녹음 중에만 이어집니다")
+        transcript = self._repository.append_live_segments(recording, provider="soniox", segments=segments)
+        stored = self._repository.raw_transcript_segments(transcript)
+        return {
+            "transcript_revision_id": str(transcript.id),
+            "source_kind": transcript.source_kind,
+            "segment_count": len(stored),
+        }
 
     def summary_input(self, refinement_id: UUID, *, kind: str) -> dict[str, Any]:
         if kind not in {"provisional", "final"}:
@@ -807,6 +847,7 @@ class MeetingApplication:
             "segments": [
                 {
                     "segment_id": str(segment.id),
+                    "sequence": segment.sequence,
                     "source_segment_key": segment.source_segment_key,
                     "start_ms": segment.start_ms,
                     "end_ms": segment.end_ms,

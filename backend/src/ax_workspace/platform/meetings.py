@@ -355,6 +355,21 @@ class SqlAlchemyMeetingRepository:
             .limit(1)
         )
 
+    def latest_recorded_raw_transcript(
+        self,
+        recording: MeetingRecordingRecord,
+    ) -> MeetingRawTranscriptRevisionRecord | None:
+        """The reading made from the audio file itself. What the live stream heard is not one of these."""
+        return self._session.scalar(
+            select(MeetingRawTranscriptRevisionRecord)
+            .where(
+                MeetingRawTranscriptRevisionRecord.recording_id == recording.id,
+                MeetingRawTranscriptRevisionRecord.source_kind != "realtime",
+            )
+            .order_by(MeetingRawTranscriptRevisionRecord.revision.desc())
+            .limit(1)
+        )
+
     def create_raw_transcript(
         self,
         recording: MeetingRecordingRecord,
@@ -396,6 +411,72 @@ class SqlAlchemyMeetingRepository:
                     created_at=now,
                 )
             )
+        self._session.flush()
+        return transcript
+
+    def live_transcript(self, recording: MeetingRecordingRecord) -> MeetingRawTranscriptRevisionRecord | None:
+        """The revision the live stream is writing into, if it has started one."""
+        return self._session.scalar(
+            select(MeetingRawTranscriptRevisionRecord)
+            .where(
+                MeetingRawTranscriptRevisionRecord.recording_id == recording.id,
+                MeetingRawTranscriptRevisionRecord.source_kind == "realtime",
+            )
+            .order_by(MeetingRawTranscriptRevisionRecord.revision.desc())
+        )
+
+    def append_live_segments(
+        self,
+        recording: MeetingRecordingRecord,
+        *,
+        provider: str,
+        segments: list[FinalTranscriptSegment],
+    ) -> MeetingRawTranscriptRevisionRecord:
+        """Append settled tokens to this recording's live revision, starting it on the first batch."""
+        now = datetime.now(UTC)
+        transcript = self.live_transcript(recording)
+        if transcript is None:
+            latest = self._session.scalar(
+                select(MeetingRawTranscriptRevisionRecord.revision)
+                .where(MeetingRawTranscriptRevisionRecord.recording_id == recording.id)
+                .order_by(MeetingRawTranscriptRevisionRecord.revision.desc())
+                .limit(1)
+            )
+            transcript = MeetingRawTranscriptRevisionRecord(
+                recording_id=recording.id,
+                revision=(int(latest) if latest is not None else 0) + 1,
+                state="completed",
+                source_kind="realtime",
+                provider=provider,
+                provider_reference=f"realtime:{recording.id}",
+                created_at=now,
+                finalized_at=now,
+            )
+            self._session.add(transcript)
+            self._session.flush()
+        highest = self._session.scalar(
+            select(MeetingRawTranscriptSegmentRecord.sequence)
+            .where(MeetingRawTranscriptSegmentRecord.transcript_revision_id == transcript.id)
+            .order_by(MeetingRawTranscriptSegmentRecord.sequence.desc())
+            .limit(1)
+        )
+        sequence = int(highest or 0)
+        for segment in segments:
+            sequence += 1
+            self._session.add(
+                MeetingRawTranscriptSegmentRecord(
+                    transcript_revision_id=transcript.id,
+                    sequence=sequence,
+                    source_segment_key=segment.source_segment_key.strip(),
+                    start_ms=segment.start_ms,
+                    end_ms=segment.end_ms,
+                    text=segment.text.strip(),
+                    speaker_label=segment.speaker_label.strip() if segment.speaker_label else None,
+                    confirmed_member_id=None,
+                    created_at=now,
+                )
+            )
+        transcript.finalized_at = now
         self._session.flush()
         return transcript
 

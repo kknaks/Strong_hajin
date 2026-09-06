@@ -789,6 +789,9 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .transcript-meta b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
 .transcript-text { overflow-wrap: anywhere; }
 .transcript-correction { color: var(--text-tertiary); font-size: 11px; white-space: nowrap; }
+.live-transcript { padding: 8px 10px; margin: 0 0 10px; border: 1px solid var(--border-default); border-left: 3px solid var(--progress-accent); border-radius: var(--radius-card); background: var(--surface-sunken); }
+.live-transcript .transcript { max-height: 200px; }
+.live-provisional { margin: 4px 8px 0; color: var(--text-tertiary); font-size: 13px; font-style: italic; overflow-wrap: anywhere; }
 .summary-card { padding: 12px 14px; margin: 0 0 8px; border: 1px solid var(--border-default); border-left: 3px solid var(--accent); border-radius: var(--radius-card); background: var(--selected-bg); }
 .summary-head { display: flex; align-items: baseline; justify-content: space-between; }
 .summary-evidence { display: grid; gap: 4px; margin: 8px 0; padding: 0; list-style: none; font-size: 12.5px; }

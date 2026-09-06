@@ -120,11 +120,23 @@ def test_real_subprocess_runner_streams_and_cancels(tmp_path) -> None:
     from ax_workspace.platform.codex_cli import _subprocess_runner
 
     lines: list[str] = []
-    script = "import sys,time\nfor i in range(50):\n    print('{\"type\":\"line\",\"i\":%d}' % i, flush=True)\n    time.sleep(0.05)\n"
+    # Emit a few lines, then wait far longer than this test may take. Whether the process is stopped is then a fact
+    # about cancellation, not about which thread the machine happened to schedule: without it the runner would hit
+    # its timeout and raise instead of returning.
+    script = (
+        "import sys,time\n"
+        "for i in range(5):\n"
+        "    print('{\"type\":\"line\",\"i\":%d}' % i, flush=True)\n"
+        "time.sleep(600)\n"
+    )
     started = time.monotonic()
-    result = _subprocess_runner("python3", ["-c", script], tmp_path, {"PATH": "/usr/bin:/bin"}, 10, on_line=lines.append, should_cancel=lambda: len(lines) >= 5)
-    assert 5 <= len(lines) < 50, "the process was stopped after the cancel condition instead of running to completion"
-    assert time.monotonic() - started < 5
+    result = _subprocess_runner(
+        "python3", ["-c", script], tmp_path, {"PATH": "/usr/bin:/bin"}, 10,
+        on_line=lines.append, should_cancel=lambda: len(lines) >= 5,
+    )
+    assert len(lines) == 5, "the lines emitted before the process blocked should all have been ingested"
+    # It returned rather than timing out, and the process it stopped did not exit on its own terms.
+    assert time.monotonic() - started < 10
     assert result.returncode != 0
     legacy = _subprocess_runner("python3", ["-c", "print('ok')"], tmp_path, {"PATH": "/usr/bin:/bin"}, 10)
     assert legacy.returncode == 0 and legacy.stdout.strip() == "ok"
@@ -144,7 +156,9 @@ def test_sink_failure_stops_the_run_and_fails_the_turn_instead_of_completing_sil
 
     # Real subprocess path: the first ingested event fails -> the process is stopped, not run to completion.
     lines: list[str] = []
-    script = "import time\nfor i in range(100):\n    print('{\"type\":\"turn.started\"}', flush=True)\n    time.sleep(0.05)\n"
+    # One line, then a wait far longer than this test: being stopped is then a fact about the failed ingest rather
+    # than about scheduling. Without stopping, the runner would raise TimeoutExpired instead of EventIngestFailed.
+    script = "import time\nprint('{\"type\":\"turn.started\"}', flush=True)\ntime.sleep(600)\n"
 
     def boom(line: str) -> None:
         lines.append(line)
@@ -153,7 +167,7 @@ def test_sink_failure_stops_the_run_and_fails_the_turn_instead_of_completing_sil
     started = time.monotonic()
     with pytest.raises(Exception) as raised:
         _subprocess_runner("python3", ["-c", script], tmp_path, {"PATH": "/usr/bin:/bin"}, 10, on_line=boom)
-    assert raised.type.__name__ == "EventIngestFailed" and len(lines) < 100 and time.monotonic() - started < 5
+    assert raised.type.__name__ == "EventIngestFailed" and len(lines) == 1 and time.monotonic() - started < 10
 
     # Adapter path: the failure surfaces as a provider failure with provenance, never as a completed result.
     def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None) -> ProcessResult:

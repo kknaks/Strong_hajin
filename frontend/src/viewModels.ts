@@ -634,6 +634,8 @@ export type MeetingNote = {
 /** Immutable provider output. Never edited; the refinement below is a projection of it. */
 export type RawTranscriptSegment = {
   segment_id: string;
+  /** Its place in the reading, so a live transcript's order is a fact rather than an accident of arrival. */
+  sequence: number;
   source_segment_key: string;
   start_ms: number;
   end_ms: number;
@@ -649,7 +651,8 @@ export type RefinedTranscriptSegment = RawTranscriptSegment & {
   confidence: number | null;
 };
 
-export type MeetingRecording = {
+/** What starting or stopping a recording hands back: the recording itself, never a transcript and never a storage key. */
+export type MeetingRecordingHandle = {
   recording_id: string;
   meeting_id: string;
   purpose: string;
@@ -662,7 +665,28 @@ export type MeetingRecording = {
   started_at: string | null;
   ended_at: string | null;
   storage_key: null;
-  raw_transcript: { transcript_revision_id: string; revision: number; state: string; provider: string; segments: RawTranscriptSegment[] } | null;
+};
+
+/** A restricted key for one recording's live stream. The long-lived provider key stays on the server. */
+export type MeetingRealtimeCredential = {
+  temporary_key: string;
+  expires_at: string;
+  client_reference_id: string;
+  websocket_url: string;
+  model: string;
+  enable_speaker_diarization: boolean;
+};
+
+export type MeetingRecording = MeetingRecordingHandle & {
+  raw_transcript: {
+    transcript_revision_id: string;
+    revision: number;
+    state: string;
+    /** `realtime` while the stream is still writing; the file's own reading arrives later as `async_final`. */
+    source_kind: string;
+    provider: string;
+    segments: RawTranscriptSegment[];
+  } | null;
   refinement: { refinement_revision_id: string; raw_transcript_revision_id: string; revision: number; state: string; segments: RefinedTranscriptSegment[] } | null;
   speaker_assignments: Array<{ speaker_assignment_id: string; speaker_label: string; member_id: string; scope: string; state: string }>;
 };
