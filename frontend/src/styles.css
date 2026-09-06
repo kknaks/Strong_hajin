@@ -468,16 +468,44 @@ button.metric-card:hover { border-color: var(--border-strong); background: var(-
 .ax-resource-list li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ax-resource-kind { padding: 1px 6px; border-radius: var(--radius-chip); background: var(--surface-sunken); color: var(--text-tertiary); font-size: 11px; font-weight: 700; }
 .ax-resource-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; }
-.graph-with-detail { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; align-items: start; }
-.graph-detail { display: grid; gap: 10px; align-content: start; padding: 12px; border: 1px solid var(--border-default); border-radius: var(--radius-card); background: var(--surface-sunken); max-height: 460px; overflow-y: auto; }
-.graph-detail-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+/* 관계 탐색: the picture fills the page and everything else floats over it, the way a map reads. */
+.graph-page { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: 12px; min-height: calc(100vh - 120px); }
+.graph-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.graph-toolbar .spacer { flex: 1; }
+.graph-search { flex: 1 1 320px; min-width: 220px; height: 40px; padding: 0 14px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); font: inherit; background: var(--surface-default); color: var(--text-primary); }
+.renderer-badge { padding: 7px 10px; border: 1px solid var(--border-default); border-radius: var(--radius-chip); background: var(--surface-sunken); color: var(--text-tertiary); font-size: 11px; font-weight: 700; white-space: nowrap; }
+
+.graph-card { position: relative; min-height: 520px; overflow: hidden; border: 1px solid var(--border-default); border-radius: var(--radius-card); background: var(--surface-default); }
+.graph-card::before { content: ""; position: absolute; inset: 0; pointer-events: none; background-image: radial-gradient(var(--border-default) .8px, transparent .8px); background-size: 19px 19px; opacity: .6; }
+.graph-card-empty { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; }
+.graph-overlay { position: absolute; z-index: 5; }
+.graph-overlay.top { top: 14px; left: 14px; right: 14px; display: flex; gap: 8px; flex-wrap: wrap; pointer-events: none; }
+.graph-pill { min-height: 28px; display: inline-flex; align-items: center; padding: 0 10px; border: 1px solid var(--border-default); border-radius: var(--radius-chip); background: var(--surface-default); color: var(--text-secondary); font-size: 11px; font-weight: 700; }
+.graph-overlay.filters { top: 52px; left: 14px; display: flex; gap: 6px; flex-wrap: wrap; }
+.graph-filter { height: 28px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid var(--border-default); border-radius: var(--radius-chip); background: var(--surface-default); color: var(--text-tertiary); font-size: 11px; font-weight: 700; cursor: pointer; }
+.graph-filter.active { border-color: var(--accent); color: var(--text-primary); background: var(--selected-bg); }
+.graph-filter i, .graph-overlay.legend i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.graph-overlay.legend { left: 14px; bottom: 14px; display: flex; gap: 12px; padding: 8px 11px; border: 1px solid var(--border-default); border-radius: var(--radius-chip); background: var(--surface-default); color: var(--text-tertiary); font-size: 10px; }
+.graph-overlay.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.graph-overlay.hint { left: 50%; bottom: 16px; transform: translateX(-50%); margin: 0; padding: 7px 10px; border: 1px solid var(--border-default); border-radius: var(--radius-chip); background: var(--surface-default); color: var(--text-tertiary); font-size: 10px; white-space: nowrap; pointer-events: none; }
+.graph-overlay.zoom { right: 14px; bottom: 14px; display: grid; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius-control); background: var(--surface-default); }
+.graph-overlay.zoom button { width: 34px; height: 32px; border: 0; background: transparent; color: var(--text-secondary); font-size: 15px; cursor: pointer; }
+.graph-overlay.zoom button + button { border-top: 1px solid var(--border-default); }
+.graph-overlay.zoom button:disabled { opacity: .4; cursor: default; }
+
+.graph-detail { position: absolute; z-index: 8; top: 52px; right: 14px; bottom: 60px; width: 312px; display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; gap: 10px; padding: 14px; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius-card); background: var(--surface-default); box-shadow: var(--shadow-md, 0 12px 36px rgba(35, 43, 74, .14)); }
+.graph-detail-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding-right: 24px; }
 .graph-detail-head b { font-size: 14px; }
-.graph-relations { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.graph-detail-close { position: absolute; right: 10px; top: 8px; }
+.graph-relations { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; overflow-y: auto; }
 .graph-relations li { display: grid; gap: 2px; padding-bottom: 6px; border-bottom: 1px solid var(--border-subtle); }
 .graph-relations li:last-child { border-bottom: 0; }
 .graph-detail-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-@media (max-width: 1100px) { .graph-with-detail { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 1100px) { .graph-detail { position: static; width: auto; margin-top: 10px; } }
+
 .graph-canvas-shell { display: grid; gap: 6px; }
+.graph-canvas-shell.fill { position: absolute; inset: 0; }
+.graph-canvas-shell.fill .graph-canvas { height: 100%; border: 0; background: transparent; }
 .graph-canvas { width: 100%; border: 1px solid var(--border-default); border-radius: var(--radius-card); background: var(--surface-default); }
 .member-access { margin-top: 16px; display: grid; gap: 10px; }
 .member-access .grant-list li { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }

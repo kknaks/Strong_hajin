@@ -20,8 +20,10 @@ NODE_KINDS = ("person", "team", "work_request", "task", "material", "meeting", "
 #: How far one answer may reach, so a screen and a delegated turn get the same bounded thing.
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 50
-#: The first screen is a graph, not an empty search box — bounded the same way every other answer is.
-OVERVIEW_LIMIT = 40
+#: The first screen is a graph, not an empty search box — bounded the same way every other answer is. It is wider
+#: than one hop because a graph one can read the structure of needs more than a couple of dozen connections.
+OVERVIEW_LIMIT = 120
+MAX_OVERVIEW_LIMIT = 200
 
 #: How to read an edge from either end. The inverse is wording, not a second edge.
 RELATIONS: dict[str, dict[str, str]] = {
@@ -366,7 +368,7 @@ class GraphApplication:
             nodes[self._ref(node)] = node
             edges.extend(edges_for_report)
 
-        answer = self._bounded(me, nodes, edges, limit)
+        answer = self._bounded(me, nodes, edges, min(max(1, int(limit)), MAX_OVERVIEW_LIMIT), cap=MAX_OVERVIEW_LIMIT)
         answer["view"] = view
         # A grouping the product has no ledger for is not offered at all, rather than invented from titles.
         answer["available_views"] = ["member", "team"]
@@ -414,9 +416,17 @@ class GraphApplication:
 
     # ---- shared shaping ----
 
-    def _bounded(self, center: dict[str, Any], nodes: dict[str, dict[str, Any]], edges: list[dict[str, Any]], limit: int) -> dict[str, Any]:
+    def _bounded(
+        self,
+        center: dict[str, Any],
+        nodes: dict[str, dict[str, Any]],
+        edges: list[dict[str, Any]],
+        limit: int,
+        *,
+        cap: int = MAX_LIMIT,
+    ) -> dict[str, Any]:
         """One answer stays small enough to read: extra connections are counted, never silently dropped."""
-        bounded = max(1, min(int(limit), MAX_LIMIT))
+        bounded = max(1, min(int(limit), cap))
         kept = edges[:bounded]
         named = {self._ref(center)} | {row["from"] for row in kept} | {row["to"] for row in kept}
         return {

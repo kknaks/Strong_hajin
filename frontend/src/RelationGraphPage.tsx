@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { graphNeighbors, graphOverview, graphSearch } from "./api";
-import { GraphCanvas, KIND_LABEL, KIND_SOURCE, refOf } from "./GraphCanvas";
+import { GraphCanvas, KIND_COLOR, KIND_LABEL, KIND_SOURCE, refOf, type GraphControls } from "./GraphCanvas";
 import type { GraphEdge, GraphNeighborhood, GraphNode, GraphOverview } from "./viewModels";
 import { personName, taskStateLabel } from "./labels";
 
@@ -47,6 +47,8 @@ export function RelationGraphPage({
   const [busy, setBusy] = useState(false);
   const [loadingGraph, setLoadingGraph] = useState(true);
   const [selected, setSelected] = useState<GraphNode | null>(null);
+  const [hidden, setHidden] = useState<Set<GraphNode["kind"]>>(new Set());
+  const [controls, setControls] = useState<GraphControls | null>(null);
 
   // 첫 화면은 빈 검색 상자가 아니라 지금 이어져 있는 것들이다.
   const loadOverview = useCallback(
@@ -139,8 +141,22 @@ export function RelationGraphPage({
     onOpenNode?.(node);
   };
 
+  const kinds = useMemo(() => {
+    const present = new Set((shown?.nodes ?? []).map((node) => node.kind));
+    return (Object.keys(KIND_LABEL) as GraphNode["kind"][]).filter((kind) => present.has(kind));
+  }, [shown]);
+
+  // Hiding a kind is a way of looking, not a different question: the answer is the same, drawn with less in it.
+  const visible = useMemo(() => {
+    if (!shown) return null;
+    if (hidden.size === 0) return shown;
+    const nodes = shown.nodes.filter((node) => !hidden.has(node.kind));
+    const kept = new Set(nodes.map((node) => refOf(node)));
+    return { ...shown, nodes, edges: shown.edges.filter((edge) => kept.has(edge.from) && kept.has(edge.to)) };
+  }, [hidden, shown]);
+
   return (
-    <div className="page">
+    <div className="page graph-page">
       <div className="page-head">
         <div>
           <h1>관계 탐색</h1>
@@ -148,11 +164,26 @@ export function RelationGraphPage({
         </div>
       </div>
 
-      <div className="inline-reason" style={{ padding: 0 }}>
+      <div className="graph-toolbar">
+        <div aria-label="표현 수준" className="segmented" role="tablist">
+          {(overview?.available_views ?? ["member", "team"]).map((item) => (
+            <button
+              aria-selected={view === item}
+              disabled={loadingGraph || around !== null}
+              key={item}
+              onClick={() => setView(item)}
+              role="tab"
+              type="button"
+            >
+              {VIEW_LABEL[item] ?? item}
+            </button>
+          ))}
+        </div>
         <label className="sr-only" htmlFor="graph-query">
           무엇을 찾을까요
         </label>
         <input
+          className="graph-search"
           id="graph-query"
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
@@ -167,105 +198,149 @@ export function RelationGraphPage({
         <button className="btn primary" disabled={busy} onClick={() => void search()} type="button">
           찾기
         </button>
+        {around && (
+          <button className="btn h40" onClick={() => { setAround(null); setSelected(null); }} type="button">
+            첫 화면으로
+          </button>
+        )}
+        <span className="spacer" />
+        <span className="renderer-badge">Sigma.js 3 · Graphology · ForceAtlas2</span>
       </div>
 
-      <section aria-label="관계 그래프" className="drawer-section">
-        <div className="section-row">
-          <h4>
-            {around ? `${around.center.kind === "person" ? personName(around.center.title) : around.center.title} 중심` : "지금 이어져 있는 것들"}
-          </h4>
-          <div aria-label="표현 수준" className="segmented" role="tablist">
-            {(overview?.available_views ?? ["member", "team"]).map((item) => (
-              <button
-                aria-selected={view === item}
-                disabled={loadingGraph || around !== null}
-                key={item}
-                onClick={() => setView(item)}
-                role="tab"
-                type="button"
-              >
-                {VIEW_LABEL[item] ?? item}
-              </button>
-            ))}
-          </div>
-          {around && (
-            <button className="btn h30" onClick={() => setAround(null)} type="button">
-              첫 화면으로
-            </button>
-          )}
-        </div>
+      <section aria-label="관계 그래프" className="graph-card">
         {around === null && overview === null ? (
-          <p className="t-meta">관계를 불러오는 중…</p>
-        ) : (shown?.nodes.length ?? 0) === 0 ? (
-          <div className="empty-state">
-            <b>아직 이어진 것이 없습니다</b>
-            <p>업무를 맡거나 요청을 주고받으면 여기에서 이어집니다. 볼 수 있는 범위 안에서만 그립니다.</p>
+          <p className="t-meta graph-card-empty">관계를 불러오는 중…</p>
+        ) : (visible?.nodes.length ?? 0) === 0 ? (
+          <div className="empty-state graph-card-empty">
+            <b>{(shown?.nodes.length ?? 0) === 0 ? "아직 이어진 것이 없습니다" : "고른 종류가 모두 숨겨져 있습니다"}</b>
+            <p>
+              {(shown?.nodes.length ?? 0) === 0
+                ? "업무를 맡거나 요청을 주고받으면 여기에서 이어집니다. 볼 수 있는 범위 안에서만 그립니다."
+                : "위의 종류 단추를 다시 눌러 보여 주세요."}
+            </p>
           </div>
         ) : (
-          <div className="graph-with-detail">
+          <>
             <GraphCanvas
               centerRef={centerRef || undefined}
-              edges={shown?.edges ?? []}
-              nodes={shown?.nodes ?? []}
+              edges={visible?.edges ?? []}
+              fill
+              nodes={visible?.nodes ?? []}
+              onReady={setControls}
               onSelect={setSelected}
               selectedRef={selected ? refOf(selected) : null}
             />
-            <aside aria-label="선택한 노드" className="graph-detail">
-              {selected === null ? (
-                <p className="t-meta">
-                  노드에 마우스를 올리면 그 지점의 직접 연결만 밝아집니다. 눌러서 고르면 여기에서 정본과 연결을 봅니다.
-                </p>
-              ) : (
-                <>
-                  <div className="graph-detail-head">
-                    <span className="ax-resource-kind">{KIND_LABEL[selected.kind] ?? selected.kind}</span>
-                    <b>{selected.kind === "person" ? personName(selected.title) : selected.title}</b>
-                    {selected.state && (
-                      <span className="t-meta">
-                        {taskStateLabel[selected.state as keyof typeof taskStateLabel] ?? selected.state}
-                      </span>
-                    )}
-                  </div>
-                  <dl className="meta-grid">
-                    <div>
-                      <dt>정본</dt>
-                      <dd>{KIND_SOURCE[selected.kind] ?? selected.kind}</dd>
-                    </div>
-                  </dl>
-                  <h5 className="t-meta">직접 연결 {connectionsOf(selected).length}개</h5>
-                  <ul className="graph-relations">
-                    {connectionsOf(selected).map(({ edge, other, incoming }) => (
-                      <li data-relation={edge.kind} key={`${edge.kind}:${edge.from}:${edge.to}`}>
-                        <button className="btn link" onClick={() => setSelected(other)} type="button">
-                          {other.kind === "person" ? personName(other.title) : other.title}
-                        </button>
-                        <span className="t-meta">
-                          {(incoming ? edge.inverse_label : edge.label) ?? edge.kind}
-                          {edge.count && edge.count > 1 ? ` ×${edge.count}` : ""} · 출처 {edge.provenance ?? edge.kind}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                  <div className="graph-detail-actions">
-                    <button className="btn h30" disabled={busy} onClick={() => void walk(selected)} type="button">
-                      이 지점 중심으로
-                    </button>
-                    {(selected.kind === "task" || onOpenNode) && (
-                      <button className="btn h30 primary" onClick={() => openOriginal(selected)} type="button">
-                        {KIND_LABEL[selected.kind] ?? "원본"} 상세 열기
-                      </button>
-                    )}
-                  </div>
-                </>
+
+            <div className="graph-overlay top">
+              <span className="graph-pill">
+                내 권한으로 접근 가능한 연결 · {around ? "한 걸음 이웃" : "첫 화면"} · {VIEW_LABEL[view]}
+              </span>
+              <span className="graph-pill">
+                {visible?.nodes.length ?? 0}개 노드 · {visible?.edges.length ?? 0}개 연결
+                {shown?.truncated ? " · 더 있음" : ""}
+              </span>
+              {around && (
+                <span className="graph-pill">
+                  중심 · {around.center.kind === "person" ? personName(around.center.title) : around.center.title}
+                </span>
               )}
-            </aside>
-          </div>
+            </div>
+
+            <div aria-label="종류 필터" className="graph-overlay filters" role="group">
+              {kinds.map((kind) => (
+                <button
+                  aria-pressed={!hidden.has(kind)}
+                  className={hidden.has(kind) ? "graph-filter" : "graph-filter active"}
+                  key={kind}
+                  onClick={() =>
+                    setHidden((current) => {
+                      const next = new Set(current);
+                      if (next.has(kind)) next.delete(kind);
+                      else next.add(kind);
+                      return next;
+                    })
+                  }
+                  type="button"
+                >
+                  <i style={{ background: KIND_COLOR[kind] }} /> {KIND_LABEL[kind]}
+                </button>
+              ))}
+            </div>
+
+            <div aria-hidden className="graph-overlay legend">
+              {kinds.map((kind) => (
+                <span key={kind}>
+                  <i style={{ background: KIND_COLOR[kind] }} /> {KIND_LABEL[kind]}
+                </span>
+              ))}
+            </div>
+            <p aria-hidden className="graph-overlay hint">
+              스크롤 확대 · 배경 이동 · 노드 드래그 · 올리면 이웃만 밝아짐 · 누르면 정본과 연결
+            </p>
+
+            <div aria-label="화면 조작" className="graph-overlay zoom" role="group">
+              <button aria-label="확대" disabled={!controls} onClick={() => controls?.zoomIn()} type="button">
+                +
+              </button>
+              <button aria-label="축소" disabled={!controls} onClick={() => controls?.zoomOut()} type="button">
+                −
+              </button>
+              <button aria-label="전체 보기" disabled={!controls} onClick={() => controls?.reset()} type="button">
+                ⌂
+              </button>
+              <button aria-label="배치 다시 계산" disabled={!controls} onClick={() => controls?.relayout()} type="button">
+                ↻
+              </button>
+            </div>
+
+            {selected && (
+              <aside aria-label="선택한 노드" className="graph-detail">
+                <div className="graph-detail-head">
+                  <span className="ax-resource-kind">{KIND_LABEL[selected.kind] ?? selected.kind}</span>
+                  <b>{selected.kind === "person" ? personName(selected.title) : selected.title}</b>
+                  {selected.state && (
+                    <span className="t-meta">
+                      {taskStateLabel[selected.state as keyof typeof taskStateLabel] ?? selected.state}
+                    </span>
+                  )}
+                  <button aria-label="상세 닫기" className="btn link graph-detail-close" onClick={() => setSelected(null)} type="button">
+                    ✕
+                  </button>
+                </div>
+                <dl className="meta-grid">
+                  <div>
+                    <dt>정본</dt>
+                    <dd>{KIND_SOURCE[selected.kind] ?? selected.kind}</dd>
+                  </div>
+                </dl>
+                <h5 className="t-meta">직접 연결 {connectionsOf(selected).length}개</h5>
+                <ul className="graph-relations">
+                  {connectionsOf(selected).map(({ edge, other, incoming }) => (
+                    <li data-relation={edge.kind} key={`${edge.kind}:${edge.from}:${edge.to}`}>
+                      <button className="btn link" onClick={() => setSelected(other)} type="button">
+                        {other.kind === "person" ? personName(other.title) : other.title}
+                      </button>
+                      <span className="t-meta">
+                        {(incoming ? edge.inverse_label : edge.label) ?? edge.kind}
+                        {edge.count && edge.count > 1 ? ` ×${edge.count}` : ""} · 출처 {edge.provenance ?? edge.kind}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="graph-detail-actions">
+                  <button className="btn h30" disabled={busy} onClick={() => void walk(selected)} type="button">
+                    이 지점 중심으로
+                  </button>
+                  {(selected.kind === "task" || onOpenNode) && (
+                    <button className="btn h30 primary" onClick={() => openOriginal(selected)} type="button">
+                      {KIND_LABEL[selected.kind] ?? "원본"} 상세 열기
+                    </button>
+                  )}
+                </div>
+              </aside>
+            )}
+          </>
         )}
-        <p className="t-meta">
-          {shown?.truncated
-            ? "연결이 더 있습니다. 한 번에 보여 주는 수를 넘었습니다 — 한 지점을 중심으로 두면 그 주변을 다 볼 수 있습니다."
-            : "노드를 누르면 오른쪽에서 정본과 연결을 봅니다. 볼 수 있는 것만 그려지고, 따라가도 권한은 늘지 않습니다."}
-        </p>
       </section>
 
       <div className="graph-layout">

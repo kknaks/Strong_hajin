@@ -1000,7 +1000,7 @@ def create_app(
         @app.get("/api/graph/overview")
         def graph_overview(
             view: Literal["member", "team"] = "member",
-            limit: int = 40,
+            limit: int = 120,
             principal: Principal = Depends(developer_principal),
         ) -> dict[str, object]:
             try:

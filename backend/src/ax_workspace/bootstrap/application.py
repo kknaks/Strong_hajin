@@ -947,7 +947,7 @@ class WorkflowApplication:
     def _graph(self, session: Any) -> GraphApplication:
         return GraphApplication(_SessionGraphSource(self, session))
 
-    def graph_overview(self, principal: Principal, *, view: str = "member", limit: int = 40) -> dict[str, Any]:
+    def graph_overview(self, principal: Principal, *, view: str = "member", limit: int = 120) -> dict[str, Any]:
         with self._session_factory() as session:
             return GraphApplication(_SessionGraphSource(self, session)).overview(principal, view=view, limit=limit)
 

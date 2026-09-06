@@ -101,7 +101,10 @@ describe("첫 화면", () => {
     renderPage();
     await waitFor(() => expect(api.graphOverview).toHaveBeenCalledWith("member"));
     const graph = await screen.findByLabelText("관계 그래프");
-    expect(within(graph).getByText("지금 이어져 있는 것들")).toBeTruthy();
+    // The first screen says what it is showing and how much of it, without anyone searching.
+    expect(within(graph).getByText(/첫 화면 · 구성원 보기/)).toBeTruthy();
+    expect(within(graph).getByText(/3개 노드 · 2개 연결/)).toBeTruthy();
+    expect(within(graph).getAllByRole("button", { name: /사람|팀|업무/ }).length).toBeGreaterThan(0);
     expect(api.graphSearch).not.toHaveBeenCalled();
   });
 
@@ -110,5 +113,26 @@ describe("첫 화면", () => {
     await waitFor(() => expect(api.graphOverview).toHaveBeenCalledWith("member"));
     fireEvent.click(screen.getByRole("tab", { name: "팀으로 묶기" }));
     await waitFor(() => expect(api.graphOverview).toHaveBeenCalledWith("team"));
+  });
+});
+
+
+describe("보는 방식", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("hides a kind on request without asking a different question", async () => {
+    renderPage();
+    const graph = await screen.findByLabelText("관계 그래프");
+    await waitFor(() => expect(within(graph).getByText(/3개 노드 · 2개 연결/)).toBeTruthy());
+
+    const filters = within(graph).getByLabelText("종류 필터");
+    fireEvent.click(within(filters).getByRole("button", { name: /팀/ }));
+
+    // The same authorized answer, drawn with less in it — no new request went out.
+    await waitFor(() => expect(within(graph).getByText(/2개 노드 · 1개 연결/)).toBeTruthy());
+    expect(api.graphOverview).toHaveBeenCalledTimes(1);
   });
 });

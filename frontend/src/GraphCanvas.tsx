@@ -15,7 +15,7 @@ import type { GraphEdge, GraphNode } from "./viewModels";
  * 그림 옆에는 언제나 같은 내용의 목록이 함께 있다. 스크린 리더와 WebGL이 없는 환경에서는 그 목록이 이 화면이다.
  */
 
-const KIND_COLOR: Record<string, string> = {
+export const KIND_COLOR: Record<string, string> = {
   person: "#7181f8",
   team: "#7181f8",
   work_request: "#9a78df",
@@ -54,14 +54,24 @@ export const refOf = (node: GraphNode): string => `${node.kind}:${node.id}`;
 
 const shorten = (text: string, limit = 16): string => (text.length > limit ? `${text.slice(0, limit - 1)}…` : text);
 
+export type GraphControls = {
+  zoomIn: () => void;
+  zoomOut: () => void;
+  reset: () => void;
+  /** Lay the same answer out again, for when a person has dragged it into a shape they want to undo. */
+  relayout: () => void;
+};
+
 export function GraphCanvas({
   nodes,
   edges,
   centerRef,
   selectedRef,
   onSelect,
+  onReady,
   interactive = true,
-  height = 460,
+  height,
+  fill = false,
 }: {
   nodes: GraphNode[];
   edges: GraphEdge[];
@@ -70,15 +80,21 @@ export function GraphCanvas({
   /** What the person has clicked. Its neighbourhood stays lit while nothing is hovered. */
   selectedRef?: string | null;
   onSelect?: (node: GraphNode) => void;
+  /** Handed the camera and layout controls once the picture exists, so the page can offer them. */
+  onReady?: (controls: GraphControls | null) => void;
   /** A chat card is a fixed picture of one turn: no panning, no zooming, no dragging. */
   interactive?: boolean;
   height?: number;
+  /** Fill the space it is given instead of standing at a fixed height. */
+  fill?: boolean;
 }) {
   const container = useRef<HTMLDivElement | null>(null);
   const [drawn, setDrawn] = useState(false);
   const select = useRef(onSelect);
   const selected = useRef(selectedRef ?? null);
+  const ready = useRef(onReady);
   select.current = onSelect;
+  ready.current = onReady;
 
   // Selection lives outside the effect: choosing a different node re-lights the picture without rebuilding it.
   const refresh = useRef<(() => void) | null>(null);
@@ -206,6 +222,28 @@ export function GraphCanvas({
       }
       setDrawn(true);
       refresh.current = () => sigma.refresh();
+      const camera = sigma.getCamera();
+      ready.current?.({
+        zoomIn: () => camera.animatedZoom({ duration: 220 }),
+        zoomOut: () => camera.animatedUnzoom({ duration: 220 }),
+        reset: () => camera.animatedReset({ duration: 260 }),
+        relayout: () => {
+          forceAtlas2.assign(graph, {
+            iterations: graph.order >= 80 ? 150 : 100,
+            settings: {
+              barnesHutOptimize: graph.order >= 80,
+              edgeWeightInfluence: 0.7,
+              gravity: 1.05,
+              scalingRatio: 8,
+              slowDown: 5,
+              strongGravityMode: false,
+            },
+          });
+          sigma.setCustomBBox(null);
+          camera.animatedReset({ duration: 260 });
+          sigma.refresh();
+        },
+      });
 
       if (!interactive) {
         // A chat card is a picture of one turn, not a place to explore: nothing pans, zooms or drags.
@@ -269,19 +307,20 @@ export function GraphCanvas({
     return () => {
       cancelled = true;
       refresh.current = null;
+      ready.current?.(null);
       renderer?.kill();
     };
   }, [nodes, edges, centerRef, interactive]);
 
   return (
-    <div className="graph-canvas-shell">
+    <div className={fill ? "graph-canvas-shell fill" : "graph-canvas-shell"}>
       <div
         aria-hidden={drawn ? undefined : true}
         className="graph-canvas"
         data-drawn={drawn ? "true" : "false"}
         data-node-count={nodes.length}
         ref={container}
-        style={{ height }}
+        style={height ? { height } : undefined}
       />
       {!drawn && <p className="t-meta">이 화면에서는 그림을 그릴 수 없어 아래 목록으로 보여 줍니다.</p>}
     </div>
