@@ -158,7 +158,7 @@ function ConversationTimeline({
                   {item.body}
                 </p>
               ))}
-            <ExecutionRail onRetry={retried ? undefined : () => onRetryTurn(turn.turn_id)} tools={tools} turn={turn} />
+            <ExecutionRail onRetry={retried ? undefined : () => onRetryTurn(turn.turn_id)} steps={walked} tools={tools} turn={turn} />
             {messages
               .filter((item) => item.role === "assistant" && (item.body || item.body_state === "streaming"))
               .map((item) => (
@@ -173,8 +173,8 @@ function ConversationTimeline({
                   {item.body_state === "cancelled" && <small className="ax-body-note">취소 시점까지의 답변</small>}
                 </div>
               ))}
+            <TurnGraph onOpenGraph={onOpenGraph} steps={walked} />
             <AnswerResources onOpen={onOpenResource} resources={named} />
-            <SearchPath onOpenGraph={onOpenGraph} steps={walked} />
             <EvidenceCards evidence={evidence} />
             {actions.map((action) => (
               <ActionResultCard action={action} key={action.action_id} onDecide={onDecide} />
@@ -248,7 +248,18 @@ function prefersReducedMotion(): boolean {
  * observed order. It updates the same element instead of appending rows, so layout stays stable; once the turn is
  * terminal it collapses into a one-line summary so the answer is the main content.
  */
-export function ExecutionRail({ turn, tools, onRetry }: { turn: ConversationTurn; tools: Tools; onRetry?: () => void }) {
+export function ExecutionRail({
+  turn,
+  tools,
+  steps = [],
+  onRetry,
+}: {
+  turn: ConversationTurn;
+  tools: Tools;
+  /** Where this turn walked, shown as it arrives and folded away with the tools once the turn is done. */
+  steps?: GraphReceipt[];
+  onRetry?: () => void;
+}) {
   const progress = turn.progress_state ?? (turn.state === "pending" ? "queued" : turn.state === "running" ? "preparing" : (turn.state as string));
   const terminal = progress === "completed" || progress === "failed" || progress === "cancelled";
   const now = useNow(!terminal);
@@ -289,7 +300,14 @@ export function ExecutionRail({ turn, tools, onRetry }: { turn: ConversationTurn
     );
   });
 
-  const outcome = [`${icon} ${stateLabel[progress] ?? progress}`, tools.length ? `도구 ${tools.length}개` : null].filter(Boolean).join(" · ");
+  const path = <SearchPathSteps steps={steps} />;
+  const outcome = [
+    `${icon} ${stateLabel[progress] ?? progress}`,
+    tools.length ? `도구 ${tools.length}개` : null,
+    steps.length ? `연결 ${steps.length}단계` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const timings = [elapsedText ? `실행 ${elapsedText}` : null, waitText ? `대기 ${waitText}` : null].filter(Boolean).join(" · ");
 
   if (terminal) {
@@ -308,6 +326,7 @@ export function ExecutionRail({ turn, tools, onRetry }: { turn: ConversationTurn
             {turn.error && <span className="ax-rail-error">{turn.error}</span>}
           </summary>
           {tools.length > 0 ? <ol className="ax-rail-tools">{receipts}</ol> : <p className="ax-rail-none">도구를 사용하지 않았습니다.</p>}
+          {path}
         </details>
         {(progress === "failed" || progress === "cancelled") && onRetry && (
           <button className="btn h30 primary" onClick={onRetry} type="button">
@@ -336,6 +355,7 @@ export function ExecutionRail({ turn, tools, onRetry }: { turn: ConversationTurn
           {receipts}
         </ol>
       )}
+      {path}
     </div>
   );
 }
@@ -378,49 +398,19 @@ const EDGE_SENTENCE: Record<string, string> = {
 /**
  * 찾아본 연결: the steps this turn actually took, in the order the tools returned them.
  *
- * Nothing here is inferred — a connection appears only because a graph tool returned it for this persona, and it is
- * restored from the server on re-entry rather than held in the page.
+ * It appears inside the execution rail — live while the turn runs, folded into the one-line receipt once it is done —
+ * because it is how the answer was found, not the answer. Nothing here is inferred: a connection is listed only
+ * because a graph tool returned it for this persona, and it is restored from the server on re-entry.
  */
-function SearchPath({ steps, onOpenGraph }: { steps: GraphReceipt[]; onOpenGraph?: (nodeRef: string) => void }) {
+function SearchPathSteps({ steps }: { steps: GraphReceipt[] }) {
   if (steps.length === 0) return null;
   const found = steps.filter((step) => step.kind === "node");
   const edges = steps.filter((step) => step.kind === "edge");
-  // The picture is this turn's, fixed: the nodes and edges its tools actually returned, and nothing else.
-  const seen = new Map<string, GraphNode>();
-  const add = (ref: string | null | undefined, title: string | null | undefined) => {
-    if (!ref || seen.has(ref)) return;
-    const [kind, ...rest] = ref.split(":");
-    seen.set(ref, { kind: kind as GraphNode["kind"], id: rest.join(":"), title: title ?? ref, state: null });
-  };
-  for (const step of steps) {
-    add(step.node_ref, step.node_title);
-    add(step.from_ref, step.from_title);
-    add(step.to_ref, step.to_title);
-  }
-  const graphEdges: GraphEdge[] = edges
-    .filter((step) => step.from_ref && step.to_ref)
-    .map((step) => ({
-      kind: step.edge_kind ?? "",
-      from: String(step.from_ref),
-      to: String(step.to_ref),
-      label: EDGE_SENTENCE[step.edge_kind ?? ""] ?? step.edge_kind ?? "",
-    }));
-  const center = steps.find((step) => step.kind === "node")?.node_ref ?? graphEdges[0]?.from;
   return (
     <section aria-label="찾아본 연결" className="ax-search-path">
       <b>
         찾아본 연결 {edges.length + found.length}단계 <small>· 실제로 조회한 것만</small>
       </b>
-      {seen.size > 0 && (
-        <>
-          <GraphCanvas edges={graphEdges} height={180} interactive={false} nodes={[...seen.values()]} />
-          {onOpenGraph && center && (
-            <button className="btn h30" onClick={() => onOpenGraph(String(center))} type="button">
-              전체 그래프로 보기
-            </button>
-          )}
-        </>
-      )}
       <ol className="ax-path-list">
         {found.length > 0 && (
           <li key="found">
@@ -434,6 +424,48 @@ function SearchPath({ steps, onOpenGraph }: { steps: GraphReceipt[]; onOpenGraph
           </li>
         ))}
       </ol>
+    </section>
+  );
+}
+
+/**
+ * 이 답의 그림: the same receipt, drawn once and left alone.
+ *
+ * It stays with the answer rather than folding away with the execution, because it is what the answer is about. It is
+ * a picture of one turn — nothing to pan, zoom or filter — and `전체 그래프로 보기` hands the centre to the full
+ * surface, which applies this person's access again from the start.
+ */
+function TurnGraph({ steps, onOpenGraph }: { steps: GraphReceipt[]; onOpenGraph?: (nodeRef: string) => void }) {
+  if (steps.length === 0) return null;
+  const seen = new Map<string, GraphNode>();
+  const add = (ref: string | null | undefined, title: string | null | undefined) => {
+    if (!ref || seen.has(ref)) return;
+    const [kind, ...rest] = ref.split(":");
+    seen.set(ref, { kind: kind as GraphNode["kind"], id: rest.join(":"), title: title ?? ref, state: null });
+  };
+  for (const step of steps) {
+    add(step.node_ref, step.node_title);
+    add(step.from_ref, step.from_title);
+    add(step.to_ref, step.to_title);
+  }
+  const edges: GraphEdge[] = steps
+    .filter((step) => step.kind === "edge" && step.from_ref && step.to_ref)
+    .map((step) => ({
+      kind: step.edge_kind ?? "",
+      from: String(step.from_ref),
+      to: String(step.to_ref),
+      label: EDGE_SENTENCE[step.edge_kind ?? ""] ?? step.edge_kind ?? "",
+    }));
+  if (seen.size === 0) return null;
+  const center = steps.find((step) => step.kind === "node")?.node_ref ?? edges[0]?.from;
+  return (
+    <section aria-label="이 답의 관계" className="ax-turn-graph">
+      <GraphCanvas edges={edges} height={180} interactive={false} nodes={[...seen.values()]} />
+      {onOpenGraph && center && (
+        <button className="btn h30" onClick={() => onOpenGraph(String(center))} type="button">
+          전체 그래프로 보기
+        </button>
+      )}
     </section>
   );
 }

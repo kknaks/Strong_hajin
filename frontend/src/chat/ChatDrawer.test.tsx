@@ -116,9 +116,13 @@ describe("찾아본 연결", () => {
         onRetryTurn={vi.fn()}
       />,
     );
-    const path = container.querySelector("section.ax-search-path") as HTMLElement;
+    // The path is how the answer was found, so it lives in the execution rail — folded away once the turn is done.
+    const rail = container.querySelector(".ax-rail") as HTMLElement;
+    const path = rail.querySelector("section.ax-search-path") as HTMLElement;
     expect(path.textContent).toContain("분기 마감 요청 → 분기 마감");
     expect(path.textContent).toContain("만든 업무");
+    // The picture of the answer stays with the answer.
+    expect(container.querySelector("section.ax-turn-graph")).not.toBeNull();
 
     rerender(<MessageList
         conversation={base as never}
@@ -129,6 +133,7 @@ describe("찾아본 연결", () => {
         onRetryTurn={vi.fn()}
       />);
     expect(container.querySelector("section.ax-search-path")).toBeNull();
+    expect(container.querySelector("section.ax-turn-graph")).toBeNull();
   });
 });
 
@@ -635,5 +640,47 @@ describe("답변이 가리키는 것", () => {
         onRetryTurn={vi.fn()}
       />);
     expect(container.querySelector("section.ax-answer-resources")).toBeNull();
+  });
+});
+
+describe("실행 영수증", () => {
+  afterEach(cleanup);
+
+  it("shows the walk while the turn runs and folds it into one line once it is done", async () => {
+    const running = conversation("c11", "관계 질문", "이 업무가 어디서 왔는지 알려줘");
+    running.turns[0] = { ...running.turns[0], state: "running", progress_state: "tool_running" } as never;
+    const steps = [
+      { receipt_id: "r1", turn_id: running.turns[0].turn_id, sequence: 1, kind: "node" as const, node_ref: "task:t1", node_title: "분기 마감", observed_at: "2026-09-06T00:00:00Z" },
+    ];
+    const { container, rerender } = render(
+      <MessageList
+        conversation={{ ...running, graph_receipts: steps } as never}
+        localFragments={[]}
+        onDecide={vi.fn()}
+        onDiscardFragment={vi.fn()}
+        onRetryFragment={vi.fn()}
+        onRetryTurn={vi.fn()}
+      />,
+    );
+    // While it runs the path is open, with no summary to expand.
+    expect(container.querySelector(".ax-rail:not(.terminal) section.ax-search-path")).not.toBeNull();
+    expect(container.querySelector(".ax-rail details")).toBeNull();
+
+    const done = conversation("c11", "관계 질문", "이 업무가 어디서 왔는지 알려줘");
+    rerender(
+      <MessageList
+        conversation={{ ...done, graph_receipts: steps.map((step) => ({ ...step, turn_id: done.turns[0].turn_id })) } as never}
+        localFragments={[]}
+        onDecide={vi.fn()}
+        onDiscardFragment={vi.fn()}
+        onRetryFragment={vi.fn()}
+        onRetryTurn={vi.fn()}
+      />,
+    );
+    const receipt = container.querySelector(".ax-rail.terminal details") as HTMLDetailsElement;
+    expect(receipt).not.toBeNull();
+    expect(receipt.open).toBe(false);
+    expect(receipt.querySelector("summary")?.textContent).toContain("연결 1단계");
+    expect(receipt.querySelector("section.ax-search-path")).not.toBeNull();
   });
 });
