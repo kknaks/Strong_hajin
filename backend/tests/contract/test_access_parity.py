@@ -37,7 +37,14 @@ def test_every_channel_gives_the_same_answer_about_the_same_work(tmp_path) -> No
     assert _http_task(client, "yuna", task["task_id"]).json()["access"] == "read_only"
     executive = McpReportsFacade(settings, "yuna")
     assert executive.get_task(task["task_id"])["title"] == secret
-    assert task["task_id"] in {row["task_id"] for row in executive.list_tasks()}
+    # 창구를 맞춰 견준다: 읽을 수 있는 것끼리, 자기가 든 것끼리. 두 질문을 섞으면 parity가 아니라 혼동이다.
+    assert task["task_id"] in {row["task_id"] for row in executive.list_tasks(mine=False)}
+    over_http = {row["task_id"] for row in client.get("/api/tasks", headers={"X-Demo-Persona": "yuna"}).json()}
+    assert over_http == {row["task_id"] for row in executive.list_tasks(mine=False)}
+    held = {row["task_id"] for row in client.get("/api/my-work", headers={"X-Demo-Persona": "yuna"}).json()}
+    assert held == {row["task_id"] for row in executive.list_tasks()}
+    # 대표라도 남의 업무는 자기가 든 것이 아니다.
+    assert task["task_id"] not in held
     found = executive.graph_search(secret[:4])
     assert task["task_id"] in {node["id"] for node in found["nodes"] if node["kind"] == "task"}
 
@@ -46,7 +53,7 @@ def test_every_channel_gives_the_same_answer_about_the_same_work(tmp_path) -> No
     assert _http_task(client, "jiho", task["task_id"]).status_code == 404
     with pytest.raises(Exception):
         lead.get_task(task["task_id"])
-    assert task["task_id"] not in {row["task_id"] for row in lead.list_tasks()}
+    assert task["task_id"] not in {row["task_id"] for row in lead.list_tasks(mine=False)}
     lead_graph = lead.graph_search(secret[:4])
     assert secret not in str(lead_graph)
     assert lead_graph["nodes"] == [] and lead_graph.get("truncated") in (False, None)

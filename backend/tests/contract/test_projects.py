@@ -18,10 +18,15 @@ HYEON = {"X-Demo-Persona": "hyeon"}    # 인사 — 제품팀 밖
 
 
 @pytest.fixture()
-def client(tmp_path) -> TestClient:
+def settings(tmp_path) -> Settings:
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
-    return TestClient(create_app(Settings(RuntimeProfile.TEST, database_url)))
+    return Settings(RuntimeProfile.TEST, database_url)
+
+
+@pytest.fixture()
+def client(settings: Settings) -> TestClient:
+    return TestClient(create_app(settings))
 
 
 def _project(client: TestClient, *, name: str = "한빛 통합 마케팅", unit: str = "product", by: dict | None = None) -> dict:
@@ -248,3 +253,26 @@ def test_the_person_who_may_sign_in_as_the_organization_sees_every_project(clien
         "한빛 통합 마케팅",
         "사내 인사 시스템 개편",
     }
+
+
+def test_what_a_person_holds_is_not_what_they_may_read(client: TestClient, settings: Settings) -> None:
+    """`내 업무`와 `조직의 업무`는 다른 질문이고, AX의 도구가 그 둘을 구분해 답한다.
+
+    프로젝트로 남의 업무를 읽는 사람에게 `오늘 할 일`을 물었을 때 남의 일이 자기 일로 섞여 나오면 답이 틀린
+    것이다 — 읽을 수 있다는 것과 내가 해야 한다는 것은 같지 않다.
+    """
+    from ax_workspace.entrypoints.mcp import McpReportsFacade
+
+    project = _project(client)
+    theirs = client.post(
+        "/api/tasks", headers=JIHO, json={"title": "지호가 든 프로젝트 업무", "project_id": project["project_id"]}
+    ).json()
+    client.post(f"/api/projects/{project['project_id']}/members", headers=JIHO, json={"member_id": "hyeon"})
+    mine = client.post("/api/tasks", headers=HYEON, json={"title": "현이 든 업무"}).json()
+
+    facade = McpReportsFacade(settings, "hyeon")
+
+    assert {row["task_id"] for row in facade.list_tasks()} == {mine["task_id"]}
+    # 넓히는 길은 남아 있고, 넓혔을 때만 넓어진다.
+    readable = {row["task_id"] for row in facade.list_tasks(mine=False)}
+    assert theirs["task_id"] in readable and mine["task_id"] in readable

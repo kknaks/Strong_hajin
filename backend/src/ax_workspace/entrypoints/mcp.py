@@ -318,8 +318,13 @@ class McpReportsFacade:
             return
         self._application.record_answer_resources(self.principal, UUID(causation_id), references)
 
-    def list_tasks(self) -> list[dict[str, Any]]:
-        tasks = self._application.list_tasks(self.principal)
+    def list_tasks(self, *, mine: bool = True) -> list[dict[str, Any]]:
+        """이 사람이 든 업무, 또는 이 사람이 읽을 수 있는 업무 전부.
+
+        둘은 다른 질문이다. `내 오늘 업무`에 조직·프로젝트 범위로 읽는 남의 업무가 섞이면 답이 틀린다 — 읽을
+        수 있다는 것과 내가 해야 한다는 것은 같지 않다.
+        """
+        tasks = self._application.list_tasks(self.principal, include_organization=not mine)
         self._remember(
             [{"resource_type": "task", "resource_id": str(row["task_id"]), "resource_version": row.get("version")} for row in tasks]
         )
@@ -821,9 +826,14 @@ def _register_meeting_tools(server: MCPServer, facade: McpReportsFacade) -> None
 
 def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
     if TASK_READ in facade.principal.capabilities:
-        @server.tool(description="List the delegated principal's active Tasks.")
-        def task_list() -> list[dict[str, Any]]:
-            return facade.list_tasks()
+        @server.tool(
+            description=(
+                "Work this person holds. Set mine=false to widen to every Task they may read — the work of their "
+                "organization and of projects they are on — which is a different question from what they must do."
+            )
+        )
+        def task_list(mine: bool = True) -> list[dict[str, Any]]:
+            return facade.list_tasks(mine=mine)
 
         @server.tool(description="Read one delegated principal Task.")
         def task_get(task_id: str) -> dict[str, Any]:

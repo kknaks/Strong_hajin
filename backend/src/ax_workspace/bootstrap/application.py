@@ -1339,9 +1339,17 @@ class WorkflowApplication:
             self._projects(session).release(principal, project_id, member_id)
             session.commit()
 
-    def list_tasks(self, principal: Principal, *, include_closed: bool = False) -> list[dict[str, Any]]:
+    def list_tasks(
+        self, principal: Principal, *, include_closed: bool = False, include_organization: bool = True
+    ) -> list[dict[str, Any]]:
+        """이 사람이 읽을 수 있는 업무. `include_organization=False`면 자기가 든 것까지다.
+
+        둘은 다른 질문이라 부르는 쪽이 고른다 — 읽을 수 있다는 것과 자기가 해야 한다는 것은 같지 않다.
+        """
         with self._session_factory() as session:
-            return self._tasks(session).list_for(principal, include_closed=include_closed, include_organization=True)
+            return self._tasks(session).list_for(
+                principal, include_closed=include_closed, include_organization=include_organization
+            )
 
     def get_task(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
         with self._session_factory() as session:
