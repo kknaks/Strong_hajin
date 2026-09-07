@@ -54,8 +54,10 @@ export async function signOut(page) {
       const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
       return document.elementFromPoint(point.x, point.y) === target ? point : null;
     });
-  // A drawer that just closed can still be animating the shell across the sidebar; wait for it to settle.
-  const spot = await pollFor(page, at, { timeout: 10_000, description: "로그아웃 버튼이 눌릴 수 있게 되는 것" });
+  // A drawer that just closed can still be animating the shell across the sidebar; wait for it to settle. The
+  // acceptance suite runs every journey on one machine, so this waits as long as the other waits in the suite do —
+  // a loaded machine is slower, not broken.
+  const spot = await pollFor(page, at, { timeout: 20_000, description: "로그아웃 버튼이 눌릴 수 있게 되는 것" });
   await page.mouse.click(spot.x, spot.y);
   await page.getByLabel("이메일").waitFor();
 }

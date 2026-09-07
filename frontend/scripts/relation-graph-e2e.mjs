@@ -231,7 +231,7 @@ try {
   await drawer.getByRole("button", { name: "상세 닫기" }).click();
 
   // Someone who may not read this work finds none of it, and cannot walk into it.
-  await page.getByRole("dialog").waitFor({ state: "detached", timeout: 20_000 });
+  await drawer.waitFor({ state: "detached", timeout: 20_000 });
   await signOut(page);
   await loginAs(page, "mina");
   const hidden = await page.evaluate(async ({ childId, subject }) => {

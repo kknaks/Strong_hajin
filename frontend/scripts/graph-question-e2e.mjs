@@ -129,10 +129,12 @@ try {
   }
   await page.screenshot({ path: "test-results/graph-question-turn2.png", fullPage: false });
 
-  // The card hands the centre to the full surface, which applies this person's access again from the start.
-  const lastGrounds = page.locator("details.ax-answer-evidence").last();
-  if (!(await lastGrounds.evaluate((element) => element.open))) await lastGrounds.locator("summary").click();
-  await lastGrounds.locator("section[aria-label='이 답의 관계']").getByRole("button", { name: "전체 그래프로 보기" }).click();
+  // The card hands the centre to the full surface, which applies this person's access again from the start. The card
+  // belongs to the turn that actually walked: a follow-up answered from this conversation's own ids has no walk of
+  // its own to hand over, and that is the point of the seeds rather than a missing picture.
+  const walkedGrounds = page.locator("details.ax-answer-evidence").first();
+  if (!(await walkedGrounds.evaluate((element) => element.open))) await walkedGrounds.locator("summary").click();
+  await walkedGrounds.locator("section[aria-label='이 답의 관계']").getByRole("button", { name: "전체 그래프로 보기" }).click();
   const surface = page.locator("section[aria-label='관계 그래프']");
   await surface.waitFor({ timeout: 30_000 });
   await pollFor(page, async () => ((await surface.textContent()) ?? "").includes("중심"), {
