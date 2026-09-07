@@ -29,6 +29,7 @@ import yaml
 
 from ax_workspace.modules.datasets.inventory import Disposition, InventoryEntry, classify, summarize
 from ax_workspace.modules.datasets.schema import SCHEMA_VERSION, TABLES
+from ax_workspace.bootstrap.scenario_csv import initialize as scenario_tables
 from ax_workspace.modules.datasets.validation import cycles, validate
 
 #: Noise every macOS folder carries. Not data, and not a decision anyone should have to make.
@@ -195,6 +196,8 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.command == "init":
             target.mkdir(parents=True, exist_ok=True)
             initialize(target, name=arguments.name, as_of=arguments.as_of)
+            # 조직과 그 위의 예제는 같은 폴더에 산다. 하나의 명령이 둘 다 쓸 수 있는 빈 표를 만든다.
+            scenario_tables(target)
             print(json.dumps({"dataset": str(target), "schema_version": SCHEMA_VERSION, "tables": len(TABLES)}, ensure_ascii=False, indent=2))
             return 0
         if not target.is_dir():
