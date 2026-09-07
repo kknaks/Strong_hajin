@@ -12,6 +12,8 @@ export type GraphNode = {
   date?: string | null;
   /** 어느 프로젝트의 일인가. 업무 node에만 있고, 비어 있는 것이 정상이다. */
   project_id?: string | null;
+  /** 접어서 이 안에 담은 개수. 묶어 보는 표현 수준에서만 실리며, 권한 밖은 여기 세지 않는다. */
+  folded?: number | null;
 };
 
 /**

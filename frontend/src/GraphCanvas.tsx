@@ -164,7 +164,9 @@ export function GraphCanvas({
           y: Math.sin(angle) * radius,
           // A canvas label is a way to recognise something, not to read it whole: long titles are cut here and stay
           // complete in the detail panel beside the picture.
-          label: shorten(node.kind === "person" ? personName(node.title) : node.title),
+          // 접어서 담은 것이 있으면 몇인지 이름에 붙인다. 접기는 감추는 것이 아니라 묶는 것이므로, 묶인
+          // 개수가 보이지 않으면 사람은 그것이 전부인지 알 수 없다.
+          label: shorten(node.kind === "person" ? personName(node.title) : node.title) + (node.folded ? ` ${node.folded}` : ""),
           // Size says how connected something is, so a label goes to what holds the picture together rather than to
           // whichever leaf the grid happened to reach first.
           size: (ref === centerRef ? 10 : 7) + ((degree.get(ref) ?? 0) / busiest) * 8,

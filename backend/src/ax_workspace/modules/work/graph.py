@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from ax_workspace.modules.organization_access.domain import (
+    PROJECT_READ,
     Principal,
     TASK_READ,
     WORK_REQUEST_READ,
@@ -23,8 +24,6 @@ MAX_LIMIT = 50
 #: The first screen is a graph, not an empty search box — bounded the same way every other answer is. It is wider
 #: than one hop because a graph one can read the structure of needs more than a couple of dozen connections.
 OVERVIEW_LIMIT = 120
-#: 첫 화면에 팀마다 세우는 동료 수. 조직을 다 그리는 자리가 아니라 어디에 서 있는지를 보여 주는 자리다.
-COLLEAGUES_PER_UNIT = 12
 MAX_OVERVIEW_LIMIT = 200
 
 #: How to read an edge from either end. The inverse is wording, not a second edge.
@@ -38,6 +37,7 @@ RELATIONS: dict[str, dict[str, str]] = {
     "has_material": {"label": "자료", "inverse": "붙은 업무", "provenance": "attachment_binding"},
     "belongs_to": {"label": "소속", "inverse": "구성원", "provenance": "membership"},
     "under": {"label": "상위 조직", "inverse": "하위 조직", "provenance": "organization_unit"},
+    "assigned_to": {"label": "참여 프로젝트", "inverse": "참여자", "provenance": "project_assignment"},
     "part_of": {"label": "이 프로젝트의 일", "inverse": "프로젝트", "provenance": "task"},
     "attended": {"label": "참석", "inverse": "참석자", "provenance": "meeting_attendee"},
     "owns_meeting": {"label": "소집", "inverse": "소집자", "provenance": "meeting"},
@@ -348,6 +348,16 @@ class GraphApplication:
             node = self._team_node(unit)
             nodes[self._ref(node)] = node
             edges.append(self._edge("belongs_to", self._ref(me), self._ref(node)))
+        # 프로젝트도 내가 서 있는 자리다 — 조직 단위와 나란한 두 번째 축이므로 소속과 같은 자격으로 그린다.
+        # 일을 프로젝트로 접는 것은 다음 보기의 몫이고, 여기서는 프로젝트가 하나의 이웃으로 선다.
+        joined = principal.projects_for(PROJECT_READ)
+        my_projects = [
+            project for project in self._source.readable_projects(principal) if str(project["project_id"]) in joined
+        ]
+        for project in my_projects:
+            node = self._project_node(project)
+            nodes[self._ref(node)] = node
+            edges.append(self._edge("assigned_to", self._ref(me), self._ref(node)))
         for task in self._source.readable_tasks(principal, limit=MAX_LIMIT):
             node = self._task_node(task)
             nodes[self._ref(node)] = node
@@ -401,10 +411,16 @@ class GraphApplication:
             nodes[self._ref(node)] = node
             edges.extend(edges_for_report)
 
-        # 여기부터는 조직이다. 일보다 뒤에 두는 이유는 잘렸을 때 남아야 하는 쪽이 일이기 때문이다 — 조직은
-        # 배경이고, 이 사람이 지금 무엇을 하고 있는지가 먼저다.
-        #
+        # 화면에 선 업무가 그 프로젝트의 일이라면 그 선도 긋는다. 접는 것이 아니라 잇는 것이므로 업무는
+        # 그대로 낱개로 남는다.
+        for node in [row for row in nodes.values() if row["kind"] == "task"]:
+            project_ref = f"project:{node.get('project_id') or ''}"
+            if node.get("project_id") and project_ref in nodes:
+                edges.append(self._edge("part_of", self._ref(node), project_ref))
+
         # 일로 만난 사람도 어딘가에 속해 있다. 그 자리를 함께 그려야 사람과 조직이 한 그림이 된다.
+        # 여기까지가 구성원 보기의 몫이다 — 내가 속한 자리와 나란히 선 사람들. 팀 위에 무엇이 있는지는
+        # 조직도의 질문이고, 그 질문에는 팀으로 묶기가 답한다.
         for person_ref in [ref for ref, node in nodes.items() if node["kind"] == "person"]:
             member_id = person_ref.split(":", 1)[1]
             for unit in self._source.member_units(member_id):
@@ -414,37 +430,17 @@ class GraphApplication:
                 edge = self._edge("belongs_to", person_ref, self._ref(node))
                 if not any(row["from"] == edge["from"] and row["to"] == edge["to"] for row in edges):
                     edges.append(edge)
-        # 그리고 팀 위에는 사업부가, 그 위에는 회사가 있다. 조직도가 말하는 그대로 위로 잇는다.
-        by_id = {str(unit["id"]): unit for unit in self._source.organization_units()}
-        for team_ref in [ref for ref, node in nodes.items() if node["kind"] == "team"]:
-            current = by_id.get(team_ref.split(":", 1)[1])
-            while current is not None:
-                parent = by_id.get(str(current.get("parent_id") or ""))
-                if parent is None:
-                    break
-                node = self._team_node(parent)
-                nodes[self._ref(node)] = node
-                edges.append(self._edge("under", f"team:{current['id']}", self._ref(node)))
-                current = parent
-        # 마지막으로 같은 자리에 있는 사람들. 회사 전체는 팀이 아니므로 그 아래 전원을 뿌리지 않는다 — 그러면
-        # 그림이 아니라 점 무더기가 된다. 팀마다 몇 사람까지만 세우고 나머지는 그 팀 node를 눌러 본다.
+        # 같은 자리에 있는 사람들. 회사 전체는 팀이 아니므로 그 아래 전원을 뿌리지 않는다 — 모두의 조상인
+        # node는 화면의 모든 것과 이어져 배치를 바퀴로 눌러 버리고, 그것은 조직도이지 내 주변이 아니다.
         for unit in my_units:
             if not str(unit.get("parent_id") or ""):
-                # 회사 아래에 붙는 것은 사람이 아니라 그 아래 조직이다. 대표처럼 회사에만 속한 사람에게도
-                # 자기가 서 있는 자리가 보여야 한다.
-                for child in [row for row in by_id.values() if str(row.get("parent_id") or "") == str(unit["id"])]:
-                    node = self._team_node(child)
-                    nodes[self._ref(node)] = node
-                    edges.append(self._edge("under", self._ref(node), f"team:{unit['id']}"))
                 continue
-            shown = 0
             for member in self._source.unit_members(str(unit["id"])):
                 member_id = str(member["member_id"])
-                if member_id == str(principal.id) or shown >= COLLEAGUES_PER_UNIT:
+                if member_id == str(principal.id):
                     continue
                 self._add_person(nodes, member_id)
                 edges.append(self._edge("belongs_to", f"person:{member_id}", f"team:{unit['id']}"))
-                shown += 1
 
         answer = self._bounded(me, nodes, edges, min(max(1, int(limit)), MAX_OVERVIEW_LIMIT), cap=MAX_OVERVIEW_LIMIT)
         answer["view"] = view
@@ -490,6 +486,13 @@ class GraphApplication:
             else:
                 existing["count"] += 1
         edges = list(grouped.values())
+        # 팀 보기와 같은 약속: 접힌 node는 자기가 몇을 담고 있는지 말한다.
+        held: dict[str, int] = {}
+        for ref in project_of.values():
+            held[ref] = held.get(ref, 0) + 1
+        for ref, count in held.items():
+            if ref in by_ref:
+                by_ref[ref] = {**by_ref[ref], "folded": count}
         named = {row["from"] for row in edges} | {row["to"] for row in edges} | {moved(self._ref(answer["center"]))}
         return {
             **answer,
@@ -533,6 +536,25 @@ class GraphApplication:
             else:
                 existing["count"] += 1
         edges = list(grouped.values())
+        # 조직 계층은 팀 보기의 몫이다. 구성원 보기는 내 주변을 그리고, 팀 위에 무엇이 있는지는 여기서 답한다.
+        units = {str(unit["id"]): unit for unit in self._source.organization_units()}
+        for team_ref in [ref for ref, node in by_ref.items() if node["kind"] == "team"]:
+            current = units.get(team_ref.split(":", 1)[1])
+            while current is not None:
+                parent = units.get(str(current.get("parent_id") or ""))
+                if parent is None:
+                    break
+                node = self._team_node(parent)
+                by_ref[self._ref(node)] = node
+                edges.append({**self._edge("under", f"team:{current['id']}", self._ref(node)), "count": 1})
+                current = parent
+        # 접힌 것은 몇인지 말한다. 선이 `×3`으로 접혔다고 하면서 node가 침묵하면 절반만 접은 것이다.
+        held: dict[str, int] = {}
+        for ref in team_of.values():
+            held[ref] = held.get(ref, 0) + 1
+        for ref, count in held.items():
+            if ref in by_ref:
+                by_ref[ref] = {**by_ref[ref], "folded": count}
         named = {row["from"] for row in edges} | {row["to"] for row in edges} | {moved(self._ref(answer["center"]))}
         return {
             **answer,

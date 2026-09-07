@@ -245,32 +245,57 @@ def test_the_first_screen_connects_the_things_it_already_shows(tmp_path) -> None
     assert any(kind == "has_material" for kind, _, _ in edges)
 
 
-def test_the_first_screen_stands_the_organization_up_around_the_person(tmp_path) -> None:
-    """일이 하나도 없어도 어디에 속해 있고 누구와 나란히 있는지는 그림에 있어야 한다.
+def test_each_view_answers_one_question_and_not_the_next_one(tmp_path) -> None:
+    """구성원 보기는 내 주변을, 팀으로 묶기는 조직을 답한다.
 
-    사람이 각자 자기 업무에만 매달린 섬으로 보이면 그것은 관계 그래프가 아니다. 팀 위에는 사업부가, 그 위에는
-    회사가 있고, 그 나무는 조직 원장이 말하는 그대로다.
+    일이 하나도 없어도 어디에 속해 있고 누구와 나란히 있는지는 내 주변이다. 하지만 팀 위에 무엇이 있는지는
+    조직도의 질문이고, 그것까지 첫 화면에 세우면 모두의 조상인 회사 node가 화면의 모든 것과 이어져 그림이
+    아니라 바퀴가 된다.
     """
     client, _ = _stack(tmp_path)
 
     overview = client.get("/api/graph/overview", headers=JIHO).json()
     edges = {(edge["kind"], edge["from"], edge["to"]) for edge in overview["edges"]}
-    teams = {node["id"] for node in overview["nodes"] if node["kind"] == "team"}
 
-    # 나만이 아니라 같은 자리에 있는 사람들도 그 팀에 붙어 있다.
+    # 내 주변: 내 자리와 나란히 선 사람들.
     assert ("belongs_to", "person:jiho", "team:product") in edges
     colleagues = {
         edge[1] for edge in edges if edge[0] == "belongs_to" and edge[2] == "team:product" and edge[1] != "person:jiho"
     }
     assert colleagues, "같은 팀 사람들이 팀에 붙어 있지 않습니다"
-    # 그리고 팀은 위로 이어져 회사까지 닿는다 — 한 단계가 아니라 조직도가 말하는 그대로의 층이다.
-    assert "scax" in teams
-    upward = {edge[1]: edge[2] for edge in edges if edge[0] == "under"}
+    # 조직 계층은 여기 없다 — 그 질문에는 다음 보기가 답한다.
+    assert not any(kind == "under" for kind, _, _ in edges)
+
+    # 프로젝트는 조직 단위와 나란한 두 번째 축이므로 소속과 같은 자격으로 내 옆에 선다.
+    project = client.post(
+        "/api/projects", headers=JIHO, json={"name": "라비앙 통합 마케팅", "organization_unit_id": "product"}
+    ).json()
+    inside = client.post(
+        "/api/tasks", headers=JIHO, json={"title": "프로젝트에 매달린 일", "project_id": project["project_id"]}
+    ).json()
+    # 만든 것과 붙은 것은 다르다 — 배정되기 전에는 내 자리가 아니므로 내 옆에 서지 않는다.
+    assert not any(
+        edge["kind"] == "assigned_to" for edge in client.get("/api/graph/overview", headers=JIHO).json()["edges"]
+    )
+    client.post(f"/api/projects/{project['project_id']}/members", headers=JIHO, json={"member_id": "jiho", "kind": "lead"})
+
+    mine = client.get("/api/graph/overview", headers=JIHO).json()
+    with_project = {(edge["kind"], edge["from"], edge["to"]) for edge in mine["edges"]}
+    assert ("assigned_to", "person:jiho", f"project:{project['project_id']}") in with_project
+    # 그 프로젝트의 일이라는 것도 잇는다 — 접는 것이 아니라 잇는 것이므로 업무는 낱개로 남는다.
+    assert ("part_of", f"task:{inside['task_id']}", f"project:{project['project_id']}") in with_project
+    assert any(node["id"] == inside["task_id"] for node in mine["nodes"] if node["kind"] == "task")
+
+    grouped = client.get("/api/graph/overview", headers=JIHO, params={"view": "team"}).json()
+    upward = {edge["from"]: edge["to"] for edge in grouped["edges"] if edge["kind"] == "under"}
     current, walked = "team:product", []
     while current in upward:
         current = upward[current]
         walked.append(current)
     assert walked[-1] == "team:scax" and len(walked) > 1, walked
+    # 접힌 팀은 자기가 몇 사람을 담고 있는지 말한다.
+    product = next(node for node in grouped["nodes"] if node["kind"] == "team" and node["id"] == "product")
+    assert product["folded"] >= 1
 
 
 def test_grouping_by_team_reads_the_same_answer_one_level_up(tmp_path) -> None:
