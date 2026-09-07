@@ -22,6 +22,7 @@ import json
 import os
 from pathlib import Path
 import sys
+from typing import Any
 
 import csv
 
@@ -123,12 +124,14 @@ def read_tables(target: Path) -> dict[str, list[dict[str, str]]]:
 
 
 def apply_dataset(target: Path, rows: dict[str, list[dict[str, str]]], *, password: str | None, dry_run: bool = False) -> int:
-    """Write the dataset into the local demo database, all of it or none of it.
+    """Write one folder into the local demo database: the organization, and the example work standing on it.
 
-    The import is only ever pointed at a database this repository is willing to reset, and it is one transaction:
-    a dataset that turns out to be unapplicable leaves nothing behind for someone to clean up by hand.
+    한 폴더가 한 명령이다. 조직 표와 그 위의 예제 표가 같은 자리에 있는데 넣는 명령이 둘이면 사람이 순서를
+    기억해야 하고, 반만 넣은 상태가 생긴다.
 
-    `dry_run`은 그 transaction을 되돌려, 무엇이 생기고 무엇이 그대로일지만 말하고 아무것도 바꾸지 않는다.
+    두 층은 들어가는 길이 다르다. 조직은 원장에 한 transaction으로 들어가고 — 적용할 수 없는 dataset이
+    절반만 남지 않는다 — 예제는 제품의 정식 command를 그 사람으로서 지나간다. actor·이력·권한이 진짜여야
+    하기 때문이며, 그래서 예제는 되돌릴 수 없다. `dry_run`이 조직까지만 보여 주는 이유다.
     """
     from ax_workspace.bootstrap.dataset_import import DatasetImportError, import_into
     from ax_workspace.bootstrap.settings import Settings
@@ -149,10 +152,37 @@ def apply_dataset(target: Path, rows: dict[str, list[dict[str, str]]], *, passwo
     except DatasetImportError as error:
         print(str(error), file=sys.stderr)
         return 1
-    print(json.dumps({"dataset": str(target), "dry_run": dry_run, **result.as_dict()}, ensure_ascii=False, indent=2))
-    for note in result.skipped:
+    report: dict[str, Any] = {"dataset": str(target), "dry_run": dry_run, **result.as_dict()}
+    notes = list(result.skipped)
+
+    if dry_run:
+        notes.append("예제 업무는 제품 command를 지나가므로 되돌릴 수 없다 — 미리보기에서는 넣지 않는다")
+    else:
+        made = _apply_scenario(target, settings)
+        if made is not None:
+            report["scenario"] = made.as_dict()
+            notes.extend(made.skipped)
+
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    for note in notes:
         print(f"\n하지 않은 것: {note}")
     return 0
+
+
+def _apply_scenario(target: Path, settings: Any) -> Any:
+    """같은 폴더의 예제 표를 조직 위에 올린다. 표가 없으면 조직만 넣은 것이다."""
+    from ax_workspace.bootstrap.application import create_workflow_application
+    from ax_workspace.bootstrap.scenario import build
+    from ax_workspace.bootstrap.scenario_csv import ScenarioPlanError, load_plan
+
+    try:
+        plan = load_plan(target)
+    except ScenarioPlanError as error:
+        print(str(error), file=sys.stderr)
+        return None
+    if not (plan.work or plan.asks or plan.handouts or plan.gatherings):
+        return None
+    return build(create_workflow_application(settings), plan)
 
 
 def main(argv: list[str] | None = None) -> int:

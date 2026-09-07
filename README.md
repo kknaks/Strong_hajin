@@ -84,7 +84,7 @@ Run `DATABASE_URL=postgresql+psycopg://ax:ax@localhost:54329/ax_demo make conver
 make dataset-inspect SOURCE=~/Downloads/thesc DATASET_ARGS="--hide-names"   # 열지 않고 분류만
 make dataset-init TARGET=~/scax-datasets/actual DATASET_ARGS="--name 조직 --as-of 2026-09-02"
 make dataset-validate TARGET=~/scax-datasets/actual
-make dataset-preview TARGET=~/scax-datasets/actual                          # 넣어 본 뒤 되돌린다
+make dataset-import TARGET=~/scax-datasets/actual DATASET_ARGS=--dry-run    # 넣어 본 뒤 되돌린다
 SCAX_DATASET_PASSWORD=... make dataset-import TARGET=~/scax-datasets/actual
 ```
 
@@ -110,15 +110,18 @@ SCAX_DATASET_PASSWORD=... make dataset-import TARGET=~/scax-datasets/actual
 
 ## 예제 업무 (scenario)
 
-조직은 정본이고 그 위의 업무는 아니다. `make scenario`가 이미 들어와 있는 조직 위에 같은 성격의 예제 업무를 만든다 — 날짜 단위 실무, 고객사 프로젝트의 계층과 기한, 고객사와의 월간 미팅. 모든 행이 제품의 정식 command를 그 사람으로서 지나가므로 actor·회차·활동 이력·권한이 전부 진짜이고, 두 번 돌려도 한 번 돌린 것과 같다.
+조직은 정본이고 그 위의 업무는 아니다. `dataset import`가 조직을 넣은 뒤 같은 폴더의 계획으로 같은 성격의 예제 업무를 만든다 — 날짜 단위 실무, 고객사 프로젝트의 계층과 기한, 고객사와의 월간 미팅. 모든 행이 제품의 정식 command를 그 사람으로서 지나가므로 actor·회차·활동 이력·권한이 전부 진짜이고, 두 번 돌려도 한 번 돌린 것과 같다.
 
 계획은 조직 dataset과 같은 폴더의 CSV다. 실제 구성원의 key와 고객사 이름을 가리키므로 저장소 밖에 두고, 저장소는 그 표를 읽는 계약만 갖는다. 저장소 안을 가리키면 명령이 거절한다. `dataset init`이 조직 표와 함께 빈 계획 표도 만든다.
+
+한 폴더가 한 명령이다 — `dataset import`가 조직을 넣고 그 위에 예제를 올린다. 예제 표가 없으면 조직만 들어간다.
 
 ```sh
 make reset-catalog
 SCAX_DATASET_PASSWORD=... make dataset-import TARGET=~/scax-datasets/thesc
-make scenario PLAN=~/scax-datasets/thesc
 ```
+
+두 층은 들어가는 길이 다르다. 조직은 원장에 한 transaction으로 들어가고, 예제는 제품의 정식 command를 그 사람으로서 지나간다 — actor·이력·권한이 진짜여야 하기 때문이다. 그래서 예제는 되돌릴 수 없고, `--dry-run`은 조직까지만 보여 준다.
 
 | 표 | 무엇을 담나 |
 |---|---|
