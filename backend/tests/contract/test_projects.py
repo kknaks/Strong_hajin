@@ -53,6 +53,11 @@ def test_a_project_member_from_another_unit_reads_that_project_and_nothing_more(
     assert client.get("/api/projects", headers=HYEON).json() == []
     assert client.get(f"/api/projects/{project['project_id']}", headers=HYEON).status_code == 404
 
+    # 같은 팀이라는 것만으로 프로젝트에 일을 매달지 못한다 — 붙어야 보이고, 보여야 매단다.
+    assert client.post(
+        "/api/tasks", headers=MINA, json={"title": "홈페이지 디자인 기획", "project_id": project["project_id"]}
+    ).status_code == 404
+    client.post(f"/api/projects/{project['project_id']}/members", headers=JIHO, json={"member_id": "mina"})
     inside = client.post("/api/tasks", headers=MINA, json={"title": "홈페이지 디자인 기획", "project_id": project["project_id"]})
     assert inside.status_code == 201, inside.text
     outside = client.post("/api/tasks", headers=MINA, json={"title": "내 개인 업무"})
@@ -77,6 +82,7 @@ def test_a_project_member_from_another_unit_reads_that_project_and_nothing_more(
 def test_the_grant_says_which_rule_made_it_and_ends_when_the_assignment_does(client: TestClient) -> None:
     """프로젝트 권한도 보직 권한과 같은 길로 생긴다 — 규칙이 만들고, 배정이 끝나면 함께 끝난다."""
     project = _project(client)
+    client.post(f"/api/projects/{project['project_id']}/members", headers=JIHO, json={"member_id": "mina"})
     task = client.post("/api/tasks", headers=MINA, json={"title": "브랜드블로그 키워드 선정", "project_id": project["project_id"]})
     client.post(f"/api/projects/{project['project_id']}/members", headers=JIHO, json={"member_id": "hyeon"})
 
@@ -104,6 +110,7 @@ def test_work_can_join_a_project_later_and_its_parts_come_along(client: TestClie
     assert parent["project_id"] is None and child["project_id"] is None
 
     project = _project(client)
+    client.post(f"/api/projects/{project['project_id']}/members", headers=JIHO, json={"member_id": "mina"})
     # 하위 업무가 붙으면서 상위 업무의 회차가 올라간다. 지금 값으로 답한다.
     current = client.get(f"/api/tasks/{parent['task_id']}", headers=MINA).json()
     moved = client.patch(
@@ -131,6 +138,7 @@ def test_a_project_member_sees_the_parts_they_could_already_open(client: TestCli
     빼면 접근만 남고 쓸모가 사라진다. 읽을 수 없는 부분은 여전히 이름도 개수도 나오지 않는다.
     """
     project = _project(client)
+    client.post(f"/api/projects/{project['project_id']}/members", headers=JIHO, json={"member_id": "mina"})
     parent = client.post(
         "/api/tasks", headers=MINA, json={"title": "한빛 9월 통합 마케팅", "project_id": project["project_id"]}
     ).json()
@@ -276,3 +284,26 @@ def test_what_a_person_holds_is_not_what_they_may_read(client: TestClient, setti
     # 넓히는 길은 남아 있고, 넓혔을 때만 넓어진다.
     readable = {row["task_id"] for row in facade.list_tasks(mine=False)}
     assert theirs["task_id"] in readable and mine["task_id"] in readable
+
+
+def test_owning_a_project_is_a_fact_about_responsibility_and_not_a_key(client: TestClient) -> None:
+    """소유 조직은 누구 책임인지를 말할 뿐, 그 조직 사람 전부에게 프로젝트를 열어 주지 않는다.
+
+    열쇠로 쓰면 붙어야 보인다는 규칙에 뒷문이 생긴다 — 배정되지 않은 팀원이 팀의 모든 프로젝트를 읽게 된다.
+    관리할 자격은 남는다. 그것이 없으면 방금 만든 프로젝트를 만든 사람도 찾지 못해 아무도 배정할 수 없다.
+    """
+    project = _project(client)
+
+    # 만든 사람은 그 조직의 관리 자격으로 계속 찾고 관리한다 — 만들자마자 고아가 되지 않는다.
+    assert {row["name"] for row in client.get("/api/projects", headers=JIHO).json()} == {"한빛 통합 마케팅"}
+    assert client.get(f"/api/projects/{project['project_id']}", headers=JIHO).json()["may_manage"] is True
+
+    # 같은 팀이어도 붙기 전에는 없는 것과 같다.
+    assert client.get("/api/projects", headers=MINA).json() == []
+    assert client.get(f"/api/projects/{project['project_id']}", headers=MINA).status_code == 404
+
+    client.post(f"/api/projects/{project['project_id']}/members", headers=JIHO, json={"member_id": "mina"})
+
+    assert {row["name"] for row in client.get("/api/projects", headers=MINA).json()} == {"한빛 통합 마케팅"}
+    # 붙었다고 관리까지 되는 것은 아니다.
+    assert client.get(f"/api/projects/{project['project_id']}", headers=MINA).json()["may_manage"] is False

@@ -208,21 +208,26 @@ class ProjectApplication:
     # ---- internals ----
 
     def _readable(self, principal: Principal) -> frozenset[str]:
-        """읽을 수 있는 프로젝트 — 두 축 중 하나라도 닿으면 된다.
+        """읽을 수 있는 프로젝트 — 붙어 있거나, 관리할 자격이 있거나.
 
-        붙어 있는 프로젝트(프로젝트 축)와, 자기 조직이 소유한 프로젝트(조직 축). 후자가 없으면 아무도 자기 팀의
-        프로젝트에 일을 매달 수 없고, 누군가 배정해 줄 때까지 그 프로젝트는 존재하지 않는 것이 된다.
+        소유 조직은 이 프로젝트가 누구 책임인지를 말하는 사실이지 그 조직 사람 전부에게 열어 주는 열쇠가
+        아니다. 그렇게 두면 배정되지 않은 팀원도 팀의 모든 프로젝트를 읽게 되어, 붙어야 보인다는 규칙에
+        뒷문이 생긴다.
+
+        관리 자격은 남는다. 그것이 없으면 방금 만든 프로젝트를 만든 사람도 찾지 못해 아무도 배정할 수 없고,
+        프로젝트는 만들어지자마자 고아가 된다. 만들 자격 자체가 그 조직의 관리 자격에서 나오므로 이 둘은
+        같은 자격이다.
         """
         if PROJECT_READ not in principal.capabilities:
             return frozenset()
         joined = principal.projects_for(PROJECT_READ)
-        units = principal.scope_for(PROJECT_READ)
-        owned = {
+        managed_units = principal.scope_for(PROJECT_MANAGE)
+        managed = {
             str(project.id)
             for project in self._repository.all_projects()
-            if project.organization_unit_id in units
+            if project.organization_unit_id in managed_units
         }
-        return frozenset(joined | owned)
+        return frozenset(joined | managed)
 
     def _readable_project(self, principal: Principal, project_id: UUID) -> Any:
         project = self._repository.project(project_id)
