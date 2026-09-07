@@ -245,14 +245,43 @@ def test_the_first_screen_connects_the_things_it_already_shows(tmp_path) -> None
     assert any(kind == "has_material" for kind, _, _ in edges)
 
 
+def test_the_first_screen_stands_the_organization_up_around_the_person(tmp_path) -> None:
+    """일이 하나도 없어도 어디에 속해 있고 누구와 나란히 있는지는 그림에 있어야 한다.
+
+    사람이 각자 자기 업무에만 매달린 섬으로 보이면 그것은 관계 그래프가 아니다. 팀 위에는 사업부가, 그 위에는
+    회사가 있고, 그 나무는 조직 원장이 말하는 그대로다.
+    """
+    client, _ = _stack(tmp_path)
+
+    overview = client.get("/api/graph/overview", headers=JIHO).json()
+    edges = {(edge["kind"], edge["from"], edge["to"]) for edge in overview["edges"]}
+    teams = {node["id"] for node in overview["nodes"] if node["kind"] == "team"}
+
+    # 나만이 아니라 같은 자리에 있는 사람들도 그 팀에 붙어 있다.
+    assert ("belongs_to", "person:jiho", "team:product") in edges
+    colleagues = {
+        edge[1] for edge in edges if edge[0] == "belongs_to" and edge[2] == "team:product" and edge[1] != "person:jiho"
+    }
+    assert colleagues, "같은 팀 사람들이 팀에 붙어 있지 않습니다"
+    # 그리고 팀은 위로 이어져 회사까지 닿는다 — 한 단계가 아니라 조직도가 말하는 그대로의 층이다.
+    assert "scax" in teams
+    upward = {edge[1]: edge[2] for edge in edges if edge[0] == "under"}
+    current, walked = "team:product", []
+    while current in upward:
+        current = upward[current]
+        walked.append(current)
+    assert walked[-1] == "team:scax" and len(walked) > 1, walked
+
+
 def test_grouping_by_team_reads_the_same_answer_one_level_up(tmp_path) -> None:
     client, _ = _stack(tmp_path)
     _journey(client, "팀으로 묶어 볼 업무")
     grouped = client.get("/api/graph/overview", headers=JIHO, params={"view": "team"}).json()
 
     assert grouped["view"] == "team"
-    # 사람은 자기 팀으로 접힌다. 팀 node는 조직 원장의 canonical unit이다.
-    assert not any(node["kind"] == "person" for node in grouped["nodes"])
+    # 사람은 자기 팀으로 접힌다. 팀 node는 조직 원장의 canonical unit이다. 회사 뿌리에만 있는 사람은
+    # 붙일 팀이 없어 그대로 남는다 — 그 규칙은 아래 test가 따로 고정한다.
+    assert "jiho" not in {node["id"] for node in grouped["nodes"] if node["kind"] == "person"}
     assert "team:product" in {f"{node['kind']}:{node['id']}" for node in grouped["nodes"]}
     # 같은 팀 안에서만 이어지는 연결은 그 팀의 내부 사정이므로 감춘다.
     assert all(edge["from"] != edge["to"] for edge in grouped["edges"])

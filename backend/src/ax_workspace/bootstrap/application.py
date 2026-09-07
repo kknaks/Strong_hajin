@@ -368,6 +368,10 @@ class _SessionGraphSource:
             for member in SqlAlchemyOrganizationRepository(self._session).unit_members(unit_id, include_descendants=False)
         ]
 
+    def organization_units(self) -> list[dict[str, Any]]:
+        """조직 나무 전체. 이름과 어디에 붙어 있는지까지이며, 누가 있는지는 말하지 않는다."""
+        return SqlAlchemyOrganizationRepository(self._session).organization_tree()
+
 
 class _SessionTaskReferences:
     """Reads a referenced Task through the Work module itself, so a pointer never becomes permission."""

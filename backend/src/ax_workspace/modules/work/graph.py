@@ -23,6 +23,8 @@ MAX_LIMIT = 50
 #: The first screen is a graph, not an empty search box — bounded the same way every other answer is. It is wider
 #: than one hop because a graph one can read the structure of needs more than a couple of dozen connections.
 OVERVIEW_LIMIT = 120
+#: 첫 화면에 팀마다 세우는 동료 수. 조직을 다 그리는 자리가 아니라 어디에 서 있는지를 보여 주는 자리다.
+COLLEAGUES_PER_UNIT = 12
 MAX_OVERVIEW_LIMIT = 200
 
 #: How to read an edge from either end. The inverse is wording, not a second edge.
@@ -35,6 +37,7 @@ RELATIONS: dict[str, dict[str, str]] = {
     "refers_to": {"label": "참고함", "inverse": "참고됨", "provenance": "task_reference"},
     "has_material": {"label": "자료", "inverse": "붙은 업무", "provenance": "attachment_binding"},
     "belongs_to": {"label": "소속", "inverse": "구성원", "provenance": "membership"},
+    "under": {"label": "상위 조직", "inverse": "하위 조직", "provenance": "organization_unit"},
     "part_of": {"label": "이 프로젝트의 일", "inverse": "프로젝트", "provenance": "task"},
     "attended": {"label": "참석", "inverse": "참석자", "provenance": "meeting_attendee"},
     "owns_meeting": {"label": "소집", "inverse": "소집자", "provenance": "meeting"},
@@ -74,6 +77,7 @@ class GraphSourcePort(Protocol):
     def own_reports(self, principal: Principal, *, limit: int = 3) -> list[dict[str, Any]]: ...
     def material_owners(self, principal: Principal, material_id: str) -> list[dict[str, Any]]: ...
     def unit_members(self, unit_id: str) -> list[dict[str, Any]]: ...
+    def organization_units(self) -> list[dict[str, Any]]: ...
 
 
 class GraphApplication:
@@ -339,7 +343,8 @@ class GraphApplication:
         nodes: dict[str, dict[str, Any]] = {self._ref(me): me}
         edges: list[dict[str, Any]] = []
 
-        for unit in self._source.member_units(str(principal.id)):
+        my_units = self._source.member_units(str(principal.id))
+        for unit in my_units:
             node = self._team_node(unit)
             nodes[self._ref(node)] = node
             edges.append(self._edge("belongs_to", self._ref(me), self._ref(node)))
@@ -395,6 +400,51 @@ class GraphApplication:
                 continue
             nodes[self._ref(node)] = node
             edges.extend(edges_for_report)
+
+        # 여기부터는 조직이다. 일보다 뒤에 두는 이유는 잘렸을 때 남아야 하는 쪽이 일이기 때문이다 — 조직은
+        # 배경이고, 이 사람이 지금 무엇을 하고 있는지가 먼저다.
+        #
+        # 일로 만난 사람도 어딘가에 속해 있다. 그 자리를 함께 그려야 사람과 조직이 한 그림이 된다.
+        for person_ref in [ref for ref, node in nodes.items() if node["kind"] == "person"]:
+            member_id = person_ref.split(":", 1)[1]
+            for unit in self._source.member_units(member_id):
+                node = self._team_node(unit)
+                if self._ref(node) not in nodes:
+                    continue
+                edge = self._edge("belongs_to", person_ref, self._ref(node))
+                if not any(row["from"] == edge["from"] and row["to"] == edge["to"] for row in edges):
+                    edges.append(edge)
+        # 그리고 팀 위에는 사업부가, 그 위에는 회사가 있다. 조직도가 말하는 그대로 위로 잇는다.
+        by_id = {str(unit["id"]): unit for unit in self._source.organization_units()}
+        for team_ref in [ref for ref, node in nodes.items() if node["kind"] == "team"]:
+            current = by_id.get(team_ref.split(":", 1)[1])
+            while current is not None:
+                parent = by_id.get(str(current.get("parent_id") or ""))
+                if parent is None:
+                    break
+                node = self._team_node(parent)
+                nodes[self._ref(node)] = node
+                edges.append(self._edge("under", f"team:{current['id']}", self._ref(node)))
+                current = parent
+        # 마지막으로 같은 자리에 있는 사람들. 회사 전체는 팀이 아니므로 그 아래 전원을 뿌리지 않는다 — 그러면
+        # 그림이 아니라 점 무더기가 된다. 팀마다 몇 사람까지만 세우고 나머지는 그 팀 node를 눌러 본다.
+        for unit in my_units:
+            if not str(unit.get("parent_id") or ""):
+                # 회사 아래에 붙는 것은 사람이 아니라 그 아래 조직이다. 대표처럼 회사에만 속한 사람에게도
+                # 자기가 서 있는 자리가 보여야 한다.
+                for child in [row for row in by_id.values() if str(row.get("parent_id") or "") == str(unit["id"])]:
+                    node = self._team_node(child)
+                    nodes[self._ref(node)] = node
+                    edges.append(self._edge("under", self._ref(node), f"team:{unit['id']}"))
+                continue
+            shown = 0
+            for member in self._source.unit_members(str(unit["id"])):
+                member_id = str(member["member_id"])
+                if member_id == str(principal.id) or shown >= COLLEAGUES_PER_UNIT:
+                    continue
+                self._add_person(nodes, member_id)
+                edges.append(self._edge("belongs_to", f"person:{member_id}", f"team:{unit['id']}"))
+                shown += 1
 
         answer = self._bounded(me, nodes, edges, min(max(1, int(limit)), MAX_OVERVIEW_LIMIT), cap=MAX_OVERVIEW_LIMIT)
         answer["view"] = view
