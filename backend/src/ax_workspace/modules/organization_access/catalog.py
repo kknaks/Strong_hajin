@@ -132,7 +132,7 @@ _PROJECT_PARTICIPANT_CAPABILITIES = ("project.read", "work.read", "task.read", "
 #: 실제로 일을 시키려면 조직 축으로 돌아가야 해서 부서를 가로지르는 프로젝트를 만든 이유가 사라진다.
 #: 배정에는 이미 안전장치가 있다 — 받는 사람이 수락해야 자기 업무가 되고 거절도 사유와 함께 남는다.
 #: 판단(`work_request.decide`)은 주지 않는다. 요청을 받을지는 받는 사람 본인의 것이다.
-_PROJECT_LEAD_CAPABILITIES = _PROJECT_PARTICIPANT_CAPABILITIES + ("task.assign",)
+_PROJECT_LEAD_CAPABILITIES = _PROJECT_PARTICIPANT_CAPABILITIES + ("task.assign", "project.manage")
 
 ROLE_TEMPLATES: tuple[RoleTemplate, ...] = (
     # Someone who comes to meetings and nothing else — an outside adviser, a contractor between engagements.

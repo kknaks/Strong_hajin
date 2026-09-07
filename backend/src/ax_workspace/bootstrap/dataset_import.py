@@ -417,13 +417,11 @@ def _import_projects(session: Session, rows: dict[str, list[dict[str, str]]], re
     known: dict[str, ProjectRecord] = {}
     for row in rows.get("projects", []):
         key = _text(row, "key")
-        unit = _text(row, "unit_key")
         project = session.scalar(select(ProjectRecord).where(ProjectRecord.external_key == key))
         if project is None:
             project = ProjectRecord(
                 name=_text(row, "name"),
                 description=_text(row, "description") or None,
-                organization_unit_id=unit,
                 state=_text(row, "state") or "active",
                 starts_on=_day(_text(row, "starts_on")),
                 ends_on=_day(_text(row, "ends_on")),
@@ -434,7 +432,7 @@ def _import_projects(session: Session, rows: dict[str, list[dict[str, str]]], re
             session.flush()
             result.track("projects", made=True)
         else:
-            project.name, project.organization_unit_id = _text(row, "name"), unit
+            project.name = _text(row, "name")
             result.track("projects", made=False)
         known[key] = project
 

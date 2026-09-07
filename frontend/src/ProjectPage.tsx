@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { assignToProject, createProject, getMemberDirectory, getProject, getOrganizationTree, listProjects, releaseFromProject } from "./api";
+import { assignToProject, createProject, getMemberDirectory, getProject, listProjects, releaseFromProject } from "./api";
 import { formatDate, personName, taskStateLabel } from "./labels";
-import type { OrganizationUnitNode, Persona, Project, ProjectDetail } from "./viewModels";
+import type { Persona, Project, ProjectDetail } from "./viewModels";
 
 /**
  * 프로젝트 — 부서를 가로질러 묶이는 일과, 그 일을 함께 하는 사람들.
@@ -16,11 +16,9 @@ import type { OrganizationUnitNode, Persona, Project, ProjectDetail } from "./vi
 export function ProjectPage({ personaId, onError }: { personaId: string; onError: (message: string | null) => void }) {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [selected, setSelected] = useState<ProjectDetail | null>(null);
-  const [units, setUnits] = useState<OrganizationUnitNode[]>([]);
   const [directory, setDirectory] = useState<Persona[]>([]);
   const [opening, setOpening] = useState(false);
   const [name, setName] = useState("");
-  const [unit, setUnit] = useState("");
   const [joining, setJoining] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -47,19 +45,17 @@ export function ProjectPage({ personaId, onError }: { personaId: string; onError
         if (rows[0]) setSelected(await getProject(rows[0].project_id));
       })
       .catch((error: unknown) => onError(error instanceof Error ? error.message : "프로젝트를 불러오지 못했습니다."));
-    void getOrganizationTree().then(setUnits).catch(() => setUnits([]));
     void getMemberDirectory().then(setDirectory).catch(() => setDirectory([]));
   }, [onError, personaId]);
 
-  const unitName = useMemo(() => new Map(units.map((item) => [item.id, item.name])), [units]);
   const joined = new Set((selected?.members ?? []).map((row) => row.member_id));
   const iAmIn = joined.has(personaId);
 
   async function open() {
-    if (!name.trim() || !unit || busy) return;
+    if (!name.trim() || busy) return;
     setBusy(true);
     try {
-      const made = await createProject({ name: name.trim(), organization_unit_id: unit });
+      const made = await createProject({ name: name.trim() });
       setName("");
       setOpening(false);
       await reload(made.project_id);
@@ -105,7 +101,7 @@ export function ProjectPage({ personaId, onError }: { personaId: string; onError
       <header className="page-head">
         <h2>프로젝트</h2>
         <p className="t-meta">
-          부서를 가로질러 묶이는 일입니다. 소유 조직은 책임 소재일 뿐이고, 담당자는 어느 부서에서든 붙을 수 있습니다.
+          부서를 가로질러 묶이는 일입니다. 소유 조직은 없고, 붙은 사람이 곧 그 프로젝트입니다 — 어느 부서에서든 붙을 수 있습니다.
         </p>
       </header>
 
@@ -123,18 +119,7 @@ export function ProjectPage({ personaId, onError }: { personaId: string; onError
                 <span>이름</span>
                 <input id="project-name" onChange={(event) => setName(event.target.value)} value={name} />
               </label>
-              <label className="field" htmlFor="project-unit">
-                <span>소유 조직</span>
-                <select id="project-unit" onChange={(event) => setUnit(event.target.value)} value={unit}>
-                  <option value="">조직 선택</option>
-                  {units.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button className="btn h30 primary" disabled={busy || !name.trim() || !unit} onClick={() => void open()} type="button">
+              <button className="btn h30 primary" disabled={busy || !name.trim()} onClick={() => void open()} type="button">
                 열기
               </button>
             </div>
@@ -150,7 +135,6 @@ export function ProjectPage({ personaId, onError }: { personaId: string; onError
                   type="button"
                 >
                   <span className="project-row-name">{project.name}</span>
-                  <span className="t-meta">{project.organization_unit_name ?? unitName.get(project.organization_unit_id)}</span>
                 </button>
               </li>
             ))}
@@ -164,11 +148,12 @@ export function ProjectPage({ personaId, onError }: { personaId: string; onError
         ) : (
           <div className="project-detail" data-project-id={selected.project_id}>
             <h3>{selected.name}</h3>
-            <p className="t-meta">
-              {selected.organization_unit_name ?? unitName.get(selected.organization_unit_id)}
-              {selected.starts_on && ` · ${formatDate(selected.starts_on)}`}
-              {selected.ends_on && ` ~ ${formatDate(selected.ends_on)}`}
-            </p>
+            {(selected.starts_on || selected.ends_on) && (
+              <p className="t-meta">
+                {selected.starts_on && formatDate(selected.starts_on)}
+                {selected.ends_on && ` ~ ${formatDate(selected.ends_on)}`}
+              </p>
+            )}
             {selected.description && <p>{selected.description}</p>}
 
             <section aria-label="담당자">

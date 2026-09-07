@@ -29,11 +29,11 @@ def client(settings: Settings) -> TestClient:
     return TestClient(create_app(settings))
 
 
-def _project(client: TestClient, *, name: str = "한빛 통합 마케팅", unit: str = "product", by: dict | None = None) -> dict:
+def _project(client: TestClient, *, name: str = "한빛 통합 마케팅", by: dict | None = None) -> dict:
     made = client.post(
         "/api/projects",
         headers=by or JIHO,
-        json={"name": name, "organization_unit_id": unit, "description": "부서를 가로지르는 한 건"},
+        json={"name": name, "description": "부서를 가로지르는 한 건"},
     )
     assert made.status_code == 201, made.text
     return made.json()
@@ -248,19 +248,30 @@ def test_a_project_cannot_be_a_back_door_into_work_that_is_not_in_it(client: Tes
     assert refused.status_code == 404, refused.text
 
 
-def test_a_lead_may_only_open_a_project_where_their_authority_reaches(client: TestClient) -> None:
-    """프로젝트를 여는 권한은 그것을 소유할 조직에서 나온다. 제품팀장이 피플팀의 프로젝트를 열지 못한다."""
-    refused = client.post("/api/projects", headers=JIHO, json={"name": "인사 개편", "organization_unit_id": "people"})
+def test_only_someone_who_may_manage_projects_can_start_one(client: TestClient) -> None:
+    """프로젝트를 만드는 것은 관리하는 일이다. 구성원은 만들지 못하고, 만든 사람은 담당자로 함께 기록된다."""
+    refused = client.post("/api/projects", headers=MINA, json={"name": "구성원이 만드는 프로젝트"})
     assert refused.status_code == 403, refused.text
 
+    made = client.post("/api/projects", headers=JIHO, json={"name": "팀장이 만드는 프로젝트"})
+    assert made.status_code == 201, made.text
+    detail = client.get(f"/api/projects/{made.json()['project_id']}", headers=JIHO).json()
+    assert [(row["member_id"], row["assignment_kind"]) for row in detail["members"]] == [("jiho", "lead")]
+    # 만들자마자 고아가 되지 않는다: 만든 사람이 붙어 있으므로 찾고 관리한다.
+    assert detail["may_manage"] is True
 
-def test_the_person_who_may_sign_in_as_the_organization_sees_every_project(client: TestClient) -> None:
+
+def test_even_the_organization_reads_projects_by_assignment(client: TestClient) -> None:
+    """조직 전체를 읽는 자격도 프로젝트를 열지 않는다 — 축이 하나라는 말은 예외가 없다는 뜻이다.
+
+    대표는 조직의 업무를 읽지만, 그 업무가 어느 프로젝트의 것인지는 그 프로젝트에 붙어야 본다. 프로젝트를
+    조직 축으로 다시 여는 순간 방금 막은 뒷문이 그대로 돌아온다.
+    """
     _project(client)
-    _project(client, name="사내 인사 시스템 개편", unit="people", by=YUNA)
-    assert {row["name"] for row in client.get("/api/projects", headers=YUNA).json()} == {
-        "한빛 통합 마케팅",
-        "사내 인사 시스템 개편",
-    }
+    _project(client, name="사내 인사 시스템 개편", by=YUNA)
+
+    # 자기가 만들어 담당자로 붙은 것만 보인다.
+    assert {row["name"] for row in client.get("/api/projects", headers=YUNA).json()} == {"사내 인사 시스템 개편"}
 
 
 def test_what_a_person_holds_is_not_what_they_may_read(client: TestClient, settings: Settings) -> None:
@@ -286,17 +297,16 @@ def test_what_a_person_holds_is_not_what_they_may_read(client: TestClient, setti
     assert theirs["task_id"] in readable and mine["task_id"] in readable
 
 
-def test_owning_a_project_is_a_fact_about_responsibility_and_not_a_key(client: TestClient) -> None:
-    """소유 조직은 누구 책임인지를 말할 뿐, 그 조직 사람 전부에게 프로젝트를 열어 주지 않는다.
+def test_a_project_opens_by_assignment_and_by_nothing_else(client: TestClient) -> None:
+    """프로젝트가 열리는 길은 배정 하나다.
 
-    열쇠로 쓰면 붙어야 보인다는 규칙에 뒷문이 생긴다 — 배정되지 않은 팀원이 팀의 모든 프로젝트를 읽게 된다.
-    관리할 자격은 남는다. 그것이 없으면 방금 만든 프로젝트를 만든 사람도 찾지 못해 아무도 배정할 수 없다.
+    부서로도, 만든 사람이라는 사실로도 열리지 않는다. 축이 하나면 뒷문이 없다 — 소유 조직을 두던 시절에는
+    배정되지 않은 팀원도 팀의 모든 프로젝트를 읽었다.
     """
     project = _project(client)
 
-    # 만든 사람은 그 조직의 관리 자격으로 계속 찾고 관리한다 — 만들자마자 고아가 되지 않는다.
+    # 만든 사람은 담당자로 기록되었으므로 배정으로 보인다 — 만들었다는 사실 때문이 아니다.
     assert {row["name"] for row in client.get("/api/projects", headers=JIHO).json()} == {"한빛 통합 마케팅"}
-    assert client.get(f"/api/projects/{project['project_id']}", headers=JIHO).json()["may_manage"] is True
 
     # 같은 팀이어도 붙기 전에는 없는 것과 같다.
     assert client.get("/api/projects", headers=MINA).json() == []
@@ -305,5 +315,5 @@ def test_owning_a_project_is_a_fact_about_responsibility_and_not_a_key(client: T
     client.post(f"/api/projects/{project['project_id']}/members", headers=JIHO, json={"member_id": "mina"})
 
     assert {row["name"] for row in client.get("/api/projects", headers=MINA).json()} == {"한빛 통합 마케팅"}
-    # 붙었다고 관리까지 되는 것은 아니다.
+    # 붙었다고 관리까지 되는 것은 아니다. 관리는 담당자의 일이다.
     assert client.get(f"/api/projects/{project['project_id']}", headers=MINA).json()["may_manage"] is False

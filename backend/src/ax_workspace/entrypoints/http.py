@@ -94,7 +94,6 @@ class CreateTaskRequest(BaseModel):
 class CreateProjectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=300)
-    organization_unit_id: str = Field(min_length=1, max_length=100)
     description: str | None = None
     #: 기간은 없을 수 있다. 시작만 정해지고 끝은 아직 없는 일이 흔하다.
     starts_on: date | None = None
@@ -939,7 +938,6 @@ def create_app(
                 return app.state.workflow_application.create_project(
                     principal,
                     name=request.name,
-                    organization_unit_id=request.organization_unit_id,
                     description=request.description,
                     starts_on=request.starts_on,
                     ends_on=request.ends_on,

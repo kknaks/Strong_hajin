@@ -292,7 +292,7 @@ def test_the_files_of_work_someone_may_read_are_not_hidden_from_them(tmp_path) -
     """
     client, application, worker, settings = _stack(tmp_path)
     project = client.post(
-        "/api/projects", headers=JIHO, json={"name": "한빛 통합 마케팅", "organization_unit_id": "product"}
+        "/api/projects", headers=JIHO, json={"name": "한빛 통합 마케팅"}
     ).json()
     task = client.post(
         "/api/tasks", headers=JIHO, json={"title": "홈페이지 카테고리 정리", "project_id": project["project_id"]}

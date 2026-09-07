@@ -191,8 +191,6 @@ def build(application: Any, plan: "ScenarioPlan", *, today: date | None = None) 
         assignee = acting(item.assignee)
         if assignee is None:
             continue
-        from uuid import UUID
-
         try:
             application.accept_work_request(assignee, UUID(str(request["request_id"])), int(request["version"]))
             result.track("accepted_requests", made=True)
@@ -226,8 +224,6 @@ def build(application: Any, plan: "ScenarioPlan", *, today: date | None = None) 
         assignee = acting(item.assignee)
         if assignee is None:
             continue
-        from uuid import UUID
-
         try:
             application.accept_task_assignment(assignee, UUID(str(task["assignment_id"])))
             result.track("accepted_assignments", made=True)
@@ -256,8 +252,6 @@ def build(application: Any, plan: "ScenarioPlan", *, today: date | None = None) 
             result.skipped.append(f"회의 '{item.title}' · {error}")
             continue
         result.track("meetings", made=True)
-        from uuid import UUID
-
         try:
             note = application.create_meeting_note(principal, UUID(str(meeting["meeting_id"])), item.note)
             application.finalize_meeting_note(principal, UUID(str(meeting["meeting_id"])), int(note["version"]))
@@ -272,7 +266,6 @@ def _walk_to(application: Any, principal: Principal, task: dict[str, Any], targe
     """상태는 옮겨 적는 것이 아니라 그 사람이 실제로 옮긴다. 이력도 그렇게 남는다."""
     if target == "open":
         return
-    from uuid import UUID
 
     from ax_workspace.modules.work.application import TaskState
 

@@ -44,7 +44,6 @@ class SqlAlchemyProjectRepository:
         *,
         name: str,
         description: str | None,
-        organization_unit_id: str,
         starts_on: date | None,
         ends_on: date | None,
         external_key: str | None,
@@ -53,7 +52,6 @@ class SqlAlchemyProjectRepository:
         project = ProjectRecord(
             name=name,
             description=description,
-            organization_unit_id=organization_unit_id,
             starts_on=starts_on,
             ends_on=ends_on,
             external_key=external_key,

@@ -748,8 +748,9 @@ class ActionItemAuditEventRecord(Base):
 class ProjectRecord(Base):
     """부서를 가로질러 묶이는 일 하나.
 
-    소유 조직 단위는 이 프로젝트가 누구 것인지를 말할 뿐, 누가 참여할 수 있는지를 제한하지 않는다 — 마케팅 한 건에
-    국내사업부 AE와 비주얼디자인팀 디자이너가 함께 붙는다.
+    소유 조직 단위를 두지 않는다. 프로젝트는 부서를 가로지르려고 있는 것이라 — 마케팅 한 건에 국내사업부 AE와
+    비주얼디자인팀 디자이너가 함께 붙는다 — 어느 한 부서의 것이라고 적는 순간 그 부서가 열쇠가 된다. 누가
+    참여하는지는 `project_assignments`가 말하고, 그것이 이 프로젝트가 열리는 유일한 길이다.
 
     기간은 비어 있을 수 있다. 시작만 정해지고 끝은 아직 없는 일이 흔하다.
     """
@@ -759,8 +760,6 @@ class ProjectRecord(Base):
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(300), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
-    #: 이 프로젝트를 소유한 조직 단위. 참여 자격이 아니라 책임 소재다.
-    organization_unit_id: Mapped[str] = mapped_column(ForeignKey("organization_units.id"), nullable=False)
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     starts_on: Mapped[date | None] = mapped_column(Date)
     ends_on: Mapped[date | None] = mapped_column(Date)

@@ -65,7 +65,7 @@ def _dataset(tmp_path):
     _write(target, "appointments", [{"member_key": "ds-han", "unit_key": "ds-team", "position_key": "ds-lead", "kind": "primary", "valid_from": "", "valid_until": ""}])
     _write(target, "job_assignments", [{"member_key": "ds-han", "job_key": "ds-growth", "kind": "primary"}])
     _write(target, "projects", [
-        {"key": "ds-hanbit", "name": "한빛 통합 마케팅", "unit_key": "ds-div", "state": "active", "starts_on": "2026-09-01"},
+        {"key": "ds-hanbit", "name": "한빛 통합 마케팅", "state": "active", "starts_on": "2026-09-01"},
     ])
     # 담당 기간은 원문이 말하지 않으면 비워 둔다.
     _write(target, "project_assignments", [
@@ -249,7 +249,7 @@ def test_a_dataset_can_carry_projects_and_who_is_on_them(tmp_path) -> None:
 
     with make_session_factory(database_url)() as session:
         project = session.scalar(select(ProjectRecord).where(ProjectRecord.external_key == "ds-hanbit"))
-        assert project is not None and project.organization_unit_id == "ds-div"
+        assert project is not None and project.name == "한빛 통합 마케팅"
         joined = session.scalars(select(ProjectAssignmentRecord).where(ProjectAssignmentRecord.project_id == project.id)).all()
         assert {row.member_id: row.assignment_kind for row in joined} == {"ds-han": "lead", "ds-noh": "member"}
         # 원문이 담당 기간을 말하지 않았으므로 비어 있다.

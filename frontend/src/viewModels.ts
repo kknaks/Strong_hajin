@@ -54,13 +54,11 @@ export type GraphNeighborhood = { center: GraphNode; nodes: GraphNode[]; edges: 
 export type GraphView = "member" | "team" | "project";
 export type GraphOverview = GraphNeighborhood & { view: GraphView; available_views: GraphView[] };
 
-/** 부서를 가로질러 묶이는 일 하나. 소유 조직은 책임 소재이지 참여 자격이 아니다. */
+/** 부서를 가로질러 묶이는 일 하나. 소유 조직은 없고, 붙은 사람이 곧 그 프로젝트다. */
 export type Project = {
   project_id: string;
   name: string;
   description: string | null;
-  organization_unit_id: string;
-  organization_unit_name?: string | null;
   state: string;
   /** 기간은 없을 수 있다 — 시작만 정해지고 끝은 아직 없는 일이 흔하다. */
   starts_on: string | null;

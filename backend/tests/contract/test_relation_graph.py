@@ -268,17 +268,12 @@ def test_each_view_answers_one_question_and_not_the_next_one(tmp_path) -> None:
 
     # 프로젝트는 조직 단위와 나란한 두 번째 축이므로 소속과 같은 자격으로 내 옆에 선다.
     project = client.post(
-        "/api/projects", headers=JIHO, json={"name": "한빛 통합 마케팅", "organization_unit_id": "product"}
+        "/api/projects", headers=JIHO, json={"name": "한빛 통합 마케팅"}
     ).json()
     inside = client.post(
         "/api/tasks", headers=JIHO, json={"title": "프로젝트에 매달린 일", "project_id": project["project_id"]}
     ).json()
-    # 만든 것과 붙은 것은 다르다 — 배정되기 전에는 내 자리가 아니므로 내 옆에 서지 않는다.
-    assert not any(
-        edge["kind"] == "assigned_to" for edge in client.get("/api/graph/overview", headers=JIHO).json()["edges"]
-    )
-    client.post(f"/api/projects/{project['project_id']}/members", headers=JIHO, json={"member_id": "jiho", "kind": "lead"})
-
+    # 만들면 담당자로 함께 기록되므로, 만든 사람 옆에는 곧바로 선다.
     mine = client.get("/api/graph/overview", headers=JIHO).json()
     with_project = {(edge["kind"], edge["from"], edge["to"]) for edge in mine["edges"]}
     assert ("assigned_to", "person:jiho", f"project:{project['project_id']}") in with_project
@@ -350,7 +345,7 @@ def test_grouping_by_project_folds_work_and_leaves_the_rest_alone(tmp_path) -> N
     assert client.get("/api/graph/overview", headers=JIHO).json()["available_views"] == ["member", "team"]
 
     project = client.post(
-        "/api/projects", headers=JIHO, json={"name": "한빛 통합 마케팅", "organization_unit_id": "product"}
+        "/api/projects", headers=JIHO, json={"name": "한빛 통합 마케팅"}
     ).json()
     inside = client.post(
         "/api/tasks", headers=JIHO, json={"title": "홈페이지 디자인 기획", "project_id": project["project_id"]}
@@ -372,7 +367,7 @@ def test_a_project_someone_may_not_read_never_folds_their_view(tmp_path) -> None
     """읽을 수 없는 프로젝트로는 접지 않는다. 접었다면 그 프로젝트의 이름이 드러났을 것이다."""
     client, _ = _stack(tmp_path)
     project = client.post(
-        "/api/projects", headers=JIHO, json={"name": "이름이 새면 안 되는 프로젝트", "organization_unit_id": "product"}
+        "/api/projects", headers=JIHO, json={"name": "이름이 새면 안 되는 프로젝트"}
     ).json()
     client.post("/api/tasks", headers=JIHO, json={"title": "그 안의 일", "project_id": project["project_id"]})
 

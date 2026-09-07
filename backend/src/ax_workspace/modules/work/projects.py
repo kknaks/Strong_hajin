@@ -3,8 +3,8 @@
 조직 단위가 사람이 어디에 속하는지를 말한다면, 프로젝트는 사람들이 무엇을 함께 하는지를 말한다. 둘은 나란히 선다:
 프로젝트에 붙는다고 조직 안에서 갖던 것이 줄지 않고, 프로젝트 밖의 일이 열리지도 않는다.
 
-소유 조직 단위는 이 프로젝트가 누구 책임인지를 말할 뿐 참여 자격을 제한하지 않는다. 마케팅 한 건에 국내사업부
-AE와 비주얼디자인팀 디자이너가 함께 붙는 것이 정상이며, 그것이 이 모듈이 있는 이유다.
+소유 조직 단위를 두지 않는다. 마케팅 한 건에 국내사업부 AE와 비주얼디자인팀 디자이너가 함께 붙는 것이 정상이고,
+그것이 이 모듈이 있는 이유다 — 어느 한 부서의 것이라고 적으면 그 부서가 프로젝트를 여는 열쇠가 된다.
 
 이 모듈은 권한을 스스로 만들지 않는다. 배정이 무슨 권한을 부르는지는 조직·권한 모듈의 표준 규칙이 답하며,
 여기서는 배정이라는 사실만 기록한다.
@@ -41,7 +41,6 @@ class ProjectRepository(Protocol):
         *,
         name: str,
         description: str | None,
-        organization_unit_id: str,
         starts_on: date | None,
         ends_on: date | None,
         external_key: str | None,
@@ -57,7 +56,6 @@ class ProjectRepository(Protocol):
     def member_projects(self, member_id: str) -> list[Any]: ...
     def tasks_in(self, project_id: UUID) -> list[Any]: ...
     def member_names(self, member_ids: list[str]) -> dict[str, str]: ...
-    def unit_names(self) -> dict[str, str]: ...
 
 
 ASSIGNMENT_KINDS = ("lead", "member")
@@ -76,15 +74,21 @@ class ProjectApplication:
         principal: Principal,
         *,
         name: str,
-        organization_unit_id: str,
         description: str | None = None,
         starts_on: date | None = None,
         ends_on: date | None = None,
         external_key: str | None = None,
     ) -> dict[str, Any]:
-        """프로젝트 하나. 만드는 권한은 그 프로젝트를 소유할 조직 단위에서 나온다."""
-        if not principal.allows(PROJECT_MANAGE, unit=organization_unit_id):
-            raise ProjectAccessDenied("이 조직에서 프로젝트를 만들 수 있는 자격이 없습니다")
+        """프로젝트 하나. 만들고, 사람을 붙인다 — 그 둘이 프로젝트의 전부다.
+
+        소유 조직을 두지 않는다. 프로젝트는 부서를 가로질러 묶이려고 있는 것이라 어느 한 부서의 것이라고
+        말하는 순간 그 부서가 열쇠가 되고, 붙어야 보인다는 규칙에 뒷문이 생긴다.
+
+        만든 사람은 담당자로 함께 기록된다. 그러지 않으면 만든 사람조차 자기 프로젝트를 찾지 못해 아무도
+        붙일 수 없고, 프로젝트는 만들어지자마자 고아가 된다.
+        """
+        if PROJECT_MANAGE not in principal.capabilities:
+            raise ProjectAccessDenied("프로젝트를 만들 수 있는 자격이 없습니다")
         cleaned = " ".join(str(name or "").split())
         if not cleaned:
             raise ProjectError("프로젝트 이름이 필요합니다")
@@ -95,11 +99,18 @@ class ProjectApplication:
         project = self._repository.create(
             name=cleaned,
             description=(description or "").strip() or None,
-            organization_unit_id=organization_unit_id,
             starts_on=starts_on,
             ends_on=ends_on,
             external_key=external_key,
             created_by=str(principal.id),
+        )
+        self._repository.add_assignment(
+            project_id=project.id,
+            member_id=str(principal.id),
+            kind="lead",
+            valid_from=None,
+            valid_until=None,
+            assigned_by=str(principal.id),
         )
         return self._view(project)
 
@@ -145,9 +156,8 @@ class ProjectApplication:
     def list(self, principal: Principal) -> list[dict[str, Any]]:
         """이 사람이 읽을 수 있는 프로젝트만. 읽을 수 없는 프로젝트는 개수로도 드러나지 않는다."""
         reach = self._readable(principal)
-        units = self._repository.unit_names()
         return [
-            {**self._view(project), "organization_unit_name": units.get(project.organization_unit_id)}
+            {**self._view(project)}
             for project in self._repository.all_projects()
             if str(project.id) in reach
         ]
@@ -156,13 +166,11 @@ class ProjectApplication:
         project = self._readable_project(principal, project_id)
         assignments = self._repository.assignments_for(project.id)
         names = self._repository.member_names([row.member_id for row in assignments])
-        units = self._repository.unit_names()
         tasks = self._repository.tasks_in(project.id)
         return {
             **self._view(project),
-            "organization_unit_name": units.get(project.organization_unit_id),
             # 무엇을 할 수 있는지는 서버가 말한다. 화면이 권한을 추측해 버튼을 그리면 눌러야 아는 거절이 된다.
-            "may_manage": principal.allows(PROJECT_MANAGE, unit=project.organization_unit_id, project=str(project.id)),
+            "may_manage": principal.allows(PROJECT_MANAGE, project=str(project.id)),
             "members": [
                 {**self._assignment_view(row), "display_name": names.get(row.member_id, row.member_id)}
                 for row in assignments
@@ -208,26 +216,14 @@ class ProjectApplication:
     # ---- internals ----
 
     def _readable(self, principal: Principal) -> frozenset[str]:
-        """읽을 수 있는 프로젝트 — 붙어 있거나, 관리할 자격이 있거나.
+        """읽을 수 있는 프로젝트 — 붙어 있는 것뿐이다.
 
-        소유 조직은 이 프로젝트가 누구 책임인지를 말하는 사실이지 그 조직 사람 전부에게 열어 주는 열쇠가
-        아니다. 그렇게 두면 배정되지 않은 팀원도 팀의 모든 프로젝트를 읽게 되어, 붙어야 보인다는 규칙에
-        뒷문이 생긴다.
-
-        관리 자격은 남는다. 그것이 없으면 방금 만든 프로젝트를 만든 사람도 찾지 못해 아무도 배정할 수 없고,
-        프로젝트는 만들어지자마자 고아가 된다. 만들 자격 자체가 그 조직의 관리 자격에서 나오므로 이 둘은
-        같은 자격이다.
+        축이 하나면 뒷문이 없다. 부서로도, 만든 사람이라는 사실로도 열리지 않고, 배정이라는 한 가지 사실로만
+        열린다. 조직 전체를 읽는 자격은 그 자격이 따로 말한다.
         """
         if PROJECT_READ not in principal.capabilities:
             return frozenset()
-        joined = principal.projects_for(PROJECT_READ)
-        managed_units = principal.scope_for(PROJECT_MANAGE)
-        managed = {
-            str(project.id)
-            for project in self._repository.all_projects()
-            if project.organization_unit_id in managed_units
-        }
-        return frozenset(joined | managed)
+        return frozenset(principal.projects_for(PROJECT_READ))
 
     def _readable_project(self, principal: Principal, project_id: UUID) -> Any:
         project = self._repository.project(project_id)
@@ -240,7 +236,7 @@ class ProjectApplication:
         project = self._repository.project(project_id)
         if project is None:
             raise ProjectNotFound("프로젝트를 찾을 수 없습니다")
-        if not principal.allows(PROJECT_MANAGE, unit=project.organization_unit_id, project=str(project.id)):
+        if not principal.allows(PROJECT_MANAGE, project=str(project.id)):
             raise ProjectAccessDenied("이 프로젝트를 관리할 수 있는 자격이 없습니다")
         return project
 
@@ -250,7 +246,6 @@ class ProjectApplication:
             "project_id": str(project.id),
             "name": project.name,
             "description": project.description,
-            "organization_unit_id": project.organization_unit_id,
             "state": project.state,
             "starts_on": project.starts_on.isoformat() if project.starts_on else None,
             "ends_on": project.ends_on.isoformat() if project.ends_on else None,

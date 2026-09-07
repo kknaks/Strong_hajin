@@ -143,13 +143,12 @@ TABLES: tuple[Table, ...] = (
         (
             Column("key", kind="key"),
             Column("name"),
-            Column("unit_key", kind="key", references="organization_units"),
             Column("state", required=False, kind="enum", values=PROJECT_STATES),
             Column("starts_on", required=False, kind="date"),
             Column("ends_on", required=False, kind="date"),
             Column("description", required=False),
         ),
-        note="프로젝트. 소유 조직은 책임 소재이고 참여 자격을 제한하지 않는다. 기간은 없을 수 있다.",
+        note="프로젝트. 소유 조직을 두지 않는다 — 누가 참여하는지가 `project_assignments`이고 그것이 열리는 유일한 길이다. 기간은 없을 수 있다.",
     ),
     Table(
         "project_assignments",
@@ -177,4 +176,4 @@ TABLES: tuple[Table, ...] = (
 
 TABLES_BY_NAME = {table.name: table for table in TABLES}
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5

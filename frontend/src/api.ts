@@ -483,7 +483,6 @@ export async function getProject(projectId: string): Promise<ProjectDetail> {
 
 export async function createProject(body: {
   name: string;
-  organization_unit_id: string;
   description?: string | null;
   starts_on?: string | null;
   ends_on?: string | null;
