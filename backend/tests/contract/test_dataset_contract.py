@@ -92,20 +92,32 @@ def test_an_organization_that_contains_itself_is_a_mistake() -> None:
 
 def test_the_commands_refuse_to_put_a_dataset_inside_the_repository(tmp_path, capsys) -> None:
     repository = Path(__file__).resolve().parents[3]
-    assert main(["init", str(repository / "datasets" / "actual")]) == 2
+    assert main(["import", str(repository / "datasets" / "actual")]) == 2
     assert "저장소 밖" in capsys.readouterr().err
     assert not (repository / "datasets" / "actual").exists()
 
 
-def test_validate_reports_counts_and_fails_when_something_is_wrong(tmp_path, capsys) -> None:
+def test_pointing_at_nothing_makes_the_tables_to_fill_rather_than_an_error(tmp_path, capsys) -> None:
+    """시작하는 명령을 따로 외우지 않는다 — 없는 폴더를 가리키면 채울 표를 만들어 주고 멈춘다."""
+    target = tmp_path / "새 dataset"
+
+    assert main(["import", str(target)]) == 0
+
+    printed = capsys.readouterr().out
+    assert "빈 표를 만들었습니다" in printed
+    assert (target / "manifest.yaml").exists()
+    # 조직과 그 위의 예제가 같은 폴더에 산다.
+    assert (target / "members.csv").exists() and (target / "scenario_work.csv").exists()
+
+
+def test_a_dataset_that_does_not_hold_together_is_refused_before_anything_is_written(tmp_path, capsys) -> None:
+    """검사는 넣는 일의 첫 단계다. 통과하지 못하면 하나도 쓰지 않고 멈추고, 무엇이 잘못됐는지 말한다."""
     target = tmp_path / "dataset"
     target.mkdir()
     _organization(target)
-    assert main(["validate", str(target)]) == 0
-    answer = json.loads(capsys.readouterr().out)
-    assert answer["rows"]["members"] == 1 and answer["problem_count"] == 0
-
     _write(target, "memberships", [{"member_key": "없는사람", "unit_key": "sales", "kind": "primary", "valid_from": "", "valid_until": ""}])
-    assert main(["validate", str(target)]) == 1
-    failed = json.loads(capsys.readouterr().out)
-    assert failed["problem_count"] == 1 and "members에 없는 키" in failed["problems"][0]
+
+    assert main(["import", str(target), "--dry-run"]) == 1
+
+    problems = capsys.readouterr().err
+    assert "먼저 dataset을 고쳐야 합니다" in problems and "members에 없는 키" in problems

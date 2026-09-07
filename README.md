@@ -18,7 +18,7 @@ make local-stack     # API 8001 + conversation/material/meeting workers + fronte
 
 `make local-stack` is the default local run path: it waits for PostgreSQL, refuses to start when the schema has not been initialized (run `make reset-demo` first; the stack itself never resets), starts the five required processes together, supervises them (if any one exits at any time the others are stopped and the target fails), and stops them all on Ctrl+C. The individual targets remain for running one process at a time: `make api` (port 8000, autoreload), `make conversation-worker`, `make material-worker`, `make meeting-worker`, `make frontend` (port 5173). The conversation worker is the separate consumer of the durable job table and the only process that invokes Codex for queued AX turns; without it every AX turn stays `pending`. The material worker extracts and indexes uploaded Task materials; without it uploads stay `queued`. The meeting worker finalizes uploaded audio through raw STT → refinement → final summary, and resumes from the first missing immutable artifact after a fenced crash. All workers and the API share one extension-free PostgreSQL job transport (`durable_jobs`: `FOR UPDATE SKIP LOCKED` claims, fencing lease tokens, at-least-once delivery with idempotent handlers). It uses only standard PostgreSQL features so that it can run on Azure Database for PostgreSQL Flexible Server, which does not offer the PGMQ extension; that compatibility is intended by design and has not yet been probed against an Azure runtime. `AX_JOB_QUEUE_BACKEND` selects `postgres` (default) or `memory` (in-process tests); the removed PGMQ transport and its `AX_CONVERSATION_QUEUE_BACKEND` variable fail fast with an actionable error. Run `AX_MCP_PERSONA=mina make mcp` in another terminal to expose Mina’s dynamically filtered stdio MCP Tool set; this binding is required, so an unbound MCP server never lets a client select `demo-admin`. Run `make verify` in another terminal for non-integration backend tests, frontend behavior tests, and the production Vite build. The API itself starts at `http://127.0.0.1:8000`; Swagger is at `/docs`.
 
-`make reset-demo` is the only command that drops the demo tables, and normal API startup never mutates the schema. After pulling a persistence schema change you have two choices: `make reset-demo` (destructive — a clean seed, losing local demo data) or `make sync-demo-schema`, which adds the tables and columns the model has and the database does not, and refuses to do anything that could lose data (a column the model no longer has, or a NOT NULL column on a table with rows) — it prints those for a person to decide. `sync-demo-schema` is a development convenience and runs only in development/test profiles; it is not a migration tool. Production schema change is a separate, gated piece of work: see the migration baseline Work Brief. Alembic revisions are intentionally not part of this milestone.
+`make reset-demo` is the only command that drops the demo tables, and normal API startup never mutates the schema. After pulling a persistence schema change you have two choices: `make reset-demo` (destructive — a clean seed, losing local demo data) or `make sync-demo-schema` (`reset_demo --sync`), which adds the tables and columns the model has and the database does not, and refuses to do anything that could lose data (a column the model no longer has, or a NOT NULL column on a table with rows) — it prints those for a person to decide. `sync-demo-schema` is a development convenience and runs only in development/test profiles; it is not a migration tool. Production schema change is a separate, gated piece of work: see the migration baseline Work Brief. Alembic revisions are intentionally not part of this milestone.
 
 ## Assignments, cc, and evidence
 
@@ -82,11 +82,12 @@ Run `DATABASE_URL=postgresql+psycopg://ax:ax@localhost:54329/ax_demo make conver
 
 ```sh
 make dataset-inspect SOURCE=~/Downloads/thesc DATASET_ARGS="--hide-names"   # 열지 않고 분류만
-make dataset-init TARGET=~/scax-datasets/actual DATASET_ARGS="--name 조직 --as-of 2026-09-02"
-make dataset-validate TARGET=~/scax-datasets/actual
+make dataset-import TARGET=~/scax-datasets/actual                          # 없으면 채울 표를 만들어 준다
 make dataset-import TARGET=~/scax-datasets/actual DATASET_ARGS=--dry-run    # 넣어 본 뒤 되돌린다
 SCAX_DATASET_PASSWORD=... make dataset-import TARGET=~/scax-datasets/actual
 ```
+
+데이터를 다루는 명령은 셋이다 — 열지 않고 분류하는 `dataset-inspect`, 넣는 `dataset-import`, 스키마를 다루는 `reset-demo`(`--catalog-only`·`--sync`). `import`는 없는 폴더를 가리키면 채울 표를 만들어 주고, 있으면 검사한 뒤 넣는다 — 시작하는 명령과 검사하는 명령을 따로 외우지 않는다. `inspect`를 합치지 않는 이유는 입력이 다르기 때문이다: 아직 아무도 열어보지 않은 전달 폴더와, 이미 심사를 통과한 dataset 폴더는 같은 것이 아니다.
 
 `inspect`는 파일을 열지 않는다. 경로가 말하는 것만으로 `deny`(계정·비밀번호 자료) · `metadata-only`(읽을 수 없는 형식이나 너무 큰 파일) · `manual-review`(기본) · `import`(사람이 `--allow`로 올린 것)을 정하고, 목록을 원본 폴더 옆에 쓴다. 허용 목록이 deny를 이기지 못하며, macOS가 분해해서 저장한 한글 파일명(NFD)도 같은 이름으로 취급한다.
 
@@ -142,7 +143,7 @@ The local stdio MCP server is a development-only delegated binding. It resolves 
 
 조건·순위·개수는 데이터베이스 안에서 끝난다. PostgreSQL에서는 `tsvector` + GIN 색인이, 그 밖에서는 같은 열을 훑는 방식이 답하며 application으로는 답만 온다. 2,400개 구간에 하나만 있는 낱말을 찾는 통합 test가 실행 계획으로 색인 사용과 순차 스캔 부재를 확인한다.
 
-분석 규칙은 version을 갖는다(`kiwi-<lib>-r<rules>`). 규칙이 바뀌면 그 규칙으로 만든 색인은 질문과 만나지 못하므로 `make reindex-search`로 다시 만든다. 원문은 건드리지 않고 찾기 위한 형태만 바뀌며, 여러 번 돌려도 한 번 돌린 것과 같다.
+분석 규칙은 version을 갖는다(`kiwi-<lib>-r<rules>`). 규칙이 바뀌면 그 규칙으로 만든 색인은 질문과 만나지 못하는데, 자료 워커가 한가할 때 뒤처진 것부터 다시 만든다 — 사람이 규칙이 바뀐 것을 기억했다가 명령을 부르지 않는다. 원문은 건드리지 않고 찾기 위한 형태만 바뀌며, 여러 번 돌려도 한 번 돌린 것과 같고 중간에 멈춰도 남은 것부터 이어서 한다.
 
 시작점을 대지 않으면 읽을 수 있는 업무 전부에서 찾는다. 시작점이 넓어져도 권한은 넓어지지 않는다.
 

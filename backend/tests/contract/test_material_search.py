@@ -321,6 +321,35 @@ def test_the_files_of_work_someone_may_read_are_not_hidden_from_them(tmp_path) -
     assert _upload(client, task["task_id"], "끼워넣기.md", BRIEF.encode(), "text/markdown", headers=MINA).status_code == 404
 
 
+def test_the_worker_catches_the_index_up_without_anyone_asking(tmp_path) -> None:
+    """분석 규칙이 바뀐 것을 사람이 기억했다가 명령을 부르는 것은 잊기 위한 설계다.
+
+    규칙은 chunk마다 적혀 있으므로 자료 워커가 안다. 추출할 것이 없을 때 뒤처진 색인을 따라잡고, 따라잡을
+    것이 없으면 아무 일도 하지 않는다.
+    """
+    from sqlalchemy import select, update
+
+    from ax_workspace.platform.persistence import MaterialChunkRecord, make_session_factory
+
+    client, application, worker, settings = _stack(tmp_path)
+    task = client.post("/api/tasks", headers=MINA, json={"title": "견적 검토"}).json()
+    _upload(client, task["task_id"], "견적.md", BRIEF.encode(), "text/markdown")
+    while asyncio.run(worker.run_once()):
+        pass
+
+    sessions = make_session_factory(settings.database_url)
+    with sessions() as session:
+        session.execute(update(MaterialChunkRecord).values(analyzer_version="kiwi-0.0.0-r0", search_text=None))
+        session.commit()
+
+    # 넣을 job이 없어도 워커가 한가한 김에 따라잡는다.
+    assert asyncio.run(worker.run_once()) is True
+    with sessions() as session:
+        assert all(chunk.search_text for chunk in session.scalars(select(MaterialChunkRecord)))
+    # 따라잡을 것이 없으면 아무 일도 하지 않는다 — 한가한 워커가 같은 일을 반복하지 않는다.
+    assert asyncio.run(worker.run_once()) is False
+
+
 def test_an_index_made_with_older_rules_is_rebuilt_and_only_once(tmp_path) -> None:
     """분석 규칙이 바뀌면 그 규칙으로 만든 색인은 더 이상 질문과 만나지 못한다. 다시 만들어야 한다.
 
