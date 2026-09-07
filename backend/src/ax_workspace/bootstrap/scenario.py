@@ -87,6 +87,8 @@ class Ask:
     due_in: int
     checklist: tuple[str, ...] = ()
     accept: bool = False
+    #: 읽고 논의하되 판단하지 않는 사람들.
+    cc: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +228,7 @@ def build(application: Any, plan: "ScenarioPlan", *, today: date | None = None) 
                 description=item.description,
                 due_date=day + timedelta(days=item.due_in),
                 checklist=list(item.checklist) or None,
+                cc_member_ids=list(item.cc) or None,
             )
         except Exception as error:
             result.skipped.append(f"요청 '{item.title}' · {error}")

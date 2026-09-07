@@ -270,6 +270,19 @@ class _SessionGraphSource:
         except Exception:
             return []
 
+    def materials_for_tasks(self, principal: Principal, task_ids: list[UUID]) -> dict[str, list[dict[str, Any]]]:
+        """화면에 있는 업무들의 자료.
+
+        업무마다 자료 모듈의 같은 인가된 읽기를 지난다. 한 번의 질의로 줄일 수는 있지만 그러면 자료의
+        판정과 표현이 두 곳에 생긴다 — 첫 화면의 업무 수는 이미 상한이 있으므로 그 값을 치르지 않는다.
+        """
+        found: dict[str, list[dict[str, Any]]] = {}
+        for task_id in task_ids:
+            materials = self.task_materials(principal, task_id)
+            if materials:
+                found[str(task_id)] = materials
+        return found
+
     def person(self, member_id: str) -> dict[str, Any] | None:
         name = SqlAlchemyTaskRepository(self._session).member_display_name(member_id)
         return {"member_id": member_id, "display_name": name or member_id}

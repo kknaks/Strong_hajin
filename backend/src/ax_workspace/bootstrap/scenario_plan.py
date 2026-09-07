@@ -37,7 +37,7 @@ SECTIONS: dict[str, type] = {
 }
 
 #: 사람을 가리키는 필드. 여기에 적힌 이름은 `people`을 거쳐 실제 member key가 된다.
-_PERSON_FIELDS = frozenset({"owner", "requester", "assignee", "assigner", "attendees"})
+_PERSON_FIELDS = frozenset({"owner", "requester", "assignee", "assigner", "attendees", "cc"})
 
 
 class ScenarioPlanError(ValueError):

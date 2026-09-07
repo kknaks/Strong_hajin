@@ -63,6 +63,7 @@ class GraphSourcePort(Protocol):
     def readable_requests(self, principal: Principal, *, query: str | None = None) -> list[dict[str, Any]]: ...
     def readable_request(self, principal: Principal, request_id: UUID) -> dict[str, Any] | None: ...
     def task_materials(self, principal: Principal, task_id: UUID) -> list[dict[str, Any]]: ...
+    def materials_for_tasks(self, principal: Principal, task_ids: list[UUID]) -> dict[str, list[dict[str, Any]]]: ...
     def person(self, member_id: str) -> dict[str, Any] | None: ...
     def people(self, principal: Principal, *, query: str) -> list[dict[str, Any]]: ...
     def readable_meetings(self, principal: Principal, *, query: str | None = None, limit: int = 50) -> list[dict[str, Any]]: ...
@@ -356,6 +357,11 @@ class GraphApplication:
             edges.append(self._edge("requested", f"person:{request['requester_id']}", self._ref(node)))
             self._add_person(nodes, str(request["assignee_id"]))
             edges.append(self._edge("asked_of", self._ref(node), f"person:{request['assignee_id']}"))
+            # 요청이 업무가 되었으면 그 자국을 첫 화면에서도 잇는다. 둘 다 이미 화면에 있는데 선만 없으면
+            # 같은 일이 두 점으로 흩어져 보인다.
+            produced = request.get("task_id")
+            if produced and f"task:{produced}" in nodes:
+                edges.append(self._edge("produced", self._ref(node), f"task:{produced}"))
         for meeting in self._source.readable_meetings(principal):
             node = self._meeting_node(meeting)
             nodes[self._ref(node)] = node
@@ -370,6 +376,14 @@ class GraphApplication:
                     continue
                 self._add_person(nodes, member_id)
                 edges.append(self._edge("attended", f"person:{member_id}", self._ref(node)))
+        # 업무에 붙은 자료도 첫 화면의 일부다 — 일과 그 일이 들고 있는 문서는 따로 놓인 것이 아니다.
+        for task_id, materials in self._source.materials_for_tasks(
+            principal, [UUID(str(node["id"])) for node in nodes.values() if node["kind"] == "task"]
+        ).items():
+            for material in materials:
+                node = self._material_node(material)
+                nodes[self._ref(node)] = node
+                edges.append(self._edge("has_material", f"task:{task_id}", self._ref(node)))
         for report in self._source.own_reports(principal, limit=2):
             node = self._report_node(report)
             edges_for_report = [

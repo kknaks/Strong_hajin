@@ -227,6 +227,24 @@ def test_the_first_screen_is_already_a_graph_of_what_this_person_is_connected_to
     assert overview["available_views"] == ["member", "team"]
 
 
+def test_the_first_screen_connects_the_things_it_already_shows(tmp_path) -> None:
+    """요청과 그것이 된 업무, 업무와 그 업무가 들고 있는 자료는 첫 화면에서도 이어져 있어야 한다.
+
+    둘 다 이미 그려지는데 선만 없으면 같은 일이 흩어진 점으로 보인다. 이웃 조회에서만 이어지는 것은 이어져
+    있다고 말하기 어렵다.
+    """
+    client, _ = _stack(tmp_path)
+    made = _journey(client, "첫 화면이 이어야 할 업무")
+
+    overview = client.get("/api/graph/overview", headers=JIHO).json()
+    edges = {(edge["kind"], edge["from"], edge["to"]) for edge in overview["edges"]}
+    kinds = {node["kind"] for node in overview["nodes"]}
+
+    assert ("produced", f"work_request:{made['request']['request_id']}", f"task:{made['task']['task_id']}") in edges
+    assert "material" in kinds
+    assert any(kind == "has_material" for kind, _, _ in edges)
+
+
 def test_grouping_by_team_reads_the_same_answer_one_level_up(tmp_path) -> None:
     client, _ = _stack(tmp_path)
     _journey(client, "팀으로 묶어 볼 업무")
