@@ -268,7 +268,7 @@ def test_each_view_answers_one_question_and_not_the_next_one(tmp_path) -> None:
 
     # 프로젝트는 조직 단위와 나란한 두 번째 축이므로 소속과 같은 자격으로 내 옆에 선다.
     project = client.post(
-        "/api/projects", headers=JIHO, json={"name": "라비앙 통합 마케팅", "organization_unit_id": "product"}
+        "/api/projects", headers=JIHO, json={"name": "한빛 통합 마케팅", "organization_unit_id": "product"}
     ).json()
     inside = client.post(
         "/api/tasks", headers=JIHO, json={"title": "프로젝트에 매달린 일", "project_id": project["project_id"]}
