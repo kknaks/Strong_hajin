@@ -8,7 +8,7 @@ import csv
 import pytest
 
 from ax_workspace.bootstrap.scenario_csv import TABLES, ScenarioPlanError, initialize, load_plan
-from ax_workspace.entrypoints.scenario import main
+from ax_workspace.entrypoints.dataset import main
 
 
 def _write(target, table: str, rows: list[dict[str, str]]) -> None:
@@ -100,10 +100,37 @@ def test_a_plan_that_cannot_be_read_says_where_it_broke(tmp_path, table, rows, s
     assert says in str(error.value)
 
 
-def test_a_plan_inside_the_repository_is_refused_before_anything_is_built(tmp_path, capsys) -> None:
+def test_a_dataset_inside_the_repository_is_refused_before_anything_is_read(tmp_path, capsys) -> None:
     """저장소는 계약을 갖고, 실제 사람과 고객사가 적힌 표는 갖지 않는다."""
     inside = __import__("pathlib").Path(__file__).resolve().parents[2]
 
-    assert main([str(inside)]) == 2
+    assert main(["import", str(inside)]) == 2
 
     assert "저장소 밖" in capsys.readouterr().err
+
+
+def test_one_folder_is_one_command(tmp_path, monkeypatch, capsys) -> None:
+    """조직과 그 위의 예제가 같은 폴더에 있으면 넣는 명령도 하나다.
+
+    둘로 두면 사람이 순서를 기억해야 하고, 조직만 들어간 반쪽 상태가 생긴다. 예제 표가 없으면 조직만 들어간
+    것이고 그것도 온전한 결과다.
+    """
+    from ax_workspace.entrypoints.dataset import main
+
+    from ax_workspace.entrypoints.dataset import initialize as dataset_tables
+
+    target = _plan(tmp_path)
+    # 조직 표는 비어 있어도 있어야 한다 — `dataset init`이 두 층의 표를 함께 만드는 이유다.
+    dataset_tables(target, name="fixture", as_of="2026-09-02")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'demo.db'}")
+    monkeypatch.setenv("AX_PROFILE", "development")
+    from ax_workspace.entrypoints.reset_demo import reset_database
+
+    reset_database(f"sqlite:///{tmp_path / 'demo.db'}")
+
+    # 계획이 가리키는 사람이 이 조직에 없으므로 만들 수 있는 것이 없다 — 그래도 한 명령으로 끝나고, 무엇을
+    # 하지 않았는지 말한다.
+    assert main(["import", str(target)]) == 0
+    printed = capsys.readouterr().out
+    assert '"scenario"' in printed
+    assert "하지 않은 것" in printed

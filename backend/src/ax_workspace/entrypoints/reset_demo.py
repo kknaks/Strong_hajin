@@ -34,14 +34,33 @@ def reset_database(database_url: str, *, demo_organization: bool = True) -> None
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="reset_demo", description="Recreate the local demo schema.")
+    parser = argparse.ArgumentParser(prog="reset_demo", description="Bring the local demo schema to the current model.")
     # 실제 조직을 dataset으로 들여올 때는 예시 회사가 옆에 서 있지 않아야 한다.
     parser.add_argument("--catalog-only", action="store_true", help="제품 catalog만 두고 예시 회사는 만들지 않는다")
+    parser.add_argument(
+        "--sync",
+        action="store_true",
+        help="지우지 않고 맞춘다 — 모델에 있고 데이터베이스에 없는 표와 열만 더하고, 잃을 수 있는 것은 사람이 정하도록 남긴다",
+    )
     arguments = parser.parse_args(argv)
 
     settings = Settings.from_environment()
     if not settings.developer_auth_enabled:
         raise RuntimeError("reset_demo is available only in development and test profiles")
+
+    # 스키마를 다루는 명령은 하나다. 지울지 말지는 플래그가 가른다 — 이름이 둘이면 파괴적인 쪽을 잘못 부르기 쉽다.
+    if arguments.sync:
+        from ax_workspace.bootstrap.schema_sync import apply
+
+        made = apply(settings.database_url)
+        for statement in made["statements"]:
+            print(f"applied: {statement}")
+        for note in made.get("manual", []):
+            print(f"사람이 정할 것: {note}")
+        if not made["statements"]:
+            print("데이터베이스가 이미 모델과 같습니다.")
+        return
+
     reset_database(settings.database_url, demo_organization=not arguments.catalog_only)
     if arguments.catalog_only:
         print("Catalog reset: unit types, capabilities, recommended roles and daily-report-generation@1. 예시 회사는 없다.")

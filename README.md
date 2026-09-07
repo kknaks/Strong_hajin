@@ -1,154 +1,190 @@
 # ax-workspace
 
-SCAX 상용 시스템의 독립 modular monolith 저장소입니다. 조직·업무·요청·판단·보고와 내장 AX 대화가 하나의 PostgreSQL 원장과 application operation 위에서 동작하며, 개인 일일보고 생성만 내부 동적 Workflow를 사용합니다. 로컬 실행은 별도 demo mode가 아니라 같은 production 경로를 `DeveloperAuthAdapter`와 seed로 검증하는 방식입니다.
+SCAX 상용 시스템의 modular monolith 저장소다. 조직·업무·요청·판단·회의·자료·보고와 내장 AX 대화가 하나의 PostgreSQL 원장과 application command 위에서 돈다. 로컬 실행은 별도 demo mode가 아니라 같은 production 경로를 `DeveloperAuthAdapter`와 seed로 지나가는 방식이다.
 
-장기 설계와 진행 상태는 Obsidian vault의 `SCAX 상용 시스템 구축` Project Note와 `SCAX 상용 시스템 설계` 문서가 소유합니다. 첫 vertical slice의 실행 기록은 `02_PARA/04_Archives/Work Briefs/2026-09-03 - SCAX Workflow catalog demo.md`에 보관되어 있습니다. 디자인 시스템 참조본은 `docs/design/`에, 도메인 모델과 SCAX ERD의 대조표는 `docs/domain-model.md`에 있습니다.
+저장소는 제품과 계약을 갖고 데이터는 갖지 않는다. 실제 조직·자료는 Git 밖 폴더에 있고, 그것을 읽는 명령만 여기 있다.
 
-## Local backend bootstrap
+장기 설계와 진행 상태는 Obsidian vault의 `SCAX 상용 시스템 구축` Project Note와 `SCAX 상용 시스템 설계`가 소유한다. 도메인 모델과 SCAX ERD 대조표는 `docs/domain-model.md`, 디자인 시스템 참조본은 `docs/design/`에 있다.
 
-Prerequisites: Python 3.12+, [uv](https://docs.astral.sh/uv/), Docker.
+## 띄우기
+
+필요한 것: Python 3.12+, [uv](https://docs.astral.sh/uv/), Docker.
 
 ```sh
 make install
 make frontend-install
 make postgres-up
-make reset-demo      # once, and again after any persistence schema change
-make local-stack     # API 8001 + conversation/material/meeting workers + frontend 5176, Ctrl+C stops all
+make reset-demo        # 한 번, 그리고 스키마가 바뀔 때마다
+make local-stack       # API 8001 · 워커 셋 · 프론트 5176 · Ctrl+C면 모두 멈춘다
 ```
 
-`make local-stack` is the default local run path: it waits for PostgreSQL, refuses to start when the schema has not been initialized (run `make reset-demo` first; the stack itself never resets), starts the five required processes together, supervises them (if any one exits at any time the others are stopped and the target fails), and stops them all on Ctrl+C. The individual targets remain for running one process at a time: `make api` (port 8000, autoreload), `make conversation-worker`, `make material-worker`, `make meeting-worker`, `make frontend` (port 5173). The conversation worker is the separate consumer of the durable job table and the only process that invokes Codex for queued AX turns; without it every AX turn stays `pending`. The material worker extracts and indexes uploaded Task materials; without it uploads stay `queued`. The meeting worker finalizes uploaded audio through raw STT → refinement → final summary, and resumes from the first missing immutable artifact after a fenced crash. All workers and the API share one extension-free PostgreSQL job transport (`durable_jobs`: `FOR UPDATE SKIP LOCKED` claims, fencing lease tokens, at-least-once delivery with idempotent handlers). It uses only standard PostgreSQL features so that it can run on Azure Database for PostgreSQL Flexible Server, which does not offer the PGMQ extension; that compatibility is intended by design and has not yet been probed against an Azure runtime. `AX_JOB_QUEUE_BACKEND` selects `postgres` (default) or `memory` (in-process tests); the removed PGMQ transport and its `AX_CONVERSATION_QUEUE_BACKEND` variable fail fast with an actionable error. Run `AX_MCP_PERSONA=mina make mcp` in another terminal to expose Mina’s dynamically filtered stdio MCP Tool set; this binding is required, so an unbound MCP server never lets a client select `demo-admin`. Run `make verify` in another terminal for non-integration backend tests, frontend behavior tests, and the production Vite build. The API itself starts at `http://127.0.0.1:8000`; Swagger is at `/docs`.
+`make local-stack`이 기본 실행 경로다. PostgreSQL을 기다리고, 스키마가 없으면 시작하지 않고(먼저 `make reset-demo` — 스택은 스스로 reset하지 않는다), 다섯 프로세스를 함께 띄우고 감독한다. 하나라도 죽으면 나머지를 멈추고 실패한다.
 
-`make reset-demo` is the only command that drops the demo tables, and normal API startup never mutates the schema. After pulling a persistence schema change you have two choices: `make reset-demo` (destructive — a clean seed, losing local demo data) or `make sync-demo-schema`, which adds the tables and columns the model has and the database does not, and refuses to do anything that could lose data (a column the model no longer has, or a NOT NULL column on a table with rows) — it prints those for a person to decide. `sync-demo-schema` is a development convenience and runs only in development/test profiles; it is not a migration tool. Production schema change is a separate, gated piece of work: see the migration baseline Work Brief. Alembic revisions are intentionally not part of this milestone.
+프로세스를 하나씩 띄우는 길도 있다: `make api`(8000, autoreload) · `make conversation-worker` · `make material-worker` · `make meeting-worker` · `make frontend`(5173).
 
-## Assignments, cc, and evidence
+- **대화 워커** — 대기열의 AX turn을 실제 Codex로 실행하는 유일한 프로세스다. 없으면 모든 turn이 `pending`에 머문다.
+- **자료 워커** — 올린 자료를 추출하고 색인한다. 없으면 업로드가 `queued`에 머문다. 한가할 때 지난 분석 규칙으로 만들어진 색인을 따라잡는다.
+- **회의 워커** — 올린 녹음을 raw STT → 정제 → 최종 요약으로 넘기고, 중단되면 빠진 첫 산출물부터 이어서 한다.
 
-- Every task holds a `task_assignments` row (self, request_effect, or direct). My Work lists only tasks with an **active** assignment.
-- A member with `task.assign` (지호 팀장, 데모 관리자) can assign a task to someone in their own units via 새 업무 추가 → 담당자. It shows up in the assignee's 판단이 필요한 업무 panel until they accept or decline (reason required); the assigner tracks it under 보낸 업무 → 배정한 업무.
-- A work request can carry 참조자(cc). cc members read the request, its timeline and comments, and can attach files to their own comments, but never decide.
-- Requester and assignee can adopt files as evidence for the current submission (근거 자료). Evidence is pinned to the submission by sha256 and shown per 회차 in the request drawer.
-- Capabilities come from `access_grants` only: role grants apply the role's capability mapping at the pinned `role_capability_version`; grants created by a standard rule end with the appointment that produced them. 조직 → 내 권한 shows the grants.
+워커와 API는 확장 없는 PostgreSQL job 전송(`durable_jobs`)을 함께 쓴다 — `FOR UPDATE SKIP LOCKED` claim, fencing lease token, 멱등 handler 위의 at-least-once. PGMQ 확장이 없는 Azure Database for PostgreSQL Flexible Server에서도 돌게 하려는 선택이고, 아직 Azure runtime에서 확인하지는 않았다. `AX_JOB_QUEUE_BACKEND`가 `postgres`(기본)와 `memory`(in-process test)를 고른다.
 
-## Material content search and AX evidence
+`AX_MCP_PERSONA=mina make mcp`는 그 사람으로 묶인 stdio MCP 도구 집합을 연다. 이 묶임은 필수여서, 묶이지 않은 MCP 서버는 client가 persona를 고르게 두지 않는다.
 
-Uploading a Task material records an extraction job in the same transaction as the attachment (`extraction.status` starts as `queued` in the upload response). The separate `make material-worker` process extracts UTF-8 text/Markdown and text-based PDF into bounded chunks; every outcome is an explicit state (`completed`, `failed` with a reason such as `encrypted_pdf`, `corrupt_pdf`, `empty_content`, `not_utf8_text`, or `unsupported`) shown in the Task drawer. `GET /api/tasks/{id}/materials/search?q=` and the MCP tool `task_material_search` run the same `material.search` query: they re-check the caller's active assignment and the live binding first, then return bounded excerpts with file name, page, integrity hash, and the origin URL; detached materials and other people's tasks never appear, not even as counts. When Codex calls the tool inside a delegated turn, the excerpts it read are recorded as that turn's `material_evidence` and rendered as 근거 자료 cards under the answer, each with 원본 열기. File text is never copied into tool timeline summaries or audit rows. `make e2e-material-search` is the real Codex journey for this path.
+### 스키마
 
-## Office document parser (not yet persisted)
-
-`modules/work/document_parsing.py` defines a persistence-free `DocumentParser` port whose result is a bounded, ordered `ParsedDocument` (blocks with source locators: DOCX 문단/표/머리글·바닥글, XLSX 시트+셀 범위, PPTX 슬라이드+발표자 노트, PDF 페이지) and an explainable status (`ok`, `empty`, `needs_ocr`, `unsupported`, `encrypted`, `corrupt`, `budget_exceeded`). `platform/document_parsers.py` implements it with python-docx, openpyxl (read-only, formulas kept as text, external links never followed), python-pptx, and pypdf behind an OOXML ZIP preflight (member count, per-part and total uncompressed size, compression ratio, encryption flags). It is deliberately **not** connected to the material extraction tables: where Office output is stored and at what granularity is the user gate described in `docs/material-data-management-design.md`. `uv run python backend/scripts/probe_documents.py <dir>` probes a local directory read-only and prints names, sizes, and statuses only.
-
-## Task fields and materials
-
-A Task carries `description`, `start_date`, and `due_date` beside its state; the owner edits them with `PATCH /api/tasks/{id}` (`task.update`, no approval gate, `expected_version` required, start ≤ due). A WorkRequest carries an optional `due_date` and `description` that flow into the Task created on acceptance. Reference documents (`kind=input`) and deliverables (`kind=output`) are uploaded with `POST /api/tasks/{id}/materials` (multipart, 25MB), listed, downloaded from `/content`, and detached (the record and bytes stay for lineage). Bytes live behind the `MaterialStorage` port; the local adapter writes under `AX_MATERIALS_DIR` (default `backend/.scax/materials`, git-ignored) and an Azure Blob container adapter will implement the same port. Completed tasks can be reopened (`resume`); cancellation stays terminal.
-
-## Login and sessions
-
-The browser authenticates with a server-side login session (`POST /api/auth/login` → HttpOnly `scax_session` cookie, `GET /api/auth/me`, `POST /api/auth/logout`). Signing in proves who someone is and carries no privilege of its own: the session resolves to a member and the Organization & Access ledger decides everything else. The local provider is an ordinary email and password — `PBKDF2-SHA256`, salted per member, and every refused attempt answers identically so that trying addresses reveals nothing. `make reset-demo` installs the capability catalog, the recommended roles (외부 참여자 · 구성원 · 팀장 · 인사 담당자 · 대표), the demo organization (유나 대표 · 지호 팀장 · 민아 구성원 · 현우 인사 · 소라 외부 법무 자문 · 민석 재무), and one credential per member (`<member>@scax.example`, password `scax-demo-1234`). Installing again adds nothing, and a role the organization has changed (`roles.customized_at`) is never rewritten by a later install; `reset_demo` refuses anything but a local demo database, On a developer machine `GET /api/auth/providers` also hands the sign-in page those demo accounts and their shared password, and pressing one fills the form and posts the same credentials to the same login route — a way to skip typing, not a way to skip signing in, and becoming someone else still means signing out first. Only credentials at the demo domain are listed, so a real account added to a local database is not enumerated. The production profile registers no local login route at all and offers no accounts. Google OIDC will plug into the same session store as a second provider. The `X-Demo-Persona` header remains a development/test seam that only names which member a script is acting as — the ledger still decides whether that member exists and is active, it never overrides a live session, and production omits those routes entirely.
-
-## Current API slice
-
-The product surface exposes direct Task and Reports operations. `POST /api/daily-reports/generate-draft` runs the persisted `daily-report-generation@1` metadata internally, then Reports owns `edit`, `submit`, and `history`; the browser and persona-bound MCP server use those same operations rather than a generic run console.
-
-The only production/development LLM adapter is `CodexCliProviderAdapter`. It invokes `codex exec` with an isolated runtime home, user config/rules/skills/plugins disabled, a read-only sandbox, `gpt-5.6-terra`, Fast tier, low reasoning, and a structured output schema. A missing CLI binary or authentication fails explicitly; deterministic providers are injected only by tests.
-
-For the browser WorkRequest journey, run the backend on port 8001, then start Vite with the matching proxy and execute the Playwright script:
+스키마를 다루는 명령은 하나다. 지울지 말지는 플래그가 가른다.
 
 ```sh
-DATABASE_URL=postgresql+psycopg://ax:ax@localhost:54329/ax_demo make api-e2e
-DATABASE_URL=postgresql+psycopg://ax:ax@localhost:54329/ax_demo make frontend-e2e
-make e2e-task-lifecycle
-make e2e-work-request
-make e2e-conversation
-make e2e-conversation-action
-make e2e-conversation-report-edit-action
-make e2e-daily-report
-make live-report-smoke
+make reset-demo        # 파괴적 — 깨끗한 seed, 로컬 데모 데이터는 사라진다
+make reset-catalog     # 제품 catalog만. 실제 조직을 넣기 전에 쓴다
+make sync-demo-schema  # 지우지 않고 맞춘다 (reset_demo --sync)
 ```
 
-For a manual walkthrough, use `make local-stack` as the default run path: it waits for PostgreSQL, starts all five required processes together (API on 8001, conversation worker, material worker, meeting worker, frontend on 5176), fails if any of them exits during startup, and stops them together on Ctrl+C, so no worker can be forgotten. It never resets the database. An AX turn stays `pending` forever when the conversation worker is not running, uploaded materials stay `queued` without the material worker, and uploaded recordings await finalization without the meeting worker. All workers survive transient database failures (for example `make reset-demo` recreating the schema they poll) by logging and retrying with backoff instead of exiting. `make acceptance-e2e` starts with a reset, so it runs in its own database (`ACCEPTANCE_DATABASE_URL`, `ax_test_acceptance` by default) and never touches the organization and materials you loaded into `DATABASE_URL`.
+`--sync`는 모델에 있고 데이터베이스에 없는 표와 열만 더한다. 데이터를 잃을 수 있는 것(사라진 열, 행이 있는 표의 NOT NULL 열)은 하지 않고 사람이 정하도록 출력한다. 개발 편의이지 migration 도구가 아니다 — 운영 스키마 변경과 Alembic baseline은 별도 gate다. 일반 API 시작은 스키마를 절대 바꾸지 않는다.
 
-`api-e2e` listens on `127.0.0.1:8001`, while `frontend-e2e` configures Vite's `/api` proxy with `VITE_API_TARGET=http://127.0.0.1:8001` and listens on `127.0.0.1:5176`. This avoids accidentally validating the unrelated default API port 8000; `e2e-work-request` uses the UI itself to create a request, switch to the assignee, then accept it.
+## 데이터 넣기
 
-The individual `e2e-*` targets do not reset data: they expect a running API, worker, and frontend on the documented E2E ports. In particular, `e2e-daily-report` requires the seeded Mina report date to be unsubmitted, so it is not intended to be run repeatedly against an already-submitted demo database. For repeatable clean-bootstrap acceptance evidence, use the composite command below. It starts the pinned vanilla PostgreSQL 16 container if needed, performs exactly one explicit `reset-demo`, starts an isolated API/conversation-worker/material-worker/meeting-worker/frontend stack on ports `18111`/`15186`, runs every browser journey against that one seed — Task, WorkRequest, ActionItem, Conversation, DailyReport, 자료 검색, 이력, 참고, 캘린더, 결과 확인, 하위 업무, 채팅 복구·체크리스트, 관계 탐색, 역할 범위 — and stops only the processes it started. The one journey outside it is `e2e-meeting-live-transcript`, which needs a real Soniox credential and a macOS fake microphone; run that against `make local-stack`. It fails before reset if either isolated port is occupied; override both ports when necessary.
-
-```sh
-make acceptance-e2e
-```
-
-Run `DATABASE_URL=postgresql+psycopg://ax:ax@localhost:54329/ax_demo make conversation-worker` alongside the two E2E servers before the conversation browser journeys. `make e2e-conversation` proves the production worker's Codex CLI path calls the persona-bound `task_list` MCP tool, keeps the composer usable while a follow-up is visibly queued in the same conversation, and switches between two independently executing conversations without leaking timeline state; the screenshot is written to `frontend/test-results/conversation-e2e.png`. `make e2e-conversation-action` proves a real Codex MCP `work_request_create` call ends as a pending ActionItem, then approves that exact Action from the general 판단 surface and verifies its shared resource id/audit plus Jiho's Task-free decision inbox projection; it writes `frontend/test-results/conversation-action-e2e.png`. `make e2e-daily-report` is the browser report journey: it creates and starts a real Task, calls the actual report-generation runtime through the Reports page, edits with the returned draft version, submits with the edited version, and re-enters the page to restore the immutable submission history; it writes `frontend/test-results/daily-report-e2e.png` and prints only resource/provenance identifiers. `make e2e-access-roles` is the scope journey: 구성원 · 팀장 · 대표 each sign in with their own address and see exactly what their roles and scoped grants allow — the 대표 reads the organization's work read-only and a private meeting they were not part of, the 팀장 does neither, and nobody else's work reaches 할일 or 내 업무. It also drives the access admin surface on the 조직 page: the 대표 widens a member's authority at a named scope with a reason, then takes it back in the same place. `make live-report-smoke` remains an opt-in DB-level real-Codex report proof: it creates a seeded Task activity, calls `daily_report.generate_draft`, and asserts the persisted WorkflowRun, four NodeRuns, and completed ProviderCall provenance without printing the generated body or prompt.
-
-## 실제 조직·업무 자료 (dataset)
-
-전달받은 자료와 거기서 만든 데이터는 이 저장소가 소유하지 않는다. 저장소는 계약(schema)과 도구만 갖고, 데이터는 Git 밖 폴더에 둔다.
+데이터를 다루는 명령은 셋이다.
 
 ```sh
-make dataset-inspect SOURCE=~/Downloads/thesc DATASET_ARGS="--hide-names"   # 열지 않고 분류만
-make dataset-init TARGET=~/scax-datasets/actual DATASET_ARGS="--name 조직 --as-of 2026-09-02"
-make dataset-validate TARGET=~/scax-datasets/actual
-make dataset-preview TARGET=~/scax-datasets/actual                          # 넣어 본 뒤 되돌린다
+make dataset-inspect SOURCE=~/Downloads/thesc DATASET_ARGS="--hide-names"
+make dataset-import  TARGET=~/scax-datasets/actual                        # 없으면 채울 표를 만들어 준다
+make dataset-import  TARGET=~/scax-datasets/actual DATASET_ARGS=--dry-run # 넣어 본 뒤 되돌린다
 SCAX_DATASET_PASSWORD=... make dataset-import TARGET=~/scax-datasets/actual
 ```
 
-`inspect`는 파일을 열지 않는다. 경로가 말하는 것만으로 `deny`(계정·비밀번호 자료) · `metadata-only`(읽을 수 없는 형식이나 너무 큰 파일) · `manual-review`(기본) · `import`(사람이 `--allow`로 올린 것)을 정하고, 목록을 원본 폴더 옆에 쓴다. 허용 목록이 deny를 이기지 못하며, macOS가 분해해서 저장한 한글 파일명(NFD)도 같은 이름으로 취급한다.
+`inspect`는 **파일을 열지 않는다.** 경로가 말하는 것만으로 `deny`(계정·비밀번호 자료) · `metadata-only`(읽을 수 없는 형식이나 너무 큰 파일) · `manual-review`(기본) · `import`(사람이 `--allow`로 올린 것)를 정하고, 목록을 원본 폴더 옆에 쓴다. 허용 목록이 deny를 이기지 못하며, macOS가 분해해 저장한 한글 파일명(NFD)도 같은 이름으로 본다.
 
-`init`은 빈 CSV header와 manifest를, `validate`는 키 중복·없는 참조·허용되지 않은 값·날짜 형식·순환을 확인한다. 검증 결과는 어느 파일 몇 번째 줄 어느 열인지만 말하고 셀 값은 출력하지 않는다. 두 명령 모두 저장소 안을 가리키면 거절한다.
+`import`를 `inspect`와 합치지 않는 이유는 입력이 다르기 때문이다 — 아직 아무도 열어보지 않은 전달 폴더와, 이미 심사를 통과한 dataset 폴더는 같은 것이 아니다.
 
-`import`는 검증을 통과한 dataset을 제품의 원장에 넣는다. 조직을 만드는 두 번째 길이 아니라 제품이 이미 쓰는 행을 사람이 정한 key로 다시 찾아 쓰는 adapter이므로, 두 번 넣어도 한 번 넣은 것과 같다. 한 transaction이라 적용할 수 없는 dataset은 아무것도 남기지 않는다. 넣을 수 있는 대상은 `reset-demo`가 지울 수 있는 로컬 demo DB뿐이다.
+`import`는 한 폴더를 한 명령으로 넣는다: 없으면 채울 표를 만들고, 있으면 검사한 뒤 조직과 그 위의 예제를 넣는다. 검사를 통과하지 못하면 하나도 쓰지 않고 무엇이 잘못됐는지 말한다.
 
-실제 조직을 들여올 때는 `make reset-catalog`으로 시작한다. 제품 자신의 것(조직 단위 종류 · 기능 권한 · 권장 역할 · workflow definition)만 설치하고 예시 회사는 만들지 않으므로, 실제 조직이 예시 회사 옆에 나란히 서지 않는다. `make reset-demo`는 예시 회사까지 함께 만드는 기존 동작 그대로이며 모든 browser journey가 그것을 쓴다.
+### 폴더 안의 표
 
-권한은 조직이 정한다. 그 사람의 역할(`members.role_key`)과 보직에 따라오는 역할(`positions.role_key`)이 APPOINTMENT와 ACCESS_GRANT를 만들고, `logins`는 들어오는 문만 만든다. 두 역할은 서로를 덮어쓰지 않는다 — 인사총무팀장은 팀장이면서 인사 담당자다. 보직이 만든 grant는 그 보직과 함께 끝나고 소속이 만든 grant는 소속이 있는 동안 남으며, 어느 쪽인지는 그 grant를 만든 STANDARD_GRANT_RULE이 말한다. 비밀번호는 dataset에 두지 않고 `SCAX_DATASET_PASSWORD`로 준다. 주지 않으면 로그인을 절반만 만들지 않고 "하지 않은 것"으로 보고한다.
+조직 11장과 그 위의 예제 8장이 같은 폴더에 산다. 사람이 편집할 수 있는 외부 key로 서로를 가리키고, 저장소는 그 표를 읽는 계약만 갖는다. 저장소 안을 가리키면 명령이 거절한다.
 
-조직 전체가 원장에 있어도 로그인은 일부만 갖는다. 답할 수 없는 사람은 업무 요청과 배정의 수행 후보에서 빠지고 그렇게 만들려는 시도는 원장이 거절하므로, 판단이 영영 기다리는 항목이 생기지 않는다. 명부·과거 업무·회의 참석자·graph node로는 그대로 보인다.
-
-`employment_type`은 원문이 사람별로 말할 때만 채운다. 조직도가 팀 단위 인원수로만 말하는 경우에는 비워 두고 추정하지 않는다.
-
-`projects`·`project_assignments`는 부서를 가로질러 묶이는 일과 그 사람들을 나른다. 담당 기간은 없을 수 있고, 배정은 조직 보직과 같은 STANDARD_GRANT_RULE 경로로 그 프로젝트 범위의 grant를 만든다.
-
-프로젝트에는 소유 조직이 없다. 부서를 가로지르려고 있는 것이라 어느 한 부서의 것이라고 적는 순간 그 부서가 열쇠가 되고, `붙어야 보인다`는 규칙에 뒷문이 생긴다 — 배정되지 않은 팀원이 팀의 모든 프로젝트를 읽게 된다. 프로젝트가 열리는 길은 배정 하나뿐이며 조직 전체를 읽는 자격에도 예외가 없다.
-
-만드는 것은 관리하는 일이라 `project.manage`가 있어야 하고, 만든 사람은 담당자로 함께 기록된다. 그러지 않으면 만든 사람조차 자기 프로젝트를 찾지 못해 아무도 붙일 수 없다. 담당자는 사람을 붙이고 뗀다.
-
-## 예제 업무 (scenario)
-
-조직은 정본이고 그 위의 업무는 아니다. `make scenario`가 이미 들어와 있는 조직 위에 같은 성격의 예제 업무를 만든다 — 날짜 단위 실무, 고객사 프로젝트의 계층과 기한, 고객사와의 월간 미팅. 모든 행이 제품의 정식 command를 그 사람으로서 지나가므로 actor·회차·활동 이력·권한이 전부 진짜이고, 두 번 돌려도 한 번 돌린 것과 같다.
-
-계획은 조직 dataset과 같은 폴더의 CSV다. 실제 구성원의 key와 고객사 이름을 가리키므로 저장소 밖에 두고, 저장소는 그 표를 읽는 계약만 갖는다. 저장소 안을 가리키면 명령이 거절한다. `dataset init`이 조직 표와 함께 빈 계획 표도 만든다.
-
-```sh
-make reset-catalog
-SCAX_DATASET_PASSWORD=... make dataset-import TARGET=~/scax-datasets/thesc
-make scenario PLAN=~/scax-datasets/thesc
-```
-
-| 표 | 무엇을 담나 |
+| 표 | 담는 것 |
 |---|---|
-| `scenario_people.csv` | 사람 key에 붙이는 이름표. 아래 표들은 이 이름만 쓴다 |
-| `scenario_work.csv` | 업무 한 줄씩. `project`가 있으면 그 프로젝트의 일, `parent`가 있으면 그 업무의 하위 |
-| `scenario_requests.csv` · `scenario_request_cc.csv` | 요청과 그 참조자 |
-| `scenario_assignments.csv` | 배정 |
-| `scenario_meetings.csv` · `scenario_attendees.csv` | 회의와 참석자 |
-| `scenario_checklists.csv` | 업무·요청·배정의 체크리스트 (`owner_kind`로 구분) |
+| `organization_units` · `members` · `memberships` | 조직 나무와 사람, 소속 |
+| `grades` · `positions` · `appointments` · `jobs` · `job_assignments` | 직급·보직·발령·직무 |
+| `projects` · `project_assignments` | 프로젝트와 붙은 사람 |
+| `logins` | 로그인을 만들 사람 (비밀번호는 표에 없다) |
+| `scenario_people` | 사람 key에 붙이는 이름표. 아래 표들은 이 이름만 쓴다 |
+| `scenario_work` | 업무 한 줄씩. `project`가 있으면 그 프로젝트의 일, `parent`가 있으면 그 업무의 하위 |
+| `scenario_requests` · `scenario_request_cc` | 요청과 참조자 |
+| `scenario_assignments` | 배정 |
+| `scenario_meetings` · `scenario_attendees` | 회의와 참석자 |
+| `scenario_checklists` | 업무·요청·배정의 체크리스트 (`owner_kind`로 구분) |
 
-스스로 든 일, 프로젝트의 일, 하위 업무를 세 가지 모양으로 두지 않는다 — 셋의 차이는 `project`와 `parent` 두 칸뿐이다. 쓰지 않는 표는 없어도 되고, 없는 표는 빈 표로 읽는다.
+두 층은 들어가는 길이 다르다. 조직은 원장에 한 transaction으로 들어가고 — 적용할 수 없는 dataset이 절반만 남지 않는다 — 예제는 제품의 정식 command를 **그 사람으로서** 지나간다. actor·회차·활동 이력·권한이 진짜여야 하기 때문이고, 그래서 예제는 되돌릴 수 없다. `--dry-run`이 조직까지만 보여 주는 이유다.
 
-The local stdio MCP server is a development-only delegated binding. It resolves the active Organization & Access principal for every canonical operation, but a long-lived external MCP process must reconnect after its developer persona's employment or grants change; the conversation worker also revalidates that owner and typed context immediately before execution.
+같은 dataset을 다시 넣으면 created 0이다. 비밀번호는 표에 두지 않고 `SCAX_DATASET_PASSWORD`로 준다. 주지 않으면 로그인을 절반만 만들지 않고 "하지 않은 것"으로 보고한다.
 
-## 자료 검색
+전체 구성원이 원장에 있어도 로그인은 일부만 갖는다. 답할 수 없는 사람은 업무 요청과 배정의 수행 후보에서 빠지고 그렇게 만들려는 시도는 원장이 거절하므로, 판단이 영영 기다리는 항목이 생기지 않는다. 명부·과거 업무·회의 참석자·graph node로는 그대로 보인다.
 
-자료 검색은 제목·파일명이 아니라 추출된 본문을 찾는다. 한국어는 조사가 낱말에 붙어 있어 글자 그대로 비교하면 `견적서를`이 `견적서`를 만나지 못하므로, 문서와 질문에 같은 형태소 분석(Kiwi)을 적용한다. 같은 낱말이 자리에 따라 다르게 갈리는 경우(`납기일은` → `납·기일`, `납기일` → `납기·일`)를 위해 어절에서 조사를 뗀 형태도 함께 색인하고, 갈리면 다른 것이 되는 제품 코드·문서 번호는 원문 그대로도 남긴다. 낱말은 통째로만 맞는다 — `일`은 `일정`이 아니다.
+## 로그인과 세션
 
-조건·순위·개수는 데이터베이스 안에서 끝난다. PostgreSQL에서는 `tsvector` + GIN 색인이, 그 밖에서는 같은 열을 훑는 방식이 답하며 application으로는 답만 온다. 2,400개 구간에 하나만 있는 낱말을 찾는 통합 test가 실행 계획으로 색인 사용과 순차 스캔 부재를 확인한다.
+브라우저는 서버 세션으로 인증한다(`POST /api/auth/login` → HttpOnly `scax_session` 쿠키, `GET /api/auth/me`, `POST /api/auth/logout`). 로그인은 **누구인지를 증명할 뿐 아무 권한도 갖고 오지 않는다** — 세션은 구성원 하나로 풀리고 나머지는 전부 Organization & Access 원장이 정한다.
 
-분석 규칙은 version을 갖는다(`kiwi-<lib>-r<rules>`). 규칙이 바뀌면 그 규칙으로 만든 색인은 질문과 만나지 못하므로 `make reindex-search`로 다시 만든다. 원문은 건드리지 않고 찾기 위한 형태만 바뀌며, 여러 번 돌려도 한 번 돌린 것과 같다.
+로컬 provider는 평범한 이메일·비밀번호다. `PBKDF2-SHA256`, 사람마다 다른 salt, 그리고 거절은 언제나 같은 말로 답해서 주소를 넣어 보는 것으로는 아무것도 알 수 없다.
 
-시작점을 대지 않으면 읽을 수 있는 업무 전부에서 찾는다. 시작점이 넓어져도 권한은 넓어지지 않는다.
+`make reset-demo`는 capability 카탈로그, 권장 역할(외부 참여자 · 구성원 · 팀장 · 인사 담당자 · 대표), 예시 회사, 그리고 사람마다 credential 하나(`<member>@scax.example`, 비밀번호 `scax-demo-1234`)를 만든다. 다시 설치해도 더해지는 것이 없고, 조직이 고친 역할(`roles.customized_at`)은 나중 설치가 덮어쓰지 않는다.
 
-`make verify` deliberately excludes PostgreSQL integration tests; its success is not PostgreSQL coverage. For an explicit, reproducible disposable-PostgreSQL proof, start the documented container and run:
+개발 기계에서는 `GET /api/auth/providers`가 로그인 화면에 그 계정들을 함께 넘긴다. 하나를 누르면 폼이 채워지고 **같은 login route로 같은 credential이 간다** — 타이핑을 건너뛰는 길이지 로그인을 건너뛰는 길이 아니며, 다른 사람이 되려면 여전히 로그아웃해야 한다. 데모 도메인의 계정만 나열되므로 로컬에 넣은 실제 계정은 드러나지 않는다. production 프로파일은 이 route를 아예 등록하지 않는다.
+
+`X-Demo-Persona` 헤더는 스크립트가 어느 구성원으로 행동하는지 말하는 개발·테스트 이음매다. 그 구성원이 있고 재직 중인지는 여전히 원장이 정하고, 살아 있는 세션을 덮지 않으며, production에는 없다.
+
+## 권한 — 조직이 정한다
+
+capability 카탈로그 → 버전이 붙은 역할 template → `StandardGrantRule` → `AccessGrant`로 흐른다. 그 사람의 역할(`members.role_key`)과 보직이 데려오는 역할(`positions.role_key`)이 각각 grant를 만들고 **서로 덮어쓰지 않는다** — 인사총무팀장은 팀장이면서 인사 담당자다. 보직이 만든 grant는 그 보직과 함께 끝나고 소속이 만든 grant는 소속이 있는 동안 남으며, 어느 쪽인지는 그 grant를 만든 규칙이 말한다.
+
+범위는 세 가지다: 조직 단위 · 조직 전체 · 프로젝트. 조직 → 내 권한에서 자기 grant를 본다.
+
+## 업무 — 요청과 배정
+
+받은 것은 종류를 가리지 않고 **할일**로 모인다: 업무 요청 · 업무 배정 · 업무 결과 확인 · AX가 제안한 변경. 지금 내 판단을 기다리는 것이 거기 있다.
+
+**요청**과 **배정**은 다르다.
+
+- **요청**은 수평이다. 판단할 수 있는 동료라면 조직 어디로든 보낼 수 있다. 받은 사람이 수락·거절·조정 요청을 하고, 조정을 받으면 요청자가 내용을 고쳐 재상신하며 회차마다 불변 snapshot이 남는다. 참조자(cc)는 읽고 논의하되 판단하지 않는다. 요청자와 담당자는 현재 회차의 근거 자료를 sha256으로 고정해 붙인다.
+- **배정**은 수직이다. `task.assign` grant가 닿는 범위 안의 사람에게만 간다. 받은 사람이 수락해야 자기 업무가 되고, 거절에는 사유가 남는다. 협상 왕복은 없다 — 배정자는 재배정으로 다른 사람에게 넘긴다.
+
+모든 업무는 `task_assignments` 행을 갖는다(self · request_effect · direct). `내 업무`는 **active** 배정이 있는 것만 나열한다. 결과가 나오면 완료 보고를 올리고 요청자가 완료 인정 또는 보완 요청을 하며, 이것도 회차로 쌓인다.
+
+업무는 `description` · `start_date` · `due_date`를 갖고 소유자가 `PATCH /api/tasks/{id}`로 고친다(`expected_version` 필수, 시작 ≤ 기한). 체크리스트, 1단계 하위 업무, 참고 업무 연결이 그 위에 붙는다. 모든 변경은 `TaskVersion`으로 남아 `활동·이력`에서 회차와 diff로 읽힌다. 완료한 업무는 다시 열 수 있고 취소는 끝이다.
+
+## 프로젝트
+
+부서를 가로질러 묶이는 일과 그 사람들을 나른다. 조직 단위와 **나란한 두 번째 축**이고, 배정은 조직 보직과 같은 규칙 경로로 그 프로젝트 범위의 grant를 만든다.
+
+프로젝트에는 소유 조직이 없다. 부서를 가로지르려고 있는 것이라 어느 한 부서의 것이라고 적는 순간 그 부서가 열쇠가 되고, `붙어야 보인다`는 규칙에 뒷문이 생긴다. **프로젝트가 열리는 길은 배정 하나뿐이며 조직 전체를 읽는 자격에도 예외가 없다.**
+
+만드는 것은 관리하는 일이라 `project.manage`가 있어야 하고, 만든 사람은 담당자로 함께 기록된다 — 그러지 않으면 만든 사람조차 자기 프로젝트를 찾지 못해 아무도 붙일 수 없다. 담당자가 사람을 붙이고 뗀다. 담당 기간은 없을 수 있다.
+
+## 자료와 본문 검색
+
+자료를 올리면 같은 transaction에 추출 job이 기록된다(업로드 응답의 `extraction.status`가 `queued`로 시작). 자료 워커가 UTF-8 텍스트·Markdown·텍스트 PDF와 Office 문서를 경계가 있는 블록과 chunk로 뽑는다. DOCX 문단/표/머리글·바닥글, XLSX 시트+셀 범위, PPTX 슬라이드+발표자 노트, PDF 페이지가 각자의 source locator와 함께 남는다. 모든 결과는 명시적 상태다 — `completed`, 또는 `encrypted_pdf` · `corrupt_pdf` · `empty_content` · `not_utf8_text` · `unsupported` 같은 사유가 붙은 `failed`.
+
+원본 byte는 `MaterialStorage` port 뒤에 있다. 로컬 adapter는 `AX_MATERIALS_DIR`(기본 `backend/.scax/materials`, git 제외) 아래에 쓰고, Azure Blob adapter가 같은 port를 구현할 자리다. 파일(`kind=input`/`output`) · 링크 · 다른 자원 참조를 붙일 수 있고, 뗀 뒤에도 기록과 byte는 계보를 위해 남는다.
+
+검색은 제목·파일명이 아니라 추출된 본문을 찾는다. 한국어는 조사가 낱말에 붙어 있어 글자 그대로 비교하면 `견적서를`이 `견적서`를 만나지 못하므로, 문서와 질문에 같은 형태소 분석(Kiwi)을 적용한다. 같은 낱말이 자리에 따라 다르게 갈리는 경우(`납기일은` → `납·기일`, `납기일` → `납기·일`)를 위해 어절에서 조사를 뗀 형태도 함께 색인하고, 갈리면 다른 것이 되는 제품 코드·문서 번호는 원문 그대로도 남긴다. 낱말은 통째로만 맞는다 — `일`은 `일정`이 아니다. 조건·순위·개수는 PostgreSQL `tsvector` + GIN 인덱스가 끝낸다.
+
+분석 규칙은 version을 갖는다(`kiwi-<lib>-r<rules>`). 규칙이 바뀌면 그 규칙으로 만든 색인은 질문과 만나지 못하는데, 자료 워커가 한가할 때 뒤처진 것부터 다시 만든다 — 사람이 규칙이 바뀐 것을 기억했다가 명령을 부르지 않는다. 원문은 건드리지 않고 찾기 위한 형태만 바뀌며, 여러 번 돌려도 한 번 돌린 것과 같고 중간에 멈춰도 이어서 한다.
+
+어느 업무의 자료인지 몰라도 찾는다. `GET /api/materials/search?q=`와 MCP `task_material_search`는 같은 판정 위에 선다 — 읽을 수 있는 업무에 지금 살아 있는 binding만 보고, 파일 이름·쪽·무결성 해시·원본 URL과 함께 경계가 있는 발췌를 돌려준다. 뗀 자료와 읽을 수 없는 업무의 자료는 이름도 개수도 나오지 않는다.
+
+## AX 대화와 근거
+
+provider는 실제 Codex CLI다(`CodexCliProviderAdapter`). 격리된 runtime home, 사용자 config·rules·skills·plugins 비활성, 읽기 전용 sandbox, `gpt-5.6-terra`, Fast tier, low reasoning, 구조화된 출력 schema로 `codex exec`를 부른다. CLI가 없거나 인증이 안 되면 명시적으로 실패한다 — 결정적 provider는 test에서만 주입한다.
+
+그 세션에는 **그 사람으로 묶인 stdio MCP 서버**가 붙는다. 대화는 대기열로 순서가 보장되고 취소·재시도가 된다.
+
+**쓰기는 바로 일어나지 않는다.** 도구가 변경을 제안하면 ActionItem이 되고, 사람이 승인해야 원장에 반영된다.
+
+답변 아래에는 근거가 한 줄로 접혀 있다. 펼치면 답이 가리키는 정본(원문의 몇 쪽인지 포함), 문서 발췌 카드, 그리고 그 회차가 실제로 걸어간 경로가 나온다. 근거를 확인하려고 대화를 떠나지 않는다. 도구가 읽은 발췌는 그 turn의 `material_evidence`로 남고, 본문이 도구 timeline 요약이나 감사 행에 복제되지 않는다.
+
+`내 업무`와 `조직의 업무`는 다른 질문이다. `task_list`는 그 사람이 든 업무를 돌려주고, 팀이나 프로젝트 전체를 묻는 질문에만 `mine=false`로 넓힌다 — 읽을 수 있다는 것이 그 사람의 일이라는 뜻은 아니다.
+
+## 관계 탐색
+
+사람·팀·프로젝트·업무·요청·회의·자료·보고가 node이고, edge는 전부 각 원장의 사실이다. **그래프 전용 관계 표는 없다.** 첫 화면이 이미 그래프이며, 한 걸음 나갈 때마다 연결마다 권한을 다시 판정한다.
+
+표현 수준 셋이 각자 하나씩 답한다.
+
+- **구성원 보기** — 내 주변. 내가 속한 팀, 내가 배정된 프로젝트, 나란히 선 사람들, 내 업무·자료·회의·요청
+- **팀으로 묶기** — 조직. 사람이 팀으로 접히고 팀 위의 계층이 선다
+- **프로젝트로 묶기** — 일이 프로젝트로 접힌다
+
+접힌 node는 자기가 몇을 담고 있는지 말한다. 자리가 없어 접은 것과 권한이 없어 안 보이는 것은 다르다 — 뒤쪽은 개수도 나오지 않는다.
+
+## 일일보고
+
+초안 생성만 versioned Workflow로 실행한다. 사람의 편집·확인·제출·이력과 불변 snapshot은 Reports application과 DailyReport 원장이 직접 소유한다.
+
+정의는 데이터다. 어떤 node가 있는지, 이름이 무엇인지, 무엇이 무엇을 먹이는지, 답이 어느 node의 어느 필드인지(`outputs`)를 정의가 정하고 런타임에 node 이름이 박혀 있지 않다. 대신 런타임은 등록된 node type과 operation, 승인된 provider profile만 허용한다 — 정의는 데이터이지 실행 가능한 설정이 아니다.
+
+node마다 입력 snapshot과 결과가 `workflow_runs`·`workflow_node_executions`에 남고, 만들어진 초안은 `definition_version_id`를 들고 다닌다. 제품에 통합된 workflow는 아직 이 하나다.
+
+## 검증
 
 ```sh
-make postgres-up
-make test-postgres
-make reset-demo
+make verify          # backend 단위·계약 test + frontend 동작 test + Vite production build
+make test-postgres   # PostgreSQL 통합 test
+make acceptance-e2e  # 브라우저 journey 전부, 자기 데이터베이스에서
 ```
 
-`postgres-up` provisions a separate local `ax_test` database beside the app's `ax_demo` database. `test-postgres` resets only `POSTGRES_TEST_URL` (default: `ax_test`) and refuses to run when it equals `DATABASE_URL`. To use a different disposable local port, pass it consistently, for example `make test-postgres POSTGRES_TEST_URL=postgresql+psycopg://localhost:55432/ax_test` and `make reset-demo DATABASE_URL=postgresql+psycopg://localhost:55432/ax_demo`. Reset rejects remote, production-named, and non-demo/test URLs before connecting.
+`acceptance-e2e`는 reset으로 시작하므로 **자기 데이터베이스**(`ACCEPTANCE_DATABASE_URL`, 기본 `ax_test_acceptance`)에서 돈다 — `DATABASE_URL`에 넣어 둔 조직과 자료를 건드리지 않는다. 고정된 PostgreSQL 16 컨테이너를 띄우고, 정확히 한 번 reset하고, 포트 `18111`/`15186`에 격리된 스택을 세워 하나의 seed 위에서 모든 journey를 돌린 뒤 자기가 띄운 것만 멈춘다. 두 포트 중 하나라도 쓰이고 있으면 reset 전에 실패한다.
+
+개별 `e2e-*` 타깃은 데이터를 reset하지 않는다. 문서화된 E2E 포트(`8001`/`5176`)에 API·워커·프론트가 떠 있기를 기대하므로 `make local-stack`과 함께 쓴다.
+
+```sh
+make local-stack     # 다른 터미널에서
+make e2e-task-lifecycle
+make e2e-work-request
+make e2e-material-search
+make e2e-graph-question
+```
+
+`acceptance-e2e` 밖에 있는 journey가 하나 있다: `e2e-meeting-live-transcript`는 실제 Soniox credential과 macOS 가짜 마이크가 필요해서 `make local-stack`에 대고 돌린다. `make live-report-smoke`는 opt-in 실 Codex 증거다 — seed된 업무 활동을 만들고 `daily_report.generate_draft`를 불러 남은 WorkflowRun·NodeRun 넷·완료된 ProviderCall provenance를 확인하며, 생성된 본문이나 prompt는 출력하지 않는다.
+
+`uv run python backend/scripts/probe_documents.py <dir>`는 로컬 폴더를 읽기 전용으로 살펴 이름·크기·상태만 출력한다.
