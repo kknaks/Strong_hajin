@@ -47,6 +47,12 @@ import {
 } from "./labels";
 import { DateField } from "./DateField";
 import { ConfirmModal, Drawer } from "./Modal";
+import { Skeleton } from "./Skeleton";
+import { Checkbox, FieldMessage } from "./FormControls";
+import { Icon } from "./Icon";
+import { Select } from "./Select";
+import { EmptyValue } from "./Empty";
+import { ProgressBar } from "./ProgressBar";
 import type {
   ChecklistItem,
   DirectTask,
@@ -158,7 +164,7 @@ export function TaskHistorySection({ task }: { task: DirectTask }) {
         {task.state === "cancelled" && " · 취소됨"}
       </p>
       {open && failure && <p className="danger-text">{failure}</p>}
-      {open && !failure && history === null && <p className="t-meta">불러오는 중…</p>}
+      {open && !failure && history === null && <Skeleton label="기록을 불러오는 중" rows={3} />}
       {open && history !== null && history.activity.length === 0 && <p className="t-meta">아직 기록이 없습니다.</p>}
       {open && history !== null && history.activity.length > 0 && (
         <div className="chip-row">
@@ -195,7 +201,7 @@ export function TaskHistorySection({ task }: { task: DirectTask }) {
                     변경 내용
                   </button>
                 )}
-                {diff === "loading" && <p className="t-meta">변경 내용을 불러오는 중…</p>}
+                {diff === "loading" && <Skeleton label="변경 내용을 불러오는 중" rows={2} />}
                 {typeof diff === "string" && diff !== "loading" && <p className="danger-text">{diff}</p>}
                 {diff && typeof diff !== "string" && (
                   <dl aria-label="변경 내용" className="diff-grid" role="group">
@@ -611,9 +617,15 @@ export function TaskDetailDrawer({
     await onTransition(current, "complete");
   };
 
+  // Enter 로도 보낼 수 있지만, 빈 채로 눌렀을 때 아무 일도 일어나지 않으면 그건 침묵한 실패다 (v2 09·RULES 12)
+  const [blockReasonError, setBlockReasonError] = useState<string | null>(null);
   const submitBlock = async () => {
     const reason = blockReason.trim();
-    if (!reason) return;
+    if (!reason) {
+      setBlockReasonError("막힘 사유를 적어 주세요.");
+      return;
+    }
+    setBlockReasonError(null);
     await onTransition(current, "block", reason);
     setIsBlocking(false);
     setBlockReason("");
@@ -1029,19 +1041,15 @@ export function TaskDetailDrawer({
               {handover && (
                 <div className="form-stack link-draft">
                   <div className="field">
-                    <label htmlFor={`task-handover-${task.task_id}`}>담당자 변경 대상</label>
-                    <select
+                    <span>담당자 변경 대상</span>
+                    <Select
                       id={`task-handover-${task.task_id}`}
-                      onChange={(event) => setHandover({ ...handover, assigneeId: event.target.value })}
+                      label="담당자 변경 대상"
+                      onChange={(next) => setHandover({ ...handover, assigneeId: next })}
+                      options={(handoverChoices ?? []).map((choice) => ({ value: choice.id, label: personName(choice.display_name) }))}
+                      placeholder="담당자 고르기"
                       value={handover.assigneeId}
-                    >
-                      <option value="">담당자 고르기</option>
-                      {(handoverChoices ?? []).map((choice) => (
-                        <option key={choice.id} value={choice.id}>
-                          {personName(choice.display_name)}
-                        </option>
-                      ))}
-                    </select>
+                    />
                   </div>
                   <div className="field">
                     <label htmlFor={`task-handover-reason-${task.task_id}`}>담당자 변경 사유</label>
@@ -1114,6 +1122,9 @@ export function TaskDetailDrawer({
               )}
             </h4>
             {checklist !== null && checklist.length > 0 && (
+              <ProgressBar done={checklist.filter((item) => item.done).length} total={checklist.length} />
+            )}
+            {checklist !== null && checklist.length > 0 && (
               <ul className="checklist">
                 {checklist.map((item, index) => (
                   <li className={item.done ? "checklist-item done" : "checklist-item"} data-item-id={item.item_id} key={item.item_id}>
@@ -1141,15 +1152,9 @@ export function TaskDetailDrawer({
                       </>
                     ) : (
                       <>
-                        <label>
-                          <input
-                            checked={item.done}
-                            disabled={!canManage || busy}
-                            onChange={(event) => void toggleStep(item, event.target.checked)}
-                            type="checkbox"
-                          />
-                          <span>{item.text}</span>
-                        </label>
+                        <Checkbox checked={item.done} disabled={!canManage || busy} onChange={(next) => void toggleStep(item, next)}>
+                          {item.text}
+                        </Checkbox>
                         {canManage && (
                           <>
                             {/* Order moves with buttons, not only with a pointer: a drag would strand keyboard and touch. */}
@@ -1160,7 +1165,7 @@ export function TaskDetailDrawer({
                               onClick={() => void moveStep(item, -1)}
                               type="button"
                             >
-                              ↑
+                              <Icon name="arrow-up" size={14} />
                             </button>
                             <button
                               aria-label={`${item.text} 아래로`}
@@ -1169,7 +1174,7 @@ export function TaskDetailDrawer({
                               onClick={() => void moveStep(item, 1)}
                               type="button"
                             >
-                              ↓
+                              <Icon name="arrow-down" size={14} />
                             </button>
                             <button
                               aria-label={`${item.text} 수정`}
@@ -1248,9 +1253,13 @@ export function TaskDetailDrawer({
                 막힘 사유
               </label>
               <input
+                aria-invalid={blockReasonError ? true : undefined}
                 autoFocus
                 id={`block-reason-${task.task_id}`}
-                onChange={(event) => setBlockReason(event.target.value)}
+                onChange={(event) => {
+                  setBlockReason(event.target.value);
+                  setBlockReasonError(null);
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") void submitBlock();
                 }}
@@ -1264,6 +1273,7 @@ export function TaskDetailDrawer({
                 입력 취소
               </button>
             </div>
+            <FieldMessage error={blockReasonError} help="적어 둔 사유는 카드와 목록에 그대로 보입니다." />
           </section>
         )}
         {parentTask && (
@@ -1396,15 +1406,15 @@ export function TaskDetailDrawer({
             {editable && refDraft !== null && (
               <div className="form-stack link-draft">
                 <div className="field">
-                  <label htmlFor={`task-reference-${task.task_id}`}>연결할 업무</label>
-                  <select id={`task-reference-${task.task_id}`} onChange={(event) => setRefDraft(event.target.value)} value={refDraft}>
-                    <option value="">업무 고르기</option>
-                    {(refChoices ?? []).map((choice) => (
-                      <option key={choice.task_id} value={choice.task_id}>
-                        {choice.title}
-                      </option>
-                    ))}
-                  </select>
+                  <span>연결할 업무</span>
+                  <Select
+                    id={`task-reference-${task.task_id}`}
+                    label="연결할 업무"
+                    onChange={setRefDraft}
+                    options={(refChoices ?? []).map((choice) => ({ value: choice.task_id, label: choice.title }))}
+                    placeholder="업무 고르기"
+                    value={refDraft}
+                  />
                 </div>
                 <div className="row-actions">
                   <button className="btn h30 primary" disabled={busy || !refDraft} onClick={() => void connectReference()} type="button">
@@ -1430,7 +1440,7 @@ export function TaskDetailDrawer({
               }}
               type="button"
             >
-              ✦ AX에게 이 업무 묻기
+              <Icon name="sparkle" size={14} /> AX에게 이 업무 묻기
             </button>
           </section>
         )}
@@ -1478,9 +1488,14 @@ export function TaskQuickActions({
 }) {
   const [isBlocking, setIsBlocking] = useState(false);
   const [blockReason, setBlockReason] = useState("");
+  const [blockReasonError, setBlockReasonError] = useState<string | null>(null);
   const submitBlock = async () => {
     const reason = blockReason.trim();
-    if (!reason) return;
+    if (!reason) {
+      setBlockReasonError("막힘 사유를 적어 주세요.");
+      return;
+    }
+    setBlockReasonError(null);
     await onTransition(task, "block", reason);
     setIsBlocking(false);
     setBlockReason("");
@@ -1518,9 +1533,13 @@ export function TaskQuickActions({
             막힘 사유
           </label>
           <input
+            aria-invalid={blockReasonError ? true : undefined}
             autoFocus
             id={`row-block-reason-${task.task_id}`}
-            onChange={(event) => setBlockReason(event.target.value)}
+            onChange={(event) => {
+              setBlockReason(event.target.value);
+              setBlockReasonError(null);
+            }}
             onKeyDown={(event) => {
               if (event.key === "Enter") void submitBlock();
               if (event.key === "Escape") setIsBlocking(false);
@@ -1534,6 +1553,7 @@ export function TaskQuickActions({
           <button className="btn h30 ghost" onClick={() => setIsBlocking(false)} type="button">
             입력 취소
           </button>
+          <FieldMessage error={blockReasonError} />
         </div>
       )}
     </>
@@ -2062,7 +2082,7 @@ export function WorkRequestDetailDrawer({
                     {item.attachments.map((attachment) => (
                       <li key={attachment.attachment_id}>
                         <a href={requestAttachmentUrl(request.request_id, attachment.attachment_id)} rel="noreferrer" target="_blank">
-                          📎 {attachment.name}
+                          <Icon name="paperclip" size={14} /> {attachment.name}
                         </a>
                         <span className="t-meta"> {formatBytes(attachment.size_bytes)}</span>
                       </li>
@@ -2105,7 +2125,8 @@ export function WorkRequestDetailDrawer({
             title={commentFile ? commentFile.name : "파일 첨부"}
             type="button"
           >
-            📎{commentFile ? ` ${commentFile.name.length > 14 ? `${commentFile.name.slice(0, 12)}…` : commentFile.name}` : ""}
+            <Icon name="paperclip" size={14} />
+            {commentFile ? ` ${commentFile.name.length > 14 ? `${commentFile.name.slice(0, 12)}…` : commentFile.name}` : ""}
           </button>
           <button className="btn" disabled={isWorking || !comment.trim()} onClick={() => void submitComment()} type="button">
             남기기
@@ -2320,18 +2341,18 @@ export function CreateWorkDrawer({
           </div>
           {kind === "task" && assignCandidates.length > 0 ? (
             <div>
-              <dt>
-                <label htmlFor="new-task-owner">담당자</label>
-              </dt>
+              <dt>담당자</dt>
               <dd>
-                <select id="new-task-owner" onChange={(event) => setTaskOwnerId(event.target.value)} value={taskOwnerId}>
-                  <option value="me">{ownerName} (나)</option>
-                  {assignCandidates.map((candidate) => (
-                    <option key={candidate.id} value={candidate.id}>
-                      {candidate.display_name}
-                    </option>
-                  ))}
-                </select>
+                <Select
+                  id="new-task-owner"
+                  label="담당자"
+                  onChange={setTaskOwnerId}
+                  options={[
+                    { value: "me", label: `${ownerName} (나)` },
+                    ...assignCandidates.map((candidate) => ({ value: candidate.id, label: candidate.display_name })),
+                  ]}
+                  value={taskOwnerId}
+                />
               </dd>
             </div>
           ) : (
@@ -2342,26 +2363,17 @@ export function CreateWorkDrawer({
           )}
           {kind === "request" && (
             <div>
-              <dt>
-                <label htmlFor="work-request-assignee">담당 후보</label>
-              </dt>
+              <dt>담당 후보</dt>
               <dd>
-                <select
+                <Select
                   disabled={assigneeCandidates.length === 0}
                   id="work-request-assignee"
-                  onChange={(event) => setAssigneeId(event.target.value)}
+                  label="담당 후보"
+                  onChange={setAssigneeId}
+                  options={assigneeCandidates.map((candidate) => ({ value: candidate.id, label: candidate.display_name }))}
+                  placeholder="요청 가능한 동료가 없습니다."
                   value={assigneeId}
-                >
-                  {assigneeCandidates.length === 0 ? (
-                    <option value="">요청 가능한 동료가 없습니다.</option>
-                  ) : (
-                    assigneeCandidates.map((candidate) => (
-                      <option key={candidate.id} value={candidate.id}>
-                        {candidate.display_name}
-                      </option>
-                    ))
-                  )}
-                </select>
+                />
               </dd>
             </div>
           )}
@@ -2434,15 +2446,15 @@ export function CreateWorkDrawer({
           {referenceDraft !== null && (
             <div className="form-stack link-draft">
               <div className="field">
-                <label htmlFor="new-task-reference">연결할 이전 업무</label>
-                <select id="new-task-reference" onChange={(event) => setReferenceDraft(event.target.value)} value={referenceDraft}>
-                  <option value="">업무 고르기</option>
-                  {(referenceChoices ?? []).map((choice) => (
-                    <option key={choice.task_id} value={choice.task_id}>
-                      {choice.title}
-                    </option>
-                  ))}
-                </select>
+                <span>연결할 이전 업무</span>
+                <Select
+                  id="new-task-reference"
+                  label="연결할 이전 업무"
+                  onChange={setReferenceDraft}
+                  options={(referenceChoices ?? []).map((choice) => ({ value: choice.task_id, label: choice.title }))}
+                  placeholder="업무 고르기"
+                  value={referenceDraft}
+                />
               </div>
               <div className="row-actions">
                 <button className="btn h30 primary" disabled={!referenceDraft} onClick={linkReference} type="button">

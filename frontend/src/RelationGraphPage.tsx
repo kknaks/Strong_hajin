@@ -4,6 +4,8 @@ import { graphNeighbors, graphOverview, graphSearch } from "./api";
 import { EDGE_SENTENCE, GraphCanvas, KIND_COLOR, KIND_LABEL, KIND_SOURCE, refOf, type GraphControls } from "./GraphCanvas";
 import type { GraphEdge, GraphNeighborhood, GraphNode, GraphOverview, GraphView } from "./viewModels";
 import { personName, taskStateLabel, workRequestStateLabel } from "./labels";
+import { Empty } from "./Empty";
+import { Icon } from "./Icon";
 
 /** What a connection means, in the words a person would use rather than the name of the edge. */
 const VIEW_LABEL: Record<string, string> = { member: "구성원 보기", team: "팀으로 묶기", project: "프로젝트로 묶기" };
@@ -215,14 +217,17 @@ export function RelationGraphPage({
         {around === null && overview === null ? (
           <p className="t-meta graph-card-empty">관계를 불러오는 중…</p>
         ) : (visible?.nodes.length ?? 0) === 0 ? (
-          <div className="empty-state graph-card-empty">
-            <b>{(shown?.nodes.length ?? 0) === 0 ? "아직 이어진 것이 없습니다" : "고른 종류가 모두 숨겨져 있습니다"}</b>
-            <p>
-              {(shown?.nodes.length ?? 0) === 0
+          <Empty
+            className="graph-card-empty"
+            description={
+              (shown?.nodes.length ?? 0) === 0
                 ? "업무를 맡거나 요청을 주고받으면 여기에서 이어집니다. 볼 수 있는 범위 안에서만 그립니다."
-                : "위의 종류 단추를 다시 눌러 보여 주세요."}
-            </p>
-          </div>
+                : "위의 종류 단추를 다시 눌러 보여 주세요."
+            }
+            onAction={(shown?.nodes.length ?? 0) === 0 ? undefined : () => setHidden(new Set())}
+            title={(shown?.nodes.length ?? 0) === 0 ? "아직 이어진 것이 없습니다" : "고른 종류가 모두 숨겨져 있습니다"}
+            variant={(shown?.nodes.length ?? 0) === 0 ? "default" : "filter"}
+          />
         ) : (
           <>
             <GraphCanvas
@@ -284,16 +289,16 @@ export function RelationGraphPage({
 
             <div aria-label="화면 조작" className="graph-overlay zoom" role="group">
               <button aria-label="확대" disabled={!controls} onClick={() => controls?.zoomIn()} type="button">
-                +
+                <Icon name="plus" size={14} />
               </button>
               <button aria-label="축소" disabled={!controls} onClick={() => controls?.zoomOut()} type="button">
-                −
+                <Icon name="minus" size={14} />
               </button>
               <button aria-label="전체 보기" disabled={!controls} onClick={() => controls?.reset()} type="button">
-                ⌂
+                <Icon name="home" size={14} />
               </button>
               <button aria-label="배치 다시 계산" disabled={!controls} onClick={() => controls?.relayout()} type="button">
-                ↻
+                <Icon name="refresh" size={14} />
               </button>
             </div>
 
@@ -306,7 +311,7 @@ export function RelationGraphPage({
                     <span className="t-meta">{stateText(selected.state)}</span>
                   )}
                   <button aria-label="상세 닫기" className="btn link graph-detail-close" onClick={() => setSelected(null)} type="button">
-                    ✕
+                    <Icon name="close" size={14} />
                   </button>
                 </div>
                 <dl className="meta-grid">

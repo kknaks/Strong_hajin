@@ -3,15 +3,17 @@ import { useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { addDays, dayDifference, dueDayText, formatDate, formatMonth, isOverdue, isoDateInSeoul, seoulToday, taskStateLabel } from "./labels";
 import type { DirectTask, TaskState } from "./viewModels";
 import { StatusText, type TaskAction } from "./WorkModals";
+import { EmptyValue } from "./Empty";
+import { Icon, type IconName } from "./Icon";
 
 /* ---------------------------------------------------------------- shared small pieces */
 
-export function MetricCard({ label, value, icon, onClick }: { label: string; value: number; icon?: string; onClick?: () => void }) {
+export function MetricCard({ label, value, icon, onClick }: { label: string; value: number; icon?: IconName; onClick?: () => void }) {
   const Tag = onClick ? "button" : "div";
   return (
     <Tag className="metric-card" onClick={onClick} type={onClick ? "button" : undefined}>
       <span className="metric-label">
-        {icon && <span aria-hidden className="metric-icon">{icon}</span>}
+        {icon && <span aria-hidden className="metric-icon"><Icon name={icon} /></span>}
         {label}
       </span>
       <b className="metric-value">{value}</b>
@@ -66,7 +68,7 @@ export function TaskCard({
       </b>
       {memo && <p className={memoTone === "danger" ? "task-card-memo danger-text" : "task-card-memo"}>{memo}</p>}
       <div className="task-card-foot">
-        <span>{date ?? "—"}</span>
+        <span>{date ?? <EmptyValue />}</span>
         <span className="task-card-people">{people}</span>
       </div>
       {actions && <div className="task-card-actions">{actions}</div>}
@@ -84,7 +86,7 @@ export function PersonChip({ name, arrowTo }: { name: string; arrowTo?: string }
       {arrowTo && (
         <>
           <span aria-hidden className="person-arrow">
-            →
+            <Icon name="arrow-right" size={12} />
           </span>
           <span className="avatar xs" aria-hidden>
             {arrowTo.slice(0, 1)}
@@ -112,7 +114,7 @@ export function CollapsibleGroup({
     <section className="group">
       <button aria-expanded={open} className="group-head" onClick={() => setOpen((value) => !value)} type="button">
         <span aria-hidden className={open ? "caret open" : "caret"}>
-          ▾
+          <Icon name="chevron-down" size={12} />
         </span>
         {title}
         <span className="count-badge">{count}</span>
@@ -130,7 +132,7 @@ export function ChecklistCue({ progress }: { progress?: { done: number; total: n
   const complete = progress.done === progress.total;
   return (
     <span className={complete ? "checklist-cue complete" : "checklist-cue"} title={`체크리스트 ${progress.done}/${progress.total}`}>
-      {complete ? "☑" : "☐"} {progress.done}/{progress.total}
+      <Icon name={complete ? "check-square" : "square"} size={12} /> {progress.done}/{progress.total}
     </span>
   );
 }

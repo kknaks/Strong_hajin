@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { getMeeting, getTask, getTaskMaterials, getWorkRequestTimeline } from "../api";
 import { formatDate, taskStateLabel, workRequestStateLabel } from "../labels";
+import { Skeleton } from "../Skeleton";
 import type { AnswerResource } from "../viewModels";
 
 /**
@@ -56,7 +57,7 @@ export function ResourcePeek({
         // 사라졌는지 권한을 잃었는지 구별해 말하지 않는다. 구별하면 그것이 곧 존재를 알리는 말이 된다.
         <p className="ax-peek-note">지금은 열 수 없습니다.</p>
       ) : rows === null ? (
-        <p className="t-meta">불러오는 중…</p>
+        <Skeleton label="자료를 불러오는 중" rows={2} />
       ) : (
         <dl className="ax-peek-list">
           {rows.map(([label, value]) => (

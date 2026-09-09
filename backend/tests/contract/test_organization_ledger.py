@@ -1,5 +1,5 @@
 """The organization ledger follows the ERD: typed units in a hierarchy, positions, grades, jobs, and rules."""
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -8,6 +8,7 @@ from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.platform.persistence import (
+    MemberRecord,
     RoleCapabilityRecord,
     AccessGrantRecord,
     PositionDefinitionRecord,
@@ -97,3 +98,26 @@ def test_revoking_the_grant_removes_capabilities_while_the_appointment_remains(t
     assert profile["capabilities"] == [] and profile["grants"] == []
     assert profile["roles"] == ["구성원"]  # the appointment still exists; only the grant is gone
     assert client.get("/api/tasks", headers=MINA).status_code == 403
+
+
+def test_a_phone_and_a_birth_date_are_answered_only_to_someone_who_manages_the_organization(tmp_path) -> None:
+    """명부는 누구에게나 이름을 말하지만 인사 정보는 아니다 — 권한이 없으면 필드는 남고 값이 비어 온다.
+
+    SPEC-005 §2: 결과 field는 현재 Principal의 권한에 맞게 제한한다. 감추는 방법으로 필드를 지우지는 않는다 —
+    client가 응답의 모양으로 권한을 추측하게 만들면 화면마다 다른 규칙이 생긴다.
+    """
+    client, database_url = _client(tmp_path)
+    with make_session_factory(database_url)() as session:
+        member = session.get(MemberRecord, "mina")
+        member.phone, member.birth_date = "010-0000-0000", date(1990, 1, 2)
+        session.commit()
+
+    # 인사 담당자(organization.manage)에게는 값이 온다.
+    manager = {row["id"]: row for row in client.get("/api/organization/members", headers={"X-Demo-Persona": "hyeon"}).json()}
+    assert manager["mina"]["phone"] == "010-0000-0000" and manager["mina"]["birth_date"] == "1990-01-02"
+
+    # 구성원에게는 필드가 있고 값이 없다.
+    plain = {row["id"]: row for row in client.get("/api/organization/members", headers=MINA).json()}
+    assert set(plain["mina"]) >= {"id", "display_name", "phone", "birth_date"}
+    assert plain["mina"]["phone"] is None and plain["mina"]["birth_date"] is None
+    assert plain["mina"]["display_name"] == manager["mina"]["display_name"]

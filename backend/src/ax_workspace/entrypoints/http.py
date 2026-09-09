@@ -38,12 +38,31 @@ from ax_workspace.modules.work.projects import ProjectAccessDenied, ProjectError
 from ax_workspace.modules.meetings.transcription import TranscriptionFailure, FinalTranscriptSegment
 from ax_workspace.modules.ax_execution.conversations import ConversationError, ConversationQueueOverflow
 from ax_workspace.modules.ax_execution.actions import ActionAccessDenied, ActionCapabilityDenied, ActionError
-from ax_workspace.bootstrap.seed import DEMO_EMAIL_DOMAIN, DEMO_PASSWORD, SEEDED_MEMBERS
+from ax_workspace.bootstrap.seed import DEMO_PASSWORD, SEEDED_MEMBERS
 from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
 
 
 class MemberResponse(BaseModel):
+    id: str
+    display_name: str
+    #: 인사 정보. 조직 관리 권한(`organization.manage`)이 없는 사람에게는 자리만 오고 값은 비어 있다 —
+    #: 응답의 모양으로 권한을 추측하게 만들지 않는다.
+    phone: str | None = None
+    birth_date: date | None = None
+    #: 들어올 문이 있는가. 권한이 아니라 로그인 계정의 유무다.
+    has_account: bool = False
+
+
+class CandidateResponse(BaseModel):
+    """고를 수 있는 사람 하나 — 이름과 id까지다.
+
+    명부와 응답 모델을 나눈다. 후보 목록은 사람을 고르라고 있는 것이라 재직·계정·연락처를 말할 자리가 아니고,
+    명부의 모델을 돌려쓰면 명부에 열이 하나 늘 때마다 여기에도 따라붙는다 — 값이 없으면 기본값이 거짓말을 하고
+    (계정이 있는 사람을 `has_account=false`로), 값이 있으면 마스킹을 지나지 않은 채로 나간다. 둘 다 실제로
+    일어났다(PR #2 F1·F2).
+    """
+
     id: str
     display_name: str
 
@@ -482,7 +501,7 @@ def create_app(
             """
             answer: dict[str, object] = {"local": settings.local_login_enabled, "oidc": False}
             if settings.local_login_enabled:
-                accounts = app.state.workflow_application.demo_accounts(DEMO_EMAIL_DOMAIN)
+                accounts = app.state.workflow_application.demo_accounts(settings.demo_email_domain)
                 # Read as an organization — 대표 first, then the team — rather than in identifier order.
                 order = {member.id: index for index, member in enumerate(SEEDED_MEMBERS)}
                 answer["demo_accounts"] = sorted(accounts, key=lambda row: (order.get(str(row["member_id"]), len(order)), row["member_id"]))
@@ -839,6 +858,42 @@ def create_app(
         def organization_members(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
             return app.state.workflow_application.member_directory(principal)
 
+        @app.get("/api/organization/members/{member_id}")
+        def organization_member_detail(
+            member_id: str, principal: Principal = Depends(developer_principal)
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.organization_member_detail(principal, member_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/organization/members/{member_id}/history")
+        def organization_member_history(
+            member_id: str,
+            axis: str = Query(description="membership · appointment · grade · job · grant"),
+            principal: Principal = Depends(developer_principal),
+        ) -> list[dict[str, object]]:
+            try:
+                return app.state.workflow_application.organization_member_history(principal, member_id, axis)
+            except ValueError as error:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/organization/activity")
+        def organization_activity(
+            unit_id: str | None = None,
+            limit: int = Query(default=50, ge=1, le=200),
+            cursor: str | None = None,
+            principal: Principal = Depends(developer_principal),
+        ) -> list[dict[str, object]]:
+            try:
+                return app.state.workflow_application.organization_activity(
+                    principal, unit_id=unit_id, limit=limit, cursor=cursor
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
         @app.get("/api/access/roles")
         def installed_access_roles(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
             try:
@@ -1013,10 +1068,10 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
-        @app.get("/api/task-assignment-candidates", response_model=list[MemberResponse])
-        def task_assignment_candidates(principal: Principal = Depends(developer_principal)) -> list[MemberResponse]:
+        @app.get("/api/task-assignment-candidates", response_model=list[CandidateResponse])
+        def task_assignment_candidates(principal: Principal = Depends(developer_principal)) -> list[CandidateResponse]:
             try:
-                return [MemberResponse(**candidate) for candidate in app.state.workflow_application.task_assignment_candidates(principal)]
+                return [CandidateResponse(**candidate) for candidate in app.state.workflow_application.task_assignment_candidates(principal)]
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -1412,10 +1467,10 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
-        @app.get("/api/work-request-cc-candidates", response_model=list[MemberResponse])
-        def work_request_cc_candidates(principal: Principal = Depends(developer_principal)) -> list[MemberResponse]:
+        @app.get("/api/work-request-cc-candidates", response_model=list[CandidateResponse])
+        def work_request_cc_candidates(principal: Principal = Depends(developer_principal)) -> list[CandidateResponse]:
             try:
-                return [MemberResponse(**candidate) for candidate in app.state.workflow_application.work_request_cc_candidates(principal)]
+                return [CandidateResponse(**candidate) for candidate in app.state.workflow_application.work_request_cc_candidates(principal)]
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -1465,13 +1520,13 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
-        @app.get("/api/work-request-assignee-candidates", response_model=list[MemberResponse])
+        @app.get("/api/work-request-assignee-candidates", response_model=list[CandidateResponse])
         def work_request_assignee_candidates(
             principal: Principal = Depends(developer_principal),
-        ) -> list[MemberResponse]:
+        ) -> list[CandidateResponse]:
             try:
                 candidates = app.state.workflow_application.work_request_assignee_candidates(principal)
-                return [MemberResponse(**candidate) for candidate in candidates]
+                return [CandidateResponse(**candidate) for candidate in candidates]
             except Exception as error:
                 raise _runtime_error(error) from error
 

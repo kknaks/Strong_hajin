@@ -6,6 +6,7 @@ import { DateField } from "./DateField";
 import { formatDate, formatDateTime, personName } from "./labels";
 import { Drawer } from "./Modal";
 import { StatusText } from "./WorkModals";
+import { Skeleton } from "./Skeleton";
 import type {
   ActionCommand,
   ActionDiscussionEntry,
@@ -156,7 +157,7 @@ function RoundHistory({ rounds, personas }: { rounds: ActionRound[]; personas: P
                 ))}
               </dl>
             )}
-            <p className="round-basis t-meta">{basisLine(round)}</p>
+            <p className="t-meta">{basisLine(round)}</p>
             {round.decisions.map((decision) => (
               <p className="round-decision" key={decision.review_decision_id}>
                 <b>{nameOf(personas, decision.actor_member_id)}</b> {decisionLabel[decision.decision] ?? decision.decision}
@@ -451,7 +452,7 @@ export function ActionItemDrawer({
       title={detail?.subject ?? "불러오는 중…"}
     >
       {!detail ? (
-        <p className="t-meta">판단 항목을 불러오는 중…</p>
+        <Skeleton label="판단 항목을 불러오는 중" rows={4} />
       ) : (
         <>
           <p className="current-question">{detail.current_question}</p>

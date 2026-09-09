@@ -67,6 +67,27 @@ class Principal:
         return project is not None and project in self.projects_for(capability)
 
 
+#: 변경 기록이 조직 화면의 어느 축으로 읽히는가. 여기 없는 event_kind는 조직 축이 아니므로 기록에 오르지 않는다 —
+#: 업무·요청·회의 사건이 사람의 조직 이력에 섞이면 「이 사람에게 무엇이 있었나」가 흐려진다.
+#: 소속·직책 축의 kind는 아직 그 command가 없어 비어 있지만, 이름은 여기서 먼저 정해 둔다 — 나중에 command가
+#: 생길 때 매핑을 다시 궁리하지 않도록.
+ORGANIZATION_ACTIVITY_AXES: dict[str, str] = {
+    "access.grant_added": "권한",
+    "access.grant_revoked": "권한",
+    "access.role_changed": "권한",
+    "organization.membership_added": "소속",
+    "organization.membership_changed": "소속",
+    "organization.membership_ended": "소속",
+    "organization.appointment_added": "직책",
+    "organization.appointment_ended": "직책",
+    "organization.member_added": "조직",
+    "organization.member_employment_changed": "조직",
+}
+
+#: 이력을 되짚을 수 있는 축. 화면의 「이력」 버튼 하나가 이 중 하나를 부른다.
+MEMBER_HISTORY_AXES = ("membership", "appointment", "grade", "job", "grant")
+
+
 TASK_READ = "task.read"
 #: 조직 전체 업무 조회. 읽을 수 있다는 것이지 남의 판단을 대신할 수 있다는 뜻이 아니다.
 WORK_READ_ALL = "work.read.all"

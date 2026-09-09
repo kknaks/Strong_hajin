@@ -143,7 +143,7 @@ describe("product surfaces", () => {
 
     render(<App />);
     fireEvent.click(within(await screen.findByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "내 업무" }));
-    const panel = (await screen.findByText("판단이 필요한 업무")).closest("aside") as HTMLElement;
+    const panel = (await screen.findByText("판단이 필요한 업무")).closest(".decision-section") as HTMLElement;
     expect(await within(panel).findByText("분기 보고 정리")).toBeTruthy();
     expect(within(panel).getByText("업무 배정")).toBeTruthy();
     // Not in My Work before acceptance.
@@ -498,7 +498,7 @@ describe("product surfaces", () => {
     fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
 
     // The proposal is one judgement among the rest, labelled by the server, not by the client.
-    const panel = (await screen.findByText("판단이 필요한 업무")).closest("aside") as HTMLElement;
+    const panel = (await screen.findByText("판단이 필요한 업무")).closest(".decision-section") as HTMLElement;
     expect(await within(panel).findByText("AX가 만든 업무")).toBeTruthy();
     expect(within(panel).getByText("업무 생성")).toBeTruthy();
 
@@ -1600,16 +1600,17 @@ describe("product surfaces", () => {
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
     fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
-    const filter = (await screen.findByLabelText(/상태/)) as HTMLSelectElement;
-    fireEvent.change(filter, { target: { value: "all" } });
-    expect(filter.value).toBe("all");
+    // 상태 필터는 v2 05 의 툴바 칩 + 팝오버다 (select 아님)
+    fireEvent.click(await screen.findByRole("button", { name: "진행 중·시작 전·막힘" }));
+    fireEvent.click(screen.getByRole("radio", { name: "전체 상태" }));
+    expect(screen.getByRole("button", { name: "전체 상태" })).toBeTruthy();
     const readsBeforeApproval = myWorkReads.length;
 
     fireEvent.click(screen.getByRole("button", { name: "AX" }));
     const card = (await screen.findByText("AX가 만든 업무", { selector: ".ax-action-card b" })).closest(".ax-action-card") as HTMLElement;
     expect(within(card).getByText("담당")).toBeTruthy(); // server preview row, not inferred from action_type
     // The same judgement is also in the unified decision ledger, labelled by the server.
-    const panel = document.querySelector(".decision-panel") as HTMLElement;
+    const panel = document.querySelector(".decision-section") as HTMLElement;
     expect(within(panel).getByText("AX가 만든 업무")).toBeTruthy();
     expect(within(panel).getByText("업무 생성")).toBeTruthy();
     fireEvent.click(within(card).getByRole("button", { name: "승인" }));
@@ -1620,11 +1621,11 @@ describe("product surfaces", () => {
     // The current surface re-reads its projection and shows the created task by its real title...
     await waitFor(() => expect(myWorkReads.length).toBeGreaterThan(readsBeforeApproval));
     await waitFor(() => {
-      const onWorkSurface = screen.getAllByText("AX가 만든 업무").filter((node) => !node.closest(".ax-action-card") && !node.closest(".decision-panel"));
+      const onWorkSurface = screen.getAllByText("AX가 만든 업무").filter((node) => !node.closest(".ax-action-card") && !node.closest(".decision-panel, .decision-section"));
       expect(onWorkSurface.length).toBeGreaterThan(0);
     });
     // ...without a remount: the filter the user chose is still selected.
-    expect((screen.getByLabelText(/상태/) as HTMLSelectElement).value).toBe("all");
+    expect(screen.getByRole("button", { name: "전체 상태" })).toBeTruthy();
     expect(screen.queryByText("판단은 저장되었지만 화면을 갱신하지 못했습니다.")).toBeNull();
   });
   it("names the real work subject in the approval notice, not the generic operation title", async () => {
@@ -1755,8 +1756,8 @@ describe("product surfaces", () => {
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
     fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
-    const filter = (await screen.findByLabelText(/상태/)) as HTMLSelectElement;
-    fireEvent.change(filter, { target: { value: "all" } });
+    fireEvent.click(await screen.findByRole("button", { name: "진행 중·시작 전·막힘" }));
+    fireEvent.click(screen.getByRole("radio", { name: "전체 상태" }));
 
     fireEvent.click(screen.getByRole("button", { name: "AX" }));
     const card = (await screen.findByText("정산 자료 정리", { selector: ".ax-action-card b" })).closest(".ax-action-card") as HTMLElement;
@@ -1772,10 +1773,10 @@ describe("product surfaces", () => {
     expect(order).toEqual(["decided", "my-work settled"]);
     // Settled in place: the created task is visible and the chosen filter survived.
     await waitFor(() => {
-      const onSurface = screen.getAllByText("정산 자료 정리").filter((node) => !node.closest(".ax-action-card") && !node.closest(".decision-panel"));
+      const onSurface = screen.getAllByText("정산 자료 정리").filter((node) => !node.closest(".ax-action-card") && !node.closest(".decision-panel, .decision-section"));
       expect(onSurface.length).toBeGreaterThan(0);
     });
-    expect((screen.getByLabelText(/상태/) as HTMLSelectElement).value).toBe("all");
+    expect(screen.getByRole("button", { name: "전체 상태" })).toBeTruthy();
     expect(screen.queryByText("판단은 저장되었지만 화면을 갱신하지 못했습니다.")).toBeNull();
   });
 
@@ -1835,7 +1836,7 @@ describe("product surfaces", () => {
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
     fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
-    await screen.findByLabelText(/상태/);
+    await screen.findByRole("button", { name: "진행 중·시작 전·막힘" });
     fireEvent.click(screen.getByRole("button", { name: "AX" }));
     const card = (await screen.findByText("월말 정산", { selector: ".ax-action-card b" })).closest(".ax-action-card") as HTMLElement;
     fireEvent.click(within(card).getByRole("button", { name: "승인" }));
@@ -1854,7 +1855,7 @@ describe("product surfaces", () => {
     await waitFor(() => expect(screen.queryByText("판단은 저장되었지만 화면을 갱신하지 못했습니다.")).toBeNull());
     expect(fetchMock.mock.calls.filter(([path]) => String(path) === "/api/actions/action-6/decide")).toHaveLength(1);
     await waitFor(() => {
-      const onSurface = screen.getAllByText("월말 정산").filter((node) => !node.closest(".ax-action-card") && !node.closest(".decision-panel"));
+      const onSurface = screen.getAllByText("월말 정산").filter((node) => !node.closest(".ax-action-card") && !node.closest(".decision-panel, .decision-section"));
       expect(onSurface.length).toBeGreaterThan(0);
     });
   });

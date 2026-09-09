@@ -1,0 +1,127 @@
+{
+  "projectId": "8fa54d76-58d6-481a-aed9-743dff9d6c09",
+  "shape": "package",
+  "pkg": "ax-workspace-frontend",
+  "globalName": "SCAX",
+  "entry": "./frontend/ds-entry.tsx",
+  "tsconfig": "tsconfig.json",
+  "cssEntry": "src/styles.css",
+  "extraFonts": [
+    "../.design-sync/fonts/pretendard.css"
+  ],
+  "componentSrcMap": {
+    "Icon": "src/Icon.tsx",
+    "Popover": "src/Popover.tsx",
+    "Empty": "src/Empty.tsx",
+    "EmptyValue": "src/Empty.tsx",
+    "Skeleton": "src/Skeleton.tsx",
+    "ProgressBar": "src/ProgressBar.tsx",
+    "Drawer": "src/Modal.tsx",
+    "ConfirmModal": "src/Modal.tsx",
+    "Toast": "src/Modal.tsx",
+    "Checkbox": "src/FormControls.tsx",
+    "FieldMessage": "src/FormControls.tsx",
+    "DateField": "src/DateField.tsx",
+    "MinWidthNotice": "src/MinWidthNotice.tsx",
+    "TaskCalendar": "src/WorkViews.tsx",
+    "DatePicker": "src/DatePicker.tsx",
+    "Select": "src/Select.tsx",
+    "MultiSelect": "src/Select.tsx",
+    "TimeField": "src/TimeField.tsx",
+    "TimeRangeField": "src/TimeField.tsx"
+  },
+  "dtsPropsFor": {
+    "Icon": "/** 27 glyphs, viewBox 0 0 16 16, stroke 1.5 (1.3 at <=14px), fill none (v2 07). */ name: \"close\" | \"chevron-down\" | \"chevron-right\" | \"arrow-right\" | \"arrow-up\" | \"arrow-down\" | \"sparkle\" | \"send\" | \"check\" | \"check-square\" | \"square\" | \"circle\" | \"play\" | \"list\" | \"calendar\" | \"clock\" | \"paperclip\" | \"plus\" | \"minus\" | \"home\" | \"refresh\" | \"ban\" | \"pending\" | \"alert\" | \"search\" | \"empty\" | \"filter\"; /** render size: 14 list/badge, 16 default, 20 toolbar/empty state, 12 chevron only */ size?: 12 | 14 | 16 | 20; className?: string; /** accessible name; omit for decorative icons (aria-hidden) */ title?: string;",
+    "Popover": "/** the opener; spread `props` on the button (aria + onClick), `open` is current state, `toggle` flips it */ trigger: (state: { open: boolean; toggle: () => void; props: React.ButtonHTMLAttributes<HTMLButtonElement> }) => React.ReactNode; /** panel content; call `close()` after a choice */ children: (close: () => void) => React.ReactNode; /** aria-label of the panel */ label: string; /** panel width, 200-400 (v2 14) */ width?: number;",
+    "Empty": "/** Headline 2 Bold */ title: string; /** Label 1 Meta */ description?: React.ReactNode; /** default = nothing here yet · filter = nothing matched (adds a reset action) · error = failed to load (adds a retry action, role=alert) */ variant?: \"default\" | \"filter\" | \"error\"; /** required for variant=default when onAction is given; filter/error have built-in labels */ actionLabel?: string; onAction?: () => void; className?: string; children?: React.ReactNode;",
+    "EmptyValue": "/* no props — renders the em dash used for an empty cell (v2 12) */",
+    "Skeleton": "/** bars to draw; match the real content's row count (list = 5) */ rows?: number; /** screen-reader text */ label?: string;",
+    "ProgressBar": "/** header line 'label · done / total'; omit when the count is already shown nearby */ label?: string; done: number; total: number;",
+    "Drawer": "/** aria-label of the dialog */ label: string; /** small line above the title (Label 2 Bold, tertiary) */ kicker?: string; /** Heading 1 (22) */ title: string; headerExtra?: React.ReactNode; /** footer row: put a flex spacer `<span className=\\\"spacer\\\" />` between left and right groups */ footer?: React.ReactNode; onClose: () => void; children: React.ReactNode;",
+    "ConfirmModal": "title: string; description: string; confirmLabel: string; /** true = destructive confirm button (danger) instead of primary */ danger?: boolean; /** disables both buttons while the command is in flight */ busy?: boolean; onConfirm: () => void; onClose: () => void;",
+    "Toast": "message: string; /** auto-fires after 4s */ onClose: () => void; /** optional single text action (e.g. 실행취소) */ action?: { label: string; onAction: () => void }; /** v2 확장 — success: check 아이콘 --accent(완료는 accent), error: alert 아이콘 --danger-accent + role=alert. 없으면 아이콘 없는 기본 토스트 */ tone?: \"success\" | \"error\";",
+    "Checkbox": "checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean; id?: string; /** label text beside the 16px box */ children?: React.ReactNode;",
+    "FieldMessage": "/** shown instead of `help` when present (role=alert) */ error?: string | null; help?: React.ReactNode; id?: string;",
+    "DateField": "id: string; label: string; /** ISO YYYY-MM-DD or '' */ value: string; onChange: (isoValue: string) => void; disabled?: boolean; /** keep the label for screen readers only */ hideLabel?: boolean;",
+    "MinWidthNotice": "/* no props — fixed full-screen notice, visible only below 1280px (CSS media query) */",
+    "TaskCalendar": "/** 업무 캘린더 — 월(6주 42칸) · 주(7칸) 뷰. 업무 하나가 기간만큼 가로 막대(calendar-chip)로 이어지고 색은 상태를 따른다 (v2 13) */ /** start_date·due_date(ISO YYYY-MM-DD)가 있는 업무만 그려진다 */ tasks: Array<{ task_id: string; title: string; state: \"open\" | \"in_progress\" | \"blocked\" | \"completion_submitted\" | \"done\" | \"cancelled\"; version: number; block_reason: string | null; start_date?: string | null; due_date?: string | null; description?: string | null }>; /** 막대 클릭 */ onOpen: (task: { task_id: string; title: string; state: string }) => void; /** 기본 month. 주 뷰는 칸이 높고(280) 막대 8줄, 월 뷰는 3줄 + \"+N개 더\" */ mode?: \"week\" | \"month\"; /** 주면 툴바에 주/월 세그먼트가 생긴다 */ onModeChange?: (mode: \"week\" | \"month\") => void; /** 격자가 열리는 날짜(ISO). 기본 오늘 */ anchorDate?: string;",
+    "DatePicker": "/** 달력 피커 — v2 14 Popover 위에 얹은 280px 월 격자(v2 확장). 트리거는 btn h30 ghost + calendar 아이콘, 패널은 이전/다음 달 · 요일 · 7×6 · 지우기/오늘. 고른 날 = 검정 배경(현재 위치 규칙), 오늘 = 테두리 */ /** ISO YYYY-MM-DD, 없으면 \"\" */ value: string; /** 고르거나 지울 때(지우면 \"\") */ onChange: (isoValue: string) => void; /** 고를 수 있는 첫 날 (ISO) */ min?: string; /** 마지막 날 (ISO) */ max?: string; /** 트리거 버튼 id */ id?: string; /** 패널 aria-label; 트리거는 \"<label> 달력 열기\"로 읽힌다 */ label: string;",
+    "Select": "/** 하나 고르기 — 네이티브 <select> 대신 Popover(v2 14) 위의 목록. 트리거는 폼 필드 규격 h34 · --radius-control · 14px */ /** 트리거 단추의 id — 호출부 .field 레이블이 가리키는 자리 */ id?: string; /** 접근 이름. 트리거와 목록이 같이 쓴다 */ label: string; value: string; onChange: (value: string) => void; options: ReadonlyArray<{ value: string; label: string; /** 항목 아래 한 줄 */ description?: string; disabled?: boolean; /** 같은 값이 이어지는 동안 한 번만 머리글이 뜬다 */ group?: string }>; /** 값이 없을 때 트리거에 남는 글자 */ placeholder?: string; disabled?: boolean; /** 있으면 보더가 갈아입고 헬퍼 대신 이 문장이 나간다 (FieldMessage) */ error?: string | null; /** 문장 없이 보더만 */ invalid?: boolean; help?: React.ReactNode; /** 기본은 자동 — 옵션 8개 초과면 검색창이 붙는다 */ searchable?: boolean; searchPlaceholder?: string; /** 목록 바닥의 한 줄 행동 (btn link) */ footerAction?: { label: string; onAction: () => void }; /** 트리거를 갈아 끼운다 — filter-chip · btn ghost. DatePicker 가 Popover 에 넘기는 방식과 같다 */ trigger?: (state: { open: boolean; label: string; props: React.ButtonHTMLAttributes<HTMLButtonElement> }) => React.ReactNode;",
+    "MultiSelect": "/** 여럿 고르기 — 옵션은 Checkbox 와 같은 네모, 선택 값은 칩(badge ai)으로 서고 maxChips 를 넘으면 +N */ id?: string; label: string; value: ReadonlyArray<string>; onChange: (values: string[]) => void; options: ReadonlyArray<{ value: string; label: string; description?: string; disabled?: boolean; group?: string }>; placeholder?: string; disabled?: boolean; error?: string | null; invalid?: boolean; help?: React.ReactNode; searchable?: boolean; searchPlaceholder?: string; footerAction?: { label: string; onAction: () => void }; /** 칩으로 세워 두는 개수, 기본 2 */ maxChips?: number; /** 목록 머리의 전체 선택/해제, 기본 true */ selectAll?: boolean; trigger?: (state: { open: boolean; label: string; props: React.ButtonHTMLAttributes<HTMLButtonElement> }) => React.ReactNode;",
+    "TimeField": "/** 시각 하나 — 네이티브 input[type=time] 대신 30분 목록 팝오버. 표기는 24시간 HH:MM 고정(오전/오후 없음) */ id?: string; label: string; /** 24시간 \"HH:MM\", 없으면 \"\" */ value: string; onChange: (value: string) => void; /** 목록 간격(분), 기본 30 */ step?: number; /** 고를 수 있는 첫/마지막 시각 \"HH:MM\" */ min?: string; max?: string; placeholder?: string; disabled?: boolean; error?: string | null; invalid?: boolean; help?: React.ReactNode; trigger?: (state: { open: boolean; label: string; props: React.ButtonHTMLAttributes<HTMLButtonElement> }) => React.ReactNode;",
+    "TimeRangeField": "/** 시각 한 쌍 — 종료<=시작이면 에러 한 줄(FieldMessage), 시작을 옮기면 종료가 같은 간격만큼 따라간다 */ id?: string; /** 한 쌍 전체의 이름. 각 트리거는 \"<label> 시작 시각\" 으로 읽힌다 */ label: string; /** 24시간 \"HH:MM\" */ start: string; end: string; onChange: (next: { start: string; end: string }) => void; step?: number; /** 간격을 알 수 없을 때 종료가 서는 자리(분), 기본 60 */ defaultDuration?: number; min?: string; max?: string; disabled?: boolean; /** 주면 범위 검사보다 이 문장이 먼저다 */ error?: string | null; help?: React.ReactNode; startLabel?: string; endLabel?: string;"
+  },
+  "overrides": {
+    "Drawer": {
+      "cardMode": "single",
+      "viewport": "1280x720"
+    },
+    "ConfirmModal": {
+      "cardMode": "single",
+      "viewport": "900x600"
+    },
+    "Toast": {
+      "cardMode": "column",
+      "viewport": "900x1500"
+    },
+    "Popover": {
+      "cardMode": "single",
+      "primaryStory": "StatusFilter",
+      "viewport": "520x360"
+    },
+    "MinWidthNotice": {
+      "cardMode": "single",
+      "viewport": "960x480"
+    },
+    "Checkbox": {
+      "cardMode": "column"
+    },
+    "DateField": {
+      "cardMode": "column"
+    },
+    "Empty": {
+      "cardMode": "column"
+    },
+    "EmptyValue": {
+      "cardMode": "column"
+    },
+    "Icon": {
+      "cardMode": "column"
+    },
+    "ProgressBar": {
+      "cardMode": "column"
+    },
+    "Skeleton": {
+      "cardMode": "column"
+    },
+    "TaskCalendar": {
+      "cardMode": "column",
+      "viewport": "1100x760"
+    },
+    "DatePicker": {
+      "cardMode": "single",
+      "primaryStory": "Open",
+      "viewport": "520x640"
+    },
+    "Select": {
+      "cardMode": "single",
+      "primaryStory": "Open",
+      "viewport": "560x520"
+    },
+    "MultiSelect": {
+      "cardMode": "single",
+      "primaryStory": "Open",
+      "viewport": "560x520"
+    },
+    "TimeField": {
+      "cardMode": "single",
+      "primaryStory": "Open",
+      "viewport": "520x520"
+    },
+    "TimeRangeField": {
+      "cardMode": "column",
+      "viewport": "620x520"
+    }
+  },
+  "readmeHeader": ".design-sync/conventions.md"
+}

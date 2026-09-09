@@ -14,6 +14,7 @@ from ax_workspace.modules.organization_access.catalog import (
     RoleTemplate,
     validate,
 )
+from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.organization_access.credentials import hash_password, normalize_email
 from ax_workspace.platform.persistence import (
     AccessGrantRecord,
@@ -42,11 +43,12 @@ from ax_workspace.modules.reports.workflow_metadata import content_hash, daily_r
 # The local demo's shared password. It exists only behind `reset_demo`, which refuses anything but a local demo
 # database, and the login route that accepts it is not registered in the production profile.
 DEMO_PASSWORD = "scax-demo-1234"
-DEMO_EMAIL_DOMAIN = "scax.example"
 
 
 def demo_email(member_id: str) -> str:
-    return normalize_email(f"{member_id}@{DEMO_EMAIL_DOMAIN}")
+    """데모 계정의 주소. 도메인은 실행 환경이 정하고(`AX_DEMO_EMAIL_DOMAIN`), 목록을 읽는 쪽과 같은 값을 쓴다 —
+    시드가 쓴 도메인과 목록이 거르는 도메인이 어긋나면 계정이 만들어져도 목록에 오르지 않는다."""
+    return normalize_email(f"{member_id}@{Settings.from_environment().demo_email_domain}")
 
 
 def seed_catalog(session: Session, *, demo_organization: bool = True) -> None:

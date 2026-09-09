@@ -99,7 +99,8 @@ describe("프로젝트", () => {
     vi.mocked(api.assignToProject).mockResolvedValue({} as never);
     renderPage();
     await screen.findByText("한빛의원 통합 마케팅", { selector: "h3" });
-    fireEvent.change(screen.getByLabelText("붙일 구성원"), { target: { value: "m-han" } });
+    fireEvent.click(screen.getByLabelText("붙일 구성원"));
+    fireEvent.click(screen.getByRole("option", { name: "한별" }));
     fireEvent.click(screen.getByText("참여로 붙이기"));
     await waitFor(() => expect(api.assignToProject).toHaveBeenCalledWith("p-1", { member_id: "m-han", kind: "member" }));
   });

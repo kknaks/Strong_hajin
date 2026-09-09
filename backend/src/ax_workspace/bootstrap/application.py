@@ -696,6 +696,24 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).unit_members(principal, unit_id)
 
+    def organization_member_detail(self, principal: Principal, member_id: str) -> dict[str, Any]:
+        with self._session_factory() as session:
+            return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).member_detail(principal, member_id)
+
+    def organization_member_history(self, principal: Principal, member_id: str, axis: str) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).member_axis_history(
+                principal, member_id, axis
+            )
+
+    def organization_activity(
+        self, principal: Principal, *, unit_id: str | None = None, limit: int = 50, cursor: str | None = None
+    ) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).organization_activity(
+                principal, unit_id=unit_id, limit=limit, cursor=cursor
+            )
+
     def my_organization_profile(self, principal: Principal) -> dict[str, Any]:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).my_profile(principal)

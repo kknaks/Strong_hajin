@@ -5,6 +5,8 @@ import type { AnswerResource, Conversation, ConversationContextReference } from 
 import { ResourcePeek } from "./ResourcePeek";
 import { MessageList } from "./MessageList";
 import type { ListStatus, LocalFragment } from "./useConversations";
+import { Skeleton } from "../Skeleton";
+import { Icon } from "../Icon";
 
 export type LabeledContextReference = ConversationContextReference & { label?: string; pinned?: boolean };
 
@@ -134,10 +136,10 @@ export function ChatDrawer({
             onClick={() => setSwitcherOpen((open) => !open)}
             type="button"
           >
-            {switcherOpen ? "▾" : "▸"} 대화 {conversations.length}개
+            <Icon name={switcherOpen ? "chevron-down" : "chevron-right"} size={12} /> 대화 {conversations.length}개
           </button>
           <button aria-label="새 AX 대화" className="btn h30 ai" onClick={onStart} type="button">
-            ✦ 새 대화
+            <Icon name="sparkle" size={14} /> 새 대화
           </button>
         </div>
         {switcherOpen && (
@@ -145,7 +147,7 @@ export function ChatDrawer({
             {conversations.length > 2 && (
               <input
                 aria-label="대화 검색"
-                className="ax-sessions-search"
+                className="ax-sessions-search search-input-box"
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="대화 검색…"
                 type="search"
@@ -153,7 +155,7 @@ export function ChatDrawer({
               />
             )}
             {listStatus === "loading" && conversations.length === 0 ? (
-              <p className="ax-sessions-state">대화를 불러오는 중…</p>
+              <Skeleton label="대화를 불러오는 중" rows={3} />
             ) : listStatus === "error" && conversations.length === 0 ? (
               <p className="ax-sessions-state error">
                 대화 목록을 불러오지 못했습니다.
@@ -229,12 +231,12 @@ export function ChatDrawer({
         {selectedContext && (
           <div aria-label="참고 자료" className="ax-context-row">
             <div className="ax-context-chip">
-              <span aria-hidden>📎</span>
+              <Icon name="paperclip" size={14} />
               <span>
                 {selectedContext.resource_type === "task" ? "업무" : "업무 요청"} · {selectedContext.label ?? selectedContext.resource_id.slice(0, 8)}
               </span>
               <button aria-label="참고 자료 떼기" onClick={onClearContext} type="button">
-                ×
+                <Icon name="close" />
               </button>
             </div>
             <small>현재 화면 자료 · 서버가 버전을 확인해 요약만 전달합니다</small>

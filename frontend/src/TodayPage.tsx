@@ -30,6 +30,8 @@ import {
   type TaskAction,
 } from "./WorkModals";
 import { CollapsibleGroup, MetricCard, PersonChip, TaskCard, TaskListRow } from "./WorkViews";
+import { Empty } from "./Empty";
+import { Icon } from "./Icon";
 
 type TodayPageProps = {
   personaId: string;
@@ -219,30 +221,30 @@ export function TodayPage({
           }}
         >
           <span aria-hidden className="spark">
-            ✦
+            <Icon name="sparkle" />
           </span>
           <label className="sr-only" htmlFor="today-ax-prompt">
             AX에게 오늘 업무 묻기
           </label>
           <input id="today-ax-prompt" onChange={(event) => setPrompt(event.target.value)} placeholder={defaultPrompt} value={prompt} />
           <button aria-label="질문하기" type="submit">
-            ➤
+            <Icon name="send" size={14} />
           </button>
         </form>
       </section>
 
       <div className="metric-row">
-        <MetricCard icon="→" label="오늘 나에게 요청된 업무" onClick={() => onNavigate("work")} value={decisionCount} />
-        <MetricCard icon="▶" label="진행 중인 업무" onClick={() => onNavigate("work")} value={groups.inProgress.length} />
-        <MetricCard icon="!" label="막힌 업무" onClick={() => onNavigate("work")} value={groups.blocked.length} />
-        <MetricCard icon="○" label="시작 전 업무" onClick={() => onNavigate("work")} value={groups.startingToday.length} />
+        <MetricCard icon="arrow-right" label="오늘 나에게 요청된 업무" onClick={() => onNavigate("work")} value={decisionCount} />
+        <MetricCard icon="play" label="진행 중인 업무" onClick={() => onNavigate("work")} value={groups.inProgress.length} />
+        <MetricCard icon="alert" label="막힌 업무" onClick={() => onNavigate("work")} value={groups.blocked.length} />
+        <MetricCard icon="circle" label="시작 전 업무" onClick={() => onNavigate("work")} value={groups.startingToday.length} />
       </div>
 
-      <div className="home-columns dashboard-columns">
+      <div className={canGenerateDailyReport ? "home-columns dashboard-columns" : "home-columns dashboard-columns two"}>
         <section>
           <div className="column-head">
             <h2>
-              <span aria-hidden>☑</span> 오늘 나에게 요청된 업무
+              <Icon name="check-square" size={14} /> 오늘 나에게 요청된 업무
             </h2>
             <button className="btn link" onClick={() => onNavigate("work")} type="button">
               전체보기
@@ -250,13 +252,10 @@ export function TodayPage({
           </div>
           {decisionCount === 0 ? (
             <div className="decision-panel">
-              <div className="empty-state">
-                <b>요청된 업무가 없습니다</b>
-                <p>동료의 요청과 AX 제안이 오면 여기에 쌓입니다.</p>
-              </div>
+              <Empty description="동료의 요청과 AX 제안이 오면 여기에 쌓입니다." title="요청된 업무가 없습니다" />
             </div>
           ) : (
-            <ul className="card-stack surface-card-list">
+            <ul className="card-stack">
               {actionItems.map((item) => (
                 <ActionItemCard item={item} key={item.action_item_id} personas={personas} onOpen={setSelectedActionItem} />
               ))}
@@ -267,7 +266,7 @@ export function TodayPage({
         <section>
           <div className="column-head">
             <h2>
-              <span aria-hidden>▤</span> 오늘의 업무
+              <Icon name="list" size={14} /> 오늘의 업무
             </h2>
             <button className="btn link" onClick={() => onNavigate("work")} type="button">
               전체보기
@@ -275,15 +274,12 @@ export function TodayPage({
           </div>
           <div className="decision-panel">
             {tasks.length === 0 ? (
-              <div className="empty-state">
-                <b>등록된 업무가 없습니다</b>
-                <p>오늘 할 일을 등록하면 여기에 쌓입니다.</p>
-                {canManageOwnTasks && (
-                  <button className="btn" onClick={() => setIsCreating(true)} type="button">
-                    첫 업무 만들기
-                  </button>
-                )}
-              </div>
+              <Empty
+                actionLabel="첫 업무 만들기"
+                description="오늘 할 일을 등록하면 여기에 쌓입니다."
+                onAction={canManageOwnTasks ? () => setIsCreating(true) : undefined}
+                title="등록된 업무가 없습니다"
+              />
             ) : (
               <>
                 {groups.blocked.length > 0 && (
@@ -325,7 +321,17 @@ export function TodayPage({
               </>
             )}
           </div>
-          {canGenerateDailyReport && (
+        </section>
+
+        {/* v2 05 Dashboard 의 세 번째 열. 이 사람에게 보고 권한이 없으면 열 자체를 세우지 않는다 —
+            빈 열을 남기지 말라는 규칙이라 grid 도 두 열로 접는다. */}
+        {canGenerateDailyReport && (
+          <section>
+            <div className="column-head">
+              <h2>
+                <Icon name="calendar" size={14} /> 오늘의 보고
+              </h2>
+            </div>
             <div className="decision-panel schedule">
               <div className="reminder-row">
                 <div>
@@ -337,8 +343,8 @@ export function TodayPage({
                 </button>
               </div>
             </div>
-          )}
-        </section>
+          </section>
+        )}
       </div>
 
       {selectedTask && (

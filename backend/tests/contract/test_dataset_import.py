@@ -358,3 +358,27 @@ def test_an_organization_that_contains_itself_is_refused_before_anything_is_writ
         import_into(database_url, rows, password=PASSWORD)
     with make_session_factory(database_url)() as session:
         assert session.get(OrganizationUnitRecord, "ds-team") is None
+
+
+def test_a_phone_and_a_birth_date_arrive_when_the_source_states_them_and_stay_empty_when_it_does_not(tmp_path) -> None:
+    """원문이 말한 사람만 전화·생년월일을 갖는다. 말하지 않은 칸은 비워 두고 추정하지 않는다."""
+    from datetime import date
+
+    target = _dataset(tmp_path)
+    _write(target, "members", [
+        {"key": "ds-han", "display_name": "한", "employment_state": "active", "employment_type": "regular", "primary_unit_key": "ds-team", "role_key": "member", "grade_key": "ds-manager", "employed_from": "2024-03-04", "employed_until": "", "phone": "010-0000-0000", "birth_date": "1990-01-02"},
+        {"key": "ds-noh", "display_name": "노", "employment_state": "active", "employment_type": "", "primary_unit_key": "ds-team", "role_key": "member", "grade_key": "", "employed_from": "", "employed_until": "", "phone": "", "birth_date": ""},
+    ])
+    database_url = _database(tmp_path)
+    import_into(database_url, read_tables(target), password=PASSWORD)
+
+    with make_session_factory(database_url)() as session:
+        han, noh = session.get(MemberRecord, "ds-han"), session.get(MemberRecord, "ds-noh")
+        assert (han.phone, han.birth_date) == ("010-0000-0000", date(1990, 1, 2))
+        assert (noh.phone, noh.birth_date) == (None, None)
+
+    # 두 번째 적재의 빈 칸은 지우는 말이 아니다 — 원문이 말하지 않는 것을 없앴다고 기록하지 않는다.
+    import_into(database_url, read_tables(target), password=PASSWORD)
+    with make_session_factory(database_url)() as session:
+        han = session.get(MemberRecord, "ds-han")
+        assert (han.phone, han.birth_date) == ("010-0000-0000", date(1990, 1, 2))

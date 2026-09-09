@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 
 import { formatDate } from "./labels";
+import { Icon } from "./Icon";
 
 /**
  * A date control that always reads YYYY/MM/DD on screen.
@@ -94,7 +95,7 @@ export function DateField({
           }}
           type="button"
         >
-          📅
+          <Icon name="calendar" size={14} />
         </button>
         <input
           aria-hidden

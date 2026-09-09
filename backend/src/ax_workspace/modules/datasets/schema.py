@@ -96,6 +96,9 @@ TABLES: tuple[Table, ...] = (
             Column("grade_key", required=False, kind="key", references="grades"),
             Column("employed_from", required=False, kind="date"),
             Column("employed_until", required=False, kind="date"),
+            #: 원문이 사람별로 말할 때만 적는 인사 정보. 열을 통째로 쓰지 않은 예전 폴더도 그대로 통과한다.
+            Column("phone", required=False),
+            Column("birth_date", required=False, kind="date"),
         ),
         note="구성원. 원문에 없는 발령 효력일은 비워 둔다 — 만들어 내지 않는다.",
     ),
@@ -176,4 +179,4 @@ TABLES: tuple[Table, ...] = (
 
 TABLES_BY_NAME = {table.name: table for table in TABLES}
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6

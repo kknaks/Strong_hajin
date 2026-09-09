@@ -19,3 +19,13 @@ frontend/test-results/
 /datasets/
 *-inventory.json
 *.dataset/
+
+# design-sync (claude.ai/design 동기화) — 스테이징 스크립트·빌드 산출물·머신 상태는 커밋하지 않는다
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules
+
+# Storybook 정적 빌드 산출물
+frontend/storybook-static/

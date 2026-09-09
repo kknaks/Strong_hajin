@@ -5,11 +5,11 @@ from uuid import UUID
 
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.organization_access.credentials import LocalCredential, normalize_email
-from ax_workspace.modules.organization_access.domain import TASK_ASSIGN, Grant, Principal
+from ax_workspace.modules.organization_access.domain import ORGANIZATION_ACTIVITY_AXES, TASK_ASSIGN, Grant, Principal
 from ax_workspace.platform.persistence import (
     AccessGrantRecord,
     ActivityEventRecord,
@@ -145,6 +145,322 @@ class SqlAlchemyOrganizationRepository:
                 for grant in effective_grants
             ],
         }
+
+    def member_detail(self, member_id: str) -> dict[str, Any] | None:
+        """한 사람을 여섯 축으로 한 번에 읽는다 — 지금 값과, 지금 닿지 않게 된 권한까지.
+
+        SPEC-005 §2의 축들은 서로 다른 사실이라 한 질문에 함께 답해도 섞이지 않는다. 여기서는 **누가 볼 수
+        있는지를 정하지 않는다** — 원장은 있는 그대로 말하고, 무엇을 비울지는 application이 정한다. 그래야 권한
+        규칙이 두 곳에 흩어지지 않는다.
+        """
+        profile = self.profile_for(member_id)
+        if profile is None:
+            return None
+        member = self._session.get(MemberRecord, member_id)
+        assert member is not None  # profile_for가 이미 확인했다
+        now = datetime.now(UTC)
+        units = {unit.id: unit for unit in self._session.scalars(select(OrganizationUnitRecord))}
+        type_names = {item.id: item.name for item in self._session.scalars(select(OrganizationUnitTypeRecord))}
+
+        memberships = list(
+            self._session.scalars(
+                select(MembershipRecord)
+                .where(
+                    MembershipRecord.member_id == member_id,
+                    MembershipRecord.valid_from <= now,
+                    or_(MembershipRecord.valid_until.is_(None), MembershipRecord.valid_until > now),
+                )
+                .order_by(MembershipRecord.is_primary.desc(), MembershipRecord.organization_id)
+            )
+        )
+        primary = next((row.organization_id for row in memberships if row.is_primary), None)
+        if primary is None and memberships:
+            primary = memberships[0].organization_id
+
+        # 직책 축은 직책을 말한다. 자리 이름이 없는 발령 행은 그 사람의 역할을 조직에 붙들어 두는 것이라
+        # 권한 축(`grants`)이 이미 말하고 있다 — 여기 함께 실으면 직책이 없는 사람에게도 직책이 있는 것처럼 보인다.
+        appointments = self._session.execute(
+            select(AppointmentRecord, PositionDefinitionRecord.name)
+            .join(PositionDefinitionRecord, PositionDefinitionRecord.id == AppointmentRecord.position_definition_id)
+            .where(
+                AppointmentRecord.member_id == member_id,
+                AppointmentRecord.valid_from <= now,
+                or_(AppointmentRecord.valid_until.is_(None), AppointmentRecord.valid_until > now),
+            )
+            .order_by(AppointmentRecord.valid_from)
+        ).all()
+
+        grade = self._session.execute(
+            select(GradeRecord.id, GradeRecord.name)
+            .join(GradeAssignmentRecord, GradeAssignmentRecord.grade_id == GradeRecord.id)
+            .where(
+                GradeAssignmentRecord.member_id == member_id,
+                GradeAssignmentRecord.valid_from <= now,
+                or_(GradeAssignmentRecord.valid_until.is_(None), GradeAssignmentRecord.valid_until > now),
+            )
+            .order_by(GradeAssignmentRecord.valid_from.desc())
+        ).first()
+
+        jobs = self._session.execute(
+            select(JobRecord.id, JobRecord.name, JobAssignmentRecord.assignment_kind)
+            .join(JobAssignmentRecord, JobAssignmentRecord.job_id == JobRecord.id)
+            .where(
+                JobAssignmentRecord.member_id == member_id,
+                JobAssignmentRecord.valid_from <= now,
+                or_(JobAssignmentRecord.valid_until.is_(None), JobAssignmentRecord.valid_until > now),
+            )
+            .order_by(JobRecord.id)
+        ).all()
+
+        # 회수된 권한은 지워진 것이 아니다. 지금 닿지 않는다는 사실과 언제 거두었는지가 화면에 남아야 한다.
+        revoked = list(
+            self._session.scalars(
+                select(AccessGrantRecord)
+                .where(AccessGrantRecord.member_id == member_id, AccessGrantRecord.revoked_at.is_not(None))
+                .order_by(AccessGrantRecord.revoked_at.desc())
+            )
+        )
+        role_labels = {
+            item.id: item.label
+            for item in self._session.scalars(
+                select(RoleRecord).where(RoleRecord.id.in_({grant.role_id for grant in revoked if grant.role_id}))
+            )
+        } if revoked else {}
+
+        return {
+            "member_id": member.id,
+            "display_name": member.display_name,
+            "employment_state": member.employment_state,
+            "employment_type": member.employment_type,
+            # 계정이 있다는 것은 권한이 아니라 들어올 문이 있다는 뜻이다.
+            "has_account": bool(member.account_ref),
+            "phone": member.phone,
+            "birth_date": member.birth_date.isoformat() if member.birth_date else None,
+            "hierarchy_path": [
+                {"unit_id": unit.id, "name": unit.name, "unit_type": type_names.get(unit.unit_type_id, unit.unit_type_id)}
+                for unit in self._unit_path(primary, units)
+            ],
+            "memberships": [
+                {
+                    "unit_id": row.organization_id,
+                    "unit_name": units[row.organization_id].name if row.organization_id in units else row.organization_id,
+                    "kind": row.membership_kind,
+                    "valid_from": row.valid_from.isoformat(),
+                    "valid_until": row.valid_until.isoformat() if row.valid_until else None,
+                }
+                for row in memberships
+            ],
+            "appointments": [
+                {
+                    "unit_id": row.organization_id,
+                    "unit_name": units[row.organization_id].name if row.organization_id in units else row.organization_id,
+                    "position": position,
+                    "role_id": row.role_id,
+                    "kind": row.appointment_kind,
+                    "valid_from": row.valid_from.isoformat(),
+                    "valid_until": row.valid_until.isoformat() if row.valid_until else None,
+                }
+                for row, position in appointments
+            ],
+            "grade": {"id": grade.id, "name": grade.name} if grade else None,
+            "jobs": [{"id": job_id, "name": name, "kind": kind} for job_id, name, kind in jobs],
+            "grants": profile["grants"],
+            "revoked_grants": [
+                {
+                    "grant_id": str(grant.id),
+                    "role_id": grant.role_id,
+                    "role_label": role_labels.get(grant.role_id or "", None),
+                    "scope_kind": grant.scope_kind,
+                    "scope_ref": grant.scope_ref,
+                    "scope_name": units[grant.scope_ref].name if grant.scope_ref in units else grant.scope_ref,
+                    "valid_from": grant.valid_from.isoformat(),
+                    "revoked_at": grant.revoked_at.isoformat() if grant.revoked_at else None,
+                }
+                for grant in revoked
+            ],
+        }
+
+    def member_axis_history(self, member_id: str, axis: str) -> list[dict[str, Any]]:
+        """한 축이 지나온 기간들, 최신순. 지금 값도 여기 한 행으로 들어 있다 — 현재는 아직 끝나지 않은 기간이다."""
+        units = {item.id: item.name for item in self._session.scalars(select(OrganizationUnitRecord))}
+        rows: list[dict[str, Any]] = []
+
+        if axis == "membership":
+            for row in self._session.scalars(select(MembershipRecord).where(MembershipRecord.member_id == member_id)):
+                rows.append(
+                    {
+                        "value": units.get(row.organization_id, row.organization_id),
+                        "unit_name": units.get(row.organization_id, row.organization_id),
+                        "kind": row.membership_kind,
+                        "valid_from": row.valid_from,
+                        "valid_until": row.valid_until,
+                        "reason": row.change_reason_ref,
+                        "actor": None,
+                    }
+                )
+        elif axis == "appointment":
+            for row, position in self._session.execute(
+                select(AppointmentRecord, PositionDefinitionRecord.name)
+                .join(PositionDefinitionRecord, PositionDefinitionRecord.id == AppointmentRecord.position_definition_id)
+                .where(AppointmentRecord.member_id == member_id)
+            ).all():
+                rows.append(
+                    {
+                        "value": position,
+                        "unit_name": units.get(row.organization_id, row.organization_id),
+                        "kind": row.appointment_kind,
+                        "valid_from": row.valid_from,
+                        "valid_until": row.valid_until,
+                        "reason": row.change_reason_ref,
+                        "actor": None,
+                    }
+                )
+        elif axis == "grade":
+            for row, name in self._session.execute(
+                select(GradeAssignmentRecord, GradeRecord.name)
+                .join(GradeRecord, GradeRecord.id == GradeAssignmentRecord.grade_id)
+                .where(GradeAssignmentRecord.member_id == member_id)
+            ).all():
+                rows.append(
+                    {"value": name, "unit_name": None, "kind": None, "valid_from": row.valid_from,
+                     "valid_until": row.valid_until, "reason": None, "actor": None}
+                )
+        elif axis == "job":
+            for row, name in self._session.execute(
+                select(JobAssignmentRecord, JobRecord.name)
+                .join(JobRecord, JobRecord.id == JobAssignmentRecord.job_id)
+                .where(JobAssignmentRecord.member_id == member_id)
+            ).all():
+                rows.append(
+                    {"value": name, "unit_name": None, "kind": row.assignment_kind, "valid_from": row.valid_from,
+                     "valid_until": row.valid_until, "reason": None, "actor": None}
+                )
+        elif axis == "grant":
+            grants = list(
+                self._session.scalars(select(AccessGrantRecord).where(AccessGrantRecord.member_id == member_id))
+            )
+            labels = {
+                item.id: item.label
+                for item in self._session.scalars(
+                    select(RoleRecord).where(RoleRecord.id.in_({grant.role_id for grant in grants if grant.role_id}))
+                )
+            } if grants else {}
+            # 부여한 이유는 grant 자신이 아니라 그때 남은 사건이 갖고 있다. 그 사건을 grant로 되짚는다.
+            reasons = self._grant_reasons({grant.id for grant in grants})
+            actors = self._display_names({grant.granted_by_member_id for grant in grants if grant.granted_by_member_id})
+            for grant in grants:
+                rows.append(
+                    {
+                        "value": labels.get(grant.role_id or "", grant.role_id or grant.capability_id),
+                        "unit_name": units.get(grant.scope_ref or "", grant.scope_ref),
+                        "kind": grant.scope_kind,
+                        "valid_from": grant.valid_from,
+                        # 예정 만료일이 있어도 그 전에 거두었다면 거둔 때가 끝이다 — 먼저 오는 쪽을 쓴다.
+                        "valid_until": _earliest(grant.valid_until, grant.revoked_at),
+                        "reason": reasons.get(grant.id),
+                        "actor": actors.get(grant.granted_by_member_id or ""),
+                    }
+                )
+        else:
+            raise ValueError(axis)
+
+        rows.sort(key=lambda row: row["valid_from"], reverse=True)
+        for row in rows:
+            row["valid_from"] = row["valid_from"].isoformat()
+            row["valid_until"] = row["valid_until"].isoformat() if row["valid_until"] else None
+        return rows
+
+    def _grant_reasons(self, grant_ids: set[UUID]) -> dict[UUID, str | None]:
+        if not grant_ids:
+            return {}
+        refs = {f"access_grant:{grant_id}": grant_id for grant_id in grant_ids}
+        found: dict[UUID, str | None] = {}
+        for event in self._session.scalars(
+            select(ActivityEventRecord)
+            .where(ActivityEventRecord.after_ref.in_(refs))
+            .order_by(ActivityEventRecord.occurred_at)
+        ):
+            found[refs[str(event.after_ref)]] = event.reason
+        return found
+
+    def _display_names(self, member_ids: set[str]) -> dict[str, str]:
+        if not member_ids:
+            return {}
+        return {
+            member.id: member.display_name
+            for member in self._session.scalars(select(MemberRecord).where(MemberRecord.id.in_(member_ids)))
+        }
+
+    def organization_activity(
+        self, *, member_ids: frozenset[str] | None, limit: int, cursor: str | None
+    ) -> list[dict[str, Any]]:
+        """조직 축에서 무슨 일이 있었는지, 최신순.
+
+        업무·요청·회의의 사건은 여기 오르지 않는다 — 축 매핑표에 있는 kind만 조직의 사건이다. `member_ids`가
+        주어지면 그 사람들에 대한 사건으로 좁힌다(그 조직 아래를 물었다는 뜻이다).
+        """
+        if not member_ids:
+            return []
+        query = select(ActivityEventRecord).where(
+            ActivityEventRecord.event_kind.in_(ORGANIZATION_ACTIVITY_AXES),
+            # 사람에 대한 사건은 그 사람이 이 범위에 있어야 하고, 역할·조직처럼 사람이 아닌 대상의 사건은
+            # 그것을 바꾼 사람이 이 범위에 있어야 한다. 역할은 제품의 것이라 어느 회사의 것도 아니지만,
+            # 바꾼 행위는 한 사람의 것이고 그 사람은 한 회사에 속한다.
+            or_(
+                and_(ActivityEventRecord.target_type == "member", ActivityEventRecord.target_id.in_(member_ids)),
+                and_(ActivityEventRecord.target_type != "member", ActivityEventRecord.actor_id.in_(member_ids)),
+            ),
+        )
+        if cursor:
+            # 정렬이 (occurred_at, id)이므로 경계도 그 둘이어야 한다. 시각만 쓰면 같은 시각의 나머지가
+            # 다음 페이지에서 통째로 빠진다(PR #2 F4).
+            moment, _, last_id = cursor.partition("|")
+            at = datetime.fromisoformat(moment)
+            query = (
+                query.where(
+                    or_(
+                        ActivityEventRecord.occurred_at < at,
+                        and_(ActivityEventRecord.occurred_at == at, ActivityEventRecord.id < UUID(last_id)),
+                    )
+                )
+                if last_id
+                # 시각만 적힌 옛 커서도 계속 받는다 — 같은 시각을 건너뛰는 예전 동작 그대로이며, 새 커서를
+                # 쓰는 쪽은 행마다 실려 오는 `cursor`를 그대로 되돌려 주면 된다.
+                else query.where(ActivityEventRecord.occurred_at < at)
+            )
+        events = list(
+            self._session.scalars(
+                query.order_by(ActivityEventRecord.occurred_at.desc(), ActivityEventRecord.id.desc()).limit(limit)
+            )
+        )
+        actors = self._display_names({event.actor_id for event in events})
+        return [
+            {
+                "occurred_at": event.occurred_at.isoformat(),
+                "axis": ORGANIZATION_ACTIVITY_AXES[event.event_kind],
+                "event_kind": event.event_kind,
+                "summary": event.safe_summary,
+                "reason": event.reason,
+                "actor_id": event.actor_id,
+                "actor_name": actors.get(event.actor_id, event.actor_id),
+                "target_id": event.target_id,
+                "target_type": event.target_type,
+                # 이 행 다음부터 읽으려면 그대로 돌려주면 되는 자리표.
+                "cursor": f"{event.occurred_at.isoformat()}|{event.id}",
+            }
+            for event in events
+        ]
+
+    def _unit_path(self, unit_id: str | None, units: dict[str, Any]) -> list[Any]:
+        """회사에서 이 자리까지 내려오는 길. 위로 올라가며 모으고 뒤집는다."""
+        path: list[Any] = []
+        seen: set[str] = set()
+        current = unit_id
+        while current and current in units and current not in seen:
+            seen.add(current)
+            path.append(units[current])
+            current = units[current].parent_id
+        return list(reversed(path))
 
     def principal_for(self, member_id: str) -> Principal | None:
         profile = self.profile_for(member_id)
@@ -364,6 +680,10 @@ class SqlAlchemyOrganizationRepository:
         )
         self._session.flush()
 
+    def unit_descendants(self, unit_id: str) -> frozenset[str]:
+        """이 조직과 그 아래 전부. 한 조직을 물었다는 것은 그 아래를 함께 물었다는 뜻이다."""
+        return self._unit_descendants().get(unit_id, frozenset({unit_id}))
+
     def member_ids_in(self, units: frozenset[str]) -> frozenset[str]:
         """Active members whose current membership sits in one of these units."""
         if not units:
@@ -437,10 +757,20 @@ class SqlAlchemyOrganizationRepository:
             .order_by(OrganizationUnitRecord.display_order, OrganizationUnitRecord.id)
         )
 
-    def _active_member_names(self) -> list[dict[str, str]]:
-        """재직 중인 사람의 이름. 조직의 꼭대기가 무엇으로 불리든 이 목록은 같다."""
+    def _active_member_names(self) -> list[dict[str, Any]]:
+        """재직 중인 사람의 이름. 조직의 꼭대기가 무엇으로 불리든 이 목록은 같다.
+
+        전화·생년월일은 여기서 함께 읽고 **누구에게 보일지는 정하지 않는다** — 그 판단은 원장이 아니라
+        application의 몫이라, 권한 규칙이 두 곳에 흩어지지 않는다.
+        """
         rows = self._session.execute(
-            select(MemberRecord.id, MemberRecord.display_name)
+            select(
+                MemberRecord.id,
+                MemberRecord.display_name,
+                MemberRecord.phone,
+                MemberRecord.birth_date,
+                MemberRecord.account_ref,
+            )
             .join(EmploymentPeriodRecord, EmploymentPeriodRecord.member_id == MemberRecord.id)
             .where(
                 MemberRecord.employment_state == "active",
@@ -449,9 +779,19 @@ class SqlAlchemyOrganizationRepository:
             )
             .order_by(MemberRecord.id)
         ).all()
-        return [{"id": str(member_id), "display_name": str(name)} for member_id, name in rows]
+        return [
+            {
+                "id": str(member_id),
+                "display_name": str(name),
+                "phone": phone or None,
+                "birth_date": born.isoformat() if born else None,
+                # 계정이 있다는 것은 권한이 아니라 들어올 문이 있다는 뜻이다 — 화면의 「계정 없음」 배지가 읽는다.
+                "has_account": bool(account_ref),
+            }
+            for member_id, name, phone, born, account_ref in rows
+        ]
 
-    def member_directory(self) -> list[dict[str, str]]:
+    def member_directory(self) -> list[dict[str, Any]]:
         """Every active member's name, so the product can say who did what. It carries no capability."""
         return self._active_member_names()
 
@@ -483,8 +823,23 @@ class SqlAlchemyOrganizationRepository:
 
 
     def member_candidates(self, principal: Principal) -> list[dict[str, str]]:
-        """Every active member other than the principal (참조자 후보); the org tree stays the navigation boundary."""
-        return [member for member in self._active_member_names() if member["id"] != str(principal.id)]
+        """Every active member other than the principal (참조자 후보); the org tree stays the navigation boundary.
+
+        후보는 **고를 수 있을 만큼만** 말한다 — id와 이름이다. 명부와 같은 행을 돌려쓰면, 명부에 열이 하나 늘 때
+        마스킹을 지나지 않는 이 길로 함께 새어 나간다. 실제로 그렇게 전화·생년월일이 나갔다(PR #2 F1).
+        """
+        rows = self._session.execute(
+            select(MemberRecord.id, MemberRecord.display_name)
+            .join(EmploymentPeriodRecord, EmploymentPeriodRecord.member_id == MemberRecord.id)
+            .where(
+                MemberRecord.employment_state == "active",
+                EmploymentPeriodRecord.state == "active",
+                EmploymentPeriodRecord.ended_at.is_(None),
+                MemberRecord.id != str(principal.id),
+            )
+            .order_by(MemberRecord.id)
+        ).all()
+        return [{"id": str(member_id), "display_name": str(name)} for member_id, name in rows]
 
     def task_assignment_candidates(self, principal: Principal) -> list[dict[str, str]]:
         """Active members inside the scope this person's assign authority was granted at, who can run a Task themselves.
@@ -628,3 +983,9 @@ class SqlAlchemyOrganizationRepository:
                 }
             )
         return result
+
+
+def _earliest(*moments: datetime | None) -> datetime | None:
+    """적힌 것들 중 가장 먼저 오는 때. 아무것도 적히지 않았으면 아직 끝나지 않은 것이다."""
+    stated = [moment for moment in moments if moment is not None]
+    return min(stated) if stated else None

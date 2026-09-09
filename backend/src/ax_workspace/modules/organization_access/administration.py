@@ -18,6 +18,15 @@ from ax_workspace.modules.organization_access.domain import Principal
 ORGANIZATION_MANAGE = "organization.manage"
 
 
+def manages_any_of(principal: Principal, units: frozenset[str]) -> bool:
+    """이 사람의 자리 중 하나라도 관리 범위에 들어오는가.
+
+    판정은 여기 한 곳에만 산다. 바꾸는 쪽은 이것이 거짓이면 거절하고, 읽는 쪽은 거짓이면 민감한 field를 비운다 —
+    같은 규칙을 두 곳에 적어 두면 언젠가 한쪽만 고쳐진다.
+    """
+    return any(principal.allows(ORGANIZATION_MANAGE, unit=unit) for unit in units)
+
+
 class AccessAdministrationError(Exception):
     """The change would leave the organization in a state it must not be in."""
 
@@ -190,8 +199,7 @@ class AccessAdministration:
     # ---- guards ---------------------------------------------------------
 
     def _require_authority_over_member(self, principal: Principal, member_id: str) -> None:
-        units = self._repository.member_units(member_id)
-        if not any(principal.allows(ORGANIZATION_MANAGE, unit=unit) for unit in units):
+        if not manages_any_of(principal, self._repository.member_units(member_id)):
             raise AccessAdministrationDenied("이 구성원의 권한을 바꿀 수 있는 범위가 아닙니다")
 
     def _root(self) -> str:

@@ -15,16 +15,43 @@ import type { GraphEdge, GraphNode } from "./viewModels";
  * 그림 옆에는 언제나 같은 내용의 목록이 함께 있다. 스크린 리더와 WebGL이 없는 환경에서는 그 목록이 이 화면이다.
  */
 
-export const KIND_COLOR: Record<string, string> = {
-  person: "#7181f8",
-  team: "#7181f8",
-  project: "#5a63c9",
-  work_request: "#9a78df",
-  task: "#33aaff",
-  material: "#4da885",
-  meeting: "#d89038",
-  report: "#d96f8b",
+/**
+ * sigma 는 WebGL 로 그려서 CSS 변수를 이해하지 못한다 — 문자열 색을 요구한다.
+ * 그래서 값을 여기에 두지 않고 `:root` 의 토큰을 한 번 읽어서 넘긴다. 색의 주인은 styles.css 다.
+ */
+/**
+ * 그래프 색의 주인은 `styles.css` 다 (`--graph-*`). 여기서는 값을 갖지 않고 이름만 안다.
+ *
+ * 소비처가 둘이라 형태도 둘이다 — 범례 같은 DOM 은 `var(...)` 를 그대로 쓰고, sigma 는 WebGL 로
+ * 그려서 CSS 변수를 이해하지 못하므로 계산된 문자열을 넘겨야 한다.
+ */
+const NODE_TOKEN: Record<string, string> = {
+  person: "--graph-node-person",
+  team: "--graph-node-team",
+  project: "--graph-node-project",
+  work_request: "--graph-node-work-request",
+  task: "--graph-node-task",
+  material: "--graph-node-material",
+  meeting: "--graph-node-meeting",
+  report: "--graph-node-report",
 };
+
+/** DOM 에서 쓰는 형태. 인라인 style 에 그대로 넣으면 브라우저가 푼다. */
+export const KIND_COLOR: Record<string, string> = Object.fromEntries(
+  Object.entries(NODE_TOKEN).map(([kind, name]) => [kind, `var(${name})`]),
+);
+
+const tokenCache = new Map<string, string>();
+/** sigma 에 넘길 형태. 노드마다 다시 재지 않도록 이름당 한 번만 읽는다. */
+const token = (name: string): string => {
+  if (typeof document === "undefined") return "";
+  const cached = tokenCache.get(name);
+  if (cached !== undefined) return cached;
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  tokenCache.set(name, value);
+  return value;
+};
+const nodeColor = (kind: string): string => token(NODE_TOKEN[kind] ?? "--graph-node-fallback");
 
 export const KIND_LABEL: Record<string, string> = {
   person: "사람",
@@ -75,9 +102,9 @@ export const KIND_SOURCE: Record<string, string> = {
   report: "DailyReport",
 };
 
-const DIM_NODE = "#d9dde5";
-const DIM_EDGE = "#edf0f4";
-const ACTIVE_EDGE = "#6676f4";
+const DIM_NODE = () => token("--graph-node-dim");
+const DIM_EDGE = () => token("--graph-edge-dim");
+const ACTIVE_EDGE = () => token("--graph-edge-active");
 
 export const refOf = (node: GraphNode): string => `${node.kind}:${node.id}`;
 
@@ -170,7 +197,7 @@ export function GraphCanvas({
           // Size says how connected something is, so a label goes to what holds the picture together rather than to
           // whichever leaf the grid happened to reach first.
           size: (ref === centerRef ? 10 : 7) + ((degree.get(ref) ?? 0) / busiest) * 8,
-          color: KIND_COLOR[node.kind] ?? "#868e96",
+          color: nodeColor(node.kind),
           kind: node.kind,
           // Only the centre and the teams claim a label unconditionally; the rest are placed by label density.
           forceLabel: ref === centerRef || node.kind === "team" || node.kind === "project",
@@ -182,7 +209,7 @@ export function GraphCanvas({
           label: edge.count && edge.count > 1 ? `${edge.label ?? edge.kind} ×${edge.count}` : edge.label ?? edge.kind,
           size: Math.min(3, 1 + (edge.count ?? 1) * 0.4),
           type: "arrow",
-          color: "#c3c9d4",
+          color: token("--graph-edge"),
           forceLabel: false,
         });
       }
@@ -217,10 +244,10 @@ export function GraphCanvas({
           allowInvalidContainer: true,
           labelSize: 11,
           labelWeight: "650",
-          labelColor: { color: "#343944" },
+          labelColor: { color: token("--graph-label") },
           edgeLabelSize: 9,
           edgeLabelWeight: "650",
-          edgeLabelColor: { color: "#747d8d" },
+          edgeLabelColor: { color: token("--graph-edge-label") },
           // Labels are placed by density rather than all at once, so the middle of a busy graph stays readable.
           labelDensity: 0.55,
           labelGridCellSize: 130,
@@ -236,7 +263,7 @@ export function GraphCanvas({
             if (!center) return data;
             if (id === center) return { ...data, highlighted: true, size: data.size * 1.25, zIndex: 2, forceLabel: true };
             if (neighbourhood(center).has(id)) return { ...data, zIndex: 1, forceLabel: true };
-            return { ...data, color: DIM_NODE, label: "", zIndex: 0 };
+            return { ...data, color: DIM_NODE(), label: "", zIndex: 0 };
           },
           edgeReducer: (id, data) => {
             const center = focus();
@@ -244,8 +271,8 @@ export function GraphCanvas({
             const [source, target] = graph.extremities(id);
             const touching = source === center || target === center;
             return touching
-              ? { ...data, color: ACTIVE_EDGE, size: 2.2, forceLabel: true, zIndex: 2 }
-              : { ...data, color: DIM_EDGE, label: "", size: 0.6, forceLabel: false, zIndex: 0 };
+              ? { ...data, color: ACTIVE_EDGE(), size: 2.2, forceLabel: true, zIndex: 2 }
+              : { ...data, color: DIM_EDGE(), label: "", size: 0.6, forceLabel: false, zIndex: 0 };
           },
         });
       } catch {

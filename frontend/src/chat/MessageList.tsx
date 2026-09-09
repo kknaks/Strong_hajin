@@ -6,6 +6,7 @@ import { AssistantMarkdown } from "./AssistantMarkdown";
 import { EDGE_LABEL, EDGE_SENTENCE, GraphCanvas } from "../GraphCanvas";
 import type { ActionItem, AnswerResource, Conversation, ConversationTurn, GraphEdge, GraphNode, GraphReceipt, MaterialEvidence } from "../viewModels";
 import type { LocalFragment } from "./useConversations";
+import { Icon, type IconName } from "../Icon";
 
 const BOTTOM_SLACK_PX = 24;
 
@@ -106,7 +107,7 @@ export function MessageList({
       </div>
       {hasNew && !following && (
         <button className="ax-new-messages" onClick={jumpToBottom} type="button">
-          ↓ 새 메시지
+          <Icon name="arrow-down" size={12} /> 새 메시지
         </button>
       )}
     </div>
@@ -279,7 +280,7 @@ export function ExecutionRail({
       : progress === "retrying" && turn.attempt
         ? `${stateLabel.retrying} (${turn.attempt}번째)`
         : stateLabel[progress] ?? progress;
-  const icon = progress === "completed" ? "✓" : progress === "failed" ? "✕" : progress === "cancelled" ? "⊘" : "◌";
+  const icon: IconName = progress === "completed" ? "check" : progress === "failed" ? "close" : progress === "cancelled" ? "ban" : "pending";
 
   // Timings tick every second and are aria-hidden; only semantic phase/tool changes are announced.
   const receipts = tools.map((tool) => {
@@ -306,7 +307,7 @@ export function ExecutionRail({
 
   const path = <SearchPathSteps steps={steps} />;
   const outcome = [
-    `${icon} ${stateLabel[progress] ?? progress}`,
+    stateLabel[progress] ?? progress,
     tools.length ? `도구 ${tools.length}개` : null,
     steps.length ? `연결 ${steps.length}단계` : null,
   ]
@@ -345,7 +346,7 @@ export function ExecutionRail({
     <div className={`ax-rail ${progress}`} data-motion={reduced ? "reduced" : "normal"} data-progress={progress} role="group">
       <div className="ax-rail-head">
         <span aria-hidden className={`ax-rail-icon ${reduced ? "" : "spin"}`}>
-          {icon}
+          <Icon name={icon} size={14} />
         </span>
         <span aria-live="polite" className="ax-rail-phrase">
           {phrase}

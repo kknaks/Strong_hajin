@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActionItemCard, ActionItemDrawer } from "./ActionCenter";
 
 import {
@@ -16,7 +16,7 @@ import {
   transitionDirectTask,
   updateTask,
 } from "./api";
-import { dueDayText, formatDate, personName, seoulToday, taskStateLabel, workRequestStateLabel } from "./labels";
+import { dueDayText, formatDate, personName, seoulToday, emptyValue, taskFilterLabel, taskFilterOptions, taskStateLabel, workRequestStateLabel } from "./labels";
 import { type ActionItemEnvelope, type DirectTask, type Persona, type TaskAssignment, type TaskPatch, type TaskState, type WorkRequest } from "./viewModels";
 import {
   CreateWorkDrawer,
@@ -29,6 +29,9 @@ import {
   type TaskAction,
 } from "./WorkModals";
 import { ChecklistCue, PersonChip, TaskCard, TaskKanban, TaskTimeline } from "./WorkViews";
+import { Empty, EmptyValue } from "./Empty";
+import { Icon } from "./Icon";
+import { Popover } from "./Popover";
 
 type MyWorkPageProps = {
   personaId: string;
@@ -100,6 +103,9 @@ export function MyWorkPage({
   const [selectedTask, setSelectedTask] = useState<DirectTask | null>(null);
   const [selectedRequest, setSelectedRequest] = useState<WorkRequest | null>(null);
   const [isCreating, setIsCreating] = useState(false);
+  // 볼 것이 있을 때만 펼친다. 사람이 접거나 편 뒤에는 그 선택이 이긴다.
+  const [decisionsOpen, setDecisionsOpen] = useState(false);
+  const decisionsSettled = useRef(false);
 
   const reload = useCallback(async () => {
     const [work, closed, judgements, requests, nextSent] = await Promise.all([
@@ -138,6 +144,14 @@ export function MyWorkPage({
       cancelled = true;
     };
   }, [onError, reload]);
+
+  // 처음 한 번만 자동으로 정한다 — 볼 것이 있으면 펼치고, 없으면 접는다.
+  // 그 뒤로는 사람이 접고 편 것이 이긴다. 새로 고칠 때마다 다시 펴면 접어 둔 뜻을 무시하는 것이다.
+  useEffect(() => {
+    if (decisionsSettled.current || actionItems.length === 0) return;
+    decisionsSettled.current = true;
+    setDecisionsOpen(true);
+  }, [actionItems.length]);
 
   // The shell awaits this to know the visible projection has settled; re-reading in place keeps filter/view state.
   useEffect(() => {
@@ -291,26 +305,34 @@ export function MyWorkPage({
       </div>
 
       <div className="work-layout">
-        <aside>
+        {/* v2 05 List 는 단일 패널이라 옆 열이 없다. 판단할 것은 목록 위에 접히는 패널로 앉는다.
+            비어 있으면 스스로 접혀서, 볼 것이 없을 때 목록을 아래로 밀지 않는다. */}
+        <section aria-label="판단이 필요한 업무" className="decision-section" data-open={decisionsOpen}>
           <div className="column-head">
-            <h2>판단이 필요한 업무</h2>
+            <button
+              aria-expanded={decisionsOpen}
+              className="decision-toggle"
+              onClick={() => setDecisionsOpen((open) => !open)}
+              type="button"
+            >
+              <span aria-hidden className={decisionsOpen ? "caret open" : "caret"}>
+                <Icon name="chevron-down" size={12} />
+              </span>
+              판단이 필요한 업무
+            </button>
             {decisionCount > 0 && <span className="count-badge">{decisionCount}</span>}
           </div>
-          <div className="decision-panel">
-            {actionItems.length === 0 ? (
-              <div className="empty-state">
-                <b>판단할 항목이 없습니다</b>
-                <p>동료의 요청, 관리자의 배정, AX 제안이 오면 여기에 쌓입니다.</p>
-              </div>
+          {decisionsOpen &&
+            (actionItems.length === 0 ? (
+              <Empty description="동료의 요청, 관리자의 배정, AX 제안이 오면 여기에 쌓입니다." title="판단할 항목이 없습니다" />
             ) : (
               <div className="card-stack">
                 {actionItems.map((item) => (
                   <ActionItemCard item={item} key={item.action_item_id} personas={people} onOpen={setSelectedActionItem} />
                 ))}
               </div>
-            )}
-          </div>
-        </aside>
+            ))}
+        </section>
 
         <div>
           <div className="list-toolbar">
@@ -331,18 +353,37 @@ export function MyWorkPage({
             </div>
             {tab === "mine" && (
               <div className="toolbar-group">
-                <label className="sr-only" htmlFor="task-state-filter">
-                  상태 필터
-                </label>
-                <select id="task-state-filter" onChange={(event) => setFilter(event.target.value as TaskFilter)} value={filter}>
-                  <option value="active">진행 중·시작 전·막힘</option>
-                  <option value="all">전체 상태</option>
-                  {(["open", "in_progress", "blocked", "done", "cancelled"] as const).map((state) => (
-                    <option key={state} value={state}>
-                      {taskStateLabel[state]}
-                    </option>
-                  ))}
-                </select>
+                {/* v2 05 의 툴바: 지금 무엇을 보고 있는가가 왼쪽이고, 고르는 일은 팝오버가 받는다 (v2 14) */}
+                <Popover
+                  label="상태 필터"
+                  trigger={({ open, props }) => (
+                    <button className={open ? "filter-chip on" : "filter-chip"} {...props}>
+                      {taskFilterLabel[filter]}
+                      <Icon name="chevron-down" size={12} />
+                    </button>
+                  )}
+                >
+                  {(close) => (
+                    <div role="radiogroup">
+                      {taskFilterOptions.map((option) => (
+                        <button
+                          aria-checked={filter === option}
+                          className="popover-item"
+                          key={option}
+                          onClick={() => {
+                            setFilter(option);
+                            close();
+                          }}
+                          role="radio"
+                          type="button"
+                        >
+                          {taskFilterLabel[option]}
+                          {filter === option && <Icon className="icon-check" name="check" size={14} />}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </Popover>
                 <div aria-label="보기 방식" className="segmented" role="tablist">
                   {views.map((item) => (
                     <button aria-selected={view === item.id} key={item.id} onClick={() => setView(item.id)} role="tab" type="button">
@@ -372,10 +413,7 @@ export function MyWorkPage({
                   {organizationTasks.length === 0 && (
                     <tr>
                       <td colSpan={4}>
-                        <div className="empty-state">
-                          <b>조직에 진행 중인 다른 업무가 없습니다</b>
-                          <p>누군가 업무를 맡으면 여기에서 보입니다.</p>
-                        </div>
+                        <Empty description="누군가 업무를 맡으면 여기에서 보입니다." title="조직에 진행 중인 다른 업무가 없습니다" />
                       </td>
                     </tr>
                   )}
@@ -384,7 +422,7 @@ export function MyWorkPage({
                       <td className="title-cell">{task.title}</td>
                       <td className="center">{displayNameOf(people, task.assignee?.member_id, "담당자 없음")}</td>
                       <td className="center">{taskStateLabel[task.state] ?? task.state}</td>
-                      <td className="center">{task.due_date ?? "—"}</td>
+                      <td className="center">{task.due_date ?? <EmptyValue />}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -435,10 +473,7 @@ export function MyWorkPage({
                     {sentAssignments.length === 0 && (
                       <tr>
                         <td colSpan={4}>
-                          <div className="empty-state">
-                            <b>내가 담당자를 지정한 업무가 없습니다</b>
-                            <p>새 업무 추가에서 담당자를 팀원으로 고르면 그 사람에게 갑니다.</p>
-                          </div>
+                          <Empty description="새 업무 추가에서 담당자를 팀원으로 고르면 그 사람에게 갑니다." title="내가 담당자를 지정한 업무가 없습니다" />
                         </td>
                       </tr>
                     )}
@@ -493,7 +528,8 @@ export function MyWorkPage({
                 <tr>
                   <th>업무명</th>
                   <th className="center">상태</th>
-                  <th className="center">시작일</th>
+                  {/* v2 15: 좁아지면 시작일이 가장 먼저 숨는다. 업무명·상태·기한은 끝까지 남는다 */}
+                  <th className="center col-start-date">시작일</th>
                   <th className="center">기한</th>
                   <th className="center">담당자</th>
                   <th className="center">출처</th>
@@ -504,21 +540,21 @@ export function MyWorkPage({
                 {visibleTasks.length === 0 && (
                   <tr>
                     <td colSpan={7}>
-                      <div className="empty-state">
-                        <b>{filter === "active" || filter === "all" ? "등록된 업무가 없습니다" : "조건에 맞는 업무가 없습니다"}</b>
-                        <p>{filter === "active" || filter === "all" ? "오늘 할 일을 등록하면 여기에 쌓입니다." : "다른 상태를 선택해 보세요."}</p>
-                        {filter !== "active" && filter !== "all" ? (
-                          <button className="btn" onClick={() => setFilter("active")} type="button">
-                            필터 초기화
-                          </button>
-                        ) : (
-                          canManageOwnTasks && (
-                            <button className="btn" onClick={() => setIsCreating(true)} type="button">
-                              첫 업무 만들기
-                            </button>
-                          )
-                        )}
-                      </div>
+                      {filter !== "active" && filter !== "all" ? (
+                        <Empty
+                          description="다른 상태를 선택해 보세요."
+                          onAction={() => setFilter("active")}
+                          title="조건에 맞는 업무가 없습니다"
+                          variant="filter"
+                        />
+                      ) : (
+                        <Empty
+                          actionLabel="첫 업무 만들기"
+                          description="오늘 할 일을 등록하면 여기에 쌓입니다."
+                          onAction={canManageOwnTasks ? () => setIsCreating(true) : undefined}
+                          title="등록된 업무가 없습니다"
+                        />
+                      )}
                     </td>
                   </tr>
                 )}
@@ -529,7 +565,7 @@ export function MyWorkPage({
                       key={task.task_id}
                       onOpen={() => setSelectedTask(task)}
                       requester={task.origin?.actor ? personName(task.origin.actor.display_name) : "—"}
-                      startDate={task.start_date ? formatDate(task.start_date) : "—"}
+                      startDate={task.start_date ? formatDate(task.start_date) : emptyValue}
                       task={task}
                       today={today}
                     />
@@ -657,7 +693,7 @@ function TaskTableRow({
       <td className="center">
         <StatusText state={task.state} />
       </td>
-      <td className="center">{startDate}</td>
+      <td className="center col-start-date">{startDate}</td>
       <td className="center">
         <DueText task={task} today={today} />
       </td>
@@ -716,10 +752,7 @@ function RequestRelationSection({
           {requests.length === 0 && (
             <tr>
               <td colSpan={5}>
-                <div className="empty-state">
-                  <b>{emptyTitle}</b>
-                  <p>{emptyHint}</p>
-                </div>
+                <Empty description={emptyHint} title={emptyTitle} />
               </td>
             </tr>
           )}

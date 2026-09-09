@@ -112,7 +112,8 @@ describe("writing down the first steps with the work", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "참고 업무 연결" }));
     await waitFor(() => expect(api.getTasks).toHaveBeenCalled());
-    fireEvent.change(await screen.findByLabelText("연결할 이전 업무"), { target: { value: "task-0" } });
+    fireEvent.click(await screen.findByLabelText("연결할 이전 업무"));
+    fireEvent.click(screen.getByRole("option", { name: "1분기 정산" }));
     fireEvent.click(screen.getByRole("button", { name: "연결" }));
     expect(screen.getByText("1분기 정산")).toBeTruthy();
 
@@ -128,7 +129,8 @@ describe("writing down the first steps with the work", () => {
     fireEvent.click(screen.getByRole("tab", { name: "요청" }));
     fireEvent.change(screen.getByLabelText("요청할 업무"), { target: { value: "이번 분기 보고" } });
     fireEvent.click(screen.getByRole("button", { name: "참고 업무 연결" }));
-    fireEvent.change(await screen.findByLabelText("연결할 이전 업무"), { target: { value: "task-0" } });
+    fireEvent.click(await screen.findByLabelText("연결할 이전 업무"));
+    fireEvent.click(screen.getByRole("option", { name: "지난 분기 보고" }));
     fireEvent.click(screen.getByRole("button", { name: "연결" }));
 
     fireEvent.click(screen.getByRole("button", { name: "업무 요청 보내기" }));

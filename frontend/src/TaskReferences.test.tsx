@@ -107,7 +107,8 @@ describe("참고 업무", () => {
 
     fireEvent.click(within(section).getByRole("button", { name: "업무 연결" }));
     await waitFor(() => expect(api.getTasks).toHaveBeenCalled());
-    fireEvent.change(await within(section).findByLabelText("연결할 업무"), { target: { value: "task-9" } });
+    fireEvent.click(await within(section).findByLabelText("연결할 업무"));
+    fireEvent.click(await within(section).findByRole("option", { name: "다른 업무" }));
     fireEvent.click(within(section).getByRole("button", { name: "연결" }));
 
     await waitFor(() => expect(api.addTaskReference).toHaveBeenCalledWith("task-1", "task-9"));

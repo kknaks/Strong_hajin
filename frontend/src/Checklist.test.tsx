@@ -93,7 +93,7 @@ describe("task checklist", () => {
     renderDrawer([step("i1", "자료 모으기", 1, true), step("i2", "초안 쓰기", 2), step("i3", "검토 요청", 3)]);
     const section = await screen.findByLabelText("체크리스트");
     await waitFor(() => expect(within(section).getByText("1/3")).toBeTruthy());
-    expect(Array.from(section.querySelectorAll(".checklist-item span")).map((node) => node.textContent)).toEqual([
+    expect(Array.from(section.querySelectorAll(".checklist-item .checkbox-label")).map((node) => node.textContent)).toEqual([
       "자료 모으기",
       "초안 쓰기",
       "검토 요청",
@@ -190,9 +190,9 @@ describe("task checklist", () => {
   it("shows a compact cue on list rows only when the task actually has steps", async () => {
     const { ChecklistCue } = await import("./WorkViews");
     const { container, rerender } = render(<ChecklistCue progress={{ done: 1, total: 3 }} />);
-    expect(container.textContent).toBe("☐ 1/3");
+    expect(container.textContent).toBe(" 1/3");
     rerender(<ChecklistCue progress={{ done: 3, total: 3 }} />);
-    expect(container.textContent).toBe("☑ 3/3");
+    expect(container.textContent).toBe(" 3/3");
     expect(container.querySelector(".checklist-cue.complete")).toBeTruthy();
     rerender(<ChecklistCue progress={{ done: 0, total: 0 }} />);
     expect(container.textContent).toBe("");
@@ -356,7 +356,7 @@ describe("task checklist", () => {
     fireEvent.click(within(section).getByRole("button", { name: "초안 쓰기 위로" }));
     await waitFor(() => expect(api.reorderChecklist).toHaveBeenCalledWith("task-1", ["i2", "i1", "i3"]));
     await waitFor(() =>
-      expect(Array.from(section.querySelectorAll(".checklist-item span")).map((node) => node.textContent)).toEqual([
+      expect(Array.from(section.querySelectorAll(".checklist-item .checkbox-label")).map((node) => node.textContent)).toEqual([
         "초안 쓰기",
         "자료 모으기",
         "검토 요청",
@@ -778,7 +778,8 @@ describe("changing who holds the work", () => {
     const { onNotice } = renderDrawer({ canAssign: true, onChanged });
 
     fireEvent.click(await screen.findByRole("button", { name: "담당자 변경" }));
-    fireEvent.change(await screen.findByLabelText("담당자 변경 대상"), { target: { value: "jiho" } });
+    fireEvent.click(await screen.findByLabelText("담당자 변경 대상"));
+    fireEvent.click(screen.getByRole("option", { name: "지호" }));
     fireEvent.change(screen.getByLabelText("담당자 변경 사유"), { target: { value: "제가 이어서 합니다" } });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "변경" }));

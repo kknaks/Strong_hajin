@@ -1,0 +1,16 @@
+/* Pretendard Variable (SIL OFL 1.1) — https://github.com/orioncactus/pretendard v1.3.9
+   앱은 시스템 설치 폰트에 기대지만, claude.ai/design 렌더에는 폰트 파일이 같이 가야 해서 여기서 싣는다. */
+@font-face {
+  font-family: "Pretendard Variable";
+  font-weight: 45 920;
+  font-style: normal;
+  font-display: swap;
+  src: url("./PretendardVariable.woff2") format("woff2-variations");
+}
+@font-face {
+  font-family: "Pretendard";
+  font-weight: 45 920;
+  font-style: normal;
+  font-display: swap;
+  src: url("./PretendardVariable.woff2") format("woff2-variations");
+}

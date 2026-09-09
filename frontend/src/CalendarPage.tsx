@@ -6,6 +6,8 @@ import { MeetingDrawer } from "./MeetingDrawer";
 import type { CalendarEntry, DirectTask, Persona, TaskPatch } from "./viewModels";
 import { TaskDetailDrawer, type TaskAction } from "./WorkModals";
 import { TaskCalendar } from "./WorkViews";
+import { Empty } from "./Empty";
+import { Skeleton } from "./Skeleton";
 
 type CalendarPageProps = {
   personaId: string;
@@ -186,13 +188,10 @@ export function CalendarPage({
  * time and nothing else, and is rendered as such rather than as a meeting with hidden fields.
  */
 function MeetingList({ entries, onOpen }: { entries: CalendarEntry[] | null; onOpen: (meetingId: string) => void }) {
-  if (entries === null) return <p className="t-meta">회의를 불러오는 중…</p>;
+  if (entries === null) return <Skeleton label="회의를 불러오는 중" />;
   if (entries.length === 0) {
     return (
-      <div className="empty-state">
-        <b>회의가 없습니다</b>
-        <p>일정이 잡히면 여기에 쌓입니다.</p>
-      </div>
+      <Empty description="일정이 잡히면 여기에 쌓입니다." title="회의가 없습니다" />
     );
   }
   return (

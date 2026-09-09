@@ -1,4 +1,5 @@
 import type {
+  AccessGrant,
   ActionItemDetail,
   CalendarEntry,
   MeetingDetail,
@@ -504,6 +505,107 @@ export async function getOrganizationTree(): Promise<OrganizationUnitNode[]> {
 
 export async function getOrganizationUnitMembers(unitId: string): Promise<OrganizationMember[]> {
   return request<OrganizationMember[]>(`/api/organization/units/${unitId}/members`);
+}
+
+/**
+ * 한 사람의 여섯 축(계층 · 소속 · 직책 · 직급 · 직무 · 권한)과 재직 · 계정 유무를 한 번에.
+ *
+ * 응답의 **모양은 누구에게나 같다** — 볼 자격이 없는 축은 자리를 남기고 값만 비운다(`phone`·`birth_date` 는
+ * null, `grants`·`revoked_grants` 는 빈 배열). 그래서 화면은 모양으로 권한을 추측하지 않는다.
+ */
+export type OrganizationMemberAxes = {
+  member_id: string;
+  display_name: string;
+  employment_state: string;
+  employment_type: string | null;
+  /** 들어올 문이 있는가. 권한이 아니라 로그인 계정의 유무다. */
+  has_account: boolean;
+  phone: string | null;
+  birth_date: string | null;
+  /** 회사에서 이 사람 자리까지 내려오는 길. */
+  hierarchy_path: Array<{ unit_id: string; name: string; unit_type: string | null }>;
+  memberships: Array<{ unit_id: string; unit_name: string; kind: string; valid_from: string; valid_until: string | null }>;
+  appointments: Array<{
+    unit_id: string;
+    unit_name: string;
+    position: string;
+    role_id: string | null;
+    kind: string;
+    valid_from: string;
+    valid_until: string | null;
+  }>;
+  grade: { id: string; name: string } | null;
+  jobs: Array<{ id: string; name: string; kind: string | null }>;
+  grants: AccessGrant[];
+  /** 회수는 지우는 것이 아니다 — 지금 닿지 않는다는 사실과 언제 거두었는지가 함께 남는다. */
+  revoked_grants: Array<{
+    grant_id: string;
+    role_id: string | null;
+    role_label: string | null;
+    scope_kind: string;
+    scope_ref: string | null;
+    scope_name: string | null;
+    valid_from: string;
+    revoked_at: string | null;
+  }>;
+};
+
+/** 이력을 되짚을 수 있는 축. 계층은 여기 없다 — 계층은 소속이 지나온 길을 다시 그린 것이다. */
+export type MemberHistoryAxis = "membership" | "appointment" | "grade" | "job" | "grant";
+
+/** 한 축이 지나온 기간 하나. 지금 값도 여기 한 행으로 들어 있다 — 아직 끝나지 않은 기간이다. */
+export type MemberHistoryEntry = {
+  value: string | null;
+  unit_name: string | null;
+  kind: string | null;
+  valid_from: string;
+  valid_until: string | null;
+  reason: string | null;
+  actor: string | null;
+};
+
+/** 조직 축에서 무슨 일이 있었는가, 최신순. `axis` 는 서버가 정한 한국어 축 이름이다(권한 · 소속 · 직책 · 조직). */
+export type OrganizationActivityEvent = {
+  occurred_at: string;
+  axis: string;
+  event_kind: string;
+  summary: string;
+  reason: string | null;
+  actor_id: string;
+  actor_name: string;
+  target_id: string;
+  target_type: string;
+  /**
+   * 이 행 다음부터 읽는 자리표 — (시각, id) 복합 커서다. 「더 보기」는 이것을 **그대로** 되보낸다.
+   *
+   * 서버 정렬이 (시각, id) 라서 경계도 그 둘이어야 한다. 시각만 되보내면 같은 시각의 나머지 사건이
+   * 다음 쪽에서 통째로 빠진다 (PR #2 F4). 옛 형식(시각만)도 서버가 받긴 하지만 그 건너뜀이 그대로 남는다.
+   */
+  cursor: string;
+};
+
+export async function getOrganizationMemberAxes(memberId: string): Promise<OrganizationMemberAxes> {
+  return request<OrganizationMemberAxes>(`/api/organization/members/${memberId}`);
+}
+
+/** 본인이거나 그 사람을 관리할 수 있는 사람만 읽는다 — 그 밖에는 403 이다. */
+export async function getOrganizationMemberHistory(memberId: string, axis: MemberHistoryAxis): Promise<MemberHistoryEntry[]> {
+  return request<MemberHistoryEntry[]>(`/api/organization/members/${memberId}/history?axis=${axis}`);
+}
+
+/**
+ * 변경 기록. 조직을 말하지 않으면 조직 전체를 물은 것이고, 그때 필요한 자격도 조직 전체에 대한 것이다.
+ *
+ * 다음 쪽은 마지막 행의 `occurred_at` 을 `cursor` 로 다시 물어 받는다 — 서버가 그 시각보다 앞선 것만 준다.
+ */
+export async function getOrganizationActivity(input: { unitId?: string | null; limit?: number; cursor?: string | null } = {}): Promise<
+  OrganizationActivityEvent[]
+> {
+  const query = new URLSearchParams();
+  if (input.unitId) query.set("unit_id", input.unitId);
+  query.set("limit", String(input.limit ?? 50));
+  if (input.cursor) query.set("cursor", input.cursor);
+  return request<OrganizationActivityEvent[]>(`/api/organization/activity?${query.toString()}`);
 }
 
 export async function getWorkRequestTimeline(requestId: string): Promise<RequestTimeline> {

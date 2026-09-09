@@ -5,6 +5,10 @@ from enum import StrEnum
 import os
 
 
+#: 「바로 로그인」 목록이 보여 줄 계정의 도메인, 아무 말이 없을 때. 조직마다 다르므로 실행 환경이 정한다.
+DEFAULT_DEMO_EMAIL_DOMAIN = "scax.example"
+
+
 class RuntimeProfile(StrEnum):
     DEVELOPMENT = "development"
     TEST = "test"
@@ -28,6 +32,8 @@ class Settings:
     meeting_queue_visibility_timeout: int = 120
     meeting_queue_max_attempts: int = 3
     meeting_worker_concurrency: int = 1
+    #: 이 도메인의 계정만 「바로 로그인」 목록에 오른다 — 그 밖의 실제 계정은 로컬 DB에 있어도 나열되지 않는다.
+    demo_email_domain: str = DEFAULT_DEMO_EMAIL_DOMAIN
 
     @property
     def developer_auth_enabled(self) -> bool:
@@ -64,6 +70,7 @@ class Settings:
             meeting_queue_visibility_timeout=int(os.getenv("AX_MEETING_QUEUE_VISIBILITY_TIMEOUT", "120")),
             meeting_queue_max_attempts=int(os.getenv("AX_MEETING_QUEUE_MAX_ATTEMPTS", "3")),
             meeting_worker_concurrency=int(os.getenv("AX_MEETING_WORKER_CONCURRENCY", "1")),
+            demo_email_domain=os.getenv("AX_DEMO_EMAIL_DOMAIN", DEFAULT_DEMO_EMAIL_DOMAIN),
         )
 
 

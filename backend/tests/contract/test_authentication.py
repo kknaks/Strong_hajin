@@ -112,4 +112,39 @@ def test_the_member_directory_puts_names_to_ids_for_anyone_signed_in(tmp_path) -
     client.post("/api/auth/login", json={"email": demo_email("mina"), "password": DEMO_PASSWORD})
     members = client.get("/api/organization/members").json()
     assert {member["id"] for member in members} >= {"mina", "jiho"}
-    assert all(set(member) == {"id", "display_name"} for member in members)
+    # 명부의 모양은 누구에게나 같고, 로그인만으로는 이름과 id 밖에 열리지 않는다. 인사 정보는 자리만 오고
+    # 값은 비어 있다 — 응답의 모양이 사람마다 달라지면 client가 그 모양으로 권한을 추측하게 된다.
+    assert all(set(member) == {"id", "display_name", "phone", "birth_date", "has_account"} for member in members)
+    assert all(member["phone"] is None and member["birth_date"] is None for member in members)
+    # 계정 유무는 권한이 아니라 들어올 문이 있는지다 — 명부와 같은 기준으로 누구에게나 보인다.
+    assert all(member["has_account"] is True for member in members)
+
+
+def test_which_domain_the_shortcut_list_shows_is_the_environment_s_to_say(tmp_path, monkeypatch) -> None:
+    """조직마다 메일 도메인이 다르다 — 어느 도메인을 「바로 로그인」으로 볼지는 실행 환경이 정한다.
+
+    The shortcut list only ever shows one domain, so that a real account in a local database is never enumerated
+    beside the demo's own. Which domain that is was a constant in the code, which meant a local stack running a real
+    organization's data had no way to say so. `AX_DEMO_EMAIL_DOMAIN` is that way, and the seed writes its accounts at
+    the same domain the list reads — one value, one place.
+    """
+    monkeypatch.setenv("AX_PROFILE", RuntimeProfile.TEST)
+    monkeypatch.setenv("AX_JOB_QUEUE_BACKEND", "memory")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'demo.db'}")
+    monkeypatch.setenv("AX_DEMO_EMAIL_DOMAIN", "example.test")
+
+    settings = Settings.from_environment()
+    assert settings.demo_email_domain == "example.test"
+
+    reset_database(settings.database_url)
+    client = TestClient(create_app(settings))
+    listed = client.get("/api/auth/providers").json()["demo_accounts"]
+    assert {account["member_id"] for account in listed} == {"yuna", "jiho", "mina", "hyeon", "sora", "minseok"}
+    assert all(account["email"].endswith("@example.test") for account in listed)
+    # 목록은 지나가는 길일 뿐이다 — 그 자격이 실제 로그인 route를 지나야 세션이 생긴다.
+    shortcut = listed[0]
+    assert client.post("/api/auth/login", json={"email": shortcut["email"], "password": DEMO_PASSWORD}).status_code == 200
+
+    # 아무 말이 없으면 제품의 예시 도메인이다.
+    monkeypatch.delenv("AX_DEMO_EMAIL_DOMAIN")
+    assert Settings.from_environment().demo_email_domain == "scax.example"

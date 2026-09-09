@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { assignToProject, createProject, getMemberDirectory, getProject, listProjects, releaseFromProject } from "./api";
 import { formatDate, personName, taskStateLabel } from "./labels";
+import { Select } from "./Select";
 import type { Persona, Project, ProjectDetail } from "./viewModels";
 
 /**
@@ -177,16 +178,15 @@ export function ProjectPage({ personaId, onError }: { personaId: string; onError
               </ul>
               {selected.may_manage && (
               <div className="project-join">
-                <select aria-label="붙일 구성원" onChange={(event) => setJoining(event.target.value)} value={joining}>
-                  <option value="">구성원 선택</option>
-                  {directory
+                <Select
+                  label="붙일 구성원"
+                  onChange={setJoining}
+                  options={directory
                     .filter((person) => !joined.has(person.id))
-                    .map((person) => (
-                      <option key={person.id} value={person.id}>
-                        {personName(person.display_name)}
-                      </option>
-                    ))}
-                </select>
+                    .map((person) => ({ value: person.id, label: personName(person.display_name) }))}
+                  placeholder="구성원 선택"
+                  value={joining}
+                />
                 <button className="btn h30" disabled={busy || !joining} onClick={() => void join(joining, "member")} type="button">
                   참여로 붙이기
                 </button>

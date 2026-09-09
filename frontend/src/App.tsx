@@ -14,6 +14,7 @@ import { ProjectPage } from "./ProjectPage";
 import { RelationGraphPage } from "./RelationGraphPage";
 import { TodayPage } from "./TodayPage";
 import type { ConversationContextReference, DirectTask, OrganizationProfile, Persona, ProductSurface } from "./viewModels";
+import { Icon } from "./Icon";
 
 const navigation: ReadonlyArray<{ id: ProductSurface; label: string }> = [
   { id: "today", label: "오늘" },
@@ -47,6 +48,8 @@ export default function App() {
   const [surface, setSurface] = useState<ProductSurface>("today");
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  // 1280 단에서만 쓰이는 사이드바 덮개. 그 위 폭에서는 CSS 가 사이드바를 늘 보이게 해서 값이 무시된다.
+  const [railOpen, setRailOpen] = useState(false);
   const [isAxOpen, setIsAxOpen] = useState(false);
   const [contextOptions, setContextOptions] = useState<LabeledContextReference[]>([]);
   const [selectedContextKey, setSelectedContextKey] = useState("");
@@ -266,7 +269,9 @@ export default function App() {
 
   return (
     <main className="thesc-shell">
-      <aside className="rail">
+      {/* 1280 단에서는 사이드바가 화면을 덮으므로, 그 뒤를 덮는 스크림도 함께 온다 (v2 15) */}
+      {railOpen && <div aria-hidden className="rail-scrim" onMouseDown={() => setRailOpen(false)} />}
+      <aside className={railOpen ? "rail open" : "rail"}>
         <div className="wordmark">
           <span aria-hidden className="wordmark-mark">
             SC
@@ -290,7 +295,15 @@ export default function App() {
         </div>
         <nav aria-label="제품 탐색">
           {visibleNavigation.map((item) => (
-            <button className={surface === item.id ? "active" : ""} key={item.id} onClick={() => setSurface(item.id)} type="button">
+            <button
+              className={surface === item.id ? "active" : ""}
+              key={item.id}
+              onClick={() => {
+                setSurface(item.id);
+                setRailOpen(false);
+              }}
+              type="button"
+            >
               {item.label}
             </button>
           ))}
@@ -300,6 +313,15 @@ export default function App() {
 
       <section className="canvas">
         <header className="canvas-topbar">
+          <button
+            aria-expanded={railOpen}
+            aria-label="탐색 열기"
+            className="rail-toggle"
+            onClick={() => setRailOpen((open) => !open)}
+            type="button"
+          >
+            <Icon name="list" />
+          </button>
           <nav aria-label="현재 위치" className="breadcrumb">
             {surface === "today" ? (
               <b>홈</b>
@@ -395,7 +417,7 @@ export default function App() {
 
       {!isAxOpen && (
         <button className="ax-launcher" onClick={() => setIsAxOpen(true)} type="button">
-          <span aria-hidden>✦</span> AX
+          <Icon name="sparkle" size={14} /> AX
         </button>
       )}
       {isAxOpen && (

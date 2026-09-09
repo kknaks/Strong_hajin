@@ -165,6 +165,21 @@ provider는 실제 Codex CLI다(`CodexCliProviderAdapter`). 격리된 runtime ho
 
 node마다 입력 snapshot과 결과가 `workflow_runs`·`workflow_node_executions`에 남고, 만들어진 초안은 `definition_version_id`를 들고 다닌다. 제품에 통합된 workflow는 아직 이 하나다.
 
+## 디자인 시스템
+
+화면 부품은 `frontend/src`에 있고, 그 가운데 **디자인 부품 19개**만 `frontend/ds-entry.tsx`가 따로 내보낸다. 페이지·api·viewModels는 부품이 아니라 거기 없다.
+
+```sh
+make storybook         # 부품 카탈로그, :6006
+make storybook-build   # 정적 빌드 — 설정이 상했는지 보는 가장 빠른 길
+```
+
+스토리는 `.design-sync/previews/<Name>.tsx` **한 벌**이다. 같은 파일을 Storybook과 claude.ai/design 프리뷰 카드가 같이 읽는다 — 두 벌을 두면 한쪽에만 스토리를 더하는 일이 반드시 생기고, 그때부터 둘은 다른 시스템을 보여 준다. 스토리를 더하려면 그 파일에 대문자로 시작하는 export를 하나 더 쓴다. 두 곳에 같이 나간다.
+
+부품을 claude.ai/design 프로젝트로 올리는 것은 `/design-sync`다. 화면을 지을 때의 규약(클래스 어휘·토큰·오버레이 규칙)은 `.design-sync/conventions.md`가, 이 저장소만의 함정은 `.design-sync/NOTES.md`가 갖는다. 시각 규칙의 원본은 `docs/design/design-system-v2.dc.html`이다.
+
+규칙 하나만 여기 옮겨 둔다: **네이티브 `<select>`와 `input[type=date|time]`은 쓰지 않는다.** 브라우저가 OS 위젯으로 그려서 토큰이 닿지 않고, 표기가 로캘을 따라 갈라진다 — 같은 값이 사람마다 `2026/09/30`과 `09/30/2026`, `14:30`과 `오후 2:30`으로 읽힌다. 대신 `DateField`·`DatePicker`·`TimeField`·`TimeRangeField`·`Select`·`MultiSelect`를 쓴다.
+
 ## 검증
 
 ```sh

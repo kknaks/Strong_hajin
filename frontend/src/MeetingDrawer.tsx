@@ -15,6 +15,7 @@ import {
 import { startLiveTranscription, type LiveTranscriptionSession, type SettledSegment } from "./liveTranscription";
 import { formatDateTime, personName } from "./labels";
 import { Drawer } from "./Modal";
+import { Skeleton } from "./Skeleton";
 import type {
   MeetingDetail,
   MeetingRecordingHandle,
@@ -345,7 +346,7 @@ export function MeetingDrawer({
       title={meeting?.title ?? "불러오는 중…"}
     >
       {!meeting ? (
-        <p className="t-meta">회의를 불러오는 중…</p>
+        <Skeleton label="회의를 불러오는 중" rows={4} />
       ) : (
         <>
           <dl className="drawer-facts">

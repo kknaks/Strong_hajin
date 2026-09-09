@@ -6,7 +6,7 @@
 
 | ERD | 테이블 | 비고 |
 |---|---|---|
-| MEMBER | `members` | `account_ref`는 로그인 계정 참조(developer provider: `developer:<id>`), `record_status` |
+| MEMBER | `members` | `account_ref`는 로그인 계정 참조(developer provider: `developer:<id>`), `record_status`. `phone`·`birth_date`는 옵셔널 인사 정보로, 명부 응답에는 `organization.manage` 권한이 있는 Principal에게만 값이 실린다(로컬은 `make sync-demo-schema`로 적용, 운영 스키마는 별도 gate) |
 | EMPLOYMENT_PERIOD | `employment_periods` | 한 시점 열린 재직 기간 1개; 모든 권한 판정이 유효 재직을 선행 요구 |
 | ORGANIZATION_UNIT_TYPE | `organization_unit_types` | 회사·본부·실·팀·파트. 깊이와 종류는 별개 |
 | ORGANIZATION_UNIT | `organization_units` | `parent_id` 자기 참조, `unit_type_id`, `lifecycle`, `abolished_at`, `display_order` |
@@ -21,6 +21,10 @@
 | RESOURCE_RELATIONSHIP | `resource_relationships` | WorkRequest 생성 시 requester·assignee·cc 관계를 기록. cc 구성원은 요청 목록·timeline·댓글·첨부 열람이 가능하고 판단은 못 한다(`cc_member_ids`, `GET /api/work-request-cc-candidates`) |
 
 Projection: `GET /api/organization/tree`, `GET /api/organization/units/{id}/members`(하위 조직 포함, 재직자만), `GET /api/organization/me`.
+Projection: `GET /api/organization/members`(명부 — `id`·`display_name`·`has_account`, `phone`·`birth_date`는 `organization.manage` 보유자에게만 값).
+Projection: `GET /api/organization/members/{id}`(6축 통합 — 계층·소속·직책·직급·직무·재직·계정 유무는 로그인한 누구나, `phone`·`birth_date`·`grants`·`revoked_grants`는 본인 또는 그 구성원의 소속 unit에 `organization.manage`를 가진 Principal에게만 값. 직책 축은 `position_definition_id`가 있는 발령만).
+Projection: `GET /api/organization/members/{id}/history?axis=membership|appointment|grade|job|grant`(축별 기간 행, 최신순 — 본인 또는 관리 권한만, 아니면 403).
+Projection: `GET /api/organization/activity?unit_id=&limit=&cursor=`(조직 축 변경 기록 — `domain.py::ORGANIZATION_ACTIVITY_AXES`에 있는 `event_kind`만 축으로 읽고 나머지는 제외. 해당 unit(없으면 루트)에 `organization.manage` 필요).
 
 ## 판단 통합 (ActionItem) — 현재 상태
 

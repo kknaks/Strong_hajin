@@ -156,7 +156,9 @@ describe("ChatDrawer session switcher", () => {
 
   it("distinguishes first-load, empty, and error states without hiding the new-conversation action", () => {
     const { rerender, props } = renderDrawer({ conversations: [], activeConversation: null, listStatus: "loading" });
-    expect(screen.getByText("대화를 불러오는 중…")).toBeTruthy();
+    // 첫 로딩은 글자가 아니라 올 목록의 자리로 기다린다 (v2 10 STATE)
+    expect(screen.getByRole("status").getAttribute("aria-busy")).toBe("true");
+    expect(screen.getByText("대화를 불러오는 중")).toBeTruthy();
     expect(screen.getByRole("button", { name: "새 AX 대화" })).toBeTruthy();
 
     rerender(<ChatDrawer {...props} conversations={[]} activeConversation={null} listStatus="error" />);
@@ -223,7 +225,7 @@ describe("ExecutionRail", () => {
     const { container } = render(<ExecutionRail onRetry={onRetry} tools={[]} turn={failed} />);
     const rail = container.querySelector(".ax-rail") as HTMLElement;
     expect(rail.className).toContain("terminal");
-    expect(within(rail).getByText("✕ 실패")).toBeTruthy();
+    expect(within(rail).getByText("실패")).toBeTruthy();
     expect((container.querySelector(".ax-rail-timings") as HTMLElement).textContent).toBe("· 실행 12s · 대기 1s");
     expect((container.querySelector(".ax-rail-timings") as HTMLElement).getAttribute("aria-hidden")).toBe("true");
     expect(within(rail).getByText("provider failed")).toBeTruthy();
@@ -232,7 +234,7 @@ describe("ExecutionRail", () => {
     expect(onRetry).toHaveBeenCalledTimes(1);
     cleanup();
     render(<ExecutionRail tools={[]} turn={turn("t2")} />);
-    expect(screen.getByText("✓ 완료")).toBeTruthy();
+    expect(screen.getByText("완료")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "다시 시도" })).toBeNull();
   });
 });
@@ -255,7 +257,7 @@ describe("MessageList", () => {
     expect(order).toEqual(["user", "ax-rail", "assistant"]);
     expect(screen.getByText("부분 답변")).toBeTruthy();
     expect(screen.getByText("취소 시점까지의 답변")).toBeTruthy();
-    expect(screen.getByText("⊘ 취소됨")).toBeTruthy();
+    expect(screen.getByText("취소됨")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
     expect(listProps.onRetryTurn).toHaveBeenCalledWith("t1");
   });
@@ -327,7 +329,7 @@ describe("MessageList", () => {
     const second = { ...first, version: 2, messages: [...first.messages, { message_id: "m2", turn_id: "c1-t1", role: "assistant" as const, body: "답변입니다", sequence: 2, state: "accepted" as const }] };
     rerender(<MessageList {...listProps} conversation={second} localFragments={[]} />);
     expect(scroller.scrollTop).toBe(0);
-    fireEvent.click(screen.getByRole("button", { name: "↓ 새 메시지" }));
+    fireEvent.click(screen.getByRole("button", { name: "새 메시지" }));
     expect(scroller.scrollTop).toBe(1000);
   });
 
@@ -347,14 +349,14 @@ describe("MessageList", () => {
     fireEvent.scroll(scroller);
     // Same progress state, longer partial body → new content.
     rerender(<MessageList {...listProps} conversation={{ ...running, messages: [running.messages[0], { ...running.messages[1], body: "부분 답변이 더 길어짐" }] }} localFragments={[]} />);
-    expect(screen.getByRole("button", { name: "↓ 새 메시지" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "↓ 새 메시지" }));
+    expect(screen.getByRole("button", { name: "새 메시지" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "새 메시지" }));
     // Same progress state, a tool receipt appears → new content again.
     const tool = { turn_id: "c1-t1", sequence: 1, provider_call_id: "c", tool_name: "task_list", display_name: "task list", input_summary: "입력 없음", state: "running", result_summary: null, error_summary: null, latency_ms: null, started_at: null, completed_at: null, target_resource_id: null, target_resource_version: null, audit_ref: null };
     scroller.scrollTop = 0;
     fireEvent.scroll(scroller);
     rerender(<MessageList {...listProps} conversation={{ ...running, tool_invocations: [tool] }} localFragments={[]} />);
-    expect(screen.getByRole("button", { name: "↓ 새 메시지" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "새 메시지" })).toBeTruthy();
   });
 });
 

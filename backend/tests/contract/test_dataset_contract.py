@@ -121,3 +121,35 @@ def test_a_dataset_that_does_not_hold_together_is_refused_before_anything_is_wri
 
     problems = capsys.readouterr().err
     assert "먼저 dataset을 고쳐야 합니다" in problems and "members에 없는 키" in problems
+
+
+def test_a_person_may_carry_a_phone_and_a_birth_date_and_may_also_not(tmp_path) -> None:
+    """전화·생년월일은 원문이 말할 때만 적는다 — 열이 통째로 없는 예전 폴더도 그대로 통과한다."""
+    members = next(table for table in TABLES if table.name == "members")
+    optional = {column.name: column for column in members.columns if not column.required}
+    assert "phone" in optional and "birth_date" in optional
+    assert optional["birth_date"].kind == "date"
+
+    target = tmp_path / "dataset"
+    target.mkdir()
+    _organization(target)
+    _write(target, "members", [
+        {"key": "a", "display_name": "가", "employment_state": "active", "employment_type": "", "primary_unit_key": "sales", "role_key": "member", "grade_key": "manager", "employed_from": "", "employed_until": "", "phone": "010-0000-0000", "birth_date": "1990-01-01"},
+        {"key": "b", "display_name": "나", "employment_state": "active", "employment_type": "", "primary_unit_key": "sales", "role_key": "member", "grade_key": "manager", "employed_from": "", "employed_until": "", "phone": "", "birth_date": ""},
+    ])
+    assert validate(read_tables(target)).ok
+
+    # 잘못 적힌 생년월일은 값을 보여 주지 않고 자리만 말한다.
+    _write(target, "members", [
+        {"key": "a", "display_name": "가", "employment_state": "active", "employment_type": "", "primary_unit_key": "sales", "role_key": "member", "grade_key": "manager", "employed_from": "", "employed_until": "", "phone": "", "birth_date": "어제"},
+    ])
+    problems = validate(read_tables(target)).problems
+    assert ("members", "birth_date", "not_a_date") in {(item.table, item.column, item.kind) for item in problems}
+
+    # 두 열이 아예 없는 폴더 — 예전 스키마로 채운 dataset도 그대로 들어간다.
+    header = [name for name in members.header if name not in {"phone", "birth_date"}]
+    with (target / "members.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=header)
+        writer.writeheader()
+        writer.writerow({"key": "a", "display_name": "가", "employment_state": "active", "employment_type": "", "primary_unit_key": "sales", "role_key": "member", "grade_key": "manager", "employed_from": "", "employed_until": ""})
+    assert validate(read_tables(target)).ok

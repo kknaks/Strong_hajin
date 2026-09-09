@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test": "vitest run",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build",
     "e2e:task-lifecycle": "node scripts/task-lifecycle-e2e.mjs",
     "e2e:task-checklist": "node scripts/task-checklist-e2e.mjs",
     "e2e:task-history": "node scripts/task-history-e2e.mjs",
@@ -44,11 +46,13 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
+    "@storybook/react-vite": "^10.6.0",
     "@testing-library/react": "^16.3.0",
     "@types/react": "^19.1.16",
     "@types/react-dom": "^19.1.9",
     "@vitejs/plugin-react": "^5.0.4",
     "jsdom": "^26.1.0",
+    "storybook": "^10.6.0",
     "typescript": "^5.9.2",
     "vite": "^7.1.7",
     "vitest": "^3.2.4"

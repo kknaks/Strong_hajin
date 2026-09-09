@@ -205,10 +205,19 @@ def _import_members(session: Session, rows: dict[str, list[dict[str, str]]], res
         key = _text(row, "key")
         state = _text(row, "employment_state")
         kind = _text(row, "employment_type") or None
+        phone = _text(row, "phone") or None
+        born = _day(_text(row, "birth_date"))
         member = session.get(MemberRecord, key)
         if member is None:
             session.add(
-                MemberRecord(id=key, display_name=_text(row, "display_name"), employment_state=state, employment_type=kind)
+                MemberRecord(
+                    id=key,
+                    display_name=_text(row, "display_name"),
+                    employment_state=state,
+                    employment_type=kind,
+                    phone=phone,
+                    birth_date=born,
+                )
             )
             result.track("members", made=True)
         else:
@@ -216,6 +225,10 @@ def _import_members(session: Session, rows: dict[str, list[dict[str, str]]], res
             # 비어 있는 칸은 지우는 말이 아니다. 원문이 말하지 않는 것을 없앴다고 기록하지 않는다.
             if kind is not None:
                 member.employment_type = kind
+            if phone is not None:
+                member.phone = phone
+            if born is not None:
+                member.birth_date = born
             result.track("members", made=False)
         if session.scalar(select(EmploymentPeriodRecord).where(EmploymentPeriodRecord.member_id == key)) is None:
             session.add(

@@ -46,6 +46,11 @@ class MemberRecord(Base):
     employment_state: Mapped[str] = mapped_column(String(40), nullable=False)
     #: 정규직·시간제처럼 어떤 형태로 일하는지. 출처가 말하지 않으면 비어 있고, 추정해서 채우지 않는다.
     employment_type: Mapped[str | None] = mapped_column(String(40))
+    #: 연락처와 생년월일. 인사 정보라 명부에는 조직 관리 권한이 있는 사람에게만 실린다. 출처가 말하지 않으면
+    #: 비어 있다 — 사람마다 있을 수도 없을 수도 있는 것이라 없는 것을 지어내지 않는다.
+    #: 이 두 열은 로컬 demo DB에 `make sync-demo-schema`로만 적용된다 — 운영 스키마 반영은 별도 gate다.
+    phone: Mapped[str | None] = mapped_column(String(40))
+    birth_date: Mapped[date | None] = mapped_column(Date)
     account_ref: Mapped[str | None] = mapped_column(String(200))
     record_status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))

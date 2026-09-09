@@ -187,7 +187,7 @@ describe("work relation information architecture", () => {
     ];
     renderPage({}, { actions: axAction, judgements });
     await screen.findByText("AX가 제안한 업무");
-    const inbox = within(document.querySelector(".decision-panel") as HTMLElement);
+    const inbox = within(document.querySelector(".decision-section") as HTMLElement);
     // A canonical WorkRequest is labelled as a request, never as an AX proposal.
     const requestCard = inbox.getByText("내게 온 검토 요청").closest(".task-card") as HTMLElement;
     expect(requestCard.querySelector(".task-card-kicker")?.textContent).toBe("업무 요청");
@@ -199,7 +199,7 @@ describe("work relation information architecture", () => {
     for (const label of ["받은 업무", "보낸 업무", "참조된 업무"]) {
       expect(within(screen.getByLabelText(label)).queryByText("AX가 제안한 업무")).toBeNull();
     }
-    expect(within(document.querySelector(".decision-panel") as HTMLElement).getByText("AX가 제안한 업무")).toBeTruthy();
+    expect(within(document.querySelector(".decision-section") as HTMLElement).getByText("AX가 제안한 업무")).toBeTruthy();
   });
 
   it("lets the requester reach the resubmit path for a negotiating request they own", async () => {
@@ -260,4 +260,26 @@ describe("what the list says about dates", () => {
     // The scheduled task keeps its own date, so the two rows do not read the same.
     expect(within(withDate).queryByText("2026/08/20")).toBeNull();
   });
+
+  it("판단 섹션은 볼 것이 있을 때 펼치고, 없으면 접은 채로 둔다 — 목록을 아래로 밀지 않는다 (v2 05 List)", async () => {
+    const judgements = [
+      { action_item_id: "ai-1", kind: "work_request.acceptance", status: "awaiting_review", subject: "판단할 요청", operation_label: "업무 요청", current_question: "결정하세요", preview: [], allowed_commands: [], submission_version: 1, waiting_on: { member_id: "mina", display_name: "민아" }, resource: { type: "work_request", id: "r1" }, expected_version: 1 },
+    ];
+    renderPage({}, { judgements });
+    const section = await screen.findByLabelText("판단이 필요한 업무");
+    await waitFor(() => expect(section.getAttribute("data-open")).toBe("true"));
+    expect(within(section).getByText("판단할 요청")).toBeTruthy();
+
+    // 접으면 내용은 사라지고 머리줄만 남는다 — 편 상태를 사람이 되돌릴 수 있어야 한다.
+    fireEvent.click(within(section).getByRole("button", { name: /판단이 필요한 업무/ }));
+    expect(section.getAttribute("data-open")).toBe("false");
+    expect(within(section).queryByText("판단할 요청")).toBeNull();
+  });
+
+  it("판단할 것이 없으면 접힌 채로 시작한다", async () => {
+    renderPage({}, { judgements: [] });
+    const section = await screen.findByLabelText("판단이 필요한 업무");
+    expect(section.getAttribute("data-open")).toBe("false");
+  });
+
 });

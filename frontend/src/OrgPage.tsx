@@ -1,18 +1,26 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   getInstalledAccessRoles,
-  getMemberAccess,
   getMyOrganizationProfile,
+  getOrganizationActivity,
+  getOrganizationMemberAxes,
   getOrganizationTree,
   getOrganizationUnitMembers,
   grantAccessRole,
   revokeAccessGrant,
+  type OrganizationActivityEvent,
 } from "./api";
-import { capabilityText, personName } from "./labels";
+import { ConfirmModal, Toast } from "./Modal";
+import { orgScreen, personName } from "./labels";
+import { AccessDrawer } from "./org/AccessDrawer";
+import { ChangeLogPanel } from "./org/ChangeLogPanel";
+import { MemberAxesPanel, grantText, type DetailView } from "./org/MemberAxesPanel";
+import { MemberListPanel } from "./org/MemberListPanel";
+import { OrgTreePanel } from "./org/OrgTreePanel";
 import type {
+  AccessGrant,
   InstalledAccessRole,
-  MemberAccess,
   OrganizationMember,
   OrganizationProfile,
   OrganizationUnitNode,
@@ -23,20 +31,58 @@ type OrgPageProps = {
   onError: (message: string | null) => void;
 };
 
+/** 회수를 기다리는 결정 하나. Drawer 를 닫은 뒤에 확인을 띄우기 위해 사유를 함께 들고 있는다. */
+type PendingRevoke = { grant: AccessGrant; reason: string };
+
+/** 변경 기록 한 쪽의 크기. 이만큼 받아 오면 더 있을 수 있다는 뜻이다. */
+const ACTIVITY_PAGE = 50;
+
+/**
+ * 조직 화면 v3 — 한 사람을 여섯 축(계층 · 소속 · 직책 · 직급 · 직무 · 권한)으로 읽는 화면.
+ *
+ * 3분할: 조직 tree → 구성원 목록 → 여섯 축 상세, 그 아래 변경 기록(관리자만).
+ *
+ * 패널 ③ 는 `GET /api/organization/members/{id}` **한 번**으로 채운다 — 여섯 축·재직·계정 유무·권한·회수된
+ * 권한이 한 응답에 있다. 목록 응답과 권한 응답을 프론트에서 이어 붙이지 않는다.
+ *
+ * 실제 접근을 바꾸는 축은 권한 하나뿐이고, 이 화면에서 바꿀 수 있는 것도 그 하나뿐이다 — 소속·직책을 바꾸는
+ * command 가 서버에 아직 없어서 그 축의 「변경」은 그리지 않는다. 행 메뉴도 마찬가지다. 없는 기능을 쓸 수 있는
+ * 것처럼 보이게 하지 않는다 (SPEC-005 §5).
+ */
 export function OrgPage({ personaId, onError }: OrgPageProps) {
   const [profile, setProfile] = useState<OrganizationProfile | null>(null);
-  const [units, setUnits] = useState<OrganizationUnitNode[]>([]);
-  const [selectedUnit, setSelectedUnit] = useState<string | null>(null);
+  const [units, setUnits] = useState<OrganizationUnitNode[] | null>(null);
+  const [treeFailed, setTreeFailed] = useState(false);
+  const [selectedUnitId, setSelectedUnitId] = useState<string | null>(null);
+  const [expandedUnitIds, setExpandedUnitIds] = useState<Set<string>>(new Set());
   const [members, setMembers] = useState<OrganizationMember[] | null>(null);
+  const [membersFailed, setMembersFailed] = useState(false);
   const [selectedMember, setSelectedMember] = useState<OrganizationMember | null>(null);
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const [roles, setRoles] = useState<InstalledAccessRole[] | null>(null);
-  const [access, setAccess] = useState<MemberAccess | null>(null);
-  const [grantRole, setGrantRole] = useState("");
-  const [grantScope, setGrantScope] = useState("");
-  const [grantReason, setGrantReason] = useState("");
+  const [roles, setRoles] = useState<InstalledAccessRole[]>([]);
+  const [detail, setDetail] = useState<DetailView>({ status: "empty" });
+  const [activity, setActivity] = useState<OrganizationActivityEvent[] | null>(null);
+  const [activityFailed, setActivityFailed] = useState(false);
+  const [activityHasMore, setActivityHasMore] = useState(false);
+  const [activityLoadingMore, setActivityLoadingMore] = useState(false);
+  const [query, setQuery] = useState("");
+  /** 이름 검색은 조직이 아니라 사람을 찾는다. 그래서 조직 전체의 명부를 한 번 받아 색인으로 쓴다. */
+  const [directory, setDirectory] = useState<OrganizationMember[]>([]);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [pendingRevoke, setPendingRevoke] = useState<PendingRevoke | null>(null);
   const [busy, setBusy] = useState(false);
+  const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
+
   const administers = (profile?.capabilities ?? []).includes("organization.manage");
+  /**
+   * 권한·회수분·이력을 볼 수 있는가. 서버의 기준과 같게 둔다 — **본인이거나 그 사람을 관리할 수 있는 사람**.
+   *
+   * 응답의 모양은 누구에게나 같아서(볼 수 없는 축은 값만 비어 온다) 모양으로는 자격을 알 수 없다. 비어 있는
+   * `grants` 가 "권한이 없다"인지 "볼 자격이 없다"인지 응답이 구별해 주지 않기 때문이다. 그래서 화면이 같은
+   * 기준을 한 번 더 세운다. 관리 범위가 조직 일부인 사람은 여기서 참이어도 서버가 403 을 줄 수 있고,
+   * 그때는 Toast 로 말한다.
+   */
+  const canReadSensitive =
+    administers || (profile !== null && selectedMember !== null && profile.member_id === selectedMember.member_id);
 
   useEffect(() => {
     let cancelled = false;
@@ -45,35 +91,70 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
         if (cancelled) return;
         setProfile(nextProfile);
         setUnits(tree);
+        setTreeFailed(false);
         // 회사 이름은 고객마다 다르다. 꼭대기는 위로 더 올라갈 곳이 없는 단위이지 특정한 이름이 아니다.
-        const root = tree.find((unit) => !unit.parent_id)?.id ?? null;
-        setSelectedUnit((current) => current ?? nextProfile.organizations.find((item) => item.id !== root)?.id ?? tree[0]?.id ?? null);
+        const root = tree.find((unit) => !unit.parent_id) ?? null;
+        const initial = nextProfile.organizations.find((item) => item.id !== root?.id)?.id ?? tree[0]?.id ?? null;
+        setSelectedUnitId((current) => current ?? initial);
+        // 처음에는 고른 조직까지 가는 길만 펼친다 — 나머지는 접힌 채로 둔다.
+        const byId = new Map(tree.map((unit) => [unit.id, unit]));
+        const path = new Set<string>();
+        let cursor = initial ? byId.get(initial) : undefined;
+        while (cursor) {
+          path.add(cursor.id);
+          cursor = cursor.parent_id ? byId.get(cursor.parent_id) : undefined;
+        }
+        setExpandedUnitIds(path);
         onError(null);
       })
       .catch((error: unknown) => {
-        if (!cancelled) onError(error instanceof Error ? error.message : "조직 정보를 불러오지 못했습니다.");
+        if (cancelled) return;
+        setTreeFailed(true);
+        setUnits([]);
+        onError(error instanceof Error ? error.message : "조직 정보를 불러오지 못했습니다.");
       });
     return () => {
       cancelled = true;
     };
   }, [onError, personaId]);
 
+  const rootUnitId = useMemo(() => (units ?? []).find((unit) => !unit.parent_id)?.id ?? null, [units]);
+
   useEffect(() => {
-    if (!selectedUnit) return;
+    if (!rootUnitId) return;
     let cancelled = false;
-    setMembers(null);
-    setSelectedMember(null);
-    void getOrganizationUnitMembers(selectedUnit)
+    void getOrganizationUnitMembers(rootUnitId)
       .then((items) => {
-        if (!cancelled) setMembers(items);
+        if (!cancelled) setDirectory(items);
       })
-      .catch((error: unknown) => {
-        if (!cancelled) onError(error instanceof Error ? error.message : "구성원을 불러오지 못했습니다.");
+      .catch(() => {
+        // 검색 색인을 못 받아도 tree 는 그대로 읽힌다. 검색만 조용히 못 하게 둔다.
+        if (!cancelled) setDirectory([]);
       });
     return () => {
       cancelled = true;
     };
-  }, [onError, selectedUnit]);
+  }, [rootUnitId]);
+
+  useEffect(() => {
+    if (!selectedUnitId) return;
+    let cancelled = false;
+    setMembers(null);
+    setMembersFailed(false);
+    setSelectedMember(null);
+    void getOrganizationUnitMembers(selectedUnitId)
+      .then((items) => {
+        if (!cancelled) setMembers(items);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setMembersFailed(true);
+        setMembers([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedUnitId]);
 
   useEffect(() => {
     if (!administers) return;
@@ -90,61 +171,95 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
     };
   }, [administers]);
 
-  const loadAccess = useCallback(
-    async (memberId: string | null) => {
-      if (!administers || !memberId) {
-        setAccess(null);
-        return;
+  /**
+   * 한 사람을 여섯 축으로 한 번에 읽는다. 권한·회수분도 이 응답에 있다.
+   *
+   * 요청마다 세대를 하나 올리고, 돌아왔을 때 세대가 이미 지났으면 **그 응답은 버린다.** A 를 고른 뒤 응답이
+   * 오기 전에 B 를 고르면 A 의 응답이 나중에 도착해 상세를 A 로 덮을 수 있었는데, 그러면 화면은 A 를
+   * 보여 주면서 권한 변경은 B 에게 나가게 된다 — 화면에 보이는 사람과 바뀌는 사람이 갈라지는 일이다.
+   */
+  const detailGeneration = useRef(0);
+  const loadDetail = useCallback(async (memberId: string | null) => {
+    const generation = ++detailGeneration.current;
+    if (!memberId) {
+      setDetail({ status: "empty" });
+      return;
+    }
+    setDetail((current) => (current.status === "ready" && current.detail.member_id === memberId ? current : { status: "loading" }));
+    try {
+      const next = await getOrganizationMemberAxes(memberId);
+      if (detailGeneration.current !== generation) return;
+      setDetail({ status: "ready", detail: next });
+    } catch {
+      if (detailGeneration.current !== generation) return;
+      setDetail({ status: "error" });
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadDetail(selectedMember?.member_id ?? null);
+  }, [loadDetail, selectedMember]);
+
+  /**
+   * 변경 기록은 고른 조직의 것이다 — 조직을 바꾸면 다시 묻는다.
+   *
+   * 서버는 봉투 없이 배열만 준다. 받은 수가 요청한 수와 같으면 더 있을 수 있다는 뜻이라, 마지막 행의 시각을
+   * 다음 쪽의 cursor 로 쓴다.
+   */
+  const activityGeneration = useRef(0);
+  const loadActivity = useCallback(
+    async (unitId: string | null) => {
+      if (!administers) return;
+      const generation = ++activityGeneration.current;
+      setActivity(null);
+      setActivityFailed(false);
+      setActivityHasMore(false);
+      try {
+        const events = await getOrganizationActivity({ limit: ACTIVITY_PAGE, unitId });
+        // 조직을 바꾸면 세대가 올라간다 — 이전 조직의 첫 쪽이 늦게 와도 새 표를 덮지 않는다.
+        if (activityGeneration.current !== generation) return;
+        setActivity(events);
+        setActivityHasMore(events.length === ACTIVITY_PAGE);
+      } catch {
+        if (activityGeneration.current !== generation) return;
+        setActivityFailed(true);
+        setActivity([]);
       }
-      setAccess(await getMemberAccess(memberId).catch(() => null));
     },
     [administers],
   );
 
   useEffect(() => {
-    void loadAccess(selectedMember?.member_id ?? null);
-  }, [loadAccess, selectedMember]);
+    void loadActivity(selectedUnitId);
+  }, [loadActivity, selectedUnitId]);
 
-  async function grant() {
-    if (!selectedMember || !grantRole || !grantScope || !grantReason.trim() || busy) return;
-    setBusy(true);
-    onError(null);
+  /**
+   * 「더 보기」는 새 세대를 열지 않고 지금 세대에 이어 붙인다 — 그 사이 조직이 바뀌었으면 붙이지 않는다.
+   *
+   * 다음 쪽의 자리표는 마지막 행이 실어 온 `cursor` 를 **그대로** 되보낸다. 시각만 보내면 같은 시각의
+   * 나머지 사건이 통째로 빠진다 (PR #2 F4 — 서버 정렬이 (시각, id) 이므로 경계도 그 둘이다).
+   */
+  async function loadMoreActivity() {
+    const last = activity?.[activity.length - 1];
+    if (!last || activityLoadingMore) return;
+    const generation = activityGeneration.current;
+    setActivityLoadingMore(true);
     try {
-      await grantAccessRole({
-        member_id: selectedMember.member_id,
-        role_id: grantRole,
-        scope_kind: grantScope === rootUnitId ? "organization" : "unit",
-        scope_ref: grantScope,
-        include_descendants: true,
-        reason: grantReason.trim(),
-      });
-      setGrantReason("");
-      await loadAccess(selectedMember.member_id);
-    } catch (error) {
-      onError(error instanceof Error ? error.message : "권한을 부여하지 못했습니다.");
+      const next = await getOrganizationActivity({ cursor: last.cursor, limit: ACTIVITY_PAGE, unitId: selectedUnitId });
+      if (activityGeneration.current !== generation) return;
+      setActivity((current) => [...(current ?? []), ...next]);
+      setActivityHasMore(next.length === ACTIVITY_PAGE);
+    } catch {
+      if (activityGeneration.current !== generation) return;
+      setToast({ message: orgScreen.changeLogError, tone: "error" });
     } finally {
-      setBusy(false);
-    }
-  }
-
-  async function revoke(grantId: string) {
-    if (!selectedMember || busy) return;
-    const reason = grantReason.trim() || "권한 회수";
-    setBusy(true);
-    onError(null);
-    try {
-      await revokeAccessGrant(grantId, reason);
-      await loadAccess(selectedMember.member_id);
-    } catch (error) {
-      onError(error instanceof Error ? error.message : "권한을 회수하지 못했습니다.");
-    } finally {
-      setBusy(false);
+      setActivityLoadingMore(false);
     }
   }
 
   const childrenOf = useMemo(() => {
     const map = new Map<string | null, OrganizationUnitNode[]>();
-    for (const unit of units) {
+    for (const unit of units ?? []) {
       const list = map.get(unit.parent_id) ?? [];
       list.push(unit);
       map.set(unit.parent_id, list);
@@ -152,266 +267,167 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
     for (const list of map.values()) list.sort((a, b) => a.display_order - b.display_order || a.id.localeCompare(b.id));
     return map;
   }, [units]);
-  const unitById = useMemo(() => new Map(units.map((unit) => [unit.id, unit])), [units]);
-  /** 조직 전체를 뜻하는 단위. 이름이 아니라 자리로 찾는다. */
-  const rootUnitId = useMemo(() => units.find((unit) => !unit.parent_id)?.id ?? null, [units]);
-  const selected = selectedUnit ? unitById.get(selectedUnit) : undefined;
+  const unitById = useMemo(() => new Map((units ?? []).map((unit) => [unit.id, unit])), [units]);
+  const selectedUnit = selectedUnitId ? unitById.get(selectedUnitId) ?? null : null;
 
-  const renderUnit = (unit: OrganizationUnitNode, depth: number) => {
-    const children = childrenOf.get(unit.id) ?? [];
-    const isCollapsed = collapsed.has(unit.id);
-    return (
-      <li key={unit.id}>
-        <div className={unit.id === selectedUnit ? "org-node selected" : "org-node"} style={{ paddingLeft: 12 + depth * 20 }}>
-          {children.length > 0 ? (
-            <button
-              aria-expanded={!isCollapsed}
-              aria-label={isCollapsed ? `${unit.name} 펼치기` : `${unit.name} 접기`}
-              className="org-caret"
-              onClick={() =>
-                setCollapsed((current) => {
-                  const next = new Set(current);
-                  if (next.has(unit.id)) next.delete(unit.id);
-                  else next.add(unit.id);
-                  return next;
-                })
-              }
-              type="button"
-            >
-              {isCollapsed ? "▸" : "▾"}
-            </button>
-          ) : (
-            <span className="org-caret placeholder">–</span>
-          )}
-          <button className="org-node-main" onClick={() => setSelectedUnit(unit.id)} type="button">
-            <b>{unit.name}</b>
-            {unit.unit_type && <span className="badge outline">{unit.unit_type}</span>}
-            {unit.leaders.map((leader) => (
-              <span className="badge neutral" key={`${leader.display_name}-${leader.position}`}>
-                {personName(leader.display_name)} {leader.position}
-                {leader.kind === "acting" ? " 직무대행" : ""}
-              </span>
-            ))}
-            <span className="t-meta">전체 {unit.member_count}명</span>
-          </button>
-        </div>
-        {!isCollapsed && children.length > 0 && <ul>{children.map((child) => renderUnit(child, depth + 1))}</ul>}
-        {isCollapsed && children.length > 0 && (
-          <div className="t-meta" style={{ paddingLeft: 44 + depth * 20 }}>
-            하위 {children.length}
-          </div>
-        )}
-      </li>
-    );
-  };
+  /** 검색 중일 때 tree 에 남길 조직 — 이름이 맞는 사람이 속한 조직과 거기까지 가는 길. */
+  const visibleUnitIds = useMemo(() => {
+    const needle = query.trim();
+    if (!needle) return null;
+    const keep = new Set<string>();
+    for (const member of directory) {
+      if (!personName(member.display_name).includes(needle)) continue;
+      for (const membership of member.memberships) {
+        let cursor = unitById.get(membership.organization_id);
+        while (cursor && !keep.has(cursor.id)) {
+          keep.add(cursor.id);
+          cursor = cursor.parent_id ? unitById.get(cursor.parent_id) : undefined;
+        }
+      }
+    }
+    return keep;
+  }, [directory, query, unitById]);
+
+  const toggleUnit = useCallback((unitId: string) => {
+    setExpandedUnitIds((current) => {
+      const next = new Set(current);
+      if (next.has(unitId)) next.delete(unitId);
+      else next.add(unitId);
+      return next;
+    });
+  }, []);
+
+  /**
+   * 바꾸는 대상은 **Drawer 가 보여 주고 있는 그 사람**이다 — 목록의 선택이 아니라 상세 응답 하나에서 읽는다.
+   * 표시와 변경이 서로 다른 상태를 보면 둘이 갈라질 수 있고, 그 갈라짐이 남의 권한을 바꾼다.
+   */
+  const changeTarget = detail.status === "ready" ? detail.detail : null;
+
+  async function grant(input: { roleId: string; scopeRef: string; reason: string }) {
+    if (!changeTarget || busy) return;
+    setBusy(true);
+    onError(null);
+    try {
+      await grantAccessRole({
+        member_id: changeTarget.member_id,
+        role_id: input.roleId,
+        scope_kind: input.scopeRef === rootUnitId ? "organization" : "unit",
+        scope_ref: input.scopeRef,
+        include_descendants: true,
+        reason: input.reason,
+      });
+      setDrawerOpen(false);
+      await Promise.all([loadDetail(changeTarget.member_id), loadActivity(selectedUnitId)]);
+      setToast({ message: orgScreen.accessDrawer.grantSuccess, tone: "success" });
+    } catch (error) {
+      setToast({ message: error instanceof Error ? error.message : orgScreen.accessDrawer.grantFailure, tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revoke({ grant: target, reason }: PendingRevoke) {
+    if (!changeTarget || busy) return;
+    setBusy(true);
+    onError(null);
+    try {
+      await revokeAccessGrant(target.grant_id, reason);
+      setPendingRevoke(null);
+      await Promise.all([loadDetail(changeTarget.member_id), loadActivity(selectedUnitId)]);
+      setToast({ message: orgScreen.accessDrawer.revokeSuccess, tone: "success" });
+    } catch (error) {
+      setPendingRevoke(null);
+      setToast({ message: error instanceof Error ? error.message : orgScreen.accessDrawer.revokeFailure, tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <section className="page-surface">
       <div className="page-head">
         <div>
-          <h1>조직과 구성원</h1>
-          <p>조직도는 탐색 기준일 뿐 업무·인사·권한 열람 범위를 넓히지 않습니다. 상위 조직을 고르면 하위 조직의 재직 구성원까지 함께 봅니다.</p>
+          <h1>{orgScreen.title}</h1>
         </div>
-      </div>
-
-      <div className="org-layout">
-        <div>
-          <h2 className="section-title">조직도</h2>
-          <div className="decision-panel">
-            <ul className="org-tree">{(childrenOf.get(null) ?? []).map((unit) => renderUnit(unit, 0))}</ul>
-          </div>
-
-          <h2 className="section-title">
-            {selected?.name ?? "조직"} <small>전체 {selected?.member_count ?? 0}명</small>
-          </h2>
-          <div className="decision-panel">
-            {members === null ? (
-              <p className="t-meta">불러오는 중…</p>
-            ) : members.length === 0 ? (
-              <div className="empty-state">
-                <b>재직 중인 구성원이 없습니다</b>
-                <p>하위 조직을 포함해도 현재 소속된 사람이 없습니다.</p>
-              </div>
-            ) : (
-              <ul className="member-list">
-                {members.map((member) => (
-                  <li key={member.member_id}>
-                    <button
-                      className={selectedMember?.member_id === member.member_id ? "member-row selected" : "member-row"}
-                      onClick={() => setSelectedMember(member)}
-                      type="button"
-                    >
-                      <span className="avatar md" aria-hidden>
-                        {personName(member.display_name).slice(0, 1)}
-                      </span>
-                      <span className="member-main">
-                        <b>{personName(member.display_name)}</b>
-                        <span className="chip-row" style={{ marginTop: 4 }}>
-                          {member.memberships.map((membership) => (
-                            <span className="badge ai" key={membership.organization_id}>
-                              {membership.organization_name} · {membership.kind === "primary" ? "주소속" : "겸직"}
-                            </span>
-                          ))}
-                          {member.positions.map((position) => (
-                            <span className="badge neutral" key={`${position.organization_name}-${position.position}`}>
-                              {position.organization_name} {position.position}
-                            </span>
-                          ))}
-                        </span>
-                      </span>
-                      <span className="t-meta">{[member.grade, ...member.jobs].filter(Boolean).join(" · ") || "—"}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
-
-        <aside>
-          <h2 className="section-title">구성원 상세</h2>
-          {selectedMember ? (
-            <div className="decision-panel">
-              <div className="member-head">
-                <span className="avatar lg" aria-hidden>
-                  {personName(selectedMember.display_name).slice(0, 1)}
-                </span>
-                <div>
-                  <b className="t-item">{personName(selectedMember.display_name)}</b>
-                  <p className="t-meta">{[selectedMember.grade, ...selectedMember.jobs].filter(Boolean).join(" · ") || "직급·직무 정보 없음"}</p>
-                </div>
-              </div>
-              <dl className="meta-grid" style={{ marginTop: 16 }}>
-                <div>
-                  <dt>소속</dt>
-                  <dd>{selectedMember.memberships.map((item) => `${item.organization_name}(${item.kind === "primary" ? "주소속" : "겸직"})`).join(", ") || "—"}</dd>
-                </div>
-                <div>
-                  <dt>보직</dt>
-                  <dd>{selectedMember.positions.map((item) => `${item.organization_name} ${item.position}`).join(", ") || "없음"}</dd>
-                </div>
-                <div>
-                  <dt>직급</dt>
-                  <dd>{selectedMember.grade ?? "—"}</dd>
-                </div>
-                <div>
-                  <dt>직무</dt>
-                  <dd>{selectedMember.jobs.join(", ") || "—"}</dd>
-                </div>
-              </dl>
-              {administers ? (
-                <section aria-label="구성원 권한" className="member-access">
-                  <h3 className="t-item">권한</h3>
-                  {access === null ? (
-                    <p className="t-meta">권한을 불러오는 중…</p>
-                  ) : (
-                    <>
-                      <ul className="grant-list" aria-label="부여된 권한">
-                        {access.grants.length === 0 && <li className="t-meta">부여된 권한이 없습니다.</li>}
-                        {access.grants.map((item) => (
-                          <li data-grant={item.grant_id} key={item.grant_id}>
-                            <b>{item.role_label ?? item.capability_id ?? item.role_id}</b>
-                            <span className="t-meta">
-                              {item.scope_name ?? item.scope_ref ?? "전체"}
-                              {item.include_descendants ? " 이하" : ""} · {item.origin_rule_id ? "보직 표준 부여" : "직접 부여"}
-                            </span>
-                            {!item.origin_rule_id && (
-                              <button className="btn h30" disabled={busy} onClick={() => void revoke(item.grant_id)} type="button">
-                                회수
-                              </button>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                      <div className="grant-form">
-                        <label className="field" htmlFor="grant-role">
-                          <span>역할</span>
-                          <select id="grant-role" onChange={(event) => setGrantRole(event.target.value)} value={grantRole}>
-                            <option value="">역할 선택</option>
-                            {(roles ?? []).map((role) => (
-                              <option key={role.role_id} value={role.role_id}>
-                                {role.label}
-                                {role.customized ? " (수정됨)" : ""}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label className="field" htmlFor="grant-scope">
-                          <span>범위</span>
-                          <select id="grant-scope" onChange={(event) => setGrantScope(event.target.value)} value={grantScope}>
-                            <option value="">범위 선택</option>
-                            {units.map((unit) => (
-                              <option key={unit.id} value={unit.id}>
-                                {unit.name}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label className="field" htmlFor="grant-reason">
-                          <span>사유</span>
-                          <input id="grant-reason" onChange={(event) => setGrantReason(event.target.value)} value={grantReason} />
-                        </label>
-                        <button
-                          className="btn h30 primary"
-                          disabled={busy || !grantRole || !grantScope || !grantReason.trim()}
-                          onClick={() => void grant()}
-                          type="button"
-                        >
-                          권한 부여
-                        </button>
-                      </div>
-                      <p className="t-meta">부여와 회수는 사유와 함께 기록되고, 조직을 관리할 사람이 아무도 남지 않는 회수는 거절됩니다.</p>
-                    </>
-                  )}
-                </section>
-              ) : (
-                <p className="t-meta" style={{ marginTop: 12 }}>
-                  권한·비공개 업무·인사 이력은 별도 권한이 없으면 표시하지 않습니다.
-                </p>
-              )}
-            </div>
+        <div className="page-head-actions">
+          {administers ? (
+            <span className="badge ai">{orgScreen.adminBadge}</span>
           ) : (
-            <div className="decision-panel">
-              <div className="empty-state">
-                <b>구성원을 선택하세요</b>
-                <p>조직도에서 조직을, 목록에서 사람을 고르면 소속·보직·직급·직무를 봅니다.</p>
-              </div>
-            </div>
+            <span className="badge outline">{orgScreen.readOnlyBadge}</span>
           )}
-
-          {profile && (
-            <>
-              <h2 className="section-title">
-                내 권한 <small>{profile.capabilities.length}개</small>
-              </h2>
-              <div className="decision-panel">
-                {profile.grants && profile.grants.length > 0 && (
-                  <ul className="grant-list" aria-label="권한 부여">
-                    {profile.grants.map((grant) => (
-                      <li key={grant.grant_id}>
-                        <b>{grant.role_label ?? grant.capability_id ?? grant.role_id}</b>
-                        <span className="t-meta">
-                          {grant.scope_name ?? grant.scope_ref ?? "전체"}
-                          {grant.include_descendants ? " 이하" : ""} · {grant.origin_rule_id ? "보직 표준 부여" : "직접 부여"}
-                          {grant.role_capability_version ? ` · 역할 v${grant.role_capability_version} 고정` : ""}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                <ul className="capability-list">
-                  {profile.capabilities.map((capability) => (
-                    <li key={capability}>
-                      <span>{capabilityText(capability)}</span>
-                      <code>{capability}</code>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </>
-          )}
-        </aside>
+        </div>
       </div>
+
+      <div className="org-screen-grid">
+        <OrgTreePanel
+          childrenOf={childrenOf}
+          expandedUnitIds={expandedUnitIds}
+          failed={treeFailed}
+          loading={units === null}
+          onQueryChange={setQuery}
+          onSelect={setSelectedUnitId}
+          onToggle={toggleUnit}
+          query={query}
+          selectedUnitId={selectedUnitId}
+          visibleUnitIds={visibleUnitIds}
+        />
+        <MemberListPanel
+          failed={membersFailed}
+          members={members}
+          onSelect={setSelectedMember}
+          selectedMemberId={selectedMember?.member_id ?? null}
+          unit={selectedUnit}
+        />
+        <MemberAxesPanel
+          canManageAccess={administers}
+          canReadSensitive={canReadSensitive}
+          onChangeAccess={() => setDrawerOpen(true)}
+          onHistoryDenied={(message) => setToast({ message, tone: "error" })}
+          view={detail}
+        />
+      </div>
+
+      {administers && (
+        <ChangeLogPanel
+          events={activity}
+          failed={activityFailed}
+          hasMore={activityHasMore}
+          loadingMore={activityLoadingMore}
+          onLoadMore={() => void loadMoreActivity()}
+        />
+      )}
+
+      {drawerOpen && detail.status === "ready" && (
+        <AccessDrawer
+          busy={busy}
+          grants={detail.detail.grants}
+          member={detail.detail}
+          onClose={() => setDrawerOpen(false)}
+          onGrant={(input) => void grant(input)}
+          onRequestRevoke={(target, reason) => {
+            // Drawer 위에 모달을 겹치지 않는다 — 먼저 닫고 나서 확인을 띄운다.
+            setDrawerOpen(false);
+            setPendingRevoke({ grant: target, reason });
+          }}
+          roles={roles}
+          rootUnitId={rootUnitId}
+          units={units ?? []}
+        />
+      )}
+
+      {pendingRevoke && (
+        <ConfirmModal
+          busy={busy}
+          confirmLabel={orgScreen.accessDrawer.confirmLabel}
+          danger
+          description={`${grantText(pendingRevoke.grant)} — ${pendingRevoke.reason}`}
+          onClose={() => setPendingRevoke(null)}
+          onConfirm={() => void revoke(pendingRevoke)}
+          title={orgScreen.accessDrawer.confirmTitle}
+        />
+      )}
+
+      {toast && <Toast message={toast.message} onClose={() => setToast(null)} tone={toast.tone} />}
     </section>
   );
 }
