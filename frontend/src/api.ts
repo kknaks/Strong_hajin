@@ -192,6 +192,10 @@ export async function updateTask(taskId: string, expectedVersion: number, patch:
   return request<DirectTask>(`/api/tasks/${taskId}`, { body: JSON.stringify(body), method: "PATCH" });
 }
 
+export async function getMaterialMetadata(materialId: string): Promise<{ material_id: string; name: string; origin: string; integrity_ref: string }> {
+  return request(`/api/materials/${materialId}`);
+}
+
 export async function getTaskMaterials(taskId: string): Promise<TaskMaterial[]> {
   return request<TaskMaterial[]>(`/api/tasks/${taskId}/materials`);
 }
@@ -249,8 +253,8 @@ export async function reassignTask(
   });
 }
 
-export async function detachTaskMaterial(taskId: string, materialId: string): Promise<TaskMaterial> {
-  return request<TaskMaterial>(`/api/tasks/${taskId}/materials/${materialId}/detach`, { method: "POST" });
+export async function detachTaskMaterial(taskId: string, bindingId: string): Promise<TaskMaterial> {
+  return request<TaskMaterial>(`/api/tasks/${taskId}/material-bindings/${bindingId}/detach`, { method: "POST" });
 }
 
 export async function transitionDirectTask(

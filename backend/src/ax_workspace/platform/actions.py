@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import hashlib
 import json
-from typing import Any
+from typing import Any, Callable
 from uuid import UUID
 
 from sqlalchemy import select
@@ -25,7 +25,6 @@ from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepo
 from ax_workspace.platform.persistence import (
     ActionItemAuditEventRecord,
     ActionItemRecord,
-    ConversationMaterialEvidenceRecord,
     ConversationRecord,
     ConversationTurnRecord,
 )
@@ -41,10 +40,13 @@ from ax_workspace.platform.work_tasks import (
 )
 
 
+ActionEvidenceReader = Callable[[Principal, UUID], list[dict[str, Any]]]
+
+
 class SqlAlchemyActionRepository:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, *, evidence_reader: ActionEvidenceReader | None = None) -> None:
         self._session = session
-        self._presenter = ActionPresenter(session)
+        self._presenter = ActionPresenter(session, evidence_reader=evidence_reader)
 
     def propose(
         self,
@@ -188,7 +190,7 @@ class SqlAlchemyActionRepository:
         return action.action_type
 
 
-def action_center_application(session: Session, executor: Any) -> Any:
+def action_center_application(session: Session, executor: Any, *, evidence_reader: ActionEvidenceReader | None = None) -> Any:
     """The one judgement application, built here so the wrapper runs exactly what HTTP and the UI run."""
     # Imported late: the ActionCenter presents AX proposals through this module.
     from ax_workspace.modules.ax_execution.actions import ActionApplication
@@ -198,11 +200,12 @@ def action_center_application(session: Session, executor: Any) -> Any:
     return ActionCenterApplication(
         action_handlers(
             session,
+            evidence_reader=evidence_reader,
             work_requests=WorkRequestApplication(
                 SqlAlchemyWorkRequestRepository(session),
                 OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
             ),
-            actions=ActionApplication(SqlAlchemyActionRepository(session), executor),
+            actions=ActionApplication(SqlAlchemyActionRepository(session, evidence_reader=evidence_reader), executor),
             assignments=TaskAssignmentApplication(
                 SqlAlchemyTaskAssignmentRepository(session),
                 OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
@@ -226,9 +229,10 @@ def action_center_application(session: Session, executor: Any) -> Any:
 class SqlAlchemyActionExecutor:
     """Invokes existing public application commands inside the Action transaction."""
 
-    def __init__(self, session: Session, report_provider: Any) -> None:
+    def __init__(self, session: Session, report_provider: Any, *, evidence_reader: ActionEvidenceReader | None = None) -> None:
         self._session = session
         self._report_provider = report_provider
+        self._evidence_reader = evidence_reader
 
     def execute(self, principal: Principal, action: ActionItemRecord) -> dict[str, Any]:
         # Everything this approval causes says which confirmation carried it; the actor stays the approver.
@@ -362,7 +366,7 @@ class SqlAlchemyActionExecutor:
         offered to them on that item and that the version they are answering is still the current one.
         """
         payload = action.payload or {}
-        center = action_center_application(self._session, self)
+        center = action_center_application(self._session, self, evidence_reader=self._evidence_reader)
         target = str(payload["action_item_id"])
         envelope = center.detail(principal, target)
         if envelope.get("expected_version") != payload.get("expected_version"):
@@ -452,11 +456,10 @@ class ActionPresenter:
     them, so the preview never widens what the approver may see.
     """
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, *, evidence_reader: ActionEvidenceReader | None = None) -> None:
         self._session = session
         self._name_cache: dict[str, dict[str, str]] = {}
-        self._evidence_cache: dict[UUID, list[ConversationMaterialEvidenceRecord]] = {}
-        self._readable_task_cache: dict[tuple[str, UUID], bool] = {}
+        self._evidence_reader = evidence_reader
 
     def present(self, action: ActionItemRecord, principal: Principal | None) -> dict[str, Any]:
         payload = action.payload or {}
@@ -620,54 +623,24 @@ class ActionPresenter:
         if principal is None or not action_item_id:
             return None
         try:
-            return action_center_application(self._session, _NO_EFFECT_EXECUTOR).detail(principal, str(action_item_id))
+            return action_center_application(self._session, _NO_EFFECT_EXECUTOR, evidence_reader=self._evidence_reader).detail(principal, str(action_item_id))
         except Exception:
             # The approver cannot read the target: say nothing about it rather than widen what they may see.
             return None
 
     def _evidence(self, fields: list[dict[str, str]], action: ActionItemRecord, principal: Principal | None) -> None:
-        """Attachments the proposing turn actually read, so the approver sees what the proposal is grounded in.
-
-        These are links, not fields the command creates: no current command attaches files. Access is re-checked per
-        approver against the owning Task, so evidence from a Task they can no longer read disappears from the preview.
-        """
-        if principal is None:
+        """Name actual turn observations after current owner, binding and hash checks."""
+        if principal is None or self._evidence_reader is None:
             return
-        # Dedupe by material, not by file name: two distinct attachments may share a name and both are real sources.
-        seen: set[UUID] = set()
+        seen: set[str] = set()
         names: list[str] = []
-        for item in self._turn_evidence(action.turn_id):
-            if item.material_id in seen or not self._can_read_task(principal, item.task_id):
-                continue
-            seen.add(item.material_id)
-            names.append(item.name)
+        for item in self._evidence_reader(principal, action.turn_id):
+            identifier = str(item["attachment_id"])
+            if identifier not in seen:
+                seen.add(identifier)
+                names.append(item["name"])
         if names:
             fields.append({"id": "evidence", "label": "근거 자료", "value": ", ".join(names), "kind": "evidence"})
-
-    def _turn_evidence(self, turn_id: UUID) -> list[ConversationMaterialEvidenceRecord]:
-        cached = self._evidence_cache.get(turn_id)
-        if cached is None:
-            cached = list(
-                self._session.scalars(
-                    select(ConversationMaterialEvidenceRecord)
-                    .where(ConversationMaterialEvidenceRecord.turn_id == turn_id)
-                    .order_by(ConversationMaterialEvidenceRecord.rank, ConversationMaterialEvidenceRecord.id)
-                )
-            )
-            self._evidence_cache[turn_id] = cached
-        return cached
-
-    def _can_read_task(self, principal: Principal, task_id: UUID) -> bool:
-        key = (str(principal.id), task_id)
-        cached = self._readable_task_cache.get(key)
-        if cached is None:
-            try:
-                TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session), SqlAlchemyActionRepository(self._session)).get(principal, task_id)
-                cached = True
-            except (TaskError, ValueError):
-                cached = False
-            self._readable_task_cache[key] = cached
-        return cached
 
     @staticmethod
     def _text(fields: list[dict[str, str]], field_id: str, label: str, value: Any) -> None:

@@ -10,7 +10,7 @@ from sqlalchemy import delete, select
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.mcp import McpReportsFacade, _create_bound_persona_server, create_mcp_server
-from ax_workspace.modules.organization_access.domain import Principal, TASK_READ, TASK_SELF_MANAGE
+from ax_workspace.modules.organization_access.domain import Principal, TASK_READ, TASK_SELF_MANAGE, WORK_REQUEST_READ
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.modules.ax_execution.ai import AiGeneration
 from ax_workspace.modules.work.application import TaskAccessDenied
@@ -67,6 +67,24 @@ def test_task_tool_discovery_separates_read_from_self_manage() -> None:
     assert "task_create_self" not in read_tools
     assert {"task_create_self", "task_start", "task_cancel"} <= manage_tools
     assert "task_list" not in manage_tools
+
+
+@pytest.mark.parametrize("capability", [TASK_READ, WORK_REQUEST_READ])
+def test_graph_discovery_names_all_supported_nodes_and_only_canonical_arguments(capability) -> None:
+    facade = CapabilityFacade(Principal("mina", "읽기", frozenset({"scax"}), frozenset({capability})))
+    tools = {tool.name: tool for tool in asyncio.run(_create_bound_persona_server(facade).list_tools())}
+    search = tools["graph_search"]
+    neighbors = tools["graph_neighbors"]
+    for kind in ("person", "team", "project", "task", "work_request", "meeting"):
+        assert f"`{kind}`" in search.description
+    for kind in ("person", "team", "project", "task", "work_request", "meeting", "material", "report"):
+        assert f"`{kind}:<id>`" in neighbors.description
+    assert set(search.input_schema["properties"]) == {"query", "limit"}
+    assert search.input_schema["required"] == ["query"]
+    assert set(neighbors.input_schema["properties"]) == {"node", "limit"}
+    assert neighbors.input_schema["required"] == ["node"]
+    assert "one hop" in neighbors.description and "never grants access" in neighbors.description
+    assert "evidence" in search.description
 
 
 def test_mcp_facade_uses_direct_daily_report_operations(tmp_path) -> None:
@@ -227,7 +245,7 @@ def test_stdio_mcp_client_discovers_only_persona_bound_report_tools(tmp_path) ->
                     "task_get",
                     "task_history",
                     "task_list",
-                    "task_material_search",
+                    "material_search",
                     "task_materials_list",
                     "task_resume",
                     "task_start",

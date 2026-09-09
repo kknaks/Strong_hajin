@@ -6,7 +6,7 @@ import hashlib
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
@@ -264,6 +264,22 @@ class SqlAlchemyDailyReportRepository:
                 for submission in submissions
             ],
         }
+
+    def material_revisions(self, owner_id: str, *, report_id: str | None = None, include_history: bool = False) -> list[dict[str, Any]]:
+        if report_id is not None:
+            self._owned_report(owner_id, report_id)
+        latest = select(func.max(DailyReportSubmissionRecord.submission_version)).where(
+            DailyReportSubmissionRecord.report_id == DailyReportRecord.id).correlate(DailyReportRecord).scalar_subquery()
+        statement = select(DailyReportRecord.id, DailyReportRecord.report_date, DailyReportSubmissionRecord.id,
+            DailyReportSubmissionRecord.submission_version, (DailyReportSubmissionRecord.submission_version == latest).label("is_current")).join(
+            DailyReportSubmissionRecord, DailyReportSubmissionRecord.report_id == DailyReportRecord.id).where(DailyReportRecord.owner_id == owner_id)
+        if report_id is not None:
+            statement = statement.where(DailyReportRecord.id == UUID(report_id))
+        if not include_history:
+            statement = statement.where(DailyReportSubmissionRecord.submission_version == latest)
+        statement = statement.order_by(DailyReportRecord.report_date.desc(), DailyReportSubmissionRecord.submission_version.desc())
+        return [{"report_id": str(report), "report_date": report_date, "revision_id": str(submission),
+                 "revision": version, "is_current_revision": current} for report, report_date, submission, version, current in self._session.execute(statement)]
 
     def recent(self, owner_id: str, *, limit: int = 3) -> list[dict[str, Any]]:
         """The last few reports this person wrote, each with the work its newest draft was written from."""

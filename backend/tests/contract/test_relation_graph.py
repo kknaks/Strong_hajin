@@ -5,6 +5,7 @@ materials attached to it. Every step is re-checked against what that person may 
 things connect, it never hands out access, and it never counts or names what someone may not see.
 """
 from fastapi.testclient import TestClient
+import pytest
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
@@ -188,6 +189,14 @@ def test_a_turn_keeps_a_record_of_where_it_actually_walked(tmp_path, monkeypatch
     # Every step names something readable, and the order is the order it was walked.
     assert [row["sequence"] for row in steps] == sorted(row["sequence"] for row in steps)
     assert any(row["node_title"] == "발자국이 남는 업무" for row in steps if row["kind"] == "node")
+    material_ref = f"material:{made['material']['material_id']}"
+    assert any(row["edge_kind"] == "has_material" and row["to_ref"] == material_ref for row in steps)
+
+    # The graph identity is a binding, even though canonical content search uses an artifact identity.
+    detached = client.post(f'/api/tasks/{made['task']['task_id']}/material-bindings/{made['material']['binding_id']}/detach', headers=JIHO)
+    assert detached.status_code == 200, detached.text
+    after = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=JIHO).json()["graph_receipts"]
+    assert all(material_ref not in (row.get("node_ref"), row.get("from_ref"), row.get("to_ref")) for row in after)
 
     # Nothing is written for a walk that was not taken.
     other = client.post("/api/conversations", headers=JIHO, json={"title": "다른 대화"}).json()
@@ -464,6 +473,140 @@ def _today() -> str:
     from ax_workspace.platform.work_tasks import business_date
 
     return business_date(datetime.now(UTC))
+
+
+def test_team_and_project_are_searchable_authorized_start_nodes(tmp_path) -> None:
+    from ax_workspace.entrypoints.mcp import McpReportsFacade
+
+    client, application = _stack(tmp_path)
+    project = client.post("/api/projects", headers=JIHO, json={"name": "탐색 2026 프로젝트"}).json()
+    facade = McpReportsFacade(Settings(RuntimeProfile.TEST, f"sqlite:///{tmp_path / 'demo.db'}"), "jiho")
+    for query, kind, identifier in [("제품", "team", "product"), ("탐색 2026", "project", project["project_id"])]:
+        response = client.get("/api/graph/search", headers=JIHO, params={"q": query})
+        assert response.status_code == 200
+        answer = response.json()
+        assert any(node["kind"] == kind and node["id"] == identifier for node in answer["nodes"])
+        assert answer == facade.graph_search(query)
+        assert answer == application.graph_search(facade.principal, query)
+    hidden = client.get("/api/graph/search", headers=HYEON, params={"q": "탐색 2026"}).json()
+    assert hidden == {"query": "탐색 2026", "nodes": [], "truncated": False}
+
+
+def test_project_walks_live_assignments_and_authorized_work_one_hop(tmp_path) -> None:
+    from ax_workspace.entrypoints.mcp import McpReportsFacade
+
+    client, application = _stack(tmp_path)
+    project = client.post("/api/projects", headers=JIHO, json={"name": "프로젝트 한 단계"}).json()
+    project_id = project["project_id"]
+    task = client.post("/api/tasks", headers=JIHO, json={"title": "프로젝트 업무", "project_id": project_id}).json()
+    client.post(f"/api/projects/{project_id}/members", headers=JIHO, json={"member_id": "mina"})
+    facade = McpReportsFacade(Settings(RuntimeProfile.TEST, f"sqlite:///{tmp_path / 'demo.db'}"), "mina")
+    ref = f"project:{project_id}"
+    response = client.get("/api/graph/neighbors", headers=MINA, params={"node": ref})
+    assert response.status_code == 200, response.text
+    answer = response.json()
+    assert answer == facade.graph_neighbors(ref) == application.graph_neighbors(facade.principal, ref)
+    edges = {(edge["kind"], edge["from"], edge["to"]) for edge in answer["edges"]}
+    assert edges == {("assigned_to", "person:jiho", ref), ("assigned_to", "person:mina", ref), ("part_of", f"task:{task['task_id']}", ref)}
+    from dataclasses import replace
+    from ax_workspace.modules.organization_access.domain import TASK_READ
+
+    project_only = replace(facade.principal, capabilities=facade.principal.capabilities - {TASK_READ})
+    limited = application.graph_neighbors(project_only, ref, limit=2)
+    assert limited["truncated"] is False
+    assert {edge["kind"] for edge in limited["edges"]} == {"assigned_to"}
+    assert task["task_id"] not in str(limited) and task["title"] not in str(limited)
+    assert client.get("/api/graph/neighbors", headers=HYEON, params={"node": ref}).status_code == 404
+    client.delete(f"/api/projects/{project_id}/members/mina", headers=JIHO)
+    assert client.get("/api/graph/neighbors", headers=MINA, params={"node": ref}).status_code == 404
+    assert facade.graph_search("프로젝트 한 단계")["nodes"] == []
+
+
+def test_project_connections_respect_assignment_time_in_seoul(tmp_path, monkeypatch) -> None:
+    import time
+    from datetime import UTC, datetime, timedelta
+
+    with monkeypatch.context() as environment:
+        environment.setenv("TZ", "Asia/Seoul")
+        time.tzset()
+        try:
+            client, _ = _stack(tmp_path)
+            project = client.post("/api/projects", headers=JIHO, json={"name": "참여 유효기간"}).json()
+            pid = project["project_id"]
+            future = (datetime.now(UTC) + timedelta(hours=2)).isoformat()
+            expired = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+            for member, fields in [("mina", {"valid_from": future}), ("hyeon", {"valid_until": expired}), ("minseok", {"valid_until": future})]:
+                response = client.post(f"/api/projects/{pid}/members", headers=JIHO, json={"member_id": member, **fields})
+                assert response.status_code == 201, response.text
+            answer = client.get("/api/graph/neighbors", headers=JIHO, params={"node": f"project:{pid}"}).json()
+            assert {edge["from"] for edge in answer["edges"]} == {"person:jiho", "person:minseok"}
+        finally:
+            environment.undo()
+            time.tzset()
+
+
+def test_empty_team_is_a_real_node_and_unknown_team_is_not(tmp_path) -> None:
+    client, _ = _stack(tmp_path)
+    from ax_workspace.platform.persistence import OrganizationUnitRecord, make_session_factory
+
+    with make_session_factory(f"sqlite:///{tmp_path / 'demo.db'}")() as session:
+        session.add(OrganizationUnitRecord(id="empty-team", name="아직 빈 팀", parent_id="scax"))
+        session.commit()
+    answer = client.get("/api/graph/neighbors", headers=JIHO, params={"node": "team:empty-team"})
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["center"]["title"] == "아직 빈 팀"
+    assert client.get("/api/graph/neighbors", headers=JIHO, params={"node": "team:missing"}).status_code == 404
+
+
+@pytest.mark.parametrize("node", ["conversation:123", "action:123", "draft:123", "task:", "project:2026", "2026"])
+def test_graph_rejects_unsupported_nodes_and_title_numbers(tmp_path, node) -> None:
+    client, _ = _stack(tmp_path)
+    assert client.get("/api/graph/neighbors", headers=JIHO, params={"node": node}).status_code == 422
+    assert client.get("/api/graph/neighbors", headers=JIHO, params={"node_ref": "person:jiho"}).status_code == 422
+
+
+def test_unknown_person_is_not_a_graph_node(tmp_path) -> None:
+    client, _ = _stack(tmp_path)
+    assert client.get("/api/graph/neighbors", headers=JIHO, params={"node": "person:missing"}).status_code == 404
+
+
+def test_request_read_without_task_read_can_use_the_discovered_graph(tmp_path) -> None:
+    from dataclasses import replace
+    from ax_workspace.entrypoints.mcp import McpReportsFacade
+    from ax_workspace.modules.organization_access.domain import TASK_READ
+
+    client, application = _stack(tmp_path)
+    request = client.post("/api/work-requests", headers=MINA, json={"title": "요청만 조회", "assignee_id": "jiho"}).json()
+    principal = McpReportsFacade(Settings(RuntimeProfile.TEST, f"sqlite:///{tmp_path / 'demo.db'}"), "mina").principal
+    request_reader = replace(principal, capabilities=principal.capabilities - {TASK_READ})
+    result = application.graph_search(request_reader, "요청만 조회")
+    assert [(row["kind"], row["id"]) for row in result["nodes"]] == [("work_request", request["request_id"])]
+
+
+def test_project_receipts_are_visible_then_redacted_after_membership_release(tmp_path, monkeypatch) -> None:
+    from uuid import UUID
+    from ax_workspace.entrypoints.mcp import McpReportsFacade
+    from ax_workspace.platform.persistence import ConversationTurnRecord, make_session_factory
+
+    client, _ = _stack(tmp_path)
+    project = client.post("/api/projects", headers=JIHO, json={"name": "회수되는 탐색 근거"}).json()
+    pid = project["project_id"]
+    client.post(f"/api/projects/{pid}/members", headers=JIHO, json={"member_id": "mina"})
+    conversation = client.post("/api/conversations", headers=MINA, json={"title": "조회"}).json()
+    cid = conversation["conversation_id"]
+    accepted = client.post(f"/api/conversations/{cid}/messages", headers={**MINA, "Idempotency-Key": "project-receipt"}, json={"body": "프로젝트 관계", "context": []}).json()
+    url = f"sqlite:///{tmp_path / 'demo.db'}"
+    with make_session_factory(url)() as session:
+        execution_id = session.get(ConversationTurnRecord, UUID(accepted["turn_id"])).execution_id
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", str(execution_id))
+    facade = McpReportsFacade(Settings(RuntimeProfile.TEST, url), "mina")
+    facade.graph_search(project["name"])
+    facade.graph_neighbors(f"project:{pid}")
+    before = client.get(f"/api/conversations/{cid}", headers=MINA).json()["graph_receipts"]
+    assert any(row.get("node_ref") == f"project:{pid}" for row in before)
+    assert any(row.get("edge_kind") == "assigned_to" for row in before)
+    client.delete(f"/api/projects/{pid}/members/mina", headers=JIHO)
+    assert client.get(f"/api/conversations/{cid}", headers=MINA).json()["graph_receipts"] == []
 
 
 def test_each_node_says_where_it_sits_in_time_when_the_ledger_plans_one(tmp_path) -> None:

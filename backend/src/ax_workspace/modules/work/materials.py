@@ -13,11 +13,9 @@ from uuid import UUID, uuid4
 from ax_workspace.modules.organization_access.domain import Principal, TASK_READ, TASK_SELF_MANAGE
 from ax_workspace.modules.work.application import TaskAccessDenied, TaskError, TaskRepository
 from ax_workspace.modules.work.material_extraction import (
-    MAX_SEARCH_HITS,
     MaterialExtractionJob,
     MaterialExtractionQueue,
     MaterialExtractionRepository,
-    MaterialRetriever,
     extraction_view,
 )
 
@@ -148,7 +146,6 @@ class TaskMaterialApplication:
         storage: MaterialStorage,
         extractions: MaterialExtractionRepository | None = None,
         extraction_queue: MaterialExtractionQueue | None = None,
-        retriever: MaterialRetriever | None = None,
         references: ResourceReferencePort | None = None,
         readable_work: ReadableWorkPort | None = None,
     ) -> None:
@@ -159,7 +156,6 @@ class TaskMaterialApplication:
         self._storage = storage
         self._extractions = extractions
         self._extraction_queue = extraction_queue
-        self._retriever = retriever
         self._references = references
 
     def list(self, principal: Principal, task_id: UUID) -> list[dict[str, Any]]:
@@ -171,98 +167,6 @@ class TaskMaterialApplication:
             self._view(binding, attachment, extractions.get(attachment.id), principal=principal, references=self._references)
             for binding, attachment in active
         ]
-
-    def search(
-        self,
-        principal: Principal,
-        task_id: UUID | None,
-        query: str,
-        *,
-        limit: int = 5,
-        registered_from: date | None = None,
-        registered_until: date | None = None,
-    ) -> dict[str, Any]:
-        """`material.search`. 어느 업무의 자료인지 알면 그 업무에서, 모르면 읽을 수 있는 업무 전부에서 찾는다.
-
-        어느 자료에 있는지 모르는 채로 묻는 것이 자료 검색의 보통이다. 시작점을 대라고 요구하면 아는 사람만 찾을
-        수 있고, 그것은 검색이 아니라 조회다.
-
-        시작점이 넓어져도 권한은 넓어지지 않는다. 볼 수 있는 업무는 업무 모듈이 답하고, 그 업무에 지금 살아 있는
-        binding만 본다 — 여기서 하는 일은 순위를 매기는 것뿐이다.
-
-        `registered_*`는 자료가 등록된 때의 조건이지 본문에 적힌 날짜가 아니다. `지난달 등록한 자료`와 `8월
-        실적을 언급한 자료`는 다른 질문이며, 날짜를 검색어에 섞으면 둘이 하나로 뭉개진다.
-        """
-        self._require(principal, TASK_READ)
-        task = self._readable(principal, task_id) if task_id is not None else None
-        cleaned = " ".join(query.split())
-        if not cleaned:
-            raise MaterialError("search query is required")
-        if self._extractions is None or self._retriever is None:
-            raise MaterialError("material search is not available")
-        if task is not None:
-            anchors = [str(task.id)]
-        elif self._readable_work is not None:
-            anchors = self._readable_work.readable_task_ids(principal)
-        else:
-            raise MaterialError("material search needs a task")
-        active = [
-            (binding, attachment)
-            for binding, attachment in self._attachments.bindings_for_many("task", anchors)
-            if binding.unbound_at is None and _registered_within(attachment, registered_from, registered_until)
-        ]
-        extractions = self._extractions.for_attachments([attachment.id for _, attachment in active])
-        searchable: dict[UUID, tuple[Any, Any, Any]] = {}
-        unavailable: list[dict[str, Any]] = []
-        for binding, attachment in active:
-            extraction = extractions.get(attachment.id)
-            if extraction is not None and extraction.status == "completed" and extraction.integrity_ref == attachment.integrity_ref:
-                searchable[extraction.id] = (binding, attachment, extraction)
-            else:
-                unavailable.append(
-                    {
-                        "material_id": str(binding.id),
-                        "name": attachment.name,
-                        "kind": binding.role,
-                        # Why it could not be read: a link has no content to extract, a file may still be pending.
-                        "reason": attachment.source_kind if attachment.source_kind != "file" else "extraction",
-                        "extraction": extraction_view(extraction),
-                    }
-                )
-        hits = self._retriever.search(list(searchable), cleaned, limit=max(1, min(limit, MAX_SEARCH_HITS)))
-        results = []
-        for hit in hits:
-            binding, attachment, extraction = searchable[hit.extraction_id]
-            results.append(
-                {
-                    "material_id": str(binding.id),
-                    "attachment_id": str(attachment.id),
-                    "chunk_id": str(hit.chunk_id),
-                    "task_id": binding.context_id,
-                    "kind": binding.role,
-                    "name": attachment.name,
-                    "content_type": attachment.content_type,
-                    "integrity_ref": attachment.integrity_ref,
-                    "extraction_id": str(extraction.id),
-                    "sequence": hit.sequence,
-                    "page": hit.page,
-                    "excerpt": hit.excerpt,
-                    "matched_tokens": hit.matched_tokens,
-                    "origin": f"/api/tasks/{binding.context_id}/materials/{binding.id}/content",
-                }
-            )
-        return {
-            # 시작점을 대지 않았으면 답에도 시작점이 없다. 결과의 각 줄이 자기 업무를 말한다.
-            "task_id": str(task.id) if task is not None else None,
-            "task_title": task.title if task is not None else None,
-            "query": cleaned,
-            # 실제로 무엇으로 좁혔는지 남긴다. 답이 어떤 조건 위에 서 있는지 사람이 알아야 한다.
-            "registered_from": registered_from.isoformat() if registered_from else None,
-            "registered_until": registered_until.isoformat() if registered_until else None,
-            "results": results,
-            "searched_materials": len(searchable),
-            "unavailable_materials": unavailable,
-        }
 
     def attach_link(self, principal: Principal, task_id: UUID, *, kind: str, url: str, label: str) -> dict[str, Any]:
         """Point a Task at work that lives somewhere else.
@@ -351,10 +255,11 @@ class TaskMaterialApplication:
                 self._extraction_queue.enqueue(MaterialExtractionJob(extraction.id, attachment.id))
         return self._moved_view(task, binding, attachment, extraction, principal=principal, references=self._references)
 
-    def open(self, principal: Principal, task_id: UUID, binding_id: UUID) -> tuple[dict[str, Any], bytes]:
+    def open(self, principal: Principal, task_id: UUID, material_id: UUID) -> tuple[dict[str, Any], bytes]:
         self._require(principal, TASK_READ)
         self._readable(principal, task_id)
-        found = self._attachments.binding("task", str(task_id), binding_id)
+        found = next(((binding, attachment) for binding, attachment in self._attachments.bindings_for("task", str(task_id))
+                      if attachment.id == material_id and binding.unbound_at is None), None)
         if found is None or found[0].unbound_at is not None:
             raise MaterialNotFound("material was not found")
         binding, attachment = found
@@ -434,7 +339,8 @@ class TaskMaterialApplication:
             name = title or "볼 수 없는 자료"
         return {
             "extraction": extraction_view(extraction),
-            "material_id": str(binding.id),
+            "material_id": str(attachment.id),
+            "binding_id": str(binding.id),
             "attachment_id": str(attachment.id),
             "task_id": binding.context_id,
             "kind": binding.role,

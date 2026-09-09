@@ -255,10 +255,17 @@ class ProjectApplication:
 
     @staticmethod
     def _assignment_view(assignment: Any) -> dict[str, Any]:
+        def utc(value: datetime | None) -> str | None:
+            # SQLite returns stored UTC timestamps without tzinfo; never reinterpret
+            # those wall-clock values in the host's local timezone.
+            if value is None:
+                return None
+            return (value if value.tzinfo else value.replace(tzinfo=UTC)).astimezone(UTC).isoformat()
+
         return {
             "member_id": assignment.member_id,
             "assignment_kind": assignment.assignment_kind,
             # 유효기간은 비어 있을 수 있다. 비어 있으면 지금부터 계속이라는 뜻이다.
-            "valid_from": assignment.valid_from.astimezone(UTC).isoformat() if assignment.valid_from else None,
-            "valid_until": assignment.valid_until.astimezone(UTC).isoformat() if assignment.valid_until else None,
+            "valid_from": utc(assignment.valid_from),
+            "valid_until": utc(assignment.valid_until),
         }

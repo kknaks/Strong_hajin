@@ -114,8 +114,8 @@ def test_docx_keeps_paragraph_and_table_order_and_headers() -> None:
     result = PARSER.parse(name="계약.docx", content_type="", data=_docx())
     assert result.status == STATUS_OK
     assert [block.kind for block in result.blocks] == ["paragraph", "table", "paragraph", "header"]
-    assert [block.locator.label for block in result.blocks] == ["문단 1", "표 1", "문단 2", "머리글 1"]
-    assert result.blocks[1].text == "항목 | 금액 대행료 | 1,000,000"
+    assert [block.locator.label for block in result.blocks] == ["문단 1", "표 1, 1–2행 1–2열", "문단 2", "머리글 1"]
+    assert result.blocks[1].text == "R1C1=항목 | R1C2=금액 R2C1=대행료 | R2C2=1,000,000"
     assert [block.order for block in result.blocks] == [0, 1, 2, 3]
 
 
@@ -136,9 +136,9 @@ def test_pptx_returns_slide_numbers_tables_and_notes() -> None:
     result = PARSER.parse(name="보고.pptx", content_type="", data=_pptx())
     assert result.status == STATUS_OK and result.slide_count == 2
     kinds = [(block.kind, block.locator.label) for block in result.blocks]
-    assert kinds == [("slide_text", "슬라이드 1"), ("slide_table", "슬라이드 1"), ("notes", "슬라이드 1 발표자 노트")]
+    assert kinds == [("slide_text", "슬라이드 1"), ("slide_table", "슬라이드 1 표 1, 1–2행 1–2열"), ("notes", "슬라이드 1 발표자 노트")]
     assert "체험단 보고" in result.blocks[0].text and "본문 텍스트" in result.blocks[0].text
-    assert result.blocks[1].text == "채널 | 건수 블로그 | 12"
+    assert result.blocks[1].text == "R1C1=채널 | R1C2=건수 R2C1=블로그 | R2C2=12"
     assert result.blocks[2].text == "발표자 노트 내용"
 
 
@@ -150,7 +150,7 @@ def test_pdf_pages_needs_ocr_and_empty_are_distinct() -> None:
     blank = PARSER.parse(name="blank.pdf", content_type="application/pdf", data=_pdf(""))
     assert blank.status == STATUS_EMPTY and blank.blocks == ()
     mixed = PARSER.parse(name="mixed.pdf", content_type="application/pdf", data=_pdf("Cover text", image_only_pages=1))
-    assert mixed.status == STATUS_OK and len(mixed.blocks) == 1 and any("no text layer" in w for w in mixed.warnings)
+    assert mixed.status == "partial" and len(mixed.blocks) == 1 and any("no text layer" in w for w in mixed.warnings)
 
 
 def test_corrupt_encrypted_and_legacy_inputs_end_in_explainable_statuses() -> None:

@@ -27,7 +27,7 @@ from ax_workspace.modules.organization_access.domain import (
     WORK_REQUEST_DECIDE,
     Principal,
 )
-from ax_workspace.platform.actions import ActionPresenter
+from ax_workspace.platform.actions import ActionPresenter, ActionEvidenceReader
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
 from ax_workspace.modules.work.requests import (
     DECISION_VERSION,
@@ -485,9 +485,9 @@ class WorkRequestActionHandler:
 class AxProposalActionHandler:
     """A gated AX proposal: the owner approves or rejects the effect the turn prepared."""
 
-    def __init__(self, session: Session, actions: Any) -> None:
+    def __init__(self, session: Session, actions: Any, *, evidence_reader: ActionEvidenceReader | None = None) -> None:
         self._session = session
-        self._presenter = ActionPresenter(session)
+        self._presenter = ActionPresenter(session, evidence_reader=evidence_reader)
         self._members = MemberDirectory(session)
         self._actions = actions
 
@@ -926,7 +926,8 @@ class TaskDeliveryActionHandler:
             raise ActionAccessDenied("principal cannot read this action item")
 
 
-def action_handlers(session: Session, *, work_requests: Any, actions: Any, assignments: Any, tasks: Any = None) -> list[Any]:
+def action_handlers(session: Session, *, work_requests: Any, actions: Any, assignments: Any, tasks: Any = None,
+                    evidence_reader: ActionEvidenceReader | None = None) -> list[Any]:
     """Every origin that can put a question to a person, in the order a person should meet them.
 
     The module applications are passed in rather than rebuilt here, so every command runs the same operation the rest of
@@ -938,7 +939,7 @@ def action_handlers(session: Session, *, work_requests: Any, actions: Any, assig
     ]
     if tasks is not None:
         handlers.append(TaskDeliveryActionHandler(session, tasks))
-    handlers.append(AxProposalActionHandler(session, actions))
+    handlers.append(AxProposalActionHandler(session, actions, evidence_reader=evidence_reader))
     return handlers
 
 

@@ -598,7 +598,7 @@ describe("materials that live somewhere else", () => {
   });
 
   const link = {
-    material_id: "m1",
+    material_id: "m1", binding_id: "binding-m1",
     attachment_id: "a1",
     task_id: "task-1",
     kind: "input" as const,
@@ -656,8 +656,18 @@ describe("materials that live somewhere else", () => {
     expect(await screen.findByRole("link", { name: "설계 문서" })).toBeTruthy();
   });
 
+  it("detaches only the selected binding of a shared artifact", async () => {
+    vi.mocked(api.detachTaskMaterial).mockResolvedValue({ ...link, task_version: 2 } as never);
+    renderWithMaterials([link, { ...link, binding_id: "binding-output", kind: "output" }]);
+    await screen.findAllByRole("link", { name: "설계 문서" });
+    const inputSection = screen.getByText("참고 자료").closest("section") as HTMLElement;
+    fireEvent.click(within(inputSection).getByRole("button", { name: "떼기" }));
+    await waitFor(() => expect(api.detachTaskMaterial).toHaveBeenCalledWith("task-1", "binding-m1"));
+    await waitFor(() => expect(screen.getAllByRole("link", { name: "설계 문서" })).toHaveLength(1));
+  });
+
   it("still downloads a file material through the server", async () => {
-    const file = { ...link, material_id: "m2", name: "견적서.pdf", source_kind: "file", url: null, mutable_source: false, size_bytes: 2048 };
+    const file = { ...link, material_id: "m2", binding_id: "binding-m2", name: "견적서.pdf", source_kind: "file", url: null, mutable_source: false, size_bytes: 2048 };
     renderWithMaterials([file]);
     const anchor = (await screen.findByRole("link", { name: "견적서.pdf" })) as HTMLAnchorElement;
     expect(anchor.href).toContain("/api/tasks/task-1/materials/m2/content");
@@ -672,7 +682,7 @@ describe("materials that point at other work in SCAX", () => {
   });
 
   const reference = {
-    material_id: "m3",
+    material_id: "m3", binding_id: "binding-m3",
     attachment_id: "a3",
     task_id: "task-1",
     kind: "input" as const,

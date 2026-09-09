@@ -15,15 +15,20 @@ from ax_workspace.modules.work.material_extraction import (
     MaterialExtractionJob,
     MaterialExtractionService,
     MaterialTextExtractor,
+    PARSER_VERSION,
+    UPGRADABLE_PARSER_VERSIONS,
+    ParserVersionConflict,
 )
 from ax_workspace.platform.durable_jobs import MemoryDurableJobQueue, build_job_queue
 from ax_workspace.platform.material_extraction import (
     PypdfTextExtractor,
+    MaterialJobQueue,
     SqlAlchemyMaterialExtractionRepository,
     reindex_stale_chunks,
 )
 from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
-from ax_workspace.platform.persistence import make_session_factory
+from ax_workspace.platform.native_materials import NativeRevisionExtractor, NativeRevisionStorage
+from ax_workspace.platform.persistence import AttachmentRecord, make_session_factory
 
 FAILURE_BACKOFF_SECONDS = 2.0
 logger = logging.getLogger(__name__)
@@ -89,6 +94,10 @@ class MaterialExtractionWorker:
         """
         try:
             with self._sessions() as session:
+                upgrades = SqlAlchemyMaterialExtractionRepository(session).request_upgrades(limit=self._settings.material_worker_concurrency)
+                queue = MaterialJobQueue(self._queue_factory(session))
+                for job in upgrades:
+                    queue.enqueue(job)
                 written = reindex_stale_chunks(session, limit=self._settings.material_worker_concurrency * 50)
                 session.commit()
         except SQLAlchemyError:
@@ -96,7 +105,7 @@ class MaterialExtractionWorker:
             return False
         if written:
             logger.info("material worker reindexed %d chunk(s) made with older analysis rules", written)
-        return bool(written)
+        return bool(written or upgrades)
 
     def _claim_jobs(self) -> list[ClaimedJob]:
         with self._sessions() as session:
@@ -135,12 +144,33 @@ class MaterialExtractionWorker:
     def process(self, job: MaterialExtractionJob) -> str:
         """Exposed so tests and the API-side inline path share the exact use case. Never holds a transaction while parsing."""
         with self._sessions() as session:
+            repository = SqlAlchemyMaterialExtractionRepository(session)
+            extraction = repository.get(job.extraction_id)
+            if not repository.is_terminal(job.extraction_id) and extraction.parser_version != PARSER_VERSION:
+                if extraction.parser_version not in UPGRADABLE_PARSER_VERSIONS:
+                    # A worker from an older deployment must not downgrade or consume a future parser's job.
+                    return "contended"
+                attachment = session.get(AttachmentRecord, extraction.attachment_id)
+                if attachment is not None and attachment.lifecycle != "purged":
+                    try:
+                        current = repository.request(attachment)
+                    except ParserVersionConflict:
+                        return "contended"
+                    MaterialJobQueue(self._queue_factory(session)).enqueue(MaterialExtractionJob(current.id, attachment.id))
+                    session.commit()
+                    return "skipped"
             claimed = self._service(session).claim(job)
             session.commit()
         if isinstance(claimed, str):
             return claimed  # "skipped" (terminal) or "contended" (held by a live worker)
-        outcome = MaterialExtractionService.extract(claimed, self._storage, self._extractor)
-        with self._sessions() as session:
-            status = self._service(session).finish(claimed, outcome)
-            session.commit()
-            return status
+        if claimed.source_kind == "native_revision":
+            outcome = MaterialExtractionService.extract(claimed, NativeRevisionStorage(self._sessions), NativeRevisionExtractor())
+        else:
+            outcome = MaterialExtractionService.extract(claimed, self._storage, self._extractor)
+        try:
+            with self._sessions() as session:
+                status = self._service(session).finish(claimed, outcome)
+                session.commit()
+                return status
+        finally:
+            outcome.close()

@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from ax_workspace.modules.work.material_search import MaterialResourceType
 from ax_workspace.modules.organization_access.administration import (
     AccessAdministrationDenied,
     AccessAdministrationError,
@@ -256,6 +257,13 @@ class UpdateTaskRequest(BaseModel):
     #: 이 업무를 어느 프로젝트의 것으로 둘 것인가. 떼려면 `clear_project`를 쓴다.
     project_id: UUID | None = None
     clear_project: bool = False
+
+
+class MaterialFolderCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["personal", "team"]
+    title: str = Field(min_length=1, max_length=300)
+    organization_id: str | None = None
 
 
 class TaskMaterialLinkRequest(BaseModel):
@@ -1116,6 +1124,77 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
+        @app.get("/api/meetings/{meeting_id}/materials/{material_id}/content")
+        def open_meeting_material(meeting_id: UUID, material_id: UUID, principal: Principal = Depends(developer_principal)) -> Response:
+            try:
+                view, data = app.state.workflow_application.open_meeting_material(principal, meeting_id, material_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+            return Response(content=data, media_type=str(view["content_type"]),
+                            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(str(view['name']))}"})
+
+        @app.get("/api/daily-reports/{report_id}/materials/{material_id}/content")
+        def open_report_material(report_id: UUID, material_id: UUID, principal: Principal = Depends(developer_principal)) -> Response:
+            try:
+                view, data = app.state.workflow_application.open_report_material(principal, report_id, material_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+            return Response(content=data, media_type=str(view["content_type"]),
+                            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(str(view['name']))}"})
+
+        @app.get("/api/material-folders")
+        def list_material_folders(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+            try:
+                return app.state.workflow_application.list_material_folders(principal)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/material-folders", status_code=status.HTTP_201_CREATED)
+        def create_material_folder(request: MaterialFolderCreateRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.create_material_folder(principal, **request.model_dump())
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/material-folders/{folder_id}/materials")
+        def list_folder_materials(folder_id: UUID, principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+            try:
+                return app.state.workflow_application.list_folder_materials(principal, folder_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/material-folders/{folder_id}/materials", status_code=status.HTTP_201_CREATED)
+        async def upload_folder_material(folder_id: UUID, file: UploadFile = File(...), principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            data = await file.read()
+            try:
+                return app.state.workflow_application.upload_folder_material(principal, folder_id, name=file.filename or "material",
+                                                                            content_type=file.content_type or "application/octet-stream", data=data)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/material-folders/{folder_id}/materials/{material_id}/content")
+        def open_folder_material(folder_id: UUID, material_id: UUID, principal: Principal = Depends(developer_principal)) -> Response:
+            try:
+                view, data = app.state.workflow_application.open_folder_material(principal, folder_id, material_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+            return Response(content=data, media_type=str(view["content_type"]),
+                            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(str(view['name']))}"})
+
+        @app.post("/api/material-folders/{folder_id}/materials/{material_id}/detach")
+        def detach_folder_material(folder_id: UUID, material_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.detach_folder_material(principal, folder_id, material_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/material-folders/{folder_id}/archive")
+        def archive_material_folder(folder_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.archive_material_folder(principal, folder_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
         @app.get("/api/tasks/{task_id}/materials")
         def list_task_materials(task_id: UUID, principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
             try:
@@ -1258,30 +1337,23 @@ def create_app(
 
         @app.get("/api/materials/search")
         def search_materials(
-            q: str,
-            limit: int = 5,
-            registered_from: date | None = None,
-            registered_until: date | None = None,
+            q: str, limit: int = 5,
+            resource_types: list[MaterialResourceType] | None = Query(None),
+            resource_type: MaterialResourceType | None = None, resource_id: str | None = None,
+            material_id: UUID | None = None, registered_from: date | None = None, registered_until: date | None = None,
             principal: Principal = Depends(developer_principal),
         ) -> dict[str, object]:
-            """어느 업무의 자료인지 모를 때. 읽을 수 있는 업무에 붙은 것만 찾는다.
-
-            `registered_*`는 자료가 등록된 때의 조건이지 본문에 적힌 날짜가 아니다.
-            """
             try:
-                return app.state.workflow_application.search_task_materials(
-                    principal, None, q, limit=limit,
-                    registered_from=registered_from, registered_until=registered_until,
-                )
+                return app.state.workflow_application.search_materials(principal, q, limit=limit, resource_types=resource_types,
+                    resource_type=resource_type, resource_id=resource_id, material_id=material_id,
+                    registered_from=registered_from, registered_until=registered_until)
             except Exception as error:
                 raise _runtime_error(error) from error
 
-        @app.get("/api/tasks/{task_id}/materials/search")
-        def search_task_materials(
-            task_id: UUID, q: str, limit: int = 5, principal: Principal = Depends(developer_principal)
-        ) -> dict[str, object]:
+        @app.get("/api/materials/{material_id}")
+        def material_metadata(material_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
             try:
-                return app.state.workflow_application.search_task_materials(principal, task_id, q, limit=limit)
+                return app.state.workflow_application.material_metadata(principal, material_id)
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -1299,10 +1371,10 @@ def create_app(
                 headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(str(view['name']))}"},
             )
 
-        @app.post("/api/tasks/{task_id}/materials/{material_id}/detach")
-        def detach_task_material(task_id: UUID, material_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        @app.post("/api/tasks/{task_id}/material-bindings/{binding_id}/detach")
+        def detach_task_material(task_id: UUID, binding_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
             try:
-                return app.state.workflow_application.detach_task_material(principal, task_id, material_id)
+                return app.state.workflow_application.detach_task_material(principal, task_id, binding_id)
             except Exception as error:
                 raise _runtime_error(error) from error
 

@@ -144,6 +144,8 @@ class ConversationWorker:
         )
         request = replace(
             request,
+            # A provider checkpoint may contain prior material text whose permission has since changed.
+            provider_session_ref=None if pack.get("reset_provider_session") else request.provider_session_ref,
             seed_references=tuple(pack["seeds"]),
             recent_exchanges=tuple(pack["exchanges"]),
         )

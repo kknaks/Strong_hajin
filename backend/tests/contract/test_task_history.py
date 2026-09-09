@@ -90,7 +90,7 @@ def test_a_snapshot_keeps_what_the_current_screen_hides(tmp_path) -> None:
     assert "url" not in with_both["snapshot"]["materials"][0] or with_both["snapshot"]["materials"][0].get("data") is None
 
     client.delete(f"/api/tasks/{task_id}/checklist/{step['item_id']}", headers=MINA)
-    client.post(f"/api/tasks/{task_id}/materials/{material['material_id']}/detach", headers=MINA)
+    client.post(f'/api/tasks/{task_id}/material-bindings/{material['binding_id']}/detach', headers=MINA)
 
     assert client.get(f"/api/tasks/{task_id}", headers=MINA).json()["checklist"] == []
     assert client.get(f"/api/tasks/{task_id}/materials", headers=MINA).json() == []

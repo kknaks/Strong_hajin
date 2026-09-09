@@ -4,7 +4,9 @@ The development helper closes the gap between a running demo database and the cu
 reset. It may add what is missing; anything that could lose data — a column the model no longer has, or a NOT NULL
 column on a table that already has rows — is reported for a person to decide, never performed.
 """
+import pytest
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.bootstrap.schema_sync import apply, plan
@@ -61,3 +63,37 @@ def test_anything_that_could_lose_data_is_left_to_a_person(tmp_path) -> None:
     assert not any("DROP" in statement.upper() for statement in made["statements"])
     apply(database_url)
     assert "사람이_만든_컬럼" in {column["name"] for column in inspect(create_engine(database_url)).get_columns("tasks")}
+
+
+def test_additive_folder_table_requires_exactly_one_owner(tmp_path):
+    database_url = _database(tmp_path)
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE material_folders"))
+        members_before = connection.execute(text("SELECT id FROM members ORDER BY id")).all()
+    statements = apply(database_url)["statements"]
+    assert any("ck_material_folder_owner" in statement for statement in statements)
+    with engine.begin() as connection:
+        assert connection.execute(text("SELECT id FROM members ORDER BY id")).all() == members_before
+    with pytest.raises(IntegrityError, match="ck_material_folder_owner"):
+        with engine.begin() as connection:
+            connection.execute(text(
+                "INSERT INTO material_folders (id, kind, title, owner_member_id, organization_id, created_by, created_at) "
+                "VALUES ('11111111111141118111111111111111', 'personal', 'invalid owner', 'mina', 'product', 'mina', CURRENT_TIMESTAMP)"
+            ))
+    assert apply(database_url)["statements"] == []
+
+
+def test_content_receipt_is_the_only_material_evidence_schema(tmp_path):
+    database_url = _database(tmp_path)
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE conversation_content_evidence"))
+        members_before = connection.execute(text("SELECT id FROM members ORDER BY id")).all()
+    made = apply(database_url)
+    assert made["manual"] == []
+    assert any("conversation_content_evidence" in statement for statement in made["statements"])
+    assert "conversation_material_evidence" not in inspect(engine).get_table_names()
+    with engine.begin() as connection:
+        assert connection.execute(text("SELECT id FROM members ORDER BY id")).all() == members_before
+    assert apply(database_url)["statements"] == []

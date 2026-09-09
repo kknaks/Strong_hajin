@@ -2,30 +2,33 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from io import BytesIO
 from typing import Any
-from uuid import UUID
+from itertools import batched
+from uuid import UUID, uuid5
 
-from sqlalchemy import case, delete, func, literal, literal_column, select
+from sqlalchemy import case, delete, insert, func, literal, literal_column, select
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.jobs.domain import JOB_KIND_MATERIAL_EXTRACTION, DurableJobQueue, JobEnvelope
 from dataclasses import replace
 
+from ax_workspace.platform.extraction_spool import ExtractionSpool
 from ax_workspace.platform.korean import analyzer
 from ax_workspace.modules.work.material_extraction import (
-    MAX_TEXT_CHARS,
     ExtractedChunk,
     ExtractedBlock,
     ExtractionOutcome,
     MaterialExtractionJob,
-    chunk_text,
+    PARSER_VERSION,
+    UPGRADABLE_PARSER_VERSIONS,
+    ParserVersionConflict,
+    iter_chunks,
     classify,
     decode_utf8_text,
 )
 from ax_workspace.platform.persistence import (
     AttachmentRecord,
-    ConversationMaterialEvidenceRecord,
+    ConversationContentEvidenceRecord,
     ConversationRecord,
     ConversationTurnRecord,
     MaterialBlockRecord,
@@ -34,11 +37,7 @@ from ax_workspace.platform.persistence import (
 )
 
 MATERIAL_EXTRACTION_QUEUE = "ax_material_extraction"
-MAX_PDF_PAGES = 300
 
-
-#: Bumped when the parsers change what they produce. A new version supersedes the old reading; it never rewrites it.
-PARSER_VERSION = "1"
 
 #: Why a document could not be read, in the vocabulary the material surfaces already speak.
 _PARSER_FAILURES = {
@@ -47,7 +46,7 @@ _PARSER_FAILURES = {
     "unsupported": "unsupported_format",
     "encrypted": "encrypted_document",
     "corrupt": "corrupt_document",
-    "budget_exceeded": "budget_exceeded",
+    "budget_exceeded": "too_large",
 }
 
 
@@ -60,98 +59,70 @@ class PypdfTextExtractor:
         self._documents = documents or OfficeDocumentParser()
 
     def extract(self, *, name: str, content_type: str, data: bytes) -> ExtractionOutcome:
+        blocks = ExtractionSpool(ExtractedBlock)
+        chunks = ExtractionSpool(ExtractedChunk)
+        try:
+            outcome = self._extract(name=name, content_type=content_type, data=data, blocks=blocks, chunks=chunks)
+        except BaseException:
+            blocks.close()
+            chunks.close()
+            raise
+        if outcome.status not in {"completed", "partial"}:
+            blocks.close()
+            chunks.close()
+        return outcome
+
+    def _extract(self, *, name, content_type, data, blocks, chunks) -> ExtractionOutcome:
+        total = 0
+
+        def append(block: ExtractedBlock) -> None:
+            nonlocal total
+            blocks.append(block)
+            for chunk in iter_chunks(block.text, page=block.page, sequence_start=len(chunks), char_offset=total):
+                chunks.append(replace(chunk, block_sequence=block.sequence, context_text=(block.header_context or {}).get("text", "")))
+            total += len(block.text)
+
         extractor = classify(name, content_type)
         if extractor in {"text", "markdown"}:
             decoded = decode_utf8_text(data)
             if decoded is None:
                 return ExtractionOutcome(status="failed", extractor=extractor, failure_reason="not_utf8_text")
-            chunks = chunk_text(decoded)
-            if not chunks:
+            if not decoded.strip():
                 return ExtractionOutcome(status="failed", extractor=extractor, failure_reason="empty_content")
-            blocks = (ExtractedBlock(sequence=1, kind="paragraph", text=decoded[:MAX_TEXT_CHARS], locator_label="본문"),)
-            chunks = tuple(replace(chunk, block_sequence=1) for chunk in chunks)
+            append(ExtractedBlock(sequence=1, kind="paragraph", text=decoded, locator_label="본문"))
             return ExtractionOutcome(
-                status="completed", extractor=extractor, chunks=chunks, blocks=blocks,
-                char_count=min(len(decoded), MAX_TEXT_CHARS),
+                status="completed", extractor=extractor, chunks=chunks, blocks=blocks, char_count=total,
+                coverage={"complete": True, "indexed_blocks": len(blocks), "indexed_chars": total},
             )
-        # Everything else the parser understands: the document's own shape, then chunks derived from it.
         document_format = self._documents.supports(name=name, content_type=content_type)
         if document_format is None:
             return ExtractionOutcome(status="unsupported", extractor=extractor, failure_reason="unsupported_format")
-        parsed = self._documents.parse(name=name, content_type=content_type, data=data)
-        if parsed.status != "ok" or not parsed.blocks:
-            reason = _PARSER_FAILURES.get(parsed.status, "extractor_error")
-            status = "needs_ocr" if reason == "needs_ocr" else ("unsupported" if reason == "unsupported_format" else "failed")
-            return ExtractionOutcome(
-                status=status, extractor=document_format, failure_reason=reason, page_count=parsed.page_count
-            )
-        blocks: list[ExtractedBlock] = []
-        chunks: list[ExtractedChunk] = []
-        total = 0
-        for block in parsed.blocks:
-            if total >= MAX_TEXT_CHARS:
-                break
-            text = block.text[: MAX_TEXT_CHARS - total]
+
+        def receive(block) -> None:
             locator = block.locator
-            blocks.append(
-                ExtractedBlock(
-                    sequence=len(blocks) + 1,
-                    kind=block.kind,
-                    text=text,
-                    locator_label=locator.label,
-                    page=getattr(locator, "page", None),
-                    sheet=getattr(locator, "sheet", None),
-                    slide=getattr(locator, "slide", None),
-                    # A sheet row's ordinal lives in the locator's index; other kinds have none.
-                    row=getattr(locator, "index", None) if block.kind == "sheet_row" else None,
-                )
-            )
-            for chunk in chunk_text(text, page=getattr(locator, "page", None), sequence_start=len(chunks), char_offset=total):
-                chunks.append(replace(chunk, block_sequence=len(blocks)))
-            total += len(text)
-        if not chunks:
-            return ExtractionOutcome(status="failed", extractor=document_format, failure_reason="empty_content", page_count=parsed.page_count)
+            append(ExtractedBlock(
+                sequence=len(blocks) + 1, kind=block.kind, text=block.text,
+                locator_label=locator.label, page=locator.page, sheet=locator.sheet, slide=locator.slide,
+                row=locator.index if block.kind == "sheet_row" else None,
+                source_locator=locator.as_dict(), header_context=block.header_context,
+            ))
+
+        parsed = self._documents.parse(name=name, content_type=content_type, data=data, sink=receive)
+        if parsed.truncated:
+            return ExtractionOutcome(status="too_large", extractor=document_format, failure_reason="too_large",
+                                     warnings=parsed.warnings, coverage={"complete": False})
+        if parsed.status not in {"ok", "partial"} or not chunks:
+            reason = _PARSER_FAILURES.get(parsed.status, "extractor_error")
+            status = "needs_ocr" if reason == "needs_ocr" else ("unsupported" if reason == "unsupported_format" else ("too_large" if reason == "too_large" else "failed"))
+            return ExtractionOutcome(status=status, extractor=document_format, failure_reason=reason,
+                                     page_count=parsed.page_count, warnings=parsed.warnings,
+                                     coverage={**parsed.coverage, "complete": False, "reason": parsed.detail})
         return ExtractionOutcome(
-            status="completed", extractor=document_format, chunks=tuple(chunks), blocks=tuple(blocks),
-            char_count=total, page_count=parsed.page_count,
+            status="partial" if parsed.status == "partial" else "completed", extractor=document_format,
+            chunks=chunks, blocks=blocks, char_count=total, page_count=parsed.page_count,
+            warnings=parsed.warnings,
+            coverage={**parsed.coverage, "complete": parsed.status == "ok", "indexed_blocks": len(blocks), "indexed_chars": total},
         )
-
-    @staticmethod
-    def _extract_pdf(data: bytes) -> ExtractionOutcome:
-        from pypdf import PdfReader
-        from pypdf.errors import PdfReadError
-
-        try:
-            reader = PdfReader(BytesIO(data), strict=False)
-            if reader.is_encrypted:
-                try:
-                    if reader.decrypt("") == 0:
-                        return ExtractionOutcome(status="failed", extractor="pdf", failure_reason="encrypted_pdf")
-                except Exception:  # noqa: BLE001
-                    return ExtractionOutcome(status="failed", extractor="pdf", failure_reason="encrypted_pdf")
-            page_count = len(reader.pages)
-        except PdfReadError:
-            return ExtractionOutcome(status="failed", extractor="pdf", failure_reason="corrupt_pdf")
-        except Exception:  # noqa: BLE001
-            return ExtractionOutcome(status="failed", extractor="pdf", failure_reason="corrupt_pdf")
-        chunks: list[ExtractedChunk] = []
-        total = 0
-        for index, page in enumerate(reader.pages):
-            if index >= MAX_PDF_PAGES or total >= MAX_TEXT_CHARS:
-                break
-            try:
-                page_text = page.extract_text() or ""
-            except Exception:  # noqa: BLE001 - one bad page must not hide the rest; a fully unreadable file yields no chunks
-                continue
-            page_text = page_text.strip()
-            if not page_text:
-                continue
-            page_text = page_text[: MAX_TEXT_CHARS - total]
-            chunks.extend(chunk_text(page_text, page=index + 1, sequence_start=len(chunks), char_offset=total))
-            total += len(page_text)
-        if not chunks:
-            return ExtractionOutcome(status="failed", extractor="pdf", failure_reason="empty_content", page_count=page_count)
-        return ExtractionOutcome(status="completed", extractor="pdf", chunks=tuple(chunks), char_count=total, page_count=page_count)
 
 
 class SqlAlchemyMaterialExtractionRepository:
@@ -160,6 +131,17 @@ class SqlAlchemyMaterialExtractionRepository:
 
     def request(self, attachment: AttachmentRecord, *, parser_version: str = PARSER_VERSION) -> MaterialExtractionRecord:
         """One extraction per (file version, parser version); requesting the same pair returns the existing row."""
+        if attachment.source_kind == "native_recording":
+            raise ValueError("native audio has no text extraction; search its transcript revisions")
+        if parser_version != PARSER_VERSION:
+            raise ValueError("parser version is not installed")
+        # Serialize concurrent upgrade/upload requests on the immutable artifact, before checking the unique pair.
+        self._session.execute(select(AttachmentRecord.id).where(AttachmentRecord.id == attachment.id).with_for_update())
+        active_versions = self._session.scalars(select(MaterialExtractionRecord.parser_version).where(
+            MaterialExtractionRecord.attachment_id == attachment.id, MaterialExtractionRecord.superseded_at.is_(None),
+        )).all()
+        if any(version not in UPGRADABLE_PARSER_VERSIONS | {PARSER_VERSION} for version in active_versions):
+            raise ParserVersionConflict("active parser version is incompatible")
         existing = self._session.scalar(
             select(MaterialExtractionRecord).where(
                 MaterialExtractionRecord.attachment_id == attachment.id,
@@ -181,7 +163,7 @@ class SqlAlchemyMaterialExtractionRepository:
         record = MaterialExtractionRecord(
             attachment_id=attachment.id,
             integrity_ref=attachment.integrity_ref,
-            extractor=classify(attachment.name, attachment.content_type),
+            extractor="native_revision" if attachment.source_kind == "native_revision" else classify(attachment.name, attachment.content_type),
             parser_version=parser_version,
             status="queued",
             requested_at=datetime.now(UTC),
@@ -189,6 +171,29 @@ class SqlAlchemyMaterialExtractionRepository:
         self._session.add(record)
         self._session.flush()
         return record
+
+    def request_upgrades(self, *, limit: int) -> list[MaterialExtractionJob]:
+        """Schedule a bounded batch of old active projections; source bytes and historical blocks stay untouched."""
+        statement = (
+            select(AttachmentRecord)
+            .join(MaterialExtractionRecord, MaterialExtractionRecord.attachment_id == AttachmentRecord.id)
+            .where(AttachmentRecord.source_kind.in_(("file", "native_revision")), AttachmentRecord.lifecycle != "purged",
+                   MaterialExtractionRecord.superseded_at.is_(None),
+                   MaterialExtractionRecord.integrity_ref == AttachmentRecord.integrity_ref,
+                   MaterialExtractionRecord.parser_version.in_(UPGRADABLE_PARSER_VERSIONS))
+            .order_by(MaterialExtractionRecord.requested_at, AttachmentRecord.id)
+            .limit(max(1, limit))
+        )
+        if self._session.bind is not None and self._session.bind.dialect.name == "postgresql":
+            statement = statement.with_for_update(skip_locked=True, of=AttachmentRecord)
+        jobs = []
+        for attachment in self._session.scalars(statement).all():
+            try:
+                extraction = self.request(attachment)
+            except ParserVersionConflict:
+                continue  # A newer deployment won the artifact lock after candidate selection.
+            jobs.append(MaterialExtractionJob(extraction.id, attachment.id))
+        return jobs
 
     def for_attachments(self, attachment_ids: list[UUID]) -> dict[UUID, MaterialExtractionRecord]:
         if not attachment_ids:
@@ -205,14 +210,14 @@ class SqlAlchemyMaterialExtractionRepository:
 
     def is_terminal(self, extraction_id: UUID) -> bool:
         extraction = self._session.get(MaterialExtractionRecord, extraction_id)
-        return extraction is None or extraction.status in {"completed", "unsupported", "failed"}
+        return extraction is None or extraction.superseded_at is not None or extraction.status in {"completed", "partial", "too_large", "unsupported", "failed", "purged"}
 
     def claim(self, extraction_id: UUID, *, stale_after_seconds: int) -> tuple[MaterialExtractionRecord, AttachmentRecord] | None:
         statement = select(MaterialExtractionRecord).where(MaterialExtractionRecord.id == extraction_id)
         if self._session.bind is not None and self._session.bind.dialect.name == "postgresql":
             statement = statement.with_for_update(skip_locked=True)
         extraction = self._session.scalar(statement)
-        if extraction is None or extraction.status in {"completed", "unsupported", "failed"}:
+        if extraction is None or extraction.superseded_at is not None or extraction.status in {"completed", "partial", "too_large", "unsupported", "failed", "purged"}:
             return None
         now = datetime.now(UTC)
         if extraction.status == "running":
@@ -236,7 +241,8 @@ class SqlAlchemyMaterialExtractionRepository:
     def running(self, extraction_id: UUID, attempt: int) -> MaterialExtractionRecord | None:
         """The extraction row only if it is still running under the given attempt (fencing for the domain projection)."""
         statement = select(MaterialExtractionRecord).where(
-            MaterialExtractionRecord.id == extraction_id, MaterialExtractionRecord.status == "running", MaterialExtractionRecord.attempt_count == attempt
+            MaterialExtractionRecord.id == extraction_id, MaterialExtractionRecord.status == "running",
+            MaterialExtractionRecord.attempt_count == attempt, MaterialExtractionRecord.superseded_at.is_(None),
         )
         if self._session.bind is not None and self._session.bind.dialect.name == "postgresql":
             statement = statement.with_for_update()
@@ -246,39 +252,33 @@ class SqlAlchemyMaterialExtractionRepository:
         # Re-processing the same reading replaces its blocks and chunks instead of appending duplicates.
         self._session.execute(delete(MaterialChunkRecord).where(MaterialChunkRecord.extraction_id == extraction.id))
         self._session.execute(delete(MaterialBlockRecord).where(MaterialBlockRecord.extraction_id == extraction.id))
-        block_ids: dict[int, UUID] = {}
-        for block in outcome.blocks:
-            record = MaterialBlockRecord(
-                extraction_id=extraction.id,
-                sequence=block.sequence,
-                kind=block.kind,
-                text=block.text,
-                locator_label=block.locator_label,
-                page=block.page,
-                sheet=block.sheet,
-                slide=block.slide,
-                row=block.row,
-            )
-            self._session.add(record)
-            self._session.flush()
-            block_ids[block.sequence] = record.id
+        # Stable identities make a replay replace the same projection. Insert batches stay bounded; the surrounding
+        # transaction publishes blocks, chunks and terminal status together, or rolls the entire attempt back.
+        def block_id(sequence: int) -> UUID:
+            return uuid5(extraction.id, f"block:{sequence}")
+
+        for batch in batched(outcome.blocks, 128):
+            self._session.execute(insert(MaterialBlockRecord), [
+                {"id": block_id(block.sequence), "extraction_id": extraction.id, "sequence": block.sequence,
+                 "kind": block.kind, "text": block.text, "locator_label": block.locator_label,
+                 "page": block.page, "sheet": block.sheet, "slide": block.slide, "row": block.row,
+                 "source_locator": block.source_locator, "header_context": block.header_context}
+                for block in batch
+            ])
         korean = analyzer()
-        for chunk in outcome.chunks:
-            self._session.add(
-                MaterialChunkRecord(
-                    extraction_id=extraction.id,
-                    block_id=block_ids.get(chunk.block_sequence) if chunk.block_sequence else None,
-                    sequence=chunk.sequence,
-                    page=chunk.page,
-                    char_start=chunk.char_start,
-                    char_end=chunk.char_end,
-                    text=chunk.text,
-                    # 문서를 질문과 같은 규칙으로 잘라 둔다. 이 열이 색인되고, 원문은 그대로 남는다.
-                    search_text=korean.index_text(chunk.text),
-                    analyzer_version=korean.version,
-                )
-            )
-        extraction.status = "completed"
+        for batch in batched(outcome.chunks, 128):
+            self._session.execute(insert(MaterialChunkRecord), [
+                {"id": uuid5(extraction.id, f"chunk:{chunk.sequence}"), "extraction_id": extraction.id,
+                 "block_id": block_id(chunk.block_sequence) if chunk.block_sequence is not None else None,
+                 "sequence": chunk.sequence, "page": chunk.page, "char_start": chunk.char_start,
+                 "char_end": chunk.char_end, "text": chunk.text,
+                 "context_text": chunk.context_text,
+                 "search_text": korean.index_text(chunk.context_text + " " + chunk.text), "analyzer_version": korean.version}
+                for chunk in batch
+            ])
+        extraction.status = outcome.status
+        extraction.warnings = list(outcome.warnings)
+        extraction.coverage = outcome.coverage
         extraction.extractor = outcome.extractor
         extraction.failure_reason = None
         extraction.chunk_count = len(outcome.chunks)
@@ -287,12 +287,16 @@ class SqlAlchemyMaterialExtractionRepository:
         extraction.completed_at = datetime.now(UTC)
         self._session.flush()
 
-    def fail(self, extraction: MaterialExtractionRecord, reason: str, *, status: str = "failed") -> None:
+    def fail(self, extraction: MaterialExtractionRecord, reason: str, *, status: str = "failed", outcome: ExtractionOutcome | None = None) -> None:
         self._session.execute(delete(MaterialChunkRecord).where(MaterialChunkRecord.extraction_id == extraction.id))
         self._session.execute(delete(MaterialBlockRecord).where(MaterialBlockRecord.extraction_id == extraction.id))
         extraction.status = status
         extraction.failure_reason = reason
         extraction.chunk_count = 0
+        extraction.char_count = 0
+        extraction.page_count = outcome.page_count if outcome else None
+        extraction.warnings = list(outcome.warnings) if outcome else []
+        extraction.coverage = outcome.coverage if outcome else {"complete": False}
         extraction.completed_at = datetime.now(UTC)
         self._session.flush()
 
@@ -311,6 +315,18 @@ class SqlAlchemyMaterialExtractionRepository:
                 select(MaterialChunkRecord).where(MaterialChunkRecord.extraction_id.in_(extraction_ids)).order_by(MaterialChunkRecord.extraction_id, MaterialChunkRecord.sequence)
             )
         )
+
+    def chunk_contexts(self, chunk_ids: list[UUID]) -> dict[UUID, dict[str, Any]]:
+        if not chunk_ids:
+            return {}
+        rows = self._session.execute(
+            select(MaterialChunkRecord.id, MaterialChunkRecord.char_start, MaterialChunkRecord.char_end,
+                   MaterialBlockRecord.source_locator, MaterialBlockRecord.header_context, MaterialBlockRecord.locator_label)
+            .outerjoin(MaterialBlockRecord, MaterialChunkRecord.block_id == MaterialBlockRecord.id)
+            .where(MaterialChunkRecord.id.in_(chunk_ids))
+        )
+        return {row.id: {"source_locator": {**(row.source_locator or {}), "char_start": row.char_start, "char_end": row.char_end, "char_offset_basis": "extracted_projection"},
+                         "header_context": row.header_context, "locator_label": row.locator_label} for row in rows}
 
 
 def reindex_stale_chunks(session: Session, *, limit: int = 500) -> int:
@@ -331,7 +347,7 @@ def reindex_stale_chunks(session: Session, *, limit: int = 500) -> int:
         )
     )
     for chunk in stale:
-        chunk.search_text = korean.index_text(chunk.text)
+        chunk.search_text = korean.index_text((chunk.context_text or "") + " " + chunk.text)
         chunk.analyzer_version = korean.version
     session.flush()
     return len(stale)
@@ -411,51 +427,32 @@ class SqlAlchemyMaterialEvidenceRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def record(self, execution_id: UUID, principal_id: str, task_id: UUID, query: str, hits: list[dict[str, Any]]) -> list[ConversationMaterialEvidenceRecord]:
-        turn = self._session.scalar(select(ConversationTurnRecord).where(ConversationTurnRecord.execution_id == execution_id))
+    def record(self, execution_id: UUID, principal_id: str, query: str, hits: list[dict[str, Any]]) -> None:
+        # Share the artifact fence with purge; refresh rows already read during search before publishing copied text.
+        artifact_ids = sorted({UUID(hit["material_id"]) for hit in hits}, key=str)
+        artifacts = {str(row.id): row for row in self._session.scalars(select(AttachmentRecord).where(
+            AttachmentRecord.id.in_(artifact_ids)).order_by(AttachmentRecord.id).with_for_update().execution_options(populate_existing=True))}
+        # Artifact -> turn is the common publication lock order.
+        turn = self._session.scalar(select(ConversationTurnRecord).where(ConversationTurnRecord.execution_id == execution_id).with_for_update())
         if turn is None:
             raise ValueError("delegated conversation execution was not found")
         conversation = self._session.get(ConversationRecord, turn.conversation_id)
-        if conversation is None or str(conversation.owner_id) != principal_id:  # fail closed
+        if conversation is None or str(conversation.owner_id) != principal_id:
             raise ValueError("delegated conversation belongs to another principal")
-        now = datetime.now(UTC)
-        records: list[ConversationMaterialEvidenceRecord] = []
         for rank, hit in enumerate(hits, start=1):
-            existing = self._session.scalar(
-                select(ConversationMaterialEvidenceRecord).where(
-                    ConversationMaterialEvidenceRecord.turn_id == turn.id,
-                    ConversationMaterialEvidenceRecord.chunk_id == UUID(str(hit["chunk_id"])),
-                )
-            )
-            if existing is not None:
-                records.append(existing)
+            artifact = artifacts.get(hit["material_id"])
+            if artifact is None or artifact.lifecycle == "purged" or artifact.integrity_ref != hit["integrity_ref"]:
                 continue
-            record = ConversationMaterialEvidenceRecord(
-                turn_id=turn.id,
-                conversation_id=turn.conversation_id,
-                execution_id=execution_id,
-                task_id=task_id,
-                material_id=UUID(str(hit["material_id"])),
-                attachment_id=UUID(str(hit["attachment_id"])),
-                chunk_id=UUID(str(hit["chunk_id"])),
-                name=str(hit["name"]),
-                integrity_ref=str(hit["integrity_ref"]),
-                page=hit.get("page"),
-                excerpt=str(hit["excerpt"])[:400],
-                query=query[:300],
-                rank=rank,
-                recorded_at=now,
-            )
-            self._session.add(record)
-            records.append(record)
-        self._session.flush()
-        return records
-
-    def for_conversation(self, conversation_id: UUID) -> list[ConversationMaterialEvidenceRecord]:
-        return list(
-            self._session.scalars(
-                select(ConversationMaterialEvidenceRecord)
-                .where(ConversationMaterialEvidenceRecord.conversation_id == conversation_id)
-                .order_by(ConversationMaterialEvidenceRecord.recorded_at, ConversationMaterialEvidenceRecord.rank)
-            )
-        )
+            existing = self._session.scalar(select(ConversationContentEvidenceRecord).where(
+                ConversationContentEvidenceRecord.turn_id == turn.id, ConversationContentEvidenceRecord.chunk_id == UUID(hit["chunk_id"])))
+            if existing is not None:
+                contexts = {(row["resource_type"], row["resource_id"], row["binding_id"]): row for row in existing.source_contexts}
+                contexts.update({(row["resource_type"], row["resource_id"], row["binding_id"]): row for row in hit["source_contexts"]})
+                existing.source_contexts = list(contexts.values())
+                continue
+            self._session.add(ConversationContentEvidenceRecord(turn_id=turn.id, conversation_id=turn.conversation_id,
+                execution_id=execution_id, attachment_id=UUID(hit["material_id"]), chunk_id=UUID(hit["chunk_id"]),
+                source_contexts=hit["source_contexts"], name=hit["name"], integrity_ref=hit["integrity_ref"], page=hit.get("page"),
+                source_locator=hit.get("source_locator"), header_context=hit.get("header_context"), extraction_snapshot=hit.get("extraction"),
+                excerpt=str(hit["excerpt"])[:400], query=query[:300], rank=rank, recorded_at=datetime.now(UTC)))
+            self._session.flush()

@@ -128,13 +128,13 @@ def test_a_material_the_answer_read_says_which_page_without_repeating_the_text(t
 
     conversation, execution_id = _delegated_turn(client, database_url, MINA, "material-locator")
     monkeypatch.setenv("AX_MCP_CAUSATION_ID", execution_id)
-    found = McpReportsFacade(settings, "mina").search_task_materials(task["task_id"], "납기일")
+    found = McpReportsFacade(settings, 'mina').search_materials('납기일', resource_type='task', resource_id=task['task_id'])
     monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
     assert found["results"], "자료에서 아무것도 찾지 못했습니다"
 
     named = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()["answer_resources"]
     [material] = [row for row in named if row["resource_type"] == "material"]
-    assert material["title"] == "견적.md" and material["parent_resource_id"] == task["task_id"]
+    assert material["title"] == "견적.md" and material["source_contexts"][0]["resource_id"] == task["task_id"]
     # 원문은 여기 없다. 있다면 발췌가 두 곳에 남는다.
     assert "한빛상사" not in str(material) and "납기일" not in str(material)
 

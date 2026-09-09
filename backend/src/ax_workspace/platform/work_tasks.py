@@ -104,9 +104,10 @@ def _clean_locator(value: Any) -> dict[str, Any] | None:
     """
     if not isinstance(value, dict):
         return None
-    allowed = ("page", "section", "start", "end", "anchor", "sheet", "cell")
+    numeric = {"section", "page", "start", "end", "index", "slide", "row_start", "row_end", "column_start", "column_end", "char_start", "char_end", "start_ms", "end_ms", "segment_sequence", "submission_version"}
+    allowed = (*sorted(numeric), "anchor", "sheet", "cell", "kind", "cell_range", "container", "variant", "char_offset_basis", "source_revision_id", "recording_id", "segment_id", "raw_start_segment_id", "raw_end_segment_id", "report_id")
     cleaned = {
-        key: (int(value[key]) if key in {"page", "start", "end"} and str(value[key]).lstrip("-").isdigit() else str(value[key])[:120])
+        key: (int(value[key]) if key in numeric and str(value[key]).lstrip("-").isdigit() else str(value[key])[:120])
         for key in allowed
         if value.get(key) not in (None, "")
     }
@@ -148,6 +149,8 @@ class SqlAlchemyGraphReceiptRepository:
                     from_title=step.get("from_title"),
                     to_ref=step.get("to_ref"),
                     to_title=step.get("to_title"),
+                    source_contexts=step.get("source_contexts"),
+                    integrity_ref=step.get("integrity_ref"),
                     observed_at=now,
                 )
             )
@@ -163,14 +166,14 @@ class SqlAlchemyGraphReceiptRepository:
             ConversationTurnRecord,
         )
 
-        turn = self._session.scalar(select(ConversationTurnRecord).where(ConversationTurnRecord.execution_id == execution_id))
+        turn = self._session.scalar(select(ConversationTurnRecord).where(ConversationTurnRecord.execution_id == execution_id).with_for_update())
         if turn is None:
             raise ValueError("delegated conversation execution was not found")
         conversation = self._session.get(ConversationRecord, turn.conversation_id)
         if conversation is None or str(conversation.owner_id) != principal_id:  # fail closed
             raise ValueError("delegated conversation belongs to another principal")
         existing = {
-            (row.resource_type, row.resource_id)
+            (row.resource_type, row.resource_id): row
             for row in self._session.scalars(
                 select(ConversationAnswerResourceRecord).where(ConversationAnswerResourceRecord.turn_id == turn.id)
             )
@@ -185,11 +188,16 @@ class SqlAlchemyGraphReceiptRepository:
         for reference in references:
             key = (str(reference["resource_type"]), str(reference["resource_id"]))
             if key in existing:
+                record = existing[key]
+                if key[0] == "material" and record.integrity_ref == reference.get("integrity_ref"):
+                    contexts = {(row["resource_type"], row["resource_id"], row["binding_id"]): row for row in record.source_contexts or []}
+                    contexts.update({(row["resource_type"], row["resource_id"], row["binding_id"]): row for row in reference.get("source_contexts") or []})
+                    record.source_contexts = list(contexts.values())
+                    if reference.get("source_locator"):
+                        record.source_locator = _clean_locator(reference["source_locator"])
                 continue
-            existing.add(key)
             written += 1
-            self._session.add(
-                ConversationAnswerResourceRecord(
+            record = ConversationAnswerResourceRecord(
                     turn_id=turn.id,
                     conversation_id=turn.conversation_id,
                     execution_id=execution_id,
@@ -197,11 +205,13 @@ class SqlAlchemyGraphReceiptRepository:
                     resource_type=key[0],
                     resource_id=key[1],
                     resource_version=reference.get("resource_version"),
-                    parent_resource_id=(str(reference["parent_resource_id"]) if reference.get("parent_resource_id") else None),
+                    source_contexts=reference.get("source_contexts"),
+                    integrity_ref=reference.get("integrity_ref"),
                     source_locator=_clean_locator(reference.get("source_locator")),
                     observed_at=now,
                 )
-            )
+            self._session.add(record)
+            existing[key] = record
         self._session.flush()
         return written
 
@@ -692,7 +702,8 @@ class SqlAlchemyTaskRepository:
         ]
         materials = [
             {
-                "material_id": str(binding.id),
+                "material_id": str(attachment.id),
+                "binding_id": str(binding.id),
                 "attachment_id": str(attachment.id),
                 "kind": binding.role,
                 "name": attachment.name,
@@ -1838,6 +1849,9 @@ class SqlAlchemyAttachmentRepository:
         return record
 
     def bind(self, *, attachment_id: UUID, context_type: str, context_id: str, role: str, bound_by: str) -> AttachmentBindingRecord:
+        attachment = self._session.get(AttachmentRecord, attachment_id)
+        if attachment is not None and attachment.source_kind in {"native_revision", "native_recording"}:
+            raise ValueError("native revisions retain their owning resource; they are not shareable file bindings")
         binding = AttachmentBindingRecord(
             attachment_id=attachment_id, context_type=context_type, context_id=context_id, role=role, bound_by=bound_by, bound_at=datetime.now(UTC)
         )
@@ -1849,7 +1863,8 @@ class SqlAlchemyAttachmentRepository:
         rows = self._session.execute(
             select(AttachmentBindingRecord, AttachmentRecord)
             .join(AttachmentRecord, AttachmentRecord.id == AttachmentBindingRecord.attachment_id)
-            .where(AttachmentBindingRecord.context_type == context_type, AttachmentBindingRecord.context_id == context_id)
+            .where(AttachmentBindingRecord.context_type == context_type, AttachmentBindingRecord.context_id == context_id,
+                   AttachmentRecord.source_kind.not_in(("native_revision", "native_recording")))
             .order_by(AttachmentBindingRecord.bound_at)
         ).all()
         return [(binding, attachment) for binding, attachment in rows]
@@ -1862,6 +1877,7 @@ class SqlAlchemyAttachmentRepository:
                 AttachmentBindingRecord.id == binding_id,
                 AttachmentBindingRecord.context_type == context_type,
                 AttachmentBindingRecord.context_id == context_id,
+                AttachmentRecord.source_kind.not_in(("native_revision", "native_recording")),
             )
         ).first()
         return (row[0], row[1]) if row else None
@@ -1872,13 +1888,29 @@ class SqlAlchemyAttachmentRepository:
     def attachment(self, attachment_id: UUID) -> AttachmentRecord | None:
         return self._session.get(AttachmentRecord, attachment_id)
 
+    def active_task_contexts(self, material_id: UUID) -> list[str]:
+        """Candidate owners, not an authorization decision; callers must read each Task."""
+        return list(self._session.scalars(
+            select(AttachmentBindingRecord.context_id)
+            .join(AttachmentRecord, AttachmentRecord.id == AttachmentBindingRecord.attachment_id)
+            .where(
+                AttachmentBindingRecord.attachment_id == material_id,
+                AttachmentBindingRecord.context_type == "task",
+                AttachmentBindingRecord.unbound_at.is_(None),
+                AttachmentRecord.source_kind.not_in(("native_revision", "native_recording")),
+            )
+            .distinct()
+            .order_by(AttachmentBindingRecord.context_id)
+        ))
+
     def bindings_for_many(self, context_type: str, context_ids: list[str]) -> list[tuple[AttachmentBindingRecord, AttachmentRecord]]:
         if not context_ids:
             return []
         rows = self._session.execute(
             select(AttachmentBindingRecord, AttachmentRecord)
             .join(AttachmentRecord, AttachmentRecord.id == AttachmentBindingRecord.attachment_id)
-            .where(AttachmentBindingRecord.context_type == context_type, AttachmentBindingRecord.context_id.in_(context_ids), AttachmentBindingRecord.unbound_at.is_(None))
+            .where(AttachmentBindingRecord.context_type == context_type, AttachmentBindingRecord.context_id.in_(context_ids),
+                   AttachmentBindingRecord.unbound_at.is_(None), AttachmentRecord.source_kind.not_in(("native_revision", "native_recording")))
             .order_by(AttachmentBindingRecord.bound_at)
         ).all()
         return [(binding, attachment) for binding, attachment in rows]

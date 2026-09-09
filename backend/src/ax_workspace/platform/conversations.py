@@ -11,7 +11,7 @@ from sqlalchemy import Engine, delete, func, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
-from ax_workspace.platform.actions import SqlAlchemyActionRepository
+from ax_workspace.platform.actions import SqlAlchemyActionRepository, ActionEvidenceReader
 from ax_workspace.modules.ax_execution.ai import (
     AiConversationRequest,
     AiConversationResult,
@@ -35,7 +35,7 @@ from ax_workspace.platform.persistence import (
     ContextReferenceRecord,
     ConversationAnswerResourceRecord,
     ConversationGraphReceiptRecord,
-    ConversationMaterialEvidenceRecord,
+    ConversationContentEvidenceRecord,
     ConversationMessageRecord,
     ConversationProviderSessionReferenceRecord,
     ConversationRecord,
@@ -54,10 +54,12 @@ class SqlAlchemyConversationRepository:
         session: Session,
         queue: ConversationExecutionQueue,
         queue_limit: int = 8,
+        *, evidence_reader: ActionEvidenceReader | None = None,
     ) -> None:
         self._session = session
         self._queue_limit = queue_limit
         self._queue = queue
+        self._evidence_reader = evidence_reader
 
     def create(self, owner_id: str, title: str) -> ConversationRecord:
         now = datetime.now(UTC)
@@ -545,12 +547,7 @@ class SqlAlchemyConversationRepository:
             if include_actions
             else []
         )
-        action_repository = SqlAlchemyActionRepository(self._session)
-        evidence = self._session.scalars(
-            select(ConversationMaterialEvidenceRecord)
-            .where(ConversationMaterialEvidenceRecord.conversation_id == conversation.id)
-            .order_by(ConversationMaterialEvidenceRecord.recorded_at, ConversationMaterialEvidenceRecord.rank)
-        ).all()
+        action_repository = SqlAlchemyActionRepository(self._session, evidence_reader=self._evidence_reader)
         graph_steps = self._session.scalars(
             select(ConversationGraphReceiptRecord)
             .where(ConversationGraphReceiptRecord.conversation_id == conversation.id)
@@ -572,7 +569,8 @@ class SqlAlchemyConversationRepository:
                     "resource_type": item.resource_type,
                     "resource_id": item.resource_id,
                     "resource_version": item.resource_version,
-                    "parent_resource_id": item.parent_resource_id,
+                    "source_contexts": item.source_contexts,
+                    "integrity_ref": item.integrity_ref,
                     "source_locator": item.source_locator,
                 }
                 for item in answer_resources
@@ -591,28 +589,21 @@ class SqlAlchemyConversationRepository:
                     "from_title": item.from_title,
                     "to_ref": item.to_ref,
                     "to_title": item.to_title,
+                    "source_contexts": item.source_contexts,
+                    "integrity_ref": item.integrity_ref,
                     "observed_at": item.observed_at.isoformat(),
                 }
                 for item in graph_steps
             ],
             "material_evidence": [
-                {
-                    "evidence_id": str(item.id),
-                    "turn_id": str(item.turn_id),
-                    "task_id": str(item.task_id),
-                    "material_id": str(item.material_id),
-                    "attachment_id": str(item.attachment_id),
-                    "chunk_id": str(item.chunk_id),
-                    "name": item.name,
-                    "integrity_ref": item.integrity_ref,
-                    "page": item.page,
-                    "excerpt": item.excerpt,
-                    "query": item.query,
-                    "rank": item.rank,
-                    "origin": f"/api/tasks/{item.task_id}/materials/{item.material_id}/content",
-                    "recorded_at": item.recorded_at.isoformat(),
-                }
-                for item in evidence
+                {"evidence_id": str(item.id), "turn_id": str(item.turn_id),
+                 "material_id": str(item.attachment_id), "attachment_id": str(item.attachment_id), "chunk_id": str(item.chunk_id),
+                 "name": item.name, "integrity_ref": item.integrity_ref, "page": item.page, "excerpt": item.excerpt,
+                 "source_contexts": item.source_contexts, "source_locator": item.source_locator, "header_context": item.header_context,
+                 "extraction": item.extraction_snapshot, "query": item.query, "rank": item.rank, "recorded_at": item.recorded_at.isoformat()}
+                for item in self._session.scalars(select(ConversationContentEvidenceRecord).where(
+                    ConversationContentEvidenceRecord.conversation_id == conversation.id).order_by(
+                    ConversationContentEvidenceRecord.recorded_at, ConversationContentEvidenceRecord.rank))
             ],
             "conversation_id": str(conversation.id),
             "title": conversation.title,

@@ -275,6 +275,7 @@ export type TaskMaterial = {
   /** `file` (SCAX holds the bytes), `external_link` (a URL), `resource_ref` (something inside the product). */
   source_kind?: string;
   material_id: string;
+  binding_id: string;
   task_id: string;
   kind: TaskMaterialKind;
   name: string;
@@ -306,7 +307,8 @@ export type MaterialExtraction = {
 export type MaterialEvidence = {
   evidence_id: string;
   turn_id: string;
-  task_id: string;
+  source_contexts?: Array<{ resource_type: string; resource_id: string; title: string; binding_id: string; origin: string }>;
+  source_locator?: Record<string, unknown> | null;
   material_id: string;
   attachment_id: string;
   chunk_id: string;
@@ -598,8 +600,9 @@ export type AnswerResource = {
   resource_type: "task" | "meeting" | "work_request" | "material" | "report";
   resource_id: string;
   resource_version: number | null;
-  parent_resource_id: string | null;
   title: string;
+  source_contexts?: MaterialEvidence["source_contexts"];
+  origin?: string;
   state: string | null;
   /** 원문의 어디였는지 — 쪽·절처럼 그 자료가 스스로 부르는 자리. 없는 것이 정상이다. */
   source_locator?: { page?: number; section?: string; sheet?: string; cell?: string; anchor?: string } | null;

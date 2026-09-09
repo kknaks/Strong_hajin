@@ -62,7 +62,7 @@ try {
   const conversation = await (await createConversation).json();
   await page.getByLabel("AX 메시지").fill(
     [
-      `먼저 SCAX MCP의 task_material_search 도구를 task_id ${sourceTask.task_id}, 질의 '납기일'로 실제 호출해 첨부 내용을 확인해줘.`,
+      `먼저 SCAX MCP의 material_search 도구를 resource_type task, resource_id ${sourceTask.task_id}, 질의 '납기일'로 실제 호출해 첨부 내용을 확인해줘.`,
       `그 다음 같은 턴에서 task_create_self 도구를 실제로 호출해서 제목 '${taskTitle}'의 내 업무를 생성 제안해줘.`,
       "두 도구를 모두 실제로 호출하고, 답변으로만 제안하지 마.",
       "내가 화면에서 승인할 때까지 기다려.",

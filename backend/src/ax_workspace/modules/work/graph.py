@@ -6,6 +6,7 @@ edge to work someone may not open is dropped along with the work itself, so no t
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -15,9 +16,23 @@ from ax_workspace.modules.organization_access.domain import (
     TASK_READ,
     WORK_REQUEST_READ,
 )
+from ax_workspace.modules.work.search import matches
 
 #: What may be at either end of a connection. Each is read through the module that owns it.
 NODE_KINDS = ("person", "team", "project", "work_request", "task", "material", "meeting", "report")
+SEARCHABLE_NODE_KINDS = ("person", "team", "project", "task", "work_request", "meeting")
+GRAPH_SEARCH_DESCRIPTION = (
+    "Find authorized start nodes by name: " + ", ".join(f"`{kind}`" for kind in SEARCHABLE_NODE_KINDS)
+    + ". Material and report are evidence nodes reached through relationships, not title search. "
+    "Use returned kind and id as `<kind>:<id>`; numbers in titles are not IDs. "
+    "Results are bounded (default 20, maximum 50); truncated means more readable matches exist."
+)
+GRAPH_NEIGHBORS_DESCRIPTION = (
+    "Follow one hop using the canonical `node` argument: " + ", ".join(f"`{kind}:<id>`" for kind in NODE_KINDS)
+    + ". Use IDs returned by tools, never infer them from titles. Each neighbour is re-checked against "
+    "what this persona may read, so a connection never grants access. "
+    "Returns directed edges with provenance and inverse labels, bounded to 50 edges (default 20)."
+)
 #: How far one answer may reach, so a screen and a delegated turn get the same bounded thing.
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 50
@@ -61,7 +76,7 @@ class GraphNotFound(GraphError):
 class GraphSourcePort(Protocol):
     """The authorized reads this projection is built from; each is the owning module's own operation."""
 
-    def readable_tasks(self, principal: Principal, *, query: str | None = None, limit: int = 50) -> list[dict[str, Any]]: ...
+    def readable_tasks(self, principal: Principal, *, query: str | None = None, assignee_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]: ...
     def readable_task(self, principal: Principal, task_id: UUID) -> dict[str, Any] | None: ...
     def readable_requests(self, principal: Principal, *, query: str | None = None) -> list[dict[str, Any]]: ...
     def readable_request(self, principal: Principal, request_id: UUID) -> dict[str, Any] | None: ...
@@ -69,8 +84,9 @@ class GraphSourcePort(Protocol):
     def materials_for_tasks(self, principal: Principal, task_ids: list[UUID]) -> dict[str, list[dict[str, Any]]]: ...
     def person(self, member_id: str) -> dict[str, Any] | None: ...
     def people(self, principal: Principal, *, query: str) -> list[dict[str, Any]]: ...
-    def readable_meetings(self, principal: Principal, *, query: str | None = None, limit: int = 50) -> list[dict[str, Any]]: ...
+    def readable_meetings(self, principal: Principal, *, query: str | None = None, member_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]: ...
     def readable_projects(self, principal: Principal) -> list[dict[str, Any]]: ...
+    def readable_project(self, principal: Principal, project_id: UUID) -> dict[str, Any] | None: ...
     def readable_meeting(self, principal: Principal, meeting_id: UUID) -> dict[str, Any] | None: ...
     def meeting_followup_tasks(self, principal: Principal, meeting_id: UUID) -> list[dict[str, Any]]: ...
     def member_units(self, member_id: str) -> list[dict[str, Any]]: ...
@@ -97,9 +113,11 @@ class GraphApplication:
         # 한 걸음 나갈 때 그 연결마다 다시 판정한다.
         nodes = [
             *(self._person_node(row) for row in self._source.people(principal, query=text)),
+            *(self._team_node(row) for row in self._source.organization_units() if matches(text, row["name"])),
+            *(self._project_node(row) for row in self._source.readable_projects(principal) if matches(text, row["name"])),
             *(self._task_node(row) for row in self._source.readable_tasks(principal, query=text, limit=MAX_LIMIT + 1)),
             *(self._request_node(row) for row in self._source.readable_requests(principal, query=text)),
-            *(self._meeting_node(row) for row in self._source.readable_meetings(principal, query=text)),
+            *(self._meeting_node(row) for row in self._source.readable_meetings(principal, query=text, limit=MAX_LIMIT + 1)),
         ]
         return {"query": text, "nodes": nodes[:bounded], "truncated": len(nodes) > bounded}
 
@@ -121,6 +139,8 @@ class GraphApplication:
             return self._material_neighbors(principal, identifier, limit)
         if kind == "team":
             return self._team_neighbors(principal, identifier, limit)
+        if kind == "project":
+            return self._project_neighbors(principal, UUID(identifier), limit)
         raise GraphError(f"{kind}에서는 아직 연결을 따라갈 수 없습니다")
 
     # ---- one hop from a Task ----
@@ -137,6 +157,14 @@ class GraphApplication:
         if holder:
             self._add_person(nodes, holder)
             edges.append(self._edge("holds", f"person:{holder}", self._ref(center)))
+
+        project_id = task.get("project_id")
+        if project_id:
+            project = self._source.readable_project(principal, UUID(str(project_id)))
+            if project is not None:
+                node = self._project_node(project)
+                nodes[self._ref(node)] = node
+                edges.append(self._edge("part_of", self._ref(center), self._ref(node)))
 
         source_request_id = (task.get("lineage") or {}).get("source_work_request_id")
         if source_request_id:
@@ -170,7 +198,7 @@ class GraphApplication:
         for material in self._source.task_materials(principal, task_id):
             node = self._material_node(material)
             nodes[self._ref(node)] = node
-            edges.append(self._edge("has_material", self._ref(center), self._ref(node)))
+            edges.append(self._material_edge(str(task_id), material))
 
         # A report this person wrote from this work is part of how the work connects, for them.
         for report in self._source.own_reports(principal, limit=5):
@@ -274,7 +302,9 @@ class GraphApplication:
         for task in owners:
             node = self._task_node(task)
             nodes[self._ref(node)] = node
-            edges.append(self._edge("has_material", self._ref(node), self._ref(center)))
+            for material in self._source.task_materials(principal, UUID(str(task["task_id"]))):
+                if str(material["material_id"]) == material_id:
+                    edges.append(self._material_edge(str(task["task_id"]), material))
         return self._bounded(center, nodes, edges, limit)
 
     # ---- one hop from a person, and from the team they sit in ----
@@ -291,9 +321,7 @@ class GraphApplication:
             node = self._team_node(unit)
             nodes[self._ref(node)] = node
             edges.append(self._edge("belongs_to", self._ref(center), self._ref(node)))
-        for task in self._source.readable_tasks(principal, limit=MAX_LIMIT):
-            if str((task.get("assignee") or {}).get("member_id") or "") != member_id:
-                continue
+        for task in self._source.readable_tasks(principal, assignee_id=member_id, limit=MAX_LIMIT + 1):
             node = self._task_node(task)
             nodes[self._ref(node)] = node
             edges.append(self._edge("holds", self._ref(center), self._ref(node)))
@@ -305,10 +333,7 @@ class GraphApplication:
             elif str(request.get("assignee_id")) == member_id:
                 nodes[self._ref(node)] = node
                 edges.append(self._edge("asked_of", self._ref(node), self._ref(center)))
-        for meeting in self._source.readable_meetings(principal):
-            attendees = {str(attendee["member_id"]) for attendee in meeting.get("attendees") or []}
-            if member_id != str(meeting.get("owner_id")) and member_id not in attendees:
-                continue
+        for meeting in self._source.readable_meetings(principal, member_id=member_id, limit=MAX_LIMIT + 1):
             node = self._meeting_node(meeting)
             nodes[self._ref(node)] = node
             kind = "owns_meeting" if member_id == str(meeting.get("owner_id")) else "attended"
@@ -316,16 +341,40 @@ class GraphApplication:
         return self._bounded(center, nodes, edges, limit)
 
     def _team_neighbors(self, principal: Principal, unit_id: str, limit: int) -> dict[str, Any]:
-        members = self._source.unit_members(unit_id)
-        if not members:
+        unit = next((row for row in self._source.organization_units() if str(row["id"]) == unit_id), None)
+        if unit is None:
             raise GraphNotFound("team was not found")
-        unit = next((item for item in self._source.member_units(str(members[0]["member_id"])) if str(item["id"]) == unit_id), None)
-        center = self._team_node(unit or {"id": unit_id, "name": unit_id})
+        members = self._source.unit_members(unit_id)
+        center = self._team_node(unit)
         nodes: dict[str, dict[str, Any]] = {self._ref(center): center}
         edges: list[dict[str, Any]] = []
         for member in members:
             self._add_person(nodes, str(member["member_id"]))
             edges.append(self._edge("belongs_to", f"person:{member['member_id']}", self._ref(center)))
+        return self._bounded(center, nodes, edges, limit)
+
+    def _project_neighbors(self, principal: Principal, project_id: UUID, limit: int) -> dict[str, Any]:
+        project = self._source.readable_project(principal, project_id)
+        if project is None:
+            raise GraphNotFound("project was not found")
+        center = self._project_node(project)
+        nodes = {self._ref(center): center}
+        edges = []
+        now = datetime.now(UTC)
+        for member in project["members"]:
+            start, end = member.get("valid_from"), member.get("valid_until")
+            if (start and datetime.fromisoformat(start) > now) or (end and datetime.fromisoformat(end) <= now):
+                continue
+            self._add_person(nodes, str(member["member_id"]))
+            edges.append(self._edge("assigned_to", f"person:{member['member_id']}", self._ref(center)))
+        # Project visibility is not a substitute for Work's own read policy.
+        for candidate in project["tasks"]:
+            task = self._source.readable_task(principal, UUID(candidate["task_id"]))
+            if task is None:
+                continue
+            node = self._task_node(task)
+            nodes[self._ref(node)] = node
+            edges.append(self._edge("part_of", self._ref(node), self._ref(center)))
         return self._bounded(center, nodes, edges, limit)
 
     # ---- the first screen ----
@@ -398,7 +447,7 @@ class GraphApplication:
             for material in materials:
                 node = self._material_node(material)
                 nodes[self._ref(node)] = node
-                edges.append(self._edge("has_material", f"task:{task_id}", self._ref(node)))
+                edges.append(self._material_edge(str(task_id), material))
         for report in self._source.own_reports(principal, limit=2):
             node = self._report_node(report)
             edges_for_report = [
@@ -577,6 +626,14 @@ class GraphApplication:
     ) -> dict[str, Any]:
         """One answer stays small enough to read: extra connections are counted, never silently dropped."""
         bounded = max(1, min(int(limit), cap))
+        unique = {}
+        for edge in edges:
+            key = (edge["kind"], edge["from"], edge["to"])
+            if key not in unique:
+                unique[key] = {**edge, **({"source_contexts": list(edge["source_contexts"])} if "source_contexts" in edge else {})}
+            elif edge["kind"] == "has_material":
+                unique[key]["source_contexts"].extend(context for context in edge["source_contexts"] if context not in unique[key]["source_contexts"])
+        edges = list(unique.values())
         kept = edges[:bounded]
         named = {self._ref(center)} | {row["from"] for row in kept} | {row["to"] for row in kept}
         return {
@@ -596,6 +653,11 @@ class GraphApplication:
         kind, _, identifier = str(node_ref or "").partition(":")
         if kind not in NODE_KINDS or not identifier:
             raise GraphError("node must be <kind>:<id>")
+        if kind in {"task", "work_request", "project", "meeting", "material", "report"}:
+            try:
+                UUID(identifier)
+            except ValueError as error:
+                raise GraphError("node id must be the canonical UUID returned by a tool") from error
         return kind, identifier
 
     @staticmethod
@@ -648,13 +710,21 @@ class GraphApplication:
             "date": report.get("date"),
         }
 
+    def _material_edge(self, task_id: str, material: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **self._edge("has_material", f"task:{task_id}", f"material:{material['material_id']}"),
+            "integrity_ref": material["integrity_ref"],
+            "source_contexts": [{"resource_type": "task", "resource_id": task_id,
+                                 "binding_id": material["binding_id"], "role": material["kind"]}],
+        }
+
     @staticmethod
     def _material_node(material: dict[str, Any]) -> dict[str, Any]:
         return {
             "kind": "material",
             "id": str(material["material_id"]),
             "title": str(material["name"]),
-            "state": str(material.get("kind") or ""),
+            "state": "purged" if material.get("purged") else "available",
             "date": None,
         }
 

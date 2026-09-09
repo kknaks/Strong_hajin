@@ -93,6 +93,9 @@ class AnswerResourcePort(Protocol):
     def resolve(self, principal: Principal, references: list[dict[str, Any]]) -> list[dict[str, Any]]: ...
 
     def readable_titles(self, principal: Principal, refs: list[str]) -> dict[str, str]: ...
+    def readable_material_steps(self, principal: Principal, steps: list[dict[str, Any]]) -> list[dict[str, Any]]: ...
+
+    def readable_material_evidence(self, principal: Principal, evidence: list[dict[str, Any]]) -> list[dict[str, Any]]: ...
 
 
 class ConversationApplication:
@@ -165,6 +168,11 @@ class ConversationApplication:
             self._answer_resources.resolve(principal, references) if self._answer_resources is not None else []
         )
         view["graph_receipts"] = self._readable_steps(principal, view.get("graph_receipts") or [])
+        evidence = view.get("material_evidence") or []
+        view["material_evidence"] = (
+            self._answer_resources.readable_material_evidence(principal, evidence)
+            if evidence and self._answer_resources is not None else []
+        )
         view["tool_invocations"] = self._readable_tool_results(principal, view.get("tool_invocations") or [])
         return view
 
@@ -179,6 +187,13 @@ class ConversationApplication:
         The receipt itself stays — that the turn called something is a fact about the turn — but the summary of a
         resource this person may no longer read is withheld rather than kept as a label nobody could otherwise see.
         """
+        # Older material-search summaries copied names/counts without the full candidate ids. They cannot be
+        # reauthorized, including no-hit/unavailable counts, so only the observed invocation remains here.
+        tools = [
+            {**tool, "result_summary": "결과 수신 (자료 내용은 근거 카드에만 표시)"}
+            if tool.get("tool_name") in {"material_search"} and tool.get("result_summary")
+            else tool for tool in tools
+        ]
         if self._answer_resources is None or not tools:
             return tools
         refs = {
@@ -216,9 +231,15 @@ class ConversationApplication:
             for ref in (step.get("node_ref"), step.get("from_ref"), step.get("to_ref"))
             if ref
         }
+        material_steps = {step["receipt_id"]: step for step in self._answer_resources.readable_material_steps(principal, steps)}
         titles = self._answer_resources.readable_titles(principal, sorted(refs))
         kept: list[dict[str, Any]] = []
         for step in steps:
+            if step.get("edge_kind") == "has_material":
+                observed = material_steps.get(step["receipt_id"])
+                if observed is None:
+                    continue
+                step = {**step, "source_contexts": observed["source_contexts"]}
             ends = [str(ref) for ref in (step.get("node_ref"), step.get("from_ref"), step.get("to_ref")) if ref]
             if any(ref not in titles for ref in ends):
                 continue

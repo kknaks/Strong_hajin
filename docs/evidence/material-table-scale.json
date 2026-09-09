@@ -1,0 +1,39 @@
+{
+  "profile": "scax-material-integrity-v1",
+  "kind": "xlsx",
+  "shape": {
+    "rows": 100000,
+    "non_empty_cells": 1000000
+  },
+  "source_bytes": 3141127,
+  "sha256": "5db6cda2afeca6512c5701b967c509310145646f2ef70a4977e6ab9bbd395966",
+  "archive": {
+    "members": 9,
+    "uncompressed_bytes": 38883442,
+    "largest_member_bytes": 38867432
+  },
+  "generation_seconds": 2.832,
+  "parse_seconds": 10.143,
+  "parser_status": "completed",
+  "worker_seconds": 40.863,
+  "extraction": {
+    "status": "completed",
+    "failure_reason": null,
+    "char_count": 15477914,
+    "chunk_count": 100000,
+    "coverage": {
+      "complete": true,
+      "indexed_blocks": 100000,
+      "indexed_chars": 15477914
+    },
+    "warnings": []
+  },
+  "db_blocks": 100000,
+  "db_chunks": 100000,
+  "tail_search_seconds": 0.089,
+  "tail_found": true,
+  "peak_rss_bytes_including_generation": 809648128,
+  "total_seconds": 44.134,
+  "parser_version": "3",
+  "measured_on": "2026-09-09"
+}

@@ -293,17 +293,32 @@ class CodexCliProviderAdapter:
     RELATIONSHIP_POLICY = (
         "SCAX 조회 지침:\n"
         "- 목록 하나로 답할 수 있는 질문은 소유 도구를 바로 부르고 거기서 멈춘다. `내 업무`는 `task_list`,"
-        " `나에게 온 요청`은 `work_request_list`, `내 회의`는 `list_meetings`다. 관계를 묻지 않은 질문에"
+        " `나에게 온 요청`은 `work_request_list`, `내 회의`는 `meeting_list`다. 관계를 묻지 않은 질문에"
         " graph를 걷지 않는다 — 이미 답이 손에 있는데 더 걷는 것은 답을 늦출 뿐이다.\n"
-        "- 사람·팀·업무·회의·자료가 어떻게 이어져 있는지 묻는 질문은 `graph_search`로 시작 node를 찾고,"
+        "- 사람·팀·프로젝트·업무·회의·자료가 어떻게 이어져 있는지 묻는 질문은 `graph_search`로 시작 node를 찾고,"
         " `graph_neighbors`로 명시된 관계만 넓힌 뒤, 필요한 것만 소유 도구(`task_get`·`meeting_get`·"
         "`work_request_get`·`task_materials_list`)로 읽는다.\n"
-        "- 문서 본문이나 회의 발화를 찾아야 하는 질문은 `task_material_search`로 시작 node를 얻은 뒤 같은 순서로 넓힌다.\n"
+        "- 요청한 관계가 첫 node에 모두 있지 않으면 반환된 연결 node에서 필요한 관계만 추가로 확장한다."
+        " 소유 도구의 상세 조회만으로 관계 경로를 확인했다고 대신하지 않는다.\n"
+        "- 관계 답변의 주대상이 Task·업무 요청·회의이면 해당 소유 조회 도구로 한 번 확인하여 답변의 정본 링크를"
+        " 남긴다. 주변 node의 상세를 일괄 조회하지 않는다.\n"
+        "- graph_search 시작 종류는 person/team/project/task/work_request/meeting이다. material/report는 관계로 도달한다."
+        " graph_neighbors(node='<kind>:<id>')에는 반환된 kind와 id만 쓴다. 제목의 숫자를 ID로 추측하지 않는다.\n"
+        "- 회의에서 결정한 날짜·담당자 등 발화 내용을 묻는 질문은 `material_search`로 시작한다. 회의 제목도"
+        " 본문 검색의 단서로 사용하고, 회의 ID를 찾기 위한 graph 조회를 먼저 하지 않는다. 확정 전사/정제 revision의 source_locator 발화 시간·segment와"
+        " 녹음 원본 연결을 근거로 쓰고, 실시간/미확정 발화나 검색 불가 오디오를 읽었다고 말하지 않는다.\n"
         "- 도구가 돌려주지 않은 관계는 말하지 않는다. 관계를 그림이나 표로 지어내지 말고, 조회한 것만 근거로 답한다.\n"
         "- 여러 개를 나열할 때는 도구가 준 canonical id의 대상만 말한다.\n"
-        "- 자료 안의 내용을 묻는 질문은 `task_material_search`로 시작한다. 어느 업무의 자료인지 모르면 `task_id`를"
-        " 대지 않는다 — 읽을 수 있는 자료 전부에서 찾는다. 한 번에 못 찾으면 같은 뜻의 다른 말이나 줄임말로 두세 번까지"
-        " 다시 찾고, 그래도 없으면 없다고 말한다. 찾지 못한 것을 지어내지 않는다.\n"
+        "- SCAX 내부 자료는 웹에서 찾지 않는다. 자료 본문 질문은 `material_search`로 시작한다. 소유 대상을 모르면 owner filter를 생략하여 Task·업무 요청·"
+        " 회의·제출 보고서·개인/팀 자료함 중 현재 읽을 수 있는 자료에서 찾는다. 한 대상을 알면 resource_type과"
+        " resource_id를 함께 지정한다. 같은 뜻의 다른 말로 재검색하되 최초 호출을 포함해 최대 세 번까지 찾고,"
+        " 그래도 없으면 현재 접근 가능한 범위에서 결과가 없다고 말한다.\n"
+        "- 자료 조회와 Graph의 material_id는 모두 canonical artifact UUID다. binding_id는 원본이 붙은 연결의 ID다. 부분 추출 파일은 사용자가 명시했을 때만 artifact ID로 선택한다."
+        " owner만 지정한 것은 파일 선택이 아니다. extraction.coverage/warnings와 no-hit의 selected_material.extraction도"
+        " 확인하고 미처리 범위를 밝힌다. 결과가 준 origin과 정확한 source_locator를 근거로 사용한다.\n"
+        "- 사용자가 본인 업무 생성이나 승인할 수 있는 생성안을 요청하면 필요한 자료 근거를 먼저 조회한 뒤"
+        " `task_create_self`로 Action 제안을 준비한다. 이 대화에서는 사람의 승인 전까지 업무가 생성되지 않는다."
+        " 단순 아이디어를 묻는 경우에는 문장으로 답한다.\n"
         "- 날짜는 두 가지로 갈린다. `지난달 등록한 자료`는 등록 시각의 조건이고 `8월 실적을 언급한 자료`는 본문에"
         " 찾을 말이다. 날짜를 본문 검색어에 섞지 않는다.\n"
         "- `task_list`는 그 사람이 든 업무를 돌려준다. 팀이나 프로젝트 전체를 묻는 질문에만 `mine=false`로 넓히고,"
@@ -660,7 +675,7 @@ def _summarize_tool_error(error: Any) -> str:
     return "도구 실행 실패"
 
 
-_CONTENT_BEARING_TOOLS = frozenset({"task_material_search"})
+_CONTENT_BEARING_TOOLS = frozenset({"material_search"})
 
 
 def _summarize_tool_result(result: Any, *, tool_name: str = "") -> str:
@@ -687,15 +702,9 @@ def _summarize_tool_result(result: Any, *, tool_name: str = "") -> str:
     if isinstance(payload, list):
         return f"결과: {len(payload)}건 조회"
     if isinstance(payload, dict) and isinstance(payload.get("results"), list) and "searched_materials" in payload:
-        # material.search: report counts and file names only; excerpts stay out of the timeline.
-        names = sorted({str(item.get("name", "")) for item in payload["results"] if isinstance(item, dict)} - {""})
-        unavailable = payload.get("unavailable_materials") if isinstance(payload.get("unavailable_materials"), list) else []
-        summary = f"결과: 자료 {int(payload['searched_materials'])}개 검색, 관련 구간 {len(payload['results'])}건"
-        if names:
-            summary += f" ({_truncate(', '.join(names), 60)})"
-        if unavailable:
-            summary += f", 읽지 못한 자료 {len(unavailable)}개"
-        return summary
+        # This timeline has no complete candidate identity set to reauthorize historic counts or names.
+        # Details belong to the separately reauthorized material evidence, even for a no-hit search.
+        return "결과 수신 (자료 내용은 근거 카드에만 표시)"
     if tool_name in _CONTENT_BEARING_TOOLS:
         return "결과 수신 (자료 내용은 근거 카드에만 표시)"
     if isinstance(payload, dict):

@@ -6,8 +6,6 @@ from pypdf import PdfReader, PdfWriter
 from ax_workspace.modules.work.material_extraction import (
     CHUNK_CHARS,
     EXCERPT_CHARS,
-    MAX_CHUNKS,
-    MAX_TEXT_CHARS,
     LexicalMaterialRetriever,
     chunk_text,
     classify,
@@ -56,12 +54,12 @@ def test_classify_limits_the_first_slice_to_text_markdown_and_pdf() -> None:
 def test_chunking_is_bounded_and_overlapping() -> None:
     text = ("문장입니다. " * 40 + "\n\n") * 60  # ~30k chars
     chunks = chunk_text(text)
-    assert 20 <= len(chunks) <= MAX_CHUNKS
+    assert 20 <= len(chunks)
     assert all(len(chunk.text) <= CHUNK_CHARS for chunk in chunks)
     assert [chunk.sequence for chunk in chunks] == list(range(len(chunks)))
     assert chunks[1].char_start < chunks[0].char_end  # overlap keeps context across the boundary
-    huge = chunk_text("a" * (MAX_TEXT_CHARS * 2))
-    assert len(huge) <= MAX_CHUNKS and huge[-1].char_end <= MAX_TEXT_CHARS
+    huge = chunk_text("a" * 400_000)
+    assert len(huge) > 400 and huge[-1].char_end == 400_000
 
 
 def test_query_tokens_handle_korean_particles_and_excerpt_stays_bounded() -> None:

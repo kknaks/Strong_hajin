@@ -370,6 +370,16 @@ class SqlAlchemyMeetingRepository:
             .limit(1)
         )
 
+    def recorded_raw_transcripts(self, recording, *, limit=None):
+        return list(self._session.scalars(select(MeetingRawTranscriptRevisionRecord).where(
+            MeetingRawTranscriptRevisionRecord.recording_id == recording.id, MeetingRawTranscriptRevisionRecord.source_kind != "realtime",
+            MeetingRawTranscriptRevisionRecord.state == "completed").order_by(MeetingRawTranscriptRevisionRecord.revision.desc()).limit(limit)))
+
+    def completed_refinements(self, transcript, *, limit=None):
+        return list(self._session.scalars(select(MeetingTranscriptRefinementRevisionRecord).where(
+            MeetingTranscriptRefinementRevisionRecord.raw_transcript_revision_id == transcript.id,
+            MeetingTranscriptRefinementRevisionRecord.state == "completed").order_by(MeetingTranscriptRefinementRevisionRecord.revision.desc()).limit(limit)))
+
     def create_raw_transcript(
         self,
         recording: MeetingRecordingRecord,

@@ -5,6 +5,7 @@ what they delivered — frozen as it was at that moment — and the person who a
 accept it, or say what is still missing. Asking for more is not a new question; it is another round of the same one.
 """
 from uuid import UUID
+import pytest
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -171,8 +172,9 @@ def test_accepting_the_result_closes_the_work_exactly_once(tmp_path) -> None:
     assert _delivery_item(client, MINA, task_id) is None  # it is answered; it is no longer waiting
 
 
-def test_a_report_freezes_what_was_delivered_and_what_the_task_then_was(tmp_path) -> None:
-    client, _ = _stack(tmp_path)
+@pytest.mark.parametrize("additional_binding", [False, True])
+def test_a_report_freezes_what_was_delivered_and_what_the_task_then_was(tmp_path, additional_binding) -> None:
+    client, database_url = _stack(tmp_path)
     task_id = _accepted_task(client, "근거가 붙는 업무")
     client.post(f"/api/tasks/{task_id}/checklist", headers=JIHO, json={"text": "자료 모으기"})
     material = client.post(
@@ -180,6 +182,12 @@ def test_a_report_freezes_what_was_delivered_and_what_the_task_then_was(tmp_path
         headers=JIHO,
         json={"kind": "output", "url": "https://docs.example.com/report", "label": "최종 보고서"},
     ).json()
+
+    if additional_binding:
+        from ax_workspace.platform.work_tasks import SqlAlchemyAttachmentRepository
+        with make_session_factory(database_url)() as session:
+            SqlAlchemyAttachmentRepository(session).bind(attachment_id=UUID(material["material_id"]), context_type="task", context_id=task_id, role="input", bound_by="jiho")
+            session.commit()
 
     current = client.get(f"/api/tasks/{task_id}", headers=JIHO).json()
     reported = client.post(
@@ -203,6 +211,8 @@ def test_a_report_freezes_what_was_delivered_and_what_the_task_then_was(tmp_path
     # Outputs are named by identity and integrity, never copied into the snapshot.
     assert [output["name"] for output in snapshot["outputs"]] == ["최종 보고서"]
     assert snapshot["outputs"][0]["integrity_ref"] == material["integrity_ref"]
+    assert snapshot["outputs"][0]["material_id"] == material["material_id"]
+    assert snapshot["outputs"][0]["binding_id"] == material["binding_id"]
 
     # Changing the task afterwards does not change what was reported.
     client.post(f"/api/tasks/{task_id}/checklist", headers=JIHO, json={"text": "나중에 추가한 단계"})

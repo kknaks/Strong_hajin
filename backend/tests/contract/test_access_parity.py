@@ -84,8 +84,8 @@ def test_every_channel_gives_the_same_answer_about_the_same_file(tmp_path) -> No
 
     # 대표는 조직의 일을 읽는다: 세 창구가 같은 발췌를 준다.
     executive = McpReportsFacade(settings, "yuna")
-    over_http = client.get("/api/materials/search", headers={"X-Demo-Persona": "yuna"}, params={"q": "한빛상사"}).json()
-    over_mcp = executive.search_task_materials(None, "한빛상사")
+    over_http = client.get('/api/materials/search', headers={'X-Demo-Persona': 'yuna'}, params={'q': '한빛상사'}).json()
+    over_mcp = executive.search_materials('한빛상사')
     assert {row["name"] for row in over_http["results"]} == {row["name"] for row in over_mcp["results"]} == {"정산.md"}
     # 그리고 찾은 파일을 목록에서도 본다 — 본문만 보이고 파일은 없는 자리를 만들지 않는다.
     listed = client.get(f"/api/tasks/{task['task_id']}/materials", headers={"X-Demo-Persona": "yuna"})
@@ -93,10 +93,10 @@ def test_every_channel_gives_the_same_answer_about_the_same_file(tmp_path) -> No
 
     # 다른 팀의 팀장에게는 어느 창구에서도 아무것도 없다.
     lead = McpReportsFacade(settings, "jiho")
-    refused = client.get("/api/materials/search", headers={"X-Demo-Persona": "jiho"}, params={"q": "한빛상사"}).json()
+    refused = client.get('/api/materials/search', headers={'X-Demo-Persona': 'jiho'}, params={'q': '한빛상사'}).json()
     assert refused["results"] == [] and refused["searched_materials"] == 0
     assert "정산" not in str(refused)
-    denied = lead.search_task_materials(None, "한빛상사")
+    denied = lead.search_materials('한빛상사')
     assert denied["results"] == [] and denied["searched_materials"] == 0
     assert "정산" not in str(denied)
     assert client.get(f"/api/tasks/{task['task_id']}/materials", headers={"X-Demo-Persona": "jiho"}).status_code == 404
@@ -123,7 +123,10 @@ def test_a_capability_taken_away_is_taken_away_everywhere_at_once(tmp_path) -> N
     # The same second: the HTTP route, the tool list, and the graph all stop offering it.
     assert _http_task(client, "yuna", task["task_id"]).status_code == 403
     assert "task_get" not in {tool.name for tool in _tool_names(settings, "yuna")}
-    assert client.get("/api/graph/search", headers={"X-Demo-Persona": "yuna"}, params={"q": "회수"}).status_code == 403
+    # WorkRequest read still permits graph discovery, but cannot recover revoked Task read.
+    graph = client.get("/api/graph/search", headers={"X-Demo-Persona": "yuna"}, params={"q": "회수"})
+    assert graph.status_code == 200
+    assert graph.json() == {"query": "회수", "nodes": [], "truncated": False}
 
 
 def _tool_names(settings: Settings, persona: str):

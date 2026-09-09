@@ -70,6 +70,8 @@ class MeetingRepository(Protocol):
     def latest_raw_transcript_for_recording(self, recording: Any) -> Any | None: ...
 
     def latest_recorded_raw_transcript(self, recording: Any) -> Any | None: ...
+    def recorded_raw_transcripts(self, recording: Any, *, limit: int | None = None) -> list[Any]: ...
+    def completed_refinements(self, transcript: Any, *, limit: int | None = None) -> list[Any]: ...
     def create_raw_transcript(
         self,
         recording: Any,
@@ -157,6 +159,34 @@ class MeetingApplication:
             # Detail lookup deliberately fails closed, unlike calendar's busy-only projection.
             raise MeetingNotFound("meeting was not found")
         return self._view(meeting, include_note=True)
+
+    def material_revisions(self, principal: Principal, meeting_id: UUID, *, include_history: bool = False) -> list[dict[str, Any]]:
+        """Current immutable file-derived transcript layers, after the same read policy as meeting detail."""
+        meeting = self._repository.meeting(meeting_id)
+        if meeting is None or not self._can_read_detail(principal, meeting):
+            raise MeetingNotFound("meeting was not found")
+        revisions = []
+        for recording in self._repository.recordings(meeting):
+            if not recording.storage_key or not recording.sha256:
+                continue
+            raw_revisions = self._repository.recorded_raw_transcripts(recording, limit=None if include_history else 1)
+            latest = raw_revisions[0] if raw_revisions else None
+            base = {"recording_id": str(recording.id), "recording_integrity_ref": f"sha256:{recording.sha256}"}
+            revisions.append({**base, "kind": "meeting_recording", "source_layer": "recording", "revision_id": str(recording.id),
+                              "revision": 1, "is_current_revision": True, "recording_state": recording.state})
+            for raw in raw_revisions:
+                if raw is None or raw.state != "completed":
+                    continue
+                current = latest is not None and raw.id == latest.id
+                revisions.append({**base, "kind": "meeting_raw", "source_layer": "raw_transcript", "revision_id": str(raw.id),
+                                  "revision": raw.revision, "is_current_revision": current})
+                refinements = self._repository.completed_refinements(raw, limit=None if include_history else 1)
+                latest_refinement = refinements[0] if refinements else None
+                for refined in refinements:
+                    if refined is not None and refined.state == "completed":
+                        revisions.append({**base, "kind": "meeting_refinement", "source_layer": "refinement", "revision_id": str(refined.id),
+                                          "revision": refined.revision, "is_current_revision": current and refined.id == latest_refinement.id})
+        return revisions
 
     def create(
         self,

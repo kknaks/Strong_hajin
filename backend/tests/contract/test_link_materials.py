@@ -77,7 +77,7 @@ def test_a_link_is_never_dressed_up_as_a_file(tmp_path) -> None:
     assert content.status_code == 422
 
     # And nothing to read, so a search says it could not be read rather than pretending it found nothing.
-    found = client.get(f"/api/tasks/{task_id}/materials/search", headers=MINA, params={"q": "설계"})
+    found = client.get('/api/materials/search', headers=MINA, params={'q': '설계', 'resource_type': 'task', 'resource_id': task_id})
     assert found.status_code == 200, found.text
     body = found.json()
     assert body["results"] == []
@@ -114,7 +114,7 @@ def test_only_the_person_holding_the_task_may_attach_or_remove_a_link(tmp_path) 
     assert client.get(f"/api/tasks/{task_id}/materials", headers=JIHO).status_code in {403, 404, 422}
 
     material = _link(client, task_id, kind="input", url="https://docs.example.com/a", label="설계 문서").json()
-    removed = client.post(f"/api/tasks/{task_id}/materials/{material['material_id']}/detach", headers=MINA)
+    removed = client.post(f'/api/tasks/{task_id}/material-bindings/{material['binding_id']}/detach', headers=MINA)
     assert removed.status_code == 200, removed.text
     assert client.get(f"/api/tasks/{task_id}/materials", headers=MINA).json() == []
 
@@ -130,7 +130,8 @@ def test_the_same_link_attached_again_is_a_new_binding_not_a_rewritten_one(tmp_p
 
     # One artifact identity, two places it is used.
     assert one["attachment_id"] == two["attachment_id"]
-    assert one["material_id"] != two["material_id"]
+    assert one["material_id"] == two["material_id"]
+    assert one["binding_id"] != two["binding_id"]
     with make_session_factory(database_url)() as session:
         assert len(session.scalars(select(AttachmentRecord)).all()) == 1
 
@@ -195,6 +196,7 @@ def test_a_task_can_point_at_another_thing_inside_scax(tmp_path) -> None:
     assert renamed.status_code == 200, renamed.text
     [listed] = [row for row in client.get(f"/api/tasks/{task_id}/materials", headers=MINA).json() if row["source_kind"] == "resource_ref"]
     assert listed["resource"]["title"] == "이름이 바뀐 회의"
+    assert client.get(f"/api/materials/{material['material_id']}", headers=MINA).json()["name"] == "이름이 바뀐 회의"
 
 
 def test_a_reference_can_only_point_at_something_the_person_may_read(tmp_path) -> None:

@@ -123,7 +123,7 @@ capability 카탈로그 → 버전이 붙은 역할 template → `StandardGrantR
 
 ## 자료와 본문 검색
 
-자료를 올리면 같은 transaction에 추출 job이 기록된다(업로드 응답의 `extraction.status`가 `queued`로 시작). 자료 워커가 UTF-8 텍스트·Markdown·텍스트 PDF와 Office 문서를 경계가 있는 블록과 chunk로 뽑는다. DOCX 문단/표/머리글·바닥글, XLSX 시트+셀 범위, PPTX 슬라이드+발표자 노트, PDF 페이지가 각자의 source locator와 함께 남는다. 모든 결과는 명시적 상태다 — `completed`, 또는 `encrypted_pdf` · `corrupt_pdf` · `empty_content` · `not_utf8_text` · `unsupported` 같은 사유가 붙은 `failed`.
+자료를 올리면 같은 transaction에 추출 job이 기록된다(업로드 응답의 `extraction.status`가 `queued`로 시작). 자료 워커가 UTF-8 텍스트·Markdown·텍스트 PDF와 Office 문서를 경계가 있는 블록과 chunk로 뽑는다. DOCX 문단/표/머리글·바닥글, XLSX 시트+셀 범위, PPTX 슬라이드+발표자 노트, PDF 페이지가 각자의 source locator와 함께 남는다. 추출·색인은 원문의 끝까지 처리하고 전체 projection이 공개된 뒤에만 `completed`가 된다. 혼합 스캔처럼 읽지 못한 구간이 있으면 `partial`과 처리 범위·경고를 보존하며, 해당 파일을 명시한 검색에서만 반환한다. 용량·암호화·손상·미지원은 이유가 있는 실패로 처리한다. 원문 출력 상한과 검색 결과 개수 제한을 구별한다([추출 무결성과 검증](docs/material-integrity.md)).
 
 원본 byte는 `MaterialStorage` port 뒤에 있다. 로컬 adapter는 `AX_MATERIALS_DIR`(기본 `backend/.scax/materials`, git 제외) 아래에 쓰고, Azure Blob adapter가 같은 port를 구현할 자리다. 파일(`kind=input`/`output`) · 링크 · 다른 자원 참조를 붙일 수 있고, 뗀 뒤에도 기록과 byte는 계보를 위해 남는다.
 
@@ -131,7 +131,7 @@ capability 카탈로그 → 버전이 붙은 역할 template → `StandardGrantR
 
 분석 규칙은 version을 갖는다(`kiwi-<lib>-r<rules>`). 규칙이 바뀌면 그 규칙으로 만든 색인은 질문과 만나지 못하는데, 자료 워커가 한가할 때 뒤처진 것부터 다시 만든다 — 사람이 규칙이 바뀐 것을 기억했다가 명령을 부르지 않는다. 원문은 건드리지 않고 찾기 위한 형태만 바뀌며, 여러 번 돌려도 한 번 돌린 것과 같고 중간에 멈춰도 이어서 한다.
 
-어느 업무의 자료인지 몰라도 찾는다. `GET /api/materials/search?q=`와 MCP `task_material_search`는 같은 판정 위에 선다 — 읽을 수 있는 업무에 지금 살아 있는 binding만 보고, 파일 이름·쪽·무결성 해시·원본 URL과 함께 경계가 있는 발췌를 돌려준다. 뗀 자료와 읽을 수 없는 업무의 자료는 이름도 개수도 나오지 않는다.
+업무에 연결하지 않은 자료도 찾는다. `GET /api/materials/search?q=`와 MCP `material_search`는 Task·WorkRequest·Meeting·Report·개인/팀 자료함의 현재 owner 권한을 먼저 확인하고 허용된 원본만 검색한다. 결과의 `material_id`는 canonical artifact UUID이며, 같은 구간의 여러 연결은 읽을 수 있는 `source_contexts`로 합친다. 원본 revision·해시·locator·발췌·열기 링크를 함께 반환하고, 해제되거나 읽을 수 없는 연결의 이름·존재·건수는 제외한다. Task·Graph·본문 검색·답변의 `material_id`는 같은 artifact ID다. `binding_id`는 연결을 식별하며 Task 연결 해제는 `/api/tasks/{task_id}/material-bindings/{binding_id}/detach`로 수행한다. Task 범위 검색도 canonical API의 `resource_type=task`·`resource_id`를 사용한다([owner와 공개 계약](docs/material-search-owners.md)).
 
 ## AX 대화와 근거
 
@@ -141,11 +141,13 @@ provider는 실제 Codex CLI다(`CodexCliProviderAdapter`). 격리된 runtime ho
 
 **쓰기는 바로 일어나지 않는다.** 도구가 변경을 제안하면 ActionItem이 되고, 사람이 승인해야 원장에 반영된다.
 
-답변 아래에는 근거가 한 줄로 접혀 있다. 펼치면 답이 가리키는 정본(원문의 몇 쪽인지 포함), 문서 발췌 카드, 그리고 그 회차가 실제로 걸어간 경로가 나온다. 근거를 확인하려고 대화를 떠나지 않는다. 도구가 읽은 발췌는 그 turn의 `material_evidence`로 남고, 본문이 도구 timeline 요약이나 감사 행에 복제되지 않는다.
+답변 아래에는 근거가 한 줄로 접혀 있다. 펼치면 답이 가리키는 정본(원문의 몇 쪽인지 포함), 문서 발췌 카드, 그리고 그 회차가 실제로 걸어간 경로가 나온다. 근거를 확인하려고 대화를 떠나지 않는다. 도구가 읽은 발췌는 그 turn의 `material_evidence`로 남고, 본문이 도구 timeline 요약이나 감사 행에 복제되지 않는다. 근거 카드·정본 링크·Action preview는 관측 당시 context와 현재 owner 권한·원본 해시의 교집합을 다시 확인한다. 자료를 조회한 대화의 후속 질문은 provider checkpoint를 재사용하지 않고 현재 허용된 정본 참조와 사용자 발화에서 이어간다.
 
 `내 업무`와 `조직의 업무`는 다른 질문이다. `task_list`는 그 사람이 든 업무를 돌려주고, 팀이나 프로젝트 전체를 묻는 질문에만 `mine=false`로 넓힌다 — 읽을 수 있다는 것이 그 사람의 일이라는 뜻은 아니다.
 
 ## 관계 탐색
+
+노드별 검색·확장·overview·owner read·본문 검색 범위는 [탐색 지원 계약](docs/search-support.md)에 정리되어 있다.
 
 사람·팀·프로젝트·업무·요청·회의·자료·보고가 node이고, edge는 전부 각 원장의 사실이다. **그래프 전용 관계 표는 없다.** 첫 화면이 이미 그래프이며, 한 걸음 나갈 때마다 연결마다 권한을 다시 판정한다.
 

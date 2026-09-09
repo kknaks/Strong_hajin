@@ -1,0 +1,159 @@
+{
+  "run_date": "2026-09-09",
+  "database": "isolated disposable SQLite per profile",
+  "rss_scope": "process peak including synthetic fixture generation, application startup and Korean analyzer initialization",
+  "analyzer_only_peak_bytes": 606650368,
+  "analyzer_only_preinit_bytes": 14385152,
+  "profiles": [
+    {
+      "profile": "scax-material-integrity-v1",
+      "kind": "xlsx",
+      "shape": {
+        "rows": 100000,
+        "non_empty_cells": 1000000
+      },
+      "source_bytes": 3141125,
+      "sha256": "a69376b294e50735724b5568dfc68e828b3f9c5052d35e7d4d9fe634e5d42609",
+      "archive": {
+        "members": 9,
+        "uncompressed_bytes": 38883442,
+        "largest_member_bytes": 38867432
+      },
+      "generation_seconds": 2.901,
+      "parse_seconds": 5.748,
+      "parser_status": "completed",
+      "worker_seconds": 22.981,
+      "extraction": {
+        "status": "completed",
+        "failure_reason": null,
+        "char_count": 15477914,
+        "chunk_count": 100000,
+        "coverage": {
+          "complete": true,
+          "indexed_blocks": 100000,
+          "indexed_chars": 15477914
+        },
+        "warnings": []
+      },
+      "db_blocks": 100000,
+      "db_chunks": 100000,
+      "tail_search_seconds": 0.055,
+      "tail_found": true,
+      "peak_rss_bytes_including_generation": 772489216,
+      "total_seconds": 26.299
+    },
+    {
+      "profile": "scax-material-integrity-v1",
+      "kind": "docx",
+      "shape": {
+        "authored_pages": 350,
+        "tables": 350,
+        "non_empty_cells": 16800
+      },
+      "source_bytes": 105050,
+      "sha256": "138b0c4439e4d7c5d31ef5c8453bdc3e5354af7a6c86436c2ec8d857626255ee",
+      "archive": {
+        "members": 17,
+        "uncompressed_bytes": 3036980,
+        "largest_member_bytes": 2212368
+      },
+      "generation_seconds": 5.709,
+      "parse_seconds": 0.615,
+      "parser_status": "completed",
+      "worker_seconds": 1.828,
+      "extraction": {
+        "status": "completed",
+        "failure_reason": null,
+        "char_count": 471330,
+        "chunk_count": 701,
+        "coverage": {
+          "complete": true,
+          "indexed_blocks": 701,
+          "indexed_chars": 471330
+        },
+        "warnings": []
+      },
+      "db_blocks": 701,
+      "db_chunks": 701,
+      "tail_search_seconds": 0.006,
+      "tail_found": true,
+      "peak_rss_bytes_including_generation": 732938240,
+      "total_seconds": 7.896
+    },
+    {
+      "profile": "scax-material-integrity-v1",
+      "kind": "pptx",
+      "shape": {
+        "slides": 990,
+        "tables": 990,
+        "notes": 990
+      },
+      "source_bytes": 2093525,
+      "sha256": "4efd67f8d2e10e39f7700497c63000a3b744f16e43fe797cd89253cab8d499d2",
+      "archive": {
+        "members": 3999,
+        "uncompressed_bytes": 4353039,
+        "largest_member_bytes": 279384
+      },
+      "generation_seconds": 4.483,
+      "parse_seconds": 0.554,
+      "parser_status": "completed",
+      "worker_seconds": 1.538,
+      "extraction": {
+        "status": "completed",
+        "failure_reason": null,
+        "char_count": 59071,
+        "chunk_count": 2970,
+        "coverage": {
+          "complete": true,
+          "indexed_blocks": 2970,
+          "indexed_chars": 59071
+        },
+        "warnings": []
+      },
+      "db_blocks": 2970,
+      "db_chunks": 2970,
+      "tail_search_seconds": 0.006,
+      "tail_found": true,
+      "peak_rss_bytes_including_generation": 755597312,
+      "total_seconds": 6.394
+    },
+    {
+      "profile": "scax-material-integrity-v1",
+      "kind": "pptx",
+      "shape": {
+        "slides": 1000,
+        "tables": 1000,
+        "notes": 1000
+      },
+      "source_bytes": 2114409,
+      "sha256": "0eb1156f823fb8ff1cba21570f7ae4b67000cf420c77970179d577efd5e5a01c",
+      "archive": {
+        "members": 4039,
+        "uncompressed_bytes": 4395940,
+        "largest_member_bytes": 282176
+      },
+      "generation_seconds": 4.581,
+      "parse_seconds": 0.012,
+      "parser_status": "too_large",
+      "worker_seconds": 0.017,
+      "extraction": {
+        "status": "too_large",
+        "failure_reason": "too_large",
+        "char_count": 0,
+        "chunk_count": 0,
+        "coverage": {
+          "complete": false,
+          "reason": "archive has 4039 members (limit 4000)"
+        },
+        "warnings": []
+      },
+      "db_blocks": 0,
+      "db_chunks": 0,
+      "tail_search_seconds": 0.896,
+      "tail_found": false,
+      "peak_rss_bytes_including_generation": 745881600,
+      "total_seconds": 5.871
+    }
+  ]
+}

@@ -3,7 +3,7 @@ import { chromium } from "@playwright/test";
 import { loginAs, pollFor } from "./e2e-helpers.mjs";
 
 /**
- * upload → durable extraction job → material worker → real Codex/MCP `task_material_search` → cited answer.
+ * upload → durable extraction job → material worker → real Codex/MCP `material_search` → cited answer.
  * Asserts the evidence card shows the file actually read, a bounded excerpt, and an origin that serves the same bytes.
  */
 const frontendUrl = process.env.SCAX_E2E_URL ?? "http://127.0.0.1:5176";
@@ -83,7 +83,7 @@ try {
   await page.getByLabel("AX 메시지").fill(
     [
       `업무 '${taskTitle}'(task_id ${task.task_id})를 첨부자료까지 포함해 설명해줘.`,
-      "반드시 SCAX MCP의 task_material_search 도구를 실제로 호출해 첨부 내용을 근거로 답해.",
+      "반드시 SCAX MCP의 material_search 도구를 실제로 호출해 첨부 내용을 근거로 답해.",
       "공급사 이름과 납기일을 첨부에서 찾은 대로 인용하고, 첨부에 없는 내용은 없다고 말해.",
     ].join(" "),
   );
@@ -98,13 +98,13 @@ try {
         const current = await response.json();
         const turn = current.turns.at(-1);
         if (!turn || turn.state !== "completed") return null;
-        const tool = current.tool_invocations.find((item) => item.tool_name === "task_material_search" && item.state === "completed");
+        const tool = current.tool_invocations.find((item) => item.tool_name === "material_search" && item.state === "completed");
         const evidence = (current.material_evidence ?? []).filter((item) => item.turn_id === turn.turn_id);
         if (!tool || evidence.length === 0) return null;
         const answer = current.messages.find((item) => item.role === "assistant" && item.turn_id === turn.turn_id);
         return { tool, evidence, answer: answer?.body ?? "" };
       }, conversation.conversation_id),
-    { timeout: 180_000, description: "a completed turn with a real task_material_search call and recorded evidence" },
+    { timeout: 180_000, description: "a completed turn with a real material_search call and recorded evidence" },
   );
 
   if (cited.evidence.some((item) => item.name !== fileName || item.material_id !== indexed.material_id)) {

@@ -103,7 +103,7 @@ def test_an_office_document_is_kept_as_the_blocks_it_is_made_of(tmp_path) -> Non
     assert extraction.parser_version and extraction.superseded_at is None
 
     # And it is searchable through the ordinary surface.
-    found = client.get(f"/api/tasks/{task_id}/materials/search", headers=MINA, params={"q": "납기일"}).json()
+    found = client.get('/api/materials/search', headers=MINA, params={'q': '납기일', 'resource_type': 'task', 'resource_id': task_id}).json()
     assert [row["name"] for row in found["results"]] == ["계약서.docx"]
     assert material["material_id"]
 
@@ -123,7 +123,7 @@ def test_a_scanned_document_says_it_could_not_be_read_rather_than_looking_empty(
 
     [listed] = client.get(f"/api/tasks/{task_id}/materials", headers=MINA).json()
     assert listed["extraction"]["status"] in {"needs_ocr", "failed"}
-    search = client.get(f"/api/tasks/{task_id}/materials/search", headers=MINA, params={"q": "무엇이든"}).json()
+    search = client.get('/api/materials/search', headers=MINA, params={'q': '무엇이든', 'resource_type': 'task', 'resource_id': task_id}).json()
     assert search["results"] == []
     assert [row["name"] for row in search["unavailable_materials"]] == ["스캔본.pdf"]
 
@@ -141,9 +141,12 @@ def test_a_newer_parser_supersedes_what_it_replaces_instead_of_rewriting_it(tmp_
     with make_session_factory(database_url)() as session:
         first = session.scalar(select(MaterialExtractionRecord))
         first_id, attachment_id = first.id, first.attachment_id
+        first.parser_version = "1"
+        session.commit()
 
     # The same file, extracted again by a newer parser version.
-    application.reextract_material(attachment_id=attachment_id, parser_version="test-2")
+    from ax_workspace.modules.work.material_extraction import PARSER_VERSION
+    application.reextract_material(attachment_id=attachment_id, parser_version=PARSER_VERSION)
     _drain(worker)
 
     with make_session_factory(database_url)() as session:
@@ -158,7 +161,7 @@ def test_a_newer_parser_supersedes_what_it_replaces_instead_of_rewriting_it(tmp_
     assert kept
 
     # Search reads only the current extraction, so nothing is found twice.
-    found = client.get(f"/api/tasks/{task_id}/materials/search", headers=MINA, params={"q": "한빛상사"}).json()
+    found = client.get('/api/materials/search', headers=MINA, params={'q': '한빛상사', 'resource_type': 'task', 'resource_id': task_id}).json()
     assert len(found["results"]) == 1
 
 
@@ -187,7 +190,7 @@ def test_purging_a_file_removes_its_content_but_not_that_it_was_cited(tmp_path) 
     # The material is still listed as a fact of the Task, saying it can no longer be read.
     [listed] = client.get(f"/api/tasks/{task_id}/materials", headers=MINA).json()
     assert listed["purged"] is True
-    search = client.get(f"/api/tasks/{task_id}/materials/search", headers=MINA, params={"q": "주민등록번호"}).json()
+    search = client.get('/api/materials/search', headers=MINA, params={'q': '주민등록번호', 'resource_type': 'task', 'resource_id': task_id}).json()
     assert search["results"] == []
     assert client.get(
         f"/api/tasks/{task_id}/materials/{material['material_id']}/content", headers=MINA

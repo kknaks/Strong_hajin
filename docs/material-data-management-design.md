@@ -1,5 +1,7 @@
 # 첨부 데이터 관리 설계안 — 원문·파생 결과·검색 projection
 
+2026-09-09 현재 추출 계약은 [자료 추출 무결성](material-integrity.md)을 따른다. 아래 2026-09-06 검토·결정 중 출력 상한, 표 전체 1블록, 이전 결과의 검색 유지, 저장된 evidence의 권한 재검사 관련 내용은 최신 계약으로 대체됐다. 원본/파생 projection 분리와 미정 retention은 유지한다.
+
 기준: Work Brief `2026-09-04 - SCAX Office 문서 파서와 첨부 데이터 관리 설계`, SPEC-006(자료 검색·출처 계보), ERD §6(ATTACHMENT / ATTACHMENT_BINDING / EVIDENCE), 현재 구현 `ax-workspace` (`attachments`, `attachment_bindings`, `material_extractions`, `material_chunks`, `conversation_material_evidence`, `durable_jobs`).
 
 합의된 방향(Brief 핵심 판단): **원본 byte는 private object storage**, **정규화된 추출 텍스트와 source locator는 PostgreSQL**, **lexical index·향후 embedding은 추출 결과에서 재생성 가능한 별도 projection**. 아래는 그 방향 안에서 아직 고정하지 않은 항목을 비교하고 사용자 결정을 분리한 문서다. 이 문서는 코드/DB 계약이 아니다. Office parser(`modules/work/document_parsing.py`, `platform/document_parsers.py`)의 `ParsedDocument`는 persistence entity가 아니며, 아래 결정이 확정되기 전에는 어떤 테이블에도 자동 저장하지 않는다.

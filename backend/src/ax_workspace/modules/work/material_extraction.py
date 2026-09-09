@@ -6,7 +6,9 @@ caller is authorized to see leave this module.
 """
 from __future__ import annotations
 
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
+import hashlib
 import re
 from typing import Any, Protocol
 from uuid import UUID
@@ -14,15 +16,24 @@ from uuid import UUID
 from ax_workspace.modules.work.search import folded
 
 SUPPORTED_EXTRACTORS = ("text", "markdown", "pdf")
-MAX_TEXT_CHARS = 200_000
 CHUNK_CHARS = 1_000
 CHUNK_OVERLAP = 120
-MAX_CHUNKS = 400
 EXCERPT_CHARS = 280
 MAX_SEARCH_HITS = 8
+# Parser output is a versioned contract; a deployment only publishes/searches its installed contract.
+PARSER_VERSION = "3"
+UPGRADABLE_PARSER_VERSIONS = frozenset({"1", "2"})
+
+
+class ParserVersionConflict(ValueError):
+    """A newer/incompatible deployment owns the active parser projection."""
+
 
 # status: queued -> running -> completed | failed | unsupported
 FAILURE_REASONS = {
+    "integrity_mismatch": "저장된 원본이 업로드 당시의 파일과 일치하지 않아 추출하지 않았습니다",
+    "parser_upgrade_required": "이전 parser의 추출 결과입니다. 현재 계약으로 원본 재추출이 필요합니다",
+    "projection_unverified": "추출 결과의 전체성 정보를 확인할 수 없어 검색하지 않습니다",
     "empty_content": "본문에 텍스트가 없습니다 (스캔 이미지 PDF 또는 빈 파일)",
     "encrypted_pdf": "암호가 걸린 PDF는 읽을 수 없습니다",
     "corrupt_pdf": "손상된 PDF 파일입니다",
@@ -32,6 +43,7 @@ FAILURE_REASONS = {
     "needs_ocr": "스캔 문서로 보입니다 — 텍스트 층이 없어 내용을 읽을 수 없습니다 (OCR 미도입)",
     "encrypted_document": "암호가 걸린 문서는 읽을 수 없습니다",
     "corrupt_document": "손상된 문서 파일입니다",
+    "too_large": "문서가 처리 가능한 크기·구조 한도를 넘어 읽지 않았습니다",
     "budget_exceeded": "문서가 너무 크거나 구조가 안전하지 않아 읽지 않았습니다",
 }
 
@@ -45,6 +57,7 @@ class ExtractedChunk:
     page: int | None = None
     #: Which block this span came from, so a hit can name the part of the document a person would recognise.
     block_sequence: int | None = None
+    context_text: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,18 +72,29 @@ class ExtractedBlock:
     sheet: str | None = None
     slide: int | None = None
     row: int | None = None
+    source_locator: dict[str, Any] = field(default_factory=dict)
+    header_context: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ExtractionOutcome:
     status: str  # completed | failed | unsupported | needs_ocr
     extractor: str | None
-    chunks: tuple[ExtractedChunk, ...] = ()
-    blocks: tuple[ExtractedBlock, ...] = ()
+    chunks: Sequence[ExtractedChunk] = ()
+    blocks: Sequence[ExtractedBlock] = ()
     failure_reason: str | None = None
     char_count: int = 0
     page_count: int | None = None
     transient: bool = False
+    warnings: tuple[str, ...] = ()
+    coverage: dict[str, Any] = field(default_factory=dict)
+
+
+    def close(self) -> None:
+        for records in (self.blocks, self.chunks):
+            close = getattr(records, "close", None)
+            if close is not None:
+                close()
 
 
 class MaterialTextExtractor(Protocol):
@@ -96,9 +120,10 @@ class MaterialExtractionRepository(Protocol):
     def is_terminal(self, extraction_id: UUID) -> bool: ...
     def running(self, extraction_id: UUID, attempt: int) -> Any | None: ...
     def complete(self, extraction: Any, outcome: ExtractionOutcome) -> None: ...
-    def fail(self, extraction: Any, reason: str, *, status: str = "failed") -> None: ...
+    def fail(self, extraction: Any, reason: str, *, status: str = "failed", outcome: ExtractionOutcome | None = None) -> None: ...
     def release(self, extraction: Any) -> None: ...
     def chunks_for(self, extraction_ids: list[UUID]) -> list[Any]: ...
+    def chunk_contexts(self, chunk_ids: list[UUID]) -> dict[UUID, dict[str, Any]]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +133,8 @@ class ClaimedExtraction:
     name: str
     content_type: str
     source_ref: str
+    integrity_ref: str | None = None
+    source_kind: str = "file"
 
 
 def classify(name: str, content_type: str) -> str | None:
@@ -131,13 +158,15 @@ def decode_utf8_text(data: bytes) -> str | None:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def chunk_text(text: str, *, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP, max_chunks: int = MAX_CHUNKS, page: int | None = None, sequence_start: int = 0, char_offset: int = 0) -> list[ExtractedChunk]:
-    """Split bounded text into overlapping windows that prefer paragraph and sentence boundaries."""
-    normalized = text[:MAX_TEXT_CHARS]
-    chunks: list[ExtractedChunk] = []
+def iter_chunks(text: str, *, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP, page: int | None = None, sequence_start: int = 0, char_offset: int = 0) -> Iterator[ExtractedChunk]:
+    """Split the complete text into bounded, overlapping windows. Result limits never limit source coverage."""
+    normalized = text
+    if size <= 0 or overlap < 0 or overlap >= size:
+        raise ValueError("chunk size must be positive and overlap smaller than size")
+    sequence = sequence_start
     position = 0
     length = len(normalized)
-    while position < length and len(chunks) < max_chunks:
+    while position < length:
         end = min(position + size, length)
         if end < length:
             window = normalized[position:end]
@@ -146,11 +175,16 @@ def chunk_text(text: str, *, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERL
                 end = position + cut + 1
         piece = normalized[position:end].strip()
         if piece:
-            chunks.append(ExtractedChunk(sequence_start + len(chunks), piece, char_offset + position, char_offset + end, page))
+            yield ExtractedChunk(sequence, piece, char_offset + position, char_offset + end, page)
+            sequence += 1
         if end >= length:
             break
         position = max(end - overlap, position + 1)
-    return chunks
+
+
+def chunk_text(text: str, **kwargs) -> list[ExtractedChunk]:
+    """Convenience for small callers; the extraction worker consumes iter_chunks directly."""
+    return list(iter_chunks(text, **kwargs))
 
 
 _TOKEN = re.compile(r"[0-9A-Za-z가-힣]+")
@@ -251,14 +285,14 @@ class LexicalMaterialRetriever:
             return [
                 MaterialHit(
                     chunk.id, chunk.extraction_id, chunk.sequence, chunk.page, excerpt(chunk.text, tokens),
-                    *score_text(chunk.text, tokens),
+                    *score_text((getattr(chunk, "context_text", None) or "") + " " + chunk.text, tokens),
                 )
                 for chunk in self._index.top_matches(extraction_ids, tokens, limit=bounded)
             ]
         # 색인이 없는 곳에서도 답은 나와야 한다. 같은 순위 규칙을 여기서 쓴다.
         scored: list[tuple[tuple[int, int], Any]] = []
         for chunk in self._repository.chunks_for(extraction_ids):
-            matched, occurrences = score_text(chunk.text, tokens)
+            matched, occurrences = score_text((getattr(chunk, "context_text", None) or "") + " " + chunk.text, tokens)
             if matched:
                 scored.append(((matched, occurrences), chunk))
         scored.sort(key=lambda item: (-item[0][0], -item[0][1], item[1].sequence))
@@ -284,12 +318,16 @@ class MaterialExtractionService:
         if claimed is None:
             return "skipped" if self._repository.is_terminal(job.extraction_id) else "contended"
         extraction, attachment = claimed
-        return ClaimedExtraction(extraction.id, int(extraction.attempt_count), attachment.name, attachment.content_type, attachment.source_ref)
+        return ClaimedExtraction(extraction.id, int(extraction.attempt_count), attachment.name, attachment.content_type,
+                                 attachment.source_ref, getattr(extraction, "integrity_ref", None), getattr(attachment, "source_kind", "file"))
 
     @staticmethod
     def extract(claimed: ClaimedExtraction, storage: Any, extractor: MaterialTextExtractor) -> ExtractionOutcome:
         try:
             data = storage.get(claimed.source_ref)
+            if claimed.integrity_ref is not None and f"sha256:{hashlib.sha256(data).hexdigest()}" != claimed.integrity_ref:
+                return ExtractionOutcome(status="failed", extractor=classify(claimed.name, claimed.content_type),
+                                         failure_reason="integrity_mismatch", coverage={"complete": False, "reason": "integrity_mismatch"})
             return extractor.extract(name=claimed.name, content_type=claimed.content_type, data=data)
         except Exception:  # noqa: BLE001 - the reason code is what leaves this boundary, never the exception text
             return ExtractionOutcome(status="failed", extractor=classify(claimed.name, claimed.content_type), failure_reason="extractor_error", transient=True)
@@ -302,17 +340,29 @@ class MaterialExtractionService:
         if outcome.transient and extraction.attempt_count < self._max_attempts:
             self._repository.release(extraction)
             return "retry"
-        if outcome.status == "completed":
+        if outcome.status in {"completed", "partial"}:
             self._repository.complete(extraction, outcome)
-            return "completed"
-        status = outcome.status if outcome.status in {"failed", "unsupported"} else "failed"
-        self._repository.fail(extraction, outcome.failure_reason or "extractor_error", status=status)
+            return outcome.status
+        status = outcome.status if outcome.status in {"failed", "unsupported", "too_large"} else "failed"
+        self._repository.fail(extraction, outcome.failure_reason or "extractor_error", status=status, outcome=outcome)
         return status
+
+
+def projection_failure(extraction: Any) -> str | None:
+    """Validate a published projection without changing its historical extraction record."""
+    if getattr(extraction, "parser_version", None) != PARSER_VERSION:
+        return "parser_upgrade_required"
+    coverage = getattr(extraction, "coverage", None)
+    expected = extraction.status == "completed"
+    if not isinstance(coverage, dict) or coverage.get("complete") is not expected:
+        return "projection_unverified"
+    return None
 
 
 def extraction_view(extraction: Any | None) -> dict[str, Any] | None:
     if extraction is None:
         return None
+    failure = projection_failure(extraction) if extraction.status in {"completed", "partial"} else None
     return {
         "extraction_id": str(extraction.id),
         "status": extraction.status,
@@ -322,7 +372,13 @@ def extraction_view(extraction: Any | None) -> dict[str, Any] | None:
         "chunk_count": int(extraction.chunk_count or 0),
         "char_count": int(extraction.char_count or 0),
         "page_count": extraction.page_count,
+        "warnings": list(getattr(extraction, "warnings", None) or []),
+        "coverage": getattr(extraction, "coverage", None),
+        "parser_version": getattr(extraction, "parser_version", None),
+        "integrity_ref": extraction.integrity_ref,
         "attempt_count": int(extraction.attempt_count or 0),
         "requested_at": extraction.requested_at.isoformat() if extraction.requested_at else None,
         "completed_at": extraction.completed_at.isoformat() if extraction.completed_at else None,
+        **({"status": "failed", "stored_status": extraction.status, "failure_reason": failure,
+            "failure_text": FAILURE_REASONS[failure], "reextraction_required": True} if failure else {}),
     }

@@ -4,8 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-# tasks/<task>/<file>, work_requests/<request>/comments/<file>, work_requests/<request>/evidence/<file>
-_SAFE_KEY = re.compile(r"^(?:tasks/[0-9a-f-]{36}|work_requests/[0-9a-f-]{36}/(?:comments|evidence))/[0-9a-f-]{36}$")
+# tasks/<task>/<file>, material_folders/<folder>/<file>, work_requests/<request>/{comments|evidence}/<file>
+_SAFE_KEY = re.compile(r"^(?:(?:tasks|material_folders)/[0-9a-f-]{36}|work_requests/[0-9a-f-]{36}/(?:comments|evidence))/[0-9a-f-]{36}$")
 
 
 class LocalDirectoryMaterialStorage:

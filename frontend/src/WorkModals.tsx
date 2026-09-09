@@ -771,8 +771,8 @@ export function TaskDetailDrawer({
   const detach = async (material: TaskMaterial) => {
     onError(null);
     try {
-      const detached = await detachTaskMaterial(task.task_id, material.material_id);
-      setMaterials((rows) => (rows ?? []).filter((item) => item.material_id !== material.material_id));
+      const detached = await detachTaskMaterial(task.task_id, material.binding_id);
+      setMaterials((rows) => (rows ?? []).filter((item) => item.binding_id !== material.binding_id));
       moved(detached.task_version);
       await settleVersion();
       onNotice?.(`'${material.name}'을 업무에서 뗐습니다. 기록은 남습니다.`);
@@ -850,7 +850,7 @@ export function TaskDetailDrawer({
         ) : (
           <ul className="material-list">
             {items.map((item) => (
-              <li key={item.material_id}>
+              <li key={item.binding_id}>
                 {item.source_kind === "resource_ref" ? (
                   /* It lives inside the product, so it opens inside the product — and only when it resolved. */
                   item.resource && onOpenTask ? (
@@ -997,6 +997,7 @@ export function TaskDetailDrawer({
                 <div className="chip-row">
                   {(materials ?? [])
                     .filter((item) => item.kind === "output")
+                    .filter((item, index, rows) => rows.findIndex((row) => row.material_id === item.material_id) === index)
                     .map((item) => {
                       const checked = report.outputs.includes(item.material_id);
                       return (

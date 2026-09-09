@@ -1,0 +1,1232 @@
+{
+  "profile": "scax-natural-routing-v2",
+  "live": true,
+  "model": "gpt-5.6-terra",
+  "service_tier": "fast",
+  "reasoning_effort": "low",
+  "fixture_kind": "synthetic_only",
+  "fixture": {
+    "task_id": "850a6bb5-f3ee-48d3-9503-52546ba91ef5",
+    "child_task_id": "8c52f55f-68d9-4654-a5e5-14a30be9ad52",
+    "request_id": "6693b882-4eec-4264-aaf2-27146816b83c",
+    "task_material": "75a94387-431b-44db-8f9c-bf43ba103486",
+    "task_binding": "51a246ea-23b7-497d-8a26-e9b86f83312b",
+    "personal_material": "04f92d9c-c444-4a55-8bfd-5a228afee32a",
+    "folder_id": "6411baf7-505e-4af5-8907-92f8686cc96b",
+    "meeting_id": "c1418cb5-e7c9-4693-8931-9e6519a9637d",
+    "meeting_material": "ebf9f7cf-d4a6-511f-9448-d70ec61149dc",
+    "raw_revision_id": "c4c44476-9355-408f-859d-38fceaf6585f"
+  },
+  "focus": [
+    "relation",
+    "meeting",
+    "precreation",
+    "independent"
+  ],
+  "confirmable_proposal": true,
+  "repeats": 3,
+  "results": [
+    {
+      "kind": "relation",
+      "question": "민아가 요청해서 내가 맡은 '노을 검토 1788669499950' 업무의 요청자, 담당자, 하위 업무와 연결 자료를 관계를 따라 확인해줘.",
+      "state": "completed",
+      "checks": {
+        "completed": true,
+        "first_tool": true,
+        "required_tools": true,
+        "within_call_budget": true,
+        "no_tool_error": true,
+        "expected_relationships": true,
+        "correct_numeric_title_anchor": true,
+        "canonical_task": true,
+        "no_malformed_id": true,
+        "no_unapproved_task_creation": true
+      },
+      "passed": true,
+      "tool_names": [
+        "graph_search",
+        "graph_neighbors",
+        "graph_neighbors",
+        "task_get",
+        "task_materials_list"
+      ],
+      "tool_error_count": 0,
+      "business_error_count": 0,
+      "malformed_id_count": 0,
+      "over_call_count": 0,
+      "recovered_after_error": false,
+      "queue_wait_ms": 12,
+      "run_ms": 25321,
+      "tool_latency_ms": 133,
+      "usage": {
+        "input_tokens": 90096,
+        "cached_input_tokens": 76544,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 680,
+        "reasoning_output_tokens": 106
+      },
+      "material_receipts": 0,
+      "graph_edges": 7,
+      "answer_resource_count": 2,
+      "answer_sha256": "80734a5b43a8bca9d191afbf135d8235f2fa8b0d3317e2ecd047d2b4229ca22d",
+      "observed_relations": [
+        {
+          "kind": "node",
+          "node_ref": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5",
+          "edge_kind": null,
+          "from_ref": null,
+          "to_ref": null
+        },
+        {
+          "kind": "node",
+          "node_ref": "work_request:6693b882-4eec-4264-aaf2-27146816b83c",
+          "edge_kind": null,
+          "from_ref": null,
+          "to_ref": null
+        },
+        {
+          "kind": "edge",
+          "node_ref": null,
+          "edge_kind": "holds",
+          "from_ref": "person:jiho",
+          "to_ref": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5"
+        },
+        {
+          "kind": "edge",
+          "node_ref": null,
+          "edge_kind": "produced",
+          "from_ref": "work_request:6693b882-4eec-4264-aaf2-27146816b83c",
+          "to_ref": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5"
+        },
+        {
+          "kind": "edge",
+          "node_ref": null,
+          "edge_kind": "parent_of",
+          "from_ref": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5",
+          "to_ref": "task:8c52f55f-68d9-4654-a5e5-14a30be9ad52"
+        },
+        {
+          "kind": "edge",
+          "node_ref": null,
+          "edge_kind": "has_material",
+          "from_ref": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5",
+          "to_ref": "material:51a246ea-23b7-497d-8a26-e9b86f83312b"
+        },
+        {
+          "kind": "edge",
+          "node_ref": null,
+          "edge_kind": "requested",
+          "from_ref": "person:mina",
+          "to_ref": "work_request:6693b882-4eec-4264-aaf2-27146816b83c"
+        },
+        {
+          "kind": "edge",
+          "node_ref": null,
+          "edge_kind": "asked_of",
+          "from_ref": "work_request:6693b882-4eec-4264-aaf2-27146816b83c",
+          "to_ref": "person:jiho"
+        },
+        {
+          "kind": "edge",
+          "node_ref": null,
+          "edge_kind": "produced",
+          "from_ref": "work_request:6693b882-4eec-4264-aaf2-27146816b83c",
+          "to_ref": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5"
+        }
+      ],
+      "answer_refs": [
+        {
+          "resource_type": "task",
+          "resource_id": "850a6bb5-f3ee-48d3-9503-52546ba91ef5"
+        },
+        {
+          "resource_type": "material",
+          "resource_id": "51a246ea-23b7-497d-8a26-e9b86f83312b"
+        }
+      ],
+      "trace": {
+        "calls": {
+          "item_2": {
+            "tool": "graph_search",
+            "arguments": {
+              "query": "노을 검토 1788669499950",
+              "limit": 20
+            },
+            "status": "completed"
+          },
+          "item_3": {
+            "tool": "graph_neighbors",
+            "arguments": {
+              "node": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5",
+              "limit": 50
+            },
+            "status": "completed"
+          },
+          "item_4": {
+            "tool": "graph_neighbors",
+            "arguments": {
+              "node": "work_request:6693b882-4eec-4264-aaf2-27146816b83c",
+              "limit": 50
+            },
+            "status": "completed"
+          },
+          "item_5": {
+            "tool": "task_get",
+            "arguments": {
+              "task_id": "850a6bb5-f3ee-48d3-9503-52546ba91ef5"
+            },
+            "status": "completed"
+          },
+          "item_6": {
+            "tool": "task_materials_list",
+            "arguments": {
+              "task_id": "850a6bb5-f3ee-48d3-9503-52546ba91ef5"
+            },
+            "status": "completed"
+          }
+        },
+        "checkpoint_reused": false,
+        "seed_refs": []
+      },
+      "repeat": 1
+    },
+    {
+      "kind": "independent",
+      "question": "가람 운영가이드에서 변경 승인을 받는 창구와 제출 기한을 알려줘.",
+      "state": "completed",
+      "checks": {
+        "completed": true,
+        "first_tool": true,
+        "required_tools": true,
+        "within_call_budget": true,
+        "no_tool_error": true,
+        "expected_receipt": true,
+        "canonical_answer_link": true,
+        "approval_owner_fact": true,
+        "submission_date_fact": true,
+        "no_malformed_id": true,
+        "no_unapproved_task_creation": true
+      },
+      "passed": true,
+      "tool_names": [
+        "material_search"
+      ],
+      "tool_error_count": 0,
+      "business_error_count": 0,
+      "malformed_id_count": 0,
+      "over_call_count": 0,
+      "recovered_after_error": false,
+      "queue_wait_ms": 9,
+      "run_ms": 12523,
+      "tool_latency_ms": 920,
+      "usage": {
+        "input_tokens": 52327,
+        "cached_input_tokens": 45312,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 207,
+        "reasoning_output_tokens": 41
+      },
+      "material_receipts": 1,
+      "graph_edges": 0,
+      "answer_resource_count": 1,
+      "answer_sha256": "0bd63402abb30cb91372306f2d11e44b3d1be08778e868532317463bd680d907",
+      "observed_relations": [],
+      "answer_refs": [
+        {
+          "resource_type": "material",
+          "resource_id": "04f92d9c-c444-4a55-8bfd-5a228afee32a"
+        }
+      ],
+      "trace": {
+        "calls": {
+          "item_2": {
+            "tool": "material_search",
+            "arguments": {
+              "query": "가람 운영가이드 변경 승인 제출 기한",
+              "limit": 10
+            },
+            "status": "completed"
+          }
+        },
+        "checkpoint_reused": false,
+        "seed_refs": []
+      },
+      "repeat": 1
+    },
+    {
+      "kind": "meeting",
+      "question": "새봄 일정 회의에서 확정한 출시 날짜와 담당자를 찾아줘.",
+      "state": "completed",
+      "checks": {
+        "completed": true,
+        "first_tool": true,
+        "required_tools": true,
+        "within_call_budget": true,
+        "no_tool_error": true,
+        "expected_receipt": true,
+        "canonical_answer_link": true,
+        "meeting_segment_locator": true,
+        "launch_date_fact": true,
+        "launch_owner_fact": true,
+        "no_malformed_id": true,
+        "no_unapproved_task_creation": true
+      },
+      "passed": true,
+      "tool_names": [
+        "material_search",
+        "meeting_get"
+      ],
+      "tool_error_count": 0,
+      "business_error_count": 0,
+      "malformed_id_count": 0,
+      "over_call_count": 0,
+      "recovered_after_error": false,
+      "queue_wait_ms": 7,
+      "run_ms": 14209,
+      "tool_latency_ms": 919,
+      "usage": {
+        "input_tokens": 91677,
+        "cached_input_tokens": 73728,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 348,
+        "reasoning_output_tokens": 68
+      },
+      "material_receipts": 1,
+      "graph_edges": 0,
+      "answer_resource_count": 2,
+      "answer_sha256": "ee34c609679cbdc0e423579d97be5f1326cfba3d3d924d26c9210900fd0c2ad0",
+      "observed_relations": [],
+      "answer_refs": [
+        {
+          "resource_type": "material",
+          "resource_id": "ebf9f7cf-d4a6-511f-9448-d70ec61149dc"
+        },
+        {
+          "resource_type": "meeting",
+          "resource_id": "c1418cb5-e7c9-4693-8931-9e6519a9637d"
+        }
+      ],
+      "trace": {
+        "calls": {
+          "item_2": {
+            "tool": "material_search",
+            "arguments": {
+              "query": "새봄 일정 회의",
+              "resource_types": [
+                "meeting"
+              ],
+              "limit": 20
+            },
+            "status": "completed"
+          },
+          "item_3": {
+            "tool": "meeting_get",
+            "arguments": {
+              "meeting_id": "c1418cb5-e7c9-4693-8931-9e6519a9637d"
+            },
+            "status": "completed"
+          }
+        },
+        "checkpoint_reused": false,
+        "seed_refs": []
+      },
+      "repeat": 1
+    },
+    {
+      "kind": "precreation",
+      "question": "노을 견적서에서 납기일을 먼저 확인하고, 그 근거로 내가 승인할 수 있는 납품 검토 업무 생성안을 준비해줘.",
+      "state": "completed",
+      "checks": {
+        "completed": true,
+        "first_tool": true,
+        "required_tools": true,
+        "within_call_budget": true,
+        "no_tool_error": true,
+        "expected_receipt": true,
+        "canonical_answer_link": true,
+        "pending_proposal_with_evidence": true,
+        "no_malformed_id": true,
+        "no_unapproved_task_creation": true
+      },
+      "passed": true,
+      "tool_names": [
+        "material_search",
+        "task_create_self"
+      ],
+      "tool_error_count": 0,
+      "business_error_count": 0,
+      "malformed_id_count": 0,
+      "over_call_count": 0,
+      "recovered_after_error": false,
+      "queue_wait_ms": 8,
+      "run_ms": 19729,
+      "tool_latency_ms": 920,
+      "usage": {
+        "input_tokens": 78780,
+        "cached_input_tokens": 66560,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 497,
+        "reasoning_output_tokens": 64
+      },
+      "material_receipts": 2,
+      "graph_edges": 0,
+      "answer_resource_count": 2,
+      "answer_sha256": "e24462e8382f3a0b8726eef62942b1533e8b19558df2442583a4b3b964063e96",
+      "observed_relations": [],
+      "answer_refs": [
+        {
+          "resource_type": "material",
+          "resource_id": "ebf9f7cf-d4a6-511f-9448-d70ec61149dc"
+        },
+        {
+          "resource_type": "material",
+          "resource_id": "75a94387-431b-44db-8f9c-bf43ba103486"
+        }
+      ],
+      "trace": {
+        "calls": {
+          "item_2": {
+            "tool": "material_search",
+            "arguments": {
+              "query": "노을 견적서 납기일",
+              "limit": 10
+            },
+            "status": "completed"
+          },
+          "item_3": {
+            "tool": "task_create_self",
+            "arguments": {
+              "title": "노을 납품 검토",
+              "checklist": [
+                "견적서 기준 납기일(2026-09-30) 확인",
+                "공급사 햇살상사의 납품 일정 및 이행 가능 여부 검토",
+                "검토 결과를 정리하고 납품 승인 여부 결정"
+              ],
+              "reference_task_ids": [
+                "850a6bb5-f3ee-48d3-9503-52546ba91ef5"
+              ]
+            },
+            "status": "completed"
+          }
+        },
+        "checkpoint_reused": false,
+        "seed_refs": []
+      },
+      "repeat": 1
+    },
+    {
+      "kind": "relation",
+      "question": "민아가 요청해서 내가 맡은 '노을 검토 1788669499950' 업무의 요청자, 담당자, 하위 업무와 연결 자료를 관계를 따라 확인해줘.",
+      "state": "completed",
+      "checks": {
+        "completed": true,
+        "first_tool": true,
+        "required_tools": true,
+        "within_call_budget": true,
+        "no_tool_error": true,
+        "expected_relationships": false,
+        "correct_numeric_title_anchor": true,
+        "canonical_task": true,
+        "no_malformed_id": true,
+        "no_unapproved_task_creation": true
+      },
+      "passed": false,
+      "tool_names": [
+        "graph_search",
+        "graph_neighbors",
+        "task_get",
+        "task_materials_list"
+      ],
+      "tool_error_count": 0,
+      "business_error_count": 0,
+      "malformed_id_count": 0,
+      "over_call_count": 0,
+      "recovered_after_error": false,
+      "queue_wait_ms": 6,
+      "run_ms": 22526,
+      "tool_latency_ms": 117,
+      "usage": {
+        "input_tokens": 70148,
+        "cached_input_tokens": 62464,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 747,
+        "reasoning_output_tokens": 170
+      },
+      "material_receipts": 0,
+      "graph_edges": 4,
+      "answer_resource_count": 2,
+      "answer_sha256": "3f6ee54a9b2a9f557efc9575328e80da3a6b99ba69e1e6c5465d7d21019e3214",
+      "observed_relations": [
+        {
+          "kind": "node",
+          "node_ref": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5",
+          "edge_kind": null,
+          "from_ref": null,
+          "to_ref": null
+        },
+        {
+          "kind": "node",
+          "node_ref": "work_request:6693b882-4eec-4264-aaf2-27146816b83c",
+          "edge_kind": null,
+          "from_ref": null,
+          "to_ref": null
+        },
+        {
+          "kind": "edge",
+          "node_ref": null,
+          "edge_kind": "holds",
+          "from_ref": "person:jiho",
+          "to_ref": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5"
+        },
+        {
+          "kind": "edge",
+          "node_ref": null,
+          "edge_kind": "produced",
+          "from_ref": "work_request:6693b882-4eec-4264-aaf2-27146816b83c",
+          "to_ref": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5"
+        },
+        {
+          "kind": "edge",
+          "node_ref": null,
+          "edge_kind": "parent_of",
+          "from_ref": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5",
+          "to_ref": "task:8c52f55f-68d9-4654-a5e5-14a30be9ad52"
+        },
+        {
+          "kind": "edge",
+          "node_ref": null,
+          "edge_kind": "has_material",
+          "from_ref": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5",
+          "to_ref": "material:51a246ea-23b7-497d-8a26-e9b86f83312b"
+        }
+      ],
+      "answer_refs": [
+        {
+          "resource_type": "task",
+          "resource_id": "850a6bb5-f3ee-48d3-9503-52546ba91ef5"
+        },
+        {
+          "resource_type": "material",
+          "resource_id": "51a246ea-23b7-497d-8a26-e9b86f83312b"
+        }
+      ],
+      "trace": {
+        "calls": {
+          "item_2": {
+            "tool": "graph_search",
+            "arguments": {
+              "query": "노을 검토 1788669499950",
+              "limit": 20
+            },
+            "status": "completed"
+          },
+          "item_3": {
+            "tool": "graph_neighbors",
+            "arguments": {
+              "node": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5",
+              "limit": 50
+            },
+            "status": "completed"
+          },
+          "item_4": {
+            "tool": "task_get",
+            "arguments": {
+              "task_id": "850a6bb5-f3ee-48d3-9503-52546ba91ef5"
+            },
+            "status": "completed"
+          },
+          "item_5": {
+            "tool": "task_materials_list",
+            "arguments": {
+              "task_id": "850a6bb5-f3ee-48d3-9503-52546ba91ef5"
+            },
+            "status": "completed"
+          }
+        },
+        "checkpoint_reused": false,
+        "seed_refs": []
+      },
+      "repeat": 2
+    },
+    {
+      "kind": "independent",
+      "question": "가람 운영가이드에서 변경 승인을 받는 창구와 제출 기한을 알려줘.",
+      "state": "completed",
+      "checks": {
+        "completed": true,
+        "first_tool": true,
+        "required_tools": true,
+        "within_call_budget": true,
+        "no_tool_error": true,
+        "expected_receipt": true,
+        "canonical_answer_link": true,
+        "approval_owner_fact": true,
+        "submission_date_fact": true,
+        "no_malformed_id": true,
+        "no_unapproved_task_creation": true
+      },
+      "passed": true,
+      "tool_names": [
+        "material_search"
+      ],
+      "tool_error_count": 0,
+      "business_error_count": 0,
+      "malformed_id_count": 0,
+      "over_call_count": 0,
+      "recovered_after_error": false,
+      "queue_wait_ms": 8,
+      "run_ms": 11869,
+      "tool_latency_ms": 890,
+      "usage": {
+        "input_tokens": 69952,
+        "cached_input_tokens": 54528,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 206,
+        "reasoning_output_tokens": 31
+      },
+      "material_receipts": 1,
+      "graph_edges": 0,
+      "answer_resource_count": 1,
+      "answer_sha256": "75b3fff4e718ffd62985f7ac033d5a7df65dd7d7891cdfdb58404bfbc8523279",
+      "observed_relations": [],
+      "answer_refs": [
+        {
+          "resource_type": "material",
+          "resource_id": "04f92d9c-c444-4a55-8bfd-5a228afee32a"
+        }
+      ],
+      "trace": {
+        "calls": {
+          "item_2": {
+            "tool": "material_search",
+            "arguments": {
+              "query": "가람 운영가이드 변경 승인 제출 기한"
+            },
+            "status": "completed"
+          }
+        },
+        "checkpoint_reused": false,
+        "seed_refs": []
+      },
+      "repeat": 2
+    },
+    {
+      "kind": "meeting",
+      "question": "새봄 일정 회의에서 확정한 출시 날짜와 담당자를 찾아줘.",
+      "state": "completed",
+      "checks": {
+        "completed": true,
+        "first_tool": true,
+        "required_tools": true,
+        "within_call_budget": true,
+        "no_tool_error": true,
+        "expected_receipt": true,
+        "canonical_answer_link": true,
+        "meeting_segment_locator": true,
+        "launch_date_fact": true,
+        "launch_owner_fact": true,
+        "no_malformed_id": true,
+        "no_unapproved_task_creation": true
+      },
+      "passed": true,
+      "tool_names": [
+        "material_search"
+      ],
+      "tool_error_count": 0,
+      "business_error_count": 0,
+      "malformed_id_count": 0,
+      "over_call_count": 0,
+      "recovered_after_error": false,
+      "queue_wait_ms": 8,
+      "run_ms": 12892,
+      "tool_latency_ms": 882,
+      "usage": {
+        "input_tokens": 61075,
+        "cached_input_tokens": 45312,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 266,
+        "reasoning_output_tokens": 36
+      },
+      "material_receipts": 1,
+      "graph_edges": 0,
+      "answer_resource_count": 1,
+      "answer_sha256": "8569e72e618bafc0306353a5d4a144387790dc7d5912fc5f94f73ddf4b604b88",
+      "observed_relations": [],
+      "answer_refs": [
+        {
+          "resource_type": "material",
+          "resource_id": "ebf9f7cf-d4a6-511f-9448-d70ec61149dc"
+        }
+      ],
+      "trace": {
+        "calls": {
+          "item_2": {
+            "tool": "material_search",
+            "arguments": {
+              "query": "새봄 일정 회의 출시 날짜 담당자 확정",
+              "limit": 20
+            },
+            "status": "completed"
+          }
+        },
+        "checkpoint_reused": false,
+        "seed_refs": []
+      },
+      "repeat": 2
+    },
+    {
+      "kind": "precreation",
+      "question": "노을 견적서에서 납기일을 먼저 확인하고, 그 근거로 내가 승인할 수 있는 납품 검토 업무 생성안을 준비해줘.",
+      "state": "completed",
+      "checks": {
+        "completed": true,
+        "first_tool": true,
+        "required_tools": true,
+        "within_call_budget": true,
+        "no_tool_error": true,
+        "expected_receipt": true,
+        "canonical_answer_link": true,
+        "pending_proposal_with_evidence": true,
+        "no_malformed_id": true,
+        "no_unapproved_task_creation": true
+      },
+      "passed": true,
+      "tool_names": [
+        "material_search",
+        "task_create_self"
+      ],
+      "tool_error_count": 0,
+      "business_error_count": 0,
+      "malformed_id_count": 0,
+      "over_call_count": 0,
+      "recovered_after_error": false,
+      "queue_wait_ms": 8,
+      "run_ms": 17910,
+      "tool_latency_ms": 922,
+      "usage": {
+        "input_tokens": 70259,
+        "cached_input_tokens": 63488,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 492,
+        "reasoning_output_tokens": 68
+      },
+      "material_receipts": 1,
+      "graph_edges": 0,
+      "answer_resource_count": 1,
+      "answer_sha256": "daa17a09ba843b27f49484b9422cf4b83424acdf5febcc5c90703a21ea2794c4",
+      "observed_relations": [],
+      "answer_refs": [
+        {
+          "resource_type": "material",
+          "resource_id": "75a94387-431b-44db-8f9c-bf43ba103486"
+        }
+      ],
+      "trace": {
+        "calls": {
+          "item_2": {
+            "tool": "material_search",
+            "arguments": {
+              "query": "노을 견적서",
+              "limit": 10
+            },
+            "status": "completed"
+          },
+          "item_3": {
+            "tool": "task_create_self",
+            "arguments": {
+              "title": "노을 납품 검토",
+              "checklist": [
+                "노을 견적서의 납기일(2026-09-30) 확인",
+                "햇살상사 납품 일정 및 검토 사항 확인",
+                "납품 검토 결과 승인"
+              ]
+            },
+            "status": "completed"
+          }
+        },
+        "checkpoint_reused": false,
+        "seed_refs": []
+      },
+      "repeat": 2
+    },
+    {
+      "kind": "relation",
+      "question": "민아가 요청해서 내가 맡은 '노을 검토 1788669499950' 업무의 요청자, 담당자, 하위 업무와 연결 자료를 관계를 따라 확인해줘.",
+      "state": "completed",
+      "checks": {
+        "completed": true,
+        "first_tool": true,
+        "required_tools": true,
+        "within_call_budget": true,
+        "no_tool_error": true,
+        "expected_relationships": true,
+        "correct_numeric_title_anchor": true,
+        "canonical_task": true,
+        "no_malformed_id": true,
+        "no_unapproved_task_creation": true
+      },
+      "passed": true,
+      "tool_names": [
+        "graph_search",
+        "graph_neighbors",
+        "graph_neighbors",
+        "task_get",
+        "task_subtask_list",
+        "task_materials_list"
+      ],
+      "tool_error_count": 0,
+      "business_error_count": 0,
+      "malformed_id_count": 0,
+      "over_call_count": 0,
+      "recovered_after_error": false,
+      "queue_wait_ms": 8,
+      "run_ms": 25488,
+      "tool_latency_ms": 137,
+      "usage": {
+        "input_tokens": 117194,
+        "cached_input_tokens": 100096,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 775,
+        "reasoning_output_tokens": 159
+      },
+      "material_receipts": 0,
+      "graph_edges": 7,
+      "answer_resource_count": 2,
+      "answer_sha256": "c46930897cb5b149cbd5155daaac0fc2a0896152e13abe873ff22d5030e874a8",
+      "observed_relations": [
+        {
+          "kind": "node",
+          "node_ref": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5",
+          "edge_kind": null,
+          "from_ref": null,
+          "to_ref": null
+        },
+        {
+          "kind": "node",
+          "node_ref": "work_request:6693b882-4eec-4264-aaf2-27146816b83c",
+          "edge_kind": null,
+          "from_ref": null,
+          "to_ref": null
+        },
+        {
+          "kind": "edge",
+          "node_ref": null,
+          "edge_kind": "holds",
+          "from_ref": "person:jiho",
+          "to_ref": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5"
+        },
+        {
+          "kind": "edge",
+          "node_ref": null,
+          "edge_kind": "produced",
+          "from_ref": "work_request:6693b882-4eec-4264-aaf2-27146816b83c",
+          "to_ref": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5"
+        },
+        {
+          "kind": "edge",
+          "node_ref": null,
+          "edge_kind": "parent_of",
+          "from_ref": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5",
+          "to_ref": "task:8c52f55f-68d9-4654-a5e5-14a30be9ad52"
+        },
+        {
+          "kind": "edge",
+          "node_ref": null,
+          "edge_kind": "has_material",
+          "from_ref": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5",
+          "to_ref": "material:51a246ea-23b7-497d-8a26-e9b86f83312b"
+        },
+        {
+          "kind": "edge",
+          "node_ref": null,
+          "edge_kind": "requested",
+          "from_ref": "person:mina",
+          "to_ref": "work_request:6693b882-4eec-4264-aaf2-27146816b83c"
+        },
+        {
+          "kind": "edge",
+          "node_ref": null,
+          "edge_kind": "asked_of",
+          "from_ref": "work_request:6693b882-4eec-4264-aaf2-27146816b83c",
+          "to_ref": "person:jiho"
+        },
+        {
+          "kind": "edge",
+          "node_ref": null,
+          "edge_kind": "produced",
+          "from_ref": "work_request:6693b882-4eec-4264-aaf2-27146816b83c",
+          "to_ref": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5"
+        }
+      ],
+      "answer_refs": [
+        {
+          "resource_type": "task",
+          "resource_id": "850a6bb5-f3ee-48d3-9503-52546ba91ef5"
+        },
+        {
+          "resource_type": "material",
+          "resource_id": "51a246ea-23b7-497d-8a26-e9b86f83312b"
+        }
+      ],
+      "trace": {
+        "calls": {
+          "item_2": {
+            "tool": "graph_search",
+            "arguments": {
+              "query": "노을 검토 1788669499950",
+              "limit": 20
+            },
+            "status": "completed"
+          },
+          "item_3": {
+            "tool": "graph_neighbors",
+            "arguments": {
+              "node": "task:850a6bb5-f3ee-48d3-9503-52546ba91ef5",
+              "limit": 50
+            },
+            "status": "completed"
+          },
+          "item_4": {
+            "tool": "graph_neighbors",
+            "arguments": {
+              "node": "work_request:6693b882-4eec-4264-aaf2-27146816b83c",
+              "limit": 50
+            },
+            "status": "completed"
+          },
+          "item_5": {
+            "tool": "task_get",
+            "arguments": {
+              "task_id": "850a6bb5-f3ee-48d3-9503-52546ba91ef5"
+            },
+            "status": "completed"
+          },
+          "item_6": {
+            "tool": "task_subtask_list",
+            "arguments": {
+              "task_id": "850a6bb5-f3ee-48d3-9503-52546ba91ef5"
+            },
+            "status": "completed"
+          },
+          "item_7": {
+            "tool": "task_materials_list",
+            "arguments": {
+              "task_id": "850a6bb5-f3ee-48d3-9503-52546ba91ef5"
+            },
+            "status": "completed"
+          }
+        },
+        "checkpoint_reused": false,
+        "seed_refs": []
+      },
+      "repeat": 3
+    },
+    {
+      "kind": "independent",
+      "question": "가람 운영가이드에서 변경 승인을 받는 창구와 제출 기한을 알려줘.",
+      "state": "completed",
+      "checks": {
+        "completed": true,
+        "first_tool": true,
+        "required_tools": true,
+        "within_call_budget": true,
+        "no_tool_error": true,
+        "expected_receipt": true,
+        "canonical_answer_link": true,
+        "approval_owner_fact": true,
+        "submission_date_fact": true,
+        "no_malformed_id": true,
+        "no_unapproved_task_creation": true
+      },
+      "passed": true,
+      "tool_names": [
+        "material_search"
+      ],
+      "tool_error_count": 0,
+      "business_error_count": 0,
+      "malformed_id_count": 0,
+      "over_call_count": 0,
+      "recovered_after_error": false,
+      "queue_wait_ms": 8,
+      "run_ms": 12273,
+      "tool_latency_ms": 894,
+      "usage": {
+        "input_tokens": 65335,
+        "cached_input_tokens": 52480,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 202,
+        "reasoning_output_tokens": 22
+      },
+      "material_receipts": 1,
+      "graph_edges": 0,
+      "answer_resource_count": 1,
+      "answer_sha256": "d567783f8f8af68fd72563ce2132e7fd3cacdf030b90b9b9d5c092d3c0a8a2bc",
+      "observed_relations": [],
+      "answer_refs": [
+        {
+          "resource_type": "material",
+          "resource_id": "04f92d9c-c444-4a55-8bfd-5a228afee32a"
+        }
+      ],
+      "trace": {
+        "calls": {
+          "item_2": {
+            "tool": "material_search",
+            "arguments": {
+              "query": "가람 운영가이드 변경 승인 제출 기한",
+              "limit": 10
+            },
+            "status": "completed"
+          }
+        },
+        "checkpoint_reused": false,
+        "seed_refs": []
+      },
+      "repeat": 3
+    },
+    {
+      "kind": "meeting",
+      "question": "새봄 일정 회의에서 확정한 출시 날짜와 담당자를 찾아줘.",
+      "state": "completed",
+      "checks": {
+        "completed": true,
+        "first_tool": true,
+        "required_tools": true,
+        "within_call_budget": true,
+        "no_tool_error": true,
+        "expected_receipt": true,
+        "canonical_answer_link": true,
+        "meeting_segment_locator": true,
+        "launch_date_fact": true,
+        "launch_owner_fact": true,
+        "no_malformed_id": true,
+        "no_unapproved_task_creation": true
+      },
+      "passed": true,
+      "tool_names": [
+        "material_search",
+        "meeting_get"
+      ],
+      "tool_error_count": 0,
+      "business_error_count": 0,
+      "malformed_id_count": 0,
+      "over_call_count": 0,
+      "recovered_after_error": false,
+      "queue_wait_ms": 8,
+      "run_ms": 18973,
+      "tool_latency_ms": 933,
+      "usage": {
+        "input_tokens": 92437,
+        "cached_input_tokens": 77824,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 349,
+        "reasoning_output_tokens": 50
+      },
+      "material_receipts": 1,
+      "graph_edges": 0,
+      "answer_resource_count": 2,
+      "answer_sha256": "a4e4354c999382550eb6e7c667354240517e13e06f21b713461b351861e920d0",
+      "observed_relations": [],
+      "answer_refs": [
+        {
+          "resource_type": "material",
+          "resource_id": "ebf9f7cf-d4a6-511f-9448-d70ec61149dc"
+        },
+        {
+          "resource_type": "meeting",
+          "resource_id": "c1418cb5-e7c9-4693-8931-9e6519a9637d"
+        }
+      ],
+      "trace": {
+        "calls": {
+          "item_2": {
+            "tool": "material_search",
+            "arguments": {
+              "query": "새봄 일정",
+              "resource_types": [
+                "meeting"
+              ],
+              "limit": 20
+            },
+            "status": "completed"
+          },
+          "item_3": {
+            "tool": "meeting_get",
+            "arguments": {
+              "meeting_id": "c1418cb5-e7c9-4693-8931-9e6519a9637d"
+            },
+            "status": "completed"
+          }
+        },
+        "checkpoint_reused": false,
+        "seed_refs": []
+      },
+      "repeat": 3
+    },
+    {
+      "kind": "precreation",
+      "question": "노을 견적서에서 납기일을 먼저 확인하고, 그 근거로 내가 승인할 수 있는 납품 검토 업무 생성안을 준비해줘.",
+      "state": "completed",
+      "checks": {
+        "completed": true,
+        "first_tool": true,
+        "required_tools": true,
+        "within_call_budget": true,
+        "no_tool_error": true,
+        "expected_receipt": true,
+        "canonical_answer_link": true,
+        "pending_proposal_with_evidence": true,
+        "no_malformed_id": true,
+        "no_unapproved_task_creation": true
+      },
+      "passed": true,
+      "tool_names": [
+        "material_search",
+        "task_create_self"
+      ],
+      "tool_error_count": 0,
+      "business_error_count": 0,
+      "malformed_id_count": 0,
+      "over_call_count": 0,
+      "recovered_after_error": false,
+      "queue_wait_ms": 8,
+      "run_ms": 18367,
+      "tool_latency_ms": 941,
+      "usage": {
+        "input_tokens": 78580,
+        "cached_input_tokens": 66560,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 428,
+        "reasoning_output_tokens": 34
+      },
+      "material_receipts": 2,
+      "graph_edges": 0,
+      "answer_resource_count": 2,
+      "answer_sha256": "45778424b5ec3c0037c7804370d2a0ad1716b8c464b1bf09948cc1bc4b45b2ce",
+      "observed_relations": [],
+      "answer_refs": [
+        {
+          "resource_type": "material",
+          "resource_id": "ebf9f7cf-d4a6-511f-9448-d70ec61149dc"
+        },
+        {
+          "resource_type": "material",
+          "resource_id": "75a94387-431b-44db-8f9c-bf43ba103486"
+        }
+      ],
+      "trace": {
+        "calls": {
+          "item_2": {
+            "tool": "material_search",
+            "arguments": {
+              "query": "노을 견적서 납기일",
+              "limit": 10
+            },
+            "status": "completed"
+          },
+          "item_3": {
+            "tool": "task_create_self",
+            "arguments": {
+              "title": "노을 납품 검토",
+              "checklist": [
+                "노을 견적서의 납기일(2026-09-30) 확인",
+                "납품 일정 및 준비 사항 검토",
+                "검토 결과 승인 여부 결정"
+              ]
+            },
+            "status": "completed"
+          }
+        },
+        "checkpoint_reused": false,
+        "seed_refs": []
+      },
+      "repeat": 3
+    },
+    {
+      "kind": "revoked_followup",
+      "question": "그 가람 운영가이드의 승인 창구와 제출 기한을 다시 확인해줘.",
+      "state": "completed",
+      "checks": {
+        "completed": true,
+        "first_tool": true,
+        "required_tools": true,
+        "within_call_budget": true,
+        "no_tool_error": true,
+        "checkpoint_reset": true,
+        "revoked_receipt_absent": true,
+        "revoked_seed_absent": true,
+        "old_fact_not_replayed": true,
+        "no_malformed_id": true,
+        "no_unapproved_task_creation": true
+      },
+      "passed": true,
+      "tool_names": [
+        "material_search",
+        "material_search",
+        "material_search"
+      ],
+      "tool_error_count": 0,
+      "business_error_count": 0,
+      "malformed_id_count": 0,
+      "over_call_count": 0,
+      "recovered_after_error": false,
+      "queue_wait_ms": 8,
+      "run_ms": 20872,
+      "tool_latency_ms": 902,
+      "usage": {
+        "input_tokens": 116388,
+        "cached_input_tokens": 102144,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 365,
+        "reasoning_output_tokens": 61
+      },
+      "material_receipts": 0,
+      "graph_edges": 0,
+      "answer_resource_count": 0,
+      "answer_sha256": "6378e883c86f08434dcad92a841e83f2c89971c9d63f8ad33881aa08e5d32057",
+      "observed_relations": [],
+      "answer_refs": [],
+      "trace": {
+        "calls": {
+          "item_2": {
+            "tool": "material_search",
+            "arguments": {
+              "query": "가람 운영가이드 승인 창구 제출 기한",
+              "limit": 10
+            },
+            "status": "completed"
+          },
+          "item_3": {
+            "tool": "material_search",
+            "arguments": {
+              "query": "가람",
+              "limit": 10
+            },
+            "status": "completed"
+          },
+          "item_4": {
+            "tool": "material_search",
+            "arguments": {
+              "query": "승인 제출 마감",
+              "limit": 10
+            },
+            "status": "completed"
+          }
+        },
+        "checkpoint_reused": false,
+        "seed_refs": []
+      }
+    }
+  ],
+  "source_sha256": {
+    "scripts/search_routing_live_profile.py": "9918990307bba27fa3add4708b722a5cd5ae9f00cb4da99326e1cc5022c6aa51",
+    "src/ax_workspace/platform/codex_cli.py": "5b5181dbd5b22a27a26ef949e4926a43aebbf006a8589e879e6541836b06c2ee",
+    "src/ax_workspace/entrypoints/mcp.py": "d2265bc74e94046721647ee5dd18d0e8d037c192921eb2ec9b998d473a160262",
+    "src/ax_workspace/bootstrap/application.py": "d5909d1aecee5565a3ac0030b64718002b012ee9d60be9a1fe1f0216a8e8d2aa"
+  },
+  "cli_version": "codex-cli 0.153.4",
+  "temporary_data_removed": true,
+  "evaluation_date": "2026-09-09",
+  "source_ref": "743fa94a77532d0669a027563d1e92afff89cd3b",
+  "source_hashes_unchanged_after_run": true
+}

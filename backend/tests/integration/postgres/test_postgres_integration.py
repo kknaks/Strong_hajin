@@ -1120,7 +1120,7 @@ def test_material_upload_enqueues_in_the_same_transaction_and_the_worker_indexes
     with sessions() as session:
         assert len(session.scalars(select(MaterialChunkRecord)).all()) == chunk_count
         assert _queue_count(session, JOB_KIND_MATERIAL_EXTRACTION) == 0
-    search = client.get(f"/api/tasks/{task['task_id']}/materials/search", headers={"X-Demo-Persona": "mina"}, params={"q": "공급사"}).json()
+    search = client.get('/api/materials/search', headers={'X-Demo-Persona': 'mina'}, params={'q': '공급사', 'resource_type': 'task', 'resource_id': task['task_id']}).json()
     assert {hit["name"] for hit in search["results"]} == {"견적.md"}
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Identity, Index, Integer, JSON, String, Text, Uuid, UniqueConstraint, create_engine, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Identity, Index, Integer, JSON, String, Text, Uuid, UniqueConstraint, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 
@@ -1058,6 +1058,24 @@ class EvidenceRecord(Base):
     adopted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class MaterialFolderRecord(Base):
+    """Explicit owner for independent files; no ownership is inferred from Attachment.uploaded_by."""
+
+    __tablename__ = "material_folders"
+    __table_args__ = (
+        CheckConstraint("(kind = 'personal' AND owner_member_id IS NOT NULL AND organization_id IS NULL) OR "
+                        "(kind = 'team' AND owner_member_id IS NULL AND organization_id IS NOT NULL)", name="ck_material_folder_owner"),
+    )
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    owner_member_id: Mapped[str | None] = mapped_column(ForeignKey("members.id"), index=True)
+    organization_id: Mapped[str | None] = mapped_column(ForeignKey("organization_units.id"), index=True)
+    created_by: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class MaterialExtractionRecord(Base):
     """Derived projection of one Attachment version: extraction lifecycle (queued/running/completed/failed/unsupported)."""
 
@@ -1081,6 +1099,8 @@ class MaterialExtractionRecord(Base):
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     char_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     page_count: Mapped[int | None] = mapped_column(Integer)
+    warnings: Mapped[list | None] = mapped_column(JSON)
+    coverage: Mapped[dict | None] = mapped_column(JSON)
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -1109,6 +1129,9 @@ class MaterialBlockRecord(Base):
     slide: Mapped[int | None] = mapped_column(Integer)
     row: Mapped[int | None] = mapped_column(Integer)
 
+    source_locator: Mapped[dict | None] = mapped_column(JSON)
+    header_context: Mapped[dict | None] = mapped_column(JSON)
+
 
 class MaterialChunkRecord(Base):
     """Bounded searchable span of extracted text; identity = (extraction, sequence)."""
@@ -1136,6 +1159,8 @@ class MaterialChunkRecord(Base):
     #: 찾기 위한 형태 — 본문을 문서와 질문에 같은 규칙으로 잘라 이어 붙인 낱말들. 원문은 위의 `text`가 갖고
     #: 여기에는 사람이 읽을 것이 없다. 데이터베이스가 이 열을 색인한다.
     search_text: Mapped[str | None] = mapped_column(Text)
+    #: 표의 첫 non-empty 행에서 얻은 bounded context. 원문 청크와 분리해 재색인에도 보존한다.
+    context_text: Mapped[str | None] = mapped_column(Text)
     #: 어떤 분석 규칙으로 만들었는지. 규칙이 바뀌면 이 값이 달라지고 그 색인은 다시 만들어야 한다.
     analyzer_version: Mapped[str | None] = mapped_column(String(40))
 
@@ -1164,6 +1189,8 @@ class ConversationGraphReceiptRecord(Base):
     from_title: Mapped[str | None] = mapped_column(String(300))
     to_ref: Mapped[str | None] = mapped_column(String(120))
     to_title: Mapped[str | None] = mapped_column(String(300))
+    source_contexts: Mapped[list | None] = mapped_column(JSON)
+    integrity_ref: Mapped[str | None] = mapped_column(String(80))
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -1190,31 +1217,35 @@ class ConversationAnswerResourceRecord(Base):
     resource_id: Mapped[str] = mapped_column(String(120), nullable=False)
     #: The version the tool saw, when that resource has one. It says what the answer stood on, not what is true now.
     resource_version: Mapped[int | None] = mapped_column(Integer)
-    #: The task a material was read through, so the reference can be reopened where it is actually bound.
-    parent_resource_id: Mapped[str | None] = mapped_column(String(120))
+    #: Material metadata actually observed by this read; new bindings cannot restore a revoked observation.
+    source_contexts: Mapped[list | None] = mapped_column(JSON)
+    integrity_ref: Mapped[str | None] = mapped_column(String(80))
     #: 원문의 어디였는지 — 쪽, 절, 구간처럼 그 자료가 스스로 부르는 자리다. 도구가 말해 준 만큼만 담고,
     #: 원문이나 발췌는 여기 복제하지 않는다. 없을 수 있으며 없는 것이 정상이다.
     source_locator: Mapped[dict | None] = mapped_column(JSON)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class ConversationMaterialEvidenceRecord(Base):
-    """Material excerpts a delegated AX turn actually retrieved (SPEC-008 evidence card)."""
+class ConversationContentEvidenceRecord(Base):
+    """Observed canonical artifacts and owner contexts."""
 
-    __tablename__ = "conversation_material_evidence"
-    __table_args__ = (UniqueConstraint("turn_id", "chunk_id", name="uq_conversation_material_evidence"),)
+    __tablename__ = "conversation_content_evidence"
+    __table_args__ = (UniqueConstraint("turn_id", "chunk_id", name="uq_conversation_content_evidence"),)
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     turn_id: Mapped[UUID] = mapped_column(ForeignKey("conversation_turns.id"), nullable=False, index=True)
     conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), nullable=False, index=True)
     execution_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
-    task_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
-    material_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     attachment_id: Mapped[UUID] = mapped_column(ForeignKey("attachments.id"), nullable=False)
-    chunk_id: Mapped[UUID] = mapped_column(ForeignKey("material_chunks.id"), nullable=False)
+    # A receipt survives removal of the projection and its chunks.
+    chunk_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source_contexts: Mapped[list] = mapped_column(JSON, nullable=False)
     name: Mapped[str] = mapped_column(String(300), nullable=False)
     integrity_ref: Mapped[str] = mapped_column(String(80), nullable=False)
     page: Mapped[int | None] = mapped_column(Integer)
+    source_locator: Mapped[dict | None] = mapped_column(JSON)
+    header_context: Mapped[dict | None] = mapped_column(JSON)
+    extraction_snapshot: Mapped[dict | None] = mapped_column(JSON)
     excerpt: Mapped[str] = mapped_column(Text, nullable=False)
     query: Mapped[str] = mapped_column(String(300), nullable=False)
     rank: Mapped[int] = mapped_column(Integer, nullable=False)

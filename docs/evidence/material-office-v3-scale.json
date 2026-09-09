@@ -1,0 +1,123 @@
+{
+  "run_date": "2026-09-09",
+  "database": "isolated disposable SQLite per profile",
+  "rss_scope": "process peak including synthetic generation, app and analyzer startup",
+  "profiles": [
+    {
+      "profile": "scax-material-integrity-v1",
+      "kind": "docx",
+      "shape": {
+        "authored_pages": 350,
+        "tables": 350,
+        "non_empty_cells": 16800
+      },
+      "source_bytes": 105050,
+      "sha256": "cc5ba29db9ea035b5eaf955a8f1ebf8b7186d8c00c9bf6b5132051119bd384c2",
+      "archive": {
+        "members": 17,
+        "uncompressed_bytes": 3036980,
+        "largest_member_bytes": 2212368
+      },
+      "generation_seconds": 5.557,
+      "parse_seconds": 0.693,
+      "parser_status": "completed",
+      "worker_seconds": 2.041,
+      "extraction": {
+        "status": "completed",
+        "failure_reason": null,
+        "char_count": 559530,
+        "chunk_count": 701,
+        "coverage": {
+          "complete": true,
+          "indexed_blocks": 701,
+          "indexed_chars": 559530
+        },
+        "warnings": []
+      },
+      "db_blocks": 701,
+      "db_chunks": 701,
+      "tail_search_seconds": 0.007,
+      "tail_found": true,
+      "peak_rss_bytes_including_generation": 735477760,
+      "total_seconds": 7.96,
+      "parser_version": "3"
+    },
+    {
+      "profile": "scax-material-integrity-v1",
+      "kind": "pptx",
+      "shape": {
+        "slides": 990,
+        "tables": 990,
+        "notes": 990
+      },
+      "source_bytes": 2093525,
+      "sha256": "7e491230d7b94180d707a980c493758b569a1c856e06c93c4a7acaed2c2417ff",
+      "archive": {
+        "members": 3999,
+        "uncompressed_bytes": 4353039,
+        "largest_member_bytes": 279384
+      },
+      "generation_seconds": 4.439,
+      "parse_seconds": 0.606,
+      "parser_status": "completed",
+      "worker_seconds": 1.65,
+      "extraction": {
+        "status": "completed",
+        "failure_reason": null,
+        "char_count": 60061,
+        "chunk_count": 2970,
+        "coverage": {
+          "complete": true,
+          "indexed_blocks": 2970,
+          "indexed_chars": 60061
+        },
+        "warnings": []
+      },
+      "db_blocks": 2970,
+      "db_chunks": 2970,
+      "tail_search_seconds": 0.007,
+      "tail_found": true,
+      "peak_rss_bytes_including_generation": 759316480,
+      "total_seconds": 6.478,
+      "parser_version": "3"
+    },
+    {
+      "profile": "scax-material-integrity-v1",
+      "kind": "pptx",
+      "shape": {
+        "slides": 1000,
+        "tables": 1000,
+        "notes": 1000
+      },
+      "source_bytes": 2114409,
+      "sha256": "de57ad0354aee196731917ff6eb4f0d85dc382ddd218369eb98c70d6c021b429",
+      "archive": {
+        "members": 4039,
+        "uncompressed_bytes": 4395940,
+        "largest_member_bytes": 282176
+      },
+      "generation_seconds": 4.444,
+      "parse_seconds": 0.011,
+      "parser_status": "too_large",
+      "worker_seconds": 0.017,
+      "extraction": {
+        "status": "too_large",
+        "failure_reason": "too_large",
+        "char_count": 0,
+        "chunk_count": 0,
+        "coverage": {
+          "complete": false,
+          "reason": "archive has 4039 members (limit 4000)"
+        },
+        "warnings": []
+      },
+      "db_blocks": 0,
+      "db_chunks": 0,
+      "tail_search_seconds": 0.842,
+      "tail_found": false,
+      "peak_rss_bytes_including_generation": 746258432,
+      "total_seconds": 5.661,
+      "parser_version": "3"
+    }
+  ]
+}

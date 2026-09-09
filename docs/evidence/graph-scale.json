@@ -1,0 +1,56 @@
+{
+  "seed": "scax-graph-scale-v1",
+  "database": "disposable SQLite",
+  "synthetic_nodes": {
+    "person": 100,
+    "team": 20,
+    "project": 10,
+    "task": 2000,
+    "work_request": 1000,
+    "meeting": 500,
+    "material": 2000
+  },
+  "base_directed_relations": 14609,
+  "additional_journeys": [
+    "meeting follow-up promotion",
+    "daily report with actual work evidence"
+  ],
+  "measurements": [
+    {
+      "query_class": "업무",
+      "sql_queries": 3043,
+      "loaded_orm_rows": 6341,
+      "fetched_db_rows": 11746,
+      "elapsed_ms": 448.08
+    },
+    {
+      "query_class": "요청",
+      "sql_queries": 3043,
+      "loaded_orm_rows": 6341,
+      "fetched_db_rows": 11746,
+      "elapsed_ms": 459.43
+    },
+    {
+      "query_class": "회의",
+      "sql_queries": 3043,
+      "loaded_orm_rows": 6341,
+      "fetched_db_rows": 11746,
+      "elapsed_ms": 454.53
+    },
+    {
+      "query_class": "업무",
+      "sql_queries": 3043,
+      "loaded_orm_rows": 6341,
+      "fetched_db_rows": 11746,
+      "elapsed_ms": 460.32
+    },
+    {
+      "query_class": "회의",
+      "sql_queries": 3043,
+      "loaded_orm_rows": 6341,
+      "fetched_db_rows": 11746,
+      "elapsed_ms": 468.01
+    }
+  ],
+  "limits": "fetched_db_rows counts DBAPI fetchone/fetchmany/fetchall rows, including scalar and repeated reads; loaded_orm_rows counts hydrated objects; neither measures physical scan rows or buffers. Local timings are not an SLA."
+}

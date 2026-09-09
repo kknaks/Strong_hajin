@@ -75,7 +75,7 @@ def test_failures_are_explainable_states_not_silent_success(tmp_path) -> None:
     assert (by_name["broken.pdf"]["status"], by_name["broken.pdf"]["failure_reason"]) == ("failed", "corrupt_document")
     assert all(item["failure_text"] for item in by_name.values())
     # Nothing searchable, but the unavailable files are named so AX can say it could not read them.
-    search = client.get(f"/api/tasks/{task['task_id']}/materials/search", headers=MINA, params={"q": "납기일"}).json()
+    search = client.get('/api/materials/search', headers=MINA, params={'q': '납기일', 'resource_type': 'task', 'resource_id': task['task_id']}).json()
     assert search["results"] == [] and search["searched_materials"] == 0
     assert sorted(item["name"] for item in search["unavailable_materials"]) == ["broken.pdf", "legacy.txt", "scan.png"]
 
@@ -86,7 +86,7 @@ def test_search_returns_bounded_excerpts_only_for_authorized_live_bindings(tmp_p
     material = _upload(client, task["task_id"], "견적.md", BRIEF.encode(), "text/markdown").json()
     other = _upload(client, task["task_id"], "회의록.txt", ("회의록: 일정 조율. " * 50).encode(), "text/plain").json()
     assert asyncio.run(worker.run_once()) is True
-    search = client.get(f"/api/tasks/{task['task_id']}/materials/search", headers=MINA, params={"q": "공급사와 납기일이 어떻게 되나요"}).json()
+    search = client.get('/api/materials/search', headers=MINA, params={'q': '공급사와 납기일이 어떻게 되나요', 'resource_type': 'task', 'resource_id': task['task_id']}).json()
     assert search["searched_materials"] == 2 and search["unavailable_materials"] == []
     # Several excerpts may come from one file (different sections); the unrelated file never appears.
     assert {hit["name"] for hit in search["results"]} == {"견적.md"}
@@ -95,12 +95,12 @@ def test_search_returns_bounded_excerpts_only_for_authorized_live_bindings(tmp_p
     assert hit["origin"] == f"/api/tasks/{task['task_id']}/materials/{material['material_id']}/content"
     assert client.get(hit["origin"], headers=MINA).status_code == 200
     # An empty query is a 422, not an empty success.
-    assert client.get(f"/api/tasks/{task['task_id']}/materials/search", headers=MINA, params={"q": "  "}).status_code == 422
+    assert client.get('/api/materials/search', headers=MINA, params={'q': '  ', 'resource_type': 'task', 'resource_id': task['task_id']}).status_code == 422
     # Another member holds no assignment for this task: not found, no counts leaked.
-    assert client.get(f"/api/tasks/{task['task_id']}/materials/search", headers=JIHO, params={"q": "납기일"}).status_code == 404
+    assert client.get('/api/materials/search', headers=JIHO, params={'q': '납기일', 'resource_type': 'task', 'resource_id': task['task_id']}).status_code == 404
     # A detached material disappears from results and counts.
-    assert client.post(f"/api/tasks/{task['task_id']}/materials/{material['material_id']}/detach", headers=MINA).status_code == 200
-    after = client.get(f"/api/tasks/{task['task_id']}/materials/search", headers=MINA, params={"q": "납기일"}).json()
+    assert client.post(f'/api/tasks/{task['task_id']}/material-bindings/{material['binding_id']}/detach', headers=MINA).status_code == 200
+    after = client.get('/api/materials/search', headers=MINA, params={'q': '납기일', 'resource_type': 'task', 'resource_id': task['task_id']}).json()
     assert after["results"] == [] and after["searched_materials"] == 1 and [m["name"] for m in after["unavailable_materials"]] == []
     del other
 
@@ -124,10 +124,10 @@ def test_delegated_mcp_search_records_turn_evidence_that_the_conversation_view_e
     # The persona-bound MCP facade inside a delegated turn uses the same application query and records evidence.
     monkeypatch.setenv("AX_MCP_CAUSATION_ID", execution_id)
     facade = McpReportsFacade(settings, "mina")
-    result = facade.search_task_materials(task["task_id"], "공급사 납기일", 3)
+    result = facade.search_materials('공급사 납기일', resource_type='task', resource_id=task['task_id'], limit=3)
     assert {hit["name"] for hit in result["results"]} == {"견적.md"}
     # Calling again with the same execution does not duplicate the evidence rows.
-    facade.search_task_materials(task["task_id"], "공급사 납기일", 3)
+    facade.search_materials('공급사 납기일', resource_type='task', resource_id=task['task_id'], limit=3)
 
     view = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()
     evidence = view["material_evidence"]
@@ -140,7 +140,7 @@ def test_delegated_mcp_search_records_turn_evidence_that_the_conversation_view_e
     monkeypatch.setenv("AX_MCP_CAUSATION_ID", execution_id)
     jiho = McpReportsFacade(settings, "jiho")
     try:
-        jiho.search_task_materials(task["task_id"], "납기일", 3)
+        jiho.search_materials('납기일', resource_type='task', resource_id=task['task_id'], limit=3)
         raise AssertionError("jiho must not search mina's task")
     except Exception as error:  # noqa: BLE001 - the application raises TaskNotFound; the type is not the contract here
         assert "not found" in str(error)
@@ -181,7 +181,7 @@ def test_evidence_recording_fails_closed_for_a_turn_the_principal_does_not_own(t
     with make_session_factory(settings.database_url)() as session:
         turn = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"]))
         with pytest.raises(ValueError, match="another principal"):
-            SqlAlchemyMaterialEvidenceRepository(session).record(turn.execution_id, "jiho", UUID(int=1), "q", [])
+            SqlAlchemyMaterialEvidenceRepository(session).record(turn.execution_id, "jiho", "q", [])
 
 
 def test_action_preview_links_the_attachments_the_turn_read_and_hides_them_from_other_principals(tmp_path, monkeypatch) -> None:
@@ -199,7 +199,7 @@ def test_action_preview_links_the_attachments_the_turn_read_and_hides_them_from_
     with make_session_factory(settings.database_url)() as session:
         execution_id = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"])).execution_id
     monkeypatch.setenv("AX_MCP_CAUSATION_ID", str(execution_id))
-    McpReportsFacade(settings, "mina").search_task_materials(task["task_id"], "공급사 납기일", 3)
+    McpReportsFacade(settings, 'mina').search_materials('공급사 납기일', resource_type='task', resource_id=task['task_id'], limit=3)
 
     mina = application.authenticated_principal("mina")
     jiho = application.authenticated_principal("jiho")
@@ -215,7 +215,7 @@ def test_action_preview_links_the_attachments_the_turn_read_and_hides_them_from_
 
     with make_session_factory(settings.database_url)() as session:
         record = session.get(ActionItemRecord, UUID(proposed["action_id"]))
-        presenter = ActionPresenter(session)
+        presenter = ActionPresenter(session, evidence_reader=lambda principal, turn_id: application._action_material_evidence(session, principal, turn_id))
         assert any(row["id"] == "evidence" for row in presenter.present(record, mina)["preview"])
         # Jiho holds no assignment on Mina's Task, so the linked evidence leaves the preview entirely.
         rows = presenter.present(record, jiho)["preview"]
@@ -251,18 +251,18 @@ def test_searching_without_naming_the_work_finds_what_this_person_may_read(tmp_p
     while asyncio.run(worker.run_once()):
         pass
 
-    found = client.get("/api/materials/search", headers=MINA, params={"q": "한빛상사"})
+    found = client.get('/api/materials/search', headers=MINA, params={'q': '한빛상사'})
     assert found.status_code == 200, found.text
     body = found.json()
     # 시작점을 대지 않았으므로 답에도 시작점이 없다. 각 줄이 자기 업무를 말한다.
-    assert body["task_id"] is None and body["task_title"] is None
+    assert "task_id" not in body
     assert {row["name"] for row in body["results"]} == {"내견적.md"}
-    assert {row["task_id"] for row in body["results"]} == {mine["task_id"]}
+    assert {row["source_resource_id"] for row in body["results"]} == {mine["task_id"]}
     # 남의 자료는 이름도 건수도 나오지 않는다.
     assert "남견적" not in found.text
 
     # 지호에게는 정확히 반대로 보인다.
-    theirs_found = client.get("/api/materials/search", headers=JIHO, params={"q": "한빛상사"}).json()
+    theirs_found = client.get('/api/materials/search', headers=JIHO, params={'q': '한빛상사'}).json()
     assert {row["name"] for row in theirs_found["results"]} == {"남견적.md"}
 
 
@@ -276,11 +276,11 @@ def test_naming_the_work_still_scopes_the_search_to_it(tmp_path) -> None:
     while asyncio.run(worker.run_once()):
         pass
 
-    scoped = client.get(f"/api/tasks/{one['task_id']}/materials/search", headers=MINA, params={"q": "한빛상사"}).json()
-    assert scoped["task_id"] == one["task_id"]
+    scoped = client.get('/api/materials/search', headers=MINA, params={'q': '한빛상사', 'resource_type': 'task', 'resource_id': one['task_id']}).json()
+    assert {r["source_resource_id"] for r in scoped["results"]} == {one["task_id"]}
     assert {row["name"] for row in scoped["results"]} == {"첫견적.md"}
 
-    wide = client.get("/api/materials/search", headers=MINA, params={"q": "한빛상사"}).json()
+    wide = client.get('/api/materials/search', headers=MINA, params={'q': '한빛상사'}).json()
     assert {row["name"] for row in wide["results"]} == {"첫견적.md", "둘째견적.md"}
 
 
@@ -303,7 +303,7 @@ def test_the_files_of_work_someone_may_read_are_not_hidden_from_them(tmp_path) -
 
     # 프로젝트에 붙기 전에는 업무도 자료도 없는 것과 같다.
     assert client.get(f"/api/tasks/{task['task_id']}/materials", headers=MINA).status_code == 404
-    assert client.get("/api/materials/search", headers=MINA, params={"q": "한빛상사"}).json()["results"] == []
+    assert client.get('/api/materials/search', headers=MINA, params={'q': '한빛상사'}).json()["results"] == []
 
     client.post(f"/api/projects/{project['project_id']}/members", headers=JIHO, json={"member_id": "mina"})
 
@@ -312,12 +312,12 @@ def test_the_files_of_work_someone_may_read_are_not_hidden_from_them(tmp_path) -
     [material] = listed.json()
     assert material["name"] == "간트.md"
     # 넓은 검색이 찾아 주는 것과 그 업무를 대고 묻는 것이 같은 답이다.
-    wide = client.get("/api/materials/search", headers=MINA, params={"q": "한빛상사"}).json()
-    scoped = client.get(f"/api/tasks/{task['task_id']}/materials/search", headers=MINA, params={"q": "한빛상사"}).json()
+    wide = client.get('/api/materials/search', headers=MINA, params={'q': '한빛상사'}).json()
+    scoped = client.get('/api/materials/search', headers=MINA, params={'q': '한빛상사', 'resource_type': 'task', 'resource_id': task['task_id']}).json()
     assert {row["name"] for row in wide["results"]} == {row["name"] for row in scoped["results"]} == {"간트.md"}
     assert client.get(f"/api/tasks/{task['task_id']}/materials/{material['material_id']}/content", headers=MINA).status_code == 200
     # 읽는 것이 붙이고 떼는 것으로 번지지 않는다.
-    assert client.post(f"/api/tasks/{task['task_id']}/materials/{material['material_id']}/detach", headers=MINA).status_code == 404
+    assert client.post(f'/api/tasks/{task['task_id']}/material-bindings/{material['binding_id']}/detach', headers=MINA).status_code == 404
     assert _upload(client, task["task_id"], "끼워넣기.md", BRIEF.encode(), "text/markdown", headers=MINA).status_code == 404
 
 
@@ -375,14 +375,14 @@ def test_an_index_made_with_older_rules_is_rebuilt_and_only_once(tmp_path) -> No
             chunk.analyzer_version = "kiwi-0.0.0-r0"
         session.commit()
 
-    assert client.get(f"/api/tasks/{task['task_id']}/materials/search", headers=MINA, params={"q": "한빛상사"}).json()["results"] == []
+    assert client.get('/api/materials/search', headers=MINA, params={'q': '한빛상사', 'resource_type': 'task', 'resource_id': task['task_id']}).json()["results"] == []
 
     rebuilt = application.reindex_material_search()
     assert rebuilt == len(original)
     # 두 번째는 할 일이 없다.
     assert application.reindex_material_search() == 0
 
-    found = client.get(f"/api/tasks/{task['task_id']}/materials/search", headers=MINA, params={"q": "한빛상사"}).json()
+    found = client.get('/api/materials/search', headers=MINA, params={'q': '한빛상사', 'resource_type': 'task', 'resource_id': task['task_id']}).json()
     assert found["results"], "다시 만든 색인으로도 찾지 못했습니다"
     with make_session_factory(database_url)() as session:
         # 원문은 그대로다. 바뀐 것은 찾기 위한 형태뿐이다.
@@ -420,22 +420,18 @@ def test_when_a_material_was_registered_is_a_different_question_from_what_it_say
         session.commit()
 
     # 등록 시각으로 묻는다: 8월에 등록된 것만.
-    registered = client.get(
-        "/api/materials/search",
-        headers=MINA,
-        params={"q": "한빛상사", "registered_from": "2026-08-01", "registered_until": "2026-08-31"},
-    ).json()
+    registered = client.get('/api/materials/search', headers=MINA, params={'q': '한빛상사', 'registered_from': '2026-08-01', 'registered_until': '2026-08-31'}).json()
     assert {row["name"] for row in registered["results"]} == {"8월정리.md"}
     # 무엇으로 좁혔는지 답이 말한다.
     assert registered["registered_from"] == "2026-08-01" and registered["registered_until"] == "2026-08-31"
 
     # 본문에서 `8월 실적`을 묻는다: 9월에 등록된 자료가 그것을 말한다.
-    mentioned = client.get("/api/materials/search", headers=MINA, params={"q": "8월 실적"}).json()
+    mentioned = client.get('/api/materials/search', headers=MINA, params={'q': '8월 실적'}).json()
     assert "9월정리.md" in {row["name"] for row in mentioned["results"]}
     assert mentioned["registered_from"] is None
 
     # 조건을 주지 않으면 둘 다 나온다.
-    both = client.get("/api/materials/search", headers=MINA, params={"q": "한빛상사"}).json()
+    both = client.get('/api/materials/search', headers=MINA, params={'q': '한빛상사'}).json()
     assert {row["name"] for row in both["results"]} == {"8월정리.md", "9월정리.md"}
     assert august["material_id"] and september["material_id"]
 

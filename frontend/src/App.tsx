@@ -451,9 +451,16 @@ export default function App() {
               setFocusMeetingId(resource.resource_id);
               return;
             }
-            if (resource.resource_type === "material" && resource.parent_resource_id) {
-              setSurface("work");
-              setFocusTaskId(resource.parent_resource_id);
+            if (resource.resource_type === "material") {
+              const taskContext = resource.source_contexts?.find((context) => context.resource_type === "task");
+              if (taskContext) {
+                setSurface("work");
+                setFocusTaskId(taskContext.resource_id);
+                return;
+              }
+            }
+            if (resource.resource_type === "material" && resource.origin) {
+              window.open(resource.origin, "_blank", "noopener,noreferrer");
               return;
             }
             if (resource.resource_type === "report") setSurface("report");

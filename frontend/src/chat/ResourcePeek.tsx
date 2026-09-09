@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { getMeeting, getTask, getTaskMaterials, getWorkRequestTimeline } from "../api";
+import { getMaterialMetadata, getMeeting, getTask, getWorkRequestTimeline } from "../api";
 import { formatDate, taskStateLabel, workRequestStateLabel } from "../labels";
 import { Skeleton } from "../Skeleton";
 import type { AnswerResource } from "../viewModels";
@@ -104,17 +104,11 @@ async function read(resource: AnswerResource): Promise<Array<[string, string]> |
         ["기한", request.due_date ? formatDate(request.due_date) : "없음"],
       ];
     }
-    if (resource.resource_type === "material" && resource.parent_resource_id) {
-      const materials = await getTaskMaterials(resource.parent_resource_id);
-      const found = materials.find((row) => row.material_id === resource.resource_id);
-      if (!found) return null;
-      const where = resource.source_locator?.page ? `${resource.source_locator.page}쪽` : "";
-      return [
-        ["종류", found.kind === "input" ? "참고 자료" : "산출물"],
-        ...(where ? ([["읽은 자리", where]] as Array<[string, string]>) : []),
-        ["올린 때", formatDate(found.created_at.slice(0, 10))],
-      ];
+    if (resource.resource_type === "material") {
+      const material = await getMaterialMetadata(resource.resource_id);
+      return [["자료", material.name], ["원본 확인", material.integrity_ref]];
     }
+
   } catch {
     return null;
   }

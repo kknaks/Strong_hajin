@@ -15,6 +15,7 @@ from ax_workspace.modules.organization_access.domain import (
     WORK_REQUEST_READ,
 )
 from ax_workspace.modules.work.application import clean_checklist
+from ax_workspace.modules.work.material_extraction import MaterialExtractionJob, MaterialExtractionQueue, MaterialExtractionRepository
 from ax_workspace.modules.work.materials import AttachmentRepository, MaterialNotFound, MaterialStorage, store_file
 
 
@@ -187,6 +188,8 @@ class WorkRequestApplication:
         attachments: AttachmentRepository | None = None,
         storage: MaterialStorage | None = None,
         references: "TaskReferenceViewPort | None" = None,
+        extractions: MaterialExtractionRepository | None = None,
+        extraction_queue: MaterialExtractionQueue | None = None,
     ) -> None:
         self._repository = repository
         self._assignee_directory = assignee_directory
@@ -194,6 +197,7 @@ class WorkRequestApplication:
         self._attachments = attachments
         self._storage = storage
         self._references = references
+        self._extractions, self._extraction_queue = extractions, extraction_queue
 
     def create(
         self,
@@ -496,6 +500,7 @@ class WorkRequestApplication:
             provenance=f"work_request:{request.id}:comment:{comment.id}", uploaded_by=str(principal.id),
         )
         self._attachments.bind(attachment_id=attachment.id, context_type="comment", context_id=str(comment.id), role="discussion", bound_by=str(principal.id))
+        self._request_extraction(attachment)
         return self._comment_view(comment, [_attachment_view(item) for _, item in self._attachments.bindings_for("comment", str(comment.id))])
 
     def add_evidence(self, principal: Principal, request_id: UUID, *, name: str, content_type: str, data: bytes) -> dict[str, Any]:
@@ -522,6 +527,7 @@ class WorkRequestApplication:
         self._attachments.bind(attachment_id=attachment.id, context_type="submission", context_id=str(submission.id), role="supplemental", bound_by=str(principal.id))
         role = "decision_basis" if str(principal.id) == request.assignee_id else "supporting"
         evidence = self._repository.adopt_evidence(submission, attachment, role=role, adopted_by=str(principal.id))
+        self._request_extraction(attachment)
         # The basis a reviewer is looking at just changed, so the version they opened must no longer answer it.
         request.version += 1
         request.updated_at = datetime.now(UTC)
@@ -541,14 +547,39 @@ class WorkRequestApplication:
             "adopted_at": evidence.adopted_at.isoformat(),
         }
 
+    def _request_extraction(self, attachment: Any) -> None:
+        if self._extractions is not None:
+            extraction = self._extractions.request(attachment)
+            if extraction.status == "queued" and self._extraction_queue is not None:
+                self._extraction_queue.enqueue(MaterialExtractionJob(extraction.id, attachment.id))
+
+    def material_bindings(self, principal: Principal, request_id: UUID) -> list[tuple[Any, Any]]:
+        """Live discussion bindings and adopted, immutable submission files for a current participant."""
+        self._require(principal, WORK_REQUEST_READ)
+        request = self._participant_request(principal, request_id)
+        if self._attachments is None:
+            return []
+        bindings = []
+        if self._comments is not None and request.request_thread_id is not None:
+            comments = self._comments.list_for(request.request_thread_id)
+            bindings.extend(self._attachments.bindings_for_many("comment", [str(comment.id) for comment in comments]))
+        adoptions = self._repository.evidence_for(request)
+        adopted = {(str(submission.id), attachment.id, evidence.fixed_snapshot_ref)
+                   for evidence, attachment, submission in adoptions if not evidence.mutable_source}
+        for binding, attachment in self._attachments.bindings_for_many("submission", sorted({item[0] for item in adopted})):
+            if (binding.context_id, attachment.id, attachment.integrity_ref) in adopted:
+                bindings.append((binding, attachment))
+        return [(binding, attachment) for binding, attachment in bindings
+                if binding.unbound_at is None and attachment.lifecycle != "purged"]
+
     def open_attachment(self, principal: Principal, request_id: UUID, attachment_id: UUID) -> tuple[dict[str, Any], bytes]:
         """Any participant (requester, assignee, cc) may read files that belong to this request's thread."""
         self._require(principal, WORK_REQUEST_READ)
         if self._attachments is None or self._storage is None:
             raise WorkRequestError("attachments are not available")
-        request = self._participant_request(principal, request_id)
-        attachment = self._attachments.attachment(attachment_id)
-        if attachment is None or not str(attachment.provenance).startswith(f"work_request:{request.id}:"):
+        attachment = next((attachment for _, attachment in self.material_bindings(principal, request_id)
+                           if attachment.id == attachment_id), None)
+        if attachment is None:
             raise MaterialNotFound("attachment was not found")
         return _attachment_view(attachment), self._storage.get(attachment.source_ref)
 

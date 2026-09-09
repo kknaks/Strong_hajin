@@ -50,7 +50,7 @@ const base: DirectTask = {
 };
 
 const material = {
-  material_id: "m1",
+  material_id: "m1", binding_id: "binding-m1",
   task_id: "task-1",
   kind: "output" as const,
   name: "최종 보고서",

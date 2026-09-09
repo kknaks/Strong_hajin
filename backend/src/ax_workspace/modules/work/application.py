@@ -584,19 +584,25 @@ class TaskApplication:
     def _delivery_snapshot(self, principal: Principal, task: Any, summary: str, output_material_ids: list[UUID]) -> dict[str, Any]:
         """What was handed over, as it was: the Task's own words, its steps, and the outputs named by identity."""
         wanted = {str(item) for item in output_material_ids}
-        outputs = []
+        selected = {}
         for binding, attachment in self._attachments.bindings_for("task", str(task.id)) if self._attachments else []:
-            if binding.unbound_at is not None or str(binding.id) not in wanted:
+            identifier = str(attachment.id)
+            if binding.unbound_at is not None or identifier not in wanted:
                 continue
-            outputs.append(
-                {
-                    "material_id": str(binding.id),
-                    "attachment_id": str(attachment.id),
-                    "name": attachment.name,
-                    "kind": binding.role,
-                    "integrity_ref": attachment.integrity_ref,
-                }
-            )
+            if identifier in selected and selected[identifier][0].role == "output":
+                continue
+            selected[identifier] = (binding, attachment)
+        outputs = [
+            {
+                "material_id": str(attachment.id),
+                "binding_id": str(binding.id),
+                "attachment_id": str(attachment.id),
+                "name": attachment.name,
+                "kind": binding.role,
+                "integrity_ref": attachment.integrity_ref,
+            }
+            for binding, attachment in selected.values()
+        ]
         if len(outputs) != len(wanted):
             raise TaskError("이 업무에 없는 산출물은 완료 보고에 담을 수 없습니다")
         return {

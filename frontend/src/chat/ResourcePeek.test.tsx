@@ -5,6 +5,7 @@ vi.mock("../api", () => ({
   getTask: vi.fn(),
   getMeeting: vi.fn(),
   getTaskMaterials: vi.fn(),
+  getMaterialMetadata: vi.fn(),
   getWorkRequestTimeline: vi.fn(),
 }));
 
@@ -18,7 +19,6 @@ const reference = {
   resource_type: "task" as const,
   resource_id: "task-1",
   resource_version: 3,
-  parent_resource_id: null,
   title: "분기 마감",
   state: "in_progress",
 };
@@ -55,6 +55,21 @@ describe("근거 상세", () => {
     await screen.findByText("지금은 열 수 없습니다.");
     // 사라진 것과 권한을 잃은 것을 구별해 말하지 않는다 — 구별이 곧 존재를 알리는 말이 된다.
     expect(screen.queryByText(/권한|삭제|없는/)).toBeNull();
+  });
+
+  it("canonical 자료를 현재 권한으로 다시 읽는다", async () => {
+    vi.mocked(api.getMaterialMetadata).mockResolvedValue({ material_id: "artifact-1", name: "제출 원본", origin: "/api/source", integrity_ref: "sha256:original" });
+    render(<ResourcePeek onClose={vi.fn()} onOpenFully={vi.fn()} resource={{ ...reference, resource_type: "material", resource_id: "artifact-1" }} />);
+    await screen.findByText("제출 원본");
+    expect(api.getMaterialMetadata).toHaveBeenCalledWith("artifact-1");
+    expect(screen.getByText("sha256:original")).toBeTruthy();
+  });
+
+  it("canonical 자료를 더 이상 읽을 수 없으면 내용을 표시하지 않는다", async () => {
+    vi.mocked(api.getMaterialMetadata).mockRejectedValue(new Error("404"));
+    render(<ResourcePeek onClose={vi.fn()} onOpenFully={vi.fn()} resource={{ ...reference, resource_type: "material", resource_id: "artifact-1" }} />);
+    await screen.findByText("지금은 열 수 없습니다.");
+    expect(screen.queryByText("sha256:original")).toBeNull();
   });
 
   it("정식 화면으로 가는 길은 따로 있다", async () => {

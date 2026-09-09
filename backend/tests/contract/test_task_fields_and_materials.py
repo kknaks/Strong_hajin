@@ -112,7 +112,7 @@ def test_materials_upload_download_detach_and_stay_private_to_the_owner(tmp_path
     )
     assert bad_kind.status_code == 422
 
-    detached = client.post(f"/api/tasks/{task_id}/materials/{material['material_id']}/detach", headers=MINA)
+    detached = client.post(f'/api/tasks/{task_id}/material-bindings/{material['binding_id']}/detach', headers=MINA)
     assert detached.status_code == 200 and detached.json()["removed_at"]
     assert client.get(f"/api/tasks/{task_id}/materials", headers=MINA).json() == []
     assert client.get(f"/api/tasks/{task_id}/materials/{material['material_id']}/content", headers=MINA).status_code == 404

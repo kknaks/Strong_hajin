@@ -15,6 +15,8 @@ from ax_workspace.modules.ax_execution.conversations import (
 )
 from ax_workspace.modules.ax_execution.actions import ActionApplication
 from ax_workspace.modules.organization_access.domain import Principal
+from ax_workspace.modules.work.material_folders import MaterialFolderApplication
+from ax_workspace.platform.material_folders import SqlAlchemyMaterialFolderRepository
 from ax_workspace.modules.organization_access.administration import AccessAdministration
 from ax_workspace.modules.organization_access.application import OrganizationApplication
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
@@ -32,6 +34,8 @@ from ax_workspace.platform.action_center import action_handlers
 from ax_workspace.platform.actions import SqlAlchemyActionExecutor, SqlAlchemyActionRepository
 from ax_workspace.platform.reports import SqlAlchemyDailyReportDraftWorkflow, SqlAlchemyDailyReportRepository
 from ax_workspace.modules.work.materials import MaterialError, MaterialNotFound, TaskMaterialApplication
+from ax_workspace.modules.work.material_search import MaterialSearchApplication, RESOURCE_TYPES
+from ax_workspace.bootstrap.material_sources import SessionMaterialOwners, readable_content_evidence
 from ax_workspace.modules.work.graph import GraphApplication
 from ax_workspace.modules.work.application import TaskAccessDenied, TaskApplication, TaskState
 from ax_workspace.modules.work.assignments import TaskAssignmentApplication
@@ -46,7 +50,7 @@ from sqlalchemy import delete, select
 
 from ax_workspace.platform.persistence import (
     AttachmentRecord,
-    ConversationMaterialEvidenceRecord,
+    ConversationContentEvidenceRecord,
     MaterialBlockRecord,
     MaterialChunkRecord,
     MaterialExtractionRecord,
@@ -54,9 +58,10 @@ from ax_workspace.platform.persistence import (
     make_session_factory,
 )
 from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
+from ax_workspace.platform.native_materials import NativeMaterialRepository, NativeRevisionStorage
 from ax_workspace.platform.recordings import LocalDirectoryRecordingStorage
 from ax_workspace.platform.soniox import SonioxTranscriptionAdapter
-from ax_workspace.modules.work.material_extraction import LexicalMaterialRetriever, MaterialExtractionJob
+from ax_workspace.modules.work.material_extraction import LexicalMaterialRetriever, MaterialExtractionJob, extraction_view
 from ax_workspace.modules.work.projects import ProjectApplication
 from ax_workspace.modules.work.search import matches
 from ax_workspace.platform.projects import SqlAlchemyProjectRepository
@@ -116,12 +121,23 @@ class _SessionAnswerResources:
         self._application = application
         self._session = session
 
+    def readable_material_evidence(self, principal: Principal, evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return readable_content_evidence(self._application, self._session, principal, evidence)
+
     def resolve(self, principal: Principal, references: list[dict[str, Any]]) -> list[dict[str, Any]]:
         resolved: list[dict[str, Any]] = []
+        content = self._readable_content_references(principal, references)
         for reference in references:
             kind = str(reference["resource_type"])
             identifier = str(reference["resource_id"])
-            title, state = self._read(principal, kind, identifier, reference.get("parent_resource_id"))
+            if kind == "material":
+                observed = content.get((str(reference.get("turn_id")), identifier))
+                if observed is None:
+                    continue
+                resolved.append({**reference, "title": observed["name"], "state": "available", "origin": observed["origin"],
+                    "source_contexts": observed["source_contexts"], "current_version": None, "changed_since": False})
+                continue
+            title, state = self._read(principal, kind, identifier)
             if title is None:
                 # Readable when the turn ran, not now. It leaves no title and no gap that could be counted.
                 continue
@@ -137,6 +153,16 @@ class _SessionAnswerResources:
                 "changed_since": bool(seen and current and int(current) != int(seen)),
             })
         return resolved
+
+    def _readable_content_references(self, principal: Principal, references: list[dict[str, Any]]) -> dict:
+        observations = [{**row, "material_id": row["resource_id"]} for row in references if row["resource_type"] == "material"]
+        return {(str(row.get("turn_id")), row["material_id"]): row
+                for row in readable_content_evidence(self._application, self._session, principal, observations)}
+
+    def readable_material_steps(self, principal: Principal, steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        observations = [{**step, "material_id": str(step["to_ref"]).partition(":")[2]}
+                        for step in steps if step.get("edge_kind") == "has_material"]
+        return readable_content_evidence(self._application, self._session, principal, observations)
 
     def _current_version(self, principal: Principal, kind: str, identifier: str) -> int | None:
         """지금의 회차. 회차를 갖지 않는 것에는 없는 것이 정상이다."""
@@ -170,13 +196,16 @@ class _SessionAnswerResources:
             if kind == "team" and identifier in units:
                 titles[ref] = units[identifier]
                 continue
-            title, _state = self._read(principal, kind, identifier, None)
+            title, _state = self._read(principal, kind, identifier)
             if title is not None:
                 titles[ref] = title
         return titles
 
-    def _read(self, principal: Principal, kind: str, identifier: str, parent: Any) -> tuple[str | None, str | None]:
+    def _read(self, principal: Principal, kind: str, identifier: str) -> tuple[str | None, str | None]:
         try:
+            if kind == "project":
+                project = self._source.readable_project(principal, UUID(identifier))
+                return (str(project["name"]), project.get("state")) if project else (None, None)
             if kind == "task":
                 task = self._source.readable_task(principal, UUID(identifier))
                 return (str(task["title"]), task.get("state")) if task else (None, None)
@@ -186,11 +215,9 @@ class _SessionAnswerResources:
             if kind == "meeting":
                 meeting = self._source.readable_meeting(principal, UUID(identifier))
                 return (str(meeting["title"]), meeting.get("visibility")) if meeting else (None, None)
-            if kind == "material" and parent:
-                for material in self._source.task_materials(principal, UUID(str(parent))):
-                    if str(material["material_id"]) == identifier:
-                        return str(material["name"]), str(material.get("kind") or "")
-                return (None, None)
+            if kind == "material":
+                material = self._application._material_metadata(self._session, principal, UUID(identifier))
+                return material["name"], material["state"]
             if kind == "report":
                 report = self._application.daily_report_history(principal, identifier)
                 return (f"{report['report_date']} 일일보고", report.get("status"))
@@ -228,12 +255,17 @@ class _SessionGraphSource:
         self._application = application
         self._session = session
 
-    def readable_tasks(self, principal: Principal, *, query: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    def readable_tasks(self, principal: Principal, *, query: str | None = None, assignee_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         # Following connections is a read surface like any other: it shows exactly what this person may read.
-        rows = self._application._tasks(self._session).list_for(
-            principal, include_closed=True, include_organization=True
-        )
-        return [row for row in rows if not query or matches(query, str(row["title"]))][:limit]
+        try:
+            rows = self._application._tasks(self._session).list_for(
+                principal, include_closed=True, include_organization=True
+            )
+        except TaskAccessDenied:
+            return []
+        return [row for row in rows
+                if (not query or matches(query, str(row["title"])))
+                and (assignee_id is None or str((row.get("assignee") or {}).get("member_id")) == assignee_id)][:limit]
 
     def readable_task(self, principal: Principal, task_id: UUID) -> dict[str, Any] | None:
         try:
@@ -285,7 +317,7 @@ class _SessionGraphSource:
 
     def person(self, member_id: str) -> dict[str, Any] | None:
         name = SqlAlchemyTaskRepository(self._session).member_display_name(member_id)
-        return {"member_id": member_id, "display_name": name or member_id}
+        return {"member_id": member_id, "display_name": name} if name is not None else None
 
     def readable_projects(self, principal: Principal) -> list[dict[str, Any]]:
         """그래프가 프로젝트로 묶을 때 묻는 것. 판정은 프로젝트 모듈이 한다."""
@@ -294,13 +326,24 @@ class _SessionGraphSource:
         except Exception:
             return []
 
-    def readable_meetings(self, principal: Principal, *, query: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    def readable_project(self, principal: Principal, project_id: UUID) -> dict[str, Any] | None:
+        from ax_workspace.modules.work.projects import ProjectAccessDenied, ProjectNotFound
+
+        try:
+            return self._application._projects(self._session).get(principal, project_id)
+        except (ProjectAccessDenied, ProjectNotFound):
+            return None
+
+    def readable_meetings(self, principal: Principal, *, query: str | None = None, member_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         try:
             rows = self._application._meetings(self._session).list(principal)
         except Exception:
             return []
         meetings = [row for row in rows if row.get("kind") == "meeting"]
-        return [row for row in meetings if not query or matches(query, str(row.get("title") or ""))][:limit]
+        return [row for row in meetings
+                if (not query or matches(query, str(row.get("title") or "")))
+                and (member_id is None or member_id == str(row.get("owner_id"))
+                     or member_id in {str(person["member_id"]) for person in row.get("attendees") or []})][:limit]
 
     def readable_meeting(self, principal: Principal, meeting_id: UUID) -> dict[str, Any] | None:
         try:
@@ -343,11 +386,10 @@ class _SessionGraphSource:
     def material_owners(self, principal: Principal, material_id: str) -> list[dict[str, Any]]:
         """The work this file is bound to, among the work this person may read."""
         owners: list[dict[str, Any]] = []
-        for task in self.readable_tasks(principal, limit=50):
-            for material in self.task_materials(principal, UUID(str(task["task_id"]))):
-                if str(material["material_id"]) == material_id:
-                    owners.append(task)
-                    break
+        for task_id in SqlAlchemyAttachmentRepository(self._session).active_task_contexts(UUID(material_id)):
+            task = self.readable_task(principal, UUID(task_id))
+            if task is not None:
+                owners.append(task)
         return owners
 
     def member_units(self, member_id: str) -> list[dict[str, Any]]:
@@ -495,6 +537,7 @@ class WorkflowApplication:
                 content_type=content_type,
                 data=data,
             )
+            NativeMaterialRepository(session).ensure_recording(recording_id)
             self._meeting_queue(session).enqueue(MeetingFinalizationJob(recording_id))
             session.commit()
             return result
@@ -540,6 +583,7 @@ class WorkflowApplication:
                 segments=segments,
                 finalization_lease_token=finalization_lease_token,
             )
+            self._register_native_material(session, "meeting_raw", UUID(result["transcript_revision_id"]))
             session.commit()
             return result
 
@@ -601,6 +645,9 @@ class WorkflowApplication:
             session.commit()
         completed = plan.get("completed")
         if completed is not None:
+            with self._session_factory() as session:
+                self._register_native_material(session, "meeting_refinement", UUID(completed["refinement_revision_id"]))
+                session.commit()
             return completed
         generation = self._report_provider.generate(
             AiGenerationRequest(
@@ -617,6 +664,7 @@ class WorkflowApplication:
                 segments=segments,
                 finalization_lease_token=finalization_lease_token,
             )
+            self._register_native_material(session, "meeting_refinement", UUID(result["refinement_revision_id"]))
             session.commit()
             return result
 
@@ -845,6 +893,7 @@ class WorkflowApplication:
             result = self._reports(session).submit(
                 principal, report_id, draft_id, expected_version, reason
             )
+            self._register_native_material(session, "report_submission", UUID(result["submission_id"]))
             session.commit()
             return result
 
@@ -1022,9 +1071,11 @@ class WorkflowApplication:
         if not str(reason or "").strip():
             raise MaterialError("삭제 사유가 필요합니다")
         with self._session_factory() as session:
-            attachment = session.get(AttachmentRecord, attachment_id)
+            attachment = session.scalar(select(AttachmentRecord).where(AttachmentRecord.id == attachment_id).with_for_update())
             if attachment is None:
                 raise MaterialNotFound("attachment was not found")
+            if attachment.source_kind in {"native_revision", "native_recording"}:
+                raise MaterialError("native revision content must be managed through its owning resource")
             extraction_ids = [
                 row.id
                 for row in session.scalars(
@@ -1040,13 +1091,9 @@ class WorkflowApplication:
                     row.status = "purged"
                     row.chunk_count = 0
                     row.char_count = 0
-            for evidence in session.scalars(
-                select(ConversationMaterialEvidenceRecord).where(
-                    ConversationMaterialEvidenceRecord.attachment_id == attachment.id
-                )
-            ):
-                # The row is the record that an answer cited this file; the text it quoted is gone.
+            for evidence in session.scalars(select(ConversationContentEvidenceRecord).where(ConversationContentEvidenceRecord.attachment_id == attachment.id)):
                 evidence.excerpt = ""
+                evidence.header_context = None
             if attachment.source_kind == "file":
                 self._material_storage.delete(attachment.source_ref)
             attachment.lifecycle = "purged"
@@ -1100,6 +1147,8 @@ class WorkflowApplication:
                             "from_title": titles.get(row["from"]),
                             "to_ref": row["to"],
                             "to_title": titles.get(row["to"]),
+                            "source_contexts": row.get("source_contexts"),
+                            "integrity_ref": row.get("integrity_ref"),
                         }
                         for row in result["edges"]
                     ],
@@ -1133,22 +1182,28 @@ class WorkflowApplication:
                 return {"seeds": [], "exchanges": []}
             view = conversations.view(conversation)
             resolver = _SessionAnswerResources(self, session)
+            observed_materials = list(view.get("material_evidence") or [])
+            readable_materials = resolver.readable_material_evidence(principal, observed_materials)
+            content_observed = bool(observed_materials) or any(tool.get("tool_name") == "material_search"
+                for tool in view.get("tool_invocations") or [])
             references = list(view.get("answer_resources") or [])
             for step in view.get("graph_receipts") or []:
-                node_ref = step.get("node_ref")
-                if step.get("kind") != "node" or not node_ref or ":" not in str(node_ref):
-                    continue
-                kind, _, identifier = str(node_ref).partition(":")
-                references.append({"resource_type": kind, "resource_id": identifier, "resource_version": None, "parent_resource_id": None})
+                for ref in (step.get("node_ref"), step.get("from_ref"), step.get("to_ref")):
+                    if not ref or ":" not in str(ref):
+                        continue
+                    kind, _, identifier = str(ref).partition(":")
+                    references.append({"resource_type": kind, "resource_id": identifier, "resource_version": None,
+                        "turn_id": step["turn_id"], "source_contexts": step.get("source_contexts") or [],
+                        "integrity_ref": step.get("integrity_ref")})
             seen: set[tuple[str, str]] = set()
             deduped = []
-            for reference in references:
+            for reference in resolver.resolve(principal, references):
                 key = (str(reference["resource_type"]), str(reference["resource_id"]))
                 if key in seen:
                     continue
                 seen.add(key)
                 deduped.append(reference)
-            resolved = resolver.resolve(principal, deduped[-seeds:])
+            resolved = deduped[-seeds:]
             pack: dict[str, Any] = {
                 "seeds": [
                     {
@@ -1159,11 +1214,17 @@ class WorkflowApplication:
                     for row in resolved
                 ],
                 "exchanges": [],
+                "reset_provider_session": content_observed,
             }
-            if include_exchanges:
+            material_seeds = {}
+            for row in readable_materials:
+                material_seeds[row["material_id"]] = {"ref": f"material:{row['material_id']}", "title": row["name"], "version": row["integrity_ref"]}
+            pack["seeds"] = (pack["seeds"] + list(material_seeds.values()))[-seeds:]
+            if include_exchanges or content_observed:
                 pack["exchanges"] = [
                     {"role": str(message["role"]), "body": str(message["body"])[:400]}
-                    for message in (view.get("messages") or [])[-exchanges:]
+                    for message in [message for message in view.get("messages") or []
+                                    if not content_observed or message["role"] == "user"][-exchanges:]
                     if str(message.get("body") or "").strip()
                 ]
             return pack
@@ -1212,41 +1273,118 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return self._materials(session).open(principal, task_id, material_id)
 
-    def detach_task_material(self, principal: Principal, task_id: UUID, material_id: UUID) -> dict[str, Any]:
+    def detach_task_material(self, principal: Principal, task_id: UUID, binding_id: UUID) -> dict[str, Any]:
         with self._session_factory() as session:
-            result = self._materials(session).detach(principal, task_id, material_id)
+            result = self._materials(session).detach(principal, task_id, binding_id)
             session.commit()
             return result
 
-    def search_task_materials(
-        self,
-        principal: Principal,
-        task_id: UUID | None,
-        query: str,
-        *,
-        limit: int = 5,
-        execution_id: UUID | None = None,
-        registered_from: Any = None,
-        registered_until: Any = None,
-    ) -> dict[str, Any]:
-        """`material.search`. 시작점이 있으면 그 업무에서, 없으면 읽을 수 있는 업무 전부에서 찾는다.
-
-        위임된 turn이면 찾은 것이 그 turn의 근거로도 남는다. 시작점 없이 찾은 결과는 각 줄이 자기 업무를 말하므로
-        근거도 그 업무에 붙는다.
-        """
+    def search_materials(self, principal: Principal, query: str, *, execution_id: UUID | None = None, **filters: Any) -> dict[str, Any]:
         with self._session_factory() as session:
-            result = self._materials(session).search(
-                principal, task_id, query, limit=limit,
-                registered_from=registered_from, registered_until=registered_until,
-            )
-            if execution_id is not None and result["results"]:
-                evidence = SqlAlchemyMaterialEvidenceRepository(session)
-                by_task: dict[str, list[dict[str, Any]]] = {}
-                for hit in result["results"]:
-                    by_task.setdefault(str(hit["task_id"]), []).append(hit)
-                for anchor, hits in by_task.items():
-                    evidence.record(execution_id, str(principal.id), UUID(anchor), result["query"], hits)
-                session.commit()
+            extractions = SqlAlchemyMaterialExtractionRepository(session)
+            result = MaterialSearchApplication(SessionMaterialOwners(self, session), extractions,
+                                               LexicalMaterialRetriever(extractions, SqlChunkIndex(session)),
+                                               self._material_queue(session)).search(principal, query, **filters)
+            if execution_id is not None:
+                SqlAlchemyMaterialEvidenceRepository(session).record(execution_id, str(principal.id), result["query"], result["results"])
+            session.commit()
+            return result
+
+    def material_metadata(self, principal: Principal, material_id: UUID) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._material_metadata(session, principal, material_id)
+            session.commit()
+            return result
+
+    def _material_metadata(self, session: Any, principal: Principal, material_id: UUID) -> dict[str, Any]:
+        sources = SessionMaterialOwners(self, session).sources(principal, set(RESOURCE_TYPES), material_id=material_id)
+        sources = [source for source in sources if source.attachment.id == material_id and source.attachment.lifecycle != "purged"]
+        if not sources:
+            raise MaterialNotFound("material was not found")
+        attachment = sources[0].attachment
+        contexts = sorted((source.context for source in sources), key=lambda row: (row["resource_type"], row["resource_id"], row["binding_id"]))
+        extraction = SqlAlchemyMaterialExtractionRepository(session).for_attachments([material_id]).get(material_id)
+        return {"material_id": str(material_id), "name": self._material_name(session, principal, attachment), "content_type": attachment.content_type,
+                "size_bytes": attachment.size_bytes, "integrity_ref": attachment.integrity_ref, "state": attachment.lifecycle,
+                "source_contexts": contexts, "origin": contexts[0]["origin"], "extraction": extraction_view(extraction)}
+
+    def _material_name(self, session: Any, principal: Principal, attachment: Any) -> str:
+        if attachment.source_kind == "resource_ref":
+            kind, _, identifier = str(attachment.source_ref).partition(":")
+            return _SessionResourceReferences(self, session).title(principal, kind, identifier) or "볼 수 없는 자료"
+        return attachment.name
+
+    def _material_folders(self, session: Any) -> MaterialFolderApplication:
+        return MaterialFolderApplication(SqlAlchemyMaterialFolderRepository(session),
+                                         OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
+                                         SqlAlchemyAttachmentRepository(session), self._material_storage,
+                                         SqlAlchemyMaterialExtractionRepository(session), self._material_queue(session))
+
+    def _register_native_material(self, session: Any, kind: str, revision_id: UUID) -> None:
+        binding, attachment = NativeMaterialRepository(session).ensure(kind, revision_id)
+        if attachment.lifecycle == "purged" or binding.unbound_at is not None:
+            return
+        extraction = SqlAlchemyMaterialExtractionRepository(session).request(attachment)
+        if extraction.status == "queued":
+            self._material_queue(session).enqueue(MaterialExtractionJob(extraction.id, attachment.id))
+
+    def open_meeting_material(self, principal: Principal, meeting_id: UUID, material_id: UUID) -> tuple[dict[str, Any], bytes]:
+        return self._open_native_material(principal, "meeting", meeting_id, material_id)
+
+    def open_report_material(self, principal: Principal, report_id: UUID, material_id: UUID) -> tuple[dict[str, Any], bytes]:
+        return self._open_native_material(principal, "report", report_id, material_id)
+
+    def _open_native_material(self, principal: Principal, resource_type: str, resource_id: UUID, material_id: UUID) -> tuple[dict[str, Any], bytes]:
+        with self._session_factory() as session:
+            sources = SessionMaterialOwners(self, session).sources(principal, {resource_type}, resource_type=resource_type, resource_id=str(resource_id), material_id=material_id)
+            attachment = next((source.attachment for source in sources if source.attachment.id == material_id), None)
+            if attachment is None:
+                raise MaterialNotFound("material was not found")
+            if attachment.source_kind == "native_recording":
+                recording = NativeMaterialRepository(session).recording_source(UUID(attachment.source_ref.rsplit(":", 1)[-1]))
+                data = self._recording_storage.get(recording.storage_key)
+            else:
+                data = NativeRevisionStorage(self._session_factory).get(attachment.source_ref)
+            if f"sha256:{hashlib.sha256(data).hexdigest()}" != attachment.integrity_ref:
+                raise MaterialError("native revision integrity does not match the registered material")
+            result = {"material_id": str(attachment.id), "name": attachment.name, "content_type": attachment.content_type}
+            session.commit()
+            return result, data
+
+    def create_material_folder(self, principal: Principal, **fields: Any) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._material_folders(session).create(principal, **fields)
+            session.commit()
+            return result
+
+    def list_material_folders(self, principal: Principal) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return self._material_folders(session).list_for(principal)
+
+    def list_folder_materials(self, principal: Principal, folder_id: UUID) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return self._material_folders(session).materials(principal, folder_id)
+
+    def upload_folder_material(self, principal: Principal, folder_id: UUID, **fields: Any) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._material_folders(session).upload(principal, folder_id, **fields)
+            session.commit()
+            return result
+
+    def open_folder_material(self, principal: Principal, folder_id: UUID, material_id: UUID) -> tuple[dict[str, Any], bytes]:
+        with self._session_factory() as session:
+            return self._material_folders(session).open(principal, folder_id, material_id)
+
+    def detach_folder_material(self, principal: Principal, folder_id: UUID, material_id: UUID) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._material_folders(session).detach(principal, folder_id, material_id)
+            session.commit()
+            return result
+
+    def archive_material_folder(self, principal: Principal, folder_id: UUID) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._material_folders(session).archive(principal, folder_id)
+            session.commit()
             return result
 
     def reindex_material_search(self, *, limit: int = 500) -> int:
@@ -1274,7 +1412,6 @@ class WorkflowApplication:
             self._material_storage,
             extractions,
             self._material_queue(session),
-            LexicalMaterialRetriever(extractions, SqlChunkIndex(session)),
             _SessionResourceReferences(self, session),
             _SessionReadableWork(self, session),
         )
@@ -1490,6 +1627,7 @@ class WorkflowApplication:
         return ActionCenterApplication(
             action_handlers(
                 session,
+                evidence_reader=lambda principal, turn_id: self._action_material_evidence(session, principal, turn_id),
                 work_requests=self._work_requests(session),
                 actions=self._actions(session),
                 assignments=self._assignments(session),
@@ -1616,7 +1754,7 @@ class WorkflowApplication:
         return TaskApplication(
             SqlAlchemyTaskRepository(session),
             SqlAlchemyWorkRequestRepository(session),
-            SqlAlchemyActionRepository(session),
+            SqlAlchemyActionRepository(session, evidence_reader=lambda principal, turn_id: self._action_material_evidence(session, principal, turn_id)),
             SqlAlchemyAttachmentRepository(session),
             SqlAlchemyOrganizationRepository(session),
             self._projects(session),
@@ -1633,6 +1771,8 @@ class WorkflowApplication:
             SqlAlchemyAttachmentRepository(session),
             self._material_storage,
             _SessionTaskReferences(self, session),
+            SqlAlchemyMaterialExtractionRepository(session),
+            self._material_queue(session),
         )
 
     def _conversations(self, session: Any) -> ConversationApplication:
@@ -1641,15 +1781,24 @@ class WorkflowApplication:
                 session,
                 ConversationJobQueue(self.job_queue(session)),
                 self._settings.conversation_queue_max_fragments,
+                evidence_reader=lambda principal, turn_id: self._action_material_evidence(session, principal, turn_id),
             ),
             SqlAlchemyConversationContextResolver(session),
             _SessionAnswerResources(self, session),
         )
 
+    def _action_material_evidence(self, session: Any, principal: Principal, turn_id: UUID) -> list[dict[str, Any]]:
+        evidence = [{"attachment_id": str(row.attachment_id), "material_id": str(row.attachment_id),
+                     "name": row.name, "integrity_ref": row.integrity_ref, "source_contexts": row.source_contexts}
+                    for row in session.scalars(select(ConversationContentEvidenceRecord).where(
+                        ConversationContentEvidenceRecord.turn_id == turn_id).order_by(
+                            ConversationContentEvidenceRecord.rank, ConversationContentEvidenceRecord.id))]
+        return readable_content_evidence(self, session, principal, evidence)
+
     def _actions(self, session: Any) -> ActionApplication:
         return ActionApplication(
-            SqlAlchemyActionRepository(session),
-            SqlAlchemyActionExecutor(session, self._report_provider),
+            SqlAlchemyActionRepository(session, evidence_reader=lambda principal, turn_id: self._action_material_evidence(session, principal, turn_id)),
+            SqlAlchemyActionExecutor(session, self._report_provider, evidence_reader=lambda principal, turn_id: self._action_material_evidence(session, principal, turn_id)),
         )
 
     def add_task_checklist_item(

@@ -1,0 +1,2466 @@
+{
+  "profile": "scax-material-corpus-v1",
+  "phase": "local_evaluation",
+  "files": 96,
+  "source_classes": {
+    "work_brief": 24,
+    "literature": 24,
+    "permanent": 24,
+    "resource": 24
+  },
+  "bytes": 1632154,
+  "min_bytes": 183,
+  "median_bytes": 9261,
+  "max_bytes": 117454,
+  "excluded": {
+    "path": 10,
+    "content_candidate": 19
+  },
+  "corpus_hash": "818ee179d8ff62b91ee56fe280aa6a340b31cb062588dfba24fd0549f57485f6",
+  "provider_calls": 0,
+  "database": "ephemeral_sqlite",
+  "load_seconds": 0.503,
+  "extract_seconds": 4.073,
+  "chunks": 1184,
+  "owners": {
+    "personal_folder": 32,
+    "team_folder": 32,
+    "task": 32
+  },
+  "queries": [
+    {
+      "query_id": "000341e5c8d95a0cb8d9",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        22.332,
+        15.357
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0002870cd50ef312f430",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": 4,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        11.032,
+        10.645
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "00c94ff5db32ea590ead",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 8,
+      "latency_ms": [
+        10.673,
+        10.46
+      ],
+      "selected_recovery": true,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "013201e06f4a2ee3549e",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 2,
+      "latency_ms": [
+        10.358,
+        10.919
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "002b2010527d6556e264",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 8,
+      "latency_ms": [
+        10.494,
+        10.51
+      ],
+      "selected_recovery": true,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "005bece3c0217be73b7f",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": 3,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        11.583,
+        10.658
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "055b9cf91a9622fefac2",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": 3,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.296,
+        10.723
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0add72a02b0cac00523e",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        15.264,
+        15.483
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0215ce91a7ae0df07825",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": 3,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.392,
+        10.334
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0725cdd0cd9c8c7a39b8",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": 2,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.496,
+        30.46
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "078d86b46355c4a93a60",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 8,
+      "latency_ms": [
+        10.725,
+        10.729
+      ],
+      "selected_recovery": true,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0588dc5ad7682d51380e",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": 4,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.524,
+        10.56
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "02e3e33453bc49fe95a6",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 8,
+      "latency_ms": [
+        10.78,
+        10.673
+      ],
+      "selected_recovery": true,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "15c9736ebcabe585ac79",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        15.583,
+        15.656
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0130d4d0a48ef0899b1c",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 8,
+      "latency_ms": [
+        10.578,
+        10.442
+      ],
+      "selected_recovery": true,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "03fb3b4495d5e0e7d045",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 8,
+      "latency_ms": [
+        10.394,
+        10.462
+      ],
+      "selected_recovery": true,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "005eff3ee1bb208e8108",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": 5,
+      "relevant_hits": 1,
+      "hit_count": 7,
+      "latency_ms": [
+        10.418,
+        10.482
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0448d5e0f66c6a2f26d9",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": 3,
+      "relevant_hits": 1,
+      "hit_count": 5,
+      "latency_ms": [
+        10.296,
+        10.341
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "345241dfdb69870c5498",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.392,
+        10.31
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "08cd2a19da826eca7099",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": 2,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.495,
+        10.529
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0d53daaa6b0da2a3cd64",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": 3,
+      "relevant_hits": 1,
+      "hit_count": 5,
+      "latency_ms": [
+        10.336,
+        10.351
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0a20d4db8016a73d3952",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": 5,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.494,
+        10.402
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0adf58355e2c57c7bd31",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": 4,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.38,
+        10.639
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "000d5dc3b30c3a4b07c3",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 2,
+      "latency_ms": [
+        10.185,
+        10.117
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "01b7cf2c62cefff4846c",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        15.859,
+        15.708
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "00d904292cb2e7d005a8",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 1,
+      "latency_ms": [
+        10.212,
+        10.053
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "009c85bcd65d5a4257d4",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 8,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.355,
+        10.306
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "02f86e0fffbf4a031dc9",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 2,
+      "latency_ms": [
+        10.063,
+        10.263
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0002829ab5b0ac2dd2af",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 2,
+      "latency_ms": [
+        10.051,
+        10.045
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0103be797cca9d65f065",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 5,
+      "latency_ms": [
+        10.398,
+        10.103
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0033494a3733efb42dc7",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 6,
+      "latency_ms": [
+        11.046,
+        10.751
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "017e86b70ef7f6366e2c",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 8,
+      "latency_ms": [
+        10.979,
+        10.893
+      ],
+      "selected_recovery": true,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "09ce8e94012bd9958f3a",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 1,
+      "latency_ms": [
+        10.388,
+        10.377
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "3fba8258b8fa2178a987",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 0,
+      "latency_ms": [
+        7.168,
+        7.078
+      ],
+      "selected_recovery": false,
+      "projection_contains_query": true,
+      "query_index_overlap": 0,
+      "recall_at_8": 0.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "00b5319bad06f6a5c6f1",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 1,
+      "latency_ms": [
+        11.278,
+        10.606
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0d8c199929a2baaea2c5",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        17.22,
+        17.024
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "130e9b81aeb5dd837e54",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        35.799,
+        16.206
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "137a7037c7ccd6492a60",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 5,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.5,
+        10.547
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "01ad87262ca121fcf337",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 2,
+      "latency_ms": [
+        10.193,
+        10.193
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "14ad1434a31834eef812",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        14.569,
+        14.594
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "00205bd503591cb4268a",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 2,
+      "latency_ms": [
+        10.139,
+        10.228
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "04e89109de986d2b380f",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 1,
+      "latency_ms": [
+        10.053,
+        10.323
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "086ea694bbad9e8e5446",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 5,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        14.777,
+        14.589
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0755ac570404d20c78c7",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 6,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.569,
+        10.381
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0b09869cc3a16a41adf6",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 2,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        14.736,
+        14.847
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0269a84cc2c38fe70143",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 1,
+      "latency_ms": [
+        10.175,
+        10.096
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "000707af4fa87c1a7920",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 8,
+      "latency_ms": [
+        10.303,
+        10.396
+      ],
+      "selected_recovery": true,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0081f6ea813b3a8d997c",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 4,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.431,
+        10.399
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "00c61db30e2452394115",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 7,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.343,
+        10.48
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0100ff8fb17580477ab4",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 1,
+      "latency_ms": [
+        10.202,
+        10.137
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "009762caaf4f56933e54",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 8,
+      "latency_ms": [
+        10.398,
+        10.736
+      ],
+      "selected_recovery": true,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "007fb5fb9a17449d106e",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        16.667,
+        16.582
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "029f6f2817ac2c40ea9c",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 4,
+      "relevant_hits": 1,
+      "hit_count": 4,
+      "latency_ms": [
+        10.607,
+        10.361
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "00b3ce921b34250fc2b4",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 2,
+      "relevant_hits": 1,
+      "hit_count": 4,
+      "latency_ms": [
+        10.222,
+        10.249
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "00d05340168bdce536c3",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.391,
+        10.461
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "00fdfb9cb0f944713a2c",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 2,
+      "latency_ms": [
+        10.185,
+        9.94
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "04f15657c40da99e85e5",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 1,
+      "latency_ms": [
+        10.076,
+        10.036
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "22f3bf1a713e6953e890",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.41,
+        11.041
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "01683adb34f4b62c733b",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 2,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        17.054,
+        17.17
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "012eb3b444d3ddafbb9f",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 2,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        11.996,
+        12.543
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "77238ba1c106e7cb36d1",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.711,
+        10.456
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "07baaffe6da609e5c9ce",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 5,
+      "latency_ms": [
+        10.211,
+        10.354
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0c5f1430521a519bc2ed",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        14.758,
+        14.663
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "270db3c8e92a0ef60965",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 2,
+      "latency_ms": [
+        10.19,
+        10.145
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "8362938122a94b902811",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.361,
+        10.325
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "2ddfd20487f49540bd4d",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 2,
+      "latency_ms": [
+        10.426,
+        10.146
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0d87536c0c36dd161e8c",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 2,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.369,
+        30.393
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "05421cd008e1849d4449",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        15.58,
+        15.308
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "019272220cab29b41679",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.435,
+        10.361
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "03f0973c214e1fbeabf2",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        15.982,
+        16.174
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "075731e17d73ba1dc2e4",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        15.845,
+        15.703
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "00b635e9ba1a0c6a066a",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 1,
+      "latency_ms": [
+        10.318,
+        10.289
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "00293c9379bdbdcdc085",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": 2,
+      "relevant_hits": 1,
+      "hit_count": 6,
+      "latency_ms": [
+        10.482,
+        10.598
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "006888e6f11ce8823617",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 8,
+      "latency_ms": [
+        10.344,
+        10.407
+      ],
+      "selected_recovery": true,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0040d9c9102e680e71cc",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 8,
+      "latency_ms": [
+        10.422,
+        10.465
+      ],
+      "selected_recovery": true,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "00049eb2c41cdb40a5b7",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": 5,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.471,
+        10.483
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "02a4bb10d882e58060c6",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": 4,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.461,
+        10.51
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0251affeaf8a7bb3a021",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": 3,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.534,
+        10.419
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "12e53b729f68c95cf3c0",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": 5,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.323,
+        10.5
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "012df9c0123b302e913a",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 8,
+      "latency_ms": [
+        10.485,
+        10.508
+      ],
+      "selected_recovery": true,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "00656f853139637f3251",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": 5,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.395,
+        10.5
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "020150797297525d0cee",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 2,
+      "latency_ms": [
+        10.167,
+        10.147
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "050414848c86d0fe37c8",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 8,
+      "latency_ms": [
+        10.828,
+        10.479
+      ],
+      "selected_recovery": true,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "05b8738e60101f1f8161",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": 7,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.523,
+        10.438
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "024b3e4a18e674ab10c6",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 8,
+      "latency_ms": [
+        10.594,
+        10.456
+      ],
+      "selected_recovery": true,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0f1917d53e0b0ddece0c",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 8,
+      "latency_ms": [
+        10.502,
+        11.129
+      ],
+      "selected_recovery": false,
+      "projection_contains_query": true,
+      "query_index_overlap": 0,
+      "recall_at_8": 0.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "042ac4bd6852d6481c56",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 8,
+      "latency_ms": [
+        10.487,
+        10.612
+      ],
+      "selected_recovery": true,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "01d35f08fb319cd174f4",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": 3,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        12.101,
+        10.542
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "04eefef51a9a1ed54ff1",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 1,
+      "latency_ms": [
+        10.205,
+        10.178
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "4644c6b155edfe15d0ca",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        15.125,
+        15.215
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "02ca12a469929a26f724",
+      "kind": "unique_korean",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.344,
+        10.52
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0006e8cb85e3598b5467",
+      "kind": "ambiguous_korean",
+      "expected_count": 4,
+      "expected_source_classes": [
+        "literature",
+        "resource",
+        "work_brief"
+      ],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 8,
+      "latency_ms": [
+        10.43,
+        10.493
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "00150457d9c166f27844",
+      "kind": "ambiguous_korean",
+      "expected_count": 4,
+      "expected_source_classes": [
+        "literature",
+        "resource"
+      ],
+      "rank": 1,
+      "relevant_hits": 2,
+      "hit_count": 8,
+      "latency_ms": [
+        10.474,
+        10.667
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.5,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0023f8843aa23e393464",
+      "kind": "ambiguous_korean",
+      "expected_count": 4,
+      "expected_source_classes": [
+        "literature",
+        "permanent",
+        "resource"
+      ],
+      "rank": 4,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.452,
+        10.599
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.25,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0062abacbf57a61a061d",
+      "kind": "ambiguous_korean",
+      "expected_count": 3,
+      "expected_source_classes": [
+        "permanent",
+        "resource"
+      ],
+      "rank": 6,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.418,
+        10.586
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.3333,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "00abaf7d80037de142aa",
+      "kind": "ambiguous_korean",
+      "expected_count": 6,
+      "expected_source_classes": [
+        "resource",
+        "work_brief"
+      ],
+      "rank": 6,
+      "relevant_hits": 2,
+      "hit_count": 8,
+      "latency_ms": [
+        10.559,
+        10.589
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.3333,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "00ac35f36f3a0a613899",
+      "kind": "ambiguous_korean",
+      "expected_count": 7,
+      "expected_source_classes": [
+        "literature",
+        "resource",
+        "work_brief"
+      ],
+      "rank": 1,
+      "relevant_hits": 4,
+      "hit_count": 8,
+      "latency_ms": [
+        30.604,
+        10.559
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.5714,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "00d41534da54f23e71f0",
+      "kind": "ambiguous_korean",
+      "expected_count": 4,
+      "expected_source_classes": [
+        "literature",
+        "resource",
+        "work_brief"
+      ],
+      "rank": 3,
+      "relevant_hits": 1,
+      "hit_count": 8,
+      "latency_ms": [
+        10.576,
+        10.561
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.25,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0105e4fcb087d3f39e7d",
+      "kind": "ambiguous_korean",
+      "expected_count": 6,
+      "expected_source_classes": [
+        "permanent",
+        "resource",
+        "work_brief"
+      ],
+      "rank": 4,
+      "relevant_hits": 4,
+      "hit_count": 8,
+      "latency_ms": [
+        10.64,
+        10.457
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.6667,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "012f8c548e9547e80a9c",
+      "kind": "ambiguous_korean",
+      "expected_count": 3,
+      "expected_source_classes": [
+        "literature",
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 3,
+      "hit_count": 8,
+      "latency_ms": [
+        14.872,
+        14.98
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0133e62e6fc4d2ab2a8d",
+      "kind": "ambiguous_korean",
+      "expected_count": 3,
+      "expected_source_classes": [
+        "permanent",
+        "resource",
+        "work_brief"
+      ],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 8,
+      "latency_ms": [
+        10.415,
+        10.598
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0158ac794c67e54f43f4",
+      "kind": "ambiguous_korean",
+      "expected_count": 4,
+      "expected_source_classes": [
+        "permanent",
+        "resource",
+        "work_brief"
+      ],
+      "rank": 1,
+      "relevant_hits": 4,
+      "hit_count": 8,
+      "latency_ms": [
+        14.766,
+        14.973
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0160386ff3ce3863da43",
+      "kind": "ambiguous_korean",
+      "expected_count": 3,
+      "expected_source_classes": [
+        "work_brief"
+      ],
+      "rank": 1,
+      "relevant_hits": 2,
+      "hit_count": 8,
+      "latency_ms": [
+        10.473,
+        10.344
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.6667,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "8ae7d2efba2a09155b7d",
+      "kind": "synonym_probe",
+      "expected_count": 30,
+      "expected_source_classes": [
+        "literature",
+        "permanent",
+        "resource",
+        "work_brief"
+      ],
+      "rank": 1,
+      "relevant_hits": 4,
+      "hit_count": 8,
+      "latency_ms": [
+        10.455,
+        10.421
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.1333,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "8971c6fad677ee4fd88c",
+      "kind": "synonym_probe",
+      "expected_count": 12,
+      "expected_source_classes": [
+        "literature",
+        "permanent",
+        "resource",
+        "work_brief"
+      ],
+      "rank": 3,
+      "relevant_hits": 3,
+      "hit_count": 8,
+      "latency_ms": [
+        10.383,
+        11.594
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.25,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "01dfd369cfa718dda5f1",
+      "kind": "synonym_probe",
+      "expected_count": 23,
+      "expected_source_classes": [
+        "literature",
+        "permanent",
+        "resource",
+        "work_brief"
+      ],
+      "rank": 1,
+      "relevant_hits": 2,
+      "hit_count": 8,
+      "latency_ms": [
+        11.698,
+        13.21
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.087,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "4ea159b30a6bc07340f0",
+      "kind": "synonym_probe",
+      "expected_count": 21,
+      "expected_source_classes": [
+        "literature",
+        "permanent",
+        "resource",
+        "work_brief"
+      ],
+      "rank": 2,
+      "relevant_hits": 2,
+      "hit_count": 8,
+      "latency_ms": [
+        12.532,
+        11.9
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 0.0952,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "5ac7de6274ec51444b03",
+      "kind": "mentioned_date",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 2,
+      "latency_ms": [
+        10.13,
+        10.055
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "5639fe065f49530b4b9c",
+      "kind": "mentioned_date",
+      "expected_count": 2,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 2,
+      "hit_count": 8,
+      "latency_ms": [
+        10.497,
+        10.335
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "faf7b04fb750e54c2f32",
+      "kind": "mentioned_date",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "literature"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 1,
+      "latency_ms": [
+        9.924,
+        10.607
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "0390eae8c98b5e45030e",
+      "kind": "mentioned_date",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "resource"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 2,
+      "latency_ms": [
+        10.677,
+        10.57
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "41b62fb4518505d36dcd",
+      "kind": "mentioned_date",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 1,
+      "latency_ms": [
+        10.282,
+        10.25
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "4a37c6f7ec34678e57c6",
+      "kind": "mentioned_date",
+      "expected_count": 1,
+      "expected_source_classes": [
+        "permanent"
+      ],
+      "rank": 1,
+      "relevant_hits": 1,
+      "hit_count": 2,
+      "latency_ms": [
+        10.474,
+        10.226
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": 1.0,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    },
+    {
+      "query_id": "d839b0832cb43b33611e",
+      "kind": "no_result",
+      "expected_count": 0,
+      "expected_source_classes": [],
+      "rank": null,
+      "relevant_hits": 0,
+      "hit_count": 0,
+      "latency_ms": [
+        10.432,
+        10.122
+      ],
+      "selected_recovery": null,
+      "projection_contains_query": null,
+      "query_index_overlap": null,
+      "recall_at_8": null,
+      "searched_materials": 96,
+      "unavailable_materials_count": 0
+    }
+  ],
+  "locator_checks": 716,
+  "locator_failures": 0,
+  "source_span_failures": 0,
+  "unauthorized_metadata_absent": true,
+  "jiho_searched_materials": 32,
+  "jiho_owner_scope_valid": true,
+  "mina_searched_materials": 96,
+  "mina_owner_scope_valid": true,
+  "source_hashes_unchanged": true,
+  "vault_status_unchanged": true,
+  "temporary_data_removed": true,
+  "correctness_pass": true
+}
