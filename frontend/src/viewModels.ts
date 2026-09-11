@@ -68,11 +68,24 @@ export type Project = {
 };
 
 export type ProjectMember = {
+  assignment_id?: string;
   member_id: string;
   display_name: string;
   assignment_kind: "lead" | "member";
   valid_from: string | null;
   valid_until: string | null;
+};
+
+/** 현재 구성원과 섞지 않고 읽는 한 번의 프로젝트 참여 회차. */
+export type ProjectParticipation = ProjectMember & {
+  assignment_id: string;
+  assigned_by_member_id: string | null;
+  assigned_by_display_name: string | null;
+  created_at: string;
+  ended_at: string | null;
+  ended_by_member_id: string | null;
+  ended_by_display_name: string | null;
+  end_reason: string | null;
 };
 
 export type ProjectDetail = Project & {

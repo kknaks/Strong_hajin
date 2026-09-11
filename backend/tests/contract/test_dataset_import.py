@@ -258,6 +258,9 @@ def test_a_dataset_can_carry_projects_and_who_is_on_them(tmp_path) -> None:
             select(AccessGrantRecord).where(AccessGrantRecord.member_id == "ds-noh", AccessGrantRecord.scope_kind == "project")
         ).all()
         assert [grant.scope_ref for grant in grants] == [str(project.id)]
+        assert [grant.origin_project_assignment_id for grant in grants] == [
+            next(row.id for row in joined if row.member_id == "ds-noh")
+        ]
 
     second = import_into(database_url, read_tables(tmp_path / "dataset"), password=PASSWORD)
     assert "projects" not in second.created and "project_assignments" not in second.created

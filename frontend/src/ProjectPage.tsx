@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { assignToProject, createProject, getMemberDirectory, getProject, listProjects, releaseFromProject } from "./api";
+import {
+  assignToProject,
+  createProject,
+  getMemberDirectory,
+  getProject,
+  getProjectParticipationHistory,
+  listProjects,
+  releaseFromProject,
+} from "./api";
 import { formatDate, personName, taskStateLabel } from "./labels";
 import { Select } from "./Select";
-import type { Persona, Project, ProjectDetail } from "./viewModels";
+import type { Persona, Project, ProjectDetail, ProjectParticipation } from "./viewModels";
 
 /**
  * 프로젝트 — 부서를 가로질러 묶이는 일과, 그 일을 함께 하는 사람들.
@@ -17,11 +25,29 @@ import type { Persona, Project, ProjectDetail } from "./viewModels";
 export function ProjectPage({ personaId, onError }: { personaId: string; onError: (message: string | null) => void }) {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [selected, setSelected] = useState<ProjectDetail | null>(null);
+  const [history, setHistory] = useState<ProjectParticipation[] | null>(null);
   const [directory, setDirectory] = useState<Persona[]>([]);
   const [opening, setOpening] = useState(false);
   const [name, setName] = useState("");
   const [joining, setJoining] = useState("");
+  const [releasing, setReleasing] = useState<{
+    assignmentId?: string;
+    memberId: string;
+    displayName: string;
+  } | null>(null);
+  const [releaseReason, setReleaseReason] = useState("");
   const [busy, setBusy] = useState(false);
+
+  const loadProject = useCallback(async (projectId: string) => {
+    setReleasing(null);
+    setReleaseReason("");
+    const [detail, participationHistory] = await Promise.all([
+      getProject(projectId),
+      getProjectParticipationHistory(projectId),
+    ]);
+    setSelected(detail);
+    setHistory(participationHistory);
+  }, []);
 
   const reload = useCallback(
     async (keep?: string) => {
@@ -29,25 +55,30 @@ export function ProjectPage({ personaId, onError }: { personaId: string; onError
         const rows = await listProjects();
         setProjects(rows);
         const target = keep ?? selected?.project_id ?? rows[0]?.project_id;
-        setSelected(target ? await getProject(target) : null);
+        if (target) {
+          await loadProject(target);
+        } else {
+          setSelected(null);
+          setHistory(null);
+        }
         onError(null);
       } catch (error) {
         onError(error instanceof Error ? error.message : "프로젝트를 불러오지 못했습니다.");
       }
     },
     // 선택은 사용자 조작으로만 바뀐다: 목록을 다시 읽을 때마다 선택이 튀지 않게 한다.
-    [onError, selected?.project_id],
+    [loadProject, onError, selected?.project_id],
   );
 
   useEffect(() => {
     void listProjects()
       .then(async (rows) => {
         setProjects(rows);
-        if (rows[0]) setSelected(await getProject(rows[0].project_id));
+        if (rows[0]) await loadProject(rows[0].project_id);
       })
       .catch((error: unknown) => onError(error instanceof Error ? error.message : "프로젝트를 불러오지 못했습니다."));
     void getMemberDirectory().then(setDirectory).catch(() => setDirectory([]));
-  }, [onError, personaId]);
+  }, [loadProject, onError, personaId]);
 
   const joined = new Set((selected?.members ?? []).map((row) => row.member_id));
   const iAmIn = joined.has(personaId);
@@ -85,7 +116,9 @@ export function ProjectPage({ personaId, onError }: { personaId: string; onError
     if (!selected || busy) return;
     setBusy(true);
     try {
-      await releaseFromProject(selected.project_id, memberId);
+      await releaseFromProject(selected.project_id, memberId, releasing?.assignmentId, releaseReason);
+      setReleasing(null);
+      setReleaseReason("");
       await reload(selected.project_id);
     } catch (error) {
       onError(error instanceof Error ? error.message : "담당자를 떼지 못했습니다.");
@@ -132,7 +165,7 @@ export function ProjectPage({ personaId, onError }: { personaId: string; onError
                 <button
                   aria-current={selected?.project_id === project.project_id}
                   className={`project-row ${selected?.project_id === project.project_id ? "on" : ""}`}
-                  onClick={() => void getProject(project.project_id).then(setSelected)}
+                  onClick={() => void loadProject(project.project_id)}
                   type="button"
                 >
                   <span className="project-row-name">{project.name}</span>
@@ -157,7 +190,7 @@ export function ProjectPage({ personaId, onError }: { personaId: string; onError
             )}
             {selected.description && <p>{selected.description}</p>}
 
-            <section aria-label="담당자">
+            <section aria-label="현재 참여자">
               <b>
                 담당자 {selected.members.length}명 <small className="t-meta">· 부서와 무관하게 붙습니다</small>
               </b>
@@ -168,14 +201,55 @@ export function ProjectPage({ personaId, onError }: { personaId: string; onError
                     <span>{personName(row.display_name)}</span>
                     {row.valid_until && <span className="t-meta">~ {formatDate(row.valid_until.slice(0, 10))}</span>}
                     {selected.may_manage && (
-                      <button className="btn link" disabled={busy} onClick={() => void release(row.member_id)} type="button">
-                        떼기
+                      <button
+                        aria-label={`${personName(row.display_name)} 참여 종료`}
+                        className="btn link"
+                        disabled={busy}
+                        onClick={() => {
+                          setReleasing({
+                            assignmentId: row.assignment_id,
+                            memberId: row.member_id,
+                            displayName: personName(row.display_name),
+                          });
+                          setReleaseReason("");
+                        }}
+                        type="button"
+                      >
+                        참여 종료
                       </button>
                     )}
                   </li>
                 ))}
                 {selected.members.length === 0 && <li className="t-meta">아직 아무도 붙어 있지 않습니다.</li>}
               </ul>
+              {releasing && (
+                <div className="project-join">
+                  <label className="field" htmlFor="project-release-reason">
+                    <span>참여 종료 사유 (선택)</span>
+                    <input
+                      id="project-release-reason"
+                      maxLength={4000}
+                      onChange={(event) => setReleaseReason(event.target.value)}
+                      placeholder={`${releasing.displayName}의 종료 사유`}
+                      value={releaseReason}
+                    />
+                  </label>
+                  <button className="btn h30" disabled={busy} onClick={() => void release(releasing.memberId)} type="button">
+                    종료 기록
+                  </button>
+                  <button
+                    className="btn h30"
+                    disabled={busy}
+                    onClick={() => {
+                      setReleasing(null);
+                      setReleaseReason("");
+                    }}
+                    type="button"
+                  >
+                    취소
+                  </button>
+                </div>
+              )}
               {selected.may_manage && (
               <div className="project-join">
                 <Select
@@ -195,6 +269,22 @@ export function ProjectPage({ personaId, onError }: { personaId: string; onError
                 </button>
               </div>
               )}
+            </section>
+
+            <section aria-label="참여 이력">
+              <b>참여 이력 {history === null ? "" : `${history.length}건`}</b>
+              <ul className="project-members">
+                {(history ?? []).map((row) => (
+                  <li data-assignment-id={row.assignment_id} key={row.assignment_id}>
+                    <span className="project-member-kind">{row.assignment_kind === "lead" ? "담당" : "참여"}</span>
+                    <span>{personName(row.display_name)}</span>
+                    <span className="t-meta">{row.ended_at ? "종료" : "현재"}</span>
+                    {row.ended_by_display_name && <span className="t-meta">처리 {personName(row.ended_by_display_name)}</span>}
+                    {row.end_reason && <span>{row.end_reason}</span>}
+                  </li>
+                ))}
+                {history !== null && history.length === 0 && <li className="t-meta">기록된 참여가 없습니다.</li>}
+              </ul>
             </section>
 
             <section aria-label="이 프로젝트의 업무">

@@ -19,7 +19,7 @@ PROTECTED_CODEX_BASE ?= node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a046
 PROTECTED_RUNTIME_BASE ?= debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 PROTECTED_EXPECT_CONSTANTS ?= visible
 
-.PHONY: install test test-postgres frontend-test frontend-build frontend-assets verify protected-build protected-inspect postgres-up postgres-down reset-demo reset-catalog sync-demo-schema dataset-import dataset-inspect api conversation-worker material-worker meeting-worker mcp frontend-install frontend storybook storybook-build api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-ax-editable-task e2e-ax-editable-meeting e2e-ax-meeting-draft e2e-assistant-character e2e-assistant-preference e2e-follow-up-continuation e2e-ax-action-draft e2e-ax-action-materials e2e-conversation-report-edit-action e2e-daily-report e2e-material-search e2e-meeting-live-transcript e2e-access-roles e2e-graph-question local-stack acceptance-e2e live-report-smoke soniox-smoke
+.PHONY: install test test-postgres frontend-test frontend-build frontend-assets verify protected-build protected-inspect postgres-up postgres-down reset-demo reset-catalog sync-demo-schema dataset-import dataset-inspect api conversation-worker material-worker meeting-worker mcp frontend-install frontend storybook storybook-build api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-ax-editable-task e2e-ax-editable-meeting e2e-ax-meeting-draft e2e-assistant-character e2e-assistant-preference e2e-follow-up-continuation e2e-ax-action-draft e2e-ax-action-materials e2e-conversation-report-edit-action e2e-daily-report e2e-material-search e2e-meeting-live-transcript e2e-access-roles e2e-project-participation-history e2e-graph-question local-stack acceptance-e2e live-report-smoke soniox-smoke
 
 install:
 	cd backend && uv sync --all-groups
@@ -262,6 +262,9 @@ e2e-meeting-live-transcript:
 e2e-access-roles:
 	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:access-roles
 
+e2e-project-participation-history:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:project-participation-history
+
 # 관계 질문 두 turn을 실제 Codex CLI·MCP로: graph 먼저 걷고, 이어지는 질문은 이 대화가 읽은 id에서 출발한다.
 e2e-graph-question:
 	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:graph-question
@@ -332,6 +335,7 @@ acceptance-e2e:
 		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-chat-checklist; \
 		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-relation-graph; \
 		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-access-roles; \
+		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-project-participation-history; \
 		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-graph-question
 
 # Opt-in: needs a real SONIOX_API_KEY. Prints provider request ids and durations only.

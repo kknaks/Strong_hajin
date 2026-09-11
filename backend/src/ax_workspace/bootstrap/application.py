@@ -1689,15 +1689,33 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return self._projects(session).get(principal, project_id)
 
+    def project_participation_history(self, principal: Principal, project_id: UUID) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return self._projects(session).participation_history(principal, project_id)
+
     def assign_to_project(self, principal: Principal, project_id: UUID, member_id: str, **fields: Any) -> dict[str, Any]:
         with self._session_factory() as session:
             result = self._projects(session).assign(principal, project_id, member_id, **fields)
             session.commit()
             return result
 
-    def release_from_project(self, principal: Principal, project_id: UUID, member_id: str) -> None:
+    def release_from_project(
+        self,
+        principal: Principal,
+        project_id: UUID,
+        member_id: str,
+        *,
+        assignment_id: UUID | None = None,
+        reason: str | None = None,
+    ) -> None:
         with self._session_factory() as session:
-            self._projects(session).release(principal, project_id, member_id)
+            self._projects(session).release(
+                principal,
+                project_id,
+                member_id,
+                assignment_id=assignment_id,
+                reason=reason,
+            )
             session.commit()
 
     def list_tasks(

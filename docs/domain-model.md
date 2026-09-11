@@ -26,6 +26,18 @@ Projection: `GET /api/organization/members/{id}`(6축 통합 — 계층·소속�
 Projection: `GET /api/organization/members/{id}/history?axis=membership|appointment|grade|job|grant`(축별 기간 행, 최신순 — 본인 또는 관리 권한만, 아니면 403).
 Projection: `GET /api/organization/activity?unit_id=&limit=&cursor=`(조직 축 변경 기록 — `domain.py::ORGANIZATION_ACTIVITY_AXES`에 있는 `event_kind`만 축으로 읽고 나머지는 제외. 해당 unit(없으면 루트)에 `organization.manage` 필요).
 
+## 프로젝트 참여 (Project Participation)
+
+| ERD | 테이블 | 비고 |
+|---|---|---|
+| PROJECT | `projects` | 소유 조직 없이 부서를 가로지르는 업무 축. 프로젝트 read는 현재 유효한 project-scope grant 하나로만 열린다 |
+| PROJECT_ASSIGNMENT | `project_assignments` | 참여 회차별 append-only 행. `valid_from/valid_until`은 계획 유효기간, `ended_at/ended_by_member_id/end_reason`은 실제 제외 사실이다. `(project_id, member_id) WHERE ended_at IS NULL` partial unique index가 미종료 회차 하나를 보장한다 |
+| ACCESS_GRANT | `access_grants.origin_project_assignment_id` | 표준 프로젝트 grant를 발생시킨 참여 회차. 종료는 이 값이 가리키는 grant만 회수하고 같은 role/scope의 독립 grant는 유지한다 |
+
+현재 구성원·업무 배정 후보·graph 관계는 미종료이면서 현재 유효기간에 든 참여만 사용한다. 전체 이력은 `GET /api/projects/{id}/participation-history`로 분리하고 기존 project read를 그대로 검사하므로, 종료된 참여자는 그 과거 사실만으로 프로젝트 이름·이력 건수를 읽지 못한다. 재참여는 과거 행을 다시 열지 않고 새 참여와 새 grant를 append한다. 동시 요청은 참여 행 lock과 DB partial unique index로 직렬화한다. 종료 명령이 `assignment_id`를 보내면 그 회차를 idempotency receipt로 사용해 과거 종료 재전송이 새 회차를 끝내지 않는다. 식별자가 없는 기존 DELETE는 호환을 위해 요청 시점의 현재 회차를 종료하며, 재참여 전의 요청인지 새 종료 의도인지는 서버가 구분할 수 없다.
+
+기존 DB 이행은 운영 migration gate다. nullable 종료 컬럼과 grant 발생 근거를 먼저 추가하고, 기존 표준 project-assignment grant만 당시 유일한 참여 행에 backfill한 다음, 기존 무조건 unique `uq_project_assignment`를 제거하고 partial unique index를 만든다. 기존 행의 `ended_at`·처리자·사유는 근거 없이 합성하지 않는다. `sync-demo-schema`는 nullable 컬럼 추가까지만 가능한 개발 helper라 constraint 교체·backfill을 대신하지 않으며, 로컬 demo는 reset하거나 별도 migration을 적용해야 한다.
+
 ## 판단 통합 (ActionItem) — 현재 상태
 
 사람 판단이 필요한 경로는 업무 요청, 직접 배정, AX 변경 제안 세 가지이고, 셋 다 하나의 판단 계약을 쓴다.

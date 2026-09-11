@@ -101,6 +101,199 @@ def test_the_grant_says_which_rule_made_it_and_ends_when_the_assignment_does(cli
     assert client.get(f"/api/tasks/{task.json()['task_id']}", headers=HYEON).status_code == 404
 
 
+def test_release_preserves_participation_history_separate_from_current_members(client: TestClient) -> None:
+    project = _project(client)
+    project_id = project["project_id"]
+    joined = client.post(
+        f"/api/projects/{project_id}/members",
+        headers=JIHO,
+        json={"member_id": "hyeon", "kind": "member"},
+    )
+    assert joined.status_code == 201, joined.text
+
+    released = client.request(
+        "DELETE",
+        f"/api/projects/{project_id}/members/hyeon",
+        headers=JIHO,
+        json={"reason": "고객사 지원 종료"},
+    )
+    assert released.status_code == 204, released.text
+
+    current = client.get(f"/api/projects/{project_id}", headers=JIHO).json()
+    assert "hyeon" not in {row["member_id"] for row in current["members"]}
+    assert "hyeon" not in {
+        row["id"] for row in client.get("/api/task-assignment-candidates", headers=JIHO).json()
+    }
+    graph = client.get("/api/graph/neighbors", headers=JIHO, params={"node": f"project:{project_id}"}).json()
+    assert not any(edge["from"] == "person:hyeon" for edge in graph["edges"])
+
+    history = client.get(f"/api/projects/{project_id}/participation-history", headers=JIHO)
+    assert history.status_code == 200, history.text
+    [ended] = [row for row in history.json() if row["member_id"] == "hyeon"]
+    assert ended["end_reason"] == "고객사 지원 종료"
+    assert ended["ended_by_member_id"] == "jiho"
+    assert ended["ended_at"] is not None
+    # 과거 참여 사실은 현재 접근을 되살리지 않고, 비인가 사용자에게 건수조차 주지 않는다.
+    assert client.get(f"/api/projects/{project_id}/participation-history", headers=HYEON).status_code == 404
+
+
+def test_rejoining_creates_a_new_participation_without_overwriting_the_ended_one(client: TestClient) -> None:
+    project = _project(client)
+    project_id = project["project_id"]
+    client.post(f"/api/projects/{project_id}/members", headers=JIHO, json={"member_id": "hyeon"})
+    client.request(
+        "DELETE",
+        f"/api/projects/{project_id}/members/hyeon",
+        headers=JIHO,
+        json={"reason": "1차 참여 종료"},
+    )
+
+    rejoined = client.post(
+        f"/api/projects/{project_id}/members",
+        headers=JIHO,
+        json={"member_id": "hyeon", "kind": "lead"},
+    )
+    assert rejoined.status_code == 201, rejoined.text
+    assert client.get(f"/api/projects/{project_id}", headers=HYEON).status_code == 200
+
+    history = [
+        row
+        for row in client.get(f"/api/projects/{project_id}/participation-history", headers=JIHO).json()
+        if row["member_id"] == "hyeon"
+    ]
+    assert len(history) == 2
+    assert history[0]["assignment_id"] != history[1]["assignment_id"]
+    assert history[0]["end_reason"] == "1차 참여 종료"
+    assert history[0]["ended_by_member_id"] == "jiho"
+    assert history[1]["assignment_kind"] == "lead"
+    assert history[1]["ended_at"] is None
+
+
+def test_replaying_an_ended_participation_release_does_not_end_the_new_round(client: TestClient) -> None:
+    project = _project(client)
+    project_id = project["project_id"]
+    first = client.post(
+        f"/api/projects/{project_id}/members",
+        headers=JIHO,
+        json={"member_id": "hyeon"},
+    ).json()
+    release = {
+        "assignment_id": first["assignment_id"],
+        "reason": "1차 참여 종료",
+    }
+    assert client.request(
+        "DELETE",
+        f"/api/projects/{project_id}/members/hyeon",
+        headers=JIHO,
+        json=release,
+    ).status_code == 204
+
+    second = client.post(
+        f"/api/projects/{project_id}/members",
+        headers=JIHO,
+        json={"member_id": "hyeon", "kind": "lead"},
+    ).json()
+    replay = client.request(
+        "DELETE",
+        f"/api/projects/{project_id}/members/hyeon",
+        headers=JIHO,
+        json=release,
+    )
+
+    assert replay.status_code == 204, replay.text
+    current = client.get(f"/api/projects/{project_id}", headers=JIHO).json()["members"]
+    [active] = [row for row in current if row["member_id"] == "hyeon"]
+    assert active["assignment_id"] == second["assignment_id"]
+    assert client.get(f"/api/projects/{project_id}", headers=HYEON).status_code == 200
+
+
+def test_release_revokes_only_the_grant_created_by_that_participation(
+    client: TestClient,
+    settings: Settings,
+) -> None:
+    from ax_workspace.platform.persistence import AccessGrantRecord, make_session_factory
+
+    project = _project(client)
+    project_id = project["project_id"]
+    with make_session_factory(settings.database_url)() as session:
+        session.add(
+            AccessGrantRecord(
+                member_id="hyeon",
+                role_id="role:project-participant",
+                role_capability_version=1,
+                scope_kind="project",
+                scope_ref=project_id,
+                scope_organization_id=None,
+                include_descendants=False,
+                granted_by_member_id="yuna",
+            )
+        )
+        session.commit()
+
+    client.post(f"/api/projects/{project_id}/members", headers=JIHO, json={"member_id": "hyeon"})
+    released = client.delete(f"/api/projects/{project_id}/members/hyeon", headers=JIHO)
+    assert released.status_code == 204, released.text
+
+    assert client.get(f"/api/projects/{project_id}", headers=HYEON).status_code == 200
+    grants = client.get("/api/organization/me", headers=HYEON).json()["grants"]
+    assert any(row["scope_kind"] == "project" and row["scope_ref"] == project_id for row in grants)
+    [ended] = [
+        row
+        for row in client.get(f"/api/projects/{project_id}/participation-history", headers=JIHO).json()
+        if row["member_id"] == "hyeon"
+    ]
+    assert ended["end_reason"] is None
+    assert ended["ended_by_member_id"] == "jiho"
+
+
+def test_repeated_assignment_is_an_idempotent_receipt_for_the_same_active_participation(client: TestClient) -> None:
+    project = _project(client)
+    project_id = project["project_id"]
+    first = client.post(f"/api/projects/{project_id}/members", headers=JIHO, json={"member_id": "hyeon"})
+    second = client.post(
+        f"/api/projects/{project_id}/members",
+        headers=JIHO,
+        json={"member_id": "hyeon", "kind": "lead"},
+    )
+    assert first.status_code == second.status_code == 201
+    assert first.json()["assignment_id"] == second.json()["assignment_id"]
+    history = [
+        row
+        for row in client.get(f"/api/projects/{project_id}/participation-history", headers=JIHO).json()
+        if row["member_id"] == "hyeon"
+    ]
+    assert len(history) == 1
+    assert history[0]["assignment_kind"] == "member", "a replay must not silently rewrite the active round"
+
+
+def test_current_members_and_assignment_candidates_respect_the_planned_validity_period(client: TestClient) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    project = _project(client)
+    project_id = project["project_id"]
+    now = datetime.now(UTC)
+    for member_id, period in [
+        ("mina", {"valid_from": (now + timedelta(hours=2)).isoformat()}),
+        ("hyeon", {"valid_until": (now - timedelta(hours=2)).isoformat()}),
+        ("minseok", {"valid_until": (now + timedelta(hours=2)).isoformat()}),
+    ]:
+        response = client.post(
+            f"/api/projects/{project_id}/members",
+            headers=JIHO,
+            json={"member_id": member_id, **period},
+        )
+        assert response.status_code == 201, response.text
+
+    current = client.get(f"/api/projects/{project_id}", headers=JIHO).json()["members"]
+    assert {row["member_id"] for row in current} == {"jiho", "minseok"}
+    candidates = client.get("/api/task-assignment-candidates", headers=JIHO).json()
+    assert "minseok" in {row["id"] for row in candidates}
+    # 미나는 조직 축으로도 후보라서 미래 프로젝트 참여만으로 후보에서 뺄 수 없다.
+    assert "hyeon" not in {row["id"] for row in candidates}
+    assert client.get(f"/api/projects/{project_id}", headers=MINA).status_code == 404
+    assert client.get(f"/api/projects/{project_id}", headers=HYEON).status_code == 404
+
+
 def test_work_can_join_a_project_later_and_its_parts_come_along(client: TestClient) -> None:
     """일이 먼저 있고 프로젝트가 나중에 생기는 것이 보통이다. 상위 업무가 옮겨 가면 그 안의 일도 함께 간다."""
     parent = client.post("/api/tasks", headers=MINA, json={"title": "한빛 9월 통합 마케팅"}).json()

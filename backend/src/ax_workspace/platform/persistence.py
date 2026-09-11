@@ -241,6 +241,11 @@ class AccessGrantRecord(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     origin_rule_id: Mapped[str | None] = mapped_column(ForeignKey("standard_grant_rules.id"))
     origin_rule_version: Mapped[int | None] = mapped_column(Integer)
+    #: 프로젝트 참여가 만든 grant만 그 참여 종료에 따라 회수할 수 있게 하는 발생 근거.
+    origin_project_assignment_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("project_assignments.id"),
+        index=True,
+    )
 
 
 class ResourceRelationshipRecord(Base):
@@ -834,7 +839,16 @@ class ProjectAssignmentRecord(Base):
     """
 
     __tablename__ = "project_assignments"
-    __table_args__ = (UniqueConstraint("project_id", "member_id", name="uq_project_assignment"),)
+    __table_args__ = (
+        Index(
+            "uq_project_assignment_active",
+            "project_id",
+            "member_id",
+            unique=True,
+            sqlite_where=text("ended_at IS NULL"),
+            postgresql_where=text("ended_at IS NULL"),
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
@@ -845,6 +859,10 @@ class ProjectAssignmentRecord(Base):
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     assigned_by_member_id: Mapped[str | None] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
+    #: 실제 제외는 계획된 유효기간과 다른 사실이다. 사유는 입력되지 않았으면 비워 둔다.
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ended_by_member_id: Mapped[str | None] = mapped_column(String(100))
+    end_reason: Mapped[str | None] = mapped_column(Text)
 
 
 class TaskRecord(Base):

@@ -148,6 +148,12 @@ class AssignToProjectRequest(BaseModel):
     valid_until: datetime | None = None
 
 
+class ReleaseFromProjectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    assignment_id: UUID | None = None
+    reason: str | None = Field(default=None, max_length=4000)
+
+
 class CreateMeetingRequest(BaseModel):
     organization_id: str = Field(min_length=1, max_length=100)
     title: str = Field(min_length=1, max_length=300)
@@ -1166,6 +1172,16 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
+        @app.get("/api/projects/{project_id}/participation-history")
+        def project_participation_history(
+            project_id: UUID,
+            principal: Principal = Depends(developer_principal),
+        ) -> list[dict[str, object]]:
+            try:
+                return app.state.workflow_application.project_participation_history(principal, project_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
         @app.post("/api/projects/{project_id}/tasks", status_code=status.HTTP_201_CREATED)
         def plan_project_work(
             project_id: UUID,
@@ -1207,10 +1223,17 @@ def create_app(
         def release_from_project(
             project_id: UUID,
             member_id: str,
+            request: ReleaseFromProjectRequest | None = None,
             principal: Principal = Depends(developer_principal),
         ) -> Response:
             try:
-                app.state.workflow_application.release_from_project(principal, project_id, member_id)
+                app.state.workflow_application.release_from_project(
+                    principal,
+                    project_id,
+                    member_id,
+                    assignment_id=request.assignment_id if request else None,
+                    reason=request.reason if request else None,
+                )
             except Exception as error:
                 raise _runtime_error(error) from error
             return Response(status_code=status.HTTP_204_NO_CONTENT)

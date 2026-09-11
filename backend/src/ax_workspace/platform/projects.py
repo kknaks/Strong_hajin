@@ -11,6 +11,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.organization_access.catalog import ROLE_TEMPLATES_BY_KEY
@@ -71,21 +72,61 @@ class SqlAlchemyProjectRepository:
         return list(self._session.scalars(select(ProjectRecord).order_by(ProjectRecord.created_at)))
 
     def assignments_for(self, project_id: UUID) -> list[ProjectAssignmentRecord]:
+        now = datetime.now(UTC)
         return list(
             self._session.scalars(
                 select(ProjectAssignmentRecord)
-                .where(ProjectAssignmentRecord.project_id == project_id)
+                .where(
+                    ProjectAssignmentRecord.project_id == project_id,
+                    ProjectAssignmentRecord.ended_at.is_(None),
+                    or_(ProjectAssignmentRecord.valid_from.is_(None), ProjectAssignmentRecord.valid_from <= now),
+                    or_(ProjectAssignmentRecord.valid_until.is_(None), ProjectAssignmentRecord.valid_until > now),
+                )
                 .order_by(ProjectAssignmentRecord.assignment_kind, ProjectAssignmentRecord.member_id)
             )
         )
 
-    def assignment(self, project_id: UUID, member_id: str) -> ProjectAssignmentRecord | None:
-        return self._session.scalar(
-            select(ProjectAssignmentRecord).where(
-                ProjectAssignmentRecord.project_id == project_id,
-                ProjectAssignmentRecord.member_id == member_id,
+    def assignment_history(self, project_id: UUID) -> list[ProjectAssignmentRecord]:
+        return list(
+            self._session.scalars(
+                select(ProjectAssignmentRecord)
+                .where(ProjectAssignmentRecord.project_id == project_id)
+                .order_by(ProjectAssignmentRecord.created_at, ProjectAssignmentRecord.id)
             )
         )
+
+    def assignment(
+        self,
+        project_id: UUID,
+        member_id: str,
+        *,
+        lock: bool = False,
+    ) -> ProjectAssignmentRecord | None:
+        statement = select(ProjectAssignmentRecord).where(
+            ProjectAssignmentRecord.project_id == project_id,
+            ProjectAssignmentRecord.member_id == member_id,
+            ProjectAssignmentRecord.ended_at.is_(None),
+        )
+        if lock:
+            statement = statement.with_for_update()
+        return self._session.scalar(statement)
+
+    def assignment_round(
+        self,
+        project_id: UUID,
+        member_id: str,
+        assignment_id: UUID,
+        *,
+        lock: bool = False,
+    ) -> ProjectAssignmentRecord | None:
+        statement = select(ProjectAssignmentRecord).where(
+            ProjectAssignmentRecord.id == assignment_id,
+            ProjectAssignmentRecord.project_id == project_id,
+            ProjectAssignmentRecord.member_id == member_id,
+        )
+        if lock:
+            statement = statement.with_for_update()
+        return self._session.scalar(statement)
 
     def add_assignment(
         self,
@@ -97,32 +138,65 @@ class SqlAlchemyProjectRepository:
         valid_until: datetime | None,
         assigned_by: str,
     ) -> ProjectAssignmentRecord:
-        assignment = ProjectAssignmentRecord(
+        try:
+            with self._session.begin_nested():
+                assignment = ProjectAssignmentRecord(
+                    project_id=project_id,
+                    member_id=member_id,
+                    assignment_kind=kind,
+                    valid_from=valid_from,
+                    valid_until=valid_until,
+                    assigned_by_member_id=assigned_by,
+                )
+                self._session.add(assignment)
+                self._session.flush()
+        except IntegrityError:
+            existing = self.assignment(project_id, member_id, lock=True)
+            if existing is not None:
+                return existing
+            raise
+        grant_project_access(
+            self._session,
+            assignment_id=assignment.id,
             project_id=project_id,
             member_id=member_id,
-            assignment_kind=kind,
+            granted_by=assigned_by,
+            kind=kind,
             valid_from=valid_from,
             valid_until=valid_until,
-            assigned_by_member_id=assigned_by,
-        )
-        self._session.add(assignment)
-        self._session.flush()
-        grant_project_access(
-            self._session, project_id=project_id, member_id=member_id, granted_by=assigned_by, kind=kind
         )
         return assignment
 
-    def remove_assignment(self, assignment: ProjectAssignmentRecord) -> None:
-        revoke_project_access(self._session, project_id=assignment.project_id, member_id=assignment.member_id)
-        self._session.delete(assignment)
+    def end_assignment(
+        self,
+        assignment: ProjectAssignmentRecord,
+        *,
+        ended_by: str,
+        reason: str | None,
+    ) -> None:
+        revoke_project_access(
+            self._session,
+            assignment_id=assignment.id,
+            project_id=assignment.project_id,
+            member_id=assignment.member_id,
+        )
+        assignment.ended_at = datetime.now(UTC)
+        assignment.ended_by_member_id = ended_by
+        assignment.end_reason = reason
         self._session.flush()
 
     def member_projects(self, member_id: str) -> list[ProjectRecord]:
+        now = datetime.now(UTC)
         return list(
             self._session.scalars(
                 select(ProjectRecord)
                 .join(ProjectAssignmentRecord, ProjectAssignmentRecord.project_id == ProjectRecord.id)
                 .where(ProjectAssignmentRecord.member_id == member_id)
+                .where(
+                    ProjectAssignmentRecord.ended_at.is_(None),
+                    or_(ProjectAssignmentRecord.valid_from.is_(None), ProjectAssignmentRecord.valid_from <= now),
+                    or_(ProjectAssignmentRecord.valid_until.is_(None), ProjectAssignmentRecord.valid_until > now),
+                )
                 .order_by(ProjectRecord.created_at)
             )
         )
@@ -167,7 +241,15 @@ def _project_rule(session: Session, template: Any) -> str:
 
 
 def grant_project_access(
-    session: Session, *, project_id: UUID, member_id: str, granted_by: str | None, kind: str = "member"
+    session: Session,
+    *,
+    assignment_id: UUID,
+    project_id: UUID,
+    member_id: str,
+    granted_by: str | None,
+    kind: str = "member",
+    valid_from: datetime | None = None,
+    valid_until: datetime | None = None,
 ) -> None:
     """배정이 만든 권한. 조직 단위 grant와 나란히 서고 서로를 대신하지 않는다."""
     template = ROLE_TEMPLATES_BY_KEY[_role_key(kind)]
@@ -175,8 +257,7 @@ def grant_project_access(
     existing = session.scalar(
         select(AccessGrantRecord).where(
             AccessGrantRecord.member_id == member_id,
-            AccessGrantRecord.role_id == template.role_id,
-            AccessGrantRecord.scope_ref == scope_ref,
+            AccessGrantRecord.origin_project_assignment_id == assignment_id,
             AccessGrantRecord.revoked_at.is_(None),
         )
     )
@@ -193,26 +274,57 @@ def grant_project_access(
             scope_ref=scope_ref,
             include_descendants=False,
             granted_by_member_id=granted_by,
+            valid_from=valid_from or datetime.now(UTC),
+            valid_until=valid_until,
             origin_rule_id=_project_rule(session, template),
             origin_rule_version=1,
+            origin_project_assignment_id=assignment_id,
         )
     )
     session.flush()
 
 
-def revoke_project_access(session: Session, *, project_id: UUID, member_id: str) -> None:
+def revoke_project_access(
+    session: Session,
+    *,
+    assignment_id: UUID,
+    project_id: UUID,
+    member_id: str,
+) -> None:
     """프로젝트에서 빠지면 그 프로젝트로 얻었던 권한도 끝난다. 담당이든 참여든 그 프로젝트의 것만이며,
     조직 안에서 갖던 것은 건드리지 않는다."""
     role_ids = {ROLE_TEMPLATES_BY_KEY[key].role_id for key in PROJECT_ROLE_KEYS.values()}
     now = datetime.now(UTC)
-    for grant in session.scalars(
-        select(AccessGrantRecord).where(
-            AccessGrantRecord.member_id == member_id,
-            AccessGrantRecord.role_id.in_(sorted(role_ids)),
-            AccessGrantRecord.scope_ref == str(project_id),
-            AccessGrantRecord.revoked_at.is_(None),
+    grants = list(
+        session.scalars(
+            select(AccessGrantRecord).where(
+                AccessGrantRecord.member_id == member_id,
+                AccessGrantRecord.scope_ref == str(project_id),
+                AccessGrantRecord.origin_project_assignment_id == assignment_id,
+                AccessGrantRecord.revoked_at.is_(None),
+            )
         )
-    ):
+    )
+    if not grants:
+        # 이 컬럼을 추가하기 전의 표준 project-assignment grant만 안전하게 연결한다.
+        # origin이 없는 독립 grant는 같은 role/scope여도 참여 종료의 소유가 아니다.
+        rule_ids = {
+            f"standard:project_assignment:project:{ROLE_TEMPLATES_BY_KEY[key].role_id}"
+            for key in PROJECT_ROLE_KEYS.values()
+        }
+        grants = list(
+            session.scalars(
+                select(AccessGrantRecord).where(
+                    AccessGrantRecord.member_id == member_id,
+                    AccessGrantRecord.role_id.in_(sorted(role_ids)),
+                    AccessGrantRecord.scope_ref == str(project_id),
+                    AccessGrantRecord.origin_project_assignment_id.is_(None),
+                    AccessGrantRecord.origin_rule_id.in_(sorted(rule_ids)),
+                    AccessGrantRecord.revoked_at.is_(None),
+                )
+            )
+        )
+    for grant in grants:
         grant.revoked_at = now
     session.flush()
 

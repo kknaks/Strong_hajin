@@ -461,23 +461,33 @@ def _import_projects(session: Session, rows: dict[str, list[dict[str, str]]], re
             select(ProjectAssignmentRecord).where(
                 ProjectAssignmentRecord.project_id == project.id,
                 ProjectAssignmentRecord.member_id == member_key,
+                ProjectAssignmentRecord.ended_at.is_(None),
             )
         )
         if exists is not None:
             result.track("project_assignments", made=False)
             continue
-        session.add(
-            ProjectAssignmentRecord(
-                project_id=project.id,
-                member_id=member_key,
-                assignment_kind=_text(row, "kind") or "member",
-                valid_from=_moment(_text(row, "valid_from")),
-                valid_until=_moment(_text(row, "valid_until")),
-                assigned_by_member_id="dataset",
-            )
+        valid_from = _moment(_text(row, "valid_from"))
+        valid_until = _moment(_text(row, "valid_until"))
+        assignment = ProjectAssignmentRecord(
+            project_id=project.id,
+            member_id=member_key,
+            assignment_kind=_text(row, "kind") or "member",
+            valid_from=valid_from,
+            valid_until=valid_until,
+            assigned_by_member_id="dataset",
         )
+        session.add(assignment)
+        session.flush()
         grant_project_access(
-            session, project_id=project.id, member_id=member_key, granted_by="dataset", kind=_text(row, "kind") or "member"
+            session,
+            assignment_id=assignment.id,
+            project_id=project.id,
+            member_id=member_key,
+            granted_by="dataset",
+            kind=_text(row, "kind") or "member",
+            valid_from=valid_from,
+            valid_until=valid_until,
         )
         result.track("project_assignments", made=True)
 

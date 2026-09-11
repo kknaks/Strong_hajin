@@ -43,6 +43,7 @@ import type {
   ProjectDetail,
   ProjectMember,
   Notification,
+  ProjectParticipation,
 } from "./viewModels";
 
 type ApiErrorBody = {
@@ -516,6 +517,10 @@ export async function getProject(projectId: string): Promise<ProjectDetail> {
   return request<ProjectDetail>(`/api/projects/${projectId}`);
 }
 
+export async function getProjectParticipationHistory(projectId: string): Promise<ProjectParticipation[]> {
+  return request<ProjectParticipation[]>(`/api/projects/${projectId}/participation-history`);
+}
+
 export async function createProject(body: {
   name: string;
   description?: string | null;
@@ -529,8 +534,21 @@ export async function assignToProject(projectId: string, body: { member_id: stri
   return request<ProjectMember>(`/api/projects/${projectId}/members`, { method: "POST", body: JSON.stringify(body) });
 }
 
-export async function releaseFromProject(projectId: string, memberId: string): Promise<void> {
-  await request<void>(`/api/projects/${projectId}/members/${memberId}`, { method: "DELETE" });
+export async function releaseFromProject(
+  projectId: string,
+  memberId: string,
+  assignmentId?: string,
+  reason?: string,
+): Promise<void> {
+  const cleaned = reason?.trim();
+  const body = {
+    ...(assignmentId ? { assignment_id: assignmentId } : {}),
+    ...(cleaned ? { reason: cleaned } : {}),
+  };
+  await request<void>(`/api/projects/${projectId}/members/${memberId}`, {
+    method: "DELETE",
+    ...(Object.keys(body).length ? { body: JSON.stringify(body) } : {}),
+  });
 }
 
 export async function getOrganizationTree(): Promise<OrganizationUnitNode[]> {

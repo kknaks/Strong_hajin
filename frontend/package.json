@@ -43,6 +43,7 @@
     "e2e:material-search": "node scripts/material-search-e2e.mjs",
     "e2e:meeting-live-transcript": "node scripts/meeting-live-transcript-e2e.mjs",
     "e2e:access-roles": "node scripts/access-roles-e2e.mjs",
+    "e2e:project-participation-history": "node scripts/project-participation-history-e2e.mjs",
     "e2e:graph-question": "node scripts/graph-question-e2e.mjs",
     "preview": "vite preview"
   },
