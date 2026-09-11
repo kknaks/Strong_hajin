@@ -1,9 +1,12 @@
 """Task description/schedule edits, request due dates, and task materials behind the storage port."""
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
+from ax_workspace.modules.work import application as work_application
 
 MINA = {"X-Demo-Persona": "mina"}
 JIHO = {"X-Demo-Persona": "jiho"}
@@ -53,6 +56,96 @@ def test_task_carries_description_and_schedule_and_owner_edits_them(tmp_path) ->
         json={"expected_version": task["version"] + 1, "clear_due_date": True},
     )
     assert cleared.status_code == 200 and cleared.json()["due_date"] is None
+
+
+def test_start_sets_a_missing_start_date_to_the_seoul_business_day(tmp_path, monkeypatch) -> None:
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            instant = datetime(2026, 9, 9, 16, 30, tzinfo=UTC)
+            return instant if tz is None else instant.astimezone(tz)
+
+    monkeypatch.setattr(work_application, "datetime", FrozenDateTime)
+    client = _client(tmp_path)
+    created = client.post("/api/tasks", headers=MINA, json={"title": "시작일 없는 업무"}).json()
+    assert created["start_date"] is None
+
+    started = client.post(
+        f"/api/tasks/{created['task_id']}/start",
+        headers=MINA,
+        json={"expected_version": created["version"]},
+    )
+
+    assert started.status_code == 200, started.text
+    assert started.json()["state"] == "in_progress"
+    assert started.json()["start_date"] == "2026-09-10"
+    history = client.get(f"/api/tasks/{created['task_id']}/history", headers=MINA).json()
+    assert history["versions"][-1]["snapshot"]["start_date"] == "2026-09-10"
+
+
+def test_start_preserves_an_existing_past_or_future_date(tmp_path) -> None:
+    client = _client(tmp_path)
+    for title, start_date, due_date in (
+        ("기한이 지난 업무", "2020-08-31", "2020-09-01"),
+        ("미래에 시작할 업무", "2099-08-31", "2099-09-01"),
+    ):
+        created = client.post(
+            "/api/tasks",
+            headers=MINA,
+            json={"title": title, "start_date": start_date, "due_date": due_date},
+        ).json()
+
+        started = client.post(
+            f"/api/tasks/{created['task_id']}/start",
+            headers=MINA,
+            json={"expected_version": created["version"]},
+        )
+
+        assert started.status_code == 200, started.text
+        assert started.json()["start_date"] == start_date
+        assert started.json()["due_date"] == due_date
+
+
+def test_failed_duplicate_and_resume_transitions_do_not_replace_the_first_start_date(tmp_path) -> None:
+    client = _client(tmp_path)
+    created = client.post("/api/tasks", headers=MINA, json={"title": "다시 시작할 업무"}).json()
+
+    stale = client.post(
+        f"/api/tasks/{created['task_id']}/start",
+        headers=MINA,
+        json={"expected_version": created["version"] + 1},
+    )
+    assert stale.status_code == 422
+    unchanged = client.get(f"/api/tasks/{created['task_id']}", headers=MINA).json()
+    assert unchanged["state"] == "open" and unchanged["start_date"] is None
+
+    started = client.post(
+        f"/api/tasks/{created['task_id']}/start",
+        headers=MINA,
+        json={"expected_version": created["version"]},
+    ).json()
+    duplicate = client.post(
+        f"/api/tasks/{created['task_id']}/start",
+        headers=MINA,
+        json={"expected_version": started["version"]},
+    )
+    assert duplicate.status_code == 422
+
+    blocked = client.post(
+        f"/api/tasks/{created['task_id']}/block",
+        headers=MINA,
+        json={"expected_version": started["version"], "reason": "외부 확인 대기"},
+    ).json()
+    resumed = client.post(
+        f"/api/tasks/{created['task_id']}/resume",
+        headers=MINA,
+        json={"expected_version": blocked["version"]},
+    ).json()
+    assert resumed["start_date"] == started["start_date"]
+
+    history = client.get(f"/api/tasks/{created['task_id']}/history", headers=MINA).json()
+    state_changes = [row for row in history["activity"] if row["event_kind"] == "task.state_changed"]
+    assert len(state_changes) == 3
 
 
 def test_request_due_date_flows_into_the_accepted_task(tmp_path) -> None:

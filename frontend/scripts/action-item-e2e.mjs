@@ -1,6 +1,6 @@
 import { chromium } from "@playwright/test";
 
-import { loginAs, switchAccount } from "./e2e-helpers.mjs";
+import { chooseOption, loginAs, switchAccount } from "./e2e-helpers.mjs";
 
 // The whole judgement round trip on one ActionItem:
 // 요청 생성 → 담당자 조정 요청 → 요청자 수정·diff 확인·재상신 → 담당자 최신 회차 수락 → Task 한 건 → 양방향 lineage.
@@ -37,13 +37,13 @@ try {
   await page.getByRole("button", { name: "새 업무 추가" }).click();
   await page.getByRole("tab", { name: "요청", exact: true }).click();
   await page.getByLabel("요청할 업무").fill(title);
-  await page.getByLabel("담당 후보").selectOption("jiho");
+  await chooseOption(page, "담당 후보", /지호/);
   await page.getByRole("button", { name: "업무 요청 보내기" }).click();
 
   // Jiho meets it in the one judgement ledger and asks for a change.
   await switchAccount(page, "jiho");
   await navigation.getByRole("button", { name: "내 업무" }).click();
-  const jihoCard = page.locator(".decision-panel .task-card", { hasText: title });
+  const jihoCard = page.locator(".decision-section .task-card", { hasText: title });
   await jihoCard.waitFor({ timeout: 20_000 });
   if ((await jihoCard.locator(".task-card-kicker").textContent())?.trim() !== "업무 요청") {
     throw new Error("the judgement card is not labelled by the server operation");
@@ -67,7 +67,7 @@ try {
   await jihoDrawer.getByLabel("제안: 희망 기한", { exact: true }).fill(proposedDue);
   await jihoDrawer.getByRole("button", { name: "조정 요청 확정" }).click();
   await page.getByRole("dialog").waitFor({ state: "detached", timeout: 20_000 });
-  await page.locator(".decision-panel .task-card", { hasText: title }).waitFor({ state: "detached", timeout: 20_000 });
+  await page.locator(".decision-section .task-card", { hasText: title }).waitFor({ state: "detached", timeout: 20_000 });
 
   // The same question is now Mina's to answer, marked 조정 필요 — and Jiho, who may still read it, is offered nothing.
   const waiting = await asPersona(page, "jiho", `/api/action-items/${actionItemId}`);
@@ -76,7 +76,7 @@ try {
   }
   await switchAccount(page, "mina");
   await navigation.getByRole("button", { name: "내 업무" }).click();
-  const minaCard = page.locator(`.decision-panel .task-card[data-action-item-id="${actionItemId}"]`);
+  const minaCard = page.locator(`.decision-section .task-card[data-action-item-id="${actionItemId}"]`);
   await minaCard.waitFor({ timeout: 20_000 });
   if (!(await minaCard.textContent())?.includes("조정 필요")) {
     throw new Error("the adjusted request is not shown as 조정 필요 to the requester");
@@ -114,7 +114,7 @@ try {
   // Jiho sees round two with the diff, and accepts it.
   await switchAccount(page, "jiho");
   await navigation.getByRole("button", { name: "내 업무" }).click();
-  const roundTwo = page.locator(`.decision-panel .task-card[data-action-item-id="${actionItemId}"]`);
+  const roundTwo = page.locator(`.decision-section .task-card[data-action-item-id="${actionItemId}"]`);
   await roundTwo.waitFor({ timeout: 20_000 });
   if (!(await roundTwo.textContent())?.includes("2회차")) throw new Error("the reviewer did not receive the second round");
   await roundTwo.getByRole("button", { name: "판단하기" }).click();
@@ -130,7 +130,7 @@ try {
   }
   await acceptDrawer.getByRole("button", { name: "수락" }).click();
   await page.getByRole("dialog").waitFor({ state: "detached", timeout: 20_000 });
-  await page.locator(`.decision-panel .task-card[data-action-item-id="${actionItemId}"]`).waitFor({ state: "detached", timeout: 20_000 });
+  await page.locator(`.decision-section .task-card[data-action-item-id="${actionItemId}"]`).waitFor({ state: "detached", timeout: 20_000 });
 
   // A lost response is a receipt, not a second Task: the same command re-sent against the same version.
   const resent = await asPersona(page, "jiho", `/api/action-items/${actionItemId}/commands/accept`, {

@@ -7,8 +7,8 @@ import { loginAs, pollFor, signOut } from "./e2e-helpers.mjs";
  *
  * The first turn asks what a person is working on. The second says `그중 …` and must not depend on the provider
  * remembering anything: the seeds are the canonical ids this conversation already read, re-checked for this person.
- * Everything asserted here is what the tools actually returned — the walk receipt, the resources the answer points
- * at, and the fixed picture of that turn.
+ * Everything asserted here is what the tools actually returned — the stored walk receipt and the resources the
+ * answer points at. The chat deliberately does not draw the graph.
  */
 const frontendUrl = process.env.SCAX_E2E_URL ?? "http://127.0.0.1:5176";
 const stamp = Date.now();
@@ -52,14 +52,14 @@ try {
     await post("/api/tasks", { title: `한 달 뒤 업무 ${stampValue}`, due_date: day(30) });
   }, { soonestTitle: soonest, stampValue: stamp });
 
-  await page.getByRole("button", { name: "AX" }).click();
-  const created = page.waitForResponse((response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "AX", exact: true }).click();
   await page.getByRole("button", { name: "새 AX 대화" }).click();
-  const conversation = await (await created).json();
 
   // Turn 1: a relationship question. The policy asks for graph_search → graph_neighbors → owning read.
   await page.getByLabel("AX 메시지").fill("내가 지금 담당하고 있는 업무를 관계를 따라 찾고, 각 업무의 기한까지 확인해서 알려줘.");
+  const created = page.waitForResponse((response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST");
   await page.getByRole("button", { name: "보내기" }).click();
+  const conversation = await (await created).json();
   const afterFirst = await waitForTurn(page, conversation.conversation_id, 1);
   const firstTurn = afterFirst.turns[0];
   if (firstTurn.state !== "completed") throw new Error(`the first turn did not complete: ${firstTurn.state} ${firstTurn.error ?? ""}`);
@@ -74,26 +74,56 @@ try {
     throw new Error(`the answer did not point at the work it read: ${JSON.stringify(named.map((row) => row.title))}`);
   }
 
-  // The execution receipt folds away once the turn is done, and the answer keeps its own picture.
-  const receipt = page.locator(".ax-rail.terminal details").last();
-  await receipt.waitFor({ timeout: 30_000 });
-  if (await receipt.evaluate((element) => element.open)) throw new Error("the finished turn did not fold its receipt away");
-  if ((await receipt.locator("summary").textContent())?.includes("연결") !== true) {
-    throw new Error("the one-line receipt did not say how many steps the turn walked");
+  // This long graph run can finish between two equal-version projections. Re-enter through the canonical list before
+  // judging the terminal presentation; lifecycle convergence itself is covered by chat-lifecycle-e2e.
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await Promise.race([
+    page.getByRole("navigation", { name: "제품 탐색" }).waitFor(),
+    page.getByLabel("이메일").waitFor(),
+  ]);
+  if ((await page.getByLabel("이메일").count()) > 0) await loginAs(page, "jiho");
+  await page.getByRole("button", { name: "AX", exact: true }).click();
+  if ((await page.locator(".ax-messages").getByText("내가 지금 담당하고 있는 업무를 관계를 따라 찾고, 각 업무의 기한까지 확인해서 알려줘.").count()) === 0) {
+    await page.getByRole("button", { name: "대화 히스토리" }).click();
+    await page.locator(`.ax-conversation-list button[data-conversation-id="${conversation.conversation_id}"]`).click();
   }
-  // 근거는 답에 붙은 한 줄로 먼저 오고, 펼쳐야 정본·인용·경로가 나온다.
+
+  // The completed execution timeline stays visible below the answer. Graph receipts remain server facts, not chat UI.
+  const receipt = page.locator(".ax-rail.terminal").last();
+  try {
+    await receipt.waitFor({ timeout: 30_000 });
+  } catch (error) {
+    await page.screenshot({ path: "test-results/graph-question-terminal-missing.png", fullPage: false });
+    const railStates = await page.locator(".ax-rail").evaluateAll((items) => items.map((item) => ({ className: item.className, progress: item.getAttribute("data-progress"), text: item.textContent })));
+    const messageText = ((await page.locator(".ax-messages").textContent().catch(() => "")) ?? "").trim();
+    throw new Error(`completed turn was not projected as a terminal rail: ${JSON.stringify({ railStates, messageText })}`, { cause: error });
+  }
+  const completedSummary = (await receipt.locator("summary").textContent()) ?? "";
+  if (!completedSummary.includes("도구") || !completedSummary.includes("근거")) {
+    throw new Error(`the finished turn did not summarize its tools and evidence: ${completedSummary}`);
+  }
+  if (await receipt.locator("details").evaluate((element) => element.open)) {
+    throw new Error("the finished execution timeline was not collapsed");
+  }
+  if ((await page.locator(".ax-search-path, .ax-turn-graph").count()) !== 0) {
+    throw new Error("the chat exposed graph visualization after it was removed from this surface");
+  }
+  // 근거는 실행 단계와 별도인 한 줄로 먼저 오고, 펼쳐야 정본·인용이 나온다.
   const grounds = page.locator("details.ax-answer-evidence").last();
   await grounds.waitFor({ timeout: 20_000 });
   if (await grounds.evaluate((element) => element.open)) throw new Error("the evidence panel was not folded away behind the answer");
   const groundsLine = (await grounds.locator("summary").textContent()) ?? "";
-  if (!groundsLine.includes("정본") || !groundsLine.includes("연결")) {
+  if (!groundsLine.includes("근거") || groundsLine.includes("연결")) {
     throw new Error(`the one-line evidence bar did not say what the answer stands on: ${groundsLine}`);
   }
   await grounds.locator("summary").click();
-  await grounds.locator("section[aria-label='이 답의 관계']").waitFor({ timeout: 20_000 });
-  // 제목만 있는 목록은 봤다는 주장이다. 실제로 걸어간 연결이 그 자리에 문장으로 붙어야 근거가 된다.
-  if ((await grounds.locator(".ax-resource-why").count()) === 0) {
-    throw new Error("no read resource said which connection the turn walked to reach it");
+  // 펼친 근거에는 실제로 읽은 정본이 나온다. 직접 걸어간 edge가 그 정본에 닿았을 때만 보조 설명을
+  // 붙이며, graph 탐색 뒤 owning list/get으로 읽은 정본에 가상의 연결 설명을 만들지 않는다.
+  const showAll = grounds.getByRole("button", { name: /개 더 보기/ });
+  if (await showAll.count()) await showAll.click();
+  const groundedResources = await grounds.locator(".ax-resource-list li").count();
+  if (groundedResources !== named.length) {
+    throw new Error(`the expanded evidence did not show every resource the turn read: ${groundedResources}/${named.length}`);
   }
   await page.screenshot({ path: "test-results/graph-question-turn1.png", fullPage: false });
 
@@ -107,6 +137,7 @@ try {
     .filter((message) => message.role === "assistant" && message.turn_id === secondTurn.turn_id)
     .map((message) => message.body)
     .join(" ");
+  const secondNamed = afterSecond.answer_resources.filter((row) => row.turn_id === secondTurn.turn_id);
   // What `그중` should resolve to is decided from the ledger, not from this script's own assumption: among the work
   // the first turn actually read, the one with the earliest deadline.
   const expected = await page.evaluate(async (ids) => {
@@ -123,25 +154,12 @@ try {
   if (!expected) throw new Error("none of the work the turn read had a deadline to compare");
   // What this proves is the seed contract: the follow-up is answered from what this conversation actually read, not
   // from whatever the provider remembered. Which of those it picks is the model's judgement, not SCAX's guarantee.
-  const grounded = named.find((row) => answer.includes(row.title));
+  const grounded = named.find((row) => secondNamed.some((candidate) => candidate.resource_type === row.resource_type && candidate.resource_id === row.resource_id))
+    ?? named.find((row) => answer.includes(row.title));
   if (!grounded) {
-    throw new Error(`the follow-up named nothing this conversation had read: ${answer}`);
+    throw new Error(`the follow-up pointed at nothing this conversation had read: ${JSON.stringify({ answer, secondNamed })}`);
   }
   await page.screenshot({ path: "test-results/graph-question-turn2.png", fullPage: false });
-
-  // The card hands the centre to the full surface, which applies this person's access again from the start. The card
-  // belongs to the turn that actually walked: a follow-up answered from this conversation's own ids has no walk of
-  // its own to hand over, and that is the point of the seeds rather than a missing picture.
-  const walkedGrounds = page.locator("details.ax-answer-evidence").first();
-  if (!(await walkedGrounds.evaluate((element) => element.open))) await walkedGrounds.locator("summary").click();
-  await walkedGrounds.locator("section[aria-label='이 답의 관계']").getByRole("button", { name: "전체 그래프로 보기" }).click();
-  const surface = page.locator("section[aria-label='관계 그래프']");
-  await surface.waitFor({ timeout: 30_000 });
-  await pollFor(page, async () => ((await surface.textContent()) ?? "").includes("중심"), {
-    timeout: 20_000,
-    description: "미니 그래프가 넘겨준 중심 node로 전체 그래프가 열리는 것",
-  });
-  await page.screenshot({ path: "test-results/graph-question-continued.png", fullPage: false });
 
   // A stored walk is asked about again before it is shown: a meeting whose share is taken back leaves the chat.
   await signOut(page);
@@ -172,12 +190,14 @@ try {
 
   await signOut(page);
   await loginAs(page, "jiho");
-  await page.getByRole("button", { name: "AX" }).click();
-  const secondCreated = page.waitForResponse((response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "AX", exact: true }).click();
   await page.getByRole("button", { name: "새 AX 대화" }).click();
-  const meetingConversation = await (await secondCreated).json();
-  await page.getByLabel("AX 메시지").fill("SCAX MCP의 meeting_list 도구로 내가 볼 수 있는 회의를 모두 나열해줘.");
+  await page.getByLabel("AX 메시지").fill(
+    "SCAX MCP의 meeting_list를 include_visible=true로 호출해 조직에서 공유되어 내가 볼 수 있는 회의를 모두 나열해줘.",
+  );
+  const secondCreated = page.waitForResponse((response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST");
   await page.getByRole("button", { name: "보내기" }).click();
+  const meetingConversation = await (await secondCreated).json();
   const afterMeetings = await waitForTurn(page, meetingConversation.conversation_id, 1);
   const meetingTurn = afterMeetings.turns[0];
   if (meetingTurn.state !== "completed") throw new Error(`the meeting turn did not complete: ${meetingTurn.state}`);

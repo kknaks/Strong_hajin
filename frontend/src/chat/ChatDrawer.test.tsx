@@ -13,6 +13,8 @@ vi.mock("../api", () => ({
   decideAction: vi.fn(),
   getConversation: vi.fn(),
   getConversations: vi.fn(),
+  getNotifications: vi.fn(async () => []),
+  markNotificationRead: vi.fn(),
   retryConversationTurn: vi.fn(),
   sendConversationMessage: vi.fn(),
 }));
@@ -48,15 +50,27 @@ function conversation(id: string, title: string, firstMessage: string, extra: Pa
   } as Conversation;
 }
 
+function answeredConversation(id: string, title: string, firstMessage: string): Conversation {
+  const base = conversation(id, title, firstMessage);
+  return {
+    ...base,
+    messages: [
+      ...base.messages,
+      { message_id: `${id}-m2`, turn_id: `${id}-t1`, role: "assistant", body: "답변", body_state: "final", sequence: 2, state: "accepted" },
+    ],
+  } as Conversation;
+}
+
 const noop = async () => undefined;
 
 function renderDrawer(overrides: Partial<Parameters<typeof ChatDrawer>[0]> = {}) {
   const conversations = [
-    conversation("c1", "견적 검토", "견적서 납기일을 알려줘"),
-    conversation("c2", "새 대화", "오늘 할 일을 정리해줘"),
-    conversation("c3", "보고 초안", "일일보고 초안을 만들어줘"),
+    answeredConversation("c1", "견적 검토", "견적서 납기일을 알려줘"),
+    answeredConversation("c2", "새 대화", "오늘 할 일을 정리해줘"),
+    answeredConversation("c3", "보고 초안", "일일보고 초안을 만들어줘"),
   ];
   const props: Parameters<typeof ChatDrawer>[0] = {
+    personaId: "mina",
     personaName: "민아 (구성원)",
     surfaceLabel: "내 업무",
     conversations,
@@ -77,16 +91,17 @@ function renderDrawer(overrides: Partial<Parameters<typeof ChatDrawer>[0]> = {})
     onRetryTurn: vi.fn(),
     onRetryFragment: vi.fn(),
     onDiscardFragment: vi.fn(),
+    onFollowUpCandidate: vi.fn(async () => true),
     onRetryList: vi.fn(),
     ...overrides,
   };
   return { ...render(<ChatDrawer {...props} />), props };
 }
 
-describe("찾아본 연결", () => {
+describe("graph receipt presentation", () => {
   afterEach(cleanup);
 
-  it("shows the steps a turn actually walked, and nothing when it walked none", async () => {
+  it("keeps graph receipts out of the chat presentation", async () => {
     const base = conversation("c9", "관계 질문", "이 업무가 어디서 왔는지 알려줘");
     const walked = {
       ...base,
@@ -116,13 +131,8 @@ describe("찾아본 연결", () => {
         onRetryTurn={vi.fn()}
       />,
     );
-    // The path is how the answer was found, so it lives in the execution rail — folded away once the turn is done.
-    const rail = container.querySelector(".ax-rail") as HTMLElement;
-    const path = rail.querySelector("section.ax-search-path") as HTMLElement;
-    expect(path.textContent).toContain("분기 마감 요청 → 분기 마감");
-    expect(path.textContent).toContain("만든 업무");
-    // The picture of the answer stays with the answer.
-    expect(container.querySelector("section.ax-turn-graph")).not.toBeNull();
+    expect(container.querySelector("section.ax-search-path")).toBeNull();
+    expect(container.querySelector("section.ax-turn-graph")).toBeNull();
 
     rerender(<MessageList
         conversation={base as never}
@@ -140,22 +150,50 @@ describe("찾아본 연결", () => {
 describe("ChatDrawer session switcher", () => {
   afterEach(cleanup);
 
+  it("replaces the conversation and composer with each header utility screen", () => {
+    const { props } = renderDrawer();
+
+    fireEvent.click(screen.getByRole("button", { name: "대화 검색" }));
+    expect(screen.getByRole("region", { name: "대화 검색 화면" })).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "AX 메시지" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "알림" }));
+    expect(screen.getByRole("region", { name: "알림 화면" })).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "AX 메시지" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "대화 히스토리" }));
+    expect(screen.getByRole("region", { name: "대화 히스토리 화면" })).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "AX 메시지" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "대화 히스토리" }));
+    expect(screen.getByRole("textbox", { name: "AX 메시지" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "대화 검색" }));
+    fireEvent.click(screen.getByRole("button", { name: "보고 초안" }));
+    expect(props.onSelect).toHaveBeenCalledWith(expect.objectContaining({ conversation_id: "c3" }));
+    expect(screen.getByRole("textbox", { name: "AX 메시지" })).toBeTruthy();
+  });
+
   it("lists conversations vertically and filters them by title or first message", () => {
     renderDrawer();
-    expect(within(screen.getByRole("list")).getAllByRole("button")).toHaveLength(3);
+    fireEvent.click(screen.getByRole("button", { name: "대화 검색" }));
+    expect(within(screen.getByRole("list", { name: "대화 히스토리" })).getAllByRole("button")).toHaveLength(3);
     expect(screen.getByRole("button", { name: "견적 검토" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "오늘 할 일을 정리해줘" })).toBeTruthy();
 
-    fireEvent.change(screen.getByLabelText("대화 검색"), { target: { value: "일일보고" } });
+    fireEvent.change(screen.getByRole("searchbox", { name: "대화 검색" }), { target: { value: "일일보고" } });
     const buttons = within(screen.getByRole("list")).getAllByRole("button");
     expect(buttons).toHaveLength(1);
     expect(buttons[0].getAttribute("aria-label")).toBe("보고 초안");
 
-    fireEvent.change(screen.getByLabelText("대화 검색"), { target: { value: "없는 대화" } });
+    fireEvent.change(screen.getByRole("searchbox", { name: "대화 검색" }), { target: { value: "없는 대화" } });
     expect(screen.getByText("검색 결과가 없습니다.")).toBeTruthy();
   });
 
   it("distinguishes first-load, empty, and error states without hiding the new-conversation action", () => {
     const { rerender, props } = renderDrawer({ conversations: [], activeConversation: null, listStatus: "loading" });
+    fireEvent.click(screen.getByRole("button", { name: "대화 히스토리" }));
+    expect(props.onRetryList).toHaveBeenCalledTimes(1);
     // 첫 로딩은 글자가 아니라 올 목록의 자리로 기다린다 (v2 10 STATE)
     expect(screen.getByRole("status").getAttribute("aria-busy")).toBe("true");
     expect(screen.getByText("대화를 불러오는 중")).toBeTruthy();
@@ -163,11 +201,140 @@ describe("ChatDrawer session switcher", () => {
 
     rerender(<ChatDrawer {...props} conversations={[]} activeConversation={null} listStatus="error" />);
     fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
-    expect(props.onRetryList).toHaveBeenCalledTimes(1);
+    expect(props.onRetryList).toHaveBeenCalledTimes(2);
 
     rerender(<ChatDrawer {...props} conversations={[]} activeConversation={null} listStatus="ready" />);
-    expect(screen.getByText("아직 대화가 없습니다. 새 대화로 시작하세요.")).toBeTruthy();
-    expect(screen.getByPlaceholderText("먼저 새 대화를 만들어 주세요")).toBeTruthy();
+    expect(screen.getByText("아직 완료된 대화가 없습니다.")).toBeTruthy();
+    expect(screen.queryByPlaceholderText("메시지를 입력해 주세요.")).toBeNull();
+  });
+
+  it("keeps unanswered and empty conversations out of history", () => {
+    const answered = answeredConversation("answered", "새 대화", "답변이 끝난 질문");
+    const pending = conversation("pending", "새 대화", "아직 답변 중", {
+      turns: [turn("pending-t1", { state: "running", progress_state: "composing", execution_completed_at: null })],
+    });
+    const empty = conversation("empty", "새 대화", "", { messages: [], turns: [] });
+    renderDrawer({ conversations: [empty, pending, answered], activeConversation: pending });
+
+    fireEvent.click(screen.getByRole("button", { name: "대화 히스토리" }));
+    const history = screen.getByRole("list", { name: "대화 히스토리" });
+    expect(within(history).getAllByRole("button")).toHaveLength(1);
+    expect(within(history).getByRole("button", { name: "답변이 끝난 질문" })).toBeTruthy();
+    expect(within(history).queryByRole("button", { name: "아직 답변 중" })).toBeNull();
+  });
+
+  it("uses the header controls for history and new chat, and shows the visual start state only without an active conversation", async () => {
+    const { props } = renderDrawer({ activeConversation: null, message: "" });
+    expect(screen.getByText("새로운 대화")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /무엇을 도와드릴까요\?/ })).toBeTruthy();
+    expect(screen.queryByRole("searchbox", { name: "대화 검색" })).toBeNull();
+    expect(screen.queryByRole("list", { name: "대화 히스토리" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "대화 히스토리" }));
+    expect(props.onRetryList).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("list", { name: "대화 히스토리" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "대화 검색" }));
+    expect(props.onRetryList).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("searchbox", { name: "대화 검색" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "새 AX 대화" }));
+    expect(props.onStart).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "이번 주 내 업무를 정리해줘" }));
+    expect(props.onSend).toHaveBeenCalledWith("이번 주 내 업무를 정리해줘");
+    expect(props.onMessageChange).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "알림" }));
+    await waitFor(() => expect(screen.getByRole("region", { name: "알림 화면" }).textContent).toContain("새 알림이 없습니다."));
+    expect(props.onRetryList).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows authorized notifications and marks one read before opening its owner", async () => {
+    const notification = {
+      notification_id: "n1",
+      kind: "meeting.shared",
+      summary: "민아님이 ‘고객 온보딩 회의’ 회의를 공유했습니다.",
+      actor_id: "mina",
+      resource: { type: "meeting" as const, id: "m1", version: 2, title: "고객 온보딩 회의" },
+      created_at: "2026-09-11T01:00:00Z",
+      read_at: null,
+    };
+    vi.mocked(api.getNotifications).mockResolvedValueOnce([notification]);
+    vi.mocked(api.markNotificationRead).mockResolvedValueOnce({ ...notification, read_at: "2026-09-11T01:01:00Z" });
+    const onOpenResource = vi.fn();
+    renderDrawer({ onOpenResource });
+
+    fireEvent.click(screen.getByRole("button", { name: "알림" }));
+    const item = await screen.findByRole("button", { name: /고객 온보딩 회의/ });
+    expect(item.textContent).toContain(notification.summary);
+    fireEvent.click(item);
+
+    await waitFor(() => expect(api.markNotificationRead).toHaveBeenCalledWith("n1"));
+    expect(onOpenResource).toHaveBeenCalledWith(expect.objectContaining({
+      resource_type: "meeting",
+      resource_id: "m1",
+      title: "고객 온보딩 회의",
+    }));
+  });
+
+  it("keeps the notification visible and reports a read failure without opening its owner", async () => {
+    const notification = {
+      notification_id: "n1",
+      kind: "meeting.shared",
+      summary: "민아님이 ‘고객 온보딩 회의’ 회의를 공유했습니다.",
+      actor_id: "mina",
+      resource: { type: "meeting" as const, id: "m1", version: 2, title: "고객 온보딩 회의" },
+      created_at: "2026-09-11T01:00:00Z",
+      read_at: null,
+    };
+    vi.mocked(api.getNotifications).mockResolvedValueOnce([notification]);
+    vi.mocked(api.markNotificationRead).mockRejectedValueOnce(new Error("revoked"));
+    const onOpenResource = vi.fn();
+    renderDrawer({ onOpenResource });
+
+    fireEvent.click(screen.getByRole("button", { name: "알림" }));
+    fireEvent.click(await screen.findByRole("button", { name: /고객 온보딩 회의/ }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("알림을 열지 못했습니다. 다시 시도해 주세요.");
+    expect(screen.getByRole("button", { name: /고객 온보딩 회의/ })).toBeTruthy();
+    expect(onOpenResource).not.toHaveBeenCalled();
+  });
+
+  it("allows the first message to be sent from the blank new-chat state", () => {
+    const { props } = renderDrawer({ activeConversation: null, message: "오늘 내 회의를 알려줘" });
+    const send = screen.getByRole("button", { name: "보내기" }) as HTMLButtonElement;
+    expect(send.disabled).toBe(false);
+    fireEvent.click(send);
+    expect(props.onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("submits a keyboard shortcut once when Enter auto-repeats during the same key press", () => {
+    const { props } = renderDrawer({ message: "한 번만 보내줘" });
+    const composer = screen.getByRole("textbox", { name: "AX 메시지" });
+
+    fireEvent.keyDown(composer, { key: "Enter", ctrlKey: true });
+    fireEvent.keyDown(composer, { key: "Enter", ctrlKey: true, repeat: true });
+
+    expect(props.onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the blank new-chat send control active and returns an empty click to the composer", () => {
+    const { props } = renderDrawer({ activeConversation: null, message: "" });
+    const composer = screen.getByRole("textbox", { name: "AX 메시지" });
+    const send = screen.getByRole("button", { name: "보내기" }) as HTMLButtonElement;
+
+    expect(send.disabled).toBe(false);
+    fireEvent.click(send);
+
+    expect(document.activeElement).toBe(composer);
+    expect(props.onSend).not.toHaveBeenCalled();
+  });
+
+  it("renders an explicitly created empty conversation as the same visual start state", () => {
+    const empty = conversation("empty", "새 대화", "", { messages: [], turns: [], actions: [] });
+    renderDrawer({ conversations: [empty], activeConversation: empty });
+    expect(screen.getByText("새로운 대화")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /무엇을 도와드릴까요\?/ })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "추천 대화" })).toBeNull();
   });
 
   it("keeps the composer usable while a turn runs, auto-grows it, and shows the queueing send label", () => {
@@ -180,10 +347,49 @@ describe("ChatDrawer session switcher", () => {
   });
 });
 
+describe("assistant identity", () => {
+  afterEach(cleanup);
+
+  it("keeps the selected AX character in the header without repeating it beside answers", () => {
+    const active = conversation("c1", "프로필", "질문", {
+      messages: [
+        { message_id: "m1", turn_id: "c1-t1", role: "user", body: "질문", sequence: 1, state: "accepted" },
+        { message_id: "m2", turn_id: "c1-t1", role: "assistant", body: "답변", sequence: 2, state: "accepted", body_state: "final" },
+      ],
+    });
+    renderDrawer({ characterKey: "red-panda", conversations: [active], activeConversation: active });
+    expect(screen.getAllByRole("img", { name: "AX assistant · 레서판다 · 대기 중" })).toHaveLength(1);
+    expect(document.querySelector(".assistant .assistant-character")).toBeNull();
+  });
+});
+
 describe("ExecutionRail", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+  });
+
+  it("shows a quiet request-check timeline while the answer is being prepared", () => {
+    const running = turn("t1", { state: "running", progress_state: "tool_running", current_tool_display_name: "관련 업무 히스토리 확인", execution_completed_at: null });
+    const tools: Conversation["tool_invocations"] = [
+      { turn_id: "t1", sequence: 1, provider_call_id: "c1", tool_name: "project_list", display_name: "프로젝트 목록 조회", input_summary: "입력 없음", state: "completed", result_summary: "프로젝트 3건", error_summary: null, latency_ms: 80, started_at: null, completed_at: null, target_resource_id: null, target_resource_version: null, audit_ref: null },
+      { turn_id: "t1", sequence: 2, provider_call_id: "c2", tool_name: "task_history", display_name: "관련 업무 히스토리 확인", input_summary: "선택 업무", state: "running", result_summary: null, error_summary: null, latency_ms: null, started_at: null, completed_at: null, target_resource_id: null, target_resource_version: null, audit_ref: null },
+    ];
+    const { container } = render(<ExecutionRail tools={tools} turn={running} />);
+
+    expect(screen.getByText("요청 내용 확인...")).toBeTruthy();
+    const timeline = screen.getByRole("list", { name: "요청 처리 단계" });
+    const steps = within(timeline).getAllByRole("listitem");
+    expect(steps).toHaveLength(2);
+    expect(steps[0].textContent).toContain("프로젝트 목록 조회");
+    expect(steps[0].querySelector(".ax-rail-step-time")?.textContent).toBe("80ms");
+    expect(steps[0].getAttribute("aria-label")).toBe("프로젝트 목록 조회 · 완료");
+    expect(steps[1].textContent).toContain("관련 업무 히스토리 확인");
+    expect(steps[1].getAttribute("aria-label")).toBe("관련 업무 히스토리 확인 · 실행 중");
+    expect(container.querySelector(".ax-rail-live-step.completed .ax-rail-step-check")).toBeTruthy();
+    expect(container.querySelector(".ax-rail-live-step.running .ax-rail-step-check")).toBeTruthy();
+    expect(container.querySelector(".ax-rail-tool-result")).toBeNull();
+    expect(container.querySelector(".ax-rail-tool-time")).toBeNull();
   });
 
   it("announces only the phase and tool changes; the ticking elapsed time is hidden from assistive tech", () => {
@@ -199,15 +405,15 @@ describe("ExecutionRail", () => {
     expect(rail.getAttribute("data-motion")).toBe("reduced");
     expect(container.querySelector(".ax-rail-icon.spin")).toBeNull(); // no spinner under prefers-reduced-motion
     const phrase = container.querySelector(".ax-rail-phrase") as HTMLElement;
-    expect(phrase.getAttribute("aria-live")).toBe("polite");
-    expect(phrase.textContent).toBe("도구 실행 중 · task list");
-    expect((container.querySelector(".ax-rail-elapsed") as HTMLElement).getAttribute("aria-hidden")).toBe("true");
-    expect((container.querySelector(".ax-rail-tools") as HTMLElement).getAttribute("aria-live")).toBe("polite");
-    const time = container.querySelector(".ax-rail-tool-time") as HTMLElement;
-    expect(time.getAttribute("aria-hidden")).toBe("true");
-    expect(time.textContent).toMatch(/s$/); // elapsed since the observed start
+    expect(phrase.getAttribute("aria-hidden")).toBe("true");
+    expect(phrase.textContent).toBe("요청 내용 확인...");
+    const liveStatus = container.querySelector(".ax-rail-live-status") as HTMLElement;
+    expect(liveStatus.getAttribute("aria-live")).toBe("polite");
+    expect(liveStatus.textContent).toBe("도구 실행 중 · task list");
+    expect((container.querySelector(".ax-rail-live-steps") as HTMLElement).getAttribute("aria-live")).toBe("polite");
+    expect(container.querySelector(".ax-rail-tool-time")).toBeNull();
     expect(within(rail).getByText("task list")).toBeTruthy();
-    expect(within(rail).getByText("실행 중")).toBeTruthy();
+    expect(within(rail).getByRole("listitem", { name: "task list · 실행 중" })).toBeTruthy();
   });
 
   it("does not show a tool duration when the start was never observed", () => {
@@ -216,35 +422,80 @@ describe("ExecutionRail", () => {
       { turn_id: "t1", sequence: 1, provider_call_id: "c1", tool_name: "task_get", display_name: "task get", input_summary: "입력: task_id=1", state: "completed", result_summary: "결과: state=open", error_summary: null, latency_ms: null, started_at: null, completed_at: "2026-09-04T00:00:05Z", target_resource_id: null, target_resource_version: null, audit_ref: null },
     ];
     const { container } = render(<ExecutionRail tools={tools} turn={done} />);
-    expect(container.querySelector(".ax-rail-tool-time")).toBeNull();
+    expect(container.querySelector(".ax-rail-step-time")).toBeNull();
   });
 
-  it("collapses into a one-line summary once terminal and offers retry for failures", () => {
+  it("collapses the A-style completed timeline and offers retry for failures", () => {
+    const completedTool: Conversation["tool_invocations"][number] = {
+      turn_id: "t2", sequence: 1, provider_call_id: "c1", tool_name: "meeting_list", display_name: "회의 목록 조회",
+      input_summary: "오늘", state: "completed", result_summary: "회의 2건", error_summary: null, latency_ms: 84,
+      started_at: null, completed_at: null, target_resource_id: null, target_resource_version: null, audit_ref: null,
+    };
+    const completed = render(<ExecutionRail tools={[completedTool]} turn={turn("t2")} />);
+    const completedRail = completed.container.querySelector(".ax-rail.terminal") as HTMLElement;
+    expect(within(completedRail).queryByText("요청 내용 확인 완료")).toBeNull();
+    expect(completedRail.querySelector(".ax-rail-icon")).toBeNull();
+    expect(completedRail.querySelector("summary")?.textContent).toContain("도구 호출 1회");
+    const completedDetails = completedRail.querySelector("details") as HTMLDetailsElement;
+    expect(completedDetails.open).toBe(false);
+    fireEvent.click(completedDetails.querySelector("summary")!);
+    expect(within(completedRail).getByRole("listitem", { name: "회의 목록 조회 · 완료" })).toBeTruthy();
+    expect(completedRail.querySelector(".ax-rail-step-time")?.textContent).toBe("84ms");
+    expect(completedRail.querySelector("code")?.textContent).toBe("meeting_list");
+    completed.unmount();
+
     const onRetry = vi.fn();
     const failed = turn("t1", { state: "failed", progress_state: "failed", error: "provider failed" });
     const { container } = render(<ExecutionRail onRetry={onRetry} tools={[]} turn={failed} />);
     const rail = container.querySelector(".ax-rail") as HTMLElement;
     expect(rail.className).toContain("terminal");
-    expect(within(rail).getByText("실패")).toBeTruthy();
-    expect((container.querySelector(".ax-rail-timings") as HTMLElement).textContent).toBe("· 실행 12s · 대기 1s");
+    expect(within(rail).getByText("요청 처리 실패")).toBeTruthy();
+    expect((container.querySelector(".ax-rail-timings") as HTMLElement).textContent).toBe("실행 12s · 대기 1s");
     expect((container.querySelector(".ax-rail-timings") as HTMLElement).getAttribute("aria-hidden")).toBe("true");
     expect(within(rail).getByText("provider failed")).toBeTruthy();
-    expect((rail.querySelector("details") as HTMLDetailsElement).open).toBe(false);
+    expect(rail.querySelector("details")).toBeNull();
     fireEvent.click(within(rail).getByRole("button", { name: "다시 시도" }));
     expect(onRetry).toHaveBeenCalledTimes(1);
-    cleanup();
-    render(<ExecutionRail tools={[]} turn={turn("t2")} />);
-    expect(screen.getByText("완료")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "다시 시도" })).toBeNull();
+  });
+
+  it("treats a terminal turn state as final even while the last progress snapshot still says composing", () => {
+    const staleProgress = turn("t3", { state: "completed", progress_state: "composing" });
+    const { container } = render(<ExecutionRail tools={[]} turn={staleProgress} />);
+    expect(container.querySelector(".ax-rail.terminal.completed")).not.toBeNull();
+    expect(screen.queryByText("요청 내용 확인 완료")).toBeNull();
+    expect(container.querySelector(".ax-rail-timings")?.textContent).toContain("실행 12s");
+    expect(container.querySelector("details")).toBeNull();
+  });
+
+  it("groups only adjacent repeated tools while preserving later execution stages", () => {
+    const calls = [40, 60, 80].map((latency, index) => ({
+      turn_id: "t4", sequence: index + 1, provider_call_id: `c${index}`, tool_name: "task_material_search",
+      display_name: "자료 내용 검색", input_summary: `검색 ${index + 1}`, state: "completed" as const,
+      result_summary: "찾음", error_summary: null, latency_ms: latency, started_at: null, completed_at: null,
+      target_resource_id: null, target_resource_version: null, audit_ref: null,
+    }));
+    calls.push({ ...calls[0], sequence: 4, provider_call_id: "c4", state: "failed", latency_ms: 20, error_summary: "실패" } as never);
+    calls.push({ ...calls[0], sequence: 5, provider_call_id: "c5", tool_name: "task_get", display_name: "업무 상세 확인", latency_ms: 30 } as never);
+    calls.push({ ...calls[0], sequence: 6, provider_call_id: "c6", latency_ms: 25 } as never);
+
+    const { container } = render(<ExecutionRail tools={calls} turn={turn("t4")} />);
+    expect(container.querySelector("summary")?.textContent).toContain("도구 호출 6회");
+    fireEvent.click(container.querySelector("summary")!);
+    const timeline = screen.getByRole("list", { name: "요청 처리 단계" });
+    expect(within(timeline).getAllByRole("listitem")).toHaveLength(4);
+    expect(within(timeline).getByRole("listitem", { name: "자료 내용 검색 3회 · 완료" }).textContent).toContain("180ms");
+    expect(within(timeline).getAllByText("task_material_search")).toHaveLength(3);
+    expect(within(timeline).getByRole("listitem", { name: "자료 내용 검색 · 실패" })).toBeTruthy();
+    expect(within(timeline).getByRole("listitem", { name: "업무 상세 확인 · 완료" })).toBeTruthy();
   });
 });
 
 describe("MessageList", () => {
   afterEach(cleanup);
 
-  const listProps = { onDecide: noop, onRetryTurn: vi.fn(), onRetryFragment: vi.fn(), onDiscardFragment: vi.fn() };
+  const listProps = { onDecide: noop, onRetryTurn: vi.fn(), onRetryFragment: vi.fn(), onDiscardFragment: vi.fn(), onFollowUpCandidate: vi.fn(async () => true) };
 
-  it("orders a turn as request → rail → answer and keeps partial text with its terminal state", () => {
+  it("keeps the live rail under the request, then moves the terminal rail below the answer", () => {
     const active = conversation("c1", "견적 검토", "첫 발화", {
       messages: [
         { message_id: "m1", turn_id: "t1", role: "user", body: "첫 발화", sequence: 1, state: "accepted" },
@@ -254,10 +505,10 @@ describe("MessageList", () => {
     });
     const { container } = render(<MessageList {...listProps} conversation={active} localFragments={[]} />);
     const order = [...container.querySelectorAll(".ax-turn > *")].map((element) => element.className.split(" ")[0]);
-    expect(order).toEqual(["user", "ax-rail", "assistant"]);
+    expect(order).toEqual(["user", "assistant", "ax-rail"]);
     expect(screen.getByText("부분 답변")).toBeTruthy();
     expect(screen.getByText("취소 시점까지의 답변")).toBeTruthy();
-    expect(screen.getByText("취소됨")).toBeTruthy();
+    expect(screen.getByText("요청 처리 취소")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
     expect(listProps.onRetryTurn).toHaveBeenCalledWith("t1");
   });
@@ -278,6 +529,183 @@ describe("MessageList", () => {
     const streaming = screen.getByText("작성 중인 답").closest(".assistant") as HTMLElement;
     expect(streaming.getAttribute("data-body-state")).toBe("streaming");
     expect(screen.getByText("답변 작성 중")).toBeTruthy();
+  });
+
+  it("submits a completed answer's follow-up once, disables siblings while sending, and restores retry after failure", async () => {
+    let settle: ((accepted: boolean) => void) | undefined;
+    const onFollowUpCandidate = vi.fn(
+      () => new Promise<boolean>((resolve) => { settle = resolve; }),
+    );
+    const active = conversation("c1", "회의 후속", "회의 내용을 알려줘", {
+      messages: [
+        { message_id: "m1", turn_id: "t1", role: "user", body: "회의 내용을 알려줘", sequence: 1, state: "accepted" },
+        { message_id: "m2", turn_id: "t1", role: "assistant", body: "결정 사항입니다.", sequence: 2, state: "accepted", body_state: "final" },
+      ],
+      turns: [turn("t1", {
+        follow_up_candidates: [
+          { candidate_id: "f1", source_turn_id: "t1", label: "회의에서 나온 아주 긴 후속 업무를 담당자별로 정리하기", user_text: "회의에서 나온 업무를 담당자별로 정리해줘", selected_message_id: null },
+          { candidate_id: "f2", source_turn_id: "t1", label: "다음 회의 잡기", user_text: "다음 회의 일정을 잡아줘", selected_message_id: null },
+        ],
+      })],
+    });
+    const { container } = render(
+      <MessageList {...listProps} conversation={active} localFragments={[]} onFollowUpCandidate={onFollowUpCandidate} />,
+    );
+    const first = screen.getByRole("button", { name: "회의에서 나온 업무를 담당자별로 정리해줘" });
+    const second = screen.getByRole("button", { name: "다음 회의 일정을 잡아줘" });
+    fireEvent.click(first);
+    fireEvent.click(first);
+    expect(onFollowUpCandidate).toHaveBeenCalledTimes(1);
+    expect(onFollowUpCandidate).toHaveBeenCalledWith(active.turns[0].follow_up_candidates?.[0]);
+    expect(first.getAttribute("data-state")).toBe("sending");
+    expect(first.getAttribute("aria-pressed")).toBe("true");
+    expect((second as HTMLButtonElement).disabled).toBe(true);
+    expect(container.querySelector(".ax-follow-up-candidates")?.textContent).toContain("전송 중");
+
+    await act(async () => settle?.(false));
+    expect((first as HTMLButtonElement).disabled).toBe(false);
+    expect(first.getAttribute("data-state")).toBe("failed");
+    expect(container.querySelector(".ax-follow-up-candidates")?.textContent).toContain("다시 시도");
+  });
+
+  it("hides follow-ups before completion and reconstructs the selected candidate from history", () => {
+    const candidate = { candidate_id: "f1", source_turn_id: "t1", label: "후속 업무 정리", user_text: "후속 업무를 정리해줘", selected_message_id: null };
+    const streaming = conversation("c1", "회의 후속", "질문", {
+      turns: [turn("t1", { state: "running", progress_state: "composing", follow_up_candidates: [candidate] })],
+    });
+    const { rerender } = render(<MessageList {...listProps} conversation={streaming} localFragments={[]} />);
+    expect(screen.queryByRole("button", { name: "후속 업무를 정리해줘" })).toBeNull();
+
+    const selected = {
+      ...streaming,
+      messages: [
+        ...streaming.messages,
+        { message_id: "m2", turn_id: "t1", role: "assistant" as const, body: "완료 답변", sequence: 2, state: "accepted" as const, body_state: "final" as const },
+      ],
+      turns: [turn("t1", { follow_up_candidates: [{ ...candidate, selected_message_id: "m3" }] })],
+    };
+    rerender(<MessageList {...listProps} conversation={selected} localFragments={[]} />);
+    const button = screen.getByRole("button", { name: "후속 업무를 정리해줘 · 선택됨" });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("hides the previous answer's suggestions as soon as a new user message starts", () => {
+    const candidate = { candidate_id: "f1", source_turn_id: "t1", label: "후속 업무 정리", user_text: "후속 업무를 정리해줘", selected_message_id: null };
+    const previous = conversation("c1", "회의 후속", "첫 질문", {
+      messages: [
+        { message_id: "m1", turn_id: "t1", role: "user", body: "첫 질문", sequence: 1, state: "accepted" },
+        { message_id: "m2", turn_id: "t1", role: "assistant", body: "첫 답변", sequence: 2, state: "accepted", body_state: "final" },
+        { message_id: "m3", turn_id: "t2", role: "user", body: "새 질문", sequence: 3, state: "accepted" },
+      ],
+      turns: [
+        turn("t1", { follow_up_candidates: [candidate, { ...candidate, candidate_id: "f2", user_text: "다음 회의를 준비해줘" }] }),
+        turn("t2", { state: "running", progress_state: "preparing", execution_completed_at: null }),
+      ],
+    });
+
+    render(<MessageList {...listProps} conversation={previous} localFragments={[]} />);
+
+    expect(screen.queryByRole("region", { name: "추천 대화" })).toBeNull();
+  });
+
+  it("projects the latest completed turn as stacked cards above the composer and supports directional keys", () => {
+    const previous = {
+      candidate_id: "old-1", source_turn_id: "t1", label: "이전 후보", user_text: "이전 답변을 더 설명해줘", selected_message_id: null,
+    };
+    const latest = [
+      { candidate_id: "new-1", source_turn_id: "t2", label: "짧은 이름", user_text: "회의에서 나온 후속 업무를 담당자별 우선순위와 마감일 기준으로 자세히 정리해줘", selected_message_id: null },
+      { candidate_id: "new-2", source_turn_id: "t2", label: "다음 후보", user_text: "다음 회의 안건을 준비해줘", selected_message_id: null },
+    ];
+    const active = conversation("c1", "회의 후속", "첫 질문", {
+      messages: [
+        { message_id: "m1", turn_id: "t1", role: "user", body: "첫 질문", sequence: 1, state: "accepted" },
+        { message_id: "m2", turn_id: "t1", role: "assistant", body: "첫 답변", sequence: 2, state: "accepted", body_state: "final" },
+        { message_id: "m3", turn_id: "t2", role: "user", body: "둘째 질문", sequence: 3, state: "accepted" },
+        { message_id: "m4", turn_id: "t2", role: "assistant", body: "둘째 답변", sequence: 4, state: "accepted", body_state: "final" },
+      ],
+      turns: [turn("t1", { follow_up_candidates: [previous, { ...previous, candidate_id: "old-2", user_text: "이전 후속을 정리해줘" }] }), turn("t2", { follow_up_candidates: latest })],
+      actions: [{
+        action_id: "a1", conversation_id: "c1", turn_id: "t2", action_type: "task.create_self",
+        title: "업무 생성 확인", state: "pending", version: 1, payload_summary: "업무 생성", result: null, audit_ref: null, commands: [],
+      }],
+    });
+    const { container, rerender } = render(<MessageList {...listProps} conversation={active} localFragments={[]} />);
+    const rails = screen.getAllByRole("region", { name: "추천 대화" });
+    expect(rails).toHaveLength(1);
+    expect(rails[0].closest(".ax-turn")?.getAttribute("data-turn-id")).toBe("t2");
+    expect(rails[0].previousElementSibling?.classList.contains("ax-action-card")).toBe(true);
+    expect(rails[0].closest(".ax-turn")?.lastElementChild).toBe(rails[0]);
+    expect(within(rails[0]).getByText("이렇게 물어볼 수 있어요")).toBeTruthy();
+    expect(within(rails[0]).getByText("선택하면 바로 전송돼요")).toBeTruthy();
+    expect(rails[0].querySelector(".ax-follow-up-list")).toBeTruthy();
+    expect(rails[0].querySelectorAll(".ax-follow-up-arrow")).toHaveLength(latest.length);
+    expect(screen.queryByRole("button", { name: previous.user_text })).toBeNull();
+    const first = screen.getByRole("button", { name: latest[0].user_text });
+    const second = screen.getByRole("button", { name: latest[1].user_text });
+    expect(first.textContent).toContain(latest[0].user_text);
+    first.focus();
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(second);
+    fireEvent.keyDown(second, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(first);
+
+    rerender(<MessageList
+      {...listProps}
+      conversation={{
+        ...active,
+        messages: [...active.messages, { message_id: "m5", turn_id: "t3", role: "assistant", body: "후속 후보가 필요 없는 답변", sequence: 5, state: "accepted", body_state: "final" }],
+        turns: [...active.turns, turn("t3", { follow_up_candidates: [] })],
+      }}
+      localFragments={[]}
+    />);
+    expect(screen.queryByRole("region", { name: "추천 대화" })).toBeNull();
+  });
+
+  it("sends a composer-rail candidate without replacing the manual composer draft", () => {
+    const candidate = { candidate_id: "f1", source_turn_id: "c1-t1", label: "후속 업무", user_text: "후속 업무를 정리해줘", selected_message_id: null };
+    const active = conversation("c1", "회의 후속", "질문", {
+      messages: [
+        { message_id: "m1", turn_id: "c1-t1", role: "user", body: "질문", sequence: 1, state: "accepted" },
+        { message_id: "m2", turn_id: "c1-t1", role: "assistant", body: "답변", sequence: 2, state: "accepted", body_state: "final" },
+      ],
+      turns: [turn("c1-t1", { follow_up_candidates: [candidate, { ...candidate, candidate_id: "f2", user_text: "다음 회의를 준비해줘" }] })],
+    });
+    const onMessageChange = vi.fn();
+    const onFollowUpCandidate = vi.fn(async () => true);
+    renderDrawer({ conversations: [active], activeConversation: active, message: "작성 중인 수동 초안", onMessageChange, onFollowUpCandidate });
+    fireEvent.click(screen.getByRole("button", { name: candidate.user_text }));
+    expect((screen.getByLabelText("AX 메시지") as HTMLTextAreaElement).value).toBe("작성 중인 수동 초안");
+    expect(onMessageChange).not.toHaveBeenCalled();
+    expect(onFollowUpCandidate).toHaveBeenCalledWith(candidate);
+  });
+
+  it("clears a finished rail's local send state when a newer completed turn supplies candidates", async () => {
+    const first = { candidate_id: "f1", source_turn_id: "t1", label: "첫 후보", user_text: "첫 후속 질문", selected_message_id: null };
+    const next = { candidate_id: "f2", source_turn_id: "t2", label: "새 후보", user_text: "새 후속 질문", selected_message_id: null };
+    const onFollowUpCandidate = vi.fn(async () => true);
+    const initial = conversation("c1", "후속 전환", "질문", {
+      messages: [{ message_id: "m1", turn_id: "t1", role: "assistant", body: "답변", sequence: 1, state: "accepted", body_state: "final" }],
+      turns: [turn("t1", { follow_up_candidates: [first, { ...first, candidate_id: "f1b", user_text: "다른 첫 후속 질문" }] })],
+    });
+    const { rerender } = render(<MessageList {...listProps} conversation={initial} localFragments={[]} onFollowUpCandidate={onFollowUpCandidate} />);
+    fireEvent.click(screen.getByRole("button", { name: first.user_text }));
+    await waitFor(() => expect(onFollowUpCandidate).toHaveBeenCalledTimes(1));
+
+    rerender(<MessageList
+      {...listProps}
+      conversation={{
+        ...initial,
+        messages: [...initial.messages, { message_id: "m2", turn_id: "t2", role: "assistant", body: "새 답변", sequence: 2, state: "accepted", body_state: "final" }],
+        turns: [...initial.turns, turn("t2", { follow_up_candidates: [next, { ...next, candidate_id: "f2b", user_text: "다른 새 후속 질문" }] })],
+      }}
+      localFragments={[]}
+      onFollowUpCandidate={onFollowUpCandidate}
+    />);
+    const nextButton = screen.getByRole("button", { name: next.user_text });
+    expect((nextButton as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(nextButton);
+    await waitFor(() => expect(onFollowUpCandidate).toHaveBeenCalledTimes(2));
   });
 
   it("renders only the server-provided approval commands on the canonical action card", () => {
@@ -311,11 +739,30 @@ describe("MessageList", () => {
     const onDiscardFragment = vi.fn();
     render(<MessageList {...listProps} conversation={active} localFragments={[failed]} onDiscardFragment={onDiscardFragment} onRetryFragment={onRetryFragment} />);
     const queue = screen.getByRole("list", { name: "대기열" });
-    expect(within(queue).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["대기 1둘째 발화 대기 중", "대기 2셋째 발화 대기 중"]);
+    const queuedItems = within(queue).getAllByRole("listitem");
+    expect(queuedItems.map((item) => within(item).getByText(/째 발화/).textContent)).toEqual(["둘째 발화", "셋째 발화"]);
+    expect(queuedItems.map((item) => within(item).getByRole("status").textContent)).toEqual(["✦요청 내용 확인...", "✦요청 내용 확인..."]);
     fireEvent.click(screen.getByRole("button", { name: "다시 보내기" }));
     expect(onRetryFragment).toHaveBeenCalledWith(failed);
     fireEvent.click(screen.getByRole("button", { name: "삭제" }));
     expect(onDiscardFragment).toHaveBeenCalledWith("l1");
+  });
+
+  it("keeps a local request bubble stable and changes only the status copy after transport acceptance", () => {
+    const active = conversation("c1", "견적 검토", "첫 발화");
+    const sending: LocalFragment = { local_id: "l2", conversation_id: "c1", body: "새 요청", state: "sending", context: [], idempotency_key: "k2" };
+    const accepted: LocalFragment = { ...sending, local_id: "l3", state: "accepted", idempotency_key: "k3" };
+    const { rerender } = render(<MessageList {...listProps} conversation={active} localFragments={[sending]} />);
+
+    const sendingFragment = document.querySelector('[data-local-id="l2"]') as HTMLElement;
+    expect(within(sendingFragment).getByText("새 요청").classList.contains("user")).toBe(true);
+    expect(within(sendingFragment).getByRole("status").textContent).toContain("요청을 접수하는 중...");
+    expect(within(sendingFragment).queryByText("접수 중…")).toBeNull();
+
+    rerender(<MessageList {...listProps} conversation={active} localFragments={[accepted]} />);
+    const acceptedFragment = document.querySelector('[data-local-id="l3"]') as HTMLElement;
+    expect(within(acceptedFragment).getByText("새 요청").classList.contains("user")).toBe(true);
+    expect(within(acceptedFragment).getByRole("status").textContent).toContain("요청 내용 확인...");
   });
 
   it("offers a new-message jump instead of stealing the scroll position when the reader is above the bottom", () => {
@@ -365,6 +812,35 @@ describe("useConversations", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("keeps refreshing a started Turn after the drawer closes until the server projects completion", async () => {
+    vi.useFakeTimers();
+    const running = conversation("c1", "닫힌 동안 완료", "질문", {
+      turns: [turn("c1-t1", { state: "running", progress_state: "composing", execution_completed_at: null })],
+    });
+    const completed = conversation("c1", "닫힌 동안 완료", "질문", {
+      version: 2,
+      turns: [turn("c1-t1")],
+    });
+    vi.mocked(api.getConversations).mockResolvedValue([running]);
+    vi.mocked(api.getConversation).mockResolvedValue(completed);
+    const { result, rerender } = renderHook(
+      ({ open }) => useConversations({ personaId: "mina", isOpen: open, onError }),
+      { initialProps: { open: true } },
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.isProcessing).toBe(true);
+    rerender({ open: false });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(800);
+    });
+    expect(api.getConversation).toHaveBeenCalledWith("c1");
+    expect(result.current.activeConversation?.turns[0].state).toBe("completed");
   });
 
   it("keeps an optimistic fragment until the server projection carries its idempotency key", async () => {
@@ -389,6 +865,35 @@ describe("useConversations", () => {
     expect(result.current.activeConversation?.messages.filter((item) => item.body === "새 질문")).toHaveLength(1);
   });
 
+  it("retries a failed follow-up through the ordinary message API with one stable candidate identity", async () => {
+    const base = conversation("c1", "회의 후속", "이전 발화");
+    const onError = vi.fn();
+    vi.mocked(api.getConversations).mockResolvedValue([base]);
+    vi.mocked(api.getConversation).mockResolvedValue(base);
+    vi.mocked(api.sendConversationMessage)
+      .mockRejectedValueOnce(new Error("response lost"))
+      .mockResolvedValueOnce({ conversation_id: "c1", message_id: "m9", turn_id: "t9", queued: false, queue_size: 0 });
+    const { result } = renderHook(() => useConversations({ personaId: "mina", isOpen: true, onError }));
+    await waitFor(() => expect(result.current.activeConversation?.conversation_id).toBe("c1"));
+
+    await act(async () => {
+      expect(await result.current.send("c1", "다음 회의 일정을 잡아줘", [], undefined, "candidate-1")).toBe(false);
+    });
+    const [failed] = result.current.localFragments;
+    expect(failed.follow_up_candidate_id).toBe("candidate-1");
+    expect(failed.idempotency_key).toBe("follow-up:candidate-1");
+
+    await act(async () => {
+      await result.current.retryFragment(failed);
+    });
+    expect(api.sendConversationMessage).toHaveBeenNthCalledWith(
+      1, "c1", "다음 회의 일정을 잡아줘", [], "follow-up:candidate-1", "candidate-1",
+    );
+    expect(api.sendConversationMessage).toHaveBeenNthCalledWith(
+      2, "c1", "다음 회의 일정을 잡아줘", [], "follow-up:candidate-1", "candidate-1",
+    );
+  });
+
   it("keeps an unsent draft through a reload, and forgets it once the conversation is left behind", () => {
     window.localStorage.clear();
     const first = renderHook(() => useConversations({ personaId: "mina", isOpen: true, onError: vi.fn() }));
@@ -406,6 +911,8 @@ describe("useConversations", () => {
     const second = conversation("c2", "둘째 대화", "b");
     vi.mocked(api.getConversations).mockResolvedValue([first, second]);
     vi.mocked(api.createConversation).mockResolvedValue(conversation("c3", "새 대화", "", { messages: [], turns: [] }));
+    vi.mocked(api.sendConversationMessage).mockResolvedValue({ conversation_id: "c3", message_id: "m3", turn_id: "t3", queued: false, queue_size: 0 });
+    vi.mocked(api.getConversation).mockResolvedValue(conversation("c3", "새 대화", "아직 대화 없음"));
     const { result } = renderHook(() => useConversations({ personaId: "mina", isOpen: true, onError }));
     await waitFor(() => expect(result.current.activeConversation?.conversation_id).toBe("c1"));
 
@@ -424,14 +931,117 @@ describe("useConversations", () => {
     await act(async () => {
       await result.current.start();
     });
-    expect(result.current.activeConversation?.conversation_id).toBe("c3");
+    expect(api.createConversation).not.toHaveBeenCalled();
+    expect(result.current.activeConversation).toBeNull();
     expect(result.current.draft).toBe("아직 대화 없음");
+
+    await act(async () => {
+      expect(await result.current.sendCurrent("아직 대화 없음", [])).toBe(true);
+    });
+    expect(api.createConversation).toHaveBeenCalledTimes(1);
+    expect(result.current.activeConversation?.conversation_id).toBe("c3");
+    expect(result.current.draft).toBe("");
+  });
+
+  it("keeps existing history while explicit new chat opens only a local blank state", async () => {
+    const previous = conversation("c1", "기존 대화", "이전 질문");
+    vi.mocked(api.getConversations).mockResolvedValue([previous]);
+    const { result } = renderHook(() => useConversations({ personaId: "mina", isOpen: true, onError }));
+    await waitFor(() => expect(result.current.activeConversation?.conversation_id).toBe("c1"));
+
+    await act(async () => {
+      expect(await result.current.start()).toBeNull();
+    });
+    expect(api.createConversation).not.toHaveBeenCalled();
+    expect(result.current.activeConversation).toBeNull();
+    expect(result.current.conversations.map((item) => item.conversation_id)).toEqual(["c1"]);
+  });
+
+  it("does not auto-open a legacy conversation with no utterance", async () => {
+    const empty = conversation("empty", "새 대화", "", { messages: [], turns: [] });
+    const answered = answeredConversation("answered", "기존 답변", "이전 질문");
+    vi.mocked(api.getConversations).mockResolvedValue([empty, answered]);
+
+    const { result } = renderHook(() => useConversations({ personaId: "mina", isOpen: true, onError }));
+
+    await waitFor(() => expect(result.current.listStatus).toBe("ready"));
+    expect(result.current.activeConversation?.conversation_id).toBe("answered");
+  });
+
+  it("creates a conversation before sending from a no-history start state", async () => {
+    const created = conversation("c2", "새 대화", "", { messages: [], turns: [] });
+    const projected = conversation("c2", "오늘 내 회의를 알려줘", "오늘 내 회의를 알려줘");
+    vi.mocked(api.getConversations).mockResolvedValue([]);
+    vi.mocked(api.createConversation).mockResolvedValue(created);
+    vi.mocked(api.sendConversationMessage).mockResolvedValue({ conversation_id: "c2", message_id: "m2", turn_id: "t2", queued: false, queue_size: 0 });
+    vi.mocked(api.getConversation).mockResolvedValue(projected);
+    const { result } = renderHook(() => useConversations({ personaId: "mina", isOpen: true, onError }));
+    await waitFor(() => expect(result.current.listStatus).toBe("ready"));
+    expect(result.current.activeConversation).toBeNull();
+
+    await act(async () => {
+      expect(await result.current.sendCurrent("오늘 내 회의를 알려줘", [])).toBe(true);
+    });
+    expect(api.createConversation).toHaveBeenCalledTimes(1);
+    expect(api.sendConversationMessage).toHaveBeenCalledWith("c2", "오늘 내 회의를 알려줘", [], expect.any(String), undefined);
+    expect(result.current.activeConversation?.conversation_id).toBe("c2");
+  });
+
+  it("creates and submits the first turn exactly once when send is clicked twice rapidly", async () => {
+    const created = conversation("c2", "새 대화", "", { messages: [], turns: [] });
+    const projected = conversation("c2", "새 대화", "첫 질문");
+    vi.mocked(api.getConversations).mockResolvedValue([]);
+    vi.mocked(api.createConversation).mockResolvedValue(created);
+    vi.mocked(api.sendConversationMessage).mockResolvedValue({ conversation_id: "c2", message_id: "m2", turn_id: "t2", queued: false, queue_size: 0 });
+    vi.mocked(api.getConversation).mockResolvedValue(projected);
+    const { result } = renderHook(() => useConversations({ personaId: "mina", isOpen: true, onError }));
+    await waitFor(() => expect(result.current.listStatus).toBe("ready"));
+
+    await act(async () => {
+      await Promise.all([
+        result.current.sendCurrent("첫 질문", []),
+        result.current.sendCurrent("첫 질문", []),
+      ]);
+    });
+
+    expect(api.createConversation).toHaveBeenCalledTimes(1);
+    expect(api.sendConversationMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses one in-flight submission when the same active-conversation message fires twice", async () => {
+    const active = conversation("c1", "기존 대화", "이전 질문");
+    const projected = conversation("c1", "기존 대화", "같은 질문");
+    vi.mocked(api.getConversations).mockResolvedValue([active]);
+    vi.mocked(api.sendConversationMessage).mockResolvedValue({ conversation_id: "c1", message_id: "m2", turn_id: "t2", queued: false, queue_size: 0 });
+    vi.mocked(api.getConversation).mockResolvedValue(projected);
+    const { result } = renderHook(() => useConversations({ personaId: "mina", isOpen: true, onError }));
+    await waitFor(() => expect(result.current.activeConversation?.conversation_id).toBe("c1"));
+
+    await act(async () => {
+      await Promise.all([
+        result.current.sendCurrent("같은 질문", []),
+        result.current.sendCurrent("같은 질문", []),
+      ]);
+    });
+
+    expect(api.sendConversationMessage).toHaveBeenCalledTimes(1);
   });
 });
 
 describe("AssistantMarkdown", () => {
   const listProps = { onDecide: noop, onRetryTurn: vi.fn(), onRetryFragment: vi.fn(), onDiscardFragment: vi.fn() };
   afterEach(cleanup);
+
+  const taskResource = {
+    reference_id: "task-ref",
+    turn_id: "turn-1",
+    sequence: 1,
+    resource_type: "task" as const,
+    resource_id: "task-1",
+    resource_version: 3,
+    title: "한글 업무 제목",
+    state: "in_progress",
+  };
 
   it("renders emphasis, lists, links, and code semantically instead of showing the syntax", () => {
     const body = "현재 내 업무는 **0개**입니다.\n\n- 첫째 `task_list`\n- 둘째\n\n1. 하나\n2. 둘\n\n[업무 보기](https://scax.example/tasks)\n\n```\nselect 1\n```";
@@ -465,6 +1075,56 @@ describe("AssistantMarkdown", () => {
     vi.unstubAllGlobals();
   });
 
+  it("opens explicit canonical task, meeting, and request API links in product details instead of JSON tabs", () => {
+    const onOpenResource = vi.fn();
+    const meetingResource = { ...taskResource, reference_id: "meeting-ref", sequence: 2, resource_type: "meeting" as const, resource_id: "meeting-1", title: "한글 회의 제목" };
+    const requestResource = { ...taskResource, reference_id: "request-ref", sequence: 3, resource_type: "work_request" as const, resource_id: "request-1", title: "한글 요청 제목" };
+    render(
+      <AssistantMarkdown
+        body="[업무 링크](/api/tasks/task-1?from=ax#activity) [회의 링크](/api/meetings/meeting-1) [요청 링크](/api/work-requests/request-1/)"
+        onOpenResource={onOpenResource}
+        resources={[taskResource, meetingResource, requestResource]}
+      />,
+    );
+
+    for (const name of ["업무 링크", "회의 링크", "요청 링크"]) {
+      expect(screen.queryByRole("link", { name })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name }));
+    }
+    expect(onOpenResource).toHaveBeenNthCalledWith(1, taskResource);
+    expect(onOpenResource).toHaveBeenNthCalledWith(2, meetingResource);
+    expect(onOpenResource).toHaveBeenNthCalledWith(3, requestResource);
+  });
+
+  it("does not infer unknown API ids or intercept material content and external links", () => {
+    const onOpenResource = vi.fn();
+    const { container } = render(
+      <AssistantMarkdown
+        body={[
+          "[모르는 업무](/api/tasks/not-observed)",
+          "[내부 명령](/api/tasks/task-1/start)",
+          "[알 수 없는 content](/api/unknown/content)",
+          "[파일 원본](/api/tasks/task-1/materials/material-1/content?download=1)",
+          "[외부 자료](https://example.com/reference?q=한글#section)",
+          "[외부 업무 API](https://example.com/api/tasks/task-1)",
+        ].join(" ")}
+        onOpenResource={onOpenResource}
+        resources={[taskResource]}
+      />,
+    );
+
+    expect(screen.queryByRole("link", { name: "모르는 업무" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "모르는 업무" })).toBeNull();
+    expect(container.textContent).toContain("모르는 업무");
+    expect(screen.queryByRole("link", { name: "내부 명령" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "내부 명령" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "알 수 없는 content" })).toBeNull();
+    expect(screen.getByRole("link", { name: "파일 원본" }).getAttribute("href")).toBe("/api/tasks/task-1/materials/material-1/content?download=1");
+    expect(screen.getByRole("link", { name: "외부 자료" }).getAttribute("href")).toBe("https://example.com/reference?q=%ED%95%9C%EA%B8%80#section");
+    expect(screen.getByRole("link", { name: "외부 업무 API" }).getAttribute("href")).toBe("https://example.com/api/tasks/task-1");
+    expect(onOpenResource).not.toHaveBeenCalled();
+  });
+
   it("keeps the streaming caret and the body-state note outside the Markdown content", () => {
     const streaming = conversation("c1", "새 대화", "질문", {
       messages: [
@@ -477,7 +1137,7 @@ describe("AssistantMarkdown", () => {
     const bubble = container.querySelector(".assistant[data-body-state='streaming']") as HTMLElement;
     expect(bubble.querySelector(".ax-md strong")?.textContent).toBe("부분");
     expect(bubble.querySelector(".ax-md .ax-streaming-mark")).toBeNull();
-    expect(bubble.querySelector(":scope > .ax-streaming-mark")).toBeTruthy();
+    expect(bubble.querySelector(":scope > .ax-assistant-body > .ax-streaming-mark")).toBeTruthy();
     const cancelled = { ...streaming, messages: [streaming.messages[0], { ...streaming.messages[1], body_state: "cancelled" as const }], turns: [turn("c1-t1", { state: "cancelled", progress_state: "cancelled" })] };
     cleanup();
     const second = render(<MessageList {...listProps} conversation={cancelled} localFragments={[]} />).container;
@@ -580,6 +1240,96 @@ describe("ActionResultCard", () => {
     expect(card.querySelectorAll("button")).toHaveLength(0);
     expect(card.querySelector(".ax-card-kicker")?.textContent).toBe("AX 제안");
   });
+
+  it("shows the server's partial batch outcome instead of claiming every item was applied", () => {
+    const partial = conversation("c1", "새 대화", "업무 진행을 기록해줘", {
+      actions: [
+        {
+          action_id: "batch-1",
+          conversation_id: "c1",
+          turn_id: "c1-t1",
+          action_type: "task.progress.batch",
+          title: "업무 진행 일괄 반영 확인",
+          subject: "업무 진행 2건",
+          operation_label: "업무 진행 일괄 반영",
+          preview: [
+            { id: "operation_1", label: "CPA 데이터 취합", value: "체크리스트 완료 · 반영됨", kind: "state" },
+            { id: "operation_2", label: "플레이스 순위", value: "진행 메모 · 확인 중 · 대상 변경", kind: "state" },
+          ],
+          state: "approved",
+          version: 2,
+          payload_summary: "업무 진행 2건",
+          result: { batch_state: "partial", applied_count: 1, total_count: 2 },
+          result_summary: "1/2건 반영됨 · 나머지 항목 확인 필요",
+          audit_ref: "batch-1",
+          commands: [],
+        },
+      ],
+    });
+    const { container } = render(<MessageList {...listProps} conversation={partial} localFragments={[]} />);
+    const card = container.querySelector(".ax-action-card") as HTMLElement;
+    expect(card.querySelector("small.approved")?.textContent).toBe("1/2건 반영됨 · 나머지 항목 확인 필요");
+    expect(within(card).queryByText("승인됨 · 원장에 반영됨")).toBeNull();
+  });
+
+  it("edits a progress note inside one batch card and confirms the server-owned draft", async () => {
+    const onDecide = vi.fn().mockResolvedValue(undefined);
+    const pending = conversation("c1", "업무 일지", "업무 진행을 기록해줘", {
+      actions: [
+        {
+          action_id: "batch-edit",
+          conversation_id: "c1",
+          turn_id: "c1-t1",
+          action_type: "task.progress.batch",
+          title: "업무 진행 일괄 반영 확인",
+          subject: "업무 진행 2건",
+          operation_label: "업무 진행 일괄 반영",
+          preview: [
+            { id: "operation_1", label: "CPA 데이터 취합", value: "체크리스트 완료", kind: "state" },
+            { id: "operation_2", label: "플레이스 순위", value: "진행 메모 · 확인 중", kind: "state" },
+          ],
+          state: "pending",
+          version: 1,
+          payload_summary: "업무 진행 2건",
+          result: null,
+          audit_ref: null,
+          commands: [
+            { id: "confirm", label: "이 내용으로 반영", tone: "primary" },
+            { id: "reject", label: "거절", tone: "neutral" },
+          ],
+          edit_contract: {
+            editor: "task_progress_batch",
+            base_submission_version: 1,
+            fields: [],
+            values: {
+              operations: [
+                { effect_id: "one", kind: "checklist.update", task_id: "task-1", item_id: "step-1", expected_version: 1, done: true },
+                { effect_id: "two", kind: "progress.note", task_id: "task-2", expected_version: 1, summary: "확인 중" },
+              ],
+            },
+          },
+        },
+      ],
+    });
+    const { container } = render(
+      <MessageList {...listProps} onDecide={onDecide} conversation={pending} localFragments={[]} />,
+    );
+    const card = container.querySelector(".action-progress-batch-card") as HTMLElement;
+    fireEvent.click(within(card).getByRole("button", { name: "수정" }));
+    fireEvent.change(within(card).getByLabelText("진행 내용 - 플레이스 순위"), { target: { value: "검수 중" } });
+    fireEvent.click(within(card).getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(onDecide).toHaveBeenCalledWith(
+      "batch-edit",
+      1,
+      "confirm",
+      expect.objectContaining({
+        base_submission_version: 1,
+        draft: expect.objectContaining({
+          operations: expect.arrayContaining([expect.objectContaining({ kind: "progress.note", summary: "검수 중" })]),
+        }),
+      }),
+    ));
+  });
 });
 
 describe("답변이 가리키는 것", () => {
@@ -589,6 +1339,10 @@ describe("답변이 가리키는 것", () => {
     const base = conversation("c10", "오늘 업무", "제품팀장이 오늘 하는 업무 알려줘");
     const named = {
       ...base,
+      messages: [
+        ...base.messages,
+        { message_id: "c10-m2", turn_id: base.turns[0].turn_id, role: "assistant", body: "분기 마감 정리와 주간 회의를 확인했습니다.", body_state: "final", sequence: 2, state: "accepted" },
+      ],
       answer_resources: [
         {
           reference_id: "a1",
@@ -627,6 +1381,8 @@ describe("답변이 가리키는 것", () => {
     const listed = container.querySelector("section.ax-answer-resources") as HTMLElement;
     expect(listed.textContent).toContain("분기 마감 정리");
     expect(listed.textContent).toContain("주간 회의");
+    fireEvent.click(screen.getByRole("button", { name: "주간 회의" }));
+    expect(onOpenResource).toHaveBeenCalledWith(expect.objectContaining({ resource_type: "meeting", resource_id: "meeting-1" }));
     // The item opens the canonical thing by its own id — not by anything parsed out of the answer text.
     fireEvent.click(listed.querySelectorAll("button")[0]);
     expect(onOpenResource).toHaveBeenCalledWith(expect.objectContaining({ resource_type: "task", resource_id: "task-1" }));
@@ -691,8 +1447,8 @@ describe("근거", () => {
     // 답이 먼저 읽히도록 기본은 접힘이고, 한 줄이 딛고 있는 것의 크기를 말한다.
     const panel = container.querySelector("details.ax-answer-evidence") as HTMLDetailsElement;
     expect(panel.open).toBe(false);
-    expect(panel.querySelector("summary")?.textContent).toContain("정본 1건");
-    expect(panel.querySelector("summary")?.textContent).toContain("연결 1단계");
+    expect(panel.querySelector("summary")?.textContent).toContain("근거 1건");
+    expect(panel.querySelector("summary")?.textContent).not.toContain("연결");
     // 제목만으로는 근거가 아니다: 실제로 걸어간 edge가 그 자리에 문장으로 붙는다.
     const row = panel.querySelector('li[data-resource="task:t1"]') as HTMLElement;
     expect(row.querySelector(".ax-resource-why")?.textContent).toBe("이 업무를 만든 요청 · 분기 마감 요청");
@@ -714,10 +1470,10 @@ describe("근거", () => {
   });
 });
 
-describe("근거를 열어도 대화는 그대로", () => {
+describe("근거 상세 이동", () => {
   afterEach(cleanup);
 
-  it("정본을 그 자리에서 읽고, 쓰다 만 문장과 대화가 사라지지 않는다", async () => {
+  it("상세 열기를 누르면 중간 peek 없이 정본 상세 화면으로 바로 넘긴다", () => {
     const named = {
       reference_id: "a1",
       turn_id: "c1-t1",
@@ -743,13 +1499,8 @@ describe("근거를 열어도 대화는 그대로", () => {
     const panel = document.querySelector("details.ax-answer-evidence") as HTMLDetailsElement;
     fireEvent.click(panel.querySelector("summary") as HTMLElement);
     fireEvent.click(screen.getByRole("button", { name: "상세 열기" }));
-    const peek = await screen.findByLabelText("근거 상세");
-    expect(peek).toBeTruthy();
-    // 대화를 떠나지 않았다: 목록도 쓰다 만 문장도 그대로다.
-    expect((screen.getByLabelText("AX 메시지") as HTMLTextAreaElement).value).toBe("쓰다 만 문장");
-    expect(screen.getByRole("button", { name: "견적 검토" })).toBeTruthy();
-    // 화면 이동은 별도 CTA이며 여기서 저절로 일어나지 않는다.
-    expect(openFully).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("근거 상세")).toBeNull();
+    expect(openFully).toHaveBeenCalledWith(expect.objectContaining({ resource_type: "task", resource_id: "task-1" }));
   });
 });
 
@@ -809,10 +1560,10 @@ describe("근거가 딛고 선 것", () => {
   });
 });
 
-describe("실행 영수증", () => {
+describe("실행 영수증 위치", () => {
   afterEach(cleanup);
 
-  it("shows the walk while the turn runs and folds it into one line once it is done", async () => {
+  it("does not render graph UI and places the completed timeline after the answer", async () => {
     const running = conversation("c11", "관계 질문", "이 업무가 어디서 왔는지 알려줘");
     running.turns[0] = { ...running.turns[0], state: "running", progress_state: "tool_running" } as never;
     const steps = [
@@ -828,11 +1579,11 @@ describe("실행 영수증", () => {
         onRetryTurn={vi.fn()}
       />,
     );
-    // While it runs the path is open, with no summary to expand.
-    expect(container.querySelector(".ax-rail:not(.terminal) section.ax-search-path")).not.toBeNull();
+    expect(container.querySelector("section.ax-search-path")).toBeNull();
     expect(container.querySelector(".ax-rail details")).toBeNull();
 
     const done = conversation("c11", "관계 질문", "이 업무가 어디서 왔는지 알려줘");
+    done.messages.push({ message_id: "c11-m2", turn_id: done.turns[0].turn_id, role: "assistant", body: "분기 마감 업무입니다.", body_state: "final", sequence: 2, state: "accepted" });
     rerender(
       <MessageList
         conversation={{ ...done, graph_receipts: steps.map((step) => ({ ...step, turn_id: done.turns[0].turn_id })) } as never}
@@ -843,10 +1594,9 @@ describe("실행 영수증", () => {
         onRetryTurn={vi.fn()}
       />,
     );
-    const receipt = container.querySelector(".ax-rail.terminal details") as HTMLDetailsElement;
-    expect(receipt).not.toBeNull();
-    expect(receipt.open).toBe(false);
-    expect(receipt.querySelector("summary")?.textContent).toContain("연결 1단계");
-    expect(receipt.querySelector("section.ax-search-path")).not.toBeNull();
+    const order = [...container.querySelectorAll(".ax-turn > *")].map((element) => element.className.split(" ")[0]);
+    expect(order).toEqual(["user", "assistant", "ax-rail"]);
+    expect(container.querySelector(".ax-rail.terminal details")).toBeNull();
+    expect(container.querySelector("section.ax-search-path, section.ax-turn-graph")).toBeNull();
   });
 });

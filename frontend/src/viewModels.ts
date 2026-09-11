@@ -233,7 +233,7 @@ export type ChecklistItem = {
 export type TaskAssignmentSummary = {
   assignment_id: string;
   kind: "self" | "request_effect" | "direct";
-  status: "pending" | "active" | "declined" | "superseded";
+  status: "pending" | "active" | "declined" | "superseded" | "cancelled";
   /** Who put this person on the work. Empty when nobody did — a self assignment has no assigner. */
   assigned_by: string | null;
   accepted_at: string | null;
@@ -242,7 +242,7 @@ export type TaskAssignmentSummary = {
 export type TaskAssignment = {
   assignment_id: string;
   assignment_kind: "self" | "request_effect" | "direct";
-  status: "pending" | "active" | "declined" | "superseded";
+  status: "pending" | "active" | "declined" | "superseded" | "cancelled";
   assignee_id: string;
   /** Who put this person on the work. Empty when nobody did — a self assignment has no assigner. */
   assigned_by: string | null;
@@ -287,6 +287,13 @@ export type TaskMaterial = {
   extraction?: MaterialExtraction | null;
   /** The Task version this attach or detach moved the Task to. Only mutation answers carry it. */
   task_version?: number;
+};
+
+/** A Meeting owns its current attachments; MeetingNote versions never own or snapshot this list. */
+export type MeetingMaterial = Omit<TaskMaterial, "task_id" | "task_version"> & {
+  meeting_id: string;
+  /** The Meeting version returned by an attachment mutation. */
+  meeting_version?: number;
 };
 
 export type MaterialExtraction = {
@@ -374,6 +381,10 @@ export type OrganizationProfile = {
   roles?: string[];
   grants?: AccessGrant[];
   capabilities: string[];
+  assistant_character?: {
+    character_key: string;
+    version: number;
+  };
 };
 
 export type DailyReportDraft = {
@@ -429,6 +440,10 @@ export type WorkRequest = {
   title: string;
   description?: string | null;
   due_date?: string | null;
+  /** Steps requested before acceptance; they become the accepted Task's own checklist. */
+  checklist?: string[];
+  /** Permission-safe earlier work, populated by the WorkRequest detail read. */
+  references?: TaskReference[];
   requester_id?: string;
   assignee_id?: string;
   cc_member_ids?: string[];
@@ -458,6 +473,13 @@ export type ActionItem = {
   subject?: string;
   operation_label?: string;
   preview?: ActionPreviewField[];
+  /** Server-authored outcome for effects that can complete only partially. */
+  result_summary?: string;
+  /** Closed, server-authored editor contract for an editable AX proposal. */
+  edit_contract?: ActionEditContract;
+  /** Pre-create link/file identities owned by this Action; confirmation alone claims them into a Task. */
+  material_drafts?: ActionMaterialDraft[];
+  material_results?: Array<Record<string, unknown>>;
 };
 
 /** One independent judgement question, whatever raised it. The server decides everything the client renders. */
@@ -476,8 +498,32 @@ export type ActionItemEnvelope = {
   expected_version: number | null;
   /** The Task this proposal produced, when it produced one. */
   derived_task_id?: string | null;
+  /** The Meeting this proposal produced, when it produced one. */
+  derived_meeting_id?: string | null;
   /** Fields the last reviewer asked to have changed. A proposal, never an edit: the round still holds what was sent. */
   suggested_changes?: Record<string, string>;
+  edit_contract?: ActionEditContract;
+  material_drafts?: ActionMaterialDraft[];
+  material_results?: Array<Record<string, unknown>>;
+  /** Server-authored outcome for effects that can complete only partially. */
+  result_summary?: string;
+  /** Per-effect receipt for a server-executed batch. */
+  execution_result?: Record<string, unknown>;
+};
+
+export type ActionMaterialDraft = {
+  material_draft_id: string;
+  action_item_id: string;
+  source_kind: "external_link" | "file";
+  name: string;
+  content_type: string;
+  size_bytes: number;
+  url: string | null;
+  integrity_ref: string;
+  state: "staged" | "claimed";
+  expires_at: string;
+  claimed_task_id: string | null;
+  claimed_meeting_id?: string | null;
 };
 
 /** One immutable round: the frozen content that was judged, what changed since the previous round, and the answers. */
@@ -524,7 +570,36 @@ export type ActionPreviewField = { id: string; label: string; value: string; kin
 
 export type ActionCommand = { id: string; label: string; tone: "primary" | "neutral" | "danger" | string; requires_reason?: boolean };
 
+export type ActionEditOption = { value: string; label: string; organization_ids?: string[] };
+
+export type ActionEditField = {
+  id: string;
+  label: string;
+  type: "text" | "textarea" | "date" | "datetime" | "boolean" | "person" | "select" | "multi_select" | "string_list";
+  required: boolean;
+  editable: boolean;
+  value?: string | null;
+  label_value?: string;
+  options?: ActionEditOption[];
+};
+
+export type ActionEditContract = {
+  editor: "task" | "meeting" | "task_progress_batch";
+  base_submission_version: number;
+  values: Record<string, unknown>;
+  fields: ActionEditField[];
+  warnings?: string[];
+};
+
 export type TurnProgressState = "queued" | "preparing" | "tool_running" | "composing" | "retrying" | "completed" | "failed" | "cancelled";
+
+export type FollowUpCandidate = {
+  candidate_id: string;
+  source_turn_id: string;
+  label: string;
+  user_text: string;
+  selected_message_id: string | null;
+};
 
 export type ConversationTurn = {
   turn_id: string;
@@ -542,6 +617,7 @@ export type ConversationTurn = {
   provider_run_ref: string | null;
   provider_session_ref: string | null;
   error: string | null;
+  follow_up_candidates?: FollowUpCandidate[];
 };
 
 export type Conversation = {
@@ -557,6 +633,7 @@ export type Conversation = {
     state: "accepted" | "queued";
     body_state?: "final" | "streaming" | "failed" | "cancelled";
     idempotency_key?: string | null;
+    follow_up_candidate_id?: string | null;
     created_at?: string;
   }>;
   turns: ConversationTurn[];
@@ -610,6 +687,21 @@ export type AnswerResource = {
   current_version?: number | null;
   /** 답이 딛고 선 뒤로 바뀌었는가. 숨기지 않고 말한다. */
   changed_since?: boolean;
+};
+
+export type Notification = {
+  notification_id: string;
+  kind: "meeting.shared" | "work_request.received" | "work_request.accepted" | string;
+  summary: string;
+  actor_id: string;
+  resource: {
+    type: "meeting" | "work_request";
+    id: string;
+    version: number | null;
+    title: string;
+  };
+  created_at: string;
+  read_at: string | null;
 };
 
 export type ConversationContextReference = {
@@ -726,6 +818,13 @@ export type MeetingSummaryRow = {
   lifecycle: string;
   version: number;
   attendees: Array<{ member_id: string; display_name: string }>;
+  lineage?: {
+    source_action_item_id: string | null;
+    source_decision_item_id: string | null;
+    source_submission_id: string | null;
+    source_review_decision_id: string | null;
+    confirmed_by: string | null;
+  };
 };
 
 export type MeetingNoteVersion = {
@@ -734,6 +833,7 @@ export type MeetingNoteVersion = {
   body: string;
   created_by: string;
   created_at: string;
+  source_status?: "current_turn" | "resolved" | "not_found" | null;
   source_evidence: Array<Record<string, unknown>>;
 };
 
@@ -742,6 +842,7 @@ export type MeetingNote = {
   lifecycle: string;
   version: number;
   body: string;
+  source_status?: "current_turn" | "resolved" | "not_found" | null;
   versions: MeetingNoteVersion[];
   finalized_at: string | null;
   finalized_by: string | null;
@@ -845,6 +946,7 @@ export type MeetingSummary = {
 };
 
 export type MeetingDetail = MeetingSummaryRow & {
+  materials: MeetingMaterial[];
   note: MeetingNote | null;
   recordings: MeetingRecording[];
   summaries: MeetingSummary[];

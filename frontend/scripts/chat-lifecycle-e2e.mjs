@@ -19,23 +19,37 @@ try {
   const page = await browser.newPage();
   await page.goto(frontendUrl, { waitUntil: "domcontentloaded" });
   await loginAs(page, "mina");
-  await page.getByRole("button", { name: "AX" }).click();
+  const taskTitle = `채팅 실행 근거 확인 ${Date.now()}`;
+  const seededTask = await page.evaluate(async (title) => {
+    const response = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    if (!response.ok) throw new Error(`task fixture creation failed: ${response.status}`);
+    return response.json();
+  }, taskTitle);
+  const conversationsLoaded = page.waitForResponse(
+    (response) => response.url().endsWith("/api/conversations") && response.request().method() === "GET",
+  );
+  await page.getByRole("button", { name: "AX", exact: true }).click();
+  await conversationsLoaded;
   const newConversation = page.getByRole("button", { name: "새 AX 대화" });
+  await newConversation.click();
+  const prompt = "SCAX MCP의 task_list를 사용해 내 업무 수만 알려줘.";
+  await page.getByLabel("AX 메시지").fill(prompt);
   const createFirst = page.waitForResponse(
     (response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST",
   );
-  await newConversation.click();
-  const first = await (await createFirst).json();
-  const prompt = "SCAX MCP의 task_list를 사용해 내 업무 수만 알려줘.";
-  await page.getByLabel("AX 메시지").fill(prompt);
   await page.getByRole("button", { name: "보내기" }).click();
+  const first = await (await createFirst).json();
 
   // The optimistic row shows at once and converges onto the server row without a duplicate.
   await page.locator(".ax-messages").getByText(prompt).first().waitFor({ timeout: 10_000 });
   const rail = page.locator(".ax-rail").first();
   await rail.waitFor({ timeout: 20_000 });
 
-  // Observe user-facing progress states as the worker ingests Codex JSONL. A tool receipt must be visible in the rail
+  // Observe user-facing progress states as the worker ingests Codex JSONL. A compact timeline step must be visible
   // while the turn is still non-terminal (live tool display before the final answer). `tool_running` itself lasts only
   // as long as the tool call (task_list takes tens of milliseconds), so it is recorded when seen but not required.
   const liveReceipt = await pollFor(
@@ -44,11 +58,17 @@ try {
       const state = await rail.getAttribute("data-progress");
       if (state) seenStates.add(state);
       const terminal = state === "completed" || state === "failed" || state === "cancelled";
-      const receipts = page.locator(".ax-rail .ax-rail-tool");
+      const receipts = page.locator(".ax-rail .ax-rail-live-step");
       if (!terminal && (await receipts.count()) > 0) {
-        const name = ((await receipts.first().locator(".ax-rail-tool-name").textContent()) ?? "").trim();
-        const toolState = ((await receipts.first().locator(".ax-rail-tool-state").textContent()) ?? "").trim();
-        if (name) return { name, toolState, turnState: state };
+        const name = ((await receipts.first().locator("span").nth(1).textContent()) ?? "").trim();
+        const accessibleState = (await receipts.first().getAttribute("aria-label")) ?? "";
+        if (name) {
+          if ((await rail.getByText("요청 내용 확인...").count()) !== 1) {
+            throw new Error("working rail did not show the accepted request-check heading");
+          }
+          await rail.screenshot({ path: "test-results/chat-lifecycle-working-rail.png" });
+          return { name, accessibleState, turnState: state };
+        }
       }
       if (terminal) {
         throw new Error(`turn reached ${state} before a live tool receipt was observed (states seen: ${[...seenStates].join(",")})`);
@@ -60,23 +80,29 @@ try {
   const duplicates = await page.locator(".ax-messages").getByText(prompt).count();
   if (duplicates !== 1) throw new Error(`user request rendered ${duplicates} times while running (expected 1)`);
 
-  // Final answer: rail collapses to one line with observed timings; the assistant body is the primary content.
-  const summary = page.locator(".ax-rail.terminal .ax-rail-summary", { hasText: /✓ 완료 · 도구 \d+개/ }).first();
+  // Final answer: the full A-style timeline moves below the assistant body, with evidence kept separate.
+  const summary = page.locator(".ax-rail.terminal details summary").first();
   await summary.waitFor({ timeout: 90_000 });
   const timings = (await page.locator(".ax-rail.terminal .ax-rail-timings").first().textContent()) ?? "";
   if (!/실행 \d+(\.\d+)?s/.test(timings) || !/대기 /.test(timings)) {
     throw new Error(`terminal rail is missing observed timings: ${JSON.stringify(timings)}`);
   }
-  if ((await page.locator(".ax-rail.terminal details[open]").count()) !== 0) throw new Error("terminal rail did not collapse");
+  const completedDetails = page.locator(".ax-rail.terminal details").first();
+  if (await completedDetails.evaluate((element) => element.open)) throw new Error("terminal rail was not collapsed after completion");
   const answer = page.locator(".ax-messages .assistant[data-body-state='final']").first();
   await answer.waitFor({ timeout: 10_000 });
-  const answerText = ((await answer.textContent()) ?? "").trim();
+  const answerBody = answer.locator(".ax-assistant-body");
+  const answerText = ((await answerBody.textContent()) ?? "").trim();
   if (!answerText) throw new Error("final assistant body is empty");
+  if (/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i.test(answerText)) {
+    throw new Error(`final assistant body exposed an internal UUID: ${JSON.stringify(answerText)}`);
+  }
   await summary.click();
-  const receipt = page.locator(".ax-rail-tool.completed", { hasText: "task list" }).first();
+  const receipt = page.locator(".ax-rail-live-step.completed", { hasText: "업무 목록 조회" }).first();
   await receipt.waitFor();
-  const toolTime = (await receipt.locator(".ax-rail-tool-time").textContent().catch(() => "")) ?? "";
+  const toolTime = (await receipt.locator(".ax-rail-step-time").textContent().catch(() => "")) ?? "";
   if (!/\d/.test(toolTime)) throw new Error(`completed tool receipt has no observed duration: ${JSON.stringify(toolTime)}`);
+  await page.locator(".ax-drawer").screenshot({ path: "test-results/chat-lifecycle-expanded.png" });
 
   // Server projection carries the same lifecycle facts (not client-only state).
   const projection = await page.evaluate(async (conversationId) => {
@@ -103,15 +129,9 @@ try {
     throw new Error(`task_list tool row lacks observed timing: ${JSON.stringify(tool)}`);
   }
 
-  // Switch away and back: the answer, collapsed rail and timings come from the projection, not from local state.
-  const createSecond = page.waitForResponse(
-    (response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST",
-  );
+  // Switch to an unpersisted blank draft and reload: the answer, completed timeline and timings come back from the
+  // canonical projection, not from local state. Merely opening a new chat must not create an empty server row.
   await newConversation.click();
-  const second = await (await createSecond).json();
-  const conversationButton = (conversationId) =>
-    page.locator(`.ax-conversation-list button[data-conversation-id="${conversationId}"]`);
-  await conversationButton(second.conversation_id).waitFor();
   if ((await page.locator(".ax-messages").getByText(prompt).count()) !== 0) throw new Error("first conversation leaked into the new one");
   await page.reload({ waitUntil: "domcontentloaded" });
   // The session survives the reload; log in again only if the login screen is shown.
@@ -120,14 +140,20 @@ try {
     page.getByLabel("이메일").waitFor(),
   ]);
   if ((await page.getByLabel("이메일").count()) > 0) await loginAs(page, "mina");
-  await page.getByRole("button", { name: "AX" }).click();
-  await conversationButton(first.conversation_id).click();
+  await page.getByRole("button", { name: "AX", exact: true }).click();
   await page.locator(".ax-messages").getByText(prompt).first().waitFor({ timeout: 10_000 });
-  await page.locator(".ax-rail.terminal .ax-rail-summary", { hasText: /✓ 완료 · 도구 \d+개/ }).first().waitFor({ timeout: 10_000 });
-  const restored = ((await page.locator(".ax-messages .assistant[data-body-state='final']").first().textContent()) ?? "").trim();
+  const restoredSummary = page.locator(".ax-rail.terminal details summary").first();
+  await restoredSummary.waitFor({ timeout: 10_000 });
+  const restored = ((await page.locator(".ax-messages .assistant[data-body-state='final'] .ax-assistant-body").first().textContent()) ?? "").trim();
   if (restored !== answerText) throw new Error("final answer did not survive re-entry from the projection");
 
+  await page.locator(".ax-drawer").screenshot({ path: "test-results/chat-lifecycle-collapsed.png" });
   await page.screenshot({ path: "test-results/chat-lifecycle-e2e.png", fullPage: true });
+  await restoredSummary.click();
+  await page.locator(".ax-rail-evidence li", { hasText: taskTitle }).getByRole("button", { name: "상세 열기" }).click();
+  await page.getByRole("dialog", { name: "업무 상세" }).waitFor({ timeout: 20_000 });
+  await page.getByRole("heading", { name: taskTitle, exact: true }).waitFor({ timeout: 20_000 });
+  if ((await page.locator(".ax-drawer").count()) !== 0) throw new Error("canonical task detail opened without closing the AX drawer");
   console.log(
     JSON.stringify({
       result: "chat lifecycle projected live and restored on re-entry",
@@ -136,6 +162,7 @@ try {
       run_ms: turn.run_ms,
       queue_wait_ms: turn.queue_wait_ms,
       tool_latency_ms: tool.latency_ms,
+      evidence_task_id: seededTask.task_id,
     }),
   );
 } finally {

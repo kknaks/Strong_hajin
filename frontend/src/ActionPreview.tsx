@@ -1,5 +1,5 @@
 import type { ActionCommand, ActionItem } from "./viewModels";
-import { formatDate } from "./labels";
+import { formatDate, formatDateTime } from "./labels";
 
 /**
  * Shared presentation of an AX Action for the chat card and the decision inbox. Everything shown comes from the server
@@ -13,19 +13,27 @@ export function actionKicker(action: ActionItem): string {
   return action.operation_label ? `AX 제안 · ${action.operation_label}` : "AX 제안";
 }
 
-export function ActionPreviewDetails({ action, defaultOpen = false }: { action: ActionItem; defaultOpen?: boolean }) {
-  const rows = action.preview ?? [];
+export function ActionPreviewDetails({
+  action,
+  defaultOpen = false,
+  excludeRowIds = [],
+}: {
+  action: ActionItem;
+  defaultOpen?: boolean;
+  excludeRowIds?: string[];
+}) {
+  const rows = (action.preview ?? []).filter((row) => !excludeRowIds.includes(row.id));
   if (rows.length === 0) return null;
   return (
     <details className="ax-preview" data-action-preview={action.action_id} open={defaultOpen || undefined}>
       <summary>
-        상세 보기 <small>· 승인 전 확인할 {rows.length}개 항목</small>
+        상세 보기 <small>· {action.state === "pending" ? "승인 전 확인할" : "처리 결과"} {rows.length}개 항목</small>
       </summary>
       <dl className="ax-preview-list">
         {rows.map((row) => (
           <div className={`ax-preview-row ${row.kind}`} key={row.id}>
             <dt>{row.label}</dt>
-            <dd>{row.kind === "date" ? formatDate(row.value) : row.value}</dd>
+            <dd>{row.kind === "date" ? formatDate(row.value) : row.kind === "datetime" ? formatDateTime(row.value) : row.value}</dd>
           </div>
         ))}
       </dl>

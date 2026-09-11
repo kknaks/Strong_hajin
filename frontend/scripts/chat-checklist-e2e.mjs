@@ -36,12 +36,8 @@ try {
     return created;
   }, taskTitle);
 
-  await page.getByRole("button", { name: "AX" }).click();
-  const createConversation = page.waitForResponse(
-    (response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST",
-  );
+  await page.getByRole("button", { name: "AX", exact: true }).click();
   await page.getByRole("button", { name: "새 AX 대화" }).click();
-  const conversation = await (await createConversation).json();
   await page.getByLabel("AX 메시지").fill(
     [
       `SCAX MCP의 task_checklist_list 도구를 task_id ${task.task_id}로 실제 호출해 현재 단계를 확인해줘.`,
@@ -49,7 +45,11 @@ try {
       "두 도구를 모두 실제로 호출하고, 답변으로만 제안하지 마. 내가 화면에서 승인할 때까지 기다려.",
     ].join(" "),
   );
+  const createConversation = page.waitForResponse(
+    (response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "보내기" }).click();
+  const conversation = await (await createConversation).json();
 
   const pending = await pollFor(
     page,

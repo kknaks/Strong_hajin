@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import UTC, datetime
 
 from typing import Any
 import hashlib
@@ -14,8 +15,9 @@ from ax_workspace.modules.ax_execution.conversations import (
     ConversationApplication,
     ConversationContextReferenceInput,
 )
-from ax_workspace.modules.ax_execution.actions import ActionApplication
-from ax_workspace.modules.organization_access.domain import Principal
+from ax_workspace.modules.ax_execution.actions import ActionApplication, ActionCapabilityDenied
+from ax_workspace.modules.notifications import NotificationNotFound
+from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, Principal
 from ax_workspace.modules.work.material_folders import MaterialFolderApplication
 from ax_workspace.platform.material_folders import SqlAlchemyMaterialFolderRepository
 from ax_workspace.modules.organization_access.administration import AccessAdministration
@@ -35,6 +37,7 @@ from ax_workspace.platform.action_center import action_handlers
 from ax_workspace.platform.actions import SqlAlchemyActionExecutor, SqlAlchemyActionRepository
 from ax_workspace.platform.reports import SqlAlchemyDailyReportDraftWorkflow, SqlAlchemyDailyReportRepository
 from ax_workspace.modules.work.materials import MaterialError, MaterialNotFound, TaskMaterialApplication
+from ax_workspace.modules.work.action_materials import ActionMaterialDraftApplication, ActionMaterialError
 from ax_workspace.modules.work.material_search import MaterialSearchApplication, RESOURCE_TYPES
 from ax_workspace.bootstrap.material_sources import SessionMaterialOwners, readable_content_evidence
 from ax_workspace.modules.work.graph import GraphApplication
@@ -46,25 +49,32 @@ from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment
 from ax_workspace.modules.meetings.refinement import build_refinement_prompt, parse_refinement, refinement_output_schema
 from ax_workspace.modules.meetings.summary import build_summary_prompt, parse_summary, summary_output_schema
 from ax_workspace.modules.meetings.jobs import MeetingFinalizationJob, MeetingFinalizationQueue
-from ax_workspace.modules.work.requests import WorkRequestApplication
-from sqlalchemy import delete, select
+from ax_workspace.modules.work.requests import WorkRequestApplication, WorkRequestError
+from sqlalchemy import delete, or_, select
 
 from ax_workspace.platform.persistence import (
+    AppointmentRecord,
     AttachmentRecord,
+    DecisionItemRecord,
     ConversationContentEvidenceRecord,
+    EmploymentPeriodRecord,
     MaterialBlockRecord,
     MaterialChunkRecord,
     MaterialExtractionRecord,
+    MemberRecord,
     OrganizationUnitRecord,
+    PositionDefinitionRecord,
     make_session_factory,
 )
 from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
+from ax_workspace.platform.notifications import SqlAlchemyNotificationRepository, notification_view
+from ax_workspace.platform.action_materials import SqlAlchemyActionMaterialDraftRepository
 from ax_workspace.platform.native_materials import NativeMaterialRepository, NativeRevisionStorage
 from ax_workspace.platform.recordings import LocalDirectoryRecordingStorage
 from ax_workspace.platform.soniox import SonioxTranscriptionAdapter
 from ax_workspace.modules.work.material_extraction import LexicalMaterialRetriever, MaterialExtractionJob, extraction_view
 from ax_workspace.modules.work.projects import ProjectApplication
-from ax_workspace.modules.work.search import matches
+from ax_workspace.modules.work.search import folded, matches, normalize_person_reference
 from ax_workspace.platform.projects import SqlAlchemyProjectRepository
 from ax_workspace.platform.korean import install as install_korean_analyzer
 from ax_workspace.platform.material_extraction import (
@@ -275,14 +285,85 @@ class _SessionGraphSource:
             return None
 
     def people(self, principal: Principal, *, query: str) -> list[dict[str, Any]]:
-        """이름으로 사람을 찾는다. 명부는 활동 중인 구성원 누구에게나 이름과 id까지만 열려 있다."""
+        """이름 또는 현재 소속 범위의 활성 직책으로 사람을 찾는다.
+
+        존칭 정리는 이 서버 경계가 하고, 직책과 사람의 연결은 display name 장식이 아니라 appointment 원장을
+        읽는다. 다른 조직의 같은 직책을 함께 내보내면 `우리 팀장님`이 전사 검색이 되므로 현재 principal의
+        실제 membership과 그 상위 조직에 놓인 appointment만 후보가 된다.
+        """
+        reference = normalize_person_reference(query)
+        if not reference:
+            return []
+        position_reference = any(
+            folded(reference) == folded(str(position_name))
+            for position_name in self._session.scalars(
+                select(PositionDefinitionRecord.name).where(PositionDefinitionRecord.lifecycle == "active")
+            )
+        )
         rows = OrganizationApplication(SqlAlchemyOrganizationRepository(self._session)).member_directory(principal)
         # graph의 사람 node는 `member_id`로 말한다. 명부는 `id`로 말하므로 여기서 한 번 맞춘다.
-        return [
-            {"member_id": row["id"], "display_name": row["display_name"]}
+        found = {
+            str(row["id"]): {"member_id": row["id"], "display_name": row["display_name"]}
             for row in rows
-            if matches(query, str(row["display_name"]))
-        ]
+            if not position_reference and matches(reference, str(row["display_name"]))
+        }
+        if not position_reference:
+            return [found[key] for key in sorted(found)]
+        now = datetime.now(UTC)
+        parents = {
+            str(unit_id): str(parent_id) if parent_id is not None else None
+            for unit_id, parent_id in self._session.execute(
+                select(OrganizationUnitRecord.id, OrganizationUnitRecord.parent_id)
+            ).all()
+        }
+        related_organizations = set(principal.organization_scope)
+        frontier = list(related_organizations)
+        while frontier:
+            parent = parents.get(frontier.pop())
+            if parent is not None and parent not in related_organizations:
+                related_organizations.add(parent)
+                frontier.append(parent)
+        appointments = self._session.execute(
+            select(
+                MemberRecord.id,
+                MemberRecord.display_name,
+                PositionDefinitionRecord.name,
+                AppointmentRecord.organization_id,
+                OrganizationUnitRecord.name,
+            )
+            .join(AppointmentRecord, AppointmentRecord.member_id == MemberRecord.id)
+            .join(EmploymentPeriodRecord, EmploymentPeriodRecord.member_id == MemberRecord.id)
+            .join(PositionDefinitionRecord, PositionDefinitionRecord.id == AppointmentRecord.position_definition_id)
+            .join(OrganizationUnitRecord, OrganizationUnitRecord.id == AppointmentRecord.organization_id)
+            .where(
+                MemberRecord.employment_state == "active",
+                MemberRecord.record_status == "active",
+                EmploymentPeriodRecord.state == "active",
+                EmploymentPeriodRecord.ended_at.is_(None),
+                PositionDefinitionRecord.lifecycle == "active",
+                PositionDefinitionRecord.organization_unit_type_id == OrganizationUnitRecord.unit_type_id,
+                OrganizationUnitRecord.lifecycle == "active",
+                OrganizationUnitRecord.abolished_at.is_(None),
+                AppointmentRecord.organization_id.in_(related_organizations),
+                AppointmentRecord.valid_from <= now,
+                or_(AppointmentRecord.valid_until.is_(None), AppointmentRecord.valid_until > now),
+            )
+            .order_by(MemberRecord.id, AppointmentRecord.organization_id)
+        ).all()
+        for member_id, display_name, position_name, organization_id, organization_name in appointments:
+            if folded(reference) != folded(str(position_name)):
+                continue
+            found[str(member_id)] = {
+                "member_id": str(member_id),
+                "display_name": str(display_name),
+                "match": {
+                    "kind": "position",
+                    "label": str(position_name),
+                    "organization_id": str(organization_id),
+                    "organization_name": str(organization_name),
+                },
+            }
+        return [found[key] for key in sorted(found)]
 
     def readable_requests(self, principal: Principal, *, query: str | None = None) -> list[dict[str, Any]]:
         try:
@@ -472,12 +553,58 @@ class WorkflowApplication:
     def create_meeting(self, principal: Principal, **fields: Any) -> dict[str, Any]:
         with self._session_factory() as session:
             result = self._meetings(session).create(principal, **fields)
+            self._register_note_material_from_view(session, result.get("note"))
             session.commit()
             return result
 
     def update_meeting(self, principal: Principal, meeting_id: UUID, expected_version: int, changes: dict[str, Any]) -> dict[str, Any]:
         with self._session_factory() as session:
             result = self._meetings(session).update(principal, meeting_id, expected_version, changes)
+            session.commit()
+            return result
+
+    def attach_meeting_material_link(self, principal: Principal, meeting_id: UUID, expected_version: int, *, url: str, label: str) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._meetings(session).attach_material_link(
+                principal, meeting_id, expected_version, url=url, label=label
+            )
+            session.commit()
+            return result
+
+    def attach_meeting_material(
+        self, principal: Principal, meeting_id: UUID, expected_version: int, *, name: str, content_type: str, data: bytes
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._meetings(session).attach_material(
+                principal, meeting_id, expected_version, name=name, content_type=content_type, data=data
+            )
+            session.commit()
+            return result
+
+    def detach_meeting_material(
+        self, principal: Principal, meeting_id: UUID, binding_id: UUID, expected_version: int
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._meetings(session).detach_material(principal, meeting_id, binding_id, expected_version)
+            session.commit()
+            return result
+
+    def replace_meeting_material(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        binding_id: UUID,
+        expected_version: int,
+        *,
+        name: str,
+        content_type: str,
+        data: bytes,
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._meetings(session).replace_material(
+                principal, meeting_id, binding_id, expected_version,
+                name=name, content_type=content_type, data=data,
+            )
             session.commit()
             return result
 
@@ -493,21 +620,60 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def list_notifications(self, principal: Principal) -> list[dict[str, object]]:
+        with self._session_factory() as session:
+            rows = SqlAlchemyNotificationRepository(session).list_for(str(principal.id))
+            return [view for row in rows if (view := self._authorized_notification_view(session, principal, row)) is not None]
+
+    def mark_notification_read(self, principal: Principal, notification_id: UUID) -> dict[str, object]:
+        with self._session_factory() as session:
+            repository = SqlAlchemyNotificationRepository(session)
+            row = repository.for_recipient(notification_id, str(principal.id), lock=True)
+            if row is None:
+                raise NotificationNotFound("notification was not found")
+            view = self._authorized_notification_view(session, principal, row)
+            if view is None:
+                raise NotificationNotFound("notification was not found")
+            repository.mark_read(row)
+            session.commit()
+            return notification_view(
+                row,
+                title=str(view["resource"]["title"]),
+                version=view["resource"]["version"],
+            )
+
+    def _authorized_notification_view(self, session: Any, principal: Principal, row: Any) -> dict[str, object] | None:
+        try:
+            if row.resource_type == "meeting":
+                resource = self._meetings(session).get(principal, UUID(row.resource_id))
+                title, version = resource["title"], resource["version"]
+            elif row.resource_type == "work_request":
+                resource = self._work_requests(session).get(principal, UUID(row.resource_id))
+                title, version = resource["title"], resource["version"]
+            else:
+                return None
+        except (MeetingError, WorkRequestError, ValueError):
+            return None
+        return notification_view(row, title=str(title), version=int(version))
+
     def create_meeting_note(self, principal: Principal, meeting_id: UUID, body: str) -> dict[str, Any]:
         with self._session_factory() as session:
             result = self._meetings(session).create_note(principal, meeting_id, body)
+            self._register_note_material_from_view(session, result)
             session.commit()
             return result
 
     def save_meeting_note(self, principal: Principal, meeting_id: UUID, expected_version: int, body: str) -> dict[str, Any]:
         with self._session_factory() as session:
             result = self._meetings(session).save_note(principal, meeting_id, expected_version, body)
+            self._register_note_material_from_view(session, result)
             session.commit()
             return result
 
     def finalize_meeting_note(self, principal: Principal, meeting_id: UUID, expected_version: int) -> dict[str, Any]:
         with self._session_factory() as session:
             result = self._meetings(session).finalize_note(principal, meeting_id, expected_version)
+            self._register_note_material_from_view(session, result)
             session.commit()
             return result
 
@@ -717,6 +883,7 @@ class WorkflowApplication:
                 summary_id,
                 expected_version,
             )
+            self._register_note_material_from_view(session, result.get("note"))
             session.commit()
             return result
 
@@ -766,6 +933,16 @@ class WorkflowApplication:
     def my_organization_profile(self, principal: Principal) -> dict[str, Any]:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).my_profile(principal)
+
+    def set_assistant_character(
+        self, principal: Principal, character_key: str, expected_version: int
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = OrganizationApplication(SqlAlchemyOrganizationRepository(session)).set_assistant_character(
+                principal, character_key, expected_version
+            )
+            session.commit()
+            return result
 
     def authenticated_principal(self, member_id: str) -> Principal:
         with self._session_factory() as session:
@@ -929,6 +1106,11 @@ class WorkflowApplication:
             SqlAlchemyMeetingRepository(session),
             self._recording_storage,
             self._soniox,
+            SqlAlchemyAttachmentRepository(session),
+            _SessionResourceReferences(self, session),
+            self._material_storage,
+            SqlAlchemyMaterialExtractionRepository(session),
+            self._material_queue(session),
         )
 
     def create_self_task(
@@ -1223,10 +1405,17 @@ class WorkflowApplication:
             pack["seeds"] = (pack["seeds"] + list(material_seeds.values()))[-seeds:]
             if include_exchanges or content_observed:
                 pack["exchanges"] = [
-                    {"role": str(message["role"]), "body": str(message["body"])[:400]}
-                    for message in [message for message in view.get("messages") or []
-                                    if not content_observed or message["role"] == "user"][-exchanges:]
-                    if str(message.get("body") or "").strip()
+                    {
+                        "turn_id": str(message["turn_id"]),
+                        "role": str(message["role"]),
+                        "body": str(message["body"])[:400],
+                    }
+                    for message in [
+                        message
+                        for message in view.get("messages") or []
+                        if not content_observed or message["role"] == "user"
+                    ][-exchanges:]
+                    if message.get("turn_id") and str(message.get("body") or "").strip()
                 ]
             return pack
 
@@ -1329,6 +1518,13 @@ class WorkflowApplication:
         if extraction.status == "queued":
             self._material_queue(session).enqueue(MaterialExtractionJob(extraction.id, attachment.id))
 
+    def _register_note_material_from_view(self, session: Any, note: dict[str, Any] | None) -> None:
+        if not note:
+            return
+        current = next((version for version in note.get("versions", []) if version.get("version") == note.get("version")), None)
+        if current is not None:
+            self._register_native_material(session, "meeting_note", UUID(current["version_id"]))
+
     def open_meeting_material(self, principal: Principal, meeting_id: UUID, material_id: UUID) -> tuple[dict[str, Any], bytes]:
         return self._open_native_material(principal, "meeting", meeting_id, material_id)
 
@@ -1344,8 +1540,17 @@ class WorkflowApplication:
             if attachment.source_kind == "native_recording":
                 recording = NativeMaterialRepository(session).recording_source(UUID(attachment.source_ref.rsplit(":", 1)[-1]))
                 data = self._recording_storage.get(recording.storage_key)
-            else:
+            elif attachment.source_kind == "native_revision":
                 data = NativeRevisionStorage(self._session_factory).get(attachment.source_ref)
+            elif attachment.source_kind == "file":
+                if attachment.lifecycle == "purged":
+                    raise MaterialNotFound("이 자료는 완전히 삭제되어 더 이상 내려받을 수 없습니다")
+                try:
+                    data = self._material_storage.get(attachment.source_ref)
+                except FileNotFoundError as error:
+                    raise MaterialNotFound("자료 원본을 찾을 수 없습니다") from error
+            else:
+                raise MaterialError("only file attachments have downloadable content")
             if f"sha256:{hashlib.sha256(data).hexdigest()}" != attachment.integrity_ref:
                 raise MaterialError("native revision integrity does not match the registered material")
             result = {"material_id": str(attachment.id), "name": attachment.name, "content_type": attachment.content_type}
@@ -1624,15 +1829,79 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def stage_action_material_link(
+        self, principal: Principal, action_item_id: UUID, *, url: str, label: str
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._action_materials(session).stage_link(principal, action_item_id, url=url, label=label)
+            session.commit()
+            return result
+
+    def stage_action_material_file(
+        self,
+        principal: Principal,
+        action_item_id: UUID,
+        *,
+        name: str,
+        content_type: str,
+        data: bytes,
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            reserved = self._action_materials(session).reserve_file(
+                principal, action_item_id, name=name, content_type=content_type, data=data
+            )
+            session.commit()
+        draft_id = UUID(reserved["material_draft_id"])
+        try:
+            self._material_storage.put(str(reserved["_storage_key"]), data, content_type or "application/octet-stream")
+            with self._session_factory() as session:
+                result = self._action_materials(session).complete_file(principal, action_item_id, draft_id)
+                session.commit()
+                return result
+        except Exception as error:
+            # The reservation is intentionally durable before storage I/O. If the
+            # database is temporarily unavailable here, leave it as ``uploading``
+            # so expiry reconciliation can still discover it; do not let cleanup
+            # failure mask the upload error or prevent best-effort byte removal.
+            try:
+                with self._session_factory() as session:
+                    self._action_materials(session).fail_file(principal, action_item_id, draft_id)
+                    session.commit()
+            except Exception:
+                pass
+            try:
+                self._material_storage.delete(str(reserved["_storage_key"]))
+            except Exception:
+                pass
+            if isinstance(error, ActionMaterialError):
+                raise
+            raise ActionMaterialError("file upload failed") from error
+
+    def discard_action_material_draft(
+        self, principal: Principal, action_item_id: UUID, material_draft_id: UUID
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._action_materials(session).discard(principal, action_item_id, material_draft_id)
+            session.commit()
+            return result
+
+    def reconcile_action_material_drafts(self, *, limit: int = 100) -> int:
+        with self._session_factory() as session:
+            cleaned = self._action_materials(session).reconcile(limit=limit)
+            session.commit()
+            return cleaned
+
     def _action_center(self, session: Any) -> ActionCenterApplication:
+        work_requests = self._work_requests(session)
         return ActionCenterApplication(
             action_handlers(
                 session,
                 evidence_reader=lambda principal, turn_id: self._action_material_evidence(session, principal, turn_id),
-                work_requests=self._work_requests(session),
-                actions=self._actions(session),
+                work_requests=work_requests,
+                actions=self._actions(session, work_requests=work_requests),
                 assignments=self._assignments(session),
                 tasks=self._tasks(session),
+                material_drafts=self._action_materials(session),
             )
         )
 
@@ -1675,6 +1944,7 @@ class WorkflowApplication:
         conversation_id: UUID,
         context: list[Any],
         idempotency_key: str | None,
+        follow_up_candidate_id: UUID | None = None,
     ) -> dict[str, Any]:
         with self._session_factory() as session:
             references = [
@@ -1692,6 +1962,7 @@ class WorkflowApplication:
                 body,
                 references,
                 idempotency_key,
+                follow_up_candidate_id,
             )
             session.commit()
             return result
@@ -1741,12 +2012,32 @@ class WorkflowApplication:
         decision: str,
     ) -> dict[str, Any]:
         with self._session_factory() as session:
-            result = self._actions(session).decide(
-                principal,
-                action_id,
-                expected_version,
-                decision,
-            )
+            action = SqlAlchemyActionRepository(session).action(action_id, str(principal.id))
+            # The old chat endpoint remains a compatibility surface. A Task proposal raised under the canonical
+            # ledger still goes through its atomic confirm operation, so this route cannot create or assign a Task
+            # without the selected Submission and ReviewDecision lineage.
+            if (
+                action is not None
+                and action.action_type in {"task.create_self", "task.assign", "meeting.create"}
+                and session.get(DecisionItemRecord, action.id) is not None
+            ):
+                if ACTION_DECIDE not in principal.capabilities:
+                    raise ActionCapabilityDenied(f"{ACTION_DECIDE} capability is required")
+                center = self._action_center(session)
+                detail = center.detail(principal, str(action_id))
+                command = "confirm" if decision == "approve" else decision
+                payload: dict[str, Any] = {"expected_version": expected_version}
+                if command == "confirm":
+                    payload["base_submission_version"] = detail["submission_version"]
+                center.execute(principal, str(action_id), command, payload)
+                result = SqlAlchemyActionRepository(session).view(action, principal)
+            else:
+                result = self._actions(session).decide(
+                    principal,
+                    action_id,
+                    expected_version,
+                    decision,
+                )
             session.commit()
             return result
 
@@ -1783,23 +2074,51 @@ class WorkflowApplication:
                 ConversationJobQueue(self.job_queue(session)),
                 self._settings.conversation_queue_max_fragments,
                 evidence_reader=lambda principal, turn_id: self._action_material_evidence(session, principal, turn_id),
+                work_requests=self._work_requests(session),
             ),
             SqlAlchemyConversationContextResolver(session),
             _SessionAnswerResources(self, session),
         )
 
     def _action_material_evidence(self, session: Any, principal: Principal, turn_id: UUID) -> list[dict[str, Any]]:
-        evidence = [{"attachment_id": str(row.attachment_id), "material_id": str(row.attachment_id),
-                     "name": row.name, "integrity_ref": row.integrity_ref, "source_contexts": row.source_contexts}
+        evidence = [{"evidence_id": str(row.id), "attachment_id": str(row.attachment_id),
+                     "material_id": str(row.attachment_id), "chunk_id": str(row.chunk_id), "name": row.name,
+                     "integrity_ref": row.integrity_ref, "source_contexts": row.source_contexts,
+                     "source_locator": row.source_locator, "page": row.page, "excerpt": row.excerpt}
                     for row in session.scalars(select(ConversationContentEvidenceRecord).where(
                         ConversationContentEvidenceRecord.turn_id == turn_id).order_by(
                             ConversationContentEvidenceRecord.rank, ConversationContentEvidenceRecord.id))]
         return readable_content_evidence(self, session, principal, evidence)
 
-    def _actions(self, session: Any) -> ActionApplication:
+    def _actions(
+        self,
+        session: Any,
+        *,
+        work_requests: WorkRequestApplication | None = None,
+    ) -> ActionApplication:
+        work_requests = work_requests or self._work_requests(session)
         return ActionApplication(
-            SqlAlchemyActionRepository(session, evidence_reader=lambda principal, turn_id: self._action_material_evidence(session, principal, turn_id)),
-            SqlAlchemyActionExecutor(session, self._report_provider, evidence_reader=lambda principal, turn_id: self._action_material_evidence(session, principal, turn_id)),
+            SqlAlchemyActionRepository(
+                session,
+                evidence_reader=lambda principal, turn_id: self._action_material_evidence(session, principal, turn_id),
+                work_requests=work_requests,
+            ),
+            SqlAlchemyActionExecutor(
+                session,
+                self._report_provider,
+                self._action_materials(session),
+                work_requests=work_requests,
+                evidence_reader=lambda principal, turn_id: self._action_material_evidence(session, principal, turn_id),
+            ),
+        )
+
+    def _action_materials(self, session: Any) -> ActionMaterialDraftApplication:
+        return ActionMaterialDraftApplication(
+            SqlAlchemyActionMaterialDraftRepository(session),
+            self._material_storage,
+            SqlAlchemyAttachmentRepository(session),
+            SqlAlchemyMaterialExtractionRepository(session),
+            self._material_queue(session),
         )
 
     def add_task_checklist_item(

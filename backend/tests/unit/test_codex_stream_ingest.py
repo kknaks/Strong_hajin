@@ -84,7 +84,10 @@ def test_adapter_streams_lines_to_the_sink_before_the_process_ends(tmp_path) -> 
         for line in _lines():
             on_line(line + "\n")
             seen_during_run.append(len(sink.events))  # the sink already has the event when the next line arrives
-        Path(arguments[arguments.index("--output-last-message") + 1]).write_text("내 업무는 없습니다.", encoding="utf-8")
+        Path(arguments[arguments.index("--output-last-message") + 1]).write_text(
+            json.dumps({"body": "내 업무는 없습니다.", "follow_up_candidates": []}),
+            encoding="utf-8",
+        )
         return ProcessResult("\n".join(_lines()), "", 0)
 
     result = _adapter(tmp_path, runner).converse(_request(), sink=sink)

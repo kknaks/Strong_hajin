@@ -1,6 +1,6 @@
 import { chromium } from "@playwright/test";
 
-import { loginAs, pollFor, switchAccount } from "./e2e-helpers.mjs";
+import { chooseOption, loginAs, pollFor, switchAccount } from "./e2e-helpers.mjs";
 
 // 참고 업무: pointing at work that came before, in the browser. A requester picks earlier work while writing a
 // request; the person who accepts gets the same pointer on the Task it becomes, and letting one go leaves the
@@ -34,9 +34,9 @@ try {
   await page.getByRole("button", { name: "새 업무 추가", exact: true }).click();
   await page.getByRole("tab", { name: "요청", exact: true }).click();
   await page.getByLabel("요청할 업무").fill(requested);
-  await page.getByLabel("담당 후보").selectOption("jiho");
+  await chooseOption(page, "담당 후보", /지호/);
   await page.getByRole("button", { name: "참고 업무 연결" }).click();
-  await page.getByLabel("연결할 이전 업무").selectOption(previous.task_id);
+  await chooseOption(page, "연결할 이전 업무", earlier);
   await page.getByRole("button", { name: "연결", exact: true }).click();
   await page.getByRole("button", { name: "업무 요청 보내기" }).click();
   await page.getByRole("dialog").waitFor({ state: "detached", timeout: 20_000 });
@@ -75,9 +75,7 @@ try {
   await navigation.getByRole("button", { name: "내 업무" }).click();
   await page.getByRole("button", { name: "새 업무 추가", exact: true }).click();
   await page.getByLabel("업무 제목").fill(`후속 정리 ${stamp}`);
-  await page.getByRole("button", { name: "참고 업무 연결" }).click();
-  await page.getByLabel("연결할 이전 업무").selectOption(previous.task_id);
-  await page.getByRole("button", { name: "연결", exact: true }).click();
+  await page.getByRole("checkbox", { name: earlier }).check();
   await page.getByRole("button", { name: "업무 추가", exact: true }).click();
   await page.getByRole("dialog").waitFor({ state: "detached", timeout: 20_000 });
 

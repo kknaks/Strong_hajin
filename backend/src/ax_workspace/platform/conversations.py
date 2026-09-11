@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 import hashlib
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import Engine, delete, func, select, text
 from sqlalchemy.exc import DBAPIError
@@ -54,12 +54,15 @@ class SqlAlchemyConversationRepository:
         session: Session,
         queue: ConversationExecutionQueue,
         queue_limit: int = 8,
-        *, evidence_reader: ActionEvidenceReader | None = None,
+        *,
+        evidence_reader: ActionEvidenceReader | None = None,
+        work_requests: Any = None,
     ) -> None:
         self._session = session
         self._queue_limit = queue_limit
         self._queue = queue
         self._evidence_reader = evidence_reader
+        self._work_requests = work_requests
 
     def create(self, owner_id: str, title: str) -> ConversationRecord:
         now = datetime.now(UTC)
@@ -81,7 +84,35 @@ class SqlAlchemyConversationRepository:
         body: str,
         context: list[dict[str, str | bool]],
         idempotency_key: str | None,
+        follow_up_candidate_id: UUID | None = None,
     ) -> tuple[ConversationMessageRecord, ConversationTurnRecord | None, bool, int]:
+        if follow_up_candidate_id is not None:
+            existing_candidate = self._session.scalar(
+                select(ConversationMessageRecord).where(
+                    ConversationMessageRecord.conversation_id == conversation.id,
+                    ConversationMessageRecord.follow_up_candidate_id == follow_up_candidate_id,
+                )
+            )
+            if existing_candidate is not None:
+                return existing_candidate, self._turn(existing_candidate.turn_id), existing_candidate.turn_id is None, self._queued_count(conversation.id)
+            source = next(
+                (
+                    candidate
+                    for turn in self._session.scalars(
+                        select(ConversationTurnRecord).where(
+                            ConversationTurnRecord.conversation_id == conversation.id,
+                            ConversationTurnRecord.state == "completed",
+                        )
+                    ).all()
+                    for candidate in (turn.follow_up_candidates or [])
+                    if candidate.get("candidate_id") == str(follow_up_candidate_id)
+                ),
+                None,
+            )
+            if source is None or " ".join(body.split()) != source.get("user_text"):
+                raise ConversationError("follow-up candidate is not available")
+            body = str(source["user_text"])
+            idempotency_key = f"follow-up:{follow_up_candidate_id}"
         if idempotency_key:
             existing = self._session.scalar(select(ConversationMessageRecord).where(ConversationMessageRecord.conversation_id == conversation.id, ConversationMessageRecord.idempotency_key == idempotency_key))
             if existing is not None:
@@ -91,7 +122,15 @@ class SqlAlchemyConversationRepository:
         if active is not None and queue_size >= self._queue_limit:
             raise ConversationQueueOverflow(queue_size, self._queue_limit)
         now = datetime.now(UTC)
-        message = self._message(conversation.id, None, "user", body, now, idempotency_key)
+        message = self._message(
+            conversation.id,
+            None,
+            "user",
+            body,
+            now,
+            idempotency_key,
+            follow_up_candidate_id=follow_up_candidate_id,
+        )
         for reference in context:
             self._session.add(
                 ContextReferenceRecord(
@@ -125,6 +164,7 @@ class SqlAlchemyConversationRepository:
         turn.execution_completed_at = now
         if result.usage is not None:
             turn.usage = result.usage
+        turn.follow_up_candidates = self._normalize_follow_up_candidates(turn.id, result)
         conversation = self._session.get(ConversationRecord, turn.conversation_id)
         assert conversation is not None
         if result.provider_session_ref:
@@ -297,15 +337,7 @@ class SqlAlchemyConversationRepository:
     def claim_execution(
         self, execution: ConversationExecution, principal: Principal
     ) -> tuple[ConversationTurnRecord, AiConversationRequest] | None:
-        turn = self._session.scalar(
-            select(ConversationTurnRecord)
-            .where(
-                ConversationTurnRecord.id == execution.turn_id,
-                ConversationTurnRecord.conversation_id == execution.conversation_id,
-                ConversationTurnRecord.execution_id == execution.execution_id,
-            )
-            .with_for_update()
-        )
+        turn = self._execution_turn(execution, lock=True)
         if turn is None or turn.state in {"completed", "failed", "cancelled"}:
             return None
         # The worker obtains a process-held advisory guard before this transition.
@@ -339,15 +371,7 @@ class SqlAlchemyConversationRepository:
             return None
 
     def fail_execution(self, execution: ConversationExecution, message: str) -> bool:
-        turn = self._session.scalar(
-            select(ConversationTurnRecord)
-            .where(
-                ConversationTurnRecord.id == execution.turn_id,
-                ConversationTurnRecord.conversation_id == execution.conversation_id,
-                ConversationTurnRecord.execution_id == execution.execution_id,
-            )
-            .with_for_update()
-        )
+        turn = self._execution_turn(execution, lock=True)
         if turn is None or turn.state in {"completed", "failed", "cancelled"}:
             return False
         self.fail(turn, ProviderRequestFailed(message))
@@ -547,7 +571,11 @@ class SqlAlchemyConversationRepository:
             if include_actions
             else []
         )
-        action_repository = SqlAlchemyActionRepository(self._session, evidence_reader=self._evidence_reader)
+        action_repository = SqlAlchemyActionRepository(
+            self._session,
+            evidence_reader=self._evidence_reader,
+            work_requests=self._work_requests,
+        )
         graph_steps = self._session.scalars(
             select(ConversationGraphReceiptRecord)
             .where(ConversationGraphReceiptRecord.conversation_id == conversation.id)
@@ -558,6 +586,11 @@ class SqlAlchemyConversationRepository:
             .where(ConversationAnswerResourceRecord.conversation_id == conversation.id)
             .order_by(ConversationAnswerResourceRecord.observed_at, ConversationAnswerResourceRecord.sequence)
         ).all()
+        selected_candidates = {
+            str(message.follow_up_candidate_id): str(message.id)
+            for message in messages
+            if message.follow_up_candidate_id is not None
+        }
         return {
             # Canonical ids a turn read and named. They carry no title here: the application asks the owning module
             # for that at read time, so a reference someone may no longer open simply is not there.
@@ -620,6 +653,7 @@ class SqlAlchemyConversationRepository:
                     else "accepted",
                     "body_state": message.body_state,
                     "idempotency_key": message.idempotency_key,
+                    "follow_up_candidate_id": str(message.follow_up_candidate_id) if message.follow_up_candidate_id else None,
                     "created_at": message.created_at.isoformat(),
                 }
                 for message in messages
@@ -644,6 +678,13 @@ class SqlAlchemyConversationRepository:
                     "provider_run_ref": turn.provider_run_ref,
                     "provider_session_ref": turn.provider_session_ref,
                     "error": turn.normalized_error,
+                    "follow_up_candidates": [
+                        {
+                            **candidate,
+                            "selected_message_id": selected_candidates.get(str(candidate["candidate_id"])),
+                        }
+                        for candidate in (turn.follow_up_candidates or [])
+                    ] if turn.state == "completed" else [],
                 }
                 for turn in turns
             ],
@@ -695,6 +736,17 @@ class SqlAlchemyConversationRepository:
         *,
         lock: bool = False,
     ) -> ConversationTurnRecord | None:
+        if lock:
+            # Every command that can add a message or drain the queue takes the aggregate lock first. Without this
+            # shared order, an HTTP sender can hold Conversation while a worker holds Turn and both can then wait on
+            # the other's message/FK insert (or race to the same per-conversation sequence).
+            conversation = self._session.scalar(
+                select(ConversationRecord)
+                .where(ConversationRecord.id == execution.conversation_id)
+                .with_for_update()
+            )
+            if conversation is None:
+                return None
         statement = select(ConversationTurnRecord).where(
             ConversationTurnRecord.id == execution.turn_id,
             ConversationTurnRecord.conversation_id == execution.conversation_id,
@@ -705,9 +757,37 @@ class SqlAlchemyConversationRepository:
     def _queued_count(self, conversation_id: UUID) -> int:
         return int(self._session.scalar(select(func.count()).select_from(ConversationMessageRecord).where(ConversationMessageRecord.conversation_id == conversation_id, ConversationMessageRecord.role == "user", ConversationMessageRecord.turn_id.is_(None))) or 0)
 
-    def _message(self, conversation_id: UUID, turn_id: UUID | None, role: str, body: str, now: datetime, idempotency_key: str | None, *, body_state: str = "final") -> ConversationMessageRecord:
+    @staticmethod
+    def _normalize_follow_up_candidates(turn_id: UUID, result: AiConversationResult) -> list[dict[str, str]]:
+        normalized: list[dict[str, str]] = []
+        seen_labels: set[str] = set()
+        seen_texts: set[str] = set()
+        for candidate in result.follow_up_candidates:
+            label = " ".join(candidate.label.split())
+            user_text = " ".join(candidate.user_text.split())
+            label_key = label.casefold()
+            text_key = user_text.casefold()
+            if not label or not user_text or len(label) > 120 or len(user_text) > 1000:
+                continue
+            if label_key in seen_labels or text_key in seen_texts:
+                continue
+            seen_labels.add(label_key)
+            seen_texts.add(text_key)
+            normalized.append(
+                {
+                    "candidate_id": str(uuid4()),
+                    "source_turn_id": str(turn_id),
+                    "label": label,
+                    "user_text": user_text,
+                }
+            )
+            if len(normalized) == 3:
+                break
+        return normalized if len(normalized) >= 2 else []
+
+    def _message(self, conversation_id: UUID, turn_id: UUID | None, role: str, body: str, now: datetime, idempotency_key: str | None, *, body_state: str = "final", follow_up_candidate_id: UUID | None = None) -> ConversationMessageRecord:
         sequence = int(self._session.scalar(select(func.coalesce(func.max(ConversationMessageRecord.sequence), 0)).where(ConversationMessageRecord.conversation_id == conversation_id)) or 0) + 1
-        message = ConversationMessageRecord(conversation_id=conversation_id, turn_id=turn_id, sequence=sequence, role=role, body=body, idempotency_key=idempotency_key, body_state=body_state, created_at=now)
+        message = ConversationMessageRecord(conversation_id=conversation_id, turn_id=turn_id, sequence=sequence, role=role, body=body, idempotency_key=idempotency_key, follow_up_candidate_id=follow_up_candidate_id, body_state=body_state, created_at=now)
         self._session.add(message)
         self._session.flush()
         return message

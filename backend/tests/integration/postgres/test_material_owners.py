@@ -18,7 +18,7 @@ from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment
 from ax_workspace.platform.native_materials import NativeMaterialRepository
 from ax_workspace.platform.durable_jobs import SqlAlchemyDurableJobQueue
 from ax_workspace.platform.material_extraction import SqlAlchemyMaterialExtractionRepository
-from ax_workspace.platform.persistence import AttachmentRecord, AttachmentBindingRecord, DurableJobRecord, EvidenceRecord, MaterialExtractionRecord, MeetingRawTranscriptRevisionRecord, MeetingRawTranscriptSegmentRecord, MeetingRecordingRecord, make_session_factory
+from ax_workspace.platform.persistence import AttachmentRecord, AttachmentBindingRecord, DurableJobRecord, EvidenceRecord, MaterialExtractionRecord, MeetingNoteRecord, MeetingNoteVersionRecord, MeetingRawTranscriptRevisionRecord, MeetingRawTranscriptSegmentRecord, MeetingRecordingRecord, make_session_factory
 from test_postgres_integration import _postgres_test_url
 
 MINA = {"X-Demo-Persona": "mina"}
@@ -111,6 +111,40 @@ def _recording(client):
 def _final(application, recording_id):
     return application.record_final_meeting_transcript(recording_id=recording_id, provider="fixture", provider_reference="final:postgres",
         segments=[FinalTranscriptSegment("one", 0, 1000, "postgresnativetoken")])
+
+
+@pytest.mark.integration
+def test_meeting_note_version_and_projection_commit_with_one_durable_job(tmp_path, monkeypatch):
+    client, application, worker, sessions = _stack(tmp_path)
+    meeting = client.post("/api/meetings", headers=MINA, json={
+        "organization_id": "scax", "title": "PG 텍스트 회의록", "starts_at": "2026-09-10T01:00:00Z",
+        "ends_at": "2026-09-10T02:00:00Z", "visibility": "private", "attendee_ids": ["jiho"],
+    }).json()
+    principal = application.authenticated_principal("mina")
+    original = SqlAlchemyDurableJobQueue.enqueue
+
+    def fail_after_insert(self, job):
+        original(self, job)
+        raise RuntimeError("injected note enqueue failure")
+
+    with monkeypatch.context() as failed:
+        failed.setattr(SqlAlchemyDurableJobQueue, "enqueue", fail_after_insert)
+        with pytest.raises(RuntimeError, match="injected note enqueue"):
+            application.create_meeting_note(principal, UUID(meeting["meeting_id"]), "postgresmeetingnotetoken")
+    with sessions() as session:
+        for record in (MeetingNoteRecord, MeetingNoteVersionRecord, AttachmentRecord, AttachmentBindingRecord, MaterialExtractionRecord, DurableJobRecord):
+            assert list(session.scalars(select(record))) == []
+
+    note = application.create_meeting_note(principal, UUID(meeting["meeting_id"]), "postgresmeetingnotetoken")
+    with sessions() as session:
+        assert len(list(session.scalars(select(MeetingNoteVersionRecord)))) == 1
+        assert len(list(session.scalars(select(AttachmentRecord)))) == 1
+        assert len(list(session.scalars(select(MaterialExtractionRecord)))) == 1
+        assert len(list(session.scalars(select(DurableJobRecord).where(DurableJobRecord.kind == "material.extraction")))) == 1
+    assert asyncio.run(worker.run_once())
+    hit = application.search_materials(principal, "postgresmeetingnotetoken", resource_types=["meeting"])["results"][0]
+    assert hit["source_locator"]["source_revision_id"] == note["versions"][0]["version_id"]
+    assert client.get(hit["origin"], headers=MINA).json()["body"] == "postgresmeetingnotetoken"
 
 
 @pytest.mark.integration

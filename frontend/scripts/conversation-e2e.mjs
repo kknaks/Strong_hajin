@@ -14,47 +14,65 @@ try {
   const page = await browser.newPage();
   await page.goto(frontendUrl, { waitUntil: "domcontentloaded" });
   await loginAs(page, "mina");
-  await page.getByRole("button", { name: "AX" }).click();
+  await page.getByRole("button", { name: "AX", exact: true }).click();
   const newConversation = page.getByRole("button", { name: "새 AX 대화" });
-  const createFirstConversation = page.waitForResponse(
-    (response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST",
-  );
   await newConversation.click();
-  const firstConversation = await (await createFirstConversation).json();
   await page
     .getByLabel("AX 메시지")
     .fill("SCAX MCP의 task_list를 사용해 첫 번째 대화의 내 업무 수만 알려줘.");
+  const createFirstConversation = page.waitForResponse(
+    (response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "보내기" }).click();
+  const firstConversation = await (await createFirstConversation).json();
   await page.getByRole("button", { name: "대기열에 보내기" }).waitFor({ timeout: 20_000 });
   await page
     .getByLabel("AX 메시지")
     .fill("첫 번째 대화의 두 번째 발화입니다. 같은 task_list를 다시 확인해줘.");
   await page.getByRole("button", { name: "대기열에 보내기" }).click();
-  await page.getByText("대기 중").waitFor({ timeout: 20_000 });
+  await page
+    .getByRole("list", { name: "대기열" })
+    .getByText("첫 번째 대화의 두 번째 발화입니다.", { exact: false })
+    .waitFor({ timeout: 20_000 });
 
-  const createSecondConversation = page.waitForResponse(
-    (response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST",
-  );
   await newConversation.click();
-  const secondConversation = await (await createSecondConversation).json();
   await page
     .getByLabel("AX 메시지")
     .fill("SCAX MCP의 task_list를 사용해 두 번째 대화의 내 업무 수만 알려줘.");
+  const createSecondConversation = page.waitForResponse(
+    (response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "보내기" }).click();
+  const secondConversation = await (await createSecondConversation).json();
+
+  // History contains answered conversations only. Keep the queued-state assertion
+  // above, then wait for both conversations to earn their persistent titles.
+  await pollFor(
+    page,
+    () => page.evaluate(async ({ firstId, secondId }) => {
+      const items = await (await fetch("/api/conversations")).json();
+      const first = items.find((item) => item.conversation_id === firstId);
+      const second = items.find((item) => item.conversation_id === secondId);
+      return first?.turns.filter((turn) => turn.state === "completed").length >= 2
+        && second?.turns.some((turn) => turn.state === "completed");
+    }, { firstId: firstConversation.conversation_id, secondId: secondConversation.conversation_id }),
+    { timeout: 120_000, description: "both conversations completing before they enter history" },
+  );
 
   const conversationButton = (conversationId) =>
     page.locator(`.ax-conversation-list button[data-conversation-id="${conversationId}"]`);
   const activeTimeline = page.locator(".ax-messages");
+  await page.getByRole("button", { name: "대화 히스토리" }).click();
   await conversationButton(firstConversation.conversation_id).click();
   await activeTimeline.getByText("첫 번째 대화의 두 번째 발화입니다.").waitFor({ timeout: 20_000 });
   await activeTimeline.getByText("두 번째 대화의 내 업무 수만 알려줘.").count().then((count) => {
     if (count !== 0) throw new Error("Conversation state leaked across the active-session switch");
   });
-  await conversationButton(firstConversation.conversation_id).click();
-  const toolSummary = page.locator(".ax-rail.terminal .ax-rail-summary", { hasText: /✓ 완료 · 도구 \d+개/ }).first();
+  const toolSummary = page.locator(".ax-rail.terminal details summary").first();
   await toolSummary.waitFor({ timeout: 90_000 });
   await toolSummary.click();
-  await page.locator(".ax-rail-tool.completed", { hasText: "task list" }).first().waitFor();
+  await page.locator(".ax-rail-live-step.completed", { hasText: "task_list" }).first().waitFor();
+  await page.getByRole("button", { name: "대화 히스토리" }).click();
   await conversationButton(secondConversation.conversation_id).click();
   await pollFor(
     page,

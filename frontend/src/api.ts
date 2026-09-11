@@ -1,4 +1,5 @@
 import type {
+  ActionMaterialDraft,
   AccessGrant,
   ActionItemDetail,
   CalendarEntry,
@@ -41,6 +42,7 @@ import type {
   Project,
   ProjectDetail,
   ProjectMember,
+  Notification,
 } from "./viewModels";
 
 type ApiErrorBody = {
@@ -329,6 +331,10 @@ export async function getWorkRequests(): Promise<WorkRequest[]> {
   return request<WorkRequest[]>("/api/work-requests");
 }
 
+export async function getWorkRequest(requestId: string): Promise<WorkRequest> {
+  return request<WorkRequest>(`/api/work-requests/${requestId}`);
+}
+
 export async function getActions(): Promise<ActionItem[]> {
   return request<ActionItem[]>("/api/actions");
 }
@@ -375,6 +381,14 @@ export async function getConversations(): Promise<Conversation[]> {
   return request<Conversation[]>("/api/conversations");
 }
 
+export async function getNotifications(): Promise<Notification[]> {
+  return request<Notification[]>("/api/notifications");
+}
+
+export async function markNotificationRead(notificationId: string): Promise<Notification> {
+  return request<Notification>(`/api/notifications/${notificationId}/read`, { method: "POST", body: "{}" });
+}
+
 export async function getConversation(conversationId: string): Promise<Conversation> {
   return request<Conversation>(`/api/conversations/${conversationId}`);
 }
@@ -388,9 +402,10 @@ export async function sendConversationMessage(
   body: string,
   context: ConversationContextReference[],
   idempotencyKey: string,
+  followUpCandidateId?: string,
 ): Promise<ConversationMessageAcceptance> {
   return request<ConversationMessageAcceptance>(`/api/conversations/${conversationId}/messages`, {
-    body: JSON.stringify({ body, context }),
+    body: JSON.stringify({ body, context, follow_up_candidate_id: followUpCandidateId }),
     headers: { "Idempotency-Key": idempotencyKey },
     method: "POST",
   });
@@ -399,8 +414,13 @@ export async function sendConversationMessage(
 export async function decideAction(
   actionId: string,
   expectedVersion: number,
-  decision: "approve" | "reject",
+  decision: string,
+  payload: { base_submission_version?: number; draft?: Record<string, unknown> } = {},
 ): Promise<void> {
+  if (decision === "confirm" || decision === "cancel_assignment") {
+    await runActionCommand(actionId, decision, { expected_version: expectedVersion, ...payload });
+    return;
+  }
   await request(`/api/actions/${actionId}/decide`, {
     body: JSON.stringify({ expected_version: expectedVersion, decision }),
     method: "POST",
@@ -465,6 +485,16 @@ export async function getSession(): Promise<OrganizationProfile | null> {
     if (error instanceof ApiError && error.status === 401) return null;
     throw error;
   }
+}
+
+export async function setAssistantCharacterPreference(
+  characterKey: string,
+  expectedVersion: number,
+): Promise<{ character_key: string; version: number }> {
+  return request("/api/profile/preferences/assistant-character", {
+    body: JSON.stringify({ character_key: characterKey, expected_version: expectedVersion }),
+    method: "PUT",
+  });
 }
 
 export async function login(email: string, password: string): Promise<OrganizationProfile> {
@@ -719,12 +749,48 @@ export async function getActionItem(actionItemId: string): Promise<ActionItemDet
 export async function runActionCommand(
   actionItemId: string,
   command: string,
-  payload: { expected_version?: number | null; reason?: string; changes?: Record<string, unknown> } = {},
+  payload: {
+    expected_version?: number | null;
+    base_submission_version?: number;
+    draft?: Record<string, unknown>;
+    attachment_draft_ids?: string[];
+    reason?: string;
+    changes?: Record<string, unknown>;
+  } = {},
 ): Promise<ActionItemEnvelope> {
   return request<ActionItemEnvelope>(`/api/action-items/${actionItemId}/commands/${command}`, {
     body: JSON.stringify(payload),
     method: "POST",
   });
+}
+
+export async function stageActionMaterialLink(
+  actionItemId: string,
+  link: { url: string; label: string },
+): Promise<ActionMaterialDraft> {
+  return request<ActionMaterialDraft>(`/api/action-items/${actionItemId}/material-drafts/links`, {
+    method: "POST",
+    body: JSON.stringify(link),
+  });
+}
+
+export async function stageActionMaterialFile(actionItemId: string, file: File): Promise<ActionMaterialDraft> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const response = await fetch(`/api/action-items/${actionItemId}/material-drafts/files`, {
+    body: form,
+    credentials: "same-origin",
+    method: "POST",
+  });
+  if (!response.ok) {
+    const error = (await response.json().catch(() => ({}))) as ApiErrorBody;
+    throw new ApiError(response.status, typeof error.detail === "string" ? error.detail : response.statusText);
+  }
+  return response.json() as Promise<ActionMaterialDraft>;
+}
+
+export async function discardActionMaterialDraft(actionItemId: string, materialDraftId: string): Promise<void> {
+  await request(`/api/action-items/${actionItemId}/material-drafts/${materialDraftId}/discard`, { method: "POST" });
 }
 
 export async function addChecklistItem(taskId: string, text: string): Promise<ChecklistItem> {
@@ -762,6 +828,10 @@ export async function getCalendarEntries(): Promise<CalendarEntry[]> {
 
 export async function getMeeting(meetingId: string): Promise<MeetingDetail> {
   return request<MeetingDetail>(`/api/meetings/${meetingId}`);
+}
+
+export function meetingMaterialContentUrl(meetingId: string, materialId: string): string {
+  return `/api/meetings/${meetingId}/materials/${materialId}/content`;
 }
 
 export async function createMeeting(input: {

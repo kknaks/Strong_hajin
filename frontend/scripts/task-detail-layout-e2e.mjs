@@ -42,7 +42,7 @@ try {
   const row = page.getByRole("row", { name: new RegExp(title) });
   await row.waitFor({ timeout: 20_000 });
   const cue = (await row.locator(".checklist-cue").textContent())?.trim();
-  if (cue !== "☐ 1/3") throw new Error(`list cue is wrong: ${JSON.stringify(cue)}`);
+  if (cue !== "1/3") throw new Error(`list cue is wrong: ${JSON.stringify(cue)}`);
 
   await row.click();
   const drawer = page.getByRole("dialog", { name: "업무 상세" });

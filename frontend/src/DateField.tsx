@@ -1,10 +1,10 @@
 import { useEffect, useId, useRef, useState } from "react";
 
 import { formatDate } from "./labels";
-import { Icon } from "./Icon";
+import { Icon, type IconName } from "./Icon";
 
 /**
- * A date control that always reads YYYY/MM/DD on screen.
+ * A date control that defaults to YYYY/MM/DD and can adopt a screen-specific separator.
  *
  * `input[type=date]` renders in the browser's own locale, so the same field shows mm/dd/yyyy to one person and
  * dd.mm.yyyy to another. The visible field here is text we format ourselves; a native date input stays mounted,
@@ -13,6 +13,10 @@ import { Icon } from "./Icon";
  */
 
 const ISO = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+function formatDisplayDate(value: string, separator: "/" | "."): string {
+  return formatDate(value).replaceAll("/", separator);
+}
 
 /** Accepts what people actually type: 2026/09/30, 2026-09-30, 2026.09.30, 20260930. */
 export function parseDateInput(text: string): string | null {
@@ -35,6 +39,9 @@ export function DateField({
   onChange,
   disabled = false,
   hideLabel = false,
+  displaySeparator = "/",
+  pickerIcon = "calendar",
+  required = false,
 }: {
   id: string;
   label: string;
@@ -43,15 +50,18 @@ export function DateField({
   onChange: (isoValue: string) => void;
   disabled?: boolean;
   hideLabel?: boolean;
+  displaySeparator?: "/" | ".";
+  pickerIcon?: Extract<IconName, "calendar" | "chevron-down">;
+  required?: boolean;
 }) {
-  const [text, setText] = useState(() => (value ? formatDate(value) : ""));
+  const [text, setText] = useState(() => (value ? formatDisplayDate(value, displaySeparator) : ""));
   const pickerId = useId();
   const picker = useRef<HTMLInputElement>(null);
 
   // The field follows the value it is given, except while the person is mid-edit with an unparseable string.
   useEffect(() => {
-    setText(value ? formatDate(value) : "");
-  }, [value]);
+    setText(value ? formatDisplayDate(value, displaySeparator) : "");
+  }, [displaySeparator, value]);
 
   const commit = (next: string) => {
     setText(next);
@@ -67,18 +77,20 @@ export function DateField({
   return (
     <div className="date-field">
       <label className={hideLabel ? "sr-only" : undefined} htmlFor={id}>
-        {label}
+        {label}{required && <span aria-hidden className="danger-text"> *</span>}
       </label>
       <div className="date-field-control">
         <input
+          aria-label={label}
           aria-describedby={`${pickerId}-hint`}
           autoComplete="off"
           disabled={disabled}
           id={id}
           inputMode="numeric"
-          onBlur={() => setText(value ? formatDate(value) : "")}
+          onBlur={() => setText(value ? formatDisplayDate(value, displaySeparator) : "")}
           onChange={(event) => commit(event.target.value)}
-          placeholder="YYYY/MM/DD"
+          placeholder={`YYYY${displaySeparator}MM${displaySeparator}DD`}
+          required={required}
           type="text"
           value={text}
         />
@@ -95,7 +107,7 @@ export function DateField({
           }}
           type="button"
         >
-          <Icon name="calendar" size={14} />
+          <Icon name={pickerIcon} size={14} />
         </button>
         <input
           aria-hidden
@@ -109,7 +121,7 @@ export function DateField({
         />
       </div>
       <span className="sr-only" id={`${pickerId}-hint`}>
-        연도 4자리, 월 2자리, 일 2자리 순서로 입력합니다. 예: 2026/09/30
+        연도 4자리, 월 2자리, 일 2자리 순서로 입력합니다. 예: 2026{displaySeparator}09{displaySeparator}30
       </span>
     </div>
   );

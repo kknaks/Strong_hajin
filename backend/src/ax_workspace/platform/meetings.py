@@ -31,6 +31,7 @@ from ax_workspace.platform.persistence import (
     MembershipRecord,
     ResourceRelationshipRecord,
 )
+from ax_workspace.platform.notifications import SqlAlchemyNotificationRepository
 
 
 class SqlAlchemyMeetingRepository:
@@ -43,19 +44,29 @@ class SqlAlchemyMeetingRepository:
         organization_id: str,
         owner_id: str,
         title: str,
+        description: str | None = None,
         starts_at: datetime,
         ends_at: datetime,
         visibility: str,
         attendee_ids: list[str],
+        source_action_item_id: UUID | None = None,
+        source_decision_item_id: UUID | None = None,
+        source_submission_id: UUID | None = None,
+        source_review_decision_id: UUID | None = None,
     ) -> MeetingRecord:
         now = datetime.now(UTC)
         meeting = MeetingRecord(
             organization_id=organization_id,
             owner_id=owner_id,
             title=title,
+            description=description,
             starts_at=starts_at,
             ends_at=ends_at,
             visibility=visibility,
+            source_action_item_id=source_action_item_id,
+            source_decision_item_id=source_decision_item_id,
+            source_submission_id=source_submission_id,
+            source_review_decision_id=source_review_decision_id,
             lifecycle="scheduled",
             version=1,
             created_at=now,
@@ -197,21 +208,39 @@ class SqlAlchemyMeetingRepository:
         summary: str,
         *,
         before_ref: str | None = None,
-    ) -> None:
-        self._session.add(
-            ActivityEventRecord(
-                target_type="meeting",
-                target_id=str(meeting.id),
-                event_kind=event_kind,
-                actor_kind="member",
-                actor_id=actor_id,
-                before_ref=before_ref,
-                after_ref=f"meeting:{meeting.id}@{meeting.version}",
-                reason=None,
-                safe_summary=summary[:300],
-                occurred_at=datetime.now(UTC),
-            )
+        after_ref: str | None = None,
+        notify_member_id: str | None = None,
+        notification_summary: str | None = None,
+    ) -> ActivityEventRecord:
+        event = ActivityEventRecord(
+            target_type="meeting",
+            target_id=str(meeting.id),
+            event_kind=event_kind,
+            actor_kind="member",
+            actor_id=actor_id,
+            before_ref=before_ref,
+            after_ref=after_ref or f"meeting:{meeting.id}@{meeting.version}",
+            reason=None,
+            safe_summary=summary[:300],
+            occurred_at=datetime.now(UTC),
         )
+        self._session.add(event)
+        self._session.flush()
+        if notify_member_id and notification_summary:
+            SqlAlchemyNotificationRepository(self._session).emit(
+                recipient_member_id=notify_member_id,
+                source_kind="activity_event",
+                source_id=str(event.id),
+                kind=event_kind,
+                resource_type="meeting",
+                resource_id=str(meeting.id),
+                resource_version=int(meeting.version),
+                resource_title=meeting.title,
+                actor_member_id=actor_id,
+                safe_summary=notification_summary,
+                created_at=event.occurred_at,
+            )
+        return event
 
     def note(self, meeting: MeetingRecord, *, lock: bool = False) -> MeetingNoteRecord | None:
         statement = select(MeetingNoteRecord).where(MeetingNoteRecord.meeting_id == meeting.id)
@@ -225,6 +254,7 @@ class SqlAlchemyMeetingRepository:
         body: str,
         author_id: str,
         source_evidence: list[dict[str, Any]] | None = None,
+        source_status: str | None = None,
     ) -> MeetingNoteRecord:
         now = datetime.now(UTC)
         note = MeetingNoteRecord(
@@ -243,6 +273,7 @@ class SqlAlchemyMeetingRepository:
                 version=1,
                 body=body,
                 source_evidence=source_evidence or [],
+                source_status=source_status,
                 created_by=author_id,
                 created_at=now,
             )

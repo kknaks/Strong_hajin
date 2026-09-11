@@ -11,13 +11,14 @@ from ax_workspace.modules.work.application import InvalidTaskTransition, TaskAcc
 
 class TaskAssignmentRepository(Protocol):
     def create_assigned_task(
-        self, assigner_id: str, assignee_id: str, title: str, *, description: str | None = None, start_date: date | None = None, due_date: date | None = None, causation_key: str | None = None, checklist: list[str] | None = None
+        self, assigner_id: str, assignee_id: str, title: str, *, description: str | None = None, start_date: date | None = None, due_date: date | None = None, causation_key: str | None = None, checklist: list[str] | None = None, references: list[UUID] | None = None, source_action_item_id: UUID | None = None, source_decision_item_id: UUID | None = None, source_submission_id: UUID | None = None, source_review_decision_id: UUID | None = None
     ) -> tuple[Any, Any]: ...
     def assignment(self, assignment_id: UUID, *, lock: bool = False) -> Any: ...
     def task_for(self, assignment: Any) -> Any: ...
     def pending_for(self, assignee_id: str) -> list[tuple[Any, Any]]: ...
     def assigned_by(self, assigner_id: str) -> list[tuple[Any, Any]]: ...
     def decide(self, assignment: Any, actor_id: str, decision: str, *, reason: str | None = None) -> Any: ...
+    def cancel(self, assignment: Any, actor_id: str) -> None: ...
     def task_by_id(self, task_id: UUID, *, lock: bool = False) -> Any: ...
     def active_assignment_for(self, task_id: UUID, *, lock: bool = False) -> Any: ...
     def reassign(self, task: Any, current: Any, assigner_id: str, assignee_id: str, reason: str | None) -> Any: ...
@@ -81,7 +82,12 @@ class TaskAssignmentApplication:
         due_date: date | None = None,
         causation_key: str | None = None,
         checklist: list[str] | None = None,
+        reference_task_ids: list[UUID] | None = None,
         parent_task_id: UUID | None = None,
+        source_action_item_id: UUID | None = None,
+        source_decision_item_id: UUID | None = None,
+        source_submission_id: UUID | None = None,
+        source_review_decision_id: UUID | None = None,
     ) -> dict[str, Any]:
         """Create a Task for someone else. It enters their My Work only after they accept the assignment."""
         self._require(principal, TASK_ASSIGN)
@@ -93,11 +99,17 @@ class TaskAssignmentApplication:
             raise TaskError("assignee is not within your assignment scope")
         validate_schedule(start_date, due_date)
         parent = self._tasks.parent_for(principal, parent_task_id) if parent_task_id is not None else None
+        references = self._tasks._readable_tasks(principal, reference_task_ids) if self._tasks is not None else []
         task, assignment = self._repository.create_assigned_task(
             str(principal.id), assignee_id, title.strip(),
             description=_clean_text(description), start_date=start_date, due_date=due_date, causation_key=causation_key,
             checklist=clean_checklist(checklist),
+            references=references,
             parent_task_id=parent.id if parent is not None else None,
+            source_action_item_id=source_action_item_id,
+            source_decision_item_id=source_decision_item_id,
+            source_submission_id=source_submission_id,
+            source_review_decision_id=source_review_decision_id,
         )
         if parent is not None:
             self._tasks.record_subtask(principal, parent, task)
@@ -184,6 +196,23 @@ class TaskAssignmentApplication:
             raise TaskError("decline reason is required")
         assignment = self._pending_target(principal, assignment_id)
         self._repository.decide(assignment, str(principal.id), "reject", reason=reason.strip())
+        return self._view(assignment, self._repository.task_for(assignment))
+
+    def cancel(self, principal: Principal, assignment_id: UUID) -> dict[str, Any]:
+        """Withdraw a direct assignment before the assignee answers it.
+
+        This is the requester's command, not a ReviewDecision by the assignee. Both paths lock the same assignment row,
+        so acceptance and cancellation cannot both win when the clicks race.
+        """
+        self._require(principal, TASK_ASSIGN)
+        assignment = self._repository.assignment(assignment_id, lock=True)
+        if assignment is None or assignment.assigned_by != str(principal.id) or assignment.assignment_kind != "direct":
+            raise TaskNotFound("task assignment was not found")
+        if assignment.status == "cancelled":
+            return self._view(assignment, self._repository.task_for(assignment))
+        if assignment.status != "pending":
+            raise TaskError("task assignment is no longer awaiting acceptance")
+        self._repository.cancel(assignment, str(principal.id))
         return self._view(assignment, self._repository.task_for(assignment))
 
     def _pending_target(self, principal: Principal, assignment_id: UUID) -> Any:

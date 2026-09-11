@@ -136,6 +136,32 @@ def test_delegated_mcp_search_records_turn_evidence_that_the_conversation_view_e
     assert evidence[0]["material_id"] == material["material_id"] and "한빛상사" in evidence[0]["excerpt"]
     assert evidence[0]["origin"].endswith(f"/materials/{material['material_id']}/content")
 
+    # If this same Turn raises an Action, the material it actually read becomes the immutable basis of Submission 1.
+    proposal = application.propose_action(
+        application.authenticated_principal("mina"),
+        UUID(execution_id),
+        "task.create_self",
+        "업무 생성 확인",
+        {"title": "근거가 붙은 AX 업무", "due_date": "2026-09-30"},
+    )
+    action_round = client.get(f"/api/action-items/{proposal['action_id']}", headers=MINA).json()["rounds"][0]
+    assert len(action_round["evidence"]) == 1
+    assert action_round["evidence"][0]["attachment_id"] == evidence[0]["attachment_id"]
+    assert action_round["evidence"][0]["fixed_snapshot_ref"].endswith(f"@{evidence[0]['integrity_ref']}")
+    confirmed = client.post(
+        f"/api/action-items/{proposal['action_id']}/commands/confirm",
+        headers=MINA,
+        json={
+            "expected_version": 1,
+            "base_submission_version": 1,
+            "draft": {"title": "사람이 고친 근거 업무", "due_date": "2026-09-30"},
+        },
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    original, final = client.get(f"/api/action-items/{proposal['action_id']}", headers=MINA).json()["rounds"]
+    assert final["evidence"] == original["evidence"]
+    assert final["decisions"][0]["evidence_hash"] == final["evidence_hash"]
+
     # Jiho cannot use Mina's execution to search Mina's task, nor is Jiho's own facade call recorded on Mina's turn.
     monkeypatch.setenv("AX_MCP_CAUSATION_ID", execution_id)
     jiho = McpReportsFacade(settings, "jiho")

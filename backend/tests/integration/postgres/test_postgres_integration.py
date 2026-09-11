@@ -1,6 +1,7 @@
 import os
 import asyncio
 import tempfile
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event, Lock, Thread
 import time
@@ -20,6 +21,7 @@ from ax_workspace.entrypoints.conversation_worker import ConversationWorker
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.modules.ax_execution.ai import (
     AiConversationResult,
+    AiFollowUpCandidate,
     AiGeneration,
     AiToolInvocation,
     ProviderRequestFailed,
@@ -31,24 +33,105 @@ from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment, 
 from ax_workspace.platform.conversation_jobs import ConversationJobQueue
 from ax_workspace.platform.durable_jobs import SqlAlchemyDurableJobQueue
 from ax_workspace.platform.persistence import DurableJobRecord
+from ax_workspace.platform.notifications import SqlAlchemyNotificationRepository
 from ax_workspace.platform.persistence import (
+    AssistantCharacterPreferenceRecord,
     ConversationTurnRecord,
     ConversationMessageRecord,
     ConversationAuditEventRecord,
     ActionItemRecord,
+    DecisionItemRecord,
     EmploymentPeriodRecord,
     TaskAssignmentRecord,
     TaskRecord,
+    ReviewDecisionRecord,
+    SubmissionRecord,
     ToolInvocationRecord,
+    MeetingRecord,
+    NotificationRecord,
+    ResourceRelationshipRecord,
 )
 
 
+@pytest.mark.integration
+def test_meeting_share_and_notification_commit_or_retry_together(monkeypatch) -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    application = create_workflow_application(Settings(RuntimeProfile.TEST, database_url))
+    principal = application.authenticated_principal("mina")
+    meeting = application.create_meeting(
+        principal,
+        organization_id="scax",
+        title="PG 공유 원자성",
+        starts_at=datetime.fromisoformat("2026-09-11T01:00:00+00:00"),
+        ends_at=datetime.fromisoformat("2026-09-11T02:00:00+00:00"),
+        visibility="private",
+        attendee_ids=[],
+    )
+    original = SqlAlchemyNotificationRepository.emit
+
+    def fail_delivery(self, **kwargs):
+        original(self, **kwargs)
+        raise RuntimeError("injected notification delivery failure")
+
+    with monkeypatch.context() as failed:
+        failed.setattr(SqlAlchemyNotificationRepository, "emit", fail_delivery)
+        with pytest.raises(RuntimeError, match="notification delivery"):
+            application.share_meeting(
+                principal,
+                UUID(meeting["meeting_id"]),
+                "sora",
+                meeting["version"],
+            )
+
+    with make_session_factory(database_url)() as session:
+        stored = session.get(MeetingRecord, UUID(meeting["meeting_id"]))
+        assert stored.version == meeting["version"]
+        assert list(session.scalars(select(NotificationRecord))) == []
+        assert list(session.scalars(select(ResourceRelationshipRecord).where(
+            ResourceRelationshipRecord.resource_type == "meeting",
+            ResourceRelationshipRecord.resource_id == meeting["meeting_id"],
+            ResourceRelationshipRecord.relationship_kind == "share",
+        ))) == []
+
+    shared = application.share_meeting(principal, UUID(meeting["meeting_id"]), "sora", meeting["version"])
+    assert shared["version"] == meeting["version"] + 1
+    assert len(application.list_notifications(application.authenticated_principal("sora"))) == 1
+
+
+@pytest.mark.integration
+def test_postgres_accepts_only_one_concurrent_first_assistant_character_preference() -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    client = TestClient(create_app(Settings(RuntimeProfile.TEST, database_url)))
+    gate = Barrier(2)
+
+    def save(character_key: str):
+        gate.wait()
+        return client.put(
+            "/api/profile/preferences/assistant-character",
+            headers={"X-Demo-Persona": "mina"},
+            json={"character_key": character_key, "expected_version": 0},
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(save, ("rabbit", "red-panda")))
+
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    with make_session_factory(database_url)() as session:
+        record = session.get(AssistantCharacterPreferenceRecord, "mina")
+        assert record is not None
+        assert record.character_key in {"rabbit", "red-panda"}
+        assert record.version == 1
+
+
 class ConversationProvider:
-    def __init__(self, *, delay_seconds: float = 0, failures: int = 0) -> None:
+    def __init__(self, *, delay_seconds: float = 0, failures: int = 0, candidates=None) -> None:
         self.delay_seconds = delay_seconds
         self.failures = failures
         self.calls = 0
         self.started = Event()
+        self.candidates = candidates or []
 
     def converse(self, request, *, sink=None, cancel=None) -> AiConversationResult:
         self.calls += 1
@@ -73,6 +156,7 @@ class ConversationProvider:
                     latency_ms=1,
                 )
             ],
+            follow_up_candidates=self.candidates,
         )
 
 
@@ -277,6 +361,103 @@ def _postgres_test_url() -> str:
 
 
 @pytest.mark.integration
+def test_postgres_serializes_concurrent_graph_receipt_sequences() -> None:
+    """A second graph tool waits for the first receipt append, then takes the next sequence."""
+    from ax_workspace.platform.persistence import ConversationGraphReceiptRecord
+    from ax_workspace.platform.work_tasks import SqlAlchemyGraphReceiptRepository
+
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    client = _conversation_client(database_url)
+    headers = {"X-Demo-Persona": "mina"}
+    conversation = client.post("/api/conversations", headers=headers, json={"title": "병렬 관계 조회"}).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={**headers, "Idempotency-Key": "concurrent-graph-receipts"},
+        json={"body": "관계를 동시에 확인해줘", "context": []},
+    ).json()
+
+    factory = make_session_factory(database_url)
+    with factory() as session:
+        execution_id = session.get(ConversationTurnRecord, UUID(accepted["turn_id"])).execution_id
+
+    contender_reached_turn = Event()
+    contender_read_sequence = Event()
+    release_contender = Event()
+    engine = factory.kw["bind"]
+
+    def observe_contender_start(_connection, _cursor, statement, _parameters, context, _many) -> None:
+        if context.execution_options.get("graph_receipt_contender") and "FROM conversation_turns" in statement:
+            contender_reached_turn.set()
+
+    def pause_after_sequence_read(_connection, _cursor, statement, _parameters, context, _many) -> None:
+        if context.execution_options.get("graph_receipt_contender") and "max(conversation_graph_receipts.sequence)" in statement:
+            contender_read_sequence.set()
+            assert release_contender.wait(timeout=2), "first receipt append did not release the contender"
+
+    event.listen(engine, "before_cursor_execute", observe_contender_start)
+    event.listen(engine, "after_cursor_execute", pause_after_sequence_read)
+    try:
+        with factory() as first_session:
+            SqlAlchemyGraphReceiptRepository(first_session).record(
+                execution_id,
+                "mina",
+                [{"kind": "node", "node_ref": "task:first", "node_title": "첫 관계"}],
+            )
+
+            def append_second() -> None:
+                with factory() as second_session:
+                    second_session.connection(execution_options={"graph_receipt_contender": True})
+                    SqlAlchemyGraphReceiptRepository(second_session).record(
+                        execution_id,
+                        "mina",
+                        [{"kind": "node", "node_ref": "task:second", "node_title": "둘째 관계"}],
+                    )
+                    second_session.commit()
+
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                second = executor.submit(append_second)
+                assert contender_reached_turn.wait(timeout=2), "second receipt append did not reach the Turn row"
+                # Without serialization the contender reads the stale max here and pauses before its duplicate insert.
+                # With serialization it is still waiting on the Turn row and reads the max only after this commit.
+                contender_read_sequence.wait(timeout=0.25)
+                first_session.commit()
+                release_contender.set()
+                second.result(timeout=5)
+    finally:
+        release_contender.set()
+        event.remove(engine, "before_cursor_execute", observe_contender_start)
+        event.remove(engine, "after_cursor_execute", pause_after_sequence_read)
+
+    fan_out = Barrier(9)
+
+    def append_from_graph_tool(index: int) -> None:
+        fan_out.wait(timeout=2)
+        with factory() as session:
+            SqlAlchemyGraphReceiptRepository(session).record(
+                execution_id,
+                "mina",
+                [{"kind": "node", "node_ref": f"task:fan-out-{index}", "node_title": f"병렬 관계 {index}"}],
+            )
+            session.commit()
+
+    with ThreadPoolExecutor(max_workers=9) as executor:
+        list(executor.map(append_from_graph_tool, range(9)))
+
+    with factory() as session:
+        receipts = list(
+            session.scalars(
+                select(ConversationGraphReceiptRecord)
+                .where(ConversationGraphReceiptRecord.execution_id == execution_id)
+                .order_by(ConversationGraphReceiptRecord.sequence)
+            )
+        )
+    assert [row.sequence for row in receipts] == list(range(1, 12))
+    assert [row.node_title for row in receipts[:2]] == ["첫 관계", "둘째 관계"]
+    assert {row.node_title for row in receipts[2:]} == {f"병렬 관계 {index}" for index in range(9)}
+
+
+@pytest.mark.integration
 def test_postgres_serializes_concurrent_daily_report_causation_before_workflow_execution() -> None:
     database_url = _postgres_test_url()
     reset_database(database_url)
@@ -344,7 +525,18 @@ def test_job_queue_enqueue_and_domain_turn_commit_atomically_then_parallel_group
         assert _queue_count(session) == 2
         assert len(list(session.scalars(select(ConversationTurnRecord)))) == 2
 
-    provider = ConversationProvider(delay_seconds=0.2)
+    class OverlapProvider(ConversationProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.gate = Barrier(2)
+
+        def converse(self, request, *, sink=None, cancel=None) -> AiConversationResult:
+            # Both provider calls must be live together. A sequential worker blocks here and fails this test instead
+            # of being guessed from a machine-dependent wall-clock threshold.
+            self.gate.wait(timeout=2)
+            return super().converse(request, sink=sink, cancel=cancel)
+
+    provider = OverlapProvider()
     worker = ConversationWorker(
         Settings(
             RuntimeProfile.TEST,
@@ -355,9 +547,7 @@ def test_job_queue_enqueue_and_domain_turn_commit_atomically_then_parallel_group
         ),
         provider=provider,
     )
-    started = time.monotonic()
     assert asyncio.run(worker.run_once()) is True
-    assert time.monotonic() - started < 0.35
     assert provider.calls == 2
     with session_factory() as session:
         assert _queue_count(session) == 0
@@ -720,6 +910,123 @@ def test_job_queue_fifo_drain_preserves_queued_fragments_for_one_conversation() 
                 select(ConversationTurnRecord).order_by(ConversationTurnRecord.started_at)
             )
         ] == ["completed", "completed"]
+
+
+@pytest.mark.integration
+def test_postgres_serializes_worker_claim_with_a_new_fragment_for_the_same_conversation() -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    client = _conversation_client(database_url)
+    worker = ConversationWorker(
+        Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres"),
+        provider=ConversationProvider(),
+    )
+
+    for index in range(8):
+        conversation = client.post(
+            "/api/conversations",
+            headers={"X-Demo-Persona": "mina"},
+            json={"title": f"동시 수신 {index}"},
+        ).json()
+        first = client.post(
+            f"/api/conversations/{conversation['conversation_id']}/messages",
+            headers={"X-Demo-Persona": "mina", "Idempotency-Key": f"claim-first-{index}"},
+            json={"body": "첫 발화", "context": []},
+        )
+        assert first.status_code == 202
+        gate = Barrier(2)
+
+        def claim() -> bool:
+            gate.wait()
+            return asyncio.run(worker.run_once())
+
+        def accept_next():
+            gate.wait()
+            return client.post(
+                f"/api/conversations/{conversation['conversation_id']}/messages",
+                headers={"X-Demo-Persona": "mina", "Idempotency-Key": f"claim-next-{index}"},
+                json={"body": "둘째 발화", "context": []},
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            claim_result, accepted = executor.submit(claim), executor.submit(accept_next)
+            assert claim_result.result(timeout=10) is True
+            assert accepted.result(timeout=10).status_code == 202
+
+        while asyncio.run(worker.run_once()):
+            pass
+        view = client.get(
+            f"/api/conversations/{conversation['conversation_id']}",
+            headers={"X-Demo-Persona": "mina"},
+        ).json()
+        assert [message["body"] for message in view["messages"] if message["role"] == "user"] == [
+            "첫 발화",
+            "둘째 발화",
+        ]
+        assert [turn["state"] for turn in view["turns"]] == ["completed", "completed"]
+
+
+@pytest.mark.integration
+def test_postgres_serializes_concurrent_follow_up_selection_to_one_user_turn() -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    client = _conversation_client(database_url)
+    conversation = client.post(
+        "/api/conversations",
+        headers={"X-Demo-Persona": "mina"},
+        json={"title": "후속 대화"},
+    ).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={"X-Demo-Persona": "mina", "Idempotency-Key": "seed"},
+        json={"body": "회의 결과를 알려줘", "context": []},
+    )
+    assert accepted.status_code == 202
+    worker = ConversationWorker(
+        Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres"),
+        provider=ConversationProvider(
+            candidates=[
+                AiFollowUpCandidate("후속 업무 정리", "회의에서 나온 업무를 정리해줘"),
+                AiFollowUpCandidate("다음 회의 준비", "다음 회의 안건을 준비해줘"),
+            ]
+        ),
+    )
+    assert asyncio.run(worker.run_once()) is True
+    view = client.get(
+        f"/api/conversations/{conversation['conversation_id']}",
+        headers={"X-Demo-Persona": "mina"},
+    ).json()
+    candidate = view["turns"][0]["follow_up_candidates"][0]
+    gate = Barrier(2)
+
+    def choose(key: str):
+        gate.wait()
+        return client.post(
+            f"/api/conversations/{conversation['conversation_id']}/messages",
+            headers={"X-Demo-Persona": "mina", "Idempotency-Key": key},
+            json={
+                "body": candidate["user_text"],
+                "context": [],
+                "follow_up_candidate_id": candidate["candidate_id"],
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(choose, ("tab-a", "tab-b")))
+
+    assert [response.status_code for response in responses] == [202, 202]
+    assert len({response.json()["message_id"] for response in responses}) == 1
+    assert len({response.json()["turn_id"] for response in responses}) == 1
+    with make_session_factory(database_url)() as session:
+        selected = list(
+            session.scalars(
+                select(ConversationMessageRecord).where(
+                    ConversationMessageRecord.follow_up_candidate_id == UUID(candidate["candidate_id"])
+                )
+            )
+        )
+        assert len(selected) == 1
+        assert selected[0].body == candidate["user_text"]
 
 
 @pytest.mark.integration
@@ -1270,7 +1577,7 @@ def test_postgres_serializes_two_simultaneous_comment_posts_of_the_same_key_into
 
 @pytest.mark.integration
 def test_postgres_serializes_two_simultaneous_judgements_into_one_effect() -> None:
-    """Two people (or two tabs) answering the same question at once must produce one Task and one decision."""
+    """Two tabs sending the same judgement get one receipt, one Task and one decision."""
     database_url = _postgres_test_url()
     reset_database(database_url)
     client = _conversation_client(database_url)
@@ -1279,14 +1586,14 @@ def test_postgres_serializes_two_simultaneous_judgements_into_one_effect() -> No
     url = f"/api/action-items/{item['action_item_id']}/commands/accept"
     body = {"expected_version": item["expected_version"]}
     barrier = Barrier(2)
-    results: list[tuple[int, str]] = []
+    results: list[tuple[int, dict[str, object]]] = []
     lock = Lock()
 
     def accept() -> None:
         barrier.wait(timeout=10)
         response = client.post(url, headers={"X-Demo-Persona": "jiho"}, json=body)
         with lock:
-            results.append((response.status_code, response.text[:200]))
+            results.append((response.status_code, response.json()))
 
     threads = [Thread(target=accept) for _ in range(2)]
     for thread in threads:
@@ -1294,7 +1601,9 @@ def test_postgres_serializes_two_simultaneous_judgements_into_one_effect() -> No
     for thread in threads:
         thread.join(timeout=20)
 
-    assert sorted(status for status, _ in results) == [200, 422], results  # one answer, one stale-version refusal
+    assert [status for status, _ in results] == [200, 200], results
+    assert {str(receipt["action_item_id"]) for _, receipt in results} == {item["action_item_id"]}
+    assert {str(receipt["status"]) for _, receipt in results} == {"resolved"}
     with make_session_factory(database_url)() as session:
         assert int(session.execute(text("SELECT count(*) FROM tasks WHERE title = '동시 판단 요청'")).scalar_one()) == 1
         assert int(session.execute(text("SELECT count(*) FROM review_decisions")).scalar_one()) == 1
@@ -1347,8 +1656,8 @@ def test_postgres_keeps_every_earlier_round_byte_identical_after_a_revision() ->
 
 
 @pytest.mark.integration
-def test_postgres_serializes_two_simultaneous_ax_approvals_into_one_effect() -> None:
-    """The same lost-update guard on the AX path: two approvals in flight produce one Task and one approval."""
+def test_postgres_serializes_two_simultaneous_ax_confirms_into_one_effect() -> None:
+    """The same lost-update guard on the AX path: two confirms in flight produce one Task and one decision."""
     database_url = _postgres_test_url()
     reset_database(database_url)
     settings = Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres")
@@ -1364,11 +1673,19 @@ def test_postgres_serializes_two_simultaneous_ax_approvals_into_one_effect() -> 
         execution_id = session.get(ConversationTurnRecord, UUID(accepted["turn_id"])).execution_id
     application = create_workflow_application(settings, ConversationProvider())
     application.propose_action(
-        application.authenticated_principal("jiho"), execution_id, "task.create_self", "업무 생성 확인", {"title": "동시 승인 업무"}
+        application.authenticated_principal("jiho"),
+        execution_id,
+        "task.create_self",
+        "업무 생성 확인",
+        {"title": "동시 승인 업무", "due_date": "2026-09-30"},
     )
     [item] = [row for row in client.get("/api/action-items", headers=jiho).json() if row["kind"] == "ax.task.create_self"]
-    url = f"/api/action-items/{item['action_item_id']}/commands/approve"
-    body = {"expected_version": item["expected_version"]}
+    url = f"/api/action-items/{item['action_item_id']}/commands/confirm"
+    body = {
+        "expected_version": item["expected_version"],
+        "base_submission_version": item["submission_version"],
+        "draft": {"title": "동시 승인 업무", "due_date": "2026-09-30"},
+    }
     barrier = Barrier(2)
     results: list[int] = []
     lock = Lock()
@@ -1389,8 +1706,134 @@ def test_postgres_serializes_two_simultaneous_ax_approvals_into_one_effect() -> 
     assert results == [200, 200], results
     with make_session_factory(database_url)() as session:
         assert int(session.execute(text("SELECT count(*) FROM tasks WHERE title = '동시 승인 업무'")).scalar_one()) == 1
+        assert int(
+            session.execute(
+                text("SELECT count(*) FROM submissions WHERE decision_item_id = CAST(:id AS uuid)"),
+                {"id": item["action_item_id"]},
+            ).scalar_one()
+        ) == 1
+        assert int(session.execute(text("SELECT count(*) FROM review_decisions WHERE decision = 'confirm'")).scalar_one()) == 1
     assert client.get("/api/actions", headers=jiho).json()[0]["state"] == "approved"
     assert [row for row in client.get("/api/action-items", headers=jiho).json() if row["kind"] == "ax.task.create_self"] == []
+
+
+@pytest.mark.integration
+def test_postgres_serializes_two_simultaneous_ax_meeting_confirms_into_one_local_record() -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres")
+    client = _conversation_client(database_url)
+    mina = {"X-Demo-Persona": "mina"}
+    conversation = client.post("/api/conversations", headers=mina, json={"title": "동시 회의 확정"}).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={**mina, "Idempotency-Key": "concurrent-meeting-confirm"},
+        json={"body": "출시 점검 회의를 제안해줘", "context": []},
+    ).json()
+    with make_session_factory(database_url)() as session:
+        execution_id = session.get(ConversationTurnRecord, UUID(accepted["turn_id"])).execution_id
+    application = create_workflow_application(settings, ConversationProvider())
+    application.propose_action(
+        application.authenticated_principal("mina"),
+        execution_id,
+        "meeting.create",
+        "회의 생성 확인",
+        {
+            "organization_id": "scax",
+            "title": "동시 확정 회의 원안",
+            "starts_at": "2026-09-21T01:00:00Z",
+            "ends_at": "2026-09-21T02:00:00Z",
+            "visibility": "private",
+            "attendee_ids": ["jiho"],
+            "include_initial_note": True,
+            "initial_note_body": "출시 범위를 확인한다.",
+        },
+    )
+    [item] = [row for row in client.get("/api/action-items", headers=mina).json() if row["kind"] == "ax.meeting.create"]
+    url = f"/api/action-items/{item['action_item_id']}/commands/confirm"
+    body = {
+        "expected_version": item["expected_version"],
+        "base_submission_version": item["submission_version"],
+        "draft": {
+            **item["edit_contract"]["values"],
+            "title": "동시 확정 회의",
+        },
+    }
+    barrier = Barrier(2)
+    results: list[tuple[int, str | None]] = []
+    lock = Lock()
+
+    def confirm() -> None:
+        barrier.wait(timeout=10)
+        response = client.post(url, headers=mina, json=body)
+        payload = response.json()
+        with lock:
+            results.append((response.status_code, payload.get("derived_meeting_id")))
+
+    threads = [Thread(target=confirm) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+
+    assert sorted(status for status, _ in results) == [200, 200], results
+    assert len({meeting_id for _, meeting_id in results}) == 1
+    with make_session_factory(database_url)() as session:
+        assert int(session.execute(text("SELECT count(*) FROM meetings WHERE title = '동시 확정 회의'")).scalar_one()) == 1
+        assert int(session.execute(text("SELECT count(*) FROM meeting_notes")).scalar_one()) == 1
+        assert int(session.execute(text("SELECT count(*) FROM meeting_note_versions")).scalar_one()) == 1
+        assert int(
+            session.execute(
+                text("SELECT count(*) FROM submissions WHERE decision_item_id = CAST(:id AS uuid)"),
+                {"id": item["action_item_id"]},
+            ).scalar_one()
+        ) == 2
+        assert int(session.execute(text("SELECT count(*) FROM review_decisions WHERE decision = 'confirm'")).scalar_one()) == 1
+
+
+@pytest.mark.integration
+def test_postgres_rolls_back_a_changed_submission_when_the_task_effect_fails() -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres")
+    client = _conversation_client(database_url)
+    jiho = {"X-Demo-Persona": "jiho"}
+    conversation = client.post("/api/conversations", headers=jiho, json={"title": "원자적 확정"}).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={**jiho, "Idempotency-Key": "atomic-confirm"},
+        json={"body": "제안해줘", "context": []},
+    ).json()
+    with make_session_factory(database_url)() as session:
+        execution_id = session.get(ConversationTurnRecord, UUID(accepted["turn_id"])).execution_id
+    application = create_workflow_application(settings, ConversationProvider())
+    application.propose_action(
+        application.authenticated_principal("jiho"), execution_id, "task.create_self", "업무 생성 확인", {"title": "원안"}
+    )
+    [item] = [row for row in client.get("/api/action-items", headers=jiho).json() if row["kind"] == "ax.task.create_self"]
+
+    failed = client.post(
+        f"/api/action-items/{item['action_item_id']}/commands/confirm",
+        headers=jiho,
+        json={
+            "expected_version": item["expected_version"],
+            "base_submission_version": item["submission_version"],
+            "draft": {
+                "title": "저장되면 안 되는 수정안",
+                "reference_task_ids": ["00000000-0000-0000-0000-000000000099"],
+            },
+        },
+    )
+    assert failed.status_code in {404, 422}, failed.text
+
+    with make_session_factory(database_url)() as session:
+        decision = session.get(DecisionItemRecord, UUID(item["action_item_id"]))
+        assert decision.status == "open"
+        assert session.query(SubmissionRecord).filter_by(decision_item_id=decision.id).count() == 1
+        assert session.query(ReviewDecisionRecord).count() == 0
+        assert session.query(TaskRecord).filter_by(title="저장되면 안 되는 수정안").count() == 0
+    [still_pending] = [row for row in client.get("/api/action-items", headers=jiho).json() if row["action_item_id"] == item["action_item_id"]]
+    assert still_pending["submission_version"] == 1 and still_pending["status"] == "awaiting_review"
 
 
 @pytest.mark.integration
@@ -1481,6 +1924,70 @@ def test_postgres_serializes_adopting_evidence_against_deciding_on_it() -> None:
             assert len(round_one["evidence"]) == 0
             [frozen] = timeline["review_decisions"]
             assert frozen["evidence_hash"] == round_one["evidence_hash"]
+
+
+@pytest.mark.integration
+def test_postgres_serializes_assignment_acceptance_against_requester_cancellation() -> None:
+    """The requester and assignee answer the same pending relation, so only one command may win its row lock."""
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url, materials_dir=tempfile.mkdtemp())
+    app = create_app(settings)
+    client = TestClient(app)
+    application = app.state.workflow_application
+    jiho = {"X-Demo-Persona": "jiho"}
+    mina = {"X-Demo-Persona": "mina"}
+
+    conversation = application.create_conversation(application.authenticated_principal("jiho"), "배정 취소 경합")
+    accepted = application.accept_conversation_message(
+        application.authenticated_principal("jiho"),
+        "민아에게 업무를 요청해줘",
+        UUID(conversation["conversation_id"]),
+        [],
+        "postgres-assignment-cancel-race",
+    )
+    with make_session_factory(database_url)() as session:
+        execution_id = session.get(ConversationTurnRecord, UUID(accepted["turn_id"])).execution_id
+    proposal = application.propose_action(
+        application.authenticated_principal("jiho"),
+        execution_id,
+        "task.assign",
+        "업무 배정 확인",
+        {"title": "한 번만 닫힐 요청", "assignee_id": "mina", "due_date": "2026-09-30"},
+    )
+    detail = client.get(f"/api/action-items/{proposal['action_id']}", headers=jiho).json()
+    confirmed = client.post(
+        f"/api/action-items/{proposal['action_id']}/commands/confirm",
+        headers=jiho,
+        json={"expected_version": detail["expected_version"], "base_submission_version": 1},
+    ).json()
+    [assignment] = [row for row in client.get("/api/task-assignments/sent", headers=jiho).json() if row["task"]["title"] == "한 번만 닫힐 요청"]
+    gate = Barrier(2)
+
+    def cancel() -> Any:
+        gate.wait()
+        return client.post(
+            f"/api/action-items/{proposal['action_id']}/commands/cancel_assignment",
+            headers=jiho,
+            json={"expected_version": confirmed["expected_version"]},
+        )
+
+    def accept() -> Any:
+        gate.wait()
+        return client.post(f"/api/task-assignments/{assignment['assignment_id']}/accept", headers=mina)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        cancel_future, accept_future = executor.submit(cancel), executor.submit(accept)
+        cancellation, acceptance = cancel_future.result(), accept_future.result()
+
+    assert sorted([cancellation.status_code, acceptance.status_code]) == [200, 422]
+    [settled] = [row for row in client.get("/api/task-assignments/sent", headers=jiho).json() if row["assignment_id"] == assignment["assignment_id"]]
+    assert settled["status"] in {"active", "cancelled"}
+    assert settled["task"]["state"] == ("open" if settled["status"] == "active" else "cancelled")
+    if settled["status"] == "active":
+        assert any(row["task_id"] == settled["task"]["task_id"] for row in client.get("/api/my-work", headers=mina).json())
+    else:
+        assert all(row["task_id"] != settled["task"]["task_id"] for row in client.get("/api/my-work", headers=mina).json())
 
 
 @pytest.mark.integration

@@ -6,12 +6,15 @@ from uuid import UUID
 from datetime import UTC, datetime
 
 from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.organization_access.credentials import LocalCredential, normalize_email
 from ax_workspace.modules.organization_access.domain import ORGANIZATION_ACTIVITY_AXES, TASK_ASSIGN, Grant, Principal
+from ax_workspace.modules.organization_access.application import AssistantCharacterPreferenceConflict
 from ax_workspace.platform.persistence import (
     AccessGrantRecord,
+    AssistantCharacterPreferenceRecord,
     ActivityEventRecord,
     AppointmentRecord,
     EmploymentPeriodRecord,
@@ -145,6 +148,45 @@ class SqlAlchemyOrganizationRepository:
                 for grant in effective_grants
             ],
         }
+
+    def assistant_character_preference(self, member_id: str) -> dict[str, Any] | None:
+        record = self._session.get(AssistantCharacterPreferenceRecord, member_id)
+        if record is None:
+            return None
+        return {"character_key": record.character_key, "version": record.version}
+
+    def save_assistant_character_preference(
+        self, member_id: str, character_key: str, expected_version: int
+    ) -> dict[str, Any]:
+        if expected_version == 0:
+            record = AssistantCharacterPreferenceRecord(
+                member_id=member_id,
+                character_key=character_key,
+                version=1,
+            )
+            self._session.add(record)
+            try:
+                self._session.flush()
+            except IntegrityError as error:
+                self._session.rollback()
+                raise AssistantCharacterPreferenceConflict("AX 캐릭터 설정이 이미 변경됐습니다.") from error
+            return {"character_key": record.character_key, "version": record.version}
+
+        row = self._session.execute(
+            update(AssistantCharacterPreferenceRecord)
+            .where(
+                AssistantCharacterPreferenceRecord.member_id == member_id,
+                AssistantCharacterPreferenceRecord.version == expected_version,
+            )
+            .values(character_key=character_key, version=expected_version + 1, updated_at=datetime.now(UTC))
+            .returning(
+                AssistantCharacterPreferenceRecord.character_key,
+                AssistantCharacterPreferenceRecord.version,
+            )
+        ).one_or_none()
+        if row is None:
+            raise AssistantCharacterPreferenceConflict("AX 캐릭터 설정이 다른 곳에서 변경됐습니다.")
+        return {"character_key": row.character_key, "version": row.version}
 
     def member_detail(self, member_id: str) -> dict[str, Any] | None:
         """한 사람을 여섯 축으로 한 번에 읽는다 — 지금 값과, 지금 닿지 않게 된 권한까지.

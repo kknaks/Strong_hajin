@@ -56,6 +56,7 @@ const capabilityLabel: Record<string, string> = {
   "daily_report.edit": "일일보고 편집",
   "daily_report.submit": "일일보고 제출",
   "meeting.followup.request": "회의 후속 업무 요청",
+  "meeting.share": "회의 공유",
   "task.read": "업무 열람",
   "task.accept": "배정 수락",
   "task.assign": "업무 배정",
@@ -179,10 +180,7 @@ export const taskFilterOptions = ["active", "all", "open", "in_progress", "block
 /** 값이 없을 때 칸에 남기는 것 — 공백이 아니라 대시다 (v2 12 TABLE). */
 export const emptyValue = "—";
 
-/**
- * 이 제품은 데스크톱 전용이고 1280 미만은 지원하지 않는다 (v2 `15 — RESPONSIVE`).
- * 좁은 폭에서 화면을 접는 대신 이 안내 하나로 대신한다.
- */
+/** 이전 desktop-only 소비자의 import 호환성을 위한 문구다. 앱은 더 이상 좁은 화면을 이 안내로 대체하지 않는다. */
 export const minWidthNotice = {
   title: "화면이 좁습니다",
   description: "가로 1280 이상에서 사용해 주세요. 창을 넓히면 바로 이어서 볼 수 있습니다.",

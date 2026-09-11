@@ -1,45 +1,83 @@
 import { useEffect, useRef, useState } from "react";
 
 import { ActionCommandButtons, ActionPreviewDetails, actionKicker, actionSubject } from "../ActionPreview";
+import { ActionTaskCard } from "../ActionTaskCard";
+import { ActionMeetingCard } from "../ActionMeetingCard";
+import { ActionProgressBatchCard } from "../ActionProgressBatchCard";
 import { formatDate, formatDuration, isoDateInSeoul, taskStateLabel } from "../labels";
 import { AssistantMarkdown } from "./AssistantMarkdown";
-import { EDGE_LABEL, EDGE_SENTENCE, GraphCanvas } from "../GraphCanvas";
-import type { ActionItem, AnswerResource, Conversation, ConversationTurn, GraphEdge, GraphNode, GraphReceipt, MaterialEvidence } from "../viewModels";
+import { EDGE_SENTENCE } from "../GraphCanvas";
+import type { ActionItem, AnswerResource, Conversation, ConversationTurn, FollowUpCandidate, GraphReceipt, MaterialEvidence } from "../viewModels";
 import type { LocalFragment } from "./useConversations";
 import { Icon, type IconName } from "../Icon";
 
 const BOTTOM_SLACK_PX = 24;
 
 type Tools = Conversation["tool_invocations"];
+type Tool = Tools[number];
+
+function terminalToolRows(tools: Tools): Array<{ tool: Tool; count: number; latencyMs: number | null }> {
+  const rows: Array<{ tool: Tool; count: number; latencyMs: number; hasLatency: boolean }> = [];
+  for (const tool of tools) {
+    // Only adjacent calls collapse. The same tool appearing later remains a new row so execution order stays legible;
+    // successful and failed calls also stay separate so grouping never hides a partial failure.
+    const previous = rows.at(-1);
+    const row = previous?.tool.tool_name === tool.tool_name && previous.tool.state === tool.state
+      ? previous
+      : { tool, count: 0, latencyMs: 0, hasLatency: false };
+    if (row !== previous) rows.push(row);
+    row.count += 1;
+    if (tool.latency_ms !== null) {
+      row.latencyMs += tool.latency_ms;
+      row.hasLatency = true;
+    }
+  }
+  return rows.map(({ tool, count, latencyMs, hasLatency }) => ({
+    tool,
+    count,
+    latencyMs: hasLatency ? latencyMs : null,
+  }));
+}
 
 /**
  * Turn timeline with bottom-aware autoscroll: follows new events only while the reader is at the bottom;
  * otherwise a `새 메시지` affordance offers the jump and never steals the scroll position.
  *
- * One turn renders in a fixed order: user request → execution rail (live state + chronological tool receipts,
- * collapsed to one line once terminal) → assistant answer (streaming/final/failed/cancelled) → evidence →
- * canonical action result cards. The answer is always the last, primary content.
+ * One turn renders live work below the request. Once terminal, a compact receipt moves below the assistant answer;
+ * opening it reveals the A-style tool timeline and answer evidence together, then action cards and follow-ups continue.
  */
 export function MessageList({
+  personaId = "",
   conversation,
   localFragments,
   onDecide,
   onRetryTurn,
   onRetryFragment,
   onDiscardFragment,
-  onOpenGraph,
+  onFollowUpCandidate,
   onOpenResource,
+  onOpenTask,
+  onOpenMeeting,
 }: {
+  personaId?: string;
   conversation: Conversation | null;
   localFragments: LocalFragment[];
-  onDecide: (actionId: string, expectedVersion: number, decision: string) => Promise<void>;
+  onDecide: (
+    actionId: string,
+    expectedVersion: number,
+    decision: string,
+    payload?: { base_submission_version?: number; draft?: Record<string, unknown> },
+  ) => Promise<void>;
   onRetryTurn: (turnId: string) => void;
   onRetryFragment: (fragment: LocalFragment) => void;
   onDiscardFragment: (localId: string) => void;
-  /** Continue this turn's picture on the full graph surface, centred on one node. */
-  onOpenGraph?: (nodeRef: string) => void;
+  onFollowUpCandidate?: (candidate: FollowUpCandidate) => Promise<boolean>;
   /** Open one thing the answer points at, in the surface that owns it. */
   onOpenResource?: (resource: AnswerResource) => void;
+  /** Open the Task named by a persisted Action receipt. */
+  onOpenTask?: (taskId: string) => void;
+  /** Open the Meeting named by a persisted Action receipt. */
+  onOpenMeeting?: (meetingId: string) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
@@ -58,6 +96,16 @@ export function MessageList({
       ].join("#")
     : "";
   const lastConversationId = useRef<string | null>(null);
+  const latestTurn = conversation?.turns.at(-1);
+  const latestFollowUpTurn = conversation
+    && localFragments.length === 0
+    && !conversation.messages.some((message) => message.state === "queued")
+    && latestTurn?.state === "completed"
+    && conversation.messages.some((message) => (
+      message.turn_id === latestTurn.turn_id && message.role === "assistant" && message.body_state === "final"
+    ))
+      ? latestTurn
+      : undefined;
 
   useEffect(() => {
     const element = scroller.current;
@@ -94,12 +142,16 @@ export function MessageList({
       <div className="ax-messages" onScroll={onScroll} ref={scroller}>
         {conversation ? (
           <ConversationTimeline
+            personaId={personaId}
             conversation={conversation}
+            followUpTurnId={latestFollowUpTurn?.follow_up_candidates?.length ? latestFollowUpTurn.turn_id : null}
             localFragments={localFragments}
             onDecide={onDecide}
             onDiscardFragment={onDiscardFragment}
-            onOpenGraph={onOpenGraph}
+            onFollowUpCandidate={onFollowUpCandidate}
             onOpenResource={onOpenResource}
+            onOpenTask={onOpenTask}
+            onOpenMeeting={onOpenMeeting}
             onRetryFragment={onRetryFragment}
             onRetryTurn={onRetryTurn}
           />
@@ -115,23 +167,36 @@ export function MessageList({
 }
 
 function ConversationTimeline({
+  personaId,
   conversation,
+  followUpTurnId,
   localFragments,
   onDecide,
   onRetryTurn,
   onRetryFragment,
   onDiscardFragment,
-  onOpenGraph,
+  onFollowUpCandidate,
   onOpenResource,
+  onOpenTask,
+  onOpenMeeting,
 }: {
+  personaId: string;
   conversation: Conversation;
+  followUpTurnId: string | null;
   localFragments: LocalFragment[];
-  onDecide: (actionId: string, expectedVersion: number, decision: string) => Promise<void>;
+  onDecide: (
+    actionId: string,
+    expectedVersion: number,
+    decision: string,
+    payload?: { base_submission_version?: number; draft?: Record<string, unknown> },
+  ) => Promise<void>;
   onRetryTurn: (turnId: string) => void;
   onRetryFragment: (fragment: LocalFragment) => void;
   onDiscardFragment: (localId: string) => void;
-  onOpenGraph?: (nodeRef: string) => void;
+  onFollowUpCandidate?: (candidate: FollowUpCandidate) => Promise<boolean>;
   onOpenResource?: (resource: AnswerResource) => void;
+  onOpenTask?: (taskId: string) => void;
+  onOpenMeeting?: (meetingId: string) => void;
 }) {
   const queuedMessages = conversation.messages.filter((item) => item.state === "queued");
 
@@ -149,6 +214,7 @@ function ConversationTimeline({
         const actions = (conversation.actions ?? []).filter((action) => action.turn_id === turn.turn_id);
         const named = (conversation.answer_resources ?? []).filter((item) => item.turn_id === turn.turn_id);
         const retried = conversation.turns.find((item) => item.retry_of_turn_id === turn.turn_id);
+        const executionTerminal = isTerminalTurn(turn);
         return (
           <section className="ax-turn" data-turn-id={turn.turn_id} key={turn.turn_id}>
             {turn.retry_of_turn_id && <span className="ax-turn-lineage">이전 실패한 요청의 다시 시도</span>}
@@ -159,63 +225,196 @@ function ConversationTimeline({
                   {item.body}
                 </p>
               ))}
-            <ExecutionRail onRetry={retried ? undefined : () => onRetryTurn(turn.turn_id)} steps={walked} tools={tools} turn={turn} />
+            {!executionTerminal && <ExecutionRail onRetry={retried ? undefined : () => onRetryTurn(turn.turn_id)} tools={tools} turn={turn} />}
             {messages
               .filter((item) => item.role === "assistant" && (item.body || item.body_state === "streaming"))
               .map((item) => (
                 <div className={`assistant ${item.body_state ?? "final"}`} data-body-state={item.body_state ?? "final"} key={item.message_id}>
-                  <AssistantMarkdown body={item.body} />
-                  {item.body_state === "streaming" && (
-                    <span aria-hidden className="ax-streaming-mark">
-                      ▍
-                    </span>
-                  )}
-                  {item.body_state === "failed" && <small className="ax-body-note">답변이 완성되지 않았습니다</small>}
-                  {item.body_state === "cancelled" && <small className="ax-body-note">취소 시점까지의 답변</small>}
+                  <div className="ax-assistant-body">
+                    <AssistantMarkdown body={item.body} onOpenResource={onOpenResource} resources={named} />
+                    {item.body_state === "streaming" && (
+                      <span aria-hidden className="ax-streaming-mark">
+                        ▍
+                      </span>
+                    )}
+                    {item.body_state === "failed" && <small className="ax-body-note">답변이 완성되지 않았습니다</small>}
+                    {item.body_state === "cancelled" && <small className="ax-body-note">취소 시점까지의 답변</small>}
+                  </div>
                 </div>
               ))}
-            <AnswerEvidence
-              evidence={evidence}
-              onOpen={onOpenResource}
-              onOpenGraph={onOpenGraph}
-              resources={named}
-              steps={walked}
-            />
-            {actions.map((action) => (
+            {executionTerminal && (
+              <ExecutionRail
+                evidence={evidence}
+                onOpenResource={onOpenResource}
+                onRetry={retried ? undefined : () => onRetryTurn(turn.turn_id)}
+                resources={named}
+                steps={walked}
+                tools={tools}
+                turn={turn}
+              />
+            )}
+            {actions.map((action) => action.edit_contract?.editor === "task_progress_batch" ? (
+              <ActionProgressBatchCard
+                action={action}
+                key={action.action_id}
+                onCommand={(command, payload) => onDecide(action.action_id, action.version, command, payload)}
+              />
+            ) : action.edit_contract?.editor === "task" ? (
+              <ActionTaskCard
+                action={action}
+                key={`${personaId}:${action.action_id}`}
+                onCommand={(command, payload) => onDecide(action.action_id, action.version, command, payload)}
+                onOpenTask={onOpenTask}
+                principalId={personaId}
+              />
+            ) : action.edit_contract?.editor === "meeting" ? (
+              <ActionMeetingCard
+                action={action}
+                key={`${personaId}:${action.action_id}`}
+                onCommand={(command, payload) => onDecide(action.action_id, action.version, command, payload)}
+                onOpenMeeting={onOpenMeeting}
+                principalId={personaId}
+              />
+            ) : (
               <ActionResultCard action={action} key={action.action_id} onDecide={onDecide} />
             ))}
+            {turn.turn_id === followUpTurnId && (
+              <FollowUpCandidates candidates={turn.follow_up_candidates ?? []} onChoose={onFollowUpCandidate} />
+            )}
           </section>
         );
       })}
       {queuedMessages.length > 0 && (
         <ol aria-label="대기열" className="ax-queue">
-          {queuedMessages.map((item, index) => (
-            <li className="user queued" key={item.message_id}>
-              <span className="ax-queue-index">대기 {index + 1}</span>
-              {item.body} <small>대기 중</small>
+          {queuedMessages.map((item) => (
+            <li className="ax-queued-message" key={item.message_id}>
+              <p className="user">{item.body}</p>
+              <div className="ax-rail ax-pending-request-status" role="status">
+                <div className="ax-rail-head">
+                  <span aria-hidden className="ax-rail-icon">✦</span>
+                  <span className="ax-rail-phrase">요청 내용 확인...</span>
+                </div>
+              </div>
             </li>
           ))}
         </ol>
       )}
-      {localFragments.map((fragment) => (
-        <p className={`user local ${fragment.state}`} data-local-id={fragment.local_id} key={fragment.local_id}>
+      {localFragments.map((fragment) => fragment.state === "failed" ? (
+        <p className="user local failed" data-local-id={fragment.local_id} key={fragment.local_id}>
           {fragment.body}
-          {fragment.state === "sending" && <small>접수 중…</small>}
-          {fragment.state === "accepted" && <small>접수됨 · 반영 중</small>}
-          {fragment.state === "failed" && (
-            <span className="ax-fragment-actions">
-              <small>접수 실패{fragment.error ? ` · ${fragment.error}` : ""}</small>
-              <button className="btn h30" onClick={() => onRetryFragment(fragment)} type="button">
-                다시 보내기
-              </button>
-              <button className="btn h30 ghost" onClick={() => onDiscardFragment(fragment.local_id)} type="button">
-                삭제
-              </button>
-            </span>
-          )}
+          <span className="ax-fragment-actions">
+            <small>접수 실패{fragment.error ? ` · ${fragment.error}` : ""}</small>
+            <button className="btn h30" onClick={() => onRetryFragment(fragment)} type="button">
+              다시 보내기
+            </button>
+            <button className="btn h30 ghost" onClick={() => onDiscardFragment(fragment.local_id)} type="button">
+              삭제
+            </button>
+          </span>
         </p>
+      ) : (
+        <section className={`ax-local-fragment ${fragment.state}`} data-local-id={fragment.local_id} key={fragment.local_id}>
+          <p className="user">{fragment.body}</p>
+          <div className="ax-rail ax-pending-request-status" role="status">
+            <div className="ax-rail-head">
+              <span aria-hidden className="ax-rail-icon">✦</span>
+              <span className="ax-rail-phrase">{fragment.state === "sending" ? "요청을 접수하는 중..." : "요청 내용 확인..."}</span>
+            </div>
+          </div>
+        </section>
       ))}
     </>
+  );
+}
+
+function FollowUpCandidates({
+  candidates,
+  onChoose,
+}: {
+  candidates: FollowUpCandidate[];
+  onChoose?: (candidate: FollowUpCandidate) => Promise<boolean>;
+}) {
+  const selected = candidates.find((candidate) => candidate.selected_message_id !== null);
+  const pendingRef = useRef<string | null>(null);
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [failedId, setFailedId] = useState<string | null>(null);
+  const sourceTurnId = candidates[0]?.source_turn_id ?? null;
+
+  useEffect(() => {
+    pendingRef.current = null;
+    setPendingId(null);
+    setFailedId(null);
+  }, [sourceTurnId]);
+
+  if (candidates.length === 0 || !onChoose) return null;
+
+  const choose = async (candidate: FollowUpCandidate) => {
+    if (pendingRef.current || selected) return;
+    pendingRef.current = candidate.candidate_id;
+    setPendingId(candidate.candidate_id);
+    setFailedId(null);
+    let accepted = false;
+    try {
+      accepted = await onChoose(candidate);
+    } catch {
+      accepted = false;
+    } finally {
+      if (!accepted) {
+        pendingRef.current = null;
+        setPendingId(null);
+        setFailedId(candidate.candidate_id);
+      }
+    }
+  };
+
+  return (
+    <section aria-label="추천 대화" className="ax-follow-up-candidates">
+      <div className="ax-follow-up-heading">
+        <strong>이렇게 물어볼 수 있어요</strong>
+        <small>선택하면 바로 전송돼요</small>
+      </div>
+      <div className="ax-follow-up-list">
+        {candidates.map((candidate, index) => {
+          const isSelected = candidate.selected_message_id !== null;
+          const isPending = pendingId === candidate.candidate_id;
+          const isFailed = failedId === candidate.candidate_id;
+          const state = isSelected ? "selected" : isPending ? "sending" : isFailed ? "failed" : "ready";
+          const suffix = isSelected ? " · 선택됨" : isPending ? " · 전송 중" : isFailed ? " · 다시 시도" : "";
+          return (
+            <button
+              aria-label={`${candidate.user_text}${suffix}`}
+              aria-pressed={isSelected || isPending}
+              className="ax-follow-up-candidate"
+              data-state={state}
+              disabled={Boolean(selected || pendingId)}
+              key={candidate.candidate_id}
+              onClick={() => void choose(candidate)}
+              onKeyDown={(event) => {
+                if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                const buttons = Array.from(event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("button") ?? []);
+                const targetIndex = event.key === "Home"
+                  ? 0
+                  : event.key === "End"
+                    ? buttons.length - 1
+                    : (index + (["ArrowDown", "ArrowRight"].includes(event.key) ? 1 : -1) + buttons.length) % buttons.length;
+                event.preventDefault();
+                buttons[targetIndex]?.focus();
+                buttons[targetIndex]?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+              }}
+              title={candidate.user_text}
+              type="button"
+            >
+              <span>{candidate.user_text}</span>
+              {suffix && <small aria-hidden>{suffix.slice(3)}</small>}
+              <span aria-hidden className="ax-follow-up-arrow">↘</span>
+            </button>
+          );
+        })}
+      </div>
+      <span aria-live="polite" className="sr-only">
+        {pendingId ? "후속 질문 전송 중" : failedId ? "전송하지 못했습니다. 같은 후보를 다시 시도할 수 있습니다." : selected ? "선택한 후속 질문을 보냈습니다." : ""}
+      </span>
+    </section>
   );
 }
 
@@ -248,25 +447,38 @@ function prefersReducedMotion(): boolean {
   return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
+function turnProgress(turn: ConversationTurn): string {
+  if (["completed", "failed", "cancelled"].includes(String(turn.state))) return String(turn.state);
+  return turn.progress_state ?? (turn.state === "pending" ? "queued" : turn.state === "running" ? "preparing" : String(turn.state));
+}
+
+function isTerminalTurn(turn: ConversationTurn): boolean {
+  return ["completed", "failed", "cancelled"].includes(turnProgress(turn));
+}
+
 /**
- * Compact, in-place execution rail: one status line (icon + step phrase + elapsed) and one line per tool receipt in
- * observed order. It updates the same element instead of appending rows, so layout stays stable; once the turn is
- * terminal it collapses into a one-line summary so the answer is the main content.
+ * In-place execution timeline. While live it sits beneath the request; once terminal its caller moves a quiet B-style
+ * receipt below the answer. The receipt opens into the A-style tool timeline and the evidence that supported the answer.
  */
 export function ExecutionRail({
   turn,
   tools,
+  resources = [],
+  evidence = [],
   steps = [],
+  onOpenResource,
   onRetry,
 }: {
   turn: ConversationTurn;
   tools: Tools;
-  /** Where this turn walked, shown as it arrives and folded away with the tools once the turn is done. */
+  resources?: AnswerResource[];
+  evidence?: MaterialEvidence[];
   steps?: GraphReceipt[];
+  onOpenResource?: (resource: AnswerResource) => void;
   onRetry?: () => void;
 }) {
-  const progress = turn.progress_state ?? (turn.state === "pending" ? "queued" : turn.state === "running" ? "preparing" : (turn.state as string));
-  const terminal = progress === "completed" || progress === "failed" || progress === "cancelled";
+  const progress = turnProgress(turn);
+  const terminal = isTerminalTurn(turn);
   const now = useNow(!terminal);
   const reduced = prefersReducedMotion();
   const startedAt = turn.execution_started_at ? Date.parse(turn.execution_started_at) : null;
@@ -280,61 +492,73 @@ export function ExecutionRail({
       : progress === "retrying" && turn.attempt
         ? `${stateLabel.retrying} (${turn.attempt}번째)`
         : stateLabel[progress] ?? progress;
-  const icon: IconName = progress === "completed" ? "check" : progress === "failed" ? "close" : progress === "cancelled" ? "ban" : "pending";
-
-  // Timings tick every second and are aria-hidden; only semantic phase/tool changes are announced.
-  const receipts = tools.map((tool) => {
+  const presentedTools = terminal ? terminalToolRows(tools) : tools.map((tool) => ({ tool, count: 1, latencyMs: tool.latency_ms }));
+  const liveSteps = presentedTools.map(({ tool, count, latencyMs }, rowIndex) => {
+    const status = toolStateLabel[tool.state] ?? tool.state;
+    const mark = tool.state === "completed" ? "✓" : tool.state === "failed" || tool.state === "denied" ? "×" : tool.state === "running" ? "…" : "";
+    const displayName = count > 1 ? `${tool.display_name} ${count}회` : tool.display_name;
     const startedMs = tool.started_at ? Date.parse(tool.started_at) : null;
     const running = tool.state === "running" || tool.state === "pending";
     const timing = running
       ? startedMs !== null
         ? formatDuration(Math.max(0, now - startedMs))
         : null
-      : formatDuration(tool.latency_ms);
+      : formatDuration(latencyMs);
     return (
-      <li className={`ax-rail-tool ${tool.state}`} key={`${tool.turn_id}-${tool.sequence}`} title={tool.input_summary}>
-        <span className="ax-rail-tool-name">{tool.display_name}</span>
-        <span className="ax-rail-tool-state">{toolStateLabel[tool.state] ?? tool.state}</span>
-        <span className="ax-rail-tool-result">{running ? tool.input_summary : tool.result_summary ?? tool.error_summary ?? ""}</span>
-        {timing && (
-          <span aria-hidden className="ax-rail-tool-time">
-            {timing}
-          </span>
-        )}
+      <li
+        aria-label={`${displayName} · ${status}`}
+        className={`ax-rail-live-step ${tool.state}`}
+        key={terminal ? `${tool.tool_name}-${tool.state}-${rowIndex}` : `${tool.turn_id}-${tool.sequence}`}
+      >
+        <span aria-hidden className="ax-rail-step-check">{mark}</span>
+        <span>{displayName}</span>
+        {terminal && <code className="ax-rail-tool-code">{tool.tool_name}</code>}
+        {timing && <span aria-hidden className="ax-rail-step-time">{timing}</span>}
       </li>
     );
   });
 
-  const path = <SearchPathSteps steps={steps} />;
-  const outcome = [
-    stateLabel[progress] ?? progress,
-    tools.length ? `도구 ${tools.length}개` : null,
-    steps.length ? `연결 ${steps.length}단계` : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
   const timings = [elapsedText ? `실행 ${elapsedText}` : null, waitText ? `대기 ${waitText}` : null].filter(Boolean).join(" · ");
 
   if (terminal) {
+    const terminalPhrase = progress === "completed" ? "요청 내용 확인 완료" : progress === "failed" ? "요청 처리 실패" : "요청 처리 취소";
+    const evidenceCount = resources.length + evidence.length;
+    const hasExpandableContent = tools.length > 0 || evidenceCount > 0;
+    const summaryMeta = [timings, tools.length ? `도구 호출 ${tools.length}회` : null, evidenceCount ? `근거 ${evidenceCount}건` : null].filter(Boolean).join(" · ");
+    const heading = progress === "completed" ? (
+      summaryMeta && <span aria-live="polite" className="ax-rail-timings">{summaryMeta}</span>
+    ) : (
+      <>
+        <span aria-hidden className="ax-rail-icon">✦</span>
+        <span aria-live="polite" className="ax-rail-phrase">{terminalPhrase}</span>
+        {summaryMeta && <span aria-hidden className="ax-rail-timings">{summaryMeta}</span>}
+      </>
+    );
     return (
-      <div className={`ax-rail terminal ${progress}`} data-progress={progress} role="group">
-        <details className="ax-rail-details">
-          <summary>
-            <span aria-live="polite" className="ax-rail-summary">
-              {outcome}
-            </span>
-            {timings && (
-              <span aria-hidden className="ax-rail-timings">
-                · {timings}
-              </span>
-            )}
-            {turn.error && <span className="ax-rail-error">{turn.error}</span>}
-          </summary>
-          {tools.length > 0 ? <ol className="ax-rail-tools">{receipts}</ol> : <p className="ax-rail-none">도구를 사용하지 않았습니다.</p>}
-          {path}
-        </details>
+      <div className={`ax-rail terminal ${progress}`} data-motion={reduced ? "reduced" : "normal"} data-progress={progress} role="group">
+        {hasExpandableContent ? (
+          <details className="ax-rail-details ax-answer-evidence">
+            <summary className="ax-rail-head">{heading}</summary>
+            <div className="ax-rail-expanded">
+              {tools.length > 0 && (
+                <section aria-label="실행 단계" className="ax-rail-execution">
+                  <b>실행 단계</b>
+                  <ol aria-label="요청 처리 단계" className="ax-rail-live-steps">{liveSteps}</ol>
+                </section>
+              )}
+              {evidenceCount > 0 && (
+                <section aria-label="답변 근거" className="ax-rail-evidence">
+                  <b>답변 근거</b>
+                  <AnswerResources onOpen={onOpenResource} provenance={walkedTo(steps)} resources={resources} />
+                  <EvidenceCards evidence={evidence} />
+                </section>
+              )}
+            </div>
+          </details>
+        ) : <div className="ax-rail-head static">{heading}</div>}
+        {turn.error && <span className="ax-rail-error">{turn.error}</span>}
         {(progress === "failed" || progress === "cancelled") && onRetry && (
-          <button className="btn h30 primary" onClick={onRetry} type="button">
+          <button className="btn h30 primary ax-rail-retry" onClick={onRetry} type="button">
             다시 시도
           </button>
         )}
@@ -345,22 +569,15 @@ export function ExecutionRail({
   return (
     <div className={`ax-rail ${progress}`} data-motion={reduced ? "reduced" : "normal"} data-progress={progress} role="group">
       <div className="ax-rail-head">
-        <span aria-hidden className={`ax-rail-icon ${reduced ? "" : "spin"}`}>
-          <Icon name={icon} size={14} />
-        </span>
-        <span aria-live="polite" className="ax-rail-phrase">
-          {phrase}
-        </span>
-        <span aria-hidden className="ax-rail-elapsed">
-          {elapsedText ?? ""}
-        </span>
+        <span aria-hidden className="ax-rail-icon">✦</span>
+        <span aria-hidden className="ax-rail-phrase">요청 내용 확인...</span>
+        <span aria-live="polite" className="sr-only ax-rail-live-status">{phrase}</span>
       </div>
       {tools.length > 0 && (
-        <ol aria-live="polite" className="ax-rail-tools">
-          {receipts}
+        <ol aria-label="요청 처리 단계" aria-live="polite" className="ax-rail-live-steps">
+          {liveSteps}
         </ol>
       )}
-      {path}
     </div>
   );
 }
@@ -377,113 +594,16 @@ function ActionResultCard({ action, onDecide }: { action: ActionItem; onDecide: 
       <b>{actionSubject(action)}</b>
       <ActionPreviewDetails action={action} defaultOpen={action.state === "pending"} />
       <small className={action.state}>
-        {action.state === "pending" ? "확인 필요 · 승인해야 반영됩니다" : action.state === "approved" ? "승인됨 · 원장에 반영됨" : "거절됨"}
+        {action.state === "pending"
+          ? "확인 필요 · 승인해야 반영됩니다"
+          : action.state === "approved"
+            ? action.result_summary ?? "승인됨 · 원장에 반영됨"
+            : "거절됨"}
       </small>
       {(action.commands?.length ?? 0) > 0 && (
         <div>
           <ActionCommandButtons commands={action.commands} onCommand={(commandId) => void onDecide(action.action_id, action.version, commandId)} />
         </div>
-      )}
-    </section>
-  );
-}
-
-/**
- * 찾아본 연결: the steps this turn actually took, in the order the tools returned them.
- *
- * It appears inside the execution rail — live while the turn runs, folded into the one-line receipt once it is done —
- * because it is how the answer was found, not the answer. Nothing here is inferred: a connection is listed only
- * because a graph tool returned it for this persona, and it is restored from the server on re-entry.
- */
-function SearchPathSteps({ steps }: { steps: GraphReceipt[] }) {
-  if (steps.length === 0) return null;
-  const found = steps.filter((step) => step.kind === "node");
-  const edges = steps.filter((step) => step.kind === "edge");
-  return (
-    <section aria-label="찾아본 연결" className="ax-search-path">
-      <b>
-        찾아본 연결 {edges.length + found.length}단계 <small>· 실제로 조회한 것만</small>
-      </b>
-      <ol className="ax-path-list">
-        {found.length > 0 && (
-          <li key="found">
-            <span className="t-meta">찾음</span> {found.map((step) => step.node_title).filter(Boolean).join(", ")}
-          </li>
-        )}
-        {edges.map((step) => (
-          <li key={step.receipt_id}>
-            <span className="t-meta">{EDGE_LABEL[step.edge_kind ?? ""] ?? step.edge_kind}</span>{" "}
-            {step.from_title ?? step.from_ref} → {step.to_title ?? step.to_ref}
-          </li>
-        ))}
-      </ol>
-    </section>
-  );
-}
-
-/**
- * 이 답의 그림: the same receipt, drawn once and left alone.
- *
- * It stays with the answer rather than folding away with the execution, because it is what the answer is about. It is
- * a picture of one turn — nothing to pan, zoom or filter — and `전체 그래프로 보기` hands the centre to the full
- * surface, which applies this person's access again from the start.
- */
-function TurnGraph({
-  steps,
-  onOpenGraph,
-  onPeek,
-  resources,
-}: {
-  steps: GraphReceipt[];
-  onOpenGraph?: (nodeRef: string) => void;
-  /** 그림의 node를 누르면 근거 행을 누른 것과 같은 자리가 열린다 — 같은 정본이므로 다른 문이 있을 이유가 없다. */
-  onPeek?: (resource: AnswerResource) => void;
-  resources?: AnswerResource[];
-}) {
-  if (steps.length === 0) return null;
-  const seen = new Map<string, GraphNode>();
-  const add = (ref: string | null | undefined, title: string | null | undefined) => {
-    if (!ref || seen.has(ref)) return;
-    const [kind, ...rest] = ref.split(":");
-    seen.set(ref, { kind: kind as GraphNode["kind"], id: rest.join(":"), title: title ?? ref, state: null });
-  };
-  for (const step of steps) {
-    add(step.node_ref, step.node_title);
-    add(step.from_ref, step.from_title);
-    add(step.to_ref, step.to_title);
-  }
-  const edges: GraphEdge[] = steps
-    .filter((step) => step.kind === "edge" && step.from_ref && step.to_ref)
-    .map((step) => ({
-      kind: step.edge_kind ?? "",
-      from: String(step.from_ref),
-      to: String(step.to_ref),
-      label: EDGE_LABEL[step.edge_kind ?? ""] ?? step.edge_kind ?? "",
-    }));
-  if (seen.size === 0) return null;
-  const center = steps.find((step) => step.kind === "node")?.node_ref ?? edges[0]?.from;
-  return (
-    <section aria-label="이 답의 관계" className="ax-turn-graph">
-      <GraphCanvas
-        edges={edges}
-        height={180}
-        interactive={false}
-        nodes={[...seen.values()]}
-        onSelect={
-          onPeek
-            ? (node) => {
-                const found = (resources ?? []).find(
-                  (row) => row.resource_type === node.kind && row.resource_id === node.id,
-                );
-                if (found) onPeek(found);
-              }
-            : undefined
-        }
-      />
-      {onOpenGraph && center && (
-        <button className="btn h30" onClick={() => onOpenGraph(String(center))} type="button">
-          전체 그래프로 보기
-        </button>
       )}
     </section>
   );
@@ -564,50 +684,6 @@ function AnswerResources({
         </button>
       )}
     </section>
-  );
-}
-
-/**
- * 이 답이 무엇 위에 서 있는지, 한 줄로 먼저.
- *
- * 근거는 답 아래 따로따로 쌓이는 세 덩어리가 아니라 답에 붙은 한 줄이다. 접힌 상태에서 그 줄은 얼마나 많은 것을
- * 딛고 있는지만 말하고, 펼치면 읽은 정본·인용한 구간·걸어간 경로가 같은 자리에서 이어진다. 답이 언제나 먼저
- * 읽히도록 기본은 접힘이다.
- *
- * 세는 것은 화면에 실제로 도달한 것뿐이다. 지금 이 사람이 볼 수 없는 것은 서버에서 아예 오지 않으므로 여기에서도
- * 세지 않는다. 볼 수 없는 것의 개수는 그 자체로 존재를 알리는 말이 된다.
- */
-function AnswerEvidence({
-  resources,
-  evidence,
-  steps,
-  onOpen,
-  onOpenGraph,
-}: {
-  resources: AnswerResource[];
-  evidence: MaterialEvidence[];
-  steps: GraphReceipt[];
-  onOpen?: (resource: AnswerResource) => void;
-  onOpenGraph?: (nodeRef: string) => void;
-}) {
-  if (resources.length === 0 && evidence.length === 0 && steps.length === 0) return null;
-  const counts = [
-    resources.length ? `정본 ${resources.length}건` : null,
-    evidence.length ? `인용 ${evidence.length}곳` : null,
-    steps.length ? `연결 ${steps.length}단계` : null,
-  ].filter(Boolean);
-  return (
-    <details className="ax-answer-evidence">
-      <summary>
-        <span className="ax-evidence-kicker">근거</span>
-        <span className="ax-evidence-counts">{counts.join(" · ")}</span>
-      </summary>
-      <div className="ax-evidence-body">
-        <AnswerResources onOpen={onOpen} provenance={walkedTo(steps)} resources={resources} />
-        <EvidenceCards evidence={evidence} />
-        <TurnGraph onOpenGraph={onOpenGraph} onPeek={onOpen} resources={resources} steps={steps} />
-      </div>
-    </details>
   );
 }
 

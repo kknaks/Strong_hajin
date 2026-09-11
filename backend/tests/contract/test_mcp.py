@@ -218,6 +218,7 @@ def test_stdio_mcp_client_discovers_only_persona_bound_report_tools(tmp_path) ->
                     "action_item_command",
                     "action_item_get",
                     "action_item_list",
+                    "conversation_search",
                     "daily_report_edit",
                     "daily_report_generate_draft",
                     "daily_report_history",
@@ -230,9 +231,11 @@ def test_stdio_mcp_client_discovers_only_persona_bound_report_tools(tmp_path) ->
                     "work_request_list",
                     "graph_neighbors",
                     "graph_overview",
-            "graph_search",
+                    "graph_search",
                     "meeting_get",
                     "meeting_list",
+                    "meeting_create",
+                    "meeting_share",
                     "task_block",
                     "task_cancel",
                     "task_complete",
@@ -242,6 +245,7 @@ def test_stdio_mcp_client_discovers_only_persona_bound_report_tools(tmp_path) ->
                     "task_checklist_list",
                     "task_checklist_reorder",
                     "task_checklist_update",
+                    "task_progress_batch",
                     "task_get",
                     "task_history",
                     "task_list",
@@ -435,11 +439,27 @@ def test_mcp_create_mutations_are_idempotent_within_a_server_bound_turn(tmp_path
         ContractTestAiProvider(),
     )
 
-    first_action = facade.create_self_task("재시도해도 하나인 업무")
-    repeated_action = facade.create_self_task("재시도해도 하나인 업무")
+    fields = {
+        "description": "직접 생성과 같은 설명",
+        "start_date": "2026-09-10",
+        "due_date": "2026-09-30",
+        "checklist": ["자료 확인"],
+    }
+    first_action = facade.create_self_task("재시도해도 하나인 업무", **fields)
+    repeated_action = facade.create_self_task("재시도해도 하나인 업무", **fields)
 
     assert first_action["state"] == "pending"
     assert repeated_action["action_id"] == first_action["action_id"]
+    assert first_action["edit_contract"]["values"] == {
+        "title": "재시도해도 하나인 업무",
+        "description": "직접 생성과 같은 설명",
+        "start_date": "2026-09-10",
+        "due_date": "2026-09-30",
+        "checklist": ["자료 확인"],
+        "reference_task_ids": [],
+        "parent_task_id": None,
+        "project_id": None,
+    }
     with make_session_factory(database_url)() as session:
         assert session.query(TaskActivityRecord).count() == 0
 

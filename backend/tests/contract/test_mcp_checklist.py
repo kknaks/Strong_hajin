@@ -5,6 +5,7 @@ discovered when the persona actually holds the capability. Inside a turn nothing
 gated AX Action the person approves, and only that approval applies the effect exactly once.
 """
 import asyncio
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
@@ -15,6 +16,7 @@ from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.platform.persistence import RoleCapabilityRecord, make_session_factory
 
 MINA = {"X-Demo-Persona": "mina"}
+JIHO = {"X-Demo-Persona": "jiho"}
 
 CHECKLIST_TOOLS = {
     "task_checklist_list",
@@ -22,6 +24,7 @@ CHECKLIST_TOOLS = {
     "task_checklist_update",
     "task_checklist_archive",
     "task_checklist_reorder",
+    "task_progress_batch",
 }
 
 
@@ -37,8 +40,8 @@ def _tools(settings, persona: str, monkeypatch):
     return asyncio.run(create_mcp_server(settings).list_tools())
 
 
-def _task_with_steps(client, *texts: str) -> tuple[str, list[dict]]:
-    task_id = client.post("/api/tasks", headers=MINA, json={"title": "AX가 도울 업무"}).json()["task_id"]
+def _task_with_steps(client, *texts: str, title: str = "AX가 도울 업무") -> tuple[str, list[dict]]:
+    task_id = client.post("/api/tasks", headers=MINA, json={"title": title}).json()["task_id"]
     steps = [client.post(f"/api/tasks/{task_id}/checklist", headers=MINA, json={"text": text}).json() for text in texts]
     return task_id, steps
 
@@ -113,6 +116,176 @@ def test_inside_a_turn_a_step_is_proposed_and_only_an_approval_writes_it(tmp_pat
         "검토 요청",
     ]
     assert existing["item_id"] != proposed["action_id"]
+
+
+def test_one_turn_batches_distinct_task_progress_and_applies_every_item_once(tmp_path, monkeypatch) -> None:
+    _, settings, client = _stack(tmp_path)
+    first_task, [first_step] = _task_with_steps(client, "취합 완료", title="A병원 CPA 데이터 취합")
+    second_task, _ = _task_with_steps(client, title="플레이스 순위")
+    third_task, _ = _task_with_steps(client, title="인스타 체험단")
+    second_version = client.get(f"/api/tasks/{second_task}", headers=MINA).json()["version"]
+    third_version = client.get(f"/api/tasks/{third_task}", headers=MINA).json()["version"]
+    _delegated_turn(client, client.app.state.workflow_application, MINA, "mina", monkeypatch)
+
+    facade = McpReportsFacade(settings, "mina")
+    proposed = facade.update_task_progress_batch([
+        {
+            "kind": "checklist.update",
+            "task_id": first_task,
+            "item_id": first_step["item_id"],
+            "expected_version": first_step["version"],
+            "done": True,
+        },
+        {
+            "kind": "progress.note",
+            "task_id": second_task,
+            "expected_version": second_version,
+            "summary": "플레이스 순위 확인 중",
+        },
+        {
+            "kind": "progress.note",
+            "task_id": third_task,
+            "expected_version": third_version,
+            "summary": "인스타 체험단 5명 컨택",
+        },
+    ])
+    assert proposed["state"] == "pending"
+    assert proposed["action_type"] == "task.progress.batch"
+    assert all(not row["done"] for row in client.get(f"/api/tasks/{first_task}", headers=MINA).json()["checklist"])
+    assert not any(row["event_kind"] == "task.progress.noted" for row in client.get(f"/api/tasks/{second_task}/history", headers=MINA).json()["activity"])
+
+    detail = client.get(f"/api/action-items/{proposed['action_id']}", headers=MINA).json()
+    assert len(detail["rounds"][0]["snapshot"]["operations"]) == 3
+    assert detail["edit_contract"]["editor"] == "task_progress_batch"
+    edited = dict(detail["rounds"][0]["snapshot"])
+    edited["operations"] = [dict(operation) for operation in edited["operations"]]
+    edited["operations"][1]["summary"] = "플레이스 순위 검수 중"
+    tampered = {"operations": [dict(operation) for operation in edited["operations"]]}
+    tampered["operations"][1]["task_id"] = str(uuid4())
+    refused = client.post(
+        f"/api/action-items/{proposed['action_id']}/commands/confirm",
+        headers=MINA,
+        json={
+            "expected_version": detail["expected_version"],
+            "base_submission_version": detail["submission_version"],
+            "draft": tampered,
+        },
+    )
+    assert refused.status_code == 422
+    confirmed = client.post(
+        f"/api/action-items/{proposed['action_id']}/commands/confirm",
+        headers=MINA,
+        json={
+            "expected_version": detail["expected_version"],
+            "base_submission_version": detail["submission_version"],
+            "draft": edited,
+        },
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["execution_result"]["batch_state"] == "completed"
+    assert [row["status"] for row in confirmed.json()["execution_result"]["items"]] == ["applied"] * 3
+    assert client.get(f"/api/tasks/{first_task}", headers=MINA).json()["checklist"][0]["done"] is True
+    for task_id, summary in (
+        (second_task, "진행 메모: 플레이스 순위 검수 중"),
+        (third_task, "진행 메모: 인스타 체험단 5명 컨택"),
+    ):
+        [activity] = [
+            row for row in client.get(f"/api/tasks/{task_id}/history", headers=MINA).json()["activity"]
+            if row["event_kind"] == "task.progress.noted"
+        ]
+        assert activity["summary"] == summary
+        assert activity["actor"]["member_id"] == "mina"
+        assert activity["occurred_at"]
+        assert activity["causation"] == {"kind": "action_item", "id": proposed["action_id"]}
+    assert len(client.get("/api/my-work", headers=MINA).json()) == 3
+
+    replay = client.post(
+        f"/api/action-items/{proposed['action_id']}/commands/confirm",
+        headers=MINA,
+        json={
+            "expected_version": detail["expected_version"],
+            "base_submission_version": detail["submission_version"],
+            "draft": edited,
+        },
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["execution_result"] == confirmed.json()["execution_result"]
+
+
+def test_a_batch_reports_partial_outcomes_and_replay_does_not_repeat_the_applied_item(tmp_path, monkeypatch) -> None:
+    _, settings, client = _stack(tmp_path)
+    first_task, [first_step] = _task_with_steps(client, "완료할 단계", title="그대로 반영될 업무")
+    stale_task, _ = _task_with_steps(client, title="먼저 바뀔 업무")
+    stale_version = client.get(f"/api/tasks/{stale_task}", headers=MINA).json()["version"]
+    _delegated_turn(client, client.app.state.workflow_application, MINA, "mina", monkeypatch)
+
+    proposed = McpReportsFacade(settings, "mina").update_task_progress_batch([
+        {
+            "kind": "checklist.update",
+            "task_id": first_task,
+            "item_id": first_step["item_id"],
+            "expected_version": first_step["version"],
+            "done": True,
+        },
+        {
+            "kind": "progress.note",
+            "task_id": stale_task,
+            "expected_version": stale_version,
+            "summary": "반영되지 않아야 할 메모",
+        },
+    ])
+    # Someone changes the second target after AX froze its proposal.
+    client.post(f"/api/tasks/{stale_task}/checklist", headers=MINA, json={"text": "새 단계"})
+    detail = client.get(f"/api/action-items/{proposed['action_id']}", headers=MINA).json()
+    body = {
+        "expected_version": detail["expected_version"],
+        "base_submission_version": detail["submission_version"],
+    }
+    approved = client.post(
+        f"/api/action-items/{proposed['action_id']}/commands/confirm", headers=MINA, json=body
+    )
+    assert approved.status_code == 200, approved.text
+    result = approved.json()["execution_result"]
+    assert result["batch_state"] == "partial" and result["applied_count"] == 1 and result["total_count"] == 2
+    assert [row["status"] for row in result["items"]] == ["applied", "stale"]
+    first_after = client.get(f"/api/tasks/{first_task}", headers=MINA).json()
+    assert first_after["checklist"][0]["done"] is True
+    assert not any(
+        row["event_kind"] == "task.progress.noted"
+        for row in client.get(f"/api/tasks/{stale_task}/history", headers=MINA).json()["activity"]
+    )
+
+    replay = client.post(
+        f"/api/action-items/{proposed['action_id']}/commands/confirm", headers=MINA, json=body
+    )
+    assert replay.status_code == 200 and replay.json()["execution_result"] == result
+    assert client.get(f"/api/tasks/{first_task}", headers=MINA).json()["version"] == first_after["version"]
+
+
+def test_a_batch_reports_a_denied_item_without_leaking_its_task_title(tmp_path, monkeypatch) -> None:
+    _, settings, client = _stack(tmp_path)
+    own_task, _ = _task_with_steps(client, title="민아의 업무")
+    hidden = client.post("/api/tasks", headers=JIHO, json={"title": "지호만 보는 업무"}).json()
+    own_version = client.get(f"/api/tasks/{own_task}", headers=MINA).json()["version"]
+    _delegated_turn(client, client.app.state.workflow_application, MINA, "mina", monkeypatch)
+    proposed = McpReportsFacade(settings, "mina").update_task_progress_batch([
+        {"kind": "progress.note", "task_id": own_task, "expected_version": own_version, "summary": "진행 중"},
+        {"kind": "progress.note", "task_id": hidden["task_id"], "expected_version": hidden["version"], "summary": "볼 수 없음"},
+    ])
+    detail = client.get(f"/api/action-items/{proposed['action_id']}", headers=MINA).json()
+    assert "지호만 보는 업무" not in str(detail)
+    assert any(row["label"] == "볼 수 없는 업무" for row in detail["preview"])
+    approved = client.post(
+        f"/api/action-items/{proposed['action_id']}/commands/confirm",
+        headers=MINA,
+        json={
+            "expected_version": detail["expected_version"],
+            "base_submission_version": detail["submission_version"],
+        },
+    )
+    assert approved.status_code == 200, approved.text
+    assert [item["status"] for item in approved.json()["execution_result"]["items"]] == ["applied", "denied"]
+    assert approved.json()["result_summary"] == "1/2건 반영됨 · 나머지 항목 확인 필요"
 
 
 def test_the_tools_appear_only_for_a_persona_who_may_use_them(tmp_path, monkeypatch) -> None:

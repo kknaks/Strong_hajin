@@ -55,7 +55,16 @@ def action_payload_hash(payload: dict[str, Any]) -> str:
 
 
 class ActionExecutor(Protocol):
-    def execute(self, principal: Principal, action: Any) -> dict[str, Any]: ...
+    def execute(
+        self,
+        principal: Principal,
+        action: Any,
+        *,
+        payload: dict[str, Any] | None = None,
+        source_decision_item_id: UUID | None = None,
+        source_submission_id: UUID | None = None,
+        source_review_decision_id: UUID | None = None,
+    ) -> dict[str, Any]: ...
 
 
 class ActionApplication:
@@ -82,7 +91,8 @@ class ActionApplication:
         views = []
         for action in self._repository.list_for(str(principal.id)):
             view = self._repository.view(action, principal)
-            view["commands"] = action_commands(view.get("state"), can_decide, obsolete=bool(view.get("obsolete")))
+            if "commands" not in view:
+                view["commands"] = action_commands(view.get("state"), can_decide, obsolete=bool(view.get("obsolete")))
             views.append(view)
         return views
 
@@ -114,6 +124,28 @@ class ActionApplication:
         result = self._executor.execute(principal, action) if decision == "approve" else None
         self._repository.resolve(action, str(principal.id), decision, result)
         return self._repository.view(action, principal)
+
+    def execute_confirmed(
+        self,
+        principal: Principal,
+        action: Any,
+        payload: dict[str, Any],
+        *,
+        source_decision_item_id: UUID,
+        source_submission_id: UUID,
+        source_review_decision_id: UUID,
+    ) -> dict[str, Any]:
+        """Run an already-recorded canonical confirmation and mirror its receipt to the legacy effect row."""
+        result = self._executor.execute(
+            principal,
+            action,
+            payload=payload,
+            source_decision_item_id=source_decision_item_id,
+            source_submission_id=source_submission_id,
+            source_review_decision_id=source_review_decision_id,
+        )
+        self._repository.resolve(action, str(principal.id), "approve", result)
+        return result
 
     @staticmethod
     def _require(principal: Principal, capability: str) -> None:

@@ -11,10 +11,11 @@ from ax_workspace.bootstrap.material_worker import MaterialExtractionWorker
 from ax_workspace.bootstrap.application import WorkflowApplication
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
+from ax_workspace.entrypoints.mcp import McpReportsFacade, _create_bound_persona_server
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment
 from ax_workspace.modules.work.materials import MaterialError
-from ax_workspace.platform.persistence import AttachmentBindingRecord, MeetingAttendeeRecord, MeetingRawTranscriptSegmentRecord, MembershipRecord, make_session_factory
+from ax_workspace.platform.persistence import AttachmentBindingRecord, MeetingAttendeeRecord, MeetingNoteVersionRecord, MeetingRawTranscriptSegmentRecord, MembershipRecord, make_session_factory
 from ax_workspace.platform.native_materials import NativeMaterialRepository
 from test_material_search import MINA, JIHO
 from test_meeting_recordings import RefinementProvider
@@ -42,6 +43,202 @@ def _recorded(client, *, live_text=None):
                           data={"expected_version": str(recording["version"])}, files={"audio": ("original.webm", b"synthetic audio", "audio/webm")})
     assert stopped.status_code == 200
     return meeting, stopped.json()
+
+
+def test_text_only_meeting_note_is_an_authorized_searchable_native_revision(tmp_path, monkeypatch):
+    client, application, worker, settings = _stack(tmp_path)
+    meeting = client.post(
+        "/api/meetings",
+        headers=MINA,
+        json={
+            "organization_id": "scax",
+            "title": "재논의 근거 회의",
+            "starts_at": "2026-09-10T01:00:00Z",
+            "ends_at": "2026-09-10T02:00:00Z",
+            "visibility": "private",
+            "attendee_ids": ["jiho"],
+        },
+    ).json()
+    note = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/note",
+        headers=MINA,
+        json={"body": "결정: 공급사 일정이 바뀌어 출시 범위를 재논의했다."},
+    ).json()
+    principal = application.authenticated_principal("mina")
+
+    pending = application.search_materials(principal, "재논의", resource_types=["meeting"])
+    assert pending["results"] == []
+    assert pending["unavailable_materials_count"] == 1
+    assert pending["unavailable_materials"][0]["extraction"]["status"] == "queued"
+
+    assert asyncio.run(worker.run_once())
+    found = application.search_materials(principal, "재논의", resource_types=["meeting"])
+    assert len(found["results"]) == 1
+    hit = found["results"][0]
+    assert hit["source_resource_type"] == "meeting"
+    assert hit["source_resource_id"] == meeting["meeting_id"]
+    assert hit["source_resource_title"] == "재논의 근거 회의"
+    assert hit["source_locator"]["kind"] == "meeting_note"
+    assert hit["source_locator"]["meeting_id"] == meeting["meeting_id"]
+    assert hit["source_locator"]["note_id"] == note["note_id"]
+    assert hit["source_locator"]["source_revision_id"] == note["versions"][0]["version_id"]
+    assert hit["source_locator"]["note_version"] == 1
+    context = hit["source_contexts"][0]
+    assert context["source_layer"] == "meeting_note"
+    assert context["note_lifecycle"] == "draft"
+    assert context["is_current_revision"] is True
+    opened = client.get(hit["origin"], headers=MINA)
+    assert opened.status_code == 200
+    assert opened.json()["body"] == "결정: 공급사 일정이 바뀌어 출시 범위를 재논의했다."
+    filters = {"resource_type": "meeting", "resource_id": meeting["meeting_id"]}
+    response = client.get("/api/materials/search", headers=MINA, params={"q": "재논의", **filters})
+    server = _create_bound_persona_server(McpReportsFacade(settings, "mina"))
+    delegated = asyncio.run(server.call_tool("material_search", {"query": "재논의", **filters})).structured_content
+    assert response.status_code == 200 and delegated == response.json()
+
+    from test_material_evidence_owners import _turn
+
+    conversation_id, _, execution_id = _turn(client, settings)
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", str(execution_id))
+    McpReportsFacade(settings, "mina").search_materials("재논의", resource_types=["meeting"])
+    resource = next(
+        row for row in client.get(f"/api/conversations/{conversation_id}", headers=MINA).json()["answer_resources"]
+        if row["resource_type"] == "material"
+    )
+    assert resource["source_locator"]["meeting_id"] == meeting["meeting_id"]
+    assert resource["source_locator"]["note_id"] == note["note_id"]
+    assert resource["source_locator"]["note_version"] == 1
+
+    assert application.search_materials(
+        application.authenticated_principal("jiho"), "재논의", resource_types=["meeting"]
+    )["results"]
+    denied = application.search_materials(
+        application.authenticated_principal("sora"), "재논의", resource_types=["meeting"]
+    )
+    assert denied["results"] == [] and denied["unavailable_materials_count"] == 0
+
+    saved = client.patch(
+        f"/api/meetings/{meeting['meeting_id']}/note",
+        headers=MINA,
+        json={"expected_version": 1, "body": "확정 결정: 공급사 납기 때문에 범위를 다시 검토한다."},
+    ).json()
+    pending_v2 = application.search_materials(principal, "다시 검토", resource_types=["meeting"])
+    assert pending_v2["results"] == []
+    assert pending_v2["unavailable_materials"][0]["source_contexts"][0]["source_revision"] == 2
+    assert asyncio.run(worker.run_once())
+    assert application.search_materials(principal, "재논의", resource_types=["meeting"])["results"] == []
+    current = application.search_materials(principal, "다시 검토", resource_types=["meeting"])["results"][0]
+    assert current["material_id"] != hit["material_id"]
+    assert current["source_locator"]["source_revision_id"] == saved["versions"][-1]["version_id"]
+    assert current["source_contexts"][0]["source_revision"] == 2
+
+    historical = application.search_materials(
+        principal,
+        "재논의",
+        resource_types=["meeting"],
+        material_id=UUID(hit["material_id"]),
+    )["results"][0]
+    assert historical["source_contexts"][0]["is_current_revision"] is False
+    assert historical["source_contexts"][0]["note_lifecycle"] == "draft"
+
+    finalized = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/note/finalize",
+        headers=MINA,
+        json={"expected_version": 2},
+    )
+    assert finalized.status_code == 200
+    after_finalize = application.search_materials(principal, "다시 검토", resource_types=["meeting"])["results"][0]
+    assert after_finalize["material_id"] == current["material_id"]
+    assert after_finalize["source_contexts"][0]["note_lifecycle"] == "finalized"
+
+    old_attendee_principal = application.authenticated_principal("jiho")
+    with make_session_factory(settings.database_url)() as session:
+        attendee = session.scalar(
+            select(MeetingAttendeeRecord).where(
+                MeetingAttendeeRecord.meeting_id == UUID(meeting["meeting_id"]),
+                MeetingAttendeeRecord.member_id == "jiho",
+            )
+        )
+        attendee.removed_at = datetime.now(UTC)
+        session.commit()
+    revoked = application.search_materials(old_attendee_principal, "다시 검토", resource_types=["meeting"])
+    assert revoked["results"] == [] and revoked["unavailable_materials_count"] == 0
+    assert client.get(current["origin"], headers=JIHO).status_code == 404
+
+
+def test_meeting_note_integrity_drift_fails_before_publishing_search_chunks(tmp_path):
+    client, application, worker, settings = _stack(tmp_path)
+    meeting = client.post(
+        "/api/meetings",
+        headers=MINA,
+        json={
+            "organization_id": "scax",
+            "title": "회의록 무결성 검증",
+            "starts_at": "2026-09-10T03:00:00Z",
+            "ends_at": "2026-09-10T04:00:00Z",
+            "visibility": "private",
+            "attendee_ids": [],
+        },
+    ).json()
+    note = client.post(
+        f"/api/meetings/{meeting['meeting_id']}/note",
+        headers=MINA,
+        json={"body": "originalnotenativeintegritytoken"},
+    ).json()
+    principal = application.authenticated_principal("mina")
+    pending = application.search_materials(principal, "originalnotenativeintegritytoken", resource_types=["meeting"])
+    assert pending["unavailable_materials"][0]["extraction"]["status"] == "queued"
+
+    with make_session_factory(settings.database_url)() as session:
+        version = session.get(MeetingNoteVersionRecord, UUID(note["versions"][0]["version_id"]))
+        version.body = "corruptednotenativeintegritytoken"
+        session.commit()
+
+    assert asyncio.run(worker.run_once())
+    found = application.search_materials(principal, "corruptednotenativeintegritytoken", resource_types=["meeting"])
+    assert found["results"] == []
+    extraction = found["unavailable_materials"][0]["extraction"]
+    assert extraction["status"] == "failed"
+    assert extraction["failure_reason"] == "integrity_mismatch"
+    assert extraction["chunk_count"] == 0
+
+
+def test_legacy_meeting_note_is_lazily_projected_only_after_current_authorization(tmp_path, monkeypatch):
+    client, application, worker, _ = _stack(tmp_path)
+    meeting = client.post(
+        "/api/meetings",
+        headers=MINA,
+        json={
+            "organization_id": "scax",
+            "title": "기존 텍스트 회의록",
+            "starts_at": "2026-09-09T01:00:00Z",
+            "ends_at": "2026-09-09T02:00:00Z",
+            "visibility": "private",
+            "attendee_ids": [],
+        },
+    ).json()
+    with monkeypatch.context() as previous_deployment:
+        previous_deployment.setattr(WorkflowApplication, "_register_note_material_from_view", lambda *args: None)
+        created = client.post(
+            f"/api/meetings/{meeting['meeting_id']}/note",
+            headers=MINA,
+            json={"body": "legacymeetingnotetoken"},
+        )
+        assert created.status_code == 201
+
+    denied = application.search_materials(
+        application.authenticated_principal("sora"), "legacymeetingnotetoken", resource_types=["meeting"]
+    )
+    assert denied["results"] == [] and denied["unavailable_materials_count"] == 0
+    pending = application.search_materials(
+        application.authenticated_principal("mina"), "legacymeetingnotetoken", resource_types=["meeting"]
+    )
+    assert pending["results"] == []
+    assert pending["unavailable_materials"][0]["extraction"]["status"] == "queued"
+    assert asyncio.run(worker.run_once())
+    assert application.search_materials(
+        application.authenticated_principal("mina"), "legacymeetingnotetoken", resource_types=["meeting"]
+    )["results"]
 
 
 def test_final_raw_transcript_search_has_canonical_identity_and_exact_audio_segment_locator(tmp_path):

@@ -139,3 +139,182 @@ def test_the_meeting_tools_actually_answer_for_the_persona_they_are_bound_to(tmp
     # Someone who may not read it gets a busy block at most, and never its title.
     other = McpReportsFacade(settings, "jiho").list_meetings()
     assert all(row.get("title") != "도구가 답해야 할 회의" for row in other)
+
+
+def test_meeting_list_defaults_to_my_participation_and_can_explicitly_expand_to_visible_calendar(tmp_path) -> None:
+    """`내 회의` must not turn an administrator's read scope into personal attendance."""
+    from ax_workspace.entrypoints.mcp import McpReportsFacade
+
+    client = _client(tmp_path)
+    settings = client.app.state.workflow_application._settings
+    visible_only = client.post(
+        "/api/meetings",
+        headers={"X-Demo-Persona": "mina"},
+        json={
+            "organization_id": "scax", "title": "대표에게 보이지만 대표 회의는 아님",
+            "starts_at": "2026-09-09T01:00:00Z", "ends_at": "2026-09-09T02:00:00Z",
+            "visibility": "private", "attendee_ids": [],
+        },
+    ).json()
+    mine = client.post(
+        "/api/meetings",
+        headers={"X-Demo-Persona": "mina"},
+        json={
+            "organization_id": "scax", "title": "대표가 참석하는 회의",
+            "starts_at": "2026-09-09T03:00:00Z", "ends_at": "2026-09-09T04:00:00Z",
+            "visibility": "private", "attendee_ids": ["yuna"],
+        },
+    ).json()
+
+    facade = McpReportsFacade(settings, "yuna")
+    personal = facade.list_meetings()
+    assert [row["meeting_id"] for row in personal] == [mine["meeting_id"]]
+
+    visible = facade.list_meetings(include_visible=True)
+    assert {row["meeting_id"] for row in visible if row.get("kind") == "meeting"} >= {
+        mine["meeting_id"], visible_only["meeting_id"],
+    }
+
+
+def test_delegated_meeting_create_proposes_the_same_editable_action_instead_of_mutating(tmp_path, monkeypatch) -> None:
+    from uuid import UUID
+
+    from ax_workspace.entrypoints.mcp import McpReportsFacade
+    from ax_workspace.platform.persistence import ConversationTurnRecord, make_session_factory
+
+    client = _client(tmp_path)
+    application = client.app.state.workflow_application
+    settings = application._settings
+    conversation = client.post("/api/conversations", headers={"X-Demo-Persona": "mina"}, json={"title": "회의 제안"}).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={"X-Demo-Persona": "mina", "Idempotency-Key": "delegated-meeting-create"},
+        json={"body": "제품 회의를 잡아줘", "context": []},
+    )
+    assert accepted.status_code == 202, accepted.text
+    with make_session_factory(settings.database_url)() as session:
+        execution_id = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"])).execution_id
+
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", str(execution_id))
+    facade = McpReportsFacade(settings, "mina")
+    proposal = facade.create_meeting(
+        organization_id="scax",
+        title="MCP 제품 회의",
+        description="출시 범위와 담당자를 확인합니다.",
+        starts_at="2026-09-14T01:00:00Z",
+        ends_at="2026-09-14T02:00:00Z",
+        visibility="private",
+        attendee_ids=["jiho"],
+    )
+    assert proposal["action_type"] == "meeting.create" and proposal["state"] == "pending"
+    assert client.get("/api/meetings", headers={"X-Demo-Persona": "mina"}).json() == []
+
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID")
+    [item] = [row for row in facade.pending_action_items() if row["action_item_id"] == proposal["action_id"]]
+    receipt = facade.run_action_command(
+        item["action_item_id"],
+        "confirm",
+        expected_version=item["expected_version"],
+        base_submission_version=item["submission_version"],
+    )
+    assert receipt["derived_meeting_id"]
+    detail = facade.get_meeting(receipt["derived_meeting_id"])
+    assert detail["title"] == "MCP 제품 회의"
+    assert detail["description"] == "출시 범위와 담당자를 확인합니다."
+
+
+def test_delegated_meeting_create_uses_one_hour_before_an_end_only_request(tmp_path, monkeypatch) -> None:
+    from uuid import UUID
+
+    from ax_workspace.entrypoints.mcp import McpReportsFacade
+    from ax_workspace.platform.persistence import ConversationTurnRecord, make_session_factory
+
+    client = _client(tmp_path)
+    application = client.app.state.workflow_application
+    settings = application._settings
+    conversation = client.post(
+        "/api/conversations", headers={"X-Demo-Persona": "mina"}, json={"title": "종료 시각 회의 제안"}
+    ).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={"X-Demo-Persona": "mina", "Idempotency-Key": "end-only-meeting-create"},
+        json={"body": "오늘 12시까지 팀장님 포함해서 회의를 만들어줘", "context": []},
+    )
+    assert accepted.status_code == 202, accepted.text
+    with make_session_factory(settings.database_url)() as session:
+        execution_id = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"])).execution_id
+
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", str(execution_id))
+    facade = McpReportsFacade(settings, "mina")
+    proposal = facade.create_meeting(
+        organization_id=None,
+        title="팀장님과 주간 회의",
+        starts_at=None,
+        ends_at="2026-09-11T12:00:00+09:00",
+        visibility="private",
+        attendee_ids=[],
+    )
+
+    assert proposal["action_type"] == "meeting.create" and proposal["state"] == "pending"
+    assert client.get("/api/meetings", headers={"X-Demo-Persona": "mina"}).json() == []
+    item = next(row for row in facade.pending_action_items() if row["action_item_id"] == proposal["action_id"])
+    assert item["edit_contract"]["values"]["starts_at"] == "2026-09-11T02:00:00+00:00"
+    assert item["edit_contract"]["values"]["ends_at"] == "2026-09-11T03:00:00+00:00"
+    assert item["edit_contract"]["values"]["organization_id"] == "product"
+    assert item["edit_contract"]["values"]["attendee_ids"] == []
+
+
+def test_direct_meeting_create_uses_one_hour_after_a_start_only_request(tmp_path) -> None:
+    from ax_workspace.entrypoints.mcp import McpReportsFacade
+
+    client = _client(tmp_path)
+    settings = client.app.state.workflow_application._settings
+    meeting = McpReportsFacade(settings, "mina").create_meeting(
+        organization_id="scax",
+        title="한 시간 기본 회의",
+        starts_at="2026-09-11T02:00:00Z",
+        ends_at=None,
+        visibility="private",
+        attendee_ids=[],
+    )
+
+    detail = client.get(f"/api/meetings/{meeting['meeting_id']}", headers={"X-Demo-Persona": "mina"}).json()
+    assert detail["starts_at"] == "2026-09-11T02:00:00+00:00"
+    assert detail["ends_at"] == "2026-09-11T03:00:00+00:00"
+
+
+def test_meeting_create_does_not_invent_both_missing_time_boundaries(tmp_path) -> None:
+    import pytest
+
+    from ax_workspace.entrypoints.mcp import McpReportsFacade
+
+    client = _client(tmp_path)
+    settings = client.app.state.workflow_application._settings
+    with pytest.raises(ValueError, match="meeting start or end time is required"):
+        McpReportsFacade(settings, "mina").create_meeting(
+            organization_id="scax",
+            title="시간이 없는 회의",
+            starts_at=None,
+            ends_at=None,
+            visibility="private",
+            attendee_ids=[],
+        )
+
+
+def test_direct_mcp_meeting_note_does_not_claim_conversation_provenance(tmp_path) -> None:
+    from ax_workspace.entrypoints.mcp import McpReportsFacade
+
+    client = _client(tmp_path)
+    settings = client.app.state.workflow_application._settings
+    meeting = McpReportsFacade(settings, "mina").create_meeting(
+        organization_id="scax",
+        title="직접 만든 회의",
+        starts_at="2026-09-16T01:00:00Z",
+        ends_at="2026-09-16T02:00:00Z",
+        visibility="private",
+        attendee_ids=[],
+        initial_note_body="대화 Turn 없이 만든 회의록",
+    )
+    detail = client.get(f"/api/meetings/{meeting['meeting_id']}", headers={"X-Demo-Persona": "mina"}).json()
+    assert detail["note"]["source_status"] is None
+    assert detail["note"]["versions"][0]["source_evidence"] == []

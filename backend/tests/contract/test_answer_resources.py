@@ -232,6 +232,7 @@ def test_a_follow_up_starts_from_what_this_conversation_already_read(tmp_path, m
     assert [row["ref"] for row in pack["seeds"]] == [f"task:{kept['task_id']}", f"meeting:{meeting['meeting_id']}"]
     # No provider checkpoint: what was actually said is rebuilt from the canonical conversation.
     assert any("오늘 하는 일 알려줘" in row["body"] for row in pack["exchanges"])
+    assert all(row["turn_id"] for row in pack["exchanges"])
 
     current = client.get(f"/api/meetings/{meeting['meeting_id']}", headers=JIHO).json()
     client.request(
@@ -253,8 +254,18 @@ def test_a_follow_up_starts_from_what_this_conversation_already_read(tmp_path, m
         )
     )
     assert "graph_search" in prompt and "graph_neighbors" in prompt
+    assert "관계 의도는 목록 의도보다 우선한다" in prompt
+    assert "관계 의도가 없을 때만" in prompt
     assert f"task:{kept['task_id']}" in prompt
     assert meeting["meeting_id"] not in prompt
+
+    with_turns = CodexCliProviderAdapter._conversation_prompt(
+        __import__("dataclasses").replace(
+            _request_for(client, database_url, conversation),
+            recent_exchanges=tuple(pack["exchanges"]),
+        )
+    )
+    assert f"[turn:{pack['exchanges'][0]['turn_id']}]" in with_turns
 
 
 def _request_for(client, database_url: str, conversation: dict):

@@ -6,6 +6,7 @@ module already writes, so an adjustment round is the same ActionItem with a late
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -22,12 +23,22 @@ from ax_workspace.modules.actions.domain import (
 )
 from ax_workspace.modules.organization_access.domain import (
     ACTION_DECIDE,
+    TASK_ASSIGN,
     TASK_READ,
     TASK_SELF_MANAGE,
     WORK_REQUEST_DECIDE,
     Principal,
 )
-from ax_workspace.platform.actions import ActionPresenter, ActionEvidenceReader
+from ax_workspace.platform.actions import ActionEvidenceReader, ActionPresenter, _normalize_task_progress_batch
+from ax_workspace.modules.ax_execution.actions import action_payload_hash
+from ax_workspace.modules.work.application import TaskError
+from ax_workspace.modules.work.drafts import (
+    normalize_assigned_task_draft,
+    normalize_task_draft,
+    normalize_work_request_draft,
+)
+from ax_workspace.modules.meetings.domain import MeetingError
+from ax_workspace.modules.meetings.drafts import normalize_meeting_draft
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
 from ax_workspace.modules.work.requests import (
     DECISION_VERSION,
@@ -50,6 +61,7 @@ from ax_workspace.platform.persistence import (
     ReviewDecisionRecord,
     SubjectVersionRecord,
     SubmissionRecord,
+    MeetingRecord,
     TaskAssignmentRecord,
     TaskRecord,
     WorkRequestRecord,
@@ -70,6 +82,94 @@ def _required_version(payload: dict[str, Any]) -> int:
         return int(value)
     except (TypeError, ValueError) as error:
         raise ActionError("expected_version must be an integer") from error
+
+
+def _required_base_submission_version(payload: dict[str, Any]) -> int:
+    value = payload.get("base_submission_version")
+    if value is None or isinstance(value, bool):
+        raise ActionError("base_submission_version is required")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as error:
+        raise ActionError("base_submission_version must be an integer") from error
+
+
+def _normalize_ax_task_draft(action_type: str, value: Any) -> dict[str, Any]:
+    try:
+        fields = dict(value) if isinstance(value, dict) else value
+        if isinstance(fields, dict):
+            fields.pop("attachment_draft_ids", None)
+        return normalize_assigned_task_draft(fields) if action_type == "task.assign" else normalize_task_draft(fields)
+    except (TaskError, TypeError, ValueError) as error:
+        raise ActionError(str(error)) from error
+
+
+def _normalize_ax_draft(
+    action_type: str,
+    value: Any,
+    *,
+    frozen_meeting_source: dict[str, Any] | None = None,
+    requester_id: str | None = None,
+) -> dict[str, Any]:
+    if action_type == "task.progress.batch":
+        try:
+            return _normalize_task_progress_batch(dict(value) if isinstance(value, dict) else value)
+        except (TaskError, TypeError, ValueError) as error:
+            raise ActionError(str(error)) from error
+    if action_type == "work_request.create":
+        try:
+            return normalize_work_request_draft(value, requester_id=requester_id)
+        except (WorkRequestError, TypeError, ValueError) as error:
+            raise ActionError(str(error)) from error
+    if action_type != "meeting.create":
+        return _normalize_ax_task_draft(action_type, value)
+    try:
+        fields = dict(value) if isinstance(value, dict) else value
+        if isinstance(fields, dict):
+            fields.pop("attachment_draft_ids", None)
+        if isinstance(fields, dict) and frozen_meeting_source is not None:
+            fields["initial_note_source_status"] = frozen_meeting_source.get(
+                "initial_note_source_status", "not_requested"
+            )
+            fields["initial_note_source_evidence"] = list(
+                frozen_meeting_source.get("initial_note_source_evidence") or []
+            )
+        return normalize_meeting_draft(fields)
+    except (MeetingError, TypeError, ValueError) as error:
+        raise ActionError(str(error)) from error
+
+
+def _validate_task_progress_batch_edit(base: dict[str, Any], final: dict[str, Any]) -> None:
+    """A card may edit an effect's value or exclude it, never smuggle in another target or stale guard."""
+    original = {str(operation["task_id"]): operation for operation in base.get("operations") or []}
+    for operation in final.get("operations") or []:
+        before = original.get(str(operation["task_id"]))
+        if before is None:
+            raise ActionError("원안에 없던 업무는 이 카드에서 추가할 수 없습니다")
+        immutable = ("kind", "task_id", "expected_version")
+        if operation["kind"] == "checklist.update":
+            immutable = (*immutable, "item_id")
+        if any(operation.get(field) != before.get(field) for field in immutable):
+            raise ActionError("업무 대상이나 기준 버전은 이 카드에서 바꿀 수 없습니다")
+
+
+def _attachment_draft_ids(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ActionError("attachment_draft_ids must be a list")
+    try:
+        return list(dict.fromkeys(str(UUID(str(item))) for item in value))
+    except (TypeError, ValueError) as error:
+        raise ActionError("attachment_draft_ids must contain UUID values") from error
+
+
+def _payload_diff(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: {"before": before.get(key), "after": after.get(key)}
+        for key in sorted(set(before) | set(after))
+        if before.get(key) != after.get(key)
+    }
 
 
 def _proposed_changes(value: Any) -> dict[str, Any]:
@@ -485,11 +585,26 @@ class WorkRequestActionHandler:
 class AxProposalActionHandler:
     """A gated AX proposal: the owner approves or rejects the effect the turn prepared."""
 
-    def __init__(self, session: Session, actions: Any, *, evidence_reader: ActionEvidenceReader | None = None) -> None:
+    def __init__(
+        self,
+        session: Session,
+        actions: Any,
+        assignments: Any,
+        material_drafts: Any = None,
+        *,
+        work_requests: Any = None,
+        evidence_reader: ActionEvidenceReader | None = None,
+    ) -> None:
         self._session = session
-        self._presenter = ActionPresenter(session, evidence_reader=evidence_reader)
+        self._presenter = ActionPresenter(
+            session,
+            evidence_reader=evidence_reader,
+            work_requests=work_requests,
+        )
         self._members = MemberDirectory(session)
         self._actions = actions
+        self._assignments = assignments
+        self._material_drafts = material_drafts
 
     def find(self, action_item_id: str) -> Any | None:
         try:
@@ -498,9 +613,51 @@ class AxProposalActionHandler:
             return None
 
     def rounds(self, item: Any, principal: Principal) -> list[dict[str, Any]]:
-        """A gated proposal is prepared once; its single round is the payload the turn produced."""
+        """Read the immutable canonical submissions; legacy rows remain a read-only compatibility fallback."""
         if str(item.owner_id) != str(principal.id):
             raise ActionAccessDenied("principal cannot read this action item")
+        decision_item = self._decision(item)
+        if decision_item is not None:
+            submissions = self._session.scalars(
+                select(SubmissionRecord)
+                .where(SubmissionRecord.decision_item_id == decision_item.id)
+                .order_by(SubmissionRecord.submission_version)
+            ).all()
+            decisions: dict[Any, list[dict[str, Any]]] = {}
+            for decision in self._session.scalars(
+                select(ReviewDecisionRecord)
+                .where(ReviewDecisionRecord.submission_id.in_([submission.id for submission in submissions]))
+                .order_by(ReviewDecisionRecord.decided_at)
+            ).all():
+                decisions.setdefault(decision.submission_id, []).append(
+                    {
+                        "review_decision_id": str(decision.id),
+                        "actor_member_id": decision.actor_member_id,
+                        "decision": decision.decision,
+                        "reason": decision.reason,
+                        "evidence_hash": decision_facts(decision.conditions).get(EVIDENCE_HASH),
+                        "decided_at": decision.decided_at.isoformat(),
+                    }
+                )
+            rows = []
+            for submission in submissions:
+                version = self._session.get(SubjectVersionRecord, submission.subject_version_id)
+                evidence = self._canonical_evidence(submission.id)
+                rows.append(
+                    {
+                        "submission_id": str(submission.id),
+                        "submission_version": int(submission.submission_version),
+                        "evidence": evidence,
+                        "evidence_hash": evidence_manifest_hash(evidence),
+                        "submitted_by": submission.submitted_by,
+                        "submitted_at": submission.submitted_at.isoformat(),
+                        "content_hash": submission.payload_hash,
+                        "snapshot": dict(version.snapshot) if version else {},
+                        "diff": submission.diff,
+                        "decisions": decisions.get(submission.id, []),
+                    }
+                )
+            return rows
         return [
             {
                 "submission_id": str(item.id),
@@ -528,30 +685,139 @@ class AxProposalActionHandler:
             }
         ]
 
+    def _decision(self, item: ActionItemRecord) -> DecisionItemRecord | None:
+        decision = self._session.get(DecisionItemRecord, item.id)
+        return decision if decision is not None and decision.kind == f"ax.{item.action_type}" else None
+
+    def _current_submission(self, item: ActionItemRecord) -> SubmissionRecord | None:
+        decision = self._decision(item)
+        if decision is None:
+            return None
+        return self._session.scalar(
+            select(SubmissionRecord)
+            .where(SubmissionRecord.decision_item_id == decision.id)
+            .order_by(SubmissionRecord.submission_version.desc())
+        )
+
+    def _canonical_evidence(self, submission_id: UUID) -> list[dict[str, str]]:
+        rows = self._session.scalars(select(EvidenceRecord).where(EvidenceRecord.submission_id == submission_id)).all()
+        return evidence_manifest(
+            [evidence_manifest_entry(row.attachment_id, row.evidence_role, row.fixed_snapshot_ref) for row in rows]
+        )
+
     def normalize(self, item: Any, command: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """An approval carries nothing but the version it answers: the effect is the payload the turn already prepared."""
+        """Freeze the exact canonical draft a confirmation will compare and execute."""
+        if command == "cancel_assignment":
+            if payload.get("draft") is not None or payload.get("changes") or str(payload.get("reason") or "").strip():
+                raise ActionError("업무 요청 취소는 수정안이나 사유를 받지 않습니다")
+            return {}
+        normalized: dict[str, Any] = {"expected_version": _required_version(payload)}
+        if command == "confirm":
+            normalized["base_submission_version"] = _required_base_submission_version(payload)
+            current = self._current_submission(item)
+            if current is None:
+                raise ActionError("canonical AX submission was not found")
+            version = self._session.get(SubjectVersionRecord, current.subject_version_id)
+            draft = payload.get("draft") if payload.get("draft") is not None else (dict(version.snapshot) if version else {})
+            if item.action_type in {
+                "task.create_self", "task.assign", "work_request.create", "meeting.create", "task.progress.batch"
+            }:
+                frozen = dict(version.snapshot) if version is not None and item.action_type == "meeting.create" else None
+                normalized_draft = _normalize_ax_draft(
+                    item.action_type,
+                    draft,
+                    frozen_meeting_source=frozen,
+                    requester_id=str(item.owner_id),
+                )
+                if item.action_type == "task.create_self" and not normalized_draft.get("due_date"):
+                    raise ActionError("업무 기한을 입력해 주세요")
+                normalized["draft"] = normalized_draft
+                if item.action_type in {"task.create_self", "task.assign", "meeting.create"}:
+                    normalized["attachment_draft_ids"] = _attachment_draft_ids(payload.get("attachment_draft_ids"))
+            elif payload.get("draft") is not None:
+                raise ActionError("이 AX 제안은 수정 가능한 초안을 받지 않습니다")
+        elif (
+            payload.get("draft") is not None
+            or payload.get("base_submission_version") is not None
+            or payload.get("attachment_draft_ids") is not None
+        ):
+            raise ActionError(f"'{command}'은(는) 업무 초안을 받지 않습니다")
         if payload.get("changes") or str(payload.get("reason") or "").strip():
             raise ActionError("AX 제안 판단은 사유나 변경 항목을 받지 않습니다")
-        return {"expected_version": _required_version(payload)}
+        return normalized
 
     def execute(self, principal: Principal, item: Any, command: str, payload: dict[str, Any]) -> None:
-        self._actions.decide(principal, item.id, _required_version(payload), command)
+        if command == "cancel_assignment":
+            assignment = self._assignment(item)
+            if assignment is None:
+                raise ActionError("task assignment was not found")
+            self._assignments.cancel(principal, assignment.id)
+            return
+        if command in {"approve", "reject"}:
+            if command == "reject" and self._material_drafts is not None:
+                for draft in self._material_drafts.list(principal, item.id):
+                    if draft["state"] == "staged":
+                        self._material_drafts.discard(principal, item.id, UUID(draft["material_draft_id"]))
+            self._actions.decide(principal, item.id, _required_version(payload), command)
+            return
+        if command != "confirm":  # pragma: no cover - the envelope already refused anything else
+            raise ActionError(f"unsupported command {command}")
+        self._confirm(principal, item, payload)
 
     def discussion(self, item: Any, principal: Principal) -> list[dict[str, Any]]:
         """An AX proposal is judged on its preview and evidence; it carries no comment thread."""
         return []
 
     def is_replay(self, item: Any, principal: Principal, command: str, payload: dict[str, Any]) -> bool:
-        """The persisted Action is the idempotency boundary; a repeat of the decision it already holds is a receipt."""
+        """A repeat is a receipt only when version, base round and normalized final content all match."""
+        if command == "cancel_assignment":
+            assignment = self._assignment(item)
+            return (
+                assignment is not None
+                and assignment.status == "cancelled"
+                and assignment.assigned_by == str(principal.id)
+            )
         if str(item.owner_id) != str(principal.id) or ACTION_DECIDE not in principal.capabilities:
             return False
-        if item.state != {"approve": "approved", "reject": "rejected"}.get(command):
+        expected_state = {"confirm": "approved", "approve": "approved", "reject": "rejected"}.get(command)
+        if item.state != expected_state:
             return False
-        # Deciding bumps the Action exactly once, so only the version this decision consumed is a receipt.
         try:
-            return int(item.version) == _required_version(payload) + 1
+            if int(item.version) != _required_version(payload) + 1:
+                return False
         except ActionError:
             return False
+        decision_item = self._decision(item)
+        if decision_item is None:
+            return command == "reject"
+        stored = self._session.scalar(
+            select(ReviewDecisionRecord)
+            .join(SubmissionRecord, SubmissionRecord.id == ReviewDecisionRecord.submission_id)
+            .where(SubmissionRecord.decision_item_id == decision_item.id)
+            .order_by(ReviewDecisionRecord.decided_at.desc())
+        )
+        if stored is None or stored.actor_member_id != str(principal.id) or stored.decision != command:
+            return False
+        facts = dict(stored.conditions or {})
+        if command in {"approve", "reject"}:
+            return facts.get("expected_version") == _required_version(payload)
+        try:
+            normalized = self.normalize(item, command, payload)
+        except ActionError:
+            return False
+        return (
+            facts.get("expected_version") == normalized["expected_version"]
+            and facts.get("base_submission_version") == normalized["base_submission_version"]
+            and facts.get("payload_hash") == action_payload_hash({
+                **normalized["draft"],
+                **(
+                    {"attachment_draft_ids": normalized.get("attachment_draft_ids", [])}
+                    if normalized.get("attachment_draft_ids")
+                    else {}
+                ),
+            })
+            and facts.get("attachment_draft_ids", []) == normalized.get("attachment_draft_ids", [])
+        )
 
     def pending(self, principal: Principal) -> list[ActionEnvelope]:
         if ACTION_DECIDE not in principal.capabilities:
@@ -564,34 +830,262 @@ class AxProposalActionHandler:
         return [self.envelope(record, principal) for record in records]
 
     def envelope(self, record: ActionItemRecord, principal: Principal) -> ActionEnvelope:
-        presented = self._presenter.present(record, principal)
+        if str(record.owner_id) != str(principal.id):
+            raise ActionAccessDenied("principal cannot read this action item")
+        decision = self._decision(record)
+        submission = self._current_submission(record)
+        version = self._session.get(SubjectVersionRecord, submission.subject_version_id) if submission is not None else None
+        presented = self._presenter.present(
+            record,
+            principal,
+            payload_override=dict(version.snapshot) if version is not None else None,
+        )
+        resolved = decision is not None and decision.status == "resolved"
+        pending = record.state == "pending" and not resolved
+        assignment = self._assignment(record)
+        cancellable_assignment = (
+            resolved
+            and record.action_type == "task.assign"
+            and assignment is not None
+            and assignment.status == "pending"
+            and assignment.assigned_by == str(principal.id)
+            and TASK_ASSIGN in principal.capabilities
+        )
         return ActionEnvelope(
             action_item_id=str(record.id),
             kind=f"ax.{record.action_type}",
-            status=AWAITING_REVIEW if record.state == "pending" else RESOLVED,
+            status=AWAITING_REVIEW if pending else RESOLVED,
             subject=str(presented["subject"]),
             operation_label=str(presented["operation_label"]),
-            current_question="AX가 준비한 변경을 승인할지 결정하세요" if record.state == "pending" else "이 제안은 이미 판단이 끝났습니다",
+            current_question="AX가 준비한 변경을 확정할지 결정하세요" if pending else "이 제안은 이미 판단이 끝났습니다",
             preview=list(presented["preview"]),
             allowed_commands=(
                 [
-                    *([] if presented.get("obsolete") else [ActionCommand("approve", "승인", "primary")]),
+                    *(
+                        []
+                        if presented.get("obsolete")
+                        else [
+                            ActionCommand(
+                                "confirm",
+                                (
+                                    "이 내용으로 업무 요청"
+                                    if record.action_type in {"task.assign", "work_request.create"}
+                                    else "이 내용으로 회의 생성"
+                                    if record.action_type == "meeting.create"
+                                    else "이 내용으로 반영"
+                                    if record.action_type == "task.progress.batch"
+                                    else "이 내용으로 업무 생성"
+                                ),
+                                "primary",
+                            )
+                            if record.action_type in {
+                                "task.create_self",
+                                "task.assign",
+                                "work_request.create",
+                                "meeting.create",
+                                "task.progress.batch",
+                            }
+                            and submission is not None
+                            else ActionCommand("approve", "승인", "primary")
+                        ]
+                    ),
                     ActionCommand("reject", "거절", "neutral"),
                 ]
-                if record.state == "pending" and ACTION_DECIDE in principal.capabilities and str(record.owner_id) == str(principal.id)
+                if pending and ACTION_DECIDE in principal.capabilities
+                else [ActionCommand("cancel_assignment", "취소", "danger")]
+                if cancellable_assignment
                 else []
             ),
-            submission_version=1,
-            waiting_on=self._members.waiting_on(str(record.owner_id)),
+            submission_version=int(submission.submission_version) if submission is not None else 1,
+            waiting_on=self._members.waiting_on(str(record.owner_id)) if pending else None,
             resource={"type": "action", "id": str(record.id)},
             expected_version=int(record.version),
-            # Closing the round trip: the Task this proposal produced, if it produced one.
-            extra={"derived_task_id": self._derived_task_id(record)},
+            # Closing the round trip and carrying the same server-authored editor contract as the chat projection.
+            extra={
+                "derived_task_id": self._derived_task_id(record),
+                "derived_meeting_id": self._derived_meeting_id(record),
+                "material_drafts": self._material_drafts.list(principal, record.id) if self._material_drafts else [],
+                "material_results": list((record.result or {}).get("material_results") or []),
+                **(
+                    {"execution_result": dict(record.result)}
+                    if record.action_type == "task.progress.batch" and isinstance(record.result, dict)
+                    else {}
+                ),
+                **({"result_summary": presented["result_summary"]} if presented.get("result_summary") else {}),
+                **({"edit_contract": presented["edit_contract"]} if presented.get("edit_contract") is not None else {}),
+            },
+        )
+
+    def _assignment(self, record: ActionItemRecord) -> TaskAssignmentRecord | None:
+        if record.action_type != "task.assign" or not isinstance(record.result, dict):
+            return None
+        try:
+            assignment_id = UUID(str(record.result.get("assignment_id")))
+        except (TypeError, ValueError):
+            return None
+        return self._session.get(TaskAssignmentRecord, assignment_id)
+
+    def _confirm(self, principal: Principal, item: ActionItemRecord, payload: dict[str, Any]) -> None:
+        locked = self._session.scalar(
+            select(ActionItemRecord)
+            .where(ActionItemRecord.id == item.id, ActionItemRecord.owner_id == str(principal.id))
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if locked is None:
+            raise ActionAccessDenied("action was not found")
+        if locked.state != "pending":
+            if self.is_replay(locked, principal, "confirm", payload):
+                return
+            raise ActionError("action is no longer pending")
+        if int(locked.version) != _required_version(payload):
+            raise ActionError("action version is stale")
+        decision_item = self._decision(locked)
+        submission = self._current_submission(locked)
+        if decision_item is None or submission is None or decision_item.status != "open":
+            raise ActionError("action is no longer pending")
+        base_submission_version = _required_base_submission_version(payload)
+        if int(submission.submission_version) != base_submission_version:
+            raise ActionError("base submission version is stale")
+        base_version = self._session.get(SubjectVersionRecord, submission.subject_version_id)
+        base_snapshot = dict(base_version.snapshot) if base_version else {}
+        if locked.action_type not in {
+            "task.create_self", "task.assign", "work_request.create", "meeting.create", "task.progress.batch"
+        }:
+            raise ActionError("이 AX 제안은 아직 수정 확정을 지원하지 않습니다")
+        canonical_base = _normalize_ax_draft(
+            locked.action_type,
+            base_snapshot,
+            requester_id=str(locked.owner_id),
+        )
+        canonical_final = _normalize_ax_draft(
+            locked.action_type,
+            payload.get("draft"),
+            frozen_meeting_source=canonical_base if locked.action_type == "meeting.create" else None,
+            requester_id=str(locked.owner_id),
+        )
+        if locked.action_type == "task.progress.batch":
+            _validate_task_progress_batch_edit(canonical_base, canonical_final)
+        base_attachment_ids = (
+            _attachment_draft_ids(base_snapshot.get("attachment_draft_ids"))
+            if locked.action_type in {"task.create_self", "task.assign", "meeting.create"}
+            else []
+        )
+        attachment_ids = (
+            _attachment_draft_ids(payload.get("attachment_draft_ids"))
+            if locked.action_type in {"task.create_self", "task.assign", "meeting.create"}
+            else []
+        )
+        canonical_base_snapshot = {**canonical_base, **({"attachment_draft_ids": base_attachment_ids} if base_attachment_ids else {})}
+        canonical_final_snapshot = {**canonical_final, **({"attachment_draft_ids": attachment_ids} if attachment_ids else {})}
+        selected = submission
+        assignment = self._active_assignment(submission)
+        now = datetime.now(UTC)
+        superseded_assignment_id: UUID | None = None
+        if canonical_final_snapshot != canonical_base_snapshot:
+            if assignment is not None:
+                assignment.status = "superseded"
+                assignment.resolution_kind = "revised"
+                superseded_assignment_id = assignment.id
+            next_version = SubjectVersionRecord(
+                subject_id=decision_item.subject_id,
+                version=int(submission.submission_version) + 1,
+                content_hash=action_payload_hash(canonical_final_snapshot),
+                snapshot=canonical_final_snapshot,
+                captured_at=now,
+            )
+            self._session.add(next_version)
+            self._session.flush()
+            selected = SubmissionRecord(
+                decision_item_id=decision_item.id,
+                subject_version_id=next_version.id,
+                submission_version=int(submission.submission_version) + 1,
+                revises_id=submission.id,
+                submitted_by=str(principal.id),
+                payload_hash=next_version.content_hash,
+                decision_policy_snapshot=dict(submission.decision_policy_snapshot or {}),
+                diff=_payload_diff(base_snapshot, canonical_final_snapshot),
+                submitted_at=now,
+            )
+            self._session.add(selected)
+            self._session.flush()
+            # Editing the proposal does not detach the basis the proposing Turn actually used. Each Submission owns
+            # its own immutable adoption rows, so later history never has to follow a mutable pointer backwards.
+            for evidence in self._session.scalars(
+                select(EvidenceRecord).where(EvidenceRecord.submission_id == submission.id)
+            ).all():
+                self._session.add(
+                    EvidenceRecord(
+                        submission_id=selected.id,
+                        attachment_id=evidence.attachment_id,
+                        evidence_role=evidence.evidence_role,
+                        fixed_snapshot_ref=evidence.fixed_snapshot_ref,
+                        mutable_source=evidence.mutable_source,
+                        adopted_by=str(principal.id),
+                        adopted_at=now,
+                    )
+                )
+            assignment = ReviewAssignmentRecord(
+                submission_id=selected.id,
+                reviewer_member_id=str(principal.id),
+                supersedes_assignment_id=superseded_assignment_id,
+                status="pending",
+                assigned_at=now,
+            )
+            self._session.add(assignment)
+            self._session.flush()
+        if assignment is None:
+            raise ActionError("active AX review assignment was not found")
+        basis = self._canonical_evidence(selected.id)
+        review = ReviewDecisionRecord(
+            review_assignment_id=assignment.id,
+            submission_id=selected.id,
+            actor_member_id=str(principal.id),
+            decision="confirm",
+            reason=None,
+            conditions={
+                "expected_version": _required_version(payload),
+                "base_submission_version": base_submission_version,
+                "payload_hash": action_payload_hash(canonical_final_snapshot),
+                "attachment_draft_ids": attachment_ids,
+                "_decision": {
+                    "expected_version": _required_version(payload),
+                    "evidence_hash": evidence_manifest_hash(basis),
+                    "evidence_manifest": basis,
+                },
+            },
+            decided_at=now,
+        )
+        self._session.add(review)
+        self._session.flush()
+        assignment.status = "decided"
+        assignment.resolution_kind = "confirmed"
+        assignment.resolution_ref = str(review.id)
+        decision_item.status = "resolved"
+        decision_item.resolved_at = now
+        self._actions.execute_confirmed(
+            principal,
+            locked,
+            {**canonical_final, "_attachment_draft_ids": attachment_ids},
+            source_decision_item_id=decision_item.id,
+            source_submission_id=selected.id,
+            source_review_decision_id=review.id,
+        )
+
+    def _active_assignment(self, submission: SubmissionRecord) -> ReviewAssignmentRecord | None:
+        return self._session.scalar(
+            select(ReviewAssignmentRecord)
+            .where(ReviewAssignmentRecord.submission_id == submission.id, ReviewAssignmentRecord.status == "pending")
+            .order_by(ReviewAssignmentRecord.assigned_at.desc())
         )
 
     def _derived_task_id(self, record: ActionItemRecord) -> str | None:
         task_id = self._session.scalar(select(TaskRecord.id).where(TaskRecord.source_action_item_id == record.id))
         return str(task_id) if task_id else None
+
+    def _derived_meeting_id(self, record: ActionItemRecord) -> str | None:
+        meeting_id = self._session.scalar(select(MeetingRecord.id).where(MeetingRecord.source_action_item_id == record.id))
+        return str(meeting_id) if meeting_id else None
 
 
 class TaskAssignmentActionHandler:
@@ -926,8 +1420,16 @@ class TaskDeliveryActionHandler:
             raise ActionAccessDenied("principal cannot read this action item")
 
 
-def action_handlers(session: Session, *, work_requests: Any, actions: Any, assignments: Any, tasks: Any = None,
-                    evidence_reader: ActionEvidenceReader | None = None) -> list[Any]:
+def action_handlers(
+    session: Session,
+    *,
+    work_requests: Any,
+    actions: Any,
+    assignments: Any,
+    tasks: Any = None,
+    material_drafts: Any = None,
+    evidence_reader: ActionEvidenceReader | None = None,
+) -> list[Any]:
     """Every origin that can put a question to a person, in the order a person should meet them.
 
     The module applications are passed in rather than rebuilt here, so every command runs the same operation the rest of
@@ -939,7 +1441,16 @@ def action_handlers(session: Session, *, work_requests: Any, actions: Any, assig
     ]
     if tasks is not None:
         handlers.append(TaskDeliveryActionHandler(session, tasks))
-    handlers.append(AxProposalActionHandler(session, actions, evidence_reader=evidence_reader))
+    handlers.append(
+        AxProposalActionHandler(
+            session,
+            actions,
+            assignments,
+            material_drafts,
+            work_requests=work_requests,
+            evidence_reader=evidence_reader,
+        )
+    )
     return handlers
 
 

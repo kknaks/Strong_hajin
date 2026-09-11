@@ -719,6 +719,7 @@ class WorkRequestApplication:
             "title": request.title,
             "description": getattr(request, "description", None),
             "due_date": request.due_date.isoformat() if getattr(request, "due_date", None) else None,
+            "checklist": list(getattr(request, "initial_checklist", None) or []),
             "requester_id": request.requester_id,
             "assignee_id": request.assignee_id,
             "cc_member_ids": self._repository.cc_member_ids(request),

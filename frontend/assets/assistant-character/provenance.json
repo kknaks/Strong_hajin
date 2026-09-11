@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "catalog": "SCAX assistant character",
+  "recorded_on": "2026-09-08",
+  "generation": {
+    "tool": "OpenAI Codex built-in image_gen.imagegen",
+    "model": "OpenAI-managed image generation; exact model identifier was not exposed by the tool response",
+    "session_id": "01a07a09-75ce-74e0-af2c-576c2836ccab",
+    "session_evidence": "codex-session:01a07a09-75ce-74e0-af2c-576c2836ccab#L949,L1069,L1100,L1522",
+    "output_format": "PNG with transparent alpha"
+  },
+  "reference_inputs": {
+    "cream_reference": {
+      "description": "User-provided screenshot crop containing the cream cat; user confirmed on 2026-09-08 that the pictured asset was AI-generated.",
+      "retention": "The transient paste attachment was not retained in the repository.",
+      "use": "Visual subject reference for the cream-cat generation only."
+    },
+    "cream_output_style_reference": {
+      "file": "assets/assistant-character/source/cream-cat.png",
+      "sha256": "d50c4d2fc05837cd49e3bb0372c8019aafe6db4cb04922cd6b60f51fb5df23b1",
+      "use": "Style, rendering quality, proportions, pose, lighting, and framing reference for the other eight original concepts."
+    }
+  },
+  "prompts": {
+    "cream-reference-faithful": {
+      "evidence_line": 949,
+      "text": "Use case: stylized-concept\nAsset type: transparent character cutout for a throwaway SCAX UI comparison prototype\nPrimary request: Recreate the small assistant cat shown at the lower-right of the reference image as faithfully as practical, isolated as a clean full-body character asset.\nInput image: reference image; the lower-right cat is the sole visual subject to reproduce. Ignore the surrounding application UI and speech bubble.\nSubject: a very round cream-and-peach kitten mascot with an oversized head, tiny triangular ears, soft orange ear tips and head patches, large glossy dark gray-brown eyes, a tiny pale muzzle, subtle whisker marks, stubby arms held together near the chest, tiny feet, and a compact sitting pose.\nStyle/medium: polished soft 3D clay/plush render, gentle rounded geometry, professional mascot turntable quality.\nComposition/framing: centered, front three-quarter view matching the reference pose, entire character visible, generous transparent padding, square canvas.\nLighting/mood: soft neutral studio light, friendly and calm.\nColor palette: warm ivory, peach-orange accents, muted warm gray details.\nConstraints: transparent background with genuine alpha; character only; preserve the distinctive proportions, pose, facial placement, and colors from the reference as closely as possible; no UI, no speech bubble, no text, no logo, no watermark, no floor plane, no cast shadow outside the character. This is a reference-faithful prototype asset, not a claim of original brand ownership."
+    },
+    "original-animal-lineup": {
+      "evidence_line": 1069,
+      "base_text": "Use case: stylized-concept\nAsset type: transparent character cutout for a SCAX assistant UI prototype\nInput image: style and quality reference only. Match its polished soft 3D plush/clay rendering, oversized head, compact sitting pose, large glossy eyes, paws held near the chest, gentle studio lighting, and warm neutral palette. Create an original character, not a copy of any known mascot.\nComposition/framing: centered front three-quarter view, entire character visible, same apparent scale and padding as the reference, square canvas.\nMaterials/textures: softly groomed plush fur with clean rounded geometry and crisp edges at small UI sizes.\nConstraints: genuine transparent alpha; character only; no UI, speech bubble, text, logo, watermark, floor plane, or external cast shadow. Avoid recognizable branded character features."
+    },
+    "original-cat-lineup": {
+      "evidence_line": 1100,
+      "base_text": "Use case: stylized-concept\nAsset type: transparent character cutout for a SCAX assistant UI prototype\nInput image: style and quality reference. Keep the same polished soft 3D plush/clay rendering, oversized round head, compact sitting pose, large glossy eyes, tiny front paws held near the chest, gentle studio lighting, and small-UI clarity. Create a new original cat design, not a recognizable existing mascot.\nComposition/framing: centered front three-quarter view, entire character visible, same apparent scale and transparent padding as the reference, square canvas.\nMaterials/textures: softly groomed plush fur, rounded geometry, crisp readable markings.\nConstraints: genuine transparent alpha; character only; no UI, speech bubble, text, logo, watermark, floor plane, clothing, or external cast shadow."
+    },
+    "original-red-panda": {
+      "evidence_line": 1522,
+      "text": "Use case: stylized-concept\nAsset type: transparent character cutout for the SCAX assistant lineup\nPrimary request: Create an original baby red panda assistant at the same visual quality and family style as the reference character.\nInput image: style, rendering quality, proportions, pose, lighting, and framing reference only.\nSubject: a compact sitting red panda with an oversized softly rounded head, warm cinnamon-red plush fur, restrained cream facial mask and muzzle, small rounded dark ears with cream inner rims, large glossy warm brown eyes, tiny cocoa nose, subtle pink cheeks, two small front paws held together near the chest, tiny dark feet, and a fluffy cinnamon-and-cream ringed tail curled beside the body. Friendly, calm, attentive.\nStyle/medium: polished soft 3D plush/clay mascot render with softly groomed fur and clean rounded geometry.\nComposition/framing: centered front three-quarter view, entire character visible, same apparent size and transparent padding as the reference, square canvas.\nConstraints: genuine transparent alpha; character only; original design; no recognizable branded mascot features; no UI, speech bubble, clothing, text, logo, watermark, floor plane, background, or external cast shadow."
+    }
+  },
+  "production_export": {
+    "format": "AVIF with transparent alpha",
+    "recipe": "macOS sips -s format avif -s formatOptions 90 -Z 640",
+    "max_dimension_px": 640,
+    "individual_transfer_budget_bytes": 120000,
+    "catalog_transfer_budget_bytes": 650000,
+    "catalog_decoded_rgba_budget_bytes": 16000000
+  },
+  "terms_snapshot": {
+    "checked_on": "2026-09-08",
+    "provider": "OpenAI",
+    "url": "https://openai.com/policies/terms-of-use/",
+    "summary": "Use is subject to the applicable OpenAI agreement; output may not be unique and the user remains responsible for supplied inputs and permitted use.",
+    "scope": "Provenance record, not independent legal or trademark clearance."
+  },
+  "similarity_review": {
+    "reviewed_on": "2026-09-08",
+    "method": "Prompt constraints plus side-by-side visual inspection of the nine-character lineup at catalog and 48px profile sizes.",
+    "result": "No logos, clothing, text, or obvious third-party character identifiers are present. The cream cat remains reference-faithful to a user-supplied AI-generated image; escalate if that input attribution changes.",
+    "scope": "Product visual review, not a formal trademark search."
+  },
+  "assets": [
+    {
+      "key": "cream-cat",
+      "prompt_id": "cream-reference-faithful",
+      "subject_prompt": null,
+      "reference_input": "cream_reference",
+      "generated_at": "2026-09-07T07:27:21.229Z",
+      "source": { "file": "assets/assistant-character/source/cream-cat.png", "width": 1254, "height": 1254, "sha256": "d50c4d2fc05837cd49e3bb0372c8019aafe6db4cb04922cd6b60f51fb5df23b1" },
+      "export": { "file": "src/assets/assistant-character/cream-cat.avif", "width": 640, "height": 640, "bytes": 49799, "sha256": "7fac7877ee9fa8e4424df560db51df0209b41825963df896b3878322a63a74cd" }
+    },
+    {
+      "key": "silver-tabby",
+      "prompt_id": "original-cat-lineup",
+      "subject_prompt": "an original silver tabby kitten assistant with cool pearl-gray fur, soft charcoal forehead stripes and tail rings, white muzzle and belly, slightly upright pointed ears, smoky gray glossy eyes, a tiny mauve-gray nose, a curious slight head tilt, paws together, and tail curled neatly to one side.",
+      "reference_input": "cream_output_style_reference",
+      "generated_at": "2026-09-07T07:39:29.820Z",
+      "source": { "file": "assets/assistant-character/source/silver-tabby.png", "width": 1254, "height": 1254, "sha256": "a5b9b0833fc733f38c87577744395a179bbe92045e47cbe5237f1c810a2a2e72" },
+      "export": { "file": "src/assets/assistant-character/silver-tabby.avif", "width": 640, "height": 640, "bytes": 69143, "sha256": "fca0162ab719e9870594fabfa15b4b7d8138cafbe985b22b1539a4b79da77192" }
+    },
+    {
+      "key": "tuxedo-cat",
+      "prompt_id": "original-cat-lineup",
+      "subject_prompt": "an original tuxedo kitten assistant with velvety charcoal-black fur, a clean ivory face blaze, ivory muzzle, chest and sock paws, rounder low-set ears, warm amber-brown glossy eyes, a tiny cocoa-pink nose, a calm confident expression, paws together, and a softly curved dark tail.",
+      "reference_input": "cream_output_style_reference",
+      "generated_at": "2026-09-07T07:39:29.820Z",
+      "source": { "file": "assets/assistant-character/source/tuxedo-cat.png", "width": 1312, "height": 1199, "sha256": "9286b45a62495e440efc92243dc1e6d5edd08c1108a718e9a4f99b415ce184ad" },
+      "export": { "file": "src/assets/assistant-character/tuxedo-cat.avif", "width": 640, "height": 585, "bytes": 81215, "sha256": "791d2eed66a78348e3621d5c2f75ce591de69a33e4cf557af652e5f60b01aa49" }
+    },
+    {
+      "key": "calico-cat",
+      "prompt_id": "original-cat-lineup",
+      "subject_prompt": "an original calico kitten assistant with warm ivory fur and restrained peach-orange plus soft smoke-gray patches arranged asymmetrically, one peach ear and one gray-tipped ear, deep gray-brown glossy eyes, a tiny rose nose, cheerful rounded cheeks, paws together, and a tri-color fluffy tail curled beside the body.",
+      "reference_input": "cream_output_style_reference",
+      "generated_at": "2026-09-07T07:39:29.820Z",
+      "source": { "file": "assets/assistant-character/source/calico-cat.png", "width": 1254, "height": 1254, "sha256": "211d8d6f05e35eccd5917476faa2061748350e7451eb34147af26b655703a78e" },
+      "export": { "file": "src/assets/assistant-character/calico-cat.avif", "width": 640, "height": 640, "bytes": 77318, "sha256": "4c58b1a3dea408997b111051eab369625affed4bfbd400a2cf503738e585dcc9" }
+    },
+    {
+      "key": "puppy",
+      "prompt_id": "original-animal-lineup",
+      "subject_prompt": "an original cream puppy assistant with soft caramel floppy ears, one subtle caramel brow patch, round charcoal-brown eyes, a tiny cocoa nose, stubby paws together, tiny sitting feet, and a short curved tail. Friendly, attentive, calm.",
+      "reference_input": "cream_output_style_reference",
+      "generated_at": "2026-09-07T07:36:22.854Z",
+      "source": { "file": "assets/assistant-character/source/puppy.png", "width": 1254, "height": 1254, "sha256": "1459296297e9d0adad506dbc6ac6b4894e9b6ae79f3f9001b88a7c1d6d24bbd3" },
+      "export": { "file": "src/assets/assistant-character/puppy.avif", "width": 640, "height": 640, "bytes": 56835, "sha256": "5549e24c025ce776fae44badad9dfc353d1443cdda0a3d23a4180f089cabe129" }
+    },
+    {
+      "key": "rabbit",
+      "prompt_id": "original-animal-lineup",
+      "subject_prompt": "an original ivory lop-eared rabbit assistant with long softly drooping ears, muted peach inner ears, warm gray-brown eyes, a tiny rose-beige nose, rounded cheeks, front paws together, tiny sitting feet, and a small visible cotton tail. Gentle, thoughtful, calm.",
+      "reference_input": "cream_output_style_reference",
+      "generated_at": "2026-09-07T07:36:22.854Z",
+      "source": { "file": "assets/assistant-character/source/rabbit.png", "width": 1305, "height": 1205, "sha256": "361431afb3edddfdeeb8d609aa3f394740b80a9175a841c83476f2e2711ffea5" },
+      "export": { "file": "src/assets/assistant-character/rabbit.avif", "width": 640, "height": 591, "bytes": 48431, "sha256": "30d186c4bf7036db0f7fab072528c1e8a60758fabe0b215cbc42e21ce8224572" }
+    },
+    {
+      "key": "bear",
+      "prompt_id": "original-animal-lineup",
+      "subject_prompt": "an original warm oatmeal bear cub assistant with small round ears, a pale cream muzzle and belly, deep warm brown glossy eyes, a tiny cocoa nose, rounded front paws together, tiny sitting feet, and a compact pear-shaped body. Dependable, kind, calm.",
+      "reference_input": "cream_output_style_reference",
+      "generated_at": "2026-09-07T07:36:22.854Z",
+      "source": { "file": "assets/assistant-character/source/bear.png", "width": 1254, "height": 1254, "sha256": "f20437883c1dc15d095b7182288fd34a18db46c889357f0f39f0d6b63494c613" },
+      "export": { "file": "src/assets/assistant-character/bear.avif", "width": 640, "height": 640, "bytes": 68497, "sha256": "ee2737bb0a00ac94dd8f726da0dd50c6f7de4d82d3b98fbdef5da8eef79dfa4e" }
+    },
+    {
+      "key": "chick",
+      "prompt_id": "original-animal-lineup",
+      "subject_prompt": "an original pale butter-yellow chick assistant with a soft cream belly, tiny peach wing-hands held together, large warm gray-brown eyes, a very small coral beak, two subtle feather tufts, tiny peach feet, and a compact round body. Bright, helpful, calm.",
+      "reference_input": "cream_output_style_reference",
+      "generated_at": "2026-09-07T07:36:22.854Z",
+      "source": { "file": "assets/assistant-character/source/chick.png", "width": 1254, "height": 1254, "sha256": "40949c7bb18464aa3b2ed2aa8effb4f0096529aadd7ac0e06ca5d3ef18ea6ada" },
+      "export": { "file": "src/assets/assistant-character/chick.avif", "width": 640, "height": 640, "bytes": 44745, "sha256": "5ca232d68a7627efb50523e6e6b965fc81df0b56f0ccf4d7858e44379223488d" }
+    },
+    {
+      "key": "red-panda",
+      "prompt_id": "original-red-panda",
+      "subject_prompt": null,
+      "reference_input": "cream_output_style_reference",
+      "generated_at": "2026-09-07T08:01:22.846Z",
+      "source": { "file": "assets/assistant-character/source/red-panda.png", "width": 1254, "height": 1254, "sha256": "3e55deab8622bedc725eeec8c1753b5adf1d972ec4ec8652b5ac960b69b6c255" },
+      "export": { "file": "src/assets/assistant-character/red-panda.avif", "width": 640, "height": 640, "bytes": 101087, "sha256": "e6d8d119a05442492f7a45e427f00a076807b6a0dd45e45c7c91aeeeb805028c" }
+    }
+  ]
+}

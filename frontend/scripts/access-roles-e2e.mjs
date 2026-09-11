@@ -1,6 +1,6 @@
 import { chromium } from "@playwright/test";
 
-import { loginAs, pollFor, quickLoginAs, switchAccount } from "./e2e-helpers.mjs";
+import { chooseOption, loginAs, pollFor, quickLoginAs, switchAccount } from "./e2e-helpers.mjs";
 
 /**
  * 같은 원장, 다른 범위: 대표 · 팀장 · 구성원이 각자 볼 수 있는 것만 본다.
@@ -117,32 +117,38 @@ try {
 
   // 관리자 화면: 대표가 조직 화면에서 민아의 권한을 넓히고, 그 자리에서 다시 회수한다.
   await page.getByRole("navigation", { name: "제품 탐색" }).getByRole("button", { name: "조직" }).click();
-  await page.locator(".org-node", { hasText: "제품팀" }).first().click();
-  await page.locator(".member-row", { hasText: "민아" }).first().click();
-  const access = page.getByLabel("구성원 권한");
+  await page.getByRole("region", { name: "조직 tree" }).getByRole("button", { name: /^제품팀/ }).click();
+  await page.getByRole("region", { name: "제품팀 구성원" }).getByRole("button", { name: /민아/ }).click();
+  await page.getByRole("region", { name: "민아 상세" }).waitFor();
+  const grantCount = () => page.evaluate(async () => {
+    const member = await (await fetch("/api/organization/members/mina")).json();
+    return member.grants.length;
+  });
+  const before = await grantCount();
+  await page.getByRole("button", { name: "변경" }).click();
+  let access = page.getByRole("dialog", { name: "권한 변경" });
   await access.waitFor();
-  // The panel appears before its answer does; count only once the ledger's grants are actually rendered.
-  const before = await pollFor(page, async () => (await access.locator("[data-grant]").count()) || null, {
+  await chooseOption(access, "역할", "팀장");
+  await chooseOption(access, "범위", "제품팀");
+  await access.getByLabel("사유").fill("팀장 대행");
+  await access.getByRole("button", { name: "권한 부여" }).click();
+  await pollFor(page, async () => (await grantCount()) === before + 1, {
     timeout: 15_000,
-    description: "민아의 현재 권한이 목록에 나타나는 것",
+    description: "부여한 권한이 원장에 나타나는 것",
   });
-  await page.getByLabel("역할").selectOption("role:team-lead");
-  await page.getByLabel("범위").selectOption("product");
-  await page.getByLabel("사유").fill("팀장 대행");
-  await page.getByRole("button", { name: "권한 부여" }).click();
-  await pollFor(page, async () => (await access.locator("[data-grant]").count()) > before, {
-    timeout: 15_000,
-    description: "부여한 권한이 목록에 나타나는 것",
-  });
-  const added = access.locator("[data-grant]").last();
+  await page.getByRole("button", { name: "변경" }).click();
+  access = page.getByRole("dialog", { name: "권한 변경" });
+  await access.getByLabel("사유").fill("팀장 대행 종료");
+  const added = access.locator("[data-grant]", { hasText: "팀장" }).last();
   await added.getByRole("button", { name: "회수" }).click();
+  await page.getByRole("alertdialog", { name: "이 권한을 회수할까요?" }).getByRole("button", { name: "권한 회수" }).click();
   await pollFor(
     page,
     async () => {
-      const now = await access.locator("[data-grant]").count();
+      const now = await grantCount();
       return now === before ? { now } : null;
     },
-    { timeout: 15_000, description: `회수한 권한이 목록에서 사라지는 것 (부여 전 ${before}개)` },
+    { timeout: 15_000, description: `회수한 권한이 원장에서 사라지는 것 (부여 전 ${before}개)` },
   );
 
   console.log(JSON.stringify({ task: created.task.task_id, meeting: created.meeting.meeting_id, ...executive }, null, 2));

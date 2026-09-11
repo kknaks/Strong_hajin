@@ -129,6 +129,134 @@ def test_a_person_is_a_place_to_start_from(tmp_path) -> None:
     assert around.status_code == 200
 
 
+def test_a_position_reference_is_resolved_by_the_server_not_the_display_name(tmp_path) -> None:
+    """호칭과 직책은 provider 문구나 이름 장식이 아니라 조직 원장에서 해석한다."""
+    from ax_workspace.entrypoints.mcp import McpReportsFacade
+    from ax_workspace.platform.persistence import MemberRecord, make_session_factory
+
+    client, application = _stack(tmp_path)
+    with make_session_factory(application._settings.database_url)() as session:
+        session.get(MemberRecord, "jiho").display_name = "지호"
+        session.get(MemberRecord, "hyeon").display_name = "직책이 아닌 팀장 표기"
+        session.commit()
+
+    response = client.get("/api/graph/search", headers=MINA, params={"q": "우리 팀장님"})
+
+    assert response.status_code == 200, response.text
+    people = [node for node in response.json()["nodes"] if node["kind"] == "person"]
+    assert people == [
+        {
+            "kind": "person",
+            "id": "jiho",
+            "title": "지호",
+            "state": None,
+            "date": None,
+            "match": {
+                "kind": "position",
+                "label": "팀장",
+                "organization_id": "product",
+                "organization_name": "제품팀",
+            },
+        }
+    ]
+    settings = application._settings
+    assert McpReportsFacade(settings, "mina").graph_search("우리 팀장님") == response.json()
+    around = client.get("/api/graph/neighbors", headers=MINA, params={"node": "person:jiho"})
+    assert any(
+        edge["kind"] == "belongs_to" and edge["to"] == "team:product"
+        for edge in around.json()["edges"]
+    )
+
+
+def test_a_name_honorific_uses_the_existing_person_identity(tmp_path) -> None:
+    client, _ = _stack(tmp_path)
+
+    found = client.get("/api/graph/search", headers=JIHO, params={"q": "민아님"}).json()
+
+    assert [(node["kind"], node["id"]) for node in found["nodes"]] == [("person", "mina")]
+    assert "match" not in found["nodes"][0]
+
+
+def test_position_candidates_stay_current_scoped_and_ambiguous(tmp_path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from ax_workspace.platform.persistence import AppointmentRecord, MemberRecord, make_session_factory
+
+    client, application = _stack(tmp_path)
+    now = datetime.now(UTC)
+    with make_session_factory(application._settings.database_url)() as session:
+        # 활성 보직이어도 Mina의 실제 소속 밖이면 `우리 팀장님` 후보가 아니다.
+        session.add(
+            AppointmentRecord(
+                member_id="sora",
+                organization_id="legal",
+                role_id="role:team-lead",
+                position_definition_id="team-lead",
+            )
+        )
+        # 같은 제품팀 보직이어도 이미 끝났다면 현재 관계가 아니다.
+        session.add(
+            AppointmentRecord(
+                member_id="hyeon",
+                organization_id="product",
+                role_id="role:team-lead",
+                position_definition_id="team-lead",
+                valid_from=now - timedelta(days=2),
+                valid_until=now - timedelta(days=1),
+            )
+        )
+        # member 원장이 비활성이면 유효한 appointment만으로 되살리지 않는다.
+        session.get(MemberRecord, "minseok").record_status = "inactive"
+        session.add(
+            AppointmentRecord(
+                member_id="minseok",
+                organization_id="product",
+                role_id="role:team-lead",
+                position_definition_id="team-lead",
+            )
+        )
+        session.commit()
+
+    first = client.get("/api/graph/search", headers=MINA, params={"q": "우리 팀장님"}).json()
+    assert [node["id"] for node in first["nodes"] if node["kind"] == "person"] == ["jiho"]
+
+    with make_session_factory(application._settings.database_url)() as session:
+        session.add(
+            AppointmentRecord(
+                member_id="yuna",
+                organization_id="product",
+                role_id="role:team-lead",
+                position_definition_id="team-lead",
+            )
+        )
+        session.commit()
+
+    ambiguous = client.get("/api/graph/search", headers=MINA, params={"q": "우리 팀장님"}).json()
+    assert [node["id"] for node in ambiguous["nodes"] if node["kind"] == "person"] == ["jiho", "yuna"]
+
+
+def test_a_position_reference_can_reach_the_heads_of_the_current_org_ancestors(tmp_path) -> None:
+    from ax_workspace.platform.persistence import AppointmentRecord, make_session_factory
+
+    client, application = _stack(tmp_path)
+    with make_session_factory(application._settings.database_url)() as session:
+        session.add(
+            AppointmentRecord(
+                member_id="yuna",
+                organization_id="product-division",
+                role_id="role:executive",
+                position_definition_id="division-head",
+            )
+        )
+        session.commit()
+
+    found = client.get("/api/graph/search", headers=MINA, params={"q": "저희 본부장님"}).json()
+
+    people = [node for node in found["nodes"] if node["kind"] == "person"]
+    assert [node["id"] for node in people] == ["yuna"]
+    assert people[0]["match"]["organization_id"] == "product-division"
+
+
 def test_a_delegated_turn_walks_the_same_authorized_graph(tmp_path, monkeypatch) -> None:
     from ax_workspace.entrypoints.mcp import McpReportsFacade
 

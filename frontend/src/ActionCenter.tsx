@@ -38,6 +38,8 @@ const decisionLabel: Record<string, string> = {
   negotiate: "조정 요청",
   reject: "거절",
   decline: "거절",
+  confirm: "확정",
+  approve: "승인",
   approved: "승인",
   rejected: "거절",
 };
@@ -356,7 +358,11 @@ export function ActionItemDrawer({
     setBusy(true);
     onError(null);
     try {
-      await runActionCommand(detail.action_item_id, command.id, { expected_version: detail.expected_version, ...payload });
+      await runActionCommand(detail.action_item_id, command.id, {
+        expected_version: detail.expected_version,
+        ...(command.id === "confirm" ? { base_submission_version: detail.submission_version } : {}),
+        ...payload,
+      });
       // The judgement is persisted; only claim it is reflected once every affected projection has settled.
       const reflected = await onDone();
       onNotice?.(reflected ? `'${detail.subject}' 판단을 반영했습니다.` : `'${detail.subject}' 판단을 저장했습니다.`);

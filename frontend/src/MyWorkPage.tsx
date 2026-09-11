@@ -12,6 +12,7 @@ import {
   getTasks,
   getWorkRequestAssigneeCandidates,
   getWorkRequestCcCandidates,
+  getWorkRequest,
   getWorkRequests,
   transitionDirectTask,
   updateTask,
@@ -54,6 +55,9 @@ type MyWorkPageProps = {
   /** Open this Task as soon as the page mounts — how another surface hands a person over to the work itself. */
   focusTaskId?: string | null;
   onFocusHandled?: () => void;
+  /** Open this WorkRequest through its own authorized read, without making the caller carry a stale projection. */
+  focusWorkRequestId?: string | null;
+  onRequestFocusHandled?: () => void;
 };
 
 type TaskFilter = "all" | "active" | TaskState;
@@ -84,6 +88,8 @@ export function MyWorkPage({
   onRegisterRefresh,
   focusTaskId,
   onFocusHandled,
+  focusWorkRequestId,
+  onRequestFocusHandled,
 }: MyWorkPageProps) {
   const me = personName(personaName);
   const [tasks, setTasks] = useState<DirectTask[]>([]);
@@ -128,7 +134,12 @@ export function MyWorkPage({
     setAllRequests(requests);
     setSentAssignments(nextSent);
     setSelectedTask((current) => (current ? nextTasks.find((task) => task.task_id === current.task_id) ?? null : null));
-    setSelectedRequest((current) => (current ? requests.find((request) => request.request_id === current.request_id) ?? null : null));
+    setSelectedRequest((current) => {
+      if (!current) return null;
+      const next = requests.find((request) => request.request_id === current.request_id);
+      // A list refresh must not throw away the permission-safe references loaded by the detail read.
+      return next ? { ...current, ...next } : null;
+    });
   }, [canAssignTasks, personaId]);
 
   useEffect(() => {
@@ -255,11 +266,25 @@ export function MyWorkPage({
     }
   };
 
+  const openWorkRequest = async (requestId: string) => {
+    onError(null);
+    try {
+      setSelectedRequest(await getWorkRequest(requestId));
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "업무 요청 상세를 불러오지 못했습니다.");
+    }
+  };
+
   // Another surface handed this person to one piece of work: open it, once, and let that surface forget it.
   useEffect(() => {
     if (!focusTaskId) return;
     void openDerivedTask(focusTaskId).finally(() => onFocusHandled?.());
   }, [focusTaskId]);
+
+  useEffect(() => {
+    if (!focusWorkRequestId) return;
+    void openWorkRequest(focusWorkRequestId).finally(() => onRequestFocusHandled?.());
+  }, [focusWorkRequestId]);
 
   /** Follow a Task back to whatever the server said its source is. Only sources it allowed ever reach here. */
   const openSource = async (source: { type: string; id: string }) => {
@@ -272,10 +297,9 @@ export function MyWorkPage({
         return;
       }
       if (source.type !== "work_request") return;
-      const request = (await getWorkRequests()).find((row) => row.request_id === source.id) ?? null;
       setSelectedTask(null);
       setRelatedTask(null);
-      setSelectedRequest(request);
+      await openWorkRequest(source.id);
     } catch (error) {
       onError(error instanceof Error ? error.message : "출처를 열지 못했습니다.");
     }
@@ -436,7 +460,7 @@ export function MyWorkPage({
               counterpart="requester"
               hint="판단이 끝난 요청도 기록으로 남습니다"
               label="받은 업무"
-              onOpen={setSelectedRequest}
+              onOpen={(request) => void openWorkRequest(request.request_id)}
               people={people}
               personaId={personaId}
               requests={requestsToMe}
@@ -448,7 +472,7 @@ export function MyWorkPage({
                 emptyTitle="보낸 업무가 없습니다"
                 hint="조정 요청을 받으면 상세에서 내용을 고쳐 재상신합니다"
                 label="보낸 업무"
-                onOpen={setSelectedRequest}
+                onOpen={(request) => void openWorkRequest(request.request_id)}
                 people={people}
                 personaId={personaId}
                 requests={sentRequests}
@@ -505,7 +529,7 @@ export function MyWorkPage({
               emptyTitle="참조된 업무가 없습니다"
               hint="읽고 논의할 수 있지만 판단은 담당자가 합니다"
               label="참조된 업무"
-              onOpen={setSelectedRequest}
+              onOpen={(request) => void openWorkRequest(request.request_id)}
               people={people}
               personaId={personaId}
               requests={ccRequests}
@@ -523,7 +547,7 @@ export function MyWorkPage({
           ) : view === "timeline" ? (
             <TaskTimeline onOpen={setSelectedTask} tasks={filter === "active" ? sorted : visibleTasks} />
           ) : (
-            <table className="plain-table">
+            <table className="plain-table my-work-task-table">
               <thead>
                 <tr>
                   <th>업무명</th>
@@ -531,9 +555,9 @@ export function MyWorkPage({
                   {/* v2 15: 좁아지면 시작일이 가장 먼저 숨는다. 업무명·상태·기한은 끝까지 남는다 */}
                   <th className="center col-start-date">시작일</th>
                   <th className="center">기한</th>
-                  <th className="center">담당자</th>
-                  <th className="center">출처</th>
-                  <th className="end">액션</th>
+                  <th className="center col-assignee">담당자</th>
+                  <th className="center col-source">출처</th>
+                  <th className="end col-actions">액션</th>
                 </tr>
               </thead>
               <tbody>
@@ -697,9 +721,9 @@ function TaskTableRow({
       <td className="center">
         <DueText task={task} today={today} />
       </td>
-      <td className="center">나</td>
-      <td className="center">{requester}</td>
-      <td className="end">
+      <td className="center col-assignee">나</td>
+      <td className="center col-source">{requester}</td>
+      <td className="end col-actions">
         <div className="task-actions">{actions}</div>
       </td>
     </tr>

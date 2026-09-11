@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "measured_on": "2026-09-08",
+  "baseline_head": "449cc71",
+  "environment": {
+    "browser": "Google Chrome 152.0.7977.76 (headless)",
+    "host": "Apple M3 Max, 48 GiB, macOS 26.6.2",
+    "low_end_simulation": "Chrome DevTools Protocol CPU throttling rate 4x",
+    "network": "localhost; transfer budgets are enforced independently from network latency"
+  },
+  "renderer": {
+    "type": "transparent AVIF img plus CSS transform animation",
+    "javascript_render_loop": false,
+    "background_behavior": "motion paused when document visibility is hidden",
+    "reduced_motion_behavior": "all character animation and transition disabled"
+  },
+  "measurement": {
+    "selected_asset_bytes_worst_case": 101087,
+    "catalog_assets": 9,
+    "catalog_transfer_bytes": 597070,
+    "catalog_decoded_rgba_bytes": 14479360,
+    "selected_cold_load_and_decode_ms": 33.5,
+    "catalog_cold_load_and_decode_ms": 56.8,
+    "slowest_asset_cold_load_and_decode_ms": 56.8,
+    "frame_p95_ms": 16.8,
+    "picker_js_heap_delta_bytes": 3008064,
+    "idle_main_thread_task_ms_per_2s": 1.852
+  },
+  "budgets": {
+    "selected_asset_bytes_max": 120000,
+    "catalog_transfer_bytes_max": 650000,
+    "catalog_decoded_rgba_bytes_max": 16000000,
+    "selected_cold_load_and_decode_ms_max": 800,
+    "catalog_cold_load_and_decode_ms_max": 2000,
+    "frame_p95_ms_max": 40,
+    "picker_js_heap_delta_bytes_max": 8388608,
+    "idle_main_thread_task_ms_per_2s_max": 300
+  },
+  "fallback_evidence": "Blocking every AVIF request still displayed the static poster and opened the ordinary AX drawer.",
+  "energy_scope": "The main-thread task-duration proxy bounds incremental CPU wakeups from the CSS-only renderer; this is not a physical battery discharge test."
+}

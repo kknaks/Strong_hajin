@@ -24,9 +24,8 @@ try {
   await loginAs(page, "mina");
   const navigation = page.getByRole("navigation", { name: "제품 탐색" });
   await navigation.getByRole("button", { name: "내 업무" }).click();
-  const filter = page.locator("#task-state-filter");
-  await filter.waitFor();
-  await filter.selectOption("all");
+  await page.getByRole("button", { name: "진행 중·시작 전·막힘" }).click();
+  await page.getByRole("radio", { name: "전체 상태" }).click();
 
   // A Task with an indexed attachment, so the proposing turn can actually read evidence to link on the card.
   const sourceTask = await page.evaluate(async (title) => {
@@ -54,21 +53,21 @@ try {
     { timeout: 30_000, description: "the material worker to index the approval evidence" },
   );
 
-  await page.getByRole("button", { name: "AX" }).click();
-  const createConversation = page.waitForResponse(
-    (response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST",
-  );
+  await page.getByRole("button", { name: "AX", exact: true }).click();
   await page.getByRole("button", { name: "새 AX 대화" }).click();
-  const conversation = await (await createConversation).json();
   await page.getByLabel("AX 메시지").fill(
     [
       `먼저 SCAX MCP의 material_search 도구를 resource_type task, resource_id ${sourceTask.task_id}, 질의 '납기일'로 실제 호출해 첨부 내용을 확인해줘.`,
-      `그 다음 같은 턴에서 task_create_self 도구를 실제로 호출해서 제목 '${taskTitle}'의 내 업무를 생성 제안해줘.`,
+      `그 다음 같은 턴에서 task_create_self 도구를 실제로 호출해서 제목 '${taskTitle}', 기한 2026-09-30인 내 업무를 생성 제안해줘.`,
       "두 도구를 모두 실제로 호출하고, 답변으로만 제안하지 마.",
       "내가 화면에서 승인할 때까지 기다려.",
     ].join(" "),
   );
+  const createConversation = page.waitForResponse(
+    (response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "보내기" }).click();
+  const conversation = await (await createConversation).json();
 
   const pending = await pollFor(
     page,
@@ -94,11 +93,12 @@ try {
   const cardTitle = ((await card.locator("b").first().textContent()) ?? "").trim();
   if (cardTitle !== taskTitle) throw new Error(`card title is not the real work title: ${JSON.stringify(cardTitle)}`);
   const kicker = ((await card.locator(".ax-card-kicker").textContent()) ?? "").trim();
-  if (!kicker.includes("업무 생성")) throw new Error(`card kicker lacks the operation label: ${JSON.stringify(kicker)}`);
-  const previewRows = await card.locator(".ax-preview-row dt").allTextContents();
-  if (!previewRows.includes("담당")) throw new Error(`card preview rows: ${JSON.stringify(previewRows)}`);
+  if (kicker !== "SC AX") throw new Error(`card kicker is not the approved task-card label: ${JSON.stringify(kicker)}`);
+  const previewRows = await card.locator(".action-task-summary dt").allTextContents();
+  if (!previewRows.includes("담당자")) throw new Error(`card preview rows: ${JSON.stringify(previewRows)}`);
 
-  // The attachment the turn actually read is linked on the card, and it names the real file.
+  // The server keeps the exact file evidence on the Action preview. Evidence is not silently promoted into a Task
+  // attachment: only explicit reference ids and staged material drafts belong in the card's attachment list.
   const turnEvidence = await page.evaluate(async ({ conversationId, turnId }) => {
     const current = await (await fetch(`/api/conversations/${conversationId}`, { headers: { "X-Demo-Persona": "mina" } })).json();
     return (current.material_evidence ?? []).filter((item) => item.turn_id === turnId).map((item) => item.name);
@@ -108,27 +108,38 @@ try {
   if (!evidenceRow || !evidenceRow.value.includes(fileName)) {
     throw new Error(`server preview lacks the evidence link: ${JSON.stringify({ evidenceRow, turnEvidence })}`);
   }
-  const renderedEvidence = ((await card.locator(".ax-preview-row.evidence dd").textContent()) ?? "").trim();
-  if (!renderedEvidence.includes(fileName)) throw new Error(`card evidence row: ${JSON.stringify(renderedEvidence)}`);
+  const renderedAttachment = ((await card.getByRole("region", { name: "첨부" }).textContent()) ?? "").trim();
+  const expectedAttachments = [
+    ...((pending.edit_contract?.values?.reference_task_ids ?? []).includes(sourceTask.task_id) ? [sourceTitle] : []),
+    ...(pending.material_drafts ?? []).map((item) => item.name),
+  ];
+  if (expectedAttachments.some((name) => !renderedAttachment.includes(name))) {
+    throw new Error(`card attachment list: ${JSON.stringify({ expectedAttachments, renderedAttachment })}`);
+  }
+  if (!expectedAttachments.includes(fileName) && renderedAttachment.includes(fileName)) {
+    throw new Error("read evidence was incorrectly promoted into a Task attachment");
+  }
 
   await page.screenshot({ path: "test-results/chat-approval-pending-e2e.png", fullPage: true });
 
   // Approve from the chat; the current My Work surface must re-read /api/my-work and show the task, filter intact.
   const myWorkReread = page.waitForRequest((request) => request.url().endsWith("/api/my-work"), { timeout: 20_000 });
   const decided = page.waitForResponse(
-    (response) => response.url().endsWith(`/api/actions/${pending.action_id}/decide`) && response.request().method() === "POST",
+    (response) => response.url().endsWith(`/api/action-items/${pending.action_id}/commands/confirm`) && response.request().method() === "POST",
   );
-  await card.getByRole("button", { name: "승인" }).click();
+  await card.getByRole("button", { name: "등록" }).click();
   const decideResponse = await decided;
   if (decideResponse.status() !== 200) throw new Error(`decide returned ${decideResponse.status()}`);
   await myWorkReread;
   const taskCard = page.locator(".canvas .task-card, .canvas .task-row, .canvas tr", { hasText: taskTitle }).first();
   await taskCard.waitFor({ timeout: 20_000 });
-  if ((await filter.inputValue()) !== "all") throw new Error("the My Work filter was reset (page remounted)");
+  if ((await page.getByRole("button", { name: "전체 상태" }).count()) !== 1) {
+    throw new Error("the My Work filter was reset (page remounted)");
+  }
   if ((await page.getByText("판단은 저장되었지만 화면을 갱신하지 못했습니다.").count()) !== 0) {
     throw new Error("projection refresh reported a failure after a successful approval");
   }
-  await card.locator("small.approved").waitFor({ timeout: 10_000 });
+  await page.locator(`.ax-action-card[data-action-id="${pending.action_id}"][data-state="approved"]`).waitFor({ timeout: 10_000 });
 
   // Exactly one canonical effect: the ledger holds one task with that title and the Action is approved once.
   const ledger = await page.evaluate(async ({ actionId, title }) => {
@@ -153,7 +164,8 @@ try {
       action_id: pending.action_id,
       task_id: ledger.action.result.task_id,
       preview_rows: previewRows,
-      evidence: renderedEvidence,
+      evidence: evidenceRow.value,
+      attachment: renderedAttachment,
     }),
   );
 } finally {

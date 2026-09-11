@@ -17,6 +17,10 @@ from ax_workspace.modules.organization_access.administration import (
 )
 from ax_workspace.modules.organization_access.catalog import UnknownCapability
 from ax_workspace.modules.organization_access.credentials import AuthenticationFailed
+from ax_workspace.modules.organization_access.application import (
+    AssistantCharacterPreferenceConflict,
+    UnsupportedAssistantCharacter,
+)
 from ax_workspace.modules.organization_access.domain import Principal
 from ax_workspace.entrypoints.http_auth import (
     SESSION_COOKIE,
@@ -42,6 +46,7 @@ from ax_workspace.modules.ax_execution.actions import ActionAccessDenied, Action
 from ax_workspace.bootstrap.seed import DEMO_PASSWORD, SEEDED_MEMBERS
 from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
+from ax_workspace.modules.notifications import NotificationNotFound
 
 
 class MemberResponse(BaseModel):
@@ -96,6 +101,12 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=200)
 
 
+class SetAssistantCharacterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    character_key: str = Field(min_length=1, max_length=100)
+    expected_version: int = Field(ge=0)
+
+
 class CreateTaskRequest(BaseModel):
     title: str
     description: str | None = None
@@ -140,6 +151,7 @@ class AssignToProjectRequest(BaseModel):
 class CreateMeetingRequest(BaseModel):
     organization_id: str = Field(min_length=1, max_length=100)
     title: str = Field(min_length=1, max_length=300)
+    description: str | None = None
     starts_at: datetime
     ends_at: datetime
     visibility: Literal["public", "private"] = "private"
@@ -149,9 +161,22 @@ class CreateMeetingRequest(BaseModel):
 class UpdateMeetingRequest(BaseModel):
     expected_version: int = Field(ge=1)
     title: str | None = Field(default=None, max_length=300)
+    description: str | None = None
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     visibility: Literal["public", "private"] | None = None
+
+
+class MeetingMaterialLinkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=1)
+    url: str = Field(min_length=1, max_length=500)
+    label: str = Field(min_length=1, max_length=300)
+
+
+class MeetingMaterialMutationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=1)
 
 
 class MeetingShareRequest(BaseModel):
@@ -300,6 +325,7 @@ class ConversationContextReferenceRequest(BaseModel):
 class SendConversationMessageRequest(BaseModel):
     body: str
     context: list[ConversationContextReferenceRequest] = Field(default_factory=list)
+    follow_up_candidate_id: UUID | None = None
 
 
 class CreateWorkRequestRequest(BaseModel):
@@ -371,10 +397,25 @@ class ChecklistOrderRequest(BaseModel):
 class ActionCommandRequest(BaseModel):
     """What a command needs from the caller; the server decides which command is available at all."""
 
+    model_config = ConfigDict(extra="forbid")
+
     #: Always required: a command answers the version it was shown, so a stale write cannot slip through.
     expected_version: int
+    #: Editable AX confirmations also answer the immutable Submission they were opened from.
+    base_submission_version: int | None = None
+    #: Raw editor values. The owning server operation normalizes and authorizes them again before executing.
+    draft: dict[str, object] | None = None
+    #: Expiring Action-bound material identities selected for this confirmation, separate from typed Task fields.
+    attachment_draft_ids: list[UUID] | None = None
     reason: str | None = Field(default=None, max_length=4000)
     changes: dict[str, object] | None = None
+
+
+class ActionMaterialLinkDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(min_length=1, max_length=500)
+    label: str = Field(min_length=1, max_length=300)
 
 
 class WorkRequestAmendRequest(BaseModel):
@@ -434,6 +475,8 @@ class ConversationCancelRequest(BaseModel):
 
 
 def _runtime_error(error: Exception) -> HTTPException:
+    if isinstance(error, NotificationNotFound):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
     if isinstance(error, ConversationQueueOverflow):
         return HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -553,6 +596,20 @@ def create_app(
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="로그인이 필요합니다.")
             return app.state.workflow_application.my_organization_profile(principal)
 
+        @app.put("/api/profile/preferences/assistant-character")
+        def set_assistant_character(
+            request: SetAssistantCharacterRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.set_assistant_character(
+                    principal, request.character_key, request.expected_version
+                )
+            except UnsupportedAssistantCharacter as error:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
+            except AssistantCharacterPreferenceConflict as error:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
         @app.get("/api/my-work")
         def my_work(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
             return app.state.workflow_application.my_work(principal)
@@ -571,6 +628,7 @@ def create_app(
                     principal,
                     organization_id=request.organization_id,
                     title=request.title,
+                    description=request.description,
                     starts_at=request.starts_at,
                     ends_at=request.ends_at,
                     visibility=request.visibility,
@@ -600,6 +658,77 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
+        @app.post("/api/meetings/{meeting_id}/materials/links", status_code=status.HTTP_201_CREATED)
+        def attach_meeting_material_link(
+            meeting_id: UUID,
+            request: MeetingMaterialLinkRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.attach_meeting_material_link(
+                    principal,
+                    meeting_id,
+                    request.expected_version,
+                    url=request.url,
+                    label=request.label,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/meetings/{meeting_id}/materials", status_code=status.HTTP_201_CREATED)
+        async def attach_meeting_material(
+            meeting_id: UUID,
+            expected_version: int = Form(ge=1),
+            file: UploadFile = File(...),
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.attach_meeting_material(
+                    principal,
+                    meeting_id,
+                    expected_version,
+                    name=file.filename or "material",
+                    content_type=file.content_type or "application/octet-stream",
+                    data=await file.read(),
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/meetings/{meeting_id}/material-bindings/{binding_id}/detach")
+        def detach_meeting_material(
+            meeting_id: UUID,
+            binding_id: UUID,
+            request: MeetingMaterialMutationRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.detach_meeting_material(
+                    principal, meeting_id, binding_id, request.expected_version
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/meetings/{meeting_id}/material-bindings/{binding_id}/replace")
+        async def replace_meeting_material(
+            meeting_id: UUID,
+            binding_id: UUID,
+            expected_version: int = Form(ge=1),
+            file: UploadFile = File(...),
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.replace_meeting_material(
+                    principal,
+                    meeting_id,
+                    binding_id,
+                    expected_version,
+                    name=file.filename or "material",
+                    content_type=file.content_type or "application/octet-stream",
+                    data=await file.read(),
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
         @app.post("/api/meetings/{meeting_id}/shares")
         def share_meeting(
             meeting_id: UUID,
@@ -624,6 +753,20 @@ def create_app(
                 return app.state.workflow_application.revoke_meeting_share(
                     principal, meeting_id, member_id, request.expected_version
                 )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/notifications")
+        def list_notifications(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+            return app.state.workflow_application.list_notifications(principal)
+
+        @app.post("/api/notifications/{notification_id}/read")
+        def mark_notification_read(
+            notification_id: UUID,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.mark_notification_read(principal, notification_id)
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -815,7 +958,14 @@ def create_app(
         @app.post("/api/conversations/{conversation_id}/messages", status_code=status.HTTP_202_ACCEPTED)
         def send_conversation_message(conversation_id: UUID, request: SendConversationMessageRequest, principal: Principal = Depends(developer_principal), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, object]:
             try:
-                return app.state.workflow_application.accept_conversation_message(principal, request.body, conversation_id, request.context, idempotency_key)
+                return app.state.workflow_application.accept_conversation_message(
+                    principal,
+                    request.body,
+                    conversation_id,
+                    request.context,
+                    idempotency_key,
+                    request.follow_up_candidate_id,
+                )
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -1527,6 +1677,49 @@ def create_app(
         def action_item_detail(action_item_id: str, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
             try:
                 return app.state.workflow_application.action_item_detail(principal, action_item_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/action-items/{action_item_id}/material-drafts/links", status_code=status.HTTP_201_CREATED)
+        def stage_action_material_link(
+            action_item_id: UUID,
+            request: ActionMaterialLinkDraftRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.stage_action_material_link(
+                    principal, action_item_id, url=request.url, label=request.label
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/action-items/{action_item_id}/material-drafts/files", status_code=status.HTTP_201_CREATED)
+        async def stage_action_material_file(
+            action_item_id: UUID,
+            file: UploadFile = File(...),
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.stage_action_material_file(
+                    principal,
+                    action_item_id,
+                    name=file.filename or "material",
+                    content_type=file.content_type or "application/octet-stream",
+                    data=await file.read(),
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/action-items/{action_item_id}/material-drafts/{material_draft_id}/discard")
+        def discard_action_material_draft(
+            action_item_id: UUID,
+            material_draft_id: UUID,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            try:
+                return app.state.workflow_application.discard_action_material_draft(
+                    principal, action_item_id, material_draft_id
+                )
             except Exception as error:
                 raise _runtime_error(error) from error
 

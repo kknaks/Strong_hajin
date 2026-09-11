@@ -8,6 +8,7 @@ vi.mock("./api", () => ({
   createMeetingNote: vi.fn(),
   saveMeetingNote: vi.fn(),
   finalizeMeetingNote: vi.fn(),
+  meetingMaterialContentUrl: (meetingId: string, materialId: string) => `/api/meetings/${meetingId}/materials/${materialId}/content`,
   adoptMeetingSummary: vi.fn(),
   promoteMeetingFollowup: vi.fn(),
   startMeetingRecording: vi.fn(),
@@ -48,6 +49,7 @@ const meeting = (overrides: Partial<MeetingDetail> = {}): MeetingDetail => ({
     { member_id: "mina", display_name: "민아 (구성원)" },
     { member_id: "jiho", display_name: "지호 (팀장)" },
   ],
+  materials: [],
   note: null,
   recordings: [],
   summaries: [],
@@ -121,14 +123,93 @@ const recordedMeeting = () =>
     ],
   });
 
-function renderDrawer(detail: MeetingDetail) {
+function renderDrawer(detail: MeetingDetail, onOpenTask = vi.fn()) {
   vi.mocked(api.getMeeting).mockResolvedValue(detail);
   const onError = vi.fn();
   const onNotice = vi.fn();
   const onChanged = vi.fn().mockResolvedValue(undefined);
-  render(<MeetingDrawer meetingId={detail.meeting_id} onChanged={onChanged} onClose={vi.fn()} onError={onError} onNotice={onNotice} personaId="mina" />);
-  return { onError, onNotice, onChanged };
+  render(<MeetingDrawer meetingId={detail.meeting_id} onChanged={onChanged} onClose={vi.fn()} onError={onError} onNotice={onNotice} onOpenTask={onOpenTask} personaId="mina" />);
+  return { onError, onNotice, onChanged, onOpenTask };
 }
+
+it("shows the Meeting's current attachments in Meeting detail without inventing note-version bindings", async () => {
+  const detail = meeting();
+  detail.materials = [
+    {
+      material_id: "link-1", binding_id: "binding-1", meeting_id: "m1", meeting_version: 4,
+      kind: "input", name: "회의 안건", content_type: "text/uri-list", size_bytes: 0,
+      source_kind: "external_link", url: "https://example.com/agenda", mutable_source: true,
+      uploaded_by: "mina", created_at: "2026-09-09T01:00:00Z", removed_at: null, extraction: null,
+    },
+    {
+      material_id: "file-1", binding_id: "binding-2", meeting_id: "m1", meeting_version: 4,
+      kind: "input", name: "회의안.pdf", content_type: "application/pdf", size_bytes: 512,
+      source_kind: "file", url: null, mutable_source: false,
+      uploaded_by: "mina", created_at: "2026-09-09T01:01:00Z", removed_at: null, extraction: null,
+    },
+    {
+      material_id: "task-1", binding_id: "binding-3", meeting_id: "m1", meeting_version: 4,
+      kind: "input", name: "출시 준비 업무", content_type: "application/x-scax-reference", size_bytes: 0,
+      source_kind: "resource_ref", url: null, mutable_source: true,
+      resource: { type: "task", id: "task-42", title: "출시 준비 업무" },
+      uploaded_by: "mina", created_at: "2026-09-09T01:02:00Z", removed_at: null, extraction: null,
+    },
+  ];
+  const onOpenTask = vi.fn();
+  renderDrawer(detail, onOpenTask);
+
+  const materials = await screen.findByRole("region", { name: "현재 회의 첨부" });
+  expect(within(materials).getByRole("link", { name: "회의 안건" }).getAttribute("href")).toBe("https://example.com/agenda");
+  expect(within(materials).getByRole("link", { name: "회의안.pdf" }).getAttribute("href")).toBe("/api/meetings/m1/materials/file-1/content");
+  fireEvent.click(within(materials).getByRole("button", { name: "출시 준비 업무" }));
+  expect(onOpenTask).toHaveBeenCalledWith("task-42");
+  expect(within(materials).getByText(/현재 목록/)).toBeTruthy();
+  expect(within(materials).queryByText(/회의록 v/)).toBeNull();
+});
+
+it("shows AX creation lineage and the frozen initial-note sources in Meeting detail", async () => {
+  renderDrawer(meeting({
+    lineage: {
+      source_action_item_id: "action-1",
+      source_decision_item_id: "action-1",
+      source_submission_id: "submission-2",
+      source_review_decision_id: "review-1",
+      confirmed_by: "mina",
+    },
+    note: {
+      note_id: "note-1",
+      lifecycle: "draft",
+      version: 2,
+      body: "출시 범위를 다시 확인한다.",
+      source_status: "resolved",
+      versions: [{
+        version_id: "note-version-1",
+        version: 1,
+        body: "출시 범위를 확인한다.",
+        created_by: "mina",
+        created_at: "2026-09-08T00:00:00Z",
+        source_status: "resolved",
+        source_evidence: [{ source_type: "conversation_turn", source_id: "turn-1", label: "과거 대화 · 출시 논의", excerpt: "알림은 제외한다" }],
+      }, {
+        version_id: "note-version-2",
+        version: 2,
+        body: "출시 범위를 다시 확인한다.",
+        created_by: "mina",
+        created_at: "2026-09-08T01:00:00Z",
+        source_status: null,
+        source_evidence: [],
+      }],
+      finalized_at: null,
+      finalized_by: null,
+    },
+  }));
+
+  expect(await screen.findByText("AX 제안에서 생성됨")).toBeTruthy();
+  const sources = screen.getByRole("region", { name: "초기 회의록 근거" });
+  expect(within(sources).getByText("확인된 대화·자료 기반")).toBeTruthy();
+  expect(within(sources).getByText("과거 대화 · 출시 논의")).toBeTruthy();
+  expect(within(sources).getByText("알림은 제외한다")).toBeTruthy();
+});
 
 describe("회의에서 나온 후속 업무", () => {
   afterEach(() => {

@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any, Protocol
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from ax_workspace.modules.organization_access.domain import (
     PROJECT_READ,
@@ -16,6 +17,9 @@ from ax_workspace.modules.organization_access.domain import (
     TASK_SELF_MANAGE,
     WORK_REQUEST_READ,
 )
+
+
+_TASK_TIMEZONE = ZoneInfo("Asia/Seoul")
 
 
 class TaskState(StrEnum):
@@ -55,6 +59,9 @@ class TaskRepository(Protocol):
         start_date: date | None = None,
         due_date: date | None = None,
         source_action_item_id: UUID | None = None,
+        source_decision_item_id: UUID | None = None,
+        source_submission_id: UUID | None = None,
+        source_review_decision_id: UUID | None = None,
     ) -> Any: ...
     def task(self, task_id: UUID, owner_id: str, *, lock: bool = False) -> Any: ...
     def task_by_id(self, task_id: UUID) -> Any | None: ...
@@ -147,6 +154,9 @@ class TaskApplication:
         start_date: date | None = None,
         due_date: date | None = None,
         source_action_item_id: UUID | None = None,
+        source_decision_item_id: UUID | None = None,
+        source_submission_id: UUID | None = None,
+        source_review_decision_id: UUID | None = None,
         checklist: list[str] | None = None,
         reference_task_ids: list[UUID] | None = None,
         parent_task_id: UUID | None = None,
@@ -163,6 +173,9 @@ class TaskApplication:
             title.strip(),
             causation_key,
             source_action_item_id=source_action_item_id,
+            source_decision_item_id=source_decision_item_id,
+            source_submission_id=source_submission_id,
+            source_review_decision_id=source_review_decision_id,
             description=_clean_text(description),
             start_date=start_date,
             due_date=due_date,
@@ -654,6 +667,8 @@ class TaskApplication:
             raise InvalidTaskTransition("block reason is required")
         previous_state = task.state
         task.state = target
+        if previous_state == TaskState.OPEN and target is TaskState.IN_PROGRESS and task.start_date is None:
+            task.start_date = datetime.now(UTC).astimezone(_TASK_TIMEZONE).date()
         task.block_reason = reason.strip() if target is TaskState.BLOCKED else None
         task.version += 1
         self.repository.touch(task)
@@ -862,6 +877,31 @@ class TaskApplication:
             )
         item.updated_at = datetime.now(UTC)
         return _checklist_view(item, task)
+
+    def add_progress_note(
+        self,
+        principal: Principal,
+        task_id: UUID,
+        summary: str,
+        *,
+        expected_task_version: int,
+    ) -> dict[str, Any]:
+        """Append a person's progress fact to an existing Task without creating a second work object."""
+        task = self._holding(principal, task_id, expected_task_version)
+        if TaskState(task.state) in {TaskState.DONE, TaskState.CANCELLED}:
+            raise TaskError("a closed task cannot receive a progress note")
+        cleaned = " ".join(summary.split())
+        if not cleaned:
+            raise TaskError("progress note summary is required")
+        cleaned = cleaned[:300]
+        self._moved(task)
+        self.repository.record_activity(
+            task,
+            str(principal.id),
+            "task.progress.noted",
+            f"진행 메모: {cleaned}",
+        )
+        return {"task_id": str(task.id), "task_version": int(task.version), "summary": cleaned}
 
     def archive_checklist_item(
         self,

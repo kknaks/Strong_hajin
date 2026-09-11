@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { getMemberDirectory, getMyWork, getSession, getWorkRequests, logout } from "./api";
+import { getMemberDirectory, getMyWork, getSession, getWorkRequests, logout, setAssistantCharacterPreference } from "./api";
+import { AssistantLauncher } from "./AssistantCharacter";
+import { AssistantCharacterPicker } from "./AssistantCharacterPicker";
+import {
+  advanceAssistantCompletionObservation,
+  deriveAssistantPresentationState,
+  initialAssistantCompletionObservation,
+} from "./assistantPresentation";
 import { CalendarPage } from "./CalendarPage";
 import { ChatDrawer, contextKey, type LabeledContextReference } from "./chat/ChatDrawer";
 import { NEW_DRAFT_KEY, useConversations } from "./chat/useConversations";
@@ -39,9 +46,9 @@ const surfaceLabel: Record<ProductSurface, string> = {
 export default function App() {
   const [session, setSession] = useState<OrganizationProfile | null | undefined>(undefined);
   const [focusTaskId, setFocusTaskId] = useState<string | null>(null);
+  const [focusWorkRequestId, setFocusWorkRequestId] = useState<string | null>(null);
   const personaId = session?.member_id ?? "";
   const [personas, setPersonas] = useState<Persona[]>([]);
-  const [graphFocus, setGraphFocus] = useState<string | null>(null);
   const [focusMeetingId, setFocusMeetingId] = useState<string | null>(null);
   const capabilities = session?.capabilities ?? null;
   const organizationNames = session?.organizations.map((organization) => organization.name) ?? [];
@@ -51,6 +58,9 @@ export default function App() {
   // 1280 단에서만 쓰이는 사이드바 덮개. 그 위 폭에서는 CSS 가 사이드바를 늘 보이게 해서 값이 무시된다.
   const [railOpen, setRailOpen] = useState(false);
   const [isAxOpen, setIsAxOpen] = useState(false);
+  const [isCharacterPickerOpen, setIsCharacterPickerOpen] = useState(false);
+  const [characterPreferenceBusy, setCharacterPreferenceBusy] = useState(false);
+  const [characterPreferenceError, setCharacterPreferenceError] = useState<string | null>(null);
   const [contextOptions, setContextOptions] = useState<LabeledContextReference[]>([]);
   const [selectedContextKey, setSelectedContextKey] = useState("");
   // Settlement seam: the visible surface registers its own reload here, so an approved AX effect can re-read every
@@ -63,6 +73,19 @@ export default function App() {
   const contextGeneration = useRef(0);
   const reportError = useCallback((text: string) => setError(text), []);
   const chat = useConversations({ personaId, isOpen: isAxOpen, onError: reportError });
+  const [assistantObservation, setAssistantObservation] = useState(initialAssistantCompletionObservation);
+
+  useEffect(() => {
+    setAssistantObservation((current) => advanceAssistantCompletionObservation(current, chat.conversations, isAxOpen));
+  }, [chat.conversations, isAxOpen]);
+
+  useEffect(() => setAssistantObservation(initialAssistantCompletionObservation), [personaId]);
+
+  const assistantState = deriveAssistantPresentationState({
+    conversations: chat.conversations,
+    answerReady: !isAxOpen && assistantObservation.answerReadyTurnId !== null,
+    hovered: false,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -115,6 +138,27 @@ export default function App() {
     setSession(null);
   }
 
+  async function chooseAssistantCharacter(characterKey: string) {
+    if (!session || characterPreferenceBusy) return;
+    const previous = session.assistant_character ?? { character_key: "cream-cat", version: 0 };
+    setCharacterPreferenceError(null);
+    setCharacterPreferenceBusy(true);
+    setSession({ ...session, assistant_character: { ...previous, character_key: characterKey } });
+    try {
+      const saved = await setAssistantCharacterPreference(characterKey, previous.version);
+      setSession((current) => current?.member_id === session.member_id
+        ? { ...current, assistant_character: saved }
+        : current);
+    } catch (reason) {
+      setSession((current) => current?.member_id === session.member_id
+        ? { ...current, assistant_character: previous }
+        : current);
+      setCharacterPreferenceError(reason instanceof Error ? reason.message : "AX 캐릭터 설정을 저장하지 못했습니다.");
+    } finally {
+      setCharacterPreferenceBusy(false);
+    }
+  }
+
   // Current-screen context references: typed resource pointers the server re-validates; the browser never sends content.
   // Failures propagate to the caller: a post-approval refresh must not quietly present an empty candidate list.
   const loadContextOptions = useCallback(async () => {
@@ -156,8 +200,8 @@ export default function App() {
 
   async function askAx(text: string) {
     setIsAxOpen(true);
-    const conversation = await chat.start();
-    if (conversation) await chat.send(conversation.conversation_id, text, []);
+    await chat.start();
+    await chat.sendCurrent(text, []);
   }
 
   function askAboutTask(task: DirectTask) {
@@ -176,14 +220,12 @@ export default function App() {
     setIsAxOpen(true);
   }
 
-  async function sendMessage() {
-    if (!chat.draft.trim() || !chat.activeConversation) return;
+  async function sendMessage(bodyOverride?: string) {
+    const body = bodyOverride ?? chat.draft;
+    if (!body.trim()) return;
     const selectedContext = contextOptions.find((item) => contextKey(item) === selectedContextKey);
-    const conversationId = chat.activeConversation.conversation_id;
-    const body = chat.draft;
-    chat.setDraft("", conversationId);
     // The optimistic fragment carries the text from here; a rejected send keeps its own retry/discard controls.
-    await chat.send(conversationId, body, selectedContext ? [stripLabel(selectedContext)] : []);
+    await chat.sendCurrent(body, selectedContext ? [stripLabel(selectedContext)] : []);
   }
 
   /**
@@ -203,17 +245,24 @@ export default function App() {
     return !failed;
   }, [chat, loadContextOptions]);
 
-  async function decideConversationAction(actionId: string, expectedVersion: number, decision: string) {
+  async function decideConversationAction(
+    actionId: string,
+    expectedVersion: number,
+    decision: string,
+    payload: { base_submission_version?: number; draft?: Record<string, unknown> } = {},
+  ) {
     try {
-      await chat.decide(actionId, expectedVersion, decision);
+      await chat.decide(actionId, expectedVersion, decision, payload);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "AX 확인 항목을 처리하지 못했습니다.");
-      return;
+      throw reason;
     }
     // The decision is persisted; claim it is reflected on screen only when every affected projection settled.
     const reflected = await refreshProjections();
     setToast(
-      decision === "approve"
+      decision === "cancel_assignment"
+        ? "업무 요청을 취소했습니다."
+        : decision === "approve" || decision === "confirm"
         ? reflected
           ? "제안을 승인해 반영했습니다."
           : "제안을 승인했습니다."
@@ -278,7 +327,15 @@ export default function App() {
           </span>
           SCAX
         </div>
-        <div className="profile">
+        <button
+          aria-label="내 AX 캐릭터"
+          className="profile"
+          onClick={() => {
+            setCharacterPreferenceError(null);
+            setIsCharacterPickerOpen(true);
+          }}
+          type="button"
+        >
           <span className="avatar md">{personName(currentPersonaName).slice(0, 1)}</span>
           <div>
             <b>{personName(currentPersonaName)}</b>
@@ -287,8 +344,18 @@ export default function App() {
               {organizationNames.length > 0 ? organizationNames.join(" · ") : "소속 없음"}
             </small>
           </div>
-        </div>
+        </button>
         <div className="profile-menu">
+          <button
+            className="btn h30 ghost"
+            onClick={() => {
+              setCharacterPreferenceError(null);
+              setIsCharacterPickerOpen(true);
+            }}
+            type="button"
+          >
+            설정
+          </button>
           <button className="btn h30 ghost" onClick={() => void endSession()} type="button">
             로그아웃
           </button>
@@ -377,7 +444,9 @@ export default function App() {
             {...pageProps}
             {...sharedWorkProps}
             focusTaskId={focusTaskId}
+            focusWorkRequestId={focusWorkRequestId}
             onFocusHandled={() => setFocusTaskId(null)}
+            onRequestFocusHandled={() => setFocusWorkRequestId(null)}
           />
         )}
         {surface === "report" && <DailyReportPage {...pageProps} personaName={currentPersonaName} />}
@@ -385,9 +454,7 @@ export default function App() {
         {surface === "org" && <OrgPage {...pageProps} />}
         {surface === "graph" && (
           <RelationGraphPage
-            focusNodeRef={graphFocus}
             onError={setError}
-            onFocusHandled={() => setGraphFocus(null)}
             onOpenNode={(node) => {
               // Each kind opens where it lives; the surface reads it again with this person's access.
               if (node.kind === "meeting") {
@@ -411,18 +478,37 @@ export default function App() {
             }}
           />
         )}
+
+        {!isAxOpen && (
+          <AssistantLauncher
+            characterKey={session.assistant_character?.character_key}
+            onOpen={() => setIsAxOpen(true)}
+            onPrefill={(prompt) => chat.setDraft(prompt, chat.activeConversation?.conversation_id ?? NEW_DRAFT_KEY)}
+            state={assistantState}
+          />
+        )}
       </section>
 
       {toast && <Toast message={toast} onClose={() => setToast(null)} />}
 
-      {!isAxOpen && (
-        <button className="ax-launcher" onClick={() => setIsAxOpen(true)} type="button">
-          <Icon name="sparkle" size={14} /> AX
-        </button>
+      {isCharacterPickerOpen && (
+        <AssistantCharacterPicker
+          busy={characterPreferenceBusy}
+          currentKey={session.assistant_character?.character_key ?? "cream-cat"}
+          error={characterPreferenceError}
+          onClose={() => {
+            setCharacterPreferenceError(null);
+            setIsCharacterPickerOpen(false);
+          }}
+          onSelect={(characterKey) => void chooseAssistantCharacter(characterKey)}
+        />
       )}
+
       {isAxOpen && (
         <ChatDrawer
           activeConversation={chat.activeConversation}
+          assistantState={assistantState}
+          characterKey={session.assistant_character?.character_key}
           conversations={chat.conversations}
           isProcessing={chat.isProcessing}
           listStatus={chat.listStatus}
@@ -433,17 +519,27 @@ export default function App() {
           onClose={() => setIsAxOpen(false)}
           onDecide={decideConversationAction}
           onDiscardFragment={chat.discardFragment}
+          onFollowUpCandidate={(candidate) => {
+            const conversationId = chat.activeConversation?.conversation_id;
+            return conversationId
+              ? chat.send(conversationId, candidate.user_text, [], undefined, candidate.candidate_id)
+              : Promise.resolve(false);
+          }}
           onMessageChange={(value) => chat.setDraft(value)}
           onRetryFragment={(fragment) => void chat.retryFragment(fragment)}
           onOpenResource={(resource) => {
             // Each item opens where it lives. The surface reads it again with this person's access.
+            setIsAxOpen(false);
             if (resource.resource_type === "task") {
+              setFocusWorkRequestId(null);
               setSurface("work");
               setFocusTaskId(resource.resource_id);
               return;
             }
             if (resource.resource_type === "work_request") {
+              setFocusTaskId(null);
               setSurface("work");
+              setFocusWorkRequestId(resource.resource_id);
               return;
             }
             if (resource.resource_type === "meeting") {
@@ -465,16 +561,22 @@ export default function App() {
             }
             if (resource.resource_type === "report") setSurface("report");
           }}
-          onOpenGraph={(nodeRef) => {
-            // The card is one turn's picture; the surface re-applies this person's access to whatever it draws next.
-            setGraphFocus(nodeRef);
-            setSurface("graph");
+          onOpenTask={(taskId) => {
+            setIsAxOpen(false);
+            setSurface("work");
+            setFocusTaskId(taskId);
+          }}
+          onOpenMeeting={(meetingId) => {
+            setIsAxOpen(false);
+            setSurface("calendar");
+            setFocusMeetingId(meetingId);
           }}
           onRetryList={() => void chat.refreshConversations().catch(() => setError("AX 대화를 불러오지 못했습니다."))}
           onRetryTurn={(turnId) => void chat.retryTurn(turnId)}
           onSelect={chat.select}
-          onSend={() => void sendMessage()}
+          onSend={(body) => void sendMessage(body)}
           onStart={() => void chat.start()}
+          personaId={personaId}
           personaName={currentPersonaName}
           selectedContext={selectedContext}
           surfaceLabel={surfaceLabel[surface]}

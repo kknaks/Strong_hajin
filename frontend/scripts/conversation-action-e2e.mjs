@@ -4,6 +4,7 @@ import { pollFor, loginAs, switchAccount } from "./e2e-helpers.mjs";
 
 const frontendUrl = process.env.SCAX_E2E_URL ?? "http://127.0.0.1:5176";
 const requestTitle = `AX 승인 업무 요청 ${Date.now()}`;
+const referenceTitle = `AX 참고 업무 ${Date.now()}`;
 
 const browser = await chromium.launch({
   executablePath:
@@ -12,26 +13,36 @@ const browser = await chromium.launch({
 });
 
 try {
-  const page = await browser.newPage();
+  const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
   await page.goto(frontendUrl, { waitUntil: "domcontentloaded" });
   await loginAs(page, "mina");
   const navigation = page.getByRole("navigation", { name: "제품 탐색" });
-  await page.getByRole("button", { name: "AX" }).click();
-
-  const createConversationResponse = page.waitForResponse(
-    (response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST",
-  );
+  const reference = await page.evaluate(async (title) => {
+    const response = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, due_date: "2026-09-20" }),
+    });
+    if (!response.ok) throw new Error(await response.text());
+    return response.json();
+  }, referenceTitle);
+  await page.getByRole("button", { name: "AX", exact: true }).click();
   await page.getByRole("button", { name: "새 AX 대화" }).click();
-  const conversation = await (await createConversationResponse).json();
   await page.getByLabel("AX 메시지").fill(
     [
+      `graph_search를 먼저 호출해 '${referenceTitle}' 업무를 찾고,`,
       "SCAX MCP에서 work_request_assignee_candidates를 먼저 호출한 뒤,",
-      `work_request_create로 제목 '${requestTitle}'의 업무 요청을 authorized assignee jiho에게 생성해줘.`,
+      `work_request_create로 제목 '${requestTitle}', 내용 '원안 설명', 기한 2026-09-30, 체크리스트 '수치 검토'의 업무 요청을 authorized assignee jiho에게 생성해줘.`,
+      `찾은 '${referenceTitle}' 업무는 reference_task_ids에 연결해.`,
       "반드시 work_request_create 도구를 실제로 호출해서 ActionItem을 저장해. 답변으로만 제안하지 마.",
       "이 변경은 ActionItem 제안으로 끝내고, 내가 화면에서 승인할 때까지 기다려.",
     ].join(" "),
   );
+  const createConversationResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "보내기" }).click();
+  const conversation = await (await createConversationResponse).json();
 
   const pending = await pollFor(
     page,
@@ -48,7 +59,10 @@ try {
         const tool = current.tool_invocations.find(
           (item) => item.tool_name === "work_request_create" && item.state === "completed",
         );
-        if (!action || !tool) return null;
+        const search = current.tool_invocations.find(
+          (item) => item.tool_name === "graph_search" && item.state === "completed",
+        );
+        if (!action || !tool || !search || !action.edit_contract?.values?.reference_task_ids?.length) return null;
         return action;
       }, conversation.conversation_id),
     { timeout: 120_000, description: "the pending WorkRequest ActionItem and its completed MCP invocation" },
@@ -66,19 +80,30 @@ try {
   }
   const drawerActionCard = page.locator(`.ax-action-card[data-action-id="${pending.action_id}"]`);
   await drawerActionCard.waitFor({ timeout: 20_000 });
+  if (pending.edit_contract.values.reference_task_ids[0] !== reference.task_id) {
+    throw new Error("the provider did not preserve the graph-search Task as the WorkRequest reference");
+  }
+  const before = await page.evaluate(async (title) => {
+    const requests = await (await fetch("/api/work-requests")).json();
+    const tasks = await (await fetch("/api/my-work", { headers: { "X-Demo-Persona": "jiho" } })).json();
+    return {
+      requests: requests.filter((row) => row.title === title).length,
+      recipientTasks: tasks.filter((row) => row.title === title).length,
+    };
+  }, requestTitle);
+  if (before.requests !== 0 || before.recipientTasks !== 0) {
+    throw new Error(`the proposal mutated the work ledger before confirmation: ${JSON.stringify(before)}`);
+  }
 
-  await page.getByRole("button", { name: "닫기", exact: true }).click();
-  await navigation.getByRole("button", { name: "내 업무" }).click();
-  // The proposal reaches the one judgement ledger and is approved through the one command path.
-  const actionCard = page.locator(`.decision-panel .task-card[data-action-item-id="${pending.action_id}"]`);
-  await actionCard.waitFor({ timeout: 20_000 });
-  const approvalResponse = page.waitForResponse(
+  await drawerActionCard.getByRole("button", { name: "수정" }).click();
+  await drawerActionCard.getByLabel("내용").fill("사람이 검토한 최종 설명");
+  const confirmationResponse = page.waitForResponse(
     (response) =>
-      response.url().endsWith(`/api/action-items/${pending.action_id}/commands/approve`) && response.request().method() === "POST",
+      response.url().endsWith(`/api/action-items/${pending.action_id}/commands/confirm`) && response.request().method() === "POST",
   );
-  await actionCard.getByRole("button", { name: "판단하기" }).click();
-  await page.getByRole("dialog", { name: "판단 상세" }).getByRole("button", { name: "승인" }).click();
-  await approvalResponse;
+  await drawerActionCard.getByRole("button", { name: "저장" }).click();
+  const confirmed = await confirmationResponse;
+  if (!confirmed.ok()) throw new Error(await confirmed.text());
 
   const approved = await page.evaluate(async ({ actionId, conversationId }) => {
     const headers = { "X-Demo-Persona": "mina" };
@@ -102,6 +127,17 @@ try {
   ) {
     throw new Error("Action approval did not preserve the canonical Action/audit in both product projections");
   }
+  if (approved.action.result?.state !== "pending") {
+    throw new Error(`confirmation did not create a pending WorkRequest: ${JSON.stringify(approved.action.result)}`);
+  }
+  const requestDetail = await page.evaluate(async (requestId) => {
+    const response = await fetch(`/api/work-requests/${requestId}`);
+    if (!response.ok) throw new Error(await response.text());
+    return response.json();
+  }, approved.action.result.request_id);
+  if (requestDetail.references?.[0]?.task?.task_id !== reference.task_id) {
+    throw new Error("the confirmed WorkRequest did not keep the selected reference Task");
+  }
 
   await switchAccount(page, "jiho");
   await navigation.getByRole("button", { name: "오늘" }).click();
@@ -115,6 +151,28 @@ try {
     throw new Error(`Approved AX WorkRequest did not become Jiho's judgement without a Task: ${JSON.stringify(judgement)}`);
   }
 
+  await navigation.getByRole("button", { name: "내 업무" }).click();
+  await page.getByRole("tab", { name: "할일" }).click();
+  const judgementCard = page.locator(`.task-card[data-action-item-id="${judgement.action_item_id}"]`);
+  await judgementCard.getByRole("button", { name: "판단하기" }).click();
+  const judgementDrawer = page.getByRole("dialog", { name: "판단 상세" });
+  await judgementDrawer.getByRole("button", { name: "수락" }).click();
+  await judgementDrawer.waitFor({ state: "detached", timeout: 20_000 });
+  const accepted = await pollFor(
+    page,
+    () => page.evaluate(async (title) => {
+      const tasks = await (await fetch("/api/my-work")).json();
+      const task = tasks.find((row) => row.title === title);
+      if (!task) return null;
+      const detail = await (await fetch(`/api/tasks/${task.task_id}`)).json();
+      return detail.references?.length === 1
+        && detail.checklist?.some((row) => row.text === "수치 검토")
+        ? detail
+        : null;
+    }, requestTitle),
+    { timeout: 20_000, description: "the accepted Task with its selected checklist and reference" },
+  );
+
   await page.screenshot({ path: "test-results/conversation-action-e2e.png", fullPage: true });
   console.log(
     JSON.stringify({
@@ -123,6 +181,8 @@ try {
       action_id: approved.action.action_id,
       audit_ref: approved.action.audit_ref,
       work_request_id: approved.action.result.request_id,
+      task_id: accepted.task_id,
+      reference_task_id: reference.task_id,
     }),
   );
 } finally {

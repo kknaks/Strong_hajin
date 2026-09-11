@@ -59,7 +59,11 @@ def _mina_proposal(client, application) -> dict:
     with make_session_factory(application._settings.database_url)() as session:
         execution_id = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"])).execution_id
     return application.propose_action(
-        application.authenticated_principal("mina"), execution_id, "task.create_self", "업무 생성 확인", {"title": "민아의 비밀 업무"}
+        application.authenticated_principal("mina"),
+        execution_id,
+        "task.create_self",
+        "업무 생성 확인",
+        {"title": "민아의 비밀 업무", "due_date": "2026-09-30"},
     )
 
 
@@ -81,6 +85,28 @@ def test_action_item_tools_read_exactly_what_the_product_reads(tmp_path) -> None
         f"/api/action-items/{item['action_item_id']}", headers=JIHO
     ).json()
     assert jiho.action_item_detail(item["action_item_id"])["resource"]["id"] == created["request_id"]
+
+
+def test_mcp_confirms_the_same_editable_ax_submission_operation_as_http(tmp_path) -> None:
+    database_url, settings, client = _stack(tmp_path)
+    application = client.app.state.workflow_application
+    proposal = _mina_proposal(client, application)
+    mina = _facade(settings, "mina")
+    [item] = [row for row in mina.pending_action_items() if row["action_item_id"] == proposal["action_id"]]
+
+    receipt = mina.run_action_command(
+        item["action_item_id"],
+        "confirm",
+        expected_version=item["expected_version"],
+        base_submission_version=item["submission_version"],
+        draft={"title": "MCP에서 고친 업무", "description": "같은 application operation", "due_date": "2026-09-30"},
+    )
+    assert receipt["status"] == "resolved"
+    detail = client.get(f"/api/action-items/{item['action_item_id']}", headers=MINA).json()
+    assert [round_["submission_version"] for round_ in detail["rounds"]] == [1, 2]
+    assert detail["rounds"][1]["snapshot"]["title"] == "MCP에서 고친 업무"
+    [task] = [row for row in client.get("/api/my-work", headers=MINA).json() if row["title"] == "MCP에서 고친 업무"]
+    assert client.get(f"/api/tasks/{task['task_id']}", headers=MINA).json()["lineage"]["source_submission_id"] == detail["rounds"][1]["submission_id"]
 
 
 def test_a_whole_adjustment_round_trip_runs_over_mcp_and_makes_one_task(tmp_path) -> None:
@@ -208,7 +234,15 @@ def test_action_item_tools_carry_the_annotations_a_client_needs_to_reason_about_
     assert command.idempotent_hint is True and command.destructive_hint is True
     assert tools["action_item_command"].output_schema is not None
     schema = tools["action_item_command"].input_schema["properties"]
-    assert {"action_item_id", "command", "expected_version", "reason", "changes"} <= set(schema)
+    assert {
+        "action_item_id",
+        "command",
+        "expected_version",
+        "base_submission_version",
+        "draft",
+        "reason",
+        "changes",
+    } <= set(schema)
 
 
 def test_the_tool_list_is_deterministic(tmp_path, monkeypatch) -> None:

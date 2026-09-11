@@ -28,6 +28,26 @@ describe("date field", () => {
     expect(document.body.textContent).not.toMatch(/mm\/dd\/yyyy/i);
   });
 
+  it("can use the dotted task-card presentation without changing the ISO boundary", () => {
+    const onChange = vi.fn();
+    render(
+      <DateField
+        displaySeparator="."
+        id="task-due"
+        label="기한"
+        onChange={onChange}
+        pickerIcon="chevron-down"
+        value="2026-09-30"
+      />,
+    );
+    const field = screen.getByLabelText("기한") as HTMLInputElement;
+    expect(field.value).toBe("2026.09.30");
+    expect(field.placeholder).toBe("YYYY.MM.DD");
+    fireEvent.change(field, { target: { value: "2026.10.15" } });
+    expect(onChange).toHaveBeenCalledWith("2026-10-15");
+    expect(screen.getByRole("button", { name: "기한 달력 열기" }).querySelector("svg")).toBeTruthy();
+  });
+
   it("hands the caller ISO, never the display string", () => {
     const onChange = vi.fn();
     render(<DateField id="due" label="기한" onChange={onChange} value="" />);

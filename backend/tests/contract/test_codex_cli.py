@@ -14,7 +14,36 @@ from ax_workspace.platform.codex_cli import (
     CodexCliProfile,
     CodexCliProviderAdapter,
     ProcessResult,
+    _MCP_TOOL_DISPLAY_NAMES,
 )
+
+
+def test_scax_mcp_tool_receipts_have_korean_display_names() -> None:
+    previously_unmapped = {
+        "action_item_command",
+        "action_item_get",
+        "action_item_list",
+        "conversation_search",
+        "task_block",
+        "task_cancel",
+        "task_checklist_add",
+        "task_checklist_archive",
+        "task_checklist_reorder",
+        "task_checklist_update",
+        "task_progress_batch",
+        "task_complete",
+        "task_create_self",
+        "task_resume",
+        "task_start",
+        "task_update",
+        "work_request_amend",
+        "work_request_assignee_candidates",
+        "work_request_create",
+        "work_request_history",
+    }
+
+    assert previously_unmapped <= _MCP_TOOL_DISPLAY_NAMES.keys()
+    assert all(any("가" <= char <= "힣" for char in _MCP_TOOL_DISPLAY_NAMES[name]) for name in previously_unmapped)
 
 
 def test_scax_mcp_server_uses_the_python_module_in_source_runtime(monkeypatch) -> None:
@@ -96,12 +125,32 @@ def test_codex_cli_conversation_injects_only_server_bound_scax_mcp_context(tmp_p
     auth_file = tmp_path / "host-auth.json"
     auth_file.write_text("{}", encoding="utf-8")
     captured: dict[str, object] = {}
+    observed = []
+
+    class Sink:
+        def accept(self, event) -> None:
+            observed.append(event)
 
     def runner(command: str, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: int) -> ProcessResult:
         captured["arguments"] = arguments
         captured["environment"] = environment
+        schema = json.loads(Path(arguments[arguments.index("--output-schema") + 1]).read_text(encoding="utf-8"))
+        assert schema["required"] == ["body", "follow_up_candidates"]
+        assert schema["properties"]["follow_up_candidates"]["maxItems"] == 3
         output_path = Path(arguments[arguments.index("--output-last-message") + 1])
-        output_path.write_text("업무를 조회했습니다.", encoding="utf-8")
+        output_path.write_text(
+            json.dumps(
+                {
+                    "body": "업무를 조회했습니다.",
+                    "follow_up_candidates": [
+                        {"label": "기한순으로 보기", "user_text": "그 업무를 기한순으로 정리해줘"},
+                        {"label": "우선순위 제안", "user_text": "먼저 할 업무를 제안해줘"},
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
         return ProcessResult(
             stdout="\n".join(
                 [
@@ -132,6 +181,24 @@ def test_codex_cli_conversation_injects_only_server_bound_scax_mcp_context(tmp_p
                             },
                         }
                     ),
+                    json.dumps(
+                        {
+                            "type": "item.completed",
+                            "item": {
+                                "id": "answer_1",
+                                "type": "agent_message",
+                                "text": json.dumps(
+                                    {
+                                        "body": "업무를 조회했습니다.",
+                                        "follow_up_candidates": [
+                                            {"label": "기한순으로 보기", "user_text": "그 업무를 기한순으로 정리해줘"}
+                                        ],
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            },
+                        }
+                    ),
                     json.dumps({"type": "turn.completed", "turn_id": "turn_456"}),
                 ]
             ),
@@ -157,12 +224,20 @@ def test_codex_cli_conversation_injects_only_server_bound_scax_mcp_context(tmp_p
                 principal_id="mina",
                 causation_id="turn-execution-1",
             ),
-        )
+        ),
+        sink=Sink(),
     )
 
     arguments = captured["arguments"]
     assert result.body == "업무를 조회했습니다."
-    assert [(item.tool_name, item.state) for item in result.tool_invocations] == [("task_list", "completed")]
+    assert [(item.label, item.user_text) for item in result.follow_up_candidates] == [
+        ("기한순으로 보기", "그 업무를 기한순으로 정리해줘"),
+        ("우선순위 제안", "먼저 할 업무를 제안해줘"),
+    ]
+    assert [event.text for event in observed if event.item_type == "agent_message"] == ["업무를 조회했습니다."]
+    assert [(item.tool_name, item.display_name, item.state) for item in result.tool_invocations] == [
+        ("task_list", "업무 목록 조회", "completed")
+    ]
     assert "--ignore-user-config" in arguments
     assert 'shell_environment_policy.inherit="none"' in arguments
     assert "--sandbox" in arguments
@@ -171,6 +246,29 @@ def test_codex_cli_conversation_injects_only_server_bound_scax_mcp_context(tmp_p
     assert 'mcp_servers.scax.args=["-m", "ax_workspace.entrypoints.mcp"]' in arguments
     assert 'mcp_servers.scax.env_vars=["AX_MCP_PERSONA", "AX_MCP_CAUSATION_ID", "AX_PROFILE", "DATABASE_URL"]' in arguments
     assert 'mcp_servers.scax.default_tools_approval_mode="approve"' in arguments
+    prompt = arguments[-1]
+    assert "서로 의미가 겹치는 후보는 제외" in prompt
+    assert "유용한 후보가 없으면 빈 배열" in prompt
+    assert "일반 사용자 발화" in prompt
+    assert "UUID나 내부 식별자를 답변 본문에 노출하지 않는다" in prompt
+    assert "이름과 제목" in prompt
+    assert "일부 참석자를 식별하지 못해도" in prompt
+    assert "사용자가 말한 관계·직책 표현" in prompt
+    assert "그대로 `graph_search`에 전달" in prompt
+    assert "서버가 존칭과 활성 직책을 조직 원장으로 해석" in prompt
+    assert "호칭을 제외한 `팀장`" not in prompt
+    assert "graph_search" in prompt and "graph_neighbors" in prompt
+    assert "소속 관계" in prompt
+    assert "meeting_create" in prompt
+    assert "조직을 생략" in prompt
+    assert "기본 지속시간은 1시간" in prompt
+    assert "종료 시각만 있으면 1시간 전" in prompt
+    assert "MeetingNote는 draft/final 상태와 immutable version" in prompt
+    assert "날짜나 관련 업무가 필요하면 source_contexts의 meeting ID 하나" in prompt
+    assert "`unavailable_materials`" in prompt
+    assert "그 항목의 source_contexts가 준 meeting ID만 `meeting_get`" in prompt
+    assert "WorkRequest나 새 Meeting으로 바꾸지 않는다" in prompt
+    assert "`meeting_share`로 열람 공유 확인을 제안" in prompt
     assert "postgresql://example/scax" not in " ".join(arguments)
     assert "mina" not in " ".join(arguments)
     assert captured["environment"]["AX_MCP_PERSONA"] == "mina"

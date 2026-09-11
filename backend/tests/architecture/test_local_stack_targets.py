@@ -26,6 +26,17 @@ def test_stack_and_acceptance_targets_start_every_required_process() -> None:
     assert "postgres-up" in recipe
     # Fail fast on an uninitialized schema instead of starting an API that cannot serve.
     assert "to_regclass('durable_jobs')" in recipe and "not initialized" in recipe
+    assert "to_regclass('assistant_character_preferences')" in recipe
+    assert "to_regclass('action_material_drafts')" in recipe
+    assert "to_regclass('notifications')" in recipe
+    assert "grep -qx 'notifications'" in recipe
+    assert "meeting_columns.column_name" in recipe
+    for column in ("description", "source_action_item_id", "source_decision_item_id", "source_submission_id", "source_review_decision_id"):
+        assert f"column_name = '{column}'" in recipe
+    assert "meeting_note_columns.column_name" in recipe and "column_name = 'source_status'" in recipe
+    assert "follow_up_candidates" in recipe
+    assert "follow_up_candidate_id" in recipe
+    assert "Run 'make sync-demo-schema'" in recipe
     # Supervise: an early exit of any required process stops the rest and fails the target (plain `wait` cannot see it).
     assert "check_alive" in recipe and "kill -0" in recipe and "while check_alive; do" in recipe
 

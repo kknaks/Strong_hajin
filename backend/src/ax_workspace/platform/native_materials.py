@@ -13,7 +13,7 @@ from ax_workspace.modules.work.material_extraction import ExtractedBlock, Extrac
 from ax_workspace.platform.extraction_spool import ExtractionSpool
 from ax_workspace.platform.persistence import (
     DailyReportRecord, DailyReportSubmissionRecord,
-    AttachmentBindingRecord, AttachmentRecord, MeetingRawTranscriptRevisionRecord, MeetingRawTranscriptSegmentRecord,
+    AttachmentBindingRecord, AttachmentRecord, MeetingNoteRecord, MeetingNoteVersionRecord, MeetingRawTranscriptRevisionRecord, MeetingRawTranscriptSegmentRecord,
     MeetingRecordingRecord, MeetingTranscriptRefinementRevisionRecord, MeetingTranscriptRefinementSegmentRecord,
 )
 
@@ -22,7 +22,7 @@ NATIVE_CONTENT_TYPE = "application/vnd.scax.native-revision+json"
 
 
 def source_ref(kind: str, revision_id: UUID) -> str:
-    if kind not in NATIVE_TYPES and kind not in {"meeting_recording", "report_submission"}:
+    if kind not in NATIVE_TYPES and kind not in {"meeting_note", "meeting_recording", "report_submission"}:
         raise ValueError("unknown native material kind")
     return f"native:{kind}:{revision_id}"
 
@@ -63,7 +63,28 @@ class NativeMaterialRepository:
             raise ValueError("report submission was not found")
         return submission, report
 
+    def note_source(self, version_id, *, lock=False):
+        statement = select(MeetingNoteVersionRecord).where(MeetingNoteVersionRecord.id == version_id)
+        version = self._session.scalar(statement.with_for_update() if lock else statement)
+        note = self._session.get(MeetingNoteRecord, version.note_id) if version is not None else None
+        if version is None or note is None:
+            raise ValueError("meeting note version was not found")
+        return version, note
+
     def payload(self, kind, revision_id):
+        if kind == "meeting_note":
+            version, note = self.note_source(revision_id)
+            return {
+                "format_version": 1,
+                "source_kind": kind,
+                "source_revision_id": str(version.id),
+                "meeting_id": str(note.meeting_id),
+                "note_id": str(note.id),
+                "revision": version.version,
+                "body": version.body,
+                "created_by": version.created_by,
+                "created_at": version.created_at.isoformat(),
+            }
         if kind == "report_submission":
             submission, report = self.report_source(revision_id)
             return {"format_version": 1, "source_kind": kind, "source_revision_id": str(submission.id),
@@ -122,7 +143,32 @@ class NativeMaterialRepository:
             self._session.flush()
         return self._binding(attachment, "report_submission", submission_id, report.owner_id), attachment
 
+    def ensure_note(self, version_id):
+        version, note = self.note_source(version_id, lock=True)
+        identifier = material_id_for("meeting_note", version_id)
+        attachment = self._session.get(AttachmentRecord, identifier)
+        if attachment is None:
+            data = canonical_bytes(self.payload("meeting_note", version_id))
+            reference = source_ref("meeting_note", version_id)
+            attachment = AttachmentRecord(
+                id=identifier,
+                source_kind="native_revision",
+                source_ref=reference,
+                name=f"회의록 · v{version.version}",
+                content_type=NATIVE_CONTENT_TYPE,
+                size_bytes=len(data),
+                integrity_ref=f"sha256:{hashlib.sha256(data).hexdigest()}",
+                provenance=reference,
+                uploaded_by=version.created_by,
+                created_at=version.created_at,
+            )
+            self._session.add(attachment)
+            self._session.flush()
+        return self._binding(attachment, "meeting_note", version_id, version.created_by), attachment
+
     def ensure(self, kind, revision_id):
+        if kind == "meeting_note":
+            return self.ensure_note(revision_id)
         if kind == "report_submission":
             return self.ensure_report(revision_id)
         if kind == "meeting_recording":
@@ -186,6 +232,35 @@ class NativeRevisionExtractor:
                     return ExtractionOutcome(status="failed", extractor="native_revision", failure_reason="empty_content", coverage={"complete": False})
                 return ExtractionOutcome(status="completed", extractor="native_revision", blocks=blocks, chunks=chunks,
                     char_count=len(payload["body"]), coverage={"complete": True, "unit": "report_body", "total_units": 1, "processed_units": 1})
+            if payload["source_kind"] == "meeting_note":
+                locator = {
+                    "kind": "meeting_note",
+                    "meeting_id": payload["meeting_id"],
+                    "note_id": payload["note_id"],
+                    "source_revision_id": payload["source_revision_id"],
+                    "note_version": payload["revision"],
+                }
+                blocks.append(ExtractedBlock(
+                    0,
+                    "meeting_note_body",
+                    payload["body"],
+                    locator_label=f"회의록 v{payload['revision']}",
+                    source_locator=locator,
+                ))
+                for chunk in iter_chunks(payload["body"]):
+                    chunks.append(replace(chunk, block_sequence=0))
+                if not chunks:
+                    blocks.close()
+                    chunks.close()
+                    return ExtractionOutcome(status="failed", extractor="native_revision", failure_reason="empty_content", coverage={"complete": False})
+                return ExtractionOutcome(
+                    status="completed",
+                    extractor="native_revision",
+                    blocks=blocks,
+                    chunks=chunks,
+                    char_count=len(payload["body"]),
+                    coverage={"complete": True, "unit": "meeting_note_body", "total_units": 1, "processed_units": 1},
+                )
             for segment in payload["segments"]:
                 locator = {"kind": "meeting_transcript", "source_revision_id": payload["source_revision_id"],
                            "recording_id": payload["recording_id"], "segment_id": segment["segment_id"],

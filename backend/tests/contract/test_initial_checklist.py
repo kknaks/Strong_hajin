@@ -110,7 +110,11 @@ def test_a_proposal_shows_the_steps_it_would_create(tmp_path, monkeypatch) -> No
         execution_id = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"])).execution_id
     monkeypatch.setenv("AX_MCP_CAUSATION_ID", str(execution_id))
 
-    proposed = McpReportsFacade(settings, "mina").create_self_task("AX가 제안한 업무", checklist=["자료 모으기", "초안 쓰기"])
+    proposed = McpReportsFacade(settings, "mina").create_self_task(
+        "AX가 제안한 업무",
+        checklist=["자료 모으기", "초안 쓰기"],
+        due_date="2026-09-30",
+    )
     [card] = [row for row in client.get("/api/actions", headers=MINA).json() if row["action_id"] == proposed["action_id"]]
     steps = [row for row in card["preview"] if row["id"] == "checklist"]
     assert steps and "자료 모으기" in steps[0]["value"] and "초안 쓰기" in steps[0]["value"]

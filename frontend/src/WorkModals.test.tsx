@@ -139,6 +139,41 @@ describe("work request comments", () => {
   });
 });
 
+describe("work request contents", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("shows the requested checklist and permission-safe reference tasks in the detail drawer", async () => {
+    vi.mocked(api.getWorkRequestTimeline).mockResolvedValue(emptyTimeline as never);
+    const onOpenDerivedTask = vi.fn();
+    renderDrawer({
+      onOpenDerivedTask,
+      request: {
+        ...request,
+        checklist: ["자료 수집", "수치 검토"],
+        references: [
+          {
+            reference_id: "reference-1",
+            created_by: "mina",
+            task: { task_id: "task-1", title: "지난 분기 보고", state: "done", due_date: "2026-08-31" },
+          },
+          { reference_id: "reference-2", created_by: "mina", task: null },
+        ],
+      },
+    });
+
+    const checklist = await screen.findByRole("list", { name: "요청 체크리스트" });
+    expect(within(checklist).getByText("자료 수집")).toBeTruthy();
+    expect(within(checklist).getByText("수치 검토")).toBeTruthy();
+    const references = screen.getByRole("list", { name: "요청 참고 업무" });
+    fireEvent.click(within(references).getByRole("button", { name: "지난 분기 보고 열기" }));
+    expect(onOpenDerivedTask).toHaveBeenCalledWith("task-1");
+    expect(within(references).getByText("볼 수 없는 업무")).toBeTruthy();
+  });
+});
+
 describe("request round history", () => {
   afterEach(() => {
     cleanup();

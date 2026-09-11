@@ -81,6 +81,16 @@ def test_entrypoints_do_not_import_platform_implementations() -> None:
         assert "ax_workspace.platform" not in source, module
 
 
+def test_work_request_application_is_composed_only_by_the_bootstrap() -> None:
+    """Direct, MCP and approved effects must not drift into separately assembled WorkRequest services."""
+    owners = []
+    for module in PACKAGE_ROOT.rglob("*.py"):
+        if "WorkRequestApplication(" in module.read_text(encoding="utf-8"):
+            owners.append(module.relative_to(PACKAGE_ROOT).as_posix())
+
+    assert owners == ["bootstrap/application.py"]
+
+
 def test_reports_feature_does_not_embed_provider_policy_or_spawn_processes() -> None:
     reports_sources = [
         PACKAGE_ROOT / "modules" / "reports" / "application.py",

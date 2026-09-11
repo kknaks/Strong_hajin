@@ -77,7 +77,7 @@ class ConversationRepository(Protocol):
     def create(self, owner_id: str, title: str) -> Any: ...
     def conversation(self, conversation_id: UUID, owner_id: str, *, lock: bool = False) -> Any | None: ...
     def list_for(self, owner_id: str) -> list[Any]: ...
-    def accept_fragment(self, conversation: Any, body: str, context: list[dict[str, str | bool]], idempotency_key: str | None) -> tuple[Any, Any | None, bool, int]: ...
+    def accept_fragment(self, conversation: Any, body: str, context: list[dict[str, str | bool]], idempotency_key: str | None, follow_up_candidate_id: UUID | None = None) -> tuple[Any, Any | None, bool, int]: ...
     def cancel_active(self, conversation: Any, expected_version: int) -> Any: ...
     def retry_turn(self, conversation: Any, failed_turn_id: UUID, actor_id: str) -> Any: ...
     def view(self, conversation: Any, *, include_actions: bool = False, principal: Any = None) -> dict[str, Any]: ...
@@ -127,6 +127,7 @@ class ConversationApplication:
         body: str,
         context: list[ConversationContextReferenceInput],
         idempotency_key: str | None,
+        follow_up_candidate_id: UUID | None = None,
     ) -> dict[str, Any]:
         if not body.strip():
             raise ConversationError("message is required")
@@ -137,6 +138,7 @@ class ConversationApplication:
             body.strip(),
             resolved_context,
             idempotency_key,
+            follow_up_candidate_id,
         )
         return {
             "conversation_id": str(conversation.id),
@@ -162,7 +164,8 @@ class ConversationApplication:
         view = self._repository.view(conversation, include_actions=ACTION_READ in principal.capabilities, principal=principal)
         # Approval commands come from the ledger + the caller's current capability, never inferred by the client.
         for action in view.get("actions", []):
-            action["commands"] = action_commands(action.get("state"), ACTION_DECIDE in principal.capabilities)
+            if "commands" not in action:
+                action["commands"] = action_commands(action.get("state"), ACTION_DECIDE in principal.capabilities)
         references = view.get("answer_resources") or []
         view["answer_resources"] = (
             self._answer_resources.resolve(principal, references) if self._answer_resources is not None else []

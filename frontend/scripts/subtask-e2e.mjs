@@ -101,9 +101,8 @@ try {
 
   await page.reload({ waitUntil: "domcontentloaded" });
   await navigation.getByRole("button", { name: "내 업무" }).click();
-  const filter = page.locator("#task-state-filter");
-  await filter.waitFor();
-  await filter.selectOption("all");
+  await page.getByRole("button", { name: "진행 중·시작 전·막힘" }).click();
+  await page.getByRole("radio", { name: "전체 상태" }).click();
   await page.getByRole("row", { name: new RegExp(theirsTitle) }).click();
   const childDrawer = page.getByRole("dialog", { name: "업무 상세" });
   const belongs = childDrawer.locator("section[aria-label='상위 업무']");

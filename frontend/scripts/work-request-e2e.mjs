@@ -1,6 +1,6 @@
 import { chromium } from "@playwright/test";
 
-import { loginAs, pollFor, switchAccount } from "./e2e-helpers.mjs";
+import { chooseOption, loginAs, pollFor, switchAccount } from "./e2e-helpers.mjs";
 
 const frontendUrl = process.env.SCAX_E2E_URL ?? "http://127.0.0.1:5176";
 const title = `Playwright 업무 요청 ${Date.now()}`;
@@ -18,7 +18,7 @@ try {
   await page.getByRole("button", { name: "새 업무 추가" }).click();
   await page.getByRole("tab", { name: "요청", exact: true }).click();
   await page.getByLabel("요청할 업무").fill(title);
-  await page.getByLabel("담당 후보").selectOption("jiho");
+  await chooseOption(page, "담당 후보", /지호/);
   await page.getByRole("button", { name: "업무 요청 보내기" }).click();
   await switchAccount(page, "jiho");
   const judgement = await pollFor(
@@ -74,7 +74,7 @@ try {
 
   // The judgement itself runs through the one command path.
   await page.getByRole("tab", { name: "할일" }).click();
-  const judgementCard = page.locator(`.decision-panel .task-card[data-action-item-id="${judgement.action_item_id}"]`);
+  const judgementCard = page.locator(`.decision-section .task-card[data-action-item-id="${judgement.action_item_id}"]`);
   await judgementCard.waitFor({ timeout: 20_000 });
   await judgementCard.getByRole("button", { name: "판단하기" }).click();
   const judgementDrawer = page.getByRole("dialog", { name: "판단 상세" });

@@ -84,7 +84,7 @@ try {
   );
   if (review.operation_label !== "업무 결과 확인") throw new Error(`unexpected operation: ${review.operation_label}`);
   await navigation.getByRole("button", { name: "내 업무" }).click();
-  const card = page.locator(`.decision-panel .task-card[data-action-item-id="${review.action_item_id}"]`);
+  const card = page.locator(`.decision-section .task-card[data-action-item-id="${review.action_item_id}"]`);
   await card.waitFor({ timeout: 20_000 });
   await card.getByRole("button", { name: "판단하기" }).click();
   const judgeDrawer = page.getByRole("dialog", { name: "판단 상세" });
@@ -124,7 +124,7 @@ try {
   if (second.action_item_id !== review.action_item_id) throw new Error("a second report opened a second question");
   if (second.submission_version !== 2) throw new Error(`unexpected round: ${second.submission_version}`);
   await navigation.getByRole("button", { name: "내 업무" }).click();
-  const secondCard = page.locator(`.decision-panel .task-card[data-action-item-id="${second.action_item_id}"]`);
+  const secondCard = page.locator(`.decision-section .task-card[data-action-item-id="${second.action_item_id}"]`);
   await secondCard.getByRole("button", { name: "판단하기" }).click();
   const finalDrawer = page.getByRole("dialog", { name: "판단 상세" });
   const rounds = ((await finalDrawer.locator("section[aria-label='회차 기록']").textContent()) ?? "").replace(/\s+/g, " ");

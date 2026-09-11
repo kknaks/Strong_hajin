@@ -23,7 +23,10 @@ NODE_KINDS = ("person", "team", "project", "work_request", "task", "material", "
 SEARCHABLE_NODE_KINDS = ("person", "team", "project", "task", "work_request", "meeting")
 GRAPH_SEARCH_DESCRIPTION = (
     "Find authorized start nodes by name: " + ", ".join(f"`{kind}`" for kind in SEARCHABLE_NODE_KINDS)
-    + ". Material and report are evidence nodes reached through relationships, not title search. "
+    + ". Person references may use a Korean honorific such as `님`; the server normalizes it and searches active "
+    "appointment position names within the current persona's membership hierarchy as well as display names. "
+    "Position matches include their position and organization evidence. "
+    "Material and report are evidence nodes reached through relationships, not title search. "
     "Use returned kind and id as `<kind>:<id>`; numbers in titles are not IDs. "
     "Results are bounded (default 20, maximum 50); truncated means more readable matches exist."
 )
@@ -744,7 +747,10 @@ class GraphApplication:
 
     @staticmethod
     def _person_node(person: dict[str, Any]) -> dict[str, Any]:
-        return {"kind": "person", "id": str(person["member_id"]), "title": str(person["display_name"]), "state": None, "date": None}
+        node = {"kind": "person", "id": str(person["member_id"]), "title": str(person["display_name"]), "state": None, "date": None}
+        if person.get("match"):
+            node["match"] = dict(person["match"])
+        return node
 
     @staticmethod
     def _request_node(request: dict[str, Any]) -> dict[str, Any]:

@@ -56,6 +56,19 @@ class MemberRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
 
 
+class AssistantCharacterPreferenceRecord(Base):
+    """One member's presentation preference; never copied into Conversation or Message records."""
+
+    __tablename__ = "assistant_character_preferences"
+
+    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), primary_key=True)
+    character_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC)
+    )
+
+
 class MemberCredentialRecord(Base):
     """A local email/password credential for one member. The password itself is never stored."""
 
@@ -255,10 +268,15 @@ class MeetingRecord(Base):
     organization_id: Mapped[str] = mapped_column(ForeignKey("organization_units.id"), nullable=False)
     owner_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     visibility: Mapped[str] = mapped_column(String(20), nullable=False, default="private")
     lifecycle: Mapped[str] = mapped_column(String(20), nullable=False, default="scheduled")
+    source_action_item_id: Mapped[UUID | None] = mapped_column(ForeignKey("action_items.id"))
+    source_decision_item_id: Mapped[UUID | None] = mapped_column(ForeignKey("decision_items.id"))
+    source_submission_id: Mapped[UUID | None] = mapped_column(ForeignKey("submissions.id"))
+    source_review_decision_id: Mapped[UUID | None] = mapped_column(ForeignKey("review_decisions.id"))
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -305,6 +323,7 @@ class MeetingNoteVersionRecord(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     source_evidence: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    source_status: Mapped[str | None] = mapped_column(String(30))
     created_by: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -634,6 +653,8 @@ class ConversationTurnRecord(Base):
     # Retry lineage: a retry is a new Turn that references the terminal one; the key makes one-click retry idempotent.
     retry_of_turn_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     retry_key: Mapped[str | None] = mapped_column(String(200), unique=True)
+    # Server-normalized snapshot produced with the answer. Candidate ids stay stable across reads and reconnects.
+    follow_up_candidates: Mapped[list[dict[str, str]] | None] = mapped_column(JSON)
 
 
 class ConversationProviderSessionReferenceRecord(Base):
@@ -670,6 +691,8 @@ class ConversationMessageRecord(Base):
     role: Mapped[str] = mapped_column(String(40), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     idempotency_key: Mapped[str | None] = mapped_column(String(200))
+    # A candidate is a one-shot entry into the ordinary message path. Nullable unique makes that choice exactly once.
+    follow_up_candidate_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), unique=True)
     # user rows are always final; assistant rows move streaming -> final | failed | cancelled and keep partial text.
     body_state: Mapped[str] = mapped_column(String(20), nullable=False, default="final")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -737,6 +760,34 @@ class ActionItemRecord(Base):
     audit_ref: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ActionMaterialDraftRecord(Base):
+    """An expiring pre-create material owned by one principal and one AX ActionItem.
+
+    It is not a domain Attachment yet. Confirmation claims its metadata into an AttachmentBinding in the same
+    transaction that creates the Task or Meeting; file bytes may exist earlier and are reclaimed independently.
+    """
+
+    __tablename__ = "action_material_drafts"
+    __table_args__ = (Index("ix_action_material_drafts_action", "action_id", "state"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    action_id: Mapped[UUID] = mapped_column(ForeignKey("action_items.id"), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_ref: Mapped[str] = mapped_column(String(500), nullable=False)
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(200), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    integrity_ref: Mapped[str] = mapped_column(String(80), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="staged")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    discarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claimed_task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id"))
+    claimed_meeting_id: Mapped[UUID | None] = mapped_column(ForeignKey("meetings.id"))
 
 
 class ActionItemAuditEventRecord(Base):
@@ -996,6 +1047,30 @@ class ActivityEventRecord(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class NotificationRecord(Base):
+    """A recipient projection of one canonical domain event; content is re-authorized before every read."""
+
+    __tablename__ = "notifications"
+    __table_args__ = (
+        UniqueConstraint("recipient_member_id", "source_kind", "source_id", name="uq_notification_recipient_source"),
+        Index("ix_notifications_recipient_created", "recipient_member_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    recipient_member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(60), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    kind: Mapped[str] = mapped_column(String(80), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    resource_version: Mapped[int | None] = mapped_column(Integer)
+    resource_title: Mapped[str] = mapped_column(String(300), nullable=False)
+    actor_member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    safe_summary: Mapped[str] = mapped_column(String(300), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class CommentRecord(Base):
     """ERD COMMENT — discussion on a RequestThread; never a state transition."""
 
@@ -1212,7 +1287,7 @@ class ConversationAnswerResourceRecord(Base):
     conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), nullable=False, index=True)
     execution_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
-    #: `task` | `meeting` | `work_request` | `material` | `report`
+    #: `task` | `meeting` | `work_request` | `material` | `report` | `conversation_turn`
     resource_type: Mapped[str] = mapped_column(String(40), nullable=False)
     resource_id: Mapped[str] = mapped_column(String(120), nullable=False)
     #: The version the tool saw, when that resource has one. It says what the answer stood on, not what is true now.

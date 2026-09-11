@@ -1,6 +1,6 @@
 import { chromium } from "@playwright/test";
 
-import { loginAs, pollFor, switchAccount } from "./e2e-helpers.mjs";
+import { chooseOption, loginAs, pollFor, switchAccount } from "./e2e-helpers.mjs";
 
 // Who asked for this work, seen from each side, after a real reload. The requester, the assigner and the assignee
 // each read the same server answer; nothing is reconstructed from a list the browser happens to be holding.
@@ -30,7 +30,7 @@ try {
   await page.getByRole("button", { name: "새 업무 추가" }).click();
   await page.getByRole("tab", { name: "요청", exact: true }).click();
   await page.getByLabel("요청할 업무").fill(requested);
-  await page.getByLabel("담당 후보").selectOption("jiho");
+  await chooseOption(page, "담당 후보", /지호/);
   await page.getByRole("button", { name: "업무 요청 보내기" }).click();
 
   await switchAccount(page, "jiho");
@@ -44,7 +44,7 @@ try {
     { timeout: 20_000, description: "the request to reach the reviewer" },
   );
   await navigation.getByRole("button", { name: "내 업무" }).click();
-  await page.locator(`.decision-panel .task-card[data-action-item-id="${judgement.action_item_id}"]`).getByRole("button", { name: "판단하기" }).click();
+  await page.locator(`.decision-section .task-card[data-action-item-id="${judgement.action_item_id}"]`).getByRole("button", { name: "판단하기" }).click();
   await page.getByRole("dialog", { name: "판단 상세" }).getByRole("button", { name: "수락" }).click();
   await page.getByRole("dialog").waitFor({ state: "detached", timeout: 20_000 });
 

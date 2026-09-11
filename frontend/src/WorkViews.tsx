@@ -167,10 +167,10 @@ export function TaskListRow({ task, onOpen, right }: { task: DirectTask; onOpen:
 /* ---------------------------------------------------------------- calendar view (month) */
 
 /**
- * Where a Task sits on a calendar, from its planned dates alone.
+ * Where a Task sits on a calendar, from its stored date fields alone.
  *
  * Both dates give a range that includes both ends; one date gives that single day. A Task with neither is not on the
- * calendar at all — when it was written down is not a plan, and "until today" is not a deadline.
+ * calendar at all — the renderer does not infer a date from state or creation history.
  */
 export function taskSpan(task: DirectTask): { start: string; end: string } | null {
   const start = task.start_date ?? task.due_date ?? null;

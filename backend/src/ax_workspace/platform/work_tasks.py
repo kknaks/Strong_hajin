@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, date, datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 from uuid import UUID
 
@@ -20,6 +21,7 @@ from ax_workspace.modules.work.requests import (
     evidence_manifest_entry,
     evidence_manifest_hash,
 )
+from ax_workspace.platform.notifications import SqlAlchemyNotificationRepository
 from ax_workspace.platform.persistence import (
     ActivityEventRecord,
     AttachmentBindingRecord,
@@ -104,8 +106,8 @@ def _clean_locator(value: Any) -> dict[str, Any] | None:
     """
     if not isinstance(value, dict):
         return None
-    numeric = {"section", "page", "start", "end", "index", "slide", "row_start", "row_end", "column_start", "column_end", "char_start", "char_end", "start_ms", "end_ms", "segment_sequence", "submission_version"}
-    allowed = (*sorted(numeric), "anchor", "sheet", "cell", "kind", "cell_range", "container", "variant", "char_offset_basis", "source_revision_id", "recording_id", "segment_id", "raw_start_segment_id", "raw_end_segment_id", "report_id")
+    numeric = {"section", "page", "start", "end", "index", "slide", "row_start", "row_end", "column_start", "column_end", "char_start", "char_end", "start_ms", "end_ms", "segment_sequence", "submission_version", "note_version"}
+    allowed = (*sorted(numeric), "anchor", "sheet", "cell", "kind", "cell_range", "container", "variant", "char_offset_basis", "source_revision_id", "recording_id", "segment_id", "raw_start_segment_id", "raw_end_segment_id", "report_id", "meeting_id", "note_id")
     cleaned = {
         key: (int(value[key]) if key in numeric and str(value[key]).lstrip("-").isdigit() else str(value[key])[:120])
         for key in allowed
@@ -123,7 +125,13 @@ class SqlAlchemyGraphReceiptRepository:
     def record(self, execution_id: UUID, principal_id: str, steps: list[dict[str, Any]]) -> int:
         from ax_workspace.platform.persistence import ConversationGraphReceiptRecord, ConversationRecord, ConversationTurnRecord
 
-        turn = self._session.scalar(select(ConversationTurnRecord).where(ConversationTurnRecord.execution_id == execution_id))
+        # A provider may fan out several graph tools for one Turn. Serialize their receipt appends on the owning
+        # Turn row before reading max(sequence), otherwise concurrent transactions can choose the same next value.
+        turn = self._session.scalar(
+            select(ConversationTurnRecord)
+            .where(ConversationTurnRecord.execution_id == execution_id)
+            .with_for_update()
+        )
         if turn is None:
             raise ValueError("delegated conversation execution was not found")
         conversation = self._session.get(ConversationRecord, turn.conversation_id)
@@ -294,6 +302,9 @@ class SqlAlchemyTaskRepository:
         start_date: date | None = None,
         due_date: date | None = None,
         source_action_item_id: UUID | None = None,
+        source_decision_item_id: UUID | None = None,
+        source_submission_id: UUID | None = None,
+        source_review_decision_id: UUID | None = None,
         checklist: list[str] | None = None,
         references: list[UUID] | None = None,
         parent_task_id: UUID | None = None,
@@ -323,6 +334,9 @@ class SqlAlchemyTaskRepository:
             updated_at=now,
             causation_key=causation_key,
             source_action_item_id=source_action_item_id,
+            source_decision_item_id=source_decision_item_id,
+            source_submission_id=source_submission_id,
+            source_review_decision_id=source_review_decision_id,
         )
         self.session.add(task)
         self.session.flush()
@@ -1227,14 +1241,37 @@ class SqlAlchemyWorkRequestRepository:
         )
 
     def append_audit(self, request_id: UUID, actor_id: str, event_type: str, payload: dict) -> None:
-        self._session.add(
-            WorkRequestAuditEventRecord(
-                request_id=request_id,
-                actor_id=actor_id,
-                event_type=event_type,
-                payload=payload,
-                occurred_at=datetime.now(UTC),
-            )
+        event = WorkRequestAuditEventRecord(
+            request_id=request_id,
+            actor_id=actor_id,
+            event_type=event_type,
+            payload=payload,
+            occurred_at=datetime.now(UTC),
+        )
+        self._session.add(event)
+        request = self._session.get(WorkRequestRecord, request_id)
+        if request is None or event_type not in {"work_request.created", "work_request.accepted"}:
+            return
+        self._session.flush()
+        recipient = request.assignee_id if event_type == "work_request.created" else request.requester_id
+        actor_name = _person(self._session, actor_id)
+        summary = (
+            f"{actor_name}님이 ‘{request.title}’ 업무를 요청했습니다."
+            if event_type == "work_request.created"
+            else f"{actor_name}님이 ‘{request.title}’ 업무 요청을 수락했습니다."
+        )
+        SqlAlchemyNotificationRepository(self._session).emit(
+            recipient_member_id=recipient,
+            source_kind="work_request_audit_event",
+            source_id=str(event.id),
+            kind="work_request.received" if event_type == "work_request.created" else event_type,
+            resource_type="work_request",
+            resource_id=str(request.id),
+            resource_version=int(request.version),
+            resource_title=request.title,
+            actor_member_id=actor_id,
+            safe_summary=summary,
+            created_at=event.occurred_at,
         )
 
     def rebuild_relationships(self) -> int:
@@ -1562,7 +1599,12 @@ class SqlAlchemyTaskAssignmentRepository:
         due_date: date | None = None,
         causation_key: str | None = None,
         checklist: list[str] | None = None,
+        references: list[UUID] | None = None,
         parent_task_id: UUID | None = None,
+        source_action_item_id: UUID | None = None,
+        source_decision_item_id: UUID | None = None,
+        source_submission_id: UUID | None = None,
+        source_review_decision_id: UUID | None = None,
     ) -> tuple[TaskRecord, TaskAssignmentRecord]:
         if causation_key:
             existing = self._session.scalar(select(TaskRecord).where(TaskRecord.causation_key == causation_key))
@@ -1584,6 +1626,10 @@ class SqlAlchemyTaskAssignmentRepository:
             created_at=now,
             updated_at=now,
             causation_key=causation_key,
+            source_action_item_id=source_action_item_id,
+            source_decision_item_id=source_decision_item_id,
+            source_submission_id=source_submission_id,
+            source_review_decision_id=source_review_decision_id,
         )
         self._session.add(task)
         self._session.flush()
@@ -1607,6 +1653,8 @@ class SqlAlchemyTaskAssignmentRepository:
         self._session.flush()
         tasks = SqlAlchemyTaskRepository(self._session)
         tasks.seed_checklist(task, checklist, assigner_id)
+        for referenced_task_id in references or []:
+            tasks.add_reference(task.id, referenced_task_id, assigner_id)
         tasks.capture_version(task, assigner_id, "task.created")
         item = DecisionItemRecord(
             kind="task.assignment.acceptance",
@@ -1775,6 +1823,49 @@ class SqlAlchemyTaskAssignmentRepository:
         self._session.flush()
         self._session.refresh(task)
         return record
+
+    def cancel(self, assignment: TaskAssignmentRecord, actor_id: str) -> None:
+        """Close an unanswered direct assignment without pretending the assignee judged it."""
+        now = datetime.now(UTC)
+        task = self.task_for(assignment)
+        item = self._session.get(DecisionItemRecord, assignment.source_decision_item_id) if assignment.source_decision_item_id else None
+        submission = (
+            self._session.scalar(
+                select(SubmissionRecord)
+                .where(SubmissionRecord.decision_item_id == item.id)
+                .order_by(SubmissionRecord.submission_version.desc())
+            )
+            if item
+            else None
+        )
+        review = (
+            self._session.scalar(
+                select(ReviewAssignmentRecord)
+                .where(ReviewAssignmentRecord.submission_id == submission.id, ReviewAssignmentRecord.status == "pending")
+                .order_by(ReviewAssignmentRecord.assigned_at.desc())
+            )
+            if submission
+            else None
+        )
+        assert item is not None and submission is not None and review is not None, "assignment acceptance item is missing"
+        review.status = "cancelled"
+        item.status = "resolved"
+        item.resolved_at = now
+        assignment.status = "cancelled"
+        task.state = TaskState.CANCELLED
+        task.version += 1
+        task.updated_at = now
+        self._session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now))
+        ActivityLedger(self._session).record(
+            target_type="task",
+            target_id=str(task.id),
+            event_kind="task.assignment_cancelled",
+            actor_id=actor_id,
+            before_ref=f"task_assignment:{assignment.id}",
+            safe_summary=f"업무 요청 취소: {task.title}",
+        )
+        self._session.flush()
+        self._session.refresh(task)
 
 
 class SqlAlchemyAttachmentRepository:

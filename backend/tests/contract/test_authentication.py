@@ -12,7 +12,12 @@ from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.modules.organization_access.credentials import hash_password, verify_password
-from ax_workspace.platform.persistence import EmploymentPeriodRecord, MemberCredentialRecord, make_session_factory
+from ax_workspace.platform.persistence import (
+    AssistantCharacterPreferenceRecord,
+    EmploymentPeriodRecord,
+    MemberCredentialRecord,
+    make_session_factory,
+)
 
 
 def _stack(tmp_path, profile: RuntimeProfile = RuntimeProfile.TEST):
@@ -36,6 +41,108 @@ def test_signing_in_with_an_email_and_password_opens_a_session_that_carries_the_
     assert client.post("/api/auth/logout").status_code == 204
     assert client.get("/api/auth/me").status_code == 401
     assert client.get("/api/my-work").status_code == 401
+
+
+def test_session_profile_projects_the_default_assistant_character_before_a_preference_is_saved(tmp_path) -> None:
+    client, _ = _stack(tmp_path)
+    client.post("/api/auth/login", json={"email": demo_email("mina"), "password": DEMO_PASSWORD})
+
+    assert client.get("/api/auth/me").json()["assistant_character"] == {
+        "character_key": "cream-cat",
+        "version": 0,
+    }
+
+
+def test_member_can_save_an_allowlisted_assistant_character_and_recover_it_in_a_new_session(tmp_path) -> None:
+    client, _ = _stack(tmp_path)
+    credentials = {"email": demo_email("mina"), "password": DEMO_PASSWORD}
+    client.post("/api/auth/login", json=credentials)
+
+    saved = client.put(
+        "/api/profile/preferences/assistant-character",
+        json={"character_key": "red-panda", "expected_version": 0},
+    )
+    assert saved.status_code == 200
+    assert saved.json() == {"character_key": "red-panda", "version": 1}
+
+    client.post("/api/auth/logout")
+    client.post("/api/auth/login", json=credentials)
+    assert client.get("/api/auth/me").json()["assistant_character"] == saved.json()
+
+
+def test_assistant_character_preference_rejects_unknown_keys_and_stale_versions(tmp_path) -> None:
+    client, _ = _stack(tmp_path)
+    client.post("/api/auth/login", json={"email": demo_email("mina"), "password": DEMO_PASSWORD})
+
+    unknown = client.put(
+        "/api/profile/preferences/assistant-character",
+        json={"character_key": "unapproved-mascot", "expected_version": 0},
+    )
+    assert unknown.status_code == 422
+
+    assert client.put(
+        "/api/profile/preferences/assistant-character",
+        json={"character_key": "rabbit", "expected_version": 0},
+    ).json() == {"character_key": "rabbit", "version": 1}
+    stale = client.put(
+        "/api/profile/preferences/assistant-character",
+        json={"character_key": "bear", "expected_version": 0},
+    )
+    assert stale.status_code == 409
+    assert client.get("/api/auth/me").json()["assistant_character"] == {
+        "character_key": "rabbit",
+        "version": 1,
+    }
+
+
+def test_assistant_character_preference_is_isolated_per_principal(tmp_path) -> None:
+    client, _ = _stack(tmp_path)
+
+    client.post("/api/auth/login", json={"email": demo_email("mina"), "password": DEMO_PASSWORD})
+    client.put(
+        "/api/profile/preferences/assistant-character",
+        json={"character_key": "red-panda", "expected_version": 0},
+    )
+    client.post("/api/auth/logout")
+
+    client.post("/api/auth/login", json={"email": demo_email("jiho"), "password": DEMO_PASSWORD})
+    assert client.get("/api/auth/me").json()["assistant_character"] == {
+        "character_key": "cream-cat",
+        "version": 0,
+    }
+    client.put(
+        "/api/profile/preferences/assistant-character",
+        json={"character_key": "tuxedo-cat", "expected_version": 0},
+    )
+    client.post("/api/auth/logout")
+
+    client.post("/api/auth/login", json={"email": demo_email("mina"), "password": DEMO_PASSWORD})
+    assert client.get("/api/auth/me").json()["assistant_character"] == {
+        "character_key": "red-panda",
+        "version": 1,
+    }
+
+
+def test_retired_server_value_is_preserved_until_the_member_saves_a_supported_replacement(tmp_path) -> None:
+    client, database_url = _stack(tmp_path)
+    with make_session_factory(database_url)() as session:
+        session.add(AssistantCharacterPreferenceRecord(
+            member_id="mina",
+            character_key="retired-fox",
+            version=4,
+        ))
+        session.commit()
+    client.post("/api/auth/login", json={"email": demo_email("mina"), "password": DEMO_PASSWORD})
+
+    assert client.get("/api/auth/me").json()["assistant_character"] == {
+        "character_key": "retired-fox",
+        "version": 4,
+    }
+    saved = client.put(
+        "/api/profile/preferences/assistant-character",
+        json={"character_key": "chick", "expected_version": 4},
+    )
+    assert saved.json() == {"character_key": "chick", "version": 5}
 
 
 def test_every_refused_sign_in_says_the_same_thing(tmp_path) -> None:

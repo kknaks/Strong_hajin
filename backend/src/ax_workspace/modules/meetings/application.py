@@ -20,6 +20,8 @@ from ax_workspace.modules.meetings.refinement import RefinedTranscriptSegment
 from ax_workspace.modules.meetings.summary import SummaryStatement
 from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment, RealtimeTranscriptionKeyIssuer
 from ax_workspace.modules.organization_access.domain import MEETING_RECORD, Principal
+from ax_workspace.modules.work.material_extraction import MaterialExtractionJob, extraction_view
+from ax_workspace.modules.work.materials import _link_url, store_file
 
 
 MEETING_READ = "meeting.read"
@@ -35,10 +37,15 @@ class MeetingRepository(Protocol):
         organization_id: str,
         owner_id: str,
         title: str,
+        description: str | None = None,
         starts_at: datetime,
         ends_at: datetime,
         visibility: str,
         attendee_ids: list[str],
+        source_action_item_id: UUID | None = None,
+        source_decision_item_id: UUID | None = None,
+        source_submission_id: UUID | None = None,
+        source_review_decision_id: UUID | None = None,
     ) -> Any: ...
     def meetings_in_organizations(self, organization_ids: frozenset[str]) -> list[Any]: ...
     def meeting(self, meeting_id: UUID, *, lock: bool = False) -> Any | None: ...
@@ -49,7 +56,18 @@ class MeetingRepository(Protocol):
     def add_share(self, meeting: Any, member_id: str, actor_id: str) -> None: ...
     def revoke_share(self, meeting: Any, member_id: str) -> bool: ...
     def touch(self, meeting: Any) -> None: ...
-    def append_audit(self, meeting: Any, actor_id: str, event_kind: str, summary: str, *, before_ref: str | None = None) -> None: ...
+    def append_audit(
+        self,
+        meeting: Any,
+        actor_id: str,
+        event_kind: str,
+        summary: str,
+        *,
+        before_ref: str | None = None,
+        after_ref: str | None = None,
+        notify_member_id: str | None = None,
+        notification_summary: str | None = None,
+    ) -> Any: ...
     def note(self, meeting: Any, *, lock: bool = False) -> Any | None: ...
     def create_note(
         self,
@@ -57,6 +75,7 @@ class MeetingRepository(Protocol):
         body: str,
         author_id: str,
         source_evidence: list[dict[str, Any]] | None = None,
+        source_status: str | None = None,
     ) -> Any: ...
     def append_note_version(self, note: Any, body: str, author_id: str, source_evidence: list[dict[str, Any]] | None = None) -> Any: ...
     def note_versions(self, note: Any) -> list[Any]: ...
@@ -138,17 +157,27 @@ class MeetingApplication:
         repository: MeetingRepository,
         recording_storage: RecordingStorage,
         realtime_key_issuer: RealtimeTranscriptionKeyIssuer,
+        attachments: Any = None,
+        references: Any = None,
+        material_storage: Any = None,
+        extractions: Any = None,
+        extraction_queue: Any = None,
     ) -> None:
         self._repository = repository
         self._recording_storage = recording_storage
         self._realtime_key_issuer = realtime_key_issuer
+        self._attachments = attachments
+        self._references = references
+        self._material_storage = material_storage
+        self._extractions = extractions
+        self._extraction_queue = extraction_queue
 
     def list(self, principal: Principal) -> list[dict[str, Any]]:
         """Calendar-safe projection: concealed private meetings contribute only a time busy block."""
         rows: list[dict[str, Any]] = []
         for meeting in self._repository.meetings_in_organizations(principal.organization_scope):
             if self._can_read_detail(principal, meeting):
-                rows.append(self._view(meeting, include_note=False))
+                rows.append(self._view(principal, meeting, include_note=False))
             else:
                 rows.append({"kind": "busy", "starts_at": _iso(meeting.starts_at), "ends_at": _iso(meeting.ends_at)})
         return rows
@@ -158,14 +187,180 @@ class MeetingApplication:
         if meeting is None or not self._can_read_detail(principal, meeting):
             # Detail lookup deliberately fails closed, unlike calendar's busy-only projection.
             raise MeetingNotFound("meeting was not found")
-        return self._view(meeting, include_note=True)
+        return self._view(principal, meeting, include_note=True)
+
+    def attach_material_link(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        expected_version: int,
+        *,
+        url: str,
+        label: str,
+    ) -> dict[str, Any]:
+        self._material_dependencies()
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._owned_mutable_meeting(principal, meeting_id, expected_version)
+        clean_url = _link_url(url)
+        clean_label = label.strip()[:300]
+        if not clean_label:
+            raise MeetingError("material label is required")
+        attachment = self._attachments.add_link(
+            url=clean_url,
+            name=clean_label,
+            provenance=f"link by {principal.id} on meeting {meeting.id}",
+            uploaded_by=str(principal.id),
+        )
+        binding = self._attachments.bind(
+            attachment_id=attachment.id,
+            context_type="meeting",
+            context_id=str(meeting.id),
+            role="input",
+            bound_by=str(principal.id),
+        )
+        self._record_material_change(
+            meeting,
+            principal,
+            "meeting.material_attached",
+            f"회의 첨부 연결: {clean_label}",
+            after_ref=f"attachment:{attachment.id}",
+        )
+        return self._material_view(principal, meeting, binding, attachment)
+
+    def attach_material(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        expected_version: int,
+        *,
+        name: str,
+        content_type: str,
+        data: bytes,
+    ) -> dict[str, Any]:
+        self._material_dependencies(require_storage=True)
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._owned_mutable_meeting(principal, meeting_id, expected_version)
+        attachment = store_file(
+            self._attachments,
+            self._material_storage,
+            key_prefix=f"meetings/{meeting.id}",
+            name=name,
+            content_type=content_type,
+            data=data,
+            provenance=f"upload by {principal.id} to meeting {meeting.id}",
+            uploaded_by=str(principal.id),
+        )
+        binding = self._attachments.bind(
+            attachment_id=attachment.id,
+            context_type="meeting",
+            context_id=str(meeting.id),
+            role="input",
+            bound_by=str(principal.id),
+        )
+        extraction = self._request_extraction(attachment)
+        self._record_material_change(
+            meeting,
+            principal,
+            "meeting.material_attached",
+            f"회의 첨부 등록: {attachment.name}",
+            after_ref=f"attachment:{attachment.id}",
+        )
+        return self._material_view(principal, meeting, binding, attachment, extraction=extraction)
+
+    def detach_material(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        binding_id: UUID,
+        expected_version: int,
+    ) -> dict[str, Any]:
+        self._material_dependencies()
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._owned_mutable_meeting(principal, meeting_id, expected_version)
+        found = self._attachments.binding("meeting", str(meeting.id), binding_id)
+        if found is None or found[0].unbound_at is not None:
+            raise MeetingNotFound("meeting material was not found")
+        binding, attachment = found
+        self._attachments.unbind(binding)
+        self._record_material_change(
+            meeting,
+            principal,
+            "meeting.material_detached",
+            f"회의 첨부 해제: {attachment.name}",
+            before_ref=f"attachment:{attachment.id}",
+        )
+        return self._material_view(principal, meeting, binding, attachment)
+
+    def replace_material(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        binding_id: UUID,
+        expected_version: int,
+        *,
+        name: str,
+        content_type: str,
+        data: bytes,
+    ) -> dict[str, Any]:
+        """Replace one binding with a new immutable file; the old attachment and bytes remain intact."""
+        self._material_dependencies(require_storage=True)
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._owned_mutable_meeting(principal, meeting_id, expected_version)
+        found = self._attachments.binding("meeting", str(meeting.id), binding_id)
+        if found is None or found[0].unbound_at is not None:
+            raise MeetingNotFound("meeting material was not found")
+        old_binding, old_attachment = found
+        replacement = store_file(
+            self._attachments,
+            self._material_storage,
+            key_prefix=f"meetings/{meeting.id}",
+            name=name,
+            content_type=content_type,
+            data=data,
+            provenance=f"replacement by {principal.id} on meeting {meeting.id}",
+            uploaded_by=str(principal.id),
+        )
+        new_binding = self._attachments.bind(
+            attachment_id=replacement.id,
+            context_type="meeting",
+            context_id=str(meeting.id),
+            role=old_binding.role,
+            bound_by=str(principal.id),
+        )
+        self._attachments.unbind(old_binding)
+        extraction = self._request_extraction(replacement)
+        self._record_material_change(
+            meeting,
+            principal,
+            "meeting.material_replaced",
+            f"회의 첨부 교체: {old_attachment.name} → {replacement.name}",
+            before_ref=f"attachment:{old_attachment.id}",
+            after_ref=f"attachment:{replacement.id}",
+        )
+        return self._material_view(principal, meeting, new_binding, replacement, extraction=extraction)
 
     def material_revisions(self, principal: Principal, meeting_id: UUID, *, include_history: bool = False) -> list[dict[str, Any]]:
-        """Current immutable file-derived transcript layers, after the same read policy as meeting detail."""
+        """Current immutable note/transcript layers, after the same read policy as meeting detail."""
         meeting = self._repository.meeting(meeting_id)
         if meeting is None or not self._can_read_detail(principal, meeting):
             raise MeetingNotFound("meeting was not found")
         revisions = []
+        note = self._repository.note(meeting)
+        if note is not None:
+            note_versions = self._repository.note_versions(note)
+            current = next((row for row in note_versions if row.version == note.current_version), None)
+            visible_versions = note_versions if include_history else ([current] if current is not None else [])
+            for version in visible_versions:
+                is_current = current is not None and version.id == current.id
+                revisions.append({
+                    "kind": "meeting_note",
+                    "source_layer": "meeting_note",
+                    "revision_id": str(version.id),
+                    "revision": version.version,
+                    "is_current_revision": is_current,
+                    "note_id": str(note.id),
+                    "note_lifecycle": note.lifecycle if is_current else "draft",
+                })
         for recording in self._repository.recordings(meeting):
             if not recording.storage_key or not recording.sha256:
                 continue
@@ -194,10 +389,18 @@ class MeetingApplication:
         *,
         organization_id: str,
         title: str,
+        description: str | None = None,
         starts_at: datetime,
         ends_at: datetime,
         visibility: str,
         attendee_ids: list[str],
+        source_action_item_id: UUID | None = None,
+        source_decision_item_id: UUID | None = None,
+        source_submission_id: UUID | None = None,
+        source_review_decision_id: UUID | None = None,
+        initial_note_body: str | None = None,
+        initial_note_source_evidence: list[dict[str, Any]] | None = None,
+        initial_note_source_status: str | None = None,
     ) -> dict[str, Any]:
         self._require(principal, MEETING_MANAGE)
         self._validate_schedule(title, starts_at, ends_at, visibility)
@@ -211,33 +414,52 @@ class MeetingApplication:
             organization_id=organization_id,
             owner_id=str(principal.id),
             title=title.strip(),
+            description=str(description).strip() if description else None,
             starts_at=starts_at,
             ends_at=ends_at,
             visibility=visibility,
             attendee_ids=attendees,
+            source_action_item_id=source_action_item_id,
+            source_decision_item_id=source_decision_item_id,
+            source_submission_id=source_submission_id,
+            source_review_decision_id=source_review_decision_id,
         )
         self._repository.append_audit(meeting, str(principal.id), "meeting.created", f"회의 생성: {meeting.title}")
-        return self._view(meeting, include_note=True)
+        if initial_note_body is not None:
+            body = initial_note_body.strip()
+            if not body:
+                raise MeetingError("meeting note body is required")
+            self._repository.create_note(
+                meeting,
+                body,
+                str(principal.id),
+                list(initial_note_source_evidence or []),
+                initial_note_source_status,
+            )
+            self._repository.append_audit(meeting, str(principal.id), "meeting.note_created", "회의록 초안 작성")
+        return self._view(principal, meeting, include_note=True)
 
     def update(self, principal: Principal, meeting_id: UUID, expected_version: int, changes: dict[str, Any]) -> dict[str, Any]:
         self._require(principal, MEETING_MANAGE)
         meeting = self._owned_mutable_meeting(principal, meeting_id, expected_version)
-        unknown = set(changes) - {"title", "starts_at", "ends_at", "visibility"}
+        unknown = set(changes) - {"title", "description", "starts_at", "ends_at", "visibility"}
         if unknown:
             raise MeetingError(f"unsupported meeting fields: {sorted(unknown)}")
         title = str(changes.get("title", meeting.title)).strip()
+        description = changes.get("description", meeting.description)
         starts_at = changes.get("starts_at", meeting.starts_at)
         ends_at = changes.get("ends_at", meeting.ends_at)
         visibility = str(changes.get("visibility", meeting.visibility))
         self._validate_schedule(title, starts_at, ends_at, visibility)
         meeting.title = title
+        meeting.description = str(description).strip() if description else None
         meeting.starts_at = starts_at
         meeting.ends_at = ends_at
         meeting.visibility = visibility
         meeting.version += 1
         self._repository.touch(meeting)
         self._repository.append_audit(meeting, str(principal.id), "meeting.updated", f"회의 수정: {meeting.title}", before_ref=f"meeting:{meeting.id}@{expected_version}")
-        return self._view(meeting, include_note=True)
+        return self._view(principal, meeting, include_note=True)
 
     def share(self, principal: Principal, meeting_id: UUID, member_id: str, expected_version: int) -> dict[str, Any]:
         self._require(principal, MEETING_SHARE)
@@ -247,8 +469,17 @@ class MeetingApplication:
         self._repository.add_share(meeting, member_id, str(principal.id))
         meeting.version += 1
         self._repository.touch(meeting)
-        self._repository.append_audit(meeting, str(principal.id), "meeting.shared", "회의 열람 공유", before_ref=f"meeting:{meeting.id}@{expected_version}")
-        return self._view(meeting, include_note=True)
+        actor_name = principal.display_name.split(" (")[0].strip()
+        self._repository.append_audit(
+            meeting,
+            str(principal.id),
+            "meeting.shared",
+            "회의 열람 공유",
+            before_ref=f"meeting:{meeting.id}@{expected_version}",
+            notify_member_id=member_id,
+            notification_summary=f"{actor_name}님이 ‘{meeting.title}’ 회의를 공유했습니다.",
+        )
+        return self._view(principal, meeting, include_note=True)
 
     def revoke_share(self, principal: Principal, meeting_id: UUID, member_id: str, expected_version: int) -> dict[str, Any]:
         self._require(principal, MEETING_SHARE)
@@ -258,7 +489,7 @@ class MeetingApplication:
         meeting.version += 1
         self._repository.touch(meeting)
         self._repository.append_audit(meeting, str(principal.id), "meeting.share_revoked", "회의 열람 공유 회수", before_ref=f"meeting:{meeting.id}@{expected_version}")
-        return self._view(meeting, include_note=True)
+        return self._view(principal, meeting, include_note=True)
 
     def create_note(self, principal: Principal, meeting_id: UUID, body: str) -> dict[str, Any]:
         meeting = self._note_target(principal, meeting_id)
@@ -791,14 +1022,22 @@ class MeetingApplication:
         member_id = str(principal.id)
         return member_id == meeting.owner_id or member_id in self._repository.attendee_ids(meeting) or self._repository.is_shared_with(meeting, member_id) or MEETING_READ_PRIVATE in principal.capabilities
 
-    def _view(self, meeting: Any, *, include_note: bool) -> dict[str, Any]:
+    def _view(self, principal: Principal, meeting: Any, *, include_note: bool) -> dict[str, Any]:
         attendee_ids = sorted(self._repository.attendee_ids(meeting))
         result: dict[str, Any] = {
             "kind": "meeting", "meeting_id": str(meeting.id), "organization_id": meeting.organization_id,
             "owner_id": meeting.owner_id, "title": meeting.title, "starts_at": _iso(meeting.starts_at),
+            "description": meeting.description,
             "ends_at": _iso(meeting.ends_at), "visibility": meeting.visibility, "lifecycle": meeting.lifecycle,
             "version": meeting.version,
             "attendees": [{"member_id": member_id, "display_name": self._repository.member_display_name(member_id) or member_id} for member_id in attendee_ids],
+            "lineage": {
+                "source_action_item_id": _str(getattr(meeting, "source_action_item_id", None)),
+                "source_decision_item_id": _str(getattr(meeting, "source_decision_item_id", None)),
+                "source_submission_id": _str(getattr(meeting, "source_submission_id", None)),
+                "source_review_decision_id": _str(getattr(meeting, "source_review_decision_id", None)),
+                "confirmed_by": meeting.owner_id if getattr(meeting, "source_review_decision_id", None) else None,
+            },
         }
         if include_note:
             note = self._repository.note(meeting)
@@ -806,7 +1045,94 @@ class MeetingApplication:
             recordings, summaries = self._recording_records(meeting)
             result["recordings"] = recordings
             result["summaries"] = summaries
+            result["materials"] = self._material_views(principal, meeting)
         return result
+
+    def _material_views(self, principal: Principal, meeting: Any) -> list[dict[str, Any]]:
+        if self._attachments is None:
+            return []
+        result = []
+        for binding, attachment in self._attachments.bindings_for("meeting", str(meeting.id)):
+            if binding.unbound_at is not None:
+                continue
+            result.append(self._material_view(principal, meeting, binding, attachment))
+        return result
+
+    def _material_view(
+        self,
+        principal: Principal,
+        meeting: Any,
+        binding: Any,
+        attachment: Any,
+        *,
+        extraction: Any = None,
+    ) -> dict[str, Any]:
+        name = attachment.name
+        resource = None
+        if attachment.source_kind == "resource_ref":
+            resource_type, _, resource_id = str(attachment.source_ref).partition(":")
+            title = (
+                self._references.title(principal, resource_type, resource_id)
+                if self._references is not None
+                else None
+            )
+            name = title or "볼 수 없는 자료"
+            resource = {"type": resource_type, "id": resource_id, "title": title} if title else None
+        if extraction is None and self._extractions is not None:
+            extraction = self._extractions.for_attachments([attachment.id]).get(attachment.id)
+        return {
+            "material_id": str(attachment.id),
+            "binding_id": str(binding.id),
+            "attachment_id": str(attachment.id),
+            "meeting_id": str(meeting.id),
+            "meeting_version": int(meeting.version),
+            "kind": binding.role,
+            "name": name,
+            "resource": resource,
+            "content_type": attachment.content_type,
+            "size_bytes": int(attachment.size_bytes),
+            "source_kind": attachment.source_kind,
+            "url": attachment.source_ref if attachment.source_kind == "external_link" else None,
+            "mutable_source": attachment.source_kind != "file",
+            "integrity_ref": attachment.integrity_ref,
+            "uploaded_by": attachment.uploaded_by,
+            "created_at": binding.bound_at.isoformat(),
+            "removed_at": binding.unbound_at.isoformat() if binding.unbound_at else None,
+            "extraction": extraction_view(extraction),
+        }
+
+    def _record_material_change(
+        self,
+        meeting: Any,
+        principal: Principal,
+        event_kind: str,
+        summary: str,
+        *,
+        before_ref: str | None = None,
+        after_ref: str | None = None,
+    ) -> None:
+        meeting.version += 1
+        self._repository.touch(meeting)
+        self._repository.append_audit(
+            meeting,
+            str(principal.id),
+            event_kind,
+            summary,
+            before_ref=before_ref,
+            after_ref=after_ref,
+        )
+
+    def _request_extraction(self, attachment: Any) -> Any:
+        if self._extractions is None:
+            return None
+        extraction = self._extractions.request(attachment)
+        if extraction.status == "queued" and self._extraction_queue is not None:
+            self._extraction_queue.enqueue(MaterialExtractionJob(extraction.id, attachment.id))
+        return extraction
+
+    def _material_dependencies(self, *, require_storage: bool = False) -> None:
+        if self._attachments is None or (require_storage and self._material_storage is None):
+            raise MeetingError("meeting materials are not available")
 
     def _recording_records(self, meeting: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Each recording with the transcript layers built on it, and every summary those layers produced.
@@ -839,10 +1165,15 @@ class MeetingApplication:
     def _note_view(self, note: Any, *, current: Any | None = None) -> dict[str, Any]:
         versions = self._repository.note_versions(note)
         latest = current or (versions[-1] if versions else None)
+        source_version = next(
+            (version for version in versions if getattr(version, "source_status", None) is not None),
+            None,
+        )
         return {
             "note_id": str(note.id), "lifecycle": note.lifecycle, "version": note.current_version,
             "body": latest.body if latest is not None else "",
-            "versions": [{"version_id": str(version.id), "version": version.version, "body": version.body, "created_by": version.created_by, "created_at": _iso(version.created_at), "source_evidence": list(version.source_evidence or [])} for version in versions],
+            "source_status": getattr(source_version, "source_status", None) if source_version is not None else None,
+            "versions": [{"version_id": str(version.id), "version": version.version, "body": version.body, "created_by": version.created_by, "created_at": _iso(version.created_at), "source_status": getattr(version, "source_status", None), "source_evidence": list(version.source_evidence or [])} for version in versions],
             "finalized_at": _iso(note.finalized_at), "finalized_by": note.finalized_by,
         }
 
@@ -1136,6 +1467,10 @@ def _iso(value: datetime | None) -> str | None:
         return None
     # SQLite drops timezone offsets in fast contract tests; public meeting transport is always UTC.
     return (value if value.tzinfo is not None else value.replace(tzinfo=UTC)).isoformat()
+
+
+def _str(value: object | None) -> str | None:
+    return str(value) if value is not None else None
 
 
 def _distinct(values: list[str]) -> list[str]:

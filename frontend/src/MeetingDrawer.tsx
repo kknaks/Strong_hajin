@@ -7,6 +7,7 @@ import {
   createMeetingNote,
   finalizeMeetingNote,
   getMeeting,
+  meetingMaterialContentUrl,
   meetingRealtimeCredential,
   saveMeetingNote,
   startMeetingRecording,
@@ -176,6 +177,7 @@ export function MeetingDrawer({
     null;
   const canRecord = live === null && (recording === null || recording.state !== "recording");
   const dirty = meeting !== null && body !== (meeting.note?.body ?? "");
+  const initialNoteSource = meeting?.note?.versions.find((version) => version.source_status != null) ?? null;
 
   async function saveNote() {
     if (!meeting || busy) return;
@@ -366,6 +368,47 @@ export function MeetingDrawer({
             </div>
           </dl>
 
+          {meeting.lineage?.source_action_item_id && (
+            <p aria-label="회의 출처" className="origin-chip">
+              <span className="badge outline">AX 제안에서 생성됨</span>
+              <small className="t-meta">
+                확정: {meeting.lineage.confirmed_by ? personName(meeting.lineage.confirmed_by) : "알 수 없음"}
+              </small>
+            </p>
+          )}
+
+          <section aria-label="현재 회의 첨부" className="drawer-section meeting-current-materials">
+            <h4>
+              첨부 <small className="t-meta">· 현재 목록</small>
+            </h4>
+            {(meeting.materials ?? []).length === 0 ? (
+              <p className="t-meta">등록된 첨부가 없습니다.</p>
+            ) : (
+              <ul className="material-list">
+                {(meeting.materials ?? []).map((material) => (
+                  <li key={material.binding_id}>
+                    {material.source_kind === "resource_ref" ? (
+                      material.resource?.type === "task" && onOpenTask ? (
+                        <button className="btn link" onClick={() => onOpenTask(material.resource!.id)} type="button">
+                          {material.name}
+                        </button>
+                      ) : <span>{material.name}</span>
+                    ) : (
+                      <a
+                        href={material.url ?? meetingMaterialContentUrl(meeting.meeting_id, material.material_id)}
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        {material.name}
+                      </a>
+                    )}
+                    {material.source_kind === "external_link" && <span className="badge outline">변경 가능한 링크</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
           <section aria-label="회의록" className="drawer-section">
             <h4>
               회의록{" "}
@@ -392,6 +435,23 @@ export function MeetingDrawer({
               rows={5}
               value={body}
             />
+            {meeting.note?.source_status && (
+              <section aria-label="초기 회의록 근거" className="meeting-note-sources">
+                <b>
+                  {meeting.note.source_status === "resolved"
+                    ? "확인된 대화·자료 기반"
+                    : meeting.note.source_status === "not_found"
+                      ? "지난 논의를 찾지 못해 현재 대화만 사용"
+                      : "현재 대화 기반"}
+                </b>
+                {(initialNoteSource?.source_evidence ?? []).map((source) => (
+                  <p key={`${source.source_type}:${source.source_id}`}>
+                    <span>{String(source.label ?? "근거")}</span>
+                    {source.excerpt ? <small className="t-meta">{String(source.excerpt)}</small> : null}
+                  </p>
+                ))}
+              </section>
+            )}
             {noteStatus !== "idle" && (
               <p className={noteStatus === "conflict" || noteStatus === "failed" ? "note-status danger-text" : "note-status t-meta"} role="status">
                 {noteStatusLabel[noteStatus]}

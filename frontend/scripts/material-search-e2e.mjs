@@ -75,11 +75,7 @@ try {
   await drawer.locator(`.extraction-status[data-status="completed"]`).first().waitFor({ timeout: 10_000 });
   await drawer.getByRole("button", { name: /AX에게 이 업무 묻기/ }).click();
 
-  const createConversationResponse = page.waitForResponse(
-    (response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST",
-  );
   await page.getByRole("button", { name: "새 AX 대화" }).click();
-  const conversation = await (await createConversationResponse).json();
   await page.getByLabel("AX 메시지").fill(
     [
       `업무 '${taskTitle}'(task_id ${task.task_id})를 첨부자료까지 포함해 설명해줘.`,
@@ -87,7 +83,11 @@ try {
       "공급사 이름과 납기일을 첨부에서 찾은 대로 인용하고, 첨부에 없는 내용은 없다고 말해.",
     ].join(" "),
   );
+  const createConversationResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "보내기" }).click();
+  const conversation = await (await createConversationResponse).json();
 
   const cited = await pollFor(
     page,
@@ -127,8 +127,8 @@ try {
   // 인용은 답에 붙은 근거 줄 안에 있다: 답이 먼저 읽히고, 한 번 펼치면 읽은 구간이 그대로 나온다.
   const grounds = page.locator("details.ax-answer-evidence").last();
   await grounds.waitFor({ timeout: 20_000 });
-  if ((await grounds.locator("summary").textContent())?.includes("인용") !== true) {
-    throw new Error("the one-line evidence bar did not count the quoted passages");
+  if (!/근거 \d+건/.test((await grounds.locator("summary").textContent()) ?? "")) {
+    throw new Error("the one-line evidence bar did not count the answer grounds");
   }
   await grounds.locator("summary").click();
   const card = page.locator(`.ax-evidence-card[data-material-id="${indexed.material_id}"]`).first();

@@ -16,19 +16,19 @@ try {
   const page = await browser.newPage();
   await page.goto(frontendUrl, { waitUntil: "domcontentloaded" });
   await loginAs(page, "mina");
-  await page.getByRole("button", { name: "AX" }).click();
+  await page.getByRole("button", { name: "AX", exact: true }).click();
 
-  const created = page.waitForResponse(
-    (response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST",
-  );
   await page.getByRole("button", { name: "새 AX 대화" }).click();
-  const first = await (await created).json();
 
   // A request that takes long enough to stop mid-flight.
   await page.getByLabel("AX 메시지").fill(
     `SCAX MCP의 task_list와 work_request_list를 차례로 실제 호출한 뒤, 오늘 할 일을 길게 정리해줘. ${stamp}`,
   );
+  const created = page.waitForResponse(
+    (response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "보내기" }).click();
+  const first = await (await created).json();
 
   const rail = page.locator(".ax-rail").first();
   await rail.waitFor({ timeout: 30_000 });
@@ -61,7 +61,7 @@ try {
 
   // The screen says it stopped, and offers to try again.
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "AX" }).click();
+  await page.getByRole("button", { name: "AX", exact: true }).click();
   const railAfter = page.locator(".ax-rail").first();
   await railAfter.waitFor({ timeout: 30_000 });
   if (railAfter.getAttribute("data-progress") === "running") throw new Error("a stopped turn still looks like it is running");
@@ -76,24 +76,43 @@ try {
     { timeout: 30_000, description: "the retry to open a new turn" },
   );
   if (!retried.retry_of_turn_id) throw new Error("the retry does not say what it came from");
+  await pollFor(
+    page,
+    () => page.evaluate(async (conversationId) => {
+      const detail = await (await fetch(`/api/conversations/${conversationId}`)).json();
+      return detail.turns[1]?.state === "completed";
+    }, first.conversation_id),
+    { timeout: 120_000, description: "the retried conversation to earn a history entry" },
+  );
 
   // Each conversation keeps its own unsent draft, across switching and a full reload.
+  await page.getByRole("button", { name: "새 AX 대화" }).click();
+  await page.getByLabel("AX 메시지").fill(`둘째 대화를 시작해줘 ${stamp}`);
   const secondCreated = page.waitForResponse(
     (response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST",
   );
-  await page.getByRole("button", { name: "새 AX 대화" }).click();
-  await secondCreated;
+  await page.getByRole("button", { name: "보내기" }).click();
+  const second = await (await secondCreated).json();
+  await pollFor(
+    page,
+    () => page.evaluate(async (conversationId) => {
+      const detail = await (await fetch(`/api/conversations/${conversationId}`)).json();
+      return detail.turns[0]?.state === "completed";
+    }, second.conversation_id),
+    { timeout: 120_000, description: "the second conversation's first answer" },
+  );
   await page.getByLabel("AX 메시지").fill(`둘째 대화 초안 ${stamp}`);
-  // The switcher is open by default; only expand it when it is not.
+  // History is hidden by default; expand it before switching conversations.
   if ((await page.locator(".ax-conversation-list button").count()) === 0) {
-    await page.locator(".ax-sessions-toggle").first().click();
+    await page.getByRole("button", { name: "대화 히스토리" }).click();
   }
   await page.locator(`.ax-conversation-list button[data-conversation-id="${first.conversation_id}"]`).click();
   await page.getByLabel("AX 메시지").fill(`첫째 대화 초안 ${stamp}`);
 
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "AX" }).click();
+  await page.getByRole("button", { name: "AX", exact: true }).click();
   // Reopen the same conversation: each one keeps its own unsent text, not one shared box.
+  await page.getByRole("button", { name: "대화 히스토리" }).click();
   const firstButton = page.locator(`.ax-conversation-list button[data-conversation-id="${first.conversation_id}"]`);
   await firstButton.waitFor({ timeout: 20_000 });
   await firstButton.click();

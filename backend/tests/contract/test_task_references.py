@@ -112,11 +112,17 @@ def test_the_work_someone_referred_to_travels_with_the_request(tmp_path) -> None
     request = client.post(
         "/api/work-requests",
         headers=MINA,
-        json={"title": "이번 분기 보고", "assignee_id": "jiho", "reference_task_ids": [earlier]},
+        json={
+            "title": "이번 분기 보고",
+            "assignee_id": "jiho",
+            "checklist": ["자료 수집", "수치 검토"],
+            "reference_task_ids": [earlier],
+        },
     )
     assert request.status_code == 201, request.text
 
     detail = client.get(f"/api/work-requests/{request.json()['request_id']}", headers=MINA).json()
+    assert detail["checklist"] == ["자료 수집", "수치 검토"]
     assert [row["task"]["title"] for row in detail["references"]] == ["지난 분기 보고"]
 
     [item] = client.get("/api/action-items", headers=JIHO).json()
@@ -132,6 +138,27 @@ def test_the_work_someone_referred_to_travels_with_the_request(tmp_path) -> None
     holder = client.get(f"/api/tasks/{task['task_id']}", headers=JIHO).json()
     assert len(holder["references"]) == 1
     assert holder["references"][0]["task"] is None or holder["references"][0]["task"].get("title") in {None, "볼 수 없는 업무"}
+
+
+def test_direct_mcp_work_request_uses_the_same_reference_authorization_as_http(tmp_path, monkeypatch) -> None:
+    from ax_workspace.entrypoints.mcp import McpReportsFacade
+
+    client, _, database_url = _stack(tmp_path)
+    settings = Settings(RuntimeProfile.TEST, database_url, materials_dir=str(tmp_path / "materials"))
+    earlier = _task(client, "직전 정산")
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
+
+    created = McpReportsFacade(settings, "mina").create_work_request(
+        "다음 정산",
+        "jiho",
+        due_date="2026-09-30",
+        checklist=["수치 검토"],
+        reference_task_ids=[earlier],
+    )
+
+    detail = client.get(f"/api/work-requests/{created['request_id']}", headers=MINA).json()
+    assert [row["task"]["title"] for row in detail["references"]] == ["직전 정산"]
+    assert client.get("/api/my-work", headers=JIHO).json() == []
 
 
 def test_a_task_is_no_longer_stored_as_a_generic_attachment_reference(tmp_path) -> None:
@@ -168,7 +195,9 @@ def test_a_turn_can_propose_work_that_points_at_earlier_work(tmp_path, monkeypat
     with make_session_factory(database_url)() as session:
         execution_id = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"])).execution_id
     monkeypatch.setenv("AX_MCP_CAUSATION_ID", str(execution_id))
-    proposed = McpReportsFacade(settings, "mina").create_self_task("2분기 정산", None, [earlier])
+    proposed = McpReportsFacade(settings, "mina").create_self_task(
+        "2분기 정산", reference_task_ids=[earlier], due_date="2026-09-30"
+    )
     monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
 
     [card] = [row for row in client.get("/api/actions", headers=MINA).json() if row["action_id"] == proposed["action_id"]]

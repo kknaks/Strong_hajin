@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createIdempotencyKey } from "./idempotency";
+import { TaskDraftFields, type TaskDraft } from "./ActionTaskCard";
 
 import {
   addWorkRequestComment,
@@ -31,6 +32,7 @@ import {
   attachTaskMaterialReference,
   getTaskAssignmentCandidates,
   getTasks,
+  listProjects,
   reassignTask,
   uploadTaskMaterial,
 } from "./api";
@@ -68,6 +70,8 @@ import type {
   TaskReference,
   TaskOrigin,
   TaskPatch,
+  Project,
+  ActionEditContract,
   WorkRequest,
 } from "./viewModels";
 
@@ -1897,6 +1901,50 @@ export function WorkRequestDetailDrawer({
           <p className="prewrap">{request.description}</p>
         </section>
       )}
+      {!revision && request.checklist && request.checklist.length > 0 && (
+        <section className="drawer-section">
+          <h4>체크리스트</h4>
+          <ul aria-label="요청 체크리스트" className="checklist">
+            {request.checklist.map((step, index) => (
+              <li className="checklist-item" key={`${step}-${index}`}>
+                <Checkbox checked={false} disabled onChange={() => undefined}>
+                  {step}
+                </Checkbox>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {!revision && request.references && request.references.length > 0 && (
+        <section className="drawer-section">
+          <h4>
+            참고 업무 <span className="t-meta">· 요청과 함께 전달된 이전 업무입니다</span>
+          </h4>
+          <ul aria-label="요청 참고 업무" className="material-list">
+            {request.references.map((reference) => (
+              <li key={reference.reference_id}>
+                {reference.task ? (
+                  <button
+                    aria-label={`${reference.task.title} 열기`}
+                    className="btn link"
+                    onClick={() => onOpenDerivedTask?.(reference.task!.task_id)}
+                    type="button"
+                  >
+                    {reference.task.title}
+                  </button>
+                ) : (
+                  <span className="t-meta">볼 수 없는 업무</span>
+                )}
+                <span className="t-meta">
+                  {reference.task ? taskStateLabel[reference.task.state] : "권한 없음"}
+                  {reference.task?.due_date ? ` · ${formatDate(reference.task.due_date)}` : ""}
+                  {reference.task?.assignee ? ` · ${personName(reference.task.assignee.display_name)}` : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {request.state === "negotiating" && lastDecision && (
         <section className="drawer-section">
@@ -2148,6 +2196,8 @@ export function conditionText(conditions: Record<string, unknown> | null): strin
 
 /* ---------------------------------------------------------------- create (drawer) */
 
+const noProjectCandidates: Project[] = [];
+
 export function CreateWorkDrawer({
   ownerName,
   canCreateTask,
@@ -2155,6 +2205,7 @@ export function CreateWorkDrawer({
   assigneeCandidates,
   assignCandidates = [],
   ccCandidates = [],
+  projectCandidates = noProjectCandidates,
   onCreated,
   onError,
   onClose,
@@ -2165,6 +2216,7 @@ export function CreateWorkDrawer({
   assigneeCandidates: Persona[];
   assignCandidates?: Persona[];
   ccCandidates?: Persona[];
+  projectCandidates?: Project[];
   onCreated: (notice: string) => Promise<void> | void;
   onError: (message: string | null) => void;
   onClose: () => void;
@@ -2176,6 +2228,8 @@ export function CreateWorkDrawer({
   const [dueDate, setDueDate] = useState("");
   const [assigneeId, setAssigneeId] = useState(assigneeCandidates[0]?.id ?? "");
   const [taskOwnerId, setTaskOwnerId] = useState("me");
+  const [projectId, setProjectId] = useState("");
+  const [availableProjects, setAvailableProjects] = useState<Project[]>(projectCandidates);
   const [ccIds, setCcIds] = useState<string[]>([]);
   const [steps, setSteps] = useState<string[]>([]);
   const [newStep, setNewStep] = useState("");
@@ -2184,6 +2238,107 @@ export function CreateWorkDrawer({
   const [referenceChoices, setReferenceChoices] = useState<DirectTask[] | null>(null);
   const [isWorking, setIsWorking] = useState(false);
   const assignTarget = taskOwnerId === "me" ? null : assignCandidates.find((candidate) => candidate.id === taskOwnerId) ?? null;
+
+  useEffect(() => {
+    if (kind !== "task" || referenceChoices !== null) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rows = await getTasks(true);
+        if (!cancelled) setReferenceChoices(rows ?? []);
+      } catch {
+        if (!cancelled) setReferenceChoices([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [kind, referenceChoices]);
+
+  useEffect(() => {
+    if (projectCandidates.length > 0) {
+      setAvailableProjects(projectCandidates);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rows = await listProjects();
+        if (!cancelled) setAvailableProjects(rows ?? []);
+      } catch {
+        if (!cancelled) setAvailableProjects([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectCandidates]);
+
+  const directTaskDraft: TaskDraft = {
+    title,
+    description: description || null,
+    start_date: startDate || null,
+    due_date: dueDate || null,
+    checklist: steps,
+    reference_task_ids: linkedTasks.map((row) => row.task_id),
+    parent_task_id: null,
+    project_id: projectId || null,
+    assignee_id: taskOwnerId,
+  };
+  const directTaskContract: ActionEditContract = {
+    editor: "task",
+    base_submission_version: 0,
+    values: directTaskDraft,
+    fields: [
+      { id: "title", label: "업무 제목", type: "text", required: true, editable: true },
+      { id: "description", label: "업무 내용", type: "textarea", required: false, editable: true },
+      {
+        id: "assignee_id",
+        label: "담당자",
+        type: "select",
+        required: true,
+        editable: true,
+        options: [
+          { value: "me", label: `${ownerName} (나)` },
+          ...assignCandidates.map((candidate) => ({ value: candidate.id, label: candidate.display_name })),
+        ],
+      },
+      { id: "start_date", label: "시작일", type: "date", required: false, editable: true },
+      { id: "due_date", label: "기한", type: "date", required: false, editable: true },
+      ...(!assignTarget ? [{
+        id: "project_id",
+        label: "프로젝트",
+        type: "select" as const,
+        required: false,
+        editable: true,
+        options: availableProjects.map((project) => ({ value: project.project_id, label: project.name })),
+      }] : []),
+      { id: "checklist", label: "시작 단계", type: "string_list", required: false, editable: true },
+      ...(!assignTarget ? [{
+        id: "reference_task_ids",
+        label: "참고 업무",
+        type: "multi_select" as const,
+        required: false,
+        editable: true,
+        options: (referenceChoices ?? []).map((task) => ({ value: task.task_id, label: task.title })),
+      }] : []),
+    ],
+  };
+
+  function updateDirectTaskDraft(next: TaskDraft) {
+    setTitle(next.title);
+    setDescription(next.description ?? "");
+    setStartDate(next.start_date ?? "");
+    setDueDate(next.due_date ?? "");
+    setSteps(next.checklist);
+    setTaskOwnerId(next.assignee_id ?? "me");
+    setProjectId(next.project_id ?? "");
+    const choices = referenceChoices ?? [];
+    setLinkedTasks(next.reference_task_ids.flatMap((id) => {
+      const task = choices.find((candidate) => candidate.task_id === id) ?? linkedTasks.find((candidate) => candidate.task_id === id);
+      return task ? [task] : [];
+    }));
+  }
 
   async function submit() {
     const trimmed = title.trim();
@@ -2221,6 +2376,7 @@ export function CreateWorkDrawer({
           due_date: dueDate || undefined,
           checklist,
           reference_task_ids,
+          project_id: projectId || undefined,
         });
         await onCreated(`'${trimmed}' 업무를 만들었습니다.`);
       } else {
@@ -2319,6 +2475,15 @@ export function CreateWorkDrawer({
       title="새 업무 추가"
     >
       <div className="form-stack">
+        {Boolean(kind === "task") ? (
+          <TaskDraftFields
+            contract={directTaskContract}
+            disabled={isWorking}
+            draft={directTaskDraft}
+            onChange={updateDirectTaskDraft}
+          />
+        ) : (
+          <>
         <div className="field">
           <span>
             <label htmlFor={titleInputId}>{kind === "task" ? "업무 제목" : "요청할 업무"}</label> <span className="danger-text">*</span>
@@ -2524,6 +2689,8 @@ export function CreateWorkDrawer({
             value={description}
           />
         </div>
+          </>
+        )}
       </div>
     </Drawer>
   );

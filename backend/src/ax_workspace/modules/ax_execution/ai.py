@@ -1,7 +1,7 @@
 """Provider-neutral application contract for structured and conversational AI calls."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -79,12 +79,19 @@ class AiToolInvocation:
 
 
 @dataclass(frozen=True, slots=True)
+class AiFollowUpCandidate:
+    label: str
+    user_text: str
+
+
+@dataclass(frozen=True, slots=True)
 class AiConversationResult:
     provider_run_ref: str | None
     provider_session_ref: str | None
     body: str
     tool_invocations: list[AiToolInvocation]
     usage: dict[str, Any] | None = None
+    follow_up_candidates: list[AiFollowUpCandidate] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)

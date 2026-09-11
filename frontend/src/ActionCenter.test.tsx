@@ -145,6 +145,41 @@ describe("judgement card", () => {
     expect(within(card).getByText("조정 요청에 답해 수정안을 다시 보낼지 결정하세요")).toBeTruthy();
     expect(within(card).getByText("민아 차례")).toBeTruthy();
   });
+
+  it("confirms an unchanged AX proposal against the immutable submission it shows", async () => {
+    const ax: ActionItemDetail = {
+      ...adjusted,
+      action_item_id: "ax-1",
+      kind: "ax.task.create_self",
+      status: "awaiting_review",
+      subject: "AX 원안",
+      operation_label: "업무 생성",
+      current_question: "AX가 준비한 변경을 확정할지 결정하세요",
+      allowed_commands: [{ id: "confirm", label: "이 내용으로 업무 생성", tone: "primary", requires_reason: false }],
+      submission_version: 1,
+      expected_version: 1,
+      resource: { type: "action", id: "ax-1" },
+      rounds: [{
+        submission_id: "axs-1",
+        submission_version: 1,
+        submitted_by: "ax",
+        submitted_at: "2026-09-08T01:00:00Z",
+        content_hash: "ax-hash",
+        snapshot: { title: "AX 원안" },
+        diff: null,
+        decisions: [],
+      }],
+    };
+    renderDrawer(ax);
+    const drawer = await screen.findByRole("dialog", { name: "판단 상세" });
+    fireEvent.click(within(drawer).getByRole("button", { name: "이 내용으로 업무 생성" }));
+    await waitFor(() => expect(api.runActionCommand).toHaveBeenCalled());
+    expect(vi.mocked(api.runActionCommand).mock.calls[0]).toEqual([
+      "ax-1",
+      "confirm",
+      { expected_version: 1, base_submission_version: 1 },
+    ]);
+  });
 });
 
 describe("adjustment and resubmission", () => {
@@ -156,7 +191,7 @@ describe("adjustment and resubmission", () => {
   it("opens on the previous adjustment reason and offers only the commands the server allowed", async () => {
     renderDrawer(adjusted);
     const drawer = await screen.findByRole("dialog", { name: "판단 상세" });
-    expect(within(drawer).getByText("조정 요청에 답해 수정안을 다시 보낼지 결정하세요")).toBeTruthy();
+    expect(await within(drawer).findByText("조정 요청에 답해 수정안을 다시 보낼지 결정하세요")).toBeTruthy();
     // The reason that sent it back is visible on first open, both as the ask and in the round it was decided on.
     expect(within(within(drawer).getByLabelText("조정 요청")).getByText(/기한을 늦춰 주세요/)).toBeTruthy();
     expect(within(within(drawer).getByLabelText("회차 기록")).getByText(/기한을 늦춰 주세요/)).toBeTruthy();

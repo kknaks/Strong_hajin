@@ -40,6 +40,10 @@ try {
   const field = checklist.locator('input[id^="checklist-"]');
   await field.fill("자료 모으기");
   await field.press("Enter");
+  // Enter returns after the key event, not after the request. Wait for the first
+  // row so the intentional in-flight duplicate guard does not swallow the next
+  // distinct step on a loaded acceptance machine.
+  await checklist.locator(".checklist-item", { hasText: "자료 모으기" }).waitFor({ timeout: 10_000 });
   for (const step of ["초안 쓰기", "검토 요청"]) {
     await field.fill(step);
     await checklist.getByRole("button", { name: "추가" }).click();
@@ -47,7 +51,7 @@ try {
     await checklist.locator(".checklist-item", { hasText: step }).waitFor({ timeout: 10_000 });
   }
   await checklist.locator(".checklist-progress[data-done='0'][data-total='3']").waitFor({ timeout: 10_000 });
-  const texts = await checklist.locator(".checklist-item span").allTextContents();
+  const texts = await checklist.locator(".checklist-item .checkbox-label").allTextContents();
   if (texts.join("|") !== "자료 모으기|초안 쓰기|검토 요청") throw new Error(`unexpected order: ${JSON.stringify(texts)}`);
 
   // Check one off; the progress and the strike-through follow the server's answer.
@@ -71,7 +75,7 @@ try {
   await checklist.getByRole("button", { name: "초안 다시 쓰기 위로" }).click();
   await page.waitForFunction(
     () => {
-      const rows = Array.from(document.querySelectorAll('section[aria-label="체크리스트"] .checklist-item span'));
+      const rows = Array.from(document.querySelectorAll('section[aria-label="체크리스트"] .checklist-item .checkbox-label'));
       return rows.map((node) => node.textContent).join("|") === "초안 다시 쓰기|자료 모으기|검토 요청";
     },
     undefined,
@@ -92,7 +96,7 @@ try {
   await page.getByRole("row", { name: new RegExp(title) }).click();
   const reopened = page.getByRole("dialog", { name: "업무 상세" }).locator('section[aria-label="체크리스트"]');
   await reopened.locator(".checklist-progress[data-done='1'][data-total='2']").waitFor({ timeout: 20_000 });
-  const after = await reopened.locator(".checklist-item span").allTextContents();
+  const after = await reopened.locator(".checklist-item .checkbox-label").allTextContents();
   if (after.join("|") !== "초안 다시 쓰기|자료 모으기") throw new Error(`checklist did not survive re-open: ${JSON.stringify(after)}`);
 
   // The step that left the list is still in what the Task was, marked as archived rather than erased.

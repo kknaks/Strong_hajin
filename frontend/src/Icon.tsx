@@ -28,6 +28,9 @@ export type IconName =
   | "calendar"
   | "clock"
   | "paperclip"
+  | "link"
+  | "file"
+  | "folder"
   | "plus"
   | "minus"
   | "home"
@@ -77,6 +80,19 @@ const paths: Record<IconName, React.ReactNode> = {
     </>
   ),
   paperclip: <path d="M11.8 7.3 7.2 11.9a2.4 2.4 0 0 1-3.4-3.4l5.3-5.3a1.7 1.7 0 0 1 2.4 2.4l-5.3 5.3a1 1 0 0 1-1.4-1.4l4.6-4.6" />,
+  link: (
+    <>
+      <path d="m6.3 9.7-1.1 1.1a2.3 2.3 0 0 1-3.2-3.2l2-2a2.3 2.3 0 0 1 3.2 0" />
+      <path d="m9.7 6.3 1.1-1.1A2.3 2.3 0 0 1 14 8.4l-2 2a2.3 2.3 0 0 1-3.2 0M5.8 10.2l4.4-4.4" />
+    </>
+  ),
+  file: (
+    <>
+      <path d="M4 2.5h5l3 3v8H4z" />
+      <path d="M9 2.5v3h3M6 8h4M6 10.5h4" />
+    </>
+  ),
+  folder: <path d="M2.5 4.5h4l1.2 1.3h5.8v6.7h-11zM2.5 4.5V3.3h3.2l1.2 1.2" />,
   plus: <path d="M8 3.5v9M3.5 8h9" />,
   minus: <path d="M3.5 8h9" />,
   home: <path d="m2.5 7.6 5.5-4.6 5.5 4.6M4.2 7v6.5h7.6V7" />,

@@ -88,6 +88,16 @@ class SessionMaterialOwners:
             readable_meetings = {resource_id: readable_meetings[resource_id]}
         native = NativeMaterialRepository(self._session)
         for meeting_id, meeting in readable_meetings.items():
+            for binding, attachment in attachments.bindings_for("meeting", meeting_id):
+                if binding.unbound_at is not None:
+                    continue
+                if selected is not None and attachment.id not in selected:
+                    continue
+                sources.append(ReadableMaterialSource(attachment, {
+                    "resource_type": "meeting", "resource_id": meeting_id, "title": meeting["title"],
+                    "binding_id": str(binding.id), "role": binding.role,
+                    "origin": f"/api/meetings/{meeting_id}/materials/{attachment.id}/content",
+                }))
             audio_materials = {}
             for revision in meetings.material_revisions(principal, UUID(meeting_id), include_history=selected is not None):
                 if revision["kind"] != "meeting_recording" and selected is not None and material_id_for(revision["kind"], UUID(revision["revision_id"])) not in selected:
@@ -100,16 +110,22 @@ class SessionMaterialOwners:
                     audio_materials[revision["recording_id"]] = {"material_id": str(attachment.id), "integrity_ref": attachment.integrity_ref, "origin": origin}
                 if selected is not None and attachment.id not in selected:
                     continue
-                sources.append(ReadableMaterialSource(attachment, {
+                context = {
                     "resource_type": "meeting", "resource_id": meeting_id, "title": meeting["title"],
                     "binding_id": str(binding.id), "role": binding.role, "source_layer": revision["source_layer"],
                     "source_revision_id": revision["revision_id"], "source_revision": revision["revision"],
                     "is_current_revision": revision["is_current_revision"],
-                    "recording_id": revision["recording_id"], "recording_integrity_ref": revision["recording_integrity_ref"],
                     "origin": origin,
-                    **({"recording_state": revision["recording_state"]} if "recording_state" in revision else {}),
-                    **({"recording_material": audio_materials[revision["recording_id"]]} if revision["recording_id"] in audio_materials else {}),
-                }))
+                }
+                if revision["kind"] == "meeting_note":
+                    context.update(note_id=revision["note_id"], note_lifecycle=revision["note_lifecycle"])
+                else:
+                    context.update(recording_id=revision["recording_id"], recording_integrity_ref=revision["recording_integrity_ref"])
+                    if "recording_state" in revision:
+                        context["recording_state"] = revision["recording_state"]
+                    if revision["recording_id"] in audio_materials:
+                        context["recording_material"] = audio_materials[revision["recording_id"]]
+                sources.append(ReadableMaterialSource(attachment, context))
         report_revisions = []
         if "report" in resource_types and DAILY_REPORT_READ in principal.capabilities:
             try:

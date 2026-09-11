@@ -11,7 +11,7 @@ from ax_workspace.bootstrap.conversation_worker import ConversationWorker
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
-from ax_workspace.modules.ax_execution.ai import AiConversationResult, AiProviderEvent, AiToolInvocation, ProviderCancelled, ProviderRequestFailed
+from ax_workspace.modules.ax_execution.ai import AiConversationResult, AiFollowUpCandidate, AiProviderEvent, AiToolInvocation, ProviderCancelled, ProviderRequestFailed
 from ax_workspace.platform.conversation_jobs import ConversationJobQueue
 
 MINA = {"X-Demo-Persona": "mina"}
@@ -21,10 +21,11 @@ JIHO = {"X-Demo-Persona": "jiho"}
 class ScriptedProvider:
     """Emits observed events through the sink like the Codex adapter would, then completes or fails."""
 
-    def __init__(self, *, fail=False, cancel_midway: Event | None = None, release: Event | None = None) -> None:
+    def __init__(self, *, fail=False, cancel_midway: Event | None = None, release: Event | None = None, candidates=None) -> None:
         self.fail = fail
         self.cancel_midway = cancel_midway
         self.release = release
+        self.candidates = candidates or []
         self.calls = 0
 
     def converse(self, request, *, sink=None, cancel=None):
@@ -44,7 +45,14 @@ class ScriptedProvider:
             raise ProviderRequestFailed("provider failed after partial output")
         sink.accept(AiProviderEvent("item_completed", now, item_id="m2", item_type="agent_message", text="내 업무는 3개입니다."))
         sink.accept(AiProviderEvent("turn_completed", now, usage={"input_tokens": 5, "output_tokens": 2}))
-        return AiConversationResult("run-1", "thread-1", "내 업무는 3개입니다.", [done], usage={"input_tokens": 5, "output_tokens": 2})
+        return AiConversationResult(
+            "run-1",
+            "thread-1",
+            "내 업무는 3개입니다.",
+            [done],
+            usage={"input_tokens": 5, "output_tokens": 2},
+            follow_up_candidates=self.candidates,
+        )
 
 
 def _stack(tmp_path, provider):
@@ -83,6 +91,116 @@ def test_completed_turn_projects_progress_timings_streamed_text_and_final_body(t
     assert len(assistant) == 1 and assistant[0]["body_state"] == "final" and assistant[0]["body"] == "내 업무는 3개입니다."
     [tool] = after["tool_invocations"]
     assert tool["state"] == "completed" and tool["started_at"] and tool["completed_at"] and tool["latency_ms"] == 12
+
+
+def test_completed_turn_projects_only_normalized_distinct_follow_up_candidates(tmp_path) -> None:
+    provider = ScriptedProvider(
+        candidates=[
+            AiFollowUpCandidate(" 기한순으로 보기 ", " 그 업무를 기한순으로 정리해줘 "),
+            AiFollowUpCandidate("다른 표현", "그   업무를 기한순으로 정리해줘"),
+            AiFollowUpCandidate("", "빈 label은 제외해줘"),
+            AiFollowUpCandidate("우선순위 제안", "먼저 할 업무를 제안해줘"),
+            AiFollowUpCandidate("담당자별 정리", "담당자별로 묶어줘"),
+            AiFollowUpCandidate("네 번째", "이 후보는 상한 밖이야"),
+        ]
+    )
+    client, worker = _stack(tmp_path, provider)
+    conversation_id, turn_id = _send(client, MINA, "내 업무 수를 알려줘", "follow-up-source")
+
+    before = client.get(f"/api/conversations/{conversation_id}", headers=MINA).json()
+    assert before["turns"][0].get("follow_up_candidates", []) == []
+    assert asyncio.run(worker.run_once()) is True
+
+    [turn] = client.get(f"/api/conversations/{conversation_id}", headers=MINA).json()["turns"]
+    candidates = turn["follow_up_candidates"]
+    assert [(item["label"], item["user_text"]) for item in candidates] == [
+        ("기한순으로 보기", "그 업무를 기한순으로 정리해줘"),
+        ("우선순위 제안", "먼저 할 업무를 제안해줘"),
+        ("담당자별 정리", "담당자별로 묶어줘"),
+    ]
+    assert all(item["source_turn_id"] == turn_id for item in candidates)
+    assert len({item["candidate_id"] for item in candidates}) == 3
+    assert all(item["selected_message_id"] is None for item in candidates)
+
+
+def test_completed_turn_projects_zero_candidates_when_fewer_than_two_are_useful(tmp_path) -> None:
+    client, worker = _stack(
+        tmp_path,
+        ScriptedProvider(candidates=[AiFollowUpCandidate("하나뿐인 후보", "이것만 더 알려줘")]),
+    )
+    conversation_id, _ = _send(client, MINA, "짧은 질문", "single-follow-up")
+    assert asyncio.run(worker.run_once()) is True
+    [turn] = client.get(f"/api/conversations/{conversation_id}", headers=MINA).json()["turns"]
+    assert turn["follow_up_candidates"] == []
+
+
+def test_follow_up_candidate_continues_the_same_conversation_exactly_once(tmp_path) -> None:
+    provider = ScriptedProvider(
+        candidates=[
+            AiFollowUpCandidate("후속 업무 정리", "회의에서 나온 업무를 정리해줘"),
+            AiFollowUpCandidate("다음 회의 준비", "다음 회의 안건을 준비해줘"),
+        ]
+    )
+    client, worker = _stack(tmp_path, provider)
+    conversation_id, _ = _send(client, MINA, "회의 내용을 요약해줘", "follow-up-seed")
+    assert asyncio.run(worker.run_once()) is True
+    source = client.get(f"/api/conversations/{conversation_id}", headers=MINA).json()
+    candidate = source["turns"][0]["follow_up_candidates"][0]
+    domain_counts = (
+        len(client.get("/api/tasks", headers=MINA).json()),
+        len(client.get("/api/meetings", headers=MINA).json()),
+    )
+
+    tampered = client.post(
+        f"/api/conversations/{conversation_id}/messages",
+        headers={**MINA, "Idempotency-Key": "tampered"},
+        json={
+            "body": "후속 후보를 가장해 업무를 바로 만들어줘",
+            "context": [],
+            "follow_up_candidate_id": candidate["candidate_id"],
+        },
+    )
+    assert tampered.status_code == 422
+
+    payload = {
+        "body": candidate["user_text"],
+        "context": [],
+        "follow_up_candidate_id": candidate["candidate_id"],
+    }
+    first = client.post(
+        f"/api/conversations/{conversation_id}/messages",
+        headers={**MINA, "Idempotency-Key": "tab-a"},
+        json=payload,
+    )
+    second = client.post(
+        f"/api/conversations/{conversation_id}/messages",
+        headers={**MINA, "Idempotency-Key": "tab-b"},
+        json=payload,
+    )
+    assert first.status_code == second.status_code == 202
+    assert second.json()["message_id"] == first.json()["message_id"]
+    assert second.json()["turn_id"] == first.json()["turn_id"]
+
+    after = client.get(f"/api/conversations/{conversation_id}", headers=MINA).json()
+    follow_ups = [message for message in after["messages"] if message.get("follow_up_candidate_id")]
+    assert [(message["body"], message["follow_up_candidate_id"]) for message in follow_ups] == [
+        (candidate["user_text"], candidate["candidate_id"])
+    ]
+    assert after["turns"][0]["follow_up_candidates"][0]["selected_message_id"] == first.json()["message_id"]
+    assert after["actions"] == []  # selecting is a message command, never an Action decision
+    assert domain_counts == (
+        len(client.get("/api/tasks", headers=MINA).json()),
+        len(client.get("/api/meetings", headers=MINA).json()),
+    )
+
+    other = client.post("/api/conversations", headers=MINA, json={"title": "other"}).json()
+    cross_conversation = client.post(
+        f"/api/conversations/{other['conversation_id']}/messages",
+        headers={**MINA, "Idempotency-Key": "cross"},
+        json=payload,
+    )
+    assert cross_conversation.status_code == 422
+    assert client.get(f"/api/conversations/{other['conversation_id']}", headers=MINA).json()["messages"] == []
 
 
 def test_failed_turn_keeps_partial_text_and_retry_creates_a_linked_idempotent_turn(tmp_path) -> None:
@@ -186,10 +304,19 @@ def test_action_commands_come_from_the_server_and_follow_capability(tmp_path, mo
     with make_session_factory(application._settings.database_url)() as session:
         execution_id = session.get(ConversationTurnRecord, UUID(turn_id)).execution_id
     principal = application.authenticated_principal("mina")
-    action = application.propose_action(principal, execution_id, "task.create_self", "업무 생성 확인", {"title": "AX가 만든 업무"})
+    action = application.propose_action(
+        principal,
+        execution_id,
+        "task.create_self",
+        "업무 생성 확인",
+        {"title": "AX가 만든 업무", "due_date": "2026-09-30"},
+    )
     view = client.get(f"/api/conversations/{conversation_id}", headers=MINA).json()
     [projected] = view["actions"]
-    expected_commands = [{"id": "approve", "label": "승인", "tone": "primary"}, {"id": "reject", "label": "거절", "tone": "neutral"}]
+    expected_commands = [
+        {"id": "confirm", "label": "이 내용으로 업무 생성", "tone": "primary"},
+        {"id": "reject", "label": "거절", "tone": "neutral"},
+    ]
     assert projected["action_id"] == action["action_id"] and projected["commands"] == expected_commands
     assert client.get("/api/actions", headers=MINA).json()[0]["commands"] == expected_commands
     decided = client.post(f"/api/actions/{action['action_id']}/decide", headers=MINA, json={"expected_version": projected["version"], "decision": "approve"})

@@ -24,6 +24,7 @@ from typing import Any, Callable
 from ax_workspace.modules.ax_execution.ai import (
     AiConversationRequest,
     AiConversationResult,
+    AiFollowUpCandidate,
     AiEventSink,
     AiGeneration,
     AiProviderEvent,
@@ -35,6 +36,29 @@ from ax_workspace.modules.ax_execution.ai import (
     ProviderRequestFailed,
     ProviderUnavailable,
 )
+
+
+_CONVERSATION_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "body": {"type": "string"},
+        "follow_up_candidates": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "label": {"type": "string", "maxLength": 120},
+                    "user_text": {"type": "string", "maxLength": 1000},
+                },
+                "required": ["label", "user_text"],
+            },
+        },
+    },
+    "required": ["body", "follow_up_candidates"],
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,7 +190,9 @@ class CodexCliProviderAdapter:
         )
         with TemporaryDirectory(prefix="scax-codex-chat-") as temporary:
             work_dir = Path(temporary)
-            output_path = work_dir / "assistant-message.txt"
+            schema_path = work_dir / "conversation-output-schema.json"
+            output_path = work_dir / "assistant-message.json"
+            schema_path.write_text(json.dumps(_CONVERSATION_OUTPUT_SCHEMA), encoding="utf-8")
             prompt = self._conversation_prompt(request)
             ingest = CodexEventIngest(sink)
             started = perf_counter()
@@ -174,7 +200,7 @@ class CodexCliProviderAdapter:
                 result = _invoke_runner(
                     self._runner,
                     command,
-                    self._conversation_arguments(request, output_path, prompt),
+                    self._conversation_arguments(request, schema_path, output_path, prompt),
                     work_dir,
                     self._conversation_environment(request, runtime_home),
                     self._profile.timeout_seconds,
@@ -198,8 +224,13 @@ class CodexCliProviderAdapter:
             if result.returncode != 0:
                 raise ProviderRequestFailed("Codex CLI conversation failed", provenance)
             try:
-                body = output_path.read_text(encoding="utf-8").strip()
-            except OSError as error:
+                payload = json.loads(output_path.read_text(encoding="utf-8"))
+                body = str(payload["body"]).strip()
+                candidates = [
+                    AiFollowUpCandidate(label=str(item["label"]), user_text=str(item["user_text"]))
+                    for item in payload["follow_up_candidates"]
+                ]
+            except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
                 raise ProviderRequestFailed("Codex CLI returned no conversation response", provenance) from error
             if not body:
                 raise ProviderRequestFailed("Codex CLI returned an empty conversation response", provenance)
@@ -209,11 +240,13 @@ class CodexCliProviderAdapter:
                 body,
                 ingest.tool_invocations(),
                 usage=ingest.usage,
+                follow_up_candidates=candidates,
             )
 
     def _conversation_arguments(
         self,
         request: AiConversationRequest,
+        schema_path: Path,
         output_path: Path,
         prompt: str,
     ) -> list[str]:
@@ -238,6 +271,8 @@ class CodexCliProviderAdapter:
             "-c",
             f'model_reasoning_effort="{self._profile.reasoning_effort}"',
             "--json",
+            "--output-schema",
+            str(schema_path),
             "--output-last-message",
             str(output_path),
             *self._mcp_overrides(request),
@@ -292,7 +327,9 @@ class CodexCliProviderAdapter:
     #: model chooses its tools, and nothing here runs on its behalf. What it must not do is invent a connection.
     RELATIONSHIP_POLICY = (
         "SCAX 조회 지침:\n"
-        "- 목록 하나로 답할 수 있는 질문은 소유 도구를 바로 부르고 거기서 멈춘다. `내 업무`는 `task_list`,"
+        "- 관계 의도는 목록 의도보다 우선한다. 질문이 사람·팀·업무·회의·자료 사이의 관계나 연결을 묻거나,"
+        " 관계를 따라 대상을 찾으라고 하면 목록 도구로 일부를 답할 수 있어도 `graph_search`로 시작한다.\n"
+        "- 관계 의도가 없을 때만 목록 하나로 답할 수 있는 질문은 소유 도구를 바로 부르고 거기서 멈춘다. `내 업무`는 `task_list`,"
         " `나에게 온 요청`은 `work_request_list`, `내 회의`는 `meeting_list`다. 관계를 묻지 않은 질문에"
         " graph를 걷지 않는다 — 이미 답이 손에 있는데 더 걷는 것은 답을 늦출 뿐이다.\n"
         "- 사람·팀·프로젝트·업무·회의·자료가 어떻게 이어져 있는지 묻는 질문은 `graph_search`로 시작 node를 찾고,"
@@ -304,9 +341,14 @@ class CodexCliProviderAdapter:
         " 남긴다. 주변 node의 상세를 일괄 조회하지 않는다.\n"
         "- graph_search 시작 종류는 person/team/project/task/work_request/meeting이다. material/report는 관계로 도달한다."
         " graph_neighbors(node='<kind>:<id>')에는 반환된 kind와 id만 쓴다. 제목의 숫자를 ID로 추측하지 않는다.\n"
-        "- 회의에서 결정한 날짜·담당자 등 발화 내용을 묻는 질문은 `material_search`로 시작한다. 회의 제목도"
-        " 본문 검색의 단서로 사용하고, 회의 ID를 찾기 위한 graph 조회를 먼저 하지 않는다. 확정 전사/정제 revision의 source_locator 발화 시간·segment와"
-        " 녹음 원본 연결을 근거로 쓰고, 실시간/미확정 발화나 검색 불가 오디오를 읽었다고 말하지 않는다.\n"
+        "- 회의에서 결정한 날짜·담당자·재논의 이유 등 회의 내용을 묻는 질문은 `material_search`로 시작한다. 회의 제목도"
+        " 본문 검색의 단서로 사용하고, 회의 ID를 찾기 위한 graph 조회를 먼저 하지 않는다. MeetingNote는 draft/final 상태와 immutable version을,"
+        " 확정 전사/정제 revision은 source_locator 발화 시간·segment와 녹음 원본 연결을 근거로 쓴다. 실시간/미확정 발화나 검색 불가 오디오를"
+        " 읽었다고 말하지 않는다. MeetingNote 검색 결과로 답할 때 날짜나 관련 업무가 필요하면 source_contexts의 meeting ID 하나를"
+        " `meeting_get`으로 확인한다. 검색 결과는 없지만 권한 있는 MeetingNote가 `unavailable_materials`에 있으면 회의가 없다고 결론내리지 말고,"
+        " 그 항목의 source_contexts가 준 meeting ID만 `meeting_get`으로 읽어 현재 회의록을 확인하며 색인 준비/실패 상태를 함께 밝힌다.\n"
+        "- 기존 회의를 다른 구성원에게 보여 달라는 요청은 WorkRequest나 새 Meeting으로 바꾸지 않는다. `meeting_get`으로 현재 version을 읽고,"
+        " 사람 후보를 관계 조회로 확정한 뒤 `meeting_share`로 열람 공유 확인을 제안한다. 공유 확인은 참석자 등록이나 외부 초대가 아니다.\n"
         "- 도구가 돌려주지 않은 관계는 말하지 않는다. 관계를 그림이나 표로 지어내지 말고, 조회한 것만 근거로 답한다.\n"
         "- 여러 개를 나열할 때는 도구가 준 canonical id의 대상만 말한다.\n"
         "- SCAX 내부 자료는 웹에서 찾지 않는다. 자료 본문 질문은 `material_search`로 시작한다. 소유 대상을 모르면 owner filter를 생략하여 Task·업무 요청·"
@@ -325,6 +367,53 @@ class CodexCliProviderAdapter:
         " 그렇게 넓혀 받은 목록으로 `내 업무`를 답하지 않는다 — 읽을 수 있다는 것이 그 사람의 일이라는 뜻은 아니다."
     )
 
+    FOLLOW_UP_POLICY = (
+        "후속 대화 후보 지침:\n"
+        "- 답변과 이 Turn에서 허용된 맥락을 바탕으로, 실제로 이어 갈 가치가 있는 짧은 후보를 2~3개 제안한다.\n"
+        "- 미해결 항목이나 자연스러운 다음 분석·정리·조회를 우선하고, 서로 의미가 겹치는 후보는 제외한다. "
+        "이미 끝난 행동이나 권한 밖 자료를 전제하지 않는다.\n"
+        "- 유용한 후보가 없으면 빈 배열을 반환한다. 개수를 채우려고 무관한 후보를 만들지 않는다.\n"
+        "- user_text는 클릭 뒤 같은 대화로 들어갈 일반 사용자 발화다. Task·Meeting 생성이나 Action 승인을 "
+        "직접 실행하는 명령·도구 호출이 아니다. label은 그 발화를 짧게 설명한다."
+    )
+
+    MEETING_CREATION_POLICY = (
+        "SCAX 회의 생성 지침:\n"
+        "- 사용자가 회의 생성안이나 일정 준비를 요청하고 제목·날짜와 시작 또는 종료 시각 중 하나를 알 수 있으면 "
+        "설명 답변으로 끝내지 말고 `meeting_create`로 사람이 수정·확정할 Action 카드를 먼저 준비한다. "
+        "카드 제안만으로 실제 Meeting은 생성되지 않는다.\n"
+        "- `팀장님` 같은 일부 참석자를 식별하지 못해도 회의 제안을 중단하지 않는다. 찾은 참석자만 `attendee_ids`에 "
+        "넣고, 찾지 못한 사람은 임의 ID나 다른 사람으로 채우지 않은 채 카드의 참석자 선택에서 보완하도록 짧게 알린다.\n"
+        "- 현재 사용자와의 관계·직책으로 부른 참석자는 조회를 생략하지 않는다. 사용자가 말한 관계·직책 표현을 "
+        "그대로 `graph_search`에 전달한다. 서버가 존칭과 활성 직책을 조직 원장으로 해석하며, 찾은 person 후보를 "
+        "`graph_neighbors`로 확장해 소속 관계를 확인한다. "
+        "한 사람으로 확인될 때만 그 ID를 참석자에 넣고, 없거나 여럿이면 미확정으로 둔다.\n"
+        "- 사용자가 회의 조직을 따로 말하지 않으면 `meeting_create`에서 조직을 생략한다. 서버가 현재 소속 중 "
+        "회의 생성 권한이 닿는 곳이 하나일 때만 선택하며, 여러 곳이라 확정할 수 없으면 임의 조직을 만들지 않는다.\n"
+        "- 별도 지속시간이 없을 때 기본 지속시간은 1시간이다. 종료 시각만 있으면 1시간 전을 시작 시각으로, "
+        "시작 시각만 있으면 1시간 뒤를 종료 시각으로 삼는다. 시작·종료를 모두 말했으면 명시한 값을 보존한다.\n"
+        "- 날짜와 시작·종료 시각을 모두 새로 추정해야 하는 경우에는 임의 일정을 만들지 말고 필요한 시간 정보를 묻는다."
+    )
+
+    TASK_PROGRESS_POLICY = (
+        "SCAX 업무 진행 기록 지침:\n"
+        "- 한 발화가 이미 존재하는 여러 업무의 완료·진행 사실을 함께 기록해 달라는 요청이면 일일보고나 새 업무로 "
+        "바꾸지 않는다. `task_list` 또는 `graph_search`로 각 대상을 찾고 `task_get`과 필요한 체크리스트를 읽은 뒤, "
+        "모든 변경을 `task_progress_batch` 한 번에 담아 사람이 승인할 카드 하나를 준비한다.\n"
+        "- 체크리스트 단계의 완료 여부는 `checklist.update`, 업무에 남길 진행 사실은 `progress.note`를 사용한다. "
+        "대상 ID, 현재 버전, 변경 값은 조회 결과만 사용하고 추측하지 않는다. 서버가 각 항목을 다시 정규화·검증한다.\n"
+        "- 일부 대상을 못 찾거나 여러 후보라면 찾은 대상을 다른 업무로 대체하지 않는다. 확정된 항목만 제안하고 "
+        "미확정 항목은 답변에서 분명히 알린다."
+    )
+
+    ANSWER_PRESENTATION_POLICY = (
+        "사용자 답변 표시 지침:\n"
+        "- UUID나 내부 식별자를 답변 본문에 노출하지 않는다. 도구 결과의 canonical id, database key, "
+        "opaque suffix 대신 사람이 알아볼 수 있는 이름과 제목을 사용한다.\n"
+        "- 내부 식별자는 링크·근거·Action metadata가 보존하므로 본문에 반복하지 않는다. "
+        "사용자가 식별자 자체를 명시적으로 요청한 경우에만 필요한 값을 답한다."
+    )
+
     @classmethod
     def _conversation_prompt(cls, request: AiConversationRequest) -> str:
         """The turn as the provider sees it: policy, what this conversation already stands on, then the message.
@@ -333,7 +422,13 @@ class CodexCliProviderAdapter:
         principal, so a follow-up like `그중 기한이 가장 빠른 것` has real ids to start from whether or not the
         provider kept a checkpoint of its own.
         """
-        sections: list[str] = [cls.RELATIONSHIP_POLICY]
+        sections: list[str] = [
+            cls.RELATIONSHIP_POLICY,
+            cls.MEETING_CREATION_POLICY,
+            cls.TASK_PROGRESS_POLICY,
+            cls.ANSWER_PRESENTATION_POLICY,
+            cls.FOLLOW_UP_POLICY,
+        ]
         if request.asked_at is not None:
             # 지금이 언제인지는 모델이 짐작할 것이 아니다. 큐에서 기다리다 달이 바뀌어도 물은 때는 물은 때다.
             local = request.asked_at.astimezone(ZoneInfo(request.timezone_name))
@@ -343,7 +438,7 @@ class CodexCliProviderAdapter:
             )
         if request.recent_exchanges:
             told = "\n".join(
-                f"- {'사용자' if item.get('role') == 'user' else 'AX'}: {item.get('body', '')}"
+                f"- [turn:{item.get('turn_id', '')}] {'사용자' if item.get('role') == 'user' else 'AX'}: {item.get('body', '')}"
                 for item in request.recent_exchanges
             )
             sections.append(f"이 대화에서 지금까지 오간 말(요약이 아니라 실제 발화, 최근 순):\n{told}")
@@ -557,7 +652,12 @@ class CodexEventIngest:
         if item_type == "agent_message":
             text = item.get("text") if isinstance(item.get("text"), str) else None
             if phase == "completed" and text:
-                self._emit(AiProviderEvent("item_completed", now, item_id=item_id, item_type=item_type, text=text))
+                try:
+                    structured = json.loads(text)
+                    visible_text = structured["body"].strip() if isinstance(structured, dict) and isinstance(structured.get("body"), str) else text
+                except json.JSONDecodeError:
+                    visible_text = text
+                self._emit(AiProviderEvent("item_completed", now, item_id=item_id, item_type=item_type, text=visible_text))
             return
         if item_type == "error":
             message = _summarize_tool_error(item.get("message"))
@@ -627,9 +727,56 @@ class CodexEventIngest:
             self._sink.accept(event)
 
 
+_MCP_TOOL_DISPLAY_NAMES = {
+    "action_item_command": "실행 항목 처리 준비",
+    "action_item_get": "실행 항목 상세 확인",
+    "action_item_list": "실행 항목 목록 조회",
+    "conversation_search": "대화 검색",
+    "daily_report_generate_draft": "일일 보고 초안 생성",
+    "daily_report_edit": "일일 보고 수정",
+    "daily_report_submit": "일일 보고 제출",
+    "daily_report_history": "일일 보고 이력 확인",
+    "meeting_list": "회의 목록 조회",
+    "meeting_get": "회의 상세 확인",
+    "meeting_create": "회의 생성 준비",
+    "task_list": "업무 목록 조회",
+    "task_get": "업무 상세 확인",
+    "task_history": "업무 히스토리 확인",
+    "graph_overview": "관계 개요 확인",
+    "graph_search": "관련 항목 검색",
+    "graph_neighbors": "연결 관계 확인",
+    "task_subtask_list": "하위 업무 조회",
+    "task_checklist_list": "체크리스트 조회",
+    "task_materials_list": "업무 자료 조회",
+    "task_material_search": "자료 내용 검색",
+    "task_assignment_candidates": "담당자 후보 조회",
+    "task_assign": "업무 요청 준비",
+    "task_block": "업무 차단 준비",
+    "task_cancel": "업무 취소 준비",
+    "task_checklist_add": "체크리스트 추가 준비",
+    "task_checklist_archive": "체크리스트 보관 준비",
+    "task_transition": "업무 상태 변경 준비",
+    "task_checklist_reorder": "체크리스트 순서 변경 준비",
+    "task_checklist_update": "체크리스트 수정 준비",
+    "task_progress_batch": "업무 진행 일괄 반영 준비",
+    "task_complete": "업무 완료 준비",
+    "task_create_self": "내 업무 생성 준비",
+    "task_resume": "업무 재개 준비",
+    "task_start": "업무 시작 준비",
+    "task_update": "업무 수정 준비",
+    "meeting_share": "회의 공유 준비",
+    "work_request_amend": "업무 요청 수정 준비",
+    "work_request_assignee_candidates": "업무 요청 담당자 후보 조회",
+    "work_request_create": "업무 요청 생성 준비",
+    "work_request_history": "업무 요청 이력 확인",
+    "work_request_list": "업무 요청 목록 조회",
+    "work_request_get": "업무 요청 상세 확인",
+}
+
+
 def _display_name(item_type: str, tool_name: str, item: dict[str, Any]) -> str:
     if item_type == "mcp_tool_call":
-        return tool_name.replace("_", " ")
+        return _MCP_TOOL_DISPLAY_NAMES.get(tool_name, tool_name.replace("_", " "))
     if item_type == "command_execution":
         return "명령 실행"
     if item_type == "web_search":

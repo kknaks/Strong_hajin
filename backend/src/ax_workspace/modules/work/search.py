@@ -25,3 +25,24 @@ def folded(text: str) -> str:
 def matches(query: str, text: str) -> bool:
     """제목 검색이 묻는 것: 이 글자들이 저 안에 있는가. 질의와 본문을 같은 모양으로 맞춘 뒤에 본다."""
     return folded(query) in folded(text)
+
+
+_PERSON_REFERENCE_PREFIXES = ("우리 ", "저희 ", "내 ", "제 ")
+
+
+def normalize_person_reference(text: str) -> str:
+    """사람·직책 검색에서만 제거해도 의미가 바뀌지 않는 한국어 지칭과 존칭을 걷어낸다.
+
+    직책 alias를 추측하지 않는다. `팀장님`의 `님`은 말투지만 `팀장`은 조직 원장의 실제 직책명이고,
+    그 이름을 어떤 사람과 연결할지는 appointment가 결정한다.
+    """
+    reference = " ".join(normalize(text).split())
+    for prefix in _PERSON_REFERENCE_PREFIXES:
+        if reference.startswith(prefix):
+            reference = reference[len(prefix):].strip()
+            break
+    if reference.endswith(" 님"):
+        reference = reference[:-2].rstrip()
+    elif len(reference) > 1 and reference.endswith("님"):
+        reference = reference[:-1].rstrip()
+    return reference

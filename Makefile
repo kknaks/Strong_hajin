@@ -19,7 +19,7 @@ PROTECTED_CODEX_BASE ?= node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a046
 PROTECTED_RUNTIME_BASE ?= debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 PROTECTED_EXPECT_CONSTANTS ?= visible
 
-.PHONY: install test test-postgres frontend-test frontend-build verify protected-build protected-inspect postgres-up postgres-down reset-demo reset-catalog sync-demo-schema dataset-import dataset-inspect api conversation-worker material-worker meeting-worker mcp frontend-install frontend storybook storybook-build api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-conversation-report-edit-action e2e-daily-report e2e-material-search e2e-meeting-live-transcript e2e-access-roles e2e-graph-question local-stack acceptance-e2e live-report-smoke soniox-smoke
+.PHONY: install test test-postgres frontend-test frontend-build frontend-assets verify protected-build protected-inspect postgres-up postgres-down reset-demo reset-catalog sync-demo-schema dataset-import dataset-inspect api conversation-worker material-worker meeting-worker mcp frontend-install frontend storybook storybook-build api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-ax-editable-task e2e-ax-editable-meeting e2e-ax-meeting-draft e2e-assistant-character e2e-assistant-preference e2e-follow-up-continuation e2e-ax-action-draft e2e-ax-action-materials e2e-conversation-report-edit-action e2e-daily-report e2e-material-search e2e-meeting-live-transcript e2e-access-roles e2e-graph-question local-stack acceptance-e2e live-report-smoke soniox-smoke
 
 install:
 	cd backend && uv sync --all-groups
@@ -37,7 +37,10 @@ frontend-build:
 frontend-test:
 	cd frontend && npm test
 
-verify: test frontend-test frontend-build
+frontend-assets:
+	cd frontend && npm run verify:assistant-assets
+
+verify: test frontend-test frontend-assets frontend-build
 
 protected-build:
 	docker buildx build --platform "$(PROTECTED_PLATFORM)" --load --tag "$(PROTECTED_IMAGE)" \
@@ -135,8 +138,9 @@ local-stack:
 		cleanup() { for pid in $$pids; do stop_process_tree "$$pid"; done; for pid in $$pids; do wait "$$pid" 2>/dev/null || true; done; }; \
 		trap cleanup EXIT INT TERM; \
 		$(MAKE) postgres-up; \
-		if ! docker compose exec -T postgres psql -U ax -d "$$(printf '%s' "$(DATABASE_URL)" | sed -E 's#.*/([^/?]+)(\?.*)?$$#\1#')" -tAc "SELECT to_regclass('durable_jobs'), to_regclass('task_checklist_items'), to_regclass('meeting_recordings'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_turns' AND column_name = 'progress_state')" 2>/dev/null | grep -q 'durable_jobs|task_checklist_items|meeting_recordings|progress_state'; then \
-			echo "SCAX schema is not initialized or is behind the current code in $(DATABASE_URL). Run 'make reset-demo' once (it is the only command that creates or drops tables), then 'make local-stack' again." >&2; \
+		if ! docker compose exec -T postgres psql -U ax -d "$$(printf '%s' "$(DATABASE_URL)" | sed -E 's#.*/([^/?]+)(\?.*)?$$#\1#')" -tAc "SELECT to_regclass('durable_jobs'), to_regclass('task_checklist_items'), to_regclass('meeting_recordings'), to_regclass('assistant_character_preferences'), to_regclass('action_material_drafts'), to_regclass('notifications'), (SELECT meeting_columns.column_name FROM information_schema.columns AS meeting_columns WHERE meeting_columns.table_name = 'meetings' AND meeting_columns.column_name = 'description'), (SELECT meeting_columns.column_name FROM information_schema.columns AS meeting_columns WHERE meeting_columns.table_name = 'meetings' AND meeting_columns.column_name = 'source_action_item_id'), (SELECT meeting_columns.column_name FROM information_schema.columns AS meeting_columns WHERE meeting_columns.table_name = 'meetings' AND meeting_columns.column_name = 'source_decision_item_id'), (SELECT meeting_columns.column_name FROM information_schema.columns AS meeting_columns WHERE meeting_columns.table_name = 'meetings' AND meeting_columns.column_name = 'source_submission_id'), (SELECT meeting_columns.column_name FROM information_schema.columns AS meeting_columns WHERE meeting_columns.table_name = 'meetings' AND meeting_columns.column_name = 'source_review_decision_id'), (SELECT meeting_note_columns.column_name FROM information_schema.columns AS meeting_note_columns WHERE meeting_note_columns.table_name = 'meeting_note_versions' AND meeting_note_columns.column_name = 'source_status'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_turns' AND column_name = 'progress_state'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_turns' AND column_name = 'follow_up_candidates'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_messages' AND column_name = 'follow_up_candidate_id')" 2>/dev/null | grep -q 'durable_jobs|task_checklist_items|meeting_recordings|assistant_character_preferences|action_material_drafts|notifications|description|source_action_item_id|source_decision_item_id|source_submission_id|source_review_decision_id|source_status|progress_state|follow_up_candidates|follow_up_candidate_id' \
+			|| ! docker compose exec -T postgres psql -U ax -d "$$(printf '%s' "$(DATABASE_URL)" | sed -E 's#.*/([^/?]+)(\?.*)?$$#\1#')" -tAc "SELECT to_regclass('notifications')" 2>/dev/null | grep -qx 'notifications'; then \
+			echo "SCAX schema is not initialized or is behind the current code in $(DATABASE_URL). Run 'make sync-demo-schema' to add safe missing tables or columns; use 'make reset-demo' only for a disposable fresh demo DB. Then run 'make local-stack' again." >&2; \
 			exit 2; \
 		fi; \
 		names=""; \
@@ -211,6 +215,36 @@ e2e-chat-lifecycle:
 e2e-chat-approval:
 	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:chat-approval
 
+e2e-ax-editable-task:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:ax-editable-task
+
+e2e-ax-task-request:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:ax-task-request
+
+e2e-task-progress-batch:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:task-progress-batch
+
+e2e-ax-editable-meeting:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:ax-editable-meeting
+
+e2e-ax-meeting-draft:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:ax-meeting-draft
+
+e2e-assistant-character:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:assistant-character
+
+e2e-assistant-preference:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:assistant-preference
+
+e2e-follow-up-continuation:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:follow-up-continuation
+
+e2e-ax-action-draft:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:ax-action-draft
+
+e2e-ax-action-materials:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:ax-action-materials
+
 e2e-conversation-report-edit-action:
 	cd frontend && SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" node scripts/conversation-report-edit-action-e2e.mjs
 
@@ -276,6 +310,16 @@ acceptance-e2e:
 		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-conversation-action; \
 		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-chat-lifecycle; \
 		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-chat-approval; \
+		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-ax-editable-task; \
+		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-ax-task-request; \
+		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-task-progress-batch; \
+		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-ax-editable-meeting; \
+		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-ax-meeting-draft; \
+		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-assistant-character; \
+		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-assistant-preference; \
+		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-follow-up-continuation; \
+		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-ax-action-draft; \
+		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-ax-action-materials; \
 		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-conversation-report-edit-action; \
 		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-daily-report; \
 		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" e2e-material-search; \

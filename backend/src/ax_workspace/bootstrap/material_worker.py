@@ -19,6 +19,8 @@ from ax_workspace.modules.work.material_extraction import (
     UPGRADABLE_PARSER_VERSIONS,
     ParserVersionConflict,
 )
+from ax_workspace.modules.work.action_materials import ActionMaterialDraftApplication
+from ax_workspace.platform.action_materials import SqlAlchemyActionMaterialDraftRepository
 from ax_workspace.platform.durable_jobs import MemoryDurableJobQueue, build_job_queue
 from ax_workspace.platform.material_extraction import (
     PypdfTextExtractor,
@@ -80,12 +82,29 @@ class MaterialExtractionWorker:
     async def run_once(self) -> bool:
         jobs = self._claim_jobs()
         if not jobs:
+            if await asyncio.to_thread(self._reconcile_action_drafts):
+                return True
             # 할 일이 없을 때 뒤처진 색인을 따라잡는다. 분석 규칙이 바뀌었다는 것을 사람이 기억했다가 명령을
             # 부르는 것은 잊기 위한 설계다 — 규칙은 chunk마다 적혀 있으므로 이 자리가 알아서 안다.
             return await asyncio.to_thread(self._catch_up_index)
         for job in jobs:
             await asyncio.to_thread(self._handle, job)
         return True
+
+    def _reconcile_action_drafts(self) -> bool:
+        """Delete bytes for discarded or expired pre-create drafts; delete is idempotent across retry/commit gaps."""
+        try:
+            with self._sessions() as session:
+                cleaned = ActionMaterialDraftApplication(
+                    SqlAlchemyActionMaterialDraftRepository(session), self._storage
+                ).reconcile(limit=self._settings.material_worker_concurrency * 25)
+                session.commit()
+        except SQLAlchemyError:
+            logger.exception("material worker could not reconcile Action material drafts; retrying later")
+            return False
+        if cleaned:
+            logger.info("material worker reclaimed %d Action material draft(s)", cleaned)
+        return bool(cleaned)
 
     def _catch_up_index(self) -> bool:
         """지난 규칙으로 만들어진 색인을 조금씩 다시 만든다. 원문은 건드리지 않는다.

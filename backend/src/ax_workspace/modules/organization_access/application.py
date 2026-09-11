@@ -17,6 +17,28 @@ from ax_workspace.modules.organization_access.credentials import (
 from ax_workspace.modules.organization_access.domain import MEMBER_HISTORY_AXES, Principal
 
 
+DEFAULT_ASSISTANT_CHARACTER = "cream-cat"
+ASSISTANT_CHARACTER_KEYS = frozenset({
+    "cream-cat",
+    "silver-tabby",
+    "tuxedo-cat",
+    "calico-cat",
+    "puppy",
+    "rabbit",
+    "bear",
+    "chick",
+    "red-panda",
+})
+
+
+class UnsupportedAssistantCharacter(ValueError):
+    pass
+
+
+class AssistantCharacterPreferenceConflict(RuntimeError):
+    pass
+
+
 class OrganizationRepository(Protocol):
     def profile_for(self, member_id: str) -> dict[str, Any] | None: ...
     def credential_for_email(self, email: str) -> LocalCredential | None: ...
@@ -28,6 +50,10 @@ class OrganizationRepository(Protocol):
     def member_candidates(self, principal: Principal) -> list[dict[str, str]]: ...
     def organization_tree(self) -> list[dict[str, Any]]: ...
     def unit_members(self, unit_id: str, *, include_descendants: bool = True) -> list[dict[str, Any]]: ...
+    def assistant_character_preference(self, member_id: str) -> dict[str, Any] | None: ...
+    def save_assistant_character_preference(
+        self, member_id: str, character_key: str, expected_version: int
+    ) -> dict[str, Any]: ...
     def member_detail(self, member_id: str) -> dict[str, Any] | None: ...
     def member_axis_history(self, member_id: str, axis: str) -> list[dict[str, Any]]: ...
     def member_units(self, member_id: str) -> frozenset[str]: ...
@@ -47,7 +73,20 @@ class OrganizationApplication:
         profile = self._repository.profile_for(str(principal.id))
         if profile is None:
             raise LookupError("organization member was not found")
-        return profile
+        preference = self._repository.assistant_character_preference(str(principal.id))
+        return {**profile, "assistant_character": preference or {
+            "character_key": DEFAULT_ASSISTANT_CHARACTER,
+            "version": 0,
+        }}
+
+    def set_assistant_character(
+        self, principal: Principal, character_key: str, expected_version: int
+    ) -> dict[str, Any]:
+        if character_key not in ASSISTANT_CHARACTER_KEYS:
+            raise UnsupportedAssistantCharacter("지원하지 않는 AX 캐릭터입니다.")
+        return self._repository.save_assistant_character_preference(
+            str(principal.id), character_key, expected_version
+        )
 
     def authenticate_with_password(self, email: str, password: str) -> Principal:
         """Prove who someone is. What they may then do is read from the ledger, never from the login.

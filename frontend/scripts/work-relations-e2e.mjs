@@ -1,6 +1,6 @@
 import { chromium } from "@playwright/test";
 
-import { loginAs, switchAccount } from "./e2e-helpers.mjs";
+import { chooseOption, loginAs, switchAccount } from "./e2e-helpers.mjs";
 
 // The requester's visible path for a negotiated request:
 // 내 업무 → 요청·배정 → 보낸 업무 → 상세 → 내용 고쳐 재상신, with the round history preserved.
@@ -25,13 +25,13 @@ try {
   await page.getByRole("button", { name: "새 업무 추가" }).click();
   await page.getByRole("tab", { name: "요청", exact: true }).click();
   await page.getByLabel("요청할 업무").fill(title);
-  await page.getByLabel("담당 후보").selectOption("jiho");
+  await chooseOption(page, "담당 후보", /지호/);
   await page.getByRole("button", { name: "업무 요청 보내기" }).click();
 
   // Jiho asks for a change instead of accepting.
   await switchAccount(page, "jiho");
   await navigation.getByRole("button", { name: "내 업무" }).click();
-  const jihoCard = page.locator(".decision-panel .task-card", { hasText: title });
+  const jihoCard = page.locator(".decision-section .task-card", { hasText: title });
   await jihoCard.waitFor({ timeout: 20_000 });
   // The adjustment runs through the canonical judgement drawer.
   await jihoCard.getByRole("button", { name: "판단하기" }).click();

@@ -107,11 +107,13 @@ def test_an_approved_ax_proposal_records_the_action_item_it_came_from(tmp_path) 
     with make_session_factory(database_url)() as session:
         execution_id = session.get(ConversationTurnRecord, UUID(accepted["turn_id"])).execution_id
     mina = application.authenticated_principal("mina")
-    proposal = application.propose_action(mina, execution_id, "task.create_self", "업무 생성 확인", {"title": "AX가 만든 업무"})
+    proposal = application.propose_action(
+        mina, execution_id, "task.create_self", "업무 생성 확인", {"title": "AX가 만든 업무", "due_date": "2026-09-30"}
+    )
     client.post(
-        f"/api/action-items/{proposal['action_id']}/commands/approve",
+        f"/api/action-items/{proposal['action_id']}/commands/confirm",
         headers=MINA,
-        json={"expected_version": proposal["version"]},
+        json={"expected_version": proposal["version"], "base_submission_version": 1},
     )
 
     [task] = [row for row in client.get("/api/my-work", headers=MINA).json() if row["title"] == "AX가 만든 업무"]
@@ -310,11 +312,13 @@ def test_an_ax_task_points_back_at_the_action_item_that_proposed_it(tmp_path) ->
     with make_session_factory(database_url)() as session:
         execution_id = session.get(ConversationTurnRecord, UUID(accepted["turn_id"])).execution_id
     mina = application.authenticated_principal("mina")
-    proposal = application.propose_action(mina, execution_id, "task.create_self", "업무 생성 확인", {"title": "AX 왕복 업무"})
+    proposal = application.propose_action(
+        mina, execution_id, "task.create_self", "업무 생성 확인", {"title": "AX 왕복 업무", "due_date": "2026-09-30"}
+    )
     client.post(
-        f"/api/action-items/{proposal['action_id']}/commands/approve",
+        f"/api/action-items/{proposal['action_id']}/commands/confirm",
         headers=MINA,
-        json={"expected_version": proposal["version"]},
+        json={"expected_version": proposal["version"], "base_submission_version": 1},
     )
     [task] = [row for row in client.get("/api/my-work", headers=MINA).json() if row["title"] == "AX 왕복 업무"]
 
@@ -358,9 +362,17 @@ def test_a_follow_up_proposal_on_an_ax_created_task_still_previews_its_target(tm
     client, application, database_url = _stack(tmp_path)
     mina = application.authenticated_principal("mina")
     created = application.propose_action(
-        mina, _ax_execution(client, application, database_url, "follow-up-1"), "task.create_self", "업무 생성 확인", {"title": "AX가 만든 원본 업무"}
+        mina,
+        _ax_execution(client, application, database_url, "follow-up-1"),
+        "task.create_self",
+        "업무 생성 확인",
+        {"title": "AX가 만든 원본 업무", "due_date": "2026-09-30"},
     )
-    client.post(f"/api/action-items/{created['action_id']}/commands/approve", headers=MINA, json={"expected_version": created["version"]})
+    client.post(
+        f"/api/action-items/{created['action_id']}/commands/confirm",
+        headers=MINA,
+        json={"expected_version": created["version"], "base_submission_version": 1},
+    )
     [task] = [row for row in client.get("/api/my-work", headers=MINA).json() if row["title"] == "AX가 만든 원본 업무"]
 
     # A second proposal that edits that same Task; its preview has to resolve the target title.
@@ -386,9 +398,17 @@ def test_the_source_label_is_the_work_that_was_created_not_the_proposal_label(tm
     client, application, database_url = _stack(tmp_path)
     mina = application.authenticated_principal("mina")
     proposal = application.propose_action(
-        mina, _ax_execution(client, application, database_url, "label-1"), "task.create_self", "업무 생성 확인", {"title": "AX 왕복 업무"}
+        mina,
+        _ax_execution(client, application, database_url, "label-1"),
+        "task.create_self",
+        "업무 생성 확인",
+        {"title": "AX 왕복 업무", "due_date": "2026-09-30"},
     )
-    client.post(f"/api/action-items/{proposal['action_id']}/commands/approve", headers=MINA, json={"expected_version": proposal["version"]})
+    client.post(
+        f"/api/action-items/{proposal['action_id']}/commands/confirm",
+        headers=MINA,
+        json={"expected_version": proposal["version"], "base_submission_version": 1},
+    )
     [task] = [row for row in client.get("/api/my-work", headers=MINA).json() if row["title"] == "AX 왕복 업무"]
 
     origin = client.get(f"/api/tasks/{task['task_id']}", headers=MINA).json()["origin"]
@@ -407,9 +427,17 @@ def test_without_the_action_capability_the_task_reads_but_its_proposal_does_not(
 
     mina = application.authenticated_principal("mina")
     proposal = application.propose_action(
-        mina, _ax_execution(client, application, database_url, "withheld-1"), "task.create_self", "업무 생성 확인", {"title": "권한 없는 왕복 업무"}
+        mina,
+        _ax_execution(client, application, database_url, "withheld-1"),
+        "task.create_self",
+        "업무 생성 확인",
+        {"title": "권한 없는 왕복 업무", "due_date": "2026-09-30"},
     )
-    client.post(f"/api/action-items/{proposal['action_id']}/commands/approve", headers=MINA, json={"expected_version": proposal["version"]})
+    client.post(
+        f"/api/action-items/{proposal['action_id']}/commands/confirm",
+        headers=MINA,
+        json={"expected_version": proposal["version"], "base_submission_version": 1},
+    )
     [task] = [row for row in client.get("/api/my-work", headers=MINA).json() if row["title"] == "권한 없는 왕복 업무"]
 
     limited = Principal(mina.id, mina.display_name, mina.organization_scope, frozenset(mina.capabilities - {ACTION_READ}))

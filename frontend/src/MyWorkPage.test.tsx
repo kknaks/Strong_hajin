@@ -11,6 +11,7 @@ vi.mock("./api", () => ({
   runActionCommand: vi.fn(),
   getActions: vi.fn(),
   getWorkRequests: vi.fn(),
+  getWorkRequest: vi.fn(),
   getSentTaskAssignments: vi.fn(),
   getWorkRequestAssigneeCandidates: vi.fn(),
   getWorkRequestCcCandidates: vi.fn(),
@@ -63,6 +64,7 @@ function renderPage(overrides: Record<string, unknown> = {}, mocks: { actions?: 
   vi.mocked(api.getActionItems).mockResolvedValue([]);
   vi.mocked(api.getActions).mockResolvedValue([]);
   vi.mocked(api.getWorkRequests).mockResolvedValue(requests);
+  vi.mocked(api.getWorkRequest).mockImplementation(async (requestId) => requests.find((row) => row.request_id === requestId) as never);
   vi.mocked(api.getSentTaskAssignments).mockResolvedValue([]);
   vi.mocked(api.getWorkRequestAssigneeCandidates).mockResolvedValue([]);
   vi.mocked(api.getWorkRequestCcCandidates).mockResolvedValue([]);
@@ -226,6 +228,55 @@ describe("work relation information architecture", () => {
     await waitFor(() => expect(within(drawer).getByRole("button", { name: "재상신" })).toBeTruthy());
     // The existing round history is still on screen while editing.
     expect(within(drawer).getAllByText(/기한을 늦춰 주세요/).length).toBeGreaterThan(0);
+  });
+
+  it("loads the permission-safe request detail before opening a relationship row", async () => {
+    vi.mocked(api.getWorkRequestTimeline).mockResolvedValue({
+      request: requests[0],
+      request_thread_id: "thread-1",
+      comments: [],
+      evidence: [],
+      decision_item: null,
+      submissions: [],
+      review_assignments: [],
+      review_decisions: [],
+      activity: [],
+    } as never);
+    const detail = {
+      ...requests[0],
+      checklist: ["자료 확인"],
+      references: [
+        {
+          reference_id: "reference-1",
+          created_by: "jiho",
+          task: { task_id: "task-1", title: "지난 분기 보고", state: "done" },
+        },
+      ],
+    } as WorkRequest;
+    renderPage();
+    vi.mocked(api.getWorkRequest).mockResolvedValue(detail);
+    await openRelationTab();
+
+    const row = within(screen.getByLabelText("받은 업무")).getByText("내게 온 검토 요청").closest("tr") as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: "상세보기" }));
+
+    await waitFor(() => expect(api.getWorkRequest).toHaveBeenCalledWith("to-me"));
+    const drawer = await screen.findByRole("dialog", { name: "업무 요청 상세" });
+    expect(within(drawer).getByText("자료 확인")).toBeTruthy();
+    expect(within(drawer).getByText("지난 분기 보고")).toBeTruthy();
+  });
+
+  it("opens a handed-off work request id through the permission-safe detail read", async () => {
+    vi.mocked(api.getWorkRequestTimeline).mockResolvedValue({
+      request: requests[0], request_thread_id: "thread-1", comments: [], evidence: [], decision_item: null,
+      submissions: [], review_assignments: [], review_decisions: [], activity: [],
+    } as never);
+    const onRequestFocusHandled = vi.fn();
+    renderPage({ focusWorkRequestId: "to-me", onRequestFocusHandled });
+
+    await waitFor(() => expect(api.getWorkRequest).toHaveBeenCalledWith("to-me"));
+    expect(await screen.findByRole("dialog", { name: "업무 요청 상세" })).toBeTruthy();
+    expect(onRequestFocusHandled).toHaveBeenCalledTimes(1);
   });
 });
 

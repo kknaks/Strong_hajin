@@ -18,6 +18,7 @@ vi.mock("./api", () => ({
   attachTaskMaterialLink: vi.fn(),
   attachTaskMaterialReference: vi.fn(),
   getTasks: vi.fn(),
+  listProjects: vi.fn(),
   getTaskAssignmentCandidates: vi.fn(),
   reassignTask: vi.fn(),
   taskMaterialContentUrl: () => "",
@@ -39,9 +40,9 @@ import { CreateWorkDrawer } from "./WorkModals";
 
 const jiho = { id: "jiho", display_name: "지호 (팀장)", role: "manager" } as never;
 
-function renderDrawer() {
+function renderDrawer(projectCandidates: Array<{ project_id: string; name: string }> = []) {
   const onCreated = vi.fn();
-  render(
+  const rendered = render(
     <CreateWorkDrawer
       assigneeCandidates={[jiho]}
       assignCandidates={[jiho]}
@@ -52,9 +53,10 @@ function renderDrawer() {
       onCreated={onCreated}
       onError={vi.fn()}
       ownerName="민아"
+      projectCandidates={projectCandidates as never}
     />,
   );
-  return { onCreated };
+  return { ...rendered, onCreated };
 }
 
 const addStep = (text: string) => {
@@ -110,11 +112,8 @@ describe("writing down the first steps with the work", () => {
     renderDrawer();
     fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "2분기 정산" } });
 
-    fireEvent.click(screen.getByRole("button", { name: "참고 업무 연결" }));
     await waitFor(() => expect(api.getTasks).toHaveBeenCalled());
-    fireEvent.click(await screen.findByLabelText("연결할 이전 업무"));
-    fireEvent.click(screen.getByRole("option", { name: "1분기 정산" }));
-    fireEvent.click(screen.getByRole("button", { name: "연결" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "1분기 정산" }));
     expect(screen.getByText("1분기 정산")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "업무 추가" }));
@@ -145,5 +144,18 @@ describe("writing down the first steps with the work", () => {
     fireEvent.click(screen.getByRole("button", { name: "업무 추가" }));
     await waitFor(() => expect(api.createDirectTask).toHaveBeenCalled());
     expect(vi.mocked(api.createDirectTask).mock.calls[0][1]?.checklist).toBeUndefined();
+  });
+
+  it("reuses the typed Task fields and sends the selected project with direct creation", async () => {
+    vi.mocked(api.createDirectTask).mockResolvedValue({ task_id: "task-1" } as never);
+    const { container } = renderDrawer([{ project_id: "11111111-1111-1111-1111-111111111111", name: "AX 고도화" }]);
+    expect(container.querySelector(".action-task-fields")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "프로젝트 업무" } });
+    fireEvent.change(screen.getByLabelText("프로젝트"), { target: { value: "11111111-1111-1111-1111-111111111111" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "업무 추가" }));
+
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalled());
+    expect(vi.mocked(api.createDirectTask).mock.calls[0][1]?.project_id).toBe("11111111-1111-1111-1111-111111111111");
   });
 });
