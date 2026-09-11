@@ -1,0 +1,10 @@
+**
+!.dockerignore
+!backend/
+!backend/pyproject.toml
+!backend/uv.lock
+!backend/src/
+!backend/src/**
+!delivery/
+!delivery/Dockerfile
+!delivery/strip_docstrings.py

@@ -188,7 +188,11 @@ make storybook-build   # 정적 빌드 — 설정이 상했는지 보는 가장 
 make verify          # backend 단위·계약 test + frontend 동작 test + Vite production build
 make test-postgres   # PostgreSQL 통합 test
 make acceptance-e2e  # 브라우저 journey 전부, 자기 데이터베이스에서
+make protected-build   # pinned Python/Nuitka/Codex의 linux/amd64 source-free image
+make protected-inspect # filesystem·layer·ABI·문자열 노출 검사
 ```
+
+보호 이미지의 버전 고정, 역할별 실행, 설치 환경 차이와 한계는 [SCAX 보호 이미지 빌드와 납품](delivery/README.md)에 있다.
 
 `acceptance-e2e`는 reset으로 시작하므로 **자기 데이터베이스**(`ACCEPTANCE_DATABASE_URL`, 기본 `ax_test_acceptance`)에서 돈다 — `DATABASE_URL`에 넣어 둔 조직과 자료를 건드리지 않는다. 고정된 PostgreSQL 16 컨테이너를 띄우고, 정확히 한 번 reset하고, 포트 `18111`/`15186`에 격리된 스택을 세워 하나의 seed 위에서 모든 journey를 돌린 뒤 자기가 띄운 것만 멈춘다. 두 포트 중 하나라도 쓰이고 있으면 reset 전에 실패한다.
 

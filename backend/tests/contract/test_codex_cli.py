@@ -1,6 +1,9 @@
 import json
 from pathlib import Path
+import sys
 
+from ax_workspace.bootstrap.application import create_scax_mcp_server
+from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.modules.ax_execution.ai import (
     AiConversationRequest,
     AiDelegatedToolContext,
@@ -12,6 +15,24 @@ from ax_workspace.platform.codex_cli import (
     CodexCliProviderAdapter,
     ProcessResult,
 )
+
+
+def test_scax_mcp_server_uses_the_python_module_in_source_runtime(monkeypatch) -> None:
+    monkeypatch.delenv("SCAX_RUNTIME_EXECUTABLE", raising=False)
+
+    server = create_scax_mcp_server(Settings(RuntimeProfile.TEST, "sqlite://"))
+
+    assert server.command == sys.executable
+    assert server.arguments == ("-m", "ax_workspace.entrypoints.mcp")
+
+
+def test_scax_mcp_server_reenters_the_compiled_runtime_binary(monkeypatch) -> None:
+    monkeypatch.setenv("SCAX_RUNTIME_EXECUTABLE", "/opt/scax/scax")
+
+    server = create_scax_mcp_server(Settings(RuntimeProfile.TEST, "sqlite://"))
+
+    assert server.command == "/opt/scax/scax"
+    assert server.arguments == ("mcp",)
 
 
 def test_codex_cli_adapter_uses_an_isolated_ephemeral_structured_turn(tmp_path) -> None:

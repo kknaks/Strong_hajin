@@ -11,8 +11,15 @@ E2E_API_PORT ?= 8001
 E2E_FRONTEND_PORT ?= 5176
 ACCEPTANCE_API_PORT ?= 18111
 ACCEPTANCE_FRONTEND_PORT ?= 15186
+PROTECTED_IMAGE ?= scax-protected:test
+PROTECTED_PLATFORM ?= linux/amd64
+PROTECTED_PYTHON_VERSION ?= 3.13.15
+PROTECTED_PYTHON_BASE ?= python:3.13.15-slim-bookworm@sha256:ed86c82274b3c69b52fb5820f358f0bd7df0b603332063cb5c6e32bd220c3e6e
+PROTECTED_CODEX_BASE ?= node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e
+PROTECTED_RUNTIME_BASE ?= debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+PROTECTED_EXPECT_CONSTANTS ?= visible
 
-.PHONY: install test test-postgres frontend-test frontend-build verify postgres-up postgres-down reset-demo reset-catalog sync-demo-schema dataset-import dataset-inspect api conversation-worker material-worker meeting-worker mcp frontend-install frontend storybook storybook-build api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-conversation-report-edit-action e2e-daily-report e2e-material-search e2e-meeting-live-transcript e2e-access-roles e2e-graph-question local-stack acceptance-e2e live-report-smoke soniox-smoke
+.PHONY: install test test-postgres frontend-test frontend-build verify protected-build protected-inspect postgres-up postgres-down reset-demo reset-catalog sync-demo-schema dataset-import dataset-inspect api conversation-worker material-worker meeting-worker mcp frontend-install frontend storybook storybook-build api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-conversation-report-edit-action e2e-daily-report e2e-material-search e2e-meeting-live-transcript e2e-access-roles e2e-graph-question local-stack acceptance-e2e live-report-smoke soniox-smoke
 
 install:
 	cd backend && uv sync --all-groups
@@ -31,6 +38,19 @@ frontend-test:
 	cd frontend && npm test
 
 verify: test frontend-test frontend-build
+
+protected-build:
+	docker buildx build --platform "$(PROTECTED_PLATFORM)" --load --tag "$(PROTECTED_IMAGE)" \
+		--build-arg "PYTHON_VERSION=$(PROTECTED_PYTHON_VERSION)" \
+		--build-arg "PYTHON_BASE=$(PROTECTED_PYTHON_BASE)" \
+		--build-arg "CODEX_BASE=$(PROTECTED_CODEX_BASE)" \
+		--build-arg "RUNTIME_BASE=$(PROTECTED_RUNTIME_BASE)" \
+		--file delivery/Dockerfile .
+
+# Community Nuitka compiles Python but leaves constants visible. A licensed data-hiding build must run this with
+# `--expect-constants hidden` instead and must not reuse the community image label.
+protected-inspect:
+	python3 delivery/inspect_image.py --image "$(PROTECTED_IMAGE)" --expect-constants "$(PROTECTED_EXPECT_CONSTANTS)"
 
 postgres-up:
 	docker compose up -d postgres

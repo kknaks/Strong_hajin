@@ -5,6 +5,7 @@ from pathlib import Path
 
 from typing import Any
 import hashlib
+import os
 import sys
 from uuid import UUID
 
@@ -1851,15 +1852,25 @@ def create_workflow_application(
     return WorkflowApplication(settings, report_provider)
 
 
+def create_scax_mcp_server(settings: Settings) -> CodexCliMcpServer:
+    """Address the same MCP entrypoint from source Python or the protected dispatcher."""
+    protected_executable = os.getenv("SCAX_RUNTIME_EXECUTABLE")
+    if protected_executable:
+        command = protected_executable
+        arguments = ("mcp",)
+    else:
+        command = sys.executable
+        arguments = ("-m", "ax_workspace.entrypoints.mcp")
+    return CodexCliMcpServer(
+        command=command,
+        arguments=arguments,
+        environment={
+            "AX_PROFILE": str(settings.profile),
+            "DATABASE_URL": settings.database_url,
+        },
+    )
+
+
 def create_codex_cli_provider(settings: Settings) -> CodexCliProviderAdapter:
     """Compose the isolated CLI adapter with exactly one server-bound SCAX MCP."""
-    return CodexCliProviderAdapter(
-        scax_mcp_server=CodexCliMcpServer(
-            command=sys.executable,
-            arguments=("-m", "ax_workspace.entrypoints.mcp"),
-            environment={
-                "AX_PROFILE": str(settings.profile),
-                "DATABASE_URL": settings.database_url,
-            },
-        )
-    )
+    return CodexCliProviderAdapter(scax_mcp_server=create_scax_mcp_server(settings))
