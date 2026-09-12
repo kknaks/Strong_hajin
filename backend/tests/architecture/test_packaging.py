@@ -32,3 +32,16 @@ def test_wheel_installs_canonical_package_and_entrypoints_outside_the_repository
         cwd=tmp_path,
     )
     assert imported.returncode == 0, imported.stderr
+
+    # 코드가 아닌 것도 함께 실려야 한다 — 내보내기 조판 템플릿과 AI 출력 스키마는 런타임에 파일로 읽힌다.
+    # import 만으로는 이 결함이 드러나지 않는다: 부팅은 멀쩡하고 사람이 [내보내기] 를 누를 때 터진다.
+    carried = _run(
+        str(python),
+        "-c",
+        "from ax_workspace.modules.meetings.export import TEMPLATE_PATH;"
+        "from ax_workspace.modules.meetings.batch import SCHEMA_PATH;"
+        "assert TEMPLATE_PATH.is_file(), TEMPLATE_PATH;"
+        "assert SCHEMA_PATH.is_file(), SCHEMA_PATH",
+        cwd=tmp_path,
+    )
+    assert carried.returncode == 0, carried.stderr

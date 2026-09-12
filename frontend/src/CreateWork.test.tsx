@@ -65,6 +65,51 @@ const addStep = (text: string) => {
   fireEvent.click(within(steps).getByRole("button", { name: "단계 추가" }));
 };
 
+describe("만들 수 있는 것이 한 가지뿐일 때 (D10)", () => {
+  afterEach(cleanup);
+
+  it("요청만 가능하면 토글 없이 「업무 요청」으로 연다 — 한 칸짜리 세그먼트를 두지 않는다", () => {
+    render(
+      <CreateWorkDrawer
+        assigneeCandidates={[jiho]}
+        canCreateRequest
+        canCreateTask={false}
+        onClose={vi.fn()}
+        onCreated={vi.fn()}
+        onError={vi.fn()}
+        ownerName="민아"
+      />,
+    );
+    expect(screen.getByRole("dialog", { name: "업무 요청" })).toBeTruthy();
+    expect(screen.queryByRole("tablist", { name: "생성 유형" })).toBeNull();
+    expect(screen.queryByRole("tab")).toBeNull();
+    expect(screen.getByText("동료가 수락해야 그 사람의 업무가 됩니다. 희망 기한을 함께 보낼 수 있습니다.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "업무 요청 보내기" })).toBeTruthy();
+  });
+
+  it("업무만 가능하면 「업무 추가」로 연다", () => {
+    render(
+      <CreateWorkDrawer
+        assigneeCandidates={[]}
+        canCreateRequest={false}
+        canCreateTask
+        onClose={vi.fn()}
+        onCreated={vi.fn()}
+        onError={vi.fn()}
+        ownerName="민아"
+      />,
+    );
+    expect(screen.getByRole("dialog", { name: "업무 추가" })).toBeTruthy();
+    expect(screen.queryByRole("tab")).toBeNull();
+  });
+
+  it("둘 다 가능하면 지금 그대로 — 이름은 「새 업무 추가」이고 토글이 선다", () => {
+    renderDrawer();
+    expect(screen.getByRole("dialog", { name: "새 업무 추가" })).toBeTruthy();
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["업무", "요청"]);
+  });
+});
+
 describe("writing down the first steps with the work", () => {
   afterEach(() => {
     cleanup();

@@ -108,7 +108,8 @@ describe("참고 업무", () => {
     fireEvent.click(within(section).getByRole("button", { name: "업무 연결" }));
     await waitFor(() => expect(api.getTasks).toHaveBeenCalled());
     fireEvent.click(await within(section).findByLabelText("연결할 업무"));
-    fireEvent.click(await within(section).findByRole("option", { name: "다른 업무" }));
+    // 목록은 포털로 body 에 선다 (DS-18) — 구획 안이 아니라 화면에서 찾는다
+    fireEvent.click(await screen.findByRole("option", { name: "다른 업무" }));
     fireEvent.click(within(section).getByRole("button", { name: "연결" }));
 
     await waitFor(() => expect(api.addTaskReference).toHaveBeenCalledWith("task-1", "task-9"));

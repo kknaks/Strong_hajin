@@ -1,37 +1,19 @@
-import { useEffect, useId, useRef, useState } from "react";
-
-import { formatDate } from "./labels";
+import { DatePicker } from "./DatePicker";
 import { Icon, type IconName } from "./Icon";
 
 /**
- * A date control that defaults to YYYY/MM/DD and can adopt a screen-specific separator.
+ * 날짜를 받는 칸 — 전 화면이 **같은 달력** 하나를 쓴다 (DS-17).
  *
- * `input[type=date]` renders in the browser's own locale, so the same field shows mm/dd/yyyy to one person and
- * dd.mm.yyyy to another. The visible field here is text we format ourselves; a native date input stays mounted,
- * visually hidden, purely to open the platform calendar through `showPicker()`. The value crossing `onChange` is
- * always ISO `YYYY-MM-DD` (or an empty string), so the API and database boundary is unchanged.
+ * 예전에는 운영체제 달력(`input[type=date]` + `showPicker`)이 기본이었다. 그 달력은 브라우저마다 모양도
+ * 글자 순서도 달라서, 같은 칸이 사람에 따라 mm/dd/yyyy 로도 dd.mm.yyyy 로도 보였다 — 우리가 그린 화면
+ * 한가운데에 크롬 달력이 뜨는 것도 그 때문이다. 이제 갈래를 두지 않고 이 앱의 `DatePicker` 팝오버만 연다.
+ *
+ * 칸은 **하나**다: 값(`YYYY-MM-DD`)이 왼쪽, 달력 아이콘이 그 칸 «안» 오른쪽에 서고 칸 어디를 눌러도
+ * 달력이 열린다 — 옆에 서는 시각 칸(`TimeField`)과 같은 자리·같은 크기다.
+ *
+ * 화면마다 구분자와 아이콘은 갈아 끼울 수 있다 (AX 카드는 `2026.09.30` + 「▾」로 낸다). 값 자체는
+ * 언제나 ISO `YYYY-MM-DD`(또는 빈 문자열)로 오가므로 API·DB 경계는 그대로다.
  */
-
-const ISO = /^(\d{4})-(\d{2})-(\d{2})$/;
-
-function formatDisplayDate(value: string, separator: "/" | "."): string {
-  return formatDate(value).replaceAll("/", separator);
-}
-
-/** Accepts what people actually type: 2026/09/30, 2026-09-30, 2026.09.30, 20260930. */
-export function parseDateInput(text: string): string | null {
-  const digits = text.replace(/[^\d]/g, "");
-  if (digits.length !== 8) return null;
-  const iso = `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
-  const match = ISO.exec(iso);
-  if (!match) return null;
-  const [, year, month, day] = match;
-  const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
-  // Reject a date the calendar does not have, such as 2026-02-31.
-  const round = date.toISOString().slice(0, 10);
-  return round === iso ? iso : null;
-}
-
 export function DateField({
   id,
   label,
@@ -39,90 +21,41 @@ export function DateField({
   onChange,
   disabled = false,
   hideLabel = false,
-  displaySeparator = "/",
+  displaySeparator,
   pickerIcon = "calendar",
   required = false,
 }: {
   id: string;
   label: string;
-  /** ISO `YYYY-MM-DD`, or an empty string for no date. */
+  /** ISO `YYYY-MM-DD`, 날짜가 없으면 빈 문자열. */
   value: string;
   onChange: (isoValue: string) => void;
   disabled?: boolean;
   hideLabel?: boolean;
+  /** 화면에 낼 때의 구분자. 주지 않으면 ISO 그대로(`2026-09-30`)다. */
   displaySeparator?: "/" | ".";
   pickerIcon?: Extract<IconName, "calendar" | "chevron-down">;
   required?: boolean;
 }) {
-  const [text, setText] = useState(() => (value ? formatDisplayDate(value, displaySeparator) : ""));
-  const pickerId = useId();
-  const picker = useRef<HTMLInputElement>(null);
-
-  // The field follows the value it is given, except while the person is mid-edit with an unparseable string.
-  useEffect(() => {
-    setText(value ? formatDisplayDate(value, displaySeparator) : "");
-  }, [displaySeparator, value]);
-
-  const commit = (next: string) => {
-    setText(next);
-    const trimmed = next.trim();
-    if (!trimmed) {
-      onChange("");
-      return;
-    }
-    const parsed = parseDateInput(trimmed);
-    if (parsed) onChange(parsed);
-  };
-
+  const shown = displaySeparator ? value.replaceAll("-", displaySeparator) : value;
+  const blank = displaySeparator ? `YYYY${displaySeparator}MM${displaySeparator}DD` : "YYYY-MM-DD";
   return (
     <div className="date-field">
       <label className={hideLabel ? "sr-only" : undefined} htmlFor={id}>
         {label}{required && <span aria-hidden className="danger-text"> *</span>}
       </label>
-      <div className="date-field-control">
-        <input
-          aria-label={label}
-          aria-describedby={`${pickerId}-hint`}
-          autoComplete="off"
-          disabled={disabled}
-          id={id}
-          inputMode="numeric"
-          onBlur={() => setText(value ? formatDisplayDate(value, displaySeparator) : "")}
-          onChange={(event) => commit(event.target.value)}
-          placeholder={`YYYY${displaySeparator}MM${displaySeparator}DD`}
-          required={required}
-          type="text"
-          value={text}
-        />
-        <button
-          aria-label={`${label} 달력 열기`}
-          className="btn h30 ghost date-field-picker"
-          disabled={disabled}
-          onClick={() => {
-            const element = picker.current;
-            if (!element) return;
-            // showPicker keeps the platform calendar, its keyboard support and its screen-reader behaviour.
-            if (typeof element.showPicker === "function") element.showPicker();
-            else element.focus();
-          }}
-          type="button"
-        >
-          <Icon name={pickerIcon} size={14} />
-        </button>
-        <input
-          aria-hidden
-          className="sr-only"
-          disabled={disabled}
-          onChange={(event) => onChange(event.target.value)}
-          ref={picker}
-          tabIndex={-1}
-          type="date"
-          value={value}
-        />
-      </div>
-      <span className="sr-only" id={`${pickerId}-hint`}>
-        연도 4자리, 월 2자리, 일 2자리 순서로 입력합니다. 예: 2026{displaySeparator}09{displaySeparator}30
-      </span>
+      <DatePicker
+        id={id}
+        label={label}
+        onChange={onChange}
+        trigger={({ props }) => (
+          <button {...props} className="select-trigger" disabled={disabled}>
+            <span className={value ? "select-value tabular" : "select-value placeholder"}>{shown || blank}</span>
+            <Icon name={pickerIcon} size={16} />
+          </button>
+        )}
+        value={value}
+      />
     </div>
   );
 }

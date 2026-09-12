@@ -103,6 +103,9 @@ _LEAD_CAPABILITIES = (
     "task.assign",
     "work_request.read",
     "work_request.decide",
+    # 팀장도 회의에서 나온 일을 넘긴다 — 승격은 언제나 업무 요청이고 그 자리에 참석 여부가 아니라 이 권한이 선다
+    # (SCAX-SPEC-004 §9-5 · D30). 요청을 받기만 하는 역할이면 자기가 앉아 있던 회의의 후속을 넘기지 못한다.
+    "work_request.create",
     "action.read",
     "action.decide",
     "report.review",

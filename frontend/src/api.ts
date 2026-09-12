@@ -2,14 +2,18 @@ import type {
   ActionMaterialDraft,
   AccessGrant,
   ActionItemDetail,
-  CalendarEntry,
-  MeetingDetail,
-  MeetingNote,
   InstalledAccessRole,
   MemberAccess,
-  MeetingRealtimeCredential,
-  MeetingRecordingHandle,
-  MeetingSummary,
+  MeetingAgenda,
+  MeetingLine,
+  MeetingListPayload,
+  MeetingMaterial,
+  MeetingMaterialUpload,
+  MeetingRecord,
+  MeetingRoom,
+  MeetingTodo,
+  MeetingTranscript,
+  MeetingViewer,
   ChecklistItem,
   ActionItemEnvelope,
   DailyReportDraft,
@@ -52,9 +56,12 @@ type ApiErrorBody = {
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** 서버가 문장 대신 구조를 낼 때가 있다 — 409 저장 충돌은 「지금 있는 것」을 함께 싣는다. */
+  detail: unknown;
+  constructor(status: number, message: string, detail?: unknown) {
     super(message);
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -71,7 +78,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!response.ok) {
     const error = (await response.json().catch(() => ({}))) as ApiErrorBody;
     const detail = typeof error.detail === "string" ? error.detail : response.statusText;
-    throw new ApiError(response.status, detail);
+    throw new ApiError(response.status, detail, error.detail);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
@@ -118,20 +125,6 @@ export async function releaseTaskReference(taskId: string, referenceId: string):
   return request<{ reference_id: string; task_version: number }>(`/api/tasks/${taskId}/references/${referenceId}`, { method: "DELETE" });
 }
 
-/** Turn a followup a meeting produced into ordinary work. Pressing twice is a receipt, not a second Task. */
-export async function promoteMeetingFollowup(
-  meetingId: string,
-  summaryId: string,
-  statementIndex: number,
-  body: { kind: "task" | "work_request"; title?: string; assignee_id?: string },
-): Promise<{ already_promoted: boolean; task: DirectTask | null; work_request: WorkRequest | null }> {
-  return request(`/api/meetings/${meetingId}/summaries/${summaryId}/statements/${statementIndex}/promote`, {
-    body: JSON.stringify(body),
-    method: "POST",
-  });
-}
-
-/** The first screen of 관계 탐색: bounded, authorized, and already a graph. */
 export async function graphOverview(view: GraphView = "member"): Promise<GraphOverview> {
   return request<GraphOverview>(`/api/graph/overview?view=${view}`);
 }
@@ -840,114 +833,214 @@ export async function reorderChecklist(
   });
 }
 
-export async function getCalendarEntries(): Promise<CalendarEntry[]> {
-  return request<CalendarEntry[]>("/api/meetings");
+/* ---- 회의 화면 (SCR-105 · SCR-106) — WP-001 이 소유한 계약 ----
+   캘린더 안 드로어 방식이 쓰던 옛 회의 함수(달력 목록 · 노트 · 녹음 · realtime · 요약 채택)는
+   WP-002 와 함께 지웠다. 브라우저가 STT provider 를 아는 경로는 이제 없다 (SPEC §5.2). */
+
+export async function listMeetings(cursor?: string | null): Promise<MeetingListPayload> {
+  return request<MeetingListPayload>(cursor ? `/api/meetings?cursor=${encodeURIComponent(cursor)}` : "/api/meetings");
 }
 
-export async function getMeeting(meetingId: string): Promise<MeetingDetail> {
-  return request<MeetingDetail>(`/api/meetings/${meetingId}`);
+export async function readMeeting(meetingId: string): Promise<MeetingRecord> {
+  return request<MeetingRecord>(`/api/meetings/${meetingId}`);
 }
 
-export function meetingMaterialContentUrl(meetingId: string, materialId: string): string {
-  return `/api/meetings/${meetingId}/materials/${materialId}/content`;
-}
-
-export async function createMeeting(input: {
-  organization_id: string;
+export async function bookMeeting(input: {
   title: string;
+  purpose?: string | null;
   starts_at: string;
   ends_at: string;
-  visibility: "public" | "private";
+  /** 사옥 회의실 번호. **`null` 이면 예약 시스템을 부르지 않는다** — 「회의실 선택 안 함」이다. */
+  room_id?: number | null;
   attendee_ids: string[];
-}): Promise<MeetingDetail> {
-  return request<MeetingDetail>("/api/meetings", { body: JSON.stringify(input), method: "POST" });
+  external_attendees?: string[];
+  agendas?: Array<{ title: string }>;
+  carried_from_meeting_id?: string | null;
+}): Promise<MeetingRecord> {
+  return request<MeetingRecord>("/api/meetings", { body: JSON.stringify(input), method: "POST" });
 }
 
-export async function createMeetingNote(meetingId: string, body: string): Promise<MeetingNote> {
-  return request<MeetingNote>(`/api/meetings/${meetingId}/note`, { body: JSON.stringify({ body }), method: "POST" });
+/** 값을 묻지 않고 지금 시작하는 회의. 돌아오는 것은 이미 「진행 중」인 회의다. */
+export async function quickStartMeeting(): Promise<MeetingRecord> {
+  return request<MeetingRecord>("/api/meetings/quick-start", { body: JSON.stringify({}), method: "POST" });
 }
 
-export async function saveMeetingNote(meetingId: string, expectedVersion: number, body: string): Promise<MeetingNote> {
-  return request<MeetingNote>(`/api/meetings/${meetingId}/note`, {
-    body: JSON.stringify({ expected_version: expectedVersion, body }),
+/** 예약값 고치기 — 「예정」·「완료」에서 참석자 전원이 할 수 있다. 열 수 있는지는 `can_edit_info` 가 말한다. */
+export async function updateMeetingInfo(
+  meetingId: string,
+  patch: {
+    title?: string | null;
+    starts_at?: string;
+    ends_at?: string;
+    location?: string | null;
+    attendee_ids?: string[];
+    external_attendees?: string[];
+  },
+): Promise<MeetingRecord> {
+  return request<MeetingRecord>(`/api/meetings/${meetingId}`, { body: JSON.stringify(patch), method: "PATCH" });
+}
+
+/** 두 갈래 삭제 — `meeting` 은 회의를 취소하고, `note` 는 회의록만 지운다. */
+export async function removeMeeting(meetingId: string, scope: "meeting" | "note"): Promise<void> {
+  await request<void>(`/api/meetings/${meetingId}?scope=${scope}`, { method: "DELETE" });
+}
+
+export async function startMeeting(meetingId: string): Promise<MeetingRecord> {
+  return request<MeetingRecord>(`/api/meetings/${meetingId}/start`, { body: JSON.stringify({}), method: "POST" });
+}
+
+export async function endMeeting(meetingId: string): Promise<MeetingRecord> {
+  return request<MeetingRecord>(`/api/meetings/${meetingId}/end`, { body: JSON.stringify({}), method: "POST" });
+}
+
+export async function addMeetingAgenda(meetingId: string, title: string): Promise<MeetingAgenda> {
+  return request<MeetingAgenda>(`/api/meetings/${meetingId}/agendas`, { body: JSON.stringify({ title }), method: "POST" });
+}
+
+/**
+ * 안건 한 덩어리를 덮어쓴다. `lines` 는 회의록 본문(`track: "final"`)의 줄 전부이고, 보낸 것이 그대로 남는다 —
+ * 빈 줄은 화면이 보내기 전에 버린다.
+ */
+export async function updateMeetingAgenda(
+  meetingId: string,
+  agendaId: string,
+  patch: { title?: string; concluded?: boolean; lines?: string[]; expected_last_saved_at?: string | null },
+): Promise<MeetingAgenda> {
+  return request<MeetingAgenda>(`/api/meetings/${meetingId}/agendas/${agendaId}`, {
+    body: JSON.stringify(patch),
     method: "PATCH",
   });
 }
 
-export async function finalizeMeetingNote(meetingId: string, expectedVersion: number): Promise<MeetingNote> {
-  return request<MeetingNote>(`/api/meetings/${meetingId}/note/finalize`, {
-    body: JSON.stringify({ expected_version: expectedVersion }),
-    method: "POST",
-  });
-}
-
-/** Open a recording. The server decides whether this person may record this meeting; the browser only asks. */
-export async function startMeetingRecording(meetingId: string, purpose: string): Promise<MeetingRecordingHandle> {
-  return request<MeetingRecordingHandle>(`/api/meetings/${meetingId}/recordings/start`, {
-    body: JSON.stringify({ purpose }),
-    method: "POST",
-  });
+export async function removeMeetingAgenda(meetingId: string, agendaId: string): Promise<void> {
+  await request<void>(`/api/meetings/${meetingId}/agendas/${agendaId}`, { method: "DELETE" });
 }
 
 /**
- * A restricted, short-lived key for this one recording's live stream.
+ * 회의 중 메모 한 줄 (SPEC §6). 만든 사람만, 「진행 중」에만 — 서버가 정한다.
+ * 돌아온 줄을 화면에 붙인다: **낙관 렌더를 하지 않는다.** 저장되지 않은 말을 저장된 것처럼 두지 않는다.
  *
- * The long-lived provider key never reaches a browser: this returns a temporary key bound to this recording, so the
- * worst a captured page can do is stream into the session it was already allowed to open.
+ * TODO(WP-003): 이 엔드포인트는 WP-003 이 소유한다. 계약대로 먼저 부르고 있다.
  */
-export async function meetingRealtimeCredential(
-  meetingId: string,
-  recordingId: string,
-  maxSessionDurationSeconds: number,
-): Promise<MeetingRealtimeCredential> {
-  return request<MeetingRealtimeCredential>(`/api/meetings/${meetingId}/recordings/${recordingId}/realtime-credential`, {
-    body: JSON.stringify({ max_session_duration_seconds: maxSessionDurationSeconds }),
+export async function addMeetingMemoLine(meetingId: string, agendaId: string, text: string): Promise<MeetingLine> {
+  return request<MeetingLine>(`/api/meetings/${meetingId}/agendas/${agendaId}/lines`, {
+    body: JSON.stringify({ text }),
     method: "POST",
   });
 }
 
-/** Append what the live stream has settled on. Partial tokens are still changing, so they never come here. */
-export async function appendMeetingRealtimeSegments(
+/** 「스크립트」 탭 — 끝난 회의도 진행 중 회의도 같은 자리를 읽는다. 열람은 참석·공유. */
+export async function readMeetingTranscript(meetingId: string): Promise<MeetingTranscript> {
+  return request<MeetingTranscript>(`/api/meetings/${meetingId}/transcript`);
+}
+
+/**
+ * 후속업무 후보를 **업무 요청으로** 보낸다 (SPEC §9-5) — 갈래는 하나다.
+ * 담당은 누르는 사람이 고른다: 이 함수는 고른 값을 그대로 나른다.
+ */
+export async function promoteMeetingTodo(
   meetingId: string,
-  recordingId: string,
-  segments: Array<{ source_segment_key?: string | null; start_ms: number; end_ms: number; text: string; speaker_label?: string | null }>,
-): Promise<{ transcript_revision_id: string; source_kind: string; segment_count: number }> {
-  return request(`/api/meetings/${meetingId}/recordings/${recordingId}/realtime-segments`, {
-    body: JSON.stringify({ segments }),
+  todoId: string,
+  body: { assignee_id: string; title?: string; description?: string; due_date?: string | null; checklist?: string[] },
+): Promise<MeetingTodo> {
+  return request<MeetingTodo>(`/api/meetings/${meetingId}/todos/${todoId}/promote`, {
+    body: JSON.stringify(body),
     method: "POST",
   });
 }
 
-/** Close the recording by handing over the audio itself; the authoritative reading is made from this file, not the stream. */
-export async function stopMeetingRecording(
-  meetingId: string,
-  recordingId: string,
-  expectedVersion: number,
-  audio: Blob,
-  fileName: string,
-): Promise<MeetingRecordingHandle> {
+/** 안 만들 후보는 확인 없이 지운다 — 아직 업무가 아니다. 승격된 것은 목록에 남는다. */
+export async function removeMeetingTodo(meetingId: string, todoId: string): Promise<void> {
+  await request<void>(`/api/meetings/${meetingId}/todos/${todoId}`, { method: "DELETE" });
+}
+
+/** [다시 시도] — 「실패」에서 합성만 다시 건다. 받은 발화와 메모는 건드리지 않는다. */
+export async function retryMeetingFinalize(meetingId: string): Promise<void> {
+  await request<unknown>(`/api/meetings/${meetingId}/finalize`, { body: JSON.stringify({}), method: "POST" });
+}
+
+/**
+ * 내보내기 주소 — **형식은 HTML 하나다** (SPEC §2.2). 고르는 자리를 두지 않는다.
+ * 받는 것은 브라우저가 한다: 서버가 `Content-Disposition` 을 실어 보낸다.
+ */
+export function meetingExportUrl(meetingId: string): string {
+  return `/api/meetings/${meetingId}/export?format=html`;
+}
+
+/* ---- 회의 자료 (SCAX-WP-005) ---- */
+
+export async function readMeetingMaterials(meetingId: string): Promise<MeetingMaterial[]> {
+  return request<MeetingMaterial[]>(`/api/meetings/${meetingId}/materials`);
+}
+
+/**
+ * 여러 파일을 한 번에 붙인다 — **되는 것만 붙고 안 되는 것은 사유와 함께 돌아온다** (SPEC §10).
+ * 한 건도 못 붙으면 422 `meeting_materials_rejected` 이고 사유가 `detail.failed` 에 실린다.
+ * `Content-Type` 을 손으로 정하지 않는다: 경계 문자열은 브라우저가 붙인다.
+ */
+export async function attachMeetingMaterials(meetingId: string, files: File[]): Promise<MeetingMaterialUpload> {
   const form = new FormData();
-  form.append("expected_version", String(expectedVersion));
-  form.append("audio", audio, fileName);
-  const response = await fetch(`/api/meetings/${meetingId}/recordings/${recordingId}/stop`, {
+  for (const file of files) form.append("files", file, file.name);
+  const response = await fetch(`/api/meetings/${meetingId}/materials`, {
     body: form,
     credentials: "same-origin",
     method: "POST",
   });
   if (!response.ok) {
     const error = (await response.json().catch(() => ({}))) as ApiErrorBody;
-    throw new ApiError(response.status, typeof error.detail === "string" ? error.detail : response.statusText);
+    const message = typeof error.detail === "string" ? error.detail : response.statusText;
+    throw new ApiError(response.status, message, error.detail);
   }
-  return response.json() as Promise<MeetingRecordingHandle>;
+  return response.json() as Promise<MeetingMaterialUpload>;
 }
 
-export async function adoptMeetingSummary(
-  meetingId: string,
-  summaryId: string,
-  expectedVersion: number,
-): Promise<{ summary: MeetingSummary; note: MeetingNote }> {
-  return request<{ summary: MeetingSummary; note: MeetingNote }>(`/api/meetings/${meetingId}/summaries/${summaryId}/adopt`, {
-    body: JSON.stringify({ expected_version: expectedVersion }),
+/** 떼는 것은 올린 사람이다 — 회의를 만든 사람도 남의 자료를 못 뗀다 (DEC-014). */
+export async function detachMeetingMaterial(meetingId: string, materialId: string): Promise<void> {
+  await request<void>(`/api/meetings/${meetingId}/materials/${materialId}`, { method: "DELETE" });
+}
+
+/** 드로어 본문이 딛는 주소 — PDF 는 이 주소를 그대로 띄우고 Markdown 은 글자로 읽는다. */
+export function meetingMaterialContentUrl(meetingId: string, materialId: string): string {
+  return `/api/meetings/${meetingId}/materials/${materialId}/content`;
+}
+
+/** Markdown 자료의 본문 글자 — 드로어가 글로 읽어 보여 준다. */
+export async function readMeetingMaterialText(meetingId: string, materialId: string): Promise<string> {
+  const response = await fetch(meetingMaterialContentUrl(meetingId, materialId), { credentials: "same-origin" });
+  if (!response.ok) throw new ApiError(response.status, response.statusText);
+  return response.text();
+}
+
+/* ---- 회의 공유 (SCAX-WP-005) ---- */
+
+export async function readMeetingShares(meetingId: string): Promise<MeetingViewer[]> {
+  return request<MeetingViewer[]>(`/api/meetings/${meetingId}/shares`);
+}
+
+/**
+ * 여러 명에게 한 번에 연다. **이미 참석이거나 이미 열람인 사람은 서버가 조용히 건너뛴다.**
+ * 알림은 가지 않는다 — 목록에 담기는 것이 유일한 도달 경로다 (SPEC §2.2).
+ */
+export async function shareMeetingWith(meetingId: string, memberIds: string[]): Promise<MeetingViewer[]> {
+  return request<MeetingViewer[]>(`/api/meetings/${meetingId}/shares`, {
+    body: JSON.stringify({ member_ids: memberIds }),
     method: "POST",
   });
+}
+
+/**
+ * 공유로 들어온 열람만 거둔다 — 참석을 빼는 자리는 회의 정보 편집이다 (§3.2-6, 참석자면 409).
+ * 거둔 뒤의 「볼 수 있는 사람」이 그대로 돌아온다 — 다시 묻지 않는다.
+ */
+export async function revokeMeetingShare(meetingId: string, memberId: string): Promise<MeetingViewer[]> {
+  return request<MeetingViewer[]>(`/api/meetings/${meetingId}/shares/${memberId}`, { method: "DELETE" });
+}
+
+/**
+ * 고를 수 있는 사옥 회의실. 예약 시스템이 없거나 닿지 않으면 **빈 목록**이 온다 — 없는 방을 지어내지 않는다.
+ * 시간대를 주면 **그 시간에 쓸 수 있는 방만** 온다 — 못 잡을 방을 고르게 두지 않는다.
+ */
+export async function readMeetingRooms(range?: { starts_at: string; ends_at: string }): Promise<MeetingRoom[]> {
+  const query = range ? `?starts_at=${encodeURIComponent(range.starts_at)}&ends_at=${encodeURIComponent(range.ends_at)}` : "";
+  return request<MeetingRoom[]>(`/api/meetings/rooms${query}`);
 }

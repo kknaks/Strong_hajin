@@ -8,13 +8,32 @@ from ax_workspace.modules.organization_access.domain import TASK_READ, WORK_REQU
 from ax_workspace.modules.work.material_search import ReadableMaterialSource
 from ax_workspace.modules.work.materials import MaterialNotFound
 from ax_workspace.platform.work_tasks import SqlAlchemyAttachmentRepository
-from ax_workspace.platform.native_materials import NativeMaterialRepository, material_id_for
+from ax_workspace.platform.native_materials import (
+    MEETING_TRANSCRIPT,
+    TITLELESS_MEETING,
+    NativeMaterialRepository,
+    material_id_for,
+)
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
 
 
 class SessionMaterialOwners:
     def __init__(self, application, session):
         self._application, self._session = application, session
+
+    def _request_reading(self, attachment):
+        """자라는 자료의 현재 내용에 대한 추출을 건다. 이미 그 내용으로 걸려 있으면 아무 일도 하지 않는다."""
+        from ax_workspace.modules.work.material_extraction import MaterialExtractionJob
+        from ax_workspace.platform.material_extraction import (
+            MaterialJobQueue,
+            SqlAlchemyMaterialExtractionRepository,
+        )
+
+        extraction = SqlAlchemyMaterialExtractionRepository(self._session).request(attachment)
+        if extraction.status == "queued":
+            MaterialJobQueue(self._application.job_queue(self._session)).enqueue(
+                MaterialExtractionJob(extraction.id, attachment.id)
+            )
 
     def sources(self, principal, resource_types, *, resource_type=None, resource_id=None, material_id=None, material_ids=None):
         selected = {material_id} if material_id is not None else material_ids
@@ -78,54 +97,51 @@ class SessionMaterialOwners:
                 "binding_id": str(binding.id), "role": binding.role,
                 "origin": f"/api/material-folders/{binding.context_id}/materials/{attachment.id}/content",
             }))
-        meetings = self._application._meetings(self._session)
-        readable_meetings = {}
-        if "meeting" in resource_types and MEETING_READ in principal.capabilities:
-            readable_meetings = {row["meeting_id"]: row for row in meetings.list(principal) if row.get("kind") == "meeting"}
-        if resource_type == "meeting":
-            if resource_id not in readable_meetings:
-                raise MaterialNotFound("resource was not found")
-            readable_meetings = {resource_id: readable_meetings[resource_id]}
         native = NativeMaterialRepository(self._session)
-        for meeting_id, meeting in readable_meetings.items():
-            for binding, attachment in attachments.bindings_for("meeting", meeting_id):
-                if binding.unbound_at is not None:
+        # 회의는 **판을 쌓지 않으므로 회의당 자료 하나**다 — 확정 발화 전량이 그 회의의 원문이고,
+        # 여기 더해 회의에 붙인 파일들이 같은 회의를 소유자로 삼는다 (SCAX-SPEC-004 §5.4-3 · §10).
+        # 열람 축은 상세와 같다: 참석 또는 공유. 조직 축은 여기 없다 (§3.2).
+        if "meeting" in resource_types and MEETING_READ in principal.capabilities:
+            meetings = self._application._meetings(self._session)
+            readable_meetings = {row["meeting_id"]: row for row in meetings.readable_rows(principal)}
+            if resource_type == "meeting":
+                if resource_id not in readable_meetings:
+                    raise MaterialNotFound("resource was not found")
+                readable_meetings = {resource_id: readable_meetings[resource_id]}
+            for meeting_id, row in readable_meetings.items():
+                title = row.get("title") or row.get("title_candidate") or TITLELESS_MEETING
+                origin_prefix = f"/api/meetings/{meeting_id}/materials"
+                # ① 회의에 붙인 파일들.
+                for binding, attachment in attachments.bindings_for("meeting", meeting_id):
+                    if binding.unbound_at is not None or attachment.lifecycle == "purged":
+                        continue
+                    if selected is not None and attachment.id not in selected:
+                        continue
+                    sources.append(ReadableMaterialSource(attachment, {
+                        "resource_type": "meeting", "resource_id": meeting_id, "title": title,
+                        "binding_id": str(binding.id), "role": binding.role,
+                        "origin": f"{origin_prefix}/{attachment.id}/content",
+                    }))
+                # ② 그 회의의 원문. 발화가 아직 없으면 자료가 될 것이 없다.
+                identifier = material_id_for(MEETING_TRANSCRIPT, UUID(meeting_id))
+                if selected is not None and identifier not in selected:
                     continue
-                if selected is not None and attachment.id not in selected:
+                try:
+                    binding, attachment = native.ensure(MEETING_TRANSCRIPT, UUID(meeting_id))
+                except ValueError:
                     continue
-                sources.append(ReadableMaterialSource(attachment, {
-                    "resource_type": "meeting", "resource_id": meeting_id, "title": meeting["title"],
-                    "binding_id": str(binding.id), "role": binding.role,
-                    "origin": f"/api/meetings/{meeting_id}/materials/{attachment.id}/content",
-                }))
-            audio_materials = {}
-            for revision in meetings.material_revisions(principal, UUID(meeting_id), include_history=selected is not None):
-                if revision["kind"] != "meeting_recording" and selected is not None and material_id_for(revision["kind"], UUID(revision["revision_id"])) not in selected:
-                    continue
-                binding, attachment = native.ensure(revision["kind"], UUID(revision["revision_id"]))
                 if binding.unbound_at is not None or attachment.lifecycle == "purged":
                     continue
-                origin = f"/api/meetings/{meeting_id}/materials/{attachment.id}/content"
-                if revision["kind"] == "meeting_recording":
-                    audio_materials[revision["recording_id"]] = {"material_id": str(attachment.id), "integrity_ref": attachment.integrity_ref, "origin": origin}
-                if selected is not None and attachment.id not in selected:
-                    continue
-                context = {
-                    "resource_type": "meeting", "resource_id": meeting_id, "title": meeting["title"],
-                    "binding_id": str(binding.id), "role": binding.role, "source_layer": revision["source_layer"],
-                    "source_revision_id": revision["revision_id"], "source_revision": revision["revision"],
-                    "is_current_revision": revision["is_current_revision"],
-                    "origin": origin,
-                }
-                if revision["kind"] == "meeting_note":
-                    context.update(note_id=revision["note_id"], note_lifecycle=revision["note_lifecycle"])
-                else:
-                    context.update(recording_id=revision["recording_id"], recording_integrity_ref=revision["recording_integrity_ref"])
-                    if "recording_state" in revision:
-                        context["recording_state"] = revision["recording_state"]
-                    if revision["recording_id"] in audio_materials:
-                        context["recording_material"] = audio_materials[revision["recording_id"]]
-                sources.append(ReadableMaterialSource(attachment, context))
+                # 회의는 말하는 동안 자기 원문을 늘린다 — 같은 자료의 새 내용이므로 그때마다 읽기를 다시 건다.
+                # `request` 는 같은 내용이면 있던 것을 그대로 돌려주므로 매 검색이 잡을 쌓지 않는다.
+                self._request_reading(attachment)
+                sources.append(ReadableMaterialSource(attachment, {
+                    "resource_type": "meeting", "resource_id": meeting_id, "title": title,
+                    "binding_id": str(binding.id), "role": binding.role, "source_layer": "transcript",
+                    "source_revision_id": meeting_id, "source_revision": 1, "is_current_revision": True,
+                    "origin": f"/api/meetings/{meeting_id}/transcript",
+                }))
+
         report_revisions = []
         if "report" in resource_types and DAILY_REPORT_READ in principal.capabilities:
             try:

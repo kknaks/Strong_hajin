@@ -14,13 +14,32 @@ afterEach(() => {
  * jsdom 은 배치를 하지 않아 모든 높이가 0 이다. 팝오버가 재는 세 가지(뷰포트 높이 · 트리거 자리 ·
  * 내용 높이)만 대신 말해 주면, 남은 자리를 어떻게 계산하는지는 그대로 확인할 수 있다.
  */
-function stubLayout({ viewportH, triggerTop, triggerBottom, contentH }: { viewportH: number; triggerTop: number; triggerBottom: number; contentH: number }) {
+function stubLayout({
+  viewportH,
+  viewportW = 1024,
+  triggerTop,
+  triggerBottom,
+  triggerLeft = 40,
+  contentH,
+}: {
+  viewportH: number;
+  viewportW?: number;
+  triggerTop: number;
+  triggerBottom: number;
+  /** 트리거의 왼쪽 — 패널은 여기에 맞춰 서고, 오른쪽으로 넘치면 그만큼 당겨진다 (DS-18). */
+  triggerLeft?: number;
+  contentH: number;
+}) {
   const rect = Element.prototype.getBoundingClientRect;
   const scrollHeight = Object.getOwnPropertyDescriptor(Element.prototype, "scrollHeight");
   const innerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  const innerWidth = Object.getOwnPropertyDescriptor(window, "innerWidth");
   Object.defineProperty(window, "innerHeight", { configurable: true, value: viewportH, writable: true });
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: viewportW, writable: true });
   Element.prototype.getBoundingClientRect = function bounds(this: Element) {
-    if (this.classList.contains("popover-root")) return { top: triggerTop, bottom: triggerBottom } as DOMRect;
+    if (this.classList.contains("popover-root")) {
+      return { top: triggerTop, bottom: triggerBottom, left: triggerLeft, right: triggerLeft + 200, width: 200 } as DOMRect;
+    }
     return rect.call(this);
   };
   Object.defineProperty(Element.prototype, "scrollHeight", {
@@ -34,12 +53,15 @@ function stubLayout({ viewportH, triggerTop, triggerBottom, contentH }: { viewpo
     if (scrollHeight) Object.defineProperty(Element.prototype, "scrollHeight", scrollHeight);
     else Reflect.deleteProperty(Element.prototype, "scrollHeight");
     if (innerHeight) Object.defineProperty(window, "innerHeight", innerHeight);
+    if (innerWidth) Object.defineProperty(window, "innerWidth", innerWidth);
   });
 }
 
 /** 열린 패널. */
 const panel = () => screen.getByRole("group", { name: "상태 필터" });
 const maxHeightOf = () => Number.parseInt(panel().style.maxHeight, 10);
+const topOf = () => Number.parseInt(panel().style.top, 10);
+const leftOf = () => Number.parseInt(panel().style.left, 10);
 
 function renderPopover() {
   return render(
@@ -161,5 +183,52 @@ describe("Popover — 내용이 길 때", () => {
     fireEvent.click(screen.getByRole("button", { name: "여는 단추" }));
     // -1 이라 탭 순서는 건드리지 않는다.
     expect(panel().getAttribute("tabindex")).toBe("-1");
+  });
+});
+
+/**
+ * 패널은 트리거의 «화면 좌표» 에 선다 (DS-18). 트리거 안에 매달면 조상의 `overflow` 에 잘려서,
+ * 드로어의 필드 표(`overflow:hidden`) 안에서는 칸에서 떨어져 보였다.
+ */
+describe("Popover — 자리 잡기", () => {
+  it("fixed 로 띄우고 트리거 바로 아래 8px 에 왼쪽을 맞춘다 — 조상의 overflow 에 잘리지 않는다", () => {
+    stubLayout({ viewportH: 800, triggerTop: 300, triggerBottom: 334, triggerLeft: 120, contentH: 200 });
+    renderPopover();
+    fireEvent.click(screen.getByRole("button", { name: "여는 단추" }));
+    expect(panel().style.position).toBe("fixed");
+    expect(topOf()).toBe(342); // 334 + 8
+    expect(leftOf()).toBe(120);
+  });
+
+  it("위로 뒤집으면 패널이 차지할 높이만큼 트리거 위에서 시작한다", () => {
+    // 트리거가 아래쪽(700~734), 뷰포트 800 → 아래 58 · 위 684. 위로 열고 상한 420 까지 자란다.
+    stubLayout({ viewportH: 800, triggerTop: 700, triggerBottom: 734, contentH: 1200 });
+    renderPopover();
+    fireEvent.click(screen.getByRole("button", { name: "여는 단추" }));
+    expect(panel().className).toContain("above");
+    expect(maxHeightOf()).toBe(420);
+    expect(topOf()).toBe(272); // 700 - 8 - 420
+  });
+
+  it("오른쪽으로 넘치면 그만큼 당겨 화면 안에 둔다", () => {
+    // 폭 200 짜리 패널, 뷰포트 1024, 트리거가 오른쪽 끝(950) → 1024 - 200 - 8 = 816
+    stubLayout({ viewportH: 800, viewportW: 1024, triggerTop: 100, triggerBottom: 134, triggerLeft: 950, contentH: 100 });
+    renderPopover();
+    fireEvent.click(screen.getByRole("button", { name: "여는 단추" }));
+    expect(leftOf()).toBe(816);
+  });
+
+  it("조상이 스크롤되면 좌표를 다시 잡는다 — 칸을 따라다닌다", () => {
+    stubLayout({ viewportH: 800, triggerTop: 300, triggerBottom: 334, triggerLeft: 120, contentH: 200 });
+    renderPopover();
+    fireEvent.click(screen.getByRole("button", { name: "여는 단추" }));
+    expect(topOf()).toBe(342);
+
+    // 드로어 본문이 스크롤되어 트리거가 위로 올라갔다 — scroll 은 capture 로 받는다
+    act(() => {
+      stubLayout({ viewportH: 800, triggerTop: 180, triggerBottom: 214, triggerLeft: 120, contentH: 200 });
+      document.dispatchEvent(new Event("scroll"));
+    });
+    expect(topOf()).toBe(222); // 214 + 8
   });
 });

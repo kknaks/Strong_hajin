@@ -99,7 +99,7 @@ class Gathering:
     minutes: int
     attendees: tuple[str, ...]
     note: str
-    visibility: str = "public"
+    visibility: str = "public"  # 열람은 참석으로 갈린다 — 남겨 둔 CSV 열이고 회의를 세울 때 쓰이지 않는다
 
 
 def build(application: Any, plan: "ScenarioPlan", *, today: date | None = None) -> ScenarioResult:
@@ -241,20 +241,22 @@ def build(application: Any, plan: "ScenarioPlan", *, today: date | None = None) 
         try:
             meeting = application.create_meeting(
                 principal,
-                organization_id=item.unit,
                 title=item.title,
                 starts_at=started,
                 ends_at=started + timedelta(minutes=item.minutes),
-                visibility=item.visibility,
+                organization_id=item.unit,
                 attendee_ids=[member for member in item.attendees if member != item.owner],
+                agendas=[{"title": item.title}],
             )
         except Exception as error:
             result.skipped.append(f"회의 '{item.title}' · {error}")
             continue
         result.track("meetings", made=True)
+        # 회의록은 안건에 매달린 줄 목록이다 — 시나리오는 안건 하나에 줄 하나를 매단다 (SPEC-004 §4.2).
+        meeting_id = UUID(str(meeting["meeting"]["meeting_id"]))
+        agenda_id = UUID(str(meeting["agendas"][0]["agenda_id"]))
         try:
-            note = application.create_meeting_note(principal, UUID(str(meeting["meeting_id"])), item.note)
-            application.finalize_meeting_note(principal, UUID(str(meeting["meeting_id"])), int(note["version"]))
+            application.append_meeting_line(principal, meeting_id, agenda_id, track="final", text=item.note)
             result.track("meeting_notes", made=True)
         except Exception as error:
             result.skipped.append(f"회의록 '{item.title}' · {error}")

@@ -1,267 +1,124 @@
-"""Separate Meeting finalization worker.
+"""회의록 합성을 도는 별도 프로세스 — 공용 durable job transport 위에 선다.
 
-The API only persists an uploaded Recording plus a durable job. This process
-claims the job, fences the recording attempt with the transport lease token,
-does Soniox/Codex work outside database transactions, then persists the
-immutable lineage in short transactions.
+「회의 종료」는 전이만 하고 즉시 답한다. 합성은 여기서 돈다 (SCAX-SPEC-004 §8-1) — 사람이 기다릴 일이 아니다.
+lease 와 fencing 은 transport 가 소유하고, 이 워커는 **한 회차가 곧 한 배달**이라는 것만 지킨다:
+합성이 실패해도 회의 데이터는 그대로 남고 상태만 「실패」가 된다.
 """
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-import threading
+import logging
 from typing import Any, Callable
 from uuid import UUID, uuid4
 
-from ax_workspace.bootstrap.application import WorkflowApplication
+from sqlalchemy.exc import SQLAlchemyError
+
+from ax_workspace.bootstrap.application import WorkflowApplication, create_workflow_application
 from ax_workspace.bootstrap.settings import Settings
-from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
-from ax_workspace.modules.jobs.domain import ClaimedJob, DurableJobQueue
-from ax_workspace.modules.meetings.jobs import JOB_KIND_MEETING_FINALIZE
-from ax_workspace.modules.meetings.domain import MeetingVersionConflict
-from ax_workspace.modules.meetings.transcription import FinalTranscriber, TranscriptionFailure
+from ax_workspace.modules.jobs.domain import JOB_KIND_MEETING_FINALIZE, ClaimedJob, DurableJobQueue
+from ax_workspace.modules.meetings.finalize import FINAL_ATTEMPTS
 from ax_workspace.platform.durable_jobs import MemoryDurableJobQueue, build_job_queue
-from ax_workspace.platform.recordings import LocalDirectoryRecordingStorage
-from ax_workspace.platform.soniox import SonioxTranscriptionAdapter
 from ax_workspace.platform.persistence import make_session_factory
 
+FAILURE_BACKOFF_SECONDS = 2.0
+#: 예외로 끝난 배달을 몇 번까지 되돌리는가. 합성 자신의 시도 상한과 같은 수다 (SCAX-SPEC-004 §8-3).
+MAX_DELIVERIES = FINAL_ATTEMPTS
+logger = logging.getLogger(__name__)
 
-class MeetingFinalizationWorker:
+
+class MeetingFinalizeWorker:
+    """claim job (tx) → 합성 (tx 밖) → 상태 적재 (tx) → finish job (tx, fenced)."""
+
     def __init__(
         self,
         settings: Settings,
         *,
-        transcriber: FinalTranscriber | None = None,
-        provider: AiProvider | None = None,
+        application: WorkflowApplication | None = None,
         queue_factory: Callable[[Any], DurableJobQueue] | None = None,
     ) -> None:
         self._settings = settings
-        self._application = WorkflowApplication(settings, provider)
         self._sessions = make_session_factory(settings.database_url)
-        self._storage = LocalDirectoryRecordingStorage(Path(settings.recordings_dir))
-        self._transcriber = transcriber or SonioxTranscriptionAdapter()
+        self._application = application or create_workflow_application(settings)
         self._worker_id = f"meeting-worker:{uuid4().hex[:12]}"
-        memory = MemoryDurableJobQueue() if settings.job_queue_backend == "memory" else None
-        self._queue_factory = queue_factory or (lambda session: build_job_queue(settings.job_queue_backend, session, memory))
+        if queue_factory is not None:
+            self._queue_factory = queue_factory
+        else:
+            memory = MemoryDurableJobQueue() if settings.job_queue_backend == "memory" else None
+            self._queue_factory = lambda session: build_job_queue(settings.job_queue_backend, session, memory)
         self._stopping = asyncio.Event()
+
+    async def run(self) -> None:
+        failures = 0
+        while not self._stopping.is_set():
+            try:
+                processed = await self.run_once()
+                failures = 0
+            except SQLAlchemyError:
+                # 데이터베이스가 잠깐 없어도 프로세스가 죽지 않는다. 프로그래밍 오류는 그대로 올라간다.
+                failures += 1
+                logger.exception("meeting worker poll failed (attempt %d); retrying after backoff", failures)
+                processed = False
+            delay = 0.25 if failures == 0 else min(30.0, FAILURE_BACKOFF_SECONDS * 2 ** min(failures - 1, 4))
+            if not processed:
+                try:
+                    await asyncio.wait_for(self._stopping.wait(), timeout=delay)
+                except TimeoutError:
+                    pass
 
     def stop(self) -> None:
         self._stopping.set()
 
-    async def run(self) -> None:
-        while not self._stopping.is_set():
-            processed = await self.run_once()
-            if not processed:
-                try:
-                    await asyncio.wait_for(self._stopping.wait(), timeout=0.25)
-                except TimeoutError:
-                    pass
-
     async def run_once(self) -> bool:
-        jobs = self._claim()
+        jobs = self._claim_jobs()
         if not jobs:
             return False
-        semaphore = asyncio.Semaphore(self._settings.meeting_worker_concurrency)
-
-        async def handle(job: ClaimedJob) -> None:
-            async with semaphore:
-                await self._handle(job)
-
-        await asyncio.gather(*(handle(job) for job in jobs))
+        for job in jobs:
+            await asyncio.to_thread(self._handle, job)
         return True
 
-    def _claim(self) -> list[ClaimedJob]:
+    def _claim_jobs(self) -> list[ClaimedJob]:
         with self._sessions() as session:
             jobs = self._queue_factory(session).claim(
                 JOB_KIND_MEETING_FINALIZE,
-                limit=self._settings.meeting_worker_concurrency,
-                lease_seconds=self._settings.meeting_queue_visibility_timeout,
+                limit=1,
+                lease_seconds=self._settings.meeting_finalize_lease_seconds,
                 worker_id=self._worker_id,
             )
             session.commit()
             return jobs
 
-    async def _handle(self, job: ClaimedJob) -> None:
-        lease_lost = threading.Event()
-        heartbeat = asyncio.create_task(self._heartbeat(job, lease_lost))
+    def _handle(self, job: ClaimedJob) -> None:
+        """한 배달 = 한 회차. 합성이 제 실패를 다뤘으면(「실패」로 옮겼으면) **배달은 끝난다**.
+
+        합성이 **예외로** 끝난 것은 다르다 — 그때는 회의가 아직 「정리 중」이므로 배달을 끝내면 안 된다.
+        끝내 버리면 잡은 `completed` 인데 회의는 「정리 중」에 갇혀, 화면이 오지 않을 결과를 영원히 폴링한다.
+        상한(`MAX_DELIVERIES`)까지 배달을 되돌리고, 그래도 안 되면 잡을 `failed` 로 닫으면서
+        회의도 「실패」로 보낸다 — 조용히 삼키지 않는다 (SPEC-004 §5.1 · §8-8).
+        """
+        meeting_id = UUID(str(job.payload["meeting_id"]))
         try:
-            status = await asyncio.to_thread(
-                self.process,
-                UUID(str(job.payload["recording_id"])),
-                lease_token=job.lease_token,
-                attempt=job.attempt,
-                lease_is_active=lambda: not lease_lost.is_set(),
-            )
-        finally:
-            heartbeat.cancel()
-            try:
-                await heartbeat
-            except asyncio.CancelledError:
-                pass
-        if lease_lost.is_set():
-            # The database job lease is authoritative. A subsequent delivery will
-            # re-fence the recording; this worker must not write a terminal transport state.
+            self._application.finalize_meeting(meeting_id)
+        except Exception as error:  # noqa: BLE001 — 이 배달의 실패다. 워커 프로세스는 죽지 않는다
+            self._deliver_failed(job, meeting_id, error)
             return
         with self._sessions() as session:
-            queue = self._queue_factory(session)
-            if status == "retry":
-                queue.release(job.job_id, job.lease_token, delay_seconds=min(30, 2 ** max(0, job.attempt - 1)), error="meeting transcription transient failure")
-            elif status == "contended":
-                queue.release(job.job_id, job.lease_token, delay_seconds=max(1, self._settings.meeting_queue_visibility_timeout // 2), error="meeting recording held by live worker")
-            else:
-                queue.complete(job.job_id, job.lease_token)
+            self._queue_factory(session).complete(job.job_id, job.lease_token)
             session.commit()
 
-    async def _heartbeat(self, job: ClaimedJob, lease_lost: threading.Event) -> None:
-        """Keep a long Soniox/Codex operation visible to the transport.
-
-        A failed fenced extension means another worker may now own the delivery.
-        We deliberately do not reacquire it; ``process`` observes ``lease_lost``
-        before each persistence boundary and refuses the result.
-        """
-        interval = max(1, self._settings.meeting_queue_visibility_timeout // 3)
-        while True:
-            await asyncio.sleep(interval)
-            with self._sessions() as session:
-                extended = self._queue_factory(session).extend_lease(
-                    job.job_id,
-                    job.lease_token,
-                    self._settings.meeting_queue_visibility_timeout,
-                )
-                session.commit()
-            if not extended:
-                lease_lost.set()
-                return
-
-    def process(
-        self,
-        recording_id: UUID,
-        *,
-        lease_token: UUID,
-        attempt: int,
-        lease_is_active: Callable[[], bool] | None = None,
-    ) -> str:
-        active = lease_is_active or (lambda: True)
-        try:
-            plan = self._application.meeting_finalization_input(
-                recording_id,
-                lease_token=lease_token,
-                stale_after_seconds=self._settings.meeting_queue_visibility_timeout,
-            )
-            if plan.get("completed"):
-                return "completed"
-            if plan.get("contended"):
-                return "contended"
-            if not active():
-                return "stale"
-            if plan["stage"] == "transcribe":
-                result = self._transcriber.transcribe(
-                    data=self._storage.get(plan["storage_key"]),
-                    original_name=plan["original_name"],
-                    content_type=plan["content_type"],
-                    client_reference_id=plan["client_reference_id"],
-                )
-                if not active():
-                    return "stale"
-                self._application.record_meeting_finalization_cleanup_warning(
-                    recording_id,
-                    lease_token=lease_token,
-                    warnings=result.cleanup_warnings,
-                )
-                raw = self._application.record_final_meeting_transcript(
-                    recording_id=recording_id,
-                    provider="soniox",
-                    provider_reference=result.provider_reference,
-                    segments=list(result.segments),
-                    finalization_lease_token=lease_token,
-                )
-                transcript_id = UUID(raw["transcript_revision_id"])
-                refinement_id: UUID | None = None
-            elif plan["stage"] == "refinement":
-                transcript_id = UUID(plan["transcript_revision_id"])
-                refinement_id = None
+    def _deliver_failed(self, job: ClaimedJob, meeting_id: UUID, error: Exception) -> None:
+        """예외로 끝난 배달. 남은 시도가 있으면 되돌리고, 없으면 회의와 잡을 함께 「실패」로 닫는다."""
+        last = job.attempt >= MAX_DELIVERIES
+        # 사유는 **예외 종류 한 줄**이다 — 스택도, SQL 도, 내부 식별자도 사람 화면에 내지 않는다.
+        reason = f"합성이 끝나지 못했습니다 ({type(error).__name__})"
+        logger.exception("회의 %s 합성 배달 %d/%d 실패", meeting_id, job.attempt, MAX_DELIVERIES)
+        if last:
+            # 회의를 먼저 「실패」로 보낸다 — 잡이 닫히고 회의만 「정리 중」에 남는 창을 두지 않는다.
+            self._application.fail_meeting_finalize(meeting_id, reason)
+        with self._sessions() as session:
+            queue = self._queue_factory(session)
+            if last:
+                queue.fail(job.job_id, job.lease_token, error=reason)
             else:
-                transcript_id = None
-                refinement_id = UUID(plan["refinement_revision_id"])
-            if not active():
-                return "stale"
-            if refinement_id is None:
-                if transcript_id is None:  # defensive: every plan stage is explicit above
-                    raise RuntimeError("meeting finalization plan is invalid")
-                refinement = self._application.refine_meeting_transcript(
-                    transcript_id,
-                    finalization_lease_token=lease_token,
-                )
-                refinement_id = UUID(refinement["refinement_revision_id"])
-            if not active():
-                return "stale"
-            self._application.summarize_meeting_transcript(
-                refinement_id,
-                finalization_lease_token=lease_token,
-            )
-            if not active():
-                return "stale"
-            self._application.complete_meeting_finalization(recording_id, lease_token=lease_token)
-            return "completed"
-        except TranscriptionFailure as error:
-            try:
-                self._application.record_meeting_finalization_cleanup_warning(
-                    recording_id,
-                    lease_token=lease_token,
-                    warnings=error.cleanup_warnings,
-                )
-            except MeetingVersionConflict:
-                return "stale"
-            return self._record_failure(
-                recording_id,
-                lease_token=lease_token,
-                attempt=attempt,
-                code=error.code,
-                retryable=error.retryable,
-            )
-        except MeetingVersionConflict:
-            # Only an explicit recording fence conflict is stale. Provider and programming
-            # failures become visible retryable/terminal domain state below.
-            return "stale"
-        except ProviderFailure:
-            return self._record_failure(
-                recording_id,
-                lease_token=lease_token,
-                attempt=attempt,
-                code="meeting_ai_provider_failed",
-                retryable=True,
-            )
-        except Exception:
-            return self._record_failure(
-                recording_id,
-                lease_token=lease_token,
-                attempt=attempt,
-                code="meeting_finalization_error",
-                retryable=True,
-            )
-
-    def _record_failure(
-        self,
-        recording_id: UUID,
-        *,
-        lease_token: UUID,
-        attempt: int,
-        code: str,
-        retryable: bool,
-    ) -> str:
-        try:
-            if retryable and attempt < self._settings.meeting_queue_max_attempts:
-                self._application.retry_meeting_finalization(
-                    recording_id,
-                    lease_token=lease_token,
-                    code=code,
-                )
-                return "retry"
-            self._application.fail_meeting_finalization(
-                recording_id,
-                lease_token=lease_token,
-                code=code,
-            )
-            return "failed"
-        except MeetingVersionConflict:
-            return "stale"
+                delay = min(30.0, FAILURE_BACKOFF_SECONDS * 2 ** max(0, job.attempt - 1))
+                queue.release(job.job_id, job.lease_token, delay_seconds=int(delay), error=reason)
+            session.commit()

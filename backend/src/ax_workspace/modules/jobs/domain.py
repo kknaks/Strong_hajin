@@ -13,7 +13,8 @@ from uuid import UUID
 
 JOB_KIND_CONVERSATION_TURN = "conversation.turn"
 JOB_KIND_MATERIAL_EXTRACTION = "material.extraction"
-JOB_KIND_MEETING_FINALIZE = "meeting.recording.finalize"
+#: 「정리 중」에서 두 트랙을 한 벌로 합치는 잡 (SCAX-SPEC-004 §8). 회의당 하나이고 재시도는 `/finalize` 가 건다.
+JOB_KIND_MEETING_FINALIZE = "meeting.finalize"
 
 TERMINAL_JOB_STATES = frozenset({"completed", "failed"})
 

@@ -30,10 +30,10 @@ def test_stack_and_acceptance_targets_start_every_required_process() -> None:
     assert "to_regclass('action_material_drafts')" in recipe
     assert "to_regclass('notifications')" in recipe
     assert "grep -qx 'notifications'" in recipe
-    assert "meeting_columns.column_name" in recipe
-    for column in ("description", "source_action_item_id", "source_decision_item_id", "source_submission_id", "source_review_decision_id"):
-        assert f"column_name = '{column}'" in recipe
-    assert "meeting_note_columns.column_name" in recipe and "column_name = 'source_status'" in recipe
+    # 회의 쪽 표지는 `meeting_transcripts` 하나다 — main 이 보던 옛 회의 열들(meetings.description·source_* ·
+    # meeting_note_versions.source_status)은 SCAX-SPEC-004 가 그 모델을 대체하면서 사라졌다. 그것을 계속
+    # 확인하면 스키마가 멀쩡해도 local-stack 이 영원히 거절한다.
+    assert "to_regclass('meeting_transcripts')" in recipe
     assert "follow_up_candidates" in recipe
     assert "follow_up_candidate_id" in recipe
     assert "Run 'make sync-demo-schema'" in recipe

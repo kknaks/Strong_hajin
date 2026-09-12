@@ -4,7 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-# tasks/<task>/<file>, material_folders/<folder>/<file>, action_items/<action>/drafts/<file>, ...
+# tasks/<task>/<file>, meetings/<meeting>/<file>, material_folders/<folder>/<file>,
+# action_items/<action>/drafts/<file>, work_requests/<request>/{comments|evidence}/<file>
 _SAFE_KEY = re.compile(
     r"^(?:(?:tasks|meetings|material_folders)/[0-9a-f-]{36}|action_items/[0-9a-f-]{36}/drafts|work_requests/[0-9a-f-]{36}/(?:comments|evidence))/[0-9a-f-]{36}$"
 )

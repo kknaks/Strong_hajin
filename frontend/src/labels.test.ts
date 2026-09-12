@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatDate, formatDateTime, formatDuration, formatLongDate, formatMonth } from "./labels";
+import { formatDate, formatDateTime, formatDuration, formatLongDate, formatMonth, meetingElapsed } from "./labels";
 
 describe("formatDuration", () => {
   it("shows milliseconds below one second and whole seconds from one second on", () => {
@@ -50,5 +50,22 @@ describe("shared date formatters cover every read-only rendering", () => {
     expect(formatMonth(2026, 9)).toBe("2026/09");
     expect(formatMonth(2026, 12)).toBe("2026/12");
     expect(formatMonth(2026, 9)).not.toMatch(/[년월]/);
+  });
+});
+
+describe("meetingElapsed", () => {
+  it("회의 시작에서 흐른 시간을 mm:ss 로, 한 시간을 넘으면 h:mm:ss 로 읽는다 (D50)", () => {
+    expect(meetingElapsed(0)).toBe("00:00");
+    expect(meetingElapsed(61_000)).toBe("01:01");
+    expect(meetingElapsed(120_000)).toBe("02:00");
+    // 59:59 까지는 두 칸, 한 시간부터 시간 칸이 선다
+    expect(meetingElapsed(3_599_000)).toBe("59:59");
+    expect(meetingElapsed(3_600_000)).toBe("1:00:00");
+    expect(meetingElapsed(3_930_000)).toBe("1:05:30");
+    // 기준점이 없거나 숫자가 아니면 눈금을 비운다 — 시각을 지어내지 않는다
+    expect(meetingElapsed(null)).toBe("");
+    expect(meetingElapsed(Number.NaN)).toBe("");
+    // 음수는 시작 자리로 본다
+    expect(meetingElapsed(-5_000)).toBe("00:00");
   });
 });

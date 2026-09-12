@@ -5,24 +5,56 @@ audit facts; HTTP, MCP, Calendar, Materials, and AX call these commands rather t
 """
 from __future__ import annotations
 
+import base64
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID
 
 from ax_workspace.modules.meetings.domain import (
+    MeetingStaleWrite,
+    LINE_TRACKS,
+    MAX_AGENDAS_PER_MEETING,
     MeetingAccessDenied,
     MeetingError,
     MeetingNotFound,
+    MeetingStateConflict,
+    MeetingStatus,
     MeetingVersionConflict,
+    AI_AGENDA_SOURCE,
+    ensure_agenda_capacity,
+    ensure_agenda_source,
+    ensure_info_editable,
+    ensure_transition,
+    is_auto_cancel_released,
+    is_auto_cancellable,
+    normalize_agenda_title,
+    parse_status,
 )
-from ax_workspace.modules.meetings.recordings import RecordingStorage
-from ax_workspace.modules.meetings.refinement import RefinedTranscriptSegment
-from ax_workspace.modules.meetings.summary import SummaryStatement
-from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment, RealtimeTranscriptionKeyIssuer
-from ax_workspace.modules.organization_access.domain import MEETING_RECORD, Principal
-from ax_workspace.modules.work.material_extraction import MaterialExtractionJob, extraction_view
-from ax_workspace.modules.work.materials import _link_url, store_file
+from ax_workspace.modules.meetings.finalize import describe_day
+from ax_workspace.modules.meetings.retranscribe import Recording
+from ax_workspace.modules.meetings.rooms import Attendee, RoomReservation, headcount
+from ax_workspace.modules.meetings.stream_service import MeetingAdmission
+from ax_workspace.modules.organization_access.domain import Principal
 
+
+PAST_PAGE_SIZE = 20
+QUICK_START_LENGTH = timedelta(hours=1)
+# 바로 시작한 회의가 갖고 서는 기본 안건. 사람이 이름을 고쳐 쓸 자리이지 AI 가 세운 자리가 아니다 (D32).
+QUICK_START_AGENDA_TITLE = "안건 1"
+_PAST_STATUSES = frozenset({MeetingStatus.DONE, MeetingStatus.FAILED, MeetingStatus.CANCELLED})
+_INFO_EDITABLE = frozenset({MeetingStatus.SCHEDULED, MeetingStatus.DONE})
+# 회의록 **줄** 편집이 열리는 상태 — 「예정」·「진행 중」·「정리 중」에는 열리지 않는다 (SPEC §5.1).
+_NOTE_EDITABLE = frozenset({MeetingStatus.DONE, MeetingStatus.FAILED, MeetingStatus.CANCELLED})
+# **안건** 편집(제목 고치기·지우기·결론 표시)이 열리는 상태 — 진행 중·정리 중을 뺀 넷.
+# 회의가 도는 동안 이미 선 안건을 사람이 손대면 그 안건을 딛고 있던 메모와 AI 줄이 발밑에서 바뀐다
+# (SPEC §4.1-5·6 · 시안 `SCR-106-E77`·`E35`·`E71`). 줄 편집과 다른 집합이므로 상수를 따로 둔다.
+_AGENDA_EDITABLE = frozenset(
+    {MeetingStatus.SCHEDULED, MeetingStatus.DONE, MeetingStatus.FAILED, MeetingStatus.CANCELLED}
+)
+# **안건 세우기**는 한 자리가 더 열린다 — 「진행 중」 (사용자 결정 D45, 2026-09-11).
+# 말이 새 주제로 넘어가는 순간이 곧 안건이 필요한 순간이라, 회의가 끝나기를 기다리게 하면 그 메모가
+# 엉뚱한 안건에 붙는다. **더하는 것만** 열린다: 새 안건은 아직 아무것도 딛고 있지 않아 안전하다.
+_AGENDA_ADDABLE = _AGENDA_EDITABLE | {MeetingStatus.IN_PROGRESS}
 
 MEETING_READ = "meeting.read"
 MEETING_READ_PRIVATE = "meeting.read.private"
@@ -36,1414 +68,1356 @@ class MeetingRepository(Protocol):
         *,
         organization_id: str,
         owner_id: str,
-        title: str,
-        description: str | None = None,
+        title: str | None,
+        purpose: str | None,
         starts_at: datetime,
         ends_at: datetime,
-        visibility: str,
+        location: str | None,
+        status: str,
         attendee_ids: list[str],
-        source_action_item_id: UUID | None = None,
-        source_decision_item_id: UUID | None = None,
-        source_submission_id: UUID | None = None,
-        source_review_decision_id: UUID | None = None,
+        external_attendees: list[str],
+        carried_from_meeting_id: UUID | None,
+        started_at: datetime | None = None,
     ) -> Any: ...
+    def replace_attendees(self, meeting: Any, attendee_ids: list[str], actor_id: str) -> None: ...
+    def primary_organization(self, member_id: str) -> str | None: ...
     def meetings_in_organizations(self, organization_ids: frozenset[str]) -> list[Any]: ...
+    def meetings_visible_to(self, organization_ids: frozenset[str], member_id: str) -> list[Any]: ...
     def meeting(self, meeting_id: UUID, *, lock: bool = False) -> Any | None: ...
     def attendee_ids(self, meeting: Any) -> set[str]: ...
     def is_shared_with(self, meeting: Any, member_id: str) -> bool: ...
+    def shared_member_ids(self, meeting: Any) -> list[str]: ...
     def member_display_name(self, member_id: str) -> str | None: ...
     def is_active_member_in_organization(self, member_id: str, organization_id: str) -> bool: ...
+    def is_active_member(self, member_id: str) -> bool: ...
     def add_share(self, meeting: Any, member_id: str, actor_id: str) -> None: ...
     def revoke_share(self, meeting: Any, member_id: str) -> bool: ...
     def touch(self, meeting: Any) -> None: ...
-    def append_audit(
-        self,
-        meeting: Any,
-        actor_id: str,
-        event_kind: str,
-        summary: str,
-        *,
-        before_ref: str | None = None,
-        after_ref: str | None = None,
-        notify_member_id: str | None = None,
-        notification_summary: str | None = None,
+    def append_audit(self, meeting: Any, actor_id: str, event_kind: str, summary: str, *, before_ref: str | None = None) -> None: ...
+    def agendas(self, meeting: Any) -> list[Any]: ...
+    def agenda(self, meeting: Any, agenda_id: UUID, *, lock: bool = False) -> Any | None: ...
+    def agenda_count(self, meeting: Any) -> int: ...
+    def next_agenda_order(self, meeting: Any) -> int: ...
+    def create_agenda(self, meeting: Any, *, title: str, source: str, order_index: int) -> Any: ...
+    def touch_agenda(self, agenda: Any) -> None: ...
+    def delete_agenda(self, agenda: Any) -> None: ...
+    def lines(self, meeting: Any) -> list[Any]: ...
+    def line_count(self, meeting: Any) -> int: ...
+    def append_line(self, agenda: Any, *, track: str, text: str, author_id: str | None, evidence: list[dict[str, Any]] | None = None, at_ms: int | None = None) -> Any: ...
+    def memo_lines(self, meeting: Any) -> list[Any]: ...
+    def replace_track(self, meeting: Any, track: str) -> None: ...
+    def record_ai_session(self, meeting_id: UUID, *, provider_session_ref: str, persona_id: str) -> None: ...
+    def ai_session(self, meeting_id: UUID) -> Any | None: ...
+    def succeeded_batch_cursor(self, meeting_id: UUID) -> int: ...
+    def next_batch_seq(self, meeting_id: UUID) -> int: ...
+    def latest_succeeded_batch_seq(self, meeting_id: UUID) -> int: ...
+    def record_batch_run(self, meeting_id: UUID, *, seq: int, status: str, trigger_cause: str, from_seq: int | None, to_seq: int | None, reason: str | None = None) -> None: ...
+    def pending_transcript_chars(self, meeting_id: UUID, after_seq: int) -> int: ...
+    def replace_lines(self, agenda: Any, *, track: str, texts: list[str], author_id: str | None) -> list[Any]: ...
+    def todos(self, meeting: Any) -> list[Any]: ...
+    def replace_todos(self, meeting: Any, drafts: list[dict[str, Any]]) -> None: ...
+    def todo(self, meeting: Any, todo_id: UUID, *, lock: bool = False) -> Any | None: ...
+    def link_todo(self, todo: Any, *, work_request_id: UUID) -> None: ...
+    def delete_todo(self, todo: Any) -> None: ...
+    def next_meeting_after(self, meeting: Any) -> Any | None: ...
+    def delete_note_content(self, meeting: Any) -> None: ...
+    def append_transcript_block(
+        self, meeting_id: UUID, *, speaker_label: str, at_ms: int, end_ms: int, text: str
     ) -> Any: ...
-    def note(self, meeting: Any, *, lock: bool = False) -> Any | None: ...
-    def create_note(
-        self,
-        meeting: Any,
-        body: str,
-        author_id: str,
-        source_evidence: list[dict[str, Any]] | None = None,
-        source_status: str | None = None,
-    ) -> Any: ...
-    def append_note_version(self, note: Any, body: str, author_id: str, source_evidence: list[dict[str, Any]] | None = None) -> Any: ...
-    def note_versions(self, note: Any) -> list[Any]: ...
-    def finalize_note(self, note: Any, actor_id: str) -> None: ...
-    def create_recording(self, meeting: Any, actor_id: str, purpose: str) -> Any: ...
-    def recording(self, meeting: Any, recording_id: UUID, *, lock: bool = False) -> Any | None: ...
-    def recording_by_id(self, recording_id: UUID, *, lock: bool = False) -> Any | None: ...
-    def recordings(self, meeting: Any) -> list[Any]: ...
-    def complete_recording(self, recording: Any, stored: Any) -> None: ...
-    def raw_transcript_for_provider(self, recording: Any, provider_reference: str) -> Any | None: ...
-    def latest_raw_transcript_for_recording(self, recording: Any) -> Any | None: ...
-
-    def latest_recorded_raw_transcript(self, recording: Any) -> Any | None: ...
-    def recorded_raw_transcripts(self, recording: Any, *, limit: int | None = None) -> list[Any]: ...
-    def completed_refinements(self, transcript: Any, *, limit: int | None = None) -> list[Any]: ...
-    def create_raw_transcript(
-        self,
-        recording: Any,
-        *,
-        provider: str,
-        provider_reference: str,
-        segments: list[FinalTranscriptSegment],
-    ) -> Any: ...
-    def raw_transcript_segments(self, transcript: Any) -> list[Any]: ...
-    def raw_transcript(self, transcript_id: UUID, *, lock: bool = False) -> Any | None: ...
-    def latest_refinement(self, transcript: Any) -> Any | None: ...
-    def refinement(self, refinement_id: UUID, *, lock: bool = False) -> Any | None: ...
-    def refinement_segments(self, refinement: Any) -> list[Any]: ...
-    def create_refinement(
-        self,
-        transcript: Any,
-        *,
-        provider_call_ref: str | None,
-        content_hash: str,
-        segments: list[RefinedTranscriptSegment],
-    ) -> Any: ...
-    def summary_for_refinement(self, refinement: Any, kind: str) -> Any | None: ...
-    def create_summary(
-        self,
-        refinement: Any,
-        *,
-        kind: str,
-        body: str,
-        provider_call_ref: str | None,
-        content_hash: str,
-        statements: list[SummaryStatement],
-    ) -> Any: ...
-    def summary_evidence(self, summary: Any) -> list[Any]: ...
-    def live_transcript(self, recording: Any) -> Any: ...
-    def append_live_segments(self, recording: Any, *, provider: str, segments: list[Any]) -> Any: ...
-    def followup_promotions(self, summary: Any) -> list[Any]: ...
-    def record_followup_promotion(
-        self, meeting: Any, summary: Any, statement_index: int, *, task_id: Any = None, work_request_id: Any = None, promoted_by: str
-    ) -> Any: ...
-    def summary(self, meeting: Any, summary_id: UUID, *, lock: bool = False) -> Any | None: ...
-    def adopt_summary(self, summary: Any, note_version: Any, actor_id: str) -> None: ...
-    def speaker_assignments(self, transcript: Any) -> list[Any]: ...
-    def assign_speaker_identity(
-        self,
-        meeting: Any,
-        transcript: Any,
-        *,
-        speaker_label: str,
-        member_id: str,
-        scope: str,
-        raw_start_segment: Any,
-        raw_end_segment: Any,
-        confirmed_by: str,
-    ) -> Any: ...
-    def mark_recording_transcribing(self, recording: Any, lease_token: UUID) -> None: ...
-    def complete_recording_finalization(self, recording: Any) -> None: ...
-    def mark_recording_failed(self, recording: Any, code: str) -> None: ...
-    def mark_recording_retryable(self, recording: Any, code: str) -> None: ...
-
+    def transcript_blocks(self, meeting: Any) -> list[Any]: ...
+    def transcript_blocks_after(self, meeting_id: UUID, after_seq: int) -> list[Any]: ...
+    def transcript_speaker_count(self, meeting_id: UUID) -> int: ...
+    def record_recording_file(self, meeting_id: UUID, *, storage_key: str, content_type: str) -> None: ...
 
 class MeetingApplication:
-    def __init__(
-        self,
-        repository: MeetingRepository,
-        recording_storage: RecordingStorage,
-        realtime_key_issuer: RealtimeTranscriptionKeyIssuer,
-        attachments: Any = None,
-        references: Any = None,
-        material_storage: Any = None,
-        extractions: Any = None,
-        extraction_queue: Any = None,
-    ) -> None:
+    def __init__(self, repository: MeetingRepository, recordings: Any = None) -> None:
         self._repository = repository
-        self._recording_storage = recording_storage
-        self._realtime_key_issuer = realtime_key_issuer
-        self._attachments = attachments
-        self._references = references
-        self._material_storage = material_storage
-        self._extractions = extractions
-        self._extraction_queue = extraction_queue
+        # 종료 뒤 재전사가 음원을 읽는 자리 (D44). 없으면 재전사를 건너뛴다 — 나머지 명령은 그대로 돈다.
+        self._recordings = recordings
 
     def list(self, principal: Principal) -> list[dict[str, Any]]:
-        """Calendar-safe projection: concealed private meetings contribute only a time busy block."""
+        """Calendar-safe projection: a meeting this person may not open contributes only a busy block.
+
+        This stays as it was for the calendar and the MCP tools. The meeting screen reads `board` instead, which
+        never mentions a meeting the viewer cannot open at all.
+        """
         rows: list[dict[str, Any]] = []
         for meeting in self._repository.meetings_in_organizations(principal.organization_scope):
-            if self._can_read_detail(principal, meeting):
-                rows.append(self._view(principal, meeting, include_note=False))
+            if self._can_read_calendar_detail(principal, meeting):
+                self._settle_auto_cancel(meeting)
+                rows.append(self._calendar_row(principal, meeting))
             else:
                 rows.append({"kind": "busy", "starts_at": _iso(meeting.starts_at), "ends_at": _iso(meeting.ends_at)})
         return rows
 
-    def get(self, principal: Principal, meeting_id: UUID) -> dict[str, Any]:
-        meeting = self._repository.meeting(meeting_id)
-        if meeting is None or not self._can_read_detail(principal, meeting):
-            # Detail lookup deliberately fails closed, unlike calendar's busy-only projection.
-            raise MeetingNotFound("meeting was not found")
-        return self._view(principal, meeting, include_note=True)
+    def readable_rows(self, principal: Principal) -> list[dict[str, Any]]:
+        """이 사람이 열 수 있는 회의들 — 자료 검색이 소유자를 물을 때 읽는 축이다.
 
-    def attach_material_link(
-        self,
-        principal: Principal,
-        meeting_id: UUID,
-        expected_version: int,
-        *,
-        url: str,
-        label: str,
-    ) -> dict[str, Any]:
-        self._material_dependencies()
-        self._require(principal, MEETING_MANAGE)
-        meeting = self._owned_mutable_meeting(principal, meeting_id, expected_version)
-        clean_url = _link_url(url)
-        clean_label = label.strip()[:300]
-        if not clean_label:
-            raise MeetingError("material label is required")
-        attachment = self._attachments.add_link(
-            url=clean_url,
-            name=clean_label,
-            provenance=f"link by {principal.id} on meeting {meeting.id}",
-            uploaded_by=str(principal.id),
-        )
-        binding = self._attachments.bind(
-            attachment_id=attachment.id,
-            context_type="meeting",
-            context_id=str(meeting.id),
-            role="input",
-            bound_by=str(principal.id),
-        )
-        self._record_material_change(
-            meeting,
-            principal,
-            "meeting.material_attached",
-            f"회의 첨부 연결: {clean_label}",
-            after_ref=f"attachment:{attachment.id}",
-        )
-        return self._material_view(principal, meeting, binding, attachment)
-
-    def attach_material(
-        self,
-        principal: Principal,
-        meeting_id: UUID,
-        expected_version: int,
-        *,
-        name: str,
-        content_type: str,
-        data: bytes,
-    ) -> dict[str, Any]:
-        self._material_dependencies(require_storage=True)
-        self._require(principal, MEETING_MANAGE)
-        meeting = self._owned_mutable_meeting(principal, meeting_id, expected_version)
-        attachment = store_file(
-            self._attachments,
-            self._material_storage,
-            key_prefix=f"meetings/{meeting.id}",
-            name=name,
-            content_type=content_type,
-            data=data,
-            provenance=f"upload by {principal.id} to meeting {meeting.id}",
-            uploaded_by=str(principal.id),
-        )
-        binding = self._attachments.bind(
-            attachment_id=attachment.id,
-            context_type="meeting",
-            context_id=str(meeting.id),
-            role="input",
-            bound_by=str(principal.id),
-        )
-        extraction = self._request_extraction(attachment)
-        self._record_material_change(
-            meeting,
-            principal,
-            "meeting.material_attached",
-            f"회의 첨부 등록: {attachment.name}",
-            after_ref=f"attachment:{attachment.id}",
-        )
-        return self._material_view(principal, meeting, binding, attachment, extraction=extraction)
-
-    def detach_material(
-        self,
-        principal: Principal,
-        meeting_id: UUID,
-        binding_id: UUID,
-        expected_version: int,
-    ) -> dict[str, Any]:
-        self._material_dependencies()
-        self._require(principal, MEETING_MANAGE)
-        meeting = self._owned_mutable_meeting(principal, meeting_id, expected_version)
-        found = self._attachments.binding("meeting", str(meeting.id), binding_id)
-        if found is None or found[0].unbound_at is not None:
-            raise MeetingNotFound("meeting material was not found")
-        binding, attachment = found
-        self._attachments.unbind(binding)
-        self._record_material_change(
-            meeting,
-            principal,
-            "meeting.material_detached",
-            f"회의 첨부 해제: {attachment.name}",
-            before_ref=f"attachment:{attachment.id}",
-        )
-        return self._material_view(principal, meeting, binding, attachment)
-
-    def replace_material(
-        self,
-        principal: Principal,
-        meeting_id: UUID,
-        binding_id: UUID,
-        expected_version: int,
-        *,
-        name: str,
-        content_type: str,
-        data: bytes,
-    ) -> dict[str, Any]:
-        """Replace one binding with a new immutable file; the old attachment and bytes remain intact."""
-        self._material_dependencies(require_storage=True)
-        self._require(principal, MEETING_MANAGE)
-        meeting = self._owned_mutable_meeting(principal, meeting_id, expected_version)
-        found = self._attachments.binding("meeting", str(meeting.id), binding_id)
-        if found is None or found[0].unbound_at is not None:
-            raise MeetingNotFound("meeting material was not found")
-        old_binding, old_attachment = found
-        replacement = store_file(
-            self._attachments,
-            self._material_storage,
-            key_prefix=f"meetings/{meeting.id}",
-            name=name,
-            content_type=content_type,
-            data=data,
-            provenance=f"replacement by {principal.id} on meeting {meeting.id}",
-            uploaded_by=str(principal.id),
-        )
-        new_binding = self._attachments.bind(
-            attachment_id=replacement.id,
-            context_type="meeting",
-            context_id=str(meeting.id),
-            role=old_binding.role,
-            bound_by=str(principal.id),
-        )
-        self._attachments.unbind(old_binding)
-        extraction = self._request_extraction(replacement)
-        self._record_material_change(
-            meeting,
-            principal,
-            "meeting.material_replaced",
-            f"회의 첨부 교체: {old_attachment.name} → {replacement.name}",
-            before_ref=f"attachment:{old_attachment.id}",
-            after_ref=f"attachment:{replacement.id}",
-        )
-        return self._material_view(principal, meeting, new_binding, replacement, extraction=extraction)
-
-    def material_revisions(self, principal: Principal, meeting_id: UUID, *, include_history: bool = False) -> list[dict[str, Any]]:
-        """Current immutable note/transcript layers, after the same read policy as meeting detail."""
-        meeting = self._repository.meeting(meeting_id)
-        if meeting is None or not self._can_read_detail(principal, meeting):
-            raise MeetingNotFound("meeting was not found")
-        revisions = []
-        note = self._repository.note(meeting)
-        if note is not None:
-            note_versions = self._repository.note_versions(note)
-            current = next((row for row in note_versions if row.version == note.current_version), None)
-            visible_versions = note_versions if include_history else ([current] if current is not None else [])
-            for version in visible_versions:
-                is_current = current is not None and version.id == current.id
-                revisions.append({
-                    "kind": "meeting_note",
-                    "source_layer": "meeting_note",
-                    "revision_id": str(version.id),
-                    "revision": version.version,
-                    "is_current_revision": is_current,
-                    "note_id": str(note.id),
-                    "note_lifecycle": note.lifecycle if is_current else "draft",
-                })
-        for recording in self._repository.recordings(meeting):
-            if not recording.storage_key or not recording.sha256:
+        캘린더 투영과 다르다: 조직 범위가 아니라 **참석과 공유**가 축이고, 상태를 옮기지 않는다.
+        """
+        rows: list[dict[str, Any]] = []
+        for meeting in self._repository.meetings_visible_to(principal.organization_scope, str(principal.id)):
+            if not self._can_read_detail(principal, meeting):
                 continue
-            raw_revisions = self._repository.recorded_raw_transcripts(recording, limit=None if include_history else 1)
-            latest = raw_revisions[0] if raw_revisions else None
-            base = {"recording_id": str(recording.id), "recording_integrity_ref": f"sha256:{recording.sha256}"}
-            revisions.append({**base, "kind": "meeting_recording", "source_layer": "recording", "revision_id": str(recording.id),
-                              "revision": 1, "is_current_revision": True, "recording_state": recording.state})
-            for raw in raw_revisions:
-                if raw is None or raw.state != "completed":
-                    continue
-                current = latest is not None and raw.id == latest.id
-                revisions.append({**base, "kind": "meeting_raw", "source_layer": "raw_transcript", "revision_id": str(raw.id),
-                                  "revision": raw.revision, "is_current_revision": current})
-                refinements = self._repository.completed_refinements(raw, limit=None if include_history else 1)
-                latest_refinement = refinements[0] if refinements else None
-                for refined in refinements:
-                    if refined is not None and refined.state == "completed":
-                        revisions.append({**base, "kind": "meeting_refinement", "source_layer": "refinement", "revision_id": str(refined.id),
-                                          "revision": refined.revision, "is_current_revision": current and refined.id == latest_refinement.id})
-        return revisions
+            rows.append(
+                {
+                    "meeting_id": str(meeting.id),
+                    "title": meeting.title,
+                    "title_candidate": meeting.title_candidate,
+                    "status": meeting.status,
+                }
+            )
+        return rows
+
+    def board(self, principal: Principal, *, cursor: str | None = None, page_size: int = PAST_PAGE_SIZE) -> dict[str, Any]:
+        """회의 목록의 두 구획. 「예정」은 전부 내고 「지난」은 20건씩 잇는다 (SPEC §3.4-1).
+
+        열 수 없는 회의는 여기 아예 서지 않는다 — 목록도 없는 것처럼 응답하는 자리다 (§3.2-1).
+        """
+        upcoming: list[dict[str, Any]] = []
+        past: list[dict[str, Any]] = []
+        for meeting in self._repository.meetings_visible_to(principal.organization_scope, str(principal.id)):
+            if not self._can_read_detail(principal, meeting):
+                continue
+            self._settle_auto_cancel(meeting)
+            row = self._row(principal, meeting)
+            (past if self._is_past(meeting, row["viewer_relation"]) else upcoming).append(row)
+        upcoming.sort(key=lambda row: (row["starts_at"] or "", row["meeting_id"]))
+        past.sort(key=lambda row: (row["starts_at"] or "", row["meeting_id"]), reverse=True)
+        page, next_cursor = _page(past, cursor, page_size)
+        return {"upcoming": upcoming, "past": {"items": page, "next_cursor": next_cursor}}
+
+    def get(self, principal: Principal, meeting_id: UUID) -> dict[str, Any]:
+        meeting = self._readable(principal, meeting_id)
+        return self._detail(principal, meeting)
+
+    # ------------------------------------------------------------------ 세우기 · 고치기 · 지우기
 
     def create(
         self,
         principal: Principal,
         *,
-        organization_id: str,
-        title: str,
-        description: str | None = None,
+        title: str | None,
         starts_at: datetime,
         ends_at: datetime,
-        visibility: str,
-        attendee_ids: list[str],
-        source_action_item_id: UUID | None = None,
-        source_decision_item_id: UUID | None = None,
-        source_submission_id: UUID | None = None,
-        source_review_decision_id: UUID | None = None,
-        initial_note_body: str | None = None,
-        initial_note_source_evidence: list[dict[str, Any]] | None = None,
-        initial_note_source_status: str | None = None,
+        purpose: str | None = None,
+        location: str | None = None,
+        attendee_ids: list[str] | None = None,
+        external_attendees: list[str] | None = None,
+        agendas: list[dict[str, Any]] | None = None,
+        carried_from_meeting_id: UUID | None = None,
+        organization_id: str | None = None,
     ) -> dict[str, Any]:
+        """예약. 회의를 세우는 사람은 그 회의의 참석자이기도 하다 — 목록에서 자기 회의를 잃지 않는다."""
         self._require(principal, MEETING_MANAGE)
-        self._validate_schedule(title, starts_at, ends_at, visibility)
-        if organization_id not in principal.organization_scope:
+        organization_id = organization_id or self._repository.primary_organization(str(principal.id))
+        if organization_id is None or organization_id not in principal.organization_scope:
             raise MeetingAccessDenied("meeting organization is outside the principal scope")
-        attendees = _distinct(attendee_ids)
-        for member_id in attendees:
-            if not self._repository.is_active_member_in_organization(member_id, organization_id):
-                raise MeetingError("attendee is not an active member in the meeting organization")
+        clean_title = _optional_text(title, "meeting title", 300)
+        self._validate_schedule(starts_at, ends_at)
+        attendees = self._resolved_attendees(principal, attendee_ids or [])
+        carried = self._carried_source(principal, carried_from_meeting_id)
+        drafts = [normalize_agenda_title(row.get("title")) for row in (agendas or [])]
+        ensure_agenda_capacity(max(len(drafts) - 1, 0))
         meeting = self._repository.create(
             organization_id=organization_id,
             owner_id=str(principal.id),
-            title=title.strip(),
-            description=str(description).strip() if description else None,
+            title=clean_title,
+            purpose=_optional_text(purpose, "meeting purpose", 1000),
             starts_at=starts_at,
             ends_at=ends_at,
-            visibility=visibility,
+            location=_optional_text(location, "meeting location", 300),
+            status=MeetingStatus.SCHEDULED.value,
             attendee_ids=attendees,
-            source_action_item_id=source_action_item_id,
-            source_decision_item_id=source_decision_item_id,
-            source_submission_id=source_submission_id,
-            source_review_decision_id=source_review_decision_id,
+            external_attendees=_external_names(external_attendees or []),
+            carried_from_meeting_id=carried,
         )
-        self._repository.append_audit(meeting, str(principal.id), "meeting.created", f"회의 생성: {meeting.title}")
-        if initial_note_body is not None:
-            body = initial_note_body.strip()
-            if not body:
-                raise MeetingError("meeting note body is required")
-            self._repository.create_note(
-                meeting,
-                body,
-                str(principal.id),
-                list(initial_note_source_evidence or []),
-                initial_note_source_status,
-            )
-            self._repository.append_audit(meeting, str(principal.id), "meeting.note_created", "회의록 초안 작성")
-        return self._view(principal, meeting, include_note=True)
+        source = "carried" if carried is not None else "manual"
+        for order, agenda_title in enumerate(drafts, start=1):
+            self._create_agenda(meeting, title=agenda_title, source=source, order_index=order)
+        self._repository.append_audit(meeting, str(principal.id), "meeting.created", f"회의 생성: {meeting.title or '제목 없는 회의'}")
+        return self._detail(principal, meeting)
 
-    def update(self, principal: Principal, meeting_id: UUID, expected_version: int, changes: dict[str, Any]) -> dict[str, Any]:
+    def quick_start(self, principal: Principal) -> dict[str, Any]:
+        """바로 시작 — 값을 묻지 않고 세우고 곧장 연다. 그동안은 켠 사람만 본다 (SPEC §3.1-6 · `X-125`)."""
         self._require(principal, MEETING_MANAGE)
-        meeting = self._owned_mutable_meeting(principal, meeting_id, expected_version)
-        unknown = set(changes) - {"title", "description", "starts_at", "ends_at", "visibility"}
+        organization_id = self._repository.primary_organization(str(principal.id))
+        if organization_id is None or organization_id not in principal.organization_scope:
+            raise MeetingAccessDenied("meeting organization is outside the principal scope")
+        now = datetime.now(UTC)
+        meeting = self._repository.create(
+            organization_id=organization_id,
+            owner_id=str(principal.id),
+            title=None,
+            purpose=None,
+            starts_at=now,
+            ends_at=now + QUICK_START_LENGTH,
+            location=None,
+            status=MeetingStatus.IN_PROGRESS.value,
+            started_at=now,
+            attendee_ids=[str(principal.id)],
+            external_attendees=[],
+            carried_from_meeting_id=None,
+        )
+        # 값을 묻지 않고 세운 회의에도 **메모가 붙을 자리**는 있어야 한다 — 안건이 0개면 메모 composer 의
+        # 안건 고르기가 비어 사람이 아무것도 던지지 못한다 (코디 결정 D32). 사람이 세운 안건과 같은 자격이므로
+        # `source` 는 manual 이고, 합성의 「사람 안건 보존」 대상이 된다 — AI 가 새로 세운 안건은 그 뒤에 선다.
+        # 제목이 아니라 **빈 칸**이다 (D6) — 회의 중 배치가 실제 화제로 갈아 끼운다.
+        self._create_agenda(
+            meeting, title=QUICK_START_AGENDA_TITLE, source="manual", order_index=0, title_placeholder=True
+        )
+        self._repository.append_audit(meeting, str(principal.id), "meeting.quick_started", "회의 바로 시작")
+        return self._detail(principal, meeting)
+
+    def update_info(self, principal: Principal, meeting_id: UUID, changes: dict[str, Any]) -> dict[str, Any]:
+        """회의 정보 편집 — 제목·일시·장소·참석자. 「예정」·「완료」에서만, 참석자 전원이 (SPEC §3.1-7 · §3.3)."""
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._readable(principal, meeting_id, lock=True)
+        if not self._is_attendee(principal, meeting):
+            raise MeetingAccessDenied("only an attendee may edit this meeting's information")
+        unknown = set(changes) - {"title", "purpose", "starts_at", "ends_at", "location", "attendee_ids", "external_attendees"}
         if unknown:
             raise MeetingError(f"unsupported meeting fields: {sorted(unknown)}")
-        title = str(changes.get("title", meeting.title)).strip()
-        description = changes.get("description", meeting.description)
-        starts_at = changes.get("starts_at", meeting.starts_at)
-        ends_at = changes.get("ends_at", meeting.ends_at)
-        visibility = str(changes.get("visibility", meeting.visibility))
-        self._validate_schedule(title, starts_at, ends_at, visibility)
-        meeting.title = title
-        meeting.description = str(description).strip() if description else None
+        ensure_info_editable(meeting.status)
+        starts_at = _aware(changes.get("starts_at") or meeting.starts_at)
+        ends_at = _aware(changes.get("ends_at") or meeting.ends_at)
+        self._validate_schedule(starts_at, ends_at)
+        if "title" in changes:
+            meeting.title = _optional_text(changes["title"], "meeting title", 300)
+        if "purpose" in changes:
+            meeting.purpose = _optional_text(changes["purpose"], "meeting purpose", 1000)
+        if "location" in changes:
+            meeting.location = _optional_text(changes["location"], "meeting location", 300)
         meeting.starts_at = starts_at
         meeting.ends_at = ends_at
-        meeting.visibility = visibility
+        if "attendee_ids" in changes:
+            attendees = self._resolved_attendees(principal, list(changes["attendee_ids"] or []), owner_id=meeting.owner_id)
+            self._repository.replace_attendees(meeting, attendees, str(principal.id))
+        if "external_attendees" in changes:
+            meeting.external_attendees = _external_names(list(changes["external_attendees"] or []))
+        before = meeting.version
         meeting.version += 1
         self._repository.touch(meeting)
-        self._repository.append_audit(meeting, str(principal.id), "meeting.updated", f"회의 수정: {meeting.title}", before_ref=f"meeting:{meeting.id}@{expected_version}")
-        return self._view(principal, meeting, include_note=True)
+        self._repository.append_audit(meeting, str(principal.id), "meeting.updated", f"회의 정보 수정: {meeting.title or '제목 없는 회의'}", before_ref=f"meeting:{meeting.id}@{before}")
+        return self._detail(principal, meeting)
 
-    def share(self, principal: Principal, meeting_id: UUID, member_id: str, expected_version: int) -> dict[str, Any]:
-        self._require(principal, MEETING_SHARE)
-        meeting = self._owned_mutable_meeting(principal, meeting_id, expected_version)
-        if not self._repository.is_active_member_in_organization(member_id, meeting.organization_id):
-            raise MeetingError("share target is not an active member in the meeting organization")
-        self._repository.add_share(meeting, member_id, str(principal.id))
+    def cancel(self, principal: Principal, meeting_id: UUID) -> None:
+        """[회의 취소] — 회의 자체를 취소한다. 회의록·안건·자료가 함께 사라진다 (SPEC §3.1-9)."""
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._readable(principal, meeting_id, lock=True)
+        if not self._is_attendee(principal, meeting):
+            raise MeetingAccessDenied("only an attendee may cancel this meeting")
+        meeting.status = ensure_transition(meeting.status, MeetingStatus.CANCELLED).value
+        for agenda in self._repository.agendas(meeting):
+            self._repository.delete_agenda(agenda)
+        self._repository.delete_note_content(meeting)
         meeting.version += 1
         self._repository.touch(meeting)
-        actor_name = principal.display_name.split(" (")[0].strip()
-        self._repository.append_audit(
-            meeting,
-            str(principal.id),
-            "meeting.shared",
-            "회의 열람 공유",
-            before_ref=f"meeting:{meeting.id}@{expected_version}",
-            notify_member_id=member_id,
-            notification_summary=f"{actor_name}님이 ‘{meeting.title}’ 회의를 공유했습니다.",
-        )
-        return self._view(principal, meeting, include_note=True)
+        self._repository.append_audit(meeting, str(principal.id), "meeting.cancelled", "회의 취소")
 
-    def revoke_share(self, principal: Principal, meeting_id: UUID, member_id: str, expected_version: int) -> dict[str, Any]:
-        self._require(principal, MEETING_SHARE)
-        meeting = self._owned_mutable_meeting(principal, meeting_id, expected_version)
-        if not self._repository.revoke_share(meeting, member_id):
-            raise MeetingNotFound("meeting share was not found")
-        meeting.version += 1
+    def delete_note(self, principal: Principal, meeting_id: UUID) -> None:
+        """[회의록만 삭제] — 회의록과 자료를 지우고 회의 예약은 남긴다 (SPEC §3.1-9)."""
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._readable(principal, meeting_id, lock=True)
+        if not self._is_attendee(principal, meeting):
+            raise MeetingAccessDenied("only an attendee may delete this meeting note")
+        if parse_status(meeting.status) is not MeetingStatus.SCHEDULED:
+            raise MeetingStateConflict("a meeting note may be deleted only while the meeting is scheduled")
+        self._repository.delete_note_content(meeting)
         self._repository.touch(meeting)
-        self._repository.append_audit(meeting, str(principal.id), "meeting.share_revoked", "회의 열람 공유 회수", before_ref=f"meeting:{meeting.id}@{expected_version}")
-        return self._view(principal, meeting, include_note=True)
+        self._repository.append_audit(meeting, str(principal.id), "meeting.note_deleted", "회의록만 삭제")
 
-    def create_note(self, principal: Principal, meeting_id: UUID, body: str) -> dict[str, Any]:
-        meeting = self._note_target(principal, meeting_id)
-        if not body.strip():
-            raise MeetingError("meeting note body is required")
-        if self._repository.note(meeting) is not None:
-            raise MeetingError("meeting note already exists")
-        note = self._repository.create_note(meeting, body.strip(), str(principal.id))
-        self._repository.append_audit(meeting, str(principal.id), "meeting.note_created", "회의록 작성")
-        return self._note_view(note)
+    def start(self, principal: Principal, meeting_id: UUID) -> dict[str, Any]:
+        """[회의 시작]. 취소된 회의를 시작하면 자동 취소가 먼저 풀린다 (SPEC §5.1 취소됨 행)."""
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._readable(principal, meeting_id, lock=True)
+        if not self._is_attendee(principal, meeting):
+            raise MeetingAccessDenied("only an attendee may start this meeting")
+        if parse_status(meeting.status) is MeetingStatus.CANCELLED:
+            meeting.status = ensure_transition(meeting.status, MeetingStatus.SCHEDULED).value
+        meeting.status = ensure_transition(meeting.status, MeetingStatus.IN_PROGRESS).value
+        # 확정 발화의 `at_ms` 는 예정 시각이 아니라 이 시각을 기준으로 잰다 (SCAX-SPEC-004 §5.3 `ready`).
+        meeting.started_at = datetime.now(UTC)
+        self._repository.touch(meeting)
+        self._repository.append_audit(meeting, str(principal.id), "meeting.started", "회의 시작")
+        return self._detail(principal, meeting)
 
-    def save_note(self, principal: Principal, meeting_id: UUID, expected_version: int, body: str) -> dict[str, Any]:
-        meeting = self._note_target(principal, meeting_id)
-        if not body.strip():
-            raise MeetingError("meeting note body is required")
-        note = self._repository.note(meeting, lock=True)
-        if note is None:
-            raise MeetingNotFound("meeting note was not found")
-        if note.current_version != expected_version:
-            raise MeetingVersionConflict("meeting note version is stale")
-        if note.lifecycle == "finalized":
-            raise MeetingError("finalized meeting notes cannot be edited")
-        version = self._repository.append_note_version(note, body.strip(), str(principal.id))
-        self._repository.append_audit(meeting, str(principal.id), "meeting.note_saved", "회의록 새 버전 저장", before_ref=f"meeting_note:{note.id}@{expected_version}")
-        return self._note_view(note, current=version)
+    def end(self, principal: Principal, meeting_id: UUID) -> dict[str, Any]:
+        """[회의 종료] — 상태를 「정리 중」으로 옮기는 데까지가 이 WP다.
 
-    def finalize_note(self, principal: Principal, meeting_id: UUID, expected_version: int) -> dict[str, Any]:
-        meeting = self._note_target(principal, meeting_id)
-        note = self._repository.note(meeting, lock=True)
-        if note is None:
-            raise MeetingNotFound("meeting note was not found")
-        if note.current_version != expected_version:
-            raise MeetingVersionConflict("meeting note version is stale")
-        if note.lifecycle == "finalized":
-            return self._note_view(note)
-        self._repository.finalize_note(note, str(principal.id))
-        self._repository.append_audit(meeting, str(principal.id), "meeting.note_finalized", "회의록 확정")
-        return self._note_view(note)
-
-    def start_recording(self, principal: Principal, meeting_id: UUID, purpose: str) -> dict[str, Any]:
-        meeting = self._recording_target(principal, meeting_id)
-        if not purpose.strip():
-            raise MeetingError("recording purpose is required")
-        recording = self._repository.create_recording(meeting, str(principal.id), purpose.strip())
-        self._repository.append_audit(meeting, str(principal.id), "meeting.recording_started", "회의 녹음 시작")
-        return self._recording_view(recording)
-
-    def stop_recording(
-        self,
-        principal: Principal,
-        meeting_id: UUID,
-        recording_id: UUID,
-        expected_version: int,
-        *,
-        original_name: str,
-        content_type: str,
-        data: bytes,
-    ) -> dict[str, Any]:
-        meeting = self._recording_target(principal, meeting_id)
-        recording = self._repository.recording(meeting, recording_id, lock=True)
-        if recording is None:
-            raise MeetingNotFound("meeting recording was not found")
-        if recording.actor_id != str(principal.id):
-            raise MeetingAccessDenied("only the recording initiator may stop this recording")
-        if recording.version != expected_version:
-            raise MeetingVersionConflict("meeting recording version is stale")
-        if recording.state != "recording":
-            raise MeetingError("only a recording in progress can be stopped")
-        stored = self._recording_storage.put(
-            recording_id=str(recording.id),
-            original_name=original_name,
-            content_type=content_type,
-            data=data,
-        )
-        self._repository.complete_recording(recording, stored)
-        self._repository.append_audit(meeting, str(principal.id), "meeting.recording_uploaded", "회의 녹음 업로드 완료", before_ref=f"meeting_recording:{recording.id}@{expected_version}")
-        return self._recording_view(recording)
-
-    def issue_realtime_credential(
-        self,
-        principal: Principal,
-        meeting_id: UUID,
-        recording_id: UUID,
-        max_session_duration_seconds: int,
-    ) -> dict[str, Any]:
-        meeting = self._recording_target(principal, meeting_id)
-        recording = self._repository.recording(meeting, recording_id)
-        if recording is None or recording.state != "recording":
-            raise MeetingNotFound("active meeting recording was not found")
-        if recording.actor_id != str(principal.id):
-            raise MeetingAccessDenied("only the recording initiator may open its realtime stream")
-        credential = self._realtime_key_issuer.issue(
-            client_reference_id=recording.provider_client_reference_id,
-            max_session_duration_seconds=max_session_duration_seconds,
-        )
-        return {
-            "temporary_key": credential.temporary_key,
-            "expires_at": _iso(credential.expires_at),
-            "client_reference_id": credential.client_reference_id,
-            "websocket_url": credential.websocket_url,
-            "model": credential.model,
-            "enable_speaker_diarization": credential.enable_speaker_diarization,
-        }
-
-    def finalization_input(
-        self,
-        recording_id: UUID,
-        *,
-        lease_token: UUID,
-        stale_after_seconds: int,
-    ) -> dict[str, Any]:
-        """Worker claim: move an uploaded recording into transcribing in a short transaction."""
-        recording = self._repository.recording_by_id(recording_id, lock=True)
-        if recording is None:
-            raise MeetingNotFound("meeting recording was not found")
-        if recording.state == "transcribed":
-            return {"completed": True}
-        reclaiming_stale_attempt = False
-        if recording.state == "transcribing":
-            started = recording.finalization_started_at
-            if started is not None and started.tzinfo is None:
-                started = started.replace(tzinfo=UTC)
-            if started is not None and datetime.now(UTC) - started < timedelta(seconds=stale_after_seconds):
-                return {"contended": True}
-            reclaiming_stale_attempt = True
-        if recording.state not in {"uploaded", "transcribing"} or not recording.storage_key:
-            raise MeetingError("meeting recording cannot be finalized")
-        self._repository.mark_recording_transcribing(recording, lease_token)
-        # Only a reading of the file counts as this recording's transcript; the live stream heard the room, not the file.
-        raw = self._repository.latest_recorded_raw_transcript(recording)
-        if raw is not None:
-            refinement = self._repository.latest_refinement(raw)
-            if refinement is not None and refinement.state == "completed":
-                summary = self._repository.summary_for_refinement(refinement, "final")
-                if summary is not None and summary.state == "completed":
-                    # Crash after derived saves but before the recording state transition.
-                    self._repository.complete_recording_finalization(recording)
-                    return {"completed": True}
-                return {
-                    "stage": "summary",
-                    "refinement_revision_id": str(refinement.id),
-                    "reclaimed_stale_attempt": reclaiming_stale_attempt,
-                }
-            return {
-                "stage": "refinement",
-                "transcript_revision_id": str(raw.id),
-                "reclaimed_stale_attempt": reclaiming_stale_attempt,
-            }
-        return {
-            "stage": "transcribe",
-            "recording_id": str(recording.id),
-            "storage_key": recording.storage_key,
-            "original_name": recording.original_name or "recording",
-            "content_type": recording.content_type or "application/octet-stream",
-            "client_reference_id": recording.provider_client_reference_id,
-            "reclaimed_stale_attempt": reclaiming_stale_attempt,
-        }
-
-    def complete_finalization(self, recording_id: UUID, *, lease_token: UUID) -> None:
-        """Mark the Recording complete only after immutable raw, refinement, and final summary exist."""
-        recording = self._repository.recording_by_id(recording_id, lock=True)
-        if recording is None:
-            raise MeetingNotFound("meeting recording was not found")
-        self._require_finalization_lease(recording, lease_token)
-        raw = self._repository.latest_recorded_raw_transcript(recording)
-        refinement = raw and self._repository.latest_refinement(raw)
-        summary = refinement and self._repository.summary_for_refinement(refinement, "final")
-        if raw is None or refinement is None or refinement.state != "completed" or summary is None or summary.state != "completed":
-            raise MeetingError("meeting transcript pipeline is incomplete")
-        self._repository.complete_recording_finalization(recording)
-
-    def fail_finalization(self, recording_id: UUID, *, lease_token: UUID, code: str) -> None:
-        recording = self._repository.recording_by_id(recording_id, lock=True)
-        if recording is None:
-            raise MeetingNotFound("meeting recording was not found")
-        self._require_finalization_lease(recording, lease_token)
-        self._repository.mark_recording_failed(recording, code)
-        meeting = self._repository.meeting(recording.meeting_id)
-        if meeting is not None:
-            self._repository.append_audit(meeting, recording.actor_id, "meeting.transcription_failed", "회의 전사 실패")
-
-    def retry_finalization(self, recording_id: UUID, *, lease_token: UUID, code: str) -> None:
-        recording = self._repository.recording_by_id(recording_id, lock=True)
-        if recording is None:
-            raise MeetingNotFound("meeting recording was not found")
-        self._require_finalization_lease(recording, lease_token)
-        self._repository.mark_recording_retryable(recording, code)
-
-    def record_finalization_cleanup_warning(
-        self,
-        recording_id: UUID,
-        *,
-        lease_token: UUID,
-        warnings: tuple[str, ...],
-    ) -> None:
-        if not warnings:
-            return
-        recording = self._repository.recording_by_id(recording_id, lock=True)
-        if recording is None:
-            raise MeetingNotFound("meeting recording was not found")
-        self._require_finalization_lease(recording, lease_token)
-        meeting = self._repository.meeting(recording.meeting_id)
-        if meeting is not None:
-            self._repository.append_audit(
-                meeting,
-                recording.actor_id,
-                "meeting.transcription_provider_cleanup_warning",
-                "외부 전사 정리 확인 필요",
-            )
-
-    @staticmethod
-    def _require_finalization_lease(recording: Any, lease_token: UUID) -> None:
-        if recording.finalization_lease_token != lease_token:
-            raise MeetingVersionConflict("meeting recording finalization lease is stale")
-
-    def record_final_transcript(
-        self,
-        *,
-        recording_id: UUID,
-        provider: str,
-        provider_reference: str,
-        segments: list[FinalTranscriptSegment],
-        finalization_lease_token: UUID | None = None,
-    ) -> dict[str, Any]:
-        """Worker-only canonical write for immutable async STT output.
-
-        The provider reference is an idempotency key. A redelivery returns the
-        original revision rather than changing raw text, even if the provider
-        later supplies different bytes.
+        스트림 닫기와 합성 job 등록은 SCAX-WP-002·004가 이 표면을 소비해 얹는다.
         """
-        if not provider.strip() or not provider_reference.strip():
-            raise MeetingError("final transcript provider provenance is required")
-        if not segments:
-            raise MeetingError("final transcript requires at least one segment")
-        try:
-            for segment in segments:
-                segment.validate()
-        except ValueError as error:
-            raise MeetingError(str(error)) from error
-        recording = self._repository.recording_by_id(recording_id, lock=True)
-        if recording is None:
-            raise MeetingNotFound("meeting recording was not found")
-        if finalization_lease_token is not None and recording.finalization_lease_token != finalization_lease_token:
-            raise MeetingVersionConflict("meeting recording finalization lease is stale")
-        existing = self._repository.raw_transcript_for_provider(recording, provider_reference)
-        if existing is not None:
-            return self._raw_transcript_view(existing)
-        if recording.state not in {"uploaded", "transcribing"}:
-            raise MeetingError("only an uploaded recording can receive final transcript output")
-        transcript = self._repository.create_raw_transcript(
-            recording,
-            provider=provider.strip(),
-            provider_reference=provider_reference.strip(),
-            segments=segments,
-        )
-        self._repository.append_audit(
-            self._repository.meeting(recording.meeting_id),
-            recording.actor_id,
-            "meeting.transcript_finalized",
-            "회의 원본 STT 확정",
-            before_ref=f"meeting_recording:{recording.id}@{recording.version}",
-        )
-        return self._raw_transcript_view(transcript)
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._readable(principal, meeting_id, lock=True)
+        if not self._is_attendee(principal, meeting):
+            raise MeetingAccessDenied("only an attendee may end this meeting")
+        meeting.status = ensure_transition(meeting.status, MeetingStatus.SUMMARIZING).value
+        self._repository.touch(meeting)
+        self._repository.append_audit(meeting, str(principal.id), "meeting.ended", "회의 종료")
+        return self._detail(principal, meeting)
 
-    def refinement_input(self, transcript_id: UUID) -> dict[str, Any]:
-        """Read-only worker input. Existing completed refinement makes a retry a no-op."""
-        transcript = self._repository.raw_transcript(transcript_id)
-        if transcript is None:
-            raise MeetingNotFound("meeting raw transcript was not found")
-        existing = self._repository.latest_refinement(transcript)
-        if existing is not None and existing.state == "completed":
-            return {"completed": self._refinement_view(existing)}
-        raw_segments = self._repository.raw_transcript_segments(transcript)
-        return {
-            "transcript_revision_id": str(transcript.id),
-            "raw_segments": [
-                {
-                    "source_segment_key": segment.source_segment_key,
-                    "start_ms": segment.start_ms,
-                    "end_ms": segment.end_ms,
-                    "text": segment.text,
-                    "speaker_label": segment.speaker_label,
-                }
-                for segment in raw_segments
-            ],
-        }
+    def write_memo(self, principal: Principal, meeting_id: UUID, agenda_id: UUID, text: str) -> dict[str, Any]:
+        """메모 한 줄. **쓰는 사람은 회의를 만든 사람 하나이고 「진행 중」에만 선다** (SPEC-004 §6-1·2).
 
-    def save_refinement(
-        self,
-        transcript_id: UUID,
-        *,
-        provider_call_ref: str | None,
-        content_hash: str,
-        segments: list[RefinedTranscriptSegment],
-        finalization_lease_token: UUID | None = None,
-    ) -> dict[str, Any]:
-        transcript = self._repository.raw_transcript(transcript_id, lock=True)
-        if transcript is None:
-            raise MeetingNotFound("meeting raw transcript was not found")
-        if finalization_lease_token is not None:
-            recording = self._repository.recording_by_id(transcript.recording_id, lock=True)
-            if recording is None:
-                raise MeetingNotFound("meeting recording was not found")
-            self._require_finalization_lease(recording, finalization_lease_token)
-        existing = self._repository.latest_refinement(transcript)
-        if existing is not None and existing.state == "completed":
-            return self._refinement_view(existing)
-        self._validate_refinement_coverage(self._repository.raw_transcript_segments(transcript), segments)
-        refinement = self._repository.create_refinement(
-            transcript,
-            provider_call_ref=provider_call_ref,
-            content_hash=content_hash,
-            segments=segments,
-        )
-        return self._refinement_view(refinement)
-
-    def append_live_transcript(
-        self,
-        principal: Principal,
-        meeting_id: UUID,
-        recording_id: UUID,
-        segments: list[FinalTranscriptSegment],
-    ) -> dict[str, Any]:
-        """Write down what the live stream has settled on, while the recording is still open.
-
-        Only settled tokens reach here — a partial is still changing, so writing it would be recording a guess. The
-        file's own reading happens afterwards and is a separate, authoritative revision; this one never becomes it.
+        시각은 클라이언트가 아니라 서버가 매긴다 — 회의 시작부터의 경과 밀리초다 (§6-5).
+        이미 던진 메모는 안건을 옮기지 않는다 (§6-6) — 고치는 자리는 합성 뒤의 회의록이다.
         """
-        meeting = self._recording_target(principal, meeting_id)
-        if not segments:
-            raise MeetingError("실시간 전사에는 확정된 구간이 필요합니다")
-        try:
-            for segment in segments:
-                segment.validate()
-        except ValueError as error:
-            raise MeetingError(str(error)) from error
-        recording = self._repository.recording_by_id(recording_id, lock=True)
-        if recording is None or recording.meeting_id != meeting.id:
-            raise MeetingNotFound("meeting recording was not found")
-        if str(recording.actor_id) != str(principal.id):
-            raise MeetingAccessDenied("only the recording initiator may write its live transcript")
-        if recording.state != "recording":
-            raise MeetingError("이 녹음은 이미 끝났습니다. 실시간 전사는 녹음 중에만 이어집니다")
-        transcript = self._repository.append_live_segments(recording, provider="soniox", segments=segments)
-        stored = self._repository.raw_transcript_segments(transcript)
-        return {
-            "transcript_revision_id": str(transcript.id),
-            "source_kind": transcript.source_kind,
-            "segment_count": len(stored),
-        }
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._readable(principal, meeting_id, lock=True)
+        if str(principal.id) != meeting.owner_id:
+            raise MeetingAccessDenied("only the person who made this meeting may write its memo lines")
+        if parse_status(meeting.status) is not MeetingStatus.IN_PROGRESS:
+            raise MeetingStateConflict("memo lines are written only while the meeting is running")
+        body = str(text or "").strip()
+        if not body:
+            raise MeetingError("a memo line needs text")
+        if len(body) > 2000:
+            raise MeetingError("a memo line must be at most 2000 characters")
+        agenda = self._repository.agenda(meeting, agenda_id)
+        if agenda is None:
+            raise MeetingNotFound("meeting agenda was not found")
+        line = self._repository.append_line(
+            agenda, track="memo", text=body, author_id=str(principal.id), at_ms=self._elapsed_ms(meeting)
+        )
+        meeting.last_saved_at = datetime.now(UTC)
+        # 기록이 생기면 자동 취소가 풀린다 (SPEC-004 §3.1-8).
+        self._settle_auto_cancel(meeting)
+        self._repository.touch(meeting)
+        return self._line_view(line)
 
-    def summary_input(self, refinement_id: UUID, *, kind: str) -> dict[str, Any]:
-        if kind not in {"provisional", "final"}:
-            raise MeetingError("summary kind is invalid")
-        refinement = self._repository.refinement(refinement_id)
-        if refinement is None or refinement.state != "completed":
-            raise MeetingNotFound("completed transcript refinement was not found")
-        existing = self._repository.summary_for_refinement(refinement, kind)
-        if existing is not None and existing.state == "completed":
-            return {"completed": self._summary_view(existing)}
-        return {
-            "refinement_revision_id": str(refinement.id),
-            "kind": kind,
-            "segments": [
-                {
-                    "sequence": segment.sequence,
-                    "text": segment.text,
-                    "speaker_label": segment.speaker_label,
-                    "start_ms": segment.start_ms,
-                    "end_ms": segment.end_ms,
+    def append_line(self, principal: Principal, meeting_id: UUID, agenda_id: UUID, *, track: str, text: str) -> dict[str, Any]:
+        """트랙을 골라 줄 하나를 매단다 — 시나리오 seed 와 합성(SCAX-WP-004)이 쓰는 낮은 표면이다.
+
+        사람이 쓰는 자리는 `write_memo` 하나다: 메모 트랙은 그 게이트를 지난다.
+        """
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._readable(principal, meeting_id, lock=True)
+        if str(principal.id) != meeting.owner_id:
+            raise MeetingAccessDenied("only the person who made this meeting may write its note lines")
+        if track not in LINE_TRACKS:
+            raise MeetingError(f"line track must be one of {sorted(LINE_TRACKS)}")
+        body = str(text or "").strip()
+        if not body:
+            raise MeetingError("a note line needs text")
+        agenda = self._repository.agenda(meeting, agenda_id)
+        if agenda is None:
+            raise MeetingNotFound("meeting agenda was not found")
+        line = self._repository.append_line(agenda, track=track, text=body, author_id=str(principal.id))
+        meeting.last_saved_at = datetime.now(UTC)
+        self._settle_auto_cancel(meeting)
+        self._repository.touch(meeting)
+        return self._line_view(line)
+
+    def _elapsed_ms(self, meeting: Any) -> int:
+        """회의 시작부터의 경과 밀리초. 「진행 중」이면 `started_at` 이 있다 — 없으면 0 이다."""
+        if meeting.started_at is None:
+            return 0
+        return max(0, int((datetime.now(UTC) - _aware(meeting.started_at)).total_seconds() * 1000))
+
+    # ------------------------------------------------------------------ 종료 합성 (SCAX-WP-004)
+
+    def finalize_input(self, meeting_id: UUID) -> dict[str, Any] | None:
+        """합성 입력 — 안건 · 두 트랙의 줄 · 확정 발화(콜드 폴백용) · 세션 참조.
+
+        「정리 중」이 아니면 `None` 이다: 잡의 재배달이거나 사람이 되돌린 회의다.
+        """
+        meeting = self._repository.meeting(meeting_id)
+        if meeting is None or parse_status(meeting.status) is not MeetingStatus.SUMMARIZING:
+            return None
+        agendas = self._repository.agendas(meeting)
+        lines = self._grouped_lines(meeting)
+        blocks = self._repository.transcript_blocks(meeting)
+        session = self._repository.ai_session(meeting_id)
+        next_meeting = self._repository.next_meeting_after(meeting)
+        carried: dict[str, Any] | None = None
+        if meeting.carried_from_meeting_id is not None:
+            source = self._repository.meeting(meeting.carried_from_meeting_id)
+            if source is not None:
+                carried = {
+                    "title": source.title,
+                    "agendas": [
+                        {"title": agenda.title, "concluded": bool(agenda.concluded)}
+                        for agenda in self._repository.agendas(source)
+                    ],
                 }
-                for segment in self._repository.refinement_segments(refinement)
+        return {
+            "meeting_id": str(meeting.id),
+            "persona_id": meeting.owner_id,
+            "session_ref": None if session is None else session.provider_session_ref,
+            "meeting": {
+                "meeting_id": str(meeting.id),
+                "title": meeting.title,
+                "purpose": meeting.purpose,
+                # 기준일 — 「이번 주 금요일」을 ISO 로 환산하려면 이 회의가 언제 열렸는지가 있어야 한다.
+                "starts_on": describe_day(_aware(meeting.starts_at).date()),
+                "next_meeting_on": describe_day(
+                    None if next_meeting is None else _aware(next_meeting.starts_at).date()
+                ),
+                "carried_from": carried,
+            },
+            "agendas": [
+                {
+                    "agenda_id": str(agenda.id),
+                    "order": agenda.order_index,
+                    "title": agenda.title,
+                    "source": agenda.source,
+                    "concluded": bool(agenda.concluded),
+                }
+                for agenda in agendas
             ],
+            # 사람이 세운 안건 — **넷 모두 사람 쪽이다**. AI 가 세운 것 하나만 가른다 (D38).
+            "human_agenda_ids": [str(agenda.id) for agenda in agendas if agenda.source != AI_AGENDA_SOURCE],
+            "memo_lines": _track_view(lines, "memo"),
+            "ai_lines": _track_view(lines, "ai"),
+            "transcript": [
+                {"speakerLabel": block.speaker_label, "atMs": block.at_ms, "endMs": block.end_ms, "text": block.text}
+                for block in blocks
+            ],
+            "covered_ms": (0, max((block.end_ms for block in blocks), default=0)),
+            "next_meeting_starts_on": None if next_meeting is None else _aware(next_meeting.starts_at).date(),
         }
 
-    def save_summary(
-        self,
-        refinement_id: UUID,
-        *,
-        kind: str,
-        body: str,
-        provider_call_ref: str | None,
-        content_hash: str,
-        statements: list[SummaryStatement],
-        finalization_lease_token: UUID | None = None,
-    ) -> dict[str, Any]:
-        refinement = self._repository.refinement(refinement_id, lock=True)
-        if refinement is None or refinement.state != "completed":
-            raise MeetingNotFound("completed transcript refinement was not found")
-        if finalization_lease_token is not None:
-            raw = self._repository.raw_transcript(refinement.raw_transcript_revision_id)
-            recording = raw and self._repository.recording_by_id(raw.recording_id, lock=True)
-            if recording is None:
-                raise MeetingNotFound("meeting recording was not found")
-            self._require_finalization_lease(recording, finalization_lease_token)
-        existing = self._repository.summary_for_refinement(refinement, kind)
-        if existing is not None and existing.state == "completed":
-            return self._summary_view(existing)
-        self._validate_summary_evidence(self._repository.refinement_segments(refinement), statements)
-        summary = self._repository.create_summary(
-            refinement,
-            kind=kind,
-            body=body,
-            provider_call_ref=provider_call_ref,
-            content_hash=content_hash,
-            statements=statements,
-        )
-        return self._summary_view(summary)
+    # ------------------------------------------------------------------ 종료 뒤 재전사 (D44)
 
-    def adopt_summary(
-        self,
-        principal: Principal,
-        meeting_id: UUID,
-        summary_id: UUID,
-        expected_version: int,
-    ) -> dict[str, Any]:
-        """Human adoption appends a NoteVersion; it never mutates a suggestion or transcript."""
-        meeting = self._note_target(principal, meeting_id)
-        summary = self._repository.summary(meeting, summary_id, lock=True)
-        if summary is None or summary.state not in {"completed", "adopted"}:
-            raise MeetingNotFound("meeting summary suggestion was not found")
-        if summary.version != expected_version:
-            raise MeetingVersionConflict("meeting summary version is stale")
-        if summary.state == "adopted":
-            return {"summary": self._summary_view(summary), "note": self._note_view(self._repository.note(meeting))}
-        note = self._repository.note(meeting, lock=True)
-        if note is not None and note.lifecycle == "finalized":
-            raise MeetingError("a finalized meeting note cannot adopt a summary")
-        if note is None:
-            note = self._repository.create_note(
-                meeting,
-                summary.body or "",
-                str(principal.id),
-                source_evidence=self._summary_source_evidence(summary),
-            )
-            note_version = self._repository.note_versions(note)[-1]
-        else:
-            note_version = self._repository.append_note_version(
-                note,
-                summary.body or "",
-                str(principal.id),
-                source_evidence=self._summary_source_evidence(summary),
-            )
-        self._repository.adopt_summary(summary, note_version, str(principal.id))
-        self._repository.append_audit(
-            meeting,
-            str(principal.id),
-            "meeting.summary_adopted",
-            "AI 회의 요약 채택",
-            before_ref=f"meeting_summary:{summary.id}@{expected_version}",
-        )
-        return {"summary": self._summary_view(summary), "note": self._note_view(note, current=note_version)}
+    def recording_for_retranscribe(self, meeting_id: UUID) -> Recording | None:
+        """다시 전사할 음원. 녹음이 없으면 `None` — 건너뛰는 것이지 실패가 아니다.
 
-    def assign_speaker_identity(
-        self,
-        principal: Principal,
-        meeting_id: UUID,
-        transcript_revision_id: UUID,
-        *,
-        speaker_label: str,
-        member_id: str,
-        scope: str,
-        raw_start_source_key: str,
-        raw_end_source_key: str,
-    ) -> dict[str, Any]:
-        meeting = self._note_target(principal, meeting_id)
-        transcript = self._repository.raw_transcript(transcript_revision_id)
-        if transcript is None:
-            raise MeetingNotFound("meeting raw transcript was not found")
-        recording = self._repository.recording_by_id(transcript.recording_id)
-        if recording is None or recording.meeting_id != meeting.id:
-            raise MeetingNotFound("meeting raw transcript was not found")
-        if scope not in {"segment_range", "speaker_track"} or not speaker_label.strip():
-            raise MeetingError("speaker mapping scope and label are required")
-        if not self._repository.is_active_member_in_organization(member_id, meeting.organization_id):
-            raise MeetingError("speaker mapping member is not active in the meeting organization")
-        raw_segments = self._repository.raw_transcript_segments(transcript)
-        by_key = {segment.source_segment_key: segment for segment in raw_segments}
-        start = by_key.get(raw_start_source_key)
-        end = by_key.get(raw_end_source_key)
-        if start is None or end is None or start.sequence > end.sequence:
-            raise MeetingError("speaker mapping source range is invalid")
-        assignment = self._repository.assign_speaker_identity(
-            meeting,
-            transcript,
-            speaker_label=speaker_label.strip(),
-            member_id=member_id,
-            scope=scope,
-            raw_start_segment=start,
-            raw_end_segment=end,
-            confirmed_by=str(principal.id),
-        )
-        self._repository.append_audit(meeting, str(principal.id), "meeting.speaker_confirmed", "회의 화자 확인")
-        return self._speaker_assignment_view(assignment)
+        `base_ms` 는 회의 시작과 녹음 시작의 차이다: 파일의 0초가 회의의 0초가 아니므로 그만큼 밀어
+        새 원문의 `at_ms` 를 **회의 시작 기준으로 되돌린다** — 근거 타임칩이 그 기준에 걸려 있다.
+        """
+        meeting = self._repository.meeting(meeting_id)
+        if meeting is None:
+            return None
+        row = self._repository.recording_file(meeting_id)
+        if row is None or self._recordings is None:
+            return None
+        try:
+            data = self._recordings.get(row.storage_key)
+        except FileNotFoundError:
+            return None
+        if not data:
+            return None
+        started_at = _aware(meeting.started_at) if meeting.started_at else None
+        recorded_at = _aware(row.started_at) if row.started_at else None
+        offset = 0
+        if started_at is not None and recorded_at is not None:
+            offset = max(0, int((recorded_at - started_at).total_seconds() * 1000))
+        return Recording(data=data, filename=row.storage_key.rsplit("/", 1)[-1], base_ms=offset)
 
-    def _owned_mutable_meeting(self, principal: Principal, meeting_id: UUID, expected_version: int) -> Any:
+    def replace_transcript(self, meeting_id: UUID, blocks: list[Any]) -> int:
+        """새 원문으로 전량 교체."""
+        return self._repository.replace_transcript(meeting_id, blocks)
+
+    def set_transcript_source(self, meeting_id: UUID, source: str) -> None:
+        """이 회의록이 어느 원문으로 만들어졌는지 남긴다 — 화면이 그 한 줄을 사람에게 말한다."""
         meeting = self._repository.meeting(meeting_id, lock=True)
         if meeting is None:
             raise MeetingNotFound("meeting was not found")
-        if meeting.owner_id != str(principal.id):
-            raise MeetingAccessDenied("only the meeting owner may change this meeting")
-        if meeting.version != expected_version:
-            raise MeetingVersionConflict("meeting version is stale")
-        return meeting
-
-    def _note_target(self, principal: Principal, meeting_id: UUID) -> Any:
-        self._require(principal, MEETING_MANAGE)
-        meeting = self._repository.meeting(meeting_id)
-        if meeting is None or not self._can_read_detail(principal, meeting):
-            raise MeetingNotFound("meeting was not found")
-        if str(principal.id) != meeting.owner_id and str(principal.id) not in self._repository.attendee_ids(meeting):
-            raise MeetingAccessDenied("only an attendee may edit the meeting note")
-        return meeting
-
-    def _recording_target(self, principal: Principal, meeting_id: UUID) -> Any:
-        self._require(principal, MEETING_RECORD)
-        meeting = self._repository.meeting(meeting_id)
-        if meeting is None or not self._can_read_detail(principal, meeting):
-            raise MeetingNotFound("meeting was not found")
-        member_id = str(principal.id)
-        if member_id != meeting.owner_id and member_id not in self._repository.attendee_ids(meeting):
-            raise MeetingAccessDenied("only a meeting owner or attendee may record")
-        return meeting
-
-    def _can_read_detail(self, principal: Principal, meeting: Any) -> bool:
-        if meeting.organization_id not in principal.organization_scope or MEETING_READ not in principal.capabilities:
-            return False
-        if meeting.visibility == "public":
-            return True
-        member_id = str(principal.id)
-        return member_id == meeting.owner_id or member_id in self._repository.attendee_ids(meeting) or self._repository.is_shared_with(meeting, member_id) or MEETING_READ_PRIVATE in principal.capabilities
-
-    def _view(self, principal: Principal, meeting: Any, *, include_note: bool) -> dict[str, Any]:
-        attendee_ids = sorted(self._repository.attendee_ids(meeting))
-        result: dict[str, Any] = {
-            "kind": "meeting", "meeting_id": str(meeting.id), "organization_id": meeting.organization_id,
-            "owner_id": meeting.owner_id, "title": meeting.title, "starts_at": _iso(meeting.starts_at),
-            "description": meeting.description,
-            "ends_at": _iso(meeting.ends_at), "visibility": meeting.visibility, "lifecycle": meeting.lifecycle,
-            "version": meeting.version,
-            "attendees": [{"member_id": member_id, "display_name": self._repository.member_display_name(member_id) or member_id} for member_id in attendee_ids],
-            "lineage": {
-                "source_action_item_id": _str(getattr(meeting, "source_action_item_id", None)),
-                "source_decision_item_id": _str(getattr(meeting, "source_decision_item_id", None)),
-                "source_submission_id": _str(getattr(meeting, "source_submission_id", None)),
-                "source_review_decision_id": _str(getattr(meeting, "source_review_decision_id", None)),
-                "confirmed_by": meeting.owner_id if getattr(meeting, "source_review_decision_id", None) else None,
-            },
-        }
-        if include_note:
-            note = self._repository.note(meeting)
-            result["note"] = self._note_view(note) if note is not None else None
-            recordings, summaries = self._recording_records(meeting)
-            result["recordings"] = recordings
-            result["summaries"] = summaries
-            result["materials"] = self._material_views(principal, meeting)
-        return result
-
-    def _material_views(self, principal: Principal, meeting: Any) -> list[dict[str, Any]]:
-        if self._attachments is None:
-            return []
-        result = []
-        for binding, attachment in self._attachments.bindings_for("meeting", str(meeting.id)):
-            if binding.unbound_at is not None:
-                continue
-            result.append(self._material_view(principal, meeting, binding, attachment))
-        return result
-
-    def _material_view(
-        self,
-        principal: Principal,
-        meeting: Any,
-        binding: Any,
-        attachment: Any,
-        *,
-        extraction: Any = None,
-    ) -> dict[str, Any]:
-        name = attachment.name
-        resource = None
-        if attachment.source_kind == "resource_ref":
-            resource_type, _, resource_id = str(attachment.source_ref).partition(":")
-            title = (
-                self._references.title(principal, resource_type, resource_id)
-                if self._references is not None
-                else None
-            )
-            name = title or "볼 수 없는 자료"
-            resource = {"type": resource_type, "id": resource_id, "title": title} if title else None
-        if extraction is None and self._extractions is not None:
-            extraction = self._extractions.for_attachments([attachment.id]).get(attachment.id)
-        return {
-            "material_id": str(attachment.id),
-            "binding_id": str(binding.id),
-            "attachment_id": str(attachment.id),
-            "meeting_id": str(meeting.id),
-            "meeting_version": int(meeting.version),
-            "kind": binding.role,
-            "name": name,
-            "resource": resource,
-            "content_type": attachment.content_type,
-            "size_bytes": int(attachment.size_bytes),
-            "source_kind": attachment.source_kind,
-            "url": attachment.source_ref if attachment.source_kind == "external_link" else None,
-            "mutable_source": attachment.source_kind != "file",
-            "integrity_ref": attachment.integrity_ref,
-            "uploaded_by": attachment.uploaded_by,
-            "created_at": binding.bound_at.isoformat(),
-            "removed_at": binding.unbound_at.isoformat() if binding.unbound_at else None,
-            "extraction": extraction_view(extraction),
-        }
-
-    def _record_material_change(
-        self,
-        meeting: Any,
-        principal: Principal,
-        event_kind: str,
-        summary: str,
-        *,
-        before_ref: str | None = None,
-        after_ref: str | None = None,
-    ) -> None:
-        meeting.version += 1
+        meeting.transcript_source = source
         self._repository.touch(meeting)
-        self._repository.append_audit(
-            meeting,
-            str(principal.id),
-            event_kind,
-            summary,
-            before_ref=before_ref,
-            after_ref=after_ref,
-        )
 
-    def _request_extraction(self, attachment: Any) -> Any:
-        if self._extractions is None:
-            return None
-        extraction = self._extractions.request(attachment)
-        if extraction.status == "queued" and self._extraction_queue is not None:
-            self._extraction_queue.enqueue(MaterialExtractionJob(extraction.id, attachment.id))
-        return extraction
+    def commit_finalized(self, meeting_id: UUID, notes: Any) -> dict[str, Any]:
+        """한 트랜잭션 — 최종 줄 전량 교체 · 후보 전량 교체 · 제목 후보 · 상태 done (SPEC-004 §8-7).
 
-    def _material_dependencies(self, *, require_storage: bool = False) -> None:
-        if self._attachments is None or (require_storage and self._material_storage is None):
-            raise MeetingError("meeting materials are not available")
+        **회의록을 처음부터 새로 쓴 결과를 받는다** (사용자 결정 2026-09-11). 그래서 `agenda_id` 가 오면
+        사람 안건이든 AI 안건이든 **그 안건을 이어 쓰고**, 없거나 모르는 id 면 새로 세운다. 출처는
+        이어 쓰는 안건의 것을 그대로 두고(사람이 세운 안건은 계속 사람 것이다) 새 안건만 `ai` 다.
 
-    def _recording_records(self, meeting: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Each recording with the transcript layers built on it, and every summary those layers produced.
-
-        The layering is kept visible rather than flattened: the immutable raw revision, the versioned refinement that
-        points back at it, and the human speaker confirmations that outrank both. A caller that never asks for detail
-        never reaches any of this, because this runs only behind the same authorization as the meeting itself.
+        **지금 서 있는 안건을 지우지 않는다.** 지우면 그 안건에 매달린 사람의 메모가 함께 사라지고,
+        AI 가 이어 쓰겠다고 적어 준 id 도 허공을 가리킨다 — 비우는 것은 `final` 트랙의 줄뿐이다.
         """
-        recordings: list[dict[str, Any]] = []
-        summaries: list[dict[str, Any]] = []
-        for recording in self._repository.recordings(meeting):
-            view = self._recording_view(recording)
-            transcript = self._repository.latest_raw_transcript_for_recording(recording)
-            refinement = self._repository.latest_refinement(transcript) if transcript is not None else None
-            view["raw_transcript"] = self._raw_transcript_view(transcript) if transcript is not None else None
-            view["refinement"] = self._refinement_view(refinement) if refinement is not None else None
-            view["speaker_assignments"] = (
-                [self._speaker_assignment_view(assignment) for assignment in self._repository.speaker_assignments(transcript)]
-                if transcript is not None
-                else []
-            )
-            recordings.append(view)
-            if refinement is not None:
-                for kind in ("provisional", "final"):
-                    summary = self._repository.summary_for_refinement(refinement, kind)
-                    if summary is not None:
-                        summaries.append(self._summary_view(summary))
-        return recordings, summaries
+        meeting = self._repository.meeting(meeting_id, lock=True)
+        if meeting is None:
+            raise MeetingNotFound("meeting was not found")
+        # 회의 중 후보는 여기서 끝난다 (D46) — 최종이 같은 자리를 다시 채운다. 남겨 두면 같은 일이
+        # 후보로 두 번 서고, 그중 하나는 아무도 승격할 수 없는 읽기 전용이다.
+        self._repository.clear_provisional_todos(meeting)
+        self._repository.clear_track(meeting, "final")
+        existing = {str(agenda.id): agenda for agenda in self._repository.agendas(meeting)}
+        drafts: list[dict[str, Any]] = []
+        for output in notes.agendas:
+            agenda = existing.get(str(output.agenda_id)) if output.agenda_id else None
+            if agenda is None:
+                if self._repository.agenda_count(meeting) >= MAX_AGENDAS_PER_MEETING:
+                    continue
+                agenda = self._create_agenda(
+                    meeting,
+                    title=normalize_agenda_title(output.title),
+                    source=AI_AGENDA_SOURCE,
+                    order_index=self._repository.next_agenda_order(meeting),
+                )
+            elif output.title:
+                # 이어 쓰는 안건의 제목도 AI 가 다시 잡는다 — 묶고 나눈 결과가 제목에 나타난다.
+                agenda.title = normalize_agenda_title(output.title)
+            # 결론 표시는 AI 가 내고 회의를 만든 사람이 고친다 (SPEC-004 §4.1-3).
+            agenda.concluded = bool(output.concluded)
+            self._repository.touch_agenda(agenda)
+            for line in output.lines:
+                self._repository.append_line(
+                    agenda, track="final", text=line.text, author_id=None, evidence=list(line.evidence)
+                )
+            for order, todo in enumerate(output.todos, start=1):
+                drafts.append(
+                    {
+                        "agenda_id": agenda.id,
+                        "order_index": order,
+                        "title": todo.title,
+                        "description": todo.description,
+                        "due_candidate": todo.due_candidate,
+                        "checklist_candidate": list(todo.checklist_candidate),
+                        "reference": {
+                            "meeting_id": str(meeting.id),
+                            "agenda_id": str(agenda.id),
+                            "line_ids": list(todo.line_ids),
+                        },
+                    }
+                )
+        self._repository.replace_todos(meeting, drafts)
+        if not meeting.title and notes.title_candidate:
+            # 사람이 저장해야 제목이 된다 — 그전까지는 「제목 없는 회의」다 (SPEC-004 §3.1-6 · D14).
+            meeting.title_candidate = notes.title_candidate
+        meeting.failure_reason = None
+        meeting.last_saved_at = datetime.now(UTC)
+        meeting.status = ensure_transition(meeting.status, MeetingStatus.DONE).value
+        self._repository.touch(meeting)
+        self._repository.append_audit(meeting, meeting.owner_id, "meeting.finalized", "회의록 합성 완료")
+        return self._detail_for_owner(meeting)
 
-    def _note_view(self, note: Any, *, current: Any | None = None) -> dict[str, Any]:
-        versions = self._repository.note_versions(note)
-        latest = current or (versions[-1] if versions else None)
-        source_version = next(
-            (version for version in versions if getattr(version, "source_status", None) is not None),
-            None,
-        )
-        return {
-            "note_id": str(note.id), "lifecycle": note.lifecycle, "version": note.current_version,
-            "body": latest.body if latest is not None else "",
-            "source_status": getattr(source_version, "source_status", None) if source_version is not None else None,
-            "versions": [{"version_id": str(version.id), "version": version.version, "body": version.body, "created_by": version.created_by, "created_at": _iso(version.created_at), "source_status": getattr(version, "source_status", None), "source_evidence": list(version.source_evidence or [])} for version in versions],
-            "finalized_at": _iso(note.finalized_at), "finalized_by": note.finalized_by,
-        }
+    def fail_finalize(self, meeting_id: UUID, reason: str) -> None:
+        """합성 실패 — 받은 발화와 메모는 그대로 남고 상태만 「실패」다 (SPEC-004 §8-8)."""
+        meeting = self._repository.meeting(meeting_id, lock=True)
+        if meeting is None or parse_status(meeting.status) is not MeetingStatus.SUMMARIZING:
+            return
+        meeting.status = ensure_transition(meeting.status, MeetingStatus.FAILED).value
+        meeting.failure_reason = (reason or "")[:2000] or None
+        self._repository.touch(meeting)
+        self._repository.append_audit(meeting, meeting.owner_id, "meeting.finalize_failed", "회의록 합성 실패")
 
-    @staticmethod
-    def _recording_view(recording: Any) -> dict[str, Any]:
-        return {
-            "recording_id": str(recording.id),
-            "meeting_id": str(recording.meeting_id),
-            "purpose": recording.purpose,
-            "state": recording.state,
-            "version": recording.version,
-            "content_type": recording.content_type,
-            "original_name": recording.original_name,
-            "size_bytes": recording.size_bytes,
-            "sha256": recording.sha256,
-            "started_at": _iso(recording.started_at),
-            "ended_at": _iso(recording.ended_at),
-            # A storage key or provider reference is never a browser capability.
-            "storage_key": None,
-        }
+    def retry_finalize(self, principal: Principal, meeting_id: UUID) -> dict[str, Any]:
+        """[다시 시도] — 「실패」에서만. 합성만 다시 걸고 원문을 건드리지 않는다 (SPEC-004 §8-8)."""
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._readable(principal, meeting_id, lock=True)
+        if not self._is_attendee(principal, meeting):
+            raise MeetingAccessDenied("only an attendee may retry this meeting's merge")
+        meeting.status = ensure_transition(meeting.status, MeetingStatus.SUMMARIZING).value
+        meeting.failure_reason = None
+        self._repository.touch(meeting)
+        self._repository.append_audit(meeting, str(principal.id), "meeting.finalize_retried", "회의록 합성 다시 시도")
+        return self._detail(principal, meeting)
 
-    def _raw_transcript_view(self, transcript: Any) -> dict[str, Any]:
-        segments = self._repository.raw_transcript_segments(transcript)
-        confirmed = self._confirmed_members_for_raw_segments(transcript, segments)
+    # ------------------------------------------------------------------ 다음 할 일 · 승격
+
+    def todo_for_promotion(self, principal: Principal, meeting_id: UUID, todo_id: UUID) -> tuple[Any, Any]:
+        """승격이 딛는 후보 하나. 승격은 참석자 전원이 한다 (SPEC-004 §3.3 · §9-5)."""
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._readable(principal, meeting_id, lock=True)
+        if not self._is_attendee(principal, meeting):
+            raise MeetingAccessDenied("only an attendee may promote a follow-up candidate")
+        todo = self._repository.todo(meeting, todo_id, lock=True)
+        if todo is None:
+            raise MeetingNotFound("meeting follow-up candidate was not found")
+        _ensure_settled(todo)
+        if todo.linked_work_request_id is not None:
+            # 같은 후보를 반복 승격해도 중복 업무를 만들지 않는다 (SPEC-004 §9-10).
+            raise MeetingStateConflict("this follow-up candidate has already been requested")
+        return meeting, todo
+
+    def attendee_ids(self, meeting: Any) -> set[str]:
+        """이 회의에 담긴 사람들 — 승격의 담당 후보가 여기서 먼저 난다 (SPEC-004 §9-5)."""
+        return set(self._repository.attendee_ids(meeting)) | {meeting.owner_id}
+
+    def link_promoted_todo(self, todo: Any, *, work_request_id: UUID) -> dict[str, Any]:
+        self._repository.link_todo(todo, work_request_id=work_request_id)
+        return self._todo_view(todo)
+
+    def remove_todo(self, principal: Principal, meeting_id: UUID, todo_id: UUID) -> None:
+        """안 만들 후보는 확인 없이 지운다 — 아직 업무가 아니라 남에게 가는 것도 사라지는 내용도 없다 (§9-9)."""
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._readable(principal, meeting_id, lock=True)
+        if not self._is_attendee(principal, meeting):
+            raise MeetingAccessDenied("only an attendee may delete a follow-up candidate")
+        todo = self._repository.todo(meeting, todo_id, lock=True)
+        if todo is None:
+            raise MeetingNotFound("meeting follow-up candidate was not found")
+        _ensure_settled(todo)
+        if todo.linked_work_request_id is not None:
+            # 승격된 후보는 목록에 남는다 — 지우는 자리가 아니다 (SPEC-004 §9-6).
+            raise MeetingStateConflict("a requested follow-up candidate is not deleted")
+        self._repository.delete_todo(todo)
+
+    def export(self, principal: Principal, meeting_id: UUID) -> dict[str, Any]:
+        """내보내기가 딛는 마지막 저장분 — 회의 정보 · 안건별 줄 · 다음 할 일 (SPEC-004 §8-10).
+
+        **저장 위치·provider 참조 같은 내부 값은 담지 않는다.**
+        """
+        meeting = self._readable(principal, meeting_id)
+        detail = self._detail(principal, meeting)
         return {
-            "transcript_revision_id": str(transcript.id),
-            "recording_id": str(transcript.recording_id),
-            "revision": transcript.revision,
-            "state": transcript.state,
-            "source_kind": transcript.source_kind,
-            "provider": transcript.provider,
-            "segments": [
+            "meeting": detail["meeting"],
+            "agendas": [
                 {
-                    "segment_id": str(segment.id),
-                    "sequence": segment.sequence,
-                    "source_segment_key": segment.source_segment_key,
-                    "start_ms": segment.start_ms,
-                    "end_ms": segment.end_ms,
-                    "text": segment.text,
-                    "speaker_label": segment.speaker_label,
-                    "confirmed_member_id": confirmed.get(segment.id),
+                    **agenda,
+                    "lines": [line for line in agenda["lines"] if line["track"] == "final"] or agenda["lines"],
                 }
-                for segment in segments
+                for agenda in detail["agendas"]
             ],
         }
 
-    def _refinement_view(self, refinement: Any) -> dict[str, Any]:
-        raw_transcript = self._repository.raw_transcript(refinement.raw_transcript_revision_id)
-        raw_segments = self._repository.raw_transcript_segments(raw_transcript) if raw_transcript is not None else []
-        confirmed = self._confirmed_members_for_raw_segments(raw_transcript, raw_segments) if raw_transcript is not None else {}
+    def _detail_for_owner(self, meeting: Any) -> dict[str, Any]:
+        """잡이 만든 결과를 그대로 돌려줄 때 쓰는 투영 — 사람의 요청이 아니라 회의 자신의 시점이다."""
+        lines = self._grouped_lines(meeting)
+        todos = self._grouped_todos(meeting)
         return {
-            "refinement_revision_id": str(refinement.id),
-            "raw_transcript_revision_id": str(refinement.raw_transcript_revision_id),
-            "revision": refinement.revision,
-            "state": refinement.state,
-            "provider_call_ref": refinement.provider_call_ref,
-            "segments": [
-                {
-                    "segment_id": str(segment.id),
-                    "raw_start_segment_id": str(segment.raw_start_segment_id),
-                    "raw_end_segment_id": str(segment.raw_end_segment_id),
-                    "start_ms": segment.start_ms,
-                    "end_ms": segment.end_ms,
-                    "text": segment.text,
-                    "speaker_label": segment.speaker_label,
-                    "confirmed_member_id": self._confirmed_member_for_refined_span(segment, raw_segments, confirmed),
-                    "correction_kind": segment.correction_kind,
-                    "confidence": segment.confidence,
-                }
-                for segment in self._repository.refinement_segments(refinement)
-            ],
+            "meeting_id": str(meeting.id),
+            "status": meeting.status,
+            "title_candidate": meeting.title_candidate,
+            "agendas": [self._agenda_view(agenda, lines, todos) for agenda in self._repository.agendas(meeting)],
         }
 
-    def _confirmed_members_for_raw_segments(self, transcript: Any, segments: list[Any]) -> dict[UUID, str | None]:
-        if transcript is None:
-            return {}
-        by_id = {segment.id: segment for segment in segments}
-        result: dict[UUID, str | None] = {segment.id: segment.confirmed_member_id for segment in segments}
-        for assignment in self._repository.speaker_assignments(transcript):
-            start = by_id.get(assignment.raw_start_segment_id)
-            end = by_id.get(assignment.raw_end_segment_id)
-            if start is None or end is None:
-                continue
-            for segment in segments:
-                if assignment.scope == "speaker_track":
-                    applies = segment.speaker_label == assignment.speaker_label
-                else:
-                    applies = start.sequence <= segment.sequence <= end.sequence
-                if applies:
-                    result[segment.id] = assignment.member_id
-        return result
+    # ------------------------------------------------------------------ 공유 (SCAX-WP-005 인계 예정)
 
-    @staticmethod
-    def _confirmed_member_for_refined_span(segment: Any, raw_segments: list[Any], confirmed: dict[UUID, str | None]) -> str | None:
-        by_id = {row.id: row for row in raw_segments}
-        start = by_id.get(segment.raw_start_segment_id)
-        end = by_id.get(segment.raw_end_segment_id)
-        if start is None or end is None:
-            return segment.confirmed_member_id
-        member_ids = {
-            confirmed.get(row.id)
-            for row in raw_segments
-            if start.sequence <= row.sequence <= end.sequence
-        }
-        return next(iter(member_ids)) if len(member_ids) == 1 else None
+    def viewers(self, principal: Principal, meeting_id: UUID) -> list[dict[str, Any]]:
+        """「볼 수 있는 사람」 — 참석과 공유를 한 목록으로 낸다 (SPEC-004 §3.2-3).
 
-    def _statement_views(self, summary: Any) -> list[dict[str, Any]]:
-        """Each generated statement, and — for a followup — whether someone has already acted on it."""
-        promoted = {row.statement_index: row for row in self._repository.followup_promotions(summary)}
-        rows = []
-        for row in self._repository.summary_evidence(summary):
-            promotion = promoted.get(row.statement_index)
+        `basis` 가 둘을 가른다: 참석은 거둘 수 없고 공유만 거둔다 (§3.2-6).
+        """
+        meeting = self._readable(principal, meeting_id)
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for member_id in sorted(self._repository.attendee_ids(meeting) | {meeting.owner_id}):
+            seen.add(member_id)
             rows.append(
                 {
-                    "statement_index": row.statement_index,
-                    "kind": row.statement_kind,
-                    "text": row.statement_text,
-                    "raw_start_ms": row.raw_start_ms,
-                    "raw_end_ms": row.raw_end_ms,
-                    "promoted": promotion is not None,
-                    "promoted_task_id": str(promotion.task_id) if promotion is not None and promotion.task_id else None,
-                    "promoted_work_request_id": (
-                        str(promotion.work_request_id) if promotion is not None and promotion.work_request_id else None
-                    ),
+                    "member_id": member_id,
+                    "name": self._repository.member_display_name(member_id) or member_id,
+                    "basis": "attendee",
+                }
+            )
+        for member_id in sorted(self._repository.shared_member_ids(meeting)):
+            if member_id in seen:
+                continue
+            rows.append(
+                {
+                    "member_id": member_id,
+                    "name": self._repository.member_display_name(member_id) or member_id,
+                    "basis": "share",
                 }
             )
         return rows
 
-    def followup_candidate(self, principal: Principal, meeting_id: UUID, summary_id: UUID, statement_index: int) -> dict[str, Any]:
-        """One statement someone may act on: readable meeting, completed summary, and a followup — nothing else."""
+    def share_many(self, principal: Principal, meeting_id: UUID, member_ids: list[str]) -> list[dict[str, Any]]:
+        """여러 명에게 한 번에 연다. **이미 참석이거나 이미 열람인 사람은 조용히 건너뛴다** (SPEC-004 §3.2-3).
+
+        알림은 가지 않는다 — 목록에 담기는 것이 유일한 도달 경로다 (§2.2).
+        """
+        self._require(principal, MEETING_SHARE)
+        meeting = self._readable(principal, meeting_id, lock=True)
+        if not self._is_attendee(principal, meeting):
+            raise MeetingAccessDenied("only an attendee may share this meeting")
+        already = self._repository.attendee_ids(meeting) | {meeting.owner_id} | set(
+            self._repository.shared_member_ids(meeting)
+        )
+        opened = 0
+        for member_id in _distinct(member_ids):
+            if member_id in already:
+                continue
+            if not self._repository.is_active_member(member_id):
+                raise MeetingError("share target is not an active member")
+            self._repository.add_share(meeting, member_id, str(principal.id))
+            opened += 1
+        if opened:
+            self._repository.touch(meeting)
+            self._repository.append_audit(meeting, str(principal.id), "meeting.shared", "회의 열람 공유")
+        return self.viewers(principal, meeting_id)
+
+    def share(self, principal: Principal, meeting_id: UUID, member_id: str) -> dict[str, Any]:
+        """공유는 열람만 연다 — 수정 권한을 주지 않는다 (SPEC §3.2-2). 모달과 거두기는 SCAX-WP-005다."""
+        self._require(principal, MEETING_SHARE)
+        meeting = self._readable(principal, meeting_id, lock=True)
+        if not self._is_attendee(principal, meeting):
+            raise MeetingAccessDenied("only an attendee may share this meeting")
+        if not self._repository.is_active_member(member_id):
+            raise MeetingError("share target is not an active member")
+        self._repository.add_share(meeting, member_id, str(principal.id))
+        self._repository.touch(meeting)
+        self._repository.append_audit(meeting, str(principal.id), "meeting.shared", "회의 열람 공유")
+        return self._row(principal, meeting)
+
+    def revoke_share(self, principal: Principal, meeting_id: UUID, member_id: str) -> list[dict[str, Any]]:
+        """공유로 들어온 열람만 거둘 수 있다 — 참석을 빼는 자리는 회의 정보 편집이다 (SPEC §3.2-6)."""
+        self._require(principal, MEETING_SHARE)
+        meeting = self._readable(principal, meeting_id, lock=True)
+        if not self._is_attendee(principal, meeting):
+            raise MeetingAccessDenied("only an attendee may revoke a share on this meeting")
+        if member_id in (self._repository.attendee_ids(meeting) | {meeting.owner_id}):
+            # 공유로 들어온 열람만 거둘 수 있다 — 참석을 빼는 자리는 회의 정보 편집이다 (SPEC-004 §3.2-6).
+            raise MeetingStateConflict("attendance is not revoked here; edit the meeting information instead")
+        if not self._repository.revoke_share(meeting, member_id):
+            raise MeetingNotFound("meeting share was not found")
+        self._repository.touch(meeting)
+        self._repository.append_audit(meeting, str(principal.id), "meeting.share_revoked", "회의 열람 공유 회수")
+        # 거둔 뒤의 「볼 수 있는 사람」을 그대로 돌려준다 — 화면이 다시 물어보지 않는다.
+        return self.viewers(principal, meeting_id)
+
+    # ------------------------------------------------------------------ 안건
+
+    def add_agenda(self, principal: Principal, meeting_id: UUID, title: str) -> dict[str, Any]:
+        """안건 하나를 세운다 — **회의가 도는 동안에도** 만든 사람은 세울 수 있다 (D45)."""
+        meeting = self._agenda_target(principal, meeting_id, adding=True)
+        clean = normalize_agenda_title(title)
+        ensure_agenda_capacity(self._repository.agenda_count(meeting))
+        agenda = self._create_agenda(
+            meeting, title=clean, source="manual", order_index=self._repository.next_agenda_order(meeting)
+        )
+        self._repository.append_audit(meeting, str(principal.id), "meeting.agenda_added", f"안건 추가: {clean}")
+        return self._agenda_view(agenda, self._grouped_lines(meeting), self._grouped_todos(meeting))
+
+    def update_agenda(self, principal: Principal, meeting_id: UUID, agenda_id: UUID, changes: dict[str, Any]) -> dict[str, Any]:
+        meeting = self._agenda_target(principal, meeting_id)
+        agenda = self._repository.agenda(meeting, agenda_id, lock=True)
+        if agenda is None:
+            raise MeetingNotFound("meeting agenda was not found")
+        unknown = set(changes) - {"title", "concluded", "order", "lines", "expected_last_saved_at"}
+        if unknown:
+            raise MeetingError(f"unsupported agenda fields: {sorted(unknown)}")
+        if "expected_last_saved_at" in changes:
+            # 같은 사람이 다른 탭에서 먼저 저장했으면 덮어쓰지 않고 차이를 낸다 — **판정은 안건 단위다**
+            # (SPEC-004 §8-9 · `SCR-106-I16`). 읽은 시각과 지금 저장 시각이 다르면 그 사이에 누가 저장한 것이다.
+            expected = changes["expected_last_saved_at"]
+            if _iso(agenda.updated_at) != (expected or None):
+                raise MeetingStaleWrite(
+                    "이 안건은 그 사이에 저장됐습니다", self._agenda_view(agenda, self._grouped_lines(meeting), self._grouped_todos(meeting))
+                )
+        if "title" in changes:
+            agenda.title = normalize_agenda_title(changes["title"])
+            # 사람이 이름을 붙였다 — 더 이상 빈 칸이 아니므로 AI 가 그 뒤로 바꾸지 않는다 (D6).
+            agenda.title_placeholder = False
+        if "concluded" in changes:
+            agenda.concluded = bool(changes["concluded"])
+        if "order" in changes:
+            agenda.order_index = _positive_order(changes["order"])
+        if "lines" in changes:
+            self._rewrite_note_lines(principal, meeting, agenda, changes["lines"])
+        self._repository.touch_agenda(agenda)
+        self._repository.append_audit(meeting, str(principal.id), "meeting.agenda_updated", f"안건 수정: {agenda.title}")
+        return self._agenda_view(agenda, self._grouped_lines(meeting), self._grouped_todos(meeting))
+
+    def _rewrite_note_lines(self, principal: Principal, meeting: Any, agenda: Any, lines: object) -> None:
+        """[수정] 하나로 열리고 [저장] 하나로 닫히는 줄 단위 편집 (SPEC §4.2-6 · `X-186`).
+
+        판을 쌓지 않는다 — 이 안건의 합성 트랙 줄 목록을 통째로 덮어쓰고 마지막 저장분이 그 회의록이다.
+        빈 줄은 저장할 때 버린다.
+        """
+        if parse_status(meeting.status) not in _NOTE_EDITABLE:
+            raise MeetingStateConflict("meeting note lines may be edited only after the meeting is done or failed")
+        if not isinstance(lines, (list, tuple)):
+            raise MeetingError("agenda lines must be a list of sentences")
+        texts = []
+        for value in lines:
+            text = str(value or "").strip()
+            if not text:
+                continue
+            if len(text) > 2000:
+                raise MeetingError("a note line must be at most 2000 characters")
+            texts.append(text)
+        self._repository.replace_lines(agenda, track="final", texts=texts, author_id=str(principal.id))
+        meeting.last_saved_at = datetime.now(UTC)
+        # 회의록을 쓰면 자동 취소가 풀린다 — 마지막 줄을 지우면 다시 걸린다 (SPEC §3.1-8).
+        self._settle_auto_cancel(meeting)
+        self._repository.touch(meeting)
+
+    def remove_agenda(self, principal: Principal, meeting_id: UUID, agenda_id: UUID) -> None:
+        meeting = self._agenda_target(principal, meeting_id)
+        agenda = self._repository.agenda(meeting, agenda_id, lock=True)
+        if agenda is None:
+            raise MeetingNotFound("meeting agenda was not found")
+        title = agenda.title
+        self._repository.delete_agenda(agenda)
+        self._repository.append_audit(meeting, str(principal.id), "meeting.agenda_removed", f"안건 삭제: {title}")
+
+    # ------------------------------------------------------------------ 스트림 적재 (SCAX-WP-002)
+
+    def stream_admission(self, principal: Principal, meeting_id: UUID) -> Any | None:
+        """스트림이 묻는 것 — 이 사람이 이 회의를 열 수 있는가, 그리고 언제 시작했는가.
+
+        열 수 없으면 `None` 이다. 없는 회의와 참석 아닌 회의를 가르지 않는다 — 존재를 알리지 않는다 (§3.2-1).
+        """
         meeting = self._repository.meeting(meeting_id)
         if meeting is None or not self._can_read_detail(principal, meeting):
-            raise MeetingNotFound("meeting was not found")
-        summary = self._repository.summary(meeting, summary_id)
-        if summary is None or summary.state not in {"completed", "adopted"}:
-            raise MeetingNotFound("meeting summary suggestion was not found")
-        statement = next(
-            (row for row in self._repository.summary_evidence(summary) if row.statement_index == statement_index), None
+            return None
+        return MeetingAdmission(
+            meeting_id=str(meeting.id),
+            status=meeting.status,
+            started_at=_aware(meeting.started_at or meeting.starts_at),
+            # 업스트림 자리는 회의를 만든 사람의 것이다 (코디 결정 D27). 구독은 참석·공유 그대로다.
+            is_owner=str(principal.id) == meeting.owner_id,
         )
-        if statement is None:
-            raise MeetingNotFound("summary statement was not found")
-        if statement.statement_kind != "followup":
-            raise MeetingError("후속 업무 후보만 업무로 만들 수 있습니다")
-        existing = next(
-            (row for row in self._repository.followup_promotions(summary) if row.statement_index == statement_index), None
-        )
-        return {
-            "meeting": meeting,
-            "summary": summary,
-            "statement": statement,
-            "promotion": existing,
-        }
 
-    def record_followup_promotion(
-        self,
-        principal: Principal,
-        candidate: dict[str, Any],
-        *,
-        task_id: Any = None,
-        work_request_id: Any = None,
-    ) -> Any:
-        promotion = self._repository.record_followup_promotion(
-            candidate["meeting"],
-            candidate["summary"],
-            int(candidate["statement"].statement_index),
-            task_id=task_id,
-            work_request_id=work_request_id,
-            promoted_by=str(principal.id),
-        )
-        self._repository.append_audit(
-            candidate["meeting"],
-            str(principal.id),
-            "meeting.followup_promoted",
-            f"후속 업무 생성: {candidate['statement'].statement_text[:80]}",
-        )
-        return promotion
+    def append_transcript_block(
+        self, meeting_id: UUID, *, speaker_label: str, at_ms: int, end_ms: int, text: str
+    ) -> str:
+        """확정 발화 블록 한 행. 잠정은 여기 오지 않는다 (§10-11).
 
-    def _summary_view(self, summary: Any) -> dict[str, Any]:
+        열람 판정은 연결이 설 때 이미 끝났다 — 이 자리는 그 세션이 부르는 적재 하나다.
+        """
+        block = self._repository.append_transcript_block(
+            meeting_id, speaker_label=speaker_label, at_ms=at_ms, end_ms=end_ms, text=text
+        )
+        return str(block.id)
+
+    def transcript_ready_state(self, meeting_id: UUID) -> tuple[int, int]:
+        """`ready` 가 싣는 두 값 — 지금까지 성공한 배치의 최대 회차와 화자 수.
+
+        배치는 SCAX-WP-003 이 만든다. 그때까지 회차는 0 이다.
+        """
+        return 0, self._repository.transcript_speaker_count(meeting_id)
+
+    def note_recording_file(self, meeting_id: UUID, storage_key: str, *, content_type: str) -> None:
+        """오디오 원본의 자리를 한 번 기록한다. 이 값은 어느 응답에도 나가지 않는다 (§5.5-4)."""
+        self._repository.record_recording_file(meeting_id, storage_key=storage_key, content_type=content_type)
+
+    def transcript(self, principal: Principal, meeting_id: UUID) -> dict[str, Any]:
+        """「스크립트」 탭 — 확정 발화 원문과 회의 중 메모를 함께 낸다 (SPEC-004 §5.4-7·8).
+
+        열람 축은 상세와 같다: 참석 또는 공유. 아직 아무 말도 없는 회의는 빈 목록이지 없는 회의가 아니다.
+        """
+        meeting = self._readable(principal, meeting_id)
         return {
-            "summary_id": str(summary.id),
-            "meeting_id": str(summary.meeting_id),
-            "raw_transcript_revision_id": str(summary.raw_transcript_revision_id),
-            "refinement_revision_id": str(summary.refinement_revision_id),
-            "kind": summary.kind,
-            "state": summary.state,
-            "version": summary.version,
-            "body": summary.body,
-            "provider_call_ref": summary.provider_call_ref,
-            "statements": self._statement_views(summary),
-            "evidence": [
+            "items": [
                 {
-                    "statement_index": row.statement_index,
-                    "kind": row.statement_kind,
-                    "text": row.statement_text,
-                    "refinement_start_segment_id": str(row.refinement_start_segment_id),
-                    "refinement_end_segment_id": str(row.refinement_end_segment_id),
-                    "raw_start_segment_id": str(row.raw_start_segment_id),
-                    "raw_end_segment_id": str(row.raw_end_segment_id),
-                    "raw_start_ms": row.raw_start_ms,
-                    "raw_end_ms": row.raw_end_ms,
+                    "id": str(block.id),
+                    "speakerLabel": block.speaker_label,
+                    "atMs": block.at_ms,
+                    "endMs": block.end_ms,
+                    "content": block.text,
                 }
-                for row in self._repository.summary_evidence(summary)
+                for block in self._repository.transcript_blocks(meeting)
+            ],
+            "memos": [
+                {
+                    "line_id": str(line.id),
+                    "agenda_id": str(line.agenda_id),
+                    "text": line.text,
+                    "author": line.author_id,
+                    "atMs": line.at_ms,
+                }
+                for line in self._repository.memo_lines(meeting)
             ],
         }
 
-    def _summary_source_evidence(self, summary: Any) -> list[dict[str, Any]]:
-        return [
-            {
-                "summary_id": str(summary.id),
-                "statement_index": row.statement_index,
-                "raw_start_segment_id": str(row.raw_start_segment_id),
-                "raw_end_segment_id": str(row.raw_end_segment_id),
-                "raw_start_ms": row.raw_start_ms,
-                "raw_end_ms": row.raw_end_ms,
-            }
-            for row in self._repository.summary_evidence(summary)
-        ]
+    # ------------------------------------------------------------------ AI 배치 (SCAX-WP-003)
 
-    @staticmethod
-    def _speaker_assignment_view(assignment: Any) -> dict[str, Any]:
+    def warm_start_context(self, meeting_id: UUID) -> dict[str, Any] | None:
+        """웜스타트 첫 turn 이 실을 맥락 — 회의 정보 · 안건 · 참석자 수 · 이어진 이전 회의 (SPEC §7.1).
+
+        **참석자 실명을 싣지 않는다** — 화자는 익명이고 프롬프트가 사람 이름을 들고 다닐 이유가 없다.
+        도구는 회의를 만든 사람으로 선다 (§13 `OQ-315` 잠정값).
+        """
+        meeting = self._repository.meeting(meeting_id)
+        if meeting is None:
+            return None
+        carried: dict[str, Any] | None = None
+        if meeting.carried_from_meeting_id is not None:
+            source = self._repository.meeting(meeting.carried_from_meeting_id)
+            if source is not None:
+                carried = {
+                    "meeting_id": str(source.id),
+                    "title": source.title,
+                    "agendas": [
+                        {"title": agenda.title, "concluded": bool(agenda.concluded)}
+                        for agenda in self._repository.agendas(source)
+                    ],
+                }
         return {
-            "speaker_assignment_id": str(assignment.id),
-            "transcript_revision_id": str(assignment.transcript_revision_id),
-            "speaker_label": assignment.speaker_label,
-            "member_id": assignment.member_id,
-            "scope": assignment.scope,
-            "raw_start_segment_id": str(assignment.raw_start_segment_id),
-            "raw_end_segment_id": str(assignment.raw_end_segment_id),
-            "source_audio_start_ms": assignment.source_audio_start_ms,
-            "source_audio_end_ms": assignment.source_audio_end_ms,
-            "source": assignment.source,
-            "state": assignment.state,
+            "persona_id": meeting.owner_id,
+            "meeting_id": str(meeting.id),
+            "title": meeting.title,
+            "purpose": meeting.purpose,
+            "location": meeting.location,
+            "attendee_count": len(self._repository.attendee_ids(meeting)),
+            "agendas": [
+                {"agenda_id": str(agenda.id), "title": agenda.title, "source": agenda.source}
+                for agenda in self._repository.agendas(meeting)
+            ],
+            "carried_from": carried,
         }
 
-    @staticmethod
-    def _validate_refinement_coverage(raw_segments: list[Any], refined_segments: list[RefinedTranscriptSegment]) -> None:
-        if not raw_segments or not refined_segments:
-            raise MeetingError("refinement must cover a non-empty raw transcript")
-        positions = {row.source_segment_key: index for index, row in enumerate(raw_segments)}
-        raw_by_key = {row.source_segment_key: row for row in raw_segments}
-        coverage: set[int] = set()
-        previous_start = -1
-        for segment in refined_segments:
-            if segment.raw_start_source_key not in positions or segment.raw_end_source_key not in positions:
-                raise MeetingError("refinement references an unknown raw source segment")
-            start = positions[segment.raw_start_source_key]
-            end = positions[segment.raw_end_source_key]
-            if start > end or start < previous_start:
-                raise MeetingError("refinement source ranges are not ordered")
-            if segment.start_ms < raw_by_key[segment.raw_start_source_key].start_ms or segment.end_ms > raw_by_key[segment.raw_end_source_key].end_ms:
-                raise MeetingError("refinement timestamp is outside its raw source range")
-            coverage.update(range(start, end + 1))
-            previous_start = start
-        if coverage != set(range(len(raw_segments))):
-            raise MeetingError("refinement must preserve coverage of every raw source segment")
+    def record_ai_session(self, meeting_id: UUID, *, session_ref: str, persona_id: str) -> None:
+        self._repository.record_ai_session(meeting_id, provider_session_ref=session_ref, persona_id=persona_id)
+
+    def ai_session_ref(self, meeting_id: UUID) -> str | None:
+        """SCAX-WP-004 의 종료 합성이 **같은 세션**을 이어 쓸 때 읽는 자리다 (SPEC §8-3)."""
+        row = self._repository.ai_session(meeting_id)
+        return None if row is None else row.provider_session_ref
+
+    def pending_batch_chars(self, meeting_id: UUID) -> int:
+        return self._repository.pending_transcript_chars(
+            meeting_id, self._repository.succeeded_batch_cursor(meeting_id)
+        )
+
+    def batch_input(self, meeting_id: UUID) -> dict[str, Any] | None:
+        """제출할 것이 있으면 증분, 없으면 `None`.
+
+        세션이 없으면 제출하지 않는다 — 트리거만 평가하고 구간은 미처리로 남는다 (SPEC §7.1 세션 행).
+        「진행 중」이 아니면 새 배치가 없다 — 종료 뒤 합성은 SCAX-WP-004 의 다른 진입점이다.
+        """
+        meeting = self._repository.meeting(meeting_id)
+        if meeting is None or parse_status(meeting.status) is not MeetingStatus.IN_PROGRESS:
+            return None
+        session = self._repository.ai_session(meeting_id)
+        if session is None:
+            return None
+        cursor = self._repository.succeeded_batch_cursor(meeting_id)
+        blocks = self._repository.transcript_blocks_after(meeting_id, cursor)
+        if not blocks:
+            return None
+        memos = [
+            line
+            for line in self._repository.memo_lines(meeting)
+            if line.at_ms is not None and line.at_ms >= blocks[0].at_ms
+        ]
+        return {
+            "seq": self._repository.next_batch_seq(meeting_id),
+            "session_ref": session.provider_session_ref,
+            "persona_id": session.persona_id,
+            "blocks": [
+                {
+                    "speakerLabel": block.speaker_label,
+                    "atMs": block.at_ms,
+                    "endMs": block.end_ms,
+                    "text": block.text,
+                }
+                for block in blocks
+            ],
+            "memos": [
+                {"agenda_id": str(line.agenda_id), "text": line.text, "author": line.author_id}
+                for line in memos
+            ],
+            "from_seq": blocks[0].seq,
+            "to_seq": blocks[-1].seq,
+            # 근거 검증 구간은 **회의 전체**다 — 시작부터 이번 배치 끝까지 (사용자 결정 D5, 2026-09-11).
+            #
+            # 배치는 매번 AI 트랙 전체를 다시 쓴다. 검증 구간을 「이번 배치의 미처리 발화」로 두면 앞
+            # 구간을 근거로 단 줄이 매 회차 근거를 떼여, 화면에는 **최신 구간 줄의 시간 칩만** 남는다.
+            # 실물 2회차에서 그 일이 그대로 났다. 최종 합성의 `(0, 마지막 end_ms)` 와 같은 결로 맞춘다.
+            "covered_ms": (0, max(block.end_ms for block in blocks)),
+        }
+
+    def record_batch_run(
+        self, meeting_id: UUID, *, seq: int, status: str, cause: str, from_seq: int, to_seq: int, reason: str | None
+    ) -> None:
+        self._repository.record_batch_run(
+            meeting_id, seq=seq, status=status, trigger_cause=cause, from_seq=from_seq, to_seq=to_seq, reason=reason
+        )
+
+    def replace_ai_track(self, meeting_id: UUID, agendas: list[Any]) -> list[dict[str, Any]]:
+        """검증 통과분으로 **AI 트랙 전량 교체** (SPEC §7.1 적재 · §7.3 경계).
+
+        사람이 만든 안건은 제목도 출처도 건드리지 않는다 — AI 는 그 안건에 자기 줄만 매단다.
+        AI 가 세운 안건은 배치마다 새로 서므로 이전 것을 지우고 다시 만든다.
+        """
+        meeting = self._repository.meeting(meeting_id, lock=True)
+        if meeting is None:
+            raise MeetingNotFound("meeting was not found")
+        self._repository.replace_track(meeting, "ai")
+        existing = {str(agenda.id): agenda for agenda in self._repository.agendas(meeting)}
+        drafts: list[dict[str, Any]] = []
+        for output in agendas:
+            agenda = existing.get(str(output.agenda_id)) if output.agenda_id else None
+            if agenda is None:
+                # AI 가 세운 안건 — 출처는 「AI 정리」이고 사람 안건 뒤에 선다 (SPEC §4.1-2·6).
+                title = normalize_agenda_title(output.title)
+                if self._repository.agenda_count(meeting) >= MAX_AGENDAS_PER_MEETING:
+                    continue
+                agenda = self._create_agenda(
+                    meeting, title=title, source="ai", order_index=self._repository.next_agenda_order(meeting)
+                )
+            if getattr(agenda, "title_placeholder", False):
+                # 자리표시 제목은 AI 가 채운다 (D6). **출처는 사람 것 그대로** 둔다 — 그 안건을 세운 것은
+                # 사람이고 AI 는 이름만 붙였다. 매 배치 최신화하되, 사람이 한 번 고치면 그 뒤로는 불변이다.
+                filled = normalize_agenda_title(output.title)
+                if filled and filled != agenda.title:
+                    agenda.title = filled
+                    self._repository.touch_agenda(agenda)
+            for line in output.lines:
+                self._repository.append_line(
+                    agenda, track="ai", text=line.text, author_id=None, evidence=list(line.evidence)
+                )
+            for order, todo in enumerate(getattr(output, "todos", None) or [], start=1):
+                # 회의 **중** 후보다 (D46) — 읽기 전용이고 다음 배치가 통째로 갈아 끼운다.
+                # 담당자는 없고, 회의 중이라 체크리스트는 비어 있을 수 있다.
+                drafts.append(
+                    {
+                        "agenda_id": agenda.id,
+                        "order_index": order,
+                        "title": todo.title,
+                        "description": todo.description,
+                        "due_candidate": todo.due_candidate,
+                        "checklist_candidate": list(todo.checklist_candidate),
+                        "reference": {
+                            "meeting_id": str(meeting.id),
+                            "agenda_id": str(agenda.id),
+                            "line_ids": list(todo.line_ids),
+                        },
+                    }
+                )
+        self._repository.replace_provisional_todos(meeting, drafts)
+        lines = self._grouped_lines(meeting)
+        todos = self._grouped_todos(meeting)
+        return [self._agenda_view(agenda, lines, todos) for agenda in self._repository.agendas(meeting)]
+
+    def unprocessed_transcript_cursor(self, meeting_id: UUID, *, after_seq: int = 0) -> list[dict[str, Any]]:
+        """아직 배치가 읽지 않은 확정 블록들. SCAX-WP-003 의 트리거가 여기 걸린다 — 지금은 호출자가 없다."""
+        return [
+            {
+                "id": str(block.id),
+                "seq": block.seq,
+                "speaker_label": block.speaker_label,
+                "at_ms": block.at_ms,
+                "end_ms": block.end_ms,
+                "content": block.text,
+            }
+            for block in self._repository.transcript_blocks_after(meeting_id, after_seq)
+        ]
+
+    def _readable(self, principal: Principal, meeting_id: UUID, *, lock: bool = False) -> Any:
+        """열람 판정이 실패하면 없는 것처럼 응답한다 — 존재를 알리지 않는다 (SPEC §3.2-1 · §10-1)."""
+        meeting = self._repository.meeting(meeting_id, lock=lock)
+        if meeting is None or not self._can_read_detail(principal, meeting):
+            raise MeetingNotFound("meeting was not found")
+        self._settle_auto_cancel(meeting)
+        return meeting
+
+    def _agenda_target(self, principal: Principal, meeting_id: UUID, *, adding: bool = False) -> Any:
+        """안건을 더하고 지우고 결론 표시를 고치는 사람은 회의를 만든 사람이다 (SPEC §3.3).
+
+        회의가 도는 동안 **이미 선 안건**은 사람이 손대지 않는다 — 그것을 딛고 있는 메모와 AI 줄이
+        발밑에서 바뀐다 (SPEC §4.1-6). 다만 **새로 세우는 것은 다르다**: 말이 새 주제로 넘어가는 순간이
+        곧 안건이 필요한 순간이고, 새 안건은 아직 아무것도 딛고 있지 않다 (D45). `adding` 이 그 자리다.
+        """
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._readable(principal, meeting_id, lock=True)
+        if str(principal.id) != meeting.owner_id:
+            raise MeetingAccessDenied("only the person who made this meeting may change its agendas")
+        allowed = _AGENDA_ADDABLE if adding else _AGENDA_EDITABLE
+        if parse_status(meeting.status) not in allowed:
+            raise MeetingStateConflict("agendas are not edited by hand while the meeting is running or summarizing")
+        return meeting
+
+    def _can_read_detail(self, principal: Principal, meeting: Any) -> bool:
+        """회의를 여는 사람은 그 회의의 참석자다. 공유가 유일한 예외다 (SPEC §3.2-1·2 · §10-1).
+
+        축은 둘뿐이다 — 조직 범위로 남의 회의를 여는 셋째 축은 두지 않는다. 대표라도 참석하거나 공유받지 않은
+        회의는 없는 것처럼 응답한다. 캘린더의 시간 덩어리는 회의를 여는 것이 아니므로 `list`가 따로 판정한다.
+        """
+        if MEETING_READ not in principal.capabilities:
+            return False
+        member_id = str(principal.id)
+        if member_id == meeting.owner_id or member_id in self._repository.attendee_ids(meeting):
+            return True
+        return self._repository.is_shared_with(meeting, member_id)
+
+    def _can_read_calendar_detail(self, principal: Principal, meeting: Any) -> bool:
+        """캘린더가 시간 덩어리 대신 제목까지 낼 수 있는가.
+
+        전체 조회 권한(`meeting.read.private`)이 조직 범위 안에서만 닿는 자리는 여기 하나로 남긴다 — 회의 화면의
+        열람 경계(§3.2)와 캘린더의 투영은 다른 물음이다.
+        """
+        if self._can_read_detail(principal, meeting):
+            return True
+        return (
+            MEETING_READ in principal.capabilities
+            and MEETING_READ_PRIVATE in principal.capabilities
+            and meeting.organization_id in principal.organization_scope
+        )
+
+    def _is_attendee(self, principal: Principal, meeting: Any) -> bool:
+        member_id = str(principal.id)
+        return member_id == meeting.owner_id or member_id in self._repository.attendee_ids(meeting)
+
+    def _viewer_relation(self, principal: Principal, meeting: Any) -> str:
+        return "attendee" if self._is_attendee(principal, meeting) else "shared"
+
+    def _is_past(self, meeting: Any, viewer_relation: str) -> bool:
+        """공유받은 회의는 「지난」에 담긴다 — 캘린더에 서지 않는다 (SPEC §3.2-5)."""
+        if viewer_relation == "shared":
+            return True
+        if parse_status(meeting.status) in _PAST_STATUSES:
+            return True
+        return _aware(meeting.ends_at) <= datetime.now(UTC)
+
+    def _settle_auto_cancel(self, meeting: Any) -> None:
+        """자동 취소는 스케줄러 없이 조회 시점에 판정한다 — 판정과 해제가 같은 자리에 있다 (WP-001 Open Issue).
+
+        종료 시각까지 줄이 하나도 없이 지난 「예정」은 「취소됨」이 되고, 줄이 생기면 도로 「예정」이 된다.
+        """
+        status = parse_status(meeting.status)
+        if status not in {MeetingStatus.SCHEDULED, MeetingStatus.CANCELLED}:
+            return
+        has_record = self._repository.line_count(meeting) > 0
+        now = datetime.now(UTC)
+        if is_auto_cancellable(
+            status, _aware(meeting.ends_at), now, has_record=has_record, created_at=_aware(meeting.created_at)
+        ):
+            meeting.status = MeetingStatus.CANCELLED.value
+            self._repository.touch(meeting)
+        elif is_auto_cancel_released(status, has_record=has_record):
+            meeting.status = MeetingStatus.SCHEDULED.value
+            self._repository.touch(meeting)
+
+    def _create_agenda(
+        self, meeting: Any, *, title: str, source: str, order_index: int, title_placeholder: bool = False
+    ) -> Any:
+        """안건 하나를 세운다. **출처는 여기서 한 번 검사한다** — 아는 다섯 말고는 저장되지 않는다 (D38).
+
+        지금 이 자리를 지나는 출처는 `manual`·`carried`·`ai` 셋뿐이다. `set`·`derived` 는 값만 열려 있고
+        만드는 경로가 아직 없다 — 그 경로가 생기면 여기를 지나므로 검사를 새로 세울 일이 없다.
+        """
+        return self._repository.create_agenda(
+            meeting, title=title, source=ensure_agenda_source(source), order_index=order_index,
+            title_placeholder=title_placeholder,
+        )
+
+    def _resolved_attendees(self, principal: Principal, attendee_ids: list[str], *, owner_id: str | None = None) -> list[str]:
+        """회의를 만든 사람은 언제나 참석자다 — 자기 회의를 목록에서 잃지 않는다."""
+        wanted = _distinct([*(attendee_ids or []), owner_id or str(principal.id)])
+        for member_id in wanted:
+            if not self._repository.is_active_member(member_id):
+                raise MeetingError("attendee is not an active member")
+        return wanted
+
+    def _carried_source(self, principal: Principal, carried_from_meeting_id: UUID | None) -> UUID | None:
+        if carried_from_meeting_id is None:
+            return None
+        source = self._repository.meeting(carried_from_meeting_id)
+        if source is None or not self._can_read_detail(principal, source):
+            raise MeetingNotFound("the meeting this one continues was not found")
+        return source.id
+
+    # ------------------------------------------------------------------ 응답 만들기
+
+    def _row(self, principal: Principal, meeting: Any) -> dict[str, Any]:
+        return {
+            "meeting_id": str(meeting.id),
+            "title": meeting.title,
+            "starts_at": _iso(meeting.starts_at),
+            "ends_at": _iso(meeting.ends_at),
+            "location": meeting.location,
+            "status": meeting.status,
+            "viewer_relation": self._viewer_relation(principal, meeting),
+            "created_by": meeting.owner_id,
+            "attendee_count": len(self._repository.attendee_ids(meeting)),
+        }
+
+    def _calendar_row(self, principal: Principal, meeting: Any) -> dict[str, Any]:
+        """캘린더·관계 그래프·자료 검색이 읽는 행. 화면 계약(`MeetingRow`)보다 이름이 넓다."""
+        attendee_ids = sorted(self._repository.attendee_ids(meeting))
+        return {
+            **self._row(principal, meeting),
+            "kind": "meeting",
+            "owner_id": meeting.owner_id,
+            "attendees": [
+                {"member_id": member_id, "display_name": self._repository.member_display_name(member_id) or member_id}
+                for member_id in attendee_ids
+            ],
+        }
+
+    def _detail(self, principal: Principal, meeting: Any) -> dict[str, Any]:
+        attendee_ids = sorted(self._repository.attendee_ids(meeting))
+        relation = self._viewer_relation(principal, meeting)
+        status = parse_status(meeting.status)
+        lines = self._grouped_lines(meeting)
+        todos = self._grouped_todos(meeting)
+        return {
+            "meeting": {
+                "meeting_id": str(meeting.id),
+                "title": meeting.title,
+                "purpose": meeting.purpose,
+                "starts_at": _iso(meeting.starts_at),
+                "ends_at": _iso(meeting.ends_at),
+                "location": meeting.location,
+                "status": meeting.status,
+                "created_by": meeting.owner_id,
+                "attendees": [
+                    {"member_id": member_id, "display_name": self._repository.member_display_name(member_id) or member_id}
+                    for member_id in attendee_ids
+                ],
+                "external_attendees": list(meeting.external_attendees or []),
+                "viewer_relation": relation,
+                # 회의 정보는 참석자 전원이, 회의록 줄과 안건은 만든 사람 하나가 고친다 (SPEC §3.3).
+                # 줄과 안건은 열리는 상태가 다르다 — 「예정」은 안건만, 「완료」·「실패」는 둘 다 연다.
+                "can_edit_info": relation == "attendee" and status in _INFO_EDITABLE,
+                "can_edit_note": str(principal.id) == meeting.owner_id and status in _NOTE_EDITABLE,
+                "can_edit_agendas": str(principal.id) == meeting.owner_id and status in _AGENDA_EDITABLE,
+                # 「+ 새 안건」이 서는 자리 — 편집보다 한 자리 넓다(진행 중에도 세운다, D45).
+                "can_add_agenda": str(principal.id) == meeting.owner_id and status in _AGENDA_ADDABLE,
+                # 메모는 회의를 만든 사람이 「진행 중」에만 쓴다 (SPEC-004 §6-1·2). 화면이 이 값으로 입력 칸을 세운다.
+                "can_write_memo": str(principal.id) == meeting.owner_id and status is MeetingStatus.IN_PROGRESS,
+                "last_saved_at": _iso(meeting.last_saved_at),
+                # `at_ms` 의 기준점. 예정 시각이 아니라 「진행 중」으로 옮긴 실제 시각이다.
+                "started_at": _iso(meeting.started_at),
+                "carried_from_meeting_id": str(meeting.carried_from_meeting_id) if meeting.carried_from_meeting_id else None,
+                # 제목이 비었을 때 합성이 낸 후보. 사람이 머리 편집에서 저장해야 제목이 된다.
+                "title_candidate": meeting.title_candidate,
+                "failure_reason": meeting.failure_reason,
+                # 사옥 회의실 예약의 상태 (SCAX-WP-007). 회의실을 안 고른 회의는 `null` 이다 —
+                # **상태·회의실 이름·사유 셋만 나간다**: 외부 식별자도 예약 계정도 화면이 알 일이 아니다.
+                "room_reservation": self._reservation_view(meeting),
+                # 이 회의록이 어느 원문으로 만들어졌는가 (D44). `realtime` 이면 화면이 안내 한 줄을 세운다.
+                "transcript_source": meeting.transcript_source,
+            },
+            "agendas": [self._agenda_view(agenda, lines, todos) for agenda in self._repository.agendas(meeting)],
+        }
+
+    # ------------------------------------------------------------------ 회의실 예약 (SCAX-WP-007)
 
     @staticmethod
-    def _validate_summary_evidence(refined_segments: list[Any], statements: list[SummaryStatement]) -> None:
-        if not statements:
-            raise MeetingError("summary requires at least one evidence-bound statement")
-        sequences = {segment.sequence for segment in refined_segments}
-        for statement in statements:
-            if (
-                statement.refinement_start_sequence not in sequences
-                or statement.refinement_end_sequence not in sequences
-            ):
-                raise MeetingError("summary statement references an unknown refined segment")
-            expected = set(range(statement.refinement_start_sequence, statement.refinement_end_sequence + 1))
-            if not expected.issubset(sequences):
-                raise MeetingError("summary statement must reference a contiguous refined segment range")
+    def _reservation_view(meeting: Any) -> dict[str, Any] | None:
+        reservation = RoomReservation.restored(getattr(meeting, "room_reservation", None))
+        return None if reservation is None else reservation.view()
+
+    def reservation_draft(
+        self,
+        principal: Principal,
+        *,
+        title: str | None,
+        starts_at: datetime,
+        ends_at: datetime,
+        attendee_ids: list[str] | None,
+        external_attendees: list[str] | None,
+    ) -> dict[str, Any]:
+        """**아직 없는 회의**의 예약 입력. 예약을 먼저 하고 성공한 뒤에 회의를 세우기 때문이다 (D36-2).
+
+        참석자 판정은 `create` 와 같은 규칙을 쓴다 — 만든 사람은 언제나 참석자이므로 인원수에 한 번만 센다.
+        """
+        inside_ids = self._resolved_attendees(principal, list(attendee_ids or []))
+        inside = [
+            Attendee(
+                name=self._repository.member_display_name(member_id) or member_id,
+                email=self._repository.member_email(member_id),
+            )
+            for member_id in inside_ids
+        ]
+        outside = _external_names(list(external_attendees or []))
+        return {
+            "title": title,
+            "starts_at": _aware(starts_at),
+            "ends_at": _aware(ends_at),
+            "owner_name": self._repository.member_display_name(str(principal.id)) or str(principal.id),
+            "inside": inside,
+            "outside": outside,
+            "people": headcount(inside=len(inside), outside=len(outside)),
+        }
+
+    def reservation_input(self, meeting_id: UUID) -> dict[str, Any]:
+        """예약 한 건을 세우는 데 필요한 것만. **읽기 트랜잭션에서 끝내고 그 밖에서 예약을 부른다.**"""
+        meeting = self._repository.meeting(meeting_id)
+        if meeting is None:
+            raise MeetingNotFound("meeting was not found")
+        inside = [
+            Attendee(
+                name=self._repository.member_display_name(member_id) or member_id,
+                email=self._repository.member_email(member_id),
+            )
+            for member_id in sorted(self._repository.attendee_ids(meeting) | {meeting.owner_id})
+        ]
+        return {
+            "title": meeting.title,
+            "starts_at": _aware(meeting.starts_at),
+            "ends_at": _aware(meeting.ends_at),
+            "owner_name": self._repository.member_display_name(meeting.owner_id) or meeting.owner_id,
+            "inside": inside,
+            # 사외 참석자는 이름뿐이다 — 계정이 없으니 표시 문자열로 간다 (rooms.build_reservation).
+            "outside": [str(name) for name in (meeting.external_attendees or [])],
+            "reservation": RoomReservation.restored(meeting.room_reservation),
+        }
+
+    def attach_reservation(self, meeting_id: UUID, reservation: RoomReservation, *, location: str | None) -> None:
+        """예약을 부른 **뒤** 그 결과를 회의에 붙인다. 실패도 붙인다 — 화면이 사유를 읽어야 한다."""
+        meeting = self._repository.meeting(meeting_id, lock=True)
+        if meeting is None:
+            raise MeetingNotFound("meeting was not found")
+        meeting.room_reservation = reservation.stored()
+        # 자리를 못 잡았으면 장소를 비운다 — 잡히지도 않은 방 이름이 회의에 적혀 있으면 안 된다.
+        meeting.location = location
+        self._repository.touch(meeting)
+        self._repository.append_audit(
+            meeting,
+            meeting.owner_id,
+            f"meeting.room_{reservation.status}",
+            f"회의실 예약 {reservation.status}: {reservation.room_name or reservation.reason or ''}".strip(),
+        )
+
+    @staticmethod
+    def _todo_view(todo: Any) -> dict[str, Any]:
+        """SCAX-SPEC-004 §8.1의 여덟 값. 담당자 칸은 없다 — AI가 고르지 않는다.
+
+        `linked`는 승격 전에 `null`이고, 승격하면 `work_request_id`가, 상대가 수락하면 `task_id`가 함께 찬다.
+        """
+        reference = dict(todo.reference or {})
+        return {
+            "todo_id": str(todo.id),
+            "agenda_id": str(todo.agenda_id),
+            "title": todo.title,
+            "description": todo.description or "",
+            "due_candidate": todo.due_candidate.isoformat() if todo.due_candidate else None,
+            "checklist_candidate": list(todo.checklist_candidate or []),
+            # 회의 중 배치가 낸 후보인가 (D46). 참이면 읽기 전용이고 다음 배치가 갈아 끼운다.
+            "provisional": bool(getattr(todo, "provisional", False)),
+            "reference": {
+                "meeting_id": str(reference.get("meeting_id") or todo.meeting_id),
+                "agenda_id": str(reference.get("agenda_id") or todo.agenda_id),
+                "line_ids": [str(line_id) for line_id in reference.get("line_ids") or []],
+            },
+            "linked": (
+                {
+                    "work_request_id": str(todo.linked_work_request_id),
+                    "task_id": str(todo.linked_task_id) if todo.linked_task_id else None,
+                }
+                if todo.linked_work_request_id
+                else None
+            ),
+        }
+
+    def _grouped_lines(self, meeting: Any) -> dict[Any, list[Any]]:
+        grouped: dict[Any, list[Any]] = {}
+        for line in self._repository.lines(meeting):
+            grouped.setdefault(line.agenda_id, []).append(line)
+        return grouped
+
+    def _grouped_todos(self, meeting: Any) -> dict[Any, list[Any]]:
+        grouped: dict[Any, list[Any]] = {}
+        for todo in self._repository.todos(meeting):
+            grouped.setdefault(todo.agenda_id, []).append(todo)
+        return grouped
+
+    @staticmethod
+    def _line_view(line: Any) -> dict[str, Any]:
+        """줄 하나. `at_ms` 는 메모 줄에만 값이 있다 — AI·합성 줄은 시각이 아니라 구간에 걸린다."""
+        return {
+            "line_id": str(line.id),
+            "track": line.track,
+            "order": line.order_index,
+            "text": line.text,
+            "author": line.author_id,
+            "at_ms": line.at_ms,
+            "evidence": [_evidence_span(span) for span in line.evidence or []],
+        }
+
+    def _agenda_view(self, agenda: Any, lines: dict[Any, list[Any]], todos: dict[Any, list[Any]]) -> dict[str, Any]:
+        return {
+            "agenda_id": str(agenda.id),
+            # 이 안건의 마지막 저장 시각. 다음 저장이 이 값을 함께 보내 「그 사이에 누가 저장했나」를 가른다.
+            "last_saved_at": _iso(agenda.updated_at),
+            "order": agenda.order_index,
+            "title": agenda.title,
+            "source": agenda.source,
+            "concluded": bool(agenda.concluded),
+            # 제목이 아직 자리표시인가 (D6) — 화면이 그 자리를 다르게 그릴 근거다.
+            "title_placeholder": bool(getattr(agenda, "title_placeholder", False)),
+            "lines": [self._line_view(line) for line in lines.get(agenda.id, [])],
+            "todos": [self._todo_view(todo) for todo in todos.get(agenda.id, [])],
+        }
 
     @staticmethod
     def _require(principal: Principal, capability: str) -> None:
@@ -1451,15 +1425,14 @@ class MeetingApplication:
             raise MeetingAccessDenied(f"{capability} capability is required")
 
     @staticmethod
-    def _validate_schedule(title: str, starts_at: datetime, ends_at: datetime, visibility: str) -> None:
-        if not title.strip():
-            raise MeetingError("meeting title is required")
+    def _validate_schedule(starts_at: datetime, ends_at: datetime) -> None:
+        """제목은 없을 수 있다 — 바로 시작한 회의는 제목 없이 선다. 일시는 없을 수 없다."""
+        if not isinstance(starts_at, datetime) or not isinstance(ends_at, datetime):
+            raise MeetingError("meeting start and end are required")
         if starts_at.tzinfo is None or ends_at.tzinfo is None:
             raise MeetingError("meeting times must include a timezone")
         if starts_at >= ends_at:
             raise MeetingError("meeting start must be before end")
-        if visibility not in {"public", "private"}:
-            raise MeetingError("meeting visibility must be public or private")
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -1469,9 +1442,106 @@ def _iso(value: datetime | None) -> str | None:
     return (value if value.tzinfo is not None else value.replace(tzinfo=UTC)).isoformat()
 
 
-def _str(value: object | None) -> str | None:
-    return str(value) if value is not None else None
-
-
 def _distinct(values: list[str]) -> list[str]:
     return list(dict.fromkeys(value.strip() for value in values if value.strip()))
+
+
+def _optional_text(value: object, label: str, limit: int) -> str | None:
+    """빈 글자와 없는 값을 같게 다룬다 — 화면의 빈 칸이 곧 「없음」이다."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if len(text) > limit:
+        raise MeetingError(f"{label} must be at most {limit} characters")
+    return text
+
+
+def _ensure_settled(todo: Any) -> None:
+    """회의 중 후보는 **손대지 않는다** (D46) — 승격도 삭제도 받지 않는다.
+
+    다음 배치가 그 후보를 지우고 다시 낼 수 있어서다: 방금 업무로 만든 후보가 한 회차 뒤에 없어지면
+    회의록과 업무의 계보가 끊긴다. 회의가 끝나면 최종이 같은 자리를 확정 후보로 다시 채운다.
+    """
+    if getattr(todo, "provisional", False):
+        raise MeetingStateConflict("todo_provisional")
+
+
+def _external_names(values: list[object]) -> list[str]:
+    """사외 참석자는 이름 글자뿐이다 — 계정을 만들지 않는다 (SPEC §3.1-5)."""
+    names: list[str] = []
+    for value in values:
+        name = str(value or "").strip()
+        if not name:
+            continue
+        if len(name) > 100:
+            raise MeetingError("external attendee name must be at most 100 characters")
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def _positive_order(value: object) -> int:
+    try:
+        order = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as error:
+        raise MeetingError("agenda order must be a whole number") from error
+    if order < 1:
+        raise MeetingError("agenda order starts at 1")
+    return order
+
+
+def _aware(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _place_of(row: dict[str, Any]) -> str:
+    return f"{row['starts_at']}|{row['meeting_id']}"
+
+
+def _cursor_of(row: dict[str, Any]) -> str:
+    return base64.urlsafe_b64encode(_place_of(row).encode()).decode().rstrip("=")
+
+
+def _page(rows: list[dict[str, Any]], cursor: str | None, page_size: int) -> tuple[list[dict[str, Any]], str | None]:
+    """커서는 마지막으로 낸 행의 자리다 — 그 행 다음부터 한 판을 더 낸다."""
+    start = 0
+    if cursor:
+        try:
+            marker = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode()
+        except Exception as error:  # noqa: BLE001 — a malformed cursor is a caller mistake, not a server fault
+            raise MeetingError("meeting list cursor is malformed") from error
+        start = next((index + 1 for index, row in enumerate(rows) if _place_of(row) == marker), len(rows))
+    page = rows[start : start + page_size]
+    has_more = start + page_size < len(rows)
+    return page, _cursor_of(page[-1]) if page and has_more else None
+
+
+def _evidence_span(span: dict[str, Any]) -> dict[str, int]:
+    """근거 구간 하나를 계약의 이름으로 낸다 — 화면 타임칩이 읽는 것은 `start_ms`·`end_ms` 다 (SPEC-004 §4.1).
+
+    AI 출력 스키마는 안에서 `from_ms`·`to_ms` 로 말한다. 그 이름이 응답으로 새면 칩이 시각을 못 읽는다 —
+    저장은 받은 그대로 두고 **나가는 자리에서 한 번** 옮긴다.
+    """
+    start = span.get("start_ms", span.get("from_ms"))
+    end = span.get("end_ms", span.get("to_ms"))
+    return {"start_ms": int(start or 0), "end_ms": int(end or 0)}
+
+
+def _track_view(grouped: dict[Any, list[Any]], track: str) -> list[dict[str, Any]]:
+    """한 트랙의 줄 전량 — 합성 입력이 읽는 모양이다."""
+    rows: list[dict[str, Any]] = []
+    for agenda_id, lines in grouped.items():
+        for line in lines:
+            if line.track != track:
+                continue
+            rows.append(
+                {
+                    "line_id": str(line.id),
+                    "agenda_id": str(agenda_id),
+                    "text": line.text,
+                    "at_ms": line.at_ms,
+                }
+            )
+    return rows

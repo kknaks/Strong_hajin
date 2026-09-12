@@ -2205,6 +2205,8 @@ export function CreateWorkDrawer({
   assigneeCandidates,
   assignCandidates = [],
   ccCandidates = [],
+  initial,
+  onSubmitRequest,
   projectCandidates = noProjectCandidates,
   onCreated,
   onError,
@@ -2216,22 +2218,39 @@ export function CreateWorkDrawer({
   assigneeCandidates: Persona[];
   assignCandidates?: Persona[];
   ccCandidates?: Persona[];
+  /**
+   * 이미 적힌 것에서 여는 자리가 채워 주는 값 — 회의록의 후속업무 후보가 [업무 생성]으로 여는 경우다.
+   * **담당은 채우지 않는다**: 사람을 고르는 것은 사람의 일이라 비운 채로 연다.
+   */
+  initial?: { title?: string; description?: string | null; dueDate?: string | null; checklist?: string[] };
+  /**
+   * 요청을 보내는 자리를 갈아 끼운다 — 회의록의 후속업무 후보는 **승격**으로 나가야 출처 두 열이 함께 실린다.
+   * 주지 않으면 지금까지대로 `createWorkRequest` 로 간다. 끝나고 낼 알림 문장을 돌려준다.
+   */
+  onSubmitRequest?: (input: {
+    assignee_id: string;
+    title: string;
+    description?: string;
+    due_date?: string | null;
+    checklist?: string[];
+  }) => Promise<string>;
   projectCandidates?: Project[];
   onCreated: (notice: string) => Promise<void> | void;
   onError: (message: string | null) => void;
   onClose: () => void;
 }) {
   const [kind, setKind] = useState<"task" | "request">(canCreateTask ? "task" : "request");
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
+  const [title, setTitle] = useState(initial?.title ?? "");
+  const [description, setDescription] = useState(initial?.description ?? "");
   const [startDate, setStartDate] = useState("");
-  const [dueDate, setDueDate] = useState("");
-  const [assigneeId, setAssigneeId] = useState(assigneeCandidates[0]?.id ?? "");
+  const [dueDate, setDueDate] = useState(initial?.dueDate ?? "");
+  // 미리 채운 값으로 열 때는 담당을 비워 둔다 — 첫 후보를 자동으로 고르지 않는다.
+  const [assigneeId, setAssigneeId] = useState(initial ? "" : assigneeCandidates[0]?.id ?? "");
   const [taskOwnerId, setTaskOwnerId] = useState("me");
   const [projectId, setProjectId] = useState("");
   const [availableProjects, setAvailableProjects] = useState<Project[]>(projectCandidates);
   const [ccIds, setCcIds] = useState<string[]>([]);
-  const [steps, setSteps] = useState<string[]>([]);
+  const [steps, setSteps] = useState<string[]>(initial?.checklist ?? []);
   const [newStep, setNewStep] = useState("");
   const [linkedTasks, setLinkedTasks] = useState<DirectTask[]>([]);
   const [referenceDraft, setReferenceDraft] = useState<string | null>(null);
@@ -2379,6 +2398,16 @@ export function CreateWorkDrawer({
           project_id: projectId || undefined,
         });
         await onCreated(`'${trimmed}' 업무를 만들었습니다.`);
+      } else if (onSubmitRequest) {
+        await onCreated(
+          await onSubmitRequest({
+            assignee_id: assigneeId,
+            title: trimmed,
+            description: description.trim() || undefined,
+            due_date: dueDate || null,
+            checklist,
+          }),
+        );
       } else {
         const request = await createWorkRequest(trimmed, assigneeId, {
           description: description.trim() || undefined,
@@ -2428,6 +2457,15 @@ export function CreateWorkDrawer({
   }
 
   const titleInputId = kind === "task" ? "task-title" : "work-request-title";
+  /**
+   * 만들 수 있는 것이 한 가지뿐이면 고를 것이 없다 — 토글을 두지 않고 드로어 이름이 그 한 가지를 말한다.
+   *
+   * 한 칸짜리 세그먼트는 늘 「선택됨」이라 누를 수 있는 것처럼 보이는데 실은 바뀌지 않는다. 회의록의
+   * 후속업무 후보에서 여는 자리가 그랬다 — 승격은 언제나 업무 요청이라(D19·D24) 「요청」 하나가 검은
+   * 단추처럼 남아 있었다.
+   */
+  const oneKind = canCreateTask !== canCreateRequest;
+  const drawerTitle = oneKind ? (kind === "task" ? "업무 추가" : "업무 요청") : "새 업무 추가";
 
   return (
     <Drawer
@@ -2449,18 +2487,16 @@ export function CreateWorkDrawer({
       }
       headerExtra={
         <div className="chip-row">
-          <div aria-label="생성 유형" className="segmented" role="tablist">
-            {canCreateTask && (
+          {canCreateTask && canCreateRequest && (
+            <div aria-label="생성 유형" className="segmented" role="tablist">
               <button aria-selected={kind === "task"} onClick={() => setKind("task")} role="tab" type="button">
                 업무
               </button>
-            )}
-            {canCreateRequest && (
               <button aria-selected={kind === "request"} onClick={() => setKind("request")} role="tab" type="button">
                 요청
               </button>
-            )}
-          </div>
+            </div>
+          )}
           <span className="t-meta">
             {kind === "task"
               ? assignTarget
@@ -2470,9 +2506,9 @@ export function CreateWorkDrawer({
           </span>
         </div>
       }
-      label="새 업무 추가"
+      label={drawerTitle}
       onClose={onClose}
-      title="새 업무 추가"
+      title={drawerTitle}
     >
       <div className="form-stack">
         {Boolean(kind === "task") ? (
@@ -2537,7 +2573,8 @@ export function CreateWorkDrawer({
                   label="담당 후보"
                   onChange={setAssigneeId}
                   options={assigneeCandidates.map((candidate) => ({ value: candidate.id, label: candidate.display_name }))}
-                  placeholder="요청 가능한 동료가 없습니다."
+                  // 고를 사람이 있는데 아직 안 고른 것과, 고를 사람이 아예 없는 것은 다른 말이다.
+                  placeholder={assigneeCandidates.length === 0 ? "요청 가능한 동료가 없습니다." : undefined}
                   value={assigneeId}
                 />
               </dd>

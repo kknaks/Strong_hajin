@@ -1084,8 +1084,14 @@ class AxProposalActionHandler:
         return str(task_id) if task_id else None
 
     def _derived_meeting_id(self, record: ActionItemRecord) -> str | None:
-        meeting_id = self._session.scalar(select(MeetingRecord.id).where(MeetingRecord.source_action_item_id == record.id))
-        return str(meeting_id) if meeting_id else None
+        """이 확인에서 나온 회의 — **지금은 언제나 없다.**
+
+        회의가 확인에서 나오려면 회의 행이 「어느 확인에서 나왔는가」를 들고 있어야 하는데, SCAX-SPEC-004
+        의 회의에는 그 계보 열이 없다(채팅이 회의를 만드는 경로가 멈춰 있다). 열을 되살리는 대신 **없다고
+        답한다** — 화면은 이미 `None` 을 다루고, 그 경로가 새 모델로 돌아오면 여기부터 다시 잇는다.
+        """
+        del record
+        return None
 
 
 class TaskAssignmentActionHandler:

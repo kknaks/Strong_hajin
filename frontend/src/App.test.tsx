@@ -85,6 +85,12 @@ function seoulTodayForTest(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
 }
 
+/** 오늘이 아닌, 오늘이 속한 달 격자 안의 하루 — 달력에서 한 번에 누를 수 있는 자리다. */
+function otherReportDate(): string {
+  const today = seoulTodayForTest();
+  return `${today.slice(0, 7)}-${today.endsWith("-01") ? "02" : "01"}`;
+}
+
 async function switchAccount(personaId: string) {
   fireEvent.click(screen.getByRole("button", { name: "로그아웃" }));
   fireEvent.change(await screen.findByLabelText("이메일"), { target: { value: `${personaId}@scax.example` } });
@@ -402,7 +408,9 @@ describe("product surfaces", () => {
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
     fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "내 업무" }));
     fireEvent.click(await screen.findByRole("button", { name: "새 업무 추가" }));
-    fireEvent.click(screen.getByRole("tab", { name: "요청" }));
+    // 이 사람이 만들 수 있는 것은 요청 하나뿐이라 「업무/요청」 토글이 서지 않는다 (D10)
+    const createDrawer = await screen.findByRole("dialog", { name: "업무 요청" });
+    expect(within(createDrawer).queryByRole("tab")).toBeNull();
     await screen.findByLabelText("담당 후보");
     fireEvent.change(screen.getByLabelText("요청할 업무"), { target: { value: "UI로 만든 업무 요청" } });
     fireEvent.click(screen.getByRole("button", { name: "업무 요청 보내기" }));
@@ -730,7 +738,7 @@ describe("product surfaces", () => {
       if (path.startsWith(`/api/daily-reports/status?report_date=${seoulTodayForTest()}`)) {
         return new Response(JSON.stringify({ detail: "기존 날짜를 불러오지 못했습니다." }), { status: 500 });
       }
-      if (path.startsWith("/api/daily-reports/status?report_date=2026-01-02")) {
+      if (path.startsWith(`/api/daily-reports/status?report_date=${otherReportDate()}`)) {
         return new Promise(() => {});
       }
       return new Response("not found", { status: 404 });
@@ -742,7 +750,10 @@ describe("product surfaces", () => {
     fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "보고" }));
     expect((await screen.findByRole("alert")).textContent).toContain("기존 날짜를 불러오지 못했습니다.");
 
-    fireEvent.change(screen.getByLabelText("보고일"), { target: { value: "2026-01-02" } });
+    // 보고일은 입력칸이 아니라 달력을 여는 트리거다 (DS-17) — 이 달 격자 안의 다른 날을 고른다
+    fireEvent.click(screen.getByRole("button", { name: "보고일 달력 열기" }));
+    const calendar = screen.getByRole("group", { name: "보고일" });
+    fireEvent.click(calendar.querySelector(`[data-date="${otherReportDate()}"]`) as HTMLElement);
     await waitFor(() => {
       expect(screen.queryByRole("alert")).toBeNull();
     });
@@ -852,7 +863,8 @@ describe("product surfaces", () => {
     );
 
     expect(screen.getAllByText("새 대화의 현재 발화").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText(/요청을 준비하는 중|대기열에서 기다리는 중/)).toBeTruthy();
+    // 뒤늦게 온 목록이 진행 중인 회차를 지우지 않는다 — 상세가 도착하는 한 박자를 기다려 본다
+    expect(await screen.findByText(/요청을 준비하는 중|대기열에서 기다리는 중/)).toBeTruthy();
   });
 
   it("applies only the latest overlapping Conversation list response", async () => {

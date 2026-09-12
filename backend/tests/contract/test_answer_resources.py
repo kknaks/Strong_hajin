@@ -49,11 +49,11 @@ def test_what_a_turn_read_becomes_something_each_answer_item_can_open(tmp_path, 
         "/api/meetings",
         headers=MINA,
         json={
-            "organization_id": "scax", "title": "답변이 가리킬 회의",
+            "title": "답변이 가리킬 회의",
             "starts_at": "2026-09-10T01:00:00Z", "ends_at": "2026-09-10T02:00:00Z",
-            "visibility": "private", "attendee_ids": [],
+            "attendee_ids": [],
         },
-    ).json()
+    ).json()["meeting"]
     conversation, execution_id = _delegated_turn(client, database_url, MINA, "resource-turn")
 
     monkeypatch.setenv("AX_MCP_CAUSATION_ID", execution_id)
@@ -145,15 +145,15 @@ def test_a_reference_is_asked_of_its_owner_again_every_time_it_is_read(tmp_path,
         "/api/meetings",
         headers=JIHO,
         json={
-            "organization_id": "scax", "title": "공유가 끊길 회의",
+            "title": "공유가 끊길 회의",
             "starts_at": "2026-09-10T01:00:00Z", "ends_at": "2026-09-10T02:00:00Z",
-            "visibility": "private", "attendee_ids": [],
+            "attendee_ids": [],
         },
-    ).json()
+    ).json()["meeting"]
     shared = client.post(
         f"/api/meetings/{meeting['meeting_id']}/shares",
         headers=JIHO,
-        json={"member_id": "mina", "expected_version": meeting["version"]},
+        json={"member_ids": ["mina"]},
     )
     assert shared.status_code in {200, 201}, shared.text
     conversation, execution_id = _delegated_turn(client, database_url, MINA, "revoked-turn")
@@ -165,13 +165,7 @@ def test_a_reference_is_asked_of_its_owner_again_every_time_it_is_read(tmp_path,
     assert [row["title"] for row in before] == ["공유가 끊길 회의"]
 
     # The share is taken back. The stored reference is still a row; what it says is asked again.
-    current = client.get(f"/api/meetings/{meeting['meeting_id']}", headers=JIHO).json()
-    revoked = client.request(
-        "DELETE",
-        f"/api/meetings/{meeting['meeting_id']}/shares/mina",
-        headers=JIHO,
-        json={"expected_version": current["version"]},
-    )
+    revoked = client.delete(f"/api/meetings/{meeting['meeting_id']}/shares/mina", headers=JIHO)
     assert revoked.status_code in {200, 204}, revoked.text
     after = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()
     # No title, no placeholder, and nothing left to count.
@@ -208,15 +202,15 @@ def test_a_follow_up_starts_from_what_this_conversation_already_read(tmp_path, m
         "/api/meetings",
         headers=JIHO,
         json={
-            "organization_id": "scax", "title": "뒤에 공유가 끊길 회의",
+            "title": "뒤에 공유가 끊길 회의",
             "starts_at": "2026-09-10T01:00:00Z", "ends_at": "2026-09-10T02:00:00Z",
-            "visibility": "private", "attendee_ids": [],
+            "attendee_ids": [],
         },
-    ).json()
+    ).json()["meeting"]
     client.post(
         f"/api/meetings/{meeting['meeting_id']}/shares",
         headers=JIHO,
-        json={"member_id": "mina", "expected_version": meeting["version"]},
+        json={"member_ids": ["mina"]},
     )
     conversation, execution_id = _delegated_turn(client, database_url, MINA, "seed-turn")
 
@@ -234,13 +228,7 @@ def test_a_follow_up_starts_from_what_this_conversation_already_read(tmp_path, m
     assert any("오늘 하는 일 알려줘" in row["body"] for row in pack["exchanges"])
     assert all(row["turn_id"] for row in pack["exchanges"])
 
-    current = client.get(f"/api/meetings/{meeting['meeting_id']}", headers=JIHO).json()
-    client.request(
-        "DELETE",
-        f"/api/meetings/{meeting['meeting_id']}/shares/mina",
-        headers=JIHO,
-        json={"expected_version": current["version"]},
-    )
+    client.delete(f"/api/meetings/{meeting['meeting_id']}/shares/mina", headers=JIHO)
     after = application.conversation_context_pack(mina, UUID(conversation["conversation_id"]), include_exchanges=False)
     assert [row["ref"] for row in after["seeds"]] == [f"task:{kept['task_id']}"]
     assert after["exchanges"] == []
@@ -296,15 +284,15 @@ def test_a_stored_walk_is_checked_again_before_it_is_shown(tmp_path, monkeypatch
         "/api/meetings",
         headers=JIHO,
         json={
-            "organization_id": "scax", "title": "발자국에 남을 회의",
+            "title": "발자국에 남을 회의",
             "starts_at": "2026-09-10T01:00:00Z", "ends_at": "2026-09-10T02:00:00Z",
-            "visibility": "private", "attendee_ids": [],
+            "attendee_ids": [],
         },
-    ).json()
+    ).json()["meeting"]
     client.post(
         f"/api/meetings/{meeting['meeting_id']}/shares",
         headers=JIHO,
-        json={"member_id": "mina", "expected_version": meeting["version"]},
+        json={"member_ids": ["mina"]},
     )
     conversation, execution_id = _delegated_turn(client, database_url, MINA, "walk-turn")
 
@@ -315,13 +303,7 @@ def test_a_stored_walk_is_checked_again_before_it_is_shown(tmp_path, monkeypatch
     assert walked and any("발자국에 남을 회의" in str(step) for step in walked)
 
     # 민아 is taken off the meeting. The stored steps are still rows; none of them reaches her screen.
-    current = client.get(f"/api/meetings/{meeting['meeting_id']}", headers=JIHO).json()
-    client.request(
-        "DELETE",
-        f"/api/meetings/{meeting['meeting_id']}/shares/mina",
-        headers=JIHO,
-        json={"expected_version": current["version"]},
-    )
+    client.delete(f"/api/meetings/{meeting['meeting_id']}/shares/mina", headers=JIHO)
     after = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()
     assert "발자국에 남을 회의" not in str(after)
     assert all(f"meeting:{meeting['meeting_id']}" not in str(step) for step in after["graph_receipts"])

@@ -15,5 +15,6 @@ export { Select, MultiSelect } from "./src/Select";
 export type { SelectOption, SelectFooterAction, SelectTriggerState } from "./src/Select";
 export { TimeField, TimeRangeField } from "./src/TimeField";
 export { MinWidthNotice } from "./src/MinWidthNotice";
+export { TimeChip } from "./src/TimeChip";
 export { TaskCalendar } from "./src/WorkViews";
 export type { DirectTask, TaskState } from "./src/viewModels";

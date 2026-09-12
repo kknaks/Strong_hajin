@@ -12,6 +12,18 @@ vi.mock("./api", () => ({
   stageActionMaterialLink: vi.fn(),
 }));
 
+/**
+ * 날짜 칸은 입력칸이 아니라 «달력을 여는 트리거» 다 (DS-17) — 값은 그 단추의 글자로 서고,
+ * 고치는 길은 달력을 열어 날을 누르는 것이다. 카드가 준 구분자(`.`)가 그 글자에 그대로 실린다.
+ */
+const dateTrigger = (scope: HTMLElement, label: string) => within(scope).getByRole("button", { name: `${label} 달력 열기` });
+
+function pickDate(scope: HTMLElement, label: string, isoDate: string) {
+  fireEvent.click(dateTrigger(scope, label));
+  const panel = screen.getByRole("group", { name: label });
+  fireEvent.click(panel.querySelector(`[data-date="${isoDate}"]`) as HTMLElement);
+}
+
 const proposal: ActionItem = {
   action_id: "action-1",
   conversation_id: "conversation-1",
@@ -185,7 +197,7 @@ describe("AX Task proposal card", () => {
     expect(within(summary).queryByText("참고 업무")).toBeNull();
 
     fireEvent.click(within(card).getByRole("button", { name: "수정" }));
-    expect((within(card).getByLabelText("시작일") as HTMLInputElement).value).toBe("2026.09.10");
+    expect(dateTrigger(card, "시작일").textContent).toBe("2026.09.10");
     expect(within(card).getByText("유나")).toBeTruthy();
     expect(within(card).queryByText("유나 (대표)")).toBeNull();
   });
@@ -321,10 +333,15 @@ describe("AX Task proposal card", () => {
   it("uses the required dotted due-date control and a DS reset icon", () => {
     const { container } = render(<ActionTaskCard action={proposal} onCommand={vi.fn()} principalId="jiho" />);
     fireEvent.click(within(container).getByRole("button", { name: "수정" }));
-    const due = within(container).getByLabelText("기한") as HTMLInputElement;
-    expect(due.type).toBe("text");
-    expect(due.value).toBe("2026.09.20");
-    expect(due.required).toBe(true);
+    const due = dateTrigger(container, "기한");
+    // 브라우저 기본 달력 칸을 쓰지 않는다 — 우리 달력을 여는 단추 하나다 (DS-17)
+    expect(due.tagName).toBe("BUTTON");
+    expect(container.querySelector('input[type="date"]')).toBeNull();
+    expect(due.textContent).toBe("2026.09.20");
+    // 필수는 레이블의 * 로 선다 (required 프롭)
+    expect(container.querySelector('label[for="action-task-due_date"]')?.textContent).toBe("기한 *");
+    // pickerIcon="chevron-down" — 칸 안 오른쪽 아이콘
+    expect(due.querySelector("svg")).toBeTruthy();
     expect(within(container).getByRole("button", { name: "초기화" }).querySelector("svg")).toBeTruthy();
   });
 
@@ -339,7 +356,7 @@ describe("AX Task proposal card", () => {
     };
     const { container } = render(<ActionTaskCard action={withoutDue} onCommand={onCommand} principalId="jiho" />);
     fireEvent.click(within(container).getByRole("button", { name: "등록" }));
-    expect(await within(container).findByLabelText("기한")).toBe(document.activeElement);
+    expect(await within(container).findByRole("button", { name: "기한 달력 열기" })).toBe(document.activeElement);
     expect(within(container).getByRole("alert").textContent).toContain("기한");
     expect(onCommand).not.toHaveBeenCalled();
   });
@@ -692,14 +709,14 @@ describe("AX Task proposal card", () => {
     const { container } = render(<ActionTaskCard action={proposal} onCommand={onCommand} />);
     const card = container.querySelector("[data-action-id='action-1']") as HTMLElement;
     fireEvent.click(within(card).getByRole("button", { name: "수정" }));
-    fireEvent.change(within(card).getByLabelText("시작일"), { target: { value: "2026-09-30" } });
-    fireEvent.change(within(card).getByLabelText("기한"), { target: { value: "2026-09-20" } });
+    // 기한은 원안 그대로 09-20 이고, 시작일을 그 뒤로 옮겨 어긋나게 한다
+    pickDate(card, "시작일", "2026-09-30");
 
     fireEvent.click(within(card).getByRole("button", { name: "저장" }));
 
     expect(within(card).getByRole("alert").textContent).toContain("기한은 시작일보다 빠를 수 없습니다");
-    expect(document.activeElement).toBe(within(card).getByLabelText("기한"));
-    expect((within(card).getByLabelText("시작일") as HTMLInputElement).value).toBe("2026.09.30");
+    expect(document.activeElement).toBe(dateTrigger(card, "기한"));
+    expect(dateTrigger(card, "시작일").textContent).toBe("2026.09.30");
     expect(onCommand).not.toHaveBeenCalled();
   });
 

@@ -337,13 +337,11 @@ class SqlAlchemyActionRepository:
             if source_type == "task":
                 return str(self._tasks_for_source().get(principal, UUID(source_id))["title"])
             if source_type == "meeting":
-                return str(
-                    MeetingApplication(
-                        SqlAlchemyMeetingRepository(self._session),
-                        _NoRecordingStorage(),
-                        _NoRealtimeKeyIssuer(),
-                    ).get(principal, UUID(source_id))["title"]
-                )
+                # 새 회의 모델의 상세는 `{"meeting": {...}, "agendas": [...]}` 이고 제목은 그 안에 있다.
+                meeting = MeetingApplication(SqlAlchemyMeetingRepository(self._session)).get(
+                    principal, UUID(source_id)
+                )["meeting"]
+                return str(meeting.get("title") or meeting.get("title_candidate") or "")
         except (MeetingError, TaskError, ValueError):
             return None
         return None
@@ -830,41 +828,13 @@ class SqlAlchemyActionExecutor:
                 project_id=UUID(str(payload["project_id"])) if payload.get("project_id") else None,
             )
             return self._claim_action_materials(principal, action, payload, result)
-        if action.action_type == "meeting.create":
-            result = MeetingApplication(
-                SqlAlchemyMeetingRepository(self._session),
-                _NoRecordingStorage(),
-                _NoRealtimeKeyIssuer(),
-            ).create(
-                principal,
-                organization_id=str(payload["organization_id"]),
-                title=str(payload["title"]),
-                description=payload.get("description"),
-                starts_at=_parse_datetime(payload["starts_at"]),
-                ends_at=_parse_datetime(payload["ends_at"]),
-                visibility=str(payload["visibility"]),
-                attendee_ids=list(payload.get("attendee_ids") or []),
-                source_action_item_id=action.id,
-                source_decision_item_id=source_decision_item_id,
-                source_submission_id=source_submission_id,
-                source_review_decision_id=source_review_decision_id,
-                initial_note_body=(payload.get("initial_note_body") if payload.get("include_initial_note") else None),
-                initial_note_source_evidence=list(payload.get("initial_note_source_evidence") or []),
-                initial_note_source_status=payload.get("initial_note_source_status"),
-            )
-            result = self._claim_action_materials(principal, action, payload, result)
-            return self._attach_meeting_references(principal, payload, result)
-        if action.action_type == "meeting.share":
-            return MeetingApplication(
-                SqlAlchemyMeetingRepository(self._session),
-                _NoRecordingStorage(),
-                _NoRealtimeKeyIssuer(),
-            ).share(
-                principal,
-                UUID(str(payload["meeting_id"])),
-                str(payload["member_id"]),
-                int(payload["expected_version"]),
-            )
+        if action.action_type in {"meeting.create", "meeting.share"}:
+            # main 의 채팅 확인 경로는 **옛 회의 모델**(description·visibility·판 있는 회의록·expected_version)
+            # 위에 서 있었고, SCAX-SPEC-004 가 그 모델을 대체하면서 여기서 부르던 표면이 사라졌다.
+            # 조용히 터지게 두지 않는다 — 사람이 [확인] 을 누르는 자리이므로 무엇이 안 되는지 말하고 멈춘다.
+            # 새 모델 위에 이 두 확인을 다시 세우는 것은 별도 작업이다(회의 생성·공유는 지금 회의 화면에 있다).
+            raise ActionError("이 확인은 아직 새 회의 모델로 옮겨지지 않았습니다 — 회의 화면에서 직접 해 주세요")
+
         if action.action_type == "task.update":
             changes = dict(action.payload.get("changes", {}))
             for field in ("start_date", "due_date"):
@@ -1217,15 +1187,6 @@ def _normalize_task_progress_batch(payload: dict[str, Any]) -> dict[str, Any]:
     return {"operations": normalized}
 
 
-class _NoRecordingStorage:
-    def put(self, **_: Any) -> Any:  # pragma: no cover - Meeting creation never records
-        raise AssertionError("meeting creation cannot write a recording")
-
-
-class _NoRealtimeKeyIssuer:
-    def issue(self, **_: Any) -> Any:  # pragma: no cover - Meeting creation never issues a key
-        raise AssertionError("meeting creation cannot issue a realtime key")
-
 
 # ---- structured, permission-safe Action presentation -------------------------------------------------------------
 
@@ -1334,13 +1295,11 @@ class ActionPresenter:
             if payload.get("include_initial_note"):
                 self._text(fields, "initial_note_body", "회의록 초안", payload.get("initial_note_body"))
         elif kind == "meeting.share":
-            meeting = MeetingApplication(
-                SqlAlchemyMeetingRepository(self._session),
-                _NoRecordingStorage(),
-                _NoRealtimeKeyIssuer(),
-            ).get(principal, UUID(str(payload["meeting_id"])))
-            subject = meeting["title"]
-            fields.append({"id": "meeting", "label": "회의", "value": meeting["title"], "kind": "text"})
+            meeting = MeetingApplication(SqlAlchemyMeetingRepository(self._session)).get(
+                principal, UUID(str(payload["meeting_id"]))
+            )["meeting"]
+            subject = str(meeting.get("title") or meeting.get("title_candidate") or "")
+            fields.append({"id": "meeting", "label": "회의", "value": subject, "kind": "text"})
             target_name = self._names(principal).get(str(payload.get("member_id")), _UNKNOWN_MEMBER)
             fields.append({
                 "id": "member",
@@ -1815,7 +1774,8 @@ class ActionPresenter:
                         MeetingRecord.organization_id == values["organization_id"],
                         MeetingRecord.starts_at < _parse_datetime(values["ends_at"]),
                         MeetingRecord.ends_at > _parse_datetime(values["starts_at"]),
-                        MeetingRecord.lifecycle != "cancelled",
+                        # 새 모델의 상태 열은 `status` 이고 취소는 그 여섯 값 중 하나다 (SCAX-SPEC-004 §5.1).
+                        MeetingRecord.status != "cancelled",
                     )
                 )
                 or 0

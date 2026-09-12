@@ -63,6 +63,18 @@ function renderDrawer(detail: ActionItemDetail, onDone = vi.fn().mockResolvedVal
   return { onNotice, onClose, onDone };
 }
 
+/**
+ * 날짜 칸은 달력을 여는 트리거 하나다 (DS-17) — 값은 단추 글자로 서고 고치는 길은 달력에서 날을 누르는 것이다.
+ * 목록·달력 패널은 포털로 `document.body` 에 선다 (DS-18) — 드로어 안이 아니라 화면에서 찾는다.
+ */
+const dateTrigger = (scope: HTMLElement, label: string) => within(scope).getByRole("button", { name: `${label} 달력 열기` });
+
+function pickDate(scope: HTMLElement, label: string, isoDate: string) {
+  fireEvent.click(dateTrigger(scope, label));
+  const panel = screen.getByRole("group", { name: label });
+  fireEvent.click(panel.querySelector(`[data-date="${isoDate}"]`) as HTMLElement);
+}
+
 describe("what each round stood on", () => {
   afterEach(() => {
     cleanup();
@@ -217,9 +229,10 @@ describe("adjustment and resubmission", () => {
     const summary = within(drawer).getByLabelText("제출 전 변경 요약");
     expect(within(summary).getByText(/견적 재검토 \(기한 조정\)/)).toBeTruthy();
     // A changed due date in the pre-submit summary is formatted too, never raw ISO.
-    fireEvent.change(within(drawer).getByLabelText("희망 기한"), { target: { value: "2026-10-15" } });
+    // 9월 격자는 8/30~10/10 이라 10/05 를 그 자리에서 누를 수 있다
+    pickDate(drawer, "희망 기한", "2026-10-05");
     expect(within(summary).getByText("2026/09/20")).toBeTruthy();
-    expect(within(summary).getByText("2026/10/15")).toBeTruthy();
+    expect(within(summary).getByText("2026/10/05")).toBeTruthy();
     expect(summary.textContent).not.toMatch(/2026-\d\d-\d\d/);
     expect(submit.hasAttribute("disabled")).toBe(false);
 
@@ -229,7 +242,7 @@ describe("adjustment and resubmission", () => {
     expect(vi.mocked(api.runActionCommand).mock.calls[0]).toEqual([
       "item-1",
       "revise",
-      { expected_version: 2, changes: { title: "견적 재검토 (기한 조정)", due_date: "2026-10-15" } },
+      { expected_version: 2, changes: { title: "견적 재검토 (기한 조정)", due_date: "2026-10-05" } },
     ]);
   });
 
@@ -350,7 +363,8 @@ describe("the structured change proposal and the discussion", () => {
     fireEvent.click(await within(drawer).findByRole("button", { name: "제안대로 채우기" }));
 
     expect((within(drawer).getByLabelText("요청할 업무") as HTMLInputElement).value).toBe("견적 재검토 (기한 조정)");
-    expect((within(drawer).getByLabelText("희망 기한") as HTMLInputElement).value).toBe("2026/09/30");
+    // 달력 트리거의 글자가 곧 값이다 — 이 화면은 구분자를 주지 않아 ISO 그대로 선다
+    expect(dateTrigger(drawer, "희망 기한").textContent).toBe("2026-09-30");
     // Untouched fields keep the round's own value rather than being blanked by the proposal.
     expect((within(drawer).getByLabelText("요청 내용") as HTMLTextAreaElement).value).toBe("처음 설명");
     expect(api.runActionCommand).not.toHaveBeenCalled();
@@ -373,7 +387,7 @@ describe("the structured change proposal and the discussion", () => {
     const drawer = await screen.findByRole("dialog", { name: "판단 상세" });
     fireEvent.click(within(drawer).getByRole("button", { name: "조정 요청" }));
     fireEvent.change(await within(drawer).findByLabelText("조정 요청 사유"), { target: { value: "기한을 늦춰 주세요" } });
-    fireEvent.change(within(drawer).getByLabelText("제안: 희망 기한"), { target: { value: "2026/09/30" } });
+    pickDate(drawer, "제안: 희망 기한", "2026-09-30");
     fireEvent.click(within(drawer).getByRole("button", { name: "조정 요청 확정" }));
 
     await waitFor(() => expect(api.runActionCommand).toHaveBeenCalled());

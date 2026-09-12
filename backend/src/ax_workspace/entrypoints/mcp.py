@@ -463,11 +463,30 @@ class McpReportsFacade:
         return entries
 
     def get_meeting(self, meeting_id: str) -> dict[str, Any]:
-        meeting = self._application.get_meeting(self.principal, UUID(meeting_id))
+        detail = self._application.get_meeting(self.principal, UUID(meeting_id))
         self._remember(
-            [{"resource_type": "meeting", "resource_id": str(meeting["meeting_id"]), "resource_version": meeting.get("version")}]
+            [{"resource_type": "meeting", "resource_id": str(detail["meeting"]["meeting_id"]), "resource_version": None}]
         )
-        return meeting
+        return detail
+
+    def list_projects(self) -> list[dict[str, Any]]:
+        return self._application.list_projects(self.principal)
+
+    def list_members(self, meeting_id: str | None = None) -> list[dict[str, Any]]:
+        """이 회의에 담긴 사람, 회의를 말하지 않으면 이 사람이 읽을 수 있는 조직의 사람."""
+        if meeting_id:
+            detail = self._application.get_meeting(self.principal, UUID(meeting_id))
+            return list(detail["meeting"]["attendees"])
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for unit in self._application.organization_tree(self.principal):
+            for member in self._application.organization_unit_members(self.principal, str(unit["id"])):
+                identifier = str(member.get("member_id"))
+                if identifier in seen:
+                    continue
+                seen.add(identifier)
+                rows.append(member)
+        return rows
 
     def search_conversation_turns(self, query: str, limit: int = 5) -> dict[str, Any]:
         """Find prior user Turns and remember exactly which cross-conversation sources this Turn observed."""
@@ -505,75 +524,9 @@ class McpReportsFacade:
         ])
         return {"turns": matches}
 
-    def create_meeting(
-        self,
-        *,
-        organization_id: str | None = None,
-        title: str,
-        description: str | None = None,
-        starts_at: str | None = None,
-        ends_at: str | None = None,
-        visibility: str = "private",
-        attendee_ids: list[str] | None = None,
-        initial_note_body: str | None = None,
-        prior_discussion_requested: bool = False,
-        source_turn_ids: list[str] | None = None,
-    ) -> dict[str, Any]:
-        start, end = _meeting_window(starts_at, ends_at)
-        organization_id = self._meeting_organization(organization_id)
-        payload = {
-            "organization_id": organization_id,
-            "title": title,
-            "description": description,
-            "starts_at": start.isoformat(),
-            "ends_at": end.isoformat(),
-            "visibility": visibility,
-            "attendee_ids": list(attendee_ids or []),
-            "include_initial_note": bool(initial_note_body and initial_note_body.strip()),
-            "initial_note_body": initial_note_body,
-            "prior_discussion_requested": prior_discussion_requested,
-            "source_turn_ids": list(source_turn_ids or []),
-        }
-        action = self._propose_chat_action("meeting.create", "회의 생성 확인", payload)
-        if action is not None:
-            return action
-        return self._application.create_meeting(
-            self.principal,
-            organization_id=organization_id,
-            title=title,
-            description=description,
-            starts_at=start,
-            ends_at=end,
-            visibility=visibility,
-            attendee_ids=list(attendee_ids or []),
-            initial_note_body=initial_note_body,
-            initial_note_source_status=None,
-        )
-
-    def share_meeting(self, meeting_id: str, member_id: str, expected_version: int) -> dict[str, Any]:
-        payload = {
-            "meeting_id": str(UUID(meeting_id)),
-            "member_id": member_id.strip(),
-            "expected_version": expected_version,
-        }
-        action = self._propose_chat_action("meeting.share", "회의 공유 확인", payload)
-        if action is not None:
-            return action
-        return self._application.share_meeting(
-            self.principal,
-            UUID(payload["meeting_id"]),
-            payload["member_id"],
-            int(expected_version),
-        )
-
-    def _meeting_organization(self, organization_id: str | None) -> str:
-        if organization_id and organization_id.strip():
-            return organization_id.strip()
-        principal = self.principal
-        candidates = sorted(principal.organization_scope & principal.scope_for(MEETING_MANAGE))
-        if len(candidates) != 1:
-            raise ValueError("회의 조직을 하나로 정할 수 없습니다. 조직을 지정해 주세요")
-        return candidates[0]
+    # main 의 `meeting_create`·`meeting_share` MCP 도구와 그 facade 는 **옛 회의 모델**(description·visibility·
+    # 판 있는 회의록·expected_version)에 걸려 있어 이 브랜치에서 걷었다 — SCAX-SPEC-004 가 그 모델을 대체했다.
+    # 새 모델 위에 같은 도구를 다시 세우는 것은 별도 작업이다(회의 생성·공유는 지금 HTTP 표면에만 있다).
 
     def graph_overview(self, view: str = "member", limit: int = 120) -> dict[str, Any]:
         return self._application.graph_overview(self.principal, view=view, limit=limit)
@@ -970,70 +923,37 @@ def _register_meeting_tools(server: MCPServer, facade: McpReportsFacade) -> None
         def meeting_list(include_visible: bool = False) -> dict[str, Any]:
             return {"entries": facade.list_meetings(include_visible=include_visible)}
 
-        @server.tool(
-            description=(
-                "Read one meeting the delegated persona may open: its note, recordings, transcript state and any summary "
-                "suggestions with the statements they stand on."
-            ),
-            annotations=_READ_ONLY_TOOL,
-            structured_output=True,
-        )
-        def meeting_get(meeting_id: str) -> dict[str, Any]:
-            return facade.get_meeting(meeting_id)
+    @server.tool(
+        description=(
+            "Read one meeting the delegated persona may open: its information, its agendas, and the note lines and "
+            "follow-up candidates hanging from each agenda."
+        ),
+        annotations=_READ_ONLY_TOOL,
+        structured_output=True,
+    )
+    def meeting_get(meeting_id: str) -> dict[str, Any]:
+        return facade.get_meeting(meeting_id)
 
-    if MEETING_MANAGE in facade.principal.capabilities:
-        @server.tool(
-            description=(
-                "Prepare a local Meeting for human confirmation. Use ISO date-times with offsets. Start or end may be "
-                "omitted when the request states only one boundary; the server supplies a one-hour default duration. "
-                "Do not withhold the proposal when an attendee label cannot be resolved: pass only resolved attendee "
-                "IDs (or an empty list) so the human can complete the editable attendee field. Include a frozen "
-                "initial_note_body only when the current request states a meeting topic or refers to prior discussion. "
-                "Set prior_discussion_requested=true for the latter and pass only source_turn_ids shown in the "
-                "conversation context. The server records observed sources and explicitly marks a missing prior source; "
-                "confirmation never sends invites, notifications, starts recording, or generates a new note."
-            ),
-            annotations=_COMMAND_TOOL,
-            structured_output=True,
-        )
-        def meeting_create(
-            title: str,
-            organization_id: str | None = None,
-            starts_at: str | None = None,
-            ends_at: str | None = None,
-            description: str | None = None,
-            visibility: str = "private",
-            attendee_ids: list[str] | None = None,
-            initial_note_body: str | None = None,
-            prior_discussion_requested: bool = False,
-            source_turn_ids: list[str] | None = None,
-        ) -> dict[str, Any]:
-            return facade.create_meeting(
-                organization_id=organization_id,
-                title=title,
-                description=description,
-                starts_at=starts_at,
-                ends_at=ends_at,
-                visibility=visibility,
-                attendee_ids=attendee_ids,
-                initial_note_body=initial_note_body,
-                prior_discussion_requested=prior_discussion_requested,
-                source_turn_ids=source_turn_ids,
-            )
+    @server.tool(
+        description=(
+            "Projects the delegated persona may read: what a task could hang from. Read-only."
+        ),
+        annotations=_READ_ONLY_TOOL,
+        structured_output=True,
+    )
+    def project_list() -> dict[str, Any]:
+        return {"entries": facade.list_projects()}
 
-    if MEETING_SHARE in facade.principal.capabilities:
-        @server.tool(
-            description=(
-                "Prepare sharing one existing Meeting with one resolved active member for human approval. This grants "
-                "meeting read access only; it does not add an attendee, create another Meeting, send a WorkRequest, or "
-                "contact an external service. Resolve the Meeting and member first and pass the Meeting version shown "
-                "by meeting_get."
-            ),
-            annotations=_COMMAND_TOOL,
-            structured_output=True,
-        )
-        def meeting_share(meeting_id: str, member_id: str, expected_version: int) -> dict[str, Any]:
-            return facade.share_meeting(meeting_id, member_id, expected_version)
+    @server.tool(
+        description=(
+            "People the delegated persona may see: the attendees of one meeting when a meeting id is given, "
+            "otherwise the members of the organizations they can read. Read-only."
+        ),
+        annotations=_READ_ONLY_TOOL,
+        structured_output=True,
+    )
+    def member_list(meeting_id: str | None = None) -> dict[str, Any]:
+        return {"entries": facade.list_members(meeting_id)}
 
 
 def _register_graph_tools(server: MCPServer, facade: McpReportsFacade) -> None:
@@ -1109,7 +1029,8 @@ def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
             description=(
                 "Work this person holds. Set mine=false to widen to every Task they may read — the work of their "
                 "organization and of projects they are on — which is a different question from what they must do."
-            )
+            ),
+            annotations=_READ_ONLY_TOOL,
         )
         def task_list(mine: bool = True) -> list[dict[str, Any]]:
             return facade.list_tasks(mine=mine)
@@ -1308,18 +1229,6 @@ def _parse_iso_datetime(value: Any):
     if parsed.tzinfo is None:
         raise ValueError("meeting times must include a timezone")
     return parsed
-
-
-def _meeting_window(starts_at: Any, ends_at: Any):
-    start = _parse_iso_datetime(starts_at) if starts_at not in (None, "") else None
-    end = _parse_iso_datetime(ends_at) if ends_at not in (None, "") else None
-    if start is None and end is None:
-        raise ValueError("meeting start or end time is required")
-    if start is None:
-        start = end - timedelta(hours=1)
-    if end is None:
-        end = start + timedelta(hours=1)
-    return start, end
 
 
 def main() -> None:

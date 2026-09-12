@@ -107,3 +107,26 @@ def test_frontend_is_the_only_canonical_ui_source_root() -> None:
 
     assert (repository_root / "frontend" / "package.json").is_file()
     assert not (repository_root / "web").exists()
+
+
+def test_the_browser_never_learns_the_stt_provider() -> None:
+    """브라우저는 STT provider 를 모른다 — 오디오는 반드시 우리 서버의 회의 스트림을 지난다.
+
+    SCAX-SPEC-004 §5.2-2 · §10-10. provider 주소·모델·키 이름이 프론트 소스에 있으면 직결 경로가 살아 있다는 뜻이다.
+    서버 쪽에서도 `platform/soniox.py` 하나만 그 이름을 안다 — `entrypoints`·`modules` 는 상대를 모른다.
+    """
+    repository_root = Path(__file__).resolve().parents[3]
+    forbidden = ("soniox", "stt-rt", "transcribe-websocket", "SONIOX_API_KEY")
+
+    for source in (repository_root / "frontend" / "src").rglob("*.ts*"):
+        text = source.read_text(encoding="utf-8").lower()
+        assert not any(token.lower() in text for token in forbidden), source
+
+    # 어댑터 하나와, 그 어댑터를 고르는 조립층 하나. 그 밖에서는 provider 의 이름이 나오지 않는다.
+    allowed = {PACKAGE_ROOT / "platform" / "soniox.py", PACKAGE_ROOT / "bootstrap" / "application.py"}
+    provider_named = {
+        path
+        for path in PACKAGE_ROOT.rglob("*.py")
+        if any(token.lower() in path.read_text(encoding="utf-8").lower() for token in ("soniox", "stt-rt"))
+    }
+    assert provider_named == allowed, sorted(provider_named)

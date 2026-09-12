@@ -1,0 +1,263 @@
+"""종료 합성의 **말** — 최종 출력 스키마 · 파서 · 검증 · 프롬프트 · 중복 판정.
+
+SCAX-SPEC-004 §8. 회의 중 배치(`batch.py`)와 같은 뼈대이고 최종에서만 차는 셋을 더한다:
+`title_candidate` · `concluded` · `todos`. 두 벌이 되지 않도록 **강등과 근거 검사는 `batch` 것을 그대로 쓴다**.
+
+받은 것을 믿지 않는다 — 스키마를 통과해도 코드가 다시 본다:
+**사람이 만든 안건이 하나도 빠지거나 합쳐지지 않았는가**(§8-6)가 그 중 가장 무거운 하나다.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date, timedelta
+import json
+from pathlib import Path
+import re
+from typing import Any
+
+import jsonschema
+
+from ax_workspace.modules.meetings.batch import BatchLine, SchemaViolation, demote_line
+
+
+SCHEMA_PATH = Path(__file__).resolve().parent / "schemas" / "ai_final_output.json"
+FINAL_OUTPUT_SCHEMA: dict[str, Any] = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+_validator = jsonschema.Draft202012Validator(FINAL_OUTPUT_SCHEMA)
+
+#: 합성 시도 상한. 넘으면 「실패」이고 사람이 [다시 시도]로 다시 건다 (WP Open Issue — 잠정값).
+FINAL_ATTEMPTS = 3
+#: 후보 설명의 마지막 줄이 지는 모양 (SPEC §8.2 `description`).
+SOURCE_LINE = "회의 {title} · 안건 {order} 에서"
+TITLELESS = "제목 없는 회의"
+
+
+class FinalizeFailed(Exception):
+    """한 시도의 실패 — 그 시도만 실패다. 상한까지 다시 걸고, 그래도 안 되면 「실패」다.
+
+    지금 이 예외를 던지는 자리는 없다. 사람 안건 전수 보존 검사가 유일한 던지는 자리였는데,
+    **종료 합성이 회의록을 처음부터 새로 쓰는 일이 되면서 그 검사가 사라졌다**(사용자 결정 2026-09-11).
+    이름은 남겨 둔다 — 「이 시도만 실패」라는 재시도 계약을 부르는 자리가 서비스에 있고, 앞으로 생길
+    검증도 같은 뜻으로 이것을 던지면 된다.
+    """
+
+
+@dataclass(slots=True)
+class FinalTodo:
+    title: str
+    description: str
+    due_candidate: date | None
+    checklist_candidate: list[str]
+    line_ids: list[str]
+
+
+@dataclass(slots=True)
+class FinalAgenda:
+    agenda_id: str | None
+    title: str
+    source: str
+    concluded: bool
+    lines: list[BatchLine] = field(default_factory=list)
+    todos: list[FinalTodo] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class FinalNotes:
+    title_candidate: str | None
+    agendas: list[FinalAgenda]
+
+
+def parse_final_output(body: str) -> FinalNotes:
+    """스키마 1단 — JSON · 구조 · 타입 · enum · 길이. 부분 통과가 없다."""
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as error:
+        raise SchemaViolation(f"출력이 JSON 이 아닙니다: {error.msg}") from error
+    problem = jsonschema.exceptions.best_match(_validator.iter_errors(data))
+    if problem is not None:
+        raise SchemaViolation(f"스키마 위반: {problem.message}")
+
+    agendas: list[FinalAgenda] = []
+    for agenda in data["agendas"]:
+        agendas.append(
+            FinalAgenda(
+                agenda_id=agenda["agenda_id"],
+                title=agenda["title"],
+                source=agenda["source"],
+                concluded=bool(agenda["concluded"]),
+                lines=[
+                    BatchLine(
+                        text=line["text"],
+                        evidence=[
+                            {"from_ms": int(span["from_ms"]), "to_ms": int(span["to_ms"])}
+                            for span in line["evidence"]
+                        ],
+                        task_id=None,
+                    )
+                    for line in agenda["lines"]
+                ],
+                todos=[
+                    FinalTodo(
+                        title=todo["title"],
+                        description=todo["description"],
+                        due_candidate=_parse_date(todo["due_candidate"]),
+                        checklist_candidate=list(todo["checklist_candidate"]),
+                        line_ids=list(todo["line_ids"]),
+                    )
+                    for todo in agenda["todos"]
+                ],
+            )
+        )
+    return FinalNotes(title_candidate=data["title_candidate"], agendas=agendas)
+
+
+def _parse_date(value: str | None) -> date | None:
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError as error:
+        raise SchemaViolation(f"due_candidate 가 날짜가 아닙니다: {value}") from error
+
+
+def bind_evidence(notes: FinalNotes, covered_ms: tuple[int, int]) -> None:
+    """근거는 실재하는 확정 발화 구간만 — 밖이면 **그 근거만** 떨어진다. 본문은 산다 (§8-5 근거 결박)."""
+    for agenda in notes.agendas:
+        agenda.lines = [
+            demote_line(line, allowed_task_ids=set(), covered_ms=covered_ms) for line in agenda.lines
+        ]
+
+
+def stamp_source_lines(notes: FinalNotes, *, meeting_title: str | None) -> None:
+    """후보 설명의 마지막 줄에 출처를 붙인다 — 받는 사람이 회의에 없었어도 이 글만 읽고 시작할 수 있게 (§8.2).
+
+    AI 가 이미 붙였으면 그대로 둔다: 두 번 붙이지 않는다.
+    """
+    title = meeting_title or TITLELESS
+    for order, agenda in enumerate(notes.agendas, start=1):
+        stamp = SOURCE_LINE.format(title=title, order=order)
+        for todo in agenda.todos:
+            if stamp in todo.description:
+                continue
+            todo.description = f"{todo.description.rstrip()}\n{stamp}"
+
+
+def resolve_due(todo: FinalTodo, *, next_meeting_starts_on: date | None) -> date | None:
+    """기한 세 갈래 (§8.2 `due_candidate`) — ① 말의 날짜 ② 이어진 다음 회의 전날 ③ 없음.
+
+    ①은 AI 가 채워 온다. 여기서 더하는 것은 ②뿐이고, 근거 없이 지어내지 않는 것이 ③이다.
+    """
+    if todo.due_candidate is not None:
+        return todo.due_candidate
+    if next_meeting_starts_on is not None:
+        return next_meeting_starts_on - timedelta(days=1)
+    return None
+
+
+_NORMALIZE = re.compile(r"[\s\W_]+", re.UNICODE)
+
+
+def normalize_title(value: str) -> str:
+    return _NORMALIZE.sub("", (value or "").lower())
+
+
+def is_already_work(todo_title: str, existing_titles: set[str]) -> bool:
+    """**이미 있는 업무면 후보를 내지 않는다** (SPEC §8.1-1).
+
+    「같은 일」의 기준은 미결이라(§13 `OQ-316`) 잠정으로 **제목 정규화 일치 또는 한쪽이 다른 쪽을 품음**을 쓴다.
+    판단이 서지 않으면 **후보로 낸다** — 놓친 일을 사람이 지우는 편이, 뽑히지 않은 일을 알아채는 것보다 쉽다.
+    """
+    candidate = normalize_title(todo_title)
+    if not candidate:
+        return False
+    for existing in existing_titles:
+        if not existing:
+            continue
+        if candidate == existing or candidate in existing or existing in candidate:
+            return True
+    return False
+
+
+# --- 프롬프트 -----------------------------------------------------------------
+
+
+def _dumps(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+_FINAL_INSTRUCTIONS = """회의가 끝났다. **재료를 보고 회의록 한 벌을 처음부터 새로 써라.**
+
+재료는 셋이다 — 사람이 남긴 메모 · 회의 중 네가 낸 줄 · 확정 발화. 셋을 나란히 두고 **안건 목록부터
+네가 다시 잡는다.** 사람이 예약 때 적은 안건 제목은 재료의 하나일 뿐이다: 참고하되 **묶어도 되고
+나눠도 되고 새로 세워도 된다.** 결과는 「누가 썼나」가 남지 않는 한 벌이다.
+
+## 쓰는 규칙
+
+- 이어 쓰는 안건이면 그 `agenda_id` 를 적는다 — 사람이 세운 것이든 네가 세운 것이든 같다.
+  **새로 세우는 안건은 `agenda_id` 를 null 로 둔다.** 어느 쪽도 빠뜨렸다고 실패하지 않는다.
+- 같은 말이 여러 재료에 있으면 **한 줄로 접는다.** 접힌 줄의 `line_ids` 에 원래 줄을 다 적는다.
+- 줄 하나가 짧은 문장 하나다. 문단을 쓰지 마라.
+- 줄마다 근거 구간(`evidence`)을 단다 — **없는 구간을 지어내지 마라.**
+- `concluded` 는 그 안건에서 결론이 났는가다. 확실하지 않으면 false 다.
+
+## 다음 할 일
+
+- 줄에서 할 일을 뽑는다. **담당자는 뽑지 마라** — 조직 데이터에 역할 설명이 없어 고르면 근거 없는 추측이 된다.
+- **뽑기 전에 `task_list` 로 이미 있는 업무를 조회해라.** 이미 있는 일이면 후보를 내지 않는다.
+  판단이 서지 않으면 후보로 낸다.
+- `description` 은 **언제나** 채운다 — 무엇을 왜 해야 하는지 2~4문장 + 근거 줄 요약.
+  받는 사람이 회의에 없었어도 이 글만 읽고 일을 시작할 수 있어야 한다.
+- `checklist_candidate` 는 **언제나** 2~5단계로 제안한다. 말에 단계가 없어도 네가 쪼갠다.
+- `due_candidate` 는 **말에 날짜가 있을 때만** 채운다. 「이번 주 금요일」·「다음 주 목요일」 같은 상대 표현도
+  **아래 기준일로 환산해 YYYY-MM-DD 로** 적어라 — 환산이 서지 않으면 null 로 둔다.
+  말에 아무 날짜도 없으면 null 이다. 서버가 이어진 다음 회의를 보고 채운다.
+- `line_ids` 에 그 후보가 딛는 줄들을 적는다.
+
+## 제목
+
+회의 제목이 비어 있으면 `title_candidate` 에 한 줄 후보를 낸다. 제목이 이미 있으면 null 이다.
+
+## 답하는 모양
+
+**아래 스키마를 따르는 JSON 하나로만 답하라.** 설명도 인사도 코드블록 표시도 붙이지 마라 — JSON 그것뿐이다.
+
+{schema}
+"""
+
+
+#: 요일 이름 — 상대 날짜를 환산하려면 기준일이 무슨 요일인지가 있어야 한다.
+_WEEKDAYS = ("월", "화", "수", "목", "금", "토", "일")
+
+
+def describe_day(value: date | None) -> str | None:
+    """`2026-09-10 (목)` — 모델이 「이번 주 금요일」을 셀 수 있는 모양."""
+    if value is None:
+        return None
+    return f"{value.isoformat()} ({_WEEKDAYS[value.weekday()]})"
+
+
+def build_final_prompt(
+    *,
+    meeting: dict[str, Any],
+    agendas: list[dict[str, Any]],
+    memo_lines: list[dict[str, Any]],
+    ai_lines: list[dict[str, Any]],
+    transcript: list[dict[str, Any]] | None = None,
+) -> str:
+    """합성 입력 — 지금 서 있는 안건 · 두 트랙의 줄. 세션이 발화를 기억하므로 원문은 폴백에서만 싣는다."""
+    base_day = meeting.get("starts_on")
+    next_day = meeting.get("next_meeting_on")
+    when = [f"\n**기준일: {base_day}**" if base_day else ""]
+    if next_day:
+        when.append(f" · 이어진 다음 회의: {next_day}")
+    sections = [
+        _FINAL_INSTRUCTIONS.format(schema=_dumps(FINAL_OUTPUT_SCHEMA)),
+        "".join(when) + " — 상대 날짜 표현은 이 날을 기준으로 환산한다.\n" if base_day else "",
+        f"\n회의:\n{_dumps(meeting)}",
+        f"\n지금 서 있는 안건(제목은 참고이고, 이어 쓸 때만 `agenda_id` 를 적는다):\n{_dumps(agendas)}",
+        f"\n사람이 남긴 메모 줄:\n{_dumps(memo_lines)}",
+        f"\n네가 낸 줄:\n{_dumps(ai_lines)}",
+    ]
+    if transcript is not None:
+        # 콜드 스타트 — 세션이 없어 회의를 기억하지 못한다. 확정 발화 전량을 한 번에 싣는다.
+        sections.append(f"\n확정 발화 전량:\n{_dumps(transcript)}")
+    return "".join(sections)

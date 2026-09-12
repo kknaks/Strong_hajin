@@ -1,4 +1,9 @@
-"""Immutable native revisions remain in their owner ledger; Attachment only gives them a material identity."""
+"""Immutable native revisions remain in their owner ledger; Attachment only gives them a material identity.
+
+회의는 판을 쌓지 않으므로 **회의당 자료 하나**다 (SCAX-SPEC-004 §5.4-3 · §11.1) — 옛 판 계열
+(`meeting_raw`·`meeting_refinement`·`meeting_recording`)은 파일 재전사와 함께 폐기했고, 그 자리를
+`meeting_transcript` 하나가 대신한다: 확정 발화 전량이 곧 그 회의의 원문이다.
+"""
 from __future__ import annotations
 
 from dataclasses import replace
@@ -13,16 +18,26 @@ from ax_workspace.modules.work.material_extraction import ExtractedBlock, Extrac
 from ax_workspace.platform.extraction_spool import ExtractionSpool
 from ax_workspace.platform.persistence import (
     DailyReportRecord, DailyReportSubmissionRecord,
-    AttachmentBindingRecord, AttachmentRecord, MeetingNoteRecord, MeetingNoteVersionRecord, MeetingRawTranscriptRevisionRecord, MeetingRawTranscriptSegmentRecord,
-    MeetingRecordingRecord, MeetingTranscriptRefinementRevisionRecord, MeetingTranscriptRefinementSegmentRecord,
+    AttachmentBindingRecord, AttachmentRecord, MeetingRecord, MeetingTranscriptRecord,
 )
 
-NATIVE_TYPES = {"meeting_raw": MeetingRawTranscriptRevisionRecord, "meeting_refinement": MeetingTranscriptRefinementRevisionRecord}
+#: 제목이 없는 회의도 자료 목록에 이름으로 선다 — 후보가 있으면 그것을, 없으면 이 말을 쓴다.
+TITLELESS_MEETING = "제목 없는 회의"
+
+
+def meeting_material_title(meeting) -> str:
+    return meeting.title or meeting.title_candidate or TITLELESS_MEETING
+
+NATIVE_TYPES: dict[str, type] = {}
 NATIVE_CONTENT_TYPE = "application/vnd.scax.native-revision+json"
 
 
+#: 회의 전사 — revision id 자리에 **회의 id** 가 온다. 판이 없으므로 회의 하나에 자료 하나다.
+MEETING_TRANSCRIPT = "meeting_transcript"
+
+
 def source_ref(kind: str, revision_id: UUID) -> str:
-    if kind not in NATIVE_TYPES and kind not in {"meeting_note", "meeting_recording", "report_submission"}:
+    if kind not in NATIVE_TYPES and kind not in {"report_submission", MEETING_TRANSCRIPT}:
         raise ValueError("unknown native material kind")
     return f"native:{kind}:{revision_id}"
 
@@ -39,22 +54,6 @@ class NativeMaterialRepository:
     def __init__(self, session):
         self._session = session
 
-    def _revision(self, kind, revision_id, *, lock=False):
-        model = NATIVE_TYPES.get(kind)
-        if model is None:
-            raise ValueError("unknown native material kind")
-        statement = select(model).where(model.id == revision_id)
-        row = self._session.scalar(statement.with_for_update() if lock else statement)
-        if row is None or row.state != "completed":
-            raise ValueError("native revision is not complete")
-        raw = row if kind == "meeting_raw" else self._session.get(MeetingRawTranscriptRevisionRecord, row.raw_transcript_revision_id)
-        if raw is None or raw.source_kind == "realtime" or raw.state != "completed":
-            raise ValueError("native revision is not a finalized recording transcript")
-        recording = self._session.get(MeetingRecordingRecord, raw.recording_id)
-        if recording is None or not recording.storage_key or not recording.sha256:
-            raise ValueError("native revision has no recorded original")
-        return row, raw, recording
-
     def report_source(self, submission_id, *, lock=False):
         statement = select(DailyReportSubmissionRecord).where(DailyReportSubmissionRecord.id == submission_id)
         submission = self._session.scalar(statement.with_for_update() if lock else statement)
@@ -63,70 +62,50 @@ class NativeMaterialRepository:
             raise ValueError("report submission was not found")
         return submission, report
 
-    def note_source(self, version_id, *, lock=False):
-        statement = select(MeetingNoteVersionRecord).where(MeetingNoteVersionRecord.id == version_id)
-        version = self._session.scalar(statement.with_for_update() if lock else statement)
-        note = self._session.get(MeetingNoteRecord, version.note_id) if version is not None else None
-        if version is None or note is None:
-            raise ValueError("meeting note version was not found")
-        return version, note
+    def meeting_transcript_source(self, meeting_id, *, lock=False):
+        """그 회의의 확정 발화 전량. 없으면 자료가 될 것이 없다."""
+        statement = select(MeetingRecord).where(MeetingRecord.id == meeting_id)
+        meeting = self._session.scalar(statement.with_for_update() if lock else statement)
+        if meeting is None:
+            raise ValueError("meeting was not found")
+        blocks = list(
+            self._session.scalars(
+                select(MeetingTranscriptRecord)
+                .where(MeetingTranscriptRecord.meeting_id == meeting_id)
+                .order_by(MeetingTranscriptRecord.seq)
+            )
+        )
+        if not blocks:
+            raise ValueError("meeting has no settled speech yet")
+        return meeting, blocks
 
     def payload(self, kind, revision_id):
-        if kind == "meeting_note":
-            version, note = self.note_source(revision_id)
+        if kind == MEETING_TRANSCRIPT:
+            meeting, blocks = self.meeting_transcript_source(revision_id)
             return {
                 "format_version": 1,
                 "source_kind": kind,
-                "source_revision_id": str(version.id),
-                "meeting_id": str(note.meeting_id),
-                "note_id": str(note.id),
-                "revision": version.version,
-                "body": version.body,
-                "created_by": version.created_by,
-                "created_at": version.created_at.isoformat(),
+                "source_revision_id": str(meeting.id),
+                "meeting_id": str(meeting.id),
+                "title": meeting_material_title(meeting),
+                "blocks": [
+                    {
+                        "block_id": str(block.id),
+                        "seq": block.seq,
+                        "speaker_label": block.speaker_label,
+                        "at_ms": block.at_ms,
+                        "end_ms": block.end_ms,
+                        "text": block.text,
+                    }
+                    for block in blocks
+                ],
             }
-        if kind == "report_submission":
-            submission, report = self.report_source(revision_id)
-            return {"format_version": 1, "source_kind": kind, "source_revision_id": str(submission.id),
-                    "report_id": str(report.id), "report_date": submission.report_date, "revision": submission.submission_version,
-                    "body": submission.body, "source_refs": submission.source_refs}
-        row, raw, recording = self._revision(kind, revision_id)
-        model = MeetingRawTranscriptSegmentRecord if kind == "meeting_raw" else MeetingTranscriptRefinementSegmentRecord
-        owner_column = model.transcript_revision_id if kind == "meeting_raw" else model.refinement_revision_id
-        segments = []
-        for segment in self._session.scalars(select(model).where(owner_column == row.id).order_by(model.sequence)):
-            item = {"segment_id": str(segment.id), "sequence": segment.sequence, "start_ms": segment.start_ms, "end_ms": segment.end_ms,
-                    "text": segment.text, "speaker_label": segment.speaker_label}
-            if kind == "meeting_refinement":
-                item.update(raw_start_segment_id=str(segment.raw_start_segment_id), raw_end_segment_id=str(segment.raw_end_segment_id),
-                            correction_kind=segment.correction_kind, confidence=segment.confidence)
-            else:
-                item["source_segment_key"] = segment.source_segment_key
-            segments.append(item)
-        return {"format_version": 1, "source_kind": kind, "source_revision_id": str(row.id), "revision": row.revision,
-                "raw_transcript_revision_id": str(raw.id), "recording_id": str(recording.id),
-                "recording_integrity_ref": f"sha256:{recording.sha256}", "segments": segments}
-
-    def recording_source(self, recording_id, *, lock=False):
-        statement = select(MeetingRecordingRecord).where(MeetingRecordingRecord.id == recording_id)
-        recording = self._session.scalar(statement.with_for_update() if lock else statement)
-        if recording is None or not recording.storage_key or not recording.sha256 or not recording.size_bytes:
-            raise ValueError("recording has no uploaded original")
-        return recording
-
-    def ensure_recording(self, recording_id):
-        recording = self.recording_source(recording_id, lock=True)
-        identifier = material_id_for("meeting_recording", recording_id)
-        attachment = self._session.get(AttachmentRecord, identifier)
-        if attachment is None:
-            reference = source_ref("meeting_recording", recording_id)
-            attachment = AttachmentRecord(id=identifier, source_kind="native_recording", source_ref=reference,
-                name=recording.original_name or "녹음", content_type=recording.content_type or "application/octet-stream",
-                size_bytes=recording.size_bytes, integrity_ref=f"sha256:{recording.sha256}", provenance=reference,
-                uploaded_by=recording.actor_id, created_at=recording.ended_at or recording.created_at)
-            self._session.add(attachment)
-            self._session.flush()
-        return self._binding(attachment, "meeting_recording", recording_id, recording.actor_id), attachment
+        if kind != "report_submission":
+            raise ValueError("unknown native material kind")
+        submission, report = self.report_source(revision_id)
+        return {"format_version": 1, "source_kind": kind, "source_revision_id": str(submission.id),
+                "report_id": str(report.id), "report_date": submission.report_date, "revision": submission.submission_version,
+                "body": submission.body, "source_refs": submission.source_refs}
 
     def ensure_report(self, submission_id):
         submission, report = self.report_source(submission_id, lock=True)
@@ -143,50 +122,37 @@ class NativeMaterialRepository:
             self._session.flush()
         return self._binding(attachment, "report_submission", submission_id, report.owner_id), attachment
 
-    def ensure_note(self, version_id):
-        version, note = self.note_source(version_id, lock=True)
-        identifier = material_id_for("meeting_note", version_id)
+    def ensure(self, kind, revision_id):
+        if kind == MEETING_TRANSCRIPT:
+            return self.ensure_meeting_transcript(revision_id)
+        if kind != "report_submission":
+            raise ValueError("unknown native material kind")
+        return self.ensure_report(revision_id)
+
+    def ensure_meeting_transcript(self, meeting_id):
+        """회의 전사 자료 하나. **자라는 원문이라 내용이 바뀌면 무결성 ref 도 바뀐다** — 그때 새 추출이 걸린다."""
+        meeting, _ = self.meeting_transcript_source(meeting_id, lock=True)
+        identifier = material_id_for(MEETING_TRANSCRIPT, meeting_id)
+        data = canonical_bytes(self.payload(MEETING_TRANSCRIPT, meeting_id))
+        digest = f"sha256:{hashlib.sha256(data).hexdigest()}"
+        reference = source_ref(MEETING_TRANSCRIPT, meeting_id)
         attachment = self._session.get(AttachmentRecord, identifier)
+        name = f"회의 원문 · {meeting_material_title(meeting)}"[:300]
         if attachment is None:
-            data = canonical_bytes(self.payload("meeting_note", version_id))
-            reference = source_ref("meeting_note", version_id)
             attachment = AttachmentRecord(
-                id=identifier,
-                source_kind="native_revision",
-                source_ref=reference,
-                name=f"회의록 · v{version.version}",
-                content_type=NATIVE_CONTENT_TYPE,
-                size_bytes=len(data),
-                integrity_ref=f"sha256:{hashlib.sha256(data).hexdigest()}",
-                provenance=reference,
-                uploaded_by=version.created_by,
-                created_at=version.created_at,
+                id=identifier, source_kind="native_revision", source_ref=reference, name=name,
+                content_type=NATIVE_CONTENT_TYPE, size_bytes=len(data), integrity_ref=digest,
+                provenance=reference, uploaded_by=meeting.owner_id, created_at=meeting.created_at,
             )
             self._session.add(attachment)
             self._session.flush()
-        return self._binding(attachment, "meeting_note", version_id, version.created_by), attachment
-
-    def ensure(self, kind, revision_id):
-        if kind == "meeting_note":
-            return self.ensure_note(revision_id)
-        if kind == "report_submission":
-            return self.ensure_report(revision_id)
-        if kind == "meeting_recording":
-            return self.ensure_recording(revision_id)
-        # Serialize first discovery and canonical writer retries on the existing immutable owner row.
-        row, _, recording = self._revision(kind, revision_id, lock=True)
-        reference = source_ref(kind, revision_id)
-        identifier = material_id_for(kind, revision_id)
-        attachment = self._session.get(AttachmentRecord, identifier)
-        if attachment is None:
-            data = canonical_bytes(self.payload(kind, revision_id))
-            attachment = AttachmentRecord(id=identifier, source_kind="native_revision", source_ref=reference,
-                name=f"{'원본 전사' if kind == 'meeting_raw' else '정제 전사'} · {recording.original_name or '녹음'} · r{row.revision}"[:300],
-                content_type=NATIVE_CONTENT_TYPE, size_bytes=len(data), integrity_ref=f"sha256:{hashlib.sha256(data).hexdigest()}",
-                provenance=reference, uploaded_by=recording.actor_id, created_at=row.created_at)
-            self._session.add(attachment)
+        elif attachment.integrity_ref != digest:
+            # 회의가 더 말했다 — 같은 자료의 새 내용이다. 판을 만들지 않고 그 자리를 갱신한다.
+            attachment.integrity_ref = digest
+            attachment.size_bytes = len(data)
+            attachment.name = name
             self._session.flush()
-        return self._binding(attachment, kind, revision_id, recording.actor_id), attachment
+        return self._binding(attachment, MEETING_TRANSCRIPT, meeting_id, meeting.owner_id), attachment
 
     def _binding(self, attachment, kind, revision_id, actor_id):
         binding_id = uuid5(attachment.id, "native-owner-binding")
@@ -232,54 +198,39 @@ class NativeRevisionExtractor:
                     return ExtractionOutcome(status="failed", extractor="native_revision", failure_reason="empty_content", coverage={"complete": False})
                 return ExtractionOutcome(status="completed", extractor="native_revision", blocks=blocks, chunks=chunks,
                     char_count=len(payload["body"]), coverage={"complete": True, "unit": "report_body", "total_units": 1, "processed_units": 1})
-            if payload["source_kind"] == "meeting_note":
-                locator = {
-                    "kind": "meeting_note",
-                    "meeting_id": payload["meeting_id"],
-                    "note_id": payload["note_id"],
-                    "source_revision_id": payload["source_revision_id"],
-                    "note_version": payload["revision"],
-                }
-                blocks.append(ExtractedBlock(
-                    0,
-                    "meeting_note_body",
-                    payload["body"],
-                    locator_label=f"회의록 v{payload['revision']}",
-                    source_locator=locator,
-                ))
-                for chunk in iter_chunks(payload["body"]):
-                    chunks.append(replace(chunk, block_sequence=0))
+            if payload["source_kind"] == "meeting_transcript":
+                # 한 블록이 한 조각이다 — 근거 칩이 딛는 단위와 검색이 세는 단위를 같게 둔다.
+                for index, block in enumerate(payload["blocks"]):
+                    locator = {
+                        "kind": "meeting_transcript", "source_revision_id": payload["source_revision_id"],
+                        "meeting_id": payload["meeting_id"], "block_id": block["block_id"],
+                        "seq": block["seq"], "start_ms": block["at_ms"], "end_ms": block["end_ms"],
+                        "speaker_label": block["speaker_label"],
+                    }
+                    text = f"화자 {block['speaker_label']} [{_clock(block['at_ms'])}] {block['text']}"
+                    extracted = ExtractedBlock(
+                        index, "transcript_block", text,
+                        locator_label=f"화자 {block['speaker_label']} · {_clock(block['at_ms'])}",
+                        source_locator=locator,
+                    )
+                    blocks.append(extracted)
+                    for chunk in iter_chunks(extracted.text, sequence_start=len(chunks), char_offset=total):
+                        chunks.append(replace(chunk, block_sequence=extracted.sequence))
+                    total += len(extracted.text)
                 if not chunks:
                     blocks.close()
                     chunks.close()
                     return ExtractionOutcome(status="failed", extractor="native_revision", failure_reason="empty_content", coverage={"complete": False})
-                return ExtractionOutcome(
-                    status="completed",
-                    extractor="native_revision",
-                    blocks=blocks,
-                    chunks=chunks,
-                    char_count=len(payload["body"]),
-                    coverage={"complete": True, "unit": "meeting_note_body", "total_units": 1, "processed_units": 1},
-                )
-            for segment in payload["segments"]:
-                locator = {"kind": "meeting_transcript", "source_revision_id": payload["source_revision_id"],
-                           "recording_id": payload["recording_id"], "segment_id": segment["segment_id"],
-                           "segment_sequence": segment["sequence"], "start_ms": segment["start_ms"], "end_ms": segment["end_ms"],
-                           "speaker_label": segment["speaker_label"],
-                           **{key: segment[key] for key in ("raw_start_segment_id", "raw_end_segment_id") if key in segment}}
-                block = ExtractedBlock(len(blocks), "transcript_segment", segment["text"],
-                                       locator_label=f"발화 {segment['sequence']} · {segment['start_ms']}–{segment['end_ms']} ms", source_locator=locator)
-                blocks.append(block)
-                for chunk in iter_chunks(block.text, sequence_start=len(chunks), char_offset=total):
-                    chunks.append(replace(chunk, block_sequence=block.sequence))
-                total += len(block.text)
-            if not chunks:
-                blocks.close()
-                chunks.close()
-                return ExtractionOutcome(status="failed", extractor="native_revision", failure_reason="empty_content", coverage={"complete": False})
-            return ExtractionOutcome(status="completed", extractor="native_revision", blocks=blocks, chunks=chunks, char_count=total,
-                                     coverage={"complete": True, "unit": "segment", "total_units": len(blocks), "processed_units": len(blocks)})
+                return ExtractionOutcome(status="completed", extractor="native_revision", blocks=blocks, chunks=chunks,
+                    char_count=total, coverage={"complete": True, "unit": "transcript_block", "total_units": len(blocks), "processed_units": len(blocks)})
+            raise ValueError("unsupported native revision source")
         except BaseException:
             blocks.close()
             chunks.close()
             raise
+
+
+def _clock(at_ms: int) -> str:
+    """`mm:ss` — 사람이 스크립트에서 찾아 들을 수 있는 모양."""
+    seconds = max(0, int(at_ms)) // 1000
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"

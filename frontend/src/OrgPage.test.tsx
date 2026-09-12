@@ -515,9 +515,10 @@ describe("OrgPage — 권한 변경", () => {
     fireEvent.click(within(detail).getByRole("button", { name: "변경" }));
     const drawer = await screen.findByRole("dialog", { name: "권한 변경" });
     fireEvent.click(within(drawer).getByLabelText("역할"));
-    fireEvent.click(within(drawer).getByRole("option", { name: "보고 승인" }));
+    // 목록은 포털로 body 에 선다 (DS-18) — 드로어 안이 아니라 화면에서 찾는다
+    fireEvent.click(screen.getByRole("option", { name: "보고 승인" }));
     fireEvent.click(within(drawer).getByLabelText("범위"));
-    fireEvent.click(within(drawer).getByRole("option", { name: "재무회계팀" }));
+    fireEvent.click(screen.getByRole("option", { name: "재무회계팀" }));
     fireEvent.change(within(drawer).getByLabelText("사유"), { target: { value: "승인자 보강" } });
     fireEvent.click(within(drawer).getByRole("button", { name: "권한 부여" }));
 
@@ -560,9 +561,10 @@ describe("OrgPage — 늦게 도착한 응답", () => {
     const drawer = await screen.findByRole("dialog", { name: "권한 변경" });
     expect(within(drawer).getByText(/김세연 · 2183/)).toBeTruthy();
     fireEvent.click(within(drawer).getByLabelText("역할"));
-    fireEvent.click(within(drawer).getByRole("option", { name: "보고 승인" }));
+    // 목록은 포털로 body 에 선다 (DS-18) — 드로어 안이 아니라 화면에서 찾는다
+    fireEvent.click(screen.getByRole("option", { name: "보고 승인" }));
     fireEvent.click(within(drawer).getByLabelText("범위"));
-    fireEvent.click(within(drawer).getByRole("option", { name: "재무회계팀" }));
+    fireEvent.click(screen.getByRole("option", { name: "재무회계팀" }));
     fireEvent.change(within(drawer).getByLabelText("사유"), { target: { value: "승인자 보강" } });
     fireEvent.click(within(drawer).getByRole("button", { name: "권한 부여" }));
 

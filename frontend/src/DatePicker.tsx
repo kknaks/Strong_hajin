@@ -4,6 +4,7 @@ import type React from "react";
 import { addDays, datePickerLabel, formatDate, formatMonthLong, seoulToday, weekdayNames } from "./labels";
 import { Icon } from "./Icon";
 import { Popover } from "./Popover";
+import type { SelectTriggerProps, SelectTriggerState } from "./Select";
 
 /**
  * 날짜를 고르는 자리.
@@ -157,6 +158,7 @@ export function DatePicker({
   max,
   id,
   label,
+  trigger,
 }: {
   /** ISO `YYYY-MM-DD`, 날짜가 없으면 빈 문자열. */
   value: string;
@@ -168,15 +170,21 @@ export function DatePicker({
   id?: string;
   /** 패널 이름. 트리거는 여기에 "달력 열기"를 붙여 읽는다. */
   label: string;
+  /** 트리거를 갈아 끼운다 — `Select` 와 같은 render prop. 안 주면 달력 아이콘 단추 하나다. */
+  trigger?: (state: SelectTriggerState) => React.ReactNode;
 }) {
   return (
     <Popover
       label={label}
-      trigger={({ props }) => (
-        <button {...props} aria-label={`${label} ${datePickerLabel.open}`} className="btn h30 ghost date-picker-trigger" id={id}>
-          <Icon name="calendar" size={14} />
-        </button>
-      )}
+      trigger={({ open, props }) => {
+        const triggerProps: SelectTriggerProps = { ...props, "aria-label": `${label} ${datePickerLabel.open}`, id };
+        if (trigger) return trigger({ open, label: value, props: triggerProps });
+        return (
+          <button {...triggerProps} className="btn h30 ghost date-picker-trigger">
+            <Icon name="calendar" size={14} />
+          </button>
+        );
+      }}
       width={280}
     >
       {(close) => <DatePickerPanel close={close} max={max} min={min} onChange={onChange} value={value} />}

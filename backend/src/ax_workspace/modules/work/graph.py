@@ -16,6 +16,7 @@ from ax_workspace.modules.organization_access.domain import (
     TASK_READ,
     WORK_REQUEST_READ,
 )
+from ax_workspace.modules.work.requests import SYSTEM_ACTOR_PREFIX
 from ax_workspace.modules.work.search import matches
 
 #: What may be at either end of a connection. Each is read through the module that owns it.
@@ -223,8 +224,7 @@ class GraphApplication:
         nodes: dict[str, dict[str, Any]] = {self._ref(center): center}
         edges: list[dict[str, str]] = []
 
-        self._add_person(nodes, str(request["requester_id"]))
-        edges.append(self._edge("requested", f"person:{request['requester_id']}", self._ref(center)))
+        self._link_requester(principal, nodes, edges, request, self._ref(center), resolve_meeting=True)
         self._add_person(nodes, str(request["assignee_id"]))
         edges.append(self._edge("asked_of", self._ref(center), f"person:{request['assignee_id']}"))
 
@@ -420,8 +420,7 @@ class GraphApplication:
         for request in self._source.readable_requests(principal):
             node = self._request_node(request)
             nodes[self._ref(node)] = node
-            self._add_person(nodes, str(request["requester_id"]))
-            edges.append(self._edge("requested", f"person:{request['requester_id']}", self._ref(node)))
+            self._link_requester(principal, nodes, edges, request, self._ref(node), resolve_meeting=False)
             self._add_person(nodes, str(request["assignee_id"]))
             edges.append(self._edge("asked_of", self._ref(node), f"person:{request['assignee_id']}"))
             # 요청이 업무가 되었으면 그 자국을 첫 화면에서도 잇는다. 둘 다 이미 화면에 있는데 선만 없으면
@@ -699,7 +698,7 @@ class GraphApplication:
             "kind": "meeting",
             "id": str(meeting["meeting_id"]),
             "title": str(meeting.get("title") or "회의"),
-            "state": str(meeting.get("visibility") or ""),
+            "state": str(meeting.get("status") or ""),
             "date": str(meeting["starts_at"])[:10] if meeting.get("starts_at") else None,
         }
 
@@ -761,6 +760,44 @@ class GraphApplication:
             "state": request.get("state"),
             "date": request.get("due_date"),
         }
+
+    def _link_requester(
+        self,
+        principal: Principal,
+        nodes: dict[str, dict[str, Any]],
+        edges: list[dict[str, Any]],
+        request: dict[str, Any],
+        center_ref: str,
+        *,
+        resolve_meeting: bool,
+    ) -> None:
+        """요청을 **보낸 쪽**에 잇는다. 사람이면 사람 점에, 시스템이면 그 요청이 나온 회의에 잇는다.
+
+        회의 승격이 만든 요청의 요청자는 `system:meeting` 이고 그것은 사람 명부에 없는 id 다 (D40).
+        그대로 사람 점으로 그리면 그래프에 **사람이 아닌 사람**이 하나 서고, 이름 자리에 id 가 나온다.
+        보낸 쪽이 시스템이면 사람 점을 만들지 않고 그 요청이 나온 회의에 잇는다 — 「이 일이 어디서
+        나왔는가」는 그 회의가 답이다.
+        """
+        requester = str(request["requester_id"])
+        if not requester.startswith(SYSTEM_ACTOR_PREFIX):
+            self._add_person(nodes, requester)
+            edges.append(self._edge("requested", f"person:{requester}", center_ref))
+            return
+        meeting_id = request.get("source_meeting_id")
+        if not meeting_id:
+            # 시스템이 보냈는데 회의를 모른다 — 이을 곳이 없으면 **선을 긋지 않는다**. 지어내지 않는다.
+            return
+        reference = f"meeting:{meeting_id}"
+        if reference not in nodes:
+            if not resolve_meeting:
+                # 첫 화면에서는 요청마다 회의를 찾아가지 않는다 — 이미 화면에 있는 회의에만 선을 잇는다.
+                return
+            meeting = self._source.readable_meeting(principal, UUID(str(meeting_id)))
+            if meeting is None:
+                return
+            node = self._meeting_node(meeting)
+            nodes[self._ref(node)] = node
+        edges.append(self._edge("followed_up", reference, center_ref))
 
     def _add_person(self, nodes: dict[str, dict[str, Any]], member_id: str) -> None:
         person = self._source.person(member_id) or {"member_id": member_id, "display_name": member_id}

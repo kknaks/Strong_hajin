@@ -84,7 +84,7 @@ def populate(database_url: str) -> dict:
         for i in range(500):
             owner, attendee = ("jiho", "mina") if i % 2 == 0 else ("minseok", "hyeon")
             mid = identity("meeting", i)
-            session.add(MeetingRecord(id=mid, organization_id="scax", owner_id=owner, title=f"대량 충돌 2026 회의 {i:04}", starts_at=WHEN + timedelta(days=i), ends_at=WHEN + timedelta(days=i, hours=1), visibility="private", created_at=WHEN, updated_at=WHEN))
+            session.add(MeetingRecord(id=mid, organization_id="scax", owner_id=owner, title=f"대량 충돌 2026 회의 {i:04}", starts_at=WHEN + timedelta(days=i), ends_at=WHEN + timedelta(days=i, hours=1), status="scheduled", external_attendees=[], created_at=WHEN, updated_at=WHEN))
             session.add(MeetingAttendeeRecord(id=identity("attendee", i), meeting_id=mid, member_id=attendee, invited_by=owner, added_at=WHEN))
             edge("owns_meeting", f"person:{owner}", f"meeting:{mid}")
             edge("attended", f"person:{attendee}", f"meeting:{mid}")

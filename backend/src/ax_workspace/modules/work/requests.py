@@ -38,6 +38,7 @@ class WorkRequestAccessDenied(WorkRequestError):
 
 class WorkRequestRepository(Protocol):
     def request_references(self, request_id: UUID) -> list[Any]: ...
+    def source_meeting_title(self, request: Any) -> str | None: ...
     def create_request(
         self,
         requester_id: str,
@@ -49,6 +50,9 @@ class WorkRequestRepository(Protocol):
         due_date: date | None = None,
         cc_member_ids: list[str] | None = None,
         checklist: list[str] | None = None,
+        source_meeting_id: UUID | None = None,
+        source_agenda_id: UUID | None = None,
+        promoted_by_member_id: str | None = None,
     ) -> tuple[Any, bool]: ...
     def request(self, request_id: UUID, *, lock: bool = False) -> Any: ...
     def cc_member_ids(self, request: Any) -> list[str]: ...
@@ -85,6 +89,20 @@ class WorkRequestAssigneeDirectory(Protocol):
     def is_work_request_assignee(self, principal: Principal, assignee_id: str) -> bool: ...
     def member_candidates(self, principal: Principal) -> list[dict[str, str]]: ...
     def is_active_member(self, principal: Principal, member_id: str) -> bool: ...
+
+
+#: 회의 승격이 만든 요청을 **보낸 쪽**. 사람이 아니라 시스템이다 (사용자 결정 D40, 2026-09-11).
+#:
+#: 승격은 「내가 너에게 부탁한다」가 아니라 「회의에서 이 일이 나왔다」이다. 요청자 자리에 누른 사람을
+#: 앉히면 회의에서 나온 일이 그 사람의 부탁으로 읽히고, 조직 경계(누가 누구에게 요청할 수 있는가)도
+#: 그 사람에게 걸린다. 그래서 보낸 쪽은 시스템이고, **누른 사람은 `promoted_by_member_id` 로 남는다.**
+#: 이 글자는 `members` 에 없는 id 다 — 사람 관계 표(resource_relationships)에는 이 줄이 서지 않는다.
+SYSTEM_MEETING_REQUESTER = "system:meeting"
+#: 사람이 아닌 행위자의 접두. 이 글자로 시작하는 id 는 **사람 명부에 없다** — 사람으로 그리면 안 된다.
+SYSTEM_ACTOR_PREFIX = "system:"
+#: 요청자 표시 종류. 화면이 「회의 · {회의명}」으로 그릴지 사람 이름으로 그릴지 가르는 값이다.
+REQUESTER_KIND_SYSTEM = "system"
+REQUESTER_KIND_MEMBER = "member"
 
 
 #: One reserved key inside a decision's conditions for everything the server froze, so it never mixes with the note
@@ -211,22 +229,47 @@ class WorkRequestApplication:
         cc_member_ids: list[str] | None = None,
         checklist: list[str] | None = None,
         reference_task_ids: list[UUID] | None = None,
+        source_meeting_id: UUID | None = None,
+        source_agenda_id: UUID | None = None,
+        allow_self_assignment: bool = False,
+        promoted_by_member_id: str | None = None,
     ) -> dict[str, Any]:
+        """업무 요청 하나. `promoted_by_member_id` 가 오면 **회의 승격**이다 (D40).
+
+        그때 보낸 쪽은 시스템이고 누른 사람은 참조로 남는다. 시스템이 보내므로 **담당 후보의 조직 경계를
+        묻지 않는다** — 회의에 누가 앉아 있었는지 따로 실어 보내던 예외(`eligible_member_ids`)가 이 규칙에
+        흡수됐다. 사람이 보내는 기존 경로는 한 글자도 달라지지 않는다.
+        """
         self._require(principal, WORK_REQUEST_CREATE)
         if not title.strip():
             raise WorkRequestError("title is required")
-        if not self._assignee_directory.is_work_request_assignee(principal, assignee_id):
+        promoted = promoted_by_member_id is not None
+        requester_id = SYSTEM_MEETING_REQUESTER if promoted else str(principal.id)
+        # 회의에서 나온 일을 자기가 맡겠다고 고르는 것은 승격의 정상 경로다 — 갈래를 두지 않으므로 그때도 요청이다
+        # (SCAX-SPEC-004 §9-5 「누르는 사람 자신이어도 된다」). 그 밖의 자리에서는 자기 자신이 후보가 아니다.
+        oneself = allow_self_assignment and assignee_id == str(principal.id)
+        if promoted:
+            # 조직 경계는 **보내는 사람**에게 걸리는 규칙이다. 보낸 쪽이 시스템이면 걸 자리가 없다 (D40).
+            # 그래도 아무 글자나 담당이 되지는 않는다 — 지금 일하고 있는 사람인지는 그대로 본다.
+            if not oneself and not self._assignee_directory.is_active_member(principal, assignee_id):
+                raise WorkRequestError("assignee is not an eligible assignee")
+        elif not oneself and not self._assignee_directory.is_work_request_assignee(principal, assignee_id):
             raise WorkRequestError("assignee is not an eligible assignee")
         cc: list[str] = []
         for member_id in cc_member_ids or []:
-            if member_id in {str(principal.id), assignee_id} or member_id in cc:
+            if member_id in {requester_id, str(principal.id), assignee_id} or member_id in cc:
                 continue
             if not self._assignee_directory.is_active_member(principal, member_id):
                 raise WorkRequestError(f"cc member {member_id} is not an active member")
             cc.append(member_id)
+        # 누른 사람은 cc 로 들어간다 — 시스템이 보낸 요청이라도 **그 사람은 자기가 만든 것을 읽어야 한다** (D40).
+        # 이 한 사람에게는 「일하고 있는 사람인가」를 묻지 않는다: 지금 이 요청을 만들고 있는 당사자이고,
+        # 후보 명부는 본인을 빼고 답하므로 물으면 언제나 아니라고 한다.
+        if promoted and promoted_by_member_id not in {assignee_id, *cc}:
+            cc.append(str(promoted_by_member_id))
         cleaned_description = (description or "").strip() or None
         request, created = self._repository.create_request(
-            str(principal.id),
+            requester_id,
             assignee_id,
             title.strip(),
             causation_key,
@@ -237,6 +280,10 @@ class WorkRequestApplication:
             checklist=clean_checklist(checklist),
             # So does the earlier work pointed at — but only work this person may actually read right now.
             reference_task_ids=self._readable_references(principal, reference_task_ids),
+            # 회의에서 넘어온 요청이면 출처 두 id 가 함께 간다 (SCAX-SPEC-004 §9-5).
+            source_meeting_id=source_meeting_id,
+            source_agenda_id=source_agenda_id,
+            promoted_by_member_id=promoted_by_member_id,
         )
         if created:
             self._repository.append_audit(request.id, str(principal.id), "work_request.created", {})
@@ -308,7 +355,7 @@ class WorkRequestApplication:
         request = self._repository.request(request_id, lock=True)
         if request is None:
             raise WorkRequestError("work request was not found")
-        if request.requester_id != str(principal.id):
+        if not self._is_requester(principal, request):
             raise WorkRequestAccessDenied("only the requester may amend their own request")
         if request.state != "pending":
             raise WorkRequestError("담당자가 판단하고 있는 요청만 수정할 수 있습니다")
@@ -393,7 +440,7 @@ class WorkRequestApplication:
         request = self._repository.request(request_id, lock=True)
         if request is None:
             raise WorkRequestError("work request was not found")
-        if request.requester_id != str(principal.id):
+        if not self._is_requester(principal, request):
             raise WorkRequestError("only the requester may resubmit")
         if request.version != expected_version:
             raise WorkRequestError("work request version is stale")
@@ -433,7 +480,7 @@ class WorkRequestApplication:
         request = self._repository.request(request_id, lock=True)
         if request is None:
             raise WorkRequestError("work request was not found")
-        if request.requester_id != str(principal.id):
+        if not self._is_requester(principal, request):
             raise WorkRequestError("only the requester may withdraw")
         if request.version != expected_version:
             raise WorkRequestError("work request version is stale")
@@ -511,7 +558,7 @@ class WorkRequestApplication:
         request = self._repository.request(request_id, lock=True)
         if request is None:
             raise WorkRequestError("work request was not found")
-        if str(principal.id) not in {request.requester_id, request.assignee_id}:
+        if not self._is_requester(principal, request) and str(principal.id) != request.assignee_id:
             raise WorkRequestError("only the requester or the assignee may adopt evidence")
         submission = self._repository.current_submission(request)
         if submission is None:
@@ -624,9 +671,24 @@ class WorkRequestApplication:
             raise WorkRequestError("principal cannot read this work request")
         return request
 
+    @staticmethod
+    def _is_requester(principal: Principal, request: Any) -> bool:
+        """이 사람이 **요청자 자리에 선 사람**인가 — 요청자 전용 조작의 유일한 판정이다.
+
+        회의 승격이면 요청자는 시스템이고 누른 사람이 그 자리를 대신 선다 (D40): 그 사람이 만든 요청이므로
+        고치고 거두는 것도 그 사람이다. 시스템은 로그인하지 않으므로 이 판정을 양보하지 않으면
+        승격된 요청은 **아무도 수정할 수 없는 요청**이 된다.
+        """
+        member_id = str(principal.id)
+        return member_id == request.requester_id or member_id == getattr(request, "promoted_by_member_id", None)
+
     def _is_participant(self, principal: Principal, request: Any) -> bool:
         member_id = str(principal.id)
-        return member_id in {request.requester_id, request.assignee_id} or member_id in self._repository.cc_member_ids(request)
+        return (
+            self._is_requester(principal, request)
+            or member_id == request.assignee_id
+            or member_id in self._repository.cc_member_ids(request)
+        )
 
     @staticmethod
     def _comment_view(comment: Any, attachments: list[dict[str, Any]]) -> dict[str, Any]:
@@ -655,6 +717,9 @@ class WorkRequestApplication:
         return {
             **self._view(request, task_id=self._repository.derived_task_ids([request]).get(request.id)),
             "references": self._references_view(principal, request),
+            # 「회의 · {회의명}」으로 그릴 이름. 회의에서 오지 않은 요청은 `null` 이다 (D40).
+            # 상세에서만 읽는다 — 목록 한 줄마다 회의를 찾아가는 값이 아니다.
+            "source_meeting_title": self._repository.source_meeting_title(request),
         }
 
     def _readable_references(self, principal: Principal, task_ids: list[UUID] | None) -> list[UUID]:
@@ -721,6 +786,13 @@ class WorkRequestApplication:
             "due_date": request.due_date.isoformat() if getattr(request, "due_date", None) else None,
             "checklist": list(getattr(request, "initial_checklist", None) or []),
             "requester_id": request.requester_id,
+            # 회의에서 온 요청이면 그 회의. 관계 그래프가 요청을 회의에 잇는 근거다 (D40 미결 ④).
+            "source_meeting_id": str(request.source_meeting_id) if getattr(request, "source_meeting_id", None) else None,
+            # 요청자를 화면이 어떻게 그릴지 — 사람 이름인가, 「회의 · {회의명}」인가 (D40).
+            "requester_kind": (
+                REQUESTER_KIND_SYSTEM if request.requester_id == SYSTEM_MEETING_REQUESTER else REQUESTER_KIND_MEMBER
+            ),
+            "promoted_by_member_id": getattr(request, "promoted_by_member_id", None),
             "assignee_id": request.assignee_id,
             "cc_member_ids": self._repository.cc_member_ids(request),
             "state": request.state,

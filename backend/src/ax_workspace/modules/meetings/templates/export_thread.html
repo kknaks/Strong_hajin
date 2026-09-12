@@ -1,0 +1,264 @@
+<!--
+  SCAX 회의록 내보내기 · 주제 스레드형 (A4 인쇄) — SCAX-SPEC-004 §8-10 · D39
+  ─────────────────────────────────────────────────────────────
+  · 디자이너 정본(`design/export-thread-template.html`)의 마크업과 CSS 를 그대로 옮긴 것이다.
+  · 이 파일 하나로 완결한다. 외부 CSS·폰트·스크립트를 부르지 않는다.
+  · 색은 DS 토큰의 실제 값을 그대로 박았다(인쇄물이라 var() 를 쓰지 않는다).
+  · 정본의 `{{…}}` 주석 자리를 **조각(fragment)** 으로 갈랐다: 서버가 조각을 꺼내
+    `{{이름}}` 을 값으로 갈아 끼우고 이어 붙인다. 템플릿 엔진을 새로 들이지 않기 위해서다.
+  · `{{{이름}}}` 은 이미 만들어진 마크업이 들어갈 자리다(이스케이프하지 않는다).
+    그 밖의 `{{이름}}` 은 전부 이스케이프해서 넣는다.
+  · 페이지는 .page 하나 = A4 한 장이다. 머리·꼬리는 장마다 반복하고 **쪽 번호는 서버가 센다**
+    — `counter(page)` 는 @page 마진 박스에서만 도는데 Chrome 이 그것을 지원하지 않는다.
+-->
+<!--#fragment document-->
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>회의록 — {{title}}</title>
+<style>
+/* ── 조판 기준 ─────────────────────────────────────────────
+   A4 210×297mm · 좌우 16mm · 위 14mm · 아래 22mm → 본문 폭 178mm     */
+@page { size: A4; margin: 0; }
+
+* { box-sizing: border-box; }
+
+html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+body {
+  margin: 0;
+  background: #f6f7fa;                      /* --surface-sunken · 화면에서 종이 밖 바탕 */
+  color: #1b1e25;                           /* --text-primary */
+  font-family: Pretendard, "Pretendard Variable", -apple-system, BlinkMacSystemFont,
+               "system-ui", "Segoe UI", "Noto Sans KR", "Malgun Gothic", sans-serif;
+  font-size: 12px;
+  line-height: 1.45;                        /* DS 행간 145% */
+  letter-spacing: -0.02em;                  /* DS 자간 −2% */
+}
+
+/* ── 한 장 ───────────────────────────────────────────────── */
+.page {
+  position: relative;
+  width: 210mm;
+  min-height: 297mm;
+  padding: 14mm 16mm 22mm;   /* 아래 22mm 중 10mm 는 꼬리 자리 */
+  margin: 0 auto 12mm;
+  background: #fff;                         /* --surface */
+  box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 8px 20px rgba(16,24,40,.05);  /* --shadow-md · 화면 전용 */
+  page-break-after: always;
+  break-after: page;
+}
+.page:last-of-type { page-break-after: auto; break-after: auto; margin-bottom: 0; }
+
+/* ── 머리 ────────────────────────────────────────────────── */
+.sheet-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 8px;
+}
+.sheet-head h1 { margin: 0; font-size: 17px; font-weight: 700; }   /* Title 17 */
+.sheet-when {
+  flex: none;
+  text-align: right;
+  font-size: 11px;
+  color: #5d6472;                           /* --text-secondary */
+  font-variant-numeric: tabular-nums;
+}
+.sheet-when b { display: block; font-weight: 500; }
+.sheet-people {
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e8eaf0;         /* --border-default */
+  font-size: 11px;
+  color: #6d7483;                           /* --text-tertiary */
+}
+/* 이어지는 장의 머리 — 회의명만 작게 반복한다 */
+.sheet-head.cont { padding-bottom: 12px; border-bottom: 1px solid #e8eaf0; }
+.sheet-head.cont h1 { font-size: 12px; font-weight: 700; color: #5d6472; }
+
+/* ── 요약 문단 (없으면 이 블록째 빼면 된다) ───────────────── */
+.sheet-summary {
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  background: #f6f7fa;                      /* --surface-sunken */
+  border-radius: 8px;                       /* --radius-card */
+  font-size: 12px;
+  color: #5d6472;
+  text-wrap: pretty;
+}
+
+/* ── 스레드 축 ───────────────────────────────────────────── */
+.thread { margin-top: 16px; padding-left: 16px; border-left: 1px dashed #d4d8e0; } /* --border-strong */
+.thread-item { position: relative; padding: 0 0 16px 12px; break-inside: avoid; page-break-inside: avoid; }
+.thread-item:last-child { padding-bottom: 0; }
+/* 축 위의 점 — 왼쪽 점선 한가운데에 앉는다 */
+.thread-item::before {
+  content: "";
+  position: absolute;
+  left: -20px; top: 4px;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: #5467f7;                      /* --action */
+}
+
+.agenda-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; }
+.agenda-head h2 { margin: 0 4px 0 0; font-size: 14px; font-weight: 700; }   /* Body Bold 14 */
+
+/* ── 칩 ──────────────────────────────────────────────────── */
+.chip {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;                       /* --radius-chip */
+  font-size: 11px;                          /* Micro · 칩 전용 */
+  font-weight: 700;
+  white-space: nowrap;
+}
+.chip.done      { background: #f4f5f7; color: #5d6472; }   /* --status-neutral-tint · 결론 남 */
+.chip.open      { background: #eaf4ff; color: #0079d0; }   /* --progress-tint/text · 결론 안 남 */
+.chip.action    { background: #f1f2fe; color: #5467f7; }   /* --selected-bg/--action · 액션 */
+.chip.requested { background: #f4f5f7; color: #6d7483; }   /* 승격됨 · 요청됨 */
+
+/* 발화 시각 칩 — 벽시계 HH:MM */
+.stamp {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #eaf4ff;                      /* --progress-tint */
+  color: #0079d0;                           /* --progress-text */
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.stamp.more { background: transparent; color: #6d7483; padding-left: 2px; }
+.stamp.none { background: #f6f7fa; color: #6d7483; }       /* 근거 없음 */
+
+/* ── 안건 본문 줄 ────────────────────────────────────────── */
+.lines { margin: 8px 0 0; padding: 0; list-style: none; }
+.lines li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 12px;
+  color: #5d6472;
+}
+.lines li .dot { flex: none; color: #979faf; }             /* --text-disabled */
+.lines li .text { flex: 1; min-width: 0; text-wrap: pretty; }
+.lines li .at {
+  flex: none;
+  font-size: 11px;
+  color: #979faf;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 다음 할 일 ──────────────────────────────────────────── */
+.todos { margin: 10px 0 0; padding: 10px 12px; border: 1px solid #eff1f6; border-radius: 8px; }  /* --border-subtle */
+.todos-label { margin-bottom: 6px; font-size: 11px; font-weight: 700; color: #6d7483; }
+.todo { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; padding: 3px 0; font-size: 12px; }
+.todo .title { flex: 1; min-width: 140px; color: #1b1e25; }
+.todo .due { flex: none; font-size: 11px; color: #6d7483; font-variant-numeric: tabular-nums; }
+
+/* ── 꼬리 ────────────────────────────────────────────────── */
+.sheet-foot {
+  position: absolute;
+  left: 16mm; right: 16mm; bottom: 10mm;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 6px;
+  border-top: 1px solid #eff1f6;
+  font-size: 11px;
+  color: #979faf;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 인쇄 ────────────────────────────────────────────────── */
+@media print {
+  body { background: #fff; }
+  .page { margin: 0; box-shadow: none; min-height: 297mm; }   /* height 로 잠그지 않는다 — 넘치면 잘리지 말고 밀려야 보인다 */
+}
+</style>
+</head>
+<body>
+{{{pages}}}
+</body>
+</html>
+<!--/#fragment-->
+
+<!--#fragment page-->
+<section class="page">
+{{{head}}}
+  <div class="thread">
+{{{items}}}
+  </div>
+
+  <footer class="sheet-foot">
+    <span class="page-no">{{page_no}}</span>
+    <span>SCAX · 회의록</span>
+    <span>내보낸 시각 {{exported_at}}</span>
+  </footer>
+</section>
+<!--/#fragment-->
+
+<!--#fragment first_head-->
+  <header class="sheet-head">
+    <h1>{{title}}</h1>
+    <div class="sheet-when">
+      <b>{{date}}</b>
+      <span>{{starts}}</span> ~ <span>{{ends}}</span>
+    </div>
+  </header>
+  <div class="sheet-people">
+    참석 · {{attendees}}
+  </div>
+{{{summary}}}
+<!--/#fragment-->
+
+<!--#fragment cont_head-->
+  <header class="sheet-head cont">
+    <h1>{{title}}</h1>
+    <div class="sheet-when">{{date}}</div>
+  </header>
+<!--/#fragment-->
+
+<!--#fragment summary-->
+  <p class="sheet-summary">{{summary}}</p>
+<!--/#fragment-->
+
+<!--#fragment agenda-->
+    <article class="thread-item">
+      <div class="agenda-head">
+        <h2>{{title}}</h2>{{{chips}}}
+      </div>
+{{{lines}}}
+{{{todos}}}
+    </article>
+<!--/#fragment-->
+
+<!--#fragment lines-->
+      <ul class="lines">
+{{{items}}}
+      </ul>
+<!--/#fragment-->
+
+<!--#fragment line-->
+        <li><span class="dot">·</span><span class="text">{{text}}</span><span class="at">{{at}}</span></li>
+<!--/#fragment-->
+
+<!--#fragment todos-->
+      <div class="todos">
+        <div class="todos-label">다음 할 일</div>
+{{{items}}}
+      </div>
+<!--/#fragment-->
+
+<!--#fragment todo-->
+        <div class="todo">
+          <span class="chip action">액션</span>
+          <span class="title">{{title}}</span>
+          <span class="due">{{due}}</span>{{{mark}}}
+        </div>
+<!--/#fragment-->

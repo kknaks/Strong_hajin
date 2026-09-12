@@ -14,6 +14,8 @@ import { NEW_DRAFT_KEY, useConversations } from "./chat/useConversations";
 import { DailyReportPage } from "./DailyReportPage";
 import { personName } from "./labels";
 import { LoginPage } from "./LoginPage";
+import { MeetingDetailPage } from "./meetings/MeetingDetailPage";
+import { MeetingListPage } from "./meetings/MeetingListPage";
 import { Toast } from "./Modal";
 import { MyWorkPage } from "./MyWorkPage";
 import { OrgPage } from "./OrgPage";
@@ -26,6 +28,7 @@ import { Icon } from "./Icon";
 const navigation: ReadonlyArray<{ id: ProductSurface; label: string }> = [
   { id: "today", label: "오늘" },
   { id: "calendar", label: "캘린더" },
+  { id: "meetings", label: "회의 목록" },
   { id: "work", label: "내 업무" },
   { id: "report", label: "보고" },
   { id: "project", label: "프로젝트" },
@@ -36,6 +39,7 @@ const navigation: ReadonlyArray<{ id: ProductSurface; label: string }> = [
 const surfaceLabel: Record<ProductSurface, string> = {
   today: "오늘",
   calendar: "캘린더",
+  meetings: "회의 목록",
   work: "내 업무",
   report: "보고",
   project: "프로젝트",
@@ -49,7 +53,23 @@ export default function App() {
   const [focusWorkRequestId, setFocusWorkRequestId] = useState<string | null>(null);
   const personaId = session?.member_id ?? "";
   const [personas, setPersonas] = useState<Persona[]>([]);
-  const [focusMeetingId, setFocusMeetingId] = useState<string | null>(null);
+  const [graphFocus, setGraphFocus] = useState<string | null>(null);
+  // 회의는 「회의 목록」 아래 전체 화면 둘이다 — 열린 회의가 있으면 상세, 없으면 목록.
+  const [openMeetingId, setOpenMeetingId] = useState<string | null>(null);
+  const [openMeetingTitle, setOpenMeetingTitle] = useState("");
+  // 고치던 것이 있는 채로 브레드크럼을 누르면 상세가 한 번 묻는다 (SCR-106-T11).
+  const meetingLeaveGuard = useRef<((proceed: () => void) => void) | null>(null);
+  const registerMeetingLeaveGuard = useCallback((guard: ((proceed: () => void) => void) | null) => {
+    meetingLeaveGuard.current = guard;
+  }, []);
+  const closeMeeting = useCallback(() => {
+    const proceed = () => {
+      setOpenMeetingId(null);
+      setOpenMeetingTitle("");
+    };
+    if (meetingLeaveGuard.current) meetingLeaveGuard.current(proceed);
+    else proceed();
+  }, []);
   const capabilities = session?.capabilities ?? null;
   const organizationNames = session?.organizations.map((organization) => organization.name) ?? [];
   const [surface, setSurface] = useState<ProductSurface>("today");
@@ -122,6 +142,8 @@ export default function App() {
   function resetWorkspace() {
     chat.reset();
     setSurface("today");
+    setOpenMeetingId(null);
+    setOpenMeetingTitle("");
     setIsAxOpen(false);
     setContextOptions([]);
     setSelectedContextKey("");
@@ -378,7 +400,7 @@ export default function App() {
         <p className="rail-foot">SCAX · 업무 운영 시스템</p>
       </aside>
 
-      <section className="canvas">
+      <section className={surface === "meetings" ? "canvas full-height" : "canvas"}>
         <header className="canvas-topbar">
           <button
             aria-expanded={railOpen}
@@ -398,7 +420,17 @@ export default function App() {
                   홈
                 </button>
                 <span aria-hidden>›</span>
-                <b>{surfaceLabel[surface]}</b>
+                {surface === "meetings" && openMeetingId ? (
+                  <>
+                    <button className="btn link" onClick={closeMeeting} type="button">
+                      {surfaceLabel[surface]}
+                    </button>
+                    <span aria-hidden>›</span>
+                    <b>{openMeetingTitle}</b>
+                  </>
+                ) : (
+                  <b>{surfaceLabel[surface]}</b>
+                )}
               </>
             )}
           </nav>
@@ -431,14 +463,34 @@ export default function App() {
             onNavigate={setSurface}
           />
         )}
-        {surface === "calendar" && (
-          <CalendarPage
-            {...pageProps}
-            {...sharedWorkProps}
-            focusMeetingId={focusMeetingId}
-            onMeetingFocusHandled={() => setFocusMeetingId(null)}
-          />
-        )}
+        {surface === "calendar" && <CalendarPage {...pageProps} {...sharedWorkProps} />}
+        {surface === "meetings" &&
+          (openMeetingId ? (
+            <MeetingDetailPage
+              meetingId={openMeetingId}
+              onBack={closeMeeting}
+              onError={setError}
+              onNotice={setToast}
+              canCreateWorkRequests={has("work_request.create")}
+              onOpenMeeting={setOpenMeetingId}
+              onSessionLost={() => {
+                // 스트림이 인증으로 닫혔다 — 쿠키가 죽었으므로 로그인 화면으로 돌려보낸다.
+                resetWorkspace();
+                setSession(null);
+              }}
+              onRegisterLeaveGuard={registerMeetingLeaveGuard}
+              onRegisterRefresh={registerSurfaceRefresh}
+              onTitleChange={setOpenMeetingTitle}
+              ownerName={currentPersonaName}
+            />
+          ) : (
+            <MeetingListPage
+              onError={setError}
+              onNotice={setToast}
+              onOpenMeeting={setOpenMeetingId}
+              onRegisterRefresh={registerSurfaceRefresh}
+            />
+          ))}
         {surface === "work" && (
           <MyWorkPage
             {...pageProps}
@@ -458,8 +510,8 @@ export default function App() {
             onOpenNode={(node) => {
               // Each kind opens where it lives; the surface reads it again with this person's access.
               if (node.kind === "meeting") {
-                setFocusMeetingId(node.id);
-                setSurface("calendar");
+                setOpenMeetingId(node.id);
+                setSurface("meetings");
                 return;
               }
               if (node.kind === "person" || node.kind === "team") {
@@ -543,8 +595,8 @@ export default function App() {
               return;
             }
             if (resource.resource_type === "meeting") {
-              setSurface("calendar");
-              setFocusMeetingId(resource.resource_id);
+              setOpenMeetingId(resource.resource_id);
+              setSurface("meetings");
               return;
             }
             if (resource.resource_type === "material") {
@@ -566,10 +618,11 @@ export default function App() {
             setSurface("work");
             setFocusTaskId(taskId);
           }}
+          /* 채팅이 「회의 열기」를 누르면 회의 상세로 간다 (WP-006) — main 이 쓰던 달력 + MeetingDrawer 자리다 */
           onOpenMeeting={(meetingId) => {
             setIsAxOpen(false);
-            setSurface("calendar");
-            setFocusMeetingId(meetingId);
+            setSurface("meetings");
+            setOpenMeetingId(meetingId);
           }}
           onRetryList={() => void chat.refreshConversations().catch(() => setError("AX 대화를 불러오지 못했습니다."))}
           onRetryTurn={(turnId) => void chat.retryTurn(turnId)}

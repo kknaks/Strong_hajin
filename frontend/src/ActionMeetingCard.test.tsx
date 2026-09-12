@@ -1,9 +1,21 @@
-import { cleanup, fireEvent, render, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ActionMeetingCard } from "./ActionMeetingCard";
 import type { ActionItem } from "./viewModels";
 
+
+/**
+ * 날짜 칸은 달력을 여는 트리거 하나다 (DS-17) — 값은 단추 글자로 서고, 고치는 길은 달력에서 날을 누르는 것이다.
+ * 목록(Select·TimeField·달력)은 포털로 `document.body` 에 서므로(DS-18) 카드 안이 아니라 화면에서 찾는다.
+ */
+const dateTrigger = (scope: HTMLElement, label: string) => within(scope).getByRole("button", { name: `${label} 달력 열기` });
+
+function pickDate(scope: HTMLElement, label: string, isoDate: string) {
+  fireEvent.click(dateTrigger(scope, label));
+  const panel = screen.getByRole("group", { name: label });
+  fireEvent.click(panel.querySelector(`[data-date="${isoDate}"]`) as HTMLElement);
+}
 
 const proposal: ActionItem = {
   action_id: "meeting-action-1",
@@ -134,14 +146,14 @@ describe("AX Meeting proposal card", () => {
     expect(card.queryByLabelText("조직")).toBeNull();
     expect(card.queryByLabelText("공개 범위")).toBeNull();
     expect(card.getByLabelText("주최자").textContent).toContain("민아 (구성원)");
-    expect((card.getByLabelText("날짜") as HTMLInputElement).value).toBe("2026.09.10");
+    expect(dateTrigger(container, "날짜").textContent).toBe("2026.09.10");
     expect(card.getByRole("button", { name: "시간 시작 시각" }).textContent).toContain("10:00");
     expect(card.getByRole("button", { name: "시간 종료 시각" }).textContent).toContain("11:00");
     expect(card.getByRole("button", { name: "참석자" }).textContent).toContain("지호 (팀장)");
     fireEvent.change(card.getByLabelText("회의 명"), { target: { value: "사람이 다듬은 출시 회의" } });
-    fireEvent.change(card.getByLabelText("날짜"), { target: { value: "2026.09.11" } });
+    pickDate(container, "날짜", "2026-09-11");
     fireEvent.click(card.getByRole("button", { name: "시간 시작 시각" }));
-    fireEvent.click(card.getByRole("option", { name: "12:00" }));
+    fireEvent.click(screen.getByRole("option", { name: "12:00" }));
     fireEvent.click(card.getByRole("button", { name: "새 회의록 내용 수정" }));
     expect(card.getByText(/지난 논의 기록을 찾지 못해 현재 대화만 사용/)).toBeTruthy();
     fireEvent.change(card.getByLabelText("회의록 초안"), { target: { value: "담당자별 출시 준비를 확인한다." } });
@@ -169,12 +181,12 @@ describe("AX Meeting proposal card", () => {
     const card = within(container);
     fireEvent.click(card.getByRole("button", { name: "수정" }));
     fireEvent.change(card.getByLabelText("회의 명"), { target: { value: "임시 회의명" } });
-    fireEvent.change(card.getByLabelText("날짜"), { target: { value: "2026.09.12" } });
+    pickDate(container, "날짜", "2026-09-12");
 
     fireEvent.click(card.getByRole("button", { name: "초기화" }));
 
     expect((card.getByLabelText("회의 명") as HTMLInputElement).value).toBe("출시 점검 회의");
-    expect((card.getByLabelText("날짜") as HTMLInputElement).value).toBe("2026.09.10");
+    expect(dateTrigger(container, "날짜").textContent).toBe("2026.09.10");
     expect(card.getByRole("button", { name: "저장" })).toBeTruthy();
   });
 
@@ -187,7 +199,7 @@ describe("AX Meeting proposal card", () => {
     expect(card.queryByLabelText("회의록 초안")).toBeNull();
     expect(card.queryByRole("region", { name: "회의록 초안 근거" })).toBeNull();
     fireEvent.click(card.getByRole("button", { name: "시간 종료 시각" }));
-    fireEvent.click(card.getByRole("option", { name: "09:30" }));
+    fireEvent.click(screen.getByRole("option", { name: "09:30" }));
     fireEvent.click(card.getByRole("button", { name: "저장" }));
     expect(card.getByText("종료 시각은 시작 시각보다 늦어야 합니다.")).toBeTruthy();
     expect(document.activeElement).toBe(card.getByRole("button", { name: "시간 시작 시각" }));
@@ -210,7 +222,7 @@ describe("AX Meeting proposal card", () => {
     fireEvent.click(card.getByRole("button", { name: "수정" }));
     expect(card.getByRole("button", { name: "참석자" }).textContent).toContain("현우 (인사)");
     fireEvent.click(card.getByRole("button", { name: "참석자" }));
-    fireEvent.click(card.getByRole("option", { name: "지호 (팀장)" }));
+    fireEvent.click(screen.getByRole("option", { name: "지호 (팀장)" }));
     fireEvent.click(card.getByRole("button", { name: "저장" }));
     await waitFor(() => expect(onCommand).toHaveBeenCalledWith("confirm", expect.objectContaining({
       draft: expect.objectContaining({

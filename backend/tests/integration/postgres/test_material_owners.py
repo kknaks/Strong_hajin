@@ -14,11 +14,10 @@ from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.modules.work.requests import WorkRequestApplication
-from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment
 from ax_workspace.platform.native_materials import NativeMaterialRepository
 from ax_workspace.platform.durable_jobs import SqlAlchemyDurableJobQueue
 from ax_workspace.platform.material_extraction import SqlAlchemyMaterialExtractionRepository
-from ax_workspace.platform.persistence import AttachmentRecord, AttachmentBindingRecord, DurableJobRecord, EvidenceRecord, MaterialExtractionRecord, MeetingNoteRecord, MeetingNoteVersionRecord, MeetingRawTranscriptRevisionRecord, MeetingRawTranscriptSegmentRecord, MeetingRecordingRecord, make_session_factory
+from ax_workspace.platform.persistence import AttachmentRecord, AttachmentBindingRecord, DurableJobRecord, EvidenceRecord, MaterialExtractionRecord, make_session_factory
 from test_postgres_integration import _postgres_test_url
 
 MINA = {"X-Demo-Persona": "mina"}
@@ -67,181 +66,12 @@ def test_owner_upload_rolls_back_artifact_binding_projection_and_job_together(tm
     assert found["searched_materials"] == 1 and len(found["results"]) == 1
 
 
-@pytest.mark.integration
-def test_concurrent_authorized_searches_create_one_legacy_projection_and_one_job(tmp_path, monkeypatch):
-    client, application, worker, sessions = _stack(tmp_path)
-    with monkeypatch.context() as old_deployment:
-        old_deployment.setattr(WorkRequestApplication, "_request_extraction", lambda *args: None)
-        request = client.post("/api/work-requests", headers=MINA, json={"title": "PG 과거 파일", "assignee_id": "jiho"}).json()
-        uploaded = client.post(f"/api/work-requests/{request['request_id']}/evidence", headers=MINA,
-                               files={"file": ("legacy.txt", b"concurrentownertoken", "text/plain")})
-        assert uploaded.status_code == 201
-    principal = application.authenticated_principal("mina")
-    barrier = Barrier(2)
-    original = SqlAlchemyMaterialExtractionRepository.for_attachments
-    def both_observe_missing(self, attachment_ids):
-        rows = original(self, attachment_ids)
-        assert rows == {}
-        barrier.wait(timeout=10)
-        return rows
-    with monkeypatch.context() as concurrent:
-        concurrent.setattr(SqlAlchemyMaterialExtractionRepository, "for_attachments", both_observe_missing)
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [pool.submit(application.search_materials, principal, "concurrentownertoken") for _ in range(2)]
-            for future in futures:
-                found = future.result(timeout=15)
-                assert found["unavailable_materials"][0]["extraction"]["status"] == "queued"
-    with sessions() as session:
-        assert len(list(session.scalars(select(MaterialExtractionRecord)))) == 1
-        assert len(list(session.scalars(select(DurableJobRecord).where(DurableJobRecord.state == "queued")))) == 1
-    assert asyncio.run(worker.run_once())
-    assert application.search_materials(principal, "concurrentownertoken")["searched_materials"] == 1
-
-
-def _recording(client):
-    meeting = client.post("/api/meetings", headers=MINA, json={"organization_id": "scax", "title": "PG 전사 검증",
-        "starts_at": "2026-09-10T01:00:00Z", "ends_at": "2026-09-10T02:00:00Z", "visibility": "private", "attendee_ids": ["jiho"]}).json()
-    recording = client.post(f"/api/meetings/{meeting['meeting_id']}/recordings/start", headers=MINA, json={"purpose": "검증"}).json()
-    stopped = client.post(f"/api/meetings/{meeting['meeting_id']}/recordings/{recording['recording_id']}/stop", headers=MINA,
-        data={"expected_version": str(recording["version"])}, files={"audio": ("original.webm", b"synthetic audio", "audio/webm")})
-    assert stopped.status_code == 200, stopped.text
-    return UUID(recording["recording_id"])
-
-
-def _final(application, recording_id):
-    return application.record_final_meeting_transcript(recording_id=recording_id, provider="fixture", provider_reference="final:postgres",
-        segments=[FinalTranscriptSegment("one", 0, 1000, "postgresnativetoken")])
-
-
-@pytest.mark.integration
-def test_meeting_note_version_and_projection_commit_with_one_durable_job(tmp_path, monkeypatch):
-    client, application, worker, sessions = _stack(tmp_path)
-    meeting = client.post("/api/meetings", headers=MINA, json={
-        "organization_id": "scax", "title": "PG 텍스트 회의록", "starts_at": "2026-09-10T01:00:00Z",
-        "ends_at": "2026-09-10T02:00:00Z", "visibility": "private", "attendee_ids": ["jiho"],
-    }).json()
-    principal = application.authenticated_principal("mina")
-    original = SqlAlchemyDurableJobQueue.enqueue
-
-    def fail_after_insert(self, job):
-        original(self, job)
-        raise RuntimeError("injected note enqueue failure")
-
-    with monkeypatch.context() as failed:
-        failed.setattr(SqlAlchemyDurableJobQueue, "enqueue", fail_after_insert)
-        with pytest.raises(RuntimeError, match="injected note enqueue"):
-            application.create_meeting_note(principal, UUID(meeting["meeting_id"]), "postgresmeetingnotetoken")
-    with sessions() as session:
-        for record in (MeetingNoteRecord, MeetingNoteVersionRecord, AttachmentRecord, AttachmentBindingRecord, MaterialExtractionRecord, DurableJobRecord):
-            assert list(session.scalars(select(record))) == []
-
-    note = application.create_meeting_note(principal, UUID(meeting["meeting_id"]), "postgresmeetingnotetoken")
-    with sessions() as session:
-        assert len(list(session.scalars(select(MeetingNoteVersionRecord)))) == 1
-        assert len(list(session.scalars(select(AttachmentRecord)))) == 1
-        assert len(list(session.scalars(select(MaterialExtractionRecord)))) == 1
-        assert len(list(session.scalars(select(DurableJobRecord).where(DurableJobRecord.kind == "material.extraction")))) == 1
-    assert asyncio.run(worker.run_once())
-    hit = application.search_materials(principal, "postgresmeetingnotetoken", resource_types=["meeting"])["results"][0]
-    assert hit["source_locator"]["source_revision_id"] == note["versions"][0]["version_id"]
-    assert client.get(hit["origin"], headers=MINA).json()["body"] == "postgresmeetingnotetoken"
-
-
-@pytest.mark.integration
-def test_native_revision_and_projection_roll_back_with_durable_enqueue(tmp_path, monkeypatch):
-    client, application, worker, sessions = _stack(tmp_path)
-    recording_id = _recording(client)
-    original = SqlAlchemyDurableJobQueue.enqueue
-    def fail_after_insert(self, job):
-        original(self, job)
-        raise RuntimeError("injected native enqueue failure")
-    with monkeypatch.context() as failed:
-        failed.setattr(SqlAlchemyDurableJobQueue, "enqueue", fail_after_insert)
-        with pytest.raises(RuntimeError, match="injected native enqueue"):
-            _final(application, recording_id)
-    with sessions() as session:
-        for record in (MeetingRawTranscriptRevisionRecord, MeetingRawTranscriptSegmentRecord, MaterialExtractionRecord):
-            assert list(session.scalars(select(record))) == []
-        # The audio was committed by stop before this failed transcription transaction.
-        assert [row.source_kind for row in session.scalars(select(AttachmentRecord))] == ["native_recording"]
-        assert [row.context_type for row in session.scalars(select(AttachmentBindingRecord))] == ["meeting_recording"]
-        assert list(session.scalars(select(DurableJobRecord).where(DurableJobRecord.kind == "material.extraction"))) == []
-    raw = _final(application, recording_id)
-    assert asyncio.run(worker.run_once())
-    hit = application.search_materials(application.authenticated_principal("mina"), "postgresnativetoken")["results"][0]
-    opened = client.get(hit["origin"], headers=MINA)
-    assert opened.status_code == 200 and opened.json()["source_revision_id"] == raw["transcript_revision_id"]
-
-
-@pytest.mark.integration
-def test_concurrent_legacy_native_discovery_creates_one_artifact_projection_and_job(tmp_path, monkeypatch):
-    client, application, worker, sessions = _stack(tmp_path)
-    with monkeypatch.context() as old_deployment:
-        old_deployment.setattr(NativeMaterialRepository, "ensure_recording", lambda *args: None)
-        old_deployment.setattr(WorkflowApplication, "_register_native_material", lambda *args: None)
-        recording_id = _recording(client)
-        _final(application, recording_id)
-    principal = application.authenticated_principal("mina")
-    barrier = Barrier(2)
-    original = NativeMaterialRepository.ensure
-    def concurrent_ensure(self, kind, identifier):
-        if kind == "meeting_recording":
-            barrier.wait(timeout=10)
-        return original(self, kind, identifier)
-    with monkeypatch.context() as concurrent:
-        concurrent.setattr(NativeMaterialRepository, "ensure", concurrent_ensure)
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [pool.submit(application.search_materials, principal, "postgresnativetoken") for _ in range(2)]
-            for future in futures:
-                assert next(row for row in future.result(timeout=15)["unavailable_materials"] if row["reason"] == "extraction")["extraction"]["status"] == "queued"
-    with sessions() as session:
-        for record, count in ((AttachmentRecord, 2), (AttachmentBindingRecord, 2), (MaterialExtractionRecord, 1)):
-            assert len(list(session.scalars(select(record)))) == count
-        assert len(list(session.scalars(select(DurableJobRecord).where(DurableJobRecord.kind == "material.extraction")))) == 1
-    assert asyncio.run(worker.run_once())
-    assert len(application.search_materials(principal, "postgresnativetoken")["results"]) == 1
-
-
-@pytest.mark.integration
-def test_recording_upload_and_audio_identity_roll_back_with_finalization_job(tmp_path, monkeypatch):
-    client, application, _, sessions = _stack(tmp_path)
-    original = SqlAlchemyDurableJobQueue.enqueue
-    def fail_after_insert(self, job):
-        original(self, job)
-        raise RuntimeError("injected recording enqueue failure")
-    with monkeypatch.context() as failed:
-        failed.setattr(SqlAlchemyDurableJobQueue, "enqueue", fail_after_insert)
-        with pytest.raises(RuntimeError, match="injected recording enqueue"):
-            _recording(client)
-    with sessions() as session:
-        row = session.scalar(select(MeetingRecordingRecord))
-        assert row.state == "recording" and row.storage_key is None and row.sha256 is None
-        for record in (AttachmentRecord, AttachmentBindingRecord, MaterialExtractionRecord, DurableJobRecord):
-            assert list(session.scalars(select(record))) == []
-        route = f"/api/meetings/{row.meeting_id}/recordings/{row.id}/stop"
-        expected_version = row.version
-    assert application.search_materials(application.authenticated_principal("mina"), "audio")["unavailable_materials_count"] == 0
-    retried = client.post(route, headers=MINA, data={"expected_version": str(expected_version)},
-        files={"audio": ("retry.webm", b"committed audio", "audio/webm")})
-    assert retried.status_code == 200, retried.text
-    audio = application.search_materials(application.authenticated_principal("mina"), "audio")["unavailable_materials"][0]
-    assert audio["reason"] == "native_recording" and audio["extraction"] is None
-    assert client.get(audio["source_contexts"][0]["origin"], headers=MINA).content == b"committed audio"
-
-
-class _ReportProvider:
-    def generate(self, request):
-        from ax_workspace.modules.ax_execution.ai import AiGeneration
-        return AiGeneration(provider_run_ref="pg-report", provider_session_ref="pg-report-session", body="postgresreporttoken",
-            requested_model="fixture", observed_model="fixture", requested_tier="fast", observed_tier="fast", latency_ms=1, usage={})
-
-
-def _report_draft(application):
-    return application.generate_daily_report_draft(application.authenticated_principal("mina"), "2026-09-01")
-
-
-def _report_submit(application, draft):
-    return application.submit_daily_report(application.authenticated_principal("mina"), draft["report_id"], draft["draft_id"], draft["draft_version"], None)
+# main 이 이 파일에 둔 회의 시험 다섯과 헬퍼 둘(`_recording`·`_final`)을 걷었다 — 전부 **옛 회의 모델**의
+# 표면(`/recordings/start`·`/stop` · `record_final_meeting_transcript` · MeetingNote·MeetingRawTranscript·
+# MeetingRecording 테이블)을 지나는데 SCAX-SPEC-004 가 그 모델을 대체했다.
+# 이 파일이 지키는 것(자료 소유자별 업로드가 원장·투영·잡을 **한 트랜잭션**으로 묶는가, 동시 검색이
+# 투영을 하나만 만드는가)은 남은 폴더·댓글·증빙·보고 시험이 그대로 지킨다. 회의 자료의 같은 보장을
+# 새 모델 위에서 다시 세우는 것은 별도 작업이다.
 
 
 @pytest.mark.integration

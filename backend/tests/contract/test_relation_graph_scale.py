@@ -1,5 +1,6 @@
 """Large synthetic ledgers exercise the real application/HTTP/MCP paths."""
 from time import perf_counter
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,9 +10,9 @@ from sqlalchemy.orm import Session
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
+from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.entrypoints.mcp import McpReportsFacade
 from graph_scale_fixture import identity, populate
-from test_meeting_followups import _stack_with_summary
 from test_mcp import ContractTestAiProvider
 from test_relation_graph import _today
 
@@ -64,22 +65,22 @@ def test_cost_counter_includes_each_cursor_fetch_mode():
 def large_graph(tmp_path_factory):
     directory = tmp_path_factory.mktemp("graph-scale")
     url = f"sqlite:///{directory / 'demo.db'}"
-    pipeline, made = _stack_with_summary(directory, title="합성 후속 회의")
-    meeting_id = made["meeting"]["meeting_id"]
-    detail = pipeline.get(f"/api/meetings/{meeting_id}", headers={"X-Demo-Persona": "mina"}).json()
-    candidate = next(row for row in detail["summaries"][0]["statements"] if row["kind"] == "followup")
-    promoted = pipeline.post(f"/api/meetings/{meeting_id}/summaries/{made['summary_id']}/statements/{candidate['statement_index']}/promote", headers={"X-Demo-Persona": "mina"}, json={"kind": "task", "title": "합성 후속 업무"})
-    assert promoted.status_code == 201, promoted.text
+    reset_database(url)
     expected = populate(url)
     settings = Settings(RuntimeProfile.TEST, url, materials_dir=str(directory / "materials"))
     client = TestClient(create_app(settings, report_provider=ContractTestAiProvider()))
-    followup_task = promoted.json()["task"]
-    started = client.post(f"/api/tasks/{followup_task['task_id']}/start", headers={"X-Demo-Persona": "mina"}, json={"expected_version": followup_task["version"]})
+    mina = {"X-Demo-Persona": "mina"}
+    # 회의에서 나온 일은 이제 안건의 「다음 할 일」에서 승격된다 — 그 표면은 SCAX-WP-004 다.
+    # 여기서 필요한 것은 보고가 딛는 「오늘 움직인 업무」 하나뿐이므로 평범한 업무로 세운다.
+    task = client.post("/api/tasks", headers=mina, json={"title": "오늘 움직인 업무"}).json()
+    started = client.post(
+        f"/api/tasks/{task['task_id']}/start", headers=mina, json={"expected_version": task["version"]}
+    )
     assert started.status_code == 200, started.text
-    report = client.post("/api/daily-reports/generate-draft", headers={"X-Demo-Persona": "mina"}, json={"report_date": _today()})
+    report = client.post("/api/daily-reports/generate-draft", headers=mina, json={"report_date": _today()})
     assert report.status_code in (200, 201), report.text
     expected["report_id"] = report.json()["report_id"]
-    expected["followup"] = (meeting_id, promoted.json()["task"]["task_id"])
+    expected["today_task"] = task["task_id"]
     return client, settings, expected
 
 
@@ -230,12 +231,13 @@ def test_scale_project_expansion_is_bounded_and_matches_live_ledger(large_graph)
     assert client.get("/api/graph/neighbors", headers={"X-Demo-Persona": "minseok"}, params={"node": ref}).status_code == 404
 
 
-def test_scale_followup_and_report_reach_only_actual_evidence(large_graph):
+def test_scale_report_reaches_only_actual_evidence(large_graph):
+    """보고–업무 간선은 초안이 실제로 담은 `source_refs` 에서만 나온다.
+
+    회의–업무 간선은 승격이 안건의 「다음 할 일」로 옮겨 가면서 잠시 없다 — SCAX-WP-004 가 다시 세운다.
+    """
     client, settings, expected = large_graph
-    meeting, task = expected["followup"]
-    facade = McpReportsFacade(settings, "mina")
-    answer = facade.graph_neighbors(f"meeting:{meeting}")
-    assert ("followed_up", f"meeting:{meeting}", f"task:{task}") in {(e["kind"], e["from"], e["to"]) for e in answer["edges"]}
+    task = expected["today_task"]
     report = McpReportsFacade(settings, "mina").graph_neighbors(f"report:{expected['report_id']}", 50)
     cited = [edge for edge in report["edges"] if edge["kind"] == "cites"]
     assert cited and all(edge["to"] in {f"task:{identity('task', 1998)}", f"task:{task}"} for edge in cited)

@@ -142,10 +142,14 @@ def test_mcp_facade_uses_the_work_request_public_operations(tmp_path) -> None:
     assert mina.work_request_assignee_candidates() == [{"id": "jiho", "display_name": "지호 (팀장)"}, {"id": "yuna", "display_name": "유나 (대표)"}]
     created = mina.create_work_request("MCP 업무 요청", "jiho")
     assert mina.list_work_requests() == [created]
-    # The detail read adds the earlier work pointed at; everything else is the same row the list gave.
+    # The detail read adds the earlier work pointed at and the meeting this request came out of;
+    # everything else is the same row the list gave. `source_meeting_title` lives only here on purpose —
+    # a list of requests must not walk to a meeting per row (D40).
     detail = jiho.get_work_request(created["request_id"])
     assert detail["references"] == []
-    assert {key: value for key, value in detail.items() if key != "references"} == created
+    assert detail["source_meeting_title"] is None
+    detail_only = {"references", "source_meeting_title"}
+    assert {key: value for key, value in detail.items() if key not in detail_only} == created
 
     accepted = jiho.accept_work_request(created["request_id"], created["version"])
     assert accepted["task_id"]
@@ -234,8 +238,9 @@ def test_stdio_mcp_client_discovers_only_persona_bound_report_tools(tmp_path) ->
                     "graph_search",
                     "meeting_get",
                     "meeting_list",
-                    "meeting_create",
-                    "meeting_share",
+                    # 회의 배치 세션이 여는 바닥 넷 중 둘 (SCAX-SPEC-004 §7.2-2) — 전부 조회다.
+                    "member_list",
+                    "project_list",
                     "task_block",
                     "task_cancel",
                     "task_complete",

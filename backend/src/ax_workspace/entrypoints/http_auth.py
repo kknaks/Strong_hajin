@@ -10,6 +10,7 @@ membership ledger still decides whether that member exists and is active.
 """
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException, Request, status
@@ -76,6 +77,26 @@ def current_principal(request: Request) -> Principal:
         # The header says which member a test is acting as; the ledger still decides whether that member may act.
         return _active_principal(request, adapter.member_id(header_member))
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="로그인이 필요합니다.")
+
+
+def connection_principal(connection: Any) -> Principal | None:
+    """WebSocket 핸드셰이크의 사람. 브라우저 WS 는 헤더를 못 붙이므로 **쿠키가 인증한다**.
+
+    첫 프레임은 역할만 정하고 토큰을 싣지 않는다 (SCAX-SPEC-004 §5.3 · WP-002 Interface Contract).
+    개발 페르소나 헤더는 REST 와 같은 개발·시험 이음새로만 남는다. 실패는 예외가 아니라 `None` 이다 —
+    WS 는 HTTP 상태코드가 아니라 close code 로 답한다.
+    """
+    try:
+        principal = session_principal(connection)
+        if principal is not None:
+            return principal
+        adapter: DeveloperAuthAdapter | None = getattr(connection.app.state, "developer_auth", None)
+        header_member = connection.headers.get("X-Demo-Persona")
+        if adapter is not None and header_member:
+            return _active_principal(connection, adapter.member_id(header_member))
+    except HTTPException:
+        return None
+    return None
 
 
 # Backwards-compatible name used by existing routes.

@@ -340,14 +340,12 @@ def test_the_first_screen_is_already_a_graph_of_what_this_person_is_connected_to
         "/api/meetings",
         headers=JIHO,
         json={
-            "organization_id": "scax",
             "title": "그래프에 보일 회의",
             "starts_at": "2026-09-10T01:00:00Z",
             "ends_at": "2026-09-10T02:00:00Z",
-            "visibility": "private",
             "attendee_ids": ["mina"],
         },
-    ).json()
+    ).json()["meeting"]
 
     overview = client.get("/api/graph/overview", headers=JIHO).json()
     kinds = {node["kind"] for node in overview["nodes"]}
@@ -455,9 +453,9 @@ def test_someone_who_sits_only_at_the_top_stays_where_they_are(tmp_path) -> None
         "/api/meetings",
         headers=JIHO,
         json={
-            "organization_id": "scax", "title": "대표가 참석하는 회의",
+            "title": "대표가 참석하는 회의",
             "starts_at": starts, "ends_at": "2026-09-20T02:00:00+00:00",
-            "visibility": "private", "attendee_ids": ["yuna"],
+            "attendee_ids": ["yuna"],
         },
     )
 
@@ -519,14 +517,12 @@ def test_a_meeting_says_who_was_there_and_what_came_out_of_it(tmp_path) -> None:
         "/api/meetings",
         headers=MINA,
         json={
-            "organization_id": "scax",
             "title": "연결을 볼 회의",
             "starts_at": "2026-09-10T01:00:00Z",
             "ends_at": "2026-09-10T02:00:00Z",
-            "visibility": "private",
             "attendee_ids": ["jiho"],
         },
-    ).json()
+    ).json()["meeting"]
 
     neighbors = client.get("/api/graph/neighbors", headers=MINA, params={"node": f"meeting:{meeting['meeting_id']}"}).json()
     assert neighbors["center"]["kind"] == "meeting"
@@ -748,11 +744,11 @@ def test_each_node_says_where_it_sits_in_time_when_the_ledger_plans_one(tmp_path
         "/api/meetings",
         headers=MINA,
         json={
-            "organization_id": "scax", "title": "시간이 정해진 회의",
+            "title": "시간이 정해진 회의",
             "starts_at": "2026-09-10T01:00:00Z", "ends_at": "2026-09-10T02:00:00Z",
-            "visibility": "private", "attendee_ids": [],
+            "attendee_ids": [],
         },
-    ).json()
+    ).json()["meeting"]
 
     nodes = {f"{node['kind']}:{node['id']}": node for node in client.get("/api/graph/overview", headers=MINA).json()["nodes"]}
     assert nodes[f"task:{dated['task_id']}"]["date"] == "2026-09-30"

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type React from "react";
 
 import { useEscape } from "./Modal";
@@ -16,6 +17,15 @@ import { useEscape } from "./Modal";
  * 옆에 실제로 남아 있는 자리만큼만 자라고, 내용이 그보다 길면 패널 **안에서** 스크롤한다. 뷰포트 높이만
  * 보고 자르면(예전 CSS 의 `min(60vh, 420px)`) 트리거가 아래쪽에 있을 때 패널이 화면 밖으로 나가서,
  * 스크롤할 자리 자체가 화면 밖에 남는다 — 그것이 "팝오버가 스크롤되지 않는다"의 정체였다.
+ *
+ * **패널은 `document.body` 로 내보내고 자리는 트리거의 지금 좌표에서 잡는다 (DS-18).** 트리거 «안» 에
+ * 그리면 조상 중 `overflow` 를 가진 상자에서 잘린다 — 드로어의 정보 카드(`.meta-grid` 는
+ * `overflow:hidden`)에서 담당 후보 목록과 달력이 카드 테두리에 잘리던 것이 그것이다. 포털로 내보낸 패널은
+ * `fixed` 로 띄우고 좌표를 `getBoundingClientRect()` 로 직접 준다: 열릴 때, 그리고 조상이 스크롤되거나
+ * 창이 바뀔 때마다 다시 잰다. 아래가 모자라면 위로 뒤집는다.
+ *
+ * 바깥 클릭으로 닫을 때는 트리거와 패널 **둘 다** 를 「안쪽」으로 본다 — 포털이라 패널은 트리거의 자손이
+ * 아니다.
  */
 
 /** 트리거에서 띄우는 거리 (v2 14). */
@@ -27,7 +37,8 @@ const MAX_HEIGHT = 420;
 /** 자리가 아무리 좁아도 이보다 작게는 열지 않는다. 항목 서너 개는 보여야 고를 수 있다. */
 const MIN_HEIGHT = 160;
 
-type Placement = { above: boolean; maxHeight: number };
+/** 패널을 «화면 좌표» 로 어디에 얼마나 열지. `above` 는 위로 뒤집었는가다. */
+type Placement = { above: boolean; maxHeight: number; top: number; left: number };
 
 export function Popover({
   trigger,
@@ -42,7 +53,7 @@ export function Popover({
   width?: number;
 }) {
   const [open, setOpen] = useState(false);
-  const [placement, setPlacement] = useState<Placement>({ above: false, maxHeight: MAX_HEIGHT });
+  const [placement, setPlacement] = useState<Placement>({ above: false, maxHeight: MAX_HEIGHT, top: 0, left: 0 });
   const rootRef = useRef<HTMLSpanElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const panelId = useId();
@@ -50,7 +61,10 @@ export function Popover({
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      // 패널은 포털로 body 에 서 있다 — 트리거의 자손이 아니라 따로 물어야 한다
+      if (rootRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
@@ -72,6 +86,9 @@ export function Popover({
    *
    * 아래가 모자라고 위가 더 넓으면 위로 연다 (v2 14). 어느 쪽으로 열든 max-height 는 **그쪽에 남아 있는
    * 자리**다 — 그래서 패널은 뷰포트를 넘지 않고, 넘칠 내용은 패널 안에서 스크롤된다.
+   *
+   * 좌표도 여기서 준다 (DS-18) — 패널은 `fixed` 라 조상의 `overflow` 에 잘리지 않는다. 왼쪽은 트리거에
+   * 맞추되 오른쪽으로 넘치면 그만큼 당겨 화면 안에 둔다.
    */
   const measure = useCallback(() => {
     const anchor = rootRef.current?.getBoundingClientRect();
@@ -85,8 +102,16 @@ export function Popover({
     const above = wanted > spaceBelow && spaceAbove > spaceBelow;
     const room = above ? spaceAbove : spaceBelow;
     const maxHeight = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, room));
-    setPlacement((current) => (current.above === above && current.maxHeight === maxHeight ? current : { above, maxHeight }));
-  }, []);
+    // 위로 열 때는 패널이 실제로 차지할 높이만큼 트리거 «위» 에서 시작한다.
+    const height = Math.min(wanted, maxHeight);
+    const top = above ? Math.max(EDGE, anchor.top - GAP - height) : anchor.bottom + GAP;
+    const left = Math.max(EDGE, Math.min(anchor.left, window.innerWidth - width - EDGE));
+    setPlacement((current) =>
+      current.above === above && current.maxHeight === maxHeight && current.top === top && current.left === left
+        ? current
+        : { above, maxHeight, top, left },
+    );
+  }, [width]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -109,21 +134,24 @@ export function Popover({
         toggle,
         props: { "aria-expanded": open, "aria-haspopup": "true", "aria-controls": open ? panelId : undefined, onClick: toggle, type: "button" },
       })}
-      {open && (
-        <div
-          aria-label={label}
-          className={placement.above ? "popover above" : "popover"}
-          id={panelId}
-          ref={panelRef}
-          role="group"
-          style={{ maxHeight: placement.maxHeight, width }}
-          // 안에 누를 것이 없는 팝오버(긴 글 한 덩어리)도 키보드로 스크롤할 수 있어야 한다.
-          // -1 이라 탭 순서는 그대로다.
-          tabIndex={-1}
-        >
-          {children(() => setOpen(false))}
-        </div>
-      )}
+      {open &&
+        createPortal(
+          <div
+            aria-label={label}
+            className={placement.above ? "popover above" : "popover"}
+            id={panelId}
+            ref={panelRef}
+            role="group"
+            /* 자리는 화면 좌표로 준다 — body 로 나와 있으니 조상의 overflow 도 쌓임 맥락도 타지 않는다 (DS-18) */
+            style={{ position: "fixed", top: placement.top, left: placement.left, bottom: "auto", maxHeight: placement.maxHeight, width }}
+            // 안에 누를 것이 없는 팝오버(긴 글 한 덩어리)도 키보드로 스크롤할 수 있어야 한다.
+            // -1 이라 탭 순서는 그대로다.
+            tabIndex={-1}
+          >
+            {children(() => setOpen(false))}
+          </div>,
+          document.body,
+        )}
     </span>
   );
 }

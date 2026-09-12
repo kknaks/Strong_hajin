@@ -18,7 +18,8 @@ function Opened({ children, minHeight = 260 }: { children: React.ReactNode; minH
   useEffect(() => {
     const open = () => {
       const root = ref.current;
-      if (!root || root.querySelector(".popover")) return;
+      // 패널은 포털로 body 에 선다 (DS-18) — 열렸는지는 트리거의 aria-expanded 로 묻는다
+      if (!root || root.querySelector('button[aria-haspopup][aria-expanded="true"]')) return;
       root.querySelector<HTMLButtonElement>("button[aria-haspopup]")?.click();
     };
     open();
@@ -77,4 +78,38 @@ export const Closed = () => (
       {() => null}
     </Popover>
   </div>
+);
+
+/**
+ * 잘리는 상자 안에서도 온전히 뜬다 (DS-18) — 드로어의 정보 카드(`overflow:hidden`)가 그 자리다.
+ * 패널은 `document.body` 로 나가 `fixed` 로 서고, 좌표는 트리거의 지금 자리에서 잡는다.
+ */
+export const InsideClippingCard = () => (
+  <Opened minHeight={220}>
+    <div className="meta-grid" style={{ width: 320 }}>
+      <div>
+        <dt>담당 후보</dt>
+        <dd>
+          <Popover
+            label="담당 후보"
+            width={200}
+            trigger={({ props }) => (
+              <button className="select-trigger" {...props}>
+                <span className="select-value">최유나</span>
+                <Icon name="chevron-down" size={12} />
+              </button>
+            )}
+          >
+            {() =>
+              ["최유나", "김낙수", "한서린"].map((name) => (
+                <button className="popover-item" key={name} type="button">
+                  {name}
+                </button>
+              ))
+            }
+          </Popover>
+        </dd>
+      </div>
+    </div>
+  </Opened>
 );

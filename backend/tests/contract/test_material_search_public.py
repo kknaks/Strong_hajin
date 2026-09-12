@@ -56,11 +56,11 @@ def test_delegated_canonical_search_links_answer_resource_to_current_material_me
     assert view["answer_resources"] == [] and view["material_evidence"] == []
 
 
-@pytest.mark.parametrize("kind", ["task", "work_request", "personal_folder", "team_folder", "meeting"])
+# 회의는 이 목록에 없다 — 회의 native 자료(원본 전사·정제 전사·녹음)는 파일 재전사와 함께 폐기했다
+# (SCAX-SPEC-004 §11.1). 새 `meeting_transcripts` 위에 회의 전사를 다시 자료로 세우는 것은 SCAX-WP-005 다.
+@pytest.mark.parametrize("kind", ["task", "work_request", "personal_folder", "team_folder"])
 def test_public_owner_search_and_metadata_share_current_permissions(tmp_path, kind):
     from test_material_search import _upload
-    from test_meeting_material_search import _recorded
-    from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment
 
     client, application, worker, settings = _stack(tmp_path)
     token = "publicownerparitytoken"
@@ -71,15 +71,10 @@ def test_public_owner_search_and_metadata_share_current_permissions(tmp_path, ki
         owner_id = client.post("/api/work-requests", headers=MINA, json={"title": "독립 요청", "assignee_id": "jiho"}).json()["request_id"]
         response = client.post(f"/api/work-requests/{owner_id}/evidence", headers=MINA, files={"file": ("public.txt", token.encode(), "text/plain")})
         assert response.status_code == 201, response.text
-    elif kind.endswith("folder"):
+    else:
         owner_id = client.post("/api/material-folders", headers=MINA, json={"kind": kind.removesuffix("_folder"), "title": "독립 자료", **({"organization_id": "product"} if kind == "team_folder" else {})}).json()["folder_id"]
         response = client.post(f"/api/material-folders/{owner_id}/materials", headers=MINA, files={"file": ("public.txt", token.encode(), "text/plain")})
         assert response.status_code == 201, response.text
-    else:
-        meeting, recording = _recorded(client)
-        owner_id = meeting["meeting_id"]
-        application.record_final_meeting_transcript(recording_id=UUID(recording["recording_id"]), provider="fixture", provider_reference="public:parity",
-            segments=[FinalTranscriptSegment("public-a", 1200, 3400, token)])
     assert asyncio.run(worker.run_once())
     filters = {"resource_type": kind, "resource_id": owner_id}
     response = client.get("/api/materials/search", headers=MINA, params={"q": token, **filters})

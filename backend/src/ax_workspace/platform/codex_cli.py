@@ -88,6 +88,9 @@ class CodexCliMcpServer:
     command: str
     arguments: tuple[str, ...]
     environment: dict[str, str]
+    #: 이 turn 에 열 도구 이름. 비면 서버가 노출하는 전부다 — 회의 배치는 레지스트리로 좁힌다
+    #: (SCAX-SPEC-004 §7.2-3). 서버 id 접두를 붙이지 않는다: 틀리면 조용히 도구 0개로 돈다.
+    enabled_tools: tuple[str, ...] = ()
 
 
 class CodexCliProviderAdapter:
@@ -190,9 +193,13 @@ class CodexCliProviderAdapter:
         )
         with TemporaryDirectory(prefix="scax-codex-chat-") as temporary:
             work_dir = Path(temporary)
-            schema_path = work_dir / "conversation-output-schema.json"
+            # 스키마는 **언제나** 건다. 부르는 쪽이 자기 것을 주면 그것이고(회의 배치·합성이 그렇다),
+            # 주지 않으면 대화 계약(`_CONVERSATION_OUTPUT_SCHEMA`)이다.
+            # 강제와 검증은 다른 층이다 — 여기서 걸고, 받은 JSON 은 부르는 쪽이 같은 스키마로 다시 본다.
+            schema_path = work_dir / "output-schema.json"
             output_path = work_dir / "assistant-message.json"
-            schema_path.write_text(json.dumps(_CONVERSATION_OUTPUT_SCHEMA), encoding="utf-8")
+            schema = request.output_schema if request.output_schema is not None else _CONVERSATION_OUTPUT_SCHEMA
+            schema_path.write_text(json.dumps(schema), encoding="utf-8")
             prompt = self._conversation_prompt(request)
             ingest = CodexEventIngest(sink)
             started = perf_counter()
@@ -296,7 +303,7 @@ class CodexCliProviderAdapter:
         if server is None:
             raise ProviderRequestFailed("SCAX MCP binding is not configured for conversation tools")
         del request
-        return [
+        overrides = [
             "-c",
             f"mcp_servers.scax.command={json.dumps(server.command)}",
             "-c",
@@ -306,6 +313,11 @@ class CodexCliProviderAdapter:
             "-c",
             'mcp_servers.scax.default_tools_approval_mode="approve"',
         ]
+        if server.enabled_tools:
+            # 「부르지 마라」고 프롬프트로 말하는 대신 **도구를 주지 않는다**. resume 에도 실려 매 turn 이 자기 목록을 가져간다.
+            enabled = ",".join(json.dumps(name) for name in server.enabled_tools)
+            overrides += ["-c", f"mcp_servers.scax.enabled_tools=[{enabled}]"]
+        return overrides
 
     def _conversation_environment(
         self,

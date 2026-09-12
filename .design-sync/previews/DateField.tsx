@@ -11,19 +11,19 @@ export default { title: "General/DateField", component: DateField };
 
 const box: React.CSSProperties = { width: 260 };
 
-/** 보이는 문자열은 우리 것(YYYY/MM/DD), 달력은 플랫폼 것 */
+/** 칸 하나 — 값(ISO)이 왼쪽, 달력 아이콘이 칸 안 오른쪽. 누르면 우리 DatePicker 가 열린다 (DS-17) */
 export const WithValue = () => {
   const [v, setV] = useState("2026-09-30");
   return <div style={box}><DateField id="df-end" label="종료일" value={v} onChange={setV} /></div>;
 };
 
-/** 비어 있음 — placeholder */
+/** 비어 있음 — 자리표시는 YYYY-MM-DD */
 export const Empty = () => {
   const [v, setV] = useState("");
   return <div style={box}><DateField id="df-start" label="시작일" value={v} onChange={setV} /></div>;
 };
 
-/** 비활성 */
+/** 비활성 — 달력이 열리지 않는다 */
 export const Disabled = () => (
   <div style={box}><DateField id="df-locked" label="완료일" value="2026-09-04" onChange={() => {}} disabled /></div>
 );

@@ -3,6 +3,10 @@ SONIOX_ENV_FILE ?= $(HOME)/.config/soniox/env
 # Load the Soniox key from the same file the vault's transcribe skill uses, without ever printing it. Absent file =
 # the feature reports itself unavailable; it never falls back to a stub that pretends to transcribe.
 SONIOX_ENV = set -a; [ -f "$(SONIOX_ENV_FILE)" ] && . "$(SONIOX_ENV_FILE)"; set +a;
+THECONNECT_ENV_FILE ?= $(HOME)/.config/theconnect/env
+# 사옥 회의실 예약 시스템(THE CONNECT) 계정 — Soniox 와 같은 결로, 값은 어디에도 찍지 않는다.
+# 파일이 없으면 예약 기능이 스스로 없다고 말한다: 회의는 그대로 서고 회의실만 잡히지 않는다.
+THECONNECT_ENV = set -a; [ -f "$(THECONNECT_ENV_FILE)" ] && . "$(THECONNECT_ENV_FILE)"; set +a;
 POSTGRES_TEST_URL ?= postgresql+psycopg://ax:ax@localhost:54329/ax_test
 # Acceptance는 자기 데이터베이스에서 돈다. reset으로 시작하는 suite가 사람이 쓰던 DATABASE_URL의
 # 조직·자료를 지우지 않게 한다.
@@ -89,7 +93,7 @@ reset-catalog:
 	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.reset_demo --catalog-only
 
 api:
-	@$(SONIOX_ENV) cd backend && DATABASE_URL="$(DATABASE_URL)" uv run uvicorn ax_workspace.entrypoints.http:app --reload
+	@$(SONIOX_ENV) $(THECONNECT_ENV) cd backend && DATABASE_URL="$(DATABASE_URL)" uv run uvicorn ax_workspace.entrypoints.http:app --reload
 
 conversation-worker:
 	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.conversation_worker
@@ -117,7 +121,7 @@ storybook-build:
 	cd frontend && npm run build-storybook
 
 api-e2e:
-	@$(SONIOX_ENV) cd backend && DATABASE_URL="$(DATABASE_URL)" uv run uvicorn ax_workspace.entrypoints.http:app --host 127.0.0.1 --port "$(E2E_API_PORT)"
+	@$(SONIOX_ENV) $(THECONNECT_ENV) cd backend && DATABASE_URL="$(DATABASE_URL)" uv run uvicorn ax_workspace.entrypoints.http:app --host 127.0.0.1 --port "$(E2E_API_PORT)"
 
 frontend-e2e:
 	cd frontend && VITE_API_TARGET="http://127.0.0.1:$(E2E_API_PORT)" npm run dev -- --host 127.0.0.1 --port "$(E2E_FRONTEND_PORT)"
@@ -138,7 +142,7 @@ local-stack:
 		cleanup() { for pid in $$pids; do stop_process_tree "$$pid"; done; for pid in $$pids; do wait "$$pid" 2>/dev/null || true; done; }; \
 		trap cleanup EXIT INT TERM; \
 		$(MAKE) postgres-up; \
-		if ! docker compose exec -T postgres psql -U ax -d "$$(printf '%s' "$(DATABASE_URL)" | sed -E 's#.*/([^/?]+)(\?.*)?$$#\1#')" -tAc "SELECT to_regclass('durable_jobs'), to_regclass('task_checklist_items'), to_regclass('meeting_recordings'), to_regclass('assistant_character_preferences'), to_regclass('action_material_drafts'), to_regclass('notifications'), (SELECT meeting_columns.column_name FROM information_schema.columns AS meeting_columns WHERE meeting_columns.table_name = 'meetings' AND meeting_columns.column_name = 'description'), (SELECT meeting_columns.column_name FROM information_schema.columns AS meeting_columns WHERE meeting_columns.table_name = 'meetings' AND meeting_columns.column_name = 'source_action_item_id'), (SELECT meeting_columns.column_name FROM information_schema.columns AS meeting_columns WHERE meeting_columns.table_name = 'meetings' AND meeting_columns.column_name = 'source_decision_item_id'), (SELECT meeting_columns.column_name FROM information_schema.columns AS meeting_columns WHERE meeting_columns.table_name = 'meetings' AND meeting_columns.column_name = 'source_submission_id'), (SELECT meeting_columns.column_name FROM information_schema.columns AS meeting_columns WHERE meeting_columns.table_name = 'meetings' AND meeting_columns.column_name = 'source_review_decision_id'), (SELECT meeting_note_columns.column_name FROM information_schema.columns AS meeting_note_columns WHERE meeting_note_columns.table_name = 'meeting_note_versions' AND meeting_note_columns.column_name = 'source_status'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_turns' AND column_name = 'progress_state'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_turns' AND column_name = 'follow_up_candidates'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_messages' AND column_name = 'follow_up_candidate_id')" 2>/dev/null | grep -q 'durable_jobs|task_checklist_items|meeting_recordings|assistant_character_preferences|action_material_drafts|notifications|description|source_action_item_id|source_decision_item_id|source_submission_id|source_review_decision_id|source_status|progress_state|follow_up_candidates|follow_up_candidate_id' \
+		if ! docker compose exec -T postgres psql -U ax -d "$$(printf '%s' "$(DATABASE_URL)" | sed -E 's#.*/([^/?]+)(\?.*)?$$#\1#')" -tAc "SELECT to_regclass('durable_jobs'), to_regclass('task_checklist_items'), to_regclass('meeting_transcripts'), to_regclass('assistant_character_preferences'), to_regclass('action_material_drafts'), to_regclass('notifications'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_turns' AND column_name = 'progress_state'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_turns' AND column_name = 'follow_up_candidates'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_messages' AND column_name = 'follow_up_candidate_id')" 2>/dev/null | grep -q 'durable_jobs|task_checklist_items|meeting_transcripts|assistant_character_preferences|action_material_drafts|notifications|progress_state|follow_up_candidates|follow_up_candidate_id' \
 			|| ! docker compose exec -T postgres psql -U ax -d "$$(printf '%s' "$(DATABASE_URL)" | sed -E 's#.*/([^/?]+)(\?.*)?$$#\1#')" -tAc "SELECT to_regclass('notifications')" 2>/dev/null | grep -qx 'notifications'; then \
 			echo "SCAX schema is not initialized or is behind the current code in $(DATABASE_URL). Run 'make sync-demo-schema' to add safe missing tables or columns; use 'make reset-demo' only for a disposable fresh demo DB. Then run 'make local-stack' again." >&2; \
 			exit 2; \
@@ -254,7 +258,8 @@ e2e-daily-report:
 e2e-material-search:
 	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:material-search
 
-# Real microphone path: Chrome plays a wav into getUserMedia, Soniox transcribes it live, the file's reading replaces it.
+# Real microphone path: Chrome plays a wav into getUserMedia and the audio travels browser → our server → Soniox.
+# 실시간 전사가 원문 정본이다 — 종료 후 파일을 다시 읽는 경로는 없다 (SCAX-SPEC-004 §5.4-3).
 e2e-meeting-live-transcript:
 	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:meeting-live-transcript
 

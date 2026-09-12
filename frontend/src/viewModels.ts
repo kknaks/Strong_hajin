@@ -1,4 +1,4 @@
-export type ProductSurface = "today" | "calendar" | "work" | "report" | "project" | "org" | "graph";
+export type ProductSurface = "today" | "calendar" | "meetings" | "work" | "report" | "project" | "org" | "graph";
 
 /** One thing in the relation graph. Nodes are canonical resources, never a graph-only record. */
 export type GraphNodeKind = "person" | "team" | "project" | "work_request" | "task" | "material" | "meeting" | "report";
@@ -300,13 +300,6 @@ export type TaskMaterial = {
   extraction?: MaterialExtraction | null;
   /** The Task version this attach or detach moved the Task to. Only mutation answers carry it. */
   task_version?: number;
-};
-
-/** A Meeting owns its current attachments; MeetingNote versions never own or snapshot this list. */
-export type MeetingMaterial = Omit<TaskMaterial, "task_id" | "task_version"> & {
-  meeting_id: string;
-  /** The Meeting version returned by an attachment mutation. */
-  meeting_version?: number;
 };
 
 export type MaterialExtraction = {
@@ -814,153 +807,168 @@ export type RequestTimeline = {
   activity: Array<{ event_kind: string; actor_id: string; safe_summary: string; reason: string | null; occurred_at: string }>;
 };
 
-/* ---- Meeting: the calendar entry SCAX owns, and the record it accumulates ---- */
+/* ---- Meeting screens (SCR-105 · SCR-106) — the contract WP-001 owns ---- */
 
-/** A calendar row is either a meeting the caller may read, or a bare busy block that leaks nothing else. */
-export type CalendarEntry = MeetingSummaryRow | { kind: "busy"; starts_at: string; ends_at: string };
+/**
+ * 회의 여섯 상태 (SPEC-004 §5.1). 화면은 이 여섯만 안다 — 「정리됨」은 없고 「완료」다.
+ * 무엇을 낼 수 있는지는 상태와 `viewer_relation`·`can_edit_*` 가 함께 정한다. 역할(kind)로 추론하지 않는다.
+ */
+export type MeetingStatus = "scheduled" | "in_progress" | "summarizing" | "done" | "failed" | "cancelled";
 
-export type MeetingSummaryRow = {
-  kind: "meeting";
+/** 이 사람이 회의에 닿은 방식. 「열람」 꼬리표와 조작 버튼의 유무가 이 값 하나로 갈린다. */
+export type MeetingViewerRelation = "attendee" | "shared";
+
+export type MeetingRow = {
   meeting_id: string;
-  organization_id: string;
-  owner_id: string;
-  title: string;
+  /** 주제를 안 채운 회의는 null 로 온다 — 화면이 「제목 없는 회의」로 읽는다. */
+  title: string | null;
   starts_at: string;
   ends_at: string;
-  visibility: "public" | "private";
-  lifecycle: string;
-  version: number;
-  attendees: Array<{ member_id: string; display_name: string }>;
-  lineage?: {
-    source_action_item_id: string | null;
-    source_decision_item_id: string | null;
-    source_submission_id: string | null;
-    source_review_decision_id: string | null;
-    confirmed_by: string | null;
-  };
-};
-
-export type MeetingNoteVersion = {
-  version_id: string;
-  version: number;
-  body: string;
+  location: string | null;
+  status: MeetingStatus;
+  viewer_relation: MeetingViewerRelation;
   created_by: string;
-  created_at: string;
-  source_status?: "current_turn" | "resolved" | "not_found" | null;
-  source_evidence: Array<Record<string, unknown>>;
+  attendee_count: number;
 };
 
-export type MeetingNote = {
-  note_id: string;
-  lifecycle: string;
-  version: number;
-  body: string;
-  source_status?: "current_turn" | "resolved" | "not_found" | null;
-  versions: MeetingNoteVersion[];
-  finalized_at: string | null;
-  finalized_by: string | null;
+export type MeetingListPayload = {
+  upcoming: MeetingRow[];
+  past: { items: MeetingRow[]; next_cursor: string | null };
 };
 
-/** Immutable provider output. Never edited; the refinement below is a projection of it. */
-export type RawTranscriptSegment = {
-  segment_id: string;
-  /** Its place in the reading, so a live transcript's order is a fact rather than an accident of arrival. */
-  sequence: number;
-  source_segment_key: string;
-  start_ms: number;
-  end_ms: number;
+/** 한 줄이 딛는 원문 구간. 화면은 이것을 타임칩으로 펴고 스크립트의 그 자리로 간다. */
+export type MeetingEvidence = { start_ms: number; end_ms: number };
+
+/** 회의록 한 줄. `track` 은 어느 트랙에서 온 줄인지이고, 화면은 종류 배지를 두지 않는다. */
+export type MeetingLine = {
+  line_id: string;
+  track: "memo" | "ai" | "final";
+  order: number;
   text: string;
-  speaker_label: string | null;
-  confirmed_member_id: string | null;
+  /** 그 줄을 적은 사람의 `member_id`. **AI 가 낸 줄과 합쳐진 최종 줄에는 작성자가 없다** — 그럴 때 `null` 이다. */
+  author: string | null;
+  /** 메모 줄에만 값이 있다 — 회의 시작에서 흐른 밀리초. AI·합성 줄은 시각이 아니라 구간에 걸린다. */
+  at_ms: number | null;
+  evidence: MeetingEvidence[];
 };
 
-export type RefinedTranscriptSegment = RawTranscriptSegment & {
-  raw_start_segment_id: string;
-  raw_end_segment_id: string;
-  correction_kind: string | null;
-  confidence: number | null;
+/**
+ * 후속업무 후보 한 줄 (결정 D19-3).
+ *
+ * **담당 후보를 두지 않는다** — 담당은 [업무 생성]이 여는 업무 요청 모달에서 사람이 고른다. AI 가
+ * 사람을 지목하지 않는다. `linked` 가 차 있으면 이미 요청으로 선 것이고, 그 요청이 수락되면
+ * `task_id` 가 붙는다.
+ */
+export type MeetingTodo = {
+  todo_id: string;
+  agenda_id: string;
+  title: string;
+  description: string;
+  due_candidate: string | null;
+  /** 요청 모달의 체크리스트를 미리 채우는 줄들. */
+  checklist_candidate: string[];
+  /** 이 후보가 딛는 자리 — 어느 회의의 어느 안건의 어느 줄에서 나왔나. 화면은 그리지 않는다. */
+  reference: { meeting_id: string; agenda_id: string; line_ids: string[] };
+  /**
+   * 회의 «중» 배치가 낸 잠정 후보인가 (D46). 참이면 읽기만 한다 — 승격도 삭제도 종료 뒤 최종에서만이다.
+   * 최종 합성이 잠정 후보를 통째로 지우므로 완료·실패 화면에는 참인 것이 오지 않는다.
+   */
+  provisional: boolean;
+  linked: { work_request_id: string; task_id: string | null } | null;
 };
 
-/** What starting or stopping a recording hands back: the recording itself, never a transcript and never a storage key. */
-export type MeetingRecordingHandle = {
-  recording_id: string;
+export type MeetingAgenda = {
+  agenda_id: string;
+  /** 이 안건의 마지막 저장 시각. 다음 저장이 이 값을 함께 보내 「그 사이에 누가 저장했나」를 가른다. */
+  last_saved_at: string | null;
+  order: number;
+  title: string;
+  /** 어디서 온 안건인가 (D38). 기획이 정한 넷 + AI 트랙이 세운 것. */
+  source: "manual" | "set" | "carried" | "derived" | "ai";
+  concluded: boolean;
+  lines: MeetingLine[];
+  todos: MeetingTodo[];
+};
+
+export type MeetingInfo = {
   meeting_id: string;
-  purpose: string;
-  state: "not_started" | "recording" | "uploaded" | "transcribing" | "transcribed" | "failed" | "deleted" | string;
-  version: number;
-  content_type: string | null;
-  original_name: string | null;
-  size_bytes: number | null;
-  sha256: string | null;
+  title: string | null;
+  purpose: string | null;
+  starts_at: string;
+  ends_at: string;
+  location: string | null;
+  status: MeetingStatus;
+  created_by: string;
+  attendees: Array<{ member_id: string; display_name: string }>;
+  external_attendees: string[];
+  viewer_relation: MeetingViewerRelation;
+  /** 예약값(제목·일시·장소·참석자)을 고칠 수 있는가 — 서버가 정한다. */
+  can_edit_info: boolean;
+  /** 회의록 **줄**을 고칠 수 있는가 — 서버가 정한다 (완료·실패·취소됨). */
+  can_edit_note: boolean;
+  /** **안건**을 더하고 뺄 수 있는가 — 서버가 정한다 (예정·완료·실패·취소됨).
+      줄 편집과 갈라져 있다: 「예정」은 회의록이 비어 있어도 안건은 손본다 (SPEC §4.1-5). */
+  can_edit_agendas: boolean;
+  /** 메모 입력 칸이 서는가 — 만든 사람 × 「진행 중」. 화면이 `created_by` 로 추론하지 않는다. */
+  can_write_memo: boolean;
+  last_saved_at: string | null;
+  /** `at_ms` 의 기준점. 예정 시각이 아니라 「진행 중」으로 옮긴 실제 시각이다. */
   started_at: string | null;
-  ended_at: string | null;
-  storage_key: null;
+  carried_from_meeting_id: string | null;
+  /** 제목이 비었을 때 합성이 낸 후보. **사람이 머리 편집에서 저장해야 제목이 된다.** */
+  title_candidate: string | null;
+  /** 「실패」일 때 무엇이 어긋났나. 안내 문구 옆에 그대로 붙인다. */
+  failure_reason: string | null;
+  /** 회의실을 안 잡은 회의는 `null` 이다. */
+  room_reservation: MeetingRoomReservation | null;
 };
 
-/** A restricted key for one recording's live stream. The long-lived provider key stays on the server. */
-export type MeetingRealtimeCredential = {
-  temporary_key: string;
-  expires_at: string;
-  client_reference_id: string;
-  websocket_url: string;
-  model: string;
-  enable_speaker_diarization: boolean;
+/** 「스크립트」 탭이 읽는 원문 — 확정 발화와 회의 중 메모가 같은 시각 축에 선다 (SPEC §5.4-7·8). */
+export type MeetingTranscript = {
+  items: Array<{ id: string; speakerLabel: string; atMs: number; endMs: number; content: string }>;
+  memos: Array<{ line_id: string; agenda_id: string; text: string; author: string | null; atMs: number | null }>;
 };
 
-export type MeetingRecording = MeetingRecordingHandle & {
-  raw_transcript: {
-    transcript_revision_id: string;
-    revision: number;
-    state: string;
-    /** `realtime` while the stream is still writing; the file's own reading arrives later as `async_final`. */
-    source_kind: string;
-    provider: string;
-    segments: RawTranscriptSegment[];
-  } | null;
-  refinement: { refinement_revision_id: string; raw_transcript_revision_id: string; revision: number; state: string; segments: RefinedTranscriptSegment[] } | null;
-  speaker_assignments: Array<{ speaker_assignment_id: string; speaker_label: string; member_id: string; scope: string; state: string }>;
+export type MeetingRecord = { meeting: MeetingInfo; agendas: MeetingAgenda[] };
+
+/* ---- 회의 자료와 공유 (SCAX-WP-005) ---- */
+
+/** 회의를 보며 열어 놓는 파일 한 줄. **저장 위치는 나오지 않는다.** */
+export type MeetingMaterial = {
+  material_id: string;
+  name: string;
+  content_type: string;
+  size: number;
+  uploaded_by: string;
+  uploaded_at: string;
+  /**
+   * 이 자료를 뗄 수 있는가 — **서버가 말한다.** 「올린 사람이 나인가」를 화면이 맞춰 보면
+   * 상태 조건(「진행 중」에는 자료를 다루지 않는다)이 빠지고 규칙이 두 곳에 살게 된다.
+   */
+  can_detach: boolean;
 };
 
-export type MeetingSummaryEvidence = {
-  statement_index: number;
-  kind: string;
-  text: string;
-  refinement_start_segment_id: string;
-  refinement_end_segment_id: string;
-  raw_start_segment_id: string;
-  raw_end_segment_id: string;
-  raw_start_ms: number;
-  raw_end_ms: number;
+/** 붙지 못한 파일과 그 사유 — 하나가 막혔다고 나머지를 버리지 않는다 (SPEC §10). */
+export type MeetingMaterialFailure = { name: string; reason: "too_large" | "unsupported_type" };
+
+export type MeetingMaterialUpload = { attached: MeetingMaterial[]; failed: MeetingMaterialFailure[] };
+
+/** 고를 수 있는 사옥 회의실 (SCAX-WP-007). 예약 시스템이 없거나 닿지 않으면 목록이 **빈다**. */
+export type MeetingRoom = { room_id: number; name: string; capacity: number };
+
+/**
+ * 회의실 예약이 어떻게 됐나. `booked` 면 회의의 `location` 이 그 방 이름으로 차 있다.
+ * **실패해도 회의는 남는다** — 장소만 비어 있다.
+ */
+export type MeetingRoomReservation = {
+  status: "booked" | "failed" | "cancelled";
+  room_name: string | null;
+  reason: string | null;
+  /** 고른 방이 안 돼 **다른 방으로 잡혔다**. 그 사실을 사람에게 말해야 한다. */
+  replaced?: boolean;
+  /** 원래 고른 방 이름 — `replaced` 일 때만 온다. */
+  requested_room_name?: string;
 };
 
-/** One generated statement, and — for a followup — whether someone already turned it into work. */
-export type MeetingSummaryStatement = {
-  statement_index: number;
-  kind: string;
-  text: string;
-  raw_start_ms: number;
-  raw_end_ms: number;
-  promoted: boolean;
-  promoted_task_id?: string | null;
-  promoted_work_request_id?: string | null;
-};
-
-export type MeetingSummary = {
-  summary_id: string;
-  meeting_id: string;
-  raw_transcript_revision_id: string;
-  refinement_revision_id: string;
-  kind: "provisional" | "final" | string;
-  state: "pending" | "adopted" | "dismissed" | "superseded" | "failed" | "completed" | string;
-  version: number;
-  body: string;
-  evidence: MeetingSummaryEvidence[];
-  statements?: MeetingSummaryStatement[];
-};
-
-export type MeetingDetail = MeetingSummaryRow & {
-  materials: MeetingMaterial[];
-  note: MeetingNote | null;
-  recordings: MeetingRecording[];
-  summaries: MeetingSummary[];
-};
+/** 「볼 수 있는 사람」 — 참석과 공유가 한 목록에 서고 `basis` 가 둘을 가른다 (SPEC §3.2-3). */
+export type MeetingViewer = { member_id: string; name: string; basis: "attendee" | "share" };

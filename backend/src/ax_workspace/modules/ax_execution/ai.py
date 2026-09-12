@@ -59,6 +59,9 @@ class AiConversationRequest:
     #: 사실이며, 큐에서 기다리다 달이 바뀌어도 물은 때는 물은 때다.
     asked_at: datetime | None = None
     timezone_name: str = "Asia/Seoul"
+    #: 이 turn 의 답을 강제하는 스키마. 대화로 돌아도 정해진 모양으로만 나오게 한다
+    #: (SCAX-SPEC-004 §7.2-6). 없으면 자유 문장이다 — 사람이 읽는 대화가 그렇다.
+    output_schema: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

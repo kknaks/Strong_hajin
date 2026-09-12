@@ -150,16 +150,15 @@ def _meeting(client, title: str = "설계 회의") -> str:
         "/api/meetings",
         headers=MINA,
         json={
-            "organization_id": "scax",
             "title": title,
-            "starts_at": "2026-09-10T01:00:00Z",
-            "ends_at": "2026-09-10T02:00:00Z",
-            "visibility": "private",
+            # 종료 시각이 지난 빈 회의는 스스로 취소된다 — 이 시험이 보려는 것이 아니므로 앞으로 잡는다.
+            "starts_at": "2027-09-10T01:00:00Z",
+            "ends_at": "2027-09-10T02:00:00Z",
             "attendee_ids": [],
         },
     )
     assert created.status_code == 201, created.text
-    return created.json()["meeting_id"]
+    return created.json()["meeting"]["meeting_id"]
 
 
 def test_a_task_can_point_at_another_thing_inside_scax(tmp_path) -> None:
@@ -182,16 +181,10 @@ def test_a_task_can_point_at_another_thing_inside_scax(tmp_path) -> None:
         assert row.source_ref == f"meeting:{meeting_id}"
 
     # Renaming the referenced meeting is not a rewrite of this material; the reference still resolves to the truth.
-    current = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()
     renamed = client.patch(
         f"/api/meetings/{meeting_id}",
         headers=MINA,
-        json={
-            "expected_version": current["version"],
-            "title": "이름이 바뀐 회의",
-            "starts_at": "2026-09-10T01:00:00Z",
-            "ends_at": "2026-09-10T02:00:00Z",
-        },
+        json={"title": "이름이 바뀐 회의"},
     )
     assert renamed.status_code == 200, renamed.text
     [listed] = [row for row in client.get(f"/api/tasks/{task_id}/materials", headers=MINA).json() if row["source_kind"] == "resource_ref"]

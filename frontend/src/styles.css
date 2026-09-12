@@ -16,7 +16,6 @@
   --action: #5467f7;
   --action-hover: #374df6;
   --action-active: #1e37f4;
-  --focus-ring: 0 0 0 3px rgba(113, 129, 248, 0.14);
   --progress-accent: #33aaff;
   --progress-text: #0079d0;
   --progress-tint: #eaf4ff;
@@ -91,7 +90,10 @@ h1, h2, h3, h4 { margin: 0; font-weight: 700; }
 p, dl, dd, figure, blockquote { margin: 0; }
 ul, ol { margin: 0; padding: 0; list-style: none; }
 a { color: var(--action); text-decoration: none; }
-:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--focus-ring); }
+/* 포커스는 칸 모양을 바꾸지 않는다 (사용자 결정 · 전역) — 테두리색도 그림자도 평소 그대로이고,
+   브라우저 기본 링만 끈다. 모서리에서 잘리던 테두리도 outline 을 두지 않으니 함께 사라진다.
+   ⚠ 키보드로 쓰는 사람에게는 지금 어디에 있는지가 화면에 남지 않는다 — 코디가 기록한 결정이다 */
+:focus, :focus-visible { outline: none; }
 
 .t-item { font-size: 14px; font-weight: 700; }
 .t-meta { font-size: 13px; color: var(--text-tertiary); }
@@ -312,7 +314,6 @@ input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="
 .org-row:not(.selected):hover, .org-member-row:not(.selected):hover { background: var(--surface-sunken); }
 /* 축 행의 「이력」은 패널 오른쪽 끝에 선다. 팝오버가 기본대로 트리거의 왼쪽에서 오른쪽으로 자라면 패널 밖으로
    나가고, 패널은 overflow:hidden 이라 그대로 잘린다. 그래서 이 패널 안에서만 오른쪽에 맞춰 왼쪽으로 편다. */
-.org-panel .popover { left: auto; right: 0; }
 
 /* 툴바 필터 칩 (v2 05) — 켜지면 선택 칩 색을 입는다 (v2 RULES 3) */
 .filter-chip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); background: var(--surface); color: var(--text-primary); font-size: 12px; font-weight: 500; white-space: nowrap; }
@@ -325,10 +326,10 @@ input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="
    대비책이다 — 재기 전에도 화면 밖으로는 나가지 않는다. 내용이 넘치면 패널 안에서 스크롤한다.
    overscroll-behavior: 팝오버 끝까지 내려간 뒤 휠이 뒤 페이지로 넘어가지 않게 한다 — 넘어가면 팝오버가
    스크롤되지 않는 것처럼 느껴진다. */
-.popover { position: absolute; z-index: 45; top: calc(100% + 8px); left: 0; display: grid; align-content: start; gap: 2px; max-height: min(60vh, 420px); padding: 8px; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; border: 1px solid var(--border-default); border-radius: var(--radius-popover); background: var(--surface); box-shadow: var(--shadow-lg); }
+.popover { position: absolute; z-index: 55; top: calc(100% + 8px); left: 0; display: grid; align-content: start; gap: 2px; max-height: min(60vh, 420px); padding: 8px; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; border: 1px solid var(--border-default); border-radius: var(--radius-popover); background: var(--surface); box-shadow: var(--shadow-lg); }
 .popover:focus { outline: none; }
-/* 아래가 모자라면 위로 — 같은 8px 만큼 띄운다 */
-.popover.above { top: auto; bottom: calc(100% + 8px); }
+/* 아래가 모자라면 위로 — 어느 쪽으로 열지와 그 좌표는 Popover 가 재서 인라인으로 준다 (DS-18).
+   여기 top/left 는 손으로 쓴 패널(PeoplePicker 의 이름 찾기 목록)이 쓰는 값이다. */
 /* 스크롤이 생겨도 머리는 남는다 — 달 이동처럼 스크롤한 뒤에도 필요한 것이 헤더에 있다.
    top 이 -8px 인 것은 패널의 padding 8 만큼 위로 붙여야 경계가 맞기 때문이다. */
 .popover > .popover-head, .popover > .date-picker-head { position: sticky; z-index: 1; top: -8px; margin-top: -8px; padding-top: 8px; background: var(--surface); }
@@ -592,7 +593,7 @@ button.metric-card:hover { border-color: var(--border-strong); background: var(-
 .ax-drawer-identity b, .ax-drawer-identity small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ax-header-actions { display: flex; flex: none; align-items: center; gap: 4px; }
 .ax-header-action { display: grid; width: 32px; height: 32px; padding: 0; place-items: center; border: 1px solid transparent; border-radius: 8px; color: var(--text-secondary); background: var(--surface-sunken); cursor: pointer; }
-.ax-header-action:hover, .ax-header-action:focus-visible, .ax-header-action[aria-pressed="true"] { border-color: var(--border-strong); color: var(--action); background: var(--selected-bg); }
+.ax-header-action:hover, .ax-header-action[aria-pressed="true"] { border-color: var(--border-strong); color: var(--action); background: var(--selected-bg); }
 .ax-header-action.close { color: var(--text-tertiary); background: transparent; }
 .ax-header-divider { width: 1px; height: 24px; margin: 0 4px; background: var(--border-default); }
 .ax-header-icon { width: 17px; height: 17px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
@@ -611,7 +612,7 @@ button.metric-card:hover { border-color: var(--border-strong); background: var(-
 .ax-follow-up-candidate { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 7px; width: 100%; min-width: 0; min-height: 44px; padding: 9px 12px; border: 1px solid #dfe2ff; border-radius: 12px; color: var(--text-secondary); background: #fff; font-size: 12px; line-height: 1.45; text-align: left; cursor: pointer; }
 .ax-follow-up-candidate > span:first-child { display: -webkit-box; min-width: 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; }
 .ax-follow-up-arrow { color: var(--action); font-size: 18px; line-height: 1; }
-.ax-follow-up-candidate:hover:not(:disabled), .ax-follow-up-candidate:focus-visible { border-color: var(--accent); color: var(--accent); }
+.ax-follow-up-candidate:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .ax-follow-up-candidate:disabled { cursor: default; opacity: 0.58; }
 .ax-follow-up-candidate[data-state="sending"], .ax-follow-up-candidate[data-state="selected"] { border-color: var(--accent); color: var(--accent); background: var(--selected-bg); opacity: 1; }
 .ax-follow-up-candidate[data-state="failed"] { border-color: var(--danger-accent); color: var(--danger); }
@@ -932,7 +933,6 @@ button.metric-card:hover { border-color: var(--border-strong); background: var(-
 .ax-answer-evidence > summary::-webkit-details-marker { display: none; }
 .ax-inline-resource-link { display: inline; margin: 0; padding: 0; border: 0; color: var(--action); background: transparent; font: inherit; font-weight: 600; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--action) 45%, transparent); text-underline-offset: 3px; cursor: pointer; }
 .ax-inline-resource-link:hover { color: var(--action-hover); }
-.ax-inline-resource-link:focus-visible { border-radius: 3px; outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 /* 관계 탐색: the picture fills the page and everything else floats over it, the way a map reads. */
 .graph-page { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: 12px; min-height: calc(100vh - 120px); }
 .graph-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -1128,7 +1128,7 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .ax-starter-prompts { display: grid; width: 100%; gap: 8px; }
 .ax-starter-prompts button { display: flex; align-items: center; gap: 6px; min-height: 34px; padding: 7px 12px; border: 1px solid #dfe1f3; border-radius: 999px; color: var(--text-secondary); background: #fff; text-align: left; cursor: pointer; font-size: 12px; }
 .ax-starter-prompts button span { color: var(--action); font-size: 16px; line-height: 1; }
-.ax-starter-prompts button:hover, .ax-starter-prompts button:focus-visible { border-color: var(--action); color: var(--action); background: var(--selected-bg); }
+.ax-starter-prompts button:hover { border-color: var(--action); color: var(--action); background: var(--selected-bg); }
 .ax-new-messages { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); height: 30px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--border-default); background: var(--text-primary); color: #fff; font-size: 12px; font-weight: 700; box-shadow: var(--shadow-md); }
 .ax-queue { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 6px; }
 .ax-queued-message .user, .ax-local-fragment .user { margin-bottom: 6px; }
@@ -1322,9 +1322,8 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 
 /* ---- date field: the visible string is ours, the calendar stays the platform's */
 .date-field { display: grid; gap: 4px; }
-.date-field-control { display: flex; align-items: center; gap: 4px; }
-.date-field-control input[type="text"] { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; }
-.date-field-picker { flex: none; padding: 0 8px; font-size: 13px; }
+/* 달력은 팝오버 트리거 하나다 — 칸은 필드 폭을 그대로 채운다 (DS-17) */
+.date-field > .popover-root { width: 100%; }
 
 /* ---------- date picker (v2 14 Popover 위) ---------- */
 /* 패널 폭·띄움·그림자·radius 는 .popover 가 이미 정한다. 여기는 격자만 그린다. */
@@ -1447,3 +1446,168 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .project-join { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 /* Legacy design-system export only. The app no longer mounts this desktop-only blocker. */
 .min-width-notice { display: none; }
+@media (max-width: 1279px) {
+  .min-width-notice { position: fixed; inset: 0; z-index: 100; display: grid; place-content: center; justify-items: center; gap: 12px; padding: 40px 24px; text-align: center; background: var(--surface); }
+  .min-width-notice b { font-size: 17px; font-weight: 700; }
+  .min-width-notice p { color: var(--text-tertiary); font-size: 14px; }
+  .min-width-notice svg { color: var(--text-disabled); }
+  /* 안내가 떠 있는 동안 뒤 화면은 읽히지도 눌리지도 않는다 */
+  .thesc-shell, .login-shell { display: none; }
+}
+
+/* ---------- 회의 화면 (SCR-105 회의 목록 · SCR-106 회의 상세) ----------
+   확정 시안 두 장의 규격. 새 색·새 그림자는 없다 — 전부 토큰이다. 밀도 높은 목록 화면이라
+   페이지 제목은 Display 28 이 아니라 Title 17 이고(design/CLAUDE.md), 좌우 패널은 고정 높이 대신
+   남는 높이를 그대로 먹는다: 고정값은 머리 높이가 상태마다 달라질 때 아래에 빈 띠를 남긴다. */
+/* 회의 화면은 한 화면에 갇힌다 — 페이지가 뷰포트를 채우고 «패널 안쪽» 만 스크롤한다.
+   `.canvas` 는 그리드 칸이라 늘어나 있지만 flex 기둥이 아니어서 아래로 높이가 내려가지 않았다.
+   다른 화면은 그대로 둔다 — 이 modifier 가 붙은 canvas 만 기둥이 된다 */
+/* 높이는 «위에서» 내려와야 한다. `.thesc-shell` 은 `min-height:100vh` 라 그리드 행이 내용만큼 자라고,
+   그러면 아래의 `flex:1`·`min-height:0` 이 나눌 «남는 높이» 자체가 생기지 않는다 — 페이지가 늘어난다.
+   이 화면만 canvas 에 «정해진» 높이를 준다(다른 화면은 문서가 그대로 스크롤한다). */
+.canvas.full-height { display: flex; flex-direction: column; height: 100vh; padding-bottom: 0; }
+.canvas.full-height > .page-surface { flex: 1; min-height: 0; }
+
+/* 스크롤은 되지만 막대는 보이지 않는다 — 내용만 흐른다 */
+.scroll-hidden { scrollbar-width: none; -ms-overflow-style: none; }
+.scroll-hidden::-webkit-scrollbar { display: none; }
+
+/* 찾는 이름이 명부에 없을 때 — 그 사실을 말하는 줄과 사외로 다는 줄, 둘을 가로선으로 가른다.
+   위아래로도 선을 둘러 「여기부터는 고르는 것이 아니다」가 자리로 읽히게 한다 */
+.popover-guest { border-top: 1px solid var(--border-subtle); border-bottom: 1px solid var(--border-subtle); }
+.popover-note { padding: 8px 12px; color: var(--text-tertiary); font-size: 13px; }
+.popover-guest-add { display: block; width: 100%; padding: 8px 12px; border-top: 1px solid var(--border-subtle); color: var(--text-primary); font-size: 13px; text-align: left; }
+.popover-guest-add:hover { background: var(--surface-sunken); }
+
+.meeting-surface { display: flex; flex-direction: column; flex: 1; min-height: 0; padding-bottom: 24px; }
+.meeting-page-title { font-size: 17px; }
+/* 행을 `auto` 로 두면 그리드가 «가장 큰 패널의 내용» 만큼 자란다 — 회의가 많아지면 목록이 패널을 밀어낸다.
+   `minmax(0, 1fr)` 이 행을 그리드 높이에 묶어, 넘치는 것은 패널 안에서 스크롤한다 */
+.meeting-columns { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); grid-template-rows: minmax(0, 1fr); gap: 24px; flex: 1; min-height: 0; }
+.meeting-columns.detail { grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr); gap: 16px; }
+.meeting-columns.detail.single { grid-template-columns: minmax(0, 1fr); }
+.meeting-panel { display: flex; flex-direction: column; min-height: 0; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius-panel); background: var(--surface); }
+.meeting-panel-center { flex: 1; display: grid; place-items: center; padding: 48px 24px; }
+
+/* 스크롤바는 기본이 투명하고, 그 영역에 손이 올라올 때만 보인다 */
+.meeting-scroll { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+.meeting-scroll:hover { scrollbar-color: var(--border-strong) transparent; }
+.meeting-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.meeting-scroll::-webkit-scrollbar-track { background: transparent; }
+.meeting-scroll::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 8px; background-clip: content-box; background-color: transparent; }
+.meeting-scroll:hover::-webkit-scrollbar-thumb { background-color: var(--border-strong); }
+
+.meeting-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 16px 4px 4px; }
+.meeting-section-head h2 { font-size: 14px; font-weight: 700; }
+.meeting-panel .meeting-list { gap: 6px; margin: 0; }
+.meeting-panel .meeting-row { padding: 8px 12px; gap: 12px; }
+.meeting-row.selected { border-color: var(--action); background: var(--surface-selected-row); }
+.meeting-row-mark { flex: none; width: 10px; font-size: 12px; color: var(--action); }
+.meeting-row-when { flex: none; width: 138px; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.meeting-row-title { flex: 1; min-width: 0; font-size: 14px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+.meeting-row-title.untitled { color: var(--text-tertiary); }
+.meeting-row-state { flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 8px; width: 96px; }
+
+.meeting-panel-head { padding: 20px 24px 16px; border-bottom: 1px solid var(--border-default); }
+.meeting-panel-head h2 { margin-bottom: 4px; font-size: 17px; font-weight: 700; }
+.meeting-panel-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 24px; border-top: 1px solid var(--border-default); }
+
+/* 안건은 카드로 감싸지 않고 가는 선으로만 가른다 — 패널 안에 상자를 또 두면 글자가 두 번 들여쓰인다 */
+.meeting-agenda h3 { font-weight: 700; }
+/* 회의록 줄 — 왼쪽에 글, 오른쪽에 그 줄이 딛는 구간들의 시각 칩 (D49) */
+.meeting-note-line { display: flex; align-items: baseline; gap: 12px; padding-left: 12px; }
+.meeting-note-chips { flex: none; display: inline-flex; align-items: center; gap: 4px; }
+.time-chip { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border: 1px solid var(--border-default); border-radius: var(--radius-chip); background: var(--surface); color: var(--text-tertiary); font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+button.time-chip { cursor: pointer; }
+button.time-chip:hover { border-color: var(--border-strong); background: var(--surface-sunken); color: var(--action); }
+.meeting-line-edit { flex: 1; min-width: 0; height: 30px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); background: var(--surface); font: inherit; font-size: 13px; color: var(--text-primary); }
+.meeting-add-agenda { display: flex; gap: 8px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-subtle); }
+.meeting-add-agenda input { flex: 1; height: 34px; font-size: 14px; }
+
+.meeting-tag { display: inline-flex; align-items: center; gap: 8px; height: 24px; padding: 0 8px; border: 1px solid var(--border-default); border-radius: var(--radius-chip); background: var(--surface); font-size: 12px; }
+.meeting-tag:hover { background: var(--surface-sunken); }
+
+/* 상세 머리 — 고치는 동안에는 세로로 서고 [회의 시작]이 한 칸 아래에 비활성으로 남는다 */
+.meeting-head.editing { display: block; }
+.meeting-head.editing .page-head-actions { justify-content: flex-end; margin-top: 16px; }
+.meeting-head-btn { width: auto; height: 22px; padding: 0 8px; font-size: 12px; }
+.meeting-head-btn.icon { width: 22px; padding: 0; color: var(--text-tertiary); }
+.meeting-meta-edit { display: grid; grid-template-columns: 2fr 3fr; gap: 20px; align-items: start; }
+.meeting-meta-edit input[type="text"], .meeting-meta-edit input[type="date"], .meeting-meta-edit select { height: 34px; font-size: 13px; }
+.meeting-meta-edit label { font-size: 12px; }
+
+.meeting-live-bar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; padding: 10px 16px; border-radius: var(--radius-card); background: var(--selected-bg); }
+.meeting-failed-note { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; border-left-color: var(--danger-accent); background: var(--danger-tint); }
+.meeting-purpose { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 12px; }
+
+.meeting-note-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--border-default); }
+.meeting-note-head h2 { font-size: 14px; font-weight: 700; }
+.meeting-tabs { display: flex; gap: 20px; padding: 0 20px; }
+.meeting-tabs button { display: flex; align-items: center; height: 42px; padding: 0 2px; border-bottom: 2px solid transparent; color: var(--text-tertiary); font-size: 13px; font-weight: 500; }
+.meeting-tabs button.on { border-bottom-color: var(--text-primary); color: var(--text-primary); font-weight: 700; }
+
+.meeting-material { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: var(--radius-chip); cursor: pointer; }
+.meeting-material:hover { background: var(--surface-sunken); }
+.meeting-drop { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 32px 20px; border: 1px dashed var(--border-strong); border-radius: var(--radius-card); background: var(--surface-sunken); }
+
+/* 회의실 — 이름·정원만 낸 정적 목록. 「가능」 판정 배지도, 못 쓰는 방 잠금도 없다 */
+.meeting-room.none { color: var(--text-secondary); }
+.meeting-room { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--border-default); border-radius: var(--radius-control); background: var(--surface); cursor: pointer; }
+.meeting-room.on { border-color: var(--action); background: var(--selected-bg); }
+.meeting-room input[type="radio"] { width: 16px; height: 16px; flex: none; accent-color: var(--action); }
+/* 우하단 AX 단추가 고정으로 떠 있다 — 패널 푸터의 단추가 그 아래 깔리지 않게 자리를 비운다 */
+.meeting-list-surface .meeting-panel-foot { padding-right: 120px; }
+
+.meeting-when { display: flex; align-items: center; gap: 8px; }
+.meeting-when .date-field { flex: none; width: 200px; }
+.meeting-when .time-range { flex: none; }
+.meeting-suggest { margin-top: 8px; padding: 16px 20px; border: 1px solid var(--border-default); border-radius: var(--radius-card); background: var(--surface-sunken); }
+
+/* 폼 여덟 칸이 들어가는 예약 모달과 조직도가 들어가는 공유 모달만 DS 기본 600 보다 넓다.
+   머리·푸터는 고정하고 본문만 스크롤한다 */
+.meeting-modal-wide { display: flex; flex-direction: column; width: min(760px, 100%); max-height: calc(100vh - 48px); }
+.meeting-modal-wide .modal-body { flex: 1; min-height: 0; overflow-y: auto; }
+.meeting-modal-share { display: flex; flex-direction: column; width: min(680px, 100%); max-height: calc(100vh - 48px); }
+.meeting-modal-share .modal-body { flex: 1; min-height: 0; overflow-y: auto; gap: 12px; }
+/* 회의 화면의 단은 17 / 14 / 13 / 12 넷이다 — 모달 머리 22 와 본문 15 를 그 안으로 되돌린다 */
+.meeting-surface .modal-head h3 { font-size: 17px; }
+.meeting-surface .modal-body { color: var(--text-primary); font-size: 14px; }
+.meeting-surface .modal input[type="text"]:not(.title-input), .meeting-surface .modal input[type="date"], .meeting-surface .modal select { font-size: 14px; }
+.meeting-share-table th { height: 34px; font-size: 12px; }
+.meeting-share-table td { height: 40px; font-size: 13px; }
+
+/* ---- 디자인 시스템 v2 에 없는 부품 셋 — 화면 전용이 아니라 부품으로 세운다 (D25) ----
+   Composer(한 줄 입력 한 벌) · GutterList(고정폭 메타 칸 + 본문) · StatusNote(곁에 서는 상태 한 줄).
+   값은 전부 토큰이다 — 새 색·새 그림자 0. DS 에 오르면 이 블록이 그대로 옮겨 간다. */
+.composer { display: flex; align-items: center; gap: 8px; padding: 5px 6px 5px 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); background: var(--surface); }
+.composer input { flex: 1; min-width: 0; height: 32px; padding: 0 4px; border: 0; border-radius: 0; background: transparent; font-size: 14px; }
+.composer input:focus { box-shadow: none; }
+.composer-divider { flex: none; width: 1px; height: 20px; background: var(--border-default); }
+
+.gutter-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+/* 한 줄에 세 칸 — 앞의 고정 칸들이 본문과 같은 줄에 선다. 줄 사이는 본문 한 줄 높이 기준으로 촘촘하게 */
+.gutter-row { display: flex; align-items: baseline; gap: 12px; padding: 2px 10px; border-radius: var(--radius-chip); }
+.gutter-meta, .gutter-aside { flex: none; font-size: 12px; }
+.gutter-speaker { color: var(--text-secondary); font-weight: 700; }
+.gutter-body { flex: 1; min-width: 0; color: var(--text-primary); font-size: 13px; text-wrap: pretty; }
+.gutter-body.muted { color: var(--text-tertiary); }
+/* 다른 자리에서 가리킨 줄 — 그 줄만 켜진다 */
+.gutter-row.active { background: var(--selected-bg); }
+
+.drop-zone { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 32px 20px; border: 1px dashed var(--border-strong); border-radius: var(--radius-card); background: var(--surface-sunken); }
+.drop-zone.over { border-color: var(--accent); background: var(--selected-bg); }
+
+.file-list { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.file-row { display: flex; align-items: center; gap: 12px; min-height: 34px; padding: 0 4px; border-radius: var(--radius-chip); }
+.file-row.active { background: var(--surface-selected-row); }
+.file-open { display: flex; flex: 1; align-items: center; gap: 12px; min-width: 0; padding: 6px 6px 6px 0; text-align: left; }
+.file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); font-size: 13px; }
+.file-name.muted { color: var(--text-tertiary); }
+
+.material-frame { display: block; width: 100%; height: 100%; min-height: 420px; border: 1px solid var(--border-default); border-radius: var(--radius-card); background: var(--surface); }
+
+.status-note { font-size: 12px; color: var(--text-tertiary); }
+.status-note.danger { color: var(--danger); }
+
+/* ---- 회의 「진행 중」 ---- */
+.meeting-composer-foot { padding: 12px 20px; border-top: 1px solid var(--border-default); }

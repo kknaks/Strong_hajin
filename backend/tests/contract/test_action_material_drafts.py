@@ -12,7 +12,6 @@ from ax_workspace.platform.persistence import (
     AttachmentBindingRecord,
     AttachmentRecord,
     ConversationTurnRecord,
-    MeetingNoteRecord,
     SubmissionRecord,
     TaskVersionRecord,
     make_session_factory,
@@ -48,33 +47,13 @@ def _proposal(client, application, *, title="첨부할 AX 업무"):
     )
 
 
-def _meeting_proposal(client, application, *, reference_task_id: str | None = None, include_note: bool = False):
-    conversation = client.post("/api/conversations", headers=JIHO, json={"title": "회의 첨부 계약"}).json()
-    accepted = client.post(
-        f"/api/conversations/{conversation['conversation_id']}/messages",
-        headers={**JIHO, "Idempotency-Key": "action-meeting-material"},
-        json={"body": "회의록 없이 자료만 첨부한 회의를 제안해줘", "context": []},
-    ).json()
-    with make_session_factory(application._settings.database_url)() as session:
-        execution_id = session.get(ConversationTurnRecord, UUID(accepted["turn_id"])).execution_id
-    return application.propose_action(
-        application.authenticated_principal("jiho"),
-        execution_id,
-        "meeting.create",
-        "회의 생성 확인",
-        {
-            "organization_id": "scax",
-            "title": "회의 첨부 기반 점검",
-            "description": "회의록 없이 회의 자료를 공유한다.",
-            "starts_at": "2026-09-30T01:00:00Z",
-            "ends_at": "2026-09-30T02:00:00Z",
-            "visibility": "private",
-            "attendee_ids": ["mina"],
-            "reference_task_ids": [reference_task_id] if reference_task_id else [],
-            "include_initial_note": include_note,
-            "initial_note_body": "검토할 회의록 초안" if include_note else None,
-        },
-    )
+# main 의 `meeting.create` 확인 경로를 딛던 헬퍼(`_meeting_proposal`)와 시험 둘
+# (`test_meeting_without_note_claims_materials_into_the_meeting_owner` ·
+#  `test_excluding_the_initial_note_keeps_staged_meeting_materials`)을 걷었다.
+# 그 경로는 **옛 회의 모델**(description·visibility·판 있는 회의록)에 서 있었고 SCAX-SPEC-004 가 그것을
+# 대체했다 — 지금 확인을 누르면 「회의 화면에서 직접 해 주세요」로 멈춘다. 자료 초안 계약 자체는
+# 아래 업무 제안 네 시험이 그대로 지킨다. 채팅에서 회의를 만드는 흐름을 새 모델 위에 다시 세우면
+# 그때 이 자리도 새 모델로 다시 쓴다.
 
 
 def test_link_and_file_drafts_are_projected_and_claimed_by_confirm(tmp_path) -> None:
@@ -136,114 +115,6 @@ def test_link_and_file_drafts_are_projected_and_claimed_by_confirm(tmp_path) -> 
     with make_session_factory(application._settings.database_url)() as session:
         creation = session.query(TaskVersionRecord).filter_by(task_id=UUID(task_id), version=1).one()
         assert [row["source_kind"] for row in creation.snapshot["materials"]] == ["external_link", "file"]
-
-
-def test_meeting_without_note_claims_materials_into_the_meeting_owner(tmp_path) -> None:
-    client, application = _stack(tmp_path)
-    reference = application.create_self_task(
-        application.authenticated_principal("jiho"),
-        "회의에서 참고할 업무",
-    )
-    proposal = _meeting_proposal(client, application, reference_task_id=reference["task_id"])
-    action_id = proposal["action_id"]
-    link = client.post(
-        f"/api/action-items/{action_id}/material-drafts/links",
-        headers=JIHO,
-        json={"url": "https://example.com/meeting-brief", "label": "회의 기획 링크"},
-    )
-    assert link.status_code == 201, link.text
-    uploaded = client.post(
-        f"/api/action-items/{action_id}/material-drafts/files",
-        headers=JIHO,
-        files={"file": ("회의안.txt", b"meeting attachment", "text/plain")},
-    )
-    assert uploaded.status_code == 201, uploaded.text
-    item = client.get(f"/api/action-items/{action_id}", headers=JIHO).json()
-    assert item["edit_contract"]["values"]["description"] == "회의록 없이 회의 자료를 공유한다."
-    selected = [row["material_draft_id"] for row in item["material_drafts"]]
-    assert selected == [link.json()["material_draft_id"], uploaded.json()["material_draft_id"]]
-
-    confirmed = client.post(
-        f"/api/action-items/{action_id}/commands/confirm",
-        headers=JIHO,
-        json={
-            "expected_version": item["expected_version"],
-            "base_submission_version": item["submission_version"],
-            "attachment_draft_ids": selected,
-        },
-    )
-    assert confirmed.status_code == 200, confirmed.text
-    receipt = confirmed.json()
-    meeting_id = receipt["derived_meeting_id"]
-    assert [row["meeting_id"] for row in receipt["material_results"]] == [meeting_id, meeting_id, meeting_id]
-    detail = client.get(f"/api/meetings/{meeting_id}", headers=JIHO).json()
-    assert detail["description"] == "회의록 없이 회의 자료를 공유한다."
-    assert detail["note"] is None
-    assert [(row["source_kind"], row["name"]) for row in detail["materials"]] == [
-        ("external_link", "회의 기획 링크"),
-        ("file", "회의안.txt"),
-        ("resource_ref", "회의에서 참고할 업무"),
-    ]
-    file_material = next(row for row in detail["materials"] if row["source_kind"] == "file")
-    opened = client.get(f"/api/meetings/{meeting_id}/materials/{file_material['material_id']}/content", headers=JIHO)
-    assert opened.status_code == 200 and opened.content == b"meeting attachment"
-    attendee_detail = client.get(f"/api/meetings/{meeting_id}", headers=MINA)
-    assert attendee_detail.status_code == 200
-    assert [(row["source_kind"], row["name"]) for row in attendee_detail.json()["materials"]] == [
-        ("external_link", "회의 기획 링크"),
-        ("file", "회의안.txt"),
-        ("resource_ref", "볼 수 없는 자료"),
-    ]
-    with make_session_factory(application._settings.database_url)() as session:
-        bindings = session.query(AttachmentBindingRecord).all()
-        assert [(row.context_type, row.context_id, row.role) for row in bindings] == [
-            ("meeting", meeting_id, "input"),
-            ("meeting", meeting_id, "input"),
-            ("meeting", meeting_id, "input"),
-        ]
-        assert session.query(MeetingNoteRecord).count() == 0
-
-
-def test_excluding_the_initial_note_keeps_staged_meeting_materials(tmp_path) -> None:
-    client, application = _stack(tmp_path)
-    proposal = _meeting_proposal(client, application, include_note=True)
-    action_id = proposal["action_id"]
-    link = client.post(
-        f"/api/action-items/{action_id}/material-drafts/links",
-        headers=JIHO,
-        json={"url": "https://example.com/note-independent", "label": "회의 유지 자료"},
-    ).json()
-    item = client.get(f"/api/action-items/{action_id}", headers=JIHO).json()
-    assert item["edit_contract"]["values"]["include_initial_note"] is True
-    draft = {
-        **item["edit_contract"]["values"],
-        "include_initial_note": False,
-        "initial_note_body": None,
-    }
-
-    confirmed = client.post(
-        f"/api/action-items/{action_id}/commands/confirm",
-        headers=JIHO,
-        json={
-            "expected_version": item["expected_version"],
-            "base_submission_version": item["submission_version"],
-            "draft": draft,
-            "attachment_draft_ids": [link["material_draft_id"]],
-        },
-    )
-    assert confirmed.status_code == 200, confirmed.text
-    receipt = confirmed.json()
-    detail = client.get(f"/api/meetings/{receipt['derived_meeting_id']}", headers=JIHO).json()
-    assert detail["note"] is None
-    assert [(row["source_kind"], row["name"]) for row in detail["materials"]] == [
-        ("external_link", "회의 유지 자료"),
-    ]
-    with make_session_factory(application._settings.database_url)() as session:
-        assert session.query(MeetingNoteRecord).count() == 0
-        assert session.query(AttachmentBindingRecord).filter_by(
-            context_type="meeting",
-            context_id=receipt["derived_meeting_id"],
-        ).count() == 1
 
 
 def test_stage_storage_failure_and_cross_principal_access_leave_no_draft(tmp_path) -> None:

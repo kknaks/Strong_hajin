@@ -3,6 +3,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./api", () => ({ graphSearch: vi.fn(), graphNeighbors: vi.fn(), graphOverview: vi.fn() }));
 
+/* jsdom 에는 WebGL 이 없다 — 그래프 화면이 늦게 부르는 `sigma` 가 모듈을 읽는 순간 상수를 찾다 터지고,
+   그 거절이 테스트 밖에서 떠 스위트를 빨갛게 만든다. 여기서는 그림을 보지 않으니 빈 껍데기면 된다. */
+vi.stubGlobal("WebGL2RenderingContext", class {});
+vi.stubGlobal("WebGLRenderingContext", class {});
+
 import * as api from "./api";
 import { RelationGraphPage } from "./RelationGraphPage";
 

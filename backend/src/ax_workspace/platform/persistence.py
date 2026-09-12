@@ -264,7 +264,11 @@ class ResourceRelationshipRecord(Base):
 
 
 class MeetingRecord(Base):
-    """The stable Meeting identity; note, recording, and transcript lifecycles hang from it."""
+    """The stable Meeting identity and the owner of the six statuses; agendas, lines, and recordings hang from it.
+
+    A meeting made by 「바로 시작」 stands with no title, no place, and nobody but the person who opened it, so every
+    descriptive column here is optional. The title is filled in later by a person, never by the transcript.
+    """
 
     __tablename__ = "meetings"
     __table_args__ = (Index("ix_meetings_organization_starts_at", "organization_id", "starts_at"),)
@@ -272,19 +276,111 @@ class MeetingRecord(Base):
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     organization_id: Mapped[str] = mapped_column(ForeignKey("organization_units.id"), nullable=False)
     owner_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
-    title: Mapped[str] = mapped_column(String(300), nullable=False)
-    description: Mapped[str | None] = mapped_column(Text)
+    title: Mapped[str | None] = mapped_column(String(300))
+    #: 합성이 낸 제목 후보. **사람이 저장해야 제목이 된다** — 그전까지는 「제목 없는 회의」다 (SPEC-004 §8-5 · D14).
+    title_candidate: Mapped[str | None] = mapped_column(String(300))
+    #: 합성이 실패한 사유. 화면에는 「실패」만 서고 이 글자는 감사·재시도 판단의 근거다.
+    failure_reason: Mapped[str | None] = mapped_column(String(2000))
+    purpose: Mapped[str | None] = mapped_column(String(1000))
+    location: Mapped[str | None] = mapped_column(String(300))
+    #: 사옥 회의실 예약의 현재 상태 (SCAX-WP-007). `{status, room_id, room_name, external_id, reason}` —
+    #: **`external_id` 는 바꾸고 거두기 위한 것이라 원장에만 살고 응답으로는 나가지 않는다.**
+    #: 회의실을 안 고른 회의는 비어 있다 — 예약을 부르지도 않았다는 뜻이다.
+    room_reservation: Mapped[dict | None] = mapped_column(JSON)
+    #: 이 회의록이 **어느 원문으로** 만들어졌는가 (사용자 결정 D44, 2026-09-11).
+    #: `final` = 종료 뒤 음원 전체를 다시 전사한 것 · `realtime` = 회의 중 받아 적은 것.
+    #: 재전사가 실패했거나 녹음이 없으면 `realtime` 이고, 화면이 그 사실을 한 줄로 알린다.
+    transcript_source: Mapped[str | None] = mapped_column(String(20))
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    visibility: Mapped[str] = mapped_column(String(20), nullable=False, default="private")
-    lifecycle: Mapped[str] = mapped_column(String(20), nullable=False, default="scheduled")
-    source_action_item_id: Mapped[UUID | None] = mapped_column(ForeignKey("action_items.id"))
-    source_decision_item_id: Mapped[UUID | None] = mapped_column(ForeignKey("decision_items.id"))
-    source_submission_id: Mapped[UUID | None] = mapped_column(ForeignKey("submissions.id"))
-    source_review_decision_id: Mapped[UUID | None] = mapped_column(ForeignKey("review_decisions.id"))
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="scheduled")
+    # 사외 참석자는 이름만 담는다 — 계정을 만들지 않으므로 member 관계가 될 수 없다 (SPEC §3.1-5).
+    external_attendees: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    carried_from_meeting_id: Mapped[UUID | None] = mapped_column(ForeignKey("meetings.id"))
+    last_saved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 「진행 중」으로 옮긴 실제 시각 — 예정 시각과 다르다. 확정 발화의 `at_ms` 가 이 값을 기준으로 잰다.
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MeetingAgendaRecord(Base):
+    """안건 — 회의 기록의 뼈대. 줄도 다음 할 일도 전부 여기 매달린다 (SPEC §4.1 · §10-9)."""
+
+    __tablename__ = "meeting_agendas"
+    __table_args__ = (Index("ix_meeting_agendas_meeting_order", "meeting_id", "order_index"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False)
+    order_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String(100), nullable=False)
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="manual")  # manual | carried | ai
+    concluded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: 제목이 **아직 자리표시인가** (사용자 결정 D6, 2026-09-11).
+    #: 빠른 시작은 메모가 붙을 자리로 안건 하나를 먼저 세우는데(「안건 1」), 그것은 이름이 아니라 빈 칸이다.
+    #: 참이면 회의 중 배치가 낸 제목으로 갈아 끼운다. 사람이 한 번 고치면 거짓이 되고 그 뒤로는 불변이다.
+    title_placeholder: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MeetingLineRecord(Base):
+    """줄 — 안건 본문의 단위. 한 줄이 짧은 문장 하나이고 종류 배지를 갖지 않는다 (SPEC §4.2).
+
+    `track`이 메모·AI·합성을 가른다. 두 트랙은 회의 중 각자 쌓이고(§10-5) 종료 합성이 `final` 줄을 쓴다(§8).
+    `evidence`는 확정 발화 구간 목록이고, 그 구간을 채우는 것은 SCAX-WP-003/004다 — 이 WP는 자리만 연다.
+    """
+
+    __tablename__ = "meeting_lines"
+    __table_args__ = (Index("ix_meeting_lines_agenda_track_order", "agenda_id", "track", "order_index"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False, index=True)
+    agenda_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_agendas.id"), nullable=False)
+    track: Mapped[str] = mapped_column(String(10), nullable=False)  # memo | ai | final
+    order_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    author_id: Mapped[str | None] = mapped_column(ForeignKey("members.id"))
+    # 회의 시작부터의 경과 밀리초. **서버가 매긴다** — 클라이언트 시계를 믿지 않는다 (SPEC-004 §6-5).
+    # 메모 줄에만 값이 있다: AI 줄과 합성 줄은 구간(`evidence`)에 걸리지 시각에 걸리지 않는다.
+    at_ms: Mapped[int | None] = mapped_column(Integer)
+    evidence: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MeetingTodoRecord(Base):
+    """「다음 할 일」 후보 — SCAX-SPEC-004 §8.1의 여덟 값. 업무가 아니라 후보다 (§10-17).
+
+    **담당자는 여기 없다.** AI가 고르지 않는다 — 조직 데이터에 역할 설명이 없어 고르면 근거 없는 추측이 된다.
+    담당은 승격 모달에서 사람이 정한다. `reference`가 이 후보가 딛는 줄들이고 승격 결과에서 회의로 되돌아가는
+    계보다. 값을 채우는 것은 합성(SCAX-WP-004)이고, 이 WP는 자리만 연다.
+    """
+
+    __tablename__ = "meeting_todos"
+    __table_args__ = (Index("ix_meeting_todos_agenda_order", "agenda_id", "order_index"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False, index=True)
+    agenda_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_agendas.id"), nullable=False)
+    order_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    due_candidate: Mapped[date | None] = mapped_column(Date)
+    checklist_candidate: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # 이 후보가 딛는 줄들 — {meeting_id, agenda_id, line_ids[]} (SPEC §8.1 D20).
+    reference: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    #: 회의 **중**에 배치가 낸 후보인가 (사용자 결정 D46, 2026-09-11). 참이면 **읽기 전용**이다:
+    #: 배치마다 통째로 갈리고, 종료 합성이 시작할 때 지워진다. 승격도 삭제도 받지 않는다 —
+    #: 아직 회의가 도는 중이라 그 후보가 다음 회차에 사라질 수 있기 때문이다.
+    provisional: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    # 승격 전에는 비어 있다. 승격하면 work_request_id가, 상대가 수락하면 task_id가 함께 찬다.
+    linked_work_request_id: Mapped[UUID | None] = mapped_column(ForeignKey("work_requests.id"))
+    linked_task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class MeetingAttendeeRecord(Base):
@@ -302,241 +398,90 @@ class MeetingAttendeeRecord(Base):
     removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class MeetingNoteRecord(Base):
-    """One stable note identity per Meeting; content is only ever written as a version below."""
+class MeetingTranscriptRecord(Base):
+    """확정 발화 블록 — **이 회의의 원문 정본**이다 (SCAX-SPEC-004 §5.4-3 · §10-12).
 
-    __tablename__ = "meeting_notes"
-    __table_args__ = (UniqueConstraint("meeting_id", name="uq_meeting_note"),)
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False)
-    lifecycle: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
-    current_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    finalized_by: Mapped[str | None] = mapped_column(ForeignKey("members.id"))
-
-
-class MeetingNoteVersionRecord(Base):
-    """Immutable human-authored note version, including the evidence refs it deliberately used."""
-
-    __tablename__ = "meeting_note_versions"
-    __table_args__ = (UniqueConstraint("note_id", "version", name="uq_meeting_note_version"),)
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    note_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_notes.id"), nullable=False, index=True)
-    version: Mapped[int] = mapped_column(Integer, nullable=False)
-    body: Mapped[str] = mapped_column(Text, nullable=False)
-    source_evidence: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
-    source_status: Mapped[str | None] = mapped_column(String(30))
-    created_by: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
-class MeetingRecordingRecord(Base):
-    """Audio object metadata. Bytes live behind RecordingStorage, never in this operational database."""
-
-    __tablename__ = "meeting_recordings"
-    __table_args__ = (Index("ix_meeting_recordings_meeting_created", "meeting_id", "created_at"),)
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False)
-    actor_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
-    purpose: Mapped[str] = mapped_column(String(300), nullable=False)
-    state: Mapped[str] = mapped_column(String(30), nullable=False, default="not_started")
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    storage_key: Mapped[str | None] = mapped_column(String(500))
-    original_name: Mapped[str | None] = mapped_column(String(300))
-    content_type: Mapped[str | None] = mapped_column(String(200))
-    size_bytes: Mapped[int | None] = mapped_column(BigInteger)
-    sha256: Mapped[str | None] = mapped_column(String(64))
-    provider_client_reference_id: Mapped[str] = mapped_column(String(200), nullable=False)
-    provider_file_ref: Mapped[str | None] = mapped_column(String(300))
-    provider_transcription_ref: Mapped[str | None] = mapped_column(String(300))
-    error_code: Mapped[str | None] = mapped_column(String(80))
-    error_detail: Mapped[str | None] = mapped_column(String(500))
-    finalization_attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    finalization_lease_token: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
-    finalization_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
-class MeetingRawTranscriptRevisionRecord(Base):
-    """An immutable STT result. Refinement and summary point at this rather than overwriting it."""
-
-    __tablename__ = "meeting_raw_transcript_revisions"
-    __table_args__ = (
-        UniqueConstraint("recording_id", "revision", name="uq_meeting_raw_transcript_revision"),
-        UniqueConstraint("recording_id", "provider_reference", name="uq_meeting_raw_transcript_provider_ref"),
-    )
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    recording_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_recordings.id"), nullable=False)
-    revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    state: Mapped[str] = mapped_column(String(30), nullable=False, default="processing")
-    source_kind: Mapped[str] = mapped_column(String(40), nullable=False, default="async_final")
-    provider: Mapped[str | None] = mapped_column(String(80))
-    provider_reference: Mapped[str | None] = mapped_column(String(300))
-    error_code: Mapped[str | None] = mapped_column(String(80))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-
-class MeetingRawTranscriptSegmentRecord(Base):
-    """Provider-produced final segment. Text and offsets are immutable once the raw revision completes."""
-
-    __tablename__ = "meeting_raw_transcript_segments"
-    __table_args__ = (
-        UniqueConstraint("transcript_revision_id", "sequence", name="uq_meeting_raw_transcript_segment_sequence"),
-        UniqueConstraint("transcript_revision_id", "source_segment_key", name="uq_meeting_raw_transcript_source_key"),
-    )
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    transcript_revision_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_revisions.id"), nullable=False)
-    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
-    source_segment_key: Mapped[str] = mapped_column(String(200), nullable=False)
-    start_ms: Mapped[int] = mapped_column(Integer, nullable=False)
-    end_ms: Mapped[int] = mapped_column(Integer, nullable=False)
-    text: Mapped[str] = mapped_column(Text, nullable=False)
-    speaker_label: Mapped[str | None] = mapped_column(String(100))
-    confirmed_member_id: Mapped[str | None] = mapped_column(ForeignKey("members.id"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
-class MeetingSpeakerIdentityAssignmentRecord(Base):
-    """Human-confirmed mapping of an anonymous STT track; it never rewrites provider raw text."""
-
-    __tablename__ = "meeting_speaker_identity_assignments"
-    __table_args__ = (
-        Index("ix_meeting_speaker_assignment_transcript_label", "transcript_revision_id", "speaker_label"),
-        Index("ix_meeting_speaker_assignment_meeting", "meeting_id", "confirmed_at"),
-    )
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False)
-    transcript_revision_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_revisions.id"), nullable=False)
-    speaker_label: Mapped[str] = mapped_column(String(100), nullable=False)
-    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
-    scope: Mapped[str] = mapped_column(String(30), nullable=False)  # segment_range | speaker_track
-    raw_start_segment_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_segments.id"), nullable=False)
-    raw_end_segment_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_segments.id"), nullable=False)
-    source_audio_start_ms: Mapped[int] = mapped_column(Integer, nullable=False)
-    source_audio_end_ms: Mapped[int] = mapped_column(Integer, nullable=False)
-    source: Mapped[str] = mapped_column(String(40), nullable=False, default="human_confirmed")
-    state: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
-    confirmed_by: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
-    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    revoked_by: Mapped[str | None] = mapped_column(ForeignKey("members.id"))
-
-
-class MeetingTranscriptRefinementRevisionRecord(Base):
-    """A derived, versioned reading layer over one raw STT revision; it can never mutate the raw source."""
-
-    __tablename__ = "meeting_transcript_refinement_revisions"
-    __table_args__ = (UniqueConstraint("raw_transcript_revision_id", "revision", name="uq_meeting_refinement_revision"),)
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    raw_transcript_revision_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_revisions.id"), nullable=False)
-    revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    state: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
-    provider_call_ref: Mapped[str | None] = mapped_column(String(300))
-    content_hash: Mapped[str | None] = mapped_column(String(64))
-    error_code: Mapped[str | None] = mapped_column(String(80))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-
-class MeetingTranscriptRefinementSegmentRecord(Base):
-    """Strict refinement output with a raw segment/time span and correction provenance per rendered turn."""
-
-    __tablename__ = "meeting_transcript_refinement_segments"
-    __table_args__ = (UniqueConstraint("refinement_revision_id", "sequence", name="uq_meeting_refinement_segment_sequence"),)
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    refinement_revision_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_transcript_refinement_revisions.id"), nullable=False)
-    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
-    raw_start_segment_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_segments.id"), nullable=False)
-    raw_end_segment_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_segments.id"), nullable=False)
-    start_ms: Mapped[int] = mapped_column(Integer, nullable=False)
-    end_ms: Mapped[int] = mapped_column(Integer, nullable=False)
-    text: Mapped[str] = mapped_column(Text, nullable=False)
-    speaker_label: Mapped[str | None] = mapped_column(String(100))
-    confirmed_member_id: Mapped[str | None] = mapped_column(ForeignKey("members.id"))
-    correction_kind: Mapped[str] = mapped_column(String(40), nullable=False, default="none")
-    confidence: Mapped[float | None] = mapped_column()
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
-class MeetingSummarySuggestionRecord(Base):
-    """Derived Meeting reading aid. Adoption is a separate append to MeetingNoteVersion."""
-
-    __tablename__ = "meeting_summary_suggestions"
-    __table_args__ = (
-        UniqueConstraint("refinement_revision_id", "kind", name="uq_meeting_summary_refinement_kind"),
-        Index("ix_meeting_summary_meeting_created", "meeting_id", "created_at"),
-    )
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False)
-    raw_transcript_revision_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_revisions.id"), nullable=False)
-    refinement_revision_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_transcript_refinement_revisions.id"), nullable=False)
-    kind: Mapped[str] = mapped_column(String(30), nullable=False)  # provisional | final
-    state: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    body: Mapped[str | None] = mapped_column(Text)
-    provider_call_ref: Mapped[str | None] = mapped_column(String(300))
-    content_hash: Mapped[str | None] = mapped_column(String(64))
-    error_code: Mapped[str | None] = mapped_column(String(80))
-    error_detail: Mapped[str | None] = mapped_column(String(500))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    adopted_note_version_id: Mapped[UUID | None] = mapped_column(ForeignKey("meeting_note_versions.id"))
-    adopted_by: Mapped[str | None] = mapped_column(ForeignKey("members.id"))
-    adopted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-
-class MeetingSummaryEvidenceRecord(Base):
-    """Every generated statement carries a refinement span and its raw span for citation navigation."""
-
-    __tablename__ = "meeting_summary_evidence"
-    __table_args__ = (UniqueConstraint("summary_id", "statement_index", name="uq_meeting_summary_statement"),)
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    summary_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_summary_suggestions.id"), nullable=False)
-    statement_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    statement_kind: Mapped[str] = mapped_column(String(40), nullable=False)
-    statement_text: Mapped[str] = mapped_column(Text, nullable=False)
-    refinement_start_segment_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_transcript_refinement_segments.id"), nullable=False)
-    refinement_end_segment_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_transcript_refinement_segments.id"), nullable=False)
-    raw_start_segment_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_segments.id"), nullable=False)
-    raw_end_segment_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_raw_transcript_segments.id"), nullable=False)
-    raw_start_ms: Mapped[int] = mapped_column(Integer, nullable=False)
-    raw_end_ms: Mapped[int] = mapped_column(Integer, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
-class MeetingFollowupPromotionRecord(Base):
-    """A followup someone decided to act on, and the work it became.
-
-    A summary statement is a candidate, not work. This row exists only after a person promoted it, so the same
-    candidate is never turned into two Tasks and the meeting can say which of its candidates were acted on.
+    잠정 발화는 밀어 주기만 하고 여기 오지 않는다 (§10-11). 화자는 익명 라벨이고 이름을 지어내지 않는다 (§5.4-4).
+    `at_ms`·`end_ms` 는 회의 시작 시각 기준 오프셋이다 — 근거 타임칩이 이 값에 걸린다 (§4.2-3).
+    종료 뒤 음원 전체를 다시 전사해 **이 표를 통째로 갈아 끼운다** (D44). 판을 쌓지 않으므로 revision 열은
+    없다 — 마지막 전사가 그 회의의 원문이고, 무엇으로 만들었는지는 `meetings.transcript_source` 가 말한다.
     """
 
-    __tablename__ = "meeting_followup_promotions"
-    __table_args__ = (UniqueConstraint("summary_id", "statement_index", name="uq_meeting_followup_promotion"),)
+    __tablename__ = "meeting_transcripts"
+    __table_args__ = (
+        UniqueConstraint("meeting_id", "seq", name="uq_meeting_transcript_seq"),
+        Index("ix_meeting_transcripts_meeting_at", "meeting_id", "at_ms"),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False, index=True)
-    summary_id: Mapped[UUID] = mapped_column(ForeignKey("meeting_summary_suggestions.id"), nullable=False)
-    statement_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id"))
-    work_request_id: Mapped[UUID | None] = mapped_column(ForeignKey("work_requests.id"))
-    promoted_by: Mapped[str] = mapped_column(String(100), nullable=False)
-    promoted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    speaker_label: Mapped[str] = mapped_column(String(100), nullable=False)
+    at_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MeetingAiSessionRecord(Base):
+    """회의당 provider 세션 하나. 배치가 이어 쓰고 종료 합성도 **같은 세션**을 쓴다 (SPEC-004 §7.1 · §8-3).
+
+    현행 `conversation_provider_session_references` 와 같은 방식이다 — 세션 참조는 원장이 들고 있고
+    provider 가 기억하는 것에 기대지 않는다. 열기가 실패하면 행이 없고, 그러면 배치가 제출되지 않는다.
+    """
+
+    __tablename__ = "meeting_ai_sessions"
+    __table_args__ = (UniqueConstraint("meeting_id", name="uq_meeting_ai_session"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False)
+    provider_session_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    #: 도구를 부를 때 어느 사람으로 서는가 — 회의를 만든 사람이다 (SPEC-004 §13 `OQ-315` 잠정값).
+    persona_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MeetingBatchRunRecord(Base):
+    """배치 회차 하나 — 성공·실패·폐기와 그 회차가 읽은 구간.
+
+    **커서는 성공분만 전진한다** — 실패·폐기 구간은 다음 배치에 합쳐진다 (SPEC-004 §7.1 실패 행).
+    트리거 원인은 기록만 하고 화면에 내지 않는다.
+    """
+
+    __tablename__ = "meeting_batch_runs"
+    __table_args__ = (
+        UniqueConstraint("meeting_id", "seq", name="uq_meeting_batch_run_seq"),
+        Index("ix_meeting_batch_runs_meeting_status", "meeting_id", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)  # succeeded | failed | discarded
+    trigger_cause: Mapped[str] = mapped_column(String(20), nullable=False)  # transcript | agenda_switch | timer
+    from_seq: Mapped[int | None] = mapped_column(Integer)
+    to_seq: Mapped[int | None] = mapped_column(Integer)
+    reason: Mapped[str | None] = mapped_column(String(2000))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MeetingRecordingFileRecord(Base):
+    """오디오 원본의 자리와 무결성. **아무에게도 화면에 내지 않고 저장 위치도 노출하지 않는다** (SPEC §5.5-4).
+
+    원본은 중계 경로에서 적재한다 — 별도 업로드 경로가 없으므로 회의당 한 행이다 (§5.5-2).
+    """
+
+    __tablename__ = "meeting_recording_files"
+    __table_args__ = (UniqueConstraint("meeting_id", name="uq_meeting_recording_file"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(500), nullable=False)
+    content_type: Mapped[str | None] = mapped_column(String(200))
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    sha256: Mapped[str | None] = mapped_column(String(64))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class WorkflowDefinitionRecord(Base):
@@ -899,6 +844,10 @@ class TaskRecord(Base):
     source_review_decision_id: Mapped[UUID | None] = mapped_column(ForeignKey("review_decisions.id"))
     source_action_item_id: Mapped[UUID | None] = mapped_column(ForeignKey("action_items.id"))
     source_task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id"))
+    #: 회의에서 나온 일이면 어느 회의의 어느 안건인가. 수락이 요청의 두 열을 여기로 옮긴다 (SCAX-SPEC-004 §9-7).
+    #: 받는 사람이 왜 이 일이 생겼는지를 업무 화면에서 그대로 좇는다.
+    source_meeting_id: Mapped[UUID | None] = mapped_column(ForeignKey("meetings.id"))
+    source_agenda_id: Mapped[UUID | None] = mapped_column(ForeignKey("meeting_agendas.id"))
     #: The work this one is a part of. One level only for now: a child never becomes a parent, and the parent is
     #: context and a place to see progress — never the truth about this Task's own state.
     parent_task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id"), index=True)
@@ -1439,6 +1388,17 @@ class WorkRequestRecord(Base):
     #: The steps the requester already knew about, in order. Creation content, not something a round negotiates:
     #: they become the accepted Task's checklist, written by the person who asked.
     initial_checklist: Mapped[list | None] = mapped_column(JSON)
+    #: 회의에서 넘어온 요청이면 어느 회의의 어느 안건인가 (SCAX-SPEC-004 §9-5 D20).
+    #: **출처는 글자가 아니라 열로 남는다** — `description` 끝 문장은 사람이 읽는 용도이고 기계는 이 두 값을 좇는다.
+    #: 수락으로 업무가 설 때 이 두 값이 업무로 옮겨진다 (§9-7).
+    source_meeting_id: Mapped[UUID | None] = mapped_column(ForeignKey("meetings.id"))
+    source_agenda_id: Mapped[UUID | None] = mapped_column(ForeignKey("meeting_agendas.id"))
+    #: 회의 승격으로 생긴 요청이면 **누른 사람** (사용자 결정 D40, 2026-09-11). 요청자는 시스템이므로
+    #: 「누가 이 요청을 있게 했는가」가 `requester_id` 에 남지 않는다 — 그 사실을 여기 남긴다.
+    #: 요청자 전용 조작(수정·재상신·거두기·증빙)은 이 사람도 요청자와 같게 본다.
+    #: `requester_id`·`assignee_id` 와 같은 결로 **외래키를 걸지 않는다**: 요청자 자리에 사람이 아닌
+    #: 행위자가 설 수 있게 된 열들이고, 로컬 스키마 맞추기(`--sync`)가 ALTER 한 줄로 붙일 수 있어야 한다.
+    promoted_by_member_id: Mapped[str | None] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     causation_key: Mapped[str | None] = mapped_column(String(64), unique=True)

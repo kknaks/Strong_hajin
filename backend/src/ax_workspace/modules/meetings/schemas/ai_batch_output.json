@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MeetingAiBatchOutput",
+  "description": "SCAX-SPEC-004 §7.1 「출력」 — 그 회차의 AI 트랙 **전체**다. 앞 배치 결과를 포함해 다시 낸다: 화면은 통째로 갈아끼운다. provider 에 --output-schema 로 걸고 서버가 **같은 파일로 다시 검증한다** — 강제와 검증은 다른 층이다. strict 규격: 모든 object 는 additionalProperties:false 이고 properties 의 키가 전부 required 에 있어야 한다. 하나라도 빠지면 모델 호출이 invalid_json_schema 로 죽고 빈 출력이 온다. 그래서 「선택 필드」는 required 에서 빼는 대신 nullable 로 두고 null 을 보내게 한다. 제목 후보는 회의 중에 오지 않는다 — 종료 합성이 다른 스키마로 받는다. 다음 할 일 후보는 회의 중에도 함께 온다(D46): 읽기 전용이고 `provisional` 로 적재돼 다음 배치마다 통째로 갈린다.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "agendas"
+  ],
+  "properties": {
+    "agendas": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "agenda_id",
+          "title",
+          "source",
+          "lines",
+          "todos"
+        ],
+        "properties": {
+          "agenda_id": {
+            "description": "이미 있는 안건이면 그 id, AI 가 새로 세우는 안건이면 null.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "carried",
+              "ai"
+            ]
+          },
+          "lines": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "text",
+                "evidence",
+                "task_id"
+              ],
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2000
+                },
+                "evidence": {
+                  "description": "그 줄이 딛는 확정 발화 구간. 미처리 구간 밖이면 그 줄만 강등된다.",
+                  "type": "array",
+                  "maxItems": 3,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "from_ms",
+                      "to_ms"
+                    ],
+                    "properties": {
+                      "from_ms": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "to_ms": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    }
+                  }
+                },
+                "task_id": {
+                  "description": "이미 있는 업무를 가리킬 때만. 범위 밖이거나 없으면 그 줄만 강등된다(본문·근거는 산다).",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "todos": {
+            "description": "그 안건에서 나온 후속 업무 후보 (D46). **읽기 전용이다** — 회의 중에는 아무도 이것을 업무로 만들지 않는다. 담당자를 뽑지 않고, `checklist_candidate` 는 회의 중이라 비어도 된다(최종에서 채운다). 낼 것이 없으면 빈 배열이다.",
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "title",
+                "description",
+                "due_candidate",
+                "checklist_candidate",
+                "line_ids"
+              ],
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                "description": {
+                  "type": "string",
+                  "maxLength": 4000
+                },
+                "due_candidate": {
+                  "description": "말에 날짜가 있을 때만. 없으면 null — 회의 중에는 다음 회의를 보고 채우지 않는다.",
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "minLength": 10,
+                  "maxLength": 10
+                },
+                "checklist_candidate": {
+                  "type": "array",
+                  "maxItems": 5,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                },
+                "line_ids": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

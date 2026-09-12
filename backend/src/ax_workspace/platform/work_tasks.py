@@ -28,6 +28,7 @@ from ax_workspace.platform.persistence import (
     AttachmentRecord,
     CommentRecord,
     DecisionItemRecord,
+    MeetingRecord,
     MembershipRecord,
     RequestThreadRecord,
     ReviewAssignmentRecord,
@@ -48,6 +49,7 @@ from ax_workspace.platform.persistence import (
     ResourceRelationshipRecord,
     EvidenceRecord,
 )
+from ax_workspace.platform.native_materials import TITLELESS_MEETING as UNTITLED_MEETING
 import hashlib
 import json
 
@@ -77,6 +79,16 @@ def _person(session: Session, member_id: str) -> str:
     if member is None:
         return member_id
     return member.display_name.split(" (")[0].strip() or member.display_name
+
+
+def _meeting_title(session: Session, meeting_id: UUID | None) -> str:
+    """진행 기록이 부르는 회의 이름. 제목이 아직 없으면 합성이 낸 후보를, 그것도 없으면 「제목 없는 회의」."""
+    if meeting_id is None:
+        return UNTITLED_MEETING
+    meeting = session.get(MeetingRecord, meeting_id)
+    if meeting is None:
+        return UNTITLED_MEETING
+    return (meeting.title or meeting.title_candidate or "").strip() or UNTITLED_MEETING
 
 
 def _content_hash(payload: dict) -> str:
@@ -861,6 +873,9 @@ class SqlAlchemyWorkRequestRepository:
         cc_member_ids: list[str] | None = None,
         checklist: list[str] | None = None,
         reference_task_ids: list[UUID] | None = None,
+        source_meeting_id: UUID | None = None,
+        source_agenda_id: UUID | None = None,
+        promoted_by_member_id: str | None = None,
     ) -> tuple[WorkRequestRecord, bool]:
         if causation_key:
             existing = self._session.scalar(
@@ -869,7 +884,8 @@ class SqlAlchemyWorkRequestRepository:
             if existing is not None:
                 return existing, False
         now = datetime.now(UTC)
-        context_unit = _primary_unit(self._session, requester_id)
+        # 조직 맥락은 **사람**에게서 온다 — 요청자가 시스템이면 누른 사람의 소속이 그 요청이 선 자리다 (D40).
+        context_unit = _primary_unit(self._session, promoted_by_member_id or requester_id)
         thread = RequestThreadRecord(initiated_by=requester_id, organization_context_id=context_unit, purpose=title, created_at=now)
         self._session.add(thread)
         self._session.flush()
@@ -885,6 +901,10 @@ class SqlAlchemyWorkRequestRepository:
             version=1,
             conditions=None,
             initial_checklist=list(checklist) if checklist else None,
+            # 회의에서 넘어왔으면 출처가 **열로** 남는다 — description 끝 문장은 사람이 읽는 용도다 (SCAX-SPEC-004 §9-5 D20).
+            source_meeting_id=source_meeting_id,
+            source_agenda_id=source_agenda_id,
+            promoted_by_member_id=promoted_by_member_id,
             created_at=now,
             updated_at=now,
             causation_key=causation_key,
@@ -903,7 +923,12 @@ class SqlAlchemyWorkRequestRepository:
         self._session.flush()
         request.subject_id = subject.id
         # ERD RESOURCE_RELATIONSHIP: requester, assignee, and cc members hold period-bound relationships to the request.
-        for member_id, kind in [(requester_id, "requester"), (assignee_id, "assignee"), *[(cc, "cc") for cc in (cc_member_ids or [])]]:
+        # 이 표는 **사람**의 관계를 담는다(`member_id` 가 members 를 가리킨다). 요청자가 시스템이면 그 자리에
+        # 앉힐 사람이 없으므로 그 한 줄을 쓰지 않는다 — 누른 사람은 cc 로 들어가 같은 가시성을 갖는다 (D40).
+        related = [(requester_id, "requester"), (assignee_id, "assignee"), *[(cc, "cc") for cc in (cc_member_ids or [])]]
+        for member_id, kind in related:
+            if self._session.get(MemberRecord, member_id) is None:
+                continue
             self._session.add(
                 ResourceRelationshipRecord(member_id=member_id, resource_type="work_request", resource_id=str(request.id), relationship_kind=kind, valid_from=now)
             )
@@ -936,10 +961,19 @@ class SqlAlchemyWorkRequestRepository:
         self._session.add(
             ReviewAssignmentRecord(submission_id=submission.id, reviewer_member_id=assignee_id, status="pending", assigned_at=now, due_at=item.due_at)
         )
+        # 진행 기록 첫 줄. 승격이면 **회의가 보낸 것**이고 누른 사람이 행위자다 (D40) — 「시스템이 보냄」으로
+        # 끝내면 사람이 왜 이 요청을 받았는지 읽을 수 없다. 그래서 회의 이름과 누른 사람을 함께 적는다.
+        if promoted_by_member_id:
+            actor_id = promoted_by_member_id
+            meeting_title = _meeting_title(self._session, source_meeting_id)
+            summary = f"회의 {meeting_title}에서 {_person(self._session, promoted_by_member_id)}이 업무 요청을 만들었다: {title}"
+        else:
+            actor_id = requester_id
+            summary = f"{_person(self._session, requester_id)}가 {_person(self._session, assignee_id)}에게 업무를 보냄: {title}"
         ActivityLedger(self._session).record(
-            target_type="work_request", target_id=str(request.id), event_kind="work_request.created", actor_id=requester_id,
+            target_type="work_request", target_id=str(request.id), event_kind="work_request.created", actor_id=actor_id,
             after_ref=f"work_request:{request.id}@1",
-            safe_summary=f"{_person(self._session, requester_id)}가 {_person(self._session, assignee_id)}에게 업무를 보냄: {title}",
+            safe_summary=summary,
             request_thread_id=thread.id,
         )
         return request, True
@@ -1123,6 +1157,12 @@ class SqlAlchemyWorkRequestRepository:
             )
         return submission
 
+    def source_meeting_title(self, request: WorkRequestRecord) -> str | None:
+        """이 요청이 나온 회의의 이름. 회의에서 오지 않았으면 `None` — 지어내지 않는다 (D40)."""
+        if request.source_meeting_id is None:
+            return None
+        return _meeting_title(self._session, request.source_meeting_id)
+
     def timeline(self, request: WorkRequestRecord) -> dict:
         item = self.open_decision_item(request)
         submissions = (
@@ -1190,9 +1230,13 @@ class SqlAlchemyWorkRequestRepository:
             description=request.description,
             due_date=request.due_date,
             organization_unit_id=_primary_unit(self._session, request.assignee_id),
-            origin_kind="request_effect",
+            # 회의에서 온 요청이면 업무도 회의에서 왔다고 말한다 — 받는 사람이 왜 이 일이 생겼는지를 좇는다 (§9-7).
+            origin_kind="meeting" if request.source_meeting_id is not None else "request_effect",
             request_thread_id=request.request_thread_id,
             source_work_request_id=request.id,
+            # 수락으로 업무가 설 때 요청의 출처가 업무로 옮겨진다.
+            source_meeting_id=request.source_meeting_id,
+            source_agenda_id=request.source_agenda_id,
             source_decision_item_id=item.id if item else None,
             source_submission_id=submission.id if submission else None,
             source_review_decision_id=decision.id if decision else None,

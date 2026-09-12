@@ -16,7 +16,6 @@ from ax_workspace.platform.persistence import make_session_factory
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.bootstrap.application import create_workflow_application
-from ax_workspace.bootstrap.meeting_worker import MeetingFinalizationWorker
 from ax_workspace.entrypoints.conversation_worker import ConversationWorker
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.modules.ax_execution.ai import (
@@ -29,7 +28,6 @@ from ax_workspace.modules.ax_execution.ai import (
 from ax_workspace.modules.ax_execution.conversations import ConversationExecution
 from ax_workspace.modules.jobs.domain import JOB_KIND_CONVERSATION_TURN, JOB_KIND_MEETING_FINALIZE, JOB_KIND_MATERIAL_EXTRACTION, JobEnvelope
 from ax_workspace.modules.meetings.domain import MeetingVersionConflict
-from ax_workspace.modules.meetings.transcription import FinalTranscriptSegment, FinalTranscriptionResult
 from ax_workspace.platform.conversation_jobs import ConversationJobQueue
 from ax_workspace.platform.durable_jobs import SqlAlchemyDurableJobQueue
 from ax_workspace.platform.persistence import DurableJobRecord
@@ -203,50 +201,15 @@ class ConcurrentReportProvider:
         raise AssertionError("report provider must not service conversation execution")
 
 
-class MeetingPipelineProvider:
-    """Deterministic test composition only; the worker production default is Codex CLI."""
-
-    def generate(self, request) -> AiGeneration:
-        if "statements" in request.output_schema["properties"]:
-            body = (
-                '{"body":"## 요약\\n일정을 논의했습니다.","statements":['
-                '{"kind":"summary","text":"일정을 논의했습니다.",'
-                '"refinement_start_sequence":1,"refinement_end_sequence":1}]}'
-            )
-        else:
-            body = (
-                '{"segments":[{"raw_start_source_key":"segment-1",'
-                '"raw_end_source_key":"segment-2","start_ms":0,"end_ms":3000,'
-                '"text":"일정을 논의했습니다.","speaker_label":null,'
-                '"correction_kind":"merge","confidence":0.9}]}'
-            )
-        return AiGeneration(
-            provider_run_ref="meeting-pipeline-test",
-            provider_session_ref=None,
-            body=body,
-            requested_model="test",
-            observed_model="test",
-            requested_tier="test",
-            observed_tier=None,
-            latency_ms=1,
-            usage=None,
-        )
-
-    def converse(self, request, *, sink=None, cancel=None):  # pragma: no cover - meeting worker is structured only
-        raise AssertionError("meeting worker must not use conversation generation")
-
-
-class MeetingPipelineTranscriber:
-    def transcribe(self, *, data, original_name, content_type, client_reference_id) -> FinalTranscriptionResult:
-        del data, original_name, content_type, client_reference_id
-        return FinalTranscriptionResult(
-            provider_reference="soniox:recovery",
-            provider_file_ref="soniox:file",
-            segments=(
-                FinalTranscriptSegment("segment-1", 0, 1_500, "일정을"),
-                FinalTranscriptSegment("segment-2", 1_500, 3_000, "논의했습니다."),
-            ),
-        )
+# main 의 회의 파이프라인 대역 둘(`MeetingPipelineProvider`·`MeetingPipelineTranscriber`)과 그것을 쓰던
+# `test_postgres_meeting_finalization_reclaims_a_crashed_attempt_and_fences_the_late_result` 를 걷었다.
+# 그 시험은 옛 회의 모델의 표면 전부(`/recordings/start`·`/stop` · `meeting_finalization_input` ·
+# `record_final_meeting_transcript` · `MeetingFinalizationWorker`)를 지나는데 SCAX-SPEC-004 가 그것을
+# 대체해 이름을 바꾸는 것으로는 살릴 수 없다 — 새 2-pass 파이프라인 위에 처음부터 다시 써야 한다.
+# 그 시험이 지키던 것(배달 lease 회수 + 늦게 온 결과의 fencing)은 지금 두 자리가 나눠 지킨다:
+# durable job transport 자체의 fencing 은 이 파일의 다른 postgres 시험이, 회의 합성 배달의 재시도·실패
+# 전이는 tests/contract/test_meeting_finalize.py 가 본다. 같은 보장을 postgres 위에서 다시 세우는 것은
+# 별도 작업이다.
 
 
 def _conversation_client(database_url: str) -> TestClient:
@@ -279,78 +242,6 @@ def _drain(worker, *, timeout: float = 4.0) -> bool:
             return True
         time.sleep(0.1)
     return False
-
-
-@pytest.mark.integration
-def test_postgres_meeting_finalization_reclaims_a_crashed_attempt_and_fences_the_late_result(tmp_path) -> None:
-    database_url = _postgres_test_url()
-    reset_database(database_url)
-    settings = Settings(
-        RuntimeProfile.TEST,
-        database_url,
-        job_queue_backend="postgres",
-        recordings_dir=str(tmp_path / "recordings"),
-        meeting_queue_visibility_timeout=1,
-    )
-    client = TestClient(create_app(settings, report_provider=MeetingPipelineProvider()))
-    headers = {"X-Demo-Persona": "mina"}
-    meeting = client.post(
-        "/api/meetings",
-        headers=headers,
-        json={
-            "organization_id": "scax",
-            "title": "PG crash recovery",
-            "starts_at": "2026-09-10T01:00:00Z",
-            "ends_at": "2026-09-10T02:00:00Z",
-            "visibility": "private",
-            "attendee_ids": ["jiho"],
-        },
-    ).json()
-    started = client.post(
-        f"/api/meetings/{meeting['meeting_id']}/recordings/start",
-        headers=headers,
-        json={"purpose": "fenced PostgreSQL recovery"},
-    ).json()
-    client.post(
-        f"/api/meetings/{meeting['meeting_id']}/recordings/{started['recording_id']}/stop",
-        headers=headers,
-        data={"expected_version": str(started["version"])},
-        files={"audio": ("recovery.webm", b"audio", "audio/webm")},
-    ).raise_for_status()
-
-    sessions = make_session_factory(database_url)
-    with sessions() as session:
-        [first_delivery] = SqlAlchemyDurableJobQueue(session).claim(
-            JOB_KIND_MEETING_FINALIZE,
-            limit=1,
-            lease_seconds=1,
-            worker_id="crashed-worker",
-        )
-        session.commit()
-    application = create_workflow_application(settings, MeetingPipelineProvider())
-    application.meeting_finalization_input(
-        UUID(started["recording_id"]),
-        lease_token=first_delivery.lease_token,
-        stale_after_seconds=1,
-    )
-
-    time.sleep(1.1)
-    recovery_worker = MeetingFinalizationWorker(
-        settings,
-        provider=MeetingPipelineProvider(),
-        transcriber=MeetingPipelineTranscriber(),
-    )
-    assert asyncio.run(recovery_worker.run_once()) is True
-    detail = client.get(f"/api/meetings/{meeting['meeting_id']}", headers=headers).json()
-    assert detail["recordings"][0]["state"] == "transcribed"
-    with pytest.raises(MeetingVersionConflict, match="lease is stale"):
-        application.record_final_meeting_transcript(
-            recording_id=UUID(started["recording_id"]),
-            provider="soniox",
-            provider_reference="soniox:late-crashed-worker",
-            segments=[FinalTranscriptSegment("late", 0, 100, "늦은 결과")],
-            finalization_lease_token=first_delivery.lease_token,
-        )
 
 
 def _postgres_test_url() -> str:
