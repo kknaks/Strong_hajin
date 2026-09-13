@@ -114,6 +114,6 @@ def codex_request() -> AiConversationRequest:
 
 def write_last_message(arguments, body: str = "내 업무는 없습니다.") -> None:
     Path(arguments[arguments.index("--output-last-message") + 1]).write_text(
-        json.dumps({"body": body, "follow_up_candidates": []}),
+        json.dumps({"body": body, "elements": [], "follow_up_candidates": []}),
         encoding="utf-8",
     )

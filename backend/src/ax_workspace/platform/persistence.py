@@ -688,6 +688,8 @@ class ConversationMessageRecord(Base):
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     role: Mapped[str] = mapped_column(String(40), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
+    # Nullable preserves old Markdown-only messages; v1 elements refer to observed resource receipt ids.
+    answer_document: Mapped[dict | None] = mapped_column(JSON)
     idempotency_key: Mapped[str | None] = mapped_column(String(200))
     # A candidate is a one-shot entry into the ordinary message path. Nullable unique makes that choice exactly once.
     follow_up_candidate_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), unique=True)

@@ -6,6 +6,8 @@ SCAX 상용 시스템의 modular monolith 저장소다. 조직·업무·요청·
 
 장기 설계와 진행 상태는 Obsidian vault의 `SCAX 상용 시스템 구축` Project Note와 `SCAX 상용 시스템 설계`가 소유한다. 도메인 모델과 SCAX ERD 대조표는 `docs/domain-model.md`, 디자인 시스템 참조본은 `docs/design/`에 있다.
 
+AX의 Markdown 본문·리소스 참조·목록 표시 계약은 [구조화 답변](docs/structured-answers.md)에 정리했다.
+
 ## 띄우기
 
 필요한 것: Python 3.12+, [uv](https://docs.astral.sh/uv/), Docker.

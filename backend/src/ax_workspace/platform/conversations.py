@@ -15,6 +15,7 @@ from ax_workspace.platform.actions import SqlAlchemyActionRepository
 from ax_workspace.modules.ax_execution.ai import (
     AiConversationRequest,
     AiConversationResult,
+    ProviderResponseInvalid,
     AiProviderEvent,
     AiToolInvocation,
     ProviderCancelled,
@@ -171,10 +172,13 @@ class SqlAlchemyConversationRepository:
         # The provider's final message is authoritative; it confirms (or replaces) the streamed partial body.
         assistant = self._streaming_assistant(turn)
         if assistant is None:
-            self._message(conversation.id, turn.id, "assistant", result.body, now, None, body_state="final")
+            assistant = self._message(conversation.id, turn.id, "assistant", result.body, now, None, body_state="final")
         else:
             assistant.body = result.body
             assistant.body_state = "final"
+        assistant.answer_document = (
+            {"version": 1, "elements": result.answer_elements} if result.answer_elements is not None else None
+        )
         for invocation in result.tool_invocations:
             self._upsert_tool(turn, invocation, now)
         next_turn = self.drain(conversation)
@@ -398,7 +402,7 @@ class SqlAlchemyConversationRepository:
         turn = self._execution_turn(execution, lock=True)
         if turn is None or turn.state in {"completed", "failed", "cancelled"}:
             return True
-        if turn.execution_attempt_count >= max_attempts:
+        if isinstance(error, ProviderResponseInvalid) or turn.execution_attempt_count >= max_attempts:
             self.fail(turn, error)
             return True
         return False
@@ -642,6 +646,7 @@ class SqlAlchemyConversationRepository:
                     "turn_id": str(message.turn_id) if message.turn_id else None,
                     "role": message.role,
                     "body": message.body,
+                    "answer_document": message.answer_document,
                     "sequence": message.sequence,
                     "state": "queued"
                     if message.role == "user" and message.turn_id is None

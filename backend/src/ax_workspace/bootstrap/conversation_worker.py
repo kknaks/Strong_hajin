@@ -12,7 +12,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from ax_workspace.bootstrap.settings import Settings
 
-from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
+from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure, ProviderResponseInvalid
+from ax_workspace.modules.ax_execution.answer_documents import bind_answer_resources
 from ax_workspace.modules.ax_execution.conversations import (
     ConversationExecution,
     ConversationExecutionQueue,
@@ -181,6 +182,7 @@ class ConversationWorker:
             sink = _ProjectionSink(self, claim.execution)
             try:
                 result = await asyncio.to_thread(self._provider.converse, claim.request, sink=sink, cancel=cancel)
+                self._complete(claim, result)
             except ProviderFailure as error:
                 self._handle_failure(claim, error)
             finally:
@@ -189,8 +191,6 @@ class ConversationWorker:
                     await heartbeat
                 except asyncio.CancelledError:
                     pass
-            if "result" in locals():
-                self._complete(claim, result)
             return True
 
     async def _heartbeat(self, claim: ClaimedTurn, cancel: threading.Event) -> None:
@@ -218,6 +218,15 @@ class ConversationWorker:
             session.commit()
 
     def _complete(self, claim: ClaimedTurn, result: Any) -> None:
+        if result.answer_elements is not None:
+            try:
+                principal = self._application.authenticated_principal(claim.request.delegated_tool_context.principal_id)
+                view = self._application.conversation(principal, claim.execution.conversation_id)
+                # The view resolves only observations from this owned conversation with current read permission.
+                bound = bind_answer_resources(result.body, result.answer_elements, view["answer_resources"])
+                result = replace(result, answer_elements=bound)
+            except (ValueError, LookupError) as error:
+                raise ProviderResponseInvalid("답변의 참조를 확인하지 못했습니다. 다시 요청해 주세요.") from error
         with self._sessions() as session:
             queue = self._queue_factory(session)
             # Domain result first (idempotent on turn state); the transport write is fenced by our lease token and

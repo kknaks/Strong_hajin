@@ -2,7 +2,8 @@ import type { ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import type { AnswerResource } from "../viewModels";
+import type { AnswerDocument, AnswerElement, AnswerResource } from "../viewModels";
+import { answerElementsPlugin } from "./answerElements";
 
 /**
  * Assistant bodies are provider text, never trusted HTML. Raw HTML is skipped (not parsed), only a small set of
@@ -11,6 +12,7 @@ import type { AnswerResource } from "../viewModels";
  */
 const ALLOWED_ELEMENTS = ["p", "strong", "em", "del", "ul", "ol", "li", "a", "code", "pre", "blockquote", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "table", "thead", "tbody", "tr", "th", "td"];
 const RESOURCE_LINK_PREFIX = "#scax-resource-";
+const STRUCTURED_ELEMENTS = [...ALLOWED_ELEMENTS, "div", "span"];
 const INTERNAL_RESOURCE_PATH = /^\/api\/(tasks|meetings|work-requests)\/([^/]+)\/?$/;
 const CONTENT_PATH = /^\/api\/(?:tasks\/[^/]+\/materials\/[^/]+|meetings\/[^/]+\/materials\/[^/]+|work-requests\/[^/]+\/attachments\/[^/]+|daily-reports\/[^/]+\/materials\/[^/]+|material-folders\/[^/]+\/materials\/[^/]+)\/content\/?$/;
 
@@ -105,19 +107,50 @@ function Heading({ children }: { children?: ReactNode }) {
 
 export function AssistantMarkdown({
   body,
+  document,
   resources = [],
   onOpenResource,
 }: {
   body: string;
+  document?: AnswerDocument | null;
   resources?: AnswerResource[];
   onOpenResource?: (resource: AnswerResource) => void;
 }) {
   const byReference = new Map(resources.map((resource) => [resource.reference_id, resource]));
+  if (document && document.version !== 1) return <p>이 답변 형식을 표시할 수 없습니다.</p>;
+  const byElement = new Map(document?.elements.map((element) => [element.key, element]) ?? []);
+  const resourceLink = (ref: string | null) => {
+    const resource = ref ? byReference.get(ref) : undefined;
+    if (!resource) return <span className="ax-resource-unavailable">참조를 확인할 수 없습니다</span>;
+    return onOpenResource
+      ? <button className="ax-inline-resource-link" type="button" onClick={() => onOpenResource(resource)}>{resource.title}</button>
+      : <span>{resource.title}</span>;
+  };
+  const renderElement = (element: AnswerElement | undefined, block: boolean) => {
+    if (element?.type === "resource_reference") return resourceLink(element.ref);
+    if (element?.type !== "resource_list" || !block) return <span className="ax-resource-unavailable">참조를 확인할 수 없습니다</span>;
+    if (!element.items.length) return <p>조회된 항목이 없습니다.</p>;
+    const List = element.ordered ? "ol" : "ul";
+    return <List className="ax-answer-resource-list">{element.items.map((item, index) => (
+      <li key={index}>
+        {resourceLink(item.ref)}
+        {item.ref && byReference.has(item.ref) && item.description && (
+          <div className="ax-answer-resource-description"><AssistantMarkdown body={item.description} /></div>
+        )}
+      </li>
+    ))}</List>;
+  };
   return (
     <div className="ax-md">
       <Markdown
-        allowedElements={ALLOWED_ELEMENTS}
+        allowedElements={document ? STRUCTURED_ELEMENTS : ALLOWED_ELEMENTS}
         components={{
+          div: ({ node, children }) => node?.properties["data-answer-element"] !== undefined
+            ? renderElement(byElement.get(String(node.properties["data-answer-element"])), true)
+            : <div>{children}</div>,
+          span: ({ node, children }) => node?.properties["data-answer-element"] !== undefined
+            ? renderElement(byElement.get(String(node.properties["data-answer-element"])), false)
+            : <span>{children}</span>,
           a: ({ href, children }) => {
             if (href?.startsWith(RESOURCE_LINK_PREFIX)) {
               let referenceId = "";
@@ -150,7 +183,7 @@ export function AssistantMarkdown({
           h5: Heading,
           h6: Heading,
         }}
-        remarkPlugins={[remarkGfm, resourceTitleLinkPlugin(resources)]}
+        remarkPlugins={[remarkGfm, document ? answerElementsPlugin(document, body) : resourceTitleLinkPlugin(resources)]}
         skipHtml
         unwrapDisallowed
       >

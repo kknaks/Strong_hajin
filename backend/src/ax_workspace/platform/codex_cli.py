@@ -36,15 +36,20 @@ from ax_workspace.modules.ax_execution.ai import (
     CancelToken,
     ProviderCancelled,
     ProviderRequestFailed,
+    ProviderResponseInvalid,
     ProviderUnavailable,
 )
+from ax_workspace.modules.ax_execution.answer_documents import AnswerDocument
 
 
+_ANSWER_SCHEMA = AnswerDocument.model_json_schema()
 _CONVERSATION_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
+    "$defs": _ANSWER_SCHEMA["$defs"],
     "properties": {
-        "body": {"type": "string"},
+        "body": _ANSWER_SCHEMA["properties"]["body"],
+        "elements": _ANSWER_SCHEMA["properties"]["elements"],
         "follow_up_candidates": {
             "type": "array",
             "maxItems": 3,
@@ -59,7 +64,7 @@ _CONVERSATION_OUTPUT_SCHEMA: dict[str, Any] = {
             },
         },
     },
-    "required": ["body", "follow_up_candidates"],
+    "required": ["body", "follow_up_candidates", "elements"],
 }
 
 
@@ -234,15 +239,14 @@ class CodexCliProviderAdapter:
                 raise ProviderRequestFailed("Codex CLI conversation failed", provenance)
             try:
                 payload = json.loads(output_path.read_text(encoding="utf-8"))
-                body = str(payload["body"]).strip()
+                document = AnswerDocument.model_validate({"body": payload["body"], "elements": payload["elements"]})
+                body = document.body
                 candidates = [
                     AiFollowUpCandidate(label=str(item["label"]), user_text=str(item["user_text"]))
                     for item in payload["follow_up_candidates"]
                 ]
-            except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
-                raise ProviderRequestFailed("Codex CLI returned no conversation response", provenance) from error
-            if not body:
-                raise ProviderRequestFailed("Codex CLI returned an empty conversation response", provenance)
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                raise ProviderResponseInvalid("답변 형식을 확인하지 못했습니다. 다시 요청해 주세요.", provenance) from error
             return AiConversationResult(
                 ingest.run_ref,
                 ingest.session_ref or request.provider_session_ref,
@@ -250,6 +254,7 @@ class CodexCliProviderAdapter:
                 ingest.tool_invocations(),
                 usage=ingest.usage,
                 follow_up_candidates=candidates,
+                answer_elements=[element.model_dump() for element in document.elements],
             )
 
     def _conversation_arguments(
@@ -437,7 +442,25 @@ class CodexCliProviderAdapter:
         "- UUID나 내부 식별자를 답변 본문에 노출하지 않는다. 도구 결과의 canonical id, database key, "
         "opaque suffix 대신 사람이 알아볼 수 있는 이름과 제목을 사용한다.\n"
         "- 내부 식별자는 링크·근거·Action metadata가 보존하므로 본문에 반복하지 않는다. "
-        "사용자가 식별자 자체를 명시적으로 요청한 경우에만 필요한 값을 답한다."
+        "사용자가 식별자 자체를 명시적으로 요청한 경우에만 필요한 값을 답한다.\n"
+        "- 최종 응답은 body(Markdown), elements, follow_up_candidates로 구성한다. 일반 설명은 Markdown으로 "
+        "자유롭게 작성하고 리소스가 필요 없으면 elements는 빈 배열이다.\n"
+        "- 업무·회의·업무 요청·자료·보고서의 실제 대상을 언급할 때는 내부 URL이나 제목 매칭 대신 "
+        "body에 {{key}}를 넣고 elements에 같은 key의 resource_reference를 정의한다. ref는 "
+        "현재 도구 결과나 서버가 재확인한 대화 근거의 type:id(task:<task_id>, meeting:<meeting_id>, "
+        "work_request:<request_id>, material:<material_id>, report:<report_id>)다. ID를 추측하지 않는다.\n"
+        "- 대상을 여러 개 나열하거나 실행 순서를 제안할 때는 resource_list를 쓴다. ordered는 순서 여부, "
+        "items는 각 대상의 ref와 description(Markdown 설명)이다. 제목·링크·번호·줄바꿈은 화면이 표시한다. "
+        "resource_list의 {{key}}는 앞뒤 빈 줄이 있는 독립 문단에 배치한다. key는 영문자로 시작하는 "
+        "영문/숫자/_/-이며 중복·미정의·미사용 요소를 만들지 않는다.\n"
+        "- 예: body='먼저 다음 순서로 진행하세요.\\n\\n{{results}}', "
+        "elements=[{key:'results',type:'resource_list',ordered:true,items:[{ref:'task:<조회한 ID>',"
+        "description:'변경 사항을 정리하세요.'}]}]. 단일 참조는 "
+        "{key:'background',type:'resource_reference',ref:'meeting:<조회한 ID>'}와 "
+        "body의 '배경은 {{background}}에서 확인하세요.'로 표현한다.\n"
+        "- 승인·실행 버튼이나 완료 상태는 기존 서버 Action 카드가 표시한다. elements로 명령·승인·성공 "
+        "카드를 만들지 않는다. 자료나 회의 검색 결과도 같은 참조/목록 계약을 쓴다. "
+        "설명 안에 요소를 중첩하지 않는다. literal {{...}} 예시는 코드로 감싼다."
     )
 
     @classmethod
@@ -679,12 +702,11 @@ class CodexEventIngest:
         if item_type == "agent_message":
             text = item.get("text") if isinstance(item.get("text"), str) else None
             if phase == "completed" and text:
-                try:
-                    structured = json.loads(text)
-                    visible_text = structured["body"].strip() if isinstance(structured, dict) and isinstance(structured.get("body"), str) else text
-                except json.JSONDecodeError:
-                    visible_text = text
-                self._emit(AiProviderEvent("item_completed", now, item_id=item_id, item_type=item_type, text=visible_text))
+                # Final JSON (including malformed output) waits for schema and authorization validation.
+                # Ordinary progress commentary can still arrive before completion.
+                if text.lstrip().startswith(("{", "[", "```")) or "{{" in text:
+                    return
+                self._emit(AiProviderEvent("item_completed", now, item_id=item_id, item_type=item_type, text=text))
             return
         if item_type == "error":
             message = _summarize_tool_error(item.get("message"))

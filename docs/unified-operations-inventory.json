@@ -10553,6 +10553,20 @@
                   "title": "Body",
                   "type": "string"
                 },
+                "answer_document": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Answer Document"
+                },
                 "sequence": {
                   "title": "Sequence",
                   "type": "integer"
@@ -10597,6 +10611,7 @@
                 "turn_id",
                 "role",
                 "body",
+                "answer_document",
                 "sequence",
                 "state",
                 "body_state",
@@ -12077,6 +12092,20 @@
                   "title": "Body",
                   "type": "string"
                 },
+                "answer_document": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Answer Document"
+                },
                 "sequence": {
                   "title": "Sequence",
                   "type": "integer"
@@ -12121,6 +12150,7 @@
                 "turn_id",
                 "role",
                 "body",
+                "answer_document",
                 "sequence",
                 "state",
                 "body_state",
@@ -43309,6 +43339,20 @@
                   "title": "Body",
                   "type": "string"
                 },
+                "answer_document": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Answer Document"
+                },
                 "sequence": {
                   "title": "Sequence",
                   "type": "integer"
@@ -43353,6 +43397,7 @@
                 "turn_id",
                 "role",
                 "body",
+                "answer_document",
                 "sequence",
                 "state",
                 "body_state",
@@ -45490,6 +45535,20 @@
                   "title": "Body",
                   "type": "string"
                 },
+                "answer_document": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Answer Document"
+                },
                 "sequence": {
                   "title": "Sequence",
                   "type": "integer"
@@ -45534,6 +45593,7 @@
                 "turn_id",
                 "role",
                 "body",
+                "answer_document",
                 "sequence",
                 "state",
                 "body_state",

@@ -232,7 +232,8 @@ function ConversationTimeline({
               .map((item) => (
                 <div className={`assistant ${item.body_state ?? "final"}`} data-body-state={item.body_state ?? "final"} key={item.message_id}>
                   <div className="ax-assistant-body">
-                    <AssistantMarkdown body={item.body} onOpenResource={onOpenResource} resources={named} />
+                    <AssistantMarkdown body={item.body} document={item.answer_document} onOpenResource={onOpenResource}
+                      resources={item.answer_document ? conversation.answer_resources ?? [] : named} />
                     {item.body_state === "streaming" && (
                       <span aria-hidden className="ax-streaming-mark">
                         ▍

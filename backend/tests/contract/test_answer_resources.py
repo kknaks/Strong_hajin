@@ -8,17 +8,150 @@ sees no title, no placeholder and no count.
 import asyncio
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 
 from ax_workspace.bootstrap.material_worker import MaterialExtractionWorker
+from ax_workspace.bootstrap.conversation_worker import ConversationWorker
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.mcp import McpReportsFacade
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.platform.persistence import ConversationTurnRecord, make_session_factory
+from ax_workspace.platform.conversation_jobs import ConversationJobQueue
+from ax_workspace.modules.ax_execution.ai import AiConversationResult
 
 MINA = {"X-Demo-Persona": "mina"}
 JIHO = {"X-Demo-Persona": "jiho"}
+
+
+def test_structured_answer_survives_reload_and_rechecks_titles(tmp_path):
+    client, settings, database_url, application = _stack(tmp_path)
+    task = client.post("/api/tasks", headers=MINA, json={"title": "실제 업무 제목"}).json()
+    conversation, execution_id = _delegated_turn(client, database_url, MINA, "structured-answer")
+    principal = application.authenticated_principal("mina")
+    application.record_answer_resources(principal, UUID(execution_id), [
+        {"resource_type": "task", "resource_id": task["task_id"], "resource_version": task["version"]},
+    ])
+
+    class Provider:
+        def converse(self, request, **kwargs):
+            return AiConversationResult(None, None, "먼저 {{task}}를 정리하세요.", [], answer_elements=[
+                {"key": "task", "type": "resource_reference", "ref": f"task:{task['task_id']}"},
+            ])
+
+    worker = ConversationWorker(settings, provider=Provider(), queue_factory=lambda session: ConversationJobQueue(application.memory_job_queue))
+    assert asyncio.run(worker.run_once())
+    path = f"/api/conversations/{conversation['conversation_id']}"
+    first = client.get(path, headers=MINA).json()
+    assert first["turns"][0]["state"] == "completed"
+    message = next(row for row in first["messages"] if row["role"] == "assistant")
+    assert message["answer_document"] == {"version": 1, "elements": [
+        {"key": "task", "type": "resource_reference", "ref": first["answer_resources"][0]["reference_id"]},
+    ]}
+    client.patch(f"/api/tasks/{task['task_id']}", headers=MINA, json={"expected_version": task["version"], "title": "수정한 제목"})
+    reloaded = client.get(path, headers=MINA).json()
+    assert next(row for row in reloaded["messages"] if row["role"] == "assistant")["answer_document"] == message["answer_document"]
+    assert reloaded["answer_resources"][0]["title"] == "수정한 제목"
+    pack = application.conversation_context_pack(principal, UUID(conversation["conversation_id"]), include_exchanges=True)
+    exchange = next(row for row in pack["exchanges"] if row["role"] == "assistant")
+    assert "수정한 제목" in exchange["body"]
+    assert f"task:{task['task_id']}" in exchange["body"]
+    assert first["answer_resources"][0]["reference_id"] not in exchange["body"]
+    # A follow-up can cite a prior turn's observation without inventing a second receipt or trusting provider memory.
+    accepted = client.post(path + "/messages", headers=MINA, json={"body": "그 업무를 다시 보여줘", "context": []})
+    assert accepted.status_code == 202
+    assert asyncio.run(worker.run_once())
+    follow_up = client.get(path, headers=MINA).json()
+    assert follow_up["turns"][-1]["state"] == "completed"
+    assert follow_up["messages"][-1]["answer_document"] == message["answer_document"]
+
+
+@pytest.mark.parametrize("read_method", ["get_task", "task_subtasks"])
+def test_subtasks_returned_by_a_read_can_be_used_in_a_structured_answer(tmp_path, monkeypatch, read_method):
+    client, settings, database_url, application = _stack(tmp_path)
+    parent = client.post("/api/tasks", headers=MINA, json={"title": "상위 업무"}).json()
+    child = client.post("/api/tasks", headers=MINA, json={"title": "하위 업무", "parent_task_id": parent["task_id"]}).json()
+    conversation, execution_id = _delegated_turn(client, database_url, MINA, "subtask-answer")
+    with monkeypatch.context() as env:
+        env.setenv("AX_MCP_CAUSATION_ID", execution_id)
+        observed = getattr(McpReportsFacade(settings, "mina"), read_method)(parent["task_id"])
+    assert [row["task_id"] for row in observed["children"]] == [child["task_id"]]
+
+    class Provider:
+        def converse(self, request, **kwargs):
+            return AiConversationResult(None, None, "{{children}}", [], answer_elements=[
+                {"key": "children", "type": "resource_list", "ordered": False, "items": [
+                    {"ref": f"task:{child['task_id']}", "description": "시작 전"},
+                ]},
+            ])
+
+    worker = ConversationWorker(settings, provider=Provider(), queue_factory=lambda session: ConversationJobQueue(application.memory_job_queue))
+    assert asyncio.run(worker.run_once())
+    detail = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()
+    assert detail["turns"][0]["state"] == "completed"
+    ref = detail["messages"][-1]["answer_document"]["elements"][0]["items"][0]["ref"]
+    assert next(row for row in detail["answer_resources"] if row["reference_id"] == ref)["resource_id"] == child["task_id"]
+
+
+def test_unobserved_answer_reference_fails_once_without_repeating_the_agent(tmp_path):
+    client, settings, database_url, application = _stack(tmp_path)
+    task = client.post("/api/tasks", headers=MINA, json={"title": "읽을 수 있지만 이 대화에서는 조회하지 않은 업무"}).json()
+    conversation, _ = _delegated_turn(client, database_url, MINA, "unobserved-answer")
+
+    class Provider:
+        calls = 0
+
+        def converse(self, request, **kwargs):
+            self.calls += 1
+            return AiConversationResult(None, None, "{{task}}", [], answer_elements=[
+                {"key": "task", "type": "resource_reference", "ref": f"task:{task['task_id']}"},
+            ])
+
+    provider = Provider()
+    worker = ConversationWorker(settings, provider=provider, queue_factory=lambda session: ConversationJobQueue(application.memory_job_queue))
+    assert asyncio.run(worker.run_once())
+    after = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()
+    assert after["turns"][0]["state"] == "failed"
+    assert not asyncio.run(worker.run_once()) and provider.calls == 1
+    assert all("{{task}}" not in row["body"] for row in after["messages"])
+
+
+def test_repeated_task_references_share_reads_only_within_the_current_projection(tmp_path) -> None:
+    from ax_workspace.bootstrap.application import _SessionAnswerResources
+
+    client, settings, database_url, application = _stack(tmp_path)
+    task = client.post("/api/tasks", headers=MINA, json={"title": "반복해서 언급한 업무"}).json()
+    principal = application.authenticated_principal("mina")
+    reference = {"resource_type": "task", "resource_id": task["task_id"], "resource_version": task["version"]}
+    queries = []
+    engine = application._session_factory.kw["bind"]
+
+    def count_query(_conn, _cursor, statement, _parameters, _context, _executemany):
+        queries.append(statement)
+
+    event.listen(engine, "before_cursor_execute", count_query)
+    try:
+        with application._session_factory() as session:
+            resolver = _SessionAnswerResources(application, session)
+            assert len(resolver.resolve(principal, [reference])) == 1
+        single_read_count = len(queries)
+        queries.clear()
+        with application._session_factory() as session:
+            resolver = _SessionAnswerResources(application, session)
+            repeated = resolver.resolve(principal, [dict(reference, turn_id=f"turn-{n}") for n in range(8)])
+        assert len(repeated) == 8, "Each turn must keep its own evidence reference"
+        assert len(queries) <= single_read_count + 2, "Repeated references must not multiply task detail queries"
+    finally:
+        event.remove(engine, "before_cursor_execute", count_query)
+
+    changed = client.patch(f"/api/tasks/{task['task_id']}", headers=MINA,
+                           json={"expected_version": task["version"], "title": "새 제목"})
+    assert changed.status_code == 200
+    with application._session_factory() as session:
+        [fresh] = _SessionAnswerResources(application, session).resolve(principal, [reference])
+    assert fresh["title"] == "새 제목" and fresh["changed_since"] is True
 
 
 def _stack(tmp_path):
@@ -170,8 +303,18 @@ def test_a_reference_is_asked_of_its_owner_again_every_time_it_is_read(tmp_path,
     monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
     before_detail = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()
     before = before_detail["answer_resources"]
-    before_body = before_detail["messages"]
     assert [row["title"] for row in before] == ["공유가 끊길 회의"]
+
+    class Provider:
+        def converse(self, request, **kwargs):
+            return AiConversationResult(None, None, "{{meeting}}", [], answer_elements=[
+                {"key": "meeting", "type": "resource_list", "ordered": False, "items": [
+                    {"ref": f"meeting:{meeting['meeting_id']}", "description": "공유가 끊길 회의의 비공개 설명"},
+                ]},
+            ])
+
+    worker = ConversationWorker(settings, provider=Provider(), queue_factory=lambda session: ConversationJobQueue(application.memory_job_queue))
+    assert asyncio.run(worker.run_once())
 
     # The share is taken back. The stored reference is still a row; what it says is asked again.
     revoked = client.delete(f"/api/meetings/{meeting['meeting_id']}/shares/mina", headers=JIHO)
@@ -179,9 +322,14 @@ def test_a_reference_is_asked_of_its_owner_again_every_time_it_is_read(tmp_path,
     after = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()
     # No title, no placeholder, and nothing left to count.
     assert after["answer_resources"] == []
-    assert after["messages"] == before_body
+    assert "공유가 끊길 회의" not in str(after)
+    message = next(row for row in after["messages"] if row["role"] == "assistant")
+    assert message["answer_document"]["elements"][0]["items"] == [{"ref": None, "description": ""}]
     assert client.get(f"/api/meetings/{meeting['meeting_id']}", headers=MINA).status_code == 404
     assert McpReportsFacade(settings, "mina").graph_search("공유가 끊길 회의")["nodes"] == []
+    pack = application.conversation_context_pack(application.authenticated_principal("mina"), UUID(conversation["conversation_id"]), include_exchanges=True)
+    assert "공유가 끊길 회의" not in str(pack)
+    assert meeting["meeting_id"] not in str(pack)
 
 
 def test_a_turn_records_nothing_for_a_conversation_that_is_not_its_own(tmp_path, monkeypatch) -> None:

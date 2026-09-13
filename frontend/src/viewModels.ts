@@ -639,6 +639,7 @@ export type Conversation = {
     turn_id: string | null;
     role: "user" | "assistant";
     body: string;
+    answer_document?: AnswerDocument | null;
     sequence: number;
     state: "accepted" | "queued";
     body_state?: "final" | "streaming" | "failed" | "cancelled";
@@ -673,13 +674,14 @@ export type Conversation = {
   answer_resources?: AnswerResource[];
 };
 
-/**
- * One thing an answer points at.
- *
- * The server keeps the canonical id and the version its tools saw, and re-reads the title through the owning module
- * every time — so nothing here was guessed from the answer's text, and a reference someone may no longer open is
- * simply absent rather than shown greyed out.
- */
+/** Saved placement; inaccessible receipts become null without their old metadata. */
+export type AnswerElement =
+  | { key: string; type: "resource_reference"; ref: string | null }
+  | { key: string; type: "resource_list"; ordered: boolean; items: Array<{ ref: string | null; description: string }> };
+
+export type AnswerDocument = { version: 1; elements: AnswerElement[] };
+
+/** Authorized current resource metadata. Inaccessible resources are absent from this projection. */
 export type AnswerResource = {
   reference_id: string;
   turn_id: string;

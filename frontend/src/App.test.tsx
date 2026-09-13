@@ -1006,6 +1006,7 @@ describe("product surfaces", () => {
       }
       if (path === "/api/my-work") return jsonResponse([]);
       if (path === "/api/conversations") return jsonResponse([detail(1, "처음 상태", "running")]);
+      if (path === "/api/conversations/conversation-1/messages") return jsonResponse({ queued: true });
       if (path === "/api/conversations/conversation-1") {
         return new Promise<Response>((resolve) => detailResolvers.push(resolve));
       }
@@ -1016,7 +1017,11 @@ describe("product surfaces", () => {
     render(<App />);
     await screen.findByRole("navigation", { name: "제품 탐색" });
     fireEvent.click(await screen.findByRole("button", { name: "AX" }));
-    await waitFor(() => expect(detailResolvers).toHaveLength(2), { timeout: 2_500 });
+    await waitFor(() => expect(detailResolvers).toHaveLength(1), { timeout: 2_500 });
+    // A command refresh may overlap a poll; periodic reads themselves now wait for completion.
+    fireEvent.change(screen.getByRole("textbox", { name: "AX 메시지" }), { target: { value: "추가 확인" } });
+    fireEvent.click(screen.getByRole("button", { name: "대기열에 보내기" }));
+    await waitFor(() => expect(detailResolvers).toHaveLength(2));
 
     detailResolvers[1](jsonResponse(detail(3, "최신 상세 상태", "completed")));
     expect(await screen.findByText("최신 상세 상태")).toBeTruthy();

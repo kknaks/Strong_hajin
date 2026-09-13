@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import sys
+import pytest
 
 from ax_workspace.bootstrap.application import create_scax_mcp_server
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
@@ -8,6 +9,7 @@ from ax_workspace.modules.ax_execution.ai import (
     AiConversationRequest,
     AiDelegatedToolContext,
     AiGenerationRequest,
+    ProviderRequestFailed,
 )
 from ax_workspace.modules.ax_execution.tool_catalog import TOOL_CATALOG, tool_display_title
 from ax_workspace.platform.codex_cli import (
@@ -16,6 +18,47 @@ from ax_workspace.platform.codex_cli import (
     CodexCliProviderAdapter,
     ProcessResult,
 )
+
+
+def test_conversation_returns_elements_without_exposing_unvalidated_json(tmp_path):
+    payload = {"body": "먼저 {{a}}를 확인하세요.", "elements": [
+        {"key": "a", "type": "resource_reference", "ref": "task:t1"},
+    ], "follow_up_candidates": []}
+    events = []
+
+    class Sink:
+        def accept(self, event):
+            events.append(event)
+
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+        on_line(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(payload)}}))
+        Path(arguments[arguments.index("--output-last-message") + 1]).write_text(json.dumps(payload))
+        return ProcessResult("", "", 0)
+
+    auth = tmp_path / "auth.json"
+    auth.write_text("{}")
+    provider = CodexCliProviderAdapter(CodexCliProfile(runtime_home=tmp_path / "runtime", auth_file=auth), runner=runner,
+        scax_mcp_server=CodexCliMcpServer(command="python", arguments=(), environment={}))
+    result = provider.converse(AiConversationRequest("내 업무", None, [], AiDelegatedToolContext("mina", "exec-1")), sink=Sink())
+    assert result.answer_elements == payload["elements"]
+    assert not any(event.text for event in events), "Final content waits for server reference validation"
+
+
+@pytest.mark.parametrize("payload", [
+    {"body": "{{unknown}}", "elements": [], "follow_up_candidates": []},
+    {"body": {"unexpected": "object"}, "elements": [], "follow_up_candidates": []},
+    {"body": "답변", "elements": [{"type": "execute", "command": "approve"}], "follow_up_candidates": []},
+])
+def test_invalid_conversation_output_is_a_provider_failure(tmp_path, payload):
+    def runner(command, arguments, cwd, environment, timeout):
+        Path(arguments[arguments.index("--output-last-message") + 1]).write_text(json.dumps(payload))
+        return ProcessResult("", "", 0)
+    auth = tmp_path / "auth.json"
+    auth.write_text("{}")
+    provider = CodexCliProviderAdapter(CodexCliProfile(runtime_home=tmp_path / "runtime", auth_file=auth), runner=runner,
+        scax_mcp_server=CodexCliMcpServer(command="python", arguments=(), environment={}))
+    with pytest.raises(ProviderRequestFailed):
+        provider.converse(AiConversationRequest("내 업무", None, [], AiDelegatedToolContext("mina", "exec-1")))
 
 
 def test_scax_mcp_tool_receipts_have_korean_display_names() -> None:
@@ -136,13 +179,13 @@ def test_codex_cli_conversation_injects_only_server_bound_scax_mcp_context(tmp_p
         captured["arguments"] = arguments
         captured["environment"] = environment
         schema = json.loads(Path(arguments[arguments.index("--output-schema") + 1]).read_text(encoding="utf-8"))
-        assert schema["required"] == ["body", "follow_up_candidates"]
+        assert schema["required"] == ["body", "follow_up_candidates", "elements"]
         assert schema["properties"]["follow_up_candidates"]["maxItems"] == 3
         output_path = Path(arguments[arguments.index("--output-last-message") + 1])
         output_path.write_text(
             json.dumps(
                 {
-                    "body": "업무를 조회했습니다.",
+                    "body": "업무를 조회했습니다.", "elements": [],
                     "follow_up_candidates": [
                         {"label": "기한순으로 보기", "user_text": "그 업무를 기한순으로 정리해줘"},
                         {"label": "우선순위 제안", "user_text": "먼저 할 업무를 제안해줘"},
@@ -190,7 +233,7 @@ def test_codex_cli_conversation_injects_only_server_bound_scax_mcp_context(tmp_p
                                 "type": "agent_message",
                                 "text": json.dumps(
                                     {
-                                        "body": "업무를 조회했습니다.",
+                                        "body": "업무를 조회했습니다.", "elements": [],
                                         "follow_up_candidates": [
                                             {"label": "기한순으로 보기", "user_text": "그 업무를 기한순으로 정리해줘"}
                                         ],
@@ -235,7 +278,7 @@ def test_codex_cli_conversation_injects_only_server_bound_scax_mcp_context(tmp_p
         ("기한순으로 보기", "그 업무를 기한순으로 정리해줘"),
         ("우선순위 제안", "먼저 할 업무를 제안해줘"),
     ]
-    assert [event.text for event in observed if event.item_type == "agent_message"] == ["업무를 조회했습니다."]
+    assert [event.text for event in observed if event.item_type == "agent_message"] == []
     assert [(item.tool_name, item.display_name, item.state) for item in result.tool_invocations] == [
         ("task_list", "열람 가능한 업무 조회", "completed")
     ]

@@ -164,10 +164,23 @@ export function useConversations({ personaId, isOpen, onError }: { personaId: st
   useEffect(() => {
     // A started Turn keeps refreshing after the drawer closes, so `답변 도착` can only follow a real completion.
     if (!isProcessing) return;
-    const timer = window.setInterval(() => {
-      void refreshActiveConversation().catch(() => onError("AX 상태를 갱신하지 못했습니다."));
-    }, 800);
-    return () => window.clearInterval(timer);
+    // Wait for each read: overlapping polls would continually invalidate responses slower than 800ms.
+    let stopped = false;
+    let timer: number;
+    const poll = async () => {
+      try {
+        await refreshActiveConversation();
+      } catch {
+        if (!stopped) onError("AX 상태를 갱신하지 못했습니다.");
+      } finally {
+        if (!stopped) timer = window.setTimeout(poll, 800);
+      }
+    };
+    timer = window.setTimeout(poll, 800);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
   }, [isProcessing, refreshActiveConversation, onError]);
 
   // Convergence: a local fragment disappears only once the server projection carries its idempotency key.

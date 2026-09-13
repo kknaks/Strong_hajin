@@ -444,7 +444,11 @@ class McpReportsFacade:
 
     def get_task(self, task_id: str) -> TaskDetailResult:
         task = self._application.get_task(self.principal, UUID(task_id))
-        self._remember([{"resource_type": "task", "resource_id": str(task["task_id"]), "resource_version": task.get("version")}])
+        # The authorized detail includes readable children; those observations can be cited too.
+        self._remember([
+            {"resource_type": "task", "resource_id": str(row["task_id"]), "resource_version": row.get("version")}
+            for row in [task, *task.get("children", [])]
+        ])
         return task
 
     def stage_action_material_link(self, action_item_id: str, request: ActionMaterialLinkInput) -> ActionMaterialDraftView | ActionProposalResult:
@@ -926,7 +930,7 @@ class McpReportsFacade:
         )
 
     def task_subtasks(self, task_id: str) -> TaskSubtasksResult:
-        task = self._application.get_task(self.principal, UUID(task_id))
+        task = self.get_task(task_id)
         return {
             "task_id": task_id,
             "parent": task.get("parent"),

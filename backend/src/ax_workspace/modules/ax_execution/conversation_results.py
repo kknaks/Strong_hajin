@@ -9,6 +9,7 @@ class ConversationMessageView(TypedDict):
     turn_id: str | None
     role: str
     body: str
+    answer_document: dict[str, JsonValue] | None
     sequence: int
     state: str
     body_state: str

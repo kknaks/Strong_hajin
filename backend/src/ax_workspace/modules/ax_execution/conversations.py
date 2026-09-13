@@ -12,6 +12,7 @@ from uuid import UUID
 
 from ax_workspace.modules.ax_execution.conversation_commands import ConversationCreateInput, ConversationMessageInput, ConversationCancelInput, ConversationMessageResult, ConversationRetryResult
 from ax_workspace.modules.ax_execution.actions import action_commands
+from ax_workspace.modules.ax_execution.answer_documents import project_answer_document
 from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, ACTION_READ, Principal
 
 
@@ -186,6 +187,9 @@ class ConversationApplication:
         view["answer_resources"] = (
             self._answer_resources.resolve(principal, references) if self._answer_resources is not None else []
         )
+        readable_ids = {row["reference_id"] for row in view["answer_resources"] if row.get("reference_id")}
+        for message in view.get("messages", []):
+            message["answer_document"] = project_answer_document(message.get("answer_document"), readable_ids)
         view["graph_receipts"] = self._readable_steps(principal, view.get("graph_receipts") or [])
         evidence = view.get("material_evidence") or []
         view["material_evidence"] = (

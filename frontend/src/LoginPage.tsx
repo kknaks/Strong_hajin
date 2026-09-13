@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { getAuthProviders, login, type AuthProviders } from "./api";
 import { personName } from "./labels";
+import { Icon } from "./Icon";
 import type { OrganizationProfile } from "./viewModels";
 
 /**
@@ -67,18 +68,16 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: (profile: OrganizationPr
         <p>조직의 업무를 하나의 원장에서 다루고, AX가 허용된 범위 안에서 조회하고 제안합니다.</p>
       </section>
       <section aria-label="로그인" className="login-panel">
-        <h2>로그인</h2>
-        <p className="login-lead">SCAX 계정으로 로그인합니다.</p>
-
-        <button className="btn h40 login-oidc" disabled title="Google 로그인은 조직 SSO 연결 뒤에 열립니다" type="button">
-          <span aria-hidden className="google-mark">G</span> Google 계정으로 로그인
-        </button>
-        <p className="login-hint">Google 로그인은 조직 SSO 연결 뒤에 열립니다.</p>
+        <header className="login-heading">
+          <h2>로그인</h2>
+          <p className="login-lead">SCAX 계정으로 업무를 시작하세요.</p>
+        </header>
 
         {(providers?.demo_accounts?.length ?? 0) > 0 && (
           <section aria-label="로컬 데모 계정" className="login-demo">
-            <div className="login-divider">
-              <span>로컬 실행 전용 · 바로 로그인</span>
+            <div className="login-demo-heading">
+              <h3>바로 로그인</h3>
+              <span className="login-local-badge">로컬 전용</span>
             </div>
             <ul className="demo-account-list">
               {(providers?.demo_accounts ?? []).map((account) => (
@@ -90,19 +89,20 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: (profile: OrganizationPr
                     onClick={() => void signInAs(account)}
                     type="button"
                   >
-                    <span aria-hidden className="avatar xs">
+                    <span aria-hidden className="avatar login-account-avatar">
                       {personName(account.display_name).slice(0, 1)}
                     </span>
                     <span className="demo-account-main">
                       <b>{account.display_name}</b>
                       <small className="t-meta">{account.email}</small>
                     </span>
+                    <Icon name="chevron-right" className="demo-account-arrow" />
                   </button>
                 </li>
               ))}
             </ul>
             <p className="login-hint">
-              데모 계정과 공용 비밀번호로 실제 로그인합니다. 다른 사람으로 보려면 로그아웃하고 다시 고르세요.
+              계정을 선택하면 바로 로그인됩니다.
             </p>
           </section>
         )}
@@ -143,6 +143,12 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: (profile: OrganizationPr
             </button>
           </form>
         )}
+        <div className="login-sso">
+          <button className="btn h40 login-oidc" disabled title="Google 로그인은 조직 SSO 연결 뒤에 열립니다" type="button">
+            <span aria-hidden className="google-mark">G</span> Google 계정으로 로그인
+          </button>
+          <p className="login-hint">조직 SSO 연결 후 사용할 수 있습니다.</p>
+        </div>
         {error && (
           <p className="login-error" role="alert">
             {error}

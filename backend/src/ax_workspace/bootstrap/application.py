@@ -57,6 +57,7 @@ from uuid import UUID, uuid4
 import logging
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
+from ax_workspace.modules.ax_execution.answer_documents import answer_context_excerpt
 from ax_workspace.modules.ax_execution.conversations import (
     ConversationApplication,
     ConversationContextReferenceInput,
@@ -263,6 +264,9 @@ class _SessionAnswerResources:
     def resolve(self, principal: Principal, references: list[dict[str, Any]]) -> list[dict[str, Any]]:
         resolved: list[dict[str, Any]] = []
         content = self._readable_content_references(principal, references)
+        # Several turns can cite the same task. Read its authorized detail once for this projection,
+        # including its version, rather than expanding the hierarchy again for every citation and field.
+        tasks: dict[str, dict[str, Any] | None] = {}
         for reference in references:
             kind = str(reference["resource_type"])
             identifier = str(reference["resource_id"])
@@ -273,14 +277,24 @@ class _SessionAnswerResources:
                 resolved.append({**reference, "title": observed["name"], "state": "available", "origin": observed["origin"],
                     "source_contexts": observed["source_contexts"], "current_version": None, "changed_since": False})
                 continue
-            title, state = self._read(principal, kind, identifier)
+            if kind == "task":
+                if identifier not in tasks:
+                    try:
+                        tasks[identifier] = self._source.readable_task(principal, UUID(identifier))
+                    except ValueError:
+                        tasks[identifier] = None
+                task = tasks[identifier]
+                title, state = (str(task["title"]), task.get("state")) if task else (None, None)
+                current = int(task["version"]) if task and task.get("version") is not None else None
+            else:
+                title, state = self._read(principal, kind, identifier)
+                current = self._current_version(principal, kind, identifier) if title is not None else None
             if title is None:
                 # Readable when the turn ran, not now. It leaves no title and no gap that could be counted.
                 continue
             # 답이 딛고 선 회차와 지금의 회차가 다를 수 있다. 그것은 숨길 일이 아니라 말할 일이다 — 사람이
             # 링크를 열기 전에 무엇이 달라졌을 수 있는지 알아야 한다. 지금 회차를 알 수 없으면 말하지 않는다.
             seen = reference.get("resource_version")
-            current = self._current_version(principal, kind, identifier)
             resolved.append({
                 **reference,
                 "title": title,
@@ -2429,7 +2443,8 @@ class WorkflowApplication:
                         "integrity_ref": step.get("integrity_ref")})
             seen: set[tuple[str, str]] = set()
             deduped = []
-            for reference in resolver.resolve(principal, references):
+            readable_references = resolver.resolve(principal, references)
+            for reference in readable_references:
                 key = (str(reference["resource_type"]), str(reference["resource_id"]))
                 if key in seen:
                     continue
@@ -2457,7 +2472,7 @@ class WorkflowApplication:
                     {
                         "turn_id": str(message["turn_id"]),
                         "role": str(message["role"]),
-                        "body": str(message["body"])[:400],
+                        "body": answer_context_excerpt(str(message["body"]), message.get("answer_document"), readable_references),
                     }
                     for message in [
                         message

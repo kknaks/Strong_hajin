@@ -495,6 +495,21 @@ describe("MessageList", () => {
 
   const listProps = { onDecide: noop, onRetryTurn: vi.fn(), onRetryFragment: vi.fn(), onDiscardFragment: vi.fn(), onFollowUpCandidate: vi.fn(async () => true) };
 
+  it("opens an explicitly referenced prior-turn resource from a restored follow-up", () => {
+    const onOpenResource = vi.fn();
+    const resource = { reference_id: "receipt-1", turn_id: "t1", sequence: 1, resource_type: "task" as const, resource_id: "task-1", resource_version: 1, title: "다시 확인할 업무", state: "open" };
+    const active = conversation("c1", "후속 대화", "그 업무를 다시 보여줘", {
+      turns: [turn("t1"), turn("t2")],
+      messages: [{ message_id: "m2", turn_id: "t2", role: "assistant", body: "{{task}}를 확인하세요.", sequence: 2, state: "accepted", body_state: "final",
+        answer_document: { version: 1, elements: [{ key: "task", type: "resource_reference", ref: "receipt-1" }] } }],
+      answer_resources: [resource],
+    });
+    const { container } = render(<MessageList {...listProps} conversation={active} localFragments={[]} onOpenResource={onOpenResource} />);
+    const body = container.querySelector('.ax-turn[data-turn-id="t2"] .ax-assistant-body') as HTMLElement;
+    fireEvent.click(within(body).getByRole("button", { name: resource.title }));
+    expect(onOpenResource).toHaveBeenCalledWith(resource);
+  });
+
   it("keeps the live rail under the request, then moves the terminal rail below the answer", () => {
     const active = conversation("c1", "견적 검토", "첫 발화", {
       messages: [

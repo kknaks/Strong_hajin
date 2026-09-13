@@ -95,6 +95,8 @@ class AiConversationResult:
     tool_invocations: list[AiToolInvocation]
     usage: dict[str, Any] | None = None
     follow_up_candidates: list[AiFollowUpCandidate] = field(default_factory=list)
+    # None denotes a legacy/plain answer; an empty list is a structured answer with Markdown only.
+    answer_elements: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +167,10 @@ class ProviderUnavailable(ProviderFailure):
 
 class ProviderRequestFailed(ProviderFailure):
     pass
+
+
+class ProviderResponseInvalid(ProviderRequestFailed):
+    """Invalid final output is terminal; repeating the agent could repeat domain effects."""
 
 
 class ProviderCancelled(ProviderFailure):
