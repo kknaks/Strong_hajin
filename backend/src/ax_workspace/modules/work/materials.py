@@ -5,6 +5,9 @@ ledger keeps the artifact identity, integrity hash, provenance, and where it is 
 """
 from __future__ import annotations
 
+from ax_workspace.modules.work.material_results import TaskMaterialView, TaskMaterialResult
+
+
 import hashlib
 from typing import Any, Protocol
 from uuid import UUID, uuid4
@@ -131,7 +134,7 @@ class TaskMaterialApplication:
         self._extraction_queue = extraction_queue
         self._references = references
 
-    def list(self, principal: Principal, task_id: UUID) -> list[dict[str, Any]]:
+    def list(self, principal: Principal, task_id: UUID) -> list[TaskMaterialView]:
         self._require(principal, TASK_READ)
         self._readable(principal, task_id)
         active = [(binding, attachment) for binding, attachment in self._attachments.bindings_for("task", str(task_id)) if binding.unbound_at is None]
@@ -141,7 +144,7 @@ class TaskMaterialApplication:
             for binding, attachment in active
         ]
 
-    def attach_link(self, principal: Principal, task_id: UUID, *, kind: str, url: str, label: str) -> dict[str, Any]:
+    def attach_link(self, principal: Principal, task_id: UUID, *, kind: str, url: str, label: str) -> TaskMaterialResult:
         """Point a Task at work that lives somewhere else.
 
         Nothing is fetched and no revision is pinned, so this is a changeable link and every surface says so. A
@@ -170,7 +173,7 @@ class TaskMaterialApplication:
         # A link has no content to extract, so no extraction is requested and search reports it as unreadable.
         return self._moved_view(task, binding, attachment, None, principal=principal, references=self._references)
 
-    def attach_reference(self, principal: Principal, task_id: UUID, *, kind: str, resource_type: str, resource_id: str) -> dict[str, Any]:
+    def attach_reference(self, principal: Principal, task_id: UUID, *, kind: str, resource_type: str, resource_id: str) -> TaskMaterialResult:
         """Point a Task at another thing inside SCAX, but only at something this person may already read."""
         self._require(principal, TASK_SELF_MANAGE)
         task = self._tasks.task(task_id, str(principal.id), lock=True)
@@ -202,9 +205,16 @@ class TaskMaterialApplication:
         )
         return self._moved_view(task, binding, attachment, None, principal=principal, references=self._references)
 
-    def attach(self, principal: Principal, task_id: UUID, *, kind: str, name: str, content_type: str, data: bytes) -> dict[str, Any]:
+    def upload_target(self, principal: Principal, task_id: UUID) -> tuple[str, int]:
+        task = self._upload_task(principal, task_id)
+        return task.title, int(task.version)
+
+    def _upload_task(self, principal: Principal, task_id: UUID) -> Any:
         self._require(principal, TASK_SELF_MANAGE)
-        task = self._tasks.task(task_id, str(principal.id), lock=True)
+        return self._tasks.task(task_id, str(principal.id), lock=True)
+
+    def attach(self, principal: Principal, task_id: UUID, *, kind: str, name: str, content_type: str, data: bytes) -> TaskMaterialResult:
+        task = self._upload_task(principal, task_id)
         if kind not in MATERIAL_KINDS:
             raise MaterialError("material kind must be input or output")
         clean_name = name.strip().replace("/", "_").replace("\\", "_")[:300]
@@ -227,7 +237,7 @@ class TaskMaterialApplication:
             # Same transaction as the attachment/binding: the job exists exactly when the material does.
             extraction = self._extractions.request(attachment)
             if extraction.status == "queued" and self._extraction_queue is not None:
-                self._extraction_queue.enqueue(MaterialExtractionJob(extraction.id, attachment.id))
+                self._extraction_queue.enqueue(MaterialExtractionJob(extraction.id, attachment.id, str(principal.id)))
         return self._moved_view(task, binding, attachment, extraction, principal=principal, references=self._references)
 
     def open(self, principal: Principal, task_id: UUID, material_id: UUID) -> tuple[dict[str, Any], bytes]:
@@ -249,7 +259,7 @@ class TaskMaterialApplication:
             raise MaterialNotFound("자료 원본을 찾을 수 없습니다") from error
         return self._view(binding, attachment, self._extraction_for(attachment), principal=principal, references=self._references), data
 
-    def detach(self, principal: Principal, task_id: UUID, binding_id: UUID) -> dict[str, Any]:
+    def detach(self, principal: Principal, task_id: UUID, binding_id: UUID) -> TaskMaterialResult:
         """Unbinding keeps the Attachment and bytes; the binding records when it left the Task."""
         self._require(principal, TASK_SELF_MANAGE)
         task = self._tasks.task(task_id, str(principal.id), lock=True)
@@ -262,7 +272,7 @@ class TaskMaterialApplication:
         self._tasks.record_activity(task, str(principal.id), "task.material_detached", f"자료 해제: {attachment.name}")
         return self._moved_view(task, binding, attachment, self._extraction_for(attachment), principal=principal, references=self._references)
 
-    def _moved_view(self, task: Any, binding: Any, attachment: Any, extraction: Any, *, principal: Any, references: Any) -> dict[str, Any]:
+    def _moved_view(self, task: Any, binding: Any, attachment: Any, extraction: Any, *, principal: Any, references: Any) -> TaskMaterialResult:
         """A mutation answers with the material and the Task version it moved to, so an open screen is not left stale."""
         view = self._view(binding, attachment, extraction, principal=principal, references=references)
         return {**view, "task_version": int(task.version)}
@@ -303,7 +313,7 @@ class TaskMaterialApplication:
         *,
         principal: Principal | None = None,
         references: ResourceReferencePort | None = None,
-    ) -> dict[str, Any]:
+    ) -> TaskMaterialView:
         resource = None
         name = attachment.name
         if attachment.source_kind == "resource_ref":

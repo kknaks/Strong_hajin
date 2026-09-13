@@ -24,6 +24,7 @@ from ax_workspace.modules.ax_execution.ai import (
 from ax_workspace.modules.ax_execution.conversations import (
     ConversationContextReferenceInput,
     ConversationError,
+    ConversationNotFound,
     ConversationExecution,
     ConversationExecutionQueue,
     ConversationQueueOverflow,
@@ -451,7 +452,7 @@ class SqlAlchemyConversationRepository:
         The failed/cancelled Turn is preserved; the retry key makes repeated clicks return the same new Turn."""
         failed = self._session.get(ConversationTurnRecord, failed_turn_id)
         if failed is None or failed.conversation_id != conversation.id:
-            raise ConversationError("turn was not found")
+            raise ConversationNotFound("turn was not found")
         if failed.state not in {"failed", "cancelled"}:
             raise ConversationError("only a failed or cancelled turn can be retried")
         retry_key = f"retry:{failed.id}"

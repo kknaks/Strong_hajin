@@ -1,6 +1,8 @@
 """Public authorized organization queries."""
 from __future__ import annotations
 
+from ax_workspace.modules.organization_access.results import MemberAxisHistoryView, MemberCandidateView, MemberDetailView, MemberDirectoryView, MyOrganizationProfileView, OrganizationActivityView, OrganizationProfileView, OrganizationUnitView, UnitMemberView
+
 from typing import Any, Protocol
 
 from ax_workspace.modules.organization_access.administration import (
@@ -17,18 +19,10 @@ from ax_workspace.modules.organization_access.credentials import (
 from ax_workspace.modules.organization_access.domain import MEMBER_HISTORY_AXES, Principal
 
 
+from ax_workspace.modules.organization_access.commands import AssistantCharacterInput, AssistantCharacterResult, ASSISTANT_CHARACTER_KEYS
+
 DEFAULT_ASSISTANT_CHARACTER = "cream-cat"
-ASSISTANT_CHARACTER_KEYS = frozenset({
-    "cream-cat",
-    "silver-tabby",
-    "tuxedo-cat",
-    "calico-cat",
-    "puppy",
-    "rabbit",
-    "bear",
-    "chick",
-    "red-panda",
-})
+
 
 
 class UnsupportedAssistantCharacter(ValueError):
@@ -40,36 +34,36 @@ class AssistantCharacterPreferenceConflict(RuntimeError):
 
 
 class OrganizationRepository(Protocol):
-    def profile_for(self, member_id: str) -> dict[str, Any] | None: ...
+    def profile_for(self, member_id: str) -> OrganizationProfileView | None: ...
     def credential_for_email(self, email: str) -> LocalCredential | None: ...
-    def member_directory(self) -> list[dict[str, Any]]: ...
+    def member_directory(self) -> list[MemberDirectoryView]: ...
     def demo_accounts(self, email_domain: str) -> list[dict[str, str]]: ...
     def principal_for(self, member_id: str) -> Principal | None: ...
-    def work_request_assignee_candidates(self, principal: Principal) -> list[dict[str, str]]: ...
-    def task_assignment_candidates(self, principal: Principal) -> list[dict[str, str]]: ...
-    def member_candidates(self, principal: Principal) -> list[dict[str, str]]: ...
-    def organization_tree(self) -> list[dict[str, Any]]: ...
-    def unit_members(self, unit_id: str, *, include_descendants: bool = True) -> list[dict[str, Any]]: ...
+    def work_request_assignee_candidates(self, principal: Principal) -> list[MemberCandidateView]: ...
+    def task_assignment_candidates(self, principal: Principal) -> list[MemberCandidateView]: ...
+    def member_candidates(self, principal: Principal) -> list[MemberCandidateView]: ...
+    def organization_tree(self) -> list[OrganizationUnitView]: ...
+    def unit_members(self, unit_id: str, *, include_descendants: bool = True) -> list[UnitMemberView]: ...
     def assistant_character_preference(self, member_id: str) -> dict[str, Any] | None: ...
     def save_assistant_character_preference(
         self, member_id: str, character_key: str, expected_version: int
     ) -> dict[str, Any]: ...
-    def member_detail(self, member_id: str) -> dict[str, Any] | None: ...
-    def member_axis_history(self, member_id: str, axis: str) -> list[dict[str, Any]]: ...
+    def member_detail(self, member_id: str) -> MemberDetailView | None: ...
+    def member_axis_history(self, member_id: str, axis: str) -> list[MemberAxisHistoryView]: ...
     def member_units(self, member_id: str) -> frozenset[str]: ...
     def member_ids_in(self, units: frozenset[str]) -> frozenset[str]: ...
     def unit_descendants(self, unit_id: str) -> frozenset[str]: ...
     def organization_root(self, *, near: str | None = None) -> str | None: ...
     def organization_activity(
         self, *, member_ids: frozenset[str] | None, limit: int, cursor: str | None
-    ) -> list[dict[str, Any]]: ...
+    ) -> list[OrganizationActivityView]: ...
 
 
 class OrganizationApplication:
     def __init__(self, repository: OrganizationRepository) -> None:
         self._repository = repository
 
-    def my_profile(self, principal: Principal) -> dict[str, Any]:
+    def my_profile(self, principal: Principal) -> MyOrganizationProfileView:
         profile = self._repository.profile_for(str(principal.id))
         if profile is None:
             raise LookupError("organization member was not found")
@@ -81,7 +75,9 @@ class OrganizationApplication:
 
     def set_assistant_character(
         self, principal: Principal, character_key: str, expected_version: int
-    ) -> dict[str, Any]:
+    ) -> AssistantCharacterResult:
+        command = AssistantCharacterInput(character_key=character_key, expected_version=expected_version)
+        character_key, expected_version = command.character_key, command.expected_version
         if character_key not in ASSISTANT_CHARACTER_KEYS:
             raise UnsupportedAssistantCharacter("지원하지 않는 AX 캐릭터입니다.")
         return self._repository.save_assistant_character_preference(
@@ -106,7 +102,7 @@ class OrganizationApplication:
         """Local demo sign-in shortcuts. Not an authorized read of anything: the caller is not signed in yet."""
         return self._repository.demo_accounts(email_domain)
 
-    def member_directory(self, principal: Principal) -> list[dict[str, Any]]:
+    def member_directory(self, principal: Principal) -> list[MemberDirectoryView]:
         """이름은 누구에게나, 인사 정보는 조직을 관리하는 사람에게만.
 
         SPEC-005 §2: 결과 field는 현재 Principal의 권한에 맞게 제한한다. 감추는 방법으로 field를 지우지는
@@ -124,10 +120,10 @@ class OrganizationApplication:
             raise LookupError("active organization member was not found")
         return principal
 
-    def work_request_assignee_candidates(self, principal: Principal) -> list[dict[str, str]]:
+    def work_request_assignee_candidates(self, principal: Principal) -> list[MemberCandidateView]:
         return self._repository.work_request_assignee_candidates(principal)
 
-    def organization_tree(self, principal: Principal) -> list[dict[str, Any]]:
+    def organization_tree(self, principal: Principal) -> list[OrganizationUnitView]:
         """Read-only navigation for any active principal; the tree never widens work or HR scope."""
         return self._repository.organization_tree()
 
@@ -136,7 +132,7 @@ class OrganizationApplication:
     SENSITIVE_MEMBER_FIELDS = ("phone", "birth_date")
     SENSITIVE_MEMBER_LISTS = ("grants", "revoked_grants")
 
-    def member_detail(self, principal: Principal, member_id: str) -> dict[str, Any]:
+    def member_detail(self, principal: Principal, member_id: str) -> MemberDetailView:
         """한 사람을 여섯 축으로 한 번에. 볼 수 없는 축은 자리를 남기고 값을 비운다.
 
         SPEC-005 §2: 결과 field는 현재 Principal의 권한에 맞게 제한한다. 거절하지 않고 비우는 이유는, 이 화면이
@@ -155,19 +151,19 @@ class OrganizationApplication:
             hidden[field] = []
         return hidden
 
-    def member_axis_history(self, principal: Principal, member_id: str, axis: str) -> list[dict[str, Any]]:
+    def member_axis_history(self, principal: Principal, member_id: str, axis: str) -> list[MemberAxisHistoryView]:
         """한 축이 지나온 기간들. 이력은 지금 값보다 많은 것을 말하므로, 볼 자격을 먼저 묻는다."""
         if axis not in MEMBER_HISTORY_AXES:
             raise ValueError(f"모르는 축입니다: {axis} (가능: {', '.join(MEMBER_HISTORY_AXES)})")
         if self._repository.member_detail(member_id) is None:
             raise AccessNotFound("재직 중인 구성원을 찾을 수 없습니다")
         if not self._may_read_sensitive(principal, member_id):
-            raise AccessAdministrationDenied("이 구성원의 이력을 볼 수 있는 범위가 아닙니다")
+            raise AccessNotFound("구성원 이력을 찾을 수 없습니다")
         return self._repository.member_axis_history(member_id, axis)
 
     def organization_activity(
         self, principal: Principal, *, unit_id: str | None = None, limit: int = 50, cursor: str | None = None
-    ) -> list[dict[str, Any]]:
+    ) -> list[OrganizationActivityView]:
         """조직 축의 변경 기록. 한 조직을 물으면 그 아래 사람들의 사건만 남는다.
 
         변경 기록은 누가 무엇을 왜 바꿨는지를 사람 단위로 모아 보여 준다 — 그 조직을 관리할 수 있는 사람에게만
@@ -194,13 +190,15 @@ class OrganizationApplication:
         """본인이거나, 그 사람의 자리를 관리할 수 있는 사람."""
         return str(principal.id) == member_id or manages_any_of(principal, self._repository.member_units(member_id))
 
-    def unit_members(self, principal: Principal, unit_id: str) -> list[dict[str, Any]]:
+    def unit_members(self, principal: Principal, unit_id: str) -> list[UnitMemberView]:
+        if not any(unit["id"] == unit_id for unit in self._repository.organization_tree()):
+            raise AccessNotFound("조직을 찾을 수 없습니다")
         return self._repository.unit_members(unit_id)
 
-    def task_assignment_candidates(self, principal: Principal) -> list[dict[str, str]]:
+    def task_assignment_candidates(self, principal: Principal) -> list[MemberCandidateView]:
         return self._repository.task_assignment_candidates(principal)
 
-    def member_candidates(self, principal: Principal) -> list[dict[str, str]]:
+    def member_candidates(self, principal: Principal) -> list[MemberCandidateView]:
         return self._repository.member_candidates(principal)
 
     def is_active_member(self, principal: Principal, member_id: str) -> bool:

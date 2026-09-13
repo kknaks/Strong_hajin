@@ -19,6 +19,7 @@ from ax_workspace.modules.meetings.domain import (
     MeetingNotFound,
     MeetingStateConflict,
     MeetingStatus,
+    MeetingVersionConflict,
     AI_AGENDA_SOURCE,
     ensure_agenda_capacity,
     ensure_agenda_source,
@@ -92,7 +93,9 @@ class MeetingRepository(Protocol):
     def is_active_member_in_organization(self, member_id: str, organization_id: str) -> bool: ...
     def is_active_member(self, member_id: str) -> bool: ...
     def add_share(self, meeting: Any, member_id: str, actor_id: str) -> None: ...
+    def add_legacy_public_share(self, meeting: Any, member_id: str, actor_id: str) -> None: ...
     def revoke_share(self, meeting: Any, member_id: str) -> bool: ...
+    def revoke_legacy_public_shares(self, meeting: Any) -> int: ...
     def touch(self, meeting: Any) -> None: ...
     def append_audit(self, meeting: Any, actor_id: str, event_kind: str, summary: str, *, before_ref: str | None = None) -> None: ...
     def agendas(self, meeting: Any) -> list[Any]: ...
@@ -149,6 +152,21 @@ class MeetingApplication:
                 rows.append(self._calendar_row(principal, meeting))
             else:
                 rows.append({"kind": "busy", "starts_at": _iso(meeting.starts_at), "ends_at": _iso(meeting.ends_at)})
+        return rows
+
+    def my_meetings(self, principal: Principal) -> list[dict[str, Any]]:
+        """Meetings this person owns or attends; an explicit share alone does not make one personal."""
+        rows: list[dict[str, Any]] = []
+        for meeting in self._repository.meetings_visible_to(
+            principal.organization_scope, str(principal.id)
+        ):
+            if not self._can_read_detail(principal, meeting):
+                continue
+            self._settle_auto_cancel(meeting)
+            row = self._calendar_row(principal, meeting)
+            if row.get("viewer_relation") != "shared":
+                rows.append(row)
+        rows.sort(key=lambda row: (row.get("starts_at") or "", row.get("meeting_id") or ""))
         return rows
 
     def readable_rows(self, principal: Principal) -> list[dict[str, Any]]:
@@ -210,6 +228,44 @@ class MeetingApplication:
         organization_id: str | None = None,
     ) -> dict[str, Any]:
         """예약. 회의를 세우는 사람은 그 회의의 참석자이기도 하다 — 목록에서 자기 회의를 잃지 않는다."""
+        values, drafts, source = self._validated_creation(
+            principal,
+            title=title,
+            starts_at=starts_at,
+            ends_at=ends_at,
+            purpose=purpose,
+            location=location,
+            attendee_ids=attendee_ids,
+            external_attendees=external_attendees,
+            agendas=agendas,
+            carried_from_meeting_id=carried_from_meeting_id,
+            organization_id=organization_id,
+        )
+        meeting = self._repository.create(**values)
+        for order, agenda_title in enumerate(drafts, start=1):
+            self._create_agenda(meeting, title=agenda_title, source=source, order_index=order)
+        self._repository.append_audit(meeting, str(principal.id), "meeting.created", f"회의 생성: {meeting.title or '제목 없는 회의'}")
+        return self._detail(principal, meeting)
+
+    def validate_creation(self, principal: Principal, **fields: Any) -> None:
+        """Apply every local creation rule before an irreversible room-provider call."""
+        self._validated_creation(principal, **fields)
+
+    def _validated_creation(
+        self,
+        principal: Principal,
+        *,
+        title: str | None,
+        starts_at: datetime,
+        ends_at: datetime,
+        purpose: str | None = None,
+        location: str | None = None,
+        attendee_ids: list[str] | None = None,
+        external_attendees: list[str] | None = None,
+        agendas: list[dict[str, Any]] | None = None,
+        carried_from_meeting_id: UUID | None = None,
+        organization_id: str | None = None,
+    ) -> tuple[dict[str, Any], list[str], str]:
         self._require(principal, MEETING_MANAGE)
         organization_id = organization_id or self._repository.primary_organization(str(principal.id))
         if organization_id is None or organization_id not in principal.organization_scope:
@@ -220,24 +276,24 @@ class MeetingApplication:
         carried = self._carried_source(principal, carried_from_meeting_id)
         drafts = [normalize_agenda_title(row.get("title")) for row in (agendas or [])]
         ensure_agenda_capacity(max(len(drafts) - 1, 0))
-        meeting = self._repository.create(
-            organization_id=organization_id,
-            owner_id=str(principal.id),
-            title=clean_title,
-            purpose=normalize_optional_text(purpose, label="meeting purpose", limit=1000),
-            starts_at=starts_at,
-            ends_at=ends_at,
-            location=normalize_optional_text(location, label="meeting location", limit=300),
-            status=MeetingStatus.SCHEDULED.value,
-            attendee_ids=attendees,
-            external_attendees=list(normalize_external_attendees(external_attendees or [])),
-            carried_from_meeting_id=carried,
-        )
         source = "carried" if carried is not None else "manual"
-        for order, agenda_title in enumerate(drafts, start=1):
-            self._create_agenda(meeting, title=agenda_title, source=source, order_index=order)
-        self._repository.append_audit(meeting, str(principal.id), "meeting.created", f"회의 생성: {meeting.title or '제목 없는 회의'}")
-        return self._detail(principal, meeting)
+        return (
+            {
+                "organization_id": organization_id,
+                "owner_id": str(principal.id),
+                "title": clean_title,
+                "purpose": normalize_optional_text(purpose, label="meeting purpose", limit=1000),
+                "starts_at": starts_at,
+                "ends_at": ends_at,
+                "location": normalize_optional_text(location, label="meeting location", limit=300),
+                "status": MeetingStatus.SCHEDULED.value,
+                "attendee_ids": attendees,
+                "external_attendees": list(normalize_external_attendees(external_attendees or [])),
+                "carried_from_meeting_id": carried,
+            },
+            drafts,
+            source,
+        )
 
     def quick_start(self, principal: Principal) -> dict[str, Any]:
         """바로 시작 — 값을 묻지 않고 세우고 곧장 연다. 그동안은 켠 사람만 본다 (SPEC §3.1-6 · `X-125`)."""
@@ -270,10 +326,19 @@ class MeetingApplication:
         self._repository.append_audit(meeting, str(principal.id), "meeting.quick_started", "회의 바로 시작")
         return self._detail(principal, meeting)
 
-    def update_info(self, principal: Principal, meeting_id: UUID, changes: dict[str, Any]) -> dict[str, Any]:
+    def update_info(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        changes: dict[str, Any],
+        *,
+        expected_version: int | None = None,
+    ) -> dict[str, Any]:
         """회의 정보 편집 — 제목·일시·장소·참석자. 「예정」·「완료」에서만, 참석자 전원이 (SPEC §3.1-7 · §3.3)."""
         self._require(principal, MEETING_MANAGE)
         meeting = self._readable(principal, meeting_id, lock=True)
+        if expected_version is not None and meeting.version != expected_version:
+            raise MeetingVersionConflict("meeting changed since the approval was proposed")
         view = self._view_plan(principal, meeting)
         if not view.is_attendee:
             raise MeetingAccessDenied("only an attendee may edit this meeting's information")
@@ -304,6 +369,54 @@ class MeetingApplication:
         meeting.version += 1
         self._repository.touch(meeting)
         self._repository.append_audit(meeting, str(principal.id), "meeting.updated", f"회의 정보 수정: {meeting.title or '제목 없는 회의'}", before_ref=f"meeting:{meeting.id}@{before}")
+        return self._detail(principal, meeting)
+
+    def apply_legacy_note(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        *,
+        body: str | None,
+        operation: str,
+        finalized: bool,
+    ) -> dict[str, Any]:
+        """Consume a pre-SPEC-004 pending note command without reviving the removed note aggregate.
+
+        Migrated note text becomes an immutable memo line. Finalization is retained as an audit fact because
+        the current model finalizes the whole meeting after recording, rather than a separate note row.
+        """
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._readable(principal, meeting_id, lock=True)
+        if not self._is_attendee(principal, meeting):
+            raise MeetingAccessDenied("only an attendee may edit this meeting's note")
+        clean_body = str(body or "").strip()
+        if body is not None and not clean_body:
+            raise MeetingError("meeting note body is required")
+        if operation == "create" and self._repository.lines(meeting):
+            raise MeetingError("meeting note already exists")
+        if clean_body:
+            agendas = self._repository.agendas(meeting)
+            agenda = agendas[0] if agendas else self._create_agenda(
+                meeting,
+                title="기존 회의록",
+                source="manual",
+                order_index=self._repository.next_agenda_order(meeting),
+            )
+            self._repository.append_line(
+                agenda,
+                track="memo",
+                text=clean_body,
+                author_id=str(principal.id),
+                evidence=[],
+            )
+            meeting.last_saved_at = datetime.now(UTC)
+        self._repository.touch(meeting)
+        self._repository.append_audit(
+            meeting,
+            str(principal.id),
+            "meeting.legacy_note_finalized" if finalized else "meeting.legacy_note_saved",
+            "기존 회의록 확정" if finalized else "기존 회의록 반영",
+        )
         return self._detail(principal, meeting)
 
     def cancel(self, principal: Principal, meeting_id: UUID) -> None:
@@ -733,10 +846,63 @@ class MeetingApplication:
             self._repository.append_audit(meeting, str(principal.id), "meeting.shared", "회의 열람 공유")
         return self.viewers(principal, meeting_id)
 
-    def share(self, principal: Principal, meeting_id: UUID, member_id: str) -> dict[str, Any]:
+    def apply_legacy_visibility(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        visibility: str,
+        member_ids: list[str],
+    ) -> dict[str, Any]:
+        """Translate legacy public/private into revocable, provenance-tagged current-model readers."""
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._readable(principal, meeting_id, lock=True)
+        if str(principal.id) != meeting.owner_id:
+            raise MeetingAccessDenied("only the person who made this meeting may change its visibility")
+        if visibility == "private":
+            closed = self._repository.revoke_legacy_public_shares(meeting)
+            if closed:
+                self._repository.touch(meeting)
+                self._repository.append_audit(
+                    meeting,
+                    str(principal.id),
+                    "meeting.legacy_private_migrated",
+                    "기존 비공개 범위를 명시적 열람 공유로 이행",
+                )
+            return self._detail(principal, meeting)
+        if visibility != "public":
+            raise MeetingError("meeting visibility must be public or private")
+        already = self._repository.attendee_ids(meeting) | {meeting.owner_id} | set(
+            self._repository.shared_member_ids(meeting)
+        )
+        opened = 0
+        for member_id in new_share_targets(member_ids, existing_member_ids=already):
+            if member_id in already or not self._repository.is_active_member(member_id):
+                continue
+            self._repository.add_legacy_public_share(meeting, member_id, str(principal.id))
+            opened += 1
+        if opened:
+            self._repository.touch(meeting)
+            self._repository.append_audit(
+                meeting,
+                str(principal.id),
+                "meeting.legacy_public_migrated",
+                "기존 공개 회의를 명시적 열람 공유로 이행",
+            )
+        return self._detail(principal, meeting)
+
+    def share(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        member_id: str,
+        *,
+        expected_version: int | None = None,
+    ) -> dict[str, Any]:
         """공유는 열람만 연다 — 수정 권한을 주지 않는다 (SPEC §3.2-2). 모달과 거두기는 SCAX-WP-005다."""
         self._require(principal, MEETING_SHARE)
         meeting = self._readable(principal, meeting_id, lock=True)
+        if expected_version is not None and meeting.version != expected_version:
+            raise MeetingVersionConflict("meeting changed since the approval was proposed")
         if not self._is_attendee(principal, meeting):
             raise MeetingAccessDenied("only an attendee may share this meeting")
         if not self._repository.is_active_member(member_id):
@@ -746,10 +912,19 @@ class MeetingApplication:
         self._repository.append_audit(meeting, str(principal.id), "meeting.shared", "회의 열람 공유")
         return self._row(principal, meeting)
 
-    def revoke_share(self, principal: Principal, meeting_id: UUID, member_id: str) -> list[dict[str, Any]]:
+    def revoke_share(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        member_id: str,
+        *,
+        expected_version: int | None = None,
+    ) -> list[dict[str, Any]]:
         """공유로 들어온 열람만 거둘 수 있다 — 참석을 빼는 자리는 회의 정보 편집이다 (SPEC §3.2-6)."""
         self._require(principal, MEETING_SHARE)
         meeting = self._readable(principal, meeting_id, lock=True)
+        if expected_version is not None and meeting.version != expected_version:
+            raise MeetingVersionConflict("meeting changed since the approval was proposed")
         if not self._is_attendee(principal, meeting):
             raise MeetingAccessDenied("only an attendee may revoke a share on this meeting")
         ensure_share_revocable(
@@ -1450,7 +1625,7 @@ def _iso(value: datetime | None) -> str | None:
     if value is None:
         return None
     # SQLite drops timezone offsets in fast contract tests; public meeting transport is always UTC.
-    return (value if value.tzinfo is not None else value.replace(tzinfo=UTC)).isoformat()
+    return _aware(value).isoformat()
 
 
 def _aware(value: datetime) -> datetime:

@@ -13,8 +13,10 @@ from ax_workspace.modules.actions.payloads import (
     validate_task_progress_batch_edit,
 )
 from ax_workspace.modules.ax_execution.actions import action_payload_hash
+from ax_workspace.modules.ax_execution.command_contracts import COMMAND_CONTRACTS
+from ax_workspace.modules.actions.policy import RETIRED_ACTION_TYPES
+from ax_workspace.modules.meetings.commands import MeetingReservationInput
 from ax_workspace.modules.meetings.domain import MeetingError
-from ax_workspace.modules.meetings.drafts import normalize_meeting_draft
 from ax_workspace.modules.work.errors import TaskError
 from ax_workspace.modules.work.drafts import (
     normalize_assigned_task_draft,
@@ -24,10 +26,18 @@ from ax_workspace.modules.work.drafts import (
 from ax_workspace.modules.work.request_errors import WorkRequestError
 
 
-SUPPORTED_ACTION_TYPES = frozenset(
-    {"task.create_self", "task.assign", "work_request.create", "meeting.create", "task.progress.batch"}
+SUPPORTED_ACTION_TYPES = frozenset(COMMAND_CONTRACTS) | frozenset(
+    {
+        "task.create_self",
+        "task.assign",
+        "work_request.create",
+        "meeting.reservation.create",
+        "task.progress.batch",
+    }
 )
-ATTACHABLE_ACTION_TYPES = frozenset({"task.create_self", "task.assign", "meeting.create"})
+ATTACHABLE_ACTION_TYPES = frozenset(
+    {"task.create_self", "task.assign", "meeting.reservation.create"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,9 +141,13 @@ def normalize_ax_draft(
     action_type: str,
     value: Any,
     *,
-    frozen_meeting_source: dict[str, Any] | None = None,
     requester_id: str | None = None,
 ) -> dict[str, Any]:
+    if action_type in COMMAND_CONTRACTS:
+        try:
+            return COMMAND_CONTRACTS[action_type].normalize(value)
+        except (TypeError, ValueError) as error:
+            raise ActionError(str(error)) from error
     if action_type == "task.progress.batch":
         try:
             return normalize_task_progress_batch(dict(value) if isinstance(value, dict) else value)
@@ -144,7 +158,7 @@ def normalize_ax_draft(
             return normalize_work_request_draft(value, requester_id=requester_id)
         except (WorkRequestError, TypeError, ValueError) as error:
             raise ActionError(str(error)) from error
-    if action_type != "meeting.create":
+    if action_type != "meeting.reservation.create":
         try:
             fields = dict(value) if isinstance(value, dict) else value
             if isinstance(fields, dict):
@@ -156,14 +170,7 @@ def normalize_ax_draft(
         fields = dict(value) if isinstance(value, dict) else value
         if isinstance(fields, dict):
             fields.pop("attachment_draft_ids", None)
-        if isinstance(fields, dict) and frozen_meeting_source is not None:
-            fields["initial_note_source_status"] = frozen_meeting_source.get(
-                "initial_note_source_status", "not_requested"
-            )
-            fields["initial_note_source_evidence"] = list(
-                frozen_meeting_source.get("initial_note_source_evidence") or []
-            )
-        return normalize_meeting_draft(fields)
+        return MeetingReservationInput.model_validate(fields).model_dump(mode="json")
     except (MeetingError, TypeError, ValueError) as error:
         raise ActionError(str(error)) from error
 
@@ -174,6 +181,8 @@ def decide_ax_confirmation(
 ) -> AxConfirmationDecision:
     if context.state != "pending":
         raise ActionError("action is no longer pending")
+    if context.action_type in RETIRED_ACTION_TYPES:
+        raise ActionError(RETIRED_ACTION_TYPES[context.action_type])
     expected_version = required_version(payload)
     if context.version != expected_version:
         raise ActionError("action version is stale")
@@ -194,9 +203,13 @@ def decide_ax_confirmation(
     canonical_final = normalize_ax_draft(
         context.action_type,
         payload.get("draft"),
-        frozen_meeting_source=canonical_base if context.action_type == "meeting.create" else None,
         requester_id=context.owner_id,
     )
+    if context.action_type in COMMAND_CONTRACTS:
+        try:
+            COMMAND_CONTRACTS[context.action_type].validate_edit(canonical_base, canonical_final)
+        except ValueError as error:
+            raise ActionError(str(error)) from error
     if context.action_type == "task.progress.batch":
         validate_task_progress_batch_edit(canonical_base, canonical_final)
 

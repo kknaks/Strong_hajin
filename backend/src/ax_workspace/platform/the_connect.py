@@ -27,6 +27,7 @@ from ax_workspace.modules.meetings.rooms import (
     ReservationRequest,
     RoomAuthFailed,
     RoomGatewayUnavailable,
+    RoomOutcomeUnknown,
     RoomUnavailable,
 )
 
@@ -205,6 +206,8 @@ class TheConnectGateway:
             return int(error.code), None
         except Exception as error:  # noqa: BLE001 — 네트워크·시간 초과는 예약의 실패이지 회의의 실패가 아니다
             logger.warning("예약 시스템에 닿지 못했습니다: %s", type(error).__name__)
+            if method in {"POST", "PUT", "DELETE"} and path.startswith("/api/reservations"):
+                raise RoomOutcomeUnknown("예약 시스템 처리 결과를 확인해야 합니다") from error
             raise RoomGatewayUnavailable("예약 시스템에 닿지 못했습니다") from error
 
 

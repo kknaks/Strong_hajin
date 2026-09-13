@@ -3,7 +3,6 @@ import asyncio
 from datetime import UTC, datetime
 from uuid import UUID
 
-import pytest
 from sqlalchemy import delete, select
 
 from ax_workspace.entrypoints.mcp import McpReportsFacade

@@ -1,9 +1,12 @@
 """Independent files belong to explicit personal or team folders."""
 from __future__ import annotations
 
+from ax_workspace.modules.work.material_query_results import FolderMaterialView
+
 from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import UUID
+from ax_workspace.modules.work.folder_commands import FolderView, FolderArchiveResult, FolderDetachResult
 
 from ax_workspace.modules.organization_access.domain import Principal
 from ax_workspace.modules.work.material_folder_policy import (
@@ -41,7 +44,7 @@ class MaterialFolderApplication:
         except LookupError as error:
             raise MaterialNotFound("folder was not found") from error
 
-    def create(self, principal: Principal, *, kind: str, title: str, organization_id: str | None = None) -> dict[str, Any]:
+    def create(self, principal: Principal, *, kind: str, title: str, organization_id: str | None = None) -> FolderView:
         profile = self._membership(principal)
         member_organization_ids = frozenset(unit["id"] for unit in profile["organizations"])
         decision = decide_folder_creation(
@@ -70,7 +73,7 @@ class MaterialFolderApplication:
         profile = self._membership(principal)
         return self._folders.readable(str(principal.id), [unit["id"] for unit in profile["organizations"]])
 
-    def list_for(self, principal: Principal) -> list[dict[str, Any]]:
+    def list_for(self, principal: Principal) -> list[FolderView]:
         return [self._view(folder) for folder in self.readable(principal)]
 
     def _readable(self, principal: Principal, folder_id: UUID) -> Any:
@@ -84,12 +87,12 @@ class MaterialFolderApplication:
         return [(binding, attachment) for binding, attachment in self._attachments.bindings_for("material_folder", str(folder_id))
                 if binding.unbound_at is None and attachment.lifecycle != "purged"]
 
-    def materials(self, principal: Principal, folder_id: UUID) -> list[dict[str, Any]]:
+    def materials(self, principal: Principal, folder_id: UUID) -> list[FolderMaterialView]:
         bindings = self.bindings(principal, folder_id)
         extractions = self._extractions.for_attachments([attachment.id for _, attachment in bindings])
         return [self._material_view(folder_id, binding, attachment, extractions.get(attachment.id)) for binding, attachment in bindings]
 
-    def upload(self, principal: Principal, folder_id: UUID, *, name: str, content_type: str, data: bytes) -> dict[str, Any]:
+    def upload(self, principal: Principal, folder_id: UUID, *, name: str, content_type: str, data: bytes) -> FolderMaterialView:
         self._readable(principal, folder_id)
         attachment = store_file(self._attachments, self._storage, key_prefix=f"material_folders/{folder_id}",
                                 name=name, content_type=content_type, data=data, provenance=f"material_folder:{folder_id}", uploaded_by=str(principal.id))
@@ -97,17 +100,20 @@ class MaterialFolderApplication:
                                          role="input", bound_by=str(principal.id))
         extraction = self._extractions.request(attachment)
         if extraction.status == "queued":
-            self._queue.enqueue(MaterialExtractionJob(extraction.id, attachment.id))
+            self._queue.enqueue(MaterialExtractionJob(extraction.id, attachment.id, str(principal.id)))
         return self._material_view(folder_id, binding, attachment, extraction)
 
-    def open(self, principal: Principal, folder_id: UUID, material_id: UUID) -> tuple[dict[str, Any], bytes]:
+    def upload_target(self, principal: Principal, folder_id: UUID) -> str:
+        return self._readable(principal, folder_id).title
+
+    def open(self, principal: Principal, folder_id: UUID, material_id: UUID) -> tuple[FolderMaterialView, bytes]:
         pair = next(((binding, attachment) for binding, attachment in self.bindings(principal, folder_id) if attachment.id == material_id), None)
         if pair is None:
             raise MaterialNotFound("material was not found")
         binding, attachment = pair
         return self._material_view(folder_id, binding, attachment, None), self._storage.get(attachment.source_ref)
 
-    def detach(self, principal: Principal, folder_id: UUID, material_id: UUID) -> dict[str, Any]:
+    def detach(self, principal: Principal, folder_id: UUID, material_id: UUID) -> FolderDetachResult:
         pairs = [(binding, attachment) for binding, attachment in self.bindings(principal, folder_id) if attachment.id == material_id]
         if not pairs:
             raise MaterialNotFound("material was not found")
@@ -119,7 +125,7 @@ class MaterialFolderApplication:
             self._attachments.unbind(binding)
         return {"folder_id": str(folder_id), "material_id": str(material_id), "detached": True}
 
-    def archive(self, principal: Principal, folder_id: UUID) -> dict[str, Any]:
+    def archive(self, principal: Principal, folder_id: UUID) -> FolderArchiveResult:
         folder = self._readable(principal, folder_id)
         ensure_folder_archivable(
             actor_id=str(principal.id),
@@ -129,12 +135,12 @@ class MaterialFolderApplication:
         return {"folder_id": str(folder_id), "archived": True}
 
     @staticmethod
-    def _view(folder: Any) -> dict[str, Any]:
+    def _view(folder: Any) -> FolderView:
         return {"folder_id": str(folder.id), "kind": folder.kind, "title": folder.title,
                 "owner_member_id": folder.owner_member_id, "organization_id": folder.organization_id}
 
     @staticmethod
-    def _material_view(folder_id: UUID, binding: Any, attachment: Any, extraction: Any) -> dict[str, Any]:
+    def _material_view(folder_id: UUID, binding: Any, attachment: Any, extraction: Any) -> FolderMaterialView:
         return {"material_id": str(attachment.id), "binding_id": str(binding.id), "folder_id": str(folder_id),
                 "name": attachment.name, "content_type": attachment.content_type, "size_bytes": attachment.size_bytes,
                 "integrity_ref": attachment.integrity_ref, "extraction": extraction_view(extraction),

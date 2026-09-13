@@ -65,7 +65,6 @@ def test_followup_pack_reauthorizes_material_seeds_and_omits_old_content_answers
 
 def test_receipt_keeps_only_live_observed_contexts_and_records_later_observations(tmp_path):
     from datetime import UTC, datetime
-    from sqlalchemy import select
     from ax_workspace.platform.persistence import AttachmentBindingRecord
     from ax_workspace.platform.work_tasks import SqlAlchemyAttachmentRepository
 

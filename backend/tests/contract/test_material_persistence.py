@@ -7,7 +7,6 @@ everywhere while leaving the fact that an answer once cited it.
 """
 from io import BytesIO
 from uuid import UUID
-from zipfile import ZipFile
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select

@@ -349,7 +349,7 @@ def test_the_meeting_tools_still_answer_for_the_persona_they_are_bound_to(tmp_pa
     mine = _schedule(client, title="도구가 답해야 할 회의", attendees=())["meeting"]
 
     facade = McpReportsFacade(settings, "mina")
-    listed = facade.list_meetings()
+    listed = facade.my_meetings()
     assert any(row.get("meeting_id") == mine["meeting_id"] for row in listed if row.get("kind") == "meeting")
     assert facade.get_meeting(mine["meeting_id"])["meeting"]["title"] == "도구가 답해야 할 회의"
 

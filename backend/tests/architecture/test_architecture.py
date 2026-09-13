@@ -5,9 +5,60 @@ from pathlib import Path
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.http_auth import DeveloperAuthAdapter
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
+from ax_workspace.entrypoints.mcp import DELEGATED_ACTION_CAPABILITIES
+from ax_workspace.modules.actions.confirmation import ATTACHABLE_ACTION_TYPES, SUPPORTED_ACTION_TYPES
+from ax_workspace.modules.actions.policy import CONFIRM_LABELS, RETIRED_ACTION_TYPES
+from ax_workspace.modules.ax_execution.command_contracts import COMMAND_CONTRACTS
+from ax_workspace.platform.actions import (
+    CURRENT_MEETING_ACTION_TYPES,
+    LEGACY_MEETING_ACTION_TYPES,
+    MEETING_ACTION_TYPES,
+    MEETING_CALLBACK_ACTION_TYPES,
+)
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "src" / "ax_workspace"
+
+
+def test_current_and_pending_legacy_meeting_actions_have_distinct_registered_types() -> None:
+    legacy_contracts = {kind for kind in COMMAND_CONTRACTS if kind.startswith("meeting.")}
+    assert CURRENT_MEETING_ACTION_TYPES.isdisjoint(LEGACY_MEETING_ACTION_TYPES)
+    assert "meeting.reservation.create" in CURRENT_MEETING_ACTION_TYPES
+    assert legacy_contracts <= MEETING_ACTION_TYPES
+
+
+def test_the_retired_meeting_creation_contract_keeps_no_executable_registration() -> None:
+    """`meeting.create` was withdrawn: one public creation contract remains, and nothing may run the old one."""
+    assert "meeting.create" in RETIRED_ACTION_TYPES
+    # 원장 쓰기 경로도 정책으로 막는다 — registry 부재에만 기대면 retire 가 우연이 된다.
+    for registry in (
+        COMMAND_CONTRACTS,
+        MEETING_ACTION_TYPES,
+        MEETING_CALLBACK_ACTION_TYPES,
+        SUPPORTED_ACTION_TYPES,
+        ATTACHABLE_ACTION_TYPES,
+        CONFIRM_LABELS,
+        DELEGATED_ACTION_CAPABILITIES,
+    ):
+        assert "meeting.create" not in registry
+
+
+def test_only_the_documented_workers_run_jobs_in_a_killable_child() -> None:
+    """어떤 worker가 자식 프로세스 경계를 쓰는지는 문서가 말하는 것과 같아야 한다.
+
+    이 집합이 곧 "멈춘 파서·provider를 끊을 수 있는 worker"의 목록이고, `docs/unified-operations.md`가
+    그것을 사람에게 설명한다. 한쪽만 바뀌면 독자는 없는 보호를 있다고 읽게 된다.
+    """
+    workers = {
+        path.stem
+        for path in (PACKAGE_ROOT / "bootstrap").glob("*_worker.py")
+        if "IsolatedWork(" in path.read_text()
+    }
+    assert workers == {"material_worker", "report_worker"}
+
+    document = (PACKAGE_ROOT.parents[2] / "docs" / "unified-operations.md").read_text()
+    assert "material·report worker의 blocking parser/provider 호출은 `spawn` child process group" in document
+    assert "meeting worker는 이 경계를 쓰지 않는다" in document
 
 
 def test_application_startup_never_mutates_schema(monkeypatch: pytest.MonkeyPatch) -> None:

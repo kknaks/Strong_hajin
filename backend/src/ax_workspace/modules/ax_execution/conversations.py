@@ -1,16 +1,25 @@
 """AX Conversation public commands and durable queue contracts."""
 from __future__ import annotations
 
+from ax_workspace.modules.ax_execution.conversation_results import ConversationView
+
+from ax_workspace.modules.errors import ResourceNotFound
+
 from dataclasses import dataclass
 import re
 from typing import Any, Protocol
 from uuid import UUID
 
+from ax_workspace.modules.ax_execution.conversation_commands import ConversationCreateInput, ConversationMessageInput, ConversationCancelInput, ConversationMessageResult, ConversationRetryResult
 from ax_workspace.modules.ax_execution.actions import action_commands
 from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, ACTION_READ, Principal
 
 
 class ConversationError(Exception):
+    pass
+
+
+class ConversationNotFound(ConversationError, ResourceNotFound):
     pass
 
 
@@ -111,14 +120,19 @@ class ConversationApplication:
         self._context_resolver = context_resolver
         self._answer_resources = answer_resources
 
-    def create(self, principal: Principal, title: str = "새 대화") -> dict[str, Any]:
-        return self._view(principal, self._repository.create(str(principal.id), title.strip() or "새 대화"))
+    def create(self, principal: Principal, title: str = "새 대화") -> ConversationView:
+        title = ConversationCreateInput(title=title).title
+        return self._view(principal, self._repository.create(str(principal.id), title or "새 대화"))
 
-    def list(self, principal: Principal) -> list[dict[str, Any]]:
+    def list(self, principal: Principal) -> list[ConversationView]:
         return [self._view(principal, item) for item in self._repository.list_for(str(principal.id))]
 
-    def get(self, principal: Principal, conversation_id: UUID) -> dict[str, Any]:
+    def get(self, principal: Principal, conversation_id: UUID) -> ConversationView:
         return self._view(principal, self._owned(principal, conversation_id))
+
+    def target_title(self, principal: Principal, conversation_id: UUID) -> str:
+        """Preview a control target without recursively rendering its action cards."""
+        return self._owned(principal, conversation_id).title
 
     def accept_message(
         self,
@@ -128,14 +142,15 @@ class ConversationApplication:
         context: list[ConversationContextReferenceInput],
         idempotency_key: str | None,
         follow_up_candidate_id: UUID | None = None,
-    ) -> dict[str, Any]:
+    ) -> ConversationMessageResult:
         if not body.strip():
             raise ConversationError("message is required")
-        resolved_context = self._context_resolver.resolve(principal, context)
+        command = ConversationMessageInput(body=body, context=[{'resource_type': item.resource_type, 'resource_id': item.resource_id, 'resource_version': item.resource_version, 'included': item.included} for item in context], follow_up_candidate_id=follow_up_candidate_id)
+        resolved_context = self._context_resolver.resolve(principal, command.references())
         conversation = self._owned(principal, conversation_id, lock=True)
         message, turn, queued, queue_size = self._repository.accept_fragment(
             conversation,
-            body.strip(),
+            command.body,
             resolved_context,
             idempotency_key,
             follow_up_candidate_id,
@@ -148,19 +163,20 @@ class ConversationApplication:
             "queue_size": queue_size,
         }
 
-    def cancel(self, principal: Principal, conversation_id: UUID, expected_version: int) -> dict[str, Any]:
+    def cancel(self, principal: Principal, conversation_id: UUID, expected_version: int) -> ConversationView:
+        expected_version = ConversationCancelInput(expected_version=expected_version).expected_version
         return self._view(
             principal,
             self._repository.cancel_active(self._owned(principal, conversation_id, lock=True), expected_version)
         )
 
-    def retry(self, principal: Principal, conversation_id: UUID, turn_id: UUID) -> dict[str, Any]:
+    def retry(self, principal: Principal, conversation_id: UUID, turn_id: UUID) -> ConversationRetryResult:
         """Re-submit a failed/cancelled turn as a new Turn with the original fragments and context (idempotent)."""
         conversation = self._owned(principal, conversation_id, lock=True)
         turn = self._repository.retry_turn(conversation, turn_id, str(principal.id))
         return {"conversation_id": str(conversation.id), "turn_id": str(turn.id), "retry_of_turn_id": str(turn.retry_of_turn_id)}
 
-    def _view(self, principal: Principal, conversation: Any) -> dict[str, Any]:
+    def _view(self, principal: Principal, conversation: Any) -> ConversationView:
         view = self._repository.view(conversation, include_actions=ACTION_READ in principal.capabilities, principal=principal)
         # Approval commands come from the ledger + the caller's current capability, never inferred by the client.
         for action in view.get("actions", []):
@@ -259,5 +275,5 @@ class ConversationApplication:
     def _owned(self, principal: Principal, conversation_id: UUID, *, lock: bool = False) -> Any:
         conversation = self._repository.conversation(conversation_id, str(principal.id), lock=lock)
         if conversation is None:
-            raise ConversationError("conversation was not found")
+            raise ConversationNotFound("conversation was not found")
         return conversation

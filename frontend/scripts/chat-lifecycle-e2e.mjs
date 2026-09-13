@@ -98,7 +98,7 @@ try {
     throw new Error(`final assistant body exposed an internal UUID: ${JSON.stringify(answerText)}`);
   }
   await summary.click();
-  const receipt = page.locator(".ax-rail-live-step.completed", { hasText: "업무 목록 조회" }).first();
+  const receipt = page.locator(".ax-rail-live-step.completed", { hasText: "열람 가능한 업무 조회" }).first();
   await receipt.waitFor();
   const toolTime = (await receipt.locator(".ax-rail-step-time").textContent().catch(() => "")) ?? "";
   if (!/\d/.test(toolTime)) throw new Error(`completed tool receipt has no observed duration: ${JSON.stringify(toolTime)}`);

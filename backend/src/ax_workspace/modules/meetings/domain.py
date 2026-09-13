@@ -4,6 +4,8 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
+from ax_workspace.modules.errors import ResourceNotFound
+
 
 class MeetingError(Exception):
     """The Meeting command is structurally invalid."""
@@ -13,7 +15,7 @@ class MeetingAccessDenied(MeetingError):
     """The caller may not mutate this Meeting."""
 
 
-class MeetingNotFound(MeetingError):
+class MeetingNotFound(MeetingError, ResourceNotFound):
     """The Meeting does not exist or is intentionally concealed from this principal."""
 
 

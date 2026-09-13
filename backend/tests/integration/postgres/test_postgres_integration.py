@@ -1,6 +1,7 @@
 import os
 import asyncio
 import tempfile
+from datetime import UTC, datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event, Lock, Thread
 import time
@@ -25,7 +26,9 @@ from ax_workspace.modules.ax_execution.ai import (
     ProviderRequestFailed,
 )
 from ax_workspace.modules.ax_execution.conversations import ConversationExecution
+from ax_workspace.modules.ax_execution.actions import TurnProposalSlotTaken
 from ax_workspace.modules.jobs.domain import JOB_KIND_CONVERSATION_TURN, JOB_KIND_MATERIAL_EXTRACTION, JobEnvelope
+from ax_workspace.modules.meetings.rooms import MeetingRoom, ReservationBooked
 from ax_workspace.platform.conversation_jobs import ConversationJobQueue
 from ax_workspace.platform.durable_jobs import SqlAlchemyDurableJobQueue
 from ax_workspace.platform.persistence import DurableJobRecord
@@ -329,6 +332,75 @@ def test_postgres_serializes_concurrent_daily_report_causation_before_workflow_e
     assert first_result["report_id"] == second_result["report_id"]
     assert first_result["draft_id"] == second_result["draft_id"]
     assert first_result["workflow_run_id"] == second_result["workflow_run_id"]
+
+
+@pytest.mark.integration
+def test_postgres_report_worker_reuses_completed_domain_result_after_transport_crash() -> None:
+    from ax_workspace.bootstrap.report_worker import DailyReportGenerationWorker
+    from ax_workspace.modules.jobs.domain import JOB_KIND_DAILY_REPORT_GENERATE
+    from ax_workspace.platform.durable_jobs import build_job_queue
+
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(
+        RuntimeProfile.TEST,
+        database_url,
+        job_queue_backend="postgres",
+        report_queue_visibility_timeout=1,
+    )
+    provider = ConcurrentReportProvider(database_url)
+    application = create_workflow_application(settings, provider)
+    principal = application.authenticated_principal("mina")
+    receipt = application.request_daily_report_draft(principal, "2026-09-03", "report-worker-crash")
+
+    with make_session_factory(database_url)() as session:
+        [delivery] = build_job_queue("postgres", session, None).claim(
+            JOB_KIND_DAILY_REPORT_GENERATE,
+            limit=1,
+            lease_seconds=1,
+            worker_id="crashed-report-worker",
+        )
+        session.commit()
+    crashed = DailyReportGenerationWorker(settings, provider=provider)
+    assert crashed._process(delivery) == "completed"
+
+    time.sleep(1.1)
+    recovery = DailyReportGenerationWorker(settings, provider=provider)
+    assert asyncio.run(recovery.run_once()) is True
+    status = application.daily_report_status(principal, "2026-09-03")
+    assert status["generation_id"] == receipt["generation_id"]
+    assert status["generation_status"] == "completed" and status["status"] == "draft"
+    assert provider.calls == 1
+
+
+@pytest.mark.integration
+def test_postgres_concurrent_report_requests_share_one_active_generation_and_job() -> None:
+    from ax_workspace.modules.jobs.domain import JOB_KIND_DAILY_REPORT_GENERATE
+    from ax_workspace.platform.persistence import DailyReportGenerationRecord, DurableJobRecord
+
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres")
+    first_application = create_workflow_application(settings, ConcurrentReportProvider(database_url))
+    second_application = create_workflow_application(settings, ConcurrentReportProvider(database_url))
+    barrier = Barrier(2)
+
+    def request(application):
+        principal = application.authenticated_principal("mina")
+        barrier.wait(timeout=2)
+        return application.request_daily_report_draft(principal, "2026-09-03")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        receipts = list(executor.map(request, (first_application, second_application)))
+
+    assert len({receipt["generation_id"] for receipt in receipts}) == 1
+    with make_session_factory(database_url)() as session:
+        generations = list(session.scalars(select(DailyReportGenerationRecord)))
+        jobs = list(session.scalars(select(DurableJobRecord).where(
+            DurableJobRecord.kind == JOB_KIND_DAILY_REPORT_GENERATE
+        )))
+    assert len(generations) == 1 and generations[0].state == "queued"
+    assert len(jobs) == 1 and jobs[0].state == "queued"
 
 
 @pytest.mark.integration
@@ -970,6 +1042,11 @@ def test_job_queue_revalidates_a_stale_context_before_calling_the_provider() -> 
 
 @pytest.mark.integration
 def test_postgres_action_proposals_are_owner_bound_and_serialized_per_execution() -> None:
+    """한 위임 턴의 확인 slot 은 하나다.
+
+    같은 판단의 재배달은 첫 receipt 로 수렴하고, 내용이 다른 두 번째 제안은 거절된다 — 그것을 첫
+    판단의 receipt 로 답하면 AX 가 기록되지 않은 변경을 준비했다고 말하게 된다.
+    """
     database_url = _postgres_test_url()
     reset_database(database_url)
     settings = Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres")
@@ -1030,7 +1107,7 @@ def test_postgres_action_proposals_are_owner_bound_and_serialized_per_execution(
             def propose_second() -> dict[str, object]:
                 second_started.set()
                 try:
-                    return propose("재실행에서 달라진 업무")
+                    return propose("첫 번째 제안 업무")
                 finally:
                     second_finished.set()
 
@@ -1043,7 +1120,11 @@ def test_postgres_action_proposals_are_owner_bound_and_serialized_per_execution(
     finally:
         event.remove(engine, "after_cursor_execute", hold_after_first_turn_lock)
 
+    # 같은 판단의 재배달은 같은 receipt 로 수렴한다.
     assert first["action_id"] == second["action_id"]
+    # 내용이 다른 두 번째 제안은 turn 잠금 뒤에 거절된다 — 첫 판단의 receipt 로 답하지 않는다.
+    with pytest.raises(TurnProposalSlotTaken):
+        propose("같은 턴에서 달라진 업무")
     with pytest.raises(ValueError, match="execution was not found"):
         application.propose_action(
             jiho,
@@ -1236,7 +1317,9 @@ def test_material_upload_enqueues_in_the_same_transaction_and_the_worker_indexes
 
     database_url = _postgres_test_url()
     reset_database(database_url)
-    settings = Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres", materials_dir=str(tmp_path / "materials"), material_queue_visibility_timeout=1)
+    # lease 는 자식 프로세스가 뜨는 시간을 버텨야 한다. 추출이 `spawn` 자식으로 옮겨간 뒤로 1초는
+    # 앱을 다시 import 하는 데 다 쓰여, 부하가 실리면 heartbeat 가 창을 놓치고 배달이 조용히 끝났다.
+    settings = Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres", materials_dir=str(tmp_path / "materials"), material_queue_visibility_timeout=10)
     client = TestClient(create_app(settings))
     task = client.post("/api/tasks", headers={"X-Demo-Persona": "mina"}, json={"title": "PG 자료"}).json()
     body = ("납기일은 2026-09-30입니다. 공급사는 한빛상사입니다. " * 30).encode()
@@ -1564,6 +1647,164 @@ def test_postgres_serializes_two_simultaneous_ax_confirms_into_one_effect() -> N
         assert int(session.execute(text("SELECT count(*) FROM review_decisions WHERE decision = 'confirm'")).scalar_one()) == 1
     assert client.get("/api/actions", headers=jiho).json()[0]["state"] == "approved"
     assert [row for row in client.get("/api/action-items", headers=jiho).json() if row["kind"] == "ax.task.create_self"] == []
+
+
+@pytest.mark.integration
+def test_postgres_room_create_fence_spans_two_application_instances() -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url)
+    first = create_workflow_application(settings)
+    second = create_workflow_application(settings)
+
+    class BlockingGateway:
+        def __init__(self) -> None:
+            self.entered = Event()
+            self.release = Event()
+            self.calls = 0
+            self.lock = Lock()
+
+        def rooms(self):
+            return [MeetingRoom(room_id=3, name="회의실 3", capacity=6)]
+
+        def available(self, date, start, end):
+            return self.rooms()
+
+        def members(self):
+            return []
+
+        def create(self, request):
+            with self.lock:
+                self.calls += 1
+            self.entered.set()
+            assert self.release.wait(10), "the test did not release the provider create"
+            return ReservationBooked(external_id="pg-room-1", room_id=3, room_name="회의실 3")
+
+        def update(self, *args, **kwargs):  # pragma: no cover - protocol completeness
+            raise AssertionError("unexpected update")
+
+        def cancel(self, *args, **kwargs):  # pragma: no cover - protocol completeness
+            raise AssertionError("unexpected cancel")
+
+    gateway = BlockingGateway()
+    first._room_gateway = gateway
+    second._room_gateway = gateway
+    starts = datetime.now(UTC) + timedelta(days=2)
+    fields = {
+        "title": "두 프로세스 예약",
+        "starts_at": starts,
+        "ends_at": starts + timedelta(hours=1),
+        "attendee_ids": [],
+    }
+    results: list[dict[str, Any]] = []
+    failures: list[BaseException] = []
+    result_lock = Lock()
+
+    def create(application) -> None:
+        try:
+            result = application.create_meeting(
+                application.authenticated_principal("mina"),
+                room_id=3,
+                idempotency_key="postgres-room-create-fence",
+                **fields,
+            )
+            with result_lock:
+                results.append(result)
+        except BaseException as error:  # pragma: no cover - asserted below
+            with result_lock:
+                failures.append(error)
+
+    owner = Thread(target=create, args=(first,))
+    replay = Thread(target=create, args=(second,))
+    owner.start()
+    assert gateway.entered.wait(10), "the provider create did not start"
+    replay.start()
+    time.sleep(0.1)
+    assert gateway.calls == 1
+    gateway.release.set()
+    owner.join(timeout=20)
+    replay.join(timeout=20)
+
+    assert failures == []
+    assert len(results) == 2
+    assert results[0] == results[1]
+    assert gateway.calls == 1
+    with make_session_factory(database_url)() as session:
+        assert int(session.execute(text("SELECT count(*) FROM meetings WHERE title = '두 프로세스 예약' ")).scalar_one()) == 1
+
+
+@pytest.mark.integration
+def test_postgres_serializes_two_simultaneous_ax_meeting_confirms_into_one_local_record() -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres")
+    client = _conversation_client(database_url)
+    mina = {"X-Demo-Persona": "mina"}
+    conversation = client.post("/api/conversations", headers=mina, json={"title": "동시 회의 확정"}).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={**mina, "Idempotency-Key": "concurrent-meeting-confirm"},
+        json={"body": "출시 점검 회의를 제안해줘", "context": []},
+    ).json()
+    with make_session_factory(database_url)() as session:
+        execution_id = session.get(ConversationTurnRecord, UUID(accepted["turn_id"])).execution_id
+    application = create_workflow_application(settings, ConversationProvider())
+    application.propose_action(
+        application.authenticated_principal("mina"),
+        execution_id,
+        "meeting.reservation.create",
+        "회의 생성 확인",
+        {
+            "title": "동시 확정 회의 원안",
+            "starts_at": "2026-09-21T01:00:00Z",
+            "ends_at": "2026-09-21T02:00:00Z",
+            "attendee_ids": ["jiho"],
+        },
+    )
+    [item] = [
+        row
+        for row in client.get("/api/action-items", headers=mina).json()
+        if row["kind"] == "ax.meeting.reservation.create"
+    ]
+    url = f"/api/action-items/{item['action_item_id']}/commands/confirm"
+    body = {
+        "expected_version": item["expected_version"],
+        "base_submission_version": item["submission_version"],
+        "draft": {
+            **item["edit_contract"]["values"],
+            "title": "동시 확정 회의",
+        },
+    }
+    barrier = Barrier(2)
+    results: list[tuple[int, str | None]] = []
+    lock = Lock()
+
+    def confirm() -> None:
+        barrier.wait(timeout=10)
+        response = client.post(url, headers=mina, json=body)
+        payload = response.json()
+        with lock:
+            results.append((response.status_code, payload.get("derived_meeting_id")))
+
+    threads = [Thread(target=confirm) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+
+    assert sorted(status for status, _ in results) == [200, 200], results
+    assert len({meeting_id for _, meeting_id in results}) == 1
+    with make_session_factory(database_url)() as session:
+        assert int(session.execute(text("SELECT count(*) FROM meetings WHERE title = '동시 확정 회의'")).scalar_one()) == 1
+        assert int(
+            session.execute(
+                text("SELECT count(*) FROM submissions WHERE decision_item_id = CAST(:id AS uuid)"),
+                {"id": item["action_item_id"]},
+            ).scalar_one()
+        ) == 2
+        assert int(session.execute(text("SELECT count(*) FROM review_decisions WHERE decision = 'confirm'")).scalar_one()) == 1
+
+
 @pytest.mark.integration
 def test_postgres_rolls_back_a_changed_submission_when_the_task_effect_fails() -> None:
     database_url = _postgres_test_url()
@@ -1607,6 +1848,8 @@ def test_postgres_rolls_back_a_changed_submission_when_the_task_effect_fails() -
         assert session.query(TaskRecord).filter_by(title="저장되면 안 되는 수정안").count() == 0
     [still_pending] = [row for row in client.get("/api/action-items", headers=jiho).json() if row["action_item_id"] == item["action_item_id"]]
     assert still_pending["submission_version"] == 1 and still_pending["status"] == "awaiting_review"
+
+
 
 
 @pytest.mark.integration
@@ -1821,6 +2064,42 @@ def test_postgres_keeps_one_open_assignment_per_task_through_a_handover() -> Non
 
 
 @pytest.mark.integration
+def test_postgres_first_assignment_consumes_the_unheld_task_version_once() -> None:
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    client = _conversation_client(database_url)
+    application = client.app.state.workflow_application
+    principal = application.authenticated_principal('jiho')
+    project = application.create_project(principal, name='첫 담당자 경합')
+    principal = application.authenticated_principal('jiho')
+    assert 'mina' in {row['id'] for row in application.task_assignment_candidates(principal)}
+    planned = application.plan_project_work(principal, UUID(project['project_id']), '담당 미정 업무')
+    gate = Barrier(2)
+
+    def assign(member_id):
+        gate.wait(timeout=10)
+        return client.post(f"/api/tasks/{planned['task_id']}/reassign", headers={'X-Demo-Persona': 'jiho'}, json={
+            'expected_version': planned['version'], 'assignee_id': member_id,
+        })
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(assign, ('mina', 'jiho')))
+    assert sorted(response.status_code for response in responses) == [200, 422]
+    [winner] = [response.json() for response in responses if response.status_code == 200]
+    assert winner['task']['version'] == planned['version'] + 1
+    with application._session_factory() as session:
+        assignments = session.query(TaskAssignmentRecord).filter_by(task_id=UUID(planned['task_id'])).all()
+        assert len(assignments) == 1
+        assignment = assignments[0]
+        assert assignment.source_decision_item_id is not None
+        assert session.query(SubmissionRecord).filter_by(decision_item_id=assignment.source_decision_item_id).count() == 1
+    headers = {'X-Demo-Persona': winner['assignee_id']}
+    [item] = [row for row in client.get('/api/action-items', headers=headers).json() if row['subject'] == '담당 미정 업무']
+    accepted = client.post(f"/api/action-items/{item['action_item_id']}/commands/accept", headers=headers, json={'expected_version': item['expected_version']})
+    assert accepted.status_code == 200, accepted.text
+
+
+@pytest.mark.integration
 def test_postgres_keeps_one_order_when_two_people_rearrange_the_same_checklist() -> None:
     """Order is rewritten wholesale under the Task row lock, so no two steps can end up in the same place."""
     database_url = _postgres_test_url()
@@ -2013,3 +2292,81 @@ def test_postgres_keyword_search_stays_bounded_across_many_materials(tmp_path) -
         # 본문 조건은 색인이 답한다. 2400개를 훑지 않는다.
         assert "ix_material_chunks_search" in plan, plan
         assert "Seq Scan on material_chunks" not in plan, plan
+
+
+@pytest.mark.integration
+def test_postgres_compensated_room_retry_holds_the_attempt_lock_across_the_provider_call() -> None:
+    """보상된 시도를 다시 잡을 때도 provider POST 는 행 잠금 안에서 일어난다.
+
+    재시도를 durable 하게 남기는 commit 이 행 잠금을 푼다. 거기서 곧장 POST 로 들어가면 중복 억제가
+    프로세스 안의 lock 하나에만 기대게 되고, 워커가 둘이면 그 보호가 사라진다. 최초 경로는 POST 내내
+    잠금을 쥐고 있으므로, 보상 뒤 재시도도 같아야 한다.
+    """
+    from test_meeting_rooms import FakeRoomGateway
+
+    from ax_workspace.modules.meetings.commands import MeetingReservationInput
+    from ax_workspace.platform.persistence import MeetingRoomCreationAttemptRecord
+
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url)
+    application = create_workflow_application(settings)
+    request_key = "compensated-retry-holds-the-lock"
+    starts = datetime.now(UTC) + timedelta(days=2)
+    body = {
+        "title": "보상 뒤 다시 잡는 회의",
+        "starts_at": starts.isoformat().replace("+00:00", "Z"),
+        "ends_at": (starts + timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+        "room_id": 3,
+    }
+    observed: list[bool] = []
+
+    def another_worker_can_claim_the_attempt() -> bool:
+        """다른 워커가 지금 이 시도 행을 가져갈 수 있는가. 잠겨 있으면 NOWAIT 가 거절한다."""
+        with make_session_factory(database_url)() as probe:
+            try:
+                probe.execute(
+                    text(
+                        "SELECT 1 FROM meeting_room_creation_attempts"
+                        " WHERE owner_id = :owner AND request_key = :key FOR UPDATE NOWAIT"
+                    ),
+                    {"owner": "mina", "key": request_key},
+                )
+                return True
+            except Exception:  # noqa: BLE001 — 잠겨 있다는 사실만 본다
+                return False
+            finally:
+                probe.rollback()
+
+    class ObservingGateway(FakeRoomGateway):
+        def create(self, request):
+            observed.append(another_worker_can_claim_the_attempt())
+            return super().create(request)
+
+    application._room_gateway = ObservingGateway()
+    now = datetime.now(UTC)
+    with application._session_factory() as session:
+        session.add(
+            MeetingRoomCreationAttemptRecord(
+                owner_id="mina",
+                request_key=request_key,
+                payload_fingerprint=application._room_creation_fingerprint(
+                    MeetingReservationInput.model_validate(body)
+                ),
+                status="compensated",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.commit()
+
+    application.create_meeting(
+        application.authenticated_principal("mina"),
+        room_id=body["room_id"],
+        idempotency_key=request_key,
+        title=body["title"],
+        starts_at=body["starts_at"],
+        ends_at=body["ends_at"],
+    )
+
+    assert observed == [False], "보상 뒤 재시도가 잠금 밖에서 provider 를 불렀다"

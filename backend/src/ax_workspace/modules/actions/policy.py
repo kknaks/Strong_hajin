@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ax_workspace.modules.actions.domain import AWAITING_REVIEW, AWAITING_REVISION, ActionCommand
+from ax_workspace.modules.ax_execution.command_contracts import COMMAND_CONTRACTS
 from ax_workspace.modules.organization_access.domain import (
     ACTION_DECIDE,
     TASK_ASSIGN,
@@ -16,11 +17,18 @@ from ax_workspace.modules.organization_access.domain import (
 
 
 CONFIRM_LABELS = {
+    **{action_type: "이 내용으로 반영" for action_type in COMMAND_CONTRACTS},
     "task.create_self": "이 내용으로 업무 생성",
     "task.assign": "이 내용으로 업무 요청",
     "work_request.create": "이 내용으로 업무 요청",
-    "meeting.create": "이 내용으로 회의 생성",
+    "meeting.reservation.create": "이 내용으로 회의 생성",
     "task.progress.batch": "이 내용으로 반영",
+}
+
+#: Action types whose execution path was withdrawn, and the reason a person sees instead.
+#: Rows left behind stay readable in history; nothing proposes them and nothing runs them again.
+RETIRED_ACTION_TYPES = {
+    "meeting.create": "옛 회의 생성 제안은 더 이상 실행할 수 없습니다. 회의 화면에서 새로 예약해 주세요",
 }
 
 
@@ -100,6 +108,7 @@ class AxProposalActionContext:
     obsolete: bool
     assignment_status: str | None
     assigned_by: str | None
+    allow_reject: bool = True
 
 
 def available_ax_proposal_commands(
@@ -114,7 +123,8 @@ def available_ax_proposal_commands(
                 if context.has_submission and context.action_type in CONFIRM_LABELS
                 else ActionCommand("approve", "승인", "primary")
             )
-        commands.append(ActionCommand("reject", "거절", "neutral"))
+        if context.allow_reject:
+            commands.append(ActionCommand("reject", "거절", "neutral"))
         return commands
     if (
         context.resolved

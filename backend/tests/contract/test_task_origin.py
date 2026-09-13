@@ -421,7 +421,6 @@ def test_without_the_action_capability_the_task_reads_but_its_proposal_does_not(
     client, application, database_url = _stack(tmp_path)
     from ax_workspace.modules.organization_access.domain import ACTION_READ, Principal
     from ax_workspace.modules.work.application import TaskApplication
-    from ax_workspace.platform.actions import SqlAlchemyActionRepository
     from ax_workspace.platform.persistence import make_session_factory
     from ax_workspace.platform.work_tasks import SqlAlchemyTaskRepository, SqlAlchemyWorkRequestRepository
 

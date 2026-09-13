@@ -1,7 +1,7 @@
 """SQLAlchemy adapter for Meeting-owned identity, authorization relations, and note history."""
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -25,6 +25,8 @@ from ax_workspace.platform.persistence import (
     MembershipRecord,
     ResourceRelationshipRecord,
 )
+
+_MEETING_SHARE_KINDS = ("share", "legacy_public_share")
 
 
 def normalize_todo_title(value: str) -> str:
@@ -145,7 +147,7 @@ class SqlAlchemyMeetingRepository:
         )
         shared = select(ResourceRelationshipRecord.resource_id).where(
             ResourceRelationshipRecord.resource_type == "meeting",
-            ResourceRelationshipRecord.relationship_kind == "share",
+            ResourceRelationshipRecord.relationship_kind.in_(_MEETING_SHARE_KINDS),
             ResourceRelationshipRecord.member_id == member_id,
             ResourceRelationshipRecord.valid_from <= now,
             or_(ResourceRelationshipRecord.valid_until.is_(None), ResourceRelationshipRecord.valid_until > now),
@@ -185,7 +187,7 @@ class SqlAlchemyMeetingRepository:
                 select(ResourceRelationshipRecord.id).where(
                     ResourceRelationshipRecord.resource_type == "meeting",
                     ResourceRelationshipRecord.resource_id == str(meeting.id),
-                    ResourceRelationshipRecord.relationship_kind == "share",
+                    ResourceRelationshipRecord.relationship_kind.in_(_MEETING_SHARE_KINDS),
                     ResourceRelationshipRecord.member_id == member_id,
                     ResourceRelationshipRecord.valid_from <= now,
                     or_(
@@ -205,7 +207,7 @@ class SqlAlchemyMeetingRepository:
                 select(ResourceRelationshipRecord.member_id).where(
                     ResourceRelationshipRecord.resource_type == "meeting",
                     ResourceRelationshipRecord.resource_id == str(meeting.id),
-                    ResourceRelationshipRecord.relationship_kind == "share",
+                    ResourceRelationshipRecord.relationship_kind.in_(_MEETING_SHARE_KINDS),
                     ResourceRelationshipRecord.valid_from <= now,
                     or_(
                         ResourceRelationshipRecord.valid_until.is_(None),
@@ -265,13 +267,19 @@ class SqlAlchemyMeetingRepository:
         )
 
     def add_share(self, meeting: MeetingRecord, member_id: str, actor_id: str) -> None:
+        self._add_share(meeting, member_id, relationship_kind="share")
+
+    def add_legacy_public_share(self, meeting: MeetingRecord, member_id: str, actor_id: str) -> None:
+        self._add_share(meeting, member_id, relationship_kind="legacy_public_share")
+
+    def _add_share(self, meeting: MeetingRecord, member_id: str, *, relationship_kind: str) -> None:
         now = datetime.now(UTC)
         existing = self._session.scalar(
             select(ResourceRelationshipRecord)
             .where(
                 ResourceRelationshipRecord.resource_type == "meeting",
                 ResourceRelationshipRecord.resource_id == str(meeting.id),
-                ResourceRelationshipRecord.relationship_kind == "share",
+                ResourceRelationshipRecord.relationship_kind.in_(_MEETING_SHARE_KINDS),
                 ResourceRelationshipRecord.member_id == member_id,
             )
             .order_by(ResourceRelationshipRecord.valid_from.desc())
@@ -283,7 +291,7 @@ class SqlAlchemyMeetingRepository:
                 member_id=member_id,
                 resource_type="meeting",
                 resource_id=str(meeting.id),
-                relationship_kind="share",
+                relationship_kind=relationship_kind,
                 valid_from=now,
             )
         )
@@ -294,7 +302,7 @@ class SqlAlchemyMeetingRepository:
             .where(
                 ResourceRelationshipRecord.resource_type == "meeting",
                 ResourceRelationshipRecord.resource_id == str(meeting.id),
-                ResourceRelationshipRecord.relationship_kind == "share",
+                ResourceRelationshipRecord.relationship_kind.in_(_MEETING_SHARE_KINDS),
                 ResourceRelationshipRecord.member_id == member_id,
                 ResourceRelationshipRecord.valid_until.is_(None),
             )
@@ -304,6 +312,22 @@ class SqlAlchemyMeetingRepository:
             return False
         relationship.valid_until = datetime.now(UTC)
         return True
+
+    def revoke_legacy_public_shares(self, meeting: MeetingRecord) -> int:
+        now = datetime.now(UTC)
+        relationships = self._session.scalars(
+            select(ResourceRelationshipRecord)
+            .where(
+                ResourceRelationshipRecord.resource_type == "meeting",
+                ResourceRelationshipRecord.resource_id == str(meeting.id),
+                ResourceRelationshipRecord.relationship_kind == "legacy_public_share",
+                ResourceRelationshipRecord.valid_until.is_(None),
+            )
+            .with_for_update()
+        ).all()
+        for relationship in relationships:
+            relationship.valid_until = now
+        return len(relationships)
 
     def touch(self, meeting: MeetingRecord) -> None:
         meeting.updated_at = datetime.now(UTC)

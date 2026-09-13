@@ -6,7 +6,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
-from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, Principal
+from ax_workspace.modules.actions.confirmation import ATTACHABLE_ACTION_TYPES
+from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, ACTION_READ, Principal
+from ax_workspace.modules.ax_execution.result_contracts import ActionMaterialDraftView
 from ax_workspace.modules.work.application import TaskError, TaskNotFound
 from ax_workspace.modules.work.material_values import MAX_MATERIAL_BYTES, normalize_material_link
 from ax_workspace.modules.work.materials import MaterialStorage
@@ -61,7 +63,7 @@ class ActionMaterialDraftApplication:
         action = self._repository.action_for(action_id, str(principal.id))
         if action is None:
             raise ActionMaterialNotFound("action was not found")
-        if action.action_type not in {"task.create_self", "task.assign", "meeting.create"}:
+        if action.action_type not in ATTACHABLE_ACTION_TYPES:
             return []
         return [self._view(row) for row in self._repository.visible_for(action_id, str(principal.id))]
 
@@ -137,6 +139,33 @@ class ActionMaterialDraftApplication:
         self._repository.flush()
         return self._view(row)
 
+    def upload_target(self, principal: Principal, action_id: UUID, *, pending: bool = True) -> tuple[str, int]:
+        if not pending and not {ACTION_READ, ACTION_DECIDE} & principal.capabilities:
+            raise ActionMaterialNotFound('action was not found')
+        action = self._action(principal, action_id, pending=pending, lock=pending)
+        return str((action.payload or {}).get('title') or action.title), int(action.version)
+
+    def store_reserved_file(self, principal: Principal, action_id: UUID, draft_id: UUID, data: bytes) -> ActionMaterialDraftView:
+        self._action(principal, action_id)
+        row = self._repository.draft_for(action_id, str(principal.id), draft_id, lock=True)
+        if row is None or row.state != 'uploading':
+            raise ActionMaterialNotFound('material draft was not found')
+        try:
+            self._storage.put(row.source_ref, data, row.content_type)
+        except Exception as error:
+            raise ActionMaterialError('file upload failed') from error
+        return self.complete_file(principal, action_id, draft_id)
+
+    def abort_reserved_file(self, principal: Principal, action_id: UUID, draft_id: UUID) -> None:
+        row = self._repository.draft_for(action_id, str(principal.id), draft_id, lock=True)
+        if row is None or row.state != 'uploading':
+            return
+        self.fail_file(principal, action_id, draft_id)
+        try:
+            self._storage.delete(row.source_ref)
+        except Exception:
+            pass  # The durable discarded draft remains discoverable by reconciliation.
+
     def fail_file(self, principal: Principal, action_id: UUID, draft_id: UUID) -> None:
         row = self._repository.draft_for(action_id, str(principal.id), draft_id, lock=True)
         if row is None or row.state != "uploading":
@@ -163,31 +192,15 @@ class ActionMaterialDraftApplication:
         context_type: str,
         context_id: UUID,
     ) -> list[dict[str, Any]]:
-        if not draft_ids:
+        rows = self.validate_claim(principal, action_id, draft_ids, context_type)
+        if not rows:
             return []
-        if self._attachments is None:
-            raise ActionMaterialError("canonical attachment repository is required")
-        if context_type not in {"task", "meeting"}:
-            raise ActionMaterialError("unsupported material owner")
-        rows = self._repository.selected_for_claim(action_id, str(principal.id), draft_ids)
         by_id = {row.id: row for row in rows}
         now = datetime.now(UTC)
         results: list[dict[str, Any]] = []
         for draft_id in draft_ids:
             row = by_id.get(draft_id)
-            if row is None:
-                raise ActionMaterialNotFound("material draft was not found")
-            if row.state != "staged":
-                raise ActionMaterialError("material draft is no longer available")
-            if self._aware(row.expires_at) <= now:
-                raise ActionMaterialError("material draft has expired")
             if row.source_kind == "file":
-                try:
-                    stored = self._storage.get(row.source_ref)
-                except FileNotFoundError as error:
-                    raise ActionMaterialError("staged file is incomplete") from error
-                if f"sha256:{hashlib.sha256(stored).hexdigest()}" != row.integrity_ref:
-                    raise ActionMaterialError("staged file integrity check failed")
                 attachment = self._attachments.add_file(
                     storage_key=row.source_ref,
                     name=row.name,
@@ -214,7 +227,7 @@ class ActionMaterialDraftApplication:
             if row.source_kind == "file" and self._extractions is not None:
                 extraction = self._extractions.request(attachment)
                 if extraction.status == "queued" and self._extraction_queue is not None:
-                    self._extraction_queue.enqueue(MaterialExtractionJob(extraction.id, attachment.id))
+                    self._extraction_queue.enqueue(MaterialExtractionJob(extraction.id, attachment.id, str(principal.id)))
             row.state = "claimed"
             row.claimed_at = now
             if context_type == "task":
@@ -237,6 +250,40 @@ class ActionMaterialDraftApplication:
         self._repository.flush()
         return results
 
+    def validate_claim(
+        self,
+        principal: Principal,
+        action_id: UUID,
+        draft_ids: list[UUID],
+        context_type: str,
+    ) -> list[Any]:
+        """Prove selected drafts can be claimed before any external create side effect."""
+        if not draft_ids:
+            return []
+        if self._attachments is None:
+            raise ActionMaterialError("canonical attachment repository is required")
+        if context_type not in {"task", "meeting"}:
+            raise ActionMaterialError("unsupported material owner")
+        rows = self._repository.selected_for_claim(action_id, str(principal.id), draft_ids)
+        by_id = {row.id: row for row in rows}
+        now = datetime.now(UTC)
+        for draft_id in draft_ids:
+            row = by_id.get(draft_id)
+            if row is None:
+                raise ActionMaterialNotFound("material draft was not found")
+            if row.state != "staged":
+                raise ActionMaterialError("material draft is no longer available")
+            if self._aware(row.expires_at) <= now:
+                raise ActionMaterialError("material draft has expired")
+            if row.source_kind == "file":
+                try:
+                    stored = self._storage.get(row.source_ref)
+                except FileNotFoundError as error:
+                    raise ActionMaterialError("staged file is incomplete") from error
+                if f"sha256:{hashlib.sha256(stored).hexdigest()}" != row.integrity_ref:
+                    raise ActionMaterialError("staged file integrity check failed")
+        return rows
+
     def reconcile(self, *, now: datetime | None = None, limit: int = 100) -> int:
         cutoff = now or datetime.now(UTC)
         cleaned = 0
@@ -251,14 +298,18 @@ class ActionMaterialDraftApplication:
             cleaned += 1
         return cleaned
 
-    def _action(self, principal: Principal, action_id: UUID, *, pending: bool = True) -> Any:
+    def target_title(self, principal: Principal, action_id: UUID) -> str:
+        action = self._action(principal, action_id, lock=False)
+        return str((action.payload or {}).get('title') or action.title)
+
+    def _action(self, principal: Principal, action_id: UUID, *, pending: bool = True, lock: bool = True) -> Any:
         if pending and ACTION_DECIDE not in principal.capabilities:
             raise ActionMaterialNotFound("action was not found")
-        action = self._repository.action_for(action_id, str(principal.id))
+        action = self._repository.action_for(action_id, str(principal.id), lock=lock)
         if (
             action is None
             or (pending and action.state != "pending")
-            or action.action_type not in {"task.create_self", "task.assign", "meeting.create"}
+            or action.action_type not in ATTACHABLE_ACTION_TYPES
         ):
             raise ActionMaterialNotFound("action was not found")
         return action

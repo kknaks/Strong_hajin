@@ -33,6 +33,7 @@ from ax_workspace.platform.persistence import (
     ConversationTurnRecord,
     MaterialBlockRecord,
     MaterialChunkRecord,
+    MaterialExtractionAttemptRecord,
     MaterialExtractionRecord,
 )
 
@@ -192,8 +193,19 @@ class SqlAlchemyMaterialExtractionRepository:
                 extraction = self.request(attachment)
             except ParserVersionConflict:
                 continue  # A newer deployment won the artifact lock after candidate selection.
-            jobs.append(MaterialExtractionJob(extraction.id, attachment.id))
+            jobs.append(MaterialExtractionJob(extraction.id, attachment.id, attachment.uploaded_by))
         return jobs
+
+    def request_missing(self, *, limit: int) -> list[MaterialExtractionJob]:
+        """Worker maintenance backfills legacy files without making a user's read schedule work."""
+        statement = (select(AttachmentRecord)
+                     .where(AttachmentRecord.source_kind.in_(('file', 'native_revision')), AttachmentRecord.lifecycle != 'purged',
+                            ~select(MaterialExtractionRecord.id).where(MaterialExtractionRecord.attachment_id == AttachmentRecord.id).exists())
+                     .order_by(AttachmentRecord.created_at, AttachmentRecord.id).limit(max(1, limit)))
+        if self._session.bind is not None and self._session.bind.dialect.name == 'postgresql':
+            statement = statement.with_for_update(skip_locked=True, of=AttachmentRecord)
+        return [MaterialExtractionJob(self.request(attachment).id, attachment.id, attachment.uploaded_by)
+                for attachment in self._session.scalars(statement).all()]
 
     def for_attachments(self, attachment_ids: list[UUID]) -> dict[UUID, MaterialExtractionRecord]:
         if not attachment_ids:
@@ -212,7 +224,8 @@ class SqlAlchemyMaterialExtractionRepository:
         extraction = self._session.get(MaterialExtractionRecord, extraction_id)
         return extraction is None or extraction.superseded_at is not None or extraction.status in {"completed", "partial", "too_large", "unsupported", "failed", "purged"}
 
-    def claim(self, extraction_id: UUID, *, stale_after_seconds: int) -> tuple[MaterialExtractionRecord, AttachmentRecord] | None:
+    def claim(self, extraction_id: UUID, *, stale_after_seconds: int, owner_token: UUID | None = None,
+              actor_id: str | None = None) -> tuple[MaterialExtractionRecord, AttachmentRecord] | None:
         statement = select(MaterialExtractionRecord).where(MaterialExtractionRecord.id == extraction_id)
         if self._session.bind is not None and self._session.bind.dialect.name == "postgresql":
             statement = statement.with_for_update(skip_locked=True)
@@ -221,11 +234,16 @@ class SqlAlchemyMaterialExtractionRepository:
             return None
         now = datetime.now(UTC)
         if extraction.status == "running":
-            started = extraction.started_at
+            started = extraction.heartbeat_at or extraction.started_at
             if started is not None and started.tzinfo is None:
                 started = started.replace(tzinfo=UTC)
             if started is not None and now - started < timedelta(seconds=stale_after_seconds):
                 return None  # a live worker holds it
+            previous = self._attempt(extraction)
+            if previous is not None and previous.state == "running":
+                previous.state = "abandoned"
+                previous.failure_reason = "lease_expired"
+                previous.completed_at = now
         attachment = self._session.get(AttachmentRecord, extraction.attachment_id)
         if attachment is None:
             extraction.status = "failed"
@@ -234,19 +252,57 @@ class SqlAlchemyMaterialExtractionRepository:
             return None
         extraction.status = "running"
         extraction.started_at = now
+        extraction.heartbeat_at = now
         extraction.attempt_count = int(extraction.attempt_count or 0) + 1
+        extraction.worker_token = owner_token
+        self._session.add(MaterialExtractionAttemptRecord(
+            extraction_id=extraction.id,
+            attempt_number=extraction.attempt_count,
+            actor_id=actor_id,
+            owner_token=owner_token,
+            state="running",
+            started_at=now,
+            heartbeat_at=now,
+        ))
         self._session.flush()
         return extraction, attachment
 
-    def running(self, extraction_id: UUID, attempt: int) -> MaterialExtractionRecord | None:
+    def _attempt(self, extraction: MaterialExtractionRecord) -> MaterialExtractionAttemptRecord | None:
+        return self._session.scalar(select(MaterialExtractionAttemptRecord).where(
+            MaterialExtractionAttemptRecord.extraction_id == extraction.id,
+            MaterialExtractionAttemptRecord.attempt_number == extraction.attempt_count,
+            *((MaterialExtractionAttemptRecord.owner_token == extraction.worker_token,) if extraction.worker_token is not None else ()),
+        ))
+
+    def _finish_attempt(self, extraction: MaterialExtractionRecord, state: str, failure_reason: str | None = None) -> None:
+        attempt = self._attempt(extraction)
+        if attempt is not None and attempt.state == "running":
+            attempt.state = state
+            attempt.failure_reason = failure_reason
+            attempt.heartbeat_at = datetime.now(UTC)
+            attempt.completed_at = attempt.heartbeat_at
+
+    def running(self, extraction_id: UUID, attempt: int, owner_token: UUID | None = None) -> MaterialExtractionRecord | None:
         """The extraction row only if it is still running under the given attempt (fencing for the domain projection)."""
         statement = select(MaterialExtractionRecord).where(
             MaterialExtractionRecord.id == extraction_id, MaterialExtractionRecord.status == "running",
             MaterialExtractionRecord.attempt_count == attempt, MaterialExtractionRecord.superseded_at.is_(None),
+            *((MaterialExtractionRecord.worker_token == owner_token,) if owner_token is not None else ()),
         )
         if self._session.bind is not None and self._session.bind.dialect.name == "postgresql":
             statement = statement.with_for_update()
         return self._session.scalar(statement)
+
+    def heartbeat(self, extraction_id: UUID, attempt: int, owner_token: UUID) -> bool:
+        extraction = self.running(extraction_id, attempt, owner_token)
+        if extraction is None:
+            return False
+        extraction.heartbeat_at = datetime.now(UTC)
+        attempt = self._attempt(extraction)
+        if attempt is not None and attempt.state == "running":
+            attempt.heartbeat_at = extraction.heartbeat_at
+        self._session.flush()
+        return True
 
     def complete(self, extraction: MaterialExtractionRecord, outcome: ExtractionOutcome) -> None:
         # Re-processing the same reading replaces its blocks and chunks instead of appending duplicates.
@@ -276,6 +332,7 @@ class SqlAlchemyMaterialExtractionRepository:
                  "search_text": korean.index_text(chunk.context_text + " " + chunk.text), "analyzer_version": korean.version}
                 for chunk in batch
             ])
+        self._finish_attempt(extraction, outcome.status)
         extraction.status = outcome.status
         extraction.warnings = list(outcome.warnings)
         extraction.coverage = outcome.coverage
@@ -285,11 +342,14 @@ class SqlAlchemyMaterialExtractionRepository:
         extraction.char_count = outcome.char_count
         extraction.page_count = outcome.page_count
         extraction.completed_at = datetime.now(UTC)
+        extraction.heartbeat_at = None
+        extraction.worker_token = None
         self._session.flush()
 
     def fail(self, extraction: MaterialExtractionRecord, reason: str, *, status: str = "failed", outcome: ExtractionOutcome | None = None) -> None:
         self._session.execute(delete(MaterialChunkRecord).where(MaterialChunkRecord.extraction_id == extraction.id))
         self._session.execute(delete(MaterialBlockRecord).where(MaterialBlockRecord.extraction_id == extraction.id))
+        self._finish_attempt(extraction, status, reason)
         extraction.status = status
         extraction.failure_reason = reason
         extraction.chunk_count = 0
@@ -298,13 +358,18 @@ class SqlAlchemyMaterialExtractionRepository:
         extraction.warnings = list(outcome.warnings) if outcome else []
         extraction.coverage = outcome.coverage if outcome else {"complete": False}
         extraction.completed_at = datetime.now(UTC)
+        extraction.heartbeat_at = None
+        extraction.worker_token = None
         self._session.flush()
 
     def release(self, extraction: MaterialExtractionRecord) -> None:
         """A transient failure goes back to queued so the transport redelivery can retry it."""
+        self._finish_attempt(extraction, "retry", "extractor_error")
         extraction.status = "queued"
         extraction.failure_reason = "extractor_error"
         extraction.started_at = None
+        extraction.heartbeat_at = None
+        extraction.worker_token = None
         self._session.flush()
 
     def chunks_for(self, extraction_ids: list[UUID]) -> list[MaterialChunkRecord]:
@@ -413,7 +478,7 @@ class MaterialJobQueue:
                 kind=JOB_KIND_MATERIAL_EXTRACTION,
                 ordering_key=str(job.extraction_id),
                 idempotency_key=f"{JOB_KIND_MATERIAL_EXTRACTION}:{job.extraction_id}",
-                payload={"extraction_id": str(job.extraction_id), "attachment_id": str(job.attachment_id)},
+                payload={"extraction_id": str(job.extraction_id), "attachment_id": str(job.attachment_id), "actor_id": job.actor_id},
             )
         )
 

@@ -1,35 +1,55 @@
 """PostgreSQL adapter for AX confirmation Actions and their canonical effects."""
 from __future__ import annotations
 
+from ax_workspace.modules.ax_execution.result_contracts import ActionProposalResult, ActionMaterialDraftView
+
+from ax_workspace.modules.ax_execution.command_contracts import COMMAND_CONTRACTS
+
 from datetime import UTC, datetime
 from dataclasses import dataclass, fields
 from typing import Any, Callable
 from uuid import UUID
+import json
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.actions.domain import ActionCenterApplication
+from ax_workspace.modules.errors import ResourceNotFound
 from ax_workspace.modules.actions.payloads import normalize_task_progress_batch as _normalize_task_progress_batch
+from ax_workspace.modules.actions.confirmation import SUPPORTED_ACTION_TYPES
+from ax_workspace.modules.actions.policy import CONFIRM_LABELS, RETIRED_ACTION_TYPES
 from ax_workspace.modules.organization_access.application import OrganizationApplication
-from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, TASK_ASSIGN, Principal
+from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, DAILY_REPORT_READ, DAILY_REPORT_SUBMIT, TASK_ASSIGN, Principal
 from ax_workspace.modules.meetings.application import MeetingApplication
 from ax_workspace.modules.meetings.domain import MeetingError
-from ax_workspace.modules.meetings.drafts import normalize_meeting_draft
+from ax_workspace.modules.meetings.commands import (
+    MeetingFollowupCommand,
+    MeetingMaterialDetachCommand,
+    MeetingMaterialLinkCommand,
+    MeetingReservationInput,
+    MeetingSpeakerCommand,
+    MeetingSummaryAdoptCommand,
+)
 from ax_workspace.modules.reports.application import DailyReportApplication
+from ax_workspace.modules.reports.commands import ReportEditCommand, ReportSubmitCommand
 from ax_workspace.modules.ax_execution.actions import (
     ACTION_ITEM_COMMAND,
     ACTION_ITEM_COMMAND_TITLE,
+    TURN_PROPOSAL_SLOT_TAKEN_MESSAGE,
     ActionError,
+    TurnProposalSlotTaken,
     action_commands,
     action_payload_hash,
 )
+from ax_workspace.modules.work.task_creation import TaskCreateInput, TaskAssignmentInput
 from ax_workspace.modules.work.requests import (
     DECISION_FACTS,
     EVIDENCE_HASH,
     EVIDENCE_MANIFEST,
     WorkRequestApplication,
     WorkRequestError,
+    WorkRequestAccessDenied,
     evidence_manifest,
     evidence_manifest_entry,
     evidence_manifest_hash,
@@ -41,15 +61,26 @@ from ax_workspace.modules.work.drafts import (
     normalize_work_request_draft,
 )
 from ax_workspace.modules.work.projects import ProjectApplication
+from ax_workspace.modules.work.checklist_commands import (
+    ChecklistAddCommand,
+    ChecklistArchiveCommand,
+    ChecklistOrderCommand,
+    ChecklistUpdateCommand,
+)
+from ax_workspace.modules.work.task_commands import TaskTransitionCommand, TaskUpdateCommand, TaskCompletionCommand, TaskReferenceCommand, TaskReferenceReleaseCommand, TaskReassignCommand
+from ax_workspace.modules.work.material_commands import (TaskMaterialLinkCommand, TaskMaterialReferenceCommand, TaskMaterialDetachCommand)
+from ax_workspace.modules.work.material_folders import MaterialFolderApplication
+from ax_workspace.modules.work.materials import TaskMaterialApplication
+from ax_workspace.modules.work.folder_commands import FolderCreateInput, FolderArchiveCommand, FolderMaterialDetachCommand
+from ax_workspace.modules.work.project_commands import (
+    ProjectCreateInput, ProjectMemberCommand, ProjectReleaseCommand, ProjectWorkCommand,
+)
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
 from ax_workspace.platform.meetings import SqlAlchemyMeetingRepository
 from ax_workspace.platform.persistence import (
     ActionItemAuditEventRecord,
     ActionItemRecord,
     ActionMaterialDraftRecord,
-    ConversationAnswerResourceRecord,
-    ConversationGraphReceiptRecord,
-    ConversationMessageRecord,
     ConversationRecord,
     ConversationTurnRecord,
     DecisionItemRecord,
@@ -68,7 +99,72 @@ from ax_workspace.modules.work.assignments import TaskAssignmentApplication
 from ax_workspace.platform.work_tasks import caused_by, SqlAlchemyAttachmentRepository, SqlAlchemyTaskRepository
 
 
+from ax_workspace.modules.meetings.followups import MeetingFollowupApplication
+from ax_workspace.modules.notifications import NotificationApplication, NotificationReadCommand
+from ax_workspace.modules.organization_access.commands import AssistantCharacterInput, ASSISTANT_CHARACTER_LABELS
+from ax_workspace.modules.work.assignment_commands import AssignmentAcceptCommand, AssignmentDeclineCommand
+from ax_workspace.modules.work.request_commands import WorkRequestAcceptCommand, WorkRequestRejectCommand, WorkRequestNegotiationCommand, WorkRequestAmendCommand, WorkRequestCreateInput, WorkRequestCommentCommand
+from ax_workspace.modules.ax_execution.conversation_commands import (ConversationCreateInput, ConversationMessageCommand, ConversationCancelCommand, ConversationRetryCommand)
+from ax_workspace.modules.ax_execution.conversations import ConversationApplication
+from ax_workspace.modules.work.action_materials import ActionMaterialDraftApplication
+from ax_workspace.modules.work.material_commands import ActionMaterialLinkCommand, ActionMaterialDiscardCommand
+
+POST_COMMIT_RECEIPT_PENDING = "_scax_post_commit_receipt_pending"
+
+
+def action_result_view(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Keep the durable finalization fence out of public approval receipts."""
+    if not isinstance(result, dict):
+        return result
+    if result.get(POST_COMMIT_RECEIPT_PENDING):
+        return None
+    return {key: value for key, value in result.items() if key != POST_COMMIT_RECEIPT_PENDING}
+
+
 ActionEvidenceReader = Callable[[Principal, UUID], list[dict[str, Any]]]
+
+CURRENT_MEETING_ACTION_TYPES = frozenset({
+    "meeting.reservation.create",
+    "meeting.quick_start",
+    "meeting.info.update",
+    "meeting.cancel",
+    "meeting.note.delete",
+    "meeting.start",
+    "meeting.end",
+    "meeting.finalize.retry",
+    "meeting.todo.promote",
+    "meeting.todo.remove",
+    "meeting.agenda.add",
+    "meeting.agenda.update",
+    "meeting.agenda.remove",
+    "meeting.memo.write",
+    "meeting.material.remove",
+    "meeting.share_many",
+    "meeting.share.revoke",
+})
+LEGACY_MEETING_ACTION_TYPES = frozenset({
+    "meeting.update",
+    "meeting.share",
+    "meeting.revoke_share",
+    "meeting.note.create",
+    "meeting.note.save",
+    "meeting.note.finalize",
+    "meeting.material.attach_link",
+    "meeting.material.detach",
+    "meeting.summary.adopt",
+    "meeting.speaker.assign",
+    "meeting.followup.task",
+    "meeting.followup.request",
+})
+MEETING_ACTION_TYPES = CURRENT_MEETING_ACTION_TYPES | LEGACY_MEETING_ACTION_TYPES
+MEETING_CALLBACK_ACTION_TYPES = CURRENT_MEETING_ACTION_TYPES | frozenset({
+    "meeting.update",
+    "meeting.share",
+    "meeting.revoke_share",
+    "meeting.note.create",
+    "meeting.note.save",
+    "meeting.note.finalize",
+})
 
 
 @dataclass(frozen=True)
@@ -82,10 +178,20 @@ class ActionServices:
     tasks: Callable[[], TaskApplication]
     assignments: Callable[[], TaskAssignmentApplication]
     meetings: Callable[[], MeetingApplication]
+    prepare_action: Callable[[Principal, str, str, dict[str, Any]], dict[str, Any]]
+    validate_action_rejection: Callable[[Principal, str, str], None]
+    meeting_action: Callable[[Principal, str, dict[str, Any]], Any]
     reports: Callable[[], DailyReportApplication]
     projects: Callable[[], ProjectApplication]
     organization: Callable[[], OrganizationApplication]
     action_center: Callable[[], ActionCenterApplication]
+    material_folders: Callable[[], MaterialFolderApplication]
+    materials: Callable[[], TaskMaterialApplication]
+    meeting_followups: Callable[[], MeetingFollowupApplication]
+    notifications: Callable[[], NotificationApplication]
+    work_requests: Callable[[], WorkRequestApplication]
+    conversations: Callable[[], ConversationApplication]
+    action_materials: Callable[[], ActionMaterialDraftApplication]
 
     def __post_init__(self) -> None:
         for dependency in fields(self):
@@ -120,10 +226,14 @@ class SqlAlchemyActionRepository:
     ) -> ActionItemRecord:
         """Return one recoverable effect slot per action type and turn execution.
 
-        A provider redelivery may produce a different payload for the same
-        delegated turn. It must reuse the first proposal rather than create a
-        second effect. Intentional repeated effects belong in a later turn.
+        A provider redelivery of the same judgement reuses the first proposal rather than
+        creating a second effect. A genuinely different payload is a different judgement and is
+        refused, so it waits for the next turn instead of being answered with someone else's
+        confirmation. Intentional repeated effects belong in a later turn either way.
         """
+        if action_type in RETIRED_ACTION_TYPES:
+            # 걷은 계약은 정책이 막는다 — tool registry 에 없다는 사실에 기대지 않는다.
+            raise ActionError(RETIRED_ACTION_TYPES[action_type])
         turn = self._session.scalar(
             select(ConversationTurnRecord)
             .join(ConversationRecord, ConversationRecord.id == ConversationTurnRecord.conversation_id)
@@ -141,13 +251,14 @@ class SqlAlchemyActionRepository:
                 ActionItemRecord.action_type == action_type,
             )
         )
-        if existing is not None:
-            return existing
-        if action_type == "meeting.create":
-            payload = self._freeze_meeting_proposal(owner_id, turn, payload)
-        elif action_type == "task.progress.batch":
-            payload = _normalize_task_progress_batch(payload)
+        payload = self._canonical_proposal(owner_id, turn, action_type, payload)
         payload_hash = action_payload_hash(payload)
+        if existing is not None:
+            # A redelivery of the same judgement gets the same receipt. Anything else is a different
+            # judgement: answering it with this one would let AX report a change nobody will ever see.
+            if existing.payload_hash != payload_hash:
+                raise TurnProposalSlotTaken(TURN_PROPOSAL_SLOT_TAKEN_MESSAGE)
+            return existing
         now = datetime.now(UTC)
         action = ActionItemRecord(
             owner_id=owner_id,
@@ -171,179 +282,32 @@ class SqlAlchemyActionRepository:
         self._audit(action, owner_id, "action.proposed", {})
         return action
 
+    def _canonical_proposal(
+        self,
+        owner_id: str,
+        turn: ConversationTurnRecord,
+        action_type: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """The stored form of a proposal, so the same judgement always hashes the same way."""
+        if action_type == "meeting.reservation.create":
+            return self._freeze_meeting_proposal(owner_id, turn, payload)
+        if action_type == "task.progress.batch":
+            return _normalize_task_progress_batch(payload)
+        return payload
+
     def _freeze_meeting_proposal(
         self,
         owner_id: str,
         turn: ConversationTurnRecord,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        """Adopt only source facts this delegated Turn actually carried before the human confirmation."""
-        draft = dict(payload)
-        prior_discussion_requested = bool(draft.pop("prior_discussion_requested", False))
-        source_turn_values = draft.pop("source_turn_ids", []) or []
-        if not isinstance(source_turn_values, list):
-            raise MeetingError("과거 대화 source는 Turn id 목록이어야 합니다")
-        include_note = bool(draft.get("include_initial_note") or draft.get("initial_note_body"))
-        if not include_note:
-            draft["include_initial_note"] = False
-            draft["initial_note_body"] = None
-            draft["initial_note_source_status"] = "not_requested"
-            draft["initial_note_source_evidence"] = []
-            return normalize_meeting_draft(draft)
-        messages = list(
-            self._session.scalars(
-                select(ConversationMessageRecord)
-                .where(ConversationMessageRecord.turn_id == turn.id, ConversationMessageRecord.role == "user")
-                .order_by(ConversationMessageRecord.sequence)
-            )
-        )
-        excerpt = "\n".join(message.body.strip() for message in messages if message.body.strip())[:400]
-        evidence: list[dict[str, Any]] = [{
-            "source_type": "conversation_turn",
-            "source_id": str(turn.id),
-            "label": "현재 대화",
-            "excerpt": excerpt,
-            "locator": {"conversation_id": str(turn.conversation_id), "turn_id": str(turn.id)},
-        }]
-        past_turn_ids: list[UUID] = []
-        for value in source_turn_values:
-            try:
-                identifier = UUID(str(value))
-            except ValueError:
-                continue
-            if identifier != turn.id and identifier not in past_turn_ids:
-                past_turn_ids.append(identifier)
-        if past_turn_ids:
-            observed_cross_conversation_turns = {
-                parsed
-                for resource in self._session.scalars(
-                    select(ConversationAnswerResourceRecord).where(
-                        ConversationAnswerResourceRecord.turn_id == turn.id,
-                        ConversationAnswerResourceRecord.resource_type == "conversation_turn",
-                    )
-                )
-                if (parsed := _uuid_or_none(resource.resource_id)) is not None
-            }
-            past_turns = list(
-                self._session.scalars(
-                    select(ConversationTurnRecord)
-                    .join(ConversationRecord, ConversationRecord.id == ConversationTurnRecord.conversation_id)
-                    .where(
-                        ConversationTurnRecord.id.in_(past_turn_ids),
-                        ConversationRecord.owner_id == owner_id,
-                    )
-                )
-            )
-            by_id = {item.id: item for item in past_turns}
-            for identifier in past_turn_ids:
-                source_turn = by_id.get(identifier)
-                if source_turn is None or (
-                    source_turn.conversation_id != turn.conversation_id
-                    and identifier not in observed_cross_conversation_turns
-                ):
-                    continue
-                conversation = self._session.get(ConversationRecord, source_turn.conversation_id)
-                source_messages = list(
-                    self._session.scalars(
-                        select(ConversationMessageRecord)
-                        .where(ConversationMessageRecord.turn_id == source_turn.id)
-                        .order_by(ConversationMessageRecord.sequence)
-                    )
-                )
-                source_excerpt = "\n".join(
-                    message.body.strip() for message in source_messages if message.body.strip()
-                )[:400]
-                evidence.append({
-                    "source_type": "conversation_turn",
-                    "source_id": str(source_turn.id),
-                    "label": f"과거 대화 · {conversation.title if conversation else '대화'}",
-                    "excerpt": source_excerpt,
-                    "locator": {
-                        "conversation_id": str(source_turn.conversation_id),
-                        "turn_id": str(source_turn.id),
-                    },
-                })
-        for material in self._readable_turn_materials(owner_id, turn.id):
-            contexts = list(material.get("source_contexts") or [])
-            primary = contexts[0] if contexts else {}
-            evidence.append({
-                "source_type": "material",
-                "source_id": str(material["material_id"]),
-                "label": str(material["name"]),
-                "excerpt": str(material.get("excerpt") or "")[:400],
-                "locator": {
-                    "resource_type": primary.get("resource_type"),
-                    "resource_id": primary.get("resource_id"),
-                    "binding_id": primary.get("binding_id"),
-                    "material_id": str(material["material_id"]),
-                    "chunk_id": material.get("chunk_id"),
-                    "page": material.get("page"),
-                    "integrity_ref": material.get("integrity_ref"),
-                },
-            })
-        for resource in self._session.scalars(
-            select(ConversationAnswerResourceRecord)
-            .where(ConversationAnswerResourceRecord.turn_id == turn.id)
-            .order_by(ConversationAnswerResourceRecord.sequence)
-        ):
-            if resource.resource_type not in {"task", "meeting"}:
-                continue
-            label = self._meeting_source_label(owner_id, resource.resource_type, resource.resource_id)
-            if label is None:
-                continue
-            evidence.append({
-                "source_type": resource.resource_type,
-                "source_id": resource.resource_id,
-                "label": label,
-                "excerpt": None,
-                "locator": {
-                    "resource_version": resource.resource_version,
-                    "source_contexts": list(resource.source_contexts or []),
-                    "source_locator": dict(resource.source_locator) if resource.source_locator else None,
-                },
-            })
-        for step in self._session.scalars(
-            select(ConversationGraphReceiptRecord)
-            .where(ConversationGraphReceiptRecord.turn_id == turn.id)
-            .order_by(ConversationGraphReceiptRecord.sequence)
-        ):
-            candidates = (
-                [(step.node_ref, step.node_title)]
-                if step.kind == "node"
-                else [(step.from_ref, step.from_title), (step.to_ref, step.to_title)]
-            )
-            for node_ref, node_title in candidates:
-                if not node_ref or ":" not in node_ref:
-                    continue
-                source_type, _, source_id = node_ref.partition(":")
-                if source_type not in {"task", "meeting"}:
-                    continue
-                label = self._meeting_source_label(owner_id, source_type, source_id)
-                if label is None:
-                    continue
-                evidence.append({
-                    "source_type": source_type,
-                    "source_id": source_id,
-                    "label": node_title or label,
-                    "excerpt": None,
-                    "locator": {"graph_receipt_id": str(step.id)},
-                })
-        deduped: list[dict[str, Any]] = []
-        seen: set[tuple[str, str]] = set()
-        for source in evidence:
-            key = (str(source["source_type"]), str(source["source_id"]))
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(source)
-        draft["include_initial_note"] = True
-        draft["initial_note_source_status"] = (
-            "resolved" if len(deduped) > 1
-            else "not_found" if prior_discussion_requested
-            else "current_turn"
-        )
-        draft["initial_note_source_evidence"] = deduped
-        return normalize_meeting_draft(draft)
+        """Freeze the current reservation contract before a person reviews it."""
+        del owner_id, turn
+        try:
+            return MeetingReservationInput.model_validate(payload).model_dump(mode="json")
+        except (TypeError, ValueError) as error:
+            raise MeetingError(str(error)) from error
 
     def _meeting_source_label(self, owner_id: str, source_type: str, source_id: str) -> str | None:
         """Re-authorize a previously observed resource before freezing it into a MeetingNote."""
@@ -549,26 +513,14 @@ class SqlAlchemyActionRepository:
         item.status = "resolved"
         item.resolved_at = now
 
-    def view(self, action: ActionItemRecord, principal: Principal | None = None) -> dict[str, Any]:
+    def view(self, action: ActionItemRecord, principal: Principal | None = None) -> ActionProposalResult:
         """Canonical Action row plus its structured, permission-safe presentation for `principal`."""
         presented = self._presenter.present(action, principal, payload_override=self._canonical_payload(action))
         can_decide = principal is not None and ACTION_DECIDE in principal.capabilities
         commands = action_commands(action.state, can_decide, obsolete=bool(presented.get("obsolete")))
-        if presented.get("edit_contract") is not None and action.state == "pending" and can_decide:
+        if presented.get("edit_contract") is not None and action.state == "pending" and can_decide and not presented.get("obsolete"):
             commands = [
-                {
-                    "id": "confirm",
-                    "label": (
-                        "이 내용으로 업무 요청"
-                        if action.action_type in {"task.assign", "work_request.create"}
-                        else "이 내용으로 회의 생성"
-                        if action.action_type == "meeting.create"
-                        else "이 내용으로 반영"
-                        if action.action_type == "task.progress.batch"
-                        else "이 내용으로 업무 생성"
-                    ),
-                    "tone": "primary",
-                },
+                {"id": "confirm", "label": CONFIRM_LABELS[action.action_type], "tone": "primary"},
                 {"id": "reject", "label": "거절", "tone": "neutral"},
             ]
         assignment = self._assignment(action)
@@ -582,7 +534,7 @@ class SqlAlchemyActionRepository:
             and TASK_ASSIGN in principal.capabilities
         ):
             commands = [{"id": "cancel_assignment", "label": "취소", "tone": "danger"}]
-        result = dict(action.result) if isinstance(action.result, dict) else action.result
+        result = action_result_view(action.result)
         if isinstance(result, dict) and assignment is not None:
             result["status"] = assignment.status
         return {
@@ -612,7 +564,7 @@ class SqlAlchemyActionRepository:
             return None
         return self._session.get(TaskAssignmentRecord, assignment_id)
 
-    def _material_drafts(self, action: ActionItemRecord, principal: Principal | None) -> list[dict[str, Any]]:
+    def _material_drafts(self, action: ActionItemRecord, principal: Principal | None) -> list[ActionMaterialDraftView]:
         if principal is None or str(principal.id) != str(action.owner_id):
             return []
         rows = self._session.scalars(
@@ -667,7 +619,7 @@ class SqlAlchemyActionRepository:
 
     @staticmethod
     def _summary(action: ActionItemRecord) -> str:
-        if action.action_type == "meeting.create":
+        if action.action_type == "meeting.reservation.create":
             return f"회의 생성: {action.payload['title']}"
         if action.action_type == "meeting.share":
             return "회의 공유"
@@ -713,12 +665,20 @@ class SqlAlchemyActionExecutor:
         source_submission_id: UUID | None = None,
         source_review_decision_id: UUID | None = None,
     ) -> dict[str, Any]:
+        if action.action_type in RETIRED_ACTION_TYPES:
+            raise ActionError(RETIRED_ACTION_TYPES[action.action_type])
+        # Legacy decisions select the stored payload here; canonical confirmations
+        # pass their final Submission. No branch may read the proposal again.
+        confirmed_payload = dict(action.payload if payload is None else payload)
+        confirmed_payload = self._services.prepare_action(
+            principal, str(action.id), action.action_type, confirmed_payload
+        )
         # Everything this approval causes says which confirmation carried it; the actor stays the approver.
         with caused_by(f"action_item:{action.id}"):
             return self._execute(
                 principal,
                 action,
-                payload=payload,
+                payload=confirmed_payload,
                 source_decision_item_id=source_decision_item_id,
                 source_submission_id=source_submission_id,
                 source_review_decision_id=source_review_decision_id,
@@ -729,82 +689,153 @@ class SqlAlchemyActionExecutor:
         principal: Principal,
         action: ActionItemRecord,
         *,
-        payload: dict[str, Any] | None = None,
+        payload: dict[str, Any],
         source_decision_item_id: UUID | None = None,
         source_submission_id: UUID | None = None,
         source_review_decision_id: UUID | None = None,
     ) -> dict[str, Any]:
-        payload = dict(action.payload if payload is None else payload)
+        if action.action_type in MEETING_CALLBACK_ACTION_TYPES:
+            result = self._services.meeting_action(principal, action.action_type, payload)
+            if action.action_type == "meeting.reservation.create":
+                result = self._claim_action_materials(principal, action, payload, result)
+                return self._attach_meeting_references(principal, payload, result)
+            return result
         if action.action_type == "work_request.create":
-            return self._work_requests.create(
-                principal,
-                str(payload["title"]),
-                str(payload["assignee_id"]),
-                causation_key=str(action.id),
-                description=payload.get("description"),
-                due_date=_parse_date(payload.get("due_date")),
-                cc_member_ids=list(payload.get("cc_member_ids") or []),
-                checklist=list(payload.get("checklist") or []),
-                reference_task_ids=[UUID(str(item)) for item in payload.get("reference_task_ids") or []],
-            )
+            command = WorkRequestCreateInput.model_validate(payload).for_requester(str(principal.id))
+            return self._work_requests.create(principal, **command.model_dump(), causation_key=str(action.id))
+        if action.action_type == "action.material.link.stage":
+            command = ActionMaterialLinkCommand.model_validate(payload)
+            return self._services.action_materials().stage_link(principal, command.action_item_id, url=command.url, label=command.label)
+        if action.action_type == "action.material.draft.discard":
+            command = ActionMaterialDiscardCommand.model_validate(payload)
+            return self._services.action_materials().discard(principal, command.action_item_id, command.material_draft_id)
+        if action.action_type == "conversation.create":
+            command = ConversationCreateInput.model_validate(payload)
+            return self._services.conversations().create(principal, command.title)
+        if action.action_type == "conversation.message.send":
+            command = ConversationMessageCommand.model_validate(payload)
+            return self._services.conversations().accept_message(principal, **command.model_dump(exclude={'context'}), context=command.references())
+        if action.action_type == "conversation.turn.cancel":
+            command = ConversationCancelCommand.model_validate(payload)
+            return self._services.conversations().cancel(principal, **command.model_dump())
+        if action.action_type == "conversation.turn.retry":
+            command = ConversationRetryCommand.model_validate(payload)
+            return self._services.conversations().retry(principal, **command.model_dump())
+        if action.action_type == "notification.mark_read":
+            command = NotificationReadCommand.model_validate(payload)
+            return self._services.notifications().mark_read(principal, command.notification_id)
+        if action.action_type == "assistant.character.set":
+            command = AssistantCharacterInput.model_validate(payload)
+            return self._services.organization().set_assistant_character(principal, **command.model_dump())
+        if action.action_type == "work_request.comment.add":
+            command = WorkRequestCommentCommand.model_validate(payload)
+            return self._work_requests.add_comment(principal, **command.model_dump())
+        if action.action_type == "meeting.material.attach_link":
+            command = MeetingMaterialLinkCommand.model_validate(payload)
+            return self._services.meetings().attach_material_link(principal, **command.model_dump())
+        if action.action_type == "meeting.material.detach":
+            command = MeetingMaterialDetachCommand.model_validate(payload)
+            return self._services.meetings().detach_material(principal, **command.model_dump())
+        if action.action_type == "meeting.summary.adopt":
+            command = MeetingSummaryAdoptCommand.model_validate(payload)
+            return self._services.meetings().adopt_summary(principal, **command.model_dump())
+        if action.action_type == "meeting.speaker.assign":
+            command = MeetingSpeakerCommand.model_validate(payload)
+            return self._services.meetings().assign_speaker_identity(principal, **command.model_dump())
+        if action.action_type in {"meeting.followup.task", "meeting.followup.request"}:
+            command = MeetingFollowupCommand.model_validate(payload)
+            wanted = "task" if action.action_type == "meeting.followup.task" else "work_request"
+            if command.kind != wanted:
+                raise ActionError("followup kind does not match the approved operation")
+            return self._services.meeting_followups().promote(principal, **command.model_dump())
+        if action.action_type == "task.material.attach_link":
+            command = TaskMaterialLinkCommand.model_validate(payload)
+            return self._services.materials().attach_link(principal, **command.model_dump())
+        if action.action_type == "task.material.attach_reference":
+            command = TaskMaterialReferenceCommand.model_validate(payload)
+            return self._services.materials().attach_reference(principal, **command.model_dump())
+        if action.action_type == "task.material.detach":
+            command = TaskMaterialDetachCommand.model_validate(payload)
+            return self._services.materials().detach(principal, **command.model_dump())
+        if action.action_type == "task.reassign":
+            command = TaskReassignCommand.model_validate(payload)
+            return self._services.assignments().reassign(principal, **command.model_dump())
+        if action.action_type == "task.completion.submit":
+            command = TaskCompletionCommand.model_validate(payload)
+            return self._services.tasks().submit_completion(principal, **command.model_dump())
+        if action.action_type == "task.reference.add":
+            command = TaskReferenceCommand.model_validate(payload)
+            return self._services.tasks().add_reference(principal, command.task_id, command.referenced_task_id)
+        if action.action_type == "task.reference.release":
+            command = TaskReferenceReleaseCommand.model_validate(payload)
+            return self._services.tasks().release_reference(principal, command.task_id, command.reference_id)
+        if action.action_type == "project.create":
+            command = ProjectCreateInput.model_validate(payload)
+            return self._services.projects().create(principal, **command.model_dump())
+        if action.action_type == "material_folder.create":
+            command = FolderCreateInput.model_validate(payload)
+            return self._services.material_folders().create(principal, **command.model_dump())
+        if action.action_type == "material_folder.archive":
+            command = FolderArchiveCommand.model_validate(payload)
+            return self._services.material_folders().archive(principal, command.folder_id)
+        if action.action_type == "material_folder.detach":
+            command = FolderMaterialDetachCommand.model_validate(payload)
+            return self._services.material_folders().detach(principal, command.folder_id, command.material_id)
+        if action.action_type == "project.assign_member":
+            command = ProjectMemberCommand.model_validate(payload)
+            return self._services.projects().assign(principal, **command.model_dump())
+        if action.action_type == "project.release_member":
+            command = ProjectReleaseCommand.model_validate(payload)
+            return self._services.projects().release(principal, **command.model_dump())
+        if action.action_type == "project.plan_work":
+            command = ProjectWorkCommand.model_validate(payload)
+            return self._services.assignments().plan_project_work(principal, **command.model_dump())
         if action.action_type == "daily_report.edit":
+            command = ReportEditCommand.model_validate(payload)
             return self._services.reports().edit(
                 principal,
-                str(action.payload["report_id"]),
-                str(action.payload["draft_id"]),
-                int(action.payload["expected_version"]),
-                str(action.payload["body"]),
-                list(action.payload.get("include_source_refs", [])),
-                list(action.payload.get("exclude_source_refs", [])),
+                str(command.report_id),
+                str(command.draft_id),
+                command.expected_version,
+                command.body,
+                [item.model_dump(mode="json", exclude_unset=True) for item in command.include_source_refs],
+                [item.model_dump(mode="json", exclude_unset=True) for item in command.exclude_source_refs],
             )
         if action.action_type == "daily_report.submit":
-            return self._services.reports().submit(principal, str(action.payload["report_id"]), str(action.payload["draft_id"]), int(action.payload["expected_version"]), action.payload.get("reason"))
-        if action.action_type == "task.create_self":
-            result = self._tasks().create_self(
+            command = ReportSubmitCommand.model_validate(payload)
+            return self._services.reports().submit(
                 principal,
-                str(payload["title"]),
-                causation_key=str(action.id),
-                description=payload.get("description"),
-                start_date=_parse_date(payload.get("start_date")),
-                due_date=_parse_date(payload.get("due_date")),
+                str(command.report_id),
+                str(command.draft_id),
+                command.expected_version,
+                command.reason,
+            )
+        if action.action_type == "task.create_self":
+            command = TaskCreateInput.model_validate({key: value for key, value in payload.items() if key != '_attachment_draft_ids'})
+            result = self._tasks().create_self(
+                principal, **command.model_dump(), causation_key=str(action.id),
                 source_action_item_id=action.id,
                 source_decision_item_id=source_decision_item_id,
                 source_submission_id=source_submission_id,
                 source_review_decision_id=source_review_decision_id,
-                checklist=list(payload.get("checklist") or []),
-                reference_task_ids=[UUID(str(item)) for item in payload.get("reference_task_ids") or []],
-                parent_task_id=UUID(str(payload["parent_task_id"])) if payload.get("parent_task_id") else None,
-                project_id=UUID(str(payload["project_id"])) if payload.get("project_id") else None,
             )
             return self._claim_action_materials(principal, action, payload, result)
-        if action.action_type in {"meeting.create", "meeting.share"}:
-            # main 의 채팅 확인 경로는 **옛 회의 모델**(description·visibility·판 있는 회의록·expected_version)
-            # 위에 서 있었고, SCAX-SPEC-004 가 그 모델을 대체하면서 여기서 부르던 표면이 사라졌다.
-            # 조용히 터지게 두지 않는다 — 사람이 [확인] 을 누르는 자리이므로 무엇이 안 되는지 말하고 멈춘다.
-            # 새 모델 위에 이 두 확인을 다시 세우는 것은 별도 작업이다(회의 생성·공유는 지금 회의 화면에 있다).
-            raise ActionError("이 확인은 아직 새 회의 모델로 옮겨지지 않았습니다 — 회의 화면에서 직접 해 주세요")
         if action.action_type == "task.update":
-            changes = dict(action.payload.get("changes", {}))
-            for field in ("start_date", "due_date"):
-                if field in changes:
-                    changes[field] = _parse_date(changes[field])
+            command = TaskUpdateCommand.model_validate(payload)
             return self._services.tasks().update(
-                UUID(str(action.payload["task_id"])), principal, int(action.payload["expected_version"]), changes
+                command.task_id,
+                principal,
+                command.expected_version,
+                command.changes(),
             )
         if action.action_type == "task.progress.batch":
             return self._run_task_progress_batch(principal, payload)
         if action.action_type.startswith("task.checklist."):
-            return self._run_checklist_command(principal, action)
+            return self._run_checklist_command(principal, action.action_type, payload)
         if action.action_type == "task.assign":
+            command = TaskAssignmentInput.model_validate({key: value for key, value in payload.items() if key != '_attachment_draft_ids'})
             result = self._assignments().assign(
-                principal, str(payload["title"]), str(payload["assignee_id"]),
-                description=payload.get("description"),
-                start_date=_parse_date(payload.get("start_date")),
-                due_date=_parse_date(payload.get("due_date")),
-                causation_key=str(action.id),
-                checklist=list(payload.get("checklist") or []),
-                reference_task_ids=[UUID(str(item)) for item in payload.get("reference_task_ids") or []],
-                parent_task_id=UUID(str(payload["parent_task_id"])) if payload.get("parent_task_id") else None,
+                principal, **command.model_dump(), causation_key=str(action.id),
                 source_action_item_id=action.id,
                 source_decision_item_id=source_decision_item_id,
                 source_submission_id=source_submission_id,
@@ -812,57 +843,76 @@ class SqlAlchemyActionExecutor:
             )
             return self._claim_action_materials(principal, action, payload, result)
         if action.action_type == "task.assignment.accept":
-            return self._assignments().accept(principal, UUID(str(action.payload["assignment_id"])))
+            # Old accept envelopes carried a reason that the operation ignored.
+            command = AssignmentAcceptCommand.model_validate({key: value for key, value in payload.items() if key != 'reason'})
+            return self._assignments().accept(principal, **command.model_dump())
         if action.action_type == "task.assignment.decline":
-            return self._assignments().decline(principal, UUID(str(action.payload["assignment_id"])), str(action.payload.get("reason") or ""))
+            command = AssignmentDeclineCommand.model_validate(payload)
+            return self._assignments().decline(principal, **command.model_dump())
         if action.action_type == "task.transition":
+            command = TaskTransitionCommand.model_validate(payload)
             return self._services.tasks().transition(
-                UUID(str(action.payload["task_id"])), principal, TaskState(str(action.payload["target"])),
-                action.payload.get("reason"), int(action.payload["expected_version"])
+                command.task_id,
+                principal,
+                TaskState(command.target),
+                command.reason,
+                command.expected_version,
             )
         if action.action_type == "work_request.accept":
-            return self._work_requests.accept(principal, UUID(str(action.payload["request_id"])), int(action.payload["expected_version"]))
+            command = WorkRequestAcceptCommand.model_validate(payload)
+            return self._work_requests.accept(principal, **command.model_dump())
         if action.action_type == "work_request.reject":
-            return self._work_requests.reject(principal, UUID(str(action.payload["request_id"])), int(action.payload["expected_version"]), str(action.payload["reason"]))
+            command = WorkRequestRejectCommand.model_validate(payload)
+            return self._work_requests.reject(principal, **command.model_dump())
         if action.action_type == ACTION_ITEM_COMMAND:
-            return self._run_action_item_command(principal, action)
+            return self._run_action_item_command(principal, payload)
         if action.action_type == "work_request.amend":
-            return self._work_requests.amend(
-                principal,
-                UUID(str(action.payload["request_id"])),
-                int(action.payload["expected_version"]),
-                title=action.payload.get("title"),
-                description=action.payload.get("description"),
-                due_date=_parse_date(action.payload.get("due_date")),
-                clear_due_date=bool(action.payload.get("clear_due_date")),
-            )
+            command = WorkRequestAmendCommand.model_validate(payload)
+            return self._work_requests.amend(principal, **command.model_dump())
         if action.action_type == "work_request.negotiate":
-            return self._work_requests.negotiate(principal, UUID(str(action.payload["request_id"])), int(action.payload["expected_version"]), dict(action.payload["conditions"]))
+            command = WorkRequestNegotiationCommand.model_validate(payload)
+            return self._work_requests.negotiate(principal, **command.model_dump())
         raise ValueError("unsupported action type")
 
     def _tasks(self) -> TaskApplication:
         """The same dependency-complete Task application used by direct creation and authorization."""
         return self._services.tasks()
 
-    def _run_checklist_command(self, principal: Principal, action: ActionItemRecord) -> dict[str, Any]:
+    def _run_checklist_command(self, principal: Principal, action_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         """A checklist change a delegated turn prepared, applied once by the person who approved it."""
         tasks = self._services.tasks()
-        payload = dict(action.payload)
-        task_id = UUID(str(payload["task_id"]))
-        if action.action_type == "task.checklist.add":
-            return tasks.add_checklist_item(principal, task_id, str(payload["text"]))
-        if action.action_type == "task.checklist.reorder":
-            return tasks.reorder_checklist(principal, task_id, [UUID(str(item)) for item in payload["item_ids"]])
-        item_id = UUID(str(payload["item_id"]))
-        expected_version = int(payload["expected_version"])
-        if action.action_type == "task.checklist.archive":
-            return tasks.archive_checklist_item(principal, task_id, item_id, expected_version=expected_version)
-        changes: dict[str, Any] = {"expected_version": expected_version}
-        if payload.get("text") is not None:
-            changes["text"] = str(payload["text"])
-        if payload.get("done") is not None:
-            changes["done"] = bool(payload["done"])
-        return tasks.update_checklist_item(principal, task_id, item_id, **changes)
+        if action_type == "task.checklist.add":
+            command = ChecklistAddCommand.model_validate(payload)
+            return tasks.add_checklist_item(
+                principal,
+                command.task_id,
+                command.text,
+                expected_task_version=command.expected_task_version,
+            )
+        if action_type == "task.checklist.reorder":
+            command = ChecklistOrderCommand.model_validate(payload)
+            return tasks.reorder_checklist(
+                principal,
+                command.task_id,
+                command.item_ids,
+                expected_task_version=command.expected_task_version,
+            )
+        if action_type == "task.checklist.archive":
+            command = ChecklistArchiveCommand.model_validate(payload)
+            return tasks.archive_checklist_item(
+                principal,
+                command.task_id,
+                command.item_id,
+                expected_version=command.expected_version,
+                expected_task_version=command.expected_task_version,
+            )
+        command = ChecklistUpdateCommand.model_validate(payload)
+        return tasks.update_checklist_item(
+            principal,
+            command.task_id,
+            command.item_id,
+            **command.model_dump(exclude={"task_id", "item_id"}, exclude_none=True),
+        )
 
     def _run_task_progress_batch(self, principal: Principal, payload: dict[str, Any]) -> dict[str, Any]:
         """Apply each distinct Task effect behind one approval, preserving an outcome for every item."""
@@ -923,13 +973,12 @@ class SqlAlchemyActionExecutor:
             "items": results,
         }
 
-    def _run_action_item_command(self, principal: Principal, action: ActionItemRecord) -> dict[str, Any]:
+    def _run_action_item_command(self, principal: Principal, payload: dict[str, Any]) -> dict[str, Any]:
         """Apply the judgement a delegated turn prepared, through the one canonical command path.
 
         The approving person's own authority is what runs it: the ActionCenter re-checks that the command is still
         offered to them on that item and that the version they are answering is still the current one.
         """
-        payload = action.payload or {}
         center = self._services.action_center()
         target = str(payload["action_item_id"])
         envelope = center.detail(principal, target)
@@ -956,7 +1005,7 @@ class SqlAlchemyActionExecutor:
             return result
         if self._action_materials is None:
             raise ActionError("action material staging is not available")
-        owner_type = "meeting" if action.action_type == "meeting.create" else "task"
+        owner_type = "meeting" if action.action_type == "meeting.reservation.create" else "task"
         nested = result.get(owner_type)
         owner_id = result.get(f"{owner_type}_id") or (
             nested.get(f"{owner_type}_id") if isinstance(nested, dict) else None
@@ -999,7 +1048,10 @@ class SqlAlchemyActionExecutor:
         reference_ids = [UUID(str(item)) for item in payload.get("reference_task_ids") or []]
         if not reference_ids:
             return result
-        meeting_id = result.get("meeting_id")
+        nested = result.get("meeting")
+        meeting_id = result.get("meeting_id") or (
+            nested.get("meeting_id") if isinstance(nested, dict) else None
+        )
         if not meeting_id:
             raise ActionError("created Meeting receipt did not include its identity")
         attachments = SqlAlchemyAttachmentRepository(self._session)
@@ -1068,7 +1120,44 @@ def _uuid_or_none(value: Any) -> UUID | None:
 # ---- structured, permission-safe Action presentation -------------------------------------------------------------
 
 _OPERATION_LABELS: dict[str, str] = {
+    "action.material.link.stage": "승인 항목의 링크 자료 준비",
+    "action.material.draft.discard": "승인 항목의 자료 초안 버리기",
+    "conversation.create": "새 대화 생성",
+    "conversation.message.send": "대화 메시지 접수",
+    "conversation.turn.cancel": "대화 응답 취소",
+    "conversation.turn.retry": "대화 응답 다시 시도",
+    "notification.mark_read": "알림 읽음 처리",
+    "assistant.character.set": "AX 캐릭터 변경",
+    "work_request.comment.add": "업무 요청 댓글 등록",
+    "meeting.material.attach_link": "회의 자료 링크 연결",
+    "meeting.material.detach": "회의 자료 분리",
+    "meeting.material.remove": "회의 자료 분리",
+    "meeting.summary.adopt": "회의 요약 채택",
+    "meeting.speaker.assign": "회의 화자 확인",
+    "meeting.followup.task": "회의 후속 내 업무 생성",
+    "meeting.followup.request": "회의 후속 업무 요청",
+    "task.material.attach_link": "업무 자료 링크 연결",
+    "task.material.attach_reference": "업무 회의 자료 연결",
+    "task.material.detach": "업무 자료 분리",
+    "task.reassign": "업무 담당자 변경",
+    "task.completion.submit": "업무 완료 보고",
+    "task.reference.add": "참고 업무 연결",
+    "task.reference.release": "참고 업무 해제",
+    "material_folder.create": "자료함 생성",
+    "material_folder.archive": "자료함 보관",
+    "material_folder.detach": "자료함에서 자료 분리",
+    "project.create": "프로젝트 생성",
+    "project.assign_member": "프로젝트 참여 배정",
+    "project.release_member": "프로젝트 참여 해제",
+    "project.plan_work": "프로젝트 업무 계획",
+    "meeting.info.update": "회의 수정",
+    "meeting.share.revoke": "회의 공유 해제",
+    "meeting.note.create": "회의록 작성",
+    "meeting.note.save": "회의록 수정",
+    "meeting.note.finalize": "회의록 확정",
+    # `RETIRED_ACTION_TYPES` 의 옛 계약. 실행 경로는 없고, 남은 행의 `operation_label` 만 한국어로 선다.
     "meeting.create": "회의 생성",
+    "meeting.reservation.create": "회의 생성",
     "meeting.share": "회의 공유",
     "task.create_self": "업무 생성",
     "work_request.create": "업무 요청",
@@ -1091,7 +1180,13 @@ _OPERATION_LABELS: dict[str, str] = {
 }
 _TASK_STATE_LABELS: dict[str, str] = {"open": "대기", "in_progress": "진행 중", "blocked": "막힘", "done": "완료", "cancelled": "취소"}
 _UNKNOWN_MEMBER = "확인할 수 없는 구성원"
-_CREATION_KINDS = {"task.create_self", "work_request.create", "task.assign", "meeting.create"}
+_CREATION_KINDS = {
+    "task.create_self",
+    "work_request.create",
+    "task.assign",
+    "meeting.reservation.create",
+}
+_CURRENT_MEETING_COMMAND_KINDS = CURRENT_MEETING_ACTION_TYPES
 
 
 def action_subject_label(action: ActionItemRecord, payload: dict[str, Any] | None = None) -> str:
@@ -1138,11 +1233,57 @@ class ActionPresenter:
         # Only a confirmation of another judgement can go out of date; every other proposal carries its own effect.
         obsolete = False
 
-        if kind == "meeting.create":
+        if kind == "material_folder.create":
+            subject = str(payload["title"])
+            self._text(fields, "title", "자료함 명", subject)
+            self._text(fields, "kind", "자료함 종류", "개인" if payload["kind"] == "personal" else "팀")
+            if payload.get("organization_id"):
+                self._text(fields, "organization", "소유 조직", payload["organization_id"])
+        elif kind in {"material_folder.archive", "material_folder.detach"}:
+            folders = self._services.material_folders()
+            folder = next((row for row in folders.list_for(principal) if row["folder_id"] == payload["folder_id"]), None)
+            subject = folder["title"] if folder is not None else "볼 수 없는 자료함"
+            self._text(fields, "folder", "자료함", subject)
+            obsolete = folder is None and action.state == "pending"
+            if kind == "material_folder.detach" and folder is not None:
+                material = next((row for row in folders.materials(principal, UUID(folder["folder_id"])) if row["material_id"] == payload["material_id"]), None)
+                self._text(fields, "material", "분리할 자료", material["name"] if material else "볼 수 없는 자료")
+                obsolete = material is None and action.state == "pending"
+        elif kind in {"project.create", "project.assign_member", "project.release_member", "project.plan_work"}:
+            if kind == "project.create":
+                subject = str(payload["name"])
+                self._text(fields, "name", "프로젝트 명", payload["name"])
+                self._text(fields, "description", "설명", payload.get("description"))
+                self._date(fields, "starts_on", "시작일", payload.get("starts_on"))
+                self._date(fields, "ends_on", "종료일", payload.get("ends_on"))
+                self._text(fields, "external_key", "외부 식별자", payload.get("external_key"))
+            else:
+                try:
+                    project = self._services.projects().get(principal, UUID(str(payload["project_id"])))
+                except ResourceNotFound:
+                    project = None
+                subject = project["name"] if project is not None else "볼 수 없는 프로젝트"
+                obsolete = project is None and action.state == "pending"
+                self._text(fields, "project", "프로젝트", subject)
+                if kind == "project.plan_work":
+                    self._text(fields, "title", "업무 명", payload.get("title"))
+                    self._text(fields, "description", "설명", payload.get("description"))
+                    self._date(fields, "start_date", "시작일", payload.get("start_date"))
+                    self._date(fields, "due_date", "기한", payload.get("due_date"))
+                else:
+                    self._person(fields, "member", "구성원", payload.get("member_id"), principal)
+                    if kind == "project.release_member":
+                        self._text(fields, "reason", "종료 사유", payload.get("reason"))
+                    if kind == "project.assign_member":
+                        self._text(fields, "kind", "참여 종류", "담당" if payload.get("kind") == "lead" else "참여")
+                        self._date_time(fields, "valid_from", "참여 시작", payload.get("valid_from"))
+                        self._date_time(fields, "valid_until", "참여 종료", payload.get("valid_until"))
+        elif kind == "meeting.reservation.create":
             subject = action_subject_label(action, payload)
-            self._text(fields, "description", "내용", payload.get("description"))
+            self._text(fields, "purpose", "목적", payload.get("purpose"))
             self._date_time(fields, "starts_at", "시작", payload.get("starts_at"))
             self._date_time(fields, "ends_at", "종료", payload.get("ends_at"))
+            self._text(fields, "location", "장소", payload.get("location"))
             self._person(fields, "host", "주최자", action.owner_id, principal)
             attendee_ids = [str(item) for item in payload.get("attendee_ids") or []]
             if attendee_ids:
@@ -1153,14 +1294,55 @@ class ActionPresenter:
                     "value": ", ".join(names.get(member, _UNKNOWN_MEMBER) for member in attendee_ids),
                     "kind": "people",
                 })
-            fields.append({
-                "id": "visibility",
-                "label": "공개 범위",
-                "value": "공개" if payload.get("visibility") == "public" else "비공개",
-                "kind": "state",
-            })
-            if payload.get("include_initial_note"):
-                self._text(fields, "initial_note_body", "회의록 초안", payload.get("initial_note_body"))
+            external = [str(item) for item in payload.get("external_attendees") or []]
+            if external:
+                self._text(fields, "external_attendees", "외부 참석자", ", ".join(external))
+        elif kind in _CURRENT_MEETING_COMMAND_KINDS:
+            if kind == "meeting.quick_start":
+                subject = "바로 시작할 회의"
+                self._text(fields, "operation", "변경", "제목 없는 회의를 만들고 바로 시작")
+            else:
+                try:
+                    detail = self._services.meetings().get(principal, UUID(str(payload["meeting_id"])))
+                except (MeetingError, ValueError):
+                    detail = None
+                subject = (
+                    str(detail["meeting"].get("title") or detail["meeting"].get("title_candidate") or "제목 없는 회의")
+                    if detail is not None
+                    else "볼 수 없는 회의"
+                )
+                obsolete = detail is None and action.state == "pending"
+                self._text(fields, "meeting", "대상 회의", subject)
+                changes = payload.get("changes") if isinstance(payload.get("changes"), dict) else {}
+                for key, label in (
+                    ("title", "회의 명"),
+                    ("purpose", "목적"),
+                    ("starts_at", "시작"),
+                    ("ends_at", "종료"),
+                    ("location", "장소"),
+                ):
+                    if key in changes:
+                        if key in {"starts_at", "ends_at"} and changes[key]:
+                            self._date_time(fields, key, label, changes[key])
+                        else:
+                            self._text(fields, key, label, changes[key] or "삭제")
+                if payload.get("title"):
+                    self._text(fields, "title", "안건", payload.get("title"))
+                if payload.get("text"):
+                    self._text(fields, "text", "메모", payload.get("text"))
+                if payload.get("assignee_id"):
+                    self._person(fields, "assignee", "요청 대상", payload.get("assignee_id"), principal)
+                member_ids = [str(item) for item in payload.get("member_ids") or []]
+                if member_ids:
+                    names = self._names(principal)
+                    self._text(
+                        fields,
+                        "members",
+                        "공유 대상",
+                        ", ".join(names.get(member_id, _UNKNOWN_MEMBER) for member_id in member_ids),
+                    )
+                if payload.get("member_id"):
+                    self._person(fields, "member", "공유 해제 대상", payload.get("member_id"), principal)
         elif kind == "meeting.share":
             meeting = self._services.meetings().get(principal, UUID(str(payload["meeting_id"])))["meeting"]
             subject = str(meeting.get("title") or meeting.get("title_candidate") or "")
@@ -1210,17 +1392,76 @@ class ActionPresenter:
             if cc:
                 names = self._names(principal)
                 fields.append({"id": "cc", "label": "참조자", "value": ", ".join(names.get(member, _UNKNOWN_MEMBER) for member in cc), "kind": "people"})
+        elif kind in {"task.completion.submit", "task.reference.add", "task.reference.release", "task.reassign", "task.material.attach_link", "task.material.attach_reference", "task.material.detach"}:
+            try:
+                task = self._services.tasks().get(principal, UUID(str(payload["task_id"])))
+            except (TaskNotFound, TaskAccessDenied):
+                task = None
+            subject = task["title"] if task is not None else "볼 수 없는 업무"
+            obsolete = task is None and action.state == "pending"
+            self._text(fields, "task", "대상 업무", subject)
+            if kind == "task.material.attach_link":
+                self._text(fields, "material", "자료 이름", payload.get("label"))
+                self._text(fields, "url", "링크 주소", payload.get("url"))
+                self._text(fields, "role", "자료 역할", "산출물" if payload.get("kind") == "output" else "참고 자료")
+            elif kind == "task.material.attach_reference":
+                try:
+                    target = self._services.meetings().get(principal, UUID(str(payload["resource_id"]))) if payload.get("resource_type") == "meeting" else None
+                except (MeetingError, ResourceNotFound):
+                    target = None
+                self._text(
+                    fields,
+                    "material",
+                    "연결할 회의",
+                    target["meeting"]["title"] if target else "볼 수 없는 회의",
+                )
+                obsolete = obsolete or (target is None and action.state == "pending")
+            elif kind == "task.material.detach":
+                materials = self._services.materials().list(principal, UUID(str(payload["task_id"]))) if task else []
+                material = next((row for row in materials if row["binding_id"] == str(payload["binding_id"])), None)
+                self._text(fields, "material", "분리할 자료", material["name"] if material else "분리되었거나 볼 수 없는 자료")
+                self._text(fields, "original", "원본", "원본 파일은 보존됩니다")
+            elif kind == "task.reassign":
+                self._person(fields, "assignee", "새 담당자", payload.get("assignee_id"), principal)
+                self._text(fields, "reason", "변경 사유", payload.get("reason"))
+                self._text(fields, "acceptance", "다음 판단", "새 담당자가 수락해야 내 업무에 들어갑니다")
+            elif kind == "task.completion.submit":
+                self._text(fields, "summary", "결과 요약", payload.get("summary"))
+                if task is not None:
+                    wanted = {str(identifier) for identifier in payload.get("output_material_ids") or []}
+                    materials = self._services.materials().list(principal, UUID(str(payload["task_id"])))
+                    selected_names = [row["name"] for row in materials if row["material_id"] in wanted]
+                    self._text(fields, "output_materials", "결과 자료", " · ".join(selected_names) or "선택한 결과 자료 없음")
+                self._text(fields, "review", "다음 판단", "요청자가 결과를 확인한 뒤 완료로 인정합니다")
+            elif kind == "task.reference.add":
+                referenced = self._readable_task_title(payload.get("referenced_task_id"), principal)
+                self._text(fields, "reference", "참고할 업무", referenced or "볼 수 없는 업무")
+            else:
+                reference = next((row for row in (task or {}).get("references", []) if row["reference_id"] == payload["reference_id"]), None)
+                self._text(fields, "reference", "해제할 참고 업무", (reference.get("task") or {}).get("title") if reference else "해제된 참고 연결")
         elif kind in {"task.update", "task.transition"}:
             task_title = self._readable_task_title(payload.get("task_id"), principal)
             if task_title is not None:
                 subject = task_title
                 fields.append({"id": "task", "label": "대상 업무", "value": task_title, "kind": "text"})
             if kind == "task.update":
-                changes = dict(payload.get("changes") or {})
-                self._text(fields, "title", "제목", changes.get("title"))
-                self._text(fields, "description", "설명", changes.get("description"))
-                self._date(fields, "start_date", "시작일", changes.get("start_date"))
-                self._date(fields, "due_date", "기한", changes.get("due_date"))
+                changes = TaskUpdateCommand.model_validate(payload).model_dump(mode='json', exclude_unset=True, exclude={'task_id', 'expected_version'})
+                obsolete = task_title is None and action.state == 'pending'
+                for key, label in [('title', '제목'), ('description', '설명'), ('start_date', '시작일'), ('due_date', '기한')]:
+                    if key in changes:
+                        if key in {'start_date', 'due_date'} and changes[key]:
+                            self._date(fields, key, label, changes[key])
+                        else:
+                            self._text(fields, key, label, changes[key] or '삭제')
+                if 'project_id' in changes:
+                    name = '연결 해제'
+                    if changes['project_id']:
+                        try:
+                            name = self._services.projects().get(principal, UUID(changes['project_id']))['name']
+                        except ResourceNotFound:
+                            name = '볼 수 없는 프로젝트'
+                            obsolete = action.state == 'pending'
+                    self._text(fields, 'project', '프로젝트', name)
             else:
                 target = str(payload.get("target") or "")
                 if target:
@@ -1281,8 +1522,82 @@ class ActionPresenter:
                     "value": f"{len(payload.get('item_ids') or [])}단계를 다시 정렬", "kind": "text",
                 })
             self._checklist_step(fields, payload, principal)
-        elif kind in {"task.assignment.decline", "work_request.reject", "daily_report.submit"}:
+        elif kind == 'daily_report.submit':
+            self._text(fields, 'reason', '제출 사유', payload.get('reason'))
+            if action.state == 'pending':
+                obsolete = principal is None or DAILY_REPORT_SUBMIT not in principal.capabilities
+                if not obsolete:
+                    try:
+                        report = self._services.reports().submission_preview(principal, str(payload['report_id']), str(payload['draft_id']))
+                    except ResourceNotFound:
+                        obsolete = True
+                    else:
+                        subject = f"{report['report_date']} 일일보고"
+                        self._text(fields, 'body', '제출할 보고 본문', report['body'])
+                        self._text(fields, 'sources', '보고 근거', f"{len(report['source_refs'])}건")
+                        obsolete = report['draft_version'] != payload['expected_version']
+        elif kind in {"task.assignment.decline", "work_request.reject"}:
             self._text(fields, "reason", "사유", payload.get("reason"))
+        elif kind in {"action.material.link.stage", "action.material.draft.discard"}:
+            try:
+                subject = self._services.action_materials().target_title(principal, UUID(str(payload['action_item_id'])))
+            except ResourceNotFound:
+                subject = '닫혔거나 볼 수 없는 승인 항목'
+                obsolete = action.state == 'pending'
+            self._text(fields, 'target', '대상 승인 항목', subject)
+            if kind == "action.material.link.stage":
+                self._text(fields, 'name', '자료 이름', payload.get('label'))
+                self._text(fields, 'url', '링크 주소', payload.get('url'))
+                self._text(fields, 'claim', '최종 연결', '생성 승인에서 자료를 선택해야 업무·회의에 연결됩니다')
+            else:
+                drafts = self._services.action_materials().list(principal, UUID(str(payload['action_item_id']))) if not obsolete else []
+                draft = next((row for row in drafts if row['material_draft_id'] == str(payload['material_draft_id'])), None)
+                self._text(fields, 'material', '버릴 자료 초안', draft['name'] if draft else '버렸거나 볼 수 없는 자료 초안')
+        elif kind == "conversation.create":
+            subject = str(payload.get('title') or '새 대화')
+            self._text(fields, 'title', '대화 제목', subject)
+        elif kind in {"conversation.message.send", "conversation.turn.cancel", "conversation.turn.retry"}:
+            try:
+                subject = self._services.conversations().target_title(principal, UUID(str(payload['conversation_id'])))
+            except ResourceNotFound:
+                subject = '볼 수 없는 대화'
+                obsolete = action.state == 'pending'
+            self._text(fields, 'conversation', '대상 대화', subject)
+            if kind == "conversation.message.send":
+                self._text(fields, 'body', '메시지 본문', payload.get('body'))
+                self._text(fields, 'accepted', '접수 이후', '대화 작업에 접수되며 응답이 생성되는 동안 상태를 확인할 수 있습니다')
+                names = []
+                for reference in payload.get('context') or []:
+                    if reference['resource_type'] == 'task':
+                        name = self._readable_task_title(reference['resource_id'], principal)
+                    else:
+                        try:
+                            name = self._services.work_requests().get(principal, UUID(reference['resource_id']))['title']
+                        except (ResourceNotFound, WorkRequestAccessDenied):
+                            name = None
+                    names.append(f"{name or '볼 수 없는 맥락'} ({'내용 포함' if reference['included'] else '내용 제외'})")
+                self._text(fields, 'context', '선택한 맥락', ' · '.join(names) or '선택한 맥락 없음')
+            elif kind == "conversation.turn.retry":
+                self._text(fields, 'turn', '재시도 대상', payload.get('turn_id'))
+            else:
+                self._text(fields, 'cancel', '취소 대상', '현재 처리 중인 응답을 취소합니다')
+        elif kind == "notification.mark_read":
+            notification = next((row for row in self._services.notifications().list(principal) if row['notification_id'] == payload['notification_id']), None)
+            subject = notification['resource']['title'] if notification else '볼 수 없는 알림'
+            self._text(fields, 'notification', '대상 알림', subject)
+            obsolete = notification is None and action.state == 'pending'
+        elif kind == "assistant.character.set":
+            self._text(fields, 'character', '새 캐릭터', ASSISTANT_CHARACTER_LABELS.get(payload.get('character_key'), '지원하지 않는 캐릭터'))
+        elif kind == "work_request.comment.add":
+            try:
+                request = self._services.work_requests().get(principal, UUID(str(payload['request_id'])))
+            except ResourceNotFound:
+                request = None
+            subject = request['title'] if request else '볼 수 없는 업무 요청'
+            self._text(fields, 'request', '대상 요청', subject)
+            obsolete = request is None and action.state == 'pending'
+            self._text(fields, 'comment', '댓글 본문', payload.get('body'))
+            self._text(fields, 'decision', '요청 판단', '댓글은 수락·거절 판단을 바꾸지 않습니다')
         elif kind == "work_request.amend":
             self._text(fields, "title", "제목", payload.get("title"))
             self._text(fields, "description", "설명", payload.get("description"))
@@ -1297,6 +1612,10 @@ class ActionPresenter:
         elif kind == ACTION_ITEM_COMMAND:
             return self._action_item_command(action, payload, principal, fields)
 
+        if kind in RETIRED_ACTION_TYPES:
+            # No branch above claims a retired kind, so this sets `obsolete` rather than overriding one:
+            # a withdrawn contract stays readable, but nothing offers to run it again.
+            obsolete = action.state == "pending"
         self._evidence(fields, action, principal)
         result: dict[str, Any] = {
             "subject": subject,
@@ -1314,7 +1633,8 @@ class ActionPresenter:
                 if applied
                 else "반영된 항목 없음 · 항목 확인 필요"
             )
-        edit_contract = self._edit_contract(action, principal, payload)
+        # 대상이 사라진 제안은 거절만 남는다. 편집기를 함께 내려보내면 제출할 수 없는 화면이 선다.
+        edit_contract = None if obsolete else self._edit_contract(action, principal, payload)
         if edit_contract is not None:
             result["edit_contract"] = edit_contract
         return result
@@ -1326,13 +1646,8 @@ class ActionPresenter:
         payload: dict[str, Any],
     ) -> dict[str, Any] | None:
         """The closed, permission-safe editor contract for a canonical AX creation proposal."""
-        if principal is None or action.action_type not in {
-            "task.create_self",
-            "task.assign",
-            "work_request.create",
-            "meeting.create",
-            "task.progress.batch",
-        }:
+        # The same set `decide_ax_confirmation` accepts: an editor is only offered where a confirm can land.
+        if principal is None or action.action_type not in SUPPORTED_ACTION_TYPES:
             return None
         decision = self._session.get(DecisionItemRecord, action.id)
         if decision is None:
@@ -1344,6 +1659,8 @@ class ActionPresenter:
         )
         if submission is None:
             return None
+        if action.action_type in COMMAND_CONTRACTS:
+            return self._command_edit_contract(action, principal, payload, submission)
         if action.action_type == "task.progress.batch":
             try:
                 values = _normalize_task_progress_batch(payload)
@@ -1355,8 +1672,8 @@ class ActionPresenter:
                 "values": values,
                 "fields": [],
             }
-        if action.action_type == "meeting.create":
-            return self._meeting_edit_contract(action, principal, payload, submission)
+        if action.action_type == "meeting.reservation.create":
+            return self._meeting_edit_contract(principal, payload, submission)
         if action.action_type == "work_request.create":
             return self._work_request_edit_contract(principal, payload, submission)
         try:
@@ -1372,7 +1689,7 @@ class ActionPresenter:
         if action.action_type in {"task.create_self", "task.assign"}:
             reference_options = [
                 {"value": row["task_id"], "label": row["title"]}
-                for row in tasks.list_for(principal, include_closed=True, include_organization=True)
+                for row in tasks.readable_tasks(principal, include_closed=True)
             ]
         if action.action_type == "task.create_self":
             project_options = [
@@ -1470,6 +1787,90 @@ class ActionPresenter:
             "fields": fields,
         }
 
+    def _command_edit_contract(self, action: ActionItemRecord, principal: Principal, payload: dict[str, Any], submission: SubmissionRecord) -> dict[str, Any] | None:
+        if action.state != 'pending':
+            return None
+        contract = COMMAND_CONTRACTS[action.action_type]
+        values = contract.normalize(payload)
+        schema = contract.model.model_json_schema()
+        fields = []
+        labels = {'public': '공개', 'private': '비공개', 'input': '참고 자료', 'output': '산출물', 'lead': '담당', 'member': '참여', **ASSISTANT_CHARACTER_LABELS}
+        for key, definition in schema['properties'].items():
+            if key in contract.fixed_fields or (action.action_type == 'task.transition' and key == 'reason' and values['target'] != 'blocked'):
+                continue
+            shape = definition
+            if 'anyOf' in shape:
+                shape = next((item for item in shape['anyOf'] if item.get('type') != 'null'), {})
+            if '$ref' in shape:
+                shape = schema['$defs'][shape['$ref'].split('/')[-1]]
+            field = {'id': key, 'label': definition.get('title', key), 'required': key in schema.get('required', []), 'editable': True, 'empty_policy': contract.empty_policy(key, definition)}
+            if key in {'include_source_refs', 'exclude_source_refs'} and action.action_type == 'daily_report.edit':
+                field['type'] = 'source_select'
+                field['options'] = self._report_source_options(principal, values)
+            elif key == 'item_ids' and action.action_type == 'task.checklist.reorder':
+                field['type'] = 'ordered_select'
+                field['options'] = self._command_options(action.action_type, key, principal, values)
+            elif key in {'assignee_id', 'member_id', 'referenced_task_id', 'resource_id', 'output_material_ids', 'project_id'}:
+                field['type'] = 'multi_select' if shape.get('type') == 'array' else 'select'
+                field['options'] = self._command_options(action.action_type, key, principal, values)
+            elif 'enum' in shape:
+                field['type'] = 'select'
+                field['options'] = [{'value': str(value), 'label': labels.get(value, str(value))} for value in shape['enum']]
+            elif shape.get('type') == 'boolean':
+                field['type'] = 'boolean'
+            elif shape.get('format') in {'date', 'date-time'}:
+                field['type'] = 'date' if shape['format'] == 'date' else 'datetime'
+            elif shape.get('type') == 'array':
+                field['type'] = 'string_list'
+            else:
+                field['type'] = 'textarea' if key in {'body', 'description', 'reason', 'summary'} else 'text'
+            fields.append(field)
+        return {'editor': 'command', 'base_submission_version': int(submission.submission_version), 'values': values, 'fields': fields}
+
+    def _report_source_options(self, principal: Principal, values: dict[str, Any]) -> list[dict[str, str]]:
+        sources = [*values['include_source_refs'], *values['exclude_source_refs']]
+        if DAILY_REPORT_READ in principal.capabilities:
+            history = self._services.reports().history(principal, str(values['report_id']))
+            for draft in history['drafts']:
+                sources.extend(draft['source_refs'])
+        options = {}
+        for source in sources:
+            key = (source['task_id'], source['task_version'], source['occurred_at'])
+            title = self._readable_task_title(source['task_id'], principal) or '기존 보고 근거'
+            options[key] = {'value': json.dumps(source, ensure_ascii=False, sort_keys=True), 'label': f"{title} · v{source['task_version']} · {source['occurred_at']}"}
+        return list(options.values())
+
+    def _command_options(self, action_type: str, key: str, principal: Principal, values: dict[str, Any]) -> list[dict[str, str]]:
+        try:
+            if key == 'item_ids':
+                return [{'value': row['item_id'], 'label': row['text']} for row in self._services.tasks().get(principal, UUID(values['task_id'])).get('checklist', [])]
+            if key == 'project_id':
+                if 'project.read' not in principal.capabilities:
+                    return []
+                return [{'value': row['project_id'], 'label': row['name']} for row in self._services.projects().list(principal)]
+            if key == 'assignee_id':
+                if action_type == 'task.reassign':
+                    rows = self._services.assignments().candidates(principal)
+                    rows = [*rows, {'id': str(principal.id), 'display_name': principal.display_name}]
+                else:
+                    rows = self._services.organization().work_request_assignee_candidates(principal)
+                return [{'value': str(row['id']), 'label': row['display_name']} for row in rows]
+            if key == 'member_id':
+                return [{'value': str(row['id']), 'label': row['display_name']} for row in self._services.organization().member_candidates(principal)]
+            if key == 'referenced_task_id':
+                return [{'value': row['task_id'], 'label': row['title']} for row in self._services.tasks().readable_tasks(principal, include_closed=True) if row['task_id'] != values.get('task_id')]
+            if key == 'resource_id':
+                return [
+                    {'value': row['meeting_id'], 'label': row['title']}
+                    for row in self._services.meetings().list(principal)
+                    if row.get('kind') == 'meeting'
+                ]
+            if key == 'output_material_ids':
+                return [{'value': row['material_id'], 'label': row['name']} for row in self._services.materials().list(principal, UUID(values['task_id'])) if row['kind'] == 'output']
+        except (ResourceNotFound, TaskAccessDenied):
+            return []
+        return []
+
     def _work_request_edit_contract(
         self,
         principal: Principal,
@@ -1483,11 +1884,7 @@ class ActionPresenter:
         organization = self._services.organization()
         reference_options = [
             {"value": row["task_id"], "label": row["title"]}
-            for row in self._tasks_for_principal(principal).list_for(
-                principal,
-                include_closed=True,
-                include_organization=True,
-            )
+            for row in self._tasks_for_principal(principal).readable_tasks(principal, include_closed=True)
         ]
         assignee_options = [
             {"value": row["id"], "label": row["display_name"]}
@@ -1543,106 +1940,43 @@ class ActionPresenter:
 
     def _meeting_edit_contract(
         self,
-        action: ActionItemRecord,
         principal: Principal,
         payload: dict[str, Any],
         submission: SubmissionRecord,
     ) -> dict[str, Any]:
         try:
-            values = normalize_meeting_draft({key: value for key, value in payload.items() if key != "attachment_draft_ids"})
-        except (MeetingError, TypeError, ValueError) as error:
+            values = MeetingReservationInput.model_validate(
+                {key: value for key, value in payload.items() if key != "attachment_draft_ids"}
+            ).model_dump(mode="json")
+        except (TypeError, ValueError) as error:
             raise ActionError(str(error)) from error
         organizations = SqlAlchemyOrganizationRepository(self._session)
-        profile = organizations.profile_for(str(principal.id)) or {"organizations": []}
-        organization_options = [
-            {"value": str(row["id"]), "label": str(row["name"])}
-            for row in profile.get("organizations", [])
-            if str(row["id"]) in principal.organization_scope
-        ]
-        meeting_repository = SqlAlchemyMeetingRepository(self._session)
-        organization_ids = [str(option["value"]) for option in organization_options]
-        attendee_options = []
-        for row in organizations.member_directory():
-            memberships = [
-                organization_id
-                for organization_id in organization_ids
-                if meeting_repository.is_active_member_in_organization(str(row["id"]), organization_id)
-            ]
-            if memberships:
-                attendee_options.append({
-                    "value": row["id"],
-                    "label": row["display_name"],
-                    "organization_ids": memberships,
-                })
-        reference_options = [
-            {"value": row["task_id"], "label": row["title"]}
-            for row in self._tasks_for_principal(principal).list_for(
-                principal,
-                include_closed=True,
-                include_organization=True,
-            )
+        attendee_options = [
+            {"value": str(row["id"]), "label": str(row["display_name"])}
+            for row in organizations.member_directory()
+            if organizations.principal_for(str(row["id"])) is not None
         ]
         fields: list[dict[str, Any]] = [
-            {
-                "id": "organization_id", "label": "조직", "type": "select", "required": True,
-                "editable": True, "options": organization_options,
-            },
-            {"id": "title", "label": "회의 명", "type": "text", "required": True, "editable": True},
-            {"id": "description", "label": "내용", "type": "textarea", "required": False, "editable": True},
+            {"id": "title", "label": "회의 명", "type": "text", "required": False, "editable": True},
+            {"id": "purpose", "label": "목적", "type": "textarea", "required": False, "editable": True},
             {"id": "starts_at", "label": "시작", "type": "datetime", "required": True, "editable": True},
             {"id": "ends_at", "label": "종료", "type": "datetime", "required": True, "editable": True},
-            {
-                "id": "visibility", "label": "공개 범위", "type": "select", "required": True,
-                "editable": True,
-                "options": [{"value": "private", "label": "비공개"}, {"value": "public", "label": "공개"}],
-            },
-            {
-                "id": "host_id", "label": "주최자", "type": "person", "required": True,
-                "editable": False, "value": str(principal.id), "label_value": principal.display_name,
-            },
-            {
-                "id": "attendee_ids", "label": "참석자", "type": "multi_select", "required": False,
-                "editable": True, "options": attendee_options,
-            },
-            {
-                "id": "reference_task_ids", "label": "참고 업무", "type": "multi_select", "required": False,
-                "editable": True, "options": reference_options,
-            },
-            {
-                "id": "include_initial_note", "label": "회의록 초안도 만들기", "type": "boolean",
-                "required": False, "editable": True,
-            },
-            {
-                "id": "initial_note_body", "label": "회의록 초안", "type": "textarea",
-                "required": False, "editable": True,
-            },
+            {"id": "location", "label": "장소", "type": "text", "required": False, "editable": True},
+            {"id": "attendee_ids", "label": "참석자", "type": "multi_select", "required": False,
+             "editable": True, "options": attendee_options},
+            {"id": "external_attendees", "label": "외부 참석자", "type": "string_list",
+             "required": False, "editable": True},
+            {"id": "agendas", "label": "안건", "type": "object_list", "required": False, "editable": True},
+            {"id": "carried_from_meeting_id", "label": "이어온 회의", "type": "text",
+             "required": False, "editable": True},
+            {"id": "room_id", "label": "회의실 번호", "type": "number", "required": False, "editable": True},
         ]
-        overlap_count = 0
-        if values["organization_id"] in principal.organization_scope:
-            overlap_count = int(
-                self._session.scalar(
-                    select(func.count())
-                    .select_from(MeetingRecord)
-                    .where(
-                        MeetingRecord.organization_id == values["organization_id"],
-                        MeetingRecord.starts_at < _parse_datetime(values["ends_at"]),
-                        MeetingRecord.ends_at > _parse_datetime(values["starts_at"]),
-                        # 새 모델의 상태 열은 `status` 이고 취소는 그 여섯 값 중 하나다 (SCAX-SPEC-004 §5.1).
-                        MeetingRecord.status != "cancelled",
-                    )
-                )
-                or 0
-            )
         return {
             "editor": "meeting",
             "base_submission_version": int(submission.submission_version),
             "values": values,
             "fields": fields,
-            "warnings": (
-                [f"같은 조직에 시간이 겹치는 일정이 {overlap_count}건 있습니다."]
-                if overlap_count
-                else []
-            ),
+            "warnings": [],
         }
 
     def _tasks_for_principal(self, principal: Principal) -> TaskApplication:
@@ -1664,10 +1998,16 @@ class ActionPresenter:
 
         repository = SqlAlchemyTaskRepository(self._session)
         try:
-            task = repository.task(UUID(str(task_id)), str(principal.id))
-        except Exception:  # not this person's task: the card says nothing about it
+            identifier = UUID(str(task_id))
+        except (TypeError, ValueError):
             return None
-        for item in repository.checklist_for(task.id, include_archived=True):
+        try:
+            task = self._services.tasks().get(principal, identifier)
+        except (ResourceNotFound, TaskAccessDenied):
+            return None
+        if task.get("access") != "owner":
+            return None
+        for item in repository.checklist_for(identifier, include_archived=True):
             if str(item.id) == str(item_id):
                 return str(item.text)
         return None

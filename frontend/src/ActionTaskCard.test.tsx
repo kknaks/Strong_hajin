@@ -402,6 +402,10 @@ describe("AX Task proposal card", () => {
     expect(within(container).getByText("업로드 중…")).toBeTruthy();
     expect((within(container).getByRole("button", { name: "저장" }) as HTMLButtonElement).disabled).toBe(true);
 
+    const leaving = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(leaving);
+    expect(leaving.defaultPrevented).toBe(true);
+    expect(within(container).getByRole('button', { name: '취소' }).hasAttribute('disabled')).toBe(true);
     rejectUpload(new Error("storage unavailable"));
     await waitFor(() => expect(within(container).getByText(/실패 · storage unavailable/)).toBeTruthy());
     expect((within(container).getByRole("button", { name: "저장" }) as HTMLButtonElement).disabled).toBe(true);

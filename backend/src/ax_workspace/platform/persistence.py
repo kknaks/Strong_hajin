@@ -11,6 +11,25 @@ class Base(DeclarativeBase):
     pass
 
 
+class BrowserInteractionRecord(Base):
+    __tablename__ = 'browser_interactions'
+    __table_args__ = (UniqueConstraint('owner_id', 'request_key', name='uq_browser_request_owner_key'),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    owner_id: Mapped[str] = mapped_column(ForeignKey('members.id'), nullable=False)
+    request_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    target: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    result: Mapped[dict | None] = mapped_column(JSON)
+    file_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    reservation_id: Mapped[UUID | None] = mapped_column(ForeignKey('action_material_drafts.id'))
+    capture_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class OrganizationUnitTypeRecord(Base):
     """ERD ORGANIZATION_UNIT_TYPE — organization vocabulary (회사·본부·실·팀·파트); depth is not tied to type."""
 
@@ -301,6 +320,35 @@ class MeetingRecord(Base):
     # 「진행 중」으로 옮긴 실제 시각 — 예정 시각과 다르다. 확정 발화의 `at_ms` 가 이 값을 기준으로 잰다.
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MeetingRoomCreationAttemptRecord(Base):
+    """Durable fence for one outbound room-create attempt.
+
+    The provider has no lookup or idempotency API.  A pending row therefore means a
+    process may have sent the POST and lost its response; a replay must never send it
+    again.  ``meeting_id`` turns a repeated HTTP submit into the original local
+    Meeting once the local transaction has completed.
+    """
+
+    __tablename__ = "meeting_room_creation_attempts"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "request_key", name="uq_meeting_room_creation_owner_key"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    request_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)  # pending | booked | compensated | needs_verification | refused
+    reservation: Mapped[dict | None] = mapped_column(JSON)
+    failure_reason: Mapped[str | None] = mapped_column(String(100))
+    failure_message: Mapped[str | None] = mapped_column(String(1000))
+    available_rooms: Mapped[list | None] = mapped_column(JSON)
+    meeting_id: Mapped[UUID | None] = mapped_column(ForeignKey("meetings.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -1138,6 +1186,8 @@ class MaterialExtractionRecord(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
     failure_reason: Mapped[str | None] = mapped_column(String(40))
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    worker_token: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     char_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     page_count: Mapped[int | None] = mapped_column(Integer)
@@ -1145,6 +1195,26 @@ class MaterialExtractionRecord(Base):
     coverage: Mapped[dict | None] = mapped_column(JSON)
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MaterialExtractionAttemptRecord(Base):
+    """Durable outcome of each owner-fenced extraction attempt."""
+
+    __tablename__ = "material_extraction_attempts"
+    __table_args__ = (
+        UniqueConstraint("extraction_id", "attempt_number", name="uq_material_extraction_attempt_number"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    extraction_id: Mapped[UUID] = mapped_column(ForeignKey("material_extractions.id"), nullable=False, index=True)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor_id: Mapped[str | None] = mapped_column(String(100))
+    owner_token: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    failure_reason: Mapped[str | None] = mapped_column(String(40))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
@@ -1485,6 +1555,61 @@ class ReportDraftRecord(Base):
     workflow_run_id: Mapped[UUID] = mapped_column(ForeignKey("workflow_runs.id"), nullable=False)
     definition_version_id: Mapped[UUID] = mapped_column(ForeignKey("workflow_definition_versions.id"), nullable=False)
     causation_key: Mapped[str | None] = mapped_column(String(128))
+
+
+class DailyReportGenerationRecord(Base):
+    __tablename__ = "daily_report_generations"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "causation_key", name="uq_daily_report_generation_owner_causation"),
+        Index("ix_daily_report_generation_owner_date", "owner_id", "report_date", "created_at"),
+        Index(
+            "uq_daily_report_generation_active_owner_date",
+            "owner_id",
+            "report_date",
+            unique=True,
+            postgresql_where=text("state IN ('queued', 'running')"),
+            sqlite_where=text("state IN ('queued', 'running')"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    owner_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    report_date: Mapped[str] = mapped_column(String(10), nullable=False)
+    causation_key: Mapped[str | None] = mapped_column(String(128))
+    state: Mapped[str] = mapped_column(String(30), nullable=False, default="queued")
+    report_id: Mapped[UUID | None] = mapped_column(ForeignKey("daily_reports.id"))
+    draft_id: Mapped[UUID | None] = mapped_column(ForeignKey("report_drafts.id"))
+    workflow_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("workflow_runs.id"))
+    retry_of_generation_id: Mapped[UUID | None] = mapped_column(ForeignKey("daily_report_generations.id"))
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lease_token: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    stage: Mapped[str | None] = mapped_column(String(30))
+    stage_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DailyReportGenerationAttemptRecord(Base):
+    __tablename__ = "daily_report_generation_attempts"
+    __table_args__ = (
+        UniqueConstraint("generation_id", "attempt_number", name="uq_daily_report_generation_attempt_number"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    generation_id: Mapped[UUID] = mapped_column(ForeignKey("daily_report_generations.id"), nullable=False, index=True)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    owner_token: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    stage: Mapped[str] = mapped_column(String(30), nullable=False)
+    state: Mapped[str] = mapped_column(String(30), nullable=False, default="running")
+    failure_reason: Mapped[str | None] = mapped_column(String(80))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ReportAuditEventRecord(Base):

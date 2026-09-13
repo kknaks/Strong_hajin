@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getMemberDirectory, getMyWork, getSession, getWorkRequests, logout, setAssistantCharacterPreference } from "./api";
+import { BrowserOperationScope, hasPendingBrowserOperation } from './browserOperationGuard';
 import { AssistantLauncher } from "./AssistantCharacter";
 import { AssistantCharacterPicker } from "./AssistantCharacterPicker";
 import {
@@ -9,6 +10,7 @@ import {
   initialAssistantCompletionObservation,
 } from "./assistantPresentation";
 import { CalendarPage } from "./CalendarPage";
+import { BrowserInteractionPage } from './BrowserInteractionPage';
 import { ChatDrawer, contextKey, type LabeledContextReference } from "./chat/ChatDrawer";
 import { NEW_DRAFT_KEY, useConversations } from "./chat/useConversations";
 import { DailyReportPage } from "./DailyReportPage";
@@ -48,6 +50,7 @@ const surfaceLabel: Record<ProductSurface, string> = {
 };
 
 export default function App() {
+  const [browserInteractionId, setBrowserInteractionId] = useState(() => new URLSearchParams(window.location.search).get('interaction'));
   const [session, setSession] = useState<OrganizationProfile | null | undefined>(undefined);
   const [focusTaskId, setFocusTaskId] = useState<string | null>(null);
   const [focusWorkRequestId, setFocusWorkRequestId] = useState<string | null>(null);
@@ -72,9 +75,15 @@ export default function App() {
   }, []);
   const capabilities = session?.capabilities ?? null;
   const organizationNames = session?.organizations.map((organization) => organization.name) ?? [];
-  const [surface, setSurface] = useState<ProductSurface>("today");
+  const [surface, changeSurface] = useState<ProductSurface>("today");
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  function canNavigate(scope?: 'workspace' | 'chat') {
+    if (!hasPendingBrowserOperation(scope)) return true;
+    setToast('파일 업로드나 녹음이 끝난 뒤 이동할 수 있습니다.');
+    return false;
+  }
+  const setSurface = (next: ProductSurface) => { if (canNavigate('workspace')) changeSurface(next); };
   // 1280 단에서만 쓰이는 사이드바 덮개. 그 위 폭에서는 CSS 가 사이드바를 늘 보이게 해서 값이 무시된다.
   const [railOpen, setRailOpen] = useState(false);
   const [isAxOpen, setIsAxOpen] = useState(false);
@@ -151,6 +160,7 @@ export default function App() {
   }
 
   async function endSession() {
+    if (!canNavigate()) return;
     try {
       await logout();
     } catch {
@@ -337,6 +347,13 @@ export default function App() {
       />
     );
   }
+
+  if (browserInteractionId) return <BrowserInteractionPage key={browserInteractionId} interactionId={browserInteractionId} onClose={() => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('interaction');
+    window.history.replaceState(null, '', url);
+    setBrowserInteractionId(null);
+  }} />;
 
   return (
     <main className="thesc-shell">
@@ -557,6 +574,7 @@ export default function App() {
       )}
 
       {isAxOpen && (
+        <BrowserOperationScope.Provider value="chat">
         <ChatDrawer
           activeConversation={chat.activeConversation}
           assistantState={assistantState}
@@ -568,7 +586,7 @@ export default function App() {
           message={chat.draft}
           onCancel={() => void chat.cancelActive()}
           onClearContext={() => setSelectedContextKey("")}
-          onClose={() => setIsAxOpen(false)}
+          onClose={() => { if (canNavigate('chat')) setIsAxOpen(false); }}
           onDecide={decideConversationAction}
           onDiscardFragment={chat.discardFragment}
           onFollowUpCandidate={(candidate) => {
@@ -580,6 +598,7 @@ export default function App() {
           onMessageChange={(value) => chat.setDraft(value)}
           onRetryFragment={(fragment) => void chat.retryFragment(fragment)}
           onOpenResource={(resource) => {
+            if (!canNavigate()) return;
             // Each item opens where it lives. The surface reads it again with this person's access.
             setIsAxOpen(false);
             if (resource.resource_type === "task") {
@@ -614,26 +633,29 @@ export default function App() {
             if (resource.resource_type === "report") setSurface("report");
           }}
           onOpenTask={(taskId) => {
+            if (!canNavigate()) return;
             setIsAxOpen(false);
             setSurface("work");
             setFocusTaskId(taskId);
           }}
           /* 채팅이 「회의 열기」를 누르면 회의 상세로 간다 (WP-006) — main 이 쓰던 달력 + MeetingDrawer 자리다 */
           onOpenMeeting={(meetingId) => {
+            if (!canNavigate()) return;
             setIsAxOpen(false);
             setSurface("meetings");
             setOpenMeetingId(meetingId);
           }}
           onRetryList={() => void chat.refreshConversations().catch(() => setError("AX 대화를 불러오지 못했습니다."))}
           onRetryTurn={(turnId) => void chat.retryTurn(turnId)}
-          onSelect={chat.select}
+          onSelect={(conversation) => { if (canNavigate('chat')) chat.select(conversation); }}
           onSend={(body) => void sendMessage(body)}
-          onStart={() => void chat.start()}
+          onStart={() => { if (canNavigate('chat')) void chat.start(); }}
           personaId={personaId}
           personaName={currentPersonaName}
           selectedContext={selectedContext}
           surfaceLabel={surfaceLabel[surface]}
         />
+        </BrowserOperationScope.Provider>
       )}
     </main>
   );

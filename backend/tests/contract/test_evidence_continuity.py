@@ -218,7 +218,7 @@ def test_the_judgement_ledger_reads_the_same_basis_the_request_timeline_does(tmp
     assert detail["rounds"][0]["decisions"][0]["evidence_hash"] == timeline["review_decisions"][0]["evidence_hash"]
     assert detail["rounds"][1]["decisions"] == []
     # Someone with no relationship to the request learns nothing about its basis.
-    assert client.get(f"/api/action-items/{item['action_item_id']}", headers={"X-Demo-Persona": "sora"}).status_code in {403, 422}
+    assert client.get(f"/api/action-items/{item['action_item_id']}", headers={"X-Demo-Persona": "sora"}).status_code == 404
 
 
 def test_a_judgement_that_did_not_happen_freezes_nothing(tmp_path) -> None:
@@ -252,7 +252,6 @@ def test_every_way_of_answering_freezes_the_same_basis(tmp_path, monkeypatch) ->
     from ax_workspace.platform.persistence import ConversationTurnRecord
 
     client, database_url, settings = _stack(tmp_path)
-    application = client.app.state.workflow_application
     frozen: dict[str, str] = {}
 
     # 1) the per-kind REST endpoint the product kept for compatibility

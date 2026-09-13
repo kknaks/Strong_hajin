@@ -26,8 +26,9 @@ async function logOut(page) {
 
 async function selectProject(page) {
   await openProjects(page);
+  await page.locator(".project-detail[data-project-id]").waitFor();
   await page.getByRole("button", { name: projectName }).click();
-  await page.getByText(projectName, { exact: true }).last().waitFor();
+  await page.locator(".project-detail").getByText(projectName, { exact: true }).waitFor();
 }
 
 async function attachHyeon(page, kind) {
@@ -47,7 +48,7 @@ try {
   await page.getByRole("button", { name: "새 프로젝트" }).click();
   await page.getByLabel("이름").fill(projectName);
   await page.getByRole("button", { name: "열기", exact: true }).click();
-  await page.getByText(projectName, { exact: true }).last().waitFor();
+  await page.locator(".project-detail").getByText(projectName, { exact: true }).waitFor();
   await attachHyeon(page, "member");
 
   await logOut(page);

@@ -6,6 +6,10 @@ module already writes, so an adjustment round is the same ActionItem with a late
 """
 from __future__ import annotations
 
+from ax_workspace.modules.actions.results import ActionRoundView, ActionDiscussionView
+
+from ax_workspace.modules.ax_execution.command_contracts import COMMAND_CONTRACTS
+
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -17,11 +21,14 @@ from ax_workspace.modules.actions.domain import (
     AWAITING_REVIEW,
     AWAITING_REVISION,
     RESOLVED,
+    ActionCommand,
     ActionEnvelope,
     ActionError,
     ActionNotFound,
 )
 from ax_workspace.modules.actions.confirmation import (
+    ATTACHABLE_ACTION_TYPES,
+    SUPPORTED_ACTION_TYPES,
     AxConfirmationContext,
     AxReplayContext,
     decide_ax_confirmation,
@@ -37,6 +44,7 @@ from ax_workspace.modules.actions.payloads import (
     suggested_changes,
 )
 from ax_workspace.modules.actions.policy import (
+    RETIRED_ACTION_TYPES,
     AssignmentActionContext,
     AxProposalActionContext,
     DeliveryActionContext,
@@ -59,7 +67,12 @@ from ax_workspace.modules.organization_access.domain import (
     TASK_READ,
     Principal,
 )
-from ax_workspace.platform.actions import ActionEvidenceReader, ActionPresenter, ActionServices
+from ax_workspace.platform.actions import (
+    ActionEvidenceReader,
+    ActionPresenter,
+    ActionServices,
+    action_result_view,
+)
 from ax_workspace.modules.ax_execution.actions import action_payload_hash
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
 from ax_workspace.modules.work.requests import (
@@ -77,6 +90,7 @@ from ax_workspace.platform.persistence import (
     ResourceRelationshipRecord,
     ReviewAssignmentRecord,
     EvidenceRecord,
+    MeetingRoomCreationAttemptRecord,
     ReviewDecisionRecord,
     SubjectVersionRecord,
     SubmissionRecord,
@@ -143,7 +157,7 @@ class WorkRequestActionHandler:
         decision_item, request = item
         return self._build(decision_item, request, principal, pending_only=False)
 
-    def rounds(self, item: tuple[Any, Any], principal: Principal) -> list[dict[str, Any]]:
+    def rounds(self, item: tuple[Any, Any], principal: Principal) -> list[ActionRoundView]:
         decision_item, request = item
         self._require_participant(request, principal)
         submissions = self._session.scalars(
@@ -333,7 +347,7 @@ class WorkRequestActionHandler:
             )
         ).all()
         if member_id not in set(related):
-            raise ActionAccessDenied("principal cannot read this action item")
+            raise ActionNotFound("action item was not found")
 
     def pending(self, principal: Principal) -> list[ActionEnvelope]:
         rows = self._session.execute(
@@ -384,7 +398,7 @@ class WorkRequestActionHandler:
             extra={"suggested_changes": self._suggested_changes(submission)},
         )
 
-    def discussion(self, item: tuple[Any, Any], principal: Principal) -> list[dict[str, Any]]:
+    def discussion(self, item: tuple[Any, Any], principal: Principal) -> list[ActionDiscussionView]:
         _, request = item
         self._require_participant(request, principal)
         return self._work_requests.discussion(principal, request.id)
@@ -444,6 +458,7 @@ class AxProposalActionHandler:
         evidence_reader: ActionEvidenceReader | None = None,
     ) -> None:
         self._session = session
+        self._services = services
         self._presenter = ActionPresenter(
             session,
             services=services,
@@ -460,10 +475,10 @@ class AxProposalActionHandler:
         except ValueError:
             return None
 
-    def rounds(self, item: Any, principal: Principal) -> list[dict[str, Any]]:
+    def rounds(self, item: Any, principal: Principal) -> list[ActionRoundView]:
         """Read the immutable canonical submissions; legacy rows remain a read-only compatibility fallback."""
         if str(item.owner_id) != str(principal.id):
-            raise ActionAccessDenied("principal cannot read this action item")
+            raise ActionNotFound("action item was not found")
         decision_item = self._decision(item)
         if decision_item is not None:
             submissions = self._session.scalars(
@@ -566,22 +581,28 @@ class AxProposalActionHandler:
             if current is None:
                 raise ActionError("canonical AX submission was not found")
             version = self._session.get(SubjectVersionRecord, current.subject_version_id)
-            draft = payload.get("draft") if payload.get("draft") is not None else (dict(version.snapshot) if version else {})
-            if item.action_type in {
-                "task.create_self", "task.assign", "work_request.create", "meeting.create", "task.progress.batch"
-            }:
-                frozen = dict(version.snapshot) if version is not None and item.action_type == "meeting.create" else None
+            recovery_payload = self._unresolved_room_creation_payload(item)
+            draft = (
+                payload.get("draft")
+                if payload.get("draft") is not None
+                else recovery_payload or (dict(version.snapshot) if version else {})
+            )
+            if item.action_type in SUPPORTED_ACTION_TYPES:
                 normalized_draft = _normalize_ax_draft(
                     item.action_type,
                     draft,
-                    frozen_meeting_source=frozen,
                     requester_id=str(item.owner_id),
                 )
                 if item.action_type == "task.create_self" and not normalized_draft.get("due_date"):
                     raise ActionError("업무 기한을 입력해 주세요")
                 normalized["draft"] = normalized_draft
-                if item.action_type in {"task.create_self", "task.assign", "meeting.create"}:
-                    normalized["attachment_draft_ids"] = attachment_draft_ids(payload.get("attachment_draft_ids"))
+                if item.action_type in ATTACHABLE_ACTION_TYPES:
+                    attachment_source = (
+                        payload.get("attachment_draft_ids")
+                        if "attachment_draft_ids" in payload
+                        else (recovery_payload or {}).get("attachment_draft_ids")
+                    )
+                    normalized["attachment_draft_ids"] = attachment_draft_ids(attachment_source)
             elif payload.get("draft") is not None:
                 raise ActionError("이 AX 제안은 수정 가능한 초안을 받지 않습니다")
         elif (
@@ -602,6 +623,10 @@ class AxProposalActionHandler:
             self._assignments.cancel(principal, assignment.id)
             return
         if command in {"approve", "reject"}:
+            if command == "reject":
+                self._services.validate_action_rejection(
+                    principal, str(item.id), item.action_type
+                )
             if command == "reject" and self._material_drafts is not None:
                 for draft in self._material_drafts.list(principal, item.id):
                     if draft["state"] == "staged":
@@ -612,7 +637,7 @@ class AxProposalActionHandler:
             raise ActionError(f"unsupported command {command}")
         self._confirm(principal, item, payload)
 
-    def discussion(self, item: Any, principal: Principal) -> list[dict[str, Any]]:
+    def discussion(self, item: Any, principal: Principal) -> list[ActionDiscussionView]:
         """An AX proposal is judged on its preview and evidence; it carries no comment thread."""
         return []
 
@@ -670,25 +695,45 @@ class AxProposalActionHandler:
 
     def envelope(self, record: ActionItemRecord, principal: Principal) -> ActionEnvelope:
         if str(record.owner_id) != str(principal.id):
-            raise ActionAccessDenied("principal cannot read this action item")
+            raise ActionNotFound("action item was not found")
         decision = self._decision(record)
         submission = self._current_submission(record)
         version = self._session.get(SubjectVersionRecord, submission.subject_version_id) if submission is not None else None
+        recovery_payload = self._unresolved_room_creation_payload(record)
         presented = self._presenter.present(
             record,
             principal,
-            payload_override=dict(version.snapshot) if version is not None else None,
+            payload_override=recovery_payload or (dict(version.snapshot) if version is not None else None),
         )
+        if recovery_payload is not None:
+            presented["preview"] = [
+                *presented["preview"],
+                {
+                    "id": "room_reservation_recovery",
+                    "label": "회의실 예약 상태",
+                    "value": "이전에 시도한 예약 결과 확인 필요",
+                    "kind": "status",
+                },
+            ]
         resolved = decision is not None and decision.status == "resolved"
         pending = record.state == "pending" and not resolved
         assignment = self._assignment(record)
+        visible_result = action_result_view(record.result)
         return ActionEnvelope(
             action_item_id=str(record.id),
             kind=f"ax.{record.action_type}",
             status=AWAITING_REVIEW if pending else RESOLVED,
             subject=str(presented["subject"]),
             operation_label=str(presented["operation_label"]),
-            current_question="AX가 준비한 변경을 확정할지 결정하세요" if pending else "이 제안은 이미 판단이 끝났습니다",
+            current_question=(
+                RETIRED_ACTION_TYPES[record.action_type]
+                if pending and record.action_type in RETIRED_ACTION_TYPES
+                else "이전에 시도한 회의실 예약을 확인 필요 회의로 기록하세요"
+                if pending and recovery_payload is not None
+                else "AX가 준비한 변경을 확정할지 결정하세요"
+                if pending
+                else "이 제안은 이미 판단이 끝났습니다"
+            ),
             preview=list(presented["preview"]),
             allowed_commands=available_ax_proposal_commands(
                 AxProposalActionContext(
@@ -699,6 +744,7 @@ class AxProposalActionHandler:
                     obsolete=bool(presented.get("obsolete")),
                     assignment_status=str(assignment.status) if assignment is not None else None,
                     assigned_by=str(assignment.assigned_by) if assignment is not None else None,
+                    allow_reject=recovery_payload is None,
                 ),
                 principal,
             ),
@@ -706,21 +752,38 @@ class AxProposalActionHandler:
             waiting_on=self._members.waiting_on(str(record.owner_id)) if pending else None,
             resource={"type": "action", "id": str(record.id)},
             expected_version=int(record.version),
+            compatibility_commands=[ActionCommand('approve', '승인', 'primary')]
+            if pending and ACTION_DECIDE in principal.capabilities and not presented.get('obsolete') and record.action_type in COMMAND_CONTRACTS else [],
             # Closing the round trip and carrying the same server-authored editor contract as the chat projection.
             extra={
                 "derived_task_id": self._derived_task_id(record),
                 "derived_meeting_id": self._derived_meeting_id(record),
                 "material_drafts": self._material_drafts.list(principal, record.id) if self._material_drafts else [],
                 "material_results": list((record.result or {}).get("material_results") or []),
-                **(
-                    {"execution_result": dict(record.result)}
-                    if record.action_type == "task.progress.batch" and isinstance(record.result, dict)
-                    else {}
-                ),
+                **({"execution_result": visible_result} if visible_result is not None else {}),
                 **({"result_summary": presented["result_summary"]} if presented.get("result_summary") else {}),
                 **({"edit_contract": presented["edit_contract"]} if presented.get("edit_contract") is not None else {}),
             },
         )
+
+    def _unresolved_room_creation_payload(
+        self, record: ActionItemRecord
+    ) -> dict[str, Any] | None:
+        if record.action_type != "meeting.reservation.create" or record.state != "pending":
+            return None
+        attempt = self._session.scalar(
+            select(MeetingRoomCreationAttemptRecord)
+            .where(
+                MeetingRoomCreationAttemptRecord.owner_id == str(record.owner_id),
+                MeetingRoomCreationAttemptRecord.request_key.like(f"action:{record.id}:%"),
+                MeetingRoomCreationAttemptRecord.meeting_id.is_(None),
+                MeetingRoomCreationAttemptRecord.status.in_(
+                    ("pending", "booked", "needs_verification")
+                ),
+            )
+            .order_by(MeetingRoomCreationAttemptRecord.updated_at.desc())
+        )
+        return dict(attempt.request_payload) if attempt is not None and attempt.request_payload else None
 
     def _assignment(self, record: ActionItemRecord) -> TaskAssignmentRecord | None:
         if record.action_type != "task.assign" or not isinstance(record.result, dict):
@@ -739,7 +802,7 @@ class AxProposalActionHandler:
             .execution_options(populate_existing=True)
         )
         if locked is None:
-            raise ActionAccessDenied("action was not found")
+            raise ActionNotFound("action item was not found")
         if locked.state != "pending":
             if self.is_replay(locked, principal, "confirm", payload):
                 return
@@ -768,6 +831,26 @@ class AxProposalActionHandler:
         if decision_item is None or submission is None:  # pragma: no cover - rejected by the pure plan above
             raise ActionError("action is no longer pending")
         attachment_ids = list(decision.attachment_draft_ids)
+        if attachment_ids:
+            if self._material_drafts is None:
+                raise ActionError("action material staging is not available")
+            owner_type = "meeting" if locked.action_type == "meeting.reservation.create" else "task"
+            self._material_drafts.validate_claim(
+                principal, locked.id, [UUID(value) for value in attachment_ids], owner_type
+            )
+        prepared_final = self._services.prepare_action(
+            principal,
+            str(locked.id),
+            locked.action_type,
+            {
+                **decision.final_draft,
+                **(
+                    {"_attachment_draft_ids": attachment_ids}
+                    if locked.action_type in ATTACHABLE_ACTION_TYPES
+                    else {}
+                ),
+            },
+        )
         selected = submission
         now = datetime.now(UTC)
         superseded_assignment_id: UUID | None = None
@@ -856,7 +939,14 @@ class AxProposalActionHandler:
         self._actions.execute_confirmed(
             principal,
             locked,
-            {**decision.final_draft, "_attachment_draft_ids": attachment_ids},
+            {
+                **prepared_final,
+                **(
+                    {"_attachment_draft_ids": attachment_ids}
+                    if locked.action_type in ATTACHABLE_ACTION_TYPES
+                    else {}
+                ),
+            },
             source_decision_item_id=decision_item.id,
             source_submission_id=selected.id,
             source_review_decision_id=review.id,
@@ -919,19 +1009,35 @@ class TaskAssignmentActionHandler:
     def envelope(self, item: tuple[Any, Any], principal: Principal) -> ActionEnvelope:
         assignment, task = item
         pending = assignment.status == "pending"
+        version = self._frozen_version(assignment) if not pending else None
+        if pending:
+            snapshot = {
+                "title": task.title,
+                "description": task.description,
+                "due_date": task.due_date.isoformat() if task.due_date else None,
+            }
+            expected_version = int(task.version)
+        elif version is not None:
+            snapshot = dict(version.snapshot)
+            expected_version = int(snapshot.get("task_version", version.version)) + int(
+                assignment.status in {"declined", "cancelled"}
+            )
+        else:
+            snapshot = {"title": "과거 업무 배정", "description": None, "due_date": None}
+            expected_version = None
         preview: list[dict[str, str]] = []
-        if task.description:
-            preview.append({"id": "description", "label": "설명", "value": str(task.description), "kind": "text"})
+        if snapshot.get('description'):
+            preview.append({"id": "description", "label": "설명", "value": str(snapshot['description']), "kind": "text"})
         assigner = self._members.waiting_on(assignment.assigned_by)
         if assigner:
             preview.append({"id": "assigner", "label": "배정자", "value": assigner["display_name"], "kind": "person"})
-        if task.due_date:
-            preview.append({"id": "due_date", "label": "기한", "value": task.due_date.isoformat(), "kind": "date"})
+        if snapshot.get('due_date'):
+            preview.append({"id": "due_date", "label": "기한", "value": str(snapshot['due_date']), "kind": "date"})
         return ActionEnvelope(
             action_item_id=str(assignment.id),
             kind="task.assignment",
             status=AWAITING_REVIEW if pending else RESOLVED,
-            subject=str(task.title),
+            subject=str(snapshot['title']),
             operation_label="업무 배정",
             current_question="이 업무 배정을 수락할지 결정하세요" if pending else "이 배정은 이미 판단이 끝났습니다",
             preview=preview,
@@ -941,13 +1047,47 @@ class TaskAssignmentActionHandler:
             submission_version=1,
             waiting_on=self._members.waiting_on(assignment.assignee_id if pending else None),
             resource={"type": "task", "id": str(task.id)},
-            expected_version=int(task.version),
+            expected_version=expected_version,
         )
 
-    def rounds(self, item: tuple[Any, Any], principal: Principal) -> list[dict[str, Any]]:
+    def _frozen_version(self, assignment: Any) -> SubjectVersionRecord | None:
+        if assignment.source_decision_item_id is None:
+            return None
+        return self._session.scalar(select(SubjectVersionRecord).join(
+            SubmissionRecord, SubmissionRecord.subject_version_id == SubjectVersionRecord.id
+        ).where(SubmissionRecord.decision_item_id == assignment.source_decision_item_id).order_by(SubmissionRecord.submission_version.desc()).limit(1))
+
+    def rounds(self, item: tuple[Any, Any], principal: Principal) -> list[ActionRoundView]:
         assignment, task = item
         if str(assignment.assignee_id) != str(principal.id) and str(assignment.assigned_by) != str(principal.id):
-            raise ActionAccessDenied("principal cannot read this action item")
+            raise ActionNotFound("action item was not found")
+        if assignment.source_decision_item_id is not None:
+            submissions = self._session.scalars(select(SubmissionRecord).where(
+                SubmissionRecord.decision_item_id == assignment.source_decision_item_id
+            ).order_by(SubmissionRecord.submission_version)).all()
+            rounds = []
+            for submission in submissions:
+                version = self._session.get(SubjectVersionRecord, submission.subject_version_id)
+                decisions = self._session.scalars(select(ReviewDecisionRecord).where(
+                    ReviewDecisionRecord.submission_id == submission.id
+                ).order_by(ReviewDecisionRecord.decided_at)).all()
+                rounds.append({
+                    'submission_id': str(submission.id),
+                    'submission_version': int(submission.submission_version),
+                    'evidence': [], 'evidence_hash': None,
+                    'submitted_by': submission.submitted_by,
+                    'submitted_at': submission.submitted_at.isoformat(),
+                    'content_hash': submission.payload_hash,
+                    'snapshot': dict(version.snapshot), 'diff': submission.diff,
+                    'decisions': [{
+                        'review_decision_id': str(decision.id), 'actor_member_id': decision.actor_member_id,
+                        'decision': 'decline' if decision.decision == 'reject' else decision.decision,
+                        'reason': decision.reason, 'evidence_hash': None,
+                        'decided_at': decision.decided_at.isoformat(),
+                    } for decision in decisions],
+                    **({'capture_kind': 'legacy_assignment_on_command'} if submission.decision_policy_snapshot.get('legacy_assignment_id') else {}),
+                })
+            return rounds
         decided_at = assignment.accepted_at or assignment.declined_at
         return [
             {
@@ -959,7 +1099,9 @@ class TaskAssignmentActionHandler:
                 "submitted_by": assignment.assigned_by,
                 "submitted_at": assignment.created_at.isoformat(),
                 "content_hash": "",
-                "snapshot": {"title": task.title, "description": task.description, "due_date": task.due_date.isoformat() if task.due_date else None},
+                "snapshot": ({"title": task.title, "description": task.description, "due_date": task.due_date.isoformat() if task.due_date else None}
+                             if assignment.status == 'pending' else {'title': '과거 업무 배정', 'description': None, 'due_date': None}),
+                **({'capture_kind': 'legacy_unavailable'} if assignment.status != 'pending' else {}),
                 "diff": None,
                 "decisions": [
                     {
@@ -972,7 +1114,7 @@ class TaskAssignmentActionHandler:
                     }
                 ]
                 if decided_at
-                else [],
+            else [],
             }
         ]
 
@@ -987,35 +1129,54 @@ class TaskAssignmentActionHandler:
 
     def execute(self, principal: Principal, item: tuple[Any, Any], command: str, payload: dict[str, Any]) -> None:
         assignment, task = item
+        # Match the owning command's Task -> assignment lock order. Another tab
+        # may have completed this exact decision after both controls were offered.
+        task = self._session.get(TaskRecord, task.id, with_for_update=True, populate_existing=True)
+        assignment = self._session.get(TaskAssignmentRecord, assignment.id, with_for_update=True, populate_existing=True)
+        if task is None or assignment is None:
+            raise ActionNotFound('action item was not found')
+        if self.is_replay((assignment, task), principal, command, payload):
+            return
         # The assignment carries no version of its own; the Task version the envelope showed is what is being answered.
         if int(task.version) != _required_version(payload):
             raise ActionError("task version is stale")
         if command == "accept":
-            self._assignments.accept(principal, assignment.id)
+            self._assignments.accept(principal, assignment.id, expected_task_version=_required_version(payload))
         else:
-            self._assignments.decline(principal, assignment.id, str(payload.get("reason") or ""))
+            self._assignments.decline(principal, assignment.id, str(payload.get("reason") or ""), expected_task_version=_required_version(payload))
 
-    def discussion(self, item: tuple[Any, Any], principal: Principal) -> list[dict[str, Any]]:
+    def discussion(self, item: tuple[Any, Any], principal: Principal) -> list[ActionDiscussionView]:
         """A direct assignment is answered on the spot; it carries no comment thread."""
         return []
 
     def is_replay(self, item: tuple[Any, Any], principal: Principal, command: str, payload: dict[str, Any]) -> bool:
-        """One assignment is answered once, so the stored status is the receipt — pinned to the Task version it moved.
-
-        The assignment has no version column of its own, so the Task's is the contract the envelope hands out:
-        accepting leaves it where it was, declining cancels the Task and moves it exactly one version on.
-        """
+        """The saved decision answers its consumed version even after the Task moves on."""
         assignment, task = item
         try:
             targeted = _required_version(payload)
         except ActionError:
             return False
+        decision = None
+        consumed_version = None
+        if assignment.source_review_decision_id is not None:
+            decision = self._session.get(ReviewDecisionRecord, assignment.source_review_decision_id)
+            if decision is not None:
+                consumed_version = decision_facts(decision.conditions).get(DECISION_VERSION)
+                if consumed_version is None:
+                    version = self._frozen_version(assignment)
+                    if version is not None:
+                        consumed_version = version.snapshot.get("task_version", version.version)
         return is_assignment_replay(
             AssignmentReplayContext(
                 status=str(assignment.status),
                 assignee_id=str(assignment.assignee_id),
                 task_version=int(task.version),
                 decline_reason=assignment.decline_reason,
+                has_recorded_decision=assignment.source_review_decision_id is not None,
+                decision_actor_id=str(decision.actor_member_id) if decision is not None else None,
+                decision=str(decision.decision) if decision is not None else None,
+                decision_consumed_version=int(consumed_version) if consumed_version is not None else None,
+                decision_reason=decision.reason if decision is not None else None,
             ),
             actor_id=str(principal.id),
             command=command,
@@ -1110,7 +1271,7 @@ class TaskDeliveryActionHandler:
             expected_version=int(task.version),
         )
 
-    def rounds(self, item: tuple[Any, Any], principal: Principal) -> list[dict[str, Any]]:
+    def rounds(self, item: tuple[Any, Any], principal: Principal) -> list[ActionRoundView]:
         decision_item, task = item
         self._require_participant(decision_item, task, principal)
         submissions = self._tasks.repository.delivery_submissions(decision_item)
@@ -1169,7 +1330,7 @@ class TaskDeliveryActionHandler:
             return
         self._tasks.request_delivery_changes(principal, task, submission, expected, str(payload.get("reason") or ""))
 
-    def discussion(self, item: tuple[Any, Any], principal: Principal) -> list[dict[str, Any]]:
+    def discussion(self, item: tuple[Any, Any], principal: Principal) -> list[ActionDiscussionView]:
         """The discussion lives on the request thread this work came from, not on the result question."""
         return []
 
@@ -1215,7 +1376,7 @@ class TaskDeliveryActionHandler:
             reviewer for reviewer in (self._reviewer(row) for row in submissions) if reviewer
         }
         if str(principal.id) not in people:
-            raise ActionAccessDenied("principal cannot read this action item")
+            raise ActionNotFound("action item was not found")
 
 
 def action_handlers(

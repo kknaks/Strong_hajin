@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useBrowserOperationGuard } from './browserOperationGuard';
 import { createIdempotencyKey } from "./idempotency";
 import { TaskDraftFields, type TaskDraft } from "./ActionTaskCard";
 
@@ -365,6 +366,17 @@ export function TaskDetailDrawer({
   const [editingStep, setEditingStep] = useState<{ itemId: string; text: string } | null>(null);
   const addingStep = useRef(false);
   const [uploading, setUploading] = useState<TaskMaterialKind | null>(null);
+  useBrowserOperationGuard(uploading !== null);
+  const canLeave = () => {
+    if (uploading === null) return true;
+    onError('파일 업로드가 끝난 뒤 이동할 수 있습니다.');
+    return false;
+  };
+  const close = () => {
+    if (!canLeave()) return;
+    onClose();
+  };
+  const openTask = (id: string) => { if (canLeave()) onOpenTask?.(id); };
   const [linkDraft, setLinkDraft] = useState<{ kind: TaskMaterialKind; url: string; label: string } | null>(null);
   const [references, setReferences] = useState<TaskReference[]>(task.references ?? []);
   // Where this work stands with the person who asked for it. Only the detail read carries it, so it lives here.
@@ -858,7 +870,7 @@ export function TaskDetailDrawer({
                 {item.source_kind === "resource_ref" ? (
                   /* It lives inside the product, so it opens inside the product — and only when it resolved. */
                   item.resource && onOpenTask ? (
-                    <button className="btn link" onClick={() => onOpenTask(item.resource!.id)} type="button">
+                    <button className="btn link" onClick={() => openTask(item.resource!.id)} type="button">
                       {item.name}
                     </button>
                   ) : (
@@ -943,13 +955,13 @@ export function TaskDetailDrawer({
                 </button>
               )}
               {closed && (
-                <button className="btn h40" onClick={onClose} type="button">
+                <button className="btn h40" onClick={close} type="button">
                   닫기
                 </button>
               )}
             </>
           ) : (
-            <button className="btn h40" onClick={onClose} type="button">
+            <button className="btn h40" onClick={close} type="button">
               닫기
             </button>
           )
@@ -963,7 +975,7 @@ export function TaskDetailDrawer({
         }
         kicker="업무 상세"
         label="업무 상세"
-        onClose={onClose}
+        onClose={close}
         title={task.title}
       >
         {awaitingReview && (
@@ -1084,7 +1096,7 @@ export function TaskDetailDrawer({
               {originSentence(task.origin) && <span className="badge outline">{originSentence(task.origin)}</span>}
               {task.origin.source &&
                 (onOpenSource ? (
-                  <button className="btn link" onClick={() => onOpenSource(task.origin!.source!)} type="button">
+                  <button className="btn link" onClick={() => { if (canLeave()) onOpenSource(task.origin!.source!); }} type="button">
                     {task.origin.source.title ?? "출처 보기"}
                   </button>
                 ) : (
@@ -1289,7 +1301,7 @@ export function TaskDetailDrawer({
               <button
                 aria-label={`${parentTask.title} 열기`}
                 className="btn link"
-                onClick={() => onOpenTask?.(parentTask.task_id)}
+                onClick={() => openTask(parentTask.task_id)}
                 type="button"
               >
                 {parentTask.title}
@@ -1318,7 +1330,7 @@ export function TaskDetailDrawer({
               <ul className="material-list">
                 {children.map((row) => (
                   <li key={row.task_id}>
-                    <button aria-label={`${row.title} 열기`} className="btn link" onClick={() => onOpenTask?.(row.task_id)} type="button">
+                    <button aria-label={`${row.title} 열기`} className="btn link" onClick={() => openTask(row.task_id)} type="button">
                       {row.title}
                     </button>
                     <span className="t-meta">
@@ -1378,7 +1390,7 @@ export function TaskDetailDrawer({
                       <button
                         aria-label={`${reference.task.title} 열기`}
                         className="btn link"
-                        onClick={() => onOpenTask?.(reference.task!.task_id)}
+                        onClick={() => openTask(reference.task!.task_id)}
                         type="button"
                       >
                         {reference.task.title}
@@ -1440,6 +1452,7 @@ export function TaskDetailDrawer({
               className="btn ai"
               onClick={() => {
                 // Hand the task to the AX panel and close this drawer; the drawer would otherwise cover the panel.
+                if (!canLeave()) return;
                 onAskAx(task);
                 onClose();
               }}
@@ -1599,6 +1612,11 @@ export function WorkRequestDetailDrawer({
   const [comment, setComment] = useState("");
   const [commentFile, setCommentFile] = useState<File | null>(null);
   const [isUploadingEvidence, setIsUploadingEvidence] = useState(false);
+  useBrowserOperationGuard(isUploadingEvidence || (isWorking && commentFile !== null));
+  const close = () => {
+    if (isUploadingEvidence || isWorking) { onError('저장과 업로드가 끝난 뒤 닫을 수 있습니다.'); return; }
+    onClose();
+  };
   const commentFileInput = useRef<HTMLInputElement>(null);
   // Synchronous guards: React state cannot close the window between two events in the same tick.
   const submittingComment = useRef(false);
@@ -1802,7 +1820,7 @@ export function WorkRequestDetailDrawer({
           </>
         ) : canAmend ? (
           <>
-            <button className="btn h40 ghost" onClick={onClose} type="button">
+            <button className="btn h40 ghost" onClick={close} type="button">
               닫기
             </button>
             <span className="spacer" />
@@ -1822,7 +1840,7 @@ export function WorkRequestDetailDrawer({
           </>
         ) : canResubmit ? (
           <>
-            <button className="btn h40 ghost" onClick={onClose} type="button">
+            <button className="btn h40 ghost" onClick={close} type="button">
               닫기
             </button>
             <span className="spacer" />
@@ -1841,7 +1859,7 @@ export function WorkRequestDetailDrawer({
             )}
           </>
         ) : (
-          <button className="btn h40" onClick={onClose} type="button">
+          <button className="btn h40" onClick={close} type="button">
             닫기
           </button>
         )
@@ -1855,7 +1873,7 @@ export function WorkRequestDetailDrawer({
       }
       kicker="업무 요청"
       label="업무 요청 상세"
-      onClose={onClose}
+      onClose={close}
       title={request.title}
     >
       <dl className="meta-grid columns">

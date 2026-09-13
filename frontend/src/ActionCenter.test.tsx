@@ -414,4 +414,16 @@ describe("the structured change proposal and the discussion", () => {
     // Talking is not judging: the discussion offers no command of its own.
     expect(within(discussion).queryAllByRole("button")).toHaveLength(0);
   });
+  it("confirms the command editor's edited values from the judgement drawer", async () => {
+    const detail: ActionItemDetail = {
+      ...adjusted, kind: "ax.project.create", status: "awaiting_review", expected_version: 1,
+      allowed_commands: [{ id: "confirm", label: "이 내용으로 반영", tone: "primary" }, { id: "reject", label: "거절", tone: "neutral" }],
+      edit_contract: { editor: "command", base_submission_version: 1, values: { name: "원안" }, fields: [{ id: "name", label: "프로젝트 명", type: "text", required: true, editable: true }] },
+    };
+    renderDrawer(detail);
+    fireEvent.change(await screen.findByLabelText("프로젝트 명"), { target: { value: "확정 프로젝트" } });
+    fireEvent.click(screen.getByRole("button", { name: "이 내용으로 반영" }));
+    await waitFor(() => expect(api.runActionCommand).toHaveBeenCalledWith(detail.action_item_id, "confirm", { expected_version: 1, base_submission_version: 1, draft: { name: "확정 프로젝트" } }));
+  });
+
 });

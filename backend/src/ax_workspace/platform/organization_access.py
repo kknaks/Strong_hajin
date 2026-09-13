@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ax_workspace.modules.organization_access.results import InstalledRoleView, MemberAxisHistoryView, MemberCandidateView, MemberDetailView, MemberDirectoryView, OrganizationActivityView, OrganizationProfileView, OrganizationUnitView, UnitMemberView
+
 from typing import Any
 from uuid import UUID
 
@@ -38,7 +40,7 @@ class SqlAlchemyOrganizationRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def profile_for(self, member_id: str) -> dict[str, Any] | None:
+    def profile_for(self, member_id: str) -> OrganizationProfileView | None:
         member = self._session.get(MemberRecord, member_id)
         now = datetime.now(UTC)
         employment = self._session.scalar(
@@ -188,7 +190,7 @@ class SqlAlchemyOrganizationRepository:
             raise AssistantCharacterPreferenceConflict("AX 캐릭터 설정이 다른 곳에서 변경됐습니다.")
         return {"character_key": row.character_key, "version": row.version}
 
-    def member_detail(self, member_id: str) -> dict[str, Any] | None:
+    def member_detail(self, member_id: str) -> MemberDetailView | None:
         """한 사람을 여섯 축으로 한 번에 읽는다 — 지금 값과, 지금 닿지 않게 된 권한까지.
 
         SPEC-005 §2의 축들은 서로 다른 사실이라 한 질문에 함께 답해도 섞이지 않는다. 여기서는 **누가 볼 수
@@ -322,7 +324,7 @@ class SqlAlchemyOrganizationRepository:
             ],
         }
 
-    def member_axis_history(self, member_id: str, axis: str) -> list[dict[str, Any]]:
+    def member_axis_history(self, member_id: str, axis: str) -> list[MemberAxisHistoryView]:
         """한 축이 지나온 기간들, 최신순. 지금 값도 여기 한 행으로 들어 있다 — 현재는 아직 끝나지 않은 기간이다."""
         units = {item.id: item.name for item in self._session.scalars(select(OrganizationUnitRecord))}
         rows: list[dict[str, Any]] = []
@@ -435,7 +437,7 @@ class SqlAlchemyOrganizationRepository:
 
     def organization_activity(
         self, *, member_ids: frozenset[str] | None, limit: int, cursor: str | None
-    ) -> list[dict[str, Any]]:
+    ) -> list[OrganizationActivityView]:
         """조직 축에서 무슨 일이 있었는지, 최신순.
 
         업무·요청·회의의 사건은 여기 오르지 않는다 — 축 매핑표에 있는 kind만 조직의 사건이다. `member_ids`가
@@ -592,7 +594,7 @@ class SqlAlchemyOrganizationRepository:
             )
         )
 
-    def installed_roles(self) -> list[dict[str, Any]]:
+    def installed_roles(self) -> list[InstalledRoleView]:
         return [
             {
                 "role_id": role.id,
@@ -833,7 +835,7 @@ class SqlAlchemyOrganizationRepository:
             for member_id, name, phone, born, account_ref in rows
         ]
 
-    def member_directory(self) -> list[dict[str, Any]]:
+    def member_directory(self) -> list[MemberDirectoryView]:
         """Every active member's name, so the product can say who did what. It carries no capability."""
         return self._active_member_names()
 
@@ -846,7 +848,7 @@ class SqlAlchemyOrganizationRepository:
         member = self._session.get(MemberRecord, member_id)
         return member is not None and bool(member.account_ref)
 
-    def work_request_assignee_candidates(self, principal: Principal) -> list[dict[str, str]]:
+    def work_request_assignee_candidates(self, principal: Principal) -> list[MemberCandidateView]:
         """Return active decision-capable peers whose current org scope overlaps the requester."""
         candidates: list[dict[str, str]] = []
         member_ids = self._session.scalars(select(MemberRecord.id).order_by(MemberRecord.id))
@@ -864,7 +866,7 @@ class SqlAlchemyOrganizationRepository:
         return candidates
 
 
-    def member_candidates(self, principal: Principal) -> list[dict[str, str]]:
+    def member_candidates(self, principal: Principal) -> list[MemberCandidateView]:
         """Every active member other than the principal (참조자 후보); the org tree stays the navigation boundary.
 
         후보는 **고를 수 있을 만큼만** 말한다 — id와 이름이다. 명부와 같은 행을 돌려쓰면, 명부에 열이 하나 늘 때
@@ -883,7 +885,7 @@ class SqlAlchemyOrganizationRepository:
         ).all()
         return [{"id": str(member_id), "display_name": str(name)} for member_id, name in rows]
 
-    def task_assignment_candidates(self, principal: Principal) -> list[dict[str, str]]:
+    def task_assignment_candidates(self, principal: Principal) -> list[MemberCandidateView]:
         """Active members inside the scope this person's assign authority was granted at, who can run a Task themselves.
 
         Belonging to a team is not the same as having authority over it: the reach comes from the grant, so a lead of
@@ -904,7 +906,7 @@ class SqlAlchemyOrganizationRepository:
 
     # ---- read-only organization navigation (ERD member_organization_view projection) ----
 
-    def organization_tree(self) -> list[dict[str, Any]]:
+    def organization_tree(self) -> list[OrganizationUnitView]:
         now = datetime.now(UTC)
         units = list(self._session.scalars(select(OrganizationUnitRecord).order_by(OrganizationUnitRecord.display_order, OrganizationUnitRecord.id)))
         types = {item.id: item for item in self._session.scalars(select(OrganizationUnitTypeRecord))}
@@ -957,7 +959,7 @@ class SqlAlchemyOrganizationRepository:
             for unit in units
         ]
 
-    def unit_members(self, unit_id: str, *, include_descendants: bool = True) -> list[dict[str, Any]]:
+    def unit_members(self, unit_id: str, *, include_descendants: bool = True) -> list[UnitMemberView]:
         now = datetime.now(UTC)
         units = list(self._session.scalars(select(OrganizationUnitRecord)))
         children: dict[str | None, list[str]] = {}

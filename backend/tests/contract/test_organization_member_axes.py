@@ -7,7 +7,6 @@ SPEC-005 §2: 재직·소속·보직·직급·직무·권한은 서로 다른 �
 명부와 같은 기준으로 로그인한 누구에게나 열리고, 연락처와 권한은 본인이거나 그 사람을 관리할 수 있는 사람에게만
 값이 온다. 감추는 방법으로 field를 지우지는 않는다 — 자리는 그대로 두고 값을 비운다.
 """
-from uuid import UUID
 
 from fastapi.testclient import TestClient
 
@@ -112,7 +111,7 @@ def test_each_axis_can_be_read_back_as_the_periods_it_went_through(tmp_path) -> 
 
     # 본인은 자기 이력을 본다. 남의 이력은 관리할 수 있는 사람만 본다.
     assert client.get("/api/organization/members/jiho/history?axis=membership", headers=JIHO).status_code == 200
-    assert client.get("/api/organization/members/jiho/history?axis=membership", headers=MINA).status_code == 403
+    assert client.get("/api/organization/members/jiho/history?axis=membership", headers=MINA).status_code == 404
     assert client.get("/api/organization/members/jiho/history?axis=없는축", headers=YUNA).status_code == 422
 
 

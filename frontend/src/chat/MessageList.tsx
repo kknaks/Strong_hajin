@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import { CommandConfirmationForm } from "../CommandConfirmationForm";
 import { ActionCommandButtons, ActionPreviewDetails, actionKicker, actionSubject } from "../ActionPreview";
 import { ActionTaskCard } from "../ActionTaskCard";
 import { ActionMeetingCard } from "../ActionMeetingCard";
@@ -253,7 +254,14 @@ function ConversationTimeline({
                 turn={turn}
               />
             )}
-            {actions.map((action) => action.edit_contract?.editor === "task_progress_batch" ? (
+            {actions.map((action) => action.edit_contract?.editor === "command" ? (
+              <section className="ax-action-card" key={`${personaId}:${action.action_id}`} data-action-id={action.action_id}>
+                <span className="ax-card-kicker">{actionKicker(action)}</span>
+                <b>{actionSubject(action)}</b>
+                <ActionPreviewDetails action={action} defaultOpen />
+                <CommandConfirmationForm actionId={action.action_id} principalId={personaId} contract={action.edit_contract} commands={action.commands ?? []} onCommand={(command, payload) => onDecide(action.action_id, action.version, command, payload)} />
+              </section>
+            ) : action.edit_contract?.editor === "task_progress_batch" ? (
               <ActionProgressBatchCard
                 action={action}
                 key={action.action_id}

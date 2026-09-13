@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 
 MAKEFILE = Path(__file__).resolve().parents[3] / "Makefile"
-REQUIRED_PROCESS_TARGETS = ("api-e2e", "conversation-worker", "material-worker", "frontend-e2e")
+REQUIRED_PROCESS_TARGETS = ("api-e2e", "conversation-worker", "material-worker", "meeting-worker", "report-worker", "frontend-e2e")
 
 
 def _recipe(name: str) -> str:
@@ -26,6 +26,7 @@ def test_stack_and_acceptance_targets_start_every_required_process() -> None:
     assert "postgres-up" in recipe
     # Fail fast on an uninitialized schema instead of starting an API that cannot serve.
     assert "to_regclass('durable_jobs')" in recipe and "not initialized" in recipe
+    assert "to_regclass('daily_report_generations')" in recipe
     assert "to_regclass('assistant_character_preferences')" in recipe
     assert "to_regclass('action_material_drafts')" in recipe
     assert "to_regclass('notifications')" in recipe
@@ -44,7 +45,7 @@ def test_stack_and_acceptance_targets_start_every_required_process() -> None:
 def test_acceptance_never_resets_the_database_someone_is_working_in() -> None:
     """Acceptance는 reset으로 시작한다. 그것이 사람이 조직과 자료를 넣어 둔 DATABASE_URL이면 안 된다."""
     recipe = _recipe("acceptance-e2e")
-    touching = re.findall(r"\$\(MAKE\)([^\n;&>]*)\b(reset-demo|api-e2e|conversation-worker|material-worker|meeting-worker)\b", recipe)
+    touching = re.findall(r"\$\(MAKE\)([^\n;&>]*)\b(reset-demo|api-e2e|conversation-worker|material-worker|meeting-worker|report-worker)\b", recipe)
     assert touching, "acceptance-e2e does not start anything"
     for arguments, target in touching:
         assert "ACCEPTANCE_DATABASE_URL" in arguments, f"acceptance-e2e runs {target} against the working database"

@@ -1,13 +1,58 @@
 """Composition root for the local workflow application."""
 from __future__ import annotations
 
+from ax_workspace.modules.ax_execution.browser_interactions import BrowserRecordingRequest, BrowserFileRequest, BrowserInteractionApplication, BrowserInteractionConflict, BrowserInteractionResult
+from ax_workspace.bootstrap.browser_interactions import SessionBrowserFileTargets
+from ax_workspace.platform.browser_interactions import SqlAlchemyBrowserInteractionRepository
+
+from ax_workspace.modules.ax_execution.result_contracts import ActionMaterialDraftView
+from ax_workspace.modules.organization_access.commands import AssistantCharacterResult
+from ax_workspace.modules.ax_execution.conversation_commands import ConversationMessageResult
+from ax_workspace.modules.ax_execution.conversation_commands import ConversationRetryResult
+from ax_workspace.modules.work.folder_commands import FolderArchiveResult
+from ax_workspace.modules.work.folder_commands import FolderDetachResult
+from ax_workspace.modules.work.folder_commands import FolderView
+from ax_workspace.modules.work.project_commands import ProjectReleaseResult
+
+from ax_workspace.modules.work.material_query_results import FolderMaterialView
+from ax_workspace.modules.work.graph_results import GraphNeighborsResult
+from ax_workspace.modules.work.graph_results import GraphOverviewResult
+from ax_workspace.modules.work.graph_results import GraphSearchResult
+from ax_workspace.modules.work.material_query_results import MaterialMetadataResult
+from ax_workspace.modules.work.material_query_results import MaterialSearchResult
+
+from ax_workspace.modules.organization_access.results import InstalledRoleView, MemberAccessView, MemberAxisHistoryView, MemberCandidateView, MemberDetailView, MemberDirectoryView, MyOrganizationProfileView, OrganizationActivityView, OrganizationUnitView, UnitMemberView
+
+from ax_workspace.modules.reports.results import ReportHistoryResult, ReportStatusResult, ReportRecentView
+from ax_workspace.modules.reports.results import ReportGeneratedResult
+
+from ax_workspace.modules.ax_execution.conversation_results import ConversationView
+
+from ax_workspace.modules.work.material_results import TaskMaterialView, TaskMaterialResult
+from ax_workspace.modules.work.task_results import TaskCompletionResult, TaskReferenceResult, TaskReferenceReleaseResult
+
+from ax_workspace.modules.work.project_results import ProjectView, ProjectDetailResult, ProjectAssignmentView, ProjectParticipationView
+
+from ax_workspace.modules.work.request_results import WorkRequestDetailResult, WorkRequestHistoryResult, WorkRequestEvidenceResult
+from ax_workspace.modules.actions.results import ActionDiscussionView
+
+from ax_workspace.modules.work.task_results import TaskDetailResult, TaskHistoryDiffResult, TaskHistoryResult, TaskListEntry
+
+from ax_workspace.modules.actions.results import ActionEnvelopeResult, ActionDetailResult
+
+from ax_workspace.modules.ax_execution.result_contracts import ActionProposalResult
+
 from pathlib import Path
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from time import monotonic, sleep
 
 from typing import Any
+import asyncio
 import hashlib
+import json
 import os
 import sys
+import threading
 from uuid import UUID, uuid4
 import logging
 
@@ -17,18 +62,20 @@ from ax_workspace.modules.ax_execution.conversations import (
     ConversationContextReferenceInput,
 )
 from ax_workspace.modules.ax_execution.actions import ActionApplication, ActionCapabilityDenied
-from ax_workspace.modules.notifications import NotificationNotFound
-from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, Principal
+from ax_workspace.modules.notifications import NotificationApplication, NotificationView, notification_view
+from ax_workspace.modules.errors import ResourceNotFound
+from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, DAILY_REPORT_READ, Principal
 from ax_workspace.modules.work.material_folders import MaterialFolderApplication
 from ax_workspace.platform.material_folders import SqlAlchemyMaterialFolderRepository
 from ax_workspace.modules.organization_access.administration import AccessAdministration
 from ax_workspace.modules.organization_access.application import OrganizationApplication
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
 from ax_workspace.modules.reports.application import DailyReportAccessDenied, DailyReportApplication
+from ax_workspace.modules.reports.jobs import DailyReportGenerationJob, DailyReportGenerationQueue
+from ax_workspace.modules.reports.results import ReportDraftResult, ReportSubmissionResult
 from ax_workspace.modules.ax_execution.ai import (
     AiConversationRequest,
     AiDelegatedToolContext,
-    AiGenerationRequest,
     AiProvider,
     ProviderFailure,
 )
@@ -39,19 +86,45 @@ from ax_workspace.platform.conversations import (
     SqlAlchemyConversationContextResolver,
     SqlAlchemyConversationRepository,
 )
-from ax_workspace.modules.actions.domain import ActionCenterApplication
+from ax_workspace.modules.actions.domain import ActionCenterApplication, ActionError
 from ax_workspace.platform.action_center import action_handlers
-from ax_workspace.platform.actions import ActionServices, SqlAlchemyActionExecutor, SqlAlchemyActionRepository
+from ax_workspace.platform.actions import (
+    POST_COMMIT_RECEIPT_PENDING,
+    ActionServices,
+    SqlAlchemyActionExecutor,
+    SqlAlchemyActionRepository,
+    action_result_view,
+)
 from ax_workspace.platform.reports import SqlAlchemyDailyReportDraftWorkflow, SqlAlchemyDailyReportRepository
 from ax_workspace.modules.work.materials import MaterialError, MaterialNotFound, TaskMaterialApplication
 from ax_workspace.modules.work.action_materials import ActionMaterialDraftApplication, ActionMaterialError
 from ax_workspace.modules.work.material_search import MaterialSearchApplication, RESOURCE_TYPES
 from ax_workspace.bootstrap.material_sources import SessionMaterialOwners, readable_content_evidence
 from ax_workspace.modules.work.graph import GraphApplication
-from ax_workspace.modules.work.application import TaskAccessDenied, TaskApplication, TaskState
+from ax_workspace.modules.work.application import TaskAccessDenied, TaskApplication, TaskNotFound, TaskState
 from ax_workspace.modules.work.assignments import TaskAssignmentApplication
+from ax_workspace.modules.work.task_results import (
+    ChecklistMutationResult,
+    ChecklistOrderResult,
+    TaskAssignmentResult,
+    TaskMutationResult,
+)
 from ax_workspace.modules.meetings.application import MeetingApplication
-from ax_workspace.modules.meetings.domain import MeetingError
+from ax_workspace.modules.meetings.commands import (
+    MeetingAgendaDraftInput,
+    MeetingAgendaPatch,
+    MeetingInfoPatch,
+    MeetingNoteCreateCommand,
+    MeetingNoteFinalizeCommand,
+    MeetingNoteSaveCommand,
+    MeetingMemoInput,
+    MeetingReservationInput,
+    MeetingShareCommand,
+    MeetingShareManyInput,
+    MeetingTodoPromotionInput,
+    MeetingUpdateCommand,
+)
+from ax_workspace.modules.meetings.domain import MeetingAccessDenied, MeetingError, MeetingVersionConflict
 from ax_workspace.modules.meetings.batch import (
     CAUSE_AGENDA_SWITCH,
     CAUSE_TRANSCRIPT,
@@ -63,17 +136,21 @@ from ax_workspace.modules.meetings.export import export_filename as _export_file
 from ax_workspace.modules.meetings.materials import (
     MaterialUpload,
     MeetingMaterialApplication,
-    MeetingMaterialsRejected,
 )
 from ax_workspace.modules.meetings.finalize import FINAL_OUTPUT_SCHEMA, FinalNotes, normalize_title
 from ax_workspace.modules.meetings.finalize_service import MeetingFinalizeService
 from ax_workspace.modules.meetings.rooms import (
     STATUS_BOOKED,
     STATUS_CANCELLED,
+    STATUS_NEEDS_VERIFICATION,
+    MeetingRoom,
     MeetingRoomGateway,
     RoomAuthFailed,
     RoomBookingRefused,
+    RoomCreationIdempotencyConflict,
+    RoomCreationIdempotencyRequired,
     RoomGatewayUnavailable,
+    RoomOutcomeUnknown,
     RoomReservation,
     RoomReservationError,
     RoomUnavailable,
@@ -84,10 +161,13 @@ from ax_workspace.modules.meetings.rooms import (
     map_participants,
 )
 from ax_workspace.modules.meetings.stream_service import MeetingStreamService
-from ax_workspace.modules.work.requests import WorkRequestApplication, WorkRequestError
+from ax_workspace.modules.work.request_results import WorkRequestMutationResult
+from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequestApplication, WorkRequestError
 from sqlalchemy import delete, or_, select
+from sqlalchemy.exc import IntegrityError
 
 from ax_workspace.platform.persistence import (
+    ActionItemRecord,
     AppointmentRecord,
     AttachmentRecord,
     DecisionItemRecord,
@@ -96,20 +176,22 @@ from ax_workspace.platform.persistence import (
     MaterialBlockRecord,
     MaterialChunkRecord,
     MaterialExtractionRecord,
+    MeetingRecord,
+    MeetingRoomCreationAttemptRecord,
     MemberRecord,
     OrganizationUnitRecord,
     PositionDefinitionRecord,
     make_session_factory,
 )
 from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
-from ax_workspace.platform.notifications import SqlAlchemyNotificationRepository, notification_view
+from ax_workspace.platform.notifications import SqlAlchemyNotificationRepository
 from ax_workspace.platform.action_materials import SqlAlchemyActionMaterialDraftRepository
-from ax_workspace.platform.native_materials import NativeMaterialRepository, NativeRevisionStorage
+from ax_workspace.platform.native_materials import MEETING_TRANSCRIPT, NativeMaterialRepository, NativeRevisionStorage
 from ax_workspace.platform.recordings import LocalDirectoryRecordingStorage
 from ax_workspace.platform.soniox import SonioxFileTranscriber, SonioxRealtimeConnector
 from ax_workspace.platform.the_connect import TheConnectGateway
 from ax_workspace.modules.work.material_extraction import LexicalMaterialRetriever, MaterialExtractionJob, extraction_view
-from ax_workspace.modules.work.projects import ProjectApplication
+from ax_workspace.modules.work.projects import ProjectApplication, ProjectAccessDenied
 from ax_workspace.modules.work.search import folded, matches, normalize_person_reference
 from ax_workspace.platform.projects import SqlAlchemyProjectRepository
 from ax_workspace.platform.korean import install as install_korean_analyzer
@@ -133,6 +215,12 @@ from ax_workspace.platform.work_tasks import (
 from ax_workspace.platform.meetings import SqlAlchemyMeetingRepository
 
 
+
+
+# Read projections omit resources only for explicit visibility refusals. A storage
+# failure must reach the caller as a failure, not fabricate an empty graph/answer.
+_READ_DENIALS = (ResourceNotFound, TaskAccessDenied, TaskNotFound, MaterialNotFound, WorkRequestAccessDenied,
+                 MeetingAccessDenied, DailyReportAccessDenied, ProjectAccessDenied)
 
 
 class _SessionResourceReferences:
@@ -215,11 +303,15 @@ class _SessionAnswerResources:
     def _current_version(self, principal: Principal, kind: str, identifier: str) -> int | None:
         """지금의 회차. 회차를 갖지 않는 것에는 없는 것이 정상이다."""
         try:
+            parsed_id = UUID(identifier)
+        except (TypeError, ValueError):
+            return None
+        try:
             if kind == "task":
-                task = self._source.readable_task(principal, UUID(identifier))
+                task = self._source.readable_task(principal, parsed_id)
                 return int(task["version"]) if task and task.get("version") is not None else None
             if kind == "work_request":
-                request = self._source.readable_request(principal, UUID(identifier))
+                request = self._source.readable_request(principal, parsed_id)
                 return int(request["version"]) if request and request.get("version") is not None else None
             if kind == "meeting":
                 # 회의록은 판을 쌓지 않는다 — 덮어쓰기이므로 견줄 판 번호가 없다 (SPEC-004 §11.1).
@@ -251,30 +343,36 @@ class _SessionAnswerResources:
 
     def _read(self, principal: Principal, kind: str, identifier: str) -> tuple[str | None, str | None]:
         try:
+            parsed_id = UUID(identifier)
+        except (TypeError, ValueError):
+            return (None, None)
+        try:
             if kind == "project":
-                project = self._source.readable_project(principal, UUID(identifier))
+                project = self._source.readable_project(principal, parsed_id)
                 return (str(project["name"]), project.get("state")) if project else (None, None)
             if kind == "task":
-                task = self._source.readable_task(principal, UUID(identifier))
+                task = self._source.readable_task(principal, parsed_id)
                 return (str(task["title"]), task.get("state")) if task else (None, None)
             if kind == "work_request":
-                request = self._source.readable_request(principal, UUID(identifier))
+                request = self._source.readable_request(principal, parsed_id)
                 return (str(request["title"]), request.get("state")) if request else (None, None)
             if kind == "meeting":
                 meeting = self._source.readable_meeting(principal, UUID(identifier))
                 return (str(meeting.get("title") or "제목 없는 회의"), meeting.get("status")) if meeting else (None, None)
             if kind == "material":
-                material = self._application._material_metadata(self._session, principal, UUID(identifier))
+                material = self._application._material_metadata(self._session, principal, parsed_id)
                 return material["name"], material["state"]
             if kind == "report":
                 report = self._application.daily_report_history(principal, identifier)
                 return (f"{report['report_date']} 일일보고", report.get("status"))
-        except Exception:
+        except _READ_DENIALS:
             return (None, None)
         return (None, None)
 
 
 logger = logging.getLogger(__name__)
+_MEETING_RECEIPT_MIN_LEASE_SECONDS = 30.0
+_MEETING_RECEIPT_LEASE_MARGIN_SECONDS = 10.0
 
 
 class _MeetingMaterialGate:
@@ -306,7 +404,7 @@ class _SessionFinalizeGateway:
         principal = self._application.authenticated_principal(persona_id)
         return {
             normalize_title(str(task.get("title") or ""))
-            for task in self._application.list_tasks(principal, include_closed=True, include_organization=True)
+            for task in self._application.list_tasks(principal, include_closed=True)
         }
 
     def commit_success(self, meeting_id: str, notes: FinalNotes, *, cold_start: bool) -> None:
@@ -392,7 +490,7 @@ class _SessionBatchGateway:
             principal = self._application.authenticated_principal(raw["persona_id"])
             allowed = {
                 str(task["task_id"])
-                for task in self._application.list_tasks(principal, include_organization=True)
+                for task in self._application.list_tasks(principal)
             }
         return BatchInput(
             seq=raw["seq"],
@@ -522,9 +620,7 @@ class _SessionReadableWork:
         self._session = session
 
     def readable_task_ids(self, principal: Principal) -> list[str]:
-        rows = self._application._tasks(self._session).list_for(
-            principal, include_closed=True, include_organization=True
-        )
+        rows = self._application._tasks(self._session).readable_tasks(principal, include_closed=True)
         return [str(row["task_id"]) for row in rows]
 
     def may_read_task(self, principal: Principal, task_id: UUID) -> bool:
@@ -542,9 +638,7 @@ class _SessionGraphSource:
     def readable_tasks(self, principal: Principal, *, query: str | None = None, assignee_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         # Following connections is a read surface like any other: it shows exactly what this person may read.
         try:
-            rows = self._application._tasks(self._session).list_for(
-                principal, include_closed=True, include_organization=True
-            )
+            rows = self._application._tasks(self._session).readable_tasks(principal, include_closed=True)
         except TaskAccessDenied:
             return []
         return [row for row in rows
@@ -554,7 +648,7 @@ class _SessionGraphSource:
     def readable_task(self, principal: Principal, task_id: UUID) -> dict[str, Any] | None:
         try:
             return self._application._tasks(self._session).get(principal, task_id)
-        except Exception:
+        except _READ_DENIALS:
             return None
 
     def people(self, principal: Principal, *, query: str) -> list[dict[str, Any]]:
@@ -641,20 +735,20 @@ class _SessionGraphSource:
     def readable_requests(self, principal: Principal, *, query: str | None = None) -> list[dict[str, Any]]:
         try:
             rows = self._application._work_requests(self._session).list(principal)
-        except Exception:
+        except _READ_DENIALS:
             return []
         return [row for row in rows if not query or matches(query, str(row["title"]))]
 
     def readable_request(self, principal: Principal, request_id: UUID) -> dict[str, Any] | None:
         try:
             return self._application._work_requests(self._session).get(principal, request_id)
-        except Exception:
+        except _READ_DENIALS:
             return None
 
     def task_materials(self, principal: Principal, task_id: UUID) -> list[dict[str, Any]]:
         try:
             return self._application._materials(self._session).list(principal, task_id)
-        except Exception:
+        except _READ_DENIALS:
             return []
 
     def materials_for_tasks(self, principal: Principal, task_ids: list[UUID]) -> dict[str, list[dict[str, Any]]]:
@@ -678,7 +772,7 @@ class _SessionGraphSource:
         """그래프가 프로젝트로 묶을 때 묻는 것. 판정은 프로젝트 모듈이 한다."""
         try:
             return self._application._projects(self._session).list(principal)
-        except Exception:
+        except _READ_DENIALS:
             return []
 
     def readable_project(self, principal: Principal, project_id: UUID) -> dict[str, Any] | None:
@@ -692,7 +786,7 @@ class _SessionGraphSource:
     def readable_meetings(self, principal: Principal, *, query: str | None = None, member_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         try:
             rows = self._application._meetings(self._session).list(principal)
-        except Exception:
+        except _READ_DENIALS:
             return []
         meetings = [row for row in rows if row.get("kind") == "meeting"]
         return [row for row in meetings
@@ -719,6 +813,8 @@ class _SessionGraphSource:
 
     def own_reports(self, principal: Principal, *, limit: int = 3) -> list[dict[str, Any]]:
         """This person's own daily reports and the work each one was written from. A report is nobody else's to read."""
+        if DAILY_REPORT_READ not in principal.capabilities:
+            return []
         reports = self._application.daily_report_recent(principal, limit=limit)
         return [
             {
@@ -773,7 +869,7 @@ class _SessionTaskReferences:
     def view(self, principal: Principal, task_id: UUID) -> dict[str, Any] | None:
         try:
             task = self._application._tasks(self._session).get(principal, task_id)
-        except Exception:
+        except _READ_DENIALS:
             return None
         if task.get("access") != "owner":
             # Reading it through a relationship is not the same as being able to point at it as your own context.
@@ -830,6 +926,10 @@ class WorkflowApplication:
         self._report_provider = report_provider or create_codex_cli_provider(settings)
         # 회의실 예약 시스템. **시험이 대역을 끼우는 자리**이고, 비어 있으면 계정이 갖춰졌을 때만 실물을 만든다.
         self._room_gateway: MeetingRoomGateway | None = None
+        self._room_sync_locks: dict[UUID, threading.RLock] = {}
+        self._room_sync_locks_guard = threading.Lock()
+        self._room_creation_locks: dict[tuple[str, str], threading.RLock] = {}
+        self._room_creation_locks_guard = threading.Lock()
 
     # ------------------------------------------------------------------ 회의실 예약 (SCAX-WP-007)
 
@@ -856,7 +956,10 @@ class WorkflowApplication:
         시간을 주면 **그 시간에 비어 있는 방만** 내고 `available: true` 를 붙인다 (D36-3) —
         예약이 거절된 뒤 모달이 회의실 칸만 다시 그리는 자리다. 시간이 없으면 전체 목록 그대로다.
         """
-        gateway = self.room_gateway
+        # Resolve the lazy adapter, then keep the concrete outbound owner visible to
+        # the operation inventory just as the other composition-root methods do.
+        _ = self.room_gateway
+        gateway = self._room_gateway
         if gateway is None:
             return []
         try:
@@ -895,6 +998,10 @@ class WorkflowApplication:
 
         try:
             booked = gateway.create(_request(room_id))
+        except RoomOutcomeUnknown as error:
+            raise RoomOutcomeUnknown(
+                str(error), room_id=room_id, room_name=self._room_name(gateway, room_id)
+            ) from error
         except RoomUnavailable as refused:
             requested = self._room_name(gateway, room_id)
             replacement = choose_replacement(
@@ -904,7 +1011,16 @@ class WorkflowApplication:
                 # 대체할 방이 없다 — 가능한 방 목록을 그대로 이고 올라간다. 회의는 서지 않는다.
                 raise RoomUnavailable(str(refused), available=refused.available) from refused
             logger.info("고른 회의실이 차서 %s 로 대체합니다", replacement.name)
-            booked = gateway.create(_request(replacement.room_id))
+            try:
+                booked = gateway.create(_request(replacement.room_id))
+            except RoomOutcomeUnknown as error:
+                raise RoomOutcomeUnknown(
+                    str(error),
+                    room_id=replacement.room_id,
+                    room_name=replacement.name,
+                    replaced=True,
+                    requested_room_name=requested,
+                ) from error
             return RoomReservation(
                 status=STATUS_BOOKED,
                 room_id=booked.room_id,
@@ -919,6 +1035,194 @@ class WorkflowApplication:
             room_name=booked.room_name,
             external_id=booked.external_id,
         )
+
+    def _room_creation_lock(self, owner_id: str, request_key: str) -> threading.RLock:
+        identity = (owner_id, request_key)
+        with self._room_creation_locks_guard:
+            try:
+                lock = self._room_creation_locks[identity]
+            except KeyError:
+                lock = threading.RLock()
+                self._room_creation_locks[identity] = lock
+            return lock
+
+    @staticmethod
+    def _room_creation_fingerprint(request: MeetingReservationInput) -> str:
+        return WorkflowApplication._room_creation_payload_fingerprint(
+            request.model_dump(mode="json")
+        )
+
+    @staticmethod
+    def _room_creation_payload_fingerprint(payload: dict[str, Any]) -> str:
+        canonical = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+    @staticmethod
+    def _room_creation_request_key(value: str | None) -> str:
+        key = str(value or "").strip()
+        if not key or len(key) > 200:
+            raise RoomCreationIdempotencyRequired("회의실 예약에는 200자 이하 Idempotency-Key가 필요합니다")
+        return key
+
+    @staticmethod
+    def _unknown_creation_reservation(error: RoomOutcomeUnknown, room_id: int) -> RoomReservation:
+        return RoomReservation(
+            status=STATUS_NEEDS_VERIFICATION,
+            room_id=error.room_id if error.room_id is not None else room_id,
+            room_name=error.room_name,
+            reason=error.reason,
+            replaced=error.replaced,
+            requested_room_name=error.requested_room_name,
+        )
+
+    @staticmethod
+    def _stored_room_refusal(attempt: MeetingRoomCreationAttemptRecord) -> RoomBookingRefused:
+        rooms = tuple(
+            MeetingRoom(
+                room_id=int(room["room_id"]),
+                name=str(room["name"]),
+                capacity=int(room["capacity"]),
+            )
+            for room in (attempt.available_rooms or [])
+        )
+        error_type = {
+            RoomUnavailable.reason: RoomUnavailable,
+            RoomAuthFailed.reason: RoomAuthFailed,
+            RoomGatewayUnavailable.reason: RoomGatewayUnavailable,
+        }.get(attempt.failure_reason, RoomReservationError)
+        cause = error_type(attempt.failure_message or attempt.failure_reason or "회의실 예약 실패", available=rooms)
+        return RoomBookingRefused(cause, [room.view() for room in rooms])
+
+    def _resolve_room_creation_attempt(
+        self,
+        principal: Principal,
+        request_key: str,
+        request: MeetingReservationInput,
+        source: dict[str, Any],
+        *,
+        payload_fingerprint: str | None = None,
+        request_payload: dict[str, Any] | None = None,
+    ) -> RoomReservation:
+        """Call the provider at most once for one durable owner/key/payload tuple."""
+        owner_id = str(principal.id)
+        fingerprint = payload_fingerprint or self._room_creation_fingerprint(request)
+        durable_payload = request_payload or request.model_dump(mode="json")
+        created_attempt = False
+        with self._room_creation_lock(owner_id, request_key):
+            with self._session_factory() as session:
+                attempt = session.scalar(
+                    select(MeetingRoomCreationAttemptRecord).where(
+                        MeetingRoomCreationAttemptRecord.owner_id == owner_id,
+                        MeetingRoomCreationAttemptRecord.request_key == request_key,
+                    )
+                )
+                if attempt is None:
+                    now = datetime.now(UTC)
+                    session.add(
+                        MeetingRoomCreationAttemptRecord(
+                            owner_id=owner_id,
+                            request_key=request_key,
+                            payload_fingerprint=fingerprint,
+                            request_payload=durable_payload,
+                            status="pending",
+                            created_at=now,
+                            updated_at=now,
+                        )
+                    )
+                    try:
+                        session.commit()
+                        created_attempt = True
+                    except IntegrityError:
+                        session.rollback()
+
+            with self._session_factory() as session:
+                attempt = session.scalar(
+                    select(MeetingRoomCreationAttemptRecord)
+                    .where(
+                        MeetingRoomCreationAttemptRecord.owner_id == owner_id,
+                        MeetingRoomCreationAttemptRecord.request_key == request_key,
+                    )
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+                if attempt is None:  # pragma: no cover - only external deletion can violate the claim
+                    raise RoomReservationError("회의실 예약 시도 원장을 찾지 못했습니다")
+                if attempt.payload_fingerprint != fingerprint:
+                    raise RoomCreationIdempotencyConflict(
+                        "같은 Idempotency-Key를 다른 회의실 예약에 사용할 수 없습니다"
+                    )
+                if attempt.status == "refused":
+                    raise self._stored_room_refusal(attempt)
+                if attempt.status == "compensated":
+                    attempt.status = "pending"
+                    attempt.reservation = None
+                    attempt.failure_reason = None
+                    attempt.failure_message = None
+                    attempt.updated_at = datetime.now(UTC)
+                    # 재시도를 먼저 durable 하게 남긴다 — 여기서 멈추면 다음 요청은 `pending` 을 보고
+                    # provider 를 다시 부르지 않는다. 그 commit 이 행 잠금을 풀므로, 외부 호출로
+                    # 들어가기 전에 같은 행을 다시 claim 한다. 그러지 않으면 잠금 밖에서 POST 하게 되고
+                    # 중복 억제가 프로세스 안의 lock 하나에만 기대게 된다.
+                    session.commit()
+                    created_attempt = True
+                    attempt = session.scalar(
+                        select(MeetingRoomCreationAttemptRecord)
+                        .where(
+                            MeetingRoomCreationAttemptRecord.owner_id == owner_id,
+                            MeetingRoomCreationAttemptRecord.request_key == request_key,
+                        )
+                        .with_for_update()
+                        .execution_options(populate_existing=True)
+                    )
+                    if attempt is None:  # pragma: no cover - only external deletion can violate the claim
+                        raise RoomReservationError("회의실 예약 시도 원장을 찾지 못했습니다")
+                    if attempt.status == "refused":
+                        raise self._stored_room_refusal(attempt)
+                if attempt.status in {STATUS_BOOKED, STATUS_NEEDS_VERIFICATION}:
+                    restored = RoomReservation.restored(attempt.reservation)
+                    if restored is None:  # pragma: no cover - corrupt persistence is not a retry signal
+                        raise RoomReservationError("저장된 회의실 예약 결과를 읽지 못했습니다")
+                    return restored
+
+                if not created_attempt:
+                    reservation = RoomReservation(
+                        status=STATUS_NEEDS_VERIFICATION,
+                        room_id=request.room_id,
+                        room_name=self._room_name(self.room_gateway, request.room_id) if self.room_gateway else None,
+                        reason=RoomOutcomeUnknown.reason,
+                    )
+                    attempt.status = STATUS_NEEDS_VERIFICATION
+                    attempt.reservation = reservation.stored()
+                    attempt.updated_at = datetime.now(UTC)
+                    session.commit()
+                    return reservation
+
+                try:
+                    reservation = self._reserve_room(source, request.room_id)
+                except RoomOutcomeUnknown as error:
+                    reservation = self._unknown_creation_reservation(error, request.room_id)
+                    attempt.status = STATUS_NEEDS_VERIFICATION
+                    attempt.reservation = reservation.stored()
+                    attempt.updated_at = datetime.now(UTC)
+                    session.commit()
+                    return reservation
+                except RoomReservationError as error:
+                    available = self._available_room_views(error, source)
+                    attempt.status = "refused"
+                    attempt.failure_reason = error.reason
+                    attempt.failure_message = str(error)
+                    attempt.available_rooms = available
+                    attempt.updated_at = datetime.now(UTC)
+                    session.commit()
+                    raise RoomBookingRefused(error, available) from error
+
+                attempt.status = STATUS_BOOKED
+                attempt.reservation = reservation.stored()
+                attempt.updated_at = datetime.now(UTC)
+                session.commit()
+                return reservation
 
     @staticmethod
     def _room_name(gateway: MeetingRoomGateway, room_id: int) -> str | None:
@@ -940,66 +1244,110 @@ class WorkflowApplication:
         except RoomReservationError:
             return []
 
-    def _sync_room_reservation(self, meeting_id: UUID, *, cancelled: bool) -> None:
+    def _sync_room_reservation(
+        self,
+        meeting_id: UUID,
+        *,
+        cancelled: bool,
+    ) -> dict[str, Any] | None:
         """회의가 옮겨지거나 거둬지면 잡아 둔 자리도 따라간다. **실패해도 회의 동작은 그대로다.**"""
+        with self._room_sync_lock(meeting_id):
+            return self._sync_room_reservation_locked(meeting_id, cancelled=cancelled)
+
+    def _sync_room_reservation_locked(
+        self,
+        meeting_id: UUID,
+        *,
+        cancelled: bool,
+    ) -> dict[str, Any] | None:
         gateway = self.room_gateway
         with self._session_factory() as session:
-            source = self._meetings(session).reservation_input(meeting_id)
-        reservation: RoomReservation | None = source["reservation"]
-        if reservation is None or reservation.status != STATUS_BOOKED or not reservation.external_id:
-            return
-        try:
-            if gateway is None:
-                raise RoomAuthFailed("예약 시스템 계정이 설정되어 있지 않습니다")
-            if cancelled:
-                gateway.cancel(reservation.external_id)
-                settled = RoomReservation(
-                    status=STATUS_CANCELLED, room_id=reservation.room_id, room_name=reservation.room_name
-                )
-            else:
-                # 옮긴 시간을 사옥 지역 시각으로 환산하려고 같은 함수를 쓴다 — 참석자는 싣지 않는다.
-                # (PUT 에 참석자를 실으면 그쪽이 조용히 망가뜨린다: `platform/the_connect.update` 주석.)
-                moved = build_reservation(
-                    room_id=reservation.room_id or 0,
-                    starts_at=source["starts_at"],
-                    ends_at=source["ends_at"],
-                    title=source["title"],
-                    booker_name=source["owner_name"],
-                    participant_emails=(),
-                    outside_names=(),
-                )
-                gateway.update(
-                    reservation.external_id,
-                    date=moved.date,
-                    start=moved.start,
-                    end=moved.end,
-                    room_id=reservation.room_id,
-                )
-                return
-        except RoomReservationError as error:
-            # 회의는 이미 옮겨졌거나 취소됐다. 자리만 어긋난 채로 **사실을 남긴다**.
-            logger.warning("회의 %s 예약 동기화 실패: %s", meeting_id, failure_reason(error))
-            settled = RoomReservation(
-                status=reservation.status,
-                room_id=reservation.room_id,
-                room_name=reservation.room_name,
-                external_id=reservation.external_id,
-                reason=failure_reason(error),
+            # PostgreSQL의 row lock은 다른 프로세스의 시간 변경과 recovery까지 같은 순서로 세운다.
+            # 로컬 RLock은 SELECT FOR UPDATE가 no-op인 SQLite와 한 프로세스의 중복 replay를 맡는다.
+            meeting = session.scalar(
+                select(MeetingRecord).where(MeetingRecord.id == meeting_id).with_for_update()
             )
-        with self._session_factory() as session:
+            if meeting is None:
+                return None
+            source = self._meetings(session).reservation_input(meeting_id)
+            reservation: RoomReservation | None = source["reservation"]
+            if reservation is None or reservation.status != STATUS_BOOKED or not reservation.external_id:
+                return None
+            try:
+                if gateway is None:
+                    raise RoomAuthFailed("예약 시스템 계정이 설정되어 있지 않습니다")
+                if cancelled:
+                    gateway.cancel(reservation.external_id)
+                    settled = RoomReservation(
+                        status=STATUS_CANCELLED,
+                        room_id=reservation.room_id,
+                        room_name=reservation.room_name,
+                    )
+                else:
+                    # 옮긴 시간을 사옥 지역 시각으로 환산하려고 같은 함수를 쓴다 — 참석자는 싣지 않는다.
+                    # (PUT 에 참석자를 실으면 그쪽이 조용히 망가뜨린다: `platform/the_connect.update` 주석.)
+                    moved = build_reservation(
+                        room_id=reservation.room_id or 0,
+                        starts_at=source["starts_at"],
+                        ends_at=source["ends_at"],
+                        title=source["title"],
+                        booker_name=source["owner_name"],
+                        participant_emails=(),
+                        outside_names=(),
+                    )
+                    gateway.update(
+                        reservation.external_id,
+                        date=moved.date,
+                        start=moved.start,
+                        end=moved.end,
+                        room_id=reservation.room_id,
+                    )
+                    session.commit()
+                    return {}
+            except RoomOutcomeUnknown as error:
+                # PUT/DELETE가 provider에 반영된 뒤 응답만 끊겼을 수 있다. 확인 API가 없으므로
+                # 미실행으로 단정하거나 자동 재호출하지 않고 사람이 대조할 상태로 고정한다 (D11).
+                logger.warning("회의 %s 예약 동기화 결과를 확인해야 합니다", meeting_id)
+                settled = RoomReservation(
+                    status=STATUS_NEEDS_VERIFICATION,
+                    room_id=reservation.room_id,
+                    room_name=reservation.room_name,
+                    external_id=reservation.external_id,
+                    reason=failure_reason(error),
+                )
+            except RoomReservationError as error:
+                # 회의는 이미 옮겨졌거나 취소됐다. 자리만 어긋난 채로 **사실을 남긴다**.
+                logger.warning("회의 %s 예약 동기화 실패: %s", meeting_id, failure_reason(error))
+                settled = RoomReservation(
+                    status=reservation.status,
+                    room_id=reservation.room_id,
+                    room_name=reservation.room_name,
+                    external_id=reservation.external_id,
+                    reason=failure_reason(error),
+                )
             self._meetings(session).attach_reservation(
                 # 거둔 자리는 장소를 비우고, 옮기다 어긋난 자리는 방 이름을 그대로 둔다.
                 meeting_id, settled, location=None if cancelled else settled.room_name
             )
             session.commit()
+        return {
+            "location": None if cancelled else settled.room_name,
+            "room_reservation": settled.view(),
+        }
 
-    def my_work(self, principal: Principal) -> list[dict[str, Any]]:
-        """ERD work_inbox projection: tasks the principal currently holds an active assignment for."""
-        with self._session_factory() as session:
+    def _room_sync_lock(self, meeting_id: UUID) -> threading.RLock:
+        with self._room_sync_locks_guard:
             try:
-                return self._tasks(session).list_for(principal)
-            except TaskAccessDenied:
-                return []
+                lock = self._room_sync_locks[meeting_id]
+            except KeyError:
+                lock = threading.RLock()
+                self._room_sync_locks[meeting_id] = lock
+            return lock
+
+    def my_work(self, principal: Principal, *, include_closed: bool = False) -> list[TaskListEntry]:
+        """Tasks the principal currently holds an active assignment for."""
+        with self._session_factory() as session:
+            return self._tasks(session).my_work(principal, include_closed=include_closed)
 
     def list_meetings(self, principal: Principal) -> list[dict[str, Any]]:
         """캘린더·MCP가 읽는 투영. 회의 화면은 `meeting_board`를 읽는다."""
@@ -1016,18 +1364,31 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def my_meetings(self, principal: Principal) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            result = self._meetings(session).my_meetings(principal)
+            session.commit()
+            return result
+
     def get_meeting(self, principal: Principal, meeting_id: UUID) -> dict[str, Any]:
         with self._session_factory() as session:
             result = self._meetings(session).get(principal, meeting_id)
             session.commit()
             return result
 
-    def create_meeting(self, principal: Principal, *, room_id: int | None = None, **fields: Any) -> dict[str, Any]:
+    def create_meeting(
+        self,
+        principal: Principal,
+        *,
+        room_id: int | None = None,
+        idempotency_key: str | None = None,
+        **fields: Any,
+    ) -> dict[str, Any]:
         """회의를 세운다. 회의실을 골랐으면 **자리를 먼저 잡고, 잡힌 뒤에** 회의를 세운다 (D36-2).
 
-        순서가 뒤집힌 이유: 자리를 못 잡으면 회의도 서지 않는다. 회의를 먼저 만들면 거절된 순간
-        방 없는 회의가 원장에 남고, 그것을 지우는 일이 사람 몫이 된다. 반대로 예약이 성공한 뒤
-        회의 저장이 깨지면 **잡아 둔 자리를 되돌린다** — 주인 없는 예약을 남기지 않는다.
+        자리를 못 잡으면 회의도 서지 않는다. provider POST 전에는 로컬 규칙과 durable attempt를 먼저
+        확정하고, 응답을 잃으면 같은 key로 다시 보내지 않은 채 확인 필요 회의를 남긴다. 예약 뒤 로컬
+        저장이 실패해도 attempt에 성공 결과가 남으므로 재요청은 provider를 부르지 않고 저장부터 잇는다.
         """
         if room_id is None:
             with self._session_factory() as session:
@@ -1035,32 +1396,43 @@ class WorkflowApplication:
                 session.commit()
                 return result
 
+        request_key = self._room_creation_request_key(idempotency_key)
+        request = MeetingReservationInput.model_validate({**fields, "room_id": room_id})
+        fingerprint = self._room_creation_fingerprint(request)
         with self._session_factory() as session:
-            source = self._meetings(session).reservation_draft(
+            meetings = self._meetings(session)
+            meetings.validate_creation(principal, **request.values())
+            source = meetings.reservation_draft(
                 principal,
-                title=fields.get("title"),
-                starts_at=fields["starts_at"],
-                ends_at=fields["ends_at"],
-                attendee_ids=fields.get("attendee_ids"),
-                external_attendees=fields.get("external_attendees"),
+                title=request.title,
+                starts_at=request.starts_at,
+                ends_at=request.ends_at,
+                attendee_ids=request.attendee_ids,
+                external_attendees=request.external_attendees,
             )
-        try:
-            reservation = self._reserve_room(source, room_id)
-        except RoomReservationError as error:
-            logger.warning("회의실을 잡지 못해 회의를 만들지 않습니다: %s", failure_reason(error))
-            raise RoomBookingRefused(error, self._available_room_views(error, source)) from error
-
-        try:
+        with self._room_creation_lock(str(principal.id), request_key):
+            reservation = self._resolve_room_creation_attempt(principal, request_key, request, source)
             with self._session_factory() as session:
+                attempt = session.scalar(
+                    select(MeetingRoomCreationAttemptRecord)
+                    .where(
+                        MeetingRoomCreationAttemptRecord.owner_id == str(principal.id),
+                        MeetingRoomCreationAttemptRecord.request_key == request_key,
+                    )
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+                if attempt is None or attempt.payload_fingerprint != fingerprint:  # pragma: no cover - guarded above
+                    raise RoomCreationIdempotencyConflict("회의실 예약 시도 원장이 바뀌었습니다")
                 meetings = self._meetings(session)
-                created = meetings.create(principal, **fields)
+                if attempt.meeting_id is not None:
+                    return meetings.get(principal, attempt.meeting_id)
+                created = meetings.create(principal, **request.values())
                 meeting_id = UUID(created["meeting"]["meeting_id"])
                 meetings.attach_reservation(meeting_id, reservation, location=reservation.room_name)
+                attempt.meeting_id = meeting_id
+                attempt.updated_at = datetime.now(UTC)
                 session.commit()
-        except Exception:
-            # 회의가 서지 못했다 — 방금 잡은 자리를 거둔다. 아무도 쓰지 않을 예약을 남기지 않는다.
-            self._release_orphan_reservation(reservation)
-            raise
         with self._session_factory() as session:
             return self._meetings(session).get(principal, meeting_id)
 
@@ -1073,6 +1445,99 @@ class WorkflowApplication:
         except RoomReservationError as error:
             # 거두지도 못했다. 회의는 어차피 서지 않으므로 사실만 남긴다 — 사람이 예약 시스템에서 지운다.
             logger.warning("주인 없는 회의실 예약을 거두지 못했습니다: %s", failure_reason(error))
+
+    def _compensate_room_creation_attempt(
+        self,
+        owner_id: str,
+        request_key: str,
+        reservation: RoomReservation,
+    ) -> None:
+        """Cancel a known booking after Action rollback and record whether retry is safe."""
+        gateway = self.room_gateway
+        if gateway is None or reservation.status != STATUS_BOOKED or not reservation.external_id:
+            return
+        pending = RoomReservation(
+            status=STATUS_NEEDS_VERIFICATION,
+            room_id=reservation.room_id,
+            room_name=reservation.room_name,
+            external_id=reservation.external_id,
+            reason="reservation_compensation_pending",
+            replaced=reservation.replaced,
+            requested_room_name=reservation.requested_room_name,
+        )
+        # This write must become durable before DELETE. A crash at any later point can
+        # then only replay a needs-verification receipt, never a booked reservation
+        # that may already have been cancelled.
+        self._persist_room_creation_compensation(
+            owner_id,
+            request_key,
+            status=STATUS_NEEDS_VERIFICATION,
+            reservation=pending,
+            failure_reason=pending.reason,
+        )
+        try:
+            gateway.cancel(reservation.external_id)
+        except RoomReservationError as error:
+            uncertain = RoomReservation(
+                status=STATUS_NEEDS_VERIFICATION,
+                room_id=reservation.room_id,
+                room_name=reservation.room_name,
+                external_id=reservation.external_id,
+                reason=failure_reason(error),
+                replaced=reservation.replaced,
+                requested_room_name=reservation.requested_room_name,
+            )
+            self._persist_room_creation_compensation(
+                owner_id,
+                request_key,
+                status=STATUS_NEEDS_VERIFICATION,
+                reservation=uncertain,
+                failure_reason=uncertain.reason,
+            )
+        else:
+            cancelled = RoomReservation(
+                status=STATUS_CANCELLED,
+                room_id=reservation.room_id,
+                room_name=reservation.room_name,
+                replaced=reservation.replaced,
+                requested_room_name=reservation.requested_room_name,
+            )
+            self._persist_room_creation_compensation(
+                owner_id,
+                request_key,
+                status="compensated",
+                reservation=cancelled,
+                failure_reason=None,
+            )
+
+    def _persist_room_creation_compensation(
+        self,
+        owner_id: str,
+        request_key: str,
+        *,
+        status: str,
+        reservation: RoomReservation,
+        failure_reason: str | None,
+    ) -> None:
+        with self._room_creation_lock(owner_id, request_key):
+            with self._session_factory() as attempt_session:
+                attempt = attempt_session.scalar(
+                    select(MeetingRoomCreationAttemptRecord)
+                    .where(
+                        MeetingRoomCreationAttemptRecord.owner_id == owner_id,
+                        MeetingRoomCreationAttemptRecord.request_key == request_key,
+                    )
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+                if attempt is None or attempt.meeting_id is not None:
+                    return
+                attempt.status = status
+                attempt.reservation = reservation.stored()
+                attempt.failure_reason = failure_reason
+                attempt.failure_message = None
+                attempt.updated_at = datetime.now(UTC)
+                attempt_session.commit()
 
     def quick_start_meeting(self, principal: Principal) -> dict[str, Any]:
         """[회의 시작] 바로 시작 — 세우자마자 「진행 중」이므로 웜스타트도 여기서 건다.
@@ -1238,27 +1703,18 @@ class WorkflowApplication:
 
     # --- 알림 (main #3) ------------------------------------------------------------
 
-    def list_notifications(self, principal: Principal) -> list[dict[str, object]]:
-        with self._session_factory() as session:
-            rows = SqlAlchemyNotificationRepository(session).list_for(str(principal.id))
-            return [view for row in rows if (view := self._authorized_notification_view(session, principal, row)) is not None]
+    def _notifications(self, session: Any) -> NotificationApplication:
+        return NotificationApplication(SqlAlchemyNotificationRepository(session), self._meetings(session), self._work_requests(session))
 
-    def mark_notification_read(self, principal: Principal, notification_id: UUID) -> dict[str, object]:
+    def list_notifications(self, principal: Principal) -> list[NotificationView]:
         with self._session_factory() as session:
-            repository = SqlAlchemyNotificationRepository(session)
-            row = repository.for_recipient(notification_id, str(principal.id), lock=True)
-            if row is None:
-                raise NotificationNotFound("notification was not found")
-            view = self._authorized_notification_view(session, principal, row)
-            if view is None:
-                raise NotificationNotFound("notification was not found")
-            repository.mark_read(row)
+            return self._notifications(session).list(principal)
+
+    def mark_notification_read(self, principal: Principal, notification_id: UUID) -> NotificationView:
+        with self._session_factory() as session:
+            result = self._notifications(session).mark_read(principal, notification_id)
             session.commit()
-            return notification_view(
-                row,
-                title=str(view["resource"]["title"]),
-                version=view["resource"]["version"],
-            )
+            return result
 
     def _authorized_notification_view(self, session: Any, principal: Principal, row: Any) -> dict[str, object] | None:
         """알림 한 줄을 **지금 읽을 수 있는지 다시 물어** 낸다 — 알림이 권한을 넘겨주지 않는다.
@@ -1411,19 +1867,19 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return self._meetings(session).unprocessed_transcript_cursor(meeting_id, after_seq=after_seq)
 
-    def organization_tree(self, principal: Principal) -> list[dict[str, Any]]:
+    def organization_tree(self, principal: Principal) -> list[OrganizationUnitView]:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).organization_tree(principal)
 
-    def organization_unit_members(self, principal: Principal, unit_id: str) -> list[dict[str, Any]]:
+    def organization_unit_members(self, principal: Principal, unit_id: str) -> list[UnitMemberView]:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).unit_members(principal, unit_id)
 
-    def organization_member_detail(self, principal: Principal, member_id: str) -> dict[str, Any]:
+    def organization_member_detail(self, principal: Principal, member_id: str) -> MemberDetailView:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).member_detail(principal, member_id)
 
-    def organization_member_history(self, principal: Principal, member_id: str, axis: str) -> list[dict[str, Any]]:
+    def organization_member_history(self, principal: Principal, member_id: str, axis: str) -> list[MemberAxisHistoryView]:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).member_axis_history(
                 principal, member_id, axis
@@ -1431,19 +1887,19 @@ class WorkflowApplication:
 
     def organization_activity(
         self, principal: Principal, *, unit_id: str | None = None, limit: int = 50, cursor: str | None = None
-    ) -> list[dict[str, Any]]:
+    ) -> list[OrganizationActivityView]:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).organization_activity(
                 principal, unit_id=unit_id, limit=limit, cursor=cursor
             )
 
-    def my_organization_profile(self, principal: Principal) -> dict[str, Any]:
+    def my_organization_profile(self, principal: Principal) -> MyOrganizationProfileView:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).my_profile(principal)
 
     def set_assistant_character(
         self, principal: Principal, character_key: str, expected_version: int
-    ) -> dict[str, Any]:
+    ) -> AssistantCharacterResult:
         with self._session_factory() as session:
             result = OrganizationApplication(SqlAlchemyOrganizationRepository(session)).set_assistant_character(
                 principal, character_key, expected_version
@@ -1459,11 +1915,11 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).authenticate_with_password(email, password)
 
-    def installed_access_roles(self, principal: Principal) -> list[dict[str, Any]]:
+    def installed_access_roles(self, principal: Principal) -> list[InstalledRoleView]:
         with self._session_factory() as session:
             return AccessAdministration(SqlAlchemyOrganizationRepository(session)).installed_roles(principal)
 
-    def member_access(self, principal: Principal, member_id: str) -> dict[str, Any]:
+    def member_access(self, principal: Principal, member_id: str) -> MemberAccessView:
         with self._session_factory() as session:
             return AccessAdministration(SqlAlchemyOrganizationRepository(session)).member_access(principal, member_id)
 
@@ -1519,7 +1975,7 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).demo_accounts(email_domain)
 
-    def member_directory(self, principal: Principal) -> list[dict[str, Any]]:
+    def member_directory(self, principal: Principal) -> list[MemberDirectoryView]:
         with self._session_factory() as session:
             return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).member_directory(principal)
 
@@ -1528,7 +1984,7 @@ class WorkflowApplication:
         principal: Principal,
         report_date: str,
         causation_key: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> ReportGeneratedResult:
         with self._session_factory() as session:
             try:
                 result = self._reports(session).generate_draft(
@@ -1543,6 +1999,122 @@ class WorkflowApplication:
                 session.commit()
                 raise
 
+    def request_daily_report_draft(
+        self,
+        principal: Principal,
+        report_date: str,
+        causation_key: str | None = None,
+    ) -> ReportStatusResult:
+        with self._session_factory() as session:
+            reports = self._reports(session)
+            generation = reports.request_generation(principal, report_date, causation_key)
+            if generation.state in {"queued", "running"}:
+                self._report_queue(session).enqueue(
+                    DailyReportGenerationJob(generation.id, str(principal.id))
+                )
+            result = reports.status_for_date(principal, report_date)
+            session.commit()
+            return result
+
+    def daily_report_generation_input(
+        self,
+        generation_id: UUID,
+        *,
+        attempt: int,
+        lease_token: UUID,
+        stale_after_seconds: int,
+    ) -> dict[str, Any]:
+        with self._session_factory() as session:
+            repository = SqlAlchemyDailyReportRepository(session)
+            generation = repository.generation(generation_id)
+            principal = (
+                SqlAlchemyOrganizationRepository(session).principal_for(generation.owner_id)
+                if generation is not None
+                else None
+            )
+            result = self._reports(session).generation_input(
+                principal,
+                generation_id,
+                attempt=attempt,
+                lease_token=lease_token,
+                stale_after_seconds=stale_after_seconds,
+            )
+            session.commit()
+            return result
+
+    def execute_daily_report_generation(
+        self,
+        generation_id: UUID,
+        *,
+        lease_token: UUID,
+    ) -> ReportGeneratedResult:
+        with self._session_factory() as session:
+            repository = SqlAlchemyDailyReportRepository(session)
+            generation = repository.generation(generation_id)
+            principal = (
+                SqlAlchemyOrganizationRepository(session).principal_for(generation.owner_id)
+                if generation is not None
+                else None
+            )
+            if principal is None:
+                raise DailyReportAccessDenied("daily report generation actor is no longer authorized")
+            try:
+                result = self._reports(session).execute_generation(
+                    principal, generation_id, lease_token=lease_token
+                )
+                session.commit()
+                return result
+            except ProviderFailure:
+                session.commit()
+                raise
+
+    def heartbeat_daily_report_generation(
+        self,
+        generation_id: UUID,
+        *,
+        lease_token: UUID,
+        stage_timeout_seconds: int,
+        total_timeout_seconds: int,
+    ) -> bool:
+        with self._session_factory() as session:
+            active = self._reports(session).heartbeat_generation(
+                generation_id,
+                lease_token=lease_token,
+                stage_timeout_seconds=stage_timeout_seconds,
+                total_timeout_seconds=total_timeout_seconds,
+            )
+            session.commit()
+            return active
+
+    def retry_daily_report_generation(
+        self, generation_id: UUID, *, lease_token: UUID, code: str
+    ) -> None:
+        with self._session_factory() as session:
+            self._reports(session).retry_generation(generation_id, lease_token=lease_token, code=code)
+            session.commit()
+
+    def fail_daily_report_generation(
+        self, generation_id: UUID, *, lease_token: UUID, code: str
+    ) -> None:
+        with self._session_factory() as session:
+            self._reports(session).fail_generation(generation_id, lease_token=lease_token, code=code)
+            session.commit()
+
+    def mark_daily_report_generation_needs_verification(
+        self, generation_id: UUID, *, lease_token: UUID, code: str
+    ) -> None:
+        with self._session_factory() as session:
+            self._reports(session).mark_generation_needs_verification(
+                generation_id, lease_token=lease_token, code=code
+            )
+            session.commit()
+
+    def abandon_daily_report_generation(self, generation_id: UUID, *, lease_token: UUID) -> str:
+        with self._session_factory() as session:
+            outcome = self._reports(session).abandon_generation(generation_id, lease_token=lease_token)
+            session.commit()
+            return outcome
+
     def edit_daily_report(
         self,
         principal: Principal,
@@ -1552,7 +2124,7 @@ class WorkflowApplication:
         body: str,
         include_source_refs: list[dict[str, Any]],
         exclude_source_refs: list[dict[str, Any]],
-    ) -> dict[str, Any]:
+    ) -> ReportDraftResult:
         with self._session_factory() as session:
             result = self._reports(session).edit(
                 principal,
@@ -1573,28 +2145,23 @@ class WorkflowApplication:
         draft_id: str,
         expected_version: int,
         reason: str | None,
-    ) -> dict[str, Any]:
+    ) -> ReportSubmissionResult:
         with self._session_factory() as session:
             result = self._reports(session).submit(
                 principal, report_id, draft_id, expected_version, reason
             )
-            self._register_native_material(session, "report_submission", UUID(result["submission_id"]))
             session.commit()
             return result
 
-    def daily_report_history(self, principal: Principal, report_id: str) -> dict[str, Any]:
+    def daily_report_history(self, principal: Principal, report_id: str) -> ReportHistoryResult:
         with self._session_factory() as session:
             return self._reports(session).history(principal, report_id)
 
-    def daily_report_recent(self, principal: Principal, *, limit: int = 3) -> list[dict[str, Any]]:
+    def daily_report_recent(self, principal: Principal, *, limit: int = 3) -> list[ReportRecentView]:
         with self._session_factory() as session:
-            try:
-                return self._reports(session).recent(principal, limit=limit)
-            except DailyReportAccessDenied:
-                # Someone who may not read reports has none to connect; that is an answer, not a failure.
-                return []
+            return self._reports(session).recent(principal, limit=limit)
 
-    def daily_report_status(self, principal: Principal, report_date: str) -> dict[str, Any]:
+    def daily_report_status(self, principal: Principal, report_date: str) -> ReportStatusResult:
         with self._session_factory() as session:
             return self._reports(session).status_for_date(principal, report_date)
 
@@ -1606,6 +2173,7 @@ class WorkflowApplication:
                 SqlAlchemyWorkRecordSource(session),
                 self._report_provider,
             ),
+            publish_submission=lambda revision_id: self._register_native_material(session, "report_submission", revision_id),
         )
 
     def _meetings(self, session: Any) -> MeetingApplication:
@@ -1627,7 +2195,7 @@ class WorkflowApplication:
         reference_task_ids: list[UUID] | None = None,
         parent_task_id: UUID | None = None,
         project_id: UUID | None = None,
-    ) -> dict[str, Any]:
+    ) -> TaskMutationResult:
         with self._session_factory() as session:
             result = self._tasks(session).create_self(
                 principal, title, causation_key,
@@ -1637,7 +2205,7 @@ class WorkflowApplication:
             session.commit()
             return result
 
-    def update_task(self, principal: Principal, task_id: UUID, expected_version: int, changes: dict[str, Any]) -> dict[str, Any]:
+    def update_task(self, principal: Principal, task_id: UUID, expected_version: int, changes: dict[str, Any]) -> TaskMutationResult:
         with self._session_factory() as session:
             result = self._tasks(session).update(task_id, principal, expected_version, changes)
             session.commit()
@@ -1645,7 +2213,7 @@ class WorkflowApplication:
 
     def attach_task_material_reference(
         self, principal: Principal, task_id: UUID, *, kind: str, resource_type: str, resource_id: str
-    ) -> dict[str, Any]:
+    ) -> TaskMaterialResult:
         """Point a Task at another thing inside SCAX, resolved through that thing's own authorization."""
         with self._session_factory() as session:
             result = self._materials(session).attach_reference(
@@ -1654,20 +2222,20 @@ class WorkflowApplication:
             session.commit()
             return result
 
-    def attach_task_material_link(self, principal: Principal, task_id: UUID, *, kind: str, url: str, label: str) -> dict[str, Any]:
+    def attach_task_material_link(self, principal: Principal, task_id: UUID, *, kind: str, url: str, label: str) -> TaskMaterialResult:
         """Point a Task at work that lives somewhere else. No bytes are held and no revision is pinned."""
         with self._session_factory() as session:
             result = self._materials(session).attach_link(principal, task_id, kind=kind, url=url, label=label)
             session.commit()
             return result
 
-    def add_task_reference(self, principal: Principal, task_id: UUID, referenced_task_id: UUID) -> dict[str, Any]:
+    def add_task_reference(self, principal: Principal, task_id: UUID, referenced_task_id: UUID) -> TaskReferenceResult:
         with self._session_factory() as session:
             result = self._tasks(session).add_reference(principal, task_id, referenced_task_id)
             session.commit()
             return result
 
-    def release_task_reference(self, principal: Principal, task_id: UUID, reference_id: UUID) -> dict[str, Any]:
+    def release_task_reference(self, principal: Principal, task_id: UUID, reference_id: UUID) -> TaskReferenceReleaseResult:
         with self._session_factory() as session:
             result = self._tasks(session).release_reference(principal, task_id, reference_id)
             session.commit()
@@ -1675,7 +2243,7 @@ class WorkflowApplication:
 
     def submit_task_completion(
         self, principal: Principal, task_id: UUID, expected_version: int, *, summary: str, output_material_ids: list[UUID] | None = None
-    ) -> dict[str, Any]:
+    ) -> TaskCompletionResult:
         with self._session_factory() as session:
             result = self._tasks(session).submit_completion(
                 principal, task_id, expected_version, summary=summary, output_material_ids=output_material_ids
@@ -1691,7 +2259,7 @@ class WorkflowApplication:
                 raise MaterialNotFound("attachment was not found")
             extractions = SqlAlchemyMaterialExtractionRepository(session)
             extraction = extractions.request(attachment, parser_version=parser_version)
-            self._material_queue(session).enqueue(MaterialExtractionJob(extraction.id, attachment.id))
+            self._material_queue(session).enqueue(MaterialExtractionJob(extraction.id, attachment.id, attachment.uploaded_by))
             session.commit()
             return {"extraction_id": str(extraction.id), "parser_version": parser_version}
 
@@ -1746,11 +2314,39 @@ class WorkflowApplication:
     def _graph(self, session: Any) -> GraphApplication:
         return GraphApplication(_SessionGraphSource(self, session))
 
-    def graph_overview(self, principal: Principal, *, view: str = "member", limit: int = 120) -> dict[str, Any]:
+    def graph_overview(
+        self,
+        principal: Principal,
+        *,
+        view: str = "member",
+        limit: int = 120,
+        execution_id: UUID | None = None,
+    ) -> GraphOverviewResult:
         with self._session_factory() as session:
-            return GraphApplication(_SessionGraphSource(self, session)).overview(principal, view=view, limit=limit)
+            result = self._graph(session).overview(principal, view=view, limit=limit)
+            if execution_id is not None and result["edges"]:
+                titles = {f"{row['kind']}:{row['id']}": row["title"] for row in result["nodes"]}
+                SqlAlchemyGraphReceiptRepository(session).record(
+                    execution_id,
+                    str(principal.id),
+                    [
+                        {
+                            "kind": "edge",
+                            "edge_kind": row["kind"],
+                            "from_ref": row["from"],
+                            "from_title": titles.get(row["from"]),
+                            "to_ref": row["to"],
+                            "to_title": titles.get(row["to"]),
+                            "source_contexts": row.get("source_contexts"),
+                            "integrity_ref": row.get("integrity_ref"),
+                        }
+                        for row in result["edges"]
+                    ],
+                )
+                session.commit()
+            return result
 
-    def graph_search(self, principal: Principal, query: str, limit: int = 20, *, execution_id: UUID | None = None) -> dict[str, Any]:
+    def graph_search(self, principal: Principal, query: str, limit: int = 20, *, execution_id: UUID | None = None) -> GraphSearchResult:
         """Find work to walk from. In a delegated turn the hits become that turn's own record of what it looked at."""
         with self._session_factory() as session:
             result = self._graph(session).search(principal, query, limit=limit)
@@ -1766,7 +2362,7 @@ class WorkflowApplication:
                 session.commit()
             return result
 
-    def graph_neighbors(self, principal: Principal, node: str, limit: int = 20, *, execution_id: UUID | None = None) -> dict[str, Any]:
+    def graph_neighbors(self, principal: Principal, node: str, limit: int = 20, *, execution_id: UUID | None = None) -> GraphNeighborsResult:
         with self._session_factory() as session:
             result = self._graph(session).neighbors(principal, node, limit=limit)
             if execution_id is not None and result["edges"]:
@@ -1892,21 +2488,21 @@ class WorkflowApplication:
             session.commit()
             return written
 
-    def task_history(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
+    def task_history(self, principal: Principal, task_id: UUID) -> TaskHistoryResult:
         with self._session_factory() as session:
             return self._tasks(session).history(principal, task_id)
 
-    def task_history_diff(self, principal: Principal, task_id: UUID, before: int, after: int) -> dict[str, Any]:
+    def task_history_diff(self, principal: Principal, task_id: UUID, before: int, after: int) -> TaskHistoryDiffResult:
         with self._session_factory() as session:
             return self._tasks(session).history_diff(principal, task_id, before, after)
 
-    def list_task_materials(self, principal: Principal, task_id: UUID) -> list[dict[str, Any]]:
+    def list_task_materials(self, principal: Principal, task_id: UUID) -> list[TaskMaterialView]:
         with self._session_factory() as session:
             return self._materials(session).list(principal, task_id)
 
     def attach_task_material(
         self, principal: Principal, task_id: UUID, *, kind: str, name: str, content_type: str, data: bytes
-    ) -> dict[str, Any]:
+    ) -> TaskMaterialResult:
         with self._session_factory() as session:
             result = self._materials(session).attach(principal, task_id, kind=kind, name=name, content_type=content_type, data=data)
             session.commit()
@@ -1916,30 +2512,29 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return self._materials(session).open(principal, task_id, material_id)
 
-    def detach_task_material(self, principal: Principal, task_id: UUID, binding_id: UUID) -> dict[str, Any]:
+    def detach_task_material(self, principal: Principal, task_id: UUID, binding_id: UUID) -> TaskMaterialResult:
         with self._session_factory() as session:
             result = self._materials(session).detach(principal, task_id, binding_id)
             session.commit()
             return result
 
-    def search_materials(self, principal: Principal, query: str, *, execution_id: UUID | None = None, **filters: Any) -> dict[str, Any]:
+    def search_materials(self, principal: Principal, query: str, *, execution_id: UUID | None = None, **filters: Any) -> MaterialSearchResult:
         with self._session_factory() as session:
             extractions = SqlAlchemyMaterialExtractionRepository(session)
             result = MaterialSearchApplication(SessionMaterialOwners(self, session), extractions,
-                                               LexicalMaterialRetriever(extractions, SqlChunkIndex(session)),
-                                               self._material_queue(session)).search(principal, query, **filters)
+                                               LexicalMaterialRetriever(extractions, SqlChunkIndex(session))).search(principal, query, **filters)
             if execution_id is not None:
                 SqlAlchemyMaterialEvidenceRepository(session).record(execution_id, str(principal.id), result["query"], result["results"])
             session.commit()
             return result
 
-    def material_metadata(self, principal: Principal, material_id: UUID) -> dict[str, Any]:
+    def material_metadata(self, principal: Principal, material_id: UUID) -> MaterialMetadataResult:
         with self._session_factory() as session:
             result = self._material_metadata(session, principal, material_id)
             session.commit()
             return result
 
-    def _material_metadata(self, session: Any, principal: Principal, material_id: UUID) -> dict[str, Any]:
+    def _material_metadata(self, session: Any, principal: Principal, material_id: UUID) -> MaterialMetadataResult:
         sources = SessionMaterialOwners(self, session).sources(principal, set(RESOURCE_TYPES), material_id=material_id)
         sources = [source for source in sources if source.attachment.id == material_id and source.attachment.lifecycle != "purged"]
         if not sources:
@@ -1962,6 +2557,47 @@ class WorkflowApplication:
                                          OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
                                          SqlAlchemyAttachmentRepository(session), self._material_storage,
                                          SqlAlchemyMaterialExtractionRepository(session), self._material_queue(session))
+
+    def backfill_native_materials(self, principal: Principal, *, limit: int = 100) -> int:
+        """Explicit maintenance for legacy revisions within the caller's current read scope."""
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        from ax_workspace.modules.organization_access.domain import MEETING_READ, DAILY_REPORT_READ
+
+        with self._session_factory() as session:
+            principal = SessionMaterialOwners(self, session).current_principal(principal)
+            if principal is None:
+                return 0
+            native = NativeMaterialRepository(session)
+
+            def revisions():
+                if MEETING_READ in principal.capabilities:
+                    meetings = self._meetings(session)
+                    for meeting in meetings.readable_rows(principal):
+                        yield {
+                            "kind": MEETING_TRANSCRIPT,
+                            "revision_id": meeting["meeting_id"],
+                        }
+                if DAILY_REPORT_READ in principal.capabilities:
+                    for revision in self._reports(session).material_revisions(principal, include_history=True):
+                        yield {**revision, "kind": "report_submission"}
+
+            registered = 0
+            for revision in revisions():
+                kind, identifier = revision["kind"], UUID(revision["revision_id"])
+                if native.registered(kind, identifier) is not None:
+                    continue
+                try:
+                    self._register_native_material(session, kind, identifier)
+                except ValueError:
+                    # A current meeting has no native source until at least one
+                    # transcript block has settled.
+                    continue
+                registered += 1
+                if registered == limit:
+                    break
+            session.commit()
+            return registered
 
     def _register_native_material(self, session: Any, kind: str, revision_id: UUID) -> None:
         binding, attachment = NativeMaterialRepository(session).ensure(kind, revision_id)
@@ -2000,37 +2636,37 @@ class WorkflowApplication:
             session.commit()
             return result, data
 
-    def create_material_folder(self, principal: Principal, **fields: Any) -> dict[str, Any]:
+    def create_material_folder(self, principal: Principal, **fields: Any) -> FolderView:
         with self._session_factory() as session:
             result = self._material_folders(session).create(principal, **fields)
             session.commit()
             return result
 
-    def list_material_folders(self, principal: Principal) -> list[dict[str, Any]]:
+    def list_material_folders(self, principal: Principal) -> list[FolderView]:
         with self._session_factory() as session:
             return self._material_folders(session).list_for(principal)
 
-    def list_folder_materials(self, principal: Principal, folder_id: UUID) -> list[dict[str, Any]]:
+    def list_folder_materials(self, principal: Principal, folder_id: UUID) -> list[FolderMaterialView]:
         with self._session_factory() as session:
             return self._material_folders(session).materials(principal, folder_id)
 
-    def upload_folder_material(self, principal: Principal, folder_id: UUID, **fields: Any) -> dict[str, Any]:
+    def upload_folder_material(self, principal: Principal, folder_id: UUID, **fields: Any) -> FolderMaterialView:
         with self._session_factory() as session:
             result = self._material_folders(session).upload(principal, folder_id, **fields)
             session.commit()
             return result
 
-    def open_folder_material(self, principal: Principal, folder_id: UUID, material_id: UUID) -> tuple[dict[str, Any], bytes]:
+    def open_folder_material(self, principal: Principal, folder_id: UUID, material_id: UUID) -> tuple[FolderMaterialView, bytes]:
         with self._session_factory() as session:
             return self._material_folders(session).open(principal, folder_id, material_id)
 
-    def detach_folder_material(self, principal: Principal, folder_id: UUID, material_id: UUID) -> dict[str, Any]:
+    def detach_folder_material(self, principal: Principal, folder_id: UUID, material_id: UUID) -> FolderDetachResult:
         with self._session_factory() as session:
             result = self._material_folders(session).detach(principal, folder_id, material_id)
             session.commit()
             return result
 
-    def archive_material_folder(self, principal: Principal, folder_id: UUID) -> dict[str, Any]:
+    def archive_material_folder(self, principal: Principal, folder_id: UUID) -> FolderArchiveResult:
         with self._session_factory() as session:
             result = self._material_folders(session).archive(principal, folder_id)
             session.commit()
@@ -2048,8 +2684,110 @@ class WorkflowApplication:
         return build_job_queue(self._settings.job_queue_backend, session, self.memory_job_queue)
 
 
+    def _report_queue(self, session: Any) -> DailyReportGenerationQueue:
+        return DailyReportGenerationQueue(self.job_queue(session))
+
     def _material_queue(self, session: Any) -> MaterialJobQueue:
         return MaterialJobQueue(self.job_queue(session))
+
+    def _browser_interactions(self, session: Any) -> BrowserInteractionApplication:
+        return BrowserInteractionApplication(SqlAlchemyBrowserInteractionRepository(session), SessionBrowserFileTargets(self, session), self._settings.web_origin)
+
+    def request_file_attachment(self, principal: Principal, request: BrowserFileRequest) -> BrowserInteractionResult:
+        with self._session_factory() as session:
+            result = self._browser_interactions(session).request_file(principal, request)
+            session.commit()
+            return result
+
+    def browser_interaction(self, principal: Principal, interaction_id: UUID) -> BrowserInteractionResult:
+        with self._session_factory() as session:
+            return self._browser_interactions(session).get(principal, interaction_id)
+
+    def request_recording(self, principal: Principal, request: BrowserRecordingRequest) -> BrowserInteractionResult:
+        with self._session_factory() as session:
+            result = self._browser_interactions(session).request_recording(principal, request)
+            session.commit()
+            return result
+
+    def start_browser_recording(self, principal: Principal, interaction_id: UUID, capture_id: UUID) -> BrowserInteractionResult:
+        try:
+            with self._session_factory() as session:
+                result = self._browser_interactions(session).start_recording(principal, interaction_id, capture_id)
+                session.commit()
+                return result
+        except BrowserInteractionConflict:
+            raise
+        except Exception as error:
+            with self._session_factory() as session:
+                recovered = self._browser_interactions(session).recover_recording_start_failure(
+                    principal, interaction_id, capture_id, denied=isinstance(error, (ResourceNotFound, MeetingAccessDenied)))
+                session.commit()
+                if recovered is not None:
+                    return recovered
+            raise
+
+    def stop_browser_recording(self, principal: Principal, interaction_id: UUID, capture_id: UUID, *, name: str, content_type: str, data: bytes) -> BrowserInteractionResult:
+        try:
+            with self._session_factory() as session:
+                result = self._browser_interactions(session).stop_recording(principal, interaction_id, capture_id, name=name, content_type=content_type, data=data)
+                session.commit()
+                return result
+        except BrowserInteractionConflict:
+            raise
+        except Exception:
+            with self._session_factory() as session:
+                recovered = self._browser_interactions(session).recover_recording_upload_failure(principal, interaction_id, capture_id, name=name, content_type=content_type, data=data)
+                session.commit()
+                if recovered is not None:
+                    return recovered
+            raise
+
+    def upload_browser_file(self, principal: Principal, interaction_id: UUID, *, name: str, content_type: str, data: bytes) -> BrowserInteractionResult:
+        try:
+            with self._session_factory() as session:
+                service = self._browser_interactions(session)
+                reservation_id = service.prepare_action_upload(principal, interaction_id, name=name, content_type=content_type, data=data)
+                if reservation_id is None:
+                    result = service.upload(principal, interaction_id, name=name, content_type=content_type, data=data)
+                    session.commit()
+                    return result
+                # The action file reservation survives process loss before storage I/O.
+                session.commit()
+            with self._session_factory() as session:
+                result = self._browser_interactions(session).upload_reserved_action_file(principal, interaction_id, name=name, content_type=content_type, data=data)
+                session.commit()
+                return result
+        except BrowserInteractionConflict:
+            raise
+        except Exception as error:
+            # Roll back the owning effect first, then preserve the failed browser attempt.
+            # A commit whose response was lost may already have completed; never overwrite it.
+            with self._session_factory() as session:
+                recovered = self._browser_interactions(session).recover_upload_failure(
+                    principal, interaction_id,
+                    denied=isinstance(
+                        error,
+                        (
+                            ResourceNotFound,
+                            TaskAccessDenied,
+                            TaskNotFound,
+                            WorkRequestAccessDenied,
+                            MeetingAccessDenied,
+                            ActionCapabilityDenied,
+                        ),
+                    ),
+                    name=name, content_type=content_type, data=data,
+                )
+                session.commit()
+                if recovered is not None:
+                    return recovered
+            raise
+
+    def interrupt_browser_interaction(self, principal: Principal, interaction_id: UUID, status: str) -> BrowserInteractionResult:
+        with self._session_factory() as session:
+            result = self._browser_interactions(session).interrupt(principal, interaction_id, status)
+            session.commit()
+            return result
 
     def _materials(self, session: Any) -> TaskMaterialApplication:
         extractions = SqlAlchemyMaterialExtractionRepository(session)
@@ -2063,24 +2801,24 @@ class WorkflowApplication:
             _SessionReadableWork(self, session),
         )
 
-    def reassign_task(self, principal: Principal, task_id: UUID, expected_version: int, assignee_id: str, reason: str | None = None) -> dict[str, Any]:
+    def reassign_task(self, principal: Principal, task_id: UUID, expected_version: int, assignee_id: str, reason: str | None = None) -> TaskAssignmentResult:
         """Put someone else on work that is already underway. Its own command, never a Task field edit."""
         with self._session_factory() as session:
             result = self._assignments(session).reassign(principal, task_id, expected_version, assignee_id, reason)
             session.commit()
             return result
 
-    def assign_task(self, principal: Principal, title: str, assignee_id: str, **fields: Any) -> dict[str, Any]:
+    def assign_task(self, principal: Principal, title: str, assignee_id: str, **fields: Any) -> TaskAssignmentResult:
         with self._session_factory() as session:
             result = self._assignments(session).assign(principal, title, assignee_id, **fields)
             session.commit()
             return result
 
-    def task_assignment_candidates(self, principal: Principal) -> list[dict[str, str]]:
+    def task_assignment_candidates(self, principal: Principal) -> list[MemberCandidateView]:
         with self._session_factory() as session:
             return self._assignments(session).candidates(principal)
 
-    def plan_project_work(self, principal: Principal, project_id: UUID, title: str, **fields: Any) -> dict[str, Any]:
+    def plan_project_work(self, principal: Principal, project_id: UUID, title: str, **fields: Any) -> TaskMutationResult:
         with self._session_factory() as session:
             result = self._assignments(session).plan_project_work(principal, project_id, title, **fields)
             session.commit()
@@ -2090,17 +2828,17 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return self._assignments(session).inbox(principal)
 
-    def sent_task_assignments(self, principal: Principal) -> list[dict[str, Any]]:
+    def sent_task_assignments(self, principal: Principal) -> list[TaskAssignmentResult]:
         with self._session_factory() as session:
             return self._assignments(session).sent(principal)
 
-    def accept_task_assignment(self, principal: Principal, assignment_id: UUID) -> dict[str, Any]:
+    def accept_task_assignment(self, principal: Principal, assignment_id: UUID) -> TaskAssignmentResult:
         with self._session_factory() as session:
             result = self._assignments(session).accept(principal, assignment_id)
             session.commit()
             return result
 
-    def decline_task_assignment(self, principal: Principal, assignment_id: UUID, reason: str) -> dict[str, Any]:
+    def decline_task_assignment(self, principal: Principal, assignment_id: UUID, reason: str) -> TaskAssignmentResult:
         with self._session_factory() as session:
             result = self._assignments(session).decline(principal, assignment_id, reason)
             session.commit()
@@ -2116,25 +2854,25 @@ class WorkflowApplication:
 
     # ---- 프로젝트: 부서를 가로질러 묶이는 일 ----
 
-    def create_project(self, principal: Principal, **fields: Any) -> dict[str, Any]:
+    def create_project(self, principal: Principal, **fields: Any) -> ProjectView:
         with self._session_factory() as session:
             result = self._projects(session).create(principal, **fields)
             session.commit()
             return result
 
-    def list_projects(self, principal: Principal) -> list[dict[str, Any]]:
+    def list_projects(self, principal: Principal) -> list[ProjectView]:
         with self._session_factory() as session:
             return self._projects(session).list(principal)
 
-    def get_project(self, principal: Principal, project_id: UUID) -> dict[str, Any]:
+    def get_project(self, principal: Principal, project_id: UUID) -> ProjectDetailResult:
         with self._session_factory() as session:
             return self._projects(session).get(principal, project_id)
 
-    def project_participation_history(self, principal: Principal, project_id: UUID) -> list[dict[str, Any]]:
+    def project_participation_history(self, principal: Principal, project_id: UUID) -> list[ProjectParticipationView]:
         with self._session_factory() as session:
             return self._projects(session).participation_history(principal, project_id)
 
-    def assign_to_project(self, principal: Principal, project_id: UUID, member_id: str, **fields: Any) -> dict[str, Any]:
+    def assign_to_project(self, principal: Principal, project_id: UUID, member_id: str, **fields: Any) -> ProjectAssignmentView:
         with self._session_factory() as session:
             result = self._projects(session).assign(principal, project_id, member_id, **fields)
             session.commit()
@@ -2148,9 +2886,9 @@ class WorkflowApplication:
         *,
         assignment_id: UUID | None = None,
         reason: str | None = None,
-    ) -> None:
+    ) -> ProjectReleaseResult:
         with self._session_factory() as session:
-            self._projects(session).release(
+            result = self._projects(session).release(
                 principal,
                 project_id,
                 member_id,
@@ -2158,20 +2896,14 @@ class WorkflowApplication:
                 reason=reason,
             )
             session.commit()
+            return result
 
-    def list_tasks(
-        self, principal: Principal, *, include_closed: bool = False, include_organization: bool = True
-    ) -> list[dict[str, Any]]:
-        """이 사람이 읽을 수 있는 업무. `include_organization=False`면 자기가 든 것까지다.
-
-        둘은 다른 질문이라 부르는 쪽이 고른다 — 읽을 수 있다는 것과 자기가 해야 한다는 것은 같지 않다.
-        """
+    def list_tasks(self, principal: Principal, *, include_closed: bool = False) -> list[TaskListEntry]:
+        """The explicitly requested set of work this person may currently read."""
         with self._session_factory() as session:
-            return self._tasks(session).list_for(
-                principal, include_closed=include_closed, include_organization=include_organization
-            )
+            return self._tasks(session).readable_tasks(principal, include_closed=include_closed)
 
-    def get_task(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
+    def get_task(self, principal: Principal, task_id: UUID) -> TaskDetailResult:
         with self._session_factory() as session:
             return self._tasks(session).get(principal, task_id)
 
@@ -2204,21 +2936,21 @@ class WorkflowApplication:
             session.commit()
             return result
 
-    def work_request_assignee_candidates(self, principal: Principal) -> list[dict[str, str]]:
+    def work_request_assignee_candidates(self, principal: Principal) -> list[MemberCandidateView]:
         with self._session_factory() as session:
             return self._work_requests(session).assignee_candidates(principal)
 
-    def list_work_requests(self, principal: Principal) -> list[dict[str, Any]]:
+    def list_work_requests(self, principal: Principal) -> list[WorkRequestMutationResult]:
         with self._session_factory() as session:
             return self._work_requests(session).list(principal)
 
-    def get_work_request(self, principal: Principal, request_id: UUID) -> dict[str, Any]:
+    def get_work_request(self, principal: Principal, request_id: UUID) -> WorkRequestDetailResult:
         with self._session_factory() as session:
             return self._work_requests(session).get(principal, request_id)
 
     def accept_work_request(
         self, principal: Principal, request_id: UUID, expected_version: int
-    ) -> dict[str, Any]:
+    ) -> WorkRequestMutationResult:
         with self._session_factory() as session:
             result = self._work_requests(session).accept(
                 principal, request_id, expected_version
@@ -2228,7 +2960,7 @@ class WorkflowApplication:
 
     def reject_work_request(
         self, principal: Principal, request_id: UUID, expected_version: int, reason: str
-    ) -> dict[str, Any]:
+    ) -> WorkRequestMutationResult:
         with self._session_factory() as session:
             result = self._work_requests(session).reject(
                 principal, request_id, expected_version, reason
@@ -2236,30 +2968,30 @@ class WorkflowApplication:
             session.commit()
             return result
 
-    def resubmit_work_request(self, principal: Principal, request_id: UUID, expected_version: int, **changes: Any) -> dict[str, Any]:
+    def resubmit_work_request(self, principal: Principal, request_id: UUID, expected_version: int, **changes: Any) -> WorkRequestMutationResult:
         with self._session_factory() as session:
             result = self._work_requests(session).resubmit(principal, request_id, expected_version, **changes)
             session.commit()
             return result
 
-    def amend_work_request(self, principal: Principal, request_id: UUID, expected_version: int, **changes: Any) -> dict[str, Any]:
+    def amend_work_request(self, principal: Principal, request_id: UUID, expected_version: int, **changes: Any) -> WorkRequestMutationResult:
         """The requester's own improvement to a request nobody has judged yet."""
         with self._session_factory() as session:
             result = self._work_requests(session).amend(principal, request_id, expected_version, **changes)
             session.commit()
             return result
 
-    def work_request_cc_candidates(self, principal: Principal) -> list[dict[str, str]]:
+    def work_request_cc_candidates(self, principal: Principal) -> list[MemberCandidateView]:
         with self._session_factory() as session:
             return self._work_requests(session).cc_candidates(principal)
 
-    def attach_to_work_request_comment(self, principal: Principal, request_id: UUID, comment_id: UUID, **file: Any) -> dict[str, Any]:
+    def attach_to_work_request_comment(self, principal: Principal, request_id: UUID, comment_id: UUID, **file: Any) -> ActionDiscussionView:
         with self._session_factory() as session:
             result = self._work_requests(session).attach_to_comment(principal, request_id, comment_id, **file)
             session.commit()
             return result
 
-    def add_work_request_evidence(self, principal: Principal, request_id: UUID, **file: Any) -> dict[str, Any]:
+    def add_work_request_evidence(self, principal: Principal, request_id: UUID, **file: Any) -> WorkRequestEvidenceResult:
         with self._session_factory() as session:
             result = self._work_requests(session).add_evidence(principal, request_id, **file)
             session.commit()
@@ -2269,18 +3001,18 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return self._work_requests(session).open_attachment(principal, request_id, attachment_id)
 
-    def add_work_request_comment(self, principal: Principal, request_id: UUID, body: str, idempotency_key: str | None = None) -> dict[str, Any]:
+    def add_work_request_comment(self, principal: Principal, request_id: UUID, body: str, idempotency_key: str | None = None) -> ActionDiscussionView:
         with self._session_factory() as session:
             result = self._work_requests(session).add_comment(principal, request_id, body, idempotency_key=idempotency_key)
             session.commit()
             return result
 
-    def pending_action_items(self, principal: Principal) -> list[dict[str, Any]]:
+    def pending_action_items(self, principal: Principal) -> list[ActionEnvelopeResult]:
         """Every judgement this principal owes right now, whatever raised it."""
         with self._session_factory() as session:
             return self._action_center(session).pending(principal)
 
-    def action_item_detail(self, principal: Principal, action_item_id: str) -> dict[str, Any]:
+    def action_item_detail(self, principal: Principal, action_item_id: str) -> ActionDetailResult:
         with self._session_factory() as session:
             return self._action_center(session).detail(principal, action_item_id)
 
@@ -2289,15 +3021,648 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return self._action_center(session).normalize(principal, action_item_id, command, payload)
 
-    def run_action_command(self, principal: Principal, action_item_id: str, command: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def run_action_command(self, principal: Principal, action_item_id: str, command: str, payload: dict[str, Any]) -> ActionEnvelopeResult:
         with self._session_factory() as session:
-            result = self._action_center(session).execute(principal, action_item_id, command, payload)
+            try:
+                result = self._action_center(session).execute(principal, action_item_id, command, payload)
+                hooks, refresh_receipt, receipt_pending, receipt_owner = self._commit_action_session(
+                    session, action_item_id
+                )
+            except Exception:
+                self._rollback_action_session(session)
+                raise
+        receipt_patch, receipt_hook_failed = self._run_committed_action_hooks(hooks)
+        refreshed = None
+        if refresh_receipt and not receipt_hook_failed:
+            refreshed = self._finalize_post_commit_meeting_receipt(
+                action_item_id,
+                receipt_patch,
+                expected_owner=receipt_owner,
+            )
+        if refreshed is None and receipt_pending:
+            refreshed = self._wait_for_post_commit_meeting_receipt(action_item_id)
+        if refreshed is not None:
+            result = {**result, "execution_result": refreshed}
+        return result
+
+    def _commit_action_session(
+        self,
+        session: Any,
+        action_item_id: str,
+    ) -> tuple[list[tuple[Any, bool]], bool, bool, str | None]:
+        refresh_receipt = bool(session.info.pop("scax_refresh_meeting_receipt", False))
+        try:
+            action = session.get(ActionItemRecord, UUID(action_item_id))
+        except ValueError:
+            action = None
+        receipt_owner = str(uuid4()) if refresh_receipt else None
+        if receipt_owner is not None and action is not None and isinstance(action.result, dict):
+            action.result = {
+                **action.result,
+                POST_COMMIT_RECEIPT_PENDING: {
+                    "owner": receipt_owner,
+                    "expires_at": (
+                        datetime.now(UTC) + timedelta(seconds=self._meeting_receipt_lease_seconds())
+                    ).isoformat(),
+                },
+            }
+        receipt_pending = bool(
+            action is not None
+            and isinstance(action.result, dict)
+            and action.result.get(POST_COMMIT_RECEIPT_PENDING)
+        )
+        session.commit()
+        hooks = session.info.pop("scax_after_commit", [])
+        session.info.pop("scax_after_rollback", None)
+        return hooks, refresh_receipt, receipt_pending, receipt_owner
+
+    @staticmethod
+    def _rollback_action_session(session: Any) -> None:
+        session.rollback()
+        session.info.pop("scax_after_commit", None)
+        session.info.pop("scax_refresh_meeting_receipt", None)
+        for hook in reversed(session.info.pop("scax_after_rollback", [])):
+            try:
+                hook()
+            except Exception:
+                logger.exception("승인 실행 rollback 후 외부 보상에 실패했습니다")
+
+    @staticmethod
+    def _run_committed_action_hooks(
+        hooks: list[tuple[Any, bool]],
+    ) -> tuple[dict[str, Any] | None, bool]:
+        receipt_patch = None
+        receipt_hook_failed = False
+        for hook, owns_meeting_receipt in hooks:
+            try:
+                outcome = hook()
+                if owns_meeting_receipt:
+                    receipt_patch = outcome if isinstance(outcome, dict) else {}
+            except Exception:
+                # 업무 반영과 승인 기록은 이미 함께 커밋됐다. 후속 push/외부 동기화 실패가
+                # 그 사실을 실패로 바꾸지는 않는다; 각 후속 경로가 원장 상태로 복구한다.
+                logger.exception("승인 실행 commit 후 회의 후속 처리에 실패했습니다")
+                if owns_meeting_receipt:
+                    receipt_hook_failed = True
+        return receipt_patch, receipt_hook_failed
+
+    def _finalize_post_commit_meeting_receipt(
+        self,
+        action_item_id: str,
+        receipt_patch: dict[str, Any] | None,
+        *,
+        expected_owner: str | None,
+    ) -> dict[str, Any] | None:
+        """Finish the durable receipt fence with only fields returned by the room hook."""
+        try:
+            identifier = UUID(action_item_id)
+        except ValueError:
+            return None
+        with self._session_factory() as session:
+            action = session.scalar(
+                select(ActionItemRecord).where(ActionItemRecord.id == identifier).with_for_update()
+            )
+            if action is None or action.state != "approved" or action.action_type not in {
+                "meeting.info.update",
+                "meeting.update",
+            }:
+                return None
+            source = dict(action.result or {})
+            marker = source.get(POST_COMMIT_RECEIPT_PENDING)
+            if (
+                not isinstance(marker, dict)
+                or not expected_owner
+                or marker.get("owner") != expected_owner
+            ):
+                return None
+            source.pop(POST_COMMIT_RECEIPT_PENDING, None)
+            nested = source.get("meeting")
+            owned = {
+                key: value
+                for key, value in (receipt_patch or {}).items()
+                if key in {"location", "room_reservation"}
+            }
+            refreshed = (
+                {**source, "meeting": {**nested, **owned}}
+                if isinstance(nested, dict) and owned
+                else source
+            )
+            if action.result != refreshed:
+                action.result = refreshed
+                session.commit()
+            return refreshed
+
+    def _wait_for_post_commit_meeting_receipt(
+        self,
+        action_item_id: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Wait for the owner, or take over an expired durable receipt lease."""
+        identifier = UUID(action_item_id)
+        timeout_seconds = timeout_seconds or self._meeting_receipt_lease_seconds() * 2
+        deadline = monotonic() + timeout_seconds
+        while True:
+            with self._session_factory() as session:
+                action = session.get(ActionItemRecord, identifier)
+                result = dict(action.result or {}) if action is not None else {}
+            marker = result.get(POST_COMMIT_RECEIPT_PENDING)
+            if not marker:
+                return action_result_view(result) or {}
+            receipt_owner = (
+                self._claim_expired_meeting_receipt(identifier)
+                if self._meeting_receipt_lease_expired(marker, datetime.now(UTC))
+                else None
+            )
+            if receipt_owner is not None:
+                try:
+                    receipt_patch = self._recover_meeting_receipt_patch(identifier)
+                except Exception:
+                    logger.exception("만료된 회의 승인 영수증 후속 처리를 복구하지 못했습니다")
+                else:
+                    recovered = self._finalize_post_commit_meeting_receipt(
+                        action_item_id,
+                        receipt_patch,
+                        expected_owner=receipt_owner,
+                    )
+                    if recovered is not None:
+                        return recovered
+            if monotonic() >= deadline:
+                raise ActionError("approval receipt is still being finalized")
+            sleep(0.01)
+
+    def _claim_expired_meeting_receipt(self, action_item_id: UUID) -> str | None:
+        now = datetime.now(UTC)
+        with self._session_factory() as session:
+            action = session.scalar(
+                select(ActionItemRecord).where(ActionItemRecord.id == action_item_id).with_for_update()
+            )
+            if action is None or not isinstance(action.result, dict):
+                return None
+            result = dict(action.result)
+            marker = result.get(POST_COMMIT_RECEIPT_PENDING)
+            if not self._meeting_receipt_lease_expired(marker, now):
+                return None
+            owner = str(uuid4())
+            result[POST_COMMIT_RECEIPT_PENDING] = {
+                "owner": owner,
+                "expires_at": (
+                    now + timedelta(seconds=self._meeting_receipt_lease_seconds())
+                ).isoformat(),
+            }
+            action.result = result
             session.commit()
+            return owner
+
+    @staticmethod
+    def _meeting_receipt_lease_expired(marker: Any, now: datetime) -> bool:
+        if not isinstance(marker, dict):
+            return bool(marker)
+        try:
+            expires_at = datetime.fromisoformat(str(marker["expires_at"]))
+        except (KeyError, TypeError, ValueError):
+            return True
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        return expires_at <= now
+
+    def _meeting_receipt_lease_seconds(self) -> float:
+        """Outlive the configured gateway deadline so a live owner is not taken over mid-call."""
+        return max(
+            _MEETING_RECEIPT_MIN_LEASE_SECONDS,
+            self._settings.room_booking_timeout_seconds + _MEETING_RECEIPT_LEASE_MARGIN_SECONDS,
+        )
+
+    def _recover_meeting_receipt_patch(self, action_item_id: UUID) -> dict[str, Any] | None:
+        with self._session_factory() as session:
+            action = session.get(ActionItemRecord, action_item_id)
+            meeting_id = (action.payload or {}).get("meeting_id") if action is not None else None
+        if not meeting_id:
+            return {}
+        with self._session_factory() as session:
+            source = self._meetings(session).reservation_input(UUID(str(meeting_id)))
+        reservation = source.get("reservation")
+        if (
+            isinstance(reservation, RoomReservation)
+            and reservation.status == STATUS_NEEDS_VERIFICATION
+        ):
+            return {
+                "location": reservation.room_name,
+                "room_reservation": reservation.view(),
+            }
+        return self._sync_room_reservation(UUID(str(meeting_id)), cancelled=False)
+
+    @staticmethod
+    def _after_session_commit(
+        session: Any,
+        hook: Any,
+        *,
+        refresh_meeting_receipt: bool = False,
+    ) -> None:
+        session.info.setdefault("scax_after_commit", []).append(
+            (hook, refresh_meeting_receipt)
+        )
+        if refresh_meeting_receipt:
+            session.info["scax_refresh_meeting_receipt"] = True
+
+    @staticmethod
+    def _after_session_rollback(session: Any, hook: Any) -> None:
+        session.info.setdefault("scax_after_rollback", []).append(hook)
+
+    def _execute_meeting_action(
+        self, session: Any, principal: Principal, operation: str, payload: dict[str, Any]
+    ) -> Any:
+        """Run confirmed meeting commands in the Action transaction used by every other owning command."""
+        meetings = self._meetings(session)
+
+        def identifier(name: str = "meeting_id") -> UUID:
+            return UUID(str(payload[name]))
+
+        if operation == "meeting.reservation.create":
+            request = MeetingReservationInput.model_validate(
+                {key: value for key, value in payload.items() if not key.startswith("_")}
+            )
+            reservation = None
+            if request.room_id is not None:
+                reservation = RoomReservation.restored(payload.get("_room_creation_reservation"))
+                if reservation is None:
+                    raise ActionError("회의실 예약 생성 시도가 준비되지 않았습니다")
+            result = meetings.create(principal, **request.values())
+            if reservation is not None:
+                meeting_id = UUID(result["meeting"]["meeting_id"])
+                meetings.attach_reservation(meeting_id, reservation, location=reservation.room_name)
+                attempt = session.scalar(
+                    select(MeetingRoomCreationAttemptRecord)
+                    .where(
+                        MeetingRoomCreationAttemptRecord.owner_id == str(principal.id),
+                        MeetingRoomCreationAttemptRecord.request_key
+                        == str(payload.get("_room_creation_attempt_key") or ""),
+                    )
+                    .with_for_update()
+                )
+                if attempt is not None:
+                    attempt.meeting_id = meeting_id
+                    attempt.updated_at = datetime.now(UTC)
+                result = meetings.get(principal, meeting_id)
             return result
+        if operation == "meeting.quick_start":
+            result = meetings.quick_start(principal)
+            meeting_id = str(result["meeting"]["meeting_id"])
+            self._after_session_commit(
+                session, lambda meeting_id=meeting_id: self._meeting_batch.launch_warm_start(meeting_id)
+            )
+            return result
+        if operation == "meeting.info.update":
+            meeting_id = identifier()
+            changes = MeetingInfoPatch.model_validate(payload.get("changes") or {}).changes()
+            result = meetings.update_info(principal, meeting_id, changes)
+            if {"starts_at", "ends_at"} & set(changes):
+                self._after_session_commit(
+                    session,
+                    lambda meeting_id=meeting_id: self._sync_room_reservation(meeting_id, cancelled=False),
+                    refresh_meeting_receipt=True,
+                )
+            return result
+        if operation == "meeting.update":
+            request = MeetingUpdateCommand.model_validate(payload)
+            changes = request.changes()
+            if "description" in changes:
+                changes["purpose"] = changes.pop("description")
+            visibility = changes.pop("visibility", None)
+            result = meetings.update_info(
+                principal,
+                request.meeting_id,
+                changes,
+                expected_version=request.expected_version,
+            )
+            if {"starts_at", "ends_at"} & set(changes):
+                self._after_session_commit(
+                    session,
+                    lambda meeting_id=request.meeting_id: self._sync_room_reservation(
+                        meeting_id, cancelled=False
+                    ),
+                    refresh_meeting_receipt=True,
+                )
+            if visibility is not None:
+                organizations = SqlAlchemyOrganizationRepository(session)
+                organization_id = session.get(MeetingRecord, request.meeting_id).organization_id
+                member_ids = (
+                    organizations.member_ids_in(
+                        organizations.unit_descendants(organization_id)
+                    )
+                    if visibility == "public"
+                    else []
+                )
+                result = meetings.apply_legacy_visibility(
+                    principal,
+                    request.meeting_id,
+                    visibility,
+                    sorted(member_ids),
+                )
+            return result
+        if operation == "meeting.cancel":
+            meeting_id = identifier()
+            meetings.cancel(principal, meeting_id)
+            self._after_session_commit(
+                session, lambda meeting_id=meeting_id: self._sync_room_reservation(meeting_id, cancelled=True)
+            )
+            return {"meeting_id": str(meeting_id), "state": "cancelled"}
+        if operation == "meeting.note.delete":
+            meeting_id = identifier()
+            meetings.delete_note(principal, meeting_id)
+            return {"meeting_id": str(meeting_id), "state": "note_deleted"}
+        if operation == "meeting.note.create":
+            request = MeetingNoteCreateCommand.model_validate(payload)
+            self._validate_legacy_note_cutover(session, request.meeting_id, operation, None)
+            return meetings.apply_legacy_note(
+                principal,
+                request.meeting_id,
+                body=request.body,
+                operation="create",
+                finalized=False,
+            )
+        if operation == "meeting.note.save":
+            request = MeetingNoteSaveCommand.model_validate(payload)
+            self._validate_legacy_note_cutover(
+                session,
+                request.meeting_id,
+                operation,
+                request.expected_version,
+            )
+            return meetings.apply_legacy_note(
+                principal,
+                request.meeting_id,
+                body=request.body,
+                operation="save",
+                finalized=False,
+            )
+        if operation == "meeting.note.finalize":
+            request = MeetingNoteFinalizeCommand.model_validate(payload)
+            self._validate_legacy_note_cutover(
+                session,
+                request.meeting_id,
+                operation,
+                request.expected_version,
+            )
+            return meetings.apply_legacy_note(
+                principal,
+                request.meeting_id,
+                body=None,
+                operation="finalize",
+                finalized=True,
+            )
+        if operation == "meeting.start":
+            meeting_id = identifier()
+            result = meetings.start(principal, meeting_id)
+            self._after_session_commit(
+                session, lambda meeting_id=str(meeting_id): self._meeting_batch.launch_warm_start(meeting_id)
+            )
+            return result
+        if operation == "meeting.end":
+            meeting_id = identifier()
+            result = meetings.end(principal, meeting_id)
+            self._enqueue_finalize(session, meeting_id)
+            self._after_session_commit(
+                session,
+                lambda meeting_id=meeting_id: asyncio.run(self.close_meeting_stream(meeting_id)),
+            )
+            return result
+        if operation == "meeting.finalize.retry":
+            meeting_id = identifier()
+            result = meetings.retry_finalize(principal, meeting_id)
+            self._enqueue_finalize(session, meeting_id)
+            return result
+        if operation == "meeting.todo.promote":
+            meeting_id, todo_id = identifier(), identifier("todo_id")
+            request = MeetingTodoPromotionInput.model_validate(
+                {key: value for key, value in payload.items() if key not in {"meeting_id", "todo_id"}}
+            )
+            meeting, todo = meetings.todo_for_promotion(principal, meeting_id, todo_id)
+            reference = dict(todo.reference or {})
+            created = self._work_requests(session).create(
+                principal,
+                (request.title or todo.title).strip(),
+                request.assignee_id,
+                None,
+                description=request.description if request.description is not None else todo.description,
+                due_date=request.due_date if request.due_date is not None else todo.due_candidate,
+                checklist=request.checklist if request.checklist is not None else list(todo.checklist_candidate or []),
+                source_meeting_id=meeting.id,
+                source_agenda_id=UUID(str(reference.get("agenda_id") or todo.agenda_id)),
+                allow_self_assignment=True,
+                promoted_by_member_id=str(principal.id),
+            )
+            return meetings.link_promoted_todo(todo, work_request_id=UUID(str(created["request_id"])))
+        if operation == "meeting.todo.remove":
+            meeting_id, todo_id = identifier(), identifier("todo_id")
+            meetings.remove_todo(principal, meeting_id, todo_id)
+            return {"meeting_id": str(meeting_id), "todo_id": str(todo_id), "state": "removed"}
+        if operation == "meeting.agenda.add":
+            meeting_id = identifier()
+            request = MeetingAgendaDraftInput.model_validate({"title": payload.get("title")})
+            result = meetings.add_agenda(principal, meeting_id, request.title)
+            self._after_session_commit(
+                session,
+                lambda meeting_id=str(meeting_id), result=result: self._meeting_stream.push_agenda_added_threadsafe(
+                    meeting_id, agenda=result
+                ),
+            )
+            return result
+        if operation == "meeting.agenda.update":
+            request = MeetingAgendaPatch.model_validate(payload.get("changes") or {})
+            return meetings.update_agenda(
+                principal, identifier(), identifier("agenda_id"), request.changes()
+            )
+        if operation == "meeting.agenda.remove":
+            meeting_id, agenda_id = identifier(), identifier("agenda_id")
+            meetings.remove_agenda(principal, meeting_id, agenda_id)
+            return {"meeting_id": str(meeting_id), "agenda_id": str(agenda_id), "state": "removed"}
+        if operation == "meeting.memo.write":
+            meeting_id, agenda_id = identifier(), identifier("agenda_id")
+            request = MeetingMemoInput.model_validate({"text": payload.get("text")})
+            result = meetings.write_memo(principal, meeting_id, agenda_id, request.text)
+            self._after_session_commit(
+                session,
+                lambda meeting_id=str(meeting_id), agenda_id=str(agenda_id), result=result: (
+                    self._meeting_stream.push_memo_line_threadsafe(meeting_id, agenda_id=agenda_id, line=result),
+                    self._meeting_batch.schedule(meeting_id, CAUSE_AGENDA_SWITCH),
+                ),
+            )
+            return result
+        if operation == "meeting.material.remove":
+            meeting_id, material_id = identifier(), identifier("material_id")
+            self._meeting_materials(session).detach(principal, meeting_id, material_id)
+            return {"meeting_id": str(meeting_id), "material_id": str(material_id), "state": "detached"}
+        if operation == "meeting.share_many":
+            request = MeetingShareManyInput.model_validate({"member_ids": payload.get("member_ids")})
+            return {"viewers": meetings.share_many(principal, identifier(), request.member_ids)}
+        if operation == "meeting.share":
+            request = MeetingShareCommand.model_validate(payload)
+            return meetings.share(
+                principal,
+                request.meeting_id,
+                request.member_id,
+                expected_version=request.expected_version,
+            )
+        if operation == "meeting.share.revoke":
+            return {"viewers": meetings.revoke_share(principal, identifier(), str(payload["member_id"]))}
+        if operation == "meeting.revoke_share":
+            request = MeetingShareCommand.model_validate(payload)
+            return {
+                "viewers": meetings.revoke_share(
+                    principal,
+                    request.meeting_id,
+                    request.member_id,
+                    expected_version=request.expected_version,
+                )
+            }
+        raise ValueError(f"unsupported meeting action: {operation}")
+
+    def _prepare_action_effect(
+        self,
+        action_session: Any,
+        principal: Principal,
+        action_id: str,
+        operation: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist the room-create fence before an Action transaction calls the provider."""
+        if operation != "meeting.reservation.create" or payload.get("_room_creation_reservation"):
+            return payload
+        request = MeetingReservationInput.model_validate(
+            {key: value for key, value in payload.items() if not key.startswith("_")}
+        )
+        if request.room_id is None:
+            return payload
+        durable_payload = {
+            **request.model_dump(mode="json"),
+            "attachment_draft_ids": list(payload.get("_attachment_draft_ids") or []),
+        }
+        fingerprint = self._room_creation_payload_fingerprint(durable_payload)
+        request_key = f"action:{action_id}:{fingerprint}"
+        unresolved_keys = set(
+            action_session.scalars(
+                select(MeetingRoomCreationAttemptRecord.request_key).where(
+                    MeetingRoomCreationAttemptRecord.owner_id == str(principal.id),
+                    MeetingRoomCreationAttemptRecord.request_key.like(f"action:{action_id}:%"),
+                    MeetingRoomCreationAttemptRecord.meeting_id.is_(None),
+                    MeetingRoomCreationAttemptRecord.status.in_(
+                        ("pending", STATUS_BOOKED, STATUS_NEEDS_VERIFICATION)
+                    ),
+                )
+            ).all()
+        )
+        if unresolved_keys - {request_key}:
+            raise ActionError(
+                "이 제안의 이전 회의실 예약 결과를 먼저 확인해야 합니다. "
+                "예약을 시도했던 원래 내용으로 확정을 다시 실행하세요"
+            )
+        with self._session_factory() as validation_session:
+            meetings = self._meetings(validation_session)
+            meetings.validate_creation(principal, **request.values())
+            source = meetings.reservation_draft(
+                principal,
+                title=request.title,
+                starts_at=request.starts_at,
+                ends_at=request.ends_at,
+                attendee_ids=request.attendee_ids,
+                external_attendees=request.external_attendees,
+            )
+        reservation = self._resolve_room_creation_attempt(
+            principal,
+            request_key,
+            request,
+            source,
+            payload_fingerprint=fingerprint,
+            request_payload=durable_payload,
+        )
+        if reservation.status == STATUS_BOOKED and reservation.external_id:
+            self._after_session_rollback(
+                action_session,
+                lambda owner_id=str(principal.id), request_key=request_key, reservation=reservation: (
+                    self._compensate_room_creation_attempt(owner_id, request_key, reservation)
+                ),
+            )
+        return {
+            **payload,
+            "_room_creation_reservation": reservation.stored(),
+            "_room_creation_attempt_key": request_key,
+        }
+
+    @staticmethod
+    def _validate_action_rejection(
+        session: Any,
+        principal: Principal,
+        action_id: str,
+        operation: str,
+    ) -> None:
+        if operation != "meeting.reservation.create":
+            return
+        unresolved = session.scalar(
+            select(MeetingRoomCreationAttemptRecord.id).where(
+                MeetingRoomCreationAttemptRecord.owner_id == str(principal.id),
+                MeetingRoomCreationAttemptRecord.request_key.like(f"action:{action_id}:%"),
+                MeetingRoomCreationAttemptRecord.meeting_id.is_(None),
+                MeetingRoomCreationAttemptRecord.status.in_(
+                    ("pending", STATUS_BOOKED, STATUS_NEEDS_VERIFICATION)
+                ),
+            )
+        )
+        if unresolved is not None:
+            raise ActionError(
+                "회의실 예약 결과 확인이 필요해 이 제안을 거절할 수 없습니다. "
+                "확정을 다시 실행해 확인 필요 회의로 기록하세요"
+            )
+
+    @staticmethod
+    def _validate_legacy_note_cutover(
+        session: Any,
+        meeting_id: UUID,
+        operation: str,
+        expected_version: int | None,
+    ) -> None:
+        """Continue the removed note aggregate's version from approved compatibility actions.
+
+        The pre-cutover note version was independent from Meeting.version and its table no longer exists. The first
+        surviving pending save/finalize therefore establishes the cutover baseline; later approvals advance from the
+        immutable Action payloads that were actually approved.
+        """
+        session.scalar(select(MeetingRecord).where(MeetingRecord.id == meeting_id).with_for_update())
+        rows = session.scalars(
+            select(ActionItemRecord)
+            .where(
+                ActionItemRecord.state == "approved",
+                ActionItemRecord.action_type.in_(
+                    ("meeting.note.create", "meeting.note.save", "meeting.note.finalize")
+                ),
+            )
+            .order_by(ActionItemRecord.decided_at, ActionItemRecord.id)
+            .with_for_update()
+        ).all()
+        current_version: int | None = None
+        finalized = False
+        for row in rows:
+            source = dict(row.payload or {})
+            if str(source.get("meeting_id") or "") != str(meeting_id):
+                continue
+            if row.action_type == "meeting.note.create":
+                current_version, finalized = 1, False
+            elif row.action_type == "meeting.note.save":
+                current_version, finalized = int(source["expected_version"]) + 1, False
+            else:
+                current_version, finalized = int(source["expected_version"]), True
+        if operation == "meeting.note.create":
+            if current_version is not None:
+                raise MeetingError("meeting note already exists")
+            return
+        if current_version is not None and current_version != expected_version:
+            raise MeetingVersionConflict("meeting note version is stale")
+        if operation == "meeting.note.save" and finalized:
+            raise MeetingError("finalized meeting notes cannot be edited")
 
     def stage_action_material_link(
         self, principal: Principal, action_item_id: UUID, *, url: str, label: str
-    ) -> dict[str, Any]:
+    ) -> ActionMaterialDraftView:
         with self._session_factory() as session:
             result = self._action_materials(session).stage_link(principal, action_item_id, url=url, label=label)
             session.commit()
@@ -2311,7 +3676,7 @@ class WorkflowApplication:
         name: str,
         content_type: str,
         data: bytes,
-    ) -> dict[str, Any]:
+    ) -> ActionMaterialDraftView:
         with self._session_factory() as session:
             reserved = self._action_materials(session).reserve_file(
                 principal, action_item_id, name=name, content_type=content_type, data=data
@@ -2345,7 +3710,7 @@ class WorkflowApplication:
 
     def discard_action_material_draft(
         self, principal: Principal, action_item_id: UUID, material_draft_id: UUID
-    ) -> dict[str, Any]:
+    ) -> ActionMaterialDraftView:
         with self._session_factory() as session:
             result = self._action_materials(session).discard(principal, action_item_id, material_draft_id)
             session.commit()
@@ -2372,13 +3737,13 @@ class WorkflowApplication:
             )
         )
 
-    def work_request_timeline(self, principal: Principal, request_id: UUID) -> dict[str, Any]:
+    def work_request_timeline(self, principal: Principal, request_id: UUID) -> WorkRequestHistoryResult:
         with self._session_factory() as session:
             return self._work_requests(session).timeline(principal, request_id)
 
     def negotiate_work_request(
         self, principal: Principal, request_id: UUID, expected_version: int, conditions: dict[str, Any]
-    ) -> dict[str, Any]:
+    ) -> WorkRequestMutationResult:
         with self._session_factory() as session:
             result = self._work_requests(session).negotiate(
                 principal, request_id, expected_version, conditions
@@ -2390,17 +3755,17 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return self._work_requests(session).inbox(principal)
 
-    def create_conversation(self, principal: Principal, title: str) -> dict[str, Any]:
+    def create_conversation(self, principal: Principal, title: str) -> ConversationView:
         with self._session_factory() as session:
             result = self._conversations(session).create(principal, title)
             session.commit()
             return result
 
-    def conversations(self, principal: Principal) -> list[dict[str, Any]]:
+    def conversations(self, principal: Principal) -> list[ConversationView]:
         with self._session_factory() as session:
             return self._conversations(session).list(principal)
 
-    def conversation(self, principal: Principal, conversation_id: UUID) -> dict[str, Any]:
+    def conversation(self, principal: Principal, conversation_id: UUID) -> ConversationView:
         with self._session_factory() as session:
             return self._conversations(session).get(principal, conversation_id)
 
@@ -2412,7 +3777,7 @@ class WorkflowApplication:
         context: list[Any],
         idempotency_key: str | None,
         follow_up_candidate_id: UUID | None = None,
-    ) -> dict[str, Any]:
+    ) -> ConversationMessageResult:
         with self._session_factory() as session:
             references = [
                 ConversationContextReferenceInput(
@@ -2434,7 +3799,7 @@ class WorkflowApplication:
             session.commit()
             return result
 
-    def retry_conversation_turn(self, principal: Principal, conversation_id: UUID, turn_id: UUID) -> dict[str, Any]:
+    def retry_conversation_turn(self, principal: Principal, conversation_id: UUID, turn_id: UUID) -> ConversationRetryResult:
         with self._session_factory() as session:
             result = self._conversations(session).retry(principal, conversation_id, turn_id)
             session.commit()
@@ -2442,7 +3807,7 @@ class WorkflowApplication:
 
     def cancel_conversation_turn(
         self, principal: Principal, conversation_id: UUID, expected_version: int
-    ) -> dict[str, Any]:
+    ) -> ConversationView:
         with self._session_factory() as session:
             result = self._conversations(session).cancel(principal, conversation_id, expected_version)
             session.commit()
@@ -2455,7 +3820,7 @@ class WorkflowApplication:
         action_type: str,
         title: str,
         payload: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> ActionProposalResult:
         with self._session_factory() as session:
             result = self._actions(session).propose(
                 principal,
@@ -2467,7 +3832,7 @@ class WorkflowApplication:
             session.commit()
             return result
 
-    def actions(self, principal: Principal) -> list[dict[str, Any]]:
+    def actions(self, principal: Principal) -> list[ActionProposalResult]:
         with self._session_factory() as session:
             return self._actions(session).list(principal)
 
@@ -2477,36 +3842,54 @@ class WorkflowApplication:
         action_id: UUID,
         expected_version: int,
         decision: str,
-    ) -> dict[str, Any]:
+    ) -> ActionProposalResult:
         with self._session_factory() as session:
-            action = self._action_repository(session).action(action_id, str(principal.id))
-            # The old chat endpoint remains a compatibility surface. A Task proposal raised under the canonical
-            # ledger still goes through its atomic confirm operation, so this route cannot create or assign a Task
-            # without the selected Submission and ReviewDecision lineage.
-            if (
-                action is not None
-                and action.action_type in {"task.create_self", "task.assign", "meeting.create"}
-                and session.get(DecisionItemRecord, action.id) is not None
-            ):
-                if ACTION_DECIDE not in principal.capabilities:
-                    raise ActionCapabilityDenied(f"{ACTION_DECIDE} capability is required")
-                center = self._action_center(session)
-                detail = center.detail(principal, str(action_id))
-                command = "confirm" if decision == "approve" else decision
-                payload: dict[str, Any] = {"expected_version": expected_version}
-                if command == "confirm":
-                    payload["base_submission_version"] = detail["submission_version"]
-                center.execute(principal, str(action_id), command, payload)
-                result = self._action_repository(session).view(action, principal)
-            else:
-                result = self._actions(session).decide(
-                    principal,
-                    action_id,
-                    expected_version,
-                    decision,
+            try:
+                action = self._action_repository(session).action(action_id, str(principal.id))
+                # The old chat endpoint remains a compatibility surface. A Task proposal raised under the canonical
+                # ledger still goes through its atomic confirm operation, so this route cannot create or assign a Task
+                # without the selected Submission and ReviewDecision lineage.
+                if (
+                    action is not None
+                    and action.action_type in {
+                        "task.create_self", "task.assign", "meeting.reservation.create"
+                    }
+                    and session.get(DecisionItemRecord, action.id) is not None
+                ):
+                    if ACTION_DECIDE not in principal.capabilities:
+                        raise ActionCapabilityDenied(f"{ACTION_DECIDE} capability is required")
+                    center = self._action_center(session)
+                    detail = center.detail(principal, str(action_id))
+                    command = "confirm" if decision == "approve" else decision
+                    payload: dict[str, Any] = {"expected_version": expected_version}
+                    if command == "confirm":
+                        payload["base_submission_version"] = detail["submission_version"]
+                    center.execute(principal, str(action_id), command, payload)
+                    result = self._action_repository(session).view(action, principal)
+                else:
+                    result = self._actions(session).decide(
+                        principal,
+                        action_id,
+                        expected_version,
+                        decision,
+                    )
+                hooks, refresh_receipt, receipt_pending, receipt_owner = self._commit_action_session(
+                    session, str(action_id)
                 )
-            session.commit()
-            return result
+            except Exception:
+                self._rollback_action_session(session)
+                raise
+        receipt_patch, receipt_hook_failed = self._run_committed_action_hooks(hooks)
+        refreshed = None
+        if refresh_receipt and not receipt_hook_failed:
+            refreshed = self._finalize_post_commit_meeting_receipt(
+                str(action_id),
+                receipt_patch,
+                expected_owner=receipt_owner,
+            )
+        if refreshed is None and receipt_pending:
+            refreshed = self._wait_for_post_commit_meeting_receipt(str(action_id))
+        return {**result, **({"result": refreshed} if refreshed is not None else {})}
 
     def _action_services(self, session: Any) -> ActionServices:
         """Every delayed dependency remains bound to this transaction's session."""
@@ -2514,10 +3897,26 @@ class WorkflowApplication:
             tasks=lambda: self._tasks(session),
             assignments=lambda: self._assignments(session),
             meetings=lambda: self._meetings(session),
+            prepare_action=lambda principal, action_id, operation, payload: self._prepare_action_effect(
+                session, principal, action_id, operation, payload
+            ),
+            validate_action_rejection=lambda principal, action_id, operation: (
+                self._validate_action_rejection(session, principal, action_id, operation)
+            ),
+            meeting_action=lambda principal, operation, payload: self._execute_meeting_action(
+                session, principal, operation, payload
+            ),
             reports=lambda: self._reports(session),
             projects=lambda: self._projects(session),
             organization=lambda: OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
             action_center=lambda: self._action_center(session),
+            material_folders=lambda: self._material_folders(session),
+            materials=lambda: self._materials(session),
+            meeting_followups=lambda: self._meeting_followups(session),
+            notifications=lambda: self._notifications(session),
+            work_requests=lambda: self._work_requests(session),
+            conversations=lambda: self._conversations(session),
+            action_materials=lambda: self._action_materials(session),
         )
 
     def _action_repository(self, session: Any) -> SqlAlchemyActionRepository:
@@ -2603,31 +4002,31 @@ class WorkflowApplication:
 
     def add_task_checklist_item(
         self, principal: Principal, task_id: UUID, text: str, expected_task_version: int | None = None
-    ) -> dict[str, Any]:
+    ) -> ChecklistMutationResult:
         with self._session_factory() as session:
             result = self._tasks(session).add_checklist_item(principal, task_id, text, expected_task_version=expected_task_version)
             session.commit()
             return result
 
-    def update_task_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID, **fields: Any) -> dict[str, Any]:
+    def update_task_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID, **fields: Any) -> ChecklistMutationResult:
         with self._session_factory() as session:
             result = self._tasks(session).update_checklist_item(principal, task_id, item_id, **fields)
             session.commit()
             return result
 
-    def archive_task_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID, **fields: Any) -> dict[str, Any]:
+    def archive_task_checklist_item(self, principal: Principal, task_id: UUID, item_id: UUID, **fields: Any) -> ChecklistMutationResult:
         with self._session_factory() as session:
             result = self._tasks(session).archive_checklist_item(principal, task_id, item_id, **fields)
             session.commit()
             return result
 
-    def reorder_task_checklist(self, principal: Principal, task_id: UUID, item_ids: list[UUID], **fields: Any) -> dict[str, Any]:
+    def reorder_task_checklist(self, principal: Principal, task_id: UUID, item_ids: list[UUID], **fields: Any) -> ChecklistOrderResult:
         with self._session_factory() as session:
             result = self._tasks(session).reorder_checklist(principal, task_id, item_ids, **fields)
             session.commit()
             return result
 
-    def transition_task(self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None = None, expected_version: int = 0) -> dict[str, Any]:
+    def transition_task(self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None = None, expected_version: int = 0) -> TaskMutationResult:
         with self._session_factory() as session:
             result = self._tasks(session).transition(task_id, principal, target, reason, expected_version)
             session.commit()
@@ -2673,6 +4072,7 @@ def create_scax_mcp_server(
         environment={
             "AX_PROFILE": str(settings.profile),
             "DATABASE_URL": settings.database_url,
+            "AX_WEB_ORIGIN": settings.web_origin,
         },
         enabled_tools=tuple(enabled_tools),
     )

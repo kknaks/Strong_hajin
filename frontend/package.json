@@ -45,7 +45,8 @@
     "e2e:access-roles": "node scripts/access-roles-e2e.mjs",
     "e2e:project-participation-history": "node scripts/project-participation-history-e2e.mjs",
     "e2e:graph-question": "node scripts/graph-question-e2e.mjs",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "e2e:browser-interactions": "node scripts/browser-interactions-e2e.mjs"
   },
   "dependencies": {
     "graphology": "0.26.0",

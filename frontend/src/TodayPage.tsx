@@ -113,6 +113,24 @@ export function TodayPage({
     };
   }, [onError, reload]);
 
+  useEffect(() => {
+    if (reportStatus?.generation_status !== "queued" && reportStatus?.generation_status !== "running") return;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void getDailyReportStatus(today)
+        .then((status) => {
+          if (!cancelled) setReportStatus(status);
+        })
+        .catch((error: unknown) => {
+          if (!cancelled) onError(error instanceof Error ? error.message : "보고 생성 상태를 확인하지 못했습니다.");
+        });
+    }, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [onError, reportStatus?.generation_status, today]);
+
   // The shell awaits this to know the visible projection has settled; re-reading in place keeps filter/view state.
   useEffect(() => {
     onRegisterRefresh?.(reload);
@@ -363,6 +381,7 @@ export function TodayPage({
       )}
       {selectedActionItem && (
         <ActionItemDrawer
+          principalId={personaId}
           actionItemId={selectedActionItem?.action_item_id ?? ""}
           key={selectedActionItem?.action_item_id}
           onClose={() => setSelectedActionItem(null)}
@@ -403,8 +422,10 @@ export function TodayPage({
 }
 
 function reportReminder(status: DailyReportStatus | null): string {
+  if (status?.generation_status === "queued" || status?.generation_status === "running") return "오늘 보고 초안을 만들고 있습니다.";
+  if (status?.generation_status === "failed") return "오늘 보고 초안 생성에 실패했습니다. 보고 화면에서 다시 시도해 주세요.";
+  if (status?.generation_status === "needs_verification") return "오늘 보고 생성 결과를 확인해야 합니다. 새 요청 전에 운영 기록을 확인해 주세요.";
   if (status?.status === "submitted") return "오늘 보고는 제출되었습니다. 제출 이력을 확인할 수 있습니다.";
   if (status?.status === "draft") return "초안을 편집하거나 제출할 수 있습니다.";
   return "오늘의 업무 기록을 확인한 뒤 일일보고 초안을 만들 수 있습니다.";
 }
-

@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 from datetime import UTC, datetime, timedelta
@@ -7,7 +9,9 @@ import pytest
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
+from ax_workspace.bootstrap.report_worker import DailyReportGenerationWorker
 from ax_workspace.modules.ax_execution.ai import AiConversationResult, AiGeneration, AiToolInvocation
+from ax_workspace.platform.codex_cli import CodexCliProviderAdapter
 from ax_workspace.platform.persistence import (
     ProviderCallRecord,
     ReportDraftRecord,
@@ -80,6 +84,24 @@ def _client_with_seeded_database(
             report_provider=report_provider,
         )
     )
+
+
+def _complete_report_generation(client: TestClient, tmp_path, *, max_attempts: int = 3) -> dict:
+    application = client.app.state.workflow_application
+    settings = Settings(
+        RuntimeProfile.TEST,
+        f"sqlite:///{tmp_path / 'demo.db'}",
+        report_queue_max_attempts=max_attempts,
+    )
+    worker = DailyReportGenerationWorker(
+        settings,
+        provider=application._report_provider,
+        queue_factory=lambda _session: application.memory_job_queue,
+    )
+    assert asyncio.run(worker.run_once()) is True
+    return client.get(
+        f"/api/daily-reports/status?report_date={REPORT_DATE}", headers={"X-Demo-Persona": "mina"}
+    ).json()
 
 
 def test_cancelled_conversation_holds_queued_fragments_until_a_later_send(tmp_path) -> None:
@@ -208,17 +230,22 @@ def test_generate_draft_creates_a_report_owned_draft_from_authorized_task_events
         json={"report_date": REPORT_DATE},
     )
 
-    assert response.status_code == 201
-    body = response.json()
-    assert body["status"] == "draft"
-    assert body["report_id"]
-    assert body["draft_id"]
-    assert body["draft_version"] == 1
-    assert body["body"]
-    assert body["workflow_run_id"]
-    assert body["definition_version_id"]
-    assert body["workflow_state"] == "completed"
-    assert body["submission_status"] == "unsubmitted"
+    assert response.status_code == 202
+    receipt = response.json()
+    assert receipt["generation_status"] == "queued" and receipt["report_id"] is None
+    completed = _complete_report_generation(client, tmp_path)
+    assert completed["generation_id"] == receipt["generation_id"]
+    assert completed["generation_status"] == "completed" and completed["status"] == "draft"
+    history = client.get(f"/api/daily-reports/{completed['report_id']}/history", headers={"X-Demo-Persona": "mina"}).json()
+    latest = history["drafts"][-1]
+    body = {
+        "report_id": completed["report_id"],
+        "draft_id": latest["draft_id"],
+        "draft_version": latest["version"],
+        **latest,
+    }
+    assert body["draft_version"] == 1 and body["body"]
+    assert body["workflow_run_id"] and body["definition_version_id"]
     assert [item["task_version"] for item in body["source_refs"]] == [1, 2]
     assert body["source_refs"][-1] == {
         "task_id": task["task_id"],
@@ -248,9 +275,11 @@ def test_generate_draft_creates_a_report_owned_draft_from_authorized_task_events
         assert provider_call.observed_tier == "fast"
 
 
-def test_generate_draft_fails_explicitly_without_the_codex_cli_binary(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("ax_workspace.platform.codex_cli.shutil.which", lambda _: None)
-    client = _client_with_seeded_database(tmp_path)
+def test_generate_draft_fails_explicitly_without_the_codex_cli_binary(tmp_path) -> None:
+    client = _client_with_seeded_database(
+        tmp_path,
+        report_provider=CodexCliProviderAdapter(command="definitely-missing-codex-test-binary"),
+    )
 
     response = client.post(
         "/api/daily-reports/generate-draft",
@@ -258,8 +287,11 @@ def test_generate_draft_fails_explicitly_without_the_codex_cli_binary(tmp_path, 
         json={"report_date": REPORT_DATE},
     )
 
-    assert response.status_code == 503
-    assert "binary is not available" in response.json()["detail"]
+    assert response.status_code == 202
+    failed = _complete_report_generation(client, tmp_path, max_attempts=1)
+    assert failed["generation_status"] == "failed"
+    assert failed["generation_error_code"] == "report_provider_failed"
+    assert failed["report_id"] is None
 
 
 def test_daily_report_edit_submit_and_history_are_report_owned_operations(tmp_path) -> None:
@@ -272,12 +304,26 @@ def test_daily_report_edit_submit_and_history_are_report_owned_operations(tmp_pa
         "report_date": REPORT_DATE,
         "status": "not_started",
         "report_id": None,
+        "generation_id": None,
+        "generation_status": None,
+        "generation_error_code": None,
     }
-    generated = client.post(
+    accepted = client.post(
         "/api/daily-reports/generate-draft",
         headers={"X-Demo-Persona": "mina"},
         json={"report_date": REPORT_DATE},
     ).json()
+    completed = _complete_report_generation(client, tmp_path)
+    history = client.get(f"/api/daily-reports/{completed['report_id']}/history", headers={"X-Demo-Persona": "mina"}).json()
+    latest = history["drafts"][-1]
+    generated = {
+        "report_id": completed["report_id"],
+        "draft_id": latest["draft_id"],
+        "draft_version": latest["version"],
+        "workflow_run_id": latest["workflow_run_id"],
+        "definition_version_id": latest["definition_version_id"],
+    }
+    assert completed["generation_id"] == accepted["generation_id"]
 
     edited = client.post(
         f"/api/daily-reports/{generated['report_id']}/edit",
@@ -302,6 +348,9 @@ def test_daily_report_edit_submit_and_history_are_report_owned_operations(tmp_pa
         "report_date": REPORT_DATE,
         "status": "draft",
         "report_id": generated["report_id"],
+        "generation_id": accepted["generation_id"],
+        "generation_status": "completed",
+        "generation_error_code": None,
     }
 
     submitted = client.post(
@@ -325,6 +374,9 @@ def test_daily_report_edit_submit_and_history_are_report_owned_operations(tmp_pa
         "report_date": REPORT_DATE,
         "status": "submitted",
         "report_id": generated["report_id"],
+        "generation_id": accepted["generation_id"],
+        "generation_status": "completed",
+        "generation_error_code": None,
     }
 
     history = client.get(

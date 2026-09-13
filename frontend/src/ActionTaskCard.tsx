@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useBrowserOperationGuard } from "./browserOperationGuard";
 import { createPortal } from "react-dom";
 
 import { actionSubject } from "./ActionPreview";
@@ -321,6 +322,8 @@ export function ActionTaskCard({
   const confirm = action.commands?.find((command) => command.id === "confirm");
   const changed = JSON.stringify(draft) !== JSON.stringify(base);
   const incompleteMaterial = transfers.some((item) => item.state === "uploading" || item.state === "failed");
+  const uploadingMaterial = transfers.some((item) => item.state === "uploading");
+  useBrowserOperationGuard(uploadingMaterial);
 
   useEffect(() => {
     const projected = action.material_drafts ?? [];
@@ -501,7 +504,7 @@ export function ActionTaskCard({
             {contract && (
               <TaskAttachmentGroup
                 contract={contract}
-                disabled={busy}
+                disabled={busy || uploadingMaterial}
                 draft={base}
                 materials={materials}
                 onAddFile={addFile}
@@ -523,17 +526,17 @@ export function ActionTaskCard({
       </div>
       <div className="action-task-actions">
         {action.state === "pending" && contract && !editing && (
-          <button className="btn h30 ghost" disabled={busy} onClick={() => setEditing(true)} type="button">수정</button>
+          <button className="btn h30 ghost" disabled={busy || uploadingMaterial} onClick={() => setEditing(true)} type="button">수정</button>
         )}
         {action.state === "pending" && contract && editing && (
           <>
-            <button className="btn h30 ghost action-task-cancel" disabled={busy} onClick={() => {
+            <button className="btn h30 ghost action-task-cancel" disabled={busy || uploadingMaterial} onClick={() => {
               recovered.reset();
               setError(null);
               setStartAttachmentPicker(false);
               setEditing(false);
             }} type="button">취소</button>
-            <button className="btn h30 ghost action-task-reset" disabled={busy} onClick={recovered.reset} type="button"><Icon name="refresh" size={14} />초기화</button>
+            <button className="btn h30 ghost action-task-reset" disabled={busy || uploadingMaterial} onClick={recovered.reset} type="button"><Icon name="refresh" size={14} />초기화</button>
           </>
         )}
         {confirm && contract && (
@@ -567,7 +570,7 @@ export function ActionTaskCard({
         {(action.commands ?? []).filter((command) => !["confirm", "reject"].includes(command.id)).map((command) => (
           <button
             className={`btn h30 ${command.tone === "danger" ? "danger" : "ghost"}`}
-            disabled={busy}
+            disabled={busy || uploadingMaterial}
             key={command.id}
             onClick={() => void run(command.id, undefined, command.id === "reject")}
             type="button"
@@ -614,7 +617,9 @@ export type LocalMaterialTransfer = {
   error?: string;
 };
 
-export function TaskAttachmentGroup<TDraft extends { reference_task_ids: string[] }>({
+// Reference links belong to the Task contracts; a contract that does not offer them (a meeting
+// reservation) still uses this group for its attachments.
+export function TaskAttachmentGroup<TDraft extends { reference_task_ids?: string[] }>({
   contract,
   draft,
   materials,
@@ -661,7 +666,8 @@ export function TaskAttachmentGroup<TDraft extends { reference_task_ids: string[
   const referenceField = contract.fields.find((field) => field.id === "reference_task_ids");
   const options = useMemo(() => referenceField?.options ?? [], [referenceField]);
   const labels = new Map(options.map((option) => [option.value, option.label]));
-  const selectedReferences = draft.reference_task_ids.map((id) => ({ id, label: labels.get(id) ?? "볼 수 없는 업무" }));
+  const references = draft.reference_task_ids ?? [];
+  const selectedReferences = references.map((id) => ({ id, label: labels.get(id) ?? "볼 수 없는 업무" }));
   const empty = selectedReferences.length === 0 && materials.length === 0 && transfers.length === 0;
 
   useEffect(() => {
@@ -702,7 +708,7 @@ export function TaskAttachmentGroup<TDraft extends { reference_task_ids: string[
               <span aria-hidden><Icon name="folder" size={16} /></span><span>{reference.label}</span>
               {removable && <button aria-label={`${reference.label} 첨부 제외`} disabled={disabled} onClick={() => onChangeDraft({
                 ...draft,
-                reference_task_ids: draft.reference_task_ids.filter((id) => id !== reference.id),
+                reference_task_ids: references.filter((id) => id !== reference.id),
               })} type="button"><Icon name="close" size={14} /></button>}
             </li>
           ))}
@@ -758,7 +764,7 @@ export function TaskAttachmentGroup<TDraft extends { reference_task_ids: string[
           onChangeLinkUrl={setLinkUrl}
           onClose={closePicker}
           onConfirm={(ids) => {
-            onChangeDraft({ ...draft, reference_task_ids: [...new Set([...draft.reference_task_ids, ...ids])] });
+            onChangeDraft({ ...draft, reference_task_ids: [...new Set([...references, ...ids])] });
             closePicker();
           }}
           onModeChange={setAdding}
@@ -766,7 +772,7 @@ export function TaskAttachmentGroup<TDraft extends { reference_task_ids: string[
           options={options}
           referencesOnly={referencesOnly}
           searchReferences={searchReferences}
-          selectedIds={draft.reference_task_ids}
+          selectedIds={references}
           subtitle={referencesOnly
             ? "요청에 참고할 업무를 찾아 연결하세요."
             : contract.editor === "meeting"

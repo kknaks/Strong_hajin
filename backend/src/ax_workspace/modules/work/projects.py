@@ -11,9 +11,14 @@
 """
 from __future__ import annotations
 
+from ax_workspace.modules.work.project_results import ProjectView, ProjectDetailResult, ProjectAssignmentView, ProjectParticipationView, ProjectAssignmentHistoryView
+
+from ax_workspace.modules.errors import ResourceNotFound
+
 from datetime import UTC, date, datetime
 from typing import Any, Protocol
 from uuid import UUID
+from ax_workspace.modules.work.project_commands import ProjectCreateInput, ProjectMemberInput, ProjectReleaseInput, ProjectReleaseResult
 
 from ax_workspace.modules.organization_access.domain import (
     PROJECT_MANAGE,
@@ -27,7 +32,7 @@ class ProjectError(Exception):
     pass
 
 
-class ProjectNotFound(ProjectError):
+class ProjectNotFound(ProjectError, ResourceNotFound):
     pass
 
 
@@ -87,7 +92,7 @@ class ProjectApplication:
         starts_on: date | None = None,
         ends_on: date | None = None,
         external_key: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> ProjectView:
         """프로젝트 하나. 만들고, 사람을 붙인다 — 그 둘이 프로젝트의 전부다.
 
         소유 조직을 두지 않는다. 프로젝트는 부서를 가로질러 묶이려고 있는 것이라 어느 한 부서의 것이라고
@@ -98,6 +103,8 @@ class ProjectApplication:
         """
         if PROJECT_MANAGE not in principal.capabilities:
             raise ProjectAccessDenied("프로젝트를 만들 수 있는 자격이 없습니다")
+        command = ProjectCreateInput(name=name, description=description, starts_on=starts_on, ends_on=ends_on, external_key=external_key)
+        name, description, starts_on, ends_on, external_key = command.name, command.description, command.starts_on, command.ends_on, command.external_key
         cleaned = " ".join(str(name or "").split())
         if not cleaned:
             raise ProjectError("프로젝트 이름이 필요합니다")
@@ -132,9 +139,11 @@ class ProjectApplication:
         kind: str = "member",
         valid_from: datetime | None = None,
         valid_until: datetime | None = None,
-    ) -> dict[str, Any]:
+    ) -> ProjectAssignmentView:
         """사람을 붙인다. 그 사람이 어느 부서인지는 묻지 않는다 — 그것이 프로젝트가 있는 이유다."""
         project = self._manageable(principal, project_id)
+        command = ProjectMemberInput(member_id=member_id, kind=kind, valid_from=valid_from, valid_until=valid_until)
+        member_id, kind, valid_from, valid_until = command.member_id, command.kind, command.valid_from, command.valid_until
         if kind not in ASSIGNMENT_KINDS:
             raise ProjectError("배정 종류는 담당 또는 참여입니다")
         if valid_from and valid_until and valid_until < valid_from:
@@ -160,9 +169,11 @@ class ProjectApplication:
         *,
         assignment_id: UUID | None = None,
         reason: str | None = None,
-    ) -> None:
+    ) -> ProjectReleaseResult:
         """사람을 뗀다. 그와 함께 그 프로젝트로 얻었던 권한도 끝난다."""
         project = self._manageable(principal, project_id)
+        command = ProjectReleaseInput(assignment_id=assignment_id, reason=reason)
+        assignment_id, reason = command.assignment_id, command.reason
         assignment = (
             self._repository.assignment_round(project.id, member_id, assignment_id, lock=True)
             if assignment_id is not None
@@ -171,18 +182,22 @@ class ProjectApplication:
         if assignment is None:
             raise ProjectNotFound("이 프로젝트에 배정된 구성원이 아닙니다")
         # 회차를 지정한 종료 요청은 그 회차의 receipt다. 종료 뒤 재전송되어도 새 회차를 대신 끝내지 않는다.
+        receipt: ProjectReleaseResult = {"project_id": str(project.id), "member_id": member_id, "assignment_id": str(assignment.id), "released": True}
         if assignment.ended_at is not None:
-            return
+            return receipt
         self._repository.end_assignment(
             assignment,
             ended_by=str(principal.id),
             reason=(reason or "").strip() or None,
         )
+        return receipt
 
     # ---- queries ----
 
-    def list(self, principal: Principal) -> list[dict[str, Any]]:
+    def list(self, principal: Principal) -> list[ProjectView]:
         """이 사람이 읽을 수 있는 프로젝트만. 읽을 수 없는 프로젝트는 개수로도 드러나지 않는다."""
+        if PROJECT_READ not in principal.capabilities:
+            raise ProjectAccessDenied("프로젝트를 조회할 수 있는 자격이 없습니다")
         reach = self._readable(principal)
         return [
             {**self._view(project)}
@@ -190,7 +205,7 @@ class ProjectApplication:
             if str(project.id) in reach
         ]
 
-    def get(self, principal: Principal, project_id: UUID) -> dict[str, Any]:
+    def get(self, principal: Principal, project_id: UUID) -> ProjectDetailResult:
         project = self._readable_project(principal, project_id)
         assignments = self._repository.assignments_for(project.id)
         names = self._repository.member_names([row.member_id for row in assignments])
@@ -216,7 +231,7 @@ class ProjectApplication:
             ],
         }
 
-    def participation_history(self, principal: Principal, project_id: UUID) -> list[dict[str, Any]]:
+    def participation_history(self, principal: Principal, project_id: UUID) -> list[ProjectParticipationView]:
         project = self._readable_project(principal, project_id)
         rows = self._repository.assignment_history(project.id)
         names = self._repository.member_names(
@@ -292,7 +307,7 @@ class ProjectApplication:
         return project
 
     @staticmethod
-    def _view(project: Any) -> dict[str, Any]:
+    def _view(project: Any) -> ProjectView:
         return {
             "project_id": str(project.id),
             "name": project.name,
@@ -305,7 +320,7 @@ class ProjectApplication:
         }
 
     @staticmethod
-    def _assignment_view(assignment: Any) -> dict[str, Any]:
+    def _assignment_view(assignment: Any) -> ProjectAssignmentView:
         def utc(value: datetime | None) -> str | None:
             # SQLite returns stored UTC timestamps without tzinfo; never reinterpret
             # those wall-clock values in the host's local timezone.
@@ -323,7 +338,7 @@ class ProjectApplication:
         }
 
     @classmethod
-    def _assignment_history_view(cls, assignment: Any) -> dict[str, Any]:
+    def _assignment_history_view(cls, assignment: Any) -> ProjectAssignmentHistoryView:
         def utc(value: datetime | None) -> str | None:
             if value is None:
                 return None

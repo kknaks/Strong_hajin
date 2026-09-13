@@ -75,7 +75,7 @@ try {
   const cardText = ((await card.textContent()) ?? "").replace(/\s+/g, " ");
   if (!cardText.includes(stepText)) throw new Error(`the card does not say what would be added: ${JSON.stringify(cardText)}`);
 
-  await card.getByRole("button", { name: "승인" }).click();
+  await card.getByRole("button", { name: "이 내용으로 반영" }).click();
   await card.locator("small.approved").waitFor({ timeout: 20_000 });
 
   // Exactly once, on the list, and readable on the Task the person opens.

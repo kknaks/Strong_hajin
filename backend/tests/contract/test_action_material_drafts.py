@@ -47,13 +47,13 @@ def _proposal(client, application, *, title="첨부할 AX 업무"):
     )
 
 
-# main 의 `meeting.create` 확인 경로를 딛던 헬퍼(`_meeting_proposal`)와 시험 둘
+# 옛 `meeting.create` 확인 경로를 딛던 헬퍼(`_meeting_proposal`)와 시험 둘
 # (`test_meeting_without_note_claims_materials_into_the_meeting_owner` ·
 #  `test_excluding_the_initial_note_keeps_staged_meeting_materials`)을 걷었다.
-# 그 경로는 **옛 회의 모델**(description·visibility·판 있는 회의록)에 서 있었고 SCAX-SPEC-004 가 그것을
-# 대체했다 — 지금 확인을 누르면 「회의 화면에서 직접 해 주세요」로 멈춘다. 자료 초안 계약 자체는
-# 아래 업무 제안 네 시험이 그대로 지킨다. 채팅에서 회의를 만드는 흐름을 새 모델 위에 다시 세우면
-# 그때 이 자리도 새 모델로 다시 쓴다.
+# 그 경로는 **옛 회의 모델**(description·visibility·판 있는 회의록)에 서 있었고 SCAX-SPEC-004 의
+# `meeting.reservation.create` 가 그것을 대체했다 — 이제 회의 생성의 공개 계약은 그 하나뿐이고
+# 옛 타입은 실행되지 않는다(`RETIRED_ACTION_TYPES`). 자료 초안 계약 자체는 아래 업무 제안 네 시험이
+# 그대로 지키며, 회의 쪽 첨부 청구는 `test_action_center.py` 의 예약 생성 승인이 검증한다.
 
 
 def test_link_and_file_drafts_are_projected_and_claimed_by_confirm(tmp_path) -> None:

@@ -1,6 +1,6 @@
 import { chromium } from "@playwright/test";
 
-import { loginAs, switchAccount } from "./e2e-helpers.mjs";
+import { loginAs, pollFor, switchAccount } from "./e2e-helpers.mjs";
 
 const frontendUrl = process.env.SCAX_E2E_URL ?? "http://127.0.0.1:5176";
 const title = `Playwright 보고 근거 업무 ${Date.now()}`;
@@ -38,7 +38,34 @@ try {
     { timeout: 180_000 },
   );
   await page.getByRole("button", { name: "근거로 초안 만들기" }).click();
-  const generated = await (await generateResponse).json();
+  const accepted = await (await generateResponse).json();
+  const generated = await pollFor(
+    page,
+    () => page.evaluate(async ({ reportDate, generationId }) => {
+      const statusResponse = await fetch(`/api/daily-reports/status?${new URLSearchParams({ report_date: reportDate })}`, {
+        headers: { "X-Demo-Persona": "mina" },
+      });
+      const status = await statusResponse.json();
+      if (status.generation_id !== generationId || status.generation_status !== "completed" || !status.report_id) return null;
+      const historyResponse = await fetch(`/api/daily-reports/${status.report_id}/history`, {
+        headers: { "X-Demo-Persona": "mina" },
+      });
+      const history = await historyResponse.json();
+      const draft = history.drafts.at(-1);
+      return draft ? {
+        report_id: status.report_id,
+        draft_id: draft.draft_id,
+        draft_version: draft.version,
+        body: draft.body,
+        source_refs: draft.source_refs,
+        workflow_run_id: draft.workflow_run_id,
+        definition_version_id: draft.definition_version_id,
+        workflow_state: "completed",
+        status: history.status,
+      } : null;
+    }, { reportDate: accepted.report_date, generationId: accepted.generation_id }),
+    { timeout: 180_000, description: "the durable daily-report generation" },
+  );
   if (
     generated.status !== "draft" ||
     generated.workflow_state !== "completed" ||
@@ -51,7 +78,16 @@ try {
     throw new Error("Daily-report generation did not return the version-pinned production runtime result");
   }
 
-  await page.getByLabel("일일보고 초안").fill(editedBody);
+  await navigation.getByRole("button", { name: "오늘" }).click();
+  await navigation.getByRole("button", { name: "보고" }).click();
+  const draftEditor = page.getByLabel("일일보고 초안");
+  await page.getByText(`초안 v${generated.draft_version}`, { exact: true }).waitFor({ timeout: 30_000 });
+  await pollFor(
+    page,
+    () => draftEditor.inputValue().then((body) => (body === generated.body ? body : null)),
+    { timeout: 30_000, description: "the generated daily-report draft in the editor" },
+  );
+  await draftEditor.fill(editedBody);
   const editResponse = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/api/daily-reports/${generated.report_id}/edit`) && response.request().method() === "POST",
@@ -61,6 +97,7 @@ try {
   const editRequest = editNetworkResponse.request().postDataJSON();
   const edited = await editNetworkResponse.json();
   if (
+    editRequest.draft_id !== generated.draft_id ||
     editRequest.expected_version !== generated.draft_version ||
     edited.draft_version <= generated.draft_version ||
     edited.body !== editedBody

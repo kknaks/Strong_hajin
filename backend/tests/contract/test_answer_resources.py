@@ -77,6 +77,13 @@ def test_what_a_turn_read_becomes_something_each_answer_item_can_open(tmp_path, 
     assert references[0]["resource_version"] == first["version"]
     assert all(row["turn_id"] for row in references)
     assert [row["sequence"] for row in references] == sorted(row["sequence"] for row in references)
+    from ax_workspace.entrypoints.mcp import _create_bound_persona_server
+    server = _create_bound_persona_server(McpReportsFacade(settings, 'mina'))
+    observed = asyncio.run(server.call_tool('conversation', {'conversation_id': conversation['conversation_id']})).structured_content
+    assert observed == client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()
+    found = asyncio.run(server.call_tool('conversation_search', {'query': '오늘 하는 일'})).structured_content
+    assert found['turns'][0]['conversation_id'] == conversation['conversation_id']
+    assert found['turns'][0]['excerpt'] == '오늘 하는 일 알려줘'
 
 
 def test_a_reference_says_where_in_the_source_and_whether_it_moved_since(tmp_path, monkeypatch) -> None:
@@ -161,7 +168,9 @@ def test_a_reference_is_asked_of_its_owner_again_every_time_it_is_read(tmp_path,
     monkeypatch.setenv("AX_MCP_CAUSATION_ID", execution_id)
     McpReportsFacade(settings, "mina").get_meeting(meeting["meeting_id"])
     monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
-    before = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()["answer_resources"]
+    before_detail = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()
+    before = before_detail["answer_resources"]
+    before_body = before_detail["messages"]
     assert [row["title"] for row in before] == ["공유가 끊길 회의"]
 
     # The share is taken back. The stored reference is still a row; what it says is asked again.
@@ -170,7 +179,9 @@ def test_a_reference_is_asked_of_its_owner_again_every_time_it_is_read(tmp_path,
     after = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()
     # No title, no placeholder, and nothing left to count.
     assert after["answer_resources"] == []
-    assert "공유가 끊길 회의" not in str(after)
+    assert after["messages"] == before_body
+    assert client.get(f"/api/meetings/{meeting['meeting_id']}", headers=MINA).status_code == 404
+    assert McpReportsFacade(settings, "mina").graph_search("공유가 끊길 회의")["nodes"] == []
 
 
 def test_a_turn_records_nothing_for_a_conversation_that_is_not_its_own(tmp_path, monkeypatch) -> None:

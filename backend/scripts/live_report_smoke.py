@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from datetime import UTC, datetime
 from urllib.request import Request, urlopen
 from uuid import UUID
 
@@ -20,11 +22,12 @@ from ax_workspace.platform.persistence import (
     WorkflowRunRecord,
     make_session_factory,
 )
+from ax_workspace.platform.work_tasks import business_date
 
 
 API_URL = os.getenv("SCAX_API_URL", "http://127.0.0.1:8001")
 DATABASE_URL = os.environ["DATABASE_URL"]
-REPORT_DATE = os.getenv("SCAX_REPORT_DATE", "2026-09-03")
+REPORT_DATE = os.getenv("SCAX_REPORT_DATE") or business_date(datetime.now(UTC))
 HEADERS = {"Content-Type": "application/json", "X-Demo-Persona": "mina"}
 
 
@@ -36,15 +39,52 @@ def post(path: str, body: dict[str, object]) -> dict[str, object]:
         method="POST",
     )
     with urlopen(request, timeout=180) as response:
-        if response.status not in {200, 201}:
+        if response.status not in {200, 201, 202}:
+            raise RuntimeError(f"{path}: HTTP {response.status}")
+        return json.loads(response.read())
+
+
+def get(path: str) -> dict[str, object]:
+    request = Request(f"{API_URL}{path}", headers={"X-Demo-Persona": "mina"})
+    with urlopen(request, timeout=30) as response:
+        if response.status != 200:
             raise RuntimeError(f"{path}: HTTP {response.status}")
         return json.loads(response.read())
 
 
 def main() -> None:
     task = post("/api/tasks", {"title": "실제 Codex 보고 근거 업무"})
-    post(f"/api/tasks/{task['task_id']}/start", {"expected_version": task["version"]})
-    draft = post("/api/daily-reports/generate-draft", {"report_date": REPORT_DATE})
+    started_task = post(
+        f"/api/tasks/{task['task_id']}/start", {"expected_version": task["version"]}
+    )
+    accepted = post("/api/daily-reports/generate-draft", {"report_date": REPORT_DATE})
+    deadline = time.monotonic() + 180
+    while True:
+        status = get(f"/api/daily-reports/status?report_date={REPORT_DATE}")
+        if status["generation_id"] != accepted["generation_id"]:
+            raise RuntimeError("daily-report status returned a different generation")
+        if status["generation_status"] == "completed" and status["report_id"]:
+            break
+        if status["generation_status"] in {"failed", "needs_verification"}:
+            raise RuntimeError(
+                f"daily-report generation ended as {status['generation_status']}: "
+                f"{status['generation_error_code']}"
+            )
+        if time.monotonic() >= deadline:
+            raise RuntimeError("daily-report generation did not finish within 180 seconds")
+        time.sleep(1)
+    history = get(f"/api/daily-reports/{status['report_id']}/history")
+    draft = history["drafts"][-1]
+    matching_sources = [
+        source
+        for source in draft["source_refs"]
+        if source.get("task_id") == started_task["task_id"]
+        and source.get("task_version") == started_task["version"]
+        and source.get("state") == started_task["state"]
+    ]
+    assert len(matching_sources) == 1, (
+        "generated report did not retain the exact task/version/state created for this smoke"
+    )
 
     with make_session_factory(DATABASE_URL)() as session:
         report_draft = session.get(ReportDraftRecord, UUID(str(draft["draft_id"])))
@@ -75,12 +115,13 @@ def main() -> None:
     print(
         json.dumps(
             {
-                "report_id": draft["report_id"],
+                "report_id": status["report_id"],
                 "draft_id": draft["draft_id"],
                 "workflow_run_id": draft["workflow_run_id"],
                 "definition_version_id": draft["definition_version_id"],
                 "source_ref_count": len(draft["source_refs"]),
-                "workflow_state": draft["workflow_state"],
+                "generation_id": accepted["generation_id"],
+                "generation_status": status["generation_status"],
                 "node_runs": [node.node_id for node in node_runs],
                 "provider_status": provider_call.status,
                 "provider_run_ref_present": bool(provider_call.provider_run_ref),

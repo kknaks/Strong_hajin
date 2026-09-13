@@ -7,6 +7,10 @@ from the kind.
 """
 from __future__ import annotations
 
+from ax_workspace.modules.actions.results import ActionEnvelopeResult, ActionDetailResult, ActionCommandView, ActionRoundView, ActionDiscussionView, ActionEnvelopeExtensions, ActionPreviewField, WaitingMemberView, ActionResourceView
+
+from ax_workspace.modules.errors import ResourceNotFound
+
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -29,7 +33,7 @@ class ActionCommand:
     tone: str = "neutral"
     requires_reason: bool = False
 
-    def as_dict(self) -> dict[str, Any]:
+    def as_dict(self) -> ActionCommandView:
         return {"id": self.id, "label": self.label, "tone": self.tone, "requires_reason": self.requires_reason}
 
 
@@ -43,15 +47,17 @@ class ActionEnvelope:
     subject: str
     operation_label: str
     current_question: str
-    preview: list[dict[str, str]]
+    preview: list[ActionPreviewField]
     allowed_commands: list[ActionCommand]
     submission_version: int
-    waiting_on: dict[str, str] | None
-    resource: dict[str, str]
+    waiting_on: WaitingMemberView | None
+    resource: ActionResourceView
     expected_version: int | None = None
-    extra: dict[str, Any] = field(default_factory=dict)
+    extra: ActionEnvelopeExtensions = field(default_factory=dict)
+    # Accepted from previously delivered controls, but not advertised to new clients.
+    compatibility_commands: list[ActionCommand] = field(default_factory=list)
 
-    def as_dict(self) -> dict[str, Any]:
+    def as_dict(self) -> ActionEnvelopeResult:
         return {
             "action_item_id": self.action_item_id,
             "kind": self.kind,
@@ -73,7 +79,7 @@ class ActionError(Exception):
     """The command cannot be run as asked."""
 
 
-class ActionNotFound(ActionError):
+class ActionNotFound(ActionError, ResourceNotFound):
     pass
 
 
@@ -92,11 +98,11 @@ class ActionKindHandler(Protocol):
         """How this item looks to `principal` right now, pending or not."""
         ...
 
-    def rounds(self, item: Any, principal: Principal) -> list[dict[str, Any]]:
+    def rounds(self, item: Any, principal: Principal) -> list[ActionRoundView]:
         """Every immutable Submission with its frozen content, diff and decisions, oldest first."""
         ...
 
-    def discussion(self, item: Any, principal: Principal) -> list[dict[str, Any]]:
+    def discussion(self, item: Any, principal: Principal) -> list[ActionDiscussionView]:
         """Comments on this question, in the order they were written. Talking never moves the item."""
         ...
 
@@ -130,13 +136,13 @@ class ActionCenterApplication:
     def __init__(self, handlers: list[ActionKindHandler]) -> None:
         self._handlers = handlers
 
-    def pending(self, principal: Principal) -> list[dict[str, Any]]:
+    def pending(self, principal: Principal) -> list[ActionEnvelopeResult]:
         items: list[ActionEnvelope] = []
         for handler in self._handlers:
             items.extend(handler.pending(principal))
         return [item.as_dict() for item in items]
 
-    def detail(self, principal: Principal, action_item_id: str) -> dict[str, Any]:
+    def detail(self, principal: Principal, action_item_id: str) -> ActionDetailResult:
         handler, item = self._locate(action_item_id)
         envelope = handler.envelope(item, principal)
         return {
@@ -151,9 +157,10 @@ class ActionCenterApplication:
         self._offered(handler, item, principal, command, payload)
         return handler.normalize(item, command, payload)
 
-    def execute(self, principal: Principal, action_item_id: str, command: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def execute(self, principal: Principal, action_item_id: str, command: str, payload: dict[str, Any]) -> ActionEnvelopeResult:
         handler, item = self._locate(action_item_id)
-        offered = {entry.id: entry for entry in handler.envelope(item, principal).allowed_commands}
+        envelope = handler.envelope(item, principal)
+        offered = {entry.id: entry for entry in [*envelope.allowed_commands, *envelope.compatibility_commands]}
         if command not in offered:
             # A lost response must not force the caller to choose between a duplicate effect and a stale error.
             if handler.is_replay(item, principal, command, payload):
@@ -165,7 +172,8 @@ class ActionCenterApplication:
         return handler.envelope(handler.find(action_item_id), principal).as_dict()
 
     def _offered(self, handler: ActionKindHandler, item: Any, principal: Principal, command: str, payload: dict[str, Any]) -> None:
-        offered = {entry.id: entry for entry in handler.envelope(item, principal).allowed_commands}
+        envelope = handler.envelope(item, principal)
+        offered = {entry.id: entry for entry in [*envelope.allowed_commands, *envelope.compatibility_commands]}
         if command not in offered:
             raise ActionError(f"'{command}' is not available on this action item right now")
         if offered[command].requires_reason and not str(payload.get("reason") or "").strip():

@@ -30,7 +30,31 @@ try {
     response.url().endsWith("/api/daily-reports/generate-draft") && response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "근거로 초안 만들기" }).click();
-  const generated = await (await generatedResponse).json();
+  const accepted = await (await generatedResponse).json();
+  const generated = await pollFor(
+    page,
+    () => page.evaluate(async ({ reportDate, generationId }) => {
+      const statusResponse = await fetch(`/api/daily-reports/status?${new URLSearchParams({ report_date: reportDate })}`, {
+        headers: { "X-Demo-Persona": "mina" },
+      });
+      const status = await statusResponse.json();
+      if (status.generation_id !== generationId || status.generation_status !== "completed" || !status.report_id) return null;
+      const historyResponse = await fetch(`/api/daily-reports/${status.report_id}/history`, {
+        headers: { "X-Demo-Persona": "mina" },
+      });
+      const history = await historyResponse.json();
+      const draft = history.drafts.at(-1);
+      return draft ? {
+        report_id: status.report_id,
+        draft_id: draft.draft_id,
+        draft_version: draft.version,
+        workflow_run_id: draft.workflow_run_id,
+        definition_version_id: draft.definition_version_id,
+        status: history.status,
+      } : null;
+    }, { reportDate, generationId: accepted.generation_id }),
+    { timeout: 180_000, description: "the durable daily-report generation" },
+  );
   if (
     !generated.workflow_run_id ||
     !generated.definition_version_id ||
@@ -75,7 +99,7 @@ try {
   await actionCard.getByRole("button", { name: "판단하기" }).click();
   const decisionDrawer = page.getByRole("dialog", { name: "판단 상세" });
   await decisionDrawer.waitFor({ timeout: 20_000 });
-  await decisionDrawer.getByRole("button", { name: "승인" }).click();
+  await decisionDrawer.getByRole("button", { name: "이 내용으로 반영" }).click();
   await page.getByRole("dialog").waitFor({ state: "detached", timeout: 20_000 });
   const history = await pollFor(
     page,

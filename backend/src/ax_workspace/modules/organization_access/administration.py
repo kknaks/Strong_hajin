@@ -9,6 +9,10 @@ the reason they gave is kept with it.
 """
 from __future__ import annotations
 
+from ax_workspace.modules.organization_access.results import InstalledRoleView, MemberAccessView, OrganizationProfileView
+
+from ax_workspace.modules.errors import ResourceNotFound
+
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -35,7 +39,7 @@ class AccessAdministrationDenied(Exception):
     """The administrator's own authority does not cover this person or this role."""
 
 
-class AccessNotFound(Exception):
+class AccessNotFound(ResourceNotFound):
     pass
 
 
@@ -48,8 +52,8 @@ class AccessAdministrationRepository(Protocol):
     def member_units(self, member_id: str) -> frozenset[str]: ...
     def organization_root(self, *, near: str | None = None) -> str | None: ...
     def role_exists(self, role_id: str) -> bool: ...
-    def installed_roles(self) -> list[dict[str, Any]]: ...
-    def profile_for(self, member_id: str) -> dict[str, Any] | None: ...
+    def installed_roles(self) -> list[InstalledRoleView]: ...
+    def profile_for(self, member_id: str) -> OrganizationProfileView | None: ...
     def role_version(self, role_id: str) -> int | None: ...
     def add_role_grant(
         self,
@@ -85,14 +89,19 @@ class AccessAdministration:
 
     # ---- queries --------------------------------------------------------
 
-    def installed_roles(self, principal: Principal) -> list[dict[str, Any]]:
+    def installed_roles(self, principal: Principal) -> list[InstalledRoleView]:
         """The roles this organization actually has, as they are now — not the product's recommendation."""
         self._require_authority_over_unit(principal, self._root())
         return self._repository.installed_roles()
 
-    def member_access(self, principal: Principal, member_id: str) -> dict[str, Any]:
+    def member_access(self, principal: Principal, member_id: str) -> MemberAccessView:
         """What one person may do and where, for someone whose authority covers them."""
-        self._require_authority_over_member(principal, member_id)
+        if ORGANIZATION_MANAGE not in principal.capabilities:
+            raise AccessAdministrationDenied("권한 조회 기능을 사용할 수 없습니다")
+        try:
+            self._require_authority_over_member(principal, member_id)
+        except AccessAdministrationDenied as error:
+            raise AccessNotFound("구성원 접근 정보를 찾을 수 없습니다") from error
         profile = self._repository.profile_for(member_id)
         if profile is None:
             raise AccessNotFound("재직 중인 구성원을 찾을 수 없습니다")

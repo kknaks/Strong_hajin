@@ -484,9 +484,9 @@ def test_what_a_person_holds_is_not_what_they_may_read(client: TestClient, setti
 
     facade = McpReportsFacade(settings, "hyeon")
 
-    assert {row["task_id"] for row in facade.list_tasks()} == {mine["task_id"]}
+    assert {row["task_id"] for row in facade.my_work()} == {mine["task_id"]}
     # 넓히는 길은 남아 있고, 넓혔을 때만 넓어진다.
-    readable = {row["task_id"] for row in facade.list_tasks(mine=False)}
+    readable = {row["task_id"] for row in facade.list_tasks()}
     assert theirs["task_id"] in readable and mine["task_id"] in readable
 
 

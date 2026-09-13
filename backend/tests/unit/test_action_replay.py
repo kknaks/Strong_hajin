@@ -84,6 +84,23 @@ def test_assignment_replay_uses_the_task_version_relation_and_decline_reason() -
     assert not is_assignment_replay(declined, actor_id="mina", command="decline", expected_version=4, reason="다른 사유")
 
 
+def test_assignment_replay_prefers_the_recorded_decision_after_the_task_changes() -> None:
+    accepted = AssignmentReplayContext(
+        status="active",
+        assignee_id="mina",
+        task_version=7,
+        decline_reason=None,
+        has_recorded_decision=True,
+        decision_actor_id="mina",
+        decision="accept",
+        decision_consumed_version=4,
+        decision_reason=None,
+    )
+
+    assert is_assignment_replay(accepted, actor_id="mina", command="accept", expected_version=4, reason=None)
+    assert not is_assignment_replay(accepted, actor_id="mina", command="accept", expected_version=7, reason=None)
+
+
 def test_delivery_replay_matches_the_recorded_answer_not_the_current_task_state() -> None:
     decisions = (
         RecordedDeliveryDecision(actor_id="mina", decision="negotiate", expected_version=8, reason="보강 필요"),

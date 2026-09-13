@@ -16,6 +16,7 @@ import { StatusText } from "./WorkModals";
 import {
   type DailyReportDraft,
   type DailyReportHistory,
+  type DailyReportStatus,
   type DirectTask,
   type TaskState,
 } from "./viewModels";
@@ -50,8 +51,11 @@ export function DailyReportPage({ personaId, personaName, onError, onRegisterRef
   const [history, setHistory] = useState<DailyReportHistory | null>(null);
   const [isWorking, setIsWorking] = useState<"generate" | "edit" | "submit" | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [generationStatus, setGenerationStatus] = useState<DailyReportStatus["generation_status"]>(null);
 
   const submissions = history?.submissions ?? [];
+  const generationActive = generationStatus === "queued" || generationStatus === "running";
+  const generationBlocked = generationActive || generationStatus === "needs_verification";
   const phase: ReportPhase = submissions.length > 0 ? "submitted" : draft ? "draft" : "not_started";
   const [resolvedTitles, setResolvedTitles] = useState<Record<string, string>>({});
   const taskTitles = useMemo(
@@ -117,15 +121,17 @@ export function DailyReportPage({ personaId, personaName, onError, onRegisterRef
         setBody("");
         setHistory(null);
         setNotice(null);
+        setGenerationStatus(null);
       }
       const status = await getDailyReportStatus(reportDate);
       if (!shouldApply()) return;
+      setGenerationStatus(status.generation_status);
       if (!status.report_id) {
         if (!reset) {
           setDraft(null);
           setHistory(null);
         }
-        return;
+        return status;
       }
       const nextHistory = await getDailyReportHistory(status.report_id);
       if (!shouldApply()) return;
@@ -141,6 +147,7 @@ export function DailyReportPage({ personaId, personaName, onError, onRegisterRef
         status: nextHistory.status,
       });
       setBody((current) => (reset || !isDirtyRef.current ? latestDraft.body : current));
+      return status;
     },
     [reportDate],
   );
@@ -156,8 +163,35 @@ export function DailyReportPage({ personaId, personaName, onError, onRegisterRef
     };
   }, [loadReport, onError, personaId]);
 
+  useEffect(() => {
+    if (generationStatus !== "queued" && generationStatus !== "running") return;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void loadReport({ shouldApply: () => !cancelled })
+        .then((status) => {
+          if (cancelled || !status) return;
+          if (status.generation_status === "completed") {
+            setNotice("일일보고 초안이 준비되었습니다. 내용을 확인하고 필요하면 편집한 뒤 제출하세요.");
+          } else if (status.generation_status === "failed") {
+            onError("일일보고 초안을 만들지 못했습니다. 다시 시도해 주세요.");
+          } else if (status.generation_status === "needs_verification") {
+            onError("AI 실행 결과가 불확실합니다. 새 초안을 만들기 전에 운영 기록을 확인해 주세요.");
+          }
+        })
+        .catch((error: unknown) => {
+          if (!cancelled) onError(error instanceof Error ? error.message : "보고 생성 상태를 확인하지 못했습니다.");
+        });
+    }, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [generationStatus, loadReport, onError]);
+
   // The shell awaits this after an approved AX effect; unsaved editor text is preserved.
-  const refreshReport = useCallback(() => loadReport(), [loadReport]);
+  const refreshReport = useCallback(async () => {
+    await loadReport();
+  }, [loadReport]);
   useEffect(() => {
     onRegisterRefresh?.(refreshReport);
     return () => onRegisterRefresh?.(null);
@@ -171,11 +205,9 @@ export function DailyReportPage({ personaId, personaName, onError, onRegisterRef
     onError(null);
     setNotice(null);
     try {
-      const nextDraft = await generateDailyReportDraft(reportDate);
-      setDraft(nextDraft);
-      setBody(nextDraft.body);
-      setHistory(await getDailyReportHistory(nextDraft.report_id));
-      setNotice(`초안 v${nextDraft.draft_version}을 만들었습니다. 내용을 확인하고 필요하면 편집한 뒤 제출하세요.`);
+      const accepted = await generateDailyReportDraft(reportDate);
+      setGenerationStatus(accepted.generation_status);
+      setNotice("일일보고 초안 생성을 접수했습니다. 이 페이지를 닫아도 계속 진행됩니다.");
     } catch (error) {
       onError(error instanceof Error ? error.message : "초안을 생성하지 못했습니다.");
     } finally {
@@ -288,16 +320,21 @@ export function DailyReportPage({ personaId, personaName, onError, onRegisterRef
           <div className="report-actions">
             <button
               className={draft ? "btn" : "btn primary"}
-              disabled={isWorking !== null || !reportDate}
+              disabled={isWorking !== null || generationBlocked || !reportDate}
               onClick={() => void generateDraft()}
               type="button"
             >
-              {isWorking === "generate" ? "초안 생성 중…" : draft ? "초안 다시 만들기" : "근거로 초안 만들기"}
+              {generationStatus === "needs_verification" ? "생성 결과 확인 필요" : isWorking === "generate" || generationActive ? "초안 생성 중…" : draft ? "초안 다시 만들기" : "근거로 초안 만들기"}
             </button>
           </div>
-          {isWorking === "generate" && (
+          {(isWorking === "generate" || generationActive) && (
             <p className="report-notice" style={{ marginTop: 10 }}>
               업무 기록을 모아 AI가 초안을 작성하고 있습니다. 잠시 기다려 주세요.
+            </p>
+          )}
+          {generationStatus === "needs_verification" && (
+            <p className="report-notice danger-text" role="status" style={{ marginTop: 10 }}>
+              AI 실행 결과가 불확실합니다. 새 요청을 보내기 전에 운영 기록을 확인해 주세요.
             </p>
           )}
         </section>
@@ -383,4 +420,3 @@ function groupSourceRefs(sources: DailyReportDraft["source_refs"]): Array<{ task
 function labelFor(state: string): string {
   return state in taskStateLabel ? taskStateLabel[state as TaskState] : state;
 }
-

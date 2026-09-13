@@ -107,9 +107,10 @@ def test_a_renamed_graph_runs_without_touching_the_runtime(tmp_path) -> None:
     client, database_url = _stack(tmp_path)
     _publish(database_url, "2", _renamed_definition())
 
-    generated = client.post("/api/daily-reports/generate-draft", headers=MINA, json={"report_date": "2026-09-06"})
-    assert generated.status_code in {200, 201}, generated.text
-    body = generated.json()
+    application = client.app.state.workflow_application
+    body = application.generate_daily_report_draft(
+        application.authenticated_principal("mina"), "2026-09-06"
+    )
     assert body["workflow_state"] == "completed"
     assert body["body"] == "오늘 한 일을 정리했습니다."
 
@@ -135,7 +136,10 @@ def test_the_answer_comes_from_the_definition_not_from_a_hardcoded_node_name(tmp
     definition["outputs"] = {"body": "final.body", "source_refs": "gather.source_refs"}
     _publish(database_url, "3", definition)
 
-    body = client.post("/api/daily-reports/generate-draft", headers=MINA, json={"report_date": "2026-09-06"}).json()
+    application = client.app.state.workflow_application
+    body = application.generate_daily_report_draft(
+        application.authenticated_principal("mina"), "2026-09-06"
+    )
     assert body["body"] == "오늘 한 일을 정리했습니다."
     assert isinstance(body["source_refs"], list)
 

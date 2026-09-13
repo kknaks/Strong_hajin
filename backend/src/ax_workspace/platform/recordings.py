@@ -49,6 +49,13 @@ class LocalDirectoryRecordingStorage:
             handle.write(chunk)
         return self._key(meeting_id, extension)
 
+    def replace(self, meeting_id: str, data: bytes, *, extension: str) -> str:
+        """한 번에 받은 브라우저 녹음 원본을 같은 key에 멱등 저장한다."""
+        path = self._path(meeting_id, extension)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return self._key(meeting_id, extension)
+
     def size(self, key: str) -> int:
         path = self._resolve(key)
         return path.stat().st_size if path.is_file() else 0

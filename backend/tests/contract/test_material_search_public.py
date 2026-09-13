@@ -1,11 +1,29 @@
 """Canonical REST/MCP content search uses artifact identity across owners."""
 import asyncio
+from dataclasses import replace
 from uuid import UUID
 
 import pytest
 
 from ax_workspace.entrypoints.mcp import McpReportsFacade, _create_bound_persona_server
+from ax_workspace.platform.material_extraction import PypdfTextExtractor
 from test_report_material_search import _stack, _draft, _submit, MINA
+
+
+class PublicPartialExtractor:
+    def extract(self, **kwargs):
+        return replace(
+            PypdfTextExtractor().extract(**kwargs),
+            status="partial",
+            warnings=("page 2 needs OCR",),
+            coverage={
+                "complete": False,
+                "unit": "page",
+                "total_units": 2,
+                "processed_units": 1,
+                "missing_units": [{"page": 2, "reason": "needs_ocr"}],
+            },
+        )
 
 
 def test_public_report_search_has_rest_mcp_parity_and_only_one_provider_tool(tmp_path):
@@ -84,7 +102,12 @@ def test_public_owner_search_and_metadata_share_current_permissions(tmp_path, ki
     assert found == response.json() and len(found["results"]) == 1
     hit = found["results"][0]
     assert hit["source_resource_type"] == kind and hit["source_resource_id"] == owner_id
-    assert client.get(f"/api/materials/{hit['material_id']}", headers=MINA).json()["origin"] == hit["origin"]
+    metadata = client.get(f"/api/materials/{hit['material_id']}", headers=MINA).json()
+    assert metadata["origin"] == hit["origin"]
+    assert asyncio.run(server.call_tool("material_metadata", {"material_id": hit["material_id"]})).structured_content == metadata
+    if kind.endswith("folder"):
+        listed = client.get(f"/api/material-folders/{owner_id}/materials", headers=MINA).json()
+        assert asyncio.run(server.call_tool("list_folder_materials", {"folder_id": owner_id})).structured_content["result"] == listed
     assert client.get(hit["origin"], headers=MINA).status_code == 200
     denied_headers = {"X-Demo-Persona": "sora"}
     assert client.get(f"/api/materials/{hit['material_id']}", headers=denied_headers).status_code == 404
@@ -94,18 +117,12 @@ def test_public_owner_search_and_metadata_share_current_permissions(tmp_path, ki
 
 
 def test_public_selected_partial_uses_artifact_id_and_retains_no_hit_coverage(tmp_path):
-    from dataclasses import replace
     from test_material_search import _upload
-    from ax_workspace.platform.material_extraction import PypdfTextExtractor
 
     client, _, worker, settings = _stack(tmp_path)
     task_id = client.post("/api/tasks", headers=MINA, json={"title": "부분 자료"}).json()["task_id"]
     uploaded = _upload(client, task_id, "partial.txt", b"publicpartialtoken", "text/plain").json()
-    class PartialExtractor:
-        def extract(self, **kwargs):
-            return replace(PypdfTextExtractor().extract(**kwargs), status="partial", warnings=("page 2 needs OCR",),
-                coverage={"complete": False, "unit": "page", "total_units": 2, "processed_units": 1, "missing_units": [{"page": 2, "reason": "needs_ocr"}]})
-    worker._extractor = PartialExtractor()
+    worker._extractor = PublicPartialExtractor()
     assert asyncio.run(worker.run_once())
     assert client.get("/api/materials/search", headers=MINA, params={"q": "publicpartialtoken"}).json()["results"] == []
     server = _create_bound_persona_server(McpReportsFacade(settings, "mina"))
@@ -136,13 +153,15 @@ def test_registered_tool_is_available_without_task_capability_and_sanitizes_fail
     assert "material_search" in names and "task_list" not in names
     found = asyncio.run(server.call_tool("material_search", {"query": "personalcapabilitytoken"})).structured_content
     assert len(found["results"]) == 1
-    invalid = asyncio.run(server.call_tool("material_search", {"query": "x", "material_id": "invalid-uuid"})).structured_content
-    assert invalid["error_code"] == "invalid_query"
+    from mcp.server.mcpserver.exceptions import ToolError
+    with pytest.raises(ToolError, match="invalid material search request"):
+        asyncio.run(server.call_tool("material_search", {"query": "x", "material_id": "invalid-uuid"}))
     def fail(*args, **kwargs):
         raise RuntimeError("secret SQL /private/storage/path")
     monkeypatch.setattr(facade, "search_materials", fail)
-    failed = asyncio.run(server.call_tool("material_search", {"query": "x"})).structured_content
-    assert failed["error_code"] == "internal_error" and "secret" not in str(failed) and "/private" not in str(failed)
+    with pytest.raises(ToolError, match="material search is temporarily unavailable") as failed:
+        asyncio.run(server.call_tool("material_search", {"query": "x"}))
+    assert "secret" not in str(failed.value) and "/private" not in str(failed.value)
 
 
 @pytest.mark.parametrize("change", ["replace_context", "integrity"])

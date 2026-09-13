@@ -1,6 +1,5 @@
 """Large synthetic ledgers exercise the real application/HTTP/MCP paths."""
 from time import perf_counter
-from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -80,9 +79,11 @@ def large_graph(tmp_path_factory):
         f"/api/tasks/{task['task_id']}/start", headers=mina, json={"expected_version": task["version"]}
     )
     assert started.status_code == 200, started.text
-    report = client.post("/api/daily-reports/generate-draft", headers=mina, json={"report_date": _today()})
-    assert report.status_code in (200, 201), report.text
-    expected["report_id"] = report.json()["report_id"]
+    application = client.app.state.workflow_application
+    report = application.generate_daily_report_draft(
+        application.authenticated_principal("mina"), _today()
+    )
+    expected["report_id"] = report["report_id"]
     expected["today_task"] = task["task_id"]
     return client, settings, expected
 
@@ -184,7 +185,7 @@ def test_scale_unbound_material_and_private_material_do_not_leak(large_graph):
     for index in (1996, 1999):
         answer = client.get("/api/graph/neighbors", headers={"X-Demo-Persona": "jiho"}, params={"node": f"material:{identity('material', index)}"})
         assert answer.status_code == 404
-        assert answer.json() == {"detail": "material was not found"}
+        assert answer.json() == {"detail": "대상을 찾을 수 없습니다"}
 
 
 def test_scale_destroyed_source_preserves_the_same_live_binding_fact(large_graph):

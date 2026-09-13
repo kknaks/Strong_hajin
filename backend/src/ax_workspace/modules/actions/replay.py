@@ -31,6 +31,11 @@ class AssignmentReplayContext:
     assignee_id: str
     task_version: int
     decline_reason: str | None
+    has_recorded_decision: bool = False
+    decision_actor_id: str | None = None
+    decision: str | None = None
+    decision_consumed_version: int | None = None
+    decision_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +100,14 @@ def is_assignment_replay(
 ) -> bool:
     if context.assignee_id != actor_id:
         return False
+    if context.has_recorded_decision:
+        if context.decision_actor_id != actor_id or context.decision_consumed_version != expected_version:
+            return False
+        return (command == "accept" and context.decision == "accept") or (
+            command == "decline"
+            and context.decision == "reject"
+            and (context.decision_reason or "") == str(reason or "").strip()
+        )
     if command == "accept":
         return context.status == "active" and context.task_version == expected_version
     return (

@@ -78,20 +78,3 @@ class SqlAlchemyNotificationRepository:
     def mark_read(record: NotificationRecord) -> None:
         if record.read_at is None:
             record.read_at = datetime.now(UTC)
-
-
-def notification_view(record: NotificationRecord, *, title: str, version: int | None) -> dict[str, object]:
-    return {
-        "notification_id": str(record.id),
-        "kind": record.kind,
-        "summary": record.safe_summary,
-        "actor_id": record.actor_member_id,
-        "resource": {
-            "type": record.resource_type,
-            "id": record.resource_id,
-            "version": version,
-            "title": title,
-        },
-        "created_at": record.created_at.isoformat(),
-        "read_at": record.read_at.isoformat() if record.read_at else None,
-    }

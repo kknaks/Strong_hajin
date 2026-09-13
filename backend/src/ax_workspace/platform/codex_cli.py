@@ -21,6 +21,8 @@ import time
 from time import perf_counter
 from typing import Any, Callable
 
+from ax_workspace.modules.ax_execution.tool_catalog import tool_display_title
+
 from ax_workspace.modules.ax_execution.ai import (
     AiConversationRequest,
     AiConversationResult,
@@ -309,7 +311,7 @@ class CodexCliProviderAdapter:
             "-c",
             f"mcp_servers.scax.args={json.dumps(list(server.arguments))}",
             "-c",
-            "mcp_servers.scax.env_vars=[\"AX_MCP_PERSONA\", \"AX_MCP_CAUSATION_ID\", \"AX_PROFILE\", \"DATABASE_URL\"]",
+            "mcp_servers.scax.env_vars=[\"AX_MCP_PERSONA\", \"AX_MCP_CAUSATION_ID\", \"AX_PROFILE\", \"DATABASE_URL\", \"AX_WEB_ORIGIN\"]",
             "-c",
             'mcp_servers.scax.default_tools_approval_mode="approve"',
         ]
@@ -340,11 +342,12 @@ class CodexCliProviderAdapter:
     RELATIONSHIP_POLICY = (
         "SCAX 조회 지침:\n"
         "- 관계 의도는 목록 의도보다 우선한다. 질문이 사람·팀·업무·회의·자료 사이의 관계나 연결을 묻거나,"
-        " 관계를 따라 대상을 찾으라고 하면 목록 도구로 일부를 답할 수 있어도 `graph_search`로 시작한다.\n"
-        "- 관계 의도가 없을 때만 목록 하나로 답할 수 있는 질문은 소유 도구를 바로 부르고 거기서 멈춘다. `내 업무`는 `task_list`,"
-        " `나에게 온 요청`은 `work_request_list`, `내 회의`는 `meeting_list`다. 관계를 묻지 않은 질문에"
+        " 관계를 따라 대상을 찾으라고 하면 목록 도구로 일부를 답할 수 있어도 관계 도구로 시작한다."
+        " 나/내가/내 관계의 시작은 `graph_overview`, 이름이 있는 다른 대상의 시작은 `graph_search`다.\n"
+        "- 관계 의도가 없을 때만 목록 하나로 답할 수 있는 질문은 소유 도구를 바로 부르고 거기서 멈춘다. `내 업무`는 `my_task_list`,"
+        " `나에게 온 요청`은 `work_request_list`, `내 회의`는 `my_meeting_list`, `열람 가능한 조직 일정`은 `meeting_list`다. 관계를 묻지 않은 질문에"
         " graph를 걷지 않는다 — 이미 답이 손에 있는데 더 걷는 것은 답을 늦출 뿐이다.\n"
-        "- 사람·팀·프로젝트·업무·회의·자료가 어떻게 이어져 있는지 묻는 질문은 `graph_search`로 시작 node를 찾고,"
+        "- 이름이 있는 사람·팀·프로젝트·업무·회의·자료가 어떻게 이어져 있는지 묻는 질문은 `graph_search`로 시작 node를 찾고,"
         " `graph_neighbors`로 명시된 관계만 넓힌 뒤, 필요한 것만 소유 도구(`task_get`·`meeting_get`·"
         "`work_request_get`·`task_materials_list`)로 읽는다.\n"
         "- 요청한 관계가 첫 node에 모두 있지 않으면 반환된 연결 node에서 필요한 관계만 추가로 확장한다."
@@ -375,7 +378,7 @@ class CodexCliProviderAdapter:
         " 단순 아이디어를 묻는 경우에는 문장으로 답한다.\n"
         "- 날짜는 두 가지로 갈린다. `지난달 등록한 자료`는 등록 시각의 조건이고 `8월 실적을 언급한 자료`는 본문에"
         " 찾을 말이다. 날짜를 본문 검색어에 섞지 않는다.\n"
-        "- `task_list`는 그 사람이 든 업무를 돌려준다. 팀이나 프로젝트 전체를 묻는 질문에만 `mine=false`로 넓히고,"
+        "- `my_task_list`는 본인이 담당하는 업무만 반환한다. 열람 가능한 팀/프로젝트 업무를 명시적으로 묻는 질문에는 `task_list`를 사용하고,"
         " 그렇게 넓혀 받은 목록으로 `내 업무`를 답하지 않는다 — 읽을 수 있다는 것이 그 사람의 일이라는 뜻은 아니다."
     )
 
@@ -418,6 +421,17 @@ class CodexCliProviderAdapter:
         "미확정 항목은 답변에서 분명히 알린다."
     )
 
+    WORK_AND_REPORT_ROUTING_POLICY = (
+        "SCAX 업무 생성·보고 상태 선택 지침:\n"
+        "- 특정 날짜의 일보가 작성됐는지·생성 중인지·제출됐는지 묻는 질문은 `daily_report_status` 하나로 확인한다. "
+        "보고서 본문 속 사실을 찾을 때만 `material_search`를 사용한다. 상태 질문을 자료 검색으로 바꾸지 않는다.\n"
+        "- 다른 사람에게 새 일을 제안할 때 관리자 지시·업무 배정이면 `task_assignment_candidates`로 표시 이름을 확인한 뒤 "
+        "`task_assign`을 사용한다. 수평 업무 요청·부탁·협업 요청이면 `work_request_assignee_candidates`로 확인한 뒤 "
+        "`work_request_create`를 사용한다. 사용자가 배정이 아니라고 명시하면 `task_assign`으로 바꾸지 않는다.\n"
+        "- 수신자의 표시 이름을 말했으면 후보 도구에서 ID를 찾는다. 직책·소속 관계로 사람을 특정하거나 관계 자체를 묻지 않은 한 "
+        "`graph_search`를 먼저 호출하지 않는다. 두 생성 도구 모두 사람의 확인 전에는 실제 업무나 요청을 만들지 않는다."
+    )
+
     ANSWER_PRESENTATION_POLICY = (
         "사용자 답변 표시 지침:\n"
         "- UUID나 내부 식별자를 답변 본문에 노출하지 않는다. 도구 결과의 canonical id, database key, "
@@ -438,6 +452,7 @@ class CodexCliProviderAdapter:
             cls.RELATIONSHIP_POLICY,
             cls.MEETING_CREATION_POLICY,
             cls.TASK_PROGRESS_POLICY,
+            cls.WORK_AND_REPORT_ROUTING_POLICY,
             cls.ANSWER_PRESENTATION_POLICY,
             cls.FOLLOW_UP_POLICY,
         ]
@@ -739,56 +754,11 @@ class CodexEventIngest:
             self._sink.accept(event)
 
 
-_MCP_TOOL_DISPLAY_NAMES = {
-    "action_item_command": "실행 항목 처리 준비",
-    "action_item_get": "실행 항목 상세 확인",
-    "action_item_list": "실행 항목 목록 조회",
-    "conversation_search": "대화 검색",
-    "daily_report_generate_draft": "일일 보고 초안 생성",
-    "daily_report_edit": "일일 보고 수정",
-    "daily_report_submit": "일일 보고 제출",
-    "daily_report_history": "일일 보고 이력 확인",
-    "meeting_list": "회의 목록 조회",
-    "meeting_get": "회의 상세 확인",
-    "meeting_create": "회의 생성 준비",
-    "task_list": "업무 목록 조회",
-    "task_get": "업무 상세 확인",
-    "task_history": "업무 히스토리 확인",
-    "graph_overview": "관계 개요 확인",
-    "graph_search": "관련 항목 검색",
-    "graph_neighbors": "연결 관계 확인",
-    "task_subtask_list": "하위 업무 조회",
-    "task_checklist_list": "체크리스트 조회",
-    "task_materials_list": "업무 자료 조회",
-    "task_material_search": "자료 내용 검색",
-    "task_assignment_candidates": "담당자 후보 조회",
-    "task_assign": "업무 요청 준비",
-    "task_block": "업무 차단 준비",
-    "task_cancel": "업무 취소 준비",
-    "task_checklist_add": "체크리스트 추가 준비",
-    "task_checklist_archive": "체크리스트 보관 준비",
-    "task_transition": "업무 상태 변경 준비",
-    "task_checklist_reorder": "체크리스트 순서 변경 준비",
-    "task_checklist_update": "체크리스트 수정 준비",
-    "task_progress_batch": "업무 진행 일괄 반영 준비",
-    "task_complete": "업무 완료 준비",
-    "task_create_self": "내 업무 생성 준비",
-    "task_resume": "업무 재개 준비",
-    "task_start": "업무 시작 준비",
-    "task_update": "업무 수정 준비",
-    "meeting_share": "회의 공유 준비",
-    "work_request_amend": "업무 요청 수정 준비",
-    "work_request_assignee_candidates": "업무 요청 담당자 후보 조회",
-    "work_request_create": "업무 요청 생성 준비",
-    "work_request_history": "업무 요청 이력 확인",
-    "work_request_list": "업무 요청 목록 조회",
-    "work_request_get": "업무 요청 상세 확인",
-}
 
 
 def _display_name(item_type: str, tool_name: str, item: dict[str, Any]) -> str:
     if item_type == "mcp_tool_call":
-        return _MCP_TOOL_DISPLAY_NAMES.get(tool_name, tool_name.replace("_", " "))
+        return tool_display_title(tool_name)
     if item_type == "command_execution":
         return "명령 실행"
     if item_type == "web_search":

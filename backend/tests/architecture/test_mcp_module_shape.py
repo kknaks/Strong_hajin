@@ -23,3 +23,30 @@ def test_nothing_is_defined_after_a_module_starts_running() -> None:
             if line.startswith(("def ", "class ", "async def "))
         ]
         assert not remaining, f"{module.name}: 실행 뒤에 정의가 남아 있습니다 — {remaining}"
+
+
+def test_catalog_and_explicit_callbacks_have_the_same_operation_binding():
+    import ast
+    from ax_workspace.modules.ax_execution.tool_catalog import TOOL_CATALOG, LEGACY_TOOL_TITLES
+    from ax_workspace.modules.organization_access.catalog import CAPABILITY_IDS
+
+    tree = ast.parse((PACKAGE_ROOT / 'entrypoints' / 'mcp.py').read_text())
+    bindings = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        decorated = any(isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute) and d.func.attr == 'tool'
+                        for d in node.decorator_list)
+        if decorated:
+            calls = {n.func.attr for n in ast.walk(node)
+                     if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                     and isinstance(n.func.value, ast.Name) and n.func.value.id == 'facade'}
+            assert len(calls) == 1, node.name
+            bindings[node.name] = next(iter(calls))
+    for name, definition in TOOL_CATALOG.items():
+        callback = 'task_transition' if name in {'task_start', 'task_block', 'task_resume', 'task_complete', 'task_cancel'} else name
+        assert bindings[callback] == definition.adapter_operation
+        assert set(definition.all_capabilities + definition.any_capabilities) <= CAPABILITY_IDS
+        assert any('가' <= char <= '힣' for char in definition.title)
+    assert not set(LEGACY_TOOL_TITLES) & TOOL_CATALOG.keys()
+    assert not {'grant_access_role', 'revoke_access_grant', 'set_role_capabilities'} & TOOL_CATALOG.keys()

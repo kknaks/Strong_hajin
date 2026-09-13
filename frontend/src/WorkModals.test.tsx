@@ -272,6 +272,26 @@ describe("adopting evidence", () => {
     expect(vi.mocked(api.getWorkRequestTimeline).mock.calls.length).toBeGreaterThan(1);
     expect(props.onNotice).toHaveBeenCalledWith(expect.stringContaining("근거.txt"));
   });
+
+  it('keeps request evidence upload alive when the drawer or window is closed', async () => {
+    vi.mocked(api.getWorkRequestTimeline).mockResolvedValue(emptyTimeline as never);
+    let reject!: (error: Error) => void;
+    vi.mocked(api.uploadRequestEvidence).mockReturnValue(new Promise((_, fail) => { reject = fail; }));
+    const { props } = renderDrawer({ request: pending, personaId: 'mina' });
+    const field = await screen.findByLabelText('근거 자료 파일');
+    fireEvent.change(field, { target: { files: [new File(['basis'], 'basis.txt')] } });
+    await waitFor(() => expect(api.uploadRequestEvidence).toHaveBeenCalled());
+    fireEvent.keyDown(window, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: '상세 닫기' }));
+    expect(props.onClose).not.toHaveBeenCalled();
+    const leaving = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(leaving);
+    expect(leaving.defaultPrevented).toBe(true);
+    reject(new Error('파일 저장 실패'));
+    await waitFor(() => expect(props.onError).toHaveBeenCalledWith('파일 저장 실패'));
+    fireEvent.click(screen.getByRole('button', { name: '상세 닫기' }));
+    expect(props.onClose).toHaveBeenCalledOnce();
+  });
 });
 
 describe("amending a request nobody has judged yet", () => {

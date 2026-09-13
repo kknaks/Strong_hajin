@@ -485,7 +485,6 @@ def test_only_the_one_judgement_surface_is_registered(tmp_path, monkeypatch) -> 
 
 def test_stdio_delegated_command_returns_a_pending_confirmation_and_changes_nothing(tmp_path) -> None:
     database_url, settings, client = _stack(tmp_path)
-    application = client.app.state.workflow_application
     client.post("/api/work-requests", headers=MINA, json={"title": "stdio 위임 판단", "assignee_id": "jiho"})
     [item] = _facade(settings, "jiho").pending_action_items()
 

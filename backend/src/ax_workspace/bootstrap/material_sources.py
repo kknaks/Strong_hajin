@@ -35,22 +35,27 @@ class SessionMaterialOwners:
                 MaterialExtractionJob(extraction.id, attachment.id)
             )
 
-    def sources(self, principal, resource_types, *, resource_type=None, resource_id=None, material_id=None, material_ids=None):
-        selected = {material_id} if material_id is not None else material_ids
+    def current_principal(self, principal):
         current = SqlAlchemyOrganizationRepository(self._session).principal_for(str(principal.id))
         if current is None:
-            if resource_type is not None:
-                raise MaterialNotFound("resource was not found")
-            return []
+            return None
         # Refresh revoked membership/grants without widening an intentionally attenuated caller.
-        principal = replace(current, capabilities=current.capabilities & principal.capabilities,
+        return replace(current, capabilities=current.capabilities & principal.capabilities,
                             organization_scope=current.organization_scope & principal.organization_scope,
                             grants=tuple(replace(grant, units=grant.units & principal.scope_for(grant.capability),
                                                  projects=grant.projects & principal.projects_for(grant.capability)) for grant in current.grants
                                          if grant.capability in principal.capabilities))
+
+    def sources(self, principal, resource_types, *, resource_type=None, resource_id=None, material_id=None, material_ids=None):
+        selected = {material_id} if material_id is not None else material_ids
+        principal = self.current_principal(principal)
+        if principal is None:
+            if resource_type is not None:
+                raise MaterialNotFound("resource was not found")
+            return []
         readable = {}
         if "task" in resource_types and TASK_READ in principal.capabilities:
-            tasks = self._application._tasks(self._session).list_for(principal, include_closed=True, include_organization=True)
+            tasks = self._application._tasks(self._session).readable_tasks(principal, include_closed=True)
             readable = {row["task_id"]: row for row in tasks}
         if resource_type == "task":
             if resource_id not in readable:
@@ -157,7 +162,10 @@ class SessionMaterialOwners:
             identifier = UUID(revision["revision_id"])
             if selected is not None and material_id_for("report_submission", identifier) not in selected:
                 continue
-            binding, attachment = native.ensure("report_submission", identifier)
+            registered = native.registered("report_submission", identifier)
+            if registered is None:
+                continue
+            binding, attachment = registered
             if binding.unbound_at is not None or attachment.lifecycle == "purged":
                 continue
             sources.append(ReadableMaterialSource(attachment, {

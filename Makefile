@@ -11,6 +11,8 @@ POSTGRES_TEST_URL ?= postgresql+psycopg://ax:ax@localhost:54329/ax_test
 # Acceptance는 자기 데이터베이스에서 돈다. reset으로 시작하는 suite가 사람이 쓰던 DATABASE_URL의
 # 조직·자료를 지우지 않게 한다.
 ACCEPTANCE_DATABASE_URL ?= postgresql+psycopg://ax:ax@localhost:54329/ax_test_acceptance
+# Use 0 when ACCEPTANCE_DATABASE_URL points at an already managed PostgreSQL server.
+ACCEPTANCE_MANAGE_POSTGRES ?= 1
 E2E_API_PORT ?= 8001
 E2E_FRONTEND_PORT ?= 5176
 ACCEPTANCE_API_PORT ?= 18111
@@ -116,6 +118,9 @@ material-worker:
 meeting-worker:
 	@$(SONIOX_ENV) cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.meeting_worker
 
+report-worker:
+	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.report_worker
+
 mcp:
 	@test -n "$$AX_MCP_PERSONA" || (echo "Set AX_MCP_PERSONA to a seeded demo persona"; exit 2)
 	cd backend && DATABASE_URL="$(DATABASE_URL)" AX_MCP_PERSONA="$$AX_MCP_PERSONA" uv run python -m ax_workspace.entrypoints.mcp
@@ -142,8 +147,8 @@ frontend-e2e:
 # credential and a macOS fake-microphone recording; run that one on its own against `make local-stack`.
 # The complete local stack for a manual walkthrough or the individual e2e-* targets: waits for PostgreSQL, refuses to
 # start on an uninitialized schema (run reset-demo first; this target never resets), then starts the API, conversation
-# worker, material worker, meeting worker, and frontend together, supervises them (if any one exits, the rest are stopped and the
-# target fails), and stops them all on Ctrl+C. acceptance-e2e uses the same four processes on isolated ports.
+# worker, material worker, meeting worker, report worker, and frontend together, supervises them (if any one exits, the rest are
+# stopped and the target fails), and stops them all on Ctrl+C. acceptance-e2e uses the same processes on isolated ports.
 local-stack:
 	@set -eu; \
 		pids=""; \
@@ -154,7 +159,7 @@ local-stack:
 		cleanup() { for pid in $$pids; do stop_process_tree "$$pid"; done; for pid in $$pids; do wait "$$pid" 2>/dev/null || true; done; }; \
 		trap cleanup EXIT INT TERM; \
 		$(MAKE) postgres-up; \
-		if ! docker compose exec -T postgres psql -U ax -d "$$(printf '%s' "$(DATABASE_URL)" | sed -E 's#.*/([^/?]+)(\?.*)?$$#\1#')" -tAc "SELECT to_regclass('durable_jobs'), to_regclass('task_checklist_items'), to_regclass('meeting_transcripts'), to_regclass('assistant_character_preferences'), to_regclass('action_material_drafts'), to_regclass('notifications'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_turns' AND column_name = 'progress_state'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_turns' AND column_name = 'follow_up_candidates'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_messages' AND column_name = 'follow_up_candidate_id')" 2>/dev/null | grep -q 'durable_jobs|task_checklist_items|meeting_transcripts|assistant_character_preferences|action_material_drafts|notifications|progress_state|follow_up_candidates|follow_up_candidate_id' \
+		if ! docker compose exec -T postgres psql -U ax -d "$$(printf '%s' "$(DATABASE_URL)" | sed -E 's#.*/([^/?]+)(\?.*)?$$#\1#')" -tAc "SELECT to_regclass('durable_jobs'), to_regclass('daily_report_generations'), to_regclass('task_checklist_items'), to_regclass('meeting_transcripts'), to_regclass('assistant_character_preferences'), to_regclass('action_material_drafts'), to_regclass('notifications'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_turns' AND column_name = 'progress_state'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_turns' AND column_name = 'follow_up_candidates'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_messages' AND column_name = 'follow_up_candidate_id')" 2>/dev/null | grep -q 'durable_jobs|daily_report_generations|task_checklist_items|meeting_transcripts|assistant_character_preferences|action_material_drafts|notifications|progress_state|follow_up_candidates|follow_up_candidate_id' \
 			|| ! docker compose exec -T postgres psql -U ax -d "$$(printf '%s' "$(DATABASE_URL)" | sed -E 's#.*/([^/?]+)(\?.*)?$$#\1#')" -tAc "SELECT to_regclass('notifications')" 2>/dev/null | grep -qx 'notifications'; then \
 			echo "SCAX schema is not initialized or is behind the current code in $(DATABASE_URL). Run 'make sync-demo-schema' to add safe missing tables or columns; use 'make reset-demo' only for a disposable fresh demo DB. Then run 'make local-stack' again." >&2; \
 			exit 2; \
@@ -164,13 +169,14 @@ local-stack:
 		$(MAKE) conversation-worker & pids="$$pids $$!"; names="$$names conversation-worker"; \
 		$(MAKE) material-worker & pids="$$pids $$!"; names="$$names material-worker"; \
 		$(MAKE) meeting-worker & pids="$$pids $$!"; names="$$names meeting-worker"; \
+		$(MAKE) report-worker & pids="$$pids $$!"; names="$$names report-worker"; \
 		$(MAKE) frontend-e2e & pids="$$pids $$!"; names="$$names frontend"; \
 		for attempt in $$(seq 1 60); do curl -fsS "http://127.0.0.1:$(E2E_API_PORT)/api/auth/providers" >/dev/null 2>&1 && curl -fsS "http://127.0.0.1:$(E2E_FRONTEND_PORT)" >/dev/null 2>&1 && break; sleep 1; done; \
 		curl -fsS "http://127.0.0.1:$(E2E_API_PORT)/api/auth/providers" >/dev/null; \
 		curl -fsS "http://127.0.0.1:$(E2E_FRONTEND_PORT)" >/dev/null; \
 		check_alive() { i=0; for pid in $$pids; do i=$$((i+1)); if ! kill -0 "$$pid" 2>/dev/null; then echo "SCAX local stack: required process #$$i ($$(printf '%s' "$$names" | awk -v n=$$i '{print $$n}')) exited; stopping the rest" >&2; return 1; fi; done; }; \
 		check_alive || exit 1; \
-		echo "SCAX local stack ready: API http://127.0.0.1:$(E2E_API_PORT) · frontend http://127.0.0.1:$(E2E_FRONTEND_PORT) · conversation worker · material worker · meeting worker (Ctrl+C stops all)"; \
+		echo "SCAX local stack ready: API http://127.0.0.1:$(E2E_API_PORT) · frontend http://127.0.0.1:$(E2E_FRONTEND_PORT) · conversation worker · material worker · meeting worker · report worker (Ctrl+C stops all)"; \
 		while check_alive; do sleep 2; done; \
 		exit 1
 
@@ -289,15 +295,15 @@ e2e-graph-question:
 acceptance-e2e:
 	@set -eu; \
 		acceptance_dir="$$(mktemp -d)"; \
-		api_pid=""; worker_pid=""; material_pid=""; meeting_pid=""; frontend_pid=""; \
+		api_pid=""; worker_pid=""; material_pid=""; meeting_pid=""; report_pid=""; frontend_pid=""; \
 		stop_process_tree() { \
 			for child in $$(pgrep -P "$$1" 2>/dev/null || true); do stop_process_tree "$$child"; done; \
 			kill -TERM "$$1" 2>/dev/null || true; \
 		}; \
 		cleanup() { \
 			outcome=$$?; \
-			for pid in "$$api_pid" "$$worker_pid" "$$material_pid" "$$meeting_pid" "$$frontend_pid"; do [ -z "$$pid" ] || stop_process_tree "$$pid"; done; \
-			for pid in "$$api_pid" "$$worker_pid" "$$material_pid" "$$meeting_pid" "$$frontend_pid"; do [ -z "$$pid" ] || wait "$$pid" 2>/dev/null || true; done; \
+			for pid in "$$api_pid" "$$worker_pid" "$$material_pid" "$$meeting_pid" "$$report_pid" "$$frontend_pid"; do [ -z "$$pid" ] || stop_process_tree "$$pid"; done; \
+			for pid in "$$api_pid" "$$worker_pid" "$$material_pid" "$$meeting_pid" "$$report_pid" "$$frontend_pid"; do [ -z "$$pid" ] || wait "$$pid" 2>/dev/null || true; done; \
 			if [ "$$outcome" -ne 0 ]; then cat "$$acceptance_dir"/*.log >&2 2>/dev/null || true; fi; \
 			rm -rf "$$acceptance_dir"; \
 			trap - EXIT; exit "$$outcome"; \
@@ -309,12 +315,13 @@ acceptance-e2e:
 				exit 2; \
 			fi; \
 		done; \
-		$(MAKE) postgres-up; \
+		if [ "$(ACCEPTANCE_MANAGE_POSTGRES)" = "1" ]; then $(MAKE) postgres-up; fi; \
 		$(MAKE) DATABASE_URL="$(ACCEPTANCE_DATABASE_URL)" reset-demo; \
 		$(MAKE) DATABASE_URL="$(ACCEPTANCE_DATABASE_URL)" E2E_API_PORT="$(ACCEPTANCE_API_PORT)" api-e2e >"$$acceptance_dir/api.log" 2>&1 & api_pid=$$!; \
 		$(MAKE) DATABASE_URL="$(ACCEPTANCE_DATABASE_URL)" conversation-worker >"$$acceptance_dir/worker.log" 2>&1 & worker_pid=$$!; \
 		$(MAKE) DATABASE_URL="$(ACCEPTANCE_DATABASE_URL)" material-worker >"$$acceptance_dir/material-worker.log" 2>&1 & material_pid=$$!; \
 		$(MAKE) DATABASE_URL="$(ACCEPTANCE_DATABASE_URL)" meeting-worker >"$$acceptance_dir/meeting-worker.log" 2>&1 & meeting_pid=$$!; \
+		$(MAKE) DATABASE_URL="$(ACCEPTANCE_DATABASE_URL)" report-worker >"$$acceptance_dir/report-worker.log" 2>&1 & report_pid=$$!; \
 		$(MAKE) E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" frontend-e2e >"$$acceptance_dir/frontend.log" 2>&1 & frontend_pid=$$!; \
 		for attempt in $$(seq 1 60); do curl -fsS "http://127.0.0.1:$(ACCEPTANCE_API_PORT)/api/auth/providers" >/dev/null && curl -fsS "http://127.0.0.1:$(ACCEPTANCE_FRONTEND_PORT)" >/dev/null && break; sleep 1; done; \
 		curl -fsS "http://127.0.0.1:$(ACCEPTANCE_API_PORT)/api/auth/providers" >/dev/null; \

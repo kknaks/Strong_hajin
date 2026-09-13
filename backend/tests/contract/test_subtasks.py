@@ -7,7 +7,6 @@ a child never finishes the parent. One level only, for now, and nothing crosses 
 from uuid import UUID
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app

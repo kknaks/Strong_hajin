@@ -5,7 +5,6 @@ delegated MCP tools, and through the relation graph. Where the answer is no, non
 thing's title, its file names, its node, or even a count.
 """
 import asyncio
-from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -28,6 +27,36 @@ def _http_task(client: TestClient, member: str, task_id: str):
     return client.get(f"/api/tasks/{task_id}", headers={"X-Demo-Persona": member})
 
 
+def test_my_work_and_readable_work_are_distinct_registered_queries(tmp_path) -> None:
+    from ax_workspace.entrypoints.mcp import _create_bound_persona_server
+
+    client, settings = _stack(tmp_path)
+    project = client.post("/api/projects", headers={"X-Demo-Persona": "jiho"},
+                          json={"name": "업무 조회 범위"}).json()
+    assert client.post(f"/api/projects/{project['project_id']}/members", headers={"X-Demo-Persona": "jiho"},
+                       json={"member_id": "mina"}).status_code == 201
+    created = {
+        member: client.post("/api/tasks", headers={"X-Demo-Persona": member},
+                            json={"title": f"{member} 담당 업무",
+                                  **({"project_id": project["project_id"]} if member == "mina" else {})}).json()["task_id"]
+        for member in ("jiho", "mina", "minseok")
+    }
+    facade = McpReportsFacade(settings, "jiho")
+    server = _create_bound_persona_server(facade)
+    discovered = {tool.name: tool for tool in asyncio.run(server.list_tools())}
+    assert {"my_task_list", "task_list"} <= discovered.keys()
+    assert "mine" not in discovered["my_task_list"].input_schema.get("properties", {})
+    assert "mine" not in discovered["task_list"].input_schema.get("properties", {})
+
+    mine = facade.my_work()
+    readable = facade.list_tasks()
+    assert mine == client.get("/api/my-work", headers={"X-Demo-Persona": "jiho"}).json()
+    assert readable == client.get("/api/tasks", headers={"X-Demo-Persona": "jiho"}).json()
+    assert {row["task_id"] for row in mine} == {created["jiho"]}
+    assert {created["jiho"], created["mina"]} <= {row["task_id"] for row in readable}
+    assert created["minseok"] not in {row["task_id"] for row in readable}
+
+
 def test_every_channel_gives_the_same_answer_about_the_same_work(tmp_path) -> None:
     client, settings = _stack(tmp_path)
     secret = "재무 정산 대사 자료"
@@ -38,11 +67,11 @@ def test_every_channel_gives_the_same_answer_about_the_same_work(tmp_path) -> No
     executive = McpReportsFacade(settings, "yuna")
     assert executive.get_task(task["task_id"])["title"] == secret
     # 창구를 맞춰 견준다: 읽을 수 있는 것끼리, 자기가 든 것끼리. 두 질문을 섞으면 parity가 아니라 혼동이다.
-    assert task["task_id"] in {row["task_id"] for row in executive.list_tasks(mine=False)}
+    assert task["task_id"] in {row["task_id"] for row in executive.list_tasks()}
     over_http = {row["task_id"] for row in client.get("/api/tasks", headers={"X-Demo-Persona": "yuna"}).json()}
-    assert over_http == {row["task_id"] for row in executive.list_tasks(mine=False)}
+    assert over_http == {row["task_id"] for row in executive.list_tasks()}
     held = {row["task_id"] for row in client.get("/api/my-work", headers={"X-Demo-Persona": "yuna"}).json()}
-    assert held == {row["task_id"] for row in executive.list_tasks()}
+    assert held == {row["task_id"] for row in executive.my_work()}
     # 대표라도 남의 업무는 자기가 든 것이 아니다.
     assert task["task_id"] not in held
     found = executive.graph_search(secret[:4])
@@ -53,7 +82,7 @@ def test_every_channel_gives_the_same_answer_about_the_same_work(tmp_path) -> No
     assert _http_task(client, "jiho", task["task_id"]).status_code == 404
     with pytest.raises(Exception):
         lead.get_task(task["task_id"])
-    assert task["task_id"] not in {row["task_id"] for row in lead.list_tasks(mine=False)}
+    assert task["task_id"] not in {row["task_id"] for row in lead.list_tasks()}
     lead_graph = lead.graph_search(secret[:4])
     assert secret not in str(lead_graph)
     assert lead_graph["nodes"] == [] and lead_graph.get("truncated") in (False, None)
@@ -127,6 +156,30 @@ def test_a_capability_taken_away_is_taken_away_everywhere_at_once(tmp_path) -> N
     graph = client.get("/api/graph/search", headers={"X-Demo-Persona": "yuna"}, params={"q": "회수"})
     assert graph.status_code == 200
     assert graph.json() == {"query": "회수", "nodes": [], "truncated": False}
+
+
+def test_one_live_mcp_server_refreshes_discovery_after_revoke_and_grant(tmp_path) -> None:
+    from ax_workspace.entrypoints.mcp import _create_bound_persona_server
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    client, settings = _stack(tmp_path)
+    application = client.app.state.workflow_application
+    facade = McpReportsFacade(settings, "yuna")
+    server = _create_bound_persona_server(facade)
+    original = facade.principal
+    without_read = sorted(original.capabilities - {"task.read"})
+    application.set_role_capabilities(original, "role:executive", without_read, expected_version=1)
+    assert "my_task_list" not in {tool.name for tool in asyncio.run(server.list_tools())}
+    with pytest.raises(ToolError):
+        asyncio.run(server.call_tool("my_task_list", {}))
+    denied = client.get("/api/my-work", headers={"X-Demo-Persona": "yuna"})
+    assert denied.status_code == 403
+
+    # This second connection starts without the capability and must also gain tools.
+    initially_hidden = _create_bound_persona_server(facade)
+    application.set_role_capabilities(facade.principal, "role:executive", sorted(original.capabilities), expected_version=2)
+    for connected in (server, initially_hidden):
+        assert {"my_task_list", "task_list"} <= {tool.name for tool in asyncio.run(connected.list_tools())}
 
 
 def _tool_names(settings: Settings, persona: str):

@@ -93,7 +93,7 @@ def test_report_discovery_is_not_limited_to_recent_ui_reports_and_keeps_long_bod
 def test_report_source_is_read_only_after_authorization_and_rechecks_old_principal(tmp_path, monkeypatch):
     from dataclasses import replace
     import pytest
-    from sqlalchemy import delete, select
+    from sqlalchemy import delete
     from ax_workspace.bootstrap.application import WorkflowApplication
     from ax_workspace.modules.work.materials import MaterialNotFound
     from ax_workspace.platform.native_materials import NativeMaterialRepository
@@ -115,7 +115,12 @@ def test_report_source_is_read_only_after_authorization_and_rechecks_old_princip
     restricted = replace(principal, capabilities=principal.capabilities - {"daily_report.read"})
     assert application.search_materials(restricted, "legacyreporttoken")["unavailable_materials_count"] == 0 and observed == []
     pending = application.search_materials(principal, "legacyreporttoken")
-    assert pending["unavailable_materials"][0]["extraction"]["status"] == "queued" and len(observed) == 1
+    assert pending["results"] == [] and observed == []
+    assert application.backfill_native_materials(restricted) == 0
+    assert observed == []
+    assert application.backfill_native_materials(principal) == 1
+    assert len(observed) == 1
+    assert application.backfill_native_materials(principal) == 0
     assert asyncio.run(worker.run_once())
     hit = application.search_materials(principal, "legacyreporttoken")["results"][0]
     with make_session_factory(settings.database_url)() as session:

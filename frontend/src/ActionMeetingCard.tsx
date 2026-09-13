@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useBrowserOperationGuard } from "./browserOperationGuard";
 
 import { actionSubject } from "./ActionPreview";
 import { discardActionMaterialDraft, stageActionMaterialFile, stageActionMaterialLink } from "./api";
@@ -12,24 +13,21 @@ import { useActionDraft } from "./useActionDraft";
 import type { ActionEditContract, ActionItem, ActionMaterialDraft } from "./viewModels";
 
 
+/**
+ * The reservation contract is authored by the server. The card names only the values it edits;
+ * everything else the contract carried — external attendees, agendas, the carried-over meeting,
+ * the chosen room — travels back unchanged instead of being silently dropped on confirm.
+ */
 export type MeetingDraft = {
-  organization_id: string;
   title: string;
-  description: string | null;
+  purpose: string | null;
   starts_at: string;
   ends_at: string;
-  visibility: "public" | "private";
+  location: string | null;
   attendee_ids: string[];
-  reference_task_ids: string[];
-  include_initial_note: boolean;
-  initial_note_body: string | null;
-};
-
-type SourceEvidence = {
-  source_type?: unknown;
-  source_id?: unknown;
-  label?: unknown;
-  excerpt?: unknown;
+  /** Named only so the shared attachment group can read it; the reservation contract does not carry it. */
+  reference_task_ids?: string[];
+  [carried: string]: unknown;
 };
 
 function localDateTime(value: unknown): string {
@@ -60,22 +58,19 @@ function addDays(value: string, amount: number): string {
 
 function meetingDraft(values: Record<string, unknown>): MeetingDraft {
   return {
-    organization_id: String(values.organization_id ?? ""),
+    ...values,
     title: String(values.title ?? ""),
-    description: values.description ? String(values.description) : null,
+    purpose: values.purpose ? String(values.purpose) : null,
     starts_at: localDateTime(values.starts_at),
     ends_at: localDateTime(values.ends_at),
-    visibility: values.visibility === "public" ? "public" : "private",
+    location: values.location ? String(values.location) : null,
     attendee_ids: Array.isArray(values.attendee_ids) ? values.attendee_ids.map(String) : [],
-    reference_task_ids: Array.isArray(values.reference_task_ids) ? values.reference_task_ids.map(String) : [],
-    include_initial_note: values.include_initial_note === true,
-    initial_note_body: values.initial_note_body ? String(values.initial_note_body) : null,
   };
 }
 
 function MeetingSummary({ action }: { action: ActionItem }) {
   const preview = new Map((action.preview ?? []).map((row) => [row.id, row]));
-  const description = preview.get("description")?.value;
+  const purpose = preview.get("purpose")?.value;
   const startsAt = preview.get("starts_at")?.value;
   const endsAt = preview.get("ends_at")?.value;
   const startParts = startsAt ? formatDateTime(startsAt).split(" ") : [];
@@ -89,7 +84,7 @@ function MeetingSummary({ action }: { action: ActionItem }) {
   return (
     <div className="action-task-summary action-meeting-summary">
       <b>{actionSubject(action)}</b>
-      {description && <p>{description}</p>}
+      {purpose && <p>{purpose}</p>}
       <dl>
         {rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
       </dl>
@@ -98,12 +93,7 @@ function MeetingSummary({ action }: { action: ActionItem }) {
 }
 
 function commandDraft(draft: MeetingDraft): MeetingDraft {
-  return {
-    ...draft,
-    starts_at: isoDateTime(draft.starts_at),
-    ends_at: isoDateTime(draft.ends_at),
-    initial_note_body: draft.include_initial_note ? draft.initial_note_body : null,
-  };
+  return { ...draft, starts_at: isoDateTime(draft.starts_at), ends_at: isoDateTime(draft.ends_at) };
 }
 
 export function ActionMeetingCard({
@@ -128,7 +118,6 @@ export function ActionMeetingCard({
     sanitize: meetingDraft,
   });
   const [editing, setEditing] = useState(recovered.restored);
-  const [noteBodyOpen, setNoteBodyOpen] = useState(false);
   const [startAttachmentPicker, setStartAttachmentPicker] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -139,13 +128,9 @@ export function ActionMeetingCard({
   const confirm = action.commands?.find((command) => command.id === "confirm");
   const changed = JSON.stringify(recovered.draft) !== JSON.stringify(base);
   const incompleteMaterial = transfers.some((item) => item.state === "uploading" || item.state === "failed");
+  const uploadingMaterial = transfers.some((item) => item.state === "uploading");
+  useBrowserOperationGuard(uploadingMaterial);
   const meetingId = meetingResultId(action.result);
-  const sourceStatus = String(contract?.values.initial_note_source_status ?? "not_requested");
-  const noteIncluded = recovered.draft.include_initial_note;
-  const sources = Array.isArray(contract?.values.initial_note_source_evidence)
-    ? contract.values.initial_note_source_evidence as SourceEvidence[]
-    : [];
-
   useEffect(() => {
     const projected = action.material_drafts ?? [];
     setMaterials((current) => {
@@ -160,10 +145,7 @@ export function ActionMeetingCard({
   }, [action.material_drafts]);
 
   useEffect(() => {
-    if (action.state !== "pending") {
-      setEditing(false);
-      setNoteBodyOpen(false);
-    }
+    if (action.state !== "pending") setEditing(false);
   }, [action.state]);
 
   useEffect(() => {
@@ -186,9 +168,6 @@ export function ActionMeetingCard({
       && new Date(recovered.draft.starts_at) >= new Date(recovered.draft.ends_at)) {
       return { field: "ends_at", message: "종료 시각은 시작 시각보다 늦어야 합니다." };
     }
-    if (recovered.draft.include_initial_note && !recovered.draft.initial_note_body?.trim()) {
-      return { field: "initial_note_body", message: "포함할 회의록 초안 내용을 입력해 주세요." };
-    }
     return null;
   }
 
@@ -206,8 +185,7 @@ export function ActionMeetingCard({
       const field = /참석|attendee/i.test(message) ? "attendee_ids"
         : /종료|end/i.test(message) ? "ends_at"
         : /시작|start/i.test(message) ? "starts_at"
-        : /조직|organization/i.test(message) ? "organization_id"
-        : /회의록|note/i.test(message) ? "initial_note_body"
+        : /장소|회의실|location|room/i.test(message) ? "location"
         : /제목|title/i.test(message) ? "title"
         : null;
       if (field) focusField(field);
@@ -301,7 +279,7 @@ export function ActionMeetingCard({
             {contract && (
               <TaskAttachmentGroup
                 contract={contract}
-                disabled={busy}
+                disabled={busy || uploadingMaterial}
                 draft={recovered.draft}
                 materials={materials}
                 onAddFile={addFile}
@@ -320,57 +298,6 @@ export function ActionMeetingCard({
             )}
           </>
         )}
-        {(noteIncluded || (action.state === "pending" && contract)) && (
-          <section className="action-meeting-note-section">
-            <b>회의록</b>
-            {!noteIncluded && action.state === "pending" && contract && (
-              <button aria-label="회의록 추가" className="action-task-attachment-trigger" disabled={busy} onClick={() => {
-                recovered.setDraft({ ...recovered.draft, include_initial_note: true });
-                setNoteBodyOpen(true);
-                setEditing(true);
-              }} type="button">＋ 회의록 추가</button>
-            )}
-            {noteIncluded && (
-              <ul className="action-task-attachment-list action-meeting-note-list">
-                <li data-attachment-kind="note">
-                  <span aria-hidden><Icon name="file" size={16} /></span>
-                  {editing ? (
-                    <button
-                      aria-expanded={noteBodyOpen}
-                      aria-label="새 회의록 내용 수정"
-                      className="action-meeting-note-edit"
-                      disabled={busy}
-                      onClick={() => setNoteBodyOpen((open) => !open)}
-                      type="button"
-                    >새 회의록</button>
-                  ) : <span>새 회의록</span>}
-                  {action.state === "pending" && (
-                    <button aria-label="새 회의록 제외" disabled={busy} onClick={() => {
-                      recovered.setDraft({ ...recovered.draft, include_initial_note: false });
-                      setNoteBodyOpen(false);
-                    }} type="button"><Icon name="close" size={14} /></button>
-                  )}
-                </li>
-              </ul>
-            )}
-            {noteIncluded && editing && noteBodyOpen && (
-              <div className="action-meeting-note-editor">
-                <label htmlFor="action-meeting-initial_note_body">회의록 초안</label>
-                <textarea
-                  aria-label="회의록 초안"
-                  disabled={busy || Boolean(recovered.stale)}
-                  id="action-meeting-initial_note_body"
-                  onChange={(event) => recovered.setDraft({
-                    ...recovered.draft,
-                    initial_note_body: event.target.value || null,
-                  })}
-                  value={recovered.draft.initial_note_body ?? ""}
-                />
-                <MeetingNoteSources sources={sources} status={sourceStatus} />
-              </div>
-            )}
-          </section>
-        )}
         {action.state === "pending" && (contract?.warnings ?? []).length > 0 && (
           <ul aria-label="일정 경고" className="action-meeting-warnings">
             {(contract?.warnings ?? []).map((warning) => <li key={warning}>{warning}</li>)}
@@ -380,22 +307,19 @@ export function ActionMeetingCard({
       </div>
       <div className="action-task-actions">
         {action.state === "pending" && contract && !editing && (
-          <button className="btn h30 ghost" disabled={busy} onClick={() => {
-            setNoteBodyOpen(false);
+          <button className="btn h30 ghost" disabled={busy || uploadingMaterial} onClick={() => {
             setEditing(true);
           }} type="button">수정</button>
         )}
         {action.state === "pending" && contract && editing && (
           <>
-            <button className="btn h30 ghost" disabled={busy} onClick={() => {
+            <button className="btn h30 ghost" disabled={busy || uploadingMaterial} onClick={() => {
               recovered.reset();
               setStartAttachmentPicker(false);
-              setNoteBodyOpen(false);
               setEditing(false);
             }} type="button">취소</button>
-            <button className="btn h30 ghost action-task-reset" disabled={busy} onClick={() => {
+            <button className="btn h30 ghost action-task-reset" disabled={busy || uploadingMaterial} onClick={() => {
               recovered.reset();
-              setNoteBodyOpen(false);
             }} type="button"><Icon name="refresh" size={14} />초기화</button>
           </>
         )}
@@ -408,12 +332,7 @@ export function ActionMeetingCard({
               if (problem) {
                 setError(problem.message);
                 if (!editing) setEditing(true);
-                if (problem.field === "initial_note_body") {
-                  setNoteBodyOpen(true);
-                  queueMicrotask(() => focusField(problem.field));
-                } else {
-                  focusField(problem.field);
-                }
+                focusField(problem.field);
                 return;
               }
               void run(confirm.id, {
@@ -430,7 +349,7 @@ export function ActionMeetingCard({
           </button>
         )}
         {(action.commands ?? []).filter((command) => !["confirm", "reject"].includes(command.id)).map((command) => (
-          <button className={`btn h30 ${command.tone === "danger" ? "danger" : "ghost"}`} disabled={busy} key={command.id} onClick={() => void run(command.id)} type="button">{command.label}</button>
+          <button className={`btn h30 ${command.tone === "danger" ? "danger" : "ghost"}`} disabled={busy || uploadingMaterial} key={command.id} onClick={() => void run(command.id)} type="button">{command.label}</button>
         ))}
         {meetingId && onOpenMeeting && (
           <button className="btn h30" onClick={() => onOpenMeeting(meetingId)} type="button">회의 상세 보기</button>
@@ -453,15 +372,14 @@ function MeetingDraftFields({
 }) {
   const field = (id: string) => contract.fields.find((candidate) => candidate.id === id);
   const title = field("title");
-  const description = field("description");
+  const purpose = field("purpose");
+  const location = field("location");
   const host = field("host_id");
   const attendees = field("attendee_ids");
   const startsAt = datePart(draft.starts_at);
   const endsAt = datePart(draft.ends_at);
   const sameDay = !startsAt || !endsAt || startsAt === endsAt;
-  const attendeeOptions = (attendees?.options ?? [])
-    .filter((option) => !option.organization_ids || option.organization_ids.includes(draft.organization_id))
-    .map((option) => ({ value: option.value, label: option.label }));
+  const attendeeOptions = (attendees?.options ?? []).map((option) => ({ value: option.value, label: option.label }));
 
   const replaceDate = (nextDate: string) => {
     if (!nextDate) {
@@ -493,23 +411,36 @@ function MeetingDraftFields({
         />
       </div>
       <div className="action-task-field textarea">
-        <label htmlFor="action-meeting-description">{description?.label ?? "내용"}</label>
+        <label htmlFor="action-meeting-purpose">{purpose?.label ?? "목적"}</label>
         <textarea
-          aria-label={description?.label ?? "내용"}
+          aria-label={purpose?.label ?? "목적"}
           disabled={disabled}
-          id="action-meeting-description"
-          onChange={(event) => onChange({ ...draft, description: event.target.value || null })}
-          value={draft.description ?? ""}
+          id="action-meeting-purpose"
+          onChange={(event) => onChange({ ...draft, purpose: event.target.value || null })}
+          value={draft.purpose ?? ""}
+        />
+      </div>
+      <div className="action-task-field text">
+        <label htmlFor="action-meeting-location">{location?.label ?? "장소"}</label>
+        <input
+          aria-label={location?.label ?? "장소"}
+          disabled={disabled}
+          id="action-meeting-location"
+          onChange={(event) => onChange({ ...draft, location: event.target.value || null })}
+          type="text"
+          value={draft.location ?? ""}
         />
       </div>
       <div className="action-meeting-people">
-        <div className="action-task-field person">
-          <label htmlFor="action-meeting-host_id">{host?.label ?? "주최자"}<span aria-hidden className="danger-text"> *</span></label>
-          <output aria-label={host?.label ?? "주최자"} className="action-meeting-host" id="action-meeting-host_id">
-            <span>{String(host?.label_value ?? host?.value ?? "—")}</span>
-            <Icon name="chevron-down" size={12} />
-          </output>
-        </div>
+        {host && (
+          <div className="action-task-field person">
+            <label htmlFor="action-meeting-host_id">{host.label}<span aria-hidden className="danger-text"> *</span></label>
+            <output aria-label={host.label} className="action-meeting-host" id="action-meeting-host_id">
+              <span>{String(host.label_value ?? host.value ?? "—")}</span>
+              <Icon name="chevron-down" size={12} />
+            </output>
+          </div>
+        )}
         <div className="action-task-field multi_select">
           <label htmlFor="action-meeting-attendee_ids">{attendees?.label ?? "참석자"}</label>
           <MultiSelect
@@ -568,23 +499,6 @@ function MeetingDraftFields({
   );
 }
 
-function MeetingNoteSources({ status, sources }: { status: string; sources: SourceEvidence[] }) {
-  return (
-    <section aria-label="회의록 초안 근거" className="action-meeting-sources">
-      {status === "not_found" && <p role="status">지난 논의 기록을 찾지 못해 현재 대화만 사용했습니다.</p>}
-      {status === "current_turn" && <p>현재 대화 기반 초안입니다.</p>}
-      {status === "resolved" && <p>확인된 대화·자료를 바탕으로 준비한 초안입니다.</p>}
-      <ul>
-        {sources.map((source) => (
-          <li key={`${String(source.source_type)}:${String(source.source_id)}`}>
-            <b>{String(source.label ?? "근거")}</b>
-            {source.excerpt ? <span>{String(source.excerpt)}</span> : null}
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
 
 function meetingResultId(result: Record<string, unknown> | null): string | null {
   if (!result) return null;

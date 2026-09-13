@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import delete, select
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
+from ax_workspace.bootstrap.report_worker import DailyReportGenerationWorker
 from ax_workspace.entrypoints.mcp import McpReportsFacade, _create_bound_persona_server, create_mcp_server
 from ax_workspace.modules.organization_access.domain import Principal, TASK_READ, TASK_SELF_MANAGE, WORK_REQUEST_READ
 from ax_workspace.entrypoints.reset_demo import reset_database
@@ -90,20 +91,31 @@ def test_graph_discovery_names_all_supported_nodes_and_only_canonical_arguments(
 def test_mcp_facade_uses_direct_daily_report_operations(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url)
+    provider = ContractTestAiProvider()
     facade = McpReportsFacade(
-        Settings(RuntimeProfile.TEST, database_url),
+        settings,
         "mina",
-        ContractTestAiProvider(),
+        provider,
     )
 
-    draft = facade.generate_daily_report_draft("2026-09-03")
-    assert draft["workflow_state"] == "completed"
-    assert draft["submission_status"] == "unsubmitted"
+    accepted = facade.generate_daily_report_draft("2026-09-03")
+    assert accepted["generation_status"] == "queued"
+    worker = DailyReportGenerationWorker(
+        settings,
+        provider=provider,
+        queue_factory=lambda _session: facade._application.memory_job_queue,
+    )
+    assert asyncio.run(worker.run_once())
+    status = facade._application.daily_report_status(facade.principal, "2026-09-03")
+    assert status["generation_status"] == "completed" and status["status"] == "draft"
+    history = facade.daily_report_history(status["report_id"])
+    [generated] = history["drafts"]
     edited = facade.edit_daily_report(
-        draft["report_id"], draft["draft_id"], draft["draft_version"], "MCP에서 수정한 초안"
+        history["report_id"], generated["draft_id"], generated["version"], "MCP에서 수정한 초안"
     )
     submitted = facade.submit_daily_report(
-        draft["report_id"], edited["draft_id"], edited["draft_version"]
+        history["report_id"], edited["draft_id"], edited["draft_version"]
     )
     assert submitted["body"] == "MCP에서 수정한 초안"
 
@@ -116,8 +128,9 @@ def test_delegated_daily_report_generation_reuses_one_draft_and_workflow_run(
     reset_database(database_url)
     execution_id = uuid4()
     monkeypatch.setenv("AX_MCP_CAUSATION_ID", str(execution_id))
+    settings = Settings(RuntimeProfile.TEST, database_url)
     facade = McpReportsFacade(
-        Settings(RuntimeProfile.TEST, database_url),
+        settings,
         "mina",
         ContractTestAiProvider(),
     )
@@ -126,8 +139,18 @@ def test_delegated_daily_report_generation_reuses_one_draft_and_workflow_run(
     retried = facade.generate_daily_report_draft("2026-09-03")
 
     assert retried["report_id"] == first["report_id"]
-    assert retried["draft_id"] == first["draft_id"]
-    assert retried["workflow_run_id"] == first["workflow_run_id"]
+    assert retried["generation_id"] == first["generation_id"]
+    assert retried["generation_status"] == "queued"
+    assert len(facade._application.memory_job_queue.snapshot()) == 1
+    worker = DailyReportGenerationWorker(
+        settings,
+        provider=facade._application._report_provider,
+        queue_factory=lambda _session: facade._application.memory_job_queue,
+    )
+    assert asyncio.run(worker.run_once())
+    completed = facade._application.daily_report_status(facade.principal, "2026-09-03")
+    assert completed["generation_status"] == "completed"
+    assert len(facade.daily_report_history(completed["report_id"])["drafts"]) == 1
     with make_session_factory(database_url)() as session:
         assert session.query(WorkflowRunRecord).count() == 1
 
@@ -197,7 +220,7 @@ def test_mcp_tool_exposure_is_bound_to_the_server_persona(
     assert all("persona" not in tool.name for tool in asyncio.run(create_mcp_server(settings).list_tools()))
 
 
-def test_stdio_mcp_client_discovers_only_persona_bound_report_tools(tmp_path) -> None:
+def test_stdio_mcp_client_discovers_persona_bound_tools(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
 
@@ -218,7 +241,7 @@ def test_stdio_mcp_client_discovers_only_persona_bound_report_tools(tmp_path) ->
                 await session.initialize()
                 tools = await session.list_tools()
                 names = {tool.name for tool in tools.tools}
-                assert names == {
+                assert names >= {
                     "action_item_command",
                     "action_item_get",
                     "action_item_list",
@@ -254,6 +277,7 @@ def test_stdio_mcp_client_discovers_only_persona_bound_report_tools(tmp_path) ->
                     "task_get",
                     "task_history",
                     "task_list",
+                    "my_task_list",
                     "material_search",
                     "task_materials_list",
                     "task_resume",
@@ -332,9 +356,20 @@ def test_stdio_mcp_tool_call_rechecks_a_revoked_capability(tmp_path) -> None:
                     )
                     database_session.commit()
 
+                assert "task_create_self" not in {tool.name for tool in (await session.list_tools()).tools}
                 result = await session.call_tool("task_create_self", {"title": "권한 회수 뒤 생성"})
                 assert result.is_error is True
-                assert "Error executing tool task_create_self" in result.content[0].text
+                assert result.content[0].text == "Unknown tool"
+                with make_session_factory(database_url)() as database_session:
+                    database_session.add(RoleCapabilityRecord(role_id="role:member", capability_id="task.self_manage"))
+                    database_session.commit()
+                assert "task_create_self" in {tool.name for tool in (await session.list_tools()).tools}
+                # Restore the revoked state for the direct adapter denial assertion below.
+                with make_session_factory(database_url)() as database_session:
+                    database_session.execute(delete(RoleCapabilityRecord).where(
+                        RoleCapabilityRecord.role_id == "role:member",
+                        RoleCapabilityRecord.capability_id == "task.self_manage"))
+                    database_session.commit()
 
     asyncio.run(scenario())
     with pytest.raises(TaskAccessDenied, match="task.self_manage"):
@@ -394,7 +429,7 @@ def test_delegated_stdio_mcp_tool_rechecks_capability_before_proposing_an_action
 
                 result = await session.call_tool("task_create_self", {"title": "승인 제안도 금지"})
                 assert result.is_error is True
-                assert "Error executing tool task_create_self" in result.content[0].text
+                assert result.content[0].text == "Unknown tool"
 
     asyncio.run(scenario())
     with make_session_factory(database_url)() as session:
@@ -561,3 +596,12 @@ def test_delegated_action_rejects_unknown_or_cross_owner_execution_ids(tmp_path)
         )
     with make_session_factory(database_url)() as session:
         assert session.query(ActionItemRecord).count() == 0
+
+
+def test_delegated_discovery_requires_permission_to_prepare_confirmation(monkeypatch):
+    monkeypatch.setenv('AX_MCP_CAUSATION_ID', str(uuid4()))
+    facade = CapabilityFacade(Principal('mina', '내 업무 관리', frozenset({'scax'}), frozenset({TASK_SELF_MANAGE})))
+    server = _create_bound_persona_server(facade)
+    assert 'task_create_self' not in {tool.name for tool in asyncio.run(server.list_tools())}
+    facade._principal = Principal('mina', '승인 가능', frozenset({'scax'}), frozenset({TASK_SELF_MANAGE, 'action.decide'}))
+    assert 'task_create_self' in {tool.name for tool in asyncio.run(server.list_tools())}

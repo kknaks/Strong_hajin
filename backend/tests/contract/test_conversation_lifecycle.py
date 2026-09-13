@@ -241,7 +241,7 @@ def test_failed_turn_keeps_partial_text_and_retry_creates_a_linked_idempotent_tu
     assert client.post(f"/api/conversations/{conversation_id}/turns/{turn_id}/retry", headers=MINA).json()["turn_id"] == first.json()["turn_id"]
     # Only failed/cancelled turns can be retried; other people cannot touch the conversation.
     assert client.post(f"/api/conversations/{conversation_id}/turns/{retry['turn_id']}/retry", headers=MINA).status_code == 422
-    assert client.post(f"/api/conversations/{conversation_id}/turns/{turn_id}/retry", headers=JIHO).status_code == 422
+    assert client.post(f"/api/conversations/{conversation_id}/turns/{turn_id}/retry", headers=JIHO).status_code == 404
 
 
 def test_cancelling_a_turn_keeps_what_was_said_and_ignores_what_came_after(tmp_path) -> None:

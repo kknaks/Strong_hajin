@@ -319,6 +319,32 @@ def test_a_turn_keeps_a_record_of_where_it_actually_walked(tmp_path, monkeypatch
     assert client.get(f"/api/conversations/{other['conversation_id']}", headers=JIHO).json()["graph_receipts"] == []
 
 
+def test_a_delegated_graph_overview_records_the_relationships_it_returned(tmp_path, monkeypatch) -> None:
+    from uuid import UUID
+
+    from ax_workspace.entrypoints.mcp import McpReportsFacade
+    from ax_workspace.platform.persistence import ConversationTurnRecord, make_session_factory
+
+    client, _ = _stack(tmp_path)
+    made = _journey(client, "내 관계에서 보일 업무")
+    database_url = client.app.state.workflow_application._settings.database_url
+    conversation = client.post("/api/conversations", headers=JIHO, json={"title": "내 관계"}).json()
+    accepted = client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        headers={**JIHO, "Idempotency-Key": "overview-turn"},
+        json={"body": "내가 담당한 업무를 관계로 보여줘", "context": []},
+    ).json()
+    with make_session_factory(database_url)() as session:
+        execution_id = session.get(ConversationTurnRecord, UUID(accepted["turn_id"])).execution_id
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", str(execution_id))
+
+    McpReportsFacade(Settings(RuntimeProfile.TEST, database_url), "jiho").graph_overview()
+
+    steps = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=JIHO).json()["graph_receipts"]
+    task_ref = f"task:{made['task']['task_id']}"
+    assert any(row["kind"] == "edge" and row["edge_kind"] == "holds" and row["to_ref"] == task_ref for row in steps)
+
+
 def test_the_first_screen_is_already_a_graph_of_what_this_person_is_connected_to(tmp_path) -> None:
     """빈 검색 상자가 아니라, 지금 연결되어 있는 것들이 먼저 보인다."""
     client, _ = _stack(tmp_path)
@@ -541,9 +567,10 @@ def test_a_report_stands_on_the_work_it_was_written_from(tmp_path) -> None:
     client, application = _stack(tmp_path)
     task = client.post("/api/tasks", headers=MINA, json={"title": "보고에 담길 업무"}).json()
     client.post(f"/api/tasks/{task['task_id']}/start", headers=MINA, json={"expected_version": task["version"]})
-    generated = client.post("/api/daily-reports/generate-draft", headers=MINA, json={"report_date": _today()})
-    assert generated.status_code in {200, 201}, generated.text
-    report_id = generated.json()["report_id"]
+    generated = application.generate_daily_report_draft(
+        application.authenticated_principal("mina"), _today()
+    )
+    report_id = generated["report_id"]
 
     around = client.get("/api/graph/neighbors", headers=MINA, params={"node": f"report:{report_id}"}).json()
     assert around["center"]["kind"] == "report"

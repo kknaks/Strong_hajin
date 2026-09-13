@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
+import { useBrowserOperationGuard } from './browserOperationGuard';
 
 const jsonResponse = (body: unknown) =>
   new Response(JSON.stringify(body), {
@@ -103,6 +104,25 @@ describe("product surfaces", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+  });
+
+  it('keeps the current surface and login while a browser upload is pending', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === '/api/organization/me') return jsonResponse({ member_id: 'mina', display_name: '민아', organizations: [], roles: [], capabilities: ['task.read', 'task.self_manage', 'action.read'] });
+      return jsonResponse([]);
+    });
+    vi.stubGlobal('fetch', withSession(fetchMock));
+    function PendingUpload() { useBrowserOperationGuard(true); return null; }
+    const { rerender } = render(<><App /><PendingUpload /></>);
+    const navigation = await screen.findByRole('navigation', { name: '제품 탐색' });
+    fireEvent.click(within(navigation).getByRole('button', { name: '내 업무' }));
+    expect(await screen.findByText('파일 업로드나 녹음이 끝난 뒤 이동할 수 있습니다.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '로그아웃' }));
+    expect(screen.queryByLabelText('이메일')).toBeNull();
+    rerender(<><App /></>);
+    fireEvent.click(screen.getByRole('button', { name: '로그아웃' }));
+    expect(await screen.findByLabelText('이메일')).toBeTruthy();
   });
 
   it("shows a pending manager assignment in the decision panel and moves it into My Work on accept", async () => {

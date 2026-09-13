@@ -43,10 +43,10 @@ try {
       if (!response.ok) return null;
       const current = await response.json();
       return current.actions?.find(
-        (item) => item.action_type === "meeting.create" && item.state === "pending" && item.subject === expectedTitle,
+        (item) => item.action_type === "meeting.reservation.create" && item.state === "pending" && item.subject === expectedTitle,
       ) ?? null;
     }, { conversationId: conversation.conversation_id, expectedTitle: title }),
-    { timeout: 120_000, description: "the no-note meeting.create Action" },
+    { timeout: 120_000, description: "the no-note meeting reservation Action" },
   );
   if (pending.edit_contract?.values.include_initial_note !== false) {
     throw new Error(`meeting proposal unexpectedly included a note: ${JSON.stringify(pending.edit_contract?.values)}`);

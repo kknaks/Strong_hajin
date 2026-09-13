@@ -1,4 +1,4 @@
-"""Owner uploads and lazy legacy discovery publish artifact projections with durable jobs atomically."""
+"""Owner writes and explicit legacy maintenance publish projections and durable jobs atomically."""
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -11,6 +11,7 @@ from sqlalchemy import select
 from ax_workspace.bootstrap.application import WorkflowApplication
 from ax_workspace.bootstrap.material_worker import MaterialExtractionWorker
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
+from ax_workspace.modules.ax_execution.ai import AiGeneration
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.platform.native_materials import NativeMaterialRepository
@@ -19,6 +20,45 @@ from ax_workspace.platform.persistence import AttachmentRecord, AttachmentBindin
 from test_postgres_integration import _postgres_test_url
 
 MINA = {"X-Demo-Persona": "mina"}
+
+
+class _ReportProvider:
+    def generate(self, request):
+        return AiGeneration(
+            provider_run_ref="material-owner-report",
+            provider_session_ref="material-owner-session",
+            body="보고 초안",
+            requested_model="test",
+            observed_model="test",
+            requested_tier="test",
+            observed_tier="test",
+            latency_ms=1,
+            usage=None,
+        )
+
+
+def _report_draft(application):
+    principal = application.authenticated_principal("mina")
+    generated = application.generate_daily_report_draft(principal, "2026-09-11")
+    return application.edit_daily_report(
+        principal,
+        generated["report_id"],
+        generated["draft_id"],
+        generated["draft_version"],
+        "postgresreporttoken",
+        [],
+        [],
+    )
+
+
+def _report_submit(application, draft):
+    return application.submit_daily_report(
+        application.authenticated_principal("mina"),
+        draft["report_id"],
+        draft["draft_id"],
+        draft["draft_version"],
+        None,
+    )
 
 
 def _stack(tmp_path, *, report_provider=None):
@@ -131,7 +171,7 @@ def test_report_submission_rolls_back_with_projection_and_durable_enqueue(tmp_pa
 
 
 @pytest.mark.integration
-def test_concurrent_legacy_report_discovery_creates_one_material_and_job(tmp_path, monkeypatch):
+def test_concurrent_explicit_report_backfill_creates_one_material_and_job(tmp_path, monkeypatch):
     _, application, worker, sessions = _stack(tmp_path, report_provider=_ReportProvider())
     draft = _report_draft(application)
     with monkeypatch.context() as legacy:
@@ -144,12 +184,18 @@ def test_concurrent_legacy_report_discovery_creates_one_material_and_job(tmp_pat
         barrier.wait(timeout=10)
         return original(self, kind, identifier)
     principal = application.authenticated_principal("mina")
+    for _ in range(2):
+        found = application.search_materials(principal, "postgresreporttoken")
+        assert found["results"] == [] and found["unavailable_materials"] == []
+    with sessions() as session:
+        for record in (AttachmentRecord, AttachmentBindingRecord, MaterialExtractionRecord, DurableJobRecord):
+            assert list(session.scalars(select(record))) == []
     with monkeypatch.context() as concurrent:
         concurrent.setattr(NativeMaterialRepository, "ensure", concurrent_ensure)
         with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [pool.submit(application.search_materials, principal, "postgresreporttoken") for _ in range(2)]
-            for future in futures:
-                assert future.result(timeout=15)["unavailable_materials"][0]["extraction"]["status"] == "queued"
+            futures = [pool.submit(application.backfill_native_materials, principal) for _ in range(2)]
+            scheduled = [future.result(timeout=15) for future in futures]
+            assert any(scheduled)
     with sessions() as session:
         for record in (AttachmentRecord, AttachmentBindingRecord, MaterialExtractionRecord, DurableJobRecord):
             assert len(list(session.scalars(select(record)))) == 1

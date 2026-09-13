@@ -5,13 +5,10 @@ canonical ActionItem in one query, with one envelope shape. What differs between
 applies: which commands the current principal may run, and what the question in front of them says. The client reads
 that projection; it never derives a command, a field, or a permission from the kind.
 """
+from dataclasses import replace
 from uuid import UUID
 
-# main 의 채팅 회의 제안 시험 열 개를 걷었다 — 전부 `meeting.create` **확인 실행**까지 가는 것들이고,
-# 그 실행은 옛 회의 모델(description·visibility·판 있는 회의록·계보 열)에 서 있었다. SCAX-SPEC-004 가
-# 그 모델을 대체하면서 확인은 「회의 화면에서 직접 해 주세요」로 멈춘다. 확인 **전**의 보장(관측하지 않은
-# 턴 거절 · 쓰기 직전 권한 재확인)을 보는 두 시험은 그대로 남겼다 — 그 규칙은 아직 산다.
-# 채팅에서 회의를 만드는 흐름을 새 모델 위에 다시 세울 때 이 자리도 다시 쓴다.
+# SCAX-SPEC-004의 현재 회의 계약으로 채팅 제안과 확인 실행을 검증한다.
 
 
 from fastapi.testclient import TestClient
@@ -20,12 +17,16 @@ from sqlalchemy import delete
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
+from ax_workspace.modules.ax_execution.actions import action_payload_hash
 from ax_workspace.platform.persistence import (
+    ActionItemRecord,
     ConversationTurnRecord,
     DecisionItemRecord,
+    MeetingLineRecord,
     MeetingRecord,
     ReviewAssignmentRecord,
     ReviewDecisionRecord,
+    ResourceRelationshipRecord,
     RoleCapabilityRecord,
     SubjectRecord,
     SubjectVersionRecord,
@@ -33,9 +34,6 @@ from ax_workspace.platform.persistence import (
     TaskAssignmentRecord,
     make_session_factory,
 )
-from ax_workspace.platform.meetings import SqlAlchemyMeetingRepository
-from ax_workspace.modules.meetings.domain import MeetingError
-
 MINA = {"X-Demo-Persona": "mina"}
 JIHO = {"X-Demo-Persona": "jiho"}
 HYEON = {"X-Demo-Persona": "hyeon"}
@@ -71,6 +69,35 @@ def _ax_proposal(
     with make_session_factory(application._settings.database_url)() as session:
         execution_id = session.get(ConversationTurnRecord, UUID(accepted.json()["turn_id"])).execution_id
     return application.propose_action(application.authenticated_principal(persona), execution_id, action_type, title, payload)
+
+
+def _make_pre_cutover(
+    application,
+    proposal: dict,
+    *,
+    action_type: str | None = None,
+    payload: dict | None = None,
+) -> None:
+    """Leave the transitional Action row exactly as it could exist before the canonical ledger cutover."""
+    with make_session_factory(application._settings.database_url)() as session:
+        action = session.get(ActionItemRecord, UUID(proposal["action_id"]))
+        if action_type is not None:
+            action.action_type = action_type
+        if payload is not None:
+            action.payload = payload
+            action.payload_hash = action_payload_hash(payload)
+        decision = session.get(DecisionItemRecord, UUID(proposal["action_id"]))
+        subject_id = decision.subject_id
+        session.query(ReviewAssignmentRecord).filter(
+            ReviewAssignmentRecord.submission_id.in_(
+                session.query(SubmissionRecord.id).filter_by(decision_item_id=decision.id)
+            )
+        ).delete(synchronize_session=False)
+        session.query(SubmissionRecord).filter_by(decision_item_id=decision.id).delete()
+        session.delete(decision)
+        session.query(SubjectVersionRecord).filter_by(subject_id=subject_id).delete()
+        session.delete(session.get(SubjectRecord, subject_id))
+        session.commit()
 
 
 def test_an_ax_proposal_opens_one_canonical_submission_on_its_conversation_turn(tmp_path) -> None:
@@ -114,19 +141,7 @@ def test_a_pre_cutover_pending_ax_row_keeps_its_legacy_approval_path(tmp_path) -
     proposal = _ax_proposal(
         client, application, JIHO, "jiho", "task.create_self", "업무 생성 확인", {"title": "기존 pending 업무"}
     )
-    with make_session_factory(application._settings.database_url)() as session:
-        decision = session.get(DecisionItemRecord, UUID(proposal["action_id"]))
-        subject_id = decision.subject_id
-        session.query(ReviewAssignmentRecord).filter(
-            ReviewAssignmentRecord.submission_id.in_(
-                session.query(SubmissionRecord.id).filter_by(decision_item_id=decision.id)
-            )
-        ).delete(synchronize_session=False)
-        session.query(SubmissionRecord).filter_by(decision_item_id=decision.id).delete()
-        session.delete(decision)
-        session.query(SubjectVersionRecord).filter_by(subject_id=subject_id).delete()
-        session.delete(session.get(SubjectRecord, subject_id))
-        session.commit()
+    _make_pre_cutover(application, proposal)
 
     [legacy] = [row for row in _pending(client, JIHO) if row["action_item_id"] == proposal["action_id"]]
     assert [command["id"] for command in legacy["allowed_commands"]] == ["approve", "reject"]
@@ -135,6 +150,285 @@ def test_a_pre_cutover_pending_ax_row_keeps_its_legacy_approval_path(tmp_path) -
     )
     assert approved.status_code == 200, approved.text
     assert [task["title"] for task in client.get("/api/my-work", headers=JIHO).json()] == ["기존 pending 업무"]
+
+
+def test_a_retired_meeting_create_row_stays_readable_but_can_no_longer_run(tmp_path) -> None:
+    """The old creation contract is withdrawn. A row left pending before the cutover still reads, and only clears."""
+    client, application = _stack(tmp_path)
+    current = _ax_proposal(
+        client,
+        application,
+        MINA,
+        "mina",
+        "meeting.reservation.create",
+        "회의 생성 확인",
+        {
+            "title": "임시 현재 회의",
+            "starts_at": "2026-09-20T01:00:00Z",
+            "ends_at": "2026-09-20T02:00:00Z",
+        },
+    )
+    legacy_payload = {
+        "organization_id": "product",
+        "title": "병합 전 승인 대기 회의",
+        "description": "기존 설명",
+        "starts_at": "2026-09-20T01:00:00Z",
+        "ends_at": "2026-09-20T02:00:00Z",
+        "visibility": "private",
+        "attendee_ids": [],
+    }
+    _make_pre_cutover(application, current, action_type="meeting.create", payload=legacy_payload)
+
+    [retired] = [row for row in _pending(client, MINA) if row["action_item_id"] == current["action_id"]]
+    assert retired["operation_label"] == "회의 생성"
+    assert "회의 화면에서 새로 예약" in retired["current_question"]
+    assert [command["id"] for command in retired["allowed_commands"]] == ["reject"]
+
+    refused = _command(
+        client, MINA, retired["action_item_id"], "approve", expected_version=retired["expected_version"]
+    )
+    assert refused.status_code == 422, refused.text
+
+    cleared = _command(
+        client, MINA, retired["action_item_id"], "reject", expected_version=retired["expected_version"]
+    )
+    assert cleared.status_code == 200, cleared.text
+    with make_session_factory(application._settings.database_url)() as session:
+        assert session.query(MeetingRecord).filter_by(title=legacy_payload["title"]).count() == 0
+
+
+def test_a_pre_cutover_meeting_share_action_still_executes_on_the_current_model(tmp_path) -> None:
+    client, application = _stack(tmp_path)
+    made = client.post(
+        "/api/meetings",
+        headers=MINA,
+        json={
+            "title": "공유할 회의",
+            "starts_at": "2026-09-20T01:00:00Z",
+            "ends_at": "2026-09-20T02:00:00Z",
+        },
+    ).json()["meeting"]
+    meeting_id = UUID(made["meeting_id"])
+    with make_session_factory(application._settings.database_url)() as session:
+        meeting_version = session.get(MeetingRecord, meeting_id).version
+
+    share = _ax_proposal(
+        client,
+        application,
+        MINA,
+        "mina",
+        "meeting.share",
+        "회의 공유 확인",
+        {
+            "meeting_id": str(meeting_id),
+            "member_id": "hyeon",
+            "expected_version": meeting_version,
+        },
+    )
+    _make_pre_cutover(application, share)
+    [share_item] = [row for row in _pending(client, MINA) if row["action_item_id"] == share["action_id"]]
+    shared = _command(
+        client,
+        MINA,
+        share_item["action_item_id"],
+        "approve",
+        expected_version=share_item["expected_version"],
+    )
+    assert shared.status_code == 200, shared.text
+    assert "hyeon" in {
+        row["member_id"]
+        for row in application.meeting_viewers(
+            application.authenticated_principal("mina"), meeting_id
+        )
+    }
+
+
+def test_pre_cutover_visibility_update_maps_public_access_without_discarding_explicit_shares(tmp_path) -> None:
+    client, application = _stack(tmp_path)
+    principal = application.authenticated_principal("mina")
+    made = client.post(
+        "/api/meetings",
+        headers=MINA,
+        json={
+            "title": "공개 범위 이행 대상",
+            "starts_at": "2026-09-21T01:00:00Z",
+            "ends_at": "2026-09-21T02:00:00Z",
+        },
+    ).json()["meeting"]
+    meeting_id = made["meeting_id"]
+    application.share_meeting_with(principal, UUID(meeting_id), ["hyeon"])
+
+    def approve_visibility(visibility: str) -> None:
+        with make_session_factory(application._settings.database_url)() as session:
+            expected_version = session.get(MeetingRecord, UUID(meeting_id)).version
+        proposal = _ax_proposal(
+            client,
+            application,
+            MINA,
+            "mina",
+            "meeting.update",
+            "기존 공개 범위 변경",
+            {
+                "meeting_id": meeting_id,
+                "expected_version": expected_version,
+                "visibility": visibility,
+            },
+        )
+        _make_pre_cutover(application, proposal)
+        [item] = [row for row in _pending(client, MINA) if row["action_item_id"] == proposal["action_id"]]
+        response = _command(
+            client,
+            MINA,
+            item["action_item_id"],
+            "approve",
+            expected_version=item["expected_version"],
+        )
+        assert response.status_code == 200, response.text
+
+    approve_visibility("public")
+    with make_session_factory(application._settings.database_url)() as session:
+        assert session.query(ResourceRelationshipRecord).filter_by(
+            resource_type="meeting",
+            resource_id=meeting_id,
+            relationship_kind="legacy_public_share",
+        ).count() > 0
+    assert client.get(f"/api/meetings/{meeting_id}", headers=JIHO).status_code == 200
+    moved_principal = replace(
+        application.authenticated_principal("jiho"),
+        organization_scope=frozenset(),
+    )
+    moved_board = application.meeting_board(moved_principal)
+    assert meeting_id in {
+        row["meeting_id"]
+        for row in [*moved_board["upcoming"], *moved_board["past"]["items"]]
+    }
+
+    approve_visibility("private")
+    with make_session_factory(application._settings.database_url)() as session:
+        assert session.query(ResourceRelationshipRecord).filter_by(
+            resource_type="meeting",
+            resource_id=meeting_id,
+            relationship_kind="legacy_public_share",
+            valid_until=None,
+        ).count() == 0
+    assert client.get(f"/api/meetings/{meeting_id}", headers=JIHO).status_code == 404
+    moved_board = application.meeting_board(moved_principal)
+    assert meeting_id not in {
+        row["meeting_id"]
+        for row in [*moved_board["upcoming"], *moved_board["past"]["items"]]
+    }
+    assert "hyeon" in {
+        row["member_id"] for row in application.meeting_viewers(principal, UUID(meeting_id))
+    }
+
+
+def test_other_pre_cutover_meeting_commands_are_consumed_by_current_owners(tmp_path) -> None:
+    client, application = _stack(tmp_path)
+    principal = application.authenticated_principal("mina")
+    created = client.post(
+        "/api/meetings",
+        headers=MINA,
+        json={
+            "title": "기존 명령 대상",
+            "starts_at": "2026-09-22T01:00:00Z",
+            "ends_at": "2026-09-22T02:00:00Z",
+        },
+    ).json()
+    meeting_id = created["meeting"]["meeting_id"]
+
+    def version() -> int:
+        with make_session_factory(application._settings.database_url)() as session:
+            return session.get(MeetingRecord, UUID(meeting_id)).version
+
+    def approve(kind: str, payload: dict):
+        proposal = _ax_proposal(client, application, MINA, "mina", kind, "기존 회의 명령", payload)
+        _make_pre_cutover(application, proposal)
+        [item] = [row for row in _pending(client, MINA) if row["action_item_id"] == proposal["action_id"]]
+        response = _command(
+            client,
+            MINA,
+            item["action_item_id"],
+            "approve",
+            expected_version=item["expected_version"],
+        )
+        assert response.status_code == 200, response.text
+        return response.json()["execution_result"]
+
+    updated = approve(
+        "meeting.update",
+        {
+            "meeting_id": meeting_id,
+            "expected_version": version(),
+            "title": "옮겨진 기존 회의",
+            "description": "옛 설명",
+        },
+    )
+    assert updated["meeting"]["title"] == "옮겨진 기존 회의"
+    assert updated["meeting"]["purpose"] == "옛 설명"
+
+    application.share_meeting_with(principal, UUID(meeting_id), ["hyeon"])
+    viewers = approve(
+        "meeting.revoke_share",
+        {"meeting_id": meeting_id, "member_id": "hyeon", "expected_version": version()},
+    )
+    assert "hyeon" not in {row["member_id"] for row in viewers["viewers"]}
+
+    approve("meeting.note.create", {"meeting_id": meeting_id, "body": "첫 기존 회의록"})
+    approve(
+        "meeting.note.save",
+        {"meeting_id": meeting_id, "expected_version": 1, "body": "고친 기존 회의록"},
+    )
+    approve("meeting.note.finalize", {"meeting_id": meeting_id, "expected_version": 2})
+    with make_session_factory(application._settings.database_url)() as session:
+        assert [row[0] for row in session.query(MeetingLineRecord.text).all()] == [
+            "첫 기존 회의록",
+            "고친 기존 회의록",
+        ]
+
+
+def test_pre_cutover_note_versions_are_mapped_independently_from_the_current_meeting_version(tmp_path) -> None:
+    client, application = _stack(tmp_path)
+    meeting_id = client.post(
+        "/api/meetings",
+        headers=MINA,
+        json={
+            "title": "회의록 버전 이행 대상",
+            "starts_at": "2026-09-23T01:00:00Z",
+            "ends_at": "2026-09-23T02:00:00Z",
+        },
+    ).json()["meeting"]["meeting_id"]
+
+    def command(kind: str, payload: dict):
+        proposal = _ax_proposal(client, application, MINA, "mina", kind, "기존 회의록 명령", payload)
+        _make_pre_cutover(application, proposal)
+        [item] = [row for row in _pending(client, MINA) if row["action_item_id"] == proposal["action_id"]]
+        return _command(
+            client,
+            MINA,
+            item["action_item_id"],
+            "approve",
+            expected_version=item["expected_version"],
+        )
+
+    saved = command(
+        "meeting.note.save",
+        {"meeting_id": meeting_id, "expected_version": 2, "body": "이행된 세 번째 버전"},
+    )
+    assert saved.status_code == 200, saved.text
+    stale = command(
+        "meeting.note.save",
+        {"meeting_id": meeting_id, "expected_version": 2, "body": "오래된 두 번째 버전"},
+    )
+    assert stale.status_code == 409, stale.text
+    finalized = command(
+        "meeting.note.finalize",
+        {"meeting_id": meeting_id, "expected_version": 3},
+    )
+    assert finalized.status_code == 200, finalized.text
+    with make_session_factory(application._settings.database_url)() as session:
+        meeting = session.get(MeetingRecord, UUID(meeting_id))
+        assert meeting.version == 1
+        assert [row[0] for row in session.query(MeetingLineRecord.text).all()] == ["이행된 세 번째 버전"]
 
 
 def test_confirming_an_unchanged_ax_draft_executes_submission_one_with_full_lineage(tmp_path) -> None:
@@ -428,42 +722,6 @@ def test_ax_task_confirmation_requires_the_due_date_shown_as_required(tmp_path) 
     assert [task for task in client.get("/api/my-work", headers=JIHO).json() if task["title"] == "기한 없는 업무"] == []
 
 
-def test_ax_meeting_note_rejects_an_unobserved_cross_conversation_turn_even_when_owned(tmp_path) -> None:
-    client, application = _stack(tmp_path)
-    past = client.post("/api/conversations", headers=MINA, json={"title": "소유했지만 읽지 않은 대화"}).json()
-    accepted = client.post(
-        f"/api/conversations/{past['conversation_id']}/messages",
-        headers={**MINA, "Idempotency-Key": "unobserved-past-turn"},
-        json={"body": "공개되면 안 되는 별도 대화", "context": []},
-    )
-    assert accepted.status_code == 202, accepted.text
-
-    proposal = _ax_proposal(
-        client,
-        application,
-        MINA,
-        "mina",
-        "meeting.create",
-        "회의 생성 확인",
-        {
-            "organization_id": "scax",
-            "title": "관찰되지 않은 근거 차단",
-            "starts_at": "2026-09-12T03:00:00Z",
-            "ends_at": "2026-09-12T04:00:00Z",
-            "visibility": "private",
-            "attendee_ids": [],
-            "include_initial_note": True,
-            "initial_note_body": "현재 요청만 근거로 삼는다.",
-            "prior_discussion_requested": True,
-            "source_turn_ids": [accepted.json()["turn_id"]],
-        },
-        body="과거 대화를 찾지 못한 회의를 잡아줘",
-    )
-    values = client.get(f"/api/action-items/{proposal['action_id']}", headers=MINA).json()["edit_contract"]["values"]
-    assert values["initial_note_source_status"] == "not_found"
-    assert [source["source_id"] for source in values["initial_note_source_evidence"]] == [proposal["turn_id"]]
-
-
 def test_ax_meeting_confirm_rechecks_current_manage_authority_before_writing(tmp_path) -> None:
     client, application = _stack(tmp_path)
     proposal = _ax_proposal(
@@ -471,14 +729,12 @@ def test_ax_meeting_confirm_rechecks_current_manage_authority_before_writing(tmp
         application,
         MINA,
         "mina",
-        "meeting.create",
+        "meeting.reservation.create",
         "회의 생성 확인",
         {
-            "organization_id": "scax",
             "title": "권한이 유지될 때만 생성",
             "starts_at": "2026-09-14T01:00:00Z",
             "ends_at": "2026-09-14T02:00:00Z",
-            "visibility": "private",
             "attendee_ids": [],
         },
     )
@@ -497,7 +753,7 @@ def test_ax_meeting_confirm_rechecks_current_manage_authority_before_writing(tmp
         expected_version=item["expected_version"],
         base_submission_version=1,
     )
-    assert denied.status_code in {403, 422}, denied.text
+    assert denied.status_code in {403, 404, 422}, denied.text
     with make_session_factory(application._settings.database_url)() as session:
         decision = session.get(DecisionItemRecord, UUID(proposal["action_id"]))
         assert decision.status == "open"

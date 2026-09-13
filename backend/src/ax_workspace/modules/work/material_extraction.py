@@ -5,9 +5,11 @@ attachment's integrity hash. File text is untrusted evidence: it is chunked, bou
 caller is authorized to see leave this module.
 """
 from __future__ import annotations
+from ax_workspace.modules.work.extraction_results import ExtractionView
 
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 import hashlib
 import re
 from typing import Any, Protocol
@@ -31,6 +33,8 @@ class ParserVersionConflict(ValueError):
 
 # status: queued -> running -> completed | failed | unsupported
 FAILURE_REASONS = {
+    "access_denied": "현재 이 자료를 읽을 권한이 없어 분석하지 않았습니다",
+    "time_limit_exceeded": "자료 분석 시간 한도를 넘어 중단했습니다",
     "integrity_mismatch": "저장된 원본이 업로드 당시의 파일과 일치하지 않아 추출하지 않았습니다",
     "parser_upgrade_required": "이전 parser의 추출 결과입니다. 현재 계약으로 원본 재추출이 필요합니다",
     "projection_unverified": "추출 결과의 전체성 정보를 확인할 수 없어 검색하지 않습니다",
@@ -105,6 +109,8 @@ class MaterialTextExtractor(Protocol):
 class MaterialExtractionJob:
     extraction_id: UUID
     attachment_id: UUID
+    actor_id: str | None = None
+    owner_token: UUID | None = None
 
 
 class MaterialExtractionQueue(Protocol):
@@ -116,9 +122,10 @@ class MaterialExtractionQueue(Protocol):
 class MaterialExtractionRepository(Protocol):
     def request(self, attachment: Any) -> Any: ...
     def for_attachments(self, attachment_ids: list[UUID]) -> dict[UUID, Any]: ...
-    def claim(self, extraction_id: UUID, *, stale_after_seconds: int) -> tuple[Any, Any] | None: ...
+    def claim(self, extraction_id: UUID, *, stale_after_seconds: int, owner_token: UUID | None = None,
+              actor_id: str | None = None) -> tuple[Any, Any] | None: ...
     def is_terminal(self, extraction_id: UUID) -> bool: ...
-    def running(self, extraction_id: UUID, attempt: int) -> Any | None: ...
+    def running(self, extraction_id: UUID, attempt: int, owner_token: UUID | None = None) -> Any | None: ...
     def complete(self, extraction: Any, outcome: ExtractionOutcome) -> None: ...
     def fail(self, extraction: Any, reason: str, *, status: str = "failed", outcome: ExtractionOutcome | None = None) -> None: ...
     def release(self, extraction: Any) -> None: ...
@@ -135,6 +142,7 @@ class ClaimedExtraction:
     source_ref: str
     integrity_ref: str | None = None
     source_kind: str = "file"
+    owner_token: UUID | None = None
 
 
 def classify(name: str, content_type: str) -> str | None:
@@ -314,12 +322,16 @@ class MaterialExtractionService:
     def claim(self, job: MaterialExtractionJob) -> ClaimedExtraction | str:
         """A ClaimedExtraction, or "skipped" (already terminal) / "contended" (a live worker holds it; retry later).
         The two None-like outcomes are distinct so a contended delivery is never archived as done."""
-        claimed = self._repository.claim(job.extraction_id, stale_after_seconds=self._stale_after_seconds)
+        claimed = self._repository.claim(
+            job.extraction_id, stale_after_seconds=self._stale_after_seconds, owner_token=getattr(job, "owner_token", None),
+            actor_id=getattr(job, "actor_id", None),
+        )
         if claimed is None:
             return "skipped" if self._repository.is_terminal(job.extraction_id) else "contended"
         extraction, attachment = claimed
         return ClaimedExtraction(extraction.id, int(extraction.attempt_count), attachment.name, attachment.content_type,
-                                 attachment.source_ref, getattr(extraction, "integrity_ref", None), getattr(attachment, "source_kind", "file"))
+                                 attachment.source_ref, getattr(extraction, "integrity_ref", None), getattr(attachment, "source_kind", "file"),
+                                 getattr(extraction, "worker_token", None))
 
     @staticmethod
     def extract(claimed: ClaimedExtraction, storage: Any, extractor: MaterialTextExtractor) -> ExtractionOutcome:
@@ -334,9 +346,17 @@ class MaterialExtractionService:
 
     def finish(self, claimed: ClaimedExtraction, outcome: ExtractionOutcome) -> str:
         """Returns completed | failed | unsupported | retry, or "stale" when another attempt owns the row now."""
-        extraction = self._repository.running(claimed.extraction_id, claimed.attempt)
+        extraction = self._repository.running(claimed.extraction_id, claimed.attempt, claimed.owner_token)
         if extraction is None:
             return "stale"
+        heartbeat = getattr(extraction, "heartbeat_at", None)
+        if claimed.owner_token is not None:
+            if heartbeat is None:
+                return "stale"
+            if heartbeat.tzinfo is None:
+                heartbeat = heartbeat.replace(tzinfo=UTC)
+            if datetime.now(UTC) - heartbeat >= timedelta(seconds=self._stale_after_seconds):
+                return "stale"
         if outcome.transient and extraction.attempt_count < self._max_attempts:
             self._repository.release(extraction)
             return "retry"
@@ -359,7 +379,7 @@ def projection_failure(extraction: Any) -> str | None:
     return None
 
 
-def extraction_view(extraction: Any | None) -> dict[str, Any] | None:
+def extraction_view(extraction: Any | None) -> ExtractionView | None:
     if extraction is None:
         return None
     failure = projection_failure(extraction) if extraction.status in {"completed", "partial"} else None

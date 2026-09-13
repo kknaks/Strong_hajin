@@ -129,6 +129,15 @@ class NativeMaterialRepository:
             raise ValueError("unknown native material kind")
         return self.ensure_report(revision_id)
 
+    def registered(self, kind, revision_id):
+        """Return an existing native owner binding without creating source data."""
+        identifier = material_id_for(kind, revision_id)
+        attachment = self._session.get(AttachmentRecord, identifier)
+        if attachment is None:
+            return None
+        binding = self._session.get(AttachmentBindingRecord, uuid5(identifier, "native-owner-binding"))
+        return None if binding is None else (binding, attachment)
+
     def ensure_meeting_transcript(self, meeting_id):
         """회의 전사 자료 하나. **자라는 원문이라 내용이 바뀌면 무결성 ref 도 바뀐다** — 그때 새 추출이 걸린다."""
         meeting, _ = self.meeting_transcript_source(meeting_id, lock=True)

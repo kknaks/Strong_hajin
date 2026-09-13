@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from ax_workspace.modules.reports.results import ReportHistoryResult, ReportStatusResult, ReportRecentView
+
+from ax_workspace.modules.reports.application import DailyReportNotFound
+
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import hashlib
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, text
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.ax_execution.ai import (
@@ -19,6 +23,8 @@ from ax_workspace.modules.reports.workflow_metadata import ALLOWED_OPERATIONS, D
 from ax_workspace.platform.persistence import (
     DailyReportSubmissionRecord,
     DailyReportRecord,
+    DailyReportGenerationAttemptRecord,
+    DailyReportGenerationRecord,
     ProviderCallRecord,
     ReportAuditEventRecord,
     ReportDraftRecord,
@@ -37,6 +43,277 @@ class WorkRecordSourcePort(Protocol):
 class SqlAlchemyDailyReportRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
+
+    def request_generation(
+        self,
+        owner_id: str,
+        report_date: str,
+        causation_key: str | None,
+    ) -> DailyReportGenerationRecord:
+        if causation_key:
+            existing = self._session.scalar(
+                select(DailyReportGenerationRecord).where(
+                    DailyReportGenerationRecord.owner_id == owner_id,
+                    DailyReportGenerationRecord.causation_key == causation_key,
+                )
+            )
+            if existing is not None:
+                return existing
+        active = self._session.scalar(
+            select(DailyReportGenerationRecord)
+            .where(
+                DailyReportGenerationRecord.owner_id == owner_id,
+                DailyReportGenerationRecord.report_date == report_date,
+                DailyReportGenerationRecord.state.in_(("queued", "running", "needs_verification")),
+            )
+            .order_by(DailyReportGenerationRecord.created_at.desc())
+            .limit(1)
+        )
+        if active is not None:
+            return active
+        failed = self._session.scalar(
+            select(DailyReportGenerationRecord)
+            .where(
+                DailyReportGenerationRecord.owner_id == owner_id,
+                DailyReportGenerationRecord.report_date == report_date,
+                DailyReportGenerationRecord.state == "failed",
+            )
+            .order_by(DailyReportGenerationRecord.created_at.desc())
+            .limit(1)
+        )
+        now = datetime.now(UTC)
+        generation = DailyReportGenerationRecord(
+            id=uuid4(),
+            owner_id=owner_id,
+            report_date=report_date,
+            causation_key=causation_key,
+            retry_of_generation_id=failed.id if failed is not None else None,
+            state="queued",
+            created_at=now,
+            updated_at=now,
+        )
+        try:
+            with self._session.begin_nested():
+                self._session.add(generation)
+                self._session.flush()
+            return generation
+        except IntegrityError:
+            statement = select(DailyReportGenerationRecord).where(
+                DailyReportGenerationRecord.owner_id == owner_id,
+            )
+            if causation_key:
+                same = self._session.scalar(statement.where(
+                    DailyReportGenerationRecord.causation_key == causation_key
+                ))
+                if same is not None:
+                    return same
+            winner = self._session.scalar(
+                statement.where(
+                    DailyReportGenerationRecord.report_date == report_date,
+                    DailyReportGenerationRecord.state.in_(("queued", "running", "needs_verification")),
+                ).order_by(DailyReportGenerationRecord.created_at.desc()).limit(1)
+            )
+            if winner is None:
+                raise
+            return winner
+
+    def generation(self, generation_id: UUID, *, lock: bool = False) -> DailyReportGenerationRecord | None:
+        statement = select(DailyReportGenerationRecord).where(DailyReportGenerationRecord.id == generation_id)
+        if lock:
+            statement = statement.with_for_update().execution_options(populate_existing=True)
+        return self._session.scalar(statement)
+
+    def _generation_attempt(
+        self, generation: DailyReportGenerationRecord
+    ) -> DailyReportGenerationAttemptRecord | None:
+        return self._session.scalar(
+            select(DailyReportGenerationAttemptRecord).where(
+                DailyReportGenerationAttemptRecord.generation_id == generation.id,
+                DailyReportGenerationAttemptRecord.attempt_number == generation.attempt_count,
+            )
+        )
+
+    def generation_started_external_call(
+        self, generation: DailyReportGenerationRecord
+    ) -> bool:
+        """이 실행이 외부 provider 를 이미 불렀을 수 있는가.
+
+        `run()` 은 외부 호출 직전에 노드를 `running` 으로 커밋한다. 끝나지 않은 호출 노드가 남아
+        있다는 것은 결과를 아무도 모른다는 뜻이고, 그때 같은 프롬프트를 다시 보내면 중복 실행이 된다.
+        노드 execution 이 아예 없으면 호출에 닿기 전에 끝난 것이므로 평범한 재시도로 남는다.
+        """
+        if generation.workflow_run_id is None:
+            return False
+        run = self._session.get(WorkflowRunRecord, generation.workflow_run_id)
+        if run is None:
+            return False
+        definition = self._session.get(WorkflowDefinitionVersionRecord, run.definition_version_id)
+        if definition is None:
+            return False
+        external = [
+            str(node["id"])
+            for node in definition.definition.get("nodes", [])
+            if node.get("type") == "llm.generate"
+        ]
+        if not external:
+            return False
+        return self._session.scalar(
+            select(WorkflowNodeExecutionRecord.id)
+            .where(
+                WorkflowNodeExecutionRecord.run_id == run.id,
+                WorkflowNodeExecutionRecord.node_id.in_(external),
+                WorkflowNodeExecutionRecord.state != "completed",
+            )
+            .limit(1)
+        ) is not None
+
+    def claim_generation(
+        self,
+        generation: DailyReportGenerationRecord,
+        *,
+        attempt: int,
+        lease_token: UUID,
+        stale_after_seconds: int,
+    ) -> str:
+        now = datetime.now(UTC)
+        if generation.state == "running":
+            heartbeat = generation.heartbeat_at or generation.started_at
+            if heartbeat is not None and heartbeat.tzinfo is None:
+                heartbeat = heartbeat.replace(tzinfo=UTC)
+            if heartbeat is not None and now - heartbeat < timedelta(seconds=stale_after_seconds):
+                return "contended"
+            previous = self._generation_attempt(generation)
+            if previous is not None and previous.state == "running":
+                # 이 실행이 provider 를 이미 불렀을 수 있다면, 시간이 지났다는 사실만으로
+                # 외부 미실행을 단정하지 않는다. 다시 부르는 대신 확인 필요로 고정한다.
+                if self.generation_started_external_call(generation):
+                    self.mark_generation_needs_verification(generation, "provider_result_uncertain")
+                    return "needs_verification"
+                previous.state = "abandoned"
+                previous.failure_reason = "lease_expired"
+                previous.completed_at = now
+        if generation.state != "queued" and generation.state != "running":
+            return "terminal"
+        generation.state = "running"
+        generation.attempt_count = attempt
+        generation.lease_token = lease_token
+        generation.stage = "workflow"
+        generation.stage_started_at = now
+        generation.started_at = generation.started_at or now
+        generation.heartbeat_at = now
+        generation.error_code = None
+        generation.updated_at = now
+        self._session.add(
+            DailyReportGenerationAttemptRecord(
+                id=uuid4(),
+                generation_id=generation.id,
+                attempt_number=attempt,
+                actor_id=generation.owner_id,
+                owner_token=lease_token,
+                stage="workflow",
+                state="running",
+                started_at=now,
+                heartbeat_at=now,
+            )
+        )
+        self._session.flush()
+        return "claimed"
+
+    def heartbeat_generation(
+        self,
+        generation: DailyReportGenerationRecord,
+        *,
+        stage_timeout_seconds: int,
+        total_timeout_seconds: int,
+    ) -> bool:
+        now = datetime.now(UTC)
+        stage_started = generation.stage_started_at
+        started = generation.started_at
+        if stage_started is not None and stage_started.tzinfo is None:
+            stage_started = stage_started.replace(tzinfo=UTC)
+        if started is not None and started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+        if (
+            stage_started is not None
+            and now - stage_started >= timedelta(seconds=stage_timeout_seconds)
+        ) or (started is not None and now - started >= timedelta(seconds=total_timeout_seconds)):
+            self.mark_generation_needs_verification(generation, "provider_time_limit_uncertain")
+            return False
+        generation.heartbeat_at = now
+        generation.updated_at = now
+        attempt = self._generation_attempt(generation)
+        if attempt is not None and attempt.state == "running":
+            attempt.heartbeat_at = now
+        self._session.flush()
+        return True
+
+    def _finish_generation_attempt(
+        self, generation: DailyReportGenerationRecord, state: str, reason: str | None = None
+    ) -> None:
+        attempt = self._generation_attempt(generation)
+        if attempt is not None and attempt.state == "running":
+            now = datetime.now(UTC)
+            attempt.state = state
+            attempt.failure_reason = reason
+            attempt.heartbeat_at = now
+            attempt.completed_at = now
+
+    def complete_generation(
+        self, generation: DailyReportGenerationRecord, draft: ReportDraftRecord
+    ) -> None:
+        self._finish_generation_attempt(generation, "completed")
+        now = datetime.now(UTC)
+        generation.state = "completed"
+        generation.report_id = draft.report_id
+        generation.draft_id = draft.id
+        generation.error_code = None
+        generation.lease_token = None
+        generation.heartbeat_at = None
+        generation.completed_at = now
+        generation.updated_at = now
+        self._session.flush()
+
+    def record_generation_workflow_run(
+        self, generation: DailyReportGenerationRecord, workflow_run_id: UUID
+    ) -> None:
+        if generation.workflow_run_id not in {None, workflow_run_id}:
+            raise ValueError("daily report generation workflow run differs")
+        generation.workflow_run_id = workflow_run_id
+        generation.updated_at = datetime.now(UTC)
+        self._session.flush()
+
+    def retry_generation(self, generation: DailyReportGenerationRecord, code: str) -> None:
+        self._finish_generation_attempt(generation, "retry", code)
+        generation.state = "queued"
+        generation.error_code = code[:80]
+        generation.lease_token = None
+        generation.heartbeat_at = None
+        generation.updated_at = datetime.now(UTC)
+        self._session.flush()
+
+    def fail_generation(self, generation: DailyReportGenerationRecord, code: str) -> None:
+        self._finish_generation_attempt(generation, "failed", code)
+        now = datetime.now(UTC)
+        generation.state = "failed"
+        generation.error_code = code[:80]
+        generation.lease_token = None
+        generation.heartbeat_at = None
+        generation.completed_at = now
+        generation.updated_at = now
+        self._session.flush()
+
+    def mark_generation_needs_verification(
+        self, generation: DailyReportGenerationRecord, code: str
+    ) -> None:
+        self._finish_generation_attempt(generation, "needs_verification", code)
+        now = datetime.now(UTC)
+        generation.state = "needs_verification"
+        generation.error_code = code[:80]
+        generation.lease_token = None
+        generation.heartbeat_at = None
+        generation.completed_at = now
+        generation.updated_at = now
+        self._session.flush()
 
     @contextmanager
     def generation_causation(self, owner_id: str, causation_key: str):
@@ -221,7 +498,7 @@ class SqlAlchemyDailyReportRepository:
         self._session.flush()
         return submission
 
-    def history(self, owner_id: str, report_id: str) -> dict[str, Any]:
+    def history(self, owner_id: str, report_id: str) -> ReportHistoryResult:
         report = self._owned_report(owner_id, report_id)
         drafts = list(
             self._session.scalars(
@@ -281,7 +558,7 @@ class SqlAlchemyDailyReportRepository:
         return [{"report_id": str(report), "report_date": report_date, "revision_id": str(submission),
                  "revision": version, "is_current_revision": current} for report, report_date, submission, version, current in self._session.execute(statement)]
 
-    def recent(self, owner_id: str, *, limit: int = 3) -> list[dict[str, Any]]:
+    def recent(self, owner_id: str, *, limit: int = 3) -> list[ReportRecentView]:
         """The last few reports this person wrote, each with the work its newest draft was written from."""
         reports = list(
             self._session.scalars(
@@ -309,17 +586,29 @@ class SqlAlchemyDailyReportRepository:
             )
         return answer
 
-    def status_for_date(self, owner_id: str, report_date: str) -> dict[str, Any]:
+    def status_for_date(self, owner_id: str, report_date: str) -> ReportStatusResult:
         report = self._session.scalar(
             select(DailyReportRecord).where(
                 DailyReportRecord.owner_id == owner_id,
                 DailyReportRecord.report_date == report_date,
             )
         )
+        generation = self._session.scalar(
+            select(DailyReportGenerationRecord)
+            .where(
+                DailyReportGenerationRecord.owner_id == owner_id,
+                DailyReportGenerationRecord.report_date == report_date,
+            )
+            .order_by(DailyReportGenerationRecord.created_at.desc())
+            .limit(1)
+        )
         return {
             "report_date": report_date,
             "status": report.status if report is not None else "not_started",
             "report_id": str(report.id) if report is not None else None,
+            "generation_id": str(generation.id) if generation is not None else None,
+            "generation_status": generation.state if generation is not None else None,
+            "generation_error_code": generation.error_code if generation is not None else None,
         }
 
     def _owned_report(self, owner_id: str, report_id: str, *, lock: bool = False) -> DailyReportRecord:
@@ -328,7 +617,7 @@ class SqlAlchemyDailyReportRepository:
         )
         report = self._session.scalar(statement.with_for_update().execution_options(populate_existing=True) if lock else statement)
         if report is None:
-            raise ValueError("daily report was not found")
+            raise DailyReportNotFound("daily report was not found")
         return report
 
     def _owned_draft(self, report_id: UUID, draft_id: str, *, lock: bool = False) -> ReportDraftRecord:
@@ -337,7 +626,7 @@ class SqlAlchemyDailyReportRepository:
         )
         draft = self._session.scalar(statement.with_for_update().execution_options(populate_existing=True) if lock else statement)
         if draft is None:
-            raise ValueError("daily report draft was not found")
+            raise DailyReportNotFound("daily report draft was not found")
         return draft
 
     @staticmethod
@@ -389,37 +678,68 @@ class SqlAlchemyDailyReportDraftWorkflow:
         self._sources = sources
         self._provider = provider
 
-    def run(self, principal: Any, report_date: str) -> dict[str, Any]:
-        # Whichever version is published right now: a new one is installed as data, not as a code change.
-        definition = self._session.scalar(
-            select(WorkflowDefinitionVersionRecord)
-            .where(
-                WorkflowDefinitionVersionRecord.workflow_id == "daily-report-generation",
-                WorkflowDefinitionVersionRecord.status == "published",
+    def run(
+        self,
+        principal: Any,
+        report_date: str,
+        *,
+        run_id: UUID | None = None,
+        on_run_created: Callable[[UUID], None] | None = None,
+    ) -> dict[str, Any]:
+        results: dict[str, Any] = {}
+        if run_id is None:
+            # The first attempt pins the currently published definition for every retry of this generation.
+            definition = self._session.scalar(
+                select(WorkflowDefinitionVersionRecord)
+                .where(
+                    WorkflowDefinitionVersionRecord.workflow_id == "daily-report-generation",
+                    WorkflowDefinitionVersionRecord.status == "published",
+                )
+                .order_by(WorkflowDefinitionVersionRecord.published_at.desc(), WorkflowDefinitionVersionRecord.created_at.desc())
             )
-            .order_by(WorkflowDefinitionVersionRecord.published_at.desc(), WorkflowDefinitionVersionRecord.created_at.desc())
-        )
-        if definition is None:
-            raise RuntimeError("no published daily-report-generation workflow is installed")
+            if definition is None:
+                raise RuntimeError("no published daily-report-generation workflow is installed")
+            now = datetime.now(UTC)
+            run = WorkflowRunRecord(
+                id=uuid4(),
+                definition_version_id=definition.id,
+                workflow_id=definition.workflow_id,
+                initiator_id=str(principal.id),
+                state="running",
+                input_snapshot={"report_date": report_date},
+                created_at=now,
+                updated_at=now,
+            )
+            self._session.add(run)
+            self._session.flush()
+            if on_run_created is not None:
+                on_run_created(run.id)
+        else:
+            run = self._session.get(WorkflowRunRecord, run_id)
+            if (
+                run is None
+                or run.initiator_id != str(principal.id)
+                or run.input_snapshot.get("report_date") != report_date
+            ):
+                raise ValueError("daily report workflow retry input differs")
+            definition = self._session.get(WorkflowDefinitionVersionRecord, run.definition_version_id)
+            if definition is None:
+                raise RuntimeError("daily report workflow definition was not found")
+            completed = self._session.scalars(
+                select(WorkflowNodeExecutionRecord).where(
+                    WorkflowNodeExecutionRecord.run_id == run.id,
+                    WorkflowNodeExecutionRecord.state == "completed",
+                )
+            ).all()
+            results = {row.node_id: dict(row.result or {}) for row in completed}
+            run.state = "running"
+            run.updated_at = datetime.now(UTC)
         validate_definition(definition.definition)
 
-        now = datetime.now(UTC)
-        run = WorkflowRunRecord(
-            id=uuid4(),
-            definition_version_id=definition.id,
-            workflow_id=definition.workflow_id,
-            initiator_id=str(principal.id),
-            state="running",
-            input_snapshot={"report_date": report_date},
-            created_at=now,
-            updated_at=now,
-        )
-        self._session.add(run)
-        self._session.flush()
-
-        results: dict[str, Any] = {}
         try:
             for node in definition.definition["nodes"]:
+                if node["id"] in results:
+                    continue
                 execution = self._start_node(run.id, node, results)
                 if node["type"] == "llm.generate":
                     # Persist the run and preceding node provenance before the
@@ -469,6 +789,21 @@ class SqlAlchemyDailyReportDraftWorkflow:
         node: dict[str, Any],
         results: dict[str, Any],
     ) -> WorkflowNodeExecutionRecord:
+        execution = self._session.scalar(
+            select(WorkflowNodeExecutionRecord).where(
+                WorkflowNodeExecutionRecord.run_id == run_id,
+                WorkflowNodeExecutionRecord.node_id == node["id"],
+            )
+        )
+        if execution is not None:
+            execution.state = "running"
+            execution.input_snapshot = {input_id: results[input_id] for input_id in node.get("inputs", [])}
+            execution.result = None
+            execution.normalized_error = None
+            execution.retry_count += 1
+            execution.completed_at = None
+            self._session.flush()
+            return execution
         execution = WorkflowNodeExecutionRecord(
             id=uuid4(),
             run_id=run_id,

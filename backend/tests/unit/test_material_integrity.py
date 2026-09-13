@@ -284,7 +284,6 @@ def test_pdf_warnings_do_not_contaminate_another_workers_document(monkeypatch):
 
 @pytest.mark.parametrize("pdf_log_level", [30, 50], indirect=True)
 def test_pdf_capacity_failure_inside_form_is_not_recoverable_partial(monkeypatch, pdf_log_level):
-    import logging
     from pypdf import PageObject
     from pypdf.errors import LimitReachedError
 

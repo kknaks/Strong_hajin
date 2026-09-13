@@ -10,6 +10,22 @@ from ax_workspace.modules.work.material_extraction import MaterialExtractionJob
 from ax_workspace.platform.material_extraction import PypdfTextExtractor
 
 
+class PartialCoverageExtractor:
+    def extract(self, **kwargs):
+        return replace(
+            PypdfTextExtractor().extract(**kwargs),
+            status="partial",
+            warnings=("page 2 needs OCR",),
+            coverage={
+                "complete": False,
+                "unit": "page",
+                "total_units": 2,
+                "processed_units": 1,
+                "missing_units": [{"page": 2, "reason": "needs_ocr"}],
+            },
+        )
+
+
 def test_partial_search_requires_a_file_anchor_and_preserves_coverage_in_receipt(tmp_path, monkeypatch):
     from ax_workspace.platform.persistence import ConversationTurnRecord, make_session_factory
 
@@ -18,13 +34,7 @@ def test_partial_search_requires_a_file_anchor_and_preserves_coverage_in_receipt
     selected = _upload(client, task["task_id"], "selected.txt", b"Readable partialtailtoken", "text/plain").json()
     _upload(client, task["task_id"], "other.txt", b"Other partialtailtoken", "text/plain")
 
-    class PartialExtractor:
-        def extract(self, **kwargs):
-            return replace(PypdfTextExtractor().extract(**kwargs), status="partial", warnings=("page 2 needs OCR",),
-                           coverage={"complete": False, "unit": "page", "total_units": 2, "processed_units": 1,
-                                     "missing_units": [{"page": 2, "reason": "needs_ocr"}]})
-
-    worker._extractor = PartialExtractor()
+    worker._extractor = PartialCoverageExtractor()
     assert asyncio.run(worker.run_once())
     scoped_url = "/api/materials/search"
     scope = {"resource_type": "task", "resource_id": task["task_id"]}
@@ -144,12 +154,7 @@ def test_worker_persists_partial_coverage_and_does_not_offer_it_in_general_searc
     material = _upload(client, task["task_id"], "mixed.txt", b"Readable tailtoken", "text/plain").json()
     missing = {"page": 2, "reason": "needs_ocr"}
 
-    class PartialExtractor:
-        def extract(self, **kwargs):
-            return replace(PypdfTextExtractor().extract(**kwargs), status="partial", warnings=("page 2 needs OCR",),
-                           coverage={"complete": False, "unit": "page", "total_units": 2, "processed_units": 1, "missing_units": [missing]})
-
-    worker._extractor = PartialExtractor()
+    worker._extractor = PartialCoverageExtractor()
     assert asyncio.run(worker.run_once())
     listed = client.get(f"/api/tasks/{task['task_id']}/materials", headers=MINA).json()
     extraction = listed[0]["extraction"]
@@ -195,6 +200,7 @@ def test_interrupted_batch_publish_rolls_back_and_retry_publishes_once(tmp_path,
         extraction = session.get(MaterialExtractionRecord, job.extraction_id)
         assert extraction.status == "running" and extraction.completed_at is None
         extraction.started_at = datetime.now(UTC) - timedelta(days=1)
+        extraction.heartbeat_at = extraction.started_at
         session.commit()
     assert worker.process(job) == "completed"
     assert worker.process(job) == "skipped"

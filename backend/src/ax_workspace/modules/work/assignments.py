@@ -1,12 +1,20 @@
 """Manager-assigned Tasks: a TaskAssignment stays pending until the assignee accepts it (ERD TASK_ASSIGNMENT + acceptance ActionItem)."""
 from __future__ import annotations
 
+
+from ax_workspace.modules.work.task_results import TaskMutationResult
+
 from datetime import date
 from typing import Any, Protocol
 from uuid import UUID
+from ax_workspace.modules.work.task_results import TaskAssignmentResult
+from ax_workspace.modules.work.assignment_commands import AssignmentAcceptCommand, AssignmentDeclineCommand
+from ax_workspace.modules.work.task_creation import TaskAssignmentInput
+from ax_workspace.modules.work.project_commands import ProjectWorkInput
+from ax_workspace.modules.work.task_commands import TaskReassignInput
 
 from ax_workspace.modules.organization_access.domain import Principal, TASK_ASSIGN, TASK_READ, TASK_SELF_MANAGE
-from ax_workspace.modules.work.application import InvalidTaskTransition, TaskAccessDenied, TaskApplication, TaskError, TaskNotFound, validate_schedule, clean_checklist, _clean_text, _iso
+from ax_workspace.modules.work.application import InvalidTaskTransition, TaskAccessDenied, TaskApplication, TaskError, TaskNotFound, validate_schedule, _iso
 
 
 class TaskAssignmentRepository(Protocol):
@@ -44,8 +52,8 @@ class TaskAssignmentApplication:
         self,
         repository: TaskAssignmentRepository,
         directory: TaskAssigneeDirectory,
-        tasks: Any = None,
-        projects: ProjectAssigneePort | None = None,
+        tasks: TaskApplication,
+        projects: ProjectAssigneePort,
     ) -> None:
         self._repository = repository
         self._directory = directory
@@ -64,7 +72,7 @@ class TaskAssignmentApplication:
         자기 팀 프로젝트에 일을 매달지 못하는 모양으로 드러났다.
         """
         rows = {row["id"]: row for row in self._directory.task_assignment_candidates(principal)}
-        for row in self._projects.assignable_members(principal) if self._projects is not None else []:
+        for row in self._projects.assignable_members(principal):
             rows.setdefault(row["id"], row)
         return [rows[member_id] for member_id in sorted(rows)]
 
@@ -88,22 +96,26 @@ class TaskAssignmentApplication:
         source_decision_item_id: UUID | None = None,
         source_submission_id: UUID | None = None,
         source_review_decision_id: UUID | None = None,
-    ) -> dict[str, Any]:
+    ) -> TaskAssignmentResult:
         """Create a Task for someone else. It enters their My Work only after they accept the assignment."""
         self._require(principal, TASK_ASSIGN)
-        if not title.strip():
-            raise TaskError("title is required")
+        try:
+            command = TaskAssignmentInput(title=title, assignee_id=assignee_id, description=description, start_date=start_date, due_date=due_date, checklist=checklist, reference_task_ids=reference_task_ids, parent_task_id=parent_task_id)
+        except ValueError as error:
+            raise TaskError(str(error)) from error
+        title, assignee_id, description = command.title, command.assignee_id, command.description
+        start_date, due_date = command.start_date, command.due_date
+        checklist, reference_task_ids, parent_task_id = command.checklist, command.reference_task_ids, command.parent_task_id
         if assignee_id == str(principal.id):
             raise TaskError("use a self-owned task instead of assigning yourself")
         if not self._may_put_on(principal, assignee_id):
             raise TaskError("assignee is not within your assignment scope")
-        validate_schedule(start_date, due_date)
         parent = self._tasks.parent_for(principal, parent_task_id) if parent_task_id is not None else None
-        references = self._tasks._readable_tasks(principal, reference_task_ids) if self._tasks is not None else []
+        references = self._tasks._readable_tasks(principal, reference_task_ids)
         task, assignment = self._repository.create_assigned_task(
-            str(principal.id), assignee_id, title.strip(),
-            description=_clean_text(description), start_date=start_date, due_date=due_date, causation_key=causation_key,
-            checklist=clean_checklist(checklist),
+            str(principal.id), assignee_id, title,
+            description=description, start_date=start_date, due_date=due_date, causation_key=causation_key,
+            checklist=checklist,
             references=references,
             parent_task_id=parent.id if parent is not None else None,
             source_action_item_id=source_action_item_id,
@@ -124,15 +136,17 @@ class TaskAssignmentApplication:
         description: str | None = None,
         start_date: date | None = None,
         due_date: date | None = None,
-    ) -> dict[str, Any]:
+    ) -> TaskMutationResult:
         """프로젝트 계획에 일을 올린다. 사람은 아직 정하지 않는다.
 
         무슨 일이 있는지와 누가 하는지는 다른 질문이다. 계획을 먼저 펼치고 사람을 나중에 붙이는 것이 프로젝트가
         움직이는 방식이며, 배정 행이 하나도 없다는 것이 곧 `담당자 미정`이다.
         """
         self._require(principal, TASK_ASSIGN)
-        if self._projects is None or not self._projects.may_assign_in(principal, project_id):
+        if not self._projects.may_assign_in(principal, project_id):
             raise TaskError("이 프로젝트에 업무를 올릴 수 있는 자격이 없습니다")
+        command = ProjectWorkInput(title=title, description=description, start_date=start_date, due_date=due_date)
+        title, description, start_date, due_date = command.title, command.description, command.start_date, command.due_date
         if not title.strip():
             raise TaskError("title is required")
         validate_schedule(start_date, due_date)
@@ -146,7 +160,7 @@ class TaskAssignmentApplication:
         )
         return TaskApplication._view(task)
 
-    def reassign(self, principal: Principal, task_id: UUID, expected_version: int, assignee_id: str, reason: str | None = None) -> dict[str, Any]:
+    def reassign(self, principal: Principal, task_id: UUID, expected_version: int, assignee_id: str, reason: str | None = None) -> TaskAssignmentResult:
         """Put someone else on work that is already underway.
 
         Changing who holds the work is its own command, never a field on the Task edit form: it moves a relationship,
@@ -157,6 +171,11 @@ class TaskAssignmentApplication:
         task = self._repository.task_by_id(task_id, lock=True)
         if task is None:
             raise TaskNotFound("task was not found")
+        # Assignment capability and a valid destination do not grant access to
+        # the source task. Check its owner projection after taking the row lock.
+        self._tasks.get(principal, task_id)
+        command = TaskReassignInput(expected_version=expected_version, assignee_id=assignee_id, reason=reason)
+        expected_version, assignee_id, reason = command.expected_version, command.assignee_id, command.reason
         current = self._repository.active_assignment_for(task_id, lock=True)
         if task.version != expected_version:
             raise InvalidTaskTransition("task version is stale")
@@ -180,34 +199,47 @@ class TaskAssignmentApplication:
         self._require(principal, TASK_READ)
         return [self._view(assignment, task) for assignment, task in self._repository.pending_for(str(principal.id))]
 
-    def sent(self, principal: Principal) -> list[dict[str, Any]]:
+    def sent(self, principal: Principal) -> list[TaskAssignmentResult]:
         self._require(principal, TASK_ASSIGN)
         return [self._view(assignment, task) for assignment, task in self._repository.assigned_by(str(principal.id))]
 
-    def accept(self, principal: Principal, assignment_id: UUID) -> dict[str, Any]:
+    def accept(self, principal: Principal, assignment_id: UUID, *, expected_task_version: int | None = None) -> TaskAssignmentResult:
         self._require(principal, TASK_SELF_MANAGE)
-        assignment = self._pending_target(principal, assignment_id)
+        try:
+            command = AssignmentAcceptCommand(assignment_id=assignment_id, expected_task_version=expected_task_version)
+        except ValueError as error:
+            raise TaskError(str(error)) from error
+        assignment_id, expected_task_version = command.assignment_id, command.expected_task_version
+        assignment = self._pending_target(principal, assignment_id, expected_task_version)
         self._repository.decide(assignment, str(principal.id), "accept")
         return self._view(assignment, self._repository.task_for(assignment))
 
-    def decline(self, principal: Principal, assignment_id: UUID, reason: str) -> dict[str, Any]:
+    def decline(self, principal: Principal, assignment_id: UUID, reason: str, *, expected_task_version: int | None = None) -> TaskAssignmentResult:
         self._require(principal, TASK_SELF_MANAGE)
+        try:
+            command = AssignmentDeclineCommand(assignment_id=assignment_id, expected_task_version=expected_task_version, reason=reason)
+        except ValueError as error:
+            raise TaskError(str(error)) from error
+        assignment_id, expected_task_version = command.assignment_id, command.expected_task_version
+        reason = command.reason
         if not reason.strip():
             raise TaskError("decline reason is required")
-        assignment = self._pending_target(principal, assignment_id)
+        assignment = self._pending_target(principal, assignment_id, expected_task_version)
         self._repository.decide(assignment, str(principal.id), "reject", reason=reason.strip())
         return self._view(assignment, self._repository.task_for(assignment))
 
-    def cancel(self, principal: Principal, assignment_id: UUID) -> dict[str, Any]:
+    def cancel(self, principal: Principal, assignment_id: UUID) -> TaskAssignmentResult:
         """Withdraw a direct assignment before the assignee answers it.
 
         This is the requester's command, not a ReviewDecision by the assignee. Both paths lock the same assignment row,
         so acceptance and cancellation cannot both win when the clicks race.
         """
         self._require(principal, TASK_ASSIGN)
-        assignment = self._repository.assignment(assignment_id, lock=True)
+        assignment = self._repository.assignment(assignment_id)
         if assignment is None or assignment.assigned_by != str(principal.id) or assignment.assignment_kind != "direct":
             raise TaskNotFound("task assignment was not found")
+        self._repository.task_by_id(assignment.task_id, lock=True)
+        assignment = self._repository.assignment(assignment_id, lock=True)
         if assignment.status == "cancelled":
             return self._view(assignment, self._repository.task_for(assignment))
         if assignment.status != "pending":
@@ -215,10 +247,16 @@ class TaskAssignmentApplication:
         self._repository.cancel(assignment, str(principal.id))
         return self._view(assignment, self._repository.task_for(assignment))
 
-    def _pending_target(self, principal: Principal, assignment_id: UUID) -> Any:
-        assignment = self._repository.assignment(assignment_id, lock=True)
+    def _pending_target(self, principal: Principal, assignment_id: UUID, expected_task_version: int | None = None) -> Any:
+        assignment = self._repository.assignment(assignment_id)
         if assignment is None or assignment.assignee_id != str(principal.id):
             raise TaskNotFound("task assignment was not found")
+        # Reassignment also takes Task then assignment. Use the same order and
+        # compare the version only after refreshing the locked Task.
+        task = self._repository.task_by_id(assignment.task_id, lock=True)
+        assignment = self._repository.assignment(assignment_id, lock=True)
+        if expected_task_version is not None and int(task.version) != expected_task_version:
+            raise InvalidTaskTransition("task version is stale")
         if assignment.status != "pending":
             raise TaskError("task assignment is not awaiting acceptance")
         return assignment
@@ -229,7 +267,7 @@ class TaskAssignmentApplication:
             raise TaskAccessDenied(f"{capability} capability is required")
 
     @staticmethod
-    def _view(assignment: Any, task: Any) -> dict[str, Any]:
+    def _view(assignment: Any, task: Any) -> TaskAssignmentResult:
         return {
             "assignment_id": str(assignment.id),
             "assignment_kind": assignment.assignment_kind,

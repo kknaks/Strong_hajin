@@ -18,7 +18,7 @@ class SqlAlchemyActionMaterialDraftRepository:
     def action_for(self, action_id: UUID, owner_id: str, *, lock: bool = False) -> ActionItemRecord | None:
         statement = select(ActionItemRecord).where(ActionItemRecord.id == action_id, ActionItemRecord.owner_id == owner_id)
         if lock:
-            statement = statement.with_for_update()
+            statement = statement.with_for_update().execution_options(populate_existing=True)
         return self._session.scalar(statement)
 
     def add(self, **fields: Any) -> ActionMaterialDraftRecord:
@@ -60,7 +60,7 @@ class SqlAlchemyActionMaterialDraftRepository:
             ActionMaterialDraftRecord.owner_id == owner_id,
         )
         if lock:
-            statement = statement.with_for_update()
+            statement = statement.with_for_update().execution_options(populate_existing=True)
         return self._session.scalar(statement)
 
     def cleanup_candidates(self, now: datetime, limit: int) -> list[ActionMaterialDraftRecord]:

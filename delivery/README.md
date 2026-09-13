@@ -48,6 +48,7 @@ docker run --rm --env-file scax.env -p 8000:8000 scax-protected:test api
 docker run --rm --env-file scax.env scax-protected:test conversation-worker
 docker run --rm --env-file scax.env scax-protected:test material-worker
 docker run --rm --env-file scax.env scax-protected:test meeting-worker
+docker run --rm --env-file scax.env scax-protected:test report-worker
 docker run --rm -i --env-file scax.env scax-protected:test mcp
 ```
 

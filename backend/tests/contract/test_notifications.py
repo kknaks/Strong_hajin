@@ -11,7 +11,6 @@ from fastapi.testclient import TestClient
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
-from ax_workspace.entrypoints.mcp import McpReportsFacade
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.platform.persistence import ConversationTurnRecord, make_session_factory
 

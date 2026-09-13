@@ -22,7 +22,7 @@ try {
 
   // A request that takes long enough to stop mid-flight.
   await page.getByLabel("AX 메시지").fill(
-    `SCAX MCP의 task_list와 work_request_list를 차례로 실제 호출한 뒤, 오늘 할 일을 길게 정리해줘. ${stamp}`,
+    `SCAX MCP의 my_task_list와 work_request_list를 차례로 실제 호출한 뒤, 오늘 할 일을 길게 정리해줘. ${stamp}`,
   );
   const created = page.waitForResponse(
     (response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST",

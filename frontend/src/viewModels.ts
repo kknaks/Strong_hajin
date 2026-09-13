@@ -437,6 +437,9 @@ export type DailyReportStatus = {
   report_date: string;
   status: "not_started" | "draft" | "submitted";
   report_id: string | null;
+  generation_id: string | null;
+  generation_status: "queued" | "running" | "completed" | "failed" | "needs_verification" | null;
+  generation_error_code: string | null;
 };
 
 export type WorkRequest = {
@@ -581,16 +584,17 @@ export type ActionEditOption = { value: string; label: string; organization_ids?
 export type ActionEditField = {
   id: string;
   label: string;
-  type: "text" | "textarea" | "date" | "datetime" | "boolean" | "person" | "select" | "multi_select" | "string_list";
+  type: "text" | "textarea" | "number" | "date" | "datetime" | "boolean" | "person" | "select" | "multi_select" | "string_list" | "object_list" | "ordered_select" | "source_select";
   required: boolean;
   editable: boolean;
+  empty_policy?: 'forbid' | 'null' | 'omit' | 'empty_string';
   value?: string | null;
   label_value?: string;
   options?: ActionEditOption[];
 };
 
 export type ActionEditContract = {
-  editor: "task" | "meeting" | "task_progress_batch";
+  editor: "task" | "meeting" | "task_progress_batch" | "command";
   base_submission_version: number;
   values: Record<string, unknown>;
   fields: ActionEditField[];
@@ -961,7 +965,7 @@ export type MeetingRoom = { room_id: number; name: string; capacity: number };
  * **실패해도 회의는 남는다** — 장소만 비어 있다.
  */
 export type MeetingRoomReservation = {
-  status: "booked" | "failed" | "cancelled";
+  status: "booked" | "failed" | "cancelled" | "needs_verification";
   room_name: string | null;
   reason: string | null;
   /** 고른 방이 안 돼 **다른 방으로 잡혔다**. 그 사실을 사람에게 말해야 한다. */

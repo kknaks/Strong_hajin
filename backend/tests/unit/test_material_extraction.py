@@ -82,7 +82,7 @@ class _ClaimRepo:
     def __init__(self, terminal: bool) -> None:
         self._terminal = terminal
 
-    def claim(self, extraction_id, *, stale_after_seconds):
+    def claim(self, extraction_id, *, stale_after_seconds, owner_token=None, actor_id=None):
         return None
 
     def is_terminal(self, extraction_id) -> bool:

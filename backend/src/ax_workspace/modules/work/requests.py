@@ -1,6 +1,13 @@
 """Direct WorkRequest lifecycle; it never creates WorkflowRun records."""
 from __future__ import annotations
 
+from ax_workspace.modules.work.request_results import WorkRequestDetailResult, WorkRequestEvidenceResult
+from ax_workspace.modules.actions.results import ActionDiscussionView
+
+from ax_workspace.modules.work.request_results import WorkRequestMutationResult
+from ax_workspace.modules.work.request_commands import WorkRequestVersionInput, WorkRequestRejectInput, WorkRequestNegotiationInput, WorkRequestCommentInput
+
+
 from collections.abc import Iterable
 from datetime import UTC, date, datetime
 import hashlib
@@ -18,6 +25,7 @@ from ax_workspace.modules.work.request_errors import (
     WorkRequestAccessDenied,
     WorkRequestError,
     WorkRequestIdempotencyConflict,
+    WorkRequestNotFound,
 )
 from ax_workspace.modules.work.request_lifecycle import (
     RequestCreationContext,
@@ -30,7 +38,6 @@ from ax_workspace.modules.work.request_lifecycle import (
     revise_work_request,
     withdraw_work_request,
 )
-from ax_workspace.modules.work.task_values import clean_checklist
 from ax_workspace.modules.work.material_extraction import MaterialExtractionJob, MaterialExtractionQueue, MaterialExtractionRepository
 from ax_workspace.modules.work.materials import AttachmentRepository, MaterialNotFound, MaterialStorage, store_file
 
@@ -267,7 +274,7 @@ class WorkRequestApplication:
             due_date=due_date,
             cc_member_ids=list(decision.cc_member_ids),
             # The steps travel with the request and become the accepted Task's own checklist.
-            checklist=clean_checklist(checklist),
+            checklist=checklist,
             # So does the earlier work pointed at — but only work this person may actually read right now.
             reference_task_ids=self._readable_references(principal, reference_task_ids),
             # 회의에서 넘어온 요청이면 출처 두 id 가 함께 간다 (SCAX-SPEC-004 §9-5).
@@ -279,8 +286,13 @@ class WorkRequestApplication:
             self._repository.append_audit(request.id, str(principal.id), "work_request.created", {})
         return self._view(request)
 
-    def accept(self, principal: Principal, request_id: UUID, expected_version: int) -> dict[str, Any]:
+    def accept(self, principal: Principal, request_id: UUID, expected_version: int) -> WorkRequestMutationResult:
         self._require(principal, WORK_REQUEST_DECIDE)
+        try:
+            command = WorkRequestVersionInput(expected_version=expected_version)
+        except ValueError as error:
+            raise WorkRequestError(str(error)) from error
+        expected_version = command.expected_version
         request = self._decision_target(principal, request_id, expected_version)
         request.state = "accepted"
         request.version += 1
@@ -289,8 +301,13 @@ class WorkRequestApplication:
         self._repository.append_audit(request.id, str(principal.id), "work_request.accepted", {"task_id": str(task.id)})
         return self._view(request, task)
 
-    def reject(self, principal: Principal, request_id: UUID, expected_version: int, reason: str) -> dict[str, Any]:
+    def reject(self, principal: Principal, request_id: UUID, expected_version: int, reason: str) -> WorkRequestMutationResult:
         self._require(principal, WORK_REQUEST_DECIDE)
+        try:
+            command = WorkRequestRejectInput(expected_version=expected_version, reason=reason)
+        except ValueError as error:
+            raise WorkRequestError(str(error)) from error
+        expected_version, reason = command.expected_version, command.reason
         if not reason.strip():
             raise WorkRequestError("rejection reason is required")
         request = self._decision_target(principal, request_id, expected_version)
@@ -306,8 +323,13 @@ class WorkRequestApplication:
         request_id: UUID,
         expected_version: int,
         conditions: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> WorkRequestMutationResult:
         self._require(principal, WORK_REQUEST_DECIDE)
+        try:
+            command = WorkRequestNegotiationInput(expected_version=expected_version, conditions=conditions)
+        except ValueError as error:
+            raise WorkRequestError(str(error)) from error
+        expected_version, conditions = command.expected_version, command.conditions
         if not conditions:
             raise WorkRequestError("negotiation conditions are required")
         # Whatever wrote this — the canonical command or the compatibility endpoint — the ledger must stay readable.
@@ -335,7 +357,7 @@ class WorkRequestApplication:
         description: str | None = None,
         due_date: date | None = None,
         clear_due_date: bool = False,
-    ) -> dict[str, Any]:
+    ) -> WorkRequestMutationResult:
         """The requester improving their own request before anyone has judged it.
 
         Nobody asked for this, so it is not a ReviewDecision and never puts the question back on the requester: it adds
@@ -421,7 +443,7 @@ class WorkRequestApplication:
         description: str | None = None,
         due_date: date | None = None,
         clear_due_date: bool = False,
-    ) -> dict[str, Any]:
+    ) -> WorkRequestMutationResult:
         """Requester revises a negotiated request: new SubjectVersion + Submission with diff; the earlier decision stays."""
         self._require(principal, WORK_REQUEST_CREATE)
         request = self._repository.request(request_id, lock=True)
@@ -517,12 +539,12 @@ class WorkRequestApplication:
         ]
         return {"request": self._view(request), "comments": comments, "evidence": evidence, **self._repository.timeline(request)}
 
-    def discussion(self, principal: Principal, request_id: UUID) -> list[dict[str, Any]]:
+    def discussion(self, principal: Principal, request_id: UUID) -> list[ActionDiscussionView]:
         """The comment thread on one request, for a participant. Reading or writing it never moves the judgement."""
         self._require(principal, WORK_REQUEST_READ)
         return self._comment_views(self._participant_request(principal, request_id))
 
-    def _comment_views(self, request: Any) -> list[dict[str, Any]]:
+    def _comment_views(self, request: Any) -> list[ActionDiscussionView]:
         if self._comments is None or request.request_thread_id is None:
             return []
         comments = self._comments.list_for(request.request_thread_id)
@@ -532,17 +554,9 @@ class WorkRequestApplication:
                 bound.setdefault(binding.context_id, []).append(_attachment_view(attachment))
         return [self._comment_view(item, bound.get(str(item.id), [])) for item in comments]
 
-    def attach_to_comment(self, principal: Principal, request_id: UUID, comment_id: UUID, *, name: str, content_type: str, data: bytes) -> dict[str, Any]:
+    def attach_to_comment(self, principal: Principal, request_id: UUID, comment_id: UUID, *, name: str, content_type: str, data: bytes) -> ActionDiscussionView:
         """Bind a file to one's own comment (ERD ATTACHMENT_BINDING context=comment, role=discussion)."""
-        self._require(principal, WORK_REQUEST_READ)
-        if self._comments is None or self._attachments is None or self._storage is None:
-            raise WorkRequestError("attachments are not available")
-        request = self._participant_request(principal, request_id)
-        comment = self._comments.comment(request.request_thread_id, comment_id) if request.request_thread_id else None
-        if comment is None:
-            raise WorkRequestError("comment was not found")
-        if comment.author_member_id != str(principal.id):
-            raise WorkRequestError("only the comment author may attach files")
+        request, comment = self._comment_attachment_target(principal, request_id, comment_id)
         attachment = store_file(
             self._attachments, self._storage,
             key_prefix=f"work_requests/{request.id}/comments", name=name, content_type=content_type, data=data,
@@ -552,8 +566,19 @@ class WorkRequestApplication:
         self._request_extraction(attachment)
         return self._comment_view(comment, [_attachment_view(item) for _, item in self._attachments.bindings_for("comment", str(comment.id))])
 
-    def add_evidence(self, principal: Principal, request_id: UUID, *, name: str, content_type: str, data: bytes) -> dict[str, Any]:
-        """Adopt a file as Evidence for the current Submission: the reviewer adopts decision basis, the requester supplies support."""
+    def _comment_attachment_target(self, principal: Principal, request_id: UUID, comment_id: UUID) -> tuple[Any, Any]:
+        self._require(principal, WORK_REQUEST_READ)
+        if self._comments is None or self._attachments is None or self._storage is None:
+            raise WorkRequestError("attachments are not available")
+        request = self._participant_request(principal, request_id)
+        comment = self._comments.comment(request.request_thread_id, comment_id) if request.request_thread_id else None
+        if comment is None:
+            raise WorkRequestError("comment was not found")
+        if comment.author_member_id != str(principal.id):
+            raise WorkRequestError("only the comment author may attach files")
+        return request, comment
+
+    def _evidence_target(self, principal: Principal, request_id: UUID) -> tuple[Any, Any]:
         self._require(principal, WORK_REQUEST_READ)
         if self._attachments is None or self._storage is None:
             raise WorkRequestError("attachments are not available")
@@ -568,6 +593,18 @@ class WorkRequestApplication:
         if self._repository.active_assignment(submission) is None:
             # The basis of a round a person already judged is history. A new round is how the basis grows.
             raise WorkRequestError("이 회차는 이미 판단이 끝났습니다. 수정안을 재상신한 뒤 새 회차에 근거를 추가하세요")
+        return request, submission
+
+    def upload_target(self, principal: Principal, request_id: UUID, comment_id: UUID | None = None) -> tuple[str, int]:
+        # Current request visibility precedes the narrower author/reviewer upload role.
+        self._participant_request(principal, request_id)
+        request, _ = (self._comment_attachment_target(principal, request_id, comment_id)
+                      if comment_id is not None else self._evidence_target(principal, request_id))
+        return request.title, int(request.version)
+
+    def add_evidence(self, principal: Principal, request_id: UUID, *, name: str, content_type: str, data: bytes) -> WorkRequestEvidenceResult:
+        """Adopt a file as Evidence for the current Submission: the reviewer adopts decision basis, the requester supplies support."""
+        request, submission = self._evidence_target(principal, request_id)
         attachment = store_file(
             self._attachments, self._storage,
             key_prefix=f"work_requests/{request.id}/evidence", name=name, content_type=content_type, data=data,
@@ -600,7 +637,7 @@ class WorkRequestApplication:
         if self._extractions is not None:
             extraction = self._extractions.request(attachment)
             if extraction.status == "queued" and self._extraction_queue is not None:
-                self._extraction_queue.enqueue(MaterialExtractionJob(extraction.id, attachment.id))
+                self._extraction_queue.enqueue(MaterialExtractionJob(extraction.id, attachment.id, attachment.uploaded_by))
 
     def material_bindings(self, principal: Principal, request_id: UUID) -> list[tuple[Any, Any]]:
         """Live discussion bindings and adopted, immutable submission files for a current participant."""
@@ -632,7 +669,7 @@ class WorkRequestApplication:
             raise MaterialNotFound("attachment was not found")
         return _attachment_view(attachment), self._storage.get(attachment.source_ref)
 
-    def add_comment(self, principal: Principal, request_id: UUID, body: str, *, idempotency_key: str | None = None) -> dict[str, Any]:
+    def add_comment(self, principal: Principal, request_id: UUID, body: str, *, idempotency_key: str | None = None) -> ActionDiscussionView:
         """Discussion only: a comment never changes the request state or counts as a decision.
 
         With an Idempotency-Key the Comment id is derived from thread + author + key, so a retried or double-submitted
@@ -645,7 +682,7 @@ class WorkRequestApplication:
         request = self._participant_request(principal, request_id)
         if request.request_thread_id is None:
             raise WorkRequestError("work request has no thread")
-        text = body.strip()
+        text = WorkRequestCommentInput(body=body).body
         if not text:
             raise WorkRequestError("comment body is required")
         if not idempotency_key:
@@ -668,9 +705,9 @@ class WorkRequestApplication:
     def _participant_request(self, principal: Principal, request_id: UUID) -> Any:
         request = self._repository.request(request_id)
         if request is None:
-            raise WorkRequestError("work request was not found")
+            raise WorkRequestNotFound("work request was not found")
         if not self._is_participant(principal, request):
-            raise WorkRequestError("principal cannot read this work request")
+            raise WorkRequestNotFound("work request was not found")
         return request
 
     @staticmethod
@@ -693,7 +730,7 @@ class WorkRequestApplication:
         )
 
     @staticmethod
-    def _comment_view(comment: Any, attachments: list[dict[str, Any]]) -> dict[str, Any]:
+    def _comment_view(comment: Any, attachments: list[dict[str, Any]]) -> ActionDiscussionView:
         return {
             "comment_id": str(comment.id),
             "author_member_id": comment.author_member_id,
@@ -703,17 +740,17 @@ class WorkRequestApplication:
             "attachments": attachments,
         }
 
-    def inbox(self, principal: Principal) -> list[dict[str, Any]]:
+    def inbox(self, principal: Principal) -> list[WorkRequestMutationResult]:
         self._require(principal, WORK_REQUEST_DECIDE)
         return [self._view(request) for request in self._repository.inbox_for(str(principal.id))]
 
-    def list(self, principal: Principal) -> list[dict[str, Any]]:
+    def list(self, principal: Principal) -> list[WorkRequestMutationResult]:
         self._require(principal, WORK_REQUEST_READ)
         requests = self._repository.list_for(str(principal.id))
         derived = self._repository.derived_task_ids(requests)
         return [self._view(request, task_id=derived.get(request.id)) for request in requests]
 
-    def get(self, principal: Principal, request_id: UUID) -> dict[str, Any]:
+    def get(self, principal: Principal, request_id: UUID) -> WorkRequestDetailResult:
         self._require(principal, WORK_REQUEST_READ)
         request = self._participant_request(principal, request_id)
         return {
@@ -763,7 +800,7 @@ class WorkRequestApplication:
     def _decision_target(self, principal: Principal, request_id: UUID, expected_version: int) -> Any:
         request = self._repository.request(request_id, lock=True)
         if request is None:
-            raise WorkRequestError("work request was not found")
+            raise WorkRequestNotFound("work request was not found")
         if request.assignee_id != str(principal.id):
             raise WorkRequestError("only the requested assignee may decide")
         if request.version != expected_version:
@@ -777,7 +814,7 @@ class WorkRequestApplication:
         if capability not in principal.capabilities:
             raise WorkRequestAccessDenied(f"{capability} capability is required")
 
-    def _view(self, request: Any, task: Any | None = None, *, task_id: Any | None = None) -> dict[str, Any]:
+    def _view(self, request: Any, task: Any | None = None, *, task_id: Any | None = None) -> WorkRequestMutationResult:
         submission = self._repository.current_submission(request)
         return {
             "request_id": str(request.id),

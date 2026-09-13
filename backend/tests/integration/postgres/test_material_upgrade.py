@@ -51,3 +51,42 @@ def test_concurrent_workers_schedule_one_parser_upgrade_and_publish_one_current_
     found = client.get('/api/materials/search', headers=headers, params={'q': 'postgresupgradetailtoken'}).json()
     assert found["searched_materials"] == 1 and len(found["results"]) == 1
     assert found["results"][0]["extraction"]["parser_version"] == PARSER_VERSION
+
+
+@pytest.mark.integration
+def test_two_workers_backfill_one_missing_projection_without_search_writes(tmp_path, monkeypatch):
+    from ax_workspace.modules.work.requests import WorkRequestApplication
+
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres", materials_dir=str(tmp_path / "materials"))
+    client = TestClient(create_app(settings))
+    headers = {"X-Demo-Persona": "mina"}
+    with monkeypatch.context() as legacy:
+        legacy.setattr(WorkRequestApplication, "_request_extraction", lambda *args: None)
+        request = client.post("/api/work-requests", headers=headers, json={"title": "이전 자료 보강", "assignee_id": "jiho"}).json()
+        response = client.post(f"/api/work-requests/{request['request_id']}/evidence", headers=headers,
+                               files={"file": ("legacy.txt", b"postgresbackfilltoken", "text/plain")})
+        assert response.status_code == 201, response.text
+    for _ in range(2):
+        assert client.get("/api/materials/search", headers=headers, params={"q": "postgresbackfilltoken"}).json()["results"] == []
+    with make_session_factory(database_url)() as session:
+        assert list(session.scalars(select(MaterialExtractionRecord))) == []
+        assert list(session.scalars(select(DurableJobRecord))) == []
+    barrier = Barrier(2)
+
+    def catch_up():
+        barrier.wait(timeout=5)
+        return MaterialExtractionWorker(settings)._catch_up_index()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(catch_up) for _ in range(2)]
+        assert any([future.result(timeout=10) for future in futures])
+    with make_session_factory(database_url)() as session:
+        extractions = list(session.scalars(select(MaterialExtractionRecord)))
+        jobs = list(session.scalars(select(DurableJobRecord)))
+        assert len(extractions) == len(jobs) == 1
+        assert jobs[0].payload["extraction_id"] == str(extractions[0].id)
+    assert asyncio.run(MaterialExtractionWorker(settings).run_once())
+    found = client.get("/api/materials/search", headers=headers, params={"q": "postgresbackfilltoken"}).json()
+    assert len(found["results"]) == 1

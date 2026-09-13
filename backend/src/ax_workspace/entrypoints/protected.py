@@ -39,6 +39,12 @@ def _run_meeting_worker() -> None:
     main()
 
 
+def _run_report_worker() -> None:
+    from ax_workspace.entrypoints.report_worker import main
+
+    main()
+
+
 def _run_mcp() -> None:
     from ax_workspace.entrypoints.mcp import main
 
@@ -52,7 +58,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run one SCAX backend process")
     parser.add_argument(
         "role",
-        choices=("api", "conversation-worker", "material-worker", "meeting-worker", "mcp"),
+        choices=("api", "conversation-worker", "material-worker", "meeting-worker", "report-worker", "mcp"),
     )
     role = parser.parse_args(argv).role
     handlers: dict[str, Callable[[], None]] = {
@@ -60,6 +66,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "conversation-worker": _run_conversation_worker,
         "material-worker": _run_material_worker,
         "meeting-worker": _run_meeting_worker,
+        "report-worker": _run_report_worker,
         "mcp": _run_mcp,
     }
     handlers[role]()

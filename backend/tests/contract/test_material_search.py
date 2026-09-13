@@ -420,7 +420,7 @@ def test_when_a_material_was_registered_is_a_different_question_from_what_it_say
 
     날짜를 검색어에 섞으면 둘이 하나로 뭉개진다. 등록 시각은 조건이고, 본문의 날짜는 찾을 말이다.
     """
-    from datetime import UTC, date, datetime
+    from datetime import UTC, datetime
 
     from sqlalchemy import select
 

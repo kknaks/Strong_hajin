@@ -193,7 +193,7 @@ try {
   await page.getByRole("button", { name: "AX", exact: true }).click();
   await page.getByRole("button", { name: "새 AX 대화" }).click();
   await page.getByLabel("AX 메시지").fill(
-    "SCAX MCP의 meeting_list를 include_visible=true로 호출해 조직에서 공유되어 내가 볼 수 있는 회의를 모두 나열해줘.",
+    "SCAX MCP의 meeting_list를 호출해 조직에서 공유되어 내가 볼 수 있는 회의를 모두 나열해줘.",
   );
   const secondCreated = page.waitForResponse((response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST");
   await page.getByRole("button", { name: "보내기" }).click();

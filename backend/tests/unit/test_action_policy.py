@@ -252,6 +252,15 @@ def test_ax_proposal_confirm_labels_are_canonical(action_type: str, label: str) 
     assert commands[0].label == label
 
 
+def test_ax_proposal_can_forbid_reject_during_required_recovery() -> None:
+    commands = available_ax_proposal_commands(
+        _ax_facts(pending=True, has_submission=True, allow_reject=False),
+        _principal(ACTION_DECIDE),
+    )
+
+    assert _ids(commands) == ["confirm"]
+
+
 class _Handler:
     def __init__(self, commands: list[ActionCommand]) -> None:
         self.commands = commands

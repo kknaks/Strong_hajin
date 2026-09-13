@@ -18,13 +18,14 @@ make reset-demo        # 한 번, 그리고 스키마가 바뀔 때마다
 make local-stack       # API 8001 · 워커 셋 · 프론트 5176 · Ctrl+C면 모두 멈춘다
 ```
 
-`make local-stack`이 기본 실행 경로다. PostgreSQL을 기다리고, 스키마가 없으면 시작하지 않고(먼저 `make reset-demo` — 스택은 스스로 reset하지 않는다), 다섯 프로세스를 함께 띄우고 감독한다. 하나라도 죽으면 나머지를 멈추고 실패한다.
+`make local-stack`이 기본 실행 경로다. PostgreSQL을 기다리고, 스키마가 없으면 시작하지 않고(먼저 `make reset-demo` — 스택은 스스로 reset하지 않는다), API·프런트와 네 워커를 함께 띄우고 감독한다. 하나라도 죽으면 나머지를 멈추고 실패한다.
 
-프로세스를 하나씩 띄우는 길도 있다: `make api`(8000, autoreload) · `make conversation-worker` · `make material-worker` · `make meeting-worker` · `make frontend`(5173).
+프로세스를 하나씩 띄우는 길도 있다: `make api`(8000, autoreload) · `make conversation-worker` · `make material-worker` · `make meeting-worker` · `make report-worker` · `make frontend`(5173).
 
 - **대화 워커** — 대기열의 AX turn을 실제 Codex로 실행하는 유일한 프로세스다. 없으면 모든 turn이 `pending`에 머문다.
 - **자료 워커** — 올린 자료를 추출하고 색인한다. 없으면 업로드가 `queued`에 머문다. 한가할 때 지난 분석 규칙으로 만들어진 색인을 따라잡는다.
 - **회의 워커** — 올린 녹음을 raw STT → 정제 → 최종 요약으로 넘기고, 중단되면 빠진 첫 산출물부터 이어서 한다.
+- **보고 워커** — 접수된 일일보고 생성을 고정된 workflow run에서 실행한다. 완료한 단계는 재사용하고 실패한 생성 단계만 제한적으로 다시 실행한다.
 
 워커와 API는 확장 없는 PostgreSQL job 전송(`durable_jobs`)을 함께 쓴다 — `FOR UPDATE SKIP LOCKED` claim, fencing lease token, 멱등 handler 위의 at-least-once. PGMQ 확장이 없는 Azure Database for PostgreSQL Flexible Server에서도 돌게 하려는 선택이고, 아직 Azure runtime에서 확인하지는 않았다. `AX_JOB_QUEUE_BACKEND`가 `postgres`(기본)와 `memory`(in-process test)를 고른다.
 

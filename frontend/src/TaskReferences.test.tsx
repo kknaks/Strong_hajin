@@ -54,12 +54,13 @@ function renderDrawer(references: unknown[], onOpenTask = vi.fn()) {
   vi.mocked(api.getTasks).mockResolvedValue([{ task_id: "task-9", title: "다른 업무" }] as never);
   const onError = vi.fn();
   const onChanged = vi.fn();
+  const onClose = vi.fn();
   render(
     <TaskDetailDrawer
       busy={false}
       canManage
       onChanged={onChanged}
-      onClose={vi.fn()}
+      onClose={onClose}
       onError={onError}
       onNotice={vi.fn()}
       onOpenTask={onOpenTask}
@@ -69,13 +70,30 @@ function renderDrawer(references: unknown[], onOpenTask = vi.fn()) {
       task={task}
     />,
   );
-  return { onError, onChanged, onOpenTask };
+  return { onError, onChanged, onOpenTask, onClose };
 }
 
 describe("참고 업무", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+  });
+
+  it('holds the current task while its selected file is uploading', async () => {
+    let reject!: (error: Error) => void;
+    vi.mocked(api.uploadTaskMaterial).mockReturnValue(new Promise((_, fail) => { reject = fail; }));
+    const { onOpenTask, onClose, onError } = renderDrawer([reference]);
+    const file = await screen.findByLabelText('참고 자료 파일');
+    fireEvent.change(file, { target: { files: [new File(['original'], 'source.txt')] } });
+    await waitFor(() => expect(api.uploadTaskMaterial).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: '1분기 정산 열기' }));
+    expect(onOpenTask).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+    reject(new Error('파일 업로드 실패'));
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('파일 업로드 실패'));
+    fireEvent.click(screen.getByRole('button', { name: '1분기 정산 열기' }));
+    expect(onOpenTask).toHaveBeenCalledWith('task-0');
   });
 
   it("shows the earlier work this one points at, and opens it inside the product", async () => {

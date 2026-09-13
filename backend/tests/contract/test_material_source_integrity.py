@@ -8,6 +8,11 @@ from ax_workspace.platform.persistence import AttachmentRecord, make_session_fac
 from test_material_search import MINA, _stack, _upload
 
 
+class UnreachableParser:
+    def extract(self, **kwargs):
+        raise AssertionError("Changed bytes must be rejected before parser execution")
+
+
 def test_worker_rejects_source_bytes_that_no_longer_match_the_uploaded_revision(tmp_path):
     client, _, worker, settings = _stack(tmp_path)
     task = client.post("/api/tasks", headers=MINA, json={"title": "원본 무결성"}).json()
@@ -15,9 +20,6 @@ def test_worker_rejects_source_bytes_that_no_longer_match_the_uploaded_revision(
     with make_session_factory(settings.database_url)() as session:
         source_ref = session.get(AttachmentRecord, UUID(material["attachment_id"])).source_ref
     LocalDirectoryMaterialStorage(Path(settings.materials_dir)).put(source_ref, b"replacedsourcetoken", "text/plain")
-    class UnreachableParser:
-        def extract(self, **kwargs):
-            raise AssertionError("Changed bytes must be rejected before parser execution")
     worker._extractor = UnreachableParser()
     assert asyncio.run(worker.run_once())
     extraction = client.get(f"/api/tasks/{task['task_id']}/materials", headers=MINA).json()[0]["extraction"]

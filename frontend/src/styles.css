@@ -260,6 +260,10 @@ input.title-input { height: 48px; font-size: 17px; font-weight: 700; }
 .field { display: grid; gap: 7px; }
 .field > label, .field > span, .field > span > label { color: var(--text-tertiary); font-size: 13px; font-weight: 700; }
 .form-stack, .form-grid { display: grid; gap: 16px; }
+.action-command-editor { display: grid; gap: 16px; }
+.action-command-editor fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.action-command-editor .action-task-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.action-command-editor input[type="datetime-local"] { width: 100%; height: 38px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); color: var(--text-primary); background: var(--surface); font-size: 15px; }
 
 /* 잘못된 값 — 보더만 갈아입고 자리는 그대로다 (v2 09) */
 input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--danger-accent); }
@@ -1401,8 +1405,6 @@ input[type="date"]:disabled { color: var(--text-secondary); }
 .meeting-row.openable:hover { background: var(--surface-selected-row); }
 .meeting-row .cell-main { flex: 1; min-width: 0; display: grid; gap: 2px; }
 .meeting-row .cell-main small { color: var(--text-tertiary); font-size: 12px; }
-.meeting-row.busy { background: var(--surface-sunken); color: var(--text-tertiary); }
-.meeting-row.busy b { color: var(--text-secondary); font-weight: 500; }
 .note-status { display: flex; align-items: center; gap: 8px; margin: 6px 0 0; font-size: 12px; }
 .recording-state { margin: 0 0 8px; font-size: 13px; }
 .transcript-toolbar { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; }

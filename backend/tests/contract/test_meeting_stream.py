@@ -369,7 +369,7 @@ def test_no_route_offers_a_provider_credential_or_a_direct_upload_any_more(tmp_p
     client, _, _ = _stack(tmp_path)
     paths = {getattr(route, "path", "") for route in client.app.routes}
     assert not any("realtime-credential" in path or "realtime-segments" in path for path in paths)
-    assert not any("/recordings" in path for path in paths)
+    assert not any(path.startswith("/api/meetings") and "/recordings" in path for path in paths)
     assert "/api/meetings/{meeting_id}/stream" in paths
 
 

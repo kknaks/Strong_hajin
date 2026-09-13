@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiError, bookMeeting, readMeeting, readMeetingRooms } from "../api";
+import { createIdempotencyKey } from "../idempotency";
 import { DateField } from "../DateField";
 import { Icon } from "../Icon";
 import { Select } from "../Select";
@@ -31,7 +32,7 @@ export function roomReservationNotice(record: MeetingRecord): string | null {
   if (reservation.status === "booked") {
     return reservation.replaced && reservation.room_name ? meetingScreen.roomReplaced(reservation.room_name) : null;
   }
-  if (reservation.status !== "failed") return null;
+  if (!["failed", "needs_verification"].includes(reservation.status)) return null;
   return meetingScreen.roomFailed[reservation.reason ?? ""] ?? meetingScreen.roomFailed.room_reservation_failed;
 }
 
@@ -108,6 +109,7 @@ export function BookingModal({
   const [suggestion, setSuggestion] = useState<MeetingRecord | null>(null);
   const [askClose, setAskClose] = useState(false);
   const [busy, setBusy] = useState(false);
+  const submitAttempt = useRef<{ fingerprint: string; key: string } | null>(null);
   const { roster } = useRoster(true);
 
   /* 고를 수 있는 방은 예약 시스템이 정한다 — 닿지 않으면 빈 목록이고, 그때는 「선택 안 함」만 선다.
@@ -213,19 +215,24 @@ export function BookingModal({
   async function submit() {
     if (!ready || busy) return;
     setBusy(true);
+    const input = {
+      title: trimmed,
+      purpose: purpose.trim() || null,
+      starts_at: meetingIsoAt(date, from),
+      ends_at: meetingIsoAt(date, to),
+      // 「선택 안 함」이면 `null` 이 나가고 예약 시스템을 부르지 않는다
+      room_id: room === "" ? null : Number(room),
+      attendee_ids: people.map((person) => person.member_id),
+      external_attendees: guests,
+      agendas: agendas.map((agenda) => ({ title: agenda.title })),
+      carried_from_meeting_id: carried,
+    };
+    const fingerprint = JSON.stringify(input);
+    if (submitAttempt.current?.fingerprint !== fingerprint) {
+      submitAttempt.current = { fingerprint, key: createIdempotencyKey() };
+    }
     try {
-      const record = await bookMeeting({
-        title: trimmed,
-        purpose: purpose.trim() || null,
-        starts_at: meetingIsoAt(date, from),
-        ends_at: meetingIsoAt(date, to),
-        // 「선택 안 함」이면 `null` 이 나가고 예약 시스템을 부르지 않는다
-        room_id: room === "" ? null : Number(room),
-        attendee_ids: people.map((person) => person.member_id),
-        external_attendees: guests,
-        agendas: agendas.map((agenda) => ({ title: agenda.title })),
-        carried_from_meeting_id: carried,
-      });
+      const record = await bookMeeting(input, submitAttempt.current.key);
       onCreated(record);
     } catch (reason) {
       const rejected = roomRejectionOf(reason);
@@ -234,6 +241,7 @@ export function BookingModal({
            고른 방은 풀어 둔다: 방금 거절당한 자리를 고른 채로 두지 않는다 */
         setRooms(rejected.rooms);
         setRoom("");
+        submitAttempt.current = null;
         onNotice(rejected.message);
       } else {
         onError(reason instanceof Error ? reason.message : "회의를 만들지 못했습니다.");

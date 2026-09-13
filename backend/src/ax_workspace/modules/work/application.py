@@ -1,13 +1,23 @@
 """Public commands for a principal's directly owned tasks."""
 from __future__ import annotations
 
+from ax_workspace.modules.work.task_results import TaskCompletionResult, TaskReferenceResult, TaskReferenceReleaseResult
+
+from ax_workspace.modules.work.task_results import TaskDetailResult, TaskHistoryDiffResult, TaskHistoryResult, TaskListEntry
+
+from ax_workspace.modules.work.errors import TaskError, TaskNotFound, InvalidTaskTransition, TaskAccessDenied
+from ax_workspace.modules.work.task_values import validate_schedule
+
 from datetime import UTC, date, datetime
 from typing import Any, Protocol
 from uuid import UUID
+from ax_workspace.modules.work.task_creation import TaskCreateInput
+from ax_workspace.modules.work.task_results import ChecklistMutationResult, ChecklistOrderResult, TaskMutationResult, TaskAssignmentView
+from ax_workspace.modules.work.checklist_commands import ChecklistAddInput, ChecklistUpdateInput, ChecklistArchiveInput, ChecklistOrderInput
+from ax_workspace.modules.work.task_commands import TaskEditFields, TaskCompletionInput, TaskReferenceCommand, TaskReferenceReleaseCommand
 from zoneinfo import ZoneInfo
 
 from ax_workspace.modules.work.checklist import ChecklistItem, UpdateChecklistItem, update_checklist_item
-from ax_workspace.modules.work.errors import InvalidTaskTransition, TaskAccessDenied, TaskError, TaskNotFound
 from ax_workspace.modules.work.lifecycle import (
     ChangeTaskState,
     Task,
@@ -15,7 +25,6 @@ from ax_workspace.modules.work.lifecycle import (
     TaskState,
     transition_task,
 )
-from ax_workspace.modules.work.task_values import clean_checklist, validate_schedule
 from ax_workspace.modules.organization_access.domain import (
     PROJECT_READ,
     WORK_READ_ALL,
@@ -51,7 +60,6 @@ class TaskRepository(Protocol):
     def tasks_for(self, owner_id: str, *, include_closed: bool = False) -> list[Any]: ...
     def tasks_held_by_members(self, member_ids: frozenset[str], *, include_closed: bool = False) -> list[Any]: ...
     def tasks_in_projects(self, project_ids: frozenset[str], *, include_closed: bool = False) -> list[Any]: ...
-    def touch(self, task: Any) -> None: ...
     def checklist_for(self, task_id: UUID, *, include_archived: bool = False) -> list[Any]: ...
     def checklist_progress_for(self, task_ids: list[UUID]) -> dict[UUID, tuple[int, int]]: ...
     def origin_facts(self, tasks: list[Any]) -> dict[UUID, dict[str, Any]]: ...
@@ -143,25 +151,29 @@ class TaskApplication:
         reference_task_ids: list[UUID] | None = None,
         parent_task_id: UUID | None = None,
         project_id: UUID | None = None,
-    ) -> dict[str, Any]:
+    ) -> TaskMutationResult:
         self._require(principal, TASK_SELF_MANAGE)
-        if not title.strip():
-            raise TaskError("title is required")
-        validate_schedule(start_date, due_date)
+        try:
+            command = TaskCreateInput(title=title, description=description, start_date=start_date, due_date=due_date, checklist=checklist, reference_task_ids=reference_task_ids, parent_task_id=parent_task_id, project_id=project_id)
+        except ValueError as error:
+            raise TaskError(str(error)) from error
+        title, description, start_date, due_date = command.title, command.description, command.start_date, command.due_date
+        checklist, reference_task_ids = command.checklist, command.reference_task_ids
+        parent_task_id, project_id = command.parent_task_id, command.project_id
         parent = self.parent_for(principal, parent_task_id)
         project = self.project_for(principal, project_id, parent)
         task = self.repository.create_self_task(
             str(principal.id),
-            title.strip(),
+            title,
             causation_key,
             source_action_item_id=source_action_item_id,
             source_decision_item_id=source_decision_item_id,
             source_submission_id=source_submission_id,
             source_review_decision_id=source_review_decision_id,
-            description=_clean_text(description),
+            description=description,
             start_date=start_date,
             due_date=due_date,
-            checklist=clean_checklist(checklist),
+            checklist=checklist,
             # Pointers written with the work belong to its first version, so they are frozen with it.
             references=self._readable_tasks(principal, reference_task_ids),
             parent_task_id=parent.id if parent is not None else None,
@@ -229,7 +241,7 @@ class TaskApplication:
         principal: Principal,
         expected_version: int,
         changes: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> TaskMutationResult:
         """Owner-only field edits (title, description, schedule); no approval gate and no state change."""
         self._require(principal, TASK_SELF_MANAGE)
         task = self.repository.task(task_id, str(principal.id), lock=True)
@@ -237,9 +249,10 @@ class TaskApplication:
             raise InvalidTaskTransition("task version is stale")
         if TaskState(task.state) is TaskState.CANCELLED:
             raise TaskError("cancelled tasks cannot be edited")
-        unknown = set(changes) - {"title", "description", "start_date", "due_date", "project_id"}
-        if unknown:
-            raise TaskError(f"unsupported task fields: {sorted(unknown)}")
+        try:
+            changes = TaskEditFields.model_validate(changes).changes()
+        except ValueError as error:
+            raise TaskError(str(error)) from error
         if "project_id" in changes:
             if getattr(task, "parent_task_id", None) is not None:
                 # 하위 업무는 자기 프로젝트를 따로 갖지 않는다. 상위 업무가 옮겨 가면 함께 간다.
@@ -268,13 +281,21 @@ class TaskApplication:
         )
         return self._view(task)
 
-    def list_for(
+    def my_work(self, principal: Principal, *, include_closed: bool = False) -> list[TaskListEntry]:
+        """Only work this person currently holds through an active assignment."""
+        return self._list(principal, include_closed=include_closed, include_organization=False)
+
+    def readable_tasks(self, principal: Principal, *, include_closed: bool = False) -> list[TaskListEntry]:
+        """Work this person may read through their current organization and project scope."""
+        return self._list(principal, include_closed=include_closed, include_organization=True)
+
+    def _list(
         self,
         principal: Principal,
         *,
         include_closed: bool = False,
         include_organization: bool = False,
-    ) -> list[dict[str, Any]]:
+    ) -> list[TaskListEntry]:
         """The list carries the checklist count, not its items: enough for a progress cue, cheap enough for a table.
 
         `내 업무` is what this person holds and stays that way. The organization's work is a different question, asked
@@ -316,7 +337,7 @@ class TaskApplication:
             )
         return views
 
-    def get(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
+    def get(self, principal: Principal, task_id: UUID) -> TaskDetailResult:
         """The holder's workspace, or a read-only view for someone related through the Task's source.
 
         A requester is not the assignee: they may see the work their request produced, but reading it is not holding
@@ -490,9 +511,11 @@ class TaskApplication:
         *,
         summary: str,
         output_material_ids: list[UUID] | None = None,
-    ) -> dict[str, Any]:
+    ) -> TaskCompletionResult:
         """Hand the work over: freeze what was delivered and put it in front of the person who asked for it."""
         self._require(principal, TASK_SELF_MANAGE)
+        command = TaskCompletionInput(expected_version=expected_version, summary=summary, output_material_ids=output_material_ids or [])
+        expected_version, summary, output_material_ids = command.expected_version, command.summary, command.output_material_ids
         task = self.repository.task(task_id, str(principal.id), lock=True)
         if not self.requires_completion_review(task):
             raise TaskError("이 업무는 완료 보고 없이 바로 완료 처리합니다")
@@ -625,7 +648,7 @@ class TaskApplication:
         target: TaskState,
         reason: str | None = None,
         expected_version: int = 0,
-    ) -> dict[str, Any]:
+    ) -> TaskMutationResult:
         self._require(principal, TASK_SELF_MANAGE)
         task = self.repository.task(task_id, str(principal.id), lock=True)
         requires_review = self.requires_completion_review(task)
@@ -674,7 +697,7 @@ class TaskApplication:
         if capability not in principal.capabilities:
             raise TaskAccessDenied(f"{capability} capability is required")
 
-    def history(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
+    def history(self, principal: Principal, task_id: UUID) -> TaskHistoryResult:
         """How this Task got to where it is, for anyone who may read the Task itself."""
         self._readable(principal, task_id)
         return {
@@ -711,7 +734,7 @@ class TaskApplication:
         rows.sort(key=lambda row: (row["occurred_at"], row["version"] or 0), reverse=True)
         return rows
 
-    def history_diff(self, principal: Principal, task_id: UUID, before: int, after: int) -> dict[str, Any]:
+    def history_diff(self, principal: Principal, task_id: UUID, before: int, after: int) -> TaskHistoryDiffResult:
         """What changed between two versions. Only what actually moved is named."""
         self._readable(principal, task_id)
         frozen = {int(row.version): dict(row.snapshot) for row in self.repository.versions_for(task_id)}
@@ -810,9 +833,14 @@ class TaskApplication:
 
     def add_checklist_item(
         self, principal: Principal, task_id: UUID, text: str, *, expected_task_version: int | None = None
-    ) -> dict[str, Any]:
+    ) -> ChecklistMutationResult:
         """Only the person who holds the Task may add a step, and the text must say something."""
         task = self._holding(principal, task_id, expected_task_version)
+        try:
+            command = ChecklistAddInput(text=text, expected_task_version=expected_task_version)
+        except ValueError as error:
+            raise TaskError(str(error)) from error
+        text = command.text
         cleaned = " ".join(text.split())
         if not cleaned:
             raise TaskError("checklist item text is required")
@@ -831,9 +859,14 @@ class TaskApplication:
         done: bool | None = None,
         expected_version: int | None = None,
         expected_task_version: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> ChecklistMutationResult:
         """Checking a step records who did it and when; unchecking clears those facts rather than keeping a stale actor."""
         task = self._holding(principal, task_id, expected_task_version)
+        try:
+            command = ChecklistUpdateInput(text=text, done=done, expected_version=expected_version, expected_task_version=expected_task_version)
+        except ValueError as error:
+            raise TaskError(str(error)) from error
+        text, done, expected_version = command.text, command.done, command.expected_version
         item = self.repository.checklist_item(task.id, item_id, lock=True)
         if item is None:
             raise TaskNotFound("checklist item was not found")
@@ -905,9 +938,14 @@ class TaskApplication:
         *,
         expected_version: int | None = None,
         expected_task_version: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> ChecklistMutationResult:
         """Take a step off the list without erasing that it was ever there."""
         task = self._holding(principal, task_id, expected_task_version)
+        try:
+            command = ChecklistArchiveInput(expected_version=expected_version, expected_task_version=expected_task_version)
+        except ValueError as error:
+            raise TaskError(str(error)) from error
+        expected_version = command.expected_version
         item = self.repository.checklist_item(task.id, item_id, lock=True)
         if item is None:
             raise TaskNotFound("checklist item was not found")
@@ -920,9 +958,14 @@ class TaskApplication:
 
     def reorder_checklist(
         self, principal: Principal, task_id: UUID, item_ids: list[UUID], *, expected_task_version: int | None = None
-    ) -> dict[str, Any]:
+    ) -> ChecklistOrderResult:
         """Put the steps in the order the work happens. The whole order is rewritten, never one step nudged."""
         task = self._holding(principal, task_id, expected_task_version)
+        try:
+            command = ChecklistOrderInput(item_ids=item_ids, expected_task_version=expected_task_version)
+        except ValueError as error:
+            raise TaskError(str(error)) from error
+        item_ids = command.item_ids
         items = self.repository.checklist_for(task.id)
         wanted = list(item_ids)
         if len(wanted) != len(set(wanted)) or {item.id for item in items} != set(wanted):
@@ -986,8 +1029,10 @@ class TaskApplication:
             "assignee": self._assignee_projection([referenced]).get(referenced.id),
         }
 
-    def add_reference(self, principal: Principal, task_id: UUID, referenced_task_id: UUID) -> dict[str, Any]:
+    def add_reference(self, principal: Principal, task_id: UUID, referenced_task_id: UUID) -> TaskReferenceResult:
         """Point at work that came before. Only at work this person may already read, and never at itself."""
+        command = TaskReferenceCommand(task_id=task_id, referenced_task_id=referenced_task_id)
+        task_id, referenced_task_id = command.task_id, command.referenced_task_id
         task = self._holding(principal, task_id, None)
         if referenced_task_id == task.id:
             raise TaskError("a task cannot refer to itself")
@@ -1008,8 +1053,10 @@ class TaskApplication:
             "task_version": int(task.version),
         }
 
-    def release_reference(self, principal: Principal, task_id: UUID, reference_id: UUID) -> dict[str, Any]:
+    def release_reference(self, principal: Principal, task_id: UUID, reference_id: UUID) -> TaskReferenceReleaseResult:
         """Stop pointing at it. The row closes rather than disappearing, so history still shows it was there."""
+        command = TaskReferenceReleaseCommand(task_id=task_id, reference_id=reference_id)
+        task_id, reference_id = command.task_id, command.reference_id
         task = self._holding(principal, task_id, None)
         record = self.repository.reference(task.id, reference_id)
         if record is None:
@@ -1024,7 +1071,7 @@ class TaskApplication:
         return {"reference_id": str(record.id), "task_version": int(task.version)}
 
     @staticmethod
-    def _view(task: Any) -> dict[str, Any]:
+    def _view(task: Any) -> TaskMutationResult:
         return {
             "task_id": str(task.id),
             "title": task.title,
@@ -1054,7 +1101,7 @@ class TaskApplication:
         }
 
 
-def _assignment_view(assignments: Any) -> dict[str, Any] | None:
+def _assignment_view(assignments: Any) -> TaskAssignmentView | None:
     if not assignments:
         return None
     current = assignments[-1]

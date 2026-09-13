@@ -10,6 +10,79 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, 
 from starlette.websockets import WebSocketState
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from ax_workspace.modules.ax_execution.browser_interactions import (
+    BrowserFileRequest,
+    BrowserInteractionConflict,
+    BrowserInteractionResult,
+    BrowserInterruptionInput,
+    BrowserRecordingRequest,
+    BrowserRecordingStartInput,
+)
+from ax_workspace.modules.ax_execution.conversation_commands import ConversationRetryResult
+from ax_workspace.modules.ax_execution.conversation_results import ConversationView
+from ax_workspace.modules.ax_execution.result_contracts import ActionMaterialDraftView, ActionProposalResult
+from ax_workspace.modules.actions.results import ActionDetailResult, ActionDiscussionView, ActionEnvelopeResult
+from ax_workspace.modules.organization_access.commands import AssistantCharacterResult
+from ax_workspace.modules.organization_access.results import (
+    InstalledRoleView,
+    MemberAccessView,
+    MemberAxisHistoryView,
+    MemberCandidateView,
+    MemberDetailView,
+    MemberDirectoryView,
+    MyOrganizationProfileView,
+    OrganizationActivityView,
+    OrganizationUnitView,
+    UnitMemberView,
+)
+from ax_workspace.modules.reports.results import ReportHistoryResult, ReportStatusResult
+from ax_workspace.modules.work.folder_commands import FolderArchiveResult, FolderDetachResult, FolderView
+from ax_workspace.modules.work.graph_results import GraphNeighborsResult, GraphOverviewResult, GraphSearchResult
+from ax_workspace.modules.work.material_query_results import FolderMaterialView, MaterialMetadataResult, MaterialSearchResult
+from ax_workspace.modules.work.material_results import TaskMaterialResult, TaskMaterialView
+from ax_workspace.modules.work.project_results import ProjectAssignmentView, ProjectDetailResult, ProjectParticipationView, ProjectView
+from ax_workspace.modules.work.request_results import WorkRequestDetailResult, WorkRequestEvidenceResult, WorkRequestHistoryResult
+from ax_workspace.modules.work.task_results import (
+    TaskCompletionResult,
+    TaskDetailResult,
+    TaskHistoryDiffResult,
+    TaskHistoryResult,
+    TaskListEntry,
+    TaskReferenceReleaseResult,
+    TaskReferenceResult,
+)
+
+from ax_workspace.modules.work.request_results import WorkRequestMutationResult
+from ax_workspace.modules.reports.commands import ReportEditInput as EditDailyReportRequest, ReportSubmitInput as SubmitDailyReportRequest
+from ax_workspace.modules.reports.results import ReportDraftResult, ReportSubmissionResult
+from ax_workspace.modules.work.task_creation import TaskCreateInput as CreateTaskRequest, TaskAssignmentInput as AssignTaskRequest
+from ax_workspace.modules.work.material_commands import ActionMaterialLinkInput as ActionMaterialLinkDraftRequest
+from ax_workspace.modules.work.material_commands import TaskMaterialLinkInput as TaskMaterialLinkRequest, TaskMaterialReferenceInput as TaskMaterialReferenceRequest
+from ax_workspace.modules.work.checklist_commands import ChecklistAddInput as ChecklistItemRequest, ChecklistUpdateInput as ChecklistItemPatch, ChecklistOrderInput as ChecklistOrderRequest
+from ax_workspace.modules.work.task_results import TaskAssignmentResult, ChecklistMutationResult, ChecklistOrderResult, TaskMutationResult
+from ax_workspace.modules.work.task_commands import TaskVersionInput as TaskTransitionRequest, TaskBlockInput as BlockTaskRequest
+from ax_workspace.modules.work.task_commands import TaskReassignInput as ReassignTaskRequest, TaskUpdateInput as UpdateTaskRequest
+from ax_workspace.modules.work.task_commands import TaskCompletionInput as TaskCompletionReportRequest, TaskReferenceInput as TaskReferenceRequest
+from ax_workspace.modules.work.folder_commands import FolderCreateInput as MaterialFolderCreateRequest
+from ax_workspace.modules.work.project_commands import (
+    ProjectCreateInput as CreateProjectRequest,
+    ProjectMemberInput as AssignToProjectRequest,
+    ProjectWorkInput as PlanProjectWorkRequest,
+    ProjectReleaseInput as ReleaseFromProjectRequest,
+)
+
+from ax_workspace.modules.meetings.commands import (
+    MeetingAgendaDraftInput as CreateAgendaRequest,
+    MeetingAgendaPatch as UpdateAgendaRequest,
+    MeetingInfoPatch as UpdateMeetingRequest,
+    MeetingMemoInput as WriteMemoRequest,
+    MeetingReservationInput as CreateMeetingRequest,
+    MeetingShareManyInput as ShareMeetingRequest,
+    MeetingTodoPromotionInput as PromoteTodoRequest,
+)
+
+from ax_workspace.modules.errors import ResourceNotFound, RESOURCE_NOT_FOUND_MESSAGE
+from ax_workspace.modules.reports.application import DailyReportNotFound
 from ax_workspace.modules.work.material_search import MaterialResourceType
 from ax_workspace.modules.organization_access.administration import (
     AccessAdministrationDenied,
@@ -42,7 +115,11 @@ from ax_workspace.modules.actions.domain import ActionError as ActionCenterError
 from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequestError, WorkRequestIdempotencyConflict
 from ax_workspace.modules.reports.application import DailyReportAccessDenied
 from ax_workspace.modules.meetings.materials import inline_media_type
-from ax_workspace.modules.meetings.rooms import RoomBookingRefused
+from ax_workspace.modules.meetings.rooms import (
+    RoomBookingRefused,
+    RoomCreationIdempotencyConflict,
+    RoomCreationIdempotencyRequired,
+)
 from ax_workspace.modules.meetings.domain import (
     MeetingAccessDenied,
     MeetingError,
@@ -79,8 +156,12 @@ from ax_workspace.modules.ax_execution.conversations import ConversationError, C
 from ax_workspace.modules.ax_execution.actions import ActionAccessDenied, ActionCapabilityDenied, ActionError
 from ax_workspace.bootstrap.seed import DEMO_PASSWORD, SEEDED_MEMBERS
 from ax_workspace.bootstrap.settings import Settings
-from ax_workspace.modules.ax_execution.ai import AiProvider, ProviderFailure
+from ax_workspace.modules.ax_execution.ai import AiProvider
+from ax_workspace.modules.ax_execution.conversation_commands import (ConversationCreateInput as CreateConversationRequest, ConversationMessageInput as SendConversationMessageRequest, ConversationCancelInput as ConversationCancelRequest)
 from ax_workspace.modules.notifications import NotificationNotFound
+from ax_workspace.modules.organization_access.commands import AssistantCharacterInput as SetAssistantCharacterRequest
+from ax_workspace.modules.work.assignment_commands import AssignmentDeclineInput as DeclineTaskAssignmentRequest
+from ax_workspace.modules.work.request_commands import WorkRequestDecisionInput as WorkRequestDecisionRequest, WorkRequestNegotiationInput as WorkRequestNegotiationRequest, WorkRequestRevisionInput as WorkRequestAmendRequest, WorkRequestRevisionInput as WorkRequestResubmitRequest, WorkRequestCreateInput as CreateWorkRequestRequest, WorkRequestCommentInput as CommentRequest
 
 
 class MemberResponse(BaseModel):
@@ -135,57 +216,16 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=200)
 
 
-class SetAssistantCharacterRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    character_key: str = Field(min_length=1, max_length=100)
-    expected_version: int = Field(ge=0)
 
 
-class CreateTaskRequest(BaseModel):
-    title: str
-    description: str | None = None
-    start_date: date | None = None
-    due_date: date | None = None
-    #: Steps someone already knows about, in the order they wrote them.
-    checklist: list[str] = []
-    #: Earlier work this task points at as context.
-    reference_task_ids: list[UUID] = []
-    #: The work this one is a part of. One level only: a subtask cannot have subtasks of its own.
-    parent_task_id: UUID | None = None
-    #: 어느 프로젝트의 일인가. 비어 있는 것이 정상이며, 하위 업무는 상위 업무의 프로젝트를 따른다.
-    project_id: UUID | None = None
 
 
-class CreateProjectRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    name: str = Field(min_length=1, max_length=300)
-    description: str | None = None
-    #: 기간은 없을 수 있다. 시작만 정해지고 끝은 아직 없는 일이 흔하다.
-    starts_on: date | None = None
-    ends_on: date | None = None
-    external_key: str | None = Field(default=None, max_length=200)
 
 
-class PlanProjectWorkRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    title: str = Field(min_length=1, max_length=300)
-    description: str | None = None
-    start_date: date | None = None
-    due_date: date | None = None
 
 
-class AssignToProjectRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    member_id: str = Field(min_length=1, max_length=100)
-    kind: Literal["lead", "member"] = "member"
-    valid_from: datetime | None = None
-    valid_until: datetime | None = None
 
 
-class ReleaseFromProjectRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    assignment_id: UUID | None = None
-    reason: str | None = Field(default=None, max_length=4000)
 
 
 class StreamAudioDeclaration(BaseModel):
@@ -283,154 +323,37 @@ class _WebSocketStreamClient:
             pass
 
 
-class AgendaDraftRequest(BaseModel):
-    """예약 모달이 담아 보내는 안건 한 줄. 세부 편집은 세워진 뒤 안건 표면에서 한다."""
-
-    model_config = ConfigDict(extra="forbid")
-    title: str = Field(min_length=1, max_length=100)
-
-
-class CreateMeetingRequest(BaseModel):
-    """예약 모달이 담아 보내는 값. 모르는 칸을 조용히 무시하지 않는다 — 다른 회의 요청과 같은 규칙이다."""
-
-    model_config = ConfigDict(extra="forbid")
-    title: str | None = Field(default=None, max_length=300)
-    purpose: str | None = Field(default=None, max_length=1000)
-    starts_at: datetime
-    ends_at: datetime
-    location: str | None = Field(default=None, max_length=300)
-    attendee_ids: list[str] = Field(default_factory=list)
-    external_attendees: list[str] = Field(default_factory=list)
-    agendas: list[AgendaDraftRequest] = Field(default_factory=list)
-    carried_from_meeting_id: UUID | None = None
-    #: 사옥 회의실 번호 (SCAX-WP-007). **`null` 이면 예약 시스템을 부르지 않는다** — 「회의실 선택 안 함」이다.
-    room_id: int | None = None
-
-
-class UpdateMeetingRequest(BaseModel):
-    """머리 구획의 그 자리 편집. 보내지 않은 칸은 건드리지 않는다."""
-
-    model_config = ConfigDict(extra="forbid")
-    title: str | None = Field(default=None, max_length=300)
-    purpose: str | None = Field(default=None, max_length=1000)
-    starts_at: datetime | None = None
-    ends_at: datetime | None = None
-    location: str | None = Field(default=None, max_length=300)
-    attendee_ids: list[str] | None = None
-    external_attendees: list[str] | None = None
-
-
-class WriteMemoRequest(BaseModel):
-    """메모 한 줄. 시각은 싣지 않는다 — 서버가 매긴다 (SCAX-SPEC-004 §6-5)."""
-
-    model_config = ConfigDict(extra="forbid")
-    text: str = Field(min_length=1, max_length=2000)
-
-
-class CreateAgendaRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    title: str = Field(min_length=1, max_length=100)
-
-
-class UpdateAgendaRequest(BaseModel):
-    """`lines`는 이 안건의 합성 트랙 줄 목록을 통째로 덮어쓴다 — 판을 쌓지 않는다 (SCAX-SPEC-004 §4.2-6).
-
-    `expected_last_saved_at` 은 이 안건을 읽은 시각이다. 그 사이에 누가 저장했으면 덮어쓰지 않고 409 로 지금 것을 낸다.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-    title: str | None = Field(default=None, max_length=100)
-    concluded: bool | None = None
-    order: int | None = Field(default=None, ge=1)
-    lines: list[str] | None = None
-    expected_last_saved_at: str | None = None
-
-
-class ShareMeetingRequest(BaseModel):
-    """여러 명에게 한 번에 연다. 이미 참석이거나 이미 열람인 사람은 조용히 건너뛴다 — 알림은 가지 않는다."""
-
-    model_config = ConfigDict(extra="forbid")
-    member_ids: list[str] = Field(min_length=1)
-
-
-class PromoteTodoRequest(BaseModel):
-    """승격은 **언제나 업무 요청**이다 (SCAX-SPEC-004 §9-5). 담당은 누르는 사람이 고른다 — 비어서 열린다."""
-
-    model_config = ConfigDict(extra="forbid")
-    assignee_id: str = Field(min_length=1, max_length=100)
-    title: str | None = Field(default=None, max_length=300)
-    description: str | None = None
-    due_date: date | None = None
-    checklist: list[str] | None = None
 
 
 
-class AssignTaskRequest(BaseModel):
-    title: str
-    assignee_id: str
-    description: str | None = None
-    start_date: date | None = None
-    due_date: date | None = None
-    checklist: list[str] = []
-    parent_task_id: UUID | None = None
 
 
-class ReassignTaskRequest(BaseModel):
-    """Moving the work to someone else. Its own command, so the Task edit form never carries an assignee field."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    expected_version: int
-    assignee_id: str = Field(min_length=1, max_length=100)
-    reason: str | None = Field(default=None, max_length=4000)
 
 
-class DeclineTaskAssignmentRequest(BaseModel):
-    reason: str
 
 
-class UpdateTaskRequest(BaseModel):
-    expected_version: int
-    title: str | None = None
-    description: str | None = None
-    start_date: date | None = None
-    due_date: date | None = None
-    clear_start_date: bool = False
-    clear_due_date: bool = False
-    #: 이 업무를 어느 프로젝트의 것으로 둘 것인가. 떼려면 `clear_project`를 쓴다.
-    project_id: UUID | None = None
-    clear_project: bool = False
 
 
-class MaterialFolderCreateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    kind: Literal["personal", "team"]
-    title: str = Field(min_length=1, max_length=300)
-    organization_id: str | None = None
 
 
-class TaskMaterialLinkRequest(BaseModel):
-    """Work that lives somewhere else: a URL and the words a person reads, never a file and never a credential."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    kind: Literal["input", "output"]
-    url: str = Field(min_length=1, max_length=500)
-    label: str = Field(min_length=1, max_length=300)
 
 
-class TaskMaterialReferenceRequest(BaseModel):
-    """Another thing inside SCAX. What may be referenced is decided by the module that owns it."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    kind: Literal["input", "output"]
-    resource_type: Literal["task", "meeting"]
-    resource_id: UUID
 
 
-class CreateConversationRequest(BaseModel):
-    title: str = "새 대화"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 class ConversationContextReferenceRequest(BaseModel):
@@ -440,64 +363,22 @@ class ConversationContextReferenceRequest(BaseModel):
     included: bool
 
 
-class SendConversationMessageRequest(BaseModel):
-    body: str
-    context: list[ConversationContextReferenceRequest] = Field(default_factory=list)
-    follow_up_candidate_id: UUID | None = None
 
 
-class CreateWorkRequestRequest(BaseModel):
-    title: str
-    assignee_id: str
-    description: str | None = None
-    due_date: date | None = None
-    cc_member_ids: list[str] = []
-    #: Steps the requester already knows about. They become the accepted Task's checklist.
-    checklist: list[str] = []
-    #: Earlier work the requester points at as context. It travels to the Task the acceptance creates.
-    reference_task_ids: list[UUID] = []
 
 
-class WorkRequestDecisionRequest(BaseModel):
-    expected_version: int
-    reason: str | None = None
 
 
-class WorkRequestNegotiationRequest(BaseModel):
-    expected_version: int
-    conditions: dict[str, object]
 
 
-class CommentRequest(BaseModel):
-    body: str = Field(min_length=1, max_length=4000)
 
 
-class ChecklistItemRequest(BaseModel):
-    text: str = Field(min_length=1, max_length=300)
-    #: Optional: a caller that is showing a Task may answer the version it showed.
-    expected_task_version: int | None = None
 
 
-class ChecklistItemPatch(BaseModel):
-    text: str | None = Field(default=None, max_length=300)
-    done: bool | None = None
-    #: The step's own version, so two people editing two different steps are never in conflict.
-    expected_version: int | None = None
-    expected_task_version: int | None = None
 
 
-class TaskCompletionReportRequest(BaseModel):
-    """Handing work over: what was delivered, and which of this Task's outputs it stands on."""
-
-    expected_version: int
-    summary: str = Field(min_length=1, max_length=2000)
-    output_material_ids: list[UUID] = []
 
 
-class TaskReferenceRequest(BaseModel):
-    """Earlier work this Task points at. One meaning only: `참고`, never a kind of causal relation."""
-
-    referenced_task_id: UUID
 
 
 class ChecklistArchiveRequest(BaseModel):
@@ -505,11 +386,6 @@ class ChecklistArchiveRequest(BaseModel):
     expected_task_version: int | None = None
 
 
-class ChecklistOrderRequest(BaseModel):
-    """The whole order, every step exactly once. Nudging one step would let two claim the same place."""
-
-    item_ids: list[UUID] = Field(min_length=1)
-    expected_task_version: int | None = None
 
 
 class ActionCommandRequest(BaseModel):
@@ -529,58 +405,14 @@ class ActionCommandRequest(BaseModel):
     changes: dict[str, object] | None = None
 
 
-class ActionMaterialLinkDraftRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    url: str = Field(min_length=1, max_length=500)
-    label: str = Field(min_length=1, max_length=300)
 
 
-class WorkRequestAmendRequest(BaseModel):
-    """What a requester may change on their own open request. Assignee and cc are relationships, not content."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    expected_version: int
-    title: str | None = None
-    description: str | None = None
-    due_date: date | None = None
-    clear_due_date: bool = False
 
 
-class WorkRequestResubmitRequest(BaseModel):
-    expected_version: int
-    title: str | None = None
-    description: str | None = None
-    due_date: date | None = None
-    clear_due_date: bool = False
 
 
 class GenerateDailyReportDraftRequest(BaseModel):
     report_date: str
-
-
-class EditDailyReportRequest(BaseModel):
-    draft_id: str
-    expected_version: int
-    body: str
-    include_source_refs: list[dict[str, object]] = Field(default_factory=list)
-    exclude_source_refs: list[dict[str, object]] = Field(default_factory=list)
-
-
-class SubmitDailyReportRequest(BaseModel):
-    draft_id: str
-    expected_version: int
-    reason: str | None = None
-
-
-class BlockTaskRequest(BaseModel):
-    reason: str
-    expected_version: int
-
-
-class TaskTransitionRequest(BaseModel):
-    expected_version: int
 
 
 class ActionDecisionRequest(BaseModel):
@@ -588,11 +420,13 @@ class ActionDecisionRequest(BaseModel):
     decision: Literal["approve", "reject"]
 
 
-class ConversationCancelRequest(BaseModel):
-    expected_version: int
-
-
 def _runtime_error(error: Exception) -> HTTPException:
+    if isinstance(error, BrowserInteractionConflict):
+        return HTTPException(status_code=409, detail=str(error))
+    if isinstance(error, ValidationError):
+        return HTTPException(status_code=422, detail=error.errors(include_input=False, include_context=False))
+    if isinstance(error, ResourceNotFound):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=RESOURCE_NOT_FOUND_MESSAGE)
     if isinstance(error, NotificationNotFound):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
     if isinstance(error, ConversationQueueOverflow):
@@ -630,6 +464,16 @@ def _runtime_error(error: Exception) -> HTTPException:
                 "message": str(error),
                 "available_rooms": error.available_rooms,
             },
+        )
+    if isinstance(error, RoomCreationIdempotencyRequired):
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": error.reason, "message": str(error)},
+        )
+    if isinstance(error, RoomCreationIdempotencyConflict):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": error.reason, "message": str(error)},
         )
     # 회의는 권한 밖도 없는 것처럼 응답한다 — 참석자가 아닌 사람에게 존재를 알리지 않는다 (SPEC-004 §3.2-1).
     if isinstance(error, (TaskNotFound, MaterialNotFound, MeetingNotFound, MeetingAccessDenied)):
@@ -729,7 +573,7 @@ def create_app(
         def set_assistant_character(
             request: SetAssistantCharacterRequest,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> AssistantCharacterResult:
             try:
                 return app.state.workflow_application.set_assistant_character(
                     principal, request.character_key, request.expected_version
@@ -740,8 +584,11 @@ def create_app(
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
         @app.get("/api/my-work")
-        def my_work(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
-            return app.state.workflow_application.my_work(principal)
+        def my_work(include_closed: bool = False, principal: Principal = Depends(developer_principal)) -> list[TaskListEntry]:
+            try:
+                return app.state.workflow_application.my_work(principal, include_closed=include_closed)
+            except Exception as error:
+                raise _runtime_error(error) from error
 
         @app.get("/api/meetings")
         def list_meetings(
@@ -757,6 +604,7 @@ def create_app(
         @app.post("/api/meetings", status_code=status.HTTP_201_CREATED)
         def create_meeting(
             request: CreateMeetingRequest,
+            idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
             principal: Principal = Depends(developer_principal),
         ) -> dict[str, object]:
             try:
@@ -772,6 +620,7 @@ def create_app(
                     agendas=[{"title": row.title} for row in request.agendas],
                     carried_from_meeting_id=request.carried_from_meeting_id,
                     room_id=request.room_id,
+                    idempotency_key=idempotency_key,
                 )
             except Exception as error:
                 raise _runtime_error(error) from error
@@ -1137,15 +986,15 @@ def create_app(
                 raise _runtime_error(error) from error
 
         @app.get("/api/conversations")
-        def conversations(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+        def conversations(principal: Principal = Depends(developer_principal)) -> list[ConversationView]:
             return app.state.workflow_application.conversations(principal)
 
         @app.post("/api/conversations", status_code=status.HTTP_201_CREATED)
-        def create_conversation(request: CreateConversationRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def create_conversation(request: CreateConversationRequest, principal: Principal = Depends(developer_principal)) -> ConversationView:
             return app.state.workflow_application.create_conversation(principal, request.title)
 
         @app.get("/api/conversations/{conversation_id}")
-        def conversation(conversation_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def conversation(conversation_id: UUID, principal: Principal = Depends(developer_principal)) -> ConversationView:
             try:
                 return app.state.workflow_application.conversation(principal, conversation_id)
             except Exception as error:
@@ -1170,7 +1019,7 @@ def create_app(
             conversation_id: UUID,
             request: ConversationCancelRequest,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> ConversationView:
             try:
                 return app.state.workflow_application.cancel_conversation_turn(
                     principal, conversation_id, request.expected_version
@@ -1179,7 +1028,7 @@ def create_app(
                 raise _runtime_error(error) from error
 
         @app.post("/api/conversations/{conversation_id}/turns/{turn_id}/retry", status_code=status.HTTP_202_ACCEPTED)
-        def retry_conversation_turn(conversation_id: UUID, turn_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def retry_conversation_turn(conversation_id: UUID, turn_id: UUID, principal: Principal = Depends(developer_principal)) -> ConversationRetryResult:
             try:
                 return app.state.workflow_application.retry_conversation_turn(principal, conversation_id, turn_id)
             except Exception as error:
@@ -1197,7 +1046,7 @@ def create_app(
             action_id: UUID,
             request: ActionDecisionRequest,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> ActionProposalResult:
             try:
                 return app.state.workflow_application.decide_action(
                     principal,
@@ -1209,13 +1058,13 @@ def create_app(
                 raise _runtime_error(error) from error
 
         @app.get("/api/organization/members", response_model=list[MemberResponse])
-        def organization_members(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+        def organization_members(principal: Principal = Depends(developer_principal)) -> list[MemberDirectoryView]:
             return app.state.workflow_application.member_directory(principal)
 
         @app.get("/api/organization/members/{member_id}")
         def organization_member_detail(
             member_id: str, principal: Principal = Depends(developer_principal)
-        ) -> dict[str, object]:
+        ) -> MemberDetailView:
             try:
                 return app.state.workflow_application.organization_member_detail(principal, member_id)
             except Exception as error:
@@ -1226,7 +1075,7 @@ def create_app(
             member_id: str,
             axis: str = Query(description="membership · appointment · grade · job · grant"),
             principal: Principal = Depends(developer_principal),
-        ) -> list[dict[str, object]]:
+        ) -> list[MemberAxisHistoryView]:
             try:
                 return app.state.workflow_application.organization_member_history(principal, member_id, axis)
             except ValueError as error:
@@ -1240,7 +1089,7 @@ def create_app(
             limit: int = Query(default=50, ge=1, le=200),
             cursor: str | None = None,
             principal: Principal = Depends(developer_principal),
-        ) -> list[dict[str, object]]:
+        ) -> list[OrganizationActivityView]:
             try:
                 return app.state.workflow_application.organization_activity(
                     principal, unit_id=unit_id, limit=limit, cursor=cursor
@@ -1249,14 +1098,14 @@ def create_app(
                 raise _runtime_error(error) from error
 
         @app.get("/api/access/roles")
-        def installed_access_roles(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+        def installed_access_roles(principal: Principal = Depends(developer_principal)) -> list[InstalledRoleView]:
             try:
                 return app.state.workflow_application.installed_access_roles(principal)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.get("/api/access/members/{member_id}")
-        def member_access(member_id: str, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def member_access(member_id: str, principal: Principal = Depends(developer_principal)) -> MemberAccessView:
             try:
                 return app.state.workflow_application.member_access(principal, member_id)
             except Exception as error:
@@ -1304,19 +1153,22 @@ def create_app(
                 raise _runtime_error(error) from error
 
         @app.get("/api/organization/tree")
-        def organization_tree(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+        def organization_tree(principal: Principal = Depends(developer_principal)) -> list[OrganizationUnitView]:
             return app.state.workflow_application.organization_tree(principal)
 
         @app.get("/api/organization/units/{unit_id}/members")
-        def organization_unit_members(unit_id: str, principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
-            return app.state.workflow_application.organization_unit_members(principal, unit_id)
+        def organization_unit_members(unit_id: str, principal: Principal = Depends(developer_principal)) -> list[UnitMemberView]:
+            try:
+                return app.state.workflow_application.organization_unit_members(principal, unit_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
 
         @app.get("/api/organization/me")
-        def my_organization_profile(principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def my_organization_profile(principal: Principal = Depends(developer_principal)) -> MyOrganizationProfileView:
             return app.state.workflow_application.my_organization_profile(principal)
 
         @app.post("/api/tasks", status_code=status.HTTP_201_CREATED)
-        def create_self_task(request: CreateTaskRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def create_self_task(request: CreateTaskRequest, principal: Principal = Depends(developer_principal)) -> TaskMutationResult:
             try:
                 return app.state.workflow_application.create_self_task(
                     principal,
@@ -1335,14 +1187,14 @@ def create_app(
         # ---- 프로젝트: 조직 단위와 나란한 두 번째 축 ----
 
         @app.get("/api/projects")
-        def list_projects(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+        def list_projects(principal: Principal = Depends(developer_principal)) -> list[ProjectView]:
             try:
                 return app.state.workflow_application.list_projects(principal)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.post("/api/projects", status_code=status.HTTP_201_CREATED)
-        def create_project(request: CreateProjectRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def create_project(request: CreateProjectRequest, principal: Principal = Depends(developer_principal)) -> ProjectView:
             try:
                 return app.state.workflow_application.create_project(
                     principal,
@@ -1356,7 +1208,7 @@ def create_app(
                 raise _runtime_error(error) from error
 
         @app.get("/api/projects/{project_id}")
-        def get_project(project_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def get_project(project_id: UUID, principal: Principal = Depends(developer_principal)) -> ProjectDetailResult:
             try:
                 return app.state.workflow_application.get_project(principal, project_id)
             except Exception as error:
@@ -1366,7 +1218,7 @@ def create_app(
         def project_participation_history(
             project_id: UUID,
             principal: Principal = Depends(developer_principal),
-        ) -> list[dict[str, object]]:
+        ) -> list[ProjectParticipationView]:
             try:
                 return app.state.workflow_application.project_participation_history(principal, project_id)
             except Exception as error:
@@ -1377,7 +1229,7 @@ def create_app(
             project_id: UUID,
             request: PlanProjectWorkRequest,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> TaskMutationResult:
             """프로젝트 계획에 일을 올린다. 사람은 아직 정하지 않는다."""
             try:
                 return app.state.workflow_application.plan_project_work(
@@ -1396,7 +1248,7 @@ def create_app(
             project_id: UUID,
             request: AssignToProjectRequest,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> ProjectAssignmentView:
             try:
                 return app.state.workflow_application.assign_to_project(
                     principal,
@@ -1429,32 +1281,28 @@ def create_app(
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
         @app.post("/api/tasks/assign", status_code=status.HTTP_201_CREATED)
-        def assign_task(request: AssignTaskRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def assign_task(request: AssignTaskRequest, principal: Principal = Depends(developer_principal)) -> TaskAssignmentResult:
             try:
-                return app.state.workflow_application.assign_task(
-                    principal, request.title, request.assignee_id,
-                    description=request.description, start_date=request.start_date, due_date=request.due_date,
-                    checklist=request.checklist, parent_task_id=request.parent_task_id,
-                )
+                return app.state.workflow_application.assign_task(principal, **request.model_dump())
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.get("/api/task-assignment-candidates", response_model=list[CandidateResponse])
-        def task_assignment_candidates(principal: Principal = Depends(developer_principal)) -> list[CandidateResponse]:
+        def task_assignment_candidates(principal: Principal = Depends(developer_principal)) -> list[MemberCandidateView]:
             try:
                 return [CandidateResponse(**candidate) for candidate in app.state.workflow_application.task_assignment_candidates(principal)]
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.get("/api/task-assignments/sent")
-        def sent_task_assignments(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+        def sent_task_assignments(principal: Principal = Depends(developer_principal)) -> list[TaskAssignmentResult]:
             try:
                 return app.state.workflow_application.sent_task_assignments(principal)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.post("/api/task-assignments/{assignment_id}/accept")
-        def accept_task_assignment(assignment_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def accept_task_assignment(assignment_id: UUID, principal: Principal = Depends(developer_principal)) -> TaskAssignmentResult:
             try:
                 return app.state.workflow_application.accept_task_assignment(principal, assignment_id)
             except Exception as error:
@@ -1463,27 +1311,16 @@ def create_app(
         @app.post("/api/task-assignments/{assignment_id}/decline")
         def decline_task_assignment(
             assignment_id: UUID, request: DeclineTaskAssignmentRequest, principal: Principal = Depends(developer_principal)
-        ) -> dict[str, object]:
+        ) -> TaskAssignmentResult:
             try:
                 return app.state.workflow_application.decline_task_assignment(principal, assignment_id, request.reason)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.patch("/api/tasks/{task_id}")
-        def update_task(task_id: UUID, request: UpdateTaskRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
-            changes: dict[str, object] = {}
-            if request.title is not None:
-                changes["title"] = request.title
-            if request.description is not None:
-                changes["description"] = request.description
-            if request.start_date is not None or request.clear_start_date:
-                changes["start_date"] = None if request.clear_start_date else request.start_date
-            if request.due_date is not None or request.clear_due_date:
-                changes["due_date"] = None if request.clear_due_date else request.due_date
-            if request.project_id is not None or request.clear_project:
-                changes["project_id"] = None if request.clear_project else request.project_id
+        def update_task(task_id: UUID, request: UpdateTaskRequest, principal: Principal = Depends(developer_principal)) -> TaskMutationResult:
             try:
-                return app.state.workflow_application.update_task(principal, task_id, request.expected_version, changes)
+                return app.state.workflow_application.update_task(principal, task_id, request.expected_version, request.changes())
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -1496,29 +1333,78 @@ def create_app(
             return Response(content=data, media_type=str(view["content_type"]),
                             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(str(view['name']))}"})
 
+        @app.post("/api/browser-interactions/files", status_code=201)
+        def request_file_attachment(request: BrowserFileRequest, principal: Principal = Depends(developer_principal)) -> BrowserInteractionResult:
+            try:
+                return app.state.workflow_application.request_file_attachment(principal, request)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/browser-interactions/{interaction_id}")
+        def browser_interaction(interaction_id: UUID, principal: Principal = Depends(developer_principal)) -> BrowserInteractionResult:
+            try:
+                return app.state.workflow_application.browser_interaction(principal, interaction_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/browser-interactions/{interaction_id}/file")
+        async def upload_browser_file(interaction_id: UUID, file: UploadFile = File(...), principal: Principal = Depends(developer_principal)) -> BrowserInteractionResult:
+            try:
+                return app.state.workflow_application.upload_browser_file(principal, interaction_id, name=file.filename or 'material', content_type=file.content_type or 'application/octet-stream', data=await file.read())
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post('/api/browser-interactions/recordings', status_code=201)
+        def request_recording(request: BrowserRecordingRequest, principal: Principal = Depends(developer_principal)) -> BrowserInteractionResult:
+            try:
+                return app.state.workflow_application.request_recording(principal, request)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post('/api/browser-interactions/{interaction_id}/recording/start')
+        def start_browser_recording(interaction_id: UUID, request: BrowserRecordingStartInput, principal: Principal = Depends(developer_principal)) -> BrowserInteractionResult:
+            try:
+                return app.state.workflow_application.start_browser_recording(principal, interaction_id, request.capture_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post('/api/browser-interactions/{interaction_id}/recording/stop')
+        async def stop_browser_recording(interaction_id: UUID, capture_id: UUID = Form(...), file: UploadFile = File(...), principal: Principal = Depends(developer_principal)) -> BrowserInteractionResult:
+            try:
+                return app.state.workflow_application.stop_browser_recording(principal, interaction_id, capture_id, name=file.filename or 'recording.webm', content_type=file.content_type or 'audio/webm', data=await file.read())
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.patch("/api/browser-interactions/{interaction_id}")
+        def interrupt_browser_interaction(interaction_id: UUID, request: BrowserInterruptionInput, principal: Principal = Depends(developer_principal)) -> BrowserInteractionResult:
+            try:
+                return app.state.workflow_application.interrupt_browser_interaction(principal, interaction_id, request.status)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
         @app.get("/api/material-folders")
-        def list_material_folders(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+        def list_material_folders(principal: Principal = Depends(developer_principal)) -> list[FolderView]:
             try:
                 return app.state.workflow_application.list_material_folders(principal)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.post("/api/material-folders", status_code=status.HTTP_201_CREATED)
-        def create_material_folder(request: MaterialFolderCreateRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def create_material_folder(request: MaterialFolderCreateRequest, principal: Principal = Depends(developer_principal)) -> FolderView:
             try:
                 return app.state.workflow_application.create_material_folder(principal, **request.model_dump())
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.get("/api/material-folders/{folder_id}/materials")
-        def list_folder_materials(folder_id: UUID, principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+        def list_folder_materials(folder_id: UUID, principal: Principal = Depends(developer_principal)) -> list[FolderMaterialView]:
             try:
                 return app.state.workflow_application.list_folder_materials(principal, folder_id)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.post("/api/material-folders/{folder_id}/materials", status_code=status.HTTP_201_CREATED)
-        async def upload_folder_material(folder_id: UUID, file: UploadFile = File(...), principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        async def upload_folder_material(folder_id: UUID, file: UploadFile = File(...), principal: Principal = Depends(developer_principal)) -> FolderMaterialView:
             data = await file.read()
             try:
                 return app.state.workflow_application.upload_folder_material(principal, folder_id, name=file.filename or "material",
@@ -1536,21 +1422,21 @@ def create_app(
                             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(str(view['name']))}"})
 
         @app.post("/api/material-folders/{folder_id}/materials/{material_id}/detach")
-        def detach_folder_material(folder_id: UUID, material_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def detach_folder_material(folder_id: UUID, material_id: UUID, principal: Principal = Depends(developer_principal)) -> FolderDetachResult:
             try:
                 return app.state.workflow_application.detach_folder_material(principal, folder_id, material_id)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.post("/api/material-folders/{folder_id}/archive")
-        def archive_material_folder(folder_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def archive_material_folder(folder_id: UUID, principal: Principal = Depends(developer_principal)) -> FolderArchiveResult:
             try:
                 return app.state.workflow_application.archive_material_folder(principal, folder_id)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.get("/api/tasks/{task_id}/materials")
-        def list_task_materials(task_id: UUID, principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+        def list_task_materials(task_id: UUID, principal: Principal = Depends(developer_principal)) -> list[TaskMaterialView]:
             try:
                 return app.state.workflow_application.list_task_materials(principal, task_id)
             except Exception as error:
@@ -1562,7 +1448,7 @@ def create_app(
             kind: str = Form(...),
             file: UploadFile = File(...),
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> TaskMaterialResult:
             data = await file.read()
             try:
                 return app.state.workflow_application.attach_task_material(
@@ -1579,7 +1465,7 @@ def create_app(
         @app.post("/api/tasks/{task_id}/completion-report")
         def submit_task_completion(
             task_id: UUID, request: TaskCompletionReportRequest, principal: Principal = Depends(developer_principal)
-        ) -> dict[str, object]:
+        ) -> TaskCompletionResult:
             try:
                 return app.state.workflow_application.submit_task_completion(
                     principal, task_id, request.expected_version,
@@ -1591,7 +1477,7 @@ def create_app(
         @app.post("/api/tasks/{task_id}/references", status_code=status.HTTP_201_CREATED)
         def add_task_reference(
             task_id: UUID, request: TaskReferenceRequest, principal: Principal = Depends(developer_principal)
-        ) -> dict[str, object]:
+        ) -> TaskReferenceResult:
             try:
                 return app.state.workflow_application.add_task_reference(principal, task_id, request.referenced_task_id)
             except Exception as error:
@@ -1600,7 +1486,7 @@ def create_app(
         @app.delete("/api/tasks/{task_id}/references/{reference_id}")
         def release_task_reference(
             task_id: UUID, reference_id: UUID, principal: Principal = Depends(developer_principal)
-        ) -> dict[str, object]:
+        ) -> TaskReferenceReleaseResult:
             try:
                 return app.state.workflow_application.release_task_reference(principal, task_id, reference_id)
             except Exception as error:
@@ -1611,28 +1497,28 @@ def create_app(
             view: Literal["member", "team", "project"] = "member",
             limit: int = 120,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> GraphOverviewResult:
             try:
                 return app.state.workflow_application.graph_overview(principal, view=view, limit=limit)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.get("/api/graph/search")
-        def graph_search(q: str, limit: int = 20, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def graph_search(q: str, limit: int = 20, principal: Principal = Depends(developer_principal)) -> GraphSearchResult:
             try:
                 return app.state.workflow_application.graph_search(principal, q, limit)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.get("/api/graph/neighbors")
-        def graph_neighbors(node: str, limit: int = 20, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def graph_neighbors(node: str, limit: int = 20, principal: Principal = Depends(developer_principal)) -> GraphNeighborsResult:
             try:
                 return app.state.workflow_application.graph_neighbors(principal, node, limit)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.get("/api/tasks/{task_id}/history")
-        def task_history(task_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def task_history(task_id: UUID, principal: Principal = Depends(developer_principal)) -> TaskHistoryResult:
             try:
                 return app.state.workflow_application.task_history(principal, task_id)
             except Exception as error:
@@ -1644,7 +1530,7 @@ def create_app(
             from_version: int = Query(alias="from", ge=1),
             to_version: int = Query(alias="to", ge=1),
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> TaskHistoryDiffResult:
             try:
                 return app.state.workflow_application.task_history_diff(principal, task_id, from_version, to_version)
             except Exception as error:
@@ -1655,7 +1541,7 @@ def create_app(
             task_id: UUID,
             request: ReassignTaskRequest,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> TaskAssignmentResult:
             try:
                 return app.state.workflow_application.reassign_task(
                     principal, task_id, request.expected_version, request.assignee_id, request.reason
@@ -1668,7 +1554,7 @@ def create_app(
             task_id: UUID,
             request: TaskMaterialLinkRequest,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> TaskMaterialResult:
             try:
                 return app.state.workflow_application.attach_task_material_link(
                     principal, task_id, kind=request.kind, url=request.url, label=request.label
@@ -1681,7 +1567,7 @@ def create_app(
             task_id: UUID,
             request: TaskMaterialReferenceRequest,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> TaskMaterialResult:
             try:
                 return app.state.workflow_application.attach_task_material_reference(
                     principal, task_id, kind=request.kind, resource_type=request.resource_type, resource_id=str(request.resource_id)
@@ -1696,7 +1582,7 @@ def create_app(
             resource_type: MaterialResourceType | None = None, resource_id: str | None = None,
             material_id: UUID | None = None, registered_from: date | None = None, registered_until: date | None = None,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> MaterialSearchResult:
             try:
                 return app.state.workflow_application.search_materials(principal, q, limit=limit, resource_types=resource_types,
                     resource_type=resource_type, resource_id=resource_id, material_id=material_id,
@@ -1705,7 +1591,7 @@ def create_app(
                 raise _runtime_error(error) from error
 
         @app.get("/api/materials/{material_id}")
-        def material_metadata(material_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def material_metadata(material_id: UUID, principal: Principal = Depends(developer_principal)) -> MaterialMetadataResult:
             try:
                 return app.state.workflow_application.material_metadata(principal, material_id)
             except Exception as error:
@@ -1726,7 +1612,7 @@ def create_app(
             )
 
         @app.post("/api/tasks/{task_id}/material-bindings/{binding_id}/detach")
-        def detach_task_material(task_id: UUID, binding_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def detach_task_material(task_id: UUID, binding_id: UUID, principal: Principal = Depends(developer_principal)) -> TaskMaterialResult:
             try:
                 return app.state.workflow_application.detach_task_material(principal, task_id, binding_id)
             except Exception as error:
@@ -1736,14 +1622,14 @@ def create_app(
         def list_tasks(
             include_closed: bool = False,
             principal: Principal = Depends(developer_principal),
-        ) -> list[dict[str, object]]:
+        ) -> list[TaskListEntry]:
             try:
                 return app.state.workflow_application.list_tasks(principal, include_closed=include_closed)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.get("/api/tasks/{task_id}")
-        def get_task(task_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def get_task(task_id: UUID, principal: Principal = Depends(developer_principal)) -> TaskDetailResult:
             try:
                 return app.state.workflow_application.get_task(principal, task_id)
             except Exception as error:
@@ -1753,7 +1639,7 @@ def create_app(
         def create_work_request(
             request: CreateWorkRequestRequest,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> WorkRequestMutationResult:
             try:
                 return app.state.workflow_application.create_work_request(
                     principal, request.title, request.assignee_id,
@@ -1766,7 +1652,7 @@ def create_app(
         @app.get("/api/work-requests")
         def list_work_requests(
             principal: Principal = Depends(developer_principal),
-        ) -> list[dict[str, object]]:
+        ) -> list[WorkRequestMutationResult]:
             try:
                 return app.state.workflow_application.list_work_requests(principal)
             except Exception as error:
@@ -1776,7 +1662,7 @@ def create_app(
         def get_work_request(
             request_id: UUID,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> WorkRequestDetailResult:
             try:
                 return app.state.workflow_application.get_work_request(principal, request_id)
             except Exception as error:
@@ -1787,7 +1673,7 @@ def create_app(
             request_id: UUID,
             request: WorkRequestResubmitRequest,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> WorkRequestMutationResult:
             try:
                 return app.state.workflow_application.resubmit_work_request(
                     principal, request_id, request.expected_version,
@@ -1801,7 +1687,7 @@ def create_app(
             request_id: UUID,
             request: WorkRequestAmendRequest,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> WorkRequestMutationResult:
             try:
                 return app.state.workflow_application.amend_work_request(
                     principal, request_id, request.expected_version,
@@ -1816,14 +1702,14 @@ def create_app(
             request: CommentRequest,
             principal: Principal = Depends(developer_principal),
             idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-        ) -> dict[str, object]:
+        ) -> ActionDiscussionView:
             try:
                 return app.state.workflow_application.add_work_request_comment(principal, request_id, request.body, idempotency_key)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.post("/api/tasks/{task_id}/checklist", status_code=status.HTTP_201_CREATED)
-        def add_task_checklist_item(task_id: UUID, request: ChecklistItemRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def add_task_checklist_item(task_id: UUID, request: ChecklistItemRequest, principal: Principal = Depends(developer_principal)) -> ChecklistMutationResult:
             try:
                 return app.state.workflow_application.add_task_checklist_item(
                     principal, task_id, request.text, request.expected_task_version
@@ -1834,7 +1720,7 @@ def create_app(
         @app.patch("/api/tasks/{task_id}/checklist/{item_id}")
         def update_task_checklist_item(
             task_id: UUID, item_id: UUID, request: ChecklistItemPatch, principal: Principal = Depends(developer_principal)
-        ) -> dict[str, object]:
+        ) -> ChecklistMutationResult:
             try:
                 return app.state.workflow_application.update_task_checklist_item(
                     principal, task_id, item_id, **request.model_dump(exclude_none=True)
@@ -1845,7 +1731,7 @@ def create_app(
         @app.post("/api/tasks/{task_id}/checklist/order")
         def reorder_task_checklist(
             task_id: UUID, request: ChecklistOrderRequest, principal: Principal = Depends(developer_principal)
-        ) -> dict[str, object]:
+        ) -> ChecklistOrderResult:
             try:
                 return app.state.workflow_application.reorder_task_checklist(
                     principal, task_id, request.item_ids, expected_task_version=request.expected_task_version
@@ -1860,7 +1746,7 @@ def create_app(
             expected_version: int | None = None,
             expected_task_version: int | None = None,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> ChecklistMutationResult:
             # Taking a step off the list moves the Task, so the answer carries the version it moved to.
             try:
                 return app.state.workflow_application.archive_task_checklist_item(
@@ -1871,14 +1757,14 @@ def create_app(
                 raise _runtime_error(error) from error
 
         @app.get("/api/action-items")
-        def pending_action_items(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
+        def pending_action_items(principal: Principal = Depends(developer_principal)) -> list[ActionEnvelopeResult]:
             try:
                 return app.state.workflow_application.pending_action_items(principal)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.get("/api/action-items/{action_item_id}")
-        def action_item_detail(action_item_id: str, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def action_item_detail(action_item_id: str, principal: Principal = Depends(developer_principal)) -> ActionDetailResult:
             try:
                 return app.state.workflow_application.action_item_detail(principal, action_item_id)
             except Exception as error:
@@ -1889,7 +1775,7 @@ def create_app(
             action_item_id: UUID,
             request: ActionMaterialLinkDraftRequest,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> ActionMaterialDraftView:
             try:
                 return app.state.workflow_application.stage_action_material_link(
                     principal, action_item_id, url=request.url, label=request.label
@@ -1902,7 +1788,7 @@ def create_app(
             action_item_id: UUID,
             file: UploadFile = File(...),
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> ActionMaterialDraftView:
             try:
                 return app.state.workflow_application.stage_action_material_file(
                     principal,
@@ -1919,7 +1805,7 @@ def create_app(
             action_item_id: UUID,
             material_draft_id: UUID,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> ActionMaterialDraftView:
             try:
                 return app.state.workflow_application.discard_action_material_draft(
                     principal, action_item_id, material_draft_id
@@ -1930,14 +1816,14 @@ def create_app(
         @app.post("/api/action-items/{action_item_id}/commands/{command}")
         def run_action_command(
             action_item_id: str, command: str, request: ActionCommandRequest, principal: Principal = Depends(developer_principal)
-        ) -> dict[str, object]:
+        ) -> ActionEnvelopeResult:
             try:
                 return app.state.workflow_application.run_action_command(principal, action_item_id, command, request.model_dump(exclude_none=True))
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.get("/api/work-request-cc-candidates", response_model=list[CandidateResponse])
-        def work_request_cc_candidates(principal: Principal = Depends(developer_principal)) -> list[CandidateResponse]:
+        def work_request_cc_candidates(principal: Principal = Depends(developer_principal)) -> list[MemberCandidateView]:
             try:
                 return [CandidateResponse(**candidate) for candidate in app.state.workflow_application.work_request_cc_candidates(principal)]
             except Exception as error:
@@ -1946,7 +1832,7 @@ def create_app(
         @app.post("/api/work-requests/{request_id}/comments/{comment_id}/attachments", status_code=status.HTTP_201_CREATED)
         async def attach_to_work_request_comment(
             request_id: UUID, comment_id: UUID, file: UploadFile = File(...), principal: Principal = Depends(developer_principal)
-        ) -> dict[str, object]:
+        ) -> ActionDiscussionView:
             data = await file.read()
             try:
                 return app.state.workflow_application.attach_to_work_request_comment(
@@ -1959,7 +1845,7 @@ def create_app(
         @app.post("/api/work-requests/{request_id}/evidence", status_code=status.HTTP_201_CREATED)
         async def add_work_request_evidence(
             request_id: UUID, file: UploadFile = File(...), principal: Principal = Depends(developer_principal)
-        ) -> dict[str, object]:
+        ) -> WorkRequestEvidenceResult:
             data = await file.read()
             try:
                 return app.state.workflow_application.add_work_request_evidence(
@@ -1983,7 +1869,7 @@ def create_app(
             )
 
         @app.get("/api/work-requests/{request_id}/timeline")
-        def work_request_timeline(request_id: UUID, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def work_request_timeline(request_id: UUID, principal: Principal = Depends(developer_principal)) -> WorkRequestHistoryResult:
             try:
                 return app.state.workflow_application.work_request_timeline(principal, request_id)
             except Exception as error:
@@ -1992,7 +1878,7 @@ def create_app(
         @app.get("/api/work-request-assignee-candidates", response_model=list[CandidateResponse])
         def work_request_assignee_candidates(
             principal: Principal = Depends(developer_principal),
-        ) -> list[CandidateResponse]:
+        ) -> list[MemberCandidateView]:
             try:
                 candidates = app.state.workflow_application.work_request_assignee_candidates(principal)
                 return [CandidateResponse(**candidate) for candidate in candidates]
@@ -2004,7 +1890,7 @@ def create_app(
             request_id: UUID,
             request: WorkRequestDecisionRequest,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> WorkRequestMutationResult:
             try:
                 return app.state.workflow_application.accept_work_request(
                     principal, request_id, request.expected_version
@@ -2017,7 +1903,7 @@ def create_app(
             request_id: UUID,
             request: WorkRequestDecisionRequest,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> WorkRequestMutationResult:
             try:
                 return app.state.workflow_application.reject_work_request(
                     principal, request_id, request.expected_version, request.reason or ""
@@ -2030,7 +1916,7 @@ def create_app(
             request_id: UUID,
             request: WorkRequestNegotiationRequest,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> WorkRequestMutationResult:
             try:
                 return app.state.workflow_application.negotiate_work_request(
                     principal, request_id, request.expected_version, request.conditions
@@ -2038,14 +1924,12 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
-        @app.post("/api/daily-reports/generate-draft", status_code=status.HTTP_201_CREATED)
-        def generate_daily_report_draft(request: GenerateDailyReportDraftRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        @app.post("/api/daily-reports/generate-draft", status_code=status.HTTP_202_ACCEPTED)
+        def generate_daily_report_draft(request: GenerateDailyReportDraftRequest, principal: Principal = Depends(developer_principal)) -> ReportStatusResult:
             try:
-                return app.state.workflow_application.generate_daily_report_draft(principal, request.report_date)
-            except DailyReportAccessDenied as error:
+                return app.state.workflow_application.request_daily_report_draft(principal, request.report_date)
+            except (DailyReportAccessDenied, DailyReportNotFound) as error:
                 raise _runtime_error(error) from error
-            except ProviderFailure as error:
-                raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
             except ValueError as error:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
 
@@ -2053,10 +1937,10 @@ def create_app(
         def daily_report_status(
             report_date: str = Query(),
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> ReportStatusResult:
             try:
                 return app.state.workflow_application.daily_report_status(principal, report_date)
-            except DailyReportAccessDenied as error:
+            except (DailyReportAccessDenied, DailyReportNotFound) as error:
                 raise _runtime_error(error) from error
             except ValueError as error:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
@@ -2066,7 +1950,7 @@ def create_app(
             report_id: str,
             request: EditDailyReportRequest,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> ReportDraftResult:
             try:
                 return app.state.workflow_application.edit_daily_report(
                     principal,
@@ -2077,7 +1961,7 @@ def create_app(
                     request.include_source_refs,
                     request.exclude_source_refs,
                 )
-            except DailyReportAccessDenied as error:
+            except (DailyReportAccessDenied, DailyReportNotFound) as error:
                 raise _runtime_error(error) from error
             except ValueError as error:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
@@ -2087,7 +1971,7 @@ def create_app(
             report_id: str,
             request: SubmitDailyReportRequest,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> ReportSubmissionResult:
             try:
                 return app.state.workflow_application.submit_daily_report(
                     principal,
@@ -2096,7 +1980,7 @@ def create_app(
                     request.expected_version,
                     request.reason,
                 )
-            except DailyReportAccessDenied as error:
+            except (DailyReportAccessDenied, DailyReportNotFound) as error:
                 raise _runtime_error(error) from error
             except ValueError as error:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
@@ -2105,38 +1989,38 @@ def create_app(
         def daily_report_history(
             report_id: str,
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
+        ) -> ReportHistoryResult:
             try:
                 return app.state.workflow_application.daily_report_history(principal, report_id)
-            except DailyReportAccessDenied as error:
+            except (DailyReportAccessDenied, DailyReportNotFound) as error:
                 raise _runtime_error(error) from error
             except ValueError as error:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
 
-        def task_transition(task_id: UUID, target: TaskState, principal: Principal, reason: str | None = None, expected_version: int = 0) -> dict[str, object]:
+        def task_transition(task_id: UUID, target: TaskState, principal: Principal, reason: str | None = None, expected_version: int = 0) -> TaskMutationResult:
             try:
                 return app.state.workflow_application.transition_task(task_id, principal, target, reason, expected_version)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.post("/api/tasks/{task_id}/start")
-        def start_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def start_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> TaskMutationResult:
             return task_transition(task_id, TaskState.IN_PROGRESS, principal, expected_version=request.expected_version)
 
         @app.post("/api/tasks/{task_id}/block")
-        def block_task(task_id: UUID, request: BlockTaskRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def block_task(task_id: UUID, request: BlockTaskRequest, principal: Principal = Depends(developer_principal)) -> TaskMutationResult:
             return task_transition(task_id, TaskState.BLOCKED, principal, request.reason, request.expected_version)
 
         @app.post("/api/tasks/{task_id}/resume")
-        def resume_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def resume_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> TaskMutationResult:
             return task_transition(task_id, TaskState.IN_PROGRESS, principal, expected_version=request.expected_version)
 
         @app.post("/api/tasks/{task_id}/complete")
-        def complete_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def complete_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> TaskMutationResult:
             return task_transition(task_id, TaskState.DONE, principal, expected_version=request.expected_version)
 
         @app.post("/api/tasks/{task_id}/cancel")
-        def cancel_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        def cancel_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> TaskMutationResult:
             return task_transition(task_id, TaskState.CANCELLED, principal, expected_version=request.expected_version)
 
     @app.get("/health")

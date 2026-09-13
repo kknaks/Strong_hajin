@@ -65,6 +65,55 @@ export class ApiError extends Error {
   }
 }
 
+export type BrowserInteraction = {
+  interaction_id: string;
+  kind: string;
+  intent: string;
+  target: { type: string; id: string; title: string; version: number | null };
+  status: string;
+  result: Record<string, unknown> | null;
+  open_url: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function getBrowserInteraction(id: string): Promise<BrowserInteraction> {
+  return request<BrowserInteraction>(`/api/browser-interactions/${encodeURIComponent(id)}`);
+}
+
+export async function startBrowserRecording(id: string, captureId: string): Promise<BrowserInteraction> {
+  return request<BrowserInteraction>(`/api/browser-interactions/${encodeURIComponent(id)}/recording/start`, {
+    method: 'POST', body: JSON.stringify({ capture_id: captureId }),
+  });
+}
+
+export async function stopBrowserRecording(id: string, captureId: string, audio: Blob): Promise<BrowserInteraction> {
+  const form = new FormData();
+  form.append('capture_id', captureId);
+  form.append('file', audio, audio.type.includes('mp4') ? 'recording.mp4' : 'recording.webm');
+  const response = await fetch(`/api/browser-interactions/${encodeURIComponent(id)}/recording/stop`, { method: 'POST', credentials: 'same-origin', body: form });
+  if (!response.ok) {
+    const error = (await response.json().catch(() => ({}))) as ApiErrorBody;
+    throw new ApiError(response.status, typeof error.detail === 'string' ? error.detail : response.statusText);
+  }
+  return response.json() as Promise<BrowserInteraction>;
+}
+
+export async function interruptBrowserInteraction(id: string, status: 'cancelled' | 'denied' | 'failed' | 'unsupported'): Promise<BrowserInteraction> {
+  return request<BrowserInteraction>(`/api/browser-interactions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ status }) });
+}
+
+export async function uploadBrowserFile(id: string, file: File): Promise<BrowserInteraction> {
+  const form = new FormData();
+  form.append('file', file, file.name);
+  const response = await fetch(`/api/browser-interactions/${encodeURIComponent(id)}/file`, { method: 'POST', credentials: 'same-origin', body: form });
+  if (!response.ok) {
+    const error = (await response.json().catch(() => ({}))) as ApiErrorBody;
+    throw new ApiError(response.status, typeof error.detail === 'string' ? error.detail : response.statusText);
+  }
+  return response.json() as Promise<BrowserInteraction>;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -267,8 +316,8 @@ export async function transitionDirectTask(
 
 export async function generateDailyReportDraft(
   reportDate: string,
-): Promise<DailyReportDraft> {
-  return request<DailyReportDraft>("/api/daily-reports/generate-draft", {
+): Promise<DailyReportStatus> {
+  return request<DailyReportStatus>("/api/daily-reports/generate-draft", {
     body: JSON.stringify({ report_date: reportDate }),
     method: "POST",
   });
@@ -856,8 +905,12 @@ export async function bookMeeting(input: {
   external_attendees?: string[];
   agendas?: Array<{ title: string }>;
   carried_from_meeting_id?: string | null;
-}): Promise<MeetingRecord> {
-  return request<MeetingRecord>("/api/meetings", { body: JSON.stringify(input), method: "POST" });
+}, idempotencyKey: string): Promise<MeetingRecord> {
+  return request<MeetingRecord>("/api/meetings", {
+    body: JSON.stringify(input),
+    headers: { "Idempotency-Key": idempotencyKey },
+    method: "POST",
+  });
 }
 
 /** 값을 묻지 않고 지금 시작하는 회의. 돌아오는 것은 이미 「진행 중」인 회의다. */

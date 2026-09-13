@@ -1,6 +1,10 @@
 """Human-confirmed AX effects, independent of WorkflowDefinition/WorkflowRun."""
 from __future__ import annotations
 
+from ax_workspace.modules.ax_execution.result_contracts import ActionProposalResult
+
+from ax_workspace.modules.errors import ResourceNotFound
+
 from typing import Any, Protocol
 import hashlib
 import json
@@ -13,12 +17,23 @@ class ActionError(ValueError):
     pass
 
 
-class ActionAccessDenied(ActionError):
+class ActionAccessDenied(ActionError, ResourceNotFound):
     pass
 
 
-class ActionCapabilityDenied(ActionAccessDenied):
+class ActionCapabilityDenied(ActionError):
     pass
+
+
+#: 위임 턴의 확인 slot 은 하나다. 이 문장은 AX 가 읽고 다음 턴을 기다리도록 만드는 것이므로
+#: transport 가 일반 오류로 가리지 않고 그대로 전달한다.
+TURN_PROPOSAL_SLOT_TAKEN_MESSAGE = (
+    "이 턴에는 이미 사람이 확인할 다른 판단이 있습니다. 그 판단이 처리된 뒤 다시 요청하세요"
+)
+
+
+class TurnProposalSlotTaken(ActionError):
+    """A different judgement already waits for this person in this delegated turn."""
 
 
 class ActionRepository(Protocol):
@@ -37,7 +52,7 @@ class ActionRepository(Protocol):
 
     def resolve(self, action: Any, actor_id: str, decision: str, result: dict[str, Any] | None) -> None: ...
 
-    def view(self, action: Any, principal: Principal | None = None) -> dict[str, Any]: ...
+    def view(self, action: Any, principal: Principal | None = None) -> ActionProposalResult: ...
 
 
 #: The generic gated wrapper a delegated turn proposes when it wants a judgement made on an ActionItem.
@@ -79,13 +94,13 @@ class ActionApplication:
         action_type: str,
         title: str,
         payload: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> ActionProposalResult:
         self._require(principal, ACTION_DECIDE)
         return self._repository.view(
             self._repository.propose(str(principal.id), execution_id, action_type, title, payload), principal
         )
 
-    def list(self, principal: Principal) -> list[dict[str, Any]]:
+    def list(self, principal: Principal) -> list[ActionProposalResult]:
         self._require(principal, ACTION_READ)
         can_decide = ACTION_DECIDE in principal.capabilities
         views = []
@@ -102,7 +117,7 @@ class ActionApplication:
         action_id: UUID,
         expected_version: int,
         decision: str,
-    ) -> dict[str, Any]:
+    ) -> ActionProposalResult:
         self._require(principal, ACTION_DECIDE)
         if decision not in {"approve", "reject"}:
             raise ActionError("action decision must be approve or reject")

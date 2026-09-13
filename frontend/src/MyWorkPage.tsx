@@ -635,6 +635,7 @@ export function MyWorkPage({
       )}
       {selectedActionItem && (
         <ActionItemDrawer
+          principalId={personaId}
           actionItemId={selectedActionItem?.action_item_id ?? ""}
           key={selectedActionItem?.action_item_id}
           onClose={() => setSelectedActionItem(null)}

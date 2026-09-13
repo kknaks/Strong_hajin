@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { CommandConfirmationForm } from "./CommandConfirmationForm";
 import { getActionItem, runActionCommand } from "./api";
 import { ActionPreviewDetails } from "./ActionPreview";
 import { DateField } from "./DateField";
@@ -313,6 +314,7 @@ function RevisionForm({
 
 export function ActionItemDrawer({
   actionItemId,
+  principalId = "",
   personas,
   onClose,
   onDone,
@@ -321,6 +323,7 @@ export function ActionItemDrawer({
   onOpenDerivedTask,
 }: {
   actionItemId: string;
+  principalId?: string;
   personas: Persona[];
   /** Open the Task this judgement produced, closing the round trip from the Task's own source link. */
   onOpenDerivedTask?: (taskId: string) => void;
@@ -367,8 +370,10 @@ export function ActionItemDrawer({
       const reflected = await onDone();
       onNotice?.(reflected ? `'${detail.subject}' 판단을 반영했습니다.` : `'${detail.subject}' 판단을 저장했습니다.`);
       onClose();
+      return true;
     } catch (error) {
       onError(error instanceof Error ? error.message : "판단을 처리하지 못했습니다.");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -425,7 +430,7 @@ export function ActionItemDrawer({
               </button>
             </>
           ) : (
-            commands.map((command) =>
+            (detail?.edit_contract?.editor === "command" ? [] : commands).map((command) =>
               command.id === "revise" ? (
                 <button
                   className="btn h40 primary"
@@ -482,6 +487,12 @@ export function ActionItemDrawer({
             action={{ action_id: detail.action_item_id, preview: detail.preview } as never}
             defaultOpen
           />
+          {detail.edit_contract?.editor === "command" && (
+            <CommandConfirmationForm actionId={detail.action_item_id} principalId={principalId} contract={detail.edit_contract} commands={commands} onCommand={(commandId, payload) => {
+              const command = commands.find(item => item.id === commandId);
+              return command ? run(command, payload) : Promise.resolve(false);
+            }} />
+          )}
           {detail.status === "awaiting_revision" && adjustment && (
             <AdjustmentAsk
               actor={adjustment.actor_member_id}

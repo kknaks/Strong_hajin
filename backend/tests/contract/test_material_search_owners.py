@@ -17,6 +17,19 @@ from ax_workspace.platform.work_tasks import SqlAlchemyAttachmentRepository
 from test_material_search import MINA, JIHO, _stack, _upload
 
 
+class OwnerPartialExtractor:
+    def extract(self, **kwargs):
+        return replace(
+            PypdfTextExtractor().extract(**kwargs),
+            status="partial",
+            warnings=("page 2 needs OCR",),
+            coverage={
+                "complete": False,
+                "missing_units": [{"page": 2, "reason": "needs_ocr"}],
+            },
+        )
+
+
 def test_one_artifact_has_one_hit_with_only_its_currently_readable_task_contexts(tmp_path):
     client, application, worker, settings = _stack(tmp_path)
     first = client.post("/api/tasks", headers=MINA, json={"title": "공개 첫 연결"}).json()
@@ -103,7 +116,7 @@ def test_revoked_request_context_never_reaches_index_or_open_and_does_not_hide_a
     for hidden_id in (rid, str(uuid4())):
         with pytest.raises(MaterialNotFound, match="resource was not found"):
             application.search_materials(request_only, "revocationtoken", resource_type="work_request", resource_id=hidden_id)
-    assert client.get(f"/api/work-requests/{rid}/attachments/{artifact_id}/content", headers={"X-Demo-Persona": "yuna"}).status_code == 422
+    assert client.get(f"/api/work-requests/{rid}/attachments/{artifact_id}/content", headers={"X-Demo-Persona": "yuna"}).status_code == 404
     remaining = application.search_materials(principal, "revocationtoken")
     assert len(remaining["results"]) == 1
     assert "회수될 요청 이름" not in str(remaining) and rid not in str(remaining)
@@ -140,7 +153,7 @@ def test_submission_file_needs_a_live_binding_and_immutable_adoption(tmp_path, i
     assert client.get(f"/api/work-requests/{rid}/attachments/{artifact_id}/content", headers=MINA).status_code == 404
 
 
-def test_preexisting_request_files_schedule_missing_projections_only_after_owner_authorization(tmp_path, monkeypatch):
+def test_reading_legacy_files_never_enqueues_and_the_worker_backfills_missing_projections(tmp_path, monkeypatch):
     client, application, worker, _ = _stack(tmp_path)
     with monkeypatch.context() as old_deployment:
         old_deployment.setattr(WorkRequestApplication, "_request_extraction", lambda *args: None)
@@ -153,14 +166,16 @@ def test_preexisting_request_files_schedule_missing_projections_only_after_owner
     principal = application.authenticated_principal("mina")
     for _ in range(2):
         pending = application.search_materials(principal, "legacyrequesttoken")
-        assert pending["results"] == [] and pending["unavailable_materials"][0]["extraction"]["status"] == "queued"
-        assert application.memory_job_queue.pending_count(JOB_KIND_MATERIAL_EXTRACTION) == 1
+        assert pending["results"] == [] and pending["unavailable_materials"][0]["extraction"] is None
+        assert application.memory_job_queue.pending_count(JOB_KIND_MATERIAL_EXTRACTION) == 0
+    assert asyncio.run(worker.run_once())  # Explicit worker maintenance registers the missing projection.
+    assert application.memory_job_queue.pending_count(JOB_KIND_MATERIAL_EXTRACTION) == 1
     assert asyncio.run(worker.run_once())
     assert application.search_materials(principal, "legacyrequesttoken")["results"][0]["material_id"] == uploaded["attachment_id"]
 
 
-def test_legacy_backfill_and_unavailable_metadata_are_bounded_without_hiding_the_total(tmp_path, monkeypatch):
-    client, application, _, _ = _stack(tmp_path)
+def test_worker_legacy_backfill_and_unavailable_metadata_are_bounded_without_hiding_the_total(tmp_path, monkeypatch):
+    client, application, worker, settings = _stack(tmp_path)
     with monkeypatch.context() as old_deployment:
         old_deployment.setattr(WorkRequestApplication, "_request_extraction", lambda *args: None)
         request = client.post("/api/work-requests", headers=MINA, json={"title": "이전 첨부 묶음", "assignee_id": "jiho"}).json()
@@ -173,9 +188,11 @@ def test_legacy_backfill_and_unavailable_metadata_are_bounded_without_hiding_the
     assert pending["searched_materials"] == 0 and pending["results"] == []
     assert pending["unavailable_materials_count"] == 22 and pending["unavailable_truncated"]
     assert len(pending["unavailable_materials"]) == 20
-    assert application.memory_job_queue.pending_count(JOB_KIND_MATERIAL_EXTRACTION) == 20
+    assert application.memory_job_queue.pending_count(JOB_KIND_MATERIAL_EXTRACTION) == 0
+    assert asyncio.run(worker.run_once())
+    assert application.memory_job_queue.pending_count(JOB_KIND_MATERIAL_EXTRACTION) == settings.material_worker_concurrency
     application.search_materials(principal, "batchtoken")
-    assert application.memory_job_queue.pending_count(JOB_KIND_MATERIAL_EXTRACTION) == 22
+    assert application.memory_job_queue.pending_count(JOB_KIND_MATERIAL_EXTRACTION) == settings.material_worker_concurrency
 
 
 def test_inherited_evidence_keeps_its_original_binding_and_one_search_hit(tmp_path):
@@ -201,11 +218,7 @@ def test_generic_partial_search_requires_the_canonical_artifact_anchor_and_retai
     request = client.post("/api/work-requests", headers=MINA, json={"title": "부분 자료 요청", "assignee_id": "jiho"}).json()
     uploaded = client.post(f"/api/work-requests/{request['request_id']}/evidence", headers=MINA,
                            files={"file": ("partial.txt", b"partialrequesttoken", "text/plain")}).json()
-    class PartialExtractor:
-        def extract(self, **kwargs):
-            return replace(PypdfTextExtractor().extract(**kwargs), status="partial", warnings=("page 2 needs OCR",),
-                           coverage={"complete": False, "missing_units": [{"page": 2, "reason": "needs_ocr"}]})
-    worker._extractor = PartialExtractor()
+    worker._extractor = OwnerPartialExtractor()
     assert asyncio.run(worker.run_once())
     principal = application.authenticated_principal("mina")
     for filters in ({}, {"resource_type": "work_request", "resource_id": request["request_id"]}):

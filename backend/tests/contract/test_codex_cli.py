@@ -9,12 +9,12 @@ from ax_workspace.modules.ax_execution.ai import (
     AiDelegatedToolContext,
     AiGenerationRequest,
 )
+from ax_workspace.modules.ax_execution.tool_catalog import TOOL_CATALOG, tool_display_title
 from ax_workspace.platform.codex_cli import (
     CodexCliMcpServer,
     CodexCliProfile,
     CodexCliProviderAdapter,
     ProcessResult,
-    _MCP_TOOL_DISPLAY_NAMES,
 )
 
 
@@ -42,15 +42,16 @@ def test_scax_mcp_tool_receipts_have_korean_display_names() -> None:
         "work_request_history",
     }
 
-    assert previously_unmapped <= _MCP_TOOL_DISPLAY_NAMES.keys()
-    assert all(any("가" <= char <= "힣" for char in _MCP_TOOL_DISPLAY_NAMES[name]) for name in previously_unmapped)
+    assert previously_unmapped <= TOOL_CATALOG.keys()
+    assert all(any("가" <= char <= "힣" for char in tool_display_title(name)) for name in previously_unmapped)
 
 
 def test_scax_mcp_server_uses_the_python_module_in_source_runtime(monkeypatch) -> None:
     monkeypatch.delenv("SCAX_RUNTIME_EXECUTABLE", raising=False)
 
-    server = create_scax_mcp_server(Settings(RuntimeProfile.TEST, "sqlite://"))
+    server = create_scax_mcp_server(Settings(RuntimeProfile.TEST, "sqlite://", web_origin="https://scax.example.test"))
 
+    assert server.environment["AX_WEB_ORIGIN"] == "https://scax.example.test"
     assert server.command == sys.executable
     assert server.arguments == ("-m", "ax_workspace.entrypoints.mcp")
 
@@ -212,7 +213,7 @@ def test_codex_cli_conversation_injects_only_server_bound_scax_mcp_context(tmp_p
         scax_mcp_server=CodexCliMcpServer(
             command="/usr/bin/python3",
             arguments=("-m", "ax_workspace.entrypoints.mcp"),
-            environment={"AX_PROFILE": "test", "DATABASE_URL": "postgresql://example/scax"},
+            environment={"AX_PROFILE": "test", "DATABASE_URL": "postgresql://example/scax", "AX_WEB_ORIGIN": "https://scax.example.test"},
         ),
     )
     result = provider.converse(
@@ -236,7 +237,7 @@ def test_codex_cli_conversation_injects_only_server_bound_scax_mcp_context(tmp_p
     ]
     assert [event.text for event in observed if event.item_type == "agent_message"] == ["업무를 조회했습니다."]
     assert [(item.tool_name, item.display_name, item.state) for item in result.tool_invocations] == [
-        ("task_list", "업무 목록 조회", "completed")
+        ("task_list", "열람 가능한 업무 조회", "completed")
     ]
     assert "--ignore-user-config" in arguments
     assert 'shell_environment_policy.inherit="none"' in arguments
@@ -244,7 +245,7 @@ def test_codex_cli_conversation_injects_only_server_bound_scax_mcp_context(tmp_p
     assert arguments[arguments.index("--sandbox") + 1] == "read-only"
     assert 'mcp_servers.scax.command="/usr/bin/python3"' in arguments
     assert 'mcp_servers.scax.args=["-m", "ax_workspace.entrypoints.mcp"]' in arguments
-    assert 'mcp_servers.scax.env_vars=["AX_MCP_PERSONA", "AX_MCP_CAUSATION_ID", "AX_PROFILE", "DATABASE_URL"]' in arguments
+    assert 'mcp_servers.scax.env_vars=["AX_MCP_PERSONA", "AX_MCP_CAUSATION_ID", "AX_PROFILE", "DATABASE_URL", "AX_WEB_ORIGIN"]' in arguments
     assert 'mcp_servers.scax.default_tools_approval_mode="approve"' in arguments
     prompt = arguments[-1]
     assert "서로 의미가 겹치는 후보는 제외" in prompt
@@ -258,6 +259,7 @@ def test_codex_cli_conversation_injects_only_server_bound_scax_mcp_context(tmp_p
     assert "서버가 존칭과 활성 직책을 조직 원장으로 해석" in prompt
     assert "호칭을 제외한 `팀장`" not in prompt
     assert "graph_search" in prompt and "graph_neighbors" in prompt
+    assert "나/내가/내 관계의 시작은 `graph_overview`" in prompt
     assert "소속 관계" in prompt
     assert "meeting_create" in prompt
     assert "조직을 생략" in prompt
@@ -269,11 +271,15 @@ def test_codex_cli_conversation_injects_only_server_bound_scax_mcp_context(tmp_p
     assert "그 항목의 source_contexts가 준 meeting ID만 `meeting_get`" in prompt
     assert "WorkRequest나 새 Meeting으로 바꾸지 않는다" in prompt
     assert "`meeting_share`로 열람 공유 확인을 제안" in prompt
+    assert "일보가 작성됐는지·생성 중인지·제출됐는지" in prompt
+    assert "수평 업무 요청·부탁" in prompt
+    assert "표시 이름을 말했으면 후보 도구" in prompt
     assert "postgresql://example/scax" not in " ".join(arguments)
     assert "mina" not in " ".join(arguments)
     assert captured["environment"]["AX_MCP_PERSONA"] == "mina"
     assert captured["environment"]["AX_MCP_CAUSATION_ID"] == "turn-execution-1"
     assert captured["environment"]["DATABASE_URL"] == "postgresql://example/scax"
+    assert captured["environment"]["AX_WEB_ORIGIN"] == "https://scax.example.test"
     assert "mina" not in provider._conversation_prompt(  # type: ignore[attr-defined]
         AiConversationRequest(
             prompt="내 업무를 보여줘",

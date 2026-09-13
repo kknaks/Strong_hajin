@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 import os
+from urllib.parse import urlsplit
 
 
 #: 「바로 로그인」 목록이 보여 줄 계정의 도메인, 아무 말이 없을 때. 조직마다 다르므로 실행 환경이 정한다.
@@ -50,6 +51,8 @@ class Settings:
     recordings_dir: str = ".scax/recordings"
     material_queue_visibility_timeout: int = 120
     material_queue_max_attempts: int = 3
+    material_stage_timeout_seconds: int = 120
+    material_total_timeout_seconds: int = 600
     material_worker_concurrency: int = 2
     #: 회의 중 AI 배치의 트리거 수치 (SCAX-SPEC-004 §13 `OQ-307` 잠정값 — 실측으로 갈아 끼운다).
     meeting_batch_chars: int = 600
@@ -62,8 +65,14 @@ class Settings:
     #: 순으로 한 배달 안에서 돌기 때문이다. 짧으면 긴 음원을 다시 듣는 동안 lease 가 먼저 만료되고,
     #: 다른 워커가 같은 회의를 집어 재전사가 두 번 돈다.
     meeting_finalize_lease_seconds: int = 1800
+    report_queue_visibility_timeout: int = 120
+    report_queue_max_attempts: int = 3
+    report_stage_timeout_seconds: int = 300
+    report_total_timeout_seconds: int = 900
+    report_worker_concurrency: int = 1
     #: 이 도메인의 계정만 「바로 로그인」 목록에 오른다 — 그 밖의 실제 계정은 로컬 DB에 있어도 나열되지 않는다.
     demo_email_domain: str = DEFAULT_DEMO_EMAIL_DOMAIN
+    web_origin: str = "http://localhost:5173"
     #: 사옥 회의실 예약 시스템 (SCAX-WP-007). 계정 둘은 **값이 비면 기능이 스스로 없다고 말한다** —
     #: 부팅은 멀쩡하고, 예약을 부르는 순간에만 사유가 남는다. 값을 코드에 두지 않는다.
     room_booking_base_url: str = DEFAULT_ROOM_BOOKING_BASE_URL
@@ -74,6 +83,23 @@ class Settings:
     room_booking_notify: bool = False
     #: 한 번의 왕복 상한(초). [만들기] 가 이 값만큼 기다릴 수 있다 — 그래서 짧다.
     room_booking_timeout_seconds: float = 20.0
+
+    def __post_init__(self) -> None:
+        origin = self.web_origin.strip().rstrip("/")
+        parsed = urlsplit(origin)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "AX_WEB_ORIGIN must be an HTTP(S) origin without credentials, path, query or fragment"
+            )
+        object.__setattr__(self, "web_origin", origin)
 
     @property
     def room_booking_configured(self) -> bool:
@@ -117,13 +143,21 @@ class Settings:
             recordings_dir=os.getenv("AX_RECORDINGS_DIR", ".scax/recordings"),
             material_queue_visibility_timeout=int(os.getenv("AX_MATERIAL_QUEUE_VISIBILITY_TIMEOUT", "120")),
             material_queue_max_attempts=int(os.getenv("AX_MATERIAL_QUEUE_MAX_ATTEMPTS", "3")),
+            material_stage_timeout_seconds=int(os.getenv("AX_MATERIAL_STAGE_TIMEOUT_SECONDS", "120")),
+            material_total_timeout_seconds=int(os.getenv("AX_MATERIAL_TOTAL_TIMEOUT_SECONDS", "600")),
             material_worker_concurrency=int(os.getenv("AX_MATERIAL_WORKER_CONCURRENCY", "2")),
             meeting_batch_chars=int(os.getenv("AX_MEETING_BATCH_CHARS", "600")),
             meeting_batch_switch_min_chars=int(os.getenv("AX_MEETING_BATCH_SWITCH_MIN_CHARS", "80")),
             meeting_batch_max_wait_seconds=int(os.getenv("AX_MEETING_BATCH_MAX_WAIT_SECONDS", "90")),
             meeting_ai_tools=_tool_registry(os.getenv("AX_MEETING_AI_TOOLS")),
             meeting_finalize_lease_seconds=int(os.getenv("AX_MEETING_FINALIZE_LEASE_SECONDS", "1800")),
+            report_queue_visibility_timeout=int(os.getenv("AX_REPORT_QUEUE_VISIBILITY_TIMEOUT", "120")),
+            report_queue_max_attempts=int(os.getenv("AX_REPORT_QUEUE_MAX_ATTEMPTS", "3")),
+            report_stage_timeout_seconds=int(os.getenv("AX_REPORT_STAGE_TIMEOUT_SECONDS", "300")),
+            report_total_timeout_seconds=int(os.getenv("AX_REPORT_TOTAL_TIMEOUT_SECONDS", "900")),
+            report_worker_concurrency=int(os.getenv("AX_REPORT_WORKER_CONCURRENCY", "1")),
             demo_email_domain=os.getenv("AX_DEMO_EMAIL_DOMAIN", DEFAULT_DEMO_EMAIL_DOMAIN),
+            web_origin=os.getenv("AX_WEB_ORIGIN", "http://localhost:5173"),
             room_booking_base_url=os.getenv("TDL_BASE_URL", DEFAULT_ROOM_BOOKING_BASE_URL),
             room_booking_email=os.getenv("TDL_EMAIL", ""),
             room_booking_password=os.getenv("TDL_PASSWORD", ""),

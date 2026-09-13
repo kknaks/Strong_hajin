@@ -132,7 +132,7 @@ def test_two_versions_can_be_compared_long_after_the_fact(tmp_path) -> None:
 
 def test_history_is_read_by_the_same_people_who_may_read_the_task(tmp_path) -> None:
     client, application, _ = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "요청한 업무", "assignee_id": "jiho"}).json()
+    client.post("/api/work-requests", headers=MINA, json={"title": "요청한 업무", "assignee_id": "jiho"})
     [item] = client.get("/api/action-items", headers=JIHO).json()
     client.post(
         f"/api/action-items/{item['action_item_id']}/commands/accept",

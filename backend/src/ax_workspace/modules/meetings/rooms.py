@@ -31,6 +31,7 @@ UNTITLED_RESERVATION = "제목 없는 회의"
 STATUS_BOOKED = "booked"
 STATUS_CANCELLED = "cancelled"
 STATUS_FAILED = "failed"
+STATUS_NEEDS_VERIFICATION = "needs_verification"
 
 
 class RoomReservationError(RuntimeError):
@@ -77,6 +78,39 @@ class RoomGatewayUnavailable(RoomReservationError):
     """예약 시스템에 닿지 못했다 — 네트워크·시간 초과·그쪽 오류."""
 
     reason = "reservation_unavailable"
+
+
+class RoomOutcomeUnknown(RoomReservationError):
+    """The transport ended after a mutation may have reached the reservation provider."""
+
+    reason = "reservation_needs_verification"
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        room_id: int | None = None,
+        room_name: str | None = None,
+        replaced: bool = False,
+        requested_room_name: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.room_id = room_id
+        self.room_name = room_name
+        self.replaced = replaced
+        self.requested_room_name = requested_room_name
+
+
+class RoomCreationIdempotencyRequired(RoomReservationError):
+    """A room-create mutation needs a stable caller key before it can leave the service."""
+
+    reason = "reservation_idempotency_required"
+
+
+class RoomCreationIdempotencyConflict(RoomReservationError):
+    """One caller key cannot name two different meeting creation payloads."""
+
+    reason = "reservation_idempotency_conflict"
 
 
 @dataclass(frozen=True, slots=True)

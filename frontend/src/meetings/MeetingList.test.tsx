@@ -29,6 +29,7 @@ vi.mock("../api", async (actual) => ({
 import { ApiError } from "../api";
 import * as api from "../api";
 import type { MeetingAgenda, MeetingRecord, MeetingRow } from "../viewModels";
+import { roomReservationNotice } from "./BookingModal";
 import { MeetingListPage } from "./MeetingListPage";
 import { resetRoster } from "./roster";
 
@@ -90,6 +91,35 @@ function renderList(upcoming: MeetingRow[], past: MeetingRow[], cursor: string |
   render(<MeetingListPage onError={vi.fn()} onNotice={onNotice} onOpenMeeting={onOpenMeeting} />);
   return { onOpenMeeting, onNotice };
 }
+
+it("응답이 끊긴 회의실 변경은 자동 재시도 대신 확인 필요로 알린다", () => {
+  expect(
+    roomReservationNotice(
+      record({
+        room_reservation: {
+          status: "needs_verification",
+          room_name: "회의실 3 (6인)",
+          reason: "reservation_needs_verification",
+        },
+      }),
+    ),
+  ).toBe("회의실 예약 결과를 확인해야 합니다 — 자동으로 다시 요청하지 않았습니다.");
+});
+
+it("예약 보상 중단은 실패로 숨기지 않고 취소 결과 확인이 필요하다고 알린다", () => {
+  expect(
+    roomReservationNotice(
+      record({
+        location: "회의실 3 (6인)",
+        room_reservation: {
+          status: "needs_verification",
+          room_name: "회의실 3 (6인)",
+          reason: "reservation_compensation_pending",
+        },
+      }),
+    ),
+  ).toBe("회의실 예약 취소 결과를 확인해야 합니다 — 자동으로 다시 예약하지 않았습니다.");
+});
 
 /** 명부가 비어 있어도 참석자 한 명은 세울 수 있다 — 이름을 치고 사외로 단다. */
 function addGuest(modal: HTMLElement, name: string) {
@@ -377,6 +407,27 @@ describe("SCR-105 회의 목록", () => {
     const rooms = [...modal.querySelectorAll<HTMLInputElement>('input[name="meeting-room"]')];
     expect(rooms).toHaveLength(2);
     expect(rooms[0].checked).toBe(true);
+  });
+
+  it("응답을 받지 못한 생성 재시도는 같은 idempotency key를 다시 쓴다", async () => {
+    vi.mocked(api.readMeetingRooms).mockResolvedValue([{ room_id: 7, name: "5F 대회의실 (20인)", capacity: 20 }]);
+    renderList([], []);
+    fireEvent.click(await screen.findByRole("button", { name: "회의 예약" }));
+    const modal = await screen.findByRole("dialog", { name: "회의 예약" });
+    await within(modal).findByText("5F 대회의실 (20인)");
+    fireEvent.change(within(modal).getByPlaceholderText("회의명을 적으세요"), { target: { value: "응답 유실 회의" } });
+    addGuest(modal, "한서린");
+    fireEvent.click(within(modal).getByLabelText("5F 대회의실 (20인)"));
+    vi.mocked(api.bookMeeting).mockRejectedValueOnce(new Error("응답을 받지 못했습니다"));
+
+    fireEvent.click(within(modal).getByRole("button", { name: "회의 생성" }));
+    await waitFor(() => expect(api.bookMeeting).toHaveBeenCalledTimes(1));
+    const firstKey = vi.mocked(api.bookMeeting).mock.calls[0][1];
+
+    vi.mocked(api.bookMeeting).mockResolvedValueOnce(record());
+    fireEvent.click(within(modal).getByRole("button", { name: "회의 생성" }));
+    await waitFor(() => expect(api.bookMeeting).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.bookMeeting).mock.calls[1][1]).toBe(firstKey);
   });
 
   it("일시를 바꾸면 그 시간에 쓸 수 있는 방만 다시 받는다", async () => {

@@ -491,6 +491,8 @@ export const meetingScreen = {
     room_unavailable: "그 시간엔 이미 예약된 회의실입니다 — 회의는 만들었고 장소는 비어 있습니다.",
     reservation_auth_failed: "회의실 예약 계정을 쓸 수 없습니다 — 회의는 만들었고 장소는 비어 있습니다.",
     reservation_unavailable: "회의실 예약 시스템에 닿지 못했습니다 — 회의는 만들었고 장소는 비어 있습니다.",
+    reservation_needs_verification: "회의실 예약 결과를 확인해야 합니다 — 자동으로 다시 요청하지 않았습니다.",
+    reservation_compensation_pending: "회의실 예약 취소 결과를 확인해야 합니다 — 자동으로 다시 예약하지 않았습니다.",
     room_reservation_failed: "회의실을 잡지 못했습니다 — 회의는 만들었고 장소는 비어 있습니다.",
   } as Record<string, string>,
 

@@ -6,6 +6,14 @@ edge to work someone may not open is dropped along with the work itself, so no t
 """
 from __future__ import annotations
 
+from ax_workspace.modules.work.graph_results import GraphEdgeView
+from ax_workspace.modules.work.graph_results import GraphNeighborsResult
+from ax_workspace.modules.work.graph_results import GraphNodeView
+from ax_workspace.modules.work.graph_results import GraphOverviewResult
+from ax_workspace.modules.work.graph_results import GraphSearchResult
+
+from ax_workspace.modules.errors import ResourceNotFound
+
 from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import UUID
@@ -22,21 +30,6 @@ from ax_workspace.modules.work.search import matches
 #: What may be at either end of a connection. Each is read through the module that owns it.
 NODE_KINDS = ("person", "team", "project", "work_request", "task", "material", "meeting", "report")
 SEARCHABLE_NODE_KINDS = ("person", "team", "project", "task", "work_request", "meeting")
-GRAPH_SEARCH_DESCRIPTION = (
-    "Find authorized start nodes by name: " + ", ".join(f"`{kind}`" for kind in SEARCHABLE_NODE_KINDS)
-    + ". Person references may use a Korean honorific such as `님`; the server normalizes it and searches active "
-    "appointment position names within the current persona's membership hierarchy as well as display names. "
-    "Position matches include their position and organization evidence. "
-    "Material and report are evidence nodes reached through relationships, not title search. "
-    "Use returned kind and id as `<kind>:<id>`; numbers in titles are not IDs. "
-    "Results are bounded (default 20, maximum 50); truncated means more readable matches exist."
-)
-GRAPH_NEIGHBORS_DESCRIPTION = (
-    "Follow one hop using the canonical `node` argument: " + ", ".join(f"`{kind}:<id>`" for kind in NODE_KINDS)
-    + ". Use IDs returned by tools, never infer them from titles. Each neighbour is re-checked against "
-    "what this persona may read, so a connection never grants access. "
-    "Returns directed edges with provenance and inverse labels, bounded to 50 edges (default 20)."
-)
 #: How far one answer may reach, so a screen and a delegated turn get the same bounded thing.
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 50
@@ -73,7 +66,7 @@ class GraphAccessDenied(GraphError):
     pass
 
 
-class GraphNotFound(GraphError):
+class GraphNotFound(GraphError, ResourceNotFound):
     pass
 
 
@@ -106,7 +99,7 @@ class GraphApplication:
     def __init__(self, source: GraphSourcePort) -> None:
         self._source = source
 
-    def search(self, principal: Principal, query: str, *, limit: int = DEFAULT_LIMIT) -> dict[str, Any]:
+    def search(self, principal: Principal, query: str, *, limit: int = DEFAULT_LIMIT) -> GraphSearchResult:
         self._require(principal)
         text = " ".join(str(query or "").split())
         if not text:
@@ -125,7 +118,7 @@ class GraphApplication:
         ]
         return {"query": text, "nodes": nodes[:bounded], "truncated": len(nodes) > bounded}
 
-    def neighbors(self, principal: Principal, node_ref: str, *, limit: int = DEFAULT_LIMIT) -> dict[str, Any]:
+    def neighbors(self, principal: Principal, node_ref: str, *, limit: int = DEFAULT_LIMIT) -> GraphNeighborsResult:
         """One hop from one node, with every neighbour re-checked against this person's own access."""
         self._require(principal)
         kind, identifier = self._parse(node_ref)
@@ -149,7 +142,7 @@ class GraphApplication:
 
     # ---- one hop from a Task ----
 
-    def _task_neighbors(self, principal: Principal, task_id: UUID, limit: int) -> dict[str, Any]:
+    def _task_neighbors(self, principal: Principal, task_id: UUID, limit: int) -> GraphNeighborsResult:
         task = self._source.readable_task(principal, task_id)
         if task is None:
             raise GraphNotFound("task was not found")
@@ -216,7 +209,7 @@ class GraphApplication:
 
     # ---- one hop from a WorkRequest ----
 
-    def _request_neighbors(self, principal: Principal, request_id: UUID, limit: int) -> dict[str, Any]:
+    def _request_neighbors(self, principal: Principal, request_id: UUID, limit: int) -> GraphNeighborsResult:
         request = self._source.readable_request(principal, request_id)
         if request is None:
             raise GraphNotFound("work request was not found")
@@ -239,7 +232,7 @@ class GraphApplication:
 
     # ---- one hop from a Meeting ----
 
-    def _meeting_neighbors(self, principal: Principal, meeting_id: UUID, limit: int) -> dict[str, Any]:
+    def _meeting_neighbors(self, principal: Principal, meeting_id: UUID, limit: int) -> GraphNeighborsResult:
         meeting = self._source.readable_meeting(principal, meeting_id)
         if meeting is None:
             raise GraphNotFound("meeting was not found")
@@ -265,7 +258,7 @@ class GraphApplication:
 
     # ---- one hop from a report, and from a file ----
 
-    def _report_neighbors(self, principal: Principal, report_id: str, limit: int) -> dict[str, Any]:
+    def _report_neighbors(self, principal: Principal, report_id: str, limit: int) -> GraphNeighborsResult:
         """A report stands on the work it was written from. Only the writer's own reports are here at all."""
         report = next((row for row in self._source.own_reports(principal, limit=20) if str(row["report_id"]) == report_id), None)
         if report is None:
@@ -284,7 +277,7 @@ class GraphApplication:
             edges.append(self._edge("cites", self._ref(center), self._ref(node)))
         return self._bounded(center, nodes, edges, limit)
 
-    def _material_neighbors(self, principal: Principal, material_id: str, limit: int) -> dict[str, Any]:
+    def _material_neighbors(self, principal: Principal, material_id: str, limit: int) -> GraphNeighborsResult:
         owners = self._source.material_owners(principal, material_id)
         if not owners:
             raise GraphNotFound("material was not found")
@@ -312,7 +305,7 @@ class GraphApplication:
 
     # ---- one hop from a person, and from the team they sit in ----
 
-    def _person_neighbors(self, principal: Principal, member_id: str, limit: int) -> dict[str, Any]:
+    def _person_neighbors(self, principal: Principal, member_id: str, limit: int) -> GraphNeighborsResult:
         person = self._source.person(member_id)
         if person is None:
             raise GraphNotFound("member was not found")
@@ -343,7 +336,7 @@ class GraphApplication:
             edges.append(self._edge(kind, self._ref(center), self._ref(node)))
         return self._bounded(center, nodes, edges, limit)
 
-    def _team_neighbors(self, principal: Principal, unit_id: str, limit: int) -> dict[str, Any]:
+    def _team_neighbors(self, principal: Principal, unit_id: str, limit: int) -> GraphNeighborsResult:
         unit = next((row for row in self._source.organization_units() if str(row["id"]) == unit_id), None)
         if unit is None:
             raise GraphNotFound("team was not found")
@@ -356,7 +349,7 @@ class GraphApplication:
             edges.append(self._edge("belongs_to", f"person:{member['member_id']}", self._ref(center)))
         return self._bounded(center, nodes, edges, limit)
 
-    def _project_neighbors(self, principal: Principal, project_id: UUID, limit: int) -> dict[str, Any]:
+    def _project_neighbors(self, principal: Principal, project_id: UUID, limit: int) -> GraphNeighborsResult:
         project = self._source.readable_project(principal, project_id)
         if project is None:
             raise GraphNotFound("project was not found")
@@ -382,7 +375,7 @@ class GraphApplication:
 
     # ---- the first screen ----
 
-    def overview(self, principal: Principal, *, view: str = "member", limit: int = OVERVIEW_LIMIT) -> dict[str, Any]:
+    def overview(self, principal: Principal, *, view: str = "member", limit: int = OVERVIEW_LIMIT) -> GraphOverviewResult:
         """What this person is already connected to, as a graph rather than an empty search box.
 
         It is built from the same authorized reads as everything else, so it can never show more than the person
@@ -502,7 +495,7 @@ class GraphApplication:
             return self._as_teams(answer)
         return self._as_projects(principal, answer) if view == "project" else answer
 
-    def _as_projects(self, principal: Principal, answer: dict[str, Any]) -> dict[str, Any]:
+    def _as_projects(self, principal: Principal, answer: dict[str, Any]) -> GraphOverviewResult:
         """같은 답을 프로젝트 층에서 읽는다: 업무가 자기 프로젝트로 접힌다.
 
         팀 보기가 사람을 팀으로 접는 것과 같은 동작이되 접히는 것이 다르다 — 프로젝트는 사람이 아니라 일을 묶기
@@ -553,7 +546,7 @@ class GraphApplication:
             "view": "project",
         }
 
-    def _as_teams(self, answer: dict[str, Any]) -> dict[str, Any]:
+    def _as_teams(self, answer: dict[str, Any]) -> GraphOverviewResult:
         """The same authorized answer, read one level up: people become the team they sit in.
 
         Edges that stay inside one team are that team's own business and are hidden; the rest are counted by
@@ -625,7 +618,7 @@ class GraphApplication:
         limit: int,
         *,
         cap: int = MAX_LIMIT,
-    ) -> dict[str, Any]:
+    ) -> GraphNeighborsResult:
         """One answer stays small enough to read: extra connections are counted, never silently dropped."""
         bounded = max(1, min(int(limit), cap))
         unique = {}
@@ -667,7 +660,7 @@ class GraphApplication:
         return f"{node['kind']}:{node['id']}"
 
     @staticmethod
-    def _edge(kind: str, source: str, target: str) -> dict[str, Any]:
+    def _edge(kind: str, source: str, target: str) -> GraphEdgeView:
         relation = RELATIONS.get(kind, {"label": kind, "inverse": kind, "provenance": kind})
         return {
             "kind": kind,
@@ -680,7 +673,7 @@ class GraphApplication:
         }
 
     @staticmethod
-    def _task_node(task: dict[str, Any]) -> dict[str, Any]:
+    def _task_node(task: dict[str, Any]) -> GraphNodeView:
         return {
             "kind": "task",
             "id": str(task["task_id"]),
@@ -693,7 +686,7 @@ class GraphApplication:
         }
 
     @staticmethod
-    def _meeting_node(meeting: dict[str, Any]) -> dict[str, Any]:
+    def _meeting_node(meeting: dict[str, Any]) -> GraphNodeView:
         return {
             "kind": "meeting",
             "id": str(meeting["meeting_id"]),
@@ -703,7 +696,7 @@ class GraphApplication:
         }
 
     @staticmethod
-    def _report_node(report: dict[str, Any]) -> dict[str, Any]:
+    def _report_node(report: dict[str, Any]) -> GraphNodeView:
         return {
             "kind": "report",
             "id": str(report["report_id"]),
@@ -712,7 +705,7 @@ class GraphApplication:
             "date": report.get("date"),
         }
 
-    def _material_edge(self, task_id: str, material: dict[str, Any]) -> dict[str, Any]:
+    def _material_edge(self, task_id: str, material: dict[str, Any]) -> GraphEdgeView:
         return {
             **self._edge("has_material", f"task:{task_id}", f"material:{material['material_id']}"),
             "integrity_ref": material["integrity_ref"],
@@ -721,7 +714,7 @@ class GraphApplication:
         }
 
     @staticmethod
-    def _material_node(material: dict[str, Any]) -> dict[str, Any]:
+    def _material_node(material: dict[str, Any]) -> GraphNodeView:
         return {
             "kind": "material",
             "id": str(material["material_id"]),
@@ -731,11 +724,11 @@ class GraphApplication:
         }
 
     @staticmethod
-    def _team_node(unit: dict[str, Any]) -> dict[str, Any]:
+    def _team_node(unit: dict[str, Any]) -> GraphNodeView:
         return {"kind": "team", "id": str(unit["id"]), "title": str(unit.get("name") or unit["id"]), "state": None, "date": None}
 
     @staticmethod
-    def _project_node(project: dict[str, Any]) -> dict[str, Any]:
+    def _project_node(project: dict[str, Any]) -> GraphNodeView:
         return {
             "kind": "project",
             "id": str(project["project_id"]),
@@ -745,14 +738,14 @@ class GraphApplication:
         }
 
     @staticmethod
-    def _person_node(person: dict[str, Any]) -> dict[str, Any]:
+    def _person_node(person: dict[str, Any]) -> GraphNodeView:
         node = {"kind": "person", "id": str(person["member_id"]), "title": str(person["display_name"]), "state": None, "date": None}
         if person.get("match"):
             node["match"] = dict(person["match"])
         return node
 
     @staticmethod
-    def _request_node(request: dict[str, Any]) -> dict[str, Any]:
+    def _request_node(request: dict[str, Any]) -> GraphNodeView:
         return {
             "kind": "work_request",
             "id": str(request["request_id"]),

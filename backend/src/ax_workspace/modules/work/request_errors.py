@@ -1,5 +1,7 @@
 """Errors owned by the Work Request domain."""
 
+from ax_workspace.modules.errors import ResourceNotFound
+
 
 class WorkRequestError(Exception):
     pass
@@ -10,4 +12,8 @@ class WorkRequestIdempotencyConflict(WorkRequestError):
 
 
 class WorkRequestAccessDenied(WorkRequestError):
+    pass
+
+
+class WorkRequestNotFound(WorkRequestError, ResourceNotFound):
     pass

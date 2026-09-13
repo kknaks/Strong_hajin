@@ -97,7 +97,7 @@ try {
       if (!response.ok) return null;
       const current = await response.json();
       const action = current.actions?.find(
-        (item) => item.action_type === "meeting.create" && item.state === "pending" && item.subject === title,
+        (item) => item.action_type === "meeting.reservation.create" && item.state === "pending" && item.subject === title,
       );
       const meetingRead = current.tool_invocations?.find(
         (item) => item.tool_name === "meeting_get" && item.state === "completed",
@@ -110,7 +110,7 @@ try {
       );
       return action && meetingRead && taskRead && materialRead ? action : null;
     }, { conversationId: conversation.conversation_id, title: originalTitle }),
-    { timeout: 180_000, description: "the source-populated editable meeting.create Action" },
+    { timeout: 180_000, description: "the source-populated editable meeting reservation Action" },
   );
   const fieldIds = pending.edit_contract?.fields?.map((field) => field.id);
   for (const required of ["organization_id", "title", "description", "starts_at", "ends_at", "visibility", "host_id", "attendee_ids", "reference_task_ids", "include_initial_note", "initial_note_body"]) {

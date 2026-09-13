@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, date, datetime
@@ -1556,6 +1557,33 @@ class SqlAlchemyTaskAssignmentRepository:
         판단함에 없는 일을 수락할 방법이 없다.
         """
         now = datetime.now(UTC)
+        appended = TaskAssignmentRecord(
+            task_id=task.id,
+            assignee_id=assignee_id,
+            assigned_by=assigner_id,
+            assignment_kind="direct",
+            status="pending",
+            created_at=now,
+        )
+        self._session.add(appended)
+        self._session.flush()
+        task.version += 1
+        task.updated_at = now
+        self._open_assignment_acceptance(task, appended, now)
+        ActivityLedger(self._session).record(
+            target_type="task", target_id=str(task.id), event_kind="task.assignment.offered", actor_id=assigner_id,
+            after_ref=f"task_assignment:{appended.id}",
+            safe_summary=f"{_person(self._session, assigner_id)}가 {_person(self._session, assignee_id)}에게 담당을 맡김: {task.title}",
+        )
+        self._session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now))
+        SqlAlchemyTaskRepository(self._session).capture_version(task, assigner_id, "task.assignment.offered")
+        self._session.flush()
+        self._session.refresh(task)
+        return appended
+
+    def _open_assignment_acceptance(self, task: TaskRecord, appended: TaskAssignmentRecord, now: datetime, *, legacy: bool = False) -> None:
+        """Every offered assignment has one immutable question for its new assignee."""
+        assigner_id, assignee_id = appended.assigned_by, appended.assignee_id
         subject = self._session.scalar(
             select(SubjectRecord).where(
                 SubjectRecord.owning_resource_type == "task", SubjectRecord.owning_resource_id == str(task.id)
@@ -1567,16 +1595,6 @@ class SqlAlchemyTaskAssignmentRepository:
             )
             self._session.add(subject)
             self._session.flush()
-        appended = TaskAssignmentRecord(
-            task_id=task.id,
-            assignee_id=assignee_id,
-            assigned_by=assigner_id,
-            assignment_kind="direct",
-            status="pending",
-            created_at=now,
-        )
-        self._session.add(appended)
-        self._session.flush()
         item = DecisionItemRecord(
             kind="task.assignment.acceptance",
             subject_id=subject.id,
@@ -1598,10 +1616,14 @@ class SqlAlchemyTaskAssignmentRepository:
             "due_date": task.due_date.isoformat() if task.due_date else None,
             "assignee_id": assignee_id,
             "assigned_by": assigner_id,
+            **({"task_version": int(task.version)} if legacy else {}),
         }
+        # A legacy assignment had no immutable submission. Capture the content
+        # being answered now, without backdating it or replacing another round.
+        latest = self._session.scalar(select(func.max(SubjectVersionRecord.version)).where(SubjectVersionRecord.subject_id == subject.id)) if legacy else None
         version = SubjectVersionRecord(
             subject_id=subject.id,
-            version=task.version,
+            version=max(int(task.version), int(latest or 0) + 1) if legacy else task.version,
             content_hash=_content_hash(snapshot),
             snapshot=snapshot,
             captured_at=now,
@@ -1614,7 +1636,7 @@ class SqlAlchemyTaskAssignmentRepository:
             submission_version=1,
             submitted_by=assigner_id,
             payload_hash=version.content_hash,
-            decision_policy_snapshot={"decisions": ["accept", "reject"], "reason_required_for": ["reject"]},
+            decision_policy_snapshot={"decisions": ["accept", "reject"], "reason_required_for": ["reject"], **({"legacy_assignment_id": str(appended.id), "captured_on_command": True} if legacy else {})},
             submitted_at=now,
         )
         self._session.add(submission)
@@ -1624,13 +1646,6 @@ class SqlAlchemyTaskAssignmentRepository:
                 submission_id=submission.id, reviewer_member_id=assignee_id, status="pending", assigned_at=now, due_at=item.due_at
             )
         )
-        ActivityLedger(self._session).record(
-            target_type="task", target_id=str(task.id), event_kind="task.assignment.offered", actor_id=assigner_id,
-            after_ref=f"task_assignment:{appended.id}",
-            safe_summary=f"{_person(self._session, assigner_id)}가 {_person(self._session, assignee_id)}에게 담당을 맡김: {task.title}",
-        )
-        self._session.flush()
-        return appended
 
     def create_assigned_task(
         self,
@@ -1677,54 +1692,17 @@ class SqlAlchemyTaskAssignmentRepository:
         )
         self._session.add(task)
         self._session.flush()
-        subject = SubjectRecord(subject_type="task", owning_resource_type="task", owning_resource_id=str(task.id), created_at=now)
-        self._session.add(subject)
-        self._session.flush()
-        snapshot = {
-            "title": title,
-            "description": description,
-            "start_date": start_date.isoformat() if start_date else None,
-            "due_date": due_date.isoformat() if due_date else None,
-            "assignee_id": assignee_id,
-            "assigned_by": assigner_id,
-        }
-        version = SubjectVersionRecord(subject_id=subject.id, version=1, content_hash=_content_hash(snapshot), snapshot=snapshot, captured_at=now)
-        self._session.add(version)
         assignment = TaskAssignmentRecord(
             task_id=task.id, assignee_id=assignee_id, assigned_by=assigner_id, assignment_kind="direct", status="pending", created_at=now
         )
         self._session.add(assignment)
         self._session.flush()
+        self._open_assignment_acceptance(task, assignment, now)
         tasks = SqlAlchemyTaskRepository(self._session)
         tasks.seed_checklist(task, checklist, assigner_id)
         for referenced_task_id in references or []:
             tasks.add_reference(task.id, referenced_task_id, assigner_id)
         tasks.capture_version(task, assigner_id, "task.created")
-        item = DecisionItemRecord(
-            kind="task.assignment.acceptance",
-            subject_id=subject.id,
-            context_type="task",
-            context_id=str(task.id),
-            effect_identity=f"task_assignment.activate:{assignment.id}",
-            status="open",
-            due_at=datetime.combine(due_date, datetime.min.time(), tzinfo=UTC) if due_date else None,
-            created_at=now,
-        )
-        self._session.add(item)
-        self._session.flush()
-        assignment.source_decision_item_id = item.id
-        submission = SubmissionRecord(
-            decision_item_id=item.id,
-            subject_version_id=version.id,
-            submission_version=1,
-            submitted_by=assigner_id,
-            payload_hash=version.content_hash,
-            decision_policy_snapshot={"decisions": ["accept", "reject"], "reason_required_for": ["reject"]},
-            submitted_at=now,
-        )
-        self._session.add(submission)
-        self._session.flush()
-        self._session.add(ReviewAssignmentRecord(submission_id=submission.id, reviewer_member_id=assignee_id, status="pending", assigned_at=now, due_at=item.due_at))
         self._session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now))
         ActivityLedger(self._session).record(
             target_type="task", target_id=str(task.id), event_kind="task.assigned", actor_id=assigner_id,
@@ -1768,7 +1746,7 @@ class SqlAlchemyTaskAssignmentRepository:
         `lock` takes the Task row before anything is read off it, so two commands racing for the same Task cannot
         both pass a version check that was true only before the other one committed.
         """
-        return self._session.get(TaskRecord, task_id, with_for_update=lock or None)
+        return self._session.get(TaskRecord, task_id, with_for_update=lock or None, populate_existing=lock)
 
     def active_assignment_for(self, task_id: UUID, *, lock: bool = False) -> TaskAssignmentRecord | None:
         """Who holds this Task right now. At most one assignment is ever open on it."""
@@ -1803,6 +1781,7 @@ class SqlAlchemyTaskAssignmentRepository:
         self._session.flush()
         task.version += 1
         task.updated_at = now
+        self._open_assignment_acceptance(task, appended, now)
         self._session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now))
         ActivityLedger(self._session).record(
             target_type="task", target_id=str(task.id), event_kind="task.reassigned", actor_id=assigner_id,
@@ -1814,12 +1793,16 @@ class SqlAlchemyTaskAssignmentRepository:
         )
         SqlAlchemyTaskRepository(self._session).capture_version(task, assigner_id, "task.reassigned", reason)
         self._session.flush()
+        self._session.refresh(task)
         return appended
 
     def decide(self, assignment: TaskAssignmentRecord, actor_id: str, decision: str, *, reason: str | None = None) -> ReviewDecisionRecord:
         """Acceptance activates the assignment; rejection closes it and cancels the never-entered Task."""
         now = datetime.now(UTC)
         task = self.task_for(assignment)
+        if assignment.source_decision_item_id is None:
+            self._open_assignment_acceptance(task, assignment, now, legacy=True)
+            self._session.flush()
         item = self._session.get(DecisionItemRecord, assignment.source_decision_item_id) if assignment.source_decision_item_id else None
         submission = (
             self._session.scalar(select(SubmissionRecord).where(SubmissionRecord.decision_item_id == item.id).order_by(SubmissionRecord.submission_version.desc()))
@@ -1838,7 +1821,8 @@ class SqlAlchemyTaskAssignmentRepository:
         assert item is not None and submission is not None and review is not None, "assignment acceptance item is missing"
         review.status = "decided"
         record = ReviewDecisionRecord(
-            review_assignment_id=review.id, submission_id=submission.id, actor_member_id=actor_id, decision=decision, reason=reason, decided_at=now
+            review_assignment_id=review.id, submission_id=submission.id, actor_member_id=actor_id, decision=decision, reason=reason,
+            conditions={DECISION_FACTS: {DECISION_VERSION: int(task.version)}}, decided_at=now
         )
         self._session.add(record)
         item.status = "resolved"
@@ -1872,6 +1856,9 @@ class SqlAlchemyTaskAssignmentRepository:
         """Close an unanswered direct assignment without pretending the assignee judged it."""
         now = datetime.now(UTC)
         task = self.task_for(assignment)
+        if assignment.source_decision_item_id is None:
+            self._open_assignment_acceptance(task, assignment, now, legacy=True)
+            self._session.flush()
         item = self._session.get(DecisionItemRecord, assignment.source_decision_item_id) if assignment.source_decision_item_id else None
         submission = (
             self._session.scalar(
