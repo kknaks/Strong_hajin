@@ -1,0 +1,38 @@
+/* Scrollbar — 기본은 「없다」.
+   스크롤은 되지만 바는 그리지 않는다. 우리 화면은 레일·표·목록이 전부 스크롤 영역이라
+   바가 보이는 순간 화면이 줄무늬가 된다. 손이 닿으면 뜨는 것도 같은 이유로 쓰지 않는다.
+   바가 꼭 필요한 자리에만 클래스로 켠다 (긴 표, 코드 블록 등).
+   값은 kit 의 하나뿐인 선/틴트 공식 rgba(112,115,124, α) 을 그대로 쓴다. */
+
+:root{
+  --ax-scrollbar-size:8px;
+  --ax-scrollbar-thumb:rgba(112,115,124,.28);
+  --ax-scrollbar-thumb-hover:rgba(112,115,124,.44);
+  --ax-scrollbar-track:transparent;
+}
+
+/* 기본 — 바 없음 */
+*{scrollbar-width:none}
+*::-webkit-scrollbar{width:0;height:0}
+
+/* opt-in ① 손이 닿은 동안에만 뜬다 */
+.ax-scroll-hover{scrollbar-width:thin;scrollbar-color:transparent var(--ax-scrollbar-track)}
+.ax-scroll-hover::-webkit-scrollbar{width:var(--ax-scrollbar-size);height:var(--ax-scrollbar-size)}
+.ax-scroll-hover::-webkit-scrollbar-track{background:var(--ax-scrollbar-track)}
+/* 2px 투명 테두리 + background-clip 으로 8px 트랙 안에서 4px 두께 썸을 만든다 */
+.ax-scroll-hover::-webkit-scrollbar-thumb{border:2px solid transparent;border-radius:var(--ax-r-pill);background-clip:content-box;background-color:transparent}
+.ax-scroll-hover:hover,.ax-scroll-hover:focus-within{scrollbar-color:var(--ax-scrollbar-thumb) var(--ax-scrollbar-track)}
+.ax-scroll-hover:hover::-webkit-scrollbar-thumb,.ax-scroll-hover:focus-within::-webkit-scrollbar-thumb{background-color:var(--ax-scrollbar-thumb)}
+.ax-scroll-hover::-webkit-scrollbar-thumb:hover{background-color:var(--ax-scrollbar-thumb-hover)}
+
+/* opt-in ② 늘 서 있다 */
+.ax-scroll-always{scrollbar-width:thin;scrollbar-color:var(--ax-scrollbar-thumb) var(--ax-scrollbar-track)}
+.ax-scroll-always::-webkit-scrollbar{width:var(--ax-scrollbar-size);height:var(--ax-scrollbar-size)}
+.ax-scroll-always::-webkit-scrollbar-track{background:var(--ax-scrollbar-track)}
+.ax-scroll-always::-webkit-scrollbar-thumb{border:2px solid transparent;border-radius:var(--ax-r-pill);background-clip:content-box;background-color:var(--ax-scrollbar-thumb)}
+.ax-scroll-always::-webkit-scrollbar-thumb:hover{background-color:var(--ax-scrollbar-thumb-hover)}
+
+/* 바를 켠 자리에서 나타날 때 레이아웃이 밀리지 않게 */
+@supports (scrollbar-gutter:stable){
+  .ax-scroll-gutter{scrollbar-gutter:stable}
+}

@@ -1,47 +1,53 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type React from "react";
 
-import { getMemberDirectory, getMyWork, getSession, getWorkRequests, logout, setAssistantCharacterPreference } from "./api";
-import { BrowserOperationScope, hasPendingBrowserOperation } from './browserOperationGuard';
-import { AssistantLauncher } from "./AssistantCharacter";
-import { AssistantCharacterPicker } from "./AssistantCharacterPicker";
+import { Button } from "./ds/Button";
+import { BrowserOperationScope, hasPendingBrowserOperation } from "./lib/browserOperationGuard";
+import { getMemberDirectory, getMyWork, getSession, getWorkRequests, logout, setAssistantCharacterPreference } from "./lib/api";
+import { AppBody, AppHeader, AppShell } from "./shell/AppShell";
+import { AssistantLauncher } from "./features/assistant/AssistantCharacter";
+import { AssistantCharacterPicker } from "./features/assistant/AssistantCharacterPicker";
 import {
   advanceAssistantCompletionObservation,
   deriveAssistantPresentationState,
   initialAssistantCompletionObservation,
-} from "./assistantPresentation";
-import { CalendarPage } from "./CalendarPage";
-import { BrowserInteractionPage } from './BrowserInteractionPage';
-import { ChatDrawer, contextKey, type LabeledContextReference } from "./chat/ChatDrawer";
-import { NEW_DRAFT_KEY, useConversations } from "./chat/useConversations";
-import { DailyReportPage } from "./DailyReportPage";
-import { personName } from "./labels";
-import { LoginPage } from "./LoginPage";
-import { MeetingDetailPage } from "./meetings/MeetingDetailPage";
-import { MeetingListPage } from "./meetings/MeetingListPage";
-import { Toast } from "./Modal";
-import { MyWorkPage } from "./MyWorkPage";
-import { OrgPage } from "./OrgPage";
-import { ProjectPage } from "./ProjectPage";
-import { RelationGraphPage } from "./RelationGraphPage";
-import { TodayPage } from "./TodayPage";
-import type { ConversationContextReference, DirectTask, OrganizationProfile, Persona, ProductSurface } from "./viewModels";
-import { Icon } from "./Icon";
+} from "./features/assistant/assistantPresentation";
+import { CalendarPage } from "./features/calendar/CalendarPage";
+import { BrowserInteractionPage } from "./features/browser/BrowserInteractionPage";
+import { ChatDrawer, contextKey, type LabeledContextReference } from "./features/chat/ChatDrawer";
+import { NEW_DRAFT_KEY, useConversations } from "./features/chat/useConversations";
+import { DailyReportPage } from "./features/report/DailyReportPage";
+import { personName } from "./lib/labels";
+import { LoginPage } from "./features/auth/LoginPage";
+import { MeetingWorkspace } from "./features/meetings/MeetingWorkspace";
+import { Toast } from "./ds/Modal";
+import { MyWorkPage } from "./features/work/MyWorkPage";
+import { OrgPage } from "./features/org/OrgPage";
+import { ProjectPage } from "./features/project/ProjectPage";
+import { RelationGraphPage } from "./features/graph/RelationGraphPage";
+import { SideNav } from "./shell/SideNav";
+import { TodayPage } from "./features/today/TodayPage";
+import type { ConversationContextReference, DirectTask, OrganizationProfile, Persona, ProductSurface } from "./lib/viewModels";
+import { type IconName } from "./ds/icons/Icon";
 
-const navigation: ReadonlyArray<{ id: ProductSurface; label: string }> = [
-  { id: "today", label: "오늘" },
-  { id: "calendar", label: "캘린더" },
-  { id: "meetings", label: "회의 목록" },
-  { id: "work", label: "내 업무" },
-  { id: "report", label: "보고" },
-  { id: "project", label: "프로젝트" },
-  { id: "org", label: "조직" },
-  { id: "graph", label: "관계 탐색" },
+/* 목록 정본은 우리 `ProductSurface` 8종이다 (바퀴 2 D-F). 새 DS 시안의 `nav.js` 는 예시일 뿐이라
+   거기 있는 「수신함·진행 현황·자료」는 만들지 않는다 — 갈 화면이 없다.
+   순서·아이콘·그룹 나눔은 시안을 따르고, 글리프 이름도 DS 이름이다. */
+const navigation: ReadonlyArray<{ id: ProductSurface; label: string; icon: IconName }> = [
+  { id: "today", label: "오늘", icon: "home" },
+  { id: "calendar", label: "캘린더", icon: "calendar" },
+  { id: "meetings", label: "회의", icon: "persons" },
+  { id: "work", label: "내 업무", icon: "square-check" },
+  { id: "report", label: "보고", icon: "document" },
+  { id: "project", label: "프로젝트", icon: "business-bag" },
+  { id: "org", label: "조직", icon: "company" },
+  { id: "graph", label: "관계 탐색", icon: "link" },
 ];
 
 const surfaceLabel: Record<ProductSurface, string> = {
   today: "오늘",
   calendar: "캘린더",
-  meetings: "회의 목록",
+  meetings: "회의",
   work: "내 업무",
   report: "보고",
   project: "프로젝트",
@@ -57,35 +63,33 @@ export default function App() {
   const personaId = session?.member_id ?? "";
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [graphFocus, setGraphFocus] = useState<string | null>(null);
-  // 회의는 「회의 목록」 아래 전체 화면 둘이다 — 열린 회의가 있으면 상세, 없으면 목록.
-  const [openMeetingId, setOpenMeetingId] = useState<string | null>(null);
-  const [openMeetingTitle, setOpenMeetingTitle] = useState("");
-  // 고치던 것이 있는 채로 브레드크럼을 누르면 상세가 한 번 묻는다 (SCR-106-T11).
-  const meetingLeaveGuard = useRef<((proceed: () => void) => void) | null>(null);
-  const registerMeetingLeaveGuard = useCallback((guard: ((proceed: () => void) => void) | null) => {
-    meetingLeaveGuard.current = guard;
-  }, []);
-  const closeMeeting = useCallback(() => {
-    const proceed = () => {
-      setOpenMeetingId(null);
-      setOpenMeetingTitle("");
-    };
-    if (meetingLeaveGuard.current) meetingLeaveGuard.current(proceed);
-    else proceed();
-  }, []);
+  /* 바퀴 6a M-1: 회의는 이제 «한 화면 4칸» 이다. 어느 회의를 보고 있는지는 그 화면의 선택 상태라
+     여기서 들지 않는다. 밖(채팅·관계 그래프)에서 회의를 열어 주는 길만 남긴다 — focusTaskId 와 같은 꼴이다.
+     이탈 가드도 그 화면으로 옮겨 갔다(M-2) — 이제 «선택을 바꿀 때» 묻는다. */
+  const [focusMeetingId, setFocusMeetingId] = useState<string | null>(null);
   const capabilities = session?.capabilities ?? null;
   const organizationNames = session?.organizations.map((organization) => organization.name) ?? [];
   const [surface, changeSurface] = useState<ProductSurface>("today");
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  function canNavigate(scope?: 'workspace' | 'chat') {
+  /* main(#10): 파일 업로드·녹음이 도는 중에는 화면을 못 옮긴다.
+     ★ 바퀴 12: 이 둘은 **`useCallback` 이어야 한다.** 화면이 자기 머리 액션을 셸에 등록하는 자리
+     (바퀴 5a 가 만든 seam)가 `onNavigate` 를 의존성에 두기 때문에, 매 렌더 새 함수가 되면
+     등록 → App 상태 변경 → 렌더 → 다시 등록 으로 무한 루프가 돈다. main 쪽에는 그 seam 이
+     없어서 평범한 함수였고, 합치는 순간 루프가 됐다 (App.test 가 멎는 것으로 드러났다). */
+  const canNavigate = useCallback((scope?: "workspace" | "chat") => {
     if (!hasPendingBrowserOperation(scope)) return true;
-    setToast('파일 업로드나 녹음이 끝난 뒤 이동할 수 있습니다.');
+    setToast("파일 업로드나 녹음이 끝난 뒤 이동할 수 있습니다.");
     return false;
-  }
-  const setSurface = (next: ProductSurface) => { if (canNavigate('workspace')) changeSurface(next); };
-  // 1280 단에서만 쓰이는 사이드바 덮개. 그 위 폭에서는 CSS 가 사이드바를 늘 보이게 해서 값이 무시된다.
-  const [railOpen, setRailOpen] = useState(false);
+  }, []);
+  const setSurface = useCallback(
+    (next: ProductSurface) => {
+      if (canNavigate("workspace")) changeSurface(next);
+    },
+    [canNavigate],
+  );
+  // 새 셸의 내비는 덮개가 아니라 180 ↔ 65px 접힘이다 (바퀴 2).
+  const [navCollapsed, setNavCollapsed] = useState(false);
   const [isAxOpen, setIsAxOpen] = useState(false);
   const [isCharacterPickerOpen, setIsCharacterPickerOpen] = useState(false);
   const [characterPreferenceBusy, setCharacterPreferenceBusy] = useState(false);
@@ -94,6 +98,17 @@ export default function App() {
   const [selectedContextKey, setSelectedContextKey] = useState("");
   // Settlement seam: the visible surface registers its own reload here, so an approved AX effect can re-read every
   // affected projection in place and the shell can await the result. No page remount, so filters and views survive.
+  /* 바퀴 5a J-2: 머리가 두 줄(전역 .canvas-topbar + 페이지 .page-head)이던 것을 AppHeader 한 줄로 합쳤다.
+     그래서 «페이지의» 액션이 «셸의» 머리에 서야 한다 — 화면이 자기 액션을 여기 등록하고, 떠날 때 지운다.
+     surfaceRefresh 와 같은 결의 seam 이다(화면을 리마운트하지 않고 셸이 값을 집어 간다). */
+  const [surfaceActions, setSurfaceActions] = useState<React.ReactNode>(null);
+  /* 바퀴 5b: 셸이 세 칸이라 «화면의» 레일이 «셸의» AppBody 슬롯에 서야 한다. 머리 액션과 같은 seam 이다.
+     레일을 안 넘기면 그 칸이 아예 렌더되지 않는 것이 셸 규약이라, 레일 없는 화면은 예전 그대로 본문만 남는다. */
+  const [surfaceRails, setSurfaceRails] = useState<{ left?: React.ReactNode; right?: React.ReactNode }>({});
+  const registerSurfaceRails = useCallback((rails: { left?: React.ReactNode; right?: React.ReactNode }) => setSurfaceRails(rails), []);
+  /* 지우는 것은 «화면이 떠날 때» 그 화면이 한다(등록 effect 의 cleanup). 여기서 surface 를 보고
+     지우면 안 된다 — 자식 effect 가 부모보다 먼저 도므로, 새 화면이 방금 등록한 것을 부모가 덮어 지운다. */
+  const registerSurfaceActions = useCallback((node: React.ReactNode) => setSurfaceActions(node), []);
   const surfaceRefresh = useRef<(() => Promise<void>) | null>(null);
   const registerSurfaceRefresh = useCallback((refresh: (() => Promise<void>) | null) => {
     surfaceRefresh.current = refresh;
@@ -151,8 +166,7 @@ export default function App() {
   function resetWorkspace() {
     chat.reset();
     setSurface("today");
-    setOpenMeetingId(null);
-    setOpenMeetingTitle("");
+    setFocusMeetingId(null);
     setIsAxOpen(false);
     setContextOptions([]);
     setSelectedContextKey("");
@@ -356,209 +370,165 @@ export default function App() {
   }} />;
 
   return (
-    <main className="thesc-shell">
-      {/* 1280 단에서는 사이드바가 화면을 덮으므로, 그 뒤를 덮는 스크림도 함께 온다 (v2 15) */}
-      {railOpen && <div aria-hidden className="rail-scrim" onMouseDown={() => setRailOpen(false)} />}
-      <aside className={railOpen ? "rail open" : "rail"}>
-        <div className="wordmark">
-          <span aria-hidden className="wordmark-mark">
-            SC
-          </span>
-          SCAX
-        </div>
-        <button
-          aria-label="내 AX 캐릭터"
-          className="profile"
-          onClick={() => {
+    <AppShell
+      nav={
+        <SideNav
+          activeId={surface}
+          collapsed={navCollapsed}
+          items={visibleNavigation.map((item) => ({ id: item.id, label: item.label, icon: item.icon }))}
+          label="제품 탐색"
+          logo="SCAX"
+          onCollapse={() => setNavCollapsed((collapsed) => !collapsed)}
+          onSelect={(id) => setSurface(id as ProductSurface)}
+          onUserClick={() => {
             setCharacterPreferenceError(null);
             setIsCharacterPickerOpen(true);
           }}
-          type="button"
-        >
-          <span className="avatar md">{personName(currentPersonaName).slice(0, 1)}</span>
-          <div>
-            <b>{personName(currentPersonaName)}</b>
-            {/* 소속이 여럿이면 한 줄에 다 담기지 않는다. 잘라서 보여 주고 전체는 hover로 읽는다. */}
-            <small title={organizationNames.join(" · ")}>
-              {organizationNames.length > 0 ? organizationNames.join(" · ") : "소속 없음"}
-            </small>
-          </div>
-        </button>
-        <div className="profile-menu">
-          <button
-            className="btn h30 ghost"
-            onClick={() => {
-              setCharacterPreferenceError(null);
-              setIsCharacterPickerOpen(true);
-            }}
-            type="button"
-          >
-            설정
-          </button>
-          <button className="btn h30 ghost" onClick={() => void endSession()} type="button">
-            로그아웃
-          </button>
+          user={{
+            name: personName(currentPersonaName),
+            // 소속이 여럿이면 한 줄에 다 담기지 않는다. 잘라서 보여 주고 전체는 hover 로 읽는다.
+            role: organizationNames.length > 0 ? organizationNames.join(" · ") : "소속 없음",
+          }}
+          userActionLabel="내 AX 캐릭터"
+          /* 계정 행동은 머리줄이 아니라 기둥 바닥에 선다 — 머리줄은 화면 자기 행동만 갖는다 */
+          footerActions={
+            <>
+              <Button
+                variant="text"
+                size="sm"
+                onClick={() => {
+                  setCharacterPreferenceError(null);
+                  setIsCharacterPickerOpen(true);
+                }}
+                type="button"
+              >
+                설정
+              </Button>
+              <Button variant="text" size="sm" onClick={() => void endSession()} type="button">
+                로그아웃
+              </Button>
+            </>
+          }
+        />
+      }
+    >
+      <AppHeader
+        actions={surfaceActions}
+        /* 바퀴 6a M-3: 브레드크럼을 지웠다. 회의 상세에서 목록으로 돌아가는 유일한 길이라 바퀴 2 가
+           살려 뒀던 것인데, 이제 목록 칸이 상시 옆에 서서 돌아갈 길이 UI 에 들어 있다. 시안도 머리는 한 줄이다. */
+        title={surfaceLabel[surface]}
+      />
+      <AppBody railLeft={surfaceRails.left} railRight={surfaceRails.right}>
+        {/* 오류·재조회 띠는 스크롤 밖에 선다 — 본문을 아무리 내려도 접히지 않는다 */}
+        <div className="scax-page-notices">
+          {error && (
+            <div className="error-banner" role="alert">
+              {error}
+              <Button variant="text" size="sm" onClick={() => setError(null)} type="button">
+                닫기
+              </Button>
+            </div>
+          )}
+          {staleProjection && (
+            <div className="error-banner stale" role="status">
+              {staleProjection}
+              <Button size="sm" onClick={() => void refreshProjections()} type="button">
+                다시 불러오기
+              </Button>
+            </div>
+          )}
         </div>
-        <nav aria-label="제품 탐색">
-          {visibleNavigation.map((item) => (
-            <button
-              className={surface === item.id ? "active" : ""}
-              key={item.id}
-              onClick={() => {
-                setSurface(item.id);
-                setRailOpen(false);
-              }}
-              type="button"
-            >
-              {item.label}
-            </button>
-          ))}
-        </nav>
-        <p className="rail-foot">SCAX · 업무 운영 시스템</p>
-      </aside>
-
-      <section className={surface === "meetings" ? "canvas full-height" : "canvas"}>
-        <header className="canvas-topbar">
-          <button
-            aria-expanded={railOpen}
-            aria-label="탐색 열기"
-            className="rail-toggle"
-            onClick={() => setRailOpen((open) => !open)}
-            type="button"
-          >
-            <Icon name="list" />
-          </button>
-          <nav aria-label="현재 위치" className="breadcrumb">
-            {surface === "today" ? (
-              <b>홈</b>
-            ) : (
-              <>
-                <button className="btn link" onClick={() => setSurface("today")} type="button">
-                  홈
-                </button>
-                <span aria-hidden>›</span>
-                {surface === "meetings" && openMeetingId ? (
-                  <>
-                    <button className="btn link" onClick={closeMeeting} type="button">
-                      {surfaceLabel[surface]}
-                    </button>
-                    <span aria-hidden>›</span>
-                    <b>{openMeetingTitle}</b>
-                  </>
-                ) : (
-                  <b>{surfaceLabel[surface]}</b>
-                )}
-              </>
-            )}
-          </nav>
-          <span className="t-meta">{currentPersonaName}</span>
-        </header>
-
-        {error && (
-          <div className="error-banner" role="alert">
-            {error}
-            <button className="btn h30 ghost" onClick={() => setError(null)} type="button">
-              닫기
-            </button>
-          </div>
-        )}
-        {staleProjection && (
-          <div className="error-banner stale" role="status">
-            {staleProjection}
-            <button className="btn h30" onClick={() => void refreshProjections()} type="button">
-              다시 불러오기
-            </button>
-          </div>
-        )}
-
-        {surface === "today" && (
-          <TodayPage
-            {...pageProps}
-            {...sharedWorkProps}
-            canGenerateDailyReport={has("daily_report.generate")}
-            onAskAx={(text) => void askAx(text)}
-            onNavigate={setSurface}
-          />
-        )}
-        {surface === "calendar" && <CalendarPage {...pageProps} {...sharedWorkProps} />}
-        {surface === "meetings" &&
-          (openMeetingId ? (
-            <MeetingDetailPage
-              meetingId={openMeetingId}
-              onBack={closeMeeting}
-              onError={setError}
-              onNotice={setToast}
+        {/* 셸이 overflow:hidden 이라 본문이 자기 스크롤 기둥을 갖는다 (바퀴 2 D-B).
+           회의는 «한 화면에 갇히는» 화면이라 스크롤은 안쪽 패널이 갖는다 — 여기서는 잡지 않는다. */}
+        <div className={surface === "meetings" ? "scax-page-scroll scax-page-scroll--fixed" : "scax-page-scroll"}>
+          {surface === "today" && (
+            <TodayPage
+              {...pageProps}
+              {...sharedWorkProps}
+              canGenerateDailyReport={has("daily_report.generate")}
+              onAskAx={(text) => void askAx(text)}
+              onNavigate={setSurface}
+            />
+          )}
+          {surface === "calendar" && <CalendarPage {...pageProps} {...sharedWorkProps} />}
+          {surface === "meetings" && (
+            <MeetingWorkspace
               canCreateWorkRequests={has("work_request.create")}
-              onOpenMeeting={setOpenMeetingId}
+              focusMeetingId={focusMeetingId}
+              onError={setError}
+              onFocusHandled={() => setFocusMeetingId(null)}
+              onNotice={setToast}
+              onRegisterHeaderActions={registerSurfaceActions}
+              onRegisterRails={registerSurfaceRails}
+              onRegisterRefresh={registerSurfaceRefresh}
               onSessionLost={() => {
                 // 스트림이 인증으로 닫혔다 — 쿠키가 죽었으므로 로그인 화면으로 돌려보낸다.
                 resetWorkspace();
                 setSession(null);
               }}
-              onRegisterLeaveGuard={registerMeetingLeaveGuard}
-              onRegisterRefresh={registerSurfaceRefresh}
-              onTitleChange={setOpenMeetingTitle}
               ownerName={currentPersonaName}
             />
-          ) : (
-            <MeetingListPage
-              onError={setError}
-              onNotice={setToast}
-              onOpenMeeting={setOpenMeetingId}
-              onRegisterRefresh={registerSurfaceRefresh}
+          )}
+          {surface === "work" && (
+            <MyWorkPage
+              {...pageProps}
+              {...sharedWorkProps}
+              canGenerateDailyReport={has("daily_report.generate")}
+              onNavigate={setSurface}
+              onRegisterHeaderActions={registerSurfaceActions}
+              onRegisterRails={registerSurfaceRails}
+              focusTaskId={focusTaskId}
+              focusWorkRequestId={focusWorkRequestId}
+              onFocusHandled={() => setFocusTaskId(null)}
+              onRequestFocusHandled={() => setFocusWorkRequestId(null)}
             />
-          ))}
-        {surface === "work" && (
-          <MyWorkPage
-            {...pageProps}
-            {...sharedWorkProps}
-            focusTaskId={focusTaskId}
-            focusWorkRequestId={focusWorkRequestId}
-            onFocusHandled={() => setFocusTaskId(null)}
-            onRequestFocusHandled={() => setFocusWorkRequestId(null)}
-          />
-        )}
-        {surface === "report" && <DailyReportPage {...pageProps} personaName={currentPersonaName} />}
-        {surface === "project" && <ProjectPage {...pageProps} />}
-        {surface === "org" && <OrgPage {...pageProps} />}
-        {surface === "graph" && (
-          <RelationGraphPage
-            onError={setError}
-            onOpenNode={(node) => {
-              // Each kind opens where it lives; the surface reads it again with this person's access.
-              if (node.kind === "meeting") {
-                setOpenMeetingId(node.id);
-                setSurface("meetings");
-                return;
-              }
-              if (node.kind === "person" || node.kind === "team") {
-                setSurface("org");
-                return;
-              }
-              if (node.kind === "report") {
-                setSurface("report");
-                return;
-              }
-              if (node.kind === "work_request" || node.kind === "material") setSurface("work");
-            }}
-            onOpenTask={(taskId) => {
-              setSurface("work");
-              setFocusTaskId(taskId);
-            }}
-          />
-        )}
+          )}
+          {surface === "report" && (
+            <DailyReportPage {...pageProps} onRegisterHeaderActions={registerSurfaceActions} personaName={currentPersonaName} />
+          )}
+          {surface === "project" && <ProjectPage {...pageProps} />}
+          {surface === "org" && <OrgPage {...pageProps} />}
+          {surface === "graph" && (
+            <RelationGraphPage
+              onError={setError}
+              onOpenNode={(node) => {
+                // Each kind opens where it lives; the surface reads it again with this person's access.
+                if (node.kind === "meeting") {
+                  setFocusMeetingId(node.id);
+                  setSurface("meetings");
+                  return;
+                }
+                if (node.kind === "person" || node.kind === "team") {
+                  setSurface("org");
+                  return;
+                }
+                if (node.kind === "report") {
+                  setSurface("report");
+                  return;
+                }
+                if (node.kind === "work_request" || node.kind === "material") setSurface("work");
+              }}
+              onOpenTask={(taskId) => {
+                setSurface("work");
+                setFocusTaskId(taskId);
+              }}
+            />
+          )}
+        </div>
+      </AppBody>
 
-        {!isAxOpen && (
-          <AssistantLauncher
-            characterKey={session.assistant_character?.character_key}
-            onOpen={() => setIsAxOpen(true)}
-            onPrefill={(prompt) => chat.setDraft(prompt, chat.activeConversation?.conversation_id ?? NEW_DRAFT_KEY)}
-            state={assistantState}
-          />
-        )}
-      </section>
+      {/* 런처는 position:fixed 라 스크롤 기둥 밖에 선다 — 본문을 내려도 자리를 지킨다 */}
+      {!isAxOpen && (
+        <AssistantLauncher
+          characterKey={session.assistant_character?.character_key}
+          onOpen={() => setIsAxOpen(true)}
+          onPrefill={(prompt) => chat.setDraft(prompt, chat.activeConversation?.conversation_id ?? NEW_DRAFT_KEY)}
+          state={assistantState}
+        />
+      )}
 
-      {toast && <Toast message={toast} onClose={() => setToast(null)} />}
+      {toast && <Toast
+          closeLabel="알림 지우기" message={toast} onClose={() => setToast(null)} />}
 
       {isCharacterPickerOpen && (
         <AssistantCharacterPicker
@@ -614,7 +584,7 @@ export default function App() {
               return;
             }
             if (resource.resource_type === "meeting") {
-              setOpenMeetingId(resource.resource_id);
+              setFocusMeetingId(resource.resource_id);
               setSurface("meetings");
               return;
             }
@@ -643,7 +613,7 @@ export default function App() {
             if (!canNavigate()) return;
             setIsAxOpen(false);
             setSurface("meetings");
-            setOpenMeetingId(meetingId);
+            setFocusMeetingId(meetingId);
           }}
           onRetryList={() => void chat.refreshConversations().catch(() => setError("AX 대화를 불러오지 못했습니다."))}
           onRetryTurn={(turnId) => void chat.retryTurn(turnId)}
@@ -657,7 +627,7 @@ export default function App() {
         />
         </BrowserOperationScope.Provider>
       )}
-    </main>
+    </AppShell>
   );
 }
 

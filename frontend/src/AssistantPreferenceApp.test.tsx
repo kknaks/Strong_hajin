@@ -34,7 +34,7 @@ describe("assistant character preference", () => {
 
     const { container } = render(<App />);
     await screen.findByRole("navigation", { name: "제품 탐색" });
-    expect(container.querySelector(".assistant-launcher [data-character-key]")?.getAttribute("data-character-key"))
+    expect(container.querySelector(".scax-agent--ax [data-character-key]")?.getAttribute("data-character-key"))
       .toBe("red-panda");
 
     fireEvent.click(screen.getByRole("button", { name: "설정" }));
@@ -48,7 +48,7 @@ describe("assistant character preference", () => {
         body: JSON.stringify({ character_key: "rabbit", expected_version: 1 }),
       }),
     ));
-    expect(container.querySelector(".assistant-launcher [data-character-key]")?.getAttribute("data-character-key"))
+    expect(container.querySelector(".scax-agent--ax [data-character-key]")?.getAttribute("data-character-key"))
       .toBe("rabbit");
   });
 
@@ -71,7 +71,7 @@ describe("assistant character preference", () => {
 
     const { container } = render(<App />);
     await screen.findByRole("navigation", { name: "제품 탐색" });
-    expect(container.querySelector(".assistant-launcher [data-character-key]")?.getAttribute("data-character-key"))
+    expect(container.querySelector(".scax-agent--ax [data-character-key]")?.getAttribute("data-character-key"))
       .toBe("cream-cat");
 
     fireEvent.click(screen.getByRole("button", { name: "내 AX 캐릭터" }));
@@ -80,7 +80,7 @@ describe("assistant character preference", () => {
     fireEvent.click(within(picker).getByRole("radio", { name: /곰/ }));
 
     expect((await within(picker).findByRole("alert")).textContent).toContain("다른 곳에서 변경됐습니다");
-    expect(container.querySelector(".assistant-launcher [data-character-key]")?.getAttribute("data-character-key"))
+    expect(container.querySelector(".scax-agent--ax [data-character-key]")?.getAttribute("data-character-key"))
       .toBe("cream-cat");
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/profile/preferences/assistant-character",

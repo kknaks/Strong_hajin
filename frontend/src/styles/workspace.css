@@ -1,0 +1,95 @@
+/* 회의 한 화면(4칸) 전용 CSS. 토큰은 --scax-* 만 쓴다.
+   틀·카드·안건 블록은 shell.css / meetings.css 것을 그대로 쓴다. */
+
+/* ---------- 3칸: 회의 상세 ---------- */
+.scax-detail{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;background:var(--scax-color-surface)}
+.scax-detail-empty{display:flex;flex:1 1 auto;min-height:0;align-items:center;justify-content:center}
+
+/* 진행 표시 — 회의가 도는 동안 위에 남는다 */
+.scax-live-bar{display:flex;align-items:center;gap:var(--scax-space-300);flex:0 0 auto;padding:var(--scax-space-250) var(--scax-space-600);background:var(--scax-color-accent-05);border-bottom:1px solid var(--scax-color-line-weak)}
+.scax-live-bar__elapsed{font-size:var(--scax-text-label1-size);font-weight:var(--scax-fw-semibold);color:var(--scax-color-accent);font-variant-numeric:tabular-nums}
+.scax-live-bar__who{margin-left:auto;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+
+.scax-detail__head{display:flex;flex-direction:column;gap:var(--scax-space-100);flex:0 0 auto;padding:var(--scax-space-400) var(--scax-space-600) var(--scax-space-300)}
+.scax-detail__kicker{display:flex;align-items:center;gap:var(--scax-space-100);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+.scax-detail__title-row{display:flex;align-items:center;gap:var(--scax-space-200);min-width:0}
+.scax-detail__title{margin:0;flex:0 1 auto;min-width:0;font-size:var(--scax-text-title-size);line-height:var(--scax-text-title-lh);letter-spacing:var(--scax-text-title-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.scax-detail__facts{margin:0;font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);color:var(--scax-color-ink-alt)}
+
+.scax-detail__note-bar{display:flex;align-items:center;gap:var(--scax-space-300);flex:0 0 auto;margin:0 var(--scax-space-600) var(--scax-space-300);padding:var(--scax-space-300);border-radius:var(--scax-radius-lg);background:var(--scax-color-danger-soft);font-size:var(--scax-text-label2-size);color:var(--scax-color-ink)}
+.scax-detail__note-bar>.scax-button{margin-left:auto}
+
+/* 목적 — 전체 폭 한 줄. 안건 바를 대신한다 */
+.scax-detail__purpose{display:flex;gap:var(--scax-space-300);flex:0 0 auto;margin:0 var(--scax-space-600) var(--scax-space-400);padding:var(--scax-space-300) var(--scax-space-400);border-left:3px solid var(--scax-color-accent);border-radius:0 var(--scax-radius-sm) var(--scax-radius-sm) 0;background:var(--scax-color-surface-alt)}
+.scax-detail__purpose-label{flex:0 0 auto;font-size:var(--scax-text-caption1-size);line-height:1.7;letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+.scax-detail__purpose-text{font-size:var(--scax-text-label1-size);line-height:1.6;letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink);text-wrap:pretty}
+
+/* 회의록 — 카드가 아니라 칸을 채우는 본문이다. 보고서처럼 이어졌다 */
+.scax-note{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;overflow:hidden}
+.scax-note__head{display:flex;align-items:center;gap:var(--scax-space-250);flex:0 0 auto;min-height:var(--scax-control-height-sm);padding:0 var(--scax-space-600) var(--scax-space-150)}
+.scax-note__title{margin:0;font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);letter-spacing:var(--scax-text-body1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink)}
+.scax-note__meta{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive);font-variant-numeric:tabular-nums}
+.scax-note__head>.scax-segmented{margin-left:auto}
+/* 머리의 오른쪽 자리는 [수정] 버튼과 번갈아 선다 — 결을 맞춘다:
+   흰 면 + 1px 선, 선택된 칸만 연한 면으로 눌러 표시 */
+.scax-note__head>.scax-segmented{background:var(--scax-color-surface);box-shadow:inset 0 0 0 1px var(--scax-color-line)}
+.scax-note__head .scax-segmented__item--on{background:var(--scax-color-fill-weak);box-shadow:none}
+.scax-note__settling{display:flex;flex-direction:column;gap:var(--scax-space-300);padding:var(--scax-space-400) var(--scax-space-600)}
+.scax-note__head>.scax-button{margin-left:auto}
+.scax-note__body{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;overflow-y:auto;border-top:1px solid var(--scax-color-line)}
+.scax-note__composer{display:flex;align-items:center;gap:var(--scax-space-200);flex:0 0 auto;padding:var(--scax-space-300) var(--scax-space-600);border-top:1px solid var(--scax-color-line);background:var(--scax-color-surface-alt)}
+
+/* 안건은 업무 표와 같은 결이다 — 1px 경계로 줄을 나눈다 */
+.scax-note__body .scax-agenda-block{padding:var(--scax-space-400) var(--scax-space-600);border-bottom:1px solid var(--scax-color-line-weak)}
+
+/* 회의록 줄 — 본문 왼쪽, 근거 시각 칩은 오른쪽 끝 */
+.scax-note-line{display:flex;align-items:flex-start;gap:var(--scax-space-300)}
+.scax-note-line__text{flex:1 1 auto;min-width:0}
+.scax-note-line__evidence{display:flex;align-items:center;gap:var(--scax-space-100);flex:0 0 auto;flex-wrap:wrap;justify-content:flex-end}
+.scax-time-chip{height:24px;padding:0 var(--scax-space-200);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-xs);background:var(--scax-color-surface);color:var(--scax-color-ink-alt);font-size:var(--scax-text-caption1-size);letter-spacing:var(--scax-text-caption1-ls);font-variant-numeric:tabular-nums;cursor:pointer}
+.scax-time-chip:hover{background:var(--scax-color-accent-05);border-color:var(--scax-color-accent-20);color:var(--scax-color-accent)}
+.scax-time-chip:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+
+/* 안건 추가 · 메모 입력 */
+.scax-add-agenda{display:flex;align-items:center;gap:var(--scax-space-200);padding:var(--scax-space-400) var(--scax-space-600)}
+.scax-add-agenda__input{flex:1 1 auto;min-width:0;height:var(--scax-control-height-sm);padding:0 var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);color:var(--scax-color-ink);font-family:inherit;font-size:var(--scax-text-label2-size);letter-spacing:var(--scax-text-label2-ls)}
+.scax-add-agenda__input::placeholder{color:var(--scax-color-ink-assistive)}
+.scax-add-agenda__input:focus{outline:0;border-color:var(--scax-color-accent-20);box-shadow:var(--scax-focus-ring)}
+.scax-note__composer .scax-add-agenda__input{background:var(--scax-color-surface)}
+
+/* ---------- 4칸: 첨부 · 스크립트 ---------- */
+.scax-side-rail{display:flex;flex-direction:column;gap:var(--scax-space-250);height:100%;min-height:0;padding:var(--scax-space-500) var(--scax-space-600)}
+.scax-side-rail__header{display:flex;align-items:center;flex:0 0 auto;min-height:var(--scax-control-height-sm)}
+.scax-side-rail__body{display:flex;flex-direction:column;gap:var(--scax-space-300);flex:1 1 auto;min-height:0;overflow-y:auto}
+
+/* 스크립트 — 발화와 메모가 같은 시각 축에 선다 */
+.scax-script-line{display:flex;gap:var(--scax-space-300);flex:0 0 auto;padding:var(--scax-space-250);border-radius:var(--scax-radius-lg)}
+.scax-script-line--memo{background:var(--scax-color-surface-alt)}
+.scax-script-line__side{display:flex;flex-direction:column;gap:1px;flex:0 0 auto;width:58px}
+.scax-script-line__who{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-accent)}
+.scax-script-line--memo .scax-script-line__who{color:var(--scax-color-ink-alt)}
+.scax-script-line__memo-who{font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);letter-spacing:var(--scax-text-caption2-ls);color:var(--scax-color-ink-assistive)}
+.scax-script-line__at{font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);letter-spacing:var(--scax-text-caption2-ls);color:var(--scax-color-ink-assistive);font-variant-numeric:tabular-nums}
+.scax-script-line__text{margin:0;flex:1 1 auto;min-width:0;font-size:var(--scax-text-label2-size);line-height:1.62;letter-spacing:var(--scax-text-label2-ls);color:var(--scax-color-ink);text-wrap:pretty}
+
+.scax-file-row__open{border:0;background:transparent;padding:0;text-align:left;cursor:pointer;color:inherit;font:inherit}
+.scax-file-row__open:hover{color:var(--scax-color-accent)}
+
+/* ---------- 자료 미리보기 드로어 ---------- */
+.scax-drawer-overlay{position:fixed;inset:0;z-index:50;display:flex;justify-content:flex-end;background:rgba(23,23,25,.32)}
+.scax-drawer{display:flex;flex-direction:column;width:520px;max-width:100%;height:100%;background:var(--scax-color-surface);box-shadow:var(--scax-shadow-rail)}
+.scax-drawer__head{display:flex;align-items:center;gap:var(--scax-space-200);flex:0 0 auto;padding:var(--scax-space-400) var(--scax-space-500);border-bottom:1px solid var(--scax-color-line-weak)}
+.scax-drawer__title{flex:1 1 auto;min-width:0;font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);letter-spacing:var(--scax-text-body1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.scax-drawer__hint{margin:0;flex:0 0 auto;padding:var(--scax-space-250) var(--scax-space-500);background:var(--scax-color-surface-alt);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+.scax-drawer__body{display:flex;flex-direction:column;gap:var(--scax-space-400);flex:1 1 auto;min-height:0;overflow-y:auto;padding:var(--scax-space-500)}
+.scax-drawer__foot{display:flex;align-items:center;gap:var(--scax-space-200);flex:0 0 auto;padding:var(--scax-space-400) var(--scax-space-500);border-top:1px solid var(--scax-color-line-weak)}
+.scax-drawer__spacer{flex:1 1 auto}
+.scax-drawer__preview{display:flex;align-items:center;justify-content:center;flex:1 1 auto;min-height:320px;border-radius:var(--scax-radius-lg);background:var(--scax-color-surface-alt);color:var(--scax-color-ink-assistive);font-size:var(--scax-text-label2-size)}
+.scax-drawer__meta{margin:0;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+
+/* 업무 요청 모달 — 폼 한 벌이라 880 보다 좁게 선다 */
+.scax-modal--md{width:560px;height:auto}
+.scax-modal__hint{margin:0;flex:0 0 auto;padding:var(--scax-space-250) var(--scax-space-600);background:var(--scax-color-surface-alt);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive);text-wrap:pretty}
+.scax-field-row{display:grid;grid-template-columns:1fr 1fr;gap:var(--scax-space-300)}
+.scax-field-row>.scax-field{min-width:0}
+.scax-detail__head-actions{display:flex;align-items:center;gap:var(--scax-space-200);margin-left:auto;flex:0 0 auto}

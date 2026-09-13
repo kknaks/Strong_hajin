@@ -1,0 +1,86 @@
+/* Product-level aliases used by the AX work surface. Every value below is a
+   literal read from the source frames (nav, page header, inbox, task table,
+   calendar rail, AI floating button) or an alias onto a fig-tokens variable. */
+:root{
+  /* accent — the AX violet, rgb(84,103,247) = --violet-50 */
+  --ax-accent:var(--violet-50);
+  --ax-accent-strong:var(--violet-45);
+  --ax-accent-soft:var(--violet-95);
+  --ax-accent-05:rgba(84,103,247,0.05);
+  --ax-accent-08:rgba(84,103,247,0.08);
+  --ax-accent-20:rgba(84,103,247,0.2);
+  --ax-agent-gradient:linear-gradient(270deg,rgba(182,126,255,0.2) 0%,rgba(84,103,247,0.2) 100%); /* @kind color */
+  --ax-agent-glow-blur:14px; /* 「신규」 오브 뒤 그라데이션의 번짐 — 단단한 타원이 아니라 빛으로 퍼진다 */
+
+  /* ink */
+  --ax-ink-strong:var(--common-0);
+  --ax-ink:var(--cool-neutral-10);
+  --ax-ink-neutral:var(--label-neutral);
+  --ax-ink-alt:var(--label-alternative);
+  --ax-ink-assistive:var(--label-assistive);
+  --ax-ink-disable:var(--label-disable);
+  --ax-ink-inverse:var(--cool-neutral-99);
+  --ax-ink-nav-idle:rgb(118,118,118);
+  --ax-ink-nav-active:var(--brand-100);
+
+  /* surfaces */
+  --ax-surface:var(--common-100);
+  --ax-surface-alt:var(--cool-neutral-99);
+  --ax-surface-nav:var(--cool-neutral-99);
+  --ax-surface-nav-active:rgb(0,0,0);
+  --ax-surface-nav-hover:rgb(235,242,253);
+  --ax-surface-inverse:var(--cool-neutral-15);
+
+  /* hairlines: the file uses the 3-step 112/115/124 alpha ladder */
+  --ax-line-weak:var(--line-normal-alternative);   /* rgba(112,115,124,.08) */
+  --ax-line:var(--line-normal-neutral);            /* rgba(112,115,124,.16) */
+  --ax-line-strong:var(--line-normal-normal);      /* rgba(112,115,124,.22) */
+  --ax-fill-weak:var(--fill-alternative);
+  --ax-fill:var(--fill-normal);
+  --ax-fill-strong:var(--fill-strong);
+
+  /* status */
+  --ax-danger:var(--red-40);
+  --ax-positive:var(--green-50);
+  --ax-info:var(--cyan-40);
+
+  /* radii, literal from the file */
+  --ax-r-xs:6px;   /* chip, content badge, tooltip, category chip */
+  --ax-r-sm:8px;   /* nav menu row, calendar day */
+  --ax-r-md:10px;  /* button (md), avatar interaction */
+  --ax-r-lg:12px;  /* button (lg), segmented knob */
+  --ax-r-xl:14px;  /* card, inbox task */
+  --ax-r-2xl:15px; /* AI tooltip bubble */
+  --ax-r-bubble:20px; /* 「신규」 AX agent speech bubble — 시안의 말풍선 라운드 */
+  --ax-r-pill:999px;
+
+  /* elevation, literal from the file */
+  --ax-shadow-card:0px 1px 2px -1px rgba(23,23,23,0.1);
+  --ax-shadow-raised:0px 2px 4px -2px rgba(23,23,23,0.06),0px 4px 6px -1px rgba(23,23,23,0.06);
+  --ax-shadow-panel:0px 4px 16px 0px rgba(0,0,0,0.06);
+  --ax-shadow-rail:-2px 0px 16px 0px rgba(0,0,0,0.06);
+  --ax-ring:inset 0 0 0 1px var(--ax-line);
+  --ax-ring-weak:inset 0 0 0 1px var(--ax-line-weak);
+
+  /* interaction overlay opacities, exact from Interaction/Light|Normal|Strong.
+     Ink is always --label-normal; only the opacity changes. */
+  --ax-interaction-light-hover:0.038; /* @kind other */--ax-interaction-light-focus:0.06; /* @kind other */--ax-interaction-light-press:0.09; /* @kind other */
+  --ax-interaction-normal-hover:0.05; /* @kind other */--ax-interaction-normal-focus:0.08; /* @kind other */--ax-interaction-normal-press:0.12; /* @kind other */
+  --ax-interaction-strong-hover:0.075; /* @kind other */--ax-interaction-strong-focus:0.12; /* @kind other */--ax-interaction-strong-press:0.18; /* @kind other */
+
+  /* chrome metrics */
+  --ax-nav-max:180px;
+  --ax-nav-min:65px;
+  --ax-header-h:60px;
+  --ax-inbox-w:380px;
+  --ax-calendar-w:342px;
+}
+/* 바퀴 1(D2): 원본 product.css 78~79줄의 전역 element 규칙 두 줄
+     a{color:var(--ax-accent);text-decoration:none}
+     a:hover{color:var(--ax-accent-strong);text-decoration:underline}
+   을 여기서 잘라냈다. 구 styles.css 의 `a{color:var(--action)}` 와 정면 충돌해서,
+   나중에 실리는 이쪽이 이기면 과도기 동안 앱 전체 링크 색이 바뀌기 때문이었다.
+   **바퀴 9-B**: 그 구 규칙은 이제 `shell.css` 의 전역 element 구획에 있고(값은 같다),
+   이 파일보다 **뒤에** 실린다. 그래서 잘라낸 채로 두는 이유가 그대로 유지된다 —
+   되살리면 `a:hover` 의 밑줄이 새로 생겨 링크 모양이 바뀐다. 그 판단은 이 바퀴 밖이다.
+   구 styles.css 를 지우는 바퀴 9 에서 이 두 줄을 되살린다. (ds-token-report.md §3-1 · §4) */

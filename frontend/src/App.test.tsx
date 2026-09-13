@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
-import { useBrowserOperationGuard } from './browserOperationGuard';
+import { useBrowserOperationGuard } from './lib/browserOperationGuard';
 
 const jsonResponse = (body: unknown) =>
   new Response(JSON.stringify(body), {
@@ -169,7 +169,8 @@ describe("product surfaces", () => {
 
     render(<App />);
     fireEvent.click(within(await screen.findByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "내 업무" }));
-    const panel = (await screen.findByText("판단이 필요한 업무")).closest(".decision-section") as HTMLElement;
+    // 바퀴 5b: 판단할 것은 본문 위 패널에서 좌 레일 수신함으로 «옮겨» 갔다 (복제가 아니다)
+    const panel = await screen.findByRole("region", { name: "판단이 필요한 업무" });
     expect(await within(panel).findByText("분기 보고 정리")).toBeTruthy();
     expect(within(panel).getByText("업무 배정")).toBeTruthy();
     // Not in My Work before acceptance.
@@ -299,8 +300,13 @@ describe("product surfaces", () => {
 
     expect(await screen.findByText("읽기 전용 업무")).toBeTruthy();
     expect(screen.queryByLabelText("업무 제목")).toBeNull();
-    expect(screen.queryByRole("button", { name: "업무 추가" })).toBeNull();
+    // 바퀴 5a: 이 이름은 예전에도 지금도 화면에 없는 문자열이라 «늘 통과하는» 단언이었다.
+    // 읽기 전용인 사람에게 만들기 단추가 없다는 뜻을 지키도록 실제 라벨로 맞춘다.
+    expect(screen.queryByRole("button", { name: "업무 만들기" })).toBeNull();
     expect(screen.queryByRole("button", { name: "시작" })).toBeNull();
+    // 바퀴 5c: 상태 칸이 글자에서 컨트롤로 바뀌었다 — 읽기 전용인 사람에게는 그 컨트롤도 서지 않는다
+    expect(screen.queryByRole("button", { name: "읽기 전용 업무 상태" })).toBeNull();
+    expect(screen.getByText("읽기 전용 업무")).toBeTruthy();
   });
 
   it("returns to Today before a switched persona can load a forbidden report surface", async () => {
@@ -334,7 +340,11 @@ describe("product surfaces", () => {
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
     fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "보고" }));
-    expect(await screen.findByRole("heading", { name: "개인 일일보고" })).toBeTruthy();
+    /* 바퀴 8-C: 페이지 h1 「개인 일일보고」가 셸 머리의 「보고」와 겹쳐 걷혔다. 이 검사가 지키던 것은
+       「보고 화면이 실제로 열렸다」이므로, 그 화면에만 있는 것으로 옮겨 짚는다 — 본문의 근거 구획과
+       머리줄로 올라간 보고일 고르는 자리다. 나가 있으면 둘 다 없다. */
+    expect(await screen.findByRole("heading", { name: "오늘의 업무 근거" })).toBeTruthy();
+    expect(screen.getByLabelText("보고일")).toBeTruthy();
 
     await switchAccount("jiho");
     expect(await screen.findByText(/반갑습니다 지호님!/)).toBeTruthy();
@@ -427,7 +437,7 @@ describe("product surfaces", () => {
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
     fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "내 업무" }));
-    fireEvent.click(await screen.findByRole("button", { name: "새 업무 추가" }));
+    fireEvent.click(await screen.findByRole("button", { name: "업무 만들기" }));
     // 이 사람이 만들 수 있는 것은 요청 하나뿐이라 「업무/요청」 토글이 서지 않는다 (D10)
     const createDrawer = await screen.findByRole("dialog", { name: "업무 요청" });
     expect(within(createDrawer).queryByRole("tab")).toBeNull();
@@ -526,7 +536,8 @@ describe("product surfaces", () => {
     fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
 
     // The proposal is one judgement among the rest, labelled by the server, not by the client.
-    const panel = (await screen.findByText("판단이 필요한 업무")).closest(".decision-section") as HTMLElement;
+    // 바퀴 5b: 판단할 것은 본문 위 패널에서 좌 레일 수신함으로 «옮겨» 갔다 (복제가 아니다)
+    const panel = await screen.findByRole("region", { name: "판단이 필요한 업무" });
     expect(await within(panel).findByText("AX가 만든 업무")).toBeTruthy();
     expect(within(panel).getByText("업무 생성")).toBeTruthy();
 
@@ -667,7 +678,7 @@ describe("product surfaces", () => {
     fireEvent.click(await screen.findByRole("button", { name: "AX" }));
 
     const receipt = await screen.findByRole("listitem", { name: "내 업무 조회 · 완료" });
-    expect(receipt.closest(".ax-rail.terminal")).not.toBeNull();
+    expect(receipt.closest(".scax-rail--terminal")).not.toBeNull();
     expect((receipt.closest("details") as HTMLDetailsElement).open).toBe(false);
     expect(within(receipt).getByText("321ms")).toBeTruthy();
     expect(screen.queryByText("요청 내용 확인 완료")).toBeNull();
@@ -738,6 +749,16 @@ describe("product surfaces", () => {
       "/api/daily-reports/report-1/history",
       expect.anything(),
     );
+
+    /* 바퀴 8-C §1: 이 화면은 제목 줄이 둘이었다 — 셸 머리의 「보고」 위에 페이지 h1 「개인 일일보고」가
+       또 섰다. 걷어내면서 「보고일」은 셸 머리줄로 올렸다. 없어진 것을 지키는 검사가 하나도 없으면
+       다음 바퀴가 조용히 되돌려 놓아도 아무도 모른다 — 그래서 «어디에 섰나» 를 짚는다. */
+    expect(document.querySelector(".page-head")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "개인 일일보고" })).toBeNull();
+    const header = document.querySelector(".scax-page-header") as HTMLElement;
+    expect(within(header).getByRole("heading", { name: "보고" })).toBeTruthy();
+    // 보고일은 화면 안이 아니라 그 머리줄에 있다
+    expect(within(header).getByLabelText("보고일")).toBeTruthy();
   });
 
   it("clears a stale report error as soon as the selected report date changes", async () => {
@@ -1786,17 +1807,17 @@ describe("product surfaces", () => {
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
     fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
-    // 상태 필터는 v2 05 의 툴바 칩 + 팝오버다 (select 아님)
-    fireEvent.click(await screen.findByRole("button", { name: "진행 중·시작 전·막힘" }));
-    fireEvent.click(screen.getByRole("radio", { name: "전체 상태" }));
+    // 바퀴 5a: 상태 필터가 팝오버 하나에서 시안의 칩 나열로 폈다 — 고르면 그 칩이 «눌린» 상태가 된다
+    fireEvent.click(await screen.findByRole("button", { name: "전체 상태" }));
+    expect(screen.getByRole("button", { name: "전체 상태" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByRole("button", { name: "전체 상태" })).toBeTruthy();
     const readsBeforeApproval = myWorkReads.length;
 
     fireEvent.click(screen.getByRole("button", { name: "AX" }));
-    const card = (await screen.findByText("AX가 만든 업무", { selector: ".ax-action-card b" })).closest(".ax-action-card") as HTMLElement;
+    const card = (await screen.findByText("AX가 만든 업무", { selector: ".scax-actioncard b" })).closest(".scax-actioncard") as HTMLElement;
     expect(within(card).getByText("담당")).toBeTruthy(); // server preview row, not inferred from action_type
     // The same judgement is also in the unified decision ledger, labelled by the server.
-    const panel = document.querySelector(".decision-section") as HTMLElement;
+    const panel = screen.getByRole("region", { name: "판단이 필요한 업무" });
     expect(within(panel).getByText("AX가 만든 업무")).toBeTruthy();
     expect(within(panel).getByText("업무 생성")).toBeTruthy();
     fireEvent.click(within(card).getByRole("button", { name: "승인" }));
@@ -1807,7 +1828,7 @@ describe("product surfaces", () => {
     // The current surface re-reads its projection and shows the created task by its real title...
     await waitFor(() => expect(myWorkReads.length).toBeGreaterThan(readsBeforeApproval));
     await waitFor(() => {
-      const onWorkSurface = screen.getAllByText("AX가 만든 업무").filter((node) => !node.closest(".ax-action-card") && !node.closest(".decision-panel, .decision-section"));
+      const onWorkSurface = screen.getAllByText("AX가 만든 업무").filter((node) => !node.closest(".scax-actioncard") && !node.closest(".decision-panel, .scax-inbox-card"));
       expect(onWorkSurface.length).toBeGreaterThan(0);
     });
     // ...without a remount: the filter the user chose is still selected.
@@ -1864,8 +1885,8 @@ describe("product surfaces", () => {
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
     fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
-    const card = (await screen.findByText("분기 리포트 정리")).closest(".task-card") as HTMLElement;
-    expect(card.querySelector(".task-card-kicker")?.textContent).toBe("업무 생성");
+    const card = (await screen.findByText("분기 리포트 정리")).closest(".scax-inbox-card") as HTMLElement;
+    expect(card.textContent).toContain("업무 생성");
     fireEvent.click(within(card).getByRole("button", { name: "판단하기" }));
     const drawer = await screen.findByRole("dialog", { name: "판단 상세" });
     fireEvent.click(await within(drawer).findByRole("button", { name: "승인" }));
@@ -1942,11 +1963,12 @@ describe("product surfaces", () => {
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
     fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
-    fireEvent.click(await screen.findByRole("button", { name: "진행 중·시작 전·막힘" }));
-    fireEvent.click(screen.getByRole("radio", { name: "전체 상태" }));
+    // 바퀴 5a: 상태 필터가 팝오버 하나에서 시안의 칩 나열로 폈다 — 고르면 그 칩이 «눌린» 상태가 된다
+    fireEvent.click(await screen.findByRole("button", { name: "전체 상태" }));
+    expect(screen.getByRole("button", { name: "전체 상태" }).getAttribute("aria-pressed")).toBe("true");
 
     fireEvent.click(screen.getByRole("button", { name: "AX" }));
-    const card = (await screen.findByText("정산 자료 정리", { selector: ".ax-action-card b" })).closest(".ax-action-card") as HTMLElement;
+    const card = (await screen.findByText("정산 자료 정리", { selector: ".scax-actioncard b" })).closest(".scax-actioncard") as HTMLElement;
     fireEvent.click(within(card).getByRole("button", { name: "승인" }));
 
     await waitFor(() => expect(order).toContain("decided"));
@@ -1959,7 +1981,7 @@ describe("product surfaces", () => {
     expect(order).toEqual(["decided", "my-work settled"]);
     // Settled in place: the created task is visible and the chosen filter survived.
     await waitFor(() => {
-      const onSurface = screen.getAllByText("정산 자료 정리").filter((node) => !node.closest(".ax-action-card") && !node.closest(".decision-panel, .decision-section"));
+      const onSurface = screen.getAllByText("정산 자료 정리").filter((node) => !node.closest(".scax-actioncard") && !node.closest(".decision-panel, .scax-inbox-card"));
       expect(onSurface.length).toBeGreaterThan(0);
     });
     expect(screen.getByRole("button", { name: "전체 상태" })).toBeTruthy();
@@ -2024,7 +2046,7 @@ describe("product surfaces", () => {
     fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
     await screen.findByRole("button", { name: "진행 중·시작 전·막힘" });
     fireEvent.click(screen.getByRole("button", { name: "AX" }));
-    const card = (await screen.findByText("월말 정산", { selector: ".ax-action-card b" })).closest(".ax-action-card") as HTMLElement;
+    const card = (await screen.findByText("월말 정산", { selector: ".scax-actioncard b" })).closest(".scax-actioncard") as HTMLElement;
     fireEvent.click(within(card).getByRole("button", { name: "승인" }));
 
     // The approval succeeded: it is reported as such, and the refresh failure is a separate, retryable banner.
@@ -2041,7 +2063,7 @@ describe("product surfaces", () => {
     await waitFor(() => expect(screen.queryByText("판단은 저장되었지만 화면을 갱신하지 못했습니다.")).toBeNull());
     expect(fetchMock.mock.calls.filter(([path]) => String(path) === "/api/actions/action-6/decide")).toHaveLength(1);
     await waitFor(() => {
-      const onSurface = screen.getAllByText("월말 정산").filter((node) => !node.closest(".ax-action-card") && !node.closest(".decision-panel, .decision-section"));
+      const onSurface = screen.getAllByText("월말 정산").filter((node) => !node.closest(".scax-actioncard") && !node.closest(".decision-panel, .scax-inbox-card"));
       expect(onSurface.length).toBeGreaterThan(0);
     });
   });
@@ -2113,7 +2135,7 @@ describe("product surfaces", () => {
       "/api/action-items/action-cancel/commands/cancel_assignment",
       expect.objectContaining({ method: "POST" }),
     ));
-    expect(await screen.findByText("업무 요청을 취소했습니다.", { selector: ".toast" })).toBeTruthy();
+    expect(await screen.findByText("업무 요청을 취소했습니다.", { selector: ".scax-toast" })).toBeTruthy();
     await waitFor(() => expect(within(card).queryByRole("button", { name: "취소" })).toBeNull());
   });
 });

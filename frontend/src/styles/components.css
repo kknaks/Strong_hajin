@@ -1,0 +1,675 @@
+/* ---------- Icon ---------- */
+.scax-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+.scax-icon>svg{display:block}
+
+/* SCAX parts used by 「내 업무」. Class names are the contract; no utilities, no inline styles. */
+
+/* ---------- Button ---------- */
+.scax-button{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;gap:var(--scax-space-150);height:var(--scax-control-height-md);min-height:var(--scax-control-height-md);padding:0 var(--scax-space-400);border:1px solid transparent;border-radius:var(--scax-radius-md);background:transparent;font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-semibold);white-space:nowrap;cursor:pointer;transition:background var(--scax-duration-fast) var(--scax-easing),border-color var(--scax-duration-fast) var(--scax-easing)}
+.scax-button:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-button:disabled{cursor:not-allowed;color:var(--scax-color-ink-disabled);background:var(--scax-color-fill-weak);border-color:transparent}
+.scax-button--sm{height:var(--scax-control-height-sm);min-height:var(--scax-control-height-sm);padding:0 var(--scax-space-300);border-radius:var(--scax-radius-sm);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls)}
+.scax-button--lg{height:var(--scax-control-height-lg);min-height:var(--scax-control-height-lg);padding:0 var(--scax-space-500);border-radius:var(--scax-radius-lg);font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);letter-spacing:var(--scax-text-body1-ls)}
+.scax-button--solid-primary{background:var(--scax-color-accent);color:#fff}
+.scax-button--solid-primary:hover{background:var(--scax-color-accent-strong)}
+.scax-button--outlined-primary{background:var(--scax-color-surface);border-color:var(--scax-color-accent-20);color:var(--scax-color-accent)}
+.scax-button--outlined-primary:hover{background:var(--scax-color-accent-05)}
+.scax-button--outlined-neutral{background:var(--scax-color-surface);border-color:var(--scax-color-line);color:var(--scax-color-ink-neutral)}
+.scax-button--outlined-neutral:hover{background:var(--scax-color-fill-weak)}
+.scax-button--text-neutral{padding:0 var(--scax-space-200);background:transparent;color:var(--scax-color-ink-alt)}
+.scax-button--text-neutral:hover{background:var(--scax-color-fill-weak)}
+.scax-button--block{width:100%}
+.scax-button-group{display:flex;flex-direction:row;gap:var(--scax-space-200)}
+.scax-button-group>.scax-button{flex:1 1 0;min-width:0}
+
+.scax-icon-button{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:0;border-radius:var(--scax-radius-xs);background:transparent;color:var(--scax-color-ink-assistive);cursor:pointer}
+.scax-icon-button:hover{background:var(--scax-color-fill-weak);color:var(--scax-color-ink-neutral)}
+.scax-icon-button:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-icon-button--star-on{color:var(--scax-color-accent)}
+
+/* ---------- Badge ---------- */
+.scax-badge{display:inline-flex;align-items:center;gap:var(--scax-space-100);height:22px;padding:0 var(--scax-space-200);border-radius:var(--scax-radius-xs);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);font-weight:var(--scax-fw-medium);white-space:nowrap}
+.scax-badge--accent{background:var(--scax-color-accent-08);color:var(--scax-color-accent)}
+.scax-badge--neutral{background:var(--scax-color-fill-weak);color:var(--scax-color-ink-alt)}
+.scax-badge--danger{background:var(--scax-color-danger-soft);color:var(--scax-color-danger)}
+.scax-badge--positive{background:rgba(0,163,88,.08);color:var(--scax-color-positive)}
+.scax-badge--count{justify-content:center;min-width:18px;height:18px;padding:0 var(--scax-space-100);border-radius:var(--scax-radius-pill);background:var(--scax-color-danger);color:#fff;font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);letter-spacing:var(--scax-text-caption2-ls)}
+
+/* ---------- Select (status dropdown) ---------- */
+.scax-select{position:relative;display:inline-flex}
+.scax-select__trigger{display:inline-flex;align-items:center;gap:var(--scax-space-100);height:26px;padding:0 var(--scax-space-150) 0 var(--scax-space-200);border:0;border-radius:var(--scax-radius-xs);background:var(--scax-color-accent-08);color:var(--scax-color-accent);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);font-weight:var(--scax-fw-medium);cursor:pointer}
+.scax-select__trigger:hover{background:var(--scax-color-accent-20)}
+.scax-select__trigger:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-select__trigger--neutral{background:var(--scax-color-fill-weak);color:var(--scax-color-ink-alt)}
+.scax-select__trigger--positive{background:rgba(0,163,88,.08);color:var(--scax-color-positive)}
+.scax-select__trigger--danger{background:var(--scax-color-danger-soft);color:var(--scax-color-danger)}
+
+/* ---------- Popover (floating layer for Select menus) ---------- */
+.scax-popover{position:absolute;z-index:30;min-width:120px;padding:var(--scax-space-100);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);box-shadow:var(--scax-shadow-raised)}
+.scax-popover--below-start{top:calc(100% + var(--scax-space-100));left:0}
+.scax-popover__option{display:flex;align-items:center;gap:var(--scax-space-200);width:100%;padding:var(--scax-space-150) var(--scax-space-200);border:0;border-radius:var(--scax-radius-xs);background:transparent;color:var(--scax-color-ink-neutral);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);text-align:left;white-space:nowrap;cursor:pointer}
+.scax-popover__option:hover{background:var(--scax-color-fill-weak)}
+.scax-popover__option--selected{color:var(--scax-color-accent);font-weight:var(--scax-fw-semibold)}
+
+/* ---------- SegmentedControl ---------- */
+.scax-segmented{display:inline-flex;flex-direction:row;gap:var(--scax-space-050);padding:var(--scax-space-050);border-radius:var(--scax-radius-sm);background:var(--scax-color-fill-weak)}
+.scax-segmented__item{height:28px;padding:0 var(--scax-space-300);border:0;border-radius:var(--scax-radius-xs);background:transparent;color:var(--scax-color-ink-alt);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-medium);cursor:pointer}
+.scax-segmented__item:hover{color:var(--scax-color-ink)}
+.scax-segmented__item--on{background:var(--scax-color-surface);color:var(--scax-color-ink);font-weight:var(--scax-fw-semibold);box-shadow:var(--scax-shadow-card)}
+.scax-segmented__item:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+
+/* ---------- Tabs ---------- */
+.scax-tabs{display:flex;flex-direction:row;align-items:stretch;gap:var(--scax-space-600);flex:0 0 auto;min-width:var(--scax-table-min-width);padding:0 var(--scax-space-600);border-bottom:1px solid var(--scax-color-line)}
+.scax-tabs__item{position:relative;height:52px;padding:0;border:0;background:transparent;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-headline-size);line-height:var(--scax-text-headline-lh);letter-spacing:var(--scax-text-headline-ls);font-weight:var(--scax-fw-medium);cursor:pointer}
+.scax-tabs__item:hover{color:var(--scax-color-ink-neutral)}
+.scax-tabs__item--on{color:var(--scax-color-ink);font-weight:var(--scax-fw-semibold)}
+.scax-tabs__item--on::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--scax-color-ink-strong)}
+.scax-tabs__item:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+
+/* ---------- Chip filter ---------- */
+.scax-chip{height:var(--scax-control-height-sm);padding:0 var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-xs);background:var(--scax-color-surface);color:var(--scax-color-ink-alt);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-medium);white-space:nowrap;cursor:pointer}
+.scax-chip:hover{background:var(--scax-color-fill-weak)}
+.scax-chip--on{background:var(--scax-color-surface-nav-active);border-color:var(--scax-color-surface-nav-active);color:var(--scax-color-ink-inverse);font-weight:var(--scax-fw-semibold)}
+.scax-chip:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-chip-bar{display:flex;flex-direction:row;align-items:center;gap:var(--scax-space-200);flex:0 0 auto;min-width:var(--scax-table-min-width);padding:var(--scax-space-400) var(--scax-space-600)}
+.scax-chip-bar__end{margin-left:auto;display:flex;align-items:center;gap:var(--scax-space-200)}
+
+/* ---------- GutterList (inbox rail) ---------- */
+.scax-gutter-list{display:flex;flex-direction:column;gap:var(--scax-space-250);height:100%;min-height:0;padding:var(--scax-space-500) var(--scax-space-600);overflow:hidden}
+.scax-gutter-list__header{display:flex;flex-direction:row;align-items:center;gap:var(--scax-space-150);flex:0 0 auto;height:var(--scax-control-height-sm)}
+.scax-gutter-list__title{display:flex;align-items:center;gap:var(--scax-space-150);flex:1 1 auto;min-width:0;font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);letter-spacing:var(--scax-text-body1-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink-neutral)}
+.scax-gutter-list__body{display:flex;flex-direction:column;gap:var(--scax-space-250);flex:1 1 auto;min-height:0;overflow-y:auto;padding-right:var(--scax-space-050)}
+
+/* ---------- InboxCard ---------- */
+.scax-inbox-card{display:flex;flex-direction:column;gap:var(--scax-space-400);flex:0 0 auto;padding:var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-xl);background:var(--scax-color-surface);box-shadow:var(--scax-shadow-card)}
+.scax-inbox-card__top{display:flex;flex-direction:row;align-items:flex-start;gap:var(--scax-space-200)}
+.scax-inbox-card__top>.scax-icon-button{margin-left:auto}
+.scax-inbox-card__title{font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);letter-spacing:var(--scax-text-body1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink);text-wrap:pretty}
+.scax-inbox-card__excerpt{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:var(--scax-text-label2-size);line-height:1.62;letter-spacing:var(--scax-text-label2-ls);color:var(--scax-color-ink-assistive)}
+.scax-inbox-card__meta{display:flex;flex-direction:row;align-items:center;gap:var(--scax-space-150);flex-wrap:wrap;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+.scax-inbox-card__meta-avatar{width:20px;height:20px;border-radius:var(--scax-radius-pill);object-fit:cover;background:var(--scax-color-fill-weak)}
+.scax-inbox-card__meta-sep{width:1px;height:10px;background:var(--scax-color-line-strong)}
+.scax-inbox-card__meta-who{color:var(--scax-color-ink-neutral);font-weight:var(--scax-fw-medium)}
+.scax-inbox-card__source{display:inline-flex;align-items:center;gap:var(--scax-space-100)}
+.scax-inbox-card__content{display:flex;flex-direction:column;align-items:flex-start;gap:var(--scax-space-200);align-self:stretch}
+
+/* ---------- TaskTable ---------- */
+.scax-task-table{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;min-width:var(--scax-table-min-width)}
+.scax-task-table__head,.scax-task-table__row{display:grid;grid-template-columns:44px minmax(0,1fr) 120px 140px 120px 200px;align-items:center}
+.scax-task-table__head{flex:0 0 auto;height:35px;padding:0 var(--scax-space-600);border-top:1px solid var(--scax-color-line-weak);border-bottom:1px solid var(--scax-color-line-weak);background:var(--scax-color-surface-alt);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink-assistive)}
+.scax-task-table__body{flex:1 1 auto;min-height:0;overflow-y:auto}
+.scax-task-table__row{min-height:var(--scax-row-height);background:var(--scax-color-surface);padding:var(--scax-space-150) var(--scax-space-600);border-bottom:1px solid var(--scax-color-line-weak)}
+.scax-task-table__row:hover{background:var(--scax-color-accent-05)}
+.scax-task-table__cell--center{display:flex;justify-content:center}
+.scax-task-table__cell--title{display:flex;align-items:center;gap:var(--scax-space-200);min-width:0}
+.scax-task-table__title{font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.scax-task-table__title--unread{position:relative}
+.scax-task-table__title--unread::before{content:"";position:absolute;left:-7px;top:2px;width:4px;height:4px;border-radius:var(--scax-radius-pill);background:var(--scax-color-danger)}
+.scax-task-table__cell--muted{font-size:var(--scax-text-label1-size);color:var(--scax-color-ink-alt)}
+.scax-task-table__due{display:flex;align-items:center;gap:var(--scax-space-100);font-size:var(--scax-text-label1-size);color:var(--scax-color-ink-alt)}
+.scax-task-table__due-extra{color:var(--scax-color-danger);font-size:var(--scax-text-caption1-size);font-weight:var(--scax-fw-medium)}
+.scax-task-table__cell--actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--scax-space-200);align-items:center}
+.scax-task-table__cell--actions>.scax-button{width:100%;padding:0 var(--scax-space-200)}
+.scax-task-table__cell--actions>.scax-task-table__resolved{grid-column:1 / -1;text-align:center}
+.scax-task-table__resolved{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+
+/* ---------- CalendarRail ---------- */
+.scax-calendar-rail{display:flex;flex-direction:column;gap:var(--scax-space-250);height:100%;min-height:0;padding:var(--scax-space-500) var(--scax-space-600)}
+.scax-calendar-rail__header{display:flex;flex-direction:row;align-items:center;gap:var(--scax-space-150);flex:0 0 auto}
+.scax-calendar-rail__title{flex:1 1 auto;font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);letter-spacing:var(--scax-text-body1-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink-neutral)}
+.scax-calendar-rail__day{display:flex;flex-direction:column;align-items:center;gap:var(--scax-space-200);flex:0 0 auto;padding:var(--scax-space-150) 0}
+.scax-calendar-rail__date{margin:0;font-size:var(--scax-text-title-size);line-height:var(--scax-text-title-lh);letter-spacing:var(--scax-text-title-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink)}
+.scax-calendar-rail__hours{display:flex;align-items:center;gap:var(--scax-space-800);margin:0;font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);color:var(--scax-color-ink-assistive)}
+.scax-calendar-rail__hours-label{display:inline-flex;align-items:center;gap:var(--scax-space-100)}
+.scax-calendar-rail__hours-value{color:var(--scax-color-ink-neutral);font-weight:var(--scax-fw-medium)}
+.scax-calendar-rail__list{display:flex;flex-direction:column;gap:var(--scax-space-200);flex:1 1 auto;min-height:0;overflow-y:auto}
+
+.scax-agenda-item{display:flex;flex-direction:column;gap:var(--scax-space-200);flex:0 0 auto;padding:var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-xl);background:var(--scax-color-surface)}
+.scax-agenda-item:hover{border-color:var(--scax-color-accent-20);background:var(--scax-color-accent-05)}
+.scax-agenda-item__top{display:flex;flex-direction:row;align-items:center;gap:var(--scax-space-200)}
+.scax-agenda-item__time{margin-left:auto;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+.scax-agenda-item__title{margin:0;font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink)}
+.scax-agenda-item__sub{margin:0;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+
+/* ---------- AgentBubble ---------- */
+.scax-agent{position:fixed;right:var(--scax-space-600);bottom:var(--scax-space-600);z-index:20;display:flex;flex-direction:column;align-items:flex-start;width:193px;pointer-events:none}
+.scax-agent__bubble{position:relative;max-width:165px;padding:var(--scax-space-200) var(--scax-space-400);border-radius:var(--scax-radius-bubble);background:var(--scax-color-surface-nav-active);color:#fff;font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);white-space:pre-line;box-shadow:var(--scax-shadow-raised)}
+/* 꼬리 — 말풍선 오른쪽 아래에서 오브를 가리킨다 */
+.scax-agent__bubble::after{content:'';position:absolute;right:24px;bottom:-9px;width:0;height:0;border-left:11px solid transparent;border-top:13px solid var(--scax-color-surface-nav-active)}
+.scax-agent__orb{position:relative;align-self:flex-end;width:120px;height:110px;pointer-events:auto}
+/* 오브 뒤 빛 — 그라데이션을 번지게 해서 판이 아니라 빛으로 읽히게 한다 */
+.scax-agent__glow{position:absolute;left:0;bottom:0;width:120px;height:70px;border-radius:50%;background:var(--scax-gradient-agent);filter:blur(var(--scax-agent-glow-blur))}
+.scax-agent__img{position:absolute;left:10px;bottom:8px;width:100px;height:100px;object-fit:cover;transform:scaleX(-1);border:0;background:transparent;cursor:pointer}
+
+/* ---------- Empty ---------- */
+.scax-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:var(--scax-space-300);flex:1 1 auto;min-height:180px;padding:var(--scax-space-800) var(--scax-space-600);text-align:center}
+.scax-empty__icon{display:flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:var(--scax-radius-pill);background:var(--scax-color-fill-weak);color:var(--scax-color-ink-assistive)}
+.scax-empty__title{font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-neutral)}
+.scax-empty__desc{font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);color:var(--scax-color-ink-assistive)}
+
+/* ---------- StatusNote (error) ---------- */
+.scax-status-note{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:var(--scax-space-300);flex:1 1 auto;min-height:180px;padding:var(--scax-space-800) var(--scax-space-600);text-align:center}
+.scax-status-note__icon{display:flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:var(--scax-radius-pill);background:var(--scax-color-danger-soft);color:var(--scax-color-danger)}
+.scax-status-note__title{font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-neutral)}
+.scax-status-note__desc{font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);color:var(--scax-color-ink-assistive)}
+.scax-status-note--inline{flex-direction:row;align-items:center;justify-content:flex-start;gap:var(--scax-space-200);min-height:0;padding:var(--scax-space-300) var(--scax-space-400);border:1px solid var(--scax-color-danger-soft);border-radius:var(--scax-radius-sm);background:var(--scax-color-danger-soft);text-align:left}
+
+/* ---------- Skeleton (loading) ---------- */
+.scax-skeleton{border-radius:var(--scax-radius-xs);background:var(--scax-color-fill-weak);animation:scax-pulse 1.2s var(--scax-easing) infinite}
+.scax-skeleton--text{height:12px}
+.scax-skeleton--title{height:16px}
+.scax-skeleton--card{height:108px;border-radius:var(--scax-radius-xl)}
+.scax-skeleton--agenda{height:84px;border-radius:var(--scax-radius-xl)}
+.scax-skeleton--w-40{width:40%}
+.scax-skeleton--w-60{width:60%}
+.scax-skeleton--w-80{width:80%}
+.scax-skeleton--w-full{width:100%}
+.scax-skeleton-stack{display:flex;flex-direction:column;gap:var(--scax-space-250)}
+.scax-skeleton-row{display:grid;grid-template-columns:44px minmax(0,1fr) 120px 140px 120px 200px;align-items:center;gap:var(--scax-space-300);min-height:var(--scax-row-height);padding:var(--scax-space-150) var(--scax-space-600);border-bottom:1px solid var(--scax-color-line-weak)}
+@keyframes scax-pulse{0%,100%{opacity:1}50%{opacity:.45}}
+
+/* ---------- TaskTable: 보낸 업무 / 완료 업무 변형 ---------- */
+.scax-task-table--sent .scax-task-table__head,.scax-task-table--sent .scax-task-table__row,.scax-task-table--done .scax-task-table__head,.scax-task-table--done .scax-task-table__row{grid-template-columns:24px minmax(0,1fr) 120px 140px 120px 200px}
+.scax-task-table__cell--actions-single{grid-template-columns:minmax(0,1fr);justify-items:end}
+.scax-task-table__cell--actions-single>.scax-button{width:auto;min-width:96px}
+.scax-task-table__cell--indent{padding-left:var(--scax-space-400)}
+.scax-task-table__group{display:flex;align-items:center;gap:var(--scax-space-150);width:100%;min-height:36px;padding:0 var(--scax-space-600);border:0;border-bottom:1px solid var(--scax-color-line-weak);background:var(--scax-color-surface);color:var(--scax-color-ink-alt);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-medium);text-align:left;cursor:pointer}
+.scax-task-table__group:hover{background:var(--scax-color-fill-weak)}
+.scax-task-table__group:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-badge--info{background:rgba(0,116,204,.08);color:var(--scax-color-info)}
+
+/* ---------- CalendarNav ---------- */
+.scax-calendar-nav{display:flex;flex-direction:row;align-items:center;gap:var(--scax-space-100);flex:0 0 auto;padding:var(--scax-space-150) 0}
+.scax-calendar-nav__label{flex:1 1 auto;font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink)}
+
+/* ---------- day cells: 주간 스트립 / 월간 그리드 공용 ---------- */
+.scax-day-strip,.scax-month-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:var(--scax-space-050) 0;flex:0 0 auto;align-items:center;justify-items:center}
+.scax-day-strip__head,.scax-month-grid__head{padding-bottom:var(--scax-space-150);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+.scax-month-grid{row-gap:var(--scax-space-100)}
+.scax-day-cell{position:relative;display:flex;align-items:center;justify-content:center;width:32px;height:32px;border:0;border-radius:var(--scax-radius-sm);background:transparent;color:var(--scax-color-ink-neutral);font-size:var(--scax-text-label1-size);line-height:1;font-weight:var(--scax-fw-medium);cursor:pointer}
+.scax-day-cell:hover{background:var(--scax-color-fill-weak)}
+.scax-day-cell:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-day-cell--selected{background:var(--scax-color-accent-08);color:var(--scax-color-accent);font-weight:var(--scax-fw-semibold)}
+.scax-day-cell--muted{color:var(--scax-color-ink-disabled)}
+.scax-day-cell--blank{width:32px;height:32px}
+.scax-day-cell__dot{position:absolute;left:50%;bottom:3px;transform:translateX(-50%);width:3px;height:3px;border-radius:var(--scax-radius-pill);background:currentColor}
+
+/* ---------- 주간 뷰: 날짜별 접이식 섹션 ---------- */
+.scax-day-section{display:flex;flex-direction:column;gap:var(--scax-space-200);flex:0 0 auto}
+.scax-day-section__head{display:flex;align-items:center;gap:var(--scax-space-200);width:100%;min-height:40px;padding:0;border:0;border-bottom:1px solid var(--scax-color-line-weak);background:transparent;color:var(--scax-color-ink);font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-medium);text-align:left;cursor:pointer}
+.scax-day-section__head:hover{color:var(--scax-color-accent)}
+.scax-day-section__head:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-day-section__label{flex:1 1 auto;min-width:0}
+.scax-day-section__body{display:flex;flex-direction:column;gap:var(--scax-space-200);padding-bottom:var(--scax-space-200)}
+
+/* ---------- Modal ---------- */
+.scax-modal-overlay{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--scax-space-600);background:rgba(23,23,25,.32)}
+.scax-modal{display:flex;flex-direction:column;width:880px;max-width:100%;height:min(720px, calc(100vh - var(--scax-space-1200)));max-height:calc(100vh - var(--scax-space-1200));border-radius:var(--scax-radius-xl);background:var(--scax-color-surface);box-shadow:var(--scax-shadow-raised)}
+.scax-modal__head{display:flex;align-items:center;gap:var(--scax-space-200);flex:0 0 auto;padding:var(--scax-space-500) var(--scax-space-600);border-bottom:1px solid var(--scax-color-line-weak)}
+.scax-modal__title{flex:1 1 auto;font-size:var(--scax-text-headline-size);line-height:var(--scax-text-headline-lh);letter-spacing:var(--scax-text-headline-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink)}
+/* 본문: 콘텐츠가 짧으면 감싼 높이, max-height 를 넘으면 여기만 스크롤한다 */
+.scax-modal__body{display:flex;flex-direction:column;gap:var(--scax-space-400);flex:1 1 auto;min-height:0;overflow-y:auto;padding:var(--scax-space-500) var(--scax-space-600)}
+.scax-modal__body>*{flex-shrink:0}
+.scax-modal__body>.scax-button{align-self:flex-start}
+.scax-modal__foot{display:flex;justify-content:flex-end;gap:var(--scax-space-200);flex:0 0 auto;padding:var(--scax-space-400) var(--scax-space-600);border-top:1px solid var(--scax-color-line-weak)}
+/* 확인 모달 — 짧은 물음 하나. 본문이 짧으면 감싼 높이로 선다 */
+.scax-modal--sm{width:420px;height:auto}
+.scax-modal__text{font-size:var(--scax-text-label1-size);line-height:1.62;letter-spacing:var(--scax-text-label1-ls);color:var(--scax-color-ink-alt);text-wrap:pretty}
+.scax-button--solid-danger{background:var(--scax-color-danger);color:#fff}
+.scax-button--solid-danger:hover{background:var(--scax-color-danger)}
+
+/* ---------- Field ---------- */
+.scax-field{display:flex;flex-direction:column;gap:var(--scax-space-200);min-width:0}
+
+.scax-field__label{display:flex;align-items:center;gap:var(--scax-space-100);font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink)}
+.scax-field__required{color:var(--scax-color-danger)}
+.scax-field__hint{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+.scax-field-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--scax-space-300)}
+
+/* ---------- 출처 행 ---------- */
+.scax-source-row{display:flex;align-items:center;gap:var(--scax-space-250);min-height:48px;padding:0 var(--scax-space-300) 0 var(--scax-space-400);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);color:var(--scax-color-ink-assistive)}
+.scax-source-row__label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--scax-text-label1-size);color:var(--scax-color-ink)}
+
+/* ---------- TextField / DateField ---------- */
+.scax-textfield{display:flex;align-items:center;gap:var(--scax-space-200);min-height:48px;padding:0 var(--scax-space-300) 0 var(--scax-space-400);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);color:var(--scax-color-ink-assistive)}
+.scax-textfield:focus-within{border-color:var(--scax-color-accent);box-shadow:var(--scax-focus-ring)}
+.scax-textfield__input{flex:1 1 auto;min-width:0;border:0;outline:0;background:transparent;color:var(--scax-color-ink);font-family:var(--scax-font-ui);font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls)}
+.scax-textfield__input::placeholder{color:var(--scax-color-ink-assistive)}
+.scax-textfield__input--date{appearance:none;-webkit-appearance:none}
+.scax-textfield__input--date::-webkit-calendar-picker-indicator{display:none;opacity:0;width:0;margin:0}
+.scax-textfield__input--date::-webkit-inner-spin-button,.scax-textfield__input--date::-webkit-clear-button{display:none}
+
+/* ---------- Composer ---------- */
+.scax-composer{display:flex;flex-direction:column;gap:var(--scax-space-100);padding:var(--scax-space-300) var(--scax-space-400);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface)}
+.scax-composer:focus-within{border-color:var(--scax-color-accent);box-shadow:var(--scax-focus-ring)}
+.scax-composer--full{border-color:var(--scax-color-accent)}
+.scax-composer__input{max-height:148px;min-height:148px;overflow-y:auto;border:0;outline:0;resize:none;background:transparent;color:var(--scax-color-ink);font-family:var(--scax-font-ui);font-size:var(--scax-text-label1-size);line-height:1.6;letter-spacing:var(--scax-text-label1-ls)}
+.scax-composer__count{font-size:var(--scax-text-label1-size);color:var(--scax-color-ink-assistive)}
+
+/* ---------- AutoComplete ---------- */
+.scax-autocomplete{position:relative;display:flex;flex-direction:column;gap:var(--scax-space-300)}
+.scax-autocomplete__list{position:absolute;left:0;right:0;top:56px;z-index:20;max-height:280px;margin:0;padding:var(--scax-space-200);list-style:none;overflow-y:auto;border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);box-shadow:var(--scax-shadow-raised)}
+.scax-autocomplete__option{display:flex;align-items:center;gap:var(--scax-space-200);width:100%;padding:var(--scax-space-250) var(--scax-space-300);border:0;border-radius:var(--scax-radius-xs);background:transparent;color:var(--scax-color-ink-neutral);font-size:var(--scax-text-label1-size);text-align:left;cursor:pointer}
+.scax-autocomplete__option:hover{background:var(--scax-color-fill-weak)}
+.scax-autocomplete__option--selected{color:var(--scax-color-accent);font-weight:var(--scax-fw-medium)}
+.scax-autocomplete__option--selected>.scax-icon{margin-left:auto}
+.scax-person-chips{display:flex;flex-wrap:wrap;align-items:center;gap:var(--scax-space-200)}
+.scax-person-chips__label{font-size:var(--scax-text-label2-size);color:var(--scax-color-ink-alt)}
+.scax-person-chip{display:inline-flex;align-items:center;gap:var(--scax-space-150);height:36px;padding:0 var(--scax-space-300) 0 var(--scax-space-150);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);color:var(--scax-color-ink-assistive);font-size:var(--scax-text-label2-size);font-weight:var(--scax-fw-medium);cursor:pointer}
+.scax-person-chip:hover{background:var(--scax-color-fill-weak)}
+.scax-person-chip--on{border-color:var(--scax-color-accent-20);background:var(--scax-color-accent-05);color:var(--scax-color-accent)}
+.scax-person-chip__avatar{width:24px;height:24px;border-radius:var(--scax-radius-pill);object-fit:cover;background:var(--scax-color-fill-weak)}
+.scax-person-chip__avatar--empty{display:flex;align-items:center;justify-content:center;color:var(--scax-color-ink-assistive)}
+
+/* ---------- DropZone / FileList ---------- */
+.scax-dropzone{position:relative;display:flex;flex-direction:column;gap:var(--scax-space-250);padding:var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface)}
+.scax-dropzone--over{border-style:dashed;border-color:var(--scax-color-accent);background:var(--scax-color-accent-05)}
+.scax-dropzone__head{display:flex;align-items:center;gap:var(--scax-space-300);min-height:40px;padding-left:var(--scax-space-100)}
+.scax-dropzone__hint{flex:1 1 auto;font-size:var(--scax-text-label1-size);color:var(--scax-color-ink-alt)}
+.scax-dropzone__cursor{position:absolute;right:var(--scax-space-800);top:calc(-1 * var(--scax-space-500));display:flex;align-items:center;justify-content:center;width:44px;height:44px;border-radius:var(--scax-radius-pill);background:var(--scax-color-fill-strong);color:var(--scax-color-ink-inverse)}
+.scax-file-list{display:flex;flex-direction:column;gap:var(--scax-space-200);margin:0;padding:0;list-style:none}
+.scax-file-row{display:flex;align-items:center;gap:var(--scax-space-250);min-height:44px;padding:0 var(--scax-space-250) 0 var(--scax-space-300);border:1px solid var(--scax-color-line-weak);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);color:var(--scax-color-ink-assistive)}
+.scax-file-row__name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--scax-text-label1-size);color:var(--scax-color-ink)}
+.scax-file-row__size{font-size:var(--scax-text-label2-size);color:var(--scax-color-ink-assistive)}
+
+/* ---------- Toast — 화면 하단 고정 ---------- */
+.scax-toast{position:fixed;left:50%;bottom:var(--scax-space-800);transform:translateX(-50%);z-index:60;display:flex;align-items:center;gap:var(--scax-space-250);min-height:48px;max-width:480px;padding:0 var(--scax-space-500);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface-inverse);color:var(--scax-color-ink-inverse);box-shadow:var(--scax-shadow-raised)}
+.scax-toast__text{font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls)}
+
+/* ---------- 모달 2열 레이아웃 ---------- */
+/* 2열 격자 — 1행 업무 명·기한 / 2행 내용·확인받을 사람 / 3행 체크리스트·첨부파일.
+   가운데 세로 경계선은 격자 배경으로 그린다(행 높이에 자동으로 맞춰짐). */
+.scax-modal-grid{display:grid;grid-template-columns:minmax(0,1fr) 1px minmax(0,1fr);column-gap:var(--scax-space-600);row-gap:var(--scax-space-400);align-items:start}
+.scax-modal-grid>*:nth-child(even){grid-column:1}
+.scax-modal-grid>*:nth-child(odd){grid-column:3}
+.scax-modal-grid>.scax-modal-grid__divider{grid-column:2;grid-row:1 / -1;align-self:stretch;width:1px;background:var(--scax-color-line-weak)}
+
+
+/* ---------- Checkbox / Checklist ---------- */
+.scax-checkbox{display:inline-flex;flex-shrink:0}
+.scax-checkbox__input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.scax-checkbox__box{display:flex;align-items:center;justify-content:center;width:20px;height:20px;border:1px solid var(--scax-color-line-strong);border-radius:var(--scax-radius-xs);background:var(--scax-color-surface);color:transparent;cursor:pointer}
+.scax-checkbox__input:checked+.scax-checkbox__box{border-color:var(--scax-color-accent);background:var(--scax-color-accent);color:#fff}
+.scax-checkbox__input:focus-visible+.scax-checkbox__box{box-shadow:var(--scax-focus-ring)}
+.scax-checklist{display:flex;flex-direction:column;gap:var(--scax-space-250);align-items:flex-start}
+.scax-checklist__list{display:flex;flex-direction:column;gap:var(--scax-space-200);width:100%;max-height:252px;margin:0;padding:0;list-style:none;overflow-y:auto}
+.scax-checklist__row{flex-shrink:0;display:flex;align-items:center;gap:var(--scax-space-250);min-height:44px;padding:0 var(--scax-space-250) 0 var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface)}
+.scax-checklist__row:focus-within{border-color:var(--scax-color-accent)}
+.scax-checklist__text{flex:1 1 auto;min-width:0;border:0;outline:0;background:transparent;color:var(--scax-color-ink);font-family:var(--scax-font-ui);font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls)}
+.scax-checklist__text::placeholder{color:var(--scax-color-ink-assistive)}
+.scax-checkbox__input:checked~.scax-checklist__text{color:var(--scax-color-ink-assistive);text-decoration:line-through}
+
+/* ---------- 투명(오버레이) 스크롤바 — 트랙 없음, 썸만 반투명 ---------- */
+.scax-scroll{scrollbar-width:thin;scrollbar-color:transparent transparent}
+.scax-scroll::-webkit-scrollbar{width:8px;height:8px}
+.scax-scroll::-webkit-scrollbar-track{background:transparent}
+.scax-scroll::-webkit-scrollbar-thumb{border:2px solid transparent;border-radius:var(--scax-radius-pill);background-clip:content-box;background-color:transparent}
+.scax-scroll:hover,.scax-scroll:focus-within{scrollbar-color:rgba(112,115,124,.28) transparent}
+.scax-scroll:hover::-webkit-scrollbar-thumb,.scax-scroll:focus-within::-webkit-scrollbar-thumb{background-color:rgba(112,115,124,.28)}
+.scax-scroll::-webkit-scrollbar-thumb:hover{background-color:rgba(112,115,124,.44)}
+.scax-composer:hover .scax-composer__input{scrollbar-color:rgba(112,115,124,.28) transparent}
+.scax-composer:hover .scax-composer__input::-webkit-scrollbar-thumb{background-color:rgba(112,115,124,.28)}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   바퀴 9 가 채운 자리 — 새 DS 에 없어서 우리가 «새 DS 어휘로» 만든 부품들.
+
+   지금까지는 「없으면 발명 금지, 구 것 두고 DS-gaps 에 올려라」였다. 워커 넷이 병렬로 돌 때
+   서로 다른 짝퉁을 만들지 않게 하려던 임시 조치였고, 이 바퀴에서 끝났다.
+   **기하·색을 새로 디자인하지 않았다** — 구 `styles.css` 의 값을 그대로 옮기고 이름만 바꿨다.
+   `/design-sync` 로 DS 본체에 올릴 후보가 이 블록이다.
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* ---------- Avatar (G-43) — 이니셜 원. DS 아바타는 사진 전제라 글자를 못 받는다 ----------
+   구 `.avatar` + 다섯 단 그대로다. 글자 크기는 타입 램프가 아니라 «지름의 40%» 라
+   램프에 자리가 없다(구 값 8·10·13·16·32 를 그대로 옮겼다). */
+.scax-avatar{display:grid;flex:none;place-items:center;border-radius:var(--scax-radius-pill);color:var(--scax-color-ink-alt);background:linear-gradient(140deg,var(--scax-color-line),var(--scax-color-line-strong));font-weight:var(--scax-fw-bold)}
+.scax-avatar--xs{width:20px;height:20px;font-size:8px}
+.scax-avatar--sm{width:24px;height:24px;font-size:10px}
+.scax-avatar--md{width:32px;height:32px;font-size:13px}
+.scax-avatar--lg{width:40px;height:40px;font-size:16px}
+.scax-avatar--xl{width:80px;height:80px;font-size:32px}
+
+/* ---------- DataTable (G-15 · G-46) — 열 수에 안 묶인 «읽는 표» ----------
+   DS 의 `.scax-task-table` 은 업무 표 전용 6열 격자다. 변경 기록·공유 대상·보낸 업무처럼
+   열이 제각각인 표가 쓸 것이 없어서 구 `.plain-table` 을 그대로 옮겼다. 시맨틱 <table> 이다. */
+.scax-table{width:100%;border-collapse:collapse;font-size:var(--scax-text-label1-size)}
+.scax-table th{height:44px;padding:0 var(--scax-space-400);border-bottom:1px solid var(--scax-color-line);color:var(--scax-color-ink-assistive);font-size:var(--scax-text-label2-size);font-weight:var(--scax-fw-bold);text-align:left;white-space:nowrap}
+.scax-table td{height:56px;padding:0 var(--scax-space-400);border-bottom:1px solid var(--scax-color-line-weak);color:var(--scax-color-ink-alt);vertical-align:middle;white-space:nowrap}
+.scax-table th:first-child,.scax-table td:first-child{padding-left:var(--scax-space-500)}
+.scax-table th.scax-table__center,.scax-table td.scax-table__center{text-align:center}
+.scax-table th.scax-table__end,.scax-table td.scax-table__end{text-align:right}
+.scax-table td.scax-table__title{width:100%;color:var(--scax-color-ink);font-weight:var(--scax-fw-medium);white-space:normal}
+.scax-table tr.scax-table__row--openable{cursor:pointer}
+.scax-table tr.scax-table__row--openable:hover td{background:var(--scax-color-surface-alt)}
+
+/* ---------- Button: 글줄 속 변형 (신규 gap — 번호 미정) — 구 `.btn.link` ----------
+   문장 안에 글자처럼 서는 단추. 높이·여백·테두리가 없다. 값은 구 규칙 그대로다. */
+.scax-button--inline{height:auto;min-height:0;padding:0;border:0;border-radius:0;color:var(--scax-color-accent);background:transparent;font-size:var(--scax-text-label2-size);font-weight:var(--scax-fw-medium)}
+.scax-button--inline:hover:not(:disabled){background:transparent;text-decoration:underline}
+.scax-button--inline:disabled{background:transparent;color:var(--scax-color-ink-disabled)}
+
+/* ---------- Button: AX 변형 (G-17) — 구 `.btn.ai` ----------
+   「AX 에게 묻는다」를 가리키는 단추. 강조색과 다른 축이라 tone 으로 접히지 않는다. */
+.scax-button--ai{border-color:var(--scax-color-ai-line);color:var(--scax-color-ai-ink);background:var(--scax-color-accent-08)}
+.scax-button--ai:hover:not(:disabled){border-color:var(--scax-color-ai-line-hover);background:var(--scax-color-ai-fill-hover)}
+.scax-button--ai:active:not(:disabled){border-color:var(--scax-color-ai-line-active);color:var(--scax-color-ai-ink-active);background:var(--scax-color-ai-fill-active)}
+
+/* ---------- Badge: outline 톤 (G-29) — 구 `.badge.outline` ----------
+   흰 바탕 + 가는 테두리. 새 DS 의 neutral 은 회색 «채움» 이라 「값이 아직 확정 아님」(초안 vN ·
+   변경 가능한 링크 · 색인 없음)을 채움형과 구분할 수 없었다. 구 규칙 값 그대로 옮겼다. */
+.scax-badge--outline{border:1px solid var(--scax-color-line);color:var(--scax-color-ink-assistive);background:var(--scax-color-surface);font-weight:var(--scax-fw-medium)}
+
+/* ---------- Chip: 줄 배치와 «여럿 고르기» 토글 (신규 gap — 번호 미정) ----------
+   `.scax-chip-bar` 는 업무 표 위 툴바 전용(최소 폭·패딩을 가진다)이라 모달 안에서 칩을 감싸는
+   자리가 쓸 수 없었다. `.scax-chip-row` 는 그냥 줄바꿈되는 줄이다 — 구 `.chip-row` 그대로.
+   `.scax-chip-toggle` 은 <label> 안에 체크박스를 넣은 «여럿 고르기» 다 — 구 `.chip-toggle` 그대로.
+   DS 의 `.scax-chip` 은 `aria-pressed` 단추라 폼 값이 되지 못한다. */
+.scax-chip-row{display:flex;flex-wrap:wrap;align-items:center;gap:var(--scax-space-200);margin-top:var(--scax-space-200)}
+.scax-chip-toggle{display:inline-flex;align-items:center;gap:var(--scax-space-150);height:var(--scax-control-height-sm);padding:0 var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-pill);background:var(--scax-color-surface);color:var(--scax-color-ink-alt);font-size:var(--scax-text-label2-size);cursor:pointer}
+.scax-chip-toggle input{margin:0;accent-color:var(--scax-color-accent)}
+.scax-chip-toggle--on{border-color:var(--scax-color-accent);background:var(--scax-color-accent-08);color:var(--scax-color-accent)}
+
+/* ---------- Field: 오류 한 줄 (G-05 「FieldMessage 의 톤 구분」의 절반) ----------
+   DS 는 `.scax-field__hint`(도움말)만 갖고 오류 줄이 없다. 같은 자리에 서고 색만 다르다 —
+   구 `.field-error` 값 그대로. 오류가 있으면 도움말 대신 이것이 선다(`FieldMessage`). */
+.scax-field__error{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-danger)}
+
+/* ---------- Drawer 폭 두 단 (G-10) — 바퀴 9 에 overrides-transitional.css 에서 옮겨 왔다 ----------
+   DS 골격은 520 하나뿐인데 업무 상세 드로어는 폼이 두 열이라 좁다. */
+.scax-drawer--sm { width: 520px; }
+.scax-drawer--lg { width: 840px; }
+
+/* ---------- 별표 열 없는 5열 업무표 (신규 gap — 번호 미정) — 같은 경로로 옮겨 왔다 ----------
+   DS `.scax-task-table` 은 첫 트랙 44px 이 별표 열인 6열 격자다. `starred` 필드도 저장 경로도
+   없어서 그 열을 그리지 않았고(누르면 아무 데도 안 남아 사용자를 속인다), 그래서 트랙도 다섯이다. */
+.scax-task-table--nostar > .scax-task-table__head,
+.scax-task-table--nostar > .scax-task-table__body > .scax-task-table__row { grid-template-columns: minmax(0, 1fr) 120px 140px 120px 200px; }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   바퀴 9-B — 구 `styles.css` 에서 옮겨 온 여러 화면이 나눠 쓰는 부품·유틸 규칙 152개.
+   **마크업은 한 줄도 안 바꿨다.** 값은 구 파일에 있던 그대로이고 토큰 이름만 `--scax-*` 로 갔다.
+   구 파일이 앱에서 «맨 먼저» 실렸던 것과 달리 이 파일은 늦게 실린다 — 같은 셀렉터가 양쪽에 있던
+   규칙 117개는 어차피 새 파일이 이기고 있었으므로 옮기기 전에 걷어냈다.
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+.t-item { font-size: 14px; font-weight: 700; }
+.t-meta { font-size: 13px; color: var(--scax-color-ink-assistive); }
+/* 바퀴 8-C(G-43): `.avatar` 여섯 줄을 `styles/avatar.css` 로 옮겼다 — 새 DS 아바타가 사진 전제라
+   대체품이 없고, 구 파일을 지우는 바퀴 9 전에 나와 있어야 하는 규칙이었다. 옮기면서 색·굵기를
+   `--scax-*` 로 바꿨고 기하는 그대로다. 여기 있던 여섯 줄은 «옮겨서 죽은» 구획이다(Q-1: 삭제는 바퀴 9). */
+.error-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 16px 0; padding: 12px 16px; border: 1px solid var(--scax-color-danger); border-radius: var(--scax-radius-sm); color: var(--scax-color-danger); background: var(--scax-color-danger-soft); font-size: 13px; }
+/* ---------- page primitives ---------- */
+.page-surface { margin-top: 12px; }
+/* ---------- status & badges ---------- */
+.status { display: inline-flex; align-items: center; gap: 6px; color: var(--scax-color-ink-assistive); font-size: 14px; font-weight: 500; white-space: nowrap; }
+.status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.status.in_progress, .status.pending { color: var(--scax-color-progress-ink); }
+.status.in_progress::before, .status.pending::before { background: var(--scax-color-progress); }
+.status.done, .status.negotiating, .status.accepted { color: var(--scax-color-accent); }
+.status.done::before, .status.negotiating::before, .status.accepted::before { background: var(--scax-color-accent); }
+.status.blocked { color: var(--scax-color-danger); }
+.status.blocked::before { background: var(--scax-color-danger); }
+.status.cancelled::before, .status.rejected::before { background: var(--scax-color-ink-disabled); }
+.count-badge { display: inline-grid; min-width: 20px; height: 20px; padding: 0 6px; place-items: center; border-radius: 999px; color: var(--scax-color-ink-inverse); background: var(--scax-color-ink); font-size: 11px; font-weight: 700; }
+.cell-main small.reason { color: var(--scax-color-danger); }
+input.title-input { height: 48px; font-size: 17px; font-weight: 700; }
+/* 바퀴 12: 구 `.field` 두 줄을 지웠다 — 마지막 자리(main #10 이 가져온 CommandConfirmationForm)를
+   `.scax-field` 로 옮기면서 마크업이 0곳이 됐다. 폼 어휘는 이제 `.scax-field*` 하나다. */
+.form-stack, .form-grid { display: grid; gap: 16px; }
+.checkbox-box { display: inline-grid; flex: none; place-items: center; }
+.checkbox-box input:disabled + .scax-checkbox__box { cursor: not-allowed; border-color: var(--scax-color-line); background: var(--scax-color-surface-alt); color: var(--scax-color-ink-disabled); }
+/* Search · h34 (v2 09). 폭 260 은 툴바 검색의 값이고, 지금 있는 자리는 드로어 전폭이라 폭은 두지 않는다.
+   돋보기 자리는 아이콘 규격(v2 07)이 생기면 채운다 */
+.search-input-box { height: 34px; padding: 0 12px; font-size: 13px; }
+/* 진행률 · 로그 행 (v2 11) */
+.progress { display: grid; gap: 8px; }
+.progress-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 14px; }
+.progress-head b { font-weight: 700; }
+.progress-track { height: 6px; border-radius: 3px; background: var(--scax-color-line-weak); overflow: hidden; }
+.progress-fill { display: block; height: 100%; background: var(--scax-color-accent); transition: width 160ms; }
+.activity-line .t-meta { margin-left: auto; font-size: 12px; }
+/* 빈 값 (v2 12) */
+.empty-value { color: var(--scax-color-ink-assistive); }
+/* 숫자를 세로로 맞춰 읽는 자리 — 사번·카운트·기간처럼 자릿수가 뜻을 갖는 값 (v3 조직 화면) */
+.tabular { font-variant-numeric: tabular-nums; }
+/* 아래가 모자라면 위로 — 어느 쪽으로 열지와 그 좌표는 Popover 가 재서 인라인으로 준다 (DS-18).
+   여기 top/left 는 손으로 쓴 패널(PeoplePicker 의 이름 찾기 목록)이 쓰는 값이다. */
+/* 스크롤이 생겨도 머리는 남는다 — 달 이동처럼 스크롤한 뒤에도 필요한 것이 헤더에 있다.
+   top 이 -8px 인 것은 패널의 padding 8 만큼 위로 붙여야 경계가 맞기 때문이다. */
+.popover > .popover-head, .popover > .date-picker-head { position: sticky; z-index: 1; top: -8px; margin-top: -8px; padding-top: 8px; background: var(--scax-color-surface); }
+/* 아이콘 (v2 07) — 글자와 나란히 6, 리스트 항목에서는 9 */
+/* 바퀴 3c: `.btn svg` 는 Icon.tsx 의 flexShrink 로 옮겼다. 남은 둘은 아직 구 클래스다. */
+.popover-item svg, .metric-label svg { flex: none; }
+.group + .group { margin-top: 12px; }
+.caret.open { transform: rotate(0); }
+.task-row.openable { cursor: pointer; }
+.task-row.openable:hover { border-color: var(--scax-color-accent); }
+.timeline-head > span.today { color: var(--scax-color-ink); font-weight: 700; }
+.timeline-day.today { background: var(--scax-color-surface-selected); }
+.timeline-bar.in_progress { color: var(--scax-color-progress-ink); background: var(--scax-color-progress-soft); border-left-color: var(--scax-color-progress); }
+.timeline-bar.done { color: var(--scax-color-accent); background: var(--scax-color-accent-08); border-left-color: var(--scax-color-accent); }
+.timeline-bar.blocked { color: var(--scax-color-danger); background: var(--scax-color-danger-soft); border-left-color: var(--scax-color-danger); }
+.timeline-bar.cancelled { color: var(--scax-color-ink-assistive); border-left-color: var(--scax-color-ink-disabled); text-decoration: line-through; }
+.kanban-card.dragging { opacity: 0.5; }
+.kanban-card small.reason { color: var(--scax-color-danger); }
+.modal-close { display: grid; flex: none; width: 34px; height: 34px; place-items: center; border-radius: var(--scax-radius-sm); color: var(--scax-color-ink-assistive); font-size: 20px; }
+.modal-close:hover { color: var(--scax-color-ink); background: var(--scax-color-surface-alt); }
+.modal-backdrop { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(30, 30, 30, 0.32); }
+.modal { width: min(600px, 100%); padding: 24px; border-radius: var(--scax-radius-panel); background: var(--scax-color-surface); box-shadow: var(--scax-shadow-xl); }
+.modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.modal-head h3 { font-size: 22px; }
+.modal-body { display: grid; gap: 16px; color: var(--scax-color-ink-alt); font-size: 15px; }
+.modal-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+.meta-grid { display: grid; border: 1px solid var(--scax-color-line); border-radius: 12px; overflow: hidden; }
+.meta-grid > div { display: grid; grid-template-columns: 120px minmax(0, 1fr); align-items: center; gap: 16px; min-height: 44px; padding: 8px 16px; border-bottom: 1px solid var(--scax-color-line-weak); font-size: 14px; }
+.meta-grid > div:last-child { border-bottom: 0; }
+.meta-grid dt { color: var(--scax-color-ink-assistive); font-size: 13px; font-weight: 700; }
+.meta-grid dd { min-width: 0; }
+.meta-grid.columns { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.meta-grid.columns > div { grid-template-columns: 1fr; gap: 6px; border-bottom: 0; border-right: 1px solid var(--scax-color-line-weak); }
+.meta-grid.columns > div:last-child { border-right: 0; }
+/* 바퀴 8-C: `.drawer-section` 세 줄을 `styles/shared-blocks.css` 로 옮겼다 — WorkModals·RelationGraphPage 공용. */
+.danger-text { color: var(--scax-color-danger); }
+/* 바퀴 3b: .toast 는 새 DS 로 갔다 — 자리·껍데기는 styles/components.css 의 .scax-toast 가 갖는다. */
+.scax-toast button { margin-left: auto; color: var(--scax-color-ink-inverse); opacity: 0.8; }
+.scax-toast button:hover { opacity: 1; }
+/* 실행취소는 닫기보다 앞이고, 알림 안에서 유일하게 글자를 가진 행동이다 */
+.toast-action { margin-left: auto; font-size: 13px; font-weight: 700; text-decoration: underline; }
+.toast-action + button { margin-left: 0; }
+/* tone (v2 확장): 아이콘–글자 gap 8 · 완료는 --accent, 실패는 --danger-accent. 초록은 쓰지 않는다. */
+.toast-message { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.toast-icon { flex: none; }
+.scax-toast.error .toast-icon { color: var(--scax-color-danger); }
+/* ---------- AX drawer ---------- */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.graph-overlay.top { top: 16px; left: 16px; right: 16px; display: flex; gap: 8px; flex-wrap: wrap; pointer-events: none; }
+/* ---------- task fields, materials, calendar week mode ---------- */
+.section-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.section-row h4 { margin: 0; }
+.material-list { display: grid; gap: 0; border: 1px solid var(--scax-color-line); border-radius: 12px; overflow: hidden; }
+.material-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; min-height: 44px; padding: 6px 12px; border-bottom: 1px solid var(--scax-color-line-weak); font-size: 14px; }
+.material-list li:last-child { border-bottom: 0; }
+.material-list a { overflow: hidden; color: var(--scax-color-ink); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.material-list a:hover { color: var(--scax-color-accent); text-decoration: underline; }
+.meta-grid.columns input[type="date"] { width: 100%; height: 34px; padding: 0 8px; font-size: 13px; }
+.calendar-grid.week .calendar-cell { min-height: 280px; }
+.decision-line.reject { color: var(--scax-color-danger); background: var(--scax-color-danger-soft); }
+.decision-line.negotiate { color: var(--scax-color-progress-ink); background: var(--scax-color-progress-soft); }
+/* ---- material extraction status and AX evidence cards */
+.material-list .extraction-status { margin-left: 4px; white-space: nowrap; }
+/* 바퀴 8-C: 위 카드의 이웃 한 줄도 같은 파일로. 조상 `.ax-preview` 는 바퀴 7 이 `.scax-preview` 로 갈아서 같이 다시 겨눴다. */
+.error-banner.stale { background: var(--scax-color-progress-soft); color: var(--scax-color-progress-ink); border-color: var(--scax-color-progress); }
+/* ---- task checklist: the steps inside one piece of work */
+.checklist { display: grid; gap: 4px; margin: 8px 0 0; padding: 0; list-style: none; }
+.scax-checklist__row.done .checkbox-label { color: var(--scax-color-ink-assistive); text-decoration: line-through; }
+/* 바퀴 8-C: 관계 탐색이 그 구획에 씌우던 판 모양도 같은 파일로. */
+.graph-layout .material-list li { grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto; }
+/* ---- date field: the visible string is ours, the calendar stays the platform's */
+.date-field { display: grid; gap: 4px; }
+/* ---------- date picker (v2 14 Popover 위) ---------- */
+/* 패널 폭·띄움·그림자·radius 는 .popover 가 이미 정한다. 여기는 격자만 그린다. */
+/* ---------- 선택 목록 · 시각 (Select · MultiSelect · TimeField · TimeRangeField) ----------
+   네이티브 <select> · input[type=time] 을 쓰지 않는 대신의 트리거. 새 규격이 아니라 폼 필드 규격
+   그대로다 — h34 · r8 · 14px · --border-strong (v2 09). 목록은 Popover(v2 14) 위에 얹는다. */
+.select-trigger { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; height: 34px; padding: 0 10px 0 12px; border: 1px solid var(--scax-color-line-strong); border-radius: var(--scax-radius-sm); color: var(--scax-color-ink); background: var(--scax-color-surface); font-size: 14px; text-align: left; }
+.select-trigger:hover:not(:disabled):not(.multi) { background: var(--scax-color-surface-alt); }
+.select-trigger:disabled, .select-trigger.disabled { cursor: not-allowed; border-color: var(--scax-color-line); color: var(--scax-color-ink-disabled); background: var(--scax-color-surface-alt); }
+.select-trigger[aria-invalid="true"], .select-trigger.multi:has([aria-invalid="true"]) { border-color: var(--scax-color-danger); }
+.select-trigger > svg { flex: none; color: var(--scax-color-ink-assistive); }
+.select-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* MultiSelect — 지우기가 여는 단추 안에 들어갈 수 없어 트리거는 상자 하나에 단추 둘이다 */
+.select-trigger.multi { padding: 0 8px; }
+.select-open { flex: 1; display: flex; align-items: center; gap: 6px; min-width: 0; height: 32px; overflow: hidden; color: inherit; font-size: 14px; text-align: left; }
+.select-open:hover:not(:disabled) { background: transparent; }
+.select-clear { display: grid; flex: none; width: 20px; height: 20px; place-items: center; border-radius: 50%; color: var(--scax-color-ink-assistive); }
+.select-clear:hover { color: var(--scax-color-ink); background: var(--scax-color-surface-alt); }
+/* 팝오버 안 — 검색 · 전체 선택 · 목록 · 그룹 머리 · 바닥 한 줄 */
+.select-search { padding-bottom: 4px; }
+.select-all { display: flex; justify-content: flex-end; padding-bottom: 8px; border-bottom: 1px solid var(--scax-color-line-weak); }
+/* 목록이 길어도 여기서 한 번 자른다. 팝오버가 화면 밖으로 나가는 것은 Popover 가 따로 막는다 */
+.select-list { display: grid; align-content: start; gap: 2px; max-height: 280px; overflow-y: auto; overscroll-behavior: contain; }
+.select-list:focus { outline: none; }
+.select-group { padding: 8px 10px 4px; color: var(--scax-color-ink-assistive); font-size: 11px; font-weight: 700; }
+.select-foot { display: flex; justify-content: flex-start; margin-top: 4px; padding: 8px 10px 0; border-top: 1px solid var(--scax-color-line-weak); }
+/* 키보드가 짚고 있는 항목. 마우스 hover 와 같은 면이라 두 길이 같은 그림을 만든다 */
+.popover-item.active { background: var(--scax-color-surface-alt); }
+.popover-item[aria-checked="true"].active { background: var(--scax-color-popover-current); }
+.select-option-text { min-width: 0; overflow: hidden; }
+.select-option-text small { display: block; overflow: hidden; color: var(--scax-color-ink-assistive); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+/* 체크가 없는 줄도 글자가 같은 자리에서 시작한다 */
+.select-check { flex: none; width: 14px; }
+/* 팝오버 안의 빈 상태는 패널 폭(200–400)에 맞게 위아래만 줄인다 */
+.select-empty { padding: 24px 12px; }
+/* 시각 한 쌍 — 세 필드가 다 h34 라 날짜와 한 줄에 선다 */
+.time-range { display: flex; align-items: center; gap: 8px; }
+.time-range-dash { flex: none; color: var(--scax-color-ink-assistive); font-size: 14px; }
+.date-picker-trigger { flex: none; padding: 0 8px; font-size: 13px; }
+.date-picker-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 2px 4px; }
+.date-picker-head .t-item { font-variant-numeric: tabular-nums; }
+/* 왼쪽 화살표는 같은 글리프를 돌려 쓴다 — v2 07 은 채운 아이콘도 새 글리프도 허락하지 않는다. */
+.date-picker-prev svg { transform: rotate(180deg); }
+.date-picker-row { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.date-picker-cell { display: inline-grid; width: 30px; height: 30px; place-items: center; justify-self: center; border-radius: var(--scax-radius-sm); color: var(--scax-color-ink-alt); font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.date-picker-cell:hover:not(:disabled) { background: var(--scax-color-surface-alt); }
+.date-picker-cell.outside { color: var(--scax-color-ink-disabled); }
+/* 오늘은 테두리, 고른 날은 검정 바탕 (v2 16-3 — 현재 위치는 검정) */
+.date-picker-cell.today { box-shadow: inset 0 0 0 1px var(--scax-color-line-strong); }
+.date-picker-cell[aria-selected="true"] { color: var(--scax-color-ink-inverse); background: var(--scax-color-ink); box-shadow: none; }
+.date-picker-cell:disabled { cursor: not-allowed; color: var(--scax-color-ink-disabled); background: transparent; }
+.date-picker-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--scax-color-line-weak); }
+.checklist-cue.complete { background: var(--scax-color-progress-soft); color: var(--scax-color-progress-ink); }
+/* The description must not push the steps out of the first screen. */
+.form-stack .scax-field textarea.task-description { min-height: 84px; max-height: 132px; } /* 바퀴 12: 조상이 .field → .scax-field */
+.meeting-row.openable { cursor: pointer; }
+.meeting-row.openable:hover { background: var(--scax-color-surface-selected); }
+.meeting-row .cell-main { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.meeting-row .cell-main small { color: var(--scax-color-ink-assistive); font-size: 12px; }
+/* Legacy design-system export only. The app no longer mounts this desktop-only blocker. */
+.min-width-notice { display: none; }
+.meeting-columns.detail { grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr); gap: 16px; }
+.meeting-columns.detail.single { grid-template-columns: minmax(0, 1fr); }
+.meeting-head-btn.icon { width: 22px; padding: 0; color: var(--scax-color-ink-assistive); }
+.meeting-tabs button.on { border-bottom-color: var(--scax-color-ink); color: var(--scax-color-ink); font-weight: 700; }
+/* 회의실 — 이름·정원만 낸 정적 목록. 「가능」 판정 배지도, 못 쓰는 방 잠금도 없다 */
+.meeting-room.none { color: var(--scax-color-ink-alt); }
+.meeting-room.on { border-color: var(--scax-color-accent); background: var(--scax-color-accent-08); }
+.meeting-modal-wide .modal-body { flex: 1; min-height: 0; overflow-y: auto; }
+.meeting-modal-share .modal-body { flex: 1; min-height: 0; overflow-y: auto; gap: 12px; }
+/* 회의 화면의 단은 17 / 14 / 13 / 12 넷이다 — 모달 머리 22 와 본문 15 를 그 안으로 되돌린다 */
+.meeting-surface .modal-head h3 { font-size: 17px; }
+.meeting-surface .modal-body { color: var(--scax-color-ink); font-size: 14px; }
+.meeting-surface .modal input[type="text"]:not(.title-input), .meeting-surface .modal input[type="date"], .meeting-surface .modal select { font-size: 14px; }
+.composer-divider { flex: none; width: 1px; height: 20px; background: var(--scax-color-line); }
+.gutter-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+/* 한 줄에 세 칸 — 앞의 고정 칸들이 본문과 같은 줄에 선다. 줄 사이는 본문 한 줄 높이 기준으로 촘촘하게 */
+.gutter-row { display: flex; align-items: baseline; gap: 12px; padding: 2px 10px; border-radius: var(--scax-radius-chip); }
+.gutter-meta, .gutter-aside { flex: none; font-size: 12px; }
+.gutter-body { flex: 1; min-width: 0; color: var(--scax-color-ink); font-size: 13px; text-wrap: pretty; }
+/* 다른 자리에서 가리킨 줄 — 그 줄만 켜진다 */
+.gutter-row.active { background: var(--scax-color-accent-08); }
+/* 바퀴 3b: .drop-zone 2줄을 지웠다 — 호출부 0곳. .scax-dropzone / --over 로 갔다. */
+
+/* 바퀴 3b: 파일 목록은 새 DS 로 갔다 — .scax-file-list / .scax-file-row / __name.
+   아래 셋은 DS 가 «안 가진» 것이라 새 클래스를 겨눈다: 열려 있는 줄 · 못 붙은 줄 · 이름을 여는 단추. */
+.scax-file-row.active { background: var(--scax-color-surface-selected); }
+.file-open { display: flex; flex: 1; align-items: center; gap: 12px; min-width: 0; padding: 6px 6px 6px 0; text-align: left; }
+.status-note { font-size: 12px; color: var(--scax-color-ink-assistive); }
+.status-note.danger { color: var(--scax-color-danger); }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   반응형 (바퀴 9-B 에 구 styles.css 에서 옮겨 왔다) — desktop-first.
+   한 블록이 화면 여럿을 한꺼번에 다루므로 화면별 파일로 쪼개지 않고 여기 모았다.
+   옮기면서 **마크업이 없어진 셀렉터는 걷어냈다**(구 셸의 `.canvas`·`.rail` 따위).
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+@media (min-width: 1281px) and (max-width: 1440px) {
+  .org-screen-grid { grid-template-columns: minmax(0, 24%) minmax(0, 1fr) minmax(0, 37%); }
+}
+
+@media (max-width: 1440px) {
+  .hero { margin-inline: -80px; padding-inline: 80px; }
+}
+
+@media (max-width: 1280px) {
+  .hero { margin-inline: -48px; padding-inline: 48px; }
+  /* 월간 셀만 낮춘다 — 주간은 그대로 (v2 15) */
+  .calendar-grid:not(.week) .calendar-cell { min-height: 96px; }
+  /* 칸반은 컬럼을 좁히지 않고 가로로 흐른다 (v2 15) */
+  .kanban { grid-template-columns: repeat(4, minmax(240px, 1fr)); overflow-x: auto; }
+}
+
+@media (max-width: 720px) {
+  .hero { margin-inline: -16px; padding-inline: 16px; }
+  .breadcrumb { min-width: 0; }
+  .page-surface { margin-top: 8px; }
+  .dashboard-columns, .report-grid, .project-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .dashboard-columns > *, .report-grid > *, .project-layout > * { min-width: 0; }
+  .reminder-row { align-items: flex-start; flex-direction: column; }
+  .work-layout { gap: 16px; }
+  .toolbar-group { justify-content: space-between; width: 100%; }
+}
+
+@media (max-width: 900px) {
+  .login-shell { grid-template-columns: 1fr; }
+  .login-brand { display: none; }
+}
+
+@media (max-width: 720px) {
+  .action-task-fields { grid-template-columns: minmax(0, 1fr); }
+  .action-task-field { grid-column: 1 / -1; }
+}
+
+@media (max-width: 1279px) {
+  .min-width-notice { position: fixed; inset: 0; z-index: 100; display: grid; place-content: center; justify-items: center; gap: 12px; padding: 40px 24px; text-align: center; background: var(--scax-color-surface); }
+  .min-width-notice b { font-size: 17px; font-weight: 700; }
+  .min-width-notice p { color: var(--scax-color-ink-assistive); font-size: 14px; }
+  .min-width-notice svg { color: var(--scax-color-ink-disabled); }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   폼 element 기본값 (바퀴 9-B 에 구 styles.css 에서 옮겨 왔다)
+
+   앱의 입력칸 67자리가 아직 «맨 element» 다 — DS 의 `.scax-textfield` 껍데기를 안 쓴다.
+   그래서 이 다섯 줄이 사라지면 그 자리가 전부 브라우저 기본 모양으로 벗겨진다.
+   67자리를 한꺼번에 `.scax-textfield` 로 옮기는 것은 마크업 대수술이고 눈으로 확인할 수단이
+   없는 이 바퀴에서 할 일이 아니라고 봤다 — **규칙을 DS 층으로 옮기고, 자리 이관은 남긴다.**
+   값은 구 파일 그대로이고 토큰 이름만 `--scax-*` 로 갔다.
+   ══════════════════════════════════════════════════════════════════════════════ */
+input[type="text"],input:not([type]),input[type="date"],select,textarea{width:100%;height:38px;padding:0 var(--scax-space-300);border:1px solid var(--scax-color-line-strong);border-radius:var(--scax-radius-sm);color:var(--scax-color-ink);background:var(--scax-color-surface);font-size:var(--scax-text-body1-size)}
+input::placeholder,textarea::placeholder{color:var(--scax-color-ink-disabled)}
+input:disabled,select:disabled,textarea:disabled{cursor:not-allowed;color:var(--scax-color-ink-disabled);border-color:var(--scax-color-line);background:var(--scax-color-surface-alt)}
+input[type="date"]:disabled{color:var(--scax-color-ink-alt)}
+textarea{height:auto;min-height:96px;padding:var(--scax-space-300);resize:vertical}
+/* 잘못된 값 — 보더만 갈아입고 자리는 그대로다 (v2 09) */
+input[aria-invalid="true"],select[aria-invalid="true"],textarea[aria-invalid="true"]{border-color:var(--scax-color-danger)}
+
+/* ---------- Textarea (DS-gaps G-45) — 폼용 여러 줄 입력 ----------
+   `.scax-textfield` 는 한 줄이고 `.scax-composer` 는 채팅 어휘(보내기·글자 수)라 폼 필드가 아니다.
+   구 `styles.css` 의 `textarea` 기본값을 그대로 옮겨 이름을 붙였다 — 값은 하나도 안 바꿨다.
+   위의 «폼 element 기본값» 구획이 아직 맨 `<textarea>` 를 그리고 있고, 자리를 이 클래스로 옮길
+   때마다 그쪽 의존이 줄어든다. */
+.scax-textarea{width:100%;min-height:96px;padding:var(--scax-space-300);border:1px solid var(--scax-color-line-strong);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);color:var(--scax-color-ink);font-size:var(--scax-text-body1-size);resize:vertical}
+.scax-textarea:focus-visible{border-color:var(--scax-color-accent);box-shadow:var(--scax-focus-ring)}
+.scax-textarea:disabled{cursor:not-allowed;color:var(--scax-color-ink-disabled);border-color:var(--scax-color-line);background:var(--scax-color-surface-alt)}
+.scax-textarea::placeholder{color:var(--scax-color-ink-disabled)}
+

@@ -1,0 +1,45 @@
+/* Type ramp transcribed from the source file. The .fig defines no shared Figma
+   TEXT styles (0 in METADATA.md), so these tokens/classes are lifted from the
+   literal font-size / line-height / letter-spacing values used on real layers. */
+:root{
+  --font-ui:"Pretendard JP",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; /* @kind font */
+  --font-display:"Pretendard",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; /* @kind font */
+  --fw-regular:400; /* @kind font */
+  --fw-medium:500; /* @kind font */
+  --fw-semibold:600; /* @kind font */
+  --fw-bold:700; /* @kind font */
+  --t-caption2-size:11px; /* @kind font */
+  --t-caption2-lh:1.273; /* @kind font */
+  --t-caption2-ls:0.031em; /* @kind font */
+  --t-caption1-size:12px; /* @kind font */
+  --t-caption1-lh:1.334; /* @kind font */
+  --t-caption1-ls:0.025em; /* @kind font */
+  --t-label2-size:13px; /* @kind font */
+  --t-label2-lh:1.385; /* @kind font */
+  --t-label2-ls:0.019em; /* @kind font */
+  --t-label1-size:14px; /* @kind font */
+  --t-label1-lh:1.467; /* @kind font */
+  --t-label1-ls:0.010em; /* @kind font */
+  --t-body1-size:15px; /* @kind font */
+  --t-body1-lh:1.5; /* @kind font */
+  --t-body1-ls:0.006em; /* @kind font */
+  --t-headline-size:17px; /* @kind font */
+  --t-headline-lh:1.412; /* @kind font */
+  --t-headline-ls:0em; /* @kind font */
+  --t-title-size:18px; /* @kind font */
+  --t-title-lh:1.445; /* @kind font */
+  --t-title-ls:0em; /* @kind font */
+  --t-display-size:150px; /* @kind font */
+  --t-display-lh:1.5; /* @kind font */
+  --t-display-ls:-0.032em; /* @kind font */
+}
+.ax-caption2{font-family:var(--font-ui);font-size:var(--t-caption2-size);line-height:var(--t-caption2-lh);letter-spacing:var(--t-caption2-ls);font-weight:var(--fw-medium)}
+.ax-caption1{font-family:var(--font-ui);font-size:var(--t-caption1-size);line-height:var(--t-caption1-lh);letter-spacing:var(--t-caption1-ls);font-weight:var(--fw-medium)}
+.ax-label2{font-family:var(--font-ui);font-size:var(--t-label2-size);line-height:var(--t-label2-lh);letter-spacing:var(--t-label2-ls);font-weight:var(--fw-regular)}
+.ax-label1{font-family:var(--font-ui);font-size:var(--t-label1-size);line-height:var(--t-label1-lh);letter-spacing:var(--t-label1-ls);font-weight:var(--fw-regular)}
+.ax-label1-strong{font-family:var(--font-ui);font-size:var(--t-label1-size);line-height:var(--t-label1-lh);letter-spacing:var(--t-label1-ls);font-weight:var(--fw-semibold)}
+.ax-body1{font-family:var(--font-ui);font-size:var(--t-body1-size);line-height:var(--t-body1-lh);letter-spacing:var(--t-body1-ls);font-weight:var(--fw-medium)}
+.ax-headline{font-family:var(--font-ui);font-size:var(--t-headline-size);line-height:var(--t-headline-lh);letter-spacing:var(--t-headline-ls);font-weight:var(--fw-medium)}
+.ax-headline-strong{font-family:var(--font-ui);font-size:var(--t-headline-size);line-height:var(--t-headline-lh);letter-spacing:var(--t-headline-ls);font-weight:var(--fw-semibold)}
+.ax-title{font-family:var(--font-ui);font-size:var(--t-title-size);line-height:var(--t-title-lh);letter-spacing:var(--t-title-ls);font-weight:var(--fw-semibold)}
+.ax-display{font-family:var(--font-display);font-size:var(--t-display-size);line-height:var(--t-display-lh);letter-spacing:var(--t-display-ls);font-weight:var(--fw-bold)}

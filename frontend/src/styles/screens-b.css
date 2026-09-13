@@ -1,0 +1,824 @@
+/* 바퀴 8-B — 조직 · 관계 탐색 · 캘린더 세 화면의 새 DS 규칙
+ *
+ * 셋 다 시안이 없다. 그래서 **사다리 ③** 이다 — 레이아웃(칸 나눔 · 높이 · 순서)은 구 DS 시절 그대로 두고,
+ * 색 · 타입 · 간격 · 반경 · 그림자만 `--scax-*` 로 갈아끼운다. 새로 디자인한 것은 하나도 없다.
+ *
+ * 이 파일이 하는 일은 둘뿐이다.
+ *   1. 구 `styles.css` 의 화면 전용 클래스(`.org-*` · `.graph-*` · `.calendar-*`)를 **다시 겨눈다.**
+ *      구 파일은 P-1 로 한 줄도 못 건드리므로, 같은 선택자를 여기서 다시 쓰고 값만 새 토큰으로 적는다.
+ *      `styles/index.css` 가 이 파일을 **맨 마지막에** 싣기 때문에 같은 특정도에서 이쪽이 이긴다.
+ *   2. 화면 세 장의 마크업이 인라인 `style` 로 들고 있던 구 토큰(`--text-tertiary` 따위)을
+ *      받아 줄 클래스를 새로 둔다. DOM 구조 · 요소 · aria 는 그대로고, 값의 주인만 여기로 옮겼다.
+ *
+ * 구 → 새 토큰 대응(이 파일 전체가 같은 표를 쓴다):
+ *   --text-primary → --scax-color-ink          --border-strong  → --scax-color-line
+ *   --text-secondary → --scax-color-ink-neutral  --border-default → --scax-color-line-weak
+ *   --text-tertiary → --scax-color-ink-assistive --border-subtle  → --scax-color-line-weak
+ *   --text-disabled → --scax-color-ink-disabled  --surface        → --scax-color-surface
+ *   --action/--accent → --scax-color-accent      --surface-sunken → --scax-color-fill-weak
+ *   --selected-bg → --scax-color-accent-08       --surface-selected-row → --scax-color-fill-weak
+ *   --radius-control → --scax-radius-sm(8)       --radius-chip    → --scax-radius-xs(6)
+ *   --radius-card → --scax-radius-sm(8)          --radius-panel(16) → --scax-radius-xl(14)
+ *   --shadow-md → --scax-shadow-panel
+ *
+ * 바퀴 9 에서 구 `styles.css` 가 통째로 사라지면 이 파일이 세 화면의 유일한 정본이 된다.
+ * 그때까지는 **겹쳐 쓰는 과도기 파일**이다.
+ *
+ * ⚠ `--graph-*` 14종은 이 파일이 건드리지 않는다. `GraphCanvas.tsx` 가 `getComputedStyle` 로
+ *   런타임에 읽어 가는 값이고(노드 8색 · dim · fallback · 선 3종 · 라벨), 새 DS 에는 대응하는
+ *   범주형 팔레트가 아예 없다. 지우거나 이름을 바꾸면 캔버스가 색을 통째로 잃는다 (DS-gaps G-06).
+ *   캔버스 **밖**(툴바 · 오버레이 · 범례 · 상세)만 여기서 새 DS 로 간다.
+ */
+
+/* ══════════════════════════════════════════════════════════════════════════
+   공통 — 화면 머리
+   바퀴 2 가 셸 머리(.scax-page-header > h1)를 세운 뒤로 세 화면의 페이지 h1 은
+   셸 제목과 **글자까지 똑같은 두 번째 줄**이었다(「조직」·「캘린더」·「관계 탐색」).
+   바퀴 5a 가 업무 화면에서 한 것과 같이(J-2) 그 h1 만 걷어내고, 설명 문단과
+   오른쪽 배지는 이 얇은 줄이 받는다. 새 DS 타입 램프는 18px(title)에서 끝나서
+   구 28px h1 을 받아 줄 자리도 없다.
+   ══════════════════════════════════════════════════════════════════════════ */
+.screens-b-lead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--scax-space-400);
+  margin-bottom: var(--scax-space-500);
+}
+.screens-b-lead__text {
+  min-width: 0;
+  font-size: var(--scax-text-label2-size);
+  line-height: var(--scax-text-label2-lh);
+  letter-spacing: var(--scax-text-label2-ls);
+  color: var(--scax-color-ink-assistive);
+}
+.screens-b-lead__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--scax-space-200);
+  /* 설명 문단이 없는 화면(조직)에서도 오른쪽 끝에 선다 */
+  margin-left: auto;
+}
+/* 설명 문단이 없는 화면에서는 줄이 통째로 비어 보이지 않게 자리만 준다 */
+.screens-b-lead:empty {
+  display: none;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ① 조직
+   3분할(조직 tree · 구성원 목록 · 여섯 축 상세) + 아래 변경 기록. 칸 나눔은 구 것 그대로다.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* 구 styles.css:274·281~283 을 다시 겨눈다. 트랙 폭·높이는 손대지 않는다 —
+   핸드오프가 정한 392/1fr/600 이고, 이 바퀴는 시안이 없어 다시 정할 근거가 없다. */
+.org-screen-grid {
+  gap: var(--scax-space-600);
+}
+.org-panel {
+  border: 1px solid var(--scax-color-line);
+  border-radius: var(--scax-radius-xl);
+  background: var(--scax-color-surface);
+}
+.org-row:not(.selected):hover,
+.org-member-row:not(.selected):hover {
+  background: var(--scax-color-fill-weak);
+}
+
+/* 패널 머리 — 구 마크업이 인라인 style 로 들고 있던 값들 */
+.org-panel__head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--scax-space-300);
+  flex: 0 0 auto;
+  padding: var(--scax-space-400) var(--scax-space-600);
+  border-bottom: 1px solid var(--scax-color-line-weak);
+}
+.org-panel__head--row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--scax-space-200);
+}
+.org-panel__head-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--scax-space-200);
+}
+.org-panel__title {
+  font-size: var(--scax-text-headline-size);
+  line-height: var(--scax-text-headline-lh);
+  letter-spacing: var(--scax-text-headline-ls);
+  font-weight: var(--scax-fw-semibold);
+  color: var(--scax-color-ink);
+}
+.org-panel__meta {
+  flex: none;
+  font-size: var(--scax-text-caption1-size);
+  line-height: var(--scax-text-caption1-lh);
+  letter-spacing: var(--scax-text-caption1-ls);
+  color: var(--scax-color-ink-assistive);
+  font-variant-numeric: tabular-nums;
+}
+.org-panel__pad {
+  padding: var(--scax-space-600);
+}
+
+/* 패널 ① 조직 tree */
+.org-tree-scroll {
+  padding: var(--scax-space-200) var(--scax-space-400) var(--scax-space-400);
+}
+.org-row {
+  display: flex;
+  align-items: center;
+  gap: var(--scax-space-150);
+  padding: var(--scax-space-200) var(--scax-space-300);
+  border-radius: var(--scax-radius-sm);
+}
+.org-row.selected {
+  background: var(--scax-color-accent-08);
+}
+.org-row__caret {
+  display: flex;
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--scax-color-ink-assistive);
+  cursor: pointer;
+}
+.org-row__caret:hover {
+  color: var(--scax-color-ink-neutral);
+}
+.org-row__caret-blank {
+  width: 12px;
+  flex: none;
+}
+.org-row__main {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.org-row__line {
+  display: flex;
+  align-items: center;
+  gap: var(--scax-space-200);
+}
+.org-row__name {
+  font-size: var(--scax-text-label1-size);
+  line-height: var(--scax-text-label1-lh);
+  letter-spacing: var(--scax-text-label1-ls);
+  font-weight: var(--scax-fw-medium);
+  color: var(--scax-color-ink);
+}
+.org-row.selected .org-row__name {
+  color: var(--scax-color-accent);
+  font-weight: var(--scax-fw-semibold);
+}
+.org-row__kind {
+  font-size: var(--scax-text-caption2-size);
+  line-height: var(--scax-text-caption2-lh);
+  letter-spacing: var(--scax-text-caption2-ls);
+  color: var(--scax-color-ink-assistive);
+}
+.org-row__count {
+  display: block;
+  font-size: var(--scax-text-caption1-size);
+  line-height: var(--scax-text-caption1-lh);
+  letter-spacing: var(--scax-text-caption1-ls);
+  color: var(--scax-color-ink-assistive);
+  font-variant-numeric: tabular-nums;
+}
+.org-tree-child {
+  padding-left: var(--scax-space-400);
+}
+
+/* 패널 ② 구성원 목록 — 행 높이 68 은 핸드오프 값이라 그대로 둔다 */
+.org-member-row {
+  display: flex;
+  align-items: center;
+  gap: var(--scax-space-300);
+  width: 100%;
+  height: 68px;
+  padding: 0 var(--scax-space-500);
+  border: 0;
+  border-bottom: 1px solid var(--scax-color-line-weak);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.org-member-row.selected {
+  background: var(--scax-color-fill-weak);
+}
+.org-member-row__key {
+  width: 40px;
+  flex: none;
+  font-size: var(--scax-text-caption1-size);
+  line-height: var(--scax-text-caption1-lh);
+  letter-spacing: var(--scax-text-caption1-ls);
+  color: var(--scax-color-ink-assistive);
+  font-variant-numeric: tabular-nums;
+}
+.org-member-row__who {
+  flex: 1;
+  min-width: 0;
+}
+.org-member-row__name {
+  display: block;
+  font-size: var(--scax-text-label1-size);
+  line-height: var(--scax-text-label1-lh);
+  letter-spacing: var(--scax-text-label1-ls);
+  font-weight: var(--scax-fw-medium);
+  color: var(--scax-color-ink);
+}
+.org-member-row__where {
+  display: block;
+  font-size: var(--scax-text-caption1-size);
+  line-height: var(--scax-text-caption1-lh);
+  letter-spacing: var(--scax-text-caption1-ls);
+  color: var(--scax-color-ink-assistive);
+}
+.org-member-row__grade {
+  flex: none;
+  font-size: var(--scax-text-label2-size);
+  color: var(--scax-color-ink-neutral);
+}
+
+/* 패널 ③ 여섯 축 상세 */
+.org-detail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--scax-space-300);
+  flex: 0 0 auto;
+  padding: var(--scax-space-300) var(--scax-space-600);
+  border-bottom: 1px solid var(--scax-color-line-weak);
+}
+.org-detail-head__who {
+  flex: 1;
+  min-width: 0;
+}
+.org-detail-head__line {
+  display: flex;
+  align-items: center;
+  gap: var(--scax-space-200);
+}
+.org-detail-head__name {
+  font-size: var(--scax-text-title-size);
+  line-height: var(--scax-text-title-lh);
+  letter-spacing: var(--scax-text-title-ls);
+  font-weight: var(--scax-fw-semibold);
+  color: var(--scax-color-ink);
+}
+.org-detail-head__key {
+  font-size: var(--scax-text-caption1-size);
+  color: var(--scax-color-ink-assistive);
+  font-variant-numeric: tabular-nums;
+}
+.org-detail-head__badges {
+  display: flex;
+  align-items: center;
+  gap: var(--scax-space-100);
+  margin-top: var(--scax-space-100);
+}
+.org-detail-head__caption {
+  font-size: var(--scax-text-caption2-size);
+  color: var(--scax-color-ink-assistive);
+}
+.org-detail-scroll {
+  padding: var(--scax-space-200) var(--scax-space-600) var(--scax-space-400);
+}
+
+.org-axis-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--scax-space-300);
+  padding: var(--scax-space-200) 0;
+  border-bottom: 1px solid var(--scax-color-line-weak);
+}
+.org-axis-row__label {
+  width: 36px;
+  flex: none;
+  font-size: var(--scax-text-label2-size);
+  line-height: var(--scax-text-label2-lh);
+  letter-spacing: var(--scax-text-label2-ls);
+  font-weight: var(--scax-fw-semibold);
+  color: var(--scax-color-ink-assistive);
+}
+.org-axis-row__body {
+  flex: 1;
+  min-width: 0;
+}
+.org-axis-row__value {
+  font-size: var(--scax-text-label1-size);
+  line-height: var(--scax-text-label1-lh);
+  letter-spacing: var(--scax-text-label1-ls);
+  color: var(--scax-color-ink);
+}
+.org-axis-row__caption {
+  font-size: var(--scax-text-caption1-size);
+  line-height: var(--scax-text-caption1-lh);
+  letter-spacing: var(--scax-text-caption1-ls);
+  color: var(--scax-color-ink-assistive);
+}
+
+/* 권한 축만 면을 깔고 선다 — 여섯 축 중 실제 접근을 바꾸는 유일한 축이다 */
+.org-access-card {
+  margin-top: var(--scax-space-300);
+  padding: var(--scax-space-400);
+  border-radius: var(--scax-radius-sm);
+  background: var(--scax-color-accent-08);
+}
+.org-access-card__row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--scax-space-300);
+}
+.org-access-card__label {
+  width: 36px;
+  flex: none;
+  font-size: var(--scax-text-label2-size);
+  font-weight: var(--scax-fw-semibold);
+  color: var(--scax-color-ink);
+}
+.org-access-card__body {
+  flex: 1;
+  min-width: 0;
+}
+.org-access-card__value {
+  font-size: var(--scax-text-label1-size);
+  line-height: var(--scax-text-label1-lh);
+  letter-spacing: var(--scax-text-label1-ls);
+  font-weight: var(--scax-fw-medium);
+  color: var(--scax-color-ink);
+}
+.org-access-card__caption {
+  font-size: var(--scax-text-caption1-size);
+  color: var(--scax-color-ink-neutral);
+}
+.org-revoked {
+  margin-top: var(--scax-space-200);
+  padding-top: var(--scax-space-200);
+  border-top: 1px solid var(--scax-color-accent-20);
+}
+.org-revoked__title {
+  margin-bottom: var(--scax-space-100);
+  font-size: var(--scax-text-caption2-size);
+  font-weight: var(--scax-fw-semibold);
+  color: var(--scax-color-ink-assistive);
+}
+.org-revoked__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--scax-space-100);
+  font-size: var(--scax-text-caption1-size);
+  color: var(--scax-color-ink-neutral);
+}
+.org-revoked__item {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--scax-space-200);
+}
+.org-revoked__when {
+  flex: none;
+  color: var(--scax-color-ink-assistive);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 축 이력 팝오버 — Popover 안쪽 줄 */
+.org-history-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--scax-space-050);
+  padding: var(--scax-space-200) var(--scax-space-250);
+}
+.org-history-row + .org-history-row {
+  border-top: 1px solid var(--scax-color-line-weak);
+}
+.org-history-row__top,
+.org-history-row__bottom {
+  display: flex;
+  align-items: baseline;
+  gap: var(--scax-space-200);
+}
+.org-history-row__value {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--scax-text-label1-size);
+  font-weight: var(--scax-fw-medium);
+  color: var(--scax-color-ink);
+}
+.org-history-row__when {
+  flex: none;
+  font-size: var(--scax-text-caption1-size);
+  color: var(--scax-color-ink-assistive);
+  font-variant-numeric: tabular-nums;
+}
+.org-history-row__bottom {
+  font-size: var(--scax-text-caption1-size);
+  color: var(--scax-color-ink-neutral);
+}
+.org-history-row__reason {
+  flex: 1;
+  min-width: 0;
+}
+.org-history-row__actor {
+  flex: none;
+  color: var(--scax-color-ink-assistive);
+}
+.org-history-head {
+  display: flex;
+  align-items: center;
+  padding: var(--scax-space-050) var(--scax-space-250) var(--scax-space-200);
+  font-size: var(--scax-text-label1-size);
+  font-weight: var(--scax-fw-semibold);
+  color: var(--scax-color-ink);
+}
+
+/* 변경 기록 (관리자만) — 표는 `<table>` 그대로다. 값을 읽는 표라 div-grid 로 바꾸지 않는다. */
+.org-change-log {
+  margin-top: var(--scax-space-600);
+  overflow: hidden;
+  border: 1px solid var(--scax-color-line);
+  border-radius: var(--scax-radius-xl);
+  background: var(--scax-color-surface);
+}
+.org-change-log__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--scax-space-200);
+  height: 44px;
+  padding: 0 var(--scax-space-600);
+  border-bottom: 1px solid var(--scax-color-line-weak);
+}
+.org-change-log__more {
+  display: flex;
+  justify-content: center;
+  padding: var(--scax-space-300);
+  border-top: 1px solid var(--scax-color-line-weak);
+}
+/* 구 `.plain-table` 은 다섯 화면이 같이 쓴다 — 전역으로 다시 겨누면 남의 화면까지 움직인다.
+   이 표 안에서만 새 토큰으로 말한다. */
+.org-change-log .plain-table th {
+  border-bottom: 1px solid var(--scax-color-line-weak);
+  color: var(--scax-color-ink-assistive);
+  font-size: var(--scax-text-caption1-size);
+  font-weight: var(--scax-fw-semibold);
+}
+.org-change-log .plain-table td {
+  border-bottom: 1px solid var(--scax-color-line-weak);
+  color: var(--scax-color-ink-neutral);
+  font-size: var(--scax-text-label2-size);
+}
+.org-change-log .plain-table tr:last-child td {
+  border-bottom: 0;
+}
+.org-change-log .plain-table .title-cell {
+  color: var(--scax-color-ink);
+}
+
+/* 권한 Drawer (바퀴 3b 가 `.scax-drawer` 골격으로 옮겨 둔 것) — 그 안의 줄들 */
+.org-drawer__note {
+  font-size: var(--scax-text-label2-size);
+  line-height: var(--scax-text-label2-lh);
+  letter-spacing: var(--scax-text-label2-ls);
+  color: var(--scax-color-ink-assistive);
+}
+.org-drawer__section-title {
+  margin-bottom: var(--scax-space-200);
+  font-size: var(--scax-text-label2-size);
+  font-weight: var(--scax-fw-semibold);
+  color: var(--scax-color-ink-assistive);
+}
+.org-grant-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--scax-space-200);
+}
+.org-grant-row {
+  display: flex;
+  align-items: center;
+  gap: var(--scax-space-300);
+  padding: var(--scax-space-200) var(--scax-space-300);
+  border: 1px solid var(--scax-color-line-weak);
+  border-radius: var(--scax-radius-sm);
+}
+.org-grant-row__body {
+  flex: 1;
+  min-width: 0;
+}
+.org-grant-row__title {
+  display: block;
+  font-size: var(--scax-text-label1-size);
+  line-height: var(--scax-text-label1-lh);
+  letter-spacing: var(--scax-text-label1-ls);
+  font-weight: var(--scax-fw-medium);
+  color: var(--scax-color-ink);
+}
+.org-grant-row__origin {
+  display: block;
+  font-size: var(--scax-text-caption1-size);
+  line-height: var(--scax-text-caption1-lh);
+  letter-spacing: var(--scax-text-caption1-ls);
+  color: var(--scax-color-ink-assistive);
+}
+.org-drawer__form {
+  margin-top: var(--scax-space-600);
+}
+.org-drawer__pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--scax-space-400);
+}
+
+/* 사람 머리글자 원 — 새 DS 에 「글자 아바타」가 없다(있는 것은 사진을 넣는 .scax-*__avatar 뿐).
+   구 `.avatar` 를 지우지 않고 이 세 패널 안에서만 새 토큰으로 다시 칠한다 (DS-gaps 후보). */
+.org-panel .avatar,
+.org-change-log .avatar {
+  color: var(--scax-color-ink-assistive);
+  background: var(--scax-color-fill-weak);
+  font-weight: var(--scax-fw-semibold);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ② 관계 탐색
+   캔버스 «밖»만 간다. `--graph-*` 색 토큰은 손대지 않는다 (G-06).
+   ══════════════════════════════════════════════════════════════════════════ */
+.graph-toolbar {
+  gap: var(--scax-space-200);
+}
+/* 검색칸 — 구 `.graph-search`(높이 30 · 자체 테두리)를 마크업에서 떼고 새 DS 텍스트 필드
+   골격에 얹었다. 툴바 안에서 늘어나는 몫만 여기서 준다. 구 규칙은 이제 호출부가 0곳이다. */
+.graph-search-field {
+  flex: 1 1 320px;
+  min-width: 220px;
+}
+.graph-card {
+  border: 1px solid var(--scax-color-line);
+  border-radius: var(--scax-radius-xl);
+  background: var(--scax-color-surface);
+}
+/* 배경 점무늬는 선 색을 따라간다 */
+.graph-card::before {
+  background-image: radial-gradient(var(--scax-color-line) 0.8px, transparent 0.8px);
+}
+.graph-pill {
+  min-height: 28px;
+  padding: 0 var(--scax-space-200);
+  border: 1px solid var(--scax-color-line-weak);
+  border-radius: var(--scax-radius-xs);
+  background: var(--scax-color-surface);
+  color: var(--scax-color-ink-neutral);
+  font-size: var(--scax-text-caption2-size);
+  line-height: var(--scax-text-caption2-lh);
+  letter-spacing: var(--scax-text-caption2-ls);
+  font-weight: var(--scax-fw-medium);
+}
+/* 종류 고르기 칩 — 부품은 `Chip`(.scax-chip)으로 갔다. 색점 하나와 오버레이 높이만 여기서 준다.
+   ⚠ 그 색점은 `--graph-node-*` 를 인라인으로 받는다. 새 DS 에 범주형 팔레트가 없어서다 (G-06). */
+.graph-overlay.filters .scax-chip {
+  gap: var(--scax-space-150);
+  height: 28px;
+  padding: 0 var(--scax-space-250);
+  font-size: var(--scax-text-caption2-size);
+}
+.graph-kind-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: var(--scax-space-150);
+  border-radius: var(--scax-radius-pill);
+  vertical-align: middle;
+}
+.graph-overlay.legend {
+  gap: var(--scax-space-300);
+  padding: var(--scax-space-200) var(--scax-space-250);
+  border: 1px solid var(--scax-color-line-weak);
+  border-radius: var(--scax-radius-xs);
+  background: var(--scax-color-surface);
+  color: var(--scax-color-ink-assistive);
+  font-size: var(--scax-text-caption2-size);
+}
+.graph-overlay.legend i {
+  border-radius: var(--scax-radius-pill);
+}
+.graph-overlay.hint {
+  padding: var(--scax-space-150) var(--scax-space-200);
+  border: 1px solid var(--scax-color-line-weak);
+  border-radius: var(--scax-radius-xs);
+  background: var(--scax-color-surface);
+  color: var(--scax-color-ink-assistive);
+  font-size: var(--scax-text-caption2-size);
+}
+.graph-overlay.zoom {
+  border: 1px solid var(--scax-color-line);
+  border-radius: var(--scax-radius-sm);
+  background: var(--scax-color-surface);
+}
+/* 확대·축소 네 단추는 `.scax-icon-button` 으로 갔다. 세로로 붙어 서는 줄만 여기서 준다. */
+.graph-overlay.zoom .scax-icon-button {
+  width: 34px;
+  height: 32px;
+  border-radius: 0;
+  /* 구 `.graph-overlay.zoom button` 이 같은 특정도로 색을 쥐고 있어 여기서 되찾는다 */
+  color: var(--scax-color-ink-neutral);
+}
+.graph-overlay.zoom .scax-icon-button:hover:not(:disabled) {
+  background: var(--scax-color-fill-weak);
+  color: var(--scax-color-ink);
+}
+.graph-overlay.zoom .scax-icon-button + .scax-icon-button {
+  border-top: 1px solid var(--scax-color-line-weak);
+}
+.graph-overlay.zoom .scax-icon-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.graph-detail {
+  padding: var(--scax-space-400);
+  gap: var(--scax-space-300);
+  border: 1px solid var(--scax-color-line);
+  border-radius: var(--scax-radius-xl);
+  background: var(--scax-color-surface);
+  box-shadow: var(--scax-shadow-panel);
+}
+.graph-detail-head__name {
+  font-size: var(--scax-text-label1-size);
+  line-height: var(--scax-text-label1-lh);
+  letter-spacing: var(--scax-text-label1-ls);
+  font-weight: var(--scax-fw-semibold);
+  color: var(--scax-color-ink);
+}
+.graph-detail-close {
+  position: absolute;
+  right: var(--scax-space-200);
+  top: var(--scax-space-200);
+}
+.graph-relations {
+  gap: var(--scax-space-150);
+}
+.graph-relations li {
+  padding-bottom: var(--scax-space-150);
+  border-bottom: 1px solid var(--scax-color-line-weak);
+}
+.graph-detail-actions {
+  gap: var(--scax-space-200);
+}
+.graph-canvas {
+  border: 1px solid var(--scax-color-line-weak);
+  border-radius: var(--scax-radius-xl);
+  background: var(--scax-color-surface);
+}
+.graph-layout {
+  gap: var(--scax-space-400);
+  margin-top: var(--scax-space-400);
+}
+.graph-layout .drawer-section {
+  padding: var(--scax-space-300);
+  border: 1px solid var(--scax-color-line-weak);
+  border-radius: var(--scax-radius-xl);
+  background: var(--scax-color-surface);
+}
+
+/* 목록 두 칸·상세·캔버스 대체 문단이 쓰는 작은 글자 — 구 `.t-meta` 자리.
+   `GraphCanvas` 는 채팅 카드 안에도 서므로(`.graph-page` 밖) 화면으로 가두지 않는다. */
+.graph-meta {
+  font-size: var(--scax-text-caption1-size);
+  line-height: var(--scax-text-caption1-lh);
+  letter-spacing: var(--scax-text-caption1-ls);
+  color: var(--scax-color-ink-assistive);
+}
+.graph-page h4 {
+  font-size: var(--scax-text-label1-size);
+  line-height: var(--scax-text-label1-lh);
+  letter-spacing: var(--scax-text-label1-ls);
+  font-weight: var(--scax-fw-semibold);
+  color: var(--scax-color-ink);
+}
+.graph-page .renderer-badge {
+  font-size: var(--scax-text-caption2-size);
+  color: var(--scax-color-ink-assistive);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ③ 캘린더
+   본문은 우리 `TaskCalendar`(`WorkViews.tsx`)다 — 공용 부품이라 마크업은 P-3 으로 못 건드린다.
+   그래서 **클래스는 그대로 두고 값만** 새 토큰으로 다시 겨눈다. 칸 크기 · 행 높이 · 격자는
+   구 것 그대로다(시안이 없어 다시 정할 근거가 없다).
+   **바퀴 8-C: 가둔 것을 풀었다.** 8-B 는 같은 `.calendar-*` 를 `CalendarRail`(업무 화면 우측 레일)과
+   `DatePicker` 가 함께 써서 「전역으로 겨누면 남의 화면이 조용히 따라 움직인다」며 `.calendar-screen`
+   안에 가뒀었다. 그 대가가 «같은 부품이 두 자리에서 다르게 보이는» 것이었다 — 캘린더 화면만 새 DS 이고
+   업무 화면 우측 레일은 구 색. 병렬 경계가 없어졌으므로 접두사를 떼어 **셋이 같은 모양**이 되게 했다.
+   레일은 `TaskCalendar` 를 그대로 부른다(`CalendarRail.tsx:89`) — 같은 마크업이니 같은 규칙이 맞다.
+   특정도는 구 `styles.css` 의 같은 셀렉터와 같아지고 **싣는 차례로 이긴다**(구 파일이 먼저 실린다).
+   ══════════════════════════════════════════════════════════════════════════ */
+.calendar-toolbar {
+  gap: var(--scax-space-300);
+  margin: var(--scax-space-300) 0;
+}
+.calendar-weekdays span {
+  padding: var(--scax-space-200) 0;
+  color: var(--scax-color-ink-assistive);
+  font-size: var(--scax-text-caption1-size);
+  line-height: var(--scax-text-caption1-lh);
+  letter-spacing: var(--scax-text-caption1-ls);
+  font-weight: var(--scax-fw-semibold);
+}
+.calendar-grid {
+  border: 1px solid var(--scax-color-line);
+  border-radius: var(--scax-radius-xl);
+}
+.calendar-cell {
+  gap: var(--scax-space-100);
+  padding: var(--scax-space-200);
+  border-right: 1px solid var(--scax-color-line-weak);
+  border-bottom: 1px solid var(--scax-color-line-weak);
+  background: var(--scax-color-surface);
+}
+.calendar-cell.outside {
+  background: var(--scax-color-fill-weak);
+}
+.calendar-cell.outside .calendar-day {
+  color: var(--scax-color-ink-disabled);
+}
+.calendar-cell.today {
+  background: var(--scax-color-accent-08);
+}
+.calendar-day {
+  font-size: var(--scax-text-label2-size);
+  line-height: 1;
+  font-weight: var(--scax-fw-medium);
+  color: var(--scax-color-ink);
+}
+.calendar-cell.today .calendar-day {
+  color: var(--scax-color-ink-inverse);
+  background: var(--scax-color-surface-nav-active);
+}
+/* 업무 막대 — 상태 넷의 색은 새 DS 의 status 토큰으로 간다.
+   ⚠ 새 DS 는 status 에 «진한 색 한 칸»만 준다(danger 만 soft 가 따로 있다). 그래서 바탕은
+     중립 면(fill-weak) · accent-08 · danger-soft 셋으로만 말하고, 상태의 뜻은 왼쪽 3px 선과
+     글자색이 진다. 없는 tint 를 지어내지 않았다 (DS-gaps 후보). */
+.calendar-chip {
+  padding: 0 var(--scax-space-150) 0 var(--scax-space-200);
+  border-left: 3px solid var(--scax-color-ink-assistive);
+  border-radius: var(--scax-radius-xs);
+  color: var(--scax-color-ink-neutral);
+  background: var(--scax-color-fill-weak);
+  font-size: var(--scax-text-caption2-size);
+  line-height: 20px;
+  font-weight: var(--scax-fw-semibold);
+}
+.calendar-chip.in_progress {
+  color: var(--scax-color-info);
+  background: var(--scax-color-fill-weak);
+  border-left-color: var(--scax-color-info);
+}
+.calendar-chip.done {
+  color: var(--scax-color-accent);
+  background: var(--scax-color-accent-08);
+  border-left-color: var(--scax-color-accent);
+}
+.calendar-chip.blocked {
+  color: var(--scax-color-danger);
+  background: var(--scax-color-danger-soft);
+  border-left-color: var(--scax-color-danger);
+}
+.calendar-chip.cancelled {
+  color: var(--scax-color-ink-disabled);
+  border-left-color: var(--scax-color-ink-disabled);
+}
+.calendar-more {
+  color: var(--scax-color-ink-assistive);
+  font-size: var(--scax-text-caption2-size);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   바퀴 9-B — 구 `styles.css` 에서 옮겨 온 조직 · 관계 탐색 · 캘린더 규칙 19개.
+   **마크업은 한 줄도 안 바꿨다.** 값은 구 파일에 있던 그대로이고 토큰 이름만 `--scax-*` 로 갔다.
+   구 파일이 앱에서 «맨 먼저» 실렸던 것과 달리 이 파일은 늦게 실린다 — 같은 셀렉터가 양쪽에 있던
+   규칙 117개는 어차피 새 파일이 이기고 있었으므로 옮기기 전에 걷어냈다.
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+.org-panel-scroll { flex: 1; min-height: 0; overflow: auto; }
+.scax-toast.success .toast-icon { color: var(--scax-color-accent); }
+.ax-resource-kind { padding: 1px 6px; border-radius: var(--scax-radius-chip); background: var(--scax-color-surface-alt); color: var(--scax-color-ink-assistive); font-size: 11px; font-weight: 700; }
+/* 관계 탐색: the picture fills the page and everything else floats over it, the way a map reads. */
+.graph-page { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: 12px; min-height: calc(100vh - 120px); }
+.graph-toolbar .spacer { flex: 1; }
+.renderer-badge { padding: 7px 8px; border: 1px solid var(--scax-color-line); border-radius: var(--scax-radius-chip); background: var(--scax-color-surface-alt); color: var(--scax-color-ink-assistive); font-size: 11px; font-weight: 700; white-space: nowrap; }
+.graph-card-empty { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; }
+.graph-overlay { position: absolute; z-index: 5; }
+.graph-overlay.filters { top: 52px; left: 16px; display: flex; gap: 6px; flex-wrap: wrap; }
+.graph-overlay.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.graph-overlay.zoom button { width: 34px; height: 32px; border: 0; background: transparent; color: var(--scax-color-ink-alt); font-size: 15px; cursor: pointer; }
+.graph-overlay.zoom button + button { border-top: 1px solid var(--scax-color-line); }
+.graph-overlay.zoom button:disabled { opacity: .4; cursor: default; }
+.graph-detail-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding-right: 24px; }
+.graph-detail-head b { font-size: 14px; }
+.graph-relations li:last-child { border-bottom: 0; }
+.graph-canvas-shell { display: grid; gap: 6px; }
+.graph-canvas-shell.fill { position: absolute; inset: 0; }
+.graph-canvas-shell.fill .graph-canvas { height: 100%; border: 0; background: transparent; }

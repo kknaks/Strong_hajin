@@ -1,0 +1,157 @@
+/* 회의 목록 카드·안건 블록 규칙 (바퀴 6bc 에서 실었다). 원본 handoff/meetings/css/meetings.css 다.
+   전역 element 규칙은 하나도 없다(전부 .scax-*).
+
+   원본에서 «잘라낸 것 11줄» — 바퀴 6a M-4 가 「가져오지 마라」고 한 고아 두 벌이다:
+     .scax-note-panel* 9종 · .scax-meeting-placeholder* 2종
+   둘 다 «목록의 오른쪽 회의록 미리보기 패널» 의 것인데, 그 패널은 시안에 없어서 6a 가 지웠다.
+   쓰는 마크업이 영영 없을 규칙이라 싣지 않는다. (ds-token-report.md §7 이 이것들을 고아로 짚었다) */
+/* 회의 목록 (SCR-105) 전용 부품 CSS.
+   토큰은 ../my-work/css/tokens.css 의 --scax-* 만 쓴다. 새 값은 여기에 직접 쓰지 않는다. */
+
+/* ---------- MeetingList — 「내 업무」 수신함 레일과 같은 자리·같은 카드 밀도 ---------- */
+.scax-meeting-list{display:flex;flex-direction:column;gap:var(--scax-space-250);height:100%;min-height:0;padding:var(--scax-space-500) var(--scax-space-600);overflow:hidden}
+.scax-meeting-list__header{display:flex;flex-direction:row;align-items:center;gap:var(--scax-space-150);flex:0 0 auto;min-height:var(--scax-control-height-sm)}
+.scax-meeting-list__title{display:flex;align-items:center;gap:var(--scax-space-150);flex:1 1 auto;min-width:0;margin:0;font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);letter-spacing:var(--scax-text-body1-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink-neutral)}
+.scax-meeting-list__body{display:flex;flex-direction:column;gap:var(--scax-space-400);flex:1 1 auto;min-height:0;overflow-y:auto;padding-right:var(--scax-space-050)}
+
+/* ---------- MeetingSection — 예정 / 지난 ---------- */
+.scax-meeting-section{display:flex;flex-direction:column;gap:var(--scax-space-250);flex:0 0 auto}
+.scax-meeting-section__head{display:flex;align-items:center;gap:var(--scax-space-150);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink-assistive)}
+.scax-meeting-section__count{color:var(--scax-color-ink-assistive);font-variant-numeric:tabular-nums}
+.scax-meeting-section__list{display:flex;flex-direction:column;gap:var(--scax-space-250);margin:0;padding:0;list-style:none}
+.scax-meeting-section__more{display:flex;justify-content:center;padding-top:var(--scax-space-100)}
+
+/* ---------- MeetingCard 「신규」 — 목록 한 건 ---------- */
+.scax-meeting-card{display:flex;flex-direction:column;gap:var(--scax-space-200);width:100%;padding:var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-xl);background:var(--scax-color-surface);box-shadow:var(--scax-shadow-card);text-align:left;cursor:pointer;transition:background var(--scax-duration-fast) var(--scax-easing),border-color var(--scax-duration-fast) var(--scax-easing)}
+.scax-meeting-card:hover{border-color:var(--scax-color-accent-20);background:var(--scax-color-accent-05)}
+.scax-meeting-card:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-meeting-card--selected{border-color:var(--scax-color-accent);background:var(--scax-color-accent-05)}
+.scax-meeting-card__top{display:flex;flex-direction:row;align-items:center;gap:var(--scax-space-200)}
+.scax-meeting-card__when{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive);font-variant-numeric:tabular-nums}
+.scax-meeting-card__state{display:flex;align-items:center;gap:var(--scax-space-100);margin-left:auto}
+.scax-meeting-card__title{margin:0;font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);letter-spacing:var(--scax-text-body1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink);text-wrap:pretty}
+.scax-meeting-card__title--untitled{color:var(--scax-color-ink-assistive);font-weight:var(--scax-fw-medium)}
+.scax-meeting-card__meta{display:flex;flex-direction:row;align-items:center;gap:var(--scax-space-150);flex-wrap:wrap;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+.scax-meeting-card__meta-item{display:inline-flex;align-items:center;gap:var(--scax-space-100);min-width:0}
+.scax-meeting-card__meta-sep{width:1px;height:10px;background:var(--scax-color-line-strong)}
+.scax-meeting-card__actions{display:flex;flex-direction:row;gap:var(--scax-space-200);padding-top:var(--scax-space-100)}
+.scax-meeting-card__actions>.scax-button{flex:1 1 0}
+
+/* 상태 6종 — 배지 톤 매핑. 실패는 레거시의 글자색 대신 danger 배지로 통일한다 */
+.scax-meeting-card__state .scax-badge{flex:0 0 auto}
+
+/* ---------- 빈 본문 자리 — 오른쪽 회의록 패널이 들어올 자리 ---------- */
+
+/* ---------- NotePanel 「신규」 — 오른쪽 회의록. 읽기 전용이다 ---------- */
+
+/* ---------- AgendaBlock 「신규」 — 본문 칸은 업무 표와 같은 결이다:
+   흰 바닥에 1px 경계로 줄을 나눈다. 카드를 다시 그리지 않는다 ---------- */
+.scax-agenda-block{display:flex;flex-direction:column;gap:var(--scax-space-200);flex:0 0 auto;padding:var(--scax-space-400) var(--scax-space-600);border-bottom:1px solid var(--scax-color-line-weak)}
+.scax-agenda-block__head{display:flex;align-items:center;gap:var(--scax-space-200)}
+.scax-agenda-block__title{margin:0;flex:1 1 auto;min-width:0;font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);letter-spacing:var(--scax-text-body1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink);text-wrap:pretty}
+.scax-agenda-block__source{margin:0;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+.scax-agenda-block__lines{display:flex;flex-direction:column;gap:var(--scax-space-150);margin:0;padding:0 0 0 var(--scax-space-400);list-style:disc;font-size:var(--scax-text-label1-size);line-height:1.62;letter-spacing:var(--scax-text-label1-ls);color:var(--scax-color-ink-alt)}
+/* 다음 할 일 — 업무 표의 머리줄과 같은 연한 면 */
+.scax-agenda-block__todos{display:flex;flex-direction:column;gap:var(--scax-space-200);padding:var(--scax-space-300);border-radius:var(--scax-radius-lg);background:var(--scax-color-surface-alt)}
+.scax-agenda-block__todos-label{margin:0;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink-assistive)}
+.scax-agenda-block__todo-list{display:flex;flex-direction:column;gap:var(--scax-space-150);margin:0;padding:0;list-style:none}
+.scax-agenda-block__todo{display:flex;align-items:center;gap:var(--scax-space-200);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);color:var(--scax-color-ink)}
+.scax-agenda-block__todo-what{flex:1 1 auto;min-width:0}
+.scax-agenda-block__todo-due,.scax-agenda-block__todo-state{flex:0 0 auto;color:var(--scax-color-ink-assistive);font-variant-numeric:tabular-nums}
+
+/* 공유 모달의 「볼 수 있는 사람」 표 — 모달 안이라 기본 표보다 한 단 낮다 (바퀴 9 에 구 styles.css 에서 옮겨 왔다) */
+.scax-table.meeting-share-table th{height:34px;font-size:var(--scax-text-caption1-size)}
+.scax-table.meeting-share-table td{height:40px;font-size:var(--scax-text-label2-size)}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   바퀴 9-B — 구 `styles.css` 에서 옮겨 온 회의 규칙 50개.
+   **마크업은 한 줄도 안 바꿨다.** 값은 구 파일에 있던 그대로이고 토큰 이름만 `--scax-*` 로 갔다.
+   구 파일이 앱에서 «맨 먼저» 실렸던 것과 달리 이 파일은 늦게 실린다 — 같은 셀렉터가 양쪽에 있던
+   규칙 117개는 어차피 새 파일이 이기고 있었으므로 옮기기 전에 걷어냈다.
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* 축 행의 「이력」은 패널 오른쪽 끝에 선다. 팝오버가 기본대로 트리거의 왼쪽에서 오른쪽으로 자라면 패널 밖으로
+   나가고, 패널은 overflow:hidden 이라 그대로 잘린다. 그래서 이 패널 안에서만 오른쪽에 맞춰 왼쪽으로 편다. */
+
+/* 툴바 필터 칩 (v2 05) — 켜지면 선택 칩 색을 입는다 (v2 RULES 3) */
+/* 바퀴 3c: 화면별 override 7건은 styles/overrides-transitional.css 로 «다시 겨눠» 옮겼다. */
+/* 바퀴 3c: .filter-chip 3줄을 지웠다 — 호출부 0곳. src/Chip.tsx 의 Chip(.scax-chip)으로 갔다. */
+
+/* Popover (v2 14) — 스크림 없음 · 트리거에서 8px · r12 · shadow-lg. 폭은 호출부가 200–400 안에서 준다 */
+.popover-root { position: relative; display: inline-flex; }
+/* max-height 는 Popover 가 트리거에 남은 자리를 재서 인라인으로 준다. 여기 값은 그 전의 한 프레임을 위한
+   대비책이다 — 재기 전에도 화면 밖으로는 나가지 않는다. 내용이 넘치면 패널 안에서 스크롤한다.
+   overscroll-behavior: 팝오버 끝까지 내려간 뒤 휠이 뒤 페이지로 넘어가지 않게 한다 — 넘어가면 팝오버가
+   스크롤되지 않는 것처럼 느껴진다. */
+.popover { position: absolute; z-index: 55; top: calc(100% + 8px); left: 0; display: grid; align-content: start; gap: 2px; max-height: min(60vh, 420px); padding: 8px; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; border: 1px solid var(--scax-color-line); border-radius: var(--scax-radius-lg); background: var(--scax-color-surface); box-shadow: var(--scax-shadow-lg); }
+.popover:focus { outline: none; }
+/* 항목은 상하 8 / 좌우 10 (v2 04 의 팝오버 패딩 규칙) */
+.popover-item { display: flex; align-items: center; gap: 8px; width: 100%; height: 34px; padding: 0 10px; border-radius: var(--scax-radius-sm); color: var(--scax-color-ink-alt); font-size: 14px; text-align: left; }
+.popover-item:hover { background: var(--scax-color-surface-alt); }
+.popover-item[aria-checked="true"] { color: var(--scax-color-ink); background: var(--scax-color-popover-current); font-weight: 500; }
+/* 달력은 팝오버 트리거 하나다 — 칸은 필드 폭을 그대로 채운다 (DS-17) */
+.date-field > .popover-root { width: 100%; }
+.select-value.placeholder { color: var(--scax-color-ink-assistive); }
+/* 설명 줄이 붙은 항목 — 34 는 고정 높이가 아니라 최소 높이가 된다 */
+.popover-item.stacked { height: auto; min-height: 34px; padding: 6px 10px; }
+.popover-item:disabled { cursor: not-allowed; color: var(--scax-color-ink-disabled); }
+.popover-item .checkbox-box { flex: none; }
+.time-range > .popover-root { flex: 1; }
+/* ---- meeting list and detail: the record SCAX owns for one meeting */
+.meeting-list { display: grid; gap: 6px; margin: 12px 0 0; padding: 0; list-style: none; }
+.meeting-row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border: 1px solid var(--scax-color-line); border-radius: var(--scax-radius-sm); background: var(--scax-color-surface); }
+/* 찾는 이름이 명부에 없을 때 — 그 사실을 말하는 줄과 사외로 다는 줄, 둘을 가로선으로 가른다.
+   위아래로도 선을 둘러 「여기부터는 고르는 것이 아니다」가 자리로 읽히게 한다 */
+.popover-guest { border-top: 1px solid var(--scax-color-line-weak); border-bottom: 1px solid var(--scax-color-line-weak); }
+.popover-note { padding: 8px 12px; color: var(--scax-color-ink-assistive); font-size: 13px; }
+.popover-guest-add { display: block; width: 100%; padding: 8px 12px; border-top: 1px solid var(--scax-color-line-weak); color: var(--scax-color-ink); font-size: 13px; text-align: left; }
+.popover-guest-add:hover { background: var(--scax-color-surface-alt); }
+.meeting-surface { display: flex; flex-direction: column; flex: 1; min-height: 0; padding-bottom: 24px; }
+/* 행을 `auto` 로 두면 그리드가 «가장 큰 패널의 내용» 만큼 자란다 — 회의가 많아지면 목록이 패널을 밀어낸다.
+   `minmax(0, 1fr)` 이 행을 그리드 높이에 묶어, 넘치는 것은 패널 안에서 스크롤한다 */
+.meeting-columns { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); grid-template-rows: minmax(0, 1fr); gap: 24px; flex: 1; min-height: 0; }
+/* 바퀴 6bc: 시안대로 다시 그린 자리의 «구 규칙 21줄» 을 여기서 지웠다 (바퀴 3a D-6 과 같은 처리 —
+   호출부를 옮긴 부품은 자기 옛 CSS 를 데리고 나간다). 지운 것은 전부 «마크업이 0곳» 임을 확인했다:
+     목록 행 일곱(.meeting-row-* · .meeting-row.selected · .meeting-panel 안의 행·목록) → .scax-meeting-card
+     구획 머리 둘(.meeting-section-head*)                                              → .scax-meeting-section__head
+     미리보기 패널 셋(.meeting-panel-head* · .meeting-panel-foot · 그 오른쪽 여백)      → 패널 자체가 없다 (6a M-4)
+     안건·회의록 줄 넷(.meeting-agenda h3 · .meeting-note-line · .meeting-note-chips)   → .scax-agenda-block · .scax-note-line
+     안건 추가 둘(.meeting-add-agenda*)                                                → .scax-add-agenda
+     상세 머리 셋(.meeting-live-bar · .meeting-failed-note · .meeting-purpose)          → .scax-live-bar · .scax-detail__note-bar · .scax-detail__purpose
+     회의록 머리 둘(.meeting-note-head*)                                               → .scax-note__head
+   아직 남긴 것(.meeting-panel · .meeting-tabs · .meeting-scroll · .meeting-surface · .meeting-meta-edit ·
+   .meeting-head-btn · .meeting-line-edit · .meeting-row · .meeting-list)은 전부 아직 쓰는 마크업이 있다. */
+.meeting-panel { display: flex; flex-direction: column; min-height: 0; overflow: hidden; border: 1px solid var(--scax-color-line-strong); border-radius: var(--scax-radius-panel); background: var(--scax-color-surface); }
+.meeting-panel-center { flex: 1; display: grid; place-items: center; padding: 48px 24px; }
+/* 스크롤바는 기본이 투명하고, 그 영역에 손이 올라올 때만 보인다 */
+.meeting-scroll { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+.meeting-scroll:hover { scrollbar-color: var(--scax-color-line-strong) transparent; }
+.meeting-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.meeting-scroll::-webkit-scrollbar-track { background: transparent; }
+.meeting-scroll::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 8px; background-clip: content-box; background-color: transparent; }
+.meeting-scroll:hover::-webkit-scrollbar-thumb { background-color: var(--scax-color-line-strong); }
+.meeting-line-edit { flex: 1; min-width: 0; height: 30px; padding: 0 10px; border: 1px solid var(--scax-color-line-strong); border-radius: var(--scax-radius-sm); background: var(--scax-color-surface); font: inherit; font-size: 13px; color: var(--scax-color-ink); }
+.meeting-tag { display: inline-flex; align-items: center; gap: 8px; height: 24px; padding: 0 8px; border: 1px solid var(--scax-color-line); border-radius: var(--scax-radius-chip); background: var(--scax-color-surface); font-size: 12px; }
+.meeting-tag:hover { background: var(--scax-color-surface-alt); }
+.meeting-head-btn { width: auto; height: 22px; padding: 0 8px; font-size: 12px; }
+.meeting-meta-edit { display: grid; grid-template-columns: 2fr 3fr; gap: 20px; align-items: start; }
+.meeting-meta-edit input[type="text"], .meeting-meta-edit input[type="date"], .meeting-meta-edit select { height: 34px; font-size: 13px; }
+.meeting-meta-edit label { font-size: 12px; }
+.meeting-tabs { display: flex; gap: 20px; padding: 0 20px; }
+.meeting-tabs button { display: flex; align-items: center; height: 42px; padding: 0 2px; border-bottom: 2px solid transparent; color: var(--scax-color-ink-assistive); font-size: 13px; font-weight: 500; }
+.meeting-room { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--scax-color-line); border-radius: var(--scax-radius-sm); background: var(--scax-color-surface); cursor: pointer; }
+.meeting-room input[type="radio"] { width: 16px; height: 16px; flex: none; accent-color: var(--scax-color-accent); }
+.meeting-when { display: flex; align-items: center; gap: 8px; }
+.meeting-when .date-field { flex: none; width: 200px; }
+.meeting-when .time-range { flex: none; }
+.meeting-suggest { margin-top: 8px; padding: 16px 20px; border: 1px solid var(--scax-color-line); border-radius: var(--scax-radius-sm); background: var(--scax-color-surface-alt); }
+/* 폼 여덟 칸이 들어가는 예약 모달과 조직도가 들어가는 공유 모달만 DS 기본 600 보다 넓다.
+   머리·푸터는 고정하고 본문만 스크롤한다 */
+.meeting-modal-wide { display: flex; flex-direction: column; width: min(760px, 100%); max-height: calc(100vh - 48px); }
+.meeting-modal-share { display: flex; flex-direction: column; width: min(680px, 100%); max-height: calc(100vh - 48px); }
+.gutter-speaker { color: var(--scax-color-ink-alt); font-weight: 700; }
+.gutter-body.muted { color: var(--scax-color-ink-assistive); }
+.scax-file-row__name.muted { color: var(--scax-color-ink-assistive); }
+.material-frame { display: block; width: 100%; height: 100%; min-height: 420px; border: 1px solid var(--scax-color-line); border-radius: var(--scax-radius-sm); background: var(--scax-color-surface); }
+/* ---- 회의 「진행 중」 ---- */
+.meeting-composer-foot { padding: 12px 20px; border-top: 1px solid var(--scax-color-line); }

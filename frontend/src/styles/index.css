@@ -1,0 +1,87 @@
+/* TheSC AX Design System — 토큰 묶음 (바퀴 1)
+ *
+ * design/tokens/ 원본 7벌을 **복사만** 해 두고, 이 파일 하나가 순서대로 묶는다.
+ * 값을 다시 쓰지 않는다 — 원본이 바뀌면 그 파일을 다시 복사해 오면 된다.
+ *
+ * **바퀴 9-B 에서 구 `frontend/src/styles.css` 가 사라졌다 — 이제 이 한 벌이 전부다.**
+ * 새 569 : 구 65 이고 토큰 이름 교집합이 0 이라 :root 에 그대로 얹어도 구 토큰을 안 건드린다.
+ * 그래서 스코프 격리를 두지 않는다. (ds-token-report.md §3 · §4)
+ *
+ * 이 바퀴는 토큰을 「싣기만」 한다 — --scax-* 를 참조하는 코드는 바퀴 2 부터다.
+ * 「예외」·「과도기」·「legacy」 성격의 파일은 하나도 없다. 다시 만들지 마라.
+ */
+
+/* 글꼴 — @font-face 2벌 (Pretendard JP / Pretendard).
+   원격 jsDelivr 대신 frontend/public/fonts/ 의 로컬 woff2 를 가리키게 고쳐 뒀다. */
+@import "./fonts.css";
+
+/* Figma Variables 원본 — 색·간격·반경 원시 토큰 372종.
+   :root 기본값 + [data-theme]/[data-mode] 재정의. 우리는 그 속성을 안 쓰므로 기본값만 산다. */
+@import "./fig-tokens.css";
+
+/* Figma TEXT/EFFECT 스타일 — 원본 파일에 하나도 없어서 주석 한 줄뿐이다. 자리만 지킨다. */
+@import "./fig-typography.css";
+
+/* 타입 램프 — --font-ui/--font-display · --fw-* · --t-* 30종 + .ax-* 타이포 클래스 10종. */
+@import "./typography.css";
+
+/* 제품 별칭 --ax-* — 원시 토큰을 업무 화면 어휘로 옮긴 층. 54종.
+   원본 78~79줄의 전역 a/a:hover 2규칙은 잘라냈다 (그 파일 꼬리 주석에 이유). */
+@import "./product.css";
+
+/* 화면이 실제로 쓰는 이름 --scax-* 103종. 전부 --ax- · --t- · --fw- 의 별칭이다.
+   바퀴 2 부터 화면 CSS 는 이 이름만 참조한다. */
+@import "./scax.css";
+
+/* 셸 — AppShell / AppHeader / AppBody / SideNav 가 쓰는 .scax-* 규칙 (바퀴 2).
+   원본 shell.css 의 전역 element 리셋 7줄은 잘라냈다 (그 파일 머리 주석에 이유).
+   꼬리에 과도기 스크롤 기둥 2벌(.scax-page-scroll · .scax-page-notices)이 더 있다. */
+@import "./shell.css";
+
+/* 프리미티브 — Button/Badge/Chip/Tabs/Segmented/Popover/Empty/StatusNote/Skeleton 등이 쓰는
+   .scax-* 규칙 (바퀴 3a). 원본 handoff/my-work/css/components.css 와 byte-identical 이다 —
+   전역 element 규칙이 하나도 없어서(전부 .scax-* + @keyframes 하나) 바퀴 1·2 처럼 잘라낼 것이 없었다.
+   폼·오버레이 쪽 규칙(.scax-textfield · .scax-composer · .scax-checkbox · .scax-toast · .scax-modal-grid …)도
+   같은 파일에 들어 있지만 그 부품을 실제로 갈아끼우는 것은 바퀴 3b 다 — 규칙만 미리 실려 있고 쓰는 곳이 없다. */
+@import "./components.css";
+
+/* 회의 워크스페이스 규칙 (바퀴 3b 에서 실었다). 원본 handoff/meetings/css/workspace.css 와
+   byte-identical 이고 전역 element 규칙이 하나도 없다(전부 .scax-*).
+   이 바퀴가 쓰는 것은 오버레이 골격 넷뿐이다 — .scax-drawer*(Drawer) · .scax-modal--md ·
+   .scax-modal__hint · .scax-time-chip(TimeChip). 나머지(.scax-detail* · .scax-note* ·
+   .scax-script-line* · .scax-side-rail*)는 회의 화면 어휘라 지금은 쓰는 곳이 없다 — 바퀴 6 이 쓴다.
+   값을 다시 타이핑하지 않으려고 파일째 실었다(바퀴 1·2·3a 와 같은 방식). */
+@import "./workspace.css";
+
+/* 회의 목록 카드·안건 블록 (바퀴 6bc). 미리보기 패널의 고아 11종은 빼고 실었다 — 그 파일 머리 주석 참조. */
+@import "./meetings.css";
+
+/* 바퀴 9: 과도기 파일 넷(overrides-transitional · avatar · action-cards · shared-blocks)이
+   전부 사라졌다. 각 규칙은 「그것이 사는 화면」의 파일로 갔고, DS 부품에 붙는 것(Drawer 폭 두 단 ·
+   별표 없는 표 · Avatar · DataTable · Badge outline · Button inline/ai · Chip 둘)은 components.css
+   의 「바퀴 9 가 채운 자리」 블록으로 갔다. 이 자리에 과도기 파일을 다시 만들지 마라. */
+
+/* 화면 CSS — 시안이 «없는» 화면들(사다리 ③). 이름은 구 것을 그대로 쓰고 값만 --scax-* 다.
+   싣는 차례가 곧 우선순위다 — DS 층(product·scax·shell·components·workspace) 다음에 화면 CSS 가 온다.
+   ⚠ 바퀴 8 은 워커 여럿이 «동시에» 돈다. 각자 자기 파일을 여기 한 줄로 붙이므로
+     이 자리에서 git 충돌이 나면 답은 언제나 「세 줄 다 살린다」다 (P-1 의 그 이유). */
+@import "./screens-a.css"; /* 바퀴 8-A — 로그인 · 홈(오늘) · 일일보고 · 프로젝트 */
+
+/* ── scrollbar.css 는 일부러 싣지 않는다 (바퀴 1 D3) ─────────────────────────
+ * 파일은 ./scrollbar.css 로 옮겨 뒀지만 여기서 @import 하지 않는다.
+ * 맨 위 두 줄이 전역이기 때문이다:
+ *     *{scrollbar-width:none}
+ *     *::-webkit-scrollbar{width:0;height:0}
+ * 이걸 실으면 앱 전체에서 스크롤 막대가 사라진다. 구 화면들은 막대가 보이는 전제로
+ * 그려져 있어서, 토큰만 얹는 이 바퀴가 화면을 바꿔 버린다.
+ * opt-in 클래스(.ax-scroll-hover/.ax-scroll-always/.ax-scroll-gutter)와
+ * --ax-scrollbar-* 4종도 같이 빠진다 — 지금 쓰는 곳이 없다.
+ * 새 셸이 스크롤 영역을 다 가져가는 바퀴 8 에서 이 줄의 주석을 풀면 된다.
+ * (ds-token-report.md §3-1 · §4)
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/* 조직 · 관계 탐색 · 캘린더 (바퀴 8-B) */
+@import "./screens-b.css";
+
+/* AX 대화 드로어 · 액션 센터 (바퀴 7) */
+@import "./ax.css";

@@ -1,0 +1,612 @@
+/* ══════════════════════════════════════════════════════════════════════════════
+   AX 대화 드로어 · 액션 센터 — 새 DS (바퀴 7)
+
+   시안이 없는 화면이다. 새 DS 에 대응하는 것은 `AgentBubble`(우하단 말풍선) 하나뿐이고
+   `AiChatSidebar` 는 Figma 정적 렌더러라 못 쓴다. 그래서 **사다리 ③** 을 따른다 —
+   레이아웃은 구 `styles.css` 의 것을 그대로 옮기고 색·타입·간격·라운드·그림자만
+   `--scax-*` 토큰으로 갈아끼운다. 채팅 UX 를 새로 설계하지 않았다.
+
+   구 `.ax-*` 클래스 87종과 새 DS 의 `.ax-*` 13종(타이포·스크롤)은 이름은 안 겹치지만
+   접두사를 공유한다. 여기서 새로 세우는 것은 전부 `.scax-` 다.
+
+   구 `styles.css` 는 한 줄도 안 건드렸다(P-1). 여기로 옮겨온 구획은 보고서에
+   「죽은 구획」으로 적혀 있고, 실제 삭제는 바퀴 9 가 한다.
+
+   **싣는 자리**: `index.css` 맨 «끝» — `overrides-transitional.css` 다음이다(코디 지시).
+   그래서 같은 특정도면 이 파일이 이긴다. 전역 element 규칙은 한 줄도 없고, 공용 DS 클래스
+   (`.scax-button` · `.scax-badge` · `.scax-empty` …)를 재정의하지 않는다. DS 골격 위에
+   얹는 것은 전부 우리 modifier 안으로 좁혔다 — `.scax-agent--ax` · `.scax-drawer--chat`.
+
+   토큰 대응 (구 → 새):
+     --text-primary→ink · --text-secondary→ink-alt · --text-tertiary→ink-assistive
+     --border-default→line · --border-subtle→line-weak · --border-strong→line-strong
+     --surface-sunken→surface-alt · --selected-bg→accent-08 · --action/--accent→accent
+     --danger*→danger · --danger-tint→danger-soft · --progress-text→info
+     --shadow-md→shadow-raised · --shadow-drawer→shadow-rail
+   그대로 둔 것: `--warning-surface`/`--warning-text` (DS 에 경고 면색이 없다 — G-19),
+   `--ai-*` 8종 (G-17 미결, 손대지 말라는 지시).
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* ─────────────────────────────────────────────────────────────── AgentBubble
+   구 styles.css:510~544. 시안(`scax-ui.jsx` AgentBubble)의 모양으로 세운다 —
+   말풍선이 오브 «위» 에 서고, 오브 뒤에 그라데이션 빛이 번진다. 구 런처는 가로 한 줄
+   (말풍선이 캐릭터 왼쪽)이었다. 골격 `.scax-agent*` 5종은 DS `components.css:134~142` 의
+   것이고, 여기 있는 것은 그 위에 얹는 «우리 것» 뿐이다:
+     · 말풍선이 <p> 가 아니라 <button> 이다 (눌러서 프롬프트를 채운다)
+     · 오브 안이 <img src=orb.png> 가 아니라 우리 캐릭터 에셋이다 (assistantCharacterAssets)
+     · 상태 6종(idle/hover/working/answer-ready/attention/error)의 점·움직임 */
+.scax-agent--ax{z-index:30}
+.scax-agent--ax .scax-agent__bubble{display:grid;gap:var(--scax-space-150);width:100%;max-width:none;border:0;text-align:left;cursor:pointer;pointer-events:auto}
+.scax-agent--ax .scax-agent__bubble small{display:flex;align-items:center;gap:var(--scax-space-150);color:var(--scax-color-ink-disabled);font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);letter-spacing:var(--scax-text-caption2-ls);font-weight:var(--scax-fw-bold)}
+.scax-agent--ax .scax-agent__bubble>span{overflow-wrap:anywhere;font-weight:var(--scax-fw-bold)}
+.scax-agent--ax .scax-agent__bubble:hover{background:var(--scax-color-surface-inverse)}
+.scax-agent--ax .scax-agent__bubble:hover::after{border-top-color:var(--scax-color-surface-inverse)}
+.scax-agent--ax .scax-agent__bubble:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+/* 오브 자리의 누르는 판. DS 의 `.scax-agent__img` 가 잡던 좌표를 그대로 받는다. */
+.scax-agent__launch{position:absolute;left:10px;bottom:8px;display:grid;width:100px;height:100px;padding:0;border:0;background:transparent;cursor:pointer}
+.scax-agent__launch:focus-visible{outline:0;border-radius:var(--scax-radius-pill);box-shadow:var(--scax-focus-ring)}
+.scax-agent__dot{width:7px;height:7px;border-radius:var(--scax-radius-pill);background:var(--scax-color-ink-disabled)}
+.scax-agent--working .scax-agent__dot{background:var(--scax-color-info)}
+.scax-agent--answer-ready .scax-agent__dot{background:var(--scax-color-accent)}
+.scax-agent--attention .scax-agent__dot{background:var(--scax-color-warning)}
+.scax-agent--error .scax-agent__dot{background:var(--scax-color-danger)}
+.scax-agent--idle .scax-character{animation:scax-agent-breathe 4.8s ease-in-out infinite}
+.scax-agent--hover .scax-character{transform:translateY(-3px) scale(1.02);transition:transform 180ms var(--scax-easing)}
+.scax-agent--working .scax-character{animation:scax-agent-working 1.35s ease-in-out infinite}
+.scax-agent--answer-ready .scax-character{animation:scax-agent-arrive 520ms cubic-bezier(.2,.8,.3,1) 1}
+.scax-agent--attention .scax-character{animation:scax-agent-attention 2.4s ease-in-out infinite}
+.scax-agent--error .scax-character{animation:scax-agent-error 420ms ease-out 1}
+.scax-agent--motion-paused .scax-character{animation-play-state:paused}
+@keyframes scax-agent-breathe{0%,100%{transform:scale(1)}50%{transform:translateY(-2px) scale(1.012)}}
+@keyframes scax-agent-working{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+@keyframes scax-agent-arrive{0%{opacity:.55;transform:translateY(12px) scale(.94)}70%{opacity:1;transform:translateY(-3px) scale(1.02)}100%{opacity:1;transform:none}}
+@keyframes scax-agent-attention{0%,100%{transform:rotate(0) scale(1)}45%{transform:rotate(-2deg) scale(1.015)}75%{transform:rotate(2deg) scale(1.015)}}
+@keyframes scax-agent-error{0%,100%{transform:translateX(0)}30%{transform:translateX(-5px)}65%{transform:translateX(4px)}}
+
+/* ───────────────────────────────────────────────────── 어시스턴트 캐릭터 (에셋)
+   구 styles.css:524~532 · 931~939. 이미지가 뜨기 전에는 글자 한 자를 대신 세운다. */
+.scax-character{position:relative;display:grid;flex:none;place-items:center;overflow:hidden;border-radius:42% 42% 46% 46%}
+.scax-character__img{position:absolute;display:block;width:100%;height:100%;opacity:0;object-fit:contain;transition:opacity 160ms var(--scax-easing)}
+.scax-character__img--ready{opacity:1}
+.scax-character--launcher{width:112px;height:118px}
+.scax-character--header{width:42px;height:42px}
+.scax-character--profile{width:28px;height:28px}
+.scax-character__fallback{display:grid;width:100%;height:100%;place-items:center;border:1px solid var(--scax-color-line);border-radius:inherit;background:var(--scax-color-surface-alt);color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size);font-weight:var(--scax-fw-bold)}
+.scax-character--header .scax-character__fallback{font-size:var(--scax-text-caption2-size)}
+.scax-character--profile .scax-character__fallback{font-size:var(--scax-text-caption2-size)}
+/* 오브 안에서는 원형 마스크를 벗는다 — 뒤의 그라데이션이 테두리 역할을 한다 */
+.scax-agent__launch .scax-character{width:100%;height:100%;border-radius:0;background:transparent}
+
+/* 캐릭터 고르기 모달 (구 styles.css:931~939) */
+.scax-character-picker{width:min(760px,100%)}
+.scax-character-picker__notice{margin:0 0 var(--scax-space-300);padding:var(--scax-space-250) var(--scax-space-300);border-radius:var(--scax-radius-sm);background:var(--scax-color-accent-08);color:var(--scax-color-accent);font-size:var(--scax-text-caption1-size)}
+.scax-character-picker__error{margin:0 0 var(--scax-space-300);padding:var(--scax-space-250) var(--scax-space-300);border:1px solid var(--scax-color-danger);border-radius:var(--scax-radius-sm);background:var(--scax-color-danger-soft);color:var(--scax-color-danger);font-size:var(--scax-text-caption1-size)}
+.scax-character-picker__grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--scax-space-250)}
+.scax-character-picker__option{display:grid;justify-items:center;gap:var(--scax-space-150);min-width:0;padding:var(--scax-space-300) var(--scax-space-200);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-lg);background:var(--scax-color-surface);cursor:pointer}
+.scax-character-picker__option[aria-checked="true"]{border-color:var(--scax-color-accent);background:var(--scax-color-accent-08)}
+.scax-character-picker__option b{overflow:hidden;max-width:100%;font-size:var(--scax-text-label2-size);text-overflow:ellipsis;white-space:nowrap}
+.scax-character-picker__option small{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size)}
+
+/* ───────────────────────────────────────────────────────────────── 드로어 골격
+   DS `.scax-drawer`(workspace.css:80) 는 오버레이 안에 서는 520 짜리 판이다.
+   AX 드로어는 스크림 없이 화면 오른쪽에 «붙어» 살고, 구 폭이 min(520,100vw) 이라
+   폭 두 단 중 `--sm`(520) 을 고른다(바퀴 3b 가 만든 것). `--chat` 은 그 골격을
+   오버레이 없이 세우는 데 필요한 것만 더한다. (구 styles.css:545) */
+.scax-drawer--chat{position:fixed;z-index:35;top:0;right:0;bottom:0;max-width:100vw;border-left:1px solid var(--scax-color-line);box-shadow:var(--scax-shadow-rail)}
+.scax-chat__head{justify-content:space-between;gap:var(--scax-space-300);min-height:64px;padding:var(--scax-space-250) var(--scax-space-300)}
+.scax-chat__head b{font-size:var(--scax-text-headline-size);line-height:var(--scax-text-headline-lh);letter-spacing:var(--scax-text-headline-ls);font-weight:var(--scax-fw-semibold)}
+.scax-chat__head small{display:block;margin-top:var(--scax-space-050);color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size);font-weight:var(--scax-fw-regular)}
+.scax-chat__identity{display:flex;align-items:center;gap:var(--scax-space-250);min-width:0}
+.scax-chat__identity>div{min-width:0}
+.scax-chat__identity b,.scax-chat__identity small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scax-chat__tools{display:flex;flex:none;align-items:center;gap:var(--scax-space-100)}
+.scax-chat__tool{display:grid;width:32px;height:32px;padding:0;place-items:center;border:1px solid transparent;border-radius:var(--scax-radius-sm);color:var(--scax-color-ink-alt);background:var(--scax-color-surface-alt);cursor:pointer}
+.scax-chat__tool:hover,.scax-chat__tool[aria-pressed="true"]{border-color:var(--scax-color-line-strong);color:var(--scax-color-accent);background:var(--scax-color-accent-08)}
+.scax-chat__tool--close{color:var(--scax-color-ink-assistive);background:transparent}
+.scax-chat__tool:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-chat__tool-divider{width:1px;height:24px;margin:0 var(--scax-space-100);background:var(--scax-color-line)}
+.scax-chat__tool-icon{width:17px;height:17px;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round;stroke-width:1.8}
+
+/* ───────────────────────────────────────── 검색 · 히스토리 · 알림 (구 1031~1057) */
+.scax-chat__utility{display:flex;flex:1;min-height:0;flex-direction:column;gap:var(--scax-space-500);overflow-y:auto;padding:var(--scax-space-600) var(--scax-space-500);background:var(--scax-color-surface)}
+.scax-chat__utility-head h2{margin:0;font-size:var(--scax-text-title-size);line-height:var(--scax-text-title-lh);letter-spacing:var(--scax-text-title-ls);font-weight:var(--scax-fw-semibold)}
+.scax-chat__utility-head p{margin:var(--scax-space-150) 0 0;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size)}
+.scax-chat__utility-empty{display:grid;flex:1;min-height:240px;place-content:center;justify-items:center;gap:var(--scax-space-200);color:var(--scax-color-ink-alt);text-align:center}
+.scax-chat__utility-empty .scax-chat__tool-icon{width:34px;height:34px;margin-bottom:var(--scax-space-100);color:var(--scax-color-ink-assistive)}
+.scax-chat__utility-empty p{margin:0;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size)}
+.scax-chat__search{flex:none;height:42px;padding:0 var(--scax-space-300);font-size:var(--scax-text-label2-size)}
+.scax-chat__list-note{display:flex;align-items:center;justify-content:space-between;gap:var(--scax-space-200);margin:0;padding:var(--scax-space-200) var(--scax-space-250);border:1px dashed var(--scax-color-line);border-radius:var(--scax-radius-sm);color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size)}
+.scax-chat__list-note--error{color:var(--scax-color-danger);border-color:var(--scax-color-danger)}
+.scax-chat__history{display:grid;gap:var(--scax-space-200);margin:0;padding:0;list-style:none;overflow-y:auto}
+.scax-chat__history li{display:contents}
+.scax-chat__history button{display:grid;grid-template-columns:1fr auto;column-gap:var(--scax-space-200);width:100%;max-width:none;padding:var(--scax-space-300) var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);text-align:left}
+.scax-chat__history button b{grid-column:1;overflow:hidden;font-size:var(--scax-text-label2-size);font-weight:var(--scax-fw-bold);text-overflow:ellipsis;white-space:nowrap}
+.scax-chat__history button small{grid-column:2;grid-row:1;overflow:hidden;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size);text-overflow:ellipsis;white-space:nowrap}
+.scax-chat__history-excerpt{grid-column:1 / -1;overflow:hidden;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size);text-overflow:ellipsis;white-space:nowrap}
+.scax-chat__history button[aria-pressed="true"]{border-color:transparent;background:var(--scax-color-accent-08)}
+.scax-chat__history button[aria-pressed="true"] b{color:var(--scax-color-accent)}
+.scax-chat__notices{display:grid;gap:var(--scax-space-200);margin:0;padding:0;list-style:none}
+.scax-chat__notice-error{margin:0 0 var(--scax-space-250);padding:var(--scax-space-250) var(--scax-space-300);border-radius:var(--scax-radius-sm);background:var(--scax-color-danger-soft);color:var(--scax-color-danger);font-size:var(--scax-text-caption2-size)}
+.scax-chat__notice{display:grid;grid-template-columns:6px minmax(0,1fr) auto;align-items:start;gap:var(--scax-space-250);width:100%;padding:var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);text-align:left}
+.scax-chat__notice:hover{border-color:var(--scax-color-accent);background:var(--scax-color-accent-08)}
+.scax-chat__notice-dot{width:6px;height:6px;margin-top:var(--scax-space-150);border-radius:var(--scax-radius-pill);background:var(--scax-color-accent)}
+.scax-chat__notice--read .scax-chat__notice-dot{background:transparent}
+.scax-chat__notice>span:nth-child(2){display:grid;min-width:0;gap:var(--scax-space-100)}
+.scax-chat__notice b{overflow:hidden;color:var(--scax-color-ink);font-size:var(--scax-text-label2-size);text-overflow:ellipsis;white-space:nowrap}
+.scax-chat__notice>span span{color:var(--scax-color-ink-alt);font-size:var(--scax-text-caption2-size);line-height:1.5}
+.scax-chat__notice time{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size);white-space:nowrap}
+
+/* ──────────────────────────────────────────────── 대화 흐름 (구 558~563 · 1058~1075) */
+.scax-chat__stream{position:relative;display:flex;flex:1;min-height:0;flex-direction:column}
+.scax-chat__messages{flex:1;min-height:0;padding:var(--scax-space-400) var(--scax-space-600) var(--scax-space-500);overflow:auto}
+.scax-chat__jump{position:absolute;left:50%;bottom:var(--scax-space-200);transform:translateX(-50%);display:inline-flex;align-items:center;gap:var(--scax-space-150);height:30px;padding:0 var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-pill);background:var(--scax-color-surface-nav-active);color:var(--scax-color-ink-inverse);font-size:var(--scax-text-caption1-size);font-weight:var(--scax-fw-bold);box-shadow:var(--scax-shadow-raised);cursor:pointer}
+.scax-chat__empty{padding:var(--scax-space-1200) var(--scax-space-400);color:var(--scax-color-ink-assistive);text-align:center;font-size:var(--scax-text-label1-size)}
+.scax-chat__start{align-items:center;justify-content:center;padding:var(--scax-space-800) var(--scax-space-500)}
+.scax-chat__start-card{display:grid;width:min(300px,100%);justify-items:center;gap:var(--scax-space-250);text-align:center}
+.scax-chat__start-card .scax-character--launcher{width:88px;height:92px}
+.scax-chat__start-card h2{margin:var(--scax-space-050) 0 0;font-size:var(--scax-text-title-size);line-height:var(--scax-text-title-lh);letter-spacing:var(--scax-text-title-ls);font-weight:var(--scax-fw-semibold)}
+.scax-chat__start-card>p{margin:0 0 var(--scax-space-150);color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size)}
+.scax-chat__starters{display:grid;width:100%;gap:var(--scax-space-200)}
+.scax-chat__starters button{display:flex;align-items:center;gap:var(--scax-space-150);min-height:34px;padding:var(--scax-space-150) var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-pill);color:var(--scax-color-ink-alt);background:var(--scax-color-surface);text-align:left;cursor:pointer;font-size:var(--scax-text-caption1-size)}
+.scax-chat__starters button span{color:var(--scax-color-accent);font-size:var(--scax-text-headline-size);line-height:1}
+.scax-chat__starters button:hover{border-color:var(--scax-color-accent);color:var(--scax-color-accent);background:var(--scax-color-accent-08)}
+.scax-chat__queue{display:grid;gap:var(--scax-space-150);margin:0 0 var(--scax-space-200);padding:0;list-style:none}
+.scax-chat__queued .scax-msg--user,.scax-chat__fragment .scax-msg--user{margin-bottom:var(--scax-space-150)}
+.scax-chat__fragment-actions{display:flex;align-items:center;gap:var(--scax-space-150);margin-top:var(--scax-space-150)}
+.scax-chat__fragment-actions small{margin-right:auto;color:var(--scax-color-danger)}
+
+/* ─────────────────────────────────────────────────────────── 말차례 · 말풍선 */
+.scax-turn{margin-bottom:var(--scax-space-600)}
+.scax-turn__lineage{display:block;margin:0 0 var(--scax-space-150);color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size)}
+.scax-msg{margin:0 0 var(--scax-space-200);padding:var(--scax-space-250) var(--scax-space-300);border-radius:var(--scax-radius-lg);font-size:var(--scax-text-label1-size);white-space:pre-wrap;overflow-wrap:anywhere}
+.scax-msg--user{width:fit-content;max-width:86%;margin:0 0 var(--scax-space-500) auto;padding:var(--scax-space-300) var(--scax-space-300);border-radius:var(--scax-radius-xl);border-bottom-right-radius:5px;color:var(--scax-color-ink);background:var(--scax-color-surface-alt);font-size:var(--scax-text-label1-size);line-height:1.55}
+.scax-msg--assistant{margin:0 0 var(--scax-space-250);padding:0;border:0;border-radius:0;background:transparent;color:var(--scax-color-ink);font-size:var(--scax-text-label1-size);overflow-wrap:anywhere}
+.scax-msg--assistant.scax-msg--streaming{opacity:.82}
+.scax-msg--assistant.scax-msg--failed,.scax-msg--assistant.scax-msg--cancelled{padding:var(--scax-space-250) var(--scax-space-300);border-radius:var(--scax-radius-lg);color:var(--scax-color-ink-alt);background:var(--scax-color-surface-alt)}
+.scax-msg--user.scax-msg--local.scax-msg--failed{color:var(--scax-color-ink-alt);background:var(--scax-color-danger-soft);border:1px solid var(--scax-color-danger)}
+.scax-msg__body{min-width:0}
+.scax-msg__caret{margin-left:var(--scax-space-050);color:var(--scax-color-accent);animation:scax-blink 1s steps(2) infinite}
+@keyframes scax-blink{50%{opacity:0}}
+@media (prefers-reduced-motion:reduce){.scax-msg__caret{animation:none}}
+.scax-msg__note{display:block;margin-top:var(--scax-space-150);color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size)}
+
+/* ───────────────────────────────────────────────────── 후속 질문 (구 565~577) */
+.scax-followup{display:grid;gap:var(--scax-space-250);min-width:0;margin:var(--scax-space-400) 0 var(--scax-space-100);padding:var(--scax-space-300) 0 0;border-top:1px solid var(--scax-color-line)}
+.scax-followup__head{display:flex;align-items:center;justify-content:space-between;gap:var(--scax-space-300);min-width:0}
+.scax-followup__head strong{color:var(--scax-color-ink-alt);font-size:var(--scax-text-caption1-size);font-weight:var(--scax-fw-bold)}
+.scax-followup__head small{flex:none;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size);white-space:nowrap}
+.scax-followup__list{display:grid;gap:var(--scax-space-150);min-width:0}
+.scax-followup__item{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:var(--scax-space-150);width:100%;min-width:0;min-height:44px;padding:var(--scax-space-250) var(--scax-space-300);border:1px solid var(--scax-color-accent-20);border-radius:var(--scax-radius-lg);color:var(--scax-color-ink-alt);background:var(--scax-color-surface);font-size:var(--scax-text-caption1-size);line-height:1.45;text-align:left;cursor:pointer}
+.scax-followup__item>span:first-child{display:-webkit-box;min-width:0;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal}
+.scax-followup__arrow{color:var(--scax-color-accent);font-size:var(--scax-text-title-size);line-height:1}
+.scax-followup__item:hover:not(:disabled){border-color:var(--scax-color-accent);color:var(--scax-color-accent)}
+.scax-followup__item:disabled{cursor:default;opacity:.58}
+.scax-followup__item[data-state="sending"],.scax-followup__item[data-state="selected"]{border-color:var(--scax-color-accent);color:var(--scax-color-accent);background:var(--scax-color-accent-08);opacity:1}
+.scax-followup__item[data-state="failed"]{border-color:var(--scax-color-danger);color:var(--scax-color-danger)}
+.scax-followup__item small{color:inherit;font-size:var(--scax-text-caption2-size);white-space:nowrap}
+.scax-followup__item:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+
+/* ───────────────────────────────────────────────────── 실행 레일 (구 1088~1126) */
+.scax-rail{min-height:34px;margin:var(--scax-space-200) var(--scax-space-600) var(--scax-space-300) 0;padding:0;border:0;background:transparent;font-size:var(--scax-text-caption1-size)}
+.scax-rail__head{display:grid;grid-template-columns:16px 1fr;align-items:center;gap:var(--scax-space-200);min-height:18px}
+.scax-rail__icon{color:var(--scax-color-accent);text-align:center;font-size:var(--scax-text-body1-size);line-height:1}
+.scax-rail__phrase{color:var(--scax-color-accent);font-weight:var(--scax-fw-medium)}
+.scax-rail__steps{display:grid;gap:var(--scax-space-150);margin:var(--scax-space-200) 0 0 19px;padding:0 0 0 var(--scax-space-300);border-left:2px solid var(--scax-color-line-weak);list-style:none}
+.scax-rail__step{position:relative;display:flex;align-items:center;min-height:18px;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size);line-height:16px}
+.scax-rail__check{position:absolute;left:-20px;display:grid;width:12px;height:12px;place-items:center;border:1px solid var(--scax-color-line-strong);border-radius:3px;color:var(--scax-color-ink-assistive);background:var(--scax-color-surface);font-size:9px;font-weight:var(--scax-fw-bold);line-height:1}
+.scax-rail__step--running{color:var(--scax-color-ink-alt)}
+.scax-rail__step--running .scax-rail__check{border-color:var(--scax-color-accent);color:var(--scax-color-accent)}
+.scax-rail__step--failed .scax-rail__check,.scax-rail__step--denied .scax-rail__check{border-color:var(--scax-color-danger);color:var(--scax-color-danger)}
+.scax-rail__time{margin-left:var(--scax-space-150);color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size);font-variant-numeric:tabular-nums}
+.scax-rail--terminal{display:grid;gap:var(--scax-space-150);margin-top:var(--scax-space-100);padding:0;border:0;background:transparent}
+.scax-rail--terminal .scax-rail__details{min-width:0;margin:0;border:0;background:transparent}
+.scax-rail--terminal .scax-rail__head{grid-template-columns:14px auto minmax(0,1fr) auto;min-height:16px;gap:var(--scax-space-150);list-style:none;font-size:var(--scax-text-caption2-size);cursor:pointer}
+.scax-rail--terminal .scax-rail__head::-webkit-details-marker{display:none}
+.scax-rail--terminal .scax-rail__details>.scax-rail__head::after{content:"보기";color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size);text-decoration:underline;text-decoration-color:var(--scax-color-line-strong);text-underline-offset:3px}
+.scax-rail--terminal .scax-rail__details[open]>.scax-rail__head::after{content:"접기"}
+.scax-rail--terminal .scax-rail__head--static{cursor:default}
+.scax-rail--terminal .scax-rail__timings{justify-self:start;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size);font-variant-numeric:tabular-nums}
+.scax-rail--terminal.scax-rail--completed .scax-rail__head{display:flex;justify-content:flex-start;width:max-content;max-width:100%}
+.scax-rail--terminal.scax-rail--completed .scax-rail__icon,
+.scax-rail--terminal.scax-rail--completed .scax-rail__phrase{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size);font-weight:var(--scax-fw-regular)}
+.scax-rail--terminal.scax-rail--completed .scax-rail__step{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size)}
+.scax-rail__expanded{display:grid;gap:var(--scax-space-250);margin:var(--scax-space-200) 0 0 var(--scax-space-500);padding-top:var(--scax-space-200);border-top:1px solid var(--scax-color-line-weak)}
+.scax-rail__execution,.scax-rail__evidence{display:grid;gap:var(--scax-space-150)}
+.scax-rail__execution>b,.scax-rail__evidence>b{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size)}
+.scax-rail__expanded .scax-rail__steps{margin-top:0}
+.scax-rail__code{margin-left:var(--scax-space-150);padding:1px 5px;border-radius:var(--scax-radius-xs);color:var(--scax-color-ink-assistive);background:var(--scax-color-surface-alt);font:9px ui-monospace,SFMono-Regular,Menlo,monospace}
+/* 레일 안의 근거는 본문보다 한 단 작다 — 판을 좁혀 쓴다 */
+.scax-rail__evidence .scax-sources,.scax-rail__evidence .scax-evidence{gap:5px;margin:0;padding:7px 9px;border-left-width:1px;font-size:var(--scax-text-caption2-size)}
+.scax-rail__evidence .scax-sources__list{gap:var(--scax-space-100)}
+.scax-rail__evidence .scax-sources__title,.scax-rail__evidence .scax-sources__why{font-size:var(--scax-text-caption2-size)}
+/* 구 styles.css:1118 — 레일 안의 종류 표는 한 단 작다. 이제 그 자리는 DS Badge 라 «우리 레일 안에서만» 줄인다 */
+.scax-rail__evidence .scax-badge{height:16px;padding:0 var(--scax-space-100);font-size:var(--scax-text-caption2-size)}
+.scax-rail__evidence .scax-evidence__list{gap:5px;margin-top:5px}
+.scax-rail__evidence .scax-evidence__card{padding:var(--scax-space-150) var(--scax-space-200)}
+.scax-rail__evidence .scax-evidence__head .scax-evidence__name,.scax-rail__evidence .scax-evidence__card blockquote{font-size:var(--scax-text-caption2-size)}
+.scax-rail--terminal.scax-rail--failed .scax-rail__phrase,.scax-rail__error{color:var(--scax-color-danger)}
+.scax-rail--terminal.scax-rail--cancelled .scax-rail__phrase{color:var(--scax-color-ink-assistive)}
+.scax-rail__error{margin-left:var(--scax-space-600);font-size:var(--scax-text-caption2-size)}
+.scax-rail__retry{justify-self:start;margin-left:var(--scax-space-600)}
+.scax-rail--pending{margin-top:0}
+
+/* ───────────────────────────────────── 답변이 가리키는 것 · 근거 (구 860~872 · 1020~1028) */
+.scax-sources{display:grid;gap:var(--scax-space-150);padding:var(--scax-space-250) var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface)}
+.scax-sources__list{display:grid;gap:var(--scax-space-150);margin:0;padding:0;list-style:none}
+.scax-sources__list li{display:flex;align-items:center;gap:var(--scax-space-200);flex-wrap:wrap}
+.scax-sources__title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--scax-text-label2-size);font-weight:var(--scax-fw-medium)}
+.scax-sources__why{flex-basis:100%;padding-left:var(--scax-space-050);font-size:var(--scax-text-caption2-size)}
+/* 「답변 뒤 바뀜」 — 새 DS 의 Badge 에 경고 톤이 없어서 구 --warning-* 두 토큰을 그대로 쓴다 (DS-gaps G-19) */
+.scax-sources__changed{padding:1px var(--scax-space-150);border-radius:var(--scax-radius-xs);background:var(--scax-color-warning-soft);color:var(--scax-color-warning-ink);font-size:var(--scax-text-caption2-size);font-weight:var(--scax-fw-bold)}
+.scax-sources__more{padding:0;border:0;background:transparent;color:var(--scax-color-accent);font-size:var(--scax-text-caption1-size);text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+.scax-evidence{margin:var(--scax-space-200) var(--scax-space-600) var(--scax-space-200) 0;padding:var(--scax-space-300);border:1px solid var(--scax-color-line);border-left:3px solid var(--scax-color-accent);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);font-size:var(--scax-text-caption1-size)}
+.scax-evidence>b{display:block;color:var(--scax-color-ink)}
+.scax-evidence>b small{color:var(--scax-color-ink-assistive);font-weight:var(--scax-fw-regular)}
+.scax-evidence__list{display:grid;gap:var(--scax-space-200);margin:var(--scax-space-200) 0 0;padding:0;list-style:none}
+.scax-evidence__card{padding:var(--scax-space-200) var(--scax-space-300);border:1px solid var(--scax-color-line-weak);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface-alt)}
+.scax-evidence__head{display:flex;align-items:center;gap:var(--scax-space-200)}
+.scax-evidence__head .scax-evidence__name{flex:1;min-width:0;overflow:hidden;color:var(--scax-color-ink);font-weight:var(--scax-fw-bold);text-overflow:ellipsis;white-space:nowrap}
+.scax-evidence__card blockquote{margin:var(--scax-space-150) 0 0;padding:0 0 0 var(--scax-space-300);border-left:2px solid var(--scax-color-line);color:var(--scax-color-ink-alt);font-size:var(--scax-text-caption1-size);white-space:pre-wrap}
+
+/* ───────────────────────────────────────────────── 승인 카드 (구 592~597 · 1134) */
+.scax-actioncard{margin:var(--scax-space-200) var(--scax-space-600) var(--scax-space-200) 0;padding:var(--scax-space-300) var(--scax-space-400);border:1px solid var(--scax-color-line);border-left:3px solid var(--scax-color-accent);border-radius:var(--scax-radius-sm);background:var(--scax-color-accent-08)}
+.scax-actioncard b{display:block;font-size:var(--scax-text-label1-size)}
+.scax-actioncard p{margin:var(--scax-space-100) 0 0;padding:0;border:0;background:transparent;color:var(--scax-color-ink-alt);font-size:var(--scax-text-label2-size)}
+.scax-actioncard>small{display:block;margin-top:var(--scax-space-200);color:var(--scax-color-accent);font-size:var(--scax-text-caption1-size);font-weight:var(--scax-fw-bold)}
+.scax-actioncard>small.rejected{color:var(--scax-color-ink-assistive)}
+.scax-actioncard>div{display:flex;gap:var(--scax-space-200);margin-top:var(--scax-space-300)}
+/* 카드 머리의 표들 — 구 .action-task-badges (styles.css:616~618). 안에 서는 것은 이제 Badge 다 */
+.scax-actioncard__badges{display:flex;align-items:center;justify-content:flex-start;gap:var(--scax-space-200);margin:0}
+
+/* ───────────────────────────────────────── 답변 마크다운 (구 1139~1159) */
+.scax-md{display:block;min-width:0}
+.scax-md>:first-child{margin-top:0}
+.scax-md>:last-child{margin-bottom:0}
+.scax-md p,.scax-md .scax-md__heading{margin:0 0 var(--scax-space-150);padding:0;border:0;border-radius:0;background:none;font-size:var(--scax-text-label1-size);line-height:1.55;white-space:pre-wrap}
+.scax-md .scax-md__heading{font-weight:var(--scax-fw-semibold)}
+.scax-msg__body .scax-md>.scax-md__heading:first-child,.scax-msg__body .scax-md>p:first-child>strong:only-child{font-size:var(--scax-text-headline-size);line-height:var(--scax-text-headline-lh)}
+.scax-md strong{color:var(--scax-color-ink);font-weight:var(--scax-fw-semibold)}
+.scax-md ul,.scax-md ol{margin:0 0 var(--scax-space-150);padding-left:var(--scax-space-500)}
+.scax-md li{margin:var(--scax-space-050) 0}
+.scax-md li>p{margin:0}
+.scax-md a{color:var(--scax-color-accent);text-decoration:underline;text-underline-offset:2px}
+.scax-md a:hover{color:var(--scax-color-accent-strong)}
+.scax-md code{padding:1px 5px;border:1px solid var(--scax-color-line-weak);border-radius:var(--scax-radius-xs);background:var(--scax-color-surface-alt);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:var(--scax-text-caption1-size)}
+.scax-md pre{margin:0 0 var(--scax-space-150);padding:var(--scax-space-200) var(--scax-space-300);border:1px solid var(--scax-color-line-weak);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface-alt);overflow-x:auto;font-size:var(--scax-text-caption1-size)}
+.scax-md pre code{padding:0;border:0;background:none}
+.scax-md blockquote{margin:0 0 var(--scax-space-150);padding:var(--scax-space-050) var(--scax-space-300);border-left:3px solid var(--scax-color-line-strong);color:var(--scax-color-ink-alt)}
+.scax-md hr{margin:var(--scax-space-200) 0;border:0;border-top:1px solid var(--scax-color-line)}
+.scax-md table{margin:0 0 var(--scax-space-150);border-collapse:collapse;font-size:var(--scax-text-label2-size)}
+.scax-md th,.scax-md td{padding:var(--scax-space-100) var(--scax-space-200);border:1px solid var(--scax-color-line);text-align:left}
+.scax-md th{background:var(--scax-color-surface-alt);font-weight:var(--scax-fw-bold)}
+.scax-msg--assistant.scax-msg--failed .scax-md,.scax-msg--assistant.scax-msg--cancelled .scax-md{color:var(--scax-color-ink-alt)}
+/* 답변 본문 안에서 정본을 가리키는 낱말 (구 871~872) */
+.scax-md__ref{display:inline;margin:0;padding:0;border:0;color:var(--scax-color-accent);background:transparent;font:inherit;font-weight:var(--scax-fw-semibold);text-decoration:underline;text-decoration-color:var(--scax-color-accent-20);text-underline-offset:3px;cursor:pointer}
+.scax-md__ref:hover{color:var(--scax-color-accent-strong)}
+
+/* ───────────────────────────────────── 액션 미리보기 표 (구 1162~1172) */
+.scax-preview{margin:var(--scax-space-150) 0 var(--scax-space-100);font-size:var(--scax-text-caption1-size)}
+.scax-preview>summary{cursor:pointer;color:var(--scax-color-accent);font-weight:var(--scax-fw-medium);list-style:none}
+.scax-preview>summary::-webkit-details-marker{display:none}
+.scax-preview>summary::before{content:"▸ ";color:var(--scax-color-ink-assistive)}
+.scax-preview[open]>summary::before{content:"▾ "}
+.scax-preview>summary small{display:inline;margin:0;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size);font-weight:var(--scax-fw-regular)}
+.scax-preview__list{display:grid;grid-template-columns:max-content 1fr;gap:var(--scax-space-100) var(--scax-space-300);margin:var(--scax-space-150) 0 0;padding:var(--scax-space-200) var(--scax-space-300);border:1px solid var(--scax-color-line-weak);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface-alt)}
+.scax-preview__row{display:contents}
+.scax-preview__row dt{color:var(--scax-color-ink-assistive);font-weight:var(--scax-fw-medium);white-space:nowrap}
+.scax-preview__row dd{margin:0;color:var(--scax-color-ink);overflow-wrap:anywhere;white-space:pre-wrap}
+.scax-preview__row--evidence dd{color:var(--scax-color-ink-alt)}
+
+/* ────────────────────────────────────────────── 입력줄 (구 770~773 · 963~965 · 1135~1136) */
+.scax-chat__composer{position:sticky;bottom:0;display:grid;flex:none;gap:var(--scax-space-200);padding:var(--scax-space-250) var(--scax-space-300) var(--scax-space-300);border-top:1px solid var(--scax-color-line);background:var(--scax-color-surface)}
+.scax-chat__composer textarea{resize:none;min-height:44px;max-height:200px;overflow-y:auto;line-height:1.5}
+.scax-chat__composer-actions{display:flex;align-items:center;justify-content:space-between;gap:var(--scax-space-200)}
+.scax-chat__context{display:grid;gap:var(--scax-space-100)}
+.scax-chat__context small{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size)}
+.scax-chat__context-chip{display:inline-flex;align-items:center;gap:var(--scax-space-200);width:max-content;max-width:100%;height:30px;padding:0 var(--scax-space-200) 0 var(--scax-space-300);border-radius:var(--scax-radius-pill);color:var(--scax-color-accent);background:var(--scax-color-accent-08);font-size:var(--scax-text-caption1-size);font-weight:var(--scax-fw-medium)}
+.scax-chat__context-chip>span:last-of-type{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scax-chat__context-chip button{color:var(--scax-color-accent);font-size:var(--scax-text-label1-size)}
+
+/* ──────────────────────────────────────────────────────────────── 좁은 화면
+   구 styles.css:793 · 801~809 · 840~845 의 내 몫. */
+@media (max-width:1280px){
+  .scax-drawer--chat{width:100vw}
+}
+@media (max-width:1120px){
+  .scax-character--launcher{width:92px;height:98px}
+  .scax-agent--ax{width:172px}
+  .scax-agent--ax .scax-agent__bubble{padding:var(--scax-space-250) var(--scax-space-300)}
+  .scax-agent--ax .scax-agent__bubble>span{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;font-size:var(--scax-text-caption1-size)}
+}
+@media (max-width:900px){
+  .scax-agent--ax{right:var(--scax-space-300);bottom:var(--scax-space-300);width:148px}
+  .scax-agent--ax .scax-agent__orb{width:96px;height:88px}
+  .scax-agent--ax .scax-agent__glow{width:96px;height:56px}
+  .scax-agent__launch{left:8px;bottom:6px;width:80px;height:80px}
+}
+@media (max-width:720px){
+  .scax-agent--idle .scax-character,
+  .scax-agent--hover .scax-character,
+  .scax-agent--working .scax-character,
+  .scax-agent--answer-ready .scax-character,
+  .scax-agent--attention .scax-character,
+  .scax-agent--error .scax-character{animation:none;transition:none;transform:none}
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   과도기 re-aim — 이 파일이 이름을 바꾼 «조상» 을 짚고 있던 구 규칙들.
+
+   **바퀴 8-C 에서 네 덩어리 중 셋이 죽었다.** 액션 카드 «속» 172줄이 `action-cards.css` 로
+   옮겨 가면서 거기서 조상을 직접 새 이름으로 겨누게 됐다 — 여기 있던 복사본은 쓸모가 없어졌다
+   (진행 일괄 카드의 흐린 머리 · 단추줄 정렬 · 완료 문구 폭).
+
+   남은 하나는 성격이 다르다. `overrides-transitional.css` 가 짚던 조상을 바퀴 7 이 갈았고,
+   그 파일은 그때 P-2 로 못 고쳤다. 이 바퀴는 Q-2 로 그 파일을 줄여도 되므로 **그쪽의 죽은 줄은
+   지웠고**, 새 이름으로 겨누는 이 한 줄만 여기 남는다. AX 레일이 새로 그려지는 바퀴가 가져간다.
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* ── overrides-transitional.css:「AX 근거 레일의 작은 단추」 → 이 바퀴에서 조상이 바뀌었다 ──
+   그 파일은 P-2 로 못 고치므로 여기서 새 이름으로 다시 겨눈다. 그쪽 규칙은 이제 죽은 줄이다. */
+.scax-rail__evidence .scax-sources__list .scax-button,
+.scax-rail__evidence .scax-evidence__head .scax-button{height:24px;padding:0 var(--scax-space-200);font-size:var(--scax-text-caption2-size)}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   액션 카드의 속 — 폼·첨부·자료 고르기 (바퀴 8-C 가 구 styles.css 에서 옮겨 온 172줄).
+   **바퀴 9 에서 이 파일로 합쳤다** — 액션 카드는 AX 대화 안에 사는 것이라 집이 여기다.
+   과도기 파일(`action-cards.css`)을 하나도 남기지 않는 것이 바퀴 9 의 계약이다.
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+.action-progress-batch-card > .action-progress-batch-editor { display: grid; gap: 8px; }
+.action-progress-batch-card { width: min(520px, calc(100% - 24px)); }
+.action-progress-batch-card[data-state="approved"] .scax-badge,
+.scax-chat__messages .action-progress-batch-card[data-state="approved"] > small.approved { color: var(--scax-color-ink-assistive); font-size: 11px; font-weight: 500; }
+.action-progress-batch-card[data-state="approved"] .scax-preview > summary { color: var(--scax-color-ink-assistive); }
+.action-progress-batch-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px 8px; margin: 0; padding: 10px; border: 1px solid var(--scax-color-line); border-radius: 8px; background: var(--scax-color-surface); }
+.action-progress-batch-row legend { grid-column: 1 / -1; padding: 0 3px; color: var(--scax-color-ink-alt); font-size: 12px; font-weight: 700; }
+.action-progress-batch-row label { display: grid; gap: 5px; color: var(--scax-color-ink-assistive); font-size: 11px; }
+.action-progress-batch-row label input:not([type="checkbox"]) { width: 100%; min-width: 0; height: 34px; padding: 0 10px; border: 1px solid var(--scax-color-line); border-radius: 7px; color: var(--scax-color-ink); background: var(--scax-color-surface); font-size: 12px; }
+.action-progress-batch-row .action-progress-batch-check { display: flex; align-items: center; gap: 7px; color: var(--scax-color-ink); font-size: 12px; }
+.scax-actioncard > .action-progress-batch-actions { justify-content: flex-end; }
+.action-progress-batch-error { color: var(--scax-color-danger) !important; }
+.action-task-request-target { display: flex; align-items: center; gap: 8px; width: fit-content; min-height: 40px; margin: 16px 24px 0 0; padding: 8px 12px; border-radius: 12px; background: var(--scax-color-surface-alt); color: var(--scax-color-ink-alt); font-size: 13px; line-height: 20px; }
+.action-task-request-target + .action-task-card { margin-top: 8px; }
+.action-task-card { --task-card-border: rgba(112, 115, 124, 0.16); --task-card-edit-border: #dbd3fe; --task-card-title: #131927; --task-card-copy: #737373; --task-card-meta: #70737c; display: flex; flex-direction: column; gap: 32px; width: min(380px, 100%); margin: 16px auto 8px 0; padding: 16px; border: 1px solid var(--task-card-border); border-radius: 14px; background: var(--scax-color-surface); box-shadow: none; }
+.action-task-card[data-state="approved"] { border-color: var(--task-card-border); background: var(--scax-color-surface); box-shadow: 0 4px 6px -1px rgba(23, 23, 23, 0.06), 0 2px 4px -2px rgba(23, 23, 23, 0.06); }
+.action-task-card[data-view="editing"] { border: 2px solid var(--task-card-edit-border); box-shadow: 0 4px 6px -1px rgba(23, 23, 23, 0.06), 0 2px 4px -2px rgba(23, 23, 23, 0.06); }
+.action-task-card > .action-task-content { display: grid; gap: 16px; margin-top: 0; }
+.action-task-card .action-task-badges { display: flex; align-items: center; justify-content: flex-start; gap: 8px; margin: 0; }
+.action-task-card .action-task-badges span { display: inline-flex; align-items: center; min-height: 24px; padding: 0 6px; border-radius: 4px; font-size: 12px; font-weight: 500; letter-spacing: 0.3024px; line-height: 16px; }
+.action-task-card .action-task-badges .scax-badge { margin: 0; color: #0098b2; background: #edfafd; }
+.action-task-state-badge.draft { color: rgba(55, 56, 60, 0.61); background: var(--scax-color-surface-alt); }
+.action-task-state-badge.task, .action-task-state-badge.approved { color: #005eeb; background: #eef5ff; }
+.action-task-state-badge.requested { color: #ff5d00; background: #fff3eb; }
+.action-task-state-badge.rejected { color: var(--scax-color-ink-assistive); background: var(--scax-color-surface-alt); }
+.action-task-card .action-task-summary { display: grid; gap: 4px; margin-top: 0; }
+.action-task-summary > b { color: var(--task-card-title); font-size: 15px; font-weight: 500; line-height: 24.375px; letter-spacing: 0.0855px; }
+.action-task-summary > p { margin: 0; color: var(--task-card-copy); font-size: 14px; line-height: 22.4px; letter-spacing: 0.1344px; }
+.action-task-summary > dl { display: grid; gap: 8px; margin: 12px 0 0; padding-top: 16px; border-top: 1px solid var(--task-card-border); }
+.action-task-summary > dl > div { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px; font-size: 14px; line-height: 20.538px; letter-spacing: 0.1344px; }
+.action-task-summary dt { color: var(--task-card-meta); }
+.action-task-summary dd { margin: 0; color: #000; text-align: right; overflow-wrap: anywhere; }
+.action-task-summary > dl > .action-task-summary-checklist { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.action-task-summary-checklist dd { text-align: left; }
+.action-task-summary-checklist ul { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.action-task-summary-checklist li { position: relative; min-height: 28px; padding: 4px 8px 4px 22px; border-radius: 6px; background: var(--scax-color-surface-alt); color: var(--task-card-copy); font-size: 13px; line-height: 20px; }
+.action-task-summary-checklist li::before { content: ""; position: absolute; top: 11px; left: 10px; width: 5px; height: 5px; border-radius: 50%; background: var(--scax-color-ink-disabled); }
+.action-task-card > .action-task-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 0; }
+.action-task-card > .action-task-actions .action-task-reset { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.scax-chat__messages .action-task-completion-note { width: min(380px, 100%); margin: 12px 24px 8px 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--scax-color-ink); font-size: 13px; line-height: 20px; }
+.scax-chat__messages .action-task-completion-note.request { display: flex; flex-direction: column; gap: 2px; }
+.action-task-card .action-task-error { margin-top: 0; padding: 8px 12px; border: 1px solid var(--scax-color-danger); border-radius: 4px; color: var(--scax-color-danger); background: var(--scax-color-danger-soft); }
+.action-task-card .action-task-stale { display: block; margin: 0; padding: 12px; border: 1px solid #d8a928; border-radius: var(--scax-radius-sm); background: #fff9e8; }
+.action-task-stale > p { margin: 6px 0 10px; }
+.action-task-stale dl { display: grid; gap: 7px; margin: 0 0 10px; }
+.action-task-stale dl > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 8px; font-size: 12px; }
+.action-task-stale dt { grid-column: 1 / -1; font-weight: 700; }
+.action-task-stale dd { margin: 0; overflow-wrap: anywhere; }
+.action-task-stale > .action-task-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.action-task-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 0; }
+.action-task-card .action-task-fields { grid-template-columns: minmax(0, 1fr); }
+.action-task-card .action-task-fields > .action-task-field { grid-column: 1; }
+.action-task-card .action-task-field[data-field-id="assignee_id"] { padding-top: 16px; border-top: 1px solid var(--task-card-border); }
+.action-task-field { display: grid; min-width: 0; gap: 7px; margin: 0; padding: 0; border: 0; }
+.action-task-field.text, .action-task-field.textarea, .action-task-field.string_list, .action-task-field.multi_select { grid-column: 1 / -1; }
+.action-task-field > label, .action-task-field > legend, .action-task-card .date-field > label { padding: 0; color: var(--task-card-title, var(--scax-color-ink-alt)); font-size: 14px; font-weight: 600; line-height: 20px; }
+.action-task-field input:not([type="checkbox"]), .action-task-field select, .action-task-field textarea { width: 100%; min-width: 0; }
+.action-task-card .action-task-field input:not([type="checkbox"]), .action-task-card .action-task-field select { min-height: 48px; padding: 0 12px; border-color: var(--task-card-border); border-radius: 10px; font-size: 14px; }
+.action-task-card .action-task-field textarea { min-height: 72px; padding: 12px; border-color: var(--task-card-border); border-radius: 10px; font-size: 14px; line-height: 1.5; resize: vertical; }
+.action-task-field output { min-height: 36px; padding: 8px 10px; border-radius: 4px; background: var(--scax-color-surface-alt); color: var(--scax-color-ink-alt); font-size: 13px; }
+.action-task-card .action-task-field output { display: flex; align-items: center; min-height: 48px; padding: 0 12px; border: 1px solid var(--task-card-border); border-radius: 10px; background: var(--scax-color-surface); color: #171719; font-size: 14px; }
+.action-task-card .date-field-control { position: relative; display: block; }
+.action-task-card .date-field-control input[type="text"] { padding-right: 44px; }
+.action-task-card .date-field-picker { position: absolute; top: 4px; right: 4px; width: 40px; height: 40px; padding: 0; border: 0; background: transparent; color: var(--task-card-meta); }
+.action-task-card .date-field-picker:hover:not(:disabled) { border: 0; background: var(--scax-color-surface-alt); }
+.action-task-list, .action-task-options { display: grid; gap: 6px; }
+.action-task-list ul { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.action-task-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 8px; border-radius: 4px; background: var(--scax-color-surface-alt); font-size: 13px; }
+.action-task-add-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.action-task-options { max-height: 144px; overflow: auto; padding: 8px 10px; border: 1px solid var(--scax-color-line-weak); border-radius: 4px; }
+.action-task-options label { display: flex; align-items: center; gap: 7px; font-size: 13px; }
+.action-meeting-fields { gap: 16px; }
+.action-meeting-people { display: grid; gap: 16px; padding-top: 16px; border-top: 1px solid var(--task-card-border); }
+.action-meeting-schedule { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+.action-meeting-cross-day { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+.action-meeting-fields .action-meeting-host { justify-content: space-between; gap: 8px; }
+.action-meeting-fields .action-meeting-host > svg { flex: none; color: var(--task-card-meta); }
+.action-meeting-fields .select-trigger { min-height: 48px; height: 48px; border-color: var(--task-card-border); border-radius: 10px; font-size: 14px; }
+.action-meeting-fields .select-trigger.multi { padding: 0 10px 0 12px; }
+.action-meeting-fields .select-trigger.multi .select-open { min-width: 0; }
+.action-meeting-fields .time-range { gap: 5px; }
+.action-meeting-fields .time-range-dash { font-size: 12px; }
+.action-meeting-fields .time-range .select-trigger { min-width: 0; padding: 0 7px; }
+.action-meeting-fields .time-range .select-trigger svg { display: none; }
+.action-meeting-note-editor { display: grid; gap: 8px; }
+.action-meeting-note-editor > label { color: var(--task-card-title); font-size: 14px; font-weight: 600; line-height: 20px; }
+.action-meeting-note-editor > textarea { width: 100%; min-height: 104px; padding: 12px; border: 1px solid var(--task-card-border); border-radius: 10px; font: inherit; font-size: 14px; line-height: 1.5; resize: vertical; }
+.action-meeting-sources { display: grid; gap: 7px; margin-top: 12px; padding: 10px; border: 1px solid var(--scax-color-line-weak); border-radius: 4px; background: var(--scax-color-surface-alt); }
+.action-meeting-sources > p { margin: 0; color: var(--scax-color-ink-alt); font-size: 12px; font-weight: 700; }
+.action-meeting-sources ul { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.action-meeting-sources li { display: grid; gap: 2px; min-width: 0; font-size: 12px; }
+.action-meeting-sources li b { color: var(--scax-color-ink); font-size: 12px; }
+.action-meeting-sources li span { color: var(--scax-color-ink-assistive); overflow-wrap: anywhere; }
+.action-meeting-warnings { margin: 10px 0 0; padding: 8px 10px 8px 26px; border: 1px solid #d8a928; border-radius: 4px; background: #fff9e8; color: var(--scax-color-ink-alt); font-size: 12px; }
+.action-meeting-card .action-task-badges .scax-badge { color: #17823b; background: #edf9f0; }
+.action-meeting-summary > dl { padding-top: 16px; border-top: 1px solid var(--task-card-border); }
+.action-meeting-note-section { display: grid; gap: 8px; padding-top: 16px; border-top: 1px solid var(--task-card-border); }
+.action-meeting-note-section > b,
+.action-meeting-card .action-task-attachment-heading > b { color: var(--task-card-title); font-size: 14px; font-weight: 600; line-height: 20px; }
+.action-meeting-card .action-meeting-note-section > .action-task-attachment-trigger { width: 100%; }
+.action-meeting-note-list .action-meeting-note-edit { justify-self: stretch; width: auto; height: auto; padding: 0; border-radius: 0; color: #000; font: inherit; text-align: left; }
+.action-meeting-note-list .action-meeting-note-edit:hover:not(:disabled) { background: transparent; color: var(--scax-color-accent); }
+.action-task-card .action-task-attachments { display: grid; gap: 8px; margin-top: 0; }
+.action-task-card .action-task-summary + .action-task-attachments,
+.action-task-card .action-task-fields + .action-task-attachments { padding-top: 16px; border-top: 1px solid var(--task-card-border); }
+.action-task-attachment-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.action-task-attachment-heading b { color: rgba(46, 47, 51, 0.88); font-size: 14px; font-weight: 600; line-height: 20px; letter-spacing: 0.203px; }
+.action-task-attachment-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.action-task-attachment-list li { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 40px; padding: 8px; border: 0; border-radius: 8px; background: var(--scax-color-surface-alt); color: #000; font-size: 14px; line-height: 20.538px; letter-spacing: 0.1344px; }
+.action-task-attachment-list li > span:first-child { display: grid; place-items: center; color: var(--task-card-meta); text-align: center; }
+.action-task-attachment-list li > span:nth-child(2) { display: grid; gap: 1px; overflow-wrap: anywhere; }
+.action-task-attachment-list em { color: var(--scax-color-ink-assistive); font-size: 12px; font-style: normal; }
+.action-task-attachment-list [data-upload-state="failed"] { border-color: var(--scax-color-danger); background: var(--scax-color-danger-soft); }
+.action-task-attachment-list button { width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; color: var(--scax-color-ink-alt); background: transparent; cursor: pointer; font-size: 18px; }
+.action-task-attachment-list button:hover { background: var(--scax-color-accent-08); color: var(--scax-color-ink); }
+.action-task-attachment-trigger { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; min-height: 40px; padding: 0 14px; border: 1px solid var(--task-card-border, var(--scax-color-line-strong)); border-radius: 10px; color: #171719; background: var(--scax-color-surface); font-size: 15px; font-weight: 500; line-height: 22.5px; letter-spacing: 0.0855px; }
+.action-task-attachment-trigger.empty { border-color: var(--scax-color-line); color: var(--scax-color-ink-assistive); }
+.action-task-attachment-trigger:hover:not(:disabled) { border-color: var(--scax-color-line-strong); background: var(--scax-color-surface-alt); }
+.action-task-attachment-trigger:disabled { color: var(--scax-color-ink-disabled); background: var(--scax-color-surface-alt); }
+.attachment-picker-backdrop { z-index: 80; }
+.attachment-picker-modal { width: min(580px, 100%); max-height: calc(100dvh - 40px); padding: 0; overflow: hidden; border: 1px solid var(--scax-color-line); border-radius: 18px; }
+.attachment-picker-head { padding: 24px 24px 0; }
+.attachment-picker-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.attachment-picker-title h3 { margin: 0; color: var(--scax-color-ink); font-size: 18px; line-height: 26px; letter-spacing: -.4px; }
+.attachment-picker-title p { margin: 7px 0 18px; color: var(--scax-color-ink-assistive); font-size: 12px; line-height: 18px; }
+.attachment-picker-tabs { display: flex; gap: 24px; border-bottom: 1px solid var(--scax-color-line-weak); }
+.attachment-picker-tabs button { display: flex; align-items: center; min-height: 38px; padding: 0 0 12px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--scax-color-ink-assistive); font-size: 13px; cursor: pointer; }
+.attachment-picker-tabs button[aria-selected="true"] { border-color: var(--scax-color-accent); color: var(--scax-color-accent); font-weight: 700; }
+.attachment-picker-body { min-height: 315px; max-height: min(52dvh, 460px); padding: 20px 24px; overflow: auto; }
+.attachment-picker-search { display: flex; align-items: center; gap: 9px; height: 44px; padding: 0 12px; border: 1px solid #b9b6ff; border-radius: 10px; box-shadow: 0 0 0 3px #f5f3ff; color: var(--scax-color-ink-assistive); }
+.attachment-picker-search input { flex: 1; min-width: 0; padding: 0; border: 0; outline: 0; background: transparent; font-size: 13px; }
+.attachment-picker-search button { display: grid; width: 26px; height: 26px; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--scax-color-ink-assistive); }
+.attachment-picker-results { margin-top: 14px; }
+.attachment-picker-empty { display: grid; justify-items: center; padding: 36px 12px 28px; text-align: center; }
+.attachment-picker-empty > span { display: grid; width: 42px; height: 42px; margin-bottom: 13px; place-items: center; border-radius: 13px; background: #f4f3fa; color: #b3accb; }
+.attachment-picker-empty b { color: var(--scax-color-ink-alt); font-size: 13px; font-weight: 500; }
+.attachment-picker-empty p { margin: 8px 0 0; color: var(--scax-color-ink-assistive); font-size: 12px; }
+.attachment-picker-result-title { display: flex; justify-content: space-between; padding: 5px 0 9px; color: var(--scax-color-ink-assistive); font-size: 11px; }
+.attachment-picker-result { display: grid; grid-template-columns: 34px minmax(0, 1fr) 17px; align-items: center; gap: 11px; width: 100%; padding: 8px; border: 1px solid transparent; border-radius: 9px; background: transparent; text-align: left; cursor: pointer; }
+.attachment-picker-result:hover:not(:disabled) { background: #f8f7ff; }
+.attachment-picker-result[aria-pressed="true"] { border-color: #e8e2ff; background: #f5f3ff; }
+.attachment-picker-result:disabled { cursor: default; opacity: .55; }
+.attachment-picker-result-icon { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 9px; background: var(--scax-color-surface-alt); color: var(--scax-color-ink-assistive); }
+.attachment-picker-result > span:nth-child(2) { min-width: 0; }
+.attachment-picker-result b, .attachment-picker-result small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-picker-result b { color: var(--scax-color-ink); font-size: 12px; font-weight: 600; }
+.attachment-picker-result small { margin-top: 4px; color: var(--scax-color-ink-assistive); font-size: 10px; }
+.attachment-picker-check { display: grid; width: 17px; height: 17px; place-items: center; border: 1px solid var(--scax-color-line); border-radius: 5px; color: transparent; }
+.attachment-picker-result[aria-pressed="true"] .attachment-picker-check { border-color: var(--scax-color-accent); background: var(--scax-color-accent); color: white; }
+.attachment-picker-selection { padding: 12px 24px; border-top: 1px solid var(--scax-color-line-weak); background: #fdfcff; }
+.attachment-picker-selection > small { display: block; margin-bottom: 8px; color: var(--scax-color-ink-alt); }
+.attachment-picker-selection > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.attachment-picker-selection button { display: flex; align-items: center; gap: 6px; max-width: 220px; padding: 5px 7px; border: 0; border-radius: 6px; background: #efecff; color: #7564a7; font-size: 11px; }
+.attachment-picker-form { display: grid; gap: 16px; }
+.attachment-picker-form label { display: grid; gap: 8px; color: var(--scax-color-ink-alt); font-size: 12px; }
+.attachment-picker-form input { min-height: 44px; padding: 0 12px; border: 1px solid var(--scax-color-line); border-radius: 9px; font: inherit; }
+.attachment-picker-upload { display: flex; min-height: 190px; flex-direction: column; align-items: center; justify-content: center; padding: 24px; border: 1px dashed #d4cfe7; border-radius: 12px; background: #fbfaff; color: var(--scax-color-ink-alt); text-align: center; cursor: pointer; }
+.attachment-picker-upload > svg { margin-bottom: 12px; color: #9c8fbe; }
+.attachment-picker-upload b { font-size: 13px; font-weight: 600; }
+.attachment-picker-upload span { margin-top: 18px; padding: 7px 14px; border: 1px solid #e0dbf2; border-radius: 7px; background: white; color: var(--scax-color-accent); font-size: 11px; }
+.attachment-picker-upload input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.attachment-picker-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 24px; border-top: 1px solid var(--scax-color-line-weak); }
+.attachment-picker-foot > span { color: var(--scax-color-ink-assistive); font-size: 11px; }
+.attachment-picker-foot > div { display: flex; gap: 8px; }
+@media (max-width: 640px) {
+  .attachment-picker-backdrop { padding: 12px; }
+  .attachment-picker-head { padding: 20px 18px 0; }
+  .attachment-picker-body { min-height: 270px; padding: 18px; }
+  .attachment-picker-selection { padding: 12px 18px; }
+  .attachment-picker-foot { padding: 14px 18px; }
+  .attachment-picker-foot > span { max-width: 120px; line-height: 16px; }
+}
+
+/* ── 액션 카드의 단추줄 (바퀴 9 에 overrides-transitional.css 에서 옮겨 왔다) ──
+   카드 안의 단추는 48px·radius 10 으로 카드 설계를 따른다 — DS 기본 단추와 다른 자리다. */
+.action-task-card > .action-task-actions .scax-button { min-width: 83px; height: 48px; padding: 0 27px; border-color: var(--task-card-border); border-radius: 10px; background: var(--scax-color-surface); color: #171719; font-size: 15px; font-weight: 500; line-height: 22.5px; letter-spacing: 0.0855px; }
+.action-task-card > .action-task-actions .scax-button:hover:not(:disabled) { border-color: var(--scax-color-line-strong); background: var(--scax-color-surface-alt); }
+.action-task-card > .action-task-actions .scax-button--solid-primary { border-color: transparent; background: var(--scax-color-accent); color: #fff; }
+.action-task-card > .action-task-actions .scax-button--solid-primary:hover:not(:disabled) { border-color: var(--scax-color-accent-strong); background: var(--scax-color-accent-strong); }
+.action-task-card > .action-task-actions .scax-button--solid-danger { border-color: var(--task-card-border); background: var(--scax-color-surface); color: var(--scax-color-danger); }
+.action-task-card > .action-task-actions .scax-button--solid-danger:hover:not(:disabled) { border-color: var(--scax-color-danger); background: var(--scax-color-danger-soft); color: var(--scax-color-danger); }
+.action-task-card > .action-task-actions .scax-button:disabled { border-color: var(--scax-color-line); background: var(--scax-color-surface-alt); color: var(--scax-color-ink-disabled); }
+.action-progress-batch-row > .scax-button { align-self: end; }
+.action-meeting-fields .select-trigger.multi .scax-badge { max-width: 112px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   바퀴 9-B — 구 `styles.css` 에서 옮겨 온 AX 대화 · 액션 카드 규칙 30개.
+   **마크업은 한 줄도 안 바꿨다.** 값은 구 파일에 있던 그대로이고 토큰 이름만 `--scax-*` 로 갔다.
+   구 파일이 앱에서 «맨 먼저» 실렸던 것과 달리 이 파일은 늦게 실린다 — 같은 셀렉터가 양쪽에 있던
+   규칙 117개는 어차피 새 파일이 이기고 있었으므로 옮기기 전에 걷어냈다.
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* Checkbox · 16 × 16 · r4 (v2 09) — 네이티브 input 을 다시 칠한 것이라 키보드·AT 는 그대로다 */
+/* 바퀴 3b: 체크박스 그림은 새 DS 로 갔다 — .scax-checkbox__input + .scax-checkbox__box (components.css).
+   여기 남은 넷은 DS 가 «안 가진» 것이라 새 클래스를 겨눈다: 라벨 간격 · 커서 · disabled 표시. */
+.checkbox { align-items: center; gap: 8px; cursor: pointer; font-size: 14px; }
+.checkbox:has(input:disabled) { cursor: not-allowed; color: var(--scax-color-ink-disabled); }
+/* ---------- overlays: drawer (840) / modal (600) / toast ---------- */
+/* 바퀴 3b: Drawer 는 새 DS 골격으로 갔다 — .overlay-scrim · .drawer(+head/body/foot) 를 지웠다.
+   자리는 styles/workspace.css 의 .scax-drawer-overlay · .scax-drawer · __head/__title/__body/__foot/__spacer
+   (폭 두 단은 styles/overrides-transitional.css 의 --sm/--lg). 아래 한 줄만 DS 에 없어서 다시 겨눈다. */
+.scax-drawer__head .modal-kicker { display: block; margin-bottom: 4px; color: var(--scax-color-ink-assistive); font-size: 13px; font-weight: 700; }
+/* ---- unified judgement drawer: the current question, the rounds, and the revision diff */
+.current-question { margin: 0 0 12px; padding: 12px; border-radius: var(--scax-radius-sm); background: var(--scax-color-accent-08); color: var(--scax-color-ink); font-size: 13px; font-weight: 500; }
+.round-list { display: grid; gap: 12px; margin: 8px 0 0; padding: 0; list-style: none; }
+.round-row { padding: 12px; border: 1px solid var(--scax-color-line); border-radius: var(--scax-radius-sm); background: var(--scax-color-surface); }
+.round-head { display: flex; align-items: baseline; gap: 8px; justify-content: space-between; }
+.round-snapshot { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 6px 0 0; font-size: 12px; }
+.round-snapshot-row { display: contents; }
+.round-snapshot-row dt { color: var(--scax-color-ink-assistive); white-space: nowrap; }
+.round-snapshot-row dd { margin: 0; overflow-wrap: anywhere; }
+.round-diff { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 8px 0 0; padding: 8px 12px; border-radius: var(--scax-radius-chip); background: var(--scax-color-surface-alt); font-size: 12px; }
+.round-diff-row { display: contents; }
+.round-diff-row dt { color: var(--scax-color-ink-assistive); white-space: nowrap; }
+.round-diff-row dd { margin: 0; overflow-wrap: anywhere; }
+.round-diff s { color: var(--scax-color-ink-assistive); }
+/* 바퀴 8-C: `.revision-diff s` 는 shared-blocks.css 로 갈라져 갔다 */
+.round-decision { margin: 8px 0 0; font-size: 12px; color: var(--scax-color-ink-alt); }
+/* The ask that sent a request back: the reviewer's reason and the fields they proposed changing. */
+.adjustment-ask { border-left: 3px solid var(--scax-color-line-strong); padding-left: 12px; }
+.adjustment-ask h4 { display: flex; align-items: baseline; gap: 6px; }
+.adjustment-reason { margin: 6px 0 0; font-size: 13px; }
+.proposal-grid { margin-top: 12px; }
+.discussion-list { display: grid; gap: 8px; margin: 8px 0 0; padding: 0; list-style: none; }
+.discussion-row { padding: 8px 12px; border: 1px solid var(--scax-color-line-weak); border-radius: var(--scax-radius-sm); background: var(--scax-color-surface-alt); }
+.discussion-body { margin: 4px 0 0; font-size: 12px; overflow-wrap: anywhere; }
+.drawer-facts { display: flex; flex-wrap: wrap; gap: 16px; margin: 0 0 12px; }
+.drawer-facts dt { color: var(--scax-color-ink-assistive); font-size: 12px; }
+.drawer-facts dd { margin: 2px 0 0; font-size: 13px; }
+/* 바퀴 9: `.meeting-share-table` 두 줄은 `styles/meetings.css` 로 갔다 (표가 `.scax-table` 이 되면서). */
+
+/* ---- 디자인 시스템 v2 에 없는 부품 셋 — 화면 전용이 아니라 부품으로 세운다 (D25) ----
+   Composer(한 줄 입력 한 벌) · GutterList(고정폭 메타 칸 + 본문) · StatusNote(곁에 서는 상태 한 줄).
+   값은 전부 토큰이다 — 새 색·새 그림자 0. DS 에 오르면 이 블록이 그대로 옮겨 간다. */
+.composer { display: flex; align-items: center; gap: 8px; padding: 5px 6px 5px 8px; border: 1px solid var(--scax-color-line-strong); border-radius: var(--scax-radius-sm); background: var(--scax-color-surface); }
+.composer input { flex: 1; min-width: 0; height: 32px; padding: 0 4px; border: 0; border-radius: 0; background: transparent; font-size: 14px; }
+.composer input:focus { box-shadow: none; }
+
+/* ── AX 캐릭터의 움직임 (바퀴 9-B 에 구 styles.css 에서 옮겨 왔다) ──
+   `AssistantCharacter` · `AssistantLauncher` 가 상태에 따라 골라 쓴다. 값은 구 파일 그대로다. */
+@keyframes assistant-breathe { 0%, 100% { transform: scale(1); } 50% { transform: translateY(-2px) scale(1.012); } }
+@keyframes assistant-working { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+@keyframes assistant-arrive { 0% { opacity: .55; transform: translateY(12px) scale(.94); } 70% { opacity: 1; transform: translateY(-3px) scale(1.02); } 100% { transform: translateY(0) scale(1); } }
+@keyframes assistant-attention { 0%, 100% { transform: rotate(0) scale(1); } 45% { transform: rotate(-2deg) scale(1.02); } 60% { transform: rotate(1.5deg) scale(1.02); } }
+@keyframes assistant-error { 0%, 100% { transform: translateX(0); } 30% { transform: translateX(-5px); } 65% { transform: translateX(4px); } }
+@keyframes ax-blink { 50% { opacity: 0; } }
+
+/* ── 커맨드 확인 폼 (main #10 이 구 styles.css:263~266 에 넣은 것 — 바퀴 12 가 여기로 옮겼다) ──
+   액션 카드 안에서 커맨드를 고르고 값을 채우는 자리다. 값은 main 것 그대로, 토큰만 `--scax-*` 로. */
+.action-command-editor{display:grid;gap:var(--scax-space-400)}
+.action-command-editor fieldset{border:0;padding:0;margin:0;min-width:0}
+.action-command-editor .action-task-buttons{display:flex;flex-wrap:wrap;gap:var(--scax-space-200)}
+.action-command-editor input[type="datetime-local"]{width:100%;height:38px;padding:0 var(--scax-space-300);border:1px solid var(--scax-color-line-strong);border-radius:var(--scax-radius-sm);color:var(--scax-color-ink);background:var(--scax-color-surface);font-size:var(--scax-text-body1-size)}
+

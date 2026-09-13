@@ -1,0 +1,14 @@
+/* Pretendard JP is the product typeface of the source Figma file (all UI text).
+   Pretendard (non-JP) appears once, at display size, on the section cover board.
+   The .fig ships no font binaries, so these @font-face rules load the upstream
+   open-source variable builds from jsDelivr. Swap src: to local files if you
+   have the licensed originals.
+
+   바퀴 1(D4): 그 src: 두 개를 로컬 사본으로 바꿨다. 원격 jsDelivr 에 런타임 의존하면
+   사내망·오프라인에서 글꼴이 깨진다. woff2 2벌을 frontend/public/fonts/ 에 동봉했다
+   (Pretendard = SIL OFL 1.1, 동봉 가능). 받은 곳은 위 주석의 v1.3.9 경로 그대로다 —
+   다만 비-JP 쪽 원본 URL(`@v1.3.9/dist/web/...`)은 jsDelivr 에서 404 였고, 실제 파일은
+   `@v1.3.9/packages/pretendard/dist/web/...` 에 있다. 즉 이 파일의 원격 src 는 그냥 두면
+   애초에 뜨지 않았다. (ds-token-report.md §5) */
+@font-face{font-family:"Pretendard JP";font-style:normal;font-weight:45 920;font-display:swap;src:url("/fonts/PretendardJPVariable.woff2") format("woff2-variations")}
+@font-face{font-family:"Pretendard";font-style:normal;font-weight:45 920;font-display:swap;src:url("/fonts/PretendardVariable.woff2") format("woff2-variations")}
