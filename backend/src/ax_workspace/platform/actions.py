@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from dataclasses import dataclass, fields
 from typing import Any, Callable
 from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ax_workspace.modules.actions.domain import ActionCenterApplication
+from ax_workspace.modules.actions.payloads import normalize_task_progress_batch as _normalize_task_progress_batch
 from ax_workspace.modules.organization_access.application import OrganizationApplication
 from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, TASK_ASSIGN, Principal
 from ax_workspace.modules.meetings.application import MeetingApplication
@@ -40,7 +43,6 @@ from ax_workspace.modules.work.drafts import (
 from ax_workspace.modules.work.projects import ProjectApplication
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
 from ax_workspace.platform.meetings import SqlAlchemyMeetingRepository
-from ax_workspace.platform.projects import SqlAlchemyProjectRepository
 from ax_workspace.platform.persistence import (
     ActionItemAuditEventRecord,
     ActionItemRecord,
@@ -62,19 +64,33 @@ from ax_workspace.platform.persistence import (
     TaskRecord,
     TaskVersionRecord,
 )
-from ax_workspace.platform.reports import SqlAlchemyDailyReportDraftWorkflow, SqlAlchemyDailyReportRepository
 from ax_workspace.modules.work.assignments import TaskAssignmentApplication
-from ax_workspace.platform.work_tasks import (
-    caused_by,
-    SqlAlchemyAttachmentRepository,
-    SqlAlchemyTaskAssignmentRepository,
-    SqlAlchemyTaskRepository,
-    SqlAlchemyWorkRecordSource,
-    SqlAlchemyWorkRequestRepository,
-)
+from ax_workspace.platform.work_tasks import caused_by, SqlAlchemyAttachmentRepository, SqlAlchemyTaskRepository
 
 
 ActionEvidenceReader = Callable[[Principal, UUID], list[dict[str, Any]]]
+
+
+@dataclass(frozen=True)
+class ActionServices:
+    """Named, session-bound factories supplied by bootstrap, never resolved by string.
+
+    Lazy edges break the Task-origin / Action-preview read cycle. Each factory
+    retains the approval's session and the composition root's complete dependencies.
+    """
+
+    tasks: Callable[[], TaskApplication]
+    assignments: Callable[[], TaskAssignmentApplication]
+    meetings: Callable[[], MeetingApplication]
+    reports: Callable[[], DailyReportApplication]
+    projects: Callable[[], ProjectApplication]
+    organization: Callable[[], OrganizationApplication]
+    action_center: Callable[[], ActionCenterApplication]
+
+    def __post_init__(self) -> None:
+        for dependency in fields(self):
+            if not callable(getattr(self, dependency.name)):
+                raise TypeError(f"Action service {dependency.name} must be supplied by bootstrap")
 
 
 class SqlAlchemyActionRepository:
@@ -82,15 +98,16 @@ class SqlAlchemyActionRepository:
         self,
         session: Session,
         *,
+        services: ActionServices,
         evidence_reader: ActionEvidenceReader | None = None,
-        work_requests: WorkRequestApplication | None = None,
     ) -> None:
         self._session = session
+        self._services = services
         self._evidence_reader = evidence_reader
         self._presenter = ActionPresenter(
             session,
+            services=services,
             evidence_reader=evidence_reader,
-            work_requests=work_requests,
         )
 
     def propose(
@@ -338,23 +355,14 @@ class SqlAlchemyActionRepository:
                 return str(self._tasks_for_source().get(principal, UUID(source_id))["title"])
             if source_type == "meeting":
                 # 새 회의 모델의 상세는 `{"meeting": {...}, "agendas": [...]}` 이고 제목은 그 안에 있다.
-                meeting = MeetingApplication(SqlAlchemyMeetingRepository(self._session)).get(
-                    principal, UUID(source_id)
-                )["meeting"]
+                meeting = self._services.meetings().get(principal, UUID(source_id))["meeting"]
                 return str(meeting.get("title") or meeting.get("title_candidate") or "")
         except (MeetingError, TaskError, ValueError):
             return None
         return None
 
     def _tasks_for_source(self) -> TaskApplication:
-        return TaskApplication(
-            SqlAlchemyTaskRepository(self._session),
-            SqlAlchemyWorkRequestRepository(self._session),
-            SqlAlchemyActionRepository(self._session),
-            SqlAlchemyAttachmentRepository(self._session),
-            SqlAlchemyOrganizationRepository(self._session),
-            ProjectApplication(SqlAlchemyProjectRepository(self._session)),
-        )
+        return self._services.tasks()
 
     def _open_canonical_submission(
         self,
@@ -679,70 +687,21 @@ class SqlAlchemyActionRepository:
         return action.action_type
 
 
-def action_center_application(
-    session: Session,
-    executor: Any,
-    *,
-    work_requests: WorkRequestApplication,
-    evidence_reader: ActionEvidenceReader | None = None,
-) -> Any:
-    """The one judgement application, built here so the wrapper runs exactly what HTTP and the UI run."""
-    # Imported late: the ActionCenter presents AX proposals through this module.
-    from ax_workspace.modules.ax_execution.actions import ActionApplication
-    from ax_workspace.modules.actions.domain import ActionCenterApplication
-    from ax_workspace.platform.action_center import action_handlers
-
-    return ActionCenterApplication(
-        action_handlers(
-            session,
-            evidence_reader=evidence_reader,
-            work_requests=work_requests,
-            actions=ActionApplication(
-                SqlAlchemyActionRepository(
-                    session,
-                    evidence_reader=evidence_reader,
-                    work_requests=work_requests,
-                ),
-                executor,
-            ),
-            assignments=TaskAssignmentApplication(
-                SqlAlchemyTaskAssignmentRepository(session),
-                OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
-                TaskApplication(
-                    SqlAlchemyTaskRepository(session),
-                    SqlAlchemyWorkRequestRepository(session),
-                    SqlAlchemyActionRepository(session),
-                    SqlAlchemyAttachmentRepository(session),
-                ),
-            ),
-            tasks=TaskApplication(
-                SqlAlchemyTaskRepository(session),
-                SqlAlchemyWorkRequestRepository(session),
-                SqlAlchemyActionRepository(session),
-                SqlAlchemyAttachmentRepository(session),
-            ),
-            material_drafts=getattr(executor, "_action_materials", None),
-        )
-    )
-
-
 class SqlAlchemyActionExecutor:
     """Invokes existing public application commands inside the Action transaction."""
 
     def __init__(
         self,
         session: Session,
-        report_provider: Any,
         action_materials: Any = None,
         *,
+        services: ActionServices,
         work_requests: WorkRequestApplication,
-        evidence_reader: ActionEvidenceReader | None = None,
     ) -> None:
         self._session = session
-        self._report_provider = report_provider
+        self._services = services
         self._action_materials = action_materials
         self._work_requests = work_requests
-        self._evidence_reader = evidence_reader
 
     def execute(
         self,
@@ -789,14 +748,7 @@ class SqlAlchemyActionExecutor:
                 reference_task_ids=[UUID(str(item)) for item in payload.get("reference_task_ids") or []],
             )
         if action.action_type == "daily_report.edit":
-            return DailyReportApplication(
-                SqlAlchemyDailyReportRepository(self._session),
-                SqlAlchemyDailyReportDraftWorkflow(
-                    self._session,
-                    SqlAlchemyWorkRecordSource(self._session),
-                    self._report_provider,
-                ),
-            ).edit(
+            return self._services.reports().edit(
                 principal,
                 str(action.payload["report_id"]),
                 str(action.payload["draft_id"]),
@@ -806,10 +758,7 @@ class SqlAlchemyActionExecutor:
                 list(action.payload.get("exclude_source_refs", [])),
             )
         if action.action_type == "daily_report.submit":
-            return DailyReportApplication(
-                SqlAlchemyDailyReportRepository(self._session),
-                SqlAlchemyDailyReportDraftWorkflow(self._session, SqlAlchemyWorkRecordSource(self._session), self._report_provider),
-            ).submit(principal, str(action.payload["report_id"]), str(action.payload["draft_id"]), int(action.payload["expected_version"]), action.payload.get("reason"))
+            return self._services.reports().submit(principal, str(action.payload["report_id"]), str(action.payload["draft_id"]), int(action.payload["expected_version"]), action.payload.get("reason"))
         if action.action_type == "task.create_self":
             result = self._tasks().create_self(
                 principal,
@@ -834,13 +783,12 @@ class SqlAlchemyActionExecutor:
             # 조용히 터지게 두지 않는다 — 사람이 [확인] 을 누르는 자리이므로 무엇이 안 되는지 말하고 멈춘다.
             # 새 모델 위에 이 두 확인을 다시 세우는 것은 별도 작업이다(회의 생성·공유는 지금 회의 화면에 있다).
             raise ActionError("이 확인은 아직 새 회의 모델로 옮겨지지 않았습니다 — 회의 화면에서 직접 해 주세요")
-
         if action.action_type == "task.update":
             changes = dict(action.payload.get("changes", {}))
             for field in ("start_date", "due_date"):
                 if field in changes:
                     changes[field] = _parse_date(changes[field])
-            return TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session), SqlAlchemyActionRepository(self._session)).update(
+            return self._services.tasks().update(
                 UUID(str(action.payload["task_id"])), principal, int(action.payload["expected_version"]), changes
             )
         if action.action_type == "task.progress.batch":
@@ -868,7 +816,7 @@ class SqlAlchemyActionExecutor:
         if action.action_type == "task.assignment.decline":
             return self._assignments().decline(principal, UUID(str(action.payload["assignment_id"])), str(action.payload.get("reason") or ""))
         if action.action_type == "task.transition":
-            return TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session), SqlAlchemyActionRepository(self._session)).transition(
+            return self._services.tasks().transition(
                 UUID(str(action.payload["task_id"])), principal, TaskState(str(action.payload["target"])),
                 action.payload.get("reason"), int(action.payload["expected_version"])
             )
@@ -894,22 +842,11 @@ class SqlAlchemyActionExecutor:
 
     def _tasks(self) -> TaskApplication:
         """The same dependency-complete Task application used by direct creation and authorization."""
-        return TaskApplication(
-            SqlAlchemyTaskRepository(self._session),
-            SqlAlchemyWorkRequestRepository(self._session),
-            SqlAlchemyActionRepository(self._session),
-            SqlAlchemyAttachmentRepository(self._session),
-            SqlAlchemyOrganizationRepository(self._session),
-            ProjectApplication(SqlAlchemyProjectRepository(self._session)),
-        )
+        return self._services.tasks()
 
     def _run_checklist_command(self, principal: Principal, action: ActionItemRecord) -> dict[str, Any]:
         """A checklist change a delegated turn prepared, applied once by the person who approved it."""
-        tasks = TaskApplication(
-            SqlAlchemyTaskRepository(self._session),
-            SqlAlchemyWorkRequestRepository(self._session),
-            SqlAlchemyActionRepository(self._session),
-        )
+        tasks = self._services.tasks()
         payload = dict(action.payload)
         task_id = UUID(str(payload["task_id"]))
         if action.action_type == "task.checklist.add":
@@ -993,12 +930,7 @@ class SqlAlchemyActionExecutor:
         offered to them on that item and that the version they are answering is still the current one.
         """
         payload = action.payload or {}
-        center = action_center_application(
-            self._session,
-            self,
-            work_requests=self._work_requests,
-            evidence_reader=self._evidence_reader,
-        )
+        center = self._services.action_center()
         target = str(payload["action_item_id"])
         envelope = center.detail(principal, target)
         if envelope.get("expected_version") != payload.get("expected_version"):
@@ -1014,16 +946,7 @@ class SqlAlchemyActionExecutor:
         )
 
     def _assignments(self) -> TaskAssignmentApplication:
-        return TaskAssignmentApplication(
-            SqlAlchemyTaskAssignmentRepository(self._session),
-            OrganizationApplication(SqlAlchemyOrganizationRepository(self._session)),
-            TaskApplication(
-                SqlAlchemyTaskRepository(self._session),
-                SqlAlchemyWorkRequestRepository(self._session),
-                SqlAlchemyActionRepository(self._session),
-                SqlAlchemyAttachmentRepository(self._session),
-            ),
-        )
+        return self._services.assignments()
 
     def _claim_action_materials(
         self, principal: Principal, action: ActionItemRecord, payload: dict[str, Any], result: dict[str, Any]
@@ -1142,52 +1065,6 @@ def _uuid_or_none(value: Any) -> UUID | None:
         return None
 
 
-def _normalize_task_progress_batch(payload: dict[str, Any]) -> dict[str, Any]:
-    operations = payload.get("operations")
-    if not isinstance(operations, list) or not 1 <= len(operations) <= 20:
-        raise TaskError("a task progress batch must contain between 1 and 20 operations")
-    normalized: list[dict[str, Any]] = []
-    seen_tasks: set[str] = set()
-    for raw in operations:
-        if not isinstance(raw, dict) or raw.get("kind") not in {"checklist.update", "progress.note"}:
-            raise TaskError("unsupported task progress operation")
-        task_id = str(UUID(str(raw.get("task_id"))))
-        if task_id in seen_tasks:
-            raise TaskError("a task progress batch may change each task only once")
-        seen_tasks.add(task_id)
-        expected_version = int(raw.get("expected_version"))
-        if expected_version < 1:
-            raise TaskError("task progress expected_version must be positive")
-        if raw["kind"] == "progress.note":
-            summary = " ".join(str(raw.get("summary") or "").split())
-            if not summary:
-                raise TaskError("a progress note must say what changed")
-            operation = {
-                "kind": "progress.note",
-                "task_id": task_id,
-                "expected_version": expected_version,
-                "summary": summary[:300],
-            }
-        else:
-            item_id = str(UUID(str(raw.get("item_id"))))
-            text = " ".join(str(raw["text"]).split()) if raw.get("text") is not None else None
-            done = raw.get("done") if isinstance(raw.get("done"), bool) else None
-            if text is None and done is None:
-                raise TaskError("a checklist update must change text or done")
-            operation = {
-                "kind": "checklist.update",
-                "task_id": task_id,
-                "item_id": item_id,
-                "expected_version": expected_version,
-                "text": text,
-                "done": done,
-            }
-        operation["effect_id"] = action_payload_hash(operation)
-        normalized.append(operation)
-    return {"operations": normalized}
-
-
-
 # ---- structured, permission-safe Action presentation -------------------------------------------------------------
 
 _OPERATION_LABELS: dict[str, str] = {
@@ -1226,16 +1103,6 @@ def action_subject_label(action: ActionItemRecord, payload: dict[str, Any] | Non
     return str(action.title)
 
 
-class _NoEffectExecutor:
-    """Reading a judgement never runs one; the presenter builds the ledger with an executor that refuses to act."""
-
-    def execute(self, principal: Principal, action: ActionItemRecord, **_: Any) -> dict[str, Any]:
-        raise ValueError("the presenter never executes an action")
-
-
-_NO_EFFECT_EXECUTOR = _NoEffectExecutor()
-
-
 class ActionPresenter:
     """Server-side preview of what approving an Action will actually do.
 
@@ -1249,13 +1116,13 @@ class ActionPresenter:
         self,
         session: Session,
         *,
+        services: ActionServices,
         evidence_reader: ActionEvidenceReader | None = None,
-        work_requests: WorkRequestApplication | None = None,
     ) -> None:
         self._session = session
+        self._services = services
         self._name_cache: dict[str, dict[str, str]] = {}
         self._evidence_reader = evidence_reader
-        self._work_requests = work_requests
 
     def present(
         self,
@@ -1295,9 +1162,7 @@ class ActionPresenter:
             if payload.get("include_initial_note"):
                 self._text(fields, "initial_note_body", "회의록 초안", payload.get("initial_note_body"))
         elif kind == "meeting.share":
-            meeting = MeetingApplication(SqlAlchemyMeetingRepository(self._session)).get(
-                principal, UUID(str(payload["meeting_id"]))
-            )["meeting"]
+            meeting = self._services.meetings().get(principal, UUID(str(payload["meeting_id"])))["meeting"]
             subject = str(meeting.get("title") or meeting.get("title_candidate") or "")
             fields.append({"id": "meeting", "label": "회의", "value": subject, "kind": "text"})
             target_name = self._names(principal).get(str(payload.get("member_id")), _UNKNOWN_MEMBER)
@@ -1500,15 +1365,8 @@ class ActionPresenter:
         except (TaskError, TypeError, ValueError) as error:
             raise ActionError(str(error)) from error
         organization = SqlAlchemyOrganizationRepository(self._session)
-        projects = ProjectApplication(SqlAlchemyProjectRepository(self._session))
-        tasks = TaskApplication(
-            SqlAlchemyTaskRepository(self._session),
-            SqlAlchemyWorkRequestRepository(self._session),
-            SqlAlchemyActionRepository(self._session),
-            SqlAlchemyAttachmentRepository(self._session),
-            organization,
-            projects,
-        )
+        projects = self._services.projects()
+        tasks = self._services.tasks()
         reference_options = []
         project_options = []
         if action.action_type in {"task.create_self", "task.assign"}:
@@ -1527,12 +1385,7 @@ class ActionPresenter:
         if action.action_type == "task.assign":
             assignment_options = [
                 {"value": row["id"], "label": row["display_name"]}
-                for row in TaskAssignmentApplication(
-                    SqlAlchemyTaskAssignmentRepository(self._session),
-                    OrganizationApplication(organization),
-                    tasks,
-                    projects,
-                ).candidates(principal)
+                for row in self._services.assignments().candidates(principal)
             ]
         fields: list[dict[str, Any]] = [
             {"id": "title", "label": "업무 명", "type": "text", "required": True, "editable": True},
@@ -1627,7 +1480,7 @@ class ActionPresenter:
             values = normalize_work_request_draft(payload, requester_id=str(principal.id))
         except (WorkRequestError, TypeError, ValueError) as error:
             raise ActionError(str(error)) from error
-        organization = OrganizationApplication(SqlAlchemyOrganizationRepository(self._session))
+        organization = self._services.organization()
         reference_options = [
             {"value": row["task_id"], "label": row["title"]}
             for row in self._tasks_for_principal(principal).list_for(
@@ -1793,14 +1646,7 @@ class ActionPresenter:
         }
 
     def _tasks_for_principal(self, principal: Principal) -> TaskApplication:
-        return TaskApplication(
-            SqlAlchemyTaskRepository(self._session),
-            SqlAlchemyWorkRequestRepository(self._session),
-            SqlAlchemyActionRepository(self._session),
-            SqlAlchemyAttachmentRepository(self._session),
-            SqlAlchemyOrganizationRepository(self._session),
-            ProjectApplication(SqlAlchemyProjectRepository(self._session)),
-        )
+        return self._services.tasks()
 
     def _checklist_step(self, fields: list[dict[str, str]], payload: dict[str, Any], principal: Principal | None) -> None:
         """Which step is being changed, named by its own words rather than by an id nobody can read."""
@@ -1868,15 +1714,10 @@ class ActionPresenter:
         }
 
     def _target_envelope(self, action_item_id: Any, principal: Principal | None) -> dict[str, Any] | None:
-        if principal is None or not action_item_id or self._work_requests is None:
+        if principal is None or not action_item_id:
             return None
         try:
-            return action_center_application(
-                self._session,
-                _NO_EFFECT_EXECUTOR,
-                work_requests=self._work_requests,
-                evidence_reader=self._evidence_reader,
-            ).detail(principal, str(action_item_id))
+            return self._services.action_center().detail(principal, str(action_item_id))
         except Exception:
             # The approver cannot read the target: say nothing about it rather than widen what they may see.
             return None
@@ -1931,7 +1772,7 @@ class ActionPresenter:
         cached = self._name_cache.get(key)
         if cached is not None:
             return cached
-        organization = OrganizationApplication(SqlAlchemyOrganizationRepository(self._session))
+        organization = self._services.organization()
         names = {str(member["id"]): str(member["display_name"]) for member in organization.member_candidates(principal)}
         names[key] = principal.display_name
         self._name_cache[key] = names
@@ -1941,6 +1782,6 @@ class ActionPresenter:
         if principal is None or task_id in (None, ""):
             return None
         try:
-            return str(TaskApplication(SqlAlchemyTaskRepository(self._session), SqlAlchemyWorkRequestRepository(self._session), SqlAlchemyActionRepository(self._session)).get(principal, UUID(str(task_id)))["title"])
+            return str(self._services.tasks().get(principal, UUID(str(task_id)))["title"])
         except (TaskError, ValueError):
             return None

@@ -443,7 +443,7 @@ def test_without_the_action_capability_the_task_reads_but_its_proposal_does_not(
     limited = Principal(mina.id, mina.display_name, mina.organization_scope, frozenset(mina.capabilities - {ACTION_READ}))
     with make_session_factory(database_url)() as session:
         tasks = TaskApplication(
-            SqlAlchemyTaskRepository(session), SqlAlchemyWorkRequestRepository(session), SqlAlchemyActionRepository(session)
+            SqlAlchemyTaskRepository(session), SqlAlchemyWorkRequestRepository(session), application._action_repository(session)
         )
         view = tasks.get(limited, UUID(task["task_id"]))
 

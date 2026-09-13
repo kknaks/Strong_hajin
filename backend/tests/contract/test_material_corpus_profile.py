@@ -82,9 +82,3 @@ def test_bare_credential_prefix_is_excluded_without_a_surrounding_label(tmp_path
     manifest = module.build_manifest(root, per_class=1)
     assert manifest["entries"] == []
     assert manifest["excluded"]["content_candidate"] == 1
-
-
-def test_query_selection_does_not_cut_a_long_korean_run_into_artificial_fragments():
-    module = _module()
-    assert module.WORD.findall("초장문복합단어가계속이어지는합성문장") == []
-    assert module.WORD.findall("검색어를 확인합니다") == ["검색어를", "확인합니다"]

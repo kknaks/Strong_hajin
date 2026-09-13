@@ -24,18 +24,19 @@ from ax_workspace.modules.meetings.batch import (
     BATCH_CHARS,
     BATCH_MAX_WAIT_SECONDS,
     BATCH_SWITCH_MIN_CHARS,
-    CAUSE_AGENDA_SWITCH,
     CAUSE_TIMER,
     CAUSE_TRANSCRIPT,
     STATUS_DISCARDED,
     STATUS_FAILED,
     STATUS_SUCCEEDED,
     BatchAgenda,
+    BatchTriggerContext,
     SchemaViolation,
     build_batch_prompt,
     build_warm_start_prompt,
     demote_line,
     parse_output,
+    decide_batch_trigger,
 )
 
 logger = logging.getLogger(__name__)
@@ -199,17 +200,17 @@ class MeetingBatchService:
                 self._timers.pop(meeting_id, None)
 
         pending = self._gateway.pending_chars(meeting_id)
-        if cause == CAUSE_TRANSCRIPT:
-            fire = pending >= self._chars
-        elif cause == CAUSE_AGENDA_SWITCH:
-            fire = pending >= self._switch_min_chars
-        elif cause == CAUSE_TIMER:
-            fire = pending > 0
-        else:
-            raise ValueError(f"알 수 없는 트리거: {cause}")
+        trigger = decide_batch_trigger(
+            BatchTriggerContext(
+                cause=cause,
+                pending_chars=pending,
+                chars=self._chars,
+                switch_min_chars=self._switch_min_chars,
+            )
+        )
 
-        if not fire:
-            if pending > 0:
+        if not trigger.fire:
+            if trigger.arm_timer:
                 self._arm_timer(meeting_id)
             return False
         self.run(meeting_id, cause)

@@ -91,6 +91,42 @@ def test_work_request_application_is_composed_only_by_the_bootstrap() -> None:
     assert owners == ["bootstrap/application.py"]
 
 
+def test_product_applications_are_never_reassembled_by_transport_or_persistence() -> None:
+    """Approval and presentation must use the same complete services as direct commands."""
+    import ast
+
+    misplaced = []
+    for directory in ("platform", "entrypoints"):
+        for path in (PACKAGE_ROOT / directory).glob("*.py"):
+            tree = ast.parse(path.read_text())
+            imports = {
+                alias.asname or alias.name: alias.name
+                for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+                for alias in node.names
+            }
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                name = (
+                    imports.get(node.func.id, node.func.id) if isinstance(node.func, ast.Name)
+                    else node.func.attr if isinstance(node.func, ast.Attribute) else ""
+                )
+                if name.endswith("Application") or name == "AccessAdministration":
+                    misplaced.append(f"{path.relative_to(PACKAGE_ROOT)}:{node.lineno} {name}")
+    assert misplaced == [], misplaced
+
+
+def test_action_composition_rejects_a_missing_service_before_any_effect() -> None:
+    from dataclasses import replace
+    from ax_workspace.bootstrap.application import create_workflow_application
+
+    application = create_workflow_application(Settings(RuntimeProfile.TEST, "sqlite:///:memory:"))
+    with application._session_factory() as session:
+        services = application._action_services(session)
+        with pytest.raises(TypeError, match="meetings"):
+            replace(services, meetings=None)
+
+
 def test_reports_feature_does_not_embed_provider_policy_or_spawn_processes() -> None:
     reports_sources = [
         PACKAGE_ROOT / "modules" / "reports" / "application.py",

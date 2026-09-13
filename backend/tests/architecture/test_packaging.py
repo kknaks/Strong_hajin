@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
@@ -12,6 +14,7 @@ def _run(*command: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False)
 
 
+@pytest.mark.release
 def test_wheel_installs_canonical_package_and_entrypoints_outside_the_repository(tmp_path: Path) -> None:
     wheel_dir = tmp_path / "wheel"
     build = _run("uv", "build", "--wheel", "--out-dir", str(wheel_dir), cwd=BACKEND_ROOT)

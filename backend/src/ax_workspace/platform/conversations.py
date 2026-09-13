@@ -11,7 +11,7 @@ from sqlalchemy import Engine, delete, func, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
-from ax_workspace.platform.actions import SqlAlchemyActionRepository, ActionEvidenceReader
+from ax_workspace.platform.actions import SqlAlchemyActionRepository
 from ax_workspace.modules.ax_execution.ai import (
     AiConversationRequest,
     AiConversationResult,
@@ -55,14 +55,12 @@ class SqlAlchemyConversationRepository:
         queue: ConversationExecutionQueue,
         queue_limit: int = 8,
         *,
-        evidence_reader: ActionEvidenceReader | None = None,
-        work_requests: Any = None,
+        actions: SqlAlchemyActionRepository,
     ) -> None:
         self._session = session
+        self._actions = actions
         self._queue_limit = queue_limit
         self._queue = queue
-        self._evidence_reader = evidence_reader
-        self._work_requests = work_requests
 
     def create(self, owner_id: str, title: str) -> ConversationRecord:
         now = datetime.now(UTC)
@@ -571,11 +569,7 @@ class SqlAlchemyConversationRepository:
             if include_actions
             else []
         )
-        action_repository = SqlAlchemyActionRepository(
-            self._session,
-            evidence_reader=self._evidence_reader,
-            work_requests=self._work_requests,
-        )
+        action_repository = self._actions
         graph_steps = self._session.scalars(
             select(ConversationGraphReceiptRecord)
             .where(ConversationGraphReceiptRecord.conversation_id == conversation.id)

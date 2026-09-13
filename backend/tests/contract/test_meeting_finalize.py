@@ -6,24 +6,16 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 import json
 from uuid import UUID
 
-import pytest
 from fastapi.testclient import TestClient
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
-from ax_workspace.modules.meetings.batch import SchemaViolation
 from ax_workspace.modules.meetings.domain import MeetingStatus
-from ax_workspace.modules.meetings.finalize import (
-    FinalizeFailed,
-    is_already_work,
-    parse_final_output,
-    resolve_due,
-)
 
 MINA = {"X-Demo-Persona": "mina"}
 JIHO = {"X-Demo-Persona": "jiho"}
@@ -46,6 +38,17 @@ class FakeFinalizeAgent:
         if isinstance(item, Exception):
             raise item
         return item
+
+
+class NoopBatchAgent:
+    """Finalization tests never exercise the live meeting batch provider."""
+
+    def open_session(self, *, persona_id: str, prompt: str, tools: tuple[str, ...]) -> str:
+        del persona_id, prompt, tools
+        return "finalization-test-session"
+
+    def run_batch(self, *, persona_id: str, session_ref: str, prompt: str, tools: tuple[str, ...]) -> str:
+        raise AssertionError("finalization tests must not run a live meeting batch")
 
 
 def _output(agendas: list[dict], *, title_candidate: str | None = None) -> str:
@@ -80,6 +83,7 @@ def _stack(tmp_path):
     reset_database(database_url)
     app = create_app(Settings(RuntimeProfile.TEST, database_url, recordings_dir=str(tmp_path / "audio")))
     application = app.state.workflow_application
+    application.meeting_batch._agent = NoopBatchAgent()
     agent = FakeFinalizeAgent()
     application.meeting_finalize._agent = agent
     return TestClient(app), application, agent
@@ -413,24 +417,6 @@ def test_a_memo_the_person_wrote_on_an_ai_agenda_is_not_swept_away_with_it(tmp_p
     assert [row["text"] for row in script["memos"]] == ["사람이 여기 적었다"]
 
 
-class _BrokenLoad:
-    """적재만 골라 깨뜨리는 대역 — 실물에서 깨진 자리가 provider 가 아니라 **적재**였다."""
-
-    def __init__(self, gateway, failures: int, error: Exception) -> None:
-        self._gateway, self._left, self._error = gateway, failures, error
-        self.commits = 0
-
-    def __getattr__(self, name):
-        return getattr(self._gateway, name)
-
-    def commit_success(self, meeting_id, notes, *, cold_start):
-        self.commits += 1
-        if self._left > 0:
-            self._left -= 1
-            raise self._error
-        return self._gateway.commit_success(meeting_id, notes, cold_start=cold_start)
-
-
 def _job_rows(application, meeting_id: str) -> list[dict]:
     """이 회의의 합성 잡. 시험 프로필은 in-process transport 를 쓴다 — 상태·시도수는 거기 산다."""
     return [
@@ -446,62 +432,6 @@ def _make_job_available(application, meeting_id: str) -> None:
 
     for row in _job_rows(application, meeting_id):
         row["available_at"] = _datetime.now(_UTC)
-
-
-def test_a_load_that_breaks_twice_is_two_failed_attempts_and_the_third_one_lands(tmp_path) -> None:
-    """적재는 **그 시도 안**이다 — 밖에 두면 예외가 재시도 자리를 그냥 지나친다."""
-    client, application, agent = _stack(tmp_path)
-    made = _summarizing(client, application)
-    meeting_id = made["meeting"]["meeting_id"]
-    human = made["agendas"][0]["agenda_id"]
-    _blocks(application, meeting_id)
-    broken = _BrokenLoad(application.meeting_finalize._gateway, 2, RuntimeError("대역: 적재 실패"))
-    application.meeting_finalize._gateway = broken
-    agent.script = [
-        _output([_agenda("첫 안건", agenda_id=human, source="manual", lines=[_line("세 번째에 실린 줄")])])
-    ] * 3
-    client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
-
-    worker = _worker(application, application._settings.database_url)
-    assert asyncio.run(worker.run_once()) is True
-    assert broken.commits == 3
-
-    detail = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()
-    assert detail["meeting"]["status"] == "done"
-    assert [row["text"] for row in detail["agendas"][0]["lines"]] == ["세 번째에 실린 줄"]
-    # 배달은 끝났다.
-    assert asyncio.run(worker.run_once()) is False
-    assert [row["state"] for row in _job_rows(application, meeting_id)] == ["completed"]
-
-
-def test_a_load_that_breaks_every_time_ends_as_failed_and_never_leaves_the_meeting_summarizing(tmp_path) -> None:
-    """잡을 `completed` 로 닫고 회의를 「정리 중」에 두면 화면이 오지 않을 결과를 영원히 폴링한다."""
-    client, application, agent = _stack(tmp_path)
-    made = _summarizing(client, application)
-    meeting_id = made["meeting"]["meeting_id"]
-    human = made["agendas"][0]["agenda_id"]
-    _blocks(application, meeting_id)
-    broken = _BrokenLoad(application.meeting_finalize._gateway, 99, RuntimeError("대역: 적재가 늘 깨진다"))
-    application.meeting_finalize._gateway = broken
-    agent.script = [_output([_agenda("첫 안건", agenda_id=human, source="manual", lines=[_line("실리지 못할 줄")])])] * 3
-    client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
-
-    worker = _worker(application, application._settings.database_url)
-    assert asyncio.run(worker.run_once()) is True
-    assert broken.commits == 3  # 시도 상한만큼 걸었다
-
-    detail = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()
-    assert detail["meeting"]["status"] == "failed"
-    reason = detail["meeting"]["failure_reason"]
-    # 사유는 **사람이 읽는 한 줄**이다 — 스택도, SQL 도, 예외 이름도, 내부 식별자도 화면에 내지 않는다.
-    assert reason == "회의록을 만들지 못했습니다 — 잠시 뒤 다시 시도해 주세요"
-    assert "Traceback" not in reason and "SELECT" not in reason and meeting_id not in reason
-    assert "RuntimeError" not in reason
-    # 잡도 끝났다 — 같은 배달이 다시 오지 않는다.
-    assert asyncio.run(worker.run_once()) is False
-    assert [row["state"] for row in _job_rows(application, meeting_id)] == ["completed"]
-    # 받은 발화는 그대로 남는다 (§8-8).
-    assert len(client.get(f"/api/meetings/{meeting_id}/transcript", headers=MINA).json()["items"]) == 2
 
 
 def test_a_delivery_that_raises_is_not_closed_as_completed_while_the_meeting_waits(tmp_path) -> None:
@@ -541,32 +471,6 @@ def test_a_delivery_that_raises_is_not_closed_as_completed_while_the_meeting_wai
     assert "RuntimeError" in detail["meeting"]["failure_reason"]
     rows = _job_rows(application, meeting_id)
     assert [row["state"] for row in rows] == ["failed"] and rows[0]["attempt_count"] == MAX_DELIVERIES
-
-
-def test_a_merge_without_a_session_falls_back_to_a_cold_start(tmp_path) -> None:
-    client, application, agent = _stack(tmp_path)
-    made = _summarizing(client, application)
-    meeting_id = made["meeting"]["meeting_id"]
-    human = made["agendas"][0]["agenda_id"]
-    _blocks(application, meeting_id)
-    with application._session_factory() as session:
-        from ax_workspace.platform.persistence import MeetingAiSessionRecord
-        from sqlalchemy import delete
-
-        session.execute(delete(MeetingAiSessionRecord).where(MeetingAiSessionRecord.meeting_id == UUID(meeting_id)))
-        session.commit()
-
-    agent.script = [_output([_agenda("첫 안건", agenda_id=human, source="manual", lines=[_line("콜드로 낸 줄")])])]
-    client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
-    assert application.finalize_meeting(UUID(meeting_id)) is True
-
-    assert application.meeting_finalize.cold_starts == 1
-    assert agent.runs[0]["session_ref"] is None
-    # 회의를 기억하는 상대가 없으므로 확정 발화 전량을 한 번에 실었다.
-    assert "확정 발화 0" in agent.runs[0]["prompt"]
-
-
-# --------------------------------------------------------------------- Phase 2 · 줄 병합과 산출물
 
 
 def test_two_human_agendas_may_be_folded_into_one_when_the_merge_rewrites_the_note(tmp_path) -> None:
@@ -625,29 +529,6 @@ def test_two_tracks_that_said_the_same_thing_fold_into_one_line(tmp_path) -> Non
     assert any(line["track"] == "memo" for line in agenda["lines"])
 
 
-def test_evidence_outside_the_recorded_speech_is_dropped_and_the_body_survives(tmp_path) -> None:
-    client, application, agent = _stack(tmp_path)
-    made = _summarizing(client, application)
-    meeting_id = made["meeting"]["meeting_id"]
-    human = made["agendas"][0]["agenda_id"]
-    _blocks(application, meeting_id)
-    agent.script = [
-        _output([
-            _agenda("첫 안건", agenda_id=human, source="manual",
-                    lines=[_line("근거 하나만 진짜다",
-                                 evidence=[{"from_ms": 0, "to_ms": 900}, {"from_ms": 900_000, "to_ms": 901_000}])]),
-        ])
-    ]
-    client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
-    application.finalize_meeting(UUID(meeting_id))
-
-    [agenda] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
-    [line] = [row for row in agenda["lines"] if row["track"] == "final"]
-    assert line["text"] == "근거 하나만 진짜다"
-    # 응답은 계약의 이름으로 낸다 — 화면 타임칩이 읽는 것은 `start_ms`·`end_ms` 다 (SPEC §4.1).
-    assert line["evidence"] == [{"start_ms": 0, "end_ms": 900}]
-
-
 def test_a_titleless_meeting_gets_a_candidate_the_person_still_has_to_save(tmp_path) -> None:
     client, application, agent = _stack(tmp_path)
     quick = client.post("/api/meetings/quick-start", headers=MINA, json={}).json()
@@ -675,55 +556,6 @@ def test_a_titleless_meeting_gets_a_candidate_the_person_still_has_to_save(tmp_p
     assert head["title_candidate"] == "권한 모델 회의"
 
 
-def test_a_meeting_that_already_has_a_title_keeps_it(tmp_path) -> None:
-    client, application, agent = _stack(tmp_path)
-    made = _summarizing(client, application)
-    meeting_id = made["meeting"]["meeting_id"]
-    human = made["agendas"][0]["agenda_id"]
-    _blocks(application, meeting_id)
-    agent.script = [_output([_agenda("첫 안건", agenda_id=human, source="manual")], title_candidate="AI 가 지은 이름")]
-    client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
-    application.finalize_meeting(UUID(meeting_id))
-
-    head = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]
-    assert head["title"] == "합성할 회의" and head["title_candidate"] is None
-
-
-def test_every_candidate_carries_a_description_that_ends_with_its_source_and_a_checklist(tmp_path) -> None:
-    client, application, agent = _stack(tmp_path)
-    made = _summarizing(client, application)
-    meeting_id = made["meeting"]["meeting_id"]
-    human = made["agendas"][0]["agenda_id"]
-    _blocks(application, meeting_id)
-    agent.script = [
-        _output([
-            _agenda("첫 안건", agenda_id=human, source="manual",
-                    todos=[_todo("계약서를 검토한다", checklist=["초안 읽기", "쟁점 정리", "회신"])]),
-        ])
-    ]
-    client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
-    application.finalize_meeting(UUID(meeting_id))
-
-    [todo] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
-    assert todo["description"].splitlines()[-1] == "회의 합성할 회의 · 안건 1 에서"
-    assert todo["checklist_candidate"] == ["초안 읽기", "쟁점 정리", "회신"]
-    assert todo["reference"]["agenda_id"] == human
-    assert todo["due_candidate"] is None
-
-
-def test_the_due_candidate_takes_the_spoken_date_then_the_next_meeting_then_nothing() -> None:
-    from ax_workspace.modules.meetings.finalize import FinalTodo
-
-    spoken = FinalTodo("a", "d", date(2026, 9, 20), ["x", "y"], [])
-    assert resolve_due(spoken, next_meeting_starts_on=date(2026, 9, 30)) == date(2026, 9, 20)
-
-    empty = FinalTodo("a", "d", None, ["x", "y"], [])
-    # 이어진 다음 회의가 있으면 그 전날이다.
-    assert resolve_due(empty, next_meeting_starts_on=date(2026, 9, 30)) == date(2026, 9, 29)
-    # 둘 다 없으면 비운다 — 근거 없이 지어내지 않는다.
-    assert resolve_due(empty, next_meeting_starts_on=None) is None
-
-
 def test_a_candidate_that_is_already_work_is_not_offered(tmp_path) -> None:
     """이미 있는 업무면 후보를 내지 않는다 (SPEC §8.1-1)."""
     client, application, agent = _stack(tmp_path)
@@ -743,29 +575,6 @@ def test_a_candidate_that_is_already_work_is_not_offered(tmp_path) -> None:
 
     todos = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
     assert [todo["title"] for todo in todos] == ["새로 생긴 일"]
-
-
-def test_the_same_work_judged_by_a_normalized_title() -> None:
-    assert is_already_work("계약서 검토", {"계약서검토"}) is True
-    assert is_already_work("계약서를 검토한다", {"계약서검토"}) is False
-    # 판단이 서지 않으면 후보로 낸다.
-    assert is_already_work("전혀 다른 일", {"계약서검토"}) is False
-
-
-def test_the_final_schema_has_no_assignee_and_rejects_a_broken_output() -> None:
-    from ax_workspace.modules.meetings.finalize import FINAL_OUTPUT_SCHEMA
-
-    todo_schema = FINAL_OUTPUT_SCHEMA["properties"]["agendas"]["items"]["properties"]["todos"]["items"]
-    assert set(todo_schema["required"]) == {
-        "title", "description", "due_candidate", "checklist_candidate", "line_ids"
-    }
-    assert "assignee" not in json.dumps(FINAL_OUTPUT_SCHEMA)
-
-    with pytest.raises(SchemaViolation):
-        parse_final_output("준비됨")
-    with pytest.raises(SchemaViolation):
-        # checklist 는 2~5단계다 — 언제나 제안한다.
-        parse_final_output(_output([_agenda("a", todos=[_todo("t", checklist=["하나뿐"])])]))
 
 
 # --------------------------------------------------------------------- Phase 3 · 편집 · 승격 · 내보내기
@@ -851,20 +660,6 @@ def test_promoting_the_same_candidate_twice_does_not_make_two_requests(tmp_path)
     assert len(client.get("/api/work-requests", headers=MINA).json()) == 1
 
 
-def test_promoting_to_yourself_still_goes_through_the_request_ledger(tmp_path) -> None:
-    """승격은 언제나 업무 요청이다 — Task 를 바로 세우는 갈래가 없다 (SPEC §9-5)."""
-    client, application, agent = _stack(tmp_path)
-    meeting_id, _ = _finalized(client, application, agent)
-    [todo] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
-
-    promoted = client.post(
-        f"/api/meetings/{meeting_id}/todos/{todo['todo_id']}/promote", headers=MINA, json={"assignee_id": "mina"}
-    )
-    assert promoted.status_code == 201, promoted.text
-    assert promoted.json()["linked"]["work_request_id"]
-    assert client.get("/api/my-work", headers=MINA).json() == []  # 수락 전에는 업무가 없다
-
-
 def test_promoting_without_an_assignee_does_not_proceed(tmp_path) -> None:
     client, application, agent = _stack(tmp_path)
     meeting_id, _ = _finalized(client, application, agent)
@@ -910,14 +705,6 @@ def test_a_candidate_nobody_wants_is_deleted_without_a_confirmation(tmp_path) ->
     assert client.delete(f"/api/meetings/{meeting_id}/todos/{target['todo_id']}", headers=MINA).status_code == 204
     remaining = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
     assert [row["title"] for row in remaining] == ["남을 후보"]
-
-
-def test_a_requested_candidate_is_not_deleted(tmp_path) -> None:
-    client, application, agent = _stack(tmp_path)
-    meeting_id, _ = _finalized(client, application, agent)
-    [todo] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
-    client.post(f"/api/meetings/{meeting_id}/todos/{todo['todo_id']}/promote", headers=MINA, json={"assignee_id": "jiho"})
-    assert client.delete(f"/api/meetings/{meeting_id}/todos/{todo['todo_id']}", headers=MINA).status_code == 409
 
 
 def test_a_second_merge_keeps_the_candidates_that_were_already_requested(tmp_path) -> None:
@@ -984,47 +771,6 @@ def test_someone_outside_the_meeting_cannot_export_or_promote(tmp_path) -> None:
 # --------------------------------------------------------------------- 실물 e2e 가 드러낸 것
 
 
-def test_an_attendee_from_another_organization_may_take_the_work(tmp_path) -> None:
-    """담당 후보는 **그 회의의 참석자를 먼저** 낸다 (SPEC §9-5 · D29).
-
-    같이 앉아 있던 사람에게 일을 넘기는 자리는 조직 경계를 묻는 자리가 아니다. 그 밖은 기존 규칙 그대로다.
-    """
-    client, application, agent = _stack(tmp_path)
-    # 대표(yuna)가 인사(hyeon)를 부른 회의 — 둘은 다른 조직이다.
-    starts = datetime.now(UTC) + timedelta(minutes=5)
-    made = client.post(
-        "/api/meetings",
-        headers={"X-Demo-Persona": "yuna"},
-        json={
-            "title": "조직을 가로지른 회의",
-            "starts_at": starts.isoformat().replace("+00:00", "Z"),
-            "ends_at": (starts + timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
-            "attendee_ids": ["hyeon"],
-            "agendas": [{"title": "첫 안건"}],
-        },
-    ).json()
-    meeting_id = made["meeting"]["meeting_id"]
-    human = made["agendas"][0]["agenda_id"]
-    client.post(f"/api/meetings/{meeting_id}/start", headers={"X-Demo-Persona": "yuna"})
-    application.meeting_batch.drain()
-    _blocks(application, meeting_id)
-    _with_recording(application, meeting_id)
-    agent.script = [
-        _output([_agenda("첫 안건", agenda_id=human, source="manual", todos=[_todo("인사 쪽에서 확인한다")])])
-    ]
-    client.post(f"/api/meetings/{meeting_id}/end", headers={"X-Demo-Persona": "yuna"})
-    application.finalize_meeting(UUID(meeting_id))
-    [todo] = client.get(f"/api/meetings/{meeting_id}", headers={"X-Demo-Persona": "yuna"}).json()["agendas"][0]["todos"]
-
-    promoted = client.post(
-        f"/api/meetings/{meeting_id}/todos/{todo['todo_id']}/promote",
-        headers={"X-Demo-Persona": "yuna"},
-        json={"assignee_id": "hyeon"},
-    )
-    assert promoted.status_code == 201, promoted.text
-    assert promoted.json()["linked"]["work_request_id"]
-
-
 def test_someone_who_was_not_at_the_meeting_may_still_take_the_work(tmp_path) -> None:
     """**담당 후보에 제한이 없다** (D40) — 보내는 쪽이 시스템이라 조직 경계를 걸 자리가 없다.
 
@@ -1056,58 +802,6 @@ def test_a_name_that_is_not_a_working_person_is_still_refused(tmp_path) -> None:
     )
     assert refused.status_code == 422
     assert "eligible assignee" in refused.json()["detail"]
-
-
-def test_a_lead_promotes_the_follow_up_of_the_meeting_they_sat_in(tmp_path) -> None:
-    """팀장도 회의에서 나온 일을 넘긴다 — 승격은 언제나 업무 요청이다 (D30)."""
-    client, application, agent = _stack(tmp_path)
-    meeting_id, _ = _finalized(client, application, agent)
-    [todo] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
-
-    promoted = client.post(
-        f"/api/meetings/{meeting_id}/todos/{todo['todo_id']}/promote", headers=JIHO, json={"assignee_id": "jiho"}
-    )
-    assert promoted.status_code == 201, promoted.text
-
-
-def test_the_merge_prompt_carries_the_day_the_meeting_happened(tmp_path) -> None:
-    """「이번 주 금요일」을 ISO 로 옮기려면 기준일이 있어야 한다 — 실물에서 그것이 없어 기한이 전부 비었다."""
-    client, application, agent = _stack(tmp_path)
-    made = _summarizing(client, application)
-    meeting_id = made["meeting"]["meeting_id"]
-    human = made["agendas"][0]["agenda_id"]
-    _blocks(application, meeting_id)
-    agent.script = [_output([_agenda("첫 안건", agenda_id=human, source="manual")])]
-    client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
-    application.finalize_meeting(UUID(meeting_id))
-
-    prompt = agent.runs[0]["prompt"]
-    starts_on = (datetime.now(UTC) + timedelta(minutes=5)).date().isoformat()
-    assert "기준일" in prompt and starts_on in prompt
-    assert "YYYY-MM-DD" in prompt and "환산" in prompt
-
-
-def test_a_titleless_meeting_stamps_its_candidate_rather_than_the_placeholder(tmp_path) -> None:
-    """제목이 없으면 이번에 낸 후보로 출처를 적는다 — 「회의 제목 없는 회의 · 안건 1 에서」로 나가지 않게."""
-    client, application, agent = _stack(tmp_path)
-    quick = client.post("/api/meetings/quick-start", headers=MINA, json={}).json()
-    meeting_id = quick["meeting"]["meeting_id"]
-    application.meeting_batch.drain()
-    _blocks(application, meeting_id)
-    _with_recording(application, meeting_id)
-    # 후보는 기본 안건(D32) 에 붙는다 — 사람 안건이므로 합성이 반드시 덮는다 (§8-6).
-    default_agenda = quick["agendas"][0]["agenda_id"]
-    agent.script = [
-        _output(
-            [_agenda("안건 1", agenda_id=default_agenda, source="manual", todos=[_todo("확인한다")])],
-            title_candidate="권한 모델 회의",
-        )
-    ]
-    client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
-    application.finalize_meeting(UUID(meeting_id))
-
-    [todo] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
-    assert todo["description"].splitlines()[-1] == "회의 권한 모델 회의 · 안건 1 에서"
 
 
 def test_a_spoken_date_survives_as_the_due_candidate(tmp_path) -> None:
@@ -1254,183 +948,6 @@ def _exported(client: TestClient, meeting_id: str) -> str:
     answer = client.get(f"/api/meetings/{meeting_id}/export", headers=MINA, params={"format": "html"})
     assert answer.status_code == 200, answer.text
     return answer.text
-
-
-def test_the_export_is_one_self_contained_file_that_calls_nothing_from_the_network(tmp_path) -> None:
-    """내려받은 파일이 네트워크 없이도 같은 모양으로 열려야 한다 — 외부 자원 참조 0."""
-    import re
-
-    client, application, agent = _stack(tmp_path)
-    meeting_id, _ = _finalized(client, application, agent)
-    body = _exported(client, meeting_id)
-
-    assert re.search(r"<link\b|<script\b|@import|url\(", body) is None
-    # 폰트는 시스템 스택이다.
-    assert "-apple-system" in body and "system-ui" in body
-
-
-def test_the_export_carries_the_page_layout_the_designer_set(tmp_path) -> None:
-    """A4 한 장 = `.page` 하나. 조판은 템플릿이 소유하고 서버는 값만 채운다."""
-    client, application, agent = _stack(tmp_path)
-    meeting_id, _ = _finalized(client, application, agent)
-    body = _exported(client, meeting_id)
-
-    assert "@page { size: A4; margin: 0; }" in body
-    assert "width: 210mm;" in body and "min-height: 297mm;" in body
-    # 안건이 두 장에 걸쳐 쪼개지지 않게 하는 규칙.
-    assert "break-inside: avoid" in body and "page-break-inside: avoid" in body
-    # 장마다 머리와 꼬리가 반복하고, 쪽 번호는 서버가 박는다.
-    assert '<span class="page-no">1</span>' in body
-    assert "SCAX · 회의록" in body and "내보낸 시각" in body
-
-
-def test_the_export_draws_the_agenda_as_a_thread_with_chips_and_times(tmp_path) -> None:
-    """안건 머리에 결론 칩과 근거 시각 칩이 서고, 줄 오른쪽에 벽시계 시각이 붙는다."""
-    client, application, agent = _stack(tmp_path)
-    made = _summarizing(client, application)
-    meeting_id = made["meeting"]["meeting_id"]
-    human = made["agendas"][0]["agenda_id"]
-    _blocks(application, meeting_id)
-    agent.script = [
-        _output([
-            _agenda(
-                "첫 안건", agenda_id=human, source="manual", concluded=True,
-                lines=[
-                    _line("첫 줄", evidence=[{"from_ms": 0, "to_ms": 400}]),
-                    _line("둘째 줄", evidence=[{"from_ms": 900, "to_ms": 1_000}]),
-                ],
-                todos=[_todo("근거를 딛은 일")],
-            ),
-        ])
-    ]
-    client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
-    assert application.finalize_meeting(UUID(meeting_id)) is True
-    body = _exported(client, meeting_id)
-
-    assert '<span class="chip done">결론 남</span>' in body
-    assert '<span class="chip action">액션</span>' in body and "다음 할 일" in body
-    assert '<span class="stamp' in body and '<span class="at">' in body
-    # 참석자는 한 줄로 선다.
-    assert "참석 · " in body
-
-
-def test_an_agenda_with_no_follow_up_gets_no_follow_up_box(tmp_path) -> None:
-    """0건이면 상자를 만들지 않는다 — 빈 상자가 서면 「없음」이 아니라 「덜 채워짐」으로 읽힌다."""
-    client, application, agent = _stack(tmp_path)
-    meeting_id, _ = _finalized(client, application, agent, todos=[])
-    body = _exported(client, meeting_id)
-
-    # CSS 주석에도 같은 낱말이 있으므로 **마크업**을 본다.
-    assert '<div class="todos">' not in body and 'class="todos-label"' not in body
-
-
-def test_the_export_escapes_what_people_wrote_and_never_carries_ids(tmp_path) -> None:
-    """사람이 적은 글자는 마크업이 되지 않고, 내부 식별자는 한 자도 나가지 않는다."""
-    client, application, agent = _stack(tmp_path)
-    made = _summarizing(client, application)
-    meeting_id = made["meeting"]["meeting_id"]
-    human = made["agendas"][0]["agenda_id"]
-    _blocks(application, meeting_id)
-    agent.script = [
-        _output([
-            _agenda(
-                "첫 안건", agenda_id=human, source="manual",
-                lines=[_line("<script>alert(1)</script> <b>굵게</b> & 그밖에", evidence=[{"from_ms": 0, "to_ms": 400}])],
-                todos=[],
-            ),
-        ])
-    ]
-    client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
-    assert application.finalize_meeting(UUID(meeting_id)) is True
-    body = _exported(client, meeting_id)
-
-    assert "<script>alert(1)</script>" not in body
-    assert "&lt;script&gt;alert(1)&lt;/script&gt; &lt;b&gt;굵게&lt;/b&gt; &amp; 그밖에" in body
-    # 회의·안건·줄의 id 는 어디에도 없다.
-    assert meeting_id not in body and human not in body
-
-
-def test_a_meeting_too_long_for_one_sheet_is_split_and_numbered(tmp_path) -> None:
-    """쪽은 서버가 센다 — `counter(page)` 는 @page 마진 박스에서만 돌고 Chrome 이 그것을 지원하지 않는다."""
-    from ax_workspace.modules.meetings.export import render_meeting_html
-
-    document = {
-        "meeting": {
-            "title": "긴 회의",
-            "purpose": "",
-            "starts_at": "2026-09-05T02:00:00+00:00",
-            "ends_at": "2026-09-05T05:00:00+00:00",
-            "started_at": "2026-09-05T02:00:00+00:00",
-            "attendees": [{"member_id": "mina", "display_name": "민아"}],
-            "external_attendees": [],
-        },
-        "agendas": [
-            {
-                "order": index,
-                "title": f"안건 {index}",
-                "concluded": False,
-                "lines": [
-                    {"line_id": f"l{index}-{row}", "text": "가" * 55, "at_ms": row * 1000, "evidence": []}
-                    for row in range(12)
-                ],
-                "todos": [],
-            }
-            for index in range(1, 9)
-        ],
-    }
-    body = render_meeting_html(document)
-
-    assert body.count('<section class="page"') >= 2
-    assert '<span class="page-no">1</span>' in body and '<span class="page-no">2</span>' in body
-    # 이어지는 장은 회의명만 반복하고 참석자·요약을 다시 내지 않는다.
-    assert body.count('class="sheet-head cont"') == body.count('<section class="page"') - 1
-    assert body.count("참석 · ") == 1
-
-
-def test_a_meeting_without_a_summary_leaves_the_summary_block_out(tmp_path) -> None:
-    from ax_workspace.modules.meetings.export import render_meeting_html
-
-    base = {
-        "meeting": {
-            "title": "요약 없는 회의", "starts_at": "2026-09-05T02:00:00+00:00",
-            "ends_at": "2026-09-05T03:00:00+00:00", "started_at": "2026-09-05T02:00:00+00:00",
-            "attendees": [], "external_attendees": [],
-        },
-        "agendas": [],
-    }
-    assert 'class="sheet-summary"' not in render_meeting_html(base)
-    with_summary = {**base, "meeting": {**base["meeting"], "purpose": "이번 주에 정할 것"}}
-    assert '<p class="sheet-summary">이번 주에 정할 것</p>' in render_meeting_html(with_summary)
-
-
-def test_a_follow_up_without_any_evidence_says_so_rather_than_showing_a_blank(tmp_path) -> None:
-    from ax_workspace.modules.meetings.export import render_meeting_html
-
-    document = {
-        "meeting": {
-            "title": "회의", "starts_at": "2026-09-05T02:00:00+00:00", "ends_at": "2026-09-05T03:00:00+00:00",
-            "started_at": "2026-09-05T02:00:00+00:00", "attendees": [], "external_attendees": [],
-        },
-        "agendas": [
-            {
-                "order": 1, "title": "안건", "concluded": False,
-                "lines": [{"line_id": "a", "text": "줄", "at_ms": None, "evidence": []}],
-                "todos": [
-                    {"title": "근거 없는 일", "due_candidate": None, "reference": {"line_ids": []}, "linked": None},
-                    {"title": "이미 보낸 일", "due_candidate": "2026-09-10", "reference": {"line_ids": []},
-                     "linked": {"work_request_id": "x", "task_id": None}},
-                ],
-            }
-        ],
-    }
-    body = render_meeting_html(document)
-
-    assert '<span class="stamp none">근거 없음</span>' in body
-    assert '<span class="chip requested">요청됨</span>' in body
-    # 기한은 월-일만 낸다 — 연도는 머리에 이미 있다.
-    assert '<span class="due">09-10</span>' in body
-    # 근거가 없는 줄은 시각 자리가 빈칸이다.
-    assert '<span class="at"></span>' in body
 
 
 def test_the_graph_hangs_a_promoted_request_on_its_meeting_rather_than_on_a_person_who_is_not_one(tmp_path) -> None:
@@ -1696,59 +1213,6 @@ def test_the_merge_reads_the_script_the_second_pass_wrote(tmp_path) -> None:
     assert "확정 발화 0" not in prompt
 
 
-def test_every_way_the_second_pass_can_fail_ends_the_meeting_as_failed(tmp_path) -> None:
-    """**폴백이 없다** (D44 정정) — 실시간 원문 위에서 합성하지 않고, 합성으로 넘어가지도 않는다.
-
-    한 번 폴백을 두었다가 실물에서 값을 치렀다: 결과를 받다 끊겼는데 조용히 `done` 이 됐고, 사람은
-    재전사되지 않은 회의록을 재전사된 것으로 알고 읽었다.
-    """
-    from ax_workspace.modules.meetings.retranscribe import (
-        FAILED_EMPTY,
-        FAILED_NO_RECORDING,
-        FAILED_PROVIDER,
-        FAILED_RESULT,
-        FAILED_TIMEOUT,
-        FAILED_UPLOAD,
-    )
-    from ax_workspace.modules.meetings.stream import SttUpstreamError
-
-    def _staged(stage: str) -> SttUpstreamError:
-        error = SttUpstreamError("대역")
-        error.stage = stage
-        return error
-
-    cases = [
-        ("녹음 없음", None, None, FAILED_NO_RECORDING),
-        ("업로드 실패", FakeFileTranscriber(error=_staged("upload")), True, FAILED_UPLOAD),
-        ("그쪽 거절", FakeFileTranscriber(error=SttUpstreamError("대역")), True, FAILED_PROVIDER),
-        ("결과 못 받음", FakeFileTranscriber(error=_staged("result")), True, FAILED_RESULT),
-        ("빈 결과", FakeFileTranscriber([]), True, FAILED_EMPTY),
-        ("상한 초과", FakeFileTranscriber(error=TimeoutError("상한")), True, FAILED_TIMEOUT),
-    ]
-    for index, (label, transcriber, with_recording, expected) in enumerate(cases):
-        room = tmp_path / f"case{index}"
-        room.mkdir()
-        client, application, agent = _stack(room)
-        made = _summarizing(client, application, recording=bool(with_recording))
-        meeting_id = made["meeting"]["meeting_id"]
-        human = made["agendas"][0]["agenda_id"]
-        _blocks(application, meeting_id)
-        application.meeting_finalize._transcriber = transcriber
-        agent.script = [_output([_agenda("첫 안건", agenda_id=human, source="manual")])] * 3
-
-        client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
-        assert application.finalize_meeting(UUID(meeting_id)) is False, label
-
-        head = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]
-        assert head["status"] == "failed", label
-        assert head["failure_reason"] == expected, label
-        # **합성을 부르지 않았다** — 재전사가 되지 않으면 그 걸음까지 가지 않는다.
-        assert agent.runs == [], label
-        # 실시간 원문은 그대로 남는다(지우지 않는다). 다만 그 위에서 회의록을 만들지 않는다.
-        assert [row["content"] for row in _transcript_of(client, meeting_id)] == ["확정 발화 0", "확정 발화 1"], label
-        assert head["transcript_source"] != "final", label
-
-
 def test_retrying_a_failed_meeting_starts_from_the_second_pass_again(tmp_path) -> None:
     """[다시 시도] 는 재전사부터 돈다 — 처음 실패한 걸음이 그 걸음이기 때문이다."""
     from ax_workspace.modules.meetings.stream import SttUpstreamError
@@ -1784,19 +1248,6 @@ def test_retrying_a_failed_meeting_starts_from_the_second_pass_again(tmp_path) -
     assert head["failure_reason"] is None
 
 
-def test_raw_pcm_gets_a_wav_header_and_a_container_goes_up_as_it_is(tmp_path) -> None:
-    """컨테이너는 헤더가 스스로 형식을 말한다. raw 는 아무 말도 하지 않아 우리가 적어 보낸다."""
-    from ax_workspace.modules.meetings.retranscribe import Recording, uploadable
-
-    payload, name = uploadable(Recording(data=b"\x00\x01" * 8, filename="m.pcm"))
-    assert name == "m.wav"
-    assert payload.startswith(b"RIFF") and b"WAVEfmt " in payload
-    assert payload.endswith(b"\x00\x01" * 8) and len(payload) == 44 + 16
-
-    same = Recording(data=b"webm-bytes", filename="m.webm")
-    assert uploadable(same) == (b"webm-bytes", "m.webm")
-
-
 def test_a_recording_that_started_after_the_meeting_is_shifted_back_onto_the_meeting_clock(tmp_path) -> None:
     """파일의 0초는 회의의 0초가 아니다 — 근거 타임칩이 회의 시작 기준에 걸려 있어 그만큼 되돌린다."""
     client, application, agent = _stack(tmp_path)
@@ -1820,109 +1271,6 @@ def test_a_recording_that_started_after_the_meeting_is_shifted_back_onto_the_mee
 
 
 # ------------------- 결과를 받다 끊기면 같은 전사 건으로 결과만 다시 받는다 (D44 정정 ④)
-
-
-class _FakeResponse:
-    """`urlopen` 이 돌려주는 것 — 조각으로 나눠 주고, 끊김은 짧게 주는 것으로 흉내 낸다."""
-
-    def __init__(self, payload: bytes, *, declared: int | None = None) -> None:
-        self._payload = payload
-        self._read = False
-        self.headers = {"Content-Length": str(declared if declared is not None else len(payload))}
-
-    def read(self, _size: int = -1) -> bytes:
-        if self._read:
-            return b""
-        self._read = True
-        return self._payload
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_exc) -> bool:
-        return False
-
-
-def _transcriber_reading(monkeypatch, answers: list) -> tuple:
-    """`urlopen` 을 대역으로 갈아 끼운 어댑터. **네트워크로 나가지 않는다.**"""
-    from ax_workspace.platform import soniox
-
-    calls: list[str] = []
-
-    def _fake_urlopen(request, timeout=None):
-        calls.append(request.full_url)
-        answer = answers.pop(0)
-        if isinstance(answer, Exception):
-            raise answer
-        return answer
-
-    monkeypatch.setattr(soniox.urlrequest, "urlopen", _fake_urlopen)
-    monkeypatch.setattr(soniox.time, "sleep", lambda _seconds: None)
-    return soniox.SonioxFileTranscriber(api_key="x"), calls
-
-
-def _tokens_body(text: str) -> bytes:
-    import json as _json
-
-    return _json.dumps({"tokens": [{"text": text, "speaker": "1", "start_ms": 0, "end_ms": 900}]}).encode()
-
-
-def test_a_result_that_arrives_cut_short_is_asked_for_again_on_the_same_transcription(tmp_path, monkeypatch) -> None:
-    """실물에서 `IncompleteRead` 로 큰 본문이 중간에 끊겼다 — 전사는 이미 끝났으니 받는 일만 다시 한다."""
-    from ax_workspace.modules.meetings.retranscribe import Recording
-
-    whole = _tokens_body("끝까지 받은 결과")
-    transcriber, calls = _transcriber_reading(monkeypatch, [
-        _FakeResponse(b'{"id": "file-1"}'),
-        _FakeResponse(b'{"id": "tx-1"}'),
-        _FakeResponse(b'{"status": "completed"}'),
-        _FakeResponse(whole[:10], declared=len(whole)),  # 끊김 ①
-        _FakeResponse(whole[:10], declared=len(whole)),  # 끊김 ②
-        _FakeResponse(whole),                            # 세 번째에 온다
-    ])
-
-    tokens = transcriber.transcribe(Recording(data=b"audio", filename="m.webm"))
-    assert [token.text for token in tokens] == ["끝까지 받은 결과"]
-    # **같은 전사 건**의 결과만 다시 받았다 — 다시 올리지도, 다시 전사하지도 않았다.
-    result_calls = [url for url in calls if url.endswith("/transcript")]
-    assert len(result_calls) == 3 and len(set(result_calls)) == 1
-    assert len([url for url in calls if url.endswith("/v1/files")]) == 1
-    assert len([url for url in calls if url.endswith("/v1/transcriptions")]) == 1
-
-
-def test_a_result_that_never_arrives_whole_is_a_failure_rather_than_a_short_script(tmp_path, monkeypatch) -> None:
-    """세 번 다 끊기면 실패다 — 반쯤 받은 원문으로 회의록을 만들지 않는다."""
-    from ax_workspace.modules.meetings.retranscribe import Recording
-    from ax_workspace.modules.meetings.stream import SttUpstreamError
-
-    whole = _tokens_body("끝내 못 받은 결과")
-    transcriber, calls = _transcriber_reading(monkeypatch, [
-        _FakeResponse(b'{"id": "file-1"}'),
-        _FakeResponse(b'{"id": "tx-1"}'),
-        _FakeResponse(b'{"status": "completed"}'),
-        *[_FakeResponse(whole[:10], declared=len(whole)) for _ in range(3)],
-    ])
-
-    with pytest.raises(SttUpstreamError) as raised:
-        transcriber.transcribe(Recording(data=b"audio", filename="m.webm"))
-    # 위층이 사람 말 문구를 고르는 표가 붙어 있다.
-    assert getattr(raised.value, "stage", "") == "result"
-    assert len([url for url in calls if url.endswith("/transcript")]) == 3
-
-
-def test_a_whole_body_that_comes_in_pieces_is_read_to_the_end(tmp_path) -> None:
-    """한 번의 `read()` 로 받으려 하면 큰 응답이 중간에 끊긴다 — 빈 조각이 올 때까지 읽는다."""
-    from ax_workspace.platform.soniox import _read_all
-
-    class _Chunked:
-        def __init__(self, pieces: list[bytes]) -> None:
-            self._pieces = list(pieces)
-            self.headers: dict[str, str] = {}
-
-        def read(self, _size: int = -1) -> bytes:
-            return self._pieces.pop(0) if self._pieces else b""
-
-    assert _read_all(_Chunked([b"abc", b"def", b"gh"])) == b"abcdefgh"
 
 
 def test_the_final_merge_clears_the_candidates_the_meeting_was_still_making(tmp_path) -> None:

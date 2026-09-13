@@ -8,7 +8,8 @@ from uuid import UUID, uuid4
 
 from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, Principal
 from ax_workspace.modules.work.application import TaskError, TaskNotFound
-from ax_workspace.modules.work.materials import MAX_MATERIAL_BYTES, MaterialStorage, _link_url
+from ax_workspace.modules.work.material_values import MAX_MATERIAL_BYTES, normalize_material_link
+from ax_workspace.modules.work.materials import MaterialStorage
 from ax_workspace.modules.work.material_extraction import MaterialExtractionJob
 
 ACTION_MATERIAL_TTL = timedelta(hours=24)
@@ -66,7 +67,7 @@ class ActionMaterialDraftApplication:
 
     def stage_link(self, principal: Principal, action_id: UUID, *, url: str, label: str) -> dict[str, Any]:
         self._action(principal, action_id)
-        clean_url = _link_url(url)
+        clean_url = normalize_material_link(url)
         clean_label = str(label or "").strip()[:300]
         if not clean_label:
             raise ActionMaterialError("material label is required")

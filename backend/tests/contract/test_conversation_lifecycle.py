@@ -398,7 +398,7 @@ def test_one_presenter_never_reuses_another_principals_visible_names(tmp_path) -
 
     with make_session_factory(application._settings.database_url)() as session:
         record = session.get(ActionItemRecord, UUID(proposed["action_id"]))
-        presenter = ActionPresenter(session)
+        presenter = ActionPresenter(session, services=application._action_services(session))
         first = presenter.present(record, mina)
         second = presenter.present(record, jiho)
         # Each principal is named as themselves; the requester row is resolved through that principal's own visibility.

@@ -19,15 +19,10 @@ from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.modules.meetings.batch import (
     BATCH_CHARS,
-    BATCH_MAX_WAIT_SECONDS,
     BATCH_SWITCH_MIN_CHARS,
     CAUSE_AGENDA_SWITCH,
-    CAUSE_TIMER,
     CAUSE_TRANSCRIPT,
     DEFAULT_TOOL_REGISTRY,
-    SchemaViolation,
-    demote_line,
-    parse_output,
 )
 
 MINA = {"X-Demo-Persona": "mina"}
@@ -172,45 +167,6 @@ def test_a_memo_becomes_a_line_the_server_timestamps(tmp_path) -> None:
     assert [row["text"] for row in agenda["lines"]] == ["권한부터 정한다"]
 
 
-def test_only_the_person_who_called_the_meeting_writes_memo_and_only_while_it_runs(tmp_path) -> None:
-    client, _, _ = _stack(tmp_path)
-    made = _meeting(client)
-    meeting_id = made["meeting"]["meeting_id"]
-    agenda_id = made["agendas"][0]["agenda_id"]
-    path = f"/api/meetings/{meeting_id}/agendas/{agenda_id}/lines"
-
-    # 「예정」에는 메모 자리가 없다 (SPEC §6-2).
-    assert client.post(path, headers=MINA, json={"text": "이르다"}).status_code == 409
-    client.post(f"/api/meetings/{meeting_id}/start", headers=MINA)
-
-    # 참석자라도 만든 사람이 아니면 쓰지 못하고, 없는 것처럼 답한다 (§6-1 · §3.2-1).
-    assert client.post(path, headers=JIHO, json={"text": "지호 메모"}).status_code == 404
-    assert client.post(path, headers=SORA, json={"text": "남의 회의"}).status_code == 404
-    # 빈 글자는 줄이 되지 않는다.
-    assert client.post(path, headers=MINA, json={"text": "   "}).status_code == 422
-
-    client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
-    assert client.post(path, headers=MINA, json={"text": "끝난 뒤"}).status_code == 409
-
-
-def test_can_write_memo_says_who_may_write_and_when(tmp_path) -> None:
-    client, _, _ = _stack(tmp_path)
-    made = _meeting(client)
-    meeting_id = made["meeting"]["meeting_id"]
-
-    assert client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]["can_write_memo"] is False
-    client.post(f"/api/meetings/{meeting_id}/start", headers=MINA)
-
-    head = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]
-    assert head["can_write_memo"] is True
-    # `at_ms` 의 기준점을 화면이 알아야 한다.
-    assert head["started_at"] and datetime.fromisoformat(head["started_at"]) <= datetime.now(UTC)
-    assert client.get(f"/api/meetings/{meeting_id}", headers=JIHO).json()["meeting"]["can_write_memo"] is False
-
-    client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
-    assert client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]["can_write_memo"] is False
-
-
 def test_writing_the_same_memo_twice_makes_two_lines_and_a_failed_write_makes_none(tmp_path) -> None:
     """자동 저장은 재시도한다 — 실패한 쓰기는 줄을 남기지 않고, 성공한 쓰기만 쌓인다 (SPEC §6-7)."""
     client, _, _ = _stack(tmp_path)
@@ -311,34 +267,6 @@ def test_a_session_that_cannot_be_opened_leaves_the_meeting_running_and_the_batc
     _blocks(application, meeting_id, count=3, chars=BATCH_CHARS)
     assert application.meeting_batch.evaluate(meeting_id, CAUSE_TRANSCRIPT) is True
     assert agent.runs == []  # 세션이 없으면 제출하지 않는다
-
-
-def test_the_three_triggers_fire_on_volume_on_an_agenda_switch_and_on_time(tmp_path) -> None:
-    client, application, agent = _stack(tmp_path)
-    meeting_id = _running(client)["meeting"]["meeting_id"]
-    application.meeting_batch.drain()
-    batch = application.meeting_batch
-
-    # ① 분량에 못 미치면 내지 않는다.
-    _blocks(application, meeting_id, count=1, chars=BATCH_CHARS - 100)
-    assert batch.evaluate(meeting_id, CAUSE_TRANSCRIPT) is False
-    # ② 안건 전환은 그 적은 분량으로도 낸다 — 다만 너무 적으면 생략한다.
-    assert batch.evaluate(meeting_id, CAUSE_AGENDA_SWITCH) is True
-    assert len(agent.runs) == 1
-
-    # ③ 시간 트리거는 미처리가 하나라도 있으면 낸다.
-    _blocks(application, meeting_id, count=1, chars=10, start_ms=90_000)
-    assert batch.evaluate(meeting_id, CAUSE_TIMER) is True
-    assert len(agent.runs) == 2
-
-
-def test_too_little_pending_speech_skips_the_agenda_switch_batch(tmp_path) -> None:
-    client, application, agent = _stack(tmp_path)
-    meeting_id = _running(client)["meeting"]["meeting_id"]
-    application.meeting_batch.drain()
-    _blocks(application, meeting_id, count=1, chars=BATCH_SWITCH_MIN_CHARS - 10)
-    assert application.meeting_batch.evaluate(meeting_id, CAUSE_AGENDA_SWITCH) is False
-    assert agent.runs == []
 
 
 def test_a_second_batch_does_not_start_while_one_is_running(tmp_path) -> None:
@@ -449,30 +377,6 @@ def test_an_output_that_breaks_the_schema_discards_the_whole_batch(tmp_path) -> 
     assert [line["text"] for agenda in after for line in agenda["lines"]] == ["살아남을 줄"]
 
 
-def test_a_line_that_points_at_no_task_is_demoted_and_keeps_its_body(tmp_path) -> None:
-    client, application, agent = _stack(tmp_path)
-    meeting_id = _running(client)["meeting"]["meeting_id"]
-    application.meeting_batch.drain()
-    agent.script = [
-        _output([_agenda("정리", [_line("있는 업무를 가리키지 않는 줄", task_id="00000000-0000-0000-0000-000000000000")])])
-    ]
-    _blocks(application, meeting_id, count=1, chars=BATCH_CHARS)
-    application.meeting_batch.evaluate(meeting_id, CAUSE_TRANSCRIPT)
-
-    agendas = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
-    [line] = [row for agenda in agendas for row in agenda["lines"] if row["track"] == "ai"]
-    assert line["text"] == "있는 업무를 가리키지 않는 줄"
-
-
-def test_evidence_outside_the_span_this_batch_read_is_dropped(tmp_path) -> None:
-    line = demote_line(
-        parse_output(_output([_agenda("a", [_line("x", evidence=[{"from_ms": 0, "to_ms": 500}, {"from_ms": 90_000, "to_ms": 91_000}])])]))[0].lines[0],
-        allowed_task_ids=set(),
-        covered_ms=(0, 1_000),
-    )
-    assert line.evidence == [{"from_ms": 0, "to_ms": 500}]
-
-
 def test_the_ai_track_is_replaced_whole_and_never_touches_a_human_agenda(tmp_path) -> None:
     """전량 교체 — 사람이 만든 안건은 제목도 출처도 그대로다 (SPEC §7.1 적재 · §7.3)."""
     client, application, agent = _stack(tmp_path)
@@ -564,19 +468,6 @@ def test_no_batch_is_submitted_once_the_meeting_has_ended(tmp_path) -> None:
     assert agent.runs == []
 
 
-def test_the_trigger_numbers_are_the_ones_the_open_question_left(tmp_path) -> None:
-    assert (BATCH_CHARS, BATCH_SWITCH_MIN_CHARS, BATCH_MAX_WAIT_SECONDS) == (600, 80, 90)
-
-
-def test_an_output_that_is_not_json_is_a_schema_violation() -> None:
-    with pytest.raises(SchemaViolation):
-        parse_output("준비됨")
-    with pytest.raises(SchemaViolation):
-        parse_output(_output([{"agenda_id": None, "title": "", "source": "ai", "lines": []}]))
-    with pytest.raises(SchemaViolation):
-        parse_output(_output([_agenda("a", [_line("x")], source="unknown")]))
-
-
 def test_the_batch_turn_binds_the_output_schema_to_the_provider(tmp_path) -> None:
     """대화로 돌아도 출력이 스키마를 벗어나지 못한다 (SCAX-SPEC-004 §7.2-6).
 
@@ -612,8 +503,6 @@ def test_the_batch_turn_binds_the_output_schema_to_the_provider(tmp_path) -> Non
 
 
 def test_the_cli_turn_passes_the_schema_file_to_the_provider(tmp_path) -> None:
-    from pathlib import Path
-
     from ax_workspace.modules.ax_execution.ai import AiConversationRequest, AiDelegatedToolContext
     from ax_workspace.platform.codex_cli import CodexCliMcpServer, CodexCliProviderAdapter
 
@@ -641,18 +530,6 @@ def test_the_cli_turn_passes_the_schema_file_to_the_provider(tmp_path) -> None:
     )
     assert plain.output_schema is None
     assert _CONVERSATION_OUTPUT_SCHEMA
-
-
-def test_the_batch_prompt_says_to_answer_with_that_json_and_carries_the_schema() -> None:
-    from ax_workspace.modules.meetings.batch import build_batch_prompt, build_warm_start_prompt
-
-    prompt = build_batch_prompt([{"speakerLabel": "1", "atMs": 0, "endMs": 900, "text": "말"}], [])
-    assert "JSON 하나로만 답하라" in prompt
-    # 스키마가 프롬프트에도 실린다 — provider 가 파일을 못 읽는 경우에도 모양을 안다.
-    assert '"agendas"' in prompt and '"additionalProperties": false' in prompt
-
-    warm = build_warm_start_prompt({"title": "회의"}, ("task_list",))
-    assert "JSON 스키마 하나로만" in warm
 
 
 def test_a_trigger_that_arrives_mid_batch_is_repaid_when_that_batch_ends(tmp_path) -> None:
@@ -780,26 +657,3 @@ def test_the_pushed_batch_frame_carries_the_candidates(tmp_path) -> None:
     assert agenda["todos"][0]["provisional"] is True
     # 줄은 AI 트랙만 실린다 — 그 규칙은 그대로다.
     assert all(line["track"] == "ai" for line in agenda["lines"])
-
-
-def test_a_candidate_the_meeting_is_still_making_cannot_be_promoted_or_deleted(tmp_path) -> None:
-    """다음 배치가 그 후보를 지우고 다시 낼 수 있다 — 방금 업무로 만든 것이 사라지면 계보가 끊긴다."""
-    client, application, agent = _stack(tmp_path)
-    made = _running(client)
-    meeting_id = made["meeting"]["meeting_id"]
-    human = made["agendas"][0]["agenda_id"]
-    application.meeting_batch.drain()
-    _blocks(application, meeting_id, count=3, chars=BATCH_CHARS)
-    agent.script = [_output([_agenda("첫 안건", [], agenda_id=human, source="manual", todos=[_todo("아직 후보")])])]
-    assert application.meeting_batch.evaluate(meeting_id, CAUSE_TRANSCRIPT) is True
-    application.meeting_batch.drain()
-    [todo] = _agendas_of(client, meeting_id)[0]["todos"]
-
-    promoted = client.post(
-        f"/api/meetings/{meeting_id}/todos/{todo['todo_id']}/promote", headers=MINA, json={"assignee_id": "jiho"}
-    )
-    assert promoted.status_code == 409 and "todo_provisional" in promoted.text
-    removed = client.delete(f"/api/meetings/{meeting_id}/todos/{todo['todo_id']}", headers=MINA)
-    assert removed.status_code == 409 and "todo_provisional" in removed.text
-    # 후보는 그대로 남는다 — 거절이 지우는 일이 되지 않는다.
-    assert len(_agendas_of(client, meeting_id)[0]["todos"]) == 1

@@ -2,11 +2,20 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from enum import StrEnum
 from typing import Any, Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from ax_workspace.modules.work.checklist import ChecklistItem, UpdateChecklistItem, update_checklist_item
+from ax_workspace.modules.work.errors import InvalidTaskTransition, TaskAccessDenied, TaskError, TaskNotFound
+from ax_workspace.modules.work.lifecycle import (
+    ChangeTaskState,
+    Task,
+    TaskCompletionContext,
+    TaskState,
+    transition_task,
+)
+from ax_workspace.modules.work.task_values import clean_checklist, validate_schedule
 from ax_workspace.modules.organization_access.domain import (
     PROJECT_READ,
     WORK_READ_ALL,
@@ -20,32 +29,6 @@ from ax_workspace.modules.organization_access.domain import (
 
 
 _TASK_TIMEZONE = ZoneInfo("Asia/Seoul")
-
-
-class TaskState(StrEnum):
-    OPEN = "open"
-    IN_PROGRESS = "in_progress"
-    BLOCKED = "blocked"
-    #: Handed over and waiting for the person who asked to say whether it is what they wanted. Not done.
-    COMPLETION_SUBMITTED = "completion_submitted"
-    DONE = "done"
-    CANCELLED = "cancelled"
-
-
-class TaskError(Exception):
-    pass
-
-
-class TaskNotFound(TaskError):
-    pass
-
-
-class InvalidTaskTransition(TaskError):
-    pass
-
-
-class TaskAccessDenied(TaskError):
-    pass
 
 
 class TaskRepository(Protocol):
@@ -94,7 +77,6 @@ class TaskRepository(Protocol):
     def archive_checklist_item(self, item: Any, actor_id: str) -> None: ...
     def reorder_checklist(self, items: list[Any], ordered_ids: list[UUID]) -> list[Any]: ...
     def record_activity(self, task: Any, actor_id: str, event_kind: str, summary: str, *, before_ref: str | None = None, reason: str | None = None) -> None: ...
-    def touch(self, task: Any) -> None: ...
 
 
 class ActionSourcePort(Protocol):
@@ -525,7 +507,7 @@ class TaskApplication:
         if reviewer_id is None:
             raise TaskError("이 업무의 요청자를 찾을 수 없습니다")
         snapshot = self._delivery_snapshot(principal, task, clean_summary[:2000], output_material_ids or [])
-        submission = self.repository.open_delivery_round(task, str(principal.id), reviewer_id, snapshot)
+        self.repository.open_delivery_round(task, str(principal.id), reviewer_id, snapshot)
         task.state = TaskState.COMPLETION_SUBMITTED
         task.block_reason = None
         task.version += 1
@@ -646,39 +628,44 @@ class TaskApplication:
     ) -> dict[str, Any]:
         self._require(principal, TASK_SELF_MANAGE)
         task = self.repository.task(task_id, str(principal.id), lock=True)
-        allowed = {
-            TaskState.OPEN: {TaskState.IN_PROGRESS, TaskState.CANCELLED},
-            TaskState.IN_PROGRESS: {TaskState.BLOCKED, TaskState.DONE, TaskState.CANCELLED},
-            TaskState.BLOCKED: {TaskState.IN_PROGRESS, TaskState.CANCELLED},
-            # Waiting for the person who asked: only their answer moves it on, so no command does from here.
-            TaskState.COMPLETION_SUBMITTED: {TaskState.CANCELLED},
-            # A mistaken completion can be reopened; cancellation stays terminal.
-            TaskState.DONE: {TaskState.IN_PROGRESS},
-        }
-        if target is TaskState.DONE and self.requires_completion_review(task):
-            raise InvalidTaskTransition("이 업무는 요청자의 확인이 필요합니다. 완료 보고로 제출하세요")
-        if target is TaskState.DONE:
-            self._require_children_finished(task)
-        if task.version != expected_version:
-            raise InvalidTaskTransition("task version is stale")
-        if target not in allowed.get(TaskState(task.state), set()):
-            raise InvalidTaskTransition("task state transition is not allowed")
-        if target is TaskState.BLOCKED and not (reason or "").strip():
-            raise InvalidTaskTransition("block reason is required")
-        previous_state = task.state
-        task.state = target
-        if previous_state == TaskState.OPEN and target is TaskState.IN_PROGRESS and task.start_date is None:
-            task.start_date = datetime.now(UTC).astimezone(_TASK_TIMEZONE).date()
-        task.block_reason = reason.strip() if target is TaskState.BLOCKED else None
-        task.version += 1
+        requires_review = self.requires_completion_review(task)
+        unfinished = (
+            tuple(str(child.title) for child in self.repository.open_children_of(task.id))
+            if target is TaskState.DONE and not requires_review
+            else ()
+        )
+        transition = transition_task(
+            Task(
+                id=str(task.id),
+                title=str(task.title),
+                state=TaskState(task.state),
+                version=int(task.version),
+                start_date=task.start_date,
+                block_reason=task.block_reason,
+            ),
+            ChangeTaskState(
+                target=target,
+                expected_version=expected_version,
+                reason=reason,
+                today=datetime.now(UTC).astimezone(_TASK_TIMEZONE).date(),
+            ),
+            TaskCompletionContext(
+                requires_completion_review=requires_review,
+                unfinished_child_titles=unfinished,
+            ),
+        )
+        task.state = transition.task.state
+        task.start_date = transition.task.start_date
+        task.block_reason = transition.task.block_reason
+        task.version = transition.task.version
         self.repository.touch(task)
         self.repository.record_activity(
             task,
             str(principal.id),
             "task.state_changed",
-            f"업무 상태 {previous_state} → {target.value}: {task.title}",
-            before_ref=f"task:{task.id}@{expected_version}:{previous_state}",
-            reason=task.block_reason,
+            transition.event.summary,
+            before_ref=transition.event.before_ref,
+            reason=transition.event.reason,
         )
         return self._view(task)
 
@@ -850,32 +837,39 @@ class TaskApplication:
         item = self.repository.checklist_item(task.id, item_id, lock=True)
         if item is None:
             raise TaskNotFound("checklist item was not found")
-        # The guard is on the step, not the Task: two people checking two different steps are not in conflict.
-        if expected_version is not None and int(item.version) != expected_version:
-            raise TaskError("checklist item version is stale")
-        if text is not None:
-            cleaned = " ".join(text.split())
-            if not cleaned:
-                raise TaskError("checklist item text is required")
-            before = item.text
-            item.text = cleaned[:300]
-            if before != item.text:
-                item.version += 1
-                self._moved(task)
-                self.repository.record_activity(
-                    task, str(principal.id), "task.checklist.edited", f"체크리스트 수정: {before[:40]} → {item.text[:40]}"
-                )
-        if done is not None and done != item.done:
-            item.done = done
-            item.completed_by = str(principal.id) if done else None
-            item.completed_at = datetime.now(UTC) if done else None
-            item.version += 1
+        now = datetime.now(UTC)
+        change = update_checklist_item(
+            ChecklistItem(
+                id=str(item.id),
+                task_id=str(task.id),
+                text=str(item.text),
+                done=bool(item.done),
+                version=int(item.version),
+                completed_by=item.completed_by,
+                completed_at=item.completed_at,
+            ),
+            UpdateChecklistItem(
+                text=text,
+                done=done,
+                expected_version=expected_version,
+                actor_id=str(principal.id),
+                changed_at=now,
+            ),
+        )
+        item.text = change.item.text
+        item.done = change.item.done
+        item.completed_by = change.item.completed_by
+        item.completed_at = change.item.completed_at
+        item.version = change.item.version
+        for activity in change.activities:
             self._moved(task)
             self.repository.record_activity(
-                task, str(principal.id), "task.checklist.checked" if done else "task.checklist.unchecked",
-                f"체크리스트 {'완료' if done else '해제'}: {item.text[:80]}",
+                task,
+                str(principal.id),
+                activity.kind,
+                activity.summary,
             )
-        item.updated_at = datetime.now(UTC)
+        item.updated_at = now
         return _checklist_view(item, task)
 
     def add_progress_note(
@@ -1071,31 +1065,6 @@ def _assignment_view(assignments: Any) -> dict[str, Any] | None:
         "assigned_by": current.assigned_by,
         "accepted_at": _iso(current.accepted_at),
     }
-
-
-#: A checklist written with the work itself. Bounded so a creation payload cannot become a data dump.
-MAX_INITIAL_STEPS = 50
-
-
-def clean_checklist(texts: Any) -> list[str]:
-    """The steps someone actually wrote: blank lines are not steps, and the order is theirs."""
-    if not texts:
-        return []
-    if isinstance(texts, str) or not isinstance(texts, (list, tuple)):
-        raise TaskError("checklist must be a list of steps")
-    cleaned = []
-    for text in texts:
-        step = " ".join(str(text).split())
-        if step:
-            cleaned.append(step[:300])
-    if len(cleaned) > MAX_INITIAL_STEPS:
-        raise TaskError(f"a new task can start with at most {MAX_INITIAL_STEPS} steps")
-    return cleaned
-
-
-def validate_schedule(start_date: date | None, due_date: date | None) -> None:
-    if start_date is not None and due_date is not None and start_date > due_date:
-        raise TaskError("start date cannot be later than the due date")
 
 
 #: Snapshot fields compared as plain values; lists of things get their own comparison.

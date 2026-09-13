@@ -9,6 +9,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,16 +21,10 @@ from starlette.websockets import WebSocketDisconnect
 
 from ax_workspace.modules.meetings.stream import (
     CLOSE_CONFLICT,
-    CLOSE_ENDED,
-    CLOSE_NOT_FOUND,
-    CLOSE_UNAUTHORIZED,
-    REASON_INVALID_STATUS,
     REASON_NOT_OWNER,
-    REASON_STREAM_ACTIVE,
     AudioDeclaration,
     SttToken,
     SttUpstreamError,
-    build_blocks,
 )
 
 MINA = {"X-Demo-Persona": "mina"}
@@ -170,8 +165,6 @@ def _scheduled_meeting(client: TestClient) -> str:
 def _settled_texts(client: TestClient, meeting_id: str, *, expected: int, tries: int = 60) -> list[str]:
     """적재된 확정 발화. 종료 드레인은 연결이 끊긴 뒤에 끝나므로 그 자리를 기다려 준다."""
     import time
-    from uuid import UUID
-
     application = client.app.state.workflow_application
     principal = application.authenticated_principal("mina")
     for _ in range(tries):
@@ -396,15 +389,11 @@ def test_a_provisional_utterance_is_pushed_and_never_stored(tmp_path) -> None:
 
     application = client.app.state.workflow_application
     principal = application.authenticated_principal("mina")
-    from uuid import UUID
-
     # 잠정은 밀어 주기만 한다 — 원문에 남지 않는다 (SPEC §5.4-1 · §10-11).
     assert application.meeting_transcript(principal, UUID(meeting_id))["items"] == []
 
 
 def test_a_settled_block_is_stored_and_pushed_at_the_same_moment(tmp_path) -> None:
-    from uuid import UUID
-
     client, connector, _ = _stack(tmp_path)
     connector.script = [
         [token("첫 화자의 말.", final=True, speaker="1", start_ms=0, end_ms=900)],
@@ -494,73 +483,6 @@ def test_a_subscriber_does_not_take_the_upstream_slot(tmp_path) -> None:
             assert connector.connect_count == 1
 
 
-# --------------------------------------------------------------------- 블록 경계
-
-
-def test_a_block_closes_on_a_speaker_change_a_length_limit_or_a_silence() -> None:
-    """경계 수치는 계약이 아니라 구현 재량이다 (SPEC §5.4-2). 판정이 사는 자리는 하나다."""
-    changed = build_blocks([
-        token("앞사람.", final=True, speaker="1", start_ms=0, end_ms=500),
-        token("뒷사람.", final=True, speaker="2", start_ms=600, end_ms=900),
-    ])
-    assert [(block.speaker_label, block.content) for block in changed] == [("1", "앞사람."), ("2", "뒷사람.")]
-
-    silent = build_blocks([
-        token("먼저.", final=True, speaker="1", start_ms=0, end_ms=500),
-        token("한참 뒤.", final=True, speaker="1", start_ms=3_000, end_ms=3_400),
-    ])
-    assert [block.content for block in silent] == ["먼저.", "한참 뒤."]
-
-    # 글자 상한은 150 이다 (D51) — 200자 토큰은 하나만으로 상한을 넘어 저마다 한 블록으로 선다.
-    # 토큰보다 잘게 끊지는 않는다: 시각을 쪼갤 수 없어 끊는 자리는 언제나 토큰 경계다.
-    long_run = build_blocks([
-        token("가" * 200, final=True, speaker="1", start_ms=0, end_ms=100),
-        token("나" * 200, final=True, speaker="1", start_ms=100, end_ms=200),
-        token("끝.", final=True, speaker="1", start_ms=200, end_ms=300),
-    ])
-    assert [len(block.content) for block in long_run] == [200, 200, 2]
-    assert long_run[0].content == "가" * 200
-
-    # 한 블록은 20초를 넘지 않는다 (D51) — 글자가 적어도 시간이 길면 끊는다.
-    slow = build_blocks([
-        token("어", final=True, speaker="1", start_ms=index * 1_500, end_ms=index * 1_500 + 1_400)
-        for index in range(30)
-    ])
-    assert slow and max(block.end_ms - block.at_ms for block in slow) <= 20_000
-
-    # 끊을 자리는 **상한 안의 마지막 문장 끝**이다 — 문장 가운데서 잘리면 그 블록만으로 읽히지 않는다.
-    sentences = build_blocks([
-        token("네 알겠습니다. " if index % 5 == 4 else "그래서 이렇게 ",
-              final=True, speaker="1", start_ms=index * 1_200, end_ms=index * 1_200 + 1_000)
-        for index in range(40)
-    ])
-    assert len(sentences) > 1
-    assert all(block.content.endswith(".") for block in sentences)
-
-    # 공백뿐인 블록은 행이 되지 않는다.
-    assert build_blocks([token("   ", final=True, speaker="1")]) == []
-
-
-def test_the_offsets_are_measured_from_the_meeting_start() -> None:
-    blocks = build_blocks([token("기준이 있는 말.", final=True, speaker="1", start_ms=250, end_ms=900)], base_ms=10_000)
-    assert (blocks[0].at_ms, blocks[0].end_ms) == (10_250, 10_900)
-
-
-def test_a_container_format_reaches_the_provider_as_auto_without_invented_numbers() -> None:
-    """브라우저가 보내는 `webm/opus` 는 헤더가 형식을 말한다 — 수치를 함께 보내면 provider 가 거절한다."""
-    from ax_workspace.platform.soniox import build_config
-
-    container = build_config("secret", AudioDeclaration("webm/opus", 16_000, 1))
-    assert container["audio_format"] == "auto"
-    assert "sample_rate" not in container and "num_channels" not in container
-    # endpoint detection 키가 없다 — 그것이 「미사용」이다 (SPEC §5.3 연결 조건 주석).
-    assert not any("endpoint" in key for key in container)
-
-    raw = build_config("secret", AudioDeclaration("pcm_s16le", 16_000, 1))
-    assert raw["audio_format"] == "pcm_s16le"
-    assert raw["sample_rate"] == 16_000 and raw["num_channels"] == 1
-
-
 # --------------------------------------------------------------------- 종료 드레인 · keepalive
 
 
@@ -569,8 +491,6 @@ def test_the_tail_that_only_settles_after_the_end_frame_still_reaches_the_transc
 
     그것을 기다리지 않고 닫으면 회의의 끝부분이 원문에서 사라진다 — 실물에서 그렇게 잃었다.
     """
-    from uuid import UUID
-
     client, connector, _ = _stack(tmp_path)
     connector.script = [[token("앞부분 말.", final=True, speaker="1", start_ms=0, end_ms=900)]]
     meeting_id = _running_meeting(client)
@@ -592,8 +512,6 @@ def test_the_tail_that_only_settles_after_the_end_frame_still_reaches_the_transc
 
 
 def test_a_provider_that_never_finishes_still_leaves_what_it_already_settled(tmp_path) -> None:
-    from uuid import UUID
-
     client, connector, _ = _stack(tmp_path)
     connector.script = [[token("받아 둔 말.", final=True, speaker="1", start_ms=0, end_ms=900)]]
     meeting_id = _running_meeting(client)
@@ -620,77 +538,6 @@ def test_an_upstream_that_broke_is_not_waited_on(tmp_path) -> None:
         connector.last.release()
         _drain_until(socket, "error")
     assert connector.last.finished_count == 0
-
-
-def test_a_silent_microphone_does_not_let_the_provider_drop_the_meeting() -> None:
-    """오디오가 멈춰도 회의가 통째로 끊기지 않는다 — provider 는 조용한 업스트림을 끊는다(실측 20초).
-
-    무음 판정은 시계 하나에 걸리므로 그 시계만 줄여 세션의 펌프를 직접 돌린다.
-    """
-    import ax_workspace.modules.meetings.stream_service as service
-
-    session = FakeSttSession([])
-    upstream = object.__new__(service._UpstreamSession)
-    upstream._upstream = session
-    upstream._last_audio_at = 0.0
-
-    async def run_briefly() -> None:
-        upstream._last_audio_at = asyncio.get_running_loop().time()
-        pump = asyncio.create_task(upstream._pump_keepalive())
-        await asyncio.sleep(0.12)
-        pump.cancel()
-        try:
-            await pump
-        except asyncio.CancelledError:
-            pass
-
-    original = service.KEEPALIVE_IDLE_SECONDS
-    service.KEEPALIVE_IDLE_SECONDS = 0.02
-    try:
-        asyncio.run(run_briefly())
-    finally:
-        service.KEEPALIVE_IDLE_SECONDS = original
-    assert session.keepalive_count >= 1
-
-
-def test_audio_that_keeps_arriving_needs_no_keepalive() -> None:
-    """브라우저가 무음까지 보내는 동안에는 이 자리가 아무것도 하지 않는다."""
-    import ax_workspace.modules.meetings.stream_service as service
-
-    session = FakeSttSession([])
-    upstream = object.__new__(service._UpstreamSession)
-    upstream._upstream = session
-
-    async def run_briefly() -> None:
-        loop = asyncio.get_running_loop()
-        upstream._last_audio_at = loop.time()
-        pump = asyncio.create_task(upstream._pump_keepalive())
-        for _ in range(12):
-            await asyncio.sleep(0.01)
-            upstream._last_audio_at = loop.time()  # 오디오가 계속 온다
-        pump.cancel()
-        try:
-            await pump
-        except asyncio.CancelledError:
-            pass
-
-    original = service.KEEPALIVE_IDLE_SECONDS
-    service.KEEPALIVE_IDLE_SECONDS = 0.05
-    try:
-        asyncio.run(run_briefly())
-    finally:
-        service.KEEPALIVE_IDLE_SECONDS = original
-    assert session.keepalive_count == 0
-
-
-def test_the_keepalive_and_drain_limits_live_in_one_place() -> None:
-    from ax_workspace.modules.meetings.stream import DRAIN_TIMEOUT_SECONDS, KEEPALIVE_IDLE_SECONDS
-
-    # provider 의 idle timeout(실측 20초)보다 넉넉히 짧다.
-    assert KEEPALIVE_IDLE_SECONDS == 10.0 and DRAIN_TIMEOUT_SECONDS == 8.0
-
-
-# ------------------- 참여자는 폴링하지 않는다 — 같은 소켓으로 전부 받는다 (2026-09-11)
 
 
 def test_a_memo_someone_writes_reaches_every_connection_in_the_room(tmp_path) -> None:

@@ -1,0 +1,2863 @@
+{
+  "baseline": "42e43358b866bc02d4a5e401b19d826a6e8397e1",
+  "observed_at": "2026-09-11",
+  "note": "R2 static baseline inventory, not runtime coverage evidence. target_tools are the approved-scope migration mapping; planned is not excluded or verified. UI paths matched statically; empty caller sets require the named HTTP handler to be covered too. See unified-operations.md for query purposes, browser protocols and judgement compatibility.",
+  "http": [
+    {
+      "http": "DELETE /api/meetings/{meeting_id}/shares/{member_id}",
+      "http_handler": "revoke_meeting_share",
+      "screen_callers": [],
+      "operation": "revoke_meeting_share",
+      "owning_calls": [
+        "self._meetings(session).revoke_share"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "revoke_meeting_share"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, meeting_id: UUID, member_id: str, expected_version: int",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "DELETE /api/projects/{project_id}/members/{member_id}",
+      "http_handler": "release_from_project",
+      "screen_callers": [
+        "api.ts::releaseFromProject"
+      ],
+      "operation": "release_from_project",
+      "owning_calls": [
+        "self._projects(session).release"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "release_from_project"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, project_id: UUID, member_id: str",
+      "result_annotation": "None"
+    },
+    {
+      "http": "DELETE /api/tasks/{task_id}/checklist/{item_id}",
+      "http_handler": "archive_task_checklist_item",
+      "screen_callers": [
+        "api.ts::updateChecklistItem"
+      ],
+      "operation": "archive_task_checklist_item",
+      "owning_calls": [
+        "self._tasks(session).archive_checklist_item"
+      ],
+      "baseline_tools": [
+        "task_checklist_archive"
+      ],
+      "target_tools": [
+        "task_checklist_archive"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, task_id: UUID, item_id: UUID, **fields: Any",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "DELETE /api/tasks/{task_id}/references/{reference_id}",
+      "http_handler": "release_task_reference",
+      "screen_callers": [
+        "api.ts::releaseTaskReference"
+      ],
+      "operation": "release_task_reference",
+      "owning_calls": [
+        "self._tasks(session).release_reference"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "release_task_reference"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, task_id: UUID, reference_id: UUID",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "GET /api/access/members/{member_id}",
+      "http_handler": "member_access",
+      "screen_callers": [
+        "api.ts::getMemberAccess"
+      ],
+      "operation": "member_access",
+      "owning_calls": [
+        "AccessAdministration(SqlAlchemyOrganizationRepository(session)).member_access"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "member_access"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, member_id: str",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/access/roles",
+      "http_handler": "installed_access_roles",
+      "screen_callers": [
+        "api.ts::getInstalledAccessRoles"
+      ],
+      "operation": "installed_access_roles",
+      "owning_calls": [
+        "AccessAdministration(SqlAlchemyOrganizationRepository(session)).installed_roles"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "installed_access_roles"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal",
+      "result_annotation": "list[dict[str, Any]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/action-items",
+      "http_handler": "pending_action_items",
+      "screen_callers": [
+        "api.ts::getActionItems"
+      ],
+      "operation": "pending_action_items",
+      "owning_calls": [
+        "self._action_center(session).pending"
+      ],
+      "baseline_tools": [
+        "action_item_list"
+      ],
+      "target_tools": [
+        "action_item_list"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal",
+      "result_annotation": "list[dict[str, Any]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/action-items/{action_item_id}",
+      "http_handler": "action_item_detail",
+      "screen_callers": [
+        "api.ts::getActionItem"
+      ],
+      "operation": "action_item_detail",
+      "owning_calls": [
+        "self._action_center(session).detail"
+      ],
+      "baseline_tools": [
+        "action_item_get"
+      ],
+      "target_tools": [
+        "action_item_get"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, action_item_id: str",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/actions",
+      "http_handler": "actions",
+      "screen_callers": [
+        "api.ts::getActions"
+      ],
+      "operation": "actions",
+      "owning_calls": [
+        "self._actions(session).list"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "action_item_list"
+      ],
+      "policy": "canonical-query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal",
+      "result_annotation": "list[dict[str, Any]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/auth/me",
+      "http_handler": "auth_me",
+      "screen_callers": [
+        "api.ts::getSession"
+      ],
+      "operation": "my_organization_profile",
+      "owning_calls": [
+        "OrganizationApplication(SqlAlchemyOrganizationRepository(session)).my_profile"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "my_organization_profile"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/auth/providers",
+      "http_handler": "auth_providers",
+      "screen_callers": [
+        "api.ts::getAuthProviders"
+      ],
+      "operation": "demo_accounts",
+      "owning_calls": [
+        "OrganizationApplication(SqlAlchemyOrganizationRepository(session)).demo_accounts"
+      ],
+      "baseline_tools": [],
+      "target_tools": [],
+      "policy": "E2",
+      "status": "planned",
+      "input_signature": "self, email_domain: str",
+      "result_annotation": "list[dict[str, Any]]"
+    },
+    {
+      "http": "GET /api/conversations",
+      "http_handler": "conversations",
+      "screen_callers": [
+        "api.ts::createConversation",
+        "api.ts::getConversations"
+      ],
+      "operation": "conversations",
+      "owning_calls": [
+        "self._conversations(session).list"
+      ],
+      "baseline_tools": [
+        "conversation_search"
+      ],
+      "target_tools": [
+        "conversation_search"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal",
+      "result_annotation": "list[dict[str, Any]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/conversations/{conversation_id}",
+      "http_handler": "conversation",
+      "screen_callers": [
+        "api.ts::getConversation"
+      ],
+      "operation": "conversation",
+      "owning_calls": [
+        "self._conversations(session).get"
+      ],
+      "baseline_tools": [
+        "conversation_search"
+      ],
+      "target_tools": [
+        "conversation_search"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, conversation_id: UUID",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/daily-reports/status",
+      "http_handler": "daily_report_status",
+      "screen_callers": [
+        "api.ts::getDailyReportStatus"
+      ],
+      "operation": "daily_report_status",
+      "owning_calls": [
+        "self._reports(session).status_for_date"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "daily_report_status"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, report_date: str",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/daily-reports/{report_id}/history",
+      "http_handler": "daily_report_history",
+      "screen_callers": [
+        "api.ts::getDailyReportHistory"
+      ],
+      "operation": "daily_report_history",
+      "owning_calls": [
+        "self._reports(session).history"
+      ],
+      "baseline_tools": [
+        "daily_report_history"
+      ],
+      "target_tools": [
+        "daily_report_history"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, report_id: str",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/daily-reports/{report_id}/materials/{material_id}/content",
+      "http_handler": "open_report_material",
+      "screen_callers": [],
+      "operation": "open_report_material",
+      "owning_calls": [
+        "WorkflowApplication.open_report_material"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "open_report_material"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, report_id: UUID, material_id: UUID",
+      "result_annotation": "tuple[dict[str, Any], bytes]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/graph/neighbors",
+      "http_handler": "graph_neighbors",
+      "screen_callers": [
+        "api.ts::graphNeighbors"
+      ],
+      "operation": "graph_neighbors",
+      "owning_calls": [
+        "self._graph(session).neighbors"
+      ],
+      "baseline_tools": [
+        "graph_neighbors"
+      ],
+      "target_tools": [
+        "graph_neighbors"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, node: str, limit: int=20, *, execution_id: UUID | None=None",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/graph/overview",
+      "http_handler": "graph_overview",
+      "screen_callers": [
+        "api.ts::graphOverview"
+      ],
+      "operation": "graph_overview",
+      "owning_calls": [
+        "GraphApplication(_SessionGraphSource(self, session)).overview"
+      ],
+      "baseline_tools": [
+        "graph_overview"
+      ],
+      "target_tools": [
+        "graph_overview"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, *, view: str='member', limit: int=120",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/graph/search",
+      "http_handler": "graph_search",
+      "screen_callers": [
+        "api.ts::graphSearch"
+      ],
+      "operation": "graph_search",
+      "owning_calls": [
+        "self._graph(session).search"
+      ],
+      "baseline_tools": [
+        "graph_search"
+      ],
+      "target_tools": [
+        "graph_search"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, query: str, limit: int=20, *, execution_id: UUID | None=None",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/material-folders",
+      "http_handler": "list_material_folders",
+      "screen_callers": [],
+      "operation": "list_material_folders",
+      "owning_calls": [
+        "self._material_folders(session).list_for"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "list_material_folders"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal",
+      "result_annotation": "list[dict[str, Any]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/material-folders/{folder_id}/materials",
+      "http_handler": "list_folder_materials",
+      "screen_callers": [],
+      "operation": "list_folder_materials",
+      "owning_calls": [
+        "self._material_folders(session).materials"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "list_folder_materials"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, folder_id: UUID",
+      "result_annotation": "list[dict[str, Any]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/material-folders/{folder_id}/materials/{material_id}/content",
+      "http_handler": "open_folder_material",
+      "screen_callers": [],
+      "operation": "open_folder_material",
+      "owning_calls": [
+        "self._material_folders(session).open"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "open_folder_material"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, folder_id: UUID, material_id: UUID",
+      "result_annotation": "tuple[dict[str, Any], bytes]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/materials/search",
+      "http_handler": "search_materials",
+      "screen_callers": [],
+      "operation": "search_materials",
+      "owning_calls": [
+        "MaterialSearchApplication(SessionMaterialOwners(self, session), extractions, LexicalMaterialRetriever(extractions, SqlChunkIndex(session)), self._material_queue(session)).search",
+        "SqlAlchemyMaterialEvidenceRepository(session).record"
+      ],
+      "baseline_tools": [
+        "material_search"
+      ],
+      "target_tools": [
+        "material_search"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, query: str, *, execution_id: UUID | None=None, **filters: Any",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/materials/{material_id}",
+      "http_handler": "material_metadata",
+      "screen_callers": [
+        "api.ts::getMaterialMetadata"
+      ],
+      "operation": "material_metadata",
+      "owning_calls": [
+        "WorkflowApplication.material_metadata"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "material_metadata"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, material_id: UUID",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/meetings",
+      "http_handler": "list_meetings",
+      "screen_callers": [
+        "api.ts::createMeeting",
+        "api.ts::getCalendarEntries"
+      ],
+      "operation": "list_meetings",
+      "owning_calls": [
+        "self._meetings(session).list"
+      ],
+      "baseline_tools": [
+        "meeting_list"
+      ],
+      "target_tools": [
+        "meeting_list"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal",
+      "result_annotation": "list[dict[str, Any]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/meetings/{meeting_id}",
+      "http_handler": "get_meeting",
+      "screen_callers": [
+        "api.ts::getMeeting"
+      ],
+      "operation": "get_meeting",
+      "owning_calls": [
+        "self._meetings(session).get"
+      ],
+      "baseline_tools": [
+        "meeting_get"
+      ],
+      "target_tools": [
+        "meeting_get"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, meeting_id: UUID",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/meetings/{meeting_id}/materials/{material_id}/content",
+      "http_handler": "open_meeting_material",
+      "screen_callers": [
+        "api.ts::meetingMaterialContentUrl"
+      ],
+      "operation": "open_meeting_material",
+      "owning_calls": [
+        "WorkflowApplication.open_meeting_material"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "open_meeting_material"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, meeting_id: UUID, material_id: UUID",
+      "result_annotation": "tuple[dict[str, Any], bytes]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/my-work",
+      "http_handler": "my_work",
+      "screen_callers": [
+        "api.ts::getMyWork"
+      ],
+      "operation": "my_work",
+      "owning_calls": [
+        "self._tasks(session).list_for"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "my_task_list"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal",
+      "result_annotation": "list[dict[str, Any]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/notifications",
+      "http_handler": "list_notifications",
+      "screen_callers": [
+        "api.ts::getNotifications"
+      ],
+      "operation": "list_notifications",
+      "owning_calls": [
+        "SqlAlchemyNotificationRepository(session).list_for"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "list_notifications"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal",
+      "result_annotation": "list[dict[str, object]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/organization/activity",
+      "http_handler": "organization_activity",
+      "screen_callers": [
+        "api.ts::getOrganizationActivity"
+      ],
+      "operation": "organization_activity",
+      "owning_calls": [
+        "OrganizationApplication(SqlAlchemyOrganizationRepository(session)).organization_activity"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "organization_activity"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, *, unit_id: str | None=None, limit: int=50, cursor: str | None=None",
+      "result_annotation": "list[dict[str, Any]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/organization/me",
+      "http_handler": "my_organization_profile",
+      "screen_callers": [
+        "api.ts::getMyOrganizationProfile"
+      ],
+      "operation": "my_organization_profile",
+      "owning_calls": [
+        "OrganizationApplication(SqlAlchemyOrganizationRepository(session)).my_profile"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "my_organization_profile"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/organization/members",
+      "http_handler": "organization_members",
+      "screen_callers": [
+        "api.ts::getMemberDirectory"
+      ],
+      "operation": "member_directory",
+      "owning_calls": [
+        "OrganizationApplication(SqlAlchemyOrganizationRepository(session)).member_directory"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "member_directory"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal",
+      "result_annotation": "list[dict[str, Any]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/organization/members/{member_id}",
+      "http_handler": "organization_member_detail",
+      "screen_callers": [
+        "api.ts::getOrganizationMemberAxes"
+      ],
+      "operation": "organization_member_detail",
+      "owning_calls": [
+        "OrganizationApplication(SqlAlchemyOrganizationRepository(session)).member_detail"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "organization_member_detail"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, member_id: str",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/organization/members/{member_id}/history",
+      "http_handler": "organization_member_history",
+      "screen_callers": [
+        "api.ts::getOrganizationMemberHistory"
+      ],
+      "operation": "organization_member_history",
+      "owning_calls": [
+        "OrganizationApplication(SqlAlchemyOrganizationRepository(session)).member_axis_history"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "organization_member_history"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, member_id: str, axis: str",
+      "result_annotation": "list[dict[str, Any]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/organization/tree",
+      "http_handler": "organization_tree",
+      "screen_callers": [
+        "api.ts::getOrganizationTree"
+      ],
+      "operation": "organization_tree",
+      "owning_calls": [
+        "OrganizationApplication(SqlAlchemyOrganizationRepository(session)).organization_tree"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "organization_tree"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal",
+      "result_annotation": "list[dict[str, Any]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/organization/units/{unit_id}/members",
+      "http_handler": "organization_unit_members",
+      "screen_callers": [
+        "api.ts::getOrganizationUnitMembers"
+      ],
+      "operation": "organization_unit_members",
+      "owning_calls": [
+        "OrganizationApplication(SqlAlchemyOrganizationRepository(session)).unit_members"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "organization_unit_members"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, unit_id: str",
+      "result_annotation": "list[dict[str, Any]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/projects",
+      "http_handler": "list_projects",
+      "screen_callers": [
+        "api.ts::createProject",
+        "api.ts::listProjects"
+      ],
+      "operation": "list_projects",
+      "owning_calls": [
+        "self._projects(session).list"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "list_projects"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal",
+      "result_annotation": "list[dict[str, Any]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/projects/{project_id}",
+      "http_handler": "get_project",
+      "screen_callers": [
+        "api.ts::getProject"
+      ],
+      "operation": "get_project",
+      "owning_calls": [
+        "self._projects(session).get"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "get_project"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, project_id: UUID",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/task-assignment-candidates",
+      "http_handler": "task_assignment_candidates",
+      "screen_callers": [
+        "api.ts::getTaskAssignmentCandidates"
+      ],
+      "operation": "task_assignment_candidates",
+      "owning_calls": [
+        "self._assignments(session).candidates"
+      ],
+      "baseline_tools": [
+        "task_assignment_candidates"
+      ],
+      "target_tools": [
+        "task_assignment_candidates"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal",
+      "result_annotation": "list[dict[str, str]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/task-assignments/sent",
+      "http_handler": "sent_task_assignments",
+      "screen_callers": [
+        "api.ts::getSentTaskAssignments"
+      ],
+      "operation": "sent_task_assignments",
+      "owning_calls": [
+        "self._assignments(session).sent"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "sent_task_assignments"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal",
+      "result_annotation": "list[dict[str, Any]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/tasks",
+      "http_handler": "list_tasks",
+      "screen_callers": [
+        "api.ts::createDirectTask",
+        "api.ts::getTasks"
+      ],
+      "operation": "list_tasks",
+      "owning_calls": [
+        "self._tasks(session).list_for"
+      ],
+      "baseline_tools": [
+        "task_list"
+      ],
+      "target_tools": [
+        "task_list"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, *, include_closed: bool=False, include_organization: bool=True",
+      "result_annotation": "list[dict[str, Any]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/tasks/{task_id}",
+      "http_handler": "get_task",
+      "screen_callers": [
+        "api.ts::getTask",
+        "api.ts::updateTask"
+      ],
+      "operation": "get_task",
+      "owning_calls": [
+        "self._tasks(session).get"
+      ],
+      "baseline_tools": [
+        "task_get",
+        "task_subtask_list",
+        "task_checklist_list"
+      ],
+      "target_tools": [
+        "task_get"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, task_id: UUID",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/tasks/{task_id}/history",
+      "http_handler": "task_history",
+      "screen_callers": [
+        "api.ts::getTaskHistory"
+      ],
+      "operation": "task_history",
+      "owning_calls": [
+        "self._tasks(session).history"
+      ],
+      "baseline_tools": [
+        "task_history"
+      ],
+      "target_tools": [
+        "task_history"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, task_id: UUID",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/tasks/{task_id}/history/diff",
+      "http_handler": "task_history_diff",
+      "screen_callers": [
+        "api.ts::getTaskHistoryDiff"
+      ],
+      "operation": "task_history_diff",
+      "owning_calls": [
+        "self._tasks(session).history_diff"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "task_history_diff"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, task_id: UUID, before: int, after: int",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/tasks/{task_id}/materials",
+      "http_handler": "list_task_materials",
+      "screen_callers": [
+        "api.ts::getTaskMaterials",
+        "api.ts::uploadTaskMaterial"
+      ],
+      "operation": "list_task_materials",
+      "owning_calls": [
+        "self._materials(session).list"
+      ],
+      "baseline_tools": [
+        "task_materials_list"
+      ],
+      "target_tools": [
+        "task_materials_list"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, task_id: UUID",
+      "result_annotation": "list[dict[str, Any]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/tasks/{task_id}/materials/{material_id}/content",
+      "http_handler": "task_material_content",
+      "screen_callers": [
+        "api.ts::taskMaterialContentUrl"
+      ],
+      "operation": "open_task_material",
+      "owning_calls": [
+        "self._materials(session).open"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "open_task_material"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, task_id: UUID, material_id: UUID",
+      "result_annotation": "tuple[dict[str, Any], bytes]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/work-request-assignee-candidates",
+      "http_handler": "work_request_assignee_candidates",
+      "screen_callers": [
+        "api.ts::getWorkRequestAssigneeCandidates"
+      ],
+      "operation": "work_request_assignee_candidates",
+      "owning_calls": [
+        "self._work_requests(session).assignee_candidates"
+      ],
+      "baseline_tools": [
+        "work_request_assignee_candidates"
+      ],
+      "target_tools": [
+        "work_request_assignee_candidates"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal",
+      "result_annotation": "list[dict[str, str]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/work-request-cc-candidates",
+      "http_handler": "work_request_cc_candidates",
+      "screen_callers": [
+        "api.ts::getWorkRequestCcCandidates"
+      ],
+      "operation": "work_request_cc_candidates",
+      "owning_calls": [
+        "self._work_requests(session).cc_candidates"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "work_request_cc_candidates"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal",
+      "result_annotation": "list[dict[str, str]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/work-requests",
+      "http_handler": "list_work_requests",
+      "screen_callers": [
+        "api.ts::createWorkRequest",
+        "api.ts::getWorkRequests"
+      ],
+      "operation": "list_work_requests",
+      "owning_calls": [
+        "self._work_requests(session).list"
+      ],
+      "baseline_tools": [
+        "work_request_list"
+      ],
+      "target_tools": [
+        "work_request_list"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal",
+      "result_annotation": "list[dict[str, Any]]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/work-requests/{request_id}",
+      "http_handler": "get_work_request",
+      "screen_callers": [
+        "api.ts::getWorkRequest"
+      ],
+      "operation": "get_work_request",
+      "owning_calls": [
+        "self._work_requests(session).get"
+      ],
+      "baseline_tools": [
+        "work_request_get"
+      ],
+      "target_tools": [
+        "work_request_get"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, request_id: UUID",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/work-requests/{request_id}/attachments/{attachment_id}/content",
+      "http_handler": "work_request_attachment_content",
+      "screen_callers": [
+        "api.ts::requestAttachmentUrl"
+      ],
+      "operation": "open_work_request_attachment",
+      "owning_calls": [
+        "self._work_requests(session).open_attachment"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "open_work_request_attachment"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, request_id: UUID, attachment_id: UUID",
+      "result_annotation": "tuple[dict[str, Any], bytes]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /api/work-requests/{request_id}/timeline",
+      "http_handler": "work_request_timeline",
+      "screen_callers": [
+        "api.ts::getWorkRequestTimeline"
+      ],
+      "operation": "work_request_timeline",
+      "owning_calls": [
+        "self._work_requests(session).timeline"
+      ],
+      "baseline_tools": [
+        "work_request_history"
+      ],
+      "target_tools": [
+        "work_request_history"
+      ],
+      "policy": "query",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, request_id: UUID",
+      "result_annotation": "dict[str, Any]",
+      "query_contract": "unified-operations.md#조회-목적필터인가"
+    },
+    {
+      "http": "GET /health",
+      "http_handler": "health",
+      "screen_callers": [],
+      "operation": "health",
+      "owning_calls": [],
+      "baseline_tools": [],
+      "target_tools": [],
+      "policy": "internal",
+      "status": "planned",
+      "input_signature": "",
+      "result_annotation": ""
+    },
+    {
+      "http": "PATCH /api/access/roles/{role_id}",
+      "http_handler": "set_role_capabilities",
+      "screen_callers": [],
+      "operation": "set_role_capabilities",
+      "owning_calls": [
+        "AccessAdministration(SqlAlchemyOrganizationRepository(session)).set_role_capabilities"
+      ],
+      "baseline_tools": [],
+      "target_tools": [],
+      "policy": "E1",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, role_id: str, capabilities: list[str], *, expected_version: int, reason: str | None=None",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "PATCH /api/meetings/{meeting_id}",
+      "http_handler": "update_meeting",
+      "screen_callers": [
+        "api.ts::getMeeting"
+      ],
+      "operation": "update_meeting",
+      "owning_calls": [
+        "self._meetings(session).update"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "update_meeting"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, meeting_id: UUID, expected_version: int, changes: dict[str, Any]",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "PATCH /api/meetings/{meeting_id}/note",
+      "http_handler": "save_meeting_note",
+      "screen_callers": [
+        "api.ts::createMeetingNote",
+        "api.ts::saveMeetingNote"
+      ],
+      "operation": "save_meeting_note",
+      "owning_calls": [
+        "self._meetings(session).save_note"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "save_meeting_note"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, meeting_id: UUID, expected_version: int, body: str",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "PATCH /api/tasks/{task_id}",
+      "http_handler": "update_task",
+      "screen_callers": [
+        "api.ts::getTask",
+        "api.ts::updateTask"
+      ],
+      "operation": "update_task",
+      "owning_calls": [
+        "self._tasks(session).update"
+      ],
+      "baseline_tools": [
+        "task_update"
+      ],
+      "target_tools": [
+        "task_update"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, task_id: UUID, expected_version: int, changes: dict[str, Any]",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "PATCH /api/tasks/{task_id}/checklist/{item_id}",
+      "http_handler": "update_task_checklist_item",
+      "screen_callers": [
+        "api.ts::updateChecklistItem"
+      ],
+      "operation": "update_task_checklist_item",
+      "owning_calls": [
+        "self._tasks(session).update_checklist_item"
+      ],
+      "baseline_tools": [
+        "task_checklist_update"
+      ],
+      "target_tools": [
+        "task_checklist_update"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, task_id: UUID, item_id: UUID, **fields: Any",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/access/grants",
+      "http_handler": "grant_access_role",
+      "screen_callers": [
+        "api.ts::grantAccessRole"
+      ],
+      "operation": "grant_access_role",
+      "owning_calls": [
+        "AccessAdministration(SqlAlchemyOrganizationRepository(session)).grant_role"
+      ],
+      "baseline_tools": [],
+      "target_tools": [],
+      "policy": "E1",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, *, member_id: str, role_id: str, scope_kind: str='unit', scope_ref: str | None=None, include_descendants: bool=True, reason: str | None=None",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/access/grants/{grant_id}/revoke",
+      "http_handler": "revoke_access_grant",
+      "screen_callers": [
+        "api.ts::revokeAccessGrant"
+      ],
+      "operation": "revoke_access_grant",
+      "owning_calls": [
+        "AccessAdministration(SqlAlchemyOrganizationRepository(session)).revoke_grant"
+      ],
+      "baseline_tools": [],
+      "target_tools": [],
+      "policy": "E1",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, grant_id: UUID, *, reason: str | None=None",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/action-items/{action_item_id}/commands/{command}",
+      "http_handler": "run_action_command",
+      "screen_callers": [
+        "api.ts::runActionCommand"
+      ],
+      "operation": "run_action_command",
+      "owning_calls": [
+        "self._action_center(session).execute"
+      ],
+      "baseline_tools": [
+        "action_item_command"
+      ],
+      "target_tools": [
+        "action_item_command"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, action_item_id: str, command: str, payload: dict[str, Any]",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/action-items/{action_item_id}/material-drafts/files",
+      "http_handler": "stage_action_material_file",
+      "screen_callers": [
+        "api.ts::stageActionMaterialFile"
+      ],
+      "operation": "stage_action_material_file",
+      "owning_calls": [
+        "self._action_materials(session).complete_file",
+        "self._action_materials(session).fail_file",
+        "self._action_materials(session).reserve_file"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "file_attachment_request"
+      ],
+      "policy": "browser-interaction",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, action_item_id: UUID, *, name: str, content_type: str, data: bytes",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/action-items/{action_item_id}/material-drafts/links",
+      "http_handler": "stage_action_material_link",
+      "screen_callers": [
+        "api.ts::stageActionMaterialLink"
+      ],
+      "operation": "stage_action_material_link",
+      "owning_calls": [
+        "self._action_materials(session).stage_link"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "stage_action_material_link"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, action_item_id: UUID, *, url: str, label: str",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/action-items/{action_item_id}/material-drafts/{material_draft_id}/discard",
+      "http_handler": "discard_action_material_draft",
+      "screen_callers": [
+        "api.ts::discardActionMaterialDraft"
+      ],
+      "operation": "discard_action_material_draft",
+      "owning_calls": [
+        "self._action_materials(session).discard"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "discard_action_material_draft"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, action_item_id: UUID, material_draft_id: UUID",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/actions/{action_id}/decide",
+      "http_handler": "decide_action",
+      "screen_callers": [
+        "api.ts::decideAction"
+      ],
+      "operation": "decide_action",
+      "owning_calls": [
+        "self._actions(session).decide"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "action_item_command"
+      ],
+      "policy": "canonical-judgement",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, action_id: UUID, expected_version: int, decision: str",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/auth/login",
+      "http_handler": "login",
+      "screen_callers": [
+        "api.ts::login"
+      ],
+      "operation": "authenticate_with_password",
+      "owning_calls": [
+        "OrganizationApplication(SqlAlchemyOrganizationRepository(session)).authenticate_with_password"
+      ],
+      "baseline_tools": [],
+      "target_tools": [],
+      "policy": "E2",
+      "status": "planned",
+      "input_signature": "self, email: str, password: str",
+      "result_annotation": "Principal"
+    },
+    {
+      "http": "POST /api/auth/logout",
+      "http_handler": "logout",
+      "screen_callers": [
+        "api.ts::logout"
+      ],
+      "operation": "auth.logout",
+      "owning_calls": [],
+      "baseline_tools": [],
+      "target_tools": [],
+      "policy": "E2",
+      "status": "planned",
+      "input_signature": "",
+      "result_annotation": ""
+    },
+    {
+      "http": "POST /api/conversations",
+      "http_handler": "create_conversation",
+      "screen_callers": [
+        "api.ts::createConversation",
+        "api.ts::getConversations"
+      ],
+      "operation": "create_conversation",
+      "owning_calls": [
+        "self._conversations(session).create"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "create_conversation"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, title: str",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/conversations/{conversation_id}/cancel",
+      "http_handler": "cancel_conversation",
+      "screen_callers": [
+        "api.ts::cancelConversation"
+      ],
+      "operation": "cancel_conversation_turn",
+      "owning_calls": [
+        "self._conversations(session).cancel"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "cancel_conversation_turn"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, conversation_id: UUID, expected_version: int",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/conversations/{conversation_id}/messages",
+      "http_handler": "send_conversation_message",
+      "screen_callers": [
+        "api.ts::sendConversationMessage"
+      ],
+      "operation": "accept_conversation_message",
+      "owning_calls": [
+        "self._conversations(session).accept_message"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "accept_conversation_message"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, body: str, conversation_id: UUID, context: list[Any], idempotency_key: str | None, follow_up_candidate_id: UUID | None=None",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/conversations/{conversation_id}/turns/{turn_id}/retry",
+      "http_handler": "retry_conversation_turn",
+      "screen_callers": [
+        "api.ts::retryConversationTurn"
+      ],
+      "operation": "retry_conversation_turn",
+      "owning_calls": [
+        "self._conversations(session).retry"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "retry_conversation_turn"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, conversation_id: UUID, turn_id: UUID",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/daily-reports/generate-draft",
+      "http_handler": "generate_daily_report_draft",
+      "screen_callers": [
+        "api.ts::generateDailyReportDraft"
+      ],
+      "operation": "generate_daily_report_draft",
+      "owning_calls": [
+        "self._reports(session).generate_draft"
+      ],
+      "baseline_tools": [
+        "daily_report_generate_draft"
+      ],
+      "target_tools": [
+        "daily_report_generate_draft"
+      ],
+      "policy": "durable-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, report_date: str, causation_key: str | None=None",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/daily-reports/{report_id}/edit",
+      "http_handler": "edit_daily_report",
+      "screen_callers": [
+        "api.ts::editDailyReport"
+      ],
+      "operation": "edit_daily_report",
+      "owning_calls": [
+        "self._reports(session).edit"
+      ],
+      "baseline_tools": [
+        "daily_report_edit"
+      ],
+      "target_tools": [
+        "daily_report_edit"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, report_id: str, draft_id: str, expected_version: int, body: str, include_source_refs: list[dict[str, Any]], exclude_source_refs: list[dict[str, Any]]",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/daily-reports/{report_id}/submit",
+      "http_handler": "submit_daily_report",
+      "screen_callers": [
+        "api.ts::submitDailyReport"
+      ],
+      "operation": "submit_daily_report",
+      "owning_calls": [
+        "self._reports(session).submit"
+      ],
+      "baseline_tools": [
+        "daily_report_submit"
+      ],
+      "target_tools": [
+        "daily_report_submit"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, report_id: str, draft_id: str, expected_version: int, reason: str | None",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/material-folders",
+      "http_handler": "create_material_folder",
+      "screen_callers": [],
+      "operation": "create_material_folder",
+      "owning_calls": [
+        "self._material_folders(session).create"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "create_material_folder"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, **fields: Any",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/material-folders/{folder_id}/archive",
+      "http_handler": "archive_material_folder",
+      "screen_callers": [],
+      "operation": "archive_material_folder",
+      "owning_calls": [
+        "self._material_folders(session).archive"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "archive_material_folder"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, folder_id: UUID",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/material-folders/{folder_id}/materials",
+      "http_handler": "upload_folder_material",
+      "screen_callers": [],
+      "operation": "upload_folder_material",
+      "owning_calls": [
+        "self._material_folders(session).upload"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "file_attachment_request"
+      ],
+      "policy": "browser-interaction",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, folder_id: UUID, **fields: Any",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/material-folders/{folder_id}/materials/{material_id}/detach",
+      "http_handler": "detach_folder_material",
+      "screen_callers": [],
+      "operation": "detach_folder_material",
+      "owning_calls": [
+        "self._material_folders(session).detach"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "detach_folder_material"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, folder_id: UUID, material_id: UUID",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/meetings",
+      "http_handler": "create_meeting",
+      "screen_callers": [
+        "api.ts::createMeeting",
+        "api.ts::getCalendarEntries"
+      ],
+      "operation": "create_meeting",
+      "owning_calls": [
+        "self._meetings(session).create"
+      ],
+      "baseline_tools": [
+        "meeting_create"
+      ],
+      "target_tools": [
+        "meeting_create"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, **fields: Any",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/meetings/{meeting_id}/material-bindings/{binding_id}/detach",
+      "http_handler": "detach_meeting_material",
+      "screen_callers": [],
+      "operation": "detach_meeting_material",
+      "owning_calls": [
+        "self._meetings(session).detach_material"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "detach_meeting_material"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, meeting_id: UUID, binding_id: UUID, expected_version: int",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/meetings/{meeting_id}/material-bindings/{binding_id}/replace",
+      "http_handler": "replace_meeting_material",
+      "screen_callers": [],
+      "operation": "replace_meeting_material",
+      "owning_calls": [
+        "self._meetings(session).replace_material"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "file_attachment_request"
+      ],
+      "policy": "browser-interaction",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, meeting_id: UUID, binding_id: UUID, expected_version: int, *, name: str, content_type: str, data: bytes",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/meetings/{meeting_id}/materials",
+      "http_handler": "attach_meeting_material",
+      "screen_callers": [],
+      "operation": "attach_meeting_material",
+      "owning_calls": [
+        "self._meetings(session).attach_material"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "file_attachment_request"
+      ],
+      "policy": "browser-interaction",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, meeting_id: UUID, expected_version: int, *, name: str, content_type: str, data: bytes",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/meetings/{meeting_id}/materials/links",
+      "http_handler": "attach_meeting_material_link",
+      "screen_callers": [],
+      "operation": "attach_meeting_material_link",
+      "owning_calls": [
+        "self._meetings(session).attach_material_link"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "attach_meeting_material_link"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, meeting_id: UUID, expected_version: int, *, url: str, label: str",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/meetings/{meeting_id}/note",
+      "http_handler": "create_meeting_note",
+      "screen_callers": [
+        "api.ts::createMeetingNote",
+        "api.ts::saveMeetingNote"
+      ],
+      "operation": "create_meeting_note",
+      "owning_calls": [
+        "self._meetings(session).create_note"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "create_meeting_note"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, meeting_id: UUID, body: str",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/meetings/{meeting_id}/note/finalize",
+      "http_handler": "finalize_meeting_note",
+      "screen_callers": [
+        "api.ts::finalizeMeetingNote"
+      ],
+      "operation": "finalize_meeting_note",
+      "owning_calls": [
+        "self._meetings(session).finalize_note"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "finalize_meeting_note"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, meeting_id: UUID, expected_version: int",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/meetings/{meeting_id}/recordings/start",
+      "http_handler": "start_meeting_recording",
+      "screen_callers": [
+        "api.ts::startMeetingRecording"
+      ],
+      "operation": "start_meeting_recording",
+      "owning_calls": [
+        "self._meetings(session).start_recording"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "recording_request"
+      ],
+      "policy": "browser-interaction",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, meeting_id: UUID, purpose: str",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/meetings/{meeting_id}/recordings/{recording_id}/realtime-credential",
+      "http_handler": "meeting_realtime_credential",
+      "screen_callers": [
+        "api.ts::meetingRealtimeCredential"
+      ],
+      "operation": "meeting_realtime_credential",
+      "owning_calls": [
+        "self._meetings(session).issue_realtime_credential"
+      ],
+      "baseline_tools": [],
+      "target_tools": [],
+      "policy": "E2",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, meeting_id: UUID, recording_id: UUID, max_session_duration_seconds: int",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/meetings/{meeting_id}/recordings/{recording_id}/realtime-segments",
+      "http_handler": "append_meeting_live_transcript",
+      "screen_callers": [
+        "api.ts::appendMeetingRealtimeSegments"
+      ],
+      "operation": "append_meeting_live_transcript",
+      "owning_calls": [
+        "self._meetings(session).append_live_transcript"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "recording_request"
+      ],
+      "policy": "browser-interaction",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, meeting_id: UUID, recording_id: UUID, segments: list[Any]",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/meetings/{meeting_id}/recordings/{recording_id}/stop",
+      "http_handler": "stop_meeting_recording",
+      "screen_callers": [
+        "api.ts::stopMeetingRecording"
+      ],
+      "operation": "stop_meeting_recording",
+      "owning_calls": [
+        "self._meeting_queue(session).enqueue",
+        "self._meetings(session).stop_recording"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "recording_request"
+      ],
+      "policy": "browser-interaction",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, meeting_id: UUID, recording_id: UUID, expected_version: int, *, original_name: str, content_type: str, data: bytes",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/meetings/{meeting_id}/shares",
+      "http_handler": "share_meeting",
+      "screen_callers": [],
+      "operation": "share_meeting",
+      "owning_calls": [
+        "self._meetings(session).share"
+      ],
+      "baseline_tools": [
+        "meeting_share"
+      ],
+      "target_tools": [
+        "meeting_share"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, meeting_id: UUID, member_id: str, expected_version: int",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/meetings/{meeting_id}/speaker-assignments",
+      "http_handler": "assign_meeting_speaker",
+      "screen_callers": [],
+      "operation": "assign_meeting_speaker_identity",
+      "owning_calls": [
+        "self._meetings(session).assign_speaker_identity"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "assign_meeting_speaker_identity"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, meeting_id: UUID, transcript_revision_id: UUID, **fields: Any",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/meetings/{meeting_id}/summaries/{summary_id}/adopt",
+      "http_handler": "adopt_meeting_summary",
+      "screen_callers": [
+        "api.ts::adoptMeetingSummary"
+      ],
+      "operation": "adopt_meeting_summary",
+      "owning_calls": [
+        "self._meetings(session).adopt_summary"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "adopt_meeting_summary"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, meeting_id: UUID, summary_id: UUID, expected_version: int",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/meetings/{meeting_id}/summaries/{summary_id}/statements/{statement_index}/promote",
+      "http_handler": "promote_meeting_followup",
+      "screen_callers": [
+        "api.ts::promoteMeetingFollowup"
+      ],
+      "operation": "promote_meeting_followup",
+      "owning_calls": [
+        "self._materials(session).attach_reference",
+        "self._tasks(session).create_self",
+        "self._tasks(session).get",
+        "self._work_requests(session).create",
+        "self._work_requests(session).get"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "promote_meeting_followup"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, meeting_id: UUID, summary_id: UUID, statement_index: int, *, kind: str, title: str | None=None, assignee_id: str | None=None",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/notifications/{notification_id}/read",
+      "http_handler": "mark_notification_read",
+      "screen_callers": [
+        "api.ts::markNotificationRead"
+      ],
+      "operation": "mark_notification_read",
+      "owning_calls": [
+        "repository.for_recipient",
+        "repository.mark_read"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "mark_notification_read"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, notification_id: UUID",
+      "result_annotation": "dict[str, object]"
+    },
+    {
+      "http": "POST /api/projects",
+      "http_handler": "create_project",
+      "screen_callers": [
+        "api.ts::createProject",
+        "api.ts::listProjects"
+      ],
+      "operation": "create_project",
+      "owning_calls": [
+        "self._projects(session).create"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "create_project"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, **fields: Any",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/projects/{project_id}/members",
+      "http_handler": "assign_to_project",
+      "screen_callers": [
+        "api.ts::assignToProject"
+      ],
+      "operation": "assign_to_project",
+      "owning_calls": [
+        "self._projects(session).assign"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "assign_to_project"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, project_id: UUID, member_id: str, **fields: Any",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/projects/{project_id}/tasks",
+      "http_handler": "plan_project_work",
+      "screen_callers": [],
+      "operation": "plan_project_work",
+      "owning_calls": [
+        "self._assignments(session).plan_project_work"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "plan_project_work"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, project_id: UUID, title: str, **fields: Any",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/task-assignments/{assignment_id}/accept",
+      "http_handler": "accept_task_assignment",
+      "screen_callers": [
+        "api.ts::acceptTaskAssignment"
+      ],
+      "operation": "accept_task_assignment",
+      "owning_calls": [
+        "self._assignments(session).accept"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "action_item_command"
+      ],
+      "policy": "canonical-judgement",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, assignment_id: UUID",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/task-assignments/{assignment_id}/decline",
+      "http_handler": "decline_task_assignment",
+      "screen_callers": [
+        "api.ts::declineTaskAssignment"
+      ],
+      "operation": "decline_task_assignment",
+      "owning_calls": [
+        "self._assignments(session).decline"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "action_item_command"
+      ],
+      "policy": "canonical-judgement",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, assignment_id: UUID, reason: str",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/tasks",
+      "http_handler": "create_self_task",
+      "screen_callers": [
+        "api.ts::createDirectTask",
+        "api.ts::getTasks"
+      ],
+      "operation": "create_self_task",
+      "owning_calls": [
+        "self._tasks(session).create_self"
+      ],
+      "baseline_tools": [
+        "task_create_self"
+      ],
+      "target_tools": [
+        "task_create_self"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, title: str, causation_key: str | None=None, *, description: str | None=None, start_date: Any=None, due_date: Any=None, checklist: list[str] | None=None, reference_task_ids: list[UUID] | None=None, parent_task_id: UUID | None=None, project_id: UUID | None=None",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/tasks/assign",
+      "http_handler": "assign_task",
+      "screen_callers": [
+        "api.ts::assignTask"
+      ],
+      "operation": "assign_task",
+      "owning_calls": [
+        "self._assignments(session).assign"
+      ],
+      "baseline_tools": [
+        "task_assign"
+      ],
+      "target_tools": [
+        "task_assign"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, title: str, assignee_id: str, **fields: Any",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/tasks/{task_id}/block",
+      "http_handler": "block_task",
+      "screen_callers": [],
+      "operation": "transition_task",
+      "owning_calls": [
+        "self._tasks(session).transition"
+      ],
+      "baseline_tools": [
+        "task_start",
+        "task_block",
+        "task_resume",
+        "task_complete",
+        "task_cancel"
+      ],
+      "target_tools": [
+        "task_block"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None=None, expected_version: int=0",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/tasks/{task_id}/cancel",
+      "http_handler": "cancel_task",
+      "screen_callers": [],
+      "operation": "transition_task",
+      "owning_calls": [
+        "self._tasks(session).transition"
+      ],
+      "baseline_tools": [
+        "task_start",
+        "task_block",
+        "task_resume",
+        "task_complete",
+        "task_cancel"
+      ],
+      "target_tools": [
+        "task_cancel"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None=None, expected_version: int=0",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/tasks/{task_id}/checklist",
+      "http_handler": "add_task_checklist_item",
+      "screen_callers": [
+        "api.ts::addChecklistItem"
+      ],
+      "operation": "add_task_checklist_item",
+      "owning_calls": [
+        "self._tasks(session).add_checklist_item"
+      ],
+      "baseline_tools": [
+        "task_checklist_add"
+      ],
+      "target_tools": [
+        "task_checklist_add"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, task_id: UUID, text: str, expected_task_version: int | None=None",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/tasks/{task_id}/checklist/order",
+      "http_handler": "reorder_task_checklist",
+      "screen_callers": [
+        "api.ts::reorderChecklist"
+      ],
+      "operation": "reorder_task_checklist",
+      "owning_calls": [
+        "self._tasks(session).reorder_checklist"
+      ],
+      "baseline_tools": [
+        "task_checklist_reorder"
+      ],
+      "target_tools": [
+        "task_checklist_reorder"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, task_id: UUID, item_ids: list[UUID], **fields: Any",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/tasks/{task_id}/complete",
+      "http_handler": "complete_task",
+      "screen_callers": [],
+      "operation": "transition_task",
+      "owning_calls": [
+        "self._tasks(session).transition"
+      ],
+      "baseline_tools": [
+        "task_start",
+        "task_block",
+        "task_resume",
+        "task_complete",
+        "task_cancel"
+      ],
+      "target_tools": [
+        "task_complete"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None=None, expected_version: int=0",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/tasks/{task_id}/completion-report",
+      "http_handler": "submit_task_completion",
+      "screen_callers": [
+        "api.ts::submitTaskCompletion"
+      ],
+      "operation": "submit_task_completion",
+      "owning_calls": [
+        "self._tasks(session).submit_completion"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "submit_task_completion"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, task_id: UUID, expected_version: int, *, summary: str, output_material_ids: list[UUID] | None=None",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/tasks/{task_id}/material-bindings/{binding_id}/detach",
+      "http_handler": "detach_task_material",
+      "screen_callers": [
+        "api.ts::detachTaskMaterial"
+      ],
+      "operation": "detach_task_material",
+      "owning_calls": [
+        "self._materials(session).detach"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "detach_task_material"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, task_id: UUID, binding_id: UUID",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/tasks/{task_id}/materials",
+      "http_handler": "attach_task_material",
+      "screen_callers": [
+        "api.ts::getTaskMaterials",
+        "api.ts::uploadTaskMaterial"
+      ],
+      "operation": "attach_task_material",
+      "owning_calls": [
+        "self._materials(session).attach"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "file_attachment_request"
+      ],
+      "policy": "browser-interaction",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, task_id: UUID, *, kind: str, name: str, content_type: str, data: bytes",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/tasks/{task_id}/materials/links",
+      "http_handler": "attach_task_material_link",
+      "screen_callers": [
+        "api.ts::attachTaskMaterialLink"
+      ],
+      "operation": "attach_task_material_link",
+      "owning_calls": [
+        "self._materials(session).attach_link"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "attach_task_material_link"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, task_id: UUID, *, kind: str, url: str, label: str",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/tasks/{task_id}/materials/references",
+      "http_handler": "attach_task_material_reference",
+      "screen_callers": [
+        "api.ts::attachTaskMaterialReference"
+      ],
+      "operation": "attach_task_material_reference",
+      "owning_calls": [
+        "self._materials(session).attach_reference"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "attach_task_material_reference"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, task_id: UUID, *, kind: str, resource_type: str, resource_id: str",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/tasks/{task_id}/reassign",
+      "http_handler": "reassign_task",
+      "screen_callers": [
+        "api.ts::reassignTask"
+      ],
+      "operation": "reassign_task",
+      "owning_calls": [
+        "self._assignments(session).reassign"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "reassign_task"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, task_id: UUID, expected_version: int, assignee_id: str, reason: str | None=None",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/tasks/{task_id}/references",
+      "http_handler": "add_task_reference",
+      "screen_callers": [
+        "api.ts::addTaskReference"
+      ],
+      "operation": "add_task_reference",
+      "owning_calls": [
+        "self._tasks(session).add_reference"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "add_task_reference"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, task_id: UUID, referenced_task_id: UUID",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/tasks/{task_id}/resume",
+      "http_handler": "resume_task",
+      "screen_callers": [],
+      "operation": "transition_task",
+      "owning_calls": [
+        "self._tasks(session).transition"
+      ],
+      "baseline_tools": [
+        "task_start",
+        "task_block",
+        "task_resume",
+        "task_complete",
+        "task_cancel"
+      ],
+      "target_tools": [
+        "task_resume"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None=None, expected_version: int=0",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/tasks/{task_id}/start",
+      "http_handler": "start_task",
+      "screen_callers": [],
+      "operation": "transition_task",
+      "owning_calls": [
+        "self._tasks(session).transition"
+      ],
+      "baseline_tools": [
+        "task_start",
+        "task_block",
+        "task_resume",
+        "task_complete",
+        "task_cancel"
+      ],
+      "target_tools": [
+        "task_start"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None=None, expected_version: int=0",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/work-requests",
+      "http_handler": "create_work_request",
+      "screen_callers": [
+        "api.ts::createWorkRequest",
+        "api.ts::getWorkRequests"
+      ],
+      "operation": "create_work_request",
+      "owning_calls": [
+        "self._work_requests(session).create"
+      ],
+      "baseline_tools": [
+        "work_request_create"
+      ],
+      "target_tools": [
+        "work_request_create"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, title: str, assignee_id: str, causation_key: str | None=None, *, description: str | None=None, due_date: Any=None, cc_member_ids: list[str] | None=None, checklist: list[str] | None=None, reference_task_ids: list[UUID] | None=None",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/work-requests/{request_id}/accept",
+      "http_handler": "accept_work_request",
+      "screen_callers": [],
+      "operation": "accept_work_request",
+      "owning_calls": [
+        "self._work_requests(session).accept"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "action_item_command"
+      ],
+      "policy": "canonical-judgement",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, request_id: UUID, expected_version: int",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/work-requests/{request_id}/amend",
+      "http_handler": "amend_work_request",
+      "screen_callers": [
+        "api.ts::amendWorkRequest"
+      ],
+      "operation": "amend_work_request",
+      "owning_calls": [
+        "self._work_requests(session).amend"
+      ],
+      "baseline_tools": [
+        "work_request_amend"
+      ],
+      "target_tools": [
+        "work_request_amend"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, request_id: UUID, expected_version: int, **changes: Any",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/work-requests/{request_id}/comments",
+      "http_handler": "add_work_request_comment",
+      "screen_callers": [
+        "api.ts::addWorkRequestComment"
+      ],
+      "operation": "add_work_request_comment",
+      "owning_calls": [
+        "self._work_requests(session).add_comment"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "add_work_request_comment"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, request_id: UUID, body: str, idempotency_key: str | None=None",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/work-requests/{request_id}/comments/{comment_id}/attachments",
+      "http_handler": "attach_to_work_request_comment",
+      "screen_callers": [
+        "api.ts::uploadCommentAttachment"
+      ],
+      "operation": "attach_to_work_request_comment",
+      "owning_calls": [
+        "self._work_requests(session).attach_to_comment"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "file_attachment_request"
+      ],
+      "policy": "browser-interaction",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, request_id: UUID, comment_id: UUID, **file: Any",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/work-requests/{request_id}/evidence",
+      "http_handler": "add_work_request_evidence",
+      "screen_callers": [
+        "api.ts::uploadRequestEvidence"
+      ],
+      "operation": "add_work_request_evidence",
+      "owning_calls": [
+        "self._work_requests(session).add_evidence"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "file_attachment_request"
+      ],
+      "policy": "browser-interaction",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, request_id: UUID, **file: Any",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/work-requests/{request_id}/negotiate",
+      "http_handler": "negotiate_work_request",
+      "screen_callers": [
+        "api.ts::negotiateWorkRequest"
+      ],
+      "operation": "negotiate_work_request",
+      "owning_calls": [
+        "self._work_requests(session).negotiate"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "action_item_command"
+      ],
+      "policy": "canonical-judgement",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, request_id: UUID, expected_version: int, conditions: dict[str, Any]",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/work-requests/{request_id}/reject",
+      "http_handler": "reject_work_request",
+      "screen_callers": [],
+      "operation": "reject_work_request",
+      "owning_calls": [
+        "self._work_requests(session).reject"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "action_item_command"
+      ],
+      "policy": "canonical-judgement",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, request_id: UUID, expected_version: int, reason: str",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "POST /api/work-requests/{request_id}/resubmit",
+      "http_handler": "resubmit_work_request",
+      "screen_callers": [
+        "api.ts::resubmitWorkRequest"
+      ],
+      "operation": "resubmit_work_request",
+      "owning_calls": [
+        "self._work_requests(session).resubmit"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "action_item_command"
+      ],
+      "policy": "canonical-judgement",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, request_id: UUID, expected_version: int, **changes: Any",
+      "result_annotation": "dict[str, Any]"
+    },
+    {
+      "http": "PUT /api/profile/preferences/assistant-character",
+      "http_handler": "set_assistant_character",
+      "screen_callers": [
+        "api.ts::setAssistantCharacterPreference"
+      ],
+      "operation": "set_assistant_character",
+      "owning_calls": [
+        "OrganizationApplication(SqlAlchemyOrganizationRepository(session)).set_assistant_character"
+      ],
+      "baseline_tools": [],
+      "target_tools": [
+        "set_assistant_character"
+      ],
+      "policy": "confirmed-command",
+      "status": "planned",
+      "input_signature": "self, principal: Principal, character_key: str, expected_version: int",
+      "result_annotation": "dict[str, Any]"
+    }
+  ],
+  "mcp": [
+    {
+      "tool": "action_item_command",
+      "facade": [
+        "run_action_command"
+      ],
+      "operations": [
+        "run_action_command"
+      ]
+    },
+    {
+      "tool": "action_item_get",
+      "facade": [
+        "action_item_detail"
+      ],
+      "operations": [
+        "action_item_detail"
+      ]
+    },
+    {
+      "tool": "action_item_list",
+      "facade": [
+        "pending_action_items"
+      ],
+      "operations": [
+        "pending_action_items"
+      ]
+    },
+    {
+      "tool": "conversation_search",
+      "facade": [
+        "search_conversation_turns"
+      ],
+      "operations": [
+        "conversation",
+        "conversations"
+      ]
+    },
+    {
+      "tool": "daily_report_edit",
+      "facade": [
+        "edit_daily_report"
+      ],
+      "operations": [
+        "edit_daily_report"
+      ]
+    },
+    {
+      "tool": "daily_report_generate_draft",
+      "facade": [
+        "generate_daily_report_draft"
+      ],
+      "operations": [
+        "generate_daily_report_draft"
+      ]
+    },
+    {
+      "tool": "daily_report_history",
+      "facade": [
+        "daily_report_history"
+      ],
+      "operations": [
+        "daily_report_history"
+      ]
+    },
+    {
+      "tool": "daily_report_submit",
+      "facade": [
+        "submit_daily_report"
+      ],
+      "operations": [
+        "submit_daily_report"
+      ]
+    },
+    {
+      "tool": "graph_neighbors",
+      "facade": [
+        "graph_neighbors"
+      ],
+      "operations": [
+        "graph_neighbors"
+      ]
+    },
+    {
+      "tool": "graph_overview",
+      "facade": [
+        "graph_overview"
+      ],
+      "operations": [
+        "graph_overview"
+      ]
+    },
+    {
+      "tool": "graph_search",
+      "facade": [
+        "graph_search"
+      ],
+      "operations": [
+        "graph_search"
+      ]
+    },
+    {
+      "tool": "material_search",
+      "facade": [
+        "search_materials"
+      ],
+      "operations": [
+        "search_materials"
+      ]
+    },
+    {
+      "tool": "meeting_create",
+      "facade": [
+        "create_meeting"
+      ],
+      "operations": [
+        "create_meeting"
+      ]
+    },
+    {
+      "tool": "meeting_get",
+      "facade": [
+        "get_meeting"
+      ],
+      "operations": [
+        "get_meeting"
+      ]
+    },
+    {
+      "tool": "meeting_list",
+      "facade": [
+        "list_meetings"
+      ],
+      "operations": [
+        "list_meetings"
+      ]
+    },
+    {
+      "tool": "meeting_share",
+      "facade": [
+        "share_meeting"
+      ],
+      "operations": [
+        "share_meeting"
+      ]
+    },
+    {
+      "tool": "task_assign",
+      "facade": [
+        "assign_task"
+      ],
+      "operations": [
+        "assign_task"
+      ]
+    },
+    {
+      "tool": "task_assignment_candidates",
+      "facade": [
+        "task_assignment_candidates"
+      ],
+      "operations": [
+        "task_assignment_candidates"
+      ]
+    },
+    {
+      "tool": "task_block",
+      "facade": [
+        "transition_task"
+      ],
+      "operations": [
+        "transition_task"
+      ]
+    },
+    {
+      "tool": "task_cancel",
+      "facade": [
+        "transition_task"
+      ],
+      "operations": [
+        "transition_task"
+      ]
+    },
+    {
+      "tool": "task_checklist_add",
+      "facade": [
+        "add_checklist_item"
+      ],
+      "operations": [
+        "add_task_checklist_item"
+      ]
+    },
+    {
+      "tool": "task_checklist_archive",
+      "facade": [
+        "archive_checklist_item"
+      ],
+      "operations": [
+        "archive_task_checklist_item"
+      ]
+    },
+    {
+      "tool": "task_checklist_list",
+      "facade": [
+        "task_checklist"
+      ],
+      "operations": [
+        "get_task"
+      ]
+    },
+    {
+      "tool": "task_checklist_reorder",
+      "facade": [
+        "reorder_checklist"
+      ],
+      "operations": [
+        "reorder_task_checklist"
+      ]
+    },
+    {
+      "tool": "task_checklist_update",
+      "facade": [
+        "update_checklist_item"
+      ],
+      "operations": [
+        "update_task_checklist_item"
+      ]
+    },
+    {
+      "tool": "task_complete",
+      "facade": [
+        "transition_task"
+      ],
+      "operations": [
+        "transition_task"
+      ]
+    },
+    {
+      "tool": "task_create_self",
+      "facade": [
+        "create_self_task"
+      ],
+      "operations": [
+        "create_self_task"
+      ]
+    },
+    {
+      "tool": "task_get",
+      "facade": [
+        "get_task"
+      ],
+      "operations": [
+        "get_task"
+      ]
+    },
+    {
+      "tool": "task_history",
+      "facade": [
+        "task_history"
+      ],
+      "operations": [
+        "task_history"
+      ]
+    },
+    {
+      "tool": "task_list",
+      "facade": [
+        "list_tasks"
+      ],
+      "operations": [
+        "list_tasks"
+      ]
+    },
+    {
+      "tool": "task_materials_list",
+      "facade": [
+        "list_task_materials"
+      ],
+      "operations": [
+        "list_task_materials"
+      ]
+    },
+    {
+      "tool": "task_progress_batch",
+      "facade": [
+        "update_task_progress_batch"
+      ],
+      "operations": []
+    },
+    {
+      "tool": "task_resume",
+      "facade": [
+        "transition_task"
+      ],
+      "operations": [
+        "transition_task"
+      ]
+    },
+    {
+      "tool": "task_start",
+      "facade": [
+        "transition_task"
+      ],
+      "operations": [
+        "transition_task"
+      ]
+    },
+    {
+      "tool": "task_subtask_list",
+      "facade": [
+        "task_subtasks"
+      ],
+      "operations": [
+        "get_task"
+      ]
+    },
+    {
+      "tool": "task_update",
+      "facade": [
+        "update_task"
+      ],
+      "operations": [
+        "update_task"
+      ]
+    },
+    {
+      "tool": "work_request_amend",
+      "facade": [
+        "amend_work_request"
+      ],
+      "operations": [
+        "amend_work_request"
+      ]
+    },
+    {
+      "tool": "work_request_assignee_candidates",
+      "facade": [
+        "work_request_assignee_candidates"
+      ],
+      "operations": [
+        "work_request_assignee_candidates"
+      ]
+    },
+    {
+      "tool": "work_request_create",
+      "facade": [
+        "create_work_request"
+      ],
+      "operations": [
+        "create_work_request"
+      ]
+    },
+    {
+      "tool": "work_request_get",
+      "facade": [
+        "get_work_request"
+      ],
+      "operations": [
+        "get_work_request"
+      ]
+    },
+    {
+      "tool": "work_request_history",
+      "facade": [
+        "work_request_history"
+      ],
+      "operations": [
+        "work_request_timeline"
+      ]
+    },
+    {
+      "tool": "work_request_list",
+      "facade": [
+        "list_work_requests"
+      ],
+      "operations": [
+        "list_work_requests"
+      ]
+    }
+  ]
+}

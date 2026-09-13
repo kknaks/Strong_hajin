@@ -5,7 +5,8 @@ from datetime import date
 from typing import Any
 from uuid import UUID
 
-from ax_workspace.modules.work.application import TaskError, clean_checklist, validate_schedule
+from ax_workspace.modules.work.errors import TaskError
+from ax_workspace.modules.work.task_values import clean_checklist, validate_schedule
 from ax_workspace.modules.work.requests import WorkRequestError
 
 

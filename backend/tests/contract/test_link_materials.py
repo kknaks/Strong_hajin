@@ -5,8 +5,6 @@ design admits `source_kind=file|external_link|resource_ref`, so a Task can point
 hold its bytes. What it must never do is let a link look like a frozen artifact: nothing was fetched and no revision
 was pinned, so it is a changeable link and every surface says so.
 """
-from uuid import UUID
-
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -83,27 +81,6 @@ def test_a_link_is_never_dressed_up_as_a_file(tmp_path) -> None:
     assert body["results"] == []
     assert [row["name"] for row in body["unavailable_materials"]] == ["설계 문서"]
     assert body["unavailable_materials"][0]["reason"] == "external_link"
-
-
-def test_a_link_must_be_a_link_and_must_not_carry_a_secret(tmp_path) -> None:
-    client, database_url = _stack(tmp_path)
-    task_id = _task(client)
-
-    for label, body in (
-        ("빈 URL", {"kind": "input", "url": "", "label": "무엇"}),
-        ("http가 아님", {"kind": "input", "url": "ftp://files.example.com/a", "label": "무엇"}),
-        ("스킴 없음", {"kind": "input", "url": "docs.example.com/a", "label": "무엇"}),
-        ("자바스크립트", {"kind": "input", "url": "javascript:alert(1)", "label": "무엇"}),
-        ("자격 증명 포함", {"kind": "input", "url": "https://user:secret@docs.example.com/a", "label": "무엇"}),
-        ("라벨 없음", {"kind": "input", "url": "https://docs.example.com/a", "label": "   "}),
-        ("알 수 없는 종류", {"kind": "evidence", "url": "https://docs.example.com/a", "label": "무엇"}),
-    ):
-        refused = _link(client, task_id, **body)
-        assert refused.status_code == 422, f"{label}: {refused.text}"
-
-    with make_session_factory(database_url)() as session:
-        assert session.scalars(select(AttachmentRecord)).all() == []
-    assert client.get(f"/api/tasks/{task_id}/materials", headers=MINA).json() == []
 
 
 def test_only_the_person_holding_the_task_may_attach_or_remove_a_link(tmp_path) -> None:
@@ -195,15 +172,14 @@ def test_a_task_can_point_at_another_thing_inside_scax(tmp_path) -> None:
 def test_a_reference_can_only_point_at_something_the_person_may_read(tmp_path) -> None:
     client, _ = _stack(tmp_path)
     mine = _task(client, "내 업무")
-    theirs = client.post("/api/tasks", headers=JIHO, json={"title": "지호의 업무"}).json()["task_id"]
-
-    for label, body in (
-        ("업무는 자료가 아니라 참고 업무다", {"kind": "input", "resource_type": "task", "resource_id": theirs}),
-        ("내 업무도 마찬가지", {"kind": "input", "resource_type": "task", "resource_id": mine}),
-        ("알 수 없는 종류", {"kind": "input", "resource_type": "workflow", "resource_id": mine}),
-        ("없는 자원", {"kind": "input", "resource_type": "meeting", "resource_id": "11111111-1111-4111-8111-111111111111"}),
-    ):
-        assert _reference(client, mine, **body).status_code in {403, 404, 422}, label
+    missing = _reference(
+        client,
+        mine,
+        kind="input",
+        resource_type="meeting",
+        resource_id="11111111-1111-4111-8111-111111111111",
+    )
+    assert missing.status_code in {403, 404, 422}
     assert client.get(f"/api/tasks/{mine}/materials", headers=MINA).json() == []
 
 

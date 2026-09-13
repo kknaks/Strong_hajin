@@ -6,8 +6,16 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from ax_workspace.modules.organization_access.domain import Principal
+from ax_workspace.modules.work.material_folder_policy import (
+    FolderCreationContext,
+    FolderTitle,
+    decide_folder_creation,
+    ensure_folder_archivable,
+    ensure_folder_detachable,
+    ensure_folder_organization_active,
+)
 from ax_workspace.modules.work.material_extraction import MaterialExtractionJob, MaterialExtractionQueue, MaterialExtractionRepository, extraction_view
-from ax_workspace.modules.work.materials import AttachmentRepository, MaterialError, MaterialNotFound, MaterialStorage, store_file
+from ax_workspace.modules.work.materials import AttachmentRepository, MaterialNotFound, MaterialStorage, store_file
 
 
 class MaterialFolderRepository(Protocol):
@@ -35,15 +43,27 @@ class MaterialFolderApplication:
 
     def create(self, principal: Principal, *, kind: str, title: str, organization_id: str | None = None) -> dict[str, Any]:
         profile = self._membership(principal)
-        if kind not in {"personal", "team"} or not title.strip() or len(title.strip()) > 300:
-            raise MaterialError("folder kind and a title of 1 to 300 characters are required")
-        if kind == "personal" and organization_id is not None:
-            raise MaterialError("a personal folder cannot have a team owner")
-        if kind == "team" and (organization_id not in {unit["id"] for unit in profile["organizations"]}
-                               or not self._folders.active_organization(organization_id)):
-            raise MaterialNotFound("organization was not found")
-        folder = self._folders.create(kind=kind, title=title.strip(), owner_member_id=str(principal.id) if kind == "personal" else None,
-                                      organization_id=organization_id, created_by=str(principal.id))
+        member_organization_ids = frozenset(unit["id"] for unit in profile["organizations"])
+        decision = decide_folder_creation(
+            FolderCreationContext(
+                actor_id=str(principal.id),
+                kind=kind,
+                title=FolderTitle.create(title),
+                organization_id=organization_id,
+                member_organization_ids=member_organization_ids,
+            )
+        )
+        if decision.organization_id is not None:
+            ensure_folder_organization_active(
+                organization_active=self._folders.active_organization(decision.organization_id),
+            )
+        folder = self._folders.create(
+            kind=decision.kind,
+            title=decision.title.value,
+            owner_member_id=decision.owner_member_id,
+            organization_id=decision.organization_id,
+            created_by=str(principal.id),
+        )
         return self._view(folder)
 
     def readable(self, principal: Principal) -> list[Any]:
@@ -91,16 +111,20 @@ class MaterialFolderApplication:
         pairs = [(binding, attachment) for binding, attachment in self.bindings(principal, folder_id) if attachment.id == material_id]
         if not pairs:
             raise MaterialNotFound("material was not found")
-        if any(attachment.uploaded_by != str(principal.id) for _, attachment in pairs):
-            raise MaterialError("only the uploader may detach this material")
+        ensure_folder_detachable(
+            actor_id=str(principal.id),
+            uploaded_by_member_ids=tuple(attachment.uploaded_by for _, attachment in pairs),
+        )
         for binding, _ in pairs:
             self._attachments.unbind(binding)
         return {"folder_id": str(folder_id), "material_id": str(material_id), "detached": True}
 
     def archive(self, principal: Principal, folder_id: UUID) -> dict[str, Any]:
         folder = self._readable(principal, folder_id)
-        if folder.created_by != str(principal.id):
-            raise MaterialError("only the folder creator may archive it")
+        ensure_folder_archivable(
+            actor_id=str(principal.id),
+            created_by_member_id=folder.created_by,
+        )
         folder.archived_at = datetime.now(UTC)
         return {"folder_id": str(folder_id), "archived": True}
 

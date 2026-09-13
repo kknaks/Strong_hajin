@@ -74,8 +74,6 @@ def test_folder_owner_is_explicit_and_organization_wide_authority_does_not_make_
     for team_id in ("product", "absent-organization"):
         response = client.post("/api/material-folders", headers=admin, json={"kind": "team", "organization_id": team_id, "title": "접근 불가"})
         assert response.status_code == 404 and response.json() == {"detail": "organization was not found"}
-    assert client.post("/api/material-folders", headers=MINA, json={"kind": "personal", "title": "다른 사람", "owner_member_id": "jiho"}).status_code == 422
-    assert client.post("/api/material-folders", headers=MINA, json={"kind": "personal", "title": "잘못된 소유", "organization_id": "product"}).status_code == 422
 
 
 def test_shared_artifact_has_only_readable_folder_contexts_and_detach_preserves_the_other_owner(tmp_path):

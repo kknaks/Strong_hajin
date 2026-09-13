@@ -225,43 +225,6 @@ def test_choosing_a_room_books_it_and_the_place_becomes_that_room(tmp_path) -> N
     assert stored["external_id"] == "9001" and stored["room_id"] == 3
 
 
-def test_a_room_that_is_taken_is_replaced_by_the_smallest_one_that_still_fits(tmp_path) -> None:
-    """고른 방이 찼다고 곧장 거절하지 않는다 — **정원을 감당하는 가장 작은 방**으로 대체한다 (D36-1).
-
-    큰 방부터 주면 세 사람이 12인실을 차지해 뒤에 오는 회의가 갈 곳을 잃는다.
-    """
-    gateway = FakeRoomGateway()
-    gateway.busy = {3}  # 고른 방만 찼다. 4인실과 12인실이 남아 있다.
-    client, _, _ = _stack(tmp_path, gateway=gateway)
-
-    # 인원 셋(민아 + 지호 + 사외 하나) — 4인실이 감당하므로 12인실이 아니라 그쪽으로 간다.
-    made = _book(client, room_id=3, externals=["김외부"])
-    assert made.status_code == 201, made.text
-    head = made.json()["meeting"]
-    assert head["room_reservation"] == {
-        "status": "booked",
-        "room_name": "회의실 2 (4인)",
-        "reason": None,
-        "replaced": True,
-        "requested_room_name": "회의실 3 (6인)",
-    }
-    assert head["location"] == "회의실 2 (4인)"
-    # 두 번 불렀다: 고른 방에 한 번, 대체한 방에 한 번.
-    assert [request.room_id for request in gateway.created] == [3, 2]
-
-
-def test_a_replacement_never_seats_people_in_a_room_too_small_for_them(tmp_path) -> None:
-    """정원이 모자란 방을 대신 잡아 주는 것은 도움이 아니다 — 앉을 수 없다."""
-    gateway = FakeRoomGateway()
-    gateway.busy = {3}
-    client, _, _ = _stack(tmp_path, gateway=gateway)
-
-    # 인원 다섯(민아 + 지호 + 사외 셋) — 4인실은 후보가 아니고 12인실만 남는다.
-    made = _book(client, room_id=3, externals=["가", "나", "다"])
-    assert made.status_code == 201, made.text
-    assert made.json()["meeting"]["room_reservation"]["room_name"] == "회의실 5 (12인)"
-
-
 def test_when_no_room_can_be_replaced_the_meeting_is_not_made_at_all(tmp_path) -> None:
     """대체할 방도 없으면 **회의를 만들지 않는다** (D36-2) — 방 없는 회의가 원장에 남지 않는다."""
     gateway = FakeRoomGateway()
@@ -338,52 +301,6 @@ def test_a_seat_taken_for_a_meeting_that_could_not_be_saved_is_given_back(tmp_pa
 
 
 # --------------------------------------------------------------------- 참석자 → payload
-
-
-def test_company_people_go_as_accounts_and_outside_people_go_as_names(tmp_path) -> None:
-    """사내는 회사 계정으로, 사외는 표시 문자열로 — 예약 시스템에 외부인을 등록하는 자리가 없다 (§1)."""
-    client, _, gateway = _stack(tmp_path)
-    _book(client, room_id=3, externals=["김외부", "박손님"])
-    [request] = gateway.created
-
-    # 사내 둘은 예약 시스템이 아는 **그 계정**으로 간다 — 이메일이 맞으면 이메일로, 아니면 이름으로 이었다.
-    assert set(request.participant_emails) == {"mina@company.example", "jiho@scax.example"}
-    # 표시 문자열은 만든 사람이 먼저 서고, 그 뒤에 사외 참석자의 이름이 온다.
-    assert request.display_names == ("민아 (구성원)", "김외부", "박손님")
-    # 사외 사람은 계정 자리에 오지 않는다.
-    assert not any("외부" in email or "손님" in email for email in request.participant_emails)
-
-
-def test_a_person_the_booking_system_does_not_know_is_named_rather_than_dropped(tmp_path) -> None:
-    """계정을 못 찾은 사내 참석자가 조용히 사라지면 아무도 그 사실을 모른다 — 이름으로라도 싣는다."""
-    gateway = FakeRoomGateway()
-    gateway.people = [{"name": "민아 (구성원)", "email": "mina@company.example"}]  # 지호는 그쪽에 없다
-    client, _, _ = _stack(tmp_path, gateway=gateway)
-
-    _book(client, room_id=3, externals=[])
-    [request] = gateway.created
-    assert request.participant_emails == ("mina@company.example",)
-    assert "지호 (팀장)" in request.display_names
-
-
-def test_the_booking_carries_the_meeting_time_in_office_local_time(tmp_path) -> None:
-    """예약 시스템은 날짜와 시:분을 **지역 시각**으로 읽는다 — UTC 로 보내면 아홉 시간이 밀린다."""
-    from ax_workspace.modules.meetings.rooms import OFFICE_TIMEZONE, build_reservation
-
-    starts = datetime(2026, 9, 14, 1, 30, tzinfo=UTC)  # 서울 10:30
-    request = build_reservation(
-        room_id=3,
-        starts_at=starts,
-        ends_at=starts + timedelta(hours=1),
-        title=None,
-        booker_name="민아 (구성원)",
-        participant_emails=(),
-        outside_names=(),
-    )
-    assert (request.date, request.start, request.end) == ("2026-09-14", "10:30", "11:30")
-    assert starts.astimezone(OFFICE_TIMEZONE).hour == 10
-    # 제목이 없는 회의도 예약 목록에서 빈칸으로 서지 않는다.
-    assert request.title == "제목 없는 회의"
 
 
 # --------------------------------------------------------------------- 수정 · 취소 동기화

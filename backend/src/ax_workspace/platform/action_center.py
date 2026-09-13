@@ -17,40 +17,59 @@ from ax_workspace.modules.actions.domain import (
     AWAITING_REVIEW,
     AWAITING_REVISION,
     RESOLVED,
-    ActionCommand,
     ActionEnvelope,
     ActionError,
+    ActionNotFound,
+)
+from ax_workspace.modules.actions.confirmation import (
+    AxConfirmationContext,
+    AxReplayContext,
+    decide_ax_confirmation,
+    is_ax_replay,
+    normalize_ax_draft as _normalize_ax_draft,
+    required_base_submission_version as _required_base_submission_version,
+    required_version as _required_version,
+)
+from ax_workspace.modules.actions.payloads import (
+    attachment_draft_ids,
+    proposed_changes,
+    revision_changes,
+    suggested_changes,
+)
+from ax_workspace.modules.actions.policy import (
+    AssignmentActionContext,
+    AxProposalActionContext,
+    DeliveryActionContext,
+    WorkRequestActionContext,
+    available_assignment_commands,
+    available_ax_proposal_commands,
+    available_delivery_commands,
+    available_work_request_commands,
+)
+from ax_workspace.modules.actions.replay import (
+    AssignmentReplayContext,
+    RecordedDeliveryDecision,
+    WorkRequestReplayContext,
+    is_assignment_replay,
+    is_delivery_replay,
+    is_work_request_replay,
 )
 from ax_workspace.modules.organization_access.domain import (
     ACTION_DECIDE,
-    TASK_ASSIGN,
     TASK_READ,
-    TASK_SELF_MANAGE,
-    WORK_REQUEST_DECIDE,
     Principal,
 )
-from ax_workspace.platform.actions import ActionEvidenceReader, ActionPresenter, _normalize_task_progress_batch
+from ax_workspace.platform.actions import ActionEvidenceReader, ActionPresenter, ActionServices
 from ax_workspace.modules.ax_execution.actions import action_payload_hash
-from ax_workspace.modules.work.application import TaskError
-from ax_workspace.modules.work.drafts import (
-    normalize_assigned_task_draft,
-    normalize_task_draft,
-    normalize_work_request_draft,
-)
-from ax_workspace.modules.meetings.domain import MeetingError
-from ax_workspace.modules.meetings.drafts import normalize_meeting_draft
 from ax_workspace.platform.organization_access import SqlAlchemyOrganizationRepository
 from ax_workspace.modules.work.requests import (
     DECISION_VERSION,
     EVIDENCE_HASH,
-    REVISABLE_FIELDS,
     WorkRequestAccessDenied as ActionAccessDenied,
-    WorkRequestError,
     evidence_manifest,
     evidence_manifest_entry,
     evidence_manifest_hash,
     decision_facts,
-    normalize_proposed_changes,
 )
 from ax_workspace.platform.persistence import (
     ActionItemRecord,
@@ -61,7 +80,6 @@ from ax_workspace.platform.persistence import (
     ReviewDecisionRecord,
     SubjectVersionRecord,
     SubmissionRecord,
-    MeetingRecord,
     TaskAssignmentRecord,
     TaskRecord,
     WorkRequestRecord,
@@ -72,151 +90,6 @@ def _parse_date(value: Any):
     from datetime import date
 
     return date.fromisoformat(str(value)) if value else None
-
-def _required_version(payload: dict[str, Any]) -> int:
-    """Every command answers a version it was shown. Without one there is no stale-write check at all."""
-    value = payload.get("expected_version")
-    if value is None or isinstance(value, bool):
-        raise ActionError("expected_version is required")
-    try:
-        return int(value)
-    except (TypeError, ValueError) as error:
-        raise ActionError("expected_version must be an integer") from error
-
-
-def _required_base_submission_version(payload: dict[str, Any]) -> int:
-    value = payload.get("base_submission_version")
-    if value is None or isinstance(value, bool):
-        raise ActionError("base_submission_version is required")
-    try:
-        return int(value)
-    except (TypeError, ValueError) as error:
-        raise ActionError("base_submission_version must be an integer") from error
-
-
-def _normalize_ax_task_draft(action_type: str, value: Any) -> dict[str, Any]:
-    try:
-        fields = dict(value) if isinstance(value, dict) else value
-        if isinstance(fields, dict):
-            fields.pop("attachment_draft_ids", None)
-        return normalize_assigned_task_draft(fields) if action_type == "task.assign" else normalize_task_draft(fields)
-    except (TaskError, TypeError, ValueError) as error:
-        raise ActionError(str(error)) from error
-
-
-def _normalize_ax_draft(
-    action_type: str,
-    value: Any,
-    *,
-    frozen_meeting_source: dict[str, Any] | None = None,
-    requester_id: str | None = None,
-) -> dict[str, Any]:
-    if action_type == "task.progress.batch":
-        try:
-            return _normalize_task_progress_batch(dict(value) if isinstance(value, dict) else value)
-        except (TaskError, TypeError, ValueError) as error:
-            raise ActionError(str(error)) from error
-    if action_type == "work_request.create":
-        try:
-            return normalize_work_request_draft(value, requester_id=requester_id)
-        except (WorkRequestError, TypeError, ValueError) as error:
-            raise ActionError(str(error)) from error
-    if action_type != "meeting.create":
-        return _normalize_ax_task_draft(action_type, value)
-    try:
-        fields = dict(value) if isinstance(value, dict) else value
-        if isinstance(fields, dict):
-            fields.pop("attachment_draft_ids", None)
-        if isinstance(fields, dict) and frozen_meeting_source is not None:
-            fields["initial_note_source_status"] = frozen_meeting_source.get(
-                "initial_note_source_status", "not_requested"
-            )
-            fields["initial_note_source_evidence"] = list(
-                frozen_meeting_source.get("initial_note_source_evidence") or []
-            )
-        return normalize_meeting_draft(fields)
-    except (MeetingError, TypeError, ValueError) as error:
-        raise ActionError(str(error)) from error
-
-
-def _validate_task_progress_batch_edit(base: dict[str, Any], final: dict[str, Any]) -> None:
-    """A card may edit an effect's value or exclude it, never smuggle in another target or stale guard."""
-    original = {str(operation["task_id"]): operation for operation in base.get("operations") or []}
-    for operation in final.get("operations") or []:
-        before = original.get(str(operation["task_id"]))
-        if before is None:
-            raise ActionError("원안에 없던 업무는 이 카드에서 추가할 수 없습니다")
-        immutable = ("kind", "task_id", "expected_version")
-        if operation["kind"] == "checklist.update":
-            immutable = (*immutable, "item_id")
-        if any(operation.get(field) != before.get(field) for field in immutable):
-            raise ActionError("업무 대상이나 기준 버전은 이 카드에서 바꿀 수 없습니다")
-
-
-def _attachment_draft_ids(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if not isinstance(value, list):
-        raise ActionError("attachment_draft_ids must be a list")
-    try:
-        return list(dict.fromkeys(str(UUID(str(item))) for item in value))
-    except (TypeError, ValueError) as error:
-        raise ActionError("attachment_draft_ids must contain UUID values") from error
-
-
-def _payload_diff(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: {"before": before.get(key), "after": after.get(key)}
-        for key in sorted(set(before) | set(after))
-        if before.get(key) != after.get(key)
-    }
-
-
-def _proposed_changes(value: Any) -> dict[str, Any]:
-    """An adjustment's optional structured ask. The work module owns the allow-list, so every writer agrees with it."""
-    try:
-        return normalize_proposed_changes(value)
-    except WorkRequestError as error:
-        raise ActionError(str(error)) from error
-
-
-def _revision_changes(value: Any) -> dict[str, Any]:
-    """What a revision may change. A field it does not own is refused, never dropped from a successful answer."""
-    if not value:
-        return {}
-    if not isinstance(value, dict):
-        raise ActionError("수정안은 필드별로 적어 주세요")
-    unknown = sorted(set(value) - set(REVISABLE_FIELDS))
-    if unknown:
-        raise ActionError(f"수정안에서 바꿀 수 없는 항목입니다: {', '.join(unknown)}")
-    changes: dict[str, Any] = {}
-    if "title" in value:
-        # A request always has a title, so emptying it is a mistake rather than a change.
-        title = str(value["title"] or "").strip()
-        if not title:
-            raise ActionError("요청할 업무 제목은 비울 수 없습니다")
-        changes["title"] = title
-    if "description" in value:
-        # Naming the description and leaving it empty is how a requester removes it: presence is the intent.
-        changes["description"] = str(value["description"] or "").strip()
-    if value.get("clear_due_date"):
-        changes["clear_due_date"] = True
-    elif "due_date" in value:
-        # An empty date is refused rather than dropped: a revision that succeeded must have done everything it named.
-        due_date = str(value["due_date"] or "").strip()
-        if not due_date:
-            raise ActionError("기한은 clear_due_date로만 지웁니다")
-        _parse_date(due_date)
-        changes["due_date"] = due_date
-    return changes
-
-
-def _suggested_changes(conditions: Any) -> dict[str, Any]:
-    """The proposal a negotiate decision carries; a reason-only adjustment has none."""
-    if not isinstance(conditions, dict):
-        return {}
-    return _proposed_changes(conditions.get("changes"))
-
 
 WORK_REQUEST_ACCEPTANCE = "work_request.acceptance"
 #: The result question: opened by a delivery report, answered by the person who asked for the work.
@@ -290,7 +163,7 @@ class WorkRequestActionHandler:
                     "actor_member_id": decision.actor_member_id,
                     "decision": decision.decision,
                     "reason": decision.reason,
-                    "suggested_changes": _suggested_changes(decision.conditions),
+                    "suggested_changes": suggested_changes(decision.conditions),
                     # The basis this answer was actually made on, frozen when it was made.
                     "evidence_hash": decision_facts(decision.conditions).get(EVIDENCE_HASH),
                     "decided_at": decision.decided_at.isoformat(),
@@ -332,11 +205,11 @@ class WorkRequestActionHandler:
         if reason:
             normalized["reason"] = reason
         if command == "adjust":
-            proposed = _proposed_changes(payload.get("changes"))
+            proposed = proposed_changes(payload.get("changes"))
             if proposed:
                 normalized["changes"] = proposed
         elif command == "revise":
-            revision = _revision_changes(payload.get("changes"))
+            revision = revision_changes(payload.get("changes"))
             if revision:
                 normalized["changes"] = revision
         elif payload.get("changes"):
@@ -344,7 +217,21 @@ class WorkRequestActionHandler:
         return normalized
 
     def execute(self, principal: Principal, item: tuple[Any, Any], command: str, payload: dict[str, Any]) -> None:
-        _, request = item
+        decision_item, request = item
+        # The offered envelope can predate another tab's commit. Serialize on
+        # the owning request, then recognize that exact judgement's receipt
+        # before invoking the version-checked domain command again.
+        request = self._session.scalar(
+            select(WorkRequestRecord)
+            .where(WorkRequestRecord.id == request.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if request is None:
+            raise ActionNotFound("action item was not found")
+        self._session.refresh(decision_item)
+        if self.is_replay((decision_item, request), principal, command, payload):
+            return
         expected_version = _required_version(payload)
         reason = str(payload.get("reason") or "").strip()
         if command == "accept":
@@ -352,7 +239,7 @@ class WorkRequestActionHandler:
         elif command == "reject":
             self._work_requests.reject(principal, request.id, expected_version, reason)
         elif command == "adjust":
-            proposed = _proposed_changes(payload.get("changes"))
+            proposed = proposed_changes(payload.get("changes"))
             conditions = {"note": reason, **({"changes": proposed} if proposed else {})}
             self._work_requests.negotiate(principal, request.id, expected_version, conditions)
         elif command == "withdraw":
@@ -382,48 +269,41 @@ class WorkRequestActionHandler:
         response can never become a way to change one's mind or to replay a superseded round.
         """
         decision_item, request = item
-        try:
-            targeted = int(payload["expected_version"])
-        except (KeyError, TypeError, ValueError):
-            return False
         submission = self._current_submission(decision_item)
         if submission is None:
             return False
-        if command == "revise":
-            # The round this payload produced is the receipt, and the version it consumed is recoverable from the
-            # adjustment it answered: nothing can move the request between that decision and this revision. So a later
-            # bump — someone adopting evidence on the new round — leaves the receipt intact, while a version this
-            # revision never consumed is still a different request.
-            return (
-                submission.submitted_by == str(principal.id)
-                and self._revision_consumed(submission) == targeted
-                and self._revision_produced(submission, payload)
-            )
-        if command == "withdraw":
-            # Withdrawal is terminal: nothing can move the request afterwards, so the single step still pins it.
-            return (
-                request.state == "withdrawn"
-                and request.requester_id == str(principal.id)
-                and int(request.version) == targeted + 1
-            )
         decided = self._session.scalar(
             select(ReviewDecisionRecord)
             .where(ReviewDecisionRecord.submission_id == submission.id)
             .order_by(ReviewDecisionRecord.decided_at.desc())
         )
-        if decided is None or decided.actor_member_id != str(principal.id):
-            return False
-        if decided.decision != {"accept": "accept", "reject": "reject", "adjust": "negotiate"}.get(command):
-            return False
-        # The version this answer actually consumed, frozen when it was made rather than inferred from where the
-        # request stands now.
-        if decision_facts(decided.conditions).get(DECISION_VERSION) != targeted:
-            return False
-        if command == "accept":
-            return True
-        if (decided.reason or "") != str(payload.get("reason") or "").strip():
-            return False
-        return command != "adjust" or _suggested_changes(decided.conditions) == _proposed_changes(payload.get("changes"))
+        current_version = self._session.get(SubjectVersionRecord, submission.subject_version_id)
+        previous = self._session.get(SubmissionRecord, submission.revises_id) if submission.revises_id else None
+        previous_version = (
+            self._session.get(SubjectVersionRecord, previous.subject_version_id) if previous is not None else None
+        )
+        stored = decision_facts(decided.conditions) if decided is not None else {}
+        return is_work_request_replay(
+            WorkRequestReplayContext(
+                request_state=str(request.state),
+                request_version=int(request.version),
+                requester_id=str(request.requester_id),
+                submission_actor_id=str(submission.submitted_by),
+                revision_consumed_version=self._revision_consumed(submission),
+                current_snapshot=dict(current_version.snapshot) if current_version is not None else None,
+                previous_snapshot=dict(previous_version.snapshot) if previous_version is not None else None,
+                decision_actor_id=str(decided.actor_member_id) if decided is not None else None,
+                decision=str(decided.decision) if decided is not None else None,
+                decision_expected_version=(
+                    int(stored[DECISION_VERSION]) if stored.get(DECISION_VERSION) is not None else None
+                ),
+                decision_reason=str(decided.reason) if decided is not None and decided.reason is not None else None,
+                decision_suggested_changes=suggested_changes(decided.conditions) if decided is not None else {},
+            ),
+            actor_id=str(principal.id),
+            command=command,
+            payload=payload,
+        )
 
     def _revision_consumed(self, submission: SubmissionRecord) -> int | None:
         """The request version this revision answered, read from the adjustment that asked for it.
@@ -440,28 +320,6 @@ class WorkRequestActionHandler:
         )
         consumed = decision_facts(decided.conditions).get(DECISION_VERSION) if decided else None
         return int(consumed) + 1 if consumed is not None else None
-
-    def _revision_produced(self, submission: SubmissionRecord, payload: dict[str, Any]) -> bool:
-        """Would this payload, applied to the round it revised, have produced exactly the round that now stands?"""
-        if submission.revises_id is None:
-            return False
-        previous = self._session.get(SubmissionRecord, submission.revises_id)
-        current_version = self._session.get(SubjectVersionRecord, submission.subject_version_id)
-        previous_version = self._session.get(SubjectVersionRecord, previous.subject_version_id) if previous else None
-        if current_version is None or previous_version is None:
-            return False
-        changes = dict(payload.get("changes") or {})
-        revised = dict(previous_version.snapshot)
-        if changes.get("title") is not None:
-            revised["title"] = str(changes["title"]).strip()
-        if changes.get("description") is not None:
-            revised["description"] = str(changes["description"]).strip() or None
-        if changes.get("clear_due_date"):
-            revised["due_date"] = None
-        elif changes.get("due_date") is not None:
-            parsed = _parse_date(changes["due_date"])
-            revised["due_date"] = parsed.isoformat() if parsed else None
-        return revised == dict(current_version.snapshot)
 
     def _require_participant(self, request: Any, principal: Principal) -> None:
         member_id = str(principal.id)
@@ -501,24 +359,14 @@ class WorkRequestActionHandler:
         resolved = item.status not in {"open", AWAITING_REVISION}
         status = RESOLVED if resolved else AWAITING_REVISION if item.status == AWAITING_REVISION else AWAITING_REVIEW
         if status == RESOLVED:
-            actor, allowed = None, []
+            actor = None
         elif status == AWAITING_REVIEW:
             assignment = self._active_assignment(submission)
             actor = assignment.reviewer_member_id if assignment else None
-            commands = [
-                ActionCommand("accept", "수락", "primary"),
-                ActionCommand("adjust", "조정 요청", "neutral", requires_reason=True),
-                ActionCommand("reject", "거절", "danger", requires_reason=True),
-            ]
-            allowed = commands if WORK_REQUEST_DECIDE in principal.capabilities else []
         else:
             actor = request.requester_id
-            allowed = [ActionCommand("revise", "수정안 재상신", "primary"), ActionCommand("withdraw", "요청 철회", "neutral")]
-        if actor != str(principal.id):
-            if pending_only:
-                return None
-            allowed = []
-        if pending_only and not allowed:
+        context = WorkRequestActionContext(status=status, actor_id=actor)
+        if pending_only and not available_work_request_commands(context, principal):
             return None
         return ActionEnvelope(
             action_item_id=str(item.id),
@@ -528,7 +376,7 @@ class WorkRequestActionHandler:
             operation_label="업무 요청",
             current_question=_QUESTIONS.get((WORK_REQUEST_ACCEPTANCE, status), "이 요청은 이미 판단이 끝났습니다"),
             preview=self._preview(submission, request),
-            allowed_commands=allowed,
+            allowed_commands=available_work_request_commands(context, principal),
             submission_version=int(submission.submission_version),
             waiting_on=self._members.waiting_on(actor),
             resource={"type": "work_request", "id": str(request.id)},
@@ -548,7 +396,7 @@ class WorkRequestActionHandler:
             .where(ReviewDecisionRecord.submission_id == submission.id, ReviewDecisionRecord.decision == "negotiate")
             .order_by(ReviewDecisionRecord.decided_at.desc())
         )
-        return _suggested_changes(decided.conditions if decided else None)
+        return suggested_changes(decided.conditions if decided else None)
 
     def _preview(self, submission: SubmissionRecord, request: WorkRequestRecord) -> list[dict[str, str]]:
         """Read the frozen Submission, not the mutable request row: this is what is actually being judged."""
@@ -592,14 +440,14 @@ class AxProposalActionHandler:
         assignments: Any,
         material_drafts: Any = None,
         *,
-        work_requests: Any = None,
+        services: ActionServices,
         evidence_reader: ActionEvidenceReader | None = None,
     ) -> None:
         self._session = session
         self._presenter = ActionPresenter(
             session,
+            services=services,
             evidence_reader=evidence_reader,
-            work_requests=work_requests,
         )
         self._members = MemberDirectory(session)
         self._actions = actions
@@ -733,7 +581,7 @@ class AxProposalActionHandler:
                     raise ActionError("업무 기한을 입력해 주세요")
                 normalized["draft"] = normalized_draft
                 if item.action_type in {"task.create_self", "task.assign", "meeting.create"}:
-                    normalized["attachment_draft_ids"] = _attachment_draft_ids(payload.get("attachment_draft_ids"))
+                    normalized["attachment_draft_ids"] = attachment_draft_ids(payload.get("attachment_draft_ids"))
             elif payload.get("draft") is not None:
                 raise ActionError("이 AX 제안은 수정 가능한 초안을 받지 않습니다")
         elif (
@@ -779,44 +627,35 @@ class AxProposalActionHandler:
             )
         if str(item.owner_id) != str(principal.id) or ACTION_DECIDE not in principal.capabilities:
             return False
-        expected_state = {"confirm": "approved", "approve": "approved", "reject": "rejected"}.get(command)
-        if item.state != expected_state:
-            return False
-        try:
-            if int(item.version) != _required_version(payload) + 1:
-                return False
-        except ActionError:
-            return False
         decision_item = self._decision(item)
-        if decision_item is None:
-            return command == "reject"
-        stored = self._session.scalar(
-            select(ReviewDecisionRecord)
-            .join(SubmissionRecord, SubmissionRecord.id == ReviewDecisionRecord.submission_id)
-            .where(SubmissionRecord.decision_item_id == decision_item.id)
-            .order_by(ReviewDecisionRecord.decided_at.desc())
+        stored = (
+            self._session.scalar(
+                select(ReviewDecisionRecord)
+                .join(SubmissionRecord, SubmissionRecord.id == ReviewDecisionRecord.submission_id)
+                .where(SubmissionRecord.decision_item_id == decision_item.id)
+                .order_by(ReviewDecisionRecord.decided_at.desc())
+            )
+            if decision_item is not None
+            else None
         )
-        if stored is None or stored.actor_member_id != str(principal.id) or stored.decision != command:
-            return False
-        facts = dict(stored.conditions or {})
-        if command in {"approve", "reject"}:
-            return facts.get("expected_version") == _required_version(payload)
-        try:
-            normalized = self.normalize(item, command, payload)
-        except ActionError:
-            return False
-        return (
-            facts.get("expected_version") == normalized["expected_version"]
-            and facts.get("base_submission_version") == normalized["base_submission_version"]
-            and facts.get("payload_hash") == action_payload_hash({
-                **normalized["draft"],
-                **(
-                    {"attachment_draft_ids": normalized.get("attachment_draft_ids", [])}
-                    if normalized.get("attachment_draft_ids")
-                    else {}
-                ),
-            })
-            and facts.get("attachment_draft_ids", []) == normalized.get("attachment_draft_ids", [])
+        normalized = payload
+        if command == "confirm":
+            try:
+                normalized = self.normalize(item, command, payload)
+            except ActionError:
+                return False
+        return is_ax_replay(
+            AxReplayContext(
+                state=str(item.state),
+                version=int(item.version),
+                has_decision_item=decision_item is not None,
+                stored_actor_id=str(stored.actor_member_id) if stored is not None else None,
+                stored_decision=str(stored.decision) if stored is not None else None,
+                stored_conditions=dict(stored.conditions or {}) if stored is not None else {},
+            ),
+            actor_id=str(principal.id),
+            command=command,
+            normalized_payload=normalized,
         )
 
     def pending(self, principal: Principal) -> list[ActionEnvelope]:
@@ -843,14 +682,6 @@ class AxProposalActionHandler:
         resolved = decision is not None and decision.status == "resolved"
         pending = record.state == "pending" and not resolved
         assignment = self._assignment(record)
-        cancellable_assignment = (
-            resolved
-            and record.action_type == "task.assign"
-            and assignment is not None
-            and assignment.status == "pending"
-            and assignment.assigned_by == str(principal.id)
-            and TASK_ASSIGN in principal.capabilities
-        )
         return ActionEnvelope(
             action_item_id=str(record.id),
             kind=f"ax.{record.action_type}",
@@ -859,42 +690,17 @@ class AxProposalActionHandler:
             operation_label=str(presented["operation_label"]),
             current_question="AX가 준비한 변경을 확정할지 결정하세요" if pending else "이 제안은 이미 판단이 끝났습니다",
             preview=list(presented["preview"]),
-            allowed_commands=(
-                [
-                    *(
-                        []
-                        if presented.get("obsolete")
-                        else [
-                            ActionCommand(
-                                "confirm",
-                                (
-                                    "이 내용으로 업무 요청"
-                                    if record.action_type in {"task.assign", "work_request.create"}
-                                    else "이 내용으로 회의 생성"
-                                    if record.action_type == "meeting.create"
-                                    else "이 내용으로 반영"
-                                    if record.action_type == "task.progress.batch"
-                                    else "이 내용으로 업무 생성"
-                                ),
-                                "primary",
-                            )
-                            if record.action_type in {
-                                "task.create_self",
-                                "task.assign",
-                                "work_request.create",
-                                "meeting.create",
-                                "task.progress.batch",
-                            }
-                            and submission is not None
-                            else ActionCommand("approve", "승인", "primary")
-                        ]
-                    ),
-                    ActionCommand("reject", "거절", "neutral"),
-                ]
-                if pending and ACTION_DECIDE in principal.capabilities
-                else [ActionCommand("cancel_assignment", "취소", "danger")]
-                if cancellable_assignment
-                else []
+            allowed_commands=available_ax_proposal_commands(
+                AxProposalActionContext(
+                    action_type=str(record.action_type),
+                    pending=pending,
+                    resolved=resolved,
+                    has_submission=submission is not None,
+                    obsolete=bool(presented.get("obsolete")),
+                    assignment_status=str(assignment.status) if assignment is not None else None,
+                    assigned_by=str(assignment.assigned_by) if assignment is not None else None,
+                ),
+                principal,
             ),
             submission_version=int(submission.submission_version) if submission is not None else 1,
             waiting_on=self._members.waiting_on(str(record.owner_id)) if pending else None,
@@ -937,61 +743,45 @@ class AxProposalActionHandler:
         if locked.state != "pending":
             if self.is_replay(locked, principal, "confirm", payload):
                 return
-            raise ActionError("action is no longer pending")
-        if int(locked.version) != _required_version(payload):
-            raise ActionError("action version is stale")
         decision_item = self._decision(locked)
         submission = self._current_submission(locked)
-        if decision_item is None or submission is None or decision_item.status != "open":
-            raise ActionError("action is no longer pending")
-        base_submission_version = _required_base_submission_version(payload)
-        if int(submission.submission_version) != base_submission_version:
-            raise ActionError("base submission version is stale")
-        base_version = self._session.get(SubjectVersionRecord, submission.subject_version_id)
+        base_version = (
+            self._session.get(SubjectVersionRecord, submission.subject_version_id)
+            if submission is not None
+            else None
+        )
         base_snapshot = dict(base_version.snapshot) if base_version else {}
-        if locked.action_type not in {
-            "task.create_self", "task.assign", "work_request.create", "meeting.create", "task.progress.batch"
-        }:
-            raise ActionError("이 AX 제안은 아직 수정 확정을 지원하지 않습니다")
-        canonical_base = _normalize_ax_draft(
-            locked.action_type,
-            base_snapshot,
-            requester_id=str(locked.owner_id),
+        assignment = self._active_assignment(submission) if submission is not None else None
+        decision = decide_ax_confirmation(
+            AxConfirmationContext(
+                action_type=str(locked.action_type),
+                state=str(locked.state),
+                version=int(locked.version),
+                owner_id=str(locked.owner_id),
+                decision_open=decision_item is not None and decision_item.status == "open" and submission is not None,
+                submission_version=int(submission.submission_version) if submission is not None else 0,
+                base_snapshot=base_snapshot,
+                has_active_assignment=assignment is not None,
+            ),
+            payload,
         )
-        canonical_final = _normalize_ax_draft(
-            locked.action_type,
-            payload.get("draft"),
-            frozen_meeting_source=canonical_base if locked.action_type == "meeting.create" else None,
-            requester_id=str(locked.owner_id),
-        )
-        if locked.action_type == "task.progress.batch":
-            _validate_task_progress_batch_edit(canonical_base, canonical_final)
-        base_attachment_ids = (
-            _attachment_draft_ids(base_snapshot.get("attachment_draft_ids"))
-            if locked.action_type in {"task.create_self", "task.assign", "meeting.create"}
-            else []
-        )
-        attachment_ids = (
-            _attachment_draft_ids(payload.get("attachment_draft_ids"))
-            if locked.action_type in {"task.create_self", "task.assign", "meeting.create"}
-            else []
-        )
-        canonical_base_snapshot = {**canonical_base, **({"attachment_draft_ids": base_attachment_ids} if base_attachment_ids else {})}
-        canonical_final_snapshot = {**canonical_final, **({"attachment_draft_ids": attachment_ids} if attachment_ids else {})}
+        if decision_item is None or submission is None:  # pragma: no cover - rejected by the pure plan above
+            raise ActionError("action is no longer pending")
+        attachment_ids = list(decision.attachment_draft_ids)
         selected = submission
-        assignment = self._active_assignment(submission)
         now = datetime.now(UTC)
         superseded_assignment_id: UUID | None = None
-        if canonical_final_snapshot != canonical_base_snapshot:
+        if decision.open_round is not None:
+            round_effect = decision.open_round
             if assignment is not None:
                 assignment.status = "superseded"
                 assignment.resolution_kind = "revised"
                 superseded_assignment_id = assignment.id
             next_version = SubjectVersionRecord(
                 subject_id=decision_item.subject_id,
-                version=int(submission.submission_version) + 1,
-                content_hash=action_payload_hash(canonical_final_snapshot),
-                snapshot=canonical_final_snapshot,
+                version=round_effect.submission_version,
+                content_hash=action_payload_hash(round_effect.snapshot),
+                snapshot=round_effect.snapshot,
                 captured_at=now,
             )
             self._session.add(next_version)
@@ -999,12 +789,12 @@ class AxProposalActionHandler:
             selected = SubmissionRecord(
                 decision_item_id=decision_item.id,
                 subject_version_id=next_version.id,
-                submission_version=int(submission.submission_version) + 1,
+                submission_version=round_effect.submission_version,
                 revises_id=submission.id,
                 submitted_by=str(principal.id),
                 payload_hash=next_version.content_hash,
                 decision_policy_snapshot=dict(submission.decision_policy_snapshot or {}),
-                diff=_payload_diff(base_snapshot, canonical_final_snapshot),
+                diff=round_effect.diff,
                 submitted_at=now,
             )
             self._session.add(selected)
@@ -1044,12 +834,12 @@ class AxProposalActionHandler:
             decision="confirm",
             reason=None,
             conditions={
-                "expected_version": _required_version(payload),
-                "base_submission_version": base_submission_version,
-                "payload_hash": action_payload_hash(canonical_final_snapshot),
+                "expected_version": decision.expected_version,
+                "base_submission_version": decision.base_submission_version,
+                "payload_hash": action_payload_hash(decision.final_snapshot),
                 "attachment_draft_ids": attachment_ids,
                 "_decision": {
-                    "expected_version": _required_version(payload),
+                    "expected_version": decision.expected_version,
                     "evidence_hash": evidence_manifest_hash(basis),
                     "evidence_manifest": basis,
                 },
@@ -1066,7 +856,7 @@ class AxProposalActionHandler:
         self._actions.execute_confirmed(
             principal,
             locked,
-            {**canonical_final, "_attachment_draft_ids": attachment_ids},
+            {**decision.final_draft, "_attachment_draft_ids": attachment_ids},
             source_decision_item_id=decision_item.id,
             source_submission_id=selected.id,
             source_review_decision_id=review.id,
@@ -1129,7 +919,6 @@ class TaskAssignmentActionHandler:
     def envelope(self, item: tuple[Any, Any], principal: Principal) -> ActionEnvelope:
         assignment, task = item
         pending = assignment.status == "pending"
-        mine = str(assignment.assignee_id) == str(principal.id)
         preview: list[dict[str, str]] = []
         if task.description:
             preview.append({"id": "description", "label": "설명", "value": str(task.description), "kind": "text"})
@@ -1146,10 +935,8 @@ class TaskAssignmentActionHandler:
             operation_label="업무 배정",
             current_question="이 업무 배정을 수락할지 결정하세요" if pending else "이 배정은 이미 판단이 끝났습니다",
             preview=preview,
-            allowed_commands=(
-                [ActionCommand("accept", "수락", "primary"), ActionCommand("decline", "거절", "danger", requires_reason=True)]
-                if pending and mine and TASK_SELF_MANAGE in principal.capabilities
-                else []
+            allowed_commands=available_assignment_commands(
+                AssignmentActionContext(pending=pending, assignee_id=str(assignment.assignee_id)), principal
             ),
             submission_version=1,
             waiting_on=self._members.waiting_on(assignment.assignee_id if pending else None),
@@ -1219,17 +1006,22 @@ class TaskAssignmentActionHandler:
         accepting leaves it where it was, declining cancels the Task and moves it exactly one version on.
         """
         assignment, task = item
-        if str(assignment.assignee_id) != str(principal.id):
-            return False
         try:
             targeted = _required_version(payload)
         except ActionError:
             return False
-        if command == "accept":
-            return assignment.status == "active" and int(task.version) == targeted
-        if command != "decline" or assignment.status != "declined":
-            return False
-        return int(task.version) == targeted + 1 and (assignment.decline_reason or "") == str(payload.get("reason") or "").strip()
+        return is_assignment_replay(
+            AssignmentReplayContext(
+                status=str(assignment.status),
+                assignee_id=str(assignment.assignee_id),
+                task_version=int(task.version),
+                decline_reason=assignment.decline_reason,
+            ),
+            actor_id=str(principal.id),
+            command=command,
+            expected_version=targeted,
+            reason=payload.get("reason"),
+        )
 
 
 class TaskDeliveryActionHandler:
@@ -1283,7 +1075,6 @@ class TaskDeliveryActionHandler:
         reviewer_id = self._reviewer(latest)
         answered = [row for row in self._tasks.repository.delivery_decisions([latest.id])]
         waiting = not answered
-        mine = str(principal.id) == reviewer_id
         preview: list[dict[str, str]] = [
             {"id": "summary", "label": "결과 요약", "value": str(snapshot.get("summary") or ""), "kind": "text"},
             {"id": "reporter", "label": "보고자", "value": self._members.waiting_on(latest.submitted_by)["display_name"], "kind": "person"},
@@ -1310,13 +1101,8 @@ class TaskDeliveryActionHandler:
                 "요청한 결과가 충족됐는지 확인하세요" if waiting else "이 결과는 이미 판단이 끝났습니다"
             ),
             preview=preview,
-            allowed_commands=(
-                [
-                    ActionCommand("accept", "완료 인정", "primary"),
-                    ActionCommand("request_changes", "보완 요청", "neutral", requires_reason=True),
-                ]
-                if waiting and mine and TASK_READ in principal.capabilities
-                else []
+            allowed_commands=available_delivery_commands(
+                DeliveryActionContext(waiting=waiting, reviewer_id=reviewer_id), principal
             ),
             submission_version=int(latest.submission_version),
             waiting_on=self._members.waiting_on(reviewer_id if waiting else None),
@@ -1395,16 +1181,22 @@ class TaskDeliveryActionHandler:
             targeted = _required_version(payload)
         except ActionError:
             return False
-        decided = "accept" if command == "accept" else "negotiate"
-        for row in self._tasks.repository.delivery_decisions([submission.id]):
-            if row.actor_member_id != str(principal.id) or row.decision != decided:
-                continue
-            if int(decision_facts(row.conditions).get(DECISION_VERSION) or -1) != targeted:
-                continue
-            if decided == "negotiate" and (row.reason or "") != str(payload.get("reason") or "").strip():
-                continue
-            return True
-        return False
+        decisions = tuple(
+            RecordedDeliveryDecision(
+                actor_id=str(row.actor_member_id),
+                decision=str(row.decision),
+                expected_version=int(decision_facts(row.conditions).get(DECISION_VERSION) or -1),
+                reason=row.reason,
+            )
+            for row in self._tasks.repository.delivery_decisions([submission.id])
+        )
+        return is_delivery_replay(
+            decisions,
+            actor_id=str(principal.id),
+            command=command,
+            expected_version=targeted,
+            reason=payload.get("reason"),
+        )
 
     def _latest(self, decision_item: Any) -> Any:
         return self._tasks.repository.delivery_submissions(decision_item)[-1]
@@ -1429,6 +1221,7 @@ class TaskDeliveryActionHandler:
 def action_handlers(
     session: Session,
     *,
+    services: ActionServices,
     work_requests: Any,
     actions: Any,
     assignments: Any,
@@ -1453,7 +1246,7 @@ def action_handlers(
             actions,
             assignments,
             material_drafts,
-            work_requests=work_requests,
+            services=services,
             evidence_reader=evidence_reader,
         )
     )

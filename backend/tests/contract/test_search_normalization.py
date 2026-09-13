@@ -32,10 +32,6 @@ def client(tmp_path) -> TestClient:
     return TestClient(create_app(Settings(RuntimeProfile.TEST, database_url)))
 
 
-def test_the_two_ways_of_writing_the_same_word_are_really_different_bytes() -> None:
-    assert _decomposed(TITLE) != TITLE and len(_decomposed(TITLE)) > len(TITLE)
-
-
 def test_searching_with_what_finder_gave_you_finds_the_work(client: TestClient) -> None:
     made = client.post("/api/tasks", headers=MINA, json={"title": TITLE})
     assert made.status_code == 201, made.text

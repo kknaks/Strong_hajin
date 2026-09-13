@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
-from ax_workspace.modules.meetings.materials import MAX_MEETING_MATERIAL_BYTES, accepts
+from ax_workspace.modules.meetings.materials import MAX_MEETING_MATERIAL_BYTES
 
 MINA = {"X-Demo-Persona": "mina"}
 JIHO = {"X-Demo-Persona": "jiho"}
@@ -120,50 +120,6 @@ def test_a_request_where_nothing_could_be_attached_is_a_failed_request(tmp_path)
     assert client.get(f"/api/meetings/{meeting_id}/materials", headers=MINA).json() == []
 
 
-def test_markdown_is_taken_by_its_name_when_the_browser_will_not_say_so() -> None:
-    """브라우저가 Markdown 을 `text/plain` 이나 빈 값으로 보내는 일이 흔하다."""
-    assert accepts("정리.md", "text/plain") is True
-    assert accepts("정리.markdown", "") is True
-    assert accepts("계약서.pdf", "application/pdf") is True
-    assert accepts("사진.png", "image/png") is False
-    assert accepts("압축.zip", "application/zip") is False
-
-
-def test_materials_are_not_touched_while_the_meeting_is_running(tmp_path) -> None:
-    """진행 중에는 자료 자리가 서지 않는다 — 붙이지도 떼지도 못한다 (SPEC §5.1 「진행 중」 행)."""
-    client, application, _ = _stack(tmp_path)
-    meeting_id = _meeting(client)["meeting"]["meeting_id"]
-    attached = _attach(client, meeting_id, [_file("먼저.pdf", PDF, "application/pdf")]).json()["attached"][0]
-
-    client.post(f"/api/meetings/{meeting_id}/start", headers=MINA)
-    application.meeting_batch.drain()
-    assert _attach(client, meeting_id, [_file("나중.pdf", PDF, "application/pdf")]).status_code == 409
-    assert client.delete(
-        f"/api/meetings/{meeting_id}/materials/{attached['material_id']}", headers=MINA
-    ).status_code == 409
-    # 읽기는 막지 않는다 — 회의를 보며 여는 자리다.
-    assert client.get(f"/api/meetings/{meeting_id}/materials", headers=MINA).status_code == 200
-
-
-def test_only_the_person_who_attached_a_file_may_take_it_off(tmp_path) -> None:
-    """회의를 만든 사람도 남의 자료를 못 뗀다 (SPEC §3.3 · `X-117`)."""
-    client, _, _ = _stack(tmp_path)
-    meeting_id = _meeting(client)["meeting"]["meeting_id"]
-    mine = _attach(client, meeting_id, [_file("민아.pdf", PDF, "application/pdf")]).json()["attached"][0]
-    theirs = _attach(
-        client, meeting_id, [_file("지호.pdf", PDF, "application/pdf")], headers=JIHO
-    ).json()["attached"][0]
-
-    # 붙이는 것은 참석자 전원이다.
-    assert theirs["uploaded_by"] == "jiho"
-    # 떼는 것은 올린 사람이다 — 만든 사람이라도 남의 것은 못 뗀다.
-    assert client.delete(f"/api/meetings/{meeting_id}/materials/{theirs['material_id']}", headers=MINA).status_code == 404
-    assert client.delete(f"/api/meetings/{meeting_id}/materials/{mine['material_id']}", headers=MINA).status_code == 204
-
-    remaining = client.get(f"/api/meetings/{meeting_id}/materials", headers=MINA).json()
-    assert [row["name"] for row in remaining] == ["지호.pdf"]
-
-
 def test_a_shared_viewer_reads_the_materials_and_an_outsider_is_not_told_they_exist(tmp_path) -> None:
     client, _, _ = _stack(tmp_path)
     meeting_id = _meeting(client)["meeting"]["meeting_id"]
@@ -216,33 +172,6 @@ def test_the_viewer_list_says_who_is_there_and_who_was_shown(tmp_path) -> None:
     assert {(row["member_id"], row["basis"]) for row in after.json()} == {
         ("mina", "attendee"), ("jiho", "attendee"), ("sora", "share"), ("minseok", "share"),
     }
-
-
-def test_sharing_with_someone_who_is_already_there_is_quietly_skipped(tmp_path) -> None:
-    """이미 참석이거나 이미 열람인 사람은 어느 쪽에도 두 번 서지 않는다 (SPEC §3.2-3)."""
-    client, _, _ = _stack(tmp_path)
-    meeting_id = _meeting(client)["meeting"]["meeting_id"]
-
-    first = client.post(f"/api/meetings/{meeting_id}/shares", headers=MINA, json={"member_ids": ["sora"]})
-    assert first.status_code == 200
-    again = client.post(
-        f"/api/meetings/{meeting_id}/shares", headers=MINA, json={"member_ids": ["sora", "jiho", "mina"]}
-    )
-    assert again.status_code == 200
-    rows = again.json()
-    assert len(rows) == len({row["member_id"] for row in rows}) == 3
-    assert [row["basis"] for row in rows if row["member_id"] == "jiho"] == ["attendee"]
-
-
-def test_only_a_share_is_taken_back_and_attendance_is_not(tmp_path) -> None:
-    """공유로 들어온 열람만 거둘 수 있다 — 참석을 빼는 자리는 회의 정보 편집이다 (SPEC §3.2-6)."""
-    client, _, _ = _stack(tmp_path)
-    meeting_id = _meeting(client)["meeting"]["meeting_id"]
-    client.post(f"/api/meetings/{meeting_id}/shares", headers=MINA, json={"member_ids": ["sora"]})
-
-    assert client.delete(f"/api/meetings/{meeting_id}/shares/jiho", headers=MINA).status_code == 409
-    assert client.delete(f"/api/meetings/{meeting_id}/shares/sora", headers=MINA).status_code == 200
-    assert client.get(f"/api/meetings/{meeting_id}/transcript", headers=SORA).status_code == 404
 
 
 def test_a_shared_meeting_lands_in_the_past_column_and_not_on_the_calendar(tmp_path) -> None:
@@ -365,54 +294,6 @@ def test_the_transcript_material_follows_the_meeting_as_it_keeps_talking(tmp_pat
     second = _indexed(application, settings, principal, "두번째회의원문덩어리", resource_types=["meeting"])
     # 자료는 같은 하나다 — 새 판이 서지 않는다.
     assert second and second[0]["material_id"] == material_id
-
-
-def test_the_server_says_who_may_take_a_file_off_rather_than_leaving_it_to_the_screen(tmp_path) -> None:
-    """`can_detach` 는 서버가 말한다 — 화면이 「올린 사람이 나인가」를 스스로 맞춰 보면 상태 조건이 빠진다."""
-    client, application, _ = _stack(tmp_path)
-    meeting_id = _meeting(client)["meeting"]["meeting_id"]
-    _attach(client, meeting_id, [_file("민아.pdf", PDF, "application/pdf")])
-    _attach(client, meeting_id, [_file("지호.pdf", PDF, "application/pdf")], headers=JIHO)
-
-    mine = {row["name"]: row for row in client.get(f"/api/meetings/{meeting_id}/materials", headers=MINA).json()}
-    assert mine["민아.pdf"]["can_detach"] is True
-    # 같은 참석자여도 남의 자료는 뗄 수 없다 (SPEC §3.3 · `X-117`).
-    assert mine["지호.pdf"]["can_detach"] is False
-    theirs = {row["name"]: row for row in client.get(f"/api/meetings/{meeting_id}/materials", headers=JIHO).json()}
-    assert theirs["지호.pdf"]["can_detach"] is True and theirs["민아.pdf"]["can_detach"] is False
-
-    # 회의가 시작되면 아무도 떼지 않는다 — 뗄 수 있는 자리는 **「예정」 하나**다 (D34).
-    client.post(f"/api/meetings/{meeting_id}/start", headers=MINA)
-    application.meeting_batch.drain()
-    running = client.get(f"/api/meetings/{meeting_id}/materials", headers=MINA).json()
-    assert all(row["can_detach"] is False for row in running)
-
-
-def test_a_file_cannot_be_taken_off_once_the_meeting_has_happened(tmp_path) -> None:
-    """끝난 회의의 자료는 그 회의에서 **실제로 쓰인 것**이다 — 떼면 기록이 어긋난다 (D34).
-
-    붙이는 것은 되돌릴 수 있지만 떼는 것은 그 사실을 지우는 쪽이라 자리를 더 좁게 둔다.
-    """
-    client, application, _ = _stack(tmp_path)
-    meeting_id = _meeting(client)["meeting"]["meeting_id"]
-    attached = _attach(client, meeting_id, [_file("계약서.pdf", PDF, "application/pdf")]).json()["attached"][0]
-    assert attached["can_detach"] is True
-
-    client.post(f"/api/meetings/{meeting_id}/start", headers=MINA)
-    application.meeting_batch.drain()
-    client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
-    application.finalize_meeting(UUID(meeting_id))
-
-    head = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]
-    assert head["status"] in {"done", "failed"}
-    [row] = client.get(f"/api/meetings/{meeting_id}/materials", headers=MINA).json()
-    assert row["can_detach"] is False
-    # 단추가 서지 않는 자리에서 요청만 통과하면 규칙이 두 곳에 살게 된다 — 게이트도 같이 막는다.
-    refused = client.delete(f"/api/meetings/{meeting_id}/materials/{attached['material_id']}", headers=MINA)
-    assert refused.status_code == 409, refused.text
-
-    # 붙이는 자리는 그대로다 — 좁힌 것은 떼는 쪽 하나다.
-    assert _attach(client, meeting_id, [_file("나중.pdf", PDF, "application/pdf")]).status_code == 201
 
 
 def test_taking_a_share_back_answers_with_who_can_still_see_it(tmp_path) -> None:

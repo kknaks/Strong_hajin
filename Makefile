@@ -23,13 +23,25 @@ PROTECTED_CODEX_BASE ?= node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a046
 PROTECTED_RUNTIME_BASE ?= debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 PROTECTED_EXPECT_CONSTANTS ?= visible
 
-.PHONY: install test test-postgres frontend-test frontend-build frontend-assets verify protected-build protected-inspect postgres-up postgres-down reset-demo reset-catalog sync-demo-schema dataset-import dataset-inspect api conversation-worker material-worker meeting-worker mcp frontend-install frontend storybook storybook-build api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-ax-editable-task e2e-ax-editable-meeting e2e-ax-meeting-draft e2e-assistant-character e2e-assistant-preference e2e-follow-up-continuation e2e-ax-action-draft e2e-ax-action-materials e2e-conversation-report-edit-action e2e-daily-report e2e-material-search e2e-meeting-live-transcript e2e-access-roles e2e-project-participation-history e2e-graph-question local-stack acceptance-e2e live-report-smoke soniox-smoke
+.PHONY: install test test-unit test-contract test-scale test-release test-postgres frontend-test frontend-build frontend-assets verify protected-build protected-inspect postgres-up postgres-down reset-demo reset-catalog sync-demo-schema dataset-import dataset-inspect api conversation-worker material-worker meeting-worker mcp frontend-install frontend storybook storybook-build api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-ax-editable-task e2e-ax-editable-meeting e2e-ax-meeting-draft e2e-assistant-character e2e-assistant-preference e2e-follow-up-continuation e2e-ax-action-draft e2e-ax-action-materials e2e-conversation-report-edit-action e2e-daily-report e2e-material-search e2e-meeting-live-transcript e2e-access-roles e2e-project-participation-history e2e-graph-question local-stack acceptance-e2e live-report-smoke soniox-smoke
 
 install:
 	cd backend && uv sync --all-groups
 
 test:
-	cd backend && uv run pytest -m 'not integration'
+	cd backend && uv run pytest -n auto --dist worksteal
+
+test-unit:
+	cd backend && uv run pytest tests/unit tests/architecture
+
+test-contract:
+	cd backend && uv run pytest tests/contract -n auto --dist worksteal
+
+test-scale:
+	cd backend && uv run pytest -m scale
+
+test-release:
+	cd backend && uv run pytest -m release
 
 test-postgres:
 	@test "$(POSTGRES_TEST_URL)" != "$(DATABASE_URL)" || (echo "POSTGRES_TEST_URL must differ from DATABASE_URL" >&2; exit 2)
@@ -44,7 +56,7 @@ frontend-test:
 frontend-assets:
 	cd frontend && npm run verify:assistant-assets
 
-verify: test frontend-test frontend-assets frontend-build
+verify: test test-scale test-release frontend-test frontend-assets frontend-build
 
 protected-build:
 	docker buildx build --platform "$(PROTECTED_PLATFORM)" --load --tag "$(PROTECTED_IMAGE)" \

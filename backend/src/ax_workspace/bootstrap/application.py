@@ -41,7 +41,7 @@ from ax_workspace.platform.conversations import (
 )
 from ax_workspace.modules.actions.domain import ActionCenterApplication
 from ax_workspace.platform.action_center import action_handlers
-from ax_workspace.platform.actions import SqlAlchemyActionExecutor, SqlAlchemyActionRepository
+from ax_workspace.platform.actions import ActionServices, SqlAlchemyActionExecutor, SqlAlchemyActionRepository
 from ax_workspace.platform.reports import SqlAlchemyDailyReportDraftWorkflow, SqlAlchemyDailyReportRepository
 from ax_workspace.modules.work.materials import MaterialError, MaterialNotFound, TaskMaterialApplication
 from ax_workspace.modules.work.action_materials import ActionMaterialDraftApplication, ActionMaterialError
@@ -1811,6 +1811,7 @@ class WorkflowApplication:
                 session,
                 ConversationJobQueue(self.job_queue(session)),
                 self._settings.conversation_queue_max_fragments,
+                actions=self._action_repository(session),
             )
             conversation = conversations.conversation(conversation_id, str(principal.id))
             if conversation is None:
@@ -2361,6 +2362,7 @@ class WorkflowApplication:
         return ActionCenterApplication(
             action_handlers(
                 session,
+                services=self._action_services(session),
                 evidence_reader=lambda principal, turn_id: self._action_material_evidence(session, principal, turn_id),
                 work_requests=work_requests,
                 actions=self._actions(session, work_requests=work_requests),
@@ -2477,7 +2479,7 @@ class WorkflowApplication:
         decision: str,
     ) -> dict[str, Any]:
         with self._session_factory() as session:
-            action = SqlAlchemyActionRepository(session).action(action_id, str(principal.id))
+            action = self._action_repository(session).action(action_id, str(principal.id))
             # The old chat endpoint remains a compatibility surface. A Task proposal raised under the canonical
             # ledger still goes through its atomic confirm operation, so this route cannot create or assign a Task
             # without the selected Submission and ReviewDecision lineage.
@@ -2495,7 +2497,7 @@ class WorkflowApplication:
                 if command == "confirm":
                     payload["base_submission_version"] = detail["submission_version"]
                 center.execute(principal, str(action_id), command, payload)
-                result = SqlAlchemyActionRepository(session).view(action, principal)
+                result = self._action_repository(session).view(action, principal)
             else:
                 result = self._actions(session).decide(
                     principal,
@@ -2506,12 +2508,31 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def _action_services(self, session: Any) -> ActionServices:
+        """Every delayed dependency remains bound to this transaction's session."""
+        return ActionServices(
+            tasks=lambda: self._tasks(session),
+            assignments=lambda: self._assignments(session),
+            meetings=lambda: self._meetings(session),
+            reports=lambda: self._reports(session),
+            projects=lambda: self._projects(session),
+            organization=lambda: OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
+            action_center=lambda: self._action_center(session),
+        )
+
+    def _action_repository(self, session: Any) -> SqlAlchemyActionRepository:
+        return SqlAlchemyActionRepository(
+            session,
+            services=self._action_services(session),
+            evidence_reader=lambda principal, turn_id: self._action_material_evidence(session, principal, turn_id),
+        )
+
     def _tasks(self, session: Any) -> TaskApplication:
         """Tasks with the request module attached, so a Task's origin can name a requester it is allowed to name."""
         return TaskApplication(
             SqlAlchemyTaskRepository(session),
             SqlAlchemyWorkRequestRepository(session),
-            SqlAlchemyActionRepository(session, evidence_reader=lambda principal, turn_id: self._action_material_evidence(session, principal, turn_id)),
+            self._action_repository(session),
             SqlAlchemyAttachmentRepository(session),
             SqlAlchemyOrganizationRepository(session),
             self._projects(session),
@@ -2538,8 +2559,7 @@ class WorkflowApplication:
                 session,
                 ConversationJobQueue(self.job_queue(session)),
                 self._settings.conversation_queue_max_fragments,
-                evidence_reader=lambda principal, turn_id: self._action_material_evidence(session, principal, turn_id),
-                work_requests=self._work_requests(session),
+                actions=self._action_repository(session),
             ),
             SqlAlchemyConversationContextResolver(session),
             _SessionAnswerResources(self, session),
@@ -2563,17 +2583,12 @@ class WorkflowApplication:
     ) -> ActionApplication:
         work_requests = work_requests or self._work_requests(session)
         return ActionApplication(
-            SqlAlchemyActionRepository(
-                session,
-                evidence_reader=lambda principal, turn_id: self._action_material_evidence(session, principal, turn_id),
-                work_requests=work_requests,
-            ),
+            self._action_repository(session),
             SqlAlchemyActionExecutor(
                 session,
-                self._report_provider,
                 self._action_materials(session),
+                services=self._action_services(session),
                 work_requests=work_requests,
-                evidence_reader=lambda principal, turn_id: self._action_material_evidence(session, principal, turn_id),
             ),
         )
 

@@ -43,6 +43,33 @@ STATUS_DISCARDED = "discarded"
 DEFAULT_TOOL_REGISTRY: tuple[str, ...] = ("task_list", "project_list", "meeting_get", "member_list")
 
 
+@dataclass(frozen=True, slots=True)
+class BatchTriggerContext:
+    cause: str
+    pending_chars: int
+    chars: int = BATCH_CHARS
+    switch_min_chars: int = BATCH_SWITCH_MIN_CHARS
+
+
+@dataclass(frozen=True, slots=True)
+class BatchTriggerDecision:
+    fire: bool
+    arm_timer: bool
+
+
+def decide_batch_trigger(context: BatchTriggerContext) -> BatchTriggerDecision:
+    """Decide whether pending speech fires a batch or arms its timer, without I/O."""
+    if context.cause == CAUSE_TRANSCRIPT:
+        fire = context.pending_chars >= context.chars
+    elif context.cause == CAUSE_AGENDA_SWITCH:
+        fire = context.pending_chars >= context.switch_min_chars
+    elif context.cause == CAUSE_TIMER:
+        fire = context.pending_chars > 0
+    else:
+        raise ValueError(f"알 수 없는 트리거: {context.cause}")
+    return BatchTriggerDecision(fire=fire, arm_timer=context.pending_chars > 0 and not fire)
+
+
 class SchemaViolation(Exception):
     """검증 1단 실패 — 배치 전체 폐기. 직전 성공분은 그대로 남는다."""
 

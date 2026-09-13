@@ -19,18 +19,33 @@ from ax_workspace.modules.meetings.domain import (
     MeetingNotFound,
     MeetingStateConflict,
     MeetingStatus,
-    MeetingVersionConflict,
     AI_AGENDA_SOURCE,
     ensure_agenda_capacity,
     ensure_agenda_source,
-    ensure_info_editable,
     ensure_transition,
-    is_auto_cancel_released,
-    is_auto_cancellable,
+    normalize_agenda_order,
     normalize_agenda_title,
+    normalize_external_attendees,
+    normalize_optional_text,
     parse_status,
+    validate_meeting_schedule,
 )
 from ax_workspace.modules.meetings.finalize import describe_day
+from ax_workspace.modules.meetings.policy import (
+    MeetingActorContext,
+    MeetingView,
+    MeetingViewContext,
+    ensure_share_revocable,
+    ensure_todo_actionable,
+    is_meeting_past,
+    needs_auto_settlement,
+    normalize_memo_text,
+    normalize_note_lines,
+    auto_settled_status,
+    meeting_attendees,
+    new_share_targets,
+    project_meeting_view,
+)
 from ax_workspace.modules.meetings.retranscribe import Recording
 from ax_workspace.modules.meetings.rooms import Attendee, RoomReservation, headcount
 from ax_workspace.modules.meetings.stream_service import MeetingAdmission
@@ -41,20 +56,6 @@ PAST_PAGE_SIZE = 20
 QUICK_START_LENGTH = timedelta(hours=1)
 # 바로 시작한 회의가 갖고 서는 기본 안건. 사람이 이름을 고쳐 쓸 자리이지 AI 가 세운 자리가 아니다 (D32).
 QUICK_START_AGENDA_TITLE = "안건 1"
-_PAST_STATUSES = frozenset({MeetingStatus.DONE, MeetingStatus.FAILED, MeetingStatus.CANCELLED})
-_INFO_EDITABLE = frozenset({MeetingStatus.SCHEDULED, MeetingStatus.DONE})
-# 회의록 **줄** 편집이 열리는 상태 — 「예정」·「진행 중」·「정리 중」에는 열리지 않는다 (SPEC §5.1).
-_NOTE_EDITABLE = frozenset({MeetingStatus.DONE, MeetingStatus.FAILED, MeetingStatus.CANCELLED})
-# **안건** 편집(제목 고치기·지우기·결론 표시)이 열리는 상태 — 진행 중·정리 중을 뺀 넷.
-# 회의가 도는 동안 이미 선 안건을 사람이 손대면 그 안건을 딛고 있던 메모와 AI 줄이 발밑에서 바뀐다
-# (SPEC §4.1-5·6 · 시안 `SCR-106-E77`·`E35`·`E71`). 줄 편집과 다른 집합이므로 상수를 따로 둔다.
-_AGENDA_EDITABLE = frozenset(
-    {MeetingStatus.SCHEDULED, MeetingStatus.DONE, MeetingStatus.FAILED, MeetingStatus.CANCELLED}
-)
-# **안건 세우기**는 한 자리가 더 열린다 — 「진행 중」 (사용자 결정 D45, 2026-09-11).
-# 말이 새 주제로 넘어가는 순간이 곧 안건이 필요한 순간이라, 회의가 끝나기를 기다리게 하면 그 메모가
-# 엉뚱한 안건에 붙는다. **더하는 것만** 열린다: 새 안건은 아직 아무것도 딛고 있지 않아 안전하다.
-_AGENDA_ADDABLE = _AGENDA_EDITABLE | {MeetingStatus.IN_PROGRESS}
 
 MEETING_READ = "meeting.read"
 MEETING_READ_PRIVATE = "meeting.read.private"
@@ -213,8 +214,8 @@ class MeetingApplication:
         organization_id = organization_id or self._repository.primary_organization(str(principal.id))
         if organization_id is None or organization_id not in principal.organization_scope:
             raise MeetingAccessDenied("meeting organization is outside the principal scope")
-        clean_title = _optional_text(title, "meeting title", 300)
-        self._validate_schedule(starts_at, ends_at)
+        clean_title = normalize_optional_text(title, label="meeting title", limit=300)
+        validate_meeting_schedule(starts_at, ends_at)
         attendees = self._resolved_attendees(principal, attendee_ids or [])
         carried = self._carried_source(principal, carried_from_meeting_id)
         drafts = [normalize_agenda_title(row.get("title")) for row in (agendas or [])]
@@ -223,13 +224,13 @@ class MeetingApplication:
             organization_id=organization_id,
             owner_id=str(principal.id),
             title=clean_title,
-            purpose=_optional_text(purpose, "meeting purpose", 1000),
+            purpose=normalize_optional_text(purpose, label="meeting purpose", limit=1000),
             starts_at=starts_at,
             ends_at=ends_at,
-            location=_optional_text(location, "meeting location", 300),
+            location=normalize_optional_text(location, label="meeting location", limit=300),
             status=MeetingStatus.SCHEDULED.value,
             attendee_ids=attendees,
-            external_attendees=_external_names(external_attendees or []),
+            external_attendees=list(normalize_external_attendees(external_attendees or [])),
             carried_from_meeting_id=carried,
         )
         source = "carried" if carried is not None else "manual"
@@ -273,28 +274,32 @@ class MeetingApplication:
         """회의 정보 편집 — 제목·일시·장소·참석자. 「예정」·「완료」에서만, 참석자 전원이 (SPEC §3.1-7 · §3.3)."""
         self._require(principal, MEETING_MANAGE)
         meeting = self._readable(principal, meeting_id, lock=True)
-        if not self._is_attendee(principal, meeting):
+        view = self._view_plan(principal, meeting)
+        if not view.is_attendee:
             raise MeetingAccessDenied("only an attendee may edit this meeting's information")
         unknown = set(changes) - {"title", "purpose", "starts_at", "ends_at", "location", "attendee_ids", "external_attendees"}
         if unknown:
             raise MeetingError(f"unsupported meeting fields: {sorted(unknown)}")
-        ensure_info_editable(meeting.status)
+        if not view.can_edit_info:
+            raise MeetingStateConflict("meeting information may be edited only while scheduled or done")
         starts_at = _aware(changes.get("starts_at") or meeting.starts_at)
         ends_at = _aware(changes.get("ends_at") or meeting.ends_at)
-        self._validate_schedule(starts_at, ends_at)
+        validate_meeting_schedule(starts_at, ends_at)
         if "title" in changes:
-            meeting.title = _optional_text(changes["title"], "meeting title", 300)
+            meeting.title = normalize_optional_text(changes["title"], label="meeting title", limit=300)
         if "purpose" in changes:
-            meeting.purpose = _optional_text(changes["purpose"], "meeting purpose", 1000)
+            meeting.purpose = normalize_optional_text(changes["purpose"], label="meeting purpose", limit=1000)
         if "location" in changes:
-            meeting.location = _optional_text(changes["location"], "meeting location", 300)
+            meeting.location = normalize_optional_text(changes["location"], label="meeting location", limit=300)
         meeting.starts_at = starts_at
         meeting.ends_at = ends_at
         if "attendee_ids" in changes:
             attendees = self._resolved_attendees(principal, list(changes["attendee_ids"] or []), owner_id=meeting.owner_id)
             self._repository.replace_attendees(meeting, attendees, str(principal.id))
         if "external_attendees" in changes:
-            meeting.external_attendees = _external_names(list(changes["external_attendees"] or []))
+            meeting.external_attendees = list(
+                normalize_external_attendees(list(changes["external_attendees"] or []))
+            )
         before = meeting.version
         meeting.version += 1
         self._repository.touch(meeting)
@@ -305,7 +310,7 @@ class MeetingApplication:
         """[회의 취소] — 회의 자체를 취소한다. 회의록·안건·자료가 함께 사라진다 (SPEC §3.1-9)."""
         self._require(principal, MEETING_MANAGE)
         meeting = self._readable(principal, meeting_id, lock=True)
-        if not self._is_attendee(principal, meeting):
+        if not self._view_plan(principal, meeting).is_attendee:
             raise MeetingAccessDenied("only an attendee may cancel this meeting")
         meeting.status = ensure_transition(meeting.status, MeetingStatus.CANCELLED).value
         for agenda in self._repository.agendas(meeting):
@@ -319,7 +324,8 @@ class MeetingApplication:
         """[회의록만 삭제] — 회의록과 자료를 지우고 회의 예약은 남긴다 (SPEC §3.1-9)."""
         self._require(principal, MEETING_MANAGE)
         meeting = self._readable(principal, meeting_id, lock=True)
-        if not self._is_attendee(principal, meeting):
+        view = self._view_plan(principal, meeting)
+        if not view.is_attendee:
             raise MeetingAccessDenied("only an attendee may delete this meeting note")
         if parse_status(meeting.status) is not MeetingStatus.SCHEDULED:
             raise MeetingStateConflict("a meeting note may be deleted only while the meeting is scheduled")
@@ -331,7 +337,7 @@ class MeetingApplication:
         """[회의 시작]. 취소된 회의를 시작하면 자동 취소가 먼저 풀린다 (SPEC §5.1 취소됨 행)."""
         self._require(principal, MEETING_MANAGE)
         meeting = self._readable(principal, meeting_id, lock=True)
-        if not self._is_attendee(principal, meeting):
+        if not self._view_plan(principal, meeting).is_attendee:
             raise MeetingAccessDenied("only an attendee may start this meeting")
         if parse_status(meeting.status) is MeetingStatus.CANCELLED:
             meeting.status = ensure_transition(meeting.status, MeetingStatus.SCHEDULED).value
@@ -349,7 +355,7 @@ class MeetingApplication:
         """
         self._require(principal, MEETING_MANAGE)
         meeting = self._readable(principal, meeting_id, lock=True)
-        if not self._is_attendee(principal, meeting):
+        if not self._view_plan(principal, meeting).is_attendee:
             raise MeetingAccessDenied("only an attendee may end this meeting")
         meeting.status = ensure_transition(meeting.status, MeetingStatus.SUMMARIZING).value
         self._repository.touch(meeting)
@@ -364,15 +370,12 @@ class MeetingApplication:
         """
         self._require(principal, MEETING_MANAGE)
         meeting = self._readable(principal, meeting_id, lock=True)
-        if str(principal.id) != meeting.owner_id:
+        view = self._view_plan(principal, meeting)
+        if not view.is_owner:
             raise MeetingAccessDenied("only the person who made this meeting may write its memo lines")
-        if parse_status(meeting.status) is not MeetingStatus.IN_PROGRESS:
+        if not view.can_write_memo:
             raise MeetingStateConflict("memo lines are written only while the meeting is running")
-        body = str(text or "").strip()
-        if not body:
-            raise MeetingError("a memo line needs text")
-        if len(body) > 2000:
-            raise MeetingError("a memo line must be at most 2000 characters")
+        body = normalize_memo_text(text)
         agenda = self._repository.agenda(meeting, agenda_id)
         if agenda is None:
             raise MeetingNotFound("meeting agenda was not found")
@@ -616,10 +619,11 @@ class MeetingApplication:
         todo = self._repository.todo(meeting, todo_id, lock=True)
         if todo is None:
             raise MeetingNotFound("meeting follow-up candidate was not found")
-        _ensure_settled(todo)
-        if todo.linked_work_request_id is not None:
-            # 같은 후보를 반복 승격해도 중복 업무를 만들지 않는다 (SPEC-004 §9-10).
-            raise MeetingStateConflict("this follow-up candidate has already been requested")
+        ensure_todo_actionable(
+            provisional=bool(getattr(todo, "provisional", False)),
+            linked_work_request_id=todo.linked_work_request_id,
+            action="promote",
+        )
         return meeting, todo
 
     def attendee_ids(self, meeting: Any) -> set[str]:
@@ -639,10 +643,11 @@ class MeetingApplication:
         todo = self._repository.todo(meeting, todo_id, lock=True)
         if todo is None:
             raise MeetingNotFound("meeting follow-up candidate was not found")
-        _ensure_settled(todo)
-        if todo.linked_work_request_id is not None:
-            # 승격된 후보는 목록에 남는다 — 지우는 자리가 아니다 (SPEC-004 §9-6).
-            raise MeetingStateConflict("a requested follow-up candidate is not deleted")
+        ensure_todo_actionable(
+            provisional=bool(getattr(todo, "provisional", False)),
+            linked_work_request_id=todo.linked_work_request_id,
+            action="delete",
+        )
         self._repository.delete_todo(todo)
 
     def export(self, principal: Principal, meeting_id: UUID) -> dict[str, Any]:
@@ -718,9 +723,7 @@ class MeetingApplication:
             self._repository.shared_member_ids(meeting)
         )
         opened = 0
-        for member_id in _distinct(member_ids):
-            if member_id in already:
-                continue
+        for member_id in new_share_targets(member_ids, existing_member_ids=already):
             if not self._repository.is_active_member(member_id):
                 raise MeetingError("share target is not an active member")
             self._repository.add_share(meeting, member_id, str(principal.id))
@@ -749,9 +752,10 @@ class MeetingApplication:
         meeting = self._readable(principal, meeting_id, lock=True)
         if not self._is_attendee(principal, meeting):
             raise MeetingAccessDenied("only an attendee may revoke a share on this meeting")
-        if member_id in (self._repository.attendee_ids(meeting) | {meeting.owner_id}):
-            # 공유로 들어온 열람만 거둘 수 있다 — 참석을 빼는 자리는 회의 정보 편집이다 (SPEC-004 §3.2-6).
-            raise MeetingStateConflict("attendance is not revoked here; edit the meeting information instead")
+        ensure_share_revocable(
+            member_id,
+            attendee_ids=self._repository.attendee_ids(meeting) | {meeting.owner_id},
+        )
         if not self._repository.revoke_share(meeting, member_id):
             raise MeetingNotFound("meeting share was not found")
         self._repository.touch(meeting)
@@ -795,7 +799,7 @@ class MeetingApplication:
         if "concluded" in changes:
             agenda.concluded = bool(changes["concluded"])
         if "order" in changes:
-            agenda.order_index = _positive_order(changes["order"])
+            agenda.order_index = normalize_agenda_order(changes["order"])
         if "lines" in changes:
             self._rewrite_note_lines(principal, meeting, agenda, changes["lines"])
         self._repository.touch_agenda(agenda)
@@ -808,18 +812,9 @@ class MeetingApplication:
         판을 쌓지 않는다 — 이 안건의 합성 트랙 줄 목록을 통째로 덮어쓰고 마지막 저장분이 그 회의록이다.
         빈 줄은 저장할 때 버린다.
         """
-        if parse_status(meeting.status) not in _NOTE_EDITABLE:
+        if not self._view_plan(principal, meeting).can_edit_note:
             raise MeetingStateConflict("meeting note lines may be edited only after the meeting is done or failed")
-        if not isinstance(lines, (list, tuple)):
-            raise MeetingError("agenda lines must be a list of sentences")
-        texts = []
-        for value in lines:
-            text = str(value or "").strip()
-            if not text:
-                continue
-            if len(text) > 2000:
-                raise MeetingError("a note line must be at most 2000 characters")
-            texts.append(text)
+        texts = normalize_note_lines(lines)
         self._repository.replace_lines(agenda, track="final", texts=texts, author_id=str(principal.id))
         meeting.last_saved_at = datetime.now(UTC)
         # 회의록을 쓰면 자동 취소가 풀린다 — 마지막 줄을 지우면 다시 걸린다 (SPEC §3.1-8).
@@ -1097,10 +1092,11 @@ class MeetingApplication:
         """
         self._require(principal, MEETING_MANAGE)
         meeting = self._readable(principal, meeting_id, lock=True)
-        if str(principal.id) != meeting.owner_id:
+        view = self._view_plan(principal, meeting)
+        if not view.is_owner:
             raise MeetingAccessDenied("only the person who made this meeting may change its agendas")
-        allowed = _AGENDA_ADDABLE if adding else _AGENDA_EDITABLE
-        if parse_status(meeting.status) not in allowed:
+        allowed = view.can_add_agenda if adding else view.can_edit_agendas
+        if not allowed:
             raise MeetingStateConflict("agendas are not edited by hand while the meeting is running or summarizing")
         return meeting
 
@@ -1110,12 +1106,7 @@ class MeetingApplication:
         축은 둘뿐이다 — 조직 범위로 남의 회의를 여는 셋째 축은 두지 않는다. 대표라도 참석하거나 공유받지 않은
         회의는 없는 것처럼 응답한다. 캘린더의 시간 덩어리는 회의를 여는 것이 아니므로 `list`가 따로 판정한다.
         """
-        if MEETING_READ not in principal.capabilities:
-            return False
-        member_id = str(principal.id)
-        if member_id == meeting.owner_id or member_id in self._repository.attendee_ids(meeting):
-            return True
-        return self._repository.is_shared_with(meeting, member_id)
+        return self._view_plan(principal, meeting).detail_readable
 
     def _can_read_calendar_detail(self, principal: Principal, meeting: Any) -> bool:
         """캘린더가 시간 덩어리 대신 제목까지 낼 수 있는가.
@@ -1123,46 +1114,72 @@ class MeetingApplication:
         전체 조회 권한(`meeting.read.private`)이 조직 범위 안에서만 닿는 자리는 여기 하나로 남긴다 — 회의 화면의
         열람 경계(§3.2)와 캘린더의 투영은 다른 물음이다.
         """
-        if self._can_read_detail(principal, meeting):
-            return True
-        return (
-            MEETING_READ in principal.capabilities
-            and MEETING_READ_PRIVATE in principal.capabilities
-            and meeting.organization_id in principal.organization_scope
-        )
+        return self._view_plan(principal, meeting).calendar_detail_readable
 
     def _is_attendee(self, principal: Principal, meeting: Any) -> bool:
-        member_id = str(principal.id)
-        return member_id == meeting.owner_id or member_id in self._repository.attendee_ids(meeting)
+        return self._view_plan(principal, meeting).is_attendee
 
     def _viewer_relation(self, principal: Principal, meeting: Any) -> str:
-        return "attendee" if self._is_attendee(principal, meeting) else "shared"
+        return self._view_plan(principal, meeting).relation
 
     def _is_past(self, meeting: Any, viewer_relation: str) -> bool:
         """공유받은 회의는 「지난」에 담긴다 — 캘린더에 서지 않는다 (SPEC §3.2-5)."""
-        if viewer_relation == "shared":
-            return True
-        if parse_status(meeting.status) in _PAST_STATUSES:
-            return True
-        return _aware(meeting.ends_at) <= datetime.now(UTC)
+        return is_meeting_past(
+            meeting.status,
+            ends_at=_aware(meeting.ends_at),
+            relation=viewer_relation,
+            now=datetime.now(UTC),
+        )
+
+    def _view_plan(
+        self,
+        principal: Principal,
+        meeting: Any,
+        *,
+        attendee_ids: set[str] | None = None,
+    ) -> MeetingView:
+        attendees = attendee_ids if attendee_ids is not None else self._repository.attendee_ids(meeting)
+        member_id = str(principal.id)
+        shared = (
+            frozenset()
+            if member_id == str(meeting.owner_id) or member_id in attendees
+            else frozenset(self._repository.shared_member_ids(meeting))
+        )
+        return project_meeting_view(
+            MeetingViewContext(
+                status=meeting.status,
+                owner_id=str(meeting.owner_id),
+                organization_id=str(meeting.organization_id),
+                attendee_ids=frozenset(attendees),
+                shared_member_ids=shared,
+                ends_at=_aware(meeting.ends_at),
+            ),
+            MeetingActorContext(
+                member_id=member_id,
+                can_read=MEETING_READ in principal.capabilities,
+                can_read_private=MEETING_READ_PRIVATE in principal.capabilities,
+                organization_scope=frozenset(principal.organization_scope),
+            ),
+            now=datetime.now(UTC),
+        )
 
     def _settle_auto_cancel(self, meeting: Any) -> None:
         """자동 취소는 스케줄러 없이 조회 시점에 판정한다 — 판정과 해제가 같은 자리에 있다 (WP-001 Open Issue).
 
         종료 시각까지 줄이 하나도 없이 지난 「예정」은 「취소됨」이 되고, 줄이 생기면 도로 「예정」이 된다.
         """
-        status = parse_status(meeting.status)
-        if status not in {MeetingStatus.SCHEDULED, MeetingStatus.CANCELLED}:
+        if not needs_auto_settlement(meeting.status):
             return
         has_record = self._repository.line_count(meeting) > 0
-        now = datetime.now(UTC)
-        if is_auto_cancellable(
-            status, _aware(meeting.ends_at), now, has_record=has_record, created_at=_aware(meeting.created_at)
-        ):
-            meeting.status = MeetingStatus.CANCELLED.value
-            self._repository.touch(meeting)
-        elif is_auto_cancel_released(status, has_record=has_record):
-            meeting.status = MeetingStatus.SCHEDULED.value
+        settled = auto_settled_status(
+            meeting.status,
+            ends_at=_aware(meeting.ends_at),
+            created_at=_aware(meeting.created_at),
+            has_record=has_record,
+            now=datetime.now(UTC),
+        )
+        if settled is not parse_status(meeting.status):
+            meeting.status = settled.value
             self._repository.touch(meeting)
 
     def _create_agenda(
@@ -1180,7 +1197,12 @@ class MeetingApplication:
 
     def _resolved_attendees(self, principal: Principal, attendee_ids: list[str], *, owner_id: str | None = None) -> list[str]:
         """회의를 만든 사람은 언제나 참석자다 — 자기 회의를 목록에서 잃지 않는다."""
-        wanted = _distinct([*(attendee_ids or []), owner_id or str(principal.id)])
+        wanted = list(
+            meeting_attendees(
+                attendee_ids or [],
+                owner_id=owner_id or str(principal.id),
+            )
+        )
         for member_id in wanted:
             if not self._repository.is_active_member(member_id):
                 raise MeetingError("attendee is not an active member")
@@ -1224,8 +1246,8 @@ class MeetingApplication:
 
     def _detail(self, principal: Principal, meeting: Any) -> dict[str, Any]:
         attendee_ids = sorted(self._repository.attendee_ids(meeting))
-        relation = self._viewer_relation(principal, meeting)
-        status = parse_status(meeting.status)
+        view = self._view_plan(principal, meeting, attendee_ids=set(attendee_ids))
+        relation = view.relation
         lines = self._grouped_lines(meeting)
         todos = self._grouped_todos(meeting)
         return {
@@ -1246,13 +1268,13 @@ class MeetingApplication:
                 "viewer_relation": relation,
                 # 회의 정보는 참석자 전원이, 회의록 줄과 안건은 만든 사람 하나가 고친다 (SPEC §3.3).
                 # 줄과 안건은 열리는 상태가 다르다 — 「예정」은 안건만, 「완료」·「실패」는 둘 다 연다.
-                "can_edit_info": relation == "attendee" and status in _INFO_EDITABLE,
-                "can_edit_note": str(principal.id) == meeting.owner_id and status in _NOTE_EDITABLE,
-                "can_edit_agendas": str(principal.id) == meeting.owner_id and status in _AGENDA_EDITABLE,
+                "can_edit_info": view.can_edit_info,
+                "can_edit_note": view.can_edit_note,
+                "can_edit_agendas": view.can_edit_agendas,
                 # 「+ 새 안건」이 서는 자리 — 편집보다 한 자리 넓다(진행 중에도 세운다, D45).
-                "can_add_agenda": str(principal.id) == meeting.owner_id and status in _AGENDA_ADDABLE,
+                "can_add_agenda": view.can_add_agenda,
                 # 메모는 회의를 만든 사람이 「진행 중」에만 쓴다 (SPEC-004 §6-1·2). 화면이 이 값으로 입력 칸을 세운다.
-                "can_write_memo": str(principal.id) == meeting.owner_id and status is MeetingStatus.IN_PROGRESS,
+                "can_write_memo": view.can_write_memo,
                 "last_saved_at": _iso(meeting.last_saved_at),
                 # `at_ms` 의 기준점. 예정 시각이 아니라 「진행 중」으로 옮긴 실제 시각이다.
                 "started_at": _iso(meeting.started_at),
@@ -1298,7 +1320,7 @@ class MeetingApplication:
             )
             for member_id in inside_ids
         ]
-        outside = _external_names(list(external_attendees or []))
+        outside = list(normalize_external_attendees(list(external_attendees or [])))
         return {
             "title": title,
             "starts_at": _aware(starts_at),
@@ -1424,72 +1446,11 @@ class MeetingApplication:
         if capability not in principal.capabilities:
             raise MeetingAccessDenied(f"{capability} capability is required")
 
-    @staticmethod
-    def _validate_schedule(starts_at: datetime, ends_at: datetime) -> None:
-        """제목은 없을 수 있다 — 바로 시작한 회의는 제목 없이 선다. 일시는 없을 수 없다."""
-        if not isinstance(starts_at, datetime) or not isinstance(ends_at, datetime):
-            raise MeetingError("meeting start and end are required")
-        if starts_at.tzinfo is None or ends_at.tzinfo is None:
-            raise MeetingError("meeting times must include a timezone")
-        if starts_at >= ends_at:
-            raise MeetingError("meeting start must be before end")
-
-
 def _iso(value: datetime | None) -> str | None:
     if value is None:
         return None
     # SQLite drops timezone offsets in fast contract tests; public meeting transport is always UTC.
     return (value if value.tzinfo is not None else value.replace(tzinfo=UTC)).isoformat()
-
-
-def _distinct(values: list[str]) -> list[str]:
-    return list(dict.fromkeys(value.strip() for value in values if value.strip()))
-
-
-def _optional_text(value: object, label: str, limit: int) -> str | None:
-    """빈 글자와 없는 값을 같게 다룬다 — 화면의 빈 칸이 곧 「없음」이다."""
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    if len(text) > limit:
-        raise MeetingError(f"{label} must be at most {limit} characters")
-    return text
-
-
-def _ensure_settled(todo: Any) -> None:
-    """회의 중 후보는 **손대지 않는다** (D46) — 승격도 삭제도 받지 않는다.
-
-    다음 배치가 그 후보를 지우고 다시 낼 수 있어서다: 방금 업무로 만든 후보가 한 회차 뒤에 없어지면
-    회의록과 업무의 계보가 끊긴다. 회의가 끝나면 최종이 같은 자리를 확정 후보로 다시 채운다.
-    """
-    if getattr(todo, "provisional", False):
-        raise MeetingStateConflict("todo_provisional")
-
-
-def _external_names(values: list[object]) -> list[str]:
-    """사외 참석자는 이름 글자뿐이다 — 계정을 만들지 않는다 (SPEC §3.1-5)."""
-    names: list[str] = []
-    for value in values:
-        name = str(value or "").strip()
-        if not name:
-            continue
-        if len(name) > 100:
-            raise MeetingError("external attendee name must be at most 100 characters")
-        if name not in names:
-            names.append(name)
-    return names
-
-
-def _positive_order(value: object) -> int:
-    try:
-        order = int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError) as error:
-        raise MeetingError("agenda order must be a whole number") from error
-    if order < 1:
-        raise MeetingError("agenda order starts at 1")
-    return order
 
 
 def _aware(value: datetime) -> datetime:

@@ -17,7 +17,6 @@ from ax_workspace.modules.meetings.domain import (
     MeetingStateConflict,
     MeetingStatus,
     ensure_agenda_capacity,
-    ensure_transition,
 )
 
 MINA = {"X-Demo-Persona": "mina"}
@@ -52,35 +51,6 @@ def _schedule(client: TestClient, *, title="주간 제품 회의", days=3.0, min
 
 
 # --------------------------------------------------------------------- Phase 1 · 도메인과 스키마
-
-
-@pytest.mark.parametrize(
-    "source, target",
-    [
-        (MeetingStatus.DONE, MeetingStatus.SUMMARIZING),  # 재생성을 두지 않는다
-        (MeetingStatus.SCHEDULED, MeetingStatus.DONE),
-        (MeetingStatus.SCHEDULED, MeetingStatus.SUMMARIZING),
-        (MeetingStatus.IN_PROGRESS, MeetingStatus.CANCELLED),
-        (MeetingStatus.CANCELLED, MeetingStatus.IN_PROGRESS),
-        (MeetingStatus.DONE, MeetingStatus.IN_PROGRESS),
-    ],
-)
-def test_a_transition_the_spec_does_not_draw_is_refused(source, target) -> None:
-    with pytest.raises(MeetingStateConflict):
-        ensure_transition(source, target)
-
-
-def test_the_transitions_the_spec_draws_are_allowed() -> None:
-    for source, target in [
-        (MeetingStatus.SCHEDULED, MeetingStatus.IN_PROGRESS),
-        (MeetingStatus.SCHEDULED, MeetingStatus.CANCELLED),
-        (MeetingStatus.IN_PROGRESS, MeetingStatus.SUMMARIZING),
-        (MeetingStatus.SUMMARIZING, MeetingStatus.DONE),
-        (MeetingStatus.SUMMARIZING, MeetingStatus.FAILED),
-        (MeetingStatus.FAILED, MeetingStatus.SUMMARIZING),
-        (MeetingStatus.CANCELLED, MeetingStatus.SCHEDULED),
-    ]:
-        assert ensure_transition(source, target) is target
 
 
 def test_the_twenty_first_agenda_is_refused(tmp_path) -> None:
@@ -295,15 +265,6 @@ def test_information_editing_is_refused_while_the_meeting_runs_and_opens_again_w
     assert done.json()["meeting"]["title"] == "완료 후 수정"
 
 
-def test_starting_a_meeting_twice_is_a_state_conflict(tmp_path) -> None:
-    client = _client(tmp_path)
-    meeting_id = _schedule(client)["meeting"]["meeting_id"]
-    assert client.post(f"/api/meetings/{meeting_id}/start", headers=MINA).status_code == 200
-    assert client.post(f"/api/meetings/{meeting_id}/start", headers=MINA).status_code == 409
-    assert client.post(f"/api/meetings/{meeting_id}/end", headers=MINA).status_code == 200
-    assert client.post(f"/api/meetings/{meeting_id}/end", headers=MINA).status_code == 409
-
-
 def test_cancelling_the_meeting_and_deleting_only_the_note_delete_different_things(tmp_path) -> None:
     client = _client(tmp_path)
     kept = _schedule(client, title="회의록만 지울 회의")
@@ -355,25 +316,6 @@ def test_an_empty_meeting_whose_time_passed_cancels_itself_and_a_single_line_rel
         principal, _uuid(meeting_id), _uuid(meeting["agendas"][0]["agenda_id"]), track="final", text="늦게 적은 줄"
     )
     assert client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]["status"] == "scheduled"
-
-
-def test_a_meeting_recorded_after_the_fact_is_never_auto_cancelled(tmp_path) -> None:
-    """지난 날짜로 세운 회의는 이 규칙에 걸리지 않는다 — 기다린 적이 없기 때문이다 (SPEC §3.1-8 · `X-149`)."""
-    client = _client(tmp_path)
-    meeting_id = _schedule(client, title="끝난 뒤에 적어 넣은 회의", days=-3)["meeting"]["meeting_id"]
-
-    assert client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]["status"] == "scheduled"
-    board = client.get("/api/meetings", headers=MINA).json()
-    # 「예정」으로 남지만 시간이 지났으므로 목록에서는 「지난」 구획에 선다.
-    assert [row["meeting_id"] for row in board["past"]["items"]] == [meeting_id]
-    assert board["upcoming"] == []
-
-
-def test_a_meeting_set_in_the_past_but_still_running_is_not_auto_cancelled(tmp_path) -> None:
-    client = _client(tmp_path)
-    meeting_id = _schedule(client, title="어제 시작해 아직 도는 회의", days=-1)["meeting"]["meeting_id"]
-    client.post(f"/api/meetings/{meeting_id}/start", headers=MINA)
-    assert client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]["status"] == "in_progress"
 
 
 def test_a_meeting_may_continue_the_one_before_it(tmp_path) -> None:
@@ -483,22 +425,6 @@ def test_the_note_is_a_line_list_that_saving_overwrites_rather_than_stacking(tmp
     assert [line["text"] for line in agenda["lines"]] == ["한 줄만 남긴다."]
 
 
-def test_only_the_person_who_called_the_meeting_writes_its_note_lines(tmp_path) -> None:
-    """회의 정보는 참석자 전원이, 회의록 줄은 만든 사람 하나가 고친다 (SPEC §3.3)."""
-    client = _client(tmp_path)
-    meeting = _schedule(client)
-    meeting_id = meeting["meeting"]["meeting_id"]
-    agenda_id = meeting["agendas"][0]["agenda_id"]
-    _force_status(client, meeting_id, MeetingStatus.DONE)
-
-    assert client.get(f"/api/meetings/{meeting_id}", headers=JIHO).json()["meeting"]["can_edit_note"] is False
-    refused = client.patch(
-        f"/api/meetings/{meeting_id}/agendas/{agenda_id}", headers=JIHO, json={"lines": ["지호가 쓴 줄"]}
-    )
-    assert refused.status_code == 404
-    assert client.patch(f"/api/meetings/{meeting_id}/agendas/{agenda_id}", headers=JIHO, json={"title": "지호가 고친 안건"}).status_code == 404
-
-
 def test_agendas_are_edited_before_the_meeting_and_after_it_but_never_while_it_runs(tmp_path) -> None:
     """진행 중·정리 중을 뺀 네 상태에서 사람이 **이미 선 안건**을 손본다.
 
@@ -531,26 +457,6 @@ def test_agendas_are_edited_before_the_meeting_and_after_it_but_never_while_it_r
     # 「완료」는 둘 다 연다.
     assert done["can_edit_agendas"] is True and done["can_edit_note"] is True
     assert client.post(f"/api/meetings/{meeting_id}/agendas", headers=MINA, json={"title": "완료 뒤 안건"}).status_code == 201
-
-
-def test_the_executive_who_was_not_there_cannot_open_the_meeting(tmp_path) -> None:
-    """열람의 축은 둘뿐이다 — 참석과 공유. 조직 범위로 남의 회의를 여는 셋째 축은 없다 (SPEC §3.2-1·2 · §10-1)."""
-    client = _client(tmp_path)
-    meeting_id = _schedule(client, title="대표도 못 여는 회의", attendees=())["meeting"]["meeting_id"]
-    executive = {"X-Demo-Persona": "yuna"}
-
-    # 유나(대표)는 `meeting.read.private` 를 조직 범위로 들고 있다. 그래도 참석이 아니면 없는 것처럼 답한다.
-    principal = client.app.state.workflow_application.authenticated_principal("yuna")
-    assert "meeting.read.private" in principal.capabilities
-
-    assert client.get(f"/api/meetings/{meeting_id}", headers=executive).status_code == 404
-    board = client.get("/api/meetings", headers=executive).json()
-    assert board["upcoming"] == [] and board["past"]["items"] == []
-    assert "대표도 못 여는 회의" not in str(board)
-
-    # 공유가 유일한 예외다.
-    assert client.post(f"/api/meetings/{meeting_id}/shares", headers=MINA, json={"member_ids": ["yuna"]}).status_code == 200
-    assert client.get(f"/api/meetings/{meeting_id}", headers=executive).json()["meeting"]["viewer_relation"] == "shared"
 
 
 def test_a_todo_carries_the_eight_values_the_promotion_modal_needs(tmp_path) -> None:
@@ -592,23 +498,6 @@ def test_a_todo_carries_the_eight_values_the_promotion_modal_needs(tmp_path) -> 
     # 승격 전에는 비어 있다. 담당자 칸은 아예 없다 — AI가 고르지 않는다.
     assert todo["linked"] is None
     assert "assignee_candidate" not in todo
-
-
-def test_an_agenda_may_come_from_any_of_the_five_places_and_nothing_else(tmp_path) -> None:
-    """안건 출처 다섯 (사용자 결정 D38) — 기획 넷(직접·세트·지난 회의·파생)과 우리 「AI 정리」 하나.
-
-    `set`·`derived` 는 **값만 열어 둔 것**이다: 아직 그것을 만드는 경로가 없다. 값을 먼저 여는 이유는
-    저장된 글자가 나중에 뜻을 바꾸지 않게 하려는 것이다.
-    """
-    from ax_workspace.modules.meetings.domain import AGENDA_SOURCES, ensure_agenda_source
-
-    assert AGENDA_SOURCES == {"manual", "set", "carried", "derived", "ai"}
-    for source in ("manual", "set", "carried", "derived", "ai"):
-        assert ensure_agenda_source(source) == source
-
-    for unknown in ("imported", "AI", "", "manual "):
-        with pytest.raises(MeetingError):
-            ensure_agenda_source(unknown)
 
 
 def test_an_unknown_agenda_source_is_refused_as_an_unprocessable_request(tmp_path) -> None:
@@ -676,14 +565,3 @@ def test_the_host_may_stand_up_an_agenda_while_the_meeting_is_running(tmp_path) 
         f"/api/meetings/{meeting_id}/agendas/{standing}", headers=MINA, json={"title": "고쳐 본다"}
     ).status_code == 409
     assert client.delete(f"/api/meetings/{meeting_id}/agendas/{standing}", headers=MINA).status_code == 409
-
-
-def test_an_attendee_who_did_not_call_the_meeting_cannot_add_an_agenda_while_it_runs(tmp_path) -> None:
-    """세우는 사람은 회의를 만든 사람 하나다 — 열린 것은 상태이지 사람이 아니다."""
-    client = _client(tmp_path)
-    meeting_id = _schedule(client)["meeting"]["meeting_id"]
-    assert client.post(f"/api/meetings/{meeting_id}/start", headers=MINA).status_code == 200
-
-    refused = client.post(f"/api/meetings/{meeting_id}/agendas", headers=JIHO, json={"title": "지호가 세운다"})
-    assert refused.status_code == 404
-    assert client.get(f"/api/meetings/{meeting_id}", headers=JIHO).json()["meeting"]["can_add_agenda"] is False

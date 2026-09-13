@@ -17,6 +17,9 @@ from test_mcp import ContractTestAiProvider
 from test_relation_graph import _today
 
 
+pytestmark = pytest.mark.scale
+
+
 class _CountedCursor:
     """Count rows fetched, including scalar/tuple queries outside ORM hydration."""
     def __init__(self, cursor, counts):

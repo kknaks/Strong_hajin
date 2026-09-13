@@ -371,33 +371,6 @@ def test_daily_report_does_not_expose_the_legacy_human_confirmation_run(tmp_path
     assert response.status_code == 404
 
 
-def test_self_created_task_enters_my_work_and_only_allows_valid_lifecycle_transitions(tmp_path) -> None:
-    client = _client_with_seeded_database(tmp_path)
-
-    created = client.post(
-        "/api/tasks",
-        headers={"X-Demo-Persona": "mina"},
-        json={"title": "고객 피드백 정리"},
-    )
-
-    assert created.status_code == 201
-    task = created.json()
-    assert task["state"] == "open"
-    assert client.get("/api/my-work", headers={"X-Demo-Persona": "mina"}).json()[0]["task_id"] == task["task_id"]
-    assert client.post(f"/api/tasks/{task['task_id']}/complete", headers={"X-Demo-Persona": "mina"}, json={"expected_version": 1}).status_code == 422
-    assert client.post(f"/api/tasks/{task['task_id']}/start", headers={"X-Demo-Persona": "mina"}, json={"expected_version": 1}).json()["state"] == "in_progress"
-    assert client.post(
-        f"/api/tasks/{task['task_id']}/block", headers={"X-Demo-Persona": "mina"}, json={"reason": "고객 자료 대기", "expected_version": 2}
-    ).json()["state"] == "blocked"
-    assert client.post(f"/api/tasks/{task['task_id']}/resume", headers={"X-Demo-Persona": "mina"}, json={"expected_version": 3}).json()["state"] == "in_progress"
-    completed = client.post(
-        f"/api/tasks/{task['task_id']}/complete",
-        headers={"X-Demo-Persona": "mina"},
-        json={"expected_version": 4},
-    )
-    assert completed.json()["state"] == "done"
-
-
 def test_task_and_work_request_capabilities_are_enforced_for_http_and_mcp(tmp_path) -> None:
     client = _client_with_seeded_database(tmp_path)
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"

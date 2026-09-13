@@ -186,10 +186,43 @@ make storybook-build   # 정적 빌드 — 설정이 상했는지 보는 가장 
 
 ## 검증
 
+백엔드 테스트는 `backend/tests/unit`(full application·transport·DB 없이 한 module을 검증),
+`contract`(application·HTTP·MCP·외부 호환 경계), `integration`(PostgreSQL 고유 동작) 순서로 책임을 나눈다.
+5,630-node 합성 원장을 쓰는 관계 그래프 검증은 `scale` marker로 보존하되 기본 피드백 루프에서는 분리한다.
+수집 개수를 맞추기 위해 같은 조합을 잘게 쪼개지 않는다. architecture 검증은 unit이 공개 transport나 DB 구현을
+끌어들이지 않는 경계를 고정하고, contract는 대표 boundary journey만 소유한다.
+
+새 동작을 개발할 때는 다음 순서로 테스트 책임을 정한다.
+
+1. 한 Aggregate 안의 변경은 immutable Domain State와 Command를 받아 새 State와 구체적인 Transition/Outcome,
+   Domain Event 또는 Effect Request를 반환한다. 다른 원장의 사실을 조합하는 쓰기 판단은 `Context → Decision`,
+   읽기 모양은 `Context → Projection`, 재사용되는 유효 값은 `ValueObject.create(...)`로 표현한다.
+2. application/service는 port에서 Context를 모으고 domain 결과를 같은 lock·version·transaction 안에서 빠짐없이
+   적용한다. 상태·event·effect를 다시 판단하는 `if/elif`를 만들지 않는다. contract는 HTTP·MCP·CLI serialization,
+   authorization 재검사, transaction/effect wiring의 대표 성공·실패만 검증한다.
+3. PostgreSQL constraint·locking·isolation·dialect·repository mapping처럼 실제 PostgreSQL 없이는 성립하지 않는
+   동작만 integration에 둔다.
+4. 새 unit과 같은 판단을 반복하는 기존 contract matrix는 대표 boundary만 남긴다. contract 추가에는 새 공개
+   경계가 무엇인지, integration 추가에는 PostgreSQL이 필요한 이유가 무엇인지 PR에 적는다.
+
+`Plan`은 순서·재시도·보상 단계를 실제로 실행하는 recipe에만 쓴다. 단순 필드 묶음에 `Facts`·`Plan`을 붙이지 않고
+업무 의미인 State·Command·Transition·Outcome·Context·Decision·Projection·Event·Effect Request 중 하나를 고른다.
+
+application/service에서 조회 뒤 이어지는 도메인 `if/elif`와 contract의 입력 조합 반복은 domain 추출 신호다.
+선언된 pure domain module은 application·entrypoint·platform·웹/DB framework를 import할 수 없고, generic
+`*Facts`·`*Plan`·`plan_*` interface를 만들 수 없도록 architecture test가 검사한다. 실제 Execution Plan이 필요하면
+그 순서·재시도·보상 의미를 문서화하고 gate 변경 이유를 review에 남긴다. 계층별 개수는 관찰하되 `unit > contract`
+비율 자체를 통과 조건으로 삼지 않는다.
+
 ```sh
-make verify          # backend 단위·계약 test + frontend 동작 test + Vite production build
-make test-postgres   # PostgreSQL 통합 test
-make acceptance-e2e  # 브라우저 journey 전부, 자기 데이터베이스에서
+make test              # backend unit·architecture·regular contract 전체를 같은 범위로 실행
+make test-unit         # DB·transport 없는 unit·architecture focused loop
+make test-contract     # application·HTTP·MCP·SQLite adapter 경계 검증을 병렬 실행
+make test-scale        # 큰 합성 원장 검증을 fixture 1회로 직렬 실행
+make test-release      # wheel build·격리 설치 검증 (PyPI 네트워크 필요)
+make verify            # 위 backend test 전부 + frontend 동작 test + Vite production build
+make test-postgres     # PostgreSQL 통합 test
+make acceptance-e2e    # 브라우저 journey 전부, 자기 데이터베이스에서
 make protected-build   # pinned Python/Nuitka/Codex의 linux/amd64 source-free image
 make protected-inspect # filesystem·layer·ABI·문자열 노출 검사
 ```

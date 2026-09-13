@@ -13,10 +13,8 @@ from ax_workspace.bootstrap.material_worker import MaterialExtractionWorker
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
-from ax_workspace.modules.work.requests import WorkRequestApplication
 from ax_workspace.platform.native_materials import NativeMaterialRepository
 from ax_workspace.platform.durable_jobs import SqlAlchemyDurableJobQueue
-from ax_workspace.platform.material_extraction import SqlAlchemyMaterialExtractionRepository
 from ax_workspace.platform.persistence import AttachmentRecord, AttachmentBindingRecord, DurableJobRecord, EvidenceRecord, MaterialExtractionRecord, make_session_factory
 from test_postgres_integration import _postgres_test_url
 
@@ -72,6 +70,40 @@ def test_owner_upload_rolls_back_artifact_binding_projection_and_job_together(tm
 # 이 파일이 지키는 것(자료 소유자별 업로드가 원장·투영·잡을 **한 트랜잭션**으로 묶는가, 동시 검색이
 # 투영을 하나만 만드는가)은 남은 폴더·댓글·증빙·보고 시험이 그대로 지킨다. 회의 자료의 같은 보장을
 # 새 모델 위에서 다시 세우는 것은 별도 작업이다.
+
+
+class _ReportProvider:
+    def generate(self, request):
+        from ax_workspace.modules.ax_execution.ai import AiGeneration
+
+        return AiGeneration(
+            provider_run_ref="pg-report",
+            provider_session_ref="pg-report-session",
+            body="postgresreporttoken",
+            requested_model="fixture",
+            observed_model="fixture",
+            requested_tier="fast",
+            observed_tier="fast",
+            latency_ms=1,
+            usage={},
+        )
+
+
+def _report_draft(application):
+    return application.generate_daily_report_draft(
+        application.authenticated_principal("mina"),
+        "2026-09-01",
+    )
+
+
+def _report_submit(application, draft):
+    return application.submit_daily_report(
+        application.authenticated_principal("mina"),
+        draft["report_id"],
+        draft["draft_id"],
+        draft["draft_version"],
+        None,
+    )
 
 
 @pytest.mark.integration

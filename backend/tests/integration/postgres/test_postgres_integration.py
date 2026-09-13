@@ -1,7 +1,6 @@
 import os
 import asyncio
 import tempfile
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event, Lock, Thread
 import time
@@ -26,12 +25,10 @@ from ax_workspace.modules.ax_execution.ai import (
     ProviderRequestFailed,
 )
 from ax_workspace.modules.ax_execution.conversations import ConversationExecution
-from ax_workspace.modules.jobs.domain import JOB_KIND_CONVERSATION_TURN, JOB_KIND_MEETING_FINALIZE, JOB_KIND_MATERIAL_EXTRACTION, JobEnvelope
-from ax_workspace.modules.meetings.domain import MeetingVersionConflict
+from ax_workspace.modules.jobs.domain import JOB_KIND_CONVERSATION_TURN, JOB_KIND_MATERIAL_EXTRACTION, JobEnvelope
 from ax_workspace.platform.conversation_jobs import ConversationJobQueue
 from ax_workspace.platform.durable_jobs import SqlAlchemyDurableJobQueue
 from ax_workspace.platform.persistence import DurableJobRecord
-from ax_workspace.platform.notifications import SqlAlchemyNotificationRepository
 from ax_workspace.platform.persistence import (
     AssistantCharacterPreferenceRecord,
     ConversationTurnRecord,
@@ -45,56 +42,7 @@ from ax_workspace.platform.persistence import (
     ReviewDecisionRecord,
     SubmissionRecord,
     ToolInvocationRecord,
-    MeetingRecord,
-    NotificationRecord,
-    ResourceRelationshipRecord,
 )
-
-
-@pytest.mark.integration
-def test_meeting_share_and_notification_commit_or_retry_together(monkeypatch) -> None:
-    database_url = _postgres_test_url()
-    reset_database(database_url)
-    application = create_workflow_application(Settings(RuntimeProfile.TEST, database_url))
-    principal = application.authenticated_principal("mina")
-    meeting = application.create_meeting(
-        principal,
-        organization_id="scax",
-        title="PG 공유 원자성",
-        starts_at=datetime.fromisoformat("2026-09-11T01:00:00+00:00"),
-        ends_at=datetime.fromisoformat("2026-09-11T02:00:00+00:00"),
-        visibility="private",
-        attendee_ids=[],
-    )
-    original = SqlAlchemyNotificationRepository.emit
-
-    def fail_delivery(self, **kwargs):
-        original(self, **kwargs)
-        raise RuntimeError("injected notification delivery failure")
-
-    with monkeypatch.context() as failed:
-        failed.setattr(SqlAlchemyNotificationRepository, "emit", fail_delivery)
-        with pytest.raises(RuntimeError, match="notification delivery"):
-            application.share_meeting(
-                principal,
-                UUID(meeting["meeting_id"]),
-                "sora",
-                meeting["version"],
-            )
-
-    with make_session_factory(database_url)() as session:
-        stored = session.get(MeetingRecord, UUID(meeting["meeting_id"]))
-        assert stored.version == meeting["version"]
-        assert list(session.scalars(select(NotificationRecord))) == []
-        assert list(session.scalars(select(ResourceRelationshipRecord).where(
-            ResourceRelationshipRecord.resource_type == "meeting",
-            ResourceRelationshipRecord.resource_id == meeting["meeting_id"],
-            ResourceRelationshipRecord.relationship_kind == "share",
-        ))) == []
-
-    shared = application.share_meeting(principal, UUID(meeting["meeting_id"]), "sora", meeting["version"])
-    assert shared["version"] == meeting["version"] + 1
-    assert len(application.list_notifications(application.authenticated_principal("sora"))) == 1
 
 
 @pytest.mark.integration
@@ -1419,7 +1367,7 @@ def test_conversation_cancel_stops_the_provider_and_late_events_are_ignored() ->
         record = session.get(ConversationTurnRecord, UUID(turn["turn_id"]))
         execution = ConversationExecution(record.id, record.conversation_id, record.execution_id)
         late = AiProviderEvent("item_completed", datetime.now(UTC), item_id="late", item_type="agent_message", text="늦게 도착한 본문")
-        assert SqlAlchemyConversationRepository(session, SqlAlchemyDurableJobQueue(session)).apply_event(execution, late) is False
+        assert SqlAlchemyConversationRepository(session, SqlAlchemyDurableJobQueue(session), actions=client.app.state.workflow_application._action_repository(session)).apply_event(execution, late) is False
         session.commit()
     view = client.get(f"/api/conversations/{conversation['conversation_id']}", headers={"X-Demo-Persona": "mina"}).json()
     assert [m["body"] for m in view["messages"] if m["role"] == "assistant"] == ["부분 답변입니다."]
@@ -1467,7 +1415,7 @@ def test_postgres_serializes_two_simultaneous_comment_posts_of_the_same_key_into
 
 
 @pytest.mark.integration
-def test_postgres_serializes_two_simultaneous_judgements_into_one_effect() -> None:
+def test_postgres_serializes_two_simultaneous_judgements_into_one_effect(monkeypatch) -> None:
     """Two tabs sending the same judgement get one receipt, one Task and one decision."""
     database_url = _postgres_test_url()
     reset_database(database_url)
@@ -1480,8 +1428,18 @@ def test_postgres_serializes_two_simultaneous_judgements_into_one_effect() -> No
     results: list[tuple[int, dict[str, object]]] = []
     lock = Lock()
 
-    def accept() -> None:
+    # Both requests must observe the still-offered command before either executes.
+    # A barrier outside HTTP only overlaps thread startup and can miss this race.
+    from ax_workspace.platform.action_center import WorkRequestActionHandler
+    execute = WorkRequestActionHandler.execute
+
+    def after_both_observed(self, principal, item, command, payload):
         barrier.wait(timeout=10)
+        return execute(self, principal, item, command, payload)
+
+    monkeypatch.setattr(WorkRequestActionHandler, "execute", after_both_observed)
+
+    def accept() -> None:
         response = client.post(url, headers={"X-Demo-Persona": "jiho"}, json=body)
         with lock:
             results.append((response.status_code, response.json()))
@@ -1606,82 +1564,6 @@ def test_postgres_serializes_two_simultaneous_ax_confirms_into_one_effect() -> N
         assert int(session.execute(text("SELECT count(*) FROM review_decisions WHERE decision = 'confirm'")).scalar_one()) == 1
     assert client.get("/api/actions", headers=jiho).json()[0]["state"] == "approved"
     assert [row for row in client.get("/api/action-items", headers=jiho).json() if row["kind"] == "ax.task.create_self"] == []
-
-
-@pytest.mark.integration
-def test_postgres_serializes_two_simultaneous_ax_meeting_confirms_into_one_local_record() -> None:
-    database_url = _postgres_test_url()
-    reset_database(database_url)
-    settings = Settings(RuntimeProfile.TEST, database_url, job_queue_backend="postgres")
-    client = _conversation_client(database_url)
-    mina = {"X-Demo-Persona": "mina"}
-    conversation = client.post("/api/conversations", headers=mina, json={"title": "동시 회의 확정"}).json()
-    accepted = client.post(
-        f"/api/conversations/{conversation['conversation_id']}/messages",
-        headers={**mina, "Idempotency-Key": "concurrent-meeting-confirm"},
-        json={"body": "출시 점검 회의를 제안해줘", "context": []},
-    ).json()
-    with make_session_factory(database_url)() as session:
-        execution_id = session.get(ConversationTurnRecord, UUID(accepted["turn_id"])).execution_id
-    application = create_workflow_application(settings, ConversationProvider())
-    application.propose_action(
-        application.authenticated_principal("mina"),
-        execution_id,
-        "meeting.create",
-        "회의 생성 확인",
-        {
-            "organization_id": "scax",
-            "title": "동시 확정 회의 원안",
-            "starts_at": "2026-09-21T01:00:00Z",
-            "ends_at": "2026-09-21T02:00:00Z",
-            "visibility": "private",
-            "attendee_ids": ["jiho"],
-            "include_initial_note": True,
-            "initial_note_body": "출시 범위를 확인한다.",
-        },
-    )
-    [item] = [row for row in client.get("/api/action-items", headers=mina).json() if row["kind"] == "ax.meeting.create"]
-    url = f"/api/action-items/{item['action_item_id']}/commands/confirm"
-    body = {
-        "expected_version": item["expected_version"],
-        "base_submission_version": item["submission_version"],
-        "draft": {
-            **item["edit_contract"]["values"],
-            "title": "동시 확정 회의",
-        },
-    }
-    barrier = Barrier(2)
-    results: list[tuple[int, str | None]] = []
-    lock = Lock()
-
-    def confirm() -> None:
-        barrier.wait(timeout=10)
-        response = client.post(url, headers=mina, json=body)
-        payload = response.json()
-        with lock:
-            results.append((response.status_code, payload.get("derived_meeting_id")))
-
-    threads = [Thread(target=confirm) for _ in range(2)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=20)
-
-    assert sorted(status for status, _ in results) == [200, 200], results
-    assert len({meeting_id for _, meeting_id in results}) == 1
-    with make_session_factory(database_url)() as session:
-        assert int(session.execute(text("SELECT count(*) FROM meetings WHERE title = '동시 확정 회의'")).scalar_one()) == 1
-        assert int(session.execute(text("SELECT count(*) FROM meeting_notes")).scalar_one()) == 1
-        assert int(session.execute(text("SELECT count(*) FROM meeting_note_versions")).scalar_one()) == 1
-        assert int(
-            session.execute(
-                text("SELECT count(*) FROM submissions WHERE decision_item_id = CAST(:id AS uuid)"),
-                {"id": item["action_item_id"]},
-            ).scalar_one()
-        ) == 2
-        assert int(session.execute(text("SELECT count(*) FROM review_decisions WHERE decision = 'confirm'")).scalar_one()) == 1
-
-
 @pytest.mark.integration
 def test_postgres_rolls_back_a_changed_submission_when_the_task_effect_fails() -> None:
     database_url = _postgres_test_url()

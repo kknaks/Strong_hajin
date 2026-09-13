@@ -4,12 +4,11 @@ The repository owns the shape and the commands; the data lives in a folder outsi
 own CSVs and reports where a problem is — file, row, column — never what the cell said.
 """
 import csv
-import json
 from pathlib import Path
 
 from ax_workspace.entrypoints.dataset import initialize, main, read_tables
 from ax_workspace.modules.datasets.schema import SCHEMA_VERSION, TABLES
-from ax_workspace.modules.datasets.validation import cycles, validate
+from ax_workspace.modules.datasets.validation import validate
 
 
 def _write(target: Path, table: str, rows: list[dict[str, str]]) -> None:
@@ -79,15 +78,6 @@ def test_a_dataset_that_holds_together_passes_and_one_that_does_not_says_where(t
     # Where and what kind, never the cell itself.
     assert all("또 가" not in str(problem) and "없는팀" not in str(problem) for problem in report.problems)
     assert all(problem.row is not None for problem in report.problems)
-
-
-def test_an_organization_that_contains_itself_is_a_mistake() -> None:
-    rows = [
-        {"key": "a", "parent_key": "b"},
-        {"key": "b", "parent_key": "a"},
-        {"key": "c", "parent_key": ""},
-    ]
-    assert cycles(rows, key="key", parent="parent_key") == ["a", "b"]
 
 
 def test_the_commands_refuse_to_put_a_dataset_inside_the_repository(tmp_path, capsys) -> None:

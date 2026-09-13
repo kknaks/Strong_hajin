@@ -13,7 +13,6 @@ SCAX-SPEC-004 §8. 못박는 것 —
 """
 from __future__ import annotations
 
-from datetime import date
 import logging
 import threading
 from typing import Any, Protocol
@@ -33,16 +32,13 @@ from ax_workspace.modules.meetings.retranscribe import (
 )
 from ax_workspace.modules.meetings.stream import TranscriptBlock, build_blocks
 from ax_workspace.modules.meetings.finalize import (
+    FinalizationContext,
     FINAL_ATTEMPTS,
     FinalizeFailed,
     FinalNotes,
     build_final_prompt,
-    bind_evidence,
-    is_already_work,
-    normalize_title,
     parse_final_output,
-    resolve_due,
-    stamp_source_lines,
+    finalize_notes,
 )
 
 logger = logging.getLogger(__name__)
@@ -226,34 +222,19 @@ class MeetingFinalizeService:
         )
         notes = parse_final_output(body)
 
-        # 남은 검증 둘 — 스키마(위 `parse_final_output`)와 근거 결박이다. **사람 안건 전수 보존 검사는 없다**:
+        # 남은 검증 둘 — 스키마(위 `parse_final_output`)와 도메인 정제다. **사람 안건 전수 보존 검사는 없다**:
         # 종료 합성은 재료를 보고 회의록을 처음부터 새로 쓰는 일이고, 안건 목록도 AI 가 다시 잡는다
         # (사용자 결정 2026-09-11). 예전 검사는 회의 중 배치가 세운 AI 안건이 출력에 자기 id 로 돌아오는
         # 정상 동작까지 「사람 안건을 덮었다」로 세어, 안건 없이 연 회의를 반드시 실패시켰다.
-        bind_evidence(notes, source["covered_ms"])
-        # 제목이 없으면 이번에 낸 후보로 출처를 적는다 — 「회의 제목 없는 회의 · 안건 N 에서」로 나가지 않게.
-        stamp_source_lines(
-            notes, meeting_title=source["meeting"].get("title") or notes.title_candidate
+        outcome = finalize_notes(
+            notes,
+            FinalizationContext(
+                covered_ms=source["covered_ms"],
+                meeting_title=source["meeting"].get("title"),
+                existing_task_titles=frozenset(
+                    self._gateway.existing_task_titles(source["persona_id"])
+                ),
+                next_meeting_starts_on=source.get("next_meeting_starts_on"),
+            ),
         )
-        if source["meeting"].get("title"):
-            # 제목이 이미 있으면 후보를 쓰지 않는다 — 사람이 지은 이름을 AI 가 덮지 않는다.
-            notes.title_candidate = None
-
-        self._filter_todos(notes, source)
-        return notes, cold_start
-
-    def _filter_todos(self, notes: FinalNotes, source: dict[str, Any]) -> None:
-        """이미 있는 업무면 후보를 내지 않고, 기한 세 갈래의 ②를 여기서 채운다 (§8.1 · §8.2)."""
-        existing = self._gateway.existing_task_titles(source["persona_id"])
-        next_starts_on: date | None = source.get("next_meeting_starts_on")
-        for agenda in notes.agendas:
-            kept = []
-            for todo in agenda.todos:
-                if is_already_work(todo.title, existing):
-                    logger.info("회의 %s 후보 「%s」는 이미 있는 업무라 내지 않습니다", source["meeting_id"], todo.title)
-                    continue
-                todo.due_candidate = resolve_due(todo, next_meeting_starts_on=next_starts_on)
-                kept.append(todo)
-                # 같은 배치 안에서도 두 번 뽑히지 않게 한다.
-                existing.add(normalize_title(todo.title))
-            agenda.todos = kept
+        return outcome.notes, cold_start

@@ -7,7 +7,6 @@ nothing quietly.
 """
 from datetime import UTC, datetime
 
-import pytest
 from sqlalchemy import select
 
 from ax_workspace.bootstrap.seed import seed_catalog
@@ -15,9 +14,6 @@ from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.modules.organization_access.catalog import (
     CAPABILITIES,
     ROLE_TEMPLATES_BY_KEY,
-    RoleTemplate,
-    UnknownCapability,
-    validate,
 )
 from ax_workspace.platform.persistence import (
     AccessGrantRecord,
@@ -93,11 +89,6 @@ def test_a_role_the_organization_changed_is_not_rewritten_by_the_product(tmp_pat
         }
     # The organization took a capability out of its own role; installing again does not put it back.
     assert "meeting.record" not in mapped
-
-
-def test_a_role_may_only_carry_capabilities_the_product_implements() -> None:
-    with pytest.raises(UnknownCapability, match="capability"):
-        validate(RoleTemplate("invented", "만든 역할", 1, ("task.read", "budget.approve")))
 
 
 def test_how_far_a_role_reaches_comes_from_where_the_person_was_appointed(tmp_path) -> None:

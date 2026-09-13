@@ -270,7 +270,7 @@ def _request_for(client, database_url: str, conversation: dict):
             .where(ConversationTurnRecord.conversation_id == UUID(conversation["conversation_id"]))
             .order_by(ConversationTurnRecord.started_at.desc())
         ).first()
-        return SqlAlchemyConversationRepository(session, None).request_for(turn, principal)
+        return SqlAlchemyConversationRepository(session, None, actions=application._action_repository(session)).request_for(turn, principal)
 
 
 def test_a_stored_walk_is_checked_again_before_it_is_shown(tmp_path, monkeypatch) -> None:

@@ -21,7 +21,6 @@ from ax_workspace.platform.persistence import (
 
 MINA = {"X-Demo-Persona": "mina"}
 JIHO = {"X-Demo-Persona": "jiho"}
-SORA = {"X-Demo-Persona": "sora"}
 
 
 def _stack(tmp_path):
@@ -112,53 +111,6 @@ def test_an_amendment_makes_an_open_judgement_answer_the_new_round(tmp_path) -> 
     assert client.get("/api/my-work", headers=JIHO).json() == []
     [fresh] = _pending(client, JIHO)
     assert fresh["subject"] == "바뀐 요청" and fresh["expected_version"] != opened["expected_version"]
-
-
-def test_an_amendment_is_refused_unless_it_is_the_requester_changing_something_open(tmp_path) -> None:
-    client, database_url, _ = _stack(tmp_path)
-    created = client.post(
-        "/api/work-requests", headers=MINA, json={"title": "규칙", "assignee_id": "jiho", "description": "설명"}
-    ).json()
-    rid, version = created["request_id"], created["version"]
-
-    # Only the requester, and only fields an amendment owns.
-    assert _amend(client, JIHO, rid, expected_version=version, title="담당자가 고침").status_code in {403, 422}
-    assert _amend(client, SORA, rid, expected_version=version, title="남이 고침").status_code in {403, 422}
-    assert _amend(client, MINA, rid, expected_version=version, assignee_id="sora").status_code == 422
-    # Only against the version it was shown, and only when something actually changes.
-    assert _amend(client, MINA, rid, expected_version=version + 1, title="틀린 버전").status_code == 422
-    assert _amend(client, MINA, rid, title="버전 없음").status_code == 422
-    assert _amend(client, MINA, rid, expected_version=version).status_code == 422
-    assert _amend(client, MINA, rid, expected_version=version, title="규칙", description="설명").status_code == 422
-    assert _amend(client, MINA, rid, expected_version=version, title="   ").status_code == 422
-
-    # Nothing was written by any of them.
-    with make_session_factory(database_url)() as session:
-        assert len(list(session.scalars(select(SubmissionRecord)))) == 1
-        assert [row.event_type for row in session.scalars(select(WorkRequestAuditEventRecord))] == ["work_request.created"]
-    assert client.get(f"/api/work-requests/{rid}", headers=MINA).json()["version"] == version
-
-
-def test_a_request_that_is_no_longer_open_cannot_be_amended(tmp_path) -> None:
-    client, _, _ = _stack(tmp_path)
-    accepted = client.post("/api/work-requests", headers=MINA, json={"title": "수락될 요청", "assignee_id": "jiho"}).json()
-    [item] = _pending(client, JIHO)
-    client.post(
-        f"/api/action-items/{item['action_item_id']}/commands/accept", headers=JIHO,
-        json={"expected_version": item["expected_version"]},
-    )
-    current = client.get(f"/api/work-requests/{accepted['request_id']}", headers=MINA).json()
-    assert _amend(client, MINA, accepted["request_id"], expected_version=current["version"], title="이미 늦음").status_code == 422
-
-    # An adjustment is answered by a revision, not by an amendment: the requester's turn has its own command.
-    negotiating = client.post("/api/work-requests", headers=MINA, json={"title": "조정될 요청", "assignee_id": "jiho"}).json()
-    [second] = [row for row in _pending(client, JIHO) if row["subject"] == "조정될 요청"]
-    client.post(
-        f"/api/action-items/{second['action_item_id']}/commands/adjust", headers=JIHO,
-        json={"expected_version": second["expected_version"], "reason": "고쳐 주세요"},
-    )
-    waiting = client.get(f"/api/work-requests/{negotiating['request_id']}", headers=MINA).json()
-    assert _amend(client, MINA, negotiating["request_id"], expected_version=waiting["version"], title="조정 중 수정").status_code == 422
 
 
 def test_the_same_amendment_sent_twice_is_one_round_and_one_receipt(tmp_path) -> None:

@@ -17,18 +17,19 @@ from ax_workspace.modules.meetings.domain import (
     MeetingError,
     MeetingNotFound,
     MeetingStateConflict,
-    MeetingStatus,
-    parse_status,
+)
+from ax_workspace.modules.meetings.material_policy import (
+    ACCEPTED_CONTENT_TYPES,
+    MeetingMaterialContext,
+    accepts,
+    decide_material_access,
+    inline_media_type as inline_media_type,
+    is_detachable,
 )
 
 
 #: 한 파일 한도. 업무 자료(25MB)보다 좁다 — 회의는 보며 여는 자리이지 보관하는 자리가 아니다.
 MAX_MEETING_MATERIAL_BYTES = 20 * 1024 * 1024
-
-#: 데모가 받는 형식 둘. 이미지·압축 파일은 범위 밖이다 (SPEC-004 §2.2).
-ACCEPTED_CONTENT_TYPES = frozenset({"application/pdf", "text/markdown"})
-#: 브라우저가 Markdown 을 `text/plain` 이나 빈 값으로 보내는 일이 흔하다 — 확장자도 같이 본다.
-ACCEPTED_EXTENSIONS = frozenset({".pdf", ".md", ".markdown"})
 
 REASON_TOO_LARGE = "too_large"
 REASON_UNSUPPORTED = "unsupported_type"
@@ -57,40 +58,6 @@ class MeetingMaterialGate(Protocol):
     def is_attendee(self, principal: Any, meeting: Any) -> bool: ...
 
 
-def is_detachable(status: object) -> bool:
-    """자료를 뗄 수 있는 자리인가 — **「예정」 하나다** (사용자 결정 D34, 2026-09-11).
-
-    회의가 한 번 시작되면 그 자료는 회의에서 실제로 쓰인 것이 된다. 붙이는 것은 되돌릴 수 있지만
-    떼는 것은 그 사실을 지우는 쪽이라, 시작 전으로만 자리를 좁혔다.
-    """
-    return parse_status(status) is MeetingStatus.SCHEDULED
-
-
-def accepts(name: str, content_type: str) -> bool:
-    """PDF 와 Markdown 만 받는다. 형식 선언을 못 믿으면 이름이 말하는 것을 본다."""
-    declared = (content_type or "").split(";")[0].strip().lower()
-    if declared in ACCEPTED_CONTENT_TYPES:
-        return True
-    lowered = (name or "").lower()
-    return any(lowered.endswith(extension) for extension in ACCEPTED_EXTENSIONS)
-
-
-def inline_media_type(name: str, content_type: str) -> str | None:
-    """새 탭에서 **그대로 열 수 있는** 형식이면 그때 내보낼 매체 형식, 아니면 `None` (D37).
-
-    미리보기를 걷고 새 탭으로 여는 이상 `attachment` 로는 안 된다 — 탭이 열리자마자 내려받기로
-    떨어진다. 다만 **저장된 형식 선언을 그대로 되돌려 주지는 않는다**: 올릴 때 무엇이 선언됐든
-    여기서 내는 것은 우리가 아는 둘 중 하나다. 남의 파일이 브라우저에서 실행되는 길을 열지 않는다.
-    """
-    declared = (content_type or "").split(";")[0].strip().lower()
-    lowered = (name or "").lower()
-    if declared == "application/pdf" or lowered.endswith(".pdf"):
-        return "application/pdf"
-    if declared == "text/markdown" or lowered.endswith((".md", ".markdown")):
-        return "text/markdown; charset=utf-8"
-    return None
-
-
 class MeetingMaterialApplication:
     """회의에 붙은 파일들. 저장은 업무 자료와 같은 자리이고 판정만 회의의 것이다."""
 
@@ -113,8 +80,15 @@ class MeetingMaterialApplication:
     def list(self, principal: Any, meeting_id: UUID) -> list[dict[str, Any]]:
         """회의를 열 수 있는 사람이면 자료 목록을 본다 — 공유받은 사람도 읽는다 (SPEC-004 §3.2-4)."""
         meeting = self._gate.readable(principal, meeting_id)
+        actor_is_attendee = self._gate.is_attendee(principal, meeting)
         return [
-            self._view(binding, attachment, principal=principal, meeting=meeting)
+            self._view(
+                binding,
+                attachment,
+                principal=principal,
+                meeting=meeting,
+                actor_is_attendee=actor_is_attendee,
+            )
             for binding, attachment in self._active(meeting_id)
         ]
 
@@ -135,7 +109,13 @@ class MeetingMaterialApplication:
             data = self._storage.get(attachment.source_ref)
         except FileNotFoundError as error:
             raise MeetingNotFound("자료 원본을 찾을 수 없습니다") from error
-        return self._view(binding, attachment, principal=principal, meeting=meeting), data
+        return self._view(
+            binding,
+            attachment,
+            principal=principal,
+            meeting=meeting,
+            actor_is_attendee=self._gate.is_attendee(principal, meeting),
+        ), data
 
     # --- 쓰기 -------------------------------------------------------------------
 
@@ -184,7 +164,15 @@ class MeetingMaterialApplication:
         if found is None:
             raise MeetingNotFound("meeting material was not found")
         binding, attachment = found
-        if str(attachment.uploaded_by) != str(principal.id):
+        access = decide_material_access(
+            MeetingMaterialContext(
+                status=meeting.status,
+                actor_is_attendee=True,
+                actor_id=str(principal.id),
+                uploaded_by=str(attachment.uploaded_by),
+            )
+        )
+        if not access.can_detach:
             raise MeetingAccessDenied("only the person who attached this material may remove it")
         self._attachments.unbind(binding)
 
@@ -193,9 +181,18 @@ class MeetingMaterialApplication:
     def _writable(self, principal: Any, meeting_id: UUID) -> Any:
         """붙이는 자리 — 회의가 도는 동안만 아니면 된다 (SPEC-004 §5.1 「진행 중」 행)."""
         meeting = self._gate.readable(principal, meeting_id)
-        if not self._gate.is_attendee(principal, meeting):
+        attendee = self._gate.is_attendee(principal, meeting)
+        access = decide_material_access(
+            MeetingMaterialContext(
+                status=meeting.status,
+                actor_is_attendee=attendee,
+                actor_id=str(principal.id),
+                uploaded_by=None,
+            )
+        )
+        if not attendee:
             raise MeetingAccessDenied("only an attendee may change this meeting's materials")
-        if parse_status(meeting.status) is MeetingStatus.IN_PROGRESS:
+        if not access.can_attach:
             raise MeetingStateConflict("materials are not attached or removed while the meeting is running")
         return meeting
 
@@ -245,16 +242,37 @@ class MeetingMaterialApplication:
             extraction = self._extractions.request(attachment)
             if extraction.status == "queued" and self._extraction_queue is not None:
                 self._extraction_queue.enqueue(MaterialExtractionJob(extraction.id, attachment.id))
-        return self._view(binding, attachment, principal=principal, meeting=meeting)
+        return self._view(
+            binding,
+            attachment,
+            principal=principal,
+            meeting=meeting,
+            actor_is_attendee=True,
+        )
 
-    @staticmethod
-    def _view(binding: Any, attachment: Any, *, principal: Any, meeting: Any) -> dict[str, Any]:
+    def _view(
+        self,
+        binding: Any,
+        attachment: Any,
+        *,
+        principal: Any,
+        meeting: Any,
+        actor_is_attendee: bool,
+    ) -> dict[str, Any]:
         """화면이 읽는 자료 한 줄. **저장 위치는 나가지 않는다.**
 
         `can_detach` 는 **서버가 말한다** — 화면이 「올린 사람이 나인가」를 스스로 맞춰 보면 상태 조건이
         빠지고, 규칙이 두 곳에 살게 된다. 떼는 자리는 **「예정」 하나**이므로(D34) 판정도 그 하나다.
         """
         del binding
+        access = decide_material_access(
+            MeetingMaterialContext(
+                status=meeting.status,
+                actor_is_attendee=actor_is_attendee,
+                actor_id=str(principal.id),
+                uploaded_by=str(attachment.uploaded_by),
+            )
+        )
         return {
             "material_id": str(attachment.id),
             "name": attachment.name,
@@ -262,9 +280,7 @@ class MeetingMaterialApplication:
             "size": int(attachment.size_bytes or 0),
             "uploaded_by": attachment.uploaded_by,
             "uploaded_at": _iso(attachment.created_at),
-            "can_detach": (
-                str(attachment.uploaded_by) == str(principal.id) and is_detachable(meeting.status)
-            ),
+            "can_detach": access.can_detach,
         }
 
 

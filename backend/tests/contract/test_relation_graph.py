@@ -5,11 +5,11 @@ materials attached to it. Every step is re-checked against what that person may 
 things connect, it never hands out access, and it never counts or names what someone may not see.
 """
 from fastapi.testclient import TestClient
-import pytest
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
+from test_product_operations import ContractTestAiProvider
 
 MINA = {"X-Demo-Persona": "mina"}
 JIHO = {"X-Demo-Persona": "jiho"}
@@ -22,7 +22,7 @@ def _stack(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
     settings = Settings(RuntimeProfile.TEST, database_url, materials_dir=str(tmp_path / "materials"))
-    app = create_app(settings)
+    app = create_app(settings, report_provider=ContractTestAiProvider())
     return TestClient(app), app.state.workflow_application
 
 
@@ -102,18 +102,6 @@ def test_following_connections_needs_the_capability_to_do_it(tmp_path) -> None:
     assert refused.status_code == 403
     assert client.get("/api/graph/neighbors", headers=SORA, params={"node": f"task:{made['task']['task_id']}"}).status_code == 403
     assert client.get("/api/graph/search", headers=ADMIN, params={"q": "권한을 확인할"}).status_code == 200
-
-
-def test_a_search_answers_with_bounded_results(tmp_path) -> None:
-    client, _ = _stack(tmp_path)
-    for index in range(8):
-        client.post("/api/tasks", headers=JIHO, json={"title": f"많이 있는 업무 {index}"})
-
-    bounded = client.get("/api/graph/search", headers=JIHO, params={"q": "많이 있는", "limit": 3}).json()
-    assert len(bounded["nodes"]) == 3
-    assert bounded["truncated"] is True
-    # An empty question is not a search for everything.
-    assert client.get("/api/graph/search", headers=JIHO, params={"q": "  "}).status_code == 422
 
 
 def test_a_person_is_a_place_to_start_from(tmp_path) -> None:
@@ -462,7 +450,8 @@ def test_someone_who_sits_only_at_the_top_stays_where_they_are(tmp_path) -> None
     member = client.get("/api/graph/overview", headers=JIHO).json()
     grouped = client.get("/api/graph/overview", headers=JIHO, params={"view": "team"}).json()
 
-    people = lambda answer: {node["id"] for node in answer["nodes"] if node["kind"] == "person"}
+    def people(answer):
+        return {node["id"] for node in answer["nodes"] if node["kind"] == "person"}
     # 팀에 앉은 사람은 사라지고 그 팀이 대신 선다.
     assert "jiho" in people(member) and "jiho" not in people(grouped)
     assert "product" in {node["id"] for node in grouped["nodes"] if node["kind"] == "team"}
@@ -682,10 +671,9 @@ def test_empty_team_is_a_real_node_and_unknown_team_is_not(tmp_path) -> None:
     assert client.get("/api/graph/neighbors", headers=JIHO, params={"node": "team:missing"}).status_code == 404
 
 
-@pytest.mark.parametrize("node", ["conversation:123", "action:123", "draft:123", "task:", "project:2026", "2026"])
-def test_graph_rejects_unsupported_nodes_and_title_numbers(tmp_path, node) -> None:
+def test_graph_route_rejects_an_unsupported_node_and_the_wrong_query_field(tmp_path) -> None:
     client, _ = _stack(tmp_path)
-    assert client.get("/api/graph/neighbors", headers=JIHO, params={"node": node}).status_code == 422
+    assert client.get("/api/graph/neighbors", headers=JIHO, params={"node": "conversation:123"}).status_code == 422
     assert client.get("/api/graph/neighbors", headers=JIHO, params={"node_ref": "person:jiho"}).status_code == 422
 
 

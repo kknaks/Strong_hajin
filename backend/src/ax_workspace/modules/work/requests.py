@@ -14,7 +14,23 @@ from ax_workspace.modules.organization_access.domain import (
     WORK_REQUEST_DECIDE,
     WORK_REQUEST_READ,
 )
-from ax_workspace.modules.work.application import clean_checklist
+from ax_workspace.modules.work.request_errors import (
+    WorkRequestAccessDenied,
+    WorkRequestError,
+    WorkRequestIdempotencyConflict,
+)
+from ax_workspace.modules.work.request_lifecycle import (
+    RequestCreationContext,
+    ReviseWorkRequest,
+    SYSTEM_MEETING_REQUESTER,
+    WithdrawWorkRequest,
+    WorkRequest,
+    WorkRequestRevision,
+    decide_request_creation,
+    revise_work_request,
+    withdraw_work_request,
+)
+from ax_workspace.modules.work.task_values import clean_checklist
 from ax_workspace.modules.work.material_extraction import MaterialExtractionJob, MaterialExtractionQueue, MaterialExtractionRepository
 from ax_workspace.modules.work.materials import AttachmentRepository, MaterialNotFound, MaterialStorage, store_file
 
@@ -22,18 +38,6 @@ from ax_workspace.modules.work.materials import AttachmentRepository, MaterialNo
 def comment_identity(request_thread_id: UUID, author_id: str, idempotency_key: str) -> UUID:
     """Deterministic Comment id for one logical submit, so a duplicate POST lands on the same primary key."""
     return uuid5(NAMESPACE_URL, f"scax:work-request-comment:{request_thread_id}:{author_id}:{idempotency_key}")
-
-
-class WorkRequestError(Exception):
-    pass
-
-
-class WorkRequestIdempotencyConflict(WorkRequestError):
-    """A comment idempotency key was reused with different content."""
-
-
-class WorkRequestAccessDenied(WorkRequestError):
-    pass
 
 
 class WorkRequestRepository(Protocol):
@@ -91,13 +95,6 @@ class WorkRequestAssigneeDirectory(Protocol):
     def is_active_member(self, principal: Principal, member_id: str) -> bool: ...
 
 
-#: 회의 승격이 만든 요청을 **보낸 쪽**. 사람이 아니라 시스템이다 (사용자 결정 D40, 2026-09-11).
-#:
-#: 승격은 「내가 너에게 부탁한다」가 아니라 「회의에서 이 일이 나왔다」이다. 요청자 자리에 누른 사람을
-#: 앉히면 회의에서 나온 일이 그 사람의 부탁으로 읽히고, 조직 경계(누가 누구에게 요청할 수 있는가)도
-#: 그 사람에게 걸린다. 그래서 보낸 쪽은 시스템이고, **누른 사람은 `promoted_by_member_id` 로 남는다.**
-#: 이 글자는 `members` 에 없는 id 다 — 사람 관계 표(resource_relationships)에는 이 줄이 서지 않는다.
-SYSTEM_MEETING_REQUESTER = "system:meeting"
 #: 사람이 아닌 행위자의 접두. 이 글자로 시작하는 id 는 **사람 명부에 없다** — 사람으로 그리면 안 된다.
 SYSTEM_ACTOR_PREFIX = "system:"
 #: 요청자 표시 종류. 화면이 「회의 · {회의명}」으로 그릴지 사람 이름으로 그릴지 가르는 값이다.
@@ -241,41 +238,34 @@ class WorkRequestApplication:
         흡수됐다. 사람이 보내는 기존 경로는 한 글자도 달라지지 않는다.
         """
         self._require(principal, WORK_REQUEST_CREATE)
-        if not title.strip():
-            raise WorkRequestError("title is required")
-        promoted = promoted_by_member_id is not None
-        requester_id = SYSTEM_MEETING_REQUESTER if promoted else str(principal.id)
-        # 회의에서 나온 일을 자기가 맡겠다고 고르는 것은 승격의 정상 경로다 — 갈래를 두지 않으므로 그때도 요청이다
-        # (SCAX-SPEC-004 §9-5 「누르는 사람 자신이어도 된다」). 그 밖의 자리에서는 자기 자신이 후보가 아니다.
-        oneself = allow_self_assignment and assignee_id == str(principal.id)
-        if promoted:
-            # 조직 경계는 **보내는 사람**에게 걸리는 규칙이다. 보낸 쪽이 시스템이면 걸 자리가 없다 (D40).
-            # 그래도 아무 글자나 담당이 되지는 않는다 — 지금 일하고 있는 사람인지는 그대로 본다.
-            if not oneself and not self._assignee_directory.is_active_member(principal, assignee_id):
+        decision = decide_request_creation(
+            RequestCreationContext(
+                actor_id=str(principal.id),
+                title=title,
+                description=description,
+                assignee_id=assignee_id,
+                cc_member_ids=tuple(cc_member_ids or ()),
+                allow_self_assignment=allow_self_assignment,
+                promoted_by_member_id=promoted_by_member_id,
+            )
+        )
+        if decision.assignee_validation == "active":
+            if not self._assignee_directory.is_active_member(principal, assignee_id):
                 raise WorkRequestError("assignee is not an eligible assignee")
-        elif not oneself and not self._assignee_directory.is_work_request_assignee(principal, assignee_id):
-            raise WorkRequestError("assignee is not an eligible assignee")
-        cc: list[str] = []
-        for member_id in cc_member_ids or []:
-            if member_id in {requester_id, str(principal.id), assignee_id} or member_id in cc:
-                continue
+        elif decision.assignee_validation == "scoped":
+            if not self._assignee_directory.is_work_request_assignee(principal, assignee_id):
+                raise WorkRequestError("assignee is not an eligible assignee")
+        for member_id in decision.active_member_checks:
             if not self._assignee_directory.is_active_member(principal, member_id):
                 raise WorkRequestError(f"cc member {member_id} is not an active member")
-            cc.append(member_id)
-        # 누른 사람은 cc 로 들어간다 — 시스템이 보낸 요청이라도 **그 사람은 자기가 만든 것을 읽어야 한다** (D40).
-        # 이 한 사람에게는 「일하고 있는 사람인가」를 묻지 않는다: 지금 이 요청을 만들고 있는 당사자이고,
-        # 후보 명부는 본인을 빼고 답하므로 물으면 언제나 아니라고 한다.
-        if promoted and promoted_by_member_id not in {assignee_id, *cc}:
-            cc.append(str(promoted_by_member_id))
-        cleaned_description = (description or "").strip() or None
         request, created = self._repository.create_request(
-            requester_id,
+            decision.requester_id,
             assignee_id,
-            title.strip(),
+            decision.title,
             causation_key,
-            description=cleaned_description,
+            description=decision.description,
             due_date=due_date,
-            cc_member_ids=cc,
+            cc_member_ids=list(decision.cc_member_ids),
             # The steps travel with the request and become the accepted Task's own checklist.
             checklist=clean_checklist(checklist),
             # So does the earlier work pointed at — but only work this person may actually read right now.
@@ -355,20 +345,26 @@ class WorkRequestApplication:
         request = self._repository.request(request_id, lock=True)
         if request is None:
             raise WorkRequestError("work request was not found")
-        if not self._is_requester(principal, request):
-            raise WorkRequestAccessDenied("only the requester may amend their own request")
-        if request.state != "pending":
-            raise WorkRequestError("담당자가 판단하고 있는 요청만 수정할 수 있습니다")
         command = _amend_command(title=title, description=description, due_date=due_date, clear_due_date=clear_due_date)
-        if request.version != expected_version:
-            # The same amendment coming back is that answer, not a stale one. This is judged on the command itself:
-            # once it has been applied the request no longer differs from it, so asking whether it still changes
-            # anything would refuse the very re-send it is meant to recognise.
-            if self._amendment_produced(request, str(principal.id), expected_version, command):
-                return self._view(request)
-            raise WorkRequestError("work request version is stale")
-        revised = self._revised_content(request, title=title, description=description, due_date=due_date, clear_due_date=clear_due_date)
-        submission = self._apply_round(request, str(principal.id), revised, self._repository.amend)
+        revision = revise_work_request(
+            self._domain_request(request),
+            ReviseWorkRequest(
+                actor_id=str(principal.id),
+                expected_version=expected_version,
+                mode="amend",
+                title=title,
+                description=description,
+                due_date=due_date,
+                clear_due_date=clear_due_date,
+                exact_replay=(
+                    request.version != expected_version
+                    and self._amendment_produced(request, str(principal.id), expected_version, command)
+                ),
+            ),
+        )
+        if revision.replay:
+            return self._view(request)
+        submission = self._apply_round(request, str(principal.id), revision, self._repository.amend)
         self._repository.append_audit(
             request.id,
             str(principal.id),
@@ -395,33 +391,24 @@ class WorkRequestApplication:
             for entry in self._repository.audit_payloads(request.id, "work_request.amended")
         )
 
-    def _revised_content(
-        self, request: Any, *, title: str | None, description: str | None, due_date: date | None, clear_due_date: bool
-    ) -> dict[str, Any]:
-        """What the request would become, refused when it names a field it cannot change or changes nothing."""
-        if title is not None and not title.strip():
-            raise WorkRequestError("title is required")
-        revised = {
-            "title": title.strip() if title is not None else request.title,
-            "description": (description.strip() or None) if description is not None else request.description,
-            "due_date": None if clear_due_date else (due_date if due_date is not None else request.due_date),
-        }
-        if revised == {"title": request.title, "description": request.description, "due_date": request.due_date}:
-            raise WorkRequestError("a revision must change something")
-        return revised
-
-    def _apply_round(self, request: Any, actor_id: str, revised: dict[str, Any], open_round: Any) -> Any:
-        request.title = revised["title"]
-        request.description = revised["description"]
-        request.due_date = revised["due_date"]
+    def _apply_round(self, request: Any, actor_id: str, revision: WorkRequestRevision, open_round: Any) -> Any:
+        effect = revision.open_round
+        if effect is None:
+            raise WorkRequestError("a new request revision must open a round")
+        request.title = revision.request.title
+        request.description = revision.request.description
+        request.due_date = revision.request.due_date
+        request.state = revision.request.state
+        if revision.clear_conditions:
+            request.conditions = None
         snapshot = {
-            "title": request.title,
-            "description": request.description,
-            "due_date": request.due_date.isoformat() if request.due_date else None,
-            "assignee_id": request.assignee_id,
+            "title": effect.title,
+            "description": effect.description,
+            "due_date": effect.due_date.isoformat() if effect.due_date else None,
+            "assignee_id": effect.assignee_id,
         }
         submission = open_round(request, actor_id, snapshot)
-        request.version += 1
+        request.version = revision.request.version
         return submission
 
     def resubmit(
@@ -440,18 +427,20 @@ class WorkRequestApplication:
         request = self._repository.request(request_id, lock=True)
         if request is None:
             raise WorkRequestError("work request was not found")
-        if not self._is_requester(principal, request):
-            raise WorkRequestError("only the requester may resubmit")
-        if request.version != expected_version:
-            raise WorkRequestError("work request version is stale")
-        if request.state != "negotiating":
-            raise WorkRequestError("only a negotiating work request can be resubmitted")
-        # Compare against the round being revised before touching it: a field repeated at its current value is not a
-        # change, however the caller wrote it, and an empty round would give the reviewer nothing to answer.
-        revised = self._revised_content(request, title=title, description=description, due_date=due_date, clear_due_date=clear_due_date)
-        submission = self._apply_round(request, str(principal.id), revised, self._repository.resubmit)
-        request.state = "pending"
-        request.conditions = None
+        revision = revise_work_request(
+            self._domain_request(request),
+            ReviseWorkRequest(
+                actor_id=str(principal.id),
+                expected_version=expected_version,
+                mode="resubmit",
+                title=title,
+                description=description,
+                due_date=due_date,
+                clear_due_date=clear_due_date,
+                exact_replay=False,
+            ),
+        )
+        submission = self._apply_round(request, str(principal.id), revision, self._repository.resubmit)
         self._repository.append_audit(
             request.id, str(principal.id), "work_request.resubmitted", {"submission_version": submission.submission_version}
         )
@@ -480,18 +469,31 @@ class WorkRequestApplication:
         request = self._repository.request(request_id, lock=True)
         if request is None:
             raise WorkRequestError("work request was not found")
-        if not self._is_requester(principal, request):
-            raise WorkRequestError("only the requester may withdraw")
-        if request.version != expected_version:
-            raise WorkRequestError("work request version is stale")
-        if request.state not in {"pending", "negotiating"}:
-            raise WorkRequestError("only an open work request can be withdrawn")
-        request.state = "withdrawn"
-        request.conditions = None
-        request.version += 1
+        withdrawal = withdraw_work_request(
+            self._domain_request(request),
+            WithdrawWorkRequest(actor_id=str(principal.id), expected_version=expected_version),
+        )
+        request.state = withdrawal.request.state
+        if withdrawal.clear_conditions:
+            request.conditions = None
+        request.version = withdrawal.request.version
         self._repository.withdraw(request, str(principal.id))
         self._repository.append_audit(request.id, str(principal.id), "work_request.withdrawn", {})
         return self._view(request)
+
+    @staticmethod
+    def _domain_request(request: Any) -> WorkRequest:
+        return WorkRequest(
+            id=str(request.id),
+            assignee_id=str(request.assignee_id),
+            state=str(request.state),
+            version=int(request.version),
+            requester_id=str(request.requester_id),
+            promoted_by_member_id=getattr(request, "promoted_by_member_id", None),
+            title=str(request.title),
+            description=request.description,
+            due_date=request.due_date,
+        )
 
     def timeline(self, principal: Principal, request_id: UUID) -> dict[str, Any]:
         self._require(principal, WORK_REQUEST_READ)

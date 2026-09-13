@@ -241,7 +241,7 @@ def test_action_preview_links_the_attachments_the_turn_read_and_hides_them_from_
 
     with make_session_factory(settings.database_url)() as session:
         record = session.get(ActionItemRecord, UUID(proposed["action_id"]))
-        presenter = ActionPresenter(session, evidence_reader=lambda principal, turn_id: application._action_material_evidence(session, principal, turn_id))
+        presenter = ActionPresenter(session, services=application._action_services(session), evidence_reader=lambda principal, turn_id: application._action_material_evidence(session, principal, turn_id))
         assert any(row["id"] == "evidence" for row in presenter.present(record, mina)["preview"])
         # Jiho holds no assignment on Mina's Task, so the linked evidence leaves the preview entirely.
         rows = presenter.present(record, jiho)["preview"]

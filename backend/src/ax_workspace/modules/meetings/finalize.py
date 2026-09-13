@@ -9,6 +9,7 @@ SCAX-SPEC-004 §8. 회의 중 배치(`batch.py`)와 같은 뼈대이고 최종�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from copy import deepcopy
 from datetime import date, timedelta
 import json
 from pathlib import Path
@@ -66,6 +67,21 @@ class FinalNotes:
     agendas: list[FinalAgenda]
 
 
+@dataclass(frozen=True, slots=True)
+class FinalizationContext:
+    covered_ms: tuple[int, int]
+    meeting_title: str | None
+    existing_task_titles: frozenset[str]
+    next_meeting_starts_on: date | None
+
+
+@dataclass(frozen=True, slots=True)
+class FinalizationOutcome:
+    """The normalized notes payload the application should commit atomically."""
+
+    notes: FinalNotes
+
+
 def parse_final_output(body: str) -> FinalNotes:
     """스키마 1단 — JSON · 구조 · 타입 · enum · 길이. 부분 통과가 없다."""
     try:
@@ -119,7 +135,7 @@ def _parse_date(value: str | None) -> date | None:
         raise SchemaViolation(f"due_candidate 가 날짜가 아닙니다: {value}") from error
 
 
-def bind_evidence(notes: FinalNotes, covered_ms: tuple[int, int]) -> None:
+def _bind_evidence(notes: FinalNotes, covered_ms: tuple[int, int]) -> None:
     """근거는 실재하는 확정 발화 구간만 — 밖이면 **그 근거만** 떨어진다. 본문은 산다 (§8-5 근거 결박)."""
     for agenda in notes.agendas:
         agenda.lines = [
@@ -127,7 +143,7 @@ def bind_evidence(notes: FinalNotes, covered_ms: tuple[int, int]) -> None:
         ]
 
 
-def stamp_source_lines(notes: FinalNotes, *, meeting_title: str | None) -> None:
+def _stamp_source_lines(notes: FinalNotes, *, meeting_title: str | None) -> None:
     """후보 설명의 마지막 줄에 출처를 붙인다 — 받는 사람이 회의에 없었어도 이 글만 읽고 시작할 수 있게 (§8.2).
 
     AI 가 이미 붙였으면 그대로 둔다: 두 번 붙이지 않는다.
@@ -175,6 +191,51 @@ def is_already_work(todo_title: str, existing_titles: set[str]) -> bool:
         if candidate == existing or candidate in existing or existing in candidate:
             return True
     return False
+
+
+def _prepare_final_notes_in_place(
+    notes: FinalNotes,
+    *,
+    covered_ms: tuple[int, int],
+    meeting_title: str | None,
+    existing_task_titles: set[str],
+    next_meeting_starts_on: date | None,
+) -> FinalNotes:
+    """Apply the Meeting-owned rules to parsed provider output before persistence.
+
+    The service supplies facts from repositories; this function alone decides which evidence and
+    follow-ups survive, how due dates are inferred, and whether an AI title may be retained.
+    """
+    _bind_evidence(notes, covered_ms)
+    _stamp_source_lines(notes, meeting_title=meeting_title or notes.title_candidate)
+    if meeting_title:
+        notes.title_candidate = None
+
+    seen_titles = set(existing_task_titles)
+    for agenda in notes.agendas:
+        kept: list[FinalTodo] = []
+        for todo in agenda.todos:
+            if is_already_work(todo.title, seen_titles):
+                continue
+            todo.due_candidate = resolve_due(
+                todo,
+                next_meeting_starts_on=next_meeting_starts_on,
+            )
+            kept.append(todo)
+            seen_titles.add(normalize_title(todo.title))
+        agenda.todos = kept
+    return notes
+
+
+def finalize_notes(notes: FinalNotes, context: FinalizationContext) -> FinalizationOutcome:
+    prepared = _prepare_final_notes_in_place(
+        deepcopy(notes),
+        covered_ms=context.covered_ms,
+        meeting_title=context.meeting_title,
+        existing_task_titles=set(context.existing_task_titles),
+        next_meeting_starts_on=context.next_meeting_starts_on,
+    )
+    return FinalizationOutcome(notes=prepared)
 
 
 # --- 프롬프트 -----------------------------------------------------------------

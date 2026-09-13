@@ -6,35 +6,26 @@ ledger keeps the artifact identity, integrity hash, provenance, and where it is 
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, date
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from ax_workspace.modules.organization_access.domain import Principal, TASK_READ, TASK_SELF_MANAGE
-from ax_workspace.modules.work.application import TaskAccessDenied, TaskError, TaskRepository
+from ax_workspace.modules.work.errors import TaskAccessDenied
 from ax_workspace.modules.work.material_extraction import (
     MaterialExtractionJob,
     MaterialExtractionQueue,
     MaterialExtractionRepository,
     extraction_view,
 )
-
-MATERIAL_KINDS = frozenset({"input", "output"})
-#: A link is only a link when it can be opened. Anything else is a mistake or an attempt at something else.
-LINK_SCHEMES = frozenset({"http", "https"})
-#: The things a Task may point at through a material binding, each resolved by its own module's authorized read.
-#: SCAX Tasks are deliberately not here: pointing at earlier work is a `참고 업무` reference with a real foreign key,
-#: not an attachment that happens to name a task.
-REFERENCE_TYPES = frozenset({"meeting"})
-MAX_MATERIAL_BYTES = 25 * 1024 * 1024
-
-
-class MaterialError(TaskError):
-    pass
-
-
-class MaterialNotFound(MaterialError):
-    pass
+from ax_workspace.modules.work.material_values import (
+    MATERIAL_KINDS,
+    MAX_MATERIAL_BYTES,
+    MaterialError,
+    MaterialLink,
+    MaterialNotFound,
+    MaterialReference,
+    MaterialRole,
+)
 
 
 class MaterialStorage(Protocol):
@@ -53,22 +44,17 @@ class AttachmentRepository(Protocol):
     def unbind(self, binding: Any) -> None: ...
 
 
-def _link_url(url: str) -> str:
-    """A material link must be openable and must carry no secret of its own."""
-    from urllib.parse import urlsplit
-
-    cleaned = (url or "").strip()
-    if not cleaned:
-        raise MaterialError("material url is required")
-    parts = urlsplit(cleaned)
-    if parts.scheme.lower() not in LINK_SCHEMES or not parts.netloc:
-        raise MaterialError("material url must be an http(s) address")
-    if "@" in parts.netloc:
-        # Credentials belong to the connected service, never to a material row.
-        raise MaterialError("material url must not carry credentials")
-    if len(cleaned) > 500:
-        raise MaterialError("material url is too long")
-    return cleaned
+class TaskRepository(Protocol):
+    def task(self, task_id: UUID, member_id: str, *, lock: bool = False) -> Any: ...
+    def task_by_id(self, task_id: UUID) -> Any: ...
+    def touch(self, task: Any) -> None: ...
+    def record_activity(
+        self,
+        task: Any,
+        actor_id: str,
+        event_kind: str,
+        summary: str,
+    ) -> None: ...
 
 
 def store_file(
@@ -112,19 +98,6 @@ class ResourceReferencePort(Protocol):
     """
 
     def title(self, principal: Principal, resource_type: str, resource_id: str) -> str | None: ...
-
-
-def _registered_within(attachment: Any, since: date | None, until: date | None) -> bool:
-    """자료가 등록된 때가 그 사이인가. 시작은 포함하고 끝은 그날까지 포함한다 — 사람이 날짜를 말하는 방식이다."""
-    if since is None and until is None:
-        return True
-    when = getattr(attachment, "created_at", None)
-    if when is None:
-        return False
-    day = when.astimezone(UTC).date()
-    if since is not None and day < since:
-        return False
-    return not (until is not None and day > until)
 
 
 class ReadableWorkPort(Protocol):
@@ -176,23 +149,23 @@ class TaskMaterialApplication:
         """
         self._require(principal, TASK_SELF_MANAGE)
         task = self._tasks.task(task_id, str(principal.id), lock=True)
-        if kind not in MATERIAL_KINDS:
-            raise MaterialError("material kind must be input or output")
-        clean_url = _link_url(url)
-        clean_label = label.strip()[:300]
-        if not clean_label:
-            raise MaterialError("material label is required")
+        role = MaterialRole.create(kind)
+        link = MaterialLink.create(url, label)
         attachment = self._attachments.add_link(
-            url=clean_url, name=clean_label,
+            url=link.url, name=link.label,
             provenance=f"link by {principal.id} on task {task.id}", uploaded_by=str(principal.id),
         )
         binding = self._attachments.bind(
-            attachment_id=attachment.id, context_type="task", context_id=str(task.id), role=kind, bound_by=str(principal.id)
+            attachment_id=attachment.id,
+            context_type="task",
+            context_id=str(task.id),
+            role=role.value,
+            bound_by=str(principal.id),
         )
         self._moved(task)
         self._tasks.record_activity(
             task, str(principal.id), "task.material_attached",
-            f"{'참고 자료' if kind == 'input' else '산출물'} 링크 연결: {clean_label}",
+            f"{'참고 자료' if role is MaterialRole.INPUT else '산출물'} 링크 연결: {link.label}",
         )
         # A link has no content to extract, so no extraction is requested and search reports it as unreadable.
         return self._moved_view(task, binding, attachment, None, principal=principal, references=self._references)
@@ -201,29 +174,31 @@ class TaskMaterialApplication:
         """Point a Task at another thing inside SCAX, but only at something this person may already read."""
         self._require(principal, TASK_SELF_MANAGE)
         task = self._tasks.task(task_id, str(principal.id), lock=True)
-        if kind not in MATERIAL_KINDS:
-            raise MaterialError("material kind must be input or output")
-        if resource_type == "task":
-            raise MaterialError("업무는 자료가 아니라 참고 업무로 연결하세요")
-        if resource_type not in REFERENCE_TYPES:
-            raise MaterialError(f"material reference type must be one of {sorted(REFERENCE_TYPES)}")
+        role = MaterialRole.create(kind)
+        reference = MaterialReference.create(resource_type, resource_id)
         if self._references is None:
             raise MaterialError("material references are not available")
-        title = self._references.title(principal, resource_type, str(resource_id))
+        title = self._references.title(principal, reference.resource_type, reference.resource_id)
         if title is None:
             # Refusing the same way for "not readable" and "not there" leaves nothing to probe for.
             raise MaterialNotFound("referenced resource was not found")
         attachment = self._attachments.add_reference(
-            resource_type=resource_type, resource_id=str(resource_id), name=title,
+            resource_type=reference.resource_type,
+            resource_id=reference.resource_id,
+            name=title,
             provenance=f"reference by {principal.id} on task {task.id}", uploaded_by=str(principal.id),
         )
         binding = self._attachments.bind(
-            attachment_id=attachment.id, context_type="task", context_id=str(task.id), role=kind, bound_by=str(principal.id)
+            attachment_id=attachment.id,
+            context_type="task",
+            context_id=str(task.id),
+            role=role.value,
+            bound_by=str(principal.id),
         )
         self._moved(task)
         self._tasks.record_activity(
             task, str(principal.id), "task.material_attached",
-            f"{'참고 자료' if kind == 'input' else '산출물'} 연결: {title}",
+            f"{'참고 자료' if role is MaterialRole.INPUT else '산출물'} 연결: {title}",
         )
         return self._moved_view(task, binding, attachment, None, principal=principal, references=self._references)
 

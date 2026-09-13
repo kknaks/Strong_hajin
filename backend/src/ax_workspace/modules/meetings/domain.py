@@ -1,6 +1,7 @@
 """Meeting-owned errors, the six statuses, and the invariants that hold for every transport."""
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
 
 
@@ -126,6 +127,52 @@ def ensure_agenda_source(value: object) -> str:
     if source not in AGENDA_SOURCES:
         raise MeetingError(f"agenda source must be one of {sorted(AGENDA_SOURCES)}")
     return source
+
+
+def validate_meeting_schedule(starts_at: datetime, ends_at: datetime) -> None:
+    """Meeting times are an aware, increasing interval before persistence is involved."""
+    if not isinstance(starts_at, datetime) or not isinstance(ends_at, datetime):
+        raise MeetingError("meeting start and end are required")
+    if starts_at.tzinfo is None or ends_at.tzinfo is None:
+        raise MeetingError("meeting times must include a timezone")
+    if starts_at >= ends_at:
+        raise MeetingError("meeting start must be before end")
+
+
+def normalize_optional_text(value: object, *, label: str, limit: int) -> str | None:
+    """Treat an empty command field as absent and enforce its domain length."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if len(text) > limit:
+        raise MeetingError(f"{label} must be at most {limit} characters")
+    return text
+
+
+def normalize_external_attendees(values: list[object]) -> tuple[str, ...]:
+    """External attendees are distinct display names, never member identities."""
+    names: list[str] = []
+    for value in values:
+        name = str(value or "").strip()
+        if not name:
+            continue
+        if len(name) > 100:
+            raise MeetingError("external attendee name must be at most 100 characters")
+        if name not in names:
+            names.append(name)
+    return tuple(names)
+
+
+def normalize_agenda_order(value: object) -> int:
+    try:
+        order = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as error:
+        raise MeetingError("agenda order must be a whole number") from error
+    if order < 1:
+        raise MeetingError("agenda order starts at 1")
+    return order
 
 
 def is_auto_cancellable(

@@ -3,15 +3,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Literal, Protocol, get_args
+from typing import Any, Protocol
 from uuid import UUID
 
 from ax_workspace.modules.organization_access.domain import Principal
-from ax_workspace.modules.work.material_extraction import MAX_SEARCH_HITS, MaterialExtractionJob, MaterialExtractionQueue, MaterialExtractionRepository, MaterialRetriever, extraction_view, projection_failure
-from ax_workspace.modules.work.materials import MaterialError, MaterialNotFound, _registered_within
+from ax_workspace.modules.work.material_extraction import MaterialExtractionJob, MaterialExtractionQueue, MaterialExtractionRepository, MaterialRetriever, extraction_view, projection_failure
+from ax_workspace.modules.work.material_search_policy import (
+    RESOURCE_TYPES as RESOURCE_TYPES,
+    MaterialProjectionContext,
+    MaterialSearchQuery,
+    MaterialResourceType as MaterialResourceType,
+    is_registered_within,
+    project_material,
+)
+from ax_workspace.modules.work.materials import MaterialNotFound
 
-MaterialResourceType = Literal["task", "work_request", "personal_folder", "team_folder", "meeting", "report"]
-RESOURCE_TYPES = frozenset(get_args(MaterialResourceType))
 MAX_UNAVAILABLE = 20
 MAX_BACKFILL = 20
 
@@ -36,18 +42,17 @@ class MaterialSearchApplication:
     def search(self, principal: Principal, query: str, *, limit: int = 5, resource_types: list[str] | None = None,
                resource_type: str | None = None, resource_id: str | None = None, material_id: UUID | None = None,
                registered_from: date | None = None, registered_until: date | None = None) -> dict[str, Any]:
-        cleaned = " ".join(query.split())
-        if not cleaned:
-            raise MaterialError("search query is required")
-        kinds = set(resource_types) if resource_types is not None else set(RESOURCE_TYPES)
-        if not kinds or not kinds <= RESOURCE_TYPES:
-            raise MaterialError("unknown material resource type")
-        if (resource_type is None) != (resource_id is None):
-            raise MaterialError("resource_type and resource_id must be supplied together")
-        if resource_type is not None:
-            if resource_type not in kinds:
-                raise MaterialError("resource anchor is outside resource_types")
-            kinds = {resource_type}
+        search_query = MaterialSearchQuery.create(
+            query,
+            limit=limit,
+            resource_types=resource_types,
+            resource_type=resource_type,
+            resource_id=resource_id,
+        )
+        cleaned = search_query.query
+        kinds = set(search_query.resource_types)
+        resource_type = search_query.resource_type
+        resource_id = search_query.resource_id
         # Owner modules decide the candidate set before the extraction/index repository sees any ids.
         sources = self._owners.sources(principal, kinds, resource_type=resource_type, resource_id=resource_id, material_id=material_id)
         materials: dict[UUID, dict[str, Any]] = {}
@@ -57,7 +62,11 @@ class MaterialSearchApplication:
                 continue
             if material_id is not None and attachment.id != material_id:
                 continue
-            if not _registered_within(attachment, registered_from, registered_until):
+            if not is_registered_within(
+                getattr(attachment, "created_at", None),
+                since=registered_from,
+                until=registered_until,
+            ):
                 continue
             entry = materials.setdefault(attachment.id, {"attachment": attachment, "contexts": []})
             if source.context not in entry["contexts"]:
@@ -69,8 +78,20 @@ class MaterialSearchApplication:
         extractions = self._extractions.for_attachments(list(materials))
         # Older owner upload paths did not request projections. Discover only authorized files, in a bounded batch.
         if self._extraction_queue is not None:
-            missing = sorted((identifier for identifier, entry in materials.items()
-                              if identifier not in extractions and entry["attachment"].source_kind in {"file", "native_revision"}), key=str)
+            missing = sorted(
+                (
+                    identifier
+                    for identifier, entry in materials.items()
+                    if project_material(
+                        _projection_context(
+                            entry["attachment"],
+                            extractions.get(identifier),
+                            selected=material_id is not None,
+                        )
+                    ).needs_backfill
+                ),
+                key=str,
+            )
             for identifier in missing[:MAX_BACKFILL]:
                 extraction = self._extractions.request(materials[identifier]["attachment"])
                 extractions[identifier] = extraction
@@ -86,13 +107,14 @@ class MaterialSearchApplication:
                     "integrity_ref": attachment.integrity_ref, "source_contexts": contexts,
                     "extraction": extraction_view(extraction)}
             metadata[identifier] = view
-            statuses = {"completed", "partial"} if material_id is not None else {"completed"}
-            if (extraction is not None and extraction.status in statuses and projection_failure(extraction) is None
-                    and extraction.integrity_ref == attachment.integrity_ref):
+            projection = project_material(
+                _projection_context(attachment, extraction, selected=material_id is not None)
+            )
+            if projection.searchable and extraction is not None:
                 searchable[extraction.id] = identifier
             else:
-                unavailable.append({**view, "reason": "extraction" if attachment.source_kind in {"file", "native_revision"} else attachment.source_kind})
-        hits = self._retriever.search(list(searchable), cleaned, limit=max(1, min(limit, MAX_SEARCH_HITS)))
+                unavailable.append({**view, "reason": projection.unavailable_reason})
+        hits = self._retriever.search(list(searchable), cleaned, limit=search_query.limit)
         locators = self._extractions.chunk_contexts([hit.chunk_id for hit in hits])
         results = []
         for hit in hits:
@@ -111,3 +133,19 @@ class MaterialSearchApplication:
                 "unavailable_materials": unavailable[:MAX_UNAVAILABLE], "unavailable_materials_count": len(unavailable),
                 "unavailable_truncated": len(unavailable) > MAX_UNAVAILABLE,
                 **({"selected_material": metadata[material_id]} if material_id is not None else {})}
+
+
+def _projection_context(
+    attachment: Any,
+    extraction: Any | None,
+    *,
+    selected: bool,
+) -> MaterialProjectionContext:
+    return MaterialProjectionContext(
+        source_kind=attachment.source_kind,
+        attachment_integrity_ref=attachment.integrity_ref,
+        extraction_status=None if extraction is None else extraction.status,
+        extraction_integrity_ref=None if extraction is None else extraction.integrity_ref,
+        projection_failed=extraction is not None and projection_failure(extraction) is not None,
+        selected=selected,
+    )

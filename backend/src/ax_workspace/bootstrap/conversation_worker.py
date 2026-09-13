@@ -106,13 +106,18 @@ class ConversationWorker:
             session.commit()
             return messages
 
+    def _repository(self, session: Any, queue: ConversationExecutionQueue) -> SqlAlchemyConversationRepository:
+        return SqlAlchemyConversationRepository(
+            session, queue, actions=self._application._action_repository(session)
+        )
+
     def _claim_message(
         self,
         message: ConversationQueueMessage,
     ) -> ClaimedTurn | None:
         with self._sessions() as session:
             queue = self._queue_factory(session)
-            repository = SqlAlchemyConversationRepository(session, queue)
+            repository = self._repository(session, queue)
             owner_id = repository.owner_for_execution(message.execution)
             if owner_id is None:
                 queue.archive(message.message_id, message.lease_token)
@@ -198,7 +203,7 @@ class ConversationWorker:
             elapsed += cancel_poll
             with self._sessions() as session:
                 queue = self._queue_factory(session)
-                if SqlAlchemyConversationRepository(session, queue).is_cancelled(claim.execution):
+                if self._repository(session, queue).is_cancelled(claim.execution):
                     cancel.set()
                 if elapsed >= interval:
                     elapsed = 0.0
@@ -209,7 +214,7 @@ class ConversationWorker:
     def apply_event(self, execution: ConversationExecution, event: Any) -> None:
         """Persist one observed provider event in its own short transaction (called from the provider thread)."""
         with self._sessions() as session:
-            SqlAlchemyConversationRepository(session, self._queue_factory(session)).apply_event(execution, event)
+            self._repository(session, self._queue_factory(session)).apply_event(execution, event)
             session.commit()
 
     def _complete(self, claim: ClaimedTurn, result: Any) -> None:
@@ -217,7 +222,7 @@ class ConversationWorker:
             queue = self._queue_factory(session)
             # Domain result first (idempotent on turn state); the transport write is fenced by our lease token and
             # is simply skipped when the lease was reclaimed - the next claimer sees the terminal turn and finalizes.
-            SqlAlchemyConversationRepository(session, queue).complete_execution(
+            self._repository(session, queue).complete_execution(
                 claim.execution,
                 result,
             )
@@ -227,7 +232,7 @@ class ConversationWorker:
     def _handle_failure(self, claim: ClaimedTurn, error: ProviderFailure) -> None:
         with self._sessions() as session:
             queue = self._queue_factory(session)
-            terminal = SqlAlchemyConversationRepository(session, queue).fail_or_retry_execution(
+            terminal = self._repository(session, queue).fail_or_retry_execution(
                 claim.execution,
                 self._settings.conversation_queue_max_attempts,
                 error,
@@ -236,7 +241,7 @@ class ConversationWorker:
                 queue.archive(claim.message_id, claim.lease_token)
             else:
                 # The user sees `retrying` (not a silent stall) while the transport backs off.
-                SqlAlchemyConversationRepository(session, queue).mark_retrying(claim.execution)
+                self._repository(session, queue).mark_retrying(claim.execution)
                 delay = min(self._settings.conversation_queue_visibility_timeout, 2 ** max(0, claim.read_count - 1))
                 queue.release(claim.message_id, claim.lease_token, delay_seconds=delay, error=str(error)[:200])
             session.commit()

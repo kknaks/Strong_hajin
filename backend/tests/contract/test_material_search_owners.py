@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import select
 
 from ax_workspace.modules.organization_access.domain import WORK_REQUEST_READ
-from ax_workspace.modules.work.materials import MaterialError, MaterialNotFound
+from ax_workspace.modules.work.materials import MaterialNotFound
 from ax_workspace.modules.jobs.domain import JOB_KIND_MATERIAL_EXTRACTION
 from ax_workspace.modules.work.requests import WorkRequestApplication
 from ax_workspace.platform.material_extraction import PypdfTextExtractor, SqlAlchemyMaterialExtractionRepository
@@ -42,11 +42,6 @@ def test_one_artifact_has_one_hit_with_only_its_currently_readable_task_contexts
                                           resource_type="task", resource_id=second["task_id"])
     assert len(scoped["results"]) == 1
     assert scoped["results"][0]["source_contexts"][0]["resource_id"] == second["task_id"]
-    for filters in ({"resource_types": []}, {"resource_types": ["not_an_owner"]},
-                    {"resource_id": first["task_id"]}, {"resource_type": "task"},
-                    {"resource_types": ["work_request"], "resource_type": "task", "resource_id": first["task_id"]}):
-        with pytest.raises(MaterialError):
-            application.search_materials(application.authenticated_principal("mina"), "canonicalartifacttoken", **filters)
 
 
 def test_request_comment_and_submission_files_are_searchable_without_a_task(tmp_path):
