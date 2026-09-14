@@ -871,6 +871,10 @@ class McpReportsFacade:
                 rows.append(member)
         return rows
 
+    #: 히스토리 목록의 기본 10개는 화면 미리보기용이다 — 이 검색은 그보다 훨씬 넓게, 사실상 사용자의
+    #: 전체 대화를 대상으로 훑어야 한다. 그래도 무한은 아니다: 한 사람의 대화 수에 현실적인 상한을 둔다.
+    _SEARCH_CONVERSATION_SCOPE = 200
+
     def search_conversation_turns(self, query: str, limit: int = 5) -> ConversationSearchResult:
         """Find prior user Turns and remember exactly which cross-conversation sources this Turn observed."""
         needle = query.strip().casefold()
@@ -878,8 +882,10 @@ class McpReportsFacade:
             raise ValueError("conversation search query is required")
         bounded_limit = max(1, min(int(limit), 20))
         matches: list[dict[str, Any]] = []
-        for summary in self._application.conversations(self.principal):
-            detail = self._application.conversation(self.principal, UUID(str(summary["conversation_id"])))
+        for summary in self._application.conversations(self.principal, limit=self._SEARCH_CONVERSATION_SCOPE):
+            # A full-text search over one conversation's own history must not itself be windowed to the recent
+            # page a screen would show — that would silently miss a match sitting earlier in a long conversation.
+            detail = self._application.conversation(self.principal, UUID(str(summary["conversation_id"])), message_limit=None)
             for message in reversed(detail.get("messages") or []):
                 body = str(message.get("body") or "").strip()
                 if message.get("role") != "user" or not message.get("turn_id"):

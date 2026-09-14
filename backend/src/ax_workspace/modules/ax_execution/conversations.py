@@ -16,6 +16,12 @@ from ax_workspace.modules.ax_execution.answer_documents import project_answer_do
 from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, ACTION_READ, Principal
 
 
+#: 이력이 쌓일수록 목록 조회 자체가 끝없이 커지지 않도록 — 「최근 몇 개」만 연다.
+DEFAULT_CONVERSATION_LIST_LIMIT = 10
+#: 한 대화 안에서 한 번에 들고 오는 메시지 수. 나머지는 스크롤을 올릴 때 `before_sequence` 커서로 더 가져온다.
+DEFAULT_MESSAGE_WINDOW = 50
+
+
 class ConversationError(Exception):
     pass
 
@@ -86,11 +92,20 @@ class ConversationExecutionQueue(Protocol):
 class ConversationRepository(Protocol):
     def create(self, owner_id: str, title: str) -> Any: ...
     def conversation(self, conversation_id: UUID, owner_id: str, *, lock: bool = False) -> Any | None: ...
-    def list_for(self, owner_id: str) -> list[Any]: ...
+    def list_for(self, owner_id: str, *, limit: int = 10) -> list[Any]: ...
     def accept_fragment(self, conversation: Any, body: str, context: list[dict[str, str | bool]], idempotency_key: str | None, follow_up_candidate_id: UUID | None = None) -> tuple[Any, Any | None, bool, int]: ...
     def cancel_active(self, conversation: Any, expected_version: int) -> Any: ...
     def retry_turn(self, conversation: Any, failed_turn_id: UUID, actor_id: str) -> Any: ...
-    def view(self, conversation: Any, *, include_actions: bool = False, principal: Any = None) -> dict[str, Any]: ...
+    def view(
+        self,
+        conversation: Any,
+        *,
+        include_actions: bool = False,
+        principal: Any = None,
+        message_limit: int | None = None,
+        before_sequence: int | None = None,
+        list_mode: bool = False,
+    ) -> dict[str, Any]: ...
 
 
 class AnswerResourcePort(Protocol):
@@ -125,11 +140,27 @@ class ConversationApplication:
         title = ConversationCreateInput(title=title).title
         return self._view(principal, self._repository.create(str(principal.id), title or "새 대화"))
 
-    def list(self, principal: Principal) -> list[ConversationView]:
-        return [self._view(principal, item) for item in self._repository.list_for(str(principal.id))]
+    def list(self, principal: Principal, *, limit: int = DEFAULT_CONVERSATION_LIST_LIMIT) -> list[ConversationView]:
+        # A list row only ever renders title/excerpt/summary — never a turn's tool calls, graph steps, or answer
+        # resources. `list_mode` skips fetching and reauthorizing those entirely instead of opening every row's
+        # full detail just to throw it away.
+        return [
+            self._view(principal, item, list_mode=True)
+            for item in self._repository.list_for(str(principal.id), limit=limit)
+        ]
 
-    def get(self, principal: Principal, conversation_id: UUID) -> ConversationView:
-        return self._view(principal, self._owned(principal, conversation_id))
+    def get(
+        self,
+        principal: Principal,
+        conversation_id: UUID,
+        *,
+        message_limit: int = DEFAULT_MESSAGE_WINDOW,
+        before_sequence: int | None = None,
+    ) -> ConversationView:
+        return self._view(
+            principal, self._owned(principal, conversation_id),
+            message_limit=message_limit, before_sequence=before_sequence,
+        )
 
     def target_title(self, principal: Principal, conversation_id: UUID) -> str:
         """Preview a control target without recursively rendering its action cards."""
@@ -177,8 +208,19 @@ class ConversationApplication:
         turn = self._repository.retry_turn(conversation, turn_id, str(principal.id))
         return {"conversation_id": str(conversation.id), "turn_id": str(turn.id), "retry_of_turn_id": str(turn.retry_of_turn_id)}
 
-    def _view(self, principal: Principal, conversation: Any) -> ConversationView:
-        view = self._repository.view(conversation, include_actions=ACTION_READ in principal.capabilities, principal=principal)
+    def _view(
+        self,
+        principal: Principal,
+        conversation: Any,
+        *,
+        message_limit: int | None = None,
+        before_sequence: int | None = None,
+        list_mode: bool = False,
+    ) -> ConversationView:
+        view = self._repository.view(
+            conversation, include_actions=ACTION_READ in principal.capabilities, principal=principal,
+            message_limit=message_limit, before_sequence=before_sequence, list_mode=list_mode,
+        )
         # Approval commands come from the ledger + the caller's current capability, never inferred by the client.
         for action in view.get("actions", []):
             if "commands" not in action:

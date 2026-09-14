@@ -152,7 +152,7 @@ from ax_workspace.modules.meetings.stream import (
     TranscriptPartialFrame,
 )
 from ax_workspace.modules.work.projects import ProjectAccessDenied, ProjectError, ProjectNotFound
-from ax_workspace.modules.ax_execution.conversations import ConversationError, ConversationQueueOverflow
+from ax_workspace.modules.ax_execution.conversations import DEFAULT_CONVERSATION_LIST_LIMIT, ConversationError, ConversationQueueOverflow
 from ax_workspace.modules.ax_execution.actions import ActionAccessDenied, ActionCapabilityDenied, ActionError
 from ax_workspace.bootstrap.seed import DEMO_PASSWORD, SEEDED_MEMBERS
 from ax_workspace.bootstrap.settings import Settings
@@ -986,17 +986,24 @@ def create_app(
                 raise _runtime_error(error) from error
 
         @app.get("/api/conversations")
-        def conversations(principal: Principal = Depends(developer_principal)) -> list[ConversationView]:
-            return app.state.workflow_application.conversations(principal)
+        def conversations(
+            principal: Principal = Depends(developer_principal),
+            limit: int = Query(default=DEFAULT_CONVERSATION_LIST_LIMIT, ge=1, le=100),
+        ) -> list[ConversationView]:
+            return app.state.workflow_application.conversations(principal, limit=limit)
 
         @app.post("/api/conversations", status_code=status.HTTP_201_CREATED)
         def create_conversation(request: CreateConversationRequest, principal: Principal = Depends(developer_principal)) -> ConversationView:
             return app.state.workflow_application.create_conversation(principal, request.title)
 
         @app.get("/api/conversations/{conversation_id}")
-        def conversation(conversation_id: UUID, principal: Principal = Depends(developer_principal)) -> ConversationView:
+        def conversation(
+            conversation_id: UUID,
+            principal: Principal = Depends(developer_principal),
+            before_sequence: int | None = Query(default=None, ge=0),
+        ) -> ConversationView:
             try:
-                return app.state.workflow_application.conversation(principal, conversation_id)
+                return app.state.workflow_application.conversation(principal, conversation_id, before_sequence=before_sequence)
             except Exception as error:
                 raise _runtime_error(error) from error
 

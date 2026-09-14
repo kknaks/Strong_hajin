@@ -15,6 +15,10 @@ ACCEPTANCE_DATABASE_URL ?= postgresql+psycopg://ax:ax@localhost:54329/ax_test_ac
 ACCEPTANCE_MANAGE_POSTGRES ?= 1
 E2E_API_PORT ?= 8001
 E2E_FRONTEND_PORT ?= 5176
+# 기본은 이 기기에서만 연다. 내부망 다른 기기에서 접근하려면 0.0.0.0으로 띄운다 — 그만큼 이 기기의
+# 방화벽/네트워크가 허용하는 누구나 닿을 수 있다는 뜻이므로 신뢰된 내부망에서만 그렇게 연다.
+E2E_API_HOST ?= 127.0.0.1
+E2E_FRONTEND_HOST ?= 127.0.0.1
 ACCEPTANCE_API_PORT ?= 18111
 ACCEPTANCE_FRONTEND_PORT ?= 15186
 PROTECTED_IMAGE ?= scax-protected:test
@@ -138,10 +142,10 @@ storybook-build:
 	cd frontend && npm run build-storybook
 
 api-e2e:
-	@$(SONIOX_ENV) $(THECONNECT_ENV) cd backend && DATABASE_URL="$(DATABASE_URL)" uv run uvicorn ax_workspace.entrypoints.http:app --host 127.0.0.1 --port "$(E2E_API_PORT)"
+	@$(SONIOX_ENV) $(THECONNECT_ENV) cd backend && DATABASE_URL="$(DATABASE_URL)" uv run uvicorn ax_workspace.entrypoints.http:app --host "$(E2E_API_HOST)" --port "$(E2E_API_PORT)"
 
 frontend-e2e:
-	cd frontend && VITE_API_TARGET="http://127.0.0.1:$(E2E_API_PORT)" npm run dev -- --host 127.0.0.1 --port "$(E2E_FRONTEND_PORT)"
+	cd frontend && VITE_API_TARGET="http://127.0.0.1:$(E2E_API_PORT)" npm run dev -- --host "$(E2E_FRONTEND_HOST)" --port "$(E2E_FRONTEND_PORT)"
 
 # `make acceptance-e2e` runs every browser journey except `e2e-meeting-live-transcript`, which needs a real Soniox
 # credential and a macOS fake-microphone recording; run that one on its own against `make local-stack`.

@@ -275,7 +275,7 @@
         "conversations"
       ],
       "acceptance_evidence": "docs/unified-operations.md의 R3a~R3f 경로·권한·동등성 검증",
-      "http_signature": "(principal: Principal) -> list[ConversationView]"
+      "http_signature": "(principal: Principal, limit: int) -> list[ConversationView]"
     },
     {
       "http": "GET /api/conversations/{conversation_id}",
@@ -299,7 +299,7 @@
         "conversation"
       ],
       "acceptance_evidence": "docs/unified-operations.md의 R3a~R3f 경로·권한·동등성 검증",
-      "http_signature": "(conversation_id: UUID, principal: Principal) -> ConversationView"
+      "http_signature": "(conversation_id: UUID, principal: Principal, before_sequence: int | None) -> ConversationView"
     },
     {
       "http": "GET /api/daily-reports/status",
@@ -11001,6 +11001,44 @@
                   },
                   "title": "Material Evidence",
                   "type": "array"
+                },
+                "has_more_messages": {
+                  "title": "Has More Messages",
+                  "type": "boolean"
+                },
+                "first_user_message_excerpt": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "First User Message Excerpt"
+                },
+                "user_message_count": {
+                  "title": "User Message Count",
+                  "type": "integer"
+                },
+                "has_final_answer": {
+                  "title": "Has Final Answer",
+                  "type": "boolean"
+                },
+                "queued_message_count": {
+                  "title": "Queued Message Count",
+                  "type": "integer"
+                },
+                "latest_turn_state": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Latest Turn State"
                 }
               },
               "required": [
@@ -11014,7 +11052,13 @@
                 "actions",
                 "answer_resources",
                 "graph_receipts",
-                "material_evidence"
+                "material_evidence",
+                "has_more_messages",
+                "first_user_message_excerpt",
+                "user_message_count",
+                "has_final_answer",
+                "queued_message_count",
+                "latest_turn_state"
               ],
               "title": "ConversationView",
               "type": "object"
@@ -12541,6 +12585,44 @@
               },
               "title": "Material Evidence",
               "type": "array"
+            },
+            "has_more_messages": {
+              "title": "Has More Messages",
+              "type": "boolean"
+            },
+            "first_user_message_excerpt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "First User Message Excerpt"
+            },
+            "user_message_count": {
+              "title": "User Message Count",
+              "type": "integer"
+            },
+            "has_final_answer": {
+              "title": "Has Final Answer",
+              "type": "boolean"
+            },
+            "queued_message_count": {
+              "title": "Queued Message Count",
+              "type": "integer"
+            },
+            "latest_turn_state": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Latest Turn State"
             }
           },
           "required": [
@@ -12554,7 +12636,13 @@
             "actions",
             "answer_resources",
             "graph_receipts",
-            "material_evidence"
+            "material_evidence",
+            "has_more_messages",
+            "first_user_message_excerpt",
+            "user_message_count",
+            "has_final_answer",
+            "queued_message_count",
+            "latest_turn_state"
           ],
           "title": "ConversationView",
           "type": "object"
@@ -43787,6 +43875,44 @@
                   },
                   "title": "Material Evidence",
                   "type": "array"
+                },
+                "has_more_messages": {
+                  "title": "Has More Messages",
+                  "type": "boolean"
+                },
+                "first_user_message_excerpt": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "First User Message Excerpt"
+                },
+                "user_message_count": {
+                  "title": "User Message Count",
+                  "type": "integer"
+                },
+                "has_final_answer": {
+                  "title": "Has Final Answer",
+                  "type": "boolean"
+                },
+                "queued_message_count": {
+                  "title": "Queued Message Count",
+                  "type": "integer"
+                },
+                "latest_turn_state": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Latest Turn State"
                 }
               },
               "required": [
@@ -43800,7 +43926,13 @@
                 "actions",
                 "answer_resources",
                 "graph_receipts",
-                "material_evidence"
+                "material_evidence",
+                "has_more_messages",
+                "first_user_message_excerpt",
+                "user_message_count",
+                "has_final_answer",
+                "queued_message_count",
+                "latest_turn_state"
               ],
               "title": "ConversationView",
               "type": "object"
@@ -45983,6 +46115,44 @@
                   },
                   "title": "Material Evidence",
                   "type": "array"
+                },
+                "has_more_messages": {
+                  "title": "Has More Messages",
+                  "type": "boolean"
+                },
+                "first_user_message_excerpt": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "First User Message Excerpt"
+                },
+                "user_message_count": {
+                  "title": "User Message Count",
+                  "type": "integer"
+                },
+                "has_final_answer": {
+                  "title": "Has Final Answer",
+                  "type": "boolean"
+                },
+                "queued_message_count": {
+                  "title": "Queued Message Count",
+                  "type": "integer"
+                },
+                "latest_turn_state": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Latest Turn State"
                 }
               },
               "required": [
@@ -45996,7 +46166,13 @@
                 "actions",
                 "answer_resources",
                 "graph_receipts",
-                "material_evidence"
+                "material_evidence",
+                "has_more_messages",
+                "first_user_message_excerpt",
+                "user_message_count",
+                "has_final_answer",
+                "queued_message_count",
+                "latest_turn_state"
               ],
               "title": "ConversationView",
               "type": "object"

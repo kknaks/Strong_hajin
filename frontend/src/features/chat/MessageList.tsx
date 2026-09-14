@@ -61,10 +61,15 @@ export function MessageList({
   onOpenResource,
   onOpenTask,
   onOpenMeeting,
+  onLoadOlderMessages,
+  loadingOlderMessages = false,
 }: {
   personaId?: string;
   conversation: Conversation | null;
   localFragments: LocalFragment[];
+  /** Scroll-up pagination: fetch and prepend the batch just before the oldest message currently held. */
+  onLoadOlderMessages?: () => void;
+  loadingOlderMessages?: boolean;
   onDecide: (
     actionId: string,
     expectedVersion: number,
@@ -110,9 +115,20 @@ export function MessageList({
       ? latestTurn
       : undefined;
 
+  // Set right before an older-page fetch starts (while the pre-prepend DOM is still what scrollHeight measures)
+  // and consumed by the effect below once the prepended messages have actually rendered.
+  const pendingOlderLoad = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
+
   useEffect(() => {
     const element = scroller.current;
     if (!element) return;
+    const pending = pendingOlderLoad.current;
+    if (pending) {
+      // Restore the reader's exact spot: the content that grew above it must not shove it down or up.
+      pendingOlderLoad.current = null;
+      element.scrollTop = element.scrollHeight - pending.scrollHeight + pending.scrollTop;
+      return;
+    }
     const switched = lastConversationId.current !== (conversation?.conversation_id ?? null);
     lastConversationId.current = conversation?.conversation_id ?? null;
     if (switched || following) {
@@ -124,12 +140,22 @@ export function MessageList({
     }
   }, [contentKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const TOP_SLACK_PX = 48;
   const onScroll = () => {
     const element = scroller.current;
     if (!element) return;
     const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight <= BOTTOM_SLACK_PX;
     setFollowing(atBottom);
     if (atBottom) setHasNew(false);
+    if (
+      onLoadOlderMessages
+      && !loadingOlderMessages
+      && conversation?.has_more_messages
+      && element.scrollTop <= TOP_SLACK_PX
+    ) {
+      pendingOlderLoad.current = { scrollHeight: element.scrollHeight, scrollTop: element.scrollTop };
+      onLoadOlderMessages();
+    }
   };
 
   const jumpToBottom = () => {
@@ -143,6 +169,9 @@ export function MessageList({
   return (
     <div className="scax-chat__stream">
       <div className="scax-chat__messages" onScroll={onScroll} ref={scroller}>
+        {conversation && loadingOlderMessages ? (
+          <p className="scax-chat__history-loading" role="status">이전 대화 불러오는 중…</p>
+        ) : null}
         {conversation ? (
           <ConversationTimeline
             personaId={personaId}

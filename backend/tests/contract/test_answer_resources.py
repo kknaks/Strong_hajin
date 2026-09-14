@@ -154,6 +154,39 @@ def test_repeated_task_references_share_reads_only_within_the_current_projection
     assert fresh["title"] == "새 제목" and fresh["changed_since"] is True
 
 
+def test_repeated_work_request_references_share_one_read_not_two_per_citation(tmp_path) -> None:
+    """The task path above already deduplicated and single-read; the sibling kinds never got either fix."""
+    from ax_workspace.bootstrap.application import _SessionAnswerResources
+
+    client, settings, database_url, application = _stack(tmp_path)
+    request = client.post("/api/work-requests", headers=MINA, json={"title": "반복 인용될 요청", "assignee_id": "jiho"}).json()
+    principal = application.authenticated_principal("mina")
+    reference = {"resource_type": "work_request", "resource_id": request["request_id"], "resource_version": request["version"]}
+    queries: list[str] = []
+    engine = application._session_factory.kw["bind"]
+
+    def count_query(_conn, _cursor, statement, _parameters, _context, _executemany):
+        queries.append(statement)
+
+    event.listen(engine, "before_cursor_execute", count_query)
+    try:
+        with application._session_factory() as session:
+            resolver = _SessionAnswerResources(application, session)
+            [resolved] = resolver.resolve(principal, [reference])
+        # One fetch answers both title/state and version — not the two separate reads `_read`/`_current_version`
+        # used to make.
+        single_read_count = len(queries)
+        assert resolved["current_version"] == request["version"]
+        queries.clear()
+        with application._session_factory() as session:
+            resolver = _SessionAnswerResources(application, session)
+            repeated = resolver.resolve(principal, [dict(reference, turn_id=f"turn-{n}") for n in range(8)])
+        assert len(repeated) == 8, "Each turn must keep its own evidence reference"
+        assert len(queries) <= single_read_count + 2, "Repeated citations must not multiply work_request reads"
+    finally:
+        event.remove(engine, "before_cursor_execute", count_query)
+
+
 def _stack(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)

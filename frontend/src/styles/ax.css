@@ -107,13 +107,10 @@
 .scax-chat__tool-divider{width:1px;height:24px;margin:0 var(--scax-space-100);background:var(--scax-color-line)}
 .scax-chat__tool-icon{width:17px;height:17px;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round;stroke-width:1.8}
 
-/* ───────────────────────────────────────── 검색 · 히스토리 · 알림 (구 1031~1057) */
+/* ───────────────────────────────────────── 히스토리(검색 포함) (구 1031~1057) */
 .scax-chat__utility{display:flex;flex:1;min-height:0;flex-direction:column;gap:var(--scax-space-500);overflow-y:auto;padding:var(--scax-space-600) var(--scax-space-500);background:var(--scax-color-surface)}
 .scax-chat__utility-head h2{margin:0;font-size:var(--scax-text-title-size);line-height:var(--scax-text-title-lh);letter-spacing:var(--scax-text-title-ls);font-weight:var(--scax-fw-semibold)}
 .scax-chat__utility-head p{margin:var(--scax-space-150) 0 0;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size)}
-.scax-chat__utility-empty{display:grid;flex:1;min-height:240px;place-content:center;justify-items:center;gap:var(--scax-space-200);color:var(--scax-color-ink-alt);text-align:center}
-.scax-chat__utility-empty .scax-chat__tool-icon{width:34px;height:34px;margin-bottom:var(--scax-space-100);color:var(--scax-color-ink-assistive)}
-.scax-chat__utility-empty p{margin:0;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size)}
 .scax-chat__search{flex:none;height:42px;padding:0 var(--scax-space-300);font-size:var(--scax-text-label2-size)}
 .scax-chat__list-note{display:flex;align-items:center;justify-content:space-between;gap:var(--scax-space-200);margin:0;padding:var(--scax-space-200) var(--scax-space-250);border:1px dashed var(--scax-color-line);border-radius:var(--scax-radius-sm);color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size)}
 .scax-chat__list-note--error{color:var(--scax-color-danger);border-color:var(--scax-color-danger)}
@@ -125,20 +122,11 @@
 .scax-chat__history-excerpt{grid-column:1 / -1;overflow:hidden;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size);text-overflow:ellipsis;white-space:nowrap}
 .scax-chat__history button[aria-pressed="true"]{border-color:transparent;background:var(--scax-color-accent-08)}
 .scax-chat__history button[aria-pressed="true"] b{color:var(--scax-color-accent)}
-.scax-chat__notices{display:grid;gap:var(--scax-space-200);margin:0;padding:0;list-style:none}
-.scax-chat__notice-error{margin:0 0 var(--scax-space-250);padding:var(--scax-space-250) var(--scax-space-300);border-radius:var(--scax-radius-sm);background:var(--scax-color-danger-soft);color:var(--scax-color-danger);font-size:var(--scax-text-caption2-size)}
-.scax-chat__notice{display:grid;grid-template-columns:6px minmax(0,1fr) auto;align-items:start;gap:var(--scax-space-250);width:100%;padding:var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);text-align:left}
-.scax-chat__notice:hover{border-color:var(--scax-color-accent);background:var(--scax-color-accent-08)}
-.scax-chat__notice-dot{width:6px;height:6px;margin-top:var(--scax-space-150);border-radius:var(--scax-radius-pill);background:var(--scax-color-accent)}
-.scax-chat__notice--read .scax-chat__notice-dot{background:transparent}
-.scax-chat__notice>span:nth-child(2){display:grid;min-width:0;gap:var(--scax-space-100)}
-.scax-chat__notice b{overflow:hidden;color:var(--scax-color-ink);font-size:var(--scax-text-label2-size);text-overflow:ellipsis;white-space:nowrap}
-.scax-chat__notice>span span{color:var(--scax-color-ink-alt);font-size:var(--scax-text-caption2-size);line-height:1.5}
-.scax-chat__notice time{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size);white-space:nowrap}
 
 /* ──────────────────────────────────────────────── 대화 흐름 (구 558~563 · 1058~1075) */
 .scax-chat__stream{position:relative;display:flex;flex:1;min-height:0;flex-direction:column}
 .scax-chat__messages{flex:1;min-height:0;padding:var(--scax-space-400) var(--scax-space-600) var(--scax-space-500);overflow:auto}
+.scax-chat__history-loading{margin:0 0 var(--scax-space-300);text-align:center;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size)}
 .scax-chat__jump{position:absolute;left:50%;bottom:var(--scax-space-200);transform:translateX(-50%);display:inline-flex;align-items:center;gap:var(--scax-space-150);height:30px;padding:0 var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-pill);background:var(--scax-color-surface-nav-active);color:var(--scax-color-ink-inverse);font-size:var(--scax-text-caption1-size);font-weight:var(--scax-fw-bold);box-shadow:var(--scax-shadow-raised);cursor:pointer}
 .scax-chat__empty{padding:var(--scax-space-1200) var(--scax-space-400);color:var(--scax-color-ink-assistive);text-align:center;font-size:var(--scax-text-label1-size)}
 .scax-chat__start{align-items:center;justify-content:center;padding:var(--scax-space-800) var(--scax-space-500)}
@@ -283,6 +271,13 @@
 /* 답변 본문 안에서 정본을 가리키는 낱말 (구 871~872) */
 .scax-md__ref{display:inline;margin:0;padding:0;border:0;color:var(--scax-color-accent);background:transparent;font:inherit;font-weight:var(--scax-fw-semibold);text-decoration:underline;text-decoration-color:var(--scax-color-accent-20);text-underline-offset:3px;cursor:pointer}
 .scax-md__ref:hover{color:var(--scax-color-accent-strong)}
+/* 구조화된 답변 요소(resource_reference/resource_list)가 가리키는 항목: 링크는 `.scax-md__ref`를 그대로 쓰고,
+   여기서는 목록 자리·설명·미확인 참조 표시만 정의한다. */
+.scax-answer-list{display:grid;gap:var(--scax-space-100);margin:0 0 var(--scax-space-150);padding-left:var(--scax-space-500)}
+.scax-answer-list li{margin:0}
+.scax-answer-description{margin:var(--scax-space-050) 0 0;color:var(--scax-color-ink-alt);font-size:var(--scax-text-caption1-size)}
+.scax-answer-description .scax-md p{margin:0;font-size:inherit}
+.scax-answer-unavailable{color:var(--scax-color-ink-assistive);font-style:italic}
 
 /* ───────────────────────────────────── 액션 미리보기 표 (구 1162~1172) */
 .scax-preview{margin:var(--scax-space-150) 0 var(--scax-space-100);font-size:var(--scax-text-caption1-size)}

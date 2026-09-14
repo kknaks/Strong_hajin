@@ -29,6 +29,18 @@ it("renders a mixed resource list at its paragraph and an inline reference insid
   expect(container.querySelector("p ol")).toBeNull();
 });
 
+it("drops a description that just restates the title the button already shows", () => {
+  const document: AnswerDocument = { version: 1, elements: [{ key: "list", type: "resource_list", ordered: false, items: [
+    { ref: "t", description: `${task.title} — 진행 중, 마감 09-13` },
+    { ref: "m", description: "**주간 회의** - 오늘 마감" },
+  ] }] };
+  const { container } = render(<AssistantMarkdown body="{{list}}" document={document} resources={[task, meeting]} onOpenResource={vi.fn()} />);
+  expect(container.textContent).not.toContain(`${task.title} —`);
+  expect(container.textContent).toContain("진행 중, 마감 09-13");
+  expect(container.textContent).not.toContain("주간 회의 -");
+  expect(container.textContent).toContain("오늘 마감");
+});
+
 it("preserves Markdown tables, code and escaped markers without title matching", () => {
   const document: AnswerDocument = { version: 1, elements: [{ key: "task", type: "resource_reference", ref: "t" }] };
   const body = `${task.title}\n\n\\{{literal}} {\\{literal2}} &lbrace;&lbrace;entity}}\n\n\`{{inline}}\`\n\n\`\`\`json\n{{fenced}}\n\`\`\`\n\n| 업무 | 설명 |\n| --- | --- |\n| {{task}} | **우선** 처리 |`;

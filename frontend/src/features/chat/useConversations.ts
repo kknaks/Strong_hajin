@@ -62,6 +62,32 @@ export const NEW_DRAFT_KEY = "__new__";
 
 export { createIdempotencyKey };
 
+function mergeUnique<T>(older: readonly T[], recent: readonly T[], keyOf: (item: T) => string): T[] {
+  const recentKeys = new Set(recent.map(keyOf));
+  return [...older.filter((item) => !recentKeys.has(keyOf(item))), ...recent];
+}
+
+/** Combines a projection that may carry manually-loaded older messages with a fresh server read of the recent
+ *  window, keeping every array's older rows instead of letting the fresh (windowed) read prune them away. */
+function mergeConversationWindow(existing: Conversation, fresh: Conversation): Conversation {
+  const existingOldest = existing.messages[0]?.sequence;
+  const freshOldest = fresh.messages[0]?.sequence;
+  // Whichever side's own oldest message reaches furthest back owns whether there is still more before it —
+  // the *other* side's flag only ever describes its own (possibly shallower) window.
+  const existingReachesFurther = existingOldest !== undefined && (freshOldest === undefined || existingOldest < freshOldest);
+  return {
+    ...fresh,
+    messages: mergeUnique(existing.messages, fresh.messages, (m) => m.message_id),
+    turns: mergeUnique(existing.turns, fresh.turns, (t) => t.turn_id),
+    tool_invocations: mergeUnique(existing.tool_invocations, fresh.tool_invocations, (t) => `${t.turn_id}:${t.sequence}`),
+    context_references: mergeUnique(existing.context_references, fresh.context_references, (r) => `${r.resource_type}:${r.resource_id}:${r.included}`),
+    answer_resources: mergeUnique(existing.answer_resources ?? [], fresh.answer_resources ?? [], (r) => r.reference_id),
+    graph_receipts: mergeUnique(existing.graph_receipts ?? [], fresh.graph_receipts ?? [], (r) => r.receipt_id),
+    material_evidence: mergeUnique(existing.material_evidence ?? [], fresh.material_evidence ?? [], (r) => r.evidence_id),
+    has_more_messages: existingReachesFurther ? existing.has_more_messages : fresh.has_more_messages,
+  };
+}
+
 /** Legacy empty rows are not meaningful sessions and must not replace the local new-chat state. */
 function conversationHasActivity(conversation: Conversation): boolean {
   return conversation.messages.length > 0
@@ -141,11 +167,40 @@ export function useConversations({ personaId, isOpen, onError }: { personaId: st
     if (requestGeneration !== detailRequestGeneration.current) return;
     const current = activeConversationRef.current;
     if (current?.conversation_id !== conversationId) return;
-    const projection = next.version >= current.version ? next : current;
+    // A plain re-read only ever returns the recent window; merging keeps any older page the reader had already
+    // scrolled up to load, so an in-progress-turn poll cannot silently snap them back down to the bottom page.
+    const projection = next.version >= current.version ? mergeConversationWindow(current, next) : current;
     activeConversationRef.current = projection;
     setActiveConversation(projection);
     setConversations((items) => items.map((item) => (item.conversation_id === conversationId && item.version <= projection.version ? projection : item)));
   }, [personaId]);
+
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
+  const loadingOlderRef = useRef(false);
+
+  /** Scroll-up pagination: fetches the batch just before the oldest message currently held and prepends it. */
+  const loadOlderMessages = useCallback(async () => {
+    const active = activeConversationRef.current;
+    if (!active || !active.has_more_messages || active.messages.length === 0 || loadingOlderRef.current) return;
+    const conversationId = active.conversation_id;
+    const oldestSequence = active.messages[0].sequence;
+    loadingOlderRef.current = true;
+    setLoadingOlderMessages(true);
+    try {
+      const older = await getConversation(conversationId, oldestSequence);
+      const current = activeConversationRef.current;
+      if (!current || current.conversation_id !== conversationId) return;
+      const merged = mergeConversationWindow(older, current);
+      activeConversationRef.current = merged;
+      setActiveConversation(merged);
+      setConversations((items) => items.map((item) => (item.conversation_id === conversationId ? merged : item)));
+    } catch {
+      onError("이전 대화를 불러오지 못했습니다.");
+    } finally {
+      loadingOlderRef.current = false;
+      setLoadingOlderMessages(false);
+    }
+  }, [onError]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -212,7 +267,10 @@ export function useConversations({ personaId, isOpen, onError }: { personaId: st
     activeConversationRef.current = conversation;
     explicitNewConversationRef.current = false;
     setActiveConversation(conversation);
-  }, []);
+    // The list row is a preview (windowed messages, possibly stale turn state) — refresh right away so opening
+    // a past conversation lands on its actual current detail instead of sitting on that preview.
+    void refreshActiveConversation().catch(() => onError("AX 대화를 불러오지 못했습니다."));
+  }, [refreshActiveConversation, onError]);
 
   const createForSend = useCallback(async (generation: number): Promise<Conversation | null> => {
     try {
@@ -366,6 +424,8 @@ export function useConversations({ personaId, isOpen, onError }: { personaId: st
     reset,
     refreshConversations,
     refreshActiveConversation,
+    loadOlderMessages,
+    loadingOlderMessages,
     adopt,
     select,
     start,

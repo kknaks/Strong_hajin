@@ -617,6 +617,8 @@ export default function App() {
           }}
           onRetryList={() => void chat.refreshConversations().catch(() => setError("AX 대화를 불러오지 못했습니다."))}
           onRetryTurn={(turnId) => void chat.retryTurn(turnId)}
+          onLoadOlderMessages={() => void chat.loadOlderMessages()}
+          loadingOlderMessages={chat.loadingOlderMessages}
           onSelect={(conversation) => { if (canNavigate('chat')) chat.select(conversation); }}
           onSend={(body) => void sendMessage(body)}
           onStart={() => { if (canNavigate('chat')) void chat.start(); }}

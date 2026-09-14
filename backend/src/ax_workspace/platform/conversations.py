@@ -23,6 +23,7 @@ from ax_workspace.modules.ax_execution.ai import (
     ProviderRequestFailed,
 )
 from ax_workspace.modules.ax_execution.conversations import (
+    DEFAULT_CONVERSATION_LIST_LIMIT,
     ConversationContextReferenceInput,
     ConversationError,
     ConversationNotFound,
@@ -48,6 +49,17 @@ from ax_workspace.platform.persistence import (
     TaskRecord,
     WorkRequestRecord,
 )
+
+def _scope_to_window(statement: Any, column: Any, ids: set[Any] | None) -> Any:
+    """When paginating, keep only rows for turns the returned message window can point at.
+
+    `ids=None` means unpaginated (full conversation, current behavior unchanged). An empty `ids` set is a real
+    window with no turn yet (e.g. only queued user messages) — that must match nothing, not silently drop the
+    filter and return the whole conversation's rows.
+    """
+    if ids is None:
+        return statement
+    return statement.where(column.in_(ids)) if ids else statement.where(False)
 
 
 class SqlAlchemyConversationRepository:
@@ -75,8 +87,11 @@ class SqlAlchemyConversationRepository:
         statement = select(ConversationRecord).where(ConversationRecord.id == conversation_id, ConversationRecord.owner_id == owner_id)
         return self._session.scalar(statement.with_for_update().execution_options(populate_existing=True) if lock else statement)
 
-    def list_for(self, owner_id: str) -> list[ConversationRecord]:
-        return list(self._session.scalars(select(ConversationRecord).where(ConversationRecord.owner_id == owner_id).order_by(ConversationRecord.updated_at.desc(), ConversationRecord.id)))
+    def list_for(self, owner_id: str, *, limit: int = DEFAULT_CONVERSATION_LIST_LIMIT) -> list[ConversationRecord]:
+        return list(self._session.scalars(
+            select(ConversationRecord).where(ConversationRecord.owner_id == owner_id)
+            .order_by(ConversationRecord.updated_at.desc(), ConversationRecord.id).limit(limit)
+        ))
 
     def accept_fragment(
         self,
@@ -560,31 +575,141 @@ class SqlAlchemyConversationRepository:
     def latest_session(self, conversation: ConversationRecord) -> str | None:
         return self._session.scalar(select(ConversationProviderSessionReferenceRecord.provider_session_ref).where(ConversationProviderSessionReferenceRecord.conversation_id == conversation.id).order_by(ConversationProviderSessionReferenceRecord.recorded_at.desc(), ConversationProviderSessionReferenceRecord.id.desc()))
 
-    def view(self, conversation: ConversationRecord, *, include_actions: bool = False, principal: Any = None) -> dict[str, Any]:
-        messages = self._session.scalars(select(ConversationMessageRecord).where(ConversationMessageRecord.conversation_id == conversation.id).order_by(ConversationMessageRecord.sequence)).all()
-        turns = self._session.scalars(select(ConversationTurnRecord).where(ConversationTurnRecord.conversation_id == conversation.id).order_by(ConversationTurnRecord.started_at, ConversationTurnRecord.id)).all()
-        refs = self._session.scalars(select(ContextReferenceRecord).where(ContextReferenceRecord.conversation_id == conversation.id).order_by(ContextReferenceRecord.message_id, ContextReferenceRecord.id)).all()
-        tools = self._session.scalars(select(ToolInvocationRecord).join(ConversationTurnRecord).where(ConversationTurnRecord.conversation_id == conversation.id).order_by(ConversationTurnRecord.started_at, ToolInvocationRecord.sequence)).all()
-        actions = (
-            self._session.scalars(
-                select(ActionItemRecord)
-                .where(ActionItemRecord.conversation_id == conversation.id)
-                .order_by(ActionItemRecord.created_at, ActionItemRecord.id)
-            ).all()
-            if include_actions
-            else []
+    def view(
+        self,
+        conversation: ConversationRecord,
+        *,
+        include_actions: bool = False,
+        principal: Any = None,
+        message_limit: int | None = None,
+        before_sequence: int | None = None,
+        list_mode: bool = False,
+    ) -> dict[str, Any]:
+        # 대화가 쌓일수록 매번 전체를 다시 읽지 않는다 — 창(기본 최근 `message_limit`개)만 열고, 스크롤을
+        # 올리면 `before_sequence` 커서로 그 앞을 더 연다. 요약용 필드는 창 크기와 무관하게 항상 정확하다:
+        # 목록 미리보기·검색·발화 수가 잘려 보이는 창 하나에 좌우되지 않아야 하기 때문이다.
+        # `list_mode`는 그 요약 필드만 필요한 호출(대화 목록, 검색 범위 조회)을 위한 것이다 — 메시지 창과
+        # 그것이 가리키는 turn/tool/graph/answer_resource/material_evidence를 아예 조회하지 않는다. 그
+        # 리소스들을 여는 것은 이 창의 목적이 아니라 열람한 대화 하나를 상세히 볼 때의 목적이기 때문이다.
+        has_more_messages = False
+        if list_mode:
+            messages = []
+        else:
+            message_query = select(ConversationMessageRecord).where(ConversationMessageRecord.conversation_id == conversation.id)
+            if before_sequence is not None:
+                message_query = message_query.where(ConversationMessageRecord.sequence < before_sequence)
+            if message_limit is not None:
+                fetched = list(self._session.scalars(
+                    message_query.order_by(ConversationMessageRecord.sequence.desc()).limit(message_limit + 1)
+                ))
+                has_more_messages = len(fetched) > message_limit
+                messages = list(reversed(fetched[:message_limit]))
+            else:
+                messages = list(self._session.scalars(message_query.order_by(ConversationMessageRecord.sequence)))
+
+        first_user_message = self._session.scalar(
+            select(ConversationMessageRecord.body)
+            .where(ConversationMessageRecord.conversation_id == conversation.id, ConversationMessageRecord.role == "user")
+            .order_by(ConversationMessageRecord.sequence)
+            .limit(1)
         )
+        user_message_count = int(self._session.scalar(
+            select(func.count()).select_from(ConversationMessageRecord)
+            .where(ConversationMessageRecord.conversation_id == conversation.id, ConversationMessageRecord.role == "user")
+        ) or 0)
+        has_final_answer = bool(self._session.scalar(
+            select(ConversationMessageRecord.id)
+            .where(
+                ConversationMessageRecord.conversation_id == conversation.id,
+                ConversationMessageRecord.role == "assistant",
+                ConversationMessageRecord.body_state == "final",
+                func.length(func.trim(ConversationMessageRecord.body)) > 0,
+            )
+            .limit(1)
+        ))
+        # Also window-independent and cheap: a list row's "발화 N · 대기열/상태" summary needs only these two
+        # facts, never the messages/turns arrays themselves — so a list projection can skip fetching either.
+        queued_message_count = int(self._session.scalar(
+            select(func.count()).select_from(ConversationMessageRecord)
+            .where(
+                ConversationMessageRecord.conversation_id == conversation.id,
+                ConversationMessageRecord.role == "user",
+                ConversationMessageRecord.turn_id.is_(None),
+            )
+        ) or 0)
+        latest_turn_state = self._session.scalar(
+            select(ConversationTurnRecord.state)
+            .where(ConversationTurnRecord.conversation_id == conversation.id)
+            .order_by(ConversationTurnRecord.started_at.desc())
+            .limit(1)
+        )
+
         action_repository = self._actions
-        graph_steps = self._session.scalars(
-            select(ConversationGraphReceiptRecord)
-            .where(ConversationGraphReceiptRecord.conversation_id == conversation.id)
-            .order_by(ConversationGraphReceiptRecord.observed_at, ConversationGraphReceiptRecord.sequence)
-        ).all()
-        answer_resources = self._session.scalars(
-            select(ConversationAnswerResourceRecord)
-            .where(ConversationAnswerResourceRecord.conversation_id == conversation.id)
-            .order_by(ConversationAnswerResourceRecord.observed_at, ConversationAnswerResourceRecord.sequence)
-        ).all()
+        if list_mode:
+            # A list row never opens a turn's tool calls, graph steps, answer resources, or material evidence —
+            # that is what selecting the conversation is for. Fetching them per row is what made the list itself
+            # slow (one full detail projection per row, live-reauthorizing every citation on every listing).
+            turns: list[Any] = []
+            refs: list[Any] = []
+            tools: list[Any] = []
+            actions: list[Any] = []
+            graph_steps: list[Any] = []
+            answer_resources: list[Any] = []
+            material_evidence_rows: list[Any] = []
+        else:
+            # A paginated window only needs the turns/tool calls/graph steps/answer resources/context refs its own
+            # messages can point at — the rest belongs to a message window that was not asked for.
+            turn_ids = {message.turn_id for message in messages if message.turn_id is not None}
+            message_ids = {message.id for message in messages}
+            scoped_to_window = message_limit is not None
+            window_turn_ids = turn_ids if scoped_to_window else None
+            window_message_ids = message_ids if scoped_to_window else None
+
+            turns_query = _scope_to_window(
+                select(ConversationTurnRecord).where(ConversationTurnRecord.conversation_id == conversation.id),
+                ConversationTurnRecord.id, window_turn_ids,
+            )
+            turns = self._session.scalars(turns_query.order_by(ConversationTurnRecord.started_at, ConversationTurnRecord.id)).all()
+
+            refs_query = _scope_to_window(
+                select(ContextReferenceRecord).where(ContextReferenceRecord.conversation_id == conversation.id),
+                ContextReferenceRecord.message_id, window_message_ids,
+            )
+            refs = self._session.scalars(refs_query.order_by(ContextReferenceRecord.message_id, ContextReferenceRecord.id)).all()
+
+            tools_query = _scope_to_window(
+                select(ToolInvocationRecord).join(ConversationTurnRecord).where(ConversationTurnRecord.conversation_id == conversation.id),
+                ConversationTurnRecord.id, window_turn_ids,
+            )
+            tools = self._session.scalars(tools_query.order_by(ConversationTurnRecord.started_at, ToolInvocationRecord.sequence)).all()
+            actions = (
+                self._session.scalars(
+                    select(ActionItemRecord)
+                    .where(ActionItemRecord.conversation_id == conversation.id)
+                    .order_by(ActionItemRecord.created_at, ActionItemRecord.id)
+                ).all()
+                if include_actions
+                else []
+            )
+            graph_steps_query = _scope_to_window(
+                select(ConversationGraphReceiptRecord).where(ConversationGraphReceiptRecord.conversation_id == conversation.id),
+                ConversationGraphReceiptRecord.turn_id, window_turn_ids,
+            )
+            graph_steps = self._session.scalars(
+                graph_steps_query.order_by(ConversationGraphReceiptRecord.observed_at, ConversationGraphReceiptRecord.sequence)
+            ).all()
+            answer_resources_query = _scope_to_window(
+                select(ConversationAnswerResourceRecord).where(ConversationAnswerResourceRecord.conversation_id == conversation.id),
+                ConversationAnswerResourceRecord.turn_id, window_turn_ids,
+            )
+            answer_resources = self._session.scalars(
+                answer_resources_query
+                .order_by(ConversationAnswerResourceRecord.observed_at, ConversationAnswerResourceRecord.sequence)
+            ).all()
+            material_evidence_rows = self._session.scalars(_scope_to_window(
+                select(ConversationContentEvidenceRecord).where(ConversationContentEvidenceRecord.conversation_id == conversation.id),
+                ConversationContentEvidenceRecord.turn_id, window_turn_ids,
+            ).order_by(ConversationContentEvidenceRecord.recorded_at, ConversationContentEvidenceRecord.rank)).all()
         selected_candidates = {
             str(message.follow_up_candidate_id): str(message.id)
             for message in messages
@@ -633,10 +758,15 @@ class SqlAlchemyConversationRepository:
                  "name": item.name, "integrity_ref": item.integrity_ref, "page": item.page, "excerpt": item.excerpt,
                  "source_contexts": item.source_contexts, "source_locator": item.source_locator, "header_context": item.header_context,
                  "extraction": item.extraction_snapshot, "query": item.query, "rank": item.rank, "recorded_at": item.recorded_at.isoformat()}
-                for item in self._session.scalars(select(ConversationContentEvidenceRecord).where(
-                    ConversationContentEvidenceRecord.conversation_id == conversation.id).order_by(
-                    ConversationContentEvidenceRecord.recorded_at, ConversationContentEvidenceRecord.rank))
+                for item in material_evidence_rows
             ],
+            "has_more_messages": has_more_messages,
+            # 목록 미리보기·검색·발화 수는 위 메시지 창이 잘려 있어도 항상 전체 대화 기준으로 정확하다.
+            "first_user_message_excerpt": (first_user_message or "").strip()[:300] or None,
+            "user_message_count": user_message_count,
+            "has_final_answer": has_final_answer,
+            "queued_message_count": queued_message_count,
+            "latest_turn_state": latest_turn_state,
             "conversation_id": str(conversation.id),
             "title": conversation.title,
             "version": conversation.version,

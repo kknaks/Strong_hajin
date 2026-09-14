@@ -13,6 +13,9 @@ DEFAULT_DEMO_EMAIL_DOMAIN = "scax.example"
 DEFAULT_MEETING_AI_TOOLS: tuple[str, ...] = ("task_list", "project_list", "meeting_get", "member_list")
 
 
+#: `AX_AI_PROVIDER`가 받는 값. 순서가 곧 `Settings.ai_provider`의 기본값(`codex`)이다.
+AI_PROVIDERS = ("codex", "claude")
+
 #: 사옥 회의실 예약 시스템의 자리. 참고 구현(mediness-app)의 기본값을 그대로 승격했다 — env 가 덮어쓴다.
 DEFAULT_ROOM_BOOKING_BASE_URL = "https://connect.tdl-cloud.com"
 #: 우리 회사가 그 시스템에서 갖는 번호. 2026-09-11 실측으로 계정의 소속과 일치함을 확인했다.
@@ -70,6 +73,10 @@ class Settings:
     report_stage_timeout_seconds: int = 300
     report_total_timeout_seconds: int = 900
     report_worker_concurrency: int = 1
+    #: 대화·회의 배치·일일보고가 쓰는 CLI provider. `codex`(기본) 또는 `claude` — 어느 쪽이든 같은
+    #: `AiProvider` 계약(`generate`/`converse`)을 구현한다. 결제/쿼터 문제로 한쪽이 막혔을 때 코드
+    #: 변경 없이 전환하는 자리이지, 응답 품질이나 도구 선택 정책을 바꾸는 자리가 아니다.
+    ai_provider: str = "codex"
     #: 이 도메인의 계정만 「바로 로그인」 목록에 오른다 — 그 밖의 실제 계정은 로컬 DB에 있어도 나열되지 않는다.
     demo_email_domain: str = DEFAULT_DEMO_EMAIL_DOMAIN
     web_origin: str = "http://localhost:5173"
@@ -85,6 +92,8 @@ class Settings:
     room_booking_timeout_seconds: float = 20.0
 
     def __post_init__(self) -> None:
+        if self.ai_provider not in AI_PROVIDERS:
+            raise ValueError(f"AX_AI_PROVIDER must be one of {AI_PROVIDERS}")
         origin = self.web_origin.strip().rstrip("/")
         parsed = urlsplit(origin)
         if (
@@ -156,6 +165,7 @@ class Settings:
             report_stage_timeout_seconds=int(os.getenv("AX_REPORT_STAGE_TIMEOUT_SECONDS", "300")),
             report_total_timeout_seconds=int(os.getenv("AX_REPORT_TOTAL_TIMEOUT_SECONDS", "900")),
             report_worker_concurrency=int(os.getenv("AX_REPORT_WORKER_CONCURRENCY", "1")),
+            ai_provider=os.getenv("AX_AI_PROVIDER", "codex"),
             demo_email_domain=os.getenv("AX_DEMO_EMAIL_DOMAIN", DEFAULT_DEMO_EMAIL_DOMAIN),
             web_origin=os.getenv("AX_WEB_ORIGIN", "http://localhost:5173"),
             room_booking_base_url=os.getenv("TDL_BASE_URL", DEFAULT_ROOM_BOOKING_BASE_URL),
