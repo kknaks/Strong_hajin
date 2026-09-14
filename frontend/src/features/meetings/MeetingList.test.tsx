@@ -30,7 +30,7 @@ import { ApiError } from "../../lib/api";
 import * as api from "../../lib/api";
 import type { MeetingAgenda, MeetingRecord, MeetingRow } from "../../lib/viewModels";
 import { roomReservationNotice } from "./BookingModal";
-import { useState } from "react";
+import { StrictMode, useState } from "react";
 import type React from "react";
 
 import { MeetingListPage } from "./MeetingListPage";
@@ -565,7 +565,7 @@ describe("SCR-105 회의 목록", () => {
     const { readFileSync } = await import("node:fs");
     /* 바퀴 9-B: 기둥의 «위쪽» 이 구 `.canvas` 에서 새 셸로 옮겨 갔다(바퀴 2). 그래서 구 파일만
        읽으면 이 검사는 이미 죽은 규칙을 짚는 빈 검사가 된다 — 파일 여럿을 한꺼번에 훑는다. */
-    const css: string = ["src/styles/shell.css", "src/styles/meetings.css"]
+    const css: string = ["src/styles/shell.css", "src/styles/meetings.css", "src/styles/workspace.css"]
       .map((path: string) => readFileSync(path, "utf8") as string)
       .join("\n");
     // 공백을 걷고 견준다 — 규칙이 어떻게 띄어져 있든 같은 줄로 읽힌다
@@ -580,7 +580,149 @@ describe("SCR-105 회의 목록", () => {
     // 행이 auto 면 그리드가 가장 큰 패널의 내용만큼 자란다
     expect(rule(".meeting-columns")).toContain("grid-template-rows:minmax(0,1fr)");
     expect(rule(".meeting-columns")).toContain("min-height:0");
-    expect(rule(".meeting-panel")).toContain("min-height:0");
-    expect(rule(".meeting-panel")).toContain("overflow:hidden");
+    /* 4칸의 «아래쪽» 기둥. 예전에는 열을 감싸던 카드(.meeting-panel)가 그 자리였는데, 시안대로
+       카드를 벗으면서 그 규칙이 죽었다 — 죽은 셀렉터를 짚으면 그때부터 빈 검사다.
+       지금 기둥을 잇는 것은 레일 자신과 그 본문이다: 칸이 높이를 받고, 넘치는 것은 본문 «안» 에서
+       스크롤한다. 한 칸이라도 빠지면 파일 목록이 칸을 밀어내고 [자료 첨부]가 화면 밖으로 나간다. */
+    expect(rule(".scax-side-rail")).toContain("height:100%");
+    expect(rule(".scax-side-rail")).toContain("min-height:0");
+    expect(rule(".scax-side-rail__body")).toContain("min-height:0");
+    expect(rule(".scax-side-rail__body")).toContain("overflow-y:auto");
+  });
+
+  /* 스크롤은 되지만 막대는 안 그린다 (사용자 결정). 전역 규칙이 실려 있지 않으면 화면이 줄무늬가
+     되고, 반대로 이 규칙을 «overflow 숨김» 으로 오해해 고치면 스크롤 자체가 죽는다 —
+     둘 다 아니라는 것을 한 자리에서 짚는다. */
+  it("스크롤 막대는 안 그리되 스크롤은 살아 있다", async () => {
+    // @ts-expect-error — 이 리포는 @types/node 를 두지 않는다.
+    const { readFileSync } = await import("node:fs");
+    const index: string = readFileSync("src/styles/index.css", "utf8");
+    expect(index).toContain('@import "./scrollbar.css";');
+
+    const bar: string = (readFileSync("src/styles/scrollbar.css", "utf8") as string).replace(/\s+/g, "");
+    expect(bar).toContain("*{scrollbar-width:none}");
+    expect(bar).toContain("*::-webkit-scrollbar{width:0;height:0}");
+    // 막대를 지우는 것이지 넘침을 자르는 것이 아니다 — overflow 를 건드리는 전역 규칙은 없다
+    expect(bar).not.toContain("*{overflow");
+  });
+
+  /* box-sizing 전역 리셋 — 이것이 빠지면 `width:100%` + padding + border 인 칸이 전부 부모보다
+     넓어진다. 목록 카드가 레일 오른쪽에서 잘리고 예약 모달에 가로 스크롤이 생기던 원인이다.
+     jsdom 은 그 넘침을 재지 못하므로 규칙 자체를 짚는다. */
+  it("box-sizing 전역 리셋이 살아 있다 — 칸이 부모보다 넓어지지 않는다", async () => {
+    // @ts-expect-error — 이 리포는 @types/node 를 두지 않는다.
+    const { readFileSync } = await import("node:fs");
+    const shell: string = (readFileSync("src/styles/shell.css", "utf8") as string).replace(/\s+/g, "");
+    expect(shell).toContain("*,*::before,*::after{box-sizing:border-box}");
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   [회의 시작] 한 번 = 회의 하나 (2026-09-14 사용자 보고).
+
+   클릭 한 번에 `POST /api/meetings/quick-start` 가 1ms 간격으로 **두 번** 나가고 회의가 둘 생겼다.
+   원인은 `setBusy` 의 «함수형 업데이터 안» 에서 서버를 부른 것이다 — 그 자리는 React 가 순수하다고
+   전제하므로 개발 모드(StrictMode)가 일부러 두 번 돌려 본다. 두 번 다 «같은 current(false)» 를 보니
+   `if (current) return current` 가드도 소용이 없었다.
+
+   **그래서 이 검사는 StrictMode 로 렌더한다.** 그냥 render 하면 업데이터가 한 번만 돌아
+   버그가 있어도 초록이다 — 잠금이 아니라 «검사» 가 거짓말을 하게 된다.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/** 셸의 머리 자리를 흉내 내되 **StrictMode 안에서** 세운다. */
+function renderListStrict() {
+  vi.mocked(api.listMeetings).mockResolvedValue({ upcoming: [], past: { items: [], next_cursor: null } });
+  const onOpenMeeting = vi.fn();
+  const onError = vi.fn();
+  render(
+    <StrictMode>
+      <ListHost onError={onError} onNotice={vi.fn()} onOpenMeeting={onOpenMeeting} selected={null} />
+    </StrictMode>,
+  );
+  return { onError, onOpenMeeting };
+}
+
+const startButton = () => screen.findByRole("button", { name: "회의 시작" });
+
+describe("[회의 시작] — 한 번 누르면 회의 하나다", () => {
+  it("StrictMode 에서도 클릭 한 번에 quick-start 는 한 번만 나간다", async () => {
+    const { onOpenMeeting } = renderListStrict();
+    vi.mocked(api.quickStartMeeting).mockResolvedValue(record({ meeting_id: "q1", status: "in_progress" }));
+
+    fireEvent.click(await startButton());
+
+    await waitFor(() => expect(onOpenMeeting).toHaveBeenCalledWith("q1"));
+    // 여기가 이 검사의 전부다 — 두 번 나가면 회의가 둘 생긴다
+    expect(api.quickStartMeeting).toHaveBeenCalledTimes(1);
+    expect(onOpenMeeting).toHaveBeenCalledTimes(1);
+  });
+
+  it("응답을 기다리는 동안 연타해도 한 번만 나간다 — 잠금은 렌더를 기다리지 않는다", async () => {
+    const { onOpenMeeting } = renderListStrict();
+    /* 응답을 붙잡아 둔다 — 그 사이의 클릭은 «아직 busy 가 커밋되기 전» 이다.
+       busy state 하나로 막았다면 여기서 두 번째·세 번째가 그대로 통과한다. */
+    let release: (value: MeetingRecord) => void = () => {};
+    vi.mocked(api.quickStartMeeting).mockReturnValue(new Promise<MeetingRecord>((resolve) => { release = resolve; }));
+
+    const button = await startButton();
+    fireEvent.click(button);
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(api.quickStartMeeting).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      release(record({ meeting_id: "q1", status: "in_progress" }));
+    });
+    await waitFor(() => expect(onOpenMeeting).toHaveBeenCalledWith("q1"));
+    expect(api.quickStartMeeting).toHaveBeenCalledTimes(1);
+    expect(onOpenMeeting).toHaveBeenCalledTimes(1);
+  });
+
+  it("실패하면 그 사실을 내고 잠금이 풀린다 — 다시 누르면 다시 간다", async () => {
+    const { onError, onOpenMeeting } = renderListStrict();
+    vi.mocked(api.quickStartMeeting).mockRejectedValue(new Error("서버가 거절했습니다"));
+
+    const button = await startButton();
+    fireEvent.click(button);
+    await waitFor(() => expect(onError).toHaveBeenCalledWith("서버가 거절했습니다"));
+    expect(api.quickStartMeeting).toHaveBeenCalledTimes(1);
+    // 실패는 회의를 열지 않는다
+    expect(onOpenMeeting).not.toHaveBeenCalled();
+
+    // 잠긴 채로 남으면 이 화면에서 회의를 다시 시작할 길이 없다
+    vi.mocked(api.quickStartMeeting).mockResolvedValue(record({ meeting_id: "q2", status: "in_progress" }));
+    fireEvent.click(await startButton());
+    await waitFor(() => expect(onOpenMeeting).toHaveBeenCalledWith("q2"));
+    expect(api.quickStartMeeting).toHaveBeenCalledTimes(2);
+  });
+
+  /*
+   * 예약은 같은 원인이 아니다 — `submit()` 은 업데이터를 안 쓰고, 같은 입력이면 **같은
+   * `Idempotency-Key`** 를 다시 실어 보낸다 (`rules.md` 「재전송은 영수증이다」).
+   * 그래서 두 번 나가도 서버가 회의를 둘 만들지 않는다. 그 열쇠가 사라지면 빠른 시작과 같은
+   * 증상이 예약에서도 나므로 여기서 잠근다.
+   */
+  it("예약은 재전송해도 같은 영수증을 들고 간다 — 회의가 둘 서지 않는다", async () => {
+    renderList([], []);
+    fireEvent.click(await screen.findByRole("button", { name: "회의 생성" }));
+    const modal = await screen.findByRole("dialog", { name: "회의 예약" });
+
+    fireEvent.change(within(modal).getByPlaceholderText("회의명을 적으세요"), { target: { value: "같은 회의" } });
+    addGuest(modal, "한서린");
+
+    vi.mocked(api.bookMeeting).mockRejectedValueOnce(new Error("한 번 실패"));
+    const create = within(modal).getByRole("button", { name: "회의 생성" });
+    fireEvent.click(create);
+    await waitFor(() => expect(api.bookMeeting).toHaveBeenCalledTimes(1));
+
+    vi.mocked(api.bookMeeting).mockResolvedValue(record({ meeting_id: "b1" }));
+    fireEvent.click(within(modal).getByRole("button", { name: "회의 생성" }));
+    await waitFor(() => expect(api.bookMeeting).toHaveBeenCalledTimes(2));
+
+    // 입력이 그대로면 열쇠도 그대로다 — 서버가 같은 요청으로 읽는다
+    const [, firstKey] = vi.mocked(api.bookMeeting).mock.calls[0];
+    const [, secondKey] = vi.mocked(api.bookMeeting).mock.calls[1];
+    expect(firstKey).toBeTruthy();
+    expect(secondKey).toBe(firstKey);
   });
 });

@@ -38,6 +38,7 @@ vi.mock("../../lib/api", async (actual) => ({
 
 import { ApiError } from "../../lib/api";
 import * as api from "../../lib/api";
+import { meetingScreen } from "../../lib/labels";
 import type { MeetingAgenda, MeetingInfo, MeetingRecord } from "../../lib/viewModels";
 import { useState } from "react";
 
@@ -169,7 +170,7 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
   it("끝난 회의의 스크립트는 전사만 낸다 — 메모는 섞이지 않는다", async () => {
     renderAfter();
     await screen.findByText("DB ax 전략");
-    fireEvent.click(screen.getByRole("button", { name: "스크립트" }));
+    fireEvent.click(screen.getByRole("tab", { name: "스크립트" }));
     const script = await screen.findByRole("list", { name: "스크립트" });
 
     expect(within(script).getByText("먼저 전제부터 맞춰 봅시다.")).toBeTruthy();
@@ -185,11 +186,14 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
     // 눈금은 회의 경과다 (D50) — 시작에서 1분
     expect(within(script).getByText("01:00")).toBeTruthy();
 
-    // 한 줄에 세 칸이다 — 시각 · 화자 · 내용
+    /* 줄은 «쌓인다» — 「시각 · 화자」 한 줄 위, 본문이 그 아래 열 전체 폭이다.
+       예전에는 시각 | 화자 | 본문 세 칸이 가로로 서서 본문에 남는 폭이 200 이 안 됐다(현재 화면 17).
+       ⚠ 이 화면(종료)의 디자인을 따로 바꾼 것이 아니라, 스크립트 줄이 진행 중과 «같은 부품» 이라
+       함께 간 것이다 — 낼 값과 순서는 그대로다. */
     const first = within(script).getAllByRole("listitem")[0];
-    expect(first.querySelector(".gutter-meta")?.textContent).toBe("01:00");
-    expect(first.querySelector(".gutter-aside")?.textContent).toBe("화자 1");
-    expect(first.querySelector(".gutter-body")?.textContent).toBe("먼저 전제부터 맞춰 봅시다.");
+    expect(first.querySelector(".scax-script-line__at")?.textContent).toBe("01:00");
+    expect(first.querySelector(".scax-script-line__who")?.textContent).toBe("화자 1");
+    expect(first.querySelector(".scax-script-line__text")?.textContent).toBe("먼저 전제부터 맞춰 봅시다.");
   });
 
   it("안건 출처는 다섯이고, 모르는 값이면 그 자리가 서지 않는다", async () => {
@@ -378,13 +382,12 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
     expect(screen.queryByDisplayValue("내가 고친 줄.")).toBeNull();
   });
 
-  it("제목 후보는 흐리게 서고 연필로 열면 칸에 차 있다", async () => {
+  /* 「고치는 칸에 후보가 차 있다」는 절반은 자리를 옮겨 MeetingEditModal.test.tsx 가 든다 —
+     이 화면에 남은 절반(후보를 흐리게 내고 제목인 척하지 않는다)만 여기서 잠근다. */
+  it("제목 후보는 제목이 아니다 — 「제목 없는 회의」 옆에 후보로만 선다", async () => {
     renderAfter({ title: null, title_candidate: "DB AX 전환 범위 논의" });
     expect(await screen.findByText("제목 후보 DB AX 전환 범위 논의")).toBeTruthy();
     expect(screen.getByText("제목 없는 회의")).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "회의 정보 수정" }));
-    expect((screen.getByLabelText("회의명") as HTMLInputElement).value).toBe("DB AX 전환 범위 논의");
   });
 
   it("내보내기는 형식 하나짜리 링크다 — 고르는 자리가 없다", async () => {
@@ -404,11 +407,13 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
     });
     await screen.findByText("DB ax 전략");
     expect(screen.getByRole("link", { name: "내보내기" })).toBeTruthy();
-    for (const name of ["공유", "수정", "회의 정보 수정", "자료 첨부", "업무 생성", "후보 빼기", "다음 회의 예약"]) {
+    /* 「회의 정보 수정」은 이 목록에서 뺐다 — 그 자리가 이 화면에서 목록 카드로 옮겨 갔다.
+       그 잠금은 MeetingEditModal.test.tsx 가 든다. */
+    for (const name of ["공유", "수정", "자료 첨부", "업무 생성", "후보 빼기", "다음 회의 예약"]) {
       expect(screen.queryByRole("button", { name })).toBeNull();
     }
-    expect(screen.queryByRole("button", { name: "자료" })).toBeNull();
-    expect(screen.getByRole("button", { name: "스크립트" })).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: "첨부" })).toBeNull();
+    expect(screen.getByRole("tab", { name: "스크립트" })).toBeTruthy();
   });
 
   it("「정리 중」에는 상태를 다시 묻고, 끝나면 묻기를 멈춘다", async () => {
@@ -476,9 +481,104 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
     renderAfter({ status: "summarizing", can_edit_note: false, can_edit_agendas: false });
     await screen.findByText("DB ax 전략");
     expect(screen.getByText("정리하는 중")).toBeTruthy();
-    // 영역 로딩 — 「정리 중」은 회의록 자리를 스켈레톤으로 잡아 둔다 (M2)
-    expect(screen.getAllByRole("status").some((one) => one.className.includes("skeleton"))).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "스크립트" }));
+    /* 회의록 자리는 **도는 원 + 한 문장**이다. 스켈레톤 일곱 줄이던 것을 바꿨다 —
+       스켈레톤은 「올 내용의 모양을 안다」는 자리인데 합성 결과가 몇 줄일지는 아무도 모른다.
+       읽어 주는 자리(role=status · aria-busy)는 부품이 갖는다. */
+    expect(screen.getByText(meetingScreen.finalNoteGenerating)).toBeTruthy();
+    const body = document.querySelector(".scax-note__body") as HTMLElement;
+    const busy = within(body).getAllByRole("status").find((one) => one.getAttribute("aria-busy") === "true");
+    expect(busy).toBeTruthy();
+    expect(busy?.querySelector(".scax-spinner")).toBeTruthy();
+    /* 스켈레톤 부재는 «회의록 칸 안» 에서만 본다 — 문서 전체로 보면 아직 자료를 불러오는
+       4칸의 스켈레톤이 걸려 간헐로 빨개진다(그 칸은 이 검사의 관심사가 아니다). */
+    expect(body.querySelector(".scax-skeleton")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "스크립트" }));
     expect(await within(await screen.findByRole("list", { name: "스크립트" })).findByText("먼저 전제부터 맞춰 봅시다.")).toBeTruthy();
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   종료 뒤 «합성이 도는 동안» (§8-2). 사용자가 실물 화면을 보고 발주한 것 (2026-09-14).
+   스켈레톤 일곱 줄이 「무엇을 기다리는지 말하지 않는 긴 회색 줄」이었다(현재 화면 25).
+   ════════════════════════════════════════════════════════════════════════════ */
+describe("SCR-106 「정리 중」 — 최종 회의록을 짓는 동안", () => {
+  it("회의 중의 「AI 요약이 곧 생성됩니다.」와 섞이지 않는다 — 이 자리는 종료 뒤다", async () => {
+    renderAfter({ status: "summarizing", can_edit_note: false, can_edit_agendas: false });
+    await screen.findByText("DB ax 전략");
+    expect(screen.getByText(meetingScreen.finalNoteGenerating)).toBeTruthy();
+    // 회의 «중» 의 문구가 여기 서면 회의가 아직 도는 것처럼 읽힌다
+    expect(screen.queryByText(meetingScreen.aiSummaryPending)).toBeNull();
+  });
+
+  it("정리 중에 새로고침해도 같은 안내가 선다 — 상태가 정본이다", async () => {
+    // 「새로고침」 = 스트림도 배치도 없이 상세만 다시 읽고 들어온 창이다
+    renderAfter({ status: "summarizing", can_edit_note: false, can_edit_agendas: false });
+    const line = await screen.findByText(meetingScreen.finalNoteGenerating);
+    // 스켈레톤 부재는 «회의록 칸 안» 에서만 본다 (위 검사와 같은 이유)
+    const body = line.closest(".scax-note__body") as HTMLElement;
+    expect(body).toBeTruthy();
+    expect(body.querySelector(".scax-skeleton")).toBeNull();
+  });
+
+  it("합성이 끝나면 진짜 회의록으로 바뀐다 — 프론트 타이머가 성공을 지어내지 않는다", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(api.readMeeting).mockResolvedValue({
+        meeting: meeting({ status: "summarizing", can_edit_note: false, can_edit_agendas: false }),
+        agendas: [agenda],
+      });
+      renderAfter({ status: "summarizing", can_edit_note: false, can_edit_agendas: false });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByText(meetingScreen.finalNoteGenerating)).toBeTruthy();
+
+      /* 시간만 흘려서는 아무 일도 일어나지 않는다 — 서버가 「종료」라고 말해야 바뀐다.
+         (여기서 상태를 안 바꾸고 시간만 밀면 안내가 그대로 서 있다) */
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(screen.getByText(meetingScreen.finalNoteGenerating)).toBeTruthy();
+
+      vi.mocked(api.readMeeting).mockResolvedValue({ meeting: meeting(), agendas: [agenda] });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(screen.queryByText(meetingScreen.finalNoteGenerating)).toBeNull();
+      expect(screen.getByText("수요는 구조적으로 는다는 전제에 합의했다.")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("합성이 깨지면 실패 안내와 [다시 시도]로 바뀐다 — 영원히 도는 원이 없다 (§8-8)", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(api.readMeeting).mockResolvedValue({
+        meeting: meeting({ status: "summarizing", can_edit_note: false, can_edit_agendas: false }),
+        agendas: [agenda],
+      });
+      renderAfter({ status: "summarizing", can_edit_note: false, can_edit_agendas: false });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByText(meetingScreen.finalNoteGenerating)).toBeTruthy();
+
+      vi.mocked(api.readMeeting).mockResolvedValue({
+        meeting: meeting({ status: "failed", failure_reason: "재전사가 끊겼습니다" }),
+        agendas: [agenda],
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+
+      expect(screen.queryByText(meetingScreen.finalNoteGenerating)).toBeNull();
+      expect(screen.getByText(meetingScreen.convertFailed)).toBeTruthy();
+      // 사유를 그대로 낸다 — 지어낸 말로 덮지 않는다
+      expect(screen.getByText("재전사가 끊겼습니다")).toBeTruthy();
+      expect(screen.getByRole("button", { name: meetingScreen.retry })).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

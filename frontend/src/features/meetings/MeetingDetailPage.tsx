@@ -28,6 +28,7 @@ import { FileList } from "../../ds/FileList";
 import { Icon } from "../../ds/icons/Icon";
 import { Drawer } from "../../ds/Modal";
 import { Skeleton } from "../../ds/Skeleton";
+import { Spinner } from "../../ds/Spinner";
 import { StatusNote } from "../../ds/StatusNote";
 import { emptyActionLabel, meetingAgendaSourceText, meetingBadgeTone, meetingClock, meetingDateInput, meetingElapsed, meetingIsoAt, meetingRange, meetingScreen, meetingSpeakerName, meetingStatusLabel, meetingTimeOptions, personName } from "../../lib/labels";
 import type {
@@ -101,6 +102,7 @@ export function MeetingDetailPage({
   focus = false,
   onToggleFocus,
   onRegisterRefresh,
+  reloadToken = 0,
 }: {
   meetingId: string;
   onBack: () => void;
@@ -125,6 +127,11 @@ export function MeetingDetailPage({
   focus?: boolean;
   onToggleFocus?: () => void;
   onRegisterRefresh?: (refresh: (() => Promise<void>) | null) => void;
+  /**
+   * 값이 바뀌면 상세를 다시 읽는다 — 목록 칸의 [수정]이 이 회의의 정보를 고쳤을 때 쓴다.
+   * 다시 마운트하지 않는 이유가 있다: 고치던 회의록 줄과 읽던 자리의 스크롤을 잃지 않는다.
+   */
+  reloadToken?: number;
 }) {
   const [record, setRecord] = useState<MeetingRecord | null>(null);
   const [failed, setFailed] = useState(false);
@@ -139,10 +146,6 @@ export function MeetingDetailPage({
   const [bodies, setBodies] = useState<Record<string, string[]>>({});
   const [agendaDraft, setAgendaDraft] = useState("");
   const [askRemoveAgenda, setAskRemoveAgenda] = useState<MeetingAgenda | null>(null);
-
-  const [headEdit, setHeadEdit] = useState(false);
-  const [head, setHead] = useState<{ title: string; date: string; from: string; to: string; place: string; people: Attendee[] } | null>(null);
-  const [headQuery, setHeadQuery] = useState("");
 
   const [share, setShare] = useState(false);
   const [attach, setAttach] = useState(false);
@@ -161,7 +164,6 @@ export function MeetingDetailPage({
   const noteScroll = useRef<HTMLDivElement | null>(null);
   const keepScroll = useRef<{ top: number; pinned: boolean } | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const { roster } = useRoster(headEdit);
 
   // 요청을 받을 수 있는 사람은 서버가 정한다 — 화면이 명부에서 고르지 않는다.
   useEffect(() => {
@@ -203,6 +205,15 @@ export function MeetingDetailPage({
     return () => onRegisterRefresh?.(null);
   }, [onRegisterRefresh, reload]);
 
+  /* 바깥(목록의 회의 정보 모달)이 이 회의를 고쳤다 — 첫 렌더에는 돌지 않는다(위 effect 가 이미 읽었다) */
+  const firstReloadToken = useRef(reloadToken);
+  useEffect(() => {
+    if (reloadToken === firstReloadToken.current) return;
+    void reload().catch(() => {
+      /* 한 번 못 읽었다고 화면을 오류로 덮지 않는다 — 지금 있는 값이 그대로 서 있다 */
+    });
+  }, [reload, reloadToken]);
+
   /* 끝난 회의의 원문은 서버가 갖고 있다 — 「진행 중」만 스트림에서 오고 나머지는 이 자리를 읽는다.
      예정·취소됨에는 탭 자체가 서지 않으므로 읽지 않는다 (§5.4-7). */
   /* 「진행 중」에도 읽는다 — 중간에 들어온 사람은 이미 적재된 확정 블록부터 봐야 한다.
@@ -210,9 +221,10 @@ export function MeetingDetailPage({
   /* 상태가 바뀌면 그때마다 다시 읽는다 — 「참」이 「참」으로 남는 조건이면 한 번 읽고 마는데,
      끝난 회의의 원문은 서버가 재전사로 통째 갈아 끼우므로(in_progress 때 본 것과 다른 글이다)
      in_progress→summarizing→done 마디마다 새로 읽어야 그 글이 화면에 온다 (D2). */
-  const transcriptStatus = ["scheduled", "cancelled"].includes(record?.meeting.status ?? "")
-    ? null
-    : record?.meeting.status ?? null;
+  /* 상태가 바뀔 때마다 다시 읽는다. 「예정」·「취소됨」을 빼 두었던 조건은 걷었다 — 그 회의도
+     스크립트 탭이 서고, 서버는 아직 아무 말도 없는 회의에 «빈 목록» 을 준다. 못 읽는 회의와
+     아직 말이 없는 회의를 화면이 같은 모양으로 내지 않으려면 실제로 물어봐야 한다. */
+  const transcriptStatus = record?.meeting.status ?? null;
   const loadTranscript = useCallback(async () => {
     setTranscript(await readMeetingTranscript(meetingId));
   }, [meetingId]);
@@ -247,7 +259,9 @@ export function MeetingDetailPage({
     if (meeting) onTitleChange?.(meeting.title ?? meetingScreen.noTitle);
   }, [meeting, onTitleChange]);
 
-  const dirty = editing || headEdit;
+  /* 고치던 것 — 회의 정보는 목록의 모달이 자기 닫기 경로에서 스스로 지키므로(MeetingEditModal),
+     이 화면이 들고 있는 「저장 안 한 것」은 회의록 편집 하나다. */
+  const dirty = editing;
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
   useEffect(() => {
@@ -282,6 +296,17 @@ export function MeetingDetailPage({
   const agendaEditing = noteEditing && canEditAgendas;
   /* 「취소됨」은 줄을 고칠 수 있어도 회의록이 비어 있다 — 화면은 「예정」과 같은 안건 목록이다 (§5.7) */
   const lineEditing = noteEditing && canEditNote && (settled || failedState);
+  /*
+   * 회의 «전» 의 안건은 편집 모드를 거치지 않는다 (시안 10 · `workspace.v1.jsx:221`).
+   * 시안은 안건 목록 바로 아래에 입력칸과 [안건 추가]를 그냥 세워 둔다 — 예정 회의에서 [수정]이
+   * 하던 일이 «그 칸을 펴는 것» 하나였기 때문이다. 그래서 그 상태에서는 칸을 늘 펴 두고 [수정]을
+   * 내린다: 누르는 걸음이 하나 줄 뿐 **할 수 있는 일은 그대로다** — 안건 빼기(×)도 같이 상시로 선다.
+   * 「취소됨」이 함께 걸리는 것은 그 화면이 「예정」과 같은 안건 목록이기 때문이다(§5.7).
+   * 권한은 여전히 서버가 말한다 — `can_edit_agendas` 가 닫혀 있으면 칸 자체가 서지 않는다.
+   */
+  const agendaAlways = canEditAgendas && (planned || cancelled);
+  /** 안건을 더하고 뺄 수 있는가 — 편집 모드 안이거나, 회의 전이라 늘 열려 있거나. */
+  const agendaOpen = agendaEditing || agendaAlways;
 
   /* 오디오를 올리는 연결은 회의당 하나이고 그 자리는 회의를 시작한 사람이 갖는다 (§5.2-5).
      누가 그 사람인지는 **서버가 말한다** — 화면이 `created_by` 로 추론하지 않는다.
@@ -350,29 +375,24 @@ export function MeetingDetailPage({
   const leftTabs = live && attendee;
   const memoTab = leftTabs && left === "memo";
   const aiTab = live && (!leftTabs || left === "ai");
+  /* 자료는 참석자의 것이다 — 공유받은 사람에게는 그 탭이 서지 않는다 (E75 · 기존 계약).
+     스크립트는 «읽을 수 있는 회의면 늘» 선다: 시안이 「예정 회의는 스크립트가 비어 있을 뿐」이라고
+     적어 두었고, `GET /transcript` 도 상태를 가리지 않고 빈 목록을 낸다. 상태로 탭을 지우면
+     「아직 없다」와 「볼 수 없다」가 같은 모양이 된다. */
   const tabMaterials = attendee;
-  const tabScript = !planned && !cancelled;
-  const rightShown = tabMaterials || tabScript;
-  const materialsOn = tabMaterials && (right === "materials" || !tabScript);
-  const scriptOn = tabScript && !materialsOn;
+  const materialsOn = tabMaterials && right === "materials";
+  /* 세그먼티드에 세울 항목. 스크립트는 «늘» 서므로 조건이 없다 — 자료만 참석자에게 갈린다.
+     말은 labels 가 준다 (부품은 말을 모른다). */
+  const railOptions = [
+    ...(tabMaterials ? [{ value: "materials" as const, label: meetingScreen.tabMaterials }] : []),
+    { value: "script" as const, label: meetingScreen.tabScript },
+  ];
 
 
   const draftOf = useCallback(
     (agenda: MeetingAgenda) => bodies[agenda.agenda_id] ?? linesOf(agenda, "final"),
     [bodies],
   );
-
-  const headUnchanged = useMemo(() => {
-    if (!head || !meeting) return true;
-    return (
-      head.title === (meeting.title ?? "") &&
-      head.date === meetingDateInput(meeting.starts_at) &&
-      head.from === meetingClock(meeting.starts_at) &&
-      head.to === meetingClock(meeting.ends_at) &&
-      head.place === (meeting.location ?? "") &&
-      head.people.map((one) => one.member_id).join() === meeting.attendees.map((one) => one.member_id).join()
-    );
-  }, [head, meeting]);
 
   if (failed) {
     return (
@@ -407,38 +427,6 @@ export function MeetingDetailPage({
     } finally {
       setBusy(false);
     }
-  }
-
-  function openHeadEdit() {
-    if (!meeting) return;
-    setHead({
-      // 제목이 비어 있으면 후보를 칸에 채워 연다 — 사람이 그대로 저장하면 그것이 제목이 된다
-      title: meeting.title ?? meeting.title_candidate ?? "",
-      date: meetingDateInput(meeting.starts_at),
-      from: meetingClock(meeting.starts_at),
-      to: meetingClock(meeting.ends_at),
-      place: meeting.location ?? "",
-      people: meeting.attendees.map((one) => ({ ...one })),
-    });
-    setHeadQuery("");
-    setHeadEdit(true);
-  }
-
-  async function saveHead() {
-    if (!head || !meeting) return;
-    await run(
-      () =>
-        updateMeetingInfo(meeting.meeting_id, {
-          title: head.title.trim() || null,
-          starts_at: meetingIsoAt(head.date, head.from),
-          ends_at: meetingIsoAt(head.date, head.to),
-          location: head.place.trim() || null,
-          attendee_ids: head.people.map((one) => one.member_id),
-        }),
-      meetingScreen.saved,
-    );
-    setHeadEdit(false);
-    setHeadQuery("");
   }
 
   /** [저장] — 줄 편집은 덮어쓰기다. 빈 줄은 보내기 전에 버린다. */
@@ -508,6 +496,26 @@ export function MeetingDetailPage({
   /* AI 배치가 왔으면 그 회차가 낸 트랙 «전체» 를 쓴다 — 줄 id 를 붙들지 않고 통째로 갈아 끼운다 (§7.1) */
   const shownAgendas =
     aiTab && stream.batch ? [...stream.batch.agendas].sort((left, right) => left.order - right.order) : agendas;
+
+  /*
+   * AI 트랙에 «실제로 들어온 것» 이 있는가 (§7).
+   *
+   * 이 값이 거짓인 동안 「AI 요약」 탭은 사람이 쓴 안건 제목과 빈 후보 상자를 대신 내고 있었다 —
+   * AI 가 아직 아무것도 안 냈는데 화면은 뭔가 정리된 것처럼 보였다(현재 화면 24).
+   *
+   * 판정을 **stream.batch 유무로만 하지 않는다.** 배치는 이 «창» 이 붙어 있는 동안 온 것이라,
+   * 새로고침하면 이미 저장된 AI 요약이 있어도 거짓이 된다. 그래서 상세 응답이 실어 온 것까지 함께 본다:
+   *   · `track === "ai"` 인 줄이 하나라도 있는가 (§7.1 적재 — 배치 결과는 AI 트랙 줄로 저장된다)
+   *   · 잠정 후보(`provisional`)가 하나라도 있는가 (같은 트랜잭션으로 함께 적재된다)
+   *
+   * **`source` 로 거르지 않는다.** AI 가 기존 안건(출처 「직접 입력」)을 요약한 경우도 유효한 결과다
+   * (§7.1 「안건이 없으면 AI 가 만들고」 — 있으면 그 안건에 줄을 붙인다). 출처로 거르면 그 경우가 통째로 사라진다.
+   */
+  const aiTrackArrived =
+    Boolean(stream.batch) ||
+    agendas.some((agenda) => agenda.lines.some((line) => line.track === "ai") || agenda.todos.some((todo) => todo.provisional));
+  /** 「AI 요약」 탭인데 아직 AI 가 낸 것이 없다 — 안건 목록 대신 기다리는 중임을 한 줄로 말한다. */
+  const aiPending = aiTab && !aiTrackArrived;
 
   /**
    * 줄 하나를 보는 모양으로 — 딛는 구간을 «전부» 시각 칩으로 싣는다 (D49).
@@ -598,7 +606,6 @@ export function MeetingDetailPage({
   const facts = [meetingRange(meeting.starts_at, meeting.ends_at), meeting.location, meetingScreen.attendCount(meeting.attendees.length + meeting.external_attendees.length)]
     .filter(Boolean)
     .join(" · ");
-  const headPeopleIds = new Set((head?.people ?? []).map((one) => one.member_id));
   /* 담당 후보는 회의 참석자를 앞에 세운다 — 그 자리에 있던 사람이 먼저 걸린다. 목록 자체는 서버가 준 것 그대로다 */
   const attendeeIds = new Set(meeting.attendees.map((one) => one.member_id));
   const orderedAssignees = [
@@ -606,59 +613,70 @@ export function MeetingDetailPage({
     ...assigneeCandidates.filter((one) => !attendeeIds.has(one.id)),
   ];
 
+  /*
+   * 4칸: 첨부 · 스크립트 (시안 08 · `workspace.v1.jsx:239`).
+   *
+   * 걷어낸 것 셋:
+   *   · 열 전체를 감싸던 `.meeting-panel`(1px 테두리 + 16 라운드). 시안의 이 열은 카드가 아니라
+   *     **칸**이다 — 셸이 그어 둔 왼쪽 세로 경계선 하나로 갈리고 화면 바닥까지 이어진다.
+   *   · 「자료」 밑줄 탭. 시안은 회색 바탕에 고른 것만 흰 세그먼티드고, 항목은 늘 둘이다.
+   *   · 자료가 없을 때 열을 통째로 채우던 큰 빈 상태 카드. 빈 것은 한 줄로 말하고 [+ 자료 첨부]는
+   *     **목록 바로 아래** 제자리에 선다 — 짧은 카드 바닥에 붙지 않는다.
+   *
+   * **스크립트 탭은 상태와 무관하게 선다** — 시안 주석이 직접 그렇게 적어 두었고
+   * (「예정 회의는 스크립트가 비어 있을 뿐이다」), 계약도 그 말과 맞는다:
+   * `GET /api/meetings/{id}/transcript` 는 읽을 수 있는 회의면 아직 아무 말도 없어도 빈 목록을 낸다
+   * (`backend/.../meetings/application.py:1049`). 그래서 빈 상태는 지어낸 것이 아니라 사실이다.
+   */
   const sideRail = (
-      <section aria-label="자료와 스크립트" className="meeting-panel">
-      <header className="meeting-tabs" style={{ borderBottom: "1px solid var(--scax-color-line)" }}>
-      {tabMaterials && (
-      <button className={materialsOn ? "on" : ""} onClick={() => setRight("materials")} type="button">
-      {meetingScreen.tabMaterials}
-      </button>
-      )}
-      {tabScript && (
-      <button className={scriptOn ? "on" : ""} onClick={() => setRight("script")} type="button">
-      {meetingScreen.tabScript}
-      </button>
-      )}
+    <section aria-label={meetingScreen.sideRailLabel} className="scax-side-rail">
+      <header className="scax-side-rail__header">
+        <SegmentedControl
+          ariaLabel={meetingScreen.sideRailLabel}
+          onChange={setRight}
+          options={railOptions}
+          value={materialsOn ? "materials" : "script"}
+        />
       </header>
-      <div className="meeting-scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "16px 20px" }}>
-      {materialsOn ? (
-      <div>
-      {materials === null ? (
-      <Skeleton label="자료를 불러오는 중" rows={3} />
-      ) : materials.length === 0 ? (
-      <div style={{ padding: "60px 0" }}>
-      <Empty title={meetingScreen.materialsEmpty} />
+      <div className="scax-side-rail__body scax-scroll">
+        {materialsOn ? (
+          <>
+            {materials === null ? (
+              <Skeleton label="자료를 불러오는 중" rows={3} />
+            ) : materials.length === 0 ? (
+              <p className="scax-side-rail__empty">{meetingScreen.materialsEmpty}</p>
+            ) : (
+              <FileList
+                /* 목록의 이름은 «무엇의 목록인가» 다 — 탭의 낱말(「첨부」)과 따로 둔다 */
+                label={meetingScreen.materials}
+                rows={materials.map((file) => ({
+                  key: file.material_id,
+                  name: file.name,
+                  size: sizeText(file.size),
+                  active: file.material_id === openMaterial,
+                  onOpen: () => setOpenMaterial(file.material_id),
+                  /* E75 자료 삭제 — 떼는 것은 올린 사람이고 「진행 중」에는 아무도 못 뗀다.
+                     그 둘을 합친 판정은 **서버가 낸다** — 화면이 다시 맞춰 보지 않는다 */
+                  removeLabel: meetingScreen.attachDropFile,
+                  onRemove: file.can_detach ? () => setAskDropMaterial(file) : undefined,
+                }))}
+              />
+            )}
+            {/* E06 [+ 자료 첨부] — 「진행 중」에는 숨긴다 (X-117). 자리는 목록 바로 아래다 */}
+            {attendee && !live && (
+              <Button onClick={() => setAttach(true)} size="sm" style={{ width: "100%" }} type="button">
+                <Icon name="plus" size={14} /> {meetingScreen.attach}
+              </Button>
+            )}
+          </>
+        ) : scriptRows.length > 0 ? (
+          <LiveScript rows={scriptRows} />
+        ) : (
+          <p className="scax-side-rail__empty">{meetingScreen.scriptEmpty}</p>
+        )}
       </div>
-      ) : (
-      <FileList
-      label={meetingScreen.tabMaterials}
-      rows={materials.map((file) => ({
-      key: file.material_id,
-      name: file.name,
-      size: sizeText(file.size),
-      active: file.material_id === openMaterial,
-      onOpen: () => setOpenMaterial(file.material_id),
-      /* E75 자료 삭제 — 떼는 것은 올린 사람이고 「진행 중」에는 아무도 못 뗀다.
-      그 둘을 합친 판정은 **서버가 낸다** — 화면이 다시 맞춰 보지 않는다 */
-      removeLabel: meetingScreen.attachDropFile,
-      onRemove: file.can_detach ? () => setAskDropMaterial(file) : undefined,
-      }))}
-      />
-      )}
-      {/* E06 [자료 첨부] — 「진행 중」에는 숨긴다 (X-117) */}
-      {attendee && !live && (
-      <Button size="sm" onClick={() => setAttach(true)} style={{ width: "100%", marginTop: 12 }} type="button">
-      <Icon name="paperclip" size={14} /> {meetingScreen.attach}
-      </Button>
-      )}
-      </div>
-      ) : scriptRows.length > 0 ? (
-      <LiveScript rows={scriptRows} />
-      ) : (
-      <Empty title={meetingScreen.scriptEmpty} />
-      )}
-      </div>
-      </section>  );
+    </section>
+  );
 
   return (
     <section className="scax-detail">
@@ -679,185 +697,75 @@ export function MeetingDetailPage({
       )}
 
       {/*
-        * 바퀴 6bc 1·2·3: 회의 제목·메타가 «페이지 머리」에서 3칸 안으로 내려왔다.
-        * 시안은 제목 한 줄(18px 말줄임) + 그 아래 읽기 한 줄(일시 · 장소 · 참석 N명)이다.
+        * 시안 10 의 상세 머리 — **제목부터 시작한다.**
+        *   1줄: 제목 (+ 상태 배지 셋) ······ [확장 화살표] [▷ 회의 시작]
+        *   2줄: 일시 · 장소 · 참석 N명
         *
-        * R-2: 시안에 편집 자리가 없다고 편집을 없애지 않는다. 고치는 길은 **제목 줄 오른쪽의
-        * 작은 「회의 정보 수정」 단추**에 그대로 두고, 누르면 지금 쓰던 편집 폼이 그 자리에서 열린다.
-        * 값과 저장 경로(`updateMeetingInfo`)는 하나도 안 바꿨다.
+        * 걷어낸 것 둘:
+        *   · 제목 «위» 의 「회의 정보」 구획 라벨과 그 옆 연필. 고치는 자리는 목록 카드의
+        *     [수정] → `MeetingEditModal` 로 옮겼다(시안 02). 칸도 저장 경로도 그대로다.
+        *   · [회의 시작]이 제목 아래 «따로 한 줄» 로 서던 배치. 시안은 제목과 같은 줄 오른쪽이고,
+        *     보라 면이 아니라 흰 면 + 1px 선이다 — 화면 맨 위의 [빠른 시작]과 결이 갈린다.
+        * 집중 모드 글리프도 시안 것으로 갔다: 네모에 세로선(`left-side`)이 아니라 대각선 양방향
+        * 화살표(`expand`/`collapse`)이고, 자리는 [회의 시작] «왼쪽» 이다.
         */}
-      <header className={headEdit ? "scax-detail__head editing" : "scax-detail__head"}>
-        <div style={{ minWidth: 0, flex: 1 }}>
-          {/* E76 구획 제목 · 그 옆이 예약값을 고치는 자리다 */}
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+      <header className="scax-detail__head">
+        <div className="scax-detail__title-row">
+          <h2 className="scax-detail__title">{meeting.title ?? meetingScreen.noTitle}</h2>
+          {/* 합성이 낸 제목 후보 — 아직 제목이 아니다. 목록의 [수정]으로 열어 저장해야 제목이 된다 */}
+          {!meeting.title && meeting.title_candidate && (
             <span className="t-meta" style={{ fontSize: 12 }}>
-              {meetingScreen.info}
+              {meetingScreen.titleCandidate(meeting.title_candidate)}
             </span>
-            {headEdit ? (
-              <>
-                <Button variant="text" size="sm" className="meeting-head-btn" onClick={() => setHeadEdit(false)} type="button">
-                  {meetingScreen.cancel}
-                </Button>
-                <Button size="sm" className="meeting-head-btn" disabled={headUnchanged || busy} onClick={() => void saveHead()} type="button">
-                  {meetingScreen.save}
-                </Button>
-              </>
-            ) : (
-              /* 연필 — 예약값을 고치는 자리. 「예정」·「완료」에만 서고, 열 수 있는지는 서버가 말한다 */
-              meeting.can_edit_info &&
-              (planned || settled) && (
-                <IconButton
-                  className="meeting-head-btn"
-                  label={meetingScreen.editInfo}
-                  name="pencil"
-                  onClick={openHeadEdit}
-                  size={14}
-                />
-              )
+          )}
+          {/* E02 상태 배지 — 정리 중 · 실패 · 취소됨만 */}
+          {badgeTone && status && <Badge tone={badgeTone}>{meetingStatusLabel[status]}</Badge>}
+
+          <div className="scax-detail__head-actions">
+            {/* 바퀴 6a M-5: 회의에 집중하기 — 켜면 «목록 칸» 이 사라진다. 첨부 칸은 그대로 선다.
+                시안(workspace.v1.jsx:177)이 쓰는 글리프를 그대로 들였다 — DS 원본에 있던 둘이다. */}
+            {onToggleFocus && (
+              <IconButton
+                label={focus ? meetingScreen.exitFocus : meetingScreen.focus}
+                name={focus ? "collapse" : "expand"}
+                onClick={onToggleFocus}
+                size={20}
+              />
+            )}
+            {(planned || cancelled) && attendee && (
+              <Button disabled={busy} onClick={() => void run(() => startMeeting(meeting.meeting_id))} size="sm" type="button">
+                <Icon name="play" size={14} /> {meetingScreen.start}
+              </Button>
+            )}
+            {/* 회의를 닫는 것은 이끄는 창의 일이다 — 보기만 하는 창에는 서지 않는다.
+                **빨간 solid 를 그대로 둔다** (2026-09-14 사용자 정정). 시안 22 는 이 자리를 채움 없는
+                글자로 그렸지만, 회의를 닫는 것은 되돌릴 수 없는 걸음이라 그만큼 눈에 띄어야 한다는
+                판단이다. DS 의 solid-danger 그대로이고 동작·권한(hosting)·확인 흐름도 그대로다. */}
+            {hosting && (
+              <Button disabled={busy} onClick={() => void run(() => endMeeting(meeting.meeting_id))} size="sm" tone="danger" type="button" variant="solid">
+                {meetingScreen.end}
+              </Button>
+            )}
+            {/* 공유는 «끝난 뒤» 에만 선다 (D34) — 진행 중에도 정리 중에도 아직 읽을 회의록이 없다 */}
+            {attendee && (settled || failedState) && (
+              <Button onClick={() => setShare(true)} size="sm" type="button">
+                {meetingScreen.share}
+              </Button>
+            )}
+            {/* 받는 것은 브라우저가 한다 — 서버가 Content-Disposition 을 실어 보낸다. 형식은 HTML 하나다 */}
+            {settled && (
+              <a className="scax-button scax-button--outlined-neutral" href={meetingExportUrl(meeting.meeting_id)}>
+                {meetingScreen.export}
+              </a>
+            )}
+            {settled && attendee && (
+              <Button onClick={() => setBooking(true)} size="sm" type="button">
+                {meetingScreen.bookNext}
+              </Button>
             )}
           </div>
-
-          {headEdit && head ? (
-            <div className="meeting-meta-edit">
-              <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
-                <div className="scax-field">
-                  <label className="scax-field__label" htmlFor="meeting-head-title">{meetingScreen.titleField}</label>
-                  <input
-                    id="meeting-head-title"
-                    onChange={(event) => setHead({ ...head, title: event.target.value })}
-                    placeholder={meetingScreen.subjectPlaceholder}
-                    type="text"
-                    value={head.title}
-                  />
-                </div>
-                <div className="scax-field">
-                  <label className="scax-field__label" htmlFor="meeting-head-date">{meetingScreen.whenField}</label>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <input
-                      id="meeting-head-date"
-                      onChange={(event) => setHead({ ...head, date: event.target.value })}
-                      style={{ width: "auto", flex: 1, minWidth: 0 }}
-                      type="date"
-                      value={head.date}
-                    />
-                    <select aria-label="시작 시각" onChange={(event) => setHead({ ...head, from: event.target.value })} style={{ width: "auto" }} value={head.from}>
-                      {meetingTimeOptions.map((time) => (
-                        <option key={time} value={time}>
-                          {time}
-                        </option>
-                      ))}
-                    </select>
-                    <span className="t-meta" style={{ flex: "none" }}>
-                      ~
-                    </span>
-                    <select aria-label="종료 시각" onChange={(event) => setHead({ ...head, to: event.target.value })} style={{ width: "auto" }} value={head.to}>
-                      {meetingTimeOptions.map((time) => (
-                        <option key={time} value={time}>
-                          {time}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-                {/* 장소는 이름표다 — 회의실 판정·예약은 여기로 오지 않는다 (D14) */}
-                <div className="scax-field">
-                  <label className="scax-field__label" htmlFor="meeting-head-place">{meetingScreen.place}</label>
-                  <input
-                    id="meeting-head-place"
-                    onChange={(event) => setHead({ ...head, place: event.target.value })}
-                    placeholder={meetingScreen.placeField}
-                    type="text"
-                    value={head.place}
-                  />
-                </div>
-              </div>
-
-              <div className="scax-field" style={{ minWidth: 0 }}>
-                <label className="scax-field__label">
-                  {meetingScreen.attendees} <span className="count-badge">{head.people.length}</span>
-                </label>
-                <PickedTags
-                  items={head.people.map((person) => ({
-                    key: person.member_id,
-                    name: personName(person.display_name),
-                    onRemove: () => setHead({ ...head, people: head.people.filter((one) => one.member_id !== person.member_id) }),
-                  }))}
-                />
-                <div style={{ marginTop: 12 }}>
-                  <PersonSearch
-                    excluded={headPeopleIds}
-                    onPick={(person: RosterPerson) => {
-                      setHead({ ...head, people: [...head.people, { member_id: person.member_id, display_name: person.name }] });
-                      setHeadQuery("");
-                    }}
-                    onQueryChange={setHeadQuery}
-                    placeholder={meetingScreen.nameSearchPlaceholder}
-                    query={headQuery}
-                    roster={roster}
-                  />
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div>
-              <div className="scax-detail__title-row">
-                <h2 className="scax-detail__title">{meeting.title ?? meetingScreen.noTitle}</h2>
-                {/* 합성이 낸 제목 후보 — 아직 제목이 아니다. 연필로 열어 저장해야 제목이 된다 */}
-                {!meeting.title && meeting.title_candidate && (
-                  <span className="t-meta" style={{ fontSize: 12 }}>
-                    {meetingScreen.titleCandidate(meeting.title_candidate)}
-                  </span>
-                )}
-                {/* E02 상태 배지 — 정리 중 · 실패 · 취소됨만 */}
-                {badgeTone && status && <Badge tone={badgeTone}>{meetingStatusLabel[status]}</Badge>}
-              </div>
-              <p className="scax-detail__facts">{facts}</p>
-            </div>
-          )}
         </div>
-
-        <div className="scax-detail__head-actions">
-          {(planned || cancelled) && attendee && (
-            /* 고치다 만 값으로 회의를 열지 않는다 — 편집 중에는 비활성이다 */
-            <Button variant="solid" tone="primary" size="sm" disabled={headEdit || busy} onClick={() => void run(() => startMeeting(meeting.meeting_id))} type="button">
-              <Icon name="play" size={14} /> {meetingScreen.start}
-            </Button>
-          )}
-          {/* 회의를 닫는 것은 이끄는 창의 일이다 — 보기만 하는 창에는 서지 않는다 */}
-          {hosting && (
-            <Button variant="solid" tone="primary" size="sm" disabled={busy} onClick={() => void run(() => endMeeting(meeting.meeting_id))} type="button">
-              {meetingScreen.end}
-            </Button>
-          )}
-          {/* 바퀴 6a M-5: 회의에 집중하기 — 켜면 «목록 칸» 이 사라진다(시안 focus). 첨부 칸은 그대로 선다. */}
-          {onToggleFocus && (
-            <IconButton
-              label={focus ? "목록 칸 펴기" : "회의에 집중하기"}
-              /* 시안은 expand/collapse 글리프를 쓰는데 우리 세트에 없다(바퀴 4 는 쓰는 것만 들였다).
-                 뜻이 가장 가까운 left-side(옆 칸)로 그린다 — 새 글리프를 만들지 않는다. */
-              name="left-side"
-              onClick={onToggleFocus}
-              size={16}
-            />
-          )}
-          {/* 공유는 «끝난 뒤» 에만 선다 (D34) — 진행 중에도 정리 중에도 아직 읽을 회의록이 없다 */}
-          {attendee && (settled || failedState) && (
-            <Button size="sm" onClick={() => setShare(true)} type="button">
-              {meetingScreen.share}
-            </Button>
-          )}
-          {/* 받는 것은 브라우저가 한다 — 서버가 Content-Disposition 을 실어 보낸다. 형식은 HTML 하나다 */}
-          {settled && (
-            <a className="scax-button scax-button--outlined-neutral" href={meetingExportUrl(meeting.meeting_id)}>
-              {meetingScreen.export}
-            </a>
-          )}
-          {settled && attendee && (
-            <Button size="sm" onClick={() => setBooking(true)} type="button">
-              {meetingScreen.bookNext}
-            </Button>
-          )}
-        </div>
+        <p className="scax-detail__facts">{facts}</p>
       </header>
 
       {/* E54 변환 실패 안내 + E55 [다시 시도] */}
@@ -917,7 +825,10 @@ export function MeetingDetailPage({
                 value={memoTab ? "memo" : "ai"}
               />
             )}
-            {canEdit && (
+            {/* 회의 «전» 에는 서지 않는다 — 이 단추가 하던 일(안건 칸 펴기)을 상시 칸이 이미 하고 있다.
+                줄을 고치는 상태(완료·실패)에서는 그대로다: 줄 편집은 저장을 명시로 눌러야 하는 일이라
+                「고치는 중」이라는 상태가 화면에 남아야 한다. */}
+            {canEdit && !agendaAlways && (
               <Button size="sm" disabled={busy} onClick={() => (noteEditing ? void saveNote() : setEditing(true))}
                 style={{ flex: "none" }}
                 type="button"
@@ -929,7 +840,24 @@ export function MeetingDetailPage({
 
           <div className="scax-note__body scax-scroll" ref={noteScroll}>
             {settling ? (
-              <Skeleton label="회의록을 정리하는 중" rows={7} />
+              /*
+               * §8-2 「정리 중」 — 두 트랙을 합쳐 회의록 한 벌을 «새로 짓는» 동안이다.
+               * 예전에는 스켈레톤 막대 일곱 줄이었다. 스켈레톤은 «올 내용의 모양을 아는» 자리인데
+               * 합성 결과가 몇 줄일지는 아무도 모른다 — 그래서 화면이 「무엇을 기다리는지 말하지 않는
+               * 긴 회색 줄」이 됐다(현재 화면 25). 도는 원과 한 문장으로 바꾼다.
+               *
+               * **이 자리는 시간이 지나면 스스로 걷힌다** — 프론트 타이머가 성공을 지어내지 않는다.
+               * 위의 폴링(`SETTLING_POLL_MS`)이 상태를 다시 물어, 합성이 되면 「종료」가 되어 진짜
+               * 회의록이 서고(§8-7), 재전사나 합성이 깨지면 「실패」가 되어 위의 실패 띠와 [다시 시도]가
+               * 선다(§8-8). 어느 쪽이든 `settling` 이 거짓이 되므로 **영원히 도는 원은 없다.**
+               */
+              <div className="scax-note__settling">
+                <Spinner label={meetingScreen.finalNoteGenerating} />
+              </div>
+            ) : aiPending ? (
+              /* 사람이 쓴 안건과 빈 후보 상자를 AI 결과인 척 세우지 않는다 — 아직 없다고 말한다.
+                 문구는 labels 가 갖는다. 「메모」 탭은 그대로라 적던 것은 그 자리에 그대로 있다. */
+              <p className="scax-note__pending">{meetingScreen.aiSummaryPending}</p>
             ) : (
               shownAgendas.map((agenda, index) => (
                 <AgendaBlock
@@ -962,7 +890,7 @@ export function MeetingDetailPage({
                   }
                   /* E22 결론 표시 — 완료에만. 합성이 안 된 「실패」에는 AI 가 낸 값 자체가 없다 */
                   mark={settled ? { text: agenda.concluded ? meetingScreen.concluded : meetingScreen.notConcluded, concluded: agenda.concluded } : null}
-                  onRemove={agendaEditing ? () => setAskRemoveAgenda(agenda) : null}
+                  onRemove={agendaOpen ? () => setAskRemoveAgenda(agenda) : null}
                   source={meetingAgendaSourceText(agenda.source)}
                   title={agenda.title}
                   todos={
@@ -1007,8 +935,9 @@ export function MeetingDetailPage({
               ))
             )}
 
-            {/* E35 [안건 추가] — 편집 중에만. 예정·취소됨(안건 편집)과 완료·실패(회의록 편집) 양쪽에 선다 */}
-            {agendaEditing && (
+            {/* E35 [안건 추가] — 회의 전에는 늘, 완료·실패에서는 회의록을 고치는 동안 선다.
+                자리는 시안대로 «안건 목록 바로 아래» 다. 계약은 그대로 `addMeetingAgenda` 하나다. */}
+            {agendaOpen && (
               <div className="scax-add-agenda">
                 <input
                   aria-label={meetingScreen.agendaPlaceholder}
@@ -1072,6 +1001,9 @@ export function MeetingDetailPage({
           assigneeCandidates={orderedAssignees}
           /* §8-B 14: 이 자리는 요청 전용이라 필드가 적다 — 시안대로 560 이다 */
           size="md"
+          /* 회의에서 나온 요청이다 — 요청자는 시스템(회의)이고 상태는 언제나 「판단 대기」라
+             그 두 줄을 폼에 두지 않는다 (§9-5 D40 · R-48). 보내는 값은 그대로다. */
+          origin="meeting"
           canCreateRequest
           canCreateTask={false}
           ccCandidates={ccCandidates}
@@ -1208,7 +1140,6 @@ export function MeetingDetailPage({
                   const proceed = askLeave;
                   setAskLeave(null);
                   setEditing(false);
-                  setHeadEdit(false);
                   proceed();
                 }}
                 type="button"

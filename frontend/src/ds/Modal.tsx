@@ -1,6 +1,6 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { Button, IconButton } from "./Button";
-import { Icon } from "./icons/Icon";
+import { Icon, type IconName } from "./icons/Icon";
 
 /**
  * 지금 열려 있는 오버레이들 — 나중에 연 것이 뒤에 온다.
@@ -85,7 +85,10 @@ export function Drawer({
     >
       <section aria-label={label} aria-modal="true" className={`scax-drawer scax-drawer--${size}`} role="dialog">
         <header className="scax-drawer__head">
-          <div style={{ minWidth: 0 }}>
+          {/* 이 칸이 «자라야» 닫기가 머리 오른쪽 끝으로 간다. `flex:1` 이 안쪽 h3 에 걸려 있어서
+              (부모가 아니라) 이 div 가 내용 폭만큼만 서고 × 가 파일명 바로 옆에 붙어 있었다
+              (현재 화면 29). 제목의 말줄임은 그대로 — 이제 «남는 폭» 안에서 줄어든다. */}
+          <div className="scax-drawer__head-lead">
             {kicker && <small className="modal-kicker">{kicker}</small>}
             <h3 className="scax-drawer__title">{title}</h3>
             {headerExtra}
@@ -242,12 +245,19 @@ export function Toast({
   onClose,
   action,
   tone,
+  icon,
   closeLabel,
 }: {
   message: string;
   onClose: () => void;
   action?: { label: string; onAction: () => void };
   tone?: "success" | "error";
+  /**
+   * 문구 왼쪽 글리프 — «무엇을 한 알림인지» 를 한 눈에 말한다 (시안 14 의 휴지통).
+   * `tone` 이 스스로 고르는 둘(완료 `check` · 실패 `circle-exclamation`)보다 이 값이 앞선다.
+   * 톤이 없어도 쓸 수 있다 — 지웠다는 사실은 성공도 실패도 아니다.
+   */
+  icon?: IconName;
   /** 알림을 지우는 단추의 이름 (바퀴 11: 부품은 말을 모른다) */
   closeLabel: string;
 }) {
@@ -262,9 +272,10 @@ export function Toast({
       className={tone ? `scax-toast ${tone}` : "scax-toast"}
       role={tone === "error" ? "alert" : "status"}
     >
-      {tone ? (
+      {icon || tone ? (
         <span className="scax-toast__text toast-message">
-          <Icon className="toast-icon" name={tone === "success" ? "check" : "circle-exclamation"} />
+          {/* 톤이 고르는 둘은 예전 크기(16) 그대로다. 부르는 쪽이 준 글리프는 시안 14 의 20 이다. */}
+          <Icon className="toast-icon" name={icon ?? (tone === "success" ? "check" : "circle-exclamation")} size={icon ? 20 : 16} />
           {message}
         </span>
       ) : (

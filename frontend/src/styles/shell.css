@@ -19,7 +19,25 @@
    원본 DS 리셋을 켜는 것은 제목 크기를 새 램프로 다시 정하는 바퀴의 몫이다. */
 
 /* ---------- 전역 element (바퀴 9-B 에 구 styles.css 에서 옮겨 왔다) ---------- */
-body{margin:0;min-width:320px}
+/* box-sizing 은 «되살린 것» 이다. 바퀴 2 가 원본 리셋 7줄을 잘라낼 때 「구 styles.css 가 이미
+   정해 두었다」는 이유를 달았는데, 바퀴 9-B 에서 그 파일이 사라지며 이 한 줄만 아무 데도 가지
+   못했다. 없으면 `width:100%` + padding + border 를 가진 칸이 전부 부모보다 넓어진다 —
+   목록 카드가 레일 오른쪽에서 잘리고(03) 예약 모달에 가로 스크롤이 생기던(06) 것이 그것이다.
+   h1~h4·p 리셋과 달리 이 줄은 «크기를 죽이지 않는다» — 넘치던 것을 칸 안으로 들일 뿐이다. */
+*,*::before,*::after{box-sizing:border-box}
+/* font-family 는 «되살린 것» 이다 — box-sizing 과 같은 사고, 다른 자리에서 났다.
+   구 styles.css 는 `:root{}` 블록 «꼬리» 에 토큰이 아닌 선언 일곱을 달고 있었다
+   (color · background · font-family · font-synthesis · line-height · letter-spacing ·
+   -webkit-font-smoothing). 바퀴 9-B 가 그 파일을 지울 때 element 리셋 여덟 줄만 이리로
+   옮겼고, `:root` 에 붙어 있던 이 일곱은 토큰으로 보여 따라오지 못했다. 바퀴 2 가 원본 DS 의
+   `body{…font-family…}` 를 잘라낸 이유가 「구 styles.css 가 이미 정해 두었다」였으니,
+   그 파일이 사라진 순간 글꼴을 주는 곳이 앱 전체에서 «영»이 됐다 — .ax-* 열 종과
+   .scax-textfield__input · .scax-composer__input · .scax-checklist__text ·
+   .scax-side-nav__logo 만 각자 갖고, 나머지 .scax-* 는 전부 브라우저 기본 세리프로 떨어진다.
+   ⚠ font-size · line-height · letter-spacing 은 «일부러 안 넣었다». 구 값(1.45 / -0.02em)과
+   새 램프(label1)가 달라서 지금 켜면 클래스 없는 글자의 줄간격이 화면마다 움직인다 —
+   그것은 제목 크기를 새 램프로 다시 정하는 바퀴의 몫이다(위 바퀴 9-B 주석과 같은 이유). */
+body{margin:0;min-width:320px;font-family:var(--scax-font-ui);color:var(--scax-color-ink);background:var(--scax-color-surface);font-synthesis:none;-webkit-font-smoothing:antialiased}
 button,input,select,textarea{font:inherit;letter-spacing:inherit;line-height:inherit;color:inherit}
 button{cursor:pointer;border:0;background:transparent}
 h1,h2,h3,h4{margin:0;font-weight:700}
@@ -131,8 +149,11 @@ a{color:var(--scax-color-accent);text-decoration:none}
 
 /* 문서가 흐르는 화면 10장 — 본문이 여기서 세로로 스크롤한다 */
 .scax-page-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;padding:0 40px 152px}
-/* 회의처럼 «한 화면에 갇히는» 화면 — 스크롤은 안쪽 패널이 갖는다. 여기서는 잡지 않는다 */
-.scax-page-scroll--fixed{overflow-y:hidden;padding:0 40px;display:flex;flex-direction:column}
+/* 회의처럼 «한 화면에 갇히는» 화면 — 스크롤은 안쪽 패널이 갖는다. 여기서는 잡지 않는다.
+   좌우 40px 은 구 `.canvas` 가 문서형 화면에 주던 여백이다. 회의는 «칸이 맞닿는» 화면이라
+   그 여백이 한 겹 더 끼면 상세가 목록 칸에서 떠 보인다(시안 01 은 경계선이 곧 칸의 끝이다).
+   안쪽 여백은 상세가 자기 규칙(.scax-detail__head · .scax-agenda-block 의 24)으로 갖는다. */
+.scax-page-scroll--fixed{overflow-y:hidden;padding:0;display:flex;flex-direction:column}
 /* 오류·재조회 띠는 스크롤 밖에 서서 접히지 않는다 */
 .scax-page-notices{flex:0 0 auto;padding:0 40px}
 .scax-page-notices:empty{display:none}

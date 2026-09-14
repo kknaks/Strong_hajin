@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { Drawer, ConfirmModal, Modal, Toast } from "./Modal";
 import { Checkbox } from "./FormControls";
 import { FileList } from "./FileList";
@@ -89,4 +89,35 @@ it("ConfirmModal 은 취소를 접어도 닫는 자리를 잃지 않는다", () 
   expect(within(alert).queryByRole("button", { name: "돌아가기" })).toBeNull();
   expect(within(alert).getByRole("button", { name: "닫기" })).toBeTruthy();
   expect(within(alert).getByRole("button", { name: "회의 취소" })).toBeTruthy();
+});
+
+/*
+ * 드로어 머리의 «닫기 자리» (2026-09-14 사용자 확정).
+ * `flex:1` 이 제목 h3 에 걸려 있어서 그것을 감싼 칸이 내용 폭만큼만 서고, × 가 파일명 «바로 옆» 에
+ * 붙어 있었다(현재 화면 29). 자리는 눈으로 보는 것이지만 **머리에서의 순서와 자라는 칸**은
+ * 마크업의 사실이라 여기서 잠근다 — 되돌아가면 × 가 다시 제목 옆으로 붙는다.
+ */
+it("드로어 닫기는 머리의 «끝» 에 선다 — 제목 칸이 남는 폭을 먹는다", () => {
+  const onClose = vi.fn();
+  render(
+    <Drawer closeLabel="상세 닫기" label="자료 보기" onClose={onClose} kicker="PDF 문서" title="국내사업부 현장근무 결과보고서.pdf">
+      <p>본문</p>
+    </Drawer>,
+  );
+  const dialog = screen.getByRole("dialog", { name: "자료 보기" });
+  const head = dialog.querySelector(".scax-drawer__head") as HTMLElement;
+  const close = within(head).getByRole("button", { name: "상세 닫기" });
+
+  // 제목 칸이 «자라는» 쪽이다 — 이 클래스가 빠지면 × 가 제목 옆으로 돌아온다
+  const lead = head.querySelector(".scax-drawer__head-lead") as HTMLElement;
+  expect(lead).toBeTruthy();
+  expect(lead.contains(close)).toBe(false);
+  // 닫기는 머리의 마지막 자식이다
+  expect(head.lastElementChild).toBe(close);
+  // 제목은 그 칸 안에 있고 말줄임 규칙을 그대로 쓴다
+  expect(lead.querySelector(".scax-drawer__title")?.textContent).toBe("국내사업부 현장근무 결과보고서.pdf");
+
+  // 동작과 이름은 그대로다
+  fireEvent.click(close);
+  expect(onClose).toHaveBeenCalledTimes(1);
 });

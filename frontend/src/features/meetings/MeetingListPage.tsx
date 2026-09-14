@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "../../ds/Button";
 import { listMeetings, quickStartMeeting, removeMeeting } from "../../lib/api";
@@ -10,6 +10,7 @@ import { Skeleton } from "../../ds/Skeleton";
 import { emptyActionLabel, meetingCardBadgeTone, meetingScreen, meetingStatusLabel, meetingWhen } from "../../lib/labels";
 import type { MeetingListPayload, MeetingRow } from "../../lib/viewModels";
 import { BookingModal, roomReservationNotice } from "./BookingModal";
+import { MeetingEditModal } from "./MeetingEditModal";
 
 /**
  * SCR-105 회의 목록 — 왼쪽 목록, 오른쪽 **읽기 전용** 회의록 패널.
@@ -27,6 +28,7 @@ export function MeetingListPage({
   onFocusHandled,
   selected,
   onRegisterHeaderActions,
+  onMeetingUpdated,
 }: {
   onOpenMeeting: (meetingId: string) => void;
   onError: (message: string | null) => void;
@@ -38,12 +40,16 @@ export function MeetingListPage({
   selected: string | null;
   /** 바퀴 6a: 머리가 한 줄로 합쳐져서, 이 칸의 액션(회의 생성·빠른 시작)을 셸 머리에 등록한다 (M-6). */
   onRegisterHeaderActions?: (actions: React.ReactNode) => void;
+  /** 카드의 [수정]이 회의 정보를 고쳤다 — 그 회의를 고르고 있으면 상세도 다시 읽어야 한다. */
+  onMeetingUpdated?: (meetingId: string) => void;
 }) {
   const [payload, setPayload] = useState<MeetingListPayload | null>(null);
   const [failed, setFailed] = useState(false);
   const [moreBusy, setMoreBusy] = useState(false);
   const [confirm, setConfirm] = useState<MeetingRow | null>(null);
   const [booking, setBooking] = useState(false);
+  /** [수정]이 연 회의 정보 모달. **누른 그 줄의 id** 를 들고 있다 — 고른 회의와 섞이지 않는다. */
+  const [editing, setEditing] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const reload = useCallback(async () => {
@@ -111,21 +117,40 @@ export function MeetingListPage({
     }
   }
 
+  /*
+   * [빠른 시작] — **한 번 누르면 회의 하나다.**
+   *
+   * 예전에는 `setBusy` 의 «함수형 업데이터 안» 에서 서버를 불렀다. 업데이터는 React 가 «순수하다» 고
+   * 전제하는 자리라 개발 모드(StrictMode)가 일부러 **두 번 돌려 본다** — 그래서 클릭 한 번에
+   * `POST /api/meetings/quick-start` 가 1ms 간격으로 두 번 나가고 회의가 둘 생겼다.
+   * `if (current) return current` 가드는 막지 못한다: 두 번의 호출이 «같은 current(false)» 를 보기 때문이다.
+   * 상태가 아직 커밋되지 않았으니 서로를 볼 수가 없다.
+   *
+   * 그래서 둘로 나눈다:
+   *   · 업데이터를 없앤다 — 바깥에서 `setBusy(true)` 를 부르고 «호출은 업데이터 밖» 에 둔다.
+   *   · 잠금은 `useRef` 가 든다 — ref 는 **그 자리에서 바로** 바뀌므로 같은 tick 의 두 번째 진입이
+   *     이미 잠긴 것을 본다. 렌더를 기다리는 `busy` state 하나로는 연타도 StrictMode 도 못 막는다.
+   *
+   * `busy` state 는 그대로 둔다 — 그것은 «단추를 비활성으로 보이게 하는» 표시이지 잠금이 아니다.
+   * 실패하면 `finally` 가 잠금을 풀어 **다시 누를 수 있다.** 성공하면 `onOpenMeeting` 은 한 번만 간다.
+   *
+   * 예약(`bookMeeting`)은 이 꼴이 아니다 — 그쪽은 업데이터를 안 쓰고 `Idempotency-Key` 도 실어 보낸다
+   * (`rules.md` 「재전송은 영수증이다」). 빠른 시작에는 그 열쇠가 없어 두 요청이 그대로 회의 둘이 됐다.
+   */
+  const startInFlight = useRef(false);
   const quickStart = useCallback(async () => {
-    setBusy((current) => {
-      if (current) return current;
-      void (async () => {
-        try {
-          const next = await quickStartMeeting();
-          onOpenMeeting(next.meeting.meeting_id);
-        } catch (reason) {
-          onError(reason instanceof Error ? reason.message : "회의를 시작하지 못했습니다.");
-        } finally {
-          setBusy(false);
-        }
-      })();
-      return true;
-    });
+    if (startInFlight.current) return;
+    startInFlight.current = true;
+    setBusy(true);
+    try {
+      const next = await quickStartMeeting();
+      onOpenMeeting(next.meeting.meeting_id);
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : "회의를 시작하지 못했습니다.");
+    } finally {
+      startInFlight.current = false;
+      setBusy(false);
+    }
   }, [onError, onOpenMeeting]);
 
   /* 바퀴 6a M-6: 페이지 머리가 셸의 AppHeader 한 줄로 합쳐졌다. 이 칸이 가진 두 동작을 거기 등록한다.
@@ -182,7 +207,7 @@ export function MeetingListPage({
               </h2>
               <ul aria-labelledby="meeting-upcoming" className="scax-meeting-section__list">
                 {upcoming.map((row) => (
-                  <MeetingRowItem key={row.meeting_id} onAskDelete={setConfirm} onSelect={onOpenMeeting} row={row} selected={selected === row.meeting_id} />
+                  <MeetingRowItem key={row.meeting_id} onAskDelete={setConfirm} onEdit={setEditing} onSelect={onOpenMeeting} row={row} selected={selected === row.meeting_id} />
                 ))}
               </ul>
             </section>
@@ -194,7 +219,7 @@ export function MeetingListPage({
               </h2>
               <ul aria-labelledby="meeting-past" className="scax-meeting-section__list">
                 {past.map((row) => (
-                  <MeetingRowItem key={row.meeting_id} onAskDelete={setConfirm} onSelect={onOpenMeeting} row={row} selected={selected === row.meeting_id} />
+                  <MeetingRowItem key={row.meeting_id} onAskDelete={setConfirm} onEdit={setEditing} onSelect={onOpenMeeting} row={row} selected={selected === row.meeting_id} />
                 ))}
               </ul>
               {/* §8-B 12: [더 보기]는 구획 바닥 한가운데다. `listMeetings(cursor)` · `past.next_cursor`
@@ -230,6 +255,22 @@ export function MeetingListPage({
         />
       )}
 
+      {/* 회의 정보 수정 — 예전에 상세 머리의 연필이 열던 폼이 이 자리로 왔다 (시안 02).
+          여는 대상은 «누른 줄» 이다: 고른 회의를 바꾸지 않으므로 선택과 편집 대상이 어긋날 수 없다. */}
+      {editing && (
+        <MeetingEditModal
+          meetingId={editing}
+          onClose={() => setEditing(null)}
+          onError={onError}
+          onNotice={onNotice}
+          onSaved={(meetingId) => {
+            setEditing(null);
+            void reload().catch(() => setFailed(true));
+            onMeetingUpdated?.(meetingId);
+          }}
+        />
+      )}
+
       {/* 바퀴 6a M-4: 미리보기 패널과 함께 그 안의 공유 단추도 사라졌다. 공유는 3칸(상세)에 그대로 있다. */}
       {booking && (
         <BookingModal
@@ -261,18 +302,21 @@ export function MeetingListPage({
  * **상태는 여섯 다 배지다** — `meetings.css` 가 「실패는 레거시의 글자색 대신 danger 배지로 통일한다」고
  * 직접 적어 둔 규칙이다. 상세 머리의 D34(「정리 중」에는 배지 없음)는 *그 화면의* 규칙이라 그대로 산다.
  *
- * **[수정] 은 이 회의의 상세로 간다** — 회의 정보를 고치는 자리는 거기 머리의 「회의 정보 수정」 하나이고
- * (R-2), 목록에서 곧장 폼을 여는 길은 시안에도 우리 앱에도 없다. 시안의 이 단추는 빈 핸들러다.
+ * **[수정] 은 회의 정보 모달을 연다** — 이번 바퀴에 상세 머리의 연필이 여기로 옮겨 왔다.
+ * 카드 «클릭» 은 고르기이고 [수정] 은 고치기다. 두 일이 섞이지 않도록 [수정]은 이벤트를
+ * 멈추고 **선택을 바꾸지 않는다** — 고르고 있던 회의는 그대로 있고, 고치는 대상은 누른 줄이다.
  */
 function MeetingRowItem({
   row,
   selected,
   onSelect,
+  onEdit,
   onAskDelete,
 }: {
   row: MeetingRow;
   selected: boolean;
   onSelect: (meetingId: string) => void;
+  onEdit: (meetingId: string) => void;
   onAskDelete: (row: MeetingRow) => void;
 }) {
   const open = () => onSelect(row.meeting_id);
@@ -313,7 +357,7 @@ function MeetingRowItem({
             <Button
               onClick={(event) => {
                 event.stopPropagation();
-                open();
+                onEdit(row.meeting_id);
               }}
               size="sm"
               type="button"

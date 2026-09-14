@@ -204,3 +204,166 @@ describe("writing down the first steps with the work", () => {
     expect(vi.mocked(api.createDirectTask).mock.calls[0][1]?.project_id).toBe("11111111-1111-1111-1111-111111111111");
   });
 });
+
+/* ════════════════════════════════════════════════════════════════════════════
+   회의에서 여는 후속 요청 — 상태 | 요청자 두 줄이 없다 (2026-09-14 사용자 확정).
+
+   SPEC §9-5(D40 · R-48): **요청자는 시스템(회의)이고** 누른 사람은 `promoted_by` 로 기록되고
+   참조로 붙는다. 그러니 그 자리에 누른 사람 이름을 「요청자」로 내던 것은 계약과 어긋난 표시였고
+   (현재 화면 18·19), 상태도 언제나 「판단 대기」라 폼이 말해 줄 것이 없다.
+   **화면에서만 걷고 보내는 값은 그대로다** — 이 검사가 그 둘을 함께 본다.
+   ════════════════════════════════════════════════════════════════════════════ */
+describe("회의에서 여는 후속 요청 (origin=\"meeting\")", () => {
+  afterEach(cleanup);
+
+  function renderFromMeeting(onSubmitRequest = vi.fn().mockResolvedValue("보냈습니다.")) {
+    render(
+      <CreateWorkModal
+        assigneeCandidates={[jiho]}
+        canCreateRequest
+        canCreateTask={false}
+        ccCandidates={[{ id: "sora", display_name: "소라" } as never]}
+        initial={{ title: "업무 진행과 문제 정기 공유", description: "회의에서 나온 일", dueDate: "2026-09-20", checklist: ["공유할 업무와 현재 상태를 정리한다."] }}
+        onClose={vi.fn()}
+        onCreated={vi.fn()}
+        onError={vi.fn()}
+        onSubmitRequest={onSubmitRequest}
+        origin="meeting"
+        ownerName="유나 (대표)"
+        size="md"
+      />,
+    );
+    return { onSubmitRequest };
+  }
+
+  it("상태 | 요청자 두 줄이 서지 않는다 — 빈 표도 남기지 않는다", () => {
+    renderFromMeeting();
+    const modal = screen.getByRole("dialog", { name: "업무 요청" });
+
+    expect(within(modal).queryByText("상태")).toBeNull();
+    expect(within(modal).queryByText("판단 대기")).toBeNull();
+    expect(within(modal).queryByText("요청자")).toBeNull();
+    // 누른 사람 이름이 「요청자」로 서 있던 자리다 — 계약상 요청자는 회의다
+    expect(within(modal).queryByText("유나 (대표)")).toBeNull();
+    // 두 줄을 걷고 남은 빈 표를 세우지 않는다
+    expect(modal.querySelector(".meta-grid")).toBeNull();
+  });
+
+  it("나머지 필드는 그대로다 — 담당 후보 · 희망 기한 · 참조자 · 시작 단계 · 요청 내용", () => {
+    renderFromMeeting();
+    const modal = screen.getByRole("dialog", { name: "업무 요청" });
+
+    expect((within(modal).getByLabelText("요청할 업무") as HTMLInputElement).value).toBe("업무 진행과 문제 정기 공유");
+    expect(within(modal).getByLabelText("담당 후보")).toBeTruthy();
+    expect(within(modal).getByLabelText("희망 기한")).toBeTruthy();
+    expect(within(modal).getByRole("group", { name: "참조자" })).toBeTruthy();
+    expect(within(modal).getByLabelText("시작 단계")).toBeTruthy();
+    expect(within(modal).getByText("공유할 업무와 현재 상태를 정리한다.")).toBeTruthy();
+    expect(within(modal).getByRole("button", { name: "업무 요청 보내기" })).toBeTruthy();
+  });
+
+  it("실제로 보내는 값은 하나도 바뀌지 않는다 — 표시만 걷었다", async () => {
+    const { onSubmitRequest } = renderFromMeeting();
+    const modal = screen.getByRole("dialog", { name: "업무 요청" });
+
+    fireEvent.click(within(modal).getByLabelText("담당 후보"));
+    fireEvent.click(await screen.findByRole("option", { name: "지호 (팀장)" }));
+    fireEvent.click(within(modal).getByRole("button", { name: "업무 요청 보내기" }));
+
+    await waitFor(() => expect(onSubmitRequest).toHaveBeenCalledTimes(1));
+    /* 승격 경로가 그대로다 — 출처 두 열(source_meeting_id · source_agenda_id)은 이 핸들러가
+       실어 보낸다(MeetingDetailPage). 모달은 폼 값만 넘긴다. */
+    expect(onSubmitRequest.mock.calls[0][0]).toMatchObject({
+      assignee_id: "jiho",
+      title: "업무 진행과 문제 정기 공유",
+      due_date: "2026-09-20",
+      checklist: ["공유할 업무와 현재 상태를 정리한다."],
+    });
+    // 일반 요청 경로로 새지 않는다 — 그쪽으로 가면 출처 두 열이 빠진다
+    expect(api.createWorkRequest).not.toHaveBeenCalled();
+  });
+
+  it("회의가 아닌 요청에는 상태 | 요청자가 그대로 선다 — 회의에서만 걷는다", () => {
+    /* 이 표는 «요청» 갈래의 것이다 — 업무 갈래는 `TaskDraftFields` 가 따로 그려 상태 줄 자체가 없다.
+       그래서 견줄 짝은 「회의가 아닌 요청」이다. */
+    render(
+      <CreateWorkModal
+        assigneeCandidates={[jiho]}
+        canCreateRequest
+        canCreateTask={false}
+        onClose={vi.fn()}
+        onCreated={vi.fn()}
+        onError={vi.fn()}
+        ownerName="민아"
+      />,
+    );
+    const request = screen.getByRole("dialog", { name: "업무 요청" });
+    expect(within(request).getByText("상태")).toBeTruthy();
+    expect(within(request).getByText("판단 대기")).toBeTruthy();
+    expect(within(request).getByText("요청자")).toBeTruthy();
+    expect(within(request).getByText("민아")).toBeTruthy();
+  });
+});
+
+/*
+ * 폼의 «읽히는가 / 누를 수 있는가» (2026-09-14 사용자 확정).
+ * 색은 CSS 라 jsdom 이 재지 못한다 — 그래서 색을 베끼지 않고, **색을 그렇게 만든 마크업의 사실**만 본다:
+ * 필수 별표가 라벨과 같은 줄에 서는가 · 접근 이름이 그대로인가 · 누를 수 있는 단추가 정말 활성인가.
+ */
+describe("요청 폼의 필수 표시와 활성 조작", () => {
+  afterEach(cleanup);
+
+  it("필수 별표가 라벨과 «같은 줄» 에 서고, 접근 이름은 그대로다", () => {
+    render(
+      <CreateWorkModal
+        assigneeCandidates={[jiho]}
+        canCreateRequest
+        canCreateTask={false}
+        onClose={vi.fn()}
+        onCreated={vi.fn()}
+        onError={vi.fn()}
+        ownerName="민아"
+      />,
+    );
+    const modal = screen.getByRole("dialog", { name: "업무 요청" });
+
+    /* 별표가 라벨 «밖» 이면서 같은 줄에 서야 한다 — 안으로 넣으면 접근 이름이 「요청할 업무 *」가 되고,
+       줄을 안 세우면 별표가 다음 줄로 내려간다(현재 화면 27). */
+    const input = within(modal).getByLabelText("요청할 업무") as HTMLInputElement;
+    const label = modal.querySelector(`label[for="${input.id}"]`) as HTMLElement;
+    expect(label.textContent).toBe("요청할 업무");
+    const row = label.parentElement as HTMLElement;
+    expect(row.className).toContain("scax-field__label-row");
+    expect(row.querySelector(".danger-text")?.textContent).toBe("*");
+    // 별표는 눈으로만 읽는 표시다 — 필수라는 사실은 입력칸이 진다
+    expect(row.querySelector(".danger-text")?.getAttribute("aria-hidden")).toBe("true");
+    expect(input.getAttribute("aria-required")).toBe("true");
+  });
+
+  it("[참고 업무 연결]은 실제로 누를 수 있는 단추다 — 꺼진 것처럼 두지 않는다", async () => {
+    vi.mocked(api.getTasks).mockResolvedValue([] as never);
+    // 「참고 업무」 칸은 요청 갈래의 것이다 — 요청만 되는 자리로 바로 연다
+    render(
+      <CreateWorkModal
+        assigneeCandidates={[jiho]}
+        canCreateRequest
+        canCreateTask={false}
+        onClose={vi.fn()}
+        onCreated={vi.fn()}
+        onError={vi.fn()}
+        ownerName="민아"
+      />,
+    );
+    const modal = screen.getByRole("dialog", { name: "업무 요청" });
+
+    const link = within(modal).getByRole("button", { name: "참고 업무 연결" });
+    // 「회색이면 disabled」가 성립하려면 «활성인 것은 disabled 가 아니어야» 한다
+    expect(link.hasAttribute("disabled")).toBe(false);
+    // 글자만 있는 결이 아니라 단추로 보이는 결이다 (DS outlined-neutral)
+    expect(link.className).toContain("scax-button--outlined-neutral");
+
+    // variant 를 바꿔도 하던 일은 그대로다
+    fireEvent.click(link);
+    expect(await within(modal).findByRole("button", { name: "연결 취소" })).toBeTruthy();
+  });
+});

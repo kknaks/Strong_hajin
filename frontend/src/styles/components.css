@@ -16,7 +16,12 @@
 .scax-button--outlined-primary:hover{background:var(--scax-color-accent-05)}
 .scax-button--outlined-neutral{background:var(--scax-color-surface);border-color:var(--scax-color-line);color:var(--scax-color-ink-neutral)}
 .scax-button--outlined-neutral:hover{background:var(--scax-color-fill-weak)}
-.scax-button--text-neutral{padding:0 var(--scax-space-200);background:transparent;color:var(--scax-color-ink-alt)}
+/* 2026-09-14 사용자 확정: 「활성 조작은 읽히고, **진짜 disabled 만 회색**」.
+   ink-alt 는 옆의 안내 문구와 같은 결이라 누를 수 있는 자리가 꺼진 것처럼 보였다(현재 화면 27·30).
+   테두리 단추(outlined-neutral)와 같은 잉크로 맞춘다 — 단추끼리 결이 갈리지 않는다.
+   ⚠ 이 줄은 앱 전역의 글자 단추 «전부» 에 닿는다(호출부 69곳). 못 누르는 단추는 그대로 회색이다 —
+   `.scax-button:disabled`(specificity 0,2,0)가 이 줄(0,1,0)을 이기기 때문이다. */
+.scax-button--text-neutral{padding:0 var(--scax-space-200);background:transparent;color:var(--scax-color-ink-neutral)}
 .scax-button--text-neutral:hover{background:var(--scax-color-fill-weak)}
 .scax-button--block{width:100%}
 .scax-button-group{display:flex;flex-direction:row;gap:var(--scax-space-200)}
@@ -45,7 +50,11 @@
 .scax-select__trigger--danger{background:var(--scax-color-danger-soft);color:var(--scax-color-danger)}
 
 /* ---------- Popover (floating layer for Select menus) ---------- */
-.scax-popover{position:absolute;z-index:30;min-width:120px;padding:var(--scax-space-100);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);box-shadow:var(--scax-shadow-raised)}
+/* 팝오버는 «자기를 연 층 위» 에 떠야 한다. 30 이던 때는 예약 모달(.modal-backdrop z-index:50)
+   안에서 연 셀렉터·달력·시간 칩이 배경 뒤에 그려져, 열려 있는데도 안 보이고 눌리지도 않았다
+   (Popover 는 body 로 포털된다 — 모달의 자손이 아니라 쌓임 순서를 스스로 이겨야 한다).
+   90 은 모달 50 · 겹친 확인 60 · 자료 고르기 80 보다 위이고, 최소 폭 안내 100 보다 아래다. */
+.scax-popover{position:absolute;z-index:90;min-width:120px;padding:var(--scax-space-100);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);box-shadow:var(--scax-shadow-raised)}
 .scax-popover--below-start{top:calc(100% + var(--scax-space-100));left:0}
 .scax-popover__option{display:flex;align-items:center;gap:var(--scax-space-200);width:100%;padding:var(--scax-space-150) var(--scax-space-200);border:0;border-radius:var(--scax-radius-xs);background:transparent;color:var(--scax-color-ink-neutral);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);text-align:left;white-space:nowrap;cursor:pointer}
 .scax-popover__option:hover{background:var(--scax-color-fill-weak)}
@@ -168,6 +177,16 @@
 .scax-skeleton-row{display:grid;grid-template-columns:44px minmax(0,1fr) 120px 140px 120px 200px;align-items:center;gap:var(--scax-space-300);min-height:var(--scax-row-height);padding:var(--scax-space-150) var(--scax-space-600);border-bottom:1px solid var(--scax-color-line-weak)}
 @keyframes scax-pulse{0%,100%{opacity:1}50%{opacity:.45}}
 
+/* ---------- Spinner — 끝을 모르는 기다림 ----------
+   스켈레톤이 「올 내용의 모양을 안다」는 자리라면 이쪽은 그 모양을 모르는 자리다.
+   값은 전부 토큰이다: 트랙은 연한 선, 도는 한 조각만 강조색. */
+.scax-spinner{display:inline-block;flex:0 0 auto;border:2px solid var(--scax-color-line);border-top-color:var(--scax-color-accent);border-radius:var(--scax-radius-pill);animation:scax-spin .9s linear infinite}
+.scax-spinner-row{display:flex;align-items:center;gap:var(--scax-space-250)}
+.scax-spinner-row__label{font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);color:var(--scax-color-ink-alt)}
+@keyframes scax-spin{to{transform:rotate(360deg)}}
+/* 움직임을 줄여 달라고 한 사람에게는 돌리지 않는다 — 기다리는 중이라는 사실은 문장이 말한다 */
+@media (prefers-reduced-motion:reduce){.scax-spinner{animation:none}}
+
 /* ---------- TaskTable: 보낸 업무 / 완료 업무 변형 ---------- */
 .scax-task-table--sent .scax-task-table__head,.scax-task-table--sent .scax-task-table__row,.scax-task-table--done .scax-task-table__head,.scax-task-table--done .scax-task-table__row{grid-template-columns:24px minmax(0,1fr) 120px 140px 120px 200px}
 .scax-task-table__cell--actions-single{grid-template-columns:minmax(0,1fr);justify-items:end}
@@ -221,6 +240,9 @@
 /* ---------- Field ---------- */
 .scax-field{display:flex;flex-direction:column;gap:var(--scax-space-200);min-width:0}
 
+/* 라벨과 그 옆의 필수 별표가 «한 줄» 에 선다. `.scax-field__label` 은 그 자체가 flex(=블록)라
+   혼자 두면 한 줄을 통째로 먹는다 — 감싸는 줄을 flex 로 세워야 별표가 옆에 붙는다. */
+.scax-field__label-row{display:flex;align-items:center;gap:var(--scax-space-100);min-width:0}
 .scax-field__label{display:flex;align-items:center;gap:var(--scax-space-100);font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink)}
 .scax-field__required{color:var(--scax-color-danger)}
 .scax-field__hint{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
@@ -300,13 +322,10 @@
 .scax-checkbox__input:checked~.scax-checklist__text{color:var(--scax-color-ink-assistive);text-decoration:line-through}
 
 /* ---------- 투명(오버레이) 스크롤바 — 트랙 없음, 썸만 반투명 ---------- */
-.scax-scroll{scrollbar-width:thin;scrollbar-color:transparent transparent}
-.scax-scroll::-webkit-scrollbar{width:8px;height:8px}
-.scax-scroll::-webkit-scrollbar-track{background:transparent}
-.scax-scroll::-webkit-scrollbar-thumb{border:2px solid transparent;border-radius:var(--scax-radius-pill);background-clip:content-box;background-color:transparent}
-.scax-scroll:hover,.scax-scroll:focus-within{scrollbar-color:rgba(112,115,124,.28) transparent}
-.scax-scroll:hover::-webkit-scrollbar-thumb,.scax-scroll:focus-within::-webkit-scrollbar-thumb{background-color:rgba(112,115,124,.28)}
-.scax-scroll::-webkit-scrollbar-thumb:hover{background-color:rgba(112,115,124,.44)}
+/* .scax-scroll 은 이제 «스크롤하는 칸» 이라는 표시일 뿐이다. 막대를 그리는 7줄
+   (thin + hover 시 thumb)은 지웠다 — 전역 규칙(styles/scrollbar.css)이 thumb/track 을
+   안 그리기로 정했고, 이 클래스가 더 구체적이라 그 규칙을 이겨 버렸다.
+   스크롤 동작(overflow)은 이 클래스를 붙인 쪽이 자기 규칙으로 갖는다. */
 .scax-composer:hover .scax-composer__input{scrollbar-color:rgba(112,115,124,.28) transparent}
 .scax-composer:hover .scax-composer__input::-webkit-scrollbar-thumb{background-color:rgba(112,115,124,.28)}
 
@@ -568,8 +587,6 @@ input.title-input { height: 48px; font-size: 17px; font-weight: 700; }
 .min-width-notice { display: none; }
 .meeting-columns.detail { grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr); gap: 16px; }
 .meeting-columns.detail.single { grid-template-columns: minmax(0, 1fr); }
-.meeting-head-btn.icon { width: 22px; padding: 0; color: var(--scax-color-ink-assistive); }
-.meeting-tabs button.on { border-bottom-color: var(--scax-color-ink); color: var(--scax-color-ink); font-weight: 700; }
 /* 회의실 — 이름·정원만 낸 정적 목록. 「가능」 판정 배지도, 못 쓰는 방 잠금도 없다 */
 .meeting-room.none { color: var(--scax-color-ink-alt); }
 .meeting-room.on { border-color: var(--scax-color-accent); background: var(--scax-color-accent-08); }

@@ -5,7 +5,7 @@ import { ApiError, attachMeetingMaterials } from "../../lib/api";
 import { DropZone } from "../../ds/DropZone";
 import { FileList, type FileRow } from "../../ds/FileList";
 import { Icon } from "../../ds/icons/Icon";
-import { useEscape } from "../../ds/Modal";
+import { Toast, useEscape } from "../../ds/Modal";
 import { meetingScreen } from "../../lib/labels";
 import type { MeetingMaterialFailure } from "../../lib/viewModels";
 
@@ -39,6 +39,16 @@ type Staged = { file: File; reason: MeetingMaterialFailure["reason"] | null };
  *
  * 여럿을 한 번에 놓으면 **되는 것만 붙고 안 되는 것은 사유와 함께 남는다** (SPEC §10).
  * 「진행 중」에는 이 자리가 열리지 않는다 — 서버도 409 로 막는다.
+ *
+ * **이번 바퀴 — 시안 12 로 맞췄다.**
+ *   · 안내 한 줄 + 보라 [파일 추가]가 «한 줄» 이고, 고른 파일 목록이 그 아래 «같은 칸 안» 에 선다.
+ *     예전에는 칸 안에 긴 [파일 선택] 단추가 통째로 누웠고 목록은 칸 밖에 따로 섰다.
+ *   · 끌어다 놓는 동안 칸 전체가 연보라 바닥 + 보라 점선이 된다 — `DropZone` 이 갖는다.
+ *   · 목록에서 한 건을 빼면 **뺀 뒤에** 검은 알림 한 줄이 뜬다 (시안 14). 되돌리기는 두지 않는다 —
+ *     빼기는 «아직 안 보낸» 목록에서 지우는 일이라 되돌릴 command 가 서버에 없다.
+ *
+ * **받는 형식과 크기는 계약이 정한다** — PDF · Markdown · 한 건 20MB
+ * (`backend/.../meetings/materials.py`). 시안에 URL 줄이 있어도 여기에 만들지 않는다.
  */
 export function AttachModal({
   meetingId,
@@ -54,12 +64,25 @@ export function AttachModal({
   const [askDiscard, setAskDiscard] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 「뺐다」는 알림. **실제로 목록에서 사라진 뒤**에만 선다 — 누른 사실이 아니라 결과를 말한다. */
+  const [removedNotice, setRemovedNotice] = useState<string | null>(null);
 
+  /* 고른 것이 하나도 없으면 묻지 않는다 — 물어볼 «잃을 것» 이 없다.
+     남아 있으면 「아직 안 붙었다」는 사실을 문구가 직접 말한다. */
   const close = () => (staged.length > 0 ? setAskDiscard(true) : onClose());
   useEscape(close, !askDiscard);
 
   const usable = staged.filter((one) => one.reason === null);
   const rejected = staged.some((one) => one.reason !== null);
+
+  function dropStaged(name: string) {
+    setStaged((current) => {
+      const next = current.filter((row) => row.file.name !== name);
+      // 정말 빠졌을 때만 말한다 — 같은 이름이 없어 아무것도 안 빠졌으면 알림도 없다
+      if (next.length !== current.length) setRemovedNotice(meetingScreen.fileRemoved);
+      return next;
+    });
+  }
 
   const rows: FileRow[] = staged.map((one) => ({
     key: one.file.name,
@@ -67,7 +90,7 @@ export function AttachModal({
     size: sizeText(one.file.size),
     reason: one.reason ? failureText(one.reason) : null,
     removeLabel: meetingScreen.attachDropFile,
-    onRemove: () => setStaged((current) => current.filter((row) => row.file.name !== one.file.name)),
+    onRemove: () => dropStaged(one.file.name),
   }));
 
   async function send() {
@@ -116,6 +139,7 @@ export function AttachModal({
             <DropZone
               accept=".pdf,.md,.markdown"
               disabled={busy}
+              drop={meetingScreen.attachDrop}
               hint={meetingScreen.attachLimit}
               onFiles={(files) =>
                 setStaged((current) => [
@@ -127,14 +151,12 @@ export function AttachModal({
               }
               pickLabel={meetingScreen.attachPick}
             >
-              <span className="t-meta" style={{ fontSize: 13 }}>
-                {meetingScreen.attachDrop}
-              </span>
+              {/* 시안 12: 고른 파일은 칸 «안» 에 줄로 선다 */}
+              {staged.length > 0 && <FileList label={meetingScreen.attachTitle} rows={rows} />}
             </DropZone>
 
             {rejected && <div className="scax-field__error">{meetingScreen.attachPartial}</div>}
             {error && <div className="scax-field__error">{error}</div>}
-            {staged.length > 0 && <FileList label={meetingScreen.attachTitle} rows={rows} />}
           </div>
           <footer className="modal-foot">
             <Button variant="solid" tone="primary" disabled={usable.length === 0 || busy} onClick={() => void send()} type="button">
@@ -144,11 +166,16 @@ export function AttachModal({
         </section>
       </div>
 
+      {/* 시안 14 — 검은 바닥 · 휴지통 글리프 · 문구. 읽어 주는 자리(role="status")는 부품이 갖는다 */}
+      {removedNotice && (
+        <Toast closeLabel="알림 지우기" icon="trash" message={removedNotice} onClose={() => setRemovedNotice(null)} />
+      )}
+
       {askDiscard && (
         <div className="modal-backdrop" style={{ zIndex: 60 }}>
-          <section aria-label={meetingScreen.discardTitle} aria-modal="true" className="modal" role="alertdialog">
+          <section aria-label={meetingScreen.attachDiscardTitle} aria-modal="true" className="modal" role="alertdialog">
             <header className="modal-head">
-              <h3>{meetingScreen.discardTitle}</h3>
+              <h3>{meetingScreen.attachDiscardTitle}</h3>
             </header>
             <footer className="modal-foot">
               <Button variant="text" onClick={() => setAskDiscard(false)} type="button">

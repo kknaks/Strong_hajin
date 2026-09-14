@@ -50,6 +50,10 @@ export function MeetingWorkspace({
   onFocusHandled?: () => void;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
+  /* 목록 칸의 [수정]이 회의 정보를 고쳤다 — 그 회의를 고르고 있으면 상세도 새 값을 읽어야 한다.
+     다시 마운트하지 않고 «다시 읽어라» 는 신호만 내린다: 상세가 들고 있던 것(고치던 회의록 줄,
+     읽던 자리의 스크롤)을 잃지 않는다. */
+  const [detailReloadToken, setDetailReloadToken] = useState(0);
   /** 시안의 `focus` — 켜면 목록 칸이 사라지고 상세가 넓어진다 (M-5). */
   const [focus, setFocus] = useState(false);
   /* 첨부·스크립트 칸: 여기서 «빈 칸» 만 내주고 상세가 그 안에 포털로 그린다.
@@ -86,6 +90,9 @@ export function MeetingWorkspace({
       onFocusHandled={onFocusHandled}
       onNotice={onNotice}
       onOpenMeeting={selectMeeting}
+      onMeetingUpdated={(meetingId) => {
+        if (selectedRef.current === meetingId) setDetailReloadToken((value) => value + 1);
+      }}
       onRegisterHeaderActions={onRegisterHeaderActions}
       onRegisterRefresh={onRegisterRefresh}
       selected={selected}
@@ -114,6 +121,7 @@ export function MeetingWorkspace({
       onOpenMeeting={selectMeeting}
       onRegisterLeaveGuard={registerLeaveGuard}
       onRegisterRefresh={onRegisterRefresh}
+      reloadToken={detailReloadToken}
       sideRailHost={sideRailHost}
       onSessionLost={onSessionLost}
       onToggleFocus={() => setFocus((value) => !value)}

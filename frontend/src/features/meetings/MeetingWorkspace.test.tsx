@@ -124,17 +124,21 @@ describe("회의 한 화면 4칸 (바퀴 6a)", () => {
 
     // 목록 칸에서 하나를 고르면 상세 칸이 그 회의로 바뀐다 (M-1 — 화면 전환이 아니다)
     fireEvent.click((await screen.findAllByText("DB ax 전략"))[0]);
-    expect(await screen.findByRole("button", { name: meetingScreen.editInfo })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: meetingScreen.edit })).toBeTruthy();
 
-    // 회의 정보를 고치기 시작한다 → 저장하지 않은 것이 생긴다
-    fireEvent.click(screen.getByRole("button", { name: meetingScreen.editInfo }));
-    await screen.findByLabelText(meetingScreen.place);
+    /* 회의록을 고치기 시작한다 → 저장하지 않은 것이 생긴다.
+       회의 정보 편집은 이제 목록 카드의 모달이 들고 자기 닫기 경로에서 스스로 묻는다
+       (MeetingEditModal). 이 화면이 들고 있는 「저장 안 한 것」은 회의록 편집 하나이고,
+       가드가 지켜야 하는 것도 바로 그것이다 — 잠그는 자리는 그대로다. */
+    fireEvent.click(screen.getByRole("button", { name: meetingScreen.edit }));
+    await screen.findByRole("button", { name: meetingScreen.save });
 
     // 다른 회의를 고른다 — 바로 넘어가지 않고 먼저 묻는다
     fireEvent.click((await screen.findAllByText("정산 마감 점검"))[0]);
     const ask = await screen.findByRole("alertdialog", { name: meetingScreen.leaveTitle });
     // 아직 자리는 그대로다: 고치던 칸이 살아 있다
-    expect(screen.getByLabelText(meetingScreen.place)).toBeTruthy();
+    expect(screen.getByRole("button", { name: meetingScreen.save })).toBeTruthy();
+    expect(api.readMeeting).not.toHaveBeenCalledWith("m2");
 
     // 「나간다」를 고르면 그때 옮겨 간다
     fireEvent.click(within(ask).getByRole("button", { name: meetingScreen.leave }));
@@ -144,7 +148,7 @@ describe("회의 한 화면 4칸 (바퀴 6a)", () => {
   it("고치던 것이 없으면 묻지 않고 바로 옮겨 간다", async () => {
     render(<ShellHost />);
     fireEvent.click((await screen.findAllByText("DB ax 전략"))[0]);
-    await screen.findByRole("button", { name: meetingScreen.editInfo });
+    await screen.findByRole("button", { name: meetingScreen.edit });
 
     fireEvent.click((await screen.findAllByText("정산 마감 점검"))[0]);
     await waitFor(() => expect(api.readMeeting).toHaveBeenCalledWith("m2"));

@@ -20,6 +20,10 @@
   --ax-ink-assistive:var(--label-assistive);
   --ax-ink-disable:var(--label-disable);
   --ax-ink-inverse:var(--cool-neutral-99);
+  /* 검은 면 «위» 의 보조 글자. 밝은 면의 --ax-ink-assistive 와 같은 자리인데 값이 뒤집혀야 한다 —
+     rgba(55,56,60,.28) 을 검정 위에 두면 글자가 바닥에 묻는다(시안 대비 16). 원시 램프의
+     --cool-neutral-70 을 쓴다: 검정 대비 약 6.9:1 로 보조 글자가 읽힌다. 새 값을 짓지 않았다. */
+  --ax-ink-inverse-assistive:var(--cool-neutral-70);
   --ax-ink-nav-idle:rgb(118,118,118);
   --ax-ink-nav-active:var(--brand-100);
 

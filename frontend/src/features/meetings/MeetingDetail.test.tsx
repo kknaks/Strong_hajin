@@ -114,7 +114,11 @@ function DetailHost(props: Parameters<typeof MeetingDetailPage>[0]) {
   );
 }
 
-function renderDetail(over: Partial<MeetingInfo> = {}, agendas: MeetingAgenda[] = [agenda]) {
+function renderDetail(
+  over: Partial<MeetingInfo> = {},
+  agendas: MeetingAgenda[] = [agenda],
+  extra: Partial<Parameters<typeof MeetingDetailPage>[0]> = {},
+) {
   const value: MeetingRecord = { meeting: meeting(over), agendas };
   vi.mocked(api.readMeeting).mockResolvedValue(value);
   const onNotice = vi.fn();
@@ -128,6 +132,7 @@ function renderDetail(over: Partial<MeetingInfo> = {}, agendas: MeetingAgenda[] 
       onOpenMeeting={vi.fn()}
       onSessionLost={vi.fn()}
       ownerName="이건학"
+      {...extra}
     />,
   );
   return { onNotice };
@@ -154,69 +159,44 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-const pencil = () => screen.queryByRole("button", { name: "회의 정보 수정" });
-
 describe("SCR-106 회의 상세 — 상태와 관계가 무엇을 낼지 정한다", () => {
-  it("연필은 「예정」·「완료」에만 선다", async () => {
-    for (const status of ["scheduled", "done"] as MeetingStatus[]) {
+  /*
+   * 시안 10 의 상세 머리는 «제목» 으로 시작한다 — 그 위의 「회의 정보」 구획 라벨과 연필이 함께
+   * 걷혔고, 고치는 자리는 목록 카드의 [수정] → `MeetingEditModal` 로 갔다.
+   * 그 자리의 잠금(칸 · 「바뀐 것이 없으면 저장 못 한다」 · `updateMeetingInfo` patch 모양 ·
+   * 고치던 채로 닫을 때 묻기 · 서버가 닫은 회의)은 `MeetingEditModal.test.tsx` 가 통째로 든다.
+   * 여기서는 **이 화면에 남은 것**을 잠근다.
+   */
+  it("상태 여섯 어디서도 머리는 제목으로 시작한다 — 구획 라벨도 연필도 없다", async () => {
+    for (const status of ["scheduled", "in_progress", "summarizing", "done", "failed", "cancelled"] as MeetingStatus[]) {
       renderDetail({ status });
       await screen.findByText("DB ax 전략");
-      expect(pencil()).toBeTruthy();
+      expect(screen.queryByText("회의 정보")).toBeNull();
+      // 제목은 머리의 첫 줄이다 — 위에 얹힌 줄이 없다
+      const head = document.querySelector(".scax-detail__head") as HTMLElement;
+      expect(head.firstElementChild?.querySelector(".scax-detail__title")?.textContent).toBe("DB ax 전략");
       cleanup();
     }
   });
 
-  it("진행 중 · 정리 중 · 실패 · 취소됨에는 연필이 서지 않는다", async () => {
-    for (const status of ["in_progress", "summarizing", "failed", "cancelled"] as MeetingStatus[]) {
-      renderDetail({ status });
-      await screen.findByText("DB ax 전략");
-      expect(pencil()).toBeNull();
-      cleanup();
-    }
-  });
-
-  it("만든 사람이 아닌 참석자에게도 연필은 서고, 회의록 [수정]은 서지 않는다", async () => {
-    renderDetail({ can_edit_info: true, can_edit_note: false, can_edit_agendas: false });
+  it("[회의 시작]과 집중 모드는 제목과 «같은 줄» 오른쪽에 선다 (시안 10)", async () => {
+    // 집중 모드는 워크스페이스가 접는 판단을 갖는다 — 넘겨줄 때만 그 자리가 선다
+    renderDetail({ status: "scheduled" }, [agenda], { onToggleFocus: vi.fn() });
     await screen.findByText("DB ax 전략");
-    expect(pencil()).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "수정" })).toBeNull();
+    const row = document.querySelector(".scax-detail__title-row") as HTMLElement;
+    expect(within(row).getByRole("button", { name: /회의 시작/ })).toBeTruthy();
+    // 집중 모드는 [회의 시작] 왼쪽이다 — 시안이 쓰는 대각선 양방향 화살표 글리프다
+    expect(within(row).getByRole("button", { name: "회의에 집중하기" })).toBeTruthy();
   });
 
-  it("예약값을 고치는 동안 [회의 시작]은 비활성이다", async () => {
-    renderDetail({ status: "scheduled" });
-    await screen.findByText("DB ax 전략");
-    expect(screen.getByRole("button", { name: /회의 시작/ }).hasAttribute("disabled")).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: "회의 정보 수정" }));
-    expect(screen.getByRole("button", { name: /회의 시작/ }).hasAttribute("disabled")).toBe(true);
-    // 일시는 30분 눈금이고 장소는 글자다 — 회의실 판정은 이 자리로 오지 않는다
-    expect(within(screen.getByLabelText("시작 시각")).getAllByText("15:30")).toHaveLength(1);
-    expect(screen.getByLabelText("장소")).toBeTruthy();
-  });
-
-  it("머리 편집은 바뀐 것이 없으면 저장할 수 없고, 저장하면 계약대로 보낸다", async () => {
-    renderDetail({ status: "scheduled" });
-    await screen.findByText("DB ax 전략");
-    fireEvent.click(screen.getByRole("button", { name: "회의 정보 수정" }));
-    expect(screen.getByRole("button", { name: "저장" }).hasAttribute("disabled")).toBe(true);
-    fireEvent.change(screen.getByLabelText("회의명"), { target: { value: "DB ax 전략 2" } });
-    vi.mocked(api.updateMeetingInfo).mockResolvedValue({ meeting: meeting({ status: "scheduled" }), agendas: [agenda] });
-    fireEvent.click(screen.getByRole("button", { name: "저장" }));
-    await waitFor(() =>
-      expect(api.updateMeetingInfo).toHaveBeenCalledWith("m1", {
-        title: "DB ax 전략 2",
-        starts_at: "2026-09-08T15:30:00+09:00",
-        ends_at: "2026-09-08T16:00:00+09:00",
-        location: "대회의실",
-        attendee_ids: ["1", "2"],
-      }),
-    );
-  });
-
-  it("「예정」에서도 [수정]이 서고 안건을 더하고 뺀다 — 줄 편집 칸은 서지 않는다", async () => {
+  it("「예정」은 [수정] 없이 안건 칸이 늘 서고 안건을 더하고 뺀다 — 줄 편집 칸은 서지 않는다", async () => {
     // BE 가 갈라 내는 두 필드: 「예정」은 안건만 열리고 회의록 줄은 닫혀 있다
     renderDetail({ status: "scheduled", can_edit_note: false, can_edit_agendas: true });
     await screen.findByText("DB ax 전략");
-    fireEvent.click(screen.getByRole("button", { name: "수정" }));
+    /* 시안 10: 회의 전에는 안건 목록 «바로 아래» 에 입력 칸과 [안건 추가]가 그냥 서 있다.
+       [수정]이 하던 일이 그 칸을 펴는 것 하나였으므로 단추를 내리고 칸을 상시로 뒀다 —
+       할 수 있는 일(더하기·빼기)은 그대로다. */
+    expect(screen.queryByRole("button", { name: "수정" })).toBeNull();
     expect(screen.queryByLabelText("내용을 한 줄로 적으세요")).toBeNull();
     expect(screen.getByRole("button", { name: "안건 빼기" })).toBeTruthy();
 
@@ -307,18 +287,24 @@ describe("SCR-106 회의 상세 — 상태와 관계가 무엇을 낼지 정한�
     await screen.findByText("DB ax 전략");
     const exportLink = screen.getByRole("link", { name: "내보내기" });
     expect(exportLink.getAttribute("href")).toBe("/api/meetings/m1/export?format=html");
-    for (const name of ["공유", "수정", "회의 정보 수정", "자료 첨부", "회의 시작", "업무 생성"]) {
+    /* 「회의 정보 수정」은 이 목록에서 뺐다 — 그 자리가 이 화면에서 «사라져» 목록 카드로 갔으므로
+       여기서 「없다」고 세어 봐야 권한을 말해 주지 않는다. 그 잠금은 MeetingEditModal.test.tsx 가 든다. */
+    for (const name of ["공유", "수정", "자료 첨부", "회의 시작", "업무 생성"]) {
       expect(screen.queryByRole("button", { name })).toBeNull();
     }
     // 자료 탭도 서지 않는다 — 노출 권한이 참석자다
-    expect(screen.queryByRole("button", { name: "자료" })).toBeNull();
-    expect(screen.getByRole("button", { name: "스크립트" })).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: "첨부" })).toBeNull();
+    expect(screen.getByRole("tab", { name: "스크립트" })).toBeTruthy();
   });
 
-  it("「예정」에는 스크립트 탭이 없고 [공유]도 서지 않는다", async () => {
+  it("「예정」에도 스크립트 탭은 서고 «아직 없다» 를 낸다 — [공유]는 서지 않는다", async () => {
+    /* 시안 08 의 레일 머리는 상태와 무관하게 탭 둘이다. 계약도 그 말과 맞는다 —
+       `GET /transcript` 는 아직 아무 말도 없는 회의에 빈 목록을 준다. 탭을 지우면
+       「아직 없다」와 「볼 수 없다」가 화면에서 같은 모양이 된다. */
     renderDetail({ status: "scheduled" });
     await screen.findByText("DB ax 전략");
-    expect(screen.queryByRole("button", { name: "스크립트" })).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "스크립트" }));
+    expect(await screen.findByText("아직 원문이 없습니다.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "공유" })).toBeNull();
   });
 

@@ -450,7 +450,9 @@ button.metric-card:hover { border-color: var(--scax-color-line-strong); backgrou
 .sent-section + .sent-section { margin-top: 28px; }
 .sent-section .section-title { margin-top: 0; }
 .cc-picker { border: 0; padding: 0; margin: 0; min-width: 0; }
-.cc-picker legend { padding: 0; margin-bottom: 6px; font-size: 13px; font-weight: 700; color: var(--scax-color-ink-alt); }
+/* 섹션 라벨(참조자 · 참고 업무 · 시작 단계) — 이 줄들은 «무엇을 적는 자리인가» 를 말하는 제목이다.
+   ink-alt 로 두면 그 아래 안내 문구와 같은 결이라 제목으로 읽히지 않았다(현재 화면 27). */
+.cc-picker legend { padding: 0; margin-bottom: 6px; font-size: 13px; font-weight: 700; color: var(--scax-color-ink); }
 .attachment-row { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 13px; }
 .attachment-row a { color: var(--scax-color-accent); text-decoration: none; }
 .attachment-row a:hover { text-decoration: underline; }

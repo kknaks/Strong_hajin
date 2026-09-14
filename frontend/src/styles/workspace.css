@@ -38,6 +38,12 @@
 .scax-note__head>.scax-button{margin-left:auto}
 .scax-note__body{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;overflow-y:auto;border-top:1px solid var(--scax-color-line)}
 .scax-note__composer{display:flex;align-items:center;gap:var(--scax-space-200);flex:0 0 auto;padding:var(--scax-space-300) var(--scax-space-600);border-top:1px solid var(--scax-color-line);background:var(--scax-color-surface-alt)}
+/* 메모 칸은 그 줄을 «채운다» — 시안 22 는 입력줄이 상세 폭을 거의 다 쓴다.
+   자라지 않으면 내용 너비만큼만 서서 왼쪽에 짧게 몰린다(현재 화면 21). */
+.scax-memo-composer{flex:1 1 auto;min-width:0}
+
+/* 「AI 요약」 탭인데 AI 트랙이 아직 비어 있을 때 — 안건 목록이 설 자리에 이 한 줄이 선다 */
+.scax-note__pending{margin:0;padding:var(--scax-space-600);font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);color:var(--scax-color-ink-assistive)}
 
 /* 안건은 업무 표와 같은 결이다 — 1px 경계로 줄을 나눈다 */
 .scax-note__body .scax-agenda-block{padding:var(--scax-space-400) var(--scax-space-600);border-bottom:1px solid var(--scax-color-line-weak)}
@@ -57,20 +63,37 @@
 .scax-add-agenda__input:focus{outline:0;border-color:var(--scax-color-accent-20);box-shadow:var(--scax-focus-ring)}
 .scax-note__composer .scax-add-agenda__input{background:var(--scax-color-surface)}
 
-/* ---------- 4칸: 첨부 · 스크립트 ---------- */
+/* ---------- 4칸: 첨부 · 스크립트 ----------
+   카드가 아니라 «칸» 이다 — 테두리도 라운드도 없다. 열을 가르는 것은 셸이 그은 왼쪽 세로선
+   (`.scax-page-body__rail--right`)이고, 칸은 화면 바닥까지 이어진다. 라운드가 붙는 곳은
+   세그먼티드 · 파일 줄 · 단추 셋뿐이다. */
 .scax-side-rail{display:flex;flex-direction:column;gap:var(--scax-space-250);height:100%;min-height:0;padding:var(--scax-space-500) var(--scax-space-600)}
 .scax-side-rail__header{display:flex;align-items:center;flex:0 0 auto;min-height:var(--scax-control-height-sm)}
 .scax-side-rail__body{display:flex;flex-direction:column;gap:var(--scax-space-300);flex:1 1 auto;min-height:0;overflow-y:auto}
+/* 빈 것은 한 줄로 말한다 — 큰 빈 상태 카드가 열을 통째로 채우면 [+ 자료 첨부]가 그 바닥으로 밀린다 */
+.scax-side-rail__empty{margin:0;padding:var(--scax-space-200) 0;font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);color:var(--scax-color-ink-assistive)}
 
-/* 스크립트 — 발화와 메모가 같은 시각 축에 선다 */
-.scax-script-line{display:flex;gap:var(--scax-space-300);flex:0 0 auto;padding:var(--scax-space-250);border-radius:var(--scax-radius-lg)}
+/* 스크립트 — 발화와 메모가 같은 시각 축에 선다.
+   줄은 «쌓는다»: 「시각 · 화자」 작은 한 줄 위, 본문이 그 아래 열 전체 폭이다. 이 레일은 342 라
+   시각·화자를 왼쪽 칸으로 세우면 본문에 남는 폭이 200 이 안 돼 두세 낱말마다 줄이 바뀐다(현재 화면 17).
+   폭을 못 늘리는 자리에서 글자를 줄이는 대신 칸을 없앴다 — 크기는 DS 램프 그대로다. */
+.scax-script-list{display:flex;flex-direction:column;gap:var(--scax-space-400);margin:0;padding:0;list-style:none}
+/* 오른쪽 아래 AX 런처가 덮는 높이만큼 바닥을 비운다 — 마지막 발화가 캐릭터 뒤로 들어가지 않는다.
+   값은 셸이 문서형 화면에 이미 쓰고 있는 것과 같다 (shell.css 의 .scax-page-scroll). */
+.scax-script-list::after{content:"";display:block;flex:0 0 auto;height:152px}
+.scax-script-line{display:flex;flex-direction:column;gap:var(--scax-space-100);flex:0 0 auto;padding:var(--scax-space-200) var(--scax-space-250);border-radius:var(--scax-radius-lg)}
 .scax-script-line--memo{background:var(--scax-color-surface-alt)}
-.scax-script-line__side{display:flex;flex-direction:column;gap:1px;flex:0 0 auto;width:58px}
-.scax-script-line__who{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-accent)}
-.scax-script-line--memo .scax-script-line__who{color:var(--scax-color-ink-alt)}
-.scax-script-line__memo-who{font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);letter-spacing:var(--scax-text-caption2-ls);color:var(--scax-color-ink-assistive)}
-.scax-script-line__at{font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);letter-spacing:var(--scax-text-caption2-ls);color:var(--scax-color-ink-assistive);font-variant-numeric:tabular-nums}
-.scax-script-line__text{margin:0;flex:1 1 auto;min-width:0;font-size:var(--scax-text-label2-size);line-height:1.62;letter-spacing:var(--scax-text-label2-ls);color:var(--scax-color-ink);text-wrap:pretty}
+/* 「시각 · 화자」 한 줄 — 같은 작은 크기이고 화자만 한 단 진하다 */
+.scax-script-line__meta{display:flex;align-items:center;gap:var(--scax-space-150);margin:0;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls)}
+.scax-script-line__who{font-weight:var(--scax-fw-medium);color:var(--scax-color-ink-alt)}
+.scax-script-line__at{color:var(--scax-color-ink-assistive);font-variant-numeric:tabular-nums}
+.scax-script-line__dot{color:var(--scax-color-line-strong)}
+/* 본문 — 열 전체 폭. 일반 굵기 · 본문색 · 행간 1.62 */
+.scax-script-line__text{margin:0;min-width:0;font-size:var(--scax-text-label2-size);line-height:1.62;letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-regular);color:var(--scax-color-ink);text-wrap:pretty;overflow-wrap:anywhere}
+/* 아직 굳지 않은 줄 — 색으로만 말한다 */
+.scax-script-line--tentative .scax-script-line__text{color:var(--scax-color-ink-assistive)}
+/* 근거 칩이 가리킨 줄 (I05) */
+.scax-script-line--active{background:var(--scax-color-accent-08)}
 
 .scax-file-row__open{border:0;background:transparent;padding:0;text-align:left;cursor:pointer;color:inherit;font:inherit}
 .scax-file-row__open:hover{color:var(--scax-color-accent)}
@@ -79,6 +102,10 @@
 .scax-drawer-overlay{position:fixed;inset:0;z-index:50;display:flex;justify-content:flex-end;background:rgba(23,23,25,.32)}
 .scax-drawer{display:flex;flex-direction:column;width:520px;max-width:100%;height:100%;background:var(--scax-color-surface);box-shadow:var(--scax-shadow-rail)}
 .scax-drawer__head{display:flex;align-items:center;gap:var(--scax-space-200);flex:0 0 auto;padding:var(--scax-space-400) var(--scax-space-500);border-bottom:1px solid var(--scax-color-line-weak)}
+/* 제목 칸이 남는 폭을 다 먹는다 — 그래야 닫기가 머리의 오른쪽 «끝» 에 선다.
+   `min-width:0` 이 있어야 그 안의 제목이 실제로 말줄임한다(flex 자식의 기본 min-width 는 auto 다). */
+.scax-drawer__head-lead{flex:1 1 auto;min-width:0}
+.scax-drawer__head>.scax-icon-button{flex:0 0 auto}
 .scax-drawer__title{flex:1 1 auto;min-width:0;font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);letter-spacing:var(--scax-text-body1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .scax-drawer__hint{margin:0;flex:0 0 auto;padding:var(--scax-space-250) var(--scax-space-500);background:var(--scax-color-surface-alt);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
 .scax-drawer__body{display:flex;flex-direction:column;gap:var(--scax-space-400);flex:1 1 auto;min-height:0;overflow-y:auto;padding:var(--scax-space-500)}

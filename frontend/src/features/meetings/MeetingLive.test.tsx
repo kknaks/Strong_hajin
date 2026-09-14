@@ -277,7 +277,7 @@ describe("SCR-106 「진행 중」 — 회의 스트림", () => {
 
     // 확정 스크립트
     socket().emit({ type: "transcript.final", item: { id: "f1", speakerLabel: "1", atMs: 61_000, endMs: 64_000, content: "받아 적힌 말." } });
-    fireEvent.click(screen.getByRole("button", { name: "스크립트" }));
+    fireEvent.click(screen.getByRole("tab", { name: "스크립트" }));
     expect(screen.getByText("받아 적힌 말.")).toBeTruthy();
 
     // 누가 남긴 메모 — 보는 창도 같은 프레임으로 받는다
@@ -329,13 +329,13 @@ describe("SCR-106 「진행 중」 — 회의 스트림", () => {
     expect(await screen.findByText(/마이크를 쓸 수 없습니다/)).toBeTruthy();
     // 스트림은 그대로 산다
     socket().emit({ type: "transcript.final", item: { id: "f1", speakerLabel: "화자 1", atMs: 62_000, endMs: 65_000, content: "계속 받습니다." } });
-    fireEvent.click(screen.getByRole("button", { name: "스크립트" }));
+    fireEvent.click(screen.getByRole("tab", { name: "스크립트" }));
     expect(screen.getByText("계속 받습니다.")).toBeTruthy();
   });
 
   it("잠정 발화는 교체되고 확정 발화는 쌓인다", async () => {
     await connect(true);
-    fireEvent.click(screen.getByRole("button", { name: "스크립트" }));
+    fireEvent.click(screen.getByRole("tab", { name: "스크립트" }));
 
     socket().emit({ type: "transcript.partial", segments: [{ speakerLabel: "화자 1", atMs: 61_000, text: "토큰 수요가" }] });
     expect(screen.getByText("토큰 수요가")).toBeTruthy();
@@ -387,7 +387,7 @@ describe("SCR-106 「진행 중」 — 회의 스트림", () => {
       evidence: [],
     });
     fireEvent.change(screen.getByLabelText("메모를 남기세요"), { target: { value: "그 안건에 붙는 메모." } });
-    fireEvent.click(screen.getByRole("button", { name: "메모 남기기" }));
+    fireEvent.click(screen.getByRole("button", { name: "기록" }));
     await waitFor(() => expect(api.addMeetingMemoLine).toHaveBeenCalledWith("m1", "a2", "그 안건에 붙는 메모."));
   });
 
@@ -405,7 +405,7 @@ describe("SCR-106 「진행 중」 — 회의 스트림", () => {
 
   it("화자는 번호로 오고 화면은 「화자 N」으로 읽는다 — 확정도 잠정도 같다", async () => {
     await connect(true);
-    fireEvent.click(screen.getByRole("button", { name: "스크립트" }));
+    fireEvent.click(screen.getByRole("tab", { name: "스크립트" }));
 
     socket().emit({ type: "transcript.final", item: { id: "f1", speakerLabel: "1", atMs: 61_000, endMs: 64_000, content: "확정된 말." } });
     socket().emit({ type: "transcript.partial", segments: [{ speakerLabel: "2", atMs: 70_000, text: "아직 굳지 않은 말" }] });
@@ -423,7 +423,11 @@ describe("SCR-106 「진행 중」 — 회의 스트림", () => {
     fireEvent.click(screen.getByRole("tab", { name: "AI 요약" }));
     expect(screen.getByText("회의 전에 AI 가 적어 둔 줄.")).toBeTruthy();
 
-    const pane = document.querySelector(".meeting-scroll") as HTMLElement;
+    /* 읽던 자리를 지키는 칸은 «회의록 본문» 이다 — `noteScroll` 이 가리키는 그 노드다.
+       예전에는 `.meeting-scroll`(첨부 칸의 스크롤 상자)을 잡고 있었는데, 그 칸은 배치가
+       건드리지도 않으므로 scrollTop 이 그대로인 것이 당연했다. 첨부 칸이 시안대로 다시
+       그려지며 그 클래스가 사라져 이 자리가 드러났다 — 이제 실제로 지키는지를 본다. */
+    const pane = document.querySelector(".scax-note__body") as HTMLElement;
     Object.defineProperty(pane, "scrollHeight", { configurable: true, value: 900 });
     Object.defineProperty(pane, "clientHeight", { configurable: true, value: 300 });
     pane.scrollTop = 120;
@@ -451,7 +455,7 @@ describe("SCR-106 「진행 중」 — 회의 스트림", () => {
   it("메모 입력 칸은 서버가 연 사람에게만 선다 (can_write_memo)", async () => {
     await watch();
     expect(screen.queryByLabelText("메모를 남기세요")).toBeNull();
-    expect(screen.queryByRole("button", { name: "메모 남기기" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "기록" })).toBeNull();
     cleanup();
 
     await connect(true);
@@ -462,7 +466,7 @@ describe("SCR-106 「진행 중」 — 회의 스트림", () => {
     await connect(true);
     vi.mocked(api.addMeetingMemoLine).mockRejectedValueOnce(new Error("boom"));
     fireEvent.change(screen.getByLabelText("메모를 남기세요"), { target: { value: "분기별로 다시 뽑기로." } });
-    fireEvent.click(screen.getByRole("button", { name: "메모 남기기" }));
+    fireEvent.click(screen.getByRole("button", { name: "기록" }));
     expect(await screen.findByText("저장하지 못했습니다. 다시 시도하고 있습니다.")).toBeTruthy();
     expect((screen.getByLabelText("메모를 남기세요") as HTMLInputElement).value).toBe("분기별로 다시 뽑기로.");
 
@@ -475,11 +479,11 @@ describe("SCR-106 「진행 중」 — 회의 스트림", () => {
       at_ms: 120_000,
       evidence: [],
     });
-    fireEvent.click(screen.getByRole("button", { name: "메모 남기기" }));
+    fireEvent.click(screen.getByRole("button", { name: "기록" }));
     await waitFor(() => expect(api.addMeetingMemoLine).toHaveBeenCalledWith("m1", "a1", "분기별로 다시 뽑기로."));
     expect(await screen.findByText("분기별로 다시 뽑기로.")).toBeTruthy();
     // 스크립트에는 서지 않는다 (사용자 결정) — 전사만 그 자리에 선다
-    fireEvent.click(screen.getByRole("button", { name: "스크립트" }));
+    fireEvent.click(screen.getByRole("tab", { name: "스크립트" }));
     expect(screen.queryByRole("list", { name: "스크립트" })).toBeNull();
     expect(screen.getByText("아직 원문이 없습니다.")).toBeTruthy();
   });
@@ -496,12 +500,12 @@ describe("SCR-106 「진행 중」 — 회의 스트림", () => {
       evidence: [],
     });
     fireEvent.change(screen.getByLabelText("메모를 남기세요"), { target: { value: "작성자 없이 온 줄." } });
-    fireEvent.click(screen.getByRole("button", { name: "메모 남기기" }));
+    fireEvent.click(screen.getByRole("button", { name: "기록" }));
     expect(await screen.findByText("작성자 없이 온 줄.")).toBeTruthy();
 
     // 스크립트는 전사만 낸다 — 확정 발화가 오면 그것만 선다
     socket().emit({ type: "transcript.final", item: { id: "f1", speakerLabel: "화자 1", atMs: 61_000, endMs: 64_000, content: "전사만 선다." } });
-    fireEvent.click(screen.getByRole("button", { name: "스크립트" }));
+    fireEvent.click(screen.getByRole("tab", { name: "스크립트" }));
     const script = screen.getByRole("list", { name: "스크립트" });
     expect(within(script).getByText("전사만 선다.")).toBeTruthy();
     expect(within(script).queryByText("작성자 없이 온 줄.")).toBeNull();
@@ -562,7 +566,7 @@ describe("SCR-106 「진행 중」 — 회의 스트림", () => {
 
     // 갱신은 그대로 받는다
     socket().emit({ type: "transcript.final", item: { id: "f1", speakerLabel: "1", atMs: 61_000, endMs: 64_000, content: "구독으로도 받는다." } });
-    fireEvent.click(screen.getByRole("button", { name: "스크립트" }));
+    fireEvent.click(screen.getByRole("tab", { name: "스크립트" }));
     expect(screen.getByText("구독으로도 받는다.")).toBeTruthy();
   });
 
@@ -575,7 +579,7 @@ describe("SCR-106 「진행 중」 — 회의 스트림", () => {
       memos: [],
     });
     await connect(true);
-    fireEvent.click(screen.getByRole("button", { name: "스크립트" }));
+    fireEvent.click(screen.getByRole("tab", { name: "스크립트" }));
     const script = await screen.findByRole("list", { name: "스크립트" });
     expect(within(script).getByText("들어오기 전에 오간 말.")).toBeTruthy();
     expect(within(script).getByText("그 다음 말.")).toBeTruthy();
@@ -636,7 +640,7 @@ describe("SCR-106 「진행 중」 — 회의 스트림", () => {
       type: "transcript.final",
       item: { id: "f1", speakerLabel: "1", atMs: 9_000, endMs: 12_000, content: "스트림으로 온 줄." },
     });
-    fireEvent.click(screen.getByRole("button", { name: "스크립트" }));
+    fireEvent.click(screen.getByRole("tab", { name: "스크립트" }));
     expect(screen.getByText("진행 중에 적재된 첫 줄.")).toBeTruthy();
     expect(screen.getByText("스트림으로 온 줄.")).toBeTruthy();
 
@@ -762,5 +766,198 @@ describe("SCR-106 「진행 중」 — 회의 스트림", () => {
     fireEvent.click(screen.getByRole("tab", { name: "메모" }));
     expect(screen.queryByText("이미 적재된 잠정 후보")).toBeNull();
     expect(screen.queryByText(meetingScreen.todos)).toBeNull();
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   회의 «중» 화면 다섯 곳 — 사용자가 실물 화면을 보고 발주한 것 (2026-09-14).
+   시안 21·22·23·24 · 17 과 SPEC §5.7 · §6 · §7 이 근거다.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/** AI 가 아직 아무것도 안 낸 안건 — 사람이 쓴 제목만 있고 AI 줄도 잠정 후보도 없다. */
+const humanOnlyAgenda: MeetingAgenda = { ...agenda, lines: [], todos: [] };
+
+describe("SCR-106 「진행 중」 — 회의 중 화면 다섯 곳", () => {
+  /*
+   * 1. 메모 입력줄 — 시안 22 는 칸이 상세 폭을 거의 다 쓰고 오른쪽 «밖» 에 보라 [기록]이 선다.
+   *    예전에는 footer 가 둘이라 안쪽 것이 자라지 않았고, 칸이 왼쪽에 짧게 몰려 있었다(현재 화면 21).
+   *    폭은 jsdom 이 못 재므로 «자라는 자리에 있는가» 와 «한 줄에 함께 서는가» 를 본다.
+   */
+  it("메모 칸은 그 줄을 채우고 [기록]은 칸 밖 오른쪽에 선다 — 안건 선택과 [+ 새 안건]은 그대로다", async () => {
+    await connect(true);
+
+    const foot = document.querySelector(".scax-note__composer") as HTMLElement;
+    // 칸을 감싸는 껍데기가 그 줄의 «자라는» 자식이다 — footer 가 둘이던 때는 이 자리가 없었다
+    const shell = foot.querySelector(".scax-memo-composer") as HTMLElement;
+    expect(shell).toBeTruthy();
+    expect(foot.querySelectorAll("footer")).toHaveLength(0);
+
+    // 칸과 [기록]은 «같은 줄» 이고, [기록]은 칸 밖이다
+    const row = shell.querySelector(".composer-row") as HTMLElement;
+    const field = row.querySelector(".composer") as HTMLElement;
+    const record = within(row).getByRole("button", { name: meetingScreen.recordMemo });
+    expect(field.contains(record)).toBe(false);
+    expect(row.contains(record)).toBe(true);
+
+    // SPEC §6-4 의 두 자리는 칸 «안» 에 그대로 있다 — 대상 안건과 [+ 새 안건]
+    expect(within(field).getByRole("button", { name: /안건/ })).toBeTruthy();
+    fireEvent.click(within(field).getByRole("button", { name: /안건/ }));
+    expect(await screen.findByRole("button", { name: meetingScreen.newAgenda })).toBeTruthy();
+  });
+
+  it("[기록]은 빈 칸에서 눌리지 않고, 저장에 실패하면 친 것이 칸에 그대로 남는다 (§6-7)", async () => {
+    await connect(true);
+    const record = () => screen.getByRole("button", { name: meetingScreen.recordMemo });
+    expect(record().hasAttribute("disabled")).toBe(true);
+
+    fireEvent.change(screen.getByLabelText("메모를 남기세요"), { target: { value: "적던 메모." } });
+    expect(record().hasAttribute("disabled")).toBe(false);
+
+    vi.mocked(api.addMeetingMemoLine).mockRejectedValue(new Error("저장 실패"));
+    fireEvent.click(record());
+    expect(await screen.findByText(meetingScreen.memoSaveFailed)).toBeTruthy();
+    expect((screen.getByLabelText("메모를 남기세요") as HTMLInputElement).value).toBe("적던 메모.");
+  });
+
+  /*
+   * 2. AI 요약 대기 — AI 트랙이 비어 있는 동안 사람이 쓴 안건 제목과 빈 후보 상자를
+   *    AI 결과인 척 세우고 있었다(현재 화면 24).
+   */
+  it("AI 트랙이 비면 «곧 생성됩니다» 한 줄만 낸다 — 사람이 쓴 안건을 대신 세우지 않는다", async () => {
+    await connect(false, {}, [humanOnlyAgenda]);
+    fireEvent.click(screen.getByRole("tab", { name: "AI 요약" }));
+
+    expect(screen.getByText(meetingScreen.aiSummaryPending)).toBeTruthy();
+    expect(screen.queryByText(/토큰 수요 전망/)).toBeNull();
+    // 빈 「다음 할 일」 상자도 서지 않는다 — 낼 값이 없는데 자리를 먼저 그리지 않는다
+    expect(screen.queryByText(meetingScreen.todos)).toBeNull();
+
+    // 「메모」 탭은 그대로다 — 적던 자리가 이 판정에 끌려가지 않는다
+    fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+    expect(screen.getByText(/토큰 수요 전망/)).toBeTruthy();
+    expect(screen.queryByText(meetingScreen.aiSummaryPending)).toBeNull();
+  });
+
+  it("배치가 오면 그 자리가 AI 트랙으로 바뀐다", async () => {
+    await connect(false, {}, [humanOnlyAgenda]);
+    fireEvent.click(screen.getByRole("tab", { name: "AI 요약" }));
+    expect(screen.getByText(meetingScreen.aiSummaryPending)).toBeTruthy();
+
+    socket().emit({
+      type: "ai.batch",
+      seq: 1,
+      agendas: [
+        {
+          ...agenda,
+          agenda_id: "batch-1",
+          title: "배치가 세운 안건",
+          lines: [{ line_id: "b1", track: "ai", order: 1, text: "배치가 쓴 줄.", author: "AI", at_ms: null, evidence: [] }],
+        },
+      ],
+    });
+
+    expect(screen.queryByText(meetingScreen.aiSummaryPending)).toBeNull();
+    expect(screen.getByText("배치가 쓴 줄.")).toBeTruthy();
+  });
+
+  /*
+   * 새로고침한 창에는 `stream.batch` 가 없다. 그 유무로만 판정하면 **이미 저장된 AI 요약이 숨는다** —
+   * 판정은 상세 응답이 실어 온 AI 트랙 줄·잠정 후보까지 함께 본다.
+   */
+  it("배치 없이 들어와도 이미 저장된 AI 요약은 보인다 — 출처가 「직접 입력」이어도 마찬가지다", async () => {
+    const summarized: MeetingAgenda = {
+      // 출처는 사람이 쓴 그대로다 (§7.1 — AI 는 있는 안건에 줄을 붙인다). source 로 거르면 이 경우가 사라진다
+      ...agenda,
+      source: "manual",
+      lines: [{ line_id: "s1", track: "ai", order: 1, text: "새로고침 전에 저장된 AI 줄.", author: "AI", at_ms: null, evidence: [] }],
+      todos: [],
+    };
+    await watch({}, [summarized]);
+
+    fireEvent.click(screen.getByRole("tab", { name: "AI 요약" }));
+    expect(screen.queryByText(meetingScreen.aiSummaryPending)).toBeNull();
+    expect(screen.getByText("새로고침 전에 저장된 AI 줄.")).toBeTruthy();
+  });
+
+  it("줄은 없어도 잠정 후보가 남아 있으면 AI 트랙이 온 것이다", async () => {
+    const onlyTodos: MeetingAgenda = {
+      ...agenda,
+      lines: [],
+      todos: [todo({ todo_id: "p1", title: "배치가 남긴 잠정 후보" })],
+    };
+    await watch({}, [onlyTodos]);
+
+    fireEvent.click(screen.getByRole("tab", { name: "AI 요약" }));
+    expect(screen.queryByText(meetingScreen.aiSummaryPending)).toBeNull();
+    expect(screen.getByText("배치가 남긴 잠정 후보")).toBeTruthy();
+  });
+
+  /*
+   * 3. 스크립트 가독성 — 레일이 342 라 세 칸을 가로로 세우면 본문에 남는 폭이 200 이 안 됐다
+   *    (현재 화면 17). 칸을 없애고 줄을 쌓는다. 폭 때문에 글자를 줄이지 않았다.
+   */
+  it("발언은 「시각 · 화자」 한 줄 위, 본문이 그 아래 열 전체 폭이다", async () => {
+    await connect(true);
+    socket().emit({
+      type: "transcript.final",
+      item: { id: "t1", speakerLabel: "3", atMs: 15_000, endMs: 19_000, content: "이걸 보통 링키가 하고, 그리고 각 카카오톡 알림 쪽 계약 진행이고요." },
+    });
+
+    fireEvent.click(screen.getByRole("tab", { name: "스크립트" }));
+    const script = await screen.findByRole("list", { name: "스크립트" });
+    const line = within(script).getAllByRole("listitem")[0];
+
+    // 메타 한 줄 안에 시각과 화자가 함께 선다
+    const meta = line.querySelector(".scax-script-line__meta") as HTMLElement;
+    expect(meta.querySelector(".scax-script-line__at")?.textContent).toBe("00:15");
+    expect(meta.querySelector(".scax-script-line__who")?.textContent).toBe("화자 3");
+    // 본문은 그 메타의 «형제» 다 — 같은 줄에 끼어 폭을 나눠 갖지 않는다
+    const text = line.querySelector(".scax-script-line__text") as HTMLElement;
+    expect(text.parentElement).toBe(line);
+    expect(meta.contains(text)).toBe(false);
+    expect(text.textContent).toBe("이걸 보통 링키가 하고, 그리고 각 카카오톡 알림 쪽 계약 진행이고요.");
+  });
+
+  it("잠정 줄과 근거로 가리킨 줄은 예전처럼 갈린다 — 모양이 바뀌어도 뜻은 그대로다", async () => {
+    await connect(true);
+    socket().emit({ type: "transcript.partial", segments: [{ speakerLabel: "1", atMs: 4_000, text: "아직 굳지 않은 말" }] });
+
+    fireEvent.click(screen.getByRole("tab", { name: "스크립트" }));
+    const script = await screen.findByRole("list", { name: "스크립트" });
+    const tentative = within(script).getAllByRole("listitem")[0];
+    expect(tentative.classList.contains("scax-script-line--tentative")).toBe(true);
+    expect(tentative.classList.contains("scax-script-line--active")).toBe(false);
+  });
+
+  /*
+   * 4. 진행 중 [자료 첨부] — 시안 23 에는 서 있지만 **계약이 막는다**:
+   *    SPEC §5.7-4 「[자료 첨부]는 「진행 중」에 숨긴다 (X-117)」이고,
+   *    backend 의 `decide_material_access` 도 `can_attach = ... and current is not IN_PROGRESS` 다.
+   *    붙지 않을 단추를 세우지 않는다 — 이 검사가 그 자리를 지킨다.
+   */
+  it("「진행 중」에는 [자료 첨부]가 서지 않는다 — 시안에 있어도 계약이 막는다 (§5.7-4)", async () => {
+    vi.mocked(api.readMeetingMaterials).mockResolvedValue([]);
+    await connect(true);
+    expect(screen.queryByRole("button", { name: /자료 첨부/ })).toBeNull();
+  });
+
+  /*
+   * 5. [회의 종료] — **빨간 solid 를 지킨다** (2026-09-14 사용자 정정).
+   *    시안 22 는 이 자리를 채움 없는 글자로 그렸지만, 회의를 닫는 것은 되돌릴 수 없는 걸음이라
+   *    그만큼 눈에 띄어야 한다는 것이 사용자 판단이다. 시안을 따라 되돌리지 않도록 여기서 잠근다.
+   */
+  it("[회의 종료]는 빨간 solid 를 지킨다 — 누르면 하던 대로 회의를 닫는다", async () => {
+    await connect(true);
+    const end = screen.getByRole("button", { name: meetingScreen.end });
+    expect(end.classList.contains("scax-button--solid-danger")).toBe(true);
+
+    vi.mocked(api.endMeeting).mockResolvedValue({ meeting: meeting({ status: "summarizing" }), agendas: [agenda] });
+    fireEvent.click(end);
+    await waitFor(() => expect(api.endMeeting).toHaveBeenCalledWith("m1"));
+  });
+
+  it("보기만 하는 창에는 [회의 종료]가 서지 않는다 — 권한은 그대로다", async () => {
+    await watch();
+    expect(screen.queryByRole("button", { name: meetingScreen.end })).toBeNull();
   });
 });

@@ -2330,6 +2330,7 @@ export function CreateWorkModal({
   onCreated,
   onError,
   onClose,
+  origin,
   size,
 }: {
   ownerName: string;
@@ -2355,6 +2356,17 @@ export function CreateWorkModal({
     checklist?: string[];
   }) => Promise<string>;
   projectCandidates?: Project[];
+  /**
+   * 이 요청이 «어디서 나왔는가». 회의록의 후속업무 후보에서 열렸으면 `"meeting"` 이다.
+   *
+   * 그때는 **상태와 요청자가 고를 값이 아니다** — SPEC §9-5(D40 · R-48)가 「요청자는 시스템(회의)이고
+   * 누른 사람은 `promoted_by` 로 기록되고 참조로 붙는다」고 못박는다. 그래서 그 자리에 누른 사람 이름을
+   * 「요청자」로 내던 것은 계약과 **어긋난 표시**였고(현재 화면 18·19), 상태도 언제나 「판단 대기」라
+   * 폼이 말해 줄 것이 없다. 둘 다 화면에서만 걷는다 — **보내는 값은 하나도 바뀌지 않는다.**
+   *
+   * 부르는 쪽이 명시로 넘긴다. 제목·사람 이름·상태를 보고 「회의에서 온 것 같다」고 추론하지 않는다.
+   */
+  origin?: "meeting";
   onCreated: (notice: string) => Promise<void> | void;
   onError: (message: string | null) => void;
   onClose: () => void;
@@ -2593,6 +2605,14 @@ export function CreateWorkModal({
   const drawerTitle = oneKind ? (kind === "task" ? "업무 추가" : "업무 요청") : "새 업무 추가";
   /* §8-B 14: 560 으로 여는 자리(회의록 승격)만 담당·기한을 한 줄에 세운다 — 880 에서는 지금 배치가 맞다 */
   const narrow = size === "md";
+  /* 회의에서 온 요청은 상태도 요청자도 폼이 정하는 값이 아니다 (§9-5 D40) — 그 두 줄만 걷는다.
+     `narrow`(폭)로 가르지 않는다: 폭은 «어떻게 보이나» 이고 이것은 «무엇이 값인가» 라, 같은 축이 아니다. */
+  const showOriginMeta = origin !== "meeting";
+  /* 이 표가 서는 자리는 «요청» 갈래 안이다(업무 갈래는 `TaskDraftFields` 가 따로 그린다).
+     거기 남는 줄은 넷 — 상태·요청자(둘 다 `showOriginMeta`) · 담당 후보·기한(둘 다 `!narrow`).
+     회의에서 열면 앞 둘이 걷히고 뒤 둘은 아래 `.scax-field-row` 로 따로 서므로 표가 통째로 빈다.
+     빈 `<dl>` 은 여백만 남기니 아예 세우지 않는다. */
+  const metaGridShown = showOriginMeta || !narrow;
 
   return (
     <Modal
@@ -2647,10 +2667,16 @@ export function CreateWorkModal({
         ) : (
           <>
         <div className="scax-field">
-          <span>
-            <label className="scax-field__label" htmlFor={titleInputId}>{kind === "task" ? "업무 제목" : "요청할 업무"}</label> <span className="danger-text">*</span>
+          {/* `.scax-field__label` 이 `display:flex`(=블록)라 라벨이 한 줄을 통째로 먹고 별표가 다음 줄로
+              내려가 있었다(현재 화면 27). 감싸는 줄을 flex 로 세워 둘이 나란히 선다 —
+              **별표는 라벨 «밖»에 그대로 둔다**: 안으로 넣으면 접근 이름이 「요청할 업무 *」로 바뀐다. */}
+          <span className="scax-field__label-row">
+            <label className="scax-field__label" htmlFor={titleInputId}>{kind === "task" ? "업무 제목" : "요청할 업무"}</label>
+            {/* 별표는 눈으로만 읽히는 표시다 — 필수라는 사실은 입력칸의 `aria-required` 가 진다 */}
+            <span aria-hidden className="danger-text">*</span>
           </span>
           <input
+            aria-required="true"
             autoFocus
             className="title-input"
             id={titleInputId}
@@ -2662,11 +2688,14 @@ export function CreateWorkModal({
             value={title}
           />
         </div>
+        {metaGridShown && (
         <dl className="meta-grid columns">
+          {showOriginMeta && (
           <div>
             <dt>상태</dt>
             <dd>{kind === "task" ? assignTarget ? <StatusText label="수락 대기" state="pending" /> : <StatusText state="open" /> : <StatusText label="판단 대기" state="pending" />}</dd>
           </div>
+          )}
           {kind === "task" && assignCandidates.length > 0 ? (
             <div>
               <dt>담당자</dt>
@@ -2685,12 +2714,12 @@ export function CreateWorkModal({
                 />
               </dd>
             </div>
-          ) : (
+          ) : showOriginMeta ? (
             <div>
               <dt>{kind === "task" ? "담당자" : "요청자"}</dt>
               <dd>{ownerName}</dd>
             </div>
-          )}
+          ) : null}
           {kind === "request" && !narrow && (
             <div>
               <dt>담당 후보</dt>
@@ -2739,6 +2768,7 @@ export function CreateWorkModal({
             </div>
           )}
         </dl>
+        )}
         {/* 좁은 골격에서는 담당 후보와 희망 기한이 한 줄이다 (`.scax-field-row`) — 같은 필드·같은 id 다 */}
         {narrow && (
           <div className="scax-field-row">
@@ -2806,7 +2836,11 @@ export function CreateWorkModal({
             </ul>
           )}
           <div className="row-actions" style={{ padding: "8px 0 0" }}>
-            <Button variant="text" size="sm" onClick={() => void openReferences()} type="button">
+            {/* 이 단추에는 `disabled` 가 없다 — 늘 누를 수 있다. 그런데 글자만 있는 variant 라
+                옆의 안내 문구와 같은 결로 읽혀 «비활성» 처럼 보였다(현재 화면 30).
+                DS 의 outlined-neutral 로 올려 면과 테두리를 준다 — 새 규칙을 만들지 않았다.
+                진짜로 못 누르는 상태가 되면 `.scax-button:disabled` 가 그때 회색으로 내린다. */}
+            <Button variant="outlined" tone="neutral" size="sm" onClick={() => void openReferences()} type="button">
               {referenceDraft === null ? "참고 업무 연결" : "연결 취소"}
             </Button>
           </div>

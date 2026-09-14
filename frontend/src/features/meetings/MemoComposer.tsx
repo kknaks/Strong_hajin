@@ -74,7 +74,10 @@ export function MemoComposer({
   }
 
   return (
-    <footer className="meeting-composer-foot">
+    /* 껍데기 footer 를 벗었다. 상세가 이미 `.scax-note__composer` 를 세우고 있어서 footer 가 둘이었고,
+       안쪽 것은 flex 자식인데 자라지 않아 «칸이 왼쪽에 짧게 몰려» 있었다(현재 화면 21). 여백도 두 겹이었다.
+       이제 이 부품은 그 줄을 «채우는 쪽» 이다 — 자리와 테두리는 바깥 footer 가 갖는다. */
+    <div className="scax-memo-composer">
       <Composer
         disabled={busy || (!naming && empty)}
         error={failed ? meetingScreen.memoSaveFailed : null}
@@ -106,9 +109,11 @@ export function MemoComposer({
         onChange={naming ? setDraftAgenda : setDraft}
         onSubmit={() => void (naming ? createAgenda() : send())}
         placeholder={naming ? meetingScreen.agendaPlaceholder : meetingScreen.memoPlaceholder}
-        sendLabel={naming ? meetingScreen.addAgenda : meetingScreen.sendMemo}
+        /* 시안 22 의 그 자리 — 칸 오른쪽 «밖» 의 보라 단추다 */
+        sendVariant="button"
+        sendLabel={naming ? meetingScreen.addAgenda : meetingScreen.recordMemo}
         value={naming ? draftAgenda : draft}
       />
-    </footer>
+    </div>
   );
 }

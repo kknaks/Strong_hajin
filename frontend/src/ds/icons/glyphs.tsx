@@ -48,8 +48,10 @@ export type IconName =
   | "circle-exclamation"
   | "clock"
   | "close"
+  | "collapse"
   | "company"
   | "document"
+  | "expand"
   | "home"
   | "inbox"
   | "left-side"
@@ -64,6 +66,7 @@ export type IconName =
   | "search"
   | "send"
   | "square-check"
+  | "trash"
   | "tune";
 
 /* 새 DS 의 24 그리드 글리프 — design/components/icon/Icon.jsx 에서 그대로 옮겼다. */
@@ -92,11 +95,28 @@ export const grid24: Record<Exclude<IconName, Grid16Name | Fill16Name>, React.Re
   check: <path d="M20 6 9 17l-5-5" />,
   "chevron-down": <path d="m6 9 6 6 6-6" />,
   "chevron-right": <path d="m9 18 6-6-6-6" />,
-  "circle-exclamation": <circle cx="12" cy="12" r="10" />,
+  "circle-exclamation": (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" x2="12" y1="8" y2="12" />
+      <line x1="12" x2="12.01" y1="16" y2="16" />
+    </>
+  ),
   clock: (
     <>
       <circle cx="12" cy="12" r="10" />
       <polyline points="12 6 12 12 16 14" />
+    </>
+  ),
+  /* expand · collapse — kit 에 전체화면 글리프가 없어 DS 가 같은 선 규칙(24 그리드·1.5·currentColor)으로
+     더해 둔 둘이다 (`design/components/icon/Icon.jsx:84~86`). 회의에 집중하는 자리(목록 접기)가 쓴다.
+     기하를 우리가 그린 것이 아니라 그 파일에서 그대로 옮겼다. */
+  collapse: (
+    <>
+      <path d="M4 14h6v6" />
+      <path d="M20 10h-6V4" />
+      <path d="M14 10l7-7" />
+      <path d="M3 21l7-7" />
     </>
   ),
   close: (
@@ -123,6 +143,14 @@ export const grid24: Record<Exclude<IconName, Grid16Name | Fill16Name>, React.Re
       <path d="M10 9H8" />
       <path d="M16 13H8" />
       <path d="M16 17H8" />
+    </>
+  ),
+  expand: (
+    <>
+      <path d="M15 3h6v6" />
+      <path d="M9 21H3v-6" />
+      <path d="M21 3l-7 7" />
+      <path d="M3 21l7-7" />
     </>
   ),
   home: (
@@ -197,9 +225,27 @@ export const grid24: Record<Exclude<IconName, Grid16Name | Fill16Name>, React.Re
       <path d="m9 12 2 2 4-4" />
     </>
   ),
+  /* 지운 것을 말하는 알림 한 줄이 쓴다 (시안 14). `design/components/icon/Icon.jsx:129` 그대로다. */
+  trash: (
+    <>
+      <path d="M3 6h18" />
+      <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+      <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+      <line x1="10" x2="10" y1="11" y2="17" />
+      <line x1="14" x2="14" y1="11" y2="17" />
+    </>
+  ),
   tune: (
     <>
-
+      <line x1="21" x2="14" y1="4" y2="4" />
+      <line x1="10" x2="3" y1="4" y2="4" />
+      <line x1="21" x2="12" y1="12" y2="12" />
+      <line x1="8" x2="3" y1="12" y2="12" />
+      <line x1="21" x2="16" y1="20" y2="20" />
+      <line x1="12" x2="3" y1="20" y2="20" />
+      <line x1="14" x2="14" y1="2" y2="6" />
+      <line x1="8" x2="8" y1="10" y2="14" />
+      <line x1="16" x2="16" y1="18" y2="22" />
     </>
   ),
 };

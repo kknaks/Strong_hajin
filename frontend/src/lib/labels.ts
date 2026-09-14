@@ -535,6 +535,8 @@ export const meetingScreen = {
   /* 상세 (SCR-106) */
   info: "회의 정보",
   editInfo: "회의 정보 수정",
+  /** 서버가 `can_edit_info=false` 라고 한 회의 — 칸을 열지 않고 그 사실만 낸다. */
+  cannotEditInfo: "이 회의의 정보는 고칠 수 없습니다.",
   save: "저장",
   cancel: "취소",
   end: "회의 종료",
@@ -544,19 +546,33 @@ export const meetingScreen = {
   summarizingAt: (at: string) => `정리하는 중 ${at}`,
   /** 「정리 중」의 회의록 자리 — 배지 대신 이 한 줄과 로딩이 선다 (D34). */
   summarizingNow: "정리하는 중",
+  /** 「AI 요약」 탭인데 AI 트랙이 아직 비어 있다 — 사람이 쓴 안건을 AI 결과인 척 세우지 않는다 (§7). */
+  aiSummaryPending: "AI 요약이 곧 생성됩니다.",
+  /**
+   * 회의가 «끝난 뒤» 합성이 도는 동안 (§8-2). 회의 «중» 의 `aiSummaryPending` 과 다른 자리다 —
+   * 그쪽은 아직 회의가 돌고 AI 가 중간 요약을 채우는 중이고, 이쪽은 회의가 닫혀 최종 한 벌을 짓는 중이다.
+   */
+  finalNoteGenerating: "최종 회의록 생성 중입니다.",
   lastSaved: (at: string) => `마지막 저장 ${at}`,
   edit: "수정",
   saved: "저장했습니다.",
   tabMemo: "메모",
   tabAi: "AI 요약",
-  tabMaterials: "자료",
+  tabMaterials: "첨부",
   tabScript: "스크립트",
+  /** 4칸(첨부·스크립트)의 이름 — 세그먼티드와 칸이 함께 쓴다. */
+  sideRailLabel: "자료와 스크립트",
   memoPlaceholder: "메모를 남기세요",
+  /** 메모를 던지는 단추 — 시안 22 의 글자 그대로다. 접근 이름도 이 말이 된다. */
+  recordMemo: "기록",
   memoSaveFailed: "저장하지 못했습니다. 다시 시도하고 있습니다.",
   sendMemo: "메모 남기기",
   /** 안건이 하나도 없으면 매달 자리가 없어 드롭다운이 비활성이다 — 라벨은 요소명을 그대로 쓴다. */
   memoTargetEmpty: "안건",
   startedBy: (name: string) => `${name} 이 시작함`,
+  /* 집중 모드 — 켜면 목록 칸이 접힌다. 글리프만 있고 말이 없어 이름이 곧 읽어 주는 말이다 */
+  focus: "회의에 집중하기",
+  exitFocus: "목록 칸 펴기",
 
   /* 스트림 상태 줄 — 아래 다섯은 **임시 문구다** (SPEC §13 `OQ-311`).
      기획 정본의 확정 문구 집합에 스트림 거절·끊김 문구가 없다. 확정 문구가 오면 이 자리만 바뀐다. */
@@ -593,8 +609,10 @@ export const meetingScreen = {
 
   /* 자료 첨부 (MOD-104) */
   attachTitle: "자료 첨부",
-  attachDrop: "여기에 끌어다 놓거나",
-  attachPick: "파일 선택",
+  // 시안 12 의 한 줄. 예전 「여기에 끌어다 놓거나」는 뒤에 오던 단추에 문장을 이어 붙이는 꼴이라
+  // 단추가 같은 줄 오른쪽 끝으로 가면 말이 끊긴다 — 시안 문구로 갈았다.
+  attachDrop: "첨부할 파일을 끌어다 놓거나 추가하세요",
+  attachPick: "파일 추가",
   attachLimit: "한 건당 20MB · PDF · Markdown",
   attachPartial: "일부 파일을 올리지 못했습니다. 아래에서 확인해 주세요.",
   attachSubmit: "첨부",
@@ -604,6 +622,10 @@ export const meetingScreen = {
   attachBadKind: "첨부할 수 없는 형식입니다. 문서 · 이미지 · 압축 파일을 올려 주세요.",
   attachDropFile: "파일 빼기",
   attached: "자료를 첨부했습니다.",
+  /** 고른 목록에서 한 건을 실제로 뺀 «뒤» 에 내는 한 줄 (시안 14). 되돌리기는 두지 않는다. */
+  fileRemoved: "파일이 삭제되었습니다.",
+  /** 고른 파일이 남아 있는 채로 닫을 때 — 아직 «안 붙었다» 는 사실을 말한다. */
+  attachDiscardTitle: "고른 파일은 아직 첨부되지 않았습니다. 닫을까요?",
 
   /* 공유 (MOD-105) */
   shareTitle: "공유",

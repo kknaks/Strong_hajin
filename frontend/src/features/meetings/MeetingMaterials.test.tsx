@@ -37,6 +37,7 @@ vi.mock("../../lib/api", async (actual) => ({
 
 import { ApiError } from "../../lib/api";
 import * as api from "../../lib/api";
+import { meetingScreen } from "../../lib/labels";
 import type { MeetingAgenda, MeetingInfo, MeetingMaterial, MeetingRecord } from "../../lib/viewModels";
 import { useState } from "react";
 
@@ -178,6 +179,43 @@ describe("SCR-106 자료 (MOD-104 · WP-005)", () => {
     await waitFor(() => expect(api.detachMeetingMaterial).toHaveBeenCalledWith("m1", "mat-1"));
   });
 
+  /*
+   * 시안 08 의 4칸 — 카드가 아니라 «칸» 이다. 예전에는 열 전체가 1px 테두리 + 16 라운드 카드로
+   * 감싸여 짧은 높이에서 끊겼고, 자료가 없으면 큰 빈 상태 카드가 그 칸을 통째로 채워
+   * [+ 자료 첨부]가 카드 바닥으로 밀려났다. 라운드가 붙는 곳은 세그먼티드 · 파일 줄 · 단추뿐이다.
+   */
+  it("첨부 칸은 감싸는 카드 없이 서고, [자료 첨부]는 목록 바로 아래다", async () => {
+    renderDetail();
+    await screen.findByText(mine.name);
+
+    const rail = screen.getByRole("region", { name: meetingScreen.sideRailLabel });
+    expect(rail.classList.contains("scax-side-rail")).toBe(true);
+    // 열을 감싸던 카드(.meeting-panel)는 없다
+    expect(document.querySelector(".meeting-panel")).toBeNull();
+
+    // 탭은 밑줄이 아니라 세그먼티드다 — 항목 둘이 늘 선다
+    expect(within(rail).getByRole("tab", { name: meetingScreen.tabMaterials })).toBeTruthy();
+    expect(within(rail).getByRole("tab", { name: meetingScreen.tabScript })).toBeTruthy();
+
+    // [자료 첨부]는 파일 목록 «바로 다음» 형제다 — 칸 바닥에 붙지 않는다
+    const body = rail.querySelector(".scax-side-rail__body") as HTMLElement;
+    const list = within(body).getByRole("list", { name: meetingScreen.materials });
+    expect(list.nextElementSibling?.textContent).toContain(meetingScreen.attach);
+  });
+
+  it("자료가 없어도 칸 구조는 그대로다 — 큰 빈 상태 카드가 열을 감싸지 않는다", async () => {
+    vi.mocked(api.readMeetingMaterials).mockResolvedValue([]);
+    renderDetail();
+    await screen.findByText("DB ax 전략");
+
+    const rail = screen.getByRole("region", { name: meetingScreen.sideRailLabel });
+    expect(await within(rail).findByText(meetingScreen.materialsEmpty)).toBeTruthy();
+    expect(within(rail).getByRole("tab", { name: meetingScreen.tabMaterials })).toBeTruthy();
+    // 빈 상태여도 붙이는 자리는 제자리에 선다
+    expect(within(rail).getByRole("button", { name: /자료 첨부/ })).toBeTruthy();
+    expect(rail.querySelector(".scax-empty")).toBeNull();
+  });
+
   it("「진행 중」에는 첨부도 삭제도 서지 않는다", async () => {
     // 서버가 「진행 중」에는 can_detach 를 내리지 않는다 — 화면은 그 값을 그대로 따른다
     vi.mocked(api.readMeetingMaterials).mockResolvedValue([{ ...mine, can_detach: false }, theirs]);
@@ -189,7 +227,7 @@ describe("SCR-106 자료 (MOD-104 · WP-005)", () => {
 
   it("여럿을 한 번에 놓으면 되는 것만 붙고 안 되는 것은 사유와 함께 남는다", async () => {
     const drawer = await openAttach();
-    fireEvent.change(within(drawer).getByLabelText("파일 선택"), {
+    fireEvent.change(within(drawer).getByLabelText("파일 추가"), {
       target: { files: [pdf("붙는 자료.pdf"), pdf("같이 보낸 자료.pdf")] },
     });
 
@@ -209,7 +247,7 @@ describe("SCR-106 자료 (MOD-104 · WP-005)", () => {
 
   it("한 건도 못 붙으면 422 의 사유를 그 자리에 낸다", async () => {
     const drawer = await openAttach();
-    fireEvent.change(within(drawer).getByLabelText("파일 선택"), { target: { files: [pdf("전부 막힌 자료.pdf")] } });
+    fireEvent.change(within(drawer).getByLabelText("파일 추가"), { target: { files: [pdf("전부 막힌 자료.pdf")] } });
 
     vi.mocked(api.attachMeetingMaterials).mockRejectedValue(
       new ApiError(422, "Unprocessable Entity", {
@@ -225,7 +263,7 @@ describe("SCR-106 자료 (MOD-104 · WP-005)", () => {
 
   it("고르는 시점에도 크기와 형식을 본다 — 다 올리고 나서 듣지 않는다", async () => {
     const drawer = await openAttach();
-    fireEvent.change(within(drawer).getByLabelText("파일 선택"), {
+    fireEvent.change(within(drawer).getByLabelText("파일 추가"), {
       target: { files: [new File(["x"], "구조도 원본.png", { type: "image/png" })] },
     });
     expect(within(drawer).getByText("첨부할 수 없는 형식입니다. 문서 · 이미지 · 압축 파일을 올려 주세요.")).toBeTruthy();
@@ -344,10 +382,69 @@ describe("SCR-106 공유 (MOD-105 · WP-005)", () => {
     expect(onNotice.mock.calls.flat().join(" ")).not.toContain("알림");
   });
 
+  /*
+   * 시안 12 — 고른 파일 목록은 **끌어다 놓는 칸 «안»** 에 선다. 예전에는 칸 밖에 따로 서 있었다.
+   * 칸 밖으로 새면 「이 칸에 무엇이 담겼나」가 눈으로 안 읽힌다.
+   */
+  it("고른 파일은 끌어다 놓는 칸 안에 줄로 선다", async () => {
+    const drawer = await openAttach();
+    fireEvent.change(within(drawer).getByLabelText("파일 추가"), { target: { files: [pdf("붙는 자료.pdf")] } });
+
+    const zone = drawer.querySelector(".scax-dropzone") as HTMLElement;
+    expect(within(zone).getByText("붙는 자료.pdf")).toBeTruthy();
+    // 안내 문구와 [파일 추가]는 «한 줄» 이다 (시안 12 의 머리)
+    const head = zone.querySelector(".scax-dropzone__head") as HTMLElement;
+    expect(within(head).getByText(meetingScreen.attachDrop)).toBeTruthy();
+    expect(within(head).getByRole("button", { name: meetingScreen.attachPick })).toBeTruthy();
+  });
+
+  /*
+   * 시안 14 — 지운 «뒤» 에 알린다. 「눌렀다」가 아니라 「빠졌다」를 말해야 하므로,
+   * 실제로 목록에서 사라진 것을 함께 본다. 복구하기는 두지 않는다 (사용자 명시 제외).
+   */
+  it("고른 파일을 빼면 목록에서 빠지고 그 사실을 알린다 — 되돌리기는 두지 않는다", async () => {
+    const drawer = await openAttach();
+    fireEvent.change(within(drawer).getByLabelText("파일 추가"), { target: { files: [pdf("붙는 자료.pdf")] } });
+    expect(within(drawer).getByText("붙는 자료.pdf")).toBeTruthy();
+
+    fireEvent.click(within(drawer).getByRole("button", { name: meetingScreen.attachDropFile }));
+
+    expect(within(drawer).queryByText("붙는 자료.pdf")).toBeNull();
+    const toast = await screen.findByRole("status");
+    expect(toast.textContent).toContain(meetingScreen.fileRemoved);
+    expect(within(toast).queryByRole("button", { name: /복구/ })).toBeNull();
+    // 뺀 것은 «고른 목록» 에서다 — 서버로는 아무것도 나가지 않았다
+    expect(api.attachMeetingMaterials).not.toHaveBeenCalled();
+  });
+
+  /*
+   * 닫기 확인은 «잃을 것이 있을 때만» 묻는다. 문구는 아직 안 붙었다는 사실을 직접 말한다 —
+   * 「입력 정보는 저장되지 않습니다」는 이 자리에서 무엇이 사라지는지를 가린다.
+   */
+  it("고른 파일이 남아 있을 때만 닫기를 묻는다 — 다 빼면 묻지 않는다", async () => {
+    const drawer = await openAttach();
+    // 아무것도 안 골랐다 → 바로 닫힌다
+    fireEvent.click(within(drawer).getByRole("button", { name: "닫기" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "자료 첨부" })).toBeNull());
+
+    // 같은 화면에서 다시 연다 — 레일의 [자료 첨부] 하나뿐이다
+    fireEvent.click(screen.getByRole("button", { name: /자료 첨부/ }));
+    const again = await screen.findByRole("dialog", { name: "자료 첨부" });
+    fireEvent.change(within(again).getByLabelText("파일 추가"), { target: { files: [pdf("붙는 자료.pdf")] } });
+    fireEvent.click(within(again).getByRole("button", { name: "닫기" }));
+    expect(await screen.findByRole("alertdialog", { name: meetingScreen.attachDiscardTitle })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: meetingScreen.keep }));
+
+    // 고른 것을 도로 빼면 잃을 것이 없다 — 묻지 않고 닫힌다
+    fireEvent.click(within(again).getByRole("button", { name: meetingScreen.attachDropFile }));
+    fireEvent.click(within(again).getByRole("button", { name: "닫기" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "자료 첨부" })).toBeNull());
+  });
+
   it("공유받은 사람에겐 자료 탭도 공유도 없다", async () => {
     renderDetail({ viewer_relation: "shared", can_edit_info: false, can_edit_note: false, can_edit_agendas: false });
     await screen.findByText("DB ax 전략");
-    expect(screen.queryByRole("button", { name: "자료" })).toBeNull();
+    expect(screen.queryByRole("tab", { name: "첨부" })).toBeNull();
     expect(screen.queryByRole("button", { name: "공유" })).toBeNull();
     expect(screen.queryByRole("button", { name: /자료 첨부/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "파일 빼기" })).toBeNull();
