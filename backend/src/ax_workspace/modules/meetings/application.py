@@ -12,18 +12,23 @@ from uuid import UUID
 
 from ax_workspace.modules.meetings.domain import (
     MeetingStaleWrite,
-    LINE_TRACKS,
-    MAX_AGENDAS_PER_MEETING,
+    MAX_AGENDAS_PER_TRACK,
     MeetingAccessDenied,
     MeetingError,
     MeetingNotFound,
     MeetingStateConflict,
     MeetingStatus,
     MeetingVersionConflict,
-    AI_AGENDA_SOURCE,
+    ORIGIN_TRACKS,
+    TRACK_AI,
+    TRACK_FINAL,
+    TRACK_MEMO,
     ensure_agenda_capacity,
     ensure_agenda_source,
+    ensure_agenda_track,
+    ensure_line_track,
     ensure_transition,
+    surviving_lineage,
     normalize_agenda_order,
     normalize_agenda_title,
     normalize_external_attendees,
@@ -40,8 +45,8 @@ from ax_workspace.modules.meetings.policy import (
     ensure_todo_actionable,
     is_meeting_past,
     needs_auto_settlement,
+    normalize_final_line_rows,
     normalize_memo_text,
-    normalize_note_lines,
     auto_settled_status,
     meeting_attendees,
     new_share_targets,
@@ -55,8 +60,11 @@ from ax_workspace.modules.organization_access.domain import Principal
 
 PAST_PAGE_SIZE = 20
 QUICK_START_LENGTH = timedelta(hours=1)
-# 바로 시작한 회의가 갖고 서는 기본 안건. 사람이 이름을 고쳐 쓸 자리이지 AI 가 세운 자리가 아니다 (D32).
-QUICK_START_AGENDA_TITLE = "안건 1"
+# 바로 시작한 회의가 갖고 서는 기본 안건의 제목 — **빈 값이다** (SPEC-004 v0.5.1 §4.1-7 · W-7).
+# 자리표시 문자열을 넣지 않는다: 「안건 1」이라 적어 두면 화면 라벨(「안건 N. {제목}」)과 겹쳐
+# 「안건 1. 안건 1」로 보인다. 그 이야기가 무엇이었는지는 **최종 벌의 안건 제목**이 말하고,
+# 빈 제목을 화면이 무엇으로 그리는가는 기획이 정한다 (§12 R-50). **AI 는 이 제목에 손대지 않는다** (D48 폐기).
+QUICK_START_AGENDA_TITLE = ""
 
 MEETING_READ = "meeting.read"
 MEETING_READ_PRIVATE = "meeting.read.private"
@@ -98,16 +106,25 @@ class MeetingRepository(Protocol):
     def revoke_legacy_public_shares(self, meeting: Any) -> int: ...
     def touch(self, meeting: Any) -> None: ...
     def append_audit(self, meeting: Any, actor_id: str, event_kind: str, summary: str, *, before_ref: str | None = None) -> None: ...
-    def agendas(self, meeting: Any) -> list[Any]: ...
+    def agendas(self, meeting: Any, *, track: str | None = None) -> list[Any]: ...
     def agenda(self, meeting: Any, agenda_id: UUID, *, lock: bool = False) -> Any | None: ...
-    def agenda_count(self, meeting: Any) -> int: ...
-    def next_agenda_order(self, meeting: Any) -> int: ...
-    def create_agenda(self, meeting: Any, *, title: str, source: str, order_index: int) -> Any: ...
+    def agenda_count(self, meeting: Any, *, track: str | None = None) -> int: ...
+    def next_agenda_order(self, meeting: Any, *, track: str) -> int: ...
+    def create_agenda(
+        self, meeting: Any, *, track: str, title: str, source: str | None, order_index: int,
+        title_placeholder: bool = False, merged_from: list[str] | None = None,
+    ) -> Any: ...
+    def agenda_lines(self, agenda: Any) -> list[Any]: ...
+    def agenda_ids_in_tracks(self, meeting: Any, tracks: frozenset[str]) -> set[str]: ...
+    def line_ids_in_tracks(self, meeting: Any, tracks: frozenset[str]) -> set[str]: ...
+    def save_final_lines(
+        self, agenda: Any, rows: list[tuple[str | None, str]], *, author_id: str | None
+    ) -> list[Any]: ...
     def touch_agenda(self, agenda: Any) -> None: ...
     def delete_agenda(self, agenda: Any) -> None: ...
     def lines(self, meeting: Any) -> list[Any]: ...
     def line_count(self, meeting: Any) -> int: ...
-    def append_line(self, agenda: Any, *, track: str, text: str, author_id: str | None, evidence: list[dict[str, Any]] | None = None, at_ms: int | None = None) -> Any: ...
+    def append_line(self, agenda: Any, *, track: str, text: str, author_id: str | None, evidence: list[dict[str, Any]] | None = None, at_ms: int | None = None, from_lines: list[str] | None = None) -> Any: ...
     def memo_lines(self, meeting: Any) -> list[Any]: ...
     def replace_track(self, meeting: Any, track: str) -> None: ...
     def record_ai_session(self, meeting_id: UUID, *, provider_session_ref: str, persona_id: str) -> None: ...
@@ -117,7 +134,7 @@ class MeetingRepository(Protocol):
     def latest_succeeded_batch_seq(self, meeting_id: UUID) -> int: ...
     def record_batch_run(self, meeting_id: UUID, *, seq: int, status: str, trigger_cause: str, from_seq: int | None, to_seq: int | None, reason: str | None = None) -> None: ...
     def pending_transcript_chars(self, meeting_id: UUID, after_seq: int) -> int: ...
-    def replace_lines(self, agenda: Any, *, track: str, texts: list[str], author_id: str | None) -> list[Any]: ...
+    def clear_track(self, meeting: Any, track: str) -> None: ...
     def todos(self, meeting: Any) -> list[Any]: ...
     def replace_todos(self, meeting: Any, drafts: list[dict[str, Any]]) -> None: ...
     def todo(self, meeting: Any, todo_id: UUID, *, lock: bool = False) -> Any | None: ...
@@ -242,8 +259,11 @@ class MeetingApplication:
             organization_id=organization_id,
         )
         meeting = self._repository.create(**values)
+        # 예약 모달이 준 안건은 **사람 벌**에 선다 — 사람이 세운 것이라 출처를 갖는다 (SPEC §4.0 표 · §4.1-2).
         for order, agenda_title in enumerate(drafts, start=1):
-            self._create_agenda(meeting, title=agenda_title, source=source, order_index=order)
+            self._create_agenda(
+                meeting, track=TRACK_MEMO, title=agenda_title, source=source, order_index=order
+            )
         self._repository.append_audit(meeting, str(principal.id), "meeting.created", f"회의 생성: {meeting.title or '제목 없는 회의'}")
         return self._detail(principal, meeting)
 
@@ -317,11 +337,17 @@ class MeetingApplication:
             carried_from_meeting_id=None,
         )
         # 값을 묻지 않고 세운 회의에도 **메모가 붙을 자리**는 있어야 한다 — 안건이 0개면 메모 composer 의
-        # 안건 고르기가 비어 사람이 아무것도 던지지 못한다 (코디 결정 D32). 사람이 세운 안건과 같은 자격이므로
-        # `source` 는 manual 이고, 합성의 「사람 안건 보존」 대상이 된다 — AI 가 새로 세운 안건은 그 뒤에 선다.
-        # 제목이 아니라 **빈 칸**이다 (D6) — 회의 중 배치가 실제 화제로 갈아 끼운다.
+        # 안건 고르기가 비어 사람이 아무것도 던지지 못한다 (코디 결정 D32). 사람이 세운 안건과 같은 자격이라
+        # **사람 벌**에 서고 `source` 는 manual 이다.
+        # 제목은 **빈 값**이다 (D48 폐기 · §4.1-7) — AI 가 사람 벌에 손대지 않으므로 채워 줄 사람이 없고,
+        # 그 이야기가 무엇이었는지는 최종 벌의 안건 제목이 말한다.
         self._create_agenda(
-            meeting, title=QUICK_START_AGENDA_TITLE, source="manual", order_index=0, title_placeholder=True
+            meeting,
+            track=TRACK_MEMO,
+            title=QUICK_START_AGENDA_TITLE,
+            source="manual",
+            order_index=1,
+            title_placeholder=True,
         )
         self._repository.append_audit(meeting, str(principal.id), "meeting.quick_started", "회의 바로 시작")
         return self._detail(principal, meeting)
@@ -395,16 +421,17 @@ class MeetingApplication:
         if operation == "create" and self._repository.lines(meeting):
             raise MeetingError("meeting note already exists")
         if clean_body:
-            agendas = self._repository.agendas(meeting)
+            agendas = self._repository.agendas(meeting, track=TRACK_MEMO)
             agenda = agendas[0] if agendas else self._create_agenda(
                 meeting,
+                track=TRACK_MEMO,
                 title="기존 회의록",
                 source="manual",
-                order_index=self._repository.next_agenda_order(meeting),
+                order_index=self._repository.next_agenda_order(meeting, track=TRACK_MEMO),
             )
             self._repository.append_line(
                 agenda,
-                track="memo",
+                track=TRACK_MEMO,
                 text=clean_body,
                 author_id=str(principal.id),
                 evidence=[],
@@ -492,8 +519,11 @@ class MeetingApplication:
         agenda = self._repository.agenda(meeting, agenda_id)
         if agenda is None:
             raise MeetingNotFound("meeting agenda was not found")
+        # **경로의 안건이 사람 벌의 것이 아니면 거절한다** (SPEC §6-8 · §4.0-1). 벌을 본문으로 고를 수
+        # 없다 — 쓰는 사람이 사람이므로 벌은 사람 벌 하나뿐이고, AI 벌의 안건에는 사람이 적지 않는다.
+        ensure_line_track(TRACK_MEMO, agenda_track=agenda.track)
         line = self._repository.append_line(
-            agenda, track="memo", text=body, author_id=str(principal.id), at_ms=self._elapsed_ms(meeting)
+            agenda, track=TRACK_MEMO, text=body, author_id=str(principal.id), at_ms=self._elapsed_ms(meeting)
         )
         meeting.last_saved_at = datetime.now(UTC)
         # 기록이 생기면 자동 취소가 풀린다 (SPEC-004 §3.1-8).
@@ -510,14 +540,14 @@ class MeetingApplication:
         meeting = self._readable(principal, meeting_id, lock=True)
         if str(principal.id) != meeting.owner_id:
             raise MeetingAccessDenied("only the person who made this meeting may write its note lines")
-        if track not in LINE_TRACKS:
-            raise MeetingError(f"line track must be one of {sorted(LINE_TRACKS)}")
         body = str(text or "").strip()
         if not body:
             raise MeetingError("a note line needs text")
         agenda = self._repository.agenda(meeting, agenda_id)
         if agenda is None:
             raise MeetingNotFound("meeting agenda was not found")
+        # **줄의 벌과 안건의 벌은 언제나 같다** (SPEC §4.2-9) — 다른 벌의 안건 id 를 실은 줄은 거절한다.
+        ensure_line_track(track, agenda_track=agenda.track)
         line = self._repository.append_line(agenda, track=track, text=body, author_id=str(principal.id))
         meeting.last_saved_at = datetime.now(UTC)
         self._settle_auto_cancel(meeting)
@@ -533,8 +563,12 @@ class MeetingApplication:
     # ------------------------------------------------------------------ 종료 합성 (SCAX-WP-004)
 
     def finalize_input(self, meeting_id: UUID) -> dict[str, Any] | None:
-        """합성 입력 — 안건 · 두 트랙의 줄 · 확정 발화(콜드 폴백용) · 세션 참조.
+        """합성 입력 — **원본 두 벌 전체**(안건과 줄) · 확정 발화(콜드 폴백용) · 세션 참조 (SPEC §8-3).
 
+        0.4.x 는 사람 쪽 입력이 「메모 줄 전체」였다. 이제 **사람이 세운 안건 목록도 함께 실린다** —
+        사람이 이야기를 어떻게 갈랐는지가 그 자체로 재료이고, 계보(`merged_from`)가 그 안건 id 를 딛는다.
+
+        **한 벌이 비어도 이 입력은 선다** (§8-3 · W-1) — 합성이 딛는 정본 재료는 재전사한 원문이다.
         「정리 중」이 아니면 `None` 이다: 잡의 재배달이거나 사람이 되돌린 회의다.
         """
         meeting = self._repository.meeting(meeting_id)
@@ -556,6 +590,8 @@ class MeetingApplication:
                         for agenda in self._repository.agendas(source)
                     ],
                 }
+        memo_agendas = [agenda for agenda in agendas if agenda.track == TRACK_MEMO]
+        ai_agendas = [agenda for agenda in agendas if agenda.track == TRACK_AI]
         return {
             "meeting_id": str(meeting.id),
             "persona_id": meeting.owner_id,
@@ -571,20 +607,14 @@ class MeetingApplication:
                 ),
                 "carried_from": carried,
             },
-            "agendas": [
-                {
-                    "agenda_id": str(agenda.id),
-                    "order": agenda.order_index,
-                    "title": agenda.title,
-                    "source": agenda.source,
-                    "concluded": bool(agenda.concluded),
-                }
-                for agenda in agendas
-            ],
-            # 사람이 세운 안건 — **넷 모두 사람 쪽이다**. AI 가 세운 것 하나만 가른다 (D38).
-            "human_agenda_ids": [str(agenda.id) for agenda in agendas if agenda.source != AI_AGENDA_SOURCE],
-            "memo_lines": _track_view(lines, "memo"),
-            "ai_lines": _track_view(lines, "ai"),
+            # **두 벌의 안건 목록은 서로 다르다** — 같은 회의를 사람과 AI 가 각자 갈랐고 그것이 정상이다
+            # (§4.2 · §4.1-8). 계보는 이 두 목록의 id 만 가리킬 수 있다 (§4.1-3).
+            "memo_agendas": [_agenda_material(agenda) for agenda in memo_agendas],
+            "ai_agendas": [_agenda_material(agenda) for agenda in ai_agendas],
+            "memo_agenda_ids": [str(agenda.id) for agenda in memo_agendas],
+            "ai_agenda_ids": [str(agenda.id) for agenda in ai_agendas],
+            "memo_lines": _track_view(lines, TRACK_MEMO),
+            "ai_lines": _track_view(lines, TRACK_AI),
             "transcript": [
                 {"speakerLabel": block.speaker_label, "atMs": block.at_ms, "endMs": block.end_ms, "text": block.text}
                 for block in blocks
@@ -633,14 +663,14 @@ class MeetingApplication:
         self._repository.touch(meeting)
 
     def commit_finalized(self, meeting_id: UUID, notes: Any) -> dict[str, Any]:
-        """한 트랜잭션 — 최종 줄 전량 교체 · 후보 전량 교체 · 제목 후보 · 상태 done (SPEC-004 §8-7).
+        """한 트랜잭션 — **최종 벌 전량 신규 작성** · 후보 전량 교체 · 제목 후보 · 상태 done (SPEC §8-5·7).
 
-        **회의록을 처음부터 새로 쓴 결과를 받는다** (사용자 결정 2026-09-11). 그래서 `agenda_id` 가 오면
-        사람 안건이든 AI 안건이든 **그 안건을 이어 쓰고**, 없거나 모르는 id 면 새로 세운다. 출처는
-        이어 쓰는 안건의 것을 그대로 두고(사람이 세운 안건은 계속 사람 것이다) 새 안건만 `ai` 다.
+        **원본 두 벌은 불가침이다** (D53 · §4.0-4). 0.4.x 는 `agenda_id` 가 오면 사람 안건이든 AI 안건이든
+        **그 안건을 이어 써서** 「사람 것이 보존됐는가」를 물을 수가 없었다. 이제 최종 벌은 자기 안건과 줄을
+        갖고, 합성은 **최종 벌만** 비우고 다시 짓는다 — 사람 벌·AI 벌은 한 줄도 건드리지 않는다.
 
-        **지금 서 있는 안건을 지우지 않는다.** 지우면 그 안건에 매달린 사람의 메모가 함께 사라지고,
-        AI 가 이어 쓰겠다고 적어 준 id 도 허공을 가리킨다 — 비우는 것은 `final` 트랙의 줄뿐이다.
+        묶고 나눈 결과는 **계보로 남는다** — 안건은 `merged_from`(필수), 줄은 `from_lines`(선택) 다 (D54).
+        서버는 **그 회의의 원본을 가리키는가**까지만 검증하고 없는 id 는 그 id 만 버린다 (§8-6).
         """
         meeting = self._repository.meeting(meeting_id, lock=True)
         if meeting is None:
@@ -648,29 +678,37 @@ class MeetingApplication:
         # 회의 중 후보는 여기서 끝난다 (D46) — 최종이 같은 자리를 다시 채운다. 남겨 두면 같은 일이
         # 후보로 두 번 서고, 그중 하나는 아무도 승격할 수 없는 읽기 전용이다.
         self._repository.clear_provisional_todos(meeting)
-        self._repository.clear_track(meeting, "final")
-        existing = {str(agenda.id): agenda for agenda in self._repository.agendas(meeting)}
+        # **최종 벌만** 비운다 — 안건까지 전량이다 (§8-5 · §8-8). 다시 시도해도 원본은 그대로다.
+        self._repository.clear_track(meeting, TRACK_FINAL)
+        known_agenda_ids = self._repository.agenda_ids_in_tracks(meeting, ORIGIN_TRACKS)
+        known_line_ids = self._repository.line_ids_in_tracks(meeting, ORIGIN_TRACKS)
         drafts: list[dict[str, Any]] = []
         for output in notes.agendas:
-            agenda = existing.get(str(output.agenda_id)) if output.agenda_id else None
-            if agenda is None:
-                if self._repository.agenda_count(meeting) >= MAX_AGENDAS_PER_MEETING:
-                    continue
-                agenda = self._create_agenda(
-                    meeting,
-                    title=normalize_agenda_title(output.title),
-                    source=AI_AGENDA_SOURCE,
-                    order_index=self._repository.next_agenda_order(meeting),
-                )
-            elif output.title:
-                # 이어 쓰는 안건의 제목도 AI 가 다시 잡는다 — 묶고 나눈 결과가 제목에 나타난다.
-                agenda.title = normalize_agenda_title(output.title)
-            # 결론 표시는 AI 가 내고 회의를 만든 사람이 고친다 (SPEC-004 §4.1-3).
+            if self._repository.agenda_count(meeting, track=TRACK_FINAL) >= MAX_AGENDAS_PER_TRACK:
+                continue
+            agenda = self._create_agenda(
+                meeting,
+                track=TRACK_FINAL,
+                title=normalize_agenda_title(output.title),
+                source=None,
+                order_index=self._repository.next_agenda_order(meeting, track=TRACK_FINAL),
+                merged_from=surviving_lineage(
+                    getattr(output, "merged_from", None), known_ids=known_agenda_ids
+                ),
+            )
+            # 결론 표시가 서는 것은 최종 벌뿐이다 (§4.0-5). AI 가 내고 회의를 만든 사람이 고친다.
             agenda.concluded = bool(output.concluded)
             self._repository.touch_agenda(agenda)
             for line in output.lines:
                 self._repository.append_line(
-                    agenda, track="final", text=line.text, author_id=None, evidence=list(line.evidence)
+                    agenda,
+                    track=TRACK_FINAL,
+                    text=line.text,
+                    author_id=None,
+                    evidence=list(line.evidence),
+                    from_lines=surviving_lineage(
+                        getattr(line, "from_lines", None), known_ids=known_line_ids
+                    ),
                 )
             for order, todo in enumerate(output.todos, start=1):
                 drafts.append(
@@ -710,7 +748,11 @@ class MeetingApplication:
         self._repository.append_audit(meeting, meeting.owner_id, "meeting.finalize_failed", "회의록 합성 실패")
 
     def retry_finalize(self, principal: Principal, meeting_id: UUID) -> dict[str, Any]:
-        """[다시 시도] — 「실패」에서만. 합성만 다시 걸고 원문을 건드리지 않는다 (SPEC-004 §8-8)."""
+        """[다시 시도] — 「실패」에서만. **최종 벌만 갈아 끼운다** (SPEC-004 §8-8).
+
+        원본 두 벌은 몇 번을 다시 시도해도 바뀌지 않는다 (D53) — 최종 벌을 비우는 것은 합성이 커밋하는
+        자리(`commit_finalized`)이고, 재전사부터 다시 도는 동안에도 원본은 그대로 서 있다.
+        """
         self._require(principal, MEETING_MANAGE)
         meeting = self._readable(principal, meeting_id, lock=True)
         if not self._is_attendee(principal, meeting):
@@ -766,19 +808,16 @@ class MeetingApplication:
     def export(self, principal: Principal, meeting_id: UUID) -> dict[str, Any]:
         """내보내기가 딛는 마지막 저장분 — 회의 정보 · 안건별 줄 · 다음 할 일 (SPEC-004 §8-10).
 
+        **내보내는 것은 최종 벌이다** — 원본 두 벌은 담지 않는다 (§8-11 마지막 줄). 그것이 그 회의의
+        회의록이고, 원본은 최종본을 대조하는 근거로 화면에만 선다.
+
         **저장 위치·provider 참조 같은 내부 값은 담지 않는다.**
         """
         meeting = self._readable(principal, meeting_id)
         detail = self._detail(principal, meeting)
         return {
             "meeting": detail["meeting"],
-            "agendas": [
-                {
-                    **agenda,
-                    "lines": [line for line in agenda["lines"] if line["track"] == "final"] or agenda["lines"],
-                }
-                for agenda in detail["agendas"]
-            ],
+            "agendas": [agenda for agenda in detail["agendas"] if agenda["track"] == TRACK_FINAL],
         }
 
     def _detail_for_owner(self, meeting: Any) -> dict[str, Any]:
@@ -941,18 +980,53 @@ class MeetingApplication:
     # ------------------------------------------------------------------ 안건
 
     def add_agenda(self, principal: Principal, meeting_id: UUID, title: str) -> dict[str, Any]:
-        """안건 하나를 세운다 — **회의가 도는 동안에도** 만든 사람은 세울 수 있다 (D45)."""
-        meeting = self._agenda_target(principal, meeting_id, adding=True)
+        """안건 하나를 세운다. **어느 벌에 서는지는 상태가 정한다** (SPEC §4.1-6 표 「안건 추가」).
+
+        * 예정 · **진행 중** · 취소 → **사람 벌**. 이야기가 예정에 없던 데로 가면 그 자리에서 세운다 (D45)
+        * 종료 · 실패 → **최종 벌**. `[수정]` 안에서 세우는 안건이고 `merged_from` 은 비어 있다 (§8-9)
+        * 정리 중에는 어느 벌도 열리지 않는다
+
+        **AI 벌에는 사람이 안건을 세우지 않는다** — 그것은 AI 의 기록이다 (§4.1-6 · §7.3).
+        """
+        track = self._agenda_track_for_status(meeting_id, principal)
+        meeting = self._agenda_target(principal, meeting_id, track=track, adding=True)
         clean = normalize_agenda_title(title)
-        ensure_agenda_capacity(self._repository.agenda_count(meeting))
+        ensure_agenda_capacity(self._repository.agenda_count(meeting, track=track))
         agenda = self._create_agenda(
-            meeting, title=clean, source="manual", order_index=self._repository.next_agenda_order(meeting)
+            meeting,
+            track=track,
+            title=clean,
+            # 출처는 사람 벌만 갖는다 (§4.1-2) — 최종 벌 안건에는 출처를 달지 않는다.
+            source="manual" if track == TRACK_MEMO else None,
+            order_index=self._repository.next_agenda_order(meeting, track=track),
         )
         self._repository.append_audit(meeting, str(principal.id), "meeting.agenda_added", f"안건 추가: {clean}")
         return self._agenda_view(agenda, self._grouped_lines(meeting), self._grouped_todos(meeting))
 
+    def _agenda_track_for_status(self, meeting_id: UUID, principal: Principal) -> str:
+        """사람이 안건을 세울 벌 — 「종료」·「실패」는 최종 벌이고 나머지는 사람 벌이다 (§4.1-6).
+
+        상태를 읽기 위해 회의를 한 번 연다: 게이트 판정은 `_agenda_target` 이 다시 잠그고 본다.
+        """
+        meeting = self._readable(principal, meeting_id)
+        return (
+            TRACK_FINAL
+            if parse_status(meeting.status) in {MeetingStatus.DONE, MeetingStatus.FAILED}
+            else TRACK_MEMO
+        )
+
     def update_agenda(self, principal: Principal, meeting_id: UUID, agenda_id: UUID, changes: dict[str, Any]) -> dict[str, Any]:
-        meeting = self._agenda_target(principal, meeting_id)
+        """안건 하나를 고친다 — **게이트는 그 안건이 선 벌이 정한다** (SPEC §4.1-6).
+
+        사람 벌은 예정·취소에서만, 최종 벌은 종료·실패에서만 열리고 **AI 벌은 언제도 열리지 않는다.**
+        「진행 중」에 사람 벌 안건을 더할 수는 있지만 고칠 수는 없다 — 이미 줄이 매달린 안건이 흔들리면
+        매달린 메모가 갈 곳을 잃는다.
+        """
+        meeting = self._readable(principal, meeting_id)
+        agenda = self._repository.agenda(meeting, agenda_id)
+        if agenda is None:
+            raise MeetingNotFound("meeting agenda was not found")
+        meeting = self._agenda_target(principal, meeting_id, track=agenda.track)
         agenda = self._repository.agenda(meeting, agenda_id, lock=True)
         if agenda is None:
             raise MeetingNotFound("meeting agenda was not found")
@@ -972,6 +1046,9 @@ class MeetingApplication:
             # 사람이 이름을 붙였다 — 더 이상 빈 칸이 아니므로 AI 가 그 뒤로 바꾸지 않는다 (D6).
             agenda.title_placeholder = False
         if "concluded" in changes:
+            # 결론 표시가 서는 것은 최종 벌뿐이다 (§4.0-5) — 원본 두 벌의 안건은 결론 여부를 갖지 않는다.
+            if agenda.track != TRACK_FINAL:
+                raise MeetingStateConflict("only a final-track agenda carries a conclusion mark")
             agenda.concluded = bool(changes["concluded"])
         if "order" in changes:
             agenda.order_index = normalize_agenda_order(changes["order"])
@@ -982,22 +1059,36 @@ class MeetingApplication:
         return self._agenda_view(agenda, self._grouped_lines(meeting), self._grouped_todos(meeting))
 
     def _rewrite_note_lines(self, principal: Principal, meeting: Any, agenda: Any, lines: object) -> None:
-        """[수정] 하나로 열리고 [저장] 하나로 닫히는 줄 단위 편집 (SPEC §4.2-6 · `X-186`).
+        """[수정] 하나로 열리고 [저장] 하나로 닫히는 줄 단위 편집 (SPEC §8-9 · `X-186`).
 
-        판을 쌓지 않는다 — 이 안건의 합성 트랙 줄 목록을 통째로 덮어쓰고 마지막 저장분이 그 회의록이다.
-        빈 줄은 저장할 때 버린다.
+        **고치는 것은 최종 벌뿐이다** (D53). 사람 벌·AI 벌은 회의 중 기록 그대로이고 사후에 손대는 자리가
+        없다 — 고칠 수 있으면 최종본을 대조하는 근거가 되지 못한다.
+
+        판을 쌓지 않는다 — 마지막 저장분이 그 회의록이다. 다만 **줄 목록이 줄 id 를 함께 싣고**, 서버는
+        그 id 로 계보를 잇는다 (§8-9 · 검수 F-3). 빈 줄은 저장할 때 버린다.
         """
+        if agenda.track != TRACK_FINAL:
+            raise MeetingStateConflict("only the final track's lines are edited; the two origin tracks are read-only")
         if not self._view_plan(principal, meeting).can_edit_note:
             raise MeetingStateConflict("meeting note lines may be edited only after the meeting is done or failed")
-        texts = normalize_note_lines(lines)
-        self._repository.replace_lines(agenda, track="final", texts=texts, author_id=str(principal.id))
+        rows = [(row.line_id, row.text) for row in normalize_final_line_rows(lines)]
+        self._repository.save_final_lines(agenda, rows, author_id=str(principal.id))
         meeting.last_saved_at = datetime.now(UTC)
         # 회의록을 쓰면 자동 취소가 풀린다 — 마지막 줄을 지우면 다시 걸린다 (SPEC §3.1-8).
         self._settle_auto_cancel(meeting)
         self._repository.touch(meeting)
 
     def remove_agenda(self, principal: Principal, meeting_id: UUID, agenda_id: UUID) -> None:
-        meeting = self._agenda_target(principal, meeting_id)
+        """안건을 지우면 **같은 벌 안에서** 그 안건의 줄이 함께 사라진다 (SPEC §4.1-10).
+
+        최종 벌의 안건을 지워도 **원본 두 벌은 남는다** — 계보가 가리키던 자리가 사라질 뿐이다.
+        게이트는 `update_agenda` 와 같다: 그 안건이 선 벌이 정한다.
+        """
+        meeting = self._readable(principal, meeting_id)
+        agenda = self._repository.agenda(meeting, agenda_id)
+        if agenda is None:
+            raise MeetingNotFound("meeting agenda was not found")
+        meeting = self._agenda_target(principal, meeting_id, track=agenda.track)
         agenda = self._repository.agenda(meeting, agenda_id, lock=True)
         if agenda is None:
             raise MeetingNotFound("meeting agenda was not found")
@@ -1105,9 +1196,12 @@ class MeetingApplication:
             "purpose": meeting.purpose,
             "location": meeting.location,
             "attendee_count": len(self._repository.attendee_ids(meeting)),
+            # 사람이 예약으로 세운 안건은 AI 에게 **맥락으로 실린다** — 참고이고 제약이 아니다 (§4.1-8).
+            # AI 가 그 제목을 자기 벌에 그대로 쓸 수도, 전혀 다르게 가를 수도 있다. **id 를 싣지 않는다**:
+            # AI 벌은 회차마다 전량 교체되고 이어 쓸 사람 안건이 없다 (W-6).
             "agendas": [
-                {"agenda_id": str(agenda.id), "title": agenda.title, "source": agenda.source}
-                for agenda in self._repository.agendas(meeting)
+                {"title": agenda.title, "source": agenda.source}
+                for agenda in self._repository.agendas(meeting, track=TRACK_MEMO)
             ],
             "carried_from": carried,
         }
@@ -1181,41 +1275,39 @@ class MeetingApplication:
         )
 
     def replace_ai_track(self, meeting_id: UUID, agendas: list[Any]) -> list[dict[str, Any]]:
-        """검증 통과분으로 **AI 트랙 전량 교체** (SPEC §7.1 적재 · §7.3 경계).
+        """검증 통과분으로 **AI 벌 전량 교체** (SPEC §7.1 적재 · §7.3 경계).
 
-        사람이 만든 안건은 제목도 출처도 건드리지 않는다 — AI 는 그 안건에 자기 줄만 매단다.
-        AI 가 세운 안건은 배치마다 새로 서므로 이전 것을 지우고 다시 만든다.
+        **AI 는 자기 벌에만 쓴다. 예외가 없다** (D51 · §4.1-8). 0.4.x 는 출력의 `agenda_id` 를 보고 사람
+        안건을 이어 썼고, 그래서 사람 안건 아래에 AI 줄이 매달렸다 — 그 경로가 사라졌다. 배치는 회차마다
+        AI 벌의 안건과 줄을 통째로 갈아 끼우고 **안건 id 도 그때 새로 난다.**
+
+        **사람 벌과 최종 벌은 이 교체에 걸리지 않는다** — 「메모 줄이 매달린 AI 안건은 남긴다」는 예외가
+        필요했던 결합이 벌이 갈리며 사라졌다 (§11.4 3행). 자리표시 제목을 AI 가 채우던 것도 폐기다 (D48).
         """
         meeting = self._repository.meeting(meeting_id, lock=True)
         if meeting is None:
             raise MeetingNotFound("meeting was not found")
-        self._repository.replace_track(meeting, "ai")
-        existing = {str(agenda.id): agenda for agenda in self._repository.agendas(meeting)}
+        self._repository.replace_track(meeting, TRACK_AI)
         drafts: list[dict[str, Any]] = []
         for output in agendas:
-            agenda = existing.get(str(output.agenda_id)) if output.agenda_id else None
-            if agenda is None:
-                # AI 가 세운 안건 — 출처는 「AI 정리」이고 사람 안건 뒤에 선다 (SPEC §4.1-2·6).
-                title = normalize_agenda_title(output.title)
-                if self._repository.agenda_count(meeting) >= MAX_AGENDAS_PER_MEETING:
-                    continue
-                agenda = self._create_agenda(
-                    meeting, title=title, source="ai", order_index=self._repository.next_agenda_order(meeting)
-                )
-            if getattr(agenda, "title_placeholder", False):
-                # 자리표시 제목은 AI 가 채운다 (D6). **출처는 사람 것 그대로** 둔다 — 그 안건을 세운 것은
-                # 사람이고 AI 는 이름만 붙였다. 매 배치 최신화하되, 사람이 한 번 고치면 그 뒤로는 불변이다.
-                filled = normalize_agenda_title(output.title)
-                if filled and filled != agenda.title:
-                    agenda.title = filled
-                    self._repository.touch_agenda(agenda)
+            if self._repository.agenda_count(meeting, track=TRACK_AI) >= MAX_AGENDAS_PER_TRACK:
+                continue
+            agenda = self._create_agenda(
+                meeting,
+                track=TRACK_AI,
+                title=normalize_agenda_title(output.title),
+                # 출처는 사람 벌 안의 값이다 (§4.1-2) — AI 벌의 안건은 전부 AI 가 세운 것이라 물을 것이 없다.
+                source=None,
+                order_index=self._repository.next_agenda_order(meeting, track=TRACK_AI),
+            )
             for line in output.lines:
                 self._repository.append_line(
-                    agenda, track="ai", text=line.text, author_id=None, evidence=list(line.evidence)
+                    agenda, track=TRACK_AI, text=line.text, author_id=None, evidence=list(line.evidence)
                 )
             for order, todo in enumerate(getattr(output, "todos", None) or [], start=1):
                 # 회의 **중** 후보다 (D46) — 읽기 전용이고 다음 배치가 통째로 갈아 끼운다.
                 # 담당자는 없고, 회의 중이라 체크리스트는 비어 있을 수 있다.
+                # `agenda_id` 는 **같은 트랜잭션의 이 회차 id** 를 가리킨다 (§7.1 적재 · W-6).
                 drafts.append(
                     {
                         "agenda_id": agenda.id,
@@ -1234,7 +1326,11 @@ class MeetingApplication:
         self._repository.replace_provisional_todos(meeting, drafts)
         lines = self._grouped_lines(meeting)
         todos = self._grouped_todos(meeting)
-        return [self._agenda_view(agenda, lines, todos) for agenda in self._repository.agendas(meeting)]
+        # push 가 실을 것은 **AI 벌 하나**다 — 화면의 「AI 요약」 탭이 회차마다 이 목록을 통째로 다시 그린다.
+        return [
+            self._agenda_view(agenda, lines, todos)
+            for agenda in self._repository.agendas(meeting, track=TRACK_AI)
+        ]
 
     def unprocessed_transcript_cursor(self, meeting_id: UUID, *, after_seq: int = 0) -> list[dict[str, Any]]:
         """아직 배치가 읽지 않은 확정 블록들. SCAX-WP-003 의 트리거가 여기 걸린다 — 지금은 호출자가 없다."""
@@ -1258,21 +1354,26 @@ class MeetingApplication:
         self._settle_auto_cancel(meeting)
         return meeting
 
-    def _agenda_target(self, principal: Principal, meeting_id: UUID, *, adding: bool = False) -> Any:
+    def _agenda_target(self, principal: Principal, meeting_id: UUID, *, track: str, adding: bool = False) -> Any:
         """안건을 더하고 지우고 결론 표시를 고치는 사람은 회의를 만든 사람이다 (SPEC §3.3).
 
-        회의가 도는 동안 **이미 선 안건**은 사람이 손대지 않는다 — 그것을 딛고 있는 메모와 AI 줄이
-        발밑에서 바뀐다 (SPEC §4.1-6). 다만 **새로 세우는 것은 다르다**: 말이 새 주제로 넘어가는 순간이
-        곧 안건이 필요한 순간이고, 새 안건은 아직 아무것도 딛고 있지 않다 (D45). `adding` 이 그 자리다.
+        **게이트는 벌마다 다르고, 더하는 것과 고치고 지우는 것이 또 다르다** (§4.1-6). 회의가 도는 동안
+        **이미 선 안건**은 사람이 손대지 않는다 — 그것을 딛고 있는 줄이 발밑에서 바뀐다. 다만 **새로
+        세우는 것은 다르다**: 말이 새 주제로 넘어가는 순간이 곧 안건이 필요한 순간이고, 새 안건은 아직
+        아무것도 딛고 있지 않다 (D45). `adding` 이 그 자리다.
+
+        **AI 벌은 어느 쪽도 열리지 않고**(언제나 거짓), **원본 두 벌은 「종료」·「실패」에서 읽기 전용**이다
+        (D53) — 원본은 최종 벌을 대조하는 근거이고 고칠 수 있으면 근거가 되지 못한다.
         """
+        ensure_agenda_track(track)
         self._require(principal, MEETING_MANAGE)
         meeting = self._readable(principal, meeting_id, lock=True)
         view = self._view_plan(principal, meeting)
         if not view.is_owner:
             raise MeetingAccessDenied("only the person who made this meeting may change its agendas")
-        allowed = view.can_add_agenda if adding else view.can_edit_agendas
-        if not allowed:
-            raise MeetingStateConflict("agendas are not edited by hand while the meeting is running or summarizing")
+        gates = view.can_add_agenda if adding else view.can_edit_agendas
+        if not gates[track]:
+            raise MeetingStateConflict(f"the {track} track's agendas are not open in this meeting status")
         return meeting
 
     def _can_read_detail(self, principal: Principal, meeting: Any) -> bool:
@@ -1358,16 +1459,30 @@ class MeetingApplication:
             self._repository.touch(meeting)
 
     def _create_agenda(
-        self, meeting: Any, *, title: str, source: str, order_index: int, title_placeholder: bool = False
+        self,
+        meeting: Any,
+        *,
+        track: str,
+        title: str,
+        source: str | None,
+        order_index: int,
+        title_placeholder: bool = False,
+        merged_from: list[str] | None = None,
     ) -> Any:
-        """안건 하나를 세운다. **출처는 여기서 한 번 검사한다** — 아는 다섯 말고는 저장되지 않는다 (D38).
+        """안건 하나를 세운다. **벌과 출처를 여기서 한 번 검사한다** (SPEC §4.0-2 · §4.1-2).
 
-        지금 이 자리를 지나는 출처는 `manual`·`carried`·`ai` 셋뿐이다. `set`·`derived` 는 값만 열려 있고
-        만드는 경로가 아직 없다 — 그 경로가 생기면 여기를 지나므로 검사를 새로 세울 일이 없다.
+        출처는 **사람 벌만 갖는다** — AI 벌·최종 벌에 출처가 오면 거절한다. 사람 벌이 쓰는 출처는
+        `manual`·`carried` 둘이고 `set`·`derived` 는 값만 열려 있다 (D38): 만드는 경로가 생기면 여기를
+        지나므로 검사를 새로 세울 일이 없다. 0.4.x 의 「AI 정리」(`ai`)는 은퇴했다 — 벌이 그것을 말한다.
         """
         return self._repository.create_agenda(
-            meeting, title=title, source=ensure_agenda_source(source), order_index=order_index,
+            meeting,
+            track=ensure_agenda_track(track),
+            title=title,
+            source=ensure_agenda_source(source, track=track),
+            order_index=order_index,
             title_placeholder=title_placeholder,
+            merged_from=list(merged_from or []),
         )
 
     def _resolved_attendees(self, principal: Principal, attendee_ids: list[str], *, owner_id: str | None = None) -> list[str]:
@@ -1445,9 +1560,12 @@ class MeetingApplication:
                 # 줄과 안건은 열리는 상태가 다르다 — 「예정」은 안건만, 「완료」·「실패」는 둘 다 연다.
                 "can_edit_info": view.can_edit_info,
                 "can_edit_note": view.can_edit_note,
-                "can_edit_agendas": view.can_edit_agendas,
-                # 「+ 새 안건」이 서는 자리 — 편집보다 한 자리 넓다(진행 중에도 세운다, D45).
-                "can_add_agenda": view.can_add_agenda,
+                # **벌별 판정 셋**이다 — `{"memo": bool, "ai": bool, "final": bool}` (SPEC v0.5.1 §3.3 · §4.1-6).
+                # 불리언 하나로는 「종료에서 최종 벌은 열리고 사람 벌은 닫힌다」를 낼 수 없다. 이 값이 내는
+                # 것은 **고치고 지우는 쪽**이다. `ai` 는 언제나 거짓이지만 키는 낸다.
+                "can_edit_agendas": view.can_edit_agendas.as_dict(),
+                # 「+ 새 안건」이 서는 자리 — 편집보다 한 자리 넓다(사람 벌은 진행 중에도 세운다, D45).
+                "can_add_agenda": view.can_add_agenda.as_dict(),
                 # 메모는 회의를 만든 사람이 「진행 중」에만 쓴다 (SPEC-004 §6-1·2). 화면이 이 값으로 입력 칸을 세운다.
                 "can_write_memo": view.can_write_memo,
                 "last_saved_at": _iso(meeting.last_saved_at),
@@ -1590,7 +1708,7 @@ class MeetingApplication:
 
     @staticmethod
     def _line_view(line: Any) -> dict[str, Any]:
-        """줄 하나. `at_ms` 는 메모 줄에만 값이 있다 — AI·합성 줄은 시각이 아니라 구간에 걸린다."""
+        """줄 하나. `at_ms` 는 사람 벌 줄에만 값이 있다 — AI·최종 줄은 시각이 아니라 구간에 걸린다."""
         return {
             "line_id": str(line.id),
             "track": line.track,
@@ -1599,16 +1717,26 @@ class MeetingApplication:
             "author": line.author_id,
             "at_ms": line.at_ms,
             "evidence": [_evidence_span(span) for span in line.evidence or []],
+            # **계보 — 최종 벌 줄만 든다** (§4.2-10). 그 줄이 딛는 원본 줄 id 목록이고, 저장이 본문을
+            # 고친 줄에서만 사라진다. 서버는 존재만 검증하고 맞는지는 검증하지 않는다.
+            "from_lines": [str(line_id) for line_id in getattr(line, "from_lines", None) or []],
         }
 
     def _agenda_view(self, agenda: Any, lines: dict[Any, list[Any]], todos: dict[Any, list[Any]]) -> dict[str, Any]:
+        """안건 하나. **벌이 첫 값이다** — 화면이 이 값으로 세 벌을 가른다 (SPEC §4.0-2 · §8-11)."""
         return {
             "agenda_id": str(agenda.id),
+            # 이 안건이 선 벌 — `memo` | `ai` | `final`. 안건 id 는 같은 벌 안에서만 유효하다 (§4.0-1).
+            "track": agenda.track,
             # 이 안건의 마지막 저장 시각. 다음 저장이 이 값을 함께 보내 「그 사이에 누가 저장했나」를 가른다.
             "last_saved_at": _iso(agenda.updated_at),
             "order": agenda.order_index,
             "title": agenda.title,
+            # **출처는 사람 벌만 갖는다** (§4.1-2) — 다른 두 벌은 `null` 이다.
             "source": agenda.source,
+            # **계보 — 최종 벌만 갖는다** (§4.1-3). 이 최종 안건이 묶은 원본 안건 id 목록이고, 「내가 적은
+            # 안건이 어디로 갔나」에 답하는 유일한 길이다.
+            "merged_from": [str(agenda_id) for agenda_id in getattr(agenda, "merged_from", None) or []],
             "concluded": bool(agenda.concluded),
             # 제목이 아직 자리표시인가 (D6) — 화면이 그 자리를 다르게 그릴 근거다.
             "title_placeholder": bool(getattr(agenda, "title_placeholder", False)),
@@ -1665,8 +1793,19 @@ def _evidence_span(span: dict[str, Any]) -> dict[str, int]:
     return {"start_ms": int(start or 0), "end_ms": int(end or 0)}
 
 
+def _agenda_material(agenda: Any) -> dict[str, Any]:
+    """합성이 재료로 읽는 안건 하나 — **id 를 싣는다**: 계보(`merged_from`)가 이 id 를 딛는다 (§4.1-3)."""
+    return {
+        "agenda_id": str(agenda.id),
+        "track": agenda.track,
+        "order": agenda.order_index,
+        "title": agenda.title,
+        "source": agenda.source,
+    }
+
+
 def _track_view(grouped: dict[Any, list[Any]], track: str) -> list[dict[str, Any]]:
-    """한 트랙의 줄 전량 — 합성 입력이 읽는 모양이다."""
+    """한 벌의 줄 전량 — 합성 입력이 읽는 모양이다."""
     rows: list[dict[str, Any]] = []
     for agenda_id, lines in grouped.items():
         for line in lines:

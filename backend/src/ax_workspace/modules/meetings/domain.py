@@ -67,23 +67,41 @@ MEETING_TRANSITIONS: frozenset[tuple[MeetingStatus, MeetingStatus]] = frozenset(
 #: 회의 정보(제목·일시·장소·참석자)를 고칠 수 있는 상태 (SPEC §3.1-7 · §10-18).
 INFO_EDITABLE_STATUSES: frozenset[MeetingStatus] = frozenset({MeetingStatus.SCHEDULED, MeetingStatus.DONE})
 
-MAX_AGENDAS_PER_MEETING = 20
+#: **벌마다** 안건 20개까지다 — 합쳐서 20이 아니다 (SPEC-004 §4.0-3 · `X-100` 확장).
+MAX_AGENDAS_PER_TRACK = 20
 AGENDA_TITLE_MAX_LENGTH = 100
-#: 안건이 어디서 왔는가 — 기획이 정한 넷과 우리가 쓰는 「AI 정리」 하나 (사용자 결정 D38, 2026-09-11).
+
+#: 회의록 **세 벌** (SPEC-004 §4.0 · D51). 안건과 줄이 **같은 이름을 쓴다** — 한 벌을 두 이름으로
+#: 부르지 않는다 (§4.0-2).
+#:
+#: * `memo`  — 사람 벌. 회의를 만든 사람이 예약 모달과 메모 칸에서 쓴다 (§6)
+#: * `ai`    — AI 벌. 회의 중 배치가 매 회차 **전량 교체**한다 (§7)
+#: * `final` — 최종 벌. 종료 합성이 두 벌을 재료로 **새로 짓는다** (§8)
+TRACK_MEMO = "memo"
+TRACK_AI = "ai"
+TRACK_FINAL = "final"
+AGENDA_TRACKS: frozenset[str] = frozenset({TRACK_MEMO, TRACK_AI, TRACK_FINAL})
+#: 줄의 벌은 안건의 벌과 **같은 집합**이다 (§4.2-9 · §4.0-2 「한 벌 한 이름」). 0.4.x 는 줄만 벌을
+#: 갖고 있었고 그 이름이 `memo` 였다 — **안건의 벌 이름을 그 표기에 맞췄다**(사용자 결정 2026-09-14):
+#: 줄이 이미 쓰던 이름을 그대로 두면 저장된 글자가 뜻을 바꾸지 않고 고칠 자리도 0 이다.
+LINE_TRACKS: frozenset[str] = AGENDA_TRACKS
+#: 원본 두 벌 — 최종 벌이 딛는 재료이고 계보(`merged_from`·`from_lines`)가 가리킬 수 있는 유일한 자리다.
+ORIGIN_TRACKS: frozenset[str] = frozenset({TRACK_MEMO, TRACK_AI})
+
+#: 안건이 어디서 왔는가 — 기획이 정한 넷이다 (사용자 결정 D38 · D51 이 좁혔다).
 #:
 #: * `manual`  — 사람이 직접 적었다
 #: * `set`     — 세트: 같은 회의명으로 앞뒤 이어진 회의에서 **자동으로** 넘어왔다
 #: * `carried` — 지난 회의에서 넘어왔다: **사람이** 지난 회의를 골라 불러왔다
 #: * `derived` — 다른 회의에서 파생됐다
-#: * `ai`      — 회의 중 배치나 합성이 세웠다
 #:
 #: `set` 과 `derived` 는 **값만 열어 둔 것**이고 아직 그것을 만드는 경로가 없다 (D38). 값을 먼저 여는
 #: 이유는 저장된 글자가 나중에 뜻을 바꾸지 않게 하려는 것이다 — 스키마는 그대로다(문자열 열).
-#: 합성의 「사람 안건 보존」은 계속 `source != "ai"` 로 가른다: 넷 모두 사람 쪽이다.
-AGENDA_SOURCES: frozenset[str] = frozenset({"manual", "set", "carried", "derived", "ai"})
-#: AI 가 세운 안건의 출처. 이 하나만 「사람이 세우지 않은 것」이다.
-AI_AGENDA_SOURCE = "ai"
-LINE_TRACKS: frozenset[str] = frozenset({"memo", "ai", "final"})
+#:
+#: **출처는 사람 벌 안의 출처다** (SPEC §4.1-2 · D51). 0.4.x 의 「AI 정리」(`ai`)는 **은퇴했다** —
+#: 그 값이 있던 이유는 AI 가 사람과 같은 목록에 안건을 세웠기 때문이고, 벌이 갈렸으므로 「AI 가 세웠다」는
+#: 출처가 아니라 **벌 자체**가 말한다. 어디서 왔는지를 말하는 것은 최종 벌에서 계보(§4.1-3)다.
+AGENDA_SOURCES: frozenset[str] = frozenset({"manual", "set", "carried", "derived"})
 
 
 def parse_status(value: object) -> MeetingStatus:
@@ -120,15 +138,59 @@ def normalize_agenda_title(value: object) -> str:
 
 
 def ensure_agenda_capacity(existing_count: int) -> None:
-    if existing_count >= MAX_AGENDAS_PER_MEETING:
-        raise MeetingStateConflict(f"a meeting holds at most {MAX_AGENDAS_PER_MEETING} agendas")
+    """**벌 하나**가 이고 있는 안건 수를 본다 — 세 벌을 합쳐서 세지 않는다 (SPEC §4.0-3)."""
+    if existing_count >= MAX_AGENDAS_PER_TRACK:
+        raise MeetingStateConflict(f"a meeting track holds at most {MAX_AGENDAS_PER_TRACK} agendas")
 
 
-def ensure_agenda_source(value: object) -> str:
+def ensure_agenda_track(value: object) -> str:
+    """안건이 선 벌. 아는 셋 말고는 저장되지 않는다 (SPEC §4.0-2)."""
+    track = str(value)
+    if track not in AGENDA_TRACKS:
+        raise MeetingError(f"agenda track must be one of {sorted(AGENDA_TRACKS)}")
+    return track
+
+
+def ensure_agenda_source(value: object | None, *, track: str) -> str | None:
+    """출처는 **사람 벌만 갖는다** (SPEC §4.1-2). 다른 벌에 출처가 오면 거절한다 — 버리지 않는다:
+    출처를 실은 AI·최종 안건은 벌 경계를 잘못 읽은 호출이고 조용히 지우면 그 오독이 남는다.
+    """
+    if track != TRACK_MEMO:
+        if value is None:
+            return None
+        raise MeetingError(f"only the {TRACK_MEMO} track carries an agenda source")
     source = str(value)
     if source not in AGENDA_SOURCES:
         raise MeetingError(f"agenda source must be one of {sorted(AGENDA_SOURCES)}")
     return source
+
+
+def ensure_line_track(value: object, *, agenda_track: str) -> str:
+    """**줄의 벌과 그 줄이 매달린 안건의 벌은 언제나 같다** (SPEC §4.2-9 · §4.0-1).
+
+    다른 벌의 안건 id 를 실은 줄은 거절한다 — 벌이 갈렸다는 것이 이 한 줄로 지켜진다.
+    """
+    track = str(value)
+    if track not in LINE_TRACKS:
+        raise MeetingError(f"line track must be one of {sorted(LINE_TRACKS)}")
+    if track != agenda_track:
+        raise MeetingError(f"a {track} line does not hang on a {agenda_track} agenda")
+    return track
+
+
+def surviving_lineage(claimed: object, *, known_ids: set[str]) -> list[str]:
+    """계보는 **존재만 검증한다** — 없는 id 는 그 id 만 버리고 안건·줄 자체는 산다 (SPEC §8-6 · §4.2-10).
+
+    맞는지는 검증하지 않는다: AI 의 자기보고라 서버가 확인할 방법이 없다. 검증 가능한 근거는 `evidence` 다.
+    """
+    if not isinstance(claimed, (list, tuple)):
+        return []
+    kept: list[str] = []
+    for value in claimed:
+        identifier = str(value or "").strip()
+        if identifier and identifier in known_ids and identifier not in kept:
+            kept.append(identifier)
+    return kept
 
 
 def validate_meeting_schedule(starts_at: datetime, ends_at: datetime) -> None:

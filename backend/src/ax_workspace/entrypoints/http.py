@@ -785,7 +785,7 @@ def create_app(
         ) -> dict[str, object]:
             try:
                 return app.state.workflow_application.update_meeting_agenda(
-                    principal, meeting_id, agenda_id, request.model_dump(exclude_unset=True)
+                    principal, meeting_id, agenda_id, request.changes()
                 )
             except MeetingStaleWrite as error:
                 # 덮어쓰지 않고 지금 있는 것을 함께 낸다 — 사람이 차이를 보고 정한다 (SPEC-004 §8-9).

@@ -411,9 +411,7 @@ def test_a_conversation_that_asked_for_its_own_schema_gets_that_structure_back(t
     produced = {
         "agendas": [
             {
-                "agenda_id": None,
                 "title": "다음 스프린트 범위",
-                "source": "ai",
                 "lines": [
                     {"text": "로그인 개편을 먼저 낸다.", "evidence": [{"from_ms": 0, "to_ms": 900}], "task_id": None}
                 ],
@@ -449,11 +447,10 @@ def test_a_conversation_that_asked_for_the_final_notes_schema_parses_as_final_no
         "title_candidate": "9월 정기 회의",
         "agendas": [
             {
-                "agenda_id": None,
                 "title": "배포 일정",
-                "source": "ai",
+                "merged_from": [],
                 "concluded": True,
-                "lines": [{"text": "금요일에 낸다.", "evidence": [], "line_ids": []}],
+                "lines": [{"text": "금요일에 낸다.", "evidence": [], "from_lines": []}],
                 "todos": [],
             }
         ],

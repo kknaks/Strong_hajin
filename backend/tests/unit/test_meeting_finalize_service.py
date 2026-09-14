@@ -22,9 +22,8 @@ VALID_OUTPUT = json.dumps(
         "title_candidate": None,
         "agendas": [
             {
-                "agenda_id": None,
                 "title": "정리",
-                "source": "ai",
+                "merged_from": [],
                 "concluded": False,
                 "lines": [],
                 "todos": [],
@@ -43,7 +42,8 @@ class _Gateway:
             "session_ref": session_ref,
             "persona_id": "mina",
             "meeting": {"title": "회의", "starts_on": "2026-09-13 (일)"},
-            "agendas": [],
+            "memo_agendas": [],
+            "ai_agendas": [],
             "memo_lines": [],
             "ai_lines": [],
             "transcript": [{"content": "다시 들은 말"}],

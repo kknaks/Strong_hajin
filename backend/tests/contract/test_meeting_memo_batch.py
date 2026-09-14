@@ -62,12 +62,14 @@ def _output(agendas: list[dict]) -> str:
     return json.dumps({"agendas": agendas}, ensure_ascii=False)
 
 
-def _agenda(
-    title: str, lines: list[dict], *, agenda_id: str | None = None, source: str = "ai",
-    todos: list[dict] | None = None,
-) -> dict:
-    """배치 출력의 안건 하나. `todos` 는 D46 부터 **required** 라 비어도 키가 있어야 한다."""
-    return {"agenda_id": agenda_id, "title": title, "source": source, "lines": lines, "todos": todos or []}
+def _agenda(title: str, lines: list[dict], *, todos: list[dict] | None = None) -> dict:
+    """배치 출력의 안건 하나 — **AI 벌의 안건이다.**
+
+    `agenda_id` 도 `source` 도 없다 (SPEC v0.5.1 §7.1 출력 · W-6): AI 벌은 회차마다 전량 교체되고 안건
+    id 가 매 회차 새로 나므로 이어 쓸 id 가 없고, 출처는 사람 벌 안의 값이라 여기 붙지 않는다.
+    `todos` 는 D46 부터 **required** 라 비어도 키가 있어야 한다.
+    """
+    return {"title": title, "lines": lines, "todos": todos or []}
 
 
 def _todo(title: str, *, description: str = "회의에서 나온 일.", due: str | None = None,
@@ -159,11 +161,15 @@ def test_a_memo_becomes_a_line_the_server_timestamps(tmp_path) -> None:
     )
     assert written.status_code == 201, written.text
     line = written.json()
-    assert set(line) == {"line_id", "track", "order", "text", "author", "at_ms", "evidence"}
+    # `from_lines` 가 늘었다 — 계보는 최종 벌 줄만 들지만 **키는 언제나 낸다** (§4.2-10).
+    assert set(line) == {"line_id", "track", "order", "text", "author", "at_ms", "evidence", "from_lines"}
+    assert line["from_lines"] == []
+    # 사람 벌의 줄은 `memo` 이다 — 0.4.x 의 `memo` 표기를 안건과 같은 이름으로 정렬했다 (§4.0-2 · §11.4).
     assert line["track"] == "memo" and line["author"] == "mina" and line["evidence"] == []
     assert isinstance(line["at_ms"], int) and line["at_ms"] >= 0
 
     [agenda] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
+    assert agenda["track"] == "memo"
     assert [row["text"] for row in agenda["lines"]] == ["권한부터 정한다"]
 
 
@@ -243,8 +249,15 @@ def test_a_meeting_opened_by_the_quick_start_button_gets_the_same_warm_start(tmp
 
     assert len(agent.opened) == 1
     assert agent.opened[0]["persona_id"] == "mina"
-    # 제목 없이 선 회의라도 기본 안건은 첫 turn 의 맥락에 실린다 (D32).
-    assert "안건 1" in agent.opened[0]["prompt"]
+    # 제목 없이 선 회의라도 기본 안건은 첫 turn 의 맥락에 실린다 (D32) — 다만 그 **제목은 빈 값이다**
+    # (§4.1-7 · W-7): AI 가 사람 벌에 손대지 않으므로 자리표시 문자열을 넣을 이유가 사라졌다 (D48 폐기).
+    assert '"title": ""' in agent.opened[0]["prompt"]
+    # 사람 벌의 안건은 **맥락으로만** 실린다 — id 를 싣지 않는다: 이어 쓸 사람 안건이 없다 (W-6).
+    assert '"agenda_id"' not in agent.opened[0]["prompt"]
+    detail = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()
+    [placeholder] = detail["agendas"]
+    assert placeholder["track"] == "memo" and placeholder["title"] == ""
+    assert placeholder["title_placeholder"] is True and placeholder["source"] == "manual"
     with application._session_factory() as session:
         assert application._meetings(session).ai_session_ref(UUID(meeting_id)) == "session-1"
 
@@ -378,11 +391,16 @@ def test_an_output_that_breaks_the_schema_discards_the_whole_batch(tmp_path) -> 
 
 
 def test_the_ai_track_is_replaced_whole_and_never_touches_a_human_agenda(tmp_path) -> None:
-    """전량 교체 — 사람이 만든 안건은 제목도 출처도 그대로다 (SPEC §7.1 적재 · §7.3)."""
+    """**AI 는 자기 벌에만 쓴다. 예외가 없다** (SPEC v0.5 §4.1-8 · §7.3 · D51 · D14 폐기).
+
+    0.4.x 는 출력의 `agenda_id` 를 보고 사람 안건을 이어 썼다 — 사람 안건 아래에 AI 줄이 매달렸고, 그래서
+    「사람이 적은 것이 남았나」를 물을 수가 없었다. 이제 **벌이 갈렸다**: 사람 안건에는 `memo` 줄만,
+    AI 안건에는 `ai` 줄만 매달리고, 전량 교체가 **진짜 전량**이 된다(예외 분기가 사라졌다).
+    """
     client, application, agent = _stack(tmp_path)
     made = _running(client)
     meeting_id = made["meeting"]["meeting_id"]
-    human_agenda = made["agendas"][0]["agenda_id"]
+    [human_agenda] = [row["agenda_id"] for row in made["agendas"] if row["track"] == "memo"]
     application.meeting_batch.drain()
     batch = application.meeting_batch
 
@@ -391,7 +409,7 @@ def test_the_ai_track_is_replaced_whole_and_never_touches_a_human_agenda(tmp_pat
     )
     agent.script = [
         _output([
-            _agenda("사람 안건에 붙인다", [_line("첫 배치 줄")], agenda_id=human_agenda, source="manual"),
+            _agenda("AI 가 가른 첫 화제", [_line("첫 배치 줄")]),
             _agenda("AI 가 세운 안건", [_line("새 주제")]),
         ]),
         _output([_agenda("두 번째 정리", [_line("갈아끼운 줄")])]),
@@ -401,22 +419,58 @@ def test_the_ai_track_is_replaced_whole_and_never_touches_a_human_agenda(tmp_pat
 
     agendas = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
     by_id = {agenda["agenda_id"]: agenda for agenda in agendas}
-    # 사람 안건은 제목·출처가 그대로이고 사람 줄이 살아 있다. AI 는 그 안건에 자기 줄만 매단다.
-    assert by_id[human_agenda]["title"] == "첫 안건" and by_id[human_agenda]["source"] == "manual"
-    tracks = {row["track"]: row["text"] for row in by_id[human_agenda]["lines"]}
-    assert tracks == {"memo": "사람이 적은 줄", "ai": "첫 배치 줄"}
-    [made_by_ai] = [agenda for agenda in agendas if agenda["source"] == "ai"]
-    assert made_by_ai["title"] == "AI 가 세운 안건"
+    human = by_id[human_agenda]
+    # 사람 벌의 안건은 제목도 출처도 그대로이고 **그 아래에는 사람 줄만 있다.**
+    assert human["track"] == "memo" and human["title"] == "첫 안건" and human["source"] == "manual"
+    assert [(row["track"], row["text"]) for row in human["lines"]] == [("memo", "사람이 적은 줄")]
+
+    ai_agendas = [agenda for agenda in agendas if agenda["track"] == "ai"]
+    assert [agenda["title"] for agenda in ai_agendas] == ["AI 가 가른 첫 화제", "AI 가 세운 안건"]
+    # AI 벌의 안건은 출처를 갖지 않는다 — 전부 AI 가 세운 것이라 물을 것이 없다 (§4.1-2).
+    assert all(agenda["source"] is None for agenda in ai_agendas)
+    assert all(row["track"] == "ai" for agenda in ai_agendas for row in agenda["lines"])
+    first_round_ai_ids = {agenda["agenda_id"] for agenda in ai_agendas}
 
     _blocks(application, meeting_id, count=1, chars=BATCH_CHARS, start_ms=9_000, text="라")
     batch.evaluate(meeting_id, CAUSE_TRANSCRIPT)
 
     after = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
-    ai_lines = [row["text"] for agenda in after for row in agenda["lines"] if row["track"] == "ai"]
-    # 전량 교체다 — 앞 배치의 AI 줄과 AI 안건이 남지 않는다.
-    assert ai_lines == ["갈아끼운 줄"]
-    assert [agenda["title"] for agenda in after if agenda["source"] == "manual"] == ["첫 안건"]
-    assert any(row["text"] == "사람이 적은 줄" for agenda in after for row in agenda["lines"])
+    # **전량 교체다** — 앞 회차의 AI 안건과 줄이 하나도 남지 않고 안건 id 도 새로 났다.
+    surviving_ai = [agenda for agenda in after if agenda["track"] == "ai"]
+    assert [agenda["title"] for agenda in surviving_ai] == ["두 번째 정리"]
+    assert not first_round_ai_ids & {agenda["agenda_id"] for agenda in surviving_ai}
+    assert [row["text"] for agenda in surviving_ai for row in agenda["lines"]] == ["갈아끼운 줄"]
+    # 사람 벌은 그 교체에 닿지 않는다.
+    [still_human] = [agenda for agenda in after if agenda["track"] == "memo"]
+    assert still_human["agenda_id"] == human_agenda and still_human["title"] == "첫 안건"
+    assert [row["text"] for row in still_human["lines"]] == ["사람이 적은 줄"]
+
+
+def test_a_person_cannot_write_a_memo_into_the_ai_track(tmp_path) -> None:
+    """**사람은 AI 벌에 적지 않는다** (SPEC §6-4 · §6-8 · §4.0-1).
+
+    메모 칸의 드롭다운에는 사람 벌의 안건만 서고, 경로의 안건이 사람 벌의 것이 아니면 서버가 거절한다 —
+    벌을 본문으로 고를 수 없다.
+    """
+    client, application, agent = _stack(tmp_path)
+    meeting_id = _running(client)["meeting"]["meeting_id"]
+    application.meeting_batch.drain()
+    agent.script = [_output([_agenda("AI 가 세운 안건", [_line("AI 줄")])])]
+    _blocks(application, meeting_id, count=1, chars=BATCH_CHARS)
+    application.meeting_batch.evaluate(meeting_id, CAUSE_TRANSCRIPT)
+
+    agendas = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
+    [ai_agenda] = [row["agenda_id"] for row in agendas if row["track"] == "ai"]
+
+    refused = client.post(
+        f"/api/meetings/{meeting_id}/agendas/{ai_agenda}/lines", headers=MINA, json={"text": "여기 적으면 안 된다"}
+    )
+    assert refused.status_code == 422
+    # 한 줄도 들어가지 않았다 — AI 벌은 배치가 쓴 것 그대로다.
+    after = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
+    assert [
+        (row["track"], row["text"]) for agenda in after if agenda["track"] == "ai" for row in agenda["lines"]
+    ] == [("ai", "AI 줄")]
 
 
 def test_a_committed_batch_is_pushed_to_the_subscribers_at_once(tmp_path) -> None:
@@ -563,8 +617,10 @@ def test_a_trigger_that_arrives_mid_batch_is_repaid_when_that_batch_ends(tmp_pat
 # --------------------------------------------------------------------- D46 · 회의 중 다음 할 일 후보
 
 
-def _agendas_of(client: TestClient, meeting_id: str) -> list[dict]:
-    return client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
+def _agendas_of(client: TestClient, meeting_id: str, *, track: str = "ai") -> list[dict]:
+    """상세 응답은 **세 벌을 전부** 낸다 (§8-11) — 무엇을 보는지는 부르는 쪽이 벌로 고른다."""
+    agendas = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
+    return [agenda for agenda in agendas if agenda["track"] == track]
 
 
 def test_the_batch_brings_follow_up_candidates_and_they_land_as_provisional(tmp_path) -> None:
@@ -575,12 +631,11 @@ def test_the_batch_brings_follow_up_candidates_and_they_land_as_provisional(tmp_
     client, application, agent = _stack(tmp_path)
     made = _running(client)
     meeting_id = made["meeting"]["meeting_id"]
-    human = made["agendas"][0]["agenda_id"]
     application.meeting_batch.drain()
     _blocks(application, meeting_id, count=3, chars=BATCH_CHARS)
     agent.script = [
         _output([
-            _agenda("첫 안건", [_line("AI 가 낸 줄")], agenda_id=human, source="manual",
+            _agenda("AI 가 가른 화제", [_line("AI 가 낸 줄")],
                     todos=[_todo("계약서를 검토한다", due="2026-09-20"), _todo("일정을 잡는다")]),
         ])
     ]
@@ -601,17 +656,16 @@ def test_the_next_batch_replaces_the_candidates_whole(tmp_path) -> None:
     client, application, agent = _stack(tmp_path)
     made = _running(client)
     meeting_id = made["meeting"]["meeting_id"]
-    human = made["agendas"][0]["agenda_id"]
     application.meeting_batch.drain()
 
     _blocks(application, meeting_id, count=3, chars=BATCH_CHARS)
-    agent.script = [_output([_agenda("첫 안건", [], agenda_id=human, source="manual", todos=[_todo("먼저 낸 후보")])])]
+    agent.script = [_output([_agenda("AI 가 가른 화제", [], todos=[_todo("먼저 낸 후보")])])]
     assert application.meeting_batch.evaluate(meeting_id, CAUSE_TRANSCRIPT) is True
     application.meeting_batch.drain()
     assert [row["title"] for row in _agendas_of(client, meeting_id)[0]["todos"]] == ["먼저 낸 후보"]
 
     _blocks(application, meeting_id, count=3, chars=BATCH_CHARS, start_ms=100_000)
-    agent.script = [_output([_agenda("첫 안건", [], agenda_id=human, source="manual", todos=[_todo("다시 낸 후보")])])]
+    agent.script = [_output([_agenda("AI 가 가른 화제", [], todos=[_todo("다시 낸 후보")])])]
     assert application.meeting_batch.evaluate(meeting_id, CAUSE_TRANSCRIPT) is True
     application.meeting_batch.drain()
     assert [row["title"] for row in _agendas_of(client, meeting_id)[0]["todos"]] == ["다시 낸 후보"]
@@ -622,10 +676,9 @@ def test_a_batch_that_brings_no_candidate_is_still_a_good_batch(tmp_path) -> Non
     client, application, agent = _stack(tmp_path)
     made = _running(client)
     meeting_id = made["meeting"]["meeting_id"]
-    human = made["agendas"][0]["agenda_id"]
     application.meeting_batch.drain()
     _blocks(application, meeting_id, count=3, chars=BATCH_CHARS)
-    agent.script = [_output([_agenda("첫 안건", [_line("줄만 있다")], agenda_id=human, source="manual")])]
+    agent.script = [_output([_agenda("AI 가 가른 화제", [_line("줄만 있다")])])]
 
     assert application.meeting_batch.evaluate(meeting_id, CAUSE_TRANSCRIPT) is True
     application.meeting_batch.drain()
@@ -637,7 +690,6 @@ def test_the_pushed_batch_frame_carries_the_candidates(tmp_path) -> None:
     client, application, agent = _stack(tmp_path)
     made = _running(client)
     meeting_id = made["meeting"]["meeting_id"]
-    human = made["agendas"][0]["agenda_id"]
     application.meeting_batch.drain()
 
     pushed: list[dict] = []
@@ -646,7 +698,7 @@ def test_the_pushed_batch_frame_carries_the_candidates(tmp_path) -> None:
     )
     _blocks(application, meeting_id, count=3, chars=BATCH_CHARS)
     agent.script = [
-        _output([_agenda("첫 안건", [_line("AI 줄")], agenda_id=human, source="manual", todos=[_todo("프레임에 실릴 후보")])])
+        _output([_agenda("AI 가 가른 화제", [_line("AI 줄")], todos=[_todo("프레임에 실릴 후보")])])
     ]
     assert application.meeting_batch.evaluate(meeting_id, CAUSE_TRANSCRIPT) is True
     application.meeting_batch.drain()

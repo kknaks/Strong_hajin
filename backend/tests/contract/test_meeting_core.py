@@ -74,8 +74,8 @@ def test_deleting_an_agenda_takes_its_lines_with_it(tmp_path) -> None:
     staying, going = (agenda["agenda_id"] for agenda in meeting["agendas"])
     application = client.app.state.workflow_application
     principal = client.app.state.workflow_application.authenticated_principal("mina")
-    application.append_meeting_line(principal, _uuid(meeting_id), _uuid(staying), track="final", text="남는 줄")
-    application.append_meeting_line(principal, _uuid(meeting_id), _uuid(going), track="final", text="사라질 줄")
+    application.append_meeting_line(principal, _uuid(meeting_id), _uuid(staying), track="memo", text="남는 줄")
+    application.append_meeting_line(principal, _uuid(meeting_id), _uuid(going), track="memo", text="사라질 줄")
 
     removed = client.delete(f"/api/meetings/{meeting_id}/agendas/{going}", headers=MINA)
     assert removed.status_code == 204, removed.text
@@ -96,11 +96,15 @@ def test_an_agenda_carries_order_source_conclusion_and_its_lines(tmp_path) -> No
     assert added.json()["concluded"] is False
     assert added.json()["lines"] == [] and added.json()["todos"] == []
 
+    # **결론 표시가 서는 것은 최종 벌뿐이다** (§4.0-5) — 사람 벌의 안건은 결론 여부를 갖지 않는다:
+    # 회의가 도는 동안에는 결론이 화면에 서지 않기 때문이다.
     concluded = client.patch(
         f"/api/meetings/{meeting_id}/agendas/{added.json()['agenda_id']}", headers=MINA, json={"concluded": True}
     )
-    assert concluded.status_code == 200, concluded.text
-    assert concluded.json()["concluded"] is True
+    assert concluded.status_code == 409, concluded.text
+    # 원장에도 남지 않았다 — 사람 벌의 안건은 결론 없이 그대로다.
+    after = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
+    assert all(row["concluded"] is False for row in after)
 
     too_long = client.post(f"/api/meetings/{meeting_id}/agendas", headers=MINA, json={"title": "가" * 101})
     assert too_long.status_code == 422
@@ -126,6 +130,8 @@ def test_a_line_hangs_from_an_agenda_with_a_track_and_an_empty_evidence_slot(tmp
             # 「예정」 회의라 회의 시작 시각이 없다 — 낮은 표면은 시각을 매기지 않는다.
             "at_ms": None,
             "evidence": [],
+            # 계보는 최종 벌 줄만 들지만 **키는 언제나 낸다** (§4.2-10).
+            "from_lines": [],
         }
     ]
 
@@ -218,9 +224,12 @@ def test_quick_start_stands_with_nothing_but_the_person_who_opened_it(tmp_path) 
     # 값을 묻지 않아도 **메모가 붙을 자리 하나**는 서고 선다 — 안건이 0개면 메모를 던질 곳이 없다 (D32).
     agendas = started.json()["agendas"]
     assert len(agendas) == 1
-    assert agendas[0]["title"] == "안건 1"
-    # 사람이 세운 안건과 같은 자격이다 — 합성이 이 안건을 지우거나 합치지 못한다 (SPEC §8-6).
-    assert agendas[0]["source"] == "manual" and agendas[0]["order"] == 0
+    # **제목은 빈 값이다** (§4.1-7 · W-7) — AI 가 사람 벌에 손대지 않으므로 채워 줄 사람이 없고,
+    # 자리표시 문자열을 넣으면 화면 라벨과 겹쳐 「안건 1. 안건 1」이 된다 (D48 폐기).
+    assert agendas[0]["title"] == "" and agendas[0]["title_placeholder"] is True
+    # 사람 벌의 안건이고 출처를 갖는다 (§4.0 표 · §4.1-2). 순서는 벌 안에서 1 부터다.
+    assert agendas[0]["track"] == "memo"
+    assert agendas[0]["source"] == "manual" and agendas[0]["order"] == 1
     assert agendas[0]["lines"] == [] and agendas[0]["todos"] == []
 
     assert client.get(f"/api/meetings/{head['meeting_id']}", headers=JIHO).status_code == 404
@@ -272,7 +281,7 @@ def test_cancelling_the_meeting_and_deleting_only_the_note_delete_different_thin
     application = client.app.state.workflow_application
     principal = client.app.state.workflow_application.authenticated_principal("mina")
     application.append_meeting_line(
-        principal, _uuid(kept_id), _uuid(kept["agendas"][0]["agenda_id"]), track="final", text="지워질 줄"
+        principal, _uuid(kept_id), _uuid(kept["agendas"][0]["agenda_id"]), track="memo", text="지워질 줄"
     )
 
     note_deleted = client.delete(f"/api/meetings/{kept_id}", headers=MINA, params={"scope": "note"})
@@ -313,7 +322,7 @@ def test_an_empty_meeting_whose_time_passed_cancels_itself_and_a_single_line_rel
     application = client.app.state.workflow_application
     principal = application.authenticated_principal("mina")
     application.append_meeting_line(
-        principal, _uuid(meeting_id), _uuid(meeting["agendas"][0]["agenda_id"]), track="final", text="늦게 적은 줄"
+        principal, _uuid(meeting_id), _uuid(meeting["agendas"][0]["agenda_id"]), track="memo", text="늦게 적은 줄"
     )
     assert client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]["status"] == "scheduled"
 
@@ -395,19 +404,29 @@ def test_the_note_is_a_line_list_that_saving_overwrites_rather_than_stacking(tmp
     meeting_id = meeting["meeting"]["meeting_id"]
     agenda_id = meeting["agendas"][0]["agenda_id"]
 
-    # 「예정」에서는 회의록 줄 편집이 열리지 않는다 (SPEC §5.1).
+    # 「예정」에서는 회의록 줄 편집이 열리지 않는다 (SPEC §5.1). **사람 벌의 안건에는 아예 열리지
+    # 않는다** — 고치는 자리는 최종 벌 하나다 (§8-9 · D53).
     too_early = client.patch(
-        f"/api/meetings/{meeting_id}/agendas/{agenda_id}", headers=MINA, json={"lines": ["이르다"]}
+        f"/api/meetings/{meeting_id}/agendas/{agenda_id}", headers=MINA, json={"lines": [{"text": "이르다"}]}
     )
     assert too_early.status_code == 409
 
     _force_status(client, meeting_id, MeetingStatus.DONE)
-    assert client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]["can_edit_note"] is True
+    head = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]
+    assert head["can_edit_note"] is True
+    # 「완료」에서 사람이 세우는 안건은 **최종 벌**에 선다 (§4.1-6 「안건 추가」) — 합성이 실패했거나
+    # 아직 돌지 않은 회의록을 사람이 직접 채우는 자리다 (§4.2-6 실패 행).
+    assert head["can_add_agenda"] == {"memo": False, "ai": False, "final": True}
+    made_final = client.post(f"/api/meetings/{meeting_id}/agendas", headers=MINA, json={"title": "최종 안건"})
+    assert made_final.status_code == 201, made_final.text
+    final_id = made_final.json()["agenda_id"]
+    # 사람이 [수정] 에서 세운 최종 안건의 계보는 비어 있다 (§8-9).
+    assert made_final.json()["track"] == "final" and made_final.json()["merged_from"] == []
 
     saved = client.patch(
-        f"/api/meetings/{meeting_id}/agendas/{agenda_id}",
+        f"/api/meetings/{meeting_id}/agendas/{final_id}",
         headers=MINA,
-        json={"lines": ["권한 모델은 참석으로 가른다.", "   ", "공유는 열람만 연다."]},
+        json={"lines": [{"text": "권한 모델은 참석으로 가른다."}, {"text": "   "}, {"text": "공유는 열람만 연다."}]},
     )
     assert saved.status_code == 200, saved.text
     # 빈 줄은 저장할 때 버린다. 순서는 배열 순서이고 쓴 사람이 저자다.
@@ -417,12 +436,21 @@ def test_the_note_is_a_line_list_that_saving_overwrites_rather_than_stacking(tmp
     ]
     assert client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]["last_saved_at"]
 
+    # 판을 쌓지 않는다 — 목록에서 빠진 id 는 지워진 줄이다 (§8-9).
+    keep = saved.json()["lines"][0]["line_id"]
     rewritten = client.patch(
-        f"/api/meetings/{meeting_id}/agendas/{agenda_id}", headers=MINA, json={"lines": ["한 줄만 남긴다."]}
+        f"/api/meetings/{meeting_id}/agendas/{final_id}",
+        headers=MINA,
+        json={"lines": [{"line_id": keep, "text": "한 줄만 남긴다."}]},
     )
     assert [line["text"] for line in rewritten.json()["lines"]] == ["한 줄만 남긴다."]
-    [agenda] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
-    assert [line["text"] for line in agenda["lines"]] == ["한 줄만 남긴다."]
+    finals = [row for row in client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
+              if row["track"] == "final"]
+    assert [line["text"] for agenda in finals for line in agenda["lines"]] == ["한 줄만 남긴다."]
+    # 사람 벌의 안건은 이 편집에 걸리지 않는다 (D53).
+    assert client.patch(
+        f"/api/meetings/{meeting_id}/agendas/{agenda_id}", headers=MINA, json={"lines": [{"text": "원본을 고쳐 본다"}]}
+    ).status_code == 409
 
 
 def test_agendas_are_edited_before_the_meeting_and_after_it_but_never_while_it_runs(tmp_path) -> None:
@@ -437,13 +465,18 @@ def test_agendas_are_edited_before_the_meeting_and_after_it_but_never_while_it_r
     agenda_id = meeting["agendas"][0]["agenda_id"]
 
     head = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]
-    # 「예정」은 안건을 열고 줄은 닫는다 — 두 칸이 갈라져 있어야 화면이 [수정]을 세울 수 있다.
-    assert head["can_edit_agendas"] is True and head["can_edit_note"] is False
+    # 「예정」은 **사람 벌의** 안건을 열고 줄은 닫는다 — 두 칸이 갈라져 있어야 화면이 [수정]을 세울 수 있다.
+    # 판정은 **벌별 셋**이다 (§3.3 · §4.1-6): 불리언 하나로는 벌마다 다른 게이트를 낼 수 없다.
+    assert head["can_edit_agendas"] == {"memo": True, "ai": False, "final": False}
+    assert head["can_edit_note"] is False
     assert client.post(f"/api/meetings/{meeting_id}/agendas", headers=MINA, json={"title": "예정에서 더한 안건"}).status_code == 201
 
     client.post(f"/api/meetings/{meeting_id}/start", headers=MINA)
     running = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]
-    assert running["can_edit_agendas"] is False and running["can_edit_note"] is False
+    # 「진행 중」에는 사람 벌 안건을 **더할 수는 있지만 고칠 수는 없다** — 표를 그대로 읽은 자리다.
+    assert running["can_edit_agendas"] == {"memo": False, "ai": False, "final": False}
+    assert running["can_add_agenda"] == {"memo": True, "ai": False, "final": False}
+    assert running["can_edit_note"] is False
     # 세우는 것은 열려 있다 (D45) — 고치고 지우는 것만 막힌다.
     assert client.post(f"/api/meetings/{meeting_id}/agendas", headers=MINA, json={"title": "진행 중 안건"}).status_code == 201
     assert client.patch(f"/api/meetings/{meeting_id}/agendas/{agenda_id}", headers=MINA, json={"concluded": True}).status_code == 409
@@ -454,9 +487,18 @@ def test_agendas_are_edited_before_the_meeting_and_after_it_but_never_while_it_r
 
     _force_status(client, meeting_id, MeetingStatus.DONE)
     done = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]
-    # 「완료」는 둘 다 연다.
-    assert done["can_edit_agendas"] is True and done["can_edit_note"] is True
-    assert client.post(f"/api/meetings/{meeting_id}/agendas", headers=MINA, json={"title": "완료 뒤 안건"}).status_code == 201
+    # **「완료」는 최종 벌만 연다** — 원본 두 벌은 읽기 전용이다 (D53 · §8-11). 0.4.x 의 「종료 뒤 안건
+    # 편집」은 뼈대가 한 벌이던 때의 표이고, 그 자리는 이제 최종 벌이다.
+    assert done["can_edit_agendas"] == {"memo": False, "ai": False, "final": True}
+    assert done["can_edit_note"] is True
+    # 사람 벌의 안건은 「완료」에도 닫혀 있다.
+    assert client.patch(
+        f"/api/meetings/{meeting_id}/agendas/{agenda_id}", headers=MINA, json={"title": "원본을 고쳐 본다"}
+    ).status_code == 409
+    # 새로 세우는 안건은 **최종 벌**에 선다.
+    added_after = client.post(f"/api/meetings/{meeting_id}/agendas", headers=MINA, json={"title": "완료 뒤 안건"})
+    assert added_after.status_code == 201
+    assert added_after.json()["track"] == "final"
 
 
 def test_a_todo_carries_the_eight_values_the_promotion_modal_needs(tmp_path) -> None:
@@ -501,12 +543,16 @@ def test_a_todo_carries_the_eight_values_the_promotion_modal_needs(tmp_path) -> 
 
 
 def test_an_unknown_agenda_source_is_refused_as_an_unprocessable_request(tmp_path) -> None:
-    """모르는 출처는 **422** 로 돌아온다 — 화면이 아는 다섯 밖의 글자를 원장에 남기지 못한다."""
+    """모르는 출처는 **422** 로 돌아온다 — 화면이 아는 넷 밖의 글자를 원장에 남기지 못한다.
+
+    **출처는 사람 벌 안의 출처다** (§4.1-2) — 0.4.x 의 「AI 정리」(`ai`)는 은퇴했고, 다른 두 벌에는
+    출처가 붙지 않는다.
+    """
     from ax_workspace.entrypoints.http import _runtime_error
-    from ax_workspace.modules.meetings.domain import ensure_agenda_source
+    from ax_workspace.modules.meetings.domain import TRACK_MEMO, ensure_agenda_source
 
     try:
-        ensure_agenda_source("imported")
+        ensure_agenda_source("imported", track=TRACK_MEMO)
     except MeetingError as error:
         refusal = _runtime_error(error)
     assert refusal.status_code == 422
@@ -549,8 +595,9 @@ def test_the_host_may_stand_up_an_agenda_while_the_meeting_is_running(tmp_path) 
 
     head = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]
     assert head["status"] == "in_progress"
-    # 화면이 「+ 새 안건」을 세우는 근거는 편집 권한보다 한 자리 넓다.
-    assert head["can_add_agenda"] is True and head["can_edit_agendas"] is False
+    # 화면이 「+ 새 안건」을 세우는 근거는 편집 권한보다 한 자리 넓다 — **사람 벌에서만** 그렇다.
+    assert head["can_add_agenda"] == {"memo": True, "ai": False, "final": False}
+    assert head["can_edit_agendas"] == {"memo": False, "ai": False, "final": False}
 
     added = client.post(f"/api/meetings/{meeting_id}/agendas", headers=MINA, json={"title": "회의 중 안건"})
     assert added.status_code == 201, added.text

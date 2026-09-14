@@ -4,8 +4,8 @@ from ax_workspace.modules.meetings.domain import MeetingError, MeetingStateConfl
 from ax_workspace.modules.meetings.policy import (
     MeetingActorContext,
     MeetingViewContext,
+    normalize_final_line_rows,
     normalize_memo_text,
-    normalize_note_lines,
     ensure_todo_actionable,
     ensure_share_revocable,
     meeting_attendees,
@@ -76,13 +76,48 @@ def test_controls_belong_to_role_and_status_not_to_the_transport() -> None:
     done_owner = project_meeting_view(_meeting(status=MeetingStatus.DONE), _actor("mina"), now=NOW)
     shared = project_meeting_view(_meeting(), _actor("sora"), now=NOW)
 
-    assert scheduled_owner.can_edit_info and scheduled_owner.can_edit_agendas
-    assert scheduled_owner.can_add_agenda and not scheduled_owner.can_write_memo
-    assert scheduled_attendee.can_edit_info and not scheduled_attendee.can_edit_agendas
-    assert running_owner.can_add_agenda and running_owner.can_write_memo
-    assert not running_owner.can_edit_info and not running_owner.can_edit_agendas
-    assert done_owner.can_edit_info and done_owner.can_edit_note and done_owner.can_edit_agendas
+    assert scheduled_owner.can_edit_info and scheduled_owner.can_edit_agendas.memo
+    assert scheduled_owner.can_add_agenda.memo and not scheduled_owner.can_write_memo
+    assert scheduled_attendee.can_edit_info and not scheduled_attendee.can_edit_agendas.any()
+    assert running_owner.can_add_agenda.memo and running_owner.can_write_memo
+    assert not running_owner.can_edit_info and not running_owner.can_edit_agendas.any()
+    assert done_owner.can_edit_info and done_owner.can_edit_note and done_owner.can_edit_agendas.final
     assert not shared.can_edit_info and not shared.can_edit_note
+
+
+def test_agenda_gates_are_three_verdicts_and_the_ai_track_is_never_open() -> None:
+    """**벌별 판정 셋** (SPEC-004 v0.5.1 §4.1-6). 불리언 하나로는 「종료에서 최종 벌은 열리고 사람 벌은
+    닫힌다」를 낼 수 없다 — 그 한 문장이 D-4(원본 불가침)가 지키는 것이다.
+    """
+
+    def gates(status: MeetingStatus):
+        view = project_meeting_view(_meeting(status=status), _actor("mina"), now=NOW)
+        return view.can_add_agenda.as_dict(), view.can_edit_agendas.as_dict()
+
+    add, edit = gates(MeetingStatus.SCHEDULED)
+    assert add == {"memo": True, "ai": False, "final": False}
+    assert edit == {"memo": True, "ai": False, "final": False}
+
+    # 「진행 중」에 사람 벌 안건을 **더할 수는 있지만 고칠 수는 없다** — 표를 그대로 읽은 자리다.
+    add, edit = gates(MeetingStatus.IN_PROGRESS)
+    assert add == {"memo": True, "ai": False, "final": False}
+    assert edit == {"memo": False, "ai": False, "final": False}
+
+    # 정리가 도는 동안에는 **어느 벌도** 열리지 않는다.
+    add, edit = gates(MeetingStatus.SUMMARIZING)
+    assert add == edit == {"memo": False, "ai": False, "final": False}
+
+    # 「종료」·「실패」는 **최종 벌만** 열린다 — 원본 두 벌은 읽기 전용이다 (D53).
+    for closed in (MeetingStatus.DONE, MeetingStatus.FAILED):
+        add, edit = gates(closed)
+        assert add == {"memo": False, "ai": False, "final": True}
+        assert edit == {"memo": False, "ai": False, "final": True}
+
+    # `ai` 는 어느 상태에서도 거짓이다. **키는 언제나 낸다** — 화면이 세 벌을 같은 모양으로 묻는다.
+    for status in MeetingStatus:
+        add, edit = gates(status)
+        assert add["ai"] is False and edit["ai"] is False
+        assert set(add) == set(edit) == {"memo", "ai", "final"}
 
 
 def test_board_places_shared_closed_and_elapsed_meetings_in_the_past() -> None:
@@ -137,13 +172,23 @@ def test_memo_text_is_trimmed_and_rejects_empty_or_oversized_content() -> None:
         normalize_memo_text("가" * 2001)
 
 
-def test_note_lines_keep_meaningful_trimmed_sentences_in_order() -> None:
-    assert normalize_note_lines(["  첫 줄  ", " ", None, "둘째 줄"]) == ("첫 줄", "둘째 줄")
+def test_final_line_rows_carry_their_id_and_drop_empty_sentences() -> None:
+    """최종 벌 저장은 **줄마다 id 를 싣는다** (SPEC-004 v0.5.1 §8-9 · 검수 F-3).
 
-    with pytest.raises(MeetingError, match="list of sentences"):
-        normalize_note_lines("한 줄")
+    id 없이 글자만 보내면 서버는 어느 줄이 그대로인지 알 수 없고, 손대지 않은 줄의 계보까지 첫 저장에
+    사라진다 — 그래서 글자 목록은 받지 않는다.
+    """
+    rows = normalize_final_line_rows(
+        [{"line_id": "line-1", "text": "  첫 줄  "}, {"text": " "}, {"line_id": None, "text": "둘째 줄"}]
+    )
+    assert [(row.line_id, row.text) for row in rows] == [("line-1", "첫 줄"), (None, "둘째 줄")]
+
+    with pytest.raises(MeetingError, match="line_id"):
+        normalize_final_line_rows(["글자 하나"])
+    with pytest.raises(MeetingError, match="list of"):
+        normalize_final_line_rows("한 줄")
     with pytest.raises(MeetingError, match="at most 2000"):
-        normalize_note_lines(["가" * 2001])
+        normalize_final_line_rows([{"text": "가" * 2001}])
 
 
 def test_material_controls_belong_to_attendance_uploader_and_meeting_status() -> None:

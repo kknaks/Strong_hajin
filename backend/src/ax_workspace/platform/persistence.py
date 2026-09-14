@@ -354,20 +354,39 @@ class MeetingRoomCreationAttemptRecord(Base):
 
 
 class MeetingAgendaRecord(Base):
-    """안건 — 회의 기록의 뼈대. 줄도 다음 할 일도 전부 여기 매달린다 (SPEC §4.1 · §10-9)."""
+    """안건 — 회의 기록의 뼈대. 줄도 다음 할 일도 전부 여기 매달린다 (SPEC §4.1 · §10-9).
+
+    **안건은 벌에 속한다** (SPEC-004 v0.5 §4.0). 한 회의에 회의록이 세 벌 서고 벌마다 자기 안건 목록을
+    갖는다 — 사람 벌(`memo`) · AI 벌(`ai`) · 최종 벌(`final`). 세 벌이 같은 목록을 나눠 쓰지 않으므로
+    **안건 id 는 같은 벌 안에서만 유효하다** (§4.0-1) 하고 순서도 벌마다 1부터 다시 매긴다.
+    """
 
     __tablename__ = "meeting_agendas"
-    __table_args__ = (Index("ix_meeting_agendas_meeting_order", "meeting_id", "order_index"),)
+    __table_args__ = (Index("ix_meeting_agendas_meeting_track_order", "meeting_id", "track", "order_index"),)
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False)
+    #: 이 안건이 선 벌 — `memo` | `ai` | `final` (SPEC §4.0-2). 줄의 `track` 과 **같은 이름을 쓴다**:
+    #: 한 벌을 두 이름으로 부르지 않는다.
+    track: Mapped[str] = mapped_column(String(10), nullable=False, default="memo", server_default=text("'memo'"))
     order_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: 빠른 시작이 세운 자리표시 안건은 **빈 값**이다 (§4.1-7 · W-7) — 자리표시 문자열을 넣지 않는다.
     title: Mapped[str] = mapped_column(String(100), nullable=False)
-    source: Mapped[str] = mapped_column(String(20), nullable=False, default="manual")  # manual | carried | ai
+    #: **출처는 사람 벌만 갖는다** (SPEC §4.1-2 · D51). AI 벌·최종 벌의 안건은 전부 그 벌이 세운 것이라
+    #: 출처를 물을 것이 없어 `NULL` 이다. 0.4.x 의 「AI 정리」(`ai`) 값은 은퇴했다 — 「AI 가 세웠다」는
+    #: 이제 출처가 아니라 **벌 자체**가 말한다.
+    source: Mapped[str | None] = mapped_column(String(20), default=None)  # manual | set | carried | derived
     concluded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: **계보 — 최종 벌만 갖는다** (SPEC §4.1-3 · D54). 이 최종 안건이 묶은 원본 안건 id 목록이고,
+    #: 「내가 적은 안건이 어디로 갔나」에 답하는 유일한 길이다. 서버는 **그 회의의 `memo`·`ai` 안건인가**
+    #: 까지만 검증하고(§8-6) 아닌 id 는 그 id 만 버린다. 사람이 `[수정]`에서 새로 세운 최종 안건은 비어 있다.
+    merged_from: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=list, server_default=text("'[]'")
+    )
     #: 제목이 **아직 자리표시인가** (사용자 결정 D6, 2026-09-11).
-    #: 빠른 시작은 메모가 붙을 자리로 안건 하나를 먼저 세우는데(「안건 1」), 그것은 이름이 아니라 빈 칸이다.
-    #: 참이면 회의 중 배치가 낸 제목으로 갈아 끼운다. 사람이 한 번 고치면 거짓이 되고 그 뒤로는 불변이다.
+    #: 빠른 시작은 메모가 붙을 자리로 안건 하나를 먼저 세우는데 그것은 이름이 아니라 빈 칸이다.
+    #: **AI 가 이 제목을 채우지 않는다** (D48 폐기 · SPEC §4.1-7) — 벌이 갈렸으므로 AI 는 사람 벌에 쓰지
+    #: 않는다. 그 이야기가 무엇이었는지는 최종 벌의 안건 제목이 말한다.
     title_placeholder: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
@@ -378,7 +397,9 @@ class MeetingAgendaRecord(Base):
 class MeetingLineRecord(Base):
     """줄 — 안건 본문의 단위. 한 줄이 짧은 문장 하나이고 종류 배지를 갖지 않는다 (SPEC §4.2).
 
-    `track`이 메모·AI·합성을 가른다. 두 트랙은 회의 중 각자 쌓이고(§10-5) 종료 합성이 `final` 줄을 쓴다(§8).
+    `track`이 세 벌을 가른다 — `memo` | `ai` | `final` (SPEC §4.0-2). 원본 두 벌은 회의 중 각자
+    쌓이고(§10-5) 종료 합성이 `final` 줄을 **새로** 쓴다(§8-5). **줄의 벌과 그 줄이 매달린 안건의 벌은
+    언제나 같다** (§4.2-9) — 다른 벌의 안건 id 를 실은 줄은 거절한다.
     `evidence`는 확정 발화 구간 목록이고, 그 구간을 채우는 것은 SCAX-WP-003/004다 — 이 WP는 자리만 연다.
     """
 
@@ -396,6 +417,17 @@ class MeetingLineRecord(Base):
     # 메모 줄에만 값이 있다: AI 줄과 합성 줄은 구간(`evidence`)에 걸리지 시각에 걸리지 않는다.
     at_ms: Mapped[int | None] = mapped_column(Integer)
     evidence: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    #: **계보 — 최종 벌의 줄만 갖는다** (SPEC §4.2-10 · D54). 이 줄이 딛는 원본 줄 id 목록이다.
+    #: **선택이다** — 최종 벌은 이어 붙이기가 아니라 새로 쓰는 것이라 원본 한 줄에 대응하지 않는 줄이
+    #: 정상적으로 생긴다. 서버는 **존재만 검증한다**: 그 회의의 `memo`·`ai` 줄이어야 하고 아닌 id 는
+    #: 그 id 만 버린다. 「정말 그 줄에서 나왔는가」는 AI 의 자기보고이고 확인할 방법이 없다 — 검증할 수
+    #: 있는 근거는 `evidence` 다.
+    #: 사람이 고친 뒤에도 **계보는 줄 단위로만** 사라진다 (§8-9) — 본문이 달라진 그 줄의 것만 지워지고
+    #: 손대지 않은 줄은 저장을 몇 번 해도 계보를 그대로 든다.
+    #: `text` 는 이 클래스의 열 이름이라 클래스 본문에서 `sqlalchemy.text()` 를 가린다 — DDL 문자열로 적는다.
+    from_lines: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=list, server_default="'[]'"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

@@ -22,11 +22,17 @@ from ax_workspace.modules.meetings.batch import (
 )
 from ax_workspace.modules.meetings.domain import (
     AGENDA_SOURCES,
+    LINE_TRACKS,
+    TRACK_AI,
+    TRACK_FINAL,
+    TRACK_MEMO,
     MeetingError,
     MeetingStateConflict,
     MeetingStatus,
     ensure_agenda_source,
+    ensure_line_track,
     ensure_transition,
+    surviving_lineage,
     normalize_agenda_order,
     normalize_external_attendees,
     normalize_optional_text,
@@ -73,13 +79,54 @@ def test_meeting_lifecycle_allows_only_the_transitions_in_the_domain_map() -> No
             ensure_transition(source, target)
 
 
-def test_agenda_source_vocabulary_is_closed_in_the_meeting_domain() -> None:
-    assert AGENDA_SOURCES == {"manual", "set", "carried", "derived", "ai"}
+def test_agenda_source_vocabulary_is_closed_and_belongs_to_the_human_track_alone() -> None:
+    """**출처는 사람 벌 안의 출처다** (SPEC-004 v0.5 §4.1-2 · D51).
+
+    0.4.x 의 「AI 정리」(`ai`)는 은퇴했다 — 그 값이 있던 이유는 AI 가 사람과 **같은 목록**에 안건을
+    세웠기 때문이고, 벌이 갈렸으므로 「AI 가 세웠다」는 출처가 아니라 **벌 자체**가 말한다.
+    """
+    assert AGENDA_SOURCES == {"manual", "set", "carried", "derived"}
+    assert "ai" not in AGENDA_SOURCES
     for source in AGENDA_SOURCES:
-        assert ensure_agenda_source(source) == source
-    for unknown in ("imported", "AI", "", "manual "):
+        assert ensure_agenda_source(source, track=TRACK_MEMO) == source
+    for unknown in ("imported", "AI", "", "manual ", "ai"):
         with pytest.raises(MeetingError):
-            ensure_agenda_source(unknown)
+            ensure_agenda_source(unknown, track=TRACK_MEMO)
+
+    # 다른 두 벌은 출처를 갖지 않는다 — `None` 만 통과하고 값이 오면 거절한다.
+    for track in (TRACK_AI, TRACK_FINAL):
+        assert ensure_agenda_source(None, track=track) is None
+        with pytest.raises(MeetingError, match="memo"):
+            ensure_agenda_source("manual", track=track)
+
+
+def test_a_line_hangs_only_on_an_agenda_of_its_own_track() -> None:
+    """**줄의 벌과 그 줄이 매달린 안건의 벌은 언제나 같다** (SPEC §4.2-9 · §4.0-1).
+
+    다른 벌의 안건 id 를 실은 줄은 거절한다 — 이 한 줄이 「벌이 갈렸다」를 지킨다.
+    """
+    for track in LINE_TRACKS:
+        assert ensure_line_track(track, agenda_track=track) == track
+    with pytest.raises(MeetingError, match="does not hang"):
+        ensure_line_track(TRACK_AI, agenda_track=TRACK_MEMO)
+    with pytest.raises(MeetingError, match="does not hang"):
+        ensure_line_track(TRACK_MEMO, agenda_track=TRACK_AI)
+    with pytest.raises(MeetingError, match="does not hang"):
+        ensure_line_track(TRACK_FINAL, agenda_track=TRACK_MEMO)
+    with pytest.raises(MeetingError, match="must be one of"):
+        ensure_line_track("human", agenda_track="human")
+
+
+def test_lineage_keeps_only_ids_that_point_at_this_meeting_and_drops_the_rest() -> None:
+    """계보는 **존재만 검증한다** — 없는 id 는 그 id 만 버리고 안건·줄 자체는 산다 (SPEC §8-6 · §4.2-10).
+
+    맞는지는 검증하지 않는다: AI 의 자기보고라 서버가 확인할 방법이 없다.
+    """
+    known = {"a", "b"}
+    assert surviving_lineage(["a", "없는것", "b", "a"], known_ids=known) == ["a", "b"]
+    assert surviving_lineage([], known_ids=known) == []
+    assert surviving_lineage(None, known_ids=known) == []
+    assert surviving_lineage(["없는것"], known_ids=known) == []
 
 
 def test_meeting_command_values_are_normalized_before_the_repository_sees_them() -> None:
@@ -132,9 +179,8 @@ def test_final_note_preparation_owns_evidence_titles_sources_due_dates_and_dupli
         title_candidate="AI 제목",
         agendas=[
             FinalAgenda(
-                agenda_id=None,
                 title="결론",
-                source="ai",
+                merged_from=[],
                 concluded=True,
                 lines=[
                     BatchLine(
@@ -181,9 +227,8 @@ def test_titleless_final_note_uses_the_candidate_in_its_source_stamp() -> None:
         title_candidate="후보 제목",
         agendas=[
             FinalAgenda(
-                agenda_id=None,
                 title="결론",
-                source="ai",
+                merged_from=[],
                 concluded=False,
                 todos=[FinalTodo("후속", "설명", None, ["확인", "회신"], [])],
             )
@@ -301,7 +346,8 @@ def test_batch_prompts_carry_the_json_contract() -> None:
 def test_final_prompt_carries_the_meeting_day_for_relative_due_dates() -> None:
     prompt = build_final_prompt(
         meeting={"title": "회의", "starts_on": "2026-09-13 (일)"},
-        agendas=[],
+        memo_agendas=[],
+        ai_agendas=[],
         memo_lines=[],
         ai_lines=[],
     )

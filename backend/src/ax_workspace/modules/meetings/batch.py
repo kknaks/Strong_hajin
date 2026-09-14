@@ -94,9 +94,13 @@ class BatchTodo:
 
 @dataclass(slots=True)
 class BatchAgenda:
-    agenda_id: str | None
+    """AI 벌의 안건 하나 — **id 도 출처도 싣지 않는다** (SPEC v0.5.1 §7.1 출력 · W-6).
+
+    AI 벌은 회차마다 전량 교체되고 안건 id 가 그때 새로 난다: 이어 쓸 id 가 없다. 출처는 사람 벌 안의
+    값이라(§4.1-2) AI 벌의 안건에는 붙지 않는다.
+    """
+
     title: str
-    source: str
     lines: list[BatchLine] = field(default_factory=list)
     todos: list[BatchTodo] = field(default_factory=list)
 
@@ -123,9 +127,7 @@ def parse_output(body: str) -> list[BatchAgenda]:
         ]
         agendas.append(
             BatchAgenda(
-                agenda_id=agenda["agenda_id"],
                 title=agenda["title"],
-                source=agenda["source"],
                 lines=lines,
                 todos=[
                     BatchTodo(
@@ -190,14 +192,16 @@ def build_warm_start_prompt(context: dict[str, Any], tools: tuple[str, ...]) -> 
 회의가 도는 동안 사람의 말이 실시간으로 받아쓰기 되어 확정 발화로 너에게 온다. 한 번에 다 오지 않는다 —
 일정량이 쌓이면 그 구간만 온다. 사람은 그와 별개로 자기 메모를 안건에 매단다.
 
-**너는 네 트랙에만 쓴다.** 사람의 메모를 고치거나 지우지 않는다 — 사람 트랙은 읽기 전용이다.
+**회의록은 세 벌이다** — 사람 벌 · 네 벌 · 회의가 끝나고 지을 최종 벌. **너는 네 벌에만 쓴다.**
+사람의 안건에도 줄에도 손대지 않는다 — **예외가 없다.** 사람 벌은 읽기만 하는 재료다.
 
 ## 무엇을 만드나
 
 안건이 뼈대이고 줄이 그 아래 산다. 줄 하나가 짧은 문장 하나다 — 문단을 쓰지 마라.
 
-- 이미 있는 안건에 맞으면 **그 안건의 `agenda_id` 를 그대로 적고** 아래에 줄을 붙인다.
-- 정말 어디에도 안 붙을 때만 새 안건을 세운다 — 그때 `agenda_id` 는 null 이고 `source` 는 "ai" 다.
+- **안건 목록은 네가 잡는다.** 사람이 예약 때 적은 안건은 참고이고 제약이 아니다 — 그 제목을 네 벌에
+  그대로 써도 되고 전혀 다르게 갈라도 된다. **두 벌이 다른 것이 정상이다.**
+- **사람의 안건에 줄을 붙이지 않는다.** 사람 안건에 할 말이 있으면 **네 벌에 그 안건을 세우고** 거기 적는다.
 - 화제가 조금 옮겨갔다고 새 안건을 만들지 마라. 같은 주제 안에서 이야기가 흐르는 것은 한 안건이다.
 
 ## 어떻게 요약하나
@@ -238,10 +242,11 @@ _OUTPUT_CONTRACT = """
 """
 
 
-_BATCH_INSTRUCTIONS = """회의 중 배치다. 아래는 아직 반영하지 않은 확정 발화와 그 사이 들어온 메모다.
+_BATCH_INSTRUCTIONS = """회의 중 배치다. 아래는 아직 반영하지 않은 확정 발화와 그 사이 사람이 남긴 메모다.
 
-**이번 구간을 반영해 네 트랙 전체를 다시 정리해라.** 앞 배치에서 낸 안건과 줄도 포함해 처음부터 다시 낸다 —
+**이번 구간을 반영해 네 벌 전체를 다시 정리해라.** 앞 배치에서 낸 안건과 줄도 포함해 처음부터 다시 낸다 —
 이 출력이 「AI 요약」 탭 전체가 된다. 앞 배치가 잘못 가른 안건을 합치거나 잘못 붙인 줄을 옮기는 것도 여기서 한다.
+**안건 id 를 적는 자리가 없다** — 네 벌은 회차마다 통째로 갈리므로 앞 회차의 id 를 이어 쓰지 않는다.
 
 안건마다 **그 안건에서 나온 후속 업무 후보(`todos`)도 함께 낸다 — 담당자는 뽑지 마라.** 아직 후보일 뿐이라
 `checklist_candidate` 는 비어도 되고, `due_candidate` 는 말에 날짜가 있을 때만 채운다. 낼 것이 없으면 빈 배열이다.
@@ -257,5 +262,5 @@ def build_batch_prompt(blocks: list[dict[str, Any]], memos: list[dict[str, Any]]
     contract = _OUTPUT_CONTRACT.format(schema=_dumps(OUTPUT_SCHEMA))
     return (
         f"{_BATCH_INSTRUCTIONS}{contract}\n확정 발화:\n{_dumps(blocks)}\n\n"
-        f"사람이 남긴 메모(읽기만 한다):\n{_dumps(memos)}"
+        f"사람 벌의 줄(읽기만 한다 — 여기에 쓰지 않는다):\n{_dumps(memos)}"
     )

@@ -6,9 +6,10 @@ SCAX-SPEC-004 §8. 못박는 것 —
 2. **같은 세션을 이어 쓴다** (§8-3) — 회의를 처음부터 다시 읽히지 않는다. 세션이 없거나 죽었으면
    **콜드 스타트**로 확정 발화 전량을 한 번에 실어 폴백한다. 그 횟수는 기록으로 남는다.
 3. 시도 상한까지 다시 걸고, 그래도 안 되면 **「실패」**다 — 받은 발화와 메모는 그대로 남고 `/finalize` 가 다시 건다.
-4. **사람이 만든 안건은 하나도 빠지거나 합쳐지지 않는다** (§8-6). 어기면 그 시도 실패다.
-5. 적재는 **한 트랜잭션** — 최종 줄 전량 교체 · 후보 전량 교체(승격된 것은 유지) · 제목 후보 · 상태 done.
-   부분 결과를 남기지 않는다.
+4. **원본 두 벌은 불가침이다** (D53 · §8-5). 합성은 최종 벌만 쓰고, 재시도도 최종 벌만 갈아 끼운다.
+   **한 벌이 비어도 돈다** — 정본 재료는 재전사한 원문이고 두 벌은 그 위에 얹는 재료다 (§8-3 · W-1).
+5. 적재는 **한 트랜잭션** — 최종 벌 전량 신규 작성 · 후보 전량 교체(승격된 것은 유지) · 제목 후보 ·
+   상태 done. 부분 결과를 남기지 않는다.
 6. **provider 호출 중에는 트랜잭션을 열지 않는다** — 읽기 → 커밋 → 제출 → 새 세션에서 쓰기.
 """
 from __future__ import annotations
@@ -212,7 +213,8 @@ class MeetingFinalizeService:
             logger.info("회의 %s 합성이 콜드 스타트로 돕니다 — 세션이 없습니다", source["meeting_id"])
         prompt = build_final_prompt(
             meeting=source["meeting"],
-            agendas=source["agendas"],
+            memo_agendas=source["memo_agendas"],
+            ai_agendas=source["ai_agendas"],
             memo_lines=source["memo_lines"],
             ai_lines=source["ai_lines"],
             transcript=source["transcript"] if cold_start else None,
@@ -222,10 +224,11 @@ class MeetingFinalizeService:
         )
         notes = parse_final_output(body)
 
-        # 남은 검증 둘 — 스키마(위 `parse_final_output`)와 도메인 정제다. **사람 안건 전수 보존 검사는 없다**:
-        # 종료 합성은 재료를 보고 회의록을 처음부터 새로 쓰는 일이고, 안건 목록도 AI 가 다시 잡는다
-        # (사용자 결정 2026-09-11). 예전 검사는 회의 중 배치가 세운 AI 안건이 출력에 자기 id 로 돌아오는
-        # 정상 동작까지 「사람 안건을 덮었다」로 세어, 안건 없이 연 회의를 반드시 실패시켰다.
+        # 남은 검증 — 스키마(위 `parse_final_output`) · 근거 범위 · 이미 있는 업무 제외 · **계보 존재**다
+        # (§8-6). 계보 검증은 「id 가 그 회의의 원본을 가리키는가」까지이고 없는 id 는 그 id 만 버리므로
+        # 원장을 아는 적재(`commit_success`)가 한다 — 여기서 할 수 있는 것은 나머지 셋이다.
+        # **「사람 벌 안건을 전수 보존했는가」는 검사하지 않는다**: 벌이 갈려 그 물음이 성립은 하지만
+        # 강제할지 말지가 미결이다 (§13.2 `OQ-318`).
         outcome = finalize_notes(
             notes,
             FinalizationContext(

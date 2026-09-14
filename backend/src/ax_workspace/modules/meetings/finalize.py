@@ -37,9 +37,22 @@ class FinalizeFailed(Exception):
 
     지금 이 예외를 던지는 자리는 없다. 사람 안건 전수 보존 검사가 유일한 던지는 자리였는데,
     **종료 합성이 회의록을 처음부터 새로 쓰는 일이 되면서 그 검사가 사라졌다**(사용자 결정 2026-09-11).
+    벌이 갈려 그 물음이 이제 **성립은 하지만** 강제할지 말지는 미결이다 (SPEC §13.2 `OQ-318`).
     이름은 남겨 둔다 — 「이 시도만 실패」라는 재시도 계약을 부르는 자리가 서비스에 있고, 앞으로 생길
     검증도 같은 뜻으로 이것을 던지면 된다.
     """
+
+
+@dataclass(slots=True)
+class FinalLine(BatchLine):
+    """최종 벌의 줄 하나 — 배치 줄에 **계보 하나**를 더한다 (SPEC §4.2-10 · D54).
+
+    `from_lines` 는 **선택이다**: 최종 벌은 새로 쓰는 것이라 원본 한 줄에 대응하지 않는 줄이 정상적으로
+    생긴다. 서버는 존재만 검증하고 「정말 그 줄에서 나왔는가」는 검증하지 않는다 — 그것은 AI 의
+    자기보고이고 확인할 방법이 없다. 검증할 수 있는 근거는 `evidence` 다.
+    """
+
+    from_lines: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -53,11 +66,17 @@ class FinalTodo:
 
 @dataclass(slots=True)
 class FinalAgenda:
-    agenda_id: str | None
+    """최종 벌의 안건 하나 — **이어 쓰는 id 가 아니라 계보를 든다** (SPEC v0.5 §8-5 · §4.1-3 · D54).
+
+    최종 벌은 자기 안건을 갖고 합성이 전량 새로 쓴다. `merged_from` 이 「이 최종 안건이 어느 원본
+    안건들에서 나왔나」를 말하고, 그것이 「내가 적은 안건이 어디로 갔나」에 답하는 유일한 길이다.
+    출처(`source`)는 사람 벌만 갖는다 (§4.1-2).
+    """
+
     title: str
-    source: str
+    merged_from: list[str]
     concluded: bool
-    lines: list[BatchLine] = field(default_factory=list)
+    lines: list[FinalLine] = field(default_factory=list)
     todos: list[FinalTodo] = field(default_factory=list)
 
 
@@ -96,18 +115,19 @@ def parse_final_output(body: str) -> FinalNotes:
     for agenda in data["agendas"]:
         agendas.append(
             FinalAgenda(
-                agenda_id=agenda["agenda_id"],
                 title=agenda["title"],
-                source=agenda["source"],
+                # 계보는 **존재만** 검증한다 — 그 검증은 원장을 아는 적재가 한다 (§8-6). 여기는 모양만 본다.
+                merged_from=list(agenda["merged_from"]),
                 concluded=bool(agenda["concluded"]),
                 lines=[
-                    BatchLine(
+                    FinalLine(
                         text=line["text"],
                         evidence=[
                             {"from_ms": int(span["from_ms"]), "to_ms": int(span["to_ms"])}
                             for span in line["evidence"]
                         ],
                         task_id=None,
+                        from_lines=list(line["from_lines"]),
                     )
                     for line in agenda["lines"]
                 ],
@@ -245,17 +265,25 @@ def _dumps(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2)
 
 
-_FINAL_INSTRUCTIONS = """회의가 끝났다. **재료를 보고 회의록 한 벌을 처음부터 새로 써라.**
+_FINAL_INSTRUCTIONS = """회의가 끝났다. **재료를 보고 최종 회의록 한 벌을 처음부터 새로 써라.**
 
-재료는 셋이다 — 사람이 남긴 메모 · 회의 중 네가 낸 줄 · 확정 발화. 셋을 나란히 두고 **안건 목록부터
-네가 다시 잡는다.** 사람이 예약 때 적은 안건 제목은 재료의 하나일 뿐이다: 참고하되 **묶어도 되고
-나눠도 되고 새로 세워도 된다.** 결과는 「누가 썼나」가 남지 않는 한 벌이다.
+회의록은 세 벌이다 — **사람 벌** · **네 벌(AI)** · 이제 네가 지을 **최종 벌**. 재료는 원본 두 벌 전체
+(안건과 줄)와 확정 발화다. 셋을 나란히 두고 **안건 목록부터 새로 잡는다**: 두 벌의 안건은 재료이고
+**묶어도 되고 나눠도 되고 새로 세워도 된다.** 결과는 「누가 썼나」가 남지 않는 한 벌이다.
+
+**원본 두 벌은 네가 건드리는 것이 아니다.** 그 둘은 최종본을 사람이 대조할 근거로 그대로 남는다 —
+네가 하는 일은 그것을 지우거나 고치는 것이 아니라 **그 위에 최종 벌 하나를 새로 짓는 것**이다.
+어디서 무엇이 왔는지는 **계보**로 남긴다.
 
 ## 쓰는 규칙
 
-- 이어 쓰는 안건이면 그 `agenda_id` 를 적는다 — 사람이 세운 것이든 네가 세운 것이든 같다.
-  **새로 세우는 안건은 `agenda_id` 를 null 로 둔다.** 어느 쪽도 빠뜨렸다고 실패하지 않는다.
-- 같은 말이 여러 재료에 있으면 **한 줄로 접는다.** 접힌 줄의 `line_ids` 에 원래 줄을 다 적는다.
+- **이어 쓰는 안건이 없다.** 최종 회의록은 자기 안건 목록을 갖고 너는 그것을 전부 새로 낸다 —
+  원본 두 벌의 안건은 재료이고, 이 출력이 그것을 고치거나 지우지 않는다. 원본은 그대로 남는다.
+- 안건마다 **`merged_from` 에 그 안건이 나온 원본 안건 id 를 적는다.** 둘을 묶었으면 둘 다 적고,
+  하나를 둘로 나눴으면 두 최종 안건이 같은 id 를 든다. 전사에만 있던 이야기면 **빈 배열**이다.
+  이것이 사람에게 「내가 적은 안건이 어디로 갔나」를 말하는 유일한 값이다 — 성실히 적어라.
+- 같은 말이 여러 재료에 있으면 **한 줄로 접는다.** 접힌 줄의 `from_lines` 에 원래 줄 id 를 다 적는다.
+  딛는 원본 줄이 없는 줄이면 빈 배열이다 — 없는 id 를 지어내지 마라.
 - 줄 하나가 짧은 문장 하나다. 문단을 쓰지 마라.
 - 줄마다 근거 구간(`evidence`)을 단다 — **없는 구간을 지어내지 마라.**
 - `concluded` 는 그 안건에서 결론이 났는가다. 확실하지 않으면 false 다.
@@ -299,12 +327,18 @@ def describe_day(value: date | None) -> str | None:
 def build_final_prompt(
     *,
     meeting: dict[str, Any],
-    agendas: list[dict[str, Any]],
+    memo_agendas: list[dict[str, Any]],
+    ai_agendas: list[dict[str, Any]],
     memo_lines: list[dict[str, Any]],
     ai_lines: list[dict[str, Any]],
     transcript: list[dict[str, Any]] | None = None,
 ) -> str:
-    """합성 입력 — 지금 서 있는 안건 · 두 트랙의 줄. 세션이 발화를 기억하므로 원문은 폴백에서만 싣는다."""
+    """합성 입력 — **원본 두 벌 전체**(안건과 줄)다 (SPEC §8-3).
+
+    0.4.x 는 사람 쪽 입력이 줄뿐이었다. 이제 사람이 세운 **안건 목록도 함께 실린다** — 사람이 이야기를
+    어떻게 갈랐는지가 그 자체로 재료이고, 계보가 그 id 를 딛는다. 세션이 발화를 기억하므로 원문은
+    폴백에서만 싣는다.
+    """
     base_day = meeting.get("starts_on")
     next_day = meeting.get("next_meeting_on")
     when = [f"\n**기준일: {base_day}**" if base_day else ""]
@@ -314,9 +348,10 @@ def build_final_prompt(
         _FINAL_INSTRUCTIONS.format(schema=_dumps(FINAL_OUTPUT_SCHEMA)),
         "".join(when) + " — 상대 날짜 표현은 이 날을 기준으로 환산한다.\n" if base_day else "",
         f"\n회의:\n{_dumps(meeting)}",
-        f"\n지금 서 있는 안건(제목은 참고이고, 이어 쓸 때만 `agenda_id` 를 적는다):\n{_dumps(agendas)}",
-        f"\n사람이 남긴 메모 줄:\n{_dumps(memo_lines)}",
-        f"\n네가 낸 줄:\n{_dumps(ai_lines)}",
+        f"\n사람 벌의 안건(재료다 — 묶어도 나눠도 되고, 계보에 그 id 를 적는다):\n{_dumps(memo_agendas)}",
+        f"\nAI 벌의 안건(네가 회의 중에 세운 것이다 — 같은 재료다):\n{_dumps(ai_agendas)}",
+        f"\n사람 벌의 줄:\n{_dumps(memo_lines)}",
+        f"\nAI 벌의 줄(네가 회의 중에 낸 것이다):\n{_dumps(ai_lines)}",
     ]
     if transcript is not None:
         # 콜드 스타트 — 세션이 없어 회의를 기억하지 못한다. 확정 발화 전량을 한 번에 싣는다.

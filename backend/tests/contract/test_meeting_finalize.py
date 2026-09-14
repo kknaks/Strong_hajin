@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 import json
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
@@ -55,16 +56,34 @@ def _output(agendas: list[dict], *, title_candidate: str | None = None) -> str:
     return json.dumps({"title_candidate": title_candidate, "agendas": agendas}, ensure_ascii=False)
 
 
-def _agenda(title: str, *, agenda_id: str | None = None, source: str = "ai", concluded: bool = False,
+def _agenda(title: str, *, merged_from: list[str] | None = None, concluded: bool = False,
             lines: list[dict] | None = None, todos: list[dict] | None = None) -> dict:
+    """합성 출력의 안건 하나 — **최종 벌의 안건이다.**
+
+    `agenda_id` 도 `source` 도 없다 (SPEC v0.5 §8-5 · §4.1-2): 최종 벌은 이어 쓸 대상이 없고, 출처는
+    사람 벌 안의 값이다. 그 자리에 **계보**(`merged_from`)가 온다 — 이 최종 안건이 묶은 원본 안건 id 다.
+    """
     return {
-        "agenda_id": agenda_id, "title": title, "source": source, "concluded": concluded,
+        "title": title, "merged_from": list(merged_from or []), "concluded": concluded,
         "lines": lines or [], "todos": todos or [],
     }
 
 
-def _line(text: str, *, evidence: list[dict] | None = None, line_ids: list[str] | None = None) -> dict:
-    return {"text": text, "evidence": evidence or [], "line_ids": line_ids or []}
+def _line(text: str, *, evidence: list[dict] | None = None, from_lines: list[str] | None = None) -> dict:
+    """합성 출력의 줄 하나. `from_lines` 가 그 줄이 딛는 **원본 줄** 계보다 (§4.2-10)."""
+    return {"text": text, "evidence": evidence or [], "from_lines": list(from_lines or [])}
+
+
+def _track(detail: dict, track: str) -> list[dict]:
+    """상세 응답은 **세 벌을 전부** 낸다 (SPEC §8-11 · D53) — 무엇을 보는지 벌로 고른다."""
+    return [agenda for agenda in detail["agendas"] if agenda["track"] == track]
+
+
+def _the_final(client: TestClient, meeting_id: str, headers: dict | None = None) -> dict:
+    """최종 벌의 안건 하나 — 대부분의 시험이 한 안건만 내게 하고 그 하나를 본다."""
+    detail = client.get(f"/api/meetings/{meeting_id}", headers=headers or MINA).json()
+    [agenda] = _track(detail, "final")
+    return agenda
 
 
 def _todo(title: str, *, description: str = "무엇을 왜 해야 하는지 두 문장.", due: str | None = None,
@@ -212,7 +231,7 @@ def test_a_merge_that_succeeds_closes_the_meeting_with_its_notes_already_written
     _blocks(application, meeting_id)
     agent.script = [
         _output([
-            _agenda("첫 안건", agenda_id=human, source="manual", concluded=True,
+            _agenda("첫 안건", merged_from=[human], concluded=True,
                     lines=[_line("합쳐진 줄", evidence=[{"from_ms": 0, "to_ms": 900}])],
                     todos=[_todo("계약서를 검토한다")]),
         ])
@@ -222,9 +241,16 @@ def test_a_merge_that_succeeds_closes_the_meeting_with_its_notes_already_written
 
     detail = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()
     assert detail["meeting"]["status"] == "done"
-    [agenda] = detail["agendas"]
-    assert agenda["concluded"] is True
-    assert [line["text"] for line in agenda["lines"] if line["track"] == "final"] == ["합쳐진 줄"]
+    # **최종 벌은 새로 섰고 원본 두 벌은 그대로 남는다** (§8-5 · §8-11 · D53).
+    [human_agenda] = _track(detail, "memo")
+    [agenda] = _track(detail, "final")
+    assert agenda["agenda_id"] != human_agenda["agenda_id"]
+    # 결론 표시가 서는 것은 최종 벌뿐이다 (§4.0-5).
+    assert agenda["concluded"] is True and human_agenda["concluded"] is False
+    # 계보가 「이 최종 안건은 그 사람 안건에서 나왔다」를 말한다 (§4.1-3).
+    assert agenda["merged_from"] == [human_agenda["agenda_id"]]
+    assert [line["text"] for line in agenda["lines"]] == ["합쳐진 줄"]
+    assert all(line["track"] == "final" for line in agenda["lines"])
     [todo] = agenda["todos"]
     assert todo["title"] == "계약서를 검토한다"
     assert todo["linked"] is None
@@ -266,7 +292,7 @@ def test_retry_runs_the_merge_again_without_touching_the_original(tmp_path) -> N
     application.finalize_meeting(UUID(meeting_id))
 
     # 「실패」에서만 열린다.
-    agent.script = [_output([_agenda("첫 안건", agenda_id=human, source="manual", lines=[_line("두 번째에 성공")])])]
+    agent.script = [_output([_agenda("첫 안건", merged_from=[human], lines=[_line("두 번째에 성공")])])]
     retried = client.post(f"/api/meetings/{meeting_id}/finalize", headers=MINA)
     assert retried.status_code == 200
     assert retried.json()["meeting"]["status"] == "summarizing"
@@ -285,7 +311,7 @@ def test_the_worker_claims_the_job_and_finishes_the_delivery(tmp_path) -> None:
     meeting_id = made["meeting"]["meeting_id"]
     human = made["agendas"][0]["agenda_id"]
     _blocks(application, meeting_id)
-    agent.script = [_output([_agenda("첫 안건", agenda_id=human, source="manual", lines=[_line("워커가 낸 줄")])])]
+    agent.script = [_output([_agenda("첫 안건", merged_from=[human], lines=[_line("워커가 낸 줄")])])]
     client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
 
     worker = _worker(application, application._settings.database_url)
@@ -325,9 +351,7 @@ def _ai_agenda_with_lines(application, meeting_id: str, title: str, texts: list[
         {
             "agendas": [
                 {
-                    "agenda_id": None,
                     "title": title,
-                    "source": "ai",
                     "lines": [{"text": text, "evidence": [], "task_id": None} for text in texts],
                     # 배치 출력은 `todos` 를 **언제나** 싣는다 — 낼 것이 없으면 빈 배열이다 (D46).
                     "todos": [],
@@ -341,30 +365,36 @@ def _ai_agenda_with_lines(application, meeting_id: str, title: str, texts: list[
         session.commit()
 
 
-def test_a_merge_survives_an_ai_agenda_the_batch_built_and_hung_its_own_lines_on(tmp_path) -> None:
-    """회의 중 배치가 세운 AI 안건에는 그 배치의 `ai` 줄이 매달려 있다.
+def test_the_merge_writes_a_new_final_track_and_leaves_both_origin_tracks_untouched(tmp_path) -> None:
+    """**합성은 원본 두 벌을 건드리지 않는다** (SPEC v0.5 §8-5 · §4.0-4 · D53).
 
-    안건을 먼저 지우면 그 줄들이 안건을 붙들어 외래키가 끊긴다 — 매달린 줄을 **먼저** 떼야 한다.
-    실물 e2e 3차에서 여기서 IntegrityError 가 났다.
+    0.4.x 는 `agenda_id` 가 오면 사람 안건이든 AI 안건이든 **그 안건을 이어 써서** 「사람 것이
+    보존됐는가」를 물을 수가 없었다. 이제 최종 벌이 자기 안건과 줄을 갖고, 원본 두 벌은 최종본을
+    대조하는 근거로 **이 저장 전후가 한 글자도 같아야** 한다.
+
+    **줄이 안건보다 오래 살지 않는다**도 함께 본다. SQLite 는 외래키를 강제하지 않으므로(postgres 는
+    한다) 최종 벌을 비울 때 매달린 줄을 먼저 떼지 않으면 여기서 고아 줄이 남는다.
     """
     client, application, agent = _stack(tmp_path)
     made = _summarizing(client, application)
     meeting_id = made["meeting"]["meeting_id"]
-    human = made["agendas"][0]["agenda_id"]
+    [human_agenda] = [row["agenda_id"] for row in made["agendas"] if row["track"] == "memo"]
+    memo = client.post(
+        f"/api/meetings/{meeting_id}/agendas/{human_agenda}/lines", headers=MINA, json={"text": "사람이 적은 줄"}
+    ).json()["line_id"]
     _blocks(application, meeting_id)
     _ai_agenda_with_lines(application, meeting_id, "온보딩 자료", ["배치가 낸 줄 하나", "배치가 낸 줄 둘"])
 
-    human_agenda = human
     before = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
-    assert [row["title"] for row in before] == ["첫 안건", "온보딩 자료"]
-    assert [row["source"] for row in before] == ["manual", "ai"]
-    assert len(before[1]["lines"]) == 2
+    origin_before = [row for row in before if row["track"] != "final"]
+    assert [row["track"] for row in origin_before] == ["memo", "ai"]
+    ai_agenda = next(row for row in origin_before if row["track"] == "ai")["agenda_id"]
 
     agent.script = [
         _output(
             [
-                _agenda("첫 안건", agenda_id=human, source="manual", lines=[_line("사람 안건의 최종 줄")]),
-                _agenda("온보딩 자료", source="ai", lines=[_line("AI 안건의 최종 줄")]),
+                _agenda("권한과 온보딩", merged_from=[human_agenda, ai_agenda],
+                        lines=[_line("두 벌을 합쳐 새로 쓴 줄", from_lines=[memo])]),
             ]
         )
     ]
@@ -372,49 +402,64 @@ def test_a_merge_survives_an_ai_agenda_the_batch_built_and_hung_its_own_lines_on
     assert application.finalize_meeting(UUID(meeting_id)) is True
 
     detail = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()
-    assert detail["meeting"]["status"] == "done"
-    assert detail["meeting"]["failure_reason"] is None
-    agendas = detail["agendas"]
-    assert [row["source"] for row in agendas] == ["manual", "ai", "ai"]
-    human = next(row for row in agendas if row["agenda_id"] == human_agenda)
-    assert human["title"] == "첫 안건"
-    assert [row["text"] for row in human["lines"]] == ["사람 안건의 최종 줄"]
-    # AI 가 이어 쓰겠다고 적어 주지 않았으므로(agenda_id null) 그 안건은 **새로 섰다**.
-    fresh = [row for row in agendas if row["agenda_id"] not in {human_agenda, before[1]["agenda_id"]}]
-    assert [row["title"] for row in fresh] == ["온보딩 자료"]
-    assert [row["text"] for row in fresh[0]["lines"]] == ["AI 안건의 최종 줄"]
-    # 배치가 세웠던 안건은 **지워지지 않는다** — 지우면 거기 매달린 사람의 메모가 함께 사라진다.
-    # 최종 줄이 그 자리로 가지 않았으므로 배치가 낸 `ai` 줄만 남아 있다.
-    carried = next(row for row in agendas if row["agenda_id"] == before[1]["agenda_id"])
-    assert [row["text"] for row in carried["lines"]] == ["배치가 낸 줄 하나", "배치가 낸 줄 둘"]
-    # **줄이 안건보다 오래 살지 않는다.** SQLite 는 외래키를 강제하지 않으므로(postgres 는 한다) 여기서
-    # 무너지는 것을 직접 본다 — 안건을 먼저 지우면 그 줄들이 주인 없이 남는다. 실물에서는 그게 IntegrityError 다.
+    assert detail["meeting"]["status"] == "done" and detail["meeting"]["failure_reason"] is None
+    # **원본 두 벌이 저장 전과 한 글자도 다르지 않다** — 그것이 D-4 가 지키는 것이다.
+    origin_after = [row for row in detail["agendas"] if row["track"] != "final"]
+    assert origin_after == origin_before
+
+    # 최종 벌은 **새로 선 안건 하나**이고 두 원본 안건을 계보로 든다.
+    [final] = _track(detail, "final")
+    assert final["agenda_id"] not in {human_agenda, ai_agenda}
+    assert final["merged_from"] == [human_agenda, ai_agenda]
+    assert final["source"] is None
+    assert [row["text"] for row in final["lines"]] == ["두 벌을 합쳐 새로 쓴 줄"]
+    assert final["lines"][0]["from_lines"] == [memo]
     assert _orphan_line_count(application, meeting_id) == 0
 
 
-def test_a_memo_the_person_wrote_on_an_ai_agenda_is_not_swept_away_with_it(tmp_path) -> None:
-    """사람이 남긴 것은 사라지지 않는다 — 메모를 인 AI 안건은 지우지 않고 남긴다.
+def test_the_two_origin_tracks_stay_readable_and_read_only_once_the_meeting_is_closed(tmp_path) -> None:
+    """**원본 두 벌은 종료 뒤에도 남고, 읽기 전용이다** (SPEC §8-11 · §6-9 · D53).
 
-    메모 composer 의 안건 고르기는 AI 안건도 함께 내므로 이 자리가 실제로 생긴다.
+    0.4.x 는 데이터는 남기고 **상세 응답이 `final` 줄만 골라 내어** 원본을 가렸다. 최종 벌이 AI 의
+    저작이므로 사람이 자기가 적은 것과 대조할 길이 없으면 최종본을 검증할 근거가 사라진다.
     """
     client, application, agent = _stack(tmp_path)
     made = _summarizing(client, application)
     meeting_id = made["meeting"]["meeting_id"]
-    human = made["agendas"][0]["agenda_id"]
+    [human_agenda] = [row["agenda_id"] for row in made["agendas"] if row["track"] == "memo"]
+    client.post(
+        f"/api/meetings/{meeting_id}/agendas/{human_agenda}/lines", headers=MINA, json={"text": "사람이 적은 줄"}
+    )
     _blocks(application, meeting_id)
     _ai_agenda_with_lines(application, meeting_id, "온보딩 자료", ["배치가 낸 줄"])
-    ai_agenda = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][1]["agenda_id"]
-    written = client.post(
-        f"/api/meetings/{meeting_id}/agendas/{ai_agenda}/lines", headers=MINA, json={"text": "사람이 여기 적었다"}
+    ai_agenda = next(
+        row["agenda_id"]
+        for row in client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
+        if row["track"] == "ai"
     )
-    assert written.status_code == 201, written.text
 
-    agent.script = [_output([_agenda("첫 안건", agenda_id=human, source="manual", lines=[_line("최종 줄")])])]
+    agent.script = [_output([_agenda("최종", merged_from=[human_agenda], lines=[_line("최종 줄")])])]
     client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
     assert application.finalize_meeting(UUID(meeting_id)) is True
 
-    script = client.get(f"/api/meetings/{meeting_id}/transcript", headers=MINA).json()
-    assert [row["text"] for row in script["memos"]] == ["사람이 여기 적었다"]
+    detail = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()
+    # **세 벌이 전부 응답에 있다.**
+    assert {row["track"] for row in detail["agendas"]} == {"memo", "ai", "final"}
+    assert [row["text"] for row in _track(detail, "memo")[0]["lines"]] == ["사람이 적은 줄"]
+    assert [row["text"] for row in _track(detail, "ai")[0]["lines"]] == ["배치가 낸 줄"]
+    # 게이트도 그렇게 말한다 — 「종료」에는 최종 벌만 열린다.
+    assert detail["meeting"]["can_edit_agendas"] == {"memo": False, "ai": False, "final": True}
+    assert detail["meeting"]["can_add_agenda"] == {"memo": False, "ai": False, "final": True}
+
+    # **고치는 자리가 없다** — 제목도, 줄도, 삭제도 원본 두 벌에는 열리지 않는다.
+    for origin in (human_agenda, ai_agenda):
+        path = f"/api/meetings/{meeting_id}/agendas/{origin}"
+        assert client.patch(path, headers=MINA, json={"title": "고쳐 본다"}).status_code == 409
+        assert client.patch(path, headers=MINA, json={"lines": [{"text": "덮어 본다"}]}).status_code == 409
+        assert client.delete(path, headers=MINA).status_code == 409
+
+    after = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()
+    assert after["agendas"] == detail["agendas"]
 
 
 def _job_rows(application, meeting_id: str) -> list[dict]:
@@ -484,9 +529,9 @@ def test_two_human_agendas_may_be_folded_into_one_when_the_merge_rewrites_the_no
     meeting_id = made["meeting"]["meeting_id"]
     first, second = (agenda["agenda_id"] for agenda in made["agendas"])
     _blocks(application, meeting_id)
-    # 둘을 하나로 합쳐 냈다 — 이어 쓰는 안건 하나에 제목을 새로 단다.
+    # 둘을 하나로 합쳐 냈다 — 최종 안건 하나를 세우고 계보에 원본 둘을 적는다 (§4.1-3).
     agent.script = [
-        _output([_agenda("둘을 합친 안건", agenda_id=first, source="manual", lines=[_line("합쳐 쓴 줄")])])
+        _output([_agenda("둘을 합친 안건", merged_from=[first, second], lines=[_line("합쳐 쓴 줄")])])
     ]
 
     client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
@@ -494,12 +539,13 @@ def test_two_human_agendas_may_be_folded_into_one_when_the_merge_rewrites_the_no
     detail = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()
     assert detail["meeting"]["status"] == "done"
     assert detail["meeting"]["failure_reason"] is None
-    # 이어 쓴 안건은 제목이 새로 붙고, **출처는 사람 것 그대로**다.
-    folded = next(agenda for agenda in detail["agendas"] if agenda["agenda_id"] == first)
-    assert folded["title"] == "둘을 합친 안건" and folded["source"] == "manual"
+    # 최종 안건 하나가 섰고 **계보가 묶은 둘을 든다** — 「내가 적은 안건이 어디로 갔나」에 그것이 답한다.
+    [folded] = _track(detail, "final")
+    assert folded["title"] == "둘을 합친 안건" and folded["source"] is None
+    assert folded["merged_from"] == [first, second]
     assert [row["text"] for row in folded["lines"]] == ["합쳐 쓴 줄"]
-    # 다루지 않은 안건을 **지우지는 않는다** — 사람이 그 안건에 남긴 것이 함께 사라지면 안 된다.
-    assert any(agenda["agenda_id"] == second for agenda in detail["agendas"])
+    # 원본 두 안건은 **그대로 남는다** — 묶였다는 것이 사라졌다는 뜻이 아니다 (D53).
+    assert [agenda["agenda_id"] for agenda in _track(detail, "memo")] == [first, second]
     # provider 를 한 번만 불렀다 — 시도 상한까지 헛돌지 않았다.
     assert len(agent.runs) == 1
 
@@ -515,18 +561,20 @@ def test_two_tracks_that_said_the_same_thing_fold_into_one_line(tmp_path) -> Non
     _blocks(application, meeting_id)
     agent.script = [
         _output([
-            _agenda("첫 안건", agenda_id=human, source="manual",
-                    lines=[_line("권한을 먼저 정한다", evidence=[{"from_ms": 0, "to_ms": 900}], line_ids=[memo, "ai-1"])]),
+            _agenda("첫 안건", merged_from=[human],
+                    lines=[_line("권한을 먼저 정한다", evidence=[{"from_ms": 0, "to_ms": 900}], from_lines=[memo, "ai-1"])]),
         ])
     ]
     client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
     application.finalize_meeting(UUID(meeting_id))
 
-    [agenda] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
-    final = [line for line in agenda["lines"] if line["track"] == "final"]
-    assert [line["text"] for line in final] == ["권한을 먼저 정한다"]
-    # 사람 메모는 지워지지 않는다 — 합성은 자기 트랙에 쓴다.
-    assert any(line["track"] == "memo" for line in agenda["lines"])
+    detail = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()
+    [final] = _track(detail, "final")
+    assert [line["text"] for line in final["lines"]] == ["권한을 먼저 정한다"]
+    # **계보는 존재하는 원본 줄만 남는다** — 없는 id(`ai-1`)는 그 id 만 버리고 줄 자체는 산다 (§8-6).
+    assert final["lines"][0]["from_lines"] == [memo]
+    # 사람 메모는 지워지지 않는다 — 합성은 최종 벌에만 쓴다 (D53).
+    assert [line["text"] for line in _track(detail, "memo")[0]["lines"]] == ["권한부터 정한다"]
 
 
 def test_a_titleless_meeting_gets_a_candidate_the_person_still_has_to_save(tmp_path) -> None:
@@ -541,7 +589,7 @@ def test_a_titleless_meeting_gets_a_candidate_the_person_still_has_to_save(tmp_p
     agent.script = [
         _output(
             [
-                _agenda("안건 1", agenda_id=default_agenda, source="manual"),
+                _agenda("안건 1", merged_from=[default_agenda]),
                 _agenda("AI 가 세운 안건", lines=[_line("무슨 이야기를 했다")]),
             ],
             title_candidate="권한 모델 회의",
@@ -566,14 +614,14 @@ def test_a_candidate_that_is_already_work_is_not_offered(tmp_path) -> None:
     _blocks(application, meeting_id)
     agent.script = [
         _output([
-            _agenda("첫 안건", agenda_id=human, source="manual",
+            _agenda("첫 안건", merged_from=[human],
                     todos=[_todo("계약서 검토"), _todo("새로 생긴 일")]),
         ])
     ]
     client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
     application.finalize_meeting(UUID(meeting_id))
 
-    todos = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
+    todos = _the_final(client, meeting_id)["todos"]
     assert [todo["title"] for todo in todos] == ["새로 생긴 일"]
 
 
@@ -587,14 +635,15 @@ def _finalized(client: TestClient, application, agent, *, todos: list[dict] | No
     _blocks(application, meeting_id)
     agent.script = [
         _output([
-            _agenda("첫 안건", agenda_id=human, source="manual",
+            _agenda("첫 안건", merged_from=[human],
                     lines=[_line("합성이 낸 줄", evidence=[{"from_ms": 0, "to_ms": 900}])],
                     todos=todos if todos is not None else [_todo("계약서를 검토한다")]),
         ])
     ]
     client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
     assert application.finalize_meeting(UUID(meeting_id)) is True
-    return meeting_id, human
+    # **최종 벌의** 안건을 돌려준다 — 편집도 승격도 그 벌에서만 열린다 (§8-9 · §9-1).
+    return meeting_id, _the_final(client, meeting_id)["agenda_id"]
 
 
 def test_saving_an_agenda_that_someone_else_already_saved_is_refused_with_what_is_there_now(tmp_path) -> None:
@@ -603,25 +652,25 @@ def test_saving_an_agenda_that_someone_else_already_saved_is_refused_with_what_i
     meeting_id, agenda_id = _finalized(client, application, agent)
     path = f"/api/meetings/{meeting_id}/agendas/{agenda_id}"
 
-    stale = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["last_saved_at"]
-    first = client.patch(path, headers=MINA, json={"lines": ["다른 탭이 먼저 저장한 줄"], "expected_last_saved_at": stale})
+    stale = _the_final(client, meeting_id)["last_saved_at"]
+    first = client.patch(path, headers=MINA, json={"lines": [{"text": "다른 탭이 먼저 저장한 줄"}], "expected_last_saved_at": stale})
     assert first.status_code == 200
 
-    refused = client.patch(path, headers=MINA, json={"lines": ["늦게 온 저장"], "expected_last_saved_at": stale})
+    refused = client.patch(path, headers=MINA, json={"lines": [{"text": "늦게 온 저장"}], "expected_last_saved_at": stale})
     assert refused.status_code == 409
     body = refused.json()["detail"]
     assert body["code"] == "meeting_agenda_stale"
     # 지금 있는 것을 함께 낸다 — 사람이 차이를 보고 정한다.
     assert [line["text"] for line in body["current"]["lines"] if line["track"] == "final"] == ["다른 탭이 먼저 저장한 줄"]
 
-    fresh = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["last_saved_at"]
-    assert client.patch(path, headers=MINA, json={"lines": ["이번엔 통과"], "expected_last_saved_at": fresh}).status_code == 200
+    fresh = _the_final(client, meeting_id)["last_saved_at"]
+    assert client.patch(path, headers=MINA, json={"lines": [{"text": "이번엔 통과"}], "expected_last_saved_at": fresh}).status_code == 200
 
 
 def test_promoting_a_candidate_creates_a_work_request_that_points_back_at_the_meeting(tmp_path) -> None:
     client, application, agent = _stack(tmp_path)
     meeting_id, agenda_id = _finalized(client, application, agent)
-    [todo] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
+    [todo] = _the_final(client, meeting_id)["todos"]
 
     promoted = client.post(
         f"/api/meetings/{meeting_id}/todos/{todo['todo_id']}/promote",
@@ -645,14 +694,14 @@ def test_promoting_a_candidate_creates_a_work_request_that_points_back_at_the_me
         assert row.initial_checklist == ["초안 잡기", "검토 받기"]
 
     # 승격 뒤에도 후보가 목록에 남는다 (§9-6).
-    [after] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
+    [after] = _the_final(client, meeting_id)["todos"]
     assert after["linked"]["work_request_id"] == linked["work_request_id"]
 
 
 def test_promoting_the_same_candidate_twice_does_not_make_two_requests(tmp_path) -> None:
     client, application, agent = _stack(tmp_path)
     meeting_id, _ = _finalized(client, application, agent)
-    [todo] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
+    [todo] = _the_final(client, meeting_id)["todos"]
     path = f"/api/meetings/{meeting_id}/todos/{todo['todo_id']}/promote"
 
     assert client.post(path, headers=MINA, json={"assignee_id": "jiho"}).status_code == 201
@@ -663,7 +712,7 @@ def test_promoting_the_same_candidate_twice_does_not_make_two_requests(tmp_path)
 def test_promoting_without_an_assignee_does_not_proceed(tmp_path) -> None:
     client, application, agent = _stack(tmp_path)
     meeting_id, _ = _finalized(client, application, agent)
-    [todo] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
+    [todo] = _the_final(client, meeting_id)["todos"]
     path = f"/api/meetings/{meeting_id}/todos/{todo['todo_id']}/promote"
 
     assert client.post(path, headers=MINA, json={}).status_code == 422
@@ -674,7 +723,7 @@ def test_accepting_the_request_carries_the_source_columns_onto_the_task(tmp_path
     """업무 → 회의: 수락으로 업무가 설 때 요청의 출처가 업무로 옮겨진다 (SPEC §9-7)."""
     client, application, agent = _stack(tmp_path)
     meeting_id, agenda_id = _finalized(client, application, agent)
-    [todo] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
+    [todo] = _the_final(client, meeting_id)["todos"]
     promoted = client.post(
         f"/api/meetings/{meeting_id}/todos/{todo['todo_id']}/promote", headers=MINA, json={"assignee_id": "jiho"}
     ).json()
@@ -699,32 +748,123 @@ def test_accepting_the_request_carries_the_source_columns_onto_the_task(tmp_path
 def test_a_candidate_nobody_wants_is_deleted_without_a_confirmation(tmp_path) -> None:
     client, application, agent = _stack(tmp_path)
     meeting_id, _ = _finalized(client, application, agent, todos=[_todo("지울 후보"), _todo("남을 후보")])
-    todos = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
+    todos = _the_final(client, meeting_id)["todos"]
     target = next(row for row in todos if row["title"] == "지울 후보")
 
     assert client.delete(f"/api/meetings/{meeting_id}/todos/{target['todo_id']}", headers=MINA).status_code == 204
-    remaining = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
+    remaining = _the_final(client, meeting_id)["todos"]
     assert [row["title"] for row in remaining] == ["남을 후보"]
 
 
-def test_a_second_merge_keeps_the_candidates_that_were_already_requested(tmp_path) -> None:
+def test_a_meeting_that_already_closed_is_never_merged_again(tmp_path) -> None:
+    """**「완료」에서 「정리 중」으로 돌아가는 길이 없다** (SPEC §10-19 · `MEETING_TRANSITIONS`).
+
+    이 시험이 걸던 것이 바뀌었다. 0.4.x 에서는 「합성을 한 번 더 돌려도 **승격된 후보는 남는다**」
+    (§8-5)였고, 그 길이 제품에 없어 저장소 시점에서 status 를 강제 기입해 만들어 확인했다. 벌이
+    갈리면서 최종 벌을 다시 지으면 **안건까지 전량 비우므로**(§8-5 · §8-8) 그 안건에 매달린 승격 후보가
+    함께 죽는다 — 「승격된 후보가 있는 최종 벌을 다시 지으면」은 SPEC 에 없는 자리다.
+
+    그래서 이제 걸 것은 **그 길이 열려 있지 않다**는 것이다: 전이표가 done → summarizing 을 거절하고,
+    그것이 승격된 후보가 최종 벌 비우기를 만나지 않는 **유일한 이유**다 (코디 결정 2026-09-14, 갈래 ③).
+    이 전이가 열리면 `clear_track` 이 승격된 후보를 조용히 죽인다.
+    """
+    from ax_workspace.modules.meetings.domain import MEETING_TRANSITIONS, MeetingStateConflict, ensure_transition
+
     client, application, agent = _stack(tmp_path)
-    meeting_id, human = _finalized(client, application, agent)
-    [todo] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
-    client.post(f"/api/meetings/{meeting_id}/todos/{todo['todo_id']}/promote", headers=MINA, json={"assignee_id": "jiho"})
+    meeting_id, _ = _finalized(client, application, agent)
+    [todo] = _the_final(client, meeting_id)["todos"]
+    promoted = client.post(
+        f"/api/meetings/{meeting_id}/todos/{todo['todo_id']}/promote", headers=MINA, json={"assignee_id": "jiho"}
+    )
+    assert promoted.status_code == 201, promoted.text
 
-    # 「완료」를 다시 「정리 중」으로 돌리는 길은 없으므로 저장소 시점에서 합성을 한 번 더 돌린다.
-    from ax_workspace.platform.persistence import MeetingRecord
+    # 전이표가 그 길을 갖고 있지 않다 — 이것이 이 불변식의 첫 다리다.
+    assert (MeetingStatus.DONE, MeetingStatus.SUMMARIZING) not in MEETING_TRANSITIONS
+    with pytest.raises(MeetingStateConflict):
+        ensure_transition(MeetingStatus.DONE, MeetingStatus.SUMMARIZING)
 
-    with application._session_factory() as session:
-        session.get(MeetingRecord, UUID(meeting_id)).status = MeetingStatus.SUMMARIZING.value
-        session.commit()
-    agent.script = [_output([_agenda("첫 안건", agenda_id=human, source="manual", todos=[_todo("두 번째 후보")])])]
-    application.finalize_meeting(UUID(meeting_id))
+    # [다시 시도] 표면도 「완료」에서는 열리지 않는다.
+    refused = client.post(f"/api/meetings/{meeting_id}/finalize", headers=MINA)
+    assert refused.status_code == 409, refused.text
 
-    titles = [row["title"] for row in client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]]
-    # 승격된 후보는 남는다 — 남에게 간 요청을 합성이 지우지 않는다.
-    assert "계약서를 검토한다" in titles and "두 번째 후보" in titles
+    # 승격된 후보가 그대로 서 있다 — 최종 벌을 다시 비우는 일이 애초에 일어나지 않았다.
+    [still] = _the_final(client, meeting_id)["todos"]
+    assert still["title"] == "계약서를 검토한다" and still["linked"] is not None
+
+
+def test_saving_the_final_track_keeps_the_lineage_of_every_line_it_did_not_change(tmp_path) -> None:
+    """**계보는 줄 단위로만 사라진다** (SPEC-004 v0.5.1 §8-9 · §4.2-10 · 검수 F-3).
+
+    저장이 그 안건 줄을 전부 새로 만들면 손대지 않은 줄의 계보가 **저장 한 번에 전멸**하고, 「내가 적은
+    것이 최종본에 살아남았나」를 물을 재료(`OQ-308` 이 딛는 것)가 사라진다. 그래서 저장은 줄마다 id 를
+    싣고 서버가 그 id 로 가른다 — 다섯 갈래를 한 번에 본다.
+    """
+    client, application, agent = _stack(tmp_path)
+    made = _summarizing(client, application)
+    meeting_id = made["meeting"]["meeting_id"]
+    [memo_agenda] = [row["agenda_id"] for row in made["agendas"] if row["track"] == "memo"]
+    kept_memo = client.post(
+        f"/api/meetings/{meeting_id}/agendas/{memo_agenda}/lines", headers=MINA, json={"text": "그대로 둘 줄의 뿌리"}
+    ).json()["line_id"]
+    edited_memo = client.post(
+        f"/api/meetings/{meeting_id}/agendas/{memo_agenda}/lines", headers=MINA, json={"text": "고칠 줄의 뿌리"}
+    ).json()["line_id"]
+    _blocks(application, meeting_id)
+
+    agent.script = [
+        _output([
+            _agenda("최종", merged_from=[memo_agenda], lines=[
+                _line("손대지 않을 줄", from_lines=[kept_memo]),
+                _line("사람이 고칠 줄", from_lines=[edited_memo]),
+                _line("사람이 지울 줄", from_lines=[kept_memo, edited_memo]),
+            ]),
+        ])
+    ]
+    client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
+    assert application.finalize_meeting(UUID(meeting_id)) is True
+
+    final = _the_final(client, meeting_id)
+    untouched, to_edit, to_drop = final["lines"]
+    assert [row["from_lines"] for row in final["lines"]] == [
+        [kept_memo], [edited_memo], [kept_memo, edited_memo]
+    ]
+
+    saved = client.patch(
+        f"/api/meetings/{meeting_id}/agendas/{final['agenda_id']}",
+        headers=MINA,
+        json={"lines": [
+            # ① id 가 왔고 본문이 그대로다 → 계보도 **그대로**
+            {"line_id": untouched["line_id"], "text": untouched["text"]},
+            # ② id 가 왔고 본문이 달라졌다 → **그 줄의** 계보만 지운다
+            {"line_id": to_edit["line_id"], "text": "사람이 고쳐 쓴 줄"},
+            # ③ id 없이 왔다 → 새 줄, 계보 없음
+            {"text": "사람이 새로 더한 줄"},
+            # ④ 모르는 id(그 안건의 줄이 아니다) → **그 줄만** 거절하고 저장 전체를 물리지 않는다
+            {"line_id": kept_memo, "text": "다른 벌의 줄 id 를 실었다"},
+            # ⑤ `to_drop` 은 목록에 없다 → 지워진 줄. 그 줄과 그 계보가 함께 사라진다
+        ]},
+    )
+    assert saved.status_code == 200, saved.text
+
+    rows = [(row["text"], row["from_lines"]) for row in saved.json()["lines"]]
+    assert rows == [
+        ("손대지 않을 줄", [kept_memo]),
+        ("사람이 고쳐 쓴 줄", []),
+        ("사람이 새로 더한 줄", []),
+    ]
+    assert [row["order"] for row in saved.json()["lines"]] == [1, 2, 3]
+    # 같은 안건을 **몇 번 저장해도** 손대지 않은 줄의 계보는 그대로다 — 그것이 F-3 이 막은 자리다.
+    again = client.patch(
+        f"/api/meetings/{meeting_id}/agendas/{final['agenda_id']}",
+        headers=MINA,
+        json={"lines": [{"line_id": row["line_id"], "text": row["text"]} for row in saved.json()["lines"]]},
+    )
+    assert [row["from_lines"] for row in again.json()["lines"]] == [[kept_memo], [], []]
+    # 안건 계보는 사람이 안건을 새로 세우거나 지우지 않는 한 그대로다 (§8-9).
+    assert _the_final(client, meeting_id)["merged_from"] == [memo_agenda]
+    # 원본 벌은 이 저장에 닿지 않는다.
+    detail = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()
+    assert [row["line_id"] for row in _track(detail, "memo")[0]["lines"]] == [kept_memo, edited_memo]
 
 
 def test_the_export_is_html_and_carries_the_last_saved_notes(tmp_path) -> None:
@@ -755,7 +895,7 @@ def test_an_export_format_the_demo_does_not_do_is_refused(tmp_path) -> None:
 def test_someone_outside_the_meeting_cannot_export_or_promote(tmp_path) -> None:
     client, application, agent = _stack(tmp_path)
     meeting_id, _ = _finalized(client, application, agent)
-    [todo] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
+    [todo] = _the_final(client, meeting_id)["todos"]
 
     assert client.get(f"/api/meetings/{meeting_id}/export", headers=SORA).status_code == 404
     assert client.post(
@@ -779,7 +919,7 @@ def test_someone_who_was_not_at_the_meeting_may_still_take_the_work(tmp_path) ->
     """
     client, application, agent = _stack(tmp_path)
     meeting_id, _ = _finalized(client, application, agent)
-    [todo] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
+    [todo] = _the_final(client, meeting_id)["todos"]
 
     # 소라(법무)는 이 회의에 없었고 민아와 조직도 다르다 — 그래도 받는다.
     promoted = client.post(
@@ -793,7 +933,7 @@ def test_a_name_that_is_not_a_working_person_is_still_refused(tmp_path) -> None:
     """경계는 걷었지만 **아무 글자나 담당이 되지는 않는다** — 지금 일하고 있는 사람인지는 그대로 본다."""
     client, application, agent = _stack(tmp_path)
     meeting_id, _ = _finalized(client, application, agent)
-    [todo] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
+    [todo] = _the_final(client, meeting_id)["todos"]
 
     refused = client.post(
         f"/api/meetings/{meeting_id}/todos/{todo['todo_id']}/promote",
@@ -809,7 +949,7 @@ def test_a_spoken_date_survives_as_the_due_candidate(tmp_path) -> None:
     meeting_id, human = _finalized(
         client, application, agent, todos=[_todo("초안을 낸다", due="2026-09-18")]
     )
-    [todo] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
+    [todo] = _the_final(client, meeting_id)["todos"]
     assert todo["due_candidate"] == "2026-09-18"
 
 
@@ -818,7 +958,7 @@ def test_the_evidence_a_screen_reads_is_named_the_way_the_contract_names_it(tmp_
     client, application, agent = _stack(tmp_path)
     meeting_id, human = _finalized(client, application, agent)
 
-    [agenda] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
+    agenda = _the_final(client, meeting_id)
     [line] = [row for row in agenda["lines"] if row["track"] == "final"]
     assert [set(span) for span in line["evidence"]] == [{"start_ms", "end_ms"}]
     assert line["evidence"][0]["start_ms"] == 0 and line["evidence"][0]["end_ms"] == 900
@@ -830,7 +970,7 @@ def test_the_evidence_a_screen_reads_is_named_the_way_the_contract_names_it(tmp_
 def _promoted_request(client: TestClient, application, agent, *, assignee_id: str = "jiho", headers=MINA) -> dict:
     """후보 하나를 승격시키고 그 업무 요청 상세를 돌려준다."""
     meeting_id, _ = _finalized(client, application, agent)
-    [todo] = client.get(f"/api/meetings/{meeting_id}", headers=headers).json()["agendas"][0]["todos"]
+    [todo] = _the_final(client, meeting_id, headers)["todos"]
     promoted = client.post(
         f"/api/meetings/{meeting_id}/todos/{todo['todo_id']}/promote", headers=headers, json={"assignee_id": assignee_id}
     )
@@ -989,10 +1129,10 @@ def test_the_graph_still_draws_the_person_who_sent_an_ordinary_request(tmp_path)
 
 
 def test_a_meeting_opened_with_no_agenda_finalizes_on_what_the_batch_built(tmp_path) -> None:
-    """안건 없이 연 회의 — 회의 중 배치가 세운 AI 안건을 합성이 자기 id 로 이어 쓴다.
+    """**사람 벌이 비어도 합성은 돈다 — 남은 재료로 짓는다** (SPEC §8-3 · W-1).
 
-    예전에는 사람 안건 전수 보존 검사가 「기대 [] · 실제 [AI 안건 id]」로 세어 **반드시 실패**했다
-    (실물 회의 3edd8f88). 따질 사람 안건 집합이 없어도 회의록은 서야 한다.
+    사람이 한 줄도 안 적는 회의는 흔하다. 비었다는 이유로 사람에게 묻지 않고(D52), 남은 한 벌을 최종
+    벌로 그대로 옮기지도 않는다(§8-5) — 최종 벌은 언제나 **새로** 짓는다.
     """
     client, application, agent = _stack(tmp_path)
     made = _summarizing(client, application, agendas=())
@@ -1001,11 +1141,12 @@ def test_a_meeting_opened_with_no_agenda_finalizes_on_what_the_batch_built(tmp_p
     _blocks(application, meeting_id)
     _ai_agenda_with_lines(application, meeting_id, "배치가 세운 안건", ["배치가 낸 줄"])
     [built] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
-    assert built["source"] == "ai"
+    # AI 벌의 안건이다 — 출처는 갖지 않는다 (§4.1-2).
+    assert built["track"] == "ai" and built["source"] is None
 
     agent.script = [
         _output([
-            _agenda("배치가 세운 안건", agenda_id=built["agenda_id"], source="ai", lines=[_line("합성이 낸 줄")])
+            _agenda("배치가 세운 안건", merged_from=[built["agenda_id"]], lines=[_line("합성이 낸 줄")])
         ])
     ]
     client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
@@ -1014,13 +1155,15 @@ def test_a_meeting_opened_with_no_agenda_finalizes_on_what_the_batch_built(tmp_p
     detail = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()
     assert detail["meeting"]["status"] == "done"
     assert detail["meeting"]["failure_reason"] is None
-    [agenda] = detail["agendas"]
-    # 이어 썼으므로 같은 안건이다 — 새로 세우지 않았다.
-    assert agenda["agenda_id"] == built["agenda_id"]
-    # 회의록은 `final` 트랙이다. 회의 중 배치가 낸 `ai` 줄은 그 자리에 그대로 남는다 — 무엇을 보고
-    # 썼는지가 지워지지 않는다(사람 안건에서도 예전부터 그랬다).
-    assert [row["text"] for row in agenda["lines"] if row["track"] == "final"] == ["합성이 낸 줄"]
-    assert [row["text"] for row in agenda["lines"] if row["track"] == "ai"] == ["배치가 낸 줄"]
+    # **최종 벌은 새로 선 안건이다** — AI 벌의 안건을 이어 쓰지 않고 계보로 가리킨다 (§8-5 · §4.1-3).
+    [final] = _track(detail, "final")
+    assert final["agenda_id"] != built["agenda_id"]
+    assert final["merged_from"] == [built["agenda_id"]]
+    assert [row["text"] for row in final["lines"]] == ["합성이 낸 줄"]
+    # AI 벌은 그대로다 — 무엇을 보고 썼는지가 지워지지 않는다 (D53).
+    assert [row["text"] for row in _track(detail, "ai")[0]["lines"]] == ["배치가 낸 줄"]
+    # 사람 벌은 빈 채로 남는다 — 없는 것을 지어내지 않는다.
+    assert _track(detail, "memo") == []
     assert len(agent.runs) == 1
 
 
@@ -1034,17 +1177,24 @@ def test_a_merge_may_stand_up_agendas_nobody_asked_for(tmp_path) -> None:
 
     agent.script = [
         _output([
-            _agenda("첫 안건", agenda_id=human, source="manual", lines=[_line("이어 쓴 줄")]),
+            _agenda("첫 안건", merged_from=[human], lines=[_line("이어 쓴 줄")]),
             _agenda("AI 가 새로 세운 안건", lines=[_line("새로 쓴 줄")]),
         ])
     ]
     client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
     assert application.finalize_meeting(UUID(meeting_id)) is True
 
-    agendas = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
-    assert [row["title"] for row in agendas] == ["첫 안건", "AI 가 새로 세운 안건"]
-    # 이어 쓴 안건은 사람 것 그대로, 새로 선 것만 `ai` 다.
-    assert [row["source"] for row in agendas] == ["manual", "ai"]
+    detail = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()
+    finals = _track(detail, "final")
+    assert [row["title"] for row in finals] == ["첫 안건", "AI 가 새로 세운 안건"]
+    # 최종 벌의 안건은 **출처를 갖지 않는다** — 출처는 사람 벌 안의 값이다 (§4.1-2).
+    assert [row["source"] for row in finals] == [None, None]
+    # 계보가 어느 원본에서 나왔는지를 가른다 — 두 번째 것은 전사에만 있던 이야기라 비어 있다 (§4.1-3).
+    assert [row["merged_from"] for row in finals] == [[human], []]
+    # 순서는 **벌 안에서** 1 부터 다시 매겨진다 (§4.0-1).
+    assert [row["order"] for row in finals] == [1, 2]
+    # 사람 벌의 안건은 그대로 하나다.
+    assert [row["title"] for row in _track(detail, "memo")] == ["첫 안건"]
 
 
 def test_a_failure_reason_is_one_sentence_a_person_reads_and_carries_no_identifier(tmp_path) -> None:
@@ -1086,7 +1236,7 @@ def test_a_failed_merge_can_be_retried_and_lands_under_the_new_rule(tmp_path) ->
 
     agent.script = [
         _output([
-            _agenda("배치가 세운 안건", agenda_id=built["agenda_id"], source="ai", lines=[_line("다시 시도로 실린 줄")])
+            _agenda("배치가 세운 안건", merged_from=[built["agenda_id"]], lines=[_line("다시 시도로 실린 줄")])
         ])
     ]
     retried = client.post(f"/api/meetings/{meeting_id}/finalize", headers=MINA)
@@ -1096,8 +1246,10 @@ def test_a_failed_merge_can_be_retried_and_lands_under_the_new_rule(tmp_path) ->
     detail = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()
     assert detail["meeting"]["status"] == "done"
     assert detail["meeting"]["failure_reason"] is None
-    final = [row["text"] for row in detail["agendas"][0]["lines"] if row["track"] == "final"]
-    assert final == ["다시 시도로 실린 줄"]
+    [final] = _track(detail, "final")
+    assert [row["text"] for row in final["lines"]] == ["다시 시도로 실린 줄"]
+    # 원본 AI 벌은 재시도에 닿지 않는다 — 몇 번을 다시 시도해도 바뀌지 않는다 (§8-8 · D53).
+    assert [row["text"] for row in _track(detail, "ai")[0]["lines"]] == ["배치가 낸 줄"]
 
 
 # --------------------------------------------------------------------- D44 · 종료 뒤 2-pass 재전사
@@ -1166,7 +1318,7 @@ def test_ending_a_meeting_transcribes_the_whole_recording_again_and_replaces_the
         _final_token("두 번째 사람이 답했다.", speaker="2", start_ms=1_000, end_ms=1_800),
     ])
     application.meeting_finalize._transcriber = transcriber
-    agent.script = [_output([_agenda("첫 안건", agenda_id=human, source="manual", lines=[_line("합성 줄")])])]
+    agent.script = [_output([_agenda("첫 안건", merged_from=[human], lines=[_line("합성 줄")])])]
 
     client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
     assert application.finalize_meeting(UUID(meeting_id)) is True
@@ -1203,7 +1355,7 @@ def test_the_merge_reads_the_script_the_second_pass_wrote(tmp_path) -> None:
     application.meeting_finalize._transcriber = FakeFileTranscriber([
         _final_token("재전사만 아는 문장.", speaker="1", start_ms=0, end_ms=900),
     ])
-    agent.script = [_output([_agenda("첫 안건", agenda_id=human, source="manual")])]
+    agent.script = [_output([_agenda("첫 안건", merged_from=[human])])]
 
     client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
     assert application.finalize_meeting(UUID(meeting_id)) is True
@@ -1226,7 +1378,7 @@ def test_retrying_a_failed_meeting_starts_from_the_second_pass_again(tmp_path) -
 
     broken = FakeFileTranscriber(error=SttUpstreamError("대역: 한 번 깨진다"))
     application.meeting_finalize._transcriber = broken
-    agent.script = [_output([_agenda("첫 안건", agenda_id=human, source="manual")])] * 3
+    agent.script = [_output([_agenda("첫 안건", merged_from=[human])])] * 3
     client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
     assert application.finalize_meeting(UUID(meeting_id)) is False
     assert client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]["status"] == "failed"
@@ -1234,7 +1386,7 @@ def test_retrying_a_failed_meeting_starts_from_the_second_pass_again(tmp_path) -
 
     healthy = FakeFileTranscriber([_final_token("다시 들으니 들렸다.", speaker="1", start_ms=0, end_ms=900)])
     application.meeting_finalize._transcriber = healthy
-    agent.script = [_output([_agenda("첫 안건", agenda_id=human, source="manual", lines=[_line("합성 줄")])])]
+    agent.script = [_output([_agenda("첫 안건", merged_from=[human], lines=[_line("합성 줄")])])]
 
     retried = client.post(f"/api/meetings/{meeting_id}/finalize", headers=MINA)
     assert retried.status_code == 200, retried.text
@@ -1261,7 +1413,7 @@ def test_a_recording_that_started_after_the_meeting_is_shifted_back_onto_the_mee
     application.meeting_finalize._transcriber = FakeFileTranscriber([
         _final_token("녹음 시작 직후의 말.", speaker="1", start_ms=0, end_ms=900),
     ])
-    agent.script = [_output([_agenda("첫 안건", agenda_id=human, source="manual")])]
+    agent.script = [_output([_agenda("첫 안건", merged_from=[human])])]
 
     client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
     assert application.finalize_meeting(UUID(meeting_id)) is True
@@ -1284,26 +1436,32 @@ def test_the_final_merge_clears_the_candidates_the_meeting_was_still_making(tmp_
     human = made["agendas"][0]["agenda_id"]
     _blocks(application, meeting_id)
 
-    # 회의 중 배치가 후보를 남겨 둔 상태를 만든다.
+    # 회의 중 배치가 후보를 남겨 둔 상태를 만든다. **잠정 후보는 AI 벌의 안건에 매달린다** (§4.0-6).
+    _ai_agenda_with_lines(application, meeting_id, "배치가 세운 안건", ["배치가 낸 줄"])
+    ai_agenda = next(
+        row["agenda_id"]
+        for row in client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
+        if row["track"] == "ai"
+    )
     with application._session_factory() as session:
         meetings = application._meetings(session)
         meeting = meetings._repository.meeting(UUID(meeting_id))
         meetings._repository.replace_provisional_todos(meeting, [{
-            "agenda_id": UUID(human), "order_index": 1, "title": "회의 중 후보",
+            "agenda_id": UUID(ai_agenda), "order_index": 1, "title": "회의 중 후보",
             "description": "", "due_candidate": None, "checklist_candidate": [],
-            "reference": {"meeting_id": meeting_id, "agenda_id": human, "line_ids": []},
+            "reference": {"meeting_id": meeting_id, "agenda_id": ai_agenda, "line_ids": []},
         }])
         session.commit()
-    [standing] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["todos"]
+    [standing] = _track(client.get(f"/api/meetings/{meeting_id}", headers=MINA).json(), "ai")[0]["todos"]
     assert standing["provisional"] is True
 
     agent.script = [
-        _output([_agenda("첫 안건", agenda_id=human, source="manual", todos=[_todo("최종이 낸 후보")])])
+        _output([_agenda("첫 안건", merged_from=[human], todos=[_todo("최종이 낸 후보")])])
     ]
     client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
     assert application.finalize_meeting(UUID(meeting_id)) is True
 
-    [agenda] = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
+    agenda = _the_final(client, meeting_id)
     assert [row["title"] for row in agenda["todos"]] == ["최종이 낸 후보"]
     # 최종이 낸 것은 확정 후보다 — 승격도 삭제도 받는다.
     assert agenda["todos"][0]["provisional"] is False

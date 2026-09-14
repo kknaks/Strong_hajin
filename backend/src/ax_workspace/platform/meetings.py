@@ -26,7 +26,12 @@ from ax_workspace.platform.persistence import (
     ResourceRelationshipRecord,
 )
 
+from ax_workspace.modules.meetings.domain import TRACK_AI, TRACK_FINAL, TRACK_MEMO
+
 _MEETING_SHARE_KINDS = ("share", "legacy_public_share")
+
+#: 세 벌을 응답과 목록에 내는 순서 — 사람이 적은 것 · AI 가 적은 것 · 그 둘로 지은 것.
+_TRACK_ORDER = {TRACK_MEMO: 0, TRACK_AI: 1, TRACK_FINAL: 2}
 
 
 def normalize_todo_title(value: str) -> str:
@@ -358,13 +363,20 @@ class SqlAlchemyMeetingRepository:
 
     # ------------------------------------------------------------------ 안건 · 줄 · 다음 할 일
 
-    def agendas(self, meeting: MeetingRecord) -> list[MeetingAgendaRecord]:
-        return list(
+    def agendas(self, meeting: MeetingRecord, *, track: str | None = None) -> list[MeetingAgendaRecord]:
+        """안건 목록. `track` 을 주면 **그 벌 하나**, 안 주면 세 벌 전부다 (SPEC §4.0-1).
+
+        벌 순서(`memo` → `ai` → `final`)로 먼저 가르고 그 안에서 `order_index` 를 센다 — 벌마다 자기
+        목록이고 순서도 벌마다 1부터 다시 매겨진다.
+        """
+        statement = select(MeetingAgendaRecord).where(MeetingAgendaRecord.meeting_id == meeting.id)
+        if track is not None:
+            statement = statement.where(MeetingAgendaRecord.track == track)
+        return sorted(
             self._session.scalars(
-                select(MeetingAgendaRecord)
-                .where(MeetingAgendaRecord.meeting_id == meeting.id)
-                .order_by(MeetingAgendaRecord.order_index, MeetingAgendaRecord.created_at)
-            )
+                statement.order_by(MeetingAgendaRecord.order_index, MeetingAgendaRecord.created_at)
+            ),
+            key=lambda agenda: (_TRACK_ORDER.get(agenda.track, 9), agenda.order_index, agenda.created_at),
         )
 
     def agenda(self, meeting: MeetingRecord, agenda_id: UUID, *, lock: bool = False) -> MeetingAgendaRecord | None:
@@ -375,31 +387,38 @@ class SqlAlchemyMeetingRepository:
             statement = statement.with_for_update().execution_options(populate_existing=True)
         return self._session.scalar(statement)
 
-    def agenda_count(self, meeting: MeetingRecord) -> int:
-        return int(
-            self._session.scalar(
-                select(func.count(MeetingAgendaRecord.id)).where(MeetingAgendaRecord.meeting_id == meeting.id)
-            )
-            or 0
+    def agenda_count(self, meeting: MeetingRecord, *, track: str | None = None) -> int:
+        """**벌 하나**가 이고 있는 안건 수 — 한도는 벌당 20이다 (SPEC §4.0-3)."""
+        statement = select(func.count(MeetingAgendaRecord.id)).where(
+            MeetingAgendaRecord.meeting_id == meeting.id
         )
+        if track is not None:
+            statement = statement.where(MeetingAgendaRecord.track == track)
+        return int(self._session.scalar(statement) or 0)
 
-    def next_agenda_order(self, meeting: MeetingRecord) -> int:
+    def next_agenda_order(self, meeting: MeetingRecord, *, track: str) -> int:
+        """순서는 **벌 안에서** 이어진다 — 화면의 「안건 N」이 벌마다 1부터 세는 것과 같은 값이다."""
         highest = self._session.scalar(
-            select(func.max(MeetingAgendaRecord.order_index)).where(MeetingAgendaRecord.meeting_id == meeting.id)
+            select(func.max(MeetingAgendaRecord.order_index)).where(
+                MeetingAgendaRecord.meeting_id == meeting.id, MeetingAgendaRecord.track == track
+            )
         )
         return int(highest) + 1 if highest is not None else 1
 
     def create_agenda(
-        self, meeting: MeetingRecord, *, title: str, source: str, order_index: int,
-        title_placeholder: bool = False,
+        self, meeting: MeetingRecord, *, track: str, title: str, source: str | None, order_index: int,
+        title_placeholder: bool = False, merged_from: list[str] | None = None,
     ) -> MeetingAgendaRecord:
+        """안건 하나를 **그 벌에** 세운다. `merged_from` 은 최종 벌의 계보다 (SPEC §4.1-3)."""
         now = datetime.now(UTC)
         agenda = MeetingAgendaRecord(
             meeting_id=meeting.id,
+            track=track,
             order_index=order_index,
             title=title,
             source=source,
             concluded=False,
+            merged_from=list(merged_from or []),
             title_placeholder=title_placeholder,
             created_at=now,
             updated_at=now,
@@ -444,8 +463,12 @@ class SqlAlchemyMeetingRepository:
         author_id: str | None,
         evidence: list[dict[str, Any]] | None = None,
         at_ms: int | None = None,
+        from_lines: list[str] | None = None,
     ) -> MeetingLineRecord:
-        """줄 하나를 안건 끝에 매단다. `at_ms` 는 메모 줄에만 실린다 — 서버가 매긴 값이다."""
+        """줄 하나를 안건 끝에 매단다. `at_ms` 는 사람 벌 줄에만 실린다 — 서버가 매긴 값이다.
+
+        `from_lines` 는 최종 벌 줄의 계보다 (SPEC §4.2-10). 벌 일치는 부르는 쪽이 이미 검사했다.
+        """
         now = datetime.now(UTC)
         highest = self._session.scalar(
             select(func.max(MeetingLineRecord.order_index)).where(
@@ -461,6 +484,7 @@ class SqlAlchemyMeetingRepository:
             author_id=author_id,
             at_ms=at_ms,
             evidence=list(evidence or []),
+            from_lines=list(from_lines or []),
             created_at=now,
             updated_at=now,
         )
@@ -468,106 +492,155 @@ class SqlAlchemyMeetingRepository:
         self._session.flush()
         return line
 
-    def replace_lines(
-        self, agenda: MeetingAgendaRecord, *, track: str, texts: list[str], author_id: str | None
-    ) -> list[MeetingLineRecord]:
-        """그 안건의 그 트랙 줄 목록을 통째로 다시 쓴다 — 판을 쌓지 않고 덮어쓴다 (SPEC §8-9 · §11.1)."""
-        now = datetime.now(UTC)
-        self._session.execute(
-            delete(MeetingLineRecord).where(
-                MeetingLineRecord.agenda_id == agenda.id, MeetingLineRecord.track == track
+    def agenda_lines(self, agenda: MeetingAgendaRecord) -> list[MeetingLineRecord]:
+        """그 안건에 매달린 줄 전량, 순서대로. 최종 벌 저장이 「지금 있는 것」을 여기서 읽는다."""
+        return list(
+            self._session.scalars(
+                select(MeetingLineRecord)
+                .where(MeetingLineRecord.agenda_id == agenda.id)
+                .order_by(MeetingLineRecord.order_index, MeetingLineRecord.created_at)
             )
         )
-        written = []
-        for order, text in enumerate(texts, start=1):
-            line = MeetingLineRecord(
+
+    def line_ids_in_tracks(self, meeting: MeetingRecord, tracks: frozenset[str] | set[str]) -> set[str]:
+        """그 벌들의 줄 id 전량 — 계보(`from_lines`)가 가리킬 수 있는 자리가 이 집합이다 (SPEC §4.2-10)."""
+        return {
+            str(line_id)
+            for line_id in self._session.scalars(
+                select(MeetingLineRecord.id).where(
+                    MeetingLineRecord.meeting_id == meeting.id, MeetingLineRecord.track.in_(sorted(tracks))
+                )
+            )
+        }
+
+    def agenda_ids_in_tracks(self, meeting: MeetingRecord, tracks: frozenset[str] | set[str]) -> set[str]:
+        """그 벌들의 안건 id 전량 — 계보(`merged_from`)가 가리킬 수 있는 자리다 (SPEC §4.1-3)."""
+        return {
+            str(agenda_id)
+            for agenda_id in self._session.scalars(
+                select(MeetingAgendaRecord.id).where(
+                    MeetingAgendaRecord.meeting_id == meeting.id,
+                    MeetingAgendaRecord.track.in_(sorted(tracks)),
+                )
+            )
+        }
+
+    def save_final_lines(
+        self, agenda: MeetingAgendaRecord, rows: list[tuple[str | None, str]], *, author_id: str | None
+    ) -> list[MeetingLineRecord]:
+        """최종 벌 한 안건의 줄 목록을 저장한다 — **줄 id 를 따라 계보를 잇는다** (SPEC §8-9 · D54).
+
+        * **id 가 온 줄** → 그 줄을 이어 쓴다. 본문이 그대로면 `from_lines` 도 **그대로**
+        * **id 가 왔고 본문이 달라진 줄** → **그 줄의 `from_lines` 만** 지운다 — 더 이상 AI 가 원본에서 뽑은 것이 아니다
+        * **id 없이 온 줄** → 새 줄, 계보 없음
+        * **목록에 없는 id** → 지워진 줄. 그 줄과 그 줄의 계보가 함께 사라진다
+        * **모르는 id**(그 안건의 줄이 아닌 것) → **그 줄만 거절한다.** 저장 전체를 물리지 않는다
+
+        「저장하면 그 안건 줄을 전부 새로 만든다」로 짜면 손대지 않은 줄의 계보가 저장 한 번에 전멸한다 —
+        그것이 검수 F-3 이 막은 자리다.
+        """
+        existing = {str(line.id): line for line in self.agenda_lines(agenda) if line.track == agenda.track}
+        now = datetime.now(UTC)
+        kept: list[MeetingLineRecord] = []
+        seen: set[str] = set()
+        order = 0
+        for line_id, text in rows:
+            if line_id is not None:
+                line = existing.get(line_id)
+                if line is None or line_id in seen:
+                    # 모르는 id — 그 줄만 떨어진다. 나머지 저장은 그대로 간다.
+                    continue
+                seen.add(line_id)
+                order += 1
+                if line.text != text:
+                    # 본문이 달라졌다 — **그 줄의** 계보만 지운다 (§8-9).
+                    line.text = text
+                    line.from_lines = []
+                line.order_index = order
+                line.updated_at = now
+                kept.append(line)
+                continue
+            order += 1
+            fresh = MeetingLineRecord(
                 meeting_id=agenda.meeting_id,
                 agenda_id=agenda.id,
-                track=track,
+                track=agenda.track,
                 order_index=order,
                 text=text,
                 author_id=author_id,
                 evidence=[],
+                from_lines=[],
                 created_at=now,
                 updated_at=now,
             )
-            self._session.add(line)
-            written.append(line)
+            self._session.add(fresh)
+            kept.append(fresh)
+        gone = [line for line_id, line in existing.items() if line_id not in seen]
+        for line in gone:
+            self._session.delete(line)
         self._session.flush()
-        return written
+        return kept
 
     def memo_lines(self, meeting: MeetingRecord) -> list[MeetingLineRecord]:
-        """메모 트랙 줄 전량, 시각 순. 「스크립트」 탭이 발화와 섞어 낸다 (SPEC-004 §5.4-8)."""
+        """**사람 벌**(`memo`) 줄 전량, 시각 순. 사람이 회의 중에 던진 메모다 (SPEC-004 §6 · §5.4-8)."""
         return list(
             self._session.scalars(
                 select(MeetingLineRecord)
-                .where(MeetingLineRecord.meeting_id == meeting.id, MeetingLineRecord.track == "memo")
+                .where(MeetingLineRecord.meeting_id == meeting.id, MeetingLineRecord.track == TRACK_MEMO)
                 .order_by(MeetingLineRecord.at_ms, MeetingLineRecord.created_at)
             )
         )
 
     def clear_track(self, meeting: MeetingRecord, track: str) -> None:
-        """한 트랙의 줄만 비운다 — **안건은 하나도 건드리지 않는다.**
+        """한 벌을 **통째로** 비운다 — 줄뿐 아니라 **안건까지** 지운다 (SPEC-004 v0.5 §8-5 · §8-8).
 
-        종료 합성이 쓰는 자리다: 회의록을 새로 쓰되 **지금 서 있는 안건은 그대로 둔다**. 이어 쓰는
-        안건의 `agenda_id` 가 그 자리에서 풀려야 하기 때문이다 — 배치처럼 AI 안건을 먼저 지워 버리면
-        AI 가 이어 쓰겠다고 적어 준 id 가 허공을 가리킨다 (사용자 결정 2026-09-11).
+        종료 합성과 `[다시 시도]` 가 최종 벌에 쓰는 자리다. 0.4.x 는 줄만 비우고 안건을 남겼다 —
+        합성이 원본이 서 있던 그 안건을 이어 썼기 때문이다. 벌이 갈려 **최종 벌은 안건도 자기 것**이 됐고,
+        최종 벌은 이어 쓸 대상이 없다: 전량 새로 쓴다. 그래서 비우는 것도 전량이다.
+
+        **다른 두 벌은 이 비우기에 걸리지 않는다** — 원본은 몇 번을 다시 시도해도 바뀌지 않는다 (D53).
+
+        **이 줄이 딛고 있는 가정** — 승격된 후보(`linked_work_request_id`)가 이 벌에 매달려 있을 수 없다.
+        승격은 「종료」의 최종 후보에만 열리고(§9-3 · `policy.ensure_todo_actionable` 이 `provisional` 을
+        막는다), 「종료」에서 「정리 중」으로 돌아가는 전이가 **전이표에 없다**
+        (`modules/meetings/domain.py:MEETING_TRANSITIONS` · SPEC §10-19). 그래서 승격된 후보가 여기까지
+        오는 길이 하나도 없다.
+
+        **그 전이가 열리면 이 줄이 승격된 후보를 조용히 죽인다** — 남에게 간 요청의 후보가 사라지는데
+        예외도 에러도 없다. 「승격된 후보가 있는 최종 벌을 다시 지으면 무엇을 하나」는 SPEC 에 아직
+        없으므로(코디 결정 2026-09-14, 갈래 ③), 전이표를 건드리는 사람은 이 줄을 먼저 읽어야 한다.
+        `ensure_todo_actionable` 은 회의 상태를 보지 않으므로 그쪽이 막아 주지 않는다.
         """
+        agenda_ids = set(
+            self._session.scalars(
+                select(MeetingAgendaRecord.id).where(
+                    MeetingAgendaRecord.meeting_id == meeting.id, MeetingAgendaRecord.track == track
+                )
+            )
+        )
         self._session.execute(
             delete(MeetingLineRecord).where(
                 MeetingLineRecord.meeting_id == meeting.id, MeetingLineRecord.track == track
             )
         )
+        self._session.flush()
+        if agenda_ids:
+            # 안건을 먼저 지우면 매달린 줄·후보가 외래키로 붙들어 끊어진다 — 매달린 것을 먼저 뗀다.
+            self._session.execute(delete(MeetingLineRecord).where(MeetingLineRecord.agenda_id.in_(agenda_ids)))
+            self._session.execute(delete(MeetingTodoRecord).where(MeetingTodoRecord.agenda_id.in_(agenda_ids)))
+            self._session.flush()
+            self._session.execute(delete(MeetingAgendaRecord).where(MeetingAgendaRecord.id.in_(agenda_ids)))
         self._session.flush()
 
     def replace_track(self, meeting: MeetingRecord, track: str) -> None:
-        """한 트랙을 비운다 — 전량 교체의 첫 걸음. **검증이 끝난 뒤에만 부른다** (SPEC-004 §7.1 적재).
+        """한 벌을 비운다 — 전량 교체의 첫 걸음. **검증이 끝난 뒤에만 부른다** (SPEC-004 §7.1 적재).
 
-        AI 가 세운 안건(source ai)도 함께 지운다. 사람이 만든 안건은 건드리지 않는다 (§7.3).
-
-        **지우는 차례가 있다**: 회의 중 배치가 세운 AI 안건에는 그 배치가 낸 `ai` 줄이 매달려 있다.
-        안건을 먼저 지우면 그 줄들이 안건을 붙들어 외래키가 끊긴다 — 매달린 줄을 **먼저** 떼고 안건을 지운다.
-
-        사람이 남긴 것은 지우지 않는다: 메모 줄이 매달린 AI 안건은 **지우지 않고 남긴다** — 메모는 사람의
-        기록이고, 자리가 사라지면 그 기록도 사라진다. 남은 안건은 아래 적재가 `agenda_id` 로 다시 집는다.
+        회의 중 배치가 AI 벌에 쓰는 자리다. **전량 교체가 진짜 전량이 됐다** — 0.4.x 에는 예외가 하나
+        있었다: AI 안건을 지우면 거기 매달린 **사람 메모가 같이 죽어서** 「메모 줄이 매달린 AI 안건은
+        남긴다」가 필요했다. 벌이 갈려 사람 메모가 AI 안건에 매달리는 일이 없어지며 **그 결합 자체가
+        사라졌다** (§11.4 3행 · D51). 예외 없이 벌을 통째로 갈아 끼운다.
         """
-        ai_agenda_ids = set(
-            self._session.scalars(
-                select(MeetingAgendaRecord.id).where(
-                    MeetingAgendaRecord.meeting_id == meeting.id, MeetingAgendaRecord.source == "ai"
-                )
-            )
-        )
-        self._session.execute(
-            delete(MeetingLineRecord).where(
-                MeetingLineRecord.meeting_id == meeting.id, MeetingLineRecord.track == track
-            )
-        )
-        self._session.flush()
-        if ai_agenda_ids:
-            # 트랙을 비우고도 사람의 줄(memo)이 남아 있는 AI 안건은 그 사람의 기록을 이고 있다 — 남긴다.
-            kept = set(
-                self._session.scalars(
-                    select(MeetingLineRecord.agenda_id).where(
-                        MeetingLineRecord.agenda_id.in_(ai_agenda_ids), MeetingLineRecord.track == "memo"
-                    )
-                )
-            )
-            ai_agenda_ids -= kept
-        if ai_agenda_ids:
-            # 지울 안건에 매달린 줄을 먼저 뗀다 — 남아 있는 것은 배치가 낸 `ai` 줄이다.
-            self._session.execute(
-                delete(MeetingLineRecord).where(MeetingLineRecord.agenda_id.in_(ai_agenda_ids))
-            )
-            self._session.execute(
-                delete(MeetingTodoRecord).where(MeetingTodoRecord.agenda_id.in_(ai_agenda_ids))
-            )
-            self._session.flush()
-            self._session.execute(
-                delete(MeetingAgendaRecord).where(MeetingAgendaRecord.id.in_(ai_agenda_ids))
-            )
-        self._session.flush()
-
+        self.clear_track(meeting, track)
     def todos(self, meeting: MeetingRecord) -> list[MeetingTodoRecord]:
         return list(
             self._session.scalars(
