@@ -62,7 +62,11 @@ a{color:var(--scax-color-accent);text-decoration:none}
 .scax-side-nav__collapse{order:3}
 .scax-side-nav--collapsed .scax-nav-item{justify-content:center;padding:0}
 .scax-side-nav--collapsed .scax-side-nav__divider{margin:var(--scax-space-400) 0}
-.scax-side-nav__identity{display:flex;align-items:center;gap:var(--scax-space-200);padding:var(--scax-space-100) var(--scax-space-100) var(--scax-space-400)}
+.scax-side-nav__identity{display:flex;align-items:center;gap:var(--scax-space-250);padding:var(--scax-space-100) var(--scax-space-100) var(--scax-space-500)}
+/* 이름·직책 칸이 남는 폭을 먹어야 접기 단추가 머리 오른쪽 «끝» 에 선다 (시안 31) */
+.scax-side-nav__who{flex:1 1 auto;min-width:0;text-align:left}
+/* 사진이 없을 때 서는 첫 글자 아바타 — DS `Avatar` 가 그리고, 자리 크기만 사진과 같게 맞춘다 */
+span.scax-side-nav__avatar{display:flex;align-items:center;justify-content:center}
 .scax-side-nav__avatar{flex:0 0 auto;width:40px;height:40px;border-radius:var(--scax-radius-pill);object-fit:cover;background:var(--scax-color-fill-weak)}
 .scax-side-nav__who{display:flex;flex-direction:column;gap:1px;min-width:0}
 .scax-side-nav__name{font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -83,6 +87,10 @@ a{color:var(--scax-color-accent);text-decoration:none}
 .scax-nav-item{display:flex;align-items:center;gap:var(--scax-space-250);width:100%;height:38px;padding:0 var(--scax-space-250);border:0;border-radius:var(--scax-radius-sm);background:transparent;color:var(--scax-color-ink-nav-idle);font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-medium);text-align:left;text-decoration:none;cursor:pointer;transition:background var(--scax-duration-fast) var(--scax-easing)}
 /* 아직 화면이 없는 항목 — 모양은 같고 이동만 하지 않는다 */
 .scax-nav-item[aria-disabled="true"]{cursor:default}
+/* «진짜» 못 누르는 줄 (시안 31 의 알림) — `<button disabled>` 라 클릭·키보드·탭이 모두 막혀 있고,
+   색이 그 사실을 말한다. hover 로 살아나지 않도록 바탕도 함께 묶는다. */
+.scax-nav-item:disabled{cursor:default;color:var(--scax-color-ink-disabled)}
+.scax-nav-item:disabled:hover{background:transparent;color:var(--scax-color-ink-disabled)}
 .scax-nav-item:hover{text-decoration:none}
 .scax-nav-item:hover{background:var(--scax-color-surface-nav-hover);color:var(--scax-color-ink)}
 .scax-nav-item:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}

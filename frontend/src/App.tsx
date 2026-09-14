@@ -29,6 +29,7 @@ import { SideNav } from "./shell/SideNav";
 import { TodayPage } from "./features/today/TodayPage";
 import type { ConversationContextReference, DirectTask, OrganizationProfile, Persona, ProductSurface } from "./lib/viewModels";
 import { type IconName } from "./ds/icons/Icon";
+import { shellNav } from "./lib/labels";
 
 /* 목록 정본은 우리 `ProductSurface` 8종이다 (바퀴 2 D-F). 새 DS 시안의 `nav.js` 는 예시일 뿐이라
    거기 있는 「수신함·진행 현황·자료」는 만들지 않는다 — 갈 화면이 없다.
@@ -384,30 +385,40 @@ export default function App() {
             setCharacterPreferenceError(null);
             setIsCharacterPickerOpen(true);
           }}
+          /*
+           * 시안 31 의 기둥 «머리» — 신원 줄 아래에 알림·설정 두 줄이 서고 그 밑을 가로선이 가른다.
+           * 자리는 `SideNav` 가 이미 갖고 있던 `utilityItems`(구분선 위 그룹)다 — 새로 만들지 않았다.
+           *
+           * · 알림: **갈 화면이 없다.** 그래서 «진짜» disabled 로 세운다 — 눌리지도, 키보드로 실행되지도
+           *   않는다. 시안의 파란 점(안 읽은 것)은 셀 값이 없으므로 넣지 않는다. 기능을 새로 만들지 않았다.
+           * · 설정: 기둥 «바닥» 에 있던 그 설정을 이 자리로 **옮겼다.** 여는 것도 그대로
+           *   (`AssistantCharacterPicker`) — 새 설정 화면을 만들지 않았다. 화면 전환이 아니므로
+           *   `onActivate` 로 직접 걸어 `surface` 라우팅에 설정 id 가 흘러들지 않게 했다.
+           */
+          utilityItems={[
+            { id: "notifications", label: shellNav.notifications, icon: "bell", disabled: true },
+            {
+              id: "settings",
+              label: shellNav.settings,
+              icon: "setting",
+              onActivate: () => {
+                setCharacterPreferenceError(null);
+                setIsCharacterPickerOpen(true);
+              },
+            },
+          ]}
           user={{
             name: personName(currentPersonaName),
             // 소속이 여럿이면 한 줄에 다 담기지 않는다. 잘라서 보여 주고 전체는 hover 로 읽는다.
             role: organizationNames.length > 0 ? organizationNames.join(" · ") : "소속 없음",
           }}
           userActionLabel="내 AX 캐릭터"
-          /* 계정 행동은 머리줄이 아니라 기둥 바닥에 선다 — 머리줄은 화면 자기 행동만 갖는다 */
+          /* 바닥에 남는 것은 로그아웃 하나다 — 설정은 시안대로 기둥 «머리» 로 옮겼다(위 `utilityItems`).
+             두 자리에 같은 것을 두지 않는다. 로그아웃의 자리·동작은 그대로다. */
           footerActions={
-            <>
-              <Button
-                variant="text"
-                size="sm"
-                onClick={() => {
-                  setCharacterPreferenceError(null);
-                  setIsCharacterPickerOpen(true);
-                }}
-                type="button"
-              >
-                설정
-              </Button>
-              <Button variant="text" size="sm" onClick={() => void endSession()} type="button">
-                로그아웃
-              </Button>
-            </>
+            <Button variant="text" size="sm" onClick={() => void endSession()} type="button">
+              {shellNav.signOut}
+            </Button>
           }
         />
       }

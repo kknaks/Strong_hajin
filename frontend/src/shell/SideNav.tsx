@@ -1,5 +1,6 @@
 import type React from "react";
 
+import { Avatar } from "../ds/Avatar";
 import { Icon, type IconName } from "../ds/icons/Icon";
 
 /**
@@ -29,6 +30,16 @@ export interface NavItem {
   href?: string;
   /** 안 읽은 것이 있으면 글리프 오른쪽 위에 점이 선다. */
   dot?: boolean;
+  /**
+   * **진짜로 못 누르는 줄.** `<button disabled>` 로 서서 클릭도 키보드 실행도 안 되고 탭 순서에서도 빠진다.
+   * `aria-disabled` 만 붙여 «보기에만» 꺼진 줄과 다르다 — 갈 화면이 없는 자리(알림)가 이것이다.
+   */
+  disabled?: boolean;
+  /**
+   * 이 줄만의 동작. 화면 전환(`onSelect`)이 아닌 자리가 쓴다 — 설정처럼 모달을 여는 줄이다.
+   * 주면 `onSelect` 대신 이것이 불린다: 설정 id 를 화면 이름으로 넘겨 라우팅에 흘리지 않는다.
+   */
+  onActivate?: () => void;
 }
 
 export interface SideNavProps {
@@ -83,14 +94,29 @@ export function SideNav({
         {collapsed ? null : <span className="scax-nav-item__label">{item.label}</span>}
       </>
     );
-    if (!item.href && onSelect) {
+    /* 접히면 글자가 빠지고 글리프만 남는데 그 글리프는 `aria-hidden` 이다 — 그대로 두면 이 줄에
+       **읽어 줄 이름이 하나도 없다.** 눈으로는 hover 툴팁(`data-label`)이 말해 주지만 그것은 CSS 다.
+       접힌 동안만 이름을 직접 붙인다 — 펴져 있을 때는 라벨 글자가 이미 그 일을 한다. */
+    const srLabel = collapsed ? item.label : undefined;
+    /* 못 누르는 줄은 «정말» 못 누르게 둔다 — `disabled` 가 클릭·Enter/Space·탭 순서를 한꺼번에 막는다.
+       `aria-disabled` 만 붙이면 키보드로는 여전히 눌려서 「없는 기능」이 실행되는 길이 남는다. */
+    if (item.disabled) {
+      return (
+        <button aria-label={srLabel} className={className} data-label={item.label} disabled key={item.id} type="button">
+          {inside}
+        </button>
+      );
+    }
+    const activate = item.onActivate ?? (onSelect ? () => onSelect(item.id) : null);
+    if (!item.href && activate) {
       return (
         <button
           aria-current={active ? "page" : undefined}
+          aria-label={srLabel}
           className={className}
           data-label={item.label}
           key={item.id}
-          onClick={() => onSelect(item.id)}
+          onClick={activate}
           type="button"
         >
           {inside}
@@ -101,6 +127,7 @@ export function SideNav({
       <a
         aria-current={active ? "page" : undefined}
         aria-disabled={item.href ? undefined : "true"}
+        aria-label={srLabel}
         className={className}
         data-label={item.label}
         href={item.href || undefined}
@@ -124,7 +151,13 @@ export function SideNav({
         >
           <Icon name="left-side" size={20} />
         </button>
-        {user?.avatar ? <img alt="" className="scax-side-nav__avatar" src={user.avatar} /> : null}
+        {/* 사진이 있으면 사진, 없으면 DS `Avatar` 의 첫 글자다 — 없는 이미지를 그려 깨진 아이콘을 내지 않는다.
+            세션(`/api/auth/me`)에는 아직 사진 URL 이 없어서 실제로는 첫 글자가 선다 (보고 대상). */}
+        {user?.avatar ? (
+          <img alt="" className="scax-side-nav__avatar" src={user.avatar} />
+        ) : user ? (
+          <Avatar className="scax-side-nav__avatar" name={user.name} size="md" />
+        ) : null}
         {user && !collapsed
           ? (() => {
               const who = (

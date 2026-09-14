@@ -41,8 +41,11 @@ it("셸 뼈대가 서고, 화면마다 스크롤 기둥이 본문 칸에 직접 
   expect(screen.getByRole("button", { name: "내 AX 캐릭터" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "메뉴 접기" })).toBeTruthy();
   expect(container.querySelector(".scax-side-nav__logo")?.textContent).toBe("SCAX");
-  // 아바타 URL 이 없으니 img 를 안 그린다
-  expect(container.querySelector(".scax-side-nav__avatar")).toBeNull();
+  /* 아바타 URL 이 없으니 **`<img>` 는 안 그린다** — 없는 주소를 넣으면 깨진 이미지가 뜬다.
+     대신 시안 31 의 그 자리를 DS `Avatar` 의 첫 글자로 채운다(자리를 비워 두지 않는다).
+     세션에 사진 URL 이 생기면 그때 `<img>` 가 선다. */
+  expect(container.querySelector("img.scax-side-nav__avatar")).toBeNull();
+  expect(container.querySelector("span.scax-side-nav__avatar")?.textContent).toBe("민");
   // 버전 값이 없으니 안 그린다
   expect(container.querySelector(".scax-side-nav__version")).toBeNull();
 
@@ -50,7 +53,31 @@ it("셸 뼈대가 서고, 화면마다 스크롤 기둥이 본문 칸에 직접 
   const surfaces = ["오늘", "캘린더", "회의", "내 업무", "보고", "프로젝트", "조직", "관계 탐색"];
   for (const label of surfaces) expect(nav.getByRole("button", { name: label }), label).toBeTruthy();
   // 시안에만 있는 메뉴는 만들지 않았다
-  for (const absent of ["수신함", "진행 현황", "자료", "알림"]) expect(nav.queryByRole("button", { name: absent }), absent).toBeNull();
+  for (const absent of ["수신함", "진행 현황", "자료"]) expect(nav.queryByRole("button", { name: absent }), absent).toBeNull();
+
+  /* 시안 31 의 기둥 머리 — 알림·설정 두 줄이 구분선 «위» 에 선다.
+     알림은 갈 화면이 없으므로 **진짜 disabled** 다: 눌리지도 키보드로 실행되지도 않는다.
+     (예전에는 「만들지 않았다」로 아예 없었다 — 자리는 시안대로 서되 기능은 만들지 않는 쪽으로 바뀌었다) */
+  const notifications = nav.getByRole("button", { name: "알림" });
+  expect(notifications.hasAttribute("disabled")).toBe(true);
+  const settingsRow = nav.getByRole("button", { name: "설정" });
+  expect(settingsRow.hasAttribute("disabled")).toBe(false);
+  // 설정은 화면 전환이 아니다 — 누르면 지금 쓰던 설정(내 AX 캐릭터)이 열린다
+  fireEvent.click(settingsRow);
+  const picker = await screen.findByRole("dialog", { name: "내 AX 캐릭터" });
+  fireEvent.click(within(picker).getByRole("button", { name: "캐릭터 선택 닫기" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "내 AX 캐릭터" })).toBeNull());
+
+  /* 접기 — 시안 31 의 머리 오른쪽 단추다. 접어도 «갈 수 있어야» 한다: 라벨이 사라져도
+     글리프 단추의 접근성 이름은 남고, 눌러서 화면이 바뀐다. 알림은 접혀서도 여전히 못 누른다. */
+  fireEvent.click(screen.getByRole("button", { name: "메뉴 접기" }));
+  const collapsed = within(screen.getByRole("navigation", { name: "제품 탐색" }));
+  expect(screen.getByRole("button", { name: "메뉴 펴기" })).toBeTruthy();
+  expect(collapsed.getByRole("button", { name: "알림" }).hasAttribute("disabled")).toBe(true);
+  fireEvent.click(collapsed.getByRole("button", { name: "회의" }));
+  await waitFor(() => expect(container.querySelector(".scax-page-scroll--fixed")).not.toBeNull());
+  fireEvent.click(screen.getByRole("button", { name: "메뉴 펴기" }));
+  expect(screen.getByRole("button", { name: "메뉴 접기" })).toBeTruthy();
 
   // 화면마다: 페이지가 스크롤 기둥 «안에» 들어가 있나
   for (const label of surfaces) {

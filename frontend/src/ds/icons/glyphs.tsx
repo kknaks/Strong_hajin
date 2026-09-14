@@ -39,6 +39,7 @@ export type Fill16Name = "persons";
 export type IconName =
   | Grid16Name
   | "arrow-right"
+  | "bell"
   | "blank"
   | "business-bag"
   | "calendar"
@@ -65,6 +66,7 @@ export type IconName =
   | "reset"
   | "search"
   | "send"
+  | "setting"
   | "square-check"
   | "trash"
   | "tune";
@@ -75,6 +77,14 @@ export const grid24: Record<Exclude<IconName, Grid16Name | Fill16Name>, React.Re
     <>
       <path d="M5 12h14" />
       <path d="m12 5 7 7-7 7" />
+    </>
+  ),
+  /* 사이드바 상단의 「알림」 (시안 31). DS 원본 `design/components/icon/Icon.jsx` 의 것 그대로다 —
+     기하를 새로 그리지 않았다. 우리 세트에 알림 글리프가 없어서 이 바퀴가 들여왔다. */
+  bell: (
+    <>
+      <path d="M10.268 21a2 2 0 0 0 3.464 0" />
+      <path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" />
     </>
   ),
   blank: <rect width="18" height="18" x="3" y="3" rx="2" />,
@@ -223,6 +233,16 @@ export const grid24: Record<Exclude<IconName, Grid16Name | Fill16Name>, React.Re
     <>
       <rect width="18" height="18" x="3" y="3" rx="2" />
       <path d="m9 12 2 2 4-4" />
+    </>
+  ),
+  /* 사이드바 상단의 「설정」 (시안 31) — 줄 둘에 손잡이가 달린 그것이다. DS 원본 그대로다.
+     우리 `tune` 은 3단 이퀄라이저라 시안의 글리프가 아니다 — 비슷하다고 바꿔 쓰지 않았다. */
+  setting: (
+    <>
+      <path d="M20 7h-9" />
+      <path d="M14 17H5" />
+      <circle cx="17" cy="17" r="3" />
+      <circle cx="7" cy="7" r="3" />
     </>
   ),
   /* 지운 것을 말하는 알림 한 줄이 쓴다 (시안 14). `design/components/icon/Icon.jsx:129` 그대로다. */
