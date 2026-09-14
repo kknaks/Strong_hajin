@@ -10,6 +10,7 @@ from ax_workspace.modules.ax_execution.ai import (
     AiDelegatedToolContext,
     AiGenerationRequest,
     ProviderRequestFailed,
+    ProviderResponseInvalid,
 )
 from ax_workspace.modules.ax_execution.tool_catalog import TOOL_CATALOG, tool_display_title
 from ax_workspace.platform.codex_cli import (
@@ -371,3 +372,126 @@ def test_a_structured_schema_comes_back_as_its_own_structure_not_a_report_body(t
     )
 
     assert json.loads(result.body) == produced
+
+
+def _schema_runner(payload: dict, expected_required: list[str]):
+    """A runner that behaves like Codex CLI under `--output-schema`: it writes exactly what the schema asked for."""
+
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+        schema = json.loads(Path(arguments[arguments.index("--output-schema") + 1]).read_text(encoding="utf-8"))
+        assert schema["required"] == expected_required, "the caller's own schema must be the one enforced"
+        if on_line is not None:
+            on_line(json.dumps({"type": "turn.completed", "turn_id": "turn_1"}))
+        Path(arguments[arguments.index("--output-last-message") + 1]).write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+        )
+        return ProcessResult(json.dumps({"type": "turn.completed", "turn_id": "turn_1"}), "", 0)
+
+    return runner
+
+
+def _conversation_provider(tmp_path, runner):
+    auth = tmp_path / "auth.json"
+    auth.write_text("{}", encoding="utf-8")
+    return CodexCliProviderAdapter(
+        CodexCliProfile(runtime_home=tmp_path / "runtime", auth_file=auth),
+        runner=runner,
+        scax_mcp_server=CodexCliMcpServer(command="python", arguments=(), environment={}),
+    )
+
+
+def test_a_conversation_that_asked_for_its_own_schema_gets_that_structure_back(tmp_path) -> None:
+    """회의 배치·합성은 대화 turn 으로 돌면서 자기 스키마를 건다. 그 응답에 `body` 키는 없다.
+
+    파서가 대화 계약(`body`·`elements`·`follow_up_candidates`)을 고정으로 기대하면 그 호출은
+    모델이 무엇을 내든 100% `ProviderResponseInvalid` 로 죽는다.
+    """
+    from ax_workspace.modules.meetings.batch import OUTPUT_SCHEMA as BATCH_OUTPUT_SCHEMA, parse_output
+
+    produced = {
+        "agendas": [
+            {
+                "agenda_id": None,
+                "title": "다음 스프린트 범위",
+                "source": "ai",
+                "lines": [
+                    {"text": "로그인 개편을 먼저 낸다.", "evidence": [{"from_ms": 0, "to_ms": 900}], "task_id": None}
+                ],
+                "todos": [],
+            }
+        ]
+    }
+    provider = _conversation_provider(tmp_path, _schema_runner(produced, ["agendas"]))
+
+    result = provider.converse(
+        AiConversationRequest(
+            "이번 구간을 정리해 주세요",
+            "thread-1",
+            [],
+            AiDelegatedToolContext("mina", "meeting-batch:mina"),
+            output_schema=BATCH_OUTPUT_SCHEMA,
+        )
+    )
+
+    # 배치가 실제로 읽는 자리까지 간다 — body 를 그 스키마의 파서에 그대로 먹인다.
+    assert json.loads(result.body) == produced
+    assert [agenda.title for agenda in parse_output(result.body)] == ["다음 스프린트 범위"]
+    # 대화 계약 전용 필드는 자기 스키마를 건 turn 에 붙지 않는다.
+    assert result.answer_elements is None
+    assert result.follow_up_candidates == []
+
+
+def test_a_conversation_that_asked_for_the_final_notes_schema_parses_as_final_notes(tmp_path) -> None:
+    """회의 종료 합성도 같은 자리를 지난다 — 배치와 다른 스키마 한 벌이라 따로 건다."""
+    from ax_workspace.modules.meetings.finalize import FINAL_OUTPUT_SCHEMA, parse_final_output
+
+    produced = {
+        "title_candidate": "9월 정기 회의",
+        "agendas": [
+            {
+                "agenda_id": None,
+                "title": "배포 일정",
+                "source": "ai",
+                "concluded": True,
+                "lines": [{"text": "금요일에 낸다.", "evidence": [], "line_ids": []}],
+                "todos": [],
+            }
+        ],
+    }
+    provider = _conversation_provider(tmp_path, _schema_runner(produced, ["title_candidate", "agendas"]))
+
+    result = provider.converse(
+        AiConversationRequest(
+            "합성해 주세요",
+            "thread-1",
+            [],
+            AiDelegatedToolContext("mina", "meeting-finalize:mina"),
+            output_schema=FINAL_OUTPUT_SCHEMA,
+        )
+    )
+
+    assert parse_final_output(result.body).title_candidate == "9월 정기 회의"
+
+
+def test_a_schema_bearing_turn_that_returns_broken_json_is_still_an_invalid_response(tmp_path) -> None:
+    """스키마를 걸었다고 무엇이든 통과시키지 않는다 — JSON 이 아니면 그 회차는 무효다.
+
+    다만 사유는 그 회차의 기록에만 남는 말이다: 채팅창에서 사람이 읽는 「다시 요청해 주세요」가 아니다.
+    """
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+        Path(arguments[arguments.index("--output-last-message") + 1]).write_text("not json", encoding="utf-8")
+        return ProcessResult("", "", 0)
+
+    provider = _conversation_provider(tmp_path, runner)
+
+    with pytest.raises(ProviderResponseInvalid) as raised:
+        provider.converse(
+            AiConversationRequest(
+                "이번 구간을 정리해 주세요",
+                None,
+                [],
+                AiDelegatedToolContext("mina", "meeting-batch:mina"),
+                output_schema={"type": "object", "properties": {"agendas": {"type": "array"}}, "required": ["agendas"]},
+            )
+        )
+    assert "다시 요청해 주세요" not in str(raised.value)

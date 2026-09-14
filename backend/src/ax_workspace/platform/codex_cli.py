@@ -239,18 +239,31 @@ class CodexCliProviderAdapter:
                 raise ProviderRequestFailed("Codex CLI conversation failed", provenance)
             try:
                 payload = json.loads(output_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise ProviderResponseInvalid(_invalid_response_message(request), provenance) from error
+            if request.output_schema is not None:
+                # 부르는 쪽이 자기 스키마를 걸었으면 그 모양 그대로 돌려준다 — 걸지도 않은 대화 계약
+                # (`body`·`elements`·`follow_up_candidates`)을 여기서 찾으면 그 호출은 모델이 무엇을 내든
+                # 전부 무효 응답이 된다. 검증은 같은 스키마를 가진 부르는 쪽이 한 번 더 한다.
+                return AiConversationResult(
+                    ingest.run_ref,
+                    ingest.session_ref or request.provider_session_ref,
+                    json.dumps(payload, ensure_ascii=False),
+                    ingest.tool_invocations(),
+                    usage=ingest.usage,
+                )
+            try:
                 document = AnswerDocument.model_validate({"body": payload["body"], "elements": payload["elements"]})
-                body = document.body
                 candidates = [
                     AiFollowUpCandidate(label=str(item["label"]), user_text=str(item["user_text"]))
                     for item in payload["follow_up_candidates"]
                 ]
-            except (OSError, ValueError, KeyError, TypeError) as error:
-                raise ProviderResponseInvalid("답변 형식을 확인하지 못했습니다. 다시 요청해 주세요.", provenance) from error
+            except (ValueError, KeyError, TypeError) as error:
+                raise ProviderResponseInvalid(_invalid_response_message(request), provenance) from error
             return AiConversationResult(
                 ingest.run_ref,
                 ingest.session_ref or request.provider_session_ref,
-                body,
+                document.body,
                 ingest.tool_invocations(),
                 usage=ingest.usage,
                 follow_up_candidates=candidates,
@@ -588,6 +601,17 @@ class CodexCliProviderAdapter:
         for line in stdout.splitlines():
             ingest.consume_line(line)
         return ingest.tool_invocations()
+
+
+def _invalid_response_message(request: AiConversationRequest) -> str:
+    """무효 응답을 누가 읽는지에 맞춘 한 줄.
+
+    대화는 사람이 채팅창에서 그대로 읽는다. 자기 스키마를 건 호출(회의 배치·합성)은 사람에게 다시 물을 자리가
+    없고, 이 줄은 그 회차의 기록에만 남는다 — 「다시 요청해 주세요」는 거기서 읽을 사람이 없는 말이다.
+    """
+    if request.output_schema is not None:
+        return "요청한 형식의 응답을 받지 못했습니다."
+    return "답변 형식을 확인하지 못했습니다. 다시 요청해 주세요."
 
 
 def _structured_body(payload: Any, output_schema: dict[str, Any]) -> str:
