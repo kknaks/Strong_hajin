@@ -747,6 +747,26 @@ def create_app(
                 raise _runtime_error(error) from error
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
+        @app.get("/api/meetings/{meeting_id}/promotion-candidates", response_model=list[CandidateResponse])
+        def meeting_promotion_candidates(
+            meeting_id: UUID, principal: Principal = Depends(developer_principal)
+        ) -> list[MemberCandidateView]:
+            """승격 모달의 담당 후보 — **참석자 먼저, 그다음 조직도 전체** (SCAX-SPEC-004 §9-5 · D40).
+
+            `/api/task-assignment-candidates` 를 쓰지 않는다. 그쪽은 「내가 남에게 배정할 수 있는
+            범위」라 누른 사람의 배정 권한으로 좁히는데, **승격의 요청 주체는 회의(시스템)**라 그 권한을
+            타지 않는다 — 그 목록을 쓰면 6명 중 2명만 뜬다 (사용자 결정 2026-09-14 §조사 근거 5).
+            """
+            try:
+                return [
+                    CandidateResponse(**candidate)
+                    for candidate in app.state.workflow_application.meeting_promotion_candidates(
+                        principal, meeting_id
+                    )
+                ]
+            except Exception as error:
+                raise _runtime_error(error) from error
+
         @app.get("/api/meetings/{meeting_id}/export")
         def export_meeting(
             meeting_id: UUID,

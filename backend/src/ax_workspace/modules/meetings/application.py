@@ -784,6 +784,19 @@ class MeetingApplication:
         )
         return meeting, todo
 
+    def promotion_candidate_attendees(self, principal: Principal, meeting_id: UUID) -> list[str]:
+        """승격 담당 후보에서 **먼저 서는 사람들** — 그 회의의 참석자다 (SPEC-004 §9-5).
+
+        여는 판정은 승격 자체와 같다 — 참석자 전원이다 (§3.3). 회의를 볼 수 없는 사람이 이 목록으로
+        조직도를 읽어 가지 못하게 여기서 한 번 막는다.
+        """
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._readable(principal, meeting_id)
+        if not self._is_attendee(principal, meeting):
+            raise MeetingAccessDenied("only an attendee may promote a follow-up candidate")
+        # 만든 사람은 언제나 참석자다. 순서는 화면이 「그 자리에 있던 사람」을 먼저 그리는 순서다.
+        return [meeting.owner_id, *sorted(self._repository.attendee_ids(meeting) - {meeting.owner_id})]
+
     def attendee_ids(self, meeting: Any) -> set[str]:
         """이 회의에 담긴 사람들 — 승격의 담당 후보가 여기서 먼저 난다 (SPEC-004 §9-5)."""
         return set(self._repository.attendee_ids(meeting)) | {meeting.owner_id}
@@ -1811,7 +1824,16 @@ def _agenda_material(agenda: Any) -> dict[str, Any]:
 
 
 def _track_view(grouped: dict[Any, list[Any]], track: str) -> list[dict[str, Any]]:
-    """한 벌의 줄 전량 — 합성 입력이 읽는 모양이다."""
+    """한 벌의 줄 전량 — 합성 입력이 읽는 모양이다.
+
+    **`evidence` 를 함께 싣는다** (사용자 결정 「최종 회의록만 회의록이다」 §조사 근거 4). 이것이
+    빠져 있어서 합성이 근거를 잃었다: AI 벌의 줄은 자기가 딛는 발화 구간을 이미 알고 있는데 재료에
+    그 값이 실리지 않아, 합성은 그 구간을 세션 기억에서 되살려야 했고 못 살리면 빈 근거를 냈다.
+    실물에서 최종 9줄 중 2줄이 근거 0개였고 **같은 문장이 AI 벌에서는 근거 1개를 갖고 있었다.**
+
+    값을 **나가는 이름**(`start_ms`·`end_ms`)으로 옮겨 싣는다 — 스키마가 AI 에게 요구하는 이름은
+    `from_ms`·`to_ms` 이지만, 재료는 응답과 같은 이름으로 읽히는 편이 헷갈리지 않는다.
+    """
     rows: list[dict[str, Any]] = []
     for agenda_id, lines in grouped.items():
         for line in lines:
@@ -1823,6 +1845,7 @@ def _track_view(grouped: dict[Any, list[Any]], track: str) -> list[dict[str, Any
                     "agenda_id": str(agenda_id),
                     "text": line.text,
                     "at_ms": line.at_ms,
+                    "evidence": [_evidence_span(span) for span in line.evidence or []],
                 }
             )
     return rows

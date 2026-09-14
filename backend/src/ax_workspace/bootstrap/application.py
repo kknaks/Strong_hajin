@@ -2833,6 +2833,21 @@ class WorkflowApplication:
         with self._session_factory() as session:
             return self._assignments(session).candidates(principal)
 
+    def meeting_promotion_candidates(self, principal: Principal, meeting_id: UUID) -> list[MemberCandidateView]:
+        """승격 모달의 담당 후보 — **참석자 먼저, 그다음 조직도 전체** (SCAX-SPEC-004 §9-5 · D40).
+
+        `task_assignment_candidates` 와 **일부러 다른 목록이다.** 그쪽은 「내가 남에게 배정할 수 있는
+        범위」라 누른 사람의 배정 권한으로 좁히지만, 승격은 **요청 주체가 회의(시스템)**라 그 권한을
+        타지 않는다 — 실물에서 그 필터가 6명을 2명으로 줄였다 (사용자 결정 §조사 근거 5).
+
+        여는 사람은 **승격을 할 수 있는 사람**과 같다 — 참석자 전원이다 (§3.3). 그 판정을 회의 쪽에서
+        한 번 지나고, 사람 목록은 조직 쪽에서 낸다.
+        """
+        with self._session_factory() as session:
+            meetings = self._meetings(session)
+            attendee_ids = meetings.promotion_candidate_attendees(principal, meeting_id)
+            return SqlAlchemyOrganizationRepository(session).meeting_promotion_candidates(attendee_ids)
+
     def plan_project_work(self, principal: Principal, project_id: UUID, title: str, **fields: Any) -> TaskMutationResult:
         with self._session_factory() as session:
             result = self._assignments(session).plan_project_work(principal, project_id, title, **fields)

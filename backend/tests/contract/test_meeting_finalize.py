@@ -69,9 +69,23 @@ def _agenda(title: str, *, merged_from: list[str] | None = None, concluded: bool
     }
 
 
+#: 시험이 세우는 확정 발화의 첫 구간 (`_blocks` 가 쌓는 seq 1). **최종 줄은 근거를 반드시 든다**
+#: (사용자 결정 「최종 회의록만 회의록이다」 §바뀌는 것 3) — 그래서 기본값이 빈 목록이 아니다.
+SPAN = {"from_ms": 0, "to_ms": 900}
+
+
 def _line(text: str, *, evidence: list[dict] | None = None, from_lines: list[str] | None = None) -> dict:
-    """합성 출력의 줄 하나. `from_lines` 가 그 줄이 딛는 **원본 줄** 계보다 (§4.2-10)."""
-    return {"text": text, "evidence": evidence or [], "from_lines": list(from_lines or [])}
+    """합성 출력의 줄 하나. `from_lines` 가 그 줄이 딛는 **원본 줄** 계보다 (§4.2-10).
+
+    `evidence` 는 **기본이 실재하는 구간 하나**다 — 최종 회의록의 줄은 근거 없이 서지 못하므로
+    「근거를 안 쓴 시험」이 곧 「거절되는 출력」이 된다. 빈 근거를 일부러 보내는 시험은
+    `evidence=[]` 를 명시한다.
+    """
+    return {
+        "text": text,
+        "evidence": [SPAN] if evidence is None else evidence,
+        "from_lines": list(from_lines or []),
+    }
 
 
 def _track(detail: dict, track: str) -> list[dict]:
@@ -943,6 +957,141 @@ def test_the_previous_meeting_is_carried_as_its_final_track_alone(tmp_path) -> N
         assert "사람이 적은 안건" not in text
         assert "AI 가 세운 안건" not in text
         assert "결론 난 최종 안건" in text
+
+
+def test_a_final_line_without_evidence_is_refused_and_the_attempt_fails(tmp_path) -> None:
+    """**근거 없는 최종 줄은 서지 못한다** (사용자 결정 「최종 회의록만 회의록이다」 §바뀌는 것 3).
+
+    최종 회의록은 재전사문 위에서 새로 쓰는 것이고, 근거가 없으면 사람이 「이 문장은 어디서 왔나」를
+    되짚을 방법이 없다 — 그것은 **재전사문이 사실의 SoT 다**라는 결정 자체를 비운다. 실물에서 최종
+    9줄 중 2줄이 근거 0개였다(조사 근거 4).
+
+    **줄을 조용히 버리지 않고 그 시도를 실패시킨다** — 버리면 내용이 아무 말 없이 사라진다.
+    """
+    client, application, agent = _stack(tmp_path)
+    made = _summarizing(client, application)
+    meeting_id = made["meeting"]["meeting_id"]
+    [memo_agenda] = [row["agenda_id"] for row in made["agendas"] if row["track"] == "memo"]
+    _blocks(application, meeting_id)
+
+    # 근거가 아예 비어 온 줄 — 스키마가 먼저 잡는다 (minItems 1).
+    agent.script = [
+        _output([_agenda("최종", merged_from=[memo_agenda], lines=[_line("근거 없이 선 줄", evidence=[])])])
+    ] * 3
+    client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
+    assert application.finalize_meeting(UUID(meeting_id)) is False
+    head = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]
+    assert head["status"] == "failed"
+    # 사유는 사람이 읽는 한 줄이고 내부 값이 한 자도 없다 (§10-21).
+    assert head["failure_reason"] == "회의록을 만들지 못했습니다 — 출력 형식이 맞지 않았습니다"
+
+
+def test_a_final_line_whose_only_span_is_out_of_range_is_refused_too(tmp_path) -> None:
+    """**근거가 떨어져 나가 빈 것도 같다.** 스키마는 통과하고 서버가 잡는 자리다.
+
+    구간이 실재하지 않으면 서버가 그 근거를 떨어뜨린다 (§8-6). 0.4.x 는 거기서 멈춰 **본문만 남은
+    줄이 최종 회의록에 섰다** — 지어낸 구간을 단 줄이 근거 없는 줄이 되어 통과한 것이다. 이제 그
+    자리에서 시도가 실패한다.
+    """
+    client, application, agent = _stack(tmp_path)
+    made = _summarizing(client, application)
+    meeting_id = made["meeting"]["meeting_id"]
+    [memo_agenda] = [row["agenda_id"] for row in made["agendas"] if row["track"] == "memo"]
+    _blocks(application, meeting_id)
+
+    # 회의에 없는 구간 하나만 달고 왔다 — 스키마(minItems 1)는 지나고 근거 결박에서 떨어진다.
+    far_away = {"from_ms": 9_000_000, "to_ms": 9_000_900}
+    agent.script = [
+        _output([_agenda("최종", merged_from=[memo_agenda], lines=[_line("지어낸 구간", evidence=[far_away])])])
+    ] * 3
+    client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
+    assert application.finalize_meeting(UUID(meeting_id)) is False
+    assert client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]["status"] == "failed"
+
+    # 근거가 둘인데 하나만 범위 밖이면 **그 근거만 떨어지고 줄은 산다** — 그 결이 바뀐 것은 아니다.
+    agent.script = [
+        _output([_agenda("최종", merged_from=[memo_agenda], lines=[_line("하나는 산다", evidence=[SPAN, far_away])])])
+    ]
+    assert client.post(f"/api/meetings/{meeting_id}/finalize", headers=MINA).status_code == 200
+    assert application.finalize_meeting(UUID(meeting_id)) is True
+    [final] = _track(client.get(f"/api/meetings/{meeting_id}", headers=MINA).json(), "final")
+    assert [row["text"] for row in final["lines"]] == ["하나는 산다"]
+    assert final["lines"][0]["evidence"] == [{"start_ms": 0, "end_ms": 900}]
+
+
+def test_the_synthesis_is_handed_the_spans_its_own_lines_already_stand_on(tmp_path) -> None:
+    """**합성이 근거를 잃지 않게 재료가 근거를 싣는다** (사용자 결정 §조사 근거 4).
+
+    실물에서 최종 줄 2개가 근거 0개였는데 **같은 문장이 AI 벌에서는 근거 1개를 갖고 있었다.** 재료가
+    `evidence` 를 싣지 않아, 합성은 그 구간을 세션 기억에서 되살려야 했고 못 살리면 빈 근거를 냈다.
+    이제 AI 벌 줄이 자기 구간을 달고 프롬프트에 오르므로 **이어 적기만 하면 된다.**
+    """
+    client, application, agent = _stack(tmp_path)
+    made = _summarizing(client, application)
+    meeting_id = made["meeting"]["meeting_id"]
+    [memo_agenda] = [row["agenda_id"] for row in made["agendas"] if row["track"] == "memo"]
+    _blocks(application, meeting_id)
+    _ai_agenda_with_lines(application, meeting_id, "AI 가 세운 안건", ["AI 가 낸 줄"])
+    # 배치가 낸 줄에 근거를 달아 둔다 — 실물에서 그 줄이 갖고 있던 그 값이다.
+    with application._session_factory() as session:
+        from ax_workspace.platform.persistence import MeetingLineRecord
+
+        line = session.query(MeetingLineRecord).filter(MeetingLineRecord.track == "ai").one()
+        line.evidence = [{"start_ms": 3_000, "end_ms": 3_900}]
+        session.commit()
+
+    client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
+    with application._session_factory() as session:
+        source = application._meetings(session).finalize_input(UUID(meeting_id))
+    # **재료가 근거를 싣는다.**
+    assert [row["evidence"] for row in source["ai_lines"]] == [[{"start_ms": 3_000, "end_ms": 3_900}]]
+
+    agent.script = [_output([_agenda("최종", merged_from=[memo_agenda], lines=[_line("이어 쓴 줄")])])]
+    assert application.finalize_meeting(UUID(meeting_id)) is True
+    # 프롬프트에도 그 구간이 실려 나갔다 — 모델이 이어 적을 것이 손에 있다.
+    assert '"start_ms": 3000' in agent.runs[-1]["prompt"]
+
+
+def test_promotion_candidates_are_the_whole_directory_with_the_attendees_first(tmp_path) -> None:
+    """**승격 담당 후보는 조직도 전체다** (SCAX-SPEC-004 §9-5 · D40 · 사용자 결정 §바뀌는 것 4).
+
+    승격은 「내가 너에게 부탁한다」가 아니라 「회의에서 이 일이 나왔다」이다 — **요청 주체가 시스템**이라
+    누른 사람의 배정 권한을 타지 않는다. 업무 관리의 `/api/task-assignment-candidates` 를 그대로 쓰면
+    배정 권한 범위 · 본인 제외 · `task.self_manage` 셋이 걸려 실물에서 **6명 중 2명**만 떴다
+    (조사 근거 5). 회의를 만든 사람이 그 권한을 아예 안 가진 경우엔 아무도 못 뜬다.
+
+    남는 조건은 **답할 수 있는가** 하나다 — 로그인이 없는 사람에게 보내면 그 요청이 영영 기다린다.
+    """
+    client, application, agent = _stack(tmp_path)
+    meeting_id, _ = _finalized(client, application, agent)
+
+    listed = client.get(f"/api/meetings/{meeting_id}/promotion-candidates", headers=MINA)
+    assert listed.status_code == 200, listed.text
+    rows = listed.json()
+    ids = [row["id"] for row in rows]
+
+    # **조직도 전체다** — 데모 명부 여섯이 다 있다.
+    assert set(ids) == {"hyeon", "jiho", "mina", "minseok", "sora", "yuna"}
+    # **누른 사람 자신이 있다** — 회의에서 나온 일을 자기가 하겠다고 담는 것은 흔하다 (§9-5).
+    assert "mina" in ids
+    # **참석자가 먼저 선다** — 그 자리에 있던 사람이 먼저 걸린다. 이 회의는 mina(만든 사람)·jiho 다.
+    assert ids[:2] == ["mina", "jiho"]
+    # 고를 수 있을 만큼만 말한다 — id 와 이름뿐이고 전화·생년월일이 따라오지 않는다.
+    assert all(set(row) == {"id", "display_name"} for row in rows)
+
+    # 업무 관리의 목록은 **건드리지 않았다** — 그쪽은 배정 권한을 그대로 묻는다.
+    refused = client.get("/api/task-assignment-candidates", headers=MINA)
+    assert refused.status_code == 403, refused.text
+
+    # 여는 사람은 승격과 같다 — 회의를 볼 수 없는 사람은 이 목록으로 조직도를 읽어 가지 못한다.
+    assert client.get(f"/api/meetings/{meeting_id}/promotion-candidates", headers=SORA).status_code == 404
+
+    # 실제로 그 목록의 사람에게 승격이 간다 — 배정 권한이 없는 사람이 눌러도 선다 (D40).
+    [todo] = _the_final(client, meeting_id)["todos"]
+    promoted = client.post(
+        f"/api/meetings/{meeting_id}/todos/{todo['todo_id']}/promote", headers=MINA, json={"assignee_id": "yuna"}
+    )
+    assert promoted.status_code == 201, promoted.text
 
 
 def test_the_export_is_html_and_carries_the_last_saved_notes(tmp_path) -> None:

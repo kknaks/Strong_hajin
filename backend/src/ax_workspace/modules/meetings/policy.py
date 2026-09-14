@@ -23,21 +23,29 @@ from ax_workspace.modules.meetings.domain import (
 PAST_STATUSES = frozenset({MeetingStatus.DONE, MeetingStatus.FAILED, MeetingStatus.CANCELLED})
 NOTE_EDITABLE_STATUSES = frozenset({MeetingStatus.DONE, MeetingStatus.FAILED, MeetingStatus.CANCELLED})
 
-# 안건 게이트는 **벌마다 다르고, 더하는 것과 고치고 지우는 것이 또 다르다** (SPEC-004 v0.5.1 §4.1-6).
-# 여는 사람은 어느 칸이든 회의를 만든 사람이다.
+# 안건 게이트는 **벌마다 다르고, 더하는 것과 고치고 지우는 것이 또 다르다** (SPEC-004 v0.5.1 §4.1-6 ·
+# **사용자 결정 「최종 회의록만 회의록이다」 2026-09-14**). 여는 사람은 어느 칸이든 회의를 만든 사람이다.
 #
-#   | 벌      | 안건 추가              | 안건 제목 고치기 · 안건 삭제 |
-#   |---------|------------------------|------------------------------|
-#   | `memo` | 예정 · **진행 중** · 취소 | 예정 · 취소                  |
-#   | `ai`    | **없다**               | **없다** — 언제나 거짓        |
-#   | `final` | 종료 · 실패            | 종료 · 실패 (`[수정]` 안에서) |
+#   | 벌      | 안건 추가                 | 안건 제목 고치기 · 안건 삭제 |
+#   |---------|---------------------------|------------------------------|
+#   | `memo`  | 예정 · **진행 중** · 취소 | 예정 · **진행 중** · 취소    |
+#   | `ai`    | **없다**                  | **없다** — 언제나 거짓        |
+#   | `final` | 종료 · 실패               | 종료 · 실패 (`[수정]` 안에서) |
 #
-# 「진행 중」에 사람 벌 안건을 **더할 수는 있지만 고칠 수는 없다** — 이미 줄이 매달린 안건이 흔들리면
-# 매달린 메모가 갈 곳을 잃는다. **「종료」·「실패」에서 원본 두 벌은 읽기 전용이다** (D53): 원본은
-# 최종 벌을 대조하는 근거이고 고칠 수 있으면 근거가 되지 못한다. **정리가 도는 동안에는 어느 벌도
-# 열리지 않는다** — 그래서 「정리 중」이 어느 집합에도 없다.
-MEMO_AGENDA_EDITABLE_STATUSES = frozenset({MeetingStatus.SCHEDULED, MeetingStatus.CANCELLED})
-MEMO_AGENDA_ADDABLE_STATUSES = MEMO_AGENDA_EDITABLE_STATUSES | {MeetingStatus.IN_PROGRESS}
+# **사람 벌은 임시 재료다 — 임시로 다룬다** (사용자 결정 §바뀌는 것 1). 회의록은 최종 벌 하나이고
+# 사람 벌은 그것을 지을 재료이므로, 사람이 회의가 도는 동안에도 자기가 적은 것을 고치고 지운다.
+# 0.4.x 의 「진행 중에는 이미 선 안건을 손대지 않는다」는 **원본이 최종본처럼 잠겨 있던 때의 규칙**이고,
+# 그 규칙 때문에 오타로 세운 안건이 회의가 끝날 때까지 박제됐다(조사 근거 6). 매달린 메모가 갈 곳을
+# 잃는 문제는 **안건을 지우면 그 벌의 줄이 함께 지워진다**(§4.1-10)로 이미 답이 있다 — 사람이 자기가
+# 적은 것을 지우는 것이고, 최종 벌은 재전사문 위에서 새로 지어지므로 그 삭제가 회의록을 깨지 않는다.
+#
+# **「종료」·「실패」에서 원본 두 벌은 읽기 전용이다** (D53): 그때는 최종 벌이 섰고 원본은 그것을
+# 대조하는 근거이므로, 고칠 수 있으면 근거가 되지 못한다. **정리가 도는 동안에는 어느 벌도 열리지
+# 않는다** — 그래서 「정리 중」이 어느 집합에도 없다.
+MEMO_AGENDA_EDITABLE_STATUSES = frozenset(
+    {MeetingStatus.SCHEDULED, MeetingStatus.IN_PROGRESS, MeetingStatus.CANCELLED}
+)
+MEMO_AGENDA_ADDABLE_STATUSES = MEMO_AGENDA_EDITABLE_STATUSES
 FINAL_AGENDA_EDITABLE_STATUSES = frozenset({MeetingStatus.DONE, MeetingStatus.FAILED})
 FINAL_AGENDA_ADDABLE_STATUSES = FINAL_AGENDA_EDITABLE_STATUSES
 #: **AI 벌은 사람이 언제도 손대지 않는다** — 그것은 AI 의 기록이고 배치가 매 회차 전량 교체한다 (§4.0-1).

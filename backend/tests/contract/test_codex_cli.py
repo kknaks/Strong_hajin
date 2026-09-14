@@ -450,7 +450,10 @@ def test_a_conversation_that_asked_for_the_final_notes_schema_parses_as_final_no
                 "title": "배포 일정",
                 "merged_from": [],
                 "concluded": True,
-                "lines": [{"text": "금요일에 낸다.", "evidence": [], "from_lines": []}],
+                # 최종 줄은 **근거를 반드시 든다** (사용자 결정 「최종 회의록만 회의록이다」 2026-09-14).
+                "lines": [
+                    {"text": "금요일에 낸다.", "evidence": [{"from_ms": 0, "to_ms": 900}], "from_lines": []}
+                ],
                 "todos": [],
             }
         ],

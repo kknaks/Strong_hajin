@@ -2965,7 +2965,7 @@
   ],
   "current_runtime": {
     "phase": "main-sync",
-    "http_count": 137,
+    "http_count": 138,
     "tool_count": 120,
     "tools": [
       {
@@ -63431,6 +63431,29 @@
         ],
         "acceptance_evidence": "현재 HTTP·MCP 계약 및 소유 애플리케이션 호출 동등성 테스트",
         "http_signature": "(meeting_id: UUID, todo_id: UUID, request: PromoteTodoRequest, principal: Principal) -> dict[str, object]"
+      },
+      {
+        "http": "GET /api/meetings/{meeting_id}/promotion-candidates",
+        "http_handler": "meeting_promotion_candidates",
+        "screen_callers": [],
+        "operation": "meeting_promotion_candidates",
+        "owning_calls": [
+          "self._meetings(session).promotion_candidate_attendees"
+        ],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "meeting_promotion_candidates"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "승격 모달이 담당 칸을 채울 때 읽는 목록이다 — 화면 한 자리를 위한 조회이고 그 자체로 무엇을 바꾸지 않는다. 승격 자체(meeting_todo_promote)가 이미 도구로 서 있고, AI 는 담당을 고르지 않으므로(§8.2) 이 목록을 들 이유가 없다.",
+          "alternative": "AI 가 사람을 찾아야 하면 명부·조직도 도구를 쓴다. 승격은 meeting_todo_promote 하나다.",
+          "reconsider_when": "AI 가 담당 후보를 제안하는 계약이 생길 때 (지금은 §8.2 가 금지한다)"
+        },
+        "http_signature": "(meeting_id: UUID, principal: Principal) -> list[MemberCandidateView]"
       }
     ],
     "status": "verified",

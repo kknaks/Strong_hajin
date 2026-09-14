@@ -885,6 +885,42 @@ class SqlAlchemyOrganizationRepository:
         ).all()
         return [{"id": str(member_id), "display_name": str(name)} for member_id, name in rows]
 
+    def meeting_promotion_candidates(self, attendee_ids: list[str]) -> list[MemberCandidateView]:
+        """회의 후속업무 **승격**의 담당 후보 — 참석자 먼저, 그다음 조직도 전체 (SCAX-SPEC-004 §9-5).
+
+        **`task_assignment_candidates` 와 다른 목록이고, 달라야 한다.** 그쪽은 「내가 남에게 업무를
+        배정할 수 있는 범위」이므로 배정 권한(`TASK_ASSIGN`)이 닿는 조직으로 좁히고, 자기 자신을 빼고,
+        스스로 업무를 굴릴 수 있는 사람만 남긴다. **승격은 그 물음이 아니다** —
+
+        * **요청 주체가 회의(시스템)다** (D40). 누른 사람이 부탁하는 것이 아니라 그 회의에서 나온 일이라
+          기록되므로, **누른 사람의 배정 권한을 타지 않는다.** 「시스템이 보내므로 담당 후보에 조직 경계
+          제한이 없다」가 §9-5 의 말이다.
+        * **누르는 사람 자신이어도 된다** (§9-5). 회의에서 나온 일을 자기가 하겠다고 담는 것은 흔하다.
+        * **받은 사람이 수락해야 업무가 선다** — 그 판단이 그 사람 몫이므로 「스스로 업무를 굴릴 수
+          있는가」를 우리가 미리 걸러 줄 일이 아니다.
+
+        남는 조건은 **답할 수 있는가** 하나다 (`_can_answer`) — 로그인이 없는 사람에게 요청을 보내면
+        그 요청은 영영 기다린다. 그것은 권한이 아니라 **도달 가능성**이라 이 목록에도 그대로 남는다.
+        """
+        wanted = list(dict.fromkeys(attendee_ids))
+        rows = self._session.execute(
+            select(MemberRecord.id, MemberRecord.display_name)
+            .join(EmploymentPeriodRecord, EmploymentPeriodRecord.member_id == MemberRecord.id)
+            .where(
+                MemberRecord.employment_state == "active",
+                EmploymentPeriodRecord.state == "active",
+                EmploymentPeriodRecord.ended_at.is_(None),
+            )
+            .order_by(MemberRecord.display_name, MemberRecord.id)
+        ).all()
+        known = {
+            str(member_id): str(name) for member_id, name in rows if self._can_answer(str(member_id))
+        }
+        # 그 회의에 있던 사람이 먼저 걸린다 — 참석자 순서 그대로, 그다음 나머지를 이름 순으로.
+        ordered = [member_id for member_id in wanted if member_id in known]
+        ordered += [member_id for member_id in known if member_id not in set(ordered)]
+        return [{"id": member_id, "display_name": known[member_id]} for member_id in ordered]
+
     def task_assignment_candidates(self, principal: Principal) -> list[MemberCandidateView]:
         """Active members inside the scope this person's assign authority was granted at, who can run a Task themselves.
 

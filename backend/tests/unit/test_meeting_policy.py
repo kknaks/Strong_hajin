@@ -80,7 +80,9 @@ def test_controls_belong_to_role_and_status_not_to_the_transport() -> None:
     assert scheduled_owner.can_add_agenda.memo and not scheduled_owner.can_write_memo
     assert scheduled_attendee.can_edit_info and not scheduled_attendee.can_edit_agendas.any()
     assert running_owner.can_add_agenda.memo and running_owner.can_write_memo
-    assert not running_owner.can_edit_info and not running_owner.can_edit_agendas.any()
+    # **진행 중에도 사람 벌은 고치고 지운다** — 임시 재료이므로 임시로 다룬다
+    # (사용자 결정 「최종 회의록만 회의록이다」 2026-09-14).
+    assert running_owner.can_edit_agendas.memo and not running_owner.can_edit_info
     assert done_owner.can_edit_info and done_owner.can_edit_note and done_owner.can_edit_agendas.final
     assert not shared.can_edit_info and not shared.can_edit_note
 
@@ -98,10 +100,13 @@ def test_agenda_gates_are_three_verdicts_and_the_ai_track_is_never_open() -> Non
     assert add == {"memo": True, "ai": False, "final": False}
     assert edit == {"memo": True, "ai": False, "final": False}
 
-    # 「진행 중」에 사람 벌 안건을 **더할 수는 있지만 고칠 수는 없다** — 표를 그대로 읽은 자리다.
+    # **「진행 중」에도 사람 벌은 더하고 고치고 지운다** (사용자 결정 2026-09-14 §바뀌는 것 1).
+    # 사람 벌은 최종 회의록을 지을 **임시 재료**이므로, 오타로 세운 안건이 회의가 끝날 때까지
+    # 박제되면 안 된다. 0.4.x 의 「진행 중에는 이미 선 안건을 손대지 않는다」는 원본이 최종본처럼
+    # 잠겨 있던 때의 규칙이었다.
     add, edit = gates(MeetingStatus.IN_PROGRESS)
     assert add == {"memo": True, "ai": False, "final": False}
-    assert edit == {"memo": False, "ai": False, "final": False}
+    assert edit == {"memo": True, "ai": False, "final": False}
 
     # 정리가 도는 동안에는 **어느 벌도** 열리지 않는다.
     add, edit = gates(MeetingStatus.SUMMARIZING)

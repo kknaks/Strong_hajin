@@ -67,6 +67,49 @@ def test_the_twenty_first_agenda_is_refused(tmp_path) -> None:
         ensure_agenda_capacity(20)
 
 
+def test_the_twenty_agenda_limit_is_counted_per_track_not_across_the_three(tmp_path) -> None:
+    """**안건 한도는 벌마다 20이다 — 합쳐서 20이 아니다** (SPEC-004 §4.0-3 · `X-100` 확장).
+
+    세 벌을 합산으로 세면 AI 벌이 회차마다 안건을 세우는 것만으로 사람이 자기 벌에 안건을 못 세우게
+    된다. 벌마다 자기 목록이므로 한도도 벌마다다.
+    """
+    client = _client(tmp_path)
+    meeting = _schedule(client, agendas=tuple(f"안건 {index}" for index in range(1, 21)))
+    meeting_id = meeting["meeting"]["meeting_id"]
+    assert len(meeting["agendas"]) == 20
+
+    # 사람 벌이 꽉 찼다 — 스물한 번째는 거절된다.
+    assert client.post(
+        f"/api/meetings/{meeting_id}/agendas", headers=MINA, json={"title": "스물한 번째"}
+    ).status_code == 409
+
+    # **AI 벌은 그 셈에 걸리지 않는다** — 사람 벌이 20이어도 배치는 자기 벌을 채운다.
+    application = client.app.state.workflow_application
+    with application._session_factory() as session:
+        meetings = application._meetings(session)
+        record = meetings._repository.meeting(_uuid(meeting_id))
+        for order in range(1, 21):
+            meetings._repository.create_agenda(
+                record, track="ai", title=f"AI 안건 {order}", source=None, order_index=order
+            )
+        session.commit()
+    agendas = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
+    assert len([row for row in agendas if row["track"] == "memo"]) == 20
+    assert len([row for row in agendas if row["track"] == "ai"]) == 20
+
+    # 사람 벌 한도는 여전히 사람 벌만 본다 — 합산 40이 되었다고 달라지지 않는다.
+    assert client.post(
+        f"/api/meetings/{meeting_id}/agendas", headers=MINA, json={"title": "그래도 스물한 번째"}
+    ).status_code == 409
+
+    # 하나를 지우면 그 벌에 한 자리가 난다.
+    memo_ids = [row["agenda_id"] for row in agendas if row["track"] == "memo"]
+    assert client.delete(f"/api/meetings/{meeting_id}/agendas/{memo_ids[-1]}", headers=MINA).status_code == 204
+    assert client.post(
+        f"/api/meetings/{meeting_id}/agendas", headers=MINA, json={"title": "빈 자리에 선다"}
+    ).status_code == 201
+
+
 def test_deleting_an_agenda_takes_its_lines_with_it(tmp_path) -> None:
     client = _client(tmp_path)
     meeting = _schedule(client, agendas=("남을 안건", "지울 안건"))
@@ -453,11 +496,15 @@ def test_the_note_is_a_line_list_that_saving_overwrites_rather_than_stacking(tmp
     ).status_code == 409
 
 
-def test_agendas_are_edited_before_the_meeting_and_after_it_but_never_while_it_runs(tmp_path) -> None:
-    """진행 중·정리 중을 뺀 네 상태에서 사람이 **이미 선 안건**을 손본다.
+def test_the_memo_track_is_edited_whenever_it_is_the_working_copy_and_locked_once_it_is_evidence(tmp_path) -> None:
+    """사람 벌은 **임시 재료인 동안 열리고, 근거가 된 뒤 닫힌다** (사용자 결정 2026-09-14 · D53).
 
-    SPEC §4.1-5·6 · 시안 `SCR-106-E77`·`E35`·`E71`. 회의록 **줄** 편집과는 열리는 상태가 다르다 (§5.1).
-    새로 **세우는** 것만 「진행 중」에 한 자리 더 열려 있다 (D45) — 여기서는 고치기·지우기를 본다.
+    열리는 상태는 예정 · **진행 중** · 취소다. 회의가 도는 동안 사람 벌은 최종 회의록을 지을 재료일
+    뿐이므로 사람이 자기가 적은 것을 고치고 지운다 — 오타로 세운 안건이 회의가 끝날 때까지 박제되던
+    자리가 여기였다(조사 근거 6). 「종료」·「실패」에서 닫히는 이유는 그때 최종 벌이 섰고 원본이
+    **그것을 대조하는 근거**가 되기 때문이다 (§8-11).
+
+    SPEC §4.1-6 게이트 표 · 시안 `SCR-106-E77`·`E35`·`E71`. 회의록 **줄** 편집과는 열리는 상태가 다르다.
     """
     client = _client(tmp_path)
     meeting = _schedule(client)
@@ -473,17 +520,32 @@ def test_agendas_are_edited_before_the_meeting_and_after_it_but_never_while_it_r
 
     client.post(f"/api/meetings/{meeting_id}/start", headers=MINA)
     running = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]
-    # 「진행 중」에는 사람 벌 안건을 **더할 수는 있지만 고칠 수는 없다** — 표를 그대로 읽은 자리다.
-    assert running["can_edit_agendas"] == {"memo": False, "ai": False, "final": False}
+    # **「진행 중」에도 사람 벌은 더하고 고치고 지운다** — 임시 재료이므로 임시로 다룬다.
+    assert running["can_edit_agendas"] == {"memo": True, "ai": False, "final": False}
     assert running["can_add_agenda"] == {"memo": True, "ai": False, "final": False}
+    # 회의록 **줄** 편집은 여전히 닫혀 있다 — 최종 벌이 아직 서지 않았다.
     assert running["can_edit_note"] is False
-    # 세우는 것은 열려 있다 (D45) — 고치고 지우는 것만 막힌다.
-    assert client.post(f"/api/meetings/{meeting_id}/agendas", headers=MINA, json={"title": "진행 중 안건"}).status_code == 201
-    assert client.patch(f"/api/meetings/{meeting_id}/agendas/{agenda_id}", headers=MINA, json={"concluded": True}).status_code == 409
-    assert client.delete(f"/api/meetings/{meeting_id}/agendas/{agenda_id}", headers=MINA).status_code == 409
+    added_running = client.post(f"/api/meetings/{meeting_id}/agendas", headers=MINA, json={"title": "진행 중 안건"})
+    assert added_running.status_code == 201
+    running_id = added_running.json()["agenda_id"]
+    # 제목을 고친다 — 오타로 세운 안건이 박제되지 않는다.
+    assert client.patch(
+        f"/api/meetings/{meeting_id}/agendas/{running_id}", headers=MINA, json={"title": "고쳐 쓴 안건"}
+    ).status_code == 200
+    # 지운다 — 그 안건에 매달린 그 벌의 줄이 함께 사라진다 (§4.1-10).
+    assert client.delete(f"/api/meetings/{meeting_id}/agendas/{running_id}", headers=MINA).status_code == 204
+    assert "진행 중 안건" not in [
+        row["title"] for row in client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
+    ]
+    # **결론 표시는 여전히 최종 벌에만 있다** — 임시가 열렸다고 최종의 값이 사람 벌로 오지 않는다.
+    assert client.patch(
+        f"/api/meetings/{meeting_id}/agendas/{agenda_id}", headers=MINA, json={"concluded": True}
+    ).status_code == 409
 
     client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
+    # **정리가 도는 동안에는 어느 벌도 열리지 않는다** — 합성이 그 재료를 읽는 중이다.
     assert client.post(f"/api/meetings/{meeting_id}/agendas", headers=MINA, json={"title": "정리 중 안건"}).status_code == 409
+    assert client.delete(f"/api/meetings/{meeting_id}/agendas/{agenda_id}", headers=MINA).status_code == 409
 
     _force_status(client, meeting_id, MeetingStatus.DONE)
     done = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]
@@ -491,10 +553,12 @@ def test_agendas_are_edited_before_the_meeting_and_after_it_but_never_while_it_r
     # 편집」은 뼈대가 한 벌이던 때의 표이고, 그 자리는 이제 최종 벌이다.
     assert done["can_edit_agendas"] == {"memo": False, "ai": False, "final": True}
     assert done["can_edit_note"] is True
-    # 사람 벌의 안건은 「완료」에도 닫혀 있다.
+    # **사람 벌은 「완료」에 닫힌다** — 이제 그것은 최종 벌을 대조하는 근거이고, 고칠 수 있으면
+    # 근거가 되지 못한다 (D53). 열렸다 닫히는 이 축이 「임시 재료 → 근거」의 전부다.
     assert client.patch(
         f"/api/meetings/{meeting_id}/agendas/{agenda_id}", headers=MINA, json={"title": "원본을 고쳐 본다"}
     ).status_code == 409
+    assert client.delete(f"/api/meetings/{meeting_id}/agendas/{agenda_id}", headers=MINA).status_code == 409
     # 새로 세우는 안건은 **최종 벌**에 선다.
     added_after = client.post(f"/api/meetings/{meeting_id}/agendas", headers=MINA, json={"title": "완료 뒤 안건"})
     assert added_after.status_code == 201
@@ -581,11 +645,15 @@ def test_the_places_a_meeting_actually_builds_agendas_from_are_still_three(tmp_p
     assert [row["source"] for row in carried.json()["agendas"]] == ["carried"]
 
 
-def test_the_host_may_stand_up_an_agenda_while_the_meeting_is_running(tmp_path) -> None:
+def test_the_host_may_stand_up_and_fix_and_drop_an_agenda_while_the_meeting_is_running(tmp_path) -> None:
     """말이 새 주제로 넘어가는 순간이 곧 안건이 필요한 순간이다 (사용자 결정 D45, 2026-09-11).
 
-    회의가 끝나기를 기다리게 하면 그동안의 메모가 엉뚱한 안건에 붙는다. **더하는 것만** 열린다 —
-    이미 선 안건을 고치거나 지우는 것은 그것을 딛고 있는 줄이 발밑에서 바뀌는 일이라 계속 막는다.
+    회의가 끝나기를 기다리게 하면 그동안의 메모가 엉뚱한 안건에 붙는다. **세우는 것만이 아니라 고치고
+    지우는 것도 열린다** (사용자 결정 「최종 회의록만 회의록이다」 2026-09-14) — 사람 벌은 최종
+    회의록을 지을 **임시 재료**이고, 임시를 최종처럼 잠가 두면 오타로 세운 안건이 박제된다.
+
+    안건을 지우면 **그 벌의 줄이 함께 사라진다** (§4.1-10) — 사람이 자기가 적은 것을 지우는 것이고,
+    최종 회의록은 재전사문 위에서 새로 지어지므로 그 삭제가 회의록을 깨지 않는다.
     """
     client = _client(tmp_path)
     made = _schedule(client)
@@ -595,9 +663,9 @@ def test_the_host_may_stand_up_an_agenda_while_the_meeting_is_running(tmp_path) 
 
     head = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]
     assert head["status"] == "in_progress"
-    # 화면이 「+ 새 안건」을 세우는 근거는 편집 권한보다 한 자리 넓다 — **사람 벌에서만** 그렇다.
+    # 「+ 새 안건」과 편집이 **사람 벌에서 같이 열린다** — 임시 재료라 세우는 것도 지우는 것도 그 자리다.
     assert head["can_add_agenda"] == {"memo": True, "ai": False, "final": False}
-    assert head["can_edit_agendas"] == {"memo": False, "ai": False, "final": False}
+    assert head["can_edit_agendas"] == {"memo": True, "ai": False, "final": False}
 
     added = client.post(f"/api/meetings/{meeting_id}/agendas", headers=MINA, json={"title": "회의 중 안건"})
     assert added.status_code == 201, added.text
@@ -607,8 +675,36 @@ def test_the_host_may_stand_up_an_agenda_while_the_meeting_is_running(tmp_path) 
         "회의 중 안건",
     ]
 
-    # 고치기·지우기는 그대로 막힌다.
+    # **고치기·지우기도 함께 열린다** (사용자 결정 2026-09-14) — 사람 벌은 임시 재료이므로 회의가
+    # 도는 동안 사람이 자기가 적은 것을 손본다. 0.4.x 는 여기를 막아, 이야기가 옮겨 가며 세운 안건이
+    # 잘못 서면 회의가 끝날 때까지 그대로 남았다.
     assert client.patch(
-        f"/api/meetings/{meeting_id}/agendas/{standing}", headers=MINA, json={"title": "고쳐 본다"}
+        f"/api/meetings/{meeting_id}/agendas/{standing}", headers=MINA, json={"title": "고쳐 쓴 안건"}
+    ).status_code == 200
+
+    # 지우는 것도 열린다 — 매달린 메모가 함께 사라진다.
+    memo = client.post(
+        f"/api/meetings/{meeting_id}/agendas/{standing}/lines", headers=MINA, json={"text": "여기 적은 메모"}
+    )
+    assert memo.status_code == 201, memo.text
+    assert client.delete(f"/api/meetings/{meeting_id}/agendas/{standing}", headers=MINA).status_code == 204
+    left = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
+    assert [row["title"] for row in left] == ["회의 중 안건"]
+    assert all(not row["lines"] for row in left)
+
+    # **AI 벌은 여전히 어느 쪽도 열리지 않는다** — 그것은 AI 의 기록이고 배치가 매 회차 전량 교체한다.
+    application = client.app.state.workflow_application
+    principal = application.authenticated_principal("mina")
+    with application._session_factory() as session:
+        meetings = application._meetings(session)
+        ai_agenda = meetings._repository.create_agenda(
+            meetings._repository.meeting(_uuid(meeting_id)),
+            track="ai", title="AI 가 세운 안건", source=None, order_index=1,
+        )
+        ai_id = str(ai_agenda.id)
+        session.commit()
+    assert client.patch(
+        f"/api/meetings/{meeting_id}/agendas/{ai_id}", headers=MINA, json={"title": "AI 것을 고쳐 본다"}
     ).status_code == 409
-    assert client.delete(f"/api/meetings/{meeting_id}/agendas/{standing}", headers=MINA).status_code == 409
+    assert client.delete(f"/api/meetings/{meeting_id}/agendas/{ai_id}", headers=MINA).status_code == 409
+    del principal
