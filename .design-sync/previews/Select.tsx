@@ -41,7 +41,9 @@ function Opened({ children, minHeight = 360 }: { children: React.ReactNode; minH
   useEffect(() => {
     const open = () => {
       const root = ref.current;
-      if (!root || root.querySelector(".scax-popover")) return;
+      // 패널은 포털로 body 에 선다 (DS-18) — root 안에서는 절대 안 보인다.
+      // 열렸는지는 트리거의 aria-expanded 로 묻는다.
+      if (!root || root.querySelector('button[aria-haspopup][aria-expanded="true"]')) return;
       root.querySelector<HTMLButtonElement>("button[aria-haspopup]")?.click();
     };
     open();

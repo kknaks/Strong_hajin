@@ -2,7 +2,7 @@
 // 화면·features·shell·api 는 디자인 부품이 아니라 여기 없다. 부품이 늘면 여기에 한 줄 추가한다.
 //
 // 바퀴 10 이 `src/` 를 도메인 구조로 갈랐다 — 디자인 부품은 전부 `src/ds/` 한 곳에 산다.
-// 이 파일의 목록 = `src/ds/` 의 비-테스트 파일 22개(+ `ds/icons/Icon`)가 내보내는 것 전부다.
+// 이 파일의 목록 = `src/ds/` 의 비-테스트 파일 23개(+ `ds/icons/Icon`)가 내보내는 것 전부다.
 
 export { Icon } from "./src/ds/icons/Icon";
 export type { IconName } from "./src/ds/icons/Icon";
@@ -38,6 +38,7 @@ export { Popover } from "./src/ds/Popover";
 export { Empty, EmptyValue } from "./src/ds/Empty";
 export type { EmptyVariant } from "./src/ds/Empty";
 export { Skeleton } from "./src/ds/Skeleton";
+export { Spinner } from "./src/ds/Spinner";
 export { ProgressBar } from "./src/ds/ProgressBar";
 
 export { Drawer, Modal, ConfirmModal, Toast, useEscape } from "./src/ds/Modal";

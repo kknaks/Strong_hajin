@@ -10,6 +10,96 @@ claude.ai/design 프로젝트 **`TheSC AX Design System`** (`7e839512-977c-4142-
 앱 전체가 구 디자인 시스템에서 **TheSC AX** 로 옮겨 갔고 구 DS 는 은퇴했다 (PR #12 → `main` `75360fe`).
 이 동기화 준비(바퀴 12)는 **`.design-sync/` 와 `frontend/ds-entry.tsx` 만** 손댔다 — 앱 코드는 읽기만 했다.
 
+### ⑨ `7e839512` 에는 원본 Figma DS 가 있었다 — **사용자 판단으로 교체했다** (2026-09-14)
+
+`/design-sync` 를 돌려 `list_files` 를 찍어 보고서야 알았다 — **목표 프로젝트가 빈 통이 아니라,
+우리가 부품·토큰을 복사해 온 업스트림 디자인 시스템 그 자체다.**
+
+- `components/` 17그룹 · **199종** · `guidelines/` 19 · `tokens/` 7벌 · `handoff/`(우리 부품 주석이
+  「핸드오프」라 부르는 `scax-ui.jsx`·`work-modal.jsx`) · `templates/` · `ui_kits/` · `uploads/` 스크린샷 40여장
+- 루트에 이미 `_ds_bundle.js` · `_ds_manifest.json` · `styles.css` 가 있다
+
+스킬의 업로드 계획은 deletes 글롭(`components/**`·`tokens/**`·`guidelines/**`·`fonts/**`·`_vendor/**`·
+`_preview/**`)과 **필수** reconciliation(「최종 번들에 없는 원격 경로를 전부 삭제」)을 돈다.
+그대로 올렸으면 **업스트림 199종 + guidelines 19 + tokens 7벌이 지워지고** 우리 34종으로 대체됐다.
+되돌릴 수 없다. **`finalize_plan` 전에 멈췄고 아무것도 쓰지 않았다.**
+
+**두 프로젝트는 성격이 다르다.** 업스트림 부품은 Figma 노드에서 뽑은 **정적 렌더러**다 —
+`className`/`style` + `text1..N`(문자열 슬롯) + `icon1..N`(노드 슬롯) + 부분을 켜고 끄는 boolean 뿐이고,
+**열어 본 것 중 `onClick`·`onChange`·`value`·`checked` 를 가진 것이 하나도 없다**
+(`Avatar`·`Button`·`ButtonGroup`·`IconButton`·`Icon`·`EmptyPage`·`TaskTable`·`ChipChip`·
+`SegmentedControlSegmentedControl` 확인). 유일한 예외가 `components/datetime/` 셋인데, 그 `.d.ts` 가
+스스로 「**Intentional addition** — the source Figma file defines no date-picker」라고 적고 있다.
+우리 `ds/` 는 반대로 전부 동작하는 앱 부품이다.
+
+**우리 사본의 혈통은 확인된다** (파일을 열어 대조했다):
+- `styles/fonts.css` = `tokens/fonts.css` 의 포크. 앞 4줄 주석이 **바이트 단위로 같고** src 만 로컬로 바꿨다.
+  (덤: 업스트림의 비-JP URL `@v1.3.9/dist/web/...` 는 jsDelivr 404 다 — 우리 사본이 그걸 고쳐 뒀다)
+- `styles/scax.css` = `tokens/scax.css` 의 **순수 상위집합**. 103종 → 142종, **더한 39 · 뺀 0**
+  (graph 15 · ai 7 · progress 3 · hero 3 · shadow 4 · warning 2 · surface-selected · popover-current ·
+  neutral-soft · radius-chip · radius-panel)
+- `ds/icons/glyphs.tsx` 의 24그리드 글리프는 `components/icon/Icon.jsx` 에서 옮겨 온 것이라고 소스 주석이 적는다
+
+**사용자 결정 (2026-09-14)**: 「지금은 정본이 우리 꺼야, 코드 기준」 —
+Figma 정적 렌더러 199종 + `tokens/` 7벌을 **지우고** 우리 35종으로 교체했다. 그대로 실행했다.
+
+**지우지 않은 것** (우리 번들에 대체물이 없어서 — 다음 동기화도 지우지 마라):
+`guidelines/` 19장(브랜드·색·타이포 카드) · `handoff/` · `templates/` · `ui_kits/` ·
+`uploads/`(시안 스크린샷 40여장) · `design_handoff_my_work/` · `assets/`.
+`cfg.guidelinesGlob` 을 **`[]` 로 두는 이유가 이것이다** — 기본값은 `docs/*.md` 를 긁어 가는데
+이 리포의 `docs/` 는 백엔드·도메인 문서라 `guidelines/` 를 오염시킨다.
+
+### ⑩ 파이프라인은 뚫렸다 — 그러나 **소스가 움직이는 중이면 올리지 마라** (2026-09-14)
+
+`/design-sync` 를 끝까지 돌려 build ✓ · validate **exit 0** · 34/34 렌더 · capture ✓ 까지 갔다.
+가는 길에 고친 것 셋 — 다음 동기화는 여기서 시작하면 된다:
+
+1. **`cssEntry` 가 `@import` 묶음이면 아무것도 안 풀린다.** `cfg.cssEntry` 의 내용은
+   `_ds_bundle.css` 에 **그대로 이어 붙는다**(`package-build.mjs` 의 `appendFileSync`).
+   `src/styles/index.css` 는 값 없이 `@import "./x.css"` 14줄뿐이라 번들 뿌리에서 전부 깨졌다
+   (`[CSS_IMPORT_MISSING]` ×14). `copyTokens` 는 `tokensPkg`(= node_modules 패키지)가 있어야만
+   도므로 우리처럼 앱 안에 CSS 가 있는 리포에는 안 맞는다.
+   → **`.design-sync/flatten-css.mjs`** 로 빌드 직전에 한 벌로 펼치고
+   `cfg.cssEntry = ".ds-styles-flat.css"` 를 가리킨다(산출물 `frontend/.ds-styles-flat.css`, gitignore).
+   **빌드 전에 반드시 먼저 돌려라** — 안 돌리면 낡은 CSS 가 올라간다.
+2. **`Opened` 래퍼는 `aria-expanded` 로 물어야 한다.** 패널은 포털로 `document.body` 에 서므로
+   `root.querySelector(".scax-popover")` 는 **영원히 null** 이다 → 400ms 마다 트리거를 다시 눌러
+   열림/닫힘을 반복하고 캡처 순간엔 닫혀 있다. `DatePicker`·`Select`·`MultiSelect`·`TimeField`
+   넷이 그 상태였다(`Popover` 만 처음부터 `aria-expanded` 를 써서 무사했다).
+3. **`position:fixed` 부품은 높이를 주는 래퍼가 없으면 찌부러진다.** `Modal` 프리뷰가 래퍼 없이
+   서 있어서 캡처 iframe 의 `100vh` 가 0에 가까워지고 `.scax-modal` 의
+   `height:min(720px, calc(100vh - 48px))` 가 따라 접혀 **머리·본문이 사라지고 푸터만 남았다**
+   (`.render-check.json` 의 `maxHeight: 48`). `Drawer`·`ConfirmModal` 은 이미 minHeight 래퍼가 있었다.
+
+**업로드 직전에 한 번 멈췄다** — 같은 워크트리에서 **다른 에이전트가 앱 소스를 고치는 중**이었다.
+내 빌드(11:47:35) **1분 전**인 11:46:29 에도 `components.css`·`lib/labels.ts` 가 쓰이고 있었고,
+`ds/` 표면 13개 파일이 내 기준과 달라져 있었으며 **`ds/Spinner.tsx` 라는 35번째 부품**이 새로 생겼다.
+결정적으로 `DropZone` 에 **필수 prop `drop` 이 새로 생겨** 내 `dtsPropsFor` 와 프리뷰가 이미 틀렸다.
+
+편집이 15분간 멎은 것을 확인한 뒤 그 델타를 흡수하고 진행했다 — `Spinner`(35번째) 추가,
+`DropZone.drop` 필수 prop, `FileList.icon`, `Toast.icon`, 글리프 3종(collapse·expand·trash).
+
+> **규칙: 올리기 전에 `git status --porcelain frontend/src/` 를 먼저 본다.**
+> `_ds_sync.json` 은 내용 해시로 「이 상태를 검증했다」고 보증하는 앵커다. 움직이는 트리에서 올리면
+> **반쪽 상태를 보증하게 되고**, 다음 동기화의 diff 는 그것을 영원히 고칠 수 없다.
+> 이번에는 «편집이 멎었고 빌드가 그 뒤였다» 를 확인하고 올렸다. **트리는 아직 커밋 안 된 상태다** —
+> 그 커밋이 앵커와 어긋나면 다음 동기화가 전량 재검증한다(안전한 쪽이다).
+
+### ⑪ 앱 버그 둘 — 프리뷰로는 못 고친다 (2026-09-14 발견)
+
+1. **`body` 에 `font-family` 가 없다.** 바퀴 2 가 원본 DS 전역 리셋 7줄을 잘라냈고 바퀴 9-B 가
+   여덟 줄만 되살렸는데 그중에 `font-family` 가 **없다**. 그런데 `.scax-button`·`.scax-badge`·
+   `.scax-chip`·`.scax-table`·`.scax-modal__title`·`.scax-drawer__title`·`.scax-file-row__name` 등
+   글자를 내는 클래스 대부분이 스스로 걸지 않고 **body 상속에 기댄다**.
+   실측: `getComputedStyle(document.body).fontFamily === "Times"`. 앱 전체 규칙 중
+   `html`/`body`/`:root` 에 `font-family` 를 거는 것은 **0개**다(주석 처리된 것 하나뿐).
+   → 번들에서는 `flatten-css.mjs` 가 `body{font-family:var(--font-ui);…}` 한 줄을 덧대 막았다.
+   **앱 쪽 수정은 `styles/shell.css` 의 전역 element 구획이 맡아야 한다.**
+2. **글리프 둘이 비었거나 반쪽이다.** `tune` 은 `glyphs.tsx:232` 에서 `<></>` — **도형이 0개**다
+   (`Empty variant="filter"` 가 이걸 쓰므로 「조건에 맞는 항목 없음」 상태의 아이콘이 늘 빈 원이다).
+   `circle-exclamation` 은 `<circle r=10/>` 하나뿐이라 **느낌표가 없다**
+   (`Empty variant="error"` · `Toast tone="error"` · `MinWidthNotice` 가 쓴다).
+
 ### ① 프로젝트가 바뀌었다
 
 | | 전 | 후 |
@@ -181,11 +271,15 @@ cd frontend && npx tsc --noEmit     # → 0   (단, tsconfig 의 include 는 ["s
   리뷰 시트에서 날짜가 이상해도 정상 — validate 의 카드 스크린샷(`_screenshots/general__<Name>.png`)에서 본다.
   (④ 때문에 이제 「오늘」은 프리뷰가 `today="2026-09-14"` 로 직접 고정한다.)
 
-## Known render warns (구 프로젝트에서 관측된 것 — 새 프로젝트에서 재확인 필요)
+## Known render warns (2026-09-14 새 프로젝트에서 재확인 — 둘 다 non-blocking)
 
 - `[GRID_OVERFLOW] Toast (fixed/portal)` — column 카드에서 각 셀이 transform 을 가져 fixed 토스트가
-  셀 안에 갇힌다. 카드 스크린샷으로 4셀 전부 정상 확인(2026-09-07). single 로 바꾸면 Success/Error 가
-  안 보여 사용자가 반려했으므로 column 유지.
+  셀 안에 갇힌다. **리뷰 시트에서 4셀(Basic·Error·Success·WithAction) 전부 정상 렌더 확인(2026-09-14).**
+  single 로 바꾸면 Success/Error 가 안 보여 사용자가 반려했으므로 column 유지.
+- `[TOKENS_MISSING] --action · --scax-space-1000 · --scax-space-350 · --days` —
+  `--days` 는 캘린더가 인라인 style 로 넣는 런타임 변수라 **정상**(경고 문구 자체가 그렇게 말한다).
+  나머지 셋은 **정의되지 않은 채 참조되는 실제 죽은 참조**다: `--action` 은 은퇴한 구 DS 토큰 이름이고
+  `--scax-space-1000`·`--scax-space-350` 은 space 램프에 없는 값이다(있는 것은 …800·1200). 앱 쪽 정리 대상.
 
 ## Re-sync risks
 

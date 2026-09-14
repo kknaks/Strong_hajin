@@ -29,3 +29,5 @@ ds-bundle/
 
 # Storybook 정적 빌드 산출물
 frontend/storybook-static/
+# design-sync: flatten-css 산출물 (빌드 아티팩트)
+frontend/.ds-styles-flat.css

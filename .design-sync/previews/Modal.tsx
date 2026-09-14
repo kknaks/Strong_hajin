@@ -5,9 +5,16 @@ export default { title: "General/Modal", component: Modal };
 /**
  * 화면 가운데 모달. `Drawer` 와 달리 뒤 화면을 덮는다.
  * 닫는 길 셋을 다 갖는다 — 머리의 × · Esc · 바깥 클릭.
+ *
+ * 카드 함정: `.scax-modal-overlay` 는 `position:fixed` 라 **레이아웃 높이를 갖지 않는다.**
+ * 높이를 주는 래퍼 없이 두면 캡처 iframe 의 `100vh` 가 0에 가까워지고,
+ * `.scax-modal` 의 `height:min(720px, calc(100vh - 48px))` 가 따라 찌부러져
+ * 머리·본문이 0으로 접히고 푸터만 남는다(첫 캡처에서 확인 — maxHeight 48).
+ * `Drawer`·`ConfirmModal` 프리뷰가 이미 같은 이유로 minHeight 래퍼를 쓴다.
  */
 export const Promote = () => (
-  <Modal
+  <div style={{ minHeight: 700 }}>
+    <Modal
     closeLabel="닫기"
     footer={
       <>
@@ -28,15 +35,17 @@ export const Promote = () => (
       <Checkbox checked onChange={() => {}}>회의록 템플릿 확정 — 한지원</Checkbox>
       <Checkbox checked={false} onChange={() => {}}>전사 품질 재확인 — 미지정</Checkbox>
     </div>
-    <div style={{ marginTop: 16 }}>
-      <StatusNote>보낸 업무는 받는 사람의 「받은 업무」에 바로 뜹니다.</StatusNote>
-    </div>
-  </Modal>
+      <div style={{ marginTop: 16 }}>
+        <StatusNote>보낸 업무는 받는 사람의 「받은 업무」에 바로 뜹니다.</StatusNote>
+      </div>
+    </Modal>
+  </div>
 );
 
 /** `size="sm"` — 갈래가 좁은 자리 */
 export const Small = () => (
-  <Modal
+  <div style={{ minHeight: 700 }}>
+    <Modal
     closeLabel="닫기"
     footer={
       <>
@@ -50,6 +59,7 @@ export const Small = () => (
     size="sm"
     title="THE CONNECT 3층 A룸"
   >
-    <p style={{ fontSize: 14 }}>2026-09-20 14:00 – 15:00 · 8인실</p>
-  </Modal>
+      <p style={{ fontSize: 14 }}>2026-09-20 14:00 – 15:00 · 8인실</p>
+    </Modal>
+  </div>
 );

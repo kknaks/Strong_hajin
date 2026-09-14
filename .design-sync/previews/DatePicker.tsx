@@ -15,7 +15,8 @@ const words = {
   today: "2026-09-14",
   labels: { open: "달력 열기", previousMonth: "이전 달", nextMonth: "다음 달", clear: "지우기", today: "오늘" },
   weekdayNames: ["일", "월", "화", "수", "목", "금", "토"],
-  formatMonth: (year: number, month: number) => `${year}년 ${month + 1}월`,
+  // `lib/labels.ts` 의 `formatMonthLong` 과 같다 — month 는 **1-based** 다(+1 하지 않는다).
+  formatMonth: (year: number, month: number) => `${year}년 ${month}월`,
 };
 
 /** 디자인 시스템 카드용: 마운트 직후 트리거를 눌러 열고, 닫히면 다시 연다 — 카드에서만 쓴다.
@@ -25,7 +26,9 @@ function Opened({ children, minHeight = 260 }: { children: React.ReactNode; minH
   useEffect(() => {
     const open = () => {
       const root = ref.current;
-      if (!root || root.querySelector(".scax-popover")) return;
+      // 패널은 포털로 body 에 선다 (DS-18) — root 안에서는 절대 안 보인다.
+      // 열렸는지는 트리거의 aria-expanded 로 묻는다.
+      if (!root || root.querySelector('button[aria-haspopup][aria-expanded="true"]')) return;
       root.querySelector<HTMLButtonElement>("button[aria-haspopup]")?.click();
     };
     open();

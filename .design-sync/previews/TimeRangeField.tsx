@@ -33,7 +33,8 @@ const dateWords = {
   today: "2026-09-14",
   labels: { open: "달력 열기", previousMonth: "이전 달", nextMonth: "다음 달", clear: "지우기", today: "오늘" },
   weekdayNames: ["일", "월", "화", "수", "목", "금", "토"],
-  formatMonth: (year: number, month: number) => `${year}년 ${month + 1}월`,
+  // `lib/labels.ts` 의 `formatMonthLong` 과 같다 — month 는 **1-based** 다(+1 하지 않는다).
+  formatMonth: (year: number, month: number) => `${year}년 ${month}월`,
 };
 
 /** 기본 — 시작을 옮기면 종료가 같은 간격만큼 따라간다 (defaultDuration 60) */

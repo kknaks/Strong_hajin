@@ -10,6 +10,7 @@ export const MeetingFiles = () => (
   <div className="surface-card" style={{ width: 560 }}>
     <DropZone
       accept=".pdf,.md,.txt,.docx"
+      drop="첨부할 파일을 끌어다 놓거나 추가하세요"
       hint="한 건당 20MB · PDF · Markdown · Word"
       onFiles={() => {}}
       pickLabel="파일 고르기"
@@ -22,7 +23,7 @@ export const MeetingFiles = () => (
 /** 고르는 말만 — 위에 서는 말은 선택이다 */
 export const Bare = () => (
   <div className="surface-card" style={{ width: 560 }}>
-    <DropZone hint="이미지 · 최대 10MB" onFiles={() => {}} pickLabel="증빙 첨부" />
+    <DropZone drop="증빙을 끌어다 놓거나 추가하세요" hint="이미지 · 최대 10MB" onFiles={() => {}} pickLabel="증빙 첨부" />
   </div>
 );
 
@@ -31,6 +32,7 @@ export const Disabled = () => (
   <div className="surface-card" style={{ width: 560 }}>
     <DropZone
       disabled
+      drop="첨부할 파일을 끌어다 놓거나 추가하세요"
       hint="회의가 끝난 뒤에는 자료를 더할 수 없습니다"
       onFiles={() => {}}
       pickLabel="파일 고르기"

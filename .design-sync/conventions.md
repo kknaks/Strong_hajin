@@ -2,17 +2,17 @@
 
 TheSC AX 는 **CSS 클래스 + 시맨틱 토큰** 체계다. 래퍼·Provider 없음, CSS-in-JS 없음, 유틸리티 클래스 없음.
 `src/styles/index.css` 하나를 링크하면 토큰·컴포넌트 스타일·Pretendard 가 전부 온다.
-React 부품은 **34종**(`window.SCAX.*`)이고, 나머지 부품은 아래 클래스 어휘를 그대로 쓴 일반 HTML 이다.
+React 부품은 **35종**(`window.SCAX.*`)이고, 나머지 부품은 아래 클래스 어휘를 그대로 쓴 일반 HTML 이다.
 직접 CSS 를 새로 쓰기 전에 이 표에 있는지 먼저 본다.
 
 > **2026-09-14 에 이 문서가 통째로 다시 쓰였다.** 앱이 구 디자인 시스템을 은퇴시키고 TheSC AX 로 옮겼다
 > (PR #12). 구 어휘(`btn` · `badge ai` · `plain-table` · `avatar xs` · `styles.css`)는 **이제 없다.**
 
-## 부품 34종 — `window.SCAX.*`
+## 부품 35종 — `window.SCAX.*`
 
 | 갈래 | 부품 |
 |---|---|
-| 글리프 | `Icon`(35종) |
+| 글리프 | `Icon`(38종 — 24그리드 29 · 16그리드 8 · 면 1) |
 | 사람 | `Avatar`(5단) |
 | 표시 | `Badge`(6톤) · `StatusNote` · `ProgressBar` · `TimeChip` · `EmptyValue` |
 | 단추 | `Button`(5변형) · `ButtonGroup` · `IconButton` |
@@ -20,7 +20,7 @@ React 부품은 **34종**(`window.SCAX.*`)이고, 나머지 부품은 아래 클
 | 목록·표 | `DataTable`(+`Th`·`Td`·`TrOpenable`) · `GutterList` · `FileList` |
 | 폼 | `Checkbox` · `FieldMessage` · `Select` · `MultiSelect` · `DateField` · `DatePicker` · `TimeField` · `TimeRangeField` · `DropZone` |
 | 오버레이 | `Popover` · `Drawer` · `Modal` · `ConfirmModal` · `Toast` |
-| 상태 | `Empty` · `Skeleton` · `MinWidthNotice` |
+| 상태 | `Empty` · `Skeleton` · `Spinner` · `MinWidthNotice` |
 
 ### 부품은 **말을 모른다** (바퀴 11)
 
@@ -32,7 +32,7 @@ React 부품은 **34종**(`window.SCAX.*`)이고, 나머지 부품은 아래 클
 
 | 부품 | 반드시 넘겨야 하는 문구 |
 |---|---|
-| `Skeleton` | `label` |
+| `Skeleton` · `Spinner` | `label` |
 | `ProgressBar` | `ariaLabel` (머리줄이 없어도 막대는 읽혀야 한다) |
 | `IconButton` | `label` |
 | `Drawer` · `Modal` | `closeLabel` |
@@ -43,6 +43,7 @@ React 부품은 **34종**(`window.SCAX.*`)이고, 나머지 부품은 아래 클
 | `TimeField` · `TimeRangeField` | `labels`(6개) · `selectLabels`(6개) · `emptyActionLabel` (+ 한 쌍은 `startLabel`·`endLabel`) |
 | `DatePicker` · `DateField` | `labels`(5개) · `weekdayNames`(7) · `formatMonth` · **`today`** |
 | `FileList` | 줄마다 `removeLabel` |
+| `DropZone` | `drop`(머리 한 줄) · `pickLabel` · `hint` |
 | `MinWidthNotice` | `title` · `description` |
 | `Empty` | 행동이 있으면 `actionLabel` 도 — **타입이 둘을 한 쌍으로 묶는다** |
 
@@ -61,7 +62,7 @@ React 부품은 **34종**(`window.SCAX.*`)이고, 나머지 부품은 아래 클
 | 목록 | `gutter-list`/`gutter-row`(+`active`)/`gutter-meta`/`gutter-aside`/`gutter-body`(+`muted`) · `scax-file-list`/`scax-file-row`(+`active`, `__name`·`__size`, `file-open`) |
 | 폼 | `scax-field`(`__label`·`__hint`·`__error`·`__required`) · `scax-field-row` · `scax-textfield` · `scax-textarea` · `scax-checkbox`(`__input`·`__box`) · `scax-select` · `scax-dropzone`(+`--over`) · `field`(구 골격, 아직 산다) |
 | 오버레이 | `scax-popover`(+`--above`, 포털로 body 에 선다) · `scax-drawer`(+`--sm` 520 / `--lg` 840, `scax-drawer-overlay`) · `scax-modal`(+`--sm`/`--md`, 기본 880, `scax-modal-overlay`) · `scax-toast` |
-| 상태 | `scax-empty`(`__icon`·`__title`·`__desc`) · `scax-status-note`(못 불러온 자리 — 「비었다」가 아니다) · `scax-skeleton`(+`--text`/`--title`/`--card`, `scax-skeleton-stack`) · `status-note`(인라인 한 줄) · `min-width-notice` |
+| 상태 | `scax-spinner`(+`scax-spinner-row`) · `scax-empty`(`__icon`·`__title`·`__desc`) · `scax-status-note`(못 불러온 자리 — 「비었다」가 아니다) · `scax-skeleton`(+`--text`/`--title`/`--card`, `scax-skeleton-stack`) · `status-note`(인라인 한 줄) · `min-width-notice` |
 | 시각 | `scax-time-chip` |
 | 셸 | `scax-app-shell` · `scax-app-main` · `scax-page-header` · `scax-page-body` · `scax-side-nav`(+`--collapsed`) · `scax-nav-item`(+`--active`) · `scax-breadcrumb` |
 | 텍스트 | `t-item` · `t-meta` · `tabular` · `danger-text` · `sr-only` · `.ax-*` 타이포 램프 10종 |
@@ -91,6 +92,12 @@ React 부품은 **34종**(`window.SCAX.*`)이고, 나머지 부품은 아래 클
 - **드로어 위에 모달을 겹치지 않는다.**
 - **부품 안에 문구를 박지 않는다.** 위의 「부품은 말을 모른다」 참조.
 - **`Empty` 의 `error` 를 「비어 있음」으로 읽지 않는다.** 못 불러온 것은 `.scax-status-note` 로 그려진다.
+
+## `Skeleton` 과 `Spinner` 는 갈래가 다르다
+
+갈리는 축은 **「올 것의 모양을 아는가」** 다. 목록처럼 줄 수와 높이를 아는 자리는 `Skeleton`
+(실제와 같은 개수로, 리스트는 5행). 합성이 끝난 회의록처럼 **몇 줄이 올지 모르는** 자리는
+`Spinner` — 거기에 막대를 까는 것은 「모양을 아는 척」이다.
 
 ## 화면은 네 상태를 같이 그린다
 

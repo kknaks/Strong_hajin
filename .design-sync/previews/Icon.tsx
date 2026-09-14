@@ -9,9 +9,9 @@ export default { title: "General/Icon", component: Icon };
  */
 const GRID24 = [
   "arrow-right", "blank", "business-bag", "calendar", "check", "chevron-down", "chevron-right",
-  "circle-exclamation", "clock", "close", "company", "document", "home", "inbox", "left-side",
-  "link", "list-category", "minus", "pencil", "play", "plus", "reset", "search", "send",
-  "square-check", "tune",
+  "circle-exclamation", "clock", "close", "collapse", "company", "document", "expand", "home",
+  "inbox", "left-side", "link", "list-category", "minus", "pencil", "play", "plus", "reset",
+  "search", "send", "square-check", "trash", "tune",
 ] as const;
 
 /** 아직 구 16그리드인 8종 — 선 두께를 16/24 만큼 줄여 보이는 굵기를 맞춘다 */
@@ -24,10 +24,10 @@ const cell: React.CSSProperties = { display: "grid", justifyItems: "center", gap
 const caption: React.CSSProperties = { fontSize: 11, color: "var(--scax-color-ink-assistive)" };
 const grid: React.CSSProperties = { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, width: 560 };
 
-/** 35종 전부 · 16px 기본 */
+/** 38종 전부 · 16px 기본 */
 export const AllGlyphs = () => (
   <div>
-    <p className="t-meta" style={{ marginBottom: 6 }}>24 그리드 · 26종</p>
+    <p className="t-meta" style={{ marginBottom: 6 }}>24 그리드 · {GRID24.length}종</p>
     <div style={grid}>
       {GRID24.map((name) => (
         <div key={name} style={cell}>
@@ -36,7 +36,7 @@ export const AllGlyphs = () => (
         </div>
       ))}
     </div>
-    <p className="t-meta" style={{ margin: "16px 0 6px" }}>16 그리드 · 8종 (G-03 잔여)</p>
+    <p className="t-meta" style={{ margin: "16px 0 6px" }}>16 그리드 · {GRID16.length}종 (G-03 잔여)</p>
     <div style={grid}>
       {GRID16.map((name) => (
         <div key={name} style={cell}>
@@ -45,7 +45,7 @@ export const AllGlyphs = () => (
         </div>
       ))}
     </div>
-    <p className="t-meta" style={{ margin: "16px 0 6px" }}>면 글리프 · 1종</p>
+    <p className="t-meta" style={{ margin: "16px 0 6px" }}>면 글리프 · {FILL16.length}종</p>
     <div style={grid}>
       {FILL16.map((name) => (
         <div key={name} style={cell}>
