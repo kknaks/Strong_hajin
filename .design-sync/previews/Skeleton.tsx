@@ -1,29 +1,32 @@
 import { Skeleton } from "ax-workspace-frontend";
 
-/**
- * Storybook 메타. design-sync 컨버터는 대문자로 시작하는 named export 만 카드 셀로 세므로
- * (`lib/emit.mjs` 의 `/^[A-Z]/` 필터) 이 default export 는 프리뷰 카드에 영향을 주지 않는다.
- * 스토리를 더하려면 이 파일에 named export 를 하나 더 쓰면 된다 — 두 곳에 같이 반영된다.
- */
 export default { title: "General/Skeleton", component: Skeleton };
 
+/**
+ * 바퀴 9-B 에서 구 `.skeleton-bar` 가 새 DS 의 `.scax-skeleton` 으로 갔다.
+ * **구 CSS 의 `animation-delay: .4s` 가 사라졌다** — 지금은 곧바로 맥동하므로,
+ * 예전 프리뷰가 갖고 있던 `NoDelay` 우회는 필요 없고 지웠다.
+ *
+ * 바퀴 11: `label` 이 **필수**다 — 막대는 읽을 것이 없으므로 무엇을 기다리는지는 부르는 쪽이 준다.
+ */
 
-/* 실제 CSS 는 0.4초 뒤에 막대를 보인다(짧은 로딩에는 안 띄우는 규칙).
-   정적 캡처는 그 전에 찍히므로 프리뷰 안에서만 지연을 0 으로 둔다 — 앱 동작은 그대로다. */
-const NoDelay = () => <style>{`.skeleton-bar{animation-delay:0s}`}</style>;
-
-/** 리스트 로딩 — 5행 (v2 10) */
+/** 리스트 로딩 — 실제 행 수와 같게, 리스트는 5행 */
 export const List = () => (
   <div className="surface-card" style={{ width: 480 }}>
-    <NoDelay />
-    <Skeleton />
+    <Skeleton label="업무 목록 불러오는 중" />
   </div>
 );
 
 /** 짧은 블록 — 실제 콘텐츠와 같은 개수로 */
 export const ThreeRows = () => (
   <div style={{ width: 320 }}>
-    <NoDelay />
-    <Skeleton rows={3} label="회의록 불러오는 중" />
+    <Skeleton label="회의록 불러오는 중" rows={3} />
+  </div>
+);
+
+/** 한 줄짜리 자리 */
+export const Single = () => (
+  <div style={{ width: 260 }}>
+    <Skeleton label="담당자 불러오는 중" rows={1} />
   </div>
 );

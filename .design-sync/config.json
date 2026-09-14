@@ -1,62 +1,128 @@
 {
-  "projectId": "8fa54d76-58d6-481a-aed9-743dff9d6c09",
+  "projectId": "7e839512-977c-4142-b4b5-d992df566ffc",
   "shape": "package",
   "pkg": "ax-workspace-frontend",
   "globalName": "SCAX",
   "entry": "./frontend/ds-entry.tsx",
   "tsconfig": "tsconfig.json",
-  "cssEntry": "src/styles.css",
+  "cssEntry": "src/styles/index.css",
   "extraFonts": [
     "../.design-sync/fonts/pretendard.css"
   ],
   "componentSrcMap": {
-    "Icon": "src/Icon.tsx",
-    "Popover": "src/Popover.tsx",
-    "Empty": "src/Empty.tsx",
-    "EmptyValue": "src/Empty.tsx",
-    "Skeleton": "src/Skeleton.tsx",
-    "ProgressBar": "src/ProgressBar.tsx",
-    "Drawer": "src/Modal.tsx",
-    "ConfirmModal": "src/Modal.tsx",
-    "Toast": "src/Modal.tsx",
-    "Checkbox": "src/FormControls.tsx",
-    "FieldMessage": "src/FormControls.tsx",
-    "DateField": "src/DateField.tsx",
-    "MinWidthNotice": "src/MinWidthNotice.tsx",
-    "TimeChip": "src/TimeChip.tsx",
-    "TaskCalendar": "src/WorkViews.tsx",
-    "DatePicker": "src/DatePicker.tsx",
-    "Select": "src/Select.tsx",
-    "MultiSelect": "src/Select.tsx",
-    "TimeField": "src/TimeField.tsx",
-    "TimeRangeField": "src/TimeField.tsx"
+    "Icon": "src/ds/icons/Icon.tsx",
+    "Avatar": "src/ds/Avatar.tsx",
+    "Badge": "src/ds/Badge.tsx",
+    "Button": "src/ds/Button.tsx",
+    "ButtonGroup": "src/ds/Button.tsx",
+    "IconButton": "src/ds/Button.tsx",
+    "Chip": "src/ds/Chip.tsx",
+    "ChipToggle": "src/ds/Chip.tsx",
+    "SegmentedControl": "src/ds/SegmentedControl.tsx",
+    "Tabs": "src/ds/SegmentedControl.tsx",
+    "DataTable": "src/ds/DataTable.tsx",
+    "GutterList": "src/ds/GutterList.tsx",
+    "StatusNote": "src/ds/StatusNote.tsx",
+    "DropZone": "src/ds/DropZone.tsx",
+    "FileList": "src/ds/FileList.tsx",
+    "Popover": "src/ds/Popover.tsx",
+    "Empty": "src/ds/Empty.tsx",
+    "EmptyValue": "src/ds/Empty.tsx",
+    "Skeleton": "src/ds/Skeleton.tsx",
+    "ProgressBar": "src/ds/ProgressBar.tsx",
+    "Drawer": "src/ds/Modal.tsx",
+    "Modal": "src/ds/Modal.tsx",
+    "ConfirmModal": "src/ds/Modal.tsx",
+    "Toast": "src/ds/Modal.tsx",
+    "Checkbox": "src/ds/FormControls.tsx",
+    "FieldMessage": "src/ds/FormControls.tsx",
+    "DateField": "src/ds/DateField.tsx",
+    "DatePicker": "src/ds/DatePicker.tsx",
+    "Select": "src/ds/Select.tsx",
+    "MultiSelect": "src/ds/Select.tsx",
+    "TimeField": "src/ds/TimeField.tsx",
+    "TimeRangeField": "src/ds/TimeField.tsx",
+    "TimeChip": "src/ds/TimeChip.tsx",
+    "MinWidthNotice": "src/ds/MinWidthNotice.tsx"
   },
   "dtsPropsFor": {
-    "Icon": "/** 27 glyphs, viewBox 0 0 16 16, stroke 1.5 (1.3 at <=14px), fill none (v2 07). */ name: \"close\" | \"chevron-down\" | \"chevron-right\" | \"arrow-right\" | \"arrow-up\" | \"arrow-down\" | \"sparkle\" | \"send\" | \"check\" | \"check-square\" | \"square\" | \"circle\" | \"play\" | \"list\" | \"calendar\" | \"clock\" | \"paperclip\" | \"plus\" | \"minus\" | \"home\" | \"refresh\" | \"ban\" | \"pending\" | \"alert\" | \"search\" | \"empty\" | \"filter\"; /** render size: 14 list/badge, 16 default, 20 toolbar/empty state, 12 chevron only */ size?: 12 | 14 | 16 | 20; className?: string; /** accessible name; omit for decorative icons (aria-hidden) */ title?: string;",
-    "Popover": "/** the opener; spread `props` on the button (aria + onClick), `open` is current state, `toggle` flips it */ trigger: (state: { open: boolean; toggle: () => void; props: React.ButtonHTMLAttributes<HTMLButtonElement> }) => React.ReactNode; /** panel content; call `close()` after a choice */ children: (close: () => void) => React.ReactNode; /** aria-label of the panel */ label: string; /** panel width, 200-400 (v2 14) */ width?: number;",
-    "Empty": "/** Headline 2 Bold */ title: string; /** Label 1 Meta */ description?: React.ReactNode; /** default = nothing here yet · filter = nothing matched (adds a reset action) · error = failed to load (adds a retry action, role=alert) */ variant?: \"default\" | \"filter\" | \"error\"; /** required for variant=default when onAction is given; filter/error have built-in labels */ actionLabel?: string; onAction?: () => void; className?: string; children?: React.ReactNode;",
-    "EmptyValue": "/* no props — renders the em dash used for an empty cell (v2 12) */",
-    "Skeleton": "/** bars to draw; match the real content's row count (list = 5) */ rows?: number; /** screen-reader text */ label?: string;",
-    "ProgressBar": "/** header line 'label · done / total'; omit when the count is already shown nearby */ label?: string; done: number; total: number;",
-    "Drawer": "/** aria-label of the dialog */ label: string; /** small line above the title (Label 2 Bold, tertiary) */ kicker?: string; /** Heading 1 (22) */ title: string; headerExtra?: React.ReactNode; /** footer row: put a flex spacer `<span className=\\\"spacer\\\" />` between left and right groups */ footer?: React.ReactNode; onClose: () => void; children: React.ReactNode;",
-    "ConfirmModal": "title: string; description: string; confirmLabel: string; /** true = destructive confirm button (danger) instead of primary */ danger?: boolean; /** disables both buttons while the command is in flight */ busy?: boolean; onConfirm: () => void; onClose: () => void;",
-    "Toast": "message: string; /** auto-fires after 4s */ onClose: () => void; /** optional single text action (e.g. 실행취소) */ action?: { label: string; onAction: () => void }; /** v2 확장 — success: check 아이콘 --accent(완료는 accent), error: alert 아이콘 --danger-accent + role=alert. 없으면 아이콘 없는 기본 토스트 */ tone?: \"success\" | \"error\";",
-    "Checkbox": "checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean; id?: string; /** label text beside the 16px box */ children?: React.ReactNode;",
-    "FieldMessage": "/** shown instead of `help` when present (role=alert) */ error?: string | null; help?: React.ReactNode; id?: string;",
-    "DateField": "id: string; label: string; /** ISO YYYY-MM-DD or '' */ value: string; onChange: (isoValue: string) => void; disabled?: boolean; /** keep the label for screen readers only */ hideLabel?: boolean;",
-    "MinWidthNotice": "/* no props — fixed full-screen notice, visible only below 1280px (CSS media query) */",
-    "TimeChip": "/** the clock text, mm:ss / HH:MM wall clock */ label: string; /** omit for a read-only chip; with it the chip becomes a button */ onClick?: () => void; /** native tooltip, e.g. the span this chip stands for */ title?: string;",
-    "TaskCalendar": "/** 업무 캘린더 — 월(6주 42칸) · 주(7칸) 뷰. 업무 하나가 기간만큼 가로 막대(calendar-chip)로 이어지고 색은 상태를 따른다 (v2 13) */ /** start_date·due_date(ISO YYYY-MM-DD)가 있는 업무만 그려진다 */ tasks: Array<{ task_id: string; title: string; state: \"open\" | \"in_progress\" | \"blocked\" | \"completion_submitted\" | \"done\" | \"cancelled\"; version: number; block_reason: string | null; start_date?: string | null; due_date?: string | null; description?: string | null }>; /** 막대 클릭 */ onOpen: (task: { task_id: string; title: string; state: string }) => void; /** 기본 month. 주 뷰는 칸이 높고(280) 막대 8줄, 월 뷰는 3줄 + \"+N개 더\" */ mode?: \"week\" | \"month\"; /** 주면 툴바에 주/월 세그먼트가 생긴다 */ onModeChange?: (mode: \"week\" | \"month\") => void; /** 격자가 열리는 날짜(ISO). 기본 오늘 */ anchorDate?: string;",
-    "DatePicker": "/** 달력 피커 — v2 14 Popover 위에 얹은 280px 월 격자(v2 확장). 트리거는 btn h30 ghost + calendar 아이콘, 패널은 이전/다음 달 · 요일 · 7×6 · 지우기/오늘. 고른 날 = 검정 배경(현재 위치 규칙), 오늘 = 테두리 */ /** ISO YYYY-MM-DD, 없으면 \"\" */ value: string; /** 고르거나 지울 때(지우면 \"\") */ onChange: (isoValue: string) => void; /** 고를 수 있는 첫 날 (ISO) */ min?: string; /** 마지막 날 (ISO) */ max?: string; /** 트리거 버튼 id */ id?: string; /** 패널 aria-label; 트리거는 \"<label> 달력 열기\"로 읽힌다 */ label: string;",
-    "Select": "/** 하나 고르기 — 네이티브 <select> 대신 Popover(v2 14) 위의 목록. 트리거는 폼 필드 규격 h34 · --radius-control · 14px */ /** 트리거 단추의 id — 호출부 .field 레이블이 가리키는 자리 */ id?: string; /** 접근 이름. 트리거와 목록이 같이 쓴다 */ label: string; value: string; onChange: (value: string) => void; options: ReadonlyArray<{ value: string; label: string; /** 항목 아래 한 줄 */ description?: string; disabled?: boolean; /** 같은 값이 이어지는 동안 한 번만 머리글이 뜬다 */ group?: string }>; /** 값이 없을 때 트리거에 남는 글자 */ placeholder?: string; disabled?: boolean; /** 있으면 보더가 갈아입고 헬퍼 대신 이 문장이 나간다 (FieldMessage) */ error?: string | null; /** 문장 없이 보더만 */ invalid?: boolean; help?: React.ReactNode; /** 기본은 자동 — 옵션 8개 초과면 검색창이 붙는다 */ searchable?: boolean; searchPlaceholder?: string; /** 목록 바닥의 한 줄 행동 (btn link) */ footerAction?: { label: string; onAction: () => void }; /** 트리거를 갈아 끼운다 — filter-chip · btn ghost. DatePicker 가 Popover 에 넘기는 방식과 같다 */ trigger?: (state: { open: boolean; label: string; props: React.ButtonHTMLAttributes<HTMLButtonElement> }) => React.ReactNode;",
-    "MultiSelect": "/** 여럿 고르기 — 옵션은 Checkbox 와 같은 네모, 선택 값은 칩(badge ai)으로 서고 maxChips 를 넘으면 +N */ id?: string; label: string; value: ReadonlyArray<string>; onChange: (values: string[]) => void; options: ReadonlyArray<{ value: string; label: string; description?: string; disabled?: boolean; group?: string }>; placeholder?: string; disabled?: boolean; error?: string | null; invalid?: boolean; help?: React.ReactNode; searchable?: boolean; searchPlaceholder?: string; footerAction?: { label: string; onAction: () => void }; /** 칩으로 세워 두는 개수, 기본 2 */ maxChips?: number; /** 목록 머리의 전체 선택/해제, 기본 true */ selectAll?: boolean; trigger?: (state: { open: boolean; label: string; props: React.ButtonHTMLAttributes<HTMLButtonElement> }) => React.ReactNode;",
-    "TimeField": "/** 시각 하나 — 네이티브 input[type=time] 대신 30분 목록 팝오버. 표기는 24시간 HH:MM 고정(오전/오후 없음) */ id?: string; label: string; /** 24시간 \"HH:MM\", 없으면 \"\" */ value: string; onChange: (value: string) => void; /** 목록 간격(분), 기본 30 */ step?: number; /** 고를 수 있는 첫/마지막 시각 \"HH:MM\" */ min?: string; max?: string; placeholder?: string; disabled?: boolean; error?: string | null; invalid?: boolean; help?: React.ReactNode; trigger?: (state: { open: boolean; label: string; props: React.ButtonHTMLAttributes<HTMLButtonElement> }) => React.ReactNode;",
-    "TimeRangeField": "/** 시각 한 쌍 — 종료<=시작이면 에러 한 줄(FieldMessage), 시작을 옮기면 종료가 같은 간격만큼 따라간다 */ id?: string; /** 한 쌍 전체의 이름. 각 트리거는 \"<label> 시작 시각\" 으로 읽힌다 */ label: string; /** 24시간 \"HH:MM\" */ start: string; end: string; onChange: (next: { start: string; end: string }) => void; step?: number; /** 간격을 알 수 없을 때 종료가 서는 자리(분), 기본 60 */ defaultDuration?: number; min?: string; max?: string; disabled?: boolean; /** 주면 범위 검사보다 이 문장이 먼저다 */ error?: string | null; help?: React.ReactNode; startLabel?: string; endLabel?: string;"
+    "Icon": "/** 글리프 35종. 26종은 새 DS 24그리드, 8종은 구 16그리드(G-03 잔여), `persons` 하나는 면 글리프. 선 두께는 보이는 굵기를 맞춘다 — 24그리드 1.5/1.3, 16그리드는 16/24 만큼 줄인다. */ name: \"arrow-down\" | \"arrow-up\" | \"ban\" | \"circle\" | \"folder\" | \"paperclip\" | \"pending\" | \"sparkle\" | \"arrow-right\" | \"blank\" | \"business-bag\" | \"calendar\" | \"check\" | \"chevron-down\" | \"chevron-right\" | \"circle-exclamation\" | \"clock\" | \"close\" | \"company\" | \"document\" | \"home\" | \"inbox\" | \"left-side\" | \"link\" | \"list-category\" | \"minus\" | \"pencil\" | \"persons\" | \"play\" | \"plus\" | \"reset\" | \"search\" | \"send\" | \"square-check\" | \"tune\"; /** 렌더 크기: 14 목록·배지, 16 기본, 20 툴바·빈 상태, 12 셰브런 전용 */ size?: 12 | 14 | 16 | 20; className?: string; /** 접근 이름. 없으면 장식(aria-hidden) */ title?: string;",
+    "Avatar": "/** 이니셜 아바타 (`DS-gaps` G-43) — 새 DS 의 아바타는 사진 전제라 글자를 못 받는다. 구 `.avatar` 다섯 단(20·24·32·40·80)을 `.scax-avatar` 로 옮긴 것. */ /** 사람 이름. 첫 글자만 쓴다 — 자르는 것은 이 부품의 일이다 */ name?: string | null; size?: \"xs\" | \"sm\" | \"md\" | \"lg\" | \"xl\"; /** 주면 읽히는 자리(role=img)가 된다. 안 주면 aria-hidden — 옆에 이름이 이미 서 있는 자리 */ label?: string; title?: string; className?: string;",
+    "Badge": "/** 상태·종류를 한 낱말로 다는 표. 남은 `<span>` 속성은 전부 통과한다(`data-status`·`title`). */ /** `outline` 은 바퀴 9 가 더한 톤 (`DS-gaps` G-29) — 흰 바탕 가는 테두리. 채움형 neutral 과 뜻이 다르다: 「아직 확정 아닌 값」(초안 vN · 변경 가능한 링크) */ tone?: \"accent\" | \"neutral\" | \"danger\" | \"positive\" | \"info\" | \"outline\"; /** 안 읽은 개수를 세는 빨간 원. 주면 `tone` 을 무시한다 */ variant?: \"count\"; className?: string; children?: React.ReactNode;",
+    "Button": "/** 단추 — 스타일은 `components.css` 의 `.scax-button*`. 남은 `<button>` 속성은 전부 통과한다 (Popover 트리거의 aria-expanded/haspopup/controls). */ /** `inline` 은 글줄 속 단추(`DS-gaps` 신규) — 높이·여백·테두리가 없어 문장 안에 글자처럼 선다. `ai` 는 AX 표면의 단추(`DS-gaps` G-17, `--scax-ai-*`). 둘 다 `tone` 을 무시한다 */ variant?: \"solid\" | \"outlined\" | \"text\" | \"inline\" | \"ai\"; tone?: \"primary\" | \"neutral\" | \"danger\"; size?: \"sm\" | \"md\" | \"lg\"; /** 글자. `children` 과 둘 다 오면 `children` 이 이긴다 */ label?: React.ReactNode; iconBefore?: \"arrow-down\" | \"arrow-up\" | \"ban\" | \"circle\" | \"folder\" | \"paperclip\" | \"pending\" | \"sparkle\" | \"arrow-right\" | \"blank\" | \"business-bag\" | \"calendar\" | \"check\" | \"chevron-down\" | \"chevron-right\" | \"circle-exclamation\" | \"clock\" | \"close\" | \"company\" | \"document\" | \"home\" | \"inbox\" | \"left-side\" | \"link\" | \"list-category\" | \"minus\" | \"pencil\" | \"persons\" | \"play\" | \"plus\" | \"reset\" | \"search\" | \"send\" | \"square-check\" | \"tune\"; /** 줄 폭을 다 먹는다 */ block?: boolean; disabled?: boolean; onClick?: React.MouseEventHandler<HTMLButtonElement>; type?: \"button\" | \"submit\" | \"reset\"; ariaLabel?: string; title?: string; className?: string; children?: React.ReactNode;",
+    "ButtonGroup": "/** 단추를 나란히 세운다 — 안의 단추들이 폭을 똑같이 나눠 갖는다 (`.scax-button-group`). */ children?: React.ReactNode;",
+    "IconButton": "/** 글리프 하나짜리 단추 (28px). */ /** 세트의 글리프 이름. 세트에 없는 표시를 쓸 자리는 `children` 으로 준다 */ name?: \"arrow-down\" | \"arrow-up\" | \"ban\" | \"circle\" | \"folder\" | \"paperclip\" | \"pending\" | \"sparkle\" | \"arrow-right\" | \"blank\" | \"business-bag\" | \"calendar\" | \"check\" | \"chevron-down\" | \"chevron-right\" | \"circle-exclamation\" | \"clock\" | \"close\" | \"company\" | \"document\" | \"home\" | \"inbox\" | \"left-side\" | \"link\" | \"list-category\" | \"minus\" | \"pencil\" | \"persons\" | \"play\" | \"plus\" | \"reset\" | \"search\" | \"send\" | \"square-check\" | \"tune\"; /** 달력의 앞·뒤 화살표처럼 글리프가 아닌 글자를 넣는 자리 */ children?: React.ReactNode; size?: 12 | 14 | 16 | 20; /** 화면에 안 보이는 이름 — 아이콘만 있으니 이것이 없으면 읽히지 않는다 (필수) */ label: string; onClick?: React.MouseEventHandler<HTMLButtonElement>; /** 눌린 상태(aria-pressed) — 즐겨찾기 별처럼 「켜 둔」 것 */ active?: boolean; disabled?: boolean; className?: string; title?: string; type?: \"button\" | \"submit\" | \"reset\";",
+    "Chip": "/** 켜고 끄는 낱말 단추 (`aria-pressed`). 새 DS 의 Category/Chip. 남은 `<button>` 속성은 전부 통과한다. */ label?: React.ReactNode; on?: boolean; onClick?: React.MouseEventHandler<HTMLButtonElement>; disabled?: boolean; className?: string; children?: React.ReactNode;",
+    "ChipToggle": "/** 여럿 고르는 칩 (구 `.chip-toggle`). `Chip` 과 달리 **폼 값**이다 — 안에 진짜 체크박스가 있어서 키보드로도 켜고 끈다. */ checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean; children?: React.ReactNode;",
+    "SegmentedControl": "/** 칸 안에서 하나 고른다 — 배경이 있는 작은 띠(`.scax-segmented`). 보기 방식·기간처럼 「같은 것을 다르게 보는」 자리. */ value: T; options: ReadonlyArray<{ value: T; label: React.ReactNode; /** 그래프를 불러오는 동안 못 바꾸게 막는 자리 */ disabled?: boolean }>; onChange: (value: T) => void; /** 필수 — 부품은 말을 모른다 */ ariaLabel: string;",
+    "Tabs": "/** 면을 가르며 하나 고른다 — 밑줄이 서는 페이지 단위 탭(`.scax-tabs`). `SegmentedControl` 과 크기가 다르다: min-width 880 · 좌우 여백 24 · 아래 경계선을 스스로 갖는 「본문 칸 폭」 부품. */ value: T; options: ReadonlyArray<{ value: T; label: React.ReactNode; disabled?: boolean }>; onChange: (value: T) => void; ariaLabel: string;",
+    "DataTable": "/** 읽는 표 — 열 수에 안 묶인다 (`DS-gaps` G-15 · G-46). 새 DS 의 `.scax-task-table` 은 업무 표 전용 6열 격자라 열이 제각각인 표(변경 기록 5열 · 공유 대상 3열 · 보낸 업무 4열)가 쓸 수 없다. `.scax-task-table` 과 달리 시맨틱 `<table>` 이다. 칸은 같은 파일의 `Th` · `Td` · `TrOpenable` 로 세운다 — `Th({ align?: \"start\"|\"center\"|\"end\"; scope?: \"col\"|\"row\" })`, `Td({ align?; title?: boolean })` (`title` 은 폭을 다 먹고 줄바꿈이 허용되는 「제목 칸」 하나), `TrOpenable({ onClick })` (누르면 열리는 줄). */ /** 표의 접근 이름(aria-label) */ label?: string; children: React.ReactNode; className?: string;",
+    "GutterList": "/** 왼쪽에 고정폭 메타 칸(시각 · 누구 · 종류)을 두고 오른쪽에 본문을 흘리는 목록 (`DS-gaps` G-26). `active` 인 줄은 마운트 뒤 화면 가운데로 스크롤된다. */ /** 목록의 접근 이름 */ label: string; rows: Array<{ key: string; gutter: React.ReactNode; /** 본문 앞에 서는 둘째 고정 칸 — 없으면 칸 자체가 서지 않는다 */ aside?: React.ReactNode; body: React.ReactNode; /** 아직 굳지 않은 줄 — 저장되지 않았음을 색으로만 말한다 */ muted?: boolean; active?: boolean }>; gutterWidth?: number; asideWidth?: number;",
+    "StatusNote": "/** 지금 무슨 일이 벌어지는지 한 줄로 말하는 자리 (`DS-gaps` G-25) — 화면을 막지 않고 곁에 선다. `.error-banner` 는 너무 크고 `Toast` 는 4초 뒤 사라져 「지금 상태」를 계속 말하지 못한다. `role=\"status\"` — 이 줄은 조작이 아니다. */ tone?: \"muted\" | \"danger\"; children: React.ReactNode;",
+    "DropZone": "/** 파일을 끌어다 놓거나 골라 받는 자리 (`.scax-dropzone` / `--over`). **받는 것은 이 부품이 판단하지 않는다** — 크기·형식은 부르는 쪽과 서버가 정한다. */ /** 무엇을 받는지 한 줄 — 「한 건당 20MB · PDF · Markdown」 */ hint: React.ReactNode; /** 고르는 단추의 글자 */ pickLabel: string; /** `<input accept>` 값. 브라우저 고르기 창을 좁히기만 한다 */ accept?: string; onFiles: (files: File[]) => void; disabled?: boolean; /** 고르는 단추 위에 서는 말 */ children?: React.ReactNode;",
+    "FileList": "/** 파일 한 줄씩의 목록 — 이름 · 크기 · (안 된 이유) · 빼는 자리 (`.scax-file-list`). **못 붙은 줄은 지우지 않는다** — 이름을 흐리게 두고 사유를 옆에 남긴다 (SPEC-004 §10). */ label: string; rows: Array<{ key: string; name: string; size?: string; /** 못 붙은 이유. 있으면 이름이 흐려지고 이 문장이 옆에 선다 */ reason?: string | null; /** 주면 이름이 눌러지는 줄이 된다 */ onOpen?: () => void; onRemove?: () => void; /** 빼기 단추의 이름 — 부르는 쪽이 준다 (바퀴 11) */ removeLabel: string; /** 지금 열려 있는 줄 */ active?: boolean }>;",
+    "Popover": "/** 패널을 `document.body` 로 포털해 트리거의 지금 좌표에 띄운다 (DS-18) — 조상의 `overflow` 에 잘리지 않는다. 아래가 모자라면 위로 뒤집고, max-height 는 그쪽에 남은 자리만큼(160~420). Esc 는 겹 스택의 맨 위 한 겹만 닫는다. */ /** 여는 단추. `props` 를 단추에 펼치면 aria + onClick 이 붙는다 */ trigger: (state: { open: boolean; toggle: () => void; props: React.ButtonHTMLAttributes<HTMLButtonElement> }) => React.ReactNode; /** 패널 내용. 고른 뒤 `close()` 를 부른다 */ children: (close: () => void) => React.ReactNode; /** 패널의 aria-label */ label: string; /** 패널 폭, 기본 200 */ width?: number;",
+    "Empty": "/** 비었음 · 못 찾음 · 못 불러옴. `error` 는 「비었다」가 아니라 `.scax-status-note` 로 그려지고 role=alert 다. **바퀴 11: 이 부품은 말을 모른다** — 행동이 있으면 이름도 반드시 함께 받는다(타입이 한 쌍으로 묶는다). */ title: string; description?: React.ReactNode; /** default = inbox 글리프 · filter = tune 글리프 · error = circle-exclamation + role=alert */ variant?: \"default\" | \"filter\" | \"error\"; /** 행동의 이름. `onAction` 과 한 쌍이다 — 이름 없이 행동만 넘기면 컴파일이 안 된다 */ actionLabel?: string; onAction?: (() => void) | undefined; className?: string; children?: React.ReactNode;",
+    "EmptyValue": "/* props 없다 — 값이 없는 칸에 남기는 대시(—) 하나. 공백이 아니다 (v2 12 TABLE). 대시는 말이 아니라 활자라 prop 으로 받지 않는다 (바퀴 11) */",
+    "Skeleton": "/** 로딩은 빈 화면이 아니다 — 올 내용의 자리를 미리 잡아 둔다(`.scax-skeleton-stack`). 리스트는 5행이 규격. */ /** 막대 수. 실제 내용과 같은 개수로 깐다 */ rows?: number; /** 화면에 안 보이는 이름 — 부르는 쪽이 넘긴다 (필수, 바퀴 11) */ label: string;",
+    "ProgressBar": "/** 진행률: 트랙 h6 r3, 채움 `--accent`. 머리줄(이름 + `done / total`)은 세는 자리가 따로 없을 때만 붙인다. */ /** 머리줄에 보이는 이름. 세는 자리가 따로 있으면 주지 않는다 */ label?: string; /** 막대의 접근 이름 — 머리줄이 없어도 읽혀야 한다 (필수, 바퀴 11) */ ariaLabel: string; done: number; total: number;",
+    "Drawer": "/** 뒤 화면을 남겨 둔 채 오른쪽에서 열리는 편집·상세 자리 (`.scax-drawer`). 닫는 길 셋 — 머리의 × · Esc · 바깥 클릭. */ /** 다이얼로그의 aria-label */ label: string; /** 제목 위 작은 줄 */ kicker?: string; title: string; headerExtra?: React.ReactNode; /** 푸터 줄. 좌우를 가르려면 사이에 `<span className=\"spacer\" />` 를 둔다 */ footer?: React.ReactNode; onClose: () => void; /** 골격 폭 (`DS-gaps` G-10) — `sm` 520 / `lg` 840. **기본이 `lg`** 다 */ size?: \"sm\" | \"lg\"; /** 닫기 단추의 이름 — 부르는 쪽이 준다 (필수, 바퀴 11) */ closeLabel: string; children: React.ReactNode;",
+    "Modal": "/** 화면 가운데 모달 (`.scax-modal`). `Drawer` 와 달리 뒤 화면을 덮는다. 골격 분기 없이 modifier 하나로 갈린다. 닫는 길 셋 — × · Esc · 바깥 클릭. */ label: string; title: string; headerExtra?: React.ReactNode; footer?: React.ReactNode; onClose: () => void; /** 안 주면 DS 기본 880 */ size?: \"sm\" | \"md\"; /** 닫기 단추의 이름 (필수, 바퀴 11) */ closeLabel: string; children: React.ReactNode;",
+    "ConfirmModal": "/** 되돌릴 수 없는 일 앞에서 한 번 묻는 자리 (role=alertdialog). */ title: string; description: string; confirmLabel: string; /** `null` 이면 푸터의 취소를 접고 머리에 닫기 × 를 세운다 — 닫을 길은 반드시 남는다. 부르는 쪽이 늘 준다 (필수, 바퀴 11) */ cancelLabel: string | null; /** 취소를 접었을 때 머리에 서는 × 의 이름 (필수) */ closeLabel: string; /** true = 확인 단추가 위험(danger) */ danger?: boolean; /** 명령이 날아가는 동안 두 단추를 막는다 */ busy?: boolean; onConfirm: () => void; onClose: () => void;",
+    "Toast": "/** 4초 뒤 스스로 사라지는 한 줄 (`.scax-toast`). */ message: string; onClose: () => void; /** 글자 하나짜리 행동 (예: 실행취소) */ action?: { label: string; onAction: () => void }; /** success = check 글리프 + `--accent`(완료는 accent) · error = circle-exclamation + `--danger-accent` + role=alert. 없으면 아이콘 없는 기본 토스트 */ tone?: \"success\" | \"error\"; /** 알림을 지우는 단추의 이름 (필수, 바퀴 11) */ closeLabel: string;",
+    "Checkbox": "/** 16 × 16 · r4. 네이티브 input 을 지우지 않는다 — 키보드·스크린리더·폼 제출이 전부 브라우저 것으로 남는다. */ checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean; id?: string; /** 네모 옆에 서는 글자 */ children?: React.ReactNode;",
+    "FieldMessage": "/** 필드 아래 한 줄. 에러가 뜨면 헬퍼 텍스트는 **교체**되고 둘을 같이 쌓지 않는다 (v2 09) — 그 규칙을 호출부의 성의에 맡기지 않고 여기서 강제한다. (`DS-gaps` G-05 의 `warning`·`info` 톤은 **안 만들었다** — 부르는 자리가 0곳이다) */ /** 있으면 `help` 대신 이것이 나간다 (role=alert) */ error?: string | null; help?: React.ReactNode; id?: string;",
+    "DateField": "/** 날짜를 받는 칸 — 전 화면이 **같은 달력** 하나를 쓴다 (DS-17). 네이티브 `input[type=date]` 를 화면에서 걷어냈다(브라우저마다 글자 순서가 다르다). 값은 언제나 ISO `YYYY-MM-DD`. */ id: string; label: string; /** ISO `YYYY-MM-DD`, 없으면 \"\" */ value: string; onChange: (isoValue: string) => void; disabled?: boolean; /** 이름표를 스크린리더에만 남긴다 */ hideLabel?: boolean; /** 화면에 낼 때의 구분자. 안 주면 ISO 그대로(`2026-09-30`) */ displaySeparator?: \"/\" | \".\"; pickerIcon?: \"calendar\" | \"chevron-down\"; required?: boolean; /** 아래 `DatePicker` 로 그대로 흘려보내는 것들 (바퀴 11 — 부품은 말도 시계도 모른다) */ today: string; labels: { open: string; previousMonth: string; nextMonth: string; clear: string; today: string }; weekdayNames: ReadonlyArray<string>; formatMonth: (year: number, month: number) => string;",
+    "DatePicker": "/** 달력 피커 — `Popover` 위에 얹은 280px 월 격자. 고른 날 = 검정 배경, 오늘 = 테두리. 패널은 이전/다음 달 · 요일 · 7×6 · 지우기/오늘. */ /** ISO `YYYY-MM-DD`, 없으면 \"\" */ value: string; /** 고르거나 지울 때(지우면 \"\") */ onChange: (isoValue: string) => void; /** 고를 수 있는 첫 날 / 마지막 날 (ISO) */ min?: string; max?: string; id?: string; /** 패널 이름. 트리거는 여기에 `labels.open` 을 붙여 읽는다 */ label: string; /** 트리거를 갈아 끼운다 — `Select` 와 같은 render prop. 안 주면 달력 아이콘 단추 하나 */ trigger?: (state: { open: boolean; label: string; props: React.ButtonHTMLAttributes<HTMLButtonElement> }) => React.ReactNode; /** 오늘 (ISO). 어느 시간대의 오늘인지는 부르는 쪽이 안다 (필수, 바퀴 11) */ today: string; /** 이 부품이 내는 말 전부 — `lib/labels` 의 `datePickerLabel` 을 그대로 넘긴다 (필수) */ labels: { open: string; previousMonth: string; nextMonth: string; clear: string; today: string }; /** 요일 머리글 일곱, 일요일부터 (필수) */ weekdayNames: ReadonlyArray<string>; /** 달 제목을 만드는 법 (필수) */ formatMonth: (year: number, month: number) => string;",
+    "Select": "/** 하나 고르기 — 네이티브 `<select>` 대신 `Popover` 위의 목록. 트리거는 폼 필드 규격 h34 · 14px. 옵션이 8개를 넘으면 검색창이 저절로 붙는다. **네이티브 `<select>` 는 이제 앱에 없다.** */ /** 트리거 단추의 id — 호출부 `.field` 레이블이 가리키는 자리 */ id?: string; /** 접근 이름. 트리거와 목록이 같이 쓴다 */ label: string; value: string; onChange: (value: string) => void; options: ReadonlyArray<{ value: string; label: string; /** 항목 아래 한 줄 — 같은 이름이 여럿일 때 무엇으로 갈리는지 */ description?: string; disabled?: boolean; /** 같은 값이 이어지는 동안 한 번만 머리글이 뜬다 */ group?: string }>; placeholder?: string; disabled?: boolean; /** 있으면 보더가 갈아입고 헬퍼 대신 이 문장이 나간다 (FieldMessage) */ error?: string | null; /** 문장 없이 보더만 — 문장이 한 쌍 아래 한 번만 나가는 자리(TimeRangeField) */ invalid?: boolean; help?: React.ReactNode; /** 기본은 자동(옵션 8개 초과) */ searchable?: boolean; searchPlaceholder?: string; /** 목록 바닥의 한 줄 행동 (글줄 속 단추) */ footerAction?: { label: string; onAction: () => void }; /** 트리거를 갈아 끼운다 — 툴바의 `filter-chip`, 아이콘만 있는 단추 등 */ trigger?: (state: { open: boolean; label: string; props: React.ButtonHTMLAttributes<HTMLButtonElement> }) => React.ReactNode; /** 이 부품이 내는 말 전부 — `lib/labels` 의 `selectLabel` 을 그대로 넘긴다 (필수, 바퀴 11) */ labels: { /** 값이 없을 때 트리거에 남는 글자 */ placeholder: string; /** 검색칸의 이름이자 안내 글자 */ search: string; /** 검색 결과가 없을 때의 제목 */ noMatch: string; /** 고른 값을 비우는 자리 */ clear: string; selectAll: string; clearAll: string }; /** 검색 결과가 없을 때 검색어를 비우는 단추 이름 (필수) */ emptyActionLabel: string;",
+    "MultiSelect": "/** 여럿 고르기 — 옵션은 `Checkbox` 와 같은 네모, 고른 값은 칩으로 서고 `maxChips` 를 넘으면 +N. */ id?: string; label: string; value: ReadonlyArray<string>; onChange: (values: string[]) => void; options: ReadonlyArray<{ value: string; label: string; description?: string; disabled?: boolean; group?: string }>; placeholder?: string; disabled?: boolean; error?: string | null; invalid?: boolean; help?: React.ReactNode; searchable?: boolean; searchPlaceholder?: string; footerAction?: { label: string; onAction: () => void }; /** 칩으로 세워 두는 개수, 기본 2 */ maxChips?: number; /** 목록 머리의 전체 선택/해제, 기본 true */ selectAll?: boolean; trigger?: (state: { open: boolean; label: string; props: React.ButtonHTMLAttributes<HTMLButtonElement> }) => React.ReactNode; /** 필수 (바퀴 11) */ labels: { /** 값이 없을 때 트리거에 남는 글자 */ placeholder: string; /** 검색칸의 이름이자 안내 글자 */ search: string; /** 검색 결과가 없을 때의 제목 */ noMatch: string; /** 고른 값을 비우는 자리 */ clear: string; selectAll: string; clearAll: string }; /** 필수 */ emptyActionLabel: string;",
+    "TimeField": "/** 시각 하나 (`DS-gaps` G-08) — 네이티브 `input[type=time]` 을 쓰지 않는다(로캘마다 「오후 2:30」/\"14:30\" 로 갈린다). 보이는 글자도 값도 24시간 `HH:MM` 고정. 고르기는 `Select` 의 팝오버 목록을 그대로 쓴다. */ id?: string; label: string; /** 24시간 `HH:MM`, 없으면 \"\" */ value: string; onChange: (value: string) => void; /** 목록의 간격(분). 기본 30 */ step?: number; /** 고를 수 있는 첫/마지막 시각 `HH:MM` */ min?: string; max?: string; placeholder?: string; disabled?: boolean; error?: string | null; /** 문장 없이 보더만 — 문장은 한 쌍 아래 한 번만 나간다 */ invalid?: boolean; help?: React.ReactNode; trigger?: (state: { open: boolean; label: string; props: React.ButtonHTMLAttributes<HTMLButtonElement> }) => React.ReactNode; /** 이 부품이 내는 말 — `lib/labels` 의 `timeFieldLabel` (필수, 바퀴 11) */ labels: { /** 값이 없을 때 트리거에 남는 글자 */ placeholder: string; /** 목록 검색칸의 안내 글자(예: 14:30) */ searchPlaceholder: string; /** 한 쌍 사이의 구분 기호 */ dash: string; start: string; end: string; rangeInvalid: string }; /** 목록의 「못 찾았다」에서 검색어를 비우는 단추 이름 (필수) */ emptyActionLabel: string; /** 목록의 말 — `lib/labels` 의 `selectLabel` (필수) */ selectLabels: { /** 값이 없을 때 트리거에 남는 글자 */ placeholder: string; /** 검색칸의 이름이자 안내 글자 */ search: string; /** 검색 결과가 없을 때의 제목 */ noMatch: string; /** 고른 값을 비우는 자리 */ clear: string; selectAll: string; clearAll: string };",
+    "TimeRangeField": "/** 시각 한 쌍 (`DS-gaps` G-08) — 종료<=시작이면 에러 한 줄(FieldMessage), 시작을 옮기면 종료가 같은 간격만큼 따라간다. */ id?: string; /** 한 쌍 전체의 이름 */ label: string; /** 24시간 `HH:MM` */ start: string; end: string; onChange: (next: { start: string; end: string }) => void; step?: number; /** 간격을 알 수 없을 때 종료가 서는 자리(분), 기본 60 */ defaultDuration?: number; min?: string; max?: string; disabled?: boolean; /** 주면 범위 검사보다 이 문장이 먼저다 */ error?: string | null; help?: React.ReactNode; /** 한 쌍의 두 트리거 이름 (필수, 바퀴 11) */ startLabel: string; endLabel: string; /** 필수 */ labels: { /** 값이 없을 때 트리거에 남는 글자 */ placeholder: string; /** 목록 검색칸의 안내 글자(예: 14:30) */ searchPlaceholder: string; /** 한 쌍 사이의 구분 기호 */ dash: string; start: string; end: string; rangeInvalid: string }; /** 필수 */ emptyActionLabel: string; /** 필수 */ selectLabels: { /** 값이 없을 때 트리거에 남는 글자 */ placeholder: string; /** 검색칸의 이름이자 안내 글자 */ search: string; /** 검색 결과가 없을 때의 제목 */ noMatch: string; /** 고른 값을 비우는 자리 */ clear: string; selectAll: string; clearAll: string };",
+    "TimeChip": "/** 시각 칩 (CMP-TIME-CHIP · `DS-gaps` G-12) — 「그 자리로 간다」를 누르는 자리로 낸 시각 하나. 회의록 줄이 딛는 근거 구간이 이것으로 선다. `onClick` 이 없으면 같은 모양의 읽는 칩이다 — 크기가 바뀌지 않아 줄이 흔들리지 않는다. */ /** 시각 글자 (mm:ss / HH:MM) */ label: string; /** 없으면 읽기 전용 칩, 있으면 단추가 된다 */ onClick?: () => void; /** 네이티브 툴팁 — 이 칩이 가리키는 구간 */ title?: string;",
+    "MinWidthNotice": "/** 1280 미만에서만 보이는 전면 안내 (CSS 미디어쿼리). 바퀴 11: 이 부품도 말을 모른다 — 프로덕션 호출부가 0곳이라 넘겨 주는 자리는 지금 검사뿐이다. */ /** 필수 */ title: string; /** 필수 */ description: string;"
   },
   "overrides": {
+    "Icon": {
+      "cardMode": "column"
+    },
+    "Avatar": {
+      "cardMode": "column"
+    },
+    "Badge": {
+      "cardMode": "column"
+    },
+    "Button": {
+      "cardMode": "column"
+    },
+    "IconButton": {
+      "cardMode": "column"
+    },
+    "Chip": {
+      "cardMode": "column"
+    },
+    "DataTable": {
+      "cardMode": "column",
+      "viewport": "900x760"
+    },
+    "GutterList": {
+      "cardMode": "column",
+      "viewport": "760x620"
+    },
+    "FileList": {
+      "cardMode": "column",
+      "viewport": "680x560"
+    },
+    "DropZone": {
+      "cardMode": "column",
+      "viewport": "680x560"
+    },
     "Drawer": {
       "cardMode": "single",
       "viewport": "1280x720"
+    },
+    "Modal": {
+      "cardMode": "single",
+      "viewport": "1000x700"
     },
     "ConfirmModal": {
       "cardMode": "single",
@@ -87,18 +153,11 @@
     "EmptyValue": {
       "cardMode": "column"
     },
-    "Icon": {
-      "cardMode": "column"
-    },
     "ProgressBar": {
       "cardMode": "column"
     },
     "Skeleton": {
       "cardMode": "column"
-    },
-    "TaskCalendar": {
-      "cardMode": "column",
-      "viewport": "1100x760"
     },
     "DatePicker": {
       "cardMode": "single",

@@ -1,13 +1,20 @@
 import { Icon, Select } from "ax-workspace-frontend";
 import { useEffect, useRef, useState } from "react";
 
-/**
- * Storybook 메타. design-sync 컨버터는 대문자로 시작하는 named export 만 카드 셀로 세므로
- * (`lib/emit.mjs` 의 `/^[A-Z]/` 필터) 이 default export 는 프리뷰 카드에 영향을 주지 않는다.
- * 스토리를 더하려면 이 파일에 named export 를 하나 더 쓰면 된다 — 두 곳에 같이 반영된다.
- */
 export default { title: "General/Select", component: Select };
 
+/* 바퀴 11: `src/ds/` 안에는 한국어가 0이다 — 화면에 나가는 말은 전부 prop 이다.
+   `labels` 와 `emptyActionLabel` 은 **필수**다. 키와 값은 `src/lib/labels.ts` 의 `selectLabel` 과 같다. */
+const labels = {
+  placeholder: "선택",
+  search: "검색",
+  noMatch: "조건에 맞는 항목이 없습니다",
+  clear: "지우기",
+  selectAll: "전체 선택",
+  clearAll: "전체 해제",
+};
+const emptyActionLabel = "검색어 지우기";
+const words = { labels, emptyActionLabel };
 
 const PROJECTS = [
   { value: "ax-core", label: "기업 AX 코어", description: "2026 상반기", group: "진행 중" },
@@ -27,13 +34,14 @@ const OWNERS = [
   { value: "park", label: "박민지", description: "디자인" },
 ];
 
-/** 디자인 시스템 카드용: 마운트 직후 트리거를 눌러 열고, 닫히면 다시 연다 — 카드에서만 쓴다. */
+/** 디자인 시스템 카드용: 마운트 직후 트리거를 눌러 열고, 닫히면 다시 연다 — 카드에서만 쓴다.
+ *  패널 클래스는 바퀴 3a 에서 `.popover` → `.scax-popover` 가 됐다. */
 function Opened({ children, minHeight = 360 }: { children: React.ReactNode; minHeight?: number }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const open = () => {
       const root = ref.current;
-      if (!root || root.querySelector(".popover")) return;
+      if (!root || root.querySelector(".scax-popover")) return;
       root.querySelector<HTMLButtonElement>("button[aria-haspopup]")?.click();
     };
     open();
@@ -51,6 +59,7 @@ export const Open = () => {
       <div className="field" style={{ width: 360 }}>
         <span>프로젝트</span>
         <Select
+          {...words}
           footerAction={{ label: "새 프로젝트로 추가", onAction: () => {} }}
           id="sel-project"
           label="프로젝트"
@@ -72,15 +81,15 @@ export const Triggers = () => {
     <div style={{ display: "grid", gap: 16, width: 300, padding: 4 }}>
       <div className="field">
         <span>담당자</span>
-        <Select id="sel-owner" label="담당자" onChange={setV} options={OWNERS} value={v} />
+        <Select {...words} id="sel-owner" label="담당자" onChange={setV} options={OWNERS} value={v} />
       </div>
       <div className="field">
         <span>참고 업무</span>
-        <Select label="참고 업무" onChange={() => {}} options={OWNERS} placeholder="업무 고르기" value="" />
+        <Select {...words} label="참고 업무" onChange={() => {}} options={OWNERS} placeholder="업무 고르기" value="" />
       </div>
       <div className="field">
         <span>배정자</span>
-        <Select disabled label="배정자" onChange={() => {}} options={OWNERS} placeholder="고를 수 있는 사람이 없습니다" value="" />
+        <Select {...words} disabled label="배정자" onChange={() => {}} options={OWNERS} placeholder="고를 수 있는 사람이 없습니다" value="" />
       </div>
     </div>
   );
@@ -90,16 +99,18 @@ export const Triggers = () => {
 export const Invalid = () => (
   <div className="field" style={{ width: 300, padding: 4 }}>
     <span>담당자</span>
-    <Select error="담당자를 고르세요" label="담당자" onChange={() => {}} options={OWNERS} placeholder="담당자 고르기" value="" />
+    <Select {...words} error="담당자를 고르세요" label="담당자" onChange={() => {}} options={OWNERS} placeholder="담당자 고르기" value="" />
   </div>
 );
 
-/** 툴바 트리거 — trigger render prop 으로 filter-chip 을 끼운다 */
+/** 툴바 트리거 — trigger render prop 으로 filter-chip 을 끼운다.
+ *  셰브런을 같이 두는 것이 툴바 골격이다 — 빠지면 카드가 규약과 어긋난 예시를 가르친다. */
 export const ChipTrigger = () => {
   const [v, setV] = useState("new");
   return (
     <div className="toolbar-group" style={{ padding: 4 }}>
       <Select
+        {...words}
         label="정렬"
         onChange={setV}
         options={[

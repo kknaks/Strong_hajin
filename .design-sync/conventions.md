@@ -1,70 +1,98 @@
-# SCAX 로 화면을 지을 때 — 규약
+# TheSC AX 로 화면을 지을 때 — 규약
 
-SCAX 는 **CSS 클래스 + 시맨틱 토큰** 체계다. 래퍼·Provider 없음, CSS-in-JS 없음, 유틸리티 클래스 없음. `styles.css` 하나를 링크하면 토큰·컴포넌트 스타일·Pretendard 폰트가 전부 온다. 컴포넌트는 `window.SCAX.*` 19개뿐이고, 버튼·배지·테이블·카드·폼 같은 나머지 부품은 **아래 클래스 어휘를 그대로 쓴** 일반 HTML 이다. 직접 CSS 를 새로 쓰기 전에 이 표에 있는지 먼저 본다.
+TheSC AX 는 **CSS 클래스 + 시맨틱 토큰** 체계다. 래퍼·Provider 없음, CSS-in-JS 없음, 유틸리티 클래스 없음.
+`src/styles/index.css` 하나를 링크하면 토큰·컴포넌트 스타일·Pretendard 가 전부 온다.
+React 부품은 **34종**(`window.SCAX.*`)이고, 나머지 부품은 아래 클래스 어휘를 그대로 쓴 일반 HTML 이다.
+직접 CSS 를 새로 쓰기 전에 이 표에 있는지 먼저 본다.
 
-## 클래스 어휘 (styles.css 에 실재하는 이름만)
+> **2026-09-14 에 이 문서가 통째로 다시 쓰였다.** 앱이 구 디자인 시스템을 은퇴시키고 TheSC AX 로 옮겼다
+> (PR #12). 구 어휘(`btn` · `badge ai` · `plain-table` · `avatar xs` · `styles.css`)는 **이제 없다.**
+
+## 부품 34종 — `window.SCAX.*`
+
+| 갈래 | 부품 |
+|---|---|
+| 글리프 | `Icon`(35종) |
+| 사람 | `Avatar`(5단) |
+| 표시 | `Badge`(6톤) · `StatusNote` · `ProgressBar` · `TimeChip` · `EmptyValue` |
+| 단추 | `Button`(5변형) · `ButtonGroup` · `IconButton` |
+| 고르기(비폼) | `Chip` · `ChipToggle` · `SegmentedControl` · `Tabs` |
+| 목록·표 | `DataTable`(+`Th`·`Td`·`TrOpenable`) · `GutterList` · `FileList` |
+| 폼 | `Checkbox` · `FieldMessage` · `Select` · `MultiSelect` · `DateField` · `DatePicker` · `TimeField` · `TimeRangeField` · `DropZone` |
+| 오버레이 | `Popover` · `Drawer` · `Modal` · `ConfirmModal` · `Toast` |
+| 상태 | `Empty` · `Skeleton` · `MinWidthNotice` |
+
+### 부품은 **말을 모른다** (바퀴 11)
+
+`src/ds/` 안에는 **한국어가 한 글자도 없다.** 화면에 나가는 문구는 전부 prop 으로 들어온다 —
+닫기 단추의 이름도, 「오늘」도, 요일 머리글도, 「조건에 맞는 항목이 없습니다」도.
+앱에서는 `src/lib/labels.ts` 가 그 한 벌을 들고 있고, 부르는 쪽이 그것을 그대로 펼쳐 넘긴다.
+
+그래서 **말을 안 넘기면 컴파일이 안 되는** 부품이 여럿이다:
+
+| 부품 | 반드시 넘겨야 하는 문구 |
+|---|---|
+| `Skeleton` | `label` |
+| `ProgressBar` | `ariaLabel` (머리줄이 없어도 막대는 읽혀야 한다) |
+| `IconButton` | `label` |
+| `Drawer` · `Modal` | `closeLabel` |
+| `ConfirmModal` | `cancelLabel`(`null` 이면 × 로 대체) · `closeLabel` |
+| `Toast` | `closeLabel` |
+| `SegmentedControl` · `Tabs` | `ariaLabel` |
+| `Select` · `MultiSelect` | `labels`(6개) · `emptyActionLabel` |
+| `TimeField` · `TimeRangeField` | `labels`(6개) · `selectLabels`(6개) · `emptyActionLabel` (+ 한 쌍은 `startLabel`·`endLabel`) |
+| `DatePicker` · `DateField` | `labels`(5개) · `weekdayNames`(7) · `formatMonth` · **`today`** |
+| `FileList` | 줄마다 `removeLabel` |
+| `MinWidthNotice` | `title` · `description` |
+| `Empty` | 행동이 있으면 `actionLabel` 도 — **타입이 둘을 한 쌍으로 묶는다** |
+
+「오늘」도 마찬가지다 — `DatePicker` 는 시계를 읽지 않는다. 어느 시간대의 오늘인지는 부르는 쪽이 안다.
+
+## 클래스 어휘 (`src/styles/` 에 실재하는 이름만)
 
 | 자리 | 클래스 |
 |---|---|
-| 버튼 5변형 | `btn`(secondary 기본) · `btn primary`(화면당 1개) · `btn ghost` · `btn danger` · `btn ai` · `btn link` |
-| 버튼 높이·아이콘 | 기본 h34 · `h40` · `h30`(=`small`) · 아이콘만이면 `icon` (정사각형) |
-| 상태 dot 5종 | `status` + `pending`/`in_progress`(진행 중, sky) · `done`/`accepted`(완료, indigo) · `blocked`(지연, red) · `cancelled`/`rejected` · 기본 = 시작 전 |
-| 배지 (h20 r4) | `badge ai` · `badge neutral` · `badge progress` · `badge danger` · `badge outline` |
-| 툴바 필터 칩 | `filter-chip`, 켜지면 `filter-chip on` (selected-bg + action) |
-| 세그먼트·카운트 | `segmented` > `button[aria-selected]` · `count-badge`(검정 = 현재 위치) · `count-badge quiet`(폼 라벨 옆) · `checklist-progress` |
-| 페이지 골격 | `page-head`(h1 + p + `page-head-actions`) · `toolbar` > `toolbar-group` · `section-title` |
-| 패널·카드 | `surface-card`(r16 p24) · `card-title`(h3 + p) · `meta-grid`(dl > div > dt/dd, `columns` 변형) · `effect-note` |
-| 테이블 | `plain-table`(th h44 / td h56, `title-cell`·`center`·`end`) · `work-table`(head + `progress-row`) · 빈 칸은 `<EmptyValue/>` |
-| 폼 | `field`(label + input, gap 7) · `field-help` / `field-error` (→ `FieldMessage`) · `form-stack` · `title-input` · `search-input-box`(h34) · `aria-invalid="true"` 로 에러 보더. 날짜는 `DateField`(+`DatePicker`), 시각은 `TimeField` / `TimeRangeField`, 고르기는 `Select` / `MultiSelect` — 넷 다 트리거가 h34 · `--radius-control` · 14px 이라 한 줄에 나란히 선다 |
-| 텍스트 | `t-item`(14 Bold) · `t-meta`(13 tertiary) · `danger-text` · `cancelled-title`(취소선) · `sr-only` |
-| 아바타 | `avatar xs|sm|md|lg|xl` — 사이드바 프로필·홈 상단·드로어 헤더 세 곳에만 |
-| 캘린더 | `TaskCalendar`(월 6주·주 7칸, 막대 = `calendar-chip` + 상태 클래스). 좌측 레일 260 은 v2 13 에 있으나 코드에 없다 |
-| 오버레이 | 편집·상세 = `Drawer`(840) · 결정 하나 = `ConfirmModal`(600) · 고르기 = `Popover` · 날짜 고르기 = `DatePicker`(Popover 위 280) · 목록에서 고르기 = `Select`/`MultiSelect`/`TimeField`(Popover 위, 폭은 트리거에 맞춘 200–400) · 알림 = `Toast`(`tone="success"` check/accent · `tone="error"` alert/danger, 없으면 아이콘 없음). 드로어 위에 모달을 겹치지 않는다 |
-| 상태 4종 | 데이터 화면은 정상 · 로딩(`Skeleton`, 실제 행 수만큼) · 비어 있음(`Empty`, variant default/filter/error) · 실패 를 같이 그린다 |
+| 단추 | `scax-button` + `--solid-primary` / `--solid-danger` / `--outlined-primary` / `--outlined-neutral` / `--text-neutral` / `--inline` / `--ai`, 크기 `--sm`·`--lg`, 줄 폭 `--block` · `scax-button-group` · `scax-icon-button`(28px, `--star-on`) |
+| 배지 | `scax-badge` + `--accent` / `--neutral` / `--info` / `--positive` / `--danger` / `--outline` / `--count` |
+| 칩 | `scax-chip`(+`--on`) · `scax-chip-bar`(툴바, `__end`) · `scax-chip-row`(줄바꿈) · `scax-chip-toggle`(+`--on`, 폼 값) |
+| 고르기 | `scax-segmented`(칸 안, `__item--on`) · `scax-tabs`(면을 가르며, min-width 880) |
+| 아바타 | `scax-avatar` + `--xs`(20) `--sm`(24) `--md`(32) `--lg`(40) `--xl`(80) |
+| 표 | `scax-table`(읽는 표, 열 수 자유 · `__center`/`__end`/`__title`/`__row--openable`) · `scax-task-table`(업무 전용 6열 격자) |
+| 목록 | `gutter-list`/`gutter-row`(+`active`)/`gutter-meta`/`gutter-aside`/`gutter-body`(+`muted`) · `scax-file-list`/`scax-file-row`(+`active`, `__name`·`__size`, `file-open`) |
+| 폼 | `scax-field`(`__label`·`__hint`·`__error`·`__required`) · `scax-field-row` · `scax-textfield` · `scax-textarea` · `scax-checkbox`(`__input`·`__box`) · `scax-select` · `scax-dropzone`(+`--over`) · `field`(구 골격, 아직 산다) |
+| 오버레이 | `scax-popover`(+`--above`, 포털로 body 에 선다) · `scax-drawer`(+`--sm` 520 / `--lg` 840, `scax-drawer-overlay`) · `scax-modal`(+`--sm`/`--md`, 기본 880, `scax-modal-overlay`) · `scax-toast` |
+| 상태 | `scax-empty`(`__icon`·`__title`·`__desc`) · `scax-status-note`(못 불러온 자리 — 「비었다」가 아니다) · `scax-skeleton`(+`--text`/`--title`/`--card`, `scax-skeleton-stack`) · `status-note`(인라인 한 줄) · `min-width-notice` |
+| 시각 | `scax-time-chip` |
+| 셸 | `scax-app-shell` · `scax-app-main` · `scax-page-header` · `scax-page-body` · `scax-side-nav`(+`--collapsed`) · `scax-nav-item`(+`--active`) · `scax-breadcrumb` |
+| 텍스트 | `t-item` · `t-meta` · `tabular` · `danger-text` · `sr-only` · `.ax-*` 타이포 램프 10종 |
+| 화면 골격 | `surface-card` · `card-title` · `meta-grid` · `page-head`(+`page-head-actions`) · `section-title` · `toolbar`(+`toolbar-group`) · `drawer-section` · `spacer` |
 
-## 토큰 — 시맨틱 이름으로만 (`var(--…)`)
+## 토큰 — 시맨틱 이름으로만 (`var(--scax-…)`)
 
-- 글자: `--text-primary`(Ink) · `--text-secondary` · `--text-tertiary`(Meta) · `--text-disabled` · `--on-fill`(채운 면 위 흰 글자)
-- 보더 3단: 외곽 `--border-strong` · 내부 `--border-default` · 행 구분 `--border-subtle`
-- 면: `--surface` · `--surface-sunken` · `--selected-bg`(선택 칩·카드) · `--surface-selected-row` · `--popover-current`
-- 액션: `--action`(흰 글자를 얹는 primary) · `--action-hover` · `--action-active` · `--accent`(#7181F8, 액션과 완료에만) · `--focus-ring`
-- 상태: 진행 `--progress-accent`/`--progress-text`/`--progress-tint` · 지연 `--danger`/`--danger-accent`/`--danger-tint`/`--danger-hover` · 시작 전 `--status-neutral-tint` · 경고 `--warning-surface`/`--warning-text`
-- AI: `--ai-border` · `--ai-text` · `--ai-bg-hover` · `--shadow-ai`
-- 라운드: `--radius-card`(8) · `--radius-panel`(16) · `--radius-control`(8) · `--radius-chip`(4) · `--radius-popover`(12)
-- 그림자 6개뿐: `--shadow-sm` · `--shadow-md` · `--shadow-lg`(팝오버) · `--shadow-xl`(모달·토스트) · `--shadow-drawer` · `--shadow-ai`
+화면 CSS 는 `--scax-*` 만 참조한다. 그 아래 `--ax-*`(제품 별칭) → `--*`(Figma 원시 토큰) 층이 있지만
+화면이 그 이름을 직접 부르지 않는다.
 
-규칙: **네이티브 `<select>` 와 `input[type=date|time]` 은 쓰지 않는다** — 브라우저가 OS 위젯으로 그려서 토큰이 닿지 않고, 표기가 로캘을 따라 갈라진다(같은 값이 사람마다 `2026/09/30`·`09/30/2026`, `14:30`·`오후 2:30`). 대신 `DateField` · `TimeField` · `TimeRangeField` · `Select` · `MultiSelect` 를 쓴다. 시각 표기는 24시간 `HH:MM` 고정이다. 검정(`--text-primary` 배경)은 현재 위치 표시에만, 화면당 하나 — 폼 라벨 옆 카운트는 `count-badge quiet`(글자 `--text-secondary`, 배경 `--surface-sunken`)를 쓴다. 선택은 `--selected-bg` + `--action`. 행간 145% · 자간 −2% 는 손대지 않는다(높이는 패딩으로). 간격 스케일 4·8·12·16·20·24·32·48. 새 그림자·새 배지 색을 만들지 않는다. 아이콘은 `Icon`(27종, 14/16/20) 만 쓰고 채운 아이콘을 만들지 않는다.
+- 글자: `--scax-color-ink`(본문) · `--scax-color-ink-strong` · `--scax-color-ink-neutral` · `--scax-color-ink-alt` · `--scax-color-ink-assistive`(메타) · `--scax-color-ink-disabled` · `--scax-color-ink-inverse`(채운 면 위)
+- 선 3단: `--scax-color-line-strong`(외곽) · `--scax-color-line`(내부) · `--scax-color-line-weak`(행 구분)
+- 면: `--scax-color-surface` · `--scax-color-surface-alt` · `--scax-color-surface-selected` · `--scax-color-fill`(+`-weak`/`-strong`) · `--scax-color-popover-current`
+- 강조: `--scax-color-accent`(액션과 **완료** 에만) + `-05`/`-08`/`-20`/`-soft`/`-strong`
+- 상태: `--scax-color-danger`(+`-soft`) · `--scax-color-positive` · `--scax-color-info` · `--scax-color-warning`(+`-soft`/`-ink`) · `--scax-color-progress`(+`-soft`/`-ink`)
+- AX 표면(`DS-gaps` G-17): `--scax-color-ai-ink` · `-ink-active` · `-line` · `-line-hover` · `-line-active` · `-fill-hover` · `-fill-active` (7종)
+- 관계 그래프(`DS-gaps` G-06): `--scax-graph-*` 15종(노드 9 · 엣지 4 · 라벨 2) — **「악센트 하나, 나머지 중립」 원칙과 정면으로 부딪히는 자리다. 예외로 공인할지는 아직 사용자 판단 대기.**
+- 치수: `--scax-space-*` · `--scax-radius-*`(`xs`·`sm`·`md`·`lg`·`xl`·`2xl`·`chip`·`pill`·`panel`·`bubble`) · `--scax-control-height-*`(`sm`·`md`·`lg`) · `--scax-text-*`(크기·행간·자간) · `--scax-fw-*`
+- 글꼴: `--font-ui` = **"Pretendard JP"**(본문·UI 전부) · `--font-display` = "Pretendard"(표지급 큰 글자)
 
-## 진실은 여기
+## 하지 않는 것
 
-- `styles.css` → `_ds_bundle.css`: 위 클래스와 `:root` 토큰의 실제 정의. 새 클래스를 쓰기 전에 grep 한다.
-- `components/general/<Name>/<Name>.prompt.md` · `<Name>.d.ts`: 19개 컴포넌트의 props 와 조합 예.
+- **네이티브 `<select>` · `input[type=date]` · `input[type=time]` 을 쓰지 않는다.** 셋 다 브라우저·로캘에
+  따라 모양과 글자 순서가 갈린다. 각각 `Select`/`MultiSelect` · `DateField` · `TimeField` 가 대신한다.
+  이 셋의 트리거는 전부 같은 컨트롤 규격(h34 · 14px)이라 한 줄에 나란히 선다.
+- **초록을 쓰지 않는다.** 완료는 `--scax-color-accent` 다.
+- **드로어 위에 모달을 겹치지 않는다.**
+- **부품 안에 문구를 박지 않는다.** 위의 「부품은 말을 모른다」 참조.
+- **`Empty` 의 `error` 를 「비어 있음」으로 읽지 않는다.** 못 불러온 것은 `.scax-status-note` 로 그려진다.
 
-## 한 화면의 뼈대
+## 화면은 네 상태를 같이 그린다
 
-```jsx
-const { Icon, Empty, ProgressBar } = window.SCAX;
-<div className="page-surface">
-  <div className="page-head">
-    <div><h1>내 업무</h1><p>기한이 오늘까지인 업무 3건</p></div>
-    <div className="page-head-actions">
-      <button className="btn primary"><Icon name="plus" /> 새 업무</button>
-    </div>
-  </div>
-  <div className="toolbar">
-    <div className="toolbar-group">
-      <button className="filter-chip on">진행 중 <Icon name="chevron-down" size={12} /></button>
-      <button className="filter-chip">담당 <Icon name="chevron-down" size={12} /></button>
-    </div>
-  </div>
-  <section className="surface-card">
-    <div className="card-title"><h3>체크리스트</h3><span className="checklist-progress">2 / 5</span></div>
-    <ProgressBar done={2} total={5} />
-    <table className="plain-table">
-      <thead><tr><th>업무</th><th className="center">상태</th><th className="end">종료일</th></tr></thead>
-      <tbody><tr className="openable"><td className="title-cell">제품 소개서 내용 업데이트</td>
-        <td className="center"><span className="status in_progress">진행 중</span></td><td className="end">09월 12일</td></tr></tbody>
-    </table>
-  </section>
-</div>
-```
+정상 · 로딩(`Skeleton`, 실제 행 수만큼 — 리스트는 5행) · 비어 있음(`Empty` `variant="default"|"filter"`) ·
+실패(`Empty` `variant="error"` 또는 `StatusNote tone="danger"`).

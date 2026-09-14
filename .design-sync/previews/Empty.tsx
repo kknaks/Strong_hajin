@@ -1,12 +1,12 @@
 import { Empty } from "ax-workspace-frontend";
 
-/**
- * Storybook 메타. design-sync 컨버터는 대문자로 시작하는 named export 만 카드 셀로 세므로
- * (`lib/emit.mjs` 의 `/^[A-Z]/` 필터) 이 default export 는 프리뷰 카드에 영향을 주지 않는다.
- * 스토리를 더하려면 이 파일에 named export 를 하나 더 쓰면 된다 — 두 곳에 같이 반영된다.
- */
 export default { title: "General/Empty", component: Empty };
 
+/**
+ * 바퀴 11: **행동과 그 이름은 한 쌍이다.** 타입이 둘을 묶어 두어서, 이름 없이 `onAction` 만
+ * 넘기면 컴파일이 안 된다 — 예전에는 `variant` 가 `filter`·`error` 면 부품이 스스로 이름을
+ * 골라 왔지만(`lib/labels` 의 `emptyActionLabel`) 이제 부품은 말을 모른다.
+ */
 
 const panel: React.CSSProperties = { width: 520 };
 
@@ -17,17 +17,17 @@ export const Default = () => (
   </div>
 );
 
-/** 찾지 못함 — 필터 때문에 비었으면 초기화 버튼이 따라온다 */
+/** 찾지 못함 — 필터 때문에 비었으면 초기화가 따라온다. 바퀴 11 이후 그 이름도 부르는 쪽이 준다 */
 export const Filter = () => (
   <div className="surface-card" style={panel}>
-    <Empty variant="filter" title="조건에 맞는 업무가 없어요" description="필터를 바꾸거나 초기화해 보세요." onAction={() => {}} />
+    <Empty variant="filter" title="조건에 맞는 업무가 없어요" description="필터를 바꾸거나 초기화해 보세요." actionLabel="필터 초기화" onAction={() => {}} />
   </div>
 );
 
-/** 실패 — 다시 시도를 둔다 (role=alert) */
+/** 실패 — 「비었다」가 아니라 `.scax-status-note` 로 그려지고 role=alert 다 */
 export const Error = () => (
   <div className="surface-card" style={panel}>
-    <Empty variant="error" title="업무 목록을 불러오지 못했어요" description="네트워크 상태를 확인한 뒤 다시 시도해 주세요." onAction={() => {}} />
+    <Empty variant="error" title="업무 목록을 불러오지 못했어요" description="네트워크 상태를 확인한 뒤 다시 시도해 주세요." actionLabel="다시 시도" onAction={() => {}} />
   </div>
 );
 

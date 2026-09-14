@@ -1,14 +1,36 @@
-/* Pretendard Variable (SIL OFL 1.1) — https://github.com/orioncactus/pretendard v1.3.9
-   앱은 시스템 설치 폰트에 기대지만, claude.ai/design 렌더에는 폰트 파일이 같이 가야 해서 여기서 싣는다. */
+/* 렌더 환경용 @font-face — 앱이 아니라 claude.ai/design 캡처가 쓰는 파일이다.
+   Pretendard / Pretendard JP (SIL OFL 1.1) — https://github.com/orioncactus/pretendard v1.3.9
+
+   **바퀴 9-B·10 이후 바뀐 것**: 앱은 더 이상 시스템 설치 폰트에 기대지 않는다. 이제
+   `frontend/src/styles/fonts.css` 가 `@font-face` 두 벌을 직접 들고 있고 src 는 `/fonts/*.woff2`
+   (= `frontend/public/fonts/`) 를 가리킨다. 그 **절대 경로는 렌더 환경에서 뜨지 않으므로**
+   같은 두 얼굴을 여기 사본으로 한 번 더 싣는다.
+
+   얼굴이 둘인 이유: `--font-ui`(본문·UI 전부)가 **"Pretendard JP"** 이고
+   `--font-display`(표지급 큰 글자)만 비-JP "Pretendard" 다 (`styles/typography.css:5-6`).
+   JP 쪽이 빠지면 UI 전체가 시스템 sans 로 떨어진다 — 지난 동기화에는 이 얼굴이 없었다.
+
+   ⚠ `DS-gaps` G-01 은 「글꼴이 Pretendard JP 가 맞나(한글 자형이 미세하게 다르다)」가
+   **아직 사용자 판단 대기**라고 적고 있다. 여기서는 앱이 실제로 쓰는 것을 그대로 싣는다 —
+   프리뷰가 앱과 다른 얼굴로 찍히면 그 판단을 할 근거가 없어지기 때문이다. */
+
 @font-face {
-  font-family: "Pretendard Variable";
+  font-family: "Pretendard JP";
+  font-weight: 45 920;
+  font-style: normal;
+  font-display: swap;
+  src: url("./PretendardJPVariable.woff2") format("woff2-variations");
+}
+@font-face {
+  font-family: "Pretendard";
   font-weight: 45 920;
   font-style: normal;
   font-display: swap;
   src: url("./PretendardVariable.woff2") format("woff2-variations");
 }
+/* 구 동기화가 쓰던 이름 — 남은 참조가 있어도 같은 파일로 떨어지게 둔다 */
 @font-face {
-  font-family: "Pretendard";
+  font-family: "Pretendard Variable";
   font-weight: 45 920;
   font-style: normal;
   font-display: swap;

@@ -1,16 +1,18 @@
 import { MinWidthNotice } from "ax-workspace-frontend";
 
-/**
- * Storybook 메타. design-sync 컨버터는 대문자로 시작하는 named export 만 카드 셀로 세므로
- * (`lib/emit.mjs` 의 `/^[A-Z]/` 필터) 이 default export 는 프리뷰 카드에 영향을 주지 않는다.
- * 스토리를 더하려면 이 파일에 named export 를 하나 더 쓰면 된다 — 두 곳에 같이 반영된다.
- */
 export default { title: "General/MinWidthNotice", component: MinWidthNotice };
 
-
-/** 1280 미만은 지원하지 않는 폭 — 화면을 접는 대신 안내 하나 (v2 15). 카드 뷰포트가 1280 보다 좁아야 보인다 */
+/**
+ * 1280 미만에서만 보인다(CSS 미디어쿼리) — 카드 뷰포트가 1280 보다 좁아야 화면에 뜬다.
+ *
+ * 바퀴 11: 이 부품도 말을 모른다 — `title`·`description` 을 부르는 쪽이 준다.
+ * 앱의 프로덕션 호출부는 0곳이고, `lib/labels` 의 `minWidthNotice` 를 그대로 펼쳐 넘기면 된다.
+ */
 export const Notice = () => (
   <div style={{ minHeight: 400 }}>
-    <MinWidthNotice />
+    <MinWidthNotice
+      description="가로 1280 이상에서 사용해 주세요. 창을 넓히면 바로 이어서 볼 수 있습니다."
+      title="화면이 좁습니다"
+    />
   </div>
 );

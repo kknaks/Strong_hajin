@@ -1,13 +1,40 @@
 import { DateField, TimeRangeField } from "ax-workspace-frontend";
 import { useState } from "react";
 
-/**
- * Storybook 메타. design-sync 컨버터는 대문자로 시작하는 named export 만 카드 셀로 세므로
- * (`lib/emit.mjs` 의 `/^[A-Z]/` 필터) 이 default export 는 프리뷰 카드에 영향을 주지 않는다.
- * 스토리를 더하려면 이 파일에 named export 를 하나 더 쓰면 된다 — 두 곳에 같이 반영된다.
- */
 export default { title: "General/TimeRangeField", component: TimeRangeField };
 
+/* 바퀴 11: `src/ds/` 안에는 한국어가 0이다 — 화면에 나가는 말은 전부 prop 이다.
+   이 부품은 다섯을 받는다: `labels` · `startLabel` · `endLabel` · `emptyActionLabel` · `selectLabels`.
+   키와 값은 `src/lib/labels.ts` 의 `timeFieldLabel` · `selectLabel` 과 같다. */
+const words = {
+  labels: {
+    placeholder: "시각 선택",
+    searchPlaceholder: "14:30",
+    dash: "–",
+    start: "시작 시각",
+    end: "종료 시각",
+    rangeInvalid: "종료가 시작보다 빠릅니다",
+  },
+  startLabel: "시작 시각",
+  endLabel: "종료 시각",
+  emptyActionLabel: "검색어 지우기",
+  selectLabels: {
+    placeholder: "선택",
+    search: "검색",
+    noMatch: "조건에 맞는 항목이 없습니다",
+    clear: "지우기",
+    selectAll: "전체 선택",
+    clearAll: "전체 해제",
+  },
+};
+
+/* 옆에 세우는 `DateField` 도 같은 이유로 말과 시계를 받는다 */
+const dateWords = {
+  today: "2026-09-14",
+  labels: { open: "달력 열기", previousMonth: "이전 달", nextMonth: "다음 달", clear: "지우기", today: "오늘" },
+  weekdayNames: ["일", "월", "화", "수", "목", "금", "토"],
+  formatMonth: (year: number, month: number) => `${year}년 ${month + 1}월`,
+};
 
 /** 기본 — 시작을 옮기면 종료가 같은 간격만큼 따라간다 (defaultDuration 60) */
 export const Range = () => {
@@ -16,6 +43,7 @@ export const Range = () => {
     <div className="field" style={{ width: 380, padding: 4 }}>
       <span>회의 시간</span>
       <TimeRangeField
+        {...words}
         end={v.end}
         help="시작을 옮기면 종료가 같은 간격만큼 따라간다 · defaultDuration 60"
         id="trf-meeting"
@@ -31,11 +59,14 @@ export const Range = () => {
 export const Invalid = () => (
   <div className="field" style={{ width: 380, padding: 4 }}>
     <span>회의 시간</span>
-    <TimeRangeField end="13:00" label="회의 시간" onChange={() => {}} start="14:00" />
+    <TimeRangeField {...words} end="13:00" label="회의 시간" onChange={() => {}} start="14:00" />
   </div>
 );
 
-/** 날짜 + 시각 한 쌍 — 세 필드가 다 h34 라 한 줄에 선다 */
+/**
+ * 날짜 + 시각 한 쌍 — 세 필드가 다 h34 라 한 줄에 선다.
+ * 카드 폭 함정: 560 으로 두면 오른쪽에서 종료 필드가 잘린다. 스토리 500 + 뷰포트 620x520 으로 맞춘다.
+ */
 export const WithDate = () => {
   const [date, setDate] = useState("2026-09-08");
   const [time, setTime] = useState({ start: "10:00", end: "11:30" });
@@ -44,10 +75,10 @@ export const WithDate = () => {
       <span>회의 일시</span>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <div style={{ width: 150 }}>
-          <DateField hideLabel id="trf-date" label="날짜" onChange={setDate} value={date} />
+          <DateField {...dateWords} hideLabel id="trf-date" label="날짜" onChange={setDate} value={date} />
         </div>
         <div style={{ flex: 1 }}>
-          <TimeRangeField end={time.end} label="회의 시간" onChange={setTime} start={time.start} />
+          <TimeRangeField {...words} end={time.end} label="회의 시간" onChange={setTime} start={time.start} />
         </div>
       </div>
     </div>
@@ -58,6 +89,6 @@ export const WithDate = () => {
 export const Disabled = () => (
   <div className="field" style={{ width: 380, padding: 4 }}>
     <span>확정된 시간</span>
-    <TimeRangeField disabled end="16:00" label="확정된 시간" onChange={() => {}} start="15:00" />
+    <TimeRangeField {...words} disabled end="16:00" label="확정된 시간" onChange={() => {}} start="15:00" />
   </div>
 );

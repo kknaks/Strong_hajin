@@ -1,13 +1,21 @@
 import { MultiSelect } from "ax-workspace-frontend";
 import { useEffect, useRef, useState } from "react";
 
-/**
- * Storybook 메타. design-sync 컨버터는 대문자로 시작하는 named export 만 카드 셀로 세므로
- * (`lib/emit.mjs` 의 `/^[A-Z]/` 필터) 이 default export 는 프리뷰 카드에 영향을 주지 않는다.
- * 스토리를 더하려면 이 파일에 named export 를 하나 더 쓰면 된다 — 두 곳에 같이 반영된다.
- */
 export default { title: "General/MultiSelect", component: MultiSelect };
 
+/* 바퀴 11: 부품은 언어를 모른다 — `labels`·`emptyActionLabel` 이 필수다.
+   키와 값은 `src/lib/labels.ts` 의 `selectLabel` 과 같다. */
+const words = {
+  labels: {
+    placeholder: "선택",
+    search: "검색",
+    noMatch: "조건에 맞는 항목이 없습니다",
+    clear: "지우기",
+    selectAll: "전체 선택",
+    clearAll: "전체 해제",
+  },
+  emptyActionLabel: "검색어 지우기",
+};
 
 const PEOPLE = [
   { value: "kim", label: "김서연", description: "플랫폼" },
@@ -23,7 +31,7 @@ function Opened({ children, minHeight = 360 }: { children: React.ReactNode; minH
   useEffect(() => {
     const open = () => {
       const root = ref.current;
-      if (!root || root.querySelector(".popover")) return;
+      if (!root || root.querySelector(".scax-popover")) return;
       root.querySelector<HTMLButtonElement>("button[aria-haspopup]")?.click();
     };
     open();
@@ -42,7 +50,7 @@ export const Open = () => {
         <span>
           참석자 <span className="count-badge quiet">{v.length}</span>
         </span>
-        <MultiSelect id="ms-attendees" label="참석자" onChange={setV} options={PEOPLE} placeholder="참석자 선택" value={v} />
+        <MultiSelect {...words} id="ms-attendees" label="참석자" onChange={setV} options={PEOPLE} placeholder="참석자 선택" value={v} />
       </div>
     </Opened>
   );
@@ -57,15 +65,15 @@ export const Chips = () => {
     <div style={{ display: "grid", gap: 16, width: 360, padding: 4 }}>
       <div className="field">
         <span>한 명</span>
-        <MultiSelect label="한 명" onChange={setFew} options={PEOPLE} placeholder="참석자 선택" value={few} />
+        <MultiSelect {...words} label="한 명" onChange={setFew} options={PEOPLE} placeholder="참석자 선택" value={few} />
       </div>
       <div className="field">
         <span>네 명 — +2 로 접힌다</span>
-        <MultiSelect label="네 명" onChange={setMany} options={PEOPLE} placeholder="참석자 선택" value={many} />
+        <MultiSelect {...words} label="네 명" onChange={setMany} options={PEOPLE} placeholder="참석자 선택" value={many} />
       </div>
       <div className="field">
         <span>비어 있음</span>
-        <MultiSelect label="비어 있음" onChange={setNone} options={PEOPLE} placeholder="참석자 선택" value={none} />
+        <MultiSelect {...words} label="비어 있음" onChange={setNone} options={PEOPLE} placeholder="참석자 선택" value={none} />
       </div>
     </div>
   );
@@ -77,7 +85,7 @@ export const WithHelp = () => {
   return (
     <div className="field" style={{ width: 360, padding: 4 }}>
       <span>참조자</span>
-      <MultiSelect help="회의록이 이 사람들에게도 간다" label="참조자" onChange={setV} options={PEOPLE} placeholder="참조자 선택" value={v} />
+      <MultiSelect {...words} help="회의록이 이 사람들에게도 간다" label="참조자" onChange={setV} options={PEOPLE} placeholder="참조자 선택" value={v} />
     </div>
   );
 };

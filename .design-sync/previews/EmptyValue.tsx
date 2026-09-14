@@ -1,31 +1,46 @@
-import { EmptyValue } from "ax-workspace-frontend";
+import { DataTable, EmptyValue, Td, Th } from "ax-workspace-frontend";
 
-/**
- * Storybook 메타. design-sync 컨버터는 대문자로 시작하는 named export 만 카드 셀로 세므로
- * (`lib/emit.mjs` 의 `/^[A-Z]/` 필터) 이 default export 는 프리뷰 카드에 영향을 주지 않는다.
- * 스토리를 더하려면 이 파일에 named export 를 하나 더 쓰면 된다 — 두 곳에 같이 반영된다.
- */
 export default { title: "General/EmptyValue", component: EmptyValue };
 
+/**
+ * 값이 없는 칸에 남기는 것 — 공백이 아니라 대시다.
+ *
+ * 바퀴 11: 대시는 **말이 아니라 활자**다(어느 언어에서도 「—」다). 그래서 prop 으로 받지 않고
+ * 이 부품이 들고 있는다 — `lib/labels` 의 `emptyValue` 는 「문자열을 만드는」 자리가 따로 쓴다.
+ */
 
-/** 값이 없는 칸은 공백이 아니라 대시 (v2 12) — 테이블 안에서 */
+/** 표 안의 빈 칸 */
 export const InTable = () => (
-  <table className="plain-table" style={{ width: 560 }}>
-    <thead>
-      <tr><th>업무</th><th>담당</th><th className="center">종료일</th></tr>
-    </thead>
-    <tbody>
-      <tr><td className="title-cell">제품 소개서 내용 업데이트</td><td>김지원</td><td className="center">09월 12일</td></tr>
-      <tr><td className="title-cell">주간 회의록 정리</td><td><EmptyValue /></td><td className="center"><EmptyValue /></td></tr>
-    </tbody>
-  </table>
+  <div className="surface-card" style={{ width: 560 }}>
+    <DataTable label="업무 목록">
+      <thead>
+        <tr>
+          <Th>업무</Th>
+          <Th>담당</Th>
+          <Th align="center">종료일</Th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <Td title>제품 소개서 내용 업데이트</Td>
+          <Td>김지원</Td>
+          <Td align="center">09월 12일</Td>
+        </tr>
+        <tr>
+          <Td title>주간 회의록 정리</Td>
+          <Td><EmptyValue /></Td>
+          <Td align="center"><EmptyValue /></Td>
+        </tr>
+      </tbody>
+    </DataTable>
+  </div>
 );
 
-/** 메타 그리드 안에서 */
-export const InMetaGrid = () => (
+/** 메타 목록 안의 빈 값 */
+export const InMeta = () => (
   <dl className="meta-grid" style={{ width: 400 }}>
     <div><dt>담당</dt><dd>이건학</dd></div>
-    <div><dt>기간</dt><dd><EmptyValue /></dd></div>
-    <div><dt>참조</dt><dd><EmptyValue /></dd></div>
+    <div><dt>프로젝트</dt><dd><EmptyValue /></dd></div>
+    <div><dt>요청</dt><dd><EmptyValue /></dd></div>
   </dl>
 );
