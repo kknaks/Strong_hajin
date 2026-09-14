@@ -51,6 +51,7 @@ export type AgendaTodoView = {
 export function AgendaBlock({
   index,
   title,
+  titlePlaceholder,
   source,
   mark,
   lines,
@@ -61,6 +62,11 @@ export function AgendaBlock({
   /** 정렬된 목록에서의 자리. 번호(1부터)를 정한다 — 안건의 `order` 값을 쓰지 않는다. */
   index: number;
   title: string;
+  /**
+   * 제목이 아직 자리표시인가 (§12 R-50). 참이면 서버가 빈 제목을 낸 것이고, 머리는 번호만 낸다 —
+   * 「안건 1. 안건 1」로 번호가 두 번 붙던 자리다. 값은 부르는 쪽이 서버에서 받아 넘긴다.
+   */
+  titlePlaceholder?: boolean;
   source?: string | null;
   /** 「결론 남」·「결론 안 남」. 합성이 안 된 상태에서는 낼 값 자체가 없어 null 이다. */
   mark?: { text: string; concluded: boolean } | null;
@@ -73,7 +79,9 @@ export function AgendaBlock({
   return (
     <section className="scax-agenda-block">
       <div className="scax-agenda-block__head">
-        <h3 className="scax-agenda-block__title">{meetingScreen.agendaHead(index + 1, title)}</h3>
+        <h3 className={titlePlaceholder ? "scax-agenda-block__title scax-agenda-block__title--placeholder" : "scax-agenda-block__title"}>
+          {meetingScreen.agendaHead(index + 1, title)}
+        </h3>
         {/* 「결론 남 / 안 남」은 낱말 자체가 뜻을 지고 있다 — 색으로 한 번 더 말하지 않는다 */}
         {mark && <span className="scax-agenda-block__source">{mark.text}</span>}
         {onRemove && <IconButton name="close" size={14} label={meetingScreen.dropAgenda} onClick={onRemove} />}

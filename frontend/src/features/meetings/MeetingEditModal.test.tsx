@@ -63,7 +63,7 @@ const record = (over: Partial<MeetingRecord["meeting"]> = {}): MeetingRecord => 
     viewer_relation: "attendee",
     can_edit_info: true,
     can_edit_note: false,
-    can_edit_agendas: true,
+    can_edit_agendas: { memo: true, ai: false, final: true }, can_add_agenda: { memo: true, ai: false, final: true },
     can_write_memo: false,
     started_at: null,
     title_candidate: null,

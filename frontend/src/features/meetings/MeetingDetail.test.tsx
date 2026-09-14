@@ -49,13 +49,19 @@ const agenda: MeetingAgenda = {
   last_saved_at: "2026-09-08T07:00:00Z",
   order: 1,
   title: "토큰 수요 전망",
+  /* 이 파일의 기본 회의는 「종료」다 — 그 화면이 내는 것은 **최종 벌**이다 (§4.2-6).
+     0.4.x 픽스처는 벌 축이 없어 한 안건이 세 트랙의 줄을 함께 들고 있었다 — 그 모양은 이제
+     계약이 아니다(§4.2-9: 줄은 자기 벌의 안건에만 매달린다). 벌을 최종으로 두고 줄도 그 벌의 것만 남긴다. */
+  track: "final" as const,
+  title_placeholder: false,
+  merged_from: [],
   source: "carried",
   concluded: true,
   lines: [
-    { line_id: "l1", track: "final", order: 1, text: "수요는 구조적으로 는다는 전제에 합의했다.", author: "AI", at_ms: null, evidence: [{ start_ms: 120_000, end_ms: 150_000 }] },
-    { line_id: "l2", track: "memo", order: 1, text: "분기별로 다시 뽑기로.", author: "이건학", at_ms: null, evidence: [] },
+    { line_id: "l1", track: "final", order: 1, text: "수요는 구조적으로 는다는 전제에 합의했다.", author: "AI", at_ms: null, evidence: [{ start_ms: 120_000, end_ms: 150_000 }], from_lines: [] },
+    { line_id: "l2", track: "memo", order: 1, text: "분기별로 다시 뽑기로.", author: "이건학", at_ms: null, evidence: [], from_lines: [] },
     // AI 가 낸 줄과 합쳐진 최종 줄에는 작성자가 없다 — 서버가 null 로 낸다 (W9)
-    { line_id: "l3", track: "ai", order: 1, text: "대응은 확장과 효율 두 축이다.", author: null, at_ms: null, evidence: [] },
+    { line_id: "l3", track: "ai", order: 1, text: "대응은 확장과 효율 두 축이다.", author: null, at_ms: null, evidence: [], from_lines: [] },
   ],
   todos: [
     {
@@ -90,7 +96,7 @@ function meeting(over: Partial<MeetingInfo> = {}): MeetingInfo {
     viewer_relation: "attendee",
     can_edit_info: true,
     can_edit_note: true,
-    can_edit_agendas: true,
+    can_edit_agendas: { memo: true, ai: false, final: true }, can_add_agenda: { memo: true, ai: false, final: true },
     can_write_memo: false,
     started_at: "2026-09-08T06:30:00Z",
     title_candidate: null,
@@ -191,7 +197,12 @@ describe("SCR-106 회의 상세 — 상태와 관계가 무엇을 낼지 정한�
 
   it("「예정」은 [수정] 없이 안건 칸이 늘 서고 안건을 더하고 뺀다 — 줄 편집 칸은 서지 않는다", async () => {
     // BE 가 갈라 내는 두 필드: 「예정」은 안건만 열리고 회의록 줄은 닫혀 있다
-    renderDetail({ status: "scheduled", can_edit_note: false, can_edit_agendas: true });
+    /* 「예정」 화면이 내는 것은 **사람 벌**이다 (§4.2-6) — 최종 벌은 아직 없다.
+       게이트도 사람 벌 칸만 열린다: 예정에서 최종 벌은 닫혀 있다. */
+    renderDetail(
+      { status: "scheduled", can_edit_note: false, can_edit_agendas: { memo: true, ai: false, final: false }, can_add_agenda: { memo: true, ai: false, final: false } },
+      [{ ...agenda, track: "memo", source: "carried", lines: [] }],
+    );
     await screen.findByText("DB ax 전략");
     /* 시안 10: 회의 전에는 안건 목록 «바로 아래» 에 입력 칸과 [안건 추가]가 그냥 서 있다.
        [수정]이 하던 일이 그 칸을 펴는 것 하나였으므로 단추를 내리고 칸을 상시로 뒀다 —
@@ -212,7 +223,7 @@ describe("SCR-106 회의 상세 — 상태와 관계가 무엇을 낼지 정한�
   });
 
   it("고칠 권한이 둘 다 없으면 [수정] 자체가 서지 않는다", async () => {
-    renderDetail({ can_edit_note: false, can_edit_agendas: false });
+    renderDetail({ can_edit_note: false, can_edit_agendas: { memo: false, ai: false, final: false }, can_add_agenda: { memo: false, ai: false, final: false } });
     await screen.findByText("DB ax 전략");
     expect(screen.queryByRole("button", { name: "수정" })).toBeNull();
   });
@@ -222,8 +233,8 @@ describe("SCR-106 회의 상세 — 상태와 관계가 무엇을 낼지 정한�
       {
         ...agenda,
         lines: [
-          { line_id: "n1", track: "final", order: 1, text: "AI 가 합친 줄.", author: null, at_ms: null, evidence: [] },
-          { line_id: "n2", track: "memo", order: 2, text: "사람이 적은 줄.", author: "이건학", at_ms: null, evidence: [] },
+          { line_id: "n1", track: "final", order: 1, text: "AI 가 합친 줄.", author: null, at_ms: null, evidence: [], from_lines: [] },
+          { line_id: "n2", track: "memo", order: 2, text: "사람이 적은 줄.", author: "이건학", at_ms: null, evidence: [], from_lines: [] },
         ],
       },
     ]);
@@ -252,7 +263,7 @@ describe("SCR-106 회의 상세 — 상태와 관계가 무엇을 낼지 정한�
           {
             ...agenda.lines[0],
             // 계약 키만 읽는다. 값이 숫자가 아니면 가리킬 수 없는 칩이라 세우지 않는다 (NaN:NaN 금지)
-            evidence: [{ start_ms: Number.NaN, end_ms: Number.NaN }, { start_ms: 120_000, end_ms: 150_000 }],
+            evidence: [{ start_ms: Number.NaN, end_ms: Number.NaN }, { start_ms: 120_000, end_ms: 150_000 }], from_lines: [],
           },
         ],
       },
@@ -273,9 +284,12 @@ describe("SCR-106 회의 상세 — 상태와 관계가 무엇을 낼지 정한�
     // 안건 계열은 «안건 하나»를 낸다 — 회의 한 벌이 아니다
     vi.mocked(api.updateMeetingAgenda).mockResolvedValue(agenda);
     fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    /* **저장이 줄마다 `line_id` 를 싣는다** (§8-9). 글자 배열은 이제 422 이고, id 를 빠뜨리면
+       읽어 온 줄이 전부 «새 줄» 로 다시 저장돼 계보가 죽는다. 빈 줄은 보내기 전에 버린다 —
+       [내용 줄 추가]로 만든 빈 줄이 페이로드에 없는 것이 그 증거다. */
     await waitFor(() =>
       expect(api.updateMeetingAgenda).toHaveBeenCalledWith("m1", "a1", {
-        lines: ["수요는 구조적으로 는다는 전제에 합의했다."],
+        lines: [{ line_id: "l1", text: "수요는 구조적으로 는다는 전제에 합의했다." }],
         expected_last_saved_at: "2026-09-08T07:00:00Z",
       }),
     );
@@ -283,7 +297,7 @@ describe("SCR-106 회의 상세 — 상태와 관계가 무엇을 낼지 정한�
   });
 
   it("공유받은 사람에게는 조작 버튼이 하나도 없다 — 회의록과 내보내기만 남는다", async () => {
-    renderDetail({ viewer_relation: "shared", can_edit_info: false, can_edit_note: false, can_edit_agendas: false });
+    renderDetail({ viewer_relation: "shared", can_edit_info: false, can_edit_note: false, can_edit_agendas: { memo: false, ai: false, final: false }, can_add_agenda: { memo: false, ai: false, final: false } });
     await screen.findByText("DB ax 전략");
     const exportLink = screen.getByRole("link", { name: "내보내기" });
     expect(exportLink.getAttribute("href")).toBe("/api/meetings/m1/export?format=html");

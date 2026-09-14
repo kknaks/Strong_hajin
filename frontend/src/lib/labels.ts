@@ -415,18 +415,35 @@ export const meetingCardBadgeTone: Record<MeetingStatus, "accent" | "neutral" | 
  * 안건이 어디서 왔나 (SCREENDEF-005 `E21` · D38). 기획이 정한 넷에 AI 트랙이 세운 것 하나를 더해 다섯이다.
  * **상태와 무관하게 늘 낸다** — 완료된 회의에서도 그 안건이 어디서 왔는지는 사라지지 않는다.
  */
+/**
+ * 안건의 출처 넷 (§4.1-2).
+ *
+ * 구 `ai: "AI 정리"` 는 **은퇴했다.** AI 가 세운 안건은 이제 출처가 아니라 **벌**로 갈리고
+ * (`agenda.track === "ai"`), 그 벌의 안건은 `source` 가 `null` 로 온다. 출처는 사람 벌만 갖는다.
+ */
 const agendaSourceLabel: Record<string, string> = {
   manual: "직접 입력",
   set: "세트",
   carried: "지난 회의에서 넘어옴",
   derived: "다른 회의에서 파생",
-  ai: "AI 정리",
 };
 
 /** 모르는 값이면 빈 글자다 — 없는 출처를 지어내지 않고, 그 자리는 그냥 서지 않는다. */
-export function meetingAgendaSourceText(source: string): string {
-  return agendaSourceLabel[source] ?? "";
+/** 출처는 **사람 벌만** 갖는다 (§4.1-2) — AI 벌·최종 벌은 `null` 이고 그 자리를 비운다. */
+export function meetingAgendaSourceText(source: string | null): string {
+  return source ? agendaSourceLabel[source] ?? "" : "";
 }
+
+/**
+ * 좌측 기둥 머리의 말 (시안 31). 부품(`shell/SideNav`)은 말을 모른다 — 호출부가 여기서 넘긴다.
+ */
+export const shellNav = {
+  notifications: "알림",
+  /** 알림은 아직 갈 화면이 없다 — 자리는 시안대로 서되 **실제로 눌리지 않는다**. */
+  notificationsDisabledHint: "알림은 아직 준비 중입니다.",
+  settings: "설정",
+  signOut: "로그아웃",
+} as const;
 
 export const meetingScreen = {
   /* 목록 (SCR-105) */
@@ -457,7 +474,16 @@ export const meetingScreen = {
 
   /* 안건 블록 (양쪽 화면이 같은 블록을 쓴다) */
   /** 번호는 **목록에서의 자리**(1부터)다 — 안건의 `order` 값이 아니다. 바로 시작한 회의는 0 에서 시작한다. */
-  agendaHead: (position: number, title: string) => `안건 ${position}. ${title}`,
+  /**
+   * 안건 한 줄의 머리 (§12 R-50).
+   *
+   * 제목이 **자리표시** — 빠른 시작이 세운 안건 — 이면 서버가 빈 글자를 낸다. 예전에는 서버가
+   * 「안건 1」을 제목으로 넣어 화면이 「안건 1. 안건 1」로 두 번 번호를 붙였고, v0.5.1 이
+   * 「자리표시 제목은 빈 값」으로 정리하며 **무엇을 그릴지는 화면 몫**으로 남겼다.
+   * 번호는 이 라벨이 이미 갖고 있으므로 **번호만 낸다** — 「안건 1」이지 「안건 1. 」이 아니다.
+   * (없는 제목을 지어내지 않는다. 사람이 제목을 넣으면 그때 뒤에 붙는다.)
+   */
+  agendaHead: (position: number, title: string) => (title ? `안건 ${position}. ${title}` : `안건 ${position}`),
   concluded: "결론 남",
   notConcluded: "결론 안 남",
   todos: "다음 할 일",

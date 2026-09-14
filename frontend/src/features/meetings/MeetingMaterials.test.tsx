@@ -49,6 +49,9 @@ const agenda: MeetingAgenda = {
   last_saved_at: "2026-09-08T07:00:00Z",
   order: 1,
   title: "토큰 수요 전망",
+  track: "memo" as const,
+  title_placeholder: false,
+  merged_from: [],
   source: "manual",
   concluded: true,
   lines: [],
@@ -93,7 +96,7 @@ function meeting(over: Partial<MeetingInfo> = {}): MeetingInfo {
     viewer_relation: "attendee",
     can_edit_info: true,
     can_edit_note: true,
-    can_edit_agendas: true,
+    can_edit_agendas: { memo: true, ai: false, final: true }, can_add_agenda: { memo: true, ai: false, final: true },
     can_write_memo: false,
     last_saved_at: "2026-09-08T07:08:00Z",
     started_at: "2026-09-08T06:30:00Z",
@@ -442,7 +445,7 @@ describe("SCR-106 공유 (MOD-105 · WP-005)", () => {
   });
 
   it("공유받은 사람에겐 자료 탭도 공유도 없다", async () => {
-    renderDetail({ viewer_relation: "shared", can_edit_info: false, can_edit_note: false, can_edit_agendas: false });
+    renderDetail({ viewer_relation: "shared", can_edit_info: false, can_edit_note: false, can_edit_agendas: { memo: false, ai: false, final: false }, can_add_agenda: { memo: false, ai: false, final: false } });
     await screen.findByText("DB ax 전략");
     expect(screen.queryByRole("tab", { name: "첨부" })).toBeNull();
     expect(screen.queryByRole("button", { name: "공유" })).toBeNull();

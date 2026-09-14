@@ -951,13 +951,26 @@ export async function addMeetingAgenda(meetingId: string, title: string): Promis
 }
 
 /**
- * 안건 한 덩어리를 덮어쓴다. `lines` 는 회의록 본문(`track: "final"`)의 줄 전부이고, 보낸 것이 그대로 남는다 —
- * 빈 줄은 화면이 보내기 전에 버린다.
+ * 안건 한 덩어리를 덮어쓴다. `lines` 는 **최종 벌**(`track: "final"`) 안건의 줄 전부이고, 보낸 것이
+ * 그대로 남는다 — 빈 줄은 화면이 보내기 전에 버린다.
+ *
+ * **줄마다 `line_id` 가 함께 간다** (§8-9). 글자 배열은 **422** 다 — 관용을 두지 않았다.
+ * 서버가 이 값으로 계보를 가른다:
+ *   · id 가 왔고 본문 그대로 → 계보 유지        · id 가 왔고 본문 달라짐 → 그 줄의 계보만 삭제
+ *   · id 없이 옴 → 새 줄                        · 모르는 id → 그 줄만 거절(저장 전체는 산다)
+ *
+ * 원본 두 벌(사람·AI)의 안건에 `lines` 를 보내면 **409** 이고, `concluded` 를 최종 벌 아닌 안건에
+ * 보내도 **409** 다 — 그 둘은 최종 벌의 것이다.
  */
 export async function updateMeetingAgenda(
   meetingId: string,
   agendaId: string,
-  patch: { title?: string; concluded?: boolean; lines?: string[]; expected_last_saved_at?: string | null },
+  patch: {
+    title?: string;
+    concluded?: boolean;
+    lines?: Array<{ line_id?: string; text: string }>;
+    expected_last_saved_at?: string | null;
+  },
 ): Promise<MeetingAgenda> {
   return request<MeetingAgenda>(`/api/meetings/${meetingId}/agendas/${agendaId}`, {
     body: JSON.stringify(patch),

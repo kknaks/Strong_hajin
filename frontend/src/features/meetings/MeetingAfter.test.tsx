@@ -50,6 +50,12 @@ const agenda: MeetingAgenda = {
   last_saved_at: "2026-09-08T07:00:00Z",
   order: 1,
   title: "토큰 수요 전망",
+  /* 이 파일은 종료·실패 화면이다 — 본문은 **최종 벌**이다 (§4.2-6).
+     0.4.x 픽스처는 벌 축이 없어 한 안건이 세 트랙의 줄을 함께 들고 있었다 — 그 모양은 이제
+     계약이 아니다(§4.2-9: 줄은 자기 벌의 안건에만 매달린다). 벌을 최종으로 두고 줄도 그 벌의 것만 남긴다. */
+  track: "final" as const,
+  title_placeholder: false,
+  merged_from: [],
   source: "manual",
   concluded: true,
   lines: [
@@ -60,7 +66,7 @@ const agenda: MeetingAgenda = {
       text: "수요는 구조적으로 는다는 전제에 합의했다.",
       author: null,
       at_ms: null,
-      evidence: [{ start_ms: 120_000, end_ms: 150_000 }],
+      evidence: [{ start_ms: 120_000, end_ms: 150_000 }], from_lines: [],
     },
   ],
   todos: [
@@ -108,7 +114,7 @@ function meeting(over: Partial<MeetingInfo> = {}): MeetingInfo {
     viewer_relation: "attendee",
     can_edit_info: true,
     can_edit_note: true,
-    can_edit_agendas: true,
+    can_edit_agendas: { memo: true, ai: false, final: true }, can_add_agenda: { memo: true, ai: false, final: true },
     can_write_memo: false,
     last_saved_at: "2026-09-08T07:08:00Z",
     started_at: "2026-09-08T06:30:00Z",
@@ -196,19 +202,24 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
     expect(first.querySelector(".scax-script-line__text")?.textContent).toBe("먼저 전제부터 맞춰 봅시다.");
   });
 
-  it("안건 출처는 다섯이고, 모르는 값이면 그 자리가 서지 않는다", async () => {
+  /* v0.5.1: 출처는 **사람 벌만** 갖는다 (§4.1-2). 구 `"ai"` 값은 은퇴했다 — AI 가 세운 안건은
+     출처가 아니라 «벌» 로 갈린다(`track === "ai"`). 그래서 넷이고, `null` 과 모르는 값은 자리가 서지 않는다.
+     ⚠ 약하게 만든 것이 아니다: 「AI 정리」가 사라진 만큼 «null 이면 안 선다» 를 새로 건다. */
+  it("안건 출처는 넷이고, null 이거나 모르는 값이면 그 자리가 서지 않는다", async () => {
     renderAfter({}, [
       { ...agenda, agenda_id: "s1", order: 1, title: "직접 쓴 것", source: "manual" },
       { ...agenda, agenda_id: "s2", order: 2, title: "세트에서", source: "set" },
       { ...agenda, agenda_id: "s3", order: 3, title: "지난 회의", source: "carried" },
       { ...agenda, agenda_id: "s4", order: 4, title: "다른 회의", source: "derived" },
-      { ...agenda, agenda_id: "s5", order: 5, title: "AI 가 세운 것", source: "ai" },
+      // AI 벌·최종 벌의 안건은 출처가 `null` 이다 — 그 자리가 서지 않는다
+      { ...agenda, agenda_id: "s5", order: 5, title: "출처 없는 것", source: null },
       // 계약에 없는 값이 와도 화면이 깨지지 않는다 — 그 자리가 그냥 서지 않을 뿐이다
       { ...agenda, agenda_id: "s6", order: 6, title: "모르는 출처", source: "sideways" as MeetingAgenda["source"] },
     ]);
     await screen.findByText("DB ax 전략");
     // 완료된 회의에서도 출처는 사라지지 않는다 (E21 「상태와 무관하게 늘 낸다」)
-    for (const label of ["직접 입력", "세트", "지난 회의에서 넘어옴", "다른 회의에서 파생", "AI 정리"]) {
+    expect(screen.queryByText("AI 정리")).toBeNull();
+    for (const label of ["직접 입력", "세트", "지난 회의에서 넘어옴", "다른 회의에서 파생"]) {
       expect(screen.getByText(label)).toBeTruthy();
     }
     expect(screen.queryByText("sideways")).toBeNull();
@@ -246,7 +257,7 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
       ...agenda,
       // 전사 둘째 줄은 130_000~160_000 이고, 근거는 그 «안» 에서 시작해 그 안에서 끝난다.
       // 줄의 시작 시각만 보던 때는 이런 구간에서 아무 줄도 켜지지 않았다(실측 8구간 중 5).
-      lines: [{ ...agenda.lines[0], evidence: [{ start_ms: 140_000, end_ms: 145_000 }] }],
+      lines: [{ ...agenda.lines[0], evidence: [{ start_ms: 140_000, end_ms: 145_000 }], from_lines: [] }],
     };
     renderAfter({}, [midway]);
     await screen.findByText("DB ax 전략");
@@ -371,7 +382,7 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
         current: {
           ...agenda,
           last_saved_at: "2026-09-08T07:30:00Z",
-          lines: [{ line_id: "l9", track: "final", order: 1, text: "다른 사람이 먼저 쓴 줄.", author: null, at_ms: null, evidence: [] }],
+          lines: [{ line_id: "l9", track: "final", order: 1, text: "다른 사람이 먼저 쓴 줄.", author: null, at_ms: null, evidence: [], from_lines: [] }],
         },
       }),
     );
@@ -403,7 +414,7 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
       viewer_relation: "shared",
       can_edit_info: false,
       can_edit_note: false,
-      can_edit_agendas: false,
+      can_edit_agendas: { memo: false, ai: false, final: false }, can_add_agenda: { memo: false, ai: false, final: false },
     });
     await screen.findByText("DB ax 전략");
     expect(screen.getByRole("link", { name: "내보내기" })).toBeTruthy();
@@ -419,9 +430,9 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
   it("「정리 중」에는 상태를 다시 묻고, 끝나면 묻기를 멈춘다", async () => {
     vi.useFakeTimers();
     try {
-      const settling = { meeting: meeting({ status: "summarizing", can_edit_note: false, can_edit_agendas: false }), agendas: [agenda] };
+      const settling = { meeting: meeting({ status: "summarizing", can_edit_note: false, can_edit_agendas: { memo: false, ai: false, final: false }, can_add_agenda: { memo: false, ai: false, final: false } }), agendas: [agenda] };
       vi.mocked(api.readMeeting).mockResolvedValue(settling);
-      renderAfter({ status: "summarizing", can_edit_note: false, can_edit_agendas: false });
+      renderAfter({ status: "summarizing", can_edit_note: false, can_edit_agendas: { memo: false, ai: false, final: false }, can_add_agenda: { memo: false, ai: false, final: false } });
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);
       });
@@ -478,7 +489,7 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
   });
 
   it("「정리 중」은 배지 없이 로딩과 한 줄만 내고 스크립트는 그대로 읽는다", async () => {
-    renderAfter({ status: "summarizing", can_edit_note: false, can_edit_agendas: false });
+    renderAfter({ status: "summarizing", can_edit_note: false, can_edit_agendas: { memo: false, ai: false, final: false }, can_add_agenda: { memo: false, ai: false, final: false } });
     await screen.findByText("DB ax 전략");
     expect(screen.getByText("정리하는 중")).toBeTruthy();
     /* 회의록 자리는 **도는 원 + 한 문장**이다. 스켈레톤 일곱 줄이던 것을 바꿨다 —
@@ -503,7 +514,7 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
    ════════════════════════════════════════════════════════════════════════════ */
 describe("SCR-106 「정리 중」 — 최종 회의록을 짓는 동안", () => {
   it("회의 중의 「AI 요약이 곧 생성됩니다.」와 섞이지 않는다 — 이 자리는 종료 뒤다", async () => {
-    renderAfter({ status: "summarizing", can_edit_note: false, can_edit_agendas: false });
+    renderAfter({ status: "summarizing", can_edit_note: false, can_edit_agendas: { memo: false, ai: false, final: false }, can_add_agenda: { memo: false, ai: false, final: false } });
     await screen.findByText("DB ax 전략");
     expect(screen.getByText(meetingScreen.finalNoteGenerating)).toBeTruthy();
     // 회의 «중» 의 문구가 여기 서면 회의가 아직 도는 것처럼 읽힌다
@@ -512,7 +523,7 @@ describe("SCR-106 「정리 중」 — 최종 회의록을 짓는 동안", () =>
 
   it("정리 중에 새로고침해도 같은 안내가 선다 — 상태가 정본이다", async () => {
     // 「새로고침」 = 스트림도 배치도 없이 상세만 다시 읽고 들어온 창이다
-    renderAfter({ status: "summarizing", can_edit_note: false, can_edit_agendas: false });
+    renderAfter({ status: "summarizing", can_edit_note: false, can_edit_agendas: { memo: false, ai: false, final: false }, can_add_agenda: { memo: false, ai: false, final: false } });
     const line = await screen.findByText(meetingScreen.finalNoteGenerating);
     // 스켈레톤 부재는 «회의록 칸 안» 에서만 본다 (위 검사와 같은 이유)
     const body = line.closest(".scax-note__body") as HTMLElement;
@@ -524,10 +535,10 @@ describe("SCR-106 「정리 중」 — 최종 회의록을 짓는 동안", () =>
     vi.useFakeTimers();
     try {
       vi.mocked(api.readMeeting).mockResolvedValue({
-        meeting: meeting({ status: "summarizing", can_edit_note: false, can_edit_agendas: false }),
+        meeting: meeting({ status: "summarizing", can_edit_note: false, can_edit_agendas: { memo: false, ai: false, final: false }, can_add_agenda: { memo: false, ai: false, final: false } }),
         agendas: [agenda],
       });
-      renderAfter({ status: "summarizing", can_edit_note: false, can_edit_agendas: false });
+      renderAfter({ status: "summarizing", can_edit_note: false, can_edit_agendas: { memo: false, ai: false, final: false }, can_add_agenda: { memo: false, ai: false, final: false } });
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);
       });
@@ -555,10 +566,10 @@ describe("SCR-106 「정리 중」 — 최종 회의록을 짓는 동안", () =>
     vi.useFakeTimers();
     try {
       vi.mocked(api.readMeeting).mockResolvedValue({
-        meeting: meeting({ status: "summarizing", can_edit_note: false, can_edit_agendas: false }),
+        meeting: meeting({ status: "summarizing", can_edit_note: false, can_edit_agendas: { memo: false, ai: false, final: false }, can_add_agenda: { memo: false, ai: false, final: false } }),
         agendas: [agenda],
       });
-      renderAfter({ status: "summarizing", can_edit_note: false, can_edit_agendas: false });
+      renderAfter({ status: "summarizing", can_edit_note: false, can_edit_agendas: { memo: false, ai: false, final: false }, can_add_agenda: { memo: false, ai: false, final: false } });
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);
       });

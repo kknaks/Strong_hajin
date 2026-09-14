@@ -845,10 +845,25 @@ export type MeetingListPayload = {
 /** 한 줄이 딛는 원문 구간. 화면은 이것을 타임칩으로 펴고 스크립트의 그 자리로 간다. */
 export type MeetingEvidence = { start_ms: number; end_ms: number };
 
+/**
+ * 회의록이 선 **벌** — 한 회의에 회의록이 셋이고 벌마다 자기 안건 목록과 줄을 갖는다 (SPEC §4.0-1).
+ *
+ * ⚠ **표기는 `memo` 다.** SPEC 본문(§4.0-2)은 사람 벌을 `human` 으로 적었지만 그 개명은
+ * 사용자 결정으로 되돌아갔고 **서버가 내는 값은 `memo`** 다
+ * (`backend/.../meetings/domain.py:80 TRACK_MEMO = "memo"`). 화면은 서버가 내는 값을 쓴다.
+ */
+export type MeetingTrack = "memo" | "ai" | "final";
+
+/**
+ * 벌별 판정 셋. 불리언 하나로는 「종료에서 최종 벌은 열리고 사람 벌은 닫힌다」를 낼 수 없다 (§4.1-6).
+ * **화면이 상태로 다시 추론하지 않는다** — 「진행 중」·「정리 중」까지 서버가 이 값에 이미 반영했다.
+ */
+export type MeetingTrackGates = { memo: boolean; ai: boolean; final: boolean };
+
 /** 회의록 한 줄. `track` 은 어느 트랙에서 온 줄인지이고, 화면은 종류 배지를 두지 않는다. */
 export type MeetingLine = {
   line_id: string;
-  track: "memo" | "ai" | "final";
+  track: MeetingTrack;
   order: number;
   text: string;
   /** 그 줄을 적은 사람의 `member_id`. **AI 가 낸 줄과 합쳐진 최종 줄에는 작성자가 없다** — 그럴 때 `null` 이다. */
@@ -856,6 +871,12 @@ export type MeetingLine = {
   /** 메모 줄에만 값이 있다 — 회의 시작에서 흐른 밀리초. AI·합성 줄은 시각이 아니라 구간에 걸린다. */
   at_ms: number | null;
   evidence: MeetingEvidence[];
+  /**
+   * 계보 — 이 최종 줄이 딛는 **원본 줄 id** 목록 (§4.2-10 · D54). 최종 벌 줄만 값을 든다.
+   * **이 바퀴는 이 값을 화면에 그리지 않는다** — 어디에 어떻게 낼지를 스펙이 아직 정하지 않았다
+   * (`OQ-308`). 응답에 오는 것을 타입으로만 받아 둔다.
+   */
+  from_lines: string[];
 };
 
 /**
@@ -885,15 +906,30 @@ export type MeetingTodo = {
 
 export type MeetingAgenda = {
   agenda_id: string;
+  /**
+   * 이 안건이 선 **벌**. 화면이 세 벌을 가르는 **유일한 축**이다 (§4.0-1).
+   * 안건 id 는 같은 벌 안에서만 유효하고, `order` 도 벌 «안에서» 1 부터 다시 매겨진다.
+   */
+  track: MeetingTrack;
   /** 이 안건의 마지막 저장 시각. 다음 저장이 이 값을 함께 보내 「그 사이에 누가 저장했나」를 가른다. */
   last_saved_at: string | null;
   order: number;
   title: string;
-  /** 어디서 온 안건인가 (D38). 기획이 정한 넷 + AI 트랙이 세운 것. */
-  source: "manual" | "set" | "carried" | "derived" | "ai";
+  /** 제목이 아직 «자리표시» 인가 (D6). 빠른 시작이 세운 안건은 제목이 빈 값으로 온다 (§12 R-50). */
+  title_placeholder: boolean;
+  /**
+   * 어디서 온 안건인가 (D38). **사람 벌만 값을 갖는다** — AI 벌·최종 벌은 `null` 이다 (§4.1-2).
+   * 구 `"ai"` 값은 은퇴했다: AI 가 세운 안건은 출처가 아니라 **벌**로 갈린다.
+   */
+  source: "manual" | "set" | "carried" | "derived" | null;
   concluded: boolean;
   lines: MeetingLine[];
   todos: MeetingTodo[];
+  /**
+   * 계보 — 이 최종 안건이 묶은 **원본 안건 id** 목록 (§4.1-3 · D54). 최종 벌만 값을 든다.
+   * `from_lines` 와 같은 이유로 **이 바퀴는 그리지 않는다** (`OQ-308`).
+   */
+  merged_from: string[];
 };
 
 export type MeetingInfo = {
@@ -912,9 +948,17 @@ export type MeetingInfo = {
   can_edit_info: boolean;
   /** 회의록 **줄**을 고칠 수 있는가 — 서버가 정한다 (완료·실패·취소됨). */
   can_edit_note: boolean;
-  /** **안건**을 더하고 뺄 수 있는가 — 서버가 정한다 (예정·완료·실패·취소됨).
-      줄 편집과 갈라져 있다: 「예정」은 회의록이 비어 있어도 안건은 손본다 (SPEC §4.1-5). */
-  can_edit_agendas: boolean;
+  /**
+   * 안건을 **고치고 지울** 수 있는가 — **벌마다 다르다** (§4.1-6).
+   * 사람 벌은 예정·취소, AI 벌은 언제나 거짓, 최종 벌은 종료·실패다.
+   * 상태 게이트(「진행 중」·「정리 중」)도 서버가 이미 반영했으므로 화면이 다시 추론하지 않는다.
+   */
+  can_edit_agendas: MeetingTrackGates;
+  /**
+   * 안건을 **더할** 수 있는가 — 고치는 것과 **다른 게이트**다 (§4.1-6).
+   * 사람 벌은 예정·**진행 중**·취소에 열린다: 「진행 중」에 더할 수는 있어도 고칠 수는 없다.
+   */
+  can_add_agenda: MeetingTrackGates;
   /** 메모 입력 칸이 서는가 — 만든 사람 × 「진행 중」. 화면이 `created_by` 로 추론하지 않는다. */
   can_write_memo: boolean;
   last_saved_at: string | null;

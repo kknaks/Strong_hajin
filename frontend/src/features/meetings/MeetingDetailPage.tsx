@@ -38,6 +38,7 @@ import type {
   MeetingMaterial,
   MeetingRecord,
   MeetingTodo,
+  MeetingTrack,
   MeetingTranscript,
   Persona,
 } from "../../lib/viewModels";
@@ -71,11 +72,21 @@ function staleAgendaOf(reason: unknown): MeetingAgenda | null {
   return detail?.code === "meeting_agenda_stale" && detail.current ? detail.current : null;
 }
 
-function linesOf(agenda: MeetingAgenda, track: "memo" | "ai" | "final"): string[] {
+/**
+ * 고치는 중인 줄 하나 — **id 를 함께 든다** (§8-9).
+ *
+ * 저장이 `line_id` 로 계보를 가른다: id 가 오면 그 줄의 «이어짐» 이고, id 없이 오면 새 줄이다.
+ * 예전에는 편집 상태가 `string[]` 이라 저장할 때 id 를 실을 방법이 없었고, **읽어 온 줄이 전부
+ * 새 줄로 다시 저장돼 계보가 통째로 죽었다.** 그래서 단위를 글자에서 줄로 올렸다.
+ * `line_id` 가 없는 원소는 사람이 이 자리에서 «더한» 줄이다.
+ */
+type DraftLine = { line_id?: string; text: string };
+
+function linesOf(agenda: MeetingAgenda, track: MeetingTrack): DraftLine[] {
   return agenda.lines
     .filter((line) => line.track === track)
     .sort((left, right) => left.order - right.order)
-    .map((line) => line.text);
+    .map((line) => ({ line_id: line.line_id, text: line.text }));
 }
 
 /**
@@ -143,7 +154,7 @@ export function MeetingDetailPage({
   const [transcript, setTranscript] = useState<MeetingTranscript | null>(null);
 
   const [editing, setEditing] = useState(false);
-  const [bodies, setBodies] = useState<Record<string, string[]>>({});
+  const [bodies, setBodies] = useState<Record<string, DraftLine[]>>({});
   const [agendaDraft, setAgendaDraft] = useState("");
   const [askRemoveAgenda, setAskRemoveAgenda] = useState<MeetingAgenda | null>(null);
 
@@ -284,13 +295,32 @@ export function MeetingDetailPage({
   const cancelled = status === "cancelled";
   const attendee = meeting?.viewer_relation === "attendee";
 
-  /* 고치는 권한은 둘로 갈라져 있다 — 서버가 각각 말한다. 상태로 추론하지 않는다.
-     `can_edit_agendas` 안건을 더하고 뺀다 (예정 · 완료 · 실패 · 취소됨)
-     `can_edit_note`    회의록 줄을 고친다 (완료 · 실패 · 취소됨)
-     [수정]은 그 둘 중 하나라도 열려 있으면 서는 한 자리다 (E77) — 「예정」은 회의록이 비어 있어도
-     안건은 손봐야 하므로, 줄 편집만 보고 버튼을 감추면 안건을 더할 자리가 사라진다. */
+  /*
+   * 지금 화면이 «어느 벌» 을 보고 있는가 — 이 한 값이 안건 목록·게이트·결론 표시를 모두 가른다 (§4.0-1).
+   *   진행 중 「메모」 탭 → 사람 벌(`memo`) · 「AI 요약」 탭 → AI 벌(`ai`) · 그 밖 → 최종 벌(`final`)
+   * 예정·취소는 아직 최종 벌이 없고 사람 벌의 안건 목록이 그 화면이다 (§4.2-6 표).
+   */
+  /* `leftTabs`(= live && attendee)는 아래에서 서므로 여기서는 그 재료로 같은 것을 센다 —
+     보기만 하는 창(공유)에는 탭이 없고 AI 벌을 본다. */
+  const shownTrack: MeetingTrack = live
+    ? attendee && left === "memo"
+      ? "memo"
+      : "ai"
+    : planned || cancelled
+      ? "memo"
+      : "final";
+
+  /* 고치는 권한은 **벌마다 다르고** 더하는 것과 고치는 것이 또 다르다 (§4.1-6).
+     불리언 하나이던 때는 「종료에서 최종 벌은 열리고 사람 벌은 닫힌다」를 낼 수가 없었다.
+     상태 게이트(「진행 중」·「정리 중」)도 **서버가 이 값에 이미 넣었다** — 화면이 `!live && !settling`
+     로 다시 추론하면 서버와 두 곳에서 판정하게 되므로 걷었다 (백엔드 보고 §4.2). */
+  const agendaGates = meeting?.can_edit_agendas;
+  const addGates = meeting?.can_add_agenda;
   const canEditNote = Boolean(meeting?.can_edit_note) && !live && !settling;
-  const canEditAgendas = Boolean(meeting?.can_edit_agendas) && !live && !settling;
+  /** 지금 보고 있는 벌의 안건을 고치고 지울 수 있는가. AI 벌은 언제나 거짓이다. */
+  const canEditAgendas = Boolean(agendaGates?.[shownTrack]);
+  /** 지금 보고 있는 벌에 안건을 «더할» 수 있는가 — 「진행 중」 사람 벌이 여기서만 참이다. */
+  const canAddAgenda = Boolean(addGates?.[shownTrack]);
   const canEdit = canEditNote || canEditAgendas;
   const noteEditing = editing && canEdit;
   const agendaEditing = noteEditing && canEditAgendas;
@@ -305,8 +335,14 @@ export function MeetingDetailPage({
    * 권한은 여전히 서버가 말한다 — `can_edit_agendas` 가 닫혀 있으면 칸 자체가 서지 않는다.
    */
   const agendaAlways = canEditAgendas && (planned || cancelled);
-  /** 안건을 더하고 뺄 수 있는가 — 편집 모드 안이거나, 회의 전이라 늘 열려 있거나. */
+  /** 안건을 «지울» 수 있는가 — 편집 모드 안이거나, 회의 전이라 늘 열려 있거나. */
   const agendaOpen = agendaEditing || agendaAlways;
+  /*
+   * 안건을 «더하는» 자리는 지우는 자리와 게이트가 다르다 (§4.1-6).
+   * 「진행 중」 사람 벌이 그 차이가 드러나는 유일한 자리다 — 더할 수는 있고 고칠 수는 없다.
+   * 회의 중의 그 자리는 메모 칸의 [+ 새 안건]이고(§6-4), 여기 칸은 회의 전·편집 중의 것이다.
+   */
+  const agendaAddOpen = canAddAgenda && (agendaOpen || planned || cancelled);
 
   /* 오디오를 올리는 연결은 회의당 하나이고 그 자리는 회의를 시작한 사람이 갖는다 (§5.2-5).
      누가 그 사람인지는 **서버가 말한다** — 화면이 `created_by` 로 추론하지 않는다.
@@ -354,6 +390,17 @@ export function MeetingDetailPage({
     }, SETTLING_POLL_MS);
     return () => window.clearInterval(timer);
   }, [reload, settling]);
+
+  /*
+   * 탭을 넘으면 **안건 목록이 통째로 바뀐다** (§4.2-6) — 벌이 다르면 안건도 다른 것이다.
+   * 그래서 읽던 자리를 이어받지 않고 **맨 위로 돌린다**: 사람 벌 세 번째 안건을 보다 넘어갔을 때
+   * AI 벌의 세 번째 안건은 같은 이야기가 아니므로, 그 자리를 지키면 «엉뚱한 곳에서 시작» 한다.
+   * (안건 블록에는 접힘 상태가 없다 — `AgendaBlock` 이 늘 펴진 채로 선다. 그래서 들 것도 없다.)
+   */
+  useEffect(() => {
+    const node = noteScroll.current;
+    if (node) node.scrollTop = 0;
+  }, [shownTrack]);
 
   /* AI 배치는 트랙을 통째로 갈아 끼운다 — 읽던 자리가 튀지 않게 스크롤을 그대로 둔다.
      바닥에 붙어 보고 있었으면 바닥에 붙여 둔다. */
@@ -444,9 +491,13 @@ export function MeetingDetailPage({
     try {
       for (const agenda of changed) {
         try {
-          // 줄별로 보내지 않는다 — 안건 하나를 통째로 덮어쓰고, 읽은 시각을 함께 보낸다 (§8-9).
+          /* 줄별로 보내지 않는다 — 안건 하나를 통째로 덮어쓰고, 읽은 시각을 함께 보낸다 (§8-9).
+             **줄마다 `line_id` 가 함께 간다**: 글자 배열은 이제 422 이고, id 를 빠뜨린 줄은
+             새 줄이 되어 계보가 죽는다. 빈 줄은 보내기 전에 버린다 (§4.2-8). */
           await updateMeetingAgenda(meetingKey, agenda.agenda_id, {
-            lines: draftOf(agenda).map((text) => text.trim()).filter(Boolean),
+            lines: draftOf(agenda)
+              .map((line) => ({ ...line, text: line.text.trim() }))
+              .filter((line) => line.text.length > 0),
             expected_last_saved_at: agenda.last_saved_at,
           });
         } catch (reason) {
@@ -455,7 +506,8 @@ export function MeetingDetailPage({
           /* 덮어쓰지 않는다 — 서버가 함께 준 「지금 있는 것」으로 갈아 끼우고 사람에게 말한다 (§8-9) */
           setBodies((current) => ({
             ...current,
-            [agenda.agenda_id]: stale.lines.filter((line) => line.track === "final").map((line) => line.text),
+            // 갈아 끼울 때도 **id 를 들고 온다** — 여기서 글자만 뽑으면 다음 저장이 계보를 버린다
+            [agenda.agenda_id]: linesOf(stale, "final"),
           }));
           onNotice(meetingScreen.savedElsewhere);
           await reload();
@@ -493,9 +545,24 @@ export function MeetingDetailPage({
     return closure.reason ? `${meetingScreen.streamDisconnected} ${closure.reason}` : meetingScreen.streamDisconnected;
   })();
 
-  /* AI 배치가 왔으면 그 회차가 낸 트랙 «전체» 를 쓴다 — 줄 id 를 붙들지 않고 통째로 갈아 끼운다 (§7.1) */
+  /*
+   * **이 바퀴의 핵심** — 탭마다 «자기 벌의 안건 목록» 이다 (§4.2-6 · D51).
+   *
+   * 0.4.x 는 한 목록을 두 번 냈다: 탭이 가른 것은 «줄» 뿐이고 안건 제목은 그대로였다.
+   * 이제 서버가 세 벌을 «한 `agendas` 배열에 모두» 실어 보내므로, 거르지 않으면 같은 회의가
+   * 최대 3배로 보이고 「안건 1」이 셋 선다(`order` 가 벌 안에서 다시 1 부터다 — 백엔드 보고 §4.5).
+   *
+   * 그래서 `track` 으로 먼저 거르고, 그 다음 `order` 로 세운다. **탭을 넘으면 목록이 통째로 바뀐다.**
+   */
+  const trackAgendas = agendas.filter((agenda) => agenda.track === shownTrack);
+  /* AI 배치가 왔으면 그 회차가 낸 트랙 «전체» 를 쓴다 — 줄 id 를 붙들지 않고 통째로 갈아 끼운다 (§7.1).
+     ⚠ **배치가 싣는 것은 AI 벌뿐이다** (`replace_ai_track` 의 반환이 세 벌 트리에서 AI 벌로 줄었다).
+     그래서 이 갈아 끼우기는 **AI 탭에서만** 돈다 — 사람 벌 목록(`trackAgendas`)에는 손대지 않는다.
+     「배치가 한 번 돌 때마다 사람 벌이 화면에서 사라진다」가 이 조건을 놓쳤을 때 나는 증상이다. */
   const shownAgendas =
-    aiTab && stream.batch ? [...stream.batch.agendas].sort((left, right) => left.order - right.order) : agendas;
+    aiTab && stream.batch
+      ? [...stream.batch.agendas].filter((agenda) => agenda.track === "ai").sort((left, right) => left.order - right.order)
+      : trackAgendas;
 
   /*
    * AI 트랙에 «실제로 들어온 것» 이 있는가 (§7).
@@ -504,16 +571,14 @@ export function MeetingDetailPage({
    * AI 가 아직 아무것도 안 냈는데 화면은 뭔가 정리된 것처럼 보였다(현재 화면 24).
    *
    * 판정을 **stream.batch 유무로만 하지 않는다.** 배치는 이 «창» 이 붙어 있는 동안 온 것이라,
-   * 새로고침하면 이미 저장된 AI 요약이 있어도 거짓이 된다. 그래서 상세 응답이 실어 온 것까지 함께 본다:
-   *   · `track === "ai"` 인 줄이 하나라도 있는가 (§7.1 적재 — 배치 결과는 AI 트랙 줄로 저장된다)
-   *   · 잠정 후보(`provisional`)가 하나라도 있는가 (같은 트랜잭션으로 함께 적재된다)
+   * 새로고침하면 이미 저장된 AI 요약이 있어도 거짓이 된다. 그래서 상세 응답이 실어 온 것까지 함께 본다.
    *
-   * **`source` 로 거르지 않는다.** AI 가 기존 안건(출처 「직접 입력」)을 요약한 경우도 유효한 결과다
-   * (§7.1 「안건이 없으면 AI 가 만들고」 — 있으면 그 안건에 줄을 붙인다). 출처로 거르면 그 경우가 통째로 사라진다.
+   * v0.5.1 에서 **판정 축이 간단해졌다** — 전에는 「`track === "ai"` 인 줄이나 잠정 후보가 있는가」를
+   * 줄 단위로 뒤졌는데(그때는 AI 줄이 사람 안건에 매달릴 수 있었다), 이제 **AI 벌이 자기 안건 목록을
+   * 갖는다** (§4.0-1). 그 목록이 비어 있으면 배치가 아직 아무것도 안 낸 것이다.
+   * `source` 로 거르지 않는 이유도 그대로다 — 출처는 사람 벌만 갖고 AI 벌은 언제나 `null` 이다.
    */
-  const aiTrackArrived =
-    Boolean(stream.batch) ||
-    agendas.some((agenda) => agenda.lines.some((line) => line.track === "ai") || agenda.todos.some((todo) => todo.provisional));
+  const aiTrackArrived = Boolean(stream.batch) || agendas.some((agenda) => agenda.track === "ai");
   /** 「AI 요약」 탭인데 아직 AI 가 낸 것이 없다 — 안건 목록 대신 기다리는 중임을 한 줄로 말한다. */
   const aiPending = aiTab && !aiTrackArrived;
 
@@ -864,10 +929,16 @@ export function MeetingDetailPage({
                   edit={
                     lineEditing
                       ? {
-                          lines: draftOf(agenda),
-                          onAdd: () => setBodies((current) => ({ ...current, [agenda.agenda_id]: [...draftOf(agenda), ""] })),
+                          /* 칸에는 글자만 보이고 id 는 상태가 든다 — 부품은 계보를 모른다 */
+                          lines: draftOf(agenda).map((line) => line.text),
+                          // 더한 줄에는 id 가 없다 — 그것이 「새 줄」이라는 표시다
+                          onAdd: () => setBodies((current) => ({ ...current, [agenda.agenda_id]: [...draftOf(agenda), { text: "" }] })),
                           onChange: (at, value) =>
-                            setBodies((current) => ({ ...current, [agenda.agenda_id]: draftOf(agenda).map((text, k) => (k === at ? value : text)) })),
+                            setBodies((current) => ({
+                              ...current,
+                              // 글자만 갈고 **id 는 그대로 둔다** — 본문이 달라져도 그 줄은 같은 줄이다
+                              [agenda.agenda_id]: draftOf(agenda).map((line, k) => (k === at ? { ...line, text: value } : line)),
+                            })),
                           onRemove: (at) =>
                             setBodies((current) => ({ ...current, [agenda.agenda_id]: draftOf(agenda).filter((_, k) => k !== at) })),
                         }
@@ -888,11 +959,20 @@ export function MeetingDetailPage({
                                누르면 스크립트의 그 자리가 열린다. 근거가 없는 줄은 그 자리가 빈다 */
                             tracked(agenda, "final")
                   }
-                  /* E22 결론 표시 — 완료에만. 합성이 안 된 「실패」에는 AI 가 낸 값 자체가 없다 */
-                  mark={settled ? { text: agenda.concluded ? meetingScreen.concluded : meetingScreen.notConcluded, concluded: agenda.concluded } : null}
+                  /* E22 결론 표시 — **최종 벌에만** 선다 (§4.0-5). 사람 벌·AI 벌의 안건은 결론 여부를
+                     갖지 않는다: 회의가 도는 동안에는 결론이 화면에 서지 않는다.
+                     완료 조건은 그대로다 — 합성이 안 된 「실패」에는 AI 가 낸 값 자체가 없다. */
+                  mark={
+                    settled && agenda.track === "final"
+                      ? { text: agenda.concluded ? meetingScreen.concluded : meetingScreen.notConcluded, concluded: agenda.concluded }
+                      : null
+                  }
                   onRemove={agendaOpen ? () => setAskRemoveAgenda(agenda) : null}
+                  /* 출처는 **사람 벌만** 갖는다 — 다른 두 벌은 `null` 이고 그 자리는 서지 않는다 (§4.1-2) */
                   source={meetingAgendaSourceText(agenda.source)}
+                  /* 빠른 시작이 세운 안건은 제목이 빈 값으로 온다 (§12 R-50) — 라벨이 그 자리를 메운다 */
                   title={agenda.title}
+                  titlePlaceholder={agenda.title_placeholder}
                   todos={
                     /* 회의 «중» 후속 업무 후보 (D46) — 「AI 요약」 탭에만, 읽기 전용이다.
                        배치가 온 뒤에는 그 회차가 낸 것 전량이고(AI 트랙과 같은 결로 통째 교체),
@@ -936,8 +1016,9 @@ export function MeetingDetailPage({
             )}
 
             {/* E35 [안건 추가] — 회의 전에는 늘, 완료·실패에서는 회의록을 고치는 동안 선다.
-                자리는 시안대로 «안건 목록 바로 아래» 다. 계약은 그대로 `addMeetingAgenda` 하나다. */}
-            {agendaOpen && (
+                자리는 시안대로 «안건 목록 바로 아래» 다. 계약은 그대로 `addMeetingAgenda` 하나다.
+                **지우는 게이트가 아니라 더하는 게이트를 읽는다** (§4.1-6) — 둘은 다른 판정이다. */}
+            {agendaAddOpen && (
               <div className="scax-add-agenda">
                 <input
                   aria-label={meetingScreen.agendaPlaceholder}

@@ -60,7 +60,7 @@ function info(over: Partial<MeetingInfo> = {}): MeetingInfo {
     viewer_relation: "attendee",
     can_edit_info: true,
     can_edit_note: true,
-    can_edit_agendas: true,
+    can_edit_agendas: { memo: true, ai: false, final: true }, can_add_agenda: { memo: true, ai: false, final: true },
     can_write_memo: false,
     started_at: "2026-09-08T06:30:00Z",
     title_candidate: null,
