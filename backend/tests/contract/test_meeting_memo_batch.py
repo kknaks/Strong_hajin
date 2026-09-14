@@ -390,7 +390,7 @@ def test_an_output_that_breaks_the_schema_discards_the_whole_batch(tmp_path) -> 
     assert [line["text"] for agenda in after for line in agenda["lines"]] == ["살아남을 줄"]
 
 
-def test_the_ai_track_is_replaced_whole_and_never_touches_a_human_agenda(tmp_path) -> None:
+def test_the_ai_track_is_replaced_whole_and_never_touches_a_memo_agenda(tmp_path) -> None:
     """**AI 는 자기 벌에만 쓴다. 예외가 없다** (SPEC v0.5 §4.1-8 · §7.3 · D51 · D14 폐기).
 
     0.4.x 는 출력의 `agenda_id` 를 보고 사람 안건을 이어 썼다 — 사람 안건 아래에 AI 줄이 매달렸고, 그래서
@@ -400,12 +400,12 @@ def test_the_ai_track_is_replaced_whole_and_never_touches_a_human_agenda(tmp_pat
     client, application, agent = _stack(tmp_path)
     made = _running(client)
     meeting_id = made["meeting"]["meeting_id"]
-    [human_agenda] = [row["agenda_id"] for row in made["agendas"] if row["track"] == "memo"]
+    [memo_agenda] = [row["agenda_id"] for row in made["agendas"] if row["track"] == "memo"]
     application.meeting_batch.drain()
     batch = application.meeting_batch
 
     client.post(
-        f"/api/meetings/{meeting_id}/agendas/{human_agenda}/lines", headers=MINA, json={"text": "사람이 적은 줄"}
+        f"/api/meetings/{meeting_id}/agendas/{memo_agenda}/lines", headers=MINA, json={"text": "사람이 적은 줄"}
     )
     agent.script = [
         _output([
@@ -419,10 +419,10 @@ def test_the_ai_track_is_replaced_whole_and_never_touches_a_human_agenda(tmp_pat
 
     agendas = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"]
     by_id = {agenda["agenda_id"]: agenda for agenda in agendas}
-    human = by_id[human_agenda]
+    memo = by_id[memo_agenda]
     # 사람 벌의 안건은 제목도 출처도 그대로이고 **그 아래에는 사람 줄만 있다.**
-    assert human["track"] == "memo" and human["title"] == "첫 안건" and human["source"] == "manual"
-    assert [(row["track"], row["text"]) for row in human["lines"]] == [("memo", "사람이 적은 줄")]
+    assert memo["track"] == "memo" and memo["title"] == "첫 안건" and memo["source"] == "manual"
+    assert [(row["track"], row["text"]) for row in memo["lines"]] == [("memo", "사람이 적은 줄")]
 
     ai_agendas = [agenda for agenda in agendas if agenda["track"] == "ai"]
     assert [agenda["title"] for agenda in ai_agendas] == ["AI 가 가른 첫 화제", "AI 가 세운 안건"]
@@ -441,9 +441,9 @@ def test_the_ai_track_is_replaced_whole_and_never_touches_a_human_agenda(tmp_pat
     assert not first_round_ai_ids & {agenda["agenda_id"] for agenda in surviving_ai}
     assert [row["text"] for agenda in surviving_ai for row in agenda["lines"]] == ["갈아끼운 줄"]
     # 사람 벌은 그 교체에 닿지 않는다.
-    [still_human] = [agenda for agenda in after if agenda["track"] == "memo"]
-    assert still_human["agenda_id"] == human_agenda and still_human["title"] == "첫 안건"
-    assert [row["text"] for row in still_human["lines"]] == ["사람이 적은 줄"]
+    [still_memo] = [agenda for agenda in after if agenda["track"] == "memo"]
+    assert still_memo["agenda_id"] == memo_agenda and still_memo["title"] == "첫 안건"
+    assert [row["text"] for row in still_memo["lines"]] == ["사람이 적은 줄"]
 
 
 def test_a_person_cannot_write_a_memo_into_the_ai_track(tmp_path) -> None:

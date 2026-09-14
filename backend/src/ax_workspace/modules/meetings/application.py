@@ -585,9 +585,12 @@ class MeetingApplication:
             if source is not None:
                 carried = {
                     "title": source.title,
+                    # **이전 회의의 안건은 최종 벌 하나다** (SPEC §7.2 「이전 회의 조회 — 안건과 결론」).
+                    # 원본 두 벌을 실으면 같은 회의가 세 번 실리고, `concluded` 는 최종 벌에만 있어
+                    # (§4.0-5) 원본 안건이 「결론 안 남」을 달고 들어간다 — 없는 사실을 싣는 것이다.
                     "agendas": [
                         {"title": agenda.title, "concluded": bool(agenda.concluded)}
-                        for agenda in self._repository.agendas(source)
+                        for agenda in self._repository.agendas(source, track=TRACK_FINAL)
                     ],
                 }
         memo_agendas = [agenda for agenda in agendas if agenda.track == TRACK_MEMO]
@@ -1184,9 +1187,12 @@ class MeetingApplication:
                 carried = {
                     "meeting_id": str(source.id),
                     "title": source.title,
+                    # **이전 회의의 안건은 최종 벌 하나다** — 위 `finalize_input` 과 같은 이유다
+                    # (SPEC §7.2 · §4.0-5). 이전 회의의 정본은 최종 벌이고, 원본 두 벌은 그 회의를
+                    # 되짚는 근거이지 다음 회의에 실어 줄 맥락이 아니다.
                     "agendas": [
                         {"title": agenda.title, "concluded": bool(agenda.concluded)}
-                        for agenda in self._repository.agendas(source)
+                        for agenda in self._repository.agendas(source, track=TRACK_FINAL)
                     ],
                 }
         return {

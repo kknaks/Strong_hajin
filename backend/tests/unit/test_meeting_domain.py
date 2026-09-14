@@ -79,7 +79,7 @@ def test_meeting_lifecycle_allows_only_the_transitions_in_the_domain_map() -> No
             ensure_transition(source, target)
 
 
-def test_agenda_source_vocabulary_is_closed_and_belongs_to_the_human_track_alone() -> None:
+def test_agenda_source_vocabulary_is_closed_and_belongs_to_the_memo_track_alone() -> None:
     """**출처는 사람 벌 안의 출처다** (SPEC-004 v0.5 §4.1-2 · D51).
 
     0.4.x 의 「AI 정리」(`ai`)는 은퇴했다 — 그 값이 있던 이유는 AI 가 사람과 **같은 목록**에 안건을
@@ -114,7 +114,7 @@ def test_a_line_hangs_only_on_an_agenda_of_its_own_track() -> None:
     with pytest.raises(MeetingError, match="does not hang"):
         ensure_line_track(TRACK_FINAL, agenda_track=TRACK_MEMO)
     with pytest.raises(MeetingError, match="must be one of"):
-        ensure_line_track("human", agenda_track="human")
+        ensure_line_track("origin", agenda_track="origin")
 
 
 def test_lineage_keeps_only_ids_that_point_at_this_meeting_and_drops_the_rest() -> None:
