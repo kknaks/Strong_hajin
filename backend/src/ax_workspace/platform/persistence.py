@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Identity, Index, Integer, JSON, String, Text, Uuid, UniqueConstraint, create_engine, text
+from sqlalchemy import text as sql_text  # `text` 를 열 이름으로 쓰는 클래스 안에서 부를 별칭
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 
@@ -424,9 +425,10 @@ class MeetingLineRecord(Base):
     #: 있는 근거는 `evidence` 다.
     #: 사람이 고친 뒤에도 **계보는 줄 단위로만** 사라진다 (§8-9) — 본문이 달라진 그 줄의 것만 지워지고
     #: 손대지 않은 줄은 저장을 몇 번 해도 계보를 그대로 든다.
-    #: `text` 는 이 클래스의 열 이름이라 클래스 본문에서 `sqlalchemy.text()` 를 가린다 — DDL 문자열로 적는다.
+    #: `text` 는 이 클래스의 열 이름이라 클래스 본문에서 `sqlalchemy.text()` 를 가린다 — 별칭으로 부른다.
+    #: 글자를 그대로 주면 SQLAlchemy 가 그것을 **리터럴로 한 번 더 감싸** 기본값이 따옴표째 들어간다.
     from_lines: Mapped[list] = mapped_column(
-        JSON, nullable=False, default=list, server_default="'[]'"
+        JSON, nullable=False, default=list, server_default=sql_text("'[]'")
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
