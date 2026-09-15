@@ -1,6 +1,7 @@
-import type { ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
 
 import { Button, IconButton } from "../../ds/Button";
+import { InlineText, type InlineTextHandle } from "../../ds/InlineText";
 import { Icon } from "../../ds/icons/Icon";
 import { TimeChip } from "../../ds/TimeChip";
 import { EmptyValue } from "../../ds/Empty";
@@ -62,6 +63,7 @@ export function AgendaBlock({
   /** 정렬된 목록에서의 자리. 번호(1부터)를 정한다 — 안건의 `order` 값을 쓰지 않는다. */
   index: number;
   title: string;
+  titleEdit,
   /**
    * 제목이 아직 자리표시인가 (§12 R-50). 참이면 서버가 빈 제목을 낸 것이고, 머리는 번호만 낸다 —
    * 「안건 1. 안건 1」로 번호가 두 번 붙던 자리다. 값은 부르는 쪽이 서버에서 받아 넘긴다.
@@ -73,20 +75,72 @@ export function AgendaBlock({
   lines: AgendaLineView[];
   edit?: AgendaLineEdit | null;
   /** null 이면 「다음 할 일」 구획 자체가 없다. 빈 배열이면 구획은 서고 T12 가 온다. */
+  /**
+   * 제목을 **제자리에서** 고치는 자리 (2026-09-15 사용자 결정). 주면 제목 글자가 눌러서 고치는
+   * 칸이 되고, 안 주면 머리 markup 이 **한 글자도 달라지지 않는다** — 고칠 수 없는 자리에
+   * 「고칠 수 있다」는 구조를 남기지 않기 위해서다.
+   *
+   * 열지 말지는 부르는 쪽이 **서버의 `can_edit_agendas`** 로 정한다. 부품은 권한을 모른다.
+   */
+  titleEdit?: ((next: string) => void | Promise<void>) | null;
   todos?: AgendaTodoView[] | null;
   onRemove?: (() => void) | null;
 }) {
   return (
     <section className="scax-agenda-block">
       <div className="scax-agenda-block__head">
-        <h3 className={titlePlaceholder ? "scax-agenda-block__title scax-agenda-block__title--placeholder" : "scax-agenda-block__title"}>
-          {meetingScreen.agendaHead(index + 1, title)}
+        <h3
+          className={[
+            "scax-agenda-block__title",
+            titlePlaceholder ? "scax-agenda-block__title--placeholder" : "",
+            /* 누를 수 있는 «행» 이라는 신호는 커서 하나다 — 바탕·밑줄을 지어내지 않는다 */
+            titleEdit ? "scax-agenda-block__title--editable" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          /*
+           * **행 전체가 과녁이다.** 제목 오른쪽 빈 자리를 눌러도 편집이 열리고, 캐럿은 누른
+           * 자리에서 가장 가까운 글자 사이에 놓인다(빈 자리면 글자 끝).
+           *
+           * 글자(`span`)를 늘리지 않았다 — 이 머리는 「안건 1. 제목」이 한 줄로 흐르는 자리라
+           * 늘리면 둘 사이 간격이 바뀌어 **글자가 움직인다.** 그래서 부모가 클릭만 받는다:
+           * **높이·여백·배경을 하나도 더하지 않았으므로 레이아웃은 한 픽셀도 안 바뀐다.**
+           *
+           * 단추 위는 제외한다 — `×` 나 그 밖의 조작을 눌렀는데 편집이 열리면 안 된다.
+           */
+          onClick={
+            titleEdit
+              ? (event) => {
+                  if ((event.target as HTMLElement).closest("button")) return;
+                  titleHandle.current?.open({ x: event.clientX, y: event.clientY });
+                }
+              : undefined
+          }
+        >
+          {titleEdit ? (
+            /* 번호는 그대로 글자로 남고 **제목만** 칸이 된다 — 「안건 1.」을 사람이 고치는 일은 없다.
+               활자는 이 `h3` 의 것을 그대로 물려받으므로 칸이 열려도 줄이 흔들리지 않는다. */
+            <span className="scax-agenda-block__title-row">
+              {`${meetingScreen.agendaHeadNo(index + 1, Boolean(title))} `}
+              <InlineText
+                handle={titleHandle}
+                label={meetingScreen.agendaTitleEdit}
+                onCommit={titleEdit}
+                placeholder={meetingScreen.agendaTitleEmpty}
+                value={title}
+              />
+            </span>
+          ) : (
+            meetingScreen.agendaHead(index + 1, title)
+          )}
         </h3>
         {/* 「결론 남 / 안 남」은 낱말 자체가 뜻을 지고 있다 — 색으로 한 번 더 말하지 않는다 */}
         {mark && <span className="scax-agenda-block__source">{mark.text}</span>}
         {onRemove && <IconButton name="close" size={14} label={meetingScreen.dropAgenda} onClick={onRemove} />}
       </div>
 
+  /* 제목 행이 클릭을 받아 제자리 편집을 연다 — 손잡이를 담아 둘 상자 (2026-09-15 사용자 결정) */
+  const titleHandle = useRef<InlineTextHandle | null>(null);
       {source && <p className="scax-agenda-block__source">{source}</p>}
 
       {edit ? (

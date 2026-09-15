@@ -690,3 +690,19 @@ input[aria-invalid="true"],select[aria-invalid="true"],textarea[aria-invalid="tr
 .scax-textarea:disabled{cursor:not-allowed;color:var(--scax-color-ink-disabled);border-color:var(--scax-color-line);background:var(--scax-color-surface-alt)}
 .scax-textarea::placeholder{color:var(--scax-color-ink-disabled)}
 
+
+/* 제자리 편집 (CMP-118) — **입력칸이 나타나지 않는다.**
+   글자를 이고 있던 그 노드가 `contenteditable` 로 바뀔 뿐이라 활자·여백·자리가 그대로다.
+   테두리·바탕·그림자·둥근 모서리를 **어느 상태에서도** 주지 않는다 — `:focus` 규칙도 두지 않는다
+   (포커스 표시는 2026-09-15 결정으로 앱 전체에서 사라졌다). 열렸다는 표시는 **캐럿뿐**이다.
+   `white-space:pre-wrap` 은 치는 동안 맨 끝 공백이 접혀 캐럿이 튀는 것을 막는다. */
+.scax-inline-text{
+  display:inline;margin:0;padding:0;border:0;background:none;
+  font:inherit;letter-spacing:inherit;color:inherit;cursor:text;white-space:pre-wrap;
+}
+/* 누를 수 있는 범위를 제 칸 전체로 — **레이아웃을 바꾸지 않는다.**
+   부모(`.scax-note-line__text`)가 이미 `flex:1 1 auto` 로 늘어나 있고, 그 안에서 인라인이던
+   글자를 블록으로 바꿀 뿐이다: 글자는 같은 줄 같은 왼쪽에서 시작하고 활자·줄높이가 그대로다.
+   넓어지는 것은 «과녁» 뿐이다 — 되돌리려면 이 한 줄과 `fill` prop 을 걷으면 된다. */
+.scax-inline-text--fill{display:block;width:100%}
+.scax-inline-text--empty{color:var(--scax-color-ink-assistive)}

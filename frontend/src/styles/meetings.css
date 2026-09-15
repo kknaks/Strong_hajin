@@ -160,3 +160,11 @@
 /* ---- 회의 「진행 중」 ----
    `.meeting-composer-foot` 는 지웠다 — 메모 칸을 감싸던 «두 번째» footer 였고 호출부가 0곳이 됐다.
    자리와 테두리는 상세의 `.scax-note__composer` 하나가 갖는다. */
+
+/* 제목 머리가 제자리 편집을 들 때 — 번호와 제목이 «같은 줄의 같은 글자» 로 흐른다.
+   flex 로 가르면 그것만으로 기준선과 간격이 달라져 글자가 움직인다. 그냥 inline 이다. */
+.scax-agenda-block__title-row{display:inline}
+/* 제목 «행» 이 과녁이다 (2026-09-15 사용자 결정) — 얹은 것은 커서 하나다.
+   높이·여백·배경을 더하지 않았으므로 레이아웃은 한 픽셀도 안 바뀐다.
+   되돌리려면 이 한 줄과 `AgendaBlock` 의 `onClick` 을 걷으면 된다. */
+.scax-agenda-block__title--editable{cursor:text}

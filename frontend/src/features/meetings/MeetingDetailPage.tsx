@@ -1146,6 +1146,27 @@ export function MeetingDetailPage({
               throw reason;
             }
             return meetingScreen.promoted(input.title);
+                  /*
+                   * **제목을 제자리에서 고친다** (2026-09-15 사용자 결정). 사람 벌은 임시 재료라
+                   * 진행 중에도 고칠 수 있어야 한다 — 오타로 세운 안건이 박제되던 자리다.
+                   *
+                   * 여는 조건은 `agendaAlways` 하나다: **서버의 `can_edit_agendas[지금 보는 벌]`이
+                   * 참이고 그 벌이 사람 벌일 때.** 그래서 AI 벌은 눌러도 안 열리고(서버가 언제나
+                   * 거짓을 낸다), 게이트가 닫히면 칸 자체가 서지 않는다. 화면이 상태로 다시
+                   * 추론하지 않는다.
+                   *
+                   * `expected_last_saved_at` 을 싣지 않는다 — 충돌을 내면 그것을 «판정할» 자리가
+                   * 필요한데 이번 판은 충돌 판정 UI 를 두지 않는다 (OQ-308). 사람 벌은 임시 재료라
+                   * 마지막에 고친 사람의 제목이 그 제목이다. 줄 편집(최종 벌)은 그대로 실어 보낸다.
+                   *
+                   * 실패하면 `run` 이 기존 규칙대로 오류를 내고, 다시 읽어도 제목이 그대로라
+                   * **글자가 저절로 원래대로 돌아온다** — 낙관 렌더가 없어서 되돌릴 것도 없다.
+                   */
+                  titleEdit={
+                    agendaAlways
+                      ? (next) => run(`agenda-title:${agenda.agenda_id}`, () => updateMeetingAgenda(meeting.meeting_id, agenda.agenda_id, { title: next }))
+                      : null
+                  }
           }}
           ownerName={ownerName}
         />

@@ -484,6 +484,18 @@ export const meetingScreen = {
    * (없는 제목을 지어내지 않는다. 사람이 제목을 넣으면 그때 뒤에 붙는다.)
    */
   agendaHead: (position: number, title: string) => (title ? `안건 ${position}. ${title}` : `안건 ${position}`),
+  /** 제자리 편집이 선 머리의 «번호 쪽». 제목 칸이 따로 서므로 번호와 마침표만 낸다. */
+  agendaHeadNo: (position: number, hasTitle: boolean) => (hasTitle ? `안건 ${position}.` : `안건 ${position}`),
+  /** 제자리 편집 칸의 이름 — 닫힌 글자와 열린 칸이 같은 이름으로 불린다. */
+  agendaTitleEdit: "안건 제목 고치기",
+  /** 메모 줄의 제자리 편집 칸 이름. */
+  memoLineEdit: "메모 고치기",
+  /** 메모 줄을 걷는 자리. 확인을 묻지 않는다 — 자기가 적은 임시 재료다. */
+  memoLineDrop: "메모 빼기",
+  /** 고치거나 지우려는데 그 줄이 이미 없거나 자리가 닫혔다 — 화면을 서버에 맞췄다고만 말한다. */
+  memoLineGone: "그 메모를 고칠 수 없어 지금 있는 내용으로 맞춰 두었습니다.",
+  /** 제목이 아직 없는 안건의 칸에 흐리게 서는 말. 없는 제목을 지어내지 않는다. */
+  agendaTitleEmpty: "제목 없음",
   concluded: "결론 남",
   notConcluded: "결론 안 남",
   todos: "다음 할 일",

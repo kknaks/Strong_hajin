@@ -1154,6 +1154,193 @@ describe("회의록 세 벌 — 탭마다 자기 벌의 안건 목록", () => {
 
      열지 말지는 서버의 `can_edit_agendas.memo` 하나가 정한다.
      ────────────────────────────────────────────────────────────────────────── */
+  describe("안건 제목 제자리 편집", () => {
+    const opened = { can_edit_agendas: { memo: true, ai: false, final: false }, can_add_agenda: { memo: true, ai: false, final: false } };
+    /** 그 자리 — 닫혀 있으면 `button`, 열려 있으면 `textbox` 지만 **같은 노드**다. */
+    const slot = () => screen.getByLabelText(meetingScreen.agendaTitleEdit);
+    /** 사람이 치는 것 — `contenteditable` 에는 `value` 가 없고 글자가 곧 내용이다. */
+    function type(element: HTMLElement, text: string) {
+      element.textContent = text;
+      fireEvent.input(element);
+    }
+
+    async function openMemoTitle() {
+      await connect(true, opened, [memoSide, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+      const element = slot();
+      fireEvent.click(element);
+      return element;
+    }
+
+    it("**같은 노드**가 편집으로 바뀐다 — 입력칸이 새로 나타나지 않는다", async () => {
+      await connect(true, opened, [memoSide, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+      const before = slot();
+      expect(before.tagName).toBe("SPAN");
+      expect(before.getAttribute("role")).toBe("button");
+
+      fireEvent.click(before);
+
+      // 노드가 «그대로» 다 — 갈아 끼웠다면 이 동일성이 깨진다
+      expect(slot()).toBe(before);
+      expect(before.isConnected).toBe(true);
+      expect(before.getAttribute("contenteditable")).toBe("true");
+      expect(before.getAttribute("role")).toBe("textbox");
+      // 회의록 칸 «어디에도» 입력칸이 생기지 않았다
+      const body = document.querySelector(".scax-note__body") as HTMLElement;
+      expect(body.querySelector("input")).toBeNull();
+      expect(body.querySelector("textarea")).toBeNull();
+    });
+
+    it("누르면 지금 글자를 들고 열린다 — 번호는 칸 밖에 남는다", async () => {
+      const element = await openMemoTitle();
+      expect(element.textContent).toBe("사람이 적은 안건");
+      // 「안건 1.」은 고치는 자리 밖의 글자다
+      expect(screen.getByText(/안건 1\./)).toBeTruthy();
+    });
+
+    it("`Enter` 로 저장한다 — 줄바꿈이 아니다", async () => {
+      const element = await openMemoTitle();
+      vi.mocked(api.updateMeetingAgenda).mockResolvedValue({ ...memoSide, title: "고친 제목" });
+      type(element, "고친 제목");
+      fireEvent.keyDown(element, { key: "Enter" });
+
+      await waitFor(() => expect(api.updateMeetingAgenda).toHaveBeenCalledWith("m1", "m-1", { title: "고친 제목" }));
+      /* 충돌 판정 자리를 두지 않으므로 읽은 시각을 싣지 않는다 (OQ-308) */
+      expect(vi.mocked(api.updateMeetingAgenda).mock.calls[0][2]).not.toHaveProperty("expected_last_saved_at");
+      // 칸이 닫힌다 — 같은 노드가 다시 글자가 된다
+      await waitFor(() => expect(slot().getAttribute("contenteditable")).not.toBe("true"));
+    });
+
+    it("붙여넣기로 들어온 줄바꿈은 걷고 한 줄로 저장한다", async () => {
+      const element = await openMemoTitle();
+      vi.mocked(api.updateMeetingAgenda).mockResolvedValue({ ...memoSide });
+      type(element, "두 줄로\n붙인 제목");
+      fireEvent.keyDown(element, { key: "Enter" });
+
+      await waitFor(() => expect(api.updateMeetingAgenda).toHaveBeenCalledWith("m1", "m-1", { title: "두 줄로 붙인 제목" }));
+    });
+
+    it("`Esc` 로 되돌아간다 — 친 글자를 버리고 요청도 안 나간다", async () => {
+      const element = await openMemoTitle();
+      type(element, "치다 만 글자");
+      fireEvent.keyDown(element, { key: "Escape" });
+
+      expect(api.updateMeetingAgenda).not.toHaveBeenCalled();
+      await waitFor(() => expect(slot().getAttribute("contenteditable")).not.toBe("true"));
+      expect(slot().textContent).toBe("사람이 적은 안건");
+    });
+
+    it("빈 값은 저장되지 않는다 — 이름을 지우는 자리가 아니다", async () => {
+      const element = await openMemoTitle();
+      type(element, "   ");
+      fireEvent.keyDown(element, { key: "Enter" });
+
+      expect(api.updateMeetingAgenda).not.toHaveBeenCalled();
+      await waitFor(() => expect(slot().textContent).toBe("사람이 적은 안건"));
+    });
+
+    it("값이 그대로면 요청이 안 나간다", async () => {
+      const element = await openMemoTitle();
+      type(element, "사람이 적은 안건");
+      fireEvent.keyDown(element, { key: "Enter" });
+
+      expect(api.updateMeetingAgenda).not.toHaveBeenCalled();
+    });
+
+    it("저장이 실패하면 **원래 글자로 돌아온다**", async () => {
+      const element = await openMemoTitle();
+      vi.mocked(api.updateMeetingAgenda).mockRejectedValue(new Error("저장하지 못했습니다."));
+      type(element, "못 갈 제목");
+      fireEvent.keyDown(element, { key: "Enter" });
+
+      await waitFor(() => expect(api.updateMeetingAgenda).toHaveBeenCalled());
+      // 낙관 렌더가 없어서 되돌릴 것도 없다 — 서버가 말한 값이 그대로 선다
+      await waitFor(() => expect(slot().textContent).toBe("사람이 적은 안건"));
+    });
+
+    it("제목 **오른쪽 빈 자리를 눌러도** 편집이 열린다 — 행이 과녁이다", async () => {
+      /* 「안건 1. 제목」은 한 줄로 흐르는 자리라 글자(`span`)를 늘리면 둘 사이 간격이 바뀐다
+         = 글자가 움직인다. 그래서 늘리지 않고 **부모 행(`h3`)이 클릭을 받는다.**
+         jsdom 은 좌표로 「빈 자리」를 못 만들지만, 행을 누르는 것 자체는 만들 수 있다. */
+      await connect(true, opened, [memoSide, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+      const element = slot();
+      const row = element.closest("h3") as HTMLElement;
+      expect(row.classList.contains("scax-agenda-block__title--editable")).toBe(true);
+
+      // 글자가 «아니라» 행을 누른다 — 예전에는 아무 일도 안 일어나던 자리다
+      fireEvent.click(row);
+      expect(slot()).toBe(element);
+      expect(element.getAttribute("contenteditable")).toBe("true");
+    });
+
+    it("행을 눌러도 **레이아웃이 안 바뀐다** — 얹은 것은 커서 하나다", async () => {
+      /* 행 과녁은 «핸들러 + `cursor:text`» 뿐이라 그릴 것이 없다. 높이·여백·배경을 주는
+         클래스가 붙지 않는다는 것으로 그 사실을 건다 (jsdom 은 배치를 계산하지 않는다). */
+      await connect(true, opened, [memoSide, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+      const row = slot().closest("h3") as HTMLElement;
+      const before = row.className;
+      fireEvent.click(row);
+      // 열려도 행의 클래스가 한 글자도 안 바뀐다
+      expect(row.className).toBe(before);
+      expect(row.getAttribute("style")).toBeNull();
+    });
+
+    it("행 과녁이 **[×] 를 먹지 않는다** — 단추 위는 제외한다", async () => {
+      /* 안건 머리에는 「안건 빼기」 단추가 함께 선다. 행이 클릭을 받되 단추 위는 빠져야
+         한다 — 지우려고 눌렀는데 편집이 열리면 지울 수가 없다. */
+      await connect(true, opened, [memoSide, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+      const drop = screen.getByRole("button", { name: meetingScreen.dropAgenda });
+
+      fireEvent.click(drop);
+
+      // 편집이 열리지 않았고, 지우기 확인이 대신 떴다
+      expect(slot().getAttribute("contenteditable")).not.toBe("true");
+      expect(screen.getByRole("alertdialog", { name: meetingScreen.agendaRemoveTitle })).toBeTruthy();
+    });
+
+    it("AI 벌 안건은 **눌러도 안 열린다** — 고치는 자리 자체가 없다", async () => {
+      await connect(true, opened, [memoSide, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "AI 요약" }));
+      expect(screen.queryByLabelText(meetingScreen.agendaTitleEdit)).toBeNull();
+      // 행 과녁도 서지 않는다 — 누를 수 있다는 커서조차 뜨지 않는다
+      expect(document.querySelector(".scax-agenda-block__title--editable")).toBeNull();
+      // 제목은 «글자로» 그대로 선다 — 못 고칠 뿐 안 보이는 것이 아니다
+      expect(screen.getByText(/AI 가 세운 안건/)).toBeTruthy();
+    });
+
+    it("`can_edit_agendas.memo` 가 거짓이면 사람 벌도 안 열린다 — 서버가 정한다", async () => {
+      await connect(true, { can_edit_agendas: { memo: false, ai: false, final: false }, can_add_agenda: { memo: true, ai: false, final: false } }, [memoSide, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+      expect(screen.queryByLabelText(meetingScreen.agendaTitleEdit)).toBeNull();
+      expect(screen.getByText(/사람이 적은 안건/)).toBeTruthy();
+    });
+
+    it("**테두리·바탕을 주는 클래스가 어느 상태에도 안 붙는다**", async () => {
+      /* 「글자가 1px 도 안 움직인다」 자체는 jsdom 이 배치를 계산하지 않아 걸 수 없다 (보고서에 적었다).
+         걸 수 있는 것은 **그 움직임을 만드는 원인**이다: DS 의 입력 껍데기 클래스가 붙으면
+         48px 최소 높이·1px 테두리·좌우 안여백이 한꺼번에 따라 들어와 줄이 밀린다. */
+      const shells = ["scax-textfield", "scax-field", "scax-textarea", "scax-composer", "meeting-line-edit"];
+      await connect(true, opened, [memoSide, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+      const element = slot();
+      // 닫혔을 때
+      expect(element.className).toBe("scax-inline-text");
+      fireEvent.click(element);
+      // 열렸을 때 — **클래스가 달라지지 않는다.** 모양을 바꿀 고리가 없다는 뜻이다
+      expect(element.className).toBe("scax-inline-text");
+      for (const shell of shells) expect(element.classList.contains(shell)).toBe(false);
+    });
+  });
+
+  /* ──────────────────────────────────────────────────────────────────────────
+     **메모 한 줄을 고치고 지운다** (백엔드 `6a9c41a` · 보고서 §4).
+     쓰는 자리와 같은 주소 아래 같은 본문이다. **빈 줄로 지우지 않는다** — 빈 `text` 는 422 이고
+     지우는 것은 `DELETE` 다. 게이트는 안건 [수정]·[삭제]와 **같은 값**(`can_edit_agendas.memo`)이다.
+     ────────────────────────────────────────────────────────────────────────── */
   it("자리표시 제목은 번호만 낸다 — 「안건 1. 안건 1」로 두 번 붙지 않는다 (§12 R-50)", async () => {
     /* 서버가 빈 제목 + `title_placeholder: true` 로 낸다. 예전에는 제목 자리에 「안건 1」이
        들어와 라벨의 번호와 겹쳤다. 없는 제목을 지어내지 않고 번호만 낸다. */
