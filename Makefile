@@ -25,7 +25,7 @@ PROTECTED_CODEX_BASE ?= node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a046
 PROTECTED_RUNTIME_BASE ?= debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 PROTECTED_EXPECT_CONSTANTS ?= visible
 
-.PHONY: install test test-unit test-contract test-scale test-release test-postgres frontend-test frontend-build frontend-assets verify protected-build protected-inspect postgres-up postgres-down reset-demo reset-catalog sync-demo-schema dataset-import dataset-inspect api conversation-worker material-worker meeting-worker mcp frontend-install frontend storybook storybook-build api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-ax-editable-task e2e-ax-editable-meeting e2e-ax-meeting-draft e2e-assistant-character e2e-assistant-preference e2e-follow-up-continuation e2e-ax-action-draft e2e-ax-action-materials e2e-conversation-report-edit-action e2e-daily-report e2e-material-search e2e-meeting-live-transcript e2e-access-roles e2e-project-participation-history e2e-graph-question local-stack acceptance-e2e live-report-smoke soniox-smoke
+.PHONY: install test test-unit test-contract test-scale test-release test-postgres frontend-test frontend-build frontend-assets verify protected-build protected-inspect postgres-up postgres-down reset-demo reset-catalog sync-demo-schema dataset-import dataset-inspect api conversation-worker material-worker meeting-worker mcp frontend-install frontend storybook storybook-build api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-ax-editable-task e2e-ax-editable-meeting e2e-ax-meeting-draft e2e-assistant-character e2e-assistant-preference e2e-follow-up-continuation e2e-ax-action-draft e2e-ax-action-materials e2e-conversation-report-edit-action e2e-daily-report e2e-material-search e2e-meeting-live-transcript e2e-meeting-three-tracks e2e-access-roles e2e-project-participation-history e2e-graph-question local-stack acceptance-e2e live-report-smoke soniox-smoke
 
 install:
 	cd backend && uv sync --all-groups
@@ -280,6 +280,12 @@ e2e-material-search:
 # 실시간 전사가 원문 정본이다 — 종료 후 파일을 다시 읽는 경로는 없다 (SCAX-SPEC-004 §5.4-3).
 e2e-meeting-live-transcript:
 	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:meeting-live-transcript
+
+# 회의록 세 벌을 **실물 음성**으로 끝까지 밟는다 (SPEC-004 v0.5.1 §4.0 · §8).
+# `SCAX_E2E_WAV` 에 16bit PCM wav 경로를 준다 — 음원은 리포에 없다(실제 회의 녹음이라 커밋하지 않는다).
+# 배치가 최소 한 번 돌아야 AI 벌이 서므로 기본 180초를 흘린다 (`SCAX_E2E_STREAM_SECONDS` 로 조절).
+e2e-meeting-three-tracks:
+	SCAX_E2E_URL="http://127.0.0.1:$(E2E_FRONTEND_PORT)" npm --prefix frontend run e2e:meeting-three-tracks
 
 # 같은 원장, 다른 범위: 대표·팀장·구성원이 각자 볼 수 있는 것만 본다.
 e2e-access-roles:
