@@ -54,6 +54,12 @@ export function MeetingWorkspace({
      다시 마운트하지 않고 «다시 읽어라» 는 신호만 내린다: 상세가 들고 있던 것(고치던 회의록 줄,
      읽던 자리의 스크롤)을 잃지 않는다. */
   const [detailReloadToken, setDetailReloadToken] = useState(0);
+  /* 반대 방향 — **상세에서 상태가 바뀌면 목록도 다시 읽는다** (2026-09-15 버그).
+     예전에는 길이 한쪽뿐이라(목록 → 상세) 회의를 시작·종료해도 왼쪽 카드가 옛 배지를 달고 있었다.
+     낙관 렌더로 카드를 고치지 않는다 — **다시 읽으라는 신호만** 내리고 그리는 값은 서버가 낸다.
+     폴링이 아니다: 상태가 실제로 달라졌을 때만 한 번 오른다. */
+  const [listReloadToken, setListReloadToken] = useState(0);
+  const reloadList = useCallback(() => setListReloadToken((value) => value + 1), []);
   /** 시안의 `focus` — 켜면 목록 칸이 사라지고 상세가 넓어진다 (M-5). */
   const [focus, setFocus] = useState(false);
   /* 첨부·스크립트 칸: 여기서 «빈 칸» 만 내주고 상세가 그 안에 포털로 그린다.
@@ -95,6 +101,7 @@ export function MeetingWorkspace({
       }}
       onRegisterHeaderActions={onRegisterHeaderActions}
       onRegisterRefresh={onRegisterRefresh}
+      reloadToken={listReloadToken}
       selected={selected}
     />
   );
@@ -107,7 +114,7 @@ export function MeetingWorkspace({
     onRegisterRails({ left: focus ? undefined : listRail, right: sideRail });
     return () => onRegisterRails({});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focus, focusMeetingId, onRegisterRails, selected]);
+  }, [focus, focusMeetingId, listReloadToken, onRegisterRails, selected]);
 
   return selected ? (
     <MeetingDetailPage
@@ -118,6 +125,7 @@ export function MeetingWorkspace({
       onBack={() => selectMeeting("")}
       onError={onError}
       onNotice={onNotice}
+      onMeetingChanged={reloadList}
       onOpenMeeting={selectMeeting}
       onRegisterLeaveGuard={registerLeaveGuard}
       onRegisterRefresh={onRegisterRefresh}

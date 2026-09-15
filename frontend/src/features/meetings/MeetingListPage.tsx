@@ -29,6 +29,7 @@ export function MeetingListPage({
   selected,
   onRegisterHeaderActions,
   onMeetingUpdated,
+  reloadToken = 0,
 }: {
   onOpenMeeting: (meetingId: string) => void;
   onError: (message: string | null) => void;
@@ -42,6 +43,12 @@ export function MeetingListPage({
   onRegisterHeaderActions?: (actions: React.ReactNode) => void;
   /** 카드의 [수정]이 회의 정보를 고쳤다 — 그 회의를 고르고 있으면 상세도 다시 읽어야 한다. */
   onMeetingUpdated?: (meetingId: string) => void;
+  /**
+   * 값이 올라가면 목록을 **다시 읽는다** — 상세에서 상태가 바뀌었다는 신호다 (2026-09-15 버그).
+   * 상세가 「무엇이 어떻게 바뀌었는지」를 보내지 않는 것이 핵심이다: 화면이 카드를 스스로 고치면
+   * 서버와 또 어긋난다. 여기서 하는 일은 **다시 읽는 것** 하나다.
+   */
+  reloadToken?: number;
 }) {
   const [payload, setPayload] = useState<MeetingListPayload | null>(null);
   const [failed, setFailed] = useState(false);
@@ -66,7 +73,7 @@ export function MeetingListPage({
     return () => {
       cancelled = true;
     };
-  }, [reload]);
+  }, [reload, reloadToken]);
 
   useEffect(() => {
     onRegisterRefresh?.(reload);
@@ -144,6 +151,10 @@ export function MeetingListPage({
     setBusy(true);
     try {
       const next = await quickStartMeeting();
+      /* **만든 회의가 목록에 선다** (2026-09-15 버그). 예전에는 상세만 열고 목록을 다시 읽지 않아
+         새로고침해야 카드가 생겼다. 돌아온 회의를 낙관적으로 목록에 끼워 넣지 않는다 —
+         구획도 배지도 서버가 낸 값으로 서야 한다. 실패해도 회의는 이미 섰으므로 여는 것은 막지 않는다. */
+      await reload().catch(() => undefined);
       onOpenMeeting(next.meeting.meeting_id);
     } catch (reason) {
       onError(reason instanceof Error ? reason.message : "회의를 시작하지 못했습니다.");
@@ -151,7 +162,7 @@ export function MeetingListPage({
       startInFlight.current = false;
       setBusy(false);
     }
-  }, [onError, onOpenMeeting]);
+  }, [onError, onOpenMeeting, reload]);
 
   /* 바퀴 6a M-6: 페이지 머리가 셸의 AppHeader 한 줄로 합쳐졌다. 이 칸이 가진 두 동작을 거기 등록한다.
      시안 순서대로 «회의 생성이 왼쪽», 빠른 시작이 오른쪽(solid + play)이다.
@@ -171,9 +182,22 @@ export function MeetingListPage({
     return () => onRegisterHeaderActions(null);
   }, [busy, onRegisterHeaderActions, quickStart]);
 
-  const upcoming = payload?.upcoming ?? [];
+  /*
+   * 구획은 **카드 배지와 같은 값(`row.status`)에서 나온다** (2026-09-15 버그).
+   *
+   * 서버가 내는 `upcoming` 은 「예정」이 아니라 **「아직 안 지난 회의」**다 —
+   * `is_meeting_past` 가 과거로 치는 것은 종료·실패·취소와 시간이 지난 것뿐이라(`policy.py:277`),
+   * **「진행 중」·「정리 중」도 이 칸에 들어온다.** 그래서 「진행 중」 배지를 단 카드가
+   * 「예정」이라는 제목 아래 서 있었다 — 배지가 낡아서가 아니라 **제목이 그 칸을 잘못 부르고 있었다.**
+   *
+   * 값을 새로 지어내지 않는다. 카드 배지가 읽는 그 `status` 로 한 번 더 가를 뿐이라,
+   * 둘이 어긋날 방법 자체가 없어진다.
+   */
+  const notPast = payload?.upcoming ?? [];
+  const running = notPast.filter((row) => row.status === "in_progress" || row.status === "summarizing");
+  const upcoming = notPast.filter((row) => row.status !== "in_progress" && row.status !== "summarizing");
   const past = payload?.past.items ?? [];
-  const isEmpty = Boolean(payload) && upcoming.length === 0 && past.length === 0;
+  const isEmpty = Boolean(payload) && notPast.length === 0 && past.length === 0;
 
   return (
     /* 바퀴 6a: 이 컴포넌트는 이제 «2칸(목록 레일)» 이다. 페이지 머리는 셸의 AppHeader 로,
@@ -197,6 +221,21 @@ export function MeetingListPage({
         </div>
       ) : (
         <div className="scax-meeting-list__body scax-scroll">
+          {running.length > 0 && (
+            <section className="scax-meeting-section">
+              {/* 도는 회의가 맨 위다 — 지금 가야 할 자리이기 때문이다. 제목은 상태 라벨 그대로라
+                  카드 배지와 «같은 낱말» 을 쓴다: 둘이 다른 말을 할 수가 없다 */}
+              <h2 className="scax-meeting-section__head" id="meeting-running">
+                {meetingStatusLabel.in_progress}
+                <span className="scax-meeting-section__count">{running.length}</span>
+              </h2>
+              <ul aria-labelledby="meeting-running" className="scax-meeting-section__list">
+                {running.map((row) => (
+                  <MeetingRowItem key={row.meeting_id} onAskDelete={setConfirm} onEdit={setEditing} onSelect={onOpenMeeting} row={row} selected={selected === row.meeting_id} />
+                ))}
+              </ul>
+            </section>
+          )}
           {upcoming.length > 0 && (
             <section className="scax-meeting-section">
               {/* 구획 제목은 그 자체가 머리줄이다 — h2 에 바로 건다. 감싸는 칸을 하나 더 두면

@@ -110,6 +110,7 @@ export function MeetingDetailPage({
   onError,
   onNotice,
   onTitleChange,
+  onMeetingChanged,
   onRegisterLeaveGuard,
   sideRailHost,
   focus = false,
@@ -127,6 +128,15 @@ export function MeetingDetailPage({
   onError: (message: string | null) => void;
   onNotice: (message: string) => void;
   onTitleChange?: (title: string) => void;
+  /**
+   * 이 회의의 **상태가 바뀌었다** — 목록 칸이 낡았다는 뜻이다 (2026-09-15 버그).
+   *
+   * 상태를 바꾸는 자리를 하나씩 세어 부르지 않는다. 그렇게 하면 «다음에» 생기는 경로가 반드시
+   * 빠진다 — 실제로 회의 시작·종료·[다시 시도] 말고도 정리 중 폴링과 스트림이 끊길 때의 다시 읽기가
+   * 상태를 바꾼다. 그래서 **서버가 낸 상태 값이 달라졌을 때** 한 번 부른다.
+   * 화면이 상태를 추론해서 목록을 고치는 것이 아니라, 목록에게 **다시 읽으라고** 말하는 신호다.
+   */
+  onMeetingChanged?: () => void;
   /** 고치던 것이 있으면 나가기 전에 한 번 묻는다 (T11). */
   onRegisterLeaveGuard?: (guard: ((proceed: () => void) => void) | null) => void;
   /**
@@ -192,7 +202,10 @@ export function MeetingDetailPage({
   const keepScroll = useRef<{ top: number; pinned: boolean } | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
-  // 요청을 받을 수 있는 사람은 서버가 정한다 — 화면이 명부에서 고르지 않는다.
+  /* 요청을 받을 수 있는 사람은 서버가 정한다 — 화면이 명부에서 고르지 않는다.
+     **승격은 회의 전용 경로다** — 업무 관리의 후보 목록은 누른 사람의 배정 권한으로 좁히는데,
+     승격의 요청 주체는 회의(시스템)라 그 권한을 타지 않는다 (D40). 참조(cc)는 그대로 업무 쪽이다:
+     그건 「내가 누구에게 보이느냐」라 누른 사람의 범위가 맞다. */
   useEffect(() => {
     if (!promoting) return;
     let cancelled = false;
@@ -285,6 +298,18 @@ export function MeetingDetailPage({
   useEffect(() => {
     if (meeting) onTitleChange?.(meeting.title ?? meetingScreen.noTitle);
   }, [meeting, onTitleChange]);
+
+  /* 상태가 달라진 «순간» 만 목록에 알린다 — 처음 읽었을 때는 알리지 않는다(목록이 방금 그 값을
+     실어 준 것이다). 이 한 자리가 회의 시작·종료·합성 실패·[다시 시도]·정리 중 폴링·스트림
+     재읽기를 **전부** 덮는다: 그 경로들이 공통으로 하는 일이 「상세를 다시 읽는 것」이기 때문이다. */
+  const seenStatus = useRef<string | null>(null);
+  useEffect(() => {
+    const next = meeting?.status ?? null;
+    if (next === null) return;
+    const previous = seenStatus.current;
+    seenStatus.current = next;
+    if (previous !== null && previous !== next) onMeetingChanged?.();
+  }, [meeting?.status, onMeetingChanged]);
 
   /* 고치던 것 — 회의 정보는 목록의 모달이 자기 닫기 경로에서 스스로 지키므로(MeetingEditModal),
      이 화면이 들고 있는 「저장 안 한 것」은 회의록 편집 하나다. */
@@ -393,6 +418,10 @@ export function MeetingDetailPage({
     onClosed: onStreamClosed,
   });
   /* 회의 중에 선 안건은 스트림으로도 온다 — 상세를 다시 읽기 전에도 목록에 세운다. 같은 안건은 한 번만 */
+  /* 스트림이 «나중» 이라 이긴다 — `agenda.updated` 로 고쳐진 안건이 상세가 실어 온 옛 것을 덮는다.
+     지워진 안건은 아예 빠진다: 본문 목록에서도, **메모 대상 드롭다운에서도** 함께 사라져야
+     「사라진 안건을 골라 404」가 나지 않는다 (백엔드 보고 §2). 다시 읽지 않는다 — 프레임이
+     바뀐 것을 이미 들고 왔다. */
   const agendas = [
     ...new Map([...(record?.agendas ?? []), ...stream.agendas].map((agenda) => [agenda.agenda_id, agenda])).values(),
   ]
@@ -420,10 +449,6 @@ export function MeetingDetailPage({
         /* 한 번 못 읽었다고 묻기를 그만두지 않는다 — 다음 차례에 다시 묻는다. */
       });
     }, SETTLING_POLL_MS);
-  /* 스트림이 «나중» 이라 이긴다 — `agenda.updated` 로 고쳐진 안건이 상세가 실어 온 옛 것을 덮는다.
-     지워진 안건은 아예 빠진다: 본문 목록에서도, **메모 대상 드롭다운에서도** 함께 사라져야
-     「사라진 안건을 골라 404」가 나지 않는다 (백엔드 보고 §2). 다시 읽지 않는다 — 프레임이
-     바뀐 것을 이미 들고 왔다. */
     return () => window.clearInterval(timer);
   }, [reload, settling]);
 
@@ -1121,6 +1146,27 @@ export function MeetingDetailPage({
                   source={meetingAgendaSourceText(agenda.source)}
                   /* 빠른 시작이 세운 안건은 제목이 빈 값으로 온다 (§12 R-50) — 라벨이 그 자리를 메운다 */
                   title={agenda.title}
+                  /*
+                   * **제목을 제자리에서 고친다** (2026-09-15 사용자 결정). 사람 벌은 임시 재료라
+                   * 진행 중에도 고칠 수 있어야 한다 — 오타로 세운 안건이 박제되던 자리다.
+                   *
+                   * 여는 조건은 `agendaAlways` 하나다: **서버의 `can_edit_agendas[지금 보는 벌]`이
+                   * 참이고 그 벌이 사람 벌일 때.** 그래서 AI 벌은 눌러도 안 열리고(서버가 언제나
+                   * 거짓을 낸다), 게이트가 닫히면 칸 자체가 서지 않는다. 화면이 상태로 다시
+                   * 추론하지 않는다.
+                   *
+                   * `expected_last_saved_at` 을 싣지 않는다 — 충돌을 내면 그것을 «판정할» 자리가
+                   * 필요한데 이번 판은 충돌 판정 UI 를 두지 않는다 (OQ-308). 사람 벌은 임시 재료라
+                   * 마지막에 고친 사람의 제목이 그 제목이다. 줄 편집(최종 벌)은 그대로 실어 보낸다.
+                   *
+                   * 실패하면 `run` 이 기존 규칙대로 오류를 내고, 다시 읽어도 제목이 그대로라
+                   * **글자가 저절로 원래대로 돌아온다** — 낙관 렌더가 없어서 되돌릴 것도 없다.
+                   */
+                  titleEdit={
+                    agendaAlways
+                      ? (next) => run(`agenda-title:${agenda.agenda_id}`, () => updateMeetingAgenda(meeting.meeting_id, agenda.agenda_id, { title: next }))
+                      : null
+                  }
                   titlePlaceholder={agenda.title_placeholder}
                   todos={
                     /* 회의 «중» 후속 업무 후보 (D46) — 「AI 요약」 탭에만, 읽기 전용이다.
@@ -1181,7 +1227,7 @@ export function MeetingDetailPage({
                     AI 벌 13개 때문에 막힌다 */}
                 <Button size="sm" disabled={trackAgendas.length >= 20 || agendaDraft.trim().length === 0 || isBusy("agenda-add")}
                   onClick={() =>
-                    void run(async () => {
+                    void run("agenda-add", async () => {
                       await addMeetingAgenda(meeting.meeting_id, agendaDraft.trim());
                       setAgendaDraft("");
                     })
@@ -1269,27 +1315,6 @@ export function MeetingDetailPage({
               throw reason;
             }
             return meetingScreen.promoted(input.title);
-                  /*
-                   * **제목을 제자리에서 고친다** (2026-09-15 사용자 결정). 사람 벌은 임시 재료라
-                   * 진행 중에도 고칠 수 있어야 한다 — 오타로 세운 안건이 박제되던 자리다.
-                   *
-                   * 여는 조건은 `agendaAlways` 하나다: **서버의 `can_edit_agendas[지금 보는 벌]`이
-                   * 참이고 그 벌이 사람 벌일 때.** 그래서 AI 벌은 눌러도 안 열리고(서버가 언제나
-                   * 거짓을 낸다), 게이트가 닫히면 칸 자체가 서지 않는다. 화면이 상태로 다시
-                   * 추론하지 않는다.
-                   *
-                   * `expected_last_saved_at` 을 싣지 않는다 — 충돌을 내면 그것을 «판정할» 자리가
-                   * 필요한데 이번 판은 충돌 판정 UI 를 두지 않는다 (OQ-308). 사람 벌은 임시 재료라
-                   * 마지막에 고친 사람의 제목이 그 제목이다. 줄 편집(최종 벌)은 그대로 실어 보낸다.
-                   *
-                   * 실패하면 `run` 이 기존 규칙대로 오류를 내고, 다시 읽어도 제목이 그대로라
-                   * **글자가 저절로 원래대로 돌아온다** — 낙관 렌더가 없어서 되돌릴 것도 없다.
-                   */
-                  titleEdit={
-                    agendaAlways
-                      ? (next) => run(`agenda-title:${agenda.agenda_id}`, () => updateMeetingAgenda(meeting.meeting_id, agenda.agenda_id, { title: next }))
-                      : null
-                  }
           }}
           ownerName={ownerName}
         />
@@ -1341,10 +1366,10 @@ export function MeetingDetailPage({
               <Button variant="text" onClick={() => setAskRemoveAgenda(null)} type="button">
                 {meetingScreen.keep}
               </Button>
-              <Button variant="solid" tone="danger" disabled={isBusy(`material-detach:${askDropMaterial.material_id}`)} onClick={() => {
+              <Button variant="solid" tone="danger" disabled={isBusy(`agenda-remove:${askRemoveAgenda.agenda_id}`)} onClick={() => {
                   const target = askRemoveAgenda;
                   setAskRemoveAgenda(null);
-                  void run(() => removeMeetingAgenda(meeting.meeting_id, target.agenda_id), meetingScreen.agendaRemoved);
+                  void run(`agenda-remove:${target.agenda_id}`, () => removeMeetingAgenda(meeting.meeting_id, target.agenda_id), meetingScreen.agendaRemoved);
                 }}
                 type="button"
               >
@@ -1366,11 +1391,11 @@ export function MeetingDetailPage({
               <Button variant="text" onClick={() => setAskDropMaterial(null)} type="button">
                 {meetingScreen.keep}
               </Button>
-              <Button variant="solid" tone="danger" disabled={isBusy(`agenda-remove:${askRemoveAgenda.agenda_id}`)} onClick={() => {
+              <Button variant="solid" tone="danger" disabled={isBusy(`material-detach:${askDropMaterial.material_id}`)} onClick={() => {
                   const target = askDropMaterial;
                   setAskDropMaterial(null);
                   if (openMaterial === target.material_id) setOpenMaterial(null);
-                  void run(async () => {
+                  void run(`material-detach:${target.material_id}`, async () => {
                     // 이 회의에서의 연결만 끊는다 — 자료 모듈에 쌓인 것은 남는다 (X-160)
                     await detachMeetingMaterial(meeting.meeting_id, target.material_id);
                     await loadMaterials();

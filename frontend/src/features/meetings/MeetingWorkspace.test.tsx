@@ -146,6 +146,115 @@ describe("회의 한 화면 4칸 (바퀴 6a)", () => {
     await waitFor(() => expect(api.readMeeting).toHaveBeenCalledWith("m2"));
   });
 
+  /* ──────────────────────────────────────────────────────────────────────────
+     **상세에서 바뀐 상태가 목록으로 돌아온다** (2026-09-15 버그).
+     배선이 한 방향뿐이라(목록 → 상세) 회의를 시작·종료해도 왼쪽 카드가 옛 배지를 달고 있었다.
+     낙관 렌더로 카드를 고치지 않는다 — **다시 읽으라는 신호만** 가고 그리는 값은 서버가 낸 것이다.
+     ────────────────────────────────────────────────────────────────────────── */
+  describe("상세 ↔ 목록 동기화", () => {
+    /** 「예정」 하나만 있는 목록 — 시작하면 그 카드가 어떻게 되는지 보려면 하나여야 한다. */
+    const scheduled: MeetingRow = {
+      meeting_id: "m1", title: "DB ax 전략", starts_at: "2026-09-08T06:30:00Z", ends_at: "2026-09-08T07:00:00Z",
+      location: "대회의실", status: "scheduled", attendee_count: 1, viewer_relation: "attendee",
+    } as MeetingRow;
+
+    function listReturns(...pages: MeetingRow[][]) {
+      const mock = vi.mocked(api.listMeetings);
+      mock.mockReset();
+      for (const page of pages) mock.mockResolvedValueOnce({ upcoming: page, past: { items: [], next_cursor: null } });
+      // 그 뒤로는 마지막 것을 계속 낸다
+      mock.mockResolvedValue({ upcoming: pages[pages.length - 1], past: { items: [], next_cursor: null } });
+    }
+
+    /** 왼쪽 목록 칸 — 상세 칸에도 같은 제목·같은 상태 낱말이 서므로 «이 안에서만» 본다. */
+    const railEl = () => document.querySelector(".scax-meeting-list") as HTMLElement;
+    const listRail = () => within(railEl());
+    /** 상세 머리의 단추 — 셸 머리의 [회의 시작]과 이름이 같아서 자리로 가른다. */
+    const titleRow = () => within(document.querySelector(".scax-detail__title-row") as HTMLElement);
+
+    it("회의를 시작하면 **카드 배지와 구획이 함께** 바뀐다", async () => {
+      const running = { ...scheduled, status: "in_progress" } as MeetingRow;
+      listReturns([scheduled], [running]);
+      vi.mocked(api.readMeeting).mockResolvedValue({ meeting: info({ status: "scheduled" }), agendas: [] } as MeetingRecord);
+      render(<ShellHost />);
+
+      fireEvent.click((await screen.findAllByText("DB ax 전략"))[0]);
+      // 시작 전 — 「예정」 구획에 「예정」 배지다
+      await waitFor(() => expect(listRail().getByRole("heading", { name: /예정/ })).toBeTruthy());
+
+      vi.mocked(api.startMeeting).mockResolvedValue(undefined as never);
+      vi.mocked(api.readMeeting).mockResolvedValue({ meeting: info({ status: "in_progress" }), agendas: [] } as MeetingRecord);
+      await waitFor(() => expect(titleRow().getByRole("button", { name: meetingScreen.start })).toBeTruthy());
+      fireEvent.click(titleRow().getByRole("button", { name: meetingScreen.start }));
+
+      // 목록을 **다시 읽는다** — 상세만 바뀌고 마는 자리였다
+      await waitFor(() => expect(vi.mocked(api.listMeetings).mock.calls.length).toBeGreaterThan(1));
+      // 배지와 구획이 함께 「진행 중」이 된다
+      await waitFor(() => expect(listRail().getByRole("heading", { name: /진행 중/ })).toBeTruthy());
+      expect(listRail().queryByRole("heading", { name: /예정/ })).toBeNull();
+    });
+
+    it("회의를 종료해도 그렇다 — 카드가 「지난」으로 넘어간다", async () => {
+      const running = { ...scheduled, status: "in_progress" } as MeetingRow;
+      const mock = vi.mocked(api.listMeetings);
+      mock.mockReset();
+      mock.mockResolvedValueOnce({ upcoming: [running], past: { items: [], next_cursor: null } });
+      mock.mockResolvedValue({ upcoming: [], past: { items: [{ ...scheduled, status: "done" } as MeetingRow], next_cursor: null } });
+      // 회의를 닫는 것은 «이끄는 창» 의 일이다 — 그 자리를 서게 하려면 올리는 쪽이어야 한다
+      vi.mocked(api.readMeeting).mockResolvedValue({ meeting: info({ status: "in_progress", can_write_memo: true }), agendas: [] } as MeetingRecord);
+      render(<ShellHost />);
+
+      fireEvent.click((await screen.findAllByText("DB ax 전략"))[0]);
+      await waitFor(() => expect(listRail().getByRole("heading", { name: /진행 중/ })).toBeTruthy());
+
+      vi.mocked(api.endMeeting).mockResolvedValue(undefined as never);
+      vi.mocked(api.readMeeting).mockResolvedValue({ meeting: info({ status: "done" }), agendas: [] } as MeetingRecord);
+      await waitFor(() => expect(titleRow().getByRole("button", { name: meetingScreen.end })).toBeTruthy());
+      fireEvent.click(titleRow().getByRole("button", { name: meetingScreen.end }));
+
+      await waitFor(() => expect(listRail().getByRole("heading", { name: /지난/ })).toBeTruthy());
+      expect(listRail().queryByRole("heading", { name: /진행 중/ })).toBeNull();
+    });
+
+    it("[바로 시작] 직후 목록에 선다 — 새로고침을 요구하지 않는다", async () => {
+      const started = { ...scheduled, meeting_id: "q1", title: "빠르게 시작한 회의", status: "in_progress" } as MeetingRow;
+      listReturns([], [started]);
+      vi.mocked(api.quickStartMeeting).mockResolvedValue({ meeting: info({ meeting_id: "q1", status: "in_progress" }), agendas: [] } as MeetingRecord);
+      vi.mocked(api.readMeeting).mockResolvedValue({ meeting: info({ meeting_id: "q1", status: "in_progress" }), agendas: [] } as MeetingRecord);
+      render(<ShellHost />);
+      await screen.findByRole("button", { name: /회의 시작/ });
+
+      fireEvent.click(screen.getByRole("button", { name: /회의 시작/ }));
+
+      await waitFor(() => expect(listRail().getByText("빠르게 시작한 회의")).toBeTruthy());
+    });
+
+    it("배지와 구획이 **같은 값**에서 나온다 — 「진행 중」 카드가 「예정」 아래 서지 않는다", async () => {
+      /* 서버의 `upcoming` 은 「예정」이 아니라 **「아직 안 지난 회의」**다 (`policy.py:277` —
+         과거로 치는 것은 종료·실패·취소와 시간이 지난 것뿐). 그래서 진행 중·정리 중이 이 칸에
+         함께 온다. 전에는 그 칸 전체에 「예정」이라는 제목을 달아서, 「진행 중」 배지를 단 카드가
+         「예정」 아래 서 있었다 — 카드가 낡아서가 아니라 **제목이 그 칸을 잘못 불렀다.** */
+      listReturns([
+        { ...scheduled, meeting_id: "m9", title: "아직 안 연 회의", status: "scheduled" } as MeetingRow,
+        { ...scheduled, meeting_id: "m8", title: "지금 도는 회의", status: "in_progress" } as MeetingRow,
+        { ...scheduled, meeting_id: "m7", title: "정리하는 회의", status: "summarizing" } as MeetingRow,
+      ]);
+      render(<ShellHost />);
+
+      const runningHead = await screen.findByRole("heading", { name: /진행 중/ });
+      const upcomingHead = screen.getByRole("heading", { name: /예정/ });
+      const items = (head: HTMLElement) =>
+        [...(railEl().querySelector(`ul[aria-labelledby="${head.id}"]`) as HTMLElement).querySelectorAll("li")]
+          .map((node) => node.textContent ?? "");
+
+      // 도는 것 둘은 「진행 중」 아래, 안 연 것 하나만 「예정」 아래
+      expect(items(runningHead).join(" ")).toContain("지금 도는 회의");
+      expect(items(runningHead).join(" ")).toContain("정리하는 회의");
+      expect(items(upcomingHead).join(" ")).toContain("아직 안 연 회의");
+      expect(items(upcomingHead).join(" ")).not.toContain("지금 도는 회의");
+    });
+  });
+
   it("고치던 것이 없으면 묻지 않고 바로 옮겨 간다", async () => {
     render(<ShellHost />);
     fireEvent.click((await screen.findAllByText("DB ax 전략"))[0]);
