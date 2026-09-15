@@ -148,7 +148,21 @@ export function MeetingDetailPage({
 }) {
   const [record, setRecord] = useState<MeetingRecord | null>(null);
   const [failed, setFailed] = useState(false);
-  const [busy, setBusy] = useState(false);
+  /*
+   * **도는 일들** — 깃발 하나가 아니라 «조작마다 키 하나» 다 (2026-09-15 버그).
+   *
+   * 예전에는 `busy` 불리언 하나가 화면 전체를 잠갔다. 메모를 고쳐 저장하는 동안
+   * [회의 종료]가 비활성이 됐다 돌아오면서 **깜박였다** — 저장하는 것과 회의를 끝내는 것은
+   * 상관없는 일인데 같은 깃발을 썼기 때문이다.
+   *
+   * 이제 진행 중 표시는 **그 일을 시킨 자리에만** 선다. 막는 것은 둘뿐이다 (§충돌 표):
+   *   ① **같은 조작을 두 번** — 같은 키가 이미 돌면 두 번째는 안 나간다
+   *   ② **서로 부딪히는 조작** — 아래 `LIFECYCLE` 셋
+   */
+  const [running, setRunning] = useState<ReadonlySet<string>>(() => new Set());
+  /* 잠금은 ref 가 든다 — state 는 렌더를 기다리므로 같은 tick 의 연타와 StrictMode 의 두 번째
+     진입이 «아직 안 잠긴» 값을 본다. 빠른 시작에서 회의가 둘 생긴 것이 정확히 그 자리였다. */
+  const runningRef = useRef<Set<string>>(new Set());
   const [left, setLeft] = useState<"memo" | "ai">("memo");
   const [right, setRight] = useState<"materials" | "script">("materials");
   /** 근거 칩이 가리키는 구간. 스크립트의 그 자리가 켜지고 눈에 들어온다 (I05). */
@@ -477,9 +491,38 @@ export function MeetingDetailPage({
     );
   }
 
-  async function run(work: () => Promise<unknown>, notice?: string) {
-    if (busy) return;
-    setBusy(true);
+  /**
+   * **서로 부딪히는 일** — 회의의 «생애주기» 를 바꾸는 셋이다.
+   *
+   * 셋은 모두 `meeting.status` 를 옮기고, 둘이 동시에 도는 것은 뜻 자체가 모순이다 —
+   * 「끝내는 중에 또 끝내기」·「끝내는 중에 시작하기」·「정리가 실패해 다시 거는 중에 또 걸기」.
+   * 게다가 서버가 상태 기계를 들고 있어 나중 것이 409 로 떨어지는데, 그 실패는 사람이 한 일이
+   * 아니라 **화면이 두 번 보낸 탓**이라 알릴 말이 없다. 그래서 이 셋만 서로 막는다.
+   *
+   * **그 밖의 일끼리는 안 막는다.** 회의록을 고치는 것과 회의를 끝내는 것은 상관이 없고,
+   * 안건 하나를 지우는 것과 다른 줄을 고치는 것도 그렇다 — 각자 자기 요청만 두 번 안 나가면 된다.
+   * (내용을 고치는 일들은 저마다 끝에서 상세를 다시 읽으므로, 겹쳐 돌아도 마지막 읽기가
+   * 서버가 말한 하나로 화면을 맞춘다. 화면이 스스로 지어낸 값이 없어서 어긋날 것이 없다.)
+   */
+  const LIFECYCLE = ["start", "end", "retry"];
+  const conflicting = (key: string, active: ReadonlySet<string>) =>
+    active.has(key) || (LIFECYCLE.includes(key) && LIFECYCLE.some((one) => active.has(one)));
+  /** 이 자리가 지금 눌리면 안 되는가 — 제 일이 돌고 있거나, 부딪히는 일이 돌고 있거나. */
+  const isBusy = (key: string) => conflicting(key, running);
+  /** 자리를 잡는다. 이미 돌고 있거나 부딪히면 거짓을 내고 **요청을 내지 않는다.** */
+  function claim(key: string) {
+    if (conflicting(key, runningRef.current)) return false;
+    runningRef.current.add(key);
+    setRunning(new Set(runningRef.current));
+    return true;
+  }
+  function release(key: string) {
+    runningRef.current.delete(key);
+    setRunning(new Set(runningRef.current));
+  }
+
+  async function run(key: string, work: () => Promise<unknown>, notice?: string) {
+    if (!claim(key)) return;
     try {
       await work();
       await reload();
@@ -488,7 +531,35 @@ export function MeetingDetailPage({
     } catch (reason) {
       onError(reason instanceof Error ? reason.message : "처리하지 못했습니다.");
     } finally {
-      setBusy(false);
+      release(key);
+    }
+  }
+
+  /*
+   * 메모 **한 줄** 고치기·지우기 (백엔드 `6a9c41a` · 보고서 §4).
+   * 실패 코드가 셋이고 **화면이 할 일이 저마다 다르다** — 한 덩어리로 「못 했습니다」 하지 않는다.
+   *   · **422** 글자가 비었거나 너무 길다 → 한 줄로 알리기만 한다. 다시 읽지 않는다(서버는 그대로다)
+   *   · **409** 게이트가 닫혔다 → **다시 읽어** 화면을 서버에 맞춘다. 그래야 편집 자리가 걷힌다
+   *   · **404** 없는 줄이거나 권한 밖이다 → 역시 **다시 읽는다.**
+   *     이 모듈은 권한 밖도 「없는 것처럼」 답하므로 403 을 기다리지 않는다 (§3.2-1)
+   */
+  async function runMemoLine(key: string, work: () => Promise<unknown>) {
+    if (!claim(key)) return;
+    try {
+      await work();
+      await reload();
+      onError(null);
+    } catch (reason) {
+      const status = reason instanceof ApiError ? reason.status : null;
+      if (status === 409 || status === 404) {
+        /* 화면이 낡았다 — 무엇이 어긋났는지 추론하지 않고 서버가 말한 것으로 갈아 끼운다 */
+        await reload().catch(() => setFailed(true));
+        onNotice(meetingScreen.memoLineGone);
+        return;
+      }
+      onError(reason instanceof Error ? reason.message : "처리하지 못했습니다.");
+    } finally {
+      release(key);
     }
   }
 
@@ -538,35 +609,7 @@ export function MeetingDetailPage({
     } catch (reason) {
       onError(reason instanceof Error ? reason.message : "저장하지 못했습니다.");
     } finally {
-      release(key);
-    }
-  }
-
-  /*
-   * 메모 **한 줄** 고치기·지우기 (백엔드 `6a9c41a` · 보고서 §4).
-   * 실패 코드가 셋이고 **화면이 할 일이 저마다 다르다** — 한 덩어리로 「못 했습니다」 하지 않는다.
-   *   · **422** 글자가 비었거나 너무 길다 → 한 줄로 알리기만 한다. 다시 읽지 않는다(서버는 그대로다)
-   *   · **409** 게이트가 닫혔다 → **다시 읽어** 화면을 서버에 맞춘다. 그래야 편집 자리가 걷힌다
-   *   · **404** 없는 줄이거나 권한 밖이다 → 역시 **다시 읽는다.**
-   *     이 모듈은 권한 밖도 「없는 것처럼」 답하므로 403 을 기다리지 않는다 (§3.2-1)
-   */
-  async function runMemoLine(key: string, work: () => Promise<unknown>) {
-    if (!claim(key)) return;
-    try {
-      await work();
-      await reload();
-      onError(null);
-    } catch (reason) {
-      const status = reason instanceof ApiError ? reason.status : null;
-      if (status === 409 || status === 404) {
-        /* 화면이 낡았다 — 무엇이 어긋났는지 추론하지 않고 서버가 말한 것으로 갈아 끼운다 */
-        await reload().catch(() => setFailed(true));
-        onNotice(meetingScreen.memoLineGone);
-        return;
-      }
-      onError(reason instanceof Error ? reason.message : "처리하지 못했습니다.");
-    } finally {
-      release(key);
+      release("note");
     }
   }
 
@@ -898,7 +941,7 @@ export function MeetingDetailPage({
               />
             )}
             {(planned || cancelled) && attendee && (
-              <Button disabled={busy} onClick={() => void run(() => startMeeting(meeting.meeting_id))} size="sm" type="button">
+              <Button disabled={isBusy("start")} onClick={() => void run("start", () => startMeeting(meeting.meeting_id))} size="sm" type="button">
                 <Icon name="play" size={14} /> {meetingScreen.start}
               </Button>
             )}
@@ -907,7 +950,7 @@ export function MeetingDetailPage({
                 글자로 그렸지만, 회의를 닫는 것은 되돌릴 수 없는 걸음이라 그만큼 눈에 띄어야 한다는
                 판단이다. DS 의 solid-danger 그대로이고 동작·권한(hosting)·확인 흐름도 그대로다. */}
             {hosting && (
-              <Button disabled={busy} onClick={() => void run(() => endMeeting(meeting.meeting_id))} size="sm" tone="danger" type="button" variant="solid">
+              <Button disabled={isBusy("end")} onClick={() => void run("end", () => endMeeting(meeting.meeting_id))} size="sm" tone="danger" type="button" variant="solid">
                 {meetingScreen.end}
               </Button>
             )}
@@ -942,7 +985,7 @@ export function MeetingDetailPage({
           </span>
           {/* 합성만 다시 건다 — 받은 발화와 메모는 건드리지 않는다 */}
           {canEditNote && (
-            <Button size="sm" disabled={busy} onClick={() => void run(() => retryMeetingFinalize(meeting.meeting_id))}
+            <Button size="sm" disabled={isBusy("retry")} onClick={() => void run("retry", () => retryMeetingFinalize(meeting.meeting_id))}
               style={{ flex: "none" }}
               type="button"
             >
@@ -994,7 +1037,7 @@ export function MeetingDetailPage({
                 줄을 고치는 상태(완료·실패)에서는 그대로다: 줄 편집은 저장을 명시로 눌러야 하는 일이라
                 「고치는 중」이라는 상태가 화면에 남아야 한다. */}
             {canEdit && !agendaAlways && (
-              <Button size="sm" disabled={busy} onClick={() => (noteEditing ? void saveNote() : setEditing(true))}
+              <Button size="sm" disabled={isBusy("note")} onClick={() => (noteEditing ? void saveNote() : setEditing(true))}
                 style={{ flex: "none" }}
                 type="button"
               >
@@ -1105,7 +1148,7 @@ export function MeetingDetailPage({
                                   </Button>
                                 )}
                                 {/* E73 후보 삭제 — 확인을 묻지 않는다. 아직 업무가 아니다 */}
-                                <IconButton name="close" size={14} label={meetingScreen.dropTodo} onClick={() => void run(() => removeMeetingTodo(meeting.meeting_id, todo.todo_id))} style={{ width: 30, height: 30, color: "var(--scax-color-ink-assistive)" }} />
+                                <IconButton name="close" size={14} label={meetingScreen.dropTodo} onClick={() => void run(`todo-remove:${todo.todo_id}`, () => removeMeetingTodo(meeting.meeting_id, todo.todo_id))} style={{ width: 30, height: 30, color: "var(--scax-color-ink-assistive)" }} />
                               </>
                             ) : null,
                           }))
@@ -1292,7 +1335,7 @@ export function MeetingDetailPage({
               <Button variant="text" onClick={() => setAskRemoveAgenda(null)} type="button">
                 {meetingScreen.keep}
               </Button>
-              <Button variant="solid" tone="danger" disabled={busy} onClick={() => {
+              <Button variant="solid" tone="danger" disabled={isBusy(`material-detach:${askDropMaterial.material_id}`)} onClick={() => {
                   const target = askRemoveAgenda;
                   setAskRemoveAgenda(null);
                   void run(() => removeMeetingAgenda(meeting.meeting_id, target.agenda_id), meetingScreen.agendaRemoved);
@@ -1317,7 +1360,7 @@ export function MeetingDetailPage({
               <Button variant="text" onClick={() => setAskDropMaterial(null)} type="button">
                 {meetingScreen.keep}
               </Button>
-              <Button variant="solid" tone="danger" disabled={busy} onClick={() => {
+              <Button variant="solid" tone="danger" disabled={isBusy(`agenda-remove:${askRemoveAgenda.agenda_id}`)} onClick={() => {
                   const target = askDropMaterial;
                   setAskDropMaterial(null);
                   if (openMaterial === target.material_id) setOpenMaterial(null);

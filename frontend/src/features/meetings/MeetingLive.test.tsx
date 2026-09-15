@@ -1487,6 +1487,70 @@ describe("회의록 세 벌 — 탭마다 자기 벌의 안건 목록", () => {
      깃발 하나가 화면 전체를 잠가서, 메모를 저장하는 동안 [회의 종료]가 깜박였다.
      이제 키가 조작마다 하나고, 막는 것은 ① 같은 조작 두 번 ② 생애주기 셋끼리 뿐이다.
      ────────────────────────────────────────────────────────────────────────── */
+  describe("진행 중 표시는 그 자리에만", () => {
+    const opened = { can_edit_agendas: { memo: true, ai: false, final: false }, can_add_agenda: { memo: true, ai: false, final: false } };
+    const endButton = () =>
+      within(document.querySelector(".scax-detail__title-row") as HTMLElement).getByRole("button", { name: meetingScreen.end });
+
+    it("메모를 저장하는 동안에도 **[회의 종료]가 계속 눌릴 수 있다**", async () => {
+      await connect(true, { ...opened, can_write_memo: true }, [memoSide, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+
+      // 저장을 «끝나지 않게» 붙들어 둔다 — 도는 동안의 화면을 봐야 한다
+      let settle: (value: unknown) => void = () => undefined;
+      vi.mocked(api.updateMeetingMemoLine).mockReturnValue(new Promise((resolve) => { settle = resolve; }) as never);
+
+      const slot = screen.getByLabelText(meetingScreen.memoLineEdit);
+      fireEvent.click(slot);
+      slot.textContent = "고치는 중.";
+      fireEvent.keyDown(slot, { key: "Enter" });
+      await waitFor(() => expect(api.updateMeetingMemoLine).toHaveBeenCalled());
+
+      // 저장이 도는 «동안» — 상관없는 일이므로 잠기지 않는다
+      expect(endButton()).toHaveProperty("disabled", false);
+
+      settle({ ...memoSide.lines[0], text: "고치는 중." });
+    });
+
+    it("같은 조작을 두 번 눌러도 요청이 **한 번만** 나간다", async () => {
+      await connect(true, { ...opened, can_write_memo: true }, [memoSide, aiSide]);
+      let settle: (value: unknown) => void = () => undefined;
+      vi.mocked(api.removeMeetingMemoLine).mockReturnValue(new Promise((resolve) => { settle = resolve; }) as never);
+
+      fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+      const drop = screen.getByRole("button", { name: meetingScreen.memoLineDrop });
+      fireEvent.click(drop);
+      fireEvent.click(drop);
+      fireEvent.click(drop);
+
+      await waitFor(() => expect(api.removeMeetingMemoLine).toHaveBeenCalled());
+      expect(vi.mocked(api.removeMeetingMemoLine).mock.calls).toHaveLength(1);
+      settle(undefined);
+    });
+
+    it("**부딪히는 조합은 여전히 막힌다** — 끝내는 중에 또 끝낼 수 없다", async () => {
+      await connect(true, { ...opened, can_write_memo: true }, [memoSide, aiSide]);
+      let settle: (value: unknown) => void = () => undefined;
+      vi.mocked(api.endMeeting).mockReturnValue(new Promise((resolve) => { settle = resolve; }) as never);
+
+      fireEvent.click(endButton());
+      await waitFor(() => expect(api.endMeeting).toHaveBeenCalled());
+      // 도는 «동안» 그 자리는 잠긴다 — 여기까지가 막아야 하는 것이다
+      expect(endButton()).toHaveProperty("disabled", true);
+      fireEvent.click(endButton());
+      expect(vi.mocked(api.endMeeting).mock.calls).toHaveLength(1);
+
+      settle(undefined);
+    });
+  });
+
+  /* ──────────────────────────────────────────────────────────────────────────
+     **남이 고치고 지운 것이 내 화면에 그 자리에서 선다** (백엔드 `f89de32` · 보고서 §4).
+
+     프레임 넷이 더해졌고 전부 **「바뀐 것 하나」만** 싣는다 — 벌 통째 교체가 아니다.
+     받는 쪽이 하는 일은 **id 로 upsert · delete** 하나이고, 그래서 **두 번 받아도 한 번 그린
+     것과 같다**(에코 처리). 프레임을 받고 목록을 다시 읽지 않는다 — 이미 바뀐 것이 실려 왔다.
+     ────────────────────────────────────────────────────────────────────────── */
   it("자리표시 제목은 번호만 낸다 — 「안건 1. 안건 1」로 두 번 붙지 않는다 (§12 R-50)", async () => {
     /* 서버가 빈 제목 + `title_placeholder: true` 로 낸다. 예전에는 제목 자리에 「안건 1」이
        들어와 라벨의 번호와 겹쳤다. 없는 제목을 지어내지 않고 번호만 낸다. */
