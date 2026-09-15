@@ -1341,6 +1341,152 @@ describe("회의록 세 벌 — 탭마다 자기 벌의 안건 목록", () => {
      쓰는 자리와 같은 주소 아래 같은 본문이다. **빈 줄로 지우지 않는다** — 빈 `text` 는 422 이고
      지우는 것은 `DELETE` 다. 게이트는 안건 [수정]·[삭제]와 **같은 값**(`can_edit_agendas.memo`)이다.
      ────────────────────────────────────────────────────────────────────────── */
+  describe("메모 줄 고치기·지우기", () => {
+    const opened = { can_edit_agendas: { memo: true, ai: false, final: false }, can_add_agenda: { memo: true, ai: false, final: false } };
+    const memoSlot = () => screen.getByLabelText(meetingScreen.memoLineEdit);
+    function type(element: HTMLElement, text: string) {
+      element.textContent = text;
+      fireEvent.input(element);
+    }
+
+    async function openMemoLine(over = opened) {
+      await connect(true, over, [memoSide, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+      const element = memoSlot();
+      fireEvent.click(element);
+      return element;
+    }
+
+    it("메모 줄을 **제자리에서** 고친다 — `PATCH …/lines/{lineId}` 로 간다", async () => {
+      const element = await openMemoLine();
+      vi.mocked(api.updateMeetingMemoLine).mockResolvedValue({ ...memoSide.lines[0], text: "고쳐 쓴 줄." });
+      type(element, "고쳐 쓴 줄.");
+      fireEvent.keyDown(element, { key: "Enter" });
+
+      await waitFor(() => expect(api.updateMeetingMemoLine).toHaveBeenCalledWith("m1", "m-1", "ml1", "고쳐 쓴 줄."));
+    });
+
+    it("**빈 줄로 지우려 하지 않는다** — 빈 값은 요청 자체가 안 나간다 (§4: 빈 text 는 422)", async () => {
+      const element = await openMemoLine();
+      type(element, "   ");
+      fireEvent.keyDown(element, { key: "Enter" });
+
+      expect(api.updateMeetingMemoLine).not.toHaveBeenCalled();
+      expect(api.removeMeetingMemoLine).not.toHaveBeenCalled();
+    });
+
+    it("지우는 것은 `DELETE` 다 — 확인을 묻지 않는다", async () => {
+      await connect(true, opened, [memoSide, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+      vi.mocked(api.removeMeetingMemoLine).mockResolvedValue(undefined);
+
+      fireEvent.click(screen.getByRole("button", { name: meetingScreen.memoLineDrop }));
+
+      await waitFor(() => expect(api.removeMeetingMemoLine).toHaveBeenCalledWith("m1", "m-1", "ml1"));
+      // 확인 모달이 끼지 않는다 — 자기가 적은 임시 재료다
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+    });
+
+    it("**409 는 다시 읽어 맞춘다** — 게이트가 닫혔거나 남의 벌 줄이다", async () => {
+      const element = await openMemoLine();
+      const reads = vi.mocked(api.readMeeting).mock.calls.length;
+      vi.mocked(api.updateMeetingMemoLine).mockRejectedValue(new api.ApiError(409, "conflict"));
+      type(element, "못 갈 글자.");
+      fireEvent.keyDown(element, { key: "Enter" });
+
+      await waitFor(() => expect(vi.mocked(api.readMeeting).mock.calls.length).toBeGreaterThan(reads));
+    });
+
+    it("**404 도 다시 읽는다** — 권한 밖이 404 로 오는 것이 이 모듈의 계약이다 (403 을 기다리지 않는다)", async () => {
+      await connect(true, opened, [memoSide, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+      const reads = vi.mocked(api.readMeeting).mock.calls.length;
+      vi.mocked(api.removeMeetingMemoLine).mockRejectedValue(new api.ApiError(404, "not found"));
+
+      fireEvent.click(screen.getByRole("button", { name: meetingScreen.memoLineDrop }));
+
+      await waitFor(() => expect(vi.mocked(api.readMeeting).mock.calls.length).toBeGreaterThan(reads));
+    });
+
+    it("**422 는 다시 읽지 않는다** — 서버는 그대로이고 알리기만 한다", async () => {
+      const element = await openMemoLine();
+      const reads = vi.mocked(api.readMeeting).mock.calls.length;
+      vi.mocked(api.updateMeetingMemoLine).mockRejectedValue(new api.ApiError(422, "너무 깁니다."));
+      type(element, "너무 긴 글자.");
+      fireEvent.keyDown(element, { key: "Enter" });
+
+      await waitFor(() => expect(api.updateMeetingMemoLine).toHaveBeenCalled());
+      // 잠깐 기다려도 다시 읽지 않는다
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(vi.mocked(api.readMeeting).mock.calls.length).toBe(reads);
+    });
+
+    it("줄의 **빈 자리를 눌러도** 편집이 열린다 — 과녁이 글자 폭에 묶이지 않는다", async () => {
+      /* 짧은 줄일수록 글자만한 과녁은 빗나간다. 칸(`.scax-note-line__text`)은 이미 늘어나 있고
+         그 안의 글자만 인라인이라 좁았다 — 그 글자를 칸 너비만큼 넓혔다.
+         jsdom 은 좌표로 「빈 자리를 눌렀다」를 만들 수 없으므로, **넓혔다는 사실**을 건다. */
+      await connect(true, opened, [memoSide, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+      const slot = memoSlot();
+      expect(slot.classList.contains("scax-inline-text--fill")).toBe(true);
+      // 과녁이 딛는 칸은 늘어나는 칸이다 — 그 둘이 붙어야 「빈 자리」가 눌린다
+      expect(slot.closest(".scax-note-line__text")).not.toBeNull();
+    });
+
+    it("[×] 는 여전히 삭제로 동작한다 — 과녁을 넓혀도 빼는 자리를 먹지 않는다", async () => {
+      /* 글자를 칸 너비로 넓히면 그 옆의 작은 단추를 덮기 쉽다. `×` 는 같은 칸이 아니라
+         **형제 칸**이라 덮이지 않는다 — 그 구조와 동작을 함께 건다. */
+      await connect(true, opened, [memoSide, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+      const drop = screen.getByRole("button", { name: meetingScreen.memoLineDrop });
+      // 넓힌 글자 «안» 에 들어가 있지 않다
+      expect(memoSlot().contains(drop)).toBe(false);
+
+      vi.mocked(api.removeMeetingMemoLine).mockResolvedValue(undefined);
+      fireEvent.click(drop);
+      await waitFor(() => expect(api.removeMeetingMemoLine).toHaveBeenCalledWith("m1", "m-1", "ml1"));
+    });
+
+    it("과녁을 넓혀도 **편집 전후로 박스가 안 생긴다** — 계약은 그대로다", async () => {
+      await connect(true, opened, [memoSide, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+      const slot = memoSlot();
+      const closed = slot.className;
+      fireEvent.click(slot);
+      // 같은 노드이고 클래스도 그대로다 — 모양을 바꿀 고리가 없다
+      expect(memoSlot()).toBe(slot);
+      expect(slot.className).toBe(closed);
+      for (const shell of ["scax-textfield", "scax-field", "scax-textarea", "meeting-line-edit"]) {
+        expect(slot.classList.contains(shell)).toBe(false);
+      }
+      const body = document.querySelector(".scax-note__body") as HTMLElement;
+      expect(body.querySelector("input")).toBeNull();
+      expect(body.querySelector("textarea")).toBeNull();
+    });
+
+    it("**AI 벌 줄에는 안 단다** — 고치는 자리도 빼는 자리도 없다", async () => {
+      await connect(true, opened, [memoSide, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "AI 요약" }));
+      expect(screen.queryByLabelText(meetingScreen.memoLineEdit)).toBeNull();
+      expect(screen.queryByRole("button", { name: meetingScreen.memoLineDrop })).toBeNull();
+      expect(screen.getByText("AI 가 적은 줄.")).toBeTruthy();
+    });
+
+    it("`can_edit_agendas.memo` 가 거짓이면 줄도 안 열린다 — 안건 게이트와 **같은 값**이다", async () => {
+      await connect(true, { can_edit_agendas: { memo: false, ai: false, final: false }, can_add_agenda: { memo: true, ai: false, final: false } }, [memoSide, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+      expect(screen.queryByLabelText(meetingScreen.memoLineEdit)).toBeNull();
+      expect(screen.queryByRole("button", { name: meetingScreen.memoLineDrop })).toBeNull();
+      // 줄은 «글자로» 그대로 선다
+      expect(screen.getByText("사람이 적은 줄.")).toBeTruthy();
+    });
+  });
+
+  /* ──────────────────────────────────────────────────────────────────────────
+     **진행 중 표시는 그 일을 시킨 자리에만 선다** (2026-09-15 버그).
+     깃발 하나가 화면 전체를 잠가서, 메모를 저장하는 동안 [회의 종료]가 깜박였다.
+     이제 키가 조작마다 하나고, 막는 것은 ① 같은 조작 두 번 ② 생애주기 셋끼리 뿐이다.
+     ────────────────────────────────────────────────────────────────────────── */
   it("자리표시 제목은 번호만 낸다 — 「안건 1. 안건 1」로 두 번 붙지 않는다 (§12 R-50)", async () => {
     /* 서버가 빈 제목 + `title_placeholder: true` 로 낸다. 예전에는 제목 자리에 「안건 1」이
        들어와 라벨의 번호와 겹쳤다. 없는 제목을 지어내지 않고 번호만 낸다. */

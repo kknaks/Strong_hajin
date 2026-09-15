@@ -18,6 +18,8 @@ import {
   retryMeetingFinalize,
   startMeeting,
   updateMeetingAgenda,
+  updateMeetingMemoLine,
+  removeMeetingMemoLine,
   updateMeetingInfo,
 } from "../../lib/api";
 import { Badge } from "../../ds/Badge";
@@ -536,7 +538,35 @@ export function MeetingDetailPage({
     } catch (reason) {
       onError(reason instanceof Error ? reason.message : "저장하지 못했습니다.");
     } finally {
-      setBusy(false);
+      release(key);
+    }
+  }
+
+  /*
+   * 메모 **한 줄** 고치기·지우기 (백엔드 `6a9c41a` · 보고서 §4).
+   * 실패 코드가 셋이고 **화면이 할 일이 저마다 다르다** — 한 덩어리로 「못 했습니다」 하지 않는다.
+   *   · **422** 글자가 비었거나 너무 길다 → 한 줄로 알리기만 한다. 다시 읽지 않는다(서버는 그대로다)
+   *   · **409** 게이트가 닫혔다 → **다시 읽어** 화면을 서버에 맞춘다. 그래야 편집 자리가 걷힌다
+   *   · **404** 없는 줄이거나 권한 밖이다 → 역시 **다시 읽는다.**
+   *     이 모듈은 권한 밖도 「없는 것처럼」 답하므로 403 을 기다리지 않는다 (§3.2-1)
+   */
+  async function runMemoLine(key: string, work: () => Promise<unknown>) {
+    if (!claim(key)) return;
+    try {
+      await work();
+      await reload();
+      onError(null);
+    } catch (reason) {
+      const status = reason instanceof ApiError ? reason.status : null;
+      if (status === 409 || status === 404) {
+        /* 화면이 낡았다 — 무엇이 어긋났는지 추론하지 않고 서버가 말한 것으로 갈아 끼운다 */
+        await reload().catch(() => setFailed(true));
+        onNotice(meetingScreen.memoLineGone);
+        return;
+      }
+      onError(reason instanceof Error ? reason.message : "처리하지 못했습니다.");
+    } finally {
+      release(key);
     }
   }
 
@@ -652,8 +682,52 @@ export function MeetingDetailPage({
 
   /** 이 세션에서 오간 메모 — 내가 던져 돌아온 줄과 스트림으로 온 줄. 같은 줄은 한 번만 선다. */
   const liveMemos = [...new Map([...sessionMemos, ...stream.memos].map((memo) => [memo.line.line_id, memo])).values()];
-  const memosOf = (agendaId: string) =>
-    liveMemos.filter((memo) => memo.agendaId === agendaId).map((memo) => memo.line.text);
+  /* 줄 «전체» 를 낸다 — 고치고 지우려면 `line_id` 가 있어야 한다. 상세 응답이 이미 실어 온 줄은
+     빼고 낸다: 새로고침 뒤에는 같은 줄이 기록과 세션 양쪽에 있어 그대로 두면 두 번 선다. */
+  /**
+   * 이 안건의 메모 줄 — **상세가 실어 온 것과 스트림이 들고 온 것을 `line_id` 로 합친다.**
+   *
+   * 같은 id 가 양쪽에 있으면 **스트림이 이긴다.** 그래야 `memo.line.updated` 로 남이 고친 글자가
+   * 내 화면에 선다 — 전에는 상세 쪽을 남겨서 고친 글자가 «조용히 무시» 됐다.
+   * 지워진 줄(`memo.line.removed`)은 양쪽 어디에 있든 빠진다: 상세가 실어 온 줄은 스트림 목록에
+   * 없으므로 **지웠다는 사실**(`removedLines`)로 걸러야 한다.
+   *
+   * 다시 읽지 않는다 — 프레임이 바뀐 것을 이미 들고 왔다.
+   */
+  const memoLinesOf = (agenda: MeetingAgenda): MeetingLine[] => {
+    const live = new Map(
+      liveMemos.filter((memo) => memo.agendaId === agenda.agenda_id).map((memo) => [memo.line.line_id, memo.line]),
+    );
+    const own = agenda.lines.filter((line) => line.track === "memo");
+    const seen = new Set(own.map((line) => line.line_id));
+    return [...own.map((line) => live.get(line.line_id) ?? line), ...[...live.values()].filter((line) => !seen.has(line.line_id))]
+      .filter((line) => !stream.removedLines.includes(line.line_id));
+  };
+
+  /**
+   * 「메모」 탭의 줄 목록 — 기록이 실어 온 사람 벌 줄 + 이 세션에서 오간 줄(중복 제거).
+   *
+   * **고치고 지우는 자리는 `agendaAlways` 하나로 열린다** — 안건 [수정]·[삭제]와 **같은 값**
+   * (`can_edit_agendas.memo`)이다 (백엔드 보고 §4 「화면이 편집을 세우는 근거」).
+   * `can_write_memo` 와 다르다: 그쪽은 「새 메모를 쓸 수 있는가」(만든 사람 × 진행 중)이고,
+   * 고치기·지우기는 **예정·취소에서도 열린다.** 둘이 어긋나는 상태가 실제로 있다.
+   *
+   * 최종 벌·AI 벌에는 달지 않는다 — 이 함수는 메모 탭에서만 불린다.
+   */
+  const memoLineViews = (agenda: MeetingAgenda): AgendaLineView[] => {
+    const rows = memoLinesOf(agenda);
+    return lineViews(rows).map((view, index) => {
+      const line = [...rows].sort((left, right) => left.order - right.order)[index];
+      if (!agendaAlways || !line) return view;
+      return {
+        ...view,
+        /* 빈 값은 애초에 저장되지 않는다(InlineText 가 막는다) — **빈 줄로 지우려 하지 않는다.**
+           서버도 빈 `text` 를 422 로 거절한다. 지우는 것은 아래 `onRemove` 다 (§4). */
+        edit: (next: string) => runMemoLine(`memo-line:${line.line_id}`, () => updateMeetingMemoLine(meeting.meeting_id, agenda.agenda_id, line.line_id, next)),
+        onRemove: () => void runMemoLine(`memo-line:${line.line_id}`, () => removeMeetingMemoLine(meeting.meeting_id, agenda.agenda_id, line.line_id)),
+      };
+    });
+  };
 
   /**
    * 이 줄이 칩이 가리킨 구간과 «겹치는가» (D50).
@@ -977,7 +1051,7 @@ export function MeetingDetailPage({
                       ? []
                       : memoTab
                         ? // 이 세션에서 던진 메모는 돌아온 줄만 뒤에 붙는다 — 낙관 렌더를 하지 않는다
-                          [...tracked(agenda, "memo"), ...memosOf(agenda.agenda_id).map((text) => ({ text }))]
+                          memoLineViews(agenda)
                         : aiTab
                           ? // 배치가 실어 온 것이 곧 AI 트랙 전체다 — 그 안의 줄은 track 값을 따지지 않는다
                             lineViews(stream.batch ? agenda.lines : agenda.lines.filter((line) => line.track === "ai"))

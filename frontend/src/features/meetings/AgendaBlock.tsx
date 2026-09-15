@@ -31,7 +31,18 @@ import { meetingScreen } from "../../lib/labels";
  * 근거가 없는 줄은 그 자리를 비운다 — 없는 시각을 지어내지 않는다.
  */
 export type AgendaLineChip = { label: string; onJump?: () => void };
-export type AgendaLineView = { text: string; chips?: AgendaLineChip[] };
+export type AgendaLineView = {
+  text: string;
+  chips?: AgendaLineChip[];
+  /**
+   * 이 줄을 **제자리에서** 고친다 (백엔드 `6a9c41a`). 주면 글자가 눌러서 고치는 자리가 되고,
+   * 안 주면 마크업이 예전 그대로다 — 못 고치는 줄에 고칠 수 있다는 구조를 남기지 않는다.
+   * 여는 것은 부르는 쪽이 서버의 `can_edit_agendas.memo` 로 정한다.
+   */
+  edit?: ((next: string) => void | Promise<void>) | null;
+  /** 이 줄을 걷는다. 확인을 묻지 않는다 — 자기가 적은 임시 재료다. */
+  onRemove?: (() => void) | null;
+};
 
 export type AgendaLineEdit = {
   lines: string[];
@@ -52,6 +63,7 @@ export type AgendaTodoView = {
 export function AgendaBlock({
   index,
   title,
+  titleEdit,
   titlePlaceholder,
   source,
   mark,
@@ -63,7 +75,14 @@ export function AgendaBlock({
   /** 정렬된 목록에서의 자리. 번호(1부터)를 정한다 — 안건의 `order` 값을 쓰지 않는다. */
   index: number;
   title: string;
-  titleEdit,
+  /**
+   * 제목을 **제자리에서** 고치는 자리 (2026-09-15 사용자 결정). 주면 제목 글자가 눌러서 고치는
+   * 칸이 되고, 안 주면 머리 markup 이 **한 글자도 달라지지 않는다** — 고칠 수 없는 자리에
+   * 「고칠 수 있다」는 구조를 남기지 않기 위해서다.
+   *
+   * 열지 말지는 부르는 쪽이 **서버의 `can_edit_agendas`** 로 정한다. 부품은 권한을 모른다.
+   */
+  titleEdit?: ((next: string) => void | Promise<void>) | null;
   /**
    * 제목이 아직 자리표시인가 (§12 R-50). 참이면 서버가 빈 제목을 낸 것이고, 머리는 번호만 낸다 —
    * 「안건 1. 안건 1」로 번호가 두 번 붙던 자리다. 값은 부르는 쪽이 서버에서 받아 넘긴다.
@@ -75,17 +94,11 @@ export function AgendaBlock({
   lines: AgendaLineView[];
   edit?: AgendaLineEdit | null;
   /** null 이면 「다음 할 일」 구획 자체가 없다. 빈 배열이면 구획은 서고 T12 가 온다. */
-  /**
-   * 제목을 **제자리에서** 고치는 자리 (2026-09-15 사용자 결정). 주면 제목 글자가 눌러서 고치는
-   * 칸이 되고, 안 주면 머리 markup 이 **한 글자도 달라지지 않는다** — 고칠 수 없는 자리에
-   * 「고칠 수 있다」는 구조를 남기지 않기 위해서다.
-   *
-   * 열지 말지는 부르는 쪽이 **서버의 `can_edit_agendas`** 로 정한다. 부품은 권한을 모른다.
-   */
-  titleEdit?: ((next: string) => void | Promise<void>) | null;
   todos?: AgendaTodoView[] | null;
   onRemove?: (() => void) | null;
 }) {
+  /* 제목 행이 클릭을 받아 제자리 편집을 연다 — 손잡이를 담아 둘 상자 (2026-09-15 사용자 결정) */
+  const titleHandle = useRef<InlineTextHandle | null>(null);
   return (
     <section className="scax-agenda-block">
       <div className="scax-agenda-block__head">
@@ -139,8 +152,6 @@ export function AgendaBlock({
         {onRemove && <IconButton name="close" size={14} label={meetingScreen.dropAgenda} onClick={onRemove} />}
       </div>
 
-  /* 제목 행이 클릭을 받아 제자리 편집을 연다 — 손잡이를 담아 둘 상자 (2026-09-15 사용자 결정) */
-  const titleHandle = useRef<InlineTextHandle | null>(null);
       {source && <p className="scax-agenda-block__source">{source}</p>}
 
       {edit ? (
@@ -171,7 +182,18 @@ export function AgendaBlock({
             {lines.map((line, lineIndex) => (
               <li key={lineIndex}>
                 <span className="scax-note-line">
-                  <span className="scax-note-line__text">{line.text}</span>
+                  <span className="scax-note-line__text">
+                    {line.edit ? (
+                      /* 줄의 «빈 자리» 를 눌러도 열린다 — 짧은 줄일수록 글자만한 과녁은 빗나간다.
+                         이 칸(`.scax-note-line__text`)은 이미 늘어나 있으므로 그 너비를 채우기만 한다 */
+                      <InlineText fill label={meetingScreen.memoLineEdit} onCommit={line.edit} value={line.text} />
+                    ) : (
+                      line.text
+                    )}
+                  </span>
+                  {line.onRemove && (
+                    <IconButton name="close" size={12} label={meetingScreen.memoLineDrop} onClick={line.onRemove} />
+                  )}
                   {/* 그 줄이 딛는 구간들 — 칩 하나가 구간 하나고, 누르면 스크립트의 그 자리가 열린다 (I05·D49) */}
                   {line.chips && line.chips.length > 0 && (
                     <span className="scax-note-line__evidence">

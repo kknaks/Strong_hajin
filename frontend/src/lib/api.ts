@@ -976,6 +976,34 @@ export async function addMeetingAgenda(meetingId: string, title: string): Promis
  * 원본 두 벌(사람·AI)의 안건에 `lines` 를 보내면 **409** 이고, `concluded` 를 최종 벌 아닌 안건에
  * 보내도 **409** 다 — 그 둘은 최종 벌의 것이다.
  */
+/**
+ * 메모 **한 줄** 고치기 (백엔드 `6a9c41a` · 보고서 §4). 쓰는 자리(`POST …/lines`)와 **같은 주소 아래
+ * 같은 본문**이라 익힐 모양이 하나다. 돌아오는 것은 그 줄 하나이고 `line_id`·`order`·`at_ms`·`author`
+ * 가 **바뀌지 않으므로** 화면은 제자리에서 갈아 끼우면 된다.
+ *
+ * 실패는 셋이다 (§4 표):
+ *   · **422** — 빈 글자(공백뿐)이거나 2000자 초과. **빈 줄로 지우려 하지 마라** — 지우는 것은 `DELETE` 다
+ *   · **409** — 게이트가 닫혔거나(정리 중·종료·실패) 최종 벌·AI 벌의 줄이다. 상세를 다시 읽어 맞춘다
+ *   · **404** — 그 줄이 없거나 그 안건의 줄이 아니거나 **권한이 없다**.
+ *     이 모듈은 권한 밖도 「없는 것처럼」 답한다 (§3.2-1) — **403 을 기다리지 마라**
+ */
+export async function updateMeetingMemoLine(
+  meetingId: string,
+  agendaId: string,
+  lineId: string,
+  text: string,
+): Promise<MeetingLine> {
+  return request<MeetingLine>(`/api/meetings/${meetingId}/agendas/${agendaId}/lines/${lineId}`, {
+    body: JSON.stringify({ text }),
+    method: "PATCH",
+  });
+}
+
+/** 메모 한 줄 지우기 — 204. 확인을 받지 않는다(자기가 적은 임시 재료를 걷는 일이다). 실패 코드는 위와 같다. */
+export async function removeMeetingMemoLine(meetingId: string, agendaId: string, lineId: string): Promise<void> {
+  await request<void>(`/api/meetings/${meetingId}/agendas/${agendaId}/lines/${lineId}`, { method: "DELETE" });
+}
+
 export async function updateMeetingAgenda(
   meetingId: string,
   agendaId: string,
