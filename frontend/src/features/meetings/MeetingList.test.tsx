@@ -543,17 +543,37 @@ describe("SCR-105 회의 목록", () => {
   });
 
   /* jsdom 은 스타일시트를 적용하지 않아 「포커스했을 때 무엇이 보이나」를 화면에서 잴 수 없다.
-     규칙 자체를 검사한다 — 이 결정이 조용히 되돌아가는 것을 막는 자리다. */
-  /* 「포커스는 칸 모양을 바꾸지 않는다」는 사용자가 구 DS 시절에 내린 결정이고, 이 검사가 그것을
-     지켜 왔다 — 구 `styles.css` 안의 모든 `:focus` 규칙이 outline·box-shadow 를 안 켜는지 훑었다.
+     규칙 자체를 검사한다.
 
-     ★ 바퀴 9-B 에서 그 검사의 전제가 무너졌다. 구 파일이 사라지면서 전역 규칙은 `shell.css` 로
-     옮겨 갔고(아래에서 그대로 짚는다), **새 DS 는 그 결정을 정면으로 뒤집는다** —
-     `:focus-visible` 에 `--scax-focus-ring` 을 일부러 그리는 규칙이 DS 원본 복사본 안에만 18곳이다
-     (`components.css` 17 · `meetings.css` 의 `.scax-meeting-card` 1). 「아무 규칙도 안 켠다」를
-     그대로 두면 DS 를 실은 순간 빨개지고, 파일을 골라 훑으면 그때부터 «빈 검사» 다.
-     그래서 **지금도 참인 절반만** 남긴다: 브라우저 기본 링을 끄는 전역 규칙이 살아 있는가.
-     나머지 절반(링을 다시 그릴 것인가)은 제품 판단이라 코디에게 올렸다. */
+     ★ 이 검사는 하루 사이에 두 번 뒤집혔다. 2026-09-15 에 「포커스 표시를 전역에서 없앤다」가
+     결정돼 «어느 파일에도 링이 없다» 를 걸었고, **같은 날 철회돼 전부 되살아났다.**
+     그래서 지금 거는 것은 반대다: **링이 제자리에 있는가.** 되돌린 것이 조용히 또 지워지면
+     키보드로 쓰는 사람이 자기가 어디 있는지 알 수 없게 되므로, 그 회귀를 여기서 막는다. */
+  it("포커스 링이 **되살아나 있다** — 토큰에 값이 있고 부품이 그것을 그린다 (철회 2026-09-15)", async () => {
+    // @ts-expect-error — 이 리포는 @types/node 를 두지 않는다.
+    const { readFileSync } = await import("node:fs");
+    const flat = (path: string): string => (readFileSync(path, "utf8") as string).replace(/\s+/g, "");
+
+    // 토큰이 «눕혀져» 있지 않다 — `none` 이면 23곳이 전부 아무것도 안 그린다
+    const tokens = flat("src/styles/scax.css");
+    expect(tokens).toContain("--scax-focus-ring:000 3pxvar(--scax-color-accent-20);".replace(/\s+/g, ""));
+    expect(tokens).not.toContain("--scax-focus-ring:none");
+
+    // 밟고 다니는 자리들이 실제로 그린다 — 하나라도 빠지면 그 자리가 키보드에서 사라진다
+    const components = flat("src/styles/components.css");
+    for (const selector of [
+      ".scax-button:focus-visible",
+      ".scax-icon-button:focus-visible",
+      ".scax-select__trigger:focus-visible",
+      ".scax-tabs__item:focus-visible",
+      ".scax-textfield:focus-within",
+    ]) {
+      expect(components).toContain(`${selector}{`);
+    }
+    expect(flat("src/styles/shell.css")).toContain(".scax-nav-item:focus-visible{");
+    expect(flat("src/styles/meetings.css")).toContain(".scax-meeting-card:focus-visible{");
+  });
+
   it("브라우저 기본 포커스 링을 끄는 전역 규칙이 살아 있다", async () => {
     // @ts-expect-error — 이 리포는 @types/node 를 두지 않는다. 파일을 읽는 것은 이 검사 하나뿐이다.
     const { readFileSync } = await import("node:fs");
