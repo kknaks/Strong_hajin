@@ -1551,6 +1551,134 @@ describe("회의록 세 벌 — 탭마다 자기 벌의 안건 목록", () => {
      받는 쪽이 하는 일은 **id 로 upsert · delete** 하나이고, 그래서 **두 번 받아도 한 번 그린
      것과 같다**(에코 처리). 프레임을 받고 목록을 다시 읽지 않는다 — 이미 바뀐 것이 실려 왔다.
      ────────────────────────────────────────────────────────────────────────── */
+  describe("메모·안건 실시간 프레임", () => {
+    const opened = { can_edit_agendas: { memo: true, ai: false, final: false }, can_add_agenda: { memo: true, ai: false, final: false } };
+    const composer = () => document.querySelector(".scax-memo-composer") as HTMLElement;
+
+    async function watching() {
+      const rendered = await connect(true, opened, [memoSide, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+      vi.mocked(api.readMeeting).mockClear();
+      return rendered;
+    }
+    /** 프레임을 받고 «다시 읽지 않았는가» — 재조회로 때우지 말라는 것이 계약이다. */
+    const didNotRefetch = () => expect(api.readMeeting).not.toHaveBeenCalled();
+
+    const updatedLine = {
+      type: "memo.line.updated" as const,
+      agendaId: "m-1",
+      line: { line_id: "ml1", track: "memo" as const, order: 1, text: "남이 고친 줄.", author: "이건학", at_ms: 1_000, evidence: [], from_lines: [] },
+    };
+
+    it("남이 고친 메모 줄이 **내 화면에서 바뀐다** — 그 자리에서", async () => {
+      await watching();
+      expect(screen.getByText("사람이 적은 줄.")).toBeTruthy();
+
+      socket().emit(updatedLine);
+
+      await waitFor(() => expect(screen.getByText("남이 고친 줄.")).toBeTruthy());
+      expect(screen.queryByText("사람이 적은 줄.")).toBeNull();
+      didNotRefetch();
+    });
+
+    it("남이 지운 메모 줄이 **사라진다**", async () => {
+      await watching();
+      socket().emit({ type: "memo.line.removed", agendaId: "m-1", lineId: "ml1" });
+
+      await waitFor(() => expect(screen.queryByText("사람이 적은 줄.")).toBeNull());
+      // 안건은 남는다 — 줄 하나가 사라진 것이다
+      expect(screen.getByText(/사람이 적은 안건/)).toBeTruthy();
+      didNotRefetch();
+    });
+
+    it("안건 제목이 바뀌면 **본문과 메모 대상 드롭다운이 같이** 바뀐다", async () => {
+      await watching();
+      socket().emit({
+        type: "agenda.updated",
+        agenda: { ...memoSide, title: "남이 고친 안건", lines: memoSide.lines },
+      });
+
+      // 본문
+      await waitFor(() => expect(screen.getByText(/남이 고친 안건/)).toBeTruthy());
+      expect(screen.queryByText(/사람이 적은 안건/)).toBeNull();
+      // 드롭다운 — 옛 제목 아래 메모가 쌓이면 안 된다
+      fireEvent.click(within(composer()).getByRole("button", { name: /안건/ }));
+      expect(within(screen.getByRole("listbox")).getAllByRole("option")).toHaveLength(1);
+      didNotRefetch();
+    });
+
+    it("안건이 사라지면 **드롭다운에서도 빠진다** — 고르면 404 가 나던 자리다", async () => {
+      const second: MeetingAgenda = { ...memoSide, agenda_id: "m-2", order: 2, title: "두 번째 사람 안건", lines: [] };
+      await connect(true, opened, [memoSide, second, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+      vi.mocked(api.readMeeting).mockClear();
+
+      fireEvent.click(within(composer()).getByRole("button", { name: /안건/ }));
+      expect(within(screen.getByRole("listbox")).getAllByRole("option")).toHaveLength(2);
+      fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" });
+
+      socket().emit({ type: "agenda.removed", agendaId: "m-2" });
+
+      await waitFor(() => expect(screen.queryByText(/두 번째 사람 안건/)).toBeNull());
+      fireEvent.click(within(composer()).getByRole("button", { name: /안건/ }));
+      expect(within(screen.getByRole("listbox")).getAllByRole("option")).toHaveLength(1);
+      didNotRefetch();
+    });
+
+    it("**같은 프레임을 두 번 받아도** 한 번 그린 것과 같다 — 에코가 그렇게 처리된다", async () => {
+      await watching();
+
+      socket().emit(updatedLine);
+      socket().emit(updatedLine);
+      await waitFor(() => expect(screen.getAllByText("남이 고친 줄.")).toHaveLength(1));
+
+      // 새 줄도 마찬가지다 — 「붙이기」였다면 여기서 둘이 선다
+      const fresh = { type: "memo.line" as const, agendaId: "m-1", line: { ...updatedLine.line, line_id: "ml9", order: 2, text: "새로 온 줄." } };
+      socket().emit(fresh);
+      socket().emit(fresh);
+      await waitFor(() => expect(screen.getAllByText("새로 온 줄.")).toHaveLength(1));
+
+      // 안건도 마찬가지다
+      const again = { type: "agenda.updated" as const, agenda: { ...memoSide, title: "두 번 온 제목" } };
+      socket().emit(again);
+      socket().emit(again);
+      await waitFor(() => expect(screen.getAllByText(/두 번 온 제목/)).toHaveLength(1));
+      didNotRefetch();
+    });
+
+    it("**내가 보낸 것이 되돌아와도** 두 번 안 그린다 — 방 전체 브로드캐스트다", async () => {
+      /* 내가 `PATCH` 로 고치면 응답으로 이미 그렸는데, 같은 변경이 프레임으로 되돌아온다.
+         `line_id` 로 제자리를 짚으므로 같은 자리를 다시 쓸 뿐이다. */
+      await watching();
+      const slot = screen.getByLabelText(meetingScreen.memoLineEdit);
+      vi.mocked(api.updateMeetingMemoLine).mockResolvedValue(updatedLine.line);
+      vi.mocked(api.readMeeting).mockResolvedValue({
+        meeting: meeting(opened),
+        agendas: [{ ...memoSide, lines: [updatedLine.line] }, aiSide],
+      });
+      fireEvent.click(slot);
+      slot.textContent = "남이 고친 줄.";
+      fireEvent.keyDown(slot, { key: "Enter" });
+      await waitFor(() => expect(api.updateMeetingMemoLine).toHaveBeenCalled());
+
+      // 그 변경이 방 전체로 되돌아온다
+      socket().emit(updatedLine);
+
+      await waitFor(() => expect(screen.getAllByText("남이 고친 줄.")).toHaveLength(1));
+    });
+
+    it("**모르는 타입은 조용히 지나간다** — 화면이 멈추지 않는다", async () => {
+      await watching();
+      socket().emit({ type: "something.new.from.server", whatever: 1 } as never);
+      expect(screen.getByText("사람이 적은 줄.")).toBeTruthy();
+    });
+  });
+
+  /* ──────────────────────────────────────────────────────────────────────────
+     **메모 대상 드롭다운은 칩 한 벌이다** (2026-09-15 사용자 결정).
+     전에는 항목은 줄이고 「새 안건」만 파란 링크라 혼자 다른 물건처럼 보였다.
+     모양만 바꾼다 — 목록에 뜨는 것도(사람 벌만), 고르면 일어나는 일도 그대로다.
+     ────────────────────────────────────────────────────────────────────────── */
   it("자리표시 제목은 번호만 낸다 — 「안건 1. 안건 1」로 두 번 붙지 않는다 (§12 R-50)", async () => {
     /* 서버가 빈 제목 + `title_placeholder: true` 로 낸다. 예전에는 제목 자리에 「안건 1」이
        들어와 라벨의 번호와 겹쳤다. 없는 제목을 지어내지 않고 번호만 낸다. */

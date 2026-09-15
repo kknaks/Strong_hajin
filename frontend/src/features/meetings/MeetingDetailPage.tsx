@@ -395,7 +395,9 @@ export function MeetingDetailPage({
   /* 회의 중에 선 안건은 스트림으로도 온다 — 상세를 다시 읽기 전에도 목록에 세운다. 같은 안건은 한 번만 */
   const agendas = [
     ...new Map([...(record?.agendas ?? []), ...stream.agendas].map((agenda) => [agenda.agenda_id, agenda])).values(),
-  ].sort((left, right) => left.order - right.order);
+  ]
+    .filter((agenda) => !stream.removedAgendas.includes(agenda.agenda_id))
+    .sort((left, right) => left.order - right.order);
 
   /* 업스트림 자리를 이미 다른 창이 갖고 있다 — 이 창은 구독으로 붙어 읽기만 한다 */
   const takenElsewhere = stream.takenOver;
@@ -418,6 +420,10 @@ export function MeetingDetailPage({
         /* 한 번 못 읽었다고 묻기를 그만두지 않는다 — 다음 차례에 다시 묻는다. */
       });
     }, SETTLING_POLL_MS);
+  /* 스트림이 «나중» 이라 이긴다 — `agenda.updated` 로 고쳐진 안건이 상세가 실어 온 옛 것을 덮는다.
+     지워진 안건은 아예 빠진다: 본문 목록에서도, **메모 대상 드롭다운에서도** 함께 사라져야
+     「사라진 안건을 골라 404」가 나지 않는다 (백엔드 보고 §2). 다시 읽지 않는다 — 프레임이
+     바뀐 것을 이미 들고 왔다. */
     return () => window.clearInterval(timer);
   }, [reload, settling]);
 

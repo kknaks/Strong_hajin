@@ -36,7 +36,14 @@ type ServerFrame =
   /** 배치의 안건에는 후속 업무 후보가 함께 온다 (D46). BE 가 붙이기 전에는 그 자리가 없다 — 빈 배열로 읽는다. */
   | { type: "ai.batch"; seq: number; agendas: Array<Omit<MeetingAgenda, "todos"> & { todos?: MeetingTodo[] }> }
   | { type: "memo.line"; agendaId: string; line: MeetingLine }
+  /* 아래 넷은 **「바뀐 것 하나」만** 싣는다 (백엔드 `f89de32` · 보고서 §4). 벌 통째 교체가 아니다 —
+     메모는 한 줄씩 쌓이므로 통째로 갈아 끼우면 그 사이 남이 적은 줄이 사라진다.
+     본문은 기존 프레임과 같은 모양이라 받는 쪽이 익힐 것이 없다. */
+  | { type: "memo.line.updated"; agendaId: string; line: MeetingLine }
+  | { type: "memo.line.removed"; agendaId: string; lineId: string }
   | { type: "agenda.added"; agenda: MeetingAgenda }
+  | { type: "agenda.updated"; agenda: MeetingAgenda }
+  | { type: "agenda.removed"; agendaId: string }
   | { type: "error"; code: string; reason: string };
 
 export type MeetingStreamHandlers = {
@@ -44,10 +51,17 @@ export type MeetingStreamHandlers = {
   onPartial: (segments: TranscriptSegment[]) => void;
   onFinal: (item: TranscriptItem) => void;
   onBatch: (batch: { seq: number; agendas: MeetingAgenda[] }) => void;
-  /** 누가 남긴 메모 한 줄. 보는 창도 그 자리에서 같이 받는다. */
+  /**
+   * 누가 남긴 메모 한 줄, 또는 **누가 고친 한 줄.** 보는 창도 그 자리에서 같이 받는다.
+   * 새 줄과 고친 줄이 한 손잡이인 이유는 받는 쪽이 하는 일이 같기 때문이다 — **id 로 upsert.**
+   */
   onMemo: (memo: { agendaId: string; line: MeetingLine }) => void;
-  /** 회의 중에 선 안건. 보는 창의 목록에도 바로 선다. */
+  /** 누가 지운 메모 한 줄. */
+  onMemoRemoved: (removed: { agendaId: string; lineId: string }) => void;
+  /** 회의 중에 선 안건, 또는 **누가 고친 안건.** 역시 id 로 upsert 한다. */
   onAgenda: (agenda: MeetingAgenda) => void;
+  /** 누가 지운 안건. **그 안건에 매달렸던 줄도 함께 사라졌다** (§4.1-10). */
+  onAgendaRemoved: (agendaId: string) => void;
   onClosed: (closure: StreamClosure) => void;
 };
 
@@ -110,13 +124,23 @@ export function openMeetingStream(
         seq: frame.seq,
         agendas: frame.agendas.map((agenda) => ({ ...agenda, todos: agenda.todos ?? [] })),
       });
-    // BE 가 이 프레임을 붙이기 전에는 오지 않는다 — 모양이 어긋나면 조용히 버린다.
-    if (frame.type === "memo.line") {
-      if (frame.agendaId && frame.line) handlers.onMemo({ agendaId: frame.agendaId, line: frame.line });
+    /* BE 가 이 프레임을 붙이기 전에는 오지 않는다 — 모양이 어긋나면 조용히 버린다.
+       **새 것과 고친 것이 같은 손잡이로 간다**: 받는 쪽이 하는 일이 `id` 로 upsert 하나뿐이라,
+       둘을 가르면 같은 코드를 두 벌 쓰게 되고 그때부터 한쪽만 고치는 실수가 난다. */
+    if (frame.type === "memo.line" || frame.type === "memo.line.updated") {
+      if (frame.agendaId && frame.line?.line_id) handlers.onMemo({ agendaId: frame.agendaId, line: frame.line });
       return;
     }
-    if (frame.type === "agenda.added") {
+    if (frame.type === "memo.line.removed") {
+      if (frame.agendaId && frame.lineId) handlers.onMemoRemoved({ agendaId: frame.agendaId, lineId: frame.lineId });
+      return;
+    }
+    if (frame.type === "agenda.added" || frame.type === "agenda.updated") {
       if (frame.agenda?.agenda_id) handlers.onAgenda(frame.agenda);
+      return;
+    }
+    if (frame.type === "agenda.removed") {
+      if (frame.agendaId) handlers.onAgendaRemoved(frame.agendaId);
       return;
     }
     if (frame.type === "error") lastError = frame.reason || frame.code;
@@ -149,10 +173,18 @@ export type MeetingStreamState = {
   partial: TranscriptSegment[];
   /** AI 트랙은 배치가 낸 «전체» 다. 화면은 통째로 갈아 끼우고 줄 id 를 붙들지 않는다 (§7.1). */
   batch: { seq: number; agendas: MeetingAgenda[] } | null;
-  /** 회의가 도는 동안 도착한 메모 줄. 보는 창도 같은 프레임으로 받는다. */
+  /**
+   * 회의가 도는 동안 도착한 메모 줄. 보는 창도 같은 프레임으로 받는다.
+   * **`line_id` 로 갈아 끼운다(upsert)** — 그래서 같은 프레임이 두 번 와도, 자기가 보낸 것이
+   * 방 전체 브로드캐스트로 되돌아와도 **두 번 그리지 않는다** (§3 에코 처리).
+   */
   memos: Array<{ agendaId: string; line: MeetingLine }>;
-  /** 회의가 도는 동안 선 안건. 상세를 다시 읽기 전에도 목록에 세운다. */
+  /** 지워진 메모 줄의 id. 상세가 실어 온 줄에도 걸어야 하므로 «지웠다는 사실» 을 따로 든다. */
+  removedLines: string[];
+  /** 회의가 도는 동안 선 안건, 그리고 고쳐진 안건. 역시 `agenda_id` 로 갈아 끼운다. */
   agendas: MeetingAgenda[];
+  /** 지워진 안건의 id. 본문 목록과 **메모 대상 드롭다운**이 함께 이것을 걸러야 한다. */
+  removedAgendas: string[];
   /** 마이크를 못 얻었다. 화면은 멈추지 않고 상태 줄로만 알린다. */
   micDenied: boolean;
   /**
@@ -170,7 +202,9 @@ const IDLE: MeetingStreamState = {
   partial: [],
   batch: null,
   memos: [],
+  removedLines: [],
   agendas: [],
+  removedAgendas: [],
   micDenied: false,
   takenOver: false,
 };
@@ -234,11 +268,51 @@ export function useMeetingStream({
       onBatch: (batch) => {
         if (!stopped) setState((current) => ({ ...current, batch }));
       },
+      /* ── 아래 넷이 **멱등** 이다 ──
+         전부 «id 로 제자리를 짚어» 갈아 끼우거나 지운다. 그래서 같은 프레임을 두 번 받아도,
+         자기가 보낸 것이 되돌아와도, 한 번 그린 것과 결과가 같다. 붙이기(`push`)가 아니라
+         갈아 끼우기(`upsert`)인 것이 핵심이다 — 예전 `memo.line` 은 붙이기였고, 받는 쪽
+         (`MeetingDetailPage`)이 뒤에서 한 번 더 걸러 주고 있어서 겨우 두 번 안 그렸다. */
       onMemo: (memo) => {
-        if (!stopped) setState((current) => ({ ...current, memos: [...current.memos, memo] }));
+        if (stopped) return;
+        setState((current) => {
+          const at = current.memos.findIndex((one) => one.line.line_id === memo.line.line_id);
+          if (at < 0) return { ...current, memos: [...current.memos, memo] };
+          const memos = [...current.memos];
+          memos[at] = memo;
+          return { ...current, memos };
+        });
+      },
+      onMemoRemoved: ({ lineId }) => {
+        if (stopped) return;
+        setState((current) => ({
+          ...current,
+          memos: current.memos.filter((one) => one.line.line_id !== lineId),
+          // 상세가 실어 온 줄은 여기 없다 — 지웠다는 «사실» 을 남겨 그쪽도 걸러지게 한다
+          removedLines: current.removedLines.includes(lineId) ? current.removedLines : [...current.removedLines, lineId],
+        }));
       },
       onAgenda: (agenda) => {
-        if (!stopped) setState((current) => ({ ...current, agendas: [...current.agendas, agenda] }));
+        if (stopped) return;
+        setState((current) => {
+          const at = current.agendas.findIndex((one) => one.agenda_id === agenda.agenda_id);
+          if (at < 0) return { ...current, agendas: [...current.agendas, agenda] };
+          const agendas = [...current.agendas];
+          agendas[at] = agenda;
+          return { ...current, agendas };
+        });
+      },
+      onAgendaRemoved: (agendaId) => {
+        if (stopped) return;
+        setState((current) => ({
+          ...current,
+          agendas: current.agendas.filter((one) => one.agenda_id !== agendaId),
+          // 안건이 지워지면 **그 벌의 줄도 함께 사라졌다** (§4.1-10) — 들고 있던 줄을 같이 놓는다
+          memos: current.memos.filter((one) => one.agendaId !== agendaId),
+          removedAgendas: current.removedAgendas.includes(agendaId)
+            ? current.removedAgendas
+            : [...current.removedAgendas, agendaId],
+        }));
       },
       onClosed: (closure) => {
         microphone?.stop();
