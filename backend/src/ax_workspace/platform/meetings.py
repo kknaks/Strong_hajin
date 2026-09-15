@@ -502,6 +502,34 @@ class SqlAlchemyMeetingRepository:
             )
         )
 
+    def line(self, agenda: MeetingAgendaRecord, line_id: UUID, *, lock: bool = False) -> MeetingLineRecord | None:
+        """그 안건에 매달린 줄 하나. **안건을 함께 묻는다** — 다른 안건의 줄 id 로는 찾히지 않는다."""
+        statement = select(MeetingLineRecord).where(
+            MeetingLineRecord.id == line_id, MeetingLineRecord.agenda_id == agenda.id
+        )
+        if lock:
+            statement = statement.with_for_update().execution_options(populate_existing=True)
+        return self._session.scalar(statement)
+
+    def rewrite_line_text(self, line: MeetingLineRecord, text: str) -> MeetingLineRecord:
+        """줄 하나의 본문을 고친다 — **`at_ms` 와 저자는 그대로 둔다.**
+
+        `at_ms` 는 그 줄이 «적힌» 시각이고 고친 시각이 아니다 (SPEC-004 §6-5): 회의 어디쯤에서 나온
+        말인지가 그 값의 뜻이므로, 오타를 고쳤다고 그 자리가 옮겨 가지 않는다. 저자도 같다 — 쓴 사람이
+        고치는 것이고(회의를 만든 사람 하나다) 「누가 적었나」가 바뀌는 일이 아니다.
+        """
+        line.text = text
+        line.updated_at = datetime.now(UTC)
+        self._session.flush()
+        return line
+
+    def delete_line(self, line: MeetingLineRecord) -> None:
+        """줄 하나를 지운다. 순서는 다시 매기지 않는다 — `order_index` 는 그 벌 안의 자리이고, 빈 번호가
+        생겨도 목록의 순서는 그대로다. 최종 벌 저장만 그 값을 통째로 다시 매긴다 (`save_final_lines`).
+        """
+        self._session.delete(line)
+        self._session.flush()
+
     def line_ids_in_tracks(self, meeting: MeetingRecord, tracks: frozenset[str] | set[str]) -> set[str]:
         """그 벌들의 줄 id 전량 — 계보(`from_lines`)가 가리킬 수 있는 자리가 이 집합이다 (SPEC §4.2-10)."""
         return {

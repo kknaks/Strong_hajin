@@ -831,6 +831,47 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
+        @app.patch("/api/meetings/{meeting_id}/agendas/{agenda_id}/lines/{line_id}")
+        def edit_meeting_memo_line(
+            meeting_id: UUID,
+            agenda_id: UUID,
+            line_id: UUID,
+            request: WriteMemoRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, object]:
+            """메모 한 줄을 고친다 — **줄 하나가 한 요청이다** (사용자 결정 2026-09-14 §바뀌는 것 1).
+
+            최종 벌처럼 안건의 줄 목록을 통째로 보내지 않는다: 메모는 한 줄씩 자동 저장으로 쌓이는
+            기록이라(§6-7) 고치는 단위도 한 줄이고, 그래야 회의가 도는 동안 그 사이에 들어온 남의 줄을
+            덮어쓰지 않는다. **사람 벌의 줄만 이 자리로 온다** — 최종 벌은 `PATCH …/agendas/{id}` 의
+            한 덩어리 저장이고 AI 벌은 사람이 손대지 않는다.
+            """
+            try:
+                return app.state.workflow_application.edit_meeting_memo_line(
+                    principal, meeting_id, agenda_id, line_id, request.text
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.delete(
+            "/api/meetings/{meeting_id}/agendas/{agenda_id}/lines/{line_id}",
+            status_code=status.HTTP_204_NO_CONTENT,
+        )
+        def remove_meeting_memo_line(
+            meeting_id: UUID,
+            agenda_id: UUID,
+            line_id: UUID,
+            principal: Principal = Depends(developer_principal),
+        ) -> Response:
+            """메모 한 줄을 지운다 — 확인을 받지 않는다. 사람이 자기가 적은 임시 재료를 걷는 것이다."""
+            try:
+                app.state.workflow_application.remove_meeting_memo_line(
+                    principal, meeting_id, agenda_id, line_id
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+
         @app.get("/api/meetings/{meeting_id}/transcript")
         def meeting_transcript(
             meeting_id: UUID, principal: Principal = Depends(developer_principal)

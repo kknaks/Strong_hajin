@@ -187,6 +187,156 @@ def test_writing_the_same_memo_twice_makes_two_lines_and_a_failed_write_makes_no
     assert [row["text"] for row in agenda["lines"]] == ["다시 건 저장"]
 
 
+def test_a_memo_line_is_fixed_and_dropped_one_line_at_a_time_while_the_meeting_runs(tmp_path) -> None:
+    """**사람 벌의 줄을 진행 중에 고치고 지운다** (사용자 결정 「최종 회의록만 회의록이다」 §바뀌는 것 1).
+
+    회의 중에 급히 던진 메모에 오타가 섞이는 것은 흔하고, 그 줄이 회의가 끝날 때까지 박제되면 합성이
+    그 오타를 재료로 읽는다. **줄 하나가 한 요청이다** — 최종 벌처럼 목록을 통째로 보내지 않는다.
+    """
+    client, _, _ = _stack(tmp_path)
+    made = _running(client)
+    meeting_id = made["meeting"]["meeting_id"]
+    agenda_id = made["agendas"][0]["agenda_id"]
+    path = f"/api/meetings/{meeting_id}/agendas/{agenda_id}/lines"
+
+    first = client.post(path, headers=MINA, json={"text": "권한부터 정한다"}).json()
+    second = client.post(path, headers=MINA, json={"text": "오타가 섞인 줄"}).json()
+
+    fixed = client.patch(f"{path}/{second['line_id']}", headers=MINA, json={"text": "고쳐 쓴 줄"})
+    assert fixed.status_code == 200, fixed.text
+    row = fixed.json()
+    assert row["text"] == "고쳐 쓴 줄" and row["line_id"] == second["line_id"]
+    # **`at_ms` 와 저자는 그대로다** — 그 값은 그 줄이 «적힌» 자리를 말한다 (§6-5). 고친 시각이 아니다.
+    assert row["at_ms"] == second["at_ms"] and row["author"] == "mina"
+    assert row["track"] == "memo"
+
+    # 빈 줄로는 고칠 수 없다 — 지우는 길이 따로 있다.
+    assert client.patch(f"{path}/{second['line_id']}", headers=MINA, json={"text": "   "}).status_code == 422
+    assert [row["text"] for row in _agendas_of(client, meeting_id, track="memo")[0]["lines"]] == [
+        "권한부터 정한다",
+        "고쳐 쓴 줄",
+    ]
+
+    # 지운다 — 확인을 받지 않는다. 남은 줄은 그대로 서 있다.
+    dropped = client.delete(f"{path}/{second['line_id']}", headers=MINA)
+    assert dropped.status_code == 204, dropped.text
+    assert [row["text"] for row in _agendas_of(client, meeting_id, track="memo")[0]["lines"]] == ["권한부터 정한다"]
+
+    # 없는 줄은 404 다. 지운 줄을 다시 지워도 같다.
+    assert client.delete(f"{path}/{second['line_id']}", headers=MINA).status_code == 404
+    assert client.patch(f"{path}/{second['line_id']}", headers=MINA, json={"text": "다시"}).status_code == 404
+    del first
+
+
+def test_a_memo_line_belongs_to_the_agenda_in_its_path_and_to_no_other(tmp_path) -> None:
+    """다른 안건의 줄 id 로는 찾히지 않는다 — 주소가 「어느 안건의 어느 줄」을 말한다 (§6-8)."""
+    client, _, _ = _stack(tmp_path)
+    made = _running(client, agendas=("첫 안건", "둘째 안건"))
+    meeting_id = made["meeting"]["meeting_id"]
+    first, second = (row["agenda_id"] for row in made["agendas"])
+    line = client.post(
+        f"/api/meetings/{meeting_id}/agendas/{first}/lines", headers=MINA, json={"text": "첫 안건의 줄"}
+    ).json()
+
+    wrong = client.patch(
+        f"/api/meetings/{meeting_id}/agendas/{second}/lines/{line['line_id']}",
+        headers=MINA,
+        json={"text": "남의 안건에서 고쳐 본다"},
+    )
+    assert wrong.status_code == 404
+    assert client.delete(
+        f"/api/meetings/{meeting_id}/agendas/{second}/lines/{line['line_id']}", headers=MINA
+    ).status_code == 404
+    # 원래 자리에서는 그대로 고쳐진다.
+    assert client.patch(
+        f"/api/meetings/{meeting_id}/agendas/{first}/lines/{line['line_id']}",
+        headers=MINA,
+        json={"text": "제자리에서 고친다"},
+    ).status_code == 200
+
+
+def test_the_ai_track_lines_are_refused_by_the_one_line_surface(tmp_path) -> None:
+    """**AI 벌은 사람이 언제도 손대지 않는다** (§4.1-6 · §7.3) — 줄 하나씩 고치는 문도 열리지 않는다.
+
+    이 문이 AI 벌에 열리면 배치가 매 회차 전량 교체하는 기록을 사람이 중간에 고쳐 두는 모양이 되고,
+    다음 회차에 그 수정이 말없이 사라진다.
+    """
+    client, application, agent = _stack(tmp_path)
+    meeting_id = _running(client)["meeting"]["meeting_id"]
+    application.meeting_batch.drain()
+    agent.script = [_output([_agenda("AI 가 세운 안건", [_line("AI 가 낸 줄")])])]
+    _blocks(application, meeting_id, count=1, chars=BATCH_CHARS)
+    application.meeting_batch.evaluate(meeting_id, CAUSE_TRANSCRIPT)
+
+    [ai_agenda] = _agendas_of(client, meeting_id, track="ai")
+    [ai_line] = ai_agenda["lines"]
+    path = f"/api/meetings/{meeting_id}/agendas/{ai_agenda['agenda_id']}/lines/{ai_line['line_id']}"
+
+    assert client.patch(path, headers=MINA, json={"text": "AI 것을 고쳐 본다"}).status_code == 409
+    assert client.delete(path, headers=MINA).status_code == 409
+    # 한 글자도 바뀌지 않았다.
+    assert [row["text"] for row in _agendas_of(client, meeting_id, track="ai")[0]["lines"]] == ["AI 가 낸 줄"]
+
+
+def test_the_memo_track_lines_close_once_they_are_the_evidence(tmp_path) -> None:
+    """**`can_edit_agendas.memo` 가 거짓이면 거절된다** — 안건과 같은 축이다 (D53).
+
+    「종료」·「실패」에서 사람 벌은 최종본을 대조하는 **근거**이고, 고칠 수 있으면 근거가 되지 못한다.
+    「정리 중」에는 합성이 그 재료를 읽는 중이라 닫힌다.
+    """
+    from ax_workspace.modules.meetings.domain import MeetingStatus
+    from ax_workspace.platform.persistence import MeetingRecord
+
+    client, _, _ = _stack(tmp_path)
+    made = _running(client)
+    meeting_id = made["meeting"]["meeting_id"]
+    agenda_id = made["agendas"][0]["agenda_id"]
+    path = f"/api/meetings/{meeting_id}/agendas/{agenda_id}/lines"
+    line = client.post(path, headers=MINA, json={"text": "회의 중에 적은 줄"}).json()
+
+    head = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]
+    assert head["can_edit_agendas"]["memo"] is True
+
+    application = client.app.state.workflow_application
+    for status_value in (MeetingStatus.SUMMARIZING, MeetingStatus.DONE, MeetingStatus.FAILED):
+        with application._session_factory() as session:
+            session.get(MeetingRecord, UUID(meeting_id)).status = status_value.value
+            session.commit()
+        closed = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]
+        assert closed["can_edit_agendas"]["memo"] is False, status_value
+        assert client.patch(
+            f"{path}/{line['line_id']}", headers=MINA, json={"text": "근거를 고쳐 본다"}
+        ).status_code == 409, status_value
+        assert client.delete(f"{path}/{line['line_id']}", headers=MINA).status_code == 409, status_value
+
+    # 한 글자도 바뀌지 않았다 — 그것이 대조의 근거가 성립하는 조건이다.
+    assert [row["text"] for row in _agendas_of(client, meeting_id, track="memo")[0]["lines"]] == [
+        "회의 중에 적은 줄"
+    ]
+
+
+def test_only_the_person_who_made_the_meeting_changes_its_memo_lines(tmp_path) -> None:
+    """사람 벌을 쓰는 사람이 고치는 사람이다 — 회의를 만든 사람 하나다 (§3.3 · §6-1)."""
+    client, _, _ = _stack(tmp_path)
+    made = _running(client)
+    meeting_id = made["meeting"]["meeting_id"]
+    agenda_id = made["agendas"][0]["agenda_id"]
+    path = f"/api/meetings/{meeting_id}/agendas/{agenda_id}/lines"
+    line = client.post(path, headers=MINA, json={"text": "만든 사람이 적은 줄"}).json()
+
+    # 참석자이지만 만든 사람이 아니다 — 읽기로 본다. **회의는 권한 밖도 「없는 것처럼」 답한다**
+    # (§3.2-1): 거절이 404 로 나가는 것이 이 모듈의 기존 계약이고, 메모 줄도 그 결을 따른다.
+    assert client.patch(f"{path}/{line['line_id']}", headers=JIHO, json={"text": "남의 메모"}).status_code == 404
+    assert client.delete(f"{path}/{line['line_id']}", headers=JIHO).status_code == 404
+    # 회의를 아예 못 보는 사람에게도 같다 — 두 거절이 밖에서 구별되지 않는다.
+    assert client.patch(f"{path}/{line['line_id']}", headers=SORA, json={"text": "밖에서"}).status_code == 404
+    assert client.delete(f"{path}/{line['line_id']}", headers=SORA).status_code == 404
+    # 한 글자도 바뀌지 않았다.
+    assert [row["text"] for row in _agendas_of(client, meeting_id, track="memo")[0]["lines"]] == [
+        "만든 사람이 적은 줄"
+    ]
+
+
 def test_the_transcript_carries_speech_and_memo_and_opens_to_attendees_and_viewers(tmp_path) -> None:
     client, application, _ = _stack(tmp_path)
     made = _running(client)

@@ -2965,7 +2965,7 @@
   ],
   "current_runtime": {
     "phase": "main-sync",
-    "http_count": 138,
+    "http_count": 140,
     "tool_count": 120,
     "tools": [
       {
@@ -63454,6 +63454,52 @@
           "reconsider_when": "AI 가 담당 후보를 제안하는 계약이 생길 때 (지금은 §8.2 가 금지한다)"
         },
         "http_signature": "(meeting_id: UUID, principal: Principal) -> list[MemberCandidateView]"
+      },
+      {
+        "http": "PATCH /api/meetings/{meeting_id}/agendas/{agenda_id}/lines/{line_id}",
+        "http_handler": "edit_meeting_memo_line",
+        "screen_callers": [],
+        "operation": "edit_meeting_memo_line",
+        "owning_calls": [
+          "self._meetings(session).edit_memo_line"
+        ],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "edit_meeting_memo_line"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "사람이 회의 중에 적은 메모의 오타를 그 자리에서 고치는 화면 조작이다 — 사람 벌은 최종 회의록을 지을 임시 재료이고, 그 재료를 손보는 것은 사람의 일이다 (사용자 결정 2026-09-14 §바뀌는 것 1). AI 는 사람 벌에 쓰지도 고치지도 않는다 (SCAX-SPEC-004 §7.3) — 도구로 낼 이유가 없다.",
+          "alternative": "AI 가 회의록에 남길 것은 자기 벌(배치)과 최종 벌(합성) 출력으로만 간다.",
+          "reconsider_when": "AI 가 사람 벌을 손대는 계약이 생길 때 (지금은 §7.3 이 예외 없이 금지한다)"
+        },
+        "http_signature": "(meeting_id: UUID, agenda_id: UUID, line_id: UUID, request: WriteMemoRequest, principal: Principal) -> dict[str, object]"
+      },
+      {
+        "http": "DELETE /api/meetings/{meeting_id}/agendas/{agenda_id}/lines/{line_id}",
+        "http_handler": "remove_meeting_memo_line",
+        "screen_callers": [],
+        "operation": "remove_meeting_memo_line",
+        "owning_calls": [
+          "self._meetings(session).remove_memo_line"
+        ],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "remove_meeting_memo_line"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "위 수정과 같은 자리의 삭제다 — 잘못 적은 메모를 사람이 걷어낸다. AI 는 사람 벌을 지우지 않는다 (SCAX-SPEC-004 §7.3).",
+          "alternative": "AI 가 회의록에 남길 것은 자기 벌과 최종 벌 출력으로만 간다.",
+          "reconsider_when": "AI 가 사람 벌을 손대는 계약이 생길 때 (지금은 §7.3 이 예외 없이 금지한다)"
+        },
+        "http_signature": "(meeting_id: UUID, agenda_id: UUID, line_id: UUID, principal: Principal) -> Response"
       }
     ],
     "status": "verified",

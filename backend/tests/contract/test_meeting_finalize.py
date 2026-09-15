@@ -1094,6 +1094,44 @@ def test_promotion_candidates_are_the_whole_directory_with_the_attendees_first(t
     assert promoted.status_code == 201, promoted.text
 
 
+def test_the_final_track_is_saved_as_one_list_and_not_one_line_at_a_time(tmp_path) -> None:
+    """**최종 벌은 기존 계약대로 돈다** — 줄 하나씩 고치는 문이 그 벌에는 열리지 않는다 (§8-9).
+
+    사람 벌에 생긴 `PATCH …/lines/{lineId}` 를 최종 벌에도 열면 두 가지를 우회한다 — **줄 계보**
+    (본문이 달라진 줄의 `from_lines` 만 지우는 판정)와 **「그 사이에 누가 저장했나」**(안건 단위
+    stale 판정). 그래서 최종 벌은 `[수정]` 하나로 열리고 `[저장]` 하나로 닫히는 한 덩어리로 남는다.
+    """
+    client, application, agent = _stack(tmp_path)
+    meeting_id, agenda_id = _finalized(client, application, agent)
+    final = _the_final(client, meeting_id)
+    [line] = final["lines"]
+    one_line = f"/api/meetings/{meeting_id}/agendas/{agenda_id}/lines/{line['line_id']}"
+
+    # 줄 하나씩 고치는 문은 최종 벌에 닫혀 있다.
+    assert client.patch(one_line, headers=MINA, json={"text": "한 줄만 고쳐 본다"}).status_code == 409
+    assert client.delete(one_line, headers=MINA).status_code == 409
+    assert [row["text"] for row in _the_final(client, meeting_id)["lines"]] == ["합성이 낸 줄"]
+
+    # 한 덩어리 저장은 그대로 돈다 — **줄 id 를 싣고 계보를 잇는다.**
+    saved = client.patch(
+        f"/api/meetings/{meeting_id}/agendas/{agenda_id}",
+        headers=MINA,
+        json={"lines": [{"line_id": line["line_id"], "text": "한 덩어리로 고친다"}]},
+    )
+    assert saved.status_code == 200, saved.text
+    assert [row["text"] for row in saved.json()["lines"]] == ["한 덩어리로 고친다"]
+
+    # 빈 근거 거절도 그대로다 — 합성이 다시 돌 때 그 규칙이 살아 있다.
+    with application._session_factory() as session:
+        from ax_workspace.platform.persistence import MeetingRecord
+
+        session.get(MeetingRecord, UUID(meeting_id)).status = MeetingStatus.SUMMARIZING.value
+        session.commit()
+    agent.script = [_output([_agenda("다시", merged_from=[], lines=[_line("근거가 없다", evidence=[])])])] * 3
+    assert application.finalize_meeting(UUID(meeting_id)) is False
+    assert client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["meeting"]["status"] == "failed"
+
+
 def test_the_export_is_html_and_carries_the_last_saved_notes(tmp_path) -> None:
     client, application, agent = _stack(tmp_path)
     meeting_id, _ = _finalized(client, application, agent)

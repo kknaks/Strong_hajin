@@ -125,6 +125,9 @@ class MeetingRepository(Protocol):
     def lines(self, meeting: Any) -> list[Any]: ...
     def line_count(self, meeting: Any) -> int: ...
     def append_line(self, agenda: Any, *, track: str, text: str, author_id: str | None, evidence: list[dict[str, Any]] | None = None, at_ms: int | None = None, from_lines: list[str] | None = None) -> Any: ...
+    def line(self, agenda: Any, line_id: UUID, *, lock: bool = False) -> Any | None: ...
+    def rewrite_line_text(self, line: Any, text: str) -> Any: ...
+    def delete_line(self, line: Any) -> None: ...
     def memo_lines(self, meeting: Any) -> list[Any]: ...
     def replace_track(self, meeting: Any, track: str) -> None: ...
     def record_ai_session(self, meeting_id: UUID, *, provider_session_ref: str, persona_id: str) -> None: ...
@@ -530,6 +533,80 @@ class MeetingApplication:
         self._settle_auto_cancel(meeting)
         self._repository.touch(meeting)
         return self._line_view(line)
+
+    def edit_memo_line(
+        self, principal: Principal, meeting_id: UUID, agenda_id: UUID, line_id: UUID, text: str
+    ) -> dict[str, Any]:
+        """메모 한 줄을 고친다 (사용자 결정 「최종 회의록만 회의록이다」 2026-09-14 §바뀌는 것 1).
+
+        **사람 벌은 최종 회의록을 지을 임시 재료이므로 사람이 자기가 적은 것을 손본다.** 회의 중에 급히
+        던진 메모에 오타가 섞이는 것은 흔하고, 그 줄이 회의가 끝날 때까지 박제되면 합성이 그 오타를
+        재료로 읽는다.
+
+        **줄 하나가 한 요청이다** — 최종 벌처럼 안건의 줄 목록을 통째로 보내지 않는다. 메모는 한 줄씩
+        자동 저장으로 쌓이는 기록이라(§6-7) 고치는 단위도 한 줄이고, 그래야 「그 사이에 다른 줄이
+        들어온」 회의 중 상황에서 남의 줄을 덮어쓰지 않는다.
+
+        `at_ms` 와 저자는 바뀌지 않는다 — 그 값은 그 줄이 «적힌» 자리를 말한다 (§6-5).
+        """
+        meeting, line = self._memo_line_target(principal, meeting_id, agenda_id, line_id)
+        body = normalize_memo_text(text)
+        self._repository.rewrite_line_text(line, body)
+        meeting.last_saved_at = datetime.now(UTC)
+        self._repository.touch(meeting)
+        return self._line_view(line)
+
+    def remove_memo_line(
+        self, principal: Principal, meeting_id: UUID, agenda_id: UUID, line_id: UUID
+    ) -> None:
+        """메모 한 줄을 지운다 — 잘못 적은 것을 걷어낸다 (같은 결정 §바뀌는 것 1).
+
+        확인을 받지 않는다: 사람이 자기가 적은 임시 재료를 지우는 것이고, 최종 회의록은 재전사문 위에서
+        새로 지어지므로 이 삭제가 회의록을 깨지 않는다. 지우고 나서 그 회의에 기록이 하나도 남지 않으면
+        자동 취소가 다시 걸린다 (§3.1-8) — 줄이 생길 때 풀리는 것의 뒤집힌 짝이다.
+        """
+        meeting, line = self._memo_line_target(principal, meeting_id, agenda_id, line_id)
+        self._repository.delete_line(line)
+        self._settle_auto_cancel(meeting)
+        self._repository.touch(meeting)
+
+    def _memo_line_target(
+        self, principal: Principal, meeting_id: UUID, agenda_id: UUID, line_id: UUID
+    ) -> tuple[Any, Any]:
+        """메모 줄을 고치고 지우는 자리의 게이트 — 넷을 여기 한 곳에서 본다.
+
+        1. **회의를 만든 사람 하나다** (§3.3 · §6-1) — 사람 벌을 쓰는 사람이 고치는 사람이다.
+        2. **`can_edit_agendas.memo`** 가 열려 있어야 한다 — 예정 · 진행 중 · 취소다. 「종료」·「실패」에
+           닫히는 이유가 안건과 같다: 그때 사람 벌은 최종본을 대조하는 **근거**이고, 고칠 수 있으면
+           근거가 되지 못한다 (D53). 「정리 중」에는 합성이 그 재료를 읽는 중이라 닫힌다.
+        3. **사람 벌의 안건이어야 한다** — AI 벌은 사람이 언제도 손대지 않는다 (§4.1-6 · §7.3).
+        4. **그 안건의 줄이어야 한다** — 다른 안건·다른 벌의 줄 id 로는 찾히지 않는다.
+
+        **최종 벌의 줄은 이 자리로 오지 않는다.** 그쪽은 `[수정]` 하나로 열리고 `[저장]` 하나로 닫히는
+        한 덩어리 저장이고(§8-9), 거기에는 줄 계보와 「그 사이에 누가 저장했나」 판정이 함께 걸려 있다 —
+        줄 하나씩 고치는 문을 그 벌에 내면 그 둘을 우회한다.
+        """
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._readable(principal, meeting_id, lock=True)
+        view = self._view_plan(principal, meeting)
+        if not view.is_owner:
+            raise MeetingAccessDenied("only the person who made this meeting may change its memo lines")
+        agenda = self._repository.agenda(meeting, agenda_id)
+        if agenda is None:
+            raise MeetingNotFound("meeting agenda was not found")
+        if agenda.track != TRACK_MEMO:
+            raise MeetingStateConflict(
+                f"only the {TRACK_MEMO} track's lines are edited one at a time;"
+                f" the {TRACK_FINAL} track is saved as one list and the {TRACK_AI} track is never edited"
+            )
+        if not view.can_edit_agendas[TRACK_MEMO]:
+            raise MeetingStateConflict(
+                f"the {TRACK_MEMO} track is read-only in this meeting status — it is the evidence the final note is read against"
+            )
+        line = self._repository.line(agenda, line_id, lock=True)
+        if line is None:
+            raise MeetingNotFound("meeting note line was not found")
+        return meeting, line
 
     def append_line(self, principal: Principal, meeting_id: UUID, agenda_id: UUID, *, track: str, text: str) -> dict[str, Any]:
         """트랙을 골라 줄 하나를 매단다 — 시나리오 seed 와 합성(SCAX-WP-004)이 쓰는 낮은 표면이다.

@@ -1643,6 +1643,28 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def edit_meeting_memo_line(
+        self, principal: Principal, meeting_id: UUID, agenda_id: UUID, line_id: UUID, text: str
+    ) -> dict[str, Any]:
+        """메모 한 줄을 고친다 (사용자 결정 2026-09-14 §바뀌는 것 1).
+
+        **배치 트리거를 새로 걸지 않는다.** 배치는 제출하는 자리에서 `memo_lines` 를 다시 읽으므로 고친
+        본문이 다음 회차에 그대로 실린다 — 오타를 고칠 때마다 provider 를 부르면 회의 중 호출이
+        타자 수만큼 늘고, 안건 전환 트리거는 「화제가 바뀌었다」는 신호이지 「글자가 바뀌었다」가 아니다.
+        """
+        with self._session_factory() as session:
+            result = self._meetings(session).edit_memo_line(principal, meeting_id, agenda_id, line_id, text)
+            session.commit()
+            return result
+
+    def remove_meeting_memo_line(
+        self, principal: Principal, meeting_id: UUID, agenda_id: UUID, line_id: UUID
+    ) -> None:
+        """메모 한 줄을 지운다 (같은 결정)."""
+        with self._session_factory() as session:
+            self._meetings(session).remove_memo_line(principal, meeting_id, agenda_id, line_id)
+            session.commit()
+
     def write_meeting_memo(self, principal: Principal, meeting_id: UUID, agenda_id: UUID, text: str) -> dict[str, Any]:
         """메모 한 줄. 커밋 뒤 배치 트리거를 평가한다 — 메모는 AI 가 읽을 입력이기도 하다."""
         with self._session_factory() as session:
