@@ -706,3 +706,8 @@ input[aria-invalid="true"],select[aria-invalid="true"],textarea[aria-invalid="tr
    넓어지는 것은 «과녁» 뿐이다 — 되돌리려면 이 한 줄과 `fill` prop 을 걷으면 된다. */
 .scax-inline-text--fill{display:block;width:100%}
 .scax-inline-text--empty{color:var(--scax-color-ink-assistive)}
+
+/* 칩 한 벌로 서는 고르기 목록 (2026-09-15 사용자 결정) — 항목이 전부 같은 칩이고,
+   「새 안건」도 구분선(`.select-foot`) 아래에서 같은 칩으로 선다. 혼자 링크로 튀지 않는다.
+   줄 목록이 아니라 «칩이 흐르는 줄» 이라 세로 쌓기 대신 wrap 이다. */
+.select-list--chips{display:flex;flex-wrap:wrap;align-items:center;gap:var(--scax-space-200);padding:var(--scax-space-200)}

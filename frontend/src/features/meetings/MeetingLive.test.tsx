@@ -1679,6 +1679,69 @@ describe("회의록 세 벌 — 탭마다 자기 벌의 안건 목록", () => {
      전에는 항목은 줄이고 「새 안건」만 파란 링크라 혼자 다른 물건처럼 보였다.
      모양만 바꾼다 — 목록에 뜨는 것도(사람 벌만), 고르면 일어나는 일도 그대로다.
      ────────────────────────────────────────────────────────────────────────── */
+  describe("메모 대상 드롭다운 — 칩", () => {
+    const opened = { can_edit_agendas: { memo: true, ai: false, final: false }, can_add_agenda: { memo: true, ai: false, final: false } };
+    /** 사람 벌 안건 둘 — 「고른 것만 고른 모양」을 보려면 둘 이상이어야 한다. */
+    const secondMemo: MeetingAgenda = { ...memoSide, agenda_id: "m-2", order: 2, title: "두 번째 사람 안건", lines: [] };
+
+    async function openTargets() {
+      await connect(true, opened, [memoSide, secondMemo, aiSide]);
+      fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+      /* 메모 칸 «안» 에서 찾는다 — 이제 안건 제목의 제자리 편집 자리도 「안건…」으로 불린다 */
+      fireEvent.click(within(composer()).getByRole("button", { name: /안건/ }));
+      return screen.getByRole("listbox");
+    }
+    const composer = () => document.querySelector(".scax-memo-composer") as HTMLElement;
+
+    it("항목이 **전부 같은 부품**으로 선다 — 「새 안건」만 링크로 튀지 않는다", async () => {
+      const list = await openTargets();
+      const options = within(list).getAllByRole("option");
+      expect(options).toHaveLength(2);
+      for (const option of options) expect(option.classList.contains("scax-chip")).toBe(true);
+
+      // 「새 안건」도 같은 칩이다 — 구 링크 단추(`scax-button--inline`)가 아니다
+      const create = screen.getByRole("button", { name: meetingScreen.newAgenda });
+      expect(create.classList.contains("scax-chip")).toBe(true);
+      expect(create.className).not.toContain("scax-button");
+    });
+
+    it("「새 안건」은 **구분선 아래**에 선다 — 고르는 일과 만드는 일은 다른 일이다", async () => {
+      const list = await openTargets();
+      const create = screen.getByRole("button", { name: meetingScreen.newAgenda });
+      // 목록 «밖» 의 바닥 칸에 있다 — 구분선을 그리는 자리가 그 칸이다
+      expect(list.contains(create)).toBe(false);
+      expect(create.closest(".select-foot")).not.toBeNull();
+    });
+
+    it("고른 안건은 **칩 자신의 모양**으로 표시된다 — 체크 표시를 따로 달지 않는다", async () => {
+      const list = await openTargets();
+      const [first, second] = within(list).getAllByRole("option");
+      expect(first.classList.contains("scax-chip--on")).toBe(true);
+      expect(second.classList.contains("scax-chip--on")).toBe(false);
+      expect(first.getAttribute("aria-selected")).toBe("true");
+
+      // 다른 칩을 고르면 고른 모양이 그쪽으로 옮겨 간다 — 동작은 그대로다
+      fireEvent.click(second);
+      fireEvent.click(within(composer()).getByRole("button", { name: /안건/ }));
+      const reopened = within(screen.getByRole("listbox")).getAllByRole("option");
+      expect(reopened[1].classList.contains("scax-chip--on")).toBe(true);
+      expect(reopened[0].classList.contains("scax-chip--on")).toBe(false);
+    });
+
+    it("「새 안건」을 고르면 **지금 하던 그대로** 이름 짓는 칸이 편다", async () => {
+      await openTargets();
+      fireEvent.click(screen.getByRole("button", { name: meetingScreen.newAgenda }));
+      expect(await screen.findByLabelText(meetingScreen.agendaPlaceholder)).toBeTruthy();
+    });
+
+    it("목록에는 **사람 벌 안건만** 뜬다 — 칩으로 바꿔도 그대로다", async () => {
+      const list = await openTargets();
+      const labels = within(list).getAllByRole("option").map((node) => node.textContent ?? "");
+      expect(labels).toHaveLength(2);
+      expect(labels.join(" ")).not.toContain("AI");
+    });
+  });
+
   it("자리표시 제목은 번호만 낸다 — 「안건 1. 안건 1」로 두 번 붙지 않는다 (§12 R-50)", async () => {
     /* 서버가 빈 제목 + `title_placeholder: true` 로 낸다. 예전에는 제목 자리에 「안건 1」이
        들어와 라벨의 번호와 겹쳤다. 없는 제목을 지어내지 않고 번호만 낸다. */

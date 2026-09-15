@@ -94,6 +94,11 @@ export function MemoComposer({
             emptyActionLabel={emptyActionLabel.filter}
             labels={selectLabel}
               footerAction={{ label: meetingScreen.newAgenda, onAction: () => setNaming(true) }}
+              /* 항목이 **전부 같은 칩**이다 (2026-09-15 사용자 결정) — 「새 안건」만 파란 링크로
+                 튀지 않고, 고른 표시는 체크가 아니라 **칩 자신의 모양**이다. 동작은 그대로다:
+                 목록에 뜨는 것은 사람 벌 안건뿐이고(부르는 쪽이 걸러 넘긴다), 고르면 그 안건이
+                 대상이 되며 「새 안건」은 지금 하던 그대로 이름 짓는 칸을 편다. */
+              optionVariant="chip"
               label={meetingScreen.agenda}
               onChange={setTarget}
               options={agendas.map((agenda, index) => ({ value: agenda.agenda_id, label: `${meetingScreen.agenda} ${index + 1}` }))}

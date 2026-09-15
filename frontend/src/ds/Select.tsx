@@ -5,6 +5,7 @@ import type React from "react";
 import { Badge } from "./Badge";
 import { CheckboxBox, FieldMessage } from "./FormControls";
 import { Empty } from "./Empty";
+import { Chip } from "./Chip";
 import { Icon } from "./icons/Icon";
 import { Popover } from "./Popover";
 
@@ -96,6 +97,7 @@ function useTriggerWidth() {
 
 function OptionPanel({
   options,
+  optionVariant,
   selected,
   onPick,
   multiple = false,
@@ -110,6 +112,7 @@ function OptionPanel({
   close,
 }: {
   options: ReadonlyArray<SelectOption>;
+  optionVariant?: "row" | "chip";
   /** 지금 골라져 있는 값들. Select 는 0~1개 */
   selected: ReadonlyArray<string>;
   onPick: (value: string) => void;
@@ -204,6 +207,31 @@ function OptionPanel({
     const index = option.disabled ? -1 : cursor++;
     const isSelected = selected.includes(option.value);
     const isActive = index >= 0 && index === activeIndex;
+    if (optionVariant === "chip") {
+      /* 칩 한 벌 (2026-09-15 사용자 결정) — **고른 표시는 칩 자신의 모양**(`--on`)이고
+         체크 표시를 따로 달지 않는다. `role`·`id`·`aria-*` 는 그대로 넘겨서 키보드와
+         스크린리더가 예전과 같은 목록으로 읽는다: 바뀌는 것은 «생김새» 뿐이다.
+         `aria-pressed` 는 지운다 — `role="option"` 인 자리에 눌린 단추 뜻까지 겹치면 안 된다. */
+      rows.push(
+        <Chip
+          aria-checked={isSelected}
+          aria-pressed={undefined}
+          aria-selected={isSelected}
+          data-active={isActive || undefined}
+          disabled={option.disabled}
+          id={`${listId}-option-${index}`}
+          key={option.value}
+          on={isSelected}
+          onClick={() => pick(option)}
+          onMouseEnter={() => index >= 0 && setActive(index)}
+          role="option"
+          tabIndex={-1}
+        >
+          {option.label}
+        </Chip>,
+      );
+      continue;
+    }
     rows.push(
       <button
         aria-checked={isSelected}
@@ -265,7 +293,7 @@ function OptionPanel({
         aria-activedescendant={pickable.length > 0 ? `${listId}-option-${activeIndex}` : undefined}
         aria-label={label}
         aria-multiselectable={multiple || undefined}
-        className="select-list"
+        className={optionVariant === "chip" ? "select-list select-list--chips" : "select-list"}
         onKeyDown={onKeyDown}
         ref={listRef}
         role="listbox"
@@ -277,17 +305,30 @@ function OptionPanel({
         <Empty actionLabel={emptyActionLabel} className="select-empty" onAction={() => setQuery("")} title={labels.noMatch} variant="filter" />
       )}
       {footerAction && (
+        /* 구분선 아래다 — **고르는 일과 새로 만드는 일은 다른 일이다.**
+           칩 목록에서는 이 자리도 같은 칩이라 혼자 다른 모양으로 튀지 않는다. */
         <div className="select-foot">
-          <Button
-            variant="inline"
-            onClick={() => {
-              footerAction.onAction();
-              close();
-            }}
-            type="button"
-          >
-            {footerAction.label}
-          </Button>
+          {optionVariant === "chip" ? (
+            <Chip
+              onClick={() => {
+                footerAction.onAction();
+                close();
+              }}
+            >
+              {footerAction.label}
+            </Chip>
+          ) : (
+            <Button
+              variant="inline"
+              onClick={() => {
+                footerAction.onAction();
+                close();
+              }}
+              type="button"
+            >
+              {footerAction.label}
+            </Button>
+          )}
         </div>
       )}
     </>
@@ -300,6 +341,7 @@ export function Select({
   value,
   onChange,
   options,
+  optionVariant,
   placeholder,
   disabled = false,
   error,
@@ -319,6 +361,8 @@ export function Select({
   value: string;
   onChange: (value: string) => void;
   options: ReadonlyArray<SelectOption>;
+  /** 목록 항목의 생김새. `chip` 이면 **모든 항목이 같은 칩**이고 바닥 동작도 같은 칩이다. */
+  optionVariant?: "row" | "chip";
   /** 값이 없을 때 트리거에 남는 글자 */
   placeholder?: string;
   disabled?: boolean;
@@ -377,6 +421,7 @@ export function Select({
             label={label}
             labels={labels}
             onPick={onChange}
+            optionVariant={optionVariant}
             options={options}
             searchPlaceholder={searchPlaceholder}
             searchable={searchable}
