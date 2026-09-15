@@ -13,8 +13,6 @@ vi.mock("../../lib/api", () => ({
   decideAction: vi.fn(),
   getConversation: vi.fn(),
   getConversations: vi.fn(),
-  getNotifications: vi.fn(async () => []),
-  markNotificationRead: vi.fn(),
   retryConversationTurn: vi.fn(),
   sendConversationMessage: vi.fn(),
 }));
@@ -46,6 +44,12 @@ function conversation(id: string, title: string, firstMessage: string, extra: Pa
     turns: [turn(`${id}-t1`)],
     context_references: [],
     tool_invocations: [],
+    has_more_messages: false,
+    first_user_message_excerpt: firstMessage,
+    user_message_count: 1,
+    has_final_answer: false,
+    queued_message_count: 0,
+    latest_turn_state: "completed",
     ...extra,
   } as Conversation;
 }
@@ -58,6 +62,7 @@ function answeredConversation(id: string, title: string, firstMessage: string): 
       ...base.messages,
       { message_id: `${id}-m2`, turn_id: `${id}-t1`, role: "assistant", body: "답변", body_state: "final", sequence: 2, state: "accepted" },
     ],
+    has_final_answer: true,
   } as Conversation;
 }
 
@@ -169,25 +174,18 @@ describe("graph receipt presentation", () => {
 describe("ChatDrawer session switcher", () => {
   afterEach(cleanup);
 
-  it("replaces the conversation and composer with each header utility screen", () => {
+  it("replaces the conversation and composer with the history/search utility screen", () => {
     const { props } = renderDrawer();
-
-    fireEvent.click(screen.getByRole("button", { name: "대화 검색" }));
-    expect(screen.getByRole("region", { name: "대화 검색 화면" })).toBeTruthy();
-    expect(screen.queryByRole("textbox", { name: "AX 메시지" })).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "알림" }));
-    expect(screen.getByRole("region", { name: "알림 화면" })).toBeTruthy();
-    expect(screen.queryByRole("textbox", { name: "AX 메시지" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "대화 히스토리" }));
     expect(screen.getByRole("region", { name: "대화 히스토리 화면" })).toBeTruthy();
     expect(screen.queryByRole("textbox", { name: "AX 메시지" })).toBeNull();
+    expect(screen.getByRole("searchbox", { name: "대화 검색" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "대화 히스토리" }));
     expect(screen.getByRole("textbox", { name: "AX 메시지" })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "대화 검색" }));
+    fireEvent.click(screen.getByRole("button", { name: "대화 히스토리" }));
     fireEvent.click(screen.getByRole("button", { name: "보고 초안" }));
     expect(props.onSelect).toHaveBeenCalledWith(expect.objectContaining({ conversation_id: "c3" }));
     expect(screen.getByRole("textbox", { name: "AX 메시지" })).toBeTruthy();
@@ -195,7 +193,7 @@ describe("ChatDrawer session switcher", () => {
 
   it("lists conversations vertically and filters them by title or first message", () => {
     renderDrawer();
-    fireEvent.click(screen.getByRole("button", { name: "대화 검색" }));
+    fireEvent.click(screen.getByRole("button", { name: "대화 히스토리" }));
     expect(within(screen.getByRole("list", { name: "대화 히스토리" })).getAllByRole("button")).toHaveLength(3);
     expect(screen.getByRole("button", { name: "견적 검토" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByRole("button", { name: "오늘 할 일을 정리해줘" })).toBeTruthy();
@@ -242,7 +240,7 @@ describe("ChatDrawer session switcher", () => {
     expect(within(history).queryByRole("button", { name: "아직 답변 중" })).toBeNull();
   });
 
-  it("uses the header controls for history and new chat, and shows the visual start state only without an active conversation", async () => {
+  it("uses the header controls for history and new chat, and shows the visual start state only without an active conversation", () => {
     const { props } = renderDrawer({ activeConversation: null, message: "" });
     expect(screen.getByText("새로운 대화")).toBeTruthy();
     expect(screen.getByRole("heading", { name: /무엇을 도와드릴까요\?/ })).toBeTruthy();
@@ -252,8 +250,6 @@ describe("ChatDrawer session switcher", () => {
     fireEvent.click(screen.getByRole("button", { name: "대화 히스토리" }));
     expect(props.onRetryList).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("list", { name: "대화 히스토리" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "대화 검색" }));
-    expect(props.onRetryList).toHaveBeenCalledTimes(2);
     expect(screen.getByRole("searchbox", { name: "대화 검색" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "새 AX 대화" }));
@@ -261,61 +257,6 @@ describe("ChatDrawer session switcher", () => {
     fireEvent.click(screen.getByRole("button", { name: "이번 주 내 업무를 정리해줘" }));
     expect(props.onSend).toHaveBeenCalledWith("이번 주 내 업무를 정리해줘");
     expect(props.onMessageChange).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "알림" }));
-    await waitFor(() => expect(screen.getByRole("region", { name: "알림 화면" }).textContent).toContain("새 알림이 없습니다."));
-    expect(props.onRetryList).toHaveBeenCalledTimes(2);
-  });
-
-  it("shows authorized notifications and marks one read before opening its owner", async () => {
-    const notification = {
-      notification_id: "n1",
-      kind: "meeting.shared",
-      summary: "민아님이 ‘고객 온보딩 회의’ 회의를 공유했습니다.",
-      actor_id: "mina",
-      resource: { type: "meeting" as const, id: "m1", version: 2, title: "고객 온보딩 회의" },
-      created_at: "2026-09-11T01:00:00Z",
-      read_at: null,
-    };
-    vi.mocked(api.getNotifications).mockResolvedValueOnce([notification]);
-    vi.mocked(api.markNotificationRead).mockResolvedValueOnce({ ...notification, read_at: "2026-09-11T01:01:00Z" });
-    const onOpenResource = vi.fn();
-    renderDrawer({ onOpenResource });
-
-    fireEvent.click(screen.getByRole("button", { name: "알림" }));
-    const item = await screen.findByRole("button", { name: /고객 온보딩 회의/ });
-    expect(item.textContent).toContain(notification.summary);
-    fireEvent.click(item);
-
-    await waitFor(() => expect(api.markNotificationRead).toHaveBeenCalledWith("n1"));
-    expect(onOpenResource).toHaveBeenCalledWith(expect.objectContaining({
-      resource_type: "meeting",
-      resource_id: "m1",
-      title: "고객 온보딩 회의",
-    }));
-  });
-
-  it("keeps the notification visible and reports a read failure without opening its owner", async () => {
-    const notification = {
-      notification_id: "n1",
-      kind: "meeting.shared",
-      summary: "민아님이 ‘고객 온보딩 회의’ 회의를 공유했습니다.",
-      actor_id: "mina",
-      resource: { type: "meeting" as const, id: "m1", version: 2, title: "고객 온보딩 회의" },
-      created_at: "2026-09-11T01:00:00Z",
-      read_at: null,
-    };
-    vi.mocked(api.getNotifications).mockResolvedValueOnce([notification]);
-    vi.mocked(api.markNotificationRead).mockRejectedValueOnce(new Error("revoked"));
-    const onOpenResource = vi.fn();
-    renderDrawer({ onOpenResource });
-
-    fireEvent.click(screen.getByRole("button", { name: "알림" }));
-    fireEvent.click(await screen.findByRole("button", { name: /고객 온보딩 회의/ }));
-
-    expect((await screen.findByRole("alert")).textContent).toContain("알림을 열지 못했습니다. 다시 시도해 주세요.");
-    expect(screen.getByRole("button", { name: /고객 온보딩 회의/ })).toBeTruthy();
-    expect(onOpenResource).not.toHaveBeenCalled();
   });
 
   it("allows the first message to be sent from the blank new-chat state", () => {

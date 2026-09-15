@@ -59,6 +59,8 @@ import logging
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.modules.ax_execution.answer_documents import answer_context_excerpt
 from ax_workspace.modules.ax_execution.conversations import (
+    DEFAULT_CONVERSATION_LIST_LIMIT,
+    DEFAULT_MESSAGE_WINDOW,
     ConversationApplication,
     ConversationContextReferenceInput,
 )
@@ -81,6 +83,7 @@ from ax_workspace.modules.ax_execution.ai import (
     ProviderFailure,
 )
 from ax_workspace.platform.codex_cli import CodexCliMcpServer, CodexCliProviderAdapter
+from ax_workspace.platform.claude_cli import ClaudeCliProviderAdapter
 from ax_workspace.platform.conversation_jobs import ConversationJobQueue
 from ax_workspace.platform.durable_jobs import MemoryDurableJobQueue, build_job_queue
 from ax_workspace.platform.conversations import (
@@ -261,12 +264,21 @@ class _SessionAnswerResources:
     def readable_material_evidence(self, principal: Principal, evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return readable_content_evidence(self._application, self._session, principal, evidence)
 
+    #: Kind -> (owning fetch, title field, state field, has a comparable version). One fetch derives every field
+    #: this projection needs instead of the two separate reads `_read`/`_current_version` each did on their own.
+    _EAGER_LOOKUP: dict[str, tuple[str, str, str, bool]] = {
+        "task": ("readable_task", "title", "state", True),
+        "work_request": ("readable_request", "title", "state", True),
+        "meeting": ("readable_meeting", "title", "status", False),
+        "project": ("readable_project", "name", "state", False),
+    }
+
     def resolve(self, principal: Principal, references: list[dict[str, Any]]) -> list[dict[str, Any]]:
         resolved: list[dict[str, Any]] = []
         content = self._readable_content_references(principal, references)
-        # Several turns can cite the same task. Read its authorized detail once for this projection,
-        # including its version, rather than expanding the hierarchy again for every citation and field.
-        tasks: dict[str, dict[str, Any] | None] = {}
+        # Several turns can cite the same task/meeting/request/project. Read its authorized detail once for this
+        # whole projection, including its version, rather than re-reading it (twice, previously) per citation.
+        cache: dict[tuple[str, str], dict[str, Any] | None] = {}
         for reference in references:
             kind = str(reference["resource_type"])
             identifier = str(reference["resource_id"])
@@ -277,21 +289,24 @@ class _SessionAnswerResources:
                 resolved.append({**reference, "title": observed["name"], "state": "available", "origin": observed["origin"],
                     "source_contexts": observed["source_contexts"], "current_version": None, "changed_since": False})
                 continue
-            if kind == "task":
-                if identifier not in tasks:
-                    try:
-                        tasks[identifier] = self._source.readable_task(principal, UUID(identifier))
-                    except ValueError:
-                        tasks[identifier] = None
-                task = tasks[identifier]
-                title, state = (str(task["title"]), task.get("state")) if task else (None, None)
-                current = int(task["version"]) if task and task.get("version") is not None else None
-            else:
-                title, state = self._read(principal, kind, identifier)
-                current = self._current_version(principal, kind, identifier) if title is not None else None
-            if title is None:
+            lookup = self._EAGER_LOOKUP.get(kind)
+            if lookup is None:
+                continue
+            fetch_name, title_field, state_field, has_version = lookup
+            cache_key = (kind, identifier)
+            if cache_key not in cache:
+                try:
+                    parsed_id = UUID(identifier)
+                    cache[cache_key] = getattr(self._source, fetch_name)(principal, parsed_id)
+                except (TypeError, ValueError):
+                    cache[cache_key] = None
+            row = cache[cache_key]
+            if row is None:
                 # Readable when the turn ran, not now. It leaves no title and no gap that could be counted.
                 continue
+            title = str(row.get(title_field) or "제목 없는 회의") if kind == "meeting" else str(row[title_field])
+            state = row.get(state_field)
+            current = int(row["version"]) if has_version and row.get("version") is not None else None
             # 답이 딛고 선 회차와 지금의 회차가 다를 수 있다. 그것은 숨길 일이 아니라 말할 일이다 — 사람이
             # 링크를 열기 전에 무엇이 달라졌을 수 있는지 알아야 한다. 지금 회차를 알 수 없으면 말하지 않는다.
             seen = reference.get("resource_version")
@@ -937,7 +952,7 @@ class WorkflowApplication:
         )
         # One in-process job store per application when the memory backend is selected (tests); postgres joins each session.
         self.memory_job_queue: MemoryDurableJobQueue | None = MemoryDurableJobQueue() if settings.job_queue_backend == "memory" else None
-        self._report_provider = report_provider or create_codex_cli_provider(settings)
+        self._report_provider = report_provider or create_conversation_provider(settings)
         # 회의실 예약 시스템. **시험이 대역을 끼우는 자리**이고, 비어 있으면 계정이 갖춰졌을 때만 실물을 만든다.
         self._room_gateway: MeetingRoomGateway | None = None
         self._room_sync_locks: dict[UUID, threading.RLock] = {}
@@ -1907,9 +1922,9 @@ class WorkflowApplication:
 
         시험이 `_report_provider` 를 대역으로 갈아 끼우면 그 대역이 그대로 온다: 경계는 하나다.
         """
-        if not isinstance(self._report_provider, CodexCliProviderAdapter):
+        if not isinstance(self._report_provider, (CodexCliProviderAdapter, ClaudeCliProviderAdapter)):
             return self._report_provider
-        return create_codex_cli_provider(self._settings, enabled_tools=tools)
+        return create_conversation_provider(self._settings, enabled_tools=tools)
 
     def schedule_push_ai_batch(self, meeting_id: str, *, seq: int, agendas: list[dict[str, Any]]) -> None:
         """적재 커밋 직후 push. 스트림이 다른 event loop 에 살아 있어도 그 루프에서 깨운다."""
@@ -3860,13 +3875,22 @@ class WorkflowApplication:
             session.commit()
             return result
 
-    def conversations(self, principal: Principal) -> list[ConversationView]:
+    def conversations(self, principal: Principal, *, limit: int = DEFAULT_CONVERSATION_LIST_LIMIT) -> list[ConversationView]:
         with self._session_factory() as session:
-            return self._conversations(session).list(principal)
+            return self._conversations(session).list(principal, limit=limit)
 
-    def conversation(self, principal: Principal, conversation_id: UUID) -> ConversationView:
+    def conversation(
+        self,
+        principal: Principal,
+        conversation_id: UUID,
+        *,
+        message_limit: int = DEFAULT_MESSAGE_WINDOW,
+        before_sequence: int | None = None,
+    ) -> ConversationView:
         with self._session_factory() as session:
-            return self._conversations(session).get(principal, conversation_id)
+            return self._conversations(session).get(
+                principal, conversation_id, message_limit=message_limit, before_sequence=before_sequence,
+            )
 
     def accept_conversation_message(
         self,
@@ -4184,3 +4208,26 @@ def create_codex_cli_provider(
     return CodexCliProviderAdapter(
         scax_mcp_server=create_scax_mcp_server(settings, enabled_tools=enabled_tools)
     )
+
+
+def create_claude_cli_provider(
+    settings: Settings, *, enabled_tools: tuple[str, ...] = ()
+) -> ClaudeCliProviderAdapter:
+    """Compose the Claude Code CLI adapter with the same server-bound SCAX MCP binding as Codex."""
+    return ClaudeCliProviderAdapter(
+        scax_mcp_server=create_scax_mcp_server(settings, enabled_tools=enabled_tools)
+    )
+
+
+#: `Settings.ai_provider` -> its factory. Both return an `AiProvider`; callers never branch on which.
+_AI_PROVIDER_FACTORIES = {
+    "codex": create_codex_cli_provider,
+    "claude": create_claude_cli_provider,
+}
+
+
+def create_conversation_provider(
+    settings: Settings, *, enabled_tools: tuple[str, ...] = ()
+) -> AiProvider:
+    """The one place a caller picks a provider — by `Settings.ai_provider`, never by importing an adapter."""
+    return _AI_PROVIDER_FACTORIES[settings.ai_provider](settings, enabled_tools=enabled_tools)

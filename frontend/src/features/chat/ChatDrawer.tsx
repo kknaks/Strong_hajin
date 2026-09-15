@@ -9,11 +9,9 @@ import { MessageList } from "./MessageList";
 import type { ListStatus, LocalFragment } from "./useConversations";
 import { Skeleton } from "../../ds/Skeleton";
 import { Icon } from "../../ds/icons/Icon";
-import { getNotifications, markNotificationRead } from "../../lib/api";
-import type { Notification } from "../../lib/viewModels";
 
 export type LabeledContextReference = ConversationContextReference & { label?: string; pinned?: boolean };
-type UtilityView = "search" | "history" | "notifications";
+type UtilityView = "history";
 
 export function contextKey(reference: ConversationContextReference): string {
   return `${reference.resource_type}:${reference.resource_id}:${reference.resource_version}`;
@@ -35,18 +33,21 @@ const starterPrompts = [
 const DEFAULT_CONVERSATION_TITLE = "새 대화";
 const DISPLAY_TITLE_LIMIT = 28;
 
-function HeaderIcon({ kind }: { kind: "search" | "history" | "new" | "notification" | "close" }) {
+function HeaderIcon({ kind }: { kind: "history" | "new" | "close" }) {
   const path = {
-    search: <><circle cx="10" cy="10" r="5" /><path d="m14 14 4 4" /></>,
     history: <><circle cx="12" cy="12" r="8" /><path d="M12 7v5l3 2" /></>,
     new: <><path d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v7a2.5 2.5 0 0 1-2.5 2.5H11l-4 3v-3.2A2.5 2.5 0 0 1 5 13.5Z" /><path d="M12 7v6M9 10h6" /></>,
-    notification: <><path d="M6.5 9.5a5.5 5.5 0 0 1 11 0c0 6 2.5 6 2.5 7.5H4c0-1.5 2.5-1.5 2.5-7.5Z" /><path d="M10 20h4" /></>,
     close: <path d="m7 7 10 10M17 7 7 17" />,
   }[kind];
   return <svg aria-hidden className="scax-chat__tool-icon" fill="none" viewBox="0 0 24 24">{path}</svg>;
 }
 
 export function conversationExcerpt(conversation: Conversation): string {
+  // The server-computed excerpt covers the whole conversation even when `messages` is windowed to the recent
+  // page; older/mocked payloads that omit the field fall back to scanning the (then-complete) message list.
+  if (conversation.first_user_message_excerpt !== undefined) {
+    return conversation.first_user_message_excerpt?.replace(/\s+/g, " ").trim() || conversation.title;
+  }
   const firstUserMessage = conversation.messages.find((item) => item.role === "user");
   if (!firstUserMessage) return conversation.title;
   return firstUserMessage.body.replace(/\s+/g, " ").trim();
@@ -62,18 +63,24 @@ export function conversationDisplayTitle(conversation: Conversation): string {
 }
 
 export function conversationHasAnswer(conversation: Conversation): boolean {
+  if (conversation.has_final_answer !== undefined) return conversation.has_final_answer;
   return conversation.messages.some((message) => (
     message.role === "assistant" && message.body_state === "final" && message.body.trim() !== ""
   ));
 }
 
 export function conversationSummary(conversation: Conversation): string {
-  const userMessages = conversation.messages.filter((item) => item.role === "user").length;
+  const userMessages = conversation.user_message_count ?? conversation.messages.filter((item) => item.role === "user").length;
   if (userMessages === 0) return "발화 없음";
-  const queued = conversation.messages.filter((item) => item.state === "queued").length;
+  // A list row never carries the full `messages`/`turns` arrays (see `queued_message_count`/`latest_turn_state`
+  // on `ConversationView`); older/mocked payloads that omit them fall back to scanning the (then-complete) arrays.
+  const queued = conversation.queued_message_count
+    ?? conversation.messages.filter((item) => item.state === "queued").length;
   if (queued > 0) return `발화 ${userMessages} · 대기열 ${queued}`;
-  const latestTurn = conversation.turns.at(-1);
-  const state = latestTurn ? summaryStateLabel[latestTurn.state] ?? latestTurn.state : "접수됨";
+  const latestTurnState = conversation.latest_turn_state !== undefined
+    ? conversation.latest_turn_state
+    : conversation.turns.at(-1)?.state ?? null;
+  const state = latestTurnState ? summaryStateLabel[latestTurnState] ?? latestTurnState : "접수됨";
   return `발화 ${userMessages} · ${state}`;
 }
 
@@ -110,6 +117,8 @@ export function ChatDrawer({
   onOpenResource,
   onOpenTask,
   onOpenMeeting,
+  onLoadOlderMessages,
+  loadingOlderMessages,
 }: {
   assistantState?: AssistantPresentationState;
   characterKey?: string | null;
@@ -148,6 +157,9 @@ export function ChatDrawer({
   onOpenTask?: (taskId: string) => void;
   /** Open the Meeting recorded in an Action receipt without replaying the Action. */
   onOpenMeeting?: (meetingId: string) => void;
+  /** Scroll-up pagination: fetch and prepend the batch just before the oldest message currently held. */
+  onLoadOlderMessages?: () => void;
+  loadingOlderMessages?: boolean;
 }) {
   const visibleAssistantState = assistantState ?? deriveAssistantPresentationState({
     conversations: activeConversation ? [activeConversation] : [],
@@ -156,9 +168,6 @@ export function ChatDrawer({
   });
   const [query, setQuery] = useState("");
   const [utilityView, setUtilityView] = useState<UtilityView | null>(null);
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [notificationStatus, setNotificationStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
-  const [notificationActionError, setNotificationActionError] = useState<string | null>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   // Auto-grow: the browser resize handle is off; height follows content up to the CSS max-height, then scrolls inside.
@@ -169,25 +178,8 @@ export function ChatDrawer({
     element.style.height = `${element.scrollHeight}px`;
   }, [message, activeConversation?.conversation_id, utilityView]);
   useEffect(() => {
-    if (utilityView === "search") searchInput.current?.focus();
+    if (utilityView === "history") searchInput.current?.focus();
   }, [utilityView]);
-  useEffect(() => {
-    if (utilityView !== "notifications") return;
-    let current = true;
-    setNotificationActionError(null);
-    setNotificationStatus("loading");
-    void getNotifications().then(
-      (items) => {
-        if (!current) return;
-        setNotifications(items);
-        setNotificationStatus("ready");
-      },
-      () => {
-        if (current) setNotificationStatus("error");
-      },
-    );
-    return () => { current = false; };
-  }, [personaId, utilityView]);
   const historyConversations = useMemo(() => conversations.filter(conversationHasAnswer), [conversations]);
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -207,12 +199,12 @@ export function ChatDrawer({
     }
     onSend();
   };
-  const toggleConversationUtility = (view: Extract<UtilityView, "search" | "history">) => {
-    if (utilityView === view) {
+  const toggleHistory = () => {
+    if (utilityView === "history") {
       setUtilityView(null);
       return;
     }
-    setUtilityView(view);
+    setUtilityView("history");
     onRetryList();
   };
 
@@ -228,17 +220,10 @@ export function ChatDrawer({
         </div>
         <div className="scax-chat__tools">
           <button
-            aria-label="대화 검색"
-            aria-pressed={utilityView === "search"}
-            className="scax-chat__tool"
-            onClick={() => toggleConversationUtility("search")}
-            type="button"
-          ><HeaderIcon kind="search" /></button>
-          <button
             aria-label="대화 히스토리"
             aria-pressed={utilityView === "history"}
             className="scax-chat__tool"
-            onClick={() => toggleConversationUtility("history")}
+            onClick={toggleHistory}
             type="button"
           ><HeaderIcon kind="history" /></button>
           <button
@@ -251,15 +236,6 @@ export function ChatDrawer({
             }}
             type="button"
           ><HeaderIcon kind="new" /></button>
-          <button
-            aria-label="알림"
-            aria-pressed={utilityView === "notifications"}
-            className="scax-chat__tool"
-            onClick={() => setUtilityView((current) => current === "notifications" ? null : "notifications")}
-            type="button"
-          >
-            <HeaderIcon kind="notification" />
-          </button>
           <span aria-hidden className="scax-chat__tool-divider" />
           <button aria-label="닫기" className="scax-chat__tool scax-chat__tool--close" onClick={onClose} type="button">
             <HeaderIcon kind="close" />
@@ -268,117 +244,55 @@ export function ChatDrawer({
       </header>
 
       {utilityView ? (
-        <section
-          aria-label={`${utilityView === "search" ? "대화 검색" : utilityView === "history" ? "대화 히스토리" : "알림"} 화면`}
-          className={`scax-chat__utility scax-chat__utility--${utilityView}`}
-        >
+        <section aria-label="대화 히스토리 화면" className="scax-chat__utility scax-chat__utility--history">
           <div className="scax-chat__utility-head">
-            <h2>{utilityView === "search" ? "대화 검색" : utilityView === "history" ? "대화 히스토리" : "알림"}</h2>
-            <p>{utilityView === "search" ? "지난 대화의 제목이나 첫 메시지를 검색하세요." : utilityView === "history" ? "이어서 볼 대화를 선택하세요." : "새로운 소식을 여기에서 확인하세요."}</p>
+            <h2>대화 히스토리</h2>
+            <p>지난 대화의 제목이나 첫 메시지로 검색하거나, 이어서 볼 대화를 선택하세요.</p>
           </div>
-          {utilityView === "notifications" ? (
-            notificationStatus === "loading" ? (
-              <Skeleton label="알림을 불러오는 중" rows={3} />
-            ) : notificationStatus === "error" ? (
-              <p className="scax-chat__list-note scax-chat__list-note--error">알림을 불러오지 못했습니다.</p>
-            ) : notifications.length === 0 ? (
-              <div className="scax-chat__utility-empty">
-                <HeaderIcon kind="notification" />
-                <b>새 알림이 없습니다.</b>
-                <p>새로운 알림이 도착하면 이 화면에 표시됩니다.</p>
-              </div>
-            ) : (
-              <>
-                {notificationActionError ? <p className="scax-chat__notice-error" role="alert">{notificationActionError}</p> : null}
-                <ul aria-label="알림 목록" className="scax-chat__notices">
-                  {notifications.map((notification) => (
-                    <li key={notification.notification_id}>
-                      <button
-                        className={notification.read_at ? "scax-chat__notice scax-chat__notice--read" : "scax-chat__notice"}
-                        onClick={() => {
-                          setNotificationActionError(null);
-                          void markNotificationRead(notification.notification_id).then((read) => {
-                            setNotifications((items) => items.map((item) => (
-                              item.notification_id === read.notification_id ? read : item
-                            )));
-                            onOpenResource?.({
-                              reference_id: `notification:${read.notification_id}`,
-                              turn_id: "",
-                              sequence: 0,
-                              resource_type: read.resource.type,
-                              resource_id: read.resource.id,
-                              resource_version: read.resource.version,
-                              title: read.resource.title,
-                              state: null,
-                            });
-                          }, () => {
-                            setNotificationActionError("알림을 열지 못했습니다. 다시 시도해 주세요.");
-                          });
-                        }}
-                        type="button"
-                      >
-                        <span aria-hidden className="scax-chat__notice-dot" />
-                        <span>
-                          <b>{notification.resource.title}</b>
-                          <span>{notification.summary}</span>
-                        </span>
-                        <time dateTime={notification.created_at}>{new Date(notification.created_at).toLocaleString("ko-KR")}</time>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )
+          <input
+            aria-label="대화 검색"
+            className="scax-chat__search search-input-box"
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="대화 검색…"
+            ref={searchInput}
+            type="search"
+            value={query}
+          />
+          {listStatus === "loading" && conversations.length === 0 ? (
+            <Skeleton label="대화를 불러오는 중" rows={3} />
+          ) : listStatus === "error" && conversations.length === 0 ? (
+            <p className="scax-chat__list-note scax-chat__list-note--error">
+              대화 목록을 불러오지 못했습니다.
+              <Button size="sm" onClick={onRetryList} type="button">
+                다시 시도
+              </Button>
+            </p>
+          ) : historyConversations.length === 0 ? (
+            <p className="scax-chat__list-note">아직 완료된 대화가 없습니다.</p>
+          ) : filtered.length === 0 ? (
+            <p className="scax-chat__list-note">검색 결과가 없습니다.</p>
           ) : (
-            <>
-              {utilityView === "search" && (
-              <input
-                aria-label="대화 검색"
-                className="scax-chat__search search-input-box"
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="대화 검색…"
-                ref={searchInput}
-                type="search"
-                value={query}
-              />
-              )}
-              {listStatus === "loading" && conversations.length === 0 ? (
-                <Skeleton label="대화를 불러오는 중" rows={3} />
-              ) : listStatus === "error" && conversations.length === 0 ? (
-                <p className="scax-chat__list-note scax-chat__list-note--error">
-                  대화 목록을 불러오지 못했습니다.
-                  <Button size="sm" onClick={onRetryList} type="button">
-                    다시 시도
-                  </Button>
-                </p>
-              ) : historyConversations.length === 0 ? (
-                <p className="scax-chat__list-note">아직 완료된 대화가 없습니다.</p>
-              ) : filtered.length === 0 ? (
-                <p className="scax-chat__list-note">검색 결과가 없습니다.</p>
-              ) : (
-                <ul aria-label="대화 히스토리" className="scax-chat__history">
-                  {filtered.map((conversation) => (
-                    <li key={conversation.conversation_id}>
-                      <button
-                        aria-label={conversationDisplayTitle(conversation)}
-                        aria-pressed={activeConversation?.conversation_id === conversation.conversation_id}
-                        data-conversation-id={conversation.conversation_id}
-                        onClick={() => {
-                          setUtilityView(null);
-                          onSelect(conversation);
-                        }}
-                        title={conversationExcerpt(conversation)}
-                        type="button"
-                      >
-                        <b>{conversationDisplayTitle(conversation)}</b>
-                        <small>{conversationSummary(conversation)}</small>
-                        <span className="scax-chat__history-excerpt">{conversationExcerpt(conversation)}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </>
+            <ul aria-label="대화 히스토리" className="scax-chat__history">
+              {filtered.map((conversation) => (
+                <li key={conversation.conversation_id}>
+                  <button
+                    aria-label={conversationDisplayTitle(conversation)}
+                    aria-pressed={activeConversation?.conversation_id === conversation.conversation_id}
+                    data-conversation-id={conversation.conversation_id}
+                    onClick={() => {
+                      setUtilityView(null);
+                      onSelect(conversation);
+                    }}
+                    title={conversationExcerpt(conversation)}
+                    type="button"
+                  >
+                    <b>{conversationDisplayTitle(conversation)}</b>
+                    <small>{conversationSummary(conversation)}</small>
+                    <span className="scax-chat__history-excerpt">{conversationExcerpt(conversation)}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
           )}
         </section>
       ) : (
@@ -398,6 +312,8 @@ export function ChatDrawer({
                 onOpenMeeting={onOpenMeeting}
                 onRetryFragment={onRetryFragment}
                 onRetryTurn={onRetryTurn}
+                onLoadOlderMessages={onLoadOlderMessages}
+                loadingOlderMessages={loadingOlderMessages}
               />
             </>
           ) : (

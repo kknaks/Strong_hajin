@@ -142,6 +142,15 @@ class ConversationView(TypedDict):
     answer_resources: list[ConversationAnswerResourceView]
     graph_receipts: list[ConversationGraphReceiptView]
     material_evidence: list[ConversationMaterialEvidenceView]
+    #: `messages`가 최근 창(기본 50건)으로 잘려 있을 때, 스크롤을 올리면 더 있다는 뜻이다.
+    has_more_messages: bool
+    #: 목록 미리보기·검색은 이 세 필드를 쓴다 — `messages`가 잘려 있어도 항상 대화 전체 기준이다.
+    first_user_message_excerpt: str | None
+    user_message_count: int
+    has_final_answer: bool
+    #: A list row's "발화 N · 대기열/상태" summary needs only these two — never the full messages/turns arrays.
+    queued_message_count: int
+    latest_turn_state: str | None
 
 
 class ConversationSearchHit(TypedDict):

@@ -5,6 +5,23 @@ import remarkGfm from "remark-gfm";
 import type { AnswerDocument, AnswerElement, AnswerResource } from "../../lib/viewModels";
 import { answerElementsPlugin } from "./answerElements";
 
+/** The provider is asked not to repeat a resource_list item's title in its description (the button already shows
+ *  it), but occasionally does anyway. Strip a leading, exact restatement of the current title so the same name
+ *  never shows twice — comparing case-insensitively and ignoring Markdown emphasis markers around the title. */
+function stripLeadingTitle(description: string, title: string): string {
+  const normalize = (text: string) => text.replace(/[*_`]/g, "").trim().toLowerCase();
+  const normalizedTitle = normalize(title);
+  if (!normalizedTitle || !normalize(description).startsWith(normalizedTitle)) return description;
+  let consumed = 0;
+  let index = 0;
+  while (index < description.length && consumed < normalizedTitle.length) {
+    if (!/[*_`]/.test(description[index])) consumed += 1;
+    index += 1;
+  }
+  const rest = description.slice(index).replace(/^[*_`\s]*[—\-:,·]+\s*/, "").replace(/^[*_`\s]+/, "");
+  return rest.trim();
+}
+
 /**
  * Assistant bodies are provider text, never trusted HTML. Raw HTML is skipped (not parsed), only a small set of
  * elements is rendered, and `javascript:`/`data:` link targets are dropped by react-markdown's default URL
@@ -121,24 +138,28 @@ export function AssistantMarkdown({
   const byElement = new Map(document?.elements.map((element) => [element.key, element]) ?? []);
   const resourceLink = (ref: string | null) => {
     const resource = ref ? byReference.get(ref) : undefined;
-    if (!resource) return <span className="ax-resource-unavailable">참조를 확인할 수 없습니다</span>;
+    if (!resource) return <span className="scax-answer-unavailable">참조를 확인할 수 없습니다</span>;
     return onOpenResource
-      ? <button className="ax-inline-resource-link" type="button" onClick={() => onOpenResource(resource)}>{resource.title}</button>
+      ? <button className="scax-md__ref" type="button" onClick={() => onOpenResource(resource)}>{resource.title}</button>
       : <span>{resource.title}</span>;
   };
   const renderElement = (element: AnswerElement | undefined, block: boolean) => {
     if (element?.type === "resource_reference") return resourceLink(element.ref);
-    if (element?.type !== "resource_list" || !block) return <span className="ax-resource-unavailable">참조를 확인할 수 없습니다</span>;
+    if (element?.type !== "resource_list" || !block) return <span className="scax-answer-unavailable">참조를 확인할 수 없습니다</span>;
     if (!element.items.length) return <p>조회된 항목이 없습니다.</p>;
     const List = element.ordered ? "ol" : "ul";
-    return <List className="ax-answer-resource-list">{element.items.map((item, index) => (
-      <li key={index}>
-        {resourceLink(item.ref)}
-        {item.ref && byReference.has(item.ref) && item.description && (
-          <div className="ax-answer-resource-description"><AssistantMarkdown body={item.description} /></div>
-        )}
-      </li>
-    ))}</List>;
+    return <List className="scax-answer-list">{element.items.map((item, index) => {
+      const resource = item.ref ? byReference.get(item.ref) : undefined;
+      const description = resource && item.description ? stripLeadingTitle(item.description, resource.title) : item.description;
+      return (
+        <li key={index}>
+          {resourceLink(item.ref)}
+          {resource && description && (
+            <div className="scax-answer-description"><AssistantMarkdown body={description} /></div>
+          )}
+        </li>
+      );
+    })}</List>;
   };
   return (
     <div className="scax-md">

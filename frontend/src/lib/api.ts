@@ -420,8 +420,9 @@ export async function negotiateWorkRequest(
   });
 }
 
-export async function getConversations(): Promise<Conversation[]> {
-  return request<Conversation[]>("/api/conversations");
+export async function getConversations(limit?: number): Promise<Conversation[]> {
+  const query = limit !== undefined ? `?limit=${limit}` : "";
+  return request<Conversation[]>(`/api/conversations${query}`);
 }
 
 export async function getNotifications(): Promise<Notification[]> {
@@ -432,8 +433,10 @@ export async function markNotificationRead(notificationId: string): Promise<Noti
   return request<Notification>(`/api/notifications/${notificationId}/read`, { method: "POST", body: "{}" });
 }
 
-export async function getConversation(conversationId: string): Promise<Conversation> {
-  return request<Conversation>(`/api/conversations/${conversationId}`);
+/** `beforeSequence` pages further back — the oldest message currently held, to load the batch just before it. */
+export async function getConversation(conversationId: string, beforeSequence?: number): Promise<Conversation> {
+  const query = beforeSequence !== undefined ? `?before_sequence=${beforeSequence}` : "";
+  return request<Conversation>(`/api/conversations/${conversationId}${query}`);
 }
 
 export async function createConversation(title = "새 대화"): Promise<Conversation> {

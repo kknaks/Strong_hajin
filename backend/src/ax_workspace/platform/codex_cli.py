@@ -12,16 +12,28 @@ import json
 import os
 from pathlib import Path
 import shutil
-import signal
 import subprocess
 from tempfile import TemporaryDirectory
 from zoneinfo import ZoneInfo
-import threading
-import time
 from time import perf_counter
-from typing import Any, Callable
+from typing import Any
 
-from ax_workspace.modules.ax_execution.tool_catalog import tool_display_title
+from ax_workspace.platform.cli_process import (
+    EventIngestFailed,
+    ProcessResult,
+    ProcessRunner,
+    ScaxMcpServer,
+    invalid_response_message as _invalid_response_message,
+    invoke_runner as _invoke_runner,
+    structured_body as _structured_body,
+    subprocess_runner as _subprocess_runner,
+)
+from ax_workspace.platform.tool_receipts import (
+    display_name as _display_name,
+    summarize_tool_arguments as _summarize_tool_arguments,
+    summarize_tool_error as _summarize_tool_error,
+    summarize_tool_result as _summarize_tool_result,
+)
 
 from ax_workspace.modules.ax_execution.ai import (
     AiConversationRequest,
@@ -69,16 +81,6 @@ _CONVERSATION_OUTPUT_SCHEMA: dict[str, Any] = {
 
 
 @dataclass(frozen=True, slots=True)
-class ProcessResult:
-    stdout: str
-    stderr: str
-    returncode: int
-
-
-ProcessRunner = Callable[[str, list[str], Path, dict[str, str], int], ProcessResult]
-
-
-@dataclass(frozen=True, slots=True)
 class CodexCliProfile:
     model: str = "gpt-5.6-terra"
     service_tier: str = "fast"
@@ -88,16 +90,8 @@ class CodexCliProfile:
     auth_file: Path = Path.home() / ".codex" / "auth.json"
 
 
-@dataclass(frozen=True, slots=True)
-class CodexCliMcpServer:
-    """Composition-owned SCAX stdio server configuration for an isolated Codex turn."""
-
-    command: str
-    arguments: tuple[str, ...]
-    environment: dict[str, str]
-    #: 이 turn 에 열 도구 이름. 비면 서버가 노출하는 전부다 — 회의 배치는 레지스트리로 좁힌다
-    #: (SCAX-SPEC-004 §7.2-3). 서버 id 접두를 붙이지 않는다: 틀리면 조용히 도구 0개로 돈다.
-    enabled_tools: tuple[str, ...] = ()
+#: Same shape as every other CLI adapter's MCP binding; kept under this name here for existing call sites.
+CodexCliMcpServer = ScaxMcpServer
 
 
 class CodexCliProviderAdapter:
@@ -240,7 +234,7 @@ class CodexCliProviderAdapter:
             try:
                 payload = json.loads(output_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as error:
-                raise ProviderResponseInvalid(_invalid_response_message(request), provenance) from error
+                raise ProviderResponseInvalid(_invalid_response_message(request.output_schema), provenance) from error
             if request.output_schema is not None:
                 # 부르는 쪽이 자기 스키마를 걸었으면 그 모양 그대로 돌려준다 — 걸지도 않은 대화 계약
                 # (`body`·`elements`·`follow_up_candidates`)을 여기서 찾으면 그 호출은 모델이 무엇을 내든
@@ -259,7 +253,7 @@ class CodexCliProviderAdapter:
                     for item in payload["follow_up_candidates"]
                 ]
             except (ValueError, KeyError, TypeError) as error:
-                raise ProviderResponseInvalid(_invalid_response_message(request), provenance) from error
+                raise ProviderResponseInvalid(_invalid_response_message(request.output_schema), provenance) from error
             return AiConversationResult(
                 ingest.run_ref,
                 ingest.session_ref or request.provider_session_ref,
@@ -463,7 +457,10 @@ class CodexCliProviderAdapter:
         "현재 도구 결과나 서버가 재확인한 대화 근거의 type:id(task:<task_id>, meeting:<meeting_id>, "
         "work_request:<request_id>, material:<material_id>, report:<report_id>)다. ID를 추측하지 않는다.\n"
         "- 대상을 여러 개 나열하거나 실행 순서를 제안할 때는 resource_list를 쓴다. ordered는 순서 여부, "
-        "items는 각 대상의 ref와 description(Markdown 설명)이다. 제목·링크·번호·줄바꿈은 화면이 표시한다. "
+        "items는 각 대상의 ref와 description(Markdown 설명)이다. 제목·링크·번호·줄바꿈은 화면이 표시하므로 "
+        "description에 제목을 다시 쓰지 않는다 — description은 상태·마감·사유 같은 제목 이후의 정보만 "
+        "담는다 (금지: description:'국내사업부 9월 운영 계획 확정 — 진행 중, 마감 09-13' / 허용: "
+        "description:'진행 중, 마감 09-13'). "
         "resource_list의 {{key}}는 앞뒤 빈 줄이 있는 독립 문단에 배치한다. key는 영문자로 시작하는 "
         "영문/숫자/_/-이며 중복·미정의·미사용 요소를 만들지 않는다.\n"
         "- 예: body='먼저 다음 순서로 진행하세요.\\n\\n{{results}}', "
@@ -471,6 +468,8 @@ class CodexCliProviderAdapter:
         "description:'변경 사항을 정리하세요.'}]}]. 단일 참조는 "
         "{key:'background',type:'resource_reference',ref:'meeting:<조회한 ID>'}와 "
         "body의 '배경은 {{background}}에서 확인하세요.'로 표현한다.\n"
+        "- 업무/업무 요청 상태는 화면이 쓰는 용어로만 말한다: open=대기, in_progress=진행 중, "
+        "blocked=막힘, done=완료, cancelled=취소. '차단' 등 다른 번역어를 만들지 않는다.\n"
         "- 승인·실행 버튼이나 완료 상태는 기존 서버 Action 카드가 표시한다. elements로 명령·승인·성공 "
         "카드를 만들지 않는다. 자료나 회의 검색 결과도 같은 참조/목록 계약을 쓴다. "
         "설명 안에 요소를 중첩하지 않는다. literal {{...}} 예시는 코드로 감싼다."
@@ -601,39 +600,6 @@ class CodexCliProviderAdapter:
         for line in stdout.splitlines():
             ingest.consume_line(line)
         return ingest.tool_invocations()
-
-
-def _invalid_response_message(request: AiConversationRequest) -> str:
-    """무효 응답을 누가 읽는지에 맞춘 한 줄.
-
-    대화는 사람이 채팅창에서 그대로 읽는다. 자기 스키마를 건 호출(회의 배치·합성)은 사람에게 다시 물을 자리가
-    없고, 이 줄은 그 회차의 기록에만 남는다 — 「다시 요청해 주세요」는 거기서 읽을 사람이 없는 말이다.
-    """
-    if request.output_schema is not None:
-        return "요청한 형식의 응답을 받지 못했습니다."
-    return "답변 형식을 확인하지 못했습니다. 다시 요청해 주세요."
-
-
-def _structured_body(payload: Any, output_schema: dict[str, Any]) -> str:
-    """Hand back what the caller asked for.
-
-    The daily report asks for a single text field and wants that text. Every other caller — Meeting refinement and
-    summary — passes its own schema and parses the structure itself, so unwrapping a `body` key that its schema never
-    mentioned would turn every one of those generations into an invalid response.
-    """
-    if list(output_schema.get("properties", {})) == ["body"]:
-        return payload["body"].strip()
-    return json.dumps(payload, ensure_ascii=False)
-
-
-def _invoke_runner(runner, command, arguments, cwd, environment, timeout_seconds, on_line, should_cancel) -> ProcessResult:
-    """Call a streaming runner; fall back to the legacy 5-argument runner used by older tests."""
-    try:
-        return runner(command, arguments, cwd, environment, timeout_seconds, on_line=on_line, should_cancel=should_cancel)
-    except TypeError as error:
-        if "on_line" not in str(error) and "positional" not in str(error):
-            raise
-        return runner(command, arguments, cwd, environment, timeout_seconds)
 
 
 _TOOL_ITEM_TYPES = frozenset({"mcp_tool_call", "command_execution", "web_search", "file_change"})
@@ -802,96 +768,6 @@ class CodexEventIngest:
 
 
 
-def _display_name(item_type: str, tool_name: str, item: dict[str, Any]) -> str:
-    if item_type == "mcp_tool_call":
-        return tool_display_title(tool_name)
-    if item_type == "command_execution":
-        return "명령 실행"
-    if item_type == "web_search":
-        return "웹 검색"
-    if item_type == "file_change":
-        return "파일 변경"
-    return tool_name.replace("_", " ")
-
-
-_SAFE_ARGUMENT_KEYS = frozenset(
-    {"title", "task_id", "request_id", "report_id", "draft_id", "expected_version", "assignee_id", "report_date", "state", "action", "limit", "query"}
-)
-_RESULT_KEYS = ("title", "state", "status", "draft_version", "version", "task_id", "request_id", "report_id", "action_id", "searched_materials")
-
-
-def _truncate(text: str, limit: int = 48) -> str:
-    text = " ".join(text.split())
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
-def _summarize_tool_arguments(arguments: dict[str, Any]) -> str:
-    """Keep identifiers and short titles; mask free text such as bodies, reasons, and notes."""
-    if not arguments:
-        return "입력 없음"
-    parts: list[str] = []
-    for key, value in arguments.items():
-        if key in _SAFE_ARGUMENT_KEYS and isinstance(value, (str, int, float, bool)):
-            parts.append(f"{key}={_truncate(str(value))}")
-        elif isinstance(value, list):
-            parts.append(f"{key}=[{len(value)}건]")
-        else:
-            parts.append(f"{key}=비공개")
-    return "입력: " + ", ".join(parts)
-
-
-def _summarize_tool_error(error: Any) -> str:
-    if isinstance(error, dict):
-        message = error.get("message") or error.get("detail") or error.get("code")
-        if message:
-            return f"실패: {_truncate(str(message), 80)}"
-    if isinstance(error, str) and error.strip():
-        return f"실패: {_truncate(error, 80)}"
-    return "도구 실행 실패"
-
-
-_CONTENT_BEARING_TOOLS = frozenset({"material_search"})
-
-
-def _summarize_tool_result(result: Any, *, tool_name: str = "") -> str:
-    """Summarize an MCP tool result without echoing raw payloads.
-
-    Tools whose results carry document text never fall back to echoing a string payload, whatever the transport's
-    serialization shape; their evidence is projected separately as bounded excerpts.
-    """
-    payload: Any = None
-    if isinstance(result, dict):
-        payload = result.get("structured_content") or result.get("structuredContent")
-        if payload is None:
-            for content in result.get("content") or []:
-                if isinstance(content, dict) and isinstance(content.get("text"), str):
-                    try:
-                        payload = json.loads(content["text"])
-                    except json.JSONDecodeError:
-                        payload = content["text"]
-                    break
-        if result.get("isError") or result.get("is_error"):
-            return _summarize_tool_error(payload if isinstance(payload, str) else result.get("error"))
-    elif result is not None:
-        payload = result
-    if isinstance(payload, list):
-        return f"결과: {len(payload)}건 조회"
-    if isinstance(payload, dict) and isinstance(payload.get("results"), list) and "searched_materials" in payload:
-        # This timeline has no complete candidate identity set to reauthorize historic counts or names.
-        # Details belong to the separately reauthorized material evidence, even for a no-hit search.
-        return "결과 수신 (자료 내용은 근거 카드에만 표시)"
-    if tool_name in _CONTENT_BEARING_TOOLS:
-        return "결과 수신 (자료 내용은 근거 카드에만 표시)"
-    if isinstance(payload, dict):
-        facts = [f"{key}={_truncate(str(payload[key]), 32)}" for key in _RESULT_KEYS if key in payload and payload[key] not in (None, "")]
-        if facts:
-            return "결과: " + ", ".join(facts)
-        return f"결과: 항목 {len(payload)}개 수신"
-    if isinstance(payload, str) and payload.strip():
-        return f"결과: {_truncate(payload, 80)}"
-    return "결과 없음"
-
-
 def prepare_isolated_codex_home(runtime_home: Path, *, auth_file: Path) -> Path:
     """Prepare a minimal runtime home that contains only the auth symlink."""
     runtime_home = runtime_home.resolve()
@@ -918,106 +794,3 @@ def prepare_isolated_codex_home(runtime_home: Path, *, auth_file: Path) -> Path:
     else:
         runtime_auth.symlink_to(auth_file)
     return runtime_home
-
-
-def _subprocess_runner(
-    command: str,
-    arguments: list[str],
-    cwd: Path,
-    environment: dict[str, str],
-    timeout_seconds: int,
-    on_line: Callable[[str], None] | None = None,
-    should_cancel: Callable[[], bool] | None = None,
-) -> ProcessResult:
-    """Run the CLI in its own process group and stream stdout lines to `on_line` as they arrive.
-
-    Cancel and timeout stop the whole group (Codex spawns MCP child processes), so nothing is orphaned. A failing
-    `on_line` callback is not best-effort: the stream is stopped and EventIngestFailed is raised so the turn cannot
-    complete with missing persisted events.
-    """
-    process = subprocess.Popen(
-        [command, *arguments],
-        cwd=cwd,
-        env=environment,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-        start_new_session=True,
-    )
-    stdout_lines: list[str] = []
-    stderr_chunks: list[str] = []
-    ingest_failure: list[BaseException] = []
-    deadline = time.monotonic() + timeout_seconds
-
-    def drain_stderr() -> None:
-        assert process.stderr is not None
-        for chunk in process.stderr:
-            stderr_chunks.append(chunk)
-
-    def drain_stdout() -> None:
-        assert process.stdout is not None
-        for line in process.stdout:
-            stdout_lines.append(line)
-            if on_line is not None and not ingest_failure:
-                try:
-                    on_line(line)
-                except Exception as error:  # noqa: BLE001 - recorded and surfaced; ingestion of further lines stops
-                    ingest_failure.append(error)
-
-    readers = [threading.Thread(target=drain_stdout, daemon=True), threading.Thread(target=drain_stderr, daemon=True)]
-    for reader in readers:
-        reader.start()
-    while process.poll() is None:
-        if ingest_failure:
-            _stop_process_group(process)
-            break
-        if should_cancel is not None and should_cancel():
-            _stop_process_group(process)
-            break
-        if time.monotonic() > deadline:
-            _stop_process_group(process)
-            for reader in readers:
-                reader.join(timeout=2)
-            raise subprocess.TimeoutExpired([command, *arguments], timeout_seconds)
-        time.sleep(0.05)
-    for reader in readers:
-        reader.join(timeout=5)
-    returncode = process.wait(timeout=5) if process.poll() is None else process.returncode
-    if ingest_failure:
-        raise EventIngestFailed("provider event could not be persisted") from ingest_failure[0]
-    return ProcessResult("".join(stdout_lines), "".join(stderr_chunks), returncode if returncode is not None else -1)
-
-
-class EventIngestFailed(RuntimeError):
-    """A sink/on_line callback failed while the provider was running; the execution was stopped."""
-
-
-def _stop_process_group(process: subprocess.Popen) -> None:
-    """Stop the Codex process and every child in its process group (SIGINT, SIGTERM, then SIGKILL) and reap it."""
-    try:
-        pgid = os.getpgid(process.pid)
-    except ProcessLookupError:
-        return
-    for signum, grace in ((signal.SIGINT, 3.0), (signal.SIGTERM, 3.0), (signal.SIGKILL, 3.0)):
-        if process.poll() is not None and signum is not signal.SIGKILL:
-            # The parent already exited; still sweep the group once so MCP children do not linger.
-            _signal_group(pgid, signum)
-            return
-        _signal_group(pgid, signum)
-        try:
-            process.wait(timeout=grace)
-            _signal_group(pgid, signal.SIGTERM if signum is signal.SIGINT else signum)
-            return
-        except subprocess.TimeoutExpired:
-            continue
-
-
-def _signal_group(pgid: int, signum: signal.Signals) -> None:
-    try:
-        os.killpg(pgid, signum)
-    except ProcessLookupError:
-        pass
-    except PermissionError:
-        pass

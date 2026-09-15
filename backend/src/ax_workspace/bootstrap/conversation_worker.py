@@ -20,7 +20,7 @@ from ax_workspace.modules.ax_execution.conversations import (
     ConversationQueueMessage,
 )
 from ax_workspace.modules.organization_access.application import OrganizationApplication
-from ax_workspace.bootstrap.application import create_codex_cli_provider, create_workflow_application
+from ax_workspace.bootstrap.application import create_conversation_provider, create_workflow_application
 from ax_workspace.platform.conversation_jobs import ConversationJobQueue
 from ax_workspace.platform.durable_jobs import MemoryDurableJobQueue, build_job_queue
 from ax_workspace.platform.conversations import (
@@ -58,7 +58,7 @@ class ConversationWorker:
         self._settings = settings
         self._sessions = make_session_factory(settings.database_url)
         self._execution_guard = SqlAlchemyConversationExecutionGuard(self._sessions.kw["bind"])
-        self._provider = provider or create_codex_cli_provider(settings)
+        self._provider = provider or create_conversation_provider(settings)
         # Rebuilding the turn's context from the canonical conversation, not from the provider's memory.
         self._application = create_workflow_application(settings)
         self._worker_id = f"conversation-worker:{uuid4().hex[:12]}"

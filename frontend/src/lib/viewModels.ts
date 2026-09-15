@@ -672,6 +672,15 @@ export type Conversation = {
   graph_receipts?: GraphReceipt[];
   /** The canonical things a turn read and named, so each item in an answer opens its own detail. */
   answer_resources?: AnswerResource[];
+  /** `messages` is windowed to the most recent ~50 — true while an older batch is still one scroll-up away. */
+  has_more_messages: boolean;
+  /** Preview/search/count stay accurate for the whole conversation even while `messages` is windowed. */
+  first_user_message_excerpt: string | null;
+  user_message_count: number;
+  has_final_answer: boolean;
+  /** A list row's summary needs only these two — never the full `messages`/`turns` arrays a list row omits. */
+  queued_message_count: number;
+  latest_turn_state: string | null;
 };
 
 /** Saved placement; inaccessible receipts become null without their old metadata. */

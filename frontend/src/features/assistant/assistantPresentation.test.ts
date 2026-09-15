@@ -18,6 +18,12 @@ function conversation(overrides: Partial<Conversation> = {}): Conversation {
     context_references: [],
     tool_invocations: [],
     actions: [],
+    has_more_messages: false,
+    first_user_message_excerpt: null,
+    user_message_count: 0,
+    has_final_answer: false,
+    queued_message_count: 0,
+    latest_turn_state: null,
     ...overrides,
   };
 }
