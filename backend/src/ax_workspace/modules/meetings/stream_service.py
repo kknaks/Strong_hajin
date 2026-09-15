@@ -24,6 +24,10 @@ from typing import Any, Protocol
 from ax_workspace.modules.meetings.stream import (
     AgendaAddedFrame,
     MemoLineFrame,
+    MemoLineRemovedFrame,
+    MemoLineUpdatedFrame,
+    AgendaRemovedFrame,
+    AgendaUpdatedFrame,
     CLOSE_AFTER_ERROR,
     CLOSE_CONFLICT,
     CLOSE_ENDED,
@@ -194,6 +198,41 @@ class MeetingStreamService:
         if room is None:
             return False
         room.broadcast(MemoLineFrame(agenda_id=agenda_id, line=dict(line)))
+        return True
+
+    def push_memo_line_updated_threadsafe(self, meeting_id: str, *, agenda_id: str, line: dict) -> bool:
+        """고쳐진 메모 줄을 방 전체에 민다 (사용자 결정 2026-09-15).
+
+        세션이 없으면 건너뛴다 — 고침은 이미 저장됐고 화면은 다음에 열 때 목록으로 본다.
+        """
+        room = self._rooms.get(meeting_id)
+        if room is None:
+            return False
+        room.broadcast(MemoLineUpdatedFrame(agenda_id=agenda_id, line=dict(line)))
+        return True
+
+    def push_memo_line_removed_threadsafe(self, meeting_id: str, *, agenda_id: str, line_id: str) -> bool:
+        """사라진 메모 줄을 방 전체에 민다 — 「없는 줄이 남의 화면에 계속 서는」 자리를 막는다."""
+        room = self._rooms.get(meeting_id)
+        if room is None:
+            return False
+        room.broadcast(MemoLineRemovedFrame(agenda_id=agenda_id, line_id=line_id))
+        return True
+
+    def push_agenda_updated_threadsafe(self, meeting_id: str, *, agenda: dict) -> bool:
+        """제목이 바뀐 사람 벌 안건을 방 전체에 민다 — 옛 제목 아래 메모가 쌓이지 않게 한다."""
+        room = self._rooms.get(meeting_id)
+        if room is None:
+            return False
+        room.broadcast(AgendaUpdatedFrame(agenda=dict(agenda)))
+        return True
+
+    def push_agenda_removed_threadsafe(self, meeting_id: str, *, agenda_id: str) -> bool:
+        """사라진 사람 벌 안건을 방 전체에 민다 — 메모 칸의 안건 고르기가 없는 안건을 내지 않게 한다."""
+        room = self._rooms.get(meeting_id)
+        if room is None:
+            return False
+        room.broadcast(AgendaRemovedFrame(agenda_id=agenda_id))
         return True
 
     def push_agenda_added_threadsafe(self, meeting_id: str, *, agenda: dict) -> bool:

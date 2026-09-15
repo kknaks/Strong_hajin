@@ -125,7 +125,7 @@ from ax_workspace.modules.meetings.commands import (
     MeetingTodoPromotionInput,
     MeetingUpdateCommand,
 )
-from ax_workspace.modules.meetings.domain import MeetingAccessDenied, MeetingError, MeetingVersionConflict
+from ax_workspace.modules.meetings.domain import TRACK_MEMO, MeetingAccessDenied, MeetingError, MeetingVersionConflict
 from ax_workspace.modules.meetings.batch import (
     CAUSE_AGENDA_SWITCH,
     CAUSE_TRANSCRIPT,
@@ -1620,19 +1620,36 @@ class WorkflowApplication:
             session.commit()
         # 방에 붙은 모두가 새 안건을 그 자리에서 본다 (D45) — 커밋 뒤에 민다: 저장되지 않은 안건이
         # 남의 화면에 먼저 서면 안 된다. 회의 중이 아니면 방이 없고, 그때는 조용히 건너뛴다.
-        self._meeting_stream.push_agenda_added_threadsafe(str(meeting_id), agenda=result)
+        # **사람 벌만 민다** — 「종료」·「실패」에서 세우는 안건은 최종 벌이고 그때는 스트림이 닫혀 있다.
+        if result.get("track") == TRACK_MEMO:
+            self._meeting_stream.push_agenda_added_threadsafe(str(meeting_id), agenda=result)
         return result
 
     def update_meeting_agenda(self, principal: Principal, meeting_id: UUID, agenda_id: UUID, changes: dict[str, Any]) -> dict[str, Any]:
+        """안건 하나를 고친다. **사람 벌이면 바뀐 안건을 방에 민다** (사용자 결정 2026-09-15).
+
+        참여자 화면이 옛 제목을 들고 있으면 그 아래 쌓이는 메모가 엉뚱한 이름 밑에 서고, 메모 칸의
+        안건 고르기도 옛 이름을 낸다. **최종 벌은 밀지 않는다** — 그 편집은 스트림이 닫힌 뒤이고,
+        AI 벌은 애초에 사람이 고치지 못한다.
+        """
         with self._session_factory() as session:
             result = self._meetings(session).update_agenda(principal, meeting_id, agenda_id, changes)
             session.commit()
-            return result
+        if result.get("track") == TRACK_MEMO:
+            self._meeting_stream.push_agenda_updated_threadsafe(str(meeting_id), agenda=result)
+        return result
 
     def remove_meeting_agenda(self, principal: Principal, meeting_id: UUID, agenda_id: UUID) -> None:
+        """안건 하나를 지운다. **사람 벌이면 사라졌다는 것을 방에 민다** (사용자 결정 2026-09-15).
+
+        이 프레임이 없으면 참여자 화면에 없는 안건이 남고, 메모 칸의 안건 고르기가 그것을 계속 내어
+        고르면 서버가 404 로 답한다.
+        """
         with self._session_factory() as session:
-            self._meetings(session).remove_agenda(principal, meeting_id, agenda_id)
+            track = self._meetings(session).remove_agenda(principal, meeting_id, agenda_id)
             session.commit()
+        if track == TRACK_MEMO:
+            self._meeting_stream.push_agenda_removed_threadsafe(str(meeting_id), agenda_id=str(agenda_id))
 
     def append_meeting_line(
         self, principal: Principal, meeting_id: UUID, agenda_id: UUID, *, track: str, text: str
@@ -1648,6 +1665,9 @@ class WorkflowApplication:
     ) -> dict[str, Any]:
         """메모 한 줄을 고친다 (사용자 결정 2026-09-14 §바뀌는 것 1).
 
+        **고친 줄을 방 전체에 민다** (사용자 결정 2026-09-15) — 쓰기와 같은 통로다. 이것이 없으면
+        유나가 고친 줄이 미나 화면에서는 옛 글자로 남고, 새로고침해야 바뀐다.
+
         **배치 트리거를 새로 걸지 않는다.** 배치는 제출하는 자리에서 `memo_lines` 를 다시 읽으므로 고친
         본문이 다음 회차에 그대로 실린다 — 오타를 고칠 때마다 provider 를 부르면 회의 중 호출이
         타자 수만큼 늘고, 안건 전환 트리거는 「화제가 바뀌었다」는 신호이지 「글자가 바뀌었다」가 아니다.
@@ -1655,15 +1675,26 @@ class WorkflowApplication:
         with self._session_factory() as session:
             result = self._meetings(session).edit_memo_line(principal, meeting_id, agenda_id, line_id, text)
             session.commit()
-            return result
+        # 커밋 뒤에 민다 — 저장되지 않은 글자가 남의 화면에 먼저 서면 안 된다.
+        self._meeting_stream.push_memo_line_updated_threadsafe(
+            str(meeting_id), agenda_id=str(agenda_id), line=result
+        )
+        return result
 
     def remove_meeting_memo_line(
         self, principal: Principal, meeting_id: UUID, agenda_id: UUID, line_id: UUID
     ) -> None:
-        """메모 한 줄을 지운다 (같은 결정)."""
+        """메모 한 줄을 지운다 (같은 결정). **사라졌다는 것도 방에 민다** (사용자 결정 2026-09-15).
+
+        지우기는 특히 밀어야 한다 — 남은 화면이 없는 줄을 들고 있으면 사람이 그것을 고치려 들고,
+        그 요청은 404 로 떨어진다.
+        """
         with self._session_factory() as session:
             self._meetings(session).remove_memo_line(principal, meeting_id, agenda_id, line_id)
             session.commit()
+        self._meeting_stream.push_memo_line_removed_threadsafe(
+            str(meeting_id), agenda_id=str(agenda_id), line_id=str(line_id)
+        )
 
     def write_meeting_memo(self, principal: Principal, meeting_id: UUID, agenda_id: UUID, text: str) -> dict[str, Any]:
         """메모 한 줄. 커밋 뒤 배치 트리거를 평가한다 — 메모는 AI 가 읽을 입력이기도 하다."""
@@ -3513,21 +3544,37 @@ class WorkflowApplication:
             meeting_id = identifier()
             request = MeetingAgendaDraftInput.model_validate({"title": payload.get("title")})
             result = meetings.add_agenda(principal, meeting_id, request.title)
-            self._after_session_commit(
-                session,
-                lambda meeting_id=str(meeting_id), result=result: self._meeting_stream.push_agenda_added_threadsafe(
-                    meeting_id, agenda=result
-                ),
-            )
+            # **사람 벌만 민다** — HTTP 경로와 같은 판정이다 (사용자 결정 2026-09-15).
+            if result.get("track") == TRACK_MEMO:
+                self._after_session_commit(
+                    session,
+                    lambda meeting_id=str(meeting_id), result=result: self._meeting_stream.push_agenda_added_threadsafe(
+                        meeting_id, agenda=result
+                    ),
+                )
             return result
         if operation == "meeting.agenda.update":
+            meeting_id, agenda_id = identifier(), identifier("agenda_id")
             request = MeetingAgendaPatch.model_validate(payload.get("changes") or {})
-            return meetings.update_agenda(
-                principal, identifier(), identifier("agenda_id"), request.changes()
-            )
+            result = meetings.update_agenda(principal, meeting_id, agenda_id, request.changes())
+            if result.get("track") == TRACK_MEMO:
+                self._after_session_commit(
+                    session,
+                    lambda meeting_id=str(meeting_id), result=result: self._meeting_stream.push_agenda_updated_threadsafe(
+                        meeting_id, agenda=result
+                    ),
+                )
+            return result
         if operation == "meeting.agenda.remove":
             meeting_id, agenda_id = identifier(), identifier("agenda_id")
-            meetings.remove_agenda(principal, meeting_id, agenda_id)
+            track = meetings.remove_agenda(principal, meeting_id, agenda_id)
+            if track == TRACK_MEMO:
+                self._after_session_commit(
+                    session,
+                    lambda meeting_id=str(meeting_id), agenda_id=str(agenda_id): self._meeting_stream.push_agenda_removed_threadsafe(
+                        meeting_id, agenda_id=agenda_id
+                    ),
+                )
             return {"meeting_id": str(meeting_id), "agenda_id": str(agenda_id), "state": "removed"}
         if operation == "meeting.memo.write":
             meeting_id, agenda_id = identifier(), identifier("agenda_id")

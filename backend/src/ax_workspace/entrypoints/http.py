@@ -139,6 +139,10 @@ from ax_workspace.modules.meetings.stream import (
     AgendaAddedFrame,
     AiBatchFrame,
     MemoLineFrame,
+    MemoLineRemovedFrame,
+    MemoLineUpdatedFrame,
+    AgendaRemovedFrame,
+    AgendaUpdatedFrame,
     AudioDeclaration,
     AudioFrame,
     ClientGone,
@@ -281,8 +285,17 @@ def _stream_message(frame: OutboundFrame) -> dict[str, object]:
         return {"type": "ai.batch", "seq": frame.seq, "agendas": list(frame.agendas)}
     if isinstance(frame, MemoLineFrame):
         return {"type": "memo.line", "agendaId": frame.agenda_id, "line": dict(frame.line)}
+    # 아래 넷은 **id 로 제자리를 짚는다** — 같은 프레임을 두 번 적용해도 결과가 같아야 한다 (에코 처리).
+    if isinstance(frame, MemoLineUpdatedFrame):
+        return {"type": "memo.line.updated", "agendaId": frame.agenda_id, "line": dict(frame.line)}
+    if isinstance(frame, MemoLineRemovedFrame):
+        return {"type": "memo.line.removed", "agendaId": frame.agenda_id, "lineId": frame.line_id}
     if isinstance(frame, AgendaAddedFrame):
         return {"type": "agenda.added", "agenda": dict(frame.agenda)}
+    if isinstance(frame, AgendaUpdatedFrame):
+        return {"type": "agenda.updated", "agenda": dict(frame.agenda)}
+    if isinstance(frame, AgendaRemovedFrame):
+        return {"type": "agenda.removed", "agendaId": frame.agenda_id}
     if isinstance(frame, StreamErrorFrame):
         return {"type": "error", "code": ERROR_CODE_DISCONNECTED, "reason": frame.reason}
     raise TypeError(f"알 수 없는 프레임: {type(frame).__name__}")

@@ -162,6 +162,49 @@ class MemoLineFrame:
 
 
 @dataclass(frozen=True, slots=True)
+class MemoLineUpdatedFrame:
+    """고쳐진 메모 줄 하나 — **그 줄만 갈아 끼운다** (사용자 결정 2026-09-15).
+
+    `MemoLineFrame` 과 **같은 본문**이다: 화면이 `lineId` 로 자기 목록에서 그 줄을 찾아 바꿔 넣는다.
+    AI 벌처럼 벌을 통째로 다시 보내지 않는 이유는 메모가 한 줄씩 쌓이는 기록이기 때문이다 —
+    통째 교체는 그 사이에 방금 들어온 줄을 지운다.
+    """
+
+    agenda_id: str
+    line: dict
+
+
+@dataclass(frozen=True, slots=True)
+class MemoLineRemovedFrame:
+    """사라진 메모 줄 하나. **본문이 없다** — 지워진 줄에 실어 보낼 내용이 없고 `lineId` 가 그 자리를 짚는다."""
+
+    agenda_id: str
+    line_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class AgendaUpdatedFrame:
+    """제목이 바뀐 **사람 벌** 안건 하나 — `AgendaAddedFrame` 과 같은 본문이다 (사용자 결정 2026-09-15).
+
+    참여자 화면이 옛 제목을 들고 있으면 그 아래 쌓이는 메모가 엉뚱한 이름 밑에 서고, 메모 칸의 안건
+    고르기도 옛 이름을 낸다. **AI 벌은 이 프레임을 쓰지 않는다** — 그 벌은 `ai.batch` 로 통째로 간다.
+    """
+
+    agenda: dict
+
+
+@dataclass(frozen=True, slots=True)
+class AgendaRemovedFrame:
+    """사라진 **사람 벌** 안건 하나. 그 안건에 매달렸던 줄도 함께 사라졌다 (§4.1-10).
+
+    이 프레임이 없으면 참여자 화면에 **없는 안건이 남는다** — 그리고 메모 칸의 안건 고르기가 그것을
+    계속 내어, 고르면 서버가 404 로 답한다.
+    """
+
+    agenda_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class AgendaAddedFrame:
     """회의 중에 새로 선 안건 하나 — **추가 렌더**다 (사용자 결정 D45, 2026-09-11).
 
@@ -185,7 +228,11 @@ OutboundFrame = (
     | TranscriptFinalFrame
     | AiBatchFrame
     | MemoLineFrame
+    | MemoLineUpdatedFrame
+    | MemoLineRemovedFrame
     | AgendaAddedFrame
+    | AgendaUpdatedFrame
+    | AgendaRemovedFrame
     | StreamErrorFrame
 )
 

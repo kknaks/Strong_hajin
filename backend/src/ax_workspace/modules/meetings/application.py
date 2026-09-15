@@ -1171,7 +1171,7 @@ class MeetingApplication:
         self._settle_auto_cancel(meeting)
         self._repository.touch(meeting)
 
-    def remove_agenda(self, principal: Principal, meeting_id: UUID, agenda_id: UUID) -> None:
+    def remove_agenda(self, principal: Principal, meeting_id: UUID, agenda_id: UUID) -> str:
         """안건을 지우면 **같은 벌 안에서** 그 안건의 줄이 함께 사라진다 (SPEC §4.1-10).
 
         최종 벌의 안건을 지워도 **원본 두 벌은 남는다** — 계보가 가리키던 자리가 사라질 뿐이다.
@@ -1185,9 +1185,12 @@ class MeetingApplication:
         agenda = self._repository.agenda(meeting, agenda_id, lock=True)
         if agenda is None:
             raise MeetingNotFound("meeting agenda was not found")
-        title = agenda.title
+        title, track = agenda.title, agenda.track
         self._repository.delete_agenda(agenda)
         self._repository.append_audit(meeting, str(principal.id), "meeting.agenda_removed", f"안건 삭제: {title}")
+        # **지워진 안건의 벌을 돌려준다** — 방에 그 사실을 밀지 말지는 벌이 정한다 (사용자 결정 2026-09-15).
+        # AI 벌은 `ai.batch` 로 통째로 가고 최종 벌은 스트림이 닫힌 뒤에만 선다.
+        return track
 
     # ------------------------------------------------------------------ 스트림 적재 (SCAX-WP-002)
 

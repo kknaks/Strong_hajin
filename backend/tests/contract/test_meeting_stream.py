@@ -183,6 +183,17 @@ def _drain_until(socket, wanted: str, *, limit: int = 12) -> dict:
     raise AssertionError(f"{wanted} 프레임이 오지 않았습니다")
 
 
+def _drain_recording(socket, wanted: str, *, limit: int = 12) -> tuple[dict, list[str]]:
+    """`_drain_until` 과 같지만 **지나친 프레임의 종류를 함께 돌려준다** — 「오지 않았어야 하는 것」을 거는 자리다."""
+    seen: list[str] = []
+    for _ in range(limit):
+        message = socket.receive_json()
+        if message["type"] == wanted:
+            return message, seen
+        seen.append(message["type"])
+    raise AssertionError(f"{wanted} 프레임이 오지 않았습니다 (본 것: {seen})")
+
+
 # --------------------------------------------------------------------- Phase 1 · 라우트와 레지스트리
 
 
@@ -573,6 +584,169 @@ def test_a_memo_someone_writes_reaches_every_connection_in_the_room(tmp_path) ->
     assert theirs["line"]["track"] == "memo" and theirs["line"]["author"] == "mina"
     # 저장된 그 줄이다 — 화면이 다시 물어보지 않는다.
     assert theirs["line"]["line_id"] == written.json()["line_id"]
+
+
+def test_fixing_and_dropping_a_memo_line_reaches_every_connection_in_the_room(tmp_path) -> None:
+    """**메모가 바뀌고 사라지는 것도 방 전체에 닿는다** (사용자 결정 2026-09-15).
+
+    쓰기만 내려가고 수정·삭제가 안 내려가면 유나가 고친 줄이 미나 화면에서는 옛 글자로 남고, 지운 줄은
+    남의 화면에 계속 서 있다 — 그 줄을 고치려 들면 요청이 404 로 떨어진다. 통로는 이미 있었다.
+
+    **프레임은 「바뀐 줄 하나」다.** AI 벌처럼 벌을 통째로 다시 보내지 않는다: 메모는 한 줄씩 쌓이므로
+    통째 교체가 그 사이에 방금 들어온 줄을 지운다.
+    """
+    client, _, _ = _stack(tmp_path)
+    meeting_id = _running_meeting(client)
+    agenda_id = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["agenda_id"]
+    path = f"/api/meetings/{meeting_id}/agendas/{agenda_id}/lines"
+
+    with client.websocket_connect(f"/api/meetings/{meeting_id}/stream", headers=MINA) as upstream:
+        upstream.send_json(_UPSTREAM)
+        _drain_until(upstream, "ready")
+        with client.websocket_connect(f"/api/meetings/{meeting_id}/stream", headers=JIHO) as watcher:
+            watcher.send_json(_SUBSCRIBE)
+            _drain_until(watcher, "ready")
+
+            written = client.post(path, headers=MINA, json={"text": "오타가 섞인 줄"})
+            assert written.status_code == 201, written.text
+            line_id = written.json()["line_id"]
+            _drain_until(upstream, "memo.line")
+            _drain_until(watcher, "memo.line")
+
+            fixed = client.patch(f"{path}/{line_id}", headers=MINA, json={"text": "고쳐 쓴 줄"})
+            assert fixed.status_code == 200, fixed.text
+            mine_fixed = _drain_until(upstream, "memo.line.updated")
+            theirs_fixed = _drain_until(watcher, "memo.line.updated")
+
+            dropped = client.delete(f"{path}/{line_id}", headers=MINA)
+            assert dropped.status_code == 204, dropped.text
+            mine_gone = _drain_until(upstream, "memo.line.removed")
+            theirs_gone = _drain_until(watcher, "memo.line.removed")
+
+    # 쓴 사람에게도 구독자에게도 **같은 프레임**이 간다 — 화면이 하나의 계약만 읽는다.
+    assert mine_fixed == theirs_fixed and mine_gone == theirs_gone
+    # 고침은 `memo.line` 과 **같은 본문**이다 — `lineId` 로 제자리를 찾아 갈아 끼운다.
+    assert theirs_fixed["agendaId"] == agenda_id
+    assert theirs_fixed["line"]["line_id"] == line_id
+    assert theirs_fixed["line"]["text"] == "고쳐 쓴 줄"
+    assert theirs_fixed["line"]["track"] == "memo" and theirs_fixed["line"]["author"] == "mina"
+    # 삭제는 **본문이 없다** — 지워진 줄에 실어 보낼 내용이 없다.
+    assert theirs_gone == {"type": "memo.line.removed", "agendaId": agenda_id, "lineId": line_id}
+
+
+def test_someone_outside_the_meeting_never_receives_the_memo_frames(tmp_path) -> None:
+    """**참석자가 아니면 받지 않는다** — 프레임을 걸러서가 아니라 **방에 못 들어와서**다 (§3.2-1 · §5.3).
+
+    권한은 이미 스트림이 판정한다: 붙는 자리에서 한 번 보고, 붙은 뒤에는 방에 든 모두가 같은 계약을
+    읽는다. 새 프레임에 권한 판정을 따로 얹지 않은 것이 그 뜻이다 — 얹으면 판정이 두 곳에 살고
+    조용히 어긋난다.
+    """
+    client, _, _ = _stack(tmp_path)
+    meeting_id = _running_meeting(client)
+    agenda_id = client.get(f"/api/meetings/{meeting_id}", headers=MINA).json()["agendas"][0]["agenda_id"]
+    path = f"/api/meetings/{meeting_id}/agendas/{agenda_id}/lines"
+    line_id = client.post(path, headers=MINA, json={"text": "방 안의 메모"}).json()["line_id"]
+
+    # 밖의 사람은 붙지 못한다 — 회의가 있다는 것조차 알리지 않는다.
+    with client.websocket_connect(f"/api/meetings/{meeting_id}/stream", headers=SORA) as outsider:
+        outsider.send_json(_SUBSCRIBE)
+        with pytest.raises(Exception):
+            outsider.receive_json()
+
+    # 그 사이 메모가 바뀌고 사라져도 밖으로 나가는 프레임이 없다 — 방이 그 사람을 담고 있지 않다.
+    assert client.patch(f"{path}/{line_id}", headers=MINA, json={"text": "고쳐도"}).status_code == 200
+    assert client.delete(f"{path}/{line_id}", headers=MINA).status_code == 204
+    # 밖의 사람에게는 이 회의의 상세도 없는 것처럼 답한다.
+    assert client.get(f"/api/meetings/{meeting_id}", headers=SORA).status_code == 404
+
+
+def test_renaming_and_dropping_a_memo_agenda_reaches_every_connection_in_the_room(tmp_path) -> None:
+    """**사람 벌 안건이 바뀌고 사라지는 것도 같은 구멍이었다** (사용자 결정 2026-09-15).
+
+    옛 제목을 든 화면은 그 아래 쌓이는 메모를 엉뚱한 이름 밑에 세우고, 사라진 안건을 든 화면은 메모
+    칸의 안건 고르기에 그것을 계속 내어 고르면 404 를 받는다. 서는 것(`agenda.added`)만 내려가고
+    있었으므로 나머지 둘을 같은 결로 맞췄다.
+    """
+    client, _, _ = _stack(tmp_path)
+    meeting_id = _running_meeting(client)
+
+    with client.websocket_connect(f"/api/meetings/{meeting_id}/stream", headers=MINA) as upstream:
+        upstream.send_json(_UPSTREAM)
+        _drain_until(upstream, "ready")
+        with client.websocket_connect(f"/api/meetings/{meeting_id}/stream", headers=JIHO) as watcher:
+            watcher.send_json(_SUBSCRIBE)
+            _drain_until(watcher, "ready")
+
+            added = client.post(
+                f"/api/meetings/{meeting_id}/agendas", headers=MINA, json={"title": "오타가 섞인 안건"}
+            )
+            assert added.status_code == 201, added.text
+            agenda_id = added.json()["agenda_id"]
+            _drain_until(upstream, "agenda.added")
+            _drain_until(watcher, "agenda.added")
+
+            renamed = client.patch(
+                f"/api/meetings/{meeting_id}/agendas/{agenda_id}", headers=MINA, json={"title": "고쳐 쓴 안건"}
+            )
+            assert renamed.status_code == 200, renamed.text
+            mine_renamed = _drain_until(upstream, "agenda.updated")
+            theirs_renamed = _drain_until(watcher, "agenda.updated")
+
+            removed = client.delete(f"/api/meetings/{meeting_id}/agendas/{agenda_id}", headers=MINA)
+            assert removed.status_code == 204, removed.text
+            mine_gone = _drain_until(upstream, "agenda.removed")
+            theirs_gone = _drain_until(watcher, "agenda.removed")
+
+    assert mine_renamed == theirs_renamed and mine_gone == theirs_gone
+    # 고침은 `agenda.added` 와 **같은 본문**이다 — `agenda_id` 로 제자리를 찾아 갈아 끼운다.
+    assert theirs_renamed["agenda"]["agenda_id"] == agenda_id
+    assert theirs_renamed["agenda"]["title"] == "고쳐 쓴 안건"
+    assert theirs_renamed["agenda"]["track"] == "memo"
+    assert theirs_gone == {"type": "agenda.removed", "agendaId": agenda_id}
+
+
+def test_the_ai_track_does_not_ride_the_memo_frames(tmp_path) -> None:
+    """**AI 벌 변경으로는 이 프레임이 나가지 않는다** — 그 벌은 `ai.batch` 로 통째로 간다 (§7.1 적재).
+
+    AI 벌이 메모 프레임을 타면 화면이 같은 회차를 두 계약으로 두 번 받고, 그 둘이 어긋나는 순간이 생긴다.
+    """
+    import json as _json
+
+    from ax_workspace.modules.meetings.batch import parse_output
+
+    client, _, _ = _stack(tmp_path)
+    application = client.app.state.workflow_application
+    meeting_id = _running_meeting(client)
+
+    with client.websocket_connect(f"/api/meetings/{meeting_id}/stream", headers=MINA) as upstream:
+        upstream.send_json(_UPSTREAM)
+        _drain_until(upstream, "ready")
+        with client.websocket_connect(f"/api/meetings/{meeting_id}/stream", headers=JIHO) as watcher:
+            watcher.send_json(_SUBSCRIBE)
+            _drain_until(watcher, "ready")
+
+            # 배치가 AI 벌을 세운다 — 그 벌의 안건과 줄이 함께 갈린다.
+            payload = _json.dumps(
+                {"agendas": [{"title": "AI 가 세운 안건",
+                              "lines": [{"text": "AI 가 낸 줄", "evidence": [], "task_id": None}],
+                              "todos": []}]},
+                ensure_ascii=False,
+            )
+            with application._session_factory() as session:
+                tree = application._meetings(session).replace_ai_track(UUID(meeting_id), parse_output(payload))
+                session.commit()
+            application.meeting_stream.push_ai_batch_threadsafe(meeting_id, seq=1, agendas=tree)
+
+            batch, before = _drain_recording(watcher, "ai.batch")
+
+    # AI 벌은 `ai.batch` 로 갔다 — 그 안에 그 벌의 안건과 줄이 통째로 있다.
+    assert [agenda["track"] for agenda in batch["agendas"]] == ["ai"]
+    assert [row["text"] for agenda in batch["agendas"] for row in agenda["lines"]] == ["AI 가 낸 줄"]
+    # **메모·안건 프레임은 한 장도 나가지 않았다** — AI 벌은 그 계약을 타지 않는다.
+    assert not set(before) & {
+        "memo.line", "memo.line.updated", "memo.line.removed",
+        "agenda.added", "agenda.updated", "agenda.removed",
+    }
 
 
 def test_a_partial_utterance_reaches_the_subscribers_too(tmp_path) -> None:
