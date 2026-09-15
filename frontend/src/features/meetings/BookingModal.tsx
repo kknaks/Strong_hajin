@@ -215,7 +215,12 @@ export function BookingModal({
       );
       setAgendas((current) => {
         const next = [...current];
+        /* **최종 벌만 이어 간다** (사용자 결정 2026-09-14 ②). `readMeeting` 이 내는 `agendas` 는
+           세 벌 합본이라 그대로 훑으면 임시 재료(사람 벌·AI 벌)까지 다음 회의로 실려 간다 —
+           화면엔 최종 2개인데 모달엔 5개가 서던 자리다. 상세 화면이 넘기는 `initialAgendas` 쪽은
+           이미 걸러져 오지만, 이 길(지난 회의 이어가기)은 서버 응답을 직접 훑으므로 여기서 거른다. */
         for (const agenda of record.agendas) {
+          if (agenda.track !== "final") continue;
           if (agenda.concluded) continue;
           if (!next.some((one) => one.title === agenda.title)) next.push({ title: agenda.title, source: "carried" });
         }

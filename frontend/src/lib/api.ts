@@ -753,6 +753,20 @@ export async function declineTaskAssignment(assignmentId: string, reason: string
   return request<TaskAssignment>(`/api/task-assignments/${assignmentId}/decline`, { method: "POST", body: JSON.stringify({ reason }) });
 }
 
+/**
+ * 승격 모달의 담당 후보 — **참석자 먼저 · 조직도 전체 · 본인 포함** (§9-5 · D40).
+ *
+ * `getWorkRequestAssigneeCandidates`·`getTaskAssignmentCandidates` 를 쓰지 않는다. 그 둘은
+ * 「내가 남에게 배정·요청할 수 있는 범위」라 **누른 사람의 권한**으로 좁히는데, 승격의 요청 주체는
+ * 회의(시스템)라 그 권한을 타면 안 된다 — 실측에서 6명 중 2명만 떴고, 배정 권한이 없는 사람은
+ * 아예 **403** 을 받았다 (사용자 결정 2026-09-14 §조사 근거 5).
+ *
+ * 여는 사람이 그 회의의 참석자가 아니면 **404** 다. 응답 모양은 다른 후보 목록과 같다.
+ */
+export async function getMeetingPromotionCandidates(meetingId: string): Promise<Persona[]> {
+  return request<Persona[]>(`/api/meetings/${meetingId}/promotion-candidates`);
+}
+
 export async function getWorkRequestCcCandidates(): Promise<Persona[]> {
   return request<Persona[]>("/api/work-request-cc-candidates");
 }

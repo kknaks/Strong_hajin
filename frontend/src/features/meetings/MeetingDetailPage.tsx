@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import {
   ApiError,
   addMeetingAgenda,
   endMeeting,
-  getWorkRequestAssigneeCandidates,
+  getMeetingPromotionCandidates,
   getWorkRequestCcCandidates,
   detachMeetingMaterial,
   readMeeting,
@@ -180,7 +180,7 @@ export function MeetingDetailPage({
   useEffect(() => {
     if (!promoting) return;
     let cancelled = false;
-    void Promise.all([getWorkRequestAssigneeCandidates(), getWorkRequestCcCandidates().catch(() => [] as Persona[])])
+    void Promise.all([getMeetingPromotionCandidates(meetingId), getWorkRequestCcCandidates().catch(() => [] as Persona[])])
       .then(([assignees, cc]) => {
         if (cancelled) return;
         setAssigneeCandidates(assignees);
@@ -192,7 +192,7 @@ export function MeetingDetailPage({
     return () => {
       cancelled = true;
     };
-  }, [promoting]);
+  }, [promoting, meetingId]);
 
   const reload = useCallback(async () => {
     const next = await readMeeting(meetingId);
@@ -316,7 +316,11 @@ export function MeetingDetailPage({
      로 다시 추론하면 서버와 두 곳에서 판정하게 되므로 걷었다 (백엔드 보고 §4.2). */
   const agendaGates = meeting?.can_edit_agendas;
   const addGates = meeting?.can_add_agenda;
-  const canEditNote = Boolean(meeting?.can_edit_note) && !live && !settling;
+  /* **서버 값을 그대로 읽는다.** `can_edit_note` 에도 상태 게이트가 이미 들어 있다 —
+     서버의 `NOTE_EDITABLE_STATUSES` 는 「종료 · 실패 · 취소」뿐이라 「진행 중」·「정리 중」은
+     애초에 거짓이다. 화면이 `&& !live && !settling` 로 한 번 더 재단하면 같은 규칙을 두 곳이
+     말하게 되고, 서버가 축을 옮길 때 화면이 조용히 어긋난다 (백엔드 보고 §6-4). */
+  const canEditNote = Boolean(meeting?.can_edit_note);
   /** 지금 보고 있는 벌의 안건을 고치고 지울 수 있는가. AI 벌은 언제나 거짓이다. */
   const canEditAgendas = Boolean(agendaGates?.[shownTrack]);
   /** 지금 보고 있는 벌에 안건을 «더할» 수 있는가 — 「진행 중」 사람 벌이 여기서만 참이다. */
@@ -334,7 +338,14 @@ export function MeetingDetailPage({
    * 「취소됨」이 함께 걸리는 것은 그 화면이 「예정」과 같은 안건 목록이기 때문이다(§5.7).
    * 권한은 여전히 서버가 말한다 — `can_edit_agendas` 가 닫혀 있으면 칸 자체가 서지 않는다.
    */
-  const agendaAlways = canEditAgendas && (planned || cancelled);
+  /*
+   * 임시 두 벌은 **임시로 다룬다** (사용자 결정 2026-09-14 ①).
+   * 사람 벌의 안건은 «상태가 아니라 벌» 로 갈린다 — 편집 모드를 거치지 않고 늘 열려 있고,
+   * 열지 말지는 **서버가 낸 `can_edit_agendas.memo` 하나가 정한다**(진행 중에도 참이다).
+   * 전에는 여기서 `planned || cancelled` 로 화면이 한 번 더 판단해, 진행 중에 오타로 세운 안건이
+   * 영영 안 지워졌다. 최종 벌은 그대로 `[수정]` 안에서만 열린다 (§8-9).
+   */
+  const agendaAlways = canEditAgendas && shownTrack === "memo";
   /** 안건을 «지울» 수 있는가 — 편집 모드 안이거나, 회의 전이라 늘 열려 있거나. */
   const agendaOpen = agendaEditing || agendaAlways;
   /*
@@ -342,7 +353,10 @@ export function MeetingDetailPage({
    * 「진행 중」 사람 벌이 그 차이가 드러나는 유일한 자리다 — 더할 수는 있고 고칠 수는 없다.
    * 회의 중의 그 자리는 메모 칸의 [+ 새 안건]이고(§6-4), 여기 칸은 회의 전·편집 중의 것이다.
    */
-  const agendaAddOpen = canAddAgenda && (agendaOpen || planned || cancelled);
+  /* 더하는 «자리» 는 §4.1-6 이 정해 두었다 — 예약 모달 · 시작 전 상세 · **회의 중에는 메모 칸의
+     [+ 새 안건]** · 회의록 편집 상태. 그래서 본문 칸의 이 입력 칸은 회의 중에 서지 않는다.
+     권한이 아니라 «자리» 판단이라 상태를 본다 — 열지 말지는 여전히 서버의 `can_add_agenda` 가 정한다. */
+  const agendaAddOpen = canAddAgenda && (agendaOpen || planned || cancelled) && !live;
 
   /* 오디오를 올리는 연결은 회의당 하나이고 그 자리는 회의를 시작한 사람이 갖는다 (§5.2-5).
      누가 그 사람인지는 **서버가 말한다** — 화면이 `created_by` 로 추론하지 않는다.
@@ -485,9 +499,9 @@ export function MeetingDetailPage({
       return;
     }
     const meetingKey = meeting.meeting_id;
-    const changed = agendas.filter((agenda) => bodies[agenda.agenda_id] !== undefined);
-    if (busy) return;
-    setBusy(true);
+    // 줄 편집은 **최종 벌의 일**이다 (§8-9) — 합본을 훑으면 임시 벌 안건으로 저장이 나갈 수 있다(409)
+    const changed = byTrack.final.filter((agenda) => bodies[agenda.agenda_id] !== undefined);
+    if (!claim("note")) return;
     try {
       for (const agenda of changed) {
         try {
@@ -554,7 +568,23 @@ export function MeetingDetailPage({
    *
    * 그래서 `track` 으로 먼저 거르고, 그 다음 `order` 로 세운다. **탭을 넘으면 목록이 통째로 바뀐다.**
    */
-  const trackAgendas = agendas.filter((agenda) => agenda.track === shownTrack);
+  /*
+   * **합본을 넘기는 자리를 없애는 경계.** `agendas` 는 세 벌이 섞인 원본이라 그대로 넘기면
+   * 받는 쪽이 임시 두 벌을 회의록처럼 쓴다 — 이번 판 FAIL 셋이 전부 그렇게 났다
+   * (다음 회의 예약에 5개 · 메모 드롭다운에 AI 안건 · 한도를 합산으로 셈).
+   *
+   * 그래서 «어느 벌을 받아야 하나» 를 한 자리에서 정하고, 소비처는 여기서만 꺼내 쓴다.
+   * 사용자 결정(2026-09-14 「최종 회의록만 회의록이다」): 최종만 회의록이고 나머지 둘은 임시 재료다.
+   */
+  /* 훅이 아니다 — `agendas`(376) 자체가 렌더마다 새로 만들어지는 배열이라 `useMemo` 로 감싸도
+     의존이 매번 바뀌어 아무것도 아끼지 못한다. 게다가 이 자리는 위쪽 이른 `return`(454·464)보다
+     아래라 훅으로 두면 렌더마다 훅 개수가 달라진다 (「Rendered more hooks than during the previous render」). */
+  const byTrack = {
+    memo: agendas.filter((agenda) => agenda.track === "memo"),
+    ai: agendas.filter((agenda) => agenda.track === "ai"),
+    final: agendas.filter((agenda) => agenda.track === "final"),
+  };
+  const trackAgendas = byTrack[shownTrack];
   /* AI 배치가 왔으면 그 회차가 낸 트랙 «전체» 를 쓴다 — 줄 id 를 붙들지 않고 통째로 갈아 끼운다 (§7.1).
      ⚠ **배치가 싣는 것은 AI 벌뿐이다** (`replace_ai_track` 의 반환이 세 벌 트리에서 AI 벌로 줄었다).
      그래서 이 갈아 끼우기는 **AI 탭에서만** 돈다 — 사람 벌 목록(`trackAgendas`)에는 손대지 않는다.
@@ -578,7 +608,7 @@ export function MeetingDetailPage({
    * 갖는다** (§4.0-1). 그 목록이 비어 있으면 배치가 아직 아무것도 안 낸 것이다.
    * `source` 로 거르지 않는 이유도 그대로다 — 출처는 사람 벌만 갖고 AI 벌은 언제나 `null` 이다.
    */
-  const aiTrackArrived = Boolean(stream.batch) || agendas.some((agenda) => agenda.track === "ai");
+  const aiTrackArrived = Boolean(stream.batch) || byTrack.ai.length > 0;
   /** 「AI 요약」 탭인데 아직 AI 가 낸 것이 없다 — 안건 목록 대신 기다리는 중임을 한 줄로 말한다. */
   const aiPending = aiTab && !aiTrackArrived;
 
@@ -671,12 +701,8 @@ export function MeetingDetailPage({
   const facts = [meetingRange(meeting.starts_at, meeting.ends_at), meeting.location, meetingScreen.attendCount(meeting.attendees.length + meeting.external_attendees.length)]
     .filter(Boolean)
     .join(" · ");
-  /* 담당 후보는 회의 참석자를 앞에 세운다 — 그 자리에 있던 사람이 먼저 걸린다. 목록 자체는 서버가 준 것 그대로다 */
-  const attendeeIds = new Set(meeting.attendees.map((one) => one.member_id));
-  const orderedAssignees = [
-    ...assigneeCandidates.filter((one) => attendeeIds.has(one.id)),
-    ...assigneeCandidates.filter((one) => !attendeeIds.has(one.id)),
-  ];
+  /* 담당 후보를 여기서 다시 정렬하지 않는다 — `promotion-candidates` 가 **참석자를 앞에 두고** 낸다.
+     화면이 같은 규칙을 한 번 더 말하면 서버가 순서를 바꿀 때 두 곳이 어긋난다 (백엔드 보고 §6-6). */
 
   /*
    * 4칸: 첨부 · 스크립트 (시안 08 · `workspace.v1.jsx:239`).
@@ -1028,7 +1054,9 @@ export function MeetingDetailPage({
                   type="text"
                   value={agendaDraft}
                 />
-                <Button size="sm" disabled={agendas.length>= 20 || agendaDraft.trim().length === 0 || busy}
+                {/* 한도는 **벌마다** 20 이다 (§4.0-3) — 합산으로 세면 사람 벌에 7개만 세워도
+                    AI 벌 13개 때문에 막힌다 */}
+                <Button size="sm" disabled={trackAgendas.length >= 20 || agendaDraft.trim().length === 0 || isBusy("agenda-add")}
                   onClick={() =>
                     void run(async () => {
                       await addMeetingAgenda(meeting.meeting_id, agendaDraft.trim());
@@ -1049,7 +1077,9 @@ export function MeetingDetailPage({
           {live && hosting && (
             <footer className="scax-note__composer">
             <MemoComposer
-              agendas={agendas}
+              /* 메모는 **사람 벌 안건에만** 매달린다 (§4.2-9) — 합본을 넘기면 드롭다운에 AI 안건이
+                 뜨고, 고르면 서버가 422 로 막는데 화면엔 이유가 안 뜬다 */
+              agendas={byTrack.memo}
               meetingId={meeting.meeting_id}
               /* 회의 중 안건 세우기 — 세운 뒤 상세를 다시 읽어 번호와 순서를 서버가 준 대로 맞춘다 */
               onCreateAgenda={async (title) => {
@@ -1079,7 +1109,7 @@ export function MeetingDetailPage({
           담당 후보는 비워 연다. 후보 목록은 회의 참석자를 앞에 세운다 */}
       {promoting && (
         <CreateWorkModal
-          assigneeCandidates={orderedAssignees}
+          assigneeCandidates={assigneeCandidates}
           /* §8-B 14: 이 자리는 요청 전용이라 필드가 적다 — 시안대로 560 이다 */
           size="md"
           /* 회의에서 나온 요청이다 — 요청자는 시스템(회의)이고 상태는 언제나 「판단 대기」라
@@ -1124,7 +1154,12 @@ export function MeetingDetailPage({
       {booking && (
         <BookingModal
           carriedFrom={meeting.meeting_id}
-          initialAgendas={record.agendas.filter((agenda) => !agenda.concluded).map((agenda) => ({ title: agenda.title, source: "carried" as const }))}
+          /* 넘겨 담는 것은 **최종 회의록의 안건**뿐이다 — 임시 두 벌은 회의록이 아니다
+             (사용자 결정 2026-09-14). `concluded` 필터만으로는 못 거른다: 결론 표시는 최종 벌에만
+             서므로(§4.0-5) 임시 두 벌은 전부 `false` 로 통과한다 — 실측에서 최종 2개 자리에 5개가 담겼다. */
+          initialAgendas={byTrack.final
+            .filter((agenda) => !agenda.concluded)
+            .map((agenda) => ({ title: agenda.title, source: "carried" as const }))}
           initialSubject={meeting.title ?? ""}
           onClose={() => setBooking(false)}
           onCreated={(next) => {

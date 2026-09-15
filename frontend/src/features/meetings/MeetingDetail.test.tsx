@@ -30,6 +30,7 @@ vi.mock("../../lib/api", async (actual) => ({
   getOrganizationUnitMembers: vi.fn(),
   // [업무 생성]이 여는 현행 업무 요청 모달(WorkModals)이 쓰는 것들
   getWorkRequestAssigneeCandidates: vi.fn(),
+  getMeetingPromotionCandidates: vi.fn(),
   getWorkRequestCcCandidates: vi.fn(),
   createWorkRequest: vi.fn(),
   createDirectTask: vi.fn(),
@@ -154,9 +155,12 @@ beforeEach(() => {
   vi.mocked(api.readMeetingTranscript).mockResolvedValue({ items: [], memos: [] });
   vi.mocked(api.getTasks).mockResolvedValue([]);
   vi.mocked(api.getWorkRequestCcCandidates).mockResolvedValue([]);
-  vi.mocked(api.getWorkRequestAssigneeCandidates).mockResolvedValue([
-    { id: "9", display_name: "한서린" },
+  /* 승격 후보는 **회의 전용 경로**가 낸다 — 조직 전체이고 **참석자가 앞** 이다 (D40).
+     그 순서를 서버가 이미 지어서 주므로 픽스처도 그 모양이다: 참석자(정우성)가 먼저 온다.
+     화면이 다시 정렬하지 않는다는 것을 이 순서가 증명한다 — 화면이 정렬하면 이 픽스처로도 통과해 버린다. */
+  vi.mocked(api.getMeetingPromotionCandidates).mockResolvedValue([
     { id: "2", display_name: "정우성" },
+    { id: "9", display_name: "한서린" },
   ]);
 });
 
@@ -220,6 +224,52 @@ describe("SCR-106 회의 상세 — 상태와 관계가 무엇을 낼지 정한�
     fireEvent.click(screen.getByRole("button", { name: "안건 빼기" }));
     fireEvent.click(screen.getByRole("button", { name: "삭제" }));
     await waitFor(() => expect(api.removeMeetingAgenda).toHaveBeenCalledWith("m1", "a1"));
+  });
+
+  it("안건 20 한도는 **벌마다** 센다 — 세 벌 합산으로 세지 않는다", async () => {
+    /* 실측(`MeetingDetailPage.tsx:1031`): `agendas.length >= 20` 이 세 벌 합본을 셌다.
+       사람 벌이 19개뿐인데 AI 벌·최종 벌이 합쳐 27개가 되어 [안건 추가]가 죽었다 —
+       사람은 자기 벌에 한 자리가 남았는데도 더할 수가 없었다. */
+    const many = (track: MeetingAgenda["track"], count: number, from: number): MeetingAgenda[] =>
+      Array.from({ length: count }, (_, index) => ({
+        ...agenda,
+        agenda_id: `${track}-${from + index}`,
+        order: from + index,
+        title: `${track} 안건 ${from + index}`,
+        track,
+        lines: [],
+        todos: [],
+      }));
+
+    renderDetail(
+      { status: "scheduled", can_edit_note: false, can_edit_agendas: { memo: true, ai: false, final: false }, can_add_agenda: { memo: true, ai: false, final: false } },
+      // 사람 벌 19 + AI 벌 5 + 최종 벌 5 = 합산 29. 합산으로 세면 여기서 이미 죽는다
+      [...many("memo", 19, 1), ...many("ai", 5, 1), ...many("final", 5, 1)],
+    );
+    await screen.findByText("DB ax 전략");
+
+    fireEvent.change(screen.getByLabelText("안건을 적으세요"), { target: { value: "스무 번째 안건" } });
+    expect(screen.getByRole("button", { name: "안건 추가" })).not.toHaveProperty("disabled", true);
+  });
+
+  it("그 벌이 20을 채우면 더는 못 더한다 — 한도 자체는 산다", async () => {
+    const memoFull: MeetingAgenda[] = Array.from({ length: 20 }, (_, index) => ({
+      ...agenda,
+      agenda_id: `memo-${index + 1}`,
+      order: index + 1,
+      title: `사람 벌 안건 ${index + 1}`,
+      track: "memo" as const,
+      lines: [],
+      todos: [],
+    }));
+    renderDetail(
+      { status: "scheduled", can_edit_note: false, can_edit_agendas: { memo: true, ai: false, final: false }, can_add_agenda: { memo: true, ai: false, final: false } },
+      memoFull,
+    );
+    await screen.findByText("DB ax 전략");
+
+    fireEvent.change(screen.getByLabelText("안건을 적으세요"), { target: { value: "스물한 번째" } });
+    expect(screen.getByRole("button", { name: "안건 추가" })).toHaveProperty("disabled", true);
   });
 
   it("고칠 권한이 둘 다 없으면 [수정] 자체가 서지 않는다", async () => {
@@ -375,7 +425,7 @@ describe("SCR-106 회의 상세 — 상태와 관계가 무엇을 낼지 정한�
     expect(within(drawer).getByRole("button", { name: "기한 달력 열기" }).textContent).toBe("2026-09-12");
     expect(within(drawer).getByText("지난 분기 실적 모으기")).toBeTruthy();
     expect(within(drawer).getByText("전망치 초안 쓰기")).toBeTruthy();
-    // 담당 후보는 비어 있고, 참석자(정우성)가 목록 앞에 선다
+    // 담당 후보는 비어 있고, **서버가 앞에 둔** 참석자(정우성)가 목록 앞에 선다
     // 후보 목록은 드로어가 뜬 «뒤» 에 도착한다 — 기다리지 않으면 빈 목록을 읽는다
     const assignee = within(drawer).getByRole("button", { name: "담당 후보" });
     await waitFor(() => expect(assignee.textContent).toContain("선택"));

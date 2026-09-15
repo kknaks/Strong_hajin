@@ -251,6 +251,30 @@ describe("SCR-105 회의 목록", () => {
     expect(labels).toEqual(["회의명", "일시", "목적", "안건", "참석자", "장소"]);
   });
 
+  it("「지난 회의 이어가기」도 **최종 벌만** 담는다 — 임시 두 벌은 안 넘어온다", async () => {
+    /* 상세 화면이 넘기는 `initialAgendas` 와 «다른 길» 이다: 이쪽은 `readMeeting` 의 응답을
+       직접 훑는다. 응답의 `agendas` 는 세 벌 합본이라 거르지 않으면 임시 재료(사람 벌·AI 벌)가
+       다음 회의로 실려 간다 — 실측에서 최종 2개 자리에 5개가 담기던 두 자리 중 하나다. */
+    renderList([], [row({ meeting_id: "p1", title: "주간 회의" })]);
+    fireEvent.click(await screen.findByRole("button", { name: "회의 생성" }));
+    const modal = await screen.findByRole("dialog", { name: "회의 예약" });
+
+    vi.mocked(api.readMeeting).mockResolvedValue(
+      record({}, [
+        agenda({ agenda_id: "f1", title: "이어서 볼 최종 안건", track: "final", concluded: false }),
+        agenda({ agenda_id: "m1", title: "회의 중 메모 안건", track: "memo", concluded: false }),
+        agenda({ agenda_id: "a1", title: "AI 가 세운 안건", track: "ai", concluded: false }),
+      ]),
+    );
+    // 제목이 지난 회의와 같아야 제안 카드가 선다
+    fireEvent.change(within(modal).getByLabelText(/회의명/), { target: { value: "주간 회의" } });
+    fireEvent.click(await within(modal).findByRole("button", { name: "불러오기" }));
+
+    await waitFor(() => expect(within(modal).getByText("이어서 볼 최종 안건")).toBeTruthy());
+    expect(within(modal).queryByText("회의 중 메모 안건")).toBeNull();
+    expect(within(modal).queryByText("AI 가 세운 안건")).toBeNull();
+  });
+
   it("[회의 시작]은 값을 묻지 않고 바로 연다", async () => {
     const { onOpenMeeting } = renderList([], []);
     vi.mocked(api.quickStartMeeting).mockResolvedValue(record({ meeting_id: "q1", status: "in_progress" }));

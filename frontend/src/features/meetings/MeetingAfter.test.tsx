@@ -29,6 +29,8 @@ vi.mock("../../lib/api", async (actual) => ({
   getOrganizationTree: vi.fn(),
   getOrganizationUnitMembers: vi.fn(),
   getWorkRequestAssigneeCandidates: vi.fn(),
+  getMeetingPromotionCandidates: vi.fn(),
+  getTaskAssignmentCandidates: vi.fn(),
   getWorkRequestCcCandidates: vi.fn(),
   createWorkRequest: vi.fn(),
   createDirectTask: vi.fn(),
@@ -154,9 +156,12 @@ beforeEach(() => {
   vi.mocked(api.readMeetingShares).mockResolvedValue([]);
   vi.mocked(api.getTasks).mockResolvedValue([]);
   vi.mocked(api.getWorkRequestCcCandidates).mockResolvedValue([]);
-  vi.mocked(api.getWorkRequestAssigneeCandidates).mockResolvedValue([
-    { id: "9", display_name: "한서린" },
+  /* 승격 후보는 **회의 전용 경로**가 낸다 — 조직 전체이고 **참석자가 앞** 이다 (D40).
+     그 순서를 서버가 이미 지어서 주므로 픽스처도 그 모양이다: 참석자(정우성)가 먼저 온다.
+     화면이 다시 정렬하지 않는다는 것을 이 순서가 증명한다 — 화면이 정렬하면 이 픽스처로도 통과해 버린다. */
+  vi.mocked(api.getMeetingPromotionCandidates).mockResolvedValue([
     { id: "2", display_name: "정우성" },
+    { id: "9", display_name: "한서린" },
   ]);
   vi.mocked(api.readMeetingTranscript).mockResolvedValue({
     items: [
@@ -341,6 +346,36 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
     expect(onNotice).toHaveBeenCalled();
   });
 
+  it("승격 담당 후보는 **회의 전용 경로**에서 온다 — 업무 배정 후보를 쓰지 않는다", async () => {
+    /* 업무 관리의 후보 목록은 **누른 사람의 배정 권한**으로 좁히고 본인을 뺀다 — 실측에서 6명 중
+       2명만 떴고, 배정 권한이 없는 사람은 **403** 을 받아 승격 자체를 못 했다. 승격의 요청 주체는
+       회의(시스템)라 그 권한을 타면 안 된다 (D40). 그래서 경로가 다르다. */
+    vi.mocked(api.getMeetingPromotionCandidates).mockResolvedValue([
+      { id: "2", display_name: "정우성" },
+      { id: "1", display_name: "이건학" },
+      { id: "9", display_name: "한서린" },
+    ]);
+    renderAfter();
+    await screen.findByText("전망치 다시 뽑기");
+    fireEvent.click(screen.getByRole("button", { name: "업무 생성" }));
+    const drawer = await screen.findByRole("dialog", { name: "업무 요청" });
+
+    // 회의 id 를 실어 회의 전용 경로를 부른다
+    await waitFor(() => expect(api.getMeetingPromotionCandidates).toHaveBeenCalledWith("m1"));
+    // 업무 관리 쪽은 부르지 않는다 — 그 경로는 업무 화면의 것이다
+    expect(api.getWorkRequestAssigneeCandidates).not.toHaveBeenCalled();
+    expect(api.getTaskAssignmentCandidates).not.toHaveBeenCalled();
+
+    const assignee = within(drawer).getByRole("button", { name: "담당 후보" });
+    await waitFor(() => expect(assignee.textContent).toContain("선택"));
+    fireEvent.click(assignee);
+    const options = screen.getAllByRole("option").map((node) => node.textContent ?? "");
+    // **본인도 목록에 있다** — 업무 배정 규칙은 본인을 빼지만 승격은 빼지 않는다
+    expect(options.some((text) => text.includes("이건학"))).toBe(true);
+    // 서버가 낸 순서 그대로다 — 화면이 다시 정렬하지 않는다
+    expect(options.map((text) => text.trim())).toEqual(["정우성", "이건학", "한서린"]);
+  });
+
   it("이미 보낸 후보를 다시 보내면 지금 있는 것으로 맞춘다", async () => {
     const { onNotice } = renderAfter();
     await screen.findByText("전망치 다시 뽑기");
@@ -391,6 +426,127 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
     await waitFor(() => expect(onNotice).toHaveBeenCalledWith("다른 곳에서 먼저 저장됐습니다. 지금 있는 내용으로 바꿔 두었습니다."));
     expect((await screen.findAllByLabelText("내용을 한 줄로 적으세요"))[0]).toHaveProperty("value", "다른 사람이 먼저 쓴 줄.");
     expect(screen.queryByDisplayValue("내가 고친 줄.")).toBeNull();
+  });
+
+  /* ──────────────────────────────────────────────────────────────────────────
+     **최종 회의록만 회의록이다** (사용자 결정 2026-09-14).
+     사람 벌·AI 벌은 «임시 재료» 다 — 회의가 끝난 뒤 회의록의 자리를 받는 것은 최종 벌뿐이다.
+     받는 쪽이 합본(`agendas`)을 그대로 쓰면 임시가 최종인 척한다. 실물에서 난 자리가 아래 둘이다.
+     ────────────────────────────────────────────────────────────────────────── */
+  /** 같은 회의의 임시 두 벌 — 최종과 «다른 제목» 을 들어야 섞였는지 보인다. */
+  const memoLeftover: MeetingAgenda = {
+    ...agenda,
+    agenda_id: "m-1",
+    title: "회의 중에 적어 둔 메모 안건",
+    track: "memo",
+    concluded: false,
+    lines: [],
+    todos: [],
+  };
+  const aiLeftover: MeetingAgenda = { ...memoLeftover, agenda_id: "ai-1", title: "AI 가 세운 안건", track: "ai" };
+
+  it("[다음 회의 예약]은 **최종 벌만** 담는다 — 임시 두 벌은 넘어가지 않는다", async () => {
+    /* 실측(회의 `1ac58a4c…`): 화면엔 최종 2개인데 모달엔 5개가 담겼다 — `memo` 1 · `ai` 2 · `final` 2.
+       `concluded` 만으로는 못 거른다: 결론 표시는 최종 벌에만 서므로(§4.0-5) 임시 두 벌은
+       전부 `false` 로 통과한다. 그래서 **벌** 로 거른다. */
+    const carryable: MeetingAgenda = { ...agenda, agenda_id: "f-2", title: "이어서 볼 최종 안건", concluded: false, lines: [], todos: [] };
+    renderAfter({}, [agenda, carryable, memoLeftover, aiLeftover]);
+    await screen.findByText("DB ax 전략");
+
+    fireEvent.click(screen.getByRole("button", { name: "다음 회의 예약" }));
+    const modal = await screen.findByRole("dialog", { name: /회의 예약/ });
+
+    // 결론 안 난 «최종» 안건 하나만 담긴다
+    expect(within(modal).getByText("이어서 볼 최종 안건")).toBeTruthy();
+    // 임시 두 벌은 자리가 없다 — 회의록이 아니다
+    expect(within(modal).queryByText("회의 중에 적어 둔 메모 안건")).toBeNull();
+    expect(within(modal).queryByText("AI 가 세운 안건")).toBeNull();
+    // 결론 난 최종 안건도 안 넘어간다 (끝난 일이다)
+    expect(within(modal).queryByText("토큰 수요 전망")).toBeNull();
+  });
+
+  it("저장은 **최종 벌 안건만** 보낸다 — 임시 벌로 나가면 서버가 409 다", async () => {
+    /* 줄 편집은 최종 벌의 일이다 (§8-9). 합본을 훑으면 사람 벌·AI 벌 안건에도 `PATCH` 가 나가고,
+       서버는 최종이 아닌 안건에 줄을 실으면 409 를 낸다. */
+    renderAfter({}, [agenda, memoLeftover, aiLeftover]);
+    await screen.findByText("DB ax 전략");
+    fireEvent.click(screen.getByRole("button", { name: "수정" }));
+    fireEvent.change(screen.getAllByLabelText("내용을 한 줄로 적으세요")[0], { target: { value: "고친 줄." } });
+
+    vi.mocked(api.updateMeetingAgenda).mockResolvedValue({ ...agenda });
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    await waitFor(() => expect(api.updateMeetingAgenda).toHaveBeenCalled());
+    for (const call of vi.mocked(api.updateMeetingAgenda).mock.calls) {
+      expect(call[1]).toBe("a1");
+    }
+  });
+
+  /* ──────────────────────────────────────────────────────────────────────────
+     **줄의 계보를 잃지 않는다** (§8-9). `PATCH` 의 `lines` 는 `{line_id?, text}` 목록이고,
+     `line_id` 를 빠뜨린 줄은 서버가 **새 줄** 로 받는다 — 근거(`evidence`)와 `from_lines` 가
+     그 자리에서 끊긴다. 한 줄만 고쳐도 나머지 줄의 id 가 함께 실려야 하는 이유다.
+     ────────────────────────────────────────────────────────────────────────── */
+  /** 줄 셋짜리 최종 안건 — 「하나만 고쳤을 때 나머지 둘」을 볼 수 있는 가장 작은 모양이다. */
+  const threeLines: MeetingAgenda = {
+    ...agenda,
+    lines: [
+      { line_id: "l1", track: "final", order: 1, text: "첫째 줄.", author: null, at_ms: null, evidence: [{ start_ms: 1_000, end_ms: 2_000 }], from_lines: ["a1"] },
+      { line_id: "l2", track: "final", order: 2, text: "둘째 줄.", author: null, at_ms: null, evidence: [], from_lines: [] },
+      { line_id: "l3", track: "final", order: 3, text: "셋째 줄.", author: null, at_ms: null, evidence: [], from_lines: [] },
+    ],
+  };
+
+  it("줄 셋 중 하나만 고쳐 저장해도 **나머지 둘의 `line_id` 가 그대로 실린다**", async () => {
+    renderAfter({}, [threeLines]);
+    await screen.findByText("DB ax 전략");
+    fireEvent.click(screen.getByRole("button", { name: "수정" }));
+    fireEvent.change(screen.getAllByLabelText("내용을 한 줄로 적으세요")[1], { target: { value: "둘째 줄을 고쳤다." } });
+
+    vi.mocked(api.updateMeetingAgenda).mockResolvedValue({ ...threeLines });
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    await waitFor(() => expect(api.updateMeetingAgenda).toHaveBeenCalled());
+    const patch = vi.mocked(api.updateMeetingAgenda).mock.calls[0][2];
+    expect(patch.lines).toEqual([
+      { line_id: "l1", text: "첫째 줄." },
+      { line_id: "l2", text: "둘째 줄을 고쳤다." },
+      { line_id: "l3", text: "셋째 줄." },
+    ]);
+  });
+
+  it("409 로 갈아 끼운 뒤 다시 저장해도 **서버가 준 `line_id` 가 실린다**", async () => {
+    /* 충돌이 나면 화면은 서버가 낸 지금 줄로 갈아 끼운다. 그때 id 를 흘리면, 다음 저장이
+       그 줄들을 전부 «새 줄» 로 밀어 넣어 근거가 통째로 끊긴다 — 되살리기가 불가능한 자리다. */
+    renderAfter({}, [threeLines]);
+    await screen.findByText("DB ax 전략");
+    fireEvent.click(screen.getByRole("button", { name: "수정" }));
+    fireEvent.change(screen.getAllByLabelText("내용을 한 줄로 적으세요")[0], { target: { value: "내가 고친 줄." } });
+
+    const server: MeetingAgenda = {
+      ...threeLines,
+      last_saved_at: "2026-09-08T07:30:00Z",
+      lines: [
+        { line_id: "s1", track: "final", order: 1, text: "남이 먼저 쓴 첫 줄.", author: null, at_ms: null, evidence: [], from_lines: [] },
+        { line_id: "s2", track: "final", order: 2, text: "남이 먼저 쓴 둘째 줄.", author: null, at_ms: null, evidence: [], from_lines: [] },
+      ],
+    };
+    vi.mocked(api.updateMeetingAgenda).mockRejectedValueOnce(
+      new ApiError(409, "Conflict", { code: "meeting_agenda_stale", current: server }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect((screen.getAllByLabelText("내용을 한 줄로 적으세요")[0] as HTMLInputElement).value).toBe("남이 먼저 쓴 첫 줄."));
+
+    // 갈아 끼운 줄 위에서 다시 고쳐 저장한다
+    fireEvent.change(screen.getAllByLabelText("내용을 한 줄로 적으세요")[1], { target: { value: "그 위에 다시 고친다." } });
+    vi.mocked(api.updateMeetingAgenda).mockResolvedValue(server);
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    await waitFor(() => expect(vi.mocked(api.updateMeetingAgenda).mock.calls).toHaveLength(2));
+    expect(vi.mocked(api.updateMeetingAgenda).mock.calls[1][2].lines).toEqual([
+      { line_id: "s1", text: "남이 먼저 쓴 첫 줄." },
+      { line_id: "s2", text: "그 위에 다시 고친다." },
+    ]);
   });
 
   /* 「고치는 칸에 후보가 차 있다」는 절반은 자리를 옮겨 MeetingEditModal.test.tsx 가 든다 —
@@ -529,6 +685,19 @@ describe("SCR-106 「정리 중」 — 최종 회의록을 짓는 동안", () =>
     const body = line.closest(".scax-note__body") as HTMLElement;
     expect(body).toBeTruthy();
     expect(body.querySelector(".scax-skeleton")).toBeNull();
+  });
+
+  it("정리 중에는 **어느 벌도 열리지 않는다** — 화면이 아니라 서버가 닫는다", async () => {
+    /* 화면이 들고 있던 `&& !live && !settling` 를 걷었다 (백엔드 보고 §6-4). 서버의
+       `NOTE_EDITABLE_STATUSES` 가 「종료 · 실패 · 취소」뿐이라 「정리 중」은 원래 거짓이고,
+       안건 게이트 셋도 「정리 중」을 어느 집합에도 넣지 않는다. 같은 규칙을 두 곳이 말하지 않게
+       걷었으므로, **서버 값 하나로 닫히는지**를 여기서 건다. */
+    renderAfter({ status: "summarizing", can_edit_note: false, can_edit_agendas: { memo: false, ai: false, final: false }, can_add_agenda: { memo: false, ai: false, final: false } });
+    await screen.findByText("DB ax 전략");
+    expect(screen.queryByRole("button", { name: "수정" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "저장" })).toBeNull();
+    expect(screen.queryByRole("button", { name: meetingScreen.dropAgenda })).toBeNull();
+    expect(screen.queryByLabelText(meetingScreen.agendaPlaceholder)).toBeNull();
   });
 
   it("합성이 끝나면 진짜 회의록으로 바뀐다 — 프론트 타이머가 성공을 지어내지 않는다", async () => {

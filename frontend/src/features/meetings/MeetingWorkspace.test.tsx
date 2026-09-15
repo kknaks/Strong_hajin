@@ -33,6 +33,7 @@ vi.mock("../../lib/api", async (actual) => ({
   getOrganizationTree: vi.fn(),
   getOrganizationUnitMembers: vi.fn(),
   getWorkRequestAssigneeCandidates: vi.fn(),
+  getMeetingPromotionCandidates: vi.fn(),
   getWorkRequestCcCandidates: vi.fn(),
   createWorkRequest: vi.fn(),
   createDirectTask: vi.fn(),

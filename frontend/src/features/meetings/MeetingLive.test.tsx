@@ -29,6 +29,9 @@ vi.mock("../../lib/api", async (actual) => ({
   getOrganizationTree: vi.fn(),
   getOrganizationUnitMembers: vi.fn(),
   getWorkRequestAssigneeCandidates: vi.fn(),
+  getMeetingPromotionCandidates: vi.fn(),
+  updateMeetingMemoLine: vi.fn(),
+  removeMeetingMemoLine: vi.fn(),
   getWorkRequestCcCandidates: vi.fn(),
   createWorkRequest: vi.fn(),
   createDirectTask: vi.fn(),
@@ -1114,6 +1117,43 @@ describe("회의록 세 벌 — 탭마다 자기 벌의 안건 목록", () => {
     expect(screen.queryByText(/배치가 세운 안건/)).toBeNull();
   });
 
+  it("메모 대상 드롭다운에는 **사람 벌만** 뜬다 — AI 안건을 고르면 서버가 422 다", async () => {
+    /* 메모는 사람 벌에만 매달린다 (§4.2-9). 합본을 넘기면 AI 안건이 후보로 서고, 고르면
+       그 메모가 AI 벌 안건으로 나가 **422** 로 튕긴다 — 사람은 왜 안 되는지 알 길이 없다.
+       실측에서 `MeetingDetailPage.tsx:1052` 가 안 거른 합본을 넘기던 자리다. */
+    await connect(true, {}, [memoSide, aiSide]);
+    fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /안건/ }));
+    const options = await screen.findAllByRole("option");
+    // 사람 벌 안건 하나뿐이다 — 합본이면 「안건 1」·「안건 2」 둘이 선다
+    expect(options).toHaveLength(1);
+    expect(options[0].textContent).toContain("안건 1");
+  });
+
+  it("「진행 중」에도 **사람 벌 안건을 고치고 지운다** — 서버가 연 게이트를 화면이 닫지 않는다", async () => {
+    /* 사용자 결정 2026-09-14 ①: 임시 두 벌은 임시로 다룬다. 전에는 화면이 `planned || cancelled`
+       로 한 번 더 판단해서, 진행 중에 오타로 세운 안건(「장난치고 싶다」)이 영영 박제됐다.
+       열지 말지는 서버의 `can_edit_agendas.memo` 하나가 정한다. */
+    await connect(true, { can_edit_agendas: { memo: true, ai: false, final: false }, can_add_agenda: { memo: true, ai: false, final: false } }, [memoSide, aiSide]);
+
+    fireEvent.click(screen.getByRole("tab", { name: "메모" }));
+    expect(screen.getByRole("button", { name: meetingScreen.dropAgenda })).toBeTruthy();
+
+    // AI 벌은 그대로 닫혀 있다 — 벌마다 다르다는 것이 이 대비다
+    fireEvent.click(screen.getByRole("tab", { name: "AI 요약" }));
+    expect(screen.queryByRole("button", { name: meetingScreen.dropAgenda })).toBeNull();
+  });
+
+  /* ──────────────────────────────────────────────────────────────────────────
+     **안건 제목을 제자리에서 고친다** (2026-09-15 사용자 결정).
+
+     계약 세 줄: 입력칸이 나타나지 않는다 · 테두리·바탕·그림자·둥근 모서리가 생기지 않는다 ·
+     글자가 1px 도 움직이지 않는다. 그래서 `<input>` 으로 갈아 끼우지 않고 **글자를 이고 있던
+     그 노드가 `contenteditable` 로 바뀐다** — 움직일 대상 자체가 없다.
+
+     열지 말지는 서버의 `can_edit_agendas.memo` 하나가 정한다.
+     ────────────────────────────────────────────────────────────────────────── */
   it("자리표시 제목은 번호만 낸다 — 「안건 1. 안건 1」로 두 번 붙지 않는다 (§12 R-50)", async () => {
     /* 서버가 빈 제목 + `title_placeholder: true` 로 낸다. 예전에는 제목 자리에 「안건 1」이
        들어와 라벨의 번호와 겹쳤다. 없는 제목을 지어내지 않고 번호만 낸다. */
