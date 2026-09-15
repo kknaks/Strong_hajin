@@ -62941,6 +62941,7 @@
         "screen_callers": [],
         "operation": "remove_meeting_agenda",
         "owning_calls": [
+          "self._meeting_stream.push_agenda_removed_threadsafe",
           "self._meetings(session).remove_agenda"
         ],
         "baseline_tools": [],
@@ -63164,6 +63165,7 @@
         "screen_callers": [],
         "operation": "update_meeting_agenda",
         "owning_calls": [
+          "self._meeting_stream.push_agenda_updated_threadsafe",
           "self._meetings(session).update_agenda"
         ],
         "baseline_tools": [],
