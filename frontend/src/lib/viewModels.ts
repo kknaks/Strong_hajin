@@ -107,7 +107,54 @@ export type Persona = {
   display_name: string;
 };
 
-export type TaskState = "open" | "in_progress" | "blocked" | "completion_submitted" | "done" | "cancelled";
+/**
+ * 수행 상태 — **넷이 계약이다** (SPEC-003 §4 Data Contract).
+ *
+ * `completion_submitted` 는 **외부 계약에 없다.** 요청 업무의 완료 보고가 들어가면 밖으로는
+ * `state=done` + `derived.approval=awaiting_review` 로 읽힌다(SPEC-003 §4 Request/Response ·
+ * SPEC-001 §4 State). 내부 enum 은 백엔드에 남아 있지만 **그 값을 화면 타입으로 들이지 않는다** —
+ * 들이면 「승인 전 done」을 상태값으로 판단하는 코드가 다시 생긴다.
+ *
+ * `blocked` 는 **이 판이 없애지 않는다** — 계약에는 없고(M-6 미정) 코드에는 남아 있어서, 기존
+ * 막힘 흐름을 그대로 보존한다. 필터 칩만 그리지 않는다(WORK-002 Phase 7-B).
+ */
+export type TaskState = "open" | "in_progress" | "blocked" | "done" | "cancelled";
+
+/** 수락·담당 변경을 기다리는 자리. **상태가 아니라 파생 표시다** (SPEC-003 §2.2 · DEC-002 D-4). */
+export type DerivedAssignment = "awaiting_acceptance" | "awaiting_handover";
+
+/** 완료 확인의 자리 (SPEC-002 계승). 승인 전 `done` 과 최종 완료를 가르는 **유일한** 값이다. */
+export type DerivedApproval = "awaiting_review" | "awaiting_revision" | "approved";
+
+/** 응답을 기다리는 제안 (SPEC-003 §4 Data). 담당 변경은 여기 없다 — `task_assignments` 표면이 갖는다. */
+export type DerivedProposal = "cancellation_pending" | "terms_change_pending";
+
+/** 상위의 최종 완료를 막고 있는 하위 하나. `why` 가 「아직 안 끝났다」와 「승인 전이다」를 가른다. */
+export type BlockingChild = {
+  task_id: string;
+  title: string;
+  why: "unfinished" | "awaiting_approval" | string;
+};
+
+/**
+ * 서버가 낸 파생 표시 묶음 (SPEC-003 §4 `GET /api/tasks/{id}` · §2.11).
+ *
+ * **화면이 상태 문자열로 권한·완결을 추론하지 않는다.** 무엇을 기다리는지도, 무엇이 막고 있는지도
+ * 여기서만 읽는다. 값이 통째로 없는 응답(구 서버)에서는 기존 동작이 그대로 선다.
+ */
+export type TaskDerived = {
+  assignment?: DerivedAssignment | null;
+  approval?: DerivedApproval | null;
+  proposal?: DerivedProposal | null;
+  blocking_children?: BlockingChild[];
+  /** 기한이 지난 날수. **표시만 바꾼다** — 상태·담당·기한은 그대로다 (SPEC-003 §2.6 · U-14). */
+  overdue_days?: number | null;
+  reply?: unknown;
+  status_note?: unknown;
+};
+
+/** 왜 취소됐나 (SPEC-003 §4 Data). 상위 목록에서 「취소됨 — 요청 거절」로 읽히는 근거다 (F-3). */
+export type TaskCancelReason = "direct" | "request_rejected" | "request_withdrawn" | "cancellation_agreed";
 
 /** One part of a larger Task: a Task of its own, with its own holder, dates and state. */
 export type TaskChild = {
@@ -116,6 +163,10 @@ export type TaskChild = {
   state: TaskState;
   due_date?: string | null;
   assignee?: { member_id: string; display_name: string } | null;
+  /** 하위의 파생 표시 — 「완결」 판정이 `state` 만 보지 않게 하는 자리다 (SPEC-003 §4 Data · V-15·V-16). */
+  derived?: TaskDerived | null;
+  /** 취소된 하위가 왜 취소됐나. 상위에서 「취소됨 — 요청 거절」로 읽힌다 (F-3). */
+  cancel_reason?: TaskCancelReason | string | null;
 };
 
 /**
@@ -164,8 +215,77 @@ export type DirectTask = {
   parent?: { task_id: string; title: string; state: TaskState } | null;
   /** The parts of this work this reader may see. A subtask is a Task, not a checklist line. */
   children?: TaskChild[];
-  child_progress?: { done: number; total: number };
+  /**
+   * 직속 하위의 셈 (SPEC-003 §4). `blocking` 이 0 이어야 최종 완료가 통과한다.
+   * **읽을 수 없는 하위는 여기에도 들어가지 않는다** (U-15).
+   */
+  child_progress?: { done: number; total: number; blocking?: number; cancelled?: number };
   checklist_progress?: { done: number; total: number };
+  /** 서버가 낸 파생 표시. 화면은 기다림·완결·막는 하위를 **여기서만** 읽는다. */
+  derived?: TaskDerived | null;
+  /** 취소 사유 구분 (SPEC-003 §4 Data). */
+  cancel_reason?: TaskCancelReason | string | null;
+  /** `open → in_progress` 시각 — 계획 시작일(`start_date`)과 다른 값이다 (V-13 · L-10). */
+  started_at?: string | null;
+  /*
+   * **수락 시각은 여기 없다.** 서버는 그것을 담당 관계에 싣는다 — `assignment.accepted_at`
+   * (`TaskAssignmentSummary`) 이고, 「누가 언제 이 일을 맡았나」는 업무가 아니라 그 관계의 사실이기
+   * 때문이다. 최상위에 `accepted_at` 을 두면 **서버가 내지 않는 키**를 타입이 약속하게 된다.
+   * U-3 의 「수락 시각과 시작 시각을 각각 읽는다」는 `assignment.accepted_at` ↔ `started_at` 이다.
+   */
+  completed_at?: string | null;
+  reopened_at?: string | null;
+};
+
+/**
+ * 한 업무의 담당 관계 — **현재와 대기를 각각** 낸다 (SPEC-003 §4 `GET /api/tasks/{id}/assignments`).
+ *
+ * 담당 변경 대기 동안 `current`(active)와 `pending` 이 **함께 산다**(V-18). 하나로 합쳐 읽으면
+ * 「책임 공백」이 화면에서 생긴다.
+ */
+export type TaskAssignmentsView = {
+  task_id: string;
+  current: TaskAssignment | null;
+  pending: TaskAssignment | null;
+  /** 지난 담당 관계 — 교체·거절·철회가 그대로 남는다. 담당 변경 «이력» 이 읽히는 자리다 (F-5). */
+  history: TaskAssignment[];
+};
+
+/** 수락 후의 제안 — 취소 합의와 조건 변경 (SPEC-003 §4). 담당 변경은 이 enum 에 없다. */
+export type TaskProposalKind = "cancellation" | "terms_change";
+
+export type TaskProposalState = "pending" | "agreed" | "declined" | "withdrawn";
+
+/** 한 업무의 제안 — **대기와 지난 것을 각각** 낸다 (`GET /api/tasks/{id}/proposals`). */
+export type TaskProposalsView = {
+  task_id: string;
+  pending: TaskProposal[];
+  history: TaskProposal[];
+};
+
+export type TaskProposal = {
+  proposal_id: string;
+  kind: TaskProposalKind | string;
+  state: TaskProposalState | string;
+  /** 제안한 사람. 철회는 이 사람만 부른다. */
+  proposed_by: string;
+  /** 답해야 하는 사람 — 담당자다. 서버가 정하고 화면은 「내 차례인가」만 읽는다. */
+  responder_id?: string | null;
+  /**
+   * 조건 변경이 **실제로 바꾸자고 하는 값** (`kind=terms_change`). 취소 제안에서는 비어 있다.
+   * 무엇을 바꾸는지가 없는 조건 변경은 답할 수 없는 제안이라, 화면이 이 값을 반드시 실어 보낸다.
+   */
+  payload?: Record<string, unknown> | null;
+  reason: string | null;
+  created_at: string;
+  responded_at?: string | null;
+};
+
+/** 제안 명령의 응답 봉투 — 제안 하나와 그 명령이 업무를 옮긴 회차를 함께 낸다. */
+export type TaskProposalMutation = {
+  task_id: string;
+  proposal: TaskProposal;
+  task_version: number;
 };
 
 /**
@@ -263,6 +383,14 @@ export type TaskAssignment = {
   created_at: string;
   accepted_at: string | null;
   declined_at: string | null;
+  /** 다른 담당이 수락해서 이 행이 닫힌 시각. 「중간에 담당 없는 구간」이 없다는 증거다 (V-18). */
+  superseded_at?: string | null;
+  /** 이 제안이 물러나게 한 이전 담당 행. */
+  supersedes_assignment_id?: string | null;
+  /**
+   * 담당 관계가 가리키는 업무. **관계 조회(`/assignments`)의 행에는 실리지 않는다** —
+   * 그 응답은 한 업무의 담당들이라 업무를 되풀이하지 않는다. 보낸 목록(`/task-assignments/sent`)만 싣는다.
+   */
   task: DirectTask;
 };
 
@@ -456,11 +584,38 @@ export type WorkRequest = {
   requester_id?: string;
   assignee_id?: string;
   cc_member_ids?: string[];
-  state: "pending" | "negotiating" | "accepted" | "rejected" | "withdrawn";
+  /**
+   * 출처 상태다 — 업무의 수행 상태(`open`…)와 다른 축이다.
+   *
+   * `assigned` 는 **W1 의 신규 경로**가 세우는 값이다: 판단 없이 업무와 활성 담당이 섰다는 사실만 말한다.
+   * 나머지 다섯은 **과거 판단 경로의 행**이 그대로 갖는 값이고 뜻이 바뀌지 않았다 — `assigned` 를
+   * 「수락됨」과 섞지 않는다(WORK-001 Phase 4).
+   */
+  state: "pending" | "negotiating" | "assigned" | "accepted" | "rejected" | "withdrawn" | "cancelled_by_agreement";
   version: number;
   task_id: string | null;
   assignment_state: string | null;
   conditions: Record<string, unknown> | null;
+  /**
+   * **누가 눌러 이 요청이 섰나** — 회의 승격이면 회의(시스템)가 요청자 자리에 서고 이 값이 «사람» 이다
+   * (BASE-002 O-31 · `requests.py:953`). 요청자 전용 조작(수정·재상신·철회·제안)의 판정이
+   * `requester_id` **또는** 이 값이므로, 화면도 둘을 함께 읽어야 한다.
+   */
+  promoted_by_member_id?: string | null;
+  /** 요청자를 사람으로 그릴지 「회의 · {이름}」으로 그릴지 — 서버가 정한다 (D40). */
+  requester_kind?: "member" | "system" | string | null;
+  source_meeting_id?: string | null;
+  /** 하위 요청의 상위 업무 (V-9). 발송 단계부터 연결된다. */
+  parent_task_id?: string | null;
+  /** 재요청이면 이전 요청 (V-12). 「다시 요청」이 남기는 연결이다. */
+  supersedes_request_id?: string | null;
+  /** 이 요청이 물러난 자리에 선 새 요청. 이전 요청 쪽에서 읽는 같은 연결이다. */
+  superseded_by_request_id?: string | null;
+  /**
+   * 요청자 목록에서 정리(숨김)됐나 (L-6 · F-6). **이력은 남는다** — 목록에서만 빠진다.
+   * 값이 없는 응답에서는 「숨기지 않음」으로 읽는다.
+   */
+  list_entry_hidden?: boolean | null;
 };
 
 export type ActionItem = {

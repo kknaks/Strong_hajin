@@ -532,11 +532,19 @@ def test_a_tool_receipt_stops_naming_what_the_reader_may_no_longer_open(tmp_path
     assert any("요약에 남을 업무" in str(row["result_summary"]) for row in seen)
 
     # 지호 hands the work to 민아 and keeps no relationship to it.
-    client.post(
+    # v2: **제안만으로는 담당이 바뀌지 않는다** (정책 V-18) — 민아가 수락해야 교체가 일어나고,
+    # 그때 지호의 관계가 끊긴다. 이 테스트가 보는 것은 관계가 끊긴 **뒤**의 요약이다.
+    handed = client.post(
         f"/api/tasks/{task['task_id']}/reassign",
         headers=JIHO,
         json={"expected_version": task["version"], "assignee_id": "mina", "reason": "인수인계"},
     )
+    assert handed.status_code == 200, handed.text
+    taken = client.post(
+        f"/api/task-assignments/{handed.json()['assignment_id']}/accept",
+        headers={"X-Demo-Persona": "mina"},
+    )
+    assert taken.status_code == 200, taken.text
     after = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=JIHO).json()
     hidden = [row for row in after["tool_invocations"] if row["tool_name"] == "task_get"]
     assert hidden and hidden[0]["result_summary"] == "결과를 볼 수 없습니다"

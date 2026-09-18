@@ -1,5 +1,11 @@
-"""ERD RESOURCE_RELATIONSHIP (cc), EVIDENCE adoption, and COMMENT attachment bindings on a WorkRequest."""
+"""ERD RESOURCE_RELATIONSHIP (cc), EVIDENCE adoption, and COMMENT attachment bindings on a WorkRequest.
+
+**근거(EVIDENCE)는 판단 회차에 붙는다** — W1 이후 신규 요청은 `assigned` 로 서고 그 회차를 만들지 않으므로
+(WORK-001 Phase 4), 근거 채택은 예전 배포가 남긴 모양(`legacy_acceptance.pending_request`)에서 검증한다.
+cc 관계와 댓글 첨부는 신규 요청에서도 그대로 산다.
+"""
 from fastapi.testclient import TestClient
+from legacy_acceptance import pending_request
 from sqlalchemy import select
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
@@ -44,6 +50,7 @@ def test_cc_members_can_read_and_discuss_but_never_decide(tmp_path) -> None:
     assert comment.status_code == 201
     # …but cannot decide, and an unrelated member sees nothing.
     assert client.post(f"/api/work-requests/{rid}/accept", headers=ADMIN, json={"expected_version": 1}).status_code in {403, 422}
+    # 신규 요청의 출처 상태는 `pending` — 업무는 섰고 담당은 수락을 기다린다.
     assert client.get(f"/api/work-requests/{rid}", headers=ADMIN).json()["state"] == "pending"
     assert client.get(f"/api/work-requests/{rid}/timeline", headers=SORA).status_code == 403
     unknown = client.post("/api/work-requests", headers=MINA, json={"title": "x", "assignee_id": "jiho", "cc_member_ids": ["nobody"]})
@@ -52,7 +59,7 @@ def test_cc_members_can_read_and_discuss_but_never_decide(tmp_path) -> None:
 
 def test_evidence_is_adopted_for_the_current_submission_and_pinned_by_hash(tmp_path) -> None:
     client, database_url = _client(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "견적 승인", "assignee_id": "jiho", "cc_member_ids": ["yuna"]}).json()
+    request = pending_request(client, database_url, MINA, title="견적 승인", assignee_id="jiho", cc_member_ids=["yuna"])
     rid = request["request_id"]
     supporting = client.post(f"/api/work-requests/{rid}/evidence", headers=MINA, files={"file": ("견적서.pdf", b"quote-v1", "application/pdf")})
     assert supporting.status_code == 201, supporting.text

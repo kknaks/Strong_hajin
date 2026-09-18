@@ -14,6 +14,18 @@ MINA = {"X-Demo-Persona": "mina"}
 JIHO = {"X-Demo-Persona": "jiho"}
 
 
+
+def _accept(client, request: dict, headers=JIHO) -> None:
+    """받는 사람이 수락한다 — 여기서 담당이 확정되고 그 업무가 「내 업무」에 선다 (SPEC-003 §4 수락).
+
+    W1 에서는 이 단계가 없었다(발송이 곧 배정). v2 가 되돌린 것은 **이 한 단계뿐**이다.
+    """
+    answered = client.post(
+        f"/api/work-requests/{request['request_id']}/accept",
+        headers=headers, json={"expected_version": request["version"]},
+    )
+    assert answered.status_code == 200, answered.text
+
 def _stack(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
@@ -48,14 +60,9 @@ def test_the_steps_someone_asked_for_survive_the_judgement(tmp_path) -> None:
     )
     assert request.status_code == 201, request.text
 
-    [item] = client.get("/api/action-items", headers=JIHO).json()
-    accepted = client.post(
-        f"/api/action-items/{item['action_item_id']}/commands/accept",
-        headers=JIHO,
-        json={"expected_version": item["expected_version"]},
-    )
-    assert accepted.status_code == 200, accepted.text
-
+    # v2: 발송은 업무를 세우고 **담당은 수락이 세운다** (SPEC-003 §4). 체크리스트는 요청과 함께 왔고
+    # 수락한 업무의 체크리스트가 된다 — 쓴 사람은 부탁한 쪽이다.
+    _accept(client, request.json())
     [task] = [row for row in client.get("/api/my-work", headers=JIHO).json() if row["title"] == "단계까지 부탁한 요청"]
     view = client.get(f"/api/tasks/{task['task_id']}", headers=JIHO).json()
     assert [row["text"] for row in view["checklist"]] == ["자료 모으기", "초안 쓰기"]
@@ -73,15 +80,10 @@ def test_the_steps_someone_asked_for_survive_the_judgement(tmp_path) -> None:
 def test_assigned_work_carries_the_steps_the_assigner_wrote(tmp_path) -> None:
     client, application = _stack(tmp_path)
     jiho = application.authenticated_principal("jiho")
-    assigned = application.assign_task(jiho, "단계까지 배정한 업무", "mina", checklist=["현황 파악", "보고서 작성"])
+    assigned = application.assign_task(jiho, "단계까지 배정한 업무", "mina", idempotency_key="checklist-assign", checklist=["현황 파악", "보고서 작성"])
     task_id = assigned["task"]["task_id"]
 
-    [item] = [row for row in client.get("/api/action-items", headers=MINA).json() if row["subject"] == "단계까지 배정한 업무"]
-    client.post(
-        f"/api/action-items/{item['action_item_id']}/commands/accept",
-        headers=MINA,
-        json={"expected_version": item["expected_version"]},
-    )
+    # 배정도 수락을 기다리지 않는다 — 명령이 성공하면 상대의 업무 목록에 이미 서 있다.
     view = client.get(f"/api/tasks/{task_id}", headers=MINA).json()
     assert [row["text"] for row in view["checklist"]] == ["현황 파악", "보고서 작성"]
     assert {row["created_by"] for row in view["checklist"]} == {"jiho"}
@@ -112,6 +114,7 @@ def test_a_proposal_shows_the_steps_it_would_create(tmp_path, monkeypatch) -> No
 
     proposed = McpReportsFacade(settings, "mina").create_self_task(
         "AX가 제안한 업무",
+        "checklist-draft",
         checklist=["자료 모으기", "초안 쓰기"],
         due_date="2026-09-30",
     )

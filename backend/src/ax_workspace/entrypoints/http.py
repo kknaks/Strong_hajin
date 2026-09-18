@@ -60,7 +60,7 @@ from ax_workspace.modules.work.material_commands import ActionMaterialLinkInput 
 from ax_workspace.modules.work.material_commands import TaskMaterialLinkInput as TaskMaterialLinkRequest, TaskMaterialReferenceInput as TaskMaterialReferenceRequest
 from ax_workspace.modules.work.checklist_commands import ChecklistAddInput as ChecklistItemRequest, ChecklistUpdateInput as ChecklistItemPatch, ChecklistOrderInput as ChecklistOrderRequest
 from ax_workspace.modules.work.task_results import TaskAssignmentResult, ChecklistMutationResult, ChecklistOrderResult, TaskMutationResult
-from ax_workspace.modules.work.task_commands import TaskVersionInput as TaskTransitionRequest, TaskBlockInput as BlockTaskRequest
+from ax_workspace.modules.work.task_commands import TaskVersionInput as TaskTransitionRequest, TaskBlockInput as BlockTaskRequest, TaskCancelInput as CancelTaskRequest
 from ax_workspace.modules.work.task_commands import TaskReassignInput as ReassignTaskRequest, TaskUpdateInput as UpdateTaskRequest
 from ax_workspace.modules.work.task_commands import TaskCompletionInput as TaskCompletionReportRequest, TaskReferenceInput as TaskReferenceRequest
 from ax_workspace.modules.work.folder_commands import FolderCreateInput as MaterialFolderCreateRequest
@@ -109,9 +109,27 @@ from ax_workspace.entrypoints.http_auth import (
 )
 from ax_workspace.bootstrap.application import create_auth_session_store, create_workflow_application
 from ax_workspace.modules.work.application import InvalidTaskTransition, TaskAccessDenied, TaskError, TaskNotFound, TaskState
+from ax_workspace.modules.work.errors import (
+    TaskAssignmentProposalExists,
+    TaskAssignmentResponderOnly,
+    TaskCancelRequiresAgreement,
+    TaskChildrenUnfinished,
+    TaskDirectNesting,
+    TaskIdempotencyConflict,
+    TaskIdempotencyKeyRequired,
+    TaskParentClosed,
+    TaskParentCycle,
+    TaskParentUnassigned,
+    TaskProposalNotPending,
+    TaskProposalResponderOnly,
+    TaskRecipientNotAllowed,
+    TaskReopenForbidden,
+    TaskReopenParentDone,
+)
 from ax_workspace.modules.work.graph import GraphAccessDenied, GraphError, GraphNotFound
 from ax_workspace.modules.work.materials import MaterialNotFound
 from ax_workspace.modules.actions.domain import ActionError as ActionCenterError, ActionNotFound
+from ax_workspace.modules.work.request_errors import WorkRejectReasonRequired, WorkRequestLockedAfterAccept, WorkRequestNotPending
 from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequestError, WorkRequestIdempotencyConflict
 from ax_workspace.modules.reports.application import DailyReportAccessDenied
 from ax_workspace.modules.meetings.materials import inline_media_type
@@ -165,7 +183,7 @@ from ax_workspace.modules.ax_execution.conversation_commands import (Conversatio
 from ax_workspace.modules.notifications import NotificationNotFound
 from ax_workspace.modules.organization_access.commands import AssistantCharacterInput as SetAssistantCharacterRequest
 from ax_workspace.modules.work.assignment_commands import AssignmentDeclineInput as DeclineTaskAssignmentRequest
-from ax_workspace.modules.work.request_commands import WorkRequestDecisionInput as WorkRequestDecisionRequest, WorkRequestNegotiationInput as WorkRequestNegotiationRequest, WorkRequestRevisionInput as WorkRequestAmendRequest, WorkRequestRevisionInput as WorkRequestResubmitRequest, WorkRequestCreateInput as CreateWorkRequestRequest, WorkRequestCommentInput as CommentRequest
+from ax_workspace.modules.work.request_commands import TaskVersionInput as TaskVersionRequest, TaskProposalInput as TaskProposalRequest, TaskProposalResponseInput as TaskProposalResponseRequest, TaskReopenInput as TaskReopenRequest, WorkRequestVersionInput as WorkRequestVersionRequest, WorkRequestDecisionInput as WorkRequestDecisionRequest, WorkRequestNegotiationInput as WorkRequestNegotiationRequest, WorkRequestRevisionInput as WorkRequestAmendRequest, WorkRequestRevisionInput as WorkRequestResubmitRequest, WorkRequestCreateInput as CreateWorkRequestRequest, WorkRequestCommentInput as CommentRequest
 
 
 class MemberResponse(BaseModel):
@@ -495,14 +513,42 @@ def _runtime_error(error: Exception) -> HTTPException:
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
     if isinstance(error, (TaskAccessDenied, WorkRequestAccessDenied, DailyReportAccessDenied)):
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
+    # SPEC-003 § Case Matrix — **`TaskError` 보다 먼저** 봐야 각자의 상태로 나간다. 전부 409 인 이유는
+    # 하나다: 요청 자체는 말이 되는데 **지금 그 자원의 상태가 그 명령을 받지 않는다**.
+    if isinstance(
+        error,
+        (
+            TaskCancelRequiresAgreement,
+            TaskChildrenUnfinished,
+            TaskDirectNesting,
+            TaskParentClosed,
+            TaskParentUnassigned,
+            TaskProposalNotPending,
+            TaskReopenParentDone,
+            TaskAssignmentProposalExists,
+        ),
+    ):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    # 값 자체가 틀렸다 — 자기 자신을 상위로 둘 수 있는 상태란 없다.
+    if isinstance(error, TaskParentCycle):
+        return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
+    # 생성 계약의 세 줄 (SPEC-001 § Case Matrix). `TaskError` 보다 먼저 봐야 각자의 상태로 나간다.
+    if isinstance(error, TaskRecipientNotAllowed):
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
+    if isinstance(error, TaskIdempotencyConflict):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    if isinstance(error, TaskIdempotencyKeyRequired):
+        return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     if isinstance(error, (TaskError, InvalidTaskTransition, MeetingError)):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     if isinstance(error, ActionNotFound):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
     if isinstance(error, ActionCenterError):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
-    if isinstance(error, WorkRequestIdempotencyConflict):
+    if isinstance(error, (WorkRequestIdempotencyConflict, WorkRequestNotPending, WorkRequestLockedAfterAccept)):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    if isinstance(error, WorkRejectReasonRequired):
+        return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     if isinstance(error, WorkRequestError):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
     if isinstance(error, ConversationError):
@@ -732,6 +778,7 @@ def create_app(
             meeting_id: UUID,
             todo_id: UUID,
             request: PromoteTodoRequest,
+            idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
             principal: Principal = Depends(developer_principal),
         ) -> dict[str, object]:
             """후보를 업무 요청으로 보낸다 — 출처 두 id 를 열로 싣는다. 갈래는 하나다."""
@@ -740,6 +787,7 @@ def create_app(
                     principal,
                     meeting_id,
                     todo_id,
+                    idempotency_key=idempotency_key,
                     assignee_id=request.assignee_id,
                     title=request.title,
                     description=request.description,
@@ -1249,11 +1297,21 @@ def create_app(
             return app.state.workflow_application.my_organization_profile(principal)
 
         @app.post("/api/tasks", status_code=status.HTTP_201_CREATED)
-        def create_self_task(request: CreateTaskRequest, principal: Principal = Depends(developer_principal)) -> TaskMutationResult:
+        def create_task(
+            request: CreateTaskRequest,
+            idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+            principal: Principal = Depends(developer_principal),
+        ) -> TaskMutationResult:
+            """업무 생성 — 본인 또는 수신자 지정. 담당이 남이어도 **수락 없이** 그 사람의 업무가 된다.
+
+            멱등 키는 `Idempotency-Key` **헤더**로 받는다. 본문의 `idempotency_key` 는 알 수 없는 필드로 거부된다.
+            """
             try:
-                return app.state.workflow_application.create_self_task(
+                return app.state.workflow_application.create_task(
                     principal,
                     request.title,
+                    idempotency_key=idempotency_key,
+                    assignee_id=request.assignee_id,
                     description=request.description,
                     start_date=request.start_date,
                     due_date=request.due_date,
@@ -1362,9 +1420,15 @@ def create_app(
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
         @app.post("/api/tasks/assign", status_code=status.HTTP_201_CREATED)
-        def assign_task(request: AssignTaskRequest, principal: Principal = Depends(developer_principal)) -> TaskAssignmentResult:
+        def assign_task(
+            request: AssignTaskRequest,
+            idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+            principal: Principal = Depends(developer_principal),
+        ) -> TaskAssignmentResult:
             try:
-                return app.state.workflow_application.assign_task(principal, **request.model_dump())
+                return app.state.workflow_application.assign_task(
+                    principal, idempotency_key=idempotency_key, **request.model_dump()
+                )
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -1617,6 +1681,101 @@ def create_app(
             except Exception as error:
                 raise _runtime_error(error) from error
 
+        @app.get("/api/tasks/{task_id}/children")
+        def task_children(
+            task_id: UUID,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, Any]:
+            """**직속 하위만** 낸다 (SPEC-003 §4 · 정책 L-11). 저장 깊이와 무관하다.
+
+            읽을 수 없는 하위는 목록에도 **건수에도** 없다 — 상세의 `children` 과 같은 판정이다.
+            """
+            try:
+                return app.state.workflow_application.task_children(principal, task_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/tasks/{task_id}/assignments")
+        def task_assignments(
+            task_id: UUID,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, Any]:
+            """**현재 담당과 대기 제안을 각각** 낸다 — 담당 변경 대기 중에는 둘 다 있다 (정책 V-18)."""
+            try:
+                return app.state.workflow_application.task_assignments(principal, task_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/tasks/{task_id}/reopen")
+        def reopen_task(
+            task_id: UUID,
+            request: TaskReopenRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> TaskMutationResult:
+            """끝난 일을 다시 연다. **완료된 상위가 있으면 거부**하고 상위를 먼저 열라고 낸다."""
+            try:
+                return app.state.workflow_application.reopen_task(
+                    principal, task_id, request.expected_version, request.reason
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/tasks/{task_id}/proposals")
+        def list_task_proposals(
+            task_id: UUID,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, Any]:
+            try:
+                return app.state.workflow_application.task_proposals(principal, task_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/tasks/{task_id}/proposals", status_code=status.HTTP_201_CREATED)
+        def propose_task_change(
+            task_id: UUID,
+            request: TaskProposalRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, Any]:
+            """수락 뒤의 취소·조건 변경 제안. **제안만으로는 아무것도 바뀌지 않는다.**"""
+            try:
+                return app.state.workflow_application.propose_task_change(
+                    principal, task_id, request.kind, request.expected_version,
+                    reason=request.reason, payload=request.payload,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/tasks/{task_id}/proposals/{proposal_id}/respond")
+        def respond_to_task_proposal(
+            task_id: UUID,
+            proposal_id: UUID,
+            request: TaskProposalResponseRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, Any]:
+            """동의 / 동의하지 않음 — **담당자만**. 동의해야 비로소 바뀐다."""
+            try:
+                return app.state.workflow_application.respond_to_task_proposal(
+                    principal, task_id, proposal_id, request.expected_version,
+                    agree=request.agree, reason=request.reason,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/tasks/{task_id}/proposals/{proposal_id}/withdraw")
+        def withdraw_task_proposal(
+            task_id: UUID,
+            proposal_id: UUID,
+            request: TaskVersionRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, Any]:
+            """제안한 사람이 거둔다. **회차가 필수다** — 상태를 바꾸는 모든 명령이 그렇다 (K-4)."""
+            try:
+                return app.state.workflow_application.withdraw_task_proposal(
+                    principal, task_id, proposal_id, request.expected_version
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
         @app.post("/api/tasks/{task_id}/reassign")
         def reassign_task(
             task_id: UUID,
@@ -1719,23 +1878,45 @@ def create_app(
         @app.post("/api/work-requests", status_code=status.HTTP_201_CREATED)
         def create_work_request(
             request: CreateWorkRequestRequest,
+            idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
             principal: Principal = Depends(developer_principal),
         ) -> WorkRequestMutationResult:
             try:
                 return app.state.workflow_application.create_work_request(
                     principal, request.title, request.assignee_id,
+                    idempotency_key=idempotency_key,
                     description=request.description, due_date=request.due_date, cc_member_ids=request.cc_member_ids,
                     checklist=request.checklist, reference_task_ids=request.reference_task_ids,
+                    parent_task_id=request.parent_task_id, supersedes_request_id=request.supersedes_request_id,
                 )
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.get("/api/work-requests")
         def list_work_requests(
+            include_removed: bool = Query(default=False),
             principal: Principal = Depends(developer_principal),
         ) -> list[WorkRequestMutationResult]:
+            """내 요청 목록.
+
+            `include_removed=true` 면 **내가 정리한 항목까지** 돌려주고, 각 행의 `list_entry_hidden` 이
+            어느 쪽인지 말한다. 숨김 여부를 화면이 기억하지 않는다 — 브라우저를 새로 열면 그 기억은
+            사라지는데 정리했다는 사실은 남아야 한다 (SPEC-003 §4 목록 정리).
+            """
             try:
-                return app.state.workflow_application.list_work_requests(principal)
+                return app.state.workflow_application.list_work_requests(principal, include_removed=include_removed)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        # **`/{request_id}` 보다 먼저 선언한다** — 뒤에 두면 `inbox` 가 요청 id 로 읽혀
+        # UUID 파싱에서 422 가 난다. FastAPI 는 선언 순서대로 맞춰 본다.
+        @app.get("/api/work-requests/inbox")
+        def work_request_inbox(
+            principal: Principal = Depends(developer_principal),
+        ) -> list[WorkRequestMutationResult]:
+            """내가 **답해야** 하는 요청. 내가 보낸 것은 `GET /api/work-requests` 쪽이다."""
+            try:
+                return app.state.workflow_application.work_request_inbox(principal)
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -1746,6 +1927,35 @@ def create_app(
         ) -> WorkRequestDetailResult:
             try:
                 return app.state.workflow_application.get_work_request(principal, request_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/work-requests/{request_id}/withdraw")
+        def withdraw_work_request(
+            request_id: UUID,
+            request: WorkRequestVersionRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> WorkRequestMutationResult:
+            """수락 전 철회 — **요청자의 일반 명령이다.**
+
+            예전에는 판단함 명령으로만 열려 있어서, 요청 화면에서 거둘 길이 없었다. 판단함 경유도
+            같은 결과를 그대로 낸다 (K-10).
+            """
+            try:
+                return app.state.workflow_application.withdraw_work_request(
+                    principal, request_id, request.expected_version
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.delete("/api/work-requests/{request_id}/list-entry")
+        def remove_work_request_list_entry(
+            request_id: UUID,
+            principal: Principal = Depends(developer_principal),
+        ) -> dict[str, Any]:
+            """요청자 목록에서만 뺀다 — **로그는 남는다** (정책 P-12). 전역 삭제가 아니다."""
+            try:
+                return app.state.workflow_application.remove_work_request_list_entry(principal, request_id)
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -2101,8 +2311,12 @@ def create_app(
             return task_transition(task_id, TaskState.DONE, principal, expected_version=request.expected_version)
 
         @app.post("/api/tasks/{task_id}/cancel")
-        def cancel_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> TaskMutationResult:
-            return task_transition(task_id, TaskState.CANCELLED, principal, expected_version=request.expected_version)
+        def cancel_task(task_id: UUID, request: CancelTaskRequest, principal: Principal = Depends(developer_principal)) -> TaskMutationResult:
+            """직접 취소 — **사유 필수** (SPEC-003 §4). 사유는 진행 기록에 그대로 남는다.
+
+            수락된 요청 Task 에서는 이 명령이 거부되고 제안–동의로 안내한다.
+            """
+            return task_transition(task_id, TaskState.CANCELLED, principal, request.reason, request.expected_version)
 
     @app.get("/health")
     def health() -> dict[str, str]:

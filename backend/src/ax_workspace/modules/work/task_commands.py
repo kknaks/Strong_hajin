@@ -110,18 +110,48 @@ class TaskBlockInput(TaskVersionInput):
     reason: str = Field(min_length=1, title='차단 사유')
 
 
+#: 사유가 **필수인 전이** — 왜 막혔는지, 왜 접었는지는 그 일을 잇는 사람이 읽어야 하는 사실이다
+#: (SPEC-003 §4 Validation · SPEC-001 계승). 시작·완료는 사유를 묻지 않는다.
+_REASON_REQUIRED_TARGETS = frozenset({'blocked', 'cancelled'})
+
+
 class TaskTransitionInput(TaskVersionInput):
     target: Literal['in_progress', 'blocked', 'done', 'cancelled'] = Field(title='변경 상태')
-    reason: str | None = Field(default=None, title='차단 사유')
+    reason: str | None = Field(default=None, title='사유 (차단·취소에 필수)')
 
     @model_validator(mode='after')
     def validate_reason(self) -> Self:
-        if self.target == 'blocked' and not self.reason:
-            raise ValueError('block reason is required')
-        if self.target != 'blocked':
-            self.reason = None
+        """차단과 **취소**에 사유가 필요하다. 나머지 전이에서는 실어 보내도 버린다.
+
+        취소가 오래 빠져 있었다 — 사유 없이 사라진 업무는 남은 사람에게 「왜 없어졌는지」가 아무 데도
+        없는 일이 된다. 공백만 있는 문자열도 사유가 아니므로 같이 거절한다.
+        """
+        cleaned = ' '.join(str(self.reason or '').split()) or None
+        if self.target in _REASON_REQUIRED_TARGETS and not cleaned:
+            raise ValueError(
+                'block reason is required' if self.target == 'blocked' else '취소에는 사유가 필요합니다'
+            )
+        self.reason = cleaned if self.target in _REASON_REQUIRED_TARGETS else None
         return self
 
 
 class TaskTransitionCommand(TaskTransitionInput):
     task_id: UUID = Field(title='대상 업무')
+
+
+class TaskCancelInput(TaskVersionInput):
+    """직접 취소 — **사유 필수** (SPEC-003 §4 API · Validation).
+
+    수락된 요청 Task 에서는 이 명령 자체가 거부된다(`WORK_CANCEL_REQUIRES_AGREEMENT`) — 그 자리의
+    취소는 제안–동의로만 간다. 여기 실린 사유는 진행 기록에 그대로 남는다.
+    """
+
+    reason: str = Field(min_length=1, max_length=4000, title='취소 사유')
+
+    @model_validator(mode='after')
+    def require_text(self) -> Self:
+        cleaned = ' '.join(str(self.reason or '').split())
+        if not cleaned:
+            raise ValueError('취소에는 사유가 필요합니다')
+        self.reason = cleaned
+        return self

@@ -8,6 +8,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi.testclient import TestClient
+from legacy_acceptance import make_request_look_pending
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
@@ -40,7 +41,8 @@ def _execution(client: TestClient, settings: Settings) -> UUID:
 
 
 def test_work_request_delivery_and_acceptance_notify_the_other_party_once(tmp_path) -> None:
-    client, _, _ = _stack(tmp_path)
+    """받은 쪽 알림은 신규 경로에서도 그대로 간다. 수락 알림은 **과거 행의 판단**에만 붙는다."""
+    client, _, settings = _stack(tmp_path)
     request = client.post(
         "/api/work-requests",
         headers=MINA,
@@ -51,12 +53,13 @@ def test_work_request_delivery_and_acceptance_notify_the_other_party_once(tmp_pa
     assert received["resource"]["id"] == request["request_id"]
     assert received["resource"]["title"] == "배포 체크 요청"
 
+    make_request_look_pending(settings.database_url, request["request_id"])
     accepted = client.post(
         f"/api/work-requests/{request['request_id']}/accept",
         headers=JIHO,
         json={"expected_version": request["version"]},
     )
-    assert accepted.status_code == 200
+    assert accepted.status_code == 200, accepted.text
     [completed] = client.get("/api/notifications", headers=MINA).json()
     assert completed["kind"] == "work_request.accepted"
     assert completed["summary"] == "지호님이 ‘배포 체크 요청’ 업무 요청을 수락했습니다."

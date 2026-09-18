@@ -12,6 +12,7 @@ from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
+from legacy_acceptance import make_request_look_pending
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
@@ -733,8 +734,11 @@ def test_promoting_without_an_assignee_does_not_proceed(tmp_path) -> None:
     assert client.post(path, headers=MINA, json={"assignee_id": ""}).status_code == 422
 
 
-def test_accepting_the_request_carries_the_source_columns_onto_the_task(tmp_path) -> None:
-    """업무 → 회의: 수락으로 업무가 설 때 요청의 출처가 업무로 옮겨진다 (SPEC §9-7)."""
+def test_the_promoted_request_carries_the_source_columns_onto_the_task(tmp_path) -> None:
+    """업무 → 회의: 업무가 설 때 요청의 출처가 업무로 옮겨진다 (SPEC §9-7).
+
+    W1 이후 그 업무는 승격 명령이 성공한 자리에서 바로 선다 — 수락을 기다리지 않는다.
+    """
     client, application, agent = _stack(tmp_path)
     meeting_id, agenda_id = _finalized(client, application, agent)
     [todo] = _the_final(client, meeting_id)["todos"]
@@ -744,10 +748,8 @@ def test_accepting_the_request_carries_the_source_columns_onto_the_task(tmp_path
     request_id = promoted["linked"]["work_request_id"]
 
     request = client.get(f"/api/work-requests/{request_id}", headers=JIHO).json()
-    accepted = client.post(
-        f"/api/work-requests/{request_id}/accept", headers=JIHO, json={"expected_version": request["version"]}
-    )
-    assert accepted.status_code == 200, accepted.text
+    # 승격도 발송 계약을 그대로 쓴다 — **수락 대기로 선다.** 유입 경로만으로 담당이 서지 않는다(L-15·L-16).
+    assert request["state"] == "pending" and request["task_id"]
 
     from ax_workspace.platform.persistence import TaskRecord
     from sqlalchemy import select
@@ -757,6 +759,14 @@ def test_accepting_the_request_carries_the_source_columns_onto_the_task(tmp_path
         assert str(task.source_meeting_id) == meeting_id
         assert str(task.source_agenda_id) == agenda_id
         assert task.origin_kind == "meeting"
+        # 행위자는 **누른 사람**이다. 요청자 자리에 앉은 시스템(`system:meeting`)도, 받는 사람도 아니다 —
+        # 승격 명령을 실제로 부른 것은 민아이고, 지호는 아직 아무 행위도 하지 않았다.
+        assert task.created_by_actor_id == "mina"
+        assert request["requester_kind"] == "system" and request["promoted_by_member_id"] == "mina"
+
+    # 진행 기록의 첫 회차도 같은 사람을 가리킨다 — 하지 않은 일이 이력에 남지 않는다.
+    [first] = client.get(f"/api/tasks/{task.id}/history", headers=JIHO).json()["versions"]
+    assert first["change_kind"] == "task.created" and first["actor_id"] == "mina"
 
 
 def test_a_candidate_nobody_wants_is_deleted_without_a_confirmation(tmp_path) -> None:
@@ -1280,10 +1290,16 @@ def test_a_request_nobody_promoted_still_names_the_person_who_sent_it(tmp_path) 
 
 
 def test_the_person_who_pressed_promote_may_still_amend_and_withdraw_it(tmp_path) -> None:
-    """시스템은 로그인하지 않는다 — 이 자리를 양보하지 않으면 승격된 요청은 **아무도 고칠 수 없는 요청**이 된다."""
+    """시스템은 로그인하지 않는다 — 이 자리를 양보하지 않으면 승격된 요청은 **아무도 고칠 수 없는 요청**이 된다.
+
+    수정·거두기는 판단 회차가 열려 있을 때의 명령이고, W1 이후 그 회차는 과거 행에만 있다
+    (WORK-001 Phase 4). 누른 사람이 요청자 자리에 선다는 판정(D40)은 그대로이므로 과거 모양에서 본다.
+    """
     client, application, agent = _stack(tmp_path)
     request = _promoted_request(client, application, agent)
     request_id = request["request_id"]
+    make_request_look_pending(application._settings.database_url, request_id)
+    request = client.get(f"/api/work-requests/{request_id}", headers=MINA).json()
 
     amended = client.post(
         f"/api/work-requests/{request_id}/amend",
@@ -1324,15 +1340,20 @@ def test_the_first_line_of_the_history_says_which_meeting_it_came_from(tmp_path)
     assert created["actor_id"] == "mina"
 
 
-def test_accepting_a_promoted_request_still_carries_the_meeting_onto_the_task(tmp_path) -> None:
-    """요청자가 시스템으로 바뀌어도 수락과 출처 복사는 그대로다 (SPEC-004 §9-7)."""
+def test_a_promoted_request_carries_the_meeting_onto_the_task_at_once(tmp_path) -> None:
+    """승격도 같은 생성 계약을 쓴다 — 수락을 기다리지 않고 출처 두 값이 업무로 옮겨진다 (SPEC-004 §9-7)."""
     client, application, agent = _stack(tmp_path)
     request = _promoted_request(client, application, agent)
 
+    # 승격 요청도 **수락해야** 그 사람의 업무가 된다 — 회의에서 왔다는 사실이 수락을 대신하지 않는다.
+    assert request["state"] == "pending" and request["task_id"]
+    assert client.get("/api/my-work", headers=JIHO).json() == []
     accepted = client.post(
-        f"/api/work-requests/{request['request_id']}/accept", headers=JIHO, json={"expected_version": request["version"]}
+        f"/api/work-requests/{request['request_id']}/accept",
+        headers=JIHO, json={"expected_version": request["version"]},
     )
     assert accepted.status_code == 200, accepted.text
+    assert [row["task_id"] for row in client.get("/api/my-work", headers=JIHO).json()] == [request["task_id"]]
 
     from sqlalchemy import select
 

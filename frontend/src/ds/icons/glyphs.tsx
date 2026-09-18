@@ -39,6 +39,16 @@ export type Fill16Name = "persons";
 export type IconName =
   | Grid16Name
   | "arrow-right"
+  | "chat"
+  | "chevron-left"
+  | "chevron-left-small"
+  | "chevron-right-small"
+  | "circle-check"
+  | "circle-close"
+  | "external-link"
+  | "image"
+  | "mail"
+  | "message"
   | "bell"
   | "blank"
   | "business-bag"
@@ -79,6 +89,53 @@ export const grid24: Record<Exclude<IconName, Grid16Name | Fill16Name>, React.Re
       <path d="m12 5 7 7-7 7" />
     </>
   ),
+  /*
+   * ── 시안이 부르는데 우리 표에 없던 아홉 (WORK-002 Phase 7-A) ──
+   *
+   * 전부 Lucide(ISC) 24 그리드다 — 기존 세트와 같은 출처·같은 그리드이고 **기하를 새로 그리지 않았다.**
+   * `chevron-left` 는 시안이 직접 부르지는 않지만 `chevron-right` 의 짝이 비어 있던 자리라 함께 세운다.
+   *
+   * 「-small」 둘은 **다른 글리프가 아니라 같은 꺾쇠의 좁은 판**이다 — 시안의 `CalendarNav` 가 20px
+   * 아이콘 단추 안에서 부르는 것이라 획 사이가 넓으면 단추보다 커 보인다.
+   */
+  chat: <path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z" />,
+  "chevron-left": <path d="m15 18-6-6 6-6" />,
+  "chevron-left-small": <path d="m14 16-4-4 4-4" />,
+  "chevron-right-small": <path d="m10 16 4-4-4-4" />,
+  "circle-check": (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <path d="m9 12 2 2 4-4" />
+    </>
+  ),
+  "circle-close": (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <path d="m15 9-6 6" />
+      <path d="m9 9 6 6" />
+    </>
+  ),
+  "external-link": (
+    <>
+      <path d="M15 3h6v6" />
+      <path d="M10 14 21 3" />
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+    </>
+  ),
+  image: (
+    <>
+      <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
+      <circle cx="9" cy="9" r="2" />
+      <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+    </>
+  ),
+  mail: (
+    <>
+      <rect width="20" height="16" x="2" y="4" rx="2" />
+      <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
+    </>
+  ),
+  message: <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />,
   /* 사이드바 상단의 「알림」 (시안 31). DS 원본 `design/components/icon/Icon.jsx` 의 것 그대로다 —
      기하를 새로 그리지 않았다. 우리 세트에 알림 글리프가 없어서 이 바퀴가 들여왔다. */
   bell: (

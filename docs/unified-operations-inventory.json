@@ -1127,7 +1127,7 @@
         "list_work_requests"
       ],
       "acceptance_evidence": "docs/unified-operations.md의 R3a~R3f 경로·권한·동등성 검증",
-      "http_signature": "(principal: Principal) -> list[WorkRequestMutationResult]"
+      "http_signature": "(include_removed: bool, principal: Principal) -> list[WorkRequestMutationResult]"
     },
     {
       "http": "GET /api/work-requests/{request_id}",
@@ -1982,14 +1982,14 @@
     },
     {
       "http": "POST /api/tasks",
-      "http_handler": "create_self_task",
+      "http_handler": "create_task",
       "screen_callers": [
         "api.ts::createDirectTask",
         "api.ts::getTasks"
       ],
       "operation": "create_self_task",
       "owning_calls": [
-        "self._tasks(session).create_self"
+        "self._task_creation(session).create_or_receipt"
       ],
       "baseline_tools": [
         "task_create_self"
@@ -2000,10 +2000,10 @@
       "policy": "confirmed-command",
       "status": "verified",
       "http_application_calls": [
-        "create_self_task"
+        "create_task"
       ],
       "acceptance_evidence": "docs/unified-operations.md의 R3a~R3f 경로·권한·동등성 검증",
-      "http_signature": "(request: CreateTaskRequest, principal: Principal) -> TaskMutationResult"
+      "http_signature": "(request: CreateTaskRequest, idempotency_key: str | None, principal: Principal) -> TaskMutationResult"
     },
     {
       "http": "POST /api/tasks/assign",
@@ -2013,7 +2013,7 @@
       ],
       "operation": "assign_task",
       "owning_calls": [
-        "self._assignments(session).assign"
+        "self._task_creation(session).create_or_receipt"
       ],
       "baseline_tools": [
         "task_assign"
@@ -2027,7 +2027,7 @@
         "assign_task"
       ],
       "acceptance_evidence": "docs/unified-operations.md의 R3a~R3f 경로·권한·동등성 검증",
-      "http_signature": "(request: AssignTaskRequest, principal: Principal) -> TaskAssignmentResult"
+      "http_signature": "(request: AssignTaskRequest, idempotency_key: str | None, principal: Principal) -> TaskAssignmentResult"
     },
     {
       "http": "POST /api/tasks/{task_id}/block",
@@ -2079,7 +2079,7 @@
         "transition_task"
       ],
       "acceptance_evidence": "docs/unified-operations.md의 R3a~R3f 경로·권한·동등성 검증",
-      "http_signature": "(task_id: UUID, request: TaskTransitionRequest, principal: Principal) -> TaskMutationResult"
+      "http_signature": "(task_id: UUID, request: CancelTaskRequest, principal: Principal) -> TaskMutationResult"
     },
     {
       "http": "POST /api/tasks/{task_id}/checklist",
@@ -2371,7 +2371,7 @@
       ],
       "operation": "create_work_request",
       "owning_calls": [
-        "self._work_requests(session).create"
+        "self._task_creation(session).create_or_receipt"
       ],
       "baseline_tools": [
         "work_request_create"
@@ -2385,7 +2385,7 @@
         "create_work_request"
       ],
       "acceptance_evidence": "docs/unified-operations.md의 R3a~R3f 경로·권한·동등성 검증",
-      "http_signature": "(request: CreateWorkRequestRequest, principal: Principal) -> WorkRequestMutationResult"
+      "http_signature": "(request: CreateWorkRequestRequest, idempotency_key: str | None, principal: Principal) -> WorkRequestMutationResult"
     },
     {
       "http": "POST /api/work-requests/{request_id}/accept",
@@ -2965,8 +2965,8 @@
   ],
   "current_runtime": {
     "phase": "main-sync",
-    "http_count": 140,
-    "tool_count": 120,
+    "http_count": 150,
+    "tool_count": 129,
     "tools": [
       {
         "name": "action_item_list",
@@ -9037,6 +9037,119 @@
               "title": "TaskAssignmentView",
               "type": "object"
             },
+            "TaskBlockingChildView": {
+              "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "why": {
+                  "title": "Why",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "why"
+              ],
+              "title": "TaskBlockingChildView",
+              "type": "object"
+            },
+            "TaskDerivedView": {
+              "description": "**서버가 만드는 파생 표시** (SPEC-003 §4 Data). 화면이 `state` 로 되짚지 않는다.\n\n`reply`·`status_note` 는 **키만 있고 값은 `null`** 이다 — SPEC-001 에서 이어받은 이름이지만 그\n원장(문의·회신 대기·상태 메모)이 아직 구현되지 않았다. 없는 것을 있다고 내지 않는다.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment"
+                },
+                "approval": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approval"
+                },
+                "proposal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Proposal"
+                },
+                "blocking_children": {
+                  "items": {
+                    "$ref": "#/$defs/TaskBlockingChildView"
+                  },
+                  "title": "Blocking Children",
+                  "type": "array"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reply"
+                },
+                "status_note": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Status Note"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
+                }
+              },
+              "required": [
+                "assignment",
+                "approval",
+                "proposal",
+                "blocking_children",
+                "reply",
+                "status_note",
+                "overdue_days"
+              ],
+              "title": "TaskDerivedView",
+              "type": "object"
+            },
             "TaskLineageView": {
               "properties": {
                 "request_thread_id": {
@@ -9243,10 +9356,64 @@
                   "title": "Visibility",
                   "type": "string"
                 },
+                "cancel_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Cancel Reason"
+                },
+                "started_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Started At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "reopened_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reopened At"
+                },
                 "assignment": {
                   "anyOf": [
                     {
                       "$ref": "#/$defs/TaskAssignmentView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
                     },
                     {
                       "type": "null"
@@ -9272,7 +9439,12 @@
                 "project_id",
                 "origin_kind",
                 "visibility",
+                "cancel_reason",
+                "started_at",
+                "completed_at",
+                "reopened_at",
                 "assignment",
+                "derived",
                 "lineage"
               ],
               "title": "TaskMutationResult",
@@ -15024,6 +15196,119 @@
               "title": "TaskAssignmentView",
               "type": "object"
             },
+            "TaskBlockingChildView": {
+              "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "why": {
+                  "title": "Why",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "why"
+              ],
+              "title": "TaskBlockingChildView",
+              "type": "object"
+            },
+            "TaskDerivedView": {
+              "description": "**서버가 만드는 파생 표시** (SPEC-003 §4 Data). 화면이 `state` 로 되짚지 않는다.\n\n`reply`·`status_note` 는 **키만 있고 값은 `null`** 이다 — SPEC-001 에서 이어받은 이름이지만 그\n원장(문의·회신 대기·상태 메모)이 아직 구현되지 않았다. 없는 것을 있다고 내지 않는다.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment"
+                },
+                "approval": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approval"
+                },
+                "proposal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Proposal"
+                },
+                "blocking_children": {
+                  "items": {
+                    "$ref": "#/$defs/TaskBlockingChildView"
+                  },
+                  "title": "Blocking Children",
+                  "type": "array"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reply"
+                },
+                "status_note": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Status Note"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
+                }
+              },
+              "required": [
+                "assignment",
+                "approval",
+                "proposal",
+                "blocking_children",
+                "reply",
+                "status_note",
+                "overdue_days"
+              ],
+              "title": "TaskDerivedView",
+              "type": "object"
+            },
             "TaskLineageView": {
               "properties": {
                 "request_thread_id": {
@@ -15230,10 +15515,64 @@
                   "title": "Visibility",
                   "type": "string"
                 },
+                "cancel_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Cancel Reason"
+                },
+                "started_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Started At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "reopened_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reopened At"
+                },
                 "assignment": {
                   "anyOf": [
                     {
                       "$ref": "#/$defs/TaskAssignmentView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
                     },
                     {
                       "type": "null"
@@ -15282,7 +15621,12 @@
                 "project_id",
                 "origin_kind",
                 "visibility",
+                "cancel_reason",
+                "started_at",
+                "completed_at",
+                "reopened_at",
                 "assignment",
+                "derived",
                 "lineage",
                 "checklist_progress",
                 "origin",
@@ -15502,6 +15846,119 @@
               "title": "TaskAssignmentView",
               "type": "object"
             },
+            "TaskBlockingChildView": {
+              "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "why": {
+                  "title": "Why",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "why"
+              ],
+              "title": "TaskBlockingChildView",
+              "type": "object"
+            },
+            "TaskDerivedView": {
+              "description": "**서버가 만드는 파생 표시** (SPEC-003 §4 Data). 화면이 `state` 로 되짚지 않는다.\n\n`reply`·`status_note` 는 **키만 있고 값은 `null`** 이다 — SPEC-001 에서 이어받은 이름이지만 그\n원장(문의·회신 대기·상태 메모)이 아직 구현되지 않았다. 없는 것을 있다고 내지 않는다.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment"
+                },
+                "approval": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approval"
+                },
+                "proposal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Proposal"
+                },
+                "blocking_children": {
+                  "items": {
+                    "$ref": "#/$defs/TaskBlockingChildView"
+                  },
+                  "title": "Blocking Children",
+                  "type": "array"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reply"
+                },
+                "status_note": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Status Note"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
+                }
+              },
+              "required": [
+                "assignment",
+                "approval",
+                "proposal",
+                "blocking_children",
+                "reply",
+                "status_note",
+                "overdue_days"
+              ],
+              "title": "TaskDerivedView",
+              "type": "object"
+            },
             "TaskLineageView": {
               "properties": {
                 "request_thread_id": {
@@ -15708,10 +16165,64 @@
                   "title": "Visibility",
                   "type": "string"
                 },
+                "cancel_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Cancel Reason"
+                },
+                "started_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Started At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "reopened_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reopened At"
+                },
                 "assignment": {
                   "anyOf": [
                     {
                       "$ref": "#/$defs/TaskAssignmentView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
                     },
                     {
                       "type": "null"
@@ -15760,7 +16271,12 @@
                 "project_id",
                 "origin_kind",
                 "visibility",
+                "cancel_reason",
+                "started_at",
+                "completed_at",
+                "reopened_at",
                 "assignment",
+                "derived",
                 "lineage",
                 "checklist_progress",
                 "origin",
@@ -16043,6 +16559,59 @@
               "title": "TaskAssignmentView",
               "type": "object"
             },
+            "TaskBlockingChildView": {
+              "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "why": {
+                  "title": "Why",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "why"
+              ],
+              "title": "TaskBlockingChildView",
+              "type": "object"
+            },
+            "TaskChildProgressView": {
+              "description": "하위 진행 — `blocking` 이 0이어야 상위를 끝낼 수 있다.\n\n**`blocking=0` 이 완료를 보장하지는 않는다**: 이 숫자는 읽을 수 있는 하위만 센 투영이고, 완료를\n막는 검사는 읽을 수 없는 하위까지 본다. 화면은 이 값으로 단추를 열되 409 를 정상 응답으로 받는다.",
+              "properties": {
+                "done": {
+                  "title": "Done",
+                  "type": "integer"
+                },
+                "blocking": {
+                  "title": "Blocking",
+                  "type": "integer"
+                },
+                "cancelled": {
+                  "title": "Cancelled",
+                  "type": "integer"
+                },
+                "total": {
+                  "title": "Total",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "done",
+                "blocking",
+                "cancelled",
+                "total"
+              ],
+              "title": "TaskChildProgressView",
+              "type": "object"
+            },
             "TaskDeliveryView": {
               "properties": {
                 "action_item_id": {
@@ -16105,6 +16674,95 @@
                 "last_reason"
               ],
               "title": "TaskDeliveryView",
+              "type": "object"
+            },
+            "TaskDerivedView": {
+              "description": "**서버가 만드는 파생 표시** (SPEC-003 §4 Data). 화면이 `state` 로 되짚지 않는다.\n\n`reply`·`status_note` 는 **키만 있고 값은 `null`** 이다 — SPEC-001 에서 이어받은 이름이지만 그\n원장(문의·회신 대기·상태 메모)이 아직 구현되지 않았다. 없는 것을 있다고 내지 않는다.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment"
+                },
+                "approval": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approval"
+                },
+                "proposal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Proposal"
+                },
+                "blocking_children": {
+                  "items": {
+                    "$ref": "#/$defs/TaskBlockingChildView"
+                  },
+                  "title": "Blocking Children",
+                  "type": "array"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reply"
+                },
+                "status_note": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Status Note"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
+                }
+              },
+              "required": [
+                "assignment",
+                "approval",
+                "proposal",
+                "blocking_children",
+                "reply",
+                "status_note",
+                "overdue_days"
+              ],
+              "title": "TaskDerivedView",
               "type": "object"
             },
             "TaskLineageView": {
@@ -16410,6 +17068,16 @@
                       "type": "null"
                     }
                   ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "required": [
@@ -16536,10 +17204,64 @@
               "title": "Visibility",
               "type": "string"
             },
+            "cancel_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cancel Reason"
+            },
+            "started_at": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Started At"
+            },
+            "completed_at": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Completed At"
+            },
+            "reopened_at": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reopened At"
+            },
             "assignment": {
               "anyOf": [
                 {
                   "$ref": "#/$defs/TaskAssignmentView"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "derived": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TaskDerivedView"
                 },
                 {
                   "type": "null"
@@ -16587,7 +17309,7 @@
               "type": "array"
             },
             "child_progress": {
-              "$ref": "#/$defs/TaskProgressView"
+              "$ref": "#/$defs/TaskChildProgressView"
             },
             "delivery": {
               "anyOf": [
@@ -16640,7 +17362,12 @@
             "project_id",
             "origin_kind",
             "visibility",
+            "cancel_reason",
+            "started_at",
+            "completed_at",
+            "reopened_at",
             "assignment",
+            "derived",
             "lineage",
             "origin",
             "assignee",
@@ -16915,6 +17642,148 @@
         },
         "output_schema": {
           "$defs": {
+            "TaskBlockingChildView": {
+              "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "why": {
+                  "title": "Why",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "why"
+              ],
+              "title": "TaskBlockingChildView",
+              "type": "object"
+            },
+            "TaskChildProgressView": {
+              "description": "하위 진행 — `blocking` 이 0이어야 상위를 끝낼 수 있다.\n\n**`blocking=0` 이 완료를 보장하지는 않는다**: 이 숫자는 읽을 수 있는 하위만 센 투영이고, 완료를\n막는 검사는 읽을 수 없는 하위까지 본다. 화면은 이 값으로 단추를 열되 409 를 정상 응답으로 받는다.",
+              "properties": {
+                "done": {
+                  "title": "Done",
+                  "type": "integer"
+                },
+                "blocking": {
+                  "title": "Blocking",
+                  "type": "integer"
+                },
+                "cancelled": {
+                  "title": "Cancelled",
+                  "type": "integer"
+                },
+                "total": {
+                  "title": "Total",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "done",
+                "blocking",
+                "cancelled",
+                "total"
+              ],
+              "title": "TaskChildProgressView",
+              "type": "object"
+            },
+            "TaskDerivedView": {
+              "description": "**서버가 만드는 파생 표시** (SPEC-003 §4 Data). 화면이 `state` 로 되짚지 않는다.\n\n`reply`·`status_note` 는 **키만 있고 값은 `null`** 이다 — SPEC-001 에서 이어받은 이름이지만 그\n원장(문의·회신 대기·상태 메모)이 아직 구현되지 않았다. 없는 것을 있다고 내지 않는다.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment"
+                },
+                "approval": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approval"
+                },
+                "proposal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Proposal"
+                },
+                "blocking_children": {
+                  "items": {
+                    "$ref": "#/$defs/TaskBlockingChildView"
+                  },
+                  "title": "Blocking Children",
+                  "type": "array"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reply"
+                },
+                "status_note": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Status Note"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
+                }
+              },
+              "required": [
+                "assignment",
+                "approval",
+                "proposal",
+                "blocking_children",
+                "reply",
+                "status_note",
+                "overdue_days"
+              ],
+              "title": "TaskDerivedView",
+              "type": "object"
+            },
             "TaskMemberView": {
               "properties": {
                 "member_id": {
@@ -16956,24 +17825,6 @@
               "title": "TaskParentView",
               "type": "object"
             },
-            "TaskProgressView": {
-              "properties": {
-                "done": {
-                  "title": "Done",
-                  "type": "integer"
-                },
-                "total": {
-                  "title": "Total",
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "done",
-                "total"
-              ],
-              "title": "TaskProgressView",
-              "type": "object"
-            },
             "TaskSummaryView": {
               "properties": {
                 "task_id": {
@@ -17003,6 +17854,16 @@
                   "anyOf": [
                     {
                       "$ref": "#/$defs/TaskMemberView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
                     },
                     {
                       "type": "null"
@@ -17046,7 +17907,7 @@
             "progress": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/TaskProgressView"
+                  "$ref": "#/$defs/TaskChildProgressView"
                 },
                 {
                   "type": "null"
@@ -20616,7 +21477,7 @@
       {
         "name": "task_create_self",
         "title": "내 업무 생성 준비",
-        "description": "Create a self-owned Task (title 1–300 characters, up to 50 initial checklist steps) with the same fields as direct creation: description, ISO start/due dates, project, first checklist steps in order, earlier Tasks to point at as context (`참고 업무` — a pointer, never a claim about cause or a grant of access), and an optional one-level parent Task. In a delegated AX conversation, this returns a pending Action proposal for human approval; it does not create the Task before approval.",
+        "description": "Create a Task with the same fields as direct creation (title 1–300 characters, up to 50 initial checklist steps): description, ISO start/due dates, project, first checklist steps in order, earlier Tasks to point at as context (`참고 업무` — a pointer, never a claim about cause or a grant of access), and an optional one-level parent Task. Leave assignee_id empty (or name yourself) for your own work; name an allowed recipient from work_request_assignee_candidates to send it, and it becomes their Task at once with no acceptance step (start_date, parent and project are refused on that path). idempotency_key is required: make one key per creation intent, resend the same key on a retry, and use a new key for a new Task. In a delegated AX conversation, this returns a pending Action proposal for human approval; it does not create the Task before approval.",
         "adapter_operation": "create_self_task",
         "exposure": {
           "any_capabilities": [],
@@ -20633,6 +21494,11 @@
               "maxLength": 300,
               "minLength": 1,
               "title": "업무 명",
+              "type": "string"
+            },
+            "idempotency_key": {
+              "description": "이 생성 의도의 멱등 키(필수). 한 생성 의도에 키 하나를 만들어 두고, 응답 유실·재시도·연타 동안 **같은 키**를 그대로 다시 보낸다. 새로 만드는 업무에는 **새 키**를 쓴다. 같은 키에 내용이 다르면 충돌로 거절된다. 비어 있으면 거부되며 서버가 대신 만들어 채우지 않는다.",
+              "title": "Idempotency Key",
               "type": "string"
             },
             "checklist": {
@@ -20724,10 +21590,24 @@
               ],
               "default": null,
               "title": "Project Id"
+            },
+            "assignee_id": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "담당"
             }
           },
           "required": [
-            "title"
+            "title",
+            "idempotency_key"
           ],
           "title": "task_create_selfArguments",
           "type": "object",
@@ -21263,6 +22143,119 @@
               "title": "TaskAssignmentView",
               "type": "object"
             },
+            "TaskBlockingChildView": {
+              "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "why": {
+                  "title": "Why",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "why"
+              ],
+              "title": "TaskBlockingChildView",
+              "type": "object"
+            },
+            "TaskDerivedView": {
+              "description": "**서버가 만드는 파생 표시** (SPEC-003 §4 Data). 화면이 `state` 로 되짚지 않는다.\n\n`reply`·`status_note` 는 **키만 있고 값은 `null`** 이다 — SPEC-001 에서 이어받은 이름이지만 그\n원장(문의·회신 대기·상태 메모)이 아직 구현되지 않았다. 없는 것을 있다고 내지 않는다.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment"
+                },
+                "approval": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approval"
+                },
+                "proposal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Proposal"
+                },
+                "blocking_children": {
+                  "items": {
+                    "$ref": "#/$defs/TaskBlockingChildView"
+                  },
+                  "title": "Blocking Children",
+                  "type": "array"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reply"
+                },
+                "status_note": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Status Note"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
+                }
+              },
+              "required": [
+                "assignment",
+                "approval",
+                "proposal",
+                "blocking_children",
+                "reply",
+                "status_note",
+                "overdue_days"
+              ],
+              "title": "TaskDerivedView",
+              "type": "object"
+            },
             "TaskLineageView": {
               "properties": {
                 "request_thread_id": {
@@ -21469,10 +22462,64 @@
                   "title": "Visibility",
                   "type": "string"
                 },
+                "cancel_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Cancel Reason"
+                },
+                "started_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Started At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "reopened_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reopened At"
+                },
                 "assignment": {
                   "anyOf": [
                     {
                       "$ref": "#/$defs/TaskAssignmentView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
                     },
                     {
                       "type": "null"
@@ -21498,7 +22545,12 @@
                 "project_id",
                 "origin_kind",
                 "visibility",
+                "cancel_reason",
+                "started_at",
+                "completed_at",
+                "reopened_at",
                 "assignment",
+                "derived",
                 "lineage"
               ],
               "title": "TaskMutationResult",
@@ -21577,7 +22629,7 @@
       {
         "name": "task_assign",
         "title": "업무 배정 준비",
-        "description": "Prepare a manager/directive assignment when the user says 업무 배정, assign, or 내려보내기. Resolve a named recipient with task_assignment_candidates, then assign a new Task (title 1–300 characters; optional ISO schedule, checklist, readable reference Task IDs and one-level parent Task). Direct calls create a pending assignment; delegated calls first prepare an editable human confirmation. The assignee must then accept before it appears in their work. Use task_create_self for yourself and work_request_create for a horizontal request, 부탁, or 협업 요청.",
+        "description": "Prepare a manager/directive assignment when the user says 업무 배정, assign, or 내려보내기. Resolve a named recipient with task_assignment_candidates, then assign a new Task (title 1–300 characters; optional ISO schedule, checklist, readable reference Task IDs and one-level parent Task). idempotency_key is required: one key per assignment intent, the same key on a retry, a new key for a new assignment. Direct calls create the assignment; delegated calls first prepare an editable human confirmation. The Task enters the assignee's work at once — there is no acceptance step. Use task_create_self for yourself and work_request_create for a horizontal request, 부탁, or 협업 요청.",
         "adapter_operation": "assign_task",
         "exposure": {
           "any_capabilities": [],
@@ -21598,6 +22650,11 @@
             },
             "assignee_id": {
               "title": "Assignee Id",
+              "type": "string"
+            },
+            "idempotency_key": {
+              "description": "이 생성 의도의 멱등 키(필수). 한 생성 의도에 키 하나를 만들어 두고, 응답 유실·재시도·연타 동안 **같은 키**를 그대로 다시 보낸다. 새로 만드는 업무에는 **새 키**를 쓴다. 같은 키에 내용이 다르면 충돌로 거절된다. 비어 있으면 거부되며 서버가 대신 만들어 채우지 않는다.",
+              "title": "Idempotency Key",
               "type": "string"
             },
             "description": {
@@ -21681,7 +22738,8 @@
           },
           "required": [
             "title",
-            "assignee_id"
+            "assignee_id",
+            "idempotency_key"
           ],
           "title": "task_assignArguments",
           "type": "object",
@@ -22309,6 +23367,119 @@
               "title": "TaskAssignmentView",
               "type": "object"
             },
+            "TaskBlockingChildView": {
+              "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "why": {
+                  "title": "Why",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "why"
+              ],
+              "title": "TaskBlockingChildView",
+              "type": "object"
+            },
+            "TaskDerivedView": {
+              "description": "**서버가 만드는 파생 표시** (SPEC-003 §4 Data). 화면이 `state` 로 되짚지 않는다.\n\n`reply`·`status_note` 는 **키만 있고 값은 `null`** 이다 — SPEC-001 에서 이어받은 이름이지만 그\n원장(문의·회신 대기·상태 메모)이 아직 구현되지 않았다. 없는 것을 있다고 내지 않는다.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment"
+                },
+                "approval": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approval"
+                },
+                "proposal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Proposal"
+                },
+                "blocking_children": {
+                  "items": {
+                    "$ref": "#/$defs/TaskBlockingChildView"
+                  },
+                  "title": "Blocking Children",
+                  "type": "array"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reply"
+                },
+                "status_note": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Status Note"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
+                }
+              },
+              "required": [
+                "assignment",
+                "approval",
+                "proposal",
+                "blocking_children",
+                "reply",
+                "status_note",
+                "overdue_days"
+              ],
+              "title": "TaskDerivedView",
+              "type": "object"
+            },
             "TaskLineageView": {
               "properties": {
                 "request_thread_id": {
@@ -22515,10 +23686,64 @@
                   "title": "Visibility",
                   "type": "string"
                 },
+                "cancel_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Cancel Reason"
+                },
+                "started_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Started At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "reopened_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reopened At"
+                },
                 "assignment": {
                   "anyOf": [
                     {
                       "$ref": "#/$defs/TaskAssignmentView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
                     },
                     {
                       "type": "null"
@@ -22544,7 +23769,12 @@
                 "project_id",
                 "origin_kind",
                 "visibility",
+                "cancel_reason",
+                "started_at",
+                "completed_at",
+                "reopened_at",
                 "assignment",
+                "derived",
                 "lineage"
               ],
               "title": "TaskMutationResult",
@@ -23201,6 +24431,119 @@
               "title": "TaskAssignmentView",
               "type": "object"
             },
+            "TaskBlockingChildView": {
+              "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "why": {
+                  "title": "Why",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "why"
+              ],
+              "title": "TaskBlockingChildView",
+              "type": "object"
+            },
+            "TaskDerivedView": {
+              "description": "**서버가 만드는 파생 표시** (SPEC-003 §4 Data). 화면이 `state` 로 되짚지 않는다.\n\n`reply`·`status_note` 는 **키만 있고 값은 `null`** 이다 — SPEC-001 에서 이어받은 이름이지만 그\n원장(문의·회신 대기·상태 메모)이 아직 구현되지 않았다. 없는 것을 있다고 내지 않는다.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment"
+                },
+                "approval": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approval"
+                },
+                "proposal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Proposal"
+                },
+                "blocking_children": {
+                  "items": {
+                    "$ref": "#/$defs/TaskBlockingChildView"
+                  },
+                  "title": "Blocking Children",
+                  "type": "array"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reply"
+                },
+                "status_note": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Status Note"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
+                }
+              },
+              "required": [
+                "assignment",
+                "approval",
+                "proposal",
+                "blocking_children",
+                "reply",
+                "status_note",
+                "overdue_days"
+              ],
+              "title": "TaskDerivedView",
+              "type": "object"
+            },
             "TaskLineageView": {
               "properties": {
                 "request_thread_id": {
@@ -23407,10 +24750,64 @@
                   "title": "Visibility",
                   "type": "string"
                 },
+                "cancel_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Cancel Reason"
+                },
+                "started_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Started At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "reopened_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reopened At"
+                },
                 "assignment": {
                   "anyOf": [
                     {
                       "$ref": "#/$defs/TaskAssignmentView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
                     },
                     {
                       "type": "null"
@@ -23436,7 +24833,12 @@
                 "project_id",
                 "origin_kind",
                 "visibility",
+                "cancel_reason",
+                "started_at",
+                "completed_at",
+                "reopened_at",
                 "assignment",
+                "derived",
                 "lineage"
               ],
               "title": "TaskMutationResult",
@@ -24030,6 +25432,119 @@
               "title": "TaskAssignmentView",
               "type": "object"
             },
+            "TaskBlockingChildView": {
+              "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "why": {
+                  "title": "Why",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "why"
+              ],
+              "title": "TaskBlockingChildView",
+              "type": "object"
+            },
+            "TaskDerivedView": {
+              "description": "**서버가 만드는 파생 표시** (SPEC-003 §4 Data). 화면이 `state` 로 되짚지 않는다.\n\n`reply`·`status_note` 는 **키만 있고 값은 `null`** 이다 — SPEC-001 에서 이어받은 이름이지만 그\n원장(문의·회신 대기·상태 메모)이 아직 구현되지 않았다. 없는 것을 있다고 내지 않는다.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment"
+                },
+                "approval": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approval"
+                },
+                "proposal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Proposal"
+                },
+                "blocking_children": {
+                  "items": {
+                    "$ref": "#/$defs/TaskBlockingChildView"
+                  },
+                  "title": "Blocking Children",
+                  "type": "array"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reply"
+                },
+                "status_note": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Status Note"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
+                }
+              },
+              "required": [
+                "assignment",
+                "approval",
+                "proposal",
+                "blocking_children",
+                "reply",
+                "status_note",
+                "overdue_days"
+              ],
+              "title": "TaskDerivedView",
+              "type": "object"
+            },
             "TaskLineageView": {
               "properties": {
                 "request_thread_id": {
@@ -24236,10 +25751,64 @@
                   "title": "Visibility",
                   "type": "string"
                 },
+                "cancel_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Cancel Reason"
+                },
+                "started_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Started At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "reopened_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reopened At"
+                },
                 "assignment": {
                   "anyOf": [
                     {
                       "$ref": "#/$defs/TaskAssignmentView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
                     },
                     {
                       "type": "null"
@@ -24265,7 +25834,12 @@
                 "project_id",
                 "origin_kind",
                 "visibility",
+                "cancel_reason",
+                "started_at",
+                "completed_at",
+                "reopened_at",
                 "assignment",
+                "derived",
                 "lineage"
               ],
               "title": "TaskMutationResult",
@@ -24859,6 +26433,119 @@
               "title": "TaskAssignmentView",
               "type": "object"
             },
+            "TaskBlockingChildView": {
+              "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "why": {
+                  "title": "Why",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "why"
+              ],
+              "title": "TaskBlockingChildView",
+              "type": "object"
+            },
+            "TaskDerivedView": {
+              "description": "**서버가 만드는 파생 표시** (SPEC-003 §4 Data). 화면이 `state` 로 되짚지 않는다.\n\n`reply`·`status_note` 는 **키만 있고 값은 `null`** 이다 — SPEC-001 에서 이어받은 이름이지만 그\n원장(문의·회신 대기·상태 메모)이 아직 구현되지 않았다. 없는 것을 있다고 내지 않는다.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment"
+                },
+                "approval": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approval"
+                },
+                "proposal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Proposal"
+                },
+                "blocking_children": {
+                  "items": {
+                    "$ref": "#/$defs/TaskBlockingChildView"
+                  },
+                  "title": "Blocking Children",
+                  "type": "array"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reply"
+                },
+                "status_note": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Status Note"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
+                }
+              },
+              "required": [
+                "assignment",
+                "approval",
+                "proposal",
+                "blocking_children",
+                "reply",
+                "status_note",
+                "overdue_days"
+              ],
+              "title": "TaskDerivedView",
+              "type": "object"
+            },
             "TaskLineageView": {
               "properties": {
                 "request_thread_id": {
@@ -25065,10 +26752,64 @@
                   "title": "Visibility",
                   "type": "string"
                 },
+                "cancel_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Cancel Reason"
+                },
+                "started_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Started At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "reopened_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reopened At"
+                },
                 "assignment": {
                   "anyOf": [
                     {
                       "$ref": "#/$defs/TaskAssignmentView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
                     },
                     {
                       "type": "null"
@@ -25094,7 +26835,12 @@
                 "project_id",
                 "origin_kind",
                 "visibility",
+                "cancel_reason",
+                "started_at",
+                "completed_at",
+                "reopened_at",
                 "assignment",
+                "derived",
                 "lineage"
               ],
               "title": "TaskMutationResult",
@@ -25688,6 +27434,119 @@
               "title": "TaskAssignmentView",
               "type": "object"
             },
+            "TaskBlockingChildView": {
+              "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "why": {
+                  "title": "Why",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "why"
+              ],
+              "title": "TaskBlockingChildView",
+              "type": "object"
+            },
+            "TaskDerivedView": {
+              "description": "**서버가 만드는 파생 표시** (SPEC-003 §4 Data). 화면이 `state` 로 되짚지 않는다.\n\n`reply`·`status_note` 는 **키만 있고 값은 `null`** 이다 — SPEC-001 에서 이어받은 이름이지만 그\n원장(문의·회신 대기·상태 메모)이 아직 구현되지 않았다. 없는 것을 있다고 내지 않는다.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment"
+                },
+                "approval": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approval"
+                },
+                "proposal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Proposal"
+                },
+                "blocking_children": {
+                  "items": {
+                    "$ref": "#/$defs/TaskBlockingChildView"
+                  },
+                  "title": "Blocking Children",
+                  "type": "array"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reply"
+                },
+                "status_note": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Status Note"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
+                }
+              },
+              "required": [
+                "assignment",
+                "approval",
+                "proposal",
+                "blocking_children",
+                "reply",
+                "status_note",
+                "overdue_days"
+              ],
+              "title": "TaskDerivedView",
+              "type": "object"
+            },
             "TaskLineageView": {
               "properties": {
                 "request_thread_id": {
@@ -25894,10 +27753,64 @@
                   "title": "Visibility",
                   "type": "string"
                 },
+                "cancel_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Cancel Reason"
+                },
+                "started_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Started At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "reopened_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reopened At"
+                },
                 "assignment": {
                   "anyOf": [
                     {
                       "$ref": "#/$defs/TaskAssignmentView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
                     },
                     {
                       "type": "null"
@@ -25923,7 +27836,12 @@
                 "project_id",
                 "origin_kind",
                 "visibility",
+                "cancel_reason",
+                "started_at",
+                "completed_at",
+                "reopened_at",
                 "assignment",
+                "derived",
                 "lineage"
               ],
               "title": "TaskMutationResult",
@@ -26517,6 +28435,119 @@
               "title": "TaskAssignmentView",
               "type": "object"
             },
+            "TaskBlockingChildView": {
+              "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "why": {
+                  "title": "Why",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "why"
+              ],
+              "title": "TaskBlockingChildView",
+              "type": "object"
+            },
+            "TaskDerivedView": {
+              "description": "**서버가 만드는 파생 표시** (SPEC-003 §4 Data). 화면이 `state` 로 되짚지 않는다.\n\n`reply`·`status_note` 는 **키만 있고 값은 `null`** 이다 — SPEC-001 에서 이어받은 이름이지만 그\n원장(문의·회신 대기·상태 메모)이 아직 구현되지 않았다. 없는 것을 있다고 내지 않는다.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment"
+                },
+                "approval": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approval"
+                },
+                "proposal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Proposal"
+                },
+                "blocking_children": {
+                  "items": {
+                    "$ref": "#/$defs/TaskBlockingChildView"
+                  },
+                  "title": "Blocking Children",
+                  "type": "array"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reply"
+                },
+                "status_note": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Status Note"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
+                }
+              },
+              "required": [
+                "assignment",
+                "approval",
+                "proposal",
+                "blocking_children",
+                "reply",
+                "status_note",
+                "overdue_days"
+              ],
+              "title": "TaskDerivedView",
+              "type": "object"
+            },
             "TaskLineageView": {
               "properties": {
                 "request_thread_id": {
@@ -26723,10 +28754,64 @@
                   "title": "Visibility",
                   "type": "string"
                 },
+                "cancel_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Cancel Reason"
+                },
+                "started_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Started At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "reopened_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reopened At"
+                },
                 "assignment": {
                   "anyOf": [
                     {
                       "$ref": "#/$defs/TaskAssignmentView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
                     },
                     {
                       "type": "null"
@@ -26752,7 +28837,12 @@
                 "project_id",
                 "origin_kind",
                 "visibility",
+                "cancel_reason",
+                "started_at",
+                "completed_at",
+                "reopened_at",
                 "assignment",
+                "derived",
                 "lineage"
               ],
               "title": "TaskMutationResult",
@@ -27346,6 +29436,119 @@
               "title": "TaskAssignmentView",
               "type": "object"
             },
+            "TaskBlockingChildView": {
+              "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "why": {
+                  "title": "Why",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "why"
+              ],
+              "title": "TaskBlockingChildView",
+              "type": "object"
+            },
+            "TaskDerivedView": {
+              "description": "**서버가 만드는 파생 표시** (SPEC-003 §4 Data). 화면이 `state` 로 되짚지 않는다.\n\n`reply`·`status_note` 는 **키만 있고 값은 `null`** 이다 — SPEC-001 에서 이어받은 이름이지만 그\n원장(문의·회신 대기·상태 메모)이 아직 구현되지 않았다. 없는 것을 있다고 내지 않는다.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment"
+                },
+                "approval": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approval"
+                },
+                "proposal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Proposal"
+                },
+                "blocking_children": {
+                  "items": {
+                    "$ref": "#/$defs/TaskBlockingChildView"
+                  },
+                  "title": "Blocking Children",
+                  "type": "array"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reply"
+                },
+                "status_note": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Status Note"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
+                }
+              },
+              "required": [
+                "assignment",
+                "approval",
+                "proposal",
+                "blocking_children",
+                "reply",
+                "status_note",
+                "overdue_days"
+              ],
+              "title": "TaskDerivedView",
+              "type": "object"
+            },
             "TaskLineageView": {
               "properties": {
                 "request_thread_id": {
@@ -27552,10 +29755,64 @@
                   "title": "Visibility",
                   "type": "string"
                 },
+                "cancel_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Cancel Reason"
+                },
+                "started_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Started At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "reopened_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reopened At"
+                },
                 "assignment": {
                   "anyOf": [
                     {
                       "$ref": "#/$defs/TaskAssignmentView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
                     },
                     {
                       "type": "null"
@@ -27581,7 +29838,12 @@
                 "project_id",
                 "origin_kind",
                 "visibility",
+                "cancel_reason",
+                "started_at",
+                "completed_at",
+                "reopened_at",
                 "assignment",
+                "derived",
                 "lineage"
               ],
               "title": "TaskMutationResult",
@@ -33278,7 +35540,7 @@
       {
         "name": "meeting_todo_promote",
         "title": "회의 다음 할 일 요청 준비",
-        "description": "Prepare promoting one final meeting follow-up candidate into a WorkRequest for the selected assignee. Delegated execution requires human confirmation.",
+        "description": "Prepare promoting one final meeting follow-up candidate into a WorkRequest for the selected assignee. idempotency_key is required: one key per promotion intent, the same key on a retry. The Task stands with the request — there is no acceptance step. Delegated execution requires human confirmation.",
         "adapter_operation": "promote_current_meeting_todo",
         "exposure": {
           "any_capabilities": [],
@@ -33378,12 +35640,18 @@
             },
             "request": {
               "$ref": "#/$defs/MeetingTodoPromotionInput"
+            },
+            "idempotency_key": {
+              "description": "이 생성 의도의 멱등 키(필수). 한 생성 의도에 키 하나를 만들어 두고, 응답 유실·재시도·연타 동안 **같은 키**를 그대로 다시 보낸다. 새로 만드는 업무에는 **새 키**를 쓴다. 같은 키에 내용이 다르면 충돌로 거절된다. 비어 있으면 거부되며 서버가 대신 만들어 채우지 않는다.",
+              "title": "Idempotency Key",
+              "type": "string"
             }
           },
           "required": [
             "meeting_id",
             "todo_id",
-            "request"
+            "request",
+            "idempotency_key"
           ],
           "title": "meeting_todo_promoteArguments",
           "type": "object",
@@ -41040,6 +43308,119 @@
               "title": "TaskAssignmentView",
               "type": "object"
             },
+            "TaskBlockingChildView": {
+              "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "why": {
+                  "title": "Why",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "why"
+              ],
+              "title": "TaskBlockingChildView",
+              "type": "object"
+            },
+            "TaskDerivedView": {
+              "description": "**서버가 만드는 파생 표시** (SPEC-003 §4 Data). 화면이 `state` 로 되짚지 않는다.\n\n`reply`·`status_note` 는 **키만 있고 값은 `null`** 이다 — SPEC-001 에서 이어받은 이름이지만 그\n원장(문의·회신 대기·상태 메모)이 아직 구현되지 않았다. 없는 것을 있다고 내지 않는다.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment"
+                },
+                "approval": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approval"
+                },
+                "proposal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Proposal"
+                },
+                "blocking_children": {
+                  "items": {
+                    "$ref": "#/$defs/TaskBlockingChildView"
+                  },
+                  "title": "Blocking Children",
+                  "type": "array"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reply"
+                },
+                "status_note": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Status Note"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
+                }
+              },
+              "required": [
+                "assignment",
+                "approval",
+                "proposal",
+                "blocking_children",
+                "reply",
+                "status_note",
+                "overdue_days"
+              ],
+              "title": "TaskDerivedView",
+              "type": "object"
+            },
             "TaskLineageView": {
               "properties": {
                 "request_thread_id": {
@@ -41246,10 +43627,64 @@
                   "title": "Visibility",
                   "type": "string"
                 },
+                "cancel_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Cancel Reason"
+                },
+                "started_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Started At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "reopened_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reopened At"
+                },
                 "assignment": {
                   "anyOf": [
                     {
                       "$ref": "#/$defs/TaskAssignmentView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
                     },
                     {
                       "type": "null"
@@ -41275,7 +43710,12 @@
                 "project_id",
                 "origin_kind",
                 "visibility",
+                "cancel_reason",
+                "started_at",
+                "completed_at",
+                "reopened_at",
                 "assignment",
+                "derived",
                 "lineage"
               ],
               "title": "TaskMutationResult",
@@ -53591,6 +56031,119 @@
               "title": "TaskAssignmentView",
               "type": "object"
             },
+            "TaskBlockingChildView": {
+              "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "why": {
+                  "title": "Why",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "why"
+              ],
+              "title": "TaskBlockingChildView",
+              "type": "object"
+            },
+            "TaskDerivedView": {
+              "description": "**서버가 만드는 파생 표시** (SPEC-003 §4 Data). 화면이 `state` 로 되짚지 않는다.\n\n`reply`·`status_note` 는 **키만 있고 값은 `null`** 이다 — SPEC-001 에서 이어받은 이름이지만 그\n원장(문의·회신 대기·상태 메모)이 아직 구현되지 않았다. 없는 것을 있다고 내지 않는다.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment"
+                },
+                "approval": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approval"
+                },
+                "proposal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Proposal"
+                },
+                "blocking_children": {
+                  "items": {
+                    "$ref": "#/$defs/TaskBlockingChildView"
+                  },
+                  "title": "Blocking Children",
+                  "type": "array"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reply"
+                },
+                "status_note": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Status Note"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
+                }
+              },
+              "required": [
+                "assignment",
+                "approval",
+                "proposal",
+                "blocking_children",
+                "reply",
+                "status_note",
+                "overdue_days"
+              ],
+              "title": "TaskDerivedView",
+              "type": "object"
+            },
             "TaskLineageView": {
               "properties": {
                 "request_thread_id": {
@@ -53797,10 +56350,64 @@
                   "title": "Visibility",
                   "type": "string"
                 },
+                "cancel_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Cancel Reason"
+                },
+                "started_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Started At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "reopened_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reopened At"
+                },
                 "assignment": {
                   "anyOf": [
                     {
                       "$ref": "#/$defs/TaskAssignmentView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
                     },
                     {
                       "type": "null"
@@ -53826,7 +56433,12 @@
                 "project_id",
                 "origin_kind",
                 "visibility",
+                "cancel_reason",
+                "started_at",
+                "completed_at",
+                "reopened_at",
                 "assignment",
+                "derived",
                 "lineage"
               ],
               "title": "TaskMutationResult",
@@ -54445,6 +57057,30 @@
               "title": "TaskAssignmentView",
               "type": "object"
             },
+            "TaskBlockingChildView": {
+              "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "why": {
+                  "title": "Why",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "why"
+              ],
+              "title": "TaskBlockingChildView",
+              "type": "object"
+            },
             "TaskCompletionResult": {
               "properties": {
                 "task_id": {
@@ -54559,10 +57195,64 @@
                   "title": "Visibility",
                   "type": "string"
                 },
+                "cancel_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Cancel Reason"
+                },
+                "started_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Started At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "reopened_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reopened At"
+                },
                 "assignment": {
                   "anyOf": [
                     {
                       "$ref": "#/$defs/TaskAssignmentView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
                     },
                     {
                       "type": "null"
@@ -54598,7 +57288,12 @@
                 "project_id",
                 "origin_kind",
                 "visibility",
+                "cancel_reason",
+                "started_at",
+                "completed_at",
+                "reopened_at",
                 "assignment",
+                "derived",
                 "lineage",
                 "delivery"
               ],
@@ -54667,6 +57362,95 @@
                 "last_reason"
               ],
               "title": "TaskDeliveryView",
+              "type": "object"
+            },
+            "TaskDerivedView": {
+              "description": "**서버가 만드는 파생 표시** (SPEC-003 §4 Data). 화면이 `state` 로 되짚지 않는다.\n\n`reply`·`status_note` 는 **키만 있고 값은 `null`** 이다 — SPEC-001 에서 이어받은 이름이지만 그\n원장(문의·회신 대기·상태 메모)이 아직 구현되지 않았다. 없는 것을 있다고 내지 않는다.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment"
+                },
+                "approval": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approval"
+                },
+                "proposal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Proposal"
+                },
+                "blocking_children": {
+                  "items": {
+                    "$ref": "#/$defs/TaskBlockingChildView"
+                  },
+                  "title": "Blocking Children",
+                  "type": "array"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reply"
+                },
+                "status_note": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Status Note"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
+                }
+              },
+              "required": [
+                "assignment",
+                "approval",
+                "proposal",
+                "blocking_children",
+                "reply",
+                "status_note",
+                "overdue_days"
+              ],
+              "title": "TaskDerivedView",
               "type": "object"
             },
             "TaskLineageView": {
@@ -55296,6 +58080,119 @@
               "type": "object"
             },
             "JsonValue": {},
+            "TaskBlockingChildView": {
+              "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "why": {
+                  "title": "Why",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "why"
+              ],
+              "title": "TaskBlockingChildView",
+              "type": "object"
+            },
+            "TaskDerivedView": {
+              "description": "**서버가 만드는 파생 표시** (SPEC-003 §4 Data). 화면이 `state` 로 되짚지 않는다.\n\n`reply`·`status_note` 는 **키만 있고 값은 `null`** 이다 — SPEC-001 에서 이어받은 이름이지만 그\n원장(문의·회신 대기·상태 메모)이 아직 구현되지 않았다. 없는 것을 있다고 내지 않는다.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment"
+                },
+                "approval": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approval"
+                },
+                "proposal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Proposal"
+                },
+                "blocking_children": {
+                  "items": {
+                    "$ref": "#/$defs/TaskBlockingChildView"
+                  },
+                  "title": "Blocking Children",
+                  "type": "array"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reply"
+                },
+                "status_note": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Status Note"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
+                }
+              },
+              "required": [
+                "assignment",
+                "approval",
+                "proposal",
+                "blocking_children",
+                "reply",
+                "status_note",
+                "overdue_days"
+              ],
+              "title": "TaskDerivedView",
+              "type": "object"
+            },
             "TaskMemberView": {
               "properties": {
                 "member_id": {
@@ -55389,6 +58286,16 @@
                   "anyOf": [
                     {
                       "$ref": "#/$defs/TaskMemberView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
                     },
                     {
                       "type": "null"
@@ -56127,6 +59034,32 @@
                   ],
                   "title": "Assignment State"
                 },
+                "parent_task_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Parent Task Id"
+                },
+                "supersedes_request_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Supersedes Request Id"
+                },
+                "list_entry_hidden": {
+                  "title": "List Entry Hidden",
+                  "type": "boolean"
+                },
                 "conditions": {
                   "anyOf": [
                     {
@@ -56160,6 +59093,9 @@
                 "version",
                 "task_id",
                 "assignment_state",
+                "parent_task_id",
+                "supersedes_request_id",
+                "list_entry_hidden",
                 "conditions"
               ],
               "title": "WorkRequestMutationResult",
@@ -56213,6 +59149,119 @@
         "output_schema": {
           "$defs": {
             "JsonValue": {},
+            "TaskBlockingChildView": {
+              "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "why": {
+                  "title": "Why",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "why"
+              ],
+              "title": "TaskBlockingChildView",
+              "type": "object"
+            },
+            "TaskDerivedView": {
+              "description": "**서버가 만드는 파생 표시** (SPEC-003 §4 Data). 화면이 `state` 로 되짚지 않는다.\n\n`reply`·`status_note` 는 **키만 있고 값은 `null`** 이다 — SPEC-001 에서 이어받은 이름이지만 그\n원장(문의·회신 대기·상태 메모)이 아직 구현되지 않았다. 없는 것을 있다고 내지 않는다.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment"
+                },
+                "approval": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approval"
+                },
+                "proposal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Proposal"
+                },
+                "blocking_children": {
+                  "items": {
+                    "$ref": "#/$defs/TaskBlockingChildView"
+                  },
+                  "title": "Blocking Children",
+                  "type": "array"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reply"
+                },
+                "status_note": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Status Note"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
+                }
+              },
+              "required": [
+                "assignment",
+                "approval",
+                "proposal",
+                "blocking_children",
+                "reply",
+                "status_note",
+                "overdue_days"
+              ],
+              "title": "TaskDerivedView",
+              "type": "object"
+            },
             "TaskMemberView": {
               "properties": {
                 "member_id": {
@@ -56260,6 +59309,16 @@
                   "anyOf": [
                     {
                       "$ref": "#/$defs/TaskMemberView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
                     },
                     {
                       "type": "null"
@@ -56438,6 +59497,32 @@
               ],
               "title": "Assignment State"
             },
+            "parent_task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Parent Task Id"
+            },
+            "supersedes_request_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Supersedes Request Id"
+            },
+            "list_entry_hidden": {
+              "title": "List Entry Hidden",
+              "type": "boolean"
+            },
             "conditions": {
               "anyOf": [
                 {
@@ -56489,6 +59574,9 @@
             "version",
             "task_id",
             "assignment_state",
+            "parent_task_id",
+            "supersedes_request_id",
+            "list_entry_hidden",
             "conditions",
             "references",
             "source_meeting_title"
@@ -56913,6 +60001,32 @@
                   ],
                   "title": "Assignment State"
                 },
+                "parent_task_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Parent Task Id"
+                },
+                "supersedes_request_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Supersedes Request Id"
+                },
+                "list_entry_hidden": {
+                  "title": "List Entry Hidden",
+                  "type": "boolean"
+                },
                 "conditions": {
                   "anyOf": [
                     {
@@ -56946,6 +60060,9 @@
                 "version",
                 "task_id",
                 "assignment_state",
+                "parent_task_id",
+                "supersedes_request_id",
+                "list_entry_hidden",
                 "conditions"
               ],
               "title": "WorkRequestMutationResult",
@@ -57976,6 +61093,32 @@
                   ],
                   "title": "Assignment State"
                 },
+                "parent_task_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Parent Task Id"
+                },
+                "supersedes_request_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Supersedes Request Id"
+                },
+                "list_entry_hidden": {
+                  "title": "List Entry Hidden",
+                  "type": "boolean"
+                },
                 "conditions": {
                   "anyOf": [
                     {
@@ -58009,6 +61152,9 @@
                 "version",
                 "task_id",
                 "assignment_state",
+                "parent_task_id",
+                "supersedes_request_id",
+                "list_entry_hidden",
                 "conditions"
               ],
               "title": "WorkRequestMutationResult",
@@ -58030,7 +61176,7 @@
       {
         "name": "work_request_create",
         "title": "업무 요청 생성 준비",
-        "description": "Prepare a horizontal WorkRequest when the user says 업무 요청, 수평 요청, 부탁, or 협업 요청, including when they explicitly distinguish it from assignment. Resolve a named recipient with work_request_assignee_candidates, then create the request with title 1–300 characters, optional ISO due date, CC members, initial checklist and readable reference Tasks. CC excludes the requester and recipient. Direct calls submit the request; delegated calls prepare editable confirmation first. A Task is created only after the recipient accepts. Use task_assign only for manager/directive assignment.",
+        "description": "Prepare a horizontal WorkRequest when the user says 업무 요청, 수평 요청, 부탁, or 협업 요청, including when they explicitly distinguish it from assignment. Resolve a named recipient with work_request_assignee_candidates, then create the request with title 1–300 characters, optional ISO due date, CC members, initial checklist and readable reference Tasks. CC excludes the requester and recipient. idempotency_key is required: one key per request intent, the same key on a retry, a new key for a new request. Direct calls submit the request; delegated calls prepare editable confirmation first. The Task is created with the request and enters the recipient's work at once — there is no acceptance step. Use task_assign only for manager/directive assignment.",
         "adapter_operation": "create_work_request",
         "exposure": {
           "any_capabilities": [],
@@ -58051,6 +61197,11 @@
             },
             "assignee_id": {
               "title": "Assignee Id",
+              "type": "string"
+            },
+            "idempotency_key": {
+              "description": "이 생성 의도의 멱등 키(필수). 한 생성 의도에 키 하나를 만들어 두고, 응답 유실·재시도·연타 동안 **같은 키**를 그대로 다시 보낸다. 새로 만드는 업무에는 **새 키**를 쓴다. 같은 키에 내용이 다르면 충돌로 거절된다. 비어 있으면 거부되며 서버가 대신 만들어 채우지 않는다.",
+              "title": "Idempotency Key",
               "type": "string"
             },
             "due_date": {
@@ -58125,7 +61276,8 @@
           },
           "required": [
             "title",
-            "assignee_id"
+            "assignee_id",
+            "idempotency_key"
           ],
           "title": "work_request_createArguments",
           "type": "object",
@@ -58746,6 +61898,32 @@
                   ],
                   "title": "Assignment State"
                 },
+                "parent_task_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Parent Task Id"
+                },
+                "supersedes_request_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Supersedes Request Id"
+                },
+                "list_entry_hidden": {
+                  "title": "List Entry Hidden",
+                  "type": "boolean"
+                },
                 "conditions": {
                   "anyOf": [
                     {
@@ -58779,6 +61957,9 @@
                 "version",
                 "task_id",
                 "assignment_state",
+                "parent_task_id",
+                "supersedes_request_id",
+                "list_entry_hidden",
                 "conditions"
               ],
               "title": "WorkRequestMutationResult",
@@ -63054,6 +66235,1705 @@
           "title": "BrowserInteractionResult",
           "type": "object"
         }
+      },
+      {
+        "name": "task_assignment_list",
+        "title": "업무 담당 이력 조회",
+        "description": "Read one readable task's assignment relationships: who holds it now (`current`), who has been asked and has not answered (`pending`), and the full append-only history. A task being handed over has both a current holder and a pending proposal at the same time — that overlap is what keeps someone responsible throughout. Use this before task_reassign to read the current version and to see whether a proposal is already waiting.",
+        "adapter_operation": "task_assignments",
+        "exposure": {
+          "any_capabilities": [],
+          "all_capabilities": [
+            "task.read"
+          ],
+          "authenticated_only": false,
+          "requires_confirmation": false
+        },
+        "annotations": {
+          "title": null,
+          "read_only_hint": true,
+          "destructive_hint": false,
+          "idempotent_hint": true,
+          "open_world_hint": false
+        },
+        "input_schema": {
+          "properties": {
+            "task_id": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id"
+          ],
+          "title": "task_assignment_listArguments",
+          "type": "object",
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "additionalProperties": true,
+          "title": "task_assignment_listDictOutput",
+          "type": "object"
+        }
+      },
+      {
+        "name": "task_reopen",
+        "title": "끝난 업무 다시 열기 준비",
+        "description": "Prepare reopening a task that is already finished, using its current version from task_get. Previous completion rounds, results and decisions are kept — reopening does not erase them and does not create a new task. It is refused when the parent task is already finished; reopen the parent first. Own work is reopened by its holder and requested work by the requester. Delegated execution requires human confirmation.",
+        "adapter_operation": "reopen_task",
+        "exposure": {
+          "any_capabilities": [],
+          "all_capabilities": [
+            "task.read"
+          ],
+          "authenticated_only": false,
+          "requires_confirmation": true
+        },
+        "annotations": {
+          "title": null,
+          "read_only_hint": false,
+          "destructive_hint": true,
+          "idempotent_hint": true,
+          "open_world_hint": false
+        },
+        "input_schema": {
+          "$defs": {
+            "TaskReopenInput": {
+              "additionalProperties": false,
+              "description": "재개 — 회차는 필수, 사유는 선택이다 (SPEC-003 §4 `reopen`).",
+              "properties": {
+                "expected_version": {
+                  "minimum": 1,
+                  "title": "업무 버전",
+                  "type": "integer"
+                },
+                "reason": {
+                  "anyOf": [
+                    {
+                      "maxLength": 1000,
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "재개 사유"
+                }
+              },
+              "required": [
+                "expected_version"
+              ],
+              "title": "TaskReopenInput",
+              "type": "object"
+            }
+          },
+          "properties": {
+            "task_id": {
+              "title": "Task Id",
+              "type": "string"
+            },
+            "request": {
+              "$ref": "#/$defs/TaskReopenInput"
+            }
+          },
+          "required": [
+            "task_id",
+            "request"
+          ],
+          "title": "task_reopenArguments",
+          "type": "object",
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "$defs": {
+            "ActionCommandView": {
+              "properties": {
+                "id": {
+                  "title": "Id",
+                  "type": "string"
+                },
+                "label": {
+                  "title": "Label",
+                  "type": "string"
+                },
+                "tone": {
+                  "title": "Tone",
+                  "type": "string"
+                },
+                "requires_reason": {
+                  "title": "Requires Reason",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "label",
+                "tone"
+              ],
+              "title": "ActionCommandView",
+              "type": "object"
+            },
+            "ActionEditContract": {
+              "properties": {
+                "editor": {
+                  "title": "Editor",
+                  "type": "string"
+                },
+                "base_submission_version": {
+                  "title": "Base Submission Version",
+                  "type": "integer"
+                },
+                "values": {
+                  "additionalProperties": {
+                    "$ref": "#/$defs/JsonValue"
+                  },
+                  "title": "Values",
+                  "type": "object"
+                },
+                "fields": {
+                  "items": {
+                    "$ref": "#/$defs/ActionEditField"
+                  },
+                  "title": "Fields",
+                  "type": "array"
+                },
+                "warnings": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Warnings",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "editor",
+                "base_submission_version",
+                "values",
+                "fields"
+              ],
+              "title": "ActionEditContract",
+              "type": "object"
+            },
+            "ActionEditField": {
+              "properties": {
+                "id": {
+                  "title": "Id",
+                  "type": "string"
+                },
+                "label": {
+                  "title": "Label",
+                  "type": "string"
+                },
+                "type": {
+                  "title": "Type",
+                  "type": "string"
+                },
+                "required": {
+                  "title": "Required",
+                  "type": "boolean"
+                },
+                "editable": {
+                  "title": "Editable",
+                  "type": "boolean"
+                },
+                "empty_policy": {
+                  "enum": [
+                    "forbid",
+                    "null",
+                    "omit",
+                    "empty_string"
+                  ],
+                  "title": "Empty Policy",
+                  "type": "string"
+                },
+                "value": {
+                  "$ref": "#/$defs/JsonValue"
+                },
+                "label_value": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Label Value"
+                },
+                "options": {
+                  "items": {
+                    "$ref": "#/$defs/ActionEditOption"
+                  },
+                  "title": "Options",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "id",
+                "label",
+                "type",
+                "required",
+                "editable"
+              ],
+              "title": "ActionEditField",
+              "type": "object"
+            },
+            "ActionEditOption": {
+              "properties": {
+                "value": {
+                  "title": "Value",
+                  "type": "string"
+                },
+                "label": {
+                  "title": "Label",
+                  "type": "string"
+                },
+                "organization_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Organization Ids",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "value",
+                "label"
+              ],
+              "title": "ActionEditOption",
+              "type": "object"
+            },
+            "ActionMaterialDraftView": {
+              "properties": {
+                "material_draft_id": {
+                  "title": "Material Draft Id",
+                  "type": "string"
+                },
+                "action_item_id": {
+                  "title": "Action Item Id",
+                  "type": "string"
+                },
+                "source_kind": {
+                  "title": "Source Kind",
+                  "type": "string"
+                },
+                "name": {
+                  "title": "Name",
+                  "type": "string"
+                },
+                "content_type": {
+                  "title": "Content Type",
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "title": "Size Bytes",
+                  "type": "integer"
+                },
+                "url": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Url"
+                },
+                "integrity_ref": {
+                  "title": "Integrity Ref",
+                  "type": "string"
+                },
+                "state": {
+                  "title": "State",
+                  "type": "string"
+                },
+                "expires_at": {
+                  "title": "Expires At",
+                  "type": "string"
+                },
+                "claimed_task_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Claimed Task Id"
+                },
+                "claimed_meeting_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Claimed Meeting Id"
+                }
+              },
+              "required": [
+                "material_draft_id",
+                "action_item_id",
+                "source_kind",
+                "name",
+                "content_type",
+                "size_bytes",
+                "url",
+                "integrity_ref",
+                "state",
+                "expires_at",
+                "claimed_task_id",
+                "claimed_meeting_id"
+              ],
+              "title": "ActionMaterialDraftView",
+              "type": "object"
+            },
+            "ActionMaterialReceipt": {
+              "properties": {
+                "material_draft_id": {
+                  "title": "Material Draft Id",
+                  "type": "string"
+                },
+                "material_id": {
+                  "title": "Material Id",
+                  "type": "string"
+                },
+                "attachment_id": {
+                  "title": "Attachment Id",
+                  "type": "string"
+                },
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "meeting_id": {
+                  "title": "Meeting Id",
+                  "type": "string"
+                },
+                "kind": {
+                  "title": "Kind",
+                  "type": "string"
+                },
+                "name": {
+                  "title": "Name",
+                  "type": "string"
+                },
+                "content_type": {
+                  "title": "Content Type",
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "title": "Size Bytes",
+                  "type": "integer"
+                },
+                "source_kind": {
+                  "title": "Source Kind",
+                  "type": "string"
+                },
+                "url": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Url"
+                },
+                "integrity_ref": {
+                  "title": "Integrity Ref",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "material_id",
+                "attachment_id",
+                "kind",
+                "name",
+                "content_type",
+                "size_bytes",
+                "source_kind",
+                "url",
+                "integrity_ref"
+              ],
+              "title": "ActionMaterialReceipt",
+              "type": "object"
+            },
+            "ActionPreviewField": {
+              "properties": {
+                "id": {
+                  "title": "Id",
+                  "type": "string"
+                },
+                "label": {
+                  "title": "Label",
+                  "type": "string"
+                },
+                "value": {
+                  "title": "Value",
+                  "type": "string"
+                },
+                "kind": {
+                  "title": "Kind",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "label",
+                "value",
+                "kind"
+              ],
+              "title": "ActionPreviewField",
+              "type": "object"
+            },
+            "ActionProposalResult": {
+              "properties": {
+                "action_id": {
+                  "title": "Action Id",
+                  "type": "string"
+                },
+                "conversation_id": {
+                  "title": "Conversation Id",
+                  "type": "string"
+                },
+                "turn_id": {
+                  "title": "Turn Id",
+                  "type": "string"
+                },
+                "action_type": {
+                  "title": "Action Type",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "state": {
+                  "title": "State",
+                  "type": "string"
+                },
+                "version": {
+                  "title": "Version",
+                  "type": "integer"
+                },
+                "payload_hash": {
+                  "title": "Payload Hash",
+                  "type": "string"
+                },
+                "payload_summary": {
+                  "title": "Payload Summary",
+                  "type": "string"
+                },
+                "result": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Result"
+                },
+                "material_drafts": {
+                  "items": {
+                    "$ref": "#/$defs/ActionMaterialDraftView"
+                  },
+                  "title": "Material Drafts",
+                  "type": "array"
+                },
+                "material_results": {
+                  "items": {
+                    "$ref": "#/$defs/ActionMaterialReceipt"
+                  },
+                  "title": "Material Results",
+                  "type": "array"
+                },
+                "audit_ref": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Audit Ref"
+                },
+                "subject": {
+                  "title": "Subject",
+                  "type": "string"
+                },
+                "operation_label": {
+                  "title": "Operation Label",
+                  "type": "string"
+                },
+                "preview": {
+                  "items": {
+                    "$ref": "#/$defs/ActionPreviewField"
+                  },
+                  "title": "Preview",
+                  "type": "array"
+                },
+                "obsolete": {
+                  "title": "Obsolete",
+                  "type": "boolean"
+                },
+                "commands": {
+                  "items": {
+                    "$ref": "#/$defs/ActionCommandView"
+                  },
+                  "title": "Commands",
+                  "type": "array"
+                },
+                "edit_contract": {
+                  "$ref": "#/$defs/ActionEditContract"
+                },
+                "result_summary": {
+                  "title": "Result Summary",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action_id",
+                "conversation_id",
+                "turn_id",
+                "action_type",
+                "title",
+                "state",
+                "version",
+                "payload_hash",
+                "payload_summary",
+                "result",
+                "material_drafts",
+                "material_results",
+                "audit_ref",
+                "subject",
+                "operation_label",
+                "preview",
+                "obsolete",
+                "commands"
+              ],
+              "title": "ActionProposalResult",
+              "type": "object"
+            },
+            "JsonValue": {},
+            "TaskAssignmentView": {
+              "properties": {
+                "assignment_id": {
+                  "title": "Assignment Id",
+                  "type": "string"
+                },
+                "kind": {
+                  "title": "Kind",
+                  "type": "string"
+                },
+                "status": {
+                  "title": "Status",
+                  "type": "string"
+                },
+                "assigned_by": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assigned By"
+                },
+                "accepted_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Accepted At"
+                }
+              },
+              "required": [
+                "assignment_id",
+                "kind",
+                "status",
+                "assigned_by",
+                "accepted_at"
+              ],
+              "title": "TaskAssignmentView",
+              "type": "object"
+            },
+            "TaskBlockingChildView": {
+              "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "why": {
+                  "title": "Why",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "why"
+              ],
+              "title": "TaskBlockingChildView",
+              "type": "object"
+            },
+            "TaskDerivedView": {
+              "description": "**서버가 만드는 파생 표시** (SPEC-003 §4 Data). 화면이 `state` 로 되짚지 않는다.\n\n`reply`·`status_note` 는 **키만 있고 값은 `null`** 이다 — SPEC-001 에서 이어받은 이름이지만 그\n원장(문의·회신 대기·상태 메모)이 아직 구현되지 않았다. 없는 것을 있다고 내지 않는다.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment"
+                },
+                "approval": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approval"
+                },
+                "proposal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Proposal"
+                },
+                "blocking_children": {
+                  "items": {
+                    "$ref": "#/$defs/TaskBlockingChildView"
+                  },
+                  "title": "Blocking Children",
+                  "type": "array"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reply"
+                },
+                "status_note": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Status Note"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
+                }
+              },
+              "required": [
+                "assignment",
+                "approval",
+                "proposal",
+                "blocking_children",
+                "reply",
+                "status_note",
+                "overdue_days"
+              ],
+              "title": "TaskDerivedView",
+              "type": "object"
+            },
+            "TaskLineageView": {
+              "properties": {
+                "request_thread_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Request Thread Id"
+                },
+                "source_work_request_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Source Work Request Id"
+                },
+                "source_decision_item_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Source Decision Item Id"
+                },
+                "source_submission_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Source Submission Id"
+                },
+                "source_review_decision_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Source Review Decision Id"
+                },
+                "source_action_item_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Source Action Item Id"
+                },
+                "source_task_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Source Task Id"
+                }
+              },
+              "required": [
+                "request_thread_id",
+                "source_work_request_id",
+                "source_decision_item_id",
+                "source_submission_id",
+                "source_review_decision_id",
+                "source_action_item_id",
+                "source_task_id"
+              ],
+              "title": "TaskLineageView",
+              "type": "object"
+            },
+            "TaskMutationResult": {
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "state": {
+                  "title": "State",
+                  "type": "string"
+                },
+                "version": {
+                  "title": "Version",
+                  "type": "integer"
+                },
+                "block_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Block Reason"
+                },
+                "description": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Description"
+                },
+                "start_date": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Start Date"
+                },
+                "due_date": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Due Date"
+                },
+                "created_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Created At"
+                },
+                "updated_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Updated At"
+                },
+                "organization_unit_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Organization Unit Id"
+                },
+                "project_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Project Id"
+                },
+                "origin_kind": {
+                  "title": "Origin Kind",
+                  "type": "string"
+                },
+                "visibility": {
+                  "title": "Visibility",
+                  "type": "string"
+                },
+                "cancel_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Cancel Reason"
+                },
+                "started_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Started At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "reopened_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reopened At"
+                },
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskAssignmentView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "lineage": {
+                  "$ref": "#/$defs/TaskLineageView"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "state",
+                "version",
+                "block_reason",
+                "description",
+                "start_date",
+                "due_date",
+                "created_at",
+                "updated_at",
+                "organization_unit_id",
+                "project_id",
+                "origin_kind",
+                "visibility",
+                "cancel_reason",
+                "started_at",
+                "completed_at",
+                "reopened_at",
+                "assignment",
+                "derived",
+                "lineage"
+              ],
+              "title": "TaskMutationResult",
+              "type": "object"
+            }
+          },
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskMutationResult"
+            },
+            {
+              "$ref": "#/$defs/ActionProposalResult"
+            }
+          ],
+          "title": "CommandResult[TaskMutationResult]",
+          "type": "object"
+        }
+      },
+      {
+        "name": "task_proposal_list",
+        "title": "업무 취소·조건 변경 제안 조회",
+        "description": "Read the cancellation and terms-change proposals on one readable task — those still waiting for an answer and those already settled. A proposal on its own changes nothing about the task.",
+        "adapter_operation": "task_proposals",
+        "exposure": {
+          "any_capabilities": [],
+          "all_capabilities": [
+            "task.read"
+          ],
+          "authenticated_only": false,
+          "requires_confirmation": false
+        },
+        "annotations": {
+          "title": null,
+          "read_only_hint": true,
+          "destructive_hint": false,
+          "idempotent_hint": true,
+          "open_world_hint": false
+        },
+        "input_schema": {
+          "properties": {
+            "task_id": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id"
+          ],
+          "title": "task_proposal_listArguments",
+          "type": "object",
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "additionalProperties": true,
+          "title": "task_proposal_listDictOutput",
+          "type": "object"
+        }
+      },
+      {
+        "name": "task_proposal_open",
+        "title": "업무 취소·조건 변경 제안 준비",
+        "description": "Prepare proposing that an accepted requested task be cancelled (`cancellation`, reason required) or that its agreed terms change (`terms_change`, carrying the new title, description or due date). The requester proposes and only the assignee may answer; until they agree nothing about the task changes. This is the only route to cancelling an accepted requested task — a direct cancel is refused there. One waiting proposal of each kind per task. Delegated execution requires human confirmation.",
+        "adapter_operation": "propose_task_change",
+        "exposure": {
+          "any_capabilities": [],
+          "all_capabilities": [
+            "task.read"
+          ],
+          "authenticated_only": false,
+          "requires_confirmation": true
+        },
+        "annotations": {
+          "title": null,
+          "read_only_hint": false,
+          "destructive_hint": true,
+          "idempotent_hint": true,
+          "open_world_hint": false
+        },
+        "input_schema": {
+          "$defs": {
+            "JsonValue": {},
+            "TaskProposalInput": {
+              "additionalProperties": false,
+              "description": "취소·조건 변경 제안. **제안만으로는 아무것도 바뀌지 않는다.**",
+              "properties": {
+                "kind": {
+                  "title": "제안 종류",
+                  "type": "string"
+                },
+                "expected_version": {
+                  "minimum": 1,
+                  "title": "업무 버전",
+                  "type": "integer"
+                },
+                "reason": {
+                  "anyOf": [
+                    {
+                      "maxLength": 1000,
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "사유"
+                },
+                "payload": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "바꿀 내용"
+                }
+              },
+              "required": [
+                "kind",
+                "expected_version"
+              ],
+              "title": "TaskProposalInput",
+              "type": "object"
+            }
+          },
+          "properties": {
+            "task_id": {
+              "title": "Task Id",
+              "type": "string"
+            },
+            "request": {
+              "$ref": "#/$defs/TaskProposalInput"
+            }
+          },
+          "required": [
+            "task_id",
+            "request"
+          ],
+          "title": "task_proposal_openArguments",
+          "type": "object",
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "additionalProperties": true,
+          "title": "task_proposal_openDictOutput",
+          "type": "object"
+        }
+      },
+      {
+        "name": "task_proposal_respond",
+        "title": "업무 제안 응답 준비",
+        "description": "Prepare answering one waiting proposal on a task this person holds — agree or decline, with the task's current version. Agreement is what actually cancels the task or applies the new terms; declining closes the proposal and leaves the task exactly as it was. Only the assignee may answer. Delegated execution requires human confirmation.",
+        "adapter_operation": "respond_to_task_proposal",
+        "exposure": {
+          "any_capabilities": [],
+          "all_capabilities": [
+            "task.self_manage"
+          ],
+          "authenticated_only": false,
+          "requires_confirmation": true
+        },
+        "annotations": {
+          "title": null,
+          "read_only_hint": false,
+          "destructive_hint": true,
+          "idempotent_hint": true,
+          "open_world_hint": false
+        },
+        "input_schema": {
+          "$defs": {
+            "TaskProposalResponseInput": {
+              "additionalProperties": false,
+              "description": "동의 / 동의하지 않음 — **담당자만** 부른다.",
+              "properties": {
+                "expected_version": {
+                  "minimum": 1,
+                  "title": "업무 버전",
+                  "type": "integer"
+                },
+                "agree": {
+                  "title": "동의 여부",
+                  "type": "boolean"
+                },
+                "reason": {
+                  "anyOf": [
+                    {
+                      "maxLength": 1000,
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "사유"
+                }
+              },
+              "required": [
+                "expected_version",
+                "agree"
+              ],
+              "title": "TaskProposalResponseInput",
+              "type": "object"
+            }
+          },
+          "properties": {
+            "task_id": {
+              "title": "Task Id",
+              "type": "string"
+            },
+            "proposal_id": {
+              "title": "Proposal Id",
+              "type": "string"
+            },
+            "request": {
+              "$ref": "#/$defs/TaskProposalResponseInput"
+            }
+          },
+          "required": [
+            "task_id",
+            "proposal_id",
+            "request"
+          ],
+          "title": "task_proposal_respondArguments",
+          "type": "object",
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "additionalProperties": true,
+          "title": "task_proposal_respondDictOutput",
+          "type": "object"
+        }
+      },
+      {
+        "name": "task_proposal_withdraw",
+        "title": "업무 제안 철회 준비",
+        "description": "Prepare taking back a proposal this person made, before the assignee answers it. The row stays in the history as withdrawn. Delegated execution requires human confirmation.",
+        "adapter_operation": "withdraw_task_proposal",
+        "exposure": {
+          "any_capabilities": [],
+          "all_capabilities": [
+            "task.read"
+          ],
+          "authenticated_only": false,
+          "requires_confirmation": true
+        },
+        "annotations": {
+          "title": null,
+          "read_only_hint": false,
+          "destructive_hint": true,
+          "idempotent_hint": true,
+          "open_world_hint": false
+        },
+        "input_schema": {
+          "$defs": {
+            "TaskVersionInput": {
+              "additionalProperties": false,
+              "description": "회차만 받는 명령 — **상태를 바꾸는 모든 명령에 회차가 필수다** (K-4).",
+              "properties": {
+                "expected_version": {
+                  "minimum": 1,
+                  "title": "업무 버전",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "expected_version"
+              ],
+              "title": "TaskVersionInput",
+              "type": "object"
+            }
+          },
+          "properties": {
+            "task_id": {
+              "title": "Task Id",
+              "type": "string"
+            },
+            "proposal_id": {
+              "title": "Proposal Id",
+              "type": "string"
+            },
+            "request": {
+              "$ref": "#/$defs/TaskVersionInput"
+            }
+          },
+          "required": [
+            "task_id",
+            "proposal_id",
+            "request"
+          ],
+          "title": "task_proposal_withdrawArguments",
+          "type": "object",
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "additionalProperties": true,
+          "title": "task_proposal_withdrawDictOutput",
+          "type": "object"
+        }
+      },
+      {
+        "name": "work_request_withdraw",
+        "title": "업무 요청 철회 준비",
+        "description": "Prepare withdrawing a request this person sent that the recipient has not answered yet, using its current version. The request becomes `withdrawn` and the task it created is cancelled with that reason; the parent link and the log stay. Once the recipient has accepted, use task_proposal_open instead — an accepted request is only undone by agreement. Delegated execution requires human confirmation.",
+        "adapter_operation": "withdraw_work_request",
+        "exposure": {
+          "any_capabilities": [],
+          "all_capabilities": [
+            "work_request.create"
+          ],
+          "authenticated_only": false,
+          "requires_confirmation": true
+        },
+        "annotations": {
+          "title": null,
+          "read_only_hint": false,
+          "destructive_hint": true,
+          "idempotent_hint": true,
+          "open_world_hint": false
+        },
+        "input_schema": {
+          "$defs": {
+            "WorkRequestVersionInput": {
+              "additionalProperties": false,
+              "properties": {
+                "expected_version": {
+                  "minimum": 1,
+                  "title": "요청 버전",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "expected_version"
+              ],
+              "title": "WorkRequestVersionInput",
+              "type": "object"
+            }
+          },
+          "properties": {
+            "request_id": {
+              "title": "Request Id",
+              "type": "string"
+            },
+            "request": {
+              "$ref": "#/$defs/WorkRequestVersionInput"
+            }
+          },
+          "required": [
+            "request_id",
+            "request"
+          ],
+          "title": "work_request_withdrawArguments",
+          "type": "object",
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "additionalProperties": true,
+          "title": "work_request_withdrawDictOutput",
+          "type": "object"
+        }
+      },
+      {
+        "name": "work_request_list_entry_remove",
+        "title": "요청 목록 정리 준비",
+        "description": "Prepare removing one finished request — rejected, withdrawn or cancelled by agreement — from this requester's own list. It hides the row for this person only: the request, its task, the rejection and re-request log, and everyone else's list are untouched, and the detail stays readable. Requests still in progress cannot be tidied away. Delegated execution requires human confirmation.",
+        "adapter_operation": "remove_work_request_list_entry",
+        "exposure": {
+          "any_capabilities": [],
+          "all_capabilities": [
+            "work_request.read"
+          ],
+          "authenticated_only": false,
+          "requires_confirmation": true
+        },
+        "annotations": {
+          "title": null,
+          "read_only_hint": false,
+          "destructive_hint": true,
+          "idempotent_hint": true,
+          "open_world_hint": false
+        },
+        "input_schema": {
+          "properties": {
+            "request_id": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "request_id"
+          ],
+          "title": "work_request_list_entry_removeArguments",
+          "type": "object",
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "additionalProperties": true,
+          "title": "work_request_list_entry_removeDictOutput",
+          "type": "object"
+        }
+      },
+      {
+        "name": "work_request_inbox",
+        "title": "내가 답할 업무 요청 조회",
+        "description": "Read the work requests waiting for this person's answer — the ones they received and have not yet accepted, rejected or negotiated. Requests this person sent are in work_request_list instead. Each row names the task the request already created, so what is being asked can be opened before answering. Use work_request_get for one request's full detail and rounds.",
+        "adapter_operation": "work_request_inbox",
+        "exposure": {
+          "any_capabilities": [],
+          "all_capabilities": [
+            "work_request.decide"
+          ],
+          "authenticated_only": false,
+          "requires_confirmation": false
+        },
+        "annotations": {
+          "title": null,
+          "read_only_hint": true,
+          "destructive_hint": false,
+          "idempotent_hint": true,
+          "open_world_hint": false
+        },
+        "input_schema": {
+          "properties": {},
+          "title": "work_request_inboxArguments",
+          "type": "object",
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "$defs": {
+            "JsonValue": {},
+            "WorkRequestMutationResult": {
+              "properties": {
+                "request_id": {
+                  "title": "Request Id",
+                  "type": "string"
+                },
+                "request_thread_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Request Thread Id"
+                },
+                "submission_version": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Submission Version"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "description": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Description"
+                },
+                "due_date": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Due Date"
+                },
+                "checklist": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Checklist",
+                  "type": "array"
+                },
+                "requester_id": {
+                  "title": "Requester Id",
+                  "type": "string"
+                },
+                "requester_kind": {
+                  "title": "Requester Kind",
+                  "type": "string"
+                },
+                "source_meeting_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Source Meeting Id"
+                },
+                "promoted_by_member_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Promoted By Member Id"
+                },
+                "assignee_id": {
+                  "title": "Assignee Id",
+                  "type": "string"
+                },
+                "cc_member_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Cc Member Ids",
+                  "type": "array"
+                },
+                "state": {
+                  "title": "State",
+                  "type": "string"
+                },
+                "version": {
+                  "title": "Version",
+                  "type": "integer"
+                },
+                "task_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Task Id"
+                },
+                "assignment_state": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Assignment State"
+                },
+                "parent_task_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Parent Task Id"
+                },
+                "supersedes_request_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Supersedes Request Id"
+                },
+                "list_entry_hidden": {
+                  "title": "List Entry Hidden",
+                  "type": "boolean"
+                },
+                "conditions": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Conditions"
+                }
+              },
+              "required": [
+                "request_id",
+                "request_thread_id",
+                "submission_version",
+                "title",
+                "description",
+                "due_date",
+                "checklist",
+                "requester_id",
+                "requester_kind",
+                "source_meeting_id",
+                "promoted_by_member_id",
+                "assignee_id",
+                "cc_member_ids",
+                "state",
+                "version",
+                "task_id",
+                "assignment_state",
+                "parent_task_id",
+                "supersedes_request_id",
+                "list_entry_hidden",
+                "conditions"
+              ],
+              "title": "WorkRequestMutationResult",
+              "type": "object"
+            }
+          },
+          "properties": {
+            "result": {
+              "items": {
+                "$ref": "#/$defs/WorkRequestMutationResult"
+              },
+              "title": "Result",
+              "type": "array"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "title": "work_request_inboxOutput",
+          "type": "object"
+        }
       }
     ],
     "added_http": [
@@ -63596,7 +68476,7 @@
         "owning_calls": [
           "self._meetings(session).link_promoted_todo",
           "self._meetings(session).todo_for_promotion",
-          "self._work_requests(session).create"
+          "self._task_creation(session).create_work_request"
         ],
         "baseline_tools": [],
         "target_tools": [
@@ -63608,7 +68488,7 @@
           "promote_meeting_todo"
         ],
         "acceptance_evidence": "현재 HTTP·MCP 계약 및 소유 애플리케이션 호출 동등성 테스트",
-        "http_signature": "(meeting_id: UUID, todo_id: UUID, request: PromoteTodoRequest, principal: Principal) -> dict[str, object]"
+        "http_signature": "(meeting_id: UUID, todo_id: UUID, request: PromoteTodoRequest, idempotency_key: str | None, principal: Principal) -> dict[str, object]"
       },
       {
         "http": "GET /api/meetings/{meeting_id}/promotion-candidates",
@@ -63678,6 +68558,206 @@
           "reconsider_when": "AI 가 사람 벌을 손대는 계약이 생길 때 (지금은 §7.3 이 예외 없이 금지한다)"
         },
         "http_signature": "(meeting_id: UUID, agenda_id: UUID, line_id: UUID, principal: Principal) -> Response"
+      },
+      {
+        "http": "GET /api/tasks/{task_id}/assignments",
+        "http_handler": "task_assignments",
+        "screen_callers": [],
+        "operation": "task_assignments",
+        "owning_calls": [
+          "self._assignments(session).assignments"
+        ],
+        "baseline_tools": [],
+        "target_tools": [
+          "task_assignment_list"
+        ],
+        "policy": "query",
+        "status": "verified",
+        "http_application_calls": [
+          "task_assignments"
+        ],
+        "acceptance_evidence": "WORK-002 v2 계약 테스트 (tests/contract/test_task_lifecycle_v2.py)",
+        "http_signature": "(task_id: UUID, principal: Principal) -> dict[str, Any]"
+      },
+      {
+        "http": "POST /api/tasks/{task_id}/reopen",
+        "http_handler": "reopen_task",
+        "screen_callers": [],
+        "operation": "reopen_task",
+        "owning_calls": [
+          "self._tasks(session).reopen"
+        ],
+        "baseline_tools": [],
+        "target_tools": [
+          "task_reopen"
+        ],
+        "policy": "confirmed-command",
+        "status": "verified",
+        "http_application_calls": [
+          "reopen_task"
+        ],
+        "acceptance_evidence": "WORK-002 v2 계약 테스트 (tests/contract/test_task_lifecycle_v2.py)",
+        "http_signature": "(task_id: UUID, request: TaskReopenRequest, principal: Principal) -> TaskMutationResult"
+      },
+      {
+        "http": "GET /api/tasks/{task_id}/proposals",
+        "http_handler": "list_task_proposals",
+        "screen_callers": [],
+        "operation": "task_proposals",
+        "owning_calls": [
+          "self._tasks(session).proposals"
+        ],
+        "baseline_tools": [],
+        "target_tools": [
+          "task_proposal_list"
+        ],
+        "policy": "query",
+        "status": "verified",
+        "http_application_calls": [
+          "task_proposals"
+        ],
+        "acceptance_evidence": "WORK-002 v2 계약 테스트 (tests/contract/test_task_lifecycle_v2.py)",
+        "http_signature": "(task_id: UUID, principal: Principal) -> dict[str, Any]"
+      },
+      {
+        "http": "POST /api/tasks/{task_id}/proposals",
+        "http_handler": "propose_task_change",
+        "screen_callers": [],
+        "operation": "propose_task_change",
+        "owning_calls": [
+          "self._tasks(session).propose"
+        ],
+        "baseline_tools": [],
+        "target_tools": [
+          "task_proposal_open"
+        ],
+        "policy": "confirmed-command",
+        "status": "verified",
+        "http_application_calls": [
+          "propose_task_change"
+        ],
+        "acceptance_evidence": "WORK-002 v2 계약 테스트 (tests/contract/test_task_lifecycle_v2.py)",
+        "http_signature": "(task_id: UUID, request: TaskProposalRequest, principal: Principal) -> dict[str, Any]"
+      },
+      {
+        "http": "POST /api/tasks/{task_id}/proposals/{proposal_id}/respond",
+        "http_handler": "respond_to_task_proposal",
+        "screen_callers": [],
+        "operation": "respond_to_task_proposal",
+        "owning_calls": [
+          "self._tasks(session).respond_to_proposal"
+        ],
+        "baseline_tools": [],
+        "target_tools": [
+          "task_proposal_respond"
+        ],
+        "policy": "confirmed-command",
+        "status": "verified",
+        "http_application_calls": [
+          "respond_to_task_proposal"
+        ],
+        "acceptance_evidence": "WORK-002 v2 계약 테스트 (tests/contract/test_task_lifecycle_v2.py)",
+        "http_signature": "(task_id: UUID, proposal_id: UUID, request: TaskProposalResponseRequest, principal: Principal) -> dict[str, Any]"
+      },
+      {
+        "http": "POST /api/tasks/{task_id}/proposals/{proposal_id}/withdraw",
+        "http_handler": "withdraw_task_proposal",
+        "screen_callers": [],
+        "operation": "withdraw_task_proposal",
+        "owning_calls": [
+          "self._tasks(session).withdraw_proposal"
+        ],
+        "baseline_tools": [],
+        "target_tools": [
+          "task_proposal_withdraw"
+        ],
+        "policy": "confirmed-command",
+        "status": "verified",
+        "http_application_calls": [
+          "withdraw_task_proposal"
+        ],
+        "acceptance_evidence": "WORK-002 v2 계약 테스트 (tests/contract/test_task_lifecycle_v2.py)",
+        "http_signature": "(task_id: UUID, proposal_id: UUID, request: TaskVersionRequest, principal: Principal) -> dict[str, Any]"
+      },
+      {
+        "http": "POST /api/work-requests/{request_id}/withdraw",
+        "http_handler": "withdraw_work_request",
+        "screen_callers": [],
+        "operation": "withdraw_work_request",
+        "owning_calls": [
+          "self._work_requests(session).withdraw"
+        ],
+        "baseline_tools": [],
+        "target_tools": [
+          "work_request_withdraw"
+        ],
+        "policy": "confirmed-command",
+        "status": "verified",
+        "http_application_calls": [
+          "withdraw_work_request"
+        ],
+        "acceptance_evidence": "WORK-002 v2 계약 테스트 (tests/contract/test_task_lifecycle_v2.py)",
+        "http_signature": "(request_id: UUID, request: WorkRequestVersionRequest, principal: Principal) -> WorkRequestMutationResult"
+      },
+      {
+        "http": "DELETE /api/work-requests/{request_id}/list-entry",
+        "http_handler": "remove_work_request_list_entry",
+        "screen_callers": [],
+        "operation": "remove_work_request_list_entry",
+        "owning_calls": [
+          "self._work_requests(session).remove_from_list"
+        ],
+        "baseline_tools": [],
+        "target_tools": [
+          "work_request_list_entry_remove"
+        ],
+        "policy": "confirmed-command",
+        "status": "verified",
+        "http_application_calls": [
+          "remove_work_request_list_entry"
+        ],
+        "acceptance_evidence": "WORK-002 v2 계약 테스트 (tests/contract/test_task_lifecycle_v2.py)",
+        "http_signature": "(request_id: UUID, principal: Principal) -> dict[str, Any]"
+      },
+      {
+        "http": "GET /api/tasks/{task_id}/children",
+        "http_handler": "task_children",
+        "screen_callers": [],
+        "operation": "task_children",
+        "owning_calls": [
+          "self._tasks(session).children"
+        ],
+        "baseline_tools": [],
+        "target_tools": [
+          "task_subtask_list"
+        ],
+        "policy": "query",
+        "status": "verified",
+        "http_application_calls": [
+          "task_children"
+        ],
+        "acceptance_evidence": "WORK-002 v2 계약 테스트 (tests/contract/test_task_lifecycle_v2.py)",
+        "http_signature": "(task_id: UUID, principal: Principal) -> dict[str, Any]"
+      },
+      {
+        "http": "GET /api/work-requests/inbox",
+        "http_handler": "work_request_inbox",
+        "screen_callers": [],
+        "operation": "work_request_inbox",
+        "owning_calls": [
+          "self._work_requests(session).inbox"
+        ],
+        "baseline_tools": [],
+        "target_tools": [
+          "work_request_inbox"
+        ],
+        "policy": "query",
+        "status": "verified",
+        "http_application_calls": [
+          "work_request_inbox"
+        ],
+        "acceptance_evidence": "WORK-002 v2 계약 테스트 (tests/contract/test_task_lifecycle_v2.py)",
+        "http_signature": "(principal: Principal) -> list[WorkRequestMutationResult]"
       }
     ],
     "status": "verified",
@@ -64160,6 +69240,42 @@
       },
       {
         "name": "browser_interaction_get",
+        "status": "verified"
+      },
+      {
+        "name": "task_assignment_list",
+        "status": "verified"
+      },
+      {
+        "name": "task_proposal_list",
+        "status": "verified"
+      },
+      {
+        "name": "task_proposal_open",
+        "status": "verified"
+      },
+      {
+        "name": "task_proposal_respond",
+        "status": "verified"
+      },
+      {
+        "name": "task_proposal_withdraw",
+        "status": "verified"
+      },
+      {
+        "name": "task_reopen",
+        "status": "verified"
+      },
+      {
+        "name": "work_request_list_entry_remove",
+        "status": "verified"
+      },
+      {
+        "name": "work_request_withdraw",
+        "status": "verified"
+      },
+      {
+        "name": "work_request_inbox",
         "status": "verified"
       }
     ]

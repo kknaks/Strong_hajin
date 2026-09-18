@@ -23,6 +23,10 @@ class WorkRequestMutationResult(TypedDict):
     version: int
     task_id: str | None
     assignment_state: str | None
+    parent_task_id: str | None
+    supersedes_request_id: str | None
+    #: 내가 이 항목을 목록에서 정리했는가. **서버가 답한다** — 화면의 기억은 새로 열면 사라진다.
+    list_entry_hidden: bool
     conditions: dict[str, JsonValue] | None
 
 

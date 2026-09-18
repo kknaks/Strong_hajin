@@ -5,7 +5,22 @@ from ax_workspace.modules.work.task_results import TaskCompletionResult, TaskRef
 
 from ax_workspace.modules.work.task_results import TaskDetailResult, TaskHistoryDiffResult, TaskHistoryResult, TaskListEntry
 
-from ax_workspace.modules.work.errors import TaskError, TaskNotFound, InvalidTaskTransition, TaskAccessDenied
+from ax_workspace.modules.work.errors import (
+    InvalidTaskTransition,
+    TaskProposalNotPending,
+    TaskProposalResponderOnly,
+    TaskAccessDenied,
+    TaskCancelRequiresAgreement,
+    TaskChildrenUnfinished,
+    TaskDirectNesting,
+    TaskError,
+    TaskNotFound,
+    TaskParentClosed,
+    TaskParentCycle,
+    TaskParentUnassigned,
+    TaskReopenForbidden,
+    TaskReopenParentDone,
+)
 from ax_workspace.modules.work.task_values import validate_schedule
 
 from datetime import UTC, date, datetime
@@ -56,7 +71,7 @@ class TaskRepository(Protocol):
         source_review_decision_id: UUID | None = None,
     ) -> Any: ...
     def task(self, task_id: UUID, owner_id: str, *, lock: bool = False) -> Any: ...
-    def task_by_id(self, task_id: UUID) -> Any | None: ...
+    def task_by_id(self, task_id: UUID, *, lock: bool = False) -> Any | None: ...
     def tasks_for(self, owner_id: str, *, include_closed: bool = False) -> list[Any]: ...
     def tasks_held_by_members(self, member_ids: frozenset[str], *, include_closed: bool = False) -> list[Any]: ...
     def tasks_in_projects(self, project_ids: frozenset[str], *, include_closed: bool = False) -> list[Any]: ...
@@ -75,6 +90,16 @@ class TaskRepository(Protocol):
     def references_for(self, task_id: UUID, *, include_released: bool = False) -> list[Any]: ...
     def children_of(self, task_id: UUID) -> list[Any]: ...
     def open_children_of(self, task_id: UUID) -> list[Any]: ...
+    def tasks_requested_by(self, requester_id: str, *, include_closed: bool = False) -> list[Any]: ...
+    def descendant_ids_of(self, task_ids: list[UUID]) -> set[UUID]: ...
+    def tasks_by_ids(self, task_ids: set[UUID], *, include_closed: bool = False) -> list[Any]: ...
+    def approval_rounds_for(self, task_ids: list[UUID]) -> dict[UUID, dict[str, Any]]: ...
+    def children_map(self, task_ids: list[UUID]) -> dict[UUID, list[Any]]: ...
+    def pending_proposal_kinds(self, task_ids: list[UUID]) -> dict[UUID, str]: ...
+    def proposals_for(self, task_id: UUID) -> list[Any]: ...
+    def proposal(self, task_id: UUID, proposal_id: UUID, *, lock: bool = False) -> Any: ...
+    def open_proposal(self, task: Any, kind: str, proposed_by: str, payload: dict[str, Any] | None, reason: str | None) -> Any: ...
+    def settle_proposal(self, proposal: Any, responder_id: str, state: str) -> None: ...
     def reference(self, task_id: UUID, reference_id: UUID) -> Any: ...
     def add_reference(self, task_id: UUID, referenced_task_id: UUID, created_by: str) -> Any: ...
     def release_reference(self, reference: Any, actor_id: str) -> None: ...
@@ -99,6 +124,7 @@ class WorkRequestSourcePort(Protocol):
 
     def list_for(self, principal_id: str) -> list[Any]: ...
     def request(self, request_id: UUID, *, lock: bool = False) -> Any: ...
+    def settle_by_agreement(self, request_id: UUID, actor_id: str, *, reason: str | None = None) -> None: ...
 
 
 class MemberScopePort(Protocol):
@@ -160,7 +186,8 @@ class TaskApplication:
         title, description, start_date, due_date = command.title, command.description, command.start_date, command.due_date
         checklist, reference_task_ids = command.checklist, command.reference_task_ids
         parent_task_id, project_id = command.parent_task_id, command.project_id
-        parent = self.parent_for(principal, parent_task_id)
+        # 본인 업무라 **만드는 사람이 곧 드는 사람**이다 — 중심 업무 판정이 그 값을 읽는다.
+        parent = self.parent_for(principal, parent_task_id, assignee_id=str(principal.id))
         project = self.project_for(principal, project_id, parent)
         task = self.repository.create_self_task(
             str(principal.id),
@@ -181,7 +208,18 @@ class TaskApplication:
         )
         if parent is not None:
             self.record_subtask(principal, parent, task)
-        return self._view(task)
+        return self._view(task, principal)
+
+    def creation_receipt(self, principal: Principal, task_id: UUID) -> TaskMutationResult:
+        """이미 만들어진 업무의 영수증 — **생성이 냈던 것과 같은 투영**이다.
+
+        돌려주기 전에 `get` 으로 지금 읽을 수 있는지 다시 묻는다. 잃었으면 존재를 숨긴다.
+        """
+        self.get(principal, task_id)
+        task = self.repository.task_by_id(task_id)
+        if task is None:  # pragma: no cover - `get` 이 먼저 거른다
+            raise TaskNotFound("task was not found")
+        return self._view(task, principal)
 
     def project_for(self, principal: Principal, project_id: UUID | None, parent: Any = None) -> UUID | None:
         """어느 프로젝트의 일로 둘 것인가. 하위 업무는 묻지 않고 상위 업무를 따른다.
@@ -198,11 +236,23 @@ class TaskApplication:
             raise TaskNotFound("project was not found")
         return project_id
 
-    def parent_for(self, principal: Principal, parent_task_id: UUID | None) -> Any | None:
-        """The work this one is part of: readable by this person, still open, and not already a part of something.
+    def parent_for(
+        self,
+        principal: Principal,
+        parent_task_id: UUID | None,
+        *,
+        assignee_id: str | None = None,
+        child_task_id: UUID | None = None,
+    ) -> Any | None:
+        """이 일이 **무엇의 일부인가.** 읽을 수 있고, 아직 끝나지 않았고, 순환하지 않아야 한다.
 
-        One level only for now, so a child never becomes a parent. Nothing is its own parent, and work that is over
-        takes no new parts.
+        **저장 깊이에 제한이 없다** (정책 V-6). 예전에는 「하위 아래에 하위를 둘 수 없다」로 한 단계에서
+        끊었고, 그래서 받은 일을 다시 나눌 수가 없었다 — 일이 실제로 갈라지는 모양과 어긋났다.
+        화면이 두 단계만 보이는 것은 **표시**의 일이고 저장과 무관하다 (정책 L-11).
+
+        대신 **중심 업무 판정**이 그 자리를 대신한다 (SPEC-003 §5): 같은 사람의 직접 작업을 무한히
+        겹치는 것만 막는다. `assignee_id` 는 **만들어질 하위를 들 사람**이고, 그 사람이 상위를 든 사람과
+        같으면 「직접 작업」이다.
         """
         if parent_task_id is None:
             return None
@@ -211,11 +261,91 @@ class TaskApplication:
         parent = self.repository.task_by_id(parent_task_id)
         if parent is None:
             raise TaskNotFound("task was not found")
-        if getattr(parent, "parent_task_id", None) is not None:
-            raise TaskError("하위 업무 아래에 다시 하위 업무를 둘 수 없습니다")
+        if child_task_id is not None and (
+            child_task_id == parent.id or child_task_id in self._ancestor_ids(parent)
+        ):
+            # 자기 자신이나 자기 조상을 부모로 두면 트리가 닫힌 고리가 된다 (작업계획서 §4.5).
+            raise TaskParentCycle("자기 자신이나 상위 업무를 하위로 둘 수 없습니다")
         if TaskState(parent.state) in {TaskState.DONE, TaskState.CANCELLED}:
-            raise TaskError("이미 끝난 업무에는 하위 업무를 추가할 수 없습니다")
+            raise TaskParentClosed("이미 끝난 업무에는 하위 업무를 추가할 수 없습니다")
+        self._require_may_hold_children(parent, assignee_id)
         return parent
+
+    def _requested_ancestor(self, principal: Principal, task: Any) -> bool:
+        """이 업무의 조상 중에 **내가 요청자인 업무**가 있는가 (정책 V-21).
+
+        **요청자 본인만이다** — 승격 요청이면 누른 사람도 그 자리에 선다(BASE-002 O-31, 요청자 전용
+        조작이 이미 그렇게 판정한다). 수신자·참조자(cc)는 여기 들어가지 않는다: V-21 이 새로 여는 것은
+        「요청자는 자신이 요청한 Task 와 그 하위 트리 전체를 읽는다」이고, **한 겹짜리 cc 읽기가 하위
+        전체와 그 자료까지 자동으로 포함한다는 계약은 없다.** 부모 요청 자체의 기존 cc 읽기는 그대로
+        살아 있다 — 그 사실 하나로 새 하위를 열지 않을 뿐이다.
+
+        다른 권한(조직 범위·프로젝트·직접 배정)으로 읽히는 하위는 이 함수와 무관하게 그대로 읽힌다.
+
+        자기 자신은 위에서 이미 봤으므로 여기서는 조상만 걷는다. `_ancestor_ids()` 는 본 것을 다시 보지
+        않으므로 원장이 어긋나 고리가 생겨 있어도 멈춘다.
+        """
+        if self._requests is None or WORK_REQUEST_READ not in principal.capabilities:
+            return False
+        member_id = str(principal.id)
+        for task_id in self._ancestor_ids(task):
+            node = self.repository.task_by_id(task_id)
+            request_id = getattr(node, "source_work_request_id", None) if node is not None else None
+            if request_id is None:
+                continue
+            request = self._requests.request(request_id)
+            if request is None:
+                continue
+            if member_id in {
+                str(request.requester_id),
+                str(getattr(request, "promoted_by_member_id", None) or ""),
+            }:
+                return True
+        return False
+
+    def _ancestor_ids(self, task: Any) -> set[UUID]:
+        """이 업무 위로 이어진 상위 전부. 깊이 제한이 없으므로 **본 것을 다시 보면 멈춘다** — 원장이
+        어긋나 고리가 생겨 있어도 여기서 무한히 걷지 않는다."""
+        seen: set[UUID] = set()
+        current = getattr(task, "parent_task_id", None)
+        while current is not None and current not in seen:
+            seen.add(current)
+            node = self.repository.task_by_id(current)
+            current = getattr(node, "parent_task_id", None) if node is not None else None
+        return seen
+
+    def _holder_of(self, task: Any) -> str | None:
+        """지금 그 업무를 든 사람. 수락 대기·담당 없는 업무에서는 `None` 이고, 그것이 사실이다."""
+        return (self._assignee_projection([task]).get(task.id) or {}).get("member_id")
+
+    def _is_central_task(self, task: Any) -> bool:
+        """**중심 업무인가** — 부모가 없거나, **부모를 든 사람이 이 업무를 든 사람과 다르면** 그렇다.
+
+        「부모가 없으면 중심 업무」로 판정하지 않는다 (정책 V-7 · P-3). 다른 사람이 수락한 요청 업무는
+        그 사람의 새 중심 업무이고, 그래서 자기 직속 하위와 하위 요청을 가질 수 있다.
+        """
+        parent_id = getattr(task, "parent_task_id", None)
+        if parent_id is None:
+            return True
+        parent = self.repository.task_by_id(parent_id)
+        if parent is None:
+            return True
+        return self._holder_of(parent) != self._holder_of(task)
+
+    def _require_may_hold_children(self, parent: Any, assignee_id: str | None) -> None:
+        """그 상위 아래에 이 사람의 일을 둘 수 있는가.
+
+        두 거절이 여기서 나오고 **둘 다 새 규칙이 아니다** — V-7·V-8 과 「활성 담당자가 만든다」에서
+        그대로 나온다 (SPEC-003 §4 Validation).
+        """
+        holder = self._holder_of(parent)
+        if holder is None:
+            # 아직 아무도 들지 않은 일 아래에는 하위를 만들 수 없다. 중심 업무 판정이 **부모를 든 사람**을
+            # 읽는데 그 값이 없고, 하위를 만들 수 있는 사람도 그 활성 담당자이기 때문이다. 수락하면 열린다.
+            raise TaskParentUnassigned("아직 수락되지 않은 업무에는 하위 업무를 만들 수 없습니다. 수락 후에 다시 시도하세요")
+        if assignee_id is not None and assignee_id == holder and not self._is_central_task(parent):
+            # 같은 사람의 직접 작업 아래 직접 작업 — 중심 업무의 직속으로만 둘 수 있다 (정책 V-8).
+            raise TaskDirectNesting("직접 작업은 중심 업무의 바로 아래에만 둘 수 있습니다")
 
     def record_subtask(self, principal: Principal, parent: Any, child: Any) -> None:
         """Breaking work down changes the parent too, so the parent moves on and says what was added."""
@@ -279,15 +409,22 @@ class TaskApplication:
             task, str(principal.id), "task.updated", f"업무 내용 수정: {task.title} ({', '.join(sorted(changes))})",
             before_ref=f"task:{task.id}@{expected_version}",
         )
-        return self._view(task)
+        return self._view(task, principal)
 
     def my_work(self, principal: Principal, *, include_closed: bool = False) -> list[TaskListEntry]:
-        """Only work this person currently holds through an active assignment."""
+        """**지금 이 사람이 활성 담당으로 들고 있는 것만.**
+
+        요청 관계로 읽는 업무는 여기 서지 않는다 — 내가 남에게 부탁한 일은 **읽을 수 있는 일**이지
+        **내가 하는 일**이 아니다. 그 둘을 한 목록에 담으면 「내 업무」가 내 일이 아닌 것으로 채워진다.
+        """
         return self._list(principal, include_closed=include_closed, include_organization=False)
 
     def readable_tasks(self, principal: Principal, *, include_closed: bool = False) -> list[TaskListEntry]:
-        """Work this person may read through their current organization and project scope."""
-        return self._list(principal, include_closed=include_closed, include_organization=True)
+        """이 사람이 **읽을 수 있는** 업무 전부 — 조직 범위·프로젝트 범위, 그리고 요청 관계.
+
+        자료 검색·그래프·권한 판정이 이 답을 쓴다. 「내 업무」와 다른 질문이다.
+        """
+        return self._list(principal, include_closed=include_closed, include_organization=True, include_requested=True)
 
     def _list(
         self,
@@ -295,6 +432,7 @@ class TaskApplication:
         *,
         include_closed: bool = False,
         include_organization: bool = False,
+        include_requested: bool = False,
     ) -> list[TaskListEntry]:
         """The list carries the checklist count, not its items: enough for a progress cue, cheap enough for a table.
 
@@ -304,6 +442,31 @@ class TaskApplication:
         self._require(principal, TASK_READ)
         tasks = self.repository.tasks_for(str(principal.id), include_closed=include_closed)
         held = {task.id for task in tasks}
+        # **읽기의 세 번째 길 — 요청 관계** (정책 V-21). 내가 부탁한 일과 **그 아래 전부**를 읽는다.
+        # 깊이 제한이 없다: 받은 사람이 다시 나눈 것까지 따라가 확인할 수 있어야 한다.
+        # 이 길이 여기 있어야 하는 이유는 하나 더 있다 — 자료 쪽이 묻는 `may_read_task()` 가 이 목록으로
+        # 답한다. 상세만 열어 주고 목록에 넣지 않으면 「상세는 보이는데 파일은 못 연다」가 된다.
+        # **목록과 상세가 같은 문에서 열린다.** 이 길은 요청 관계로 여는 것이므로 요청을 읽을 역량이
+        # 있어야 한다 — 없으면 목록에는 제목·id 가 나오는데 상세는 404 인 경계 불일치가 생긴다
+        # (`_requested_ancestor` 가 같은 역량을 본다). 조직 범위·프로젝트·활성 담당으로 읽는 길은
+        # 이 역량과 무관하게 그대로 산다.
+        requested = (
+            self.repository.tasks_requested_by(str(principal.id), include_closed=include_closed)
+            if include_requested and WORK_REQUEST_READ in principal.capabilities
+            else []
+        )
+        roots = [task.id for task in requested]
+        if roots:
+            subtree = self.repository.descendant_ids_of(roots) - held - set(roots)
+            tasks = tasks + [task for task in requested if task.id not in held]
+            held |= {task.id for task in requested}
+            if subtree:
+                tasks = tasks + [
+                    task
+                    for task in self.repository.tasks_by_ids(subtree, include_closed=include_closed)
+                    if task.id not in held
+                ]
+                held |= {task.id for task in tasks}
         if include_organization:
             organization = self._organization_scope_members(principal)
             if organization:
@@ -324,12 +487,14 @@ class TaskApplication:
         progress = self.repository.checklist_progress_for([task.id for task in tasks])
         origins = self._origin_projection(principal, tasks)
         assignees = self._assignee_projection(tasks)
+        # 목록 한 줄마다 같은 질의를 반복하지 않는다 — 파생 표시를 한 번에 계산해 나눠 싣는다.
+        derived = self._derived_for(tasks, readable_ids={task.id for task in tasks})
         views = []
         for task in tasks:
             done, total = progress.get(task.id, (0, 0))
             views.append(
                 {
-                    **self._view(task),
+                    **self._view(task, derived=derived.get(task.id)),
                     "checklist_progress": {"done": done, "total": total},
                     "origin": origins.get(task.id),
                     "assignee": assignees.get(task.id),
@@ -372,24 +537,126 @@ class TaskApplication:
             # way their checklist and materials are.
             related = self._manages(principal, task.parent_task_id)
         if not related:
+            # **요청자는 자기가 부탁한 업무의 하위 트리 전체를 읽는다 — 깊이 제한이 없다** (정책 V-21).
+            # 받은 사람이 그 일을 다시 나눴을 때 요청자가 「필요하면 그 업무로 들어가 확인한다」가 원문이고,
+            # 한 겹만 인정하면 상세는 열리는데 그 아래가 통째로 사라진다. 조상 중 하나라도 내가 요청한
+            # 업무면 그 아래는 그 요청의 일부다. **읽기만 넓어지고 수정·시작·완료는 그대로 막힌다.**
+            related = self._requested_ancestor(principal, task)
+        if not related:
             raise TaskNotFound("task was not found")
-        # 안을 열어 주는 것이 아니라, 이미 따로 열 수 있는 것을 목록에서만 감추지 않는 것이다. 같은 프로젝트의
-        # 하위 업무는 그 자체로 읽히므로, 여기서 숨기면 추적이 되지 않으면서 접근만 남는다. 읽을 수 없는 부분은
-        # 여전히 이름도 개수도 나오지 않는다.
-        children = [] if getattr(task, "parent_task_id", None) is not None else self._readable_children(principal, task)
         return {
-            **self._view(task),
+            **self._view(task, principal),
             "origin": self._origin_projection(principal, [task]).get(task.id),
             "assignee": self._assignee_projection([task]).get(task.id),
-            "parent": self._parent_summary(principal, task),
-            "children": children,
-            "child_progress": {
-                "done": sum(1 for row in children if row["state"] in {TaskState.DONE, TaskState.CANCELLED}),
-                "total": len(children),
-            },
+            **self._hierarchy_view(principal, task),
             # The person who asked for the work may follow where their request got to, without holding the work.
             "delivery": self.delivery_view(principal, task),
         }
+
+    # ---- derived: 서버가 만드는 파생 표시 (SPEC-003 §4 Data) ----
+
+    def _derived_for(
+        self,
+        tasks: list[Any],
+        facts: dict[UUID, dict[str, Any]] | None = None,
+        *,
+        principal: Principal | None = None,
+        readable_ids: set[UUID] | None = None,
+    ) -> dict[UUID, dict[str, Any]]:
+        """한 벌의 업무에 실릴 `derived` 묶음 — **어느 값도 `state` 에서 읽지 않는다.**
+
+        각 값은 자기 원장에서 나온다: 기다림은 담당 행에서, 확인은 판단 행에서, 제안은 제안 표에서,
+        막는 하위는 하위의 완결 판정에서. `state` 를 되짚으면 「완료 보고 제출」과 「최종 완료」가
+        같은 글자를 쓰는 순간 둘을 가를 수 없게 된다.
+
+        `reply`·`status_note` 는 **키만 있고 값은 `null` 이다.** SPEC-001 에서 이어받은 이름이지만
+        그 원장(문의·회신 대기·상태 메모)이 이 코드에 아직 없다 — 없는 것을 있다고 내지 않는다.
+        값을 내는 것은 후속 구현이다.
+        """
+        if not tasks:
+            return {}
+        ids = [task.id for task in tasks]
+        facts = facts if facts is not None else self.repository.origin_facts(tasks)
+        children = self.repository.children_map(ids)
+        shown = {
+            task.id: self._shown_children(children.get(task.id, ()), principal=principal, readable_ids=readable_ids)
+            for task in tasks
+        }
+        # **회차는 부모와 하위를 함께 묻는다.** 부모 것만 물으면 하위의 승인 행이 비고, 승인까지 끝난
+        # 요청 하위가 영원히 「승인 전」으로 읽혀 상위를 막는 것처럼 보인다.
+        rounds = self.repository.approval_rounds_for(
+            ids + [child.id for rows in shown.values() for child in rows]
+        )
+        proposals = self.repository.pending_proposal_kinds(ids)
+        today = datetime.now(UTC).astimezone(_TASK_TIMEZONE).date()
+        derived: dict[UUID, dict[str, Any]] = {}
+        for task in tasks:
+            fact = facts.get(task.id, {})
+            derived[task.id] = {
+                "assignment": _assignment_wait(fact),
+                "approval": self._approval_from_rounds(task, rounds.get(task.id)),
+                "proposal": proposals.get(task.id),
+                "blocking_children": [
+                    {"task_id": str(child.id), "title": str(child.title), "why": why}
+                    for child, why in (
+                        (child, self._settlement_gap_with(child, rounds.get(child.id)))
+                        for child in shown[task.id]
+                    )
+                    if why is not None
+                ],
+                "reply": None,
+                "status_note": None,
+                "overdue_days": _overdue_days(getattr(task, "due_date", None), task.state, today),
+            }
+        return derived
+
+    def _shown_children(
+        self, children: Any, *, principal: Principal | None, readable_ids: set[UUID] | None
+    ) -> list[Any]:
+        """투영에 실을 하위 — **읽을 수 없는 것은 이름에도 건수에도 없다** (SPEC-001 계승 · UX-U15).
+
+        **막는 것을 세는 일과 보여 주는 일은 다르다.** 완료를 막는 검사(`_require_children_finished`)는
+        읽을 수 없는 하위도 **전부** 센다 — 못 보는 부분이 안 끝났는데 상위가 끝나면 그게 거짓이다.
+        여기는 화면에 실릴 목록이라 권한이 닿는 것만 남긴다.
+
+        목록 응답에서는 `readable_ids`(그 응답이 이미 판정한 읽기 가능 집합)로 거른다 — 줄마다 다시
+        묻지 않는다. 단건 조회에서는 `principal` 로 하나씩 묻는다.
+        """
+        rows = list(children)
+        if readable_ids is not None:
+            return [child for child in rows if child.id in readable_ids]
+        if principal is not None:
+            return [child for child in rows if self.may_read_task(principal, child.id)]
+        return rows
+
+    def _approval_from_rounds(self, task: Any, round_facts: dict[str, Any] | None) -> str | None:
+        """회차 사실에서 완료 확인 상태를 읽는다. 판정은 `_approval_state` 와 **같은 규칙**이다."""
+        if not round_facts or not round_facts.get("rounds"):
+            return None
+        decisions = round_facts.get("decisions") or ()
+        if not decisions:
+            return "awaiting_review"
+        accepted = [decided_at for decision, decided_at in decisions if decision == "accept"]
+        if not accepted:
+            return "awaiting_revision"
+        reopened_at = _as_utc(getattr(task, "reopened_at", None))
+        if reopened_at is not None and all(_as_utc(decided_at) <= reopened_at for decided_at in accepted):
+            return "awaiting_review" if TaskState(task.state) is TaskState.DONE else None
+        return "approved"
+
+    def _settlement_gap_with(self, child: Any, round_facts: dict[str, Any] | None) -> str | None:
+        """`_settlement_gap` 과 **같은 판정**을, 미리 읽어 둔 회차 사실로 답한다.
+
+        `state` 비교는 **밖에서 보이는 값**으로 한다 — 내부 `completion_submitted` 를 그대로 비교하면
+        완료 보고를 낸 요청 하위가 「아직 안 끝남」으로 읽히고, 막는 이유가 틀린 채로 화면에 나간다.
+        """
+        if TaskState(child.state) is TaskState.CANCELLED:
+            return None
+        if _external_state(child.state) != TaskState.DONE.value:
+            return "unfinished"
+        if not self.requires_completion_review(child):
+            return None
+        return None if self._approval_from_rounds(child, round_facts) == "approved" else "awaiting_approval"
 
     def _organization_scope_members(self, principal: Principal) -> frozenset[str]:
         """The people whose work this person may read because of where their read authority reaches."""
@@ -439,29 +706,70 @@ class TaskApplication:
         facts = self.repository.origin_facts([parent]).get(parent.id, {})
         return facts.get("assignment_kind") == "direct" and facts.get("assigned_by") == str(principal.id)
 
-    def _may_read(self, principal: Principal, task_id: UUID) -> bool:
-        """Whether this person may open that work at all — as its holder, or through a relationship that earns it."""
+    def may_read_task(self, principal: Principal, task_id: UUID) -> bool:
+        """이 사람이 그 업무를 열 수 있는가 — **한 자리에서만 답한다.**
+
+        `readable_task_ids()` 와 이 답이 같은 규칙에서 나와야 한다. 예전에는 갈라져 있었다: 상세는
+        `get()` 이 판정하고 자료는 `_list()` 가 판정했는데 `_list()` 에 요청 관계 길이 없어서,
+        **요청자가 상세는 여는데 그 업무의 자료는 못 여는** 모양이 성립했다. Phase 4 가 `_list()` 에
+        그 길을 넣었고 이 함수는 여전히 `get()` 을 쓴다 — 두 답이 같은 길 위에 선다.
+
+        `get()` 을 쓰는 이유는 하나 더 있다: 목록에 넣기엔 너무 넓은 관계(상위를 관리하는 사람 등)를
+        단건 조회에서만 인정하는 자리가 이미 있고, 그 규칙을 여기서 다시 쓰지 않기 위해서다.
+        """
         try:
             self.get(principal, task_id)
         except (TaskNotFound, TaskAccessDenied):
             return False
         return True
 
-    def _hierarchy_view(self, principal: Principal, task: Any) -> dict[str, Any]:
-        """What this work is part of, and what is part of it — each read through the permission it needs.
+    def readable_task_ids(self, principal: Principal) -> list[str]:
+        """이 사람이 읽을 수 있는 업무 전부 — 자료 검색·그래프가 같은 답을 받는 자리."""
+        return [str(row["task_id"]) for row in self.readable_tasks(principal, include_closed=True)]
 
-        A child names its parent so the person holding it knows what it belongs to, and no more than that. A parent
-        lists the children this person may read; a count of work they cannot see would be a side channel.
+    #: 옛 이름. 모듈 안에서 부르던 자리가 많아 그대로 두되, **판정은 한 곳**이다.
+    _may_read = may_read_task
+
+    def _hierarchy_view(self, principal: Principal, task: Any) -> dict[str, Any]:
+        """이 일이 무엇의 일부이고 무엇이 이 일의 일부인가 — 각각 자기 권한으로 읽는다.
+
+        **부모가 있는 업무도 자기 하위를 낸다.** 예전에는 하위의 `children` 을 비웠는데, 저장이 한 단계로
+        묶여 있던 시절의 자취다. 저장 깊이가 열린 지금 그렇게 두면 받은 일을 다시 나눈 사람의 화면에서
+        그 아래가 통째로 사라진다. `children` 은 언제나 **직속 하위만** 이고 (정책 L-11), 더 깊은 것은
+        그 업무로 들어가 읽는다.
+
+        읽을 수 없는 하위는 **목록에도 건수에도** 없다 — 셀 수만 있게 남기면 그것이 곁수로가 된다.
         """
-        children = [] if getattr(task, "parent_task_id", None) is not None else self._readable_children(principal, task)
+        children = self._readable_children(principal, task)
+        rounds = self.repository.approval_rounds_for([UUID(str(row["task_id"])) for row in children])
+        settled = blocking = cancelled = 0
+        for row in children:
+            if row["state"] == TaskState.CANCELLED:
+                cancelled += 1
+                continue
+            child = self.repository.task_by_id(UUID(str(row["task_id"])))
+            if child is None or self._settlement_gap_with(child, rounds.get(child.id)) is None:
+                settled += 1
+            else:
+                blocking += 1
         return {
             "parent": self._parent_summary(principal, task),
             "children": children,
-            "child_progress": {
-                "done": sum(1 for row in children if row["state"] in {TaskState.DONE, TaskState.CANCELLED}),
-                "total": len(children),
-            },
+            # `done` 은 **완결한 하위**다 — 취소는 따로 세고, `blocking` 이 0이어야 상위를 끝낼 수 있다.
+            # 같은 `is_child_settled()` 판정을 쓰므로 이 숫자와 완료 거절이 어긋나지 않는다.
+            "child_progress": {"done": settled, "blocking": blocking, "cancelled": cancelled, "total": len(children)},
         }
+
+    def children(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
+        """직속 하위만, 그리고 그 진행 — 상세가 내는 것과 **같은 판정**이다."""
+        self._require(principal, TASK_READ)
+        if not self.may_read_task(principal, task_id):
+            raise TaskNotFound("task was not found")
+        task = self.repository.task_by_id(task_id)
+        if task is None:
+            raise TaskNotFound("task was not found")
+        view = self._hierarchy_view(principal, task)
+        return {"task_id": str(task_id), "children": view["children"], "child_progress": view["child_progress"]}
 
     def _readable_children(self, principal: Principal, task: Any) -> list[dict[str, Any]]:
         rows = []
@@ -473,9 +781,10 @@ class TaskApplication:
                 {
                     "task_id": str(child.id),
                     "title": child.title,
-                    "state": child.state,
+                    "state": _external_state(child.state),
                     "due_date": _iso(child.due_date),
                     "assignee": self._assignee_projection([child]).get(child.id),
+                    "derived": self._derived_for([child], principal=principal).get(child.id),
                 }
             )
         return rows
@@ -488,20 +797,114 @@ class TaskApplication:
         if parent is None:
             return None
         # Enough to know what this work belongs to. Reading the parent itself still needs its own permission.
-        return {"task_id": str(parent.id), "title": parent.title, "state": parent.state}
+        return {"task_id": str(parent.id), "title": parent.title, "state": _external_state(parent.state)}
 
     # ---- delivery: reporting what was handed over, and the answer the person who asked gives ----
 
-    def _require_children_finished(self, task: Any) -> None:
-        """Work is not finished while its parts are not, and the refusal names what is still open."""
-        remaining = self.repository.open_children_of(task.id)
-        if remaining:
-            names = ", ".join(str(child.title) for child in remaining[:3])
-            raise InvalidTaskTransition(f"끝나지 않은 하위 업무가 있습니다: {names}")
+    def is_child_settled(self, child: Any) -> bool:
+        """**하위가 끝났는가** — 상위 완료를 막느냐 마느냐의 단 하나의 판정 (정책 V-15·V-16).
+
+        세 가지가 함께여야 끝난 것이다: ① 취소가 아니고 ② `state=done` 이며 ③ **요청 업무면 요청자의
+        승인까지** 받았다. 취소는 검사에서 **제외**되므로 여기서는 「끝난 것」과 같게 답한다 — 로그는
+        남고 완료로 바뀌지도 않는다.
+
+        예전에는 `state` 만 봤다(BASE-002 O-20). 그러면 담당자가 완료 보고만 제출해도 상위가 끝날 수
+        있었다 — 요청자가 보지도 않은 결과 위에서 상위가 닫힌다. **v2 가 새로 닫는 자리가 여기다.**
+
+        **모르면 완결로 치지 않는다.** 승인 행을 찾지 못하면 미완결이다.
+        """
+        if TaskState(child.state) is TaskState.CANCELLED:
+            return True
+        # 밖에서 보이는 값으로 본다 — 완료 보고를 낸 요청 하위는 `done` 이되 **승인 전**이고,
+        # 그 구분은 바로 다음 줄이 한다. 내부 값으로 비교하면 그 행이 여기서 미리 걸러져
+        # 「승인까지여야 완결」이라는 규칙이 실제로 적용되는 자리를 잃는다.
+        if _external_state(child.state) != TaskState.DONE.value:
+            return False
+        if not self.requires_completion_review(child):
+            return True
+        return self._approval_state(child) == "approved"
+
+    def _settlement_gap(self, child: Any) -> str | None:
+        """무엇이 모자라 막는가 — `unfinished`(아직 안 끝남) 또는 `awaiting_approval`(승인 전).
+
+        **밖에서 보이는 상태로 판정한다.** 완료 보고를 낸 요청 하위는 내부 값이
+        `completion_submitted` 인데, 그것은 밖으로 `done` + `approval=awaiting_review` 다 — 「아직
+        시작도 안 했다」가 아니라 「끝내 놓고 요청자의 답을 기다린다」이고, 그 둘은 사람이 할 일이 다르다.
+        """
+        if self.is_child_settled(child):
+            return None
+        return "unfinished" if _external_state(child.state) != TaskState.DONE.value else "awaiting_approval"
+
+    def blocking_children(self, task: Any, principal: Principal | None = None) -> list[dict[str, str]]:
+        """상위의 최종 완료를 **막는 하위**와 그 이유.
+
+        `principal` 을 주면 **그 사람이 읽을 수 있는 것만** 남는다 — 이름과 건수가 밖으로 나가는 자리에
+        쓴다. 주지 않으면 전부다 — **막을지 말지를 정하는 자리**에 쓴다. 두 쓰임을 한 함수로 두되
+        인자로 가른다.
+        """
+        rows = []
+        for child in self.repository.children_of(task.id):
+            why = self._settlement_gap(child)
+            if why is None:
+                continue
+            if principal is not None and not self.may_read_task(principal, child.id):
+                continue
+            rows.append({"task_id": str(child.id), "title": str(child.title), "why": why})
+        return rows
+
+    def _require_children_finished(self, task: Any, principal: Principal | None = None) -> None:
+        """부분이 끝나지 않은 일은 끝난 일이 아니다.
+
+        **막는 판정과 말해 주는 내용을 가른다.**
+        - 막을지는 **하위 전부**로 정한다. 부르는 사람이 못 보는 하위가 안 끝났는데 상위를 끝내면
+          그 완료가 거짓이 된다 — 안 보인다고 없는 것이 아니다.
+        - 오류 본문은 **밖으로 나가는 투영**이라 그 사람이 읽을 수 있는 하위만 이름으로 낸다.
+          읽을 수 없는 것만 막고 있으면 **이름도 건수도 내지 않고** 일반 문구로 답한다 — 거절 사유로
+          남의 업무 제목이나 개수를 알려 주면 그 자체가 곁수로다.
+
+        **자동 완료는 없다** — 하위가 다 끝나도 사람이 완료 명령을 부른다. 참고 연결은 하위가 아니므로
+        이 검사에 들어가지 않는다 (E-6): 여기는 `children_of` 만 본다.
+        """
+        if not self.blocking_children(task):
+            return
+        shown = self.blocking_children(task, principal) if principal is not None else self.blocking_children(task)
+        if not shown:
+            raise TaskChildrenUnfinished("끝나지 않은 하위 업무가 있습니다")
+        names = ", ".join(row["title"] for row in shown[:3])
+        raise TaskChildrenUnfinished(f"끝나지 않은 하위 업무가 있습니다: {names}", tuple(shown))
 
     def requires_completion_review(self, task: Any) -> bool:
         """Work someone else asked for is finished when they say so, not when the holder says so."""
         return getattr(task, "source_work_request_id", None) is not None
+
+    def _approval_state(self, task: Any) -> str | None:
+        """완료 확인이 어디까지 왔나 — `awaiting_review` · `awaiting_revision` · `approved` · `null`.
+
+        **판단 원장에서 답한다.** `state` 문자열이나 투영을 읽어 되짚지 않는다 (SPEC-001 §4).
+
+        **지금 완료 회차에 유효한 승인만 센다** (BASE-002 O-33). 보완으로 회차가 오르거나 재개가
+        있었으면 **그 이전 승인은 무효다** — 아무 과거 승인 하나로 충분하다고 하면, 한 번 승인받은 일이
+        다시 열리고 바뀐 뒤에도 영원히 「승인됨」으로 남는다.
+        """
+        item = self.repository.delivery_item(task)
+        if item is None:
+            return None
+        submissions = self.repository.delivery_submissions(item)
+        if not submissions:
+            return None
+        latest = submissions[-1]
+        decisions = [row for row in self.repository.delivery_decisions([latest.id]) if row.submission_id == latest.id]
+        if not decisions:
+            return "awaiting_review"
+        accepted = [row for row in decisions if row.decision == "accept"]
+        if not accepted:
+            return "awaiting_revision"
+        # 재개 이후의 승인만 유효하다. 재개가 그 회차를 다시 열었으므로 그 전의 「인정」은 지금 결과에
+        # 대한 답이 아니다. 이력은 그대로 남는다 (E-5) — 판정만 이 선 뒤를 본다.
+        reopened_at = _as_utc(getattr(task, "reopened_at", None))
+        if reopened_at is not None and all(_as_utc(row.decided_at) <= reopened_at for row in accepted):
+            return "awaiting_review" if TaskState(task.state) is TaskState.DONE else None
+        return "approved"
 
     def submit_completion(
         self,
@@ -531,20 +934,24 @@ class TaskApplication:
             raise TaskError("이 업무의 요청자를 찾을 수 없습니다")
         snapshot = self._delivery_snapshot(principal, task, clean_summary[:2000], output_material_ids or [])
         self.repository.open_delivery_round(task, str(principal.id), reviewer_id, snapshot)
+        # 내부 값은 그대로 두고 **투영에서만** `done` + `approval=awaiting_review` 로 낸다 —
+        # 제출 가드와 승인 가드가 이 값을 읽고 있어서, enum 을 지금 없애면 그 둘이 함께 무너진다.
         task.state = TaskState.COMPLETION_SUBMITTED
         task.block_reason = None
+        # 밖으로 `done` 인 순간이 이때다. 승인은 `state` 를 바꾸지 않으므로 이 시각이 완료 시각이다.
+        task.completed_at = datetime.now(UTC)
         task.version += 1
         self.repository.touch(task)
         self.repository.record_activity(
             task, str(principal.id), "task.completion_submitted", f"완료 보고: {clean_summary[:80]}"
         )
-        return {**self._view(task), "delivery": self.delivery_view(principal, task)}
+        return {**self._view(task, principal), "delivery": self.delivery_view(principal, task)}
 
     def accept_delivery(self, principal: Principal, task: Any, submission: Any, expected_version: int) -> None:
         """The person who asked says this is what they wanted. Only this closes the work."""
         if TaskState(task.state) is not TaskState.COMPLETION_SUBMITTED:
             raise InvalidTaskTransition("확인할 완료 보고가 없습니다")
-        self._require_children_finished(task)
+        self._require_children_finished(task, principal)
         self.repository.record_delivery_decision(
             submission, str(principal.id), "accept", expected_version=expected_version
         )
@@ -564,6 +971,9 @@ class TaskApplication:
             submission, str(principal.id), "negotiate", reason=clean[:1000], expected_version=expected_version
         )
         task.state = TaskState.IN_PROGRESS
+        # 보완은 **같은 업무의 다음 회차**다 (E-3). 끝나지 않았으므로 완료 시각을 지운다 — 다음 제출이
+        # 새로 찍는다. 지난 회차와 그 판단은 그대로 남는다.
+        task.completed_at = None
         task.version += 1
         self.repository.touch(task)
         self.repository.record_activity(
@@ -650,12 +1060,22 @@ class TaskApplication:
         expected_version: int = 0,
     ) -> TaskMutationResult:
         self._require(principal, TASK_SELF_MANAGE)
+        if target is TaskState.CANCELLED:
+            # **이 거절은 담당자보다 먼저 온다.** 수락된 요청 업무의 직접 취소는 요청자·담당자·관리자
+            # **누구에게도** 열려 있지 않은데(정책 V-19), 들고 있는 사람만 찾아 보면 요청자는 「없는
+            # 업무」로 끝난다 — 왜 못 하는지도, 어디로 가야 하는지도 모른 채로. 읽을 수 있는 사람에게는
+            # 그 이유를 말한다. 읽을 수 없는 사람에게는 아래에서 그대로 404 다.
+            readable = self.repository.task_by_id(task_id)
+            if readable is not None and self.may_read_task(principal, task_id):
+                self._require_cancellable(readable)
         task = self.repository.task(task_id, str(principal.id), lock=True)
         requires_review = self.requires_completion_review(task)
+        # **완결 판정은 `state` 만 보지 않는다** — 요청 하위는 요청자의 승인까지여야 끝난 것이다.
+        # 막을지는 하위 전부로 정하고, 이름은 이 사람이 읽을 수 있는 것만 낸다. 읽을 수 있는 것이
+        # 하나도 없으면 이름 없이 막는다 — 없는 이름을 지어내지도, 남의 제목을 흘리지도 않는다.
+        children_block = target is TaskState.DONE and not requires_review and bool(self.blocking_children(task))
         unfinished = (
-            tuple(str(child.title) for child in self.repository.open_children_of(task.id))
-            if target is TaskState.DONE and not requires_review
-            else ()
+            tuple(row["title"] for row in self.blocking_children(task, principal)) if children_block else ()
         )
         transition = transition_task(
             Task(
@@ -675,12 +1095,23 @@ class TaskApplication:
             TaskCompletionContext(
                 requires_completion_review=requires_review,
                 unfinished_child_titles=unfinished,
+                children_block=children_block,
             ),
         )
         task.state = transition.task.state
         task.start_date = transition.task.start_date
         task.block_reason = transition.task.block_reason
         task.version = transition.task.version
+        # **계획과 실제를 가른다** (정책 V-13·L-10). `start_date` 는 계획이고 이 두 값이 실제다.
+        # `open` 에서 바로 완료하면 `started_at` 은 **비어 있는 채로 둔다** — 시작하지 않은 일이 끝난
+        # 것이고, 없던 시작을 지어내지 않는다.
+        now = datetime.now(UTC)
+        if target is TaskState.IN_PROGRESS and task.started_at is None:
+            task.started_at = now
+        if target is TaskState.DONE:
+            task.completed_at = now
+        if target is TaskState.CANCELLED and task.cancel_reason is None:
+            task.cancel_reason = "direct"
         self.repository.touch(task)
         self.repository.record_activity(
             task,
@@ -690,7 +1121,273 @@ class TaskApplication:
             before_ref=transition.event.before_ref,
             reason=transition.event.reason,
         )
-        return self._view(task)
+        return self._view(task, principal)
+
+    def _require_cancellable(self, task: Any) -> None:
+        """**수락된 요청 업무는 직접 취소할 수 없다** (정책 V-19 · `WORK_CANCEL_REQUIRES_AGREEMENT`).
+
+        요청자·담당자·관리자 **모두** 같다. 둘이 합의해 시작한 일을 한쪽이 혼자 접으면 다른 쪽은
+        접혔다는 사실을 나중에 알게 된다. 그 자리에서 취소로 가는 길은 **합의 취소 하나**다.
+
+        수락 전 요청 업무·본인 업무·배정 업무의 직접 취소는 **현행 그대로**다 — 아무도 받아들인 적이
+        없거나, 합의할 상대가 없는 일이다.
+        """
+        if not self.requires_completion_review(task):
+            return
+        facts = self.repository.origin_facts([task]).get(task.id, {})
+        if facts.get("assignee_id") is None:
+            return
+        raise TaskCancelRequiresAgreement(
+            "수락된 요청 업무는 직접 취소할 수 없습니다. 취소 제안으로 상대의 동의를 받으세요"
+        )
+
+    # ---- 재개: 끝난 일을 다시 연다 (SPEC-003 §4 `POST /api/tasks/{id}/reopen`) ----
+
+    def reopen(self, principal: Principal, task_id: UUID, expected_version: int, reason: str | None = None) -> TaskMutationResult:
+        """**끝난 일을 다시 연다.** 새 업무처럼 만드는 것이 아니다 (E-5).
+
+        이전 완료 이력·회차·결과를 **지우지 않는다** — `reopened_at` 이 「여기서부터 다시」를 가리키는
+        선이고, 그 선 앞의 승인은 지금 결과에 대한 답이 아니므로 완결 판정에서만 무효가 된다.
+
+        **완료된 상위가 있으면 거부한다** (정책 L-13): 상위가 이미 끝났는데 그 부분이 다시 열리면
+        상위의 완료가 거짓이 된다. **상위를 먼저 재개하라고 낸다.**
+        """
+        self._require(principal, TASK_READ)
+        task = self.repository.task_by_id(task_id, lock=True)
+        if task is None or not self.may_read_task(principal, task_id):
+            raise TaskNotFound("task was not found")
+        if int(task.version) != expected_version:
+            raise InvalidTaskTransition("task version is stale")
+        if TaskState(task.state) not in {TaskState.DONE, TaskState.COMPLETION_SUBMITTED}:
+            raise InvalidTaskTransition("끝난 업무만 다시 열 수 있습니다")
+        self._require_may_reopen(principal, task)
+        parent_id = getattr(task, "parent_task_id", None)
+        if parent_id is not None:
+            # **상위 행을 잡고 다시 읽는다.** 잠금 없이 읽으면 상위 완료와 하위 재개가 서로 다른 행만
+            # 잠근 채 지나가 `done` 인 상위 아래에 `in_progress` 인 하위가 남는다 — READ COMMITTED 의
+            # write skew 다(정책 L-13). 완료 경로가 이미 **완료 대상 행**을 먼저 잡으므로, 여기서
+            # 상위를 기다리면 그 커밋 뒤의 상태를 보고 막힌다.
+            #
+            # 잠금 순서는 하위 → 상위이고 완료 경로는 자기 한 행만 잡는다. 한쪽이 둘, 다른 쪽이 하나라
+            # 서로를 기다리는 고리가 생기지 않는다 — 모순을 deadlock 으로 바꾸지 않는다.
+            parent = self.repository.task_by_id(parent_id, lock=True)
+            if parent is not None and TaskState(parent.state) in {TaskState.DONE, TaskState.COMPLETION_SUBMITTED}:
+                raise TaskReopenParentDone("상위 업무가 완료되어 있습니다. 상위 업무를 먼저 다시 여세요")
+        now = datetime.now(UTC)
+        task.state = TaskState.IN_PROGRESS
+        task.reopened_at = now
+        task.completed_at = None
+        task.version += 1
+        self.repository.touch(task)
+        clean = " ".join(str(reason or "").split()) or None
+        self.repository.record_activity(
+            task, str(principal.id), "task.reopened", f"업무 재개: {task.title}",
+            before_ref=f"task:{task.id}@{expected_version}", reason=clean,
+        )
+        return self._view(task, principal)
+
+    def _require_may_reopen(self, principal: Principal, task: Any) -> None:
+        """누가 다시 열 수 있나 — **본인 업무는 담당자, 요청 업무는 요청자** (정책 V-19).
+
+        **배정 업무는 이 SPEC 이 정하지 않았다**(미정 M-3). 새로 열지 않는다 — 열어 두면 미정을
+        기본값으로 확정해 버린다. 배정 업무에서는 담당자 자신의 재개만 현행 권한 그대로 선다.
+        """
+        facts = self.repository.origin_facts([task]).get(task.id, {})
+        if self.requires_completion_review(task):
+            requester = self._requester_of(task)
+            if requester is None or str(principal.id) != requester:
+                raise TaskReopenForbidden("이 업무를 다시 열 수 있는 사람은 요청자입니다")
+            return
+        if facts.get("assignee_id") != str(principal.id):
+            raise TaskReopenForbidden("이 업무를 다시 열 수 있는 사람은 담당자입니다")
+
+    # ---- 제안–동의: 수락 뒤의 취소와 조건 변경 (SPEC-003 §4) ----
+
+    def propose(
+        self,
+        principal: Principal,
+        task_id: UUID,
+        kind: str,
+        expected_version: int,
+        *,
+        reason: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """제안을 낸다. **이 명령만으로는 상태도 조건도 바뀌지 않는다** (정책 V-19·V-20).
+
+        낼 수 있는 사람은 **요청자**다 — 승격 요청이면 **누른 사람**이 그 자리다 (BASE-002 O-31).
+        """
+        self._require(principal, TASK_READ)
+        if kind not in {"cancellation", "terms_change"}:
+            raise TaskError("제안 종류는 cancellation 또는 terms_change 입니다")
+        task = self._proposal_task(principal, task_id, expected_version)
+        if not self._is_request_owner(principal, task):
+            raise TaskAccessDenied("이 업무의 제안은 요청자만 낼 수 있습니다")
+        if kind == "terms_change" and not payload:
+            raise TaskError("조건 변경 제안에는 바꿀 내용이 필요합니다")
+        clean = " ".join(str(reason or "").split()) or None
+        if kind == "cancellation" and not clean:
+            raise TaskError("취소 제안에는 사유가 필요합니다")
+        if any(row.state == "pending" and row.kind == kind for row in self.repository.proposals_for(task.id)):
+            raise TaskProposalNotPending("이미 응답을 기다리는 같은 종류의 제안이 있습니다")
+        record = self.repository.open_proposal(task, kind, str(principal.id), payload, clean)
+        return {"task_id": str(task.id), "proposal": _proposal_view(record), "task_version": int(task.version)}
+
+    def respond_to_proposal(
+        self, principal: Principal, task_id: UUID, proposal_id: UUID, expected_version: int, *, agree: bool, reason: str | None = None
+    ) -> dict[str, Any]:
+        """**담당자만** 답한다 (SPEC-003 §4). 동의해야 비로소 바뀐다."""
+        self._require(principal, TASK_READ)
+        # **읽기 권한을 먼저 다시 검사한다** (K-2) — 영수증을 돌려주기 전에도 지금의 권한으로 묻는다.
+        # 잃었으면 존재를 숨긴다.
+        if not self.may_read_task(principal, task_id):
+            raise TaskNotFound("task was not found")
+        task = self.repository.task_by_id(task_id, lock=True)
+        if task is None:
+            raise TaskNotFound("task was not found")
+        record = self.repository.proposal(task_id, proposal_id, lock=True)
+        if record is None:
+            raise TaskNotFound("proposal was not found")
+        # **재전송을 회차 검사보다 먼저 가른다.** 동의가 업무를 바꾸면 회차가 오르므로, 사람이 보던
+        # 화면에서 그대로 다시 누른 요청은 「그때의 회차」를 싣고 온다 — 그것을 stale 로 거절하면
+        # 재전송이 실패로 읽힌다. 합의 취소 뒤에는 담당 관계까지 끝나 있어서 담당자 검사도 막는다.
+        # 재전송의 신원은 **저장된 답**이 갖고 있다: 같은 사람 · 같은 답 · 그 제안이 소비한 회차.
+        # 세 가지가 모두 같을 때만 영수증이고, **두 번째 effect 는 없다.**
+        # 같은 사람의 **다른 답**은 영수증이 아니다 — 409 로 갈린다(아래).
+        if (
+            record.state in {"agreed", "declined"}
+            and record.responder_id == str(principal.id)
+            and record.state == ("agreed" if agree else "declined")
+            and int(record.task_version) == int(expected_version)
+        ):
+            return {"task_id": str(task.id), "proposal": _proposal_view(record), "task_version": int(task.version)}
+        if record.state != "pending":
+            # **「이미 답했다」가 「회차가 낡았다」보다 먼저다.** 위에서 재전송이 아니라고 갈렸으므로
+            # 여기 오는 것은 *다른 답*이거나 *지금 회차로 다시 답하는 것*이고, 둘 다 사람에게 알려 줄
+            # 사실은 하나다 — 이 제안은 이미 끝났다. 회차 검사가 먼저 걸리면 그 사실이 「낡았다」로
+            # 뭉개져 다음 걸음이 보이지 않는다.
+            raise TaskProposalNotPending("이미 처리된 제안입니다")
+        if int(task.version) != expected_version:
+            raise InvalidTaskTransition("task version is stale")
+        facts = self.repository.origin_facts([task]).get(task.id, {})
+        if facts.get("assignee_id") != str(principal.id):
+            raise TaskProposalResponderOnly("이 제안에 답할 수 있는 사람은 담당자입니다")
+        self.repository.settle_proposal(record, str(principal.id), "agreed" if agree else "declined")
+        if agree:
+            self._apply_proposal(principal, task, record)
+        return {"task_id": str(task.id), "proposal": _proposal_view(record), "task_version": int(task.version)}
+
+    def withdraw_proposal(self, principal: Principal, task_id: UUID, proposal_id: UUID, expected_version: int) -> dict[str, Any]:
+        """제안한 사람이 거둔다. 답하기 전에만 열려 있고 **회차가 필수다** (K-4).
+
+        재전송이면 영수증이다 — 이미 거둔 제안에 같은 사람이 다시 부르면 두 번째 effect 없이 현재를
+        돌려준다. 돌려주기 전에 읽을 권한을 **다시 검사한다** (K-2).
+        """
+        self._require(principal, TASK_READ)
+        if not self.may_read_task(principal, task_id):
+            raise TaskNotFound("task was not found")
+        task = self.repository.task_by_id(task_id, lock=True)
+        if task is None:
+            raise TaskNotFound("task was not found")
+        record = self.repository.proposal(task_id, proposal_id, lock=True)
+        if record is None or record.proposed_by != str(principal.id):
+            raise TaskNotFound("proposal was not found")
+        # 거두기도 재전송을 **회차 검사보다 먼저** 가른다 — 같은 사람이 같은 제안을 다시 거두면
+        # 두 번째 effect 없이 현재를 돌려준다. 거두는 것은 업무를 바꾸지 않으므로 회차는 그대로다.
+        if record.state == "withdrawn":
+            return {"task_id": str(task_id), "proposal": _proposal_view(record), "task_version": int(task.version)}
+        if record.state != "pending":
+            raise TaskProposalNotPending("이미 처리된 제안입니다")
+        if int(task.version) != expected_version:
+            raise InvalidTaskTransition("task version is stale")
+        self.repository.settle_proposal(record, str(principal.id), "withdrawn")
+        return {"task_id": str(task_id), "proposal": _proposal_view(record), "task_version": int(task.version)}
+
+    def proposals(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
+        self._require(principal, TASK_READ)
+        if not self.may_read_task(principal, task_id):
+            raise TaskNotFound("task was not found")
+        rows = [_proposal_view(row) for row in self.repository.proposals_for(task_id)]
+        return {
+            "task_id": str(task_id),
+            "pending": [row for row in rows if row["state"] == "pending"],
+            "history": rows,
+        }
+
+    def _apply_proposal(self, principal: Principal, task: Any, record: Any) -> None:
+        """동의가 실제로 바꾸는 것. 그 전에는 **원래 조건과 상태가 유지된다.**"""
+        now = datetime.now(UTC)
+        if record.kind == "cancellation":
+            task.state = TaskState.CANCELLED
+            task.cancel_reason = "cancellation_agreed"
+            task.version += 1
+            self.repository.touch(task)
+            self.repository.record_activity(
+                task, str(principal.id), "task.state_changed", f"합의 취소: {task.title}", reason=record.reason
+            )
+            # **요청도 같은 transaction 에서 끝난다.** 업무만 닫고 요청을 `accepted` 로 두면 세 자리가
+            # 어긋난다: 보낸 업무 표가 「담당 확정」으로 읽고, 담당 관계가 `active` 로 남고, 목록 정리가
+            # 「진행 중」이라며 거절한다 — 합의로 접은 바로 그 항목을 치울 수 없게 된다.
+            # 요청 상태도의 `accepted → cancelled_by_agreement` 가 이 전이다 (SPEC-003 §4 State).
+            self._settle_cancelled_request(principal, task, record)
+            return
+        payload = dict(record.payload or {})
+        changed: list[str] = []
+        if "due_date" in payload:
+            wanted = payload["due_date"]
+            task.due_date = date.fromisoformat(str(wanted)) if wanted else None
+            changed.append("due_date")
+        if "title" in payload and str(payload["title"] or "").strip():
+            task.title = str(payload["title"]).strip()[:300]
+            changed.append("title")
+        if "description" in payload:
+            task.description = _clean_text(payload["description"])
+            changed.append("description")
+        if not changed:
+            raise TaskError("조건 변경 제안에 적용할 내용이 없습니다")
+        task.version += 1
+        self.repository.touch(task)
+        self.repository.record_activity(
+            task, str(principal.id), "task.updated", f"조건 변경 동의: {task.title} ({', '.join(changed)})",
+            reason=record.reason,
+        )
+        _ = now
+
+    def _settle_cancelled_request(self, principal: Principal, task: Any, record: Any) -> None:
+        """합의 취소가 그 **요청**도 끝낸다 — 상태·이력·담당 관계를 한 덩어리로 맞춘다.
+
+        본인 업무·배정 업무에는 요청이 없으므로 할 일이 없다. 그쪽의 취소는 직접 취소로 이미 끝났다.
+        """
+        if self._requests is None or getattr(task, "source_work_request_id", None) is None:
+            return
+        self._requests.settle_by_agreement(
+            task.source_work_request_id, str(principal.id), reason=record.reason
+        )
+
+    def _proposal_task(self, principal: Principal, task_id: UUID, expected_version: int) -> Any:
+        if not self.may_read_task(principal, task_id):
+            raise TaskNotFound("task was not found")
+        task = self.repository.task_by_id(task_id, lock=True)
+        if task is None:
+            raise TaskNotFound("task was not found")
+        if int(task.version) != expected_version:
+            raise InvalidTaskTransition("task version is stale")
+        return task
+
+    def _is_request_owner(self, principal: Principal, task: Any) -> bool:
+        """요청자 자리에 선 사람인가 — 요청자 본인 **또는 승격에서 누른 사람** (BASE-002 O-31).
+
+        요청자 전용 조작(수정·재상신·철회)이 이미 그 모양으로 판정한다. 제안도 같은 모양을 쓴다.
+        """
+        if self._requests is None or getattr(task, "source_work_request_id", None) is None:
+            return False
+        request = self._requests.request(task.source_work_request_id)
+        if request is None:
+            return False
+        return str(principal.id) in {
+            str(request.requester_id),
+            str(getattr(request, "promoted_by_member_id", None) or ""),
+        }
 
     @staticmethod
     def _require(principal: Principal, capability: str) -> None:
@@ -988,7 +1685,7 @@ class TaskApplication:
     def _with_checklist(self, task: Any, principal: Principal) -> dict[str, Any]:
         items = [_checklist_view(item) for item in self.repository.checklist_for(task.id)]
         return {
-            **self._view(task),
+            **self._view(task, principal),
             "checklist": items,
             "checklist_progress": {"done": sum(1 for item in items if item["done"]), "total": len(items)},
             "references": self.references(principal, task),
@@ -1070,12 +1767,15 @@ class TaskApplication:
         )
         return {"reference_id": str(record.id), "task_version": int(task.version)}
 
-    @staticmethod
-    def _view(task: Any) -> TaskMutationResult:
+    def _view(self, task: Any, principal: Principal | None = None, *, derived: dict[str, Any] | None = None) -> TaskMutationResult:
+        """밖으로 나가는 업무 하나. **`state` 는 계약의 넷뿐이고 `derived` 는 서버가 만든다.**
+
+        `derived` 를 미리 계산해 넘길 수 있다 — 목록이 줄마다 같은 질의를 반복하지 않게 하는 자리다.
+        """
         return {
             "task_id": str(task.id),
             "title": task.title,
-            "state": task.state,
+            "state": _external_state(task.state),
             "version": task.version,
             "block_reason": task.block_reason,
             "description": getattr(task, "description", None),
@@ -1088,7 +1788,16 @@ class TaskApplication:
             "project_id": _str(getattr(task, "project_id", None)),
             "origin_kind": getattr(task, "origin_kind", "direct"),
             "visibility": getattr(task, "visibility", "scope_default"),
+            # 왜 취소됐는가. 상위 목록에서 「취소됨 — 요청 거절」로 읽히는 값이다.
+            "cancel_reason": getattr(task, "cancel_reason", None),
+            # **계획과 실제를 가른다** — `start_date` 는 계획이고 `started_at` 은 실제로 시작한 그 순간이다.
+            "started_at": _iso(getattr(task, "started_at", None)),
+            "completed_at": _iso(getattr(task, "completed_at", None)),
+            "reopened_at": _iso(getattr(task, "reopened_at", None)),
             "assignment": _assignment_view(getattr(task, "assignments", None)),
+            # **파생 표시는 서버가 만든다** (SPEC-003 §2.11·§4 Data). 화면이 `state`·`origin_kind` 로
+            # 기다림과 권한을 되짚지 않는다 — 되짚으면 두 곳의 규칙이 조용히 갈린다.
+            "derived": derived if derived is not None else self._derived_for([task], principal=principal).get(task.id),
             "lineage": {
                 "request_thread_id": _str(getattr(task, "request_thread_id", None)),
                 "source_work_request_id": _str(getattr(task, "source_work_request_id", None)),
@@ -1101,10 +1810,81 @@ class TaskApplication:
         }
 
 
+def _as_utc(value: Any) -> datetime | None:
+    """시각 하나를 **비교할 수 있는 모양**으로 맞춘다.
+
+    같은 열이 백엔드마다 다르게 돌아온다: PostgreSQL 은 tz 를 달아 주고 SQLite 는 naive 로 준다.
+    둘을 그냥 비교하면 `TypeError` 다. 저장된 시각은 전부 UTC 로 쓰므로, tz 가 없으면 UTC 로 읽는다 —
+    **없는 정보를 지어내는 것이 아니라 쓸 때의 약속을 읽을 때 되살리는 것**이다.
+    """
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _proposal_view(record: Any) -> dict[str, Any]:
+    return {
+        "proposal_id": str(record.id),
+        "kind": record.kind,
+        "state": record.state,
+        "proposed_by": record.proposed_by,
+        "responder_id": record.responder_id,
+        "payload": record.payload,
+        "reason": record.reason,
+        "created_at": _iso(record.created_at),
+        "responded_at": _iso(record.responded_at),
+    }
+
+
+def _external_state(state: Any) -> str:
+    """밖으로 나가는 수행 상태는 **넷뿐이다** — `open` · `in_progress` · `done` · `cancelled`.
+
+    코드에는 `completion_submitted` 가 남아 있다. 그것은 「완료 보고를 냈고 요청자가 아직 답하지
+    않았다」는 사실이고, 계약은 그 사실을 **`state=done` + `derived.approval=awaiting_review`** 로
+    말한다 (SPEC-003 §4 State · SPEC-001 §4). **enum 자체를 없애지 않는다** — 제출 가드와 승인 가드가
+    그 내부 값을 읽고 있고, 정리는 후속이다. 여기서는 **투영만** 바꾼다.
+
+    `blocked` 도 계약에 없지만 이 work 는 그 값을 **발행하지도 없애지도 않는다**(M-6) — 들어오는
+    그대로 낸다. 없는 계약을 여기서 지어내지 않는다.
+    """
+    return TaskState.DONE.value if str(state) == TaskState.COMPLETION_SUBMITTED.value else str(state)
+
+
+def _assignment_wait(fact: dict[str, Any]) -> str | None:
+    """무엇을 기다리는가 — 담당 행 둘이 답한다 (SPEC-003 §4 `derived.assignment`).
+
+    `pending` 만 있으면 **아직 아무도 들지 않았다**: 요청 수락 대기이거나 첫 지정이다.
+    `active` 와 `pending` 이 **함께** 있으면 들고 있는 사람이 있고 교체 제안이 답을 기다린다 —
+    그 공존이 「책임 공백 없음」의 모습이다 (정책 V-18).
+    """
+    if fact.get("pending_assignee_id") is None:
+        return None
+    return "awaiting_handover" if fact.get("assignee_id") is not None else "awaiting_acceptance"
+
+
+def _overdue_days(due_date: Any, state: Any, today: date) -> int | None:
+    """기한이 며칠 지났는가. **표시값이다** — 상태·담당·기한을 아무것도 바꾸지 않는다 (정책 V-19).
+
+    끝난 일에는 지연이 없다: 이미 끝난 것을 늦었다고 계속 말하지 않는다.
+    """
+    if due_date is None or str(state) in {TaskState.DONE.value, TaskState.CANCELLED.value, TaskState.COMPLETION_SUBMITTED.value}:
+        return None
+    overdue = (today - due_date).days
+    return overdue if overdue > 0 else None
+
+
 def _assignment_view(assignments: Any) -> TaskAssignmentView | None:
+    """**지금 이 업무를 든 담당 행.**
+
+    예전에는 마지막에 붙은 행을 그대로 냈다. 담당 변경 제안이 기존 담당을 닫지 않게 된 지금(정책 V-18)
+    마지막 행은 **답을 기다리는 제안**이므로, 그것을 내면 아직 수락하지도 않은 사람이 담당자로 읽힌다.
+    `active` 를 먼저 찾고, 없으면(수락 대기·첫 지정) 기다리는 행을 낸다 — 그 경우 `status` 가
+    `pending` 이라 「아직 아무도 들지 않았다」가 그대로 읽힌다.
+    """
     if not assignments:
         return None
-    current = assignments[-1]
+    rows = list(assignments)
+    current = next((row for row in rows if row.status == "active"), None) or rows[-1]
     return {
         "assignment_id": str(current.id),
         "kind": current.assignment_kind,

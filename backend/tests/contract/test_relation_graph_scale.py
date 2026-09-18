@@ -71,7 +71,7 @@ def large_graph(tmp_path_factory):
     expected = populate(url)
     settings = Settings(RuntimeProfile.TEST, url, materials_dir=str(directory / "materials"))
     client = TestClient(create_app(settings, report_provider=ContractTestAiProvider()))
-    mina = {"X-Demo-Persona": "mina"}
+    mina = {"X-Demo-Persona": "mina", "Idempotency-Key": "graph-scale-task"}
     # 회의에서 나온 일은 이제 안건의 「다음 할 일」에서 승격된다 — 그 표면은 SCAX-WP-004 다.
     # 여기서 필요한 것은 보고가 딛는 「오늘 움직인 업무」 하나뿐이므로 평범한 업무로 세운다.
     task = client.post("/api/tasks", headers=mina, json={"title": "오늘 움직인 업무"}).json()

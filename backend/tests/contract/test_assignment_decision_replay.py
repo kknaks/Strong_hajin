@@ -1,6 +1,11 @@
-"""A later Task edit cannot erase the receipt of its earlier assignment acceptance."""
+"""A later Task edit cannot erase the receipt of its earlier assignment acceptance.
+
+**수락 대기 배정은 W1 이후 과거 행에만 있다** — 신규 배정은 즉시 활성 담당으로 선다 (WORK-001 Phase 4).
+그 회차에 답하고 영수증을 돌려주는 코드는 그대로이므로 예전 배포가 남긴 모양에서 계속 검증한다.
+"""
 from uuid import UUID
 import pytest
+from legacy_acceptance import pending_assignment
 from ax_workspace.platform.persistence import ReviewDecisionRecord, TaskAssignmentRecord
 from test_unified_commands import _stack
 
@@ -9,7 +14,7 @@ from test_unified_commands import _stack
 def test_assignment_acceptance_replays_its_consumed_version_after_a_task_edit(tmp_path, historical_record):
     client, application = _stack(tmp_path)
     jiho, mina = {'X-Demo-Persona': 'jiho'}, {'X-Demo-Persona': 'mina'}
-    created = client.post('/api/tasks/assign', headers=jiho, json={'title': '원래 배정', 'assignee_id': 'mina'}).json()
+    created = pending_assignment(client, application._settings.database_url, jiho, title='원래 배정', assignee_id='mina')
     path = f"/api/action-items/{created['assignment_id']}"
     item = client.get(path, headers=mina).json()
     payload = {'expected_version': item['expected_version']}
@@ -29,9 +34,9 @@ def test_assignment_acceptance_replays_its_consumed_version_after_a_task_edit(tm
 
 
 def test_closed_assignment_keeps_its_frozen_content_after_the_task_moves_to_another_holder(tmp_path):
-    client, _ = _stack(tmp_path)
+    client, application = _stack(tmp_path)
     jiho, mina = {'X-Demo-Persona': 'jiho'}, {'X-Demo-Persona': 'mina'}
-    assigned = client.post('/api/tasks/assign', headers=jiho, json={'title': '당시 배정한 업무', 'assignee_id': 'mina'}).json()
+    assigned = pending_assignment(client, application._settings.database_url, jiho, title='당시 배정한 업무', assignee_id='mina')
     task_id = assigned['task']['task_id']
     path = f"/api/action-items/{assigned['assignment_id']}"
     item = client.get(path, headers=mina).json()

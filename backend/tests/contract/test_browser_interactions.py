@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from ax_workspace.entrypoints.mcp import McpReportsFacade, _create_bound_persona_server
+from legacy_acceptance import pending_request
 from test_unified_commands import _stack
 
 MINA = {'X-Demo-Persona': 'mina'}
@@ -134,7 +135,8 @@ def test_file_request_uses_each_existing_owner_and_restores_its_receipt(tmp_path
         folder = client.post('/api/material-folders', headers=MINA, json={'kind': 'personal', 'title': '파일 자료함'}).json()
         command['target_id'] = folder['folder_id']
     else:
-        request = client.post('/api/work-requests', headers=MINA, json={'title': '파일 근거 요청', 'assignee_id': 'jiho'}).json()
+        # 요청 근거는 판단 회차에 붙는다 — 신규 요청에는 그 회차가 없으므로 과거 모양 행에서 본다.
+        request = pending_request(client, application._settings.database_url, MINA, title='파일 근거 요청', assignee_id='jiho')
         command['target_id'] = request['request_id']
         if intent == 'request_comment_attachment':
             comment = client.post('/api/work-requests/' + request['request_id'] + '/comments', headers=MINA, json={'body': '첨부할 논의'}).json()

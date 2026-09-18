@@ -43,8 +43,12 @@ class TaskCreationFields(BaseModel):
 
 class TaskCreateInput(TaskCreationFields):
     project_id: UUID | None = Field(default=None, title='프로젝트')
+    #: 담당. 비었거나 본인이면 본인 업무, 다른 사람이면 **수락 없이** 그 사람의 업무가 된다 (WORK-001 Phase 1).
+    #: 멱등 키는 여기 없다 — `Idempotency-Key` 헤더이고 MCP 는 도구의 명시적 인자로 받는다.
+    #: 승인자도 여기 없다 — W1 은 열만 만들고 값을 받지 않는다.
+    assignee_id: str | None = Field(default=None, max_length=100, title='담당')
 
-    @field_validator('project_id', mode='before')
+    @field_validator('project_id', 'assignee_id', mode='before')
     @classmethod
     def empty_project(cls, value: object) -> object:
         return None if value == '' else value

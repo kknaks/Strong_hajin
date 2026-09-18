@@ -2,6 +2,16 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../lib/api", () => ({
+  getTaskAssignments: vi.fn(),
+  getTaskProposals: vi.fn(),
+  createTaskProposal: vi.fn(),
+  respondTaskProposal: vi.fn(),
+  withdrawTaskProposal: vi.fn(),
+  reopenTask: vi.fn(),
+  getTaskChildren: vi.fn(),
+  withdrawWorkRequest: vi.fn(),
+  hideWorkRequestListEntry: vi.fn(),
+  getWorkRequestAssigneeCandidates: vi.fn(),
   createDirectTask: vi.fn(),
   addTaskReference: vi.fn(),
   releaseTaskReference: vi.fn(),
@@ -83,7 +93,8 @@ describe("만들 수 있는 것이 한 가지뿐일 때 (D10)", () => {
     expect(screen.getByRole("dialog", { name: "업무 요청" })).toBeTruthy();
     expect(screen.queryByRole("tablist", { name: "생성 유형" })).toBeNull();
     expect(screen.queryByRole("tab")).toBeNull();
-    expect(screen.getByText("동료가 수락해야 그 사람의 업무가 됩니다. 희망 기한을 함께 보낼 수 있습니다.")).toBeTruthy();
+    // v2: 보내는 것만으로 담당이 서지 않는다 — 상대가 수락해야 그 사람의 업무가 된다 (V-9·V-10)
+    expect(screen.getByText("상대가 수락해야 그 사람의 업무가 됩니다. 수락 전에는 담당이 서지 않습니다.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "업무 요청 보내기" })).toBeTruthy();
   });
 
@@ -299,7 +310,9 @@ describe("회의에서 여는 후속 요청 (origin=\"meeting\")", () => {
     );
     const request = screen.getByRole("dialog", { name: "업무 요청" });
     expect(within(request).getByText("상태")).toBeTruthy();
+    // v2: 보낸 요청은 `pending` 으로 선다 — 판단을 기다린다 (SPEC-003 §4 State)
     expect(within(request).getByText("판단 대기")).toBeTruthy();
+    expect(within(request).queryByText("즉시 배정됨")).toBeNull();
     expect(within(request).getByText("요청자")).toBeTruthy();
     expect(within(request).getByText("민아")).toBeTruthy();
   });
@@ -365,5 +378,350 @@ describe("요청 폼의 필수 표시와 활성 조작", () => {
     // variant 를 바꿔도 하던 일은 그대로다
     fireEvent.click(link);
     expect(await within(modal).findByRole("button", { name: "연결 취소" })).toBeTruthy();
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   W1 — 생성 창의 담당 필드와 즉시 배정 (WORK-001 Phase 7).
+
+   한 번의 생성 명령으로 업무가 실재한다. 담당이 남이면 **상대의 수락 없이** 바로 그 사람의
+   업무가 된다. 후보는 envelope 이 허용한 경로의 목록만 합치고, 같은 사람이 둘 다에 있으면
+   기존 관리자 배정 경로를 우선한다 — 재시도 도중 endpoint 가 바뀌지 않는다.
+   ════════════════════════════════════════════════════════════════════════════ */
+describe("W1 생성 창 — 담당과 즉시 배정", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  const sora = { id: "sora", display_name: "소라 (기획)" } as never;
+
+  function renderCreate(props: Record<string, unknown> = {}) {
+    const onCreated = vi.fn();
+    const onError = vi.fn();
+    render(
+      <CreateWorkModal
+        assignCandidates={[]}
+        assigneeCandidates={[]}
+        canCreateRequest
+        canCreateTask
+        onClose={vi.fn()}
+        onCreated={onCreated}
+        onError={onError}
+        ownerName="민아"
+        {...props}
+      />,
+    );
+    return { onCreated, onError };
+  }
+
+  const pickOwner = (value: string) => fireEvent.change(screen.getByLabelText("담당자"), { target: { value } });
+
+  it("담당 기본값은 나이고, 후보는 배정 후보와 수신 후보를 겹치지 않게 합친다", () => {
+    renderCreate({ assignCandidates: [jiho], assigneeCandidates: [jiho, sora] });
+    const owner = screen.getByLabelText("담당자") as HTMLSelectElement;
+    expect(owner.value).toBe("me");
+    // 같은 사람(jiho)이 두 목록에 있어도 한 번만 선다
+    expect(Array.from(owner.options).map((option) => option.value)).toEqual(["", "me", "jiho", "sora"]);
+    expect(Array.from(owner.options).map((option) => option.textContent)).toEqual(["선택 안 함", "민아 (나)", "지호 (팀장)", "소라 (기획)"]);
+  });
+
+  it("보낼 수 있는 사람이 하나도 없으면 담당 줄 자체가 서지 않는다", () => {
+    renderCreate();
+    expect(screen.queryByLabelText("담당자")).toBeNull();
+  });
+
+  it("생성 창에 승인자 필드가 없다 — W2 에서 완료 경로와 함께 연다", () => {
+    renderCreate({ assignCandidates: [jiho], assigneeCandidates: [sora] });
+    expect(screen.queryByLabelText("승인자")).toBeNull();
+    expect(screen.queryByText("승인자")).toBeNull();
+  });
+
+  it("수신 후보에게 보내면 POST /api/tasks 에 assignee_id 를 실어 보내고, 누구의 업무가 되었는지 말한다", async () => {
+    vi.mocked(api.createDirectTask).mockResolvedValue({ task_id: "task-1" } as never);
+    const { onCreated } = renderCreate({ assigneeCandidates: [sora] });
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "전망치 정리" } });
+    pickOwner("sora");
+    // 타인 지정이라는 사실을 문구가 먼저 말한다
+    expect(screen.getByText("소라에게 요청을 보냅니다. 상대가 수락해야 그 사람의 업무가 됩니다.")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "업무 배정" }));
+
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalled());
+    expect(vi.mocked(api.createDirectTask).mock.calls[0][1]?.assignee_id).toBe("sora");
+    expect(vi.mocked(api.createDirectTask).mock.calls[0][2]).toEqual(expect.any(String));
+    // 배정 경로로 새지 않는다 — 이 사람은 관리자 배정 후보가 아니다
+    expect(api.assignTask).not.toHaveBeenCalled();
+    expect(onCreated).toHaveBeenCalledWith("'전망치 정리' 업무를 소라에게 보냈습니다. 상대가 수락하면 그 사람의 업무가 됩니다.", { assignedToOther: true });
+  });
+
+  it("두 목록에 다 있는 사람은 기존 관리자 배정 경로로 간다 — overlap 에서 managed 가 우선이다", async () => {
+    vi.mocked(api.assignTask).mockResolvedValue({ assignment_id: "as-1" } as never);
+    renderCreate({ assignCandidates: [jiho], assigneeCandidates: [jiho] });
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "실적 정리" } });
+    pickOwner("jiho");
+
+    fireEvent.click(screen.getByRole("button", { name: "업무 배정" }));
+
+    await waitFor(() => expect(api.assignTask).toHaveBeenCalled());
+    expect(vi.mocked(api.assignTask).mock.calls[0][1]).toBe("jiho");
+    expect(vi.mocked(api.assignTask).mock.calls[0][3]).toEqual(expect.any(String));
+    expect(api.createDirectTask).not.toHaveBeenCalled();
+  });
+
+  it("본인 업무에는 assignee_id 를 싣지 않고 멱등 키만 간다", async () => {
+    vi.mocked(api.createDirectTask).mockResolvedValue({ task_id: "task-1" } as never);
+    const { onCreated } = renderCreate({ assigneeCandidates: [sora] });
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "내 업무" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "업무 추가" }));
+
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalled());
+    expect(vi.mocked(api.createDirectTask).mock.calls[0][1]?.assignee_id).toBeUndefined();
+    expect(vi.mocked(api.createDirectTask).mock.calls[0][2]).toEqual(expect.any(String));
+    expect(onCreated).toHaveBeenCalledWith("'내 업무' 업무를 만들었습니다.", { assignedToOther: false });
+  });
+
+  it("실패한 제출을 그대로 다시 누르면 «같은 키» 다 — 두 건이 되지 않는다", async () => {
+    vi.mocked(api.createDirectTask).mockRejectedValueOnce(new Error("네트워크 오류"));
+    renderCreate({ assigneeCandidates: [sora] });
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "다시 보낼 업무" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "업무 추가" }));
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalledTimes(1));
+
+    vi.mocked(api.createDirectTask).mockResolvedValue({ task_id: "task-1" } as never);
+    fireEvent.click(screen.getByRole("button", { name: "업무 추가" }));
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalledTimes(2));
+
+    const [first, second] = vi.mocked(api.createDirectTask).mock.calls;
+    expect(second[2]).toBe(first[2]);
+  });
+
+  it("쓴 내용을 고쳐 다시 보내면 그것은 새 의도다 — «새 키» 로 간다", async () => {
+    vi.mocked(api.createDirectTask).mockRejectedValueOnce(new Error("네트워크 오류"));
+    renderCreate({ assigneeCandidates: [sora] });
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "처음 제목" } });
+    fireEvent.click(screen.getByRole("button", { name: "업무 추가" }));
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalledTimes(1));
+
+    vi.mocked(api.createDirectTask).mockResolvedValue({ task_id: "task-1" } as never);
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "고친 제목" } });
+    fireEvent.click(screen.getByRole("button", { name: "업무 추가" }));
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalledTimes(2));
+
+    const [first, second] = vi.mocked(api.createDirectTask).mock.calls;
+    expect(second[2]).not.toBe(first[2]);
+  });
+
+  it("담당을 바꿔 다시 보내면 경로도 키도 새로 잡는다 — 재시도 도중 endpoint 가 바뀌지 않는다", async () => {
+    vi.mocked(api.createDirectTask).mockRejectedValueOnce(new Error("네트워크 오류"));
+    vi.mocked(api.assignTask).mockResolvedValue({ assignment_id: "as-1" } as never);
+    renderCreate({ assignCandidates: [jiho], assigneeCandidates: [sora] });
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "옮길 업무" } });
+    pickOwner("sora");
+    fireEvent.click(screen.getByRole("button", { name: "업무 배정" }));
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalledTimes(1));
+
+    pickOwner("jiho");
+    fireEvent.click(screen.getByRole("button", { name: "업무 배정" }));
+    await waitFor(() => expect(api.assignTask).toHaveBeenCalledTimes(1));
+    // 실패한 수평 경로로 다시 가지 않는다 — 다른 대상은 다른 명령이다
+    expect(api.createDirectTask).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(api.assignTask).mock.calls[0][3]).not.toBe(vi.mocked(api.createDirectTask).mock.calls[0][2]);
+  });
+
+  it("제출 단추를 연타해도 한 번만 나간다 — 화면에서도 두 건이 만들어지지 않는다", async () => {
+    let settle: (value: unknown) => void = () => {};
+    vi.mocked(api.createDirectTask).mockImplementation(() => new Promise((resolve) => { settle = resolve; }) as never);
+    renderCreate({ assigneeCandidates: [sora] });
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "한 번만 생길 업무" } });
+
+    const submit = screen.getByRole("button", { name: "업무 추가" });
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: "만드는 중…" }).hasAttribute("disabled")).toBe(true);
+    settle({ task_id: "task-1" });
+  });
+
+  it("화면 어디에도 「수락」 대기 문구가 남아 있지 않다", () => {
+    renderCreate({ assignCandidates: [jiho], assigneeCandidates: [sora] });
+    pickOwner("jiho");
+    const modal = screen.getByRole("dialog", { name: "새 업무 추가" });
+    expect(modal.textContent).not.toMatch(/수락 대기|수락하면|수락해야/);
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   F-1 — 수평 생성이 받지 않는 「시작일」 (리뷰 리포트 2026-09-16).
+
+   서버는 담당을 지정한 생성에서 `start_date`·`parent_task_id`·`project_id` 를 **조용히 버리지 않고**
+   422 로 거절한다(`creation_commands.py` `_refuse_unsupported_horizontal_fields`). 화면이 그 사실을
+   모른 채 시작일을 묻고 실어 보내면 W1 의 대표 동선(일반 구성원 → 동료에게 보내기)이 통째로 막힌다.
+   그래서 **묻지 않고 보내지 않는다.** 본인·관리자 배정이 지금까지 받던 것은 그대로 받는다.
+   ════════════════════════════════════════════════════════════════════════════ */
+describe("F-1 수평 생성과 시작일", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  const sora = { id: "sora", display_name: "소라 (기획)" } as never;
+
+  function renderCreate(props: Record<string, unknown> = {}) {
+    const onCreated = vi.fn();
+    const onError = vi.fn();
+    render(
+      <CreateWorkModal
+        assignCandidates={[]}
+        assigneeCandidates={[]}
+        canCreateRequest
+        canCreateTask
+        onClose={vi.fn()}
+        onCreated={onCreated}
+        onError={onError}
+        ownerName="민아"
+        {...props}
+      />,
+    );
+    return { onCreated, onError };
+  }
+
+  const pickOwner = (value: string) => fireEvent.change(screen.getByLabelText("담당자"), { target: { value } });
+  /* 날짜 칸은 앱의 `DatePicker` 팝오버 하나를 쓴다(DS-17) — 칸을 열고 격자에서 그 날을 누른다.
+     9월 격자는 8/30~10/10 이라 아래 날짜는 모두 한 화면에 선다. */
+  const pickDate = (label: string, iso: string) => {
+    fireEvent.click(screen.getByRole("button", { name: `${label} 달력 열기` }));
+    fireEvent.click(screen.getByRole("group", { name: label }).querySelector(`[data-date="${iso}"]`) as HTMLElement);
+  };
+  const startDateField = () => screen.queryByRole("button", { name: "시작일 달력 열기" });
+  const typeStartDate = (value: string) => pickDate("시작일", value);
+
+  it("시작일을 먼저 적고 수신 후보를 고르면 줄이 걷히고 payload 에도 start_date 가 없다", async () => {
+    vi.mocked(api.createDirectTask).mockResolvedValue({ task_id: "task-1" } as never);
+    const { onCreated, onError } = renderCreate({ assigneeCandidates: [sora] });
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "전망치 정리" } });
+    // 본인 업무일 때는 지금까지대로 묻는다
+    typeStartDate("2026-09-20");
+
+    pickOwner("sora");
+
+    // 묻지 않는다 — 서버가 받지 않는 값이라 줄 자체를 세우지 않는다
+    expect(startDateField()).toBeNull();
+    // 적어 둔 것이 조용히 사라지지 않게 말해 준다
+    expect(screen.getByText("적어 둔 시작일은 보내지 않습니다 — 언제 시작할지는 담당자가 정합니다.")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "업무 배정" }));
+
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalled());
+    const [, extra] = vi.mocked(api.createDirectTask).mock.calls[0];
+    expect(extra?.assignee_id).toBe("sora");
+    // 422 를 부르는 값이 실려 나가지 않는다 — 키 자체가 없다
+    expect(extra && "start_date" in extra).toBe(false);
+    expect(extra?.start_date).toBeUndefined();
+    // 그래서 생성이 성공한다
+    expect(onError).not.toHaveBeenCalledWith(expect.stringContaining("쓸 수 없는 항목"));
+    expect(onCreated).toHaveBeenCalledWith("'전망치 정리' 업무를 소라에게 보냈습니다. 상대가 수락하면 그 사람의 업무가 됩니다.", { assignedToOther: true });
+  });
+
+  it("본인 업무는 지금까지대로 시작일을 묻고 실어 보낸다", async () => {
+    vi.mocked(api.createDirectTask).mockResolvedValue({ task_id: "task-1" } as never);
+    renderCreate({ assigneeCandidates: [sora] });
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "내 업무" } });
+    typeStartDate("2026-09-20");
+
+    fireEvent.click(screen.getByRole("button", { name: "업무 추가" }));
+
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalled());
+    expect(vi.mocked(api.createDirectTask).mock.calls[0][1]?.start_date).toBe("2026-09-20");
+  });
+
+  it("관리자 배정도 지금까지대로 시작일을 묻고 실어 보낸다 — 걷는 것은 수평 경로뿐이다", async () => {
+    vi.mocked(api.assignTask).mockResolvedValue({ assignment_id: "as-1" } as never);
+    renderCreate({ assignCandidates: [jiho] });
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "실적 정리" } });
+    pickOwner("jiho");
+
+    // 관리자 배정은 서버가 받는 값이라 줄이 그대로 선다
+    expect(startDateField()).toBeTruthy();
+    typeStartDate("2026-09-21");
+    expect(screen.queryByText("적어 둔 시작일은 보내지 않습니다 — 언제 시작할지는 담당자가 정합니다.")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "업무 배정" }));
+
+    await waitFor(() => expect(api.assignTask).toHaveBeenCalled());
+    expect(vi.mocked(api.assignTask).mock.calls[0][2]?.start_date).toBe("2026-09-21");
+  });
+
+  it("담당을 나로 되돌리면 적어 둔 시작일이 그대로 다시 서고 다시 실려 간다", async () => {
+    vi.mocked(api.createDirectTask).mockResolvedValue({ task_id: "task-1" } as never);
+    renderCreate({ assigneeCandidates: [sora] });
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "오가는 업무" } });
+    typeStartDate("2026-09-20");
+
+    pickOwner("sora");
+    expect(startDateField()).toBeNull();
+    pickOwner("me");
+
+    // 값을 지우지 않았다 — 고쳐 쓴 것을 돌려받는다 (AX 카드 결이라 화면 구분자는 점이다)
+    expect(startDateField()?.textContent).toBe("2026.09.20");
+    fireEvent.click(screen.getByRole("button", { name: "업무 추가" }));
+
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalled());
+    expect(vi.mocked(api.createDirectTask).mock.calls[0][1]?.start_date).toBe("2026-09-20");
+  });
+
+  it("숨긴 시작일이 기한보다 늦어도 수평 제출을 막지 않는다 — 안 보내는 값이 사람을 세우지 않는다", async () => {
+    vi.mocked(api.createDirectTask).mockResolvedValue({ task_id: "task-1" } as never);
+    const { onError } = renderCreate({ assigneeCandidates: [sora] });
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "기한이 앞선 업무" } });
+    typeStartDate("2026-10-05");
+    pickDate("기한", "2026-09-18");
+
+    pickOwner("sora");
+    fireEvent.click(screen.getByRole("button", { name: "업무 배정" }));
+
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalled());
+    expect(onError).not.toHaveBeenCalledWith("시작일은 기한보다 늦을 수 없습니다.");
+    expect(vi.mocked(api.createDirectTask).mock.calls[0][1]?.due_date).toBe("2026-09-18");
+  });
+
+  it("숨긴 시작일은 새 의도 지문에 섞이지 않는다 — 실패 재시도가 같은 키로 간다", async () => {
+    vi.mocked(api.createDirectTask).mockRejectedValueOnce(new Error("네트워크 오류"));
+    renderCreate({ assigneeCandidates: [sora] });
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "다시 보낼 업무" } });
+    typeStartDate("2026-09-20");
+    pickOwner("sora");
+
+    fireEvent.click(screen.getByRole("button", { name: "업무 배정" }));
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalledTimes(1));
+
+    vi.mocked(api.createDirectTask).mockResolvedValue({ task_id: "task-1" } as never);
+    fireEvent.click(screen.getByRole("button", { name: "업무 배정" }));
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalledTimes(2));
+
+    const [first, second] = vi.mocked(api.createDirectTask).mock.calls;
+    expect(second[2]).toBe(first[2]);
+    expect(second[1] && "start_date" in second[1]).toBe(false);
+  });
+
+  it("제출 중에는 단추가 잠기고 연타해도 한 번만 나간다 — 수평 경로에서도 같다", async () => {
+    let settle: (value: unknown) => void = () => {};
+    vi.mocked(api.createDirectTask).mockImplementation(() => new Promise((resolve) => { settle = resolve; }) as never);
+    renderCreate({ assigneeCandidates: [sora] });
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "한 번만 생길 업무" } });
+    typeStartDate("2026-09-20");
+    pickOwner("sora");
+
+    const submit = screen.getByRole("button", { name: "업무 배정" });
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: "만드는 중…" }).hasAttribute("disabled")).toBe(true);
+    settle({ task_id: "task-1" });
   });
 });

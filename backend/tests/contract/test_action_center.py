@@ -1,5 +1,10 @@
 """One judgement ledger.
 
+**W1 이후 수락 회차는 과거 행에만 있다** — 신규 요청·배정은 판단 없이 업무와 활성 담당을 세운다
+(WORK-001 Phase 4). 봉투·명령·회차·영수증을 다루는 코드와 데이터는 그대로 남으므로, 예전 배포가
+남긴 모양(`legacy_acceptance`)을 세워 계속 검증한다. 완료 승인과 AX 확인은 신규 경로에서도 그대로다.
+
+
 Every path that needs a person's decision — a WorkRequest, a direct TaskAssignment, an AX gated proposal — is one
 canonical ActionItem in one query, with one envelope shape. What differs between kinds is the policy the server
 applies: which commands the current principal may run, and what the question in front of them says. The client reads
@@ -12,6 +17,7 @@ from uuid import UUID
 
 
 from fastapi.testclient import TestClient
+from legacy_acceptance import make_assignment_look_pending, pending_assignment, pending_request
 from sqlalchemy import delete
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
@@ -44,7 +50,9 @@ def _stack(tmp_path):
     reset_database(database_url)
     settings = Settings(RuntimeProfile.TEST, database_url, materials_dir=str(tmp_path / "materials"))
     app = create_app(settings)
-    return TestClient(app), app.state.workflow_application
+    client = TestClient(app)
+    client.database_url = database_url
+    return client, app.state.workflow_application
 
 
 def _ax_proposal(
@@ -56,7 +64,7 @@ def _ax_proposal(
     title: str,
     payload: dict,
     *,
-    body: str = "제안해줘",
+    body: str ="제안해줘",
 ) -> dict:
     """A gated AX proposal, created the way a delegated turn creates one."""
     conversation = client.post("/api/conversations", headers=headers, json={"title": "판단 통합"}).json()
@@ -502,6 +510,8 @@ def test_ax_task_proposal_publishes_a_typed_server_authored_edit_contract(tmp_pa
         "reference_task_ids": [],
         "parent_task_id": None,
         "project_id": None,
+        # 담당 — W1 이 생성 입력에 연 필드. 초안 계약이 같은 집합을 쓴다 (WORK-001 Phase 6).
+        "assignee_id": None,
     }
     fields = {field["id"]: field for field in contract["fields"]}
     assert set(fields) == {
@@ -605,17 +615,20 @@ def test_ax_work_request_keeps_editable_references_through_confirmation_and_acce
     assert request_detail["description"] == "지난 보고의 수치만 참고해 주세요"
     assert request_detail["cc_member_ids"] == ["sora"]
     assert [row["task"]["title"] for row in request_detail["references"]] == ["지난 분기 보고"]
+    # 확인이 끝나면 요청이 서고 업무도 함께 선다. **담당은 수락이 세운다** — 받는 사람이 답하기 전에는
+    # 그 사람의 「내 업무」에 서지 않고 응답 대기에 선다 (SPEC-003 §4 발송 · 정책 V-10).
+    assert request_detail["state"] == "pending"
     assert client.get("/api/my-work", headers=JIHO).json() == []
-
-    [acceptance] = _pending(client, JIHO)
-    accepted = _command(
-        client,
-        JIHO,
-        acceptance["action_item_id"],
-        "accept",
-        expected_version=acceptance["expected_version"],
+    accepted = client.post(
+        f"/api/work-requests/{request['request_id']}/accept",
+        headers=JIHO, json={"expected_version": request_detail["version"]},
     )
     assert accepted.status_code == 200, accepted.text
+    [assigned] = client.get("/api/my-work", headers=JIHO).json()
+    assert assigned["title"] == request_detail["title"]
+
+    # 수락 판단은 생기지 않는다 — 요청이 선 자리에서 업무가 이미 서 있다 (WORK-001 Phase 4).
+    assert _pending(client, JIHO) == []
     [task] = client.get("/api/my-work", headers=JIHO).json()
     detail = client.get(f"/api/tasks/{task['task_id']}", headers=JIHO).json()
     assert [row["text"] for row in detail["checklist"]] == ["수치 검토"]
@@ -762,7 +775,7 @@ def test_ax_meeting_confirm_rechecks_current_manage_authority_before_writing(tmp
         assert session.query(MeetingRecord).count() == 0
 
 
-def test_ax_task_assignment_uses_the_same_editor_but_keeps_assignee_acceptance_separate(tmp_path) -> None:
+def test_ax_task_assignment_uses_the_same_editor_and_stands_at_once(tmp_path) -> None:
     client, application = _stack(tmp_path)
     proposal = _ax_proposal(
         client,
@@ -806,14 +819,12 @@ def test_ax_task_assignment_uses_the_same_editor_but_keeps_assignee_acceptance_s
     assert receipt["status"] == "resolved"
     assert receipt["derived_task_id"]
 
-    assignments = [row for row in _pending(client, MINA) if row["kind"] == "task.assignment"]
-    assert len(assignments) == 1
-    assert assignments[0]["subject"] == "사람이 고친 요청"
-    assert assignments[0]["status"] == "awaiting_review"
-    assert [row for row in client.get("/api/my-work", headers=MINA).json() if row["title"] == "사람이 고친 요청"] == []
+    # 사람이 확인한 것이 곧 배정이다 — 받는 사람의 판단이 따로 열리지 않는다 (WORK-001 Phase 4).
+    assert [row for row in _pending(client, MINA) if row["kind"] == "task.assignment"] == []
+    [mine] = [row for row in client.get("/api/my-work", headers=MINA).json() if row["title"] == "사람이 고친 요청"]
+    assert mine["assignment"]["kind"] == "direct" and mine["assignment"]["status"] == "active"
 
-    accepted = client.post(f"/api/task-assignments/{assignments[0]['action_item_id']}/accept", headers=MINA)
-    assert accepted.status_code == 200, accepted.text
+    # 상대가 이미 들고 있으므로 보낸 쪽의 되돌리기(취소)도 남지 않는다. 출구는 문의·요청과 담당자 변경이다.
     settled = client.get(f"/api/action-items/{proposal['action_id']}", headers=JIHO).json()
     assert settled["allowed_commands"] == []
     too_late = _command(
@@ -826,7 +837,12 @@ def test_ax_task_assignment_uses_the_same_editor_but_keeps_assignee_acceptance_s
     assert too_late.status_code == 422
 
 
-def test_ax_task_assignment_can_be_cancelled_by_the_requester_only_before_acceptance(tmp_path) -> None:
+def test_a_confirmed_ax_assignment_offers_no_withdrawal_because_it_already_stands(tmp_path) -> None:
+    """취소는 **수락을 기다리는 동안**의 명령이었다. 기다림이 없어지면 그 명령도 봉투에 서지 않는다.
+
+    신규 경로에 거절·취소를 신설하지 않는다 (DEC-001 D-4). 과거 행을 위해 남은 endpoint 는 그대로 있고,
+    신규 배정에 걸면 정의된 도메인 거부이며 업무·담당에 side effect 가 없다.
+    """
     client, application = _stack(tmp_path)
     proposal = _ax_proposal(
         client,
@@ -848,46 +864,31 @@ def test_ax_task_assignment_can_be_cancelled_by_the_requester_only_before_accept
     )
     assert confirmed.status_code == 200, confirmed.text
     receipt = confirmed.json()
-    assert [command["id"] for command in receipt["allowed_commands"]] == ["cancel_assignment"]
-    assert receipt["allowed_commands"][0]["label"] == "취소"
+    assert receipt["allowed_commands"] == []
     conversation = client.get(f"/api/conversations/{proposal['conversation_id']}", headers=JIHO).json()
     [chat_receipt] = [row for row in conversation["actions"] if row["action_id"] == proposal["action_id"]]
-    assert chat_receipt["result"]["status"] == "pending"
-    assert [command["id"] for command in chat_receipt["commands"]] == ["cancel_assignment"]
+    assert chat_receipt["commands"] == []
 
-    # The recipient cannot use the requester's command even when they know the original AX Action id.
-    denied = _command(
-        client,
-        MINA,
-        proposal["action_id"],
-        "cancel_assignment",
+    # 봉투가 내지 않는 명령을 id 를 알고 직접 불러도 막힌다. 두 거절은 뜻이 다르다 —
+    # 받는 쪽에게는 **그 판단 항목의 존재 자체를 숨기고**(404), 보낸 쪽에게는 지금 걸 수 있는 명령이
+    # 아니라고 답한다(422). 「정의된 4xx」를 집합으로 받지 않고 각자 하나로 고정한다.
+    hidden = _command(
+        client, MINA, proposal["action_id"], "cancel_assignment",
         expected_version=receipt["expected_version"],
     )
-    assert denied.status_code in {403, 404, 422}
+    assert hidden.status_code == 404, hidden.text
+    refused = _command(
+        client, JIHO, proposal["action_id"], "cancel_assignment",
+        expected_version=receipt["expected_version"],
+    )
+    assert refused.status_code == 422 and "cancel_assignment" in refused.text
 
-    cancelled = _command(
-        client,
-        JIHO,
-        proposal["action_id"],
-        "cancel_assignment",
-        expected_version=receipt["expected_version"],
-    )
-    resent = _command(
-        client,
-        JIHO,
-        proposal["action_id"],
-        "cancel_assignment",
-        expected_version=receipt["expected_version"],
-    )
-    assert cancelled.status_code == resent.status_code == 200
-    assert cancelled.json() == resent.json()
-    assert cancelled.json()["allowed_commands"] == []
-    conversation = client.get(f"/api/conversations/{proposal['conversation_id']}", headers=JIHO).json()
-    [chat_receipt] = [row for row in conversation["actions"] if row["action_id"] == proposal["action_id"]]
-    assert chat_receipt["result"]["status"] == "cancelled" and chat_receipt["commands"] == []
+    # 업무도 담당도 그대로 서 있다 — 거부에 side effect 가 없다.
     assert [row for row in _pending(client, MINA) if row["kind"] == "task.assignment"] == []
     [sent] = client.get("/api/task-assignments/sent", headers=JIHO).json()
-    assert sent["status"] == "cancelled" and sent["task"]["state"] == "cancelled"
+    assert sent["status"] == "active" and sent["task"]["state"] == "open"
+    [mine] = client.get("/api/my-work", headers=MINA).json()
+    assert mine["title"] == "취소 가능한 요청"
     with make_session_factory(application._settings.database_url)() as session:
         assignment = session.get(TaskAssignmentRecord, UUID(sent["assignment_id"]))
         assert assignment is not None and assignment.source_review_decision_id is None
@@ -913,8 +914,10 @@ def test_legacy_assignment_approval_still_uses_the_canonical_confirm_operation(t
 
     assert approved.status_code == 200, approved.text
     assert approved.json()["state"] == "approved"
-    [assignment] = [row for row in _pending(client, MINA) if row["kind"] == "task.assignment"]
-    assert assignment["subject"] == "호환 경로 요청"
+    # 호환 경로도 같은 생성 계약을 지난다 — 배정이 그 자리에서 선다.
+    assert [row for row in _pending(client, MINA) if row["kind"] == "task.assignment"] == []
+    [mine] = client.get("/api/my-work", headers=MINA).json()
+    assert mine["title"] == "호환 경로 요청"
     detail = client.get(f"/api/action-items/{proposal['action_id']}", headers=JIHO).json()
     assert detail["rounds"][0]["decisions"][0]["decision"] == "confirm"
 
@@ -972,7 +975,7 @@ def test_ax_confirm_retry_is_one_receipt_and_a_failed_effect_rolls_back_the_new_
         client, application, JIHO, "jiho", "task.create_self", "업무 생성 확인", {"title": "원안", "due_date": "2026-09-30"}
     )
     [item] = [row for row in _pending(client, JIHO) if row["kind"] == "ax.task.create_self"]
-    missing_reference = "00000000-0000-0000-0000-000000000099"
+    missing_reference ="00000000-0000-0000-0000-000000000099"
     failed_payload = {
         "expected_version": item["expected_version"],
         "base_submission_version": 1,
@@ -1058,13 +1061,7 @@ def test_one_query_returns_every_kind_of_pending_judgement_with_its_own_commands
     client, application = _stack(tmp_path)
 
     # Two different origins, one ledger: a request Jiho must answer, and Jiho's own AX proposal awaiting approval.
-    request = client.post(
-        "/api/work-requests",
-        headers=MINA,
-        json={"title": "견적 재검토", "assignee_id": "jiho", "description": "9월 견적 재검토"},
-    )
-    assert request.status_code == 201, request.text
-    request = request.json()
+    request = pending_request(client, client.database_url, MINA, title="견적 재검토", assignee_id="jiho", description="9월 견적 재검토")
     proposal = _ax_proposal(client, application, JIHO, "jiho", "task.create_self", "업무 생성 확인", {"title": "AX가 만든 업무", "due_date": "2026-09-30"})
 
     pending = client.get("/api/action-items", headers=JIHO)
@@ -1110,7 +1107,7 @@ def test_one_query_returns_every_kind_of_pending_judgement_with_its_own_commands
 
 def test_pending_holds_only_what_this_principal_must_answer_now(tmp_path) -> None:
     client, application = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "검토 요청", "assignee_id": "jiho"}).json()
+    request = pending_request(client, client.database_url, MINA, title="검토 요청", assignee_id="jiho")
 
     # Before anyone answers, the reviewer owes the decision and the requester owes nothing.
     [before] = client.get("/api/action-items", headers=JIHO).json()
@@ -1146,7 +1143,7 @@ def _command(client, headers, action_item_id: str, command: str, **payload):
 def test_commands_run_the_owning_module_operation_and_resolve_the_same_action_item(tmp_path) -> None:
     """One command endpoint, but the effect is always the owning module's own operation."""
     client, _ = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "승인될 요청", "assignee_id": "jiho"}).json()
+    request = pending_request(client, client.database_url, MINA, title="승인될 요청", assignee_id="jiho")
     [item] = _pending(client, JIHO)
 
     accepted = _command(client, JIHO, item["action_item_id"], "accept", expected_version=item["expected_version"])
@@ -1163,11 +1160,7 @@ def test_commands_run_the_owning_module_operation_and_resolve_the_same_action_it
 
 def test_an_adjustment_round_keeps_one_action_item_and_immutable_earlier_rounds(tmp_path) -> None:
     client, _ = _stack(tmp_path)
-    client.post(
-        "/api/work-requests",
-        headers=MINA,
-        json={"title": "조정될 요청", "assignee_id": "jiho", "description": "처음 설명"},
-    ).json()
+    pending_request(client, client.database_url, MINA, title="조정될 요청", assignee_id="jiho", description="처음 설명")
     [first] = _pending(client, JIHO)
 
     # The reviewer must say why; an adjustment without a reason is refused.
@@ -1215,7 +1208,7 @@ def test_an_adjustment_round_keeps_one_action_item_and_immutable_earlier_rounds(
 
 def test_only_the_principal_the_item_waits_on_may_run_its_commands(tmp_path) -> None:
     client, _ = _stack(tmp_path)
-    client.post("/api/work-requests", headers=MINA, json={"title": "권한 확인 요청", "assignee_id": "jiho"}).json()
+    pending_request(client, client.database_url, MINA, title="권한 확인 요청", assignee_id="jiho")
     [item] = _pending(client, JIHO)
 
     # The requester cannot answer their own request, and cannot revise before an adjustment was asked for.
@@ -1228,7 +1221,7 @@ def test_only_the_principal_the_item_waits_on_may_run_its_commands(tmp_path) -> 
 
 def test_the_requester_can_withdraw_an_adjusted_request_and_it_leaves_every_ledger(tmp_path) -> None:
     client, _ = _stack(tmp_path)
-    client.post("/api/work-requests", headers=MINA, json={"title": "철회할 요청", "assignee_id": "jiho"}).json()
+    pending_request(client, client.database_url, MINA, title="철회할 요청", assignee_id="jiho")
     [item] = _pending(client, JIHO)
     _command(client, JIHO, item["action_item_id"], "adjust", expected_version=item["expected_version"], reason="다시 생각해 주세요")
     [waiting] = _pending(client, MINA)
@@ -1277,7 +1270,9 @@ def test_an_ax_proposal_runs_its_effect_exactly_once_through_the_same_command_pa
 def test_a_direct_assignment_is_the_same_kind_of_question_in_the_same_ledger(tmp_path) -> None:
     client, application = _stack(tmp_path)
     jiho = application.authenticated_principal("jiho")
-    assigned = application.assign_task(jiho, "배정된 업무", "mina", description="맡아 주세요")
+    assigned = application.assign_task(jiho, "배정된 업무", "mina", idempotency_key="center-assign", description="맡아 주세요")
+    # 과거 모양의 수락 대기 배정 — 신규 배정은 즉시 활성 담당으로 서므로 이 회차를 만들지 않는다.
+    make_assignment_look_pending(client.database_url, assigned["assignment_id"])
 
     [item] = [row for row in _pending(client, MINA) if row["kind"] == "task.assignment"]
     assert item["subject"] == "배정된 업무" and item["operation_label"] == "업무 배정"
@@ -1305,11 +1300,7 @@ def test_a_direct_assignment_is_the_same_kind_of_question_in_the_same_ledger(tmp
 def test_an_adjustment_carries_an_optional_structured_change_proposal_the_requester_answers(tmp_path) -> None:
     """조정 요청은 필수 사유 위에 '무엇을 이렇게 바꿔 달라'는 구조화 제안을 남길 수 있다."""
     client, _ = _stack(tmp_path)
-    client.post(
-        "/api/work-requests",
-        headers=MINA,
-        json={"title": "제안이 붙는 요청", "assignee_id": "jiho", "description": "처음 설명", "due_date": "2026-09-10"},
-    )
+    pending_request(client, client.database_url, MINA, title="제안이 붙는 요청", assignee_id="jiho", description="처음 설명", due_date="2026-09-10")
     [first] = _pending(client, JIHO)
 
     adjusted = _command(
@@ -1356,7 +1347,7 @@ def test_an_adjustment_carries_an_optional_structured_change_proposal_the_reques
 def test_a_resent_command_returns_the_same_receipt_instead_of_a_second_effect(tmp_path) -> None:
     """A lost response must not force the caller to choose between a duplicate Task and a stale error."""
     client, _ = _stack(tmp_path)
-    client.post("/api/work-requests", headers=MINA, json={"title": "한 번만 수락될 요청", "assignee_id": "jiho"})
+    pending_request(client, client.database_url, MINA, title="한 번만 수락될 요청", assignee_id="jiho")
     [item] = _pending(client, JIHO)
 
     first = _command(client, JIHO, item["action_item_id"], "accept", expected_version=item["expected_version"])
@@ -1375,7 +1366,7 @@ def test_a_resent_command_returns_the_same_receipt_instead_of_a_second_effect(tm
 def test_the_discussion_stays_on_one_action_item_across_rounds_and_never_moves_it(tmp_path) -> None:
     """댓글과 전체 논의는 ActionItem에 유지되고 상태를 직접 바꾸지 않는다."""
     client, _ = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "논의가 붙는 요청", "assignee_id": "jiho"}).json()
+    request = pending_request(client, client.database_url, MINA, title="논의가 붙는 요청", assignee_id="jiho")
     asked = client.post(f"/api/work-requests/{request['request_id']}/comments", headers=JIHO, json={"body": "예산 근거가 있나요?"})
     assert asked.status_code == 201, asked.text
     [item] = _pending(client, JIHO)
@@ -1400,7 +1391,7 @@ def test_the_discussion_stays_on_one_action_item_across_rounds_and_never_moves_i
 
 def test_the_detail_offers_commands_only_to_the_principal_the_item_waits_on(tmp_path) -> None:
     client, _ = _stack(tmp_path)
-    client.post("/api/work-requests", headers=MINA, json={"title": "차례가 있는 요청", "assignee_id": "jiho"})
+    pending_request(client, client.database_url, MINA, title="차례가 있는 요청", assignee_id="jiho")
     [item] = _pending(client, JIHO)
 
     # Both participants read the same question; only the one whose turn it is is offered a way to answer it.
@@ -1418,7 +1409,7 @@ def _rounds(client, headers, action_item_id: str) -> list[dict]:
 def test_every_command_must_name_the_version_it_is_answering(tmp_path) -> None:
     """Optimistic concurrency is the contract, not an option: a command without a version is refused."""
     client, _ = _stack(tmp_path)
-    client.post("/api/work-requests", headers=MINA, json={"title": "버전 계약", "assignee_id": "jiho"})
+    pending_request(client, client.database_url, MINA, title="버전 계약", assignee_id="jiho")
     [item] = _pending(client, JIHO)
 
     missing = client.post(f"/api/action-items/{item['action_item_id']}/commands/accept", headers=JIHO, json={})
@@ -1431,7 +1422,7 @@ def test_every_command_must_name_the_version_it_is_answering(tmp_path) -> None:
 
 def test_a_revision_may_only_change_the_fields_a_revision_owns(tmp_path) -> None:
     client, _ = _stack(tmp_path)
-    client.post("/api/work-requests", headers=MINA, json={"title": "허용 필드", "assignee_id": "jiho"})
+    pending_request(client, client.database_url, MINA, title="허용 필드", assignee_id="jiho")
     [item] = _pending(client, JIHO)
     _command(client, JIHO, item["action_item_id"], "adjust", expected_version=item["expected_version"], reason="고쳐 주세요")
     [waiting] = _pending(client, MINA)
@@ -1455,7 +1446,7 @@ def test_a_revision_may_only_change_the_fields_a_revision_owns(tmp_path) -> None
 def test_a_legacy_negotiate_cannot_leave_the_ledger_unreadable(tmp_path) -> None:
     """The compatibility endpoint writes what the canonical reader can read, or it does not write at all."""
     client, _ = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "원장 보호", "assignee_id": "jiho"}).json()
+    request = pending_request(client, client.database_url, MINA, title="원장 보호", assignee_id="jiho")
 
     poisoned = client.post(
         f"/api/work-requests/{request['request_id']}/negotiate",
@@ -1483,9 +1474,7 @@ def test_a_legacy_negotiate_cannot_leave_the_ledger_unreadable(tmp_path) -> None
 def test_a_receipt_survives_the_basis_moving_underneath_it(tmp_path) -> None:
     """A revision's receipt is pinned by the round it produced, not by a request version anyone may move."""
     client, _ = _stack(tmp_path)
-    request = client.post(
-        "/api/work-requests", headers=MINA, json={"title": "영수증 유지", "assignee_id": "jiho", "description": "처음"}
-    ).json()
+    request = pending_request(client, client.database_url, MINA, title="영수증 유지", assignee_id="jiho", description="처음")
     [item] = _pending(client, JIHO)
     _command(client, JIHO, item["action_item_id"], "adjust", expected_version=item["expected_version"], reason="고쳐 주세요")
     [waiting] = _pending(client, MINA)
@@ -1513,7 +1502,7 @@ def test_a_receipt_survives_the_basis_moving_underneath_it(tmp_path) -> None:
 
 def test_a_decision_keeps_the_server_facts_apart_from_the_conditions_a_person_wrote(tmp_path) -> None:
     client, _ = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "조건 분리", "assignee_id": "jiho"}).json()
+    request = pending_request(client, client.database_url, MINA, title="조건 분리", assignee_id="jiho")
     client.post(f"/api/work-requests/{request['request_id']}/evidence", headers=MINA, files={"file": ("근거.txt", b"one", "text/plain")})
     # Read the item after the basis moved: the version it hands out is the one the answer will consume.
     [item] = _pending(client, JIHO)

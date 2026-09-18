@@ -61,7 +61,12 @@ class Work:
 
 @dataclass(frozen=True, slots=True)
 class Ask:
-    """요청 하나. 받은 사람이 판단해야 업무가 된다 — 여기서는 만들기만 하고 판단은 남겨 둔다."""
+    """요청 하나. **수락 없이** 업무와 활성 담당이 함께 선다 (WORK-001 Phase 4).
+
+    `accept` 는 **받는 사람이 그 요청을 받아들였는가**다. v2 에서 발송은 업무를 세우고 담당은 수락이
+    세우므로(SPEC-003 §4) 이 열이 다시 뜻을 갖는다 — 켜져 있으면 seed 가 **그 사람으로** 수락을 부르고,
+    비어 있으면 수락 대기로 남는다. 하지 않은 수락을 만들지 않는다.
+    """
 
     requester: str
     assignee: str
@@ -76,7 +81,12 @@ class Ask:
 
 @dataclass(frozen=True, slots=True)
 class Handout:
-    """배정 하나. 요청과 다르다 — 위에서 내려오는 것이고, 받은 사람은 수락으로 자기 업무로 들인다."""
+    """배정 하나. 요청과 다르다 — 위에서 내려오는 것이고, 명령이 성공하면 **즉시** 그 사람의 업무다.
+
+    `accept` 는 **받는 사람이 그 요청을 받아들였는가**다. v2 에서 발송은 업무를 세우고 담당은 수락이
+    세우므로(SPEC-003 §4) 이 열이 다시 뜻을 갖는다 — 켜져 있으면 seed 가 **그 사람으로** 수락을 부르고,
+    비어 있으면 수락 대기로 남는다. 하지 않은 수락을 만들지 않는다.
+    """
 
     assigner: str
     assignee: str
@@ -147,9 +157,11 @@ def build(application: Any, plan: "ScenarioPlan", *, today: date | None = None) 
                 result.skipped.append(f"업무 '{item.title}' · 상위 업무({item.parent})가 앞에 없습니다")
                 continue
             parent_id = UUID(str(parent["task_id"]))
-        task = application.create_self_task(
+        task = application.create_task(
             principal,
             item.title,
+            # 계획의 key 하나가 생성 의도 하나다 — 같은 seed 를 다시 돌려도 같은 키를 다시 보낸다.
+            idempotency_key=f"scenario:work:{item.key}",
             description=item.description or None,
             start_date=day + timedelta(days=item.starts_in) if item.starts_in is not None else None,
             due_date=(
@@ -173,10 +185,11 @@ def build(application: Any, plan: "ScenarioPlan", *, today: date | None = None) 
             result.track("requests", made=False)
             continue
         try:
-            request = application.create_work_request(
+            sent = application.create_work_request(
                 requester,
                 item.title,
                 item.assignee,
+                idempotency_key=f"scenario:request:{item.title}",
                 description=item.description,
                 due_date=day + timedelta(days=item.due_in),
                 checklist=list(item.checklist) or None,
@@ -186,14 +199,20 @@ def build(application: Any, plan: "ScenarioPlan", *, today: date | None = None) 
             result.skipped.append(f"요청 '{item.title}' · {error}")
             continue
         result.track("requests", made=True)
+        # **발송은 업무를 세우고 담당은 수락이 세운다** (SPEC-003 §4). 그래서 seed 에도 두 모양이 산다:
+        # 아직 답을 기다리는 요청과, 받는 사람이 **실제로 수락한** 요청.
+        #
+        # `accept` 열이 있는 줄에서만 수락한다 — 그것이 dataset 이 「이 사람이 받아들였다」고 적은
+        # 자리다. **하지 않은 수락을 만들지 않는다**: 열이 없으면 수락 대기로 남고, 그것도 제품의
+        # 정상 상태다. 수락은 **받는 사람의 명령**이므로 그 사람으로 부른다 — 보낸 사람이 대신
+        # 눌러 주면 데이터는 서지만 그 수락은 아무도 하지 않은 것이 된다.
         if not item.accept:
             continue
         assignee = acting(item.assignee)
         if assignee is None:
             continue
         try:
-            application.accept_work_request(assignee, UUID(str(request["request_id"])), int(request["version"]))
-            result.track("accepted_requests", made=True)
+            application.accept_work_request(assignee, UUID(str(sent["request_id"])), int(sent["version"]))
         except Exception as error:
             result.skipped.append(f"요청 수락 '{item.title}' · {error}")
 
@@ -201,15 +220,16 @@ def build(application: Any, plan: "ScenarioPlan", *, today: date | None = None) 
         assigner = acting(item.assigner)
         if assigner is None:
             continue
-        # 수락 전 배정은 받는 사람의 업무 목록에 아직 없다. 보낸 쪽 목록에서 찾아야 두 번 만들지 않는다.
+        # 배정은 보낸 쪽 목록에서 찾아야 두 번 만들지 않는다.
         if any(str(row["task"]["title"]) == item.title for row in application.sent_task_assignments(assigner)):
             result.track("assignments", made=False)
             continue
         try:
-            task = application.assign_task(
+            application.assign_task(
                 assigner,
                 item.title,
                 item.assignee,
+                idempotency_key=f"scenario:assignment:{item.title}",
                 description=item.description,
                 start_date=day + timedelta(days=item.starts_in),
                 due_date=day + timedelta(days=item.starts_in + item.days),
@@ -219,16 +239,7 @@ def build(application: Any, plan: "ScenarioPlan", *, today: date | None = None) 
             result.skipped.append(f"배정 '{item.title}' · {error}")
             continue
         result.track("assignments", made=True)
-        if not item.accept:
-            continue
-        assignee = acting(item.assignee)
-        if assignee is None:
-            continue
-        try:
-            application.accept_task_assignment(assignee, UUID(str(task["assignment_id"])))
-            result.track("accepted_assignments", made=True)
-        except Exception as error:
-            result.skipped.append(f"배정 수락 '{item.title}' · {error}")
+        # 수락 단계가 없다 — 배정이 성공하면 상대의 업무 목록에 이미 서 있다.
 
     for item in plan.gatherings:
         principal = acting(item.owner)

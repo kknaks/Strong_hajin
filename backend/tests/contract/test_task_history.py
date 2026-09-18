@@ -23,6 +23,19 @@ JIHO = {"X-Demo-Persona": "jiho"}
 SORA = {"X-Demo-Persona": "sora"}
 
 
+
+def _accept(client, request: dict, headers=JIHO) -> None:
+    """받는 사람이 수락한다 — 여기서 담당이 확정되고 그 업무가 「내 업무」에 선다.
+
+    W1 에서는 이 단계가 없었다(발송이 곧 배정). v2 가 되돌린 것은 **이 한 단계뿐**이고,
+    아래 테스트들이 보는 관계·이력·완료는 그대로다.
+    """
+    answered = client.post(
+        f"/api/work-requests/{request['request_id']}/accept",
+        headers=headers, json={"expected_version": request["version"]},
+    )
+    assert answered.status_code == 200, answered.text
+
 def _stack(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
@@ -132,20 +145,17 @@ def test_two_versions_can_be_compared_long_after_the_fact(tmp_path) -> None:
 
 def test_history_is_read_by_the_same_people_who_may_read_the_task(tmp_path) -> None:
     client, application, _ = _stack(tmp_path)
-    client.post("/api/work-requests", headers=MINA, json={"title": "요청한 업무", "assignee_id": "jiho"})
-    [item] = client.get("/api/action-items", headers=JIHO).json()
-    client.post(
-        f"/api/action-items/{item['action_item_id']}/commands/accept",
-        headers=JIHO,
-        json={"expected_version": item["expected_version"]},
-    )
+    request = client.post("/api/work-requests", headers=MINA, json={"title": "요청한 업무", "assignee_id": "jiho"}).json()
+    # v2: 발송은 업무를 세우고 **담당은 수락이 세운다** (SPEC-003 §4). 그 뒤는 예전과 같다.
+    _accept(client, request)
     [task] = [row for row in client.get("/api/my-work", headers=JIHO).json() if row["title"] == "요청한 업무"]
     task_id = task["task_id"]
 
     # The holder reads it, and so does the person who sent the work.
     assert _history(client, task_id, JIHO).status_code == 200
     sender = _history(client, task_id, MINA)
-    assert sender.status_code == 200 and [row["version"] for row in sender.json()["versions"]] == [1]
+    # v2: 수락이 담당을 확정하며 회차를 하나 올린다 — 발송(1)과 수락(2)이 각각 읽힌다.
+    assert sender.status_code == 200 and [row["version"] for row in sender.json()["versions"]] == [1, 2]
 
     # Someone with no relationship to it learns nothing, not even that it exists.
     stranger = _history(client, task_id, SORA)

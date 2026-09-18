@@ -77,8 +77,12 @@ class WorkRequestCreateInput(BaseModel):
     cc_member_ids: list[str] = Field(default_factory=list, title='참조 구성원')
     checklist: list[str] = Field(default_factory=list, title='체크리스트')
     reference_task_ids: list[UUID] = Field(default_factory=list, title='참고 업무')
+    #: 하위 요청이면 상위 업무. **발송 단계에서 연결된다** (SPEC-003 §4 발송 · 정책 V-9).
+    parent_task_id: UUID | None = Field(default=None, title='상위 업무')
+    #: 재요청이면 이전 요청. 새 요청·새 Task 이고 옛것을 되살리지 않는다 (정책 V-12).
+    supersedes_request_id: UUID | None = Field(default=None, title='이전 요청')
 
-    @field_validator('description', 'due_date', mode='before')
+    @field_validator('description', 'due_date', 'parent_task_id', 'supersedes_request_id', mode='before')
     @classmethod
     def empty_optional(cls, value: object) -> object:
         return None if value == '' else value
@@ -101,3 +105,73 @@ class WorkRequestCreateInput(BaseModel):
 
     def for_requester(self, requester_id: str | None) -> Self:
         return self.model_copy(update={'cc_member_ids': [member for member in self.cc_member_ids if member != requester_id]})
+
+
+class TaskVersionInput(BaseModel):
+    """회차만 받는 명령 — **상태를 바꾸는 모든 명령에 회차가 필수다** (K-4)."""
+
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    expected_version: int = Field(ge=1, title='업무 버전')
+
+
+class TaskReopenInput(BaseModel):
+    """재개 — 회차는 필수, 사유는 선택이다 (SPEC-003 §4 `reopen`)."""
+
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    expected_version: int = Field(ge=1, title='업무 버전')
+    reason: str | None = Field(default=None, max_length=1000, title='재개 사유')
+
+
+class TaskProposalInput(BaseModel):
+    """취소·조건 변경 제안. **제안만으로는 아무것도 바뀌지 않는다.**"""
+
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    kind: str = Field(title='제안 종류')
+    expected_version: int = Field(ge=1, title='업무 버전')
+    reason: str | None = Field(default=None, max_length=1000, title='사유')
+    payload: dict[str, JsonValue] | None = Field(default=None, title='바꿀 내용')
+
+    @field_validator('kind')
+    @classmethod
+    def known_kind(cls, value: str) -> str:
+        if value not in {'cancellation', 'terms_change'}:
+            raise ValueError('제안 종류는 cancellation 또는 terms_change 입니다')
+        return value
+
+
+class TaskProposalResponseInput(BaseModel):
+    """동의 / 동의하지 않음 — **담당자만** 부른다."""
+
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    expected_version: int = Field(ge=1, title='업무 버전')
+    agree: bool = Field(title='동의 여부')
+    reason: str | None = Field(default=None, max_length=1000, title='사유')
+
+
+class TaskReopenCommand(TaskReopenInput):
+    task_id: UUID = Field(title='대상 업무')
+
+
+class TaskProposalCommand(TaskProposalInput):
+    task_id: UUID = Field(title='대상 업무')
+
+
+class TaskProposalResponseCommand(TaskProposalResponseInput):
+    task_id: UUID = Field(title='대상 업무')
+    proposal_id: UUID = Field(title='대상 제안')
+
+
+class TaskProposalWithdrawCommand(TaskVersionInput):
+    task_id: UUID = Field(title='대상 업무')
+    proposal_id: UUID = Field(title='대상 제안')
+
+
+class WorkRequestWithdrawCommand(WorkRequestVersionInput):
+    request_id: UUID = Field(title='대상 업무 요청')
+
+
+class WorkRequestListEntryCommand(BaseModel):
+    """요청자 목록에서 빼기 — 상태를 바꾸지 않으므로 회차를 받지 않는다. 두 번 눌러도 한 건이다."""
+
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    request_id: UUID = Field(title='대상 업무 요청')

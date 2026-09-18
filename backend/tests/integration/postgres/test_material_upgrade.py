@@ -1,4 +1,5 @@
 """The parser transition uses PostgreSQL locks and the same transaction as its durable job."""
+from legacy_acceptance import pending_request
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -64,7 +65,8 @@ def test_two_workers_backfill_one_missing_projection_without_search_writes(tmp_p
     headers = {"X-Demo-Persona": "mina"}
     with monkeypatch.context() as legacy:
         legacy.setattr(WorkRequestApplication, "_request_extraction", lambda *args: None)
-        request = client.post("/api/work-requests", headers=headers, json={"title": "이전 자료 보강", "assignee_id": "jiho"}).json()
+        # 근거는 판단 회차에 붙는다 — 신규 요청에는 그 회차가 없으므로 과거 모양 행에서 본다.
+        request = pending_request(client, database_url, headers, title="이전 자료 보강", assignee_id="jiho")
         response = client.post(f"/api/work-requests/{request['request_id']}/evidence", headers=headers,
                                files={"file": ("legacy.txt", b"postgresbackfilltoken", "text/plain")})
         assert response.status_code == 201, response.text

@@ -1,6 +1,11 @@
-"""The approved revision is the new request round, not acceptance of that request."""
+"""The approved revision is the new request round, not acceptance of that request.
+
+**W1 이후 조정·재상신 회차는 과거 행에만 있다** — 신규 요청은 `assigned` 로 서고 판단 회차를 만들지 않는다
+(WORK-001 Phase 4). 회차를 다루는 명령과 그 입력 정규화는 그대로 남으므로, 예전 배포가 남긴 모양에서 본다.
+"""
 import asyncio
 import pytest
+from legacy_acceptance import pending_request
 from ax_workspace.entrypoints.mcp import McpReportsFacade, _create_bound_persona_server
 from test_mcp_checklist import _delegated_turn
 from test_unified_commands import _stack
@@ -10,7 +15,7 @@ from test_unified_commands import _stack
 def test_request_amendment_preserves_the_original_and_applies_final_edits(tmp_path, monkeypatch, route):
     client, application = _stack(tmp_path)
     mina = {'X-Demo-Persona': 'mina'}
-    created = client.post('/api/work-requests', headers=mina, json={'title': '원안', 'description': '원래 설명', 'due_date': '2026-09-30', 'assignee_id': 'jiho'}).json()
+    created = pending_request(client, application._settings.database_url, mina, title='원안', description='원래 설명', due_date='2026-09-30', assignee_id='jiho')
     values = {'expected_version': created['version'], 'title': '  보강한 요청  ', 'description': '', 'clear_due_date': True}
     if route == 'http':
         response = client.post(f"/api/work-requests/{created['request_id']}/amend", headers=mina, json=values)
@@ -46,9 +51,9 @@ def test_request_amendment_preserves_the_original_and_applies_final_edits(tmp_pa
 
 @pytest.mark.parametrize('operation', ['amend', 'resubmit'])
 def test_request_revisions_reject_an_oversized_title_without_a_new_round(tmp_path, operation):
-    client, _ = _stack(tmp_path)
+    client, application = _stack(tmp_path)
     mina, jiho = {'X-Demo-Persona': 'mina'}, {'X-Demo-Persona': 'jiho'}
-    created = client.post('/api/work-requests', headers=mina, json={'title': '원안', 'assignee_id': 'jiho'}).json()
+    created = pending_request(client, application._settings.database_url, mina, title='원안', assignee_id='jiho')
     if operation == 'resubmit':
         response = client.post(f"/api/work-requests/{created['request_id']}/negotiate", headers=jiho, json={'expected_version': created['version'], 'conditions': {'note': '보강해 주세요'}})
         assert response.status_code == 200, response.text

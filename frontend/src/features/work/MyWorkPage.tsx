@@ -7,8 +7,7 @@ import { Tabs } from "../../ds/SegmentedControl";
 import { ActionItemDrawer } from "../action/ActionCenter";
 
 import {
-  acceptTaskAssignment,
-  declineTaskAssignment,
+  decideWorkRequest,
   generateDailyReportDraft,
   getActionItems,
   getTask,
@@ -20,16 +19,40 @@ import {
   getWorkRequestCcCandidates,
   getWorkRequest,
   getWorkRequests,
+  hideWorkRequestListEntry,
   transitionDirectTask,
   updateTask,
+  withdrawWorkRequest,
 } from "../../lib/api";
 import { Button } from "../../ds/Button";
 import { SegmentedControl } from "../../ds/SegmentedControl";
-import { dayDifference, emptyActionLabel, emptyValue, formatDate, isOverdue, personName, selectLabel, seoulToday, taskFilterLabel, taskFilterOptions, taskStateLabel, workRequestStateLabel } from "../../lib/labels";
-import { type ActionItemEnvelope, type DirectTask, type Persona, type ProductSurface, type TaskAssignment, type TaskPatch, type TaskState, type WorkRequest } from "../../lib/viewModels";
+import {
+  doneWorkChips,
+  emptyActionLabel,
+  emptyValue,
+  myWorkChips,
+  personName,
+  selectLabel,
+  sentWorkChips,
+  seoulToday,
+  taskStateLabel,
+  workChipLabel,
+  workTabLabel,
+  type WorkChip,
+} from "../../lib/labels";
+import {
+  type ActionItemEnvelope,
+  type DirectTask,
+  type Persona,
+  type ProductSurface,
+  type TaskAssignment,
+  type TaskPatch,
+  type TaskState,
+  type WorkRequest,
+} from "../../lib/viewModels";
 import {
   CreateWorkModal,
-  DueText,
+  ReasonPrompt,
   StatusText,
   TaskDetailDrawer,
   TaskQuickActions,
@@ -39,11 +62,14 @@ import {
   displayNameOf,
   type TaskAction,
 } from "./WorkModals";
-import { ChecklistCue, PersonChip, TaskCard, TaskKanban, TaskTimeline } from "./WorkViews";
+import { TaskKanban, TaskTimeline } from "./WorkViews";
 import { Empty, EmptyValue } from "../../ds/Empty";
+import { ConfirmModal } from "../../ds/Modal";
 import { DataTable, Td, Th, TrOpenable } from "../../ds/DataTable";
 import { Select } from "../../ds/Select";
 import { Icon } from "../../ds/icons/Icon";
+import { DoneTaskTable, SentTaskTable, TaskTable, doneGroupsOf, sentStateOf, type SentRow } from "./WorkTables";
+import { chipCounts, isOpenRequest, isRequestOwner, isRequestRecordRequester, matchesChip, myWorkRows, type WorkRow } from "./workRows";
 
 type MyWorkPageProps = {
   personaId: string;
@@ -78,16 +104,29 @@ type MyWorkPageProps = {
   onRequestFocusHandled?: () => void;
 };
 
-type TaskFilter = "all" | "active" | TaskState;
+/**
+ * 탭 셋 — **소유·종결 축이다** (SPEC-003 §2.1).
+ *
+ * 업무를 만드는 세 «행위»(본인 생성 · 요청 · 배정)와 1:1 이 아니고, **그것이 어긋남은 아니다.**
+ * 「받은 요청」은 네 번째 탭이 아니라 「내 업무」의 필터 칩이다 — 수락 전 요청 업무도 응답할 자리는
+ * 내 목록에 있어야 하기 때문이다(§2.1 · V-9·V-10).
+ */
+type WorkTab = "mine" | "sent" | "done";
 type ViewMode = "list" | "timeline" | "kanban";
 
 // Waiting on someone else's confirmation sits with the work in flight, not with what is finished.
-const stateOrder: Record<TaskState, number> = { blocked: 0, in_progress: 1, completion_submitted: 2, open: 3, done: 4, cancelled: 5 };
+const stateOrder: Record<TaskState, number> = { blocked: 0, in_progress: 1, open: 3, done: 4, cancelled: 5 };
 const views: Array<{ id: ViewMode; label: string }> = [
   { id: "list", label: "목록" },
   { id: "kanban", label: "칸반" },
   { id: "timeline", label: "타임라인" },
 ];
+
+const chipsForTab: Record<WorkTab, ReadonlyArray<WorkChip>> = {
+  mine: myWorkChips,
+  sent: sentWorkChips,
+  done: doneWorkChips,
+};
 
 export function MyWorkPage({
   personaId,
@@ -124,14 +163,23 @@ export function MyWorkPage({
   const [ccCandidates, setCcCandidates] = useState<Persona[]>([]);
   const [sentAssignments, setSentAssignments] = useState<TaskAssignment[]>([]);
   const [busy, setBusy] = useState(false);
-  const [filter, setFilter] = useState<TaskFilter>("active");
+  const [chip, setChip] = useState<WorkChip>("all");
   const [view, setView] = useState<ViewMode>("list");
-  const [tab, setTab] = useState<"mine" | "sent" | "organization">("mine");
+  const [tab, setTab] = useState<WorkTab>("mine");
   const [organizationTasks, setOrganizationTasks] = useState<DirectTask[]>([]);
   const [generating, setGenerating] = useState(false);
   const [selectedTask, setSelectedTask] = useState<DirectTask | null>(null);
   const [selectedRequest, setSelectedRequest] = useState<WorkRequest | null>(null);
   const [isCreating, setIsCreating] = useState(false);
+  /** 보내려는 요청의 「다시 요청」 — 이전 요청을 이어 새 요청을 만든다(재요청 · V-12). */
+  const [resending, setResending] = useState<WorkRequest | null>(null);
+  /** 사유를 받아야 하는 요청 명령 — 거절과 철회다. */
+  const [requestPrompt, setRequestPrompt] = useState<{ request: WorkRequest; command: "reject" | "withdraw" } | null>(null);
+  /** 「숨긴 항목 보기」 — 목록 정리는 숨김이고 이력은 남는다 (F-6 · OQ-202 의 화면 선택). */
+  const [showHidden, setShowHidden] = useState(false);
+  const [hiddenLocally, setHiddenLocally] = useState<string[]>([]);
+  /** 방금 읽기에서 «숨긴 항목까지» 를 서버가 거절했나. 목록을 세운 뒤 한 번 말하는 데만 쓴다. */
+  const hiddenReadFailed = useRef(false);
   // 볼 것이 있을 때만 펼친다. 사람이 접거나 편 뒤에는 그 선택이 이긴다.
   /* K-5: 칸마다 default/empty/loading/error 를 그리려면 그 상태가 화면에 있어야 한다.
      새로 읽는 것이 아니라, 지금까지 전역 오류 배너로만 나가던 reload 의 결과를 레일도 읽게 드러낸 것뿐이다. */
@@ -142,10 +190,28 @@ export function MyWorkPage({
       getMyWork(),
       getTasks(true).catch(() => [] as DirectTask[]),
       getActionItems(),
-      getWorkRequests().catch(() => [] as WorkRequest[]),
+      /* 숨긴 항목까지 함께 읽는다 — 숨김은 «목록에서 빼는 것» 이지 삭제가 아니라, 「숨긴 항목 보기」가
+         새로고침 뒤에도 서려면 서버가 그 행을 계속 내주어야 한다(L-6 · F-6).
+
+         **첫 실패를 말없이 삼키지 않는다** (검수 W-3): 서버가 `include_removed` 를 거절하면 일반
+         목록으로 내려가되 **그 사실을 화면에 남긴다** — 그러지 않으면 사람은 「숨긴 항목 보기」가
+         이 세션에만 사는 것을 모른 채 영속이 된 줄 안다. 일반 목록이 «성공» 했을 때도 경고한다. */
+      getWorkRequests(true)
+        .then((rows) => {
+          hiddenReadFailed.current = false;
+          return rows;
+        })
+        .catch(() =>
+          getWorkRequests()
+            .then((rows) => {
+              hiddenReadFailed.current = true;
+              return rows;
+            })
+            .catch(() => [] as WorkRequest[]),
+        ),
       canAssignTasks ? getSentTaskAssignments().catch(() => [] as TaskAssignment[]) : Promise.resolve([] as TaskAssignment[]),
     ]);
-    // 할일 is what this person holds. Someone who may read the organization's work sees the rest in its own tab,
+    // 할일 is what this person holds. Someone who may read the organization's work sees the rest in its own section,
     // never mixed into their own list.
     const held = new Set(work.map((task) => task.task_id));
     const mine = closed.filter((task) => held.has(task.task_id) || (task.assignee?.member_id ?? personaId) === personaId);
@@ -166,6 +232,17 @@ export function MyWorkPage({
     });
   }, [canAssignTasks, personaId]);
 
+  /**
+   * 읽기가 끝난 뒤 배너를 정리한다 — **반쪽으로 온 것이 있으면 지우지 않고 그것을 남긴다.**
+   *
+   * 명령이 성공하면 지금까지 `onError(null)` 로 배너를 비웠는데, 그러면 「숨긴 항목까지 읽지 못했다」가
+   * 성공 한 번에 지워져 사람은 영속이 깨진 것을 끝내 모른다. 성공은 성공대로 말하되 **아직 참인 경고는
+   * 남긴다.**
+   */
+  const settleError = useCallback(() => {
+    onError(hiddenReadFailed.current ? "숨긴 항목까지 읽지 못했습니다 — 「숨긴 항목 보기」가 이 세션에만 적용됩니다." : null);
+  }, [onError]);
+
   useEffect(() => {
     let cancelled = false;
     setLoadState("loading");
@@ -173,7 +250,7 @@ export function MyWorkPage({
       .then(() => {
         if (cancelled) return;
         setLoadState("ready");
-        onError(null);
+        settleError();
       })
       .catch((error: unknown) => {
         if (cancelled) return;
@@ -183,11 +260,11 @@ export function MyWorkPage({
     return () => {
       cancelled = true;
     };
-  }, [onError, reload]);
+  }, [onError, reload, settleError]);
 
   /* 바퀴 5b: 「볼 것이 있으면 펼치고 없으면 접는다」는 판단 패널이 «본문 위» 에 있어서 목록을 아래로
      밀던 시절의 규칙이었다. 이제 좌 레일이라 접든 펴든 목록을 밀지 않으므로 그 규칙 자체가 사라졌다 —
-     볼 것이 없을 때는 레일이 빈 상태를 낸다(src/InboxRail.tsx). */
+     볼 것이 없을 때는 레일이 빈 상태를 낸다(src/shell/InboxRail.tsx). */
 
   // The shell awaits this to know the visible projection has settled; re-reading in place keeps filter/view state.
   useEffect(() => {
@@ -238,18 +315,24 @@ export function MyWorkPage({
     };
   }, [canAssignTasks, personaId]);
 
-
-  const transitionTask = async (task: DirectTask, action: TaskAction, reason?: string) => {
+  /**
+   * 전이를 보낸다. **서버가 받아들였는지를 돌려준다** — 사유를 받는 자리(취소·막힘)가 거절당했을 때
+   * 사람이 쓴 문장을 지우지 않으려면, 부르는 쪽이 «됐나» 를 알아야 한다. 돌려준 값을 쓰지 않는
+   * 호출부는 지금까지와 똑같이 동작한다.
+   */
+  const transitionTask = async (task: DirectTask, action: TaskAction, reason?: string): Promise<boolean> => {
     setBusy(true);
     try {
       await transitionDirectTask(task.task_id, action, task.version, reason);
       await reload();
-      onError(null);
+      settleError();
       onNotice(
         action === "start" ? "업무를 시작했습니다." : action === "complete" ? "완료 처리했습니다." : action === "block" ? "막힘으로 표시했습니다." : action === "resume" ? "업무를 재개했습니다." : "업무를 취소했습니다.",
       );
+      return true;
     } catch (error) {
       onError(error instanceof Error ? error.message : "업무 상태를 바꾸지 못했습니다.");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -260,7 +343,7 @@ export function MyWorkPage({
     try {
       await updateTask(task.task_id, task.version, patch);
       await reload();
-      onError(null);
+      settleError();
       onNotice("업무 내용을 저장했습니다.");
     } catch (error) {
       onError(error instanceof Error ? error.message : "업무를 저장하지 못했습니다.");
@@ -269,6 +352,66 @@ export function MyWorkPage({
     }
   };
 
+  /**
+   * 받은 요청에 답한다 — **수락은 같은 Task 의 담당 확정이고 새 Task 를 만들지 않는다**(V-10).
+   * 거절은 사유가 필수이고, 그 Task 는 「취소됨 — 요청 거절」로 간다(V-11 · `cancel_reason`).
+   */
+  const decideRequest = async (request: WorkRequest, action: "accept" | "reject", reason?: string) => {
+    setBusy(true);
+    try {
+      await decideWorkRequest(request.request_id, action, request.version, reason);
+      await reload();
+      settleError();
+      onNotice(action === "accept" ? "요청을 수락했습니다. 이제 내 업무입니다." : "요청을 거절했습니다. 보낸 사람에게 사유가 전달됩니다.");
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "요청에 답하지 못했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * 수락 전 철회 — 요청은 `withdrawn`, 그 업무는 취소된다. 상위 연결과 로그는 남는다.
+   * 서버 입력 모델이 **회차만** 받으므로 사유 칸을 열지 않는다.
+   */
+  const withdrawRequest = async (request: WorkRequest) => {
+    setBusy(true);
+    try {
+      await withdrawWorkRequest(request.request_id, request.version);
+      await reload();
+      settleError();
+      onNotice("요청을 철회했습니다.");
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "요청을 철회하지 못했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * 목록 정리 (L-6 · F-6) — **「숨기기」다.**
+   *
+   * 「삭제」로 부르면 로그가 남는 사실과 어긋나고, 「보관」은 새 보관함 화면을 요구한다.
+   * 서버가 이 명령을 아직 내지 않으면 **화면에서만 접는다** — 그때도 이력은 그대로이고,
+   * 「숨긴 항목 보기」로 언제든 되돌아온다.
+   */
+  const hideFromList = async (request: WorkRequest) => {
+    setBusy(true);
+    try {
+      await hideWorkRequestListEntry(request.request_id);
+      await reload();
+      settleError();
+      onNotice("목록에서 숨겼습니다. 이력에는 그대로 남습니다.");
+    } catch (error) {
+      /* 서버가 이 명령을 아직 내지 않으면 **이 세션에서만** 접는다 — 그것은 영속이 아니므로
+         그렇게 말한다. 새로고침 뒤에도 남으려면 서버의 `list_entry_hidden` 이 있어야 한다. */
+      setHiddenLocally((current) => (current.includes(request.request_id) ? current : [...current, request.request_id]));
+      onError(error instanceof Error ? error.message : "목록 정리를 저장하지 못했습니다.");
+      onNotice("이 화면에서만 숨겼습니다 — 새로고침하면 다시 나타납니다.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   // cc·배정 후보는 로그인 계정 목록에 없는 구성원(예: 관리자)을 포함하므로 이름 해석용 목록을 합친다.
   const people = useMemo(() => {
@@ -330,14 +473,145 @@ export function MyWorkPage({
     }
   };
 
-  const sorted = useMemo(() => [...tasks].sort((left, right) => stateOrder[left.state] - stateOrder[right.state]), [tasks]);
-  const visibleTasks = useMemo(() => {
-    if (filter === "all") return sorted;
-    if (filter === "active") return sorted.filter((task) => task.state !== "done" && task.state !== "cancelled");
-    return sorted.filter((task) => task.state === filter);
-  }, [filter, sorted]);
-  const canCreate = canManageOwnTasks || canCreateWorkRequests;
+  /**
+   * 열려 있는 업무의 **요청 원장 행** — 요청자 자리 판정이 여기서 나온다 (검수 F-1).
+   *
+   * `origin.actor` 로 판정하지 않는다: `_origin_projection` 이 그 자리에 싣는 값은 `requester_id` 라,
+   * **회의 승격 요청에서는 시스템 id** 가 오고 누른 사람(`promoted_by_member_id`)이 자기 요청에서
+   * 빠진다. 원장 행을 직접 보면 서버(`_is_request_owner`)와 같은 답이 나온다.
+   *
+   * 못 찾으면 `null` 이고 판정은 `false` 다 — 내가 요청자라면 그 요청은 **내 목록에 있다**
+   * (`getWorkRequests` 가 요청자·수신자·참조자 관계로 낸다). 없다는 것은 내 자리가 아니라는 뜻이다.
+   */
+  const requestOf = useCallback(
+    (task: DirectTask | null) => {
+      if (!task) return null;
+      const sourceId = task.lineage?.source_work_request_id ?? (task.origin?.source?.type === "work_request" ? task.origin.source.id : null);
+      if (sourceId) return allRequests.find((row) => row.request_id === sourceId) ?? null;
+      return allRequests.find((row) => row.task_id === task.task_id) ?? null;
+    },
+    [allRequests],
+  );
+
   const today = seoulToday();
+  const sorted = useMemo(() => [...tasks].sort((left, right) => (stateOrder[left.state] ?? 9) - (stateOrder[right.state] ?? 9)), [tasks]);
+  /** 끝난 것은 「완료 업무」 탭의 것이다 — 「내 업무」에 섞지 않는다 (§2.1). */
+  const liveTasks = useMemo(() => sorted.filter((task) => task.state !== "done" && task.state !== "cancelled"), [sorted]);
+  const closedTasks = useMemo(() => sorted.filter((task) => task.state === "done" || task.state === "cancelled"), [sorted]);
+
+  const mineRows = useMemo(() => myWorkRows(liveTasks, requestsToMe), [liveTasks, allRequests, personaId]);
+  const chips = chipsForTab[tab];
+  const activeChip = chips.includes(chip) ? chip : "all";
+  const mineCounts = useMemo(() => chipCounts(mineRows, myWorkChips, today), [mineRows, today]);
+  const visibleRows = useMemo(
+    () => (tab === "mine" ? mineRows.filter((row) => matchesChip(row, activeChip, today)) : mineRows),
+    [activeChip, mineRows, tab, today],
+  );
+  /* 칸반·타임라인은 Task 를 받는다 — 아직 수락하지 않아 Task 가 없는 행은 그 판에 놓을 자리가 없다. */
+  const visibleTasks = useMemo(() => visibleRows.flatMap((row) => (row.task ? [row.task] : [])), [visibleRows]);
+
+  /* ── 보낸 업무 ── 요청과 배정을 함께 담되 «행에서» 구분한다 (§2.1 · V-2 · M-1). */
+  const hiddenRequestIds = useMemo(
+    () => new Set([...hiddenLocally, ...sentRequests.filter((request) => request.list_entry_hidden).map((request) => request.request_id)]),
+    [hiddenLocally, allRequests],
+  );
+  const sentRows = useMemo<SentRow[]>(() => {
+    const rows: SentRow[] = sentRequests
+      .filter((request) => showHidden || !hiddenRequestIds.has(request.request_id))
+      .map((request) => {
+        const task = request.task_id ? tasks.find((row) => row.task_id === request.task_id) ?? null : null;
+        const state = sentStateOf(request, null);
+        return {
+          id: `request-${request.request_id}`,
+          title: request.title,
+          originKind: "work_request" as const,
+          assigneeName: displayNameOf(people, request.assignee_id, "담당자"),
+          dueDate: request.due_date ?? null,
+          stateLabel: state.label,
+          stateTone: state.tone,
+          request,
+          task,
+          taskId: request.task_id,
+        };
+      });
+    for (const assignment of sentAssignments) {
+      const state = sentStateOf(null, assignment.status);
+      rows.push({
+        id: `assignment-${assignment.assignment_id}`,
+        title: assignment.task.title,
+        originKind: "direct_assignment",
+        assigneeName: displayNameOf(people, assignment.assignee_id, "담당자"),
+        dueDate: assignment.task.due_date ?? null,
+        stateLabel: state.label,
+        stateTone: state.tone,
+        request: null,
+        task: assignment.task,
+        taskId: assignment.task.task_id,
+      });
+    }
+    return rows;
+  }, [allRequests, hiddenRequestIds, people, sentAssignments, showHidden, tasks]);
+  const sentAsWorkRows = useMemo<WorkRow[]>(
+    () =>
+      sentRows.map((row) => ({
+        id: row.id,
+        title: row.title,
+        task: row.task,
+        request: row.request,
+        dueDate: row.dueDate,
+        /* 담당이 실제로 섰는지는 **서버의 `assignment_state`** 가 말한다 — 요청 상태(축이 다르다)나
+           Task 존재로 추론하지 않는다. 값이 없는 응답에서만 요청 축으로 되돌아 읽는다. */
+        awaitingAcceptance: row.request
+          ? row.request.assignment_state
+            ? row.request.assignment_state === "pending"
+            : isOpenRequest(row.request)
+          : false,
+        approval: row.task?.derived?.approval ?? null,
+      })),
+    [sentRows],
+  );
+  const sentCounts = useMemo(() => chipCounts(sentAsWorkRows, sentWorkChips, today), [sentAsWorkRows, today]);
+  const visibleSentRows = useMemo(() => {
+    if (tab !== "sent" || activeChip === "all") return sentRows;
+    const keep = new Set(sentAsWorkRows.filter((row) => matchesChip(row, activeChip, today)).map((row) => row.id));
+    return sentRows.filter((row) => keep.has(row.id));
+  }, [activeChip, sentAsWorkRows, sentRows, tab, today]);
+
+  /* ── 완료 업무 ── `done` 과 `cancelled` 를 다르게, 요청 업무의 승인 전 `done` 은 「확인 대기」로 (U-5). */
+  const closedSentTasks = useMemo(() => {
+    const ids = new Set(sentRows.flatMap((row) => (row.taskId ? [row.taskId] : [])));
+    return closedTasks.filter((task) => ids.has(task.task_id));
+  }, [closedTasks, sentRows]);
+  const closedMineTasks = useMemo(() => {
+    const sentIds = new Set(closedSentTasks.map((task) => task.task_id));
+    return closedTasks.filter((task) => !sentIds.has(task.task_id));
+  }, [closedSentTasks, closedTasks]);
+  const doneAsWorkRows = useMemo<WorkRow[]>(
+    () =>
+      closedTasks.map((task) => ({
+        id: task.task_id,
+        title: task.title,
+        task,
+        request: null,
+        dueDate: task.due_date ?? null,
+        awaitingAcceptance: false,
+        approval: task.derived?.approval ?? null,
+      })),
+    [closedTasks],
+  );
+  const doneCounts = useMemo(() => chipCounts(doneAsWorkRows, doneWorkChips, today), [doneAsWorkRows, today]);
+  const keepDone = (task: DirectTask) =>
+    tab !== "done" || activeChip === "all" || matchesChip({ id: task.task_id, title: task.title, task, request: null, dueDate: task.due_date ?? null, awaitingAcceptance: false, approval: task.derived?.approval ?? null }, activeChip, today);
+  const doneGroups = useMemo(
+    () =>
+      doneGroupsOf(closedMineTasks.filter(keepDone), closedSentTasks.filter(keepDone), (task) =>
+        task.assignee ? personName(task.assignee.display_name) : task.origin?.actor ? personName(task.origin.actor.display_name) : emptyValue,
+      ),
+    [activeChip, closedMineTasks, closedSentTasks, tab, today],
+  );
+
+  const chipCountsForTab = tab === "mine" ? mineCounts : tab === "sent" ? sentCounts : doneCounts;
+  const canCreate = canManageOwnTasks || canCreateWorkRequests;
 
   /* 시안의 「일일보고 생성」 — 만들고 나서 그 초안이 열린 보고 화면으로 넘긴다.
      실패하면 넘기지 않는다. 무엇이 안 됐는지 먼저 말해야 한다. */
@@ -362,19 +636,11 @@ export function MyWorkPage({
     }
   }, [onError, onNavigate, onNotice, today]);
 
-
   /*
    * 바퀴 5a J-2: 머리 두 줄(전역 breadcrumb 줄 + 페이지 .page-head)을 AppHeader 한 줄로 합쳤다.
    * 그래서 이 화면의 액션을 셸 머리에 «등록» 한다. 떠날 때 null 로 지운다.
    *
    * 시안의 머리 액션은 둘(「일일보고 생성」 + 「업무 만들기」)이다.
-   *
-   * **바퀴 5c: 5a 의 판정을 뒤집었다.** 5a 는 「`generateDailyReportDraft` 는 보고 화면이 날짜를 들고
-   * 부르는 것이라 여기서 못 부른다」며 단순 «이동» 단추로 줄였다. 다시 확인해 보니 **부를 수 있다** —
-   * 그 함수가 받는 것은 날짜 문자열 하나뿐이고(`api.ts`), 이 화면에는 이미 `today`(`seoulToday()`)가 있다.
-   * 보고 화면의 `reportDate` 기본값도 같은 `seoulToday()` 이고, 그 화면은 마운트할 때 그 날짜의 **최신
-   * 초안을 다시 읽는다**(`loadReport`). 그래서 여기서 만들고 넘어가면 만든 초안이 그대로 열린다.
-   * 새 엔드포인트도, 새 상태도 만들지 않았다.
    */
   useEffect(() => {
     if (!onRegisterHeaderActions) return;
@@ -413,239 +679,217 @@ export function MyWorkPage({
     return () => onRegisterRails({});
   }, [actionItems, loadState, onRegisterRails, reload, tasks]);
 
+  /** 한 행이 지금 부를 수 있는 것 — 받은 요청이면 수락·거절, 내가 맡은 행이면 다음 한 걸음이다. */
+  const rowActions = (row: WorkRow) => {
+    if (row.awaitingAcceptance && row.request && canDecideWorkRequests) {
+      return (
+        <>
+          <Button disabled={busy} onClick={() => void decideRequest(row.request!, "accept")} size="sm" tone="primary" type="button" variant="outlined">
+            수락
+          </Button>
+          <Button disabled={busy} onClick={() => setRequestPrompt({ request: row.request!, command: "reject" })} size="sm" tone="neutral" type="button" variant="outlined">
+            거절
+          </Button>
+        </>
+      );
+    }
+    // 수락 전인데 내가 답할 자리가 아니면 부를 명령이 없다 — 없는 명령의 단추를 그리지 않는다.
+    if (row.awaitingAcceptance || !row.task) return null;
+    return canManageOwnTasks ? <TaskQuickActions busy={busy} onTransition={transitionTask} task={row.task} /> : null;
+  };
+
   return (
     <section className="page-surface">
       <div className="work-layout">
         {/* 바퀴 5b K-2: 「판단이 필요한 업무」 패널은 여기 있었다. 시안대로 «좌 레일»로 옮겼다 —
-            복제가 아니라 이동이라, 이 자리에는 아무것도 남지 않는다 (src/InboxRail.tsx). */}
+            복제가 아니라 이동이라, 이 자리에는 아무것도 남지 않는다 (src/shell/InboxRail.tsx). */}
         <div>
           {/*
-            * 바퀴 5a J-4·J-8: 탭과 필터가 «같은 줄» 이던 것을 시안대로 두 줄로 갈랐다.
-            * 탭은 시안의 모양(.scax-tabs · 52px · 밑줄 2px)을 쓰되, **뜨고 지는 조건은 우리 것 그대로**다.
-            * 이름도 뜻이 맞는 것만 시안을 따랐다 — 「할일」은 시안의 「내 업무」와 같은 것이라 바꿨고,
-            * 「요청·배정」은 받은·보낸·참조를 함께 담는 우리 탭이라 시안의 「보낸 업무」로 부르면 틀린다.
-            * 시안의 「완료 업무」 탭은 우리가 상태 필터로 하는 일이라 탭을 새로 만들지 않았다.
+            * 시안의 탭 셋 — 내 업무 / 보낸 업무 / 완료 업무 (WORK-002 Phase 7-B).
+            * 「보낸 업무」는 «내가 보낸 것» 을 담으므로 요청과 배정이 함께 서고, 행에서 갈린다.
             */}
           <Tabs
             ariaLabel="업무 관점"
-            onChange={setTab}
+            onChange={(next) => {
+              setTab(next);
+              setChip("all");
+            }}
             options={[
-              { value: "mine" as const, label: "내 업무" },
-              ...(canCreateWorkRequests || canAssignTasks || requestsToMe.length > 0 || ccRequests.length > 0
-                ? [{ value: "sent" as const, label: "요청·배정" }]
-                : []),
-              ...(canReadOrganizationWork ? [{ value: "organization" as const, label: "조직 업무" }] : []),
+              { value: "mine" as const, label: workTabLabel.mine },
+              { value: "sent" as const, label: workTabLabel.sent },
+              { value: "done" as const, label: workTabLabel.done },
             ]}
             value={tab}
           />
-          {tab === "mine" && (
-            <div className="scax-chip-bar">
-              {/*
-                * J-8: 상태 필터가 팝오버 하나이던 것을 시안대로 Chip 나열로 폈다. 옵션·뜻은 우리 것 그대로다.
-                * 팝오버였을 때는 radiogroup 이라 「무엇 중 하나를 고르는가」가 이름으로 읽혔다. 칩은
-                * aria-pressed 토글이라 그 묶음이 사라지므로, 묶음에 이름을 붙여 그 자리를 지킨다.
-                */}
-              <span aria-label="상태 필터" role="group">
-                {taskFilterOptions.map((option) => (
-                  <Chip key={option} label={taskFilterLabel[option]} on={filter === option} onClick={() => setFilter(option)} />
-                ))}
-              </span>
-              {/* J-5: 시안에 자리가 없다는 이유로 보기 방식을 없애지 않는다. 시안의 오른쪽 끝 자리에 둔다 (G-14). */}
-              <span className="scax-chip-bar__end">
+          <div className="scax-chip-bar">
+            {/*
+              * 칩은 상태 나열이 아니라 «파생 조건» 이다 (§2.6). 건수는 그 칩이 거는 필터의 건수 그대로이고,
+              * 읽을 수 없는 것은 서버 목록에 애초에 없으므로 건수에도 들어가지 않는다 (U-15).
+              */}
+            <span aria-label="업무 필터" role="group">
+              {chips.map((option) => (
+                <Chip
+                  key={option}
+                  label={`${workChipLabel[option]} ${chipCountsForTab[option] ?? 0}`}
+                  on={activeChip === option}
+                  onClick={() => setChip(option)}
+                />
+              ))}
+            </span>
+            {/* J-5: 시안에 자리가 없다는 이유로 보기 방식을 없애지 않는다. 「WBS 보기」는 여는 화면이
+                시안에 없어서 두지 않는다 (M-24 미정 — 뒤집히면 이 단추만 바뀐다). */}
+            <span className="scax-chip-bar__end">
+              {tab === "mine" && (
                 <SegmentedControl
                   ariaLabel="보기 방식"
                   onChange={setView}
                   options={views.map((item) => ({ value: item.id, label: item.label }))}
                   value={view}
                 />
-              </span>
-            </div>
-          )}
+              )}
+              {tab === "sent" && hiddenRequestIds.size > 0 && (
+                <Button onClick={() => setShowHidden((current) => !current)} size="sm" tone="neutral" type="button" variant="outlined">
+                  {showHidden ? "숨긴 항목 감추기" : `숨긴 항목 보기 (${hiddenRequestIds.size})`}
+                </Button>
+              )}
+            </span>
+          </div>
 
-          {tab === "organization" ? (
-            <section aria-label="조직 업무" className="sent-section">
-              <h2 className="section-title">
-                조직 업무 <small>조직 사람들이 지금 들고 있는 업무입니다. 읽기만 하며, 옮기고 끝내는 것은 담당자의 몫입니다</small>
-              </h2>
-              <DataTable>
-                <thead>
-                  <tr>
-                    <Th>업무명</Th>
-                    <Th align="center">담당자</Th>
-                    <Th align="center">상태</Th>
-                    <Th align="center">기한</Th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {organizationTasks.length === 0 && (
-                    <tr>
-                      <Td colSpan={4}>
-                        <Empty description="누군가 업무를 맡으면 여기에서 보입니다." title="조직에 진행 중인 다른 업무가 없습니다" />
-                      </Td>
-                    </tr>
-                  )}
-                  {organizationTasks.map((task) => (
-                    <TrOpenable data-organization-task={task.task_id} key={task.task_id} onClick={() => setSelectedTask(task)}>
-                      <Td title>{task.title}</Td>
-                      <Td align="center">{displayNameOf(people, task.assignee?.member_id, "담당자 없음")}</Td>
-                      <Td align="center">{taskStateLabel[task.state] ?? task.state}</Td>
-                      <Td align="center">{task.due_date ?? <EmptyValue />}</Td>
-                    </TrOpenable>
-                  ))}
-                </tbody>
-              </DataTable>
-            </section>
+          {tab === "mine" ? (
+            view === "kanban" ? (
+              <TaskKanban
+                busy={busy}
+                canManage={canManageOwnTasks}
+                onInvalidMove={onNotice}
+                onOpen={setSelectedTask}
+                onTransition={transitionTask}
+                tasks={visibleTasks}
+              />
+            ) : view === "timeline" ? (
+              <TaskTimeline onOpen={setSelectedTask} tasks={visibleTasks} />
+            ) : (
+              <TaskTable
+                actions={rowActions}
+                filtered={activeChip !== "all"}
+                onClearFilter={() => setChip("all")}
+                onCreate={canManageOwnTasks ? () => setIsCreating(true) : undefined}
+                onOpen={(row) => {
+                  if (row.task) setSelectedTask(row.task);
+                  else if (row.request) void openWorkRequest(row.request.request_id);
+                }}
+                onRetry={() => void reload()}
+                requesterName={(row) =>
+                  row.task?.origin?.actor
+                    ? personName(row.task.origin.actor.display_name)
+                    : row.request
+                      ? displayNameOf(people, row.request.requester_id, emptyValue)
+                      : emptyValue
+                }
+                rows={visibleRows}
+                state={loadState}
+                statusCell={(row) =>
+                  row.task ? (
+                    <TaskStateCell busy={busy} canManage={canManageOwnTasks && !row.awaitingAcceptance} onTransition={transitionTask} task={row.task} />
+                  ) : (
+                    <StatusText label="수락 대기" state="pending" />
+                  )
+                }
+                today={today}
+              />
+            )
           ) : tab === "sent" ? (
             <>
-            <RequestRelationSection
-              emptyHint="동료가 보낸 요청이 도착하면 여기에 쌓입니다."
-              emptyTitle="받은 업무가 없습니다"
-              counterpart="requester"
-              hint="판단이 끝난 요청도 기록으로 남습니다"
-              label="받은 업무"
-              onOpen={(request) => void openWorkRequest(request.request_id)}
-              people={people}
-              personaId={personaId}
-              requests={requestsToMe}
-            />
-            {canCreateWorkRequests && (
+              <SentTaskTable
+                actions={(row) => (
+                  <>
+                    {/* 「다시 요청」은 **재요청**이다 — `supersedes_request_id` 를 실은 새 요청·새 Task (V-12).
+                        독촉(`reminders`)과 다른 것이고, 같은 단추가 둘 다일 수는 없다. */}
+                    {row.request && !isOpenRequest(row.request) && canCreateWorkRequests && (
+                      <Button disabled={busy} onClick={() => setResending(row.request)} size="sm" tone="neutral" type="button" variant="outlined">
+                        다시 요청
+                      </Button>
+                    )}
+                    {row.request && isOpenRequest(row.request) && (
+                      <Button disabled={busy} onClick={() => setRequestPrompt({ request: row.request!, command: "withdraw" })} size="sm" tone="neutral" type="button" variant="outlined">
+                        철회
+                      </Button>
+                    )}
+                    {/* 취소로 끝난 항목만 정리한다 — 목록에서 빠지고 이력은 남는다 (L-6). */}
+                    {row.request && (row.request.state === "rejected" || row.request.state === "withdrawn" || row.request.state === "cancelled_by_agreement") && !hiddenRequestIds.has(row.request.request_id) && (
+                      <Button disabled={busy} onClick={() => void hideFromList(row.request!)} size="sm" type="button" variant="text">
+                        숨기기
+                      </Button>
+                    )}
+                  </>
+                )}
+                filtered={activeChip !== "all"}
+                onClearFilter={() => setChip("all")}
+                onOpen={(row) => {
+                  if (row.request) void openWorkRequest(row.request.request_id);
+                  else if (row.taskId) void openDerivedTask(row.taskId);
+                }}
+                onRetry={() => void reload()}
+                rows={visibleSentRows}
+                state={loadState}
+                today={today}
+              />
+              {/* 참조는 이 제품이 가진 관계 하나이지 있을 때만 생기는 것이 아니다 — 자리를 지킨다.
+                  M-20 이 미정이라 「화면에서 없애는 것」은 제품 결정이다. 이번 판은 여기 구획으로 둔다. */}
               <RequestRelationSection
-                counterpart="assignee"
-                emptyHint="새 업무 추가에서 동료에게 업무를 보낼 수 있습니다."
-                emptyTitle="보낸 업무가 없습니다"
-                hint="조정 요청을 받으면 상세에서 내용을 고쳐 재상신합니다"
-                label="보낸 업무"
+                counterpart="both"
+                emptyHint="동료가 나를 참조자로 넣어 보낸 요청이 여기에 쌓입니다."
+                emptyTitle="참조된 업무가 없습니다"
+                hint="읽고 논의할 수 있지만 판단은 담당자가 합니다"
+                label="참조된 업무"
                 onOpen={(request) => void openWorkRequest(request.request_id)}
                 people={people}
                 personaId={personaId}
-                requests={sentRequests}
+                requests={ccRequests}
               />
-            )}
-            {canAssignTasks && (
-              <section aria-label="내가 지정한 업무" className="sent-section">
-                <h2 className="section-title">
-                  내가 지정한 업무 <small>이미 넘긴 업무입니다. 수락하면 그 사람의 업무가 됩니다</small>
-                </h2>
-                <DataTable>
-                  <thead>
-                    <tr>
-                      <Th>업무명</Th>
-                      <Th align="center">수락 상태</Th>
-                      <Th align="center">업무 상태</Th>
-                      <Th align="center">담당자</Th>
-                      <Th align="center">기한</Th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sentAssignments.length === 0 && (
+              {canReadOrganizationWork && (
+                <section aria-label="조직 업무" className="sent-section">
+                  <h2 className="section-title">
+                    조직 업무 <small>조직 사람들이 지금 들고 있는 업무입니다. 읽기만 하며, 옮기고 끝내는 것은 담당자의 몫입니다</small>
+                  </h2>
+                  <DataTable>
+                    <thead>
                       <tr>
-                        <Td colSpan={4}>
-                          <Empty description="새 업무 추가에서 담당자를 팀원으로 고르면 그 사람에게 갑니다." title="내가 담당자를 지정한 업무가 없습니다" />
-                        </Td>
+                        <Th>업무명</Th>
+                        <Th align="center">담당자</Th>
+                        <Th align="center">상태</Th>
+                        <Th align="center">기한</Th>
                       </tr>
-                    )}
-                    {sentAssignments.map((assignment) => (
-                      <TrOpenable key={assignment.assignment_id} onClick={() => void openDerivedTask(assignment.task.task_id)}>
-                        <Td title>{assignment.task.title}</Td>
-                        <Td align="center">
-                          <StatusText
-                            label={assignment.status === "pending" ? "수락 대기" : assignment.status === "active" ? "수락됨" : assignment.status === "declined" ? `거절됨${assignment.decline_reason ? ` · ${assignment.decline_reason}` : ""}` : assignment.status}
-                            state={assignment.status === "pending" ? "pending" : assignment.status === "active" ? "accepted" : "rejected"}
-                          />
-                        </Td>
-                        <Td align="center">
-                          <StatusText state={assignment.task.state} />
-                        </Td>
-                        <Td align="center">{displayNameOf(people, assignment.assignee_id, "담당자")}</Td>
-                        <Td align="center">{assignment.task.due_date ? formatDate(assignment.task.due_date) : "—"}</Td>
-                      </TrOpenable>
-                    ))}
-                  </tbody>
-                </DataTable>
-              </section>
-            )}
-            {/* 참조는 이 제품이 가진 관계 하나이지 있을 때만 생기는 것이 아니다. 옆의 두 덩어리와 같은 규칙으로
-                자리를 지켜야, 참조로 받은 요청이 아직 없는 사람도 그런 자리가 있다는 것을 안다. */}
-            <RequestRelationSection
-              counterpart="both"
-              emptyHint="동료가 나를 참조자로 넣어 보낸 요청이 여기에 쌓입니다."
-              emptyTitle="참조된 업무가 없습니다"
-              hint="읽고 논의할 수 있지만 판단은 담당자가 합니다"
-              label="참조된 업무"
-              onOpen={(request) => void openWorkRequest(request.request_id)}
-              people={people}
-              personaId={personaId}
-              requests={ccRequests}
-            />
+                    </thead>
+                    <tbody>
+                      {organizationTasks.length === 0 && (
+                        <tr>
+                          <Td colSpan={4}>
+                            <Empty description="누군가 업무를 맡으면 여기에서 보입니다." title="조직에 진행 중인 다른 업무가 없습니다" />
+                          </Td>
+                        </tr>
+                      )}
+                      {organizationTasks.map((task) => (
+                        <TrOpenable data-organization-task={task.task_id} key={task.task_id} onClick={() => setSelectedTask(task)}>
+                          <Td title>{task.title}</Td>
+                          <Td align="center">{displayNameOf(people, task.assignee?.member_id, "담당자 없음")}</Td>
+                          <Td align="center">{taskStateLabel[task.state] ?? task.state}</Td>
+                          <Td align="center">{task.due_date ?? <EmptyValue />}</Td>
+                        </TrOpenable>
+                      ))}
+                    </tbody>
+                  </DataTable>
+                </section>
+              )}
             </>
-          ) : view === "kanban" ? (
-            <TaskKanban
-              busy={busy}
-              canManage={canManageOwnTasks}
-              onInvalidMove={onNotice}
-              onOpen={setSelectedTask}
-              onTransition={transitionTask}
-              tasks={filter === "active" ? sorted : visibleTasks}
-            />
-          ) : view === "timeline" ? (
-            <TaskTimeline onOpen={setSelectedTask} tasks={filter === "active" ? sorted : visibleTasks} />
           ) : (
-            <div aria-label="내 업무" className="scax-task-table scax-task-table--nostar" role="table">
-              {/*
-                * 바퀴 5a J-6: 시맨틱 <table> 을 시안대로 div + CSS grid 로 바꿨다 — 머리는 고정이고 본문만 스크롤한다.
-                * role 로 표의 «뜻» 은 지킨다(table/row/columnheader/cell) — 보조기술에는 여전히 표다.
-                *
-                * **열이 7 → 5 로 준다.** 시안은 6열(별표·제목·요청자·기한·상태·액션)인데 별표는 5열로 접었다.
-                * 바퀴 5c 가 J-1(「BE 계약이 없으면 안 그린다」)을 폐기했지만 **별표는 그 폐기의 유일한 예외다** —
-                * `starred` 필드도 저장 엔드포인트도 없어서 눌러도 아무 데도 안 남는다. 컨트롤을 보여줄지 말지가
-                * 아니라 «값이 사라지는» 문제라 그리지 않는다. 필드가 생기면 modifier 를 떼고 DS 기본 6열로 돌아간다.
-                * 시안에 없어서 «빠지는» 것: 시작일 · 출처. 담당자 열도 이 표에서는 늘 「나」라 시안대로 접었다.
-                */}
-              <div className="scax-task-table__head" role="row">
-                <span role="columnheader">업무명</span>
-                <span className="scax-task-table__cell--center" role="columnheader">요청자</span>
-                <span className="scax-task-table__cell--center" role="columnheader">기한</span>
-                <span className="scax-task-table__cell--center" role="columnheader">상태</span>
-                <span className="scax-task-table__cell--center" role="columnheader">액션</span>
-              </div>
-              <div className="scax-task-table__body">
-                {visibleTasks.length === 0 &&
-                  (filter !== "active" && filter !== "all" ? (
-                    <Empty
-            actionLabel={emptyActionLabel.filter}
-                      description="다른 상태를 선택해 보세요."
-                      onAction={() => setFilter("active")}
-                      title="조건에 맞는 업무가 없습니다"
-                      variant="filter"
-                    />
-                  ) : (
-                    <Empty
-                      actionLabel="첫 업무 만들기"
-                      description="오늘 할 일을 등록하면 여기에 쌓입니다."
-                      onAction={canManageOwnTasks ? () => setIsCreating(true) : undefined}
-                      title="등록된 업무가 없습니다"
-                    />
-                  ))}
-                {visibleTasks.map((task) => (
-                  <TaskTableRow
-                    actions={canManageOwnTasks && <TaskQuickActions busy={busy} onTransition={transitionTask} task={task} />}
-                    key={task.task_id}
-                    onOpen={() => setSelectedTask(task)}
-                    requester={task.origin?.actor ? personName(task.origin.actor.display_name) : emptyValue}
-                    statusCell={
-                      <TaskStateCell
-                        busy={busy}
-                        canManage={canManageOwnTasks}
-                        onTransition={transitionTask}
-                        task={task}
-                      />
-                    }
-                    task={task}
-                    today={today}
-                  />
-                ))}
-              </div>
-            </div>
+            <DoneTaskTable
+              filtered={activeChip !== "all"}
+              groups={doneGroups}
+              onClearFilter={() => setChip("all")}
+              onOpen={(taskId) => void openDerivedTask(taskId)}
+              onRetry={() => void reload()}
+              state={loadState}
+            />
           )}
         </div>
       </div>
@@ -665,7 +909,11 @@ export function MyWorkPage({
           onOpenSource={selectedTask.origin?.source ? (source) => void openSource(source) : undefined}
           onUpdate={updateTaskFields}
           ownerName={selectedTask.assignee ? personName(selectedTask.assignee.display_name) : me}
+          personaId={personaId}
+          personas={people}
           task={selectedTask}
+          viewerIsRequester={isRequestOwner(requestOf(selectedTask), personaId)}
+          viewerIsRecordRequester={isRequestRecordRequester(requestOf(selectedTask), personaId)}
         />
       )}
       {relatedTask && (
@@ -675,11 +923,16 @@ export function MyWorkPage({
           onClose={() => setRelatedTask(null)}
           onError={onError}
           onNotice={onNotice}
+          onChanged={reload}
           onOpenSource={relatedTask.origin?.source ? (source) => void openSource(source) : undefined}
           onTransition={async () => undefined}
           onUpdate={async () => undefined}
           ownerName={relatedTask.assignee ? personName(relatedTask.assignee.display_name) : "미할당"}
+          personaId={personaId}
+          personas={people}
           task={relatedTask}
+          viewerIsRequester={isRequestOwner(requestOf(relatedTask), personaId)}
+          viewerIsRecordRequester={isRequestRecordRequester(requestOf(relatedTask), personaId)}
         />
       )}
       {selectedActionItem && (
@@ -711,20 +964,74 @@ export function MyWorkPage({
           request={selectedRequest}
         />
       )}
-      {isCreating && (
+      {requestPrompt?.command === "reject" && (
+        <ReasonPrompt
+          busy={busy}
+          confirmLabel="거절"
+          danger
+          description={`'${requestPrompt.request.title}' 요청을 거절합니다. 그 업무는 「취소됨 — 요청 거절」로 남고 상위 연결과 로그는 그대로입니다.`}
+          fieldLabel="거절 사유"
+          heading="거절 사유를 남겨 주세요"
+          label="거절 사유"
+          onClose={() => setRequestPrompt(null)}
+          onSubmit={(reason) => {
+            const { request } = requestPrompt;
+            setRequestPrompt(null);
+            void decideRequest(request, "reject", reason);
+          }}
+        />
+      )}
+      {requestPrompt?.command === "withdraw" && (
+        /* 철회는 사유를 받지 않는다 — 서버 입력 모델이 회차만 받는다. 묻지 않을 것을 칸으로 열지 않는다. */
+        <ConfirmModal
+          busy={busy}
+          cancelLabel="돌아가기"
+          closeLabel="닫기"
+          confirmLabel="철회"
+          danger
+          description={`'${requestPrompt.request.title}' 요청을 수락 전에 철회합니다. 그 업무는 취소되고 이력은 남습니다.`}
+          onClose={() => setRequestPrompt(null)}
+          onConfirm={() => {
+            const { request } = requestPrompt;
+            setRequestPrompt(null);
+            void withdrawRequest(request);
+          }}
+          title="요청을 철회할까요?"
+        />
+      )}
+      {(isCreating || resending) && (
         <CreateWorkModal
           assignCandidates={canAssignTasks ? assignCandidates : []}
           assigneeCandidates={assigneeCandidates}
           ccCandidates={ccCandidates}
           canCreateRequest={canCreateWorkRequests}
-          canCreateTask={canManageOwnTasks}
-          onClose={() => setIsCreating(false)}
-          onCreated={async (message) => {
+          canCreateTask={canManageOwnTasks && !resending}
+          initial={
+            resending
+              ? {
+                  title: resending.title,
+                  description: resending.description ?? null,
+                  dueDate: resending.due_date ?? null,
+                  checklist: resending.checklist ?? [],
+                  assigneeId: resending.assignee_id ?? undefined,
+                  parentTaskId: resending.parent_task_id ?? undefined,
+                  supersedesRequestId: resending.request_id,
+                }
+              : undefined
+          }
+          onClose={() => {
+            setIsCreating(false);
+            setResending(null);
+          }}
+          onCreated={async (message, outcome) => {
+            setResending(null);
             await reload();
             onNotice(message);
-            if (message.includes("요청을") || message.includes("배정했습니다")) setTab("sent");
+            // 남의 업무가 된 것은 「보낸 업무」에 선다 — 문구가 아니라 만든 쪽이 말해 주는 갈래로 고른다.
+            if (outcome?.assignedToOther) setTab("sent");
           }}
           onError={onError}
+          onOpenTask={(taskId) => void openDerivedTask(taskId)}
           ownerName={me}
         />
       )}
@@ -735,25 +1042,15 @@ export function MyWorkPage({
 /**
  * 표의 «상태» 칸 — 시안대로 알약 트리거(26px)의 `Select` 팝오버다 (바퀴 5c §8-A).
  *
- * 바퀴 5a 는 여기에 읽기 글자만 두었다. 「`allowed_commands` 가 없으니 그리지 마라」고 했는데 그게
- * 틀렸다 — 권한 필드가 하는 일은 «이 컨트롤을 보여줄까» 뿐이고 실제 차단은 서버가 한다. 그리고 우리
- * 앱은 이미 같은 근거(업무의 지금 상태)로 액션 열의 커맨드 단추를 그리고 있었다. 새 위반이 아니라
- * 있는 방식을 쓰는 것이다.
- *
  * - **무엇을 보여줄까**는 세션 봉투(`canManageOwnTasks`)가 정한다 — 읽기 전용인 사람에게는 예전처럼 글자다.
  * - **어디로 갈 수 있나**는 `allowedTaskTransitions` 한 자리가 정한다(`WorkModals.tsx`). 갈 데가
- *   없는 상태(완료 확인 대기 · 취소)는 고를 것이 없으니 역시 글자로 선다.
- * - **저장**은 표·칸반·드로어가 같이 쓰는 `transitionTask` 그대로다. 낙관적 갱신을 하지 않는다 —
- *   부르고 나서 다시 읽는다(N-3: 기존 방식과 같게).
- *
- * 「막힘」만 사유를 받아야 해서(`transitionDirectTask` 의 `reason`) 고른 즉시 보내지 않고 한 줄 칸을
- * 연다 — `TaskQuickActions` 가 쓰던 것과 같은 `.inline-reason` 이다.
+ *   없는 상태(승인 대기 · 취소)는 고를 것이 없으니 역시 글자로 선다.
+ * - **저장**은 표·칸반·드로어가 같이 쓰는 `transitionTask` 그대로다. 낙관적 갱신을 하지 않는다.
  */
 const stateTriggerTone: Record<TaskState, string> = {
   open: " scax-select__trigger--neutral",
   in_progress: "",
   blocked: " scax-select__trigger--danger",
-  completion_submitted: "",
   done: " scax-select__trigger--positive",
   cancelled: " scax-select__trigger--neutral",
 };
@@ -767,7 +1064,8 @@ function TaskStateCell({
   task: DirectTask;
   canManage: boolean;
   busy: boolean;
-  onTransition: (task: DirectTask, action: TaskAction, reason?: string) => Promise<void>;
+  /** 전이를 보낸다. 돌려주는 값(받아들여졌나)은 이 자리가 쓰지 않는다 — 사유 자리만 그것을 읽는다. */
+  onTransition: (task: DirectTask, action: TaskAction, reason?: string) => Promise<boolean | void>;
 }) {
   const [blocking, setBlocking] = useState(false);
   const transitions = allowedTaskTransitions(task);
@@ -796,7 +1094,7 @@ function TaskStateCell({
           ...transitions.map((transition) => ({ value: transition.to, label: taskStateLabel[transition.to] })),
         ]}
         trigger={({ label, props }) => (
-          <button {...props} className={`scax-select__trigger${stateTriggerTone[task.state]}`} disabled={busy}>
+          <button {...props} className={`scax-select__trigger${stateTriggerTone[task.state] ?? ""}`} disabled={busy}>
             {label}
             <Icon name="chevron-down" size={12} />
           </button>
@@ -815,65 +1113,6 @@ function TaskStateCell({
         />
       )}
     </>
-  );
-}
-
-function TaskTableRow({
-  task,
-  today,
-  requester,
-  actions,
-  statusCell,
-  onOpen,
-}: {
-  task: DirectTask;
-  today: string;
-  requester: string;
-  actions: React.ReactNode;
-  /** 상태 열에 들어가는 것 — 고칠 수 있으면 알약 Select, 아니면 읽기 글자다 (`TaskStateCell` 이 정한다) */
-  statusCell: React.ReactNode;
-  onOpen: () => void;
-}) {
-  /* J-7: 기한이 지난 만큼을 빨간 「+N」으로 낸다. due_date 와 오늘로 계산되니 서버가 필요 없다. */
-  const overdueDays = isOverdue(task, today) ? dayDifference(task.due_date!, today) : 0;
-  return (
-    <div
-      className="scax-task-table__row openable"
-      onClick={(event) => {
-        if ((event.target as HTMLElement).closest("button, input, select, textarea, a, label")) return;
-        onOpen();
-      }}
-      role="row"
-    >
-      <span className="scax-task-table__cell--title" role="cell">
-        <span className="cell-main">
-          <span className={task.state === "cancelled" ? "scax-task-table__title cancelled-title" : "scax-task-table__title"}>
-            {task.title}
-          </span>
-          <ChecklistCue progress={task.checklist_progress} />
-          {task.block_reason && <small className="reason">막힘 사유: {task.block_reason}</small>}
-        </span>
-      </span>
-      <span className="scax-task-table__cell--center scax-task-table__cell--muted" role="cell">
-        {requester}
-      </span>
-      <span className="scax-task-table__cell--center" role="cell">
-        {task.due_date ? (
-          <span className="scax-task-table__due">
-            {formatDate(task.due_date)}
-            {overdueDays > 0 && <span className="scax-task-table__due-extra">+{overdueDays}</span>}
-          </span>
-        ) : (
-          <EmptyValue />
-        )}
-      </span>
-      <span className="scax-task-table__cell--center" role="cell">
-        {statusCell}
-      </span>
-      <span className="scax-task-table__cell--actions" role="cell">
-        {actions}
-      </span>
-    </div>
   );
 }
 
@@ -931,7 +1170,7 @@ function RequestRelationSection({
             <TrOpenable key={request.request_id} onClick={() => onOpen(request)}>
               <Td title>{request.title}</Td>
               <Td align="center">
-                <StatusText label={workRequestStateLabel[request.state]} state={request.state} />
+                <StatusText label={workRequestStateLabelOf(request)} state={request.state} />
               </Td>
               <Td align="center">
                 {counterpart === "both"
@@ -949,4 +1188,8 @@ function RequestRelationSection({
       </DataTable>
     </section>
   );
+}
+
+function workRequestStateLabelOf(request: WorkRequest): string {
+  return sentStateOf(request, null).label;
 }

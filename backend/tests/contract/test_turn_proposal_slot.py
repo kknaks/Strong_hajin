@@ -8,6 +8,7 @@ import asyncio
 from uuid import UUID
 
 import pytest
+from legacy_acceptance import pending_request
 
 from ax_workspace.entrypoints.mcp import McpReportsFacade, _create_bound_persona_server
 from test_mcp_checklist import _delegated_turn
@@ -67,7 +68,8 @@ def test_a_second_judgement_on_another_item_is_refused_in_the_same_turn(tmp_path
     client, application = _stack(tmp_path)
     jiho = {"X-Demo-Persona": "jiho"}
     for title in ("먼저 판단할 요청", "나중에 판단할 요청"):
-        client.post("/api/work-requests", headers=MINA, json={"title": title, "assignee_id": "jiho"})
+        # 판단 항목 둘이 필요하다 — 신규 요청은 회차를 만들지 않으므로 과거 모양에서 본다.
+        pending_request(client, application._settings.database_url, MINA, title=title, assignee_id="jiho")
     first, second = client.get("/api/action-items", headers=jiho).json()
     _delegated_turn(client, application, jiho, "jiho", monkeypatch)
     server = _create_bound_persona_server(McpReportsFacade(application._settings, "jiho"))

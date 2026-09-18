@@ -41,6 +41,7 @@ addopts = "-m 'not integration and not release and not scale'"
 testpaths = ["tests"]
 markers = [
   "unit: deterministic domain/application tests without transport or SQL semantics",
+  "no_auto_idempotency_key: send creation requests exactly as written, without the shared Idempotency-Key fill-in",
   "contract: public application, HTTP, MCP, or adapter contract tests",
   "integration: requires an explicit disposable PostgreSQL URL",
   "scale: high-cost synthetic ledger validation run explicitly or by make verify",

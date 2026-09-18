@@ -1,4 +1,5 @@
 """Canonical REST/MCP content search uses artifact identity across owners."""
+from legacy_acceptance import pending_request
 import asyncio
 from dataclasses import replace
 from uuid import UUID
@@ -86,7 +87,8 @@ def test_public_owner_search_and_metadata_share_current_permissions(tmp_path, ki
         owner_id = client.post("/api/tasks", headers=MINA, json={"title": "검색 업무"}).json()["task_id"]
         _upload(client, owner_id, "public.txt", token.encode(), "text/plain")
     elif kind == "work_request":
-        owner_id = client.post("/api/work-requests", headers=MINA, json={"title": "독립 요청", "assignee_id": "jiho"}).json()["request_id"]
+        # 근거는 판단 회차에 붙는다 — 신규 요청에는 그 회차가 없으므로 과거 모양 행에서 본다.
+        owner_id = pending_request(client, settings.database_url, MINA, title="독립 요청", assignee_id="jiho")["request_id"]
         response = client.post(f"/api/work-requests/{owner_id}/evidence", headers=MINA, files={"file": ("public.txt", token.encode(), "text/plain")})
         assert response.status_code == 201, response.text
     else:

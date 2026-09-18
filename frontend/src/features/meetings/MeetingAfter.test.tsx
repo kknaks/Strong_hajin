@@ -2,6 +2,15 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../lib/api", async (actual) => ({
+  getTaskAssignments: vi.fn(),
+  getTaskProposals: vi.fn(),
+  createTaskProposal: vi.fn(),
+  respondTaskProposal: vi.fn(),
+  withdrawTaskProposal: vi.fn(),
+  reopenTask: vi.fn(),
+  getTaskChildren: vi.fn(),
+  withdrawWorkRequest: vi.fn(),
+  hideWorkRequestListEntry: vi.fn(),
   // ApiError 는 진짜를 쓴다 — 화면이 409 를 `instanceof` 로 가른다
   ApiError: ((await actual()) as { ApiError: unknown }).ApiError,
   readMeeting: vi.fn(),
@@ -336,7 +345,8 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
         description: "분기별 전망치를 다시 뽑는다.",
         due_date: "2026-09-12",
         checklist: ["지난 분기 실적 모으기"],
-      }),
+      // 승격도 생성 계약을 지난다 — 이 제출 의도의 멱등 키가 함께 간다 (W1 Phase 5).
+      }, expect.any(String)),
     );
     // 업무 요청을 직접 만들지 않는다 — 출처 두 열이 실려야 한다
     expect(api.createWorkRequest).not.toHaveBeenCalled();

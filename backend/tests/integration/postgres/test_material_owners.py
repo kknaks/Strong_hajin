@@ -1,4 +1,5 @@
 """Owner writes and explicit legacy maintenance publish projections and durable jobs atomically."""
+from legacy_acceptance import pending_request
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -77,7 +78,8 @@ def test_owner_upload_rolls_back_artifact_binding_projection_and_job_together(tm
         folder = client.post("/api/material-folders", headers=MINA, json={"kind": "personal", "title": "PG 개인 자료"}).json()
         route = f"/api/material-folders/{folder['folder_id']}/materials"
     else:
-        request = client.post("/api/work-requests", headers=MINA, json={"title": "PG 요청", "assignee_id": "jiho"}).json()
+        # 근거는 판단 회차에 붙는다 — 신규 요청에는 그 회차가 없으므로 과거 모양 행에서 본다.
+        request = pending_request(client, _postgres_test_url(), MINA, title="PG 요청", assignee_id="jiho")
         route = f"/api/work-requests/{request['request_id']}/evidence"
         if owner == "comment":
             comment = client.post(f"/api/work-requests/{request['request_id']}/comments", headers=MINA, json={"body": "근거 파일"}).json()

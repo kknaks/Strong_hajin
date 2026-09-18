@@ -22,10 +22,14 @@ from ax_workspace.modules.organization_access.domain import (
     WORK_REQUEST_READ,
 )
 from ax_workspace.modules.work.request_errors import (
+    WorkRejectReasonRequired,
     WorkRequestAccessDenied,
     WorkRequestError,
     WorkRequestIdempotencyConflict,
+    WorkRequestLockedAfterAccept,
     WorkRequestNotFound,
+    WorkRequestNotPending,
+    WorkRequestResponderOnly,
 )
 from ax_workspace.modules.work.request_lifecycle import (
     RequestCreationContext,
@@ -64,6 +68,8 @@ class WorkRequestRepository(Protocol):
         source_meeting_id: UUID | None = None,
         source_agenda_id: UUID | None = None,
         promoted_by_member_id: str | None = None,
+        parent_task_id: UUID | None = None,
+        supersedes_request_id: UUID | None = None,
     ) -> tuple[Any, bool]: ...
     def request(self, request_id: UUID, *, lock: bool = False) -> Any: ...
     def cc_member_ids(self, request: Any) -> list[str]: ...
@@ -73,7 +79,14 @@ class WorkRequestRepository(Protocol):
     def audit_payloads(self, request_id: UUID, event_type: str) -> list[dict[str, Any]]: ...
     def evidence_count_for(self, submission: Any) -> int: ...
     def evidence_for(self, request: Any) -> list[tuple[Any, Any, Any]]: ...
-    def create_accepted_task(self, request: Any) -> Any: ...
+    def task_for_request(self, request: Any, *, lock: bool = False) -> Any: ...
+    def accept_request_assignment(self, request: Any, actor_id: str) -> Any: ...
+    def close_request_task(self, request: Any, actor_id: str, *, cancel_reason: str, summary: str) -> Any: ...
+    def create_task_for_request(
+        self, request: Any, *, actor_id: str,
+        source_action_item_id: UUID | None = None, source_decision_item_id: UUID | None = None,
+        source_submission_id: UUID | None = None, source_review_decision_id: UUID | None = None,
+    ) -> Any: ...
     def append_audit(self, request_id: UUID, actor_id: str, event_type: str, payload: dict[str, Any]) -> None: ...
     def inbox_for(self, assignee_id: str) -> list[Any]: ...
     def list_for(self, principal_id: str) -> list[Any]: ...
@@ -83,6 +96,9 @@ class WorkRequestRepository(Protocol):
     ) -> Any: ...
     def resubmit(self, request: Any, actor_id: str, snapshot: dict[str, Any]) -> Any: ...
     def withdraw(self, request: Any, actor_id: str) -> None: ...
+    def hidden_request_ids(self, member_id: str) -> set[UUID]: ...
+    def remove_list_entry(self, request: Any, member_id: str) -> None: ...
+    def request_decisions(self, request: Any) -> list[Any]: ...
     def current_submission(self, request: Any) -> Any: ...
     def active_assignment(self, submission: Any) -> Any: ...
     def timeline(self, request: Any) -> dict[str, Any]: ...
@@ -93,6 +109,12 @@ class CommentRepository(Protocol):
     def list_for(self, request_thread_id: UUID) -> list[Any]: ...
     def comment(self, request_thread_id: UUID, comment_id: UUID) -> Any: ...
     def lock_thread(self, request_thread_id: UUID) -> None: ...
+
+
+class RequestParentPort(Protocol):
+    """상위 업무를 붙여도 되는지 묻는 자리 — 판정은 업무 모듈이 갖는다 (SPEC-003 §4 Validation)."""
+
+    def parent_for(self, principal: Principal, parent_task_id: UUID | None, *, assignee_id: str | None = None) -> Any: ...
 
 
 class WorkRequestAssigneeDirectory(Protocol):
@@ -212,8 +234,12 @@ class WorkRequestApplication:
         references: "TaskReferenceViewPort | None" = None,
         extractions: MaterialExtractionRepository | None = None,
         extraction_queue: MaterialExtractionQueue | None = None,
+        parents: "RequestParentPort | None" = None,
     ) -> None:
         self._repository = repository
+        # 상위를 붙여도 되는지는 **업무 모듈이 판정한다** — 중심 업무·순환·수락 전 부모 금지가 거기 한 곳에
+        # 있고, 요청이 그 규칙을 다시 쓰면 두 벌이 조용히 갈린다.
+        self._parents = parents
         self._assignee_directory = assignee_directory
         self._comments = comments
         self._attachments = attachments
@@ -235,14 +261,23 @@ class WorkRequestApplication:
         reference_task_ids: list[UUID] | None = None,
         source_meeting_id: UUID | None = None,
         source_agenda_id: UUID | None = None,
+        parent_task_id: UUID | None = None,
+        supersedes_request_id: UUID | None = None,
         allow_self_assignment: bool = False,
         promoted_by_member_id: str | None = None,
+        source_action_item_id: UUID | None = None,
+        source_decision_item_id: UUID | None = None,
+        source_submission_id: UUID | None = None,
+        source_review_decision_id: UUID | None = None,
     ) -> dict[str, Any]:
         """업무 요청 하나. `promoted_by_member_id` 가 오면 **회의 승격**이다 (D40).
 
         그때 보낸 쪽은 시스템이고 누른 사람은 참조로 남는다. 시스템이 보내므로 **담당 후보의 조직 경계를
         묻지 않는다** — 회의에 누가 앉아 있었는지 따로 실어 보내던 예외(`eligible_member_ids`)가 이 규칙에
         흡수됐다. 사람이 보내는 기존 경로는 한 글자도 달라지지 않는다.
+
+        `source_*` 넷은 **AX 확인이 이 요청을 있게 했을 때의 계보**다. 확정된 action 과 그 확인 회차를
+        업무가 계속 가리켜야 하므로 요청에서 업무로 그대로 흘려보낸다 — 조용히 버리지 않는다.
         """
         self._require(principal, WORK_REQUEST_CREATE)
         decision = decide_request_creation(
@@ -265,6 +300,21 @@ class WorkRequestApplication:
         for member_id in decision.active_member_checks:
             if not self._assignee_directory.is_active_member(principal, member_id):
                 raise WorkRequestError(f"cc member {member_id} is not an active member")
+        # **상위는 발송 단계에서 정해진다** (정책 V-9). 받는 사람이 그 하위를 들 사람이므로 중심 업무
+        # 판정에 그 값을 넘긴다 — 수락 전 부모·순환·직접 작업 중첩이 여기서 걸린다.
+        parent = (
+            self._parents.parent_for(principal, parent_task_id, assignee_id=assignee_id)
+            if parent_task_id is not None and self._parents is not None
+            else None
+        )
+        if supersedes_request_id is not None:
+            # 재요청은 **새 요청·새 Task** 다 (정책 V-12). 이 값은 두 건을 잇기만 하고 옛것을 되살리지 않는다.
+            previous = self._repository.request(supersedes_request_id)
+            if previous is None or str(principal.id) not in {
+                str(previous.requester_id),
+                str(getattr(previous, "promoted_by_member_id", None) or ""),
+            }:
+                raise WorkRequestNotFound("work request was not found")
         request, created = self._repository.create_request(
             decision.requester_id,
             assignee_id,
@@ -281,10 +331,26 @@ class WorkRequestApplication:
             source_meeting_id=source_meeting_id,
             source_agenda_id=source_agenda_id,
             promoted_by_member_id=promoted_by_member_id,
+            parent_task_id=parent.id if parent is not None else None,
+            supersedes_request_id=supersedes_request_id,
         )
-        if created:
-            self._repository.append_audit(request.id, str(principal.id), "work_request.created", {})
-        return self._view(request)
+        if not created:
+            return self._view(request, task_id=self._repository.derived_task_ids([request]).get(request.id))
+        self._repository.append_audit(request.id, str(principal.id), "work_request.created", {})
+        # **수락 없이** 업무와 활성 담당이 같은 transaction 에 선다 (WORK-001 Phase 4). 요청 행은 그대로
+        # 남아 출처가 되고, 업무가 `source_work_request_id` 로 그것을 가리킨다 — 완료 승인의 확인자가
+        # 거기서 나온다. 사람이 하지 않은 수락을 판단 회차로 기록하지 않는다.
+        # 업무를 있게 한 명령을 실제로 부른 사람이 행위자다 — 회의 승격이면 누른 사람이고, 요청자 자리에
+        # 앉은 시스템도 받는 사람도 아니다.
+        task = self._repository.create_task_for_request(
+            request,
+            actor_id=str(principal.id),
+            source_action_item_id=source_action_item_id,
+            source_decision_item_id=source_decision_item_id,
+            source_submission_id=source_submission_id,
+            source_review_decision_id=source_review_decision_id,
+        )
+        return self._view(request, task)
 
     def accept(self, principal: Principal, request_id: UUID, expected_version: int) -> WorkRequestMutationResult:
         self._require(principal, WORK_REQUEST_DECIDE)
@@ -293,11 +359,16 @@ class WorkRequestApplication:
         except ValueError as error:
             raise WorkRequestError(str(error)) from error
         expected_version = command.expected_version
+        receipt = self._decision_receipt(principal, request_id, expected_version, "accept")
+        if receipt is not None:
+            return receipt
         request = self._decision_target(principal, request_id, expected_version)
         request.state = "accepted"
         request.version += 1
         self._repository.record_decision(request, str(principal.id), "accept", expected_version=expected_version)
-        task = self._repository.create_accepted_task(request)
+        # **같은 업무의 담당이 확정된다 — 새 업무가 생기지 않는다** (SPEC-003 §4 수락 · 인수조건).
+        # `task_id` 와 `parent_task_id` 가 발송 때 그대로다.
+        task = self._repository.accept_request_assignment(request, str(principal.id))
         self._repository.append_audit(request.id, str(principal.id), "work_request.accepted", {"task_id": str(task.id)})
         return self._view(request, task)
 
@@ -309,13 +380,20 @@ class WorkRequestApplication:
             raise WorkRequestError(str(error)) from error
         expected_version, reason = command.expected_version, command.reason
         if not reason.strip():
-            raise WorkRequestError("rejection reason is required")
+            raise WorkRejectReasonRequired("거절에는 사유가 필요합니다")
+        receipt = self._decision_receipt(principal, request_id, expected_version, "reject")
+        if receipt is not None:
+            return receipt
         request = self._decision_target(principal, request_id, expected_version)
         request.state = "rejected"
         request.version += 1
         self._repository.record_decision(request, str(principal.id), "reject", reason=reason.strip(), expected_version=expected_version)
+        # 거절은 그 업무를 닫는다 — **상위 연결과 로그는 남는다** (SPEC-003 §4 거절 · 인수조건).
+        task = self._repository.close_request_task(
+            request, str(principal.id), cancel_reason="request_rejected", summary=f"업무 요청 거절로 취소: {request.title}"
+        )
         self._repository.append_audit(request.id, str(principal.id), "work_request.rejected", {"reason": reason.strip()})
-        return self._view(request)
+        return self._view(request, task)
 
     def negotiate(
         self,
@@ -500,8 +578,12 @@ class WorkRequestApplication:
             request.conditions = None
         request.version = withdrawal.request.version
         self._repository.withdraw(request, str(principal.id))
+        # 철회도 그 업무를 닫는다. 수락 전에만 열려 있는 명령이므로 아무도 들지 않은 일을 거두는 것이다.
+        task = self._repository.close_request_task(
+            request, str(principal.id), cancel_reason="request_withdrawn", summary=f"업무 요청 철회로 취소: {request.title}"
+        )
         self._repository.append_audit(request.id, str(principal.id), "work_request.withdrawn", {})
-        return self._view(request)
+        return self._view(request, task)
 
     @staticmethod
     def _domain_request(request: Any) -> WorkRequest:
@@ -741,14 +823,66 @@ class WorkRequestApplication:
         }
 
     def inbox(self, principal: Principal) -> list[WorkRequestMutationResult]:
-        self._require(principal, WORK_REQUEST_DECIDE)
-        return [self._view(request) for request in self._repository.inbox_for(str(principal.id))]
+        """**내가 답해야 하는 요청** (SPEC-003 §4 `GET /api/work-requests/inbox`).
 
-    def list(self, principal: Principal) -> list[WorkRequestMutationResult]:
-        self._require(principal, WORK_REQUEST_READ)
-        requests = self._repository.list_for(str(principal.id))
+        받는 사람으로서 아직 답하지 않은 것(`pending`·`negotiating`)만이다 — 내가 보낸 요청은
+        `GET /api/work-requests` 쪽이다. 각 줄이 자기가 세운 업무를 함께 가리키므로, 답하기 전에도
+        무엇에 대한 요청인지 열어 볼 수 있다.
+        """
+        self._require(principal, WORK_REQUEST_DECIDE)
+        requests = self._repository.inbox_for(str(principal.id))
         derived = self._repository.derived_task_ids(requests)
         return [self._view(request, task_id=derived.get(request.id)) for request in requests]
+
+    def list(self, principal: Principal, *, include_removed: bool = False) -> list[WorkRequestMutationResult]:
+        """내 요청 목록. **내가 정리한 항목은 여기서만 빠진다** (SPEC-003 §4 목록 정리).
+
+        읽기 권한은 그대로다 — 정리는 「내 목록에서 감춘다」이지 「없앤다」가 아니다. 그래서 이 걸러내기는
+        목록 표면에만 있고, 권한을 답하는 `list_for()` 에는 없다. 거기 두면 정리한 순간 그 요청의
+        상세·자료가 통째로 안 열린다.
+        """
+        self._require(principal, WORK_REQUEST_READ)
+        requests = self._repository.list_for(str(principal.id))
+        hidden = self._repository.hidden_request_ids(str(principal.id))
+        if not include_removed:
+            requests = [request for request in requests if request.id not in hidden]
+        derived = self._repository.derived_task_ids(requests)
+        # **정리된 항목인지는 서버가 말한다.** 화면이 기억해 두는 것이 아니다 — 브라우저를 새로 열면
+        # 그 기억은 사라지는데 정리한 사실은 남아야 한다 (SPEC-003 §4 목록 정리 · 정책 P-12).
+        return [
+            self._view(request, task_id=derived.get(request.id), hidden=request.id in hidden)
+            for request in requests
+        ]
+
+    def remove_from_list(self, principal: Principal, request_id: UUID) -> dict[str, Any]:
+        """요청자 목록에서 그 항목을 뺀다. **행도 로그도 지우지 않는다** (정책 P-12).
+
+        전역 삭제나 상대방 자료 삭제로 넓히지 않는다 — 내 화면에서만 사라진다.
+        """
+        self._require(principal, WORK_REQUEST_READ)
+        request = self._participant_request(principal, request_id)
+        # **요청자의 명령이다** (SPEC-003 §3 S-15 · §4 목록 정리). 수신자가 자기 화면에서 남의 요청을
+        # 치우는 명령이 아니다 — 받은 쪽의 정리는 계약이 없다. 승격 요청이면 **누른 사람**이 요청자
+        # 자리에 선다 (BASE-002 O-31), 요청자 전용 조작이 이미 그 모양으로 판정한다.
+        if str(principal.id) not in {
+            str(request.requester_id),
+            str(getattr(request, "promoted_by_member_id", None) or ""),
+        }:
+            raise WorkRequestAccessDenied("요청자만 자기 목록에서 정리할 수 있습니다")
+        # **「취소 항목」의 정리다.** 아직 답을 기다리거나 진행 중인 요청은 목록에서 치울 것이 아니다 —
+        # 치우면 그 사람이 답을 기다린다는 사실이 아무 데도 남지 않는다. 거두려면 철회가 그 명령이다.
+        if str(request.state) not in _CLEANABLE_REQUEST_STATES:
+            raise WorkRequestNotPending(
+                "진행 중인 요청은 정리할 수 없습니다. 아직 수락 전이면 철회하세요"
+            )
+        self._repository.remove_list_entry(request, str(principal.id))
+        return {"request_id": str(request.id), "removed": True}
+
+    def receipt(self, principal: Principal, request_id: UUID) -> WorkRequestMutationResult:
+        """이미 선 요청의 영수증 — 생성이 냈던 것과 같은 투영이고, 읽을 권한을 지금 다시 검사한다."""
+        self.get(principal, request_id)
+        request = self._repository.request(request_id)
+        return self._view(request, task_id=self._repository.derived_task_ids([request]).get(request.id))
 
     def get(self, principal: Principal, request_id: UUID) -> WorkRequestDetailResult:
         self._require(principal, WORK_REQUEST_READ)
@@ -797,16 +931,44 @@ class WorkRequestApplication:
         self._require(principal, WORK_REQUEST_CREATE)
         return self._assignee_directory.member_candidates(principal)
 
+    def _decision_receipt(
+        self, principal: Principal, request_id: UUID, expected_version: int, decision: str
+    ) -> WorkRequestMutationResult | None:
+        """**같은 사람의 같은 답을 다시 보낸 것인가** (SPEC-003 §3 S-16 · §4 「재전송이면 영수증이 먼저」).
+
+        재전송의 신원은 **이미 내려진 판단 행**이 갖고 있다: 누가(actor) · 무엇을(decision) · 어느
+        회차에(그 판단이 소비한 `expected_version`). 셋이 모두 같으면 그때의 답이 지금 다시 온 것이고,
+        **두 번째 effect 없이** 현재 상태를 돌려준다.
+
+        이 판정이 회차 검사보다 **먼저** 와야 한다. 수락은 요청의 회차를 올리므로, 사람이 보던 화면에서
+        그대로 다시 누른 요청은 「그때의 회차」를 싣고 온다 — 그것을 stale 로 거절하면 통신 재시도가
+        실패로 읽힌다. 반대로 **다른 회차·다른 답**은 재전송이 아니라 새 명령이고, 아래에서 갈린다.
+
+        돌려주기 전에 **지금의 열람 권한을 다시 검사한다** (K-2) — 잃었으면 존재를 숨긴다.
+        """
+        request = self._repository.request(request_id)
+        if request is None:
+            return None
+        for row in self._repository.request_decisions(request):
+            if str(row.actor_member_id) != str(principal.id) or str(row.decision) != decision:
+                continue
+            if decision_facts(row.conditions).get(DECISION_VERSION) != expected_version:
+                continue
+            # 존재를 다시 묻는다: 관계가 끊겼으면 영수증도 주지 않는다.
+            self.get(principal, request_id)
+            return self._view(request, task_id=self._repository.derived_task_ids([request]).get(request.id))
+        return None
+
     def _decision_target(self, principal: Principal, request_id: UUID, expected_version: int) -> Any:
         request = self._repository.request(request_id, lock=True)
         if request is None:
             raise WorkRequestNotFound("work request was not found")
         if request.assignee_id != str(principal.id):
-            raise WorkRequestError("only the requested assignee may decide")
+            raise WorkRequestResponderOnly("이 요청에 답할 수 있는 사람은 받는 사람뿐입니다")
         if request.version != expected_version:
             raise WorkRequestError("work request version is stale")
         if request.state not in {"pending", "negotiating"}:
-            raise WorkRequestError("work request is not awaiting a decision")
+            raise WorkRequestNotPending("이미 답한 요청입니다")
         return request
 
     @staticmethod
@@ -814,7 +976,7 @@ class WorkRequestApplication:
         if capability not in principal.capabilities:
             raise WorkRequestAccessDenied(f"{capability} capability is required")
 
-    def _view(self, request: Any, task: Any | None = None, *, task_id: Any | None = None) -> WorkRequestMutationResult:
+    def _view(self, request: Any, task: Any | None = None, *, task_id: Any | None = None, hidden: bool = False) -> WorkRequestMutationResult:
         submission = self._repository.current_submission(request)
         return {
             "request_id": str(request.id),
@@ -837,9 +999,43 @@ class WorkRequestApplication:
             "state": request.state,
             "version": request.version,
             "task_id": str(task.id) if task else (str(task_id) if task_id else None),
-            "assignment_state": "active" if task or task_id else None,
+            # **업무가 섰다고 담당이 선 것이 아니다.** v2 에서 발송은 업무를 세우고 담당은 수락이 세운다,
+            # 그래서 「업무가 있으면 active」였던 옛 규칙이 더는 맞지 않는다 — 수락 대기 중인 요청이
+            # 보낸 사람 화면에서 「담당 확정」으로 읽히게 된다. 요청 상태가 그 답을 이미 갖고 있다.
+            "assignment_state": _assignment_state(request.state, bool(task or task_id)),
+            # 하위 요청이면 발송 때 정해진 상위. 재요청이면 이전 요청.
+            "parent_task_id": str(request.parent_task_id) if getattr(request, "parent_task_id", None) else None,
+            "supersedes_request_id": (
+                str(request.supersedes_request_id) if getattr(request, "supersedes_request_id", None) else None
+            ),
+            # **내가 이 항목을 목록에서 정리했는가.** 서버가 말한다 — 화면이 기억해 두면 새로 열 때 사라진다.
+            "list_entry_hidden": hidden,
             "conditions": request.conditions,
         }
+
+
+#: 목록에서 정리할 수 있는 요청 상태 — **끝난 것들**이다. 거절·철회·합의 취소가 그 셋이고,
+#: 그 업무는 `cancelled` 로 닫혀 있다. 로그는 그대로 남는다 (정책 L-6).
+_CLEANABLE_REQUEST_STATES = frozenset({"rejected", "withdrawn", "cancelled_by_agreement"})
+
+
+#: 요청 상태 → 담당 관계 상태. 요청이 답을 이미 갖고 있으므로 담당 행을 다시 묻지 않는다.
+#: `assigned` 는 **W1 이 내던 값**이고 v2 는 발행하지 않는다 — 과거 행에서는 뜻 그대로 읽힌다 (정책 P-8).
+_REQUEST_ASSIGNMENT_STATE = {
+    "pending": "pending",
+    "negotiating": "pending",
+    "accepted": "active",
+    "assigned": "active",
+    "rejected": "ended",
+    "withdrawn": "ended",
+    "cancelled_by_agreement": "ended",
+}
+
+
+def _assignment_state(request_state: str, has_task: bool) -> str | None:
+    if not has_task:
+        return None
+    return _REQUEST_ASSIGNMENT_STATE.get(str(request_state))
 
 
 def _attachment_view(attachment: Any) -> dict[str, Any]:

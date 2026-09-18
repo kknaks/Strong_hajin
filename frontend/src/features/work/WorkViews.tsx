@@ -471,8 +471,8 @@ const kanbanColumns: Array<{ state: TaskState; title: string }> = [
   { state: "open", title: "시작 전" },
   { state: "in_progress", title: "진행 중" },
   { state: "blocked", title: "막힘" },
-  // Reported and waiting on the person who asked: in flight, not finished.
-  { state: "completion_submitted", title: "완료 확인 대기" },
+  /* 「완료 확인 대기」 칸은 없다 — 그것은 상태가 아니라 `derived.approval` 이다(SPEC-003 §2.2).
+     보고가 들어간 업무는 밖으로 `done` 이라 「완료」 칸에 서고, 확인 대기인지는 행의 배지가 말한다. */
   { state: "done", title: "완료" },
 ];
 
@@ -488,7 +488,8 @@ export function TaskKanban({
   canManage: boolean;
   busy: boolean;
   onOpen: (task: DirectTask) => void;
-  onTransition: (task: DirectTask, action: TaskAction, reason?: string) => Promise<void>;
+  /** 전이를 보낸다. 돌려주는 값(받아들여졌나)은 이 자리가 쓰지 않는다 — 사유 자리만 그것을 읽는다. */
+  onTransition: (task: DirectTask, action: TaskAction, reason?: string) => Promise<boolean | void>;
   onInvalidMove: (message: string) => void;
 }) {
   const [dragging, setDragging] = useState<string | null>(null);

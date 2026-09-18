@@ -4,6 +4,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectTask } from "../../lib/viewModels";
 
 vi.mock("../../lib/api", () => ({
+  getTaskAssignments: vi.fn(),
+  getTaskProposals: vi.fn(),
+  createTaskProposal: vi.fn(),
+  respondTaskProposal: vi.fn(),
+  withdrawTaskProposal: vi.fn(),
+  reopenTask: vi.fn(),
+  getTaskChildren: vi.fn(),
+  withdrawWorkRequest: vi.fn(),
+  hideWorkRequestListEntry: vi.fn(),
+  getWorkRequestAssigneeCandidates: vi.fn(),
   getTask: vi.fn(),
   getTaskMaterials: vi.fn(),
   submitTaskCompletion: vi.fn(),
@@ -108,7 +118,7 @@ describe("handing requested work back", () => {
   });
 
   it("sends the summary and the outputs the reporter picked", async () => {
-    vi.mocked(api.submitTaskCompletion).mockResolvedValue({ ...base, state: "completion_submitted", version: 5 } as never);
+    vi.mocked(api.submitTaskCompletion).mockResolvedValue({ ...base, state: "done", derived: { approval: "awaiting_review" }, version: 5 } as never);
     const { onChanged } = renderDrawer({ ...base, delivery: null } as DirectTask, [material]);
     await screen.findByLabelText("체크리스트");
 
@@ -128,9 +138,12 @@ describe("handing requested work back", () => {
   });
 
   it("says the work is waiting on the person who asked, and offers nothing to press", async () => {
+    /* 제출이 성공하면 **밖으로는 `done` + `derived.approval=awaiting_review`** 다 —
+       `completion_submitted` 는 외부 계약에 없다 (SPEC-003 §4 · SPEC-001 §4 State). */
     renderDrawer({
       ...base,
-      state: "completion_submitted",
+      state: "done",
+      derived: { assignment: null, approval: "awaiting_review", proposal: null, blocking_children: [], overdue_days: null },
       delivery: { action_item_id: "d1", status: "awaiting_review", rounds: 1, reported_by: "jiho", reported_at: "2026-09-06T01:00:00Z", summary: "1차 결과", last_reason: null },
     } as DirectTask);
     const banner = await screen.findByLabelText("완료 확인 대기");

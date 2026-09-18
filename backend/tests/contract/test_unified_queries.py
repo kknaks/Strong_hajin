@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 from fastapi.testclient import TestClient
+from legacy_acceptance import pending_request
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
@@ -266,11 +267,8 @@ def test_selected_queries_and_native_downloads_use_the_same_owning_reads(tmp_pat
     report_material = str(
         material_id_for("report_submission", UUID(submission["submission_id"]))
     )
-    request = client.post(
-        "/api/work-requests",
-        headers=headers,
-        json={"title": "근거 요청", "assignee_id": "jiho"},
-    ).json()
+    # 요청 근거는 판단 회차에 붙는다 — 신규 요청에는 그 회차가 없으므로 과거 모양 행에서 본다.
+    request = pending_request(client, url, headers, title="근거 요청", assignee_id="jiho")
     evidence = client.post(
         f"/api/work-requests/{request['request_id']}/evidence",
         headers=headers,

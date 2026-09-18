@@ -849,7 +849,16 @@ class SqlAlchemyOrganizationRepository:
         return member is not None and bool(member.account_ref)
 
     def work_request_assignee_candidates(self, principal: Principal) -> list[MemberCandidateView]:
-        """Return active decision-capable peers whose current org scope overlaps the requester."""
+        """내가 업무를 보낼 수 있는 사람 — 들어올 문이 있고, 내가 아니고, 조직 범위가 겹치는 동료.
+
+        **판단 역량(`work_request.decide`)을 묻지 않는다** (WORK-001 Phase 3). 그 역량은 팀장 계열에만 있어서,
+        묻는 한 일반 구성원에게는 후보가 한 명도 뜨지 않는다 — 동료에게 업무를 보내는 길이 막힌다.
+        받는 사람은 이제 **판단하지 않는다**: 명령이 성공하면 그 사람의 업무가 이미 서 있다.
+
+        이 판정은 **관리자 배정 권한(`task.assign`)과 다른 것**이고, 일반 구성원에게 그 역량을 주는 방식으로
+        구현하지 않는다. 보내는 쪽의 역량(`work_request.create`)은 명령이 그대로 검사한다.
+        과거 pending 행의 수락·거절·조정은 여전히 `work_request.decide` 를 요구한다 — 이 변경이 그 권한을 넓히지 않는다.
+        """
         candidates: list[dict[str, str]] = []
         member_ids = self._session.scalars(select(MemberRecord.id).order_by(MemberRecord.id))
         for member_id in member_ids:
@@ -857,8 +866,6 @@ class SqlAlchemyOrganizationRepository:
                 continue
             candidate = self.principal_for(member_id)
             if candidate is None:
-                continue
-            if "work_request.decide" not in candidate.capabilities:
                 continue
             if not principal.organization_scope.intersection(candidate.organization_scope):
                 continue

@@ -14,6 +14,7 @@ from ax_workspace.modules.work.requests import WorkRequestApplication
 from ax_workspace.platform.material_extraction import PypdfTextExtractor, SqlAlchemyMaterialExtractionRepository
 from ax_workspace.platform.persistence import AttachmentBindingRecord, EvidenceRecord, ResourceRelationshipRecord, make_session_factory
 from ax_workspace.platform.work_tasks import SqlAlchemyAttachmentRepository
+from legacy_acceptance import pending_request
 from test_material_search import MINA, JIHO, _stack, _upload
 
 
@@ -58,9 +59,9 @@ def test_one_artifact_has_one_hit_with_only_its_currently_readable_task_contexts
 
 
 def test_request_comment_and_submission_files_are_searchable_without_a_task(tmp_path):
-    client, application, worker, _ = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA,
-                          json={"title": "Task 없는 요청", "assignee_id": "jiho", "cc_member_ids": ["yuna"]}).json()
+    client, application, worker, settings = _stack(tmp_path)
+    request = pending_request(client, settings.database_url, MINA,
+                              title="Task 없는 요청", assignee_id="jiho", cc_member_ids=["yuna"])
     rid = request["request_id"]
     comment = client.post(f"/api/work-requests/{rid}/comments", headers=MINA, json={"body": "첨부 참고"}).json()
     uploaded = client.post(f"/api/work-requests/{rid}/comments/{comment['comment_id']}/attachments", headers=MINA,
@@ -82,8 +83,9 @@ def test_request_comment_and_submission_files_are_searchable_without_a_task(tmp_
 
 def test_revoked_request_context_never_reaches_index_or_open_and_does_not_hide_a_readable_task(tmp_path, monkeypatch):
     client, application, worker, settings = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA,
-                          json={"title": "회수될 요청 이름", "assignee_id": "jiho", "cc_member_ids": ["yuna"]}).json()
+    # 근거는 **판단 회차**에 붙는다 — 신규 `assigned` 요청에는 그 회차가 없으므로 과거 모양 행에서 본다.
+    request = pending_request(client, settings.database_url, MINA,
+                              title="회수될 요청 이름", assignee_id="jiho", cc_member_ids=["yuna"])
     rid = request["request_id"]
     uploaded = client.post(f"/api/work-requests/{rid}/evidence", headers=JIHO,
                            files={"file": ("shared.txt", b"revocationtoken", "text/plain")}).json()
@@ -126,7 +128,7 @@ def test_revoked_request_context_never_reaches_index_or_open_and_does_not_hide_a
 @pytest.mark.parametrize("invalidity", ["unbound", "unadopted", "snapshot_mismatch", "mutable"])
 def test_submission_file_needs_a_live_binding_and_immutable_adoption(tmp_path, invalidity):
     client, application, worker, settings = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "참여 요청", "assignee_id": "jiho"}).json()
+    request = pending_request(client, settings.database_url, MINA, title="참여 요청", assignee_id="jiho")
     rid = request["request_id"]
     uploaded = client.post(f"/api/work-requests/{rid}/evidence", headers=MINA,
                            files={"file": ("excluded.txt", b"exclusiontoken", "text/plain")}).json()
@@ -154,10 +156,10 @@ def test_submission_file_needs_a_live_binding_and_immutable_adoption(tmp_path, i
 
 
 def test_reading_legacy_files_never_enqueues_and_the_worker_backfills_missing_projections(tmp_path, monkeypatch):
-    client, application, worker, _ = _stack(tmp_path)
+    client, application, worker, settings = _stack(tmp_path)
     with monkeypatch.context() as old_deployment:
         old_deployment.setattr(WorkRequestApplication, "_request_extraction", lambda *args: None)
-        request = client.post("/api/work-requests", headers=MINA, json={"title": "이전 배포 첨부", "assignee_id": "jiho"}).json()
+        request = pending_request(client, settings.database_url, MINA, title="이전 배포 첨부", assignee_id="jiho")
         uploaded = client.post(f"/api/work-requests/{request['request_id']}/evidence", headers=MINA,
                                files={"file": ("legacy.txt", b"legacyrequesttoken", "text/plain")}).json()
     assert application.memory_job_queue.pending_count(JOB_KIND_MATERIAL_EXTRACTION) == 0
@@ -178,7 +180,7 @@ def test_worker_legacy_backfill_and_unavailable_metadata_are_bounded_without_hid
     client, application, worker, settings = _stack(tmp_path)
     with monkeypatch.context() as old_deployment:
         old_deployment.setattr(WorkRequestApplication, "_request_extraction", lambda *args: None)
-        request = client.post("/api/work-requests", headers=MINA, json={"title": "이전 첨부 묶음", "assignee_id": "jiho"}).json()
+        request = pending_request(client, settings.database_url, MINA, title="이전 첨부 묶음", assignee_id="jiho")
         for sequence in range(22):
             response = client.post(f"/api/work-requests/{request['request_id']}/evidence", headers=MINA,
                                    files={"file": (f"legacy-{sequence}.txt", b"batchtoken", "text/plain")})
@@ -196,8 +198,8 @@ def test_worker_legacy_backfill_and_unavailable_metadata_are_bounded_without_hid
 
 
 def test_inherited_evidence_keeps_its_original_binding_and_one_search_hit(tmp_path):
-    client, application, worker, _ = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "이전 제목", "assignee_id": "jiho"}).json()
+    client, application, worker, settings = _stack(tmp_path)
+    request = pending_request(client, settings.database_url, MINA, title="이전 제목", assignee_id="jiho")
     rid = request["request_id"]
     uploaded = client.post(f"/api/work-requests/{rid}/evidence", headers=MINA,
                            files={"file": ("inherited.txt", b"inheritedtoken", "text/plain")}).json()
@@ -214,8 +216,8 @@ def test_inherited_evidence_keeps_its_original_binding_and_one_search_hit(tmp_pa
 
 
 def test_generic_partial_search_requires_the_canonical_artifact_anchor_and_retains_no_hit_coverage(tmp_path):
-    client, application, worker, _ = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "부분 자료 요청", "assignee_id": "jiho"}).json()
+    client, application, worker, settings = _stack(tmp_path)
+    request = pending_request(client, settings.database_url, MINA, title="부분 자료 요청", assignee_id="jiho")
     uploaded = client.post(f"/api/work-requests/{request['request_id']}/evidence", headers=MINA,
                            files={"file": ("partial.txt", b"partialrequesttoken", "text/plain")}).json()
     worker._extractor = OwnerPartialExtractor()

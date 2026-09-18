@@ -4,6 +4,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectTask } from "../../lib/viewModels";
 
 vi.mock("../../lib/api", () => ({
+  getTaskAssignments: vi.fn(),
+  getTaskProposals: vi.fn(),
+  createTaskProposal: vi.fn(),
+  respondTaskProposal: vi.fn(),
+  withdrawTaskProposal: vi.fn(),
+  reopenTask: vi.fn(),
+  getTaskChildren: vi.fn(),
+  withdrawWorkRequest: vi.fn(),
+  hideWorkRequestListEntry: vi.fn(),
+  getWorkRequestAssigneeCandidates: vi.fn(),
   getTask: vi.fn(),
   getTaskMaterials: vi.fn(),
   getTasks: vi.fn(),
@@ -99,7 +109,7 @@ describe("참고 업무", () => {
   it("shows the earlier work this one points at, and opens it inside the product", async () => {
     const { onOpenTask } = renderDrawer([reference]);
     const section = await screen.findByLabelText("참고 업무");
-    const row = within(section).getByRole("listitem");
+    const row = await within(section).findByRole("listitem");
     expect(row.textContent).toContain("1분기 정산");
     expect(row.textContent).toContain("완료"); // the state, in the words the product uses
     expect(row.textContent).toContain("2026/06/30");
@@ -110,8 +120,10 @@ describe("참고 업무", () => {
 
   it("says a reference exists even when its work cannot be opened, and nothing else about it", async () => {
     renderDrawer([{ ...reference, task: null }]);
+    /* 구획(`참고 업무`)은 상세를 읽기 «전에» 이미 서 있다 — 그 자리를 기다린 것과 «그 안의 값» 이
+       도착한 것은 다른 사건이다. 목록 자체가 올 때까지 기다린다. */
     const section = await screen.findByLabelText("참고 업무");
-    const row = within(section).getByRole("listitem");
+    const row = await within(section).findByRole("listitem");
     expect(row.textContent).toContain("볼 수 없는 업무");
     expect(row.textContent).not.toContain("1분기 정산");
     expect(within(row).queryByRole("button", { name: /열기/ })).toBeNull();
@@ -139,7 +151,7 @@ describe("참고 업무", () => {
     vi.mocked(api.releaseTaskReference).mockResolvedValue({ reference_id: "ref-1", task_version: 4 } as never);
     renderDrawer([reference]);
     const section = await screen.findByLabelText("참고 업무");
-    fireEvent.click(within(section).getByRole("button", { name: "1분기 정산 연결 해제" }));
+    fireEvent.click(await within(section).findByRole("button", { name: "1분기 정산 연결 해제" }));
     await waitFor(() => expect(api.releaseTaskReference).toHaveBeenCalledWith("task-1", "ref-1"));
     await waitFor(() => expect(within(section).queryByText("1분기 정산")).toBeNull());
   });

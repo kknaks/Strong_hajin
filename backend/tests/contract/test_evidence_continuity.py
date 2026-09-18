@@ -4,12 +4,16 @@ A WorkRequest can be adjusted and resubmitted several times. Two things must hol
 already judged on can never change afterwards — a decision freezes the evidence set it saw. And the basis does not have
 to be assembled again on every round: a revision inherits what was already adopted, as new Evidence rows of its own, so
 each round owns an independent set that starts from the last one.
+
+**근거와 판단 회차는 W1 이후 과거 행에만 있다** — 신규 요청은 `assigned` 로 서고 그 회차를 만들지 않는다
+(WORK-001 Phase 4). 연속성을 다루는 코드와 데이터는 그대로이므로 예전 배포가 남긴 모양에서 계속 본다.
 """
 import hashlib
 import json
 from uuid import UUID
 
 from fastapi.testclient import TestClient
+from legacy_acceptance import pending_request
 from sqlalchemy import select
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
@@ -26,7 +30,9 @@ def _stack(tmp_path):
     reset_database(database_url)
     settings = Settings(RuntimeProfile.TEST, database_url, materials_dir=str(tmp_path / "materials"))
     app = create_app(settings)
-    return TestClient(app), database_url, settings
+    client = TestClient(app)
+    client.database_url = database_url
+    return client, database_url, settings
 
 
 def _adopt(client, headers, request_id: str, name: str, body: bytes):
@@ -51,7 +57,7 @@ def _expected_hash(entries: list[dict]) -> str:
 
 def test_evidence_is_adopted_only_while_the_round_is_still_being_judged(tmp_path) -> None:
     client, _, _ = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "근거 시점", "assignee_id": "jiho"}).json()
+    request = pending_request(client, client.database_url, MINA, title="근거 시점", assignee_id="jiho")
     rid = request["request_id"]
     assert _adopt(client, MINA, rid, "제안서.txt", b"proposal").status_code == 201
 
@@ -79,7 +85,7 @@ def test_evidence_is_adopted_only_while_the_round_is_still_being_judged(tmp_path
 
 def test_a_revision_inherits_the_basis_as_its_own_evidence_rows(tmp_path) -> None:
     client, database_url, _ = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "근거 상속", "assignee_id": "jiho"}).json()
+    request = pending_request(client, client.database_url, MINA, title="근거 상속", assignee_id="jiho")
     rid = request["request_id"]
     supporting = _adopt(client, MINA, rid, "견적서.txt", b"quote").json()
     basis = _adopt(client, JIHO, rid, "시장가.txt", b"prices").json()
@@ -129,7 +135,7 @@ def test_a_revision_inherits_the_basis_as_its_own_evidence_rows(tmp_path) -> Non
 
 def test_a_decision_freezes_the_evidence_it_was_made_on(tmp_path) -> None:
     client, _, _ = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "근거 동결", "assignee_id": "jiho"}).json()
+    request = pending_request(client, client.database_url, MINA, title="근거 동결", assignee_id="jiho")
     rid = request["request_id"]
     _adopt(client, MINA, rid, "근거1.txt", b"one")
     _adopt(client, JIHO, rid, "근거2.txt", b"two")
@@ -171,7 +177,7 @@ def test_a_decision_freezes_the_evidence_it_was_made_on(tmp_path) -> None:
 def test_the_same_basis_hashes_the_same_however_it_was_assembled(tmp_path) -> None:
     """The hash is of the set, not of the order its rows were written or read in."""
     client, _, _ = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "순서 무관", "assignee_id": "jiho"}).json()
+    request = pending_request(client, client.database_url, MINA, title="순서 무관", assignee_id="jiho")
     rid = request["request_id"]
     for name in ("가.txt", "나.txt", "다.txt"):
         _adopt(client, MINA, rid, name, name.encode())
@@ -189,7 +195,7 @@ def test_the_same_basis_hashes_the_same_however_it_was_assembled(tmp_path) -> No
     assert entries == sorted(entries, key=lambda row: (row["attachment_id"], row["evidence_role"], row["fixed_snapshot_ref"]))
 
     # And an empty basis is a stable answer of its own, not a missing one.
-    bare = client.post("/api/work-requests", headers=MINA, json={"title": "근거 없음", "assignee_id": "jiho"}).json()
+    bare = pending_request(client, client.database_url, MINA, title="근거 없음", assignee_id="jiho")
     [empty_item] = [row for row in _pending(client, JIHO) if row["subject"] == "근거 없음"]
     _command(client, JIHO, empty_item["action_item_id"], "accept", expected_version=empty_item["expected_version"])
     empty = client.get(f"/api/work-requests/{bare['request_id']}/timeline", headers=JIHO).json()
@@ -199,7 +205,7 @@ def test_the_same_basis_hashes_the_same_however_it_was_assembled(tmp_path) -> No
 
 def test_the_judgement_ledger_reads_the_same_basis_the_request_timeline_does(tmp_path) -> None:
     client, _, _ = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "원장 대조", "assignee_id": "jiho"}).json()
+    request = pending_request(client, client.database_url, MINA, title="원장 대조", assignee_id="jiho")
     rid = request["request_id"]
     _adopt(client, MINA, rid, "근거.txt", b"one")
     [item] = _pending(client, JIHO)
@@ -223,7 +229,7 @@ def test_the_judgement_ledger_reads_the_same_basis_the_request_timeline_does(tmp
 
 def test_a_judgement_that_did_not_happen_freezes_nothing(tmp_path) -> None:
     client, database_url, _ = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "실패한 판단", "assignee_id": "jiho"}).json()
+    request = pending_request(client, client.database_url, MINA, title="실패한 판단", assignee_id="jiho")
     rid = request["request_id"]
     _adopt(client, MINA, rid, "근거.txt", b"one")
     [item] = _pending(client, JIHO)
@@ -255,7 +261,7 @@ def test_every_way_of_answering_freezes_the_same_basis(tmp_path, monkeypatch) ->
     frozen: dict[str, str] = {}
 
     # 1) the per-kind REST endpoint the product kept for compatibility
-    legacy = client.post("/api/work-requests", headers=MINA, json={"title": "구 endpoint", "assignee_id": "jiho"}).json()
+    legacy = pending_request(client, client.database_url, MINA, title="구 endpoint", assignee_id="jiho")
     adopted = _adopt(client, MINA, legacy["request_id"], "근거.txt", b"one").json()
     # Adopting moved the request on, so the answer names the version that now stands.
     assert client.post(
@@ -267,7 +273,7 @@ def test_every_way_of_answering_freezes_the_same_basis(tmp_path, monkeypatch) ->
     assert frozen["legacy"] == _expected_hash(legacy_timeline["submissions"][0]["evidence"])
 
     # 2) the canonical ActionItem command
-    canonical = client.post("/api/work-requests", headers=MINA, json={"title": "정식 command", "assignee_id": "jiho"}).json()
+    canonical = pending_request(client, client.database_url, MINA, title="정식 command", assignee_id="jiho")
     _adopt(client, MINA, canonical["request_id"], "근거.txt", b"one")
     [item] = [row for row in _pending(client, JIHO) if row["subject"] == "정식 command"]
     assert _command(client, JIHO, item["action_item_id"], "reject", expected_version=item["expected_version"], reason="거절").status_code == 200
@@ -275,7 +281,7 @@ def test_every_way_of_answering_freezes_the_same_basis(tmp_path, monkeypatch) ->
     frozen["canonical"] = canonical_timeline["review_decisions"][0]["evidence_hash"]
 
     # 3) a delegated turn's confirmation, approved by a person
-    delegated = client.post("/api/work-requests", headers=MINA, json={"title": "위임 확인", "assignee_id": "jiho"}).json()
+    delegated = pending_request(client, client.database_url, MINA, title="위임 확인", assignee_id="jiho")
     _adopt(client, MINA, delegated["request_id"], "근거.txt", b"one")
     [pending_item] = [row for row in _pending(client, JIHO) if row["subject"] == "위임 확인"]
     conversation = client.post("/api/conversations", headers=JIHO, json={"title": "위임"}).json()
@@ -319,8 +325,8 @@ def test_every_kind_of_judgement_answers_the_same_round_shape(tmp_path) -> None:
     """A client reads a round the same way whatever raised it, even for kinds that adopt no evidence."""
     client, _, _ = _stack(tmp_path)
     application = client.app.state.workflow_application
-    application.assign_task(application.authenticated_principal("jiho"), "배정된 업무", "mina")
-    client.post("/api/work-requests", headers=MINA, json={"title": "요청", "assignee_id": "jiho"})
+    application.assign_task(application.authenticated_principal("jiho"), "배정된 업무", "mina", idempotency_key="evidence-assign")
+    pending_request(client, client.database_url, MINA, title="요청", assignee_id="jiho")
 
     for headers in (MINA, JIHO):
         for envelope in _pending(client, headers):
@@ -336,7 +342,7 @@ def test_inheriting_a_basis_records_the_copy_instead_of_a_new_adoption(tmp_path)
     client, database_url, _ = _stack(tmp_path)
     from ax_workspace.platform.persistence import ActivityEventRecord, WorkRequestAuditEventRecord
 
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "출처 보존", "assignee_id": "jiho"}).json()
+    request = pending_request(client, client.database_url, MINA, title="출처 보존", assignee_id="jiho")
     rid = request["request_id"]
     _adopt(client, JIHO, rid, "담당자근거.txt", b"basis")
     _adopt(client, MINA, rid, "요청자근거.txt", b"support")
@@ -376,7 +382,7 @@ def test_inheriting_a_basis_records_the_copy_instead_of_a_new_adoption(tmp_path)
 
 def test_the_flat_evidence_list_is_ordered_the_same_way_every_time(tmp_path) -> None:
     client, _, _ = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "정렬", "assignee_id": "jiho"}).json()
+    request = pending_request(client, client.database_url, MINA, title="정렬", assignee_id="jiho")
     rid = request["request_id"]
     for name in ("가.txt", "나.txt", "다.txt"):
         _adopt(client, MINA, rid, name, name.encode())
@@ -397,7 +403,7 @@ def test_the_flat_evidence_list_is_ordered_the_same_way_every_time(tmp_path) -> 
 
 def test_adopting_evidence_moves_the_request_on_so_an_open_reviewer_is_not_deciding_blind(tmp_path) -> None:
     client, _, _ = _stack(tmp_path)
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "버전 이동", "assignee_id": "jiho"}).json()
+    request = pending_request(client, client.database_url, MINA, title="버전 이동", assignee_id="jiho")
     rid = request["request_id"]
     [before] = _pending(client, JIHO)
 
@@ -425,7 +431,7 @@ def test_the_inheritance_is_recorded_in_both_ledgers_after_the_act_that_caused_i
     client, database_url, _ = _stack(tmp_path)
     from ax_workspace.platform.persistence import WorkRequestAuditEventRecord
 
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "원인과 결과", "assignee_id": "jiho"}).json()
+    request = pending_request(client, client.database_url, MINA, title="원인과 결과", assignee_id="jiho")
     rid = request["request_id"]
     _adopt(client, MINA, rid, "근거1.txt", b"one")
     _adopt(client, JIHO, rid, "근거2.txt", b"two")
@@ -458,7 +464,7 @@ def test_the_inheritance_is_recorded_in_both_ledgers_after_the_act_that_caused_i
         assert payload["new_submission_id"] == rounds[2]
 
     # A revision that had nothing to carry says nothing in either trail.
-    bare = client.post("/api/work-requests", headers=MINA, json={"title": "빈 상속", "assignee_id": "jiho"}).json()
+    bare = pending_request(client, client.database_url, MINA, title="빈 상속", assignee_id="jiho")
     [empty] = [row for row in _pending(client, JIHO) if row["subject"] == "빈 상속"]
     _command(client, JIHO, empty["action_item_id"], "adjust", expected_version=empty["expected_version"], reason="조정")
     [empty_waiting] = [row for row in _pending(client, MINA) if row["subject"] == "빈 상속"]

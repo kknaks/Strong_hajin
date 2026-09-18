@@ -2,6 +2,15 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../lib/api", async (actual) => ({
+  getTaskAssignments: vi.fn(),
+  getTaskProposals: vi.fn(),
+  createTaskProposal: vi.fn(),
+  respondTaskProposal: vi.fn(),
+  withdrawTaskProposal: vi.fn(),
+  reopenTask: vi.fn(),
+  getTaskChildren: vi.fn(),
+  withdrawWorkRequest: vi.fn(),
+  hideWorkRequestListEntry: vi.fn(),
   // ApiError 는 진짜를 쓴다 — 화면이 409 를 `instanceof` 로 가른다
   ApiError: ((await actual()) as { ApiError: unknown }).ApiError,
   readMeetingTranscript: vi.fn(),
@@ -418,7 +427,7 @@ describe("SCR-106 회의 상세 — 상태와 관계가 무엇을 낼지 정한�
     // 승격은 언제나 업무 요청이다 — 고를 것이 없으니 「업무/요청」 토글을 두지 않는다 (D10)
     expect(within(drawer).queryByRole("tablist", { name: "생성 유형" })).toBeNull();
     expect(within(drawer).queryByRole("tab")).toBeNull();
-    expect(within(drawer).getByText("동료가 수락해야 그 사람의 업무가 됩니다. 희망 기한을 함께 보낼 수 있습니다.")).toBeTruthy();
+    expect(within(drawer).getByText("상대가 수락해야 그 사람의 업무가 됩니다. 수락 전에는 담당이 서지 않습니다.")).toBeTruthy();
     expect((within(drawer).getByLabelText("요청할 업무") as HTMLInputElement).value).toBe("전망치 다시 뽑기");
     expect(within(drawer).getByDisplayValue("분기별 전망치를 다시 뽑아 다음 회의에 올린다.")).toBeTruthy();
     // 기한 칸은 입력칸이 아니라 달력을 여는 트리거다 (DS-17) — 미리 채운 값은 그 글자로 선다

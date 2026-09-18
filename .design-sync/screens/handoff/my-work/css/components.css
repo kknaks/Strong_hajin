@@ -1,0 +1,312 @@
+/* ---------- Icon ---------- */
+.scax-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+.scax-icon>svg{display:block}
+
+/* SCAX parts used by 「내 업무」. Class names are the contract; no utilities, no inline styles. */
+
+/* ---------- Button ---------- */
+.scax-button{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;gap:var(--scax-space-150);height:var(--scax-control-height-md);min-height:var(--scax-control-height-md);padding:0 var(--scax-space-400);border:1px solid transparent;border-radius:var(--scax-radius-md);background:transparent;font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-semibold);white-space:nowrap;cursor:pointer;transition:background var(--scax-duration-fast) var(--scax-easing),border-color var(--scax-duration-fast) var(--scax-easing)}
+.scax-button:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-button:disabled{cursor:not-allowed;color:var(--scax-color-ink-disabled);background:var(--scax-color-fill-weak);border-color:transparent}
+.scax-button--sm{height:var(--scax-control-height-sm);min-height:var(--scax-control-height-sm);padding:0 var(--scax-space-300);border-radius:var(--scax-radius-sm);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls)}
+.scax-button--lg{height:var(--scax-control-height-lg);min-height:var(--scax-control-height-lg);padding:0 var(--scax-space-500);border-radius:var(--scax-radius-lg);font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);letter-spacing:var(--scax-text-body1-ls)}
+.scax-button--solid-primary{background:var(--scax-color-accent);color:#fff}
+.scax-button--solid-primary:hover{background:var(--scax-color-accent-strong)}
+.scax-button--outlined-primary{background:var(--scax-color-surface);border-color:var(--scax-color-accent-20);color:var(--scax-color-accent)}
+.scax-button--outlined-primary:hover{background:var(--scax-color-accent-05)}
+.scax-button--outlined-neutral{background:var(--scax-color-surface);border-color:var(--scax-color-line);color:var(--scax-color-ink-neutral)}
+.scax-button--outlined-neutral:hover{background:var(--scax-color-fill-weak)}
+.scax-button--text-neutral{padding:0 var(--scax-space-200);background:transparent;color:var(--scax-color-ink-alt)}
+.scax-button--text-neutral:hover{background:var(--scax-color-fill-weak)}
+.scax-button--block{width:100%}
+.scax-button-group{display:flex;flex-direction:row;gap:var(--scax-space-200)}
+.scax-button-group>.scax-button{flex:1 1 0;min-width:0}
+
+.scax-icon-button{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:0;border-radius:var(--scax-radius-xs);background:transparent;color:var(--scax-color-ink-assistive);cursor:pointer}
+.scax-icon-button:hover{background:var(--scax-color-fill-weak);color:var(--scax-color-ink-neutral)}
+.scax-icon-button:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-icon-button--star-on{color:var(--scax-color-accent)}
+
+/* ---------- Badge ---------- */
+.scax-badge{display:inline-flex;align-items:center;gap:var(--scax-space-100);height:22px;padding:0 var(--scax-space-200);border-radius:var(--scax-radius-xs);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);font-weight:var(--scax-fw-medium);white-space:nowrap}
+.scax-badge--accent{background:var(--scax-color-accent-08);color:var(--scax-color-accent)}
+.scax-badge--neutral{background:var(--scax-color-fill-weak);color:var(--scax-color-ink-alt)}
+.scax-badge--danger{background:var(--scax-color-danger-soft);color:var(--scax-color-danger)}
+.scax-badge--positive{background:rgba(0,163,88,.08);color:var(--scax-color-positive)}
+.scax-badge--count{justify-content:center;min-width:18px;height:18px;padding:0 var(--scax-space-100);border-radius:var(--scax-radius-pill);background:var(--scax-color-danger);color:#fff;font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);letter-spacing:var(--scax-text-caption2-ls)}
+
+/* ---------- Select (status dropdown) ---------- */
+.scax-select{position:relative;display:inline-flex}
+.scax-select__trigger{display:inline-flex;align-items:center;gap:var(--scax-space-100);height:26px;padding:0 var(--scax-space-150) 0 var(--scax-space-200);border:0;border-radius:var(--scax-radius-xs);background:var(--scax-color-accent-08);color:var(--scax-color-accent);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);font-weight:var(--scax-fw-medium);cursor:pointer}
+.scax-select__trigger:hover{background:var(--scax-color-accent-20)}
+.scax-select__caret{width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:5px solid currentColor}
+.scax-select__trigger:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-select__trigger--neutral{background:var(--scax-color-fill-weak);color:var(--scax-color-ink-alt)}
+.scax-select__trigger--positive{background:rgba(0,163,88,.08);color:var(--scax-color-positive)}
+.scax-select__trigger--danger{background:var(--scax-color-danger-soft);color:var(--scax-color-danger)}
+
+/* ---------- Popover (floating layer for Select menus) ---------- */
+.scax-popover{position:absolute;z-index:30;min-width:120px;padding:var(--scax-space-100);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);box-shadow:var(--scax-shadow-raised)}
+.scax-popover--below-start{top:calc(100% + var(--scax-space-100));left:0}
+.scax-popover__option{display:flex;align-items:center;gap:var(--scax-space-200);width:100%;padding:var(--scax-space-150) var(--scax-space-200);border:0;border-radius:var(--scax-radius-xs);background:transparent;color:var(--scax-color-ink-neutral);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);text-align:left;white-space:nowrap;cursor:pointer}
+.scax-popover__option:hover{background:var(--scax-color-fill-weak)}
+.scax-popover__option--selected{color:var(--scax-color-accent);font-weight:var(--scax-fw-semibold)}
+
+/* ---------- SegmentedControl ---------- */
+.scax-segmented{display:inline-flex;flex-direction:row;gap:var(--scax-space-050);padding:var(--scax-space-050);border-radius:var(--scax-radius-sm);background:var(--scax-color-fill-weak)}
+.scax-segmented__item{height:28px;padding:0 var(--scax-space-300);border:0;border-radius:var(--scax-radius-xs);background:transparent;color:var(--scax-color-ink-alt);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-medium);cursor:pointer}
+.scax-segmented__item:hover{color:var(--scax-color-ink)}
+.scax-segmented__item--on{background:var(--scax-color-surface);color:var(--scax-color-ink);font-weight:var(--scax-fw-semibold);box-shadow:var(--scax-shadow-card)}
+.scax-segmented__item:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+
+/* ---------- Tabs ---------- */
+.scax-tabs{display:flex;flex-direction:row;align-items:stretch;gap:var(--scax-space-600);flex:0 0 auto;min-width:var(--scax-table-min-width);padding:0 var(--scax-space-600);border-bottom:1px solid var(--scax-color-line)}
+.scax-tabs__item{position:relative;height:52px;padding:0;border:0;background:transparent;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-headline-size);line-height:var(--scax-text-headline-lh);letter-spacing:var(--scax-text-headline-ls);font-weight:var(--scax-fw-medium);cursor:pointer}
+.scax-tabs__item:hover{color:var(--scax-color-ink-neutral)}
+.scax-tabs__item--on{color:var(--scax-color-ink);font-weight:var(--scax-fw-semibold)}
+.scax-tabs__item--on::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--scax-color-ink-strong)}
+.scax-tabs__item:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+
+/* ---------- Chip filter ---------- */
+.scax-chip{height:var(--scax-control-height-sm);padding:0 var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-xs);background:var(--scax-color-surface);color:var(--scax-color-ink-alt);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-medium);white-space:nowrap;cursor:pointer}
+.scax-chip:hover{background:var(--scax-color-fill-weak)}
+.scax-chip--on{background:var(--scax-color-surface-nav-active);border-color:var(--scax-color-surface-nav-active);color:var(--scax-color-ink-inverse);font-weight:var(--scax-fw-semibold)}
+.scax-chip:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-chip-bar{display:flex;flex-direction:row;align-items:center;gap:var(--scax-space-200);flex:0 0 auto;min-width:var(--scax-table-min-width);padding:var(--scax-space-400) var(--scax-space-600)}
+.scax-chip-bar__end{margin-left:auto;display:flex;align-items:center;gap:var(--scax-space-200)}
+
+/* ---------- GutterList (inbox rail) ---------- */
+.scax-gutter-list{display:flex;flex-direction:column;gap:var(--scax-space-250);height:100%;min-height:0;padding:var(--scax-space-500) var(--scax-space-600);overflow:hidden}
+.scax-gutter-list__header{display:flex;flex-direction:row;align-items:center;gap:var(--scax-space-150);flex:0 0 auto;height:var(--scax-control-height-sm)}
+.scax-gutter-list__title{display:flex;align-items:center;gap:var(--scax-space-150);flex:1 1 auto;min-width:0;font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);letter-spacing:var(--scax-text-body1-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink-neutral)}
+.scax-gutter-list__body{display:flex;flex-direction:column;gap:var(--scax-space-250);flex:1 1 auto;min-height:0;overflow-y:auto;padding-right:var(--scax-space-050)}
+
+/* ---------- InboxCard ---------- */
+.scax-inbox-card{display:flex;flex-direction:column;gap:var(--scax-space-400);flex:0 0 auto;padding:var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-xl);background:var(--scax-color-surface);box-shadow:var(--scax-shadow-card)}
+.scax-inbox-card__top{display:flex;flex-direction:row;align-items:flex-start;gap:var(--scax-space-200)}
+.scax-inbox-card__top>.scax-icon-button{margin-left:auto}
+.scax-inbox-card__title{font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);letter-spacing:var(--scax-text-body1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink);text-wrap:pretty}
+.scax-inbox-card__excerpt{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:var(--scax-text-label2-size);line-height:1.62;letter-spacing:var(--scax-text-label2-ls);color:var(--scax-color-ink-assistive)}
+.scax-inbox-card__meta{display:flex;flex-direction:row;align-items:center;gap:var(--scax-space-150);flex-wrap:wrap;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+.scax-inbox-card__meta-avatar{width:20px;height:20px;border-radius:var(--scax-radius-pill);object-fit:cover;background:var(--scax-color-fill-weak)}
+.scax-inbox-card__meta-sep{width:1px;height:10px;background:var(--scax-color-line-strong)}
+.scax-inbox-card__meta-who{color:var(--scax-color-ink-neutral);font-weight:var(--scax-fw-medium)}
+.scax-inbox-card__source{display:inline-flex;align-items:center;gap:var(--scax-space-100)}
+.scax-inbox-card__content{display:flex;flex-direction:column;align-items:flex-start;gap:var(--scax-space-200);align-self:stretch}
+
+/* ---------- TaskTable ---------- */
+.scax-task-table{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;min-width:var(--scax-table-min-width)}
+.scax-task-table__head,.scax-task-table__row{display:grid;grid-template-columns:44px minmax(0,1fr) 120px 140px 120px 200px;align-items:center}
+.scax-task-table__head{flex:0 0 auto;height:35px;padding:0 var(--scax-space-600);border-top:1px solid var(--scax-color-line-weak);border-bottom:1px solid var(--scax-color-line-weak);background:var(--scax-color-surface-alt);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink-assistive)}
+.scax-task-table__body{flex:1 1 auto;min-height:0;overflow-y:auto}
+.scax-task-table__row{min-height:var(--scax-row-height);background:var(--scax-color-surface);padding:var(--scax-space-150) var(--scax-space-600);border-bottom:1px solid var(--scax-color-line-weak)}
+.scax-task-table__row:hover{background:var(--scax-color-accent-05)}
+.scax-task-table__cell--center{display:flex;justify-content:center}
+.scax-task-table__cell--title{display:flex;align-items:center;gap:var(--scax-space-200);min-width:0}
+.scax-task-table__title{font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.scax-task-table__title--unread{position:relative}
+.scax-task-table__title--unread::before{content:"";position:absolute;left:-7px;top:2px;width:4px;height:4px;border-radius:var(--scax-radius-pill);background:var(--scax-color-danger)}
+.scax-task-table__cell--muted{font-size:var(--scax-text-label1-size);color:var(--scax-color-ink-alt)}
+.scax-task-table__due{display:flex;align-items:center;gap:var(--scax-space-100);font-size:var(--scax-text-label1-size);color:var(--scax-color-ink-alt)}
+.scax-task-table__due-extra{color:var(--scax-color-danger);font-size:var(--scax-text-caption1-size);font-weight:var(--scax-fw-medium)}
+.scax-task-table__cell--actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--scax-space-200);align-items:center}
+.scax-task-table__cell--actions>.scax-button{width:100%;padding:0 var(--scax-space-200)}
+.scax-task-table__cell--actions>.scax-task-table__resolved{grid-column:1 / -1;text-align:center}
+.scax-task-table__resolved{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+
+/* ---------- CalendarRail ---------- */
+.scax-calendar-rail{display:flex;flex-direction:column;gap:var(--scax-space-250);height:100%;min-height:0;padding:var(--scax-space-500) var(--scax-space-600)}
+.scax-calendar-rail__header{display:flex;flex-direction:row;align-items:center;gap:var(--scax-space-150);flex:0 0 auto}
+.scax-calendar-rail__title{flex:1 1 auto;font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);letter-spacing:var(--scax-text-body1-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink-neutral)}
+.scax-calendar-rail__day{display:flex;flex-direction:column;align-items:center;gap:var(--scax-space-200);flex:0 0 auto;padding:var(--scax-space-150) 0}
+.scax-calendar-rail__date{margin:0;font-size:var(--scax-text-title-size);line-height:var(--scax-text-title-lh);letter-spacing:var(--scax-text-title-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink)}
+.scax-calendar-rail__hours{display:flex;align-items:center;gap:var(--scax-space-800);margin:0;font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);color:var(--scax-color-ink-assistive)}
+.scax-calendar-rail__hours-label{display:inline-flex;align-items:center;gap:var(--scax-space-100)}
+.scax-calendar-rail__hours-value{color:var(--scax-color-ink-neutral);font-weight:var(--scax-fw-medium)}
+.scax-calendar-rail__list{display:flex;flex-direction:column;gap:var(--scax-space-200);flex:1 1 auto;min-height:0;overflow-y:auto}
+
+.scax-agenda-item{display:flex;flex-direction:column;gap:var(--scax-space-200);flex:0 0 auto;padding:var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-xl);background:var(--scax-color-surface)}
+.scax-agenda-item:hover{border-color:var(--scax-color-accent-20);background:var(--scax-color-accent-05)}
+.scax-agenda-item__top{display:flex;flex-direction:row;align-items:center;gap:var(--scax-space-200)}
+.scax-agenda-item__time{margin-left:auto;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+.scax-agenda-item__title{margin:0;font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink)}
+.scax-agenda-item__sub{margin:0;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+
+/* ---------- AgentBubble ---------- */
+.scax-agent{position:fixed;right:var(--scax-space-600);bottom:var(--scax-space-600);z-index:20;display:flex;flex-direction:column;align-items:flex-start;width:193px;pointer-events:none}
+.scax-agent__bubble{position:relative;max-width:165px;padding:var(--scax-space-200) var(--scax-space-400);border-radius:var(--scax-radius-bubble);background:var(--scax-color-surface-nav-active);color:#fff;font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);white-space:pre-line;box-shadow:var(--scax-shadow-raised)}
+/* 꼬리 — 말풍선 오른쪽 아래에서 오브를 가리킨다 */
+.scax-agent__bubble::after{content:'';position:absolute;right:24px;bottom:-9px;width:0;height:0;border-left:11px solid transparent;border-top:13px solid var(--scax-color-surface-nav-active)}
+.scax-agent__orb{position:relative;align-self:flex-end;width:120px;height:110px;pointer-events:auto}
+/* 오브 뒤 빛 — 그라데이션을 번지게 해서 판이 아니라 빛으로 읽히게 한다 */
+.scax-agent__glow{position:absolute;left:0;bottom:0;width:120px;height:70px;border-radius:50%;background:var(--scax-gradient-agent);filter:blur(var(--scax-agent-glow-blur))}
+.scax-agent__img{position:absolute;left:10px;bottom:8px;width:100px;height:100px;object-fit:cover;transform:scaleX(-1);border:0;background:transparent;cursor:pointer}
+
+/* ---------- Empty ---------- */
+.scax-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:var(--scax-space-300);flex:1 1 auto;min-height:180px;padding:var(--scax-space-800) var(--scax-space-600);text-align:center}
+.scax-empty__icon{display:flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:var(--scax-radius-pill);background:var(--scax-color-fill-weak);color:var(--scax-color-ink-assistive)}
+.scax-empty__title{font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-neutral)}
+.scax-empty__desc{font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);color:var(--scax-color-ink-assistive)}
+
+/* ---------- StatusNote (error) ---------- */
+.scax-status-note{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:var(--scax-space-300);flex:1 1 auto;min-height:180px;padding:var(--scax-space-800) var(--scax-space-600);text-align:center}
+.scax-status-note__icon{display:flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:var(--scax-radius-pill);background:var(--scax-color-danger-soft);color:var(--scax-color-danger)}
+.scax-status-note__title{font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-neutral)}
+.scax-status-note__desc{font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);color:var(--scax-color-ink-assistive)}
+.scax-status-note--inline{flex-direction:row;align-items:center;justify-content:flex-start;gap:var(--scax-space-200);min-height:0;padding:var(--scax-space-300) var(--scax-space-400);border:1px solid var(--scax-color-danger-soft);border-radius:var(--scax-radius-sm);background:var(--scax-color-danger-soft);text-align:left}
+
+/* ---------- Skeleton (loading) ---------- */
+.scax-skeleton{border-radius:var(--scax-radius-xs);background:var(--scax-color-fill-weak);animation:scax-pulse 1.2s var(--scax-easing) infinite}
+.scax-skeleton--text{height:12px}
+.scax-skeleton--title{height:16px}
+.scax-skeleton--card{height:108px;border-radius:var(--scax-radius-xl)}
+.scax-skeleton--agenda{height:84px;border-radius:var(--scax-radius-xl)}
+.scax-skeleton--w-40{width:40%}
+.scax-skeleton--w-60{width:60%}
+.scax-skeleton--w-80{width:80%}
+.scax-skeleton--w-full{width:100%}
+.scax-skeleton-stack{display:flex;flex-direction:column;gap:var(--scax-space-250)}
+.scax-skeleton-row{display:grid;grid-template-columns:44px minmax(0,1fr) 120px 140px 120px 200px;align-items:center;gap:var(--scax-space-300);min-height:var(--scax-row-height);padding:var(--scax-space-150) var(--scax-space-600);border-bottom:1px solid var(--scax-color-line-weak)}
+@keyframes scax-pulse{0%,100%{opacity:1}50%{opacity:.45}}
+
+/* ---------- TaskTable: 보낸 업무 / 완료 업무 변형 ---------- */
+.scax-task-table--sent .scax-task-table__head,.scax-task-table--sent .scax-task-table__row,.scax-task-table--done .scax-task-table__head,.scax-task-table--done .scax-task-table__row{grid-template-columns:24px minmax(0,1fr) 120px 140px 120px 200px}
+.scax-task-table__cell--actions-single{grid-template-columns:minmax(0,1fr);justify-items:end}
+.scax-task-table__cell--actions-single>.scax-button{width:auto;min-width:96px}
+.scax-task-table__cell--indent{padding-left:var(--scax-space-400)}
+.scax-task-table__group{display:flex;align-items:center;gap:var(--scax-space-150);width:100%;min-height:36px;padding:0 var(--scax-space-600);border:0;border-bottom:1px solid var(--scax-color-line-weak);background:var(--scax-color-surface);color:var(--scax-color-ink-alt);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-medium);text-align:left;cursor:pointer}
+.scax-task-table__group:hover{background:var(--scax-color-fill-weak)}
+.scax-task-table__group:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-badge--info{background:rgba(0,116,204,.08);color:var(--scax-color-info)}
+
+/* ---------- CalendarNav ---------- */
+.scax-calendar-nav{display:flex;flex-direction:row;align-items:center;gap:var(--scax-space-100);flex:0 0 auto;padding:var(--scax-space-150) 0}
+.scax-calendar-nav__label{flex:1 1 auto;font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink)}
+
+/* ---------- day cells: 주간 스트립 / 월간 그리드 공용 ---------- */
+.scax-day-strip,.scax-month-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:var(--scax-space-050) 0;flex:0 0 auto;align-items:center;justify-items:center}
+.scax-day-strip__head,.scax-month-grid__head{padding-bottom:var(--scax-space-150);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+.scax-month-grid{row-gap:var(--scax-space-100)}
+.scax-day-cell{position:relative;display:flex;align-items:center;justify-content:center;width:32px;height:32px;border:0;border-radius:var(--scax-radius-sm);background:transparent;color:var(--scax-color-ink-neutral);font-size:var(--scax-text-label1-size);line-height:1;font-weight:var(--scax-fw-medium);cursor:pointer}
+.scax-day-cell:hover{background:var(--scax-color-fill-weak)}
+.scax-day-cell:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-day-cell--selected{background:var(--scax-color-accent-08);color:var(--scax-color-accent);font-weight:var(--scax-fw-semibold)}
+.scax-day-cell--muted{color:var(--scax-color-ink-disabled)}
+.scax-day-cell--blank{width:32px;height:32px}
+.scax-day-cell__dot{position:absolute;left:50%;bottom:3px;transform:translateX(-50%);width:3px;height:3px;border-radius:var(--scax-radius-pill);background:currentColor}
+
+/* ---------- 주간 뷰: 날짜별 접이식 섹션 ---------- */
+.scax-day-section{display:flex;flex-direction:column;gap:var(--scax-space-200);flex:0 0 auto}
+.scax-day-section__head{display:flex;align-items:center;gap:var(--scax-space-200);width:100%;min-height:40px;padding:0;border:0;border-bottom:1px solid var(--scax-color-line-weak);background:transparent;color:var(--scax-color-ink);font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-medium);text-align:left;cursor:pointer}
+.scax-day-section__head:hover{color:var(--scax-color-accent)}
+.scax-day-section__head:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-day-section__label{flex:1 1 auto;min-width:0}
+.scax-day-section__body{display:flex;flex-direction:column;gap:var(--scax-space-200);padding-bottom:var(--scax-space-200)}
+
+/* ---------- Modal ---------- */
+.scax-modal-overlay{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--scax-space-600);background:rgba(23,23,25,.32)}
+.scax-modal{display:flex;flex-direction:column;width:880px;max-width:100%;height:min(720px, calc(100vh - var(--scax-space-1200)));max-height:calc(100vh - var(--scax-space-1200));border-radius:var(--scax-radius-xl);background:var(--scax-color-surface);box-shadow:var(--scax-shadow-raised)}
+.scax-modal__head{display:flex;align-items:center;gap:var(--scax-space-200);flex:0 0 auto;padding:var(--scax-space-500) var(--scax-space-600);border-bottom:1px solid var(--scax-color-line-weak)}
+.scax-modal__title{flex:1 1 auto;font-size:var(--scax-text-headline-size);line-height:var(--scax-text-headline-lh);letter-spacing:var(--scax-text-headline-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink)}
+/* 본문: 콘텐츠가 짧으면 감싼 높이, max-height 를 넘으면 여기만 스크롤한다 */
+.scax-modal__body{display:flex;flex-direction:column;gap:var(--scax-space-400);flex:1 1 auto;min-height:0;overflow-y:auto;padding:var(--scax-space-500) var(--scax-space-600)}
+.scax-modal__body>*{flex-shrink:0}
+.scax-modal__body>.scax-button{align-self:flex-start}
+.scax-modal__foot{display:flex;justify-content:flex-end;gap:var(--scax-space-200);flex:0 0 auto;padding:var(--scax-space-400) var(--scax-space-600);border-top:1px solid var(--scax-color-line-weak)}
+/* 확인 모달 — 짧은 물음 하나. 본문이 짧으면 감싼 높이로 선다 */
+.scax-modal--sm{width:420px;height:auto}
+.scax-modal__text{font-size:var(--scax-text-label1-size);line-height:1.62;letter-spacing:var(--scax-text-label1-ls);color:var(--scax-color-ink-alt);text-wrap:pretty}
+.scax-button--solid-danger{background:var(--scax-color-danger);color:#fff}
+.scax-button--solid-danger:hover{background:var(--scax-color-danger)}
+
+/* ---------- Field ---------- */
+.scax-field{display:flex;flex-direction:column;gap:var(--scax-space-200);min-width:0}
+
+.scax-field__label{display:flex;align-items:center;gap:var(--scax-space-100);font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink)}
+.scax-field__required{color:var(--scax-color-danger)}
+.scax-field__hint{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+.scax-field-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--scax-space-300)}
+
+/* ---------- 출처 행 ---------- */
+.scax-source-row{display:flex;align-items:center;gap:var(--scax-space-250);min-height:48px;padding:0 var(--scax-space-300) 0 var(--scax-space-400);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);color:var(--scax-color-ink-assistive)}
+.scax-source-row__label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--scax-text-label1-size);color:var(--scax-color-ink)}
+
+/* ---------- TextField / DateField ---------- */
+.scax-textfield{display:flex;align-items:center;gap:var(--scax-space-200);min-height:48px;padding:0 var(--scax-space-300) 0 var(--scax-space-400);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);color:var(--scax-color-ink-assistive)}
+.scax-textfield:focus-within{border-color:var(--scax-color-accent);box-shadow:var(--scax-focus-ring)}
+.scax-textfield__input{flex:1 1 auto;min-width:0;border:0;outline:0;background:transparent;color:var(--scax-color-ink);font-family:var(--scax-font-ui);font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls)}
+.scax-textfield__input::placeholder{color:var(--scax-color-ink-assistive)}
+.scax-textfield__input--date{appearance:none;-webkit-appearance:none}
+.scax-textfield__input--date::-webkit-calendar-picker-indicator{display:none;opacity:0;width:0;margin:0}
+.scax-textfield__input--date::-webkit-inner-spin-button,.scax-textfield__input--date::-webkit-clear-button{display:none}
+
+/* ---------- Composer ---------- */
+.scax-composer{display:flex;flex-direction:column;gap:var(--scax-space-100);padding:var(--scax-space-300) var(--scax-space-400);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface)}
+.scax-composer:focus-within{border-color:var(--scax-color-accent);box-shadow:var(--scax-focus-ring)}
+.scax-composer--full{border-color:var(--scax-color-accent)}
+.scax-composer__input{max-height:148px;min-height:148px;overflow-y:auto;border:0;outline:0;resize:none;background:transparent;color:var(--scax-color-ink);font-family:var(--scax-font-ui);font-size:var(--scax-text-label1-size);line-height:1.6;letter-spacing:var(--scax-text-label1-ls)}
+.scax-composer__count{font-size:var(--scax-text-label1-size);color:var(--scax-color-ink-assistive)}
+
+/* ---------- AutoComplete ---------- */
+.scax-autocomplete{position:relative;display:flex;flex-direction:column;gap:var(--scax-space-300)}
+.scax-autocomplete__list{position:absolute;left:0;right:0;top:56px;z-index:20;max-height:280px;margin:0;padding:var(--scax-space-200);list-style:none;overflow-y:auto;border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);box-shadow:var(--scax-shadow-raised)}
+.scax-autocomplete__option{display:flex;align-items:center;gap:var(--scax-space-200);width:100%;padding:var(--scax-space-250) var(--scax-space-300);border:0;border-radius:var(--scax-radius-xs);background:transparent;color:var(--scax-color-ink-neutral);font-size:var(--scax-text-label1-size);text-align:left;cursor:pointer}
+.scax-autocomplete__option:hover{background:var(--scax-color-fill-weak)}
+.scax-autocomplete__option--selected{color:var(--scax-color-accent);font-weight:var(--scax-fw-medium)}
+.scax-autocomplete__option--selected>.scax-icon{margin-left:auto}
+.scax-person-chips{display:flex;flex-wrap:wrap;align-items:center;gap:var(--scax-space-200)}
+.scax-person-chips__label{font-size:var(--scax-text-label2-size);color:var(--scax-color-ink-alt)}
+.scax-person-chip{display:inline-flex;align-items:center;gap:var(--scax-space-150);height:36px;padding:0 var(--scax-space-300) 0 var(--scax-space-150);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);color:var(--scax-color-ink-assistive);font-size:var(--scax-text-label2-size);font-weight:var(--scax-fw-medium);cursor:pointer}
+.scax-person-chip:hover{background:var(--scax-color-fill-weak)}
+.scax-person-chip--on{border-color:var(--scax-color-accent-20);background:var(--scax-color-accent-05);color:var(--scax-color-accent)}
+.scax-person-chip__avatar{width:24px;height:24px;border-radius:var(--scax-radius-pill);object-fit:cover;background:var(--scax-color-fill-weak)}
+.scax-person-chip__avatar--empty{display:flex;align-items:center;justify-content:center;color:var(--scax-color-ink-assistive)}
+
+/* ---------- DropZone / FileList ---------- */
+.scax-dropzone{position:relative;display:flex;flex-direction:column;gap:var(--scax-space-250);padding:var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface)}
+.scax-dropzone--over{border-style:dashed;border-color:var(--scax-color-accent);background:var(--scax-color-accent-05)}
+.scax-dropzone__head{display:flex;align-items:center;gap:var(--scax-space-300);min-height:40px;padding-left:var(--scax-space-100)}
+.scax-dropzone__hint{flex:1 1 auto;font-size:var(--scax-text-label1-size);color:var(--scax-color-ink-alt)}
+.scax-dropzone__cursor{position:absolute;right:var(--scax-space-800);top:calc(-1 * var(--scax-space-500));display:flex;align-items:center;justify-content:center;width:44px;height:44px;border-radius:var(--scax-radius-pill);background:var(--scax-color-fill-strong);color:var(--scax-color-ink-inverse)}
+.scax-file-list{display:flex;flex-direction:column;gap:var(--scax-space-200);margin:0;padding:0;list-style:none}
+.scax-file-row{display:flex;align-items:center;gap:var(--scax-space-250);min-height:44px;padding:0 var(--scax-space-250) 0 var(--scax-space-300);border:1px solid var(--scax-color-line-weak);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);color:var(--scax-color-ink-assistive)}
+.scax-file-row__name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--scax-text-label1-size);color:var(--scax-color-ink)}
+.scax-file-row__size{font-size:var(--scax-text-label2-size);color:var(--scax-color-ink-assistive)}
+
+/* ---------- Toast — 화면 하단 고정 ---------- */
+.scax-toast{position:fixed;left:50%;bottom:var(--scax-space-800);transform:translateX(-50%);z-index:60;display:flex;align-items:center;gap:var(--scax-space-250);min-height:48px;max-width:480px;padding:0 var(--scax-space-500);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface-inverse);color:var(--scax-color-ink-inverse);box-shadow:var(--scax-shadow-raised)}
+.scax-toast__text{font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls)}
+
+/* ---------- 모달 2열 레이아웃 ---------- */
+/* 2열 격자 — 1행 업무 명·기한 / 2행 내용·확인받을 사람 / 3행 체크리스트·첨부파일.
+   가운데 세로 경계선은 격자 배경으로 그린다(행 높이에 자동으로 맞춰짐). */
+.scax-modal-grid{display:grid;grid-template-columns:minmax(0,1fr) 1px minmax(0,1fr);column-gap:var(--scax-space-600);row-gap:var(--scax-space-400);align-items:start}
+.scax-modal-grid>*:nth-child(even){grid-column:1}
+.scax-modal-grid>*:nth-child(odd){grid-column:3}
+.scax-modal-grid>.scax-modal-grid__divider{grid-column:2;grid-row:1 / -1;align-self:stretch;width:1px;background:var(--scax-color-line-weak)}
+
+
+/* ---------- Checkbox / Checklist ---------- */
+.scax-checkbox{display:inline-flex;flex-shrink:0}
+.scax-checkbox__input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.scax-checkbox__box{display:flex;align-items:center;justify-content:center;width:20px;height:20px;border:1px solid var(--scax-color-line-strong);border-radius:var(--scax-radius-xs);background:var(--scax-color-surface);color:transparent;cursor:pointer}
+.scax-checkbox__input:checked+.scax-checkbox__box{border-color:var(--scax-color-accent);background:var(--scax-color-accent);color:#fff}
+.scax-checkbox__input:focus-visible+.scax-checkbox__box{box-shadow:var(--scax-focus-ring)}
+.scax-checklist{display:flex;flex-direction:column;gap:var(--scax-space-250);align-items:flex-start}
+.scax-checklist__list{display:flex;flex-direction:column;gap:var(--scax-space-200);width:100%;max-height:252px;margin:0;padding:0;list-style:none;overflow-y:auto}
+.scax-checklist__row{flex-shrink:0;display:flex;align-items:center;gap:var(--scax-space-250);min-height:44px;padding:0 var(--scax-space-250) 0 var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface)}
+.scax-checklist__row:focus-within{border-color:var(--scax-color-accent)}
+.scax-checklist__text{flex:1 1 auto;min-width:0;border:0;outline:0;background:transparent;color:var(--scax-color-ink);font-family:var(--scax-font-ui);font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls)}
+.scax-checklist__text::placeholder{color:var(--scax-color-ink-assistive)}
+.scax-checkbox__input:checked~.scax-checklist__text{color:var(--scax-color-ink-assistive);text-decoration:line-through}
+
+/* ---------- 투명(오버레이) 스크롤바 — 트랙 없음, 썸만 반투명 ---------- */
+.scax-scroll{scrollbar-width:thin;scrollbar-color:transparent transparent}
+.scax-scroll::-webkit-scrollbar{width:8px;height:8px}
+.scax-scroll::-webkit-scrollbar-track{background:transparent}
+.scax-scroll::-webkit-scrollbar-thumb{border:2px solid transparent;border-radius:var(--scax-radius-pill);background-clip:content-box;background-color:transparent}
+.scax-scroll:hover,.scax-scroll:focus-within{scrollbar-color:rgba(112,115,124,.28) transparent}
+.scax-scroll:hover::-webkit-scrollbar-thumb,.scax-scroll:focus-within::-webkit-scrollbar-thumb{background-color:rgba(112,115,124,.28)}
+.scax-scroll::-webkit-scrollbar-thumb:hover{background-color:rgba(112,115,124,.44)}
+.scax-composer:hover .scax-composer__input{scrollbar-color:rgba(112,115,124,.28) transparent}
+.scax-composer:hover .scax-composer__input::-webkit-scrollbar-thumb{background-color:rgba(112,115,124,.28)}

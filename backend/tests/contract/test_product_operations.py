@@ -5,6 +5,7 @@ from sqlalchemy import delete, select
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 import pytest
+from legacy_acceptance import pending_request
 
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
@@ -465,13 +466,13 @@ def test_task_cancel_and_stale_transition_leave_no_extra_mutation(tmp_path) -> N
     cancelled = client.post(
         f"/api/tasks/{task['task_id']}/cancel",
         headers={"X-Demo-Persona": "mina"},
-        json={"expected_version": 1},
+        json={"expected_version": 1, "reason": "이번 분기에는 하지 않습니다"},
     )
     assert cancelled.json()["state"] == "cancelled"
     assert client.get("/api/my-work", headers={"X-Demo-Persona": "mina"}).json() == []
 
 
-def test_work_request_creates_a_task_only_after_the_assignee_accepts(tmp_path) -> None:
+def test_work_request_creates_a_task_without_waiting_for_the_assignee(tmp_path) -> None:
     client = _client_with_seeded_database(tmp_path)
     created = client.post(
         "/api/work-requests",
@@ -480,22 +481,20 @@ def test_work_request_creates_a_task_only_after_the_assignee_accepts(tmp_path) -
     )
     assert created.status_code == 201
     request = created.json()
+    # 출처 상태는 `pending` — 업무는 섰고 **담당은 수락을 기다린다** (SPEC-003 §4 발송 · 정책 V-10).
     assert request["state"] == "pending"
+    assert request["task_id"] and request["assignment_state"] == "pending"
+    # 받는 사람에게는 **답할 질문 하나**가 서고, 답하기 전에는 「내 업무」에 서지 않는다.
+    assert [row["kind"] for row in client.get("/api/action-items", headers={"X-Demo-Persona": "jiho"}).json()] == [
+        "work_request.acceptance"
+    ]
     assert client.get("/api/my-work", headers={"X-Demo-Persona": "jiho"}).json() == []
-    [judgement] = client.get("/api/action-items", headers={"X-Demo-Persona": "jiho"}).json()
-    assert judgement["kind"] == "work_request.acceptance" and judgement["subject"] == request["title"]
-    assert judgement["resource"] == {"type": "work_request", "id": request["request_id"]}
-
-    accepted = client.post(
+    answered = client.post(
         f"/api/work-requests/{request['request_id']}/accept",
-        headers={"X-Demo-Persona": "jiho"},
-        json={"expected_version": request["version"]},
+        headers={"X-Demo-Persona": "jiho"}, json={"expected_version": request["version"]},
     )
-    assert accepted.status_code == 200
-    assert accepted.json()["state"] == "accepted"
-    assert accepted.json()["task_id"]
-    assert accepted.json()["assignment_state"] == "active"
-    assert client.get("/api/my-work", headers={"X-Demo-Persona": "jiho"}).json()[0]["task_id"] == accepted.json()["task_id"]
+    assert answered.status_code == 200, answered.text
+    assert client.get("/api/my-work", headers={"X-Demo-Persona": "jiho"}).json()[0]["task_id"] == request["task_id"]
 
 
 def test_conversation_turn_persists_messages_context_provider_refs_and_tool_activity(tmp_path) -> None:
@@ -673,18 +672,19 @@ def test_work_request_uses_authorized_organization_candidates_and_rejects_an_out
     )
 
     assert candidates.status_code == 200
-    # 판단할 수 있고 같은 조직에 있는 사람들: 팀장과 대표.
-    assert candidates.json() == [{"id": "jiho", "display_name": "지호 (팀장)"}, {"id": "yuna", "display_name": "유나 (대표)"}]
+    # 내가 업무를 보낼 수 있는 사람 — **판단 역량을 묻지 않는다** (WORK-001 Phase 3). 남는 것은 로그인 가능 ·
+    # 본인 제외 · 조직 범위 교집합 셋이고, 데모 조직은 회사 하나라 그 셋을 지난 동료 전부가 뜬다.
+    assert candidates.json() == [
+        {"id": "hyeon", "display_name": "현우 (인사)"},
+        {"id": "jiho", "display_name": "지호 (팀장)"},
+        {"id": "minseok", "display_name": "민석 (재무)"},
+        {"id": "sora", "display_name": "소라 (법무 자문)"},
+        {"id": "yuna", "display_name": "유나 (대표)"},
+    ]
+    assert "mina" not in {row["id"] for row in candidates.json()}
 
-    rejected = client.post(
-        "/api/work-requests",
-        headers={"X-Demo-Persona": "mina"},
-        json={"title": "권한 밖 배정 시도", "assignee_id": "sora"},
-    )
-
-    assert rejected.status_code == 422
-    assert "eligible assignee" in rejected.json()["detail"]
-
+    # **권한 밖 대상**은 명부에 없는 사람이다. 데모 조직은 회사 하나뿐이라 조직 범위 교집합이
+    # 늘 겹치므로, 이 조직에서 후보 밖으로 남는 것은 원장에 없는 식별자와 재직하지 않는 구성원이다.
     unknown = client.post(
         "/api/work-requests",
         headers={"X-Demo-Persona": "mina"},
@@ -710,12 +710,12 @@ def test_work_request_uses_authorized_organization_candidates_and_rejects_an_out
 
 
 def test_work_request_rejection_never_creates_a_task(tmp_path) -> None:
+    """과거 행의 거절은 그대로 돈다 — 신규 경로가 그 명령을 열지 않을 뿐이다 (DEC-001 D-4)."""
     client = _client_with_seeded_database(tmp_path)
-    created = client.post(
-        "/api/work-requests",
-        headers={"X-Demo-Persona": "mina"},
-        json={"title": "지금은 수락할 수 없는 요청", "assignee_id": "jiho"},
-    ).json()
+    created = pending_request(
+        client, f"sqlite:///{tmp_path / 'demo.db'}", {"X-Demo-Persona": "mina"},
+        title="지금은 수락할 수 없는 요청", assignee_id="jiho",
+    )
 
     rejected = client.post(
         f"/api/work-requests/{created['request_id']}/reject",
@@ -729,12 +729,12 @@ def test_work_request_rejection_never_creates_a_task(tmp_path) -> None:
 
 
 def test_work_request_negotiation_updates_conditions_and_requires_a_fresh_decision(tmp_path) -> None:
+    """조정 회차도 과거 행에만 있다 — 신규 요청은 `assigned` 로 서고 그 회차를 만들지 않는다."""
     client = _client_with_seeded_database(tmp_path)
-    created = client.post(
-        "/api/work-requests",
-        headers={"X-Demo-Persona": "mina"},
-        json={"title": "일정 협의가 필요한 요청", "assignee_id": "jiho"},
-    ).json()
+    created = pending_request(
+        client, f"sqlite:///{tmp_path / 'demo.db'}", {"X-Demo-Persona": "mina"},
+        title="일정 협의가 필요한 요청", assignee_id="jiho",
+    )
 
     negotiated = client.post(
         f"/api/work-requests/{created['request_id']}/negotiate",
@@ -789,6 +789,8 @@ def test_organization_profile_is_a_persisted_authorized_projection(tmp_path) -> 
             "task.self_manage",
             "work.read",
             "work_request.create",
+            # v2: 자기에게 온 요청은 자기가 답한다 — 수신자 검사가 그 위에 따로 선다 (SPEC-003 §5 권한).
+            "work_request.decide",
             "work_request.read",
         ],
     }

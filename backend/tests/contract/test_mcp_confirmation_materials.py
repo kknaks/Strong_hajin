@@ -1,4 +1,5 @@
 """MCP confirmations carry the same selected draft identities as browser confirmations."""
+from legacy_acceptance import pending_request
 import asyncio
 
 import pytest
@@ -33,7 +34,8 @@ def test_confirmation_preserves_material_selection_and_replays_it(tmp_path, sele
 def test_judgment_detail_keeps_discussion_attachments_and_revision_rounds(tmp_path):
     client, application = _stack(tmp_path)
     mina = {'X-Demo-Persona': 'mina'}
-    request = client.post('/api/work-requests', headers=mina, json={'title': '확인할 요청', 'assignee_id': 'jiho'}).json()
+    # 판단 상세는 과거 행의 회차를 읽는다 — 신규 요청에는 그 회차가 없다.
+    request = pending_request(client, application._settings.database_url, mina, title='확인할 요청', assignee_id='jiho')
     request_path = '/api/work-requests/' + request['request_id']
     comment = client.post(request_path + '/comments', headers=mina, json={'body': '판단 전에 읽을 근거'}).json()
     uploaded = client.post(request_path + '/comments/' + comment['comment_id'] + '/attachments', headers=mina, files={'file': ('검토.txt', b'review basis', 'text/plain')})

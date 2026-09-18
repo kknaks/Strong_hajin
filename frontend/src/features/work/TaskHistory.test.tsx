@@ -4,6 +4,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectTask } from "../../lib/viewModels";
 
 vi.mock("../../lib/api", () => ({
+  getTaskAssignments: vi.fn(),
+  getTaskProposals: vi.fn(),
+  createTaskProposal: vi.fn(),
+  respondTaskProposal: vi.fn(),
+  withdrawTaskProposal: vi.fn(),
+  reopenTask: vi.fn(),
+  getTaskChildren: vi.fn(),
+  withdrawWorkRequest: vi.fn(),
+  hideWorkRequestListEntry: vi.fn(),
+  getWorkRequestAssigneeCandidates: vi.fn(),
   getTask: vi.fn(),
   getTaskMaterials: vi.fn(),
   getTaskHistory: vi.fn(),

@@ -74,7 +74,9 @@ export function InboxRail({
   } else if (shown.length === 0) {
     body =
       items.length === 0 ? (
-        <Empty description="동료의 요청, 관리자의 배정, AX 제안이 오면 여기에 쌓입니다." title="판단할 항목이 없습니다" />
+        /* 신규 생성은 수락 판단을 만들지 않는다 — 동료의 요청도 관리자의 배정도 여기 서지 않는다
+             (WORK-001 Phase 4). 남는 것은 완료 승인과 AX 확인이다. */
+        <Empty description="완료 승인 요청과 AX 제안이 오면 여기에 쌓입니다." title="판단할 항목이 없습니다" />
       ) : (
         <Empty
             actionLabel={emptyActionLabel.filter} onAction={() => setFilter("all")} title="이 분류에는 판단할 항목이 없습니다" variant="filter" />

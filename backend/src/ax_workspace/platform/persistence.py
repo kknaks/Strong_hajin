@@ -938,12 +938,58 @@ class TaskRecord(Base):
     #: 어느 프로젝트의 일인가. 비어 있는 것이 정상이다 — 프로젝트 없이 하는 일이 조직에는 더 많다.
     project_id: Mapped[UUID | None] = mapped_column(ForeignKey("projects.id"), index=True)
     version: Mapped[int] = mapped_column(nullable=False, default=1)
+    #: 완료를 확인할 사람 0..1. **W1 은 이 열을 만들기만 한다** — 입력도 응답도 없고 값이 들어오지 않는다.
+    #: 입력과 화면은 완료 승인 경로와 같은 단위(W2)에서 함께 열린다 (WORK-001 § 최소 호환 경계).
+    approver_id: Mapped[str | None] = mapped_column(String(100))
+    #: 왜 취소됐는가 — `direct` · `request_rejected` · `request_withdrawn` · `cancellation_agreed`
+    #: (SPEC-003 §4 Data). 비어 있는 것이 정상이다: 취소되지 않은 업무에는 사유가 없다.
+    cancel_reason: Mapped[str | None] = mapped_column(String(40))
+    #: **실제** 시작 시각 — `open → in_progress` 를 부른 그 순간이다 (SPEC-003 §4 Data · 정책 V-13).
+    #: `start_date`(계획 시작일)와 다른 사실이라 같은 칸에 섞지 않는다. `open` 에서 바로 완료하면 빈 채로 남는다.
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: 완료 명령이 성공한 시각. 요청 업무에서는 **완료 보고 제출** 시각이고 승인 시각이 아니다 —
+    #: 승인은 `state` 를 바꾸지 않으므로 판단 행이 그 시각을 갖는다.
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: 마지막으로 다시 연 시각. **이전 완료 이력을 지우지 않는다**(E-5) — 지난 회차의 승인을 무효로
+    #: 가르는 기준선이 이 값이다 (§ 완결 판정).
+    reopened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     causation_key: Mapped[str | None] = mapped_column(String(64), unique=True)
     assignments: Mapped[list["TaskAssignmentRecord"]] = relationship(
         "TaskAssignmentRecord", order_by="TaskAssignmentRecord.created_at", lazy="selectin"
     )
+
+
+class TaskCreationAttemptRecord(Base):
+    """한 번의 생성 의도를 붙드는 원장 — (행위자 · 명령 종류 · 키) 하나에 결과 하나 (WORK-001 Phase 2).
+
+    키의 유효 범위가 **전역이 아니다**: 전역이면 A 가 B 의 키로 재전송했을 때 B 의 업무가 영수증으로
+    돌아간다. `payload_fingerprint` 는 같은 키에 다른 내용이 왔는지를 가르는 지문이고 **키의 재료가
+    아니다** — 다른 키에 같은 내용인 두 명령은 둘 다 선다.
+
+    같은 모양이 이미 레포에 있다 — `MeetingRoomCreationAttemptRecord`. 다만 여기에는 외부 provider 가
+    없어서 업무·담당·이 행이 **한 transaction** 에 함께 선다. 진 쪽은 unique 위반으로 막히고 이긴 쪽의
+    결과를 영수증으로 돌려받는다.
+
+    기존 `tasks.causation_key`·`work_requests.causation_key` 는 **뜻이 다르다** — 전역 unique 이고
+    payload 를 비교하지 않는다. 그 열의 동작은 바꾸지 않고 새 계약은 이 표가 받는다.
+    """
+
+    __tablename__ = "task_creation_attempts"
+    __table_args__ = (
+        UniqueConstraint("actor_id", "command_kind", "request_key", name="uq_task_creation_actor_command_key"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    actor_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    #: `task.create` · `task.assign` · `work_request.create`(`modules/work/creation.py`). 명령 종류가 다르면 같은 키도 섞이지 않는다.
+    command_kind: Mapped[str] = mapped_column(String(50), nullable=False)
+    request_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id"))
+    work_request_id: Mapped[UUID | None] = mapped_column(ForeignKey("work_requests.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class TaskChecklistItemRecord(Base):
@@ -1478,6 +1524,13 @@ class WorkRequestRecord(Base):
     """ERD WORK_REQUEST — request-first ledger; its RequestThread and Subject are created with it."""
 
     __tablename__ = "work_requests"
+    # **기존 표에 더하는 인덱스라 `schema_sync` 가 만들지 않는다** (BASE-002 O-24) — 새로 만드는 DB 는
+    # `create_all` 이 여기서 만들고, 이미 사는 DB 는 `backend/migrations/manual/2026-09-17-w2-indexes*.sql`
+    # 을 손으로 적용한다. 두 자리의 정의가 같아야 한다.
+    __table_args__ = (
+        Index("ix_work_requests_parent_task_id", "parent_task_id"),
+        Index("ix_work_requests_supersedes_request_id", "supersedes_request_id"),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     request_thread_id: Mapped[UUID | None] = mapped_column(ForeignKey("request_threads.id"))
@@ -1505,9 +1558,37 @@ class WorkRequestRecord(Base):
     #: `requester_id`·`assignee_id` 와 같은 결로 **외래키를 걸지 않는다**: 요청자 자리에 사람이 아닌
     #: 행위자가 설 수 있게 된 열들이고, 로컬 스키마 맞추기(`--sync`)가 ALTER 한 줄로 붙일 수 있어야 한다.
     promoted_by_member_id: Mapped[str | None] = mapped_column(String(100))
+    #: 하위 요청이면 **발송 단계부터** 상위 업무가 정해진다 (SPEC-003 §4 발송 · 정책 V-9). 그래서 수락
+    #: 이전에도 요청 Task 가 그 상위 아래에 선다. 독립 요청은 비어 있는 것이 정상이다.
+    #: `use_alter` 로 거는 이유: `tasks.source_work_request_id` 가 이미 이쪽을 가리켜서 두 표가 서로를
+    #: 참조한다. 그대로 두면 `create_all`·`drop_all` 이 만들 순서를 정하지 못한다 — SQLAlchemy 가
+    #: 「unresolvable cycles」 경고를 내고 제약을 통째로 건너뛴다. 나중에 ALTER 로 붙이면 순환이 풀린다.
+    parent_task_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("tasks.id", use_alter=True, name="fk_work_requests_parent_task_id")
+    )
+    #: 재요청이면 **이전 요청**. 재요청은 새 요청·새 Task 이고(정책 V-12) 거절된 것을 되살리지 않는다 —
+    #: 이 열이 두 건을 잇는 유일한 연결이다.
+    supersedes_request_id: Mapped[UUID | None] = mapped_column(ForeignKey("work_requests.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     causation_key: Mapped[str | None] = mapped_column(String(64), unique=True)
+
+
+class WorkRequestListEntryRecord(Base):
+    """요청자 목록에서 **뺀** 항목 (SPEC-003 §4 목록 정리 · 정책 P-12).
+
+    **행을 지우지 않는다.** 거절·취소·재요청 로그는 그대로 남고, 이 표는 「요청자의 목록에서만 감춘다」는
+    한 가지 사실만 갖는다. 전역 삭제도 상대방 자료 삭제도 아니다.
+    """
+
+    __tablename__ = "work_request_list_entries"
+    __table_args__ = (UniqueConstraint("work_request_id", "member_id", name="uq_work_request_list_entry"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    work_request_id: Mapped[UUID] = mapped_column(ForeignKey("work_requests.id"), nullable=False)
+    #: 누구의 목록에서 뺐는가. 한 사람의 정리가 다른 사람의 목록을 바꾸지 않는다.
+    member_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    removed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class WorkRequestAuditEventRecord(Base):
@@ -1528,7 +1609,18 @@ class TaskAssignmentRecord(Base):
     """
 
     __tablename__ = "task_assignments"
-    __table_args__ = (Index("ix_task_assignments_assignee_status", "assignee_id", "status"),)
+    __table_args__ = (
+        Index("ix_task_assignments_assignee_status", "assignee_id", "status"),
+        # 한 업무의 **활성 담당은 언제나 0 또는 1** (WORK-001 Phase 2 invariant 2). application 검사로
+        # 낮추지 않는다 — 두 명령이 동시에 들어와도 데이터베이스가 둘째를 거절한다.
+        Index(
+            "uq_task_assignments_active",
+            "task_id",
+            unique=True,
+            sqlite_where=text("status = 'active'"),
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"), nullable=False, index=True)
@@ -1547,6 +1639,47 @@ class TaskAssignmentRecord(Base):
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     declined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TaskProposalRecord(Base):
+    """수락 뒤에 조건을 바꾸거나 일을 접자는 **제안** (SPEC-003 §4 제안–동의 · DEC-002 D-6).
+
+    담당 변경은 여기 없다 — `task_assignments` 가 이미 그 표면을 갖는다(SPEC-003 §4 주석). 공통인 것은
+    **저장 모양이 아니라 규칙**이다: 제안만으로는 아무것도 바뀌지 않고, 상태는 넷이며, 응답자가 정해져
+    있고, 이력과 회차가 남는다.
+    """
+
+    __tablename__ = "task_proposals"
+    __table_args__ = (
+        Index("ix_task_proposals_task_id", "task_id"),
+        # 한 업무에 **같은 종류의 대기 제안은 하나** (SPEC-003 §4 Validation). application 검사로 낮추지
+        # 않는다 — 동시에 둘이 들어와도 데이터베이스가 둘째를 거절한다.
+        Index(
+            "uq_task_proposals_pending_kind",
+            "task_id",
+            "kind",
+            unique=True,
+            sqlite_where=text("state = 'pending'"),
+            postgresql_where=text("state = 'pending'"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"), nullable=False)
+    #: `cancellation` | `terms_change`.
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    #: `pending` | `agreed` | `declined` | `withdrawn`.
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    proposed_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    #: 답한 사람. 대기 중에는 비어 있다.
+    responder_id: Mapped[str | None] = mapped_column(String(100))
+    #: `terms_change` 가 바꾸자는 값들. `cancellation` 에서는 비어 있다.
+    payload: Mapped[dict | None] = mapped_column(JSON)
+    reason: Mapped[str | None] = mapped_column(Text)
+    #: 응답이 소비한 Task 회차 — 재전송이 두 번째 effect 를 내지 않게 하는 자리다 (K-4).
+    task_version: Mapped[int] = mapped_column(nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class DailyReportSubmissionRecord(Base):

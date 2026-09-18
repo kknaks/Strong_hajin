@@ -100,6 +100,7 @@ from ax_workspace.platform.work_tasks import caused_by, SqlAlchemyAttachmentRepo
 
 
 from ax_workspace.modules.meetings.followups import MeetingFollowupApplication
+from ax_workspace.modules.work.creation_commands import TaskCreationApplication
 from ax_workspace.modules.notifications import NotificationApplication, NotificationReadCommand
 from ax_workspace.modules.organization_access.commands import AssistantCharacterInput, ASSISTANT_CHARACTER_LABELS
 from ax_workspace.modules.work.assignment_commands import AssignmentAcceptCommand, AssignmentDeclineCommand
@@ -177,6 +178,8 @@ class ActionServices:
 
     tasks: Callable[[], TaskApplication]
     assignments: Callable[[], TaskAssignmentApplication]
+    #: 생성 세 경로와 그 멱등 계약이 만나는 자리. 확인된 action 하나가 **생성 의도 하나**다.
+    task_creation: Callable[[], TaskCreationApplication]
     meetings: Callable[[], MeetingApplication]
     prepare_action: Callable[[Principal, str, str, dict[str, Any]], dict[str, Any]]
     validate_action_rejection: Callable[[Principal, str, str], None]
@@ -702,7 +705,15 @@ class SqlAlchemyActionExecutor:
             return result
         if action.action_type == "work_request.create":
             command = WorkRequestCreateInput.model_validate(payload).for_requester(str(principal.id))
-            return self._work_requests.create(principal, **command.model_dump(), causation_key=str(action.id))
+            # 확정된 action 하나가 의도 하나다 — `action.id` 를 재실행 식별(`causation_key`)과
+            # **새 멱등 키 자리**에 함께 싣는다 (WORK-001 § 멱등 키).
+            return self._services.task_creation().create_work_request(
+                principal, **command.model_dump(), causation_key=str(action.id), idempotency_key=str(action.id),
+                source_action_item_id=action.id,
+                source_decision_item_id=source_decision_item_id,
+                source_submission_id=source_submission_id,
+                source_review_decision_id=source_review_decision_id,
+            )
         if action.action_type == "action.material.link.stage":
             command = ActionMaterialLinkCommand.model_validate(payload)
             return self._services.action_materials().stage_link(principal, command.action_item_id, url=command.url, label=command.label)
@@ -812,8 +823,9 @@ class SqlAlchemyActionExecutor:
             )
         if action.action_type == "task.create_self":
             command = TaskCreateInput.model_validate({key: value for key, value in payload.items() if key != '_attachment_draft_ids'})
-            result = self._tasks().create_self(
-                principal, **command.model_dump(), causation_key=str(action.id),
+            result = self._services.task_creation().create_task(
+                principal, **command.model_dump(exclude={'title'}), title=command.title,
+                idempotency_key=str(action.id), causation_key=str(action.id),
                 source_action_item_id=action.id,
                 source_decision_item_id=source_decision_item_id,
                 source_submission_id=source_submission_id,
@@ -834,8 +846,10 @@ class SqlAlchemyActionExecutor:
             return self._run_checklist_command(principal, action.action_type, payload)
         if action.action_type == "task.assign":
             command = TaskAssignmentInput.model_validate({key: value for key, value in payload.items() if key != '_attachment_draft_ids'})
-            result = self._assignments().assign(
-                principal, **command.model_dump(), causation_key=str(action.id),
+            result = self._services.task_creation().assign_task(
+                principal, **command.model_dump(exclude={'title', 'assignee_id'}),
+                title=command.title, assignee_id=command.assignee_id,
+                idempotency_key=str(action.id), causation_key=str(action.id),
                 source_action_item_id=action.id,
                 source_decision_item_id=source_decision_item_id,
                 source_submission_id=source_submission_id,
@@ -1796,7 +1810,13 @@ class ActionPresenter:
         fields = []
         labels = {'public': '공개', 'private': '비공개', 'input': '참고 자료', 'output': '산출물', 'lead': '담당', 'member': '참여', **ASSISTANT_CHARACTER_LABELS}
         for key, definition in schema['properties'].items():
-            if key in contract.fixed_fields or (action.action_type == 'task.transition' and key == 'reason' and values['target'] != 'blocked'):
+            # 상태 변경의 사유는 **차단과 취소**에서만 사람이 고쳐 쓴다 — 시작·완료는 사유를 묻지 않으므로
+            # 그 칸을 확인 화면에 띄우면 채울 수 없는 자리가 하나 생긴다 (SPEC-003 §4 Validation).
+            if key in contract.fixed_fields or (
+                action.action_type == 'task.transition'
+                and key == 'reason'
+                and values['target'] not in {'blocked', 'cancelled'}
+            ):
                 continue
             shape = definition
             if 'anyOf' in shape:

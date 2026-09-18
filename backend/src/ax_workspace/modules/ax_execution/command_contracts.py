@@ -17,7 +17,16 @@ from ax_workspace.modules.organization_access.commands import AssistantCharacter
 from ax_workspace.modules.work.folder_commands import FolderCreateInput, FolderArchiveCommand, FolderMaterialDetachCommand
 from ax_workspace.modules.work.material_commands import TaskMaterialLinkCommand, TaskMaterialReferenceCommand, TaskMaterialDetachCommand, ActionMaterialLinkCommand, ActionMaterialDiscardCommand
 from ax_workspace.modules.work.project_commands import ProjectCreateInput, ProjectMemberCommand, ProjectReleaseCommand, ProjectWorkCommand
-from ax_workspace.modules.work.request_commands import WorkRequestAmendCommand, WorkRequestCommentCommand
+from ax_workspace.modules.work.request_commands import (
+    TaskProposalCommand,
+    TaskProposalResponseCommand,
+    TaskProposalWithdrawCommand,
+    TaskReopenCommand,
+    WorkRequestAmendCommand,
+    WorkRequestCommentCommand,
+    WorkRequestListEntryCommand,
+    WorkRequestWithdrawCommand,
+)
 from ax_workspace.modules.work.checklist_commands import ChecklistAddCommand, ChecklistUpdateCommand, ChecklistArchiveCommand, ChecklistOrderCommand
 from ax_workspace.modules.work.task_commands import TaskTransitionCommand, TaskUpdateCommand, TaskCompletionCommand, TaskReferenceCommand, TaskReferenceReleaseCommand, TaskReassignCommand
 
@@ -47,6 +56,8 @@ class CommandContract:
         # Meeting edits distinguish absence from an explicit clear. Pydantic's
         # nullable placeholder alone cannot express the after-validator rule.
         if self.model is TaskTransitionCommand and key == 'reason':
+            # 이 칸이 보이는 것은 차단·취소뿐이고, 거기서는 **비울 수 없다** — 사유가 사라진 확인은
+            # 사유를 요구한 적이 없는 것과 같다.
             return 'forbid'
         if (self.model is MeetingUpdateCommand and key != 'description') or (self.model is TaskUpdateCommand and key == 'title'):
             return 'omit'
@@ -79,6 +90,14 @@ COMMAND_CONTRACTS = MappingProxyType({
     'task.transition': _contract(TaskTransitionCommand, 'task_id', 'expected_version', 'target'),
     'task.update': _contract(TaskUpdateCommand, 'task_id', 'expected_version'),
     'task.reassign': _contract(TaskReassignCommand, 'task_id', 'expected_version'),
+    # v2 신규 — 고정 필드는 **승인이 답하는 대상과 기준 회차**다. 사람이 확인 화면에서 그 둘을 바꾸면
+    # 다른 명령이 되므로 `validate_edit` 이 거절한다 (K-5).
+    'task.reopen': _contract(TaskReopenCommand, 'task_id', 'expected_version'),
+    'task.proposal.open': _contract(TaskProposalCommand, 'task_id', 'expected_version', 'kind'),
+    'task.proposal.respond': _contract(TaskProposalResponseCommand, 'task_id', 'proposal_id', 'expected_version'),
+    'task.proposal.withdraw': _contract(TaskProposalWithdrawCommand, 'task_id', 'proposal_id', 'expected_version'),
+    'work_request.withdraw': _contract(WorkRequestWithdrawCommand, 'request_id', 'expected_version'),
+    'work_request.list_entry.remove': _contract(WorkRequestListEntryCommand, 'request_id'),
     'task.completion.submit': _contract(TaskCompletionCommand, 'task_id', 'expected_version'),
     'task.reference.add': _contract(TaskReferenceCommand, 'task_id'),
     'task.reference.release': _contract(TaskReferenceReleaseCommand, 'task_id', 'reference_id'),

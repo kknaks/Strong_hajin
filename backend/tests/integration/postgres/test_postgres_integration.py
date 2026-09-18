@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event, select, text
 
+from legacy_acceptance import make_assignment_look_pending, pending_request
 from ax_workspace.platform.persistence import make_session_factory
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
@@ -41,6 +42,7 @@ from ax_workspace.platform.persistence import (
     DecisionItemRecord,
     EmploymentPeriodRecord,
     TaskAssignmentRecord,
+    TaskCreationAttemptRecord,
     TaskRecord,
     ReviewDecisionRecord,
     SubmissionRecord,
@@ -1503,7 +1505,8 @@ def test_postgres_serializes_two_simultaneous_judgements_into_one_effect(monkeyp
     database_url = _postgres_test_url()
     reset_database(database_url)
     client = _conversation_client(database_url)
-    client.post("/api/work-requests", headers={"X-Demo-Persona": "mina"}, json={"title": "동시 판단 요청", "assignee_id": "jiho"})
+    # 판단 회차는 과거 행의 것이다 — 신규 요청은 `assigned` 로 서고 그 회차를 만들지 않는다 (WORK-001 Phase 4).
+    pending_request(client, database_url, {"X-Demo-Persona": "mina"}, title="동시 판단 요청", assignee_id="jiho")
     [item] = client.get("/api/action-items", headers={"X-Demo-Persona": "jiho"}).json()
     url = f"/api/action-items/{item['action_item_id']}/commands/accept"
     body = {"expected_version": item["expected_version"]}
@@ -1550,7 +1553,7 @@ def test_postgres_keeps_every_earlier_round_byte_identical_after_a_revision() ->
     client = _conversation_client(database_url)
     mina = {"X-Demo-Persona": "mina"}
     jiho = {"X-Demo-Persona": "jiho"}
-    client.post("/api/work-requests", headers=mina, json={"title": "원래 제목", "assignee_id": "jiho", "description": "원래 설명"})
+    pending_request(client, database_url, mina, title="원래 제목", assignee_id="jiho", description="원래 설명")
     [item] = client.get("/api/action-items", headers=jiho).json()
     action_item_id = item["action_item_id"]
 
@@ -1903,7 +1906,7 @@ def test_postgres_serializes_adopting_evidence_against_deciding_on_it() -> None:
     jiho = {"X-Demo-Persona": "jiho"}
 
     for attempt, head_start in enumerate((0.0, 0.05)):
-        request = client.post("/api/work-requests", headers=mina, json={"title": f"경합 {attempt}", "assignee_id": "jiho"}).json()
+        request = pending_request(client, database_url, mina, title=f"경합 {attempt}", assignee_id="jiho")
         item = [row for row in client.get("/api/action-items", headers=jiho).json() if row["resource"]["id"] == request["request_id"]][0]
         gate = Barrier(2)
 
@@ -1944,7 +1947,11 @@ def test_postgres_serializes_adopting_evidence_against_deciding_on_it() -> None:
 
 @pytest.mark.integration
 def test_postgres_serializes_assignment_acceptance_against_requester_cancellation() -> None:
-    """The requester and assignee answer the same pending relation, so only one command may win its row lock."""
+    """The requester and assignee answer the same pending relation, so only one command may win its row lock.
+
+    **수락 대기 배정은 W1 이후 과거 행에만 있다** — 신규 배정은 즉시 활성 담당으로 서고 취소·수락이 걸리지
+    않는다 (WORK-001 Phase 4). 두 명령이 같은 행을 두고 다투는 코드는 그대로이므로 과거 모양에서 본다.
+    """
     database_url = _postgres_test_url()
     reset_database(database_url)
     settings = Settings(RuntimeProfile.TEST, database_url, materials_dir=tempfile.mkdtemp())
@@ -1978,6 +1985,7 @@ def test_postgres_serializes_assignment_acceptance_against_requester_cancellatio
         json={"expected_version": detail["expected_version"], "base_submission_version": 1},
     ).json()
     [assignment] = [row for row in client.get("/api/task-assignments/sent", headers=jiho).json() if row["task"]["title"] == "한 번만 닫힐 요청"]
+    make_assignment_look_pending(database_url, assignment["assignment_id"])
     gate = Barrier(2)
 
     def cancel() -> Any:
@@ -2008,7 +2016,11 @@ def test_postgres_serializes_assignment_acceptance_against_requester_cancellatio
 
 @pytest.mark.integration
 def test_postgres_keeps_one_open_assignment_per_task_through_a_handover() -> None:
-    """The holder is the open assignment, so two people must never be able to hold one Task at once."""
+    """드는 사람은 **활성 담당**이므로 한 업무를 두 사람이 동시에 들 수 없다.
+
+    이름의 「one open assignment」는 **활성 담당 하나**를 뜻한다 — v2 에서 대기 제안이 활성 옆에 함께
+    서므로(정책 V-18) 열린 행의 수가 아니라 **활성 행의 수**가 그 보장이다 (K-3).
+    """
     database_url = _postgres_test_url()
     reset_database(database_url)
     settings = Settings(RuntimeProfile.TEST, database_url, materials_dir=tempfile.mkdtemp())
@@ -2018,13 +2030,8 @@ def test_postgres_keeps_one_open_assignment_per_task_through_a_handover() -> Non
     mina = {"X-Demo-Persona": "mina"}
     jiho = {"X-Demo-Persona": "jiho"}
 
-    task_id = application.assign_task(application.authenticated_principal("jiho"), "옮겨질 업무", "mina")["task"]["task_id"]
-    [item] = [row for row in client.get("/api/action-items", headers=mina).json() if row["subject"] == "옮겨질 업무"]
-    client.post(
-        f"/api/action-items/{item['action_item_id']}/commands/accept",
-        headers=mina,
-        json={"expected_version": item["expected_version"]},
-    )
+    # 배정은 수락을 기다리지 않는다 — 명령이 성공하면 이미 민아가 들고 있다 (WORK-001 Phase 4).
+    task_id = application.assign_task(application.authenticated_principal("jiho"), "옮겨질 업무", "mina", idempotency_key="pg-assign")["task"]["task_id"]
     version = client.get(f"/api/tasks/{task_id}", headers=mina).json()["version"]
 
     # Two people try to move the same Task at the same moment; the row lock decides, and only one lands.
@@ -2052,10 +2059,19 @@ def test_postgres_keeps_one_open_assignment_per_task_through_a_handover() -> Non
                 .order_by(TaskAssignmentRecord.created_at, TaskAssignmentRecord.id)
             )
         )
-    open_rows = [row for row in rows if row.status in {"active", "pending"}]
-    assert len(open_rows) == 1, [(row.assignee_id, row.status) for row in rows]
-    assert open_rows[0].supersedes_assignment_id is not None
-    assert [row.status for row in rows[:-1]] == ["superseded"]
+    # **v2 에서 바뀐 것은 「제안이 기존 담당을 닫지 않는다」뿐이다** (WORK-002 Phase 3 · 정책 V-18).
+    # W1 이 지키던 것 — **한 업무를 두 사람이 동시에 들 수 없다** — 은 그대로이고, 이제 그 문장은
+    # 「**활성 담당이 정확히 하나**」로 읽힌다 (K-3). 대기 제안은 그 수에 들어가지 않는다.
+    by_status = [(row.assignee_id, row.status) for row in rows]
+    active = [row for row in rows if row.status == "active"]
+    pending = [row for row in rows if row.status == "pending"]
+    assert len(active) == 1, by_status
+    assert active[0].assignee_id == "mina", by_status
+    # 진 쪽(422)은 행을 만들지 않는다 — 대기 제안도 **하나**다.
+    assert len(pending) == 1, by_status
+    assert pending[0].supersedes_assignment_id == active[0].id, by_status
+    # 교체는 **수락 한 덩어리**에서만 일어난다 — 제안만으로는 아직 종료된 담당이 없다.
+    assert [row.status for row in rows if row.status == "superseded"] == [], by_status
     # The Task itself never learned a second holder: it has no such column to learn one with.
     with factory() as session:
         task = session.get(TaskRecord, UUID(task_id))
@@ -2204,7 +2220,17 @@ def test_postgres_will_not_finish_work_while_a_part_of_it_is_still_open() -> Non
     if outcomes[1].status_code == 200:
         # Finishing landed: the parent is closed, and the part was either created first or refused for that reason.
         assert view["state"] == "done"
-        assert outcomes[0].status_code in {201, 422}
+        if outcomes[0].status_code != 201:
+            # **거절의 코드가 W1 의 422 에서 409 로 옮겨졌다** — `TaskParentClosed` 가 일반 `TaskError`
+            # 버킷을 떠나 SPEC-003 §4 Case Matrix 의 `WORK_PARENT_CLOSED`(409) 줄에 섰다
+            # (`http.py` 의 「요청 자체는 말이 되는데 지금 그 자원의 상태가 그 명령을 받지 않는다」 묶음).
+            # **아무 거절이나 받아 주지 않는다**: 코드와 **이유**를 함께 못 박는다 — 코드만 넓히면
+            # 회차 불일치·권한 거절도 이 자리를 지나간다.
+            assert outcomes[0].status_code == 409, outcomes[0].text
+            assert "이미 끝난 업무에는 하위 업무를 추가할 수 없습니다" in outcomes[0].text, outcomes[0].text
+            # 진 명령은 **아무것도 남기지 않는다** — 끝난 상위 아래에 하위가 서지 않는다.
+            assert view["children"] == [], view["children"]
+            assert view["child_progress"]["total"] == 0, view["child_progress"]
     else:
         # The part landed first, so finishing is refused — and it says what is still open.
         assert outcomes[0].status_code == 201
@@ -2370,3 +2396,110 @@ def test_postgres_compensated_room_retry_holds_the_attempt_lock_across_the_provi
     )
 
     assert observed == [False], "보상 뒤 재시도가 잠금 밖에서 provider 를 불렀다"
+
+
+# --------------------------------------------------------------------- W1 생성 계약 (WORK-001 Phase 2 · 5)
+
+
+@pytest.mark.integration
+def test_postgres_makes_one_task_when_the_same_creation_key_arrives_twice_at_once() -> None:
+    """같은 키의 **동시 실행**이 중복 업무도 중복 활성 담당도 만들지 않는다 (SPEC-001 §6 W1).
+
+    진 쪽은 멱등 원장의 unique 제약에 막혀 transaction 을 통째로 잃고, 이긴 쪽의 결과를 영수증으로 받는다.
+    """
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    client = TestClient(create_app(Settings(RuntimeProfile.TEST, database_url, materials_dir=tempfile.mkdtemp())))
+    mina = {"X-Demo-Persona": "mina", "Idempotency-Key": "one-intent"}
+    gate = Barrier(2)
+
+    def create() -> Any:
+        gate.wait()
+        return client.post("/api/tasks", headers=mina, json={"title": "동시에 눌린 생성", "due_date": "2026-09-30"})
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first, second = executor.submit(create), executor.submit(create)
+        responses = [first.result(), second.result()]
+
+    assert [response.status_code for response in responses] == [201, 201], [r.text for r in responses]
+    # 영수증은 **같은 투영**이다 — PostgreSQL 은 시각에 시간대를 저장하므로 문자열까지 같다.
+    assert responses[0].json() == responses[1].json()
+
+    factory = make_session_factory(database_url)
+    with factory() as session:
+        tasks = list(session.scalars(select(TaskRecord)))
+        assert len(tasks) == 1 and tasks[0].title == "동시에 눌린 생성"
+        assignments = list(session.scalars(select(TaskAssignmentRecord)))
+        assert [row.status for row in assignments] == ["active"]
+        attempts = list(session.scalars(select(TaskCreationAttemptRecord)))
+        assert len(attempts) == 1
+        assert attempts[0].request_key == "one-intent" and attempts[0].task_id == tasks[0].id
+
+
+@pytest.mark.integration
+def test_postgres_refuses_a_second_active_assignment_at_the_database() -> None:
+    """활성 담당 유일성은 **DB 제약**이다 — application 검사를 우회해도 데이터베이스가 거절한다."""
+    from sqlalchemy.exc import IntegrityError
+
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    client = TestClient(create_app(Settings(RuntimeProfile.TEST, database_url, materials_dir=tempfile.mkdtemp())))
+    created = client.post(
+        "/api/tasks", headers={"X-Demo-Persona": "mina", "Idempotency-Key": "unique-holder"},
+        json={"title": "담당이 하나뿐인 업무"},
+    )
+    assert created.status_code == 201, created.text
+    task_id = UUID(created.json()["task_id"])
+
+    factory = make_session_factory(database_url)
+    with pytest.raises(IntegrityError):
+        with factory() as session:
+            session.add(
+                TaskAssignmentRecord(
+                    task_id=task_id, assignee_id="jiho", assigned_by="yuna",
+                    assignment_kind="direct", status="active", created_at=datetime.now(UTC),
+                )
+            )
+            session.commit()
+    with factory() as session:
+        rows = list(session.scalars(select(TaskAssignmentRecord).where(TaskAssignmentRecord.task_id == task_id)))
+        assert [(row.assignee_id, row.status) for row in rows] == [("mina", "active")]
+    # 끝난 담당은 얼마든지 쌓인다 — 제약은 **활성**에만 걸린다.
+    with factory() as session:
+        session.add(
+            TaskAssignmentRecord(
+                task_id=task_id, assignee_id="jiho", assigned_by="yuna",
+                assignment_kind="direct", status="superseded", created_at=datetime.now(UTC),
+            )
+        )
+        session.commit()
+
+
+@pytest.mark.integration
+def test_postgres_promotes_one_meeting_candidate_into_one_task_under_concurrency() -> None:
+    """같은 후보를 동시에 승격해도 업무는 한 건이다 — 키가 같은 의도를 가리키기 때문이다."""
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    settings = Settings(RuntimeProfile.TEST, database_url, materials_dir=tempfile.mkdtemp())
+    client = TestClient(create_app(settings))
+    mina = {"X-Demo-Persona": "mina", "Idempotency-Key": "promotion-intent"}
+    gate = Barrier(2)
+
+    def send() -> Any:
+        gate.wait()
+        return client.post(
+            "/api/work-requests", headers=mina, json={"title": "회의에서 나온 일", "assignee_id": "jiho"}
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first, second = executor.submit(send), executor.submit(send)
+        responses = [first.result(), second.result()]
+
+    assert [response.status_code for response in responses] == [201, 201], [r.text for r in responses]
+    assert responses[0].json()["request_id"] == responses[1].json()["request_id"]
+    with make_session_factory(database_url)() as session:
+        assert len(list(session.scalars(select(TaskRecord)))) == 1
+        # **발송은 담당을 세우지 않는다** (WORK-002 Phase 2 · 정책 V-10): 받는 사람은 아직 수락 대기다.
+        # 같은 키의 동시 발송이 한 건이라는 W1 의 보장은 그대로 — 행이 **하나**이고 그 하나가 대기다.
+        rows = list(session.scalars(select(TaskAssignmentRecord)))
+        assert [(row.assignee_id, row.status) for row in rows] == [("jiho", "pending")]

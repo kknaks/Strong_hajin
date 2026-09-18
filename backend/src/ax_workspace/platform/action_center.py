@@ -991,7 +991,14 @@ class TaskAssignmentActionHandler:
         rows = self._session.execute(
             select(TaskAssignmentRecord, TaskRecord)
             .join(TaskRecord, TaskRecord.id == TaskAssignmentRecord.task_id)
-            .where(TaskAssignmentRecord.assignee_id == str(principal.id), TaskAssignmentRecord.status == "pending")
+            .where(
+                TaskAssignmentRecord.assignee_id == str(principal.id),
+                TaskAssignmentRecord.status == "pending",
+                # **요청에서 난 대기 담당은 여기 서지 않는다.** 그 질문은 요청 자신이 갖는다
+                # (`work_request.acceptance`) — 같은 일을 두 항목으로 물으면 한쪽을 답해도 다른 쪽이
+                # 남고, 배정 수락 경로로 답하면 있지도 않은 배정 회차를 찾다 깨진다.
+                TaskAssignmentRecord.assignment_kind != "request_effect",
+            )
             .order_by(TaskAssignmentRecord.created_at)
         ).all()
         return [self.envelope((assignment, task), principal) for assignment, task in rows]
