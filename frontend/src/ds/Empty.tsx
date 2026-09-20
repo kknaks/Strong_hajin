@@ -17,6 +17,11 @@ import { Icon, type IconName } from "./icons/Icon";
  * 아이콘 이름은 **지금 우리 세트의 이름**을 쓴다(바퀴 3a D-8). 새 DS 는 이 자리에 `inbox`(24) ·
  * `circle-exclamation`(24) 를 쓰는데 우리 16 그리드 세트에 그 글리프가 없다 — 아이콘 세트 교체는 바퀴 4 다.
  *
+ * **G-CAL-02 (WORK-004): `icon` 을 더했다 — additive 다.** 시안 캘린더가 이 자리에 `calendar` 글리프를
+ * 세운다(`calendar.v1.jsx:186`). 넘기지 않으면 예전 그대로 `variant` 가 글리프를 고르므로
+ * **기존 소비처 19곳을 한 줄도 고치지 않는다** — 위 D-4 규율이 닿는 자리가 바로 「props 를 더하는 것」이다.
+ * `variant="error"` 는 붉은 원 + `role="alert"` 라 「비었다」가 아니다 — 그 자리는 글리프를 안 바꾼다.
+ *
  * **바퀴 11: 이 부품은 말을 모른다.** 예전에는 `variant` 가 `filter`·`error` 면 스스로 단추 이름을
  * 골라 왔다(`lib/labels` 의 `emptyActionLabel`). 이제 행동이 있으면 이름도 **반드시 함께** 받는다 —
  * 타입이 그 둘을 한 쌍으로 묶어서, 이름 없이 행동만 넘기면 컴파일이 안 된다.
@@ -35,6 +40,7 @@ export function Empty({
   title,
   description,
   variant = "default",
+  icon,
   actionLabel,
   onAction,
   className,
@@ -43,11 +49,15 @@ export function Empty({
   title: string;
   description?: React.ReactNode;
   variant?: EmptyVariant;
+  /** 이 자리의 글리프를 직접 고른다 (G-CAL-02). 안 주면 `variant` 가 고르던 그대로다. */
+  icon?: IconName;
   className?: string;
   children?: React.ReactNode;
 } & EmptyAction) {
   const label = actionLabel;
-  const icon: IconName = variant === "error" ? "circle-exclamation" : variant === "filter" ? "tune" : "inbox";
+  const fallback: IconName = variant === "error" ? "circle-exclamation" : variant === "filter" ? "tune" : "inbox";
+  // 못 불러온 자리(붉은 원 + alert)는 「비었다」가 아니므로 글리프를 바꾸지 않는다.
+  const glyph: IconName = variant === "error" ? fallback : icon ?? fallback;
   // 못 불러온 것은 「비었다」가 아니다 — 새 DS 는 이 자리를 StatusNote 로 그린다.
   const block = variant === "error" ? "scax-status-note" : "scax-empty";
   return (
@@ -57,7 +67,7 @@ export function Empty({
     >
       <span aria-hidden className={`${block}__icon`}>
         {/* 새 DS 는 24 를 쓰지만 우리 Icon 은 12/14/16/20 만 받는다 — 크기 정리는 바퀴 4 */}
-        <Icon name={icon} size={20} />
+        <Icon name={glyph} size={20} />
       </span>
       <p className={`${block}__title`}>{title}</p>
       {description && <p className={`${block}__desc`}>{description}</p>}

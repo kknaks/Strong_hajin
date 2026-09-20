@@ -80,5 +80,10 @@
 /* 조직 · 관계 탐색 · 캘린더 (바퀴 8-B) */
 @import "./screens-b.css";
 
+/* 캘린더 3분할 화면 (WORK-004 FE-1) — 시안 handoff/calendar/css/calendar.css 를 옮겼다.
+   클래스 71종이 위의 어느 파일과도 겹치지 않아 이 자리에서 남의 화면을 덮지 않는다.
+   ⚠ screens-b.css 의 구 `.calendar-*`(TaskCalendar)와는 **다른 계열**이다 — 그 화면은 그대로 산다. */
+@import "./calendar.css";
+
 /* AX 대화 드로어 · 액션 센터 (바퀴 7) */
 @import "./ax.css";

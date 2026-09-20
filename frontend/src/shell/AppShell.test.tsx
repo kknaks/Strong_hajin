@@ -88,7 +88,10 @@ it("셸 뼈대가 서고, 화면마다 스크롤 기둥이 본문 칸에 직접 
     fireEvent.click(nav.getByRole("button", { name: label }));
     await waitFor(() => expect(container.querySelector(".scax-page-scroll")).not.toBeNull());
     const scroll = container.querySelector(".scax-page-scroll")!;
-    const fixed = label === "회의";
+    /* WORK-004 FE-1: 캘린더가 회의와 같은 편에 섰다 — 격자가 칸을 꽉 채우고 주 뷰의 시간 격자가
+       «자기 안에서» 스크롤한다(`styles/calendar.css` 의 `.scax-cal-main{flex:1 1 auto;min-height:0}`).
+       바깥이 함께 스크롤하면 스크롤 주인이 둘이 되어 격자가 잘린다. 나머지 화면은 그대로 문서형이다. */
+    const fixed = label === "회의" || label === "캘린더";
     expect(scroll.classList.contains("scax-page-scroll--fixed"), `${label} fixed`).toBe(fixed);
     expect(scroll.children.length, `${label} 내용이 기둥 안에 있다`).toBeGreaterThan(0);
     // 스크롤 기둥은 본문 칸의 «직계 자식» 이어야 높이를 나눠 받는다

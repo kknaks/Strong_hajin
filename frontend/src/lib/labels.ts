@@ -893,3 +893,64 @@ export const meetingTimeOptions: string[] = Array.from({ length: 48 }, (_, index
 export function meetingIsoAt(date: string, time: string): string {
   return `${date}T${time}:00+09:00`;
 }
+
+/* ---- 캘린더 (SPEC-004) ----
+   시안은 레이아웃의 정본이고 **말은 우리 것이 정본**이다 (SPEC §2 읽는 규칙 1).
+   서버 오류 본문에는 `code` 가 없고 문장 하나뿐이라, 화면에 서는 말은 여기서만 만든다. */
+
+export const calendarScreen = {
+  /* 좌측 일정 레일 */
+  railTitle: "일정",
+  railEmptyTitle: "해당 일정이 없습니다",
+  railEmptyDescription: "다른 구분이나 날짜를 골라 보세요.",
+  railScopeAll: "전체 보기",
+  /* 격자 */
+  allDay: "종일",
+  today: "오늘",
+  monthLabel: "달력",
+  weekLabel: "주별 달력",
+  prev: { month: "이전 달", week: "이전 주" },
+  next: { month: "다음 달", week: "다음 주" },
+  viewAria: "기간 보기",
+  tabAria: "일정 구분",
+  /* 상태 */
+  loading: "캘린더를 불러오는 중",
+  loadFailed: "캘린더를 불러오지 못했습니다.",
+  retry: "다시 시도",
+  /* 카드 — 유형만 낸다. 상태는 카드를 열어 상세에서 읽는다 (K15) */
+  taskBadge: "업무",
+  meetingBadge: "회의",
+  undated: "기한 없음",
+  dueOnly: (date: string) => `${formatDate(date)} 마감`,
+  range: (from: string, to: string) => (from === to ? formatDate(from) : `${formatDate(from)} ~ ${formatDate(to)}`),
+  /** 업무 카드가 자기 시간 배정을 접어 넣는 줄 — `3일 10:00` 꼴 (SPEC §2.1). */
+  scheduleChip: (onDate: string, startsAt: string) => `${Number(onDate.slice(8, 10))}일 ${startsAt}`,
+  clockRange: (startsAt: string, endsAt: string) => `${startsAt}–${endsAt}`,
+  more: (count: number) => `+${count}건 더`,
+  unfold: (count: number) => `${count}건 펴기`,
+  fold: "접기",
+} as const;
+
+/** 캘린더 탭 셋 — 레일과 격자를 **동시에** 가른다 (SPEC §2.1). */
+export const calendarTabLabel = { all: "전체", meeting: "회의", task: "업무" } as const;
+
+/** 월·주 두 뷰 (SPEC §2.1). */
+export const calendarViewLabel = { week: "주", month: "월" } as const;
+
+/** 주 뷰 시간 눈금 — `오전 8시` 꼴. 0 시와 12 시는 「오전/오후 12시」다. */
+export function calendarHourLabel(hour: number): string {
+  if (hour === 0) return "오전 12시";
+  if (hour < 12) return `오전 ${hour}시`;
+  if (hour === 12) return "오후 12시";
+  return `오후 ${hour - 12}시`;
+}
+
+/** 격자 머리의 달·주 표기 — 읽기 전용 날짜 문법(`/`)과 어긋나지 않게 숫자로만 쓴다. */
+export const calendarCursorText = {
+  month: (year: number, month: number) => `${month}월`,
+  year: (year: number) => `${year}년`,
+  yearMonth: (year: number, month: number) => `${year}년 ${month}월`,
+  week: (week: number) => `${week}주차`,
+};
+
+export const calendarDow = ["일", "월", "화", "수", "목", "금", "토"] as const;

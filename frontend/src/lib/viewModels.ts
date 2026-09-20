@@ -1231,3 +1231,96 @@ export type WorkRequestReadReceipt = {
   read: boolean;
   read_at: string;
 };
+
+/* ---- 캘린더 시간 배정 (SPEC-004) ----
+   합본 조회 `GET /api/calendar?from=&to=` 한 배열이 업무와 회의를 함께 싣고 `kind` 로 가른다.
+   **화면은 기간을 계산하지 않는다** — 서버가 정규화한 `span_from`·`span_to` 를 받아서 그린다 (K14). */
+
+/**
+ * 업무 하루치 시간 배정 한 줄.
+ *
+ * **`task_id` 가 없다** — 이 배열은 언제나 자기 업무 행 안에 실려 오므로 행이 곧 소속이다.
+ * 요청한 기간과 겹치는 **살아 있는** 것만 온다(닫힌 배정·기간 밖 배정은 안 실린다).
+ * `version` 은 **그 배정 자신의 회차**다 — 업무 회차와 다른 값이고, 시각 변경이 이것을 쓴다 (K8·K10).
+ */
+export type TaskScheduleRow = {
+  schedule_id: string;
+  /** 어느 날 (`YYYY-MM-DD`). */
+  on_date: string;
+  /** 사무실 시간대의 벽시계 (`HH:MM`). 회의의 UTC ISO 와 **타입이 다르다**. */
+  starts_at: string;
+  ends_at: string;
+  version: number;
+};
+
+/**
+ * 합본 조회의 업무 행.
+ *
+ * ⚠ **`start_date`·`due_date` 로 띠를 그리지 않는다.** 둘은 원본 그대로라 뒤집힌 업무에서
+ * `start_date > due_date` 가 실제로 온다. 그리기도 드롭 가드도 `span_from`·`span_to` 를 쓴다 (K14).
+ * 기간이 없는 업무는 `span_from`·`span_to` 가 **둘 다 `null`** 이고, 그래도 행으로는 온다 —
+ * 좌측 레일이 「날짜부터」(R2)를 하려면 필요하다.
+ *
+ * `state` 는 화면 어휘 5종 그대로다. 다만 내부 `completion_submitted` 가 여기서 **`"done"` 으로
+ * 투영**되고 행에 `derived` 가 없어 승인 대기인지 **가려지지 않는다** — 그래서 좌측 카드는
+ * 상태를 내지 않는다 (K15).
+ */
+export type CalendarTaskRow = {
+  kind: "task";
+  task_id: string;
+  title: string;
+  state: TaskState;
+  start_date: string | null;
+  due_date: string | null;
+  span_from: string | null;
+  span_to: string | null;
+  /** **업무** 회차. 날짜 조정(`PATCH /api/tasks`)이 쓴다 — 배정 회차가 아니다. */
+  version: number;
+  schedules: TaskScheduleRow[];
+};
+
+/**
+ * 합본 조회의 회의 행.
+ *
+ * `starts_at`·`ends_at` 은 **UTC ISO**(`+00:00`)다 — 업무의 `on_date`+`HH:MM` 과 타입이 다르므로
+ * 격자에 놓기 전에 사무실 시간대(Asia/Seoul)로 옮긴다.
+ * `created_by_display_name` 은 **이 합본 조회에만** 있다 — `GET /api/meetings` 기간 갈래에는 없다 (K4).
+ */
+export type CalendarMeetingRow = {
+  kind: "meeting";
+  meeting_id: string;
+  title: string | null;
+  starts_at: string;
+  ends_at: string;
+  location: string | null;
+  status: MeetingStatus;
+  viewer_relation: MeetingViewerRelation;
+  /** member id. **화면에 내지 않는다** — 이름은 아래 `created_by_display_name` 이다. */
+  created_by: string;
+  attendee_count: number;
+  created_by_display_name: string;
+};
+
+export type CalendarEntry = CalendarTaskRow | CalendarMeetingRow;
+
+/** 배정 생성·시각 변경의 응답. 여기에는 `task_id` 가 있다 — 합본 조회의 `schedules[]` 와 다르다. */
+export type TaskScheduleMutation = {
+  schedule_id: string;
+  task_id: string;
+  on_date: string;
+  starts_at: string;
+  ends_at: string;
+  version: number;
+};
+
+/**
+ * 업무 날짜가 바뀔 때 **함께 닫힌 배정의 건수와 사유** (K3).
+ *
+ * 날짜가 바뀌는 세 자리(업무 수정 · 시작 전이 · 조건 변경 제안 동의)의 응답에만 실린다 —
+ * 날짜를 안 바꾸는 전이 넷(`/block`·`/resume`·`/complete`·`/cancel`)에는 **없다**.
+ * `released_count` 가 0 이면 화면은 **아무 말도 하지 않는다.** 문구는 서버가 아니라 화면이 만든다.
+ */
+export type ScheduleRelease = {
+  released_count: number;
+  reason: "out_of_range" | "task_dates_cleared" | null;
+};
