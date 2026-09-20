@@ -4,8 +4,20 @@ from __future__ import annotations
 from ax_workspace.modules.work.request_results import WorkRequestDetailResult, WorkRequestEvidenceResult
 from ax_workspace.modules.actions.results import ActionDiscussionView
 
-from ax_workspace.modules.work.request_results import WorkRequestMutationResult
-from ax_workspace.modules.work.request_commands import WorkRequestVersionInput, WorkRequestRejectInput, WorkRequestNegotiationInput, WorkRequestCommentInput
+from ax_workspace.modules.work.request_results import (
+    WorkRequestInboxEntry,
+    WorkRequestMaterialResult,
+    WorkRequestMaterialView,
+    WorkRequestMutationResult,
+    WorkRequestReadReceiptResult,
+)
+from ax_workspace.modules.work.request_commands import (
+    WorkRequestCommentInput,
+    WorkRequestMaterialLinkInput,
+    WorkRequestNegotiationInput,
+    WorkRequestRejectInput,
+    WorkRequestVersionInput,
+)
 
 
 from collections.abc import Iterable
@@ -17,12 +29,14 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from ax_workspace.modules.organization_access.domain import (
     Principal,
+    TASK_SELF_MANAGE,
     WORK_REQUEST_CREATE,
     WORK_REQUEST_DECIDE,
     WORK_REQUEST_READ,
 )
 from ax_workspace.modules.work.request_errors import (
     WorkRejectReasonRequired,
+    WorkRequestReferenceReadForbidden,
     WorkRequestAccessDenied,
     WorkRequestError,
     WorkRequestIdempotencyConflict,
@@ -42,8 +56,19 @@ from ax_workspace.modules.work.request_lifecycle import (
     revise_work_request,
     withdraw_work_request,
 )
+from ax_workspace.modules.work.parties import may_read, party_of
 from ax_workspace.modules.work.material_extraction import MaterialExtractionJob, MaterialExtractionQueue, MaterialExtractionRepository
-from ax_workspace.modules.work.materials import AttachmentRepository, MaterialNotFound, MaterialStorage, store_file
+from ax_workspace.modules.work.materials import AttachmentRepository, MaterialNotFound, MaterialStorage, material_view, store_file
+from ax_workspace.modules.work.material_values import MaterialError, MaterialLink
+
+
+def _utc_iso(value: datetime) -> str:
+    """시각 하나를 **표면에 나가는 한 모양**으로 맞춘다 — 시간대가 없으면 UTC 로 읽는다.
+
+    저장이 시간대를 잃어버리는 데이터베이스가 있어서, 갓 만든 값(aware)과 다시 읽은 값(naive)이
+    같은 순간인데 다른 글자로 나가는 자리가 생긴다. 밖으로 나가는 계약에서는 그 차이를 없앤다.
+    """
+    return (value if value.tzinfo is not None else value.replace(tzinfo=UTC)).isoformat()
 
 
 def comment_identity(request_thread_id: UUID, author_id: str, idempotency_key: str) -> UUID:
@@ -62,7 +87,10 @@ class WorkRequestRepository(Protocol):
         causation_key: str | None = None,
         *,
         description: str | None = None,
+        start_date: date | None = None,
         due_date: date | None = None,
+        project_id: UUID | None = None,
+        approver_id: str | None = None,
         cc_member_ids: list[str] | None = None,
         checklist: list[str] | None = None,
         source_meeting_id: UUID | None = None,
@@ -73,7 +101,13 @@ class WorkRequestRepository(Protocol):
     ) -> tuple[Any, bool]: ...
     def request(self, request_id: UUID, *, lock: bool = False) -> Any: ...
     def cc_member_ids(self, request: Any) -> list[str]: ...
+    def read_receipt(self, request_id: UUID, member_id: str) -> Any | None: ...
+    def mark_read(self, request_id: UUID, member_id: str) -> Any: ...
+    def read_request_ids(self, member_id: str) -> set[UUID]: ...
     def derived_task_ids(self, requests: list[Any]) -> dict[UUID, UUID]: ...
+    #: 그 업무의 **활성 선행**. 요청 행은 순서를 갖지 않으므로(발송이 세운 업무가 그 자리다) 조회는
+    #: 파생 업무에서 읽어 온다 — 생성 입력으로 받은 값이 조회로 돌아오지 않던 자리를 잇는다.
+    def predecessor_task_ids(self, task_id: UUID | None) -> list[UUID]: ...
     def adopt_evidence(self, submission: Any, attachment: Any, *, role: str, adopted_by: str) -> Any: ...
     def amend(self, request: Any, actor_id: str, snapshot: dict[str, Any]) -> Any: ...
     def audit_payloads(self, request_id: UUID, event_type: str) -> list[dict[str, Any]]: ...
@@ -84,6 +118,7 @@ class WorkRequestRepository(Protocol):
     def close_request_task(self, request: Any, actor_id: str, *, cancel_reason: str, summary: str) -> Any: ...
     def create_task_for_request(
         self, request: Any, *, actor_id: str,
+        preceding_task_ids: list[UUID] | None = None,
         source_action_item_id: UUID | None = None, source_decision_item_id: UUID | None = None,
         source_submission_id: UUID | None = None, source_review_decision_id: UUID | None = None,
     ) -> Any: ...
@@ -115,6 +150,16 @@ class RequestParentPort(Protocol):
     """상위 업무를 붙여도 되는지 묻는 자리 — 판정은 업무 모듈이 갖는다 (SPEC-003 §4 Validation)."""
 
     def parent_for(self, principal: Principal, parent_task_id: UUID | None, *, assignee_id: str | None = None) -> Any: ...
+    #: 어느 프로젝트의 일로 둘 수 있는가. **업무 모듈이 판정한다** — 하위는 상위를 따르고, 읽을 수 없는
+    #: 프로젝트에는 일을 밀어 넣을 수 없다는 규칙이 거기 한 곳에 있다.
+    def project_for(self, principal: Principal, project_id: UUID | None, parent: Any = None) -> UUID | None: ...
+    #: 선행으로 설 수 있는 배열인가. **업무 모듈이 판정한다** — 프로젝트 일치·자기 자신·중복·순환이
+    #: 거기 한 곳에 있다. 발송 단계에는 업무가 아직 없어 `task_id` 를 넘기지 않는다.
+    def resolve_predecessors(self, principal: Principal, wanted: list[UUID], *, project_id: Any) -> list[UUID]: ...
+    #: 결재자로 설 수 있는 사람인가 — **업무 모듈이 판정한다.** 재직 여부와 「담당자 본인 불가」가
+    #: 거기 한 곳에 있고, 두 갈래가 같은 규칙을 지나야 한다. 갈래가 정하는 것은 **누가 담당인가**
+    #: 하나뿐이다: 내 업무는 만드는 사람, 요청은 받는 사람이다.
+    def valid_approver(self, principal: Principal, approver_id: str | None, *, assignee_id: str | None) -> str | None: ...
 
 
 class WorkRequestAssigneeDirectory(Protocol):
@@ -123,6 +168,17 @@ class WorkRequestAssigneeDirectory(Protocol):
     def member_candidates(self, principal: Principal) -> list[dict[str, str]]: ...
     def is_active_member(self, principal: Principal, member_id: str) -> bool: ...
 
+
+#: 요청에 붙은 자료가 서는 binding context. 논의(`comment`)·판단 근거(`submission`)와 **다른 자리**다:
+#: 세 가지는 뜻이 다르고, 한 자리에 섞으면 요청 타임라인이 자료로 오염된다 (WORK-003 요청 자료 계약).
+WORK_REQUEST_MATERIAL_CONTEXT = "work_request"
+#: 요청 자료의 역할은 **참고 자료 하나**다. 요청에는 아직 결과가 없으므로 산출물이 설 자리가 없고,
+#: 수락이 이 자료를 그대로 업무에 이어 붙이므로 여기서 산출물을 허용하면 아무도 만들지 않은 산출물이
+#: 업무의 완료 보고 후보로 선다.
+WORK_REQUEST_MATERIAL_ROLE = "input"
+#: 자료를 **붙이고 뗄 수 있는** 요청 상태. 답이 온 뒤의 요청은 기록이고, 거기서는 읽기만 남는다 —
+#: 거절·철회된 요청의 자료도 그대로 읽힌다 (목록·내려받기는 상태를 묻지 않는다).
+_MATERIAL_WRITABLE_STATES = frozenset({"pending", "negotiating"})
 
 #: 사람이 아닌 행위자의 접두. 이 글자로 시작하는 id 는 **사람 명부에 없다** — 사람으로 그리면 안 된다.
 SYSTEM_ACTOR_PREFIX = "system:"
@@ -255,8 +311,12 @@ class WorkRequestApplication:
         causation_key: str | None = None,
         *,
         description: str | None = None,
+        start_date: date | None = None,
         due_date: date | None = None,
+        project_id: UUID | None = None,
+        approver_id: str | None = None,
         cc_member_ids: list[str] | None = None,
+        preceding_task_ids: list[UUID] | None = None,
         checklist: list[str] | None = None,
         reference_task_ids: list[UUID] | None = None,
         source_meeting_id: UUID | None = None,
@@ -307,6 +367,28 @@ class WorkRequestApplication:
             if parent_task_id is not None and self._parents is not None
             else None
         )
+        # 프로젝트도 **업무 모듈이 판정한다** — 하위 요청은 묻지 않고 상위를 따르고, 읽을 수 없는
+        # 프로젝트로는 보낼 수 없다. 내 업무 생성이 지나는 것과 같은 한 자리다.
+        project = (
+            self._parents.project_for(principal, project_id, parent)
+            if self._parents is not None
+            else project_id
+        )
+        # **선행도 업무 모듈이 판정한다** — 프로젝트 일치·읽기 권한이 거기 한 곳에 있다. 발송이
+        # 세우는 Task 가 아직 없으므로 자기 자신도 순환도 성립하지 않는다 (`task_id=None`).
+        # 판정을 여기서 다시 쓰면 두 벌이 조용히 갈린다.
+        predecessors = (
+            self._parents.resolve_predecessors(principal, list(preceding_task_ids or ()), project_id=project)
+            if self._parents is not None
+            else list(preceding_task_ids or ())
+        )
+        # **결재자도 업무 모듈이 판정한다.** 재직 여부와 「담당자 본인 불가」가 거기 한 곳에 있고,
+        # 요청 갈래의 담당은 **받는 사람**이다 — 자기에게 온 일을 자기가 확인하는 자리를 만들지 않는다.
+        approver = (
+            self._parents.valid_approver(principal, approver_id, assignee_id=assignee_id)
+            if self._parents is not None
+            else (approver_id or None)
+        )
         if supersedes_request_id is not None:
             # 재요청은 **새 요청·새 Task** 다 (정책 V-12). 이 값은 두 건을 잇기만 하고 옛것을 되살리지 않는다.
             previous = self._repository.request(supersedes_request_id)
@@ -321,7 +403,10 @@ class WorkRequestApplication:
             decision.title,
             causation_key,
             description=decision.description,
+            start_date=start_date,
             due_date=due_date,
+            project_id=project,
+            approver_id=approver,
             cc_member_ids=list(decision.cc_member_ids),
             # The steps travel with the request and become the accepted Task's own checklist.
             checklist=checklist,
@@ -345,6 +430,9 @@ class WorkRequestApplication:
         task = self._repository.create_task_for_request(
             request,
             actor_id=str(principal.id),
+            # 요청에 실린 선행이 **그 요청이 세우는 업무의 선행**이 된다 — 요청 행은 순서를 따로 갖지
+            # 않는다(업무가 발송 시점에 이미 서므로 그것이 관계의 자리다).
+            preceding_task_ids=predecessors,
             source_action_item_id=source_action_item_id,
             source_decision_item_id=source_decision_item_id,
             source_submission_id=source_submission_id,
@@ -369,6 +457,9 @@ class WorkRequestApplication:
         # **같은 업무의 담당이 확정된다 — 새 업무가 생기지 않는다** (SPEC-003 §4 수락 · 인수조건).
         # `task_id` 와 `parent_task_id` 가 발송 때 그대로다.
         task = self._repository.accept_request_assignment(request, str(principal.id))
+        # **요청에 실린 자료가 그 업무의 자료로 함께 선다** (WORK-003). 요청 binding 은 그대로 두고
+        # 같은 Attachment 에 업무 binding 을 더한다 — 복사본을 만들지 않으므로 파일은 하나다.
+        self._adopt_materials_into_task(request, task, str(principal.id))
         self._repository.append_audit(request.id, str(principal.id), "work_request.accepted", {"task_id": str(task.id)})
         return self._view(request, task)
 
@@ -667,7 +758,7 @@ class WorkRequestApplication:
         request = self._repository.request(request_id, lock=True)
         if request is None:
             raise WorkRequestError("work request was not found")
-        if not self._is_requester(principal, request) and str(principal.id) != request.assignee_id:
+        if not self._is_requester(principal, request) and not self._is_assignee(principal, request):
             raise WorkRequestError("only the requester or the assignee may adopt evidence")
         submission = self._repository.current_submission(request)
         if submission is None:
@@ -721,13 +812,215 @@ class WorkRequestApplication:
             if extraction.status == "queued" and self._extraction_queue is not None:
                 self._extraction_queue.enqueue(MaterialExtractionJob(extraction.id, attachment.id, attachment.uploaded_by))
 
+    # ---- 요청 자료 — 발송한 요청에 **2단계로** 붙는 참고 자료 (WORK-003) ------------------
+    #
+    # 생성 payload 에 자료 칸을 더하지 않는다: 요청은 보내는 순간 아직 id 가 없고, 부분 실패한
+    # 업로드가 요청 자체를 못 만든 것으로 읽히기 때문이다. 내 업무가 지나는 길과 **같은 모양**으로
+    # 만들고(요청 id 를 받고) 그 id 로 붙인다 — 화면이 두 갈래를 다르게 그리지 않아도 된다.
+
+    def list_materials(self, principal: Principal, request_id: UUID) -> list[WorkRequestMaterialView]:
+        """요청에 붙어 있는 자료들. **읽기는 참여자 전부**에게 열린다 — 요청 조회와 같은 문이다."""
+        self._require(principal, WORK_REQUEST_READ)
+        request = self._participant_request(principal, request_id)
+        return self._material_views(request)
+
+    def attach_material(
+        self, principal: Principal, request_id: UUID, *, kind: str = WORK_REQUEST_MATERIAL_ROLE,
+        name: str, content_type: str, data: bytes,
+    ) -> WorkRequestMaterialResult:
+        """파일 하나를 요청에 붙인다. **보낸 사람만** 붙일 수 있고, 답이 오기 전까지다."""
+        request = self._material_writer(principal, request_id)
+        self._require_material_role(kind)
+        attachment = store_file(
+            self._attachments, self._storage,
+            key_prefix=f"work_requests/{request.id}/materials",
+            name=name, content_type=content_type, data=data,
+            provenance=f"upload by {principal.id} to work request {request.id}", uploaded_by=str(principal.id),
+        )
+        binding = self._bind_material(request, attachment, str(principal.id))
+        # 파일은 읽을 내용이 있다 — 업무 자료와 같은 자리에서 추출을 건다.
+        self._request_extraction(attachment)
+        return self._material_moved(request, binding, attachment, self._material_extraction(attachment))
+
+    def attach_material_link(
+        self, principal: Principal, request_id: UUID, *, kind: str = WORK_REQUEST_MATERIAL_ROLE,
+        url: str, label: str,
+    ) -> WorkRequestMaterialResult:
+        """다른 곳에 있는 것을 요청이 가리킨다. 내용을 가져오지 않고 판본을 못 박지 않는다."""
+        request = self._material_writer(principal, request_id)
+        self._require_material_role(kind)
+        link = MaterialLink.create(url, label)
+        attachment = self._attachments.add_link(
+            url=link.url, name=link.label,
+            provenance=f"link by {principal.id} on work request {request.id}", uploaded_by=str(principal.id),
+        )
+        binding = self._bind_material(request, attachment, str(principal.id))
+        # 링크는 읽을 내용이 없으므로 추출을 걸지 않는다 — 검색은 그것을 「읽을 수 없음」으로 말한다.
+        return self._material_moved(request, binding, attachment, None)
+
+    def open_material(self, principal: Principal, request_id: UUID, material_id: UUID) -> tuple[dict[str, Any], bytes]:
+        """내려받기. **읽을 수 있는 사람이면 내려받을 수 있다** — 「보이는데 못 받는다」를 만들지 않는다."""
+        self._require(principal, WORK_REQUEST_READ)
+        request = self._participant_request(principal, request_id)
+        binding, attachment = self._material_binding(request, material_id)
+        if attachment.source_kind != "file":
+            raise MaterialError("only file attachments have downloadable content")
+        if getattr(attachment, "lifecycle", "available") == "purged":
+            raise MaterialNotFound("이 자료는 완전히 삭제되어 더 이상 내려받을 수 없습니다")
+        try:
+            data = self._storage.get(attachment.source_ref)
+        except FileNotFoundError as error:
+            # 행은 파일이 있다고 말하는데 저장소가 아니라고 한다: 버그로 터지지 않고 그대로 말한다.
+            raise MaterialNotFound("자료 원본을 찾을 수 없습니다") from error
+        view = self._material_view(
+            request, binding, attachment, self._material_extraction(attachment), task_id=self._derived_task_id(request)
+        )
+        return view, data
+
+    def detach_material(self, principal: Principal, request_id: UUID, material_id: UUID) -> WorkRequestMaterialResult:
+        """요청에서 뗀다. **Attachment 와 바이트는 남는다** — binding 이 언제 떠났는지를 적는다."""
+        request = self._material_writer(principal, request_id)
+        binding, attachment = self._material_binding(request, material_id)
+        self._attachments.unbind(binding)
+        self._repository.append_audit(
+            request.id, str(principal.id), "work_request.material_detached",
+            {"attachment_id": str(attachment.id), "name": attachment.name},
+        )
+        return self._material_moved(request, binding, attachment, self._material_extraction(attachment))
+
+    def _material_writer(self, principal: Principal, request_id: UUID) -> Any:
+        """붙이고 떼는 자리 — **보낸 사람 하나**이고, 아직 답이 오지 않은 요청에서만이다.
+
+        판정을 여기 한 곳에 모은다. 참여자 판정(`_participant_request`)이 먼저 서서 **못 읽는 사람에게는
+        존재를 숨기고**(404), 읽을 수는 있지만 보낸 사람이 아닌 참여자만 403 으로 갈린다.
+        """
+        self._require(principal, WORK_REQUEST_READ)
+        if self._attachments is None or self._storage is None:
+            raise WorkRequestError("attachments are not available")
+        request = self._participant_request(principal, request_id)
+        if not self._is_requester(principal, request):
+            raise WorkRequestAccessDenied("요청 자료는 보낸 사람만 붙이고 뗄 수 있습니다")
+        if str(request.state) not in _MATERIAL_WRITABLE_STATES:
+            raise WorkRequestNotPending("이미 답한 요청의 자료는 바꿀 수 없습니다")
+        return request
+
+    @staticmethod
+    def _require_material_role(kind: str) -> None:
+        if str(kind) != WORK_REQUEST_MATERIAL_ROLE:
+            raise MaterialError("요청 자료는 참고 자료(input)로만 붙일 수 있습니다")
+
+    def _bind_material(self, request: Any, attachment: Any, actor_id: str) -> Any:
+        binding = self._attachments.bind(
+            attachment_id=attachment.id,
+            context_type=WORK_REQUEST_MATERIAL_CONTEXT,
+            context_id=str(request.id),
+            role=WORK_REQUEST_MATERIAL_ROLE,
+            bound_by=actor_id,
+        )
+        self._repository.append_audit(
+            request.id, actor_id, "work_request.material_attached",
+            {"attachment_id": str(attachment.id), "name": attachment.name},
+        )
+        return binding
+
+    def _material_bindings_for(self, request: Any) -> list[tuple[Any, Any]]:
+        if self._attachments is None:
+            return []
+        return [
+            (binding, attachment)
+            for binding, attachment in self._attachments.bindings_for(WORK_REQUEST_MATERIAL_CONTEXT, str(request.id))
+            if binding.unbound_at is None
+        ]
+
+    def _material_binding(self, request: Any, material_id: UUID) -> tuple[Any, Any]:
+        found = next(
+            ((binding, attachment) for binding, attachment in self._material_bindings_for(request)
+             if attachment.id == material_id),
+            None,
+        )
+        if found is None:
+            raise MaterialNotFound("material was not found")
+        return found
+
+    def _material_extraction(self, attachment: Any) -> Any | None:
+        if self._extractions is None:
+            return None
+        return self._extractions.for_attachments([attachment.id]).get(attachment.id)
+
+    def _material_views(self, request: Any, *, extractions: bool = True) -> list[WorkRequestMaterialView]:
+        active = self._material_bindings_for(request)
+        if not active:
+            return []
+        found = (
+            self._extractions.for_attachments([attachment.id for _, attachment in active])
+            if extractions and self._extractions is not None
+            else {}
+        )
+        # 파생 업무는 요청당 하나다 — 자료마다 다시 묻지 않는다.
+        task_id = self._derived_task_id(request)
+        return [
+            self._material_view(request, binding, attachment, found.get(attachment.id), task_id=task_id)
+            for binding, attachment in active
+        ]
+
+    def _derived_task_id(self, request: Any) -> Any | None:
+        return self._repository.derived_task_ids([request]).get(request.id)
+
+    def _material_view(
+        self, request: Any, binding: Any, attachment: Any, extraction: Any | None, *, task_id: Any | None
+    ) -> WorkRequestMaterialView:
+        """업무 자료와 **같은 투영**에 자리 둘을 얹는다 — 어느 요청이고 어느 업무로 이어졌는가."""
+        return {
+            **material_view(binding, attachment, extraction),
+            "request_id": str(request.id),
+            "task_id": str(task_id) if task_id else None,
+        }
+
+    def _material_moved(self, request: Any, binding: Any, attachment: Any, extraction: Any | None) -> WorkRequestMaterialResult:
+        """붙이고 뗀 것은 요청의 **내용이 달라진 것**이다 — 업무 자료가 업무 회차를 올리는 것과 같다.
+
+        회차가 오르므로, 보던 화면에서 그대로 누른 수락은 stale 로 갈린다. 그것이 맞는 답이다:
+        받는 사람이 본 요청과 지금의 요청이 다르다.
+        """
+        request.version += 1
+        view = self._material_view(request, binding, attachment, extraction, task_id=self._derived_task_id(request))
+        return {**view, "request_version": int(request.version)}
+
+    def _adopt_materials_into_task(self, request: Any, task: Any, actor_id: str) -> None:
+        """수락이 요청 자료를 **파생 업무에도** 세운다 — 원본 요청 binding 은 그대로 남는다 (이중 바인딩).
+
+        복사본을 만들지 않는다. 같은 Attachment 가 두 자리에 서므로 파일도 무결성 해시도 하나이고,
+        요청 기록에서 읽던 것과 업무에서 읽는 것이 **같은 자료**임이 구조로 남는다.
+        """
+        if task is None or self._attachments is None:
+            return
+        already = {
+            attachment.id
+            for binding, attachment in self._attachments.bindings_for("task", str(task.id))
+            if binding.unbound_at is None
+        }
+        for _, attachment in self._material_bindings_for(request):
+            if attachment.id in already:
+                continue
+            self._attachments.bind(
+                attachment_id=attachment.id,
+                context_type="task",
+                context_id=str(task.id),
+                role=WORK_REQUEST_MATERIAL_ROLE,
+                bound_by=actor_id,
+            )
+
     def material_bindings(self, principal: Principal, request_id: UUID) -> list[tuple[Any, Any]]:
-        """Live discussion bindings and adopted, immutable submission files for a current participant."""
+        """요청에 붙은 자료 · 논의에 붙은 파일 · 채택된 판단 근거 — 지금 참여자가 읽을 수 있는 전부.
+
+        **자료 검색이 요청을 소유자로 읽는 한 자리다.** 요청 자료를 여기 세우지 않으면 화면에서는
+        보이는 파일이 검색에는 없는 자리가 생긴다.
+        """
         self._require(principal, WORK_REQUEST_READ)
         request = self._participant_request(principal, request_id)
         if self._attachments is None:
             return []
-        bindings = []
+        bindings = list(self._material_bindings_for(request))
         if self._comments is not None and request.request_thread_id is not None:
             comments = self._comments.list_for(request.request_thread_id)
             bindings.extend(self._attachments.bindings_for_many("comment", [str(comment.id) for comment in comments]))
@@ -749,6 +1042,12 @@ class WorkRequestApplication:
                            if attachment.id == attachment_id), None)
         if attachment is None:
             raise MaterialNotFound("attachment was not found")
+        # **내려받을 내용이 없는 자료는 여기서 걸린다** — 요청 자료가 이 목록에 서면서 링크도 닿게 됐고,
+        # 링크의 `source_ref` 는 주소이지 storage key 가 아니다. 그대로 저장소에 넘기면 키 검사가
+        # `ValueError` 로 터져 **500** 이 나간다: 말이 되는 요청에 서버 잘못이라고 답하는 자리다.
+        # 새 요청 자료 내려받기(`open_material`)가 쓰는 것과 **같은 가드**이고 같은 422 로 나간다.
+        if attachment.source_kind != "file":
+            raise MaterialError("only file attachments have downloadable content")
         return _attachment_view(attachment), self._storage.get(attachment.source_ref)
 
     def add_comment(self, principal: Principal, request_id: UUID, body: str, *, idempotency_key: str | None = None) -> ActionDiscussionView:
@@ -803,13 +1102,30 @@ class WorkRequestApplication:
         member_id = str(principal.id)
         return member_id == request.requester_id or member_id == getattr(request, "promoted_by_member_id", None)
 
-    def _is_participant(self, principal: Principal, request: Any) -> bool:
-        member_id = str(principal.id)
-        return (
-            self._is_requester(principal, request)
-            or member_id == request.assignee_id
-            or member_id in self._repository.cc_member_ids(request)
+    @staticmethod
+    def _is_assignee(principal: Principal, request: Any) -> bool:
+        """받는 사람인가 — **판단(수락·거절·협의)을 여는 유일한 자리다.**"""
+        return str(principal.id) == str(request.assignee_id)
+
+    def _is_cc(self, principal: Principal, request: Any) -> bool:
+        """참조자인가 — 읽기와 논의만 열린다 (`modules/work/parties.py`)."""
+        return str(principal.id) in self._repository.cc_member_ids(request)
+
+    def _party_of(self, principal: Principal, request: Any) -> Any:
+        """이 사람이 선 **자리 하나**. 셋을 한 판정으로 묶지 않는 이유가 `parties.py` 에 있다."""
+        return party_of(
+            str(principal.id),
+            requester_ids=[
+                str(request.requester_id),
+                str(getattr(request, "promoted_by_member_id", None) or ""),
+            ],
+            assignee_ids=[str(request.assignee_id)],
+            cc_member_ids=self._repository.cc_member_ids(request),
         )
+
+    def _is_participant(self, principal: Principal, request: Any) -> bool:
+        """읽고 논의할 수 있는가. **세 자리 전부**가 여기 서고, 그 이상은 각자의 판정이 따로 묻는다."""
+        return may_read(self._party_of(principal, request))
 
     @staticmethod
     def _comment_view(comment: Any, attachments: list[dict[str, Any]]) -> ActionDiscussionView:
@@ -822,17 +1138,63 @@ class WorkRequestApplication:
             "attachments": attachments,
         }
 
-    def inbox(self, principal: Principal) -> list[WorkRequestMutationResult]:
-        """**내가 답해야 하는 요청** (SPEC-003 §4 `GET /api/work-requests/inbox`).
+    def inbox(self, principal: Principal) -> list[WorkRequestInboxEntry]:
+        """답할 업무와 CC로 받은 참조의 합집합. TaskReference는 수신 관계가 아니다.
 
-        받는 사람으로서 아직 답하지 않은 것(`pending`·`negotiating`)만이다 — 내가 보낸 요청은
-        `GET /api/work-requests` 쪽이다. 각 줄이 자기가 세운 업무를 함께 가리키므로, 답하기 전에도
-        무엇에 대한 요청인지 열어 볼 수 있다.
+        담당자 업무(`work`)는 기존대로 pending/negotiating 만이고 **이 절이 손대지 않는다** —
+        읽음이 수락을 대신하지 않는다 (SPEC-001 U-12).
+
+        **참고 갈래(`reference`)에만 미읽음 필터가 걸린다** (SPEC-001 §4 「수신함 조회 — 필터가
+        어디에 걸리나」). 기준은 **조회하는 사람**이다: 다른 참조자의 읽음은 내 결과를 바꾸지 않는다.
+
+        이 필터가 **여기 하나에만** 있는 것이 계약이다. 요청 목록(`list()`)에 걸면 읽은 참고 업무가
+        `참조 업무` 탭에서도 사라지고, 업무 조회에 걸면 읽음이 업무의 사실인 것처럼 번진다.
+        화면·REST·MCP·AX 가 전부 이 함수를 지나므로 표면마다 다른 규칙이 서지 않는다.
         """
-        self._require(principal, WORK_REQUEST_DECIDE)
-        requests = self._repository.inbox_for(str(principal.id))
+        can_decide = WORK_REQUEST_DECIDE in principal.capabilities
+        can_read = WORK_REQUEST_READ in principal.capabilities
+        if not can_decide and not can_read:
+            self._require(principal, WORK_REQUEST_READ)
+        member_id = str(principal.id)
+        entries: list[WorkRequestInboxEntry] = []
+        requests = self._repository.list_for(member_id)
         derived = self._repository.derived_task_ids(requests)
-        return [self._view(request, task_id=derived.get(request.id)) for request in requests]
+        already_read = self._repository.read_request_ids(member_id) if can_read else set()
+        for request in requests:
+            view = self._view(request, task_id=derived.get(request.id))
+            if can_decide and request.assignee_id == member_id and request.state in {"pending", "negotiating"}:
+                entries.append({**view, "category": "work"})
+            elif can_read and member_id in view["cc_member_ids"] and request.id not in already_read:
+                entries.append({**view, "category": "reference"})
+        return entries
+
+    def mark_reference_read(self, principal: Principal, request_id: UUID) -> WorkRequestReadReceiptResult:
+        """그 참고 항목을 **내 수신함에서만** 접는다 (SPEC-001 §4 · DEC-001 D-19).
+
+        판정 순서가 계약이다 (WORK-003 § Internal Interface Contract):
+
+        1. **그 요청을 읽을 수 있는가** — 아니면 없는 것과 **같은 말**로 답한다(404). 참조자가
+           아닌 것과 존재하지 않는 것을 여기서 가르면 존재 여부가 샌다.
+        2. **그 요청의 참조자인가** — 읽을 수는 있는데 참조자가 아닌 사람만 403 이다. 요청자·담당자·
+           관리자에게는 이 명령이 없다 (§5 권한).
+        3. **이미 있으면 그것을 그대로 돌려준다** — 멱등이다. 회차도 멱등 키도 요구하지 않는다.
+
+        **요청 행을 수정하지 않는다** — 회차도 상태도 CC 관계도 그대로다. 올리면 읽음 하나가 남이
+        들고 있던 낙관적 잠금을 깨뜨린다 (§5 동시성).
+        """
+        self._require(principal, WORK_REQUEST_READ)
+        request = self._participant_request(principal, request_id)
+        if not self._is_cc(principal, request):
+            raise WorkRequestReferenceReadForbidden("이 항목을 읽음 처리할 권한이 없습니다")
+        receipt = self._repository.mark_read(request.id, str(principal.id))
+        return {
+            "request_id": str(request.id),
+            "read": True,
+            # **UTC 로 못 박아 낸다.** 방금 쓴 값과 다시 읽은 값이 같은 글자여야 두 번째 호출이
+            # 「처음 값 그대로」임을 호출자가 문자열로 확인할 수 있다 — SQLite 는 시간대를 저장하지
+            # 않아 다시 읽은 값이 naive 로 돌아오고, 그대로 내면 같은 순간이 두 모양으로 나간다.
+            "read_at": _utc_iso(receipt.read_at),
+        }
 
     def list(self, principal: Principal, *, include_removed: bool = False) -> list[WorkRequestMutationResult]:
         """내 요청 목록. **내가 정리한 항목은 여기서만 빠진다** (SPEC-003 §4 목록 정리).
@@ -928,7 +1290,17 @@ class WorkRequestApplication:
         return self._assignee_directory.work_request_assignee_candidates(principal)
 
     def cc_candidates(self, principal: Principal) -> list[dict[str, str]]:
-        self._require(principal, WORK_REQUEST_CREATE)
+        """참조자·결재자로 **고를 수 있는 사람들**. 요청 갈래만의 물음이 아니다 (WORK-003 gap D).
+
+        `POST /api/tasks` 의 본인 갈래가 이미 `cc_member_ids` 와 `approver_id` 를 받는다. 그런데 이
+        후보 조회만 `work_request.create` 를 요구해서, 업무만 만들 수 있는 사람(`task.self_manage`)의
+        생성 창에서는 **고를 명단을 읽지 못해 두 칸이 통째로 사라졌다** — 받는 값과 고를 목록이
+        어긋나 있었다. 그래서 「무엇이든 만들 수 있는 사람」으로 한 칸만 넓힌다.
+
+        **넓어지는 것은 여기까지다**: 후보는 재직 중인 사람의 id 와 이름뿐이고(`member_candidates`),
+        담당 후보(`assignee_candidates`)는 요청 생성 권한 그대로다.
+        """
+        self._require_any(principal, WORK_REQUEST_CREATE, TASK_SELF_MANAGE)
         return self._assignee_directory.member_candidates(principal)
 
     def _decision_receipt(
@@ -963,7 +1335,10 @@ class WorkRequestApplication:
         request = self._repository.request(request_id, lock=True)
         if request is None:
             raise WorkRequestNotFound("work request was not found")
-        if request.assignee_id != str(principal.id):
+        # **받는 사람 자리를 직접 묻는다** — 자리 우선순위(`party_of`)로 묻지 않는다. 요청자와
+        # 받는 사람이 같은 사람인 요청(회의 승격의 자기 배정)에서 그 사람은 요청자 자리로 읽히고,
+        # 그러면 자기에게 온 요청에 답할 수 없게 된다. 판단은 **그 자리에 있는가** 하나로 연다.
+        if not self._is_assignee(principal, request):
             raise WorkRequestResponderOnly("이 요청에 답할 수 있는 사람은 받는 사람뿐입니다")
         if request.version != expected_version:
             raise WorkRequestError("work request version is stale")
@@ -976,15 +1351,29 @@ class WorkRequestApplication:
         if capability not in principal.capabilities:
             raise WorkRequestAccessDenied(f"{capability} capability is required")
 
+    @staticmethod
+    def _require_any(principal: Principal, *capabilities: str) -> None:
+        """둘 중 하나면 된다. 없는 것을 여기서 만들지 않는다 — 이름은 그대로 거절에 실린다."""
+        if not any(capability in principal.capabilities for capability in capabilities):
+            raise WorkRequestAccessDenied(f"one of {', '.join(capabilities)} capabilities is required")
+
     def _view(self, request: Any, task: Any | None = None, *, task_id: Any | None = None, hidden: bool = False) -> WorkRequestMutationResult:
         submission = self._repository.current_submission(request)
+        derived = task.id if task is not None else task_id
         return {
             "request_id": str(request.id),
             "request_thread_id": str(request.request_thread_id) if getattr(request, "request_thread_id", None) else None,
             "submission_version": submission.submission_version if submission is not None else None,
             "title": request.title,
             "description": getattr(request, "description", None),
+            # **내 업무와 같은 공통 payload 를 같은 이름으로 낸다** — 시작일과 프로젝트가 요청에도 있다.
+            "start_date": (
+                request.start_date.isoformat() if getattr(request, "start_date", None) else None
+            ),
             "due_date": request.due_date.isoformat() if getattr(request, "due_date", None) else None,
+            "project_id": str(request.project_id) if getattr(request, "project_id", None) else None,
+            # 결재자 — 이 요청이 세우는 업무의 `approver_id` 와 **같은 값**이다 (SPEC-001 §7 OQ-N 라벨 「결재자」).
+            "approver_id": getattr(request, "approver_id", None),
             "checklist": list(getattr(request, "initial_checklist", None) or []),
             "requester_id": request.requester_id,
             # 회의에서 온 요청이면 그 회의. 관계 그래프가 요청을 회의에 잇는 근거다 (D40 미결 ④).
@@ -1011,6 +1400,18 @@ class WorkRequestApplication:
             # **내가 이 항목을 목록에서 정리했는가.** 서버가 말한다 — 화면이 기억해 두면 새로 열 때 사라진다.
             "list_entry_hidden": hidden,
             "conditions": request.conditions,
+            # **생성이 받던 셋이 조회로 돌아온다** (WORK-003 gap C). 셋 다 「요청이 업무가 될 때 함께
+            # 넘어가는 값」이라, 상세에서 보이지 않으면 보낸 사람도 받은 사람도 무엇이 함께 갔는지
+            # 확인할 길이 없고, 「다시 요청」이 이전 요청을 미리 채울 수도 없다.
+            #
+            # 선행은 **요청이 세운 업무**에서 읽는다 — 요청 행은 순서를 따로 갖지 않는다.
+            "preceding_task_ids": [str(item) for item in self._repository.predecessor_task_ids(derived)],
+            "reference_task_ids": [
+                str(row.referenced_task_id) for row in self._repository.request_references(request.id)
+            ],
+            # 붙어 있는 자료. **추출 상태는 여기서 묻지 않는다** — 목록 한 줄마다 추출 표를 뒤지지 않기
+            # 위해서다. 자료 탭이 읽는 `GET …/materials` 가 그 값을 싣는다.
+            "materials": self._material_views(request, extractions=False),
         }
 
 

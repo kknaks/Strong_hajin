@@ -42,3 +42,11 @@ class WorkRequestLockedAfterAccept(WorkRequestError):
 
 class WorkRejectReasonRequired(WorkRequestError):
     """거절 사유가 비었다 (SPEC-003 `WORK_REJECT_REASON_REQUIRED`, 422)."""
+
+
+class WorkRequestReferenceReadForbidden(WorkRequestAccessDenied):
+    """참조자가 아닌 사람이 참고 항목을 읽음 처리했다 (SPEC-001 `WORK_REFERENCE_READ_FORBIDDEN`, 403).
+
+    **없는 것·못 읽는 것과 가른다** — 그 둘은 그대로 `WORK_NOT_FOUND`(404)다 (§4 Case Matrix).
+    읽을 수는 있는데 참조자가 아닌 사람만 여기로 온다: 요청자·담당자·관리자에게는 이 명령이 없다.
+    """

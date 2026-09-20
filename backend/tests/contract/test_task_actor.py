@@ -214,7 +214,12 @@ def test_the_relationship_table_is_a_projection_that_can_be_rebuilt(tmp_path) ->
             if row.relationship_kind in {"requester", "assignee"}:
                 session.delete(row)
         session.flush()
-        assert relationships(session) == {("yuna", "work_request", request["request_id"], "cc")}
+        # 요청의 cc 는 **그 요청이 세운 업무의 cc 이기도 하다** — 같은 표의 다른 `resource_type` 으로 선다.
+        # 둘 다 파생이 아니므로 지우지 않았고, 지우지 않은 것은 그대로 남아 있어야 한다.
+        assert relationships(session) == {
+            ("yuna", "work_request", request["request_id"], "cc"),
+            ("yuna", "task", request["task_id"], "cc"),
+        }
         assert SqlAlchemyWorkRequestRepository(session).rebuild_relationships() == 2
         assert relationships(session) == before
         # Rebuilding again changes nothing: it reconstructs, it does not accumulate.

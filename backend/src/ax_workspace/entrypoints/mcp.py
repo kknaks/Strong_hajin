@@ -59,7 +59,7 @@ from ax_workspace.entrypoints.mcp_server import PersonaMcpServer
 from ax_workspace.modules.actions.commands import ActionCommandInput
 from ax_workspace.modules.ax_execution.result_contracts import ActionProposalResult, CommandResult
 from ax_workspace.modules.work.task_results import TaskMutationResult, TaskAssignmentResult, ChecklistMutationResult, ChecklistOrderResult
-from ax_workspace.modules.work.request_results import WorkRequestMutationResult
+from ax_workspace.modules.work.request_results import WorkRequestInboxEntry, WorkRequestMutationResult
 
 from ax_workspace.modules.work.task_creation import TaskCreateInput, TaskAssignmentInput
 from ax_workspace.modules.work.material_search import MaterialResourceType
@@ -307,7 +307,7 @@ class McpReportsFacade:
     def work_request_assignee_candidates(self) -> list[MemberCandidateView]:
         return self._application.work_request_assignee_candidates(self.principal)
 
-    def work_request_inbox(self) -> list[WorkRequestMutationResult]:
+    def work_request_inbox(self) -> list[WorkRequestInboxEntry]:
         rows = self._application.work_request_inbox(self.principal)
         self._remember([{"resource_type": "work_request", "resource_id": str(row["request_id"])} for row in rows])
         return rows
@@ -369,10 +369,11 @@ class McpReportsFacade:
     def create_work_request(
         self, title: str, assignee_id: str, idempotency_key: str, due_date: str | None = None, description: str | None = None,
         cc_member_ids: list[str] | None = None, checklist: list[str] | None = None,
-        reference_task_ids: list[str] | None = None,
+        reference_task_ids: list[str] | None = None, start_date: str | None = None, project_id: str | None = None,
+        preceding_task_ids: list[str] | None = None, approver_id: str | None = None,
     ) -> WorkRequestMutationResult | ActionProposalResult:
         """업무 요청 — 담당은 **수락 없이** 즉시 선다. 멱등 키는 명시적 인자이고 서버가 채우지 않는다."""
-        command = WorkRequestCreateInput(title=title, assignee_id=assignee_id, due_date=due_date, description=description, cc_member_ids=cc_member_ids, checklist=checklist, reference_task_ids=reference_task_ids).for_requester(str(self.principal.id))
+        command = WorkRequestCreateInput(title=title, assignee_id=assignee_id, start_date=start_date, due_date=due_date, project_id=project_id, description=description, cc_member_ids=cc_member_ids, checklist=checklist, reference_task_ids=reference_task_ids, preceding_task_ids=preceding_task_ids, approver_id=approver_id).for_requester(str(self.principal.id))
         payload = command.model_dump(mode='json')
         action = self._propose_chat_action('work_request.create', '업무 요청 생성 확인', payload)
         if action is not None:
@@ -712,13 +713,16 @@ class McpReportsFacade:
         due_date: str | None = None,
         project_id: str | None = None,
         assignee_id: str | None = None,
+        cc_member_ids: list[str] | None = None,
+        preceding_task_ids: list[str] | None = None,
+        approver_id: str | None = None,
     ) -> TaskMutationResult | ActionProposalResult:
         """업무 생성 — 담당이 비었거나 나면 내 업무, 다르면 **수락 없이** 그 사람의 업무다.
 
         멱등 키는 **명시적 인자**로만 온다. 공용 `_mutation_key` 를 여기서 쓰지 않는다 — 그 helper 는
         turn 을 가리킬 뿐 생성 의도를 가리키지 않아서, 한 turn 의 두 생성이 한 건으로 합쳐진다.
         """
-        command = TaskCreateInput(title=title, description=description, start_date=start_date, due_date=due_date, checklist=checklist, reference_task_ids=reference_task_ids, parent_task_id=parent_task_id, project_id=project_id, assignee_id=assignee_id)
+        command = TaskCreateInput(title=title, description=description, start_date=start_date, due_date=due_date, checklist=checklist, reference_task_ids=reference_task_ids, parent_task_id=parent_task_id, project_id=project_id, assignee_id=assignee_id, cc_member_ids=cc_member_ids, preceding_task_ids=preceding_task_ids, approver_id=approver_id).for_owner(str(self.principal.id))
         payload = command.model_dump(mode='json')
         action = self._propose_chat_action('task.create_self', '업무 생성 확인', payload)
         if action is not None:
@@ -1614,7 +1618,7 @@ def _register_work_request_create_tools(server: MCPServer, facade: McpReportsFac
         return CommandResult[WorkRequestMutationResult](facade.amend_work_request(request_id, expected_version, title, description, due_date, clear_due_date))
 
     @server.tool(annotations=_READ_ONLY_TOOL, structured_output=True)
-    def work_request_inbox() -> list[WorkRequestMutationResult]:
+    def work_request_inbox() -> list[WorkRequestInboxEntry]:
         return facade.work_request_inbox()
 
     @server.tool(annotations=_COMMAND_TOOL, structured_output=True)
@@ -1632,9 +1636,13 @@ def _register_work_request_create_tools(server: MCPServer, facade: McpReportsFac
         due_date: str | None = None, description: str | None = None,
         cc_member_ids: list[str] | None = None, checklist: list[str] | None = None,
         reference_task_ids: list[str] | None = None,
+        start_date: str | None = None, project_id: str | None = None,
+        preceding_task_ids: list[str] | None = None,
+        approver_id: Annotated[str | None, WorkRequestCreateInput.model_fields["approver_id"]] = None,
     ) -> CommandResult[WorkRequestMutationResult]:
         return CommandResult[WorkRequestMutationResult](facade.create_work_request(
-            title, assignee_id, idempotency_key, due_date, description, cc_member_ids, checklist, reference_task_ids
+            title, assignee_id, idempotency_key, due_date, description, cc_member_ids, checklist,
+            reference_task_ids, start_date, project_id, preceding_task_ids, approver_id,
         ))
 
 
@@ -1970,6 +1978,9 @@ def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
         due_date: str | None = None,
         project_id: str | None = None,
         assignee_id: Annotated[str | None, TaskCreateInput.model_fields["assignee_id"]] = None,
+        cc_member_ids: list[str] | None = None,
+        preceding_task_ids: list[str] | None = None,
+        approver_id: Annotated[str | None, TaskCreateInput.model_fields["approver_id"]] = None,
     ) -> CommandResult[TaskMutationResult]:
         return CommandResult[TaskMutationResult](facade.create_self_task(
             title,
@@ -1982,6 +1993,9 @@ def _register_task_tools(server: MCPServer, facade: McpReportsFacade) -> None:
             due_date,
             project_id,
             assignee_id,
+            cc_member_ids,
+            preceding_task_ids,
+            approver_id,
         ))
 
     @server.tool()

@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from uuid import UUID
 
 from sqlalchemy import Integer, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.work.application import TaskNotFound, TaskState
@@ -40,10 +41,12 @@ from ax_workspace.platform.persistence import (
     SubmissionRecord,
     TaskActivityRecord,
     TaskCreationAttemptRecord,
+    TaskPredecessorRecord,
     TaskProposalRecord,
     TaskRecord,
     WorkRequestAuditEventRecord,
     WorkRequestListEntryRecord,
+    WorkRequestReadReceiptRecord,
     WorkRequestRecord,
     MemberRecord,
     TaskAssignmentRecord,
@@ -376,6 +379,8 @@ class SqlAlchemyTaskRepository:
         references: list[UUID] | None = None,
         parent_task_id: UUID | None = None,
         project_id: UUID | None = None,
+        cc_member_ids: list[str] | None = None,
+        approver_id: str | None = None,
     ) -> TaskRecord:
         if causation_key:
             existing = self.session.scalar(
@@ -395,6 +400,8 @@ class SqlAlchemyTaskRepository:
             start_date=start_date,
             due_date=due_date,
             organization_unit_id=_primary_unit(self.session, owner_id),
+            # **WORK-001 이 만든 열에 이제 값이 들어온다** — `업무` 갈래만이다 (SPEC-001 §7 OQ-M).
+            approver_id=approver_id,
             origin_kind="direct",
             version=1,
             created_at=now,
@@ -418,6 +425,7 @@ class SqlAlchemyTaskRepository:
             after_ref=f"task:{task.id}@1", safe_summary=f"업무 생성: {title}",
         )
         self.seed_checklist(task, checklist, owner_id)
+        self.set_cc_members(task.id, cc_member_ids, created_at=now)
         for referenced_task_id in references or []:
             self.add_reference(task.id, referenced_task_id, owner_id)
         # Everything written with the work belongs to version 1, so the first snapshot already holds it.
@@ -1089,6 +1097,141 @@ class SqlAlchemyTaskRepository:
             statement = statement.where(TaskRecord.state.not_in([TaskState.DONE, TaskState.CANCELLED]))
         return list(self.session.scalars(statement.order_by(TaskRecord.created_at)))
 
+    # ---- 선행업무: 상위·참고와 다른 세 번째 관계 ----------------------------------
+
+    def predecessors_for(self, task_ids: list[UUID]) -> dict[UUID, list[UUID]]:
+        """여러 업무의 **활성** 선행을 한 번에 — 목록·프로젝트 상세가 줄마다 다시 묻지 않는 자리다.
+
+        뗀 행은 남아 있지만 여기 서지 않는다 (§4 「활성인 것만 실린다」).
+        """
+        if not task_ids:
+            return {}
+        found: dict[UUID, list[UUID]] = {}
+        rows = self.session.execute(
+            select(TaskPredecessorRecord.task_id, TaskPredecessorRecord.predecessor_task_id)
+            .where(
+                TaskPredecessorRecord.task_id.in_(list(task_ids)),
+                TaskPredecessorRecord.released_at.is_(None),
+            )
+            .order_by(TaskPredecessorRecord.position, TaskPredecessorRecord.created_at)
+        ).all()
+        for task_id, predecessor_task_id in rows:
+            found.setdefault(task_id, []).append(predecessor_task_id)
+        return found
+
+    def active_predecessor_ids(self, task_id: UUID) -> list[UUID]:
+        return self.predecessors_for([task_id]).get(task_id, [])
+
+    def predecessor_edges(self, task_ids: list[UUID]) -> dict[UUID, list[UUID]]:
+        """순환 검사가 걷는 **활성 변**. `predecessors_for` 와 같은 사실이고 이름만 그래프 쪽이다."""
+        return self.predecessors_for(task_ids)
+
+    def replace_predecessors(self, task_id: UUID, wanted: list[UUID], actor_id: str) -> None:
+        """활성 선행을 이 배열 **그대로** 만든다 — 전체 교체다 (SPEC-001 §4).
+
+        **행을 지우지 않는다.** 빠진 것은 `released_at` 으로 닫고, 새로 들어온 것만 행을 더한다.
+        이미 활성인 것은 **건드리지 않는다** — 다시 세우면 「언제부터 선행이었나」가 바뀐다.
+        """
+        now = datetime.now(UTC)
+        keep = list(dict.fromkeys(wanted))
+        active = {
+            row.predecessor_task_id: row
+            for row in self.session.scalars(
+                select(TaskPredecessorRecord).where(
+                    TaskPredecessorRecord.task_id == task_id,
+                    TaskPredecessorRecord.released_at.is_(None),
+                )
+            )
+        }
+        for predecessor_task_id, row in active.items():
+            if predecessor_task_id not in keep:
+                row.released_at = now
+                row.released_by = actor_id
+        for position, predecessor_task_id in enumerate(keep):
+            existing = active.get(predecessor_task_id)
+            if existing is not None:
+                # 이미 활성인 관계는 **다시 세우지 않는다** — 다시 세우면 「언제부터 선행이었나」가
+                # 바뀐다. 순서만 이번에 고른 대로 맞춘다.
+                existing.position = position
+                continue
+            self.session.add(
+                TaskPredecessorRecord(
+                    task_id=task_id,
+                    predecessor_task_id=predecessor_task_id,
+                    position=position,
+                    created_by=actor_id,
+                    created_at=now,
+                )
+            )
+        self.session.flush()
+
+    # ---- 참조자(cc): 읽기와 논의만 여는 한 겹 관계 --------------------------------
+
+    def set_cc_members(self, task_id: UUID, member_ids: list[str] | None, *, created_at: datetime) -> None:
+        """이 업무의 참조자를 세운다 — 요청이 쓰는 것과 **같은 표**다 (`resource_relationships`).
+
+        따로 표를 파지 않는 이유는 하나다: 요청의 cc 가 이미 여기 살고, 업무 cc 를 다른 곳에 두면
+        「참조로 받았다」가 두 모양으로 갈린다. `resource_type` 만 다르다.
+
+        실제로 있는 구성원만 쓴다 — 없는 id 로 관계 행을 만들면 원장이 가리킬 곳 없는 자리를 갖는다.
+        (「활동 중인 구성원인가」는 application 이 먼저 묻는다; 여기는 저장의 마지막 방어선이다.)
+        """
+        for member_id in dict.fromkeys(member_ids or []):
+            if self.session.get(MemberRecord, member_id) is None:
+                continue
+            self.session.add(
+                ResourceRelationshipRecord(
+                    member_id=member_id,
+                    resource_type="task",
+                    resource_id=str(task_id),
+                    relationship_kind="cc",
+                    valid_from=created_at,
+                )
+            )
+
+    def cc_member_ids(self, task_id: UUID) -> list[str]:
+        return self.cc_members_for([task_id]).get(task_id, [])
+
+    def cc_members_for(self, task_ids: list[UUID]) -> dict[UUID, list[str]]:
+        """여러 업무의 참조자를 한 번에 — 목록이 줄마다 같은 질의를 반복하지 않는 자리다."""
+        if not task_ids:
+            return {}
+        wanted = {str(task_id): task_id for task_id in task_ids}
+        found: dict[UUID, list[str]] = {}
+        rows = self.session.execute(
+            select(ResourceRelationshipRecord.resource_id, ResourceRelationshipRecord.member_id)
+            .where(
+                ResourceRelationshipRecord.resource_type == "task",
+                ResourceRelationshipRecord.resource_id.in_(list(wanted)),
+                ResourceRelationshipRecord.relationship_kind == "cc",
+                ResourceRelationshipRecord.valid_until.is_(None),
+            )
+            .order_by(ResourceRelationshipRecord.member_id)
+        ).all()
+        for resource_id, member_id in rows:
+            found.setdefault(wanted[str(resource_id)], []).append(member_id)
+        return found
+
+    def tasks_cc_for(self, member_id: str, *, include_closed: bool = False) -> list[TaskRecord]:
+        """**참조로 받은 업무.** 드는 것도 요청한 것도 아니고, 읽기와 논의만 열린다."""
+        ids = [
+            UUID(resource_id)
+            for resource_id in self.session.scalars(
+                select(ResourceRelationshipRecord.resource_id).where(
+                    ResourceRelationshipRecord.member_id == member_id,
+                    ResourceRelationshipRecord.resource_type == "task",
+                    ResourceRelationshipRecord.relationship_kind == "cc",
+                    ResourceRelationshipRecord.valid_until.is_(None),
+                )
+            )
+        ]
+        if not ids:
+            return []
+        statement = select(TaskRecord).where(TaskRecord.id.in_(ids))
+        if not include_closed:
+            statement = statement.where(TaskRecord.state.not_in([TaskState.DONE, TaskState.CANCELLED]))
+        return list(self.session.scalars(statement.order_by(TaskRecord.created_at)))
+
     @staticmethod
     def _held_by(owner_id: str):
         return (
@@ -1138,7 +1281,10 @@ class SqlAlchemyWorkRequestRepository:
         causation_key: str | None = None,
         *,
         description: str | None = None,
+        start_date: date | None = None,
         due_date: date | None = None,
+        project_id: UUID | None = None,
+        approver_id: str | None = None,
         cc_member_ids: list[str] | None = None,
         checklist: list[str] | None = None,
         reference_task_ids: list[UUID] | None = None,
@@ -1167,7 +1313,14 @@ class SqlAlchemyWorkRequestRepository:
             assignee_id=assignee_id,
             title=title,
             description=description,
+            # 시작일·프로젝트는 **내 업무와 같은 공통 payload** 의 칸이다. 요청 행이 직접 들고 있어야
+            # 발송이 세우는 Task 와 뒤이은 회차가 같은 값을 읽는다 — 호출 인자로만 흘려보내면 재상신에서 사라진다.
+            start_date=start_date,
             due_date=due_date,
+            project_id=project_id,
+            # 결재자도 요청 행이 직접 들고 있어야 **발송이 세우는 업무와 뒤이은 회차가 같은 값을 읽는다** —
+            # 호출 인자로만 흘려보내면 과거 행을 수락해 업무를 세울 때 그 값이 아무 데도 없다.
+            approver_id=approver_id,
             parent_task_id=parent_task_id,
             supersedes_request_id=supersedes_request_id,
             # **`pending`(응답 대기)** — 업무는 발송이 세우고 **담당은 수락이 세운다** (SPEC-003 §4 발송).
@@ -1719,6 +1872,7 @@ class SqlAlchemyWorkRequestRepository:
         *,
         actor_id: str,
         accepted: bool = False,
+        preceding_task_ids: list[UUID] | None = None,
         source_action_item_id: UUID | None = None,
         source_decision_item_id: UUID | None = None,
         source_submission_id: UUID | None = None,
@@ -1748,7 +1902,13 @@ class SqlAlchemyWorkRequestRepository:
             created_by_actor_id=actor_id,
             title=request.title,
             description=request.description,
+            # 요청에 실린 공통 payload 가 그대로 업무의 첫 회차가 된다 — 시작일·프로젝트도 예외가 아니다.
+            start_date=getattr(request, "start_date", None),
             due_date=request.due_date,
+            project_id=getattr(request, "project_id", None),
+            # **요청의 결재자가 그 요청이 세우는 업무의 결재자다.** 발송이 세우는 신규 경로에서도,
+            # 수락이 세우는 과거 행에서도 같은 값이라 두 길의 답이 갈리지 않는다.
+            approver_id=getattr(request, "approver_id", None),
             # 하위 요청이면 **발송 단계부터** 상위 아래에 선다 (정책 V-9). 수락 전에도, 거절된 뒤에도
             # 이 연결은 유지된다 — 요청자의 상위에서 「취소됨 — 요청 거절」로 읽혀야 하기 때문이다.
             parent_task_id=getattr(request, "parent_task_id", None),
@@ -1798,6 +1958,12 @@ class SqlAlchemyWorkRequestRepository:
         )
         self._session.flush()
         tasks = SqlAlchemyTaskRepository(self._session)
+        # 요청의 참조자는 **그 요청이 세운 업무의 참조자이기도 하다.** 업무 쪽에 같은 행을 세우지 않으면
+        # 참조로 받은 사람이 요청은 읽는데 그 요청이 만든 업무는 못 읽는 경계 불일치가 생긴다.
+        tasks.set_cc_members(task.id, self.cc_member_ids(request), created_at=now)
+        # 요청에 실린 선행이 그대로 이 업무의 선행이 된다 — 판정은 이미 업무 모듈이 끝냈다.
+        if preceding_task_ids:
+            tasks.replace_predecessors(task.id, list(preceding_task_ids), actor_id)
         # The steps came with the request, so they were written by the person who asked, not by the one receiving it.
         tasks.seed_checklist(task, list(request.initial_checklist or []), request.requester_id)
         # So did the earlier work they pointed at: the pointer travels, the permission to open it does not.
@@ -1943,6 +2109,73 @@ class SqlAlchemyWorkRequestRepository:
             )
         ).all()
         return {request_id: task_id for request_id, task_id in rows}
+
+    def predecessor_task_ids(self, task_id: UUID | None) -> list[UUID]:
+        """그 업무의 **활성 선행**, 고른 순서 그대로.
+
+        요청 행은 선행을 따로 갖지 않는다 — 발송이 세운 업무가 그 관계의 자리다 (SPEC-001 §4). 그래서
+        요청 조회가 「무엇 다음인가」를 답하려면 파생 업무에서 읽어 와야 한다. 업무가 아직 없는 요청
+        행(W1 이전 모양)은 선행도 없다.
+        """
+        if task_id is None:
+            return []
+        return list(
+            self._session.scalars(
+                select(TaskPredecessorRecord.predecessor_task_id)
+                .where(
+                    TaskPredecessorRecord.task_id == task_id,
+                    TaskPredecessorRecord.released_at.is_(None),
+                )
+                .order_by(TaskPredecessorRecord.position, TaskPredecessorRecord.created_at)
+            )
+        )
+
+    # ---- 참조 읽음 영수증 — 사람마다 따로 움직이는 사실 --------------------------
+
+    def read_receipt(self, request_id: UUID, member_id: str) -> WorkRequestReadReceiptRecord | None:
+        return self._session.scalar(
+            select(WorkRequestReadReceiptRecord).where(
+                WorkRequestReadReceiptRecord.work_request_id == request_id,
+                WorkRequestReadReceiptRecord.member_id == member_id,
+            )
+        )
+
+    def mark_read(self, request_id: UUID, member_id: str) -> WorkRequestReadReceiptRecord:
+        """이 사람이 그 참조를 읽었다. **두 번째 호출은 처음 행을 그대로 돌려준다.**
+
+        같은 사람의 **동시 두 번**이 행 하나로 수렴해야 한다 (§5 동시성). application 검사만으로는
+        두 transaction 이 동시에 「없다」를 보고 둘 다 넣는 틈이 남으므로, 실제로 넣어 보고
+        **유일성 제약이 거절하면 이미 선 행을 읽는다.** SAVEPOINT 안에서 시도하므로 진 쪽의 제약
+        위반이 바깥 transaction 을 깨지 않는다 — 읽음은 다른 것을 함께 바꾸지 않지만, 이 저장소의
+        명령은 한 session 에 실려 오므로 바깥을 살려 두는 것이 이 자리의 계약이다.
+        """
+        existing = self.read_receipt(request_id, member_id)
+        if existing is not None:
+            return existing
+        record = WorkRequestReadReceiptRecord(
+            work_request_id=request_id, member_id=member_id, read_at=datetime.now(UTC)
+        )
+        try:
+            with self._session.begin_nested():
+                self._session.add(record)
+                self._session.flush()
+        except IntegrityError:
+            # 진 쪽이다. 이긴 쪽이 이미 세운 행을 읽어 **같은 `read_at`** 을 돌려준다.
+            won = self.read_receipt(request_id, member_id)
+            if won is None:  # pragma: no cover - 유일성 말고 깨질 제약이 이 표에 없다
+                raise
+            return won
+        return record
+
+    def read_request_ids(self, member_id: str) -> set[UUID]:
+        """이 사람이 이미 읽은 참조 요청 전부 — 수신함 한 표면이 쓰는 필터의 원천이다."""
+        return set(
+            self._session.scalars(
+                select(WorkRequestReadReceiptRecord.work_request_id).where(
+                    WorkRequestReadReceiptRecord.member_id == member_id
+                )
+            )
+        )
 
     def cc_member_ids(self, request: WorkRequestRecord) -> list[str]:
         return list(

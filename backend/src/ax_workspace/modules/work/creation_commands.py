@@ -91,6 +91,9 @@ class TaskCreationApplication:
         reference_task_ids: list[UUID] | None = None,
         parent_task_id: UUID | None = None,
         project_id: UUID | None = None,
+        cc_member_ids: list[str] | None = None,
+        preceding_task_ids: list[UUID] | None = None,
+        approver_id: str | None = None,
         source_action_item_id: UUID | None = None,
         source_decision_item_id: UUID | None = None,
         source_submission_id: UUID | None = None,
@@ -108,8 +111,9 @@ class TaskCreationApplication:
             command = TaskCreateInput(
                 title=title, assignee_id=assignee_id, description=description, start_date=start_date,
                 due_date=due_date, checklist=checklist, reference_task_ids=reference_task_ids,
-                parent_task_id=parent_task_id, project_id=project_id,
-            )
+                parent_task_id=parent_task_id, project_id=project_id, cc_member_ids=cc_member_ids,
+                preceding_task_ids=preceding_task_ids, approver_id=approver_id,
+            ).for_owner(str(principal.id))
         except ValueError as error:
             raise TaskError(str(error)) from error
         decision = self._decide(principal, command.assignee_id, managed=False)
@@ -129,6 +133,9 @@ class TaskCreationApplication:
                 description=command.description, start_date=command.start_date, due_date=command.due_date,
                 checklist=command.checklist, reference_task_ids=command.reference_task_ids,
                 parent_task_id=command.parent_task_id, project_id=command.project_id,
+                cc_member_ids=command.cc_member_ids,
+                preceding_task_ids=command.preceding_task_ids,
+                approver_id=command.approver_id,
                 source_action_item_id=source_action_item_id,
                 source_decision_item_id=source_decision_item_id,
                 source_submission_id=source_submission_id,
@@ -145,6 +152,10 @@ class TaskCreationApplication:
             principal, command.title, decision.assignee_id, causation_key,
             description=command.description, due_date=command.due_date,
             checklist=command.checklist, reference_task_ids=command.reference_task_ids,
+            # 참조자와 결재자는 **두 갈래 모두 지나간다** — 공통 payload 의 칸이므로 남에게 보내는
+            # 생성에서도 버리지 않는다. 결재자 판정(재직·담당자 본인 불가)은 요청 쪽이 같은 규칙으로 한다.
+            cc_member_ids=command.cc_member_ids,
+            approver_id=command.approver_id,
             source_action_item_id=source_action_item_id,
             source_decision_item_id=source_decision_item_id,
             source_submission_id=source_submission_id,
@@ -156,13 +167,27 @@ class TaskCreationApplication:
 
     @staticmethod
     def _refuse_unsupported_horizontal_fields(command: TaskCreateInput) -> None:
-        """남에게 보내는 생성이 받지 않는 값은 **조용히 버리지 않고** 거절한다."""
+        """남에게 보내는 생성이 받지 않는 값은 **조용히 버리지 않고** 거절한다.
+
+        셋은 이제 `work_requests` 에 **열이 있다** — 그래서 이 거절은 저장의 한계가 아니라 **이 표면의
+        계약**이다. `POST /api/tasks` 에 담당을 적는 길은 「내 업무를 만드는 명령에 수신자를 하나 적었다」는
+        좁은 갈래이고, 시작일·상위·프로젝트까지 실어 보내는 것은 **업무 요청의 일**이다
+        (`POST /api/work-requests` 가 같은 값을 전부 받는다). 여기서 조용히 열면 같은 요청을 세우는 길이
+        둘이 되고, 둘 중 하나만 고쳤을 때 조용히 갈린다. 참조자(cc)는 이 목록에 **없다** — 요청이 원래
+        받던 값이고 공통 payload 의 칸이라 그대로 흘러간다.
+        """
         unsupported = [
             name
             for name, value in (
                 ("start_date", command.start_date),
                 ("parent_task_id", command.parent_task_id),
                 ("project_id", command.project_id),
+                # 선행은 **프로젝트 안에서만** 서는데 이 갈래가 프로젝트를 받지 않는다. 받아 두고
+                # 프로젝트 미선택으로 다시 거절하면 사람이 두 걸음을 헛디딘다 — 이름으로 한 번에 말한다.
+                ("preceding_task_ids", command.preceding_task_ids or None),
+                # **결재자는 이 목록에 없다.** 요청 갈래가 그 값을 받아 저장하게 된 뒤로, 여기서만
+                # 거절하면 같은 일을 세우는 두 길(`POST /api/tasks` + 담당 · `POST /api/work-requests`)의
+                # 답이 갈린다. 아래에서 요청으로 그대로 흘려보낸다.
             )
             if value is not None
         ]
@@ -182,8 +207,12 @@ class TaskCreationApplication:
         idempotency_key: str | None,
         causation_key: str | None = None,
         description: str | None = None,
+        start_date: date | None = None,
         due_date: date | None = None,
+        project_id: UUID | None = None,
+        approver_id: str | None = None,
         cc_member_ids: list[str] | None = None,
+        preceding_task_ids: list[UUID] | None = None,
         checklist: list[str] | None = None,
         reference_task_ids: list[UUID] | None = None,
         source_meeting_id: UUID | None = None,
@@ -204,8 +233,16 @@ class TaskCreationApplication:
             "title": " ".join(str(title).split()),
             "assignee_id": assignee_id,
             "description": (description or "").strip() or None,
+            # 같은 키에 다른 시작일·다른 프로젝트가 오면 **다른 내용**이다 — 지문에 함께 싣는다.
+            "start_date": start_date,
             "due_date": due_date,
+            "project_id": str(project_id) if project_id else None,
+            # 같은 키에 **다른 결재자**가 오면 다른 내용이다.
+            "approver_id": approver_id,
             "cc_member_ids": sorted(cc_member_ids or []),
+            # 같은 키에 **다른 선행**이 오면 다른 내용이다. 순서까지 지문에 싣는다 — 화면이 고른 순서가
+            # 저장 순서이고, 그것이 다른 두 명령을 한 건으로 합치지 않는다.
+            "preceding_task_ids": [str(item) for item in (preceding_task_ids or [])],
             "checklist": list(checklist or []),
             "reference_task_ids": [str(item) for item in (reference_task_ids or [])],
             "source_meeting_id": source_meeting_id,
@@ -221,7 +258,9 @@ class TaskCreationApplication:
             return self._request_receipt(principal, CREATE_WORK_REQUEST_COMMAND, key, fingerprint)
         created = self._requests.create(
             principal, title, assignee_id, causation_key,
-            description=description, due_date=due_date, cc_member_ids=cc_member_ids, checklist=checklist,
+            description=description, start_date=start_date, due_date=due_date, project_id=project_id,
+            approver_id=approver_id,
+            cc_member_ids=cc_member_ids, preceding_task_ids=preceding_task_ids, checklist=checklist,
             reference_task_ids=reference_task_ids, source_meeting_id=source_meeting_id,
             source_agenda_id=source_agenda_id,
             parent_task_id=parent_task_id, supersedes_request_id=supersedes_request_id,

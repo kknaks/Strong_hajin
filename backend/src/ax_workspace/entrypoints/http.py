@@ -41,7 +41,7 @@ from ax_workspace.modules.work.graph_results import GraphNeighborsResult, GraphO
 from ax_workspace.modules.work.material_query_results import FolderMaterialView, MaterialMetadataResult, MaterialSearchResult
 from ax_workspace.modules.work.material_results import TaskMaterialResult, TaskMaterialView
 from ax_workspace.modules.work.project_results import ProjectAssignmentView, ProjectDetailResult, ProjectParticipationView, ProjectView
-from ax_workspace.modules.work.request_results import WorkRequestDetailResult, WorkRequestEvidenceResult, WorkRequestHistoryResult
+from ax_workspace.modules.work.request_results import WorkRequestReadReceiptResult, WorkRequestDetailResult, WorkRequestEvidenceResult, WorkRequestHistoryResult
 from ax_workspace.modules.work.task_results import (
     TaskCompletionResult,
     TaskDetailResult,
@@ -52,7 +52,12 @@ from ax_workspace.modules.work.task_results import (
     TaskReferenceResult,
 )
 
-from ax_workspace.modules.work.request_results import WorkRequestMutationResult
+from ax_workspace.modules.work.request_results import (
+    WorkRequestInboxEntry,
+    WorkRequestMaterialResult,
+    WorkRequestMaterialView,
+    WorkRequestMutationResult,
+)
 from ax_workspace.modules.reports.commands import ReportEditInput as EditDailyReportRequest, ReportSubmitInput as SubmitDailyReportRequest
 from ax_workspace.modules.reports.results import ReportDraftResult, ReportSubmissionResult
 from ax_workspace.modules.work.task_creation import TaskCreateInput as CreateTaskRequest, TaskAssignmentInput as AssignTaskRequest
@@ -110,6 +115,7 @@ from ax_workspace.entrypoints.http_auth import (
 from ax_workspace.bootstrap.application import create_auth_session_store, create_workflow_application
 from ax_workspace.modules.work.application import InvalidTaskTransition, TaskAccessDenied, TaskError, TaskNotFound, TaskState
 from ax_workspace.modules.work.errors import (
+    TaskApproverLocked,
     TaskAssignmentProposalExists,
     TaskAssignmentResponderOnly,
     TaskCancelRequiresAgreement,
@@ -120,6 +126,8 @@ from ax_workspace.modules.work.errors import (
     TaskParentClosed,
     TaskParentCycle,
     TaskParentUnassigned,
+    TaskPredecessorsUnfinished,
+    TaskProjectLockedByPredecessors,
     TaskProposalNotPending,
     TaskProposalResponderOnly,
     TaskRecipientNotAllowed,
@@ -183,7 +191,7 @@ from ax_workspace.modules.ax_execution.conversation_commands import (Conversatio
 from ax_workspace.modules.notifications import NotificationNotFound
 from ax_workspace.modules.organization_access.commands import AssistantCharacterInput as SetAssistantCharacterRequest
 from ax_workspace.modules.work.assignment_commands import AssignmentDeclineInput as DeclineTaskAssignmentRequest
-from ax_workspace.modules.work.request_commands import TaskVersionInput as TaskVersionRequest, TaskProposalInput as TaskProposalRequest, TaskProposalResponseInput as TaskProposalResponseRequest, TaskReopenInput as TaskReopenRequest, WorkRequestVersionInput as WorkRequestVersionRequest, WorkRequestDecisionInput as WorkRequestDecisionRequest, WorkRequestNegotiationInput as WorkRequestNegotiationRequest, WorkRequestRevisionInput as WorkRequestAmendRequest, WorkRequestRevisionInput as WorkRequestResubmitRequest, WorkRequestCreateInput as CreateWorkRequestRequest, WorkRequestCommentInput as CommentRequest
+from ax_workspace.modules.work.request_commands import TaskVersionInput as TaskVersionRequest, TaskProposalInput as TaskProposalRequest, TaskProposalResponseInput as TaskProposalResponseRequest, TaskReopenInput as TaskReopenRequest, WorkRequestVersionInput as WorkRequestVersionRequest, WorkRequestDecisionInput as WorkRequestDecisionRequest, WorkRequestNegotiationInput as WorkRequestNegotiationRequest, WorkRequestRevisionInput as WorkRequestAmendRequest, WorkRequestRevisionInput as WorkRequestResubmitRequest, WorkRequestCreateInput as CreateWorkRequestRequest, WorkRequestCommentInput as CommentRequest, WorkRequestMaterialLinkInput as WorkRequestMaterialLinkRequest
 
 
 class MemberResponse(BaseModel):
@@ -526,6 +534,11 @@ def _runtime_error(error: Exception) -> HTTPException:
             TaskProposalNotPending,
             TaskReopenParentDone,
             TaskAssignmentProposalExists,
+            # SPEC-001 § Case Matrix — WORK-003 이 더하는 셋. **같은 기준으로 같은 자리에 선다**:
+            # 명령 자체는 말이 되는데 지금 그 업무의 상태가 받지 않는다.
+            TaskPredecessorsUnfinished,
+            TaskProjectLockedByPredecessors,
+            TaskApproverLocked,
         ),
     ):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
@@ -793,6 +806,14 @@ def create_app(
                     description=request.description,
                     due_date=request.due_date,
                     checklist=request.checklist,
+                    # 공통 생성 프레임의 일곱 — 회의에서 연 창과 업무 화면의 창이 **같은 값을 싣는다**.
+                    start_date=request.start_date,
+                    cc_member_ids=request.cc_member_ids,
+                    approver_id=request.approver_id,
+                    reference_task_ids=request.reference_task_ids,
+                    project_id=request.project_id,
+                    parent_task_id=request.parent_task_id,
+                    preceding_task_ids=request.preceding_task_ids,
                 )
             except Exception as error:
                 raise _runtime_error(error) from error
@@ -1319,6 +1340,9 @@ def create_app(
                     reference_task_ids=request.reference_task_ids,
                     parent_task_id=request.parent_task_id,
                     project_id=request.project_id,
+                    cc_member_ids=request.cc_member_ids,
+                    preceding_task_ids=request.preceding_task_ids,
+                    approver_id=request.approver_id,
                 )
             except Exception as error:
                 raise _runtime_error(error) from error
@@ -1885,7 +1909,10 @@ def create_app(
                 return app.state.workflow_application.create_work_request(
                     principal, request.title, request.assignee_id,
                     idempotency_key=idempotency_key,
-                    description=request.description, due_date=request.due_date, cc_member_ids=request.cc_member_ids,
+                    description=request.description, start_date=request.start_date, due_date=request.due_date,
+                    project_id=request.project_id, approver_id=request.approver_id,
+                    cc_member_ids=request.cc_member_ids,
+                    preceding_task_ids=request.preceding_task_ids,
                     checklist=request.checklist, reference_task_ids=request.reference_task_ids,
                     parent_task_id=request.parent_task_id, supersedes_request_id=request.supersedes_request_id,
                 )
@@ -1913,8 +1940,8 @@ def create_app(
         @app.get("/api/work-requests/inbox")
         def work_request_inbox(
             principal: Principal = Depends(developer_principal),
-        ) -> list[WorkRequestMutationResult]:
-            """내가 **답해야** 하는 요청. 내가 보낸 것은 `GET /api/work-requests` 쪽이다."""
+        ) -> list[WorkRequestInboxEntry]:
+            """답할 업무(category=work)와 CC 참조(category=reference)의 합집합."""
             try:
                 return app.state.workflow_application.work_request_inbox(principal)
             except Exception as error:
@@ -1945,6 +1972,20 @@ def create_app(
                 return app.state.workflow_application.withdraw_work_request(
                     principal, request_id, request.expected_version
                 )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/work-requests/{request_id}/read")
+        def mark_work_request_reference_read(
+            request_id: UUID, principal: Principal = Depends(developer_principal)
+        ) -> WorkRequestReadReceiptResult:
+            """참고 항목 읽음 — **본문도 회차도 멱등 키도 없다** (SPEC-001 §4 Validation).
+
+            두 번째 호출도 `200` 이고 `read_at` 은 처음 값 그대로다. 이미 읽었다는 것은 충돌이 아니다.
+            참조자가 아니면 403, 없거나 못 읽는 요청은 404(같은 말)다.
+            """
+            try:
+                return app.state.workflow_application.mark_work_request_reference_read(principal, request_id)
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -2143,6 +2184,79 @@ def create_app(
                     principal, request_id,
                     name=file.filename or "evidence", content_type=file.content_type or "application/octet-stream", data=data,
                 )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        # ---- 요청 자료 — 발송한 요청에 **2단계로** 붙는다 (WORK-003) -------------------------
+        #
+        # 생성 payload 에 자료 칸을 더하지 않는다. 내 업무가 지나는 길과 같은 모양이다: 만들고 →
+        # 돌아온 `request_id` 로 붙인다. 댓글 첨부·판단 근거와는 **다른 자리**이며 그 둘을 대용으로
+        # 쓰지 않는다 — 논의에 붙인 파일과 요청이 실어 보낸 자료는 뜻이 다르다.
+
+        @app.get("/api/work-requests/{request_id}/materials")
+        def list_work_request_materials(
+            request_id: UUID, principal: Principal = Depends(developer_principal)
+        ) -> list[WorkRequestMaterialView]:
+            try:
+                return app.state.workflow_application.list_work_request_materials(principal, request_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/work-requests/{request_id}/materials", status_code=status.HTTP_201_CREATED)
+        async def attach_work_request_material(
+            request_id: UUID,
+            kind: str = Form("input"),
+            file: UploadFile = File(...),
+            principal: Principal = Depends(developer_principal),
+        ) -> WorkRequestMaterialResult:
+            data = await file.read()
+            try:
+                return app.state.workflow_application.attach_work_request_material(
+                    principal,
+                    request_id,
+                    kind=kind,
+                    name=file.filename or "material",
+                    content_type=file.content_type or "application/octet-stream",
+                    data=data,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.post("/api/work-requests/{request_id}/materials/links", status_code=status.HTTP_201_CREATED)
+        def attach_work_request_material_link(
+            request_id: UUID,
+            request: WorkRequestMaterialLinkRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> WorkRequestMaterialResult:
+            try:
+                return app.state.workflow_application.attach_work_request_material_link(
+                    principal, request_id, kind=request.kind, url=request.url, label=request.label
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/work-requests/{request_id}/materials/{material_id}/content")
+        def work_request_material_content(
+            request_id: UUID, material_id: UUID, principal: Principal = Depends(developer_principal)
+        ) -> Response:
+            try:
+                view, data = app.state.workflow_application.open_work_request_material(principal, request_id, material_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+            from urllib.parse import quote
+
+            return Response(
+                content=data,
+                media_type=str(view["content_type"]),
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(str(view['name']))}"},
+            )
+
+        @app.delete("/api/work-requests/{request_id}/materials/{material_id}")
+        def detach_work_request_material(
+            request_id: UUID, material_id: UUID, principal: Principal = Depends(developer_principal)
+        ) -> WorkRequestMaterialResult:
+            try:
+                return app.state.workflow_application.detach_work_request_material(principal, request_id, material_id)
             except Exception as error:
                 raise _runtime_error(error) from error
 

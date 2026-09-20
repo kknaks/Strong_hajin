@@ -5,9 +5,11 @@ from pathlib import Path
 import re
 
 # tasks/<task>/<file>, meetings/<meeting>/<file>, material_folders/<folder>/<file>,
-# action_items/<action>/drafts/<file>, work_requests/<request>/{comments|evidence}/<file>
+# action_items/<action>/drafts/<file>, work_requests/<request>/{comments|evidence|materials}/<file>
+# `materials` 는 **요청에 붙은 자료**다 — 논의(comments)·판단 근거(evidence)와 뜻이 다르므로
+# 그 둘의 자리를 빌려 쓰지 않고 자기 접두를 갖는다 (WORK-003 요청 자료 계약).
 _SAFE_KEY = re.compile(
-    r"^(?:(?:tasks|meetings|material_folders)/[0-9a-f-]{36}|action_items/[0-9a-f-]{36}/drafts|work_requests/[0-9a-f-]{36}/(?:comments|evidence))/[0-9a-f-]{36}$"
+    r"^(?:(?:tasks|meetings|material_folders)/[0-9a-f-]{36}|action_items/[0-9a-f-]{36}/drafts|work_requests/[0-9a-f-]{36}/(?:comments|evidence|materials))/[0-9a-f-]{36}$"
 )
 
 

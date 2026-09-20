@@ -70,8 +70,27 @@ class TaskMutationResult(TypedDict):
     completed_at: str | None
     reopened_at: str | None
     assignment: TaskAssignmentView | None
+    #: 참조자 — **읽기와 논의만** 열린다. 업무 요청의 같은 이름과 같은 뜻이다 (`modules/work/parties.py`).
+    cc_member_ids: list[str]
+    #: **선행업무 — 활성인 것만** (SPEC-001 §4 Data Contract). 상위·참고와 다른 세 번째 관계이고
+    #: **간트 연결선의 유일한 원천**이다. 뗀 관계는 행으로 남지만 여기 서지 않는다.
+    preceding_task_ids: list[str]
+    #: 승인자 0..1 — 화면 라벨은 「결재자」고 같은 값이다 (SPEC-001 §7 OQ-N).
+    approver_id: str | None
     derived: TaskDerivedView | None
     lineage: TaskLineageView
+
+
+class TaskPredecessorView(TypedDict):
+    """선행 하나의 요약. **볼 수 없는 선행은 `title`·`state` 가 비고 자리만 남는다** (SPEC-001 §4).
+
+    자료 구획과 다르다: 자료는 건수도 내지 않지만 선행은 **시작을 막는 이유**라, 이유를 숨기면
+    사람이 다음 걸음을 고를 수 없다. **제목은 감추고 건수는 낸다** — 배열 길이가 그 건수다.
+    """
+
+    task_id: str
+    title: str | None
+    state: str | None
 
 
 class ChecklistItemView(TypedDict):
@@ -188,6 +207,8 @@ class TaskDetailResult(TaskMutationResult):
     child_progress: TaskChildProgressView
     delivery: TaskDeliveryView | None
     access: Literal['owner', 'read_only']
+    #: 각 선행의 제목·상태. `preceding_task_ids` 와 **같은 순서·같은 길이**다.
+    predecessors: list[TaskPredecessorView]
     checklist: NotRequired[list[ChecklistItemView]]
     checklist_progress: NotRequired[TaskProgressView]
     references: NotRequired[list[TaskReferenceView]]

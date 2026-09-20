@@ -423,15 +423,19 @@ describe("SCR-106 회의 상세 — 상태와 관계가 무엇을 낼지 정한�
     renderDetail();
     await screen.findByText("전망치 다시 뽑기");
     fireEvent.click(screen.getByRole("button", { name: "업무 생성" }));
-    const drawer = await screen.findByRole("dialog", { name: "업무 요청" });
+    const drawer = await screen.findByRole("dialog", { name: "새 업무 요청" });
     // 승격은 언제나 업무 요청이다 — 고를 것이 없으니 「업무/요청」 토글을 두지 않는다 (D10)
     expect(within(drawer).queryByRole("tablist", { name: "생성 유형" })).toBeNull();
-    expect(within(drawer).queryByRole("tab")).toBeNull();
-    expect(within(drawer).getByText("상대가 수락해야 그 사람의 업무가 됩니다. 수락 전에는 담당이 서지 않습니다.")).toBeTruthy();
+    expect(within(drawer).queryByRole("tab", { name: "업무" })).toBeNull();
+    expect(within(drawer).queryByRole("tab", { name: "요청" })).toBeNull();
+    // 최종 발주 7: 머리의 갈래 설명 문구는 걷었다 — 머리는 이름과 토글 한 줄이다.
+    expect(within(drawer).queryByText(/수락 전에는 담당이 서지 않습니다/)).toBeNull();
     expect((within(drawer).getByLabelText("요청할 업무") as HTMLInputElement).value).toBe("전망치 다시 뽑기");
     expect(within(drawer).getByDisplayValue("분기별 전망치를 다시 뽑아 다음 회의에 올린다.")).toBeTruthy();
     // 기한 칸은 입력칸이 아니라 달력을 여는 트리거다 (DS-17) — 미리 채운 값은 그 글자로 선다
-    expect(within(drawer).getByRole("button", { name: "기한 달력 열기" }).textContent).toBe("2026-09-12");
+    /* 날짜 칸의 접근 이름이 보이는 라벨과 같아졌다 — 요청 갈래는 「희망 기한」 하나로 읽힌다
+       (예전에는 눈에 보이는 라벨만 「희망 기한」이고 접근 이름은 「기한」이었다). */
+    expect(within(drawer).getByRole("button", { name: "희망 기한 달력 열기" }).textContent).toBe("2026-09-12");
     expect(within(drawer).getByText("지난 분기 실적 모으기")).toBeTruthy();
     expect(within(drawer).getByText("전망치 초안 쓰기")).toBeTruthy();
     // 담당 후보는 비어 있고, **서버가 앞에 둔** 참석자(정우성)가 목록 앞에 선다

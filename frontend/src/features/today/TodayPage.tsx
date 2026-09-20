@@ -8,6 +8,7 @@ import {
   getDailyReportStatus,
   getMyWork,
   getWorkRequestAssigneeCandidates,
+  getWorkRequestCcCandidates,
   getWorkRequests,
   transitionDirectTask,
   updateTask,
@@ -85,6 +86,14 @@ export function TodayPage({
   const [selectedRequest, setSelectedRequest] = useState<WorkRequest | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [assigneeCandidates, setAssigneeCandidates] = useState<Persona[]>([]);
+  /**
+   * 참조 후보 — **오늘 화면의 생성 창에도 참조자·결재자 칸이 서야 한다** (최종 프레임 FE 정리).
+   *
+   * 지금까지 이 화면은 이 목록을 아예 읽지 않아 `ccCandidates` 를 넘기지 못했고, 창은 후보가 비면
+   * 그 칸을 그리지 않는다 — 같은 창인데 업무 화면에서는 서고 오늘 화면에서는 없었다. 두 값 모두
+   * `POST /api/tasks` 본인 갈래가 받으므로(`cc_member_ids`·`approver_id`) 감출 이유가 없다.
+   */
+  const [ccCandidates, setCcCandidates] = useState<Persona[]>([]);
   const [busy, setBusy] = useState(false);
 
   const reload = useCallback(async () => {
@@ -138,6 +147,25 @@ export function TodayPage({
     onRegisterRefresh?.(reload);
     return () => onRegisterRefresh?.(null);
   }, [onRegisterRefresh, reload]);
+
+  /* 참조 후보는 «만들 수 있는 사람» 이면 읽는다 — 요청 권한에 매달리지 않는다(업무 갈래도 받는 값이다). */
+  useEffect(() => {
+    if (!canManageOwnTasks && !canCreateWorkRequests) {
+      setCcCandidates([]);
+      return;
+    }
+    let cancelled = false;
+    void getWorkRequestCcCandidates()
+      .then((candidates) => {
+        if (!cancelled) setCcCandidates(candidates);
+      })
+      .catch(() => {
+        if (!cancelled) setCcCandidates([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canCreateWorkRequests, canManageOwnTasks, personaId]);
 
   useEffect(() => {
     if (!canCreateWorkRequests) {
@@ -415,6 +443,7 @@ export function TodayPage({
           assigneeCandidates={assigneeCandidates}
           canCreateRequest={canCreateWorkRequests}
           canCreateTask={canManageOwnTasks}
+          ccCandidates={ccCandidates}
           onClose={() => setIsCreating(false)}
           onCreated={async (message) => {
             await reload();

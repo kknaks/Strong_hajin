@@ -2,14 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { CalendarRail } from "../../shell/CalendarRail";
 import { Chip } from "../../ds/Chip";
+import { ActionItemDrawer } from "../action/ActionCenter";
 import { InboxRail } from "../../shell/InboxRail";
 import { Tabs } from "../../ds/SegmentedControl";
-import { ActionItemDrawer } from "../action/ActionCenter";
 
 import {
   decideWorkRequest,
   generateDailyReportDraft,
-  getActionItems,
+  getWorkRequestInbox,
   getTask,
   getMyWork,
   getSentTaskAssignments,
@@ -20,6 +20,7 @@ import {
   getWorkRequest,
   getWorkRequests,
   hideWorkRequestListEntry,
+  markWorkRequestRead,
   transitionDirectTask,
   updateTask,
   withdrawWorkRequest,
@@ -27,6 +28,7 @@ import {
 import { Button } from "../../ds/Button";
 import { SegmentedControl } from "../../ds/SegmentedControl";
 import {
+  ccWorkChips,
   doneWorkChips,
   emptyActionLabel,
   emptyValue,
@@ -51,6 +53,7 @@ import {
   type WorkRequest,
 } from "../../lib/viewModels";
 import {
+  CompletionReportModal,
   CreateWorkModal,
   ReasonPrompt,
   StatusText,
@@ -62,14 +65,25 @@ import {
   displayNameOf,
   type TaskAction,
 } from "./WorkModals";
-import { TaskKanban, TaskTimeline } from "./WorkViews";
-import { Empty, EmptyValue } from "../../ds/Empty";
+import { requestInboxItems } from "./requestInbox";
+import { TaskTimeline } from "./WorkViews";
 import { ConfirmModal } from "../../ds/Modal";
+import { Empty, EmptyValue } from "../../ds/Empty";
 import { DataTable, Td, Th, TrOpenable } from "../../ds/DataTable";
 import { Select } from "../../ds/Select";
 import { Icon } from "../../ds/icons/Icon";
-import { DoneTaskTable, SentTaskTable, TaskTable, doneGroupsOf, sentStateOf, type SentRow } from "./WorkTables";
-import { chipCounts, isOpenRequest, isRequestOwner, isRequestRecordRequester, matchesChip, myWorkRows, type WorkRow } from "./workRows";
+import {
+  CcTaskTable,
+  DoneTaskTable,
+  OrganizationTaskTable,
+  SentTaskTable,
+  TaskTable,
+  doneGroupsOf,
+  sentStateOf,
+  type CcRow,
+  type SentRow,
+} from "./WorkTables";
+import { chipCounts, isOpenRequest, isRequestOwner, isRequestRecordRequester, isRequestTask, matchesChip, myWorkRows, type WorkRow } from "./workRows";
 
 type MyWorkPageProps = {
   personaId: string;
@@ -108,17 +122,15 @@ type MyWorkPageProps = {
  * 탭 셋 — **소유·종결 축이다** (SPEC-003 §2.1).
  *
  * 업무를 만드는 세 «행위»(본인 생성 · 요청 · 배정)와 1:1 이 아니고, **그것이 어긋남은 아니다.**
- * 「받은 요청」은 네 번째 탭이 아니라 「내 업무」의 필터 칩이다 — 수락 전 요청 업무도 응답할 자리는
- * 내 목록에 있어야 하기 때문이다(§2.1 · V-9·V-10).
+ * 수락 전 요청은 좌측 업무 요청 수신함에서 응답하고, 수락한 Task만 내 업무에 선다.
  */
-type WorkTab = "mine" | "sent" | "done";
-type ViewMode = "list" | "timeline" | "kanban";
+type WorkTab = "mine" | "sent" | "done" | "cc";
+type ViewMode = "list" | "timeline";
 
 // Waiting on someone else's confirmation sits with the work in flight, not with what is finished.
 const stateOrder: Record<TaskState, number> = { blocked: 0, in_progress: 1, open: 3, done: 4, cancelled: 5 };
 const views: Array<{ id: ViewMode; label: string }> = [
   { id: "list", label: "목록" },
-  { id: "kanban", label: "칸반" },
   { id: "timeline", label: "타임라인" },
 ];
 
@@ -126,7 +138,32 @@ const chipsForTab: Record<WorkTab, ReadonlyArray<WorkChip>> = {
   mine: myWorkChips,
   sent: sentWorkChips,
   done: doneWorkChips,
+  cc: ccWorkChips,
 };
+
+/**
+ * 열려 있는 **한 겹**의 내용 (4차 발주 3).
+ *
+ * 지금까지는 상세마다 상태가 따로 있어서(`selectedTask`·`relatedTask`·`selectedRequest`·
+ * `requestDerivedTask`·`selectedActionItem`) 둘이 동시에 설 수 있었고, 그때 스크림이 두 번 덮였다.
+ * 이제 **쌓기 하나**가 그 다섯을 대신한다 — 화면에 서는 것은 늘 맨 위 하나이고, 「뒤로」는 한 칸
+ * 물러설 뿐 겹을 새로 열지 않는다. 그래서 중첩 오버레이가 구조적으로 생길 수 없다.
+ */
+type DetailEntry =
+  | {
+      kind: "task";
+      taskId: string;
+      task: DirectTask;
+      /** 이 겹에서 명령을 부를 수 있나. 파생·조직 업무처럼 읽기로 여는 자리는 `false` 다. */
+      manage: boolean;
+      /**
+       * 목록에서 연 것인가 — `true` 면 새로고침에서 그 행이 사라졌을 때 겹도 함께 닫는다.
+       * 파생 업무처럼 **목록 밖에서** 읽어 온 것은 목록에 없는 것이 정상이라 닫지 않는다.
+       */
+      tracked: boolean;
+    }
+  | { kind: "request"; requestId: string; request: WorkRequest; readOnly: boolean }
+  | { kind: "action"; actionItemId: string };
 
 export function MyWorkPage({
   personaId,
@@ -141,7 +178,6 @@ export function MyWorkPage({
   onRegisterHeaderActions,
   onRegisterRails,
   canDecideWorkRequests,
-  canReadActions,
   onAskAboutTask,
   onNotice,
   onDecided,
@@ -157,6 +193,8 @@ export function MyWorkPage({
   const [actionItems, setActionItems] = useState<ActionItemEnvelope[]>([]);
   const [selectedActionItem, setSelectedActionItem] = useState<ActionItemEnvelope | null>(null);
   const [relatedTask, setRelatedTask] = useState<DirectTask | null>(null);
+  const [inboxRequests, setInboxRequests] = useState<WorkRequest[]>([]);
+  const [inboxState, setInboxState] = useState<"loading" | "error" | "ready">("loading");
   const [allRequests, setAllRequests] = useState<WorkRequest[]>([]);
   const [assigneeCandidates, setAssigneeCandidates] = useState<Persona[]>([]);
   const [assignCandidates, setAssignCandidates] = useState<Persona[]>([]);
@@ -170,6 +208,17 @@ export function MyWorkPage({
   const [generating, setGenerating] = useState(false);
   const [selectedTask, setSelectedTask] = useState<DirectTask | null>(null);
   const [selectedRequest, setSelectedRequest] = useState<WorkRequest | null>(null);
+  const [requestDerivedTask, setRequestDerivedTask] = useState<DirectTask | null>(null);
+  const [requestReadOnly, setRequestReadOnly] = useState(false);
+  /**
+   * 열려 있는 겹 — **늘 하나이고, 안의 내용만 갈아끼워진다** (4차 발주 3).
+   *
+   * 「요청 상세 → 파생 업무 상세 → 그 업무의 하위」로 들어가도 오버레이는 계속 하나다. 맨 위만 그리고,
+   * 「뒤로」는 한 칸 물러선다. 바닥까지 물러서면 닫힌다.
+   */
+  const [detailStack, setDetailStack] = useState<DetailEntry[]>([]);
+  /** 지금 그려지는 겹 — 맨 위 하나다. */
+  const detail = detailStack.length > 0 ? detailStack[detailStack.length - 1] : null;
   const [isCreating, setIsCreating] = useState(false);
   /** 보내려는 요청의 「다시 요청」 — 이전 요청을 이어 새 요청을 만든다(재요청 · V-12). */
   const [resending, setResending] = useState<WorkRequest | null>(null);
@@ -178,6 +227,20 @@ export function MyWorkPage({
   /** 「숨긴 항목 보기」 — 목록 정리는 숨김이고 이력은 남는다 (F-6 · OQ-202 의 화면 선택). */
   const [showHidden, setShowHidden] = useState(false);
   const [hiddenLocally, setHiddenLocally] = useState<string[]>([]);
+  /** 지금 읽는 중인 참고 항목 — 연타가 두 번째 명령이 되지 않게 그 단추를 잠근다. */
+  const [reading, setReading] = useState<string[]>([]);
+  /**
+   * 이 세션에서 읽은 참고 항목 (WORK-003 Phase 5).
+   *
+   * **읽음 필터는 서버의 수신함 조회가 갖는다** (SPEC-001 §4 — `reference` 갈래 하나에만 걸린다).
+   * 그런데 이 화면의 수신함 목록은 서버 수신함과 **요청 목록 둘**에서 조립된다(`requestInboxItems`
+   * 가 `category` 를 내지 않는 서버를 보완하는 자리다). 요청 목록에는 읽음 필터가 **없으므로**,
+   * 그쪽에서 방금 읽은 항목이 다시 올라온다 — 접은 카드가 도로 서는 것이 그 모습이다.
+   * 그래서 이 세션이 읽은 것을 여기 들고 조립에서 뺀다. 새로고침 뒤의 판정은 서버 것이다.
+   */
+  const [readLocally, setReadLocally] = useState<string[]>([]);
+  /** React state 는 같은 tick 의 두 이벤트 사이를 못 막는다 — 그 창을 이 ref 가 닫는다. */
+  const readingNow = useRef(new Set<string>());
   /** 방금 읽기에서 «숨긴 항목까지» 를 서버가 거절했나. 목록을 세운 뒤 한 번 말하는 데만 쓴다. */
   const hiddenReadFailed = useRef(false);
   // 볼 것이 있을 때만 펼친다. 사람이 접거나 편 뒤에는 그 선택이 이긴다.
@@ -185,11 +248,29 @@ export function MyWorkPage({
      새로 읽는 것이 아니라, 지금까지 전역 오류 배너로만 나가던 reload 의 결과를 레일도 읽게 드러낸 것뿐이다. */
   const [loadState, setLoadState] = useState<"loading" | "error" | "ready">("loading");
 
+  const reloadInbox = useCallback(async () => {
+    if (!canDecideWorkRequests) {
+      setInboxRequests([]);
+      setInboxState("ready");
+      return [] as WorkRequest[];
+    }
+    setInboxState("loading");
+    try {
+      const requests = await getWorkRequestInbox();
+      setInboxRequests(requests);
+      setInboxState("ready");
+      return requests;
+    } catch {
+      setInboxState("error");
+      return [] as WorkRequest[];
+    }
+  }, [canDecideWorkRequests]);
+
   const reload = useCallback(async () => {
-    const [work, closed, judgements, requests, nextSent] = await Promise.all([
+    const [work, closed, incoming, requests, nextSent] = await Promise.all([
       getMyWork(),
       getTasks(true).catch(() => [] as DirectTask[]),
-      getActionItems(),
+      reloadInbox(),
       /* 숨긴 항목까지 함께 읽는다 — 숨김은 «목록에서 빼는 것» 이지 삭제가 아니라, 「숨긴 항목 보기」가
          새로고침 뒤에도 서려면 서버가 그 행을 계속 내주어야 한다(L-6 · F-6).
 
@@ -218,19 +299,31 @@ export function MyWorkPage({
     setOrganizationTasks(closed.filter((task) => !held.has(task.task_id) && (task.assignee?.member_id ?? personaId) !== personaId));
     const merged = new Map<string, DirectTask>();
     for (const task of [...work, ...mine]) merged.set(task.task_id, { ...merged.get(task.task_id), ...task });
-    const nextTasks = [...merged.values()];
+    const pendingTaskIds = new Set([...requests, ...incoming].filter(isOpenRequest).map((request) => request.task_id));
+    const nextTasks = [...merged.values()].filter((task) => !pendingTaskIds.has(task.task_id));
     setTasks(nextTasks);
-    setActionItems(judgements);
     setAllRequests(requests);
     setSentAssignments(nextSent);
-    setSelectedTask((current) => (current ? nextTasks.find((task) => task.task_id === current.task_id) ?? null : null));
-    setSelectedRequest((current) => {
-      if (!current) return null;
-      const next = requests.find((request) => request.request_id === current.request_id);
-      // A list refresh must not throw away the permission-safe references loaded by the detail read.
-      return next ? { ...current, ...next } : null;
-    });
-  }, [canAssignTasks, personaId]);
+    /* 열려 있는 겹도 방금 읽은 값으로 따라간다 — 상세가 혼자 옛 회차를 들고 있으면 저장이 409 로 튄다.
+       목록에서 연 업무(`tracked`)가 목록에서 사라지면 그 겹은 닫는다. 파생·조직 업무는 애초에 목록
+       밖에서 읽어 온 것이라 목록에 없는 것이 정상이고, 닫지 않는다. */
+    setDetailStack((stack) =>
+      stack
+        .filter((entry) => !(entry.kind === "task" && entry.tracked && !nextTasks.some((task) => task.task_id === entry.taskId)))
+        .map((entry) => {
+          if (entry.kind === "task") {
+            const next = nextTasks.find((task) => task.task_id === entry.taskId);
+            return next ? { ...entry, task: next } : entry;
+          }
+          if (entry.kind === "request") {
+            const next = requests.find((request) => request.request_id === entry.requestId);
+            // A list refresh must not throw away the permission-safe references loaded by the detail read.
+            return next ? { ...entry, request: { ...entry.request, ...next } } : entry;
+          }
+          return entry;
+        }),
+    );
+  }, [canAssignTasks, personaId, reloadInbox]);
 
   /**
    * 읽기가 끝난 뒤 배너를 정리한다 — **반쪽으로 온 것이 있으면 지우지 않고 그것을 남긴다.**
@@ -272,9 +365,29 @@ export function MyWorkPage({
     return () => onRegisterRefresh?.(null);
   }, [onRegisterRefresh, reload]);
 
+  /**
+   * **참조 후보는 요청 권한에 매달리지 않는다** (최종 프레임 FE 정리).
+   *
+   * 한동안 이 목록 둘이 한 `useEffect` 안에 있었고, `work_request.create` 가 없으면 **둘 다** 안
+   * 읽었다. 그런데 참조자(`cc_member_ids`)와 결재자(`approver_id`)는 **`POST /api/tasks` 본인
+   * 갈래도 받는 값**이라, 업무만 만들 수 있는 사람의 생성 창에서 두 칸이 통째로 사라지고 있었다
+   * (창은 후보가 비면 그 칸을 그리지 않는다). 그 사람이 고를 수 있는 것을 권한 없어 못 고르는
+   * 것처럼 감춘 셈이다.
+   *
+   * 그래서 **둘을 갈랐다**: 참조 후보는 «만들 수 있는 사람» 이면 읽고, 담당 후보(요청 수신자)는
+   * 지금까지대로 요청 권한이 있을 때만 읽는다 — 그쪽은 정말로 요청 갈래에서만 쓰는 목록이다.
+   *
+   * ⚠️ **BE API gap (권한 확장 필요).** 서버의 `GET /api/work-request-cc-candidates` 는 아직
+   * `work_request.create` 를 요구한다(`WorkRequestService.cc_candidates`). 그래서 `task.self_manage`
+   * 만 가진 사람은 이 호출에서 403 을 받고 목록이 비며, 창은 여전히 두 칸을 그리지 않는다.
+   * **화면이 감추는 일은 여기서 끝났고, 남은 절반은 서버에 있다** — 그 capability 가 `task.self_manage`
+   * 로도 열리거나(또는 업무용 참조 후보 입구가 따로 열리면) 두 칸이 그대로 선다. 403 을 오류 배너로
+   * 올리지 않는 것은 의도다: 아직 못 읽는 것이 사람의 잘못이 아니다.
+   */
+  const canCreateAnything = canManageOwnTasks || canCreateWorkRequests;
   useEffect(() => {
-    if (!canCreateWorkRequests) {
-      setAssigneeCandidates([]);
+    if (!canCreateAnything) {
+      setCcCandidates([]);
       return;
     }
     let cancelled = false;
@@ -285,6 +398,17 @@ export function MyWorkPage({
       .catch(() => {
         if (!cancelled) setCcCandidates([]);
       });
+    return () => {
+      cancelled = true;
+    };
+  }, [canCreateAnything, personaId]);
+
+  useEffect(() => {
+    if (!canCreateWorkRequests) {
+      setAssigneeCandidates([]);
+      return;
+    }
+    let cancelled = false;
     void getWorkRequestAssigneeCandidates()
       .then((candidates) => {
         if (!cancelled) setAssigneeCandidates(candidates);
@@ -356,19 +480,21 @@ export function MyWorkPage({
    * 받은 요청에 답한다 — **수락은 같은 Task 의 담당 확정이고 새 Task 를 만들지 않는다**(V-10).
    * 거절은 사유가 필수이고, 그 Task 는 「취소됨 — 요청 거절」로 간다(V-11 · `cancel_reason`).
    */
-  const decideRequest = async (request: WorkRequest, action: "accept" | "reject", reason?: string) => {
+  const decideRequest = useCallback(async (request: WorkRequest, action: "accept" | "reject", reason?: string) => {
     setBusy(true);
     try {
       await decideWorkRequest(request.request_id, action, request.version, reason);
       await reload();
       settleError();
       onNotice(action === "accept" ? "요청을 수락했습니다. 이제 내 업무입니다." : "요청을 거절했습니다. 보낸 사람에게 사유가 전달됩니다.");
+      return true;
     } catch (error) {
       onError(error instanceof Error ? error.message : "요청에 답하지 못했습니다.");
+      return false;
     } finally {
       setBusy(false);
     }
-  };
+  }, [reload, settleError, onNotice, onError]);
 
   /**
    * 수락 전 철회 — 요청은 `withdrawn`, 그 업무는 취소된다. 상위 연결과 로그는 남는다.
@@ -423,25 +549,58 @@ export function MyWorkPage({
   const requestsToMe = allRequests.filter((request) => request.assignee_id === personaId);
   const sentRequests = allRequests.filter((request) => request.requester_id === personaId);
   const ccRequests = allRequests.filter((request) => request.cc_member_ids?.includes(personaId));
-  /** Open the Task a request produced. The server decides what this principal may see; the client only asks. */
-  const openDerivedTask = async (taskId: string) => {
+  /* ── 겹 하나를 여닫는 네 손잡이 (4차 발주 3) ──
+     `open` 은 쌓기를 새로 세우고(목록에서 여는 자리), `push` 는 그 위에 한 칸 얹는다(상세 «안에서»
+     따라 들어가는 자리). `back` 은 한 칸 물러서고, `close` 는 전부 접는다. */
+  const openDetail = useCallback((entry: DetailEntry) => setDetailStack([entry]), []);
+  const pushDetail = useCallback(
+    (entry: DetailEntry) => setDetailStack((stack) => (stack.length === 0 ? [entry] : [...stack, entry])),
+    [],
+  );
+  const backDetail = useCallback(() => setDetailStack((stack) => stack.slice(0, -1)), []);
+  const closeDetail = useCallback(() => setDetailStack([]), []);
+
+  /** 목록에서 내 업무 하나를 연다 — 여기서만 명령을 부를 수 있다. */
+  const openMyTask = useCallback(
+    (task: DirectTask) => openDetail({ kind: "task", taskId: task.task_id, task, manage: canManageOwnTasks, tracked: true }),
+    [canManageOwnTasks, openDetail],
+  );
+
+  /**
+   * 상세 «안에서» 다른 업무로 넘어간다 — 겹을 새로 열지 않고 한 칸 얹는다 (3차 발주 3 · 4차 발주 3).
+   *
+   * 읽기는 지금까지와 같은 서버 조회 하나다(`getTask`). 「뒤로」가 방금 보던 요청·업무로 되돌린다.
+   */
+  const pushDerivedTask = async (taskId: string) => {
     onError(null);
     try {
-      setRelatedTask(await getTask(taskId));
-      setSelectedRequest(null);
+      const task = await getTask(taskId);
+      pushDetail({ kind: "task", taskId, task, manage: false, tracked: false });
     } catch (error) {
       onError(error instanceof Error ? error.message : "파생 업무를 열지 못했습니다.");
     }
   };
 
-  const openWorkRequest = async (requestId: string) => {
+  /** Open the Task a request produced. The server decides what this principal may see; the client only asks. */
+  const openDerivedTask = async (taskId: string) => {
     onError(null);
     try {
-      setSelectedRequest(await getWorkRequest(requestId));
+      const task = await getTask(taskId);
+      openDetail({ kind: "task", taskId, task, manage: false, tracked: false });
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "파생 업무를 열지 못했습니다.");
+    }
+  };
+
+  const openWorkRequest = useCallback(async (requestId: string, readOnly = false) => {
+    onError(null);
+    try {
+      const request = await getWorkRequest(requestId);
+      openDetail({ kind: "request", requestId, request, readOnly });
     } catch (error) {
       onError(error instanceof Error ? error.message : "업무 요청 상세를 불러오지 못했습니다.");
     }
-  };
+  }, [onError, openDetail]);
 
   // Another surface handed this person to one piece of work: open it, once, and let that surface forget it.
   useEffect(() => {
@@ -454,20 +613,21 @@ export function MyWorkPage({
     void openWorkRequest(focusWorkRequestId).finally(() => onRequestFocusHandled?.());
   }, [focusWorkRequestId]);
 
-  /** Follow a Task back to whatever the server said its source is. Only sources it allowed ever reach here. */
+  /**
+   * Follow a Task back to whatever the server said its source is. Only sources it allowed ever reach here.
+   *
+   * 출처도 **같은 겹 안에서** 연다 — 「뒤로」로 보던 업무가 되돌아온다 (4차 발주 3).
+   */
   const openSource = async (source: { type: string; id: string }) => {
     onError(null);
     try {
       if (source.type === "action_item") {
-        setSelectedTask(null);
-        setRelatedTask(null);
-        setSelectedActionItem({ action_item_id: source.id } as ActionItemEnvelope);
+        pushDetail({ kind: "action", actionItemId: source.id });
         return;
       }
       if (source.type !== "work_request") return;
-      setSelectedTask(null);
-      setRelatedTask(null);
-      await openWorkRequest(source.id);
+      const request = await getWorkRequest(source.id);
+      pushDetail({ kind: "request", requestId: source.id, request, readOnly: false });
     } catch (error) {
       onError(error instanceof Error ? error.message : "출처를 열지 못했습니다.");
     }
@@ -610,7 +770,47 @@ export function MyWorkPage({
     [activeChip, closedMineTasks, closedSentTasks, tab, today],
   );
 
-  const chipCountsForTab = tab === "mine" ? mineCounts : tab === "sent" ? sentCounts : doneCounts;
+  /* ── 참조 업무 ── 남이 나를 참조자로 넣은 요청이다. **읽고 논의하는 자리이고 판단은 없다** (4차 발주 1). */
+  const ccRows = useMemo<CcRow[]>(
+    () =>
+      ccRequests.map((request) => {
+        const state = sentStateOf(request, null);
+        const who = (memberId: string | null | undefined, fallback: string) =>
+          memberId === personaId ? "나" : displayNameOf(people, memberId, fallback);
+        return {
+          id: request.request_id,
+          title: request.title,
+          counterpart: `${who(request.requester_id, "보낸 사람")} → ${who(request.assignee_id, "담당자")}`,
+          dueDate: request.due_date ?? null,
+          stateLabel: state.label,
+          stateTone: state.tone,
+          request,
+        };
+      }),
+    [allRequests, people, personaId],
+  );
+  const ccAsWorkRows = useMemo<WorkRow[]>(
+    () =>
+      ccRows.map((row) => ({
+        id: row.id,
+        title: row.title,
+        task: null,
+        request: row.request,
+        dueDate: row.dueDate,
+        /* 참조자에게는 수락 대기가 «내 차례» 가 아니다 — 칩이 판단을 걸지 않게 늘 `false` 로 둔다. */
+        awaitingAcceptance: false,
+        approval: null,
+      })),
+    [ccRows],
+  );
+  const ccCounts = useMemo(() => chipCounts(ccAsWorkRows, ccWorkChips, today), [ccAsWorkRows, today]);
+  const visibleCcRows = useMemo(() => {
+    if (tab !== "cc" || activeChip === "all") return ccRows;
+    const keep = new Set(ccAsWorkRows.filter((row) => matchesChip(row, activeChip, today)).map((row) => row.id));
+    return ccRows.filter((row) => keep.has(row.id));
+  }, [activeChip, ccAsWorkRows, ccRows, tab, today]);
+
+  const chipCountsForTab = tab === "mine" ? mineCounts : tab === "sent" ? sentCounts : tab === "cc" ? ccCounts : doneCounts;
   const canCreate = canManageOwnTasks || canCreateWorkRequests;
 
   /* 시안의 「일일보고 생성」 — 만들고 나서 그 초안이 열린 보고 화면으로 넘긴다.
@@ -661,6 +861,39 @@ export function MyWorkPage({
     return () => onRegisterHeaderActions(null);
   }, [canCreate, canGenerateDailyReport, generateDailyReport, generating, onNavigate, onRegisterHeaderActions]);
 
+  const inboxItems = useMemo(
+    () => requestInboxItems(inboxRequests, allRequests, personaId).filter((item) => !readLocally.includes(item.request_id)),
+    [inboxRequests, allRequests, personaId, readLocally],
+  );
+
+  /**
+   * 참고 항목을 읽는다 (SPEC-001 U-12 · WORK-003 Phase 5).
+   *
+   * **수신함에서만 접는다.** `allRequests` 는 건드리지 않으므로 「참조 업무」 탭에는 그대로 남고,
+   * CC 관계도 업무 상세도 그대로다 — 읽음은 그 사람에게만 있는 사실이다.
+   *
+   * **멱등이다.** 서버가 두 번째 호출에도 `200` 을 주지만, 연타가 두 번 나가는 것 자체를 여기서
+   * 먼저 막는다. 실패하면 목록에서 빼지 않는다 — 읽지 못한 것을 읽은 것처럼 접으면 그 항목이
+   * 새로고침 한 번에 되살아나 사람이 두 번 읽는다.
+   */
+  const readReference = useCallback(async (request: WorkRequest) => {
+    if (readingNow.current.has(request.request_id)) return;
+    readingNow.current.add(request.request_id);
+    setReading((current) => (current.includes(request.request_id) ? current : [...current, request.request_id]));
+    try {
+      await markWorkRequestRead(request.request_id);
+      // 뱃지는 «필터가 걸린 수신함 건수» 그대로다 — 목록에서 빠지면 건수도 함께 준다.
+      setInboxRequests((current) => current.filter((row) => row.request_id !== request.request_id));
+      setReadLocally((current) => (current.includes(request.request_id) ? current : [...current, request.request_id]));
+      settleError();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "읽음으로 표시하지 못했습니다.");
+    } finally {
+      readingNow.current.delete(request.request_id);
+      setReading((current) => current.filter((id) => id !== request.request_id));
+    }
+  }, [onError, settleError]);
+
   /* 바퀴 5b K-6: 레일 두 칸을 셸의 AppBody 슬롯으로 넘긴다. 본문 안에 직접 그리지 않는다 —
      안 넘기면 그 칸이 렌더되지 않는 것이 셸 규약이라, 떠날 때 빈 것으로 되돌려 다음 화면이 두 칸으로 돌아간다. */
   useEffect(() => {
@@ -668,16 +901,53 @@ export function MyWorkPage({
     onRegisterRails({
       left: (
         <InboxRail
-          items={actionItems}
-          onOpen={setSelectedActionItem}
-          onRetry={() => void reload()}
-          state={loadState}
+          items={inboxItems}
+          busy={busy}
+          personaId={personaId}
+          onRead={(request) => void readReference(request)}
+          reading={reading}
+          canDecide={canDecideWorkRequests}
+          onAccept={(request) => void decideRequest(request, "accept")}
+          onReject={(request) => setRequestPrompt({ request, command: "reject" })}
+          personas={people}
+          onOpen={(request) => void openWorkRequest(request.request_id, request.category === "reference")}
+          onRetry={() => void reloadInbox()}
+          state={loadState === "loading" ? "loading" : inboxState}
         />
       ),
-      right: <CalendarRail onOpen={setSelectedTask} onRetry={() => void reload()} state={loadState} tasks={tasks} />,
+      right: <CalendarRail onOpen={openMyTask} onRetry={() => void reload()} state={loadState} tasks={tasks} />,
     });
     return () => onRegisterRails({});
-  }, [actionItems, loadState, onRegisterRails, reload, tasks]);
+  }, [busy, canDecideWorkRequests, decideRequest, inboxItems, inboxState, openMyTask, people, openWorkRequest, personaId, readReference, reading, reloadInbox, loadState, onRegisterRails, reload, tasks]);
+
+  /**
+   * 열려 있는 겹을 **전부** 접는다 (3차 발주 4).
+   *
+   * 오버레이는 이 화면의 상태로만 서므로, 뒤 화면이 바뀌는데 상태가 남으면 스크림이 그대로 화면을
+   * 덮은 채 남는다 — 「모달을 닫았는데 화면이 계속 흐리다」의 정체가 그것이다. 탭은 «다른 목록으로
+   * 가는» 이동이라 지금 열린 상세는 그 목록의 것이 아니다. 명령을 취소하지 않는다: 여는 자리만 닫는다.
+   */
+  const closeOverlays = useCallback(() => {
+    closeDetail();
+    setRequestPrompt(null);
+    setIsCreating(false);
+    setResending(null);
+  }, [closeDetail]);
+
+  /**
+   * 사람이 바뀌면 열려 있던 겹도 그 사람 것이 아니다 (3차 발주 4).
+   *
+   * 이 화면은 페르소나가 바뀌어도 «다시 마운트되지 않는다» — 목록만 새로 읽는다. 그래서 탭 이동과
+   * 똑같은 잔류가 여기서도 생긴다: 앞사람의 상세가 열린 채 남아 스크림이 뒷사람의 목록을 계속 덮는다.
+   * 처음 렌더에서는 닫을 것도 없고, 다른 화면이 넘겨 준 `focusTaskId` 가 여는 겹을 스스로 덮을 수도
+   * 있어서 **바뀐 때만** 접는다.
+   */
+  const lastPersonaId = useRef(personaId);
+  useEffect(() => {
+    if (lastPersonaId.current === personaId) return;
+    lastPersonaId.current = personaId;
+    closeOverlays();
+  }, [personaId, closeOverlays]);
 
   /** 한 행이 지금 부를 수 있는 것 — 받은 요청이면 수락·거절, 내가 맡은 행이면 다음 한 걸음이다. */
   const rowActions = (row: WorkRow) => {
@@ -695,29 +965,36 @@ export function MyWorkPage({
     }
     // 수락 전인데 내가 답할 자리가 아니면 부를 명령이 없다 — 없는 명령의 단추를 그리지 않는다.
     if (row.awaitingAcceptance || !row.task) return null;
-    return canManageOwnTasks ? <TaskQuickActions busy={busy} onTransition={transitionTask} task={row.task} /> : null;
+    return canManageOwnTasks ? (
+      <TaskQuickActions busy={busy} onChanged={reload} onError={onError} onNotice={onNotice} onTransition={transitionTask} task={row.task} />
+    ) : null;
   };
 
   return (
-    <section className="page-surface">
+    <section className="page-surface my-work-page">
       <div className="work-layout">
         {/* 바퀴 5b K-2: 「판단이 필요한 업무」 패널은 여기 있었다. 시안대로 «좌 레일»로 옮겼다 —
             복제가 아니라 이동이라, 이 자리에는 아무것도 남지 않는다 (src/shell/InboxRail.tsx). */}
         <div>
           {/*
-            * 시안의 탭 셋 — 내 업무 / 보낸 업무 / 완료 업무 (WORK-002 Phase 7-B).
+            * 시안의 탭 넷 — 내 업무 / 보낸 업무 / 완료 업무 / 참조 업무 (WORK-002 Phase 7-B · 4차 발주 1).
             * 「보낸 업무」는 «내가 보낸 것» 을 담으므로 요청과 배정이 함께 서고, 행에서 갈린다.
+            * 「참조 업무」는 «남이 나를 참조자로 넣은 것» 이라 보낸 업무와 다른 자리이고, 판단 명령이 없다.
             */}
           <Tabs
             ariaLabel="업무 관점"
             onChange={(next) => {
               setTab(next);
               setChip("all");
+              // 탭을 옮기면 열려 있던 겹은 그 목록의 것이 아니다 — 스크림이 남지 않게 함께 접는다.
+              closeOverlays();
             }}
             options={[
               { value: "mine" as const, label: workTabLabel.mine },
               { value: "sent" as const, label: workTabLabel.sent },
               { value: "done" as const, label: workTabLabel.done },
+              /* 넷째 탭 — 지금까지 「보낸 업무」 안의 구획이던 참조 목록이다 (4차 발주 1). */
+              { value: "cc" as const, label: workTabLabel.cc },
             ]}
             value={tab}
           />
@@ -726,7 +1003,7 @@ export function MyWorkPage({
               * 칩은 상태 나열이 아니라 «파생 조건» 이다 (§2.6). 건수는 그 칩이 거는 필터의 건수 그대로이고,
               * 읽을 수 없는 것은 서버 목록에 애초에 없으므로 건수에도 들어가지 않는다 (U-15).
               */}
-            <span aria-label="업무 필터" role="group">
+            <span aria-label="업무 필터" className="my-work-page__filters" role="group">
               {chips.map((option) => (
                 <Chip
                   key={option}
@@ -756,17 +1033,8 @@ export function MyWorkPage({
           </div>
 
           {tab === "mine" ? (
-            view === "kanban" ? (
-              <TaskKanban
-                busy={busy}
-                canManage={canManageOwnTasks}
-                onInvalidMove={onNotice}
-                onOpen={setSelectedTask}
-                onTransition={transitionTask}
-                tasks={visibleTasks}
-              />
-            ) : view === "timeline" ? (
-              <TaskTimeline onOpen={setSelectedTask} tasks={visibleTasks} />
+            view === "timeline" ? (
+              <TaskTimeline onOpen={openMyTask} tasks={visibleTasks} />
             ) : (
               <TaskTable
                 actions={rowActions}
@@ -774,7 +1042,7 @@ export function MyWorkPage({
                 onClearFilter={() => setChip("all")}
                 onCreate={canManageOwnTasks ? () => setIsCreating(true) : undefined}
                 onOpen={(row) => {
-                  if (row.task) setSelectedTask(row.task);
+                  if (row.task) openMyTask(row.task);
                   else if (row.request) void openWorkRequest(row.request.request_id);
                 }}
                 onRetry={() => void reload()}
@@ -789,7 +1057,15 @@ export function MyWorkPage({
                 state={loadState}
                 statusCell={(row) =>
                   row.task ? (
-                    <TaskStateCell busy={busy} canManage={canManageOwnTasks && !row.awaitingAcceptance} onTransition={transitionTask} task={row.task} />
+                    <TaskStateCell
+                      busy={busy}
+                      canManage={canManageOwnTasks && !row.awaitingAcceptance}
+                      onChanged={reload}
+                      onError={onError}
+                      onNotice={onNotice}
+                      onTransition={transitionTask}
+                      task={row.task}
+                    />
                   ) : (
                     <StatusText label="수락 대기" state="pending" />
                   )
@@ -833,54 +1109,36 @@ export function MyWorkPage({
                 state={loadState}
                 today={today}
               />
-              {/* 참조는 이 제품이 가진 관계 하나이지 있을 때만 생기는 것이 아니다 — 자리를 지킨다.
-                  M-20 이 미정이라 「화면에서 없애는 것」은 제품 결정이다. 이번 판은 여기 구획으로 둔다. */}
-              <RequestRelationSection
-                counterpart="both"
-                emptyHint="동료가 나를 참조자로 넣어 보낸 요청이 여기에 쌓입니다."
-                emptyTitle="참조된 업무가 없습니다"
-                hint="읽고 논의할 수 있지만 판단은 담당자가 합니다"
-                label="참조된 업무"
-                onOpen={(request) => void openWorkRequest(request.request_id)}
-                people={people}
-                personaId={personaId}
-                requests={ccRequests}
-              />
+              {/* 4차 발주 1: 「참조된 업무」 구획은 여기 있었다. **넷째 탭으로 옮겼다** — 복제가 아니라
+                  이동이라 이 자리에는 아무것도 남지 않는다. */}
               {canReadOrganizationWork && (
-                <section aria-label="조직 업무" className="sent-section">
+                <section aria-label="조직 업무 구획" className="sent-section">
                   <h2 className="section-title">
                     조직 업무 <small>조직 사람들이 지금 들고 있는 업무입니다. 읽기만 하며, 옮기고 끝내는 것은 담당자의 몫입니다</small>
                   </h2>
-                  <DataTable>
-                    <thead>
-                      <tr>
-                        <Th>업무명</Th>
-                        <Th align="center">담당자</Th>
-                        <Th align="center">상태</Th>
-                        <Th align="center">기한</Th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {organizationTasks.length === 0 && (
-                        <tr>
-                          <Td colSpan={4}>
-                            <Empty description="누군가 업무를 맡으면 여기에서 보입니다." title="조직에 진행 중인 다른 업무가 없습니다" />
-                          </Td>
-                        </tr>
-                      )}
-                      {organizationTasks.map((task) => (
-                        <TrOpenable data-organization-task={task.task_id} key={task.task_id} onClick={() => setSelectedTask(task)}>
-                          <Td title>{task.title}</Td>
-                          <Td align="center">{displayNameOf(people, task.assignee?.member_id, "담당자 없음")}</Td>
-                          <Td align="center">{taskStateLabel[task.state] ?? task.state}</Td>
-                          <Td align="center">{task.due_date ?? <EmptyValue />}</Td>
-                        </TrOpenable>
-                      ))}
-                    </tbody>
-                  </DataTable>
+                  {/* 4차 발주 2: 같은 탭 안이라 **같은 표 골격**을 쓴다 — 열 폭도 제목 시작 위치도 위와 같다. */}
+                  <OrganizationTaskTable
+                    assigneeName={(task) => displayNameOf(people, task.assignee?.member_id, "담당자 없음")}
+                    onOpen={(task) => openDetail({ kind: "task", taskId: task.task_id, task, manage: false, tracked: false })}
+                    onRetry={() => void reload()}
+                    state={loadState}
+                    tasks={organizationTasks}
+                    today={today}
+                  />
                 </section>
               )}
             </>
+          ) : tab === "cc" ? (
+            /* 참조 업무 — 읽고 논의하는 자리다. 여는 상세도 읽기 전용이라 수락·거절이 서지 않는다. */
+            <CcTaskTable
+              filtered={activeChip !== "all"}
+              onClearFilter={() => setChip("all")}
+              onOpen={(row) => void openWorkRequest(row.request.request_id, true)}
+              onRetry={() => void reload()}
+              rows={visibleCcRows}
+              state={loadState}
+              today={today}
+            />
           ) : (
             <DoneTaskTable
               filtered={activeChip !== "all"}
@@ -894,74 +1152,64 @@ export function MyWorkPage({
         </div>
       </div>
 
-      {selectedTask && (
+      {/*
+        * **오버레이는 늘 한 겹이다** (4차 발주 3). 업무 상세·요청 상세·판단 상세가 «같은 가운데 모달»
+        * 안에서 서로 갈아끼워지고, 「뒤로」는 한 칸 물러설 뿐 새 겹을 열지 않는다. 오른쪽 드로어는
+        * 이 화면에서 더 이상 열리지 않는다 — 넷 다 `presentation="modal"` 이다.
+        */}
+      {detail?.kind === "task" && (
         <TaskDetailDrawer
+          onBack={detailStack.length > 1 ? backDetail : undefined}
+          backLabel={detailStack.length > 1 && detailStack[detailStack.length - 2]?.kind === "request" ? "업무 요청 상세로 돌아가기" : "이전 상세로 돌아가기"}
           busy={busy}
-          canManage={canManageOwnTasks}
+          canManage={detail.manage}
           onAskAx={onAskAboutTask}
-          onClose={() => setSelectedTask(null)}
+          onClose={closeDetail}
           onError={onError}
           onNotice={onNotice}
-          canAssign={Boolean(canAssignTasks)}
+          canAssign={detail.manage && Boolean(canAssignTasks)}
           onChanged={reload}
-          onOpenTask={(taskId) => void openDerivedTask(taskId)}
-          onTransition={transitionTask}
-          onOpenSource={selectedTask.origin?.source ? (source) => void openSource(source) : undefined}
-          onUpdate={updateTaskFields}
-          ownerName={selectedTask.assignee ? personName(selectedTask.assignee.display_name) : me}
+          onOpenTask={(taskId) => void pushDerivedTask(taskId)}
+          onTransition={detail.manage ? transitionTask : async () => undefined}
+          onOpenSource={detail.task.origin?.source ? (source) => void openSource(source) : undefined}
+          onUpdate={detail.manage ? updateTaskFields : async () => undefined}
+          ownerName={detail.task.assignee ? personName(detail.task.assignee.display_name) : detail.manage ? me : "미할당"}
           personaId={personaId}
           personas={people}
-          task={selectedTask}
-          viewerIsRequester={isRequestOwner(requestOf(selectedTask), personaId)}
-          viewerIsRecordRequester={isRequestRecordRequester(requestOf(selectedTask), personaId)}
+          task={detail.task}
+          viewerIsRequester={isRequestOwner(requestOf(detail.task), personaId)}
+          viewerIsRecordRequester={isRequestRecordRequester(requestOf(detail.task), personaId)}
         />
       )}
-      {relatedTask && (
-        <TaskDetailDrawer
-          busy={busy}
-          canManage={false}
-          onClose={() => setRelatedTask(null)}
-          onError={onError}
-          onNotice={onNotice}
-          onChanged={reload}
-          onOpenSource={relatedTask.origin?.source ? (source) => void openSource(source) : undefined}
-          onTransition={async () => undefined}
-          onUpdate={async () => undefined}
-          ownerName={relatedTask.assignee ? personName(relatedTask.assignee.display_name) : "미할당"}
-          personaId={personaId}
-          personas={people}
-          task={relatedTask}
-          viewerIsRequester={isRequestOwner(requestOf(relatedTask), personaId)}
-          viewerIsRecordRequester={isRequestRecordRequester(requestOf(relatedTask), personaId)}
-        />
-      )}
-      {selectedActionItem && (
+      {detail?.kind === "action" && (
         <ActionItemDrawer
+          presentation="modal"
+          onBack={detailStack.length > 1 ? backDetail : undefined}
+          backLabel="이전 상세로 돌아가기"
           principalId={personaId}
-          actionItemId={selectedActionItem?.action_item_id ?? ""}
-          key={selectedActionItem?.action_item_id}
-          onClose={() => setSelectedActionItem(null)}
+          actionItemId={detail.actionItemId}
+          key={detail.actionItemId}
+          onClose={closeDetail}
           onDone={onDecided}
           onError={onError}
           onNotice={onNotice}
-          onOpenDerivedTask={(taskId) => {
-            setSelectedActionItem(null);
-            void openDerivedTask(taskId);
-          }}
+          onOpenDerivedTask={(taskId) => void pushDerivedTask(taskId)}
           personas={people}
         />
       )}
-      {selectedRequest && (
+      {detail?.kind === "request" && (
         <WorkRequestDetailDrawer
           canDecide={canDecideWorkRequests}
-          onOpenDerivedTask={(taskId) => void openDerivedTask(taskId)}
-          onChanged={reload}
-          onClose={() => setSelectedRequest(null)}
+          readOnly={detail.readOnly}
+          onBack={detailStack.length > 1 ? backDetail : undefined}
+          onOpenDerivedTask={(taskId) => void pushDerivedTask(taskId)}
+          onChanged={async () => { await reload(); settleError(); }}
+          onClose={closeDetail}
           onError={onError}
           onNotice={onNotice}
           personaId={personaId}
           personas={people}
-          request={selectedRequest}
+          request={detail.request}
         />
       )}
       {requestPrompt?.command === "reject" && (
@@ -974,10 +1222,10 @@ export function MyWorkPage({
           heading="거절 사유를 남겨 주세요"
           label="거절 사유"
           onClose={() => setRequestPrompt(null)}
-          onSubmit={(reason) => {
-            const { request } = requestPrompt;
-            setRequestPrompt(null);
-            void decideRequest(request, "reject", reason);
+          onSubmit={async (reason) => {
+            const accepted = await decideRequest(requestPrompt.request, "reject", reason);
+            if (accepted) setRequestPrompt(null);
+            return accepted;
           }}
         />
       )}
@@ -1060,14 +1308,22 @@ function TaskStateCell({
   canManage,
   busy,
   onTransition,
+  onChanged,
+  onNotice,
+  onError,
 }: {
   task: DirectTask;
   canManage: boolean;
   busy: boolean;
   /** 전이를 보낸다. 돌려주는 값(받아들여졌나)은 이 자리가 쓰지 않는다 — 사유 자리만 그것을 읽는다. */
   onTransition: (task: DirectTask, action: TaskAction, reason?: string) => Promise<boolean | void>;
+  onChanged: () => Promise<void> | void;
+  onNotice: (message: string) => void;
+  onError: (message: string | null) => void;
 }) {
   const [blocking, setBlocking] = useState(false);
+  /** 상태 칸에서 「완료」를 고른 요청 업무 — 전이가 아니라 보고다 (5차 발주). */
+  const [reporting, setReporting] = useState(false);
   const transitions = allowedTaskTransitions(task);
   if (!canManage || transitions.length === 0) return <StatusText state={task.state} />;
 
@@ -1086,6 +1342,12 @@ function TaskStateCell({
             setBlocking(true);
             return;
           }
+          /* 요청 업무의 「완료」도 고른 자리에서 바로 보내지 않는다 — 그 전이는 서버가 늘 거절하고
+             (`이 업무는 요청자의 확인이 필요합니다`), 끝나는 길은 완료 보고 하나다 (5차 발주). */
+          if (picked.action === "complete" && isRequestTask(task)) {
+            setReporting(true);
+            return;
+          }
           void onTransition(task, picked.action);
         }}
         /* 지금 상태도 목록에 둔다 — 무엇이 골라져 있는지 보이고, 다시 고르면 아무 일도 일어나지 않는다 */
@@ -1101,6 +1363,20 @@ function TaskStateCell({
         )}
         value={task.state}
       />
+      {reporting && (
+        <CompletionReportModal
+          busy={busy}
+          onClose={() => setReporting(false)}
+          onError={onError}
+          onNotice={onNotice}
+          onSubmitted={async () => {
+            setReporting(false);
+            await onChanged();
+          }}
+          requesterName={task.origin?.actor ? personName(task.origin.actor.display_name) : "요청자"}
+          task={task}
+        />
+      )}
       {blocking && (
         <BlockReasonPrompt
           busy={busy}
@@ -1116,80 +1392,5 @@ function TaskStateCell({
   );
 }
 
-/**
- * One canonical WorkRequest relationship, listed persistently. These are not AX Actions: they live in the ledger, keep
- * their resolved history, and every row opens the same detail drawer where the round history and decisions are shown.
- */
-function RequestRelationSection({
-  label,
-  hint,
-  requests,
-  emptyTitle,
-  emptyHint,
-  people,
-  personaId,
-  onOpen,
-  counterpart,
-}: {
-  label: string;
-  hint: string;
-  requests: WorkRequest[];
-  emptyTitle: string;
-  emptyHint: string;
-  people: Persona[];
-  personaId: string;
-  onOpen: (request: WorkRequest) => void;
-  /** Which side of the request the reader is not on. A list names the other party, never a fixed role column. */
-  counterpart: "requester" | "assignee" | "both";
-}) {
-  const who = (memberId: string | null | undefined, fallback: string) => (memberId === personaId ? "나" : displayNameOf(people, memberId, fallback));
-  const counterpartLabel = counterpart === "requester" ? "보낸 사람" : counterpart === "assignee" ? "담당자" : "보낸 사람 → 담당자";
-  return (
-    <section aria-label={label} className="sent-section">
-      <h2 className="section-title">
-        {label} {hint && <small>{hint}</small>}
-      </h2>
-      <DataTable>
-        <thead>
-          <tr>
-            <Th>업무명</Th>
-            <Th align="center">상태</Th>
-            <Th align="center">{counterpartLabel}</Th>
-            <Th align="end">액션</Th>
-          </tr>
-        </thead>
-        <tbody>
-          {requests.length === 0 && (
-            <tr>
-              <Td colSpan={5}>
-                <Empty description={emptyHint} title={emptyTitle} />
-              </Td>
-            </tr>
-          )}
-          {requests.map((request) => (
-            <TrOpenable key={request.request_id} onClick={() => onOpen(request)}>
-              <Td title>{request.title}</Td>
-              <Td align="center">
-                <StatusText label={workRequestStateLabelOf(request)} state={request.state} />
-              </Td>
-              <Td align="center">
-                {counterpart === "both"
-                  ? `${who(request.requester_id, "보낸 사람")} → ${who(request.assignee_id, "담당자")}`
-                  : who(counterpart === "requester" ? request.requester_id : request.assignee_id, counterpartLabel)}
-              </Td>
-              <Td align="end">
-                <Button variant="text" size="sm" onClick={() => onOpen(request)} type="button">
-                  상세보기
-                </Button>
-              </Td>
-            </TrOpenable>
-          ))}
-        </tbody>
-      </DataTable>
-    </section>
-  );
-}
-
-function workRequestStateLabelOf(request: WorkRequest): string {
-  return sentStateOf(request, null).label;
-}
+/* 4차 발주 1: `RequestRelationSection`(참조된 업무 구획)은 여기 있었다. 넷째 탭의 `CcTaskTable` 이
+   그 자리를 받았고 — 같은 격자를 쓰는 표 한 벌이라 — 이 부품은 호출부가 0 이 되어 지웠다. */

@@ -91,10 +91,19 @@ def test_a_creation_key_is_required_and_never_invented_by_the_server() -> None:
 
 
 def test_the_creation_body_takes_the_recipient_and_still_refuses_what_it_never_took(tmp_path) -> None:
-    """수신자는 본문으로 열리고, **키는 헤더**이며 승인자는 W1 이 받지 않는다."""
+    """수신자는 본문으로 열리고, **키는 헤더**이며 모르는 필드는 그대로 거부된다.
+
+    **승인자 한 줄만 뜻이 바뀌었다.** W1 은 열만 만들고 값을 받지 않았는데, SPEC-001 §4 가
+    2026-09-19 부터 `업무` 갈래의 `approver_id` 를 **받아 저장하는 계약**으로 내렸다(WORK-003 Phase 3).
+    그래서 이 줄은 「거부된다」가 아니라 **「받아서 저장한다」**로 선다 — 계약이 바뀐 자리이지
+    검사를 놓은 자리가 아니다. 요청 갈래는 여전히 열지 않고, 그 gate 는
+    `test_common_work_payload.py` 가 갖는다 (§7 OQ-M).
+    """
     client, _, _ = _stack(tmp_path)
     assert _create(client, MINA, "body-1", title="본문 키는 거부", idempotency_key="k").status_code == 422
-    assert _create(client, MINA, "body-2", title="승인자는 W2", approver_id="jiho").status_code == 422
+    approved = _create(client, MINA, "body-2", title="결재자가 있는 업무", approver_id="jiho")
+    assert approved.status_code == 201, approved.text
+    assert approved.json()["approver_id"] == "jiho"
     assert _create(client, MINA, "body-3", title="모르는 필드", nonsense=1).status_code == 422
     # 기존 규칙은 그대로 산다.
     assert _create(client, MINA, "body-4", title="x" * 301).status_code == 422

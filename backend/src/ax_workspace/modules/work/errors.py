@@ -99,3 +99,77 @@ class TaskReopenForbidden(TaskAccessDenied):
     본인 업무는 담당자, 요청 업무는 요청자다. **배정 업무는 이 SPEC 이 정하지 않는다**(미정 M-3) —
     현행 동작을 그대로 둔다.
     """
+
+
+# ---- SPEC-001 §4 Case Matrix — WORK-003 이 더하는 거절들 ----
+#
+# **넷은 422 이고 둘은 409 다.** 가르는 기준은 기존 계약 그대로다: 입력이 틀린 것은 422,
+# 「명령 자체는 말이 되는데 지금 그 업무의 상태가 받지 않는」 것은 409 다.
+
+
+class TaskPredecessorProjectRequired(TaskError):
+    """선행을 지정했는데 프로젝트가 비었다 (SPEC-001 `WORK_PREDECESSOR_PROJECT_REQUIRED`, 422).
+
+    선행은 **같은 프로젝트 안에서만** 선다. 프로젝트가 없으면 「같은 프로젝트」라는 말이 성립하지 않는다.
+    """
+
+
+class TaskPredecessorProjectMismatch(TaskError):
+    """다른 프로젝트의 업무를 선행으로 지정했다 (SPEC-001 `WORK_PREDECESSOR_PROJECT_MISMATCH`, 422)."""
+
+
+class TaskPredecessorSelf(TaskError):
+    """자기 자신을 선행으로 지정했다 (SPEC-001 `WORK_PREDECESSOR_SELF`, 422).
+
+    **데이터베이스 CHECK 과 같은 사실**이다 — 어떤 상태에서도 참이 될 수 없으니 409 가 아니라 422 다.
+    """
+
+
+class TaskPredecessorDuplicate(TaskError):
+    """같은 선행을 두 번 실어 보냈다 (SPEC-001 `WORK_PREDECESSOR_DUPLICATE`, 422)."""
+
+
+class TaskPredecessorCycle(TaskError):
+    """선행 관계가 서로를 기다리게 된다 (SPEC-001 `WORK_PREDECESSOR_CYCLE`, 422).
+
+    **데이터베이스가 답할 수 없는 하나다** — 활성 변을 따라 걷는 일이라 application 이 답하고,
+    검사와 저장이 **한 transaction** 에 있다 (§5 동시성).
+    """
+
+
+class TaskProjectLockedByPredecessors(TaskError):
+    """남은 선행이 있는 업무의 프로젝트를 바꾸려 했다 (SPEC-001 `WORK_PROJECT_LOCKED_BY_PREDECESSORS`, 409).
+
+    선행이 **같은 프로젝트 안**이라는 불변을 프로젝트 쪽에서 깨는 길이라 막는다. 출구는 하나다 —
+    **선행을 먼저 비운다.** 하위가 상위를 따라 옮겨 가는 경로에도 같은 규칙이 걸린다.
+    """
+
+
+class TaskPredecessorsUnfinished(InvalidTaskTransition):
+    """끝나지 않은 선행이 있는데 시작하거나 `시작 전 → 완료` 로 직행했다
+    (SPEC-001 `WORK_PREDECESSORS_UNFINISHED`, 409).
+
+    **하나의 코드다** — 시작을 막는 것과 직행을 막는 것에 같은 코드를 쓴다. 사람에게는 같은 사실이다.
+    **미완 하위(`TaskChildrenUnfinished`)와 합치지 않는다**: 하위는 **완료**를, 선행은 **시작**을
+    막는다. 한 코드로 합치면 무엇을 먼저 해야 하는지가 사라진다.
+
+    **막는 선행의 이름을 본문에 낸다** — 미완 하위 거절이 이미 그 모양이다.
+    """
+
+    def __init__(self, message: str, blocking: tuple[dict[str, str], ...] = ()) -> None:
+        super().__init__(message)
+        self.blocking = blocking
+
+
+class TaskApproverInvalid(TaskError):
+    """승인자(화면 라벨 「결재자」)가 값으로 서지 못한다 (SPEC-001 `WORK_APPROVER_INVALID`, 422).
+
+    재직 중이 아니거나 **담당자 본인**이다 — 자기 일을 자기가 확인하는 자리를 만들지 않는다.
+    """
+
+
+class TaskApproverLocked(TaskError):
+    """`승인 대기` 뒤에 승인자를 바꾸려 했다 (SPEC-001 `WORK_APPROVER_LOCKED`, 409).
+
+    이미 그 사람 앞에 판단이 놓였으므로, 바꾸면 누가 무엇에 답했는지가 어긋난다 (§5 권한).
+    """

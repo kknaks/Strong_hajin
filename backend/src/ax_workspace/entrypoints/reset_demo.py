@@ -65,7 +65,13 @@ def main(argv: list[str] | None = None) -> None:
     if arguments.catalog_only:
         print("Catalog reset: unit types, capabilities, recommended roles and daily-report-generation@1. 예시 회사는 없다.")
         return
-    print("Demo schema reset and daily-report-generation@1 installed.")
+    # Keep reset_database/seed_catalog's empty-work contract for test and dataset
+    # callers. Only this explicit disposable-demo command installs screen fixtures.
+    from ax_workspace.bootstrap.application import create_workflow_application
+    from ax_workspace.bootstrap.demo_work import seed_demo_work
+
+    seed_demo_work(create_workflow_application(settings))
+    print("Demo schema reset, My Work fixtures seeded (mina/jiho), and daily-report-generation@1 installed.")
 
 
 if __name__ == "__main__":

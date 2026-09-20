@@ -116,7 +116,7 @@ describe("product surfaces", () => {
     function PendingUpload() { useBrowserOperationGuard(true); return null; }
     const { rerender } = render(<><App /><PendingUpload /></>);
     const navigation = await screen.findByRole('navigation', { name: '제품 탐색' });
-    fireEvent.click(within(navigation).getByRole('button', { name: '내 업무' }));
+    fireEvent.click(within(navigation).getByRole('button', { name: '업무' }));
     expect(await screen.findByText('파일 업로드나 녹음이 끝난 뒤 이동할 수 있습니다.')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '로그아웃' }));
     expect(screen.queryByLabelText('이메일')).toBeNull();
@@ -168,9 +168,9 @@ describe("product surfaces", () => {
     vi.stubGlobal("fetch", withSession(fetchMock));
 
     render(<App />);
-    fireEvent.click(within(await screen.findByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "내 업무" }));
+    fireEvent.click(within(await screen.findByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "홈" }));
     // 바퀴 5b: 판단할 것은 본문 위 패널에서 좌 레일 수신함으로 «옮겨» 갔다 (복제가 아니다)
-    const panel = await screen.findByRole("region", { name: "판단이 필요한 업무" });
+    const panel = (await screen.findByText("분기 보고 정리")).closest(".task-card") as HTMLElement;
     expect(await within(panel).findByText("분기 보고 정리")).toBeTruthy();
     expect(within(panel).getByText("업무 배정")).toBeTruthy();
     // Not in My Work before acceptance.
@@ -182,7 +182,8 @@ describe("product surfaces", () => {
     fireEvent.click(await within(drawer).findByRole("button", { name: "수락" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/action-items/as-1/commands/accept", expect.objectContaining({ method: "POST" })));
-    await waitFor(() => expect(within(panel).queryByText("분기 보고 정리")).toBeNull());
+    await waitFor(() => expect(document.body.contains(panel)).toBe(false));
+    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "업무" }));
     expect(await screen.findByRole("row", { name: /분기 보고 정리/ })).toBeTruthy();
   });
 
@@ -249,7 +250,7 @@ describe("product surfaces", () => {
     expect(screen.getByRole("button", { name: "일일보고 작성" })).toBeTruthy();
 
     const navigation = within(screen.getByRole("navigation", { name: "제품 탐색" }));
-    fireEvent.click(navigation.getByRole("button", { name: "내 업무" }));
+    fireEvent.click(navigation.getByRole("button", { name: "업무" }));
     expect(await screen.findByRole("button", { name: "시작" })).toBeTruthy();
     expect(screen.queryByText("수락된 배정")).toBeNull();
 
@@ -296,7 +297,7 @@ describe("product surfaces", () => {
 
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "내 업무" }));
+    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "업무" }));
 
     expect(await screen.findByText("읽기 전용 업무")).toBeTruthy();
     expect(screen.queryByLabelText("업무 제목")).toBeNull();
@@ -436,11 +437,13 @@ describe("product surfaces", () => {
 
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "내 업무" }));
+    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "업무" }));
     fireEvent.click(await screen.findByRole("button", { name: "업무 만들기" }));
     // 이 사람이 만들 수 있는 것은 요청 하나뿐이라 「업무/요청」 토글이 서지 않는다 (D10)
-    const createDrawer = await screen.findByRole("dialog", { name: "업무 요청" });
-    expect(within(createDrawer).queryByRole("tab")).toBeNull();
+    const createDrawer = await screen.findByRole("dialog", { name: "새 업무 요청" });
+    // 왼쪽 세로 탭(기본 정보·체크리스트·연관 업무·자료)은 «어느 필드를 보나» 라 갈래와 다른 축이다.
+    expect(within(createDrawer).queryByRole("tab", { name: "업무" })).toBeNull();
+    expect(within(createDrawer).queryByRole("tab", { name: "요청" })).toBeNull();
     await screen.findByLabelText("담당 후보");
     fireEvent.change(screen.getByLabelText("요청할 업무"), { target: { value: "UI로 만든 업무 요청" } });
     fireEvent.click(screen.getByRole("button", { name: "업무 요청 보내기" }));
@@ -456,7 +459,7 @@ describe("product surfaces", () => {
     await waitFor(() => {
       expect(within(screen.getByRole("navigation", { name: "제품 탐색" })).queryByRole("button", { name: "보고" })).toBeNull();
     });
-    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "오늘" }));
+    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "홈" }));
     expect(await screen.findByText(/반갑습니다 지호님!/)).toBeTruthy();
     expect(screen.queryByText("보고 리마인드")).toBeNull();
     expect(screen.queryByRole("button", { name: "일일보고 작성" })).toBeNull();
@@ -486,7 +489,7 @@ describe("product surfaces", () => {
     const acceptDrawer = await screen.findByRole("dialog", { name: "판단 상세" });
     fireEvent.click(await within(acceptDrawer).findByRole("button", { name: "수락" }));
 
-    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "내 업무" }));
+    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "업무" }));
     expect(await screen.findByText("UI로 만든 업무 요청")).toBeTruthy();
   });
 
@@ -533,11 +536,11 @@ describe("product surfaces", () => {
 
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
+    fireEvent.click(within(navigation).getByRole("button", { name: "홈" }));
 
     // The proposal is one judgement among the rest, labelled by the server, not by the client.
     // 바퀴 5b: 판단할 것은 본문 위 패널에서 좌 레일 수신함으로 «옮겨» 갔다 (복제가 아니다)
-    const panel = await screen.findByRole("region", { name: "판단이 필요한 업무" });
+    const panel = (await screen.findByText("AX가 만든 업무")).closest(".task-card") as HTMLElement;
     expect(await within(panel).findByText("AX가 만든 업무")).toBeTruthy();
     expect(within(panel).getByText("업무 생성")).toBeTruthy();
 
@@ -549,7 +552,7 @@ describe("product surfaces", () => {
 
     await waitFor(() => expect(decided).not.toBeNull());
     expect(JSON.parse(String(decided))).toEqual({ expected_version: 4 });
-    await waitFor(() => expect(within(panel).queryByText("AX가 만든 업무")).toBeNull());
+    await waitFor(() => expect(document.body.contains(panel)).toBe(false));
   });
 
   it("shows an AX ActionItem without decision controls when action.decide is not granted", async () => {
@@ -1715,7 +1718,7 @@ describe("product surfaces", () => {
 
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "내 업무" }));
+    fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "업무" }));
     fireEvent.click(await screen.findByText("첨부할 현재 업무"));
     fireEvent.click(await screen.findByRole("button", { name: /AX에게 이 업무 묻기/ }));
 
@@ -1806,7 +1809,7 @@ describe("product surfaces", () => {
 
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
+    fireEvent.click(within(navigation).getByRole("button", { name: "업무" }));
     /* WORK-002 v2: 칩이 «상태 나열» 에서 **파생 조건**으로 바뀌었다 (SPEC-003 §2.6) — 「전체 상태」는
        「전체 N」이 되었고 건수가 그 칩이 거는 필터의 건수다. 고르면 그 칩이 «눌린» 상태가 되는 규약은 그대로다. */
     fireEvent.click(await screen.findByRole("button", { name: /^전체 / }));
@@ -1816,10 +1819,9 @@ describe("product surfaces", () => {
     fireEvent.click(screen.getByRole("button", { name: "AX" }));
     const card = (await screen.findByText("AX가 만든 업무", { selector: ".scax-actioncard b" })).closest(".scax-actioncard") as HTMLElement;
     expect(within(card).getByText("담당")).toBeTruthy(); // server preview row, not inferred from action_type
-    // The same judgement is also in the unified decision ledger, labelled by the server.
-    const panel = screen.getByRole("region", { name: "판단이 필요한 업무" });
-    expect(within(panel).getByText("AX가 만든 업무")).toBeTruthy();
-    expect(within(panel).getByText("업무 생성")).toBeTruthy();
+    // AX proposals remain in chat, never mixed into the work-request inbox.
+    const panel = screen.getByRole("region", { name: "업무 요청 수신함" });
+    expect(within(panel).queryByText("AX가 만든 업무")).toBeNull();
     fireEvent.click(within(card).getByRole("button", { name: "승인" }));
 
     await waitFor(() => {
@@ -1884,8 +1886,8 @@ describe("product surfaces", () => {
 
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
-    const card = (await screen.findByText("분기 리포트 정리")).closest(".scax-inbox-card") as HTMLElement;
+    fireEvent.click(within(navigation).getByRole("button", { name: "홈" }));
+    const card = (await screen.findByText("분기 리포트 정리")).closest(".task-card") as HTMLElement;
     expect(card.textContent).toContain("업무 생성");
     fireEvent.click(within(card).getByRole("button", { name: "판단하기" }));
     const drawer = await screen.findByRole("dialog", { name: "판단 상세" });
@@ -1962,7 +1964,7 @@ describe("product surfaces", () => {
 
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
+    fireEvent.click(within(navigation).getByRole("button", { name: "업무" }));
     // 바퀴 5a: 상태 필터가 팝오버 하나에서 시안의 칩 나열로 폈다 — 고르면 그 칩이 «눌린» 상태가 된다
     fireEvent.click(await screen.findByRole("button", { name: /^전체 / }));
     expect(screen.getByRole("button", { name: /^전체 / }).getAttribute("aria-pressed")).toBe("true");
@@ -2043,7 +2045,7 @@ describe("product surfaces", () => {
 
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(within(navigation).getByRole("button", { name: "내 업무" }));
+    fireEvent.click(within(navigation).getByRole("button", { name: "업무" }));
     await screen.findByRole("button", { name: /^전체 / });
     fireEvent.click(screen.getByRole("button", { name: "AX" }));
     const card = (await screen.findByText("월말 정산", { selector: ".scax-actioncard b" })).closest(".scax-actioncard") as HTMLElement;
@@ -2135,7 +2137,50 @@ describe("product surfaces", () => {
       "/api/action-items/action-cancel/commands/cancel_assignment",
       expect.objectContaining({ method: "POST" }),
     ));
-    expect(await screen.findByText("업무 요청을 취소했습니다.", { selector: ".scax-toast" })).toBeTruthy();
+    // 4차 발주 6: 알림이 톤을 갖게 되어 문구가 `.scax-toast__text` 안에 선다. 자리는 같은 토스트다.
+    expect(await screen.findByText("업무 요청을 취소했습니다.", { selector: ".scax-toast__text" })).toBeTruthy();
     await waitFor(() => expect(within(card).queryByRole("button", { name: "취소" })).toBeNull());
+  });
+
+  /**
+   * 4차 발주 6·7 — **알림은 한 자리에서만 말한다.**
+   *
+   * 실패가 본문 안쪽의 빨간 띠였을 때는 표의 첫 줄이 아래로 밀렸고, 같은 명령의 성공(토스트)과
+   * 실패(띠)가 다른 데서 나타났다. 그리고 그 아래에는 캐릭터 말풍선이 토스트와 거의 같은 모양으로
+   * 떠 있었다 — 업무 화면에서 「방금 결과」로 읽히던 셋째 화자다.
+   */
+  it("says a failed read in the common toast, with no banner inside the page and no character bubble on 업무", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/organization/me") {
+        return jsonResponse({ member_id: "mina", display_name: "민아 (구성원)", organizations: [], capabilities: ["task.read", "task.self_manage"] });
+      }
+      if (path === "/api/organization/members") return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      if (path === "/api/my-work") return new Response(JSON.stringify({ detail: "내 업무를 불러오지 못했습니다." }), { status: 500 });
+      if (path === "/api/conversations") return jsonResponse([]);
+      if (path.startsWith("/api/daily-reports/status")) return jsonResponse({ report_date: seoulTodayForTest(), status: "not_started", report_id: null });
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", withSession(fetchMock));
+
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
+    // 홈에서는 말풍선이 그대로다 — 이 화면의 캐릭터는 예전 그대로 말한다.
+    expect(document.querySelector(".scax-agent__bubble")).not.toBeNull();
+
+    fireEvent.click(within(navigation).getByRole("button", { name: "업무" }));
+
+    const toast = await waitFor(() => {
+      const found = document.querySelector(".scax-toast");
+      if (!found) throw new Error("토스트가 아직 없습니다");
+      return found as HTMLElement;
+    });
+    expect(toast.getAttribute("role")).toBe("alert");
+    expect(toast.textContent).toContain("내 업무를 불러오지 못했습니다.");
+    // 본문 안쪽의 빨간 띠는 남아 있지 않다.
+    expect(document.querySelector(".error-banner")).toBeNull();
+    // 업무 화면에서는 말풍선을 접는다. 캐릭터(오브)는 그대로 서서 AX 를 연다.
+    expect(document.querySelector(".scax-agent__bubble")).toBeNull();
+    expect(screen.getByRole("button", { name: "AX" })).toBeTruthy();
   });
 });

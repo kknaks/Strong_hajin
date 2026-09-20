@@ -510,6 +510,12 @@ def test_ax_task_proposal_publishes_a_typed_server_authored_edit_contract(tmp_pa
         "reference_task_ids": [],
         "parent_task_id": None,
         "project_id": None,
+        # 참조자 — 내 업무와 업무 요청이 함께 쓰는 공통 payload 의 칸이다.
+        "cc_member_ids": [],
+        # 선행업무 — 같은 공통 payload 의 칸. 생성 표면 전부가 같은 배열을 받는다 (SPEC-001 §5).
+        "preceding_task_ids": [],
+        # 결재자 — `업무` 갈래만 여는 칸 (SPEC-001 §7 OQ-M).
+        "approver_id": None,
         # 담당 — W1 이 생성 입력에 연 필드. 초안 계약이 같은 집합을 쓴다 (WORK-001 Phase 6).
         "assignee_id": None,
     }
@@ -521,6 +527,11 @@ def test_ax_task_proposal_publishes_a_typed_server_authored_edit_contract(tmp_pa
         "start_date",
         "due_date",
         "project_id",
+        # 참조자도 확인 화면에서 고칠 수 있다 — 읽기와 논의만 여는 자리라 담당을 옮기지 않는다.
+        "cc_member_ids",
+        # 선행·결재자도 `업무` 초안의 칸이다 — 생성 표면이 같은 배열·같은 값을 받는다.
+        "preceding_task_ids",
+        "approver_id",
         "checklist",
         "reference_task_ids",
     }
@@ -537,6 +548,8 @@ def test_ax_task_proposal_publishes_a_typed_server_authored_edit_contract(tmp_pa
     assert fields["due_date"]["required"] is True
     assert fields["project_id"]["options"] == []
     assert fields["reference_task_ids"]["options"] == []
+    # 참조자 후보에 **자기 자신은 없다** — 초안을 만든 사람이 이미 담당 자리에 서 있다.
+    assert "jiho" not in {option["value"] for option in fields["cc_member_ids"]["options"]}
 
     conversation = client.get(f"/api/conversations/{proposal['conversation_id']}", headers=JIHO).json()
     [chat_action] = [row for row in conversation["actions"] if row["action_id"] == proposal["action_id"]]

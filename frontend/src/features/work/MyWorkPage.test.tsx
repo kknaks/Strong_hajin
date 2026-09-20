@@ -15,12 +15,13 @@ vi.mock("../../lib/api", () => ({
   runActionCommand: vi.fn(),
   getActions: vi.fn(),
   getWorkRequests: vi.fn(),
+  getWorkRequestInbox: vi.fn(),
   getWorkRequest: vi.fn(),
   getSentTaskAssignments: vi.fn(),
   getWorkRequestAssigneeCandidates: vi.fn(),
   getWorkRequestCcCandidates: vi.fn(),
   getTaskAssignmentCandidates: vi.fn(),
-  getWorkRequestTimeline: vi.fn(),
+  getWorkRequestTimeline: vi.fn().mockResolvedValue(null),
   addWorkRequestComment: vi.fn(),
   uploadCommentAttachment: vi.fn(),
   uploadRequestEvidence: vi.fn(),
@@ -63,7 +64,7 @@ const requests: WorkRequest[] = [
   request({ request_id: "cc-me", title: "참조로 받은 요청", requester_id: "jiho", assignee_id: "sora", cc_member_ids: ["mina"] }),
 ];
 
-function renderPage(overrides: Record<string, unknown> = {}, mocks: { actions?: unknown[]; judgements?: unknown[]; work?: unknown[]; requests?: unknown[] | ((includeRemoved?: boolean) => Promise<unknown>); assigneeCandidates?: unknown[] } = {}) {
+function renderPage(overrides: Record<string, unknown> = {}, mocks: { actions?: unknown[]; judgements?: unknown[]; inbox?: WorkRequest[]; work?: unknown[]; requests?: unknown[] | ((includeRemoved?: boolean) => Promise<unknown>); assigneeCandidates?: unknown[] } = {}) {
   vi.mocked(api.getMyWork).mockResolvedValue([]);
   vi.mocked(api.getTaskMaterials).mockResolvedValue([]);
   vi.mocked(api.getTaskHistory).mockResolvedValue([] as never);
@@ -72,6 +73,7 @@ function renderPage(overrides: Record<string, unknown> = {}, mocks: { actions?: 
   vi.mocked(api.getActionItems).mockResolvedValue([]);
   vi.mocked(api.getActions).mockResolvedValue([]);
   vi.mocked(api.getWorkRequests).mockResolvedValue(requests);
+  vi.mocked(api.getWorkRequestInbox).mockResolvedValue(mocks.inbox ?? [requests[0]]);
   vi.mocked(api.getWorkRequest).mockImplementation(async (requestId) => requests.find((row) => row.request_id === requestId) as never);
   vi.mocked(api.getSentTaskAssignments).mockResolvedValue([]);
   vi.mocked(api.getWorkRequestAssigneeCandidates).mockResolvedValue([]);
@@ -125,27 +127,6 @@ function RailHost(props: Parameters<typeof MyWorkPage>[0]) {
 }
 
 /**
- * 드래그가 들고 다니는 `DataTransfer` 한 벌.
- *
- * jsdom 은 이것을 구현하지 않는다(jsdom#1568). 그래서 `fireEvent.dragStart(el)` 만 부르면 브라우저가
- * «언제나» 싣는 값이 빠진 이벤트가 만들어지고, 그 값을 읽는 제품 코드가 그 자리에서 던진다 —
- * 테스트는 통과로 세는데 실행은 unhandled error 로 끝나 exit 1 이 된다.
- * **오류를 끄지 않고 fixture 를 실제 이벤트에 맞춘다**: 제품이 쓰는 것을 그대로 준다.
- */
-function dragData() {
-  const entries = new Map<string, string>();
-  return {
-    dropEffect: "none",
-    effectAllowed: "uninitialized",
-    types: [] as string[],
-    setData: (format: string, value: string) => void entries.set(format, value),
-    getData: (format: string) => entries.get(format) ?? "",
-    clearData: () => entries.clear(),
-    setDragImage: () => {},
-  };
-}
-
-/**
  * **WORK-002 v2 로 정보구조가 바뀐 자리다.**
  *
  * W1 은 「요청·배정」 한 탭 안에 받은·보낸·지정·참조 네 구획을 두었다. v2 의 탭은 **소유·종결 축**
@@ -155,6 +136,12 @@ function dragData() {
  */
 async function openSentTab() {
   const tab = await screen.findByRole("tab", { name: "보낸 업무" });
+  fireEvent.click(tab);
+  return tab;
+}
+
+async function openCcTab() {
+  const tab = await screen.findByRole("tab", { name: "참조 업무" });
   fireEvent.click(tab);
   return tab;
 }
@@ -175,30 +162,77 @@ describe("work relation information architecture", () => {
     expect(screen.queryByRole("tab", { name: "요청·배정" })).toBeNull();
   });
 
-  it("puts received requests on a chip of 내 업무, counted by what the chip filters", async () => {
+  it("keeps pending requests in the inbox, outside the held task list and counts", async () => {
     renderPage();
-    const chip = await screen.findByRole("button", { name: /받은 요청/ });
-    // 대기 중인 요청만 센다 — 이미 판단한 것은 이 칩이 거는 조건에 들지 않는다.
-    expect(chip.textContent).toContain("1");
-
-    fireEvent.click(chip);
-    const table = screen.getByLabelText("내 업무");
-    expect(within(table).getByText("내게 온 검토 요청")).toBeTruthy();
-    expect(within(table).queryByText("이미 판단한 요청")).toBeNull();
+    const rail = await screen.findByRole("region", { name: "업무 요청 수신함" });
+    expect(await within(rail).findByText("내게 온 검토 요청")).toBeTruthy();
+    expect(within(screen.getByLabelText("내 업무")).queryByText("내게 온 검토 요청")).toBeNull();
+    expect(screen.getByRole("button", { name: /^받은 요청/ }).textContent).toContain("0");
+    expect(api.getWorkRequestInbox).toHaveBeenCalled();
   });
 
-  it("offers 수락 and 거절 on a received request row, and sends the reason with the refusal", async () => {
-    vi.mocked(api.decideWorkRequest).mockResolvedValue(requests[0] as never);
+  it("opens the authorized request detail and sends the refusal reason", async () => {
+    vi.mocked(api.decideWorkRequest).mockResolvedValue(requests[0]);
     renderPage();
-    fireEvent.click(await screen.findByRole("button", { name: /받은 요청/ }));
-    const table = screen.getByLabelText("내 업무");
-
-    fireEvent.click(within(table).getByRole("button", { name: "거절" }));
-    const prompt = await screen.findByRole("dialog", { name: "거절 사유" });
-    fireEvent.change(within(prompt).getByLabelText("거절 사유"), { target: { value: "이번 주는 어렵습니다" } });
-    fireEvent.click(within(prompt).getByRole("button", { name: "거절" }));
-
+    const rail = await screen.findByRole("region", { name: "업무 요청 수신함" });
+    fireEvent.click(await within(rail).findByText("내게 온 검토 요청"));
+    const drawer = await screen.findByRole("dialog");
+    fireEvent.click(within(drawer).getByRole("button", { name: "거절" }));
+    fireEvent.change(within(drawer).getByLabelText("거절 사유"), { target: { value: "이번 주는 어렵습니다" } });
+    fireEvent.click(within(drawer).getByRole("button", { name: "거절 확정" }));
     await waitFor(() => expect(api.decideWorkRequest).toHaveBeenCalledWith("to-me", "reject", 1, "이번 주는 어렵습니다"));
+    expect(api.getWorkRequest).toHaveBeenCalledWith("to-me");
+  });
+
+  it("keeps a pending inbox task out of My Work even when the general request list omits it", async () => {
+    const incoming = request({ ...requests[0], task_id: "pending-task" });
+    renderPage({}, { inbox: [incoming], requests: [], work: [{ task_id: "pending-task", title: incoming.title, state: "open", version: 1, block_reason: null }] });
+    await within(await screen.findByRole("region", { name: "업무 요청 수신함" })).findByText(incoming.title);
+    expect(within(screen.getByLabelText("내 업무")).queryByText(incoming.title)).toBeNull();
+  });
+
+  it("accepts directly from the work inbox without opening detail", async () => {
+    renderPage();
+    vi.mocked(api.decideWorkRequest).mockResolvedValue({ ...requests[0], state: "accepted" });
+    const rail = await screen.findByRole("region", { name: "업무 요청 수신함" });
+    fireEvent.click(await within(rail).findByRole("button", { name: "수락" }));
+    await waitFor(() => expect(api.decideWorkRequest).toHaveBeenCalledWith("to-me", "accept", 1, undefined));
+    expect(api.getWorkRequest).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "업무 요청 상세" })).toBeNull();
+  });
+
+  it("direct inbox rejection keeps the reason on failure and retries the existing command", async () => {
+    const { props } = renderPage();
+    vi.mocked(api.decideWorkRequest).mockRejectedValueOnce(new Error("잠시 후 다시 시도"));
+    vi.mocked(api.decideWorkRequest).mockResolvedValue(requests[0]);
+    const rail = await screen.findByRole("region", { name: "업무 요청 수신함" });
+    fireEvent.click(await within(rail).findByRole("button", { name: "거절" }));
+    const prompt = await screen.findByRole("dialog", { name: "거절 사유" });
+    fireEvent.change(within(prompt).getByLabelText("거절 사유"), { target: { value: "일정 조율 필요" } });
+    fireEvent.click(within(prompt).getByRole("button", { name: "거절" }));
+    await waitFor(() => expect(props.onError).toHaveBeenCalledWith("잠시 후 다시 시도"));
+    expect((within(prompt).getByLabelText("거절 사유") as HTMLInputElement).value).toBe("일정 조율 필요");
+    fireEvent.click(within(prompt).getByRole("button", { name: "거절" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "거절 사유" })).toBeNull());
+    expect(api.decideWorkRequest).toHaveBeenLastCalledWith("to-me", "reject", 1, "일정 조율 필요");
+  });
+
+  it("after acceptance removes the inbox request and shows the same task in My Work", async () => {
+    const incoming = request({ ...requests[0], task_id: "same-task" });
+    renderPage({}, { inbox: [incoming], requests: [incoming] });
+    vi.mocked(api.getWorkRequest).mockResolvedValue(incoming);
+    fireEvent.click(await screen.findByText("내게 온 검토 요청"));
+    const drawer = await screen.findByRole("dialog");
+    expect(drawer.classList.contains("scax-modal")).toBe(true);
+    const accepted = { ...incoming, state: "accepted" as const, version: 2 };
+    vi.mocked(api.decideWorkRequest).mockResolvedValue(accepted);
+    vi.mocked(api.getWorkRequestInbox).mockResolvedValue([]);
+    vi.mocked(api.getWorkRequests).mockResolvedValue([accepted]);
+    vi.mocked(api.getMyWork).mockResolvedValue([{ task_id: "same-task", title: incoming.title, state: "open", version: 2, block_reason: null, assignee: { member_id: "mina", display_name: "민아" } }]);
+    fireEvent.click(within(drawer).getByRole("button", { name: "수락" }));
+    await waitFor(() => expect(api.decideWorkRequest).toHaveBeenCalledWith("to-me", "accept", 1));
+    expect((await within(screen.getByLabelText("내 업무")).findByText(incoming.title)).closest("[data-task-row]")?.getAttribute("data-task-row")).toBe(incoming.task_id);
+    await waitFor(() => expect(within(screen.getByRole("region", { name: "업무 요청 수신함" })).queryByText(incoming.title)).toBeNull());
   });
 
   it("keeps requests and assignments in one 보낸 업무 table while telling them apart on the row", async () => {
@@ -233,9 +267,9 @@ describe("work relation information architecture", () => {
     // 참조는 이 제품이 가진 관계 하나이지, 하나라도 있어야 생기는 자리가 아니다. M-20 이 미정이라
     // 「화면에서 지우는 것」은 제품 결정이고, 이 판은 보낸 업무 탭의 구획으로 남긴다.
     renderPage({}, { requests: [] });
-    await openSentTab();
+    await openCcTab();
 
-    const cc = within(screen.getByLabelText("참조된 업무"));
+    const cc = within(screen.getByLabelText("참조 업무"));
     expect(cc.getByText("참조된 업무가 없습니다")).toBeTruthy();
   });
 
@@ -269,24 +303,26 @@ describe("work relation information architecture", () => {
         commands: [{ id: "approve", label: "승인", tone: "primary" }],
       },
     ];
-    // Both origins reach the one judgement ledger, each labelled by the server.
+    // AX 판단 항목이 있어도 업무 요청 수신함에는 들어오지 않는다.
     const judgements = [
       { action_item_id: "ai-1", kind: "work_request.acceptance", status: "awaiting_review", subject: "내게 온 검토 요청", operation_label: "업무 요청", current_question: "이 업무 요청을 수락할지 결정하세요", preview: [], allowed_commands: [], submission_version: 1, waiting_on: { member_id: "mina", display_name: "민아 (구성원)" }, resource: { type: "work_request", id: "to-me" }, expected_version: 1 },
       { action_item_id: "ai-2", kind: "ax.task.create_self", status: "awaiting_review", subject: "AX가 제안한 업무", operation_label: "업무 생성", current_question: "AX가 준비한 변경을 승인할지 결정하세요", preview: [], allowed_commands: [], submission_version: 1, waiting_on: { member_id: "mina", display_name: "민아 (구성원)" }, resource: { type: "action", id: "action-1" }, expected_version: 1 },
     ];
     renderPage({}, { actions: axAction, judgements });
-    await screen.findByText("AX가 제안한 업무");
-    const inbox = within(await screen.findByRole("region", { name: "판단이 필요한 업무" }));
+    await screen.findByText("내게 온 검토 요청");
+    const inbox = within(await screen.findByRole("region", { name: "업무 요청 수신함" }));
     // A canonical WorkRequest is labelled as a request, never as an AX proposal.
     const requestCard = inbox.getByText("내게 온 검토 요청").closest(".scax-inbox-card") as HTMLElement;
     expect(within(requestCard).getByText("업무 요청")).toBeTruthy();
-    expect((inbox.getByText("AX가 제안한 업무").closest(".scax-inbox-card") as HTMLElement).textContent).toContain("업무 생성");
+    expect(inbox.queryByText("AX가 제안한 업무")).toBeNull();
+    expect(api.getActionItems).not.toHaveBeenCalled();
 
-    // 표는 원장 행만 담는다 — AX 제안은 판단 레일에 남는다.
+    // 업무 표와 수신함 모두 AX 제안을 섞지 않는다.
     await openSentTab();
     expect(within(screen.getByLabelText("보낸 업무")).queryByText("AX가 제안한 업무")).toBeNull();
-    expect(within(screen.getByLabelText("참조된 업무")).queryByText("AX가 제안한 업무")).toBeNull();
-    expect(within(screen.getByRole("region", { name: "판단이 필요한 업무" })).getByText("AX가 제안한 업무")).toBeTruthy();
+    await openCcTab();
+    expect(within(screen.getByLabelText("참조 업무")).queryByText("AX가 제안한 업무")).toBeNull();
+    expect(within(screen.getByRole("region", { name: "업무 요청 수신함" })).queryByText("AX가 제안한 업무")).toBeNull();
   });
 
   it("lets the requester reach the resubmit path for a negotiating request they own", async () => {
@@ -410,8 +446,8 @@ describe("work relation information architecture", () => {
     vi.mocked(api.decideWorkRequest).mockResolvedValue(requests[0] as never);
     const { props } = renderPage({}, { requests: hiddenUnsupported });
 
-    fireEvent.click(await screen.findByRole("button", { name: /받은 요청/ }));
-    fireEvent.click(within(screen.getByLabelText("내 업무")).getByRole("button", { name: "수락" }));
+    fireEvent.click(await screen.findByText("내게 온 검토 요청"));
+    fireEvent.click(within(await screen.findByRole("dialog", { name: "업무 요청 상세" })).getByRole("button", { name: "수락" }));
 
     await waitFor(() => expect(api.decideWorkRequest).toHaveBeenCalled());
     await waitFor(() => expect(vi.mocked(props.onError).mock.calls.at(-1)?.[0]).toContain("숨긴 항목까지 읽지 못했습니다"));
@@ -428,7 +464,7 @@ describe("work relation information architecture", () => {
     await openSentTab();
 
     fireEvent.click(within(screen.getByLabelText("보낸 업무")).getByRole("button", { name: "다시 요청" }));
-    const modal = await screen.findByRole("dialog", { name: "업무 요청" });
+    const modal = await screen.findByRole("dialog", { name: "새 업무 요청" });
     expect(modal.textContent).toContain("이전 요청을 잇는 다시 요청입니다");
     fireEvent.click(within(modal).getByRole("button", { name: "업무 요청 보내기" }));
 
@@ -491,52 +527,75 @@ describe("what the list says about dates", () => {
     expect(without.textContent).toContain("YYYY-MM-DD");
   });
 
-  it("판단할 것은 좌 레일 수신함에 서고, 분류로 좁혀진다 (바퀴 5b)", async () => {
-    const judgements = [
-      { action_item_id: "ai-1", kind: "work_request.acceptance", status: "awaiting_review", subject: "판단할 요청", operation_label: "업무 요청", current_question: "결정하세요", preview: [], allowed_commands: [], submission_version: 1, waiting_on: { member_id: "mina", display_name: "민아" }, resource: { type: "work_request", id: "r1" }, expected_version: 1 },
-    ];
-    renderPage({}, { judgements });
-    const rail = await screen.findByRole("region", { name: "판단이 필요한 업무" });
-    expect(await within(rail).findByText("판단할 요청")).toBeTruthy();
-    // 분류를 좁히면 그 분류에 없는 것은 빠진다 — 목록은 레일 안에서만 움직인다.
-    fireEvent.click(within(rail).getByRole("tab", { name: "조정 필요" }));
-    expect(within(rail).queryByText("판단할 요청")).toBeNull();
-    fireEvent.click(within(rail).getByRole("tab", { name: "전체" }));
-    expect(within(rail).getByText("판단할 요청")).toBeTruthy();
+  it("renders pending and negotiating requests with the confirmed inbox categories", async () => {
+    renderPage({}, { inbox: [requests[0], request({ ...requests[0], request_id: "negotiating", title: "협의할 요청", state: "negotiating" })] });
+    const rail = await screen.findByRole("region", { name: "업무 요청 수신함" });
+    expect(await within(rail).findByText("협의할 요청")).toBeTruthy();
+    expect(within(rail).getByText("내게 온 검토 요청")).toBeTruthy();
+    expect(within(rail).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["전체", "업무", "참고"]);
   });
 
-  it("판단할 것이 없으면 수신함이 빈 상태를 낸다", async () => {
-    renderPage({}, { judgements: [] });
-    const rail = await screen.findByRole("region", { name: "판단이 필요한 업무" });
-    expect(await within(rail).findByText("판단할 항목이 없습니다")).toBeTruthy();
+  it("filters CC requests into 참고 and opens a read-only request detail", async () => {
+    renderPage();
+    const rail = await screen.findByRole("region", { name: "업무 요청 수신함" });
+    await within(rail).findByText("참조로 받은 요청");
+    fireEvent.click(within(rail).getByRole("tab", { name: "업무" }));
+    expect(within(rail).getByText("내게 온 검토 요청")).toBeTruthy();
+    expect(within(rail).queryByText("참조로 받은 요청")).toBeNull();
+    fireEvent.click(within(rail).getByRole("tab", { name: "참고" }));
+    expect(within(rail).queryByText("내게 온 검토 요청")).toBeNull();
+    fireEvent.click(within(rail).getByRole("button", { name: "참조로 받은 요청" }));
+    const drawer = await screen.findByRole("dialog", { name: "업무 요청 상세" });
+    expect(within(drawer).getByText("참조로 받은 요청")).toBeTruthy();
+    for (const name of ["수락", "거절", "조정 요청", "남기기", "내용 수정"]) {
+      expect(within(drawer).queryByRole("button", { name })).toBeNull();
+    }
+    expect(api.getWorkRequestTimeline).toHaveBeenCalledWith("cc-me");
+  });
+
+  it("shows empty request inbox copy", async () => {
+    renderPage({}, { inbox: [], requests: [] });
+    const rail = await screen.findByRole("region", { name: "업무 요청 수신함" });
+    expect(await within(rail).findByText("받은 업무 요청이 없습니다")).toBeTruthy();
+  });
+
+  it("does not call the inbox endpoint without work_request.decide", async () => {
+    renderPage({ canDecideWorkRequests: false }, { requests: [] });
+    await screen.findByText("받은 업무 요청이 없습니다");
+    expect(api.getWorkRequestInbox).not.toHaveBeenCalled();
+  });
+
+  it("retries inbox failures independently of the held task list", async () => {
+    vi.mocked(api.getWorkRequestInbox).mockRejectedValueOnce(new Error("offline"));
+    renderPage();
+    await screen.findByText("수신함을 불러오지 못했습니다.");
+    vi.mocked(api.getWorkRequestInbox).mockResolvedValue([requests[0]]);
+    fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
+    await screen.findByText("내게 온 검토 요청");
   });
 
   /* W1: 만든 것이 어디에 섰는지를 화면이 바로 보여 준다 (WORK-001 Phase 7).
      갈래는 만든 쪽이 돌려주는 사실로 고른다 — 알림 문구를 다시 읽어 알아내지 않는다. */
   it("남의 업무가 되면 「보낸 업무」로 옮겨 서고, 내 업무면 그대로 머문다", async () => {
-    vi.mocked(api.createDirectTask).mockResolvedValue({ task_id: "task-9" } as never);
+    /* 최종 발주 3: 업무 갈래에는 담당자 칸이 없다 — 남에게 맡기는 길은 머리의 「요청」 토글이다.
+       갈래는 여전히 «만든 쪽이 돌려주는 사실» 로 고른다. */
+    vi.mocked(api.createWorkRequest).mockResolvedValue({ request_id: "req-9", title: "소라에게 보낼 업무" } as never);
     renderPage({}, { assigneeCandidates: [{ id: "sora", display_name: "소라 (법무)" }] });
 
     fireEvent.click(await screen.findByRole("button", { name: "업무 만들기" }));
-    fireEvent.change(await screen.findByLabelText("업무 제목"), { target: { value: "소라에게 보낼 업무" } });
-    await waitFor(() => expect(screen.getByLabelText("담당자")).toBeTruthy());
-    fireEvent.change(screen.getByLabelText("담당자"), { target: { value: "sora" } });
-    fireEvent.click(screen.getByRole("button", { name: "업무 배정" }));
+    const create = await screen.findByRole("dialog", { name: "새 업무 추가" });
+    fireEvent.click(within(screen.getByRole("tablist", { name: "생성 유형" })).getByRole("tab", { name: "요청 업무" }));
+    fireEvent.change(await screen.findByLabelText("요청할 업무"), { target: { value: "소라에게 보낼 업무" } });
+    fireEvent.click(within(create).getByLabelText("담당 후보"));
+    fireEvent.click(await screen.findByRole("option", { name: "소라 (법무)" }));
+    fireEvent.click(within(create).getByRole("button", { name: "업무 요청 보내기" }));
 
-    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalled());
-    expect(vi.mocked(api.createDirectTask).mock.calls[0][1]?.assignee_id).toBe("sora");
+    await waitFor(() => expect(api.createWorkRequest).toHaveBeenCalled());
+    expect(vi.mocked(api.createWorkRequest).mock.calls[0][1]).toBe("sora");
     // 목록을 다시 읽고, 그 업무가 서는 자리로 옮겨 선다
     await waitFor(() => expect((screen.getByRole("tab", { name: "보낸 업무" }) as HTMLElement).getAttribute("aria-selected")).toBe("true"));
   });
 
-  /* W1: 신규 생성은 수락 판단을 만들지 않는다 (WORK-001 Phase 4). 빈 상태가 「동료의 요청, 관리자의
-     배정」을 계속 약속하면, 영영 오지 않을 것을 기다리라고 말하는 것이 된다. */
-  it("빈 상태 문구에서 「동료의 요청, 관리자의 배정」이 빠지고 완료 승인·AX 확인만 남는다", async () => {
-    renderPage({}, { judgements: [] });
-    const rail = await screen.findByRole("region", { name: "판단이 필요한 업무" });
-    expect(await within(rail).findByText("완료 승인 요청과 AX 제안이 오면 여기에 쌓입니다.")).toBeTruthy();
-    expect(within(rail).queryByText(/동료의 요청|관리자의 배정/)).toBeNull();
-  });
 
 });
 
@@ -601,25 +660,13 @@ describe("표의 상태 칸 (바퀴 5c)", () => {
     await waitFor(() => expect(api.transitionDirectTask).toHaveBeenCalledWith("t1", "block", 3, "법무 회신 대기"));
   });
 
-  it("칸반의 막힘 칸도 같은 사유 칸을 연다 — 표와 한 벌이다", async () => {
+  it("offers only list and timeline views while retaining task opening", async () => {
     renderPage({}, { work: [task({ state: "in_progress" })] });
-    fireEvent.click(await screen.findByRole("tab", { name: "칸반" }));
-    const card = await screen.findByText("계약서 검토");
-    const column = card.closest(".kanban-column");
-    const blocked = [...document.querySelectorAll(".kanban-column")].find((node) => node.textContent?.startsWith("막힘"));
-    expect(column).toBeTruthy();
-
-    /* 한 번의 드래그는 `DataTransfer` 한 벌을 시작부터 놓을 때까지 들고 다닌다 — 그것이 브라우저가
-       주는 것이고, 제품이 거기에 「옮기기」를 적는다(`WorkViews.tsx` 의 `onDragStart`). */
-    const transfer = dragData();
-    fireEvent.dragStart(card.closest("[draggable]") as HTMLElement, { dataTransfer: transfer });
-    // 제품이 이 드래그를 «옮기기» 로 선언한다 — 커서 모양과 놓을 수 있는 자리를 브라우저가 이 값으로 정한다
-    expect(transfer.effectAllowed).toBe("move");
-    fireEvent.dragOver(blocked as HTMLElement, { dataTransfer: transfer });
-    fireEvent.drop(blocked as HTMLElement, { dataTransfer: transfer });
-
-    expect(await screen.findByRole("dialog", { name: "막힘 사유" })).toBeTruthy();
-    expect(api.transitionDirectTask).not.toHaveBeenCalled();
+    const views = screen.getByRole("tablist", { name: "보기 방식" });
+    expect(within(views).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["목록", "타임라인"]);
+    fireEvent.click(within(views).getByRole("tab", { name: "타임라인" }));
+    fireEvent.click(await screen.findByRole("button", { name: /계약서 검토/ }));
+    expect(await screen.findByRole("dialog", { name: "업무 상세" })).toBeTruthy();
   });
 
   /**
@@ -720,5 +767,34 @@ describe("머리의 일일보고 (바퀴 5c)", () => {
     renderHeader({ canGenerateDailyReport: false });
     await screen.findByRole("button", { name: "업무 만들기" });
     expect(screen.queryByRole("button", { name: "일일보고 생성" })).toBeNull();
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   후보 로딩 — **참조 후보는 요청 권한에 매달리지 않는다.**
+
+   참조자(`cc_member_ids`)와 결재자(`approver_id`)는 `POST /api/tasks` 본인 갈래도 받는 값이다.
+   한동안 두 목록이 한 `useEffect` 안에 있어서 `work_request.create` 가 없으면 **둘 다** 안 읽었고,
+   생성 창은 후보가 비면 그 칸을 그리지 않으므로 참조자·결재자가 통째로 사라졌다.
+   ════════════════════════════════════════════════════════════════════════════ */
+describe("업무만 만들 수 있는 사람의 후보 로딩", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("요청 권한이 없어도 참조 후보를 읽는다 — 담당 후보만 읽지 않는다", async () => {
+    renderPage({ canManageOwnTasks: true, canCreateWorkRequests: false, canDecideWorkRequests: false });
+
+    await waitFor(() => expect(api.getWorkRequestCcCandidates).toHaveBeenCalled());
+    // 담당 후보(요청 수신자)는 정말로 요청 갈래에서만 쓰는 목록이라 그대로 닫혀 있다
+    expect(api.getWorkRequestAssigneeCandidates).not.toHaveBeenCalled();
+  });
+
+  it("만들 수 있는 것이 아무것도 없으면 참조 후보도 읽지 않는다", async () => {
+    renderPage({ canManageOwnTasks: false, canCreateWorkRequests: false, canDecideWorkRequests: false });
+
+    await waitFor(() => expect(api.getMyWork).toHaveBeenCalled());
+    expect(api.getWorkRequestCcCandidates).not.toHaveBeenCalled();
   });
 });

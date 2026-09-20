@@ -52,6 +52,8 @@ import type {
   ProjectMember,
   Notification,
   ProjectParticipation,
+  WorkRequestMaterial,
+  WorkRequestReadReceipt,
 } from "./viewModels";
 
 type ApiErrorBody = {
@@ -222,6 +224,12 @@ export async function createDirectTask(
     parent_task_id?: string;
     project_id?: string;
     assignee_id?: string;
+    /** 참조자 — **`업무` 갈래에서도 저장된다** (SPEC-001 U-6-a). */
+    cc_member_ids?: string[];
+    /** 승인자 0..1. 화면 라벨은 「결재자」이고 같은 값이다 (SPEC-001 §4 · OQ-N). */
+    approver_id?: string;
+    /** 선행업무 0..N — 같은 프로젝트의 업무만. 있으면 `project_id` 가 필수다 (SPEC-001 U-13). */
+    preceding_task_ids?: string[];
   },
   idempotencyKey: string,
 ): Promise<DirectTask> {
@@ -464,6 +472,11 @@ export async function getWorkRequests(includeRemoved = false): Promise<WorkReque
   return request<WorkRequest[]>(includeRemoved ? "/api/work-requests?include_removed=true" : "/api/work-requests");
 }
 
+/** 내가 응답할 pending/negotiating 요청. 서버의 수신함·권한 계약을 그대로 사용한다. */
+export async function getWorkRequestInbox(): Promise<WorkRequest[]> {
+  return request<WorkRequest[]>("/api/work-requests/inbox");
+}
+
 export async function getWorkRequest(requestId: string): Promise<WorkRequest> {
   return request<WorkRequest>(`/api/work-requests/${requestId}`);
 }
@@ -490,12 +503,34 @@ export async function createWorkRequest(
   assigneeId: string,
   extra: {
     description?: string;
+    /** 요청 갈래에도 시작일이 간다 (SPEC-001 U-6-a) — 입력은 원래 이 값을 받고 있었다. */
+    start_date?: string | null;
     due_date?: string | null;
     cc_member_ids?: string[];
     checklist?: string[];
     reference_task_ids?: string[];
     parent_task_id?: string;
+    project_id?: string;
+    /** 선행업무 0..N — 같은 프로젝트의 업무만 (SPEC-001 §4). */
+    preceding_task_ids?: string[];
     supersedes_request_id?: string;
+    /**
+     * 승인자 0..1. 화면 라벨은 「결재자」이고 같은 값이다 (SPEC-001 §4 · OQ-N).
+     *
+     * **두 갈래가 같은 값을 보낸다** (WORK-003 정정) — 요청이 업무가 될 때 결재자가 함께 넘어가야
+     * 하고, 그것을 화면에서만 고르고 버리면 고른 사람이 「저장됐다」고 읽는다.
+     *
+     * **BE 통합 전에는 이 필드가 422 로 돌아올 수 있다** — OQ-M 이 아직 열려 있어 요청 생성
+     * 입력 모델(`extra='forbid'`)이 그 이름을 모른다. 그때도 **화면이 조용히 빼지 않는다**:
+     * 목표 계약이 이것이고, 거절은 서버가 필드를 열면 사라진다.
+     */
+    approver_id?: string;
+    /*
+     * **자료는 이 payload 로 가지 않는다** (WORK-003) — 여기 `material_draft_ids` 라는 칸이
+     * 있었다. 서버가 모르는 이름이라 실리는 순간 422 였고, 요청 자료의 실제 계약은 **두 단계**로
+     * 열렸다: 요청을 만들고 → 돌아온 `request_id` 로 아래 `uploadWorkRequestMaterial` ·
+     * `attachWorkRequestMaterialLink` 에 붙인다. 생성 payload 에 자료 축을 다시 만들지 않는다.
+     */
   },
   idempotencyKey: string,
 ): Promise<WorkRequest> {
@@ -504,6 +539,72 @@ export async function createWorkRequest(
     headers: { "Idempotency-Key": idempotencyKey },
     method: "POST",
   });
+}
+
+/* ------------------------------------------------------- 요청 자료 (WORK-003 · 두 단계)
+ *
+ * 발송한 요청에 자료를 붙이는 한 벌이다. 업무 자료(`/api/tasks/{id}/materials/...`)와 **같은
+ * 모양이고 자리만 다르다** — 업무 자료 입구는 활성 담당에게만 열려 수락 전 요청에는 붙일 사람이
+ * 없었다. 댓글 첨부(`.../comments/{id}/attachments`)와 판단 근거(`.../evidence`)는 뜻이 다른
+ * 자리라 여기서 대용으로 쓰지 않는다.
+ *
+ * `kind` 를 받지 않는다: 서버가 **참고 자료 하나만** 허용한다(`_require_material_role`).
+ * 요청에는 아직 결과가 없어 산출물이 설 자리가 없고, 수락이 이 자료를 업무로 그대로 이어 붙이므로
+ * 여기서 산출물을 만들면 아무도 만들지 않은 산출물이 완료 보고 후보로 선다.
+ */
+
+export async function getWorkRequestMaterials(requestId: string): Promise<WorkRequestMaterial[]> {
+  return request<WorkRequestMaterial[]>(`/api/work-requests/${requestId}/materials`);
+}
+
+/** 파일 한 건을 요청에 붙인다. **보낸 사람만**, 답이 오기 전까지다. */
+export async function uploadWorkRequestMaterial(requestId: string, file: File): Promise<WorkRequestMaterial> {
+  const form = new FormData();
+  form.append("kind", "input");
+  form.append("file", file, file.name);
+  const response = await fetch(`/api/work-requests/${requestId}/materials`, {
+    body: form,
+    credentials: "same-origin",
+    method: "POST",
+  });
+  if (!response.ok) {
+    const error = (await response.json().catch(() => ({}))) as ApiErrorBody;
+    throw new ApiError(response.status, typeof error.detail === "string" ? error.detail : response.statusText);
+  }
+  return response.json() as Promise<WorkRequestMaterial>;
+}
+
+/** 다른 곳에 있는 것을 요청이 가리킨다. 바이트를 들지 않고 판본을 못 박지 않는다. */
+export async function attachWorkRequestMaterialLink(
+  requestId: string,
+  link: { url: string; label: string },
+): Promise<WorkRequestMaterial> {
+  return request<WorkRequestMaterial>(`/api/work-requests/${requestId}/materials/links`, {
+    body: JSON.stringify({ kind: "input", url: link.url, label: link.label }),
+    method: "POST",
+  });
+}
+
+/** 내려받기 주소. 읽을 수 있는 사람이면 받을 수 있다 — 「보이는데 못 받는다」를 만들지 않는다. */
+export function workRequestMaterialContentUrl(requestId: string, materialId: string): string {
+  return `/api/work-requests/${requestId}/materials/${materialId}/content`;
+}
+
+export async function detachWorkRequestMaterial(requestId: string, materialId: string): Promise<WorkRequestMaterial> {
+  return request<WorkRequestMaterial>(`/api/work-requests/${requestId}/materials/${materialId}`, { method: "DELETE" });
+}
+
+/**
+ * 참고 항목 읽음 (SPEC-001 §4 「참고 항목 읽음 — 신규」 · U-12).
+ *
+ * **멱등이다** — 두 번째 호출도 `200` 이고 `read_at` 은 처음 읽은 시각 그대로다. 본문도 회차도
+ * 멱등 키도 요구하지 않는다: 이미 읽었다는 것은 충돌이 아니다. 요청 행의 `version` 을 올리지
+ * 않으므로 남이 쓰던 낙관적 잠금이 내 읽음 때문에 깨지지 않는다.
+ *
+ * **CC 참조자만** 부를 수 있다. 읽을 수는 있는데 참조자가 아니면 403, 없거나 못 읽으면 404다.
+ */
+export async function markWorkRequestRead(requestId: string): Promise<WorkRequestReadReceipt> {
+  return request<WorkRequestReadReceipt>(`/api/work-requests/${requestId}/read`, { method: "POST" });
 }
 
 export async function decideWorkRequest(

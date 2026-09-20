@@ -20,7 +20,7 @@ from ax_workspace.modules.actions.payloads import normalize_task_progress_batch 
 from ax_workspace.modules.actions.confirmation import SUPPORTED_ACTION_TYPES
 from ax_workspace.modules.actions.policy import CONFIRM_LABELS, RETIRED_ACTION_TYPES
 from ax_workspace.modules.organization_access.application import OrganizationApplication
-from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, DAILY_REPORT_READ, DAILY_REPORT_SUBMIT, TASK_ASSIGN, Principal
+from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, DAILY_REPORT_READ, DAILY_REPORT_SUBMIT, PROJECT_READ, TASK_ASSIGN, Principal
 from ax_workspace.modules.meetings.application import MeetingApplication
 from ax_workspace.modules.meetings.domain import MeetingError
 from ax_workspace.modules.meetings.commands import (
@@ -1705,10 +1705,17 @@ class ActionPresenter:
                 {"value": row["task_id"], "label": row["title"]}
                 for row in tasks.readable_tasks(principal, include_closed=True)
             ]
+        cc_options: list[dict[str, str]] = []
         if action.action_type == "task.create_self":
             project_options = [
                 {"value": row["project_id"], "label": row["name"]}
                 for row in projects.list(principal)
+            ]
+            # 참조자 후보는 **요청 초안이 쓰는 것과 같은 명부**다. 나 자신은 담당 자리에 이미 서 있다.
+            cc_options = [
+                {"value": row["id"], "label": row["display_name"]}
+                for row in self._services.organization().member_candidates(principal)
+                if str(row["id"]) != str(principal.id)
             ]
         assignee = organization.principal_for(str(principal.id))
         assignee_label = assignee.display_name if assignee is not None else str(principal.id)
@@ -1759,6 +1766,35 @@ class ActionPresenter:
                     "required": False,
                     "editable": True,
                     "options": project_options,
+                },
+                {
+                    # 참조자는 **읽기와 논의만** 연다 — 담당을 옮기지 않으므로 확인 화면에서 고칠 수 있다.
+                    "id": "cc_member_ids",
+                    "label": "참조자",
+                    "type": "multi_select",
+                    "required": False,
+                    "editable": True,
+                    "options": cc_options,
+                },
+                {
+                    # **선행 배열은 생성 계약의 일부라 모든 생성 표면에 함께 선다** (SPEC-001 §5 표면 일치).
+                    # 후보는 「읽을 수 있는 업무」이고, 같은 프로젝트인지는 서버가 실행 때 다시 가른다 —
+                    # 확인 화면이 프로젝트를 함께 고치는 자리라 여기서 미리 좁히면 고른 프로젝트와 어긋난다.
+                    "id": "preceding_task_ids",
+                    "label": "선행업무",
+                    "type": "multi_select",
+                    "required": False,
+                    "editable": True,
+                    "options": reference_options,
+                },
+                {
+                    # 결재자 — **`업무` 갈래만이다.** 요청 초안에는 이 칸이 없다 (SPEC-001 §7 OQ-M).
+                    "id": "approver_id",
+                    "label": "결재자",
+                    "type": "select",
+                    "required": False,
+                    "editable": True,
+                    "options": cc_options,
                 },
                 {
                     "id": "checklist",
@@ -1915,6 +1951,15 @@ class ActionPresenter:
             for row in organization.member_candidates(principal)
             if str(row["id"]) != str(principal.id)
         ]
+        # 프로젝트는 **읽을 수 있는 사람에게만** 고르게 한다 — 없으면 빈 목록이고 칸은 남는다.
+        request_project_options = (
+            [
+                {"value": row["project_id"], "label": row["name"]}
+                for row in self._services.projects().list(principal)
+            ]
+            if PROJECT_READ in principal.capabilities
+            else []
+        )
         return {
             # Work requests intentionally reuse the Task card shell; the server field list keeps the operation distinct.
             "editor": "task",
@@ -1931,11 +1976,39 @@ class ActionPresenter:
                     "editable": True,
                     "options": assignee_options,
                 },
+                {"id": "start_date", "label": "시작일", "type": "date", "required": False, "editable": True},
                 {"id": "due_date", "label": "기한", "type": "date", "required": False, "editable": True},
+                {
+                    "id": "project_id",
+                    "label": "프로젝트",
+                    "type": "select",
+                    "required": False,
+                    "editable": True,
+                    "options": request_project_options,
+                },
                 {
                     "id": "cc_member_ids",
                     "label": "참조자",
                     "type": "multi_select",
+                    "required": False,
+                    "editable": True,
+                    "options": cc_options,
+                },
+                {
+                    # 선행도 결재자도 **두 갈래가 같은 칸**을 받는다 — 확인 화면이 표면마다 다른
+                    # 필드를 내면 사람이 고른 값이 어느 길에서만 저장된다.
+                    "id": "preceding_task_ids",
+                    "label": "선행업무",
+                    "type": "multi_select",
+                    "required": False,
+                    "editable": True,
+                    "options": reference_options,
+                },
+                {
+                    # 결재자 — 요청 갈래도 이제 값을 받아 저장하고, 그 값이 이 요청이 세우는 업무로 간다.
+                    "id": "approver_id",
+                    "label": "결재자",
+                    "type": "select",
                     "required": False,
                     "editable": True,
                     "options": cc_options,

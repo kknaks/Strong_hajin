@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectTask } from "../../lib/viewModels";
 
 vi.mock("../../lib/api", () => ({
+  getActionItems: vi.fn().mockResolvedValue([]),
   getTask: vi.fn(),
   getTaskMaterials: vi.fn(),
   getTaskAssignments: vi.fn(),

@@ -205,6 +205,23 @@ export type DirectTask = {
   access?: "owner" | "read_only";
   /** Who holds the work right now, projected from the active assignment by the server. */
   assignee?: { member_id: string; display_name: string } | null;
+  /** 어느 프로젝트의 일인가. 서버의 업무 투영이 이미 내던 값이고, 타입에만 빠져 있었다. */
+  project_id?: string | null;
+  /**
+   * 선행업무 — **활성인 것만** 실린다 (SPEC-001 §4). 상위(`parent`)·참고(`reference`)와
+   * **다른 세 번째 관계**이고 서로 대체하지 않는다. 이것이 끝나야 이 업무를 시작할 수 있다.
+   */
+  preceding_task_ids?: string[];
+  /**
+   * 선행 각각의 요약 — `preceding_task_ids` 와 **같은 순서·같은 길이**다 (상세 조회에만 실린다).
+   *
+   * **볼 수 없는 선행은 `title`·`state` 가 비고 자리만 남는다** (SPEC-001 §4). 자료 구획과 다르다:
+   * 자료는 건수도 내지 않지만 선행은 **시작을 막는 이유**라, 이유를 숨기면 사람이 다음 걸음을
+   * 고를 수 없다. 제목은 감추고 건수는 낸다 — **배열 안의 빈 자리가 그 건수다.**
+   */
+  predecessors?: Array<{ task_id: string; title: string | null; state: TaskState | null }>;
+  /** 승인자 0..1. 화면 라벨은 「결재자」다 (SPEC-001 §4 · OQ-N). */
+  approver_id?: string | null;
   /** Steps inside this Task. Present on the detail read, not on list projections. */
   checklist?: ChecklistItem[];
   /** Earlier work this Task points at. Present on the detail read. */
@@ -430,6 +447,20 @@ export type TaskMaterial = {
   task_version?: number;
 };
 
+/**
+ * 발송한 요청에 붙은 자료 한 건 (`WorkRequestMaterialView`).
+ *
+ * **업무 자료와 같은 모양이고 자리가 하나 더 붙는다** — `request_id` 는 자료가 매달린 요청이고,
+ * `task_id` 는 그 요청이 세운 업무다. 아직 수락되지 않은 요청에는 업무가 없으므로 업무 자료와
+ * 달리 **비어 있을 수 있다.**
+ */
+export type WorkRequestMaterial = Omit<TaskMaterial, "task_id" | "task_version"> & {
+  request_id: string;
+  task_id: string | null;
+  /** 붙이고 뗀 답만 싣는다 — 그 조작이 요청을 옮긴 회차다 (업무 자료의 `task_version` 자리). */
+  request_version?: number;
+};
+
 export type MaterialExtraction = {
   extraction_id: string;
   /** `needs_ocr`: a scan with no text layer — unreadable, not empty. `purged`: the file itself was destroyed. */
@@ -571,6 +602,8 @@ export type DailyReportStatus = {
 };
 
 export type WorkRequest = {
+  /** 수신함 응답에 포함될 경우 서버 분류를 우선한다. */
+  category?: "work" | "reference";
   request_id: string;
   request_thread_id?: string | null;
   submission_version?: number | null;
@@ -1186,3 +1219,15 @@ export type MeetingRoomReservation = {
 
 /** 「볼 수 있는 사람」 — 참석과 공유가 한 목록에 서고 `basis` 가 둘을 가른다 (SPEC §3.2-3). */
 export type MeetingViewer = { member_id: string; name: string; basis: "attendee" | "share" };
+
+/**
+ * 참고 항목 읽음의 영수증 (SPEC-001 §4).
+ *
+ * **요청 행이 아니라 영수증이다** — `version` 이 없는 것이 그 사실이다. 읽음은 그 사람에게만
+ * 있는 사실이라 요청의 회차를 움직이지 않는다.
+ */
+export type WorkRequestReadReceipt = {
+  request_id: string;
+  read: boolean;
+  read_at: string;
+};

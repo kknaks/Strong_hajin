@@ -314,33 +314,49 @@ class TaskMaterialApplication:
         principal: Principal | None = None,
         references: ResourceReferencePort | None = None,
     ) -> TaskMaterialView:
-        resource = None
-        name = attachment.name
-        if attachment.source_kind == "resource_ref":
-            resource_type, _, resource_id = str(attachment.source_ref).partition(":")
-            title = references.title(principal, resource_type, resource_id) if references and principal else None
-            # The stored name is a fallback; a reader who may not open it is never handed the title.
-            resource = {"type": resource_type, "id": resource_id, "title": title} if title else None
-            name = title or "볼 수 없는 자료"
-        return {
-            "extraction": extraction_view(extraction),
-            "material_id": str(attachment.id),
-            "binding_id": str(binding.id),
-            "attachment_id": str(attachment.id),
-            "task_id": binding.context_id,
-            "kind": binding.role,
-            "name": name,
-            "resource": resource,
-            "content_type": attachment.content_type,
-            "size_bytes": int(attachment.size_bytes),
-            "source_kind": attachment.source_kind,
-            "url": attachment.source_ref if attachment.source_kind == "external_link" else None,
-            # SCAX did not read it and pinned no revision, so it must not be mistaken for a frozen artifact.
-            "mutable_source": attachment.source_kind != "file",
-            "integrity_ref": attachment.integrity_ref,
-            # The file itself was destroyed on request; the material stays as a fact of the Task, unreadable.
-            "purged": getattr(attachment, "lifecycle", "available") == "purged",
-            "uploaded_by": attachment.uploaded_by,
-            "created_at": binding.bound_at.isoformat(),
-            "removed_at": binding.unbound_at.isoformat() if binding.unbound_at else None,
-        }
+        return material_view(binding, attachment, extraction, principal=principal, references=references)
+
+
+def material_view(
+    binding: Any,
+    attachment: Any,
+    extraction: Any | None = None,
+    *,
+    principal: Principal | None = None,
+    references: ResourceReferencePort | None = None,
+) -> TaskMaterialView:
+    """자료 한 건이 밖으로 나가는 **한 모양**. 붙어 있는 자리(업무·요청)가 달라도 같은 키로 나간다.
+
+    업무 자료와 요청 자료가 각자 자기 투영을 적으면, 같은 파일이 두 화면에서 다른 키로 읽힌다.
+    그래서 이 함수가 하나이고, 자리마다 다른 것(`task_id` · `request_id`)만 부르는 쪽이 얹는다.
+    """
+    resource = None
+    name = attachment.name
+    if attachment.source_kind == "resource_ref":
+        resource_type, _, resource_id = str(attachment.source_ref).partition(":")
+        title = references.title(principal, resource_type, resource_id) if references and principal else None
+        # The stored name is a fallback; a reader who may not open it is never handed the title.
+        resource = {"type": resource_type, "id": resource_id, "title": title} if title else None
+        name = title or "볼 수 없는 자료"
+    return {
+        "extraction": extraction_view(extraction),
+        "material_id": str(attachment.id),
+        "binding_id": str(binding.id),
+        "attachment_id": str(attachment.id),
+        "task_id": binding.context_id,
+        "kind": binding.role,
+        "name": name,
+        "resource": resource,
+        "content_type": attachment.content_type,
+        "size_bytes": int(attachment.size_bytes),
+        "source_kind": attachment.source_kind,
+        "url": attachment.source_ref if attachment.source_kind == "external_link" else None,
+        # SCAX did not read it and pinned no revision, so it must not be mistaken for a frozen artifact.
+        "mutable_source": attachment.source_kind != "file",
+        "integrity_ref": attachment.integrity_ref,
+        # The file itself was destroyed on request; the material stays as a fact of the Task, unreadable.
+        "purged": getattr(attachment, "lifecycle", "available") == "purged",
+        "uploaded_by": attachment.uploaded_by,
+        "created_at": binding.bound_at.isoformat(),
+        "removed_at": binding.unbound_at.isoformat() if binding.unbound_at else None,
+    }

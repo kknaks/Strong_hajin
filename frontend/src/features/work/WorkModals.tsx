@@ -1,17 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import type React from "react";
-import { ChipRow, ChipToggle } from "../../ds/Chip";
+import { Chip, ChipRow, ChipToggle } from "../../ds/Chip";
 import { Badge } from "../../ds/Badge";
 import { Button } from "../../ds/Button";
 import { SegmentedControl } from "../../ds/SegmentedControl";
 import { createIdempotencyKey } from "../../lib/idempotency";
-import { TaskDraftFields, type TaskDraft } from "../action/ActionTaskCard";
-import { blockingChildrenOf, childProgressOf, isChildCancelled, isChildSettled, isRequestTask } from "./workRows";
+import { blockingChildrenOf, blockingPredecessorsOf, childProgressOf, hiddenPrecedingCountOf, isChildCancelled, isChildSettled, isRequestTask, startBlockedByPredecessors, visiblePredecessorsOf } from "./workRows";
 import { useBrowserOperationGuard } from "../../lib/browserOperationGuard";
 
 import {
   addWorkRequestComment,
   assignTask,
+  getActionItems,
+  runActionCommand,
   createDirectTask,
   createWorkRequest,
   decideWorkRequest,
@@ -49,10 +50,12 @@ import {
   listProjects,
   reassignTask,
   uploadTaskMaterial,
+  uploadWorkRequestMaterial,
+  attachWorkRequestMaterialLink,
 } from "../../lib/api";
-import { blockingChildReasonLabel, cancelReasonLabel, datePickerLabel, derivedApprovalLabel, derivedAssignmentLabel, dueDayText, emptyActionLabel, formatDate, formatDateTime, formatMonthLong, isOverdue, isoDateInSeoul, personName, proposalFieldLabel, proposalKindLabel, selectLabel, seoulToday, taskStateLabel, weekdayNames, workRequestStateLabel } from "../../lib/labels";
+import { blockingChildReasonLabel, cancelReasonLabel, datePickerLabel, hiddenPredecessorsText, predecessorsUnfinishedText, projectLockedByPredecessorsText, derivedApprovalLabel, derivedAssignmentLabel, dueDayText, emptyActionLabel, formatDate, formatDateTime, formatMonthLong, isOverdue, isoDateInSeoul, personName, proposalFieldLabel, proposalKindLabel, selectLabel, seoulToday, taskStateLabel, weekdayNames, workRequestStateLabel } from "../../lib/labels";
 import { DateField } from "../../ds/DateField";
-import { ConfirmModal, Drawer, Modal } from "../../ds/Modal";
+import { ConfirmModal, Drawer, Modal, type OverlayShellProps } from "../../ds/Modal";
 import { Skeleton } from "../../ds/Skeleton";
 import { Checkbox, FieldMessage } from "../../ds/FormControls";
 import { DropZone } from "../../ds/DropZone";
@@ -62,6 +65,7 @@ import { Select } from "../../ds/Select";
 import { EmptyValue } from "../../ds/Empty";
 import { ProgressBar } from "../../ds/ProgressBar";
 import type {
+  ActionItemEnvelope,
   ChecklistItem,
   DirectTask,
   MaterialExtraction,
@@ -81,7 +85,6 @@ import type {
   TaskPatch,
   TaskState,
   Project,
-  ActionEditContract,
   WorkRequest,
 } from "../../lib/viewModels";
 
@@ -397,7 +400,23 @@ export function TaskDetailDrawer({
   onNotice,
   onError,
   onClose,
+  presentation = "modal",
+  onBack,
+  backLabel,
 }: {
+  /**
+   * 어느 «겹» 으로 설 것인가. **기본은 가운데 모달이다** (4차 발주 3).
+   *
+   * 지금까지 기본은 오른쪽 드로어였고, 요청 상세에서 갈아끼우는 자리만 모달이었다. 그래서 같은 업무
+   * 상세가 어디서 열렸느냐에 따라 다른 겹으로 서고, 요청 상세(모달) 옆에 업무 상세(드로어)가 겹쳐
+   * 뜰 수도 있었다. 이제 **넷이 다 가운데 모달**이라 전환이 한 자리에서 일어난다.
+   *
+   * `drawer` 는 남겨 둔다 — 이 부품을 쓰는 다른 화면이 생겼을 때 골격을 고르는 자리다.
+   */
+  presentation?: "drawer" | "modal";
+  /** 넘기면 머리 왼쪽에 「뒤로」가 선다 — 이 겹을 닫지 않고 내용만 이전 것으로 되돌린다. */
+  onBack?: () => void;
+  backLabel?: string;
   /** Open another Task this one points at, inside the product rather than through a URL. */
   onOpenTask?: (taskId: string) => void;
   /** Whether this person may put someone else on work. Moving it is a command of its own, not a form field. */
@@ -477,7 +496,8 @@ export function TaskDetailDrawer({
   const [newChild, setNewChild] = useState<string | null>(null);
   const [refDraft, setRefDraft] = useState<string | null>(null);
   const [refChoices, setRefChoices] = useState<DirectTask[] | null>(null);
-  const [report, setReport] = useState<{ summary: string; outputs: string[] } | null>(null);
+  /** 완료 보고 모달이 열려 있나 — 초안(요약·산출물)은 그 모달이 든다 (5차 발주). */
+  const [reporting, setReporting] = useState(false);
   const [handover, setHandover] = useState<{ assigneeId: string; reason: string } | null>(null);
   const [handoverChoices, setHandoverChoices] = useState<Persona[] | null>(null);
   /**
@@ -493,8 +513,18 @@ export function TaskDetailDrawer({
     | { kind: "terms" }
     | { kind: "respond"; proposal: TaskProposal; agree: boolean }
     | { kind: "reopen" }
+    /** 요청자가 「보완 요청」을 부르는 자리 — 계약이 사유를 필수로 받는다. */
+    | { kind: "delivery_changes" }
     | null
   >(null);
+  /**
+   * 요청자의 **결과 확인** 자리 (4차 발주 5).
+   *
+   * 완료 보고의 최종 완료는 요청자가 낸다. 그 명령은 예전부터 판단 항목(`task.delivery`)에 있었고,
+   * **여기서 새 API 를 만들지 않는다** — 열려 있는 그 항목을 찾아 같은 커맨드를 부를 뿐이다.
+   * 못 찾으면 `null` 이고 단추를 세우지 않는다(내 차례가 아니거나 서버가 그 자리를 안 연 것이다).
+   */
+  const [deliveryDecision, setDeliveryDecision] = useState<ActionItemEnvelope | null>(null);
   /** 하위를 «어떻게» 만드는가 — 내가 직접 하거나(하위 Task), 남에게 요청하거나(하위 요청)다. */
   const [subtaskRequest, setSubtaskRequest] = useState(false);
   const [requestCandidates, setRequestCandidates] = useState<Persona[]>([]);
@@ -508,13 +538,30 @@ export function TaskDetailDrawer({
   const closed = task.state === "cancelled";
   const readOnly = task.access === "read_only";
   const editable = canManage && !closed && !readOnly;
+  /**
+   * 지금 고쳐 쓰는 중인가 — **회차 충돌로 다시 읽을 때 그 입력을 지키는 자리다** (WORK-003 Phase 6).
+   *
+   * 저장이 회차 충돌로 거절되면 부르는 쪽이 최신 값을 다시 읽어 온다. 그때 초기화 effect 가 그대로
+   * 돌면 서버 값이 **사람이 쓰던 문장을 덮어쓴다** — 충돌을 알려 주려다 그 사람의 일을 지운다.
+   */
+  const editingRef = useRef(false);
   const dirty =
     title.trim() !== task.title ||
     description.trim() !== (task.description ?? "") ||
     startDate !== (task.start_date ?? "") ||
     dueDate !== (task.due_date ?? "");
+  editingRef.current = dirty;
 
+  /**
+   * 지금 고쳐 쓰는 중인가 — **회차 충돌로 다시 읽을 때 그 입력을 지키는 자리다** (WORK-003 Phase 6).
+   *
+   * 저장이 회차 충돌로 거절되면 부르는 쪽이 최신 값을 다시 읽어 온다. 그때 아래 effect 가 그대로
+   * 돌면 서버 값이 **사람이 쓰던 문장을 덮어쓴다** — 충돌을 알려 주려다 그 사람의 일을 지운다.
+   * 그래서 쓰던 것이 있으면 새 값으로 갈아끼우지 않는다: 최신 값은 회차로 들어오고(`settledVersion`),
+   * 화면의 글자는 사람 것으로 남는다.
+   */
   useEffect(() => {
+    if (editingRef.current) return;
     setTitle(task.title);
     setDescription(task.description ?? "");
     setStartDate(task.start_date ?? "");
@@ -760,25 +807,63 @@ export function TaskDetailDrawer({
   const awaitingReview = task.derived?.approval === "awaiting_review" || delivery?.status === "awaiting_review";
   const requesterName = task.origin?.actor ? personName(task.origin.actor.display_name) : "요청자";
 
-  const submitReport = async () => {
-    const summary = report?.summary.trim() ?? "";
-    if (!summary) {
-      onError("무엇을 어디까지 했는지 적어 주세요.");
+  /* 요청자의 결과 확인 — 열려 있는 판단 항목을 찾아 둔다. 내 차례가 아니면 찾지 않는다. */
+  useEffect(() => {
+    if (!awaitingReview || !viewerIsRecordRequester) {
+      setDeliveryDecision(null);
       return;
     }
+    let cancelled = false;
+    void getActionItems()
+      .then((items) => {
+        if (cancelled) return;
+        setDeliveryDecision(
+          items.find(
+            (item) =>
+              item.kind === "task.delivery" &&
+              item.resource?.id === task.task_id &&
+              item.status === "awaiting_review" &&
+              item.allowed_commands.some((command) => command.id === "accept"),
+          ) ?? null,
+        );
+      })
+      .catch(() => {
+        // 못 읽었다고 「없다」로 단정하지 않는다 — 단추만 서지 않고, 판단 항목 화면의 길은 그대로다.
+        if (!cancelled) setDeliveryDecision(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [awaitingReview, viewerIsRecordRequester, task.task_id, task.version]);
+
+  /** 요청자가 결과를 인정한다 — **이것이 최종 완료다** (4차 발주 5 · `accept_delivery`). */
+  const acceptDelivery = async () => {
+    if (!deliveryDecision) return;
     onError(null);
     try {
-      const updated = await submitTaskCompletion(task.task_id, current.version, {
-        summary,
-        output_material_ids: report?.outputs ?? [],
-      });
-      setReport(null);
-      setDelivery(updated.delivery ?? null);
-      moved(updated.version);
-      await settleVersion();
-      onNotice?.(`완료 보고를 보냈습니다. ${requesterName}의 확인을 기다립니다.`);
+      await runActionCommand(deliveryDecision.action_item_id, "accept", { expected_version: deliveryDecision.expected_version });
+      onNotice?.("완료를 인정했습니다. 이 업무가 완료되었습니다.");
+      await onChanged?.();
     } catch (error) {
-      onError(error instanceof Error ? error.message : "완료 보고를 보내지 못했습니다.");
+      onError(error instanceof Error ? error.message : "완료를 인정하지 못했습니다.");
+    }
+  };
+
+  /** 아직 아니라고 말한다 — 사유가 필수이고, 업무는 진행 중으로 돌아가 다음 회차를 연다. */
+  const requestDeliveryChanges = async (reason: string): Promise<boolean> => {
+    if (!deliveryDecision) return false;
+    onError(null);
+    try {
+      await runActionCommand(deliveryDecision.action_item_id, "request_changes", {
+        expected_version: deliveryDecision.expected_version,
+        reason,
+      });
+      onNotice?.("보완을 요청했습니다. 담당자가 보완해 다시 보고합니다.");
+      await onChanged?.();
+      return true;
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "보완을 요청하지 못했습니다.");
+      return false;
     }
   };
 
@@ -897,6 +982,17 @@ export function TaskDetailDrawer({
   const childProgress = childProgressOf({ ...task, children });
   /** 상위 완료를 막는 하위 — **이름으로** 보여 준다 (U-7 · I-7). */
   const blockingChildren = blockingChildrenOf({ ...task, children });
+  /**
+   * 시작을 막는 선행 (SPEC-001 U-14 · WORK-003 Phase 6).
+   *
+   * **하위와 다른 축이다** — 하위는 완료를, 선행은 시작을 막는다. 그래서 목록도 문장도 따로 둔다.
+   * 서버가 거절해도 같은 문장이 나오도록 문구는 `predecessorsUnfinishedText` 한 자리에서 나온다.
+   */
+  const blockingPredecessors = blockingPredecessorsOf(task);
+  const startBlocked = startBlockedByPredecessors(task);
+  const blockedText = predecessorsUnfinishedText(blockingPredecessors.map((row) => row.title));
+  const hiddenPredecessors = hiddenPrecedingCountOf(task);
+  const visiblePredecessors = visiblePredecessorsOf(task);
 
   /** 하위 요청 모달의 수신 후보 — 열 때 한 번만 읽는다. */
   const openSubtaskRequest = async () => {
@@ -1153,10 +1249,15 @@ export function TaskDetailDrawer({
     );
   };
 
+  /* 껍데기만 갈린다 — 안의 구성·명령·상태는 한 벌 그대로다. 두 골격은 `OverlayShellProps` 를 같이 받는다. */
+  const Shell: (props: OverlayShellProps) => React.ReactElement = presentation === "modal" ? Modal : Drawer;
+
   return (
     <>
-      <Drawer
+      <Shell
           closeLabel="상세 닫기"
+        onBack={onBack}
+        backLabel={backLabel}
         footer={
           canManage ? (
             <>
@@ -1196,8 +1297,12 @@ export function TaskDetailDrawer({
                   막힘
                 </Button>
               )}
+              {/*
+                * **선행이 남았으면 누르기 전에 막는다** (SPEC-001 U-14). 눌린 뒤 서버 거절도 같은
+                * 문장이라, 사람은 두 경로에서 같은 사실을 읽는다.
+                */}
               {task.state === "open" && (
-                <Button variant="solid" tone="primary" disabled={busy} onClick={() => void onTransition(current, "start")} type="button">
+                <Button variant="solid" tone="primary" disabled={busy || startBlocked} onClick={() => void onTransition(current, "start")} type="button">
                   시작
                 </Button>
               )}
@@ -1210,19 +1315,20 @@ export function TaskDetailDrawer({
                 * 않는다 — 내가 못 읽는 하위도 서버는 세기 때문에, 0 을 「완료해도 된다」로 읽으면 틀린다.
                 */}
               {(task.state === "in_progress" || task.state === "open") && !reviewed && (
-                <Button variant="solid" tone="primary" disabled={busy} onClick={() => void complete()} type="button">
+                /* `시작 전 → 완료` 직행도 같은 게이트를 지난다 — 그 길이 열려 있으면 시작 게이트에
+                   우회로가 생긴다. `진행 중` 의 완료는 선행을 보지 않는다(막는 것은 시작이다). */
+                <Button variant="solid" tone="primary" disabled={busy || startBlocked} onClick={() => void complete()} type="button">
                   완료 처리
                 </Button>
               )}
+              {startBlocked && <small className="t-meta scax-blocked-note">{blockedText}</small>}
               {(task.state === "in_progress" || task.state === "blocked") && reviewed && (
-                <Button variant="solid" tone="primary" disabled={busy} onClick={() => setReport(report ? null : { summary: delivery?.summary ?? "", outputs: [] })}
-                  type="button"
-                >
+                <Button variant="solid" tone="primary" disabled={busy} onClick={() => setReporting(true)} type="button">
                   완료 보고
                 </Button>
               )}
               {task.state === "blocked" && (
-                <Button variant="solid" tone="primary" disabled={busy} onClick={() => void onTransition(current, "resume")} type="button">
+                <Button variant="outlined" tone="primary" size="sm" disabled={busy} onClick={() => void onTransition(current, "resume")} type="button">
                   재개
                 </Button>
               )}
@@ -1235,7 +1341,7 @@ export function TaskDetailDrawer({
                   **담당자**다. 한 조건으로 그리면 둘 중 하나는 늘 403 을 본다. */}
               {/* 재개의 요청자 판정은 **`requester_id` 하나**다 — 제안과 같은 값으로 묶지 않는다(N-1). */}
               {task.state === "done" && !reopenBlockedByApproval(task) && (reviewed ? viewerIsRecordRequester : viewerDrives) && (
-                <Button disabled={busy} onClick={() => setPrompt({ kind: "reopen" })} type="button">
+                <Button variant="outlined" tone="primary" size="sm" disabled={busy} onClick={() => setPrompt({ kind: "reopen" })} type="button">
                   재개
                 </Button>
               )}
@@ -1263,13 +1369,30 @@ export function TaskDetailDrawer({
         onClose={close}
         title={task.title}
       >
+        {/*
+          * 「완료 확인 대기」 (4차 발주 5) — 보고를 낸 쪽에는 **기다린다는 사실**이, 요청자에게는
+          * **판단하는 자리**가 선다. 판단 명령은 새로 만들지 않았다: 예전부터 있던 `task.delivery`
+          * 판단 항목의 커맨드 둘(`accept`·`request_changes`)을 그대로 부른다.
+          */}
         {awaitingReview && (
           <section aria-label="완료 확인 대기" className="drawer-section notice">
             <h4>완료 확인 대기</h4>
             <p>
-              {requesterName}에게 결과 확인을 요청했습니다. {requesterName}가 완료로 인정하면 이 업무가 완료됩니다.
+              {deliveryDecision
+                ? "담당자가 완료 보고를 보냈습니다. 요청한 결과가 충족됐는지 확인해 주세요."
+                : `${requesterName}에게 결과 확인을 요청했습니다. ${requesterName}가 완료로 인정하면 이 업무가 완료됩니다.`}
             </p>
             {delivery?.summary && <p className="prewrap t-meta">보고한 결과: {delivery.summary}</p>}
+            {deliveryDecision && (
+              <div className="row-actions">
+                <Button disabled={busy} onClick={() => void acceptDelivery()} size="sm" tone="primary" type="button" variant="solid">
+                  완료 인정
+                </Button>
+                <Button disabled={busy} onClick={() => setPrompt({ kind: "delivery_changes" })} size="sm" type="button" variant="outlined">
+                  보완 요청
+                </Button>
+              </div>
+            )}
           </section>
         )}
         {delivery?.status === "awaiting_revision" && delivery.last_reason && (
@@ -1361,59 +1484,6 @@ export function TaskDetailDrawer({
               ))}
             </ul>
             <p className="t-meta">이 업무를 최종 완료하려면 위 하위가 먼저 끝나야 합니다. 취소된 하위는 세지 않습니다.</p>
-          </section>
-        )}
-        {report !== null && (
-          <section aria-label="완료 보고" className="drawer-section">
-            <h4>완료 보고</h4>
-            <div className="scax-field">
-              <label className="scax-field__label" htmlFor={`delivery-summary-${task.task_id}`}>결과 요약</label>
-              <textarea
-                id={`delivery-summary-${task.task_id}`}
-                onChange={(event) => setReport({ ...report, summary: event.target.value })}
-                placeholder="무엇을 어디까지 했는지, 요청한 내용을 어떻게 충족했는지 적어 주세요."
-                rows={3}
-                value={report.summary}
-              />
-            </div>
-            {(materials ?? []).filter((item) => item.kind === "output").length > 0 && (
-              <fieldset className="scax-field cc-picker">
-                <legend>보고에 담을 산출물</legend>
-                <ChipRow>
-                  {(materials ?? [])
-                    .filter((item) => item.kind === "output")
-                    .filter((item, index, rows) => rows.findIndex((row) => row.material_id === item.material_id) === index)
-                    .map((item) => {
-                      const checked = report.outputs.includes(item.material_id);
-                      return (
-                        <ChipToggle
-                          checked={checked}
-                          key={item.material_id}
-                          onChange={(next) =>
-                            setReport({
-                              ...report,
-                              outputs: next
-                                ? [...report.outputs, item.material_id]
-                                : report.outputs.filter((id) => id !== item.material_id),
-                            })
-                          }
-                        >
-                          {item.name}
-                        </ChipToggle>
-                      );
-                    })}
-                </ChipRow>
-                <p className="t-meta">고른 산출물은 보고 시점의 무결성 값으로 고정되어 함께 남습니다.</p>
-              </fieldset>
-            )}
-            <div className="row-actions">
-              <Button variant="solid" tone="primary" size="sm" disabled={busy} onClick={() => void submitReport()} type="button">
-                보고 보내기
-              </Button>
-              <Button variant="text" size="sm" onClick={() => setReport(null)} type="button">
-                취소
-              </Button>
-            </div>
           </section>
         )}
         <div className="form-stack">
@@ -1626,16 +1696,25 @@ export function TaskDetailDrawer({
             <p className="danger-text">{task.block_reason}</p>
           </section>
         )}
+        {/*
+          * 막힘 사유 입력 (4차 발주 4).
+          *
+          * 예전에는 입력과 단추 둘이 **한 줄 flex**(`.inline-reason`)로 서서, 좁은 자리에서는 입력칸이
+          * 단추에 밀려 몇 글자만 보였다 — 사유를 적는 칸이 사유를 못 읽는 칸이었다. 이제 입력이 한 줄을
+          * 통째로 쓰고 단추는 그 아래 오른쪽에 선다. **공백이면 「막힘 처리」가 비활성**이고, 그 상태가
+          * 왜인지는 바로 위 도움말이 말한다 — 눌러도 아무 일이 없는 단추를 두지 않는다.
+          */}
         {isBlocking && (
-          <section className="drawer-section">
+          <section aria-label="막힘 사유 입력" className="drawer-section scax-block-reason">
             <h4>막힘 사유 입력</h4>
-            <div className="inline-reason" style={{ padding: 0 }}>
-              <label className="sr-only" htmlFor={`block-reason-${task.task_id}`}>
+            <div className="scax-field">
+              <label className="scax-field__label" htmlFor={`block-reason-${task.task_id}`}>
                 막힘 사유
               </label>
               <input
                 aria-invalid={blockReasonError ? true : undefined}
                 autoFocus
+                className="scax-block-reason__input"
                 id={`block-reason-${task.task_id}`}
                 onChange={(event) => {
                   setBlockReason(event.target.value);
@@ -1643,18 +1722,58 @@ export function TaskDetailDrawer({
                 }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") void submitBlock();
+                  if (event.key === "Escape") setIsBlocking(false);
                 }}
                 placeholder="무엇 때문에 막혔는지 적어 주세요"
                 value={blockReason}
               />
-              <Button variant="solid" tone="primary" size="sm" disabled={busy || !blockReason.trim()} onClick={() => void submitBlock()} type="button">
-                막힘 처리
-              </Button>
+            </div>
+            <FieldMessage error={blockReasonError} help="적어 둔 사유는 카드와 목록에 그대로 보입니다." />
+            <div className="scax-block-reason__actions">
               <Button variant="text" size="sm" onClick={() => setIsBlocking(false)} type="button">
                 입력 취소
               </Button>
+              <Button variant="solid" tone="primary" size="sm" disabled={busy || !blockReason.trim()} onClick={() => void submitBlock()} type="button">
+                막힘 처리
+              </Button>
             </div>
-            <FieldMessage error={blockReasonError} help="적어 둔 사유는 카드와 목록에 그대로 보입니다." />
+          </section>
+        )}
+        {/*
+          * 선행업무 줄 (SPEC-001 U-13 · U-7) — **비면 줄이 없다.**
+          *
+          * 끝나지 않은 선행을 **눈에 띄게** 낸다: 그것이 시작을 막는 이유이기 때문이다.
+          * 볼 수 없는 선행은 **제목 없이 건수만** — 자료 구획과 다르다(자료는 건수도 내지 않는다).
+          * 여기서는 막는 이유를 숨기면 사람이 다음 걸음을 고를 수 없다.
+          */}
+        {(task.predecessors ?? []).length > 0 && (
+          <section aria-label="선행업무" className="drawer-section">
+            <h4>선행업무</h4>
+            {visiblePredecessors.length > 0 && (
+              <ul className="material-list">
+                {visiblePredecessors.map((row) => {
+                  const unfinished = row.state !== "done" && row.state !== "cancelled";
+                  return (
+                    <li key={row.task_id}>
+                      {onOpenTask ? (
+                        <Button aria-label={`${row.title} 열기`} onClick={() => openTask(row.task_id)} type="button" variant="inline">
+                          {row.title}
+                        </Button>
+                      ) : (
+                        <span>{row.title}</span>
+                      )}
+                      {unfinished ? (
+                        <Badge tone="danger">{taskStateLabel[row.state] ?? row.state}</Badge>
+                      ) : (
+                        <span className="t-meta">{taskStateLabel[row.state] ?? row.state}</span>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            {hiddenPredecessors > 0 && <p className="t-meta">{hiddenPredecessorsText(hiddenPredecessors)}</p>}
+            {startBlocked && <p className="danger-text">{blockedText}</p>}
           </section>
         )}
         {parentTask && (
@@ -1849,7 +1968,32 @@ export function TaskDetailDrawer({
             </Button>
           </section>
         )}
-      </Drawer>
+      </Shell>
+      {/*
+        * 완료 보고 (4차 발주 5 · 5차 발주) — **입력 모달 한 벌이다.**
+        *
+        * 상세에서 열든 목록 행에서 열든 같은 부품이 선다. 묻는 것(결과 요약 · 함께 낼 산출물)도,
+        * 막는 것(끝나지 않은 하위 · OQ-203)도, 보내는 명령도 한 자리라 두 입구가 갈릴 수 없다.
+        */}
+      {reporting && (
+        <CompletionReportModal
+          busy={busy}
+          initialSummary={delivery?.summary ?? ""}
+          materials={materials ?? []}
+          onClose={() => setReporting(false)}
+          onError={onError}
+          onNotice={onNotice}
+          onSubmitted={async (updated) => {
+            setReporting(false);
+            setDelivery(updated.delivery ?? null);
+            moved(updated.version);
+            await settleVersion();
+          }}
+          requesterName={requesterName}
+          subtasks={children}
+          task={current}
+        />
+      )}
       {confirmUnfinished && (
         <ConfirmModal
           cancelLabel="돌아가기"
@@ -1958,6 +2102,24 @@ export function TaskDetailDrawer({
           optional
         />
       )}
+      {prompt?.kind === "delivery_changes" && (
+        /* 보완 요청은 사유가 필수다 — 계약(`request_changes`)이 그렇게 받는다. 서버가 거절하면
+           이 자리를 열어 둔 채 쓴 문장을 지키기 위해 `false` 를 돌려준다. */
+        <ReasonPrompt
+          busy={busy}
+          confirmLabel="보완 요청"
+          description={`'${task.title}' 결과가 아직 충족되지 않았다고 알립니다. 업무는 진행 중으로 돌아가고 지난 회차는 그대로 남습니다.`}
+          fieldLabel="무엇이 더 필요한가"
+          heading="보완할 내용을 적어 주세요"
+          label="보완 요청 사유"
+          onClose={() => setPrompt(null)}
+          onSubmit={async (reason) => {
+            const accepted = await requestDeliveryChanges(reason);
+            if (accepted) setPrompt(null);
+            return accepted;
+          }}
+        />
+      )}
       {subtaskRequest && (
         /* 하위를 남에게 맡긴다 — **요청 입구로만** 간다. 상위 연결은 발송 단계부터 실린다(V-9). */
         <CreateWorkModal
@@ -1997,6 +2159,189 @@ export function TaskDetailDrawer({
  *
  * `optional` 은 사유가 «선택» 인 자리(재개)에서만 켠다 — 그때는 빈 채로도 보낼 수 있다.
  */
+/**
+ * 완료 보고 — **요청 업무를 끝내는 한 벌의 입구다** (4차 발주 5 · 5차 발주).
+ *
+ * 요청 업무의 직접 완료는 서버가 막는다(`이 업무는 요청자의 확인이 필요합니다`). 끝나는 길은
+ * 「완료 보고 → 요청자 확인」 하나뿐이라, **그 보고를 받는 자리도 하나여야 한다.**
+ *
+ * 5차 발주가 고친 것이 그 자리다: 상세에는 이 모달이 있었는데 **목록 행의 「완료」는 곧바로
+ * `complete` 전이를 보내고 있었다.** 요청 업무에서는 그것이 늘 서버 거절이고, 사람은 빨간 글 한 줄을
+ * 보고 왜 안 되는지 모른 채 멈춘다. 이제 두 입구가 같은 부품을 연다.
+ *
+ * **스스로 읽을 줄 안다.** 상세는 이미 들고 있는 자료·하위를 넘기고, 행은 넘기지 않는다 —
+ * 넘기지 않은 값만 이 모달이 직접 읽는다(`getTask` · `getTaskMaterials`). 그래서 행에서 열어도
+ * 막는 하위와 낼 산출물이 상세에서 연 것과 똑같이 보인다.
+ */
+export function CompletionReportModal({
+  task,
+  requesterName,
+  busy = false,
+  materials: givenMaterials,
+  subtasks: givenSubtasks,
+  initialSummary = "",
+  onClose,
+  onSubmitted,
+  onNotice,
+  onError,
+}: {
+  task: DirectTask;
+  /** 누구의 확인을 기다리게 되는가. 보내기 전에 그것을 말해 둔다. */
+  requesterName: string;
+  busy?: boolean;
+  /** 이 업무의 자료. **넘기지 않으면 직접 읽는다** — `null` 은 「아직 안 읽었다」가 아니라 「없다」다. */
+  materials?: TaskMaterial[];
+  /** 직속 하위. 넘기지 않으면 상세 읽기로 직접 가져온다 (OQ-203 검사가 이 값을 쓴다). */
+  subtasks?: TaskChild[];
+  initialSummary?: string;
+  onClose: () => void;
+  /** 보고가 받아들여졌다. 닫는 것도, 화면을 정리하는 것도 부르는 쪽의 몫이다. */
+  onSubmitted: (updated: DirectTask) => void | Promise<void>;
+  onNotice?: (message: string) => void;
+  onError: (message: string | null) => void;
+}) {
+  const [summary, setSummary] = useState(initialSummary);
+  const [outputs, setOutputs] = useState<string[]>([]);
+  /** 보내는 중 — 두 번째 누름이 두 번째 보고가 되지 않게 막는다. */
+  const [pending, setPending] = useState(false);
+  const [ownMaterials, setOwnMaterials] = useState<TaskMaterial[] | null>(null);
+  const [ownDetail, setOwnDetail] = useState<DirectTask | null>(null);
+
+  useEffect(() => {
+    if (givenMaterials !== undefined) return;
+    let cancelled = false;
+    void getTaskMaterials(task.task_id)
+      .then((items) => {
+        if (!cancelled) setOwnMaterials(items);
+      })
+      .catch(() => {
+        // 자료를 못 읽었다고 보고를 막지 않는다 — 산출물은 «함께 낼 수 있는 것» 이지 필수가 아니다.
+        if (!cancelled) setOwnMaterials([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [givenMaterials, task.task_id]);
+
+  useEffect(() => {
+    if (givenSubtasks !== undefined) return;
+    let cancelled = false;
+    void getTask(task.task_id)
+      .then((detail) => {
+        if (!cancelled) setOwnDetail(detail);
+      })
+      .catch(() => {
+        if (!cancelled) setOwnDetail(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [givenSubtasks, task.task_id]);
+
+  /* 회차는 **방금 읽은 값이 먼저다.** 목록 투영이 든 회차가 한 걸음 뒤일 수 있고, 그대로 보내면 409 다. */
+  const current = ownDetail && ownDetail.version >= task.version ? ownDetail : task;
+  const materials = givenMaterials ?? ownMaterials ?? [];
+  const blocking = blockingChildrenOf({ ...current, children: givenSubtasks ?? current.children ?? [] });
+  const outputMaterials = materials
+    .filter((item) => item.kind === "output")
+    .filter((item, index, rows) => rows.findIndex((row) => row.material_id === item.material_id) === index);
+  const blocked = busy || pending || !summary.trim() || blocking.length > 0;
+
+  const submit = async () => {
+    const clean = summary.trim();
+    if (!clean) {
+      onError("무엇을 어디까지 했는지 적어 주세요.");
+      return;
+    }
+    /* OQ-203 — 끝나지 않은 하위가 있으면 **보고 제출도** 막는다. 요청 업무는 직접 완료가 애초에
+       막혀 있어서 하위 검사가 닿지 않았고, 그래서 하위가 남은 채로 보고가 올라갔다. */
+    if (blocking.length > 0) {
+      onError(`끝나지 않은 하위 업무가 있습니다: ${blocking.map((child) => child.title).join(", ")}`);
+      return;
+    }
+    onError(null);
+    setPending(true);
+    try {
+      const updated = await submitTaskCompletion(current.task_id, current.version, { summary: clean, output_material_ids: outputs });
+      onNotice?.(`완료 보고를 보냈습니다. ${requesterName}의 확인을 기다립니다.`);
+      await onSubmitted(updated);
+    } catch (error) {
+      // 서버가 거절하면 **쓴 문장을 지우지 않는다** — 이 자리는 열린 채로 남는다.
+      onError(error instanceof Error ? error.message : "완료 보고를 보내지 못했습니다.");
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <Modal
+      closeLabel="완료 보고 닫기"
+      footer={
+        <>
+          <Button disabled={pending} onClick={onClose} type="button" variant="text">
+            취소
+          </Button>
+          <Button disabled={blocked} onClick={() => void submit()} tone="primary" type="button" variant="solid">
+            보고 보내기
+          </Button>
+        </>
+      }
+      kicker="완료 보고"
+      label="완료 보고"
+      onClose={onClose}
+      size="md"
+      title={current.title}
+    >
+      {blocking.length > 0 && (
+        <section aria-label="보고를 막는 하위" className="drawer-section notice danger">
+          <h4>아직 끝나지 않은 하위가 있습니다</h4>
+          <ul className="material-list">
+            {blocking.map((child) => (
+              <li key={child.task_id}>
+                {child.title} <span className="t-meta">{blockingChildReasonLabel[child.why] ?? child.why}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="t-meta">하위가 먼저 끝나야 완료 보고를 보낼 수 있습니다. 취소된 하위는 세지 않습니다.</p>
+        </section>
+      )}
+      <div className="scax-field">
+        <label className="scax-field__label" htmlFor={`delivery-summary-${current.task_id}`}>
+          결과 요약
+        </label>
+        <textarea
+          autoFocus
+          id={`delivery-summary-${current.task_id}`}
+          onChange={(event) => setSummary(event.target.value)}
+          placeholder="무엇을 어디까지 했는지, 요청한 내용을 어떻게 충족했는지 적어 주세요."
+          rows={5}
+          value={summary}
+        />
+        <FieldMessage help={`보낸 뒤에는 ${requesterName}의 확인을 기다립니다. 확인이 끝나야 최종 완료입니다.`} />
+      </div>
+      {outputMaterials.length > 0 && (
+        <fieldset className="scax-field cc-picker">
+          <legend>보고에 담을 산출물</legend>
+          <ChipRow>
+            {outputMaterials.map((item) => (
+              <ChipToggle
+                checked={outputs.includes(item.material_id)}
+                key={item.material_id}
+                onChange={(next) =>
+                  setOutputs((current) => (next ? [...current, item.material_id] : current.filter((id) => id !== item.material_id)))
+                }
+              >
+                {item.name}
+              </ChipToggle>
+            ))}
+          </ChipRow>
+          <p className="t-meta">고른 산출물은 보고 시점의 무결성 값으로 고정되어 함께 남습니다.</p>
+        </fieldset>
+      )}
+    </Modal>
+  );
+}
+
 export function ReasonPrompt({
   label,
   heading,
@@ -2202,31 +2547,38 @@ export function TaskQuickActions({
   task,
   busy,
   onTransition,
+  onChanged,
+  onNotice,
+  onError,
 }: {
   task: DirectTask;
   busy: boolean;
   /** 전이를 보낸다. 돌려주는 값(받아들여졌나)은 이 자리가 쓰지 않는다 — 사유 자리만 그것을 읽는다. */
   onTransition: (task: DirectTask, action: TaskAction, reason?: string) => Promise<boolean | void>;
+  /** 완료 보고가 올라간 뒤 목록을 다시 읽는 자리. 없으면 이 행은 보고만 보내고 제자리에 남는다. */
+  onChanged?: () => Promise<void> | void;
+  onNotice?: (message: string) => void;
+  onError?: (message: string | null) => void;
 }) {
   const [isBlocking, setIsBlocking] = useState(false);
-  const [blockReason, setBlockReason] = useState("");
-  const [blockReasonError, setBlockReasonError] = useState<string | null>(null);
-  const submitBlock = async () => {
-    const reason = blockReason.trim();
-    if (!reason) {
-      setBlockReasonError("막힘 사유를 적어 주세요.");
-      return;
-    }
-    setBlockReasonError(null);
-    await onTransition(task, "block", reason);
-    setIsBlocking(false);
-    setBlockReason("");
-  };
+  /**
+   * 행에서 여는 완료 보고 (5차 발주).
+   *
+   * **요청 업무의 「완료」는 전이가 아니다.** 여기서 `complete` 를 보내면 서버가 늘 거절한다
+   * (`이 업무는 요청자의 확인이 필요합니다`) — 상세의 「완료 보고」와 행의 「완료」가 서로 다른 일을
+   * 하고 있던 자리다. 이제 둘이 같은 모달을 연다.
+   */
+  const [reporting, setReporting] = useState(false);
+  const requested = isRequestTask(task);
+  const requesterName = task.origin?.actor ? personName(task.origin.actor.display_name) : "요청자";
+  /* 행에서도 **누르기 전에** 막는다 — 상세와 목록이 같은 사실을 다르게 말하지 않는다 (U-14). */
+  const startBlocked = startBlockedByPredecessors(task);
+  const blockedText = predecessorsUnfinishedText(blockingPredecessorsOf(task).map((row) => row.title));
   return (
     <>
       {/* 바퀴 5c: 어느 단추가 서는지는 이제 `allowedTaskTransitions` 한 자리가 정한다 — 라벨과 꼴만 여기 남는다 */}
       {canTransition(task, "start") && (
-        <Button variant="solid" tone="primary" size="sm" disabled={busy} onClick={() => void onTransition(task, "start")} type="button">
+        <Button variant="solid" tone="primary" size="sm" disabled={busy || startBlocked} onClick={() => void onTransition(task, "start")} type="button">
           시작
         </Button>
       )}
@@ -2236,13 +2588,21 @@ export function TaskQuickActions({
         </Button>
       )}
       {canTransition(task, "complete") && (
-        <Button variant="solid" tone="primary" size="sm" disabled={busy} onClick={() => void onTransition(task, "complete")} type="button">
-          완료
+        /* 일반 업무는 지금까지대로 **바로 완료**다. 요청 업무만 보고 모달로 간다 — 라벨도 그것을 말한다. */
+        <Button
+          variant="solid"
+          tone="primary"
+          size="sm"
+          disabled={busy || reporting || startBlocked}
+          onClick={() => (requested ? setReporting(true) : void onTransition(task, "complete"))}
+          type="button"
+        >
+          {requested ? "완료 보고" : "완료"}
         </Button>
       )}
       {/* 「재개」는 둘 다 resume 이지만 부르는 말이 다르다 — 막힌 것을 푸는 것과 끝낸 것을 되돌리는 것이다 */}
       {canTransition(task, "resume") && task.state === "blocked" && (
-        <Button variant="solid" tone="primary" size="sm" disabled={busy} onClick={() => void onTransition(task, "resume")} type="button">
+        <Button variant="outlined" tone="primary" size="sm" disabled={busy} onClick={() => void onTransition(task, "resume")} type="button">
           재개
         </Button>
       )}
@@ -2251,34 +2611,38 @@ export function TaskQuickActions({
           다시 진행
         </Button>
       )}
+      {/*
+        * 4차 발주 4: 행의 사유 입력은 **200px 액션 칸 안에** 있었다 — 그 칸이 격자로 잡혀 있어서
+        * 입력칸이 몇 글자만 보였다. 표 상태 칸이 이미 쓰고 있던 `BlockReasonPrompt` 로 통일한다.
+        * 사유가 비면 「막힘 처리」가 비활성인 것은 그 부품이 이미 하는 일이다.
+        */}
+      {startBlocked && <small className="t-meta scax-blocked-note">{blockedText}</small>}
       {isBlocking && (
-        <div className="inline-reason">
-          <label className="sr-only" htmlFor={`row-block-reason-${task.task_id}`}>
-            막힘 사유
-          </label>
-          <input
-            aria-invalid={blockReasonError ? true : undefined}
-            autoFocus
-            id={`row-block-reason-${task.task_id}`}
-            onChange={(event) => {
-              setBlockReason(event.target.value);
-              setBlockReasonError(null);
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void submitBlock();
-              if (event.key === "Escape") setIsBlocking(false);
-            }}
-            placeholder="무엇 때문에 막혔는지 적어 주세요"
-            value={blockReason}
-          />
-          <Button variant="solid" tone="primary" size="sm" disabled={busy || !blockReason.trim()} onClick={() => void submitBlock()} type="button">
-            막힘 처리
-          </Button>
-          <Button variant="text" size="sm" onClick={() => setIsBlocking(false)} type="button">
-            입력 취소
-          </Button>
-          <FieldMessage error={blockReasonError} />
-        </div>
+        <BlockReasonPrompt
+          busy={busy}
+          onClose={() => setIsBlocking(false)}
+          onSubmit={(reason) => {
+            void onTransition(task, "block", reason);
+            setIsBlocking(false);
+          }}
+          task={task}
+        />
+      )}
+      {reporting && (
+        /* 상세가 여는 것과 **같은 부품**이다 — 묻는 것도, 막는 것도(OQ-203), 보내는 명령도 한 자리다.
+           자료와 하위는 행이 들고 있지 않으므로 이 모달이 직접 읽는다. */
+        <CompletionReportModal
+          busy={busy}
+          onClose={() => setReporting(false)}
+          onError={onError ?? (() => {})}
+          onNotice={onNotice}
+          onSubmitted={async () => {
+            setReporting(false);
+            await onChanged?.();
+          }}
+          requesterName={requesterName}
+          task={task}
+        />
       )}
     </>
   );
@@ -2294,10 +2658,13 @@ export function WorkRequestDetailDrawer({
   personaId,
   personas,
   canDecide,
+  readOnly = false,
   onChanged,
   onError,
   onNotice,
   onClose,
+  onBack,
+  backLabel,
 }: {
   request: WorkRequest;
   /** Open the Task this request produced, through the server's own authorized read. */
@@ -2305,10 +2672,18 @@ export function WorkRequestDetailDrawer({
   personaId: string;
   personas: Persona[];
   canDecide: boolean;
+  /** 참고 수신함에서는 상태·결과·이력만 읽는다. */
+  readOnly?: boolean;
   onChanged: () => Promise<void> | void;
   onError: (message: string | null) => void;
   onNotice?: (message: string) => void;
   onClose: () => void;
+  /**
+   * 넘기면 머리 왼쪽에 「뒤로」가 선다 — 이 겹을 «닫지 않고» 내용만 이전 상세로 되돌린다 (4차 발주 3).
+   * 업무 상세에서 출처(요청)를 따라 들어온 자리가 그것이다.
+   */
+  onBack?: () => void;
+  backLabel?: string;
 }) {
   const today = seoulToday();
   const [mode, setMode] = useState<"negotiate" | "reject" | null>(null);
@@ -2335,13 +2710,13 @@ export function WorkRequestDetailDrawer({
   const isRequester = request.requester_id === personaId;
   const isCc = !isAssignee && !isRequester;
   // A basis may only grow while the round is still open to it; every other state is already judged or closed.
-  const canAdoptEvidence = (isAssignee || isRequester) && request.state === "pending";
+  const canAdoptEvidence = !readOnly && (isAssignee || isRequester) && request.state === "pending";
   const assigneeName = isAssignee ? "나" : displayNameOf(personas, request.assignee_id, "담당자");
   const isOpen = request.state === "pending" || request.state === "negotiating";
-  const decidable = canDecide && isAssignee && isOpen;
-  const canResubmit = isRequester && request.state === "negotiating";
+  const decidable = !readOnly && canDecide && isAssignee && isOpen;
+  const canResubmit = !readOnly && isRequester && request.state === "negotiating";
   // Improving one's own request needs nobody's permission, but only while it is still the assignee's to judge.
-  const canAmend = isRequester && request.state === "pending";
+  const canAmend = !readOnly && isRequester && request.state === "pending";
   const condition = conditionText(request.conditions);
 
   const loadTimeline = async () => {
@@ -2498,8 +2873,10 @@ export function WorkRequestDetailDrawer({
   const lastDecision = timeline?.review_decisions.at(-1);
 
   return (
-    <Drawer
+    <Modal
           closeLabel="상세 닫기"
+      onBack={onBack}
+      backLabel={backLabel ?? "이전 상세로 돌아가기"}
       footer={
         decidable ? (
           <>
@@ -2513,7 +2890,7 @@ export function WorkRequestDetailDrawer({
             <Button variant="solid" tone="primary" disabled={isWorking} onClick={() =>
                 void run(
                   () => decideWorkRequest(request.request_id, "accept", request.version),
-                  `'${request.title}' 요청을 수락했습니다. 내 업무에 생성되었습니다.`,
+                  `'${request.title}' 요청을 수락했습니다. 내 업무에 표시되고 내가 담당자로 지정되었습니다.`,
                   "요청을 수락하지 못했습니다.",
                 )
               }
@@ -2571,7 +2948,6 @@ export function WorkRequestDetailDrawer({
           <Badge tone="outline">v{request.version}</Badge>
         </ChipRow>
       }
-      kicker="업무 요청"
       label="업무 요청 상세"
       onClose={close}
       title={request.title}
@@ -2598,7 +2974,7 @@ export function WorkRequestDetailDrawer({
                   파생 업무 보기
                 </Button>
               ) : (
-                request.state === "assigned" ? "생성됨" : "수락 후 생성됨"
+                isOpen ? "생성됨 · 담당 수락 대기" : "생성됨"
               )
             ) : (
               "아직 없음"
@@ -2612,7 +2988,7 @@ export function WorkRequestDetailDrawer({
           </div>
         )}
       </dl>
-      {isCc && <p className="t-meta">참조자로 받은 요청입니다. 읽고 논의할 수 있지만 판단은 {assigneeName}가 합니다.</p>}
+      {readOnly ? <p className="t-meta">참고로 받은 요청입니다. 상태와 처리 결과, 이력을 확인할 수 있습니다.</p> : isCc && <p className="t-meta">참조자로 받은 요청입니다. 읽고 논의할 수 있지만 판단은 {assigneeName}가 합니다.</p>}
       {request.description && !revision && (
         <section className="drawer-section">
           <h4>요청 내용</h4>
@@ -2728,13 +3104,20 @@ export function WorkRequestDetailDrawer({
       {!revision && (
         <section className="drawer-section">
           <h4>{isOpen ? "수락하면 바뀌는 것" : "결과"}</h4>
+          {/*
+            * **수락은 «생성» 이 아니라 «담당 활성화» 다** (3차 발주 2).
+            *
+            * 요청을 보내는 순간 서버는 Task 를 이미 만든다 — 수락 전에는 담당이 비어 있을 뿐이고
+            * (`derived.assignment === "awaiting_acceptance"`), 거절하면 그 Task 가 **취소된다**
+            * (「취소됨 — 요청 거절」). 그래서 「수락하면 생성됩니다 / 거절하면 만들어지지 않습니다」는
+            * 화면만 참인 말이었다. 계약이 하는 일을 그대로 적는다 — 새 동작을 만들지 않았다.
+            */}
           <blockquote className="effect-note">
-            {request.state === "accepted" && `${assigneeName === "나" ? "내" : `${assigneeName}의`} 업무에 “${request.title}”가 생성되었습니다.`}
+            {request.state === "accepted" && `“${request.title}”가 ${assigneeName === "나" ? "내" : `${assigneeName}의`} 업무에 표시되고 ${assigneeName === "나" ? "내가" : `${assigneeName}가`} 담당자로 지정되었습니다.`}
             {/* 판단이 없었던 신규 경로다 — 「수락됨」과 같은 말로 적지 않는다 (WORK-001 Phase 4). */}
-            {request.state === "assigned" && `${assigneeName === "나" ? "내" : `${assigneeName}의`} 업무에 “${request.title}”가 수락 없이 바로 생성되었습니다.`}
-            {request.state === "rejected" && "요청이 거절되어 업무가 생성되지 않았습니다."}
-            {isOpen &&
-              `수락하면 ${assigneeName === "나" ? "내" : `${assigneeName}의`} 업무에 “${request.title}”가 ${request.due_date ? `기한 ${formatDate(request.due_date)}로 ` : ""}생성됩니다. 거절하면 업무는 만들어지지 않습니다.`}
+            {request.state === "assigned" && `“${request.title}”가 수락 없이 바로 ${assigneeName === "나" ? "내" : `${assigneeName}의`} 업무에 표시되고 ${assigneeName === "나" ? "내가" : `${assigneeName}가`} 담당자로 지정되었습니다.`}
+            {request.state === "rejected" && "요청이 거절되어 업무는 취소되었습니다."}
+            {isOpen && "수락하면 이 업무가 내 업무에 표시되고, 내가 담당자로 지정됩니다. 거절하면 업무는 취소됩니다."}
           </blockquote>
         </section>
       )}
@@ -2875,7 +3258,7 @@ export function WorkRequestDetailDrawer({
         ) : (
           <p className="t-meta">아직 논의가 없습니다.</p>
         )}
-        <div className="inline-reason" style={{ padding: "8px 0 0" }}>
+        {!readOnly && <div className="inline-reason" style={{ padding: "8px 0 0" }}>
           <label className="sr-only" htmlFor={`comment-${request.request_id}`}>
             댓글
           </label>
@@ -2913,9 +3296,9 @@ export function WorkRequestDetailDrawer({
           <Button size="sm" disabled={isWorking || !comment.trim()} onClick={() => void submitComment()} type="button">
             남기기
           </Button>
-        </div>
+        </div>}
       </section>
-    </Drawer>
+    </Modal>
   );
 }
 
@@ -2935,6 +3318,122 @@ const noProjectCandidates: Project[] = [];
 const COMPOSER_HINT_LENGTH = 200;
 
 /**
+ * 생성 모달의 왼쪽 세로 탭 (최종 발주 2).
+ *
+ * **필수 하나와 선택 셋이다.** 제목 없이는 아무것도 만들 수 없으므로 「기본 정보」만 필수이고,
+ * 나머지 셋은 지금 몰라도 나중에 업무 상세에서 채울 수 있는 것들이다. 그 사실이 목록의 두 무리로
+ * 그대로 읽히게 두 tablist 로 세운다 — 한 무리에 머리글을 섞으면 tablist 의 자식 규약이 깨진다.
+ */
+type CreateTab = "basic" | "checklist" | "links" | "materials";
+const REQUIRED_TABS: ReadonlyArray<CreateTab> = ["basic"];
+/**
+ * 선택 탭 — **자료는 두 갈래 모두 선다** (최종 프레임 확정).
+ *
+ * 두 갈래가 같은 탭 한 벌을 쓰는 것은 **디자인 결정**이다: 무엇을 만들든 「기본 정보 · 체크리스트 ·
+ * 업무 연결 · 자료」 넷이 같은 자리에 있어야 갈래를 바꿔도 읽던 틀이 흔들리지 않는다.
+ *
+ * **두 갈래 모두 실제로 저장된다** (WORK-003) — 내 업무는 생성 직후 `task_id` 로, 요청은 발송
+ * 직후 `request_id` 로 붙는다. 같은 두 단계이고 자리만 다르다.
+ */
+const OPTIONAL_TABS: ReadonlyArray<CreateTab> = ["checklist", "links", "materials"];
+
+/** 만들기 창이 들고 있는 링크 자료 한 줄. 파일과 달리 바이트를 들지 않는다 — 주소와 사람이 읽는 이름뿐이다. */
+type MaterialLinkDraft = { url: string; label: string };
+
+/**
+ * **자료가 붙을 자리** — 업무이거나 요청이다 (WORK-003).
+ *
+ * 두 갈래가 **같은 두 단계**를 지난다: 만들고 → 돌아온 식별자로 붙인다. 다른 것은 입구 한 쌍뿐이라
+ * (`/api/tasks/{id}/materials…` · `/api/work-requests/{id}/materials…`) 여기서 그 하나만 가른다.
+ * 생성 payload 에 자료 축을 만들지 않고(`material_ids`·`attachments`·`material_draft_ids` 같은
+ * 이름을 지어내지 않는다), 댓글 첨부·판단 근거로 우회하지도 않는다 — 뜻이 다른 자리다.
+ */
+type MaterialHost = { kind: "task"; id: string } | { kind: "request"; id: string };
+
+/**
+ * **회의 승격만은 아직 자료를 싣지 못한다** (BE API gap · 이 분기에서 backend 는 건드리지 않는다).
+ *
+ * 승격 어댑터(`onSubmitRequest`)가 돌려주는 것은 사람에게 보일 **문장 하나**뿐이라, 붙일 자리를
+ * 가리키는 `request_id` 가 화면에 오지 않는다. 없는 식별자를 추측해 다른 요청에 붙이지 않는다 —
+ * 고칠 자리는 `POST /api/meetings/{id}/todos/{todo}/promote` 의 **응답**이다.
+ */
+const PROMOTION_MATERIALS_GAP_TEXT =
+  "회의록에서 연 승격은 아직 자료를 함께 싣지 못합니다 — 승격 응답이 요청 식별자를 돌려주지 않습니다. 여기서 고른 파일과 링크는 저장되지 않고, 창을 닫으면 사라집니다.";
+
+/**
+ * 업무를 **여럿 고르는 한 벌의 표** (새 발주 4 · 수정 발주).
+ *
+ * 참고 업무와 선행 업무가 이 표를 쓴다. 둘이 각자 다른 모양이면 같은 판 안에서 두 번 다른 읽기를
+ * 요구하므로, 열(업무명 · 프로젝트 · 담당자)도 높이도 스크롤도 여기 한 자리에서 정한다.
+ *
+ * **하나만 고르는 자리는 이 표가 아니다.** 상위 업무는 한 행 2열의 왼쪽 칸에 서는데 표를 그 칸에
+ * 넣으면 옆의 프로젝트 셀렉터와 높이가 세 곱절로 어긋난다 — 그 자리는 같은 `Select` 팝오버를 쓰고,
+ * 목록 안에서 프로젝트·담당자를 한 줄로 보여 준다.
+ *
+ * **프로젝트는 비어 있을 수 있다** — 어느 묶음에도 없는 업무가 흔하다. 없는 것을 「—」로 말하고
+ * 이름을 지어내지 않는다.
+ */
+export function TaskPickTable({
+  label,
+  tasks,
+  selected,
+  onToggle,
+  projectNameOf,
+  disabled = false,
+  emptyText,
+}: {
+  label: string;
+  tasks: DirectTask[];
+  selected: string[];
+  /** 한 줄이 켜지거나 꺼졌다. */
+  onToggle: (taskId: string, next: boolean) => void;
+  projectNameOf: (projectId: string | null | undefined) => string | null;
+  disabled?: boolean;
+  /** 고를 것이 없을 때의 한 줄. 「없다」와 「아직 고를 수 없다」는 다른 말이라 부르는 쪽이 준다. */
+  emptyText: string;
+}) {
+  return (
+    <div aria-label={label} className="scax-pick-table" role="table">
+      <div className="scax-pick-table__head" role="row">
+        <span className="scax-pick-table__cell--pick" role="columnheader">
+          <span className="sr-only">고르기</span>
+        </span>
+        <span role="columnheader">업무명</span>
+        <span role="columnheader">프로젝트</span>
+        <span role="columnheader">담당자</span>
+      </div>
+      <div className="scax-pick-table__body scax-scroll">
+        {tasks.length === 0 ? (
+          <p className="t-meta scax-pick-table__empty">{emptyText}</p>
+        ) : (
+          tasks.map((task) => {
+            const on = selected.includes(task.task_id);
+            return (
+              <label className="scax-pick-table__row" key={task.task_id} role="row">
+                <span className="scax-pick-table__cell--pick" role="cell">
+                  <input
+                    aria-label={task.title}
+                    checked={on}
+                    disabled={disabled}
+                    onChange={(event) => onToggle(task.task_id, event.target.checked)}
+                    type="checkbox"
+                  />
+                </span>
+                <span className="scax-pick-table__title" role="cell">{task.title}</span>
+                <span className="scax-pick-table__meta" role="cell">{projectNameOf(task.project_id) ?? "—"}</span>
+                <span className="scax-pick-table__meta" role="cell">
+                  {task.assignee ? personName(task.assignee.display_name) : "—"}
+                </span>
+              </label>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
  * 업무·업무 요청을 만드는 자리.
  *
  * **바퀴 6bc (§8-B 14): 서랍에서 모달로 옮겼다** — 이름도 `CreateWorkDrawer` → `CreateWorkModal`.
@@ -2943,7 +3442,8 @@ const COMPOSER_HINT_LENGTH = 200;
  * 폭은 부르는 쪽이 정한다 — 회의록의 승격은 `md`(560), 업무·오늘 화면은 기본(880).
  */
 export function CreateWorkModal({
-  ownerName,
+  /* `ownerName` 과 `origin` 은 **받되 읽지 않는다** — 둘이 그리던 상태·요청자 카드가 사라졌다.
+     타입에 남겨 두는 것은 부르는 쪽 셋을 이 변경으로 건드리지 않기 위해서다(아래 주석 참조). */
   canCreateTask,
   canCreateRequest,
   assigneeCandidates,
@@ -2956,9 +3456,13 @@ export function CreateWorkModal({
   onOpenTask,
   onError,
   onClose,
-  origin,
   size,
 }: {
+  /**
+   * 부르는 사람의 이름. **이 창은 더 이상 읽지 않는다** (WORK-003 정정) — 「요청자」 카드가
+   * 쓰던 유일한 자리였고, 요청자는 폼이 정하는 값이 아니라 서버가 기록하는 값이다.
+   * 부르는 쪽 셋이 지금도 넘기고 있어 타입에는 남는다.
+   */
   ownerName: string;
   canCreateTask: boolean;
   canCreateRequest: boolean;
@@ -3000,12 +3504,9 @@ export function CreateWorkModal({
   /**
    * 이 요청이 «어디서 나왔는가». 회의록의 후속업무 후보에서 열렸으면 `"meeting"` 이다.
    *
-   * 그때는 **상태와 요청자가 고를 값이 아니다** — SPEC §9-5(D40 · R-48)가 「요청자는 시스템(회의)이고
-   * 누른 사람은 `promoted_by` 로 기록되고 참조로 붙는다」고 못박는다. 그래서 그 자리에 누른 사람 이름을
-   * 「요청자」로 내던 것은 계약과 **어긋난 표시**였고(현재 화면 18·19), 상태도 언제나 「판단 대기」라
-   * 폼이 말해 줄 것이 없다. 둘 다 화면에서만 걷는다 — **보내는 값은 하나도 바뀌지 않는다.**
-   *
-   * 부르는 쪽이 명시로 넘긴다. 제목·사람 이름·상태를 보고 「회의에서 온 것 같다」고 추론하지 않는다.
+   * **이 창은 더 이상 읽지 않는다** (WORK-003 정정). 이 값이 하던 일은 상태·요청자 카드를 회의
+   * 승격에서만 걷는 것이었는데(§9-5 D40 · R-48), 그 카드가 **어느 갈래에서도 서지 않게** 되면서
+   * 갈릴 것이 남지 않았다. 부르는 쪽(`MeetingDetailPage`)이 지금도 넘기고 있어 타입에는 남는다.
    */
   origin?: "meeting";
   /**
@@ -3033,17 +3534,34 @@ export function CreateWorkModal({
   const [dueDate, setDueDate] = useState(initial?.dueDate ?? "");
   // 미리 채운 값으로 열 때는 담당을 비워 둔다 — 첫 후보를 자동으로 고르지 않는다.
   const [assigneeId, setAssigneeId] = useState(initial ? initial.assigneeId ?? "" : assigneeCandidates[0]?.id ?? "");
-  /** 시안의 「추가 입력」 — 시작일·프로젝트·참고 업무·참조자는 접어 두되 **계약에서 지우지 않는다**(7-C). */
-  const [extrasOpen, setExtrasOpen] = useState(false);
   /** 고른 첨부 파일. **경로가 바뀌어도 조용히 버리지 않는다** — 아래 `attachSupported` 가 말만 바꾼다. */
   const [attachments, setAttachments] = useState<File[]>([]);
+  /**
+   * 고른 링크 자료 (최종 프레임 6 — 두 갈래 모두 파일/링크 UI 를 세운다).
+   *
+   * 파일과 **같은 두 단계**다: 내 업무는 `attachTaskMaterialLink`, 요청은
+   * `attachWorkRequestMaterialLink` 로 만들어진 직후에 붙는다.
+   */
+  const [materialLinks, setMaterialLinks] = useState<MaterialLinkDraft[]>([]);
+  /** 아직 목록에 들어가지 않은, 지금 적고 있는 링크 한 줄. */
+  const [linkDraft, setLinkDraft] = useState<MaterialLinkDraft>({ url: "", label: "" });
   /**
    * **업무는 섰는데 첨부가 남은 자리.**
    *
    * 생성이 성공한 뒤 업로드가 실패하면 «생성부터 다시» 가 되어서는 안 된다 — 그러면 같은 업무가 둘
    * 선다. 만들어진 것을 여기 붙들어 두고, 다시 누르면 **업로드만** 다시 한다.
+   *
+   * 실패한 것은 **파일과 링크 두 갈래로 나눠 든다** — 다시 시도가 성공한 것을 두 번 붙이지 않는다.
    */
-  const [created, setCreated] = useState<{ taskId: string; title: string; failed: File[]; message: string } | null>(null);
+  const [created, setCreated] = useState<{
+    /** 이미 만들어진 것 — 업무이거나 요청이다. 다시 누르면 **여기에만** 붙인다. */
+    host: MaterialHost;
+    title: string;
+    failed: { files: File[]; links: MaterialLinkDraft[] };
+    message: string;
+    /** 만든 것이 남의 일이 되었나. 문구를 다시 읽어 갈래를 알아내지 않는다. */
+    assignedToOther: boolean;
+  } | null>(null);
   const [taskOwnerId, setTaskOwnerId] = useState("me");
   const [projectId, setProjectId] = useState("");
   const [availableProjects, setAvailableProjects] = useState<Project[]>(projectCandidates);
@@ -3051,7 +3569,35 @@ export function CreateWorkModal({
   const [steps, setSteps] = useState<string[]>(initial?.checklist ?? []);
   const [newStep, setNewStep] = useState("");
   const [linkedTasks, setLinkedTasks] = useState<DirectTask[]>([]);
-  const [referenceDraft, setReferenceDraft] = useState<string | null>(null);
+  /**
+   * 상위 업무 — **실제로 보내는 값이다** (`parent_task_id`).
+   *
+   * 여는 쪽이 정해 준 값(하위 요청 보내기)이면 그 값으로 시작하고 고치지 못한다: 어느 업무 아래에
+   * 매달 것인지는 그 화면이 이미 정했다. 그 밖에서는 내가 읽을 수 있는 업무 중에서 고른다 —
+   * `POST /api/tasks` 의 본인 갈래와 `POST /api/work-requests` 둘 다 이 값을 받는다.
+   */
+  const [parentTaskId, setParentTaskId] = useState(initial?.parentTaskId ?? "");
+  /**
+   * 선행업무 — **실제로 보낸다** (WORK-003 Phase 4 · SPEC-001 U-13 · §4 `preceding_task_ids`).
+   *
+   * 이 값이 화면에만 살던 시절이 있었다(계약이 없던 때). SPEC-001 이 `preceding_task_ids` 를
+   * 생성 payload 에 고정하면서 그 임시 상태가 끝났다 — 이제 고른 것은 저장되고, 「아직 저장되지
+   * 않습니다」류의 안내를 남기지 않는다. 저장된 척도, 저장 안 된 척도 하지 않는다.
+   */
+  const [precedingTaskIds, setPrecedingTaskIds] = useState<string[]>([]);
+  /**
+   * 결재자 — 계약 이름은 **승인자**(`approver_id`)이고 화면 라벨만 「결재자」다 (SPEC-001 §4 · OQ-N).
+   *
+   * **두 갈래 모두 보낸다** (WORK-003 정정). 요청이 업무가 될 때 결재자가 함께 넘어가야 하고,
+   * 고른 값을 화면에서만 들고 버리면 고른 사람은 「저장됐다」고 읽는다.
+   *
+   * 한때 여기 「요청 갈래에서는 아직 422 가 돌아올 수 있다(OQ-M)」는 메모가 있었다. **그 미결은
+   * 닫혔다** — `WorkRequestService.create` 가 `approver_id` 를 받아 `valid_approver` 로 검증하고
+   * 요청 조회에도 같은 이름으로 낸다. 사실이 아닌 메모는 고른 값을 버리는 것만큼 나쁘다.
+   */
+  const [approverId, setApproverId] = useState("");
+  /** 지금 보고 있는 탭. 처음은 늘 「기본 정보」다 — 제목 없이는 아무것도 만들 수 없다. */
+  const [tab, setTab] = useState<CreateTab>("basic");
   const [referenceChoices, setReferenceChoices] = useState<DirectTask[] | null>(null);
   const [isWorking, setIsWorking] = useState(false);
   /**
@@ -3088,8 +3634,6 @@ export function CreateWorkModal({
    */
   const startDateSupported = ownerRoute !== "horizontal";
   const effectiveStartDate = startDateSupported ? startDate : "";
-  /** 적어 둔 시작일이 이 경로에서는 실리지 않는다는 사실 — 값이 있을 때만 말한다. */
-  const startDateDropped = Boolean(startDate) && !startDateSupported;
   /**
    * 한 제출 의도에 키 하나. 쓴 것이 그대로면 재시도·연타가 **같은 키**를 다시 보내 서버가 첫 결과를
    * 영수증으로 돌려주고, 쓴 것이 달라지면 그것은 새 의도라 **새 키**를 만든다. 경로도 여기 함께 박아
@@ -3099,8 +3643,10 @@ export function CreateWorkModal({
   /** 같은 tick 에 두 번째로 들어온 제출은 React 가 단추를 비활성으로 다시 그리기 전에 여기서 막힌다. */
   const submitting = useRef(false);
 
+  /* 연관 업무 판의 세 줄(상위 업무·선행 업무·연관 업무)이 모두 이 목록을 읽는다 — 갈래를 가리지 않는다.
+     예전에는 업무 갈래에서만 읽어서, 요청 갈래는 「참고 업무 연결」을 누를 때까지 목록이 없었다. */
   useEffect(() => {
-    if (kind !== "task" || referenceChoices !== null) return;
+    if (referenceChoices !== null) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -3113,7 +3659,7 @@ export function CreateWorkModal({
     return () => {
       cancelled = true;
     };
-  }, [kind, referenceChoices]);
+  }, [referenceChoices]);
 
   useEffect(() => {
     if (projectCandidates.length > 0) {
@@ -3134,75 +3680,9 @@ export function CreateWorkModal({
     };
   }, [projectCandidates]);
 
-  const directTaskDraft: TaskDraft = {
-    title,
-    description: description || null,
-    start_date: startDate || null,
-    due_date: dueDate || null,
-    checklist: steps,
-    reference_task_ids: linkedTasks.map((row) => row.task_id),
-    parent_task_id: null,
-    project_id: projectId || null,
-    assignee_id: taskOwnerId,
-  };
-  const directTaskContract: ActionEditContract = {
-    editor: "task",
-    base_submission_version: 0,
-    values: directTaskDraft,
-    fields: [
-      { id: "title", label: "업무 제목", type: "text", required: true, editable: true },
-      { id: "description", label: "업무 내용", type: "textarea", required: false, editable: true },
-      /* 보낼 수 있는 사람이 하나도 없으면 담당 줄 «자체» 를 세우지 않는다 — 고를 것이 없는 칸을
-         「나」 하나만 담아 두면 고를 수 있을 것처럼 읽힌다 (WORK-001 Phase 7). */
-      ...(recipientCandidates.length > 0 ? [{
-        id: "assignee_id",
-        label: "담당자",
-        type: "select" as const,
-        required: true,
-        editable: true,
-        options: [
-          { value: "me", label: `${ownerName} (나)` },
-          ...recipientCandidates.map((candidate) => ({ value: candidate.id, label: candidate.display_name })),
-        ],
-      }] : []),
-      /* 수평 생성이 거절하는 값은 묻지 않는다 — `project_id`·`reference_task_ids` 와 같은 방식이다.
-         다만 이쪽은 **관리자 배정에서는 여전히 받으므로** `assignTarget` 이 아니라 경로로 가른다. */
-      ...(startDateSupported ? [{ id: "start_date", label: "시작일", type: "date" as const, required: false, editable: true }] : []),
-      { id: "due_date", label: "기한", type: "date", required: false, editable: true },
-      ...(!assignTarget ? [{
-        id: "project_id",
-        label: "프로젝트",
-        type: "select" as const,
-        required: false,
-        editable: true,
-        options: availableProjects.map((project) => ({ value: project.project_id, label: project.name })),
-      }] : []),
-      { id: "checklist", label: "시작 단계", type: "string_list", required: false, editable: true },
-      ...(!assignTarget ? [{
-        id: "reference_task_ids",
-        label: "참고 업무",
-        type: "multi_select" as const,
-        required: false,
-        editable: true,
-        options: (referenceChoices ?? []).map((task) => ({ value: task.task_id, label: task.title })),
-      }] : []),
-    ],
-  };
-
-  function updateDirectTaskDraft(next: TaskDraft) {
-    setTitle(next.title);
-    setDescription(next.description ?? "");
-    setStartDate(next.start_date ?? "");
-    setDueDate(next.due_date ?? "");
-    setSteps(next.checklist);
-    setTaskOwnerId(next.assignee_id ?? "me");
-    setProjectId(next.project_id ?? "");
-    const choices = referenceChoices ?? [];
-    setLinkedTasks(next.reference_task_ids.flatMap((id) => {
-      const task = choices.find((candidate) => candidate.task_id === id) ?? linkedTasks.find((candidate) => candidate.task_id === id);
-      return task ? [task] : [];
-    }));
-  }
+  /* 최종 발주 2·3: 업무 갈래는 `TaskDraftFields`(계약 기반 폼)로 그렸었다. 이제 왼쪽 세로 탭이
+     배치를 정하고 필드도 DS 부품(`Select`·`DateField`)으로 서므로 그 계약 폼과 어댑터 둘을 지웠다 —
+     호출부 0. **보내는 값과 경로는 한 줄도 바뀌지 않았다**: 아래 `submit()` 이 읽는 상태 그대로다. */
 
   /**
    * **자료를 붙일 수 있는 갈래인가** — 서버의 «쓰기 권한» 이 정한다.
@@ -3218,40 +3698,85 @@ export function CreateWorkModal({
    * 말한다 — 「생성 뒤 상세에서」라고만 쓰면 보내는 사람도 할 수 있는 것처럼 읽혀 틀린다.
    */
   const attachSupported = kind === "task" && ownerRoute === "self";
-  const attachBoundary =
-    kind === "request" || ownerRoute === "horizontal"
-      ? "자료는 담당자가 업무 상세에서 첨부할 수 있습니다 — 요청은 상대가 수락해 담당자가 된 뒤입니다."
-      : "자료는 담당자가 업무 상세에서 첨부할 수 있습니다 — 배정한 업무는 그 담당자입니다.";
+  /**
+   * **자료 판은 두 갈래 모두 선다** (최종 프레임 6) — 다만 **저장되는가는 갈래마다 다르다.**
+   *
+   * 판을 내려 버리면 사람이 디자인을 볼 수 없고, 판을 세운 채 저장되는 척하면 고른 것이 조용히
+   * 사라진다. 그 사이를 이 값 하나가 가른다: 판은 언제나 서고, 이 값이 `false` 면 화면이 **왜
+   * 저장되지 않는지**를 말한다.
+   */
+  /**
+   * **요청 갈래는 이제 저장된다** (WORK-003) — 발송이 돌려주는 `request_id` 로 붙는다.
+   *
+   * 예외는 회의 승격 한 곳이다: 그 어댑터는 식별자를 돌려주지 않아 붙일 자리를 모른다
+   * (`PROMOTION_MATERIALS_GAP_TEXT`).
+   */
+  const requestMaterialsSupported = kind === "request" && !onSubmitRequest;
+  const materialsSaved = kind === "task" ? attachSupported : requestMaterialsSupported;
+  const optionalTabs = OPTIONAL_TABS;
+  /** 저장되지 않는 이유 — 갈래마다 다른 사실이라 문구도 다르다. 「나중에」로 뭉뚱그리지 않는다. */
+  const materialsGapText =
+    kind === "request"
+      ? PROMOTION_MATERIALS_GAP_TEXT
+      : ownerRoute === "horizontal"
+        ? "자료는 담당자가 업무 상세에서 첨부할 수 있습니다 — 요청은 상대가 수락해 담당자가 된 뒤입니다."
+        : "자료는 담당자가 업무 상세에서 첨부할 수 있습니다 — 배정한 업무는 그 담당자입니다.";
 
-  /** 만들어진 업무에 고른 파일을 붙인다. **실패한 것만** 돌려준다 — 성공한 것을 다시 올리지 않는다. */
-  async function attachTo(taskId: string, files: File[]): Promise<File[]> {
-    const failed: File[] = [];
+  /**
+   * 만들어진 것에 고른 파일과 링크를 붙인다. **실패한 것만** 돌려준다 — 성공한 것을 다시 올리지 않는다.
+   *
+   * 링크도 파일과 **같은 두 단계**다: 무엇인가 서야 식별자가 생기고, 그 뒤에 `…/materials` ·
+   * `…/materials/links` 로 붙는다. 업무와 요청이 **같은 걸음**을 걷고 입구 한 쌍만 갈린다.
+   */
+  async function attachTo(
+    host: MaterialHost,
+    files: File[],
+    links: MaterialLinkDraft[],
+  ): Promise<{ files: File[]; links: MaterialLinkDraft[] }> {
+    const failedFiles: File[] = [];
     for (const file of files) {
       try {
-        await uploadTaskMaterial(taskId, "input", file);
+        if (host.kind === "task") await uploadTaskMaterial(host.id, "input", file);
+        else await uploadWorkRequestMaterial(host.id, file);
       } catch {
-        failed.push(file);
+        failedFiles.push(file);
       }
     }
-    return failed;
+    const failedLinks: MaterialLinkDraft[] = [];
+    for (const link of links) {
+      try {
+        if (host.kind === "task") await attachTaskMaterialLink(host.id, "input", link);
+        else await attachWorkRequestMaterialLink(host.id, link);
+      } catch {
+        failedLinks.push(link);
+      }
+    }
+    return { files: failedFiles, links: failedLinks };
   }
 
-  /** 생성은 끝났고 첨부만 남은 자리에서 다시 누르는 길. **업무를 다시 만들지 않는다.** */
+  /** 생성은 끝났고 첨부만 남은 자리에서 다시 누르는 길. **업무도 요청도 다시 만들지 않는다.** */
   async function retryAttach() {
     if (!created) return;
     setIsWorking(true);
     onError(null);
     try {
-      const failed = await attachTo(created.taskId, created.failed);
-      if (failed.length === 0) {
-        await onCreated(`${created.message} 첨부 ${created.failed.length}건을 모두 올렸습니다.`, { assignedToOther: false });
+      const pending = created.failed.files.length + created.failed.links.length;
+      const failed = await attachTo(created.host, created.failed.files, created.failed.links);
+      const left = failed.files.length + failed.links.length;
+      if (left === 0) {
+        await onCreated(`${created.message} 첨부 ${pending}건을 모두 올렸습니다.`, { assignedToOther: created.assignedToOther });
         setCreated(null);
         setAttachments([]);
+        setMaterialLinks([]);
         onClose();
         return;
       }
       setCreated({ ...created, failed });
-      onError(`첨부 ${failed.length}건을 아직 올리지 못했습니다. 다시 시도하거나 업무 상세에서 붙일 수 있습니다.`);
+      onError(
+        created.host.kind === "task"
+          ? `첨부 ${left}건을 아직 올리지 못했습니다. 다시 시도하거나 업무 상세에서 붙일 수 있습니다.`
+          : `첨부 ${left}건을 아직 올리지 못했습니다. 다시 시도하거나 요청 상세에서 붙일 수 있습니다.`,
+      );
     } finally {
       setIsWorking(false);
     }
@@ -3273,9 +3798,24 @@ export function CreateWorkModal({
       onError("담당 후보를 선택해 주세요.");
       return;
     }
-    // 숨긴 시작일로 제출을 막지 않는다 — 안 보내는 값이 사람을 세우면 고칠 자리가 없다.
-    if (kind === "task" && effectiveStartDate && dueDate && effectiveStartDate > dueDate) {
-      onError("시작일은 기한보다 늦을 수 없습니다.");
+    /*
+     * 날짜의 앞뒤는 **두 갈래 모두** 본다 (최종 프레임 FE 정리).
+     *
+     * 요청 갈래에도 시작일이 서고 `start_date` 로 실려 나가므로(SPEC-001 U-6-a), 뒤집힌 두 날짜를
+     * 업무 갈래에서만 막던 것은 갈래마다 다른 규칙이 아니라 **빠뜨린 것**이었다. 숨긴 시작일로
+     * 제출을 막지는 않는다 — 안 보내는 값이 사람을 세우면 고칠 자리가 없다.
+     */
+    if (effectiveStartDate && dueDate && effectiveStartDate > dueDate) {
+      onError(kind === "task" ? "시작일은 기한보다 늦을 수 없습니다." : "시작일은 희망 기한보다 늦을 수 없습니다.");
+      return;
+    }
+    /*
+     * **같은 업무가 상위이면서 선행일 수는 없다** — 「무엇 아래인가」와 「무엇 다음인가」는 다른
+     * 관계라 같은 업무가 둘 다이면 뜻이 서지 않는다. 화면이 후보에서 이미 서로를 빼지만, 여는 쪽이
+     * 정해 준 상위(`initial.parentTaskId`)처럼 고르기를 거치지 않는 길이 있어 여기서 한 번 더 굳힌다.
+     */
+    if (parentTaskId && precedingTaskIds.includes(parentTaskId)) {
+      onError("상위 업무는 선행 업무로 함께 고를 수 없습니다.");
       return;
     }
     const route = ownerRoute;
@@ -3299,6 +3839,11 @@ export function CreateWorkModal({
       checklist: steps,
       reference_task_ids: reference_task_ids ?? [],
       projectId,
+      /* 실제로 실려 나가는 값만 지문에 든다. 선행업무도 결재자도 이제 **두 갈래 모두** 실리므로
+         갈래를 가리지 않고 그대로 든다 — 고친 값이 지문을 흔들어야 재시도가 새 키를 받는다. */
+      parentTaskId,
+      precedingTaskIds,
+      approverId,
       assigneeId,
       taskOwnerId,
       ccIds,
@@ -3339,31 +3884,64 @@ export function CreateWorkModal({
           due_date: dueDate || undefined,
           checklist,
           reference_task_ids,
+          /* 본인 갈래는 `parent_task_id` 를 받는다 — 거절하는 것은 담당을 지정한 수평 갈래뿐이다
+             (`creation_commands.py` `_refuse_unsupported_horizontal_fields`). */
+          parent_task_id: parentTaskId || undefined,
           project_id: projectId || undefined,
+          /* 참조자는 **두 갈래 모두** 저장된다 (SPEC-001 U-6-a). 「내 업무로 만들면 저장되지
+             않는다」는 사실이 아니었고, 그 문구도 함께 걷었다. */
+          cc_member_ids: ccIds.length > 0 ? ccIds : undefined,
+          /* 결재자는 **두 갈래 공통 한 벌**이다 (WORK-003 정정) — 아래 요청 갈래도 같은 값을 싣는다. */
+          approver_id: approverId || undefined,
+          preceding_task_ids: precedingTaskIds.length > 0 ? precedingTaskIds : undefined,
         }, attempt.key);
         const notice = `'${trimmed}' 업무를 만들었습니다.`;
         /*
          * **두 단계다** — 업무가 서야 붙일 자리가 생긴다(자료는 업무에 매달린다). 여기서부터는
          * 생성이 이미 끝났으므로, 붙이다 실패해도 **생성으로 되돌아가지 않는다.**
          */
-        if (attachments.length > 0) {
-          const failed = await attachTo(madeTask.task_id, attachments);
+        const picked = attachments.length + materialLinks.length;
+        if (picked > 0) {
+          const failed = await attachTo({ kind: "task", id: madeTask.task_id }, attachments, materialLinks);
+          const left = failed.files.length + failed.links.length;
           // 만들어진 사실은 어느 쪽이든 먼저 알린다 — 목록이 그 업무를 들고 있어야 한다.
-          await onCreated(
-            failed.length === 0 ? `${notice} 첨부 ${attachments.length}건을 올렸습니다.` : notice,
-            { assignedToOther: false },
-          );
-          if (failed.length > 0) {
+          await onCreated(left === 0 ? `${notice} 첨부 ${picked}건을 올렸습니다.` : notice, { assignedToOther: false });
+          if (left > 0) {
             // 닫지 않는다. 「업무는 섰고 첨부가 남았다」는 사실을 사람이 보고 고를 수 있어야 한다.
             submitAttempt.current = null;
-            setCreated({ taskId: madeTask.task_id, title: madeTask.title || trimmed, failed, message: notice });
-            onError(`업무는 만들어졌지만 첨부 ${failed.length}건을 올리지 못했습니다. 다시 시도하거나 업무 상세에서 붙일 수 있습니다.`);
+            setCreated({
+              host: { kind: "task", id: madeTask.task_id },
+              title: madeTask.title || trimmed,
+              failed,
+              message: notice,
+              assignedToOther: false,
+            });
+            onError(`업무는 만들어졌지만 첨부 ${left}건을 올리지 못했습니다. 다시 시도하거나 업무 상세에서 붙일 수 있습니다.`);
             return;
           }
         } else {
           await onCreated(notice, { assignedToOther: false });
         }
       } else if (onSubmitRequest) {
+        /*
+         * 회의 승격 어댑터 — **이 입구가 나르는 것은 다섯뿐이다** (`promoteMeetingTodo`:
+         * `assignee_id` · `title` · `description` · `due_date` · `checklist`).
+         *
+         * ⚠️ **BE API gap (승격 입력 확장 필요).** 폼이 받아 든 나머지는 여기서 멈춘다:
+         * `start_date` · `cc_member_ids` · `approver_id` · `reference_task_ids` · `project_id` ·
+         * `parent_task_id` · `preceding_task_ids` 일곱이다. 같은 값들이 **일반 요청 경로
+         * (`POST /api/work-requests`)로는 그대로 실려 나가므로**, 회의에서 연 창만 조용히 적게
+         * 보낸다 — 고른 사람은 그 차이를 볼 수 없다.
+         *
+         * ⚠️ **자료도 여기서만 멈춘다.** 이 어댑터가 돌려주는 것은 사람에게 보일 문장뿐이라 붙일
+         * 자리(`request_id`)가 오지 않는다. 그래서 이 갈래에서는 자료 판이 그 사실을 그대로 말하고
+         * (`PROMOTION_MATERIALS_GAP_TEXT`), 다른 요청에 추측으로 붙이지 않는다. 고칠 자리는 승격
+         * 입구의 **응답**이다.
+         *
+         * 이 화면이 임의로 다른 입구로 새지 않는다(그러면 출처 두 열이 빠진다). 고칠 자리는
+         * `POST /api/meetings/{id}/todos/{todo}/promote` 의 입력 모델이고, 그 확장이 이 작업의
+         * BE 요구 목록에 올라 있다. 여기서 backend 는 건드리지 않는다.
+         */
         await onCreated(
           await onSubmitRequest({
             assignee_id: assigneeId,
@@ -3377,19 +3955,58 @@ export function CreateWorkModal({
       } else {
         const request = await createWorkRequest(trimmed, assigneeId, {
           description: description.trim() || undefined,
+          /* **요청 갈래에도 시작일이 간다** (SPEC-001 U-6-a) — 요청 생성 입력은 원래 이 값을 받고
+             있었고 화면이 접고 있었을 뿐이다. */
+          start_date: effectiveStartDate || undefined,
           due_date: dueDate || undefined,
           cc_member_ids: ccIds.filter((id) => id !== assigneeId),
           checklist,
           reference_task_ids,
-          ...(initial?.parentTaskId ? { parent_task_id: initial.parentTaskId } : {}),
+          project_id: projectId || undefined,
+          ...(parentTaskId ? { parent_task_id: parentTaskId } : {}),
+          preceding_task_ids: precedingTaskIds.length > 0 ? precedingTaskIds : undefined,
+          /* **결재자를 그대로 싣는다** (WORK-003 정정) — 요청이 업무가 될 때 함께 넘어갈 값이고,
+             서버의 요청 생성이 `approver_id` 를 받아 검증한다(`valid_approver`). */
+          approver_id: approverId || undefined,
           ...(initial?.supersedesRequestId ? { supersedes_request_id: initial.supersedesRequestId } : {}),
+          /*
+           * **자료는 이 payload 로 가지 않는다 — 다음 걸음으로 간다** (WORK-003).
+           *
+           * 고른 파일(`attachments`)과 링크(`materialLinks`)는 요청 생성 입력에 **어느 키로도
+           * 실리지 않는다**: 이름을 지어내 싣는 것은 「저장됐다」는 거짓말을 만든다. 아래에서
+           * 돌아온 `request_id` 로 `…/materials` · `…/materials/links` 에 붙는다 — 내 업무가 지나는
+           * 길과 같은 두 단계다. 댓글 첨부·evidence 로 우회하지 않는다(뜻이 다른 자리다).
+           */
         }, attempt.key);
         const assignee = assigneeCandidates.find((candidate) => candidate.id === assigneeId);
         /* v2: 보내는 것으로 담당이 서지 않는다 — 상대가 수락해야 그 사람의 업무가 된다(V-9·V-10). */
-        await onCreated(
-          `'${request.title}' 업무를 ${assignee ? personName(assignee.display_name) : "담당 후보"}에게 보냈습니다. 상대가 수락하면 그 사람의 업무가 됩니다.`,
-          { assignedToOther: true },
-        );
+        const notice = `'${request.title}' 업무를 ${assignee ? personName(assignee.display_name) : "담당 후보"}에게 보냈습니다. 상대가 수락하면 그 사람의 업무가 됩니다.`;
+        /*
+         * **두 단계의 두 번째다** — 요청이 서야 자료가 매달릴 자리(`request_id`)가 생긴다. 여기서
+         * 부터는 발송이 이미 끝났으므로, 붙이다 실패해도 **요청을 다시 보내지 않는다.**
+         */
+        const pickedForRequest = attachments.length + materialLinks.length;
+        if (pickedForRequest > 0) {
+          const failed = await attachTo({ kind: "request", id: request.request_id }, attachments, materialLinks);
+          const left = failed.files.length + failed.links.length;
+          // 보냈다는 사실은 어느 쪽이든 먼저 알린다 — 목록이 그 요청을 들고 있어야 한다.
+          await onCreated(left === 0 ? `${notice} 자료 ${pickedForRequest}건을 함께 보냈습니다.` : notice, { assignedToOther: true });
+          if (left > 0) {
+            // 닫지 않는다. 「요청은 갔고 자료가 남았다」는 사실을 사람이 보고 고를 수 있어야 한다.
+            submitAttempt.current = null;
+            setCreated({
+              host: { kind: "request", id: request.request_id },
+              title: request.title || trimmed,
+              failed,
+              message: notice,
+              assignedToOther: true,
+            });
+            onError(`요청은 보냈지만 첨부 ${left}건을 올리지 못했습니다. 다시 시도하거나 요청 상세에서 붙일 수 있습니다.`);
+            return;
+          }
+        } else {
+          await onCreated(notice, { assignedToOther: true });
+        }
       }
       // 여기까지 오면 그 의도는 끝났다 — 다음에 만드는 업무는 새 의도이므로 새 키를 받는다.
       submitAttempt.current = null;
@@ -3402,27 +4019,9 @@ export function CreateWorkModal({
     }
   }
 
-  async function openReferences() {
-    if (referenceDraft !== null) {
-      setReferenceDraft(null);
-      return;
-    }
-    setReferenceDraft("");
-    if (referenceChoices === null) {
-      try {
-        setReferenceChoices(await getTasks(true));
-      } catch {
-        setReferenceChoices([]);
-      }
-    }
-  }
-
-  function linkReference() {
-    const chosen = (referenceChoices ?? []).find((row) => row.task_id === referenceDraft);
-    if (!chosen || linkedTasks.some((row) => row.task_id === chosen.task_id)) return;
-    setLinkedTasks((current) => [...current, chosen]);
-    setReferenceDraft(null);
-  }
+  /* 새 발주 3·4: 「참고 업무 연결」로 칸을 열고 한 건씩 잇던 세 걸음(`openReferences`·`linkReference`)이
+     여기 있었다. 세 자리(상위·참고·선행)가 같은 표를 쓰게 되면서 «열고 · 고르고 · 연결하는» 것이 체크
+     한 번으로 줄었다 — 호출부 0 이라 지웠다. 담는 값(`linkedTasks` → `reference_task_ids`)은 그대로다. */
 
   function appendStep() {
     const step = newStep.trim();
@@ -3433,40 +4032,140 @@ export function CreateWorkModal({
 
   const titleInputId = kind === "task" ? "task-title" : "work-request-title";
   /**
-   * 만들 수 있는 것이 한 가지뿐이면 고를 것이 없다 — 토글을 두지 않고 드로어 이름이 그 한 가지를 말한다.
+   * 만들 수 있는 것이 한 가지뿐이면 고를 것이 없다 — 토글을 두지 않고 모달 이름이 그 한 가지를 말한다.
    *
    * 한 칸짜리 세그먼트는 늘 「선택됨」이라 누를 수 있는 것처럼 보이는데 실은 바뀌지 않는다. 회의록의
    * 후속업무 후보에서 여는 자리가 그랬다 — 승격은 언제나 업무 요청이라(D19·D24) 「요청」 하나가 검은
    * 단추처럼 남아 있었다.
    */
   const oneKind = canCreateTask !== canCreateRequest;
-  const drawerTitle = oneKind ? (kind === "task" ? "업무 추가" : "업무 요청") : "새 업무 추가";
-  /* §8-B 14: 560 으로 여는 자리(회의록 승격)만 담당·기한을 한 줄에 세운다 — 880 에서는 지금 배치가 맞다 */
-  const narrow = size === "md";
-  /* 회의에서 온 요청은 상태도 요청자도 폼이 정하는 값이 아니다 (§9-5 D40) — 그 두 줄만 걷는다.
-     `narrow`(폭)로 가르지 않는다: 폭은 «어떻게 보이나» 이고 이것은 «무엇이 값인가» 라, 같은 축이 아니다. */
-  const showOriginMeta = origin !== "meeting";
-  /* 이 표가 서는 자리는 «요청» 갈래 안이다(업무 갈래는 `TaskDraftFields` 가 따로 그린다).
-     거기 남는 줄은 넷 — 상태·요청자(둘 다 `showOriginMeta`) · 담당 후보·기한(둘 다 `!narrow`).
-     회의에서 열면 앞 둘이 걷히고 뒤 둘은 아래 `.scax-field-row` 로 따로 서므로 표가 통째로 빈다.
-     빈 `<dl>` 은 여백만 남기니 아예 세우지 않는다. */
-  const metaGridShown = showOriginMeta || !narrow;
+  /**
+   * 모달 이름은 **지금 고른 갈래를 따른다** (최종 발주 1).
+   *
+   * 지금까지는 「새 업무 추가」 하나로 두고 갈래는 토글만 말했다 — 요청을 고른 뒤에도 머리는 계속
+   * 「업무 추가」라서, 보내는 것이 무엇인지 머리와 발(제출 단추)이 서로 다른 말을 했다.
+   * 토글은 그대로 두고 **이름만** 따라 움직인다.
+   */
+  const drawerTitle = kind === "task" ? "새 업무 추가" : "새 업무 요청";
+  /* 상태·요청자 카드는 어느 갈래에도 서지 않는다 (WORK-003 정정) — 둘 다 생성 입력값이 아니라
+     서버가 정하는 값이고, 그래서 그것을 그리던 `showOriginMeta`·`metaGridShown` 도 함께 지웠다.
+     한때 회의 승격에서만 걷던 두 줄이다(§9-5 D40) — 이제 «회의에서만» 이 아니라 «어디서도» 다. */
+
+  const tabPanelId = (id: CreateTab) => `create-panel-${id}`;
+  const tabButtonId = (id: CreateTab) => `create-tab-${id}`;
+  /** 세로 탭의 화살표 이동 — 목록 안에서 위·아래로 돈다 (WAI-ARIA tabs 패턴). */
+  function moveTab(event: React.KeyboardEvent, group: ReadonlyArray<CreateTab>) {
+    const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
+    if (step === 0) return;
+    event.preventDefault();
+    const at = group.indexOf(tab);
+    const next = group[(at + step + group.length) % group.length];
+    setTab(next);
+    document.getElementById(tabButtonId(next))?.focus();
+  }
+  function tabButton(id: CreateTab, label: string, group: ReadonlyArray<CreateTab>) {
+    const on = tab === id;
+    return (
+      <button
+        aria-controls={tabPanelId(id)}
+        aria-selected={on}
+        className={on ? "scax-create-tabs__tab is-on" : "scax-create-tabs__tab"}
+        id={tabButtonId(id)}
+        key={id}
+        onClick={() => setTab(id)}
+        onKeyDown={(event) => moveTab(event, group)}
+        role="tab"
+        tabIndex={on ? 0 : -1}
+        type="button"
+      >
+        {label}
+      </button>
+    );
+  }
+  function panel(id: CreateTab, children: React.ReactNode) {
+    return (
+      <div
+        aria-labelledby={tabButtonId(id)}
+        className="scax-create-tabs__panel scax-scroll"
+        hidden={tab !== id}
+        id={tabPanelId(id)}
+        key={id}
+        role="tabpanel"
+        tabIndex={0}
+      >
+        {children}
+      </div>
+    );
+  }
+
+  /**
+   * 결재자 후보 — 참조 후보와 수신 후보를 겹치지 않게 합친다.
+   *
+   * 아직 보내지 않는 값이라 «누가 결재자가 될 수 있나» 를 정하는 계약이 없다. 그래서 **이 사람이
+   * 이미 고를 수 있는 사람** 을 그대로 쓴다 — 없는 명단을 지어내지 않는다.
+   */
+  /**
+   * 「상위 업무 없음」이 고르는 값 (최종 발주 2).
+   *
+   * 빈 문자열을 항목 값으로 두면 **아무것도 안 고른 상태와 구별되지 않는다** — 트리거가
+   * placeholder(「상위 업무 선택」) 대신 「상위 업무 없음」을 띄워, 고른 적 없는 사람에게 고른 것처럼
+   * 읽힌다. 그래서 항목에는 표시용 값을 주고, 나가는 값은 여기서 빈 값으로 되돌린다.
+   */
+  const NO_PARENT = "__no_parent__";
+  const approverCandidates = [
+    ...ccCandidates,
+    ...assigneeCandidates.filter((candidate) => !ccCandidates.some((cc) => cc.id === candidate.id)),
+  ];
+  const projectNameOf = (id: string | null | undefined) =>
+    id ? availableProjects.find((project) => project.project_id === id)?.name ?? null : null;
+  /**
+   * 선행 업무로 고를 수 있는 것 — **고른 프로젝트 안에서 내가 읽을 수 있는 업무**다 (새 발주 3).
+   *
+   * 새 조회를 열지 않는다: 이 판이 이미 읽어 둔 목록(`getTasks(include_closed`)을 프로젝트로 거른다.
+   * 그래서 여기 서는 것은 언제나 서버가 내게 내준 것뿐이고, 못 읽는 업무는 셈에도 목록에도 없다.
+   */
+  const precedingChoices = projectId
+    ? (referenceChoices ?? []).filter(
+        (row) =>
+          row.project_id === projectId &&
+          /* **상위로 고른 업무는 선행 후보가 아니다.** 「무엇 아래인가」와 「무엇 다음인가」는 다른
+             관계라 같은 업무가 둘 다이면 뜻이 서지 않는다. 예전에는 여는 쪽이 준 값
+             (`initial.parentTaskId`)만 뺐고, 창 안에서 고른 상위는 그대로 후보에 남아 있었다. */
+          row.task_id !== parentTaskId &&
+          // 이미 고른 것은 후보에서 빠진다 — 빼는 길은 아래 칩의 「빼기」다.
+          !precedingTaskIds.includes(row.task_id),
+      )
+    : [];
+  /**
+   * 상위 업무 후보 — **이미 선행으로 고른 업무는 빠진다** (위와 같은 이유의 반대 방향).
+   *
+   * 고른 것을 조용히 옮기거나 지우지 않고 **고를 수 없게** 한다: 선행에서 빼면 상위 목록에 다시 선다.
+   */
+  const parentChoices = (referenceChoices ?? []).filter((row) => !precedingTaskIds.includes(row.task_id));
+  /** 고른 선행의 요약 — 칩으로 서고 칩마다 「빼기」가 있다 (SPEC-001 U-13). */
+  const precedingTasks = precedingTaskIds.flatMap((id) => {
+    const found = (referenceChoices ?? []).find((row) => row.task_id === id);
+    return found ? [found] : [];
+  });
 
   return (
     <Modal
-          closeLabel="닫기"
+      className="scax-modal--create"
+      closeLabel="닫기"
       footer={
         created ? (
-          /* **업무는 이미 섰다.** 남은 것은 첨부뿐이라, 여기서 무엇을 눌러도 업무가 다시 만들어지지 않는다. */
+          /* **만들어진 것은 이미 섰다**(업무든 요청이든). 남은 것은 첨부뿐이라, 여기서 무엇을 눌러도
+             업무도 요청도 다시 만들어지지 않는다. */
           <>
             <Button variant="text" disabled={isWorking} onClick={onClose} type="button">
               나중에 붙이기
             </Button>
-            {onOpenTask && (
+            {/* 「업무 열기」는 **업무가 섰을 때만** 선다 — 보낸 요청은 아직 업무가 아니라 열 상세가 없다. */}
+            {onOpenTask && created.host.kind === "task" && (
               <Button
                 disabled={isWorking}
                 onClick={() => {
-                  const taskId = created.taskId;
+                  const taskId = created.host.id;
                   onClose();
                   onOpenTask(taskId);
                 }}
@@ -3476,7 +4175,7 @@ export function CreateWorkModal({
               </Button>
             )}
             <Button variant="solid" tone="primary" disabled={isWorking} onClick={() => void retryAttach()} type="button">
-              {isWorking ? "올리는 중…" : `첨부 다시 시도 (${created.failed.length})`}
+              {isWorking ? "올리는 중…" : `첨부 다시 시도 (${created.failed.files.length + created.failed.links.length})`}
             </Button>
           </>
         ) : (
@@ -3487,49 +4186,30 @@ export function CreateWorkModal({
             <Button variant="solid" tone="primary" disabled={isWorking || (kind === "request" && assigneeCandidates.length === 0)} onClick={() => void submit()}
               type="button"
             >
-              {isWorking ? "만드는 중…" : kind === "task" ? (assignTarget ? "업무 배정" : "업무 추가") : "업무 요청 보내기"}
+              {isWorking ? "만드는 중…" : kind === "task" ? "업무 추가" : "업무 요청 보내기"}
             </Button>
           </>
         )
       }
       headerExtra={
-        <ChipRow>
-          {canCreateTask && canCreateRequest && (
-            <SegmentedControl
-              ariaLabel="생성 유형"
-              onChange={setKind}
-              options={[
-                { value: "task", label: "업무" },
-                { value: "request", label: "요청" },
-              ]}
-              value={kind}
-            />
-          )}
-          {/*
-            * **담당자를 지정하면 요청 발송이고, 비우거나 본인이면 본인 업무다** (U-10 · V-2).
-            * 관리자 배정만 예외로 수락을 기다리지 않는다 — 그것은 v2 가 손대지 않은 현행이다(O-28).
-            */}
-          <span className="t-meta">
-            {kind === "task"
-              ? assignTarget
-                ? assignCandidates.some((candidate) => candidate.id === assignTarget.id)
-                  ? `${personName(assignTarget.display_name)}에게 배정합니다. 수락을 기다리지 않고 바로 그 사람의 업무가 됩니다.`
-                  : `${personName(assignTarget.display_name)}에게 요청을 보냅니다. 상대가 수락해야 그 사람의 업무가 됩니다.`
-                : "내가 할 업무를 만듭니다. 바로 내 업무에 들어갑니다."
-              : "상대가 수락해야 그 사람의 업무가 됩니다. 수락 전에는 담당이 서지 않습니다."}
-          </span>
-          {requestOnly && (
-            <span className="t-meta">
-              {initial?.supersedesRequestId ? "이전 요청을 잇는 다시 요청입니다 — 새 요청·새 업무가 서고 이전 기록은 남습니다." : "상위 업무 아래의 하위 요청입니다."}
-            </span>
-          )}
-          {/* 적어 둔 값이 조용히 사라지지 않게 한다 — 담당을 남으로 바꾼 뒤에야 줄이 걷히므로,
-              그 사실을 말해 주지 않으면 사람은 시작일이 실려 갔다고 믿는다. 담당을 나로 되돌리면
-              적어 둔 날짜가 그대로 다시 선다. */}
-          {kind === "task" && startDateDropped && (
-            <span className="t-meta">적어 둔 시작일은 보내지 않습니다 — 언제 시작할지는 담당자가 정합니다.</span>
-          )}
-        </ChipRow>
+        /*
+          * 머리는 **한 줄**이다 (최종 발주 7) — 왼쪽에 이름, 오른쪽에 갈래 토글. 지금까지 여기 있던
+          * 「내가 할 업무를 만듭니다…」류의 설명 문구는 걷었다: 갈래가 무엇을 하는지는 토글과 아래 폼이
+          * 이미 말하고, 그 문구들이 머리를 두 줄·세 줄로 늘려 본문을 밀고 있었다.
+          */
+        canCreateTask && canCreateRequest ? (
+          <SegmentedControl
+            ariaLabel="생성 유형"
+            onChange={setKind}
+            /* 갈래 이름은 **무엇이 만들어지는가**로 읽힌다 (사용자 확정) — 「업무」·「요청」은 동사처럼
+               읽혀서 무엇이 서는지가 모호했다. 값(`task`·`request`)도 제목도 payload 도 그대로다. */
+            options={[
+              { value: "task", label: "내 업무" },
+              { value: "request", label: "요청 업무" },
+            ]}
+            value={kind}
+          />
+        ) : null
       }
       label={drawerTitle}
       onClose={onClose}
@@ -3537,351 +4217,524 @@ export function CreateWorkModal({
       title={drawerTitle}
     >
       {/*
-        * 시안의 모달 본문은 **2열 격자 + 가운데 세로선**이다(`.scax-modal-grid`). 좁은 골격(회의 승격)은
-        * 필드가 적어 한 열이 맞으므로 그때만 지금까지의 `form-stack` 을 쓴다.
+        * 최종 발주 1·2 — **크기가 고정된 모달 안의 왼쪽 세로 탭.**
+        *
+        * 지금까지 필드는 한 기둥에 길게 이어 붙어 있었고(제목 → 메타표 → 참조자 → 참고 업무 → 시작 단계
+        * → 내용 → 첨부), 갈래를 바꾸거나 필드가 늘어날 때마다 모달이 세로로 자랐다. 이제 골격이
+        * **머리 · 왼쪽 탭 · 스크롤하는 판 · 발**로 고정되고, 늘어나는 것은 판 안쪽뿐이다.
+        *
+        * 판은 **넷 다 그려 둔 채 숨긴다** — 탭을 옮겨도 적어 둔 값과 스크롤 위치가 그대로 남는다.
         */}
-      <div className={narrow || kind === "task" ? "form-stack" : "scax-modal-grid"}>
-        {Boolean(kind === "task") ? (
-          <TaskDraftFields
-            contract={directTaskContract}
-            disabled={isWorking}
-            draft={directTaskDraft}
-            onChange={updateDirectTaskDraft}
-          />
-        ) : (
-          <>
-        {!narrow && <span aria-hidden className="scax-modal-grid__divider" />}
-        <div className="scax-field">
-          {/* `.scax-field__label` 이 `display:flex`(=블록)라 라벨이 한 줄을 통째로 먹고 별표가 다음 줄로
-              내려가 있었다(현재 화면 27). 감싸는 줄을 flex 로 세워 둘이 나란히 선다 —
-              **별표는 라벨 «밖»에 그대로 둔다**: 안으로 넣으면 접근 이름이 「요청할 업무 *」로 바뀐다. */}
-          <span className="scax-field__label-row">
-            <label className="scax-field__label" htmlFor={titleInputId}>{kind === "task" ? "업무 제목" : "요청할 업무"}</label>
-            {/* 별표는 눈으로만 읽히는 표시다 — 필수라는 사실은 입력칸의 `aria-required` 가 진다 */}
-            <span aria-hidden className="danger-text">*</span>
-          </span>
-          <input
-            aria-required="true"
-            autoFocus
-            className="title-input"
-            id={titleInputId}
-            onChange={(event) => setTitle(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void submit();
-            }}
-            placeholder={kind === "task" ? "업무명을 입력하세요" : "요청할 업무명을 입력하세요"}
-            value={title}
-          />
+      <div className="scax-create-tabs">
+        <div className="scax-create-tabs__nav">
+          {/* 필수와 선택을 나눠 세운다 — 무엇을 반드시 채워야 하는지가 목록 자체로 읽힌다. */}
+          <p className="scax-create-tabs__group" id="create-tabs-required">필수</p>
+          <div aria-labelledby="create-tabs-required" aria-orientation="vertical" className="scax-create-tabs__list" role="tablist">
+            {tabButton("basic", "기본 정보", REQUIRED_TABS)}
+          </div>
+          <p className="scax-create-tabs__group" id="create-tabs-optional">선택</p>
+          <div aria-labelledby="create-tabs-optional" aria-orientation="vertical" className="scax-create-tabs__list" role="tablist">
+            {tabButton("checklist", "체크리스트", optionalTabs)}
+            {tabButton("links", "업무 연결", optionalTabs)}
+            {/* 자료는 **두 갈래 모두** 선다 — 다만 요청 갈래는 아직 저장되지 않고, 그 사실을 판이 말한다. */}
+            {tabButton("materials", "자료", optionalTabs)}
+          </div>
         </div>
-        {metaGridShown && (
-        <dl className="meta-grid columns">
-          {showOriginMeta && (
-          <div>
-            <dt>상태</dt>
-            {/* 이 표는 «요청» 갈래의 것이다. W1 부터 요청은 판단을 기다리지 않고 바로 담당이 서므로
-                출처 상태는 `assigned` 이고 문구도 「판단 대기」가 아니다 (WORK-001 Phase 4·7). */}
-            {/* v2: 보낸 요청은 `pending` 으로 선다 — 판단을 기다린다(SPEC-003 §4 State). */}
-            <dd><StatusText label={workRequestStateLabel.pending} state="pending" /></dd>
-          </div>
-          )}
-          {kind === "task" && assignCandidates.length > 0 ? (
-            <div>
-              <dt>담당자</dt>
-              <dd>
-                <Select
-            emptyActionLabel={emptyActionLabel.filter}
-            labels={selectLabel}
-                  id="new-task-owner"
-                  label="담당자"
-                  onChange={setTaskOwnerId}
-                  options={[
-                    { value: "me", label: `${ownerName} (나)` },
-                    ...assignCandidates.map((candidate) => ({ value: candidate.id, label: candidate.display_name })),
-                  ]}
-                  value={taskOwnerId}
-                />
-              </dd>
-            </div>
-          ) : showOriginMeta ? (
-            <div>
-              <dt>{kind === "task" ? "담당자" : "요청자"}</dt>
-              <dd>{ownerName}</dd>
-            </div>
-          ) : null}
-          {kind === "request" && !narrow && (
-            <div>
-              <dt>담당 후보</dt>
-              <dd>
-                <Select
-            emptyActionLabel={emptyActionLabel.filter}
-            labels={selectLabel}
-                  disabled={assigneeCandidates.length === 0}
-                  id="work-request-assignee"
-                  label="담당 후보"
-                  onChange={setAssigneeId}
-                  options={assigneeCandidates.map((candidate) => ({ value: candidate.id, label: candidate.display_name }))}
-                  // 고를 사람이 있는데 아직 안 고른 것과, 고를 사람이 아예 없는 것은 다른 말이다.
-                  placeholder={assigneeCandidates.length === 0 ? "요청 가능한 동료가 없습니다." : undefined}
-                  value={assigneeId}
-                />
-              </dd>
-            </div>
-          )}
-          {kind === "task" && (
-            <div>
-              <dt>
-                <label htmlFor="new-task-start">시작일</label>
-              </dt>
-              <dd>
-                <DateField
-          formatMonth={formatMonthLong}
-          labels={datePickerLabel}
-          today={seoulToday()}
-          weekdayNames={weekdayNames} hideLabel id="new-task-start" label="시작일" onChange={setStartDate} value={startDate} />
-              </dd>
-            </div>
-          )}
-          {!narrow && (
-            <div>
-              <dt>
-                <label htmlFor="new-task-due">{kind === "task" ? "기한" : "희망 기한"}</label>
-              </dt>
-              <dd>
-                <DateField
-          formatMonth={formatMonthLong}
-          labels={datePickerLabel}
-          today={seoulToday()}
-          weekdayNames={weekdayNames} hideLabel id="new-task-due" label="기한" onChange={setDueDate} value={dueDate} />
-              </dd>
-            </div>
-          )}
-        </dl>
-        )}
-        {/* 좁은 골격에서는 담당 후보와 희망 기한이 한 줄이다 (`.scax-field-row`) — 같은 필드·같은 id 다 */}
-        {narrow && (
-          <div className="scax-field-row">
-            <div className="scax-field">
-              <label className="scax-field__label" htmlFor="work-request-assignee">담당 후보</label>
-              <Select
-            emptyActionLabel={emptyActionLabel.filter}
-            labels={selectLabel}
-                disabled={assigneeCandidates.length === 0}
-                id="work-request-assignee"
-                label="담당 후보"
-                onChange={setAssigneeId}
-                options={assigneeCandidates.map((candidate) => ({ value: candidate.id, label: candidate.display_name }))}
-                // 고를 사람이 있는데 아직 안 고른 것과, 고를 사람이 아예 없는 것은 다른 말이다.
-                placeholder={assigneeCandidates.length === 0 ? "요청 가능한 동료가 없습니다." : undefined}
-                value={assigneeId}
-              />
-            </div>
-            <div className="scax-field">
-              <label className="scax-field__label" htmlFor="new-task-due">{kind === "task" ? "기한" : "희망 기한"}</label>
-              <DateField
-          formatMonth={formatMonthLong}
-          labels={datePickerLabel}
-          today={seoulToday()}
-          weekdayNames={weekdayNames} hideLabel id="new-task-due" label="기한" onChange={setDueDate} value={dueDate} />
-            </div>
-          </div>
-        )}
-        {kind === "request" && ccCandidates.length > 0 && (
-          <fieldset className="scax-field cc-picker">
-            <legend>참조자</legend>
-            <ChipRow>
-              {ccCandidates
-                .filter((candidate) => candidate.id !== assigneeId)
-                .map((candidate) => {
-                  const checked = ccIds.includes(candidate.id);
-                  return (
-                    <ChipToggle
-                      checked={checked}
-                      key={candidate.id}
-                      onChange={(next) => setCcIds((current) => (next ? [...current, candidate.id] : current.filter((id) => id !== candidate.id)))}
-                    >
-                      {personName(candidate.display_name)}
-                    </ChipToggle>
-                  );
-                })}
-            </ChipRow>
-            <p className="t-meta">참조자는 요청을 읽고 논의할 수 있지만 판단하지 않습니다.</p>
-          </fieldset>
-        )}
-        <fieldset aria-label="참고 업무" className="scax-field cc-picker">
-          <legend>참고 업무</legend>
-          {linkedTasks.length > 0 && (
-            <ul className="checklist">
-              {linkedTasks.map((row) => (
-                <li className="scax-checklist__row" key={row.task_id}>
-                  <span>{row.title}</span>
-                  <Button variant="text" size="sm" aria-label={`${row.title} 빼기`} onClick={() => setLinkedTasks((current) => current.filter((item) => item.task_id !== row.task_id))}
-                    type="button"
-                  >
-                    빼기
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="row-actions" style={{ padding: "8px 0 0" }}>
-            {/* 이 단추에는 `disabled` 가 없다 — 늘 누를 수 있다. 그런데 글자만 있는 variant 라
-                옆의 안내 문구와 같은 결로 읽혀 «비활성» 처럼 보였다(현재 화면 30).
-                DS 의 outlined-neutral 로 올려 면과 테두리를 준다 — 새 규칙을 만들지 않았다.
-                진짜로 못 누르는 상태가 되면 `.scax-button:disabled` 가 그때 회색으로 내린다. */}
-            <Button variant="outlined" tone="neutral" size="sm" onClick={() => void openReferences()} type="button">
-              {referenceDraft === null ? "참고 업무 연결" : "연결 취소"}
-            </Button>
-          </div>
-          {referenceDraft !== null && (
-            <div className="form-stack link-draft">
+
+        <div className="scax-create-tabs__panels">
+          {panel(
+            "basic",
+            <>
               <div className="scax-field">
-                <span>연결할 이전 업무</span>
-                <Select
-            emptyActionLabel={emptyActionLabel.filter}
-            labels={selectLabel}
-                  id="new-task-reference"
-                  label="연결할 이전 업무"
-                  onChange={setReferenceDraft}
-                  options={(referenceChoices ?? []).map((choice) => ({ value: choice.task_id, label: choice.title }))}
-                  placeholder="업무 고르기"
-                  value={referenceDraft}
+                {/* `.scax-field__label` 이 `display:flex`(=블록)라 라벨이 한 줄을 통째로 먹고 별표가 다음 줄로
+                    내려가 있었다. 감싸는 줄을 flex 로 세워 둘이 나란히 선다 —
+                    **별표는 라벨 «밖»에 그대로 둔다**: 안으로 넣으면 접근 이름이 「요청할 업무 *」로 바뀐다. */}
+                <span className="scax-field__label-row">
+                  <label className="scax-field__label" htmlFor={titleInputId}>{kind === "task" ? "업무 제목" : "요청할 업무"}</label>
+                  {/* 별표는 눈으로만 읽히는 표시다 — 필수라는 사실은 입력칸의 `aria-required` 가 진다 */}
+                  <span aria-hidden className="danger-text">*</span>
+                </span>
+                <input
+                  aria-required="true"
+                  autoFocus
+                  className="title-input"
+                  id={titleInputId}
+                  onChange={(event) => setTitle(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void submit();
+                  }}
+                  placeholder={kind === "task" ? "업무명을 입력하세요" : "요청할 업무명을 입력하세요"}
+                  value={title}
                 />
               </div>
-              <div className="row-actions">
-                <Button variant="solid" tone="primary" size="sm" disabled={!referenceDraft} onClick={linkReference} type="button">
-                  연결
+
+              {/*
+                * **상태 · 요청자 카드는 여기 없다** (WORK-003 정정).
+                *
+                * 둘 다 **생성 입력값이 아니다** — 요청자는 서버가 «지금 부르는 사람» 으로 기록하고,
+                * 상태는 서버가 「판단 대기」로 세운다. 폼이 그것을 카드로 내면 고칠 수 있는 값처럼
+                * 읽히고, 실제로는 `status`·`requester_id` 어느 쪽도 payload 에 실리지 않는다.
+                *
+                * 상태와 요청자를 **보여 주는** 자리는 그대로다 — 요청 상세 모달과 수신함 카드다.
+                * 거기서는 서버가 정한 값을 읽어 내는 것이라 말이 된다.
+                */}
+
+              {/* 날짜 둘은 한 줄이다 — 시작과 끝은 함께 읽힌다. 요청 갈래에는 시작일이 없어서
+                  (서버가 받지 않는다) 한 칸이 되고, 그때는 빈 칸을 남기지 않는다. */}
+              {/* **요청 갈래에도 시작일이 선다** (SPEC-001 U-6-a) — 요청 생성 입력은 원래 이 값을
+                  받고 있었고 화면이 접고 있었을 뿐이다. 그래서 두 갈래가 같은 두 칸을 쓴다. */}
+              <div className="scax-field-row">
+                {(
+                  <div className="scax-field">
+                    <label className="scax-field__label" htmlFor="new-task-start">시작일</label>
+                    <DateField
+                      formatMonth={formatMonthLong}
+                      labels={datePickerLabel}
+                      today={seoulToday()}
+                      weekdayNames={weekdayNames}
+                      hideLabel
+                      id="new-task-start"
+                      label="시작일"
+                      onChange={setStartDate}
+                      value={startDate}
+                    />
+                  </div>
+                )}
+                <div className="scax-field">
+                  <label className="scax-field__label" htmlFor="new-task-due">{kind === "task" ? "마감일" : "희망 기한"}</label>
+                  <DateField
+                    formatMonth={formatMonthLong}
+                    labels={datePickerLabel}
+                    today={seoulToday()}
+                    weekdayNames={weekdayNames}
+                    hideLabel
+                    id="new-task-due"
+                    label={kind === "task" ? "마감일" : "희망 기한"}
+                    onChange={setDueDate}
+                    value={dueDate}
+                  />
+                </div>
+              </div>
+
+              {/* 확정 프레임 4 — 요청 갈래의 차례는 «무엇을 · 언제까지 · 누구에게» 다: 담당 후보는
+                  두 날짜 «뒤» 에 선다. 내 업무에는 이 칸이 아예 없다(서버가 현재 사용자를 담당자로 기록한다). */}
+              {kind === "request" && (
+                <div className="scax-field">
+                  <span className="scax-field__label-row">
+                    <label className="scax-field__label" htmlFor="work-request-assignee">담당 후보</label>
+                    <span aria-hidden className="danger-text">*</span>
+                  </span>
+                  <Select
+                    emptyActionLabel={emptyActionLabel.filter}
+                    labels={selectLabel}
+                    disabled={assigneeCandidates.length === 0}
+                    id="work-request-assignee"
+                    label="담당 후보"
+                    onChange={setAssigneeId}
+                    options={assigneeCandidates.map((candidate) => ({ value: candidate.id, label: candidate.display_name }))}
+                    // 고를 사람이 있는데 아직 안 고른 것과, 고를 사람이 아예 없는 것은 다른 말이다.
+                    placeholder={assigneeCandidates.length === 0 ? "요청 가능한 동료가 없습니다." : undefined}
+                    value={assigneeId}
+                  />
+                </div>
+              )}
+
+              <div className="scax-field">
+                <label className="scax-field__label" htmlFor="new-task-description">{kind === "task" ? "업무 내용" : "요청 내용"}</label>
+                {/*
+                  * 시안의 `Composer` — 테두리 상자 + 글자 수 (7-A).
+                  *
+                  * **세기만 하고 막지 않는다.** 시안은 200자에서 입력을 끊지만 그 제한은 **계약에 없고**
+                  * 서버도 더 긴 내용을 받는다. 화면이 스스로 상한을 만들면 적던 글이 조용히 잘린다 —
+                  * 그래서 넘어가면 «넘었다» 고 말하기만 한다.
+                  */}
+                <div className={description.length >= COMPOSER_HINT_LENGTH ? "scax-composer scax-composer--full" : "scax-composer"}>
+                  <textarea
+                    className="scax-composer__input scax-scroll"
+                    id="new-task-description"
+                    onChange={(event) => setDescription(event.target.value)}
+                    placeholder={kind === "task" ? "무엇을, 왜, 어디까지 할지 적어 두세요." : "상대가 판단할 수 있게 배경과 기대 결과를 적어 주세요."}
+                    value={description}
+                  />
+                  <span className="scax-composer__count">
+                    {description.length}/{COMPOSER_HINT_LENGTH}
+                  </span>
+                </div>
+              </div>
+
+              {/*
+                * 참조자 — 여럿 고르고 **두 갈래 모두 저장된다** (SPEC-001 U-6-a).
+                *
+                * 「내 업무로 만들면 함께 저장되지 않습니다」라고 적어 둔 때가 있었다 — 그때는 업무
+                * 생성 payload 에 참조 축이 없었다. `cc_member_ids` 가 공통 한 벌로 묶이면서 그 문장은
+                * **사실이 아니게** 됐고, 사실이 아닌 안내는 고른 값을 버리는 것만큼 나쁘다.
+                */}
+              {ccCandidates.length > 0 && (
+                <fieldset className="scax-field cc-picker">
+                  <legend>참조자</legend>
+                  <ChipRow>
+                    {ccCandidates
+                      .filter((candidate) => candidate.id !== assigneeId)
+                      .map((candidate) => (
+                        <ChipToggle
+                          checked={ccIds.includes(candidate.id)}
+                          key={candidate.id}
+                          onChange={(next) => setCcIds((current) => (next ? [...current, candidate.id] : current.filter((id) => id !== candidate.id)))}
+                        >
+                          {personName(candidate.display_name)}
+                        </ChipToggle>
+                      ))}
+                  </ChipRow>
+                  <p className="t-meta">참조자는 읽고 논의할 수 있지만 판단하지 않습니다. 두 갈래 모두 함께 저장됩니다.</p>
+                </fieldset>
+              )}
+
+              {/*
+                * 결재자 — 계약 이름은 **승인자**(`approver_id`)다 (SPEC-001 §4 · OQ-N).
+                *
+                * **두 갈래 모두 저장된다** (WORK-003 정정). 같은 칸이 갈래마다 다른 일을 하던
+                * 시절이 끝났으므로, 「이 갈래에서는 저장되지 않습니다」라는 안내도 함께 걷는다.
+                */}
+              {approverCandidates.length > 0 && (
+                <div className="scax-field">
+                  <label className="scax-field__label" htmlFor="new-task-approver">결재자</label>
+                  <Select
+                    emptyActionLabel={emptyActionLabel.filter}
+                    labels={selectLabel}
+                    id="new-task-approver"
+                    label="결재자"
+                    onChange={(value) => setApproverId(value ?? "")}
+                    options={approverCandidates.map((candidate) => ({ value: candidate.id, label: personName(candidate.display_name) }))}
+                    placeholder="결재자 고르기"
+                    value={approverId}
+                  />
+                  <FieldMessage
+                    help={
+                      kind === "task"
+                        ? "담당자 본인은 결재자가 될 수 없습니다. 승인 대기 뒤에는 바꿀 수 없습니다."
+                        : "상대가 수락해 업무가 서면 이 사람이 그 업무의 결재자가 됩니다."
+                    }
+                  />
+                </div>
+              )}
+            </>,
+          )}
+
+          {panel(
+            "checklist",
+            <fieldset aria-label="시작 단계" className="scax-field cc-picker">
+              <legend>체크리스트</legend>
+              {steps.length > 0 && (
+                <ul className="checklist">
+                  {steps.map((step, index) => (
+                    <li className="scax-checklist__row" key={`${step}-${index}`}>
+                      <span>{step}</span>
+                      <Button variant="text" size="sm" aria-label={`${step} 빼기`} onClick={() => setSteps((current) => current.filter((_, position) => position !== index))}
+                        type="button"
+                      >
+                        빼기
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="scax-create-add-row">
+                <label className="sr-only" htmlFor="new-task-step">
+                  추가할 단계
+                </label>
+                <input
+                  id="new-task-step"
+                  onChange={(event) => setNewStep(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") return;
+                    event.preventDefault();
+                    if (event.repeat || event.nativeEvent.isComposing) return;
+                    appendStep();
+                  }}
+                  placeholder={kind === "task" ? "이 업무를 끝내려면 무엇을 해야 하나" : "부탁할 일을 단계로 적어 두면 그대로 넘어갑니다"}
+                  value={newStep}
+                />
+                <Button size="sm" disabled={!newStep.trim()} onClick={appendStep} type="button">
+                  단계 추가
                 </Button>
               </div>
-            </div>
+              <p className="t-meta">
+                {kind === "task"
+                  ? "지금 아는 단계만 적어도 됩니다. 나중에 업무 상세에서 더할 수 있습니다."
+                  : "여기 적은 단계는 그 사람의 업무에 체크리스트로 그대로 섭니다."}
+              </p>
+            </fieldset>,
           )}
-          <p className="t-meta">
-            {kind === "task"
-              ? "이어지는 업무라면 이전 업무를 맥락으로 연결해 두세요. 인과관계를 주장하지 않습니다."
-              : "여기 연결한 업무는 그 사람의 업무에도 그대로 이어집니다. 볼 수 있는 사람에게만 보입니다."}
-          </p>
-        </fieldset>
-        <fieldset aria-label="시작 단계" className="scax-field cc-picker">
-          <legend>시작 단계</legend>
-          {steps.length > 0 && (
-            <ul className="checklist">
-              {steps.map((step, index) => (
-                <li className="scax-checklist__row" key={`${step}-${index}`}>
-                  <span>{step}</span>
-                  <Button variant="text" size="sm" aria-label={`${step} 빼기`} onClick={() => setSteps((current) => current.filter((_, position) => position !== index))}
-                    type="button"
-                  >
-                    빼기
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="inline-reason" style={{ padding: "8px 0 0" }}>
-            <label className="sr-only" htmlFor="new-task-step">
-              추가할 단계
-            </label>
-            <input
-              id="new-task-step"
-              onChange={(event) => setNewStep(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter") return;
-                event.preventDefault();
-                if (event.repeat || event.nativeEvent.isComposing) return;
-                appendStep();
-              }}
-              placeholder={kind === "task" ? "이 업무를 끝내려면 무엇을 해야 하나" : "부탁할 일을 단계로 적어 두면 그대로 넘어갑니다"}
-              value={newStep}
-            />
-            <Button size="sm" disabled={!newStep.trim()} onClick={appendStep} type="button">
-              단계 추가
-            </Button>
-          </div>
-          <p className="t-meta">
-            {kind === "task"
-              ? "지금 아는 단계만 적어도 됩니다. 나중에 업무 상세에서 더할 수 있습니다."
-              : "여기 적은 단계는 그 사람의 업무에 체크리스트로 그대로 섭니다."}
-          </p>
-        </fieldset>
-        <div className="scax-field">
-          <label className="scax-field__label" htmlFor="new-task-description">{kind === "task" ? "업무 내용" : "요청 내용"}</label>
-          {/*
-            * 시안의 `Composer` — 테두리 상자 + 글자 수 (7-A).
-            *
-            * **세기만 하고 막지 않는다.** 시안은 200자에서 입력을 끊지만 그 제한은 **계약에 없고**
-            * 서버도 더 긴 내용을 받는다. 화면이 스스로 상한을 만들면 적던 글이 조용히 잘린다 —
-            * 그래서 넘어가면 «넘었다» 고 말하기만 한다. 제한이 계약이 되면 그때 `maxLength` 를 건다.
-            */}
-          <div className={description.length >= COMPOSER_HINT_LENGTH ? "scax-composer scax-composer--full" : "scax-composer"}>
-            <textarea
-              className="scax-composer__input scax-scroll"
-              id="new-task-description"
-              onChange={(event) => setDescription(event.target.value)}
-              placeholder={kind === "task" ? "무엇을, 왜, 어디까지 할지 적어 두세요." : "상대가 판단할 수 있게 배경과 기대 결과를 적어 주세요."}
-              value={description}
-            />
-            <span className="scax-composer__count">
-              {description.length}/{COMPOSER_HINT_LENGTH}
-            </span>
-          </div>
-        </div>
-          </>
-        )}
-        {/*
-          * **첨부파일** (시안 모달의 여섯째 칸 · WORK Phase 7-A).
-          *
-          * 붙이는 것은 **두 단계다** — 업무가 서야 자료가 매달릴 자리가 생긴다. 그래서 여기서는 «고르기»
-          * 까지이고, 실제 업로드는 생성 성공 직후에 일어난다.
-          *
-          * **붙일 수 없는 갈래에서 고른 파일을 조용히 버리지 않는다.** 담당을 남으로 바꾸면 이 칸이
-          * 「지금 경로에서는 함께 못 붙인다」로 바뀌고, 담당을 나로 되돌리면 고른 파일이 그대로 다시 선다.
-          */}
-        <fieldset aria-label="첨부파일" className="scax-field cc-picker">
-          <legend>첨부파일</legend>
-          {attachSupported ? (
-            <DropZone
-              disabled={isWorking}
-              drop="첨부할 파일을 끌어다 놓거나 추가하세요"
-              hint="업무를 만든 직후 참고 자료로 붙습니다. 한 건당 25MB."
-              onFiles={(files) => setAttachments((current) => [...current, ...files])}
-              pickLabel="파일 추가"
-            >
-              {attachments.length > 0 && (
-                <FileList
-                  label="첨부할 파일"
-                  rows={attachments.map((file, index) => ({
-                    key: `${file.name}-${index}`,
-                    name: file.name,
-                    size: formatBytes(file.size),
-                    reason: created?.failed.includes(file) ? "올리지 못했습니다" : null,
-                    removeLabel: `${file.name} 빼기`,
-                    onRemove: created ? undefined : () => setAttachments((current) => current.filter((_, position) => position !== index)),
-                  }))}
+
+          {panel(
+            "links",
+            /* 최종 발주 3: 이 판의 제목·라벨은 **한 벌의 글자**다 — `legend`(참고·선행)와
+               `.scax-field__label`(상위·프로젝트)이 각자 다른 크기·굵기로 서면 같은 줄의 두 칸이
+               서로 다른 층으로 읽힌다. 기준은 선행 업무 제목이고, 그 값을 이 통이 걸어 준다. */
+            <div className="scax-links-fields">
+              {/*
+                * 새 발주 3 — 판의 차례가 곧 **일의 차례**다: 무엇 «아래» 이고 어느 «묶음» 인가(한 행 2열)
+                * → 무엇과 «함께» 읽히는가(참고) → 무엇 «다음» 인가(선행).
+                *
+                * 선행이 맨 뒤인 이유는 그것이 **프로젝트에 매달리기 때문**이다 — 묶음을 먼저 정해야
+                * 고를 것이 생긴다.
+                */}
+              <div className="scax-field-row">
+                <div className="scax-field">
+                  <label className="scax-field__label" htmlFor="new-task-parent">상위 업무</label>
+                  {/*
+                    * **하나만 고르는 자리는 표가 아니라 셀렉터다** (수정 발주).
+                    *
+                    * 이 칸은 한 행 2열의 왼쪽에 서고 오른쪽에는 프로젝트 셀렉터가 있다. 여기에 표를
+                    * 넣으면 같은 줄의 두 칸이 세 곱절로 어긋나 「한 행」으로 읽히지 않는다. 대신
+                    * 팝오버 목록 안에서 **프로젝트 · 담당자**를 한 줄로 딸려 보여 준다 — 같은 제목이
+                    * 여럿일 때 무엇으로 갈리는지는 여전히 필요하다(`SelectOption.description`).
+                    *
+                    * 여는 쪽이 정해 준 상위는 고치지 못한다: 어느 업무 아래에 매달 것인지는 그 화면이
+                    * 이미 정했고, 여기서 바꾸면 그 화면이 보낸 뜻과 어긋난다.
+                    */}
+                  <Select
+                    emptyActionLabel={emptyActionLabel.filter}
+                    labels={selectLabel}
+                    disabled={Boolean(initial?.parentTaskId)}
+                    id="new-task-parent"
+                    label="상위 업무"
+                    onChange={(value) => setParentTaskId(!value || value === NO_PARENT ? "" : value)}
+                    options={[
+                      /* 잘못 고른 뒤 되돌릴 자리 — 고르기는 «되돌릴 수 있어야» 고르는 일이 된다. */
+                      { value: NO_PARENT, label: "상위 업무 없음" },
+                      ...parentChoices.map((choice) => ({
+                        value: choice.task_id,
+                        label: choice.title,
+                        description: `${projectNameOf(choice.project_id) ?? "프로젝트 없음"} · ${
+                          choice.assignee ? personName(choice.assignee.display_name) : "담당자 없음"
+                        }`,
+                      })),
+                    ]}
+                    placeholder="상위 업무 선택"
+                    value={parentTaskId}
+                  />
+                  {initial?.parentTaskId && (
+                    <p className="t-meta">
+                      {initial?.supersedesRequestId
+                        ? "이전 요청을 잇는 다시 요청입니다 — 새 요청·새 업무가 서고 이전 기록은 남습니다."
+                        : "상위 업무 아래의 하위 요청입니다."}
+                    </p>
+                  )}
+                </div>
+
+                <div className="scax-field">
+                  <label className="scax-field__label" htmlFor="new-task-project">프로젝트</label>
+                  <Select
+                    emptyActionLabel={emptyActionLabel.filter}
+                    labels={selectLabel}
+                    id="new-task-project"
+                    label="프로젝트"
+                    onChange={(value) => setProjectId(value ?? "")}
+                    /* **선행이 남아 있으면 프로젝트를 바꾸지 못한다** (SPEC-001 U-13 · §4
+                       `WORK_PROJECT_LOCKED_BY_PREDECESSORS`). 바꾸게 두면 고른 선행이 다른 묶음의
+                       업무가 되어 서버가 422 로 거절한다 — 누른 뒤에 막지 않는다. */
+                    disabled={precedingTaskIds.length > 0}
+                    options={availableProjects.map((project) => ({ value: project.project_id, label: project.name }))}
+                    placeholder={availableProjects.length === 0 ? "참여 중인 프로젝트가 없습니다." : undefined}
+                    value={projectId}
+                  />
+                  {precedingTaskIds.length > 0 && <FieldMessage help={projectLockedByPredecessorsText} />}
+                </div>
+              </div>
+
+              {/*
+                * 참고 업무 — **여럿 고르고 `reference_task_ids` 로 실려 나간다**
+                * (WORK-003 정정 · DB `task_references` · DEC-001 D-16).
+                *
+                * 한때 이 판에서 내려 「업무 상세에서 달라」고 했던 자리다. 관계도 계약도 그대로
+                * 살아 있었으므로 **만들 때 고를 수 있어야 한다** — 만들고 나서야 이을 수 있으면
+                * 고르는 일이 두 걸음으로 갈린다.
+                *
+                * **선행 업무와 다른 관계다.** 선행은 「무엇 다음인가」(같은 프로젝트 안, 순서)이고
+                * 참고는 「무엇과 함께 읽히는가」(프로젝트를 가리지 않는다)다. 두 관계가 같은 표를
+                * 쓰되 후보가 다른 이유가 그것이다 — 참고는 프로젝트를 먼저 고를 필요가 없다.
+                */}
+              <fieldset aria-label="참고 업무" className="scax-field cc-picker">
+                <legend>참고 업무</legend>
+                <TaskPickTable
+                  emptyText="고를 수 있는 업무가 없습니다."
+                  label="참고 업무"
+                  onToggle={(taskId, next) =>
+                    setLinkedTasks((current) => {
+                      if (!next) return current.filter((row) => row.task_id !== taskId);
+                      if (current.some((row) => row.task_id === taskId)) return current;
+                      const found = (referenceChoices ?? []).find((row) => row.task_id === taskId);
+                      return found ? [...current, found] : current;
+                    })
+                  }
+                  projectNameOf={projectNameOf}
+                  selected={linkedTasks.map((row) => row.task_id)}
+                  tasks={referenceChoices ?? []}
                 />
+                <p className="t-meta">참고 업무는 함께 읽히는 업무입니다 — 순서를 정하는 선행 업무와 다릅니다.</p>
+              </fieldset>
+
+              {/*
+                * 선행업무 — **실제로 저장된다** (SPEC-001 U-13 · §4 `preceding_task_ids`).
+                *
+                * **프로젝트를 먼저 고르게 한다**: 선행은 같은 묶음 안에서만 말이 되는 관계라, 묶음이
+                * 없으면 고를 목록 자체가 없다. 빈 표를 내는 대신 무엇이 먼저인지 말한다.
+                *
+                * 후보에서 **자기 자신과 이미 고른 것을 뺀다** — 서버가 거절하기 전에 화면이 먼저
+                * 뺀다(U-4 「누른 뒤에 막지 않는다」). 고른 것은 아래 칩으로 서고 칩마다 「빼기」가 있다.
+                */}
+              <fieldset aria-label="선행 업무" className="scax-field cc-picker">
+                <legend>선행 업무</legend>
+                {projectId ? (
+                  <>
+                    <TaskPickTable
+                      emptyText="이 프로젝트에서 고를 수 있는 업무가 없습니다."
+                      label="선행 업무"
+                      onToggle={(taskId, next) =>
+                        setPrecedingTaskIds((current) =>
+                          next ? (current.includes(taskId) ? current : [...current, taskId]) : current.filter((id) => id !== taskId),
+                        )
+                      }
+                      projectNameOf={projectNameOf}
+                      selected={precedingTaskIds}
+                      tasks={precedingChoices}
+                    />
+                    {precedingTasks.length > 0 && (
+                      <ChipRow>
+                        {precedingTasks.map((row) => (
+                          <Chip
+                            key={row.task_id}
+                            label={row.title}
+                            on
+                            onClick={() => setPrecedingTaskIds((current) => current.filter((id) => id !== row.task_id))}
+                          />
+                        ))}
+                      </ChipRow>
+                    )}
+                  </>
+                ) : (
+                  <p className="t-meta">프로젝트를 먼저 선택하면 그 프로젝트의 업무 중에서 고를 수 있습니다.</p>
+                )}
+              </fieldset>
+            </div>,
+          )}
+
+          {panel(
+            "materials",
+            /*
+             * 자료 판 — **두 갈래가 같은 한 벌을 쓴다** (최종 프레임 6).
+             *
+             * 파일 고르기와 링크 적기가 갈래를 가리지 않고 같은 자리에 선다. 그래야 토글을 옮겨도
+             * 읽던 틀이 흔들리지 않는다.
+             *
+             * 붙이는 것은 **두 단계다** — 업무가 서야 자료가 매달릴 자리가 생긴다(`task_id`). 그래서
+             * 여기서는 «고르기» 까지이고, 실제 업로드는 생성 성공 직후에 일어난다.
+             *
+             * **두 갈래 모두 실제로 붙는다** (WORK-003): 업무는 `task_id` 로, 요청은 `request_id` 로.
+             * 아직 붙일 수 없는 자리(관리자 배정 · 수평 생성 · 회의 승격)에서만 `materialsSaved` 가
+             * `false` 이고, 그때는 판 맨 위에서 **왜 저장되지 않는지**를 먼저 말한다 — 고른 것을
+             * 조용히 버리지도, 저장된 척하지도 않는다.
+             */
+            <fieldset aria-label="첨부파일" className="scax-field cc-picker">
+              <legend>참고 자료</legend>
+              {!materialsSaved && (
+                /* 경고 톤이다. 「나중에 붙습니다」라는 안내가 아니라 «지금 이 창에서는 저장되지
+                   않는다» 는 사실이라, 고르기 전에 읽혀야 한다. */
+                <FieldMessage error={materialsGapText} />
               )}
-            </DropZone>
-          ) : (
-            <>
-              {/* 권한 경계를 그대로 말한다 — 「생성 뒤 상세에서」만 쓰면 보내는 사람도 할 수 있게 읽힌다. */}
-              <p className="t-meta">{attachBoundary}</p>
-              {attachments.length > 0 && (
-                <>
-                  <FieldMessage error={`고른 파일 ${attachments.length}건은 이 경로로는 함께 붙지 않습니다. 담당을 나로 되돌리면 그대로 다시 섭니다.`} />
+              <DropZone
+                disabled={isWorking || Boolean(created)}
+                drop="첨부할 파일을 끌어다 놓거나 추가하세요"
+                hint={
+                  materialsSaved
+                    ? kind === "task"
+                      ? "업무를 만든 직후 참고 자료로 붙습니다. 한 건당 25MB."
+                      : "요청을 보낸 직후 참고 자료로 함께 붙습니다. 한 건당 25MB."
+                    : "한 건당 25MB. 지금은 고르기까지이고 이 요청과 함께 저장되지 않습니다."
+                }
+                onFiles={(files) => setAttachments((current) => [...current, ...files])}
+                pickLabel="파일 추가"
+              >
+                {attachments.length > 0 && (
                   <FileList
-                    label="함께 붙지 않는 파일"
+                    label="첨부할 파일"
                     rows={attachments.map((file, index) => ({
                       key: `${file.name}-${index}`,
                       name: file.name,
                       size: formatBytes(file.size),
-                      reason: "이 경로에서는 첨부할 수 없습니다",
+                      reason: created?.failed.files.includes(file)
+                        ? "올리지 못했습니다"
+                        : materialsSaved
+                          ? null
+                          : "저장되지 않습니다",
                       removeLabel: `${file.name} 빼기`,
-                      onRemove: () => setAttachments((current) => current.filter((_, position) => position !== index)),
+                      onRemove: created ? undefined : () => setAttachments((current) => current.filter((_, position) => position !== index)),
                     }))}
                   />
-                </>
+                )}
+              </DropZone>
+
+              {/*
+                * 링크 자료 — **만들기 창에서도 적는다.**
+                *
+                * 한때 「업무를 만든 뒤 상세에서」라고만 적어 두었다. 그러나 링크도 파일과 똑같이 두
+                * 단계로 붙일 수 있고(`POST /api/tasks/{id}/materials/links`), 붙일 수 있는 것을 다른
+                * 화면으로 미루면 만드는 일이 두 걸음으로 갈린다. 새 서버 API 는 만들지 않는다.
+                */}
+              <div className="scax-create-add-row">
+                <div className="scax-field">
+                  <label className="scax-field__label" htmlFor="new-task-material-link-url">링크 주소</label>
+                  <input
+                    id="new-task-material-link-url"
+                    inputMode="url"
+                    onChange={(event) => setLinkDraft((current) => ({ ...current, url: event.target.value }))}
+                    placeholder="https://"
+                    value={linkDraft.url}
+                  />
+                </div>
+                <div className="scax-field">
+                  <label className="scax-field__label" htmlFor="new-task-material-link-label">링크 이름</label>
+                  <input
+                    id="new-task-material-link-label"
+                    onChange={(event) => setLinkDraft((current) => ({ ...current, label: event.target.value }))}
+                    placeholder="사람이 읽는 이름"
+                    value={linkDraft.label}
+                  />
+                </div>
+                <Button
+                  size="sm"
+                  /* 주소만 있고 이름이 없으면 목록에 주소가 그대로 서서 읽히지 않는다 — 둘 다 받는다. */
+                  disabled={!linkDraft.url.trim() || !linkDraft.label.trim() || isWorking || Boolean(created)}
+                  onClick={() => {
+                    setMaterialLinks((current) => [...current, { url: linkDraft.url.trim(), label: linkDraft.label.trim() }]);
+                    setLinkDraft({ url: "", label: "" });
+                  }}
+                  type="button"
+                >
+                  링크 추가
+                </Button>
+              </div>
+              {materialLinks.length > 0 && (
+                <FileList
+                  label="첨부할 링크"
+                  rows={materialLinks.map((link, index) => ({
+                    key: `${link.url}-${index}`,
+                    name: link.label,
+                    size: link.url,
+                    reason: created?.failed.links.includes(link)
+                      ? "붙이지 못했습니다"
+                      : materialsSaved
+                        ? null
+                        : "저장되지 않습니다",
+                    removeLabel: `${link.label} 빼기`,
+                    onRemove: created ? undefined : () => setMaterialLinks((current) => current.filter((_, position) => position !== index)),
+                  }))}
+                />
               )}
-            </>
+            </fieldset>,
           )}
-        </fieldset>
+        </div>
       </div>
     </Modal>
   );

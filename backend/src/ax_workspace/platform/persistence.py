@@ -992,6 +992,54 @@ class TaskCreationAttemptRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class TaskPredecessorRecord(Base):
+    """**이것이 끝나야 저것이 시작한다** — 상위·참고와 다른 **세 번째 관계** (SPEC-001 §4 Data Contract).
+
+    상위(`tasks.parent_task_id`)는 「어느 업무의 일부인가」이고 참고(`task_references`)는 맥락만 준다.
+    선행은 **순서**다: 막는 전이도 서로 반대쪽이라(상위는 완료를, 선행은 시작을) 한 표에 섞지 않는다.
+
+    **행을 지우지 않고 닫는다** (`released_at`). 참고 연결 해제가 같은 이유로 같은 모양을 쓴다 —
+    놓아준 것도 거기 있었다는 사실은 이력에 남는다 (§5 보존).
+
+    데이터베이스가 답하는 것과 application 이 답하는 것을 가른다.
+
+    - **활성 행 유일성**은 부분 unique 가 답한다 — 같은 관계의 동시 두 번이 행 하나여야 하는데
+      (§5 동시성) application 검사만으로는 둘 다 「없다」를 보는 틈이 남는다.
+    - **자기 자신 금지**는 CHECK 이 답한다 — 어떤 상태에서도 참이 될 수 없는 값이다.
+    - **순환 금지는 DB 가 못 한다.** 활성 변을 따라 걷는 일이라 application 이 답하고,
+      **검사와 저장이 한 transaction** 에 있다 (§5 동시성).
+    """
+
+    __tablename__ = "task_predecessors"
+    __table_args__ = (
+        Index(
+            "uq_task_predecessors_active",
+            "task_id",
+            "predecessor_task_id",
+            unique=True,
+            sqlite_where=text("released_at IS NULL"),
+            postgresql_where=text("released_at IS NULL"),
+        ),
+        CheckConstraint("task_id <> predecessor_task_id", name="ck_task_predecessors_not_self"),
+        Index("ix_task_predecessors_task_id", "task_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    #: 뒤에 오는 업무 — 이 업무의 **시작**이 막힌다.
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"), nullable=False)
+    #: 먼저 끝나야 하는 업무. **같은 프로젝트 안**이라는 것은 application 이 답한다.
+    predecessor_task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"), nullable=False)
+    #: **고른 순서.** 한 번의 교체가 여러 행을 같은 시각에 세우므로 `created_at` 으로는 순서가 갈리지
+    #: 않는다 — 그러면 화면이 고른 차례와 조회가 내는 차례가 매번 달라진다. 상세의 요약 배열이
+    #: `preceding_task_ids` 와 **같은 순서**여야 한다는 계약(§4)이 이 열 위에 선다.
+    position: Mapped[int] = mapped_column(nullable=False, default=0)
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: 뗀 시각. 비어 있으면 **활성**이고, 활성 행만 투영과 시작 게이트가 본다.
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    released_by: Mapped[str | None] = mapped_column(String(100))
+
+
 class TaskChecklistItemRecord(Base):
     """A step inside one Task. Not a Task: no assignment, no lineage, no judgement — it lives and dies with its Task."""
 
@@ -1540,7 +1588,21 @@ class WorkRequestRecord(Base):
     assignee_id: Mapped[str] = mapped_column(String(100), nullable=False)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
+    #: **계획 시작일** — 내 업무와 같은 공통 payload 의 한 칸이다. 예전에는 이 열이 없어서 요청 표면이
+    #: 시작일을 아예 받지 못했고, 받는 사람의 업무는 기한만 들고 섰다. 열이 생기면서 발송이 세우는
+    #: Task 로 그대로 옮겨진다. 비어 있는 것이 정상이다 — 시작일 없이 보내는 요청이 더 많다.
+    start_date: Mapped[date | None] = mapped_column(Date)
     due_date: Mapped[date | None] = mapped_column(Date)
+    #: 어느 프로젝트의 일로 보내는가. 마찬가지로 공통 payload 의 한 칸이고, 발송이 세우는 Task 가 이 값을
+    #: 물려받는다. `tasks.project_id` 와 달리 **인덱스를 두지 않는다** — 요청을 프로젝트로 거르는 조회가
+    #: 아직 없고, 기존 표에 인덱스를 더하면 `schema_sync` 가 만들지 못해 손 migration 이 하나 더 생긴다.
+    project_id: Mapped[UUID | None] = mapped_column(ForeignKey("projects.id"))
+    #: 결재자 0..1 — **요청에도 값이 들어온다.** 보내는 사람이 「이 일은 누가 확인해야 하는가」를
+    #: 요청에 실어 보내고, 그 값이 **발송이 세우는 업무(그리고 과거 행에서는 수락이 세우는 업무)로
+    #: 그대로 이어진다**. `tasks.approver_id` 와 같은 뜻이고 같은 규칙(재직·담당자 본인 불가)을 지난다.
+    #: `requester_id`·`assignee_id` 와 같은 결로 **외래키를 걸지 않는다** — 사람이 아닌 행위자가 설 수
+    #: 있게 된 열들과 같은 자리이고, 로컬 스키마 맞추기가 ALTER 한 줄로 붙일 수 있어야 한다.
+    approver_id: Mapped[str | None] = mapped_column(String(100))
     state: Mapped[str] = mapped_column(String(40), nullable=False)
     version: Mapped[int] = mapped_column(nullable=False, default=1)
     conditions: Mapped[dict | None] = mapped_column(JSON)
@@ -1572,6 +1634,31 @@ class WorkRequestRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     causation_key: Mapped[str | None] = mapped_column(String(64), unique=True)
+
+
+class WorkRequestReadReceiptRecord(Base):
+    """한 사람이 그 참조 요청을 **읽었다는 사실** (SPEC-001 §4 참고 항목 읽음 · DEC-001 D-19).
+
+    **요청 행이 아니라 여기 선다.** 읽음은 사람마다 따로 움직이는 사실이라 요청 행에 적으면 참조자가
+    셋일 때 셋의 답이 한 칸을 다툰다. 그래서 `(요청 · 사람)` 한 쌍이 행 하나이고, 그 유일성을
+    **데이터베이스가** 답한다 — 같은 사람의 동시 두 번이 둘 다 성공하면서 행은 하나여야 하기 때문이다
+    (§5 동시성). 진 쪽은 이미 선 행을 읽어 같은 `read_at` 을 돌려준다.
+
+    **CC 관계(`resource_relationships`)를 지우지 않는다.** 관계가 남아야 그 사람이 왜 이 업무를
+    알고 있었는지가 남는다 (§5 보존). 되돌리는 명령은 없다(§7 OQ-I) — 그래서 행을 지우는 자리도 없다.
+    """
+
+    __tablename__ = "work_request_read_receipts"
+    __table_args__ = (
+        UniqueConstraint("work_request_id", "member_id", name="uq_work_request_read_receipt"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    work_request_id: Mapped[UUID] = mapped_column(ForeignKey("work_requests.id"), nullable=False)
+    #: 읽은 사람. 참조자 본인이다 — 요청자·담당자에게는 이 명령이 없다 (§5 권한).
+    member_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    #: **처음 읽은 시각.** 두 번째 읽음이 이 값을 덮어쓰지 않는다 (§4 「`read_at` 은 처음 값 그대로」).
+    read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class WorkRequestListEntryRecord(Base):

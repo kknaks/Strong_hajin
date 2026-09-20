@@ -321,7 +321,7 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
     const { onNotice } = renderAfter();
     await screen.findByText("전망치 다시 뽑기");
     fireEvent.click(screen.getByRole("button", { name: "업무 생성" }));
-    const drawer = await screen.findByRole("dialog", { name: "업무 요청" });
+    const drawer = await screen.findByRole("dialog", { name: "새 업무 요청" });
 
     // 담당은 비어 있고 참석자(정우성)가 후보 목록 앞에 선다
     // 후보 목록은 드로어가 뜬 «뒤» 에 도착한다 — 기다리지 않으면 빈 목록을 읽는다
@@ -368,7 +368,7 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
     renderAfter();
     await screen.findByText("전망치 다시 뽑기");
     fireEvent.click(screen.getByRole("button", { name: "업무 생성" }));
-    const drawer = await screen.findByRole("dialog", { name: "업무 요청" });
+    const drawer = await screen.findByRole("dialog", { name: "새 업무 요청" });
 
     // 회의 id 를 실어 회의 전용 경로를 부른다
     await waitFor(() => expect(api.getMeetingPromotionCandidates).toHaveBeenCalledWith("m1"));
@@ -390,7 +390,7 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
     const { onNotice } = renderAfter();
     await screen.findByText("전망치 다시 뽑기");
     fireEvent.click(screen.getByRole("button", { name: "업무 생성" }));
-    const drawer = await screen.findByRole("dialog", { name: "업무 요청" });
+    const drawer = await screen.findByRole("dialog", { name: "새 업무 요청" });
     const assignee = within(drawer).getByRole("button", { name: "담당 후보" });
     await waitFor(() => expect(assignee.textContent).toContain("선택"));
     fireEvent.click(assignee);

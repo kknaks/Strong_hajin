@@ -11,18 +11,18 @@
 .scax-button--sm{height:var(--scax-control-height-sm);min-height:var(--scax-control-height-sm);padding:0 var(--scax-space-300);border-radius:var(--scax-radius-sm);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls)}
 .scax-button--lg{height:var(--scax-control-height-lg);min-height:var(--scax-control-height-lg);padding:0 var(--scax-space-500);border-radius:var(--scax-radius-lg);font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);letter-spacing:var(--scax-text-body1-ls)}
 .scax-button--solid-primary{background:var(--scax-color-accent);color:#fff}
-.scax-button--solid-primary:hover{background:var(--scax-color-accent-strong)}
+.scax-button--solid-primary:hover{background:var(--scax-color-accent-strong);color:#fff}
 .scax-button--outlined-primary{background:var(--scax-color-surface);border-color:var(--scax-color-accent-20);color:var(--scax-color-accent)}
-.scax-button--outlined-primary:hover{background:var(--scax-color-accent-05)}
+.scax-button--outlined-primary:hover{background:var(--scax-color-accent-05);color:var(--scax-color-accent)}
 .scax-button--outlined-neutral{background:var(--scax-color-surface);border-color:var(--scax-color-line);color:var(--scax-color-ink-neutral)}
-.scax-button--outlined-neutral:hover{background:var(--scax-color-fill-weak)}
+.scax-button--outlined-neutral:hover{background:var(--scax-color-fill-weak);color:var(--scax-color-ink-neutral)}
 /* 2026-09-14 사용자 확정: 「활성 조작은 읽히고, **진짜 disabled 만 회색**」.
    ink-alt 는 옆의 안내 문구와 같은 결이라 누를 수 있는 자리가 꺼진 것처럼 보였다(현재 화면 27·30).
    테두리 단추(outlined-neutral)와 같은 잉크로 맞춘다 — 단추끼리 결이 갈리지 않는다.
    ⚠ 이 줄은 앱 전역의 글자 단추 «전부» 에 닿는다(호출부 69곳). 못 누르는 단추는 그대로 회색이다 —
    `.scax-button:disabled`(specificity 0,2,0)가 이 줄(0,1,0)을 이기기 때문이다. */
 .scax-button--text-neutral{padding:0 var(--scax-space-200);background:transparent;color:var(--scax-color-ink-neutral)}
-.scax-button--text-neutral:hover{background:var(--scax-color-fill-weak)}
+.scax-button--text-neutral:hover{background:var(--scax-color-fill-weak);color:var(--scax-color-ink-neutral)}
 .scax-button--block{width:100%}
 .scax-button-group{display:flex;flex-direction:row;gap:var(--scax-space-200)}
 .scax-button-group>.scax-button{flex:1 1 0;min-width:0}
@@ -43,7 +43,12 @@
 /* ---------- Select (status dropdown) ---------- */
 .scax-select{position:relative;display:inline-flex}
 .scax-select__trigger{display:inline-flex;align-items:center;gap:var(--scax-space-100);height:26px;padding:0 var(--scax-space-150) 0 var(--scax-space-200);border:0;border-radius:var(--scax-radius-xs);background:var(--scax-color-accent-08);color:var(--scax-color-accent);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);font-weight:var(--scax-fw-medium);cursor:pointer}
-.scax-select__trigger:hover{background:var(--scax-color-accent-20)}
+/* hover 는 «칠해 둔 톤» 위에서만 진해진다. tone 을 안 가르면 `--danger`·`--positive` 트리거가
+   hover 에서 보라 바탕이 되고 글자는 제 톤 색으로 남아 대비가 무너진다 (3차 발주 1). */
+.scax-select__trigger:not(.scax-select__trigger--neutral):not(.scax-select__trigger--positive):not(.scax-select__trigger--danger):hover{background:var(--scax-color-accent-20)}
+.scax-select__trigger--neutral:hover{background:var(--scax-color-fill);color:var(--scax-color-ink-alt)}
+.scax-select__trigger--positive:hover{background:rgba(0,163,88,.16);color:var(--scax-color-positive)}
+.scax-select__trigger--danger:hover{background:var(--scax-color-danger-soft);color:var(--scax-color-danger)}
 .scax-select__trigger:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
 .scax-select__trigger--neutral{background:var(--scax-color-fill-weak);color:var(--scax-color-ink-alt)}
 .scax-select__trigger--positive{background:rgba(0,163,88,.08);color:var(--scax-color-positive)}
@@ -65,20 +70,33 @@
 .scax-segmented__item{height:28px;padding:0 var(--scax-space-300);border:0;border-radius:var(--scax-radius-xs);background:transparent;color:var(--scax-color-ink-alt);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-medium);cursor:pointer}
 .scax-segmented__item:hover{color:var(--scax-color-ink)}
 .scax-segmented__item--on{background:var(--scax-color-surface);color:var(--scax-color-ink);font-weight:var(--scax-fw-semibold);box-shadow:var(--scax-shadow-card)}
+/* 고른 칸은 hover 에서도 자기 «면과 잉크» 를 잃지 않는다 (3차 발주 1). */
+.scax-segmented__item--on:hover{background:var(--scax-color-surface);color:var(--scax-color-ink)}
 .scax-segmented__item:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
 
 /* ---------- Tabs ---------- */
 .scax-tabs{display:flex;flex-direction:row;align-items:stretch;gap:var(--scax-space-600);flex:0 0 auto;min-width:var(--scax-table-min-width);padding:0 var(--scax-space-600);border-bottom:1px solid var(--scax-color-line)}
 .scax-tabs__item{position:relative;height:52px;padding:0;border:0;background:transparent;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-headline-size);line-height:var(--scax-text-headline-lh);letter-spacing:var(--scax-text-headline-ls);font-weight:var(--scax-fw-medium);cursor:pointer}
-.scax-tabs__item:hover{color:var(--scax-color-ink-neutral)}
+/* 켜진 탭에까지 걸리면 «지금 여기» 의 잉크가 hover 에서 도로 흐려진다 — 꺼진 탭만 밝아진다. */
+.scax-tabs__item:not(.scax-tabs__item--on):hover{color:var(--scax-color-ink-neutral)}
 .scax-tabs__item--on{color:var(--scax-color-ink);font-weight:var(--scax-fw-semibold)}
+.scax-tabs__item--on:hover{color:var(--scax-color-ink)}
 .scax-tabs__item--on::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--scax-color-ink-strong)}
 .scax-tabs__item:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
 
 /* ---------- Chip filter ---------- */
 .scax-chip{height:var(--scax-control-height-sm);padding:0 var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-xs);background:var(--scax-color-surface);color:var(--scax-color-ink-alt);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-medium);white-space:nowrap;cursor:pointer}
-.scax-chip:hover{background:var(--scax-color-fill-weak)}
+/*
+ * 3차 발주 1 — **hover 에서 글자가 사라지던 자리.**
+ *
+ * `.scax-chip:hover`(0,2,0) 는 `.scax-chip--on`(0,1,0) 을 특정도로 이겨서, 켜진 칩(검은 면 +
+ * `--ink-inverse` 글자)에 마우스를 올리면 면만 밝은 `--fill-weak` 로 바뀌고 글자는 흰 채로 남았다.
+ * 흰 글자 + 흰 면 = 안 보임. 꺼진 칩에만 걸고, 켜진 칩은 «검은 면 위 한 단» 으로 따로 정한다 —
+ * `--surface-inverse` 는 이미 이 시스템이 검은 면의 hover 로 쓰는 값이다(`ax.css` 의 말풍선).
+ */
+.scax-chip:not(.scax-chip--on):hover{background:var(--scax-color-fill-weak)}
 .scax-chip--on{background:var(--scax-color-surface-nav-active);border-color:var(--scax-color-surface-nav-active);color:var(--scax-color-ink-inverse);font-weight:var(--scax-fw-semibold)}
+.scax-chip--on:hover{background:var(--scax-color-surface-inverse);border-color:var(--scax-color-surface-inverse);color:var(--scax-color-ink-inverse)}
 .scax-chip:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
 .scax-chip-bar{display:flex;flex-direction:row;align-items:center;gap:var(--scax-space-200);flex:0 0 auto;min-width:var(--scax-table-min-width);padding:var(--scax-space-400) var(--scax-space-600)}
 .scax-chip-bar__end{margin-left:auto;display:flex;align-items:center;gap:var(--scax-space-200)}
@@ -188,10 +206,10 @@
 @media (prefers-reduced-motion:reduce){.scax-spinner{animation:none}}
 
 /* ---------- TaskTable: 보낸 업무 / 완료 업무 변형 ---------- */
-.scax-task-table--sent .scax-task-table__head,.scax-task-table--sent .scax-task-table__row,.scax-task-table--done .scax-task-table__head,.scax-task-table--done .scax-task-table__row{grid-template-columns:24px minmax(0,1fr) 120px 140px 120px 200px}
+/* 4차 발주 2: 탭별 격자 변형을 지웠다 — 네 표가 `--nostar` 한 줄(아래)로 같은 격자를 쓴다. */
 .scax-task-table__cell--actions-single{grid-template-columns:minmax(0,1fr);justify-items:end}
 .scax-task-table__cell--actions-single>.scax-button{width:auto;min-width:96px}
-.scax-task-table__cell--indent{padding-left:var(--scax-space-400)}
+/* 4차 발주 2: 완료 표의 들여쓴 제목 칸을 지웠다 — 네 탭의 제목이 같은 선에서 시작해야 한다. */
 .scax-task-table__group{display:flex;align-items:center;gap:var(--scax-space-150);width:100%;min-height:36px;padding:0 var(--scax-space-600);border:0;border-bottom:1px solid var(--scax-color-line-weak);background:var(--scax-color-surface);color:var(--scax-color-ink-alt);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-medium);text-align:left;cursor:pointer}
 .scax-task-table__group:hover{background:var(--scax-color-fill-weak)}
 .scax-task-table__group:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
@@ -206,9 +224,13 @@
 .scax-day-strip__head,.scax-month-grid__head{padding-bottom:var(--scax-space-150);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
 .scax-month-grid{row-gap:var(--scax-space-100)}
 .scax-day-cell{position:relative;display:flex;align-items:center;justify-content:center;width:32px;height:32px;border:0;border-radius:var(--scax-radius-sm);background:transparent;color:var(--scax-color-ink-neutral);font-size:var(--scax-text-label1-size);line-height:1;font-weight:var(--scax-fw-medium);cursor:pointer}
-.scax-day-cell:hover{background:var(--scax-color-fill-weak)}
+/* 고른 날은 accent 톤을 칠해 뒀다. 이 hover(0,2,0)가 --selected(0,1,0)를 이겨서 면이 중립
+   --fill-weak 으로 덮이고 accent 잉크만 남았다 — 「지금 고른 날」이 hover 중에만 사라진다. */
+.scax-day-cell:not(.scax-day-cell--selected):hover{background:var(--scax-color-fill-weak)}
 .scax-day-cell:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
 .scax-day-cell--selected{background:var(--scax-color-accent-08);color:var(--scax-color-accent);font-weight:var(--scax-fw-semibold)}
+/* 고른 날의 hover 는 제 톤 안에서 한 단 진해진다 — 08 → 20 은 상태 알약이 쓰는 그 단이다. */
+.scax-day-cell--selected:hover{background:var(--scax-color-accent-20);color:var(--scax-color-accent)}
 .scax-day-cell--muted{color:var(--scax-color-ink-disabled)}
 .scax-day-cell--blank{width:32px;height:32px}
 .scax-day-cell__dot{position:absolute;left:50%;bottom:3px;transform:translateX(-50%);width:3px;height:3px;border-radius:var(--scax-radius-pill);background:currentColor}
@@ -223,19 +245,33 @@
 
 /* ---------- Modal ---------- */
 .scax-modal-overlay{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:var(--scax-space-600);background:rgba(23,23,25,.32)}
+/*
+ * 3차 발주 4 — **안이 빈 스크림은 화면을 가리지 않는다.**
+ *
+ * 겹은 React 상태가 세우고 접는다. 그래도 어떤 이유로든 내용 없는 껍데기가 한 프레임 남으면
+ * `inset:0` 인 이 상자가 화면 전체를 흐리게 덮고 클릭까지 먹는다 — 아무것도 안 열렸는데 흐린 화면이
+ * 그 모습이다. 안이 비면 «없는 것처럼» 두는 안전망이다. 열려 있는 겹의 동작은 건드리지 않는다.
+ */
+.scax-modal-overlay:empty,.scax-drawer-overlay:empty,.modal-backdrop:empty{opacity:0;pointer-events:none}
 .scax-modal{display:flex;flex-direction:column;width:880px;max-width:100%;height:min(720px, calc(100vh - var(--scax-space-1200)));max-height:calc(100vh - var(--scax-space-1200));border-radius:var(--scax-radius-xl);background:var(--scax-color-surface);box-shadow:var(--scax-shadow-raised)}
 .scax-modal__head{display:flex;align-items:center;gap:var(--scax-space-200);flex:0 0 auto;padding:var(--scax-space-500) var(--scax-space-600);border-bottom:1px solid var(--scax-color-line-weak)}
+/* 「뒤로」와 닫기는 제목이 남는 폭을 다 먹어도 줄어들지 않는다 */
+.scax-modal__head>.scax-icon-button{flex:0 0 auto}
+.scax-modal__head .modal-kicker{display:block;margin-bottom:4px;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size);font-weight:var(--scax-fw-semibold)}
 .scax-modal__title{flex:1 1 auto;font-size:var(--scax-text-headline-size);line-height:var(--scax-text-headline-lh);letter-spacing:var(--scax-text-headline-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink)}
 /* 본문: 콘텐츠가 짧으면 감싼 높이, max-height 를 넘으면 여기만 스크롤한다 */
 .scax-modal__body{display:flex;flex-direction:column;gap:var(--scax-space-400);flex:1 1 auto;min-height:0;overflow-y:auto;padding:var(--scax-space-500) var(--scax-space-600)}
 .scax-modal__body>*{flex-shrink:0}
 .scax-modal__body>.scax-button{align-self:flex-start}
-.scax-modal__foot{display:flex;justify-content:flex-end;gap:var(--scax-space-200);flex:0 0 auto;padding:var(--scax-space-400) var(--scax-space-600);border-top:1px solid var(--scax-color-line-weak)}
+/* 4차 발주 3: 업무 상세가 모달로 오면서 푸터에 «왼쪽 명령 + 여백 + 오른쪽 명령» 이 함께 선다.
+   `.scax-drawer__spacer` 가 그 여백이고, 세로 가운데 정렬은 드로어 푸터와 같은 값이다. */
+.scax-modal__foot{display:flex;align-items:center;justify-content:flex-end;gap:var(--scax-space-200);flex:0 0 auto;padding:var(--scax-space-400) var(--scax-space-600);border-top:1px solid var(--scax-color-line-weak)}
+.scax-modal__foot>.scax-drawer__spacer{flex:1 1 auto}
 /* 확인 모달 — 짧은 물음 하나. 본문이 짧으면 감싼 높이로 선다 */
 .scax-modal--sm{width:420px;height:auto}
 .scax-modal__text{font-size:var(--scax-text-label1-size);line-height:1.62;letter-spacing:var(--scax-text-label1-ls);color:var(--scax-color-ink-alt);text-wrap:pretty}
 .scax-button--solid-danger{background:var(--scax-color-danger);color:#fff}
-.scax-button--solid-danger:hover{background:var(--scax-color-danger)}
+.scax-button--solid-danger:hover{background:var(--scax-color-danger);color:#fff}
 
 /* ---------- Field ---------- */
 .scax-field{display:flex;flex-direction:column;gap:var(--scax-space-200);min-width:0}
@@ -278,8 +314,10 @@
 .scax-person-chips{display:flex;flex-wrap:wrap;align-items:center;gap:var(--scax-space-200)}
 .scax-person-chips__label{font-size:var(--scax-text-label2-size);color:var(--scax-color-ink-alt)}
 .scax-person-chip{display:inline-flex;align-items:center;gap:var(--scax-space-150);height:36px;padding:0 var(--scax-space-300) 0 var(--scax-space-150);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);color:var(--scax-color-ink-assistive);font-size:var(--scax-text-label2-size);font-weight:var(--scax-fw-medium);cursor:pointer}
-.scax-person-chip:hover{background:var(--scax-color-fill-weak)}
+.scax-person-chip:not(.scax-person-chip--on):hover{background:var(--scax-color-fill-weak)}
 .scax-person-chip--on{border-color:var(--scax-color-accent-20);background:var(--scax-color-accent-05);color:var(--scax-color-accent)}
+/* 고른 사람은 hover 에서도 accent 를 지킨다 — 면·테두리·잉크를 함께 옮긴다 (3차 발주 1). */
+.scax-person-chip--on:hover{background:var(--scax-color-accent-08);border-color:var(--scax-color-accent-20);color:var(--scax-color-accent)}
 .scax-person-chip__avatar{width:24px;height:24px;border-radius:var(--scax-radius-pill);object-fit:cover;background:var(--scax-color-fill-weak)}
 .scax-person-chip__avatar--empty{display:flex;align-items:center;justify-content:center;color:var(--scax-color-ink-assistive)}
 
@@ -295,6 +333,10 @@
 .scax-file-row__size{font-size:var(--scax-text-label2-size);color:var(--scax-color-ink-assistive)}
 
 /* ---------- Toast — 화면 하단 고정 ---------- */
+/* 4차 발주 6: 알림이 «여러 줄» 설 수 있다 — 실패 하나와 성공 하나가 같은 순간에 올 수 있고,
+   둘이 같은 좌표에 고정되면 뒤엣것이 앞엣것을 덮는다. 자리는 이 통이 잡고, 알림은 그 안에 쌓인다. */
+.scax-toast-stack{position:fixed;left:50%;bottom:var(--scax-space-800);transform:translateX(-50%);z-index:60;display:flex;flex-direction:column-reverse;align-items:center;gap:var(--scax-space-200);pointer-events:none}
+.scax-toast-stack>.scax-toast{position:static;left:auto;bottom:auto;transform:none;pointer-events:auto}
 .scax-toast{position:fixed;left:50%;bottom:var(--scax-space-800);transform:translateX(-50%);z-index:60;display:flex;align-items:center;gap:var(--scax-space-250);min-height:48px;max-width:480px;padding:0 var(--scax-space-500);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface-inverse);color:var(--scax-color-ink-inverse);box-shadow:var(--scax-shadow-raised)}
 .scax-toast__text{font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls)}
 
@@ -401,8 +443,11 @@
 /* ---------- 별표 열 없는 5열 업무표 (신규 gap — 번호 미정) — 같은 경로로 옮겨 왔다 ----------
    DS `.scax-task-table` 은 첫 트랙 44px 이 별표 열인 6열 격자다. `starred` 필드도 저장 경로도
    없어서 그 열을 그리지 않았고(누르면 아무 데도 안 남아 사용자를 속인다), 그래서 트랙도 다섯이다. */
-.scax-task-table--nostar > .scax-task-table__head,
-.scax-task-table--nostar > .scax-task-table__body > .scax-task-table__row { grid-template-columns: minmax(0, 1fr) 120px 140px 120px 200px; }
+/* 4차 발주 2: 자식 선택자(`>`)였다. 완료 표는 행이 그룹 `<div>` 안에 들어가 여기서 **빠졌고**,
+   위의 탭별 변형(24px 별표 트랙)이 대신 걸려 제목만 혼자 밀려 있었다. 후손 선택자로 넓혀
+   네 탭의 머리와 행이 예외 없이 같은 격자를 쓴다. */
+.scax-task-table--nostar .scax-task-table__head,
+.scax-task-table--nostar .scax-task-table__row { grid-template-columns: minmax(0, 1fr) 120px 140px 120px 200px; }
 
 /* ══════════════════════════════════════════════════════════════════════════════
    바퀴 9-B — 구 `styles.css` 에서 옮겨 온 여러 화면이 나눠 쓰는 부품·유틸 규칙 152개.
@@ -416,7 +461,7 @@
 /* 바퀴 8-C(G-43): `.avatar` 여섯 줄을 `styles/avatar.css` 로 옮겼다 — 새 DS 아바타가 사진 전제라
    대체품이 없고, 구 파일을 지우는 바퀴 9 전에 나와 있어야 하는 규칙이었다. 옮기면서 색·굵기를
    `--scax-*` 로 바꿨고 기하는 그대로다. 여기 있던 여섯 줄은 «옮겨서 죽은» 구획이다(Q-1: 삭제는 바퀴 9). */
-.error-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 16px 0; padding: 12px 16px; border: 1px solid var(--scax-color-danger); border-radius: var(--scax-radius-sm); color: var(--scax-color-danger); background: var(--scax-color-danger-soft); font-size: 13px; }
+/* 4차 발주 6: `.error-banner` 를 지웠다 — 호출부 0. 실패·성공·갱신 실패는 전부 `.scax-toast` 로 간다. */
 /* ---------- page primitives ---------- */
 .page-surface { margin-top: 12px; }
 /* ---------- status & badges ---------- */
@@ -517,7 +562,7 @@ input.title-input { height: 48px; font-size: 17px; font-weight: 700; }
 /* ---- material extraction status and AX evidence cards */
 .material-list .extraction-status { margin-left: 4px; white-space: nowrap; }
 /* 바퀴 8-C: 위 카드의 이웃 한 줄도 같은 파일로. 조상 `.ax-preview` 는 바퀴 7 이 `.scax-preview` 로 갈아서 같이 다시 겨눴다. */
-.error-banner.stale { background: var(--scax-color-progress-soft); color: var(--scax-color-progress-ink); border-color: var(--scax-color-progress); }
+
 /* ---- task checklist: the steps inside one piece of work */
 .checklist { display: grid; gap: 4px; margin: 8px 0 0; padding: 0; list-style: none; }
 .scax-checklist__row.done .checkbox-label { color: var(--scax-color-ink-assistive); text-decoration: line-through; }
@@ -569,11 +614,16 @@ input.title-input { height: 48px; font-size: 17px; font-weight: 700; }
 .date-picker-prev svg { transform: rotate(180deg); }
 .date-picker-row { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
 .date-picker-cell { display: inline-grid; width: 30px; height: 30px; place-items: center; justify-self: center; border-radius: var(--scax-radius-sm); color: var(--scax-color-ink-alt); font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; }
-.date-picker-cell:hover:not(:disabled) { background: var(--scax-color-surface-alt); }
+/* 고른 날은 «검은 면 위 흰 글자» 다. 그런데 이 hover(0,3,0)가 고른 날 규칙(0,2,0)을 특정도로
+   이겨서 면만 거의 흰 --surface-alt 로 바뀌고 잉크는 --ink-inverse 인 채 남았다 — 흰 위의 흰
+   (3차 발주 1, 칩·탭과 같은 원인). 고른 날은 빼고 건다. */
+.date-picker-cell:hover:not(:disabled):not([aria-selected="true"]) { background: var(--scax-color-surface-alt); }
 .date-picker-cell.outside { color: var(--scax-color-ink-disabled); }
 /* 오늘은 테두리, 고른 날은 검정 바탕 (v2 16-3 — 현재 위치는 검정) */
 .date-picker-cell.today { box-shadow: inset 0 0 0 1px var(--scax-color-line-strong); }
 .date-picker-cell[aria-selected="true"] { color: var(--scax-color-ink-inverse); background: var(--scax-color-ink); box-shadow: none; }
+/* 고른 날의 hover 는 «검은 면 위 한 단» — 면과 잉크를 함께 옮긴다(켜진 칩과 같은 규칙). */
+.date-picker-cell[aria-selected="true"]:hover:not(:disabled) { color: var(--scax-color-ink-inverse); background: var(--scax-color-surface-inverse); }
 .date-picker-cell:disabled { cursor: not-allowed; color: var(--scax-color-ink-disabled); background: transparent; }
 .date-picker-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--scax-color-line-weak); }
 .checklist-cue.complete { background: var(--scax-color-progress-soft); color: var(--scax-color-progress-ink); }
@@ -711,3 +761,91 @@ input[aria-invalid="true"],select[aria-invalid="true"],textarea[aria-invalid="tr
    「새 안건」도 구분선(`.select-foot`) 아래에서 같은 칩으로 선다. 혼자 링크로 튀지 않는다.
    줄 목록이 아니라 «칩이 흐르는 줄» 이라 세로 쌓기 대신 wrap 이다. */
 .select-list--chips{display:flex;flex-wrap:wrap;align-items:center;gap:var(--scax-space-200);padding:var(--scax-space-200)}
+
+
+/* ── 막힘 사유 입력 (4차 발주 4) ─────────────────────────────────────────────
+   입력이 한 줄을 통째로 쓰고, 단추는 그 아래 오른쪽에 선다. 예전 `.inline-reason` 은 입력과 단추
+   둘을 한 줄 flex 로 세워서 좁은 자리(표의 200px 액션 칸)에서 입력칸이 몇 글자만 보였다.
+   비활성 단추는 DS 의 `:disabled`(회색 채움 + 보조 글자색)를 그대로 쓴다 — 「누를 수 있음」과
+   「누를 수 없음」이 한눈에 갈린다. */
+.scax-block-reason__input { width: 100%; min-width: 0; }
+.scax-block-reason__actions { display: flex; justify-content: flex-end; gap: var(--scax-space-200); margin-top: var(--scax-space-300); }
+.scax-block-reason__actions > .scax-button { min-width: 88px; justify-content: center; }
+
+/* 4차 발주 7: 말풍선을 접은 캐릭터 — 오브만 남으므로 통이 오브 폭까지 줄어든다. 캐릭터와 그 애니메이션은
+   그대로다. 업무 화면처럼 토스트가 말하는 자리에서만 이 modifier 가 붙는다. */
+.scax-agent--nobubble { width: auto; }
+
+/* ── 업무 생성 모달 — 고정 골격 + 왼쪽 세로 탭 (최종 발주 1·2·7) ──────────────────
+   지금까지 필드는 한 기둥에 길게 이어 붙어 있어서, 갈래를 바꾸거나 필드가 늘 때마다 모달이 세로로
+   자라 화면 밖으로 밀렸다. 이제 크기는 여기서 못박고, 늘어나는 것은 «판 안쪽» 뿐이다 —
+   머리와 발은 고정이고 스크롤 기둥은 탭 판 하나다. */
+.scax-modal--create { width: 880px; max-width: calc(100vw - var(--scax-space-600)); height: min(680px, calc(100vh - var(--scax-space-1200))); max-height: calc(100vh - var(--scax-space-1200)); }
+/* 회의 승격은 요청 전용이라 좁게 열린다. 탭 기둥이 붙으므로 560 보다 조금 넓힌다. */
+.scax-modal--create.scax-modal--md { width: 620px; height: min(680px, calc(100vh - var(--scax-space-1200))); }
+/* 머리 한 줄 — 왼쪽에 이름, 오른쪽에 업무|요청 토글. 설명 문구는 여기서 걷었다. */
+.scax-modal--create .scax-modal__head > div { display: flex; align-items: center; justify-content: space-between; gap: var(--scax-space-400); }
+.scax-modal--create .scax-modal__title { flex: 0 1 auto; color: var(--scax-color-ink); }
+/* 본문은 스크롤하지 않는다 — 스크롤 기둥이 둘이면 어느 쪽이 움직일지 사람이 예측할 수 없다. */
+.scax-modal--create .scax-modal__body { gap: 0; padding: 0; overflow: hidden; }
+.scax-modal--create .scax-modal__body > .scax-create-tabs { flex: 1 1 auto; min-height: 0; }
+.scax-create-tabs { display: grid; grid-template-columns: 168px minmax(0, 1fr); height: 100%; min-height: 0; }
+.scax-create-tabs__nav { display: flex; flex-direction: column; gap: var(--scax-space-100); padding: var(--scax-space-400) var(--scax-space-300); border-right: 1px solid var(--scax-color-line-weak); background: var(--scax-color-surface-alt); overflow-y: auto; }
+/* 무리 이름(필수·선택)은 **읽히는 글자다** — 보조색으로 내리면 탭 이름보다 흐려서 「무엇이 필수인가」가
+   먼저 눈에 들어오지 않는다. 본문 글자색으로 올리고 굵기로 탭과 구분한다. */
+.scax-create-tabs__group { margin: var(--scax-space-300) 0 var(--scax-space-100); padding: 0 var(--scax-space-200); color: var(--scax-color-ink); font-size: var(--scax-text-caption1-size); font-weight: var(--scax-fw-bold); }
+.scax-create-tabs__nav > .scax-create-tabs__group:first-child { margin-top: 0; }
+.scax-create-tabs__list { display: flex; flex-direction: column; gap: 2px; }
+.scax-create-tabs__tab { display: flex; align-items: center; width: 100%; min-height: 36px; padding: 0 var(--scax-space-300); border: 0; border-radius: var(--scax-radius-sm); background: transparent; color: var(--scax-color-ink-alt); font-size: var(--scax-text-label1-size); font-weight: var(--scax-fw-medium); text-align: left; cursor: pointer; }
+.scax-create-tabs__tab:hover { background: var(--scax-color-fill-weak); }
+.scax-create-tabs__tab:focus-visible { outline: 0; box-shadow: var(--scax-focus-ring); }
+.scax-create-tabs__tab.is-on { background: var(--scax-color-surface); color: var(--scax-color-ink); font-weight: var(--scax-fw-semibold); }
+.scax-create-tabs__panels { display: flex; min-width: 0; min-height: 0; }
+.scax-create-tabs__panel { display: flex; flex-direction: column; gap: var(--scax-space-400); flex: 1 1 auto; min-width: 0; min-height: 0; overflow-y: auto; padding: var(--scax-space-500) var(--scax-space-600); }
+/* `hidden` 이 `display:flex` 에 지면 감춘 판이 그대로 보인다. 판을 «지우지 않고» 감추는 것이
+   탭을 옮겨도 적어 둔 값이 남는 조건이라, 이 한 줄이 그 약속을 떠받친다. */
+.scax-create-tabs__panel[hidden] { display: none; }
+.scax-create-tabs__panel:focus-visible { outline: 0; box-shadow: inset var(--scax-focus-ring); }
+.scax-create-tabs__panel > * { flex-shrink: 0; }
+/* 라벨은 검은색이다 — 보조색으로 내려가 있던 legend·output 도 같이 올린다. */
+.scax-create-tabs__panel .scax-field__label,
+.scax-create-tabs__panel legend { color: var(--scax-color-ink); }
+.scax-create-tabs__panel output { color: var(--scax-color-ink); font-size: var(--scax-text-label1-size); }
+.scax-create-add-row { display: flex; align-items: center; gap: var(--scax-space-200); padding-top: var(--scax-space-200); }
+.scax-create-add-row input { flex: 1 1 auto; min-width: 0; }
+/* 줄 안에서 제목·부가정보가 왼쪽을 채우고 「빼기」가 오른쪽 끝에 선다 — `flex:1` 이 없으면
+   단추가 글자 바로 옆에 붙어 «줄의 일부» 처럼 읽힌다. */
+/* 체크리스트 줄의 글자도 왼쪽을 채운다 — 바탕의 `.scax-checklist__row` 는 `label` 에만 `flex:1` 을
+   주어서, 글자 span 하나짜리 줄에서는 「빼기」가 글자 바로 옆에 붙어 있었다. 생성 판 안으로 좁혀 고친다. */
+.scax-create-tabs__panel .scax-checklist__row > span:first-child { flex: 1 1 auto; min-width: 0; }
+/* ── 업무를 여럿 고르는 한 벌의 표 (새 발주 3·4 · 수정 발주) ────────────────────
+   참고(다중)·선행(다중) 두 자리가 같은 격자·같은 높이·같은 스크롤을 쓴다. 하나만 고르는 상위 업무는
+   이 표가 아니라 `Select` 팝오버다 — 한 행 2열의 왼쪽 칸에서 옆의 프로젝트 셀렉터와 키를 맞춰야 한다.
+   목록이 길어져도 **제 안에서** 구르므로 판을 밀지 않는다. */
+.scax-pick-table { display: flex; flex-direction: column; border: 1px solid var(--scax-color-line); border-radius: var(--scax-radius-sm); background: var(--scax-color-surface); overflow: hidden; }
+.scax-pick-table__head,
+.scax-pick-table__row { display: grid; grid-template-columns: 28px minmax(0, 1fr) minmax(0, 96px) minmax(0, 88px); align-items: center; gap: var(--scax-space-200); padding: 0 var(--scax-space-300); }
+.scax-pick-table__head { min-height: 32px; border-bottom: 1px solid var(--scax-color-line-weak); background: var(--scax-color-surface-alt); color: var(--scax-color-ink-assistive); font-size: var(--scax-text-caption1-size); font-weight: var(--scax-fw-medium); }
+.scax-pick-table__body { max-height: 196px; overflow-y: auto; }
+.scax-pick-table__row { min-height: 36px; border-bottom: 1px solid var(--scax-color-line-weak); cursor: pointer; }
+.scax-pick-table__row:last-child { border-bottom: 0; }
+.scax-pick-table__row:hover { background: var(--scax-color-accent-05); }
+.scax-pick-table__row:focus-within { background: var(--scax-color-accent-05); }
+.scax-pick-table__cell--pick { display: flex; align-items: center; justify-content: center; }
+.scax-pick-table__title { overflow: hidden; color: var(--scax-color-ink); font-size: var(--scax-text-label1-size); text-overflow: ellipsis; white-space: nowrap; }
+.scax-pick-table__meta { overflow: hidden; color: var(--scax-color-ink-alt); font-size: var(--scax-text-caption1-size); text-overflow: ellipsis; white-space: nowrap; }
+.scax-pick-table__empty { padding: var(--scax-space-300); }
+
+/* 연결 업무 판의 제목·라벨은 **한 벌의 글자다** (최종 발주 3).
+   기준은 선행 업무 제목(`.cc-picker legend`: 13px · 700 · ink · 아래 6px)이고, 상위 업무와
+   프로젝트의 `.scax-field__label` 도 같은 값으로 선다 — 한 행 2열의 두 칸이 서로 다른 층으로
+   읽히면 그 줄이 「한 행」이 아니게 된다. */
+.scax-links-fields { display: flex; flex-direction: column; gap: var(--scax-space-400); }
+.scax-links-fields .scax-field__label,
+.scax-links-fields legend { display: block; padding: 0; margin: 0 0 var(--scax-space-150); font-size: 13px; line-height: 20px; font-weight: var(--scax-fw-bold); color: var(--scax-color-ink); }
+.scax-create-linked { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-width: 0; }
+.scax-create-linked__title { color: var(--scax-color-ink); font-size: var(--scax-text-label1-size); font-weight: var(--scax-fw-medium); }
+
+/* 막는 선행업무를 말하는 한 줄 (SPEC-001 U-14) — 비활성이 된 단추 바로 옆에 선다.
+   누르기 전과 눌린 뒤가 같은 문장이므로 자리도 하나다. */
+.scax-blocked-note { display: block; color: var(--scax-color-danger); }

@@ -1,15 +1,12 @@
 import { dayDifference, isOverdue, type WorkChip } from "../../lib/labels";
-import type { DerivedApproval, DerivedAssignment, DirectTask, TaskChild, WorkRequest } from "../../lib/viewModels";
+import type { DerivedApproval, DerivedAssignment, DirectTask, TaskChild, TaskState, WorkRequest } from "../../lib/viewModels";
 
 /**
  * 표 세 벌이 읽는 «행» 과 칩이 거는 «조건» — 화면 밖의 순수한 자리다 (WORK-002 Phase 7-B·7-C).
  *
  * 세 가지를 여기 모은 이유가 각각 있다.
  *
- * 1. **수락 전 요청 업무는 아직 내 업무가 아니다.** 발송 직후 그 Task 에는 활성 담당이 없어서
- *    `my_work` 에 서지 않는다(SPEC-003 §2.1 · §4). 그래도 받은 사람은 그것을 보고 수락·거절해야
- *    하므로, 「내 업무」 탭은 **들고 있는 Task** 와 **나에게 온 대기 요청** 두 원천을 한 목록으로 읽는다.
- *    둘을 합치는 자리가 화면 안에 흩어지면 칩 건수와 목록 건수가 조용히 갈린다.
+ * 1. 수락 전 요청은 수신함에서 응답한다. 내 업무에는 담당 Task만 담는다.
  * 2. **칩은 상태 나열이 아니라 파생 조건이다**(SPEC-003 §2.6). 그 판정을 한 함수로 두어야
  *    「칩 라벨의 건수 = 그 칩이 거는 필터의 건수」가 저절로 지켜진다.
  * 3. **완결 판정이 `state` 만 보지 않는다**(V-15·V-16). 요청 업무는 승인까지여야 완결이고,
@@ -99,6 +96,53 @@ export function isChildCancelled(child: TaskChild | DirectTask): boolean {
   return child.state === "cancelled";
 }
 
+/**
+ * **시작을 막는 선행업무** (SPEC-001 U-14 · §4 `WORK_PREDECESSORS_UNFINISHED`).
+ *
+ * 끝나지 않은 선행이 있으면 `시작 전` 업무의 `[시작]` 과 (`시작 전` 에서의) `[완료]` 를 둘 다
+ * 막는다 — 시작하지 않고 끝내는 길이 열려 있으면 그것이 시작 게이트의 우회로가 된다.
+ *
+ * **취소된 선행은 막지 않는다.** 그 일은 더 기다릴 것이 없다.
+ * **미완 하위와 다른 축이다** — 하위는 «완료» 를, 선행은 «시작» 을 막는다. 한 자리에서 세면
+ * 무엇을 먼저 해야 하는지가 사라진다(오류 코드도 서로 다르다).
+ *
+ * **볼 수 없는 선행은 여기 없다** — 서버가 제목을 빼고 건수만 내기 때문이다. 그 건수는
+ * `hiddenPrecedingCountOf` 가 따로 읽고, 막는 판정에는 넣지 않는다: 화면이 셀 수 없는 것으로
+ * 단추를 막으면 왜 막혔는지 말해 줄 수 없다. 최종 판정은 어차피 서버가 한다.
+ */
+export function blockingPredecessorsOf(task: DirectTask | null | undefined): Array<{ task_id: string; title: string }> {
+  return (task?.predecessors ?? [])
+    .filter((row) => row.title !== null && row.state !== "done" && row.state !== "cancelled")
+    .map((row) => ({ task_id: row.task_id, title: row.title as string }));
+}
+
+/**
+ * 볼 수 없는 선행의 건수 — **배열 안의 빈 자리를 센다**(서버가 `title`·`state` 를 비워 보낸다).
+ *
+ * 제목은 숨기고 건수는 낸다. 막는 판정에는 넣지 않는다: 화면이 이름을 말할 수 없는 것으로 단추를
+ * 막으면 왜 막혔는지 알려 줄 수 없다. 최종 판정은 어차피 서버가 한다.
+ */
+export function hiddenPrecedingCountOf(task: DirectTask | null | undefined): number {
+  return (task?.predecessors ?? []).filter((row) => row.title === null).length;
+}
+
+/** 볼 수 있는 선행만 — 상세의 줄이 이름으로 그리는 자리다. */
+export function visiblePredecessorsOf(task: DirectTask | null | undefined): Array<{ task_id: string; title: string; state: TaskState }> {
+  return (task?.predecessors ?? [])
+    .filter((row) => row.title !== null && row.state !== null)
+    .map((row) => ({ task_id: row.task_id, title: row.title as string, state: row.state as TaskState }));
+}
+
+/**
+ * 이 업무의 `[시작]`·(`시작 전` 의) `[완료]` 가 선행 때문에 막혔나.
+ *
+ * **`시작 전` 에서만 본다** — `진행 중` 의 완료는 선행을 보지 않는다(막는 것은 시작이다).
+ * 이미 시작한 뒤에 선행이 다시 열려도 되돌리지 않는다: 게이트는 시작 시점 판정이다.
+ */
+export function startBlockedByPredecessors(task: DirectTask | null | undefined): boolean {
+  return task?.state === "open" && blockingPredecessorsOf(task).length > 0;
+}
+
 /** 기한이 지난 날수 — 서버 값이 먼저다. 없으면 기한과 오늘로 센다(표시만 바뀐다 · U-14). */
 export function overdueDaysOf(task: DirectTask | null | undefined, today: string): number {
   if (!task) return 0;
@@ -170,19 +214,12 @@ export function isOpenRequest(request: WorkRequest): boolean {
   return request.state === "pending" || request.state === "negotiating";
 }
 
-/**
- * 「내 업무」 탭의 행 — 들고 있는 Task + **나에게 온 대기 요청**.
- *
- * 같은 Task 를 두 원천이 가리키면 한 행으로 합친다(요청은 Task 를 만들고 그 Task 를 다시 가리킨다).
- * Task 가 목록에 없는 대기 요청은 요청만으로 행을 세운다 — 수락하기 전에는 그 Task 가 내 목록에
- * 오지 않는 것이 v2 의 계약이고, 그래도 **응답할 자리는 있어야 한다**(V-9·V-10).
- */
+/** 내 업무는 담당 Task만 담는다. 요청 정보는 수락 후에도 같은 Task에 연결한다. */
 export function myWorkRows(tasks: DirectTask[], requestsToMe: WorkRequest[]): WorkRow[] {
-  const rows: WorkRow[] = [];
-  const seen = new Set<string>();
-  for (const task of tasks) {
+  return tasks.flatMap((task) => {
     const request = requestOfTask(task, requestsToMe);
-    rows.push({
+    if (request && isOpenRequest(request)) return [];
+    return [{
       id: task.task_id,
       title: task.title,
       task,
@@ -190,25 +227,8 @@ export function myWorkRows(tasks: DirectTask[], requestsToMe: WorkRequest[]): Wo
       dueDate: task.due_date ?? null,
       awaitingAcceptance: assignmentOf(task) === "awaiting_acceptance",
       approval: approvalOf(task),
-    });
-    seen.add(task.task_id);
-    if (request) seen.add(request.request_id);
-  }
-  for (const request of requestsToMe) {
-    if (!isOpenRequest(request)) continue;
-    if (seen.has(request.request_id)) continue;
-    if (request.task_id && seen.has(request.task_id)) continue;
-    rows.push({
-      id: request.task_id ?? request.request_id,
-      title: request.title,
-      task: null,
-      request,
-      dueDate: request.due_date ?? null,
-      awaitingAcceptance: true,
-      approval: null,
-    });
-  }
-  return rows;
+    }];
+  });
 }
 
 /**

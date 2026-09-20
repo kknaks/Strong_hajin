@@ -511,6 +511,12 @@ def test_mcp_create_mutations_are_idempotent_within_a_server_bound_turn(tmp_path
         "reference_task_ids": [],
         "parent_task_id": None,
         "project_id": None,
+        # 참조자 — 내 업무와 업무 요청이 함께 쓰는 공통 payload 의 칸이다.
+        "cc_member_ids": [],
+        # 선행업무 — 같은 공통 payload 의 칸. 생성 표면 전부가 같은 배열을 받는다 (SPEC-001 §5).
+        "preceding_task_ids": [],
+        # 결재자 — `업무` 갈래만 여는 칸 (SPEC-001 §7 OQ-M).
+        "approver_id": None,
         "assignee_id": None,
     }
     with make_session_factory(database_url)() as session:

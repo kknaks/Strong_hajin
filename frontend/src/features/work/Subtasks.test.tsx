@@ -152,7 +152,7 @@ describe("하위 업무", () => {
     const section = await screen.findByLabelText("하위 업무");
 
     fireEvent.click(within(section).getByRole("button", { name: "하위 요청 보내기" }));
-    const modal = await screen.findByRole("dialog", { name: "업무 요청" });
+    const modal = await screen.findByRole("dialog", { name: "새 업무 요청" });
     fireEvent.change(within(modal).getByLabelText("요청할 업무"), { target: { value: "매출 집계" } });
     await waitFor(() => expect(within(modal).getByLabelText("담당 후보")).toBeTruthy());
     fireEvent.click(within(modal).getByLabelText("담당 후보"));

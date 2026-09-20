@@ -7,7 +7,7 @@ import { Skeleton } from "../ds/Skeleton";
 import { StatusNote } from "../ds/StatusNote";
 import { Badge } from "../ds/Badge";
 import { Icon } from "../ds/icons/Icon";
-import { addDays, dayDifference, formatDate, formatMonth, isOverdue, seoulToday, taskStateLabel, weekdayNames } from "../lib/labels";
+import { addDays, dayDifference, isOverdue, seoulToday, taskStateLabel, weekdayNames } from "../lib/labels";
 import { type DirectTask } from "../lib/viewModels";
 
 /**
@@ -32,9 +32,22 @@ type Range = "today" | "week" | "month";
 
 const RANGES: ReadonlyArray<{ value: Range; label: string }> = [
   { value: "today", label: "오늘" },
-  { value: "week", label: "주간" },
-  { value: "month", label: "월간" },
+  { value: "week", label: "주" },
+  { value: "month", label: "월" },
 ];
+
+/** 레일 표기는 시안의 한국어 날짜 형식을 쓰며 저장된 ISO 날짜는 바꾸지 않는다. */
+function railDate(date: string): string {
+  const [, month, day] = date.split("-").map(Number);
+  const weekday = weekdayNames[new Date(`${date}T00:00:00Z`).getUTCDay()];
+  return `${month}월 ${day}일 ${weekday}요일`;
+}
+
+function weekLabel(date: string): string {
+  const [year, month, day] = date.split("-").map(Number);
+  const firstWeekday = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
+  return `${year}년 ${month}월 ${Math.ceil((day + firstWeekday) / 7)}주 차`;
+}
 
 /** 기한이 이 날짜인 업무 — 취소된 것은 일정이 아니다. */
 function dueOn(tasks: DirectTask[], date: string): DirectTask[] {
@@ -76,7 +89,7 @@ export function CalendarRail({
       ) : (
         <>
           <div className="scax-calendar-rail__day">
-            <p className="scax-calendar-rail__date">{formatDate(today)}</p>
+            <p className="scax-calendar-rail__date">{railDate(today)}</p>
             {/* 시안은 여기에 「근무 시간」을 두지만 그 값을 담는 계약이 우리에게 없다 (M-23). */}
           </div>
           <div className="scax-calendar-rail__list">
@@ -118,12 +131,12 @@ function CalendarNav({ label, onPrev, onNext, prevLabel, nextLabel }: { label: s
   );
 }
 
-function DayCell({ date, muted, selected, dot, onSelect }: { date: string; muted?: boolean; selected?: boolean; dot?: boolean; onSelect: () => void }) {
+function DayCell({ date, muted, selected, dot, isToday, onSelect }: { date: string; muted?: boolean; selected?: boolean; dot?: boolean; isToday?: boolean; onSelect: () => void }) {
   const classes = ["scax-day-cell", selected ? "scax-day-cell--selected" : "", muted ? "scax-day-cell--muted" : ""].filter(Boolean).join(" ");
   return (
-    <button aria-pressed={Boolean(selected)} className={classes} onClick={onSelect} type="button">
+    <button aria-current={isToday ? "date" : undefined} aria-pressed={Boolean(selected)} className={classes} onClick={onSelect} type="button">
       {Number(date.slice(8))}
-      {dot && <span className="scax-day-cell__dot" />}
+      {(dot || isToday) && <span aria-hidden className="scax-day-cell__dot" />}
     </button>
   );
 }
@@ -154,7 +167,7 @@ function WeekView({ anchor, onAnchor, tasks, today, onOpen }: { anchor: string; 
   return (
     <>
       <CalendarNav
-        label={`${formatDate(days[0])} – ${formatDate(days[6])}`}
+        label={weekLabel(anchor)}
         nextLabel="다음 주"
         onNext={() => onAnchor(addDays(anchor, 7))}
         onPrev={() => onAnchor(addDays(anchor, -7))}
@@ -167,7 +180,7 @@ function WeekView({ anchor, onAnchor, tasks, today, onOpen }: { anchor: string; 
           </span>
         ))}
         {days.map((date) => (
-          <DayCell date={date} dot={dueOn(tasks, date).length > 0} key={date} onSelect={() => onAnchor(date)} selected={date === anchor || date === today} />
+          <DayCell date={date} isToday={date === today} dot={dueOn(tasks, date).length > 0} key={date} onSelect={() => onAnchor(date)} selected={date === anchor || date === today} />
         ))}
       </div>
       <div className="scax-calendar-rail__list">
@@ -177,17 +190,17 @@ function WeekView({ anchor, onAnchor, tasks, today, onOpen }: { anchor: string; 
           sections.map((section) => (
             <section className="scax-day-section" key={section.date}>
               <button
-                aria-expanded={!closed[section.date]}
+                aria-expanded={!(closed[section.date] ?? section.date < today)}
                 className="scax-day-section__head"
-                onClick={() => setClosed((current) => ({ ...current, [section.date]: !current[section.date] }))}
+                onClick={() => setClosed((current) => ({ ...current, [section.date]: !(current[section.date] ?? section.date < today) }))}
                 type="button"
               >
                 <span className="scax-day-section__label">
-                  {formatDate(section.date)} ({section.items.length})
+                  {railDate(section.date)} ({section.items.length})
                 </span>
-                <Icon name={closed[section.date] ? "chevron-right" : "chevron-down"} size={16} />
+                <Icon className="scax-day-section__caret" name="chevron-down" size={16} />
               </button>
-              {!closed[section.date] && (
+              {!(closed[section.date] ?? section.date < today) && (
                 <div className="scax-day-section__body">
                   {section.items.map((task) => (
                     <AgendaItem key={task.task_id} onOpen={onOpen} task={task} today={today} />
@@ -219,7 +232,7 @@ function MonthView({ anchor, onAnchor, tasks, today, onOpen }: { anchor: string;
 
   return (
     <>
-      <CalendarNav label={formatMonth(year, month)} nextLabel="다음 달" onNext={() => shift(1)} onPrev={() => shift(-1)} prevLabel="이전 달" />
+      <CalendarNav label={`${year}년 ${month}월`} nextLabel="다음 달" onNext={() => shift(1)} onPrev={() => shift(-1)} prevLabel="이전 달" />
       <div className="scax-month-grid">
         {weekdayNames.map((name) => (
           <span className="scax-month-grid__head" key={name}>
@@ -229,6 +242,7 @@ function MonthView({ anchor, onAnchor, tasks, today, onOpen }: { anchor: string;
         {days.map((date) => (
           <DayCell
             date={date}
+            isToday={date === today}
             dot={dueOn(tasks, date).length > 0}
             key={date}
             muted={!date.startsWith(cursor)}
@@ -239,7 +253,7 @@ function MonthView({ anchor, onAnchor, tasks, today, onOpen }: { anchor: string;
       </div>
       <div className="scax-calendar-rail__list">
         {selected.length === 0 ? (
-          <Empty title={`${formatDate(anchor)}에 기한인 업무가 없습니다`} />
+          <Empty title={`${railDate(anchor)}에 기한인 업무가 없습니다`} />
         ) : (
           selected.map((task) => <AgendaItem key={task.task_id} onOpen={onOpen} task={task} today={today} />)
         )}

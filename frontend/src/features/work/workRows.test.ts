@@ -142,17 +142,15 @@ describe("하위 셈과 막는 하위", () => {
 
 describe("「내 업무」의 행", () => {
   /** 수락 전 요청 업무는 `my_work` 에 서지 않는다 — 그래도 응답할 자리는 있어야 한다 (V-9·V-10). */
-  it("아직 수락하지 않은 요청도 한 행으로 선다", () => {
+  it("아직 수락하지 않은 요청은 담당 목록에 서지 않는다", () => {
     const rows = myWorkRows([], [request({ request_id: "r1", title: "디자인 요청", task_id: "t1" })]);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].awaitingAcceptance).toBe(true);
-    expect(rows[0].task).toBeNull();
+    expect(rows).toHaveLength(0);
   });
 
   it("같은 업무를 두 원천이 가리키면 한 행으로 합친다", () => {
     const rows = myWorkRows(
       [task({ task_id: "t1", title: "디자인", lineage: { request_thread_id: null, source_work_request_id: "r1", source_decision_item_id: null, source_submission_id: null, source_review_decision_id: null, source_action_item_id: null, source_task_id: null } })],
-      [request({ request_id: "r1", title: "디자인 요청", task_id: "t1" })],
+      [request({ request_id: "r1", title: "디자인 요청", task_id: "t1", state: "accepted" })],
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].request?.request_id).toBe("r1");

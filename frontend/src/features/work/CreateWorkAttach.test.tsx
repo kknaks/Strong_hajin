@@ -6,6 +6,8 @@ vi.mock("../../lib/api", () => ({
   createWorkRequest: vi.fn(),
   assignTask: vi.fn(),
   uploadTaskMaterial: vi.fn(),
+  uploadWorkRequestMaterial: vi.fn(),
+  attachWorkRequestMaterialLink: vi.fn(),
   getTasks: vi.fn(),
   listProjects: vi.fn(),
   getTask: vi.fn(),
@@ -91,9 +93,21 @@ function renderModal(overrides: Record<string, unknown> = {}) {
 
 const file = (name: string) => new File(["x"], name, { type: "text/plain" });
 
+/** 최종 발주 2: 자료는 왼쪽 세로 탭의 「자료」 판에 산다 — 필드는 그대로이고 자리만 옮겼다. */
+const openMaterials = () => fireEvent.click(screen.getByRole("tab", { name: "자료" }));
+
 function pickFiles(names: string[]) {
+  openMaterials();
   const input = screen.getByLabelText("파일 추가") as HTMLInputElement;
   fireEvent.change(input, { target: { files: names.map(file) } });
+}
+
+/** 링크 자료 한 줄을 더한다 — 주소와 사람이 읽는 이름 둘 다 있어야 「링크 추가」가 열린다. */
+function addLink(url: string, label: string) {
+  openMaterials();
+  fireEvent.change(screen.getByLabelText("링크 주소"), { target: { value: url } });
+  fireEvent.change(screen.getByLabelText("링크 이름"), { target: { value: label } });
+  fireEvent.click(screen.getByRole("button", { name: "링크 추가" }));
 }
 
 afterEach(() => {
@@ -177,49 +191,210 @@ describe("생성은 됐는데 첨부가 실패한 자리", () => {
   });
 });
 
-describe("붙일 수 없는 갈래 — 권한 경계를 말하고, 고른 파일을 버리지 않는다", () => {
+describe("요청 갈래의 자료 — 보낸 요청에 두 단계로 붙는다", () => {
   /**
-   * 서버의 업로드는 **활성 담당** 에게만 열린다. 보내는 사람은 그 자리가 아니므로, 「생성 뒤 상세에서
-   * 붙이면 된다」고만 쓰면 **보내는 사람도 할 수 있는 것처럼 읽혀 틀린다.**
+   * **요청 자료는 «생성 payload» 가 아니라 «두 번째 걸음» 이다** (WORK-003).
+   *
+   * 한때 이 자리에 「저장되지 않습니다」가 서 있었다 — 요청에 자료를 싣는 계약이 없어, 고른 파일과
+   * 링크가 어디로도 가지 않던 시절이다. 그 계약이 열리면서(`POST /api/work-requests/{id}/materials`
+   * 와 `…/materials/links`) 요청도 내 업무와 **같은 걸음**을 걷는다: 보내고 → 돌아온 `request_id`
+   * 로 붙인다.
+   *
+   * 그래서 이 묶음이 못박는 것은 셋이다: ① 생성 payload 에 자료 키가 **여전히 없다**, ② 돌아온
+   * `request_id` 로 파일과 링크가 **실제로 올라간다**, ③ 한 건이 실패해도 **요청은 살아 있고**
+   * 그 건만 다시 시도한다.
    */
-  it("요청 갈래에서는 담당자가 수락한 뒤 붙는다고 말한다", async () => {
+  const sendRequest = async () => {
+    fireEvent.click(screen.getByRole("tab", { name: "기본 정보" }));
+    fireEvent.change(screen.getByLabelText("요청할 업무"), { target: { value: "부탁한 업무" } });
+    fireEvent.click(screen.getByLabelText("담당 후보"));
+    fireEvent.click(await screen.findByRole("option", { name: "소라 (기획)" }));
+    fireEvent.click(screen.getByRole("button", { name: "업무 요청 보내기" }));
+  };
+
+  it("요청 갈래에도 자료 탭과 파일·링크 입력이 선다", () => {
     renderModal({ canCreateTask: false });
-    const field = screen.getByLabelText("첨부파일");
-    expect(within(field).getByText(/자료는 담당자가 업무 상세에서 첨부할 수 있습니다/)).toBeTruthy();
-    expect(within(field).getByText(/수락해 담당자가 된 뒤/)).toBeTruthy();
-    expect(within(field).queryByLabelText("파일 추가")).toBeNull();
+    expect(screen.getByRole("tab", { name: "자료" })).toBeTruthy();
+    openMaterials();
+    expect(screen.getByLabelText("첨부파일")).toBeTruthy();
+    expect(screen.getByLabelText("파일 추가")).toBeTruthy();
+    expect(screen.getByLabelText("링크 주소")).toBeTruthy();
+    expect(screen.getByLabelText("링크 이름")).toBeTruthy();
   });
 
-  it("관리자 배정 갈래에서는 그 담당자가 붙인다고 말한다", async () => {
-    renderModal({ assignCandidates: [jiho] });
-    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "계약서 검토" } });
-    fireEvent.change(screen.getByLabelText("담당자"), { target: { value: "jiho" } });
+  it("「저장되지 않습니다」도 그 경고도 서지 않는다 — 실제로 붙는 갈래다", () => {
+    renderModal({ canCreateTask: false });
+    pickFiles(["초안.pdf"]);
+    addLink("https://wiki.example/spec", "기획 위키");
 
     const field = screen.getByLabelText("첨부파일");
-    expect(within(field).getByText(/배정한 업무는 그 담당자입니다/)).toBeTruthy();
+    expect(within(field).queryByRole("alert")).toBeNull();
+    expect(field.textContent).not.toContain("요청에 자료를 싣는 API가 아직 없습니다");
+    expect(within(screen.getByLabelText("첨부할 파일")).queryByText("저장되지 않습니다")).toBeNull();
+    expect(within(screen.getByLabelText("첨부할 링크")).queryByText("저장되지 않습니다")).toBeNull();
+    // 고른 것을 화면에서 지우지 않는다 — 빼는 것은 사람이 한다
+    expect(screen.getByRole("button", { name: "기획 위키 빼기" })).toBeTruthy();
   });
 
-  /** **조용히 버리지 않는다** — 고른 파일은 남고, 왜 함께 못 가는지가 화면에 선다. */
-  it("파일을 고른 뒤 담당을 남으로 바꾸면 그 파일을 버리지 않고 못 붙는다고 말한다", async () => {
+  /**
+   * **임의 payload 를 지어내지 않는다.**
+   *
+   * `material_ids`·`attachments`·`material_draft_ids` 같은 이름을 서버가 모르는 채로 실으면 422
+   * 이거나 조용히 버려지는데, 둘 다 화면에서는 「저장됐다」로 읽힌다. 댓글 첨부·evidence 입구로
+   * 우회하지도 않는다 — 뜻이 다른 자리다.
+   */
+  it("요청 생성 payload 에는 자료 키가 실리지 않는다 — 우회 입구로도 새지 않는다", async () => {
+    vi.mocked(api.createWorkRequest).mockResolvedValue({ request_id: "req-7", title: "부탁한 업무" } as never);
+    vi.mocked(api.uploadWorkRequestMaterial).mockResolvedValue({} as never);
+    vi.mocked(api.attachWorkRequestMaterialLink).mockResolvedValue({} as never);
+    renderModal({ canCreateTask: false });
+    pickFiles(["초안.pdf"]);
+    addLink("https://wiki.example/spec", "기획 위키");
+    await sendRequest();
+
+    await waitFor(() => expect(api.createWorkRequest).toHaveBeenCalled());
+    const payload = JSON.stringify(vi.mocked(api.createWorkRequest).mock.calls[0][2]);
+    expect(payload).not.toContain("material");
+    expect(payload).not.toContain("attachment");
+    expect(payload).not.toContain("draft");
+    expect(payload).not.toContain("wiki.example");
+    // 업무 자료 입구로도, 댓글·evidence 우회로도 새지 않는다
+    expect(api.uploadTaskMaterial).not.toHaveBeenCalled();
+    expect(api.attachTaskMaterialLink).not.toHaveBeenCalled();
+    expect(api.uploadCommentAttachment).not.toHaveBeenCalled();
+    expect(api.uploadRequestEvidence).not.toHaveBeenCalled();
+  });
+
+  it("요청을 보낸 뒤 돌아온 request_id 로 파일을 올린다 — 새 payload 키 없이 두 단계다", async () => {
+    vi.mocked(api.createWorkRequest).mockResolvedValue({ request_id: "req-7", title: "부탁한 업무" } as never);
+    vi.mocked(api.uploadWorkRequestMaterial).mockResolvedValue({} as never);
+    const { onCreated, onClose } = renderModal({ canCreateTask: false });
+    pickFiles(["초안.pdf", "의견.md"]);
+    await sendRequest();
+
+    await waitFor(() => expect(api.uploadWorkRequestMaterial).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.uploadWorkRequestMaterial).mock.calls.map((call) => call[0])).toEqual(["req-7", "req-7"]);
+    expect(vi.mocked(api.uploadWorkRequestMaterial).mock.calls.map((call) => (call[1] as File).name)).toEqual([
+      "초안.pdf",
+      "의견.md",
+    ]);
+    await waitFor(() =>
+      expect(vi.mocked(onCreated).mock.calls.at(-1)).toEqual([
+        "'부탁한 업무' 업무를 소라에게 보냈습니다. 상대가 수락하면 그 사람의 업무가 됩니다. 자료 2건을 함께 보냈습니다.",
+        { assignedToOther: true },
+      ]),
+    );
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it("링크도 같은 두 단계다 — 보낸 뒤 그 request_id 로 붙는다", async () => {
+    vi.mocked(api.createWorkRequest).mockResolvedValue({ request_id: "req-7", title: "부탁한 업무" } as never);
+    vi.mocked(api.attachWorkRequestMaterialLink).mockResolvedValue({} as never);
+    const { onClose } = renderModal({ canCreateTask: false });
+    addLink("https://wiki.example/spec", "기획 위키");
+    await sendRequest();
+
+    await waitFor(() => expect(api.attachWorkRequestMaterialLink).toHaveBeenCalled());
+    expect(vi.mocked(api.attachWorkRequestMaterialLink).mock.calls[0]).toEqual([
+      "req-7",
+      { url: "https://wiki.example/spec", label: "기획 위키" },
+    ]);
+    // 업무 자료 링크 입구로 새지 않는다
+    expect(api.attachTaskMaterialLink).not.toHaveBeenCalled();
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  /**
+   * **요청은 이미 갔다.** 남은 것은 자료뿐이라, 여기서 다시 누르는 것은 «업로드 재시도» 이지
+   * 「처음부터 다시」가 아니다 — 그러면 같은 요청이 둘 간다.
+   */
+  it("자료 한 건이 실패하면 요청은 살리고 그 건만 다시 시도한다", async () => {
+    vi.mocked(api.createWorkRequest).mockResolvedValue({ request_id: "req-7", title: "부탁한 업무" } as never);
+    vi.mocked(api.uploadWorkRequestMaterial).mockResolvedValue({} as never);
+    vi.mocked(api.attachWorkRequestMaterialLink)
+      .mockRejectedValueOnce(new Error("서버 오류"))
+      .mockResolvedValueOnce({} as never);
+    const { onCreated, onError, onClose } = renderModal({ canCreateTask: false });
+    pickFiles(["초안.pdf"]);
+    addLink("https://wiki.example/spec", "기획 위키");
+    await sendRequest();
+
+    // 보냈다는 사실은 먼저 알린다 — 목록이 그 요청을 들고 있어야 한다.
+    await waitFor(() =>
+      expect(vi.mocked(onCreated).mock.calls.at(-1)).toEqual([
+        "'부탁한 업무' 업무를 소라에게 보냈습니다. 상대가 수락하면 그 사람의 업무가 됩니다.",
+        { assignedToOther: true },
+      ]),
+    );
+    // 그러나 닫지 않는다: 자료가 남았다는 사실을 사람이 보고 골라야 한다.
+    expect(onClose).not.toHaveBeenCalled();
+    expect(vi.mocked(onError).mock.calls.at(-1)?.[0]).toContain("요청은 보냈지만 첨부 1건을 올리지 못했습니다");
+
+    fireEvent.click(await screen.findByRole("button", { name: "첨부 다시 시도 (1)" }));
+
+    await waitFor(() => expect(api.attachWorkRequestMaterialLink).toHaveBeenCalledTimes(2));
+    // **발송은 여전히 한 번이고**, 성공한 파일을 다시 올리지도 않는다.
+    expect(api.createWorkRequest).toHaveBeenCalledTimes(1);
+    expect(api.uploadWorkRequestMaterial).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  /* 최종 발주 3: 「담당을 남으로 바꾸면」 갈래들이 여기 있었다. 업무 갈래에서 담당자 칸이 사라져
+     그 전환을 화면에서 만들 길이 없다 — 부를 수 없는 것을 부르는 척하는 검사를 남기지 않는다. */
+});
+
+describe("내 업무의 링크 자료 — 파일과 같은 두 단계다", () => {
+  it("업무를 만든 뒤 그 task_id 로 링크를 붙인다 — 새 서버 API 없이 두 단계다", async () => {
     vi.mocked(api.createDirectTask).mockResolvedValue({ task_id: "task-9", title: "계약서 검토" } as never);
-    const { onCreated } = renderModal({ assignCandidates: [jiho] });
+    vi.mocked(api.attachTaskMaterialLink).mockResolvedValue({} as never);
+    const { onCreated } = renderModal();
+
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "계약서 검토" } });
+    addLink("https://wiki.example/spec", "기획 위키");
+    // 내 업무에서는 「저장되지 않습니다」가 붙지 않는다 — 실제로 붙는 갈래다
+    expect(within(screen.getByLabelText("첨부할 링크")).queryByText("저장되지 않습니다")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "업무 추가" }));
+
+    await waitFor(() => expect(api.attachTaskMaterialLink).toHaveBeenCalled());
+    expect(vi.mocked(api.attachTaskMaterialLink).mock.calls[0]).toEqual([
+      "task-9",
+      "input",
+      { url: "https://wiki.example/spec", label: "기획 위키" },
+    ]);
+    await waitFor(() =>
+      expect(onCreated).toHaveBeenCalledWith("'계약서 검토' 업무를 만들었습니다. 첨부 1건을 올렸습니다.", { assignedToOther: false }),
+    );
+  });
+
+  it("주소만 적고 이름이 없으면 더하지 못한다 — 목록에 주소가 그대로 설 자리를 만들지 않는다", () => {
+    renderModal();
+    openMaterials();
+    fireEvent.change(screen.getByLabelText("링크 주소"), { target: { value: "https://wiki.example/spec" } });
+    expect((screen.getByRole("button", { name: "링크 추가" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("링크 이름"), { target: { value: "기획 위키" } });
+    expect((screen.getByRole("button", { name: "링크 추가" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("파일이 붙고 링크가 실패하면 그 링크만 다시 시도한다 — 업무도 파일도 다시 붙이지 않는다", async () => {
+    vi.mocked(api.createDirectTask).mockResolvedValue({ task_id: "task-9", title: "계약서 검토" } as never);
+    vi.mocked(api.uploadTaskMaterial).mockResolvedValue({} as never);
+    vi.mocked(api.attachTaskMaterialLink).mockRejectedValueOnce(new Error("서버 오류")).mockResolvedValueOnce({} as never);
+    const { onError, onClose } = renderModal();
 
     fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "계약서 검토" } });
     pickFiles(["초안.pdf"]);
-    fireEvent.change(screen.getByLabelText("담당자"), { target: { value: "jiho" } });
+    addLink("https://wiki.example/spec", "기획 위키");
+    fireEvent.click(screen.getByRole("button", { name: "업무 추가" }));
 
-    const field = screen.getByLabelText("첨부파일");
-    expect(within(field).getByText(/이 경로로는 함께 붙지 않습니다/)).toBeTruthy();
-    expect(within(within(field).getByLabelText("함께 붙지 않는 파일")).getByText("초안.pdf")).toBeTruthy();
+    const retry = await screen.findByRole("button", { name: "첨부 다시 시도 (1)" });
+    expect(vi.mocked(onError).mock.calls.at(-1)?.[0]).toContain("첨부 1건을 올리지 못했습니다");
+    fireEvent.click(retry);
 
-    // 담당을 나로 되돌리면 고른 파일이 그대로 다시 선다.
-    fireEvent.change(screen.getByLabelText("담당자"), { target: { value: "me" } });
-    expect(within(screen.getByLabelText("첨부할 파일")).getByText("초안.pdf")).toBeTruthy();
-
-    // 그리고 그 갈래로 보내도 업로드를 «성공한 척» 부르지 않는다.
-    fireEvent.change(screen.getByLabelText("담당자"), { target: { value: "jiho" } });
-    fireEvent.click(screen.getByRole("button", { name: "업무 배정" }));
-    await waitFor(() => expect(onCreated).toHaveBeenCalled());
-    expect(api.uploadTaskMaterial).not.toHaveBeenCalled();
+    await waitFor(() => expect(api.attachTaskMaterialLink).toHaveBeenCalledTimes(2));
+    // 성공한 파일을 다시 올리지 않고, 업무를 다시 만들지도 않는다
+    expect(api.uploadTaskMaterial).toHaveBeenCalledTimes(1);
+    expect(api.createDirectTask).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 });

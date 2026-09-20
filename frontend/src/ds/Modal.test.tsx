@@ -37,6 +37,24 @@ describe("Toast", () => {
     expect(icon.querySelector("path")?.getAttribute("d")).toBe("M20 6 9 17l-5-5");
   });
 
+  it("persist 면 스스로 사라지지 않는다 — 함께 온 단추를 누를 시간이 있다 (4차 발주 6)", () => {
+    vi.useFakeTimers();
+    try {
+      const onClose = vi.fn();
+      const { rerender } = render(
+        <Toast action={{ label: "다시 불러오기", onAction: () => {} }} closeLabel="알림 지우기" message="완료 처리했습니다" onClose={onClose} persist />,
+      );
+      vi.advanceTimersByTime(10_000);
+      expect(onClose).not.toHaveBeenCalled();
+      // 켜지 않으면 예전과 똑같이 4초 뒤에 닫힌다.
+      rerender(<Toast closeLabel="알림 지우기" message="완료 처리했습니다" onClose={onClose} />);
+      vi.advanceTimersByTime(4_000);
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("error 는 alert 글리프를 세우고 role 을 alert 로 올린다", () => {
     const { container } = render(<Toast closeLabel="알림 지우기" message="처리하지 못했습니다" onClose={() => {}} tone="error" />);
     const toast = container.firstElementChild as HTMLElement;

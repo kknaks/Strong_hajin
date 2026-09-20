@@ -3,7 +3,7 @@ from datetime import date
 from typing import Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class TaskCompletionInput(BaseModel):
@@ -51,6 +51,24 @@ class TaskEditFields(BaseModel):
     start_date: date | None = Field(default=None, title='시작일')
     due_date: date | None = Field(default=None, title='기한')
     project_id: UUID | None = Field(default=None, title='프로젝트')
+    #: 선행업무 — **배열 전체 교체**다 (SPEC-001 §4). 한 건씩 붙였다 떼는 전용 명령을 두지 않는다:
+    #: 선행은 화면이 프로젝트 안에서 한 번에 여러 개를 고르는 **집합**이다.
+    #: **생략하면 건드리지 않고**(`exclude_unset`), 빈 배열은 「전부 뗀다」다.
+    preceding_task_ids: list[UUID] = Field(default_factory=list, title='선행업무')
+    #: 승인자(화면 라벨 「결재자」) — 없음은 보존, `null` 은 비우기다. `승인 대기` 뒤에는 바꿀 수 없다.
+    approver_id: str | None = Field(default=None, max_length=100, title='승인자')
+
+    @field_validator('preceding_task_ids', mode='before')
+    @classmethod
+    def absent_predecessors(cls, value: object) -> object:
+        # `null` 과 빈 배열을 같은 뜻으로 읽는다 — 둘 다 「전부 뗀다」다. 생략은 그것과 다른 뜻이고
+        # `model_fields_set` 이 그 차이를 갖는다.
+        return [] if value is None else value
+
+    @field_validator('approver_id', mode='before')
+    @classmethod
+    def empty_approver(cls, value: object) -> object:
+        return None if value == '' else value
 
     @model_validator(mode='after')
     def validate_edits(self) -> Self:
@@ -92,12 +110,22 @@ class TaskUpdateInput(BaseModel):
     clear_due_date: bool = Field(default=False, title='기한 삭제')
     project_id: UUID | None = Field(default=None, title='프로젝트')
     clear_project: bool = Field(default=False, title='프로젝트 연결 해제')
+    #: 선행업무 — 보내면 **전체 교체**, 생략하면 건드리지 않는다. 빈 배열은 「전부 뗀다」다.
+    preceding_task_ids: list[UUID] | None = Field(default=None, title='선행업무')
+    approver_id: str | None = Field(default=None, title='승인자')
+    clear_approver: bool = Field(default=False, title='승인자 비우기')
 
     def changes(self) -> dict:
         values = {key: getattr(self, key) for key in ('title', 'description') if getattr(self, key) is not None}
         for key, clear in [('start_date', self.clear_start_date), ('due_date', self.clear_due_date), ('project_id', self.clear_project)]:
             if clear or getattr(self, key) is not None:
                 values[key] = None if clear else getattr(self, key)
+        # **`None` 은 「생략」이고 빈 배열은 「전부 뗀다」다.** 둘을 한 값으로 접으면 화면이 선행을
+        # 비울 길이 없어진다 — 그래서 이 표면만 `None` 을 생략의 뜻으로 읽는다.
+        if self.preceding_task_ids is not None:
+            values['preceding_task_ids'] = self.preceding_task_ids
+        if self.clear_approver or self.approver_id is not None:
+            values['approver_id'] = None if self.clear_approver else self.approver_id
         return TaskEditFields.model_validate(values).changes()
 
 

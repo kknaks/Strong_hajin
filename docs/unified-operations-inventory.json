@@ -2965,7 +2965,7 @@
   ],
   "current_runtime": {
     "phase": "main-sync",
-    "http_count": 150,
+    "http_count": 156,
     "tool_count": 129,
     "tools": [
       {
@@ -8759,6 +8759,13 @@
                     }
                   ],
                   "title": "Parent Task Id"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
                 }
               },
               "required": [
@@ -8767,7 +8774,8 @@
                 "state",
                 "start_date",
                 "due_date",
-                "parent_task_id"
+                "parent_task_id",
+                "preceding_task_ids"
               ],
               "title": "ProjectTaskView",
               "type": "object"
@@ -9410,6 +9418,31 @@
                     }
                   ]
                 },
+                "cc_member_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Cc Member Ids",
+                  "type": "array"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
+                },
                 "derived": {
                   "anyOf": [
                     {
@@ -9444,6 +9477,9 @@
                 "completed_at",
                 "reopened_at",
                 "assignment",
+                "cc_member_ids",
+                "preceding_task_ids",
+                "approver_id",
                 "derived",
                 "lineage"
               ],
@@ -15569,6 +15605,31 @@
                     }
                   ]
                 },
+                "cc_member_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Cc Member Ids",
+                  "type": "array"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
+                },
                 "derived": {
                   "anyOf": [
                     {
@@ -15626,6 +15687,9 @@
                 "completed_at",
                 "reopened_at",
                 "assignment",
+                "cc_member_ids",
+                "preceding_task_ids",
+                "approver_id",
                 "derived",
                 "lineage",
                 "checklist_progress",
@@ -16219,6 +16283,31 @@
                     }
                   ]
                 },
+                "cc_member_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Cc Member Ids",
+                  "type": "array"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
+                },
                 "derived": {
                   "anyOf": [
                     {
@@ -16276,6 +16365,9 @@
                 "completed_at",
                 "reopened_at",
                 "assignment",
+                "cc_member_ids",
+                "preceding_task_ids",
+                "approver_id",
                 "derived",
                 "lineage",
                 "checklist_progress",
@@ -16975,6 +17067,44 @@
               "title": "TaskParentView",
               "type": "object"
             },
+            "TaskPredecessorView": {
+              "description": "선행 하나의 요약. **볼 수 없는 선행은 `title`·`state` 가 비고 자리만 남는다** (SPEC-001 §4).\n\n자료 구획과 다르다: 자료는 건수도 내지 않지만 선행은 **시작을 막는 이유**라, 이유를 숨기면\n사람이 다음 걸음을 고를 수 없다. **제목은 감추고 건수는 낸다** — 배열 길이가 그 건수다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Title"
+                },
+                "state": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "State"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "state"
+              ],
+              "title": "TaskPredecessorView",
+              "type": "object"
+            },
             "TaskProgressView": {
               "properties": {
                 "done": {
@@ -17258,6 +17388,31 @@
                 }
               ]
             },
+            "cc_member_ids": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Cc Member Ids",
+              "type": "array"
+            },
+            "preceding_task_ids": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Preceding Task Ids",
+              "type": "array"
+            },
+            "approver_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Approver Id"
+            },
             "derived": {
               "anyOf": [
                 {
@@ -17329,6 +17484,13 @@
               "title": "Access",
               "type": "string"
             },
+            "predecessors": {
+              "items": {
+                "$ref": "#/$defs/TaskPredecessorView"
+              },
+              "title": "Predecessors",
+              "type": "array"
+            },
             "checklist": {
               "items": {
                 "$ref": "#/$defs/ChecklistItemView"
@@ -17367,6 +17529,9 @@
             "completed_at",
             "reopened_at",
             "assignment",
+            "cc_member_ids",
+            "preceding_task_ids",
+            "approver_id",
             "derived",
             "lineage",
             "origin",
@@ -17375,7 +17540,8 @@
             "children",
             "child_progress",
             "delivery",
-            "access"
+            "access",
+            "predecessors"
           ],
           "title": "TaskDetailResult",
           "type": "object"
@@ -21603,6 +21769,49 @@
               ],
               "default": null,
               "title": "담당"
+            },
+            "cc_member_ids": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cc Member Ids"
+            },
+            "preceding_task_ids": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Preceding Task Ids"
+            },
+            "approver_id": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "승인자"
             }
           },
           "required": [
@@ -22516,6 +22725,31 @@
                     }
                   ]
                 },
+                "cc_member_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Cc Member Ids",
+                  "type": "array"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
+                },
                 "derived": {
                   "anyOf": [
                     {
@@ -22550,6 +22784,9 @@
                 "completed_at",
                 "reopened_at",
                 "assignment",
+                "cc_member_ids",
+                "preceding_task_ids",
+                "approver_id",
                 "derived",
                 "lineage"
               ],
@@ -23740,6 +23977,31 @@
                     }
                   ]
                 },
+                "cc_member_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Cc Member Ids",
+                  "type": "array"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
+                },
                 "derived": {
                   "anyOf": [
                     {
@@ -23774,6 +24036,9 @@
                 "completed_at",
                 "reopened_at",
                 "assignment",
+                "cc_member_ids",
+                "preceding_task_ids",
+                "approver_id",
                 "derived",
                 "lineage"
               ],
@@ -24804,6 +25069,31 @@
                     }
                   ]
                 },
+                "cc_member_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Cc Member Ids",
+                  "type": "array"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
+                },
                 "derived": {
                   "anyOf": [
                     {
@@ -24838,6 +25128,9 @@
                 "completed_at",
                 "reopened_at",
                 "assignment",
+                "cc_member_ids",
+                "preceding_task_ids",
+                "approver_id",
                 "derived",
                 "lineage"
               ],
@@ -25805,6 +26098,31 @@
                     }
                   ]
                 },
+                "cc_member_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Cc Member Ids",
+                  "type": "array"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
+                },
                 "derived": {
                   "anyOf": [
                     {
@@ -25839,6 +26157,9 @@
                 "completed_at",
                 "reopened_at",
                 "assignment",
+                "cc_member_ids",
+                "preceding_task_ids",
+                "approver_id",
                 "derived",
                 "lineage"
               ],
@@ -26806,6 +27127,31 @@
                     }
                   ]
                 },
+                "cc_member_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Cc Member Ids",
+                  "type": "array"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
+                },
                 "derived": {
                   "anyOf": [
                     {
@@ -26840,6 +27186,9 @@
                 "completed_at",
                 "reopened_at",
                 "assignment",
+                "cc_member_ids",
+                "preceding_task_ids",
+                "approver_id",
                 "derived",
                 "lineage"
               ],
@@ -27807,6 +28156,31 @@
                     }
                   ]
                 },
+                "cc_member_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Cc Member Ids",
+                  "type": "array"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
+                },
                 "derived": {
                   "anyOf": [
                     {
@@ -27841,6 +28215,9 @@
                 "completed_at",
                 "reopened_at",
                 "assignment",
+                "cc_member_ids",
+                "preceding_task_ids",
+                "approver_id",
                 "derived",
                 "lineage"
               ],
@@ -28808,6 +29185,31 @@
                     }
                   ]
                 },
+                "cc_member_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Cc Member Ids",
+                  "type": "array"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
+                },
                 "derived": {
                   "anyOf": [
                     {
@@ -28842,6 +29244,9 @@
                 "completed_at",
                 "reopened_at",
                 "assignment",
+                "cc_member_ids",
+                "preceding_task_ids",
+                "approver_id",
                 "derived",
                 "lineage"
               ],
@@ -29809,6 +30214,31 @@
                     }
                   ]
                 },
+                "cc_member_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Cc Member Ids",
+                  "type": "array"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
+                },
                 "derived": {
                   "anyOf": [
                     {
@@ -29843,6 +30273,9 @@
                 "completed_at",
                 "reopened_at",
                 "assignment",
+                "cc_member_ids",
+                "preceding_task_ids",
+                "approver_id",
                 "derived",
                 "lineage"
               ],
@@ -35561,6 +35994,7 @@
           "$defs": {
             "MeetingTodoPromotionInput": {
               "additionalProperties": false,
+              "description": "회의 후보 하나를 업무 요청으로 보낸다 — **같은 생성 프레임이 같은 값을 싣는다** (WORK-003 gap B).\n\n승격 창과 업무 화면의 창은 **같은 폼**인데 여기만 다섯 칸이었다. 나머지 일곱은 `POST /api/work-requests`\n가 이미 받는 값인데 이 입구에서 `extra=\"forbid\"` 로 422 가 됐고, 관대하게 열어 두었다면 조용히\n버려졌을 것이다 — 고른 사람은 어느 쪽도 볼 수 없다. 그래서 **같은 이름으로** 받아 요청 생성에\n그대로 흘린다.\n\n기존 다섯의 뜻은 그대로다: `None` 은 「고치지 않았다」이고 그때 후보값이 간다.\n`extra=\"forbid\"` 도 그대로 — 이름을 지어낸 값은 여전히 거절된다.",
               "properties": {
                 "assignee_id": {
                   "maxLength": 100,
@@ -35620,6 +36054,105 @@
                   ],
                   "default": null,
                   "title": "Checklist"
+                },
+                "start_date": {
+                  "anyOf": [
+                    {
+                      "format": "date",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Start Date"
+                },
+                "cc_member_ids": {
+                  "anyOf": [
+                    {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Cc Member Ids"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "maxLength": 100,
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Approver Id"
+                },
+                "reference_task_ids": {
+                  "anyOf": [
+                    {
+                      "items": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Reference Task Ids"
+                },
+                "project_id": {
+                  "anyOf": [
+                    {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Project Id"
+                },
+                "parent_task_id": {
+                  "anyOf": [
+                    {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Parent Task Id"
+                },
+                "preceding_task_ids": {
+                  "anyOf": [
+                    {
+                      "items": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Preceding Task Ids"
                 }
               },
               "required": [
@@ -43681,6 +44214,31 @@
                     }
                   ]
                 },
+                "cc_member_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Cc Member Ids",
+                  "type": "array"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
+                },
                 "derived": {
                   "anyOf": [
                     {
@@ -43715,6 +44273,9 @@
                 "completed_at",
                 "reopened_at",
                 "assignment",
+                "cc_member_ids",
+                "preceding_task_ids",
+                "approver_id",
                 "derived",
                 "lineage"
               ],
@@ -56404,6 +56965,31 @@
                     }
                   ]
                 },
+                "cc_member_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Cc Member Ids",
+                  "type": "array"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
+                },
                 "derived": {
                   "anyOf": [
                     {
@@ -56438,6 +57024,9 @@
                 "completed_at",
                 "reopened_at",
                 "assignment",
+                "cc_member_ids",
+                "preceding_task_ids",
+                "approver_id",
                 "derived",
                 "lineage"
               ],
@@ -57249,6 +57838,31 @@
                     }
                   ]
                 },
+                "cc_member_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Cc Member Ids",
+                  "type": "array"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
+                },
                 "derived": {
                   "anyOf": [
                     {
@@ -57293,6 +57907,9 @@
                 "completed_at",
                 "reopened_at",
                 "assignment",
+                "cc_member_ids",
+                "preceding_task_ids",
+                "approver_id",
                 "derived",
                 "lineage",
                 "delivery"
@@ -58901,7 +59518,316 @@
         },
         "output_schema": {
           "$defs": {
+            "ExtractionView": {
+              "properties": {
+                "extraction_id": {
+                  "title": "Extraction Id",
+                  "type": "string"
+                },
+                "status": {
+                  "title": "Status",
+                  "type": "string"
+                },
+                "extractor": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Extractor"
+                },
+                "failure_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Failure Reason"
+                },
+                "failure_text": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Failure Text"
+                },
+                "chunk_count": {
+                  "title": "Chunk Count",
+                  "type": "integer"
+                },
+                "char_count": {
+                  "title": "Char Count",
+                  "type": "integer"
+                },
+                "page_count": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Page Count"
+                },
+                "warnings": {
+                  "items": {
+                    "$ref": "#/$defs/JsonValue"
+                  },
+                  "title": "Warnings",
+                  "type": "array"
+                },
+                "coverage": {
+                  "$ref": "#/$defs/JsonValue"
+                },
+                "parser_version": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Parser Version"
+                },
+                "integrity_ref": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Integrity Ref"
+                },
+                "attempt_count": {
+                  "title": "Attempt Count",
+                  "type": "integer"
+                },
+                "requested_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Requested At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "stored_status": {
+                  "title": "Stored Status",
+                  "type": "string"
+                },
+                "reextraction_required": {
+                  "title": "Reextraction Required",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "extraction_id",
+                "status",
+                "extractor",
+                "failure_reason",
+                "failure_text",
+                "chunk_count",
+                "char_count",
+                "page_count",
+                "warnings",
+                "coverage",
+                "parser_version",
+                "integrity_ref",
+                "attempt_count",
+                "requested_at",
+                "completed_at"
+              ],
+              "title": "ExtractionView",
+              "type": "object"
+            },
             "JsonValue": {},
+            "MaterialResourceView": {
+              "properties": {
+                "type": {
+                  "title": "Type",
+                  "type": "string"
+                },
+                "id": {
+                  "title": "Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "title"
+              ],
+              "title": "MaterialResourceView",
+              "type": "object"
+            },
+            "WorkRequestMaterialView": {
+              "description": "요청에 붙은 자료 한 건 — **업무 자료와 같은 모양**이고 자리만 하나 더 붙는다.\n\n`request_id` 는 그 자료가 붙어 있는 요청이고, `task_id` 는 그 요청이 세운 업무다. 수락하면 같은\nAttachment 가 두 자리에 함께 서므로(요청 binding 보존 + 업무 binding 추가) 두 값이 모두 뜻을 갖는다.",
+              "properties": {
+                "extraction": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ExtractionView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "material_id": {
+                  "title": "Material Id",
+                  "type": "string"
+                },
+                "binding_id": {
+                  "title": "Binding Id",
+                  "type": "string"
+                },
+                "attachment_id": {
+                  "title": "Attachment Id",
+                  "type": "string"
+                },
+                "task_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Task Id"
+                },
+                "kind": {
+                  "title": "Kind",
+                  "type": "string"
+                },
+                "name": {
+                  "title": "Name",
+                  "type": "string"
+                },
+                "resource": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/MaterialResourceView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "content_type": {
+                  "title": "Content Type",
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "title": "Size Bytes",
+                  "type": "integer"
+                },
+                "source_kind": {
+                  "title": "Source Kind",
+                  "type": "string"
+                },
+                "url": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Url"
+                },
+                "mutable_source": {
+                  "title": "Mutable Source",
+                  "type": "boolean"
+                },
+                "integrity_ref": {
+                  "title": "Integrity Ref",
+                  "type": "string"
+                },
+                "purged": {
+                  "title": "Purged",
+                  "type": "boolean"
+                },
+                "uploaded_by": {
+                  "title": "Uploaded By",
+                  "type": "string"
+                },
+                "created_at": {
+                  "title": "Created At",
+                  "type": "string"
+                },
+                "removed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Removed At"
+                },
+                "request_id": {
+                  "title": "Request Id",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "extraction",
+                "material_id",
+                "binding_id",
+                "attachment_id",
+                "task_id",
+                "kind",
+                "name",
+                "resource",
+                "content_type",
+                "size_bytes",
+                "source_kind",
+                "url",
+                "mutable_source",
+                "integrity_ref",
+                "purged",
+                "uploaded_by",
+                "created_at",
+                "removed_at",
+                "request_id"
+              ],
+              "title": "WorkRequestMaterialView",
+              "type": "object"
+            },
             "WorkRequestMutationResult": {
               "properties": {
                 "request_id": {
@@ -58945,6 +59871,17 @@
                   ],
                   "title": "Description"
                 },
+                "start_date": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Start Date"
+                },
                 "due_date": {
                   "anyOf": [
                     {
@@ -58955,6 +59892,28 @@
                     }
                   ],
                   "title": "Due Date"
+                },
+                "project_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Project Id"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
                 },
                 "checklist": {
                   "items": {
@@ -59073,6 +60032,27 @@
                     }
                   ],
                   "title": "Conditions"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "reference_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Reference Task Ids",
+                  "type": "array"
+                },
+                "materials": {
+                  "items": {
+                    "$ref": "#/$defs/WorkRequestMaterialView"
+                  },
+                  "title": "Materials",
+                  "type": "array"
                 }
               },
               "required": [
@@ -59081,7 +60061,10 @@
                 "submission_version",
                 "title",
                 "description",
+                "start_date",
                 "due_date",
+                "project_id",
+                "approver_id",
                 "checklist",
                 "requester_id",
                 "requester_kind",
@@ -59096,7 +60079,10 @@
                 "parent_task_id",
                 "supersedes_request_id",
                 "list_entry_hidden",
-                "conditions"
+                "conditions",
+                "preceding_task_ids",
+                "reference_task_ids",
+                "materials"
               ],
               "title": "WorkRequestMutationResult",
               "type": "object"
@@ -59148,7 +60134,179 @@
         },
         "output_schema": {
           "$defs": {
+            "ExtractionView": {
+              "properties": {
+                "extraction_id": {
+                  "title": "Extraction Id",
+                  "type": "string"
+                },
+                "status": {
+                  "title": "Status",
+                  "type": "string"
+                },
+                "extractor": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Extractor"
+                },
+                "failure_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Failure Reason"
+                },
+                "failure_text": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Failure Text"
+                },
+                "chunk_count": {
+                  "title": "Chunk Count",
+                  "type": "integer"
+                },
+                "char_count": {
+                  "title": "Char Count",
+                  "type": "integer"
+                },
+                "page_count": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Page Count"
+                },
+                "warnings": {
+                  "items": {
+                    "$ref": "#/$defs/JsonValue"
+                  },
+                  "title": "Warnings",
+                  "type": "array"
+                },
+                "coverage": {
+                  "$ref": "#/$defs/JsonValue"
+                },
+                "parser_version": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Parser Version"
+                },
+                "integrity_ref": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Integrity Ref"
+                },
+                "attempt_count": {
+                  "title": "Attempt Count",
+                  "type": "integer"
+                },
+                "requested_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Requested At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "stored_status": {
+                  "title": "Stored Status",
+                  "type": "string"
+                },
+                "reextraction_required": {
+                  "title": "Reextraction Required",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "extraction_id",
+                "status",
+                "extractor",
+                "failure_reason",
+                "failure_text",
+                "chunk_count",
+                "char_count",
+                "page_count",
+                "warnings",
+                "coverage",
+                "parser_version",
+                "integrity_ref",
+                "attempt_count",
+                "requested_at",
+                "completed_at"
+              ],
+              "title": "ExtractionView",
+              "type": "object"
+            },
             "JsonValue": {},
+            "MaterialResourceView": {
+              "properties": {
+                "type": {
+                  "title": "Type",
+                  "type": "string"
+                },
+                "id": {
+                  "title": "Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "title"
+              ],
+              "title": "MaterialResourceView",
+              "type": "object"
+            },
             "TaskBlockingChildView": {
               "description": "상위 완료를 막는 하위 하나 — 이름을 내야 사람이 다음 걸음을 고른다.",
               "properties": {
@@ -59336,6 +60494,143 @@
               "title": "TaskSummaryView",
               "type": "object"
             },
+            "WorkRequestMaterialView": {
+              "description": "요청에 붙은 자료 한 건 — **업무 자료와 같은 모양**이고 자리만 하나 더 붙는다.\n\n`request_id` 는 그 자료가 붙어 있는 요청이고, `task_id` 는 그 요청이 세운 업무다. 수락하면 같은\nAttachment 가 두 자리에 함께 서므로(요청 binding 보존 + 업무 binding 추가) 두 값이 모두 뜻을 갖는다.",
+              "properties": {
+                "extraction": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ExtractionView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "material_id": {
+                  "title": "Material Id",
+                  "type": "string"
+                },
+                "binding_id": {
+                  "title": "Binding Id",
+                  "type": "string"
+                },
+                "attachment_id": {
+                  "title": "Attachment Id",
+                  "type": "string"
+                },
+                "task_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Task Id"
+                },
+                "kind": {
+                  "title": "Kind",
+                  "type": "string"
+                },
+                "name": {
+                  "title": "Name",
+                  "type": "string"
+                },
+                "resource": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/MaterialResourceView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "content_type": {
+                  "title": "Content Type",
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "title": "Size Bytes",
+                  "type": "integer"
+                },
+                "source_kind": {
+                  "title": "Source Kind",
+                  "type": "string"
+                },
+                "url": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Url"
+                },
+                "mutable_source": {
+                  "title": "Mutable Source",
+                  "type": "boolean"
+                },
+                "integrity_ref": {
+                  "title": "Integrity Ref",
+                  "type": "string"
+                },
+                "purged": {
+                  "title": "Purged",
+                  "type": "boolean"
+                },
+                "uploaded_by": {
+                  "title": "Uploaded By",
+                  "type": "string"
+                },
+                "created_at": {
+                  "title": "Created At",
+                  "type": "string"
+                },
+                "removed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Removed At"
+                },
+                "request_id": {
+                  "title": "Request Id",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "extraction",
+                "material_id",
+                "binding_id",
+                "attachment_id",
+                "task_id",
+                "kind",
+                "name",
+                "resource",
+                "content_type",
+                "size_bytes",
+                "source_kind",
+                "url",
+                "mutable_source",
+                "integrity_ref",
+                "purged",
+                "uploaded_by",
+                "created_at",
+                "removed_at",
+                "request_id"
+              ],
+              "title": "WorkRequestMaterialView",
+              "type": "object"
+            },
             "WorkRequestReferenceView": {
               "properties": {
                 "reference_id": {
@@ -59408,6 +60703,17 @@
               ],
               "title": "Description"
             },
+            "start_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            },
             "due_date": {
               "anyOf": [
                 {
@@ -59418,6 +60724,28 @@
                 }
               ],
               "title": "Due Date"
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            },
+            "approver_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Approver Id"
             },
             "checklist": {
               "items": {
@@ -59537,6 +60865,27 @@
               ],
               "title": "Conditions"
             },
+            "preceding_task_ids": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Preceding Task Ids",
+              "type": "array"
+            },
+            "reference_task_ids": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Reference Task Ids",
+              "type": "array"
+            },
+            "materials": {
+              "items": {
+                "$ref": "#/$defs/WorkRequestMaterialView"
+              },
+              "title": "Materials",
+              "type": "array"
+            },
             "references": {
               "items": {
                 "$ref": "#/$defs/WorkRequestReferenceView"
@@ -59562,7 +60911,10 @@
             "submission_version",
             "title",
             "description",
+            "start_date",
             "due_date",
+            "project_id",
+            "approver_id",
             "checklist",
             "requester_id",
             "requester_kind",
@@ -59578,6 +60930,9 @@
             "supersedes_request_id",
             "list_entry_hidden",
             "conditions",
+            "preceding_task_ids",
+            "reference_task_ids",
+            "materials",
             "references",
             "source_meeting_title"
           ],
@@ -59730,7 +61085,179 @@
               "title": "DiscussionAttachmentView",
               "type": "object"
             },
+            "ExtractionView": {
+              "properties": {
+                "extraction_id": {
+                  "title": "Extraction Id",
+                  "type": "string"
+                },
+                "status": {
+                  "title": "Status",
+                  "type": "string"
+                },
+                "extractor": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Extractor"
+                },
+                "failure_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Failure Reason"
+                },
+                "failure_text": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Failure Text"
+                },
+                "chunk_count": {
+                  "title": "Chunk Count",
+                  "type": "integer"
+                },
+                "char_count": {
+                  "title": "Char Count",
+                  "type": "integer"
+                },
+                "page_count": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Page Count"
+                },
+                "warnings": {
+                  "items": {
+                    "$ref": "#/$defs/JsonValue"
+                  },
+                  "title": "Warnings",
+                  "type": "array"
+                },
+                "coverage": {
+                  "$ref": "#/$defs/JsonValue"
+                },
+                "parser_version": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Parser Version"
+                },
+                "integrity_ref": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Integrity Ref"
+                },
+                "attempt_count": {
+                  "title": "Attempt Count",
+                  "type": "integer"
+                },
+                "requested_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Requested At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "stored_status": {
+                  "title": "Stored Status",
+                  "type": "string"
+                },
+                "reextraction_required": {
+                  "title": "Reextraction Required",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "extraction_id",
+                "status",
+                "extractor",
+                "failure_reason",
+                "failure_text",
+                "chunk_count",
+                "char_count",
+                "page_count",
+                "warnings",
+                "coverage",
+                "parser_version",
+                "integrity_ref",
+                "attempt_count",
+                "requested_at",
+                "completed_at"
+              ],
+              "title": "ExtractionView",
+              "type": "object"
+            },
             "JsonValue": {},
+            "MaterialResourceView": {
+              "properties": {
+                "type": {
+                  "title": "Type",
+                  "type": "string"
+                },
+                "id": {
+                  "title": "Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "title"
+              ],
+              "title": "MaterialResourceView",
+              "type": "object"
+            },
             "WorkRequestActivityView": {
               "properties": {
                 "event_kind": {
@@ -59869,6 +61396,143 @@
               "title": "WorkRequestEvidenceView",
               "type": "object"
             },
+            "WorkRequestMaterialView": {
+              "description": "요청에 붙은 자료 한 건 — **업무 자료와 같은 모양**이고 자리만 하나 더 붙는다.\n\n`request_id` 는 그 자료가 붙어 있는 요청이고, `task_id` 는 그 요청이 세운 업무다. 수락하면 같은\nAttachment 가 두 자리에 함께 서므로(요청 binding 보존 + 업무 binding 추가) 두 값이 모두 뜻을 갖는다.",
+              "properties": {
+                "extraction": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ExtractionView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "material_id": {
+                  "title": "Material Id",
+                  "type": "string"
+                },
+                "binding_id": {
+                  "title": "Binding Id",
+                  "type": "string"
+                },
+                "attachment_id": {
+                  "title": "Attachment Id",
+                  "type": "string"
+                },
+                "task_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Task Id"
+                },
+                "kind": {
+                  "title": "Kind",
+                  "type": "string"
+                },
+                "name": {
+                  "title": "Name",
+                  "type": "string"
+                },
+                "resource": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/MaterialResourceView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "content_type": {
+                  "title": "Content Type",
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "title": "Size Bytes",
+                  "type": "integer"
+                },
+                "source_kind": {
+                  "title": "Source Kind",
+                  "type": "string"
+                },
+                "url": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Url"
+                },
+                "mutable_source": {
+                  "title": "Mutable Source",
+                  "type": "boolean"
+                },
+                "integrity_ref": {
+                  "title": "Integrity Ref",
+                  "type": "string"
+                },
+                "purged": {
+                  "title": "Purged",
+                  "type": "boolean"
+                },
+                "uploaded_by": {
+                  "title": "Uploaded By",
+                  "type": "string"
+                },
+                "created_at": {
+                  "title": "Created At",
+                  "type": "string"
+                },
+                "removed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Removed At"
+                },
+                "request_id": {
+                  "title": "Request Id",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "extraction",
+                "material_id",
+                "binding_id",
+                "attachment_id",
+                "task_id",
+                "kind",
+                "name",
+                "resource",
+                "content_type",
+                "size_bytes",
+                "source_kind",
+                "url",
+                "mutable_source",
+                "integrity_ref",
+                "purged",
+                "uploaded_by",
+                "created_at",
+                "removed_at",
+                "request_id"
+              ],
+              "title": "WorkRequestMaterialView",
+              "type": "object"
+            },
             "WorkRequestMutationResult": {
               "properties": {
                 "request_id": {
@@ -59912,6 +61576,17 @@
                   ],
                   "title": "Description"
                 },
+                "start_date": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Start Date"
+                },
                 "due_date": {
                   "anyOf": [
                     {
@@ -59922,6 +61597,28 @@
                     }
                   ],
                   "title": "Due Date"
+                },
+                "project_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Project Id"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
                 },
                 "checklist": {
                   "items": {
@@ -60040,6 +61737,27 @@
                     }
                   ],
                   "title": "Conditions"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "reference_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Reference Task Ids",
+                  "type": "array"
+                },
+                "materials": {
+                  "items": {
+                    "$ref": "#/$defs/WorkRequestMaterialView"
+                  },
+                  "title": "Materials",
+                  "type": "array"
                 }
               },
               "required": [
@@ -60048,7 +61766,10 @@
                 "submission_version",
                 "title",
                 "description",
+                "start_date",
                 "due_date",
+                "project_id",
+                "approver_id",
                 "checklist",
                 "requester_id",
                 "requester_kind",
@@ -60063,7 +61784,10 @@
                 "parent_task_id",
                 "supersedes_request_id",
                 "list_entry_hidden",
-                "conditions"
+                "conditions",
+                "preceding_task_ids",
+                "reference_task_ids",
+                "materials"
               ],
               "title": "WorkRequestMutationResult",
               "type": "object"
@@ -60960,7 +62684,316 @@
               "title": "ActionProposalResult",
               "type": "object"
             },
+            "ExtractionView": {
+              "properties": {
+                "extraction_id": {
+                  "title": "Extraction Id",
+                  "type": "string"
+                },
+                "status": {
+                  "title": "Status",
+                  "type": "string"
+                },
+                "extractor": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Extractor"
+                },
+                "failure_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Failure Reason"
+                },
+                "failure_text": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Failure Text"
+                },
+                "chunk_count": {
+                  "title": "Chunk Count",
+                  "type": "integer"
+                },
+                "char_count": {
+                  "title": "Char Count",
+                  "type": "integer"
+                },
+                "page_count": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Page Count"
+                },
+                "warnings": {
+                  "items": {
+                    "$ref": "#/$defs/JsonValue"
+                  },
+                  "title": "Warnings",
+                  "type": "array"
+                },
+                "coverage": {
+                  "$ref": "#/$defs/JsonValue"
+                },
+                "parser_version": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Parser Version"
+                },
+                "integrity_ref": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Integrity Ref"
+                },
+                "attempt_count": {
+                  "title": "Attempt Count",
+                  "type": "integer"
+                },
+                "requested_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Requested At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "stored_status": {
+                  "title": "Stored Status",
+                  "type": "string"
+                },
+                "reextraction_required": {
+                  "title": "Reextraction Required",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "extraction_id",
+                "status",
+                "extractor",
+                "failure_reason",
+                "failure_text",
+                "chunk_count",
+                "char_count",
+                "page_count",
+                "warnings",
+                "coverage",
+                "parser_version",
+                "integrity_ref",
+                "attempt_count",
+                "requested_at",
+                "completed_at"
+              ],
+              "title": "ExtractionView",
+              "type": "object"
+            },
             "JsonValue": {},
+            "MaterialResourceView": {
+              "properties": {
+                "type": {
+                  "title": "Type",
+                  "type": "string"
+                },
+                "id": {
+                  "title": "Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "title"
+              ],
+              "title": "MaterialResourceView",
+              "type": "object"
+            },
+            "WorkRequestMaterialView": {
+              "description": "요청에 붙은 자료 한 건 — **업무 자료와 같은 모양**이고 자리만 하나 더 붙는다.\n\n`request_id` 는 그 자료가 붙어 있는 요청이고, `task_id` 는 그 요청이 세운 업무다. 수락하면 같은\nAttachment 가 두 자리에 함께 서므로(요청 binding 보존 + 업무 binding 추가) 두 값이 모두 뜻을 갖는다.",
+              "properties": {
+                "extraction": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ExtractionView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "material_id": {
+                  "title": "Material Id",
+                  "type": "string"
+                },
+                "binding_id": {
+                  "title": "Binding Id",
+                  "type": "string"
+                },
+                "attachment_id": {
+                  "title": "Attachment Id",
+                  "type": "string"
+                },
+                "task_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Task Id"
+                },
+                "kind": {
+                  "title": "Kind",
+                  "type": "string"
+                },
+                "name": {
+                  "title": "Name",
+                  "type": "string"
+                },
+                "resource": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/MaterialResourceView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "content_type": {
+                  "title": "Content Type",
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "title": "Size Bytes",
+                  "type": "integer"
+                },
+                "source_kind": {
+                  "title": "Source Kind",
+                  "type": "string"
+                },
+                "url": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Url"
+                },
+                "mutable_source": {
+                  "title": "Mutable Source",
+                  "type": "boolean"
+                },
+                "integrity_ref": {
+                  "title": "Integrity Ref",
+                  "type": "string"
+                },
+                "purged": {
+                  "title": "Purged",
+                  "type": "boolean"
+                },
+                "uploaded_by": {
+                  "title": "Uploaded By",
+                  "type": "string"
+                },
+                "created_at": {
+                  "title": "Created At",
+                  "type": "string"
+                },
+                "removed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Removed At"
+                },
+                "request_id": {
+                  "title": "Request Id",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "extraction",
+                "material_id",
+                "binding_id",
+                "attachment_id",
+                "task_id",
+                "kind",
+                "name",
+                "resource",
+                "content_type",
+                "size_bytes",
+                "source_kind",
+                "url",
+                "mutable_source",
+                "integrity_ref",
+                "purged",
+                "uploaded_by",
+                "created_at",
+                "removed_at",
+                "request_id"
+              ],
+              "title": "WorkRequestMaterialView",
+              "type": "object"
+            },
             "WorkRequestMutationResult": {
               "properties": {
                 "request_id": {
@@ -61004,6 +63037,17 @@
                   ],
                   "title": "Description"
                 },
+                "start_date": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Start Date"
+                },
                 "due_date": {
                   "anyOf": [
                     {
@@ -61014,6 +63058,28 @@
                     }
                   ],
                   "title": "Due Date"
+                },
+                "project_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Project Id"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
                 },
                 "checklist": {
                   "items": {
@@ -61132,6 +63198,27 @@
                     }
                   ],
                   "title": "Conditions"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "reference_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Reference Task Ids",
+                  "type": "array"
+                },
+                "materials": {
+                  "items": {
+                    "$ref": "#/$defs/WorkRequestMaterialView"
+                  },
+                  "title": "Materials",
+                  "type": "array"
                 }
               },
               "required": [
@@ -61140,7 +63227,10 @@
                 "submission_version",
                 "title",
                 "description",
+                "start_date",
                 "due_date",
+                "project_id",
+                "approver_id",
                 "checklist",
                 "requester_id",
                 "requester_kind",
@@ -61155,7 +63245,10 @@
                 "parent_task_id",
                 "supersedes_request_id",
                 "list_entry_hidden",
-                "conditions"
+                "conditions",
+                "preceding_task_ids",
+                "reference_task_ids",
+                "materials"
               ],
               "title": "WorkRequestMutationResult",
               "type": "object"
@@ -61272,6 +63365,58 @@
               ],
               "default": null,
               "title": "Reference Task Ids"
+            },
+            "start_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Start Date"
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Project Id"
+            },
+            "preceding_task_ids": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Preceding Task Ids"
+            },
+            "approver_id": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "승인자"
             }
           },
           "required": [
@@ -61765,7 +63910,316 @@
               "title": "ActionProposalResult",
               "type": "object"
             },
+            "ExtractionView": {
+              "properties": {
+                "extraction_id": {
+                  "title": "Extraction Id",
+                  "type": "string"
+                },
+                "status": {
+                  "title": "Status",
+                  "type": "string"
+                },
+                "extractor": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Extractor"
+                },
+                "failure_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Failure Reason"
+                },
+                "failure_text": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Failure Text"
+                },
+                "chunk_count": {
+                  "title": "Chunk Count",
+                  "type": "integer"
+                },
+                "char_count": {
+                  "title": "Char Count",
+                  "type": "integer"
+                },
+                "page_count": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Page Count"
+                },
+                "warnings": {
+                  "items": {
+                    "$ref": "#/$defs/JsonValue"
+                  },
+                  "title": "Warnings",
+                  "type": "array"
+                },
+                "coverage": {
+                  "$ref": "#/$defs/JsonValue"
+                },
+                "parser_version": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Parser Version"
+                },
+                "integrity_ref": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Integrity Ref"
+                },
+                "attempt_count": {
+                  "title": "Attempt Count",
+                  "type": "integer"
+                },
+                "requested_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Requested At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "stored_status": {
+                  "title": "Stored Status",
+                  "type": "string"
+                },
+                "reextraction_required": {
+                  "title": "Reextraction Required",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "extraction_id",
+                "status",
+                "extractor",
+                "failure_reason",
+                "failure_text",
+                "chunk_count",
+                "char_count",
+                "page_count",
+                "warnings",
+                "coverage",
+                "parser_version",
+                "integrity_ref",
+                "attempt_count",
+                "requested_at",
+                "completed_at"
+              ],
+              "title": "ExtractionView",
+              "type": "object"
+            },
             "JsonValue": {},
+            "MaterialResourceView": {
+              "properties": {
+                "type": {
+                  "title": "Type",
+                  "type": "string"
+                },
+                "id": {
+                  "title": "Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "title"
+              ],
+              "title": "MaterialResourceView",
+              "type": "object"
+            },
+            "WorkRequestMaterialView": {
+              "description": "요청에 붙은 자료 한 건 — **업무 자료와 같은 모양**이고 자리만 하나 더 붙는다.\n\n`request_id` 는 그 자료가 붙어 있는 요청이고, `task_id` 는 그 요청이 세운 업무다. 수락하면 같은\nAttachment 가 두 자리에 함께 서므로(요청 binding 보존 + 업무 binding 추가) 두 값이 모두 뜻을 갖는다.",
+              "properties": {
+                "extraction": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ExtractionView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "material_id": {
+                  "title": "Material Id",
+                  "type": "string"
+                },
+                "binding_id": {
+                  "title": "Binding Id",
+                  "type": "string"
+                },
+                "attachment_id": {
+                  "title": "Attachment Id",
+                  "type": "string"
+                },
+                "task_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Task Id"
+                },
+                "kind": {
+                  "title": "Kind",
+                  "type": "string"
+                },
+                "name": {
+                  "title": "Name",
+                  "type": "string"
+                },
+                "resource": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/MaterialResourceView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "content_type": {
+                  "title": "Content Type",
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "title": "Size Bytes",
+                  "type": "integer"
+                },
+                "source_kind": {
+                  "title": "Source Kind",
+                  "type": "string"
+                },
+                "url": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Url"
+                },
+                "mutable_source": {
+                  "title": "Mutable Source",
+                  "type": "boolean"
+                },
+                "integrity_ref": {
+                  "title": "Integrity Ref",
+                  "type": "string"
+                },
+                "purged": {
+                  "title": "Purged",
+                  "type": "boolean"
+                },
+                "uploaded_by": {
+                  "title": "Uploaded By",
+                  "type": "string"
+                },
+                "created_at": {
+                  "title": "Created At",
+                  "type": "string"
+                },
+                "removed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Removed At"
+                },
+                "request_id": {
+                  "title": "Request Id",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "extraction",
+                "material_id",
+                "binding_id",
+                "attachment_id",
+                "task_id",
+                "kind",
+                "name",
+                "resource",
+                "content_type",
+                "size_bytes",
+                "source_kind",
+                "url",
+                "mutable_source",
+                "integrity_ref",
+                "purged",
+                "uploaded_by",
+                "created_at",
+                "removed_at",
+                "request_id"
+              ],
+              "title": "WorkRequestMaterialView",
+              "type": "object"
+            },
             "WorkRequestMutationResult": {
               "properties": {
                 "request_id": {
@@ -61809,6 +64263,17 @@
                   ],
                   "title": "Description"
                 },
+                "start_date": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Start Date"
+                },
                 "due_date": {
                   "anyOf": [
                     {
@@ -61819,6 +64284,28 @@
                     }
                   ],
                   "title": "Due Date"
+                },
+                "project_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Project Id"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
                 },
                 "checklist": {
                   "items": {
@@ -61937,6 +64424,27 @@
                     }
                   ],
                   "title": "Conditions"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "reference_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Reference Task Ids",
+                  "type": "array"
+                },
+                "materials": {
+                  "items": {
+                    "$ref": "#/$defs/WorkRequestMaterialView"
+                  },
+                  "title": "Materials",
+                  "type": "array"
                 }
               },
               "required": [
@@ -61945,7 +64453,10 @@
                 "submission_version",
                 "title",
                 "description",
+                "start_date",
                 "due_date",
+                "project_id",
+                "approver_id",
                 "checklist",
                 "requester_id",
                 "requester_kind",
@@ -61960,7 +64471,10 @@
                 "parent_task_id",
                 "supersedes_request_id",
                 "list_entry_hidden",
-                "conditions"
+                "conditions",
+                "preceding_task_ids",
+                "reference_task_ids",
+                "materials"
               ],
               "title": "WorkRequestMutationResult",
               "type": "object"
@@ -67248,6 +69762,31 @@
                     }
                   ]
                 },
+                "cc_member_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Cc Member Ids",
+                  "type": "array"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
+                },
                 "derived": {
                   "anyOf": [
                     {
@@ -67282,6 +69821,9 @@
                 "completed_at",
                 "reopened_at",
                 "assignment",
+                "cc_member_ids",
+                "preceding_task_ids",
+                "approver_id",
                 "derived",
                 "lineage"
               ],
@@ -67692,14 +70234,15 @@
       },
       {
         "name": "work_request_inbox",
-        "title": "내가 답할 업무 요청 조회",
-        "description": "Read the work requests waiting for this person's answer — the ones they received and have not yet accepted, rejected or negotiated. Requests this person sent are in work_request_list instead. Each row names the task the request already created, so what is being asked can be opened before answering. Use work_request_get for one request's full detail and rounds.",
+        "title": "받은 업무와 참조 요청 조회",
+        "description": "Read received work requests: category=work for pending or negotiating assignee requests, category=reference for CC requests this member has not marked read. Marking a reference read is a human action and has no tool; read references stay available through work_request_list and work_request_get. CC can read request state, results and history but cannot accept or reject. Task references are not inbox entries. Use work_request_get for detail and rounds.",
         "adapter_operation": "work_request_inbox",
         "exposure": {
-          "any_capabilities": [],
-          "all_capabilities": [
-            "work_request.decide"
+          "any_capabilities": [
+            "work_request.decide",
+            "work_request.read"
           ],
+          "all_capabilities": [],
           "authenticated_only": false,
           "requires_confirmation": false
         },
@@ -67718,8 +70261,180 @@
         },
         "output_schema": {
           "$defs": {
+            "ExtractionView": {
+              "properties": {
+                "extraction_id": {
+                  "title": "Extraction Id",
+                  "type": "string"
+                },
+                "status": {
+                  "title": "Status",
+                  "type": "string"
+                },
+                "extractor": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Extractor"
+                },
+                "failure_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Failure Reason"
+                },
+                "failure_text": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Failure Text"
+                },
+                "chunk_count": {
+                  "title": "Chunk Count",
+                  "type": "integer"
+                },
+                "char_count": {
+                  "title": "Char Count",
+                  "type": "integer"
+                },
+                "page_count": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Page Count"
+                },
+                "warnings": {
+                  "items": {
+                    "$ref": "#/$defs/JsonValue"
+                  },
+                  "title": "Warnings",
+                  "type": "array"
+                },
+                "coverage": {
+                  "$ref": "#/$defs/JsonValue"
+                },
+                "parser_version": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Parser Version"
+                },
+                "integrity_ref": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Integrity Ref"
+                },
+                "attempt_count": {
+                  "title": "Attempt Count",
+                  "type": "integer"
+                },
+                "requested_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Requested At"
+                },
+                "completed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Completed At"
+                },
+                "stored_status": {
+                  "title": "Stored Status",
+                  "type": "string"
+                },
+                "reextraction_required": {
+                  "title": "Reextraction Required",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "extraction_id",
+                "status",
+                "extractor",
+                "failure_reason",
+                "failure_text",
+                "chunk_count",
+                "char_count",
+                "page_count",
+                "warnings",
+                "coverage",
+                "parser_version",
+                "integrity_ref",
+                "attempt_count",
+                "requested_at",
+                "completed_at"
+              ],
+              "title": "ExtractionView",
+              "type": "object"
+            },
             "JsonValue": {},
-            "WorkRequestMutationResult": {
+            "MaterialResourceView": {
+              "properties": {
+                "type": {
+                  "title": "Type",
+                  "type": "string"
+                },
+                "id": {
+                  "title": "Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "title"
+              ],
+              "title": "MaterialResourceView",
+              "type": "object"
+            },
+            "WorkRequestInboxEntry": {
               "properties": {
                 "request_id": {
                   "title": "Request Id",
@@ -67762,6 +70477,17 @@
                   ],
                   "title": "Description"
                 },
+                "start_date": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Start Date"
+                },
                 "due_date": {
                   "anyOf": [
                     {
@@ -67772,6 +70498,28 @@
                     }
                   ],
                   "title": "Due Date"
+                },
+                "project_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Project Id"
+                },
+                "approver_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Approver Id"
                 },
                 "checklist": {
                   "items": {
@@ -67890,6 +70638,35 @@
                     }
                   ],
                   "title": "Conditions"
+                },
+                "preceding_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Preceding Task Ids",
+                  "type": "array"
+                },
+                "reference_task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Reference Task Ids",
+                  "type": "array"
+                },
+                "materials": {
+                  "items": {
+                    "$ref": "#/$defs/WorkRequestMaterialView"
+                  },
+                  "title": "Materials",
+                  "type": "array"
+                },
+                "category": {
+                  "enum": [
+                    "work",
+                    "reference"
+                  ],
+                  "title": "Category",
+                  "type": "string"
                 }
               },
               "required": [
@@ -67898,7 +70675,10 @@
                 "submission_version",
                 "title",
                 "description",
+                "start_date",
                 "due_date",
+                "project_id",
+                "approver_id",
                 "checklist",
                 "requester_id",
                 "requester_kind",
@@ -67913,16 +70693,157 @@
                 "parent_task_id",
                 "supersedes_request_id",
                 "list_entry_hidden",
-                "conditions"
+                "conditions",
+                "preceding_task_ids",
+                "reference_task_ids",
+                "materials",
+                "category"
               ],
-              "title": "WorkRequestMutationResult",
+              "title": "WorkRequestInboxEntry",
+              "type": "object"
+            },
+            "WorkRequestMaterialView": {
+              "description": "요청에 붙은 자료 한 건 — **업무 자료와 같은 모양**이고 자리만 하나 더 붙는다.\n\n`request_id` 는 그 자료가 붙어 있는 요청이고, `task_id` 는 그 요청이 세운 업무다. 수락하면 같은\nAttachment 가 두 자리에 함께 서므로(요청 binding 보존 + 업무 binding 추가) 두 값이 모두 뜻을 갖는다.",
+              "properties": {
+                "extraction": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ExtractionView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "material_id": {
+                  "title": "Material Id",
+                  "type": "string"
+                },
+                "binding_id": {
+                  "title": "Binding Id",
+                  "type": "string"
+                },
+                "attachment_id": {
+                  "title": "Attachment Id",
+                  "type": "string"
+                },
+                "task_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Task Id"
+                },
+                "kind": {
+                  "title": "Kind",
+                  "type": "string"
+                },
+                "name": {
+                  "title": "Name",
+                  "type": "string"
+                },
+                "resource": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/MaterialResourceView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "content_type": {
+                  "title": "Content Type",
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "title": "Size Bytes",
+                  "type": "integer"
+                },
+                "source_kind": {
+                  "title": "Source Kind",
+                  "type": "string"
+                },
+                "url": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Url"
+                },
+                "mutable_source": {
+                  "title": "Mutable Source",
+                  "type": "boolean"
+                },
+                "integrity_ref": {
+                  "title": "Integrity Ref",
+                  "type": "string"
+                },
+                "purged": {
+                  "title": "Purged",
+                  "type": "boolean"
+                },
+                "uploaded_by": {
+                  "title": "Uploaded By",
+                  "type": "string"
+                },
+                "created_at": {
+                  "title": "Created At",
+                  "type": "string"
+                },
+                "removed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Removed At"
+                },
+                "request_id": {
+                  "title": "Request Id",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "extraction",
+                "material_id",
+                "binding_id",
+                "attachment_id",
+                "task_id",
+                "kind",
+                "name",
+                "resource",
+                "content_type",
+                "size_bytes",
+                "source_kind",
+                "url",
+                "mutable_source",
+                "integrity_ref",
+                "purged",
+                "uploaded_by",
+                "created_at",
+                "removed_at",
+                "request_id"
+              ],
+              "title": "WorkRequestMaterialView",
               "type": "object"
             }
           },
           "properties": {
             "result": {
               "items": {
-                "$ref": "#/$defs/WorkRequestMutationResult"
+                "$ref": "#/$defs/WorkRequestInboxEntry"
               },
               "title": "Result",
               "type": "array"
@@ -68757,7 +71678,145 @@
           "work_request_inbox"
         ],
         "acceptance_evidence": "WORK-002 v2 계약 테스트 (tests/contract/test_task_lifecycle_v2.py)",
-        "http_signature": "(principal: Principal) -> list[WorkRequestMutationResult]"
+        "http_signature": "(principal: Principal) -> list[WorkRequestInboxEntry]"
+      },
+      {
+        "http": "POST /api/work-requests/{request_id}/read",
+        "http_handler": "mark_work_request_reference_read",
+        "screen_callers": [],
+        "operation": "mark_work_request_reference_read",
+        "owning_calls": [
+          "self._work_requests(session).mark_reference_read"
+        ],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "mark_work_request_reference_read"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "읽었다는 것은 사람이 본 사실이고, 에이전트가 대신 기록하면 사람이 하지 않은 일을 원장에 남기게 된다 (DEC-001 D-19 · SPEC-001 §5 표면 일치).",
+          "alternative": "수신함 조회(work_request_inbox)는 같은 필터가 걸린 projection 을 그대로 내고, 읽은 참고 항목은 work_request_list·work_request_get 으로 계속 읽힌다.",
+          "reconsider_when": "「안 읽음으로 되돌리기」(OQ-I) 처럼 읽음 상태를 사람 밖에서 움직이는 계약이 확정될 때"
+        },
+        "http_signature": "(request_id: UUID, principal: Principal) -> WorkRequestReadReceiptResult"
+      },
+      {
+        "http": "GET /api/work-requests/{request_id}/materials",
+        "http_handler": "list_work_request_materials",
+        "screen_callers": [],
+        "operation": "list_work_request_materials",
+        "owning_calls": [
+          "self._work_requests(session).list_materials"
+        ],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "list_work_request_materials"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "요청 자료 목록은 요청 조회가 이미 낸다 — 같은 사실을 두 도구로 묻게 하지 않는다.",
+          "alternative": "work_request_get 의 materials 투영이 같은 목록을 싣는다.",
+          "reconsider_when": "AX 가 남의 요청 자료를 직접 붙이고 떼는 계약이 확정될 때"
+        },
+        "http_signature": "(request_id: UUID, principal: Principal) -> list[WorkRequestMaterialView]"
+      },
+      {
+        "http": "POST /api/work-requests/{request_id}/materials",
+        "http_handler": "attach_work_request_material",
+        "screen_callers": [],
+        "operation": "attach_work_request_material",
+        "owning_calls": [
+          "self._work_requests(session).attach_material"
+        ],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "attach_work_request_material"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "요청 자료를 올리는 AX intent 가 아직 없다. file_attachment_request 의 intent 목록에는 request_material 이 없고, work_request 대상의 업로드는 request_comment_attachment 가 아니면 전부 add_evidence 로 떨어진다 — 이 행을 verified 로 두면 「요청 자료를 붙인다」고 적힌 자리가 실제로는 판단 근거를 채택한다.",
+          "alternative": "사람은 POST /api/work-requests/{request_id}/materials 로 붙인다. 판단 근거를 채택하는 것이 실제 의도라면 request_evidence intent 가 이미 그 일을 하고, 업무가 선 뒤의 자료는 task_material intent 가 잇는다.",
+          "reconsider_when": "BrowserFileRequest 에 request_material intent 가 생기고 authorize·upload 가 요청 자료 서비스로 연결·인가될 때 — 그때 이 행을 verified 로 되돌리고 target_tools 를 다시 건다"
+        },
+        "http_signature": "(request_id: UUID, kind: str, file: UploadFile, principal: Principal) -> WorkRequestMaterialResult"
+      },
+      {
+        "http": "POST /api/work-requests/{request_id}/materials/links",
+        "http_handler": "attach_work_request_material_link",
+        "screen_callers": [],
+        "operation": "attach_work_request_material_link",
+        "owning_calls": [
+          "self._work_requests(session).attach_material_link"
+        ],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "attach_work_request_material_link"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "요청에 무엇을 실어 보낼지는 보낸 사람이 창에서 고르는 일이고, 에이전트가 남의 요청 내용을 바꾸는 계약은 없다.",
+          "alternative": "업무가 선 뒤에는 task_material_attach_link 가 같은 자료 축을 연다.",
+          "reconsider_when": "AX 가 남의 요청 자료를 직접 붙이고 떼는 계약이 확정될 때"
+        },
+        "http_signature": "(request_id: UUID, request: WorkRequestMaterialLinkRequest, principal: Principal) -> WorkRequestMaterialResult"
+      },
+      {
+        "http": "GET /api/work-requests/{request_id}/materials/{material_id}/content",
+        "http_handler": "work_request_material_content",
+        "screen_callers": [],
+        "operation": "open_work_request_material",
+        "owning_calls": [
+          "self._work_requests(session).open_material"
+        ],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "open_work_request_material"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "같은 파일을 여는 입구가 이미 하나 있다 — 두 번째 도구를 세우면 같은 바이트에 권한 판정이 두 벌이 된다.",
+          "alternative": "open_work_request_attachment 가 요청 자료를 포함한 같은 바인딩에서 파일을 연다.",
+          "reconsider_when": "AX 가 남의 요청 자료를 직접 붙이고 떼는 계약이 확정될 때"
+        },
+        "http_signature": "(request_id: UUID, material_id: UUID, principal: Principal) -> Response"
+      },
+      {
+        "http": "DELETE /api/work-requests/{request_id}/materials/{material_id}",
+        "http_handler": "detach_work_request_material",
+        "screen_callers": [],
+        "operation": "detach_work_request_material",
+        "owning_calls": [
+          "self._work_requests(session).detach_material"
+        ],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "detach_work_request_material"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "자료를 떼는 것은 보낸 사람이 자기 요청에서 하는 일이다 — 에이전트가 대신 떼면 상대가 보던 요청이 소리 없이 달라진다.",
+          "alternative": "요청 자료 판은 화면에서 붙이고 떼고, 업무가 선 뒤에는 task_material_detach 가 그 축을 잇는다.",
+          "reconsider_when": "AX 가 남의 요청 자료를 직접 붙이고 떼는 계약이 확정될 때"
+        },
+        "http_signature": "(request_id: UUID, material_id: UUID, principal: Principal) -> WorkRequestMaterialResult"
       }
     ],
     "status": "verified",

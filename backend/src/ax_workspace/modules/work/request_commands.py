@@ -1,11 +1,10 @@
 """Request-owned inputs; content revisions remain separate from recipient decisions."""
 from datetime import date
-from typing import Self
+from typing import Literal, Self
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
-from ax_workspace.modules.work.errors import TaskError
-from ax_workspace.modules.work.task_values import clean_checklist
+from ax_workspace.modules.work.task_creation import WorkPayloadFields
 
 
 class WorkRequestCommentInput(BaseModel):
@@ -16,6 +15,34 @@ class WorkRequestCommentInput(BaseModel):
 class WorkRequestCommentCommand(WorkRequestCommentInput):
     request_id: UUID = Field(title='대상 업무 요청')
     idempotency_key: str | None = Field(default=None, title='재전송 식별자')
+
+
+class WorkRequestMaterialLinkInput(BaseModel):
+    """요청에 링크 자료 하나를 건다 — 업무 자료 링크와 **같은 모양**이다 (`TaskMaterialLinkInput`).
+
+    `kind` 는 받되 **참고 자료뿐**이다: 요청에는 아직 결과가 없어 산출물이 설 자리가 없고, 수락이
+    이 자료를 업무에 그대로 이어 붙이므로 여기서 산출물을 허용하면 아무도 만들지 않은 산출물이
+    업무의 완료 보고 후보로 선다.
+    """
+
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    kind: Literal['input'] = Field(default='input', title='자료 역할')
+    url: str = Field(min_length=1, max_length=500, title='링크 주소')
+    label: str = Field(min_length=1, max_length=300, title='자료 이름')
+
+    @field_validator('url')
+    @classmethod
+    def openable_url(cls, value: str) -> str:
+        from ax_workspace.modules.work.material_values import MaterialError, normalize_material_link
+
+        try:
+            return normalize_material_link(value)
+        except MaterialError as error:
+            raise ValueError(str(error)) from error
+
+
+class WorkRequestMaterialLinkCommand(WorkRequestMaterialLinkInput):
+    request_id: UUID = Field(title='대상 업무 요청')
 
 
 class WorkRequestRevisionInput(BaseModel):
@@ -68,39 +95,25 @@ class WorkRequestNegotiationCommand(WorkRequestNegotiationInput):
     request_id: UUID = Field(title='대상 업무 요청')
 
 
-class WorkRequestCreateInput(BaseModel):
-    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
-    title: str = Field(min_length=1, max_length=300, title='업무 명')
+class WorkRequestCreateInput(WorkPayloadFields):
+    """요청 한 건의 내용 — **내 업무와 같은 공통 payload** 위에 요청 전용 둘이 얹힌다.
+
+    공통 아홉(`WorkPayloadFields`)은 여기서 다시 적지 않는다. 요청만 갖는 것은 둘뿐이다:
+    받는 사람(`assignee_id`)과 이전 요청(`supersedes_request_id`).
+    """
+
     assignee_id: str = Field(min_length=1, max_length=100, title='요청 대상')
-    description: str | None = Field(default=None, title='내용')
-    due_date: date | None = Field(default=None, title='기한')
-    cc_member_ids: list[str] = Field(default_factory=list, title='참조 구성원')
-    checklist: list[str] = Field(default_factory=list, title='체크리스트')
-    reference_task_ids: list[UUID] = Field(default_factory=list, title='참고 업무')
-    #: 하위 요청이면 상위 업무. **발송 단계에서 연결된다** (SPEC-003 §4 발송 · 정책 V-9).
-    parent_task_id: UUID | None = Field(default=None, title='상위 업무')
     #: 재요청이면 이전 요청. 새 요청·새 Task 이고 옛것을 되살리지 않는다 (정책 V-12).
     supersedes_request_id: UUID | None = Field(default=None, title='이전 요청')
 
-    @field_validator('description', 'due_date', 'parent_task_id', 'supersedes_request_id', mode='before')
+    @field_validator('supersedes_request_id', mode='before')
     @classmethod
-    def empty_optional(cls, value: object) -> object:
+    def empty_previous_request(cls, value: object) -> object:
         return None if value == '' else value
-
-    @field_validator('cc_member_ids', 'checklist', 'reference_task_ids', mode='before')
-    @classmethod
-    def absent_list(cls, value: object) -> object:
-        return [] if value is None else value
 
     @model_validator(mode='after')
     def normalize_values(self) -> Self:
-        self.description = (self.description or '').strip() or None
-        self.cc_member_ids = list(dict.fromkeys(member for item in self.cc_member_ids if (member := item.strip()) and member != self.assignee_id))
-        self.reference_task_ids = list(dict.fromkeys(self.reference_task_ids))
-        try:
-            self.checklist = clean_checklist(self.checklist)
-        except TaskError as error:
-            raise ValueError(str(error)) from error
+        self.cc_member_ids = [member for member in self.cc_member_ids if member != self.assignee_id]
         return self
 
     def for_requester(self, requester_id: str | None) -> Self:

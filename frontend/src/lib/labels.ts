@@ -273,13 +273,42 @@ export const workChipLabel: Record<WorkChip, string> = {
 export const myWorkChips: ReadonlyArray<WorkChip> = ["all", "awaiting_acceptance", "open", "in_progress", "overdue"];
 export const sentWorkChips: ReadonlyArray<WorkChip> = ["all", "not_started", "overdue"];
 export const doneWorkChips: ReadonlyArray<WorkChip> = ["all", "awaiting_review"];
+/**
+ * 「참조 업무」는 **읽는 자리다** — 수락·거절이 없다. 그래서 칩도 판단을 거는 것(「받은 요청」)이 아니라
+ * 읽는 사람이 고르는 조건뿐이다.
+ */
+export const ccWorkChips: ReadonlyArray<WorkChip> = ["all", "overdue"];
 
-/** 세 탭 (SPEC-003 §2.1). 소유·종결 축이고, 업무를 만드는 세 «행위» 와 1:1 이 아니다. */
+/**
+ * 네 탭 (SPEC-003 §2.1 · 4차 발주 1). 소유·종결 축이고, 업무를 만드는 세 «행위» 와 1:1 이 아니다.
+ *
+ * 「참조 업무」가 넷째로 선다 — 지금까지 「보낸 업무」 안의 구획이던 CC 목록이다. 그것은 내가 보낸 것이
+ * 아니라 **남이 나를 참조자로 넣은 것**이라, 소유 축에서 보낸 업무와 다른 자리다.
+ */
 export const workTabLabel = {
   mine: "내 업무",
   sent: "보낸 업무",
   done: "완료 업무",
+  cc: "참조 업무",
 } as const;
+
+/**
+ * 선행업무 때문에 막혔을 때의 말 (SPEC-001 U-14 · Case Matrix `WORK_PREDECESSORS_UNFINISHED`).
+ *
+ * **누르기 전과 눌린 뒤가 같은 문장이다.** 화면이 먼저 막고, 서버가 거절해도 같은 말을 낸다 —
+ * 같은 사실을 두 가지로 말하면 사람은 둘이 다른 일이라고 읽는다.
+ */
+export function predecessorsUnfinishedText(titles: string[]): string {
+  return titles.length > 0 ? `끝나지 않은 선행업무가 있습니다: ${titles.join(", ")}` : "끝나지 않은 선행업무가 있습니다.";
+}
+
+/** 선행이 남은 업무의 프로젝트는 바꿀 수 없다 (SPEC-001 §4 `WORK_PROJECT_LOCKED_BY_PREDECESSORS`). */
+export const projectLockedByPredecessorsText = "선행업무를 먼저 비워야 프로젝트를 바꿀 수 있습니다.";
+
+/** 볼 수 없는 선행 — 제목은 숨기고 건수는 낸다. 막는 이유까지 숨기지 않는다 (U-13). */
+export function hiddenPredecessorsText(count: number): string {
+  return `볼 수 없는 선행업무 ${count}건`;
+}
 
 /** 값이 없을 때 칸에 남기는 것 — 공백이 아니라 대시다 (v2 12 TABLE). */
 export const emptyValue = "—";

@@ -7,6 +7,15 @@ from ax_workspace.modules.work.task_results import TaskDetailResult, TaskHistory
 
 from ax_workspace.modules.work.errors import (
     InvalidTaskTransition,
+    TaskApproverInvalid,
+    TaskApproverLocked,
+    TaskPredecessorCycle,
+    TaskPredecessorDuplicate,
+    TaskPredecessorProjectMismatch,
+    TaskPredecessorProjectRequired,
+    TaskPredecessorSelf,
+    TaskPredecessorsUnfinished,
+    TaskProjectLockedByPredecessors,
     TaskProposalNotPending,
     TaskProposalResponderOnly,
     TaskAccessDenied,
@@ -27,6 +36,7 @@ from datetime import UTC, date, datetime
 from typing import Any, Protocol
 from uuid import UUID
 from ax_workspace.modules.work.task_creation import TaskCreateInput
+from ax_workspace.modules.work.parties import may_read, party_of
 from ax_workspace.modules.work.task_results import ChecklistMutationResult, ChecklistOrderResult, TaskMutationResult, TaskAssignmentView
 from ax_workspace.modules.work.checklist_commands import ChecklistAddInput, ChecklistUpdateInput, ChecklistArchiveInput, ChecklistOrderInput
 from ax_workspace.modules.work.task_commands import TaskEditFields, TaskCompletionInput, TaskReferenceCommand, TaskReferenceReleaseCommand
@@ -37,6 +47,7 @@ from ax_workspace.modules.work.lifecycle import (
     ChangeTaskState,
     Task,
     TaskCompletionContext,
+    TaskPredecessorGate,
     TaskState,
     transition_task,
 )
@@ -76,6 +87,13 @@ class TaskRepository(Protocol):
     def tasks_held_by_members(self, member_ids: frozenset[str], *, include_closed: bool = False) -> list[Any]: ...
     def tasks_in_projects(self, project_ids: frozenset[str], *, include_closed: bool = False) -> list[Any]: ...
     def checklist_for(self, task_id: UUID, *, include_archived: bool = False) -> list[Any]: ...
+    def cc_member_ids(self, task_id: UUID) -> list[str]: ...
+    def predecessors_for(self, task_ids: list[UUID]) -> dict[UUID, list[UUID]]: ...
+    def active_predecessor_ids(self, task_id: UUID) -> list[UUID]: ...
+    def predecessor_edges(self, task_ids: list[UUID]) -> dict[UUID, list[UUID]]: ...
+    def replace_predecessors(self, task_id: UUID, wanted: list[UUID], actor_id: str) -> None: ...
+    def cc_members_for(self, task_ids: list[UUID]) -> dict[UUID, list[str]]: ...
+    def tasks_cc_for(self, member_id: str, *, include_closed: bool = False) -> list[Any]: ...
     def checklist_progress_for(self, task_ids: list[UUID]) -> dict[UUID, tuple[int, int]]: ...
     def origin_facts(self, tasks: list[Any]) -> dict[UUID, dict[str, Any]]: ...
     def versions_for(self, task_id: UUID) -> list[Any]: ...
@@ -127,6 +145,16 @@ class WorkRequestSourcePort(Protocol):
     def settle_by_agreement(self, request_id: UUID, actor_id: str, *, reason: str | None = None) -> None: ...
 
 
+class MemberDirectoryPort(Protocol):
+    """「이 사람이 지금 활동 중인 구성원인가」 — 참조자를 받을 때 묻는 **유일한** 질문이다.
+
+    요청 쪽 `WorkRequestAssigneeDirectory.is_active_member` 와 같은 판정이다. 내 업무의 참조자만
+    다른 기준으로 거르면 같은 이름이 한쪽에서는 서고 한쪽에서는 서지 않는다.
+    """
+
+    def is_active_member(self, principal: Principal, member_id: str) -> bool: ...
+
+
 class MemberScopePort(Protocol):
     """Which people sit inside a set of organization units. Nothing else about them."""
 
@@ -148,8 +176,13 @@ class TaskApplication:
         attachments: Any = None,
         member_scope: MemberScopePort | None = None,
         projects: ProjectScopePort | None = None,
+        directory: MemberDirectoryPort | None = None,
     ) -> None:
         self.repository = repository
+        # 참조자로 적힌 사람이 실제로 있는 구성원인가. 요청이 쓰는 것과 같은 명부다.
+        self._directory = directory
+        # **선행 요약이 자기 자신을 다시 부르는 것을 막는 빗장** (`predecessor_views` 참조).
+        self._resolving_predecessor_access = False
         # 어느 프로젝트에 일을 매달 수 있는지는 프로젝트 모듈이 답한다. 여기서 다시 계산하지 않는다.
         self._projects = projects
         # Resolving an organization-wide read to the people it covers; never used to widen anything else.
@@ -177,18 +210,30 @@ class TaskApplication:
         reference_task_ids: list[UUID] | None = None,
         parent_task_id: UUID | None = None,
         project_id: UUID | None = None,
+        cc_member_ids: list[str] | None = None,
+        preceding_task_ids: list[UUID] | None = None,
+        approver_id: str | None = None,
     ) -> TaskMutationResult:
         self._require(principal, TASK_SELF_MANAGE)
         try:
-            command = TaskCreateInput(title=title, description=description, start_date=start_date, due_date=due_date, checklist=checklist, reference_task_ids=reference_task_ids, parent_task_id=parent_task_id, project_id=project_id)
+            command = TaskCreateInput(title=title, description=description, start_date=start_date, due_date=due_date, checklist=checklist, reference_task_ids=reference_task_ids, parent_task_id=parent_task_id, project_id=project_id, cc_member_ids=cc_member_ids, preceding_task_ids=preceding_task_ids, approver_id=approver_id).for_owner(str(principal.id))
         except ValueError as error:
             raise TaskError(str(error)) from error
         title, description, start_date, due_date = command.title, command.description, command.start_date, command.due_date
         checklist, reference_task_ids = command.checklist, command.reference_task_ids
         parent_task_id, project_id = command.parent_task_id, command.project_id
+        cc_member_ids = self._active_cc_members(principal, command.cc_member_ids)
         # 본인 업무라 **만드는 사람이 곧 드는 사람**이다 — 중심 업무 판정이 그 값을 읽는다.
         parent = self.parent_for(principal, parent_task_id, assignee_id=str(principal.id))
         project = self.project_for(principal, project_id, parent)
+        # **아직 없는 업무라 자기 자신도 순환도 성립할 수 없다** — `task_id=None` 이 그 사실이다.
+        # 프로젝트는 상위를 따라 정해진 뒤의 값으로 본다: 하위가 상위 프로젝트를 물려받는 그 값이
+        # 선행의 「같은 프로젝트」 기준이어야 둘이 어긋나지 않는다.
+        predecessors = self._resolve_predecessors(
+            principal, command.preceding_task_ids, project_id=project, task_id=None
+        )
+        # 담당자는 본인이므로 **본인을 승인자로 둘 수 없다** — 자기 일을 자기가 확인하는 자리를 만들지 않는다.
+        approver = self._valid_approver(principal, command.approver_id, assignee_id=str(principal.id))
         task = self.repository.create_self_task(
             str(principal.id),
             title,
@@ -205,10 +250,55 @@ class TaskApplication:
             references=self._readable_tasks(principal, reference_task_ids),
             parent_task_id=parent.id if parent is not None else None,
             project_id=project,
+            # 참조자는 **읽기와 논의만** 연다 (`modules/work/parties.py`). 담당도 수행도 옮기지 않는다.
+            cc_member_ids=cc_member_ids,
+            approver_id=approver,
         )
+        if predecessors:
+            # **검사와 저장이 한 transaction** 이다 (§5 동시성) — 조립 층이 이 호출 전체를 한 session 에 싣는다.
+            self.repository.replace_predecessors(task.id, predecessors, str(principal.id))
         if parent is not None:
             self.record_subtask(principal, parent, task)
-        return self._view(task, principal)
+        return self._view(task, principal, cc_member_ids=cc_member_ids)
+
+    def valid_approver(self, principal: Principal, approver_id: str | None, *, assignee_id: str | None) -> str | None:
+        """요청 발송이 부르는 **얇은 문** (`RequestParentPort`). 판정은 아래 한 곳 그대로다.
+
+        요청 갈래도 같은 규칙을 지나야 하므로 규칙을 복제하지 않는다 — 갈래가 정하는 것은
+        **누구를 담당으로 놓고 묻는가** 하나뿐이다.
+        """
+        return self._valid_approver(principal, approver_id, assignee_id=assignee_id)
+
+    def _valid_approver(self, principal: Principal, approver_id: str | None, *, assignee_id: str | None) -> str | None:
+        """승인자(화면 라벨 「결재자」)로 설 수 있는 사람인가 — **0..1 · 재직 중 · 담당자 본인 불가**
+        (SPEC-001 §4 Validation · DEC-001 D-9).
+
+        0..1 은 필드가 하나라는 사실이 이미 답한다. 재직 여부는 참조자와 **같은 명부**에 묻는다 —
+        한쪽만 다른 기준으로 거르면 같은 이름이 한 칸에서는 서고 다른 칸에서는 서지 않는다.
+        """
+        wanted = (approver_id or "").strip() or None
+        if wanted is None:
+            return None
+        if assignee_id is not None and wanted == str(assignee_id):
+            raise TaskApproverInvalid("담당자 본인은 승인자가 될 수 없습니다")
+        if self._directory is not None and not self._directory.is_active_member(principal, wanted):
+            raise TaskApproverInvalid("승인자를 다시 선택해 주세요")
+        return wanted
+
+    def _active_cc_members(self, principal: Principal, member_ids: list[str]) -> list[str]:
+        """참조자로 세울 사람들. **없는 이름은 조용히 버리지 않고 거절한다** — 요청 쪽과 같은 규칙이다.
+
+        조용히 버리면 보낸 사람 화면에서 참조자가 사라진 것을 아무도 모르고, 그 사람은 자기가 읽을 수
+        있다고 믿는 업무를 영원히 못 연다.
+        """
+        if not member_ids:
+            return []
+        if self._directory is None:  # pragma: no cover - 조립 층이 언제나 명부를 붙인다
+            return list(member_ids)
+        for member_id in member_ids:
+            if not self._directory.is_active_member(principal, member_id):
+                raise TaskError(f"참조자 {member_id} 는 활동 중인 구성원이 아닙니다")
+        return list(member_ids)
 
     def creation_receipt(self, principal: Principal, task_id: UUID) -> TaskMutationResult:
         """이미 만들어진 업무의 영수증 — **생성이 냈던 것과 같은 투영**이다.
@@ -387,10 +477,35 @@ class TaskApplication:
             if getattr(task, "parent_task_id", None) is not None:
                 # 하위 업무는 자기 프로젝트를 따로 갖지 않는다. 상위 업무가 옮겨 가면 함께 간다.
                 raise TaskError("하위 업무의 프로젝트는 상위 업무를 따릅니다")
+            # **남은 선행이 있으면 프로젝트를 바꿀 수 없다** (SPEC-001 §4 Validation · U-13).
+            # 선행이 「같은 프로젝트 안」이라는 불변을 프로젝트 쪽에서 깨는 길이라 여기서 막는다.
+            # 선행 배열을 같은 명령으로 비우는 길은 열려 있다 — 아래에서 먼저 비운 뒤 다시 부르면 된다.
+            self._require_project_unlocked(task)
             wanted = changes["project_id"]
             task.project_id = self.project_for(principal, UUID(str(wanted))) if wanted else None
             for child in self.repository.children_of(task.id):
+                # **하위가 상위를 따라 옮겨 가는 경로에도 같은 규칙이 걸린다.** 여기를 비워 두면
+                # 상위를 옮기는 것만으로 하위의 선행이 다른 프로젝트로 끌려간다.
+                self._require_project_unlocked(child)
                 child.project_id = task.project_id
+        if "approver_id" in changes:
+            # **`승인 대기` 뒤에는 아무도 못 바꾼다** (§5 권한). 이미 그 사람 앞에 판단이 놓였다.
+            if self._approval_state(task) == "awaiting_review":
+                raise TaskApproverLocked("승인 대기 중에는 승인자를 바꿀 수 없습니다")
+            task.approver_id = self._valid_approver(
+                principal, changes["approver_id"], assignee_id=self._holder_of(task)
+            )
+        if "preceding_task_ids" in changes:
+            # **배열 전체 교체**다 (SPEC-001 §4). 프로젝트 기준은 이 명령이 끝난 뒤의 값이어야 하므로
+            # 위에서 이미 반영된 `task.project_id` 를 읽는다 — 한 명령이 둘을 함께 바꿀 수 있다.
+            wanted_predecessors = self._resolve_predecessors(
+                principal,
+                [UUID(str(item)) for item in changes["preceding_task_ids"]],
+                project_id=getattr(task, "project_id", None),
+                task_id=task.id,
+            )
+            # **검사와 저장이 한 덩어리다** — 이 호출과 위의 순환 검사가 같은 transaction 안이다.
+            self.repository.replace_predecessors(task.id, wanted_predecessors, str(principal.id))
         if "title" in changes:
             title = str(changes["title"] or "").strip()
             if not title:
@@ -411,6 +526,16 @@ class TaskApplication:
         )
         return self._view(task, principal)
 
+    def _require_project_unlocked(self, task: Any) -> None:
+        """선행이 남아 있으면 그 업무의 프로젝트는 잠겨 있다 (`WORK_PROJECT_LOCKED_BY_PREDECESSORS`).
+
+        **닫힌 관계는 세지 않는다** — 뗀 선행은 행으로 남지만 잠그지 않는다.
+        """
+        if self.repository.active_predecessor_ids(task.id):
+            raise TaskProjectLockedByPredecessors(
+                f"선행업무를 먼저 비워야 프로젝트를 바꿀 수 있습니다: {task.title}"
+            )
+
     def my_work(self, principal: Principal, *, include_closed: bool = False) -> list[TaskListEntry]:
         """**지금 이 사람이 활성 담당으로 들고 있는 것만.**
 
@@ -424,7 +549,13 @@ class TaskApplication:
 
         자료 검색·그래프·권한 판정이 이 답을 쓴다. 「내 업무」와 다른 질문이다.
         """
-        return self._list(principal, include_closed=include_closed, include_organization=True, include_requested=True)
+        return self._list(
+            principal,
+            include_closed=include_closed,
+            include_organization=True,
+            include_requested=True,
+            include_cc=True,
+        )
 
     def _list(
         self,
@@ -433,6 +564,7 @@ class TaskApplication:
         include_closed: bool = False,
         include_organization: bool = False,
         include_requested: bool = False,
+        include_cc: bool = False,
     ) -> list[TaskListEntry]:
         """The list carries the checklist count, not its items: enough for a progress cue, cheap enough for a table.
 
@@ -467,6 +599,19 @@ class TaskApplication:
                     if task.id not in held
                 ]
                 held |= {task.id for task in tasks}
+        # **읽기의 네 번째 길 — 참조자(cc).** 목록과 상세가 같은 문에서 열려야 한다: 상세만 열어 주면
+        # 「상세는 보이는데 그 업무의 자료는 못 연다」가 된다 (`may_read_task()` 가 이 목록으로 답한다).
+        #
+        # 참조는 **한 겹이다** — 하위 트리를 함께 열지 않는다. 요청자의 V-21 과 달리 cc 는 그 업무 하나를
+        # 참조로 받은 것이고, 받은 사람이 그 아래를 어떻게 나눴는지는 그 사람의 작업 공간이다. 그리고
+        # 「내 업무」에는 서지 않는다 — 참조로 받은 일은 **읽을 수 있는 일**이지 내가 하는 일이 아니다
+        # (요청 관계와 같은 결이고, `my_work()` 가 이 플래그를 켜지 않는 이유다).
+        if include_cc:
+            for task in self.repository.tasks_cc_for(str(principal.id), include_closed=include_closed):
+                if task.id in held:
+                    continue
+                tasks = tasks + [task]
+                held.add(task.id)
         if include_organization:
             organization = self._organization_scope_members(principal)
             if organization:
@@ -489,12 +634,19 @@ class TaskApplication:
         assignees = self._assignee_projection(tasks)
         # 목록 한 줄마다 같은 질의를 반복하지 않는다 — 파생 표시를 한 번에 계산해 나눠 싣는다.
         derived = self._derived_for(tasks, readable_ids={task.id for task in tasks})
+        cc = self.repository.cc_members_for([task.id for task in tasks])
+        preceding = self.repository.predecessors_for([task.id for task in tasks])
         views = []
         for task in tasks:
             done, total = progress.get(task.id, (0, 0))
             views.append(
                 {
-                    **self._view(task, derived=derived.get(task.id)),
+                    **self._view(
+                        task,
+                        derived=derived.get(task.id),
+                        cc_member_ids=cc.get(task.id, []),
+                        preceding_task_ids=preceding.get(task.id, []),
+                    ),
                     "checklist_progress": {"done": done, "total": total},
                     "origin": origins.get(task.id),
                     "assignee": assignees.get(task.id),
@@ -537,6 +689,10 @@ class TaskApplication:
             # way their checklist and materials are.
             related = self._manages(principal, task.parent_task_id)
         if not related:
+            # **참조자(cc) 는 그 업무를 읽는다** — 자기 이름이 적힌 그 한 건만이다. 자리가 여는 것은
+            # 읽기와 논의뿐이고, 수정·시작·완료는 그대로 막힌다 (`modules/work/parties.py`).
+            related = may_read(self._party_of(principal, task))
+        if not related:
             # **요청자는 자기가 부탁한 업무의 하위 트리 전체를 읽는다 — 깊이 제한이 없다** (정책 V-21).
             # 받은 사람이 그 일을 다시 나눴을 때 요청자가 「필요하면 그 업무로 들어가 확인한다」가 원문이고,
             # 한 겹만 인정하면 상세는 열리는데 그 아래가 통째로 사라진다. 조상 중 하나라도 내가 요청한
@@ -551,6 +707,7 @@ class TaskApplication:
             **self._hierarchy_view(principal, task),
             # The person who asked for the work may follow where their request got to, without holding the work.
             "delivery": self.delivery_view(principal, task),
+            "predecessors": self._predecessor_summary(principal, task),
         }
 
     # ---- derived: 서버가 만드는 파생 표시 (SPEC-003 §4 Data) ----
@@ -690,6 +847,187 @@ class TaskApplication:
 
 
     # ---- subtasks: the work inside this work ----
+
+    # ---- 선행업무: 검사와 저장이 한 덩어리 ----------------------------------------
+
+    def _resolve_predecessors(
+        self,
+        principal: Principal,
+        wanted: list[UUID],
+        *,
+        project_id: Any,
+        task_id: UUID | None,
+    ) -> list[UUID]:
+        """선행으로 설 수 있는 배열인가. **다섯 거절을 각각 다른 오류로 가른다** (SPEC-001 §4 Case Matrix).
+
+        가르는 순서가 계약이다 (WORK-003 § Internal Interface Contract): 자기 자신 → 중복 →
+        프로젝트 → 순환. 앞의 것이 더 값 자체의 문제라, 한 요청에 여럿이 걸려 있어도 사람이 먼저
+        고쳐야 하는 것부터 말한다.
+
+        **읽을 수 없는 업무는 선행이 될 수 없다** — 없는 것과 같은 말(`TaskNotFound`)로 답한다.
+        정상 경로에서는 후보가 같은 프로젝트의 업무라 이 갈래가 드물다.
+
+        `task_id` 가 `None` 이면 **아직 없는 업무**다(생성). 자기 자신도 순환도 성립할 수 없으므로
+        그 둘을 묻지 않는다 — 없는 id 를 지어내 비교하지 않는다.
+        """
+        if not wanted:
+            return []
+        if project_id is None:
+            # 선행은 **같은 프로젝트 안에서만** 선다. 프로젝트가 없으면 그 말 자체가 성립하지 않는다.
+            raise TaskPredecessorProjectRequired("선행업무를 지정하려면 프로젝트를 먼저 선택해 주세요")
+        seen: set[UUID] = set()
+        for candidate in wanted:
+            if task_id is not None and candidate == task_id:
+                raise TaskPredecessorSelf("자기 자신을 선행으로 둘 수 없습니다")
+            if candidate in seen:
+                raise TaskPredecessorDuplicate("이미 선행으로 지정된 업무입니다")
+            seen.add(candidate)
+            if not self._may_read(principal, candidate):
+                raise TaskNotFound("task was not found")
+            node = self.repository.task_by_id(candidate)
+            if node is None:  # pragma: no cover - `_may_read` 가 먼저 거른다
+                raise TaskNotFound("task was not found")
+            if str(getattr(node, "project_id", None) or "") != str(project_id):
+                raise TaskPredecessorProjectMismatch(
+                    "같은 프로젝트의 업무만 선행으로 지정할 수 있습니다"
+                )
+        if task_id is not None:
+            self._require_no_predecessor_cycle(task_id, list(seen))
+        return list(wanted)
+
+    def resolve_predecessors(self, principal: Principal, wanted: list[UUID], *, project_id: Any) -> list[UUID]:
+        """**아직 없는 업무**를 위한 선행 판정 — 요청 발송이 부르는 자리다 (`RequestParentPort`).
+
+        같은 판정을 요청 모듈이 다시 쓰지 않게 하는 얇은 문이다: 프로젝트 일치·읽기 권한은 여기 한 곳에
+        있고, 자기 자신과 순환은 업무가 없으므로 성립하지 않는다.
+        """
+        return self._resolve_predecessors(principal, list(wanted), project_id=project_id, task_id=None)
+
+    def _require_no_predecessor_cycle(self, task_id: UUID, wanted: list[UUID]) -> None:
+        """이 업무를 기다리는 선행을 선행으로 삼으면 둘이 서로를 기다린다.
+
+        **데이터베이스가 답할 수 없는 하나다** — 활성 변을 따라 걷는 일이라 여기서 답하고, 부르는
+        쪽이 **저장과 같은 transaction** 에 있다 (§5 동시성). 검사한 뒤 저장 전에 남이 다른 변을
+        더해 순환이 생기는 틈을 남기지 않기 위해서다.
+
+        **본 것을 다시 보지 않는다** — 원장이 이미 어긋나 고리가 있어도 여기서 무한히 걷지 않는다.
+        """
+        frontier = [candidate for candidate in wanted]
+        seen: set[UUID] = set()
+        while frontier:
+            batch = [node for node in frontier if node not in seen]
+            if not batch:
+                return
+            seen.update(batch)
+            if task_id in seen:
+                raise TaskPredecessorCycle("선행 관계가 서로를 기다리게 됩니다")
+            edges = self.repository.predecessor_edges(batch)
+            frontier = [node for nodes in edges.values() for node in nodes]
+
+    def _predecessor_gate(self, task: Any, principal: Principal | None = None) -> Any:
+        """이 업무의 시작을 막는 선행이 있는가, 그리고 **말해도 되는 이름**은 무엇인가.
+
+        **취소된 선행은 막지 않는다** (SPEC-001 U-14) — 남은 선행이 전부 완료거나 취소면 열린다.
+        막을지는 **선행 전부**로 정하고, 이름은 이 사람이 읽을 수 있는 것만 낸다 — 미완 하위 거절이
+        이미 그 모양이다. 읽을 수 있는 것이 하나도 없으면 이름 없이 막는다.
+        """
+        blocking = self._blocking_predecessors(task)
+        if not blocking:
+            return TaskPredecessorGate()
+        titles = tuple(
+            str(node.title)
+            for node in blocking
+            if principal is None or self.may_read_task(principal, node.id)
+        )
+        return TaskPredecessorGate(blocks=True, unfinished_titles=titles)
+
+    def _blocking_predecessors(self, task: Any) -> list[Any]:
+        """끝나지도 취소되지도 않은 활성 선행들."""
+        rows = []
+        for predecessor_id in self.repository.active_predecessor_ids(task.id):
+            node = self.repository.task_by_id(predecessor_id)
+            if node is None:  # pragma: no cover - 외래키가 막는다
+                continue
+            if _external_state(node.state) in {TaskState.DONE.value, TaskState.CANCELLED.value}:
+                continue
+            rows.append(node)
+        return rows
+
+    def _predecessor_summary(self, principal: Principal, task: Any) -> list[dict[str, Any]]:
+        """상세가 싣는 선행 요약. **읽기 판정이 부른 상세에서는 비운다** (`_may_read_predecessor`).
+
+        그 호출의 결과는 「열 수 있나」 하나를 묻고 버려진다 — 거기까지 요약을 만들면 사슬을 따라
+        같은 질의가 겹쳐 쌓인다. 밖으로 나가는 상세는 언제나 이 빗장 밖에서 만들어진다.
+        """
+        if self._resolving_predecessor_access:
+            return []
+        return self.predecessor_views(principal, [task.id]).get(task.id, [])
+
+    def predecessor_views(self, principal: Principal, task_ids: list[UUID]) -> dict[UUID, list[dict[str, Any]]]:
+        """선행 요약 — 제목과 상태. **볼 수 없는 선행은 제목 없이** 자리만 남는다 (SPEC-001 §4).
+
+        자료 구획과 다르다: 자료는 건수도 내지 않지만, 선행은 **시작을 막는 이유**라 이유를 숨기면
+        사람이 다음 걸음을 고를 수 없다. 그래서 **제목은 감추고 건수는 낸다** — 배열 길이가 그 건수다.
+        """
+        edges = self.repository.predecessors_for(task_ids)
+        views: dict[UUID, list[dict[str, Any]]] = {}
+        readable: dict[UUID, bool] = {}
+        for task_id, predecessor_ids in edges.items():
+            rows: list[dict[str, Any]] = []
+            for predecessor_id in predecessor_ids:
+                if predecessor_id not in readable:
+                    readable[predecessor_id] = self._may_read_predecessor(principal, predecessor_id)
+                node = self.repository.task_by_id(predecessor_id) if readable[predecessor_id] else None
+                rows.append(
+                    {
+                        "task_id": str(predecessor_id),
+                        "title": str(node.title) if node is not None else None,
+                        "state": _external_state(node.state) if node is not None else None,
+                    }
+                )
+            views[task_id] = rows
+        return views
+
+    def _may_read_predecessor(self, principal: Principal, task_id: UUID) -> bool:
+        """선행 하나를 이 사람이 열 수 있는가 — **판정은 `may_read_task()` 하나 그대로다.**
+
+        다만 그 판정은 상세 투영을 지나고, 상세 투영은 다시 자기 선행의 요약을 만든다. 선행이
+        사슬로 이어져 있으면 A 를 읽는 동안 B 를 읽고 B 를 읽는 동안 C 를 읽는 **되돌이**가 생긴다 —
+        순환은 막혀 있어 무한하지는 않지만, 사슬 길이만큼 같은 질의가 겹쳐 쌓인다.
+
+        그래서 **되돌이 동안에만** 선행 요약을 접는다. 그때의 상세 결과는 「열 수 있나」 하나를 묻고
+        버려지므로 접어도 밖으로 나가는 답이 달라지지 않는다 — 판정을 느슨하게 하지 않는다.
+        """
+        if self._resolving_predecessor_access:
+            return self.may_read_task(principal, task_id)
+        self._resolving_predecessor_access = True
+        try:
+            return self.may_read_task(principal, task_id)
+        finally:
+            self._resolving_predecessor_access = False
+
+    def _party_of(self, principal: Principal, task: Any) -> Any:
+        """이 사람이 이 업무의 **어느 자리**에 있는가 — 요청자 · 담당 · 참조자, 아니면 아무 자리도 아니다.
+
+        세 자리를 하나로 묶지 않는 이유는 `modules/work/parties.py` 에 적혀 있다: 묶으면 참조로 받은
+        사람에게 판단과 수정까지 함께 열린다. 여기서는 **자리만 말하고** 무엇이 열리는지는 그 파일이 답한다.
+        """
+        requester_ids: list[str] = []
+        request_id = getattr(task, "source_work_request_id", None)
+        if request_id is not None and self._requests is not None:
+            request = self._requests.request(request_id)
+            if request is not None:
+                requester_ids = [
+                    str(request.requester_id),
+                    str(getattr(request, "promoted_by_member_id", None) or ""),
+                ]
+        holder = self._holder_of(task)
+        return party_of(
+            str(principal.id),
+            requester_ids=requester_ids,
+            assignee_ids=[holder] if holder else [],
+            cc_member_ids=self.repository.cc_member_ids(task.id),
+        )
 
     def _manages(self, principal: Principal, task_id: UUID) -> bool:
         """Holding the work, or having put someone on it — the two ways of being responsible for it."""
@@ -1097,6 +1435,9 @@ class TaskApplication:
                 unfinished_child_titles=unfinished,
                 children_block=children_block,
             ),
+            # **판정과 전이가 한 덩어리다** (§5 동시성). 업무 행을 이미 잠근 뒤에 세므로, 센 다음
+            # 전이 전에 선행이 다시 열리는 틈이 이 transaction 안에 없다.
+            self._predecessor_gate(task, principal),
         )
         task.state = transition.task.state
         task.start_date = transition.task.start_date
@@ -1693,6 +2034,8 @@ class TaskApplication:
             **self._hierarchy_view(principal, task),
             "origin": self._origin_projection(principal, [task]).get(task.id),
             "assignee": self._assignee_projection([task]).get(task.id),
+            # 상세는 선행의 **제목과 상태**까지 낸다 — 무엇이 시작을 막는지가 그 줄의 쓸모다 (U-13).
+            "predecessors": self._predecessor_summary(principal, task),
         }
 
     # ---- references: earlier work this Task points at ----
@@ -1767,7 +2110,15 @@ class TaskApplication:
         )
         return {"reference_id": str(record.id), "task_version": int(task.version)}
 
-    def _view(self, task: Any, principal: Principal | None = None, *, derived: dict[str, Any] | None = None) -> TaskMutationResult:
+    def _view(
+        self,
+        task: Any,
+        principal: Principal | None = None,
+        *,
+        derived: dict[str, Any] | None = None,
+        cc_member_ids: list[str] | None = None,
+        preceding_task_ids: list[UUID] | None = None,
+    ) -> TaskMutationResult:
         """밖으로 나가는 업무 하나. **`state` 는 계약의 넷뿐이고 `derived` 는 서버가 만든다.**
 
         `derived` 를 미리 계산해 넘길 수 있다 — 목록이 줄마다 같은 질의를 반복하지 않게 하는 자리다.
@@ -1795,6 +2146,23 @@ class TaskApplication:
             "completed_at": _iso(getattr(task, "completed_at", None)),
             "reopened_at": _iso(getattr(task, "reopened_at", None)),
             "assignment": _assignment_view(getattr(task, "assignments", None)),
+            # **참조자.** 요청의 `cc_member_ids` 와 같은 뜻이고 같은 표에서 나온다 — 두 표면이 같은
+            # 이름으로 같은 것을 낸다. 목록은 미리 모아 넘기고, 단건은 여기서 한 번 묻는다.
+            "cc_member_ids": (
+                list(cc_member_ids) if cc_member_ids is not None else self.repository.cc_member_ids(task.id)
+            ),
+            # **선행업무 — 활성인 것만** (SPEC-001 §4). 뗀 것은 빠진다. 상위(`parent_task_id`)·
+            # 참고(`references`)와 **다른 줄**이다: 한 배열에 섞으면 무엇이 시작을 막는지가 사라진다.
+            "preceding_task_ids": [
+                str(item)
+                for item in (
+                    preceding_task_ids
+                    if preceding_task_ids is not None
+                    else self.repository.active_predecessor_ids(task.id)
+                )
+            ],
+            # 승인자(화면 라벨 「결재자」) 0..1 — `업무` 갈래가 값을 넣는다 (SPEC-001 §7 OQ-M).
+            "approver_id": _str(getattr(task, "approver_id", None)),
             # **파생 표시는 서버가 만든다** (SPEC-003 §2.11·§4 Data). 화면이 `state`·`origin_kind` 로
             # 기다림과 권한을 되짚지 않는다 — 되짚으면 두 곳의 규칙이 조용히 갈린다.
             "derived": derived if derived is not None else self._derived_for([task], principal=principal).get(task.id),

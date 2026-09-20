@@ -32,6 +32,9 @@ class ProjectTaskView(TypedDict):
     start_date: str | None
     due_date: str | None
     parent_task_id: str | None
+    #: **간트 연결선의 유일한 원천** (SPEC-001 U-15 · §4). 이 줄이 함께 내므로 선행을 묻는 조회를
+    #: 따로 만들지 않는다. 상위–하위는 다른 그림이라 `parent_task_id` 와 섞지 않는다.
+    preceding_task_ids: list[str]
 
 
 class ProjectDetailResult(ProjectView):
