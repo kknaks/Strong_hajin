@@ -141,10 +141,21 @@ class SqlAlchemyMeetingRepository:
             )
         )
 
-    def meetings_visible_to(self, organization_ids: frozenset[str], member_id: str) -> list[MeetingRecord]:
+    def meetings_visible_to(
+        self,
+        organization_ids: frozenset[str],
+        member_id: str,
+        *,
+        overlapping: tuple[datetime, datetime] | None = None,
+    ) -> list[MeetingRecord]:
         """조직 범위 안의 회의에 더해, 그 사람이 참석했거나 공유받은 회의를 함께 낸다.
 
         열람은 조직이 아니라 관계로 갈린다 — 부서를 가로지른 회의와 공유받은 회의가 조직 범위 질의에서 새면 안 된다.
+
+        `overlapping` 은 **기본이 없음**이다 (WORK-004 Phase BE-1). 캘린더 경로만 그 창을 넘기고,
+        회의 목록(`my_meetings`)과 자료 검색(`readable_rows`)은 이 인자를 넘기지 않으므로 **결과가
+        바뀌지 않는다** — 소비처가 셋이라 무조건 거르면 나머지 둘이 함께 바뀐다.
+        창은 반열림 `[시작, 끝)` 이다: 그 창이 끝나는 순간에 시작하는 회의는 겹치지 않는다.
         """
         now = datetime.now(UTC)
         related = select(MeetingAttendeeRecord.meeting_id).where(
@@ -163,10 +174,14 @@ class SqlAlchemyMeetingRepository:
             conditions.append(MeetingRecord.organization_id.in_(organization_ids))
         if shared_ids:
             conditions.append(MeetingRecord.id.in_(shared_ids))
-        return list(
-            self._session.scalars(
-                select(MeetingRecord).where(or_(*conditions)).order_by(MeetingRecord.starts_at, MeetingRecord.id)
+        statement = select(MeetingRecord).where(or_(*conditions))
+        if overlapping is not None:
+            window_from, window_to = overlapping
+            statement = statement.where(
+                MeetingRecord.starts_at < window_to, MeetingRecord.ends_at > window_from
             )
+        return list(
+            self._session.scalars(statement.order_by(MeetingRecord.starts_at, MeetingRecord.id))
         )
 
     def meeting(self, meeting_id: UUID, *, lock: bool = False) -> MeetingRecord | None:

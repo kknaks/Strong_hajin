@@ -33,6 +33,9 @@ RecipientCheck = Literal["none", "work_request_candidate", "assignment_scope"]
 CREATE_TASK_COMMAND = "task.create"
 ASSIGN_TASK_COMMAND = "task.assign"
 CREATE_WORK_REQUEST_COMMAND = "work_request.create"
+#: 시간 배정 생성 (SPEC-004 §5). **키의 유효 범위가 같은 원장 위에 서되 명령 종류가 다르다** —
+#: 같은 키를 업무 생성과 배정 생성에 써도 둘은 섞이지 않는다.
+CREATE_TASK_SCHEDULE_COMMAND = "task_schedule.create"
 
 MAX_IDEMPOTENCY_KEY_LENGTH = 200
 

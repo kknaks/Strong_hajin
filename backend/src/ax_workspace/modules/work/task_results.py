@@ -296,3 +296,49 @@ class TaskReferenceReleaseResult(TypedDict):
 
 class TaskCompletionResult(TaskMutationResult):
     delivery: TaskDeliveryView | None
+
+
+class TaskScheduleView(TypedDict):
+    """배정 하나 — 생성과 시각 변경이 같은 모양으로 낸다 (SPEC-004 §4 Request/Response).
+
+    **제목·담당자를 싣지 않는다** — 복사하면 업무 제목이 바뀔 때 캘린더가 조용히 낡는다.
+    **`released_at`·`released_reason` 은 드러나지 않는다** — 닫힌 배정은 조회에 실리지 않는다.
+    """
+
+    schedule_id: str
+    task_id: str
+    on_date: str
+    starts_at: str
+    ends_at: str
+    #: **이 배정 자신의 회차** (증보 K8). 화면이 시각 변경을 부를 값이다.
+    version: int
+
+
+class CalendarScheduleEntry(TypedDict):
+    """합본 조회 업무 행에 매달린 배정. **`task_id` 를 다시 싣지 않는다** — 매달린 행이 이미 갖는다."""
+
+    schedule_id: str
+    on_date: str
+    starts_at: str
+    ends_at: str
+    version: int
+
+
+class CalendarTaskRow(TypedDict):
+    """합본 조회의 `kind: 'task'` — **내가 활성 담당인** 업무 하나 (SPEC-004 §4).
+
+    **`is_active_assignee` 를 싣지 않는다** (증보 K13): 축이 `my_work` 라 언제나 참이고,
+    언제나 참인 값은 아무것도 가르지 못한다.
+    """
+
+    kind: Literal['task']
+    task_id: str
+    title: str
+    state: str
+    start_date: str | None
+    due_date: str | None
+    #: **서버가 정규화한 기간** (증보 K14). 화면은 이것을 계산하지 않고 받는다. 기간이 없으면 둘 다 `None`.
+    span_from: str | None
+    span_to: str | None
+    version: int
+    schedules: list[CalendarScheduleEntry]

@@ -6,11 +6,12 @@ audit facts; HTTP, MCP, Calendar, Materials, and AX call these commands rather t
 from __future__ import annotations
 
 import base64
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Protocol
 from uuid import UUID
 
 from ax_workspace.modules.meetings.domain import (
+    MeetingRangeIncomplete,
     MeetingStaleWrite,
     MAX_AGENDAS_PER_TRACK,
     MeetingAccessDenied,
@@ -53,7 +54,7 @@ from ax_workspace.modules.meetings.policy import (
     project_meeting_view,
 )
 from ax_workspace.modules.meetings.retranscribe import Recording
-from ax_workspace.modules.meetings.rooms import Attendee, RoomReservation, headcount
+from ax_workspace.modules.meetings.rooms import OFFICE_TIMEZONE, Attendee, RoomReservation, headcount
 from ax_workspace.modules.meetings.stream_service import MeetingAdmission
 from ax_workspace.modules.organization_access.domain import Principal
 
@@ -92,7 +93,13 @@ class MeetingRepository(Protocol):
     def replace_attendees(self, meeting: Any, attendee_ids: list[str], actor_id: str) -> None: ...
     def primary_organization(self, member_id: str) -> str | None: ...
     def meetings_in_organizations(self, organization_ids: frozenset[str]) -> list[Any]: ...
-    def meetings_visible_to(self, organization_ids: frozenset[str], member_id: str) -> list[Any]: ...
+    def meetings_visible_to(
+        self,
+        organization_ids: frozenset[str],
+        member_id: str,
+        *,
+        overlapping: tuple[datetime, datetime] | None = None,
+    ) -> list[Any]: ...
     def meeting(self, meeting_id: UUID, *, lock: bool = False) -> Any | None: ...
     def attendee_ids(self, meeting: Any) -> set[str]: ...
     def is_shared_with(self, meeting: Any, member_id: str) -> bool: ...
@@ -208,14 +215,44 @@ class MeetingApplication:
             )
         return rows
 
-    def board(self, principal: Principal, *, cursor: str | None = None, page_size: int = PAST_PAGE_SIZE) -> dict[str, Any]:
-        """회의 목록의 두 구획. 「예정」은 전부 내고 「지난」은 20건씩 잇는다 (SPEC §3.4-1).
+    def board(
+        self,
+        principal: Principal,
+        *,
+        cursor: str | None = None,
+        page_size: int = PAST_PAGE_SIZE,
+        span_from: date | None = None,
+        span_to: date | None = None,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        """회의 목록. **입력에 따라 응답이 두 모양이다** (SPEC-004 §4 · 증보 K2).
 
-        열 수 없는 회의는 여기 아예 서지 않는다 — 목록도 없는 것처럼 응답하는 자리다 (§3.2-1).
+        `from`·`to` 가 **없으면 지금 그대로**다 — 「예정」은 전부 내고 「지난」은 20건씩 커서로 잇는다
+        (SPEC §3.4-1). 회의 화면은 그 인자를 보내지 않으므로 **영향을 받지 않는다**.
+
+        `from`·`to` 가 **둘 다 오면 구획도 커서도 쓰지 않는다** — 그 기간과 겹치는 회의의 한 배열이다.
+        구획을 안 쓰는 이유 셋: ① 구획을 가르는 `_is_past` 가 **공유받은 회의를 무조건 `past` 로**
+        보내서 다음 주 회의가 캘린더에서 자리를 잃는다 — 캘린더 경로가 그 판정을 **지나지 않으므로**
+        함정이 아예 없어진다. ② 기간이 이미 상한이라 커서를 또 얹을 이유가 없다. ③ `upcoming`/`past`
+        는 「지났나」로 답하는데 캘린더는 「이 주」를 묻는다.
+
+        열 수 없는 회의는 **두 갈래 모두에서** 아예 서지 않는다 — 목록도 없는 것처럼 응답한다 (§3.2-1).
         """
+        window = _day_window(span_from, span_to)
+        visible = self._repository.meetings_visible_to(
+            principal.organization_scope, str(principal.id), overlapping=window
+        )
+        if window is not None:
+            rows: list[dict[str, Any]] = []
+            for meeting in visible:
+                if not self._can_read_detail(principal, meeting):
+                    continue
+                self._settle_auto_cancel(meeting)
+                rows.append(self._row(principal, meeting))
+            rows.sort(key=lambda row: (row["starts_at"] or "", row["meeting_id"]))
+            return rows
         upcoming: list[dict[str, Any]] = []
         past: list[dict[str, Any]] = []
-        for meeting in self._repository.meetings_visible_to(principal.organization_scope, str(principal.id)):
+        for meeting in visible:
             if not self._can_read_detail(principal, meeting):
                 continue
             self._settle_auto_cancel(meeting)
@@ -225,6 +262,24 @@ class MeetingApplication:
         past.sort(key=lambda row: (row["starts_at"] or "", row["meeting_id"]), reverse=True)
         page, next_cursor = _page(past, cursor, page_size)
         return {"upcoming": upcoming, "past": {"items": page, "next_cursor": next_cursor}}
+
+    def calendar_rows(self, principal: Principal, span_from: date, span_to: date) -> list[dict[str, Any]]:
+        """합본 조회의 **회의 절반** — `board` 의 기간 갈래를 그대로 재사용한다 (SPEC-004 §4).
+
+        회의 도메인에 새 조회를 만들지 않는다. 더하는 것은 **주최자의 표시 이름 하나**이고, 그 조인은
+        **합본 조회가 한다** — `GET /api/meetings` 의 행 모양은 바뀌지 않는다 (증보 K4).
+        `attendees[]`·`purpose`·`repeat` 은 싣지 않는다.
+        """
+        return [
+            {
+                **row,
+                "kind": "meeting",
+                "created_by_display_name": (
+                    self._repository.member_display_name(row["created_by"]) or row["created_by"]
+                ),
+            }
+            for row in self.board(principal, span_from=span_from, span_to=span_to)
+        ]
 
     def get(self, principal: Principal, meeting_id: UUID) -> dict[str, Any]:
         meeting = self._readable(principal, meeting_id)
@@ -1865,6 +1920,24 @@ def _place_of(row: dict[str, Any]) -> str:
 
 def _cursor_of(row: dict[str, Any]) -> str:
     return base64.urlsafe_b64encode(_place_of(row).encode()).decode().rstrip("=")
+
+
+def _day_window(span_from: date | None, span_to: date | None) -> tuple[datetime, datetime] | None:
+    """`from`·`to` 두 날짜를 **사무실 시간대의 반열림 구간** `[from 00:00, to+1일 00:00)` 으로 연다.
+
+    **둘 다 없으면 `None`** 이고, 그때 회의 목록은 지금 동작 그대로다. **하나만 오면 거절한다** —
+    한쪽만으로는 「어느 기간」이 성립하지 않는다 (SPEC-004 `MEETING_RANGE_INCOMPLETE`).
+    날짜를 시각으로 여는 기준 시간대는 회의실 예약이 쓰는 것과 같다 — 한 저장소가 두 달력을 갖지 않는다.
+    """
+    if span_from is None and span_to is None:
+        return None
+    if span_from is None or span_to is None:
+        raise MeetingRangeIncomplete("회의 기간 조회에는 from 과 to 가 함께 필요합니다")
+    if span_from > span_to:
+        raise MeetingRangeIncomplete("조회 기간의 시작이 끝보다 뒤일 수 없습니다")
+    start = datetime.combine(span_from, time.min, tzinfo=OFFICE_TIMEZONE)
+    end = datetime.combine(span_to + timedelta(days=1), time.min, tzinfo=OFFICE_TIMEZONE)
+    return start, end
 
 
 def _page(rows: list[dict[str, Any]], cursor: str | None, page_size: int) -> tuple[list[dict[str, Any]], str | None]:

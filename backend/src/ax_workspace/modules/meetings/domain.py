@@ -27,6 +27,14 @@ class MeetingStateConflict(MeetingError):
     """The command is well formed but the meeting is not in a status that allows it."""
 
 
+class MeetingRangeIncomplete(MeetingError):
+    """회의 목록에 `from`·`to` 중 하나만 왔다 (SPEC-004 `MEETING_RANGE_INCOMPLETE`, 422).
+
+    **두 파라미터는 같이 온다.** 한쪽만으로는 「어느 기간」이 성립하지 않는다 — 없으면 기존 동작
+    (`upcoming`/`past` + 커서) 그대로다. 뒤집힌 기간(`from > to`)도 같은 거절이다.
+    """
+
+
 class MeetingStaleWrite(MeetingError):
     """다른 탭이 먼저 저장했다 — 덮어쓰지 않고 지금 있는 것을 함께 돌려준다 (SPEC-004 §8-9).
 

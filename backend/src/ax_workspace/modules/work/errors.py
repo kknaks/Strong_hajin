@@ -173,3 +173,73 @@ class TaskApproverLocked(TaskError):
 
     이미 그 사람 앞에 판단이 놓였으므로, 바꾸면 누가 무엇에 답했는지가 어긋난다 (§5 권한).
     """
+
+
+# ---- SPEC-004 §4 Case Matrix — 시간 배정이 더하는 거절들 ----
+#
+# 같은 기준으로 같은 자리에 선다: **입력이 틀린 것은 422**, 「명령 자체는 말이 되는데 지금 그 자원의
+# 상태가 받지 않는」 것은 **409**, 관계가 없는 것은 **403**, 읽을 수 없는 것은 **404**다.
+# 읽을 수 **있으나** 담당이 아닌 것은 403 이다 — 읽을 수 있다는 건 존재를 이미 아는 것이라
+# 404 로 숨기면 「내 화면에 떠 있는 업무인데 없다고 한다」가 된다 (증보 K6).
+
+
+class TaskScheduleForbidden(TaskAccessDenied):
+    """읽을 수는 있으나 그 업무의 **활성 담당자가 아니다** (SPEC-004 `TASK_SCHEDULE_FORBIDDEN`, 403).
+
+    판정 근거는 **그 업무의 활성 담당 관계**다 — `task.self_manage` 봉투가 아니다 (증보 K5).
+    그 봉투는 전역 권한 비트 하나라 **읽을 수 있는 남의 업무에도 배정이 생긴다**.
+    """
+
+
+class TaskScheduleOutOfRange(TaskError):
+    """업무 기간 밖의 날에 배정하려 했다 (SPEC-004 `TASK_SCHEDULE_OUT_OF_RANGE`, 422).
+
+    **본문에 그 기간을 적는다** — 그 「기간」은 정규화 구간이다 (증보 K11·K14). 뒤집힌 업무면
+    `start_date`~`due_date` 가 아니라 `[min, max]` 를 적는다.
+    """
+
+
+class TaskScheduleTaskUnscheduled(TaskError):
+    """기간이 없는 업무에 배정하려 했다 (SPEC-004 `TASK_SCHEDULE_TASK_UNSCHEDULED`, 422).
+
+    **한쪽만 있는 것은 여기 들어오지 않는다** — 남은 한쪽을 그 날 하루로 읽는다 (증보 K7).
+    """
+
+
+class TaskScheduleInvalidRange(TaskError):
+    """`starts_at >= ends_at` (SPEC-004 `TASK_SCHEDULE_INVALID_RANGE`, 422).
+
+    **데이터베이스 CHECK 과 같은 사실**이다 — 어떤 상태에서도 참이 될 수 없으니 409 가 아니라 422 다.
+    """
+
+
+class TaskScheduleTaskClosed(TaskError):
+    """끝난 업무(`DONE`·`CANCELLED`)에 배정하려 했다 (SPEC-004 `TASK_SCHEDULE_TASK_CLOSED`, 409).
+
+    **재전송이면 영수증이 먼저다** (증보 K12).
+    """
+
+
+class TaskScheduleDayTaken(TaskError):
+    """그 날에 **살아 있는 배정이 이미 있다** (SPEC-004 `TASK_SCHEDULE_DAY_TAKEN`, 409).
+
+    **생성은 덮어쓰지 않는다** (증보 K10). 그 날의 시각을 바꾸는 것은 `PATCH` 의 일이다.
+    **같은 멱등 키의 재전송은 이 거절에 걸리지 않는다** — 영수증이 먼저다 (증보 K12).
+    정상 흐름에서는 보이지 않는다: 화면은 그 날의 `schedule_id` 를 들고 있어 곧바로 `PATCH` 를 부른다.
+    """
+
+
+class TaskScheduleVersionConflict(TaskError):
+    """그 **배정 자신의** 회차가 어긋났다 (SPEC-004 `VERSION_CONFLICT`, 409 · 증보 K8).
+
+    업무의 회차가 아니다 — 배정만 바뀌는데 업무 회차를 올리면 다른 화면의 낙관적 잠금이 깨진다.
+    **업무 회차 경합(`InvalidTaskTransition`)과 다른 예외**인 이유는 상태가 다르기 때문이다:
+    기존 업무 표면의 계약(422)을 이 SPEC 이 바꾸지 않는다.
+    """
+
+
+class CalendarRangeInvalid(TaskError):
+    """합본 조회에 `from`·`to` 가 없거나 뒤집혔다 (SPEC-004 `CALENDAR_RANGE_REQUIRED`, 422).
+
+    화면이 항상 채워 보내므로 사용자에게 보이지 않는다.
+    """

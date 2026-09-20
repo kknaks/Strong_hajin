@@ -1,5 +1,5 @@
 """Task-owned command values shared across direct and confirmed adapters."""
-from datetime import date
+from datetime import date, time
 from typing import Literal, Self
 from uuid import UUID
 
@@ -183,3 +183,29 @@ class TaskCancelInput(TaskVersionInput):
             raise ValueError('취소에는 사유가 필요합니다')
         self.reason = cleaned
         return self
+
+
+class TaskScheduleCreateInput(BaseModel):
+    """배정 생성의 본문 — **회차를 받지 않는다** (SPEC-004 §4 · 증보 K10).
+
+    생성 전용이라 바꿀 값이 없고, 조건부 회차를 두면 **잃은 갱신이 열린다**.
+    멱등 키는 본문이 아니라 `Idempotency-Key` **헤더**로 온다 (SPEC-003 §5 K-1 계승).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    on_date: date = Field(title="배정할 날")
+    starts_at: time = Field(title="시작 시각")
+    ends_at: time = Field(title="종료 시각")
+
+
+class TaskScheduleRetimeInput(BaseModel):
+    """시각 변경의 본문. **`on_date` 를 받지 않는다** — 날짜 이동 경로가 없다 (§2.3 R6).
+
+    `expected_version` 은 **그 배정 자신의 회차**이고 **무조건 필수**다 (증보 K8·K10).
+    두 시각을 **둘 다** 보낸다 — 세로 손잡이가 한쪽만 끌어도 계약은 한 쌍이다.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=1, title="배정 버전")
+    starts_at: time = Field(title="시작 시각")
+    ends_at: time = Field(title="종료 시각")

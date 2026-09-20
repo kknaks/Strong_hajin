@@ -23,6 +23,7 @@ PURE_DOMAIN_MODULES = (
     "work/material_search_policy.py",
     "work/material_values.py",
     "work/request_lifecycle.py",
+    "work/schedule.py",
 )
 
 

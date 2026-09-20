@@ -43,7 +43,7 @@ from ax_workspace.modules.actions.results import ActionEnvelopeResult, ActionDet
 from ax_workspace.modules.ax_execution.result_contracts import ActionProposalResult
 
 from pathlib import Path
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from time import monotonic, sleep
 
 from typing import Any
@@ -106,6 +106,7 @@ from ax_workspace.modules.work.material_search import MaterialSearchApplication,
 from ax_workspace.bootstrap.material_sources import SessionMaterialOwners, readable_content_evidence
 from ax_workspace.modules.work.graph import GraphApplication
 from ax_workspace.modules.work.application import TaskAccessDenied, TaskApplication, TaskNotFound, TaskState
+from ax_workspace.modules.work.errors import CalendarRangeInvalid, TaskScheduleDayTaken
 from ax_workspace.modules.work.assignments import TaskAssignmentApplication
 from ax_workspace.modules.work.creation_commands import TaskCreationApplication
 from ax_workspace.modules.work.task_results import (
@@ -113,6 +114,7 @@ from ax_workspace.modules.work.task_results import (
     ChecklistOrderResult,
     TaskAssignmentResult,
     TaskMutationResult,
+    TaskScheduleView,
 )
 from ax_workspace.modules.meetings.application import MeetingApplication
 from ax_workspace.modules.meetings.commands import (
@@ -225,6 +227,7 @@ from ax_workspace.platform.work_tasks import (
     SqlAlchemyWorkRequestRepository,
 )
 from ax_workspace.platform.meetings import SqlAlchemyMeetingRepository
+from ax_workspace.platform.task_schedules import SqlAlchemyTaskScheduleRepository
 
 
 
@@ -1398,10 +1401,92 @@ class WorkflowApplication:
             session.commit()
             return result
 
-    def meeting_board(self, principal: Principal, *, cursor: str | None = None) -> dict[str, Any]:
+    def meeting_board(
+        self,
+        principal: Principal,
+        *,
+        cursor: str | None = None,
+        span_from: date | None = None,
+        span_to: date | None = None,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        """회의 목록. `from`·`to` 가 오면 **구획도 커서도 없는 한 배열**이고, 없으면 지금 그대로다 (증보 K2)."""
         with self._session_factory() as session:
-            result = self._meetings(session).board(principal, cursor=cursor)
+            result = self._meetings(session).board(
+                principal, cursor=cursor, span_from=span_from, span_to=span_to
+            )
             # 조회 시점 자동 취소 판정이 상태를 옮겼을 수 있다 — 읽기지만 쓰기를 남긴다.
+            session.commit()
+            return result
+
+    def calendar(self, principal: Principal, span_from: date, span_to: date) -> list[dict[str, Any]]:
+        """업무 + 회의 **합본** — 한 배열이고 `kind` 로 가른다 (SPEC-004 §4 · 증보 K2·K13·K14).
+
+        업무는 `my_work` 축, 회의는 `board` 축이다. **두 축을 섞지 않는다** — 코드가 일부러 갈라 놓은
+        판정이고, 여기서 합치는 것은 **읽은 결과**이지 판정이 아니다. **한 화면 = 한 요청**이라
+        화면이 두 번 부르지 않는다.
+        """
+        if span_from > span_to:
+            raise CalendarRangeInvalid("조회 기간의 시작이 끝보다 뒤일 수 없습니다")
+        with self._session_factory() as session:
+            tasks = self._tasks(session).calendar_tasks(principal, span_from, span_to)
+            meetings = self._meetings(session).calendar_rows(principal, span_from, span_to)
+            # 회의 조회가 자동 취소 판정으로 상태를 옮겼을 수 있다 — 읽기지만 그 쓰기를 남긴다.
+            session.commit()
+            return [*tasks, *meetings]
+
+    def create_task_schedule(
+        self,
+        principal: Principal,
+        task_id: UUID,
+        *,
+        idempotency_key: str | None,
+        on_date: date,
+        starts_at: time,
+        ends_at: time,
+    ) -> tuple[TaskScheduleView, bool]:
+        """배정 생성 — **생성 전용**이고 **영수증이 409 보다 먼저다** (증보 K10·K12).
+
+        함께 내는 참·거짓은 **새로 만들어진 것이 있는가**다 — 표면이 `201` 과 영수증의 `200` 을 그것으로 가른다.
+
+        `_created_once` 와 같은 모양이되 **깨질 수 있는 제약이 하나 더** 있다: 하루 한 칸을 지키는
+        부분 unique 다. 원장에 그 키가 없는데 그 날이 이미 찼다면 **경합에서 진 것**이므로
+        `409 TASK_SCHEDULE_DAY_TAKEN` 으로 말한다 — 데이터베이스 오류를 그대로 올리지 않는다.
+        """
+        def command(creation: Any, receipt_only: bool) -> Any:
+            return creation.create_task_schedule(
+                principal, task_id, idempotency_key=idempotency_key, on_date=on_date,
+                starts_at=starts_at, ends_at=ends_at, receipt_only=receipt_only,
+            )
+
+        try:
+            with self._session_factory() as session:
+                result = self._task_creation(session).create_or_receipt(command, receipt_only=False)
+                session.commit()
+                return result
+        except IntegrityError:
+            with self._session_factory() as session:
+                receipt = self._task_creation(session).create_or_receipt(command, receipt_only=True)
+                if receipt is not None:
+                    return receipt
+                if SqlAlchemyTaskScheduleRepository(session).active_on(task_id, on_date) is not None:
+                    raise TaskScheduleDayTaken("이 날에는 이미 시간 배정이 있습니다") from None
+            raise
+
+    def retime_task_schedule(
+        self,
+        principal: Principal,
+        schedule_id: UUID,
+        *,
+        expected_version: int,
+        starts_at: time,
+        ends_at: time,
+    ) -> TaskScheduleView:
+        """시각 변경 — 같은 날 재배정이 도착하는 자리다. 회차는 **그 배정 자신의 것**이다 (증보 K8)."""
+        with self._session_factory() as session:
+            result = self._tasks(session).retime_schedule(
+                principal, schedule_id, expected_version=expected_version,
+                starts_at=starts_at, ends_at=ends_at,
+            )
             session.commit()
             return result
 
@@ -4230,6 +4315,8 @@ class WorkflowApplication:
             self._projects(session),
             # 참조자로 적힌 사람이 활동 중인 구성원인가 — **요청이 쓰는 명부와 같은 것**이다.
             OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
+            # 시간 배정 — 업무의 자식이라 같은 application 이 든다 (SPEC-004 §4 Data Contract).
+            schedules=SqlAlchemyTaskScheduleRepository(session),
         )
 
     def _projects(self, session: Any) -> ProjectApplication:
