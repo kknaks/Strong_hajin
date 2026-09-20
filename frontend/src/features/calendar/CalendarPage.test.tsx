@@ -12,11 +12,14 @@ vi.mock("../../lib/labels", async (importOriginal) => ({
 }));
 
 const getCalendar = vi.fn<(from: string, to: string) => Promise<CalendarEntry[]>>();
-vi.mock("../../lib/api", () => ({
+vi.mock("../../lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/api")>()),
   getCalendar: (from: string, to: string) => getCalendar(from, to),
   getTask: vi.fn(),
   transitionDirectTask: vi.fn(),
   updateTask: vi.fn(),
+  createTaskSchedule: vi.fn(),
+  updateTaskSchedule: vi.fn(),
 }));
 
 /* 셸이 넘기는 콜백은 «렌더마다 같은 것»이다(`App.tsx` 의 setState 들). 여기서 렌더마다 새로 만들면
@@ -31,6 +34,8 @@ function Harness() {
       {rails.left ? <aside data-testid="rail-left">{rails.left}</aside> : null}
       {rails.right ? <aside data-testid="rail-right">{rails.right}</aside> : null}
       <CalendarPage
+        canAssignTasks={false}
+        canCreateWorkRequests={false}
         canManageOwnTasks
         onAskAboutTask={noop}
         onError={noop}
@@ -119,8 +124,10 @@ describe("캘린더 골격", () => {
         if (name.startsWith("scax-event--")) kinds.add(name);
       });
     });
-    expect([...kinds].filter((name) => !["scax-event--bar", "scax-event--bar-head", "scax-event--bar-tail", "scax-event--ghost", "scax-event--more"].includes(name)).sort())
-      .toEqual(["scax-event--meeting", "scax-event--task"]);
+    /* 유형이 아닌 수식어들 — 띠의 모양(`bar*`)·빈 자리(`ghost`)·접힌 수(`more`)와,
+       FE-2 가 더한 «손잡이가 붙는다»(`resizable`). 어느 것도 상태를 말하지 않는다. */
+    const notAKind = ["scax-event--bar", "scax-event--bar-head", "scax-event--bar-tail", "scax-event--ghost", "scax-event--more", "scax-event--resizable"];
+    expect([...kinds].filter((name) => !notAKind.includes(name)).sort()).toEqual(["scax-event--meeting", "scax-event--task"]);
     for (const state of ["open", "in_progress", "blocked", "done", "cancelled"]) {
       expect(container.querySelector(`.scax-event--${state}`)).toBeNull();
     }

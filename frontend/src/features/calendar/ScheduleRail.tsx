@@ -31,6 +31,7 @@ export function ScheduleRail({
   state,
   onRetry,
   onOpen,
+  onDragStart,
 }: {
   cards: RailCard[];
   tab: CalendarTab;
@@ -42,6 +43,8 @@ export function ScheduleRail({
   onRetry: () => void;
   /** 업무 카드를 연다. 회의 카드에는 붙지 않는다. */
   onOpen?: (card: RailCard) => void;
+  /** 업무 카드를 끌기 시작했다 (R1·R5). 회의 카드에는 붙지 않는다 — 캘린더는 회의를 옮기지 않는다(§F). */
+  onDragStart?: (card: RailCard) => void;
 }) {
   let body;
   if (state === "loading") {
@@ -66,7 +69,12 @@ export function ScheduleRail({
   } else {
     /* 여는 것은 업무뿐이다 — 캘린더는 회의에 아무 명령도 내지 않는다(§2.4). 회의 카드는 읽는 카드다. */
     body = cards.map((card) => (
-      <ScheduleCard card={card} key={card.key} onOpen={card.kind === "task" ? onOpen : undefined} />
+      <ScheduleCard
+        card={card}
+        key={card.key}
+        onDragStart={card.kind === "task" ? onDragStart : undefined}
+        onOpen={card.kind === "task" ? onOpen : undefined}
+      />
     ));
   }
   return (

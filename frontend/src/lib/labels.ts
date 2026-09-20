@@ -929,6 +929,56 @@ export const calendarScreen = {
   more: (count: number) => `+${count}건 더`,
   unfold: (count: number) => `${count}건 펴기`,
   fold: "접기",
+  /* 손잡이 — 정체는 «화면의 좌우»가 아니라 «필드»다 (WARN-A). 뒤집힌 업무에서는 띠 위의 좌우가
+     바뀌어 보일 수 있지만, `start` 손잡이는 언제나 시작일을 정한다. */
+  grabStart: "끌어서 시작일 정하기",
+  grabEnd: "끌어서 마감일 정하기",
+  grabSlotStart: "끌어서 시작 시각 정하기",
+  grabSlotEnd: "끌어서 종료 시각 정하기",
+  dragHint: "캘린더로 끌어다 기간·시간 정하기",
+  create: "업무 만들기",
+} as const;
+
+/**
+ * 쓰기가 성공했을 때 — **캘린더가 내는 말**.
+ *
+ * K3 의 「해제」는 **오류가 아니다.** 업무 수정은 성공했고 기간 밖으로 나간 배정이 닫힌 것이라,
+ * 성공 알림과 **같은 자리에서 이어 말한다.** `released_count` 가 **0 이면 이 문장을 만들지 않는다.**
+ */
+export const calendarDone = {
+  moved: "업무 기간을 옮겼습니다.",
+  resized: "업무 기간을 바꿨습니다.",
+  scheduled: "시간을 배정했습니다.",
+  rescheduled: "시간 배정을 바꿨습니다.",
+  released: (count: number) => `${count}건의 시간 배정이 기간 밖이라 해제되었습니다.`,
+} as const;
+
+/**
+ * 쓰기가 거절됐을 때 — **조용한 거절 0개** (SPEC §I).
+ *
+ * 시안은 `canDrop` 이 거짓이면 `preventDefault` 를 안 불러 **브라우저가 말없이 막는다.**
+ * 저장소의 같은 자리는 문구로 말한다(칸반 `onInvalidMove` — `WorkViews.tsx:521`). **그쪽을 따른다.**
+ *
+ * ⚠ **서버 본문을 그대로 뿌리지 않는다.** 오류 본문은 `{"detail": "<문장>"}` 뿐이고 `code` 가 없다 —
+ * 게다가 `WORK_SCHEDULE_START_AFTER_DUE` 의 서버 문구는 **영문**이다. 화면의 말은 여기 것이 정본이고,
+ * 무엇을 낼지는 **상태 코드 + 어떤 명령을 불렀는지**로 고른다(`calendarWrites.denyMessage`).
+ */
+export const calendarDeny = {
+  /** 기간 밖 — **정규화 구간**을 적는다(K11·K14). 뒤집힌 업무면 원본 두 날짜가 아니라 `[min, max]` 다. */
+  outOfRange: (from: string, to: string) =>
+    `이 업무의 기간(${formatDate(from)}~${formatDate(to)}) 안에만 시간을 배정할 수 있습니다.`,
+  unscheduled: "먼저 업무 기간을 정해 주세요. 기간이 있어야 시간을 배정할 수 있습니다.",
+  invalidRange: "종료 시각은 시작 시각보다 뒤여야 합니다.",
+  startAfterDue: "시작일은 마감일보다 뒤일 수 없습니다.",
+  taskClosed: "끝난 업무에는 시간을 배정할 수 없습니다.",
+  notMine: "내가 맡은 업무에만 시간을 배정할 수 있습니다.",
+  dayTaken: "이 날의 시간 배정이 방금 바뀌었습니다. 새로고침 후 다시 시도해 주세요.",
+  versionConflict: "다른 곳에서 먼저 바뀌었습니다. 새로고침 후 다시 시도해 주세요.",
+  notFound: "그 업무를 더는 찾을 수 없습니다. 새로고침 후 다시 시도해 주세요.",
+  /** 회의는 캘린더에서 읽기 전용이다 (§F) — 끌 수도, 시각을 늘릴 수도 없다. */
+  meetingReadOnly: "회의는 캘린더에서 옮길 수 없습니다. 회의 화면에서 바꿔 주세요.",
+  datesFailed: "업무 기간을 바꾸지 못했습니다.",
+  scheduleFailed: "시간 배정을 저장하지 못했습니다.",
 } as const;
 
 /** 캘린더 탭 셋 — 레일과 격자를 **동시에** 가른다 (SPEC §2.1). */

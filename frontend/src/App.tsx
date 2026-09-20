@@ -470,7 +470,12 @@ export default function App() {
           {/* 바퀴 8-B 가 이 화면을 본문 한 칸으로 두었던 것을 WORK-004 FE-1 이 세 칸으로 넓혔다 —
               좌측 일정 레일이 셸의 AppBody 슬롯에 선다(오른쪽은 비운다). 선례는 아래 MyWorkPage 다. */}
           {surface === "calendar" && (
-            <CalendarPage {...pageProps} {...sharedWorkProps} onRegisterRails={registerSurfaceRails} />
+            <CalendarPage
+              {...pageProps}
+              {...sharedWorkProps}
+              onRegisterHeaderActions={registerSurfaceActions}
+              onRegisterRails={registerSurfaceRails}
+            />
           )}
           {surface === "meetings" && (
             <MeetingWorkspace

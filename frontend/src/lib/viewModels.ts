@@ -208,6 +208,14 @@ export type DirectTask = {
   /** 어느 프로젝트의 일인가. 서버의 업무 투영이 이미 내던 값이고, 타입에만 빠져 있었다. */
   project_id?: string | null;
   /**
+   * 이 응답이 **날짜를 바꾼 것이라면** 그때 함께 닫힌 시간 배정의 건수와 사유 (SPEC-004 증보 K3).
+   *
+   * **날짜를 바꾸는 표면에만 실린다** — `PATCH /api/tasks/{id}` · `POST /api/tasks/{id}/start` ·
+   * `POST …/proposals/{pid}/respond` 셋뿐이다. `/block`·`/resume`·`/complete`·`/cancel` 에는
+   * **없고**, 조회(`GET /api/tasks`)에도 없다 — 그래서 `undefined` 가 기본이고 그때는 **아무 말도 하지 않는다.**
+   */
+  schedule_release?: ScheduleRelease | null;
+  /**
    * 선행업무 — **활성인 것만** 실린다 (SPEC-001 §4). 상위(`parent`)·참고(`reference`)와
    * **다른 세 번째 관계**이고 서로 대체하지 않는다. 이것이 끝나야 이 업무를 시작할 수 있다.
    */
