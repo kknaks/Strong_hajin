@@ -47,6 +47,22 @@ class TaskDerivedView(TypedDict):
     overdue_days: int | None
 
 
+class TaskScheduleReleaseView(TypedDict):
+    """이번 명령이 **닫은 배정 건수와 그 사유** (SPEC-004 §4 · 증보 K3).
+
+    **날짜가 바뀌는 세 자리 전부가 이 묶음을 낸다** — 업무 수정 · 시작 전이 · 조건 변경 제안 동의.
+    닫힌 것이 없으면 `released_count = 0` 이고 `reason` 은 `None` 이다. **0 을 내는 것도 계약이다.**
+
+    **문구는 서버가 만들지 않는다** — 화면이 이 두 값으로 「N건의 시간 배정이 기간 밖이라
+    해제되었습니다」를 만든다. 말은 프론트가 갖는 것이 저장소의 결이다.
+    **닫힌 배정의 식별자를 내지 않는다** — 되돌릴 경로가 없으므로 화면이 그것으로 할 수 있는 일이 없다.
+    """
+
+    released_count: int
+    #: `out_of_range` | `task_dates_cleared` | `None`. **셋째 사유가 생기는 경로가 없다.**
+    reason: str | None
+
+
 class TaskMutationResult(TypedDict):
     task_id: str
     title: str
@@ -79,6 +95,17 @@ class TaskMutationResult(TypedDict):
     approver_id: str | None
     derived: TaskDerivedView | None
     lineage: TaskLineageView
+
+
+class TaskDateMutationResult(TaskMutationResult):
+    """**날짜를 바꿀 수 있는 명령**의 응답 — 업무 수정과 상태 전이 (SPEC-004 §4 · 증보 K3).
+
+    투영은 `TaskMutationResult` 그대로이고 `schedule_release` 한 묶음이 더해진다.
+    **읽기 표면과 다른 타입인 것이 요점이다** — 목록·상세는 배정을 닫을 수 없으므로 이 칸을
+    가지면 안 된다. 닫은 것이 없어도 `{released_count: 0, reason: null}` 을 낸다.
+    """
+
+    schedule_release: TaskScheduleReleaseView
 
 
 class TaskPredecessorView(TypedDict):

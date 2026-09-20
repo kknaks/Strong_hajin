@@ -113,6 +113,7 @@ from ax_workspace.modules.work.task_results import (
     ChecklistMutationResult,
     ChecklistOrderResult,
     TaskAssignmentResult,
+    TaskDateMutationResult,
     TaskMutationResult,
     TaskScheduleView,
 )
@@ -2417,7 +2418,7 @@ class WorkflowApplication:
             principal, title, receipt_only=receipt_only, **fields
         ))
 
-    def update_task(self, principal: Principal, task_id: UUID, expected_version: int, changes: dict[str, Any]) -> TaskMutationResult:
+    def update_task(self, principal: Principal, task_id: UUID, expected_version: int, changes: dict[str, Any]) -> TaskDateMutationResult:
         with self._session_factory() as session:
             result = self._tasks(session).update(task_id, principal, expected_version, changes)
             session.commit()
@@ -4440,7 +4441,7 @@ class WorkflowApplication:
             session.commit()
             return result
 
-    def transition_task(self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None = None, expected_version: int = 0) -> TaskMutationResult:
+    def transition_task(self, task_id: UUID, principal: Principal, target: TaskState, reason: str | None = None, expected_version: int = 0) -> TaskDateMutationResult:
         with self._session_factory() as session:
             result = self._tasks(session).transition(task_id, principal, target, reason, expected_version)
             session.commit()

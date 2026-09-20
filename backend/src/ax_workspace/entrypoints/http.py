@@ -48,6 +48,7 @@ from ax_workspace.modules.work.task_results import (
     TaskHistoryDiffResult,
     TaskHistoryResult,
     TaskListEntry,
+    TaskDateMutationResult,
     TaskReferenceReleaseResult,
     TaskReferenceResult,
     TaskScheduleView,
@@ -1510,7 +1511,7 @@ def create_app(
                 raise _runtime_error(error) from error
 
         @app.patch("/api/tasks/{task_id}")
-        def update_task(task_id: UUID, request: UpdateTaskRequest, principal: Principal = Depends(developer_principal)) -> TaskMutationResult:
+        def update_task(task_id: UUID, request: UpdateTaskRequest, principal: Principal = Depends(developer_principal)) -> TaskDateMutationResult:
             try:
                 return app.state.workflow_application.update_task(principal, task_id, request.expected_version, request.changes())
             except Exception as error:
@@ -2485,14 +2486,19 @@ def create_app(
             except ValueError as error:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
 
-        def task_transition(task_id: UUID, target: TaskState, principal: Principal, reason: str | None = None, expected_version: int = 0) -> TaskMutationResult:
+        def task_transition(task_id: UUID, target: TaskState, principal: Principal, reason: str | None = None, expected_version: int = 0) -> TaskDateMutationResult:
             try:
                 return app.state.workflow_application.transition_task(task_id, principal, target, reason, expected_version)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.post("/api/tasks/{task_id}/start")
-        def start_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> TaskMutationResult:
+        def start_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> TaskDateMutationResult:
+            """시작 — **비어 있던 시작일을 오늘로 채운다**. 날짜가 바뀌는 자리라 `schedule_release` 를 싣는다.
+
+            **막힘·재개·완료·취소는 날짜를 바꾸지 않으므로 그 묶음을 내지 않는다** (증보 K3 의 세 자리).
+            같은 operation 을 지나지만 **표면이 약속하는 것**은 여기서 갈린다.
+            """
             return task_transition(task_id, TaskState.IN_PROGRESS, principal, expected_version=request.expected_version)
 
         @app.post("/api/tasks/{task_id}/block")
