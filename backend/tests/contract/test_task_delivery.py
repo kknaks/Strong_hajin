@@ -20,6 +20,19 @@ JIHO = {"X-Demo-Persona": "jiho"}
 SORA = {"X-Demo-Persona": "sora"}
 
 
+
+def _accept(client, request: dict, headers=JIHO) -> None:
+    """받는 사람이 수락한다 — 여기서 담당이 확정되고 그 업무가 「내 업무」에 선다.
+
+    W1 에서는 이 단계가 없었다(발송이 곧 배정). v2 가 되돌린 것은 **이 한 단계뿐**이고,
+    아래 테스트들이 보는 관계·이력·완료는 그대로다.
+    """
+    answered = client.post(
+        f"/api/work-requests/{request['request_id']}/accept",
+        headers=headers, json={"expected_version": request["version"]},
+    )
+    assert answered.status_code == 200, answered.text
+
 def _stack(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
@@ -28,15 +41,15 @@ def _stack(tmp_path):
     return TestClient(app), database_url
 
 
-def _accepted_task(client, title: str = "요청한 업무") -> str:
-    """Mina asks, Jiho accepts, Jiho starts: the shape every delivery review begins from."""
-    client.post("/api/work-requests", headers=MINA, json={"title": title, "assignee_id": "jiho"})
-    [item] = [row for row in client.get("/api/action-items", headers=JIHO).json() if row["subject"] == title]
-    client.post(
-        f"/api/action-items/{item['action_item_id']}/commands/accept",
-        headers=JIHO,
-        json={"expected_version": item["expected_version"]},
-    )
+def _requested_task(client, title: str = "요청한 업무") -> str:
+    """Mina asks and Jiho starts: the shape every delivery review begins from.
+
+    수락 단계는 없어졌지만 완료 승인은 그대로다 — 업무가 `source_work_request_id` 로 요청을 가리키고,
+    확인자를 그 요청의 요청자에게서 찾는다 (WORK-001 § 최소 호환 경계).
+    """
+    request = client.post("/api/work-requests", headers=MINA, json={"title": title, "assignee_id": "jiho"}).json()
+    # v2: 발송은 업무를 세우고 **담당은 수락이 세운다** (SPEC-003 §4). 그 뒤는 예전과 같다.
+    _accept(client, request)
     [task] = [row for row in client.get("/api/my-work", headers=JIHO).json() if row["title"] == title]
     current = client.get(f"/api/tasks/{task['task_id']}", headers=JIHO).json()
     client.post(f"/api/tasks/{task['task_id']}/start", headers=JIHO, json={"expected_version": current["version"]})
@@ -62,7 +75,7 @@ def _delivery_item(client, headers, task_id: str):
 
 def test_finishing_the_work_is_a_report_not_a_completion(tmp_path) -> None:
     client, _ = _stack(tmp_path)
-    task_id = _accepted_task(client)
+    task_id = _requested_task(client)
 
     # The holder cannot close work someone else asked for; the command tells them what to do instead.
     current = client.get(f"/api/tasks/{task_id}", headers=JIHO).json()
@@ -72,16 +85,18 @@ def test_finishing_the_work_is_a_report_not_a_completion(tmp_path) -> None:
     reported = _report(client, task_id, "초안과 최종본을 모두 정리했습니다")
     assert reported.status_code == 200, reported.text
     view = client.get(f"/api/tasks/{task_id}", headers=JIHO).json()
-    assert view["state"] == "completion_submitted"
+    # v2: 밖으로 나가는 상태는 넷뿐이다. 「제출했고 요청자가 아직 답하지 않았다」는 사실은
+    # `state=done` + `derived.approval=awaiting_review` 로 말한다 (SPEC-003 §4 State).
+    assert view["state"] == "done" and view["derived"]["approval"] == "awaiting_review"
     # Waiting for confirmation is not being done, on either side.
-    assert [row["state"] for row in client.get("/api/my-work", headers=JIHO).json() if row["task_id"] == task_id] == [
-        "completion_submitted"
-    ]
+    # 목록도 같은 말을 한다: 밖으로는 `done` 이고, 아직 확인 전이라는 사실은 `derived.approval` 이 낸다.
+    [row] = [row for row in client.get("/api/my-work", headers=JIHO).json() if row["task_id"] == task_id]
+    assert row["state"] == "done" and row["derived"]["approval"] == "awaiting_review"
 
 
 def test_the_person_who_asked_answers_a_question_of_their_own(tmp_path) -> None:
     client, _ = _stack(tmp_path)
-    task_id = _accepted_task(client, "분기 보고서")
+    task_id = _requested_task(client, "분기 보고서")
     _report(client, task_id, "초안을 정리했습니다")
 
     # The acceptance question is finished; this is a new one, with its own identity and words.
@@ -102,7 +117,7 @@ def test_the_person_who_asked_answers_a_question_of_their_own(tmp_path) -> None:
 
 def test_asking_for_more_keeps_the_same_question_and_adds_a_round(tmp_path) -> None:
     client, database_url = _stack(tmp_path)
-    task_id = _accepted_task(client, "보완이 필요한 업무")
+    task_id = _requested_task(client, "보완이 필요한 업무")
     _report(client, task_id, "1차 결과입니다")
     item = _delivery_item(client, MINA, task_id)
 
@@ -147,7 +162,7 @@ def test_asking_for_more_keeps_the_same_question_and_adds_a_round(tmp_path) -> N
 
 def test_accepting_the_result_closes_the_work_exactly_once(tmp_path) -> None:
     client, _ = _stack(tmp_path)
-    task_id = _accepted_task(client, "완료될 업무")
+    task_id = _requested_task(client, "완료될 업무")
     _report(client, task_id, "결과입니다")
     item = _delivery_item(client, MINA, task_id)
 
@@ -175,7 +190,7 @@ def test_accepting_the_result_closes_the_work_exactly_once(tmp_path) -> None:
 @pytest.mark.parametrize("additional_binding", [False, True])
 def test_a_report_freezes_what_was_delivered_and_what_the_task_then_was(tmp_path, additional_binding) -> None:
     client, database_url = _stack(tmp_path)
-    task_id = _accepted_task(client, "근거가 붙는 업무")
+    task_id = _requested_task(client, "근거가 붙는 업무")
     client.post(f"/api/tasks/{task_id}/checklist", headers=JIHO, json={"text": "자료 모으기"})
     material = client.post(
         f"/api/tasks/{task_id}/materials/links",

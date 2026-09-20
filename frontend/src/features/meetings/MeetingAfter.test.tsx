@@ -2,6 +2,15 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../lib/api", async (actual) => ({
+  getTaskAssignments: vi.fn(),
+  getTaskProposals: vi.fn(),
+  createTaskProposal: vi.fn(),
+  respondTaskProposal: vi.fn(),
+  withdrawTaskProposal: vi.fn(),
+  reopenTask: vi.fn(),
+  getTaskChildren: vi.fn(),
+  withdrawWorkRequest: vi.fn(),
+  hideWorkRequestListEntry: vi.fn(),
   // ApiError 는 진짜를 쓴다 — 화면이 409 를 `instanceof` 로 가른다
   ApiError: ((await actual()) as { ApiError: unknown }).ApiError,
   readMeeting: vi.fn(),
@@ -312,7 +321,7 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
     const { onNotice } = renderAfter();
     await screen.findByText("전망치 다시 뽑기");
     fireEvent.click(screen.getByRole("button", { name: "업무 생성" }));
-    const drawer = await screen.findByRole("dialog", { name: "업무 요청" });
+    const drawer = await screen.findByRole("dialog", { name: "새 업무 요청" });
 
     // 담당은 비어 있고 참석자(정우성)가 후보 목록 앞에 선다
     // 후보 목록은 드로어가 뜬 «뒤» 에 도착한다 — 기다리지 않으면 빈 목록을 읽는다
@@ -336,7 +345,8 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
         description: "분기별 전망치를 다시 뽑는다.",
         due_date: "2026-09-12",
         checklist: ["지난 분기 실적 모으기"],
-      }),
+      // 승격도 생성 계약을 지난다 — 이 제출 의도의 멱등 키가 함께 간다 (W1 Phase 5).
+      }, expect.any(String)),
     );
     // 업무 요청을 직접 만들지 않는다 — 출처 두 열이 실려야 한다
     expect(api.createWorkRequest).not.toHaveBeenCalled();
@@ -358,7 +368,7 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
     renderAfter();
     await screen.findByText("전망치 다시 뽑기");
     fireEvent.click(screen.getByRole("button", { name: "업무 생성" }));
-    const drawer = await screen.findByRole("dialog", { name: "업무 요청" });
+    const drawer = await screen.findByRole("dialog", { name: "새 업무 요청" });
 
     // 회의 id 를 실어 회의 전용 경로를 부른다
     await waitFor(() => expect(api.getMeetingPromotionCandidates).toHaveBeenCalledWith("m1"));
@@ -380,7 +390,7 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
     const { onNotice } = renderAfter();
     await screen.findByText("전망치 다시 뽑기");
     fireEvent.click(screen.getByRole("button", { name: "업무 생성" }));
-    const drawer = await screen.findByRole("dialog", { name: "업무 요청" });
+    const drawer = await screen.findByRole("dialog", { name: "새 업무 요청" });
     const assignee = within(drawer).getByRole("button", { name: "담당 후보" });
     await waitFor(() => expect(assignee.textContent).toContain("선택"));
     fireEvent.click(assignee);

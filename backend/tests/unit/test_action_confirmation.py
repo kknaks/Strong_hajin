@@ -23,6 +23,14 @@ def _task_draft(**changes):
         "reference_task_ids": [],
         "parent_task_id": None,
         "project_id": None,
+        # 참조자 — 내 업무와 업무 요청이 함께 쓰는 공통 payload 의 칸. 초안 정규화가 같은 집합을 쓴다.
+        "cc_member_ids": [],
+        # 선행업무 — 같은 공통 payload 의 칸. 생성 표면 전부가 같은 배열을 받는다 (SPEC-001 §5).
+        "preceding_task_ids": [],
+        # 결재자 — `업무` 갈래만 여는 칸 (SPEC-001 §7 OQ-M).
+        "approver_id": None,
+        # 담당 — W1 이 생성 입력에 연 필드. 초안 정규화가 같은 집합을 쓴다.
+        "assignee_id": None,
         **changes,
     }
 
@@ -121,7 +129,7 @@ def test_only_the_exact_confirmed_payload_is_a_replay_receipt() -> None:
         stored_conditions={
             "expected_version": 4,
             "base_submission_version": 1,
-            "payload_hash": "6f21acf9e11347c0ed89743e2dd20495d812e7b16b35dde26ec2476bb5381214",
+            "payload_hash": "70b69591b85bc49b9c757a14418cc4b2dd8f1df83206b6c3ed3e3294ea116d7a",
             "attachment_draft_ids": [],
         },
     )

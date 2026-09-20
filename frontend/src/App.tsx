@@ -31,17 +31,17 @@ import type { ConversationContextReference, DirectTask, OrganizationProfile, Per
 import { type IconName } from "./ds/icons/Icon";
 import { shellNav } from "./lib/labels";
 
-/* 목록 정본은 우리 `ProductSurface` 8종이다 (바퀴 2 D-F). 새 DS 시안의 `nav.js` 는 예시일 뿐이라
-   거기 있는 「수신함·진행 현황·자료」는 만들지 않는다 — 갈 화면이 없다.
-   순서·아이콘·그룹 나눔은 시안을 따르고, 글리프 이름도 DS 이름이다. */
-const navigation: ReadonlyArray<{ id: ProductSurface; label: string; icon: IconName }> = [
-  { id: "today", label: "오늘", icon: "home" },
+/* 표시 순서는 시안에 맞추고 기존 화면 id·권한 필터·동작은 유지한다. */
+const navigation: ReadonlyArray<{ id: ProductSurface | "materials"; label: string; icon: IconName; disabled?: boolean }> = [
+  { id: "today", label: "홈", icon: "home" },
+  { id: "work", label: "업무", icon: "square-check" },
   { id: "calendar", label: "캘린더", icon: "calendar" },
+  { id: "project", label: "프로젝트", icon: "folder" },
+  // 자료함 독립 화면은 아직 없다. 기존 자료 열기 경로를 새 라우트로 대체하지 않는다.
+  { id: "materials", label: "자료함", icon: "document", disabled: true },
   { id: "meetings", label: "회의", icon: "persons" },
-  { id: "work", label: "내 업무", icon: "square-check" },
-  { id: "report", label: "보고", icon: "document" },
-  { id: "project", label: "프로젝트", icon: "business-bag" },
   { id: "org", label: "조직", icon: "company" },
+  { id: "report", label: "보고", icon: "document" },
   { id: "graph", label: "관계 탐색", icon: "link" },
 ];
 
@@ -49,7 +49,7 @@ const surfaceLabel: Record<ProductSurface, string> = {
   today: "오늘",
   calendar: "캘린더",
   meetings: "회의",
-  work: "내 업무",
+  work: "업무",
   report: "보고",
   project: "프로젝트",
   org: "조직",
@@ -71,8 +71,30 @@ export default function App() {
   const capabilities = session?.capabilities ?? null;
   const organizationNames = session?.organizations.map((organization) => organization.name) ?? [];
   const [surface, changeSurface] = useState<ProductSurface>("today");
-  const [error, setError] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  /**
+   * 화면이 내는 알림 — **전부 토스트 한 자리다** (4차 발주 6).
+   *
+   * 지금까지 실패는 본문 안쪽의 빨간 띠(`.error-banner`)였고 성공은 토스트였다. 그래서 같은 명령의
+   * 성공과 실패가 **다른 데서** 나타났고, 띠는 본문을 아래로 밀며 표의 첫 줄을 가렸다. 이제 셋
+   * (실패 · 성공 · 갱신 실패)이 같은 통에 쌓인다.
+   *
+   * 갈래마다 **한 줄만** 산다 — 같은 갈래의 새 알림이 오면 앞엣것을 갈아치운다. 실패가 열 줄 쌓여
+   * 화면을 덮는 일도, 성공이 실패를 밀어내는 일도 없다.
+   */
+  const [notices, setNotices] = useState<Array<{ id: number; kind: "error" | "success" | "stale"; message: string }>>([]);
+  const noticeSeq = useRef(0);
+  const putNotice = useCallback((kind: "error" | "success" | "stale", message: string | null) => {
+    setNotices((current) => {
+      const rest = current.filter((notice) => notice.kind !== kind);
+      if (!message) return rest;
+      noticeSeq.current += 1;
+      return [...rest, { id: noticeSeq.current, kind, message }];
+    });
+  }, []);
+  const setError = useCallback((message: string | null) => putNotice("error", message), [putNotice]);
+  const setToast = useCallback((message: string | null) => putNotice("success", message), [putNotice]);
+  const setStaleProjection = useCallback((message: string | null) => putNotice("stale", message), [putNotice]);
+  const dismissNotice = useCallback((id: number) => setNotices((current) => current.filter((notice) => notice.id !== id)), []);
   /* main(#10): 파일 업로드·녹음이 도는 중에는 화면을 못 옮긴다.
      ★ 바퀴 12: 이 둘은 **`useCallback` 이어야 한다.** 화면이 자기 머리 액션을 셸에 등록하는 자리
      (바퀴 5a 가 만든 seam)가 `onNavigate` 를 의존성에 두기 때문에, 매 렌더 새 함수가 되면
@@ -114,7 +136,6 @@ export default function App() {
   const registerSurfaceRefresh = useCallback((refresh: (() => Promise<void>) | null) => {
     surfaceRefresh.current = refresh;
   }, []);
-  const [staleProjection, setStaleProjection] = useState<string | null>(null);
   const contextGeneration = useRef(0);
   const reportError = useCallback((text: string) => setError(text), []);
   const chat = useConversations({ personaId, isOpen: isAxOpen, onError: reportError });
@@ -376,7 +397,7 @@ export default function App() {
         <SideNav
           activeId={surface}
           collapsed={navCollapsed}
-          items={visibleNavigation.map((item) => ({ id: item.id, label: item.label, icon: item.icon }))}
+          items={visibleNavigation.map((item) => ({ id: item.id, label: item.label, icon: item.icon, disabled: item.disabled }))}
           label="제품 탐색"
           logo="SCAX"
           onCollapse={() => setNavCollapsed((collapsed) => !collapsed)}
@@ -430,28 +451,11 @@ export default function App() {
         title={surfaceLabel[surface]}
       />
       <AppBody railLeft={surfaceRails.left} railRight={surfaceRails.right}>
-        {/* 오류·재조회 띠는 스크롤 밖에 선다 — 본문을 아무리 내려도 접히지 않는다 */}
-        <div className="scax-page-notices">
-          {error && (
-            <div className="error-banner" role="alert">
-              {error}
-              <Button variant="text" size="sm" onClick={() => setError(null)} type="button">
-                닫기
-              </Button>
-            </div>
-          )}
-          {staleProjection && (
-            <div className="error-banner stale" role="status">
-              {staleProjection}
-              <Button size="sm" onClick={() => void refreshProjections()} type="button">
-                다시 불러오기
-              </Button>
-            </div>
-          )}
-        </div>
+        {/* 4차 발주 6: 오류·재조회 띠는 여기 있었다. 셋 다 화면 아래 공통 토스트로 갔다 — 본문을
+            밀지 않고, 성공과 실패가 같은 자리에서 읽힌다. */}
         {/* 셸이 overflow:hidden 이라 본문이 자기 스크롤 기둥을 갖는다 (바퀴 2 D-B).
            회의는 «한 화면에 갇히는» 화면이라 스크롤은 안쪽 패널이 갖는다 — 여기서는 잡지 않는다. */}
-        <div className={surface === "meetings" ? "scax-page-scroll scax-page-scroll--fixed" : "scax-page-scroll"}>
+        <div className={surface === "meetings" ? "scax-page-scroll scax-page-scroll--fixed" : surface === "work" ? "scax-page-scroll scax-page-scroll--work" : "scax-page-scroll"}>
           {surface === "today" && (
             <TodayPage
               {...pageProps}
@@ -531,6 +535,14 @@ export default function App() {
       {/* 런처는 position:fixed 라 스크롤 기둥 밖에 선다 — 본문을 내려도 자리를 지킨다 */}
       {!isAxOpen && (
         <AssistantLauncher
+          /*
+           * 4차 발주 7: 업무 화면에서는 **말풍선을 접는다.**
+           *
+           * 캐릭터의 말풍선은 어두운 알약에 짧은 글 한 줄이라 업무 토스트와 거의 같은 모양이고,
+           * 같은 화면 아래쪽에 함께 떠서 「방금 명령의 결과」로 읽혔다. 캐릭터 자체는 그대로 둔다 —
+           * 오브를 누르면 지금까지처럼 AX 가 열린다. 이 화면의 알림은 토스트 하나로만 읽힌다.
+           */
+          bubble={surface !== "work"}
           characterKey={session.assistant_character?.character_key}
           onOpen={() => setIsAxOpen(true)}
           onPrefill={(prompt) => chat.setDraft(prompt, chat.activeConversation?.conversation_id ?? NEW_DRAFT_KEY)}
@@ -538,8 +550,27 @@ export default function App() {
         />
       )}
 
-      {toast && <Toast
-          closeLabel="알림 지우기" message={toast} onClose={() => setToast(null)} />}
+      {/*
+        * 공통 알림 (4차 발주 6) — 실패도 성공도 여기로 온다.
+        *
+        * 갱신 실패만 **스스로 사라지지 않는다**: 함께 오는 「다시 불러오기」가 4초 뒤에 없어지면
+        * 누를 자리가 사라지기 때문이다. 닫는 길(× )은 셋 다 같다.
+        */}
+      {notices.length > 0 && (
+        <div className="scax-toast-stack">
+          {notices.map((notice) => (
+            <Toast
+              action={notice.kind === "stale" ? { label: "다시 불러오기", onAction: () => void refreshProjections() } : undefined}
+              closeLabel="알림 지우기"
+              key={notice.id}
+              message={notice.message}
+              onClose={() => dismissNotice(notice.id)}
+              persist={notice.kind === "stale"}
+              tone={notice.kind === "success" ? "success" : "error"}
+            />
+          ))}
+        </div>
+      )}
 
       {isCharacterPickerOpen && (
         <AssistantCharacterPicker

@@ -8,6 +8,7 @@ import {
   getDailyReportStatus,
   getMyWork,
   getWorkRequestAssigneeCandidates,
+  getWorkRequestCcCandidates,
   getWorkRequests,
   transitionDirectTask,
   updateTask,
@@ -85,6 +86,14 @@ export function TodayPage({
   const [selectedRequest, setSelectedRequest] = useState<WorkRequest | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [assigneeCandidates, setAssigneeCandidates] = useState<Persona[]>([]);
+  /**
+   * 참조 후보 — **오늘 화면의 생성 창에도 참조자·결재자 칸이 서야 한다** (최종 프레임 FE 정리).
+   *
+   * 지금까지 이 화면은 이 목록을 아예 읽지 않아 `ccCandidates` 를 넘기지 못했고, 창은 후보가 비면
+   * 그 칸을 그리지 않는다 — 같은 창인데 업무 화면에서는 서고 오늘 화면에서는 없었다. 두 값 모두
+   * `POST /api/tasks` 본인 갈래가 받으므로(`cc_member_ids`·`approver_id`) 감출 이유가 없다.
+   */
+  const [ccCandidates, setCcCandidates] = useState<Persona[]>([]);
   const [busy, setBusy] = useState(false);
 
   const reload = useCallback(async () => {
@@ -139,6 +148,25 @@ export function TodayPage({
     return () => onRegisterRefresh?.(null);
   }, [onRegisterRefresh, reload]);
 
+  /* 참조 후보는 «만들 수 있는 사람» 이면 읽는다 — 요청 권한에 매달리지 않는다(업무 갈래도 받는 값이다). */
+  useEffect(() => {
+    if (!canManageOwnTasks && !canCreateWorkRequests) {
+      setCcCandidates([]);
+      return;
+    }
+    let cancelled = false;
+    void getWorkRequestCcCandidates()
+      .then((candidates) => {
+        if (!cancelled) setCcCandidates(candidates);
+      })
+      .catch(() => {
+        if (!cancelled) setCcCandidates([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canCreateWorkRequests, canManageOwnTasks, personaId]);
+
   useEffect(() => {
     if (!canCreateWorkRequests) {
       setAssigneeCandidates([]);
@@ -157,7 +185,12 @@ export function TodayPage({
     };
   }, [canCreateWorkRequests, personaId]);
 
-  const transitionTask = async (task: DirectTask, action: TaskAction, reason?: string) => {
+  /**
+   * 전이를 보낸다. **서버가 받아들였는지를 돌려준다** — 사유를 받는 자리(취소·막힘)가 거절당했을 때
+   * 사람이 쓴 문장을 지우지 않으려면, 부르는 쪽이 «됐나» 를 알아야 한다. 돌려준 값을 쓰지 않는
+   * 호출부는 지금까지와 똑같이 동작한다.
+   */
+  const transitionTask = async (task: DirectTask, action: TaskAction, reason?: string): Promise<boolean> => {
     setBusy(true);
     try {
       await transitionDirectTask(task.task_id, action, task.version, reason);
@@ -166,8 +199,10 @@ export function TodayPage({
       onNotice(
         action === "start" ? "업무를 시작했습니다." : action === "complete" ? "완료 처리했습니다." : action === "block" ? "막힘으로 표시했습니다." : action === "resume" ? "업무를 재개했습니다." : "업무를 취소했습니다.",
       );
+      return true;
     } catch (error) {
       onError(error instanceof Error ? error.message : "업무 상태를 바꾸지 못했습니다.");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -408,6 +443,7 @@ export function TodayPage({
           assigneeCandidates={assigneeCandidates}
           canCreateRequest={canCreateWorkRequests}
           canCreateTask={canManageOwnTasks}
+          ccCandidates={ccCandidates}
           onClose={() => setIsCreating(false)}
           onCreated={async (message) => {
             await reload();

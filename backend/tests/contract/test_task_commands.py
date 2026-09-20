@@ -7,7 +7,7 @@ import pytest
 from ax_workspace.entrypoints.mcp import McpReportsFacade, _create_bound_persona_server
 from ax_workspace.platform.persistence import ConversationTurnRecord
 from test_unified_commands import _stack, _approval_request
-from test_task_delivery import _accepted_task
+from test_task_delivery import _requested_task
 
 
 def test_assignment_capability_does_not_allow_taking_an_unreadable_task(tmp_path):
@@ -60,7 +60,7 @@ def test_task_reference_and_delivery_effects_wait_for_approval(tmp_path, monkeyp
     actor = 'jiho' if tool == 'task_completion_submit' else 'mina'
     headers = {'X-Demo-Persona': actor}
     if tool == 'task_completion_submit':
-        task_id = _accepted_task(client)
+        task_id = _requested_task(client)
         output = client.post(f'/api/tasks/{task_id}/materials', headers=headers, data={'kind': 'output'}, files={'file': ('결과.txt', b'delivered result', 'text/plain')})
         assert output.status_code == 201, output.text
         task = client.get(f'/api/tasks/{task_id}', headers=headers).json()
@@ -97,7 +97,8 @@ def test_task_reference_and_delivery_effects_wait_for_approval(tmp_path, monkeyp
         assert replay.status_code == 200 and replay.json()['execution_result'] == approved.json()['execution_result']
     after = client.get(f'/api/tasks/{task_id}', headers=headers).json()
     if tool == 'task_completion_submit':
-        assert after['state'] == 'completion_submitted'
+        # 밖으로는 `done` 이고, 확인 전이라는 사실은 `derived.approval` 이 낸다 (SPEC-003 §4 State).
+        assert after['state'] == 'done' and after['derived']['approval'] == 'awaiting_review'
         outstanding = client.get('/api/action-items', headers={'X-Demo-Persona': 'mina'}).json()
         assert len([row for row in outstanding if row['kind'] == 'task.delivery']) == 1
     elif tool == 'task_reference_add':

@@ -1,5 +1,9 @@
 """One judgement ledger, reached over MCP.
 
+**W1 이후 수락 회차는 과거 행에만 있다** — 신규 요청·배정은 판단 없이 업무와 활성 담당을 세운다
+(WORK-001 Phase 4). MCP 전송이 같은 봉투·같은 명령·같은 영수증을 쓰는지는 그대로 검증한다.
+
+
 A delegated persona answers questions through the same `ActionCenterApplication` that HTTP and the product UI use: the
 same envelope, the same `allowed_commands`, the same payload-aware receipt. The MCP adapter is a transport — it adds no
 domain transition of its own, derives no control from the kind, and takes no persona, member, org or capability from
@@ -10,6 +14,7 @@ import os
 import sys
 
 from fastapi.testclient import TestClient
+from legacy_acceptance import pending_assignment, pending_request
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 import pytest
@@ -31,7 +36,9 @@ def _stack(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
     settings = Settings(RuntimeProfile.TEST, database_url, materials_dir=str(tmp_path / "materials"))
-    return database_url, settings, TestClient(create_app(settings))
+    client = TestClient(create_app(settings))
+    client.database_url = database_url
+    return database_url, settings, client
 
 
 def _facade(settings, persona: str) -> McpReportsFacade:
@@ -69,11 +76,7 @@ def _mina_proposal(client, application) -> dict:
 
 def test_action_item_tools_read_exactly_what_the_product_reads(tmp_path) -> None:
     database_url, settings, client = _stack(tmp_path)
-    created = client.post(
-        "/api/work-requests",
-        headers=MINA,
-        json={"title": "MCP가 읽는 요청", "assignee_id": "jiho", "description": "설명"},
-    ).json()
+    created = pending_request(client, client.database_url, MINA, title="MCP가 읽는 요청", assignee_id="jiho", description="설명")
     jiho = _facade(settings, "jiho")
 
     # The projection is the product's own, field for field — not an MCP-shaped copy of it.
@@ -113,7 +116,7 @@ def test_a_whole_adjustment_round_trip_runs_over_mcp_and_makes_one_task(tmp_path
     """The reviewer's structured ask, the requester's revision and the acceptance, all through the one command path."""
     database_url, settings, client = _stack(tmp_path)
     mina, jiho = _facade(settings, "mina"), _facade(settings, "jiho")
-    client.post("/api/work-requests", headers=MINA, json={"title": "MCP 왕복 요청", "assignee_id": "jiho"})
+    pending_request(client, client.database_url, MINA, title="MCP 왕복 요청", assignee_id="jiho")
 
     [first] = jiho.pending_action_items()
     adjusted = jiho.run_action_command(
@@ -155,7 +158,7 @@ def test_a_whole_adjustment_round_trip_runs_over_mcp_and_makes_one_task(tmp_path
 def test_a_resent_mcp_command_is_the_same_receipt_and_a_stale_one_is_refused(tmp_path) -> None:
     database_url, settings, client = _stack(tmp_path)
     mina, jiho = _facade(settings, "mina"), _facade(settings, "jiho")
-    client.post("/api/work-requests", headers=MINA, json={"title": "재전송 요청", "assignee_id": "jiho"})
+    pending_request(client, client.database_url, MINA, title="재전송 요청", assignee_id="jiho")
 
     [first] = jiho.pending_action_items()
     adjust = {"reason": "다시 봐 주세요", "changes": {"title": "제안 제목"}}
@@ -188,7 +191,7 @@ def test_a_resent_mcp_command_is_the_same_receipt_and_a_stale_one_is_refused(tmp
 def test_an_action_item_is_invisible_to_a_persona_it_does_not_belong_to(tmp_path) -> None:
     """Not merely uncommandable: the existence, subject and kind of another team's question do not leak."""
     database_url, settings, client = _stack(tmp_path)
-    client.post("/api/work-requests", headers=MINA, json={"title": "비밀 제목", "assignee_id": "jiho"})
+    pending_request(client, client.database_url, MINA, title="비밀 제목", assignee_id="jiho")
     [item] = _facade(settings, "jiho").pending_action_items()
 
     outsider = _facade(settings, "sora")
@@ -267,7 +270,7 @@ def test_the_server_tells_a_delegated_turn_to_judge_through_the_one_ledger(tmp_p
 
 def test_stdio_client_runs_the_ledger_and_keeps_it_bound_to_the_server_persona(tmp_path) -> None:
     database_url, settings, client = _stack(tmp_path)
-    client.post("/api/work-requests", headers=MINA, json={"title": "stdio 판단 요청", "assignee_id": "jiho"})
+    pending_request(client, client.database_url, MINA, title="stdio 판단 요청", assignee_id="jiho")
     expected = client.get("/api/action-items", headers=JIHO).json()
 
     async def scenario() -> None:
@@ -312,7 +315,7 @@ def test_stdio_client_runs_the_ledger_and_keeps_it_bound_to_the_server_persona(t
 
 def test_a_capability_revoked_after_discovery_is_refused_at_call_time(tmp_path) -> None:
     database_url, settings, client = _stack(tmp_path)
-    client.post("/api/work-requests", headers=MINA, json={"title": "권한 회수 요청", "assignee_id": "jiho"})
+    pending_request(client, client.database_url, MINA, title="권한 회수 요청", assignee_id="jiho")
     [item] = _facade(settings, "jiho").pending_action_items()
 
     async def scenario() -> None:
@@ -376,7 +379,7 @@ def test_a_delegated_turn_proposes_a_judgement_for_a_person_instead_of_making_it
     """Inside a chat turn the model may prepare a judgement; only a person may actually make it."""
     database_url, settings, client = _stack(tmp_path)
     application = client.app.state.workflow_application
-    client.post("/api/work-requests", headers=MINA, json={"title": "턴이 제안하는 판단", "assignee_id": "jiho"})
+    pending_request(client, client.database_url, MINA, title="턴이 제안하는 판단", assignee_id="jiho")
     jiho = _facade(settings, "jiho")
     [item] = jiho.pending_action_items()
 
@@ -426,8 +429,8 @@ def test_a_delegated_turn_can_never_approve_an_ax_proposal_including_its_own(tmp
     _delegated_turn(client, application, MINA, "mina", monkeypatch)
     mina = _facade(settings, "mina")
 
-    gate = mina.create_work_request("AX가 스스로 승인하려는 요청", "jiho")
-    assert gate["state"] == "pending"
+    gate = mina.create_work_request("AX가 스스로 승인하려는 요청", "jiho", "gate-request")
+    assert gate["state"] == "pending"  # AX 제안은 사람 확인 전까지 요청을 만들지 않는다
     [proposal] = [item for item in mina.pending_action_items() if item["kind"].startswith("ax.")]
 
     with pytest.raises(Exception, match="사람"):
@@ -437,7 +440,7 @@ def test_a_delegated_turn_can_never_approve_an_ax_proposal_including_its_own(tmp
     assert mina.pending_action_items()[0]["status"] == "awaiting_review"
 
     # A wrapper the turn proposes is itself an AX proposal, so the same rule blocks self-approving it.
-    client.post("/api/tasks/assign", headers=JIHO, json={"title": "래퍼 확인", "assignee_id": "mina"})
+    pending_assignment(client, client.database_url, JIHO, title="래퍼 확인", assignee_id="mina")
     [incoming] = [row for row in mina.pending_action_items() if row["subject"] == "래퍼 확인"]
     wrapper = mina.run_action_command(incoming["action_item_id"], "accept", expected_version=incoming["expected_version"])
     assert wrapper["state"] == "pending"
@@ -450,7 +453,7 @@ def test_a_delegated_turn_can_never_approve_an_ax_proposal_including_its_own(tmp
 def test_a_direct_admin_or_test_caller_outside_a_chat_turn_still_commands_canonically(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
     database_url, settings, client = _stack(tmp_path)
-    client.post("/api/work-requests", headers=MINA, json={"title": "직접 호출", "assignee_id": "jiho"})
+    pending_request(client, client.database_url, MINA, title="직접 호출", assignee_id="jiho")
     jiho = _facade(settings, "jiho")
     [item] = jiho.pending_action_items()
     assert jiho.run_action_command(item["action_item_id"], "accept", expected_version=item["expected_version"])["status"] == "resolved"
@@ -459,7 +462,7 @@ def test_a_direct_admin_or_test_caller_outside_a_chat_turn_still_commands_canoni
 
 def test_the_command_tool_requires_the_version_it_is_answering(tmp_path, monkeypatch) -> None:
     _, settings, client = _stack(tmp_path)
-    client.post("/api/work-requests", headers=MINA, json={"title": "버전 필수", "assignee_id": "jiho"})
+    pending_request(client, client.database_url, MINA, title="버전 필수", assignee_id="jiho")
     tools = {tool.name: tool for tool in _tools(settings, "jiho", monkeypatch)}
     schema = tools["action_item_command"].input_schema
     assert set(schema["required"]) == {"action_item_id", "command", "expected_version"}
@@ -485,7 +488,7 @@ def test_only_the_one_judgement_surface_is_registered(tmp_path, monkeypatch) -> 
 
 def test_stdio_delegated_command_returns_a_pending_confirmation_and_changes_nothing(tmp_path) -> None:
     database_url, settings, client = _stack(tmp_path)
-    client.post("/api/work-requests", headers=MINA, json={"title": "stdio 위임 판단", "assignee_id": "jiho"})
+    pending_request(client, client.database_url, MINA, title="stdio 위임 판단", assignee_id="jiho")
     [item] = _facade(settings, "jiho").pending_action_items()
 
     from uuid import UUID
@@ -549,7 +552,7 @@ def test_one_turn_holds_one_judgement_and_the_receipt_is_the_whole_payload(tmp_p
     """A receipt must prove the same judgement, not merely the same target and verb."""
     database_url, settings, client = _stack(tmp_path)
     application = client.app.state.workflow_application
-    client.post("/api/work-requests", headers=MINA, json={"title": "한 턴 한 판단", "assignee_id": "jiho"})
+    pending_request(client, client.database_url, MINA, title="한 턴 한 판단", assignee_id="jiho")
     jiho = _facade(settings, "jiho")
     [item] = jiho.pending_action_items()
     _delegated_turn(client, application, JIHO, "jiho", monkeypatch)
@@ -616,10 +619,7 @@ def test_a_delegated_server_only_advertises_a_command_it_could_actually_run(tmp_
 def test_a_pending_confirmation_says_nothing_about_work_the_approver_may_no_longer_read(tmp_path, monkeypatch) -> None:
     database_url, settings, client = _stack(tmp_path)
     application = client.app.state.workflow_application
-    client.post(
-        "/api/work-requests", headers=MINA,
-        json={"title": "기밀 예산 검토", "assignee_id": "jiho", "description": "내부 한도"},
-    )
+    pending_request(client, client.database_url, MINA, title="기밀 예산 검토", assignee_id="jiho", description="내부 한도")
     jiho = _facade(settings, "jiho")
     [item] = jiho.pending_action_items()
     _delegated_turn(client, application, JIHO, "jiho", monkeypatch)
@@ -673,14 +673,14 @@ def test_an_action_item_no_one_may_read_answers_exactly_like_one_that_does_not_e
     assert withheld.structured_content is None
     # The same answer, word for word: nothing distinguishes a withheld item from one that was never there.
     assert [block.text for block in withheld.content] == [block.text for block in unknown.content]
-    body = " ".join(block.text for block in withheld.content)
+    body =" ".join(block.text for block in withheld.content)
     assert proposal["action_id"] not in body and "민아" not in body
     assert "task.create_self" not in body and "ax." not in body
 
 
 def test_a_command_may_only_carry_the_fields_its_own_kind_owns_over_stdio(tmp_path) -> None:
     database_url, settings, client = _stack(tmp_path)
-    client.post("/api/work-requests", headers=MINA, json={"title": "필드 계약", "assignee_id": "jiho"})
+    pending_request(client, client.database_url, MINA, title="필드 계약", assignee_id="jiho")
     [item] = _facade(settings, "jiho").pending_action_items()
 
     async def scenario() -> tuple:
@@ -727,8 +727,8 @@ def test_a_pending_confirmation_survives_a_target_that_moved_or_authority_that_w
     """An approval that can no longer be applied leaves the confirmation waiting, not half-done."""
     database_url, settings, client = _stack(tmp_path)
     application = client.app.state.workflow_application
-    client.post("/api/work-requests", headers=MINA, json={"title": "움직인 대상", "assignee_id": "jiho"})
-    client.post("/api/work-requests", headers=MINA, json={"title": "회수된 권한", "assignee_id": "jiho"})
+    pending_request(client, client.database_url, MINA, title="움직인 대상", assignee_id="jiho")
+    pending_request(client, client.database_url, MINA, title="회수된 권한", assignee_id="jiho")
     jiho = _facade(settings, "jiho")
     items = {row["subject"]: row for row in jiho.pending_action_items()}
     _delegated_turn(client, application, JIHO, "jiho", monkeypatch)
@@ -773,11 +773,7 @@ def test_an_emptied_field_is_part_of_the_judgement_a_turn_prepares(tmp_path, mon
     """Clearing a field is a decision. It must survive normalization and must change what the receipt is for."""
     database_url, settings, client = _stack(tmp_path)
     application = client.app.state.workflow_application
-    client.post(
-        "/api/work-requests",
-        headers=MINA,
-        json={"title": "설명 있는 요청", "assignee_id": "jiho", "description": "지워질 설명"},
-    )
+    pending_request(client, client.database_url, MINA, title="설명 있는 요청", assignee_id="jiho", description="지워질 설명")
     jiho, mina = _facade(settings, "jiho"), _facade(settings, "mina")
     [item] = jiho.pending_action_items()
     jiho.run_action_command(item["action_item_id"], "adjust", expected_version=item["expected_version"], reason="설명을 빼 주세요")
@@ -818,7 +814,7 @@ def test_a_confirmation_whose_target_moved_says_so_instead_of_failing_when_appro
     """A pending confirmation is an answer to a moment. When that moment passes, the card says so before it is used."""
     database_url, settings, client = _stack(tmp_path)
     application = client.app.state.workflow_application
-    request = client.post("/api/work-requests", headers=MINA, json={"title": "지나간 확인", "assignee_id": "jiho"}).json()
+    request = pending_request(client, client.database_url, MINA, title="지나간 확인", assignee_id="jiho")
     jiho = _facade(settings, "jiho")
     [item] = jiho.pending_action_items()
     _delegated_turn(client, application, JIHO, "jiho", monkeypatch)
@@ -865,7 +861,7 @@ def test_a_confirmation_cannot_be_approved_when_its_target_can_no_longer_be_read
     """You cannot approve what you cannot see: an unverifiable confirmation offers only the way out."""
     database_url, settings, client = _stack(tmp_path)
     application = client.app.state.workflow_application
-    client.post("/api/work-requests", headers=MINA, json={"title": "볼 수 없는 대상", "assignee_id": "jiho"})
+    pending_request(client, client.database_url, MINA, title="볼 수 없는 대상", assignee_id="jiho")
     jiho = _facade(settings, "jiho")
     [item] = jiho.pending_action_items()
     _delegated_turn(client, application, JIHO, "jiho", monkeypatch)

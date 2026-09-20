@@ -31,6 +31,10 @@ import type {
   OrganizationProfile,
   Persona,
   TaskAssignment,
+  TaskAssignmentsView,
+  TaskChild,
+  TaskProposalMutation,
+  TaskProposalsView,
   ActionItem,
   WorkRequest,
   Conversation,
@@ -48,6 +52,8 @@ import type {
   ProjectMember,
   Notification,
   ProjectParticipation,
+  WorkRequestMaterial,
+  WorkRequestReadReceipt,
 } from "./viewModels";
 
 type ApiErrorBody = {
@@ -200,6 +206,13 @@ export async function getMyOrganizationProfile(): Promise<OrganizationProfile> {
   return request<OrganizationProfile>("/api/organization/me");
 }
 
+/**
+ * 업무 생성 — 본인 또는 수신자 지정 (W1 · WORK-001 Phase 1·6).
+ *
+ * `assignee_id` 가 없거나 본인이면 본인 업무, 다른 사람이면 **상대의 수락 없이** 그 사람의 활성 담당으로 선다.
+ * 멱등 키는 **`Idempotency-Key` 헤더**로만 간다 — 본문 필드가 아니다(생성 입력 모델이 알 수 없는 필드를
+ * 거부한다). 한 생성 의도에 키 하나이고, 재시도·연타는 같은 키를 다시 보낸다.
+ */
 export async function createDirectTask(
   title: string,
   extra: {
@@ -210,10 +223,19 @@ export async function createDirectTask(
     reference_task_ids?: string[];
     parent_task_id?: string;
     project_id?: string;
-  } = {},
+    assignee_id?: string;
+    /** 참조자 — **`업무` 갈래에서도 저장된다** (SPEC-001 U-6-a). */
+    cc_member_ids?: string[];
+    /** 승인자 0..1. 화면 라벨은 「결재자」이고 같은 값이다 (SPEC-001 §4 · OQ-N). */
+    approver_id?: string;
+    /** 선행업무 0..N — 같은 프로젝트의 업무만. 있으면 `project_id` 가 필수다 (SPEC-001 U-13). */
+    preceding_task_ids?: string[];
+  },
+  idempotencyKey: string,
 ): Promise<DirectTask> {
   return request<DirectTask>("/api/tasks", {
     body: JSON.stringify({ title, ...extra }),
+    headers: { "Idempotency-Key": idempotencyKey },
     method: "POST",
   });
 }
@@ -298,6 +320,76 @@ export async function reassignTask(
   });
 }
 
+/**
+ * 담당 관계 — **현재와 대기를 각각** 낸다 (SPEC-003 §4 `GET /api/tasks/{id}/assignments` · P-3).
+ *
+ * 담당 변경 대기 동안 `active` 하나와 `pending` 하나가 함께 산다(V-18). 한 값으로 합쳐 읽으면
+ * 화면에서 책임 공백이 생긴다.
+ */
+export async function getTaskAssignments(taskId: string): Promise<TaskAssignmentsView> {
+  return request<TaskAssignmentsView>(`/api/tasks/${taskId}/assignments`);
+}
+
+/** 직속 하위만 (SPEC-003 §4 · L-11). 저장 깊이와 무관하고, 읽을 수 없는 하위는 들어 있지 않다. */
+export async function getTaskChildren(taskId: string): Promise<TaskChild[]> {
+  return request<TaskChild[]>(`/api/tasks/${taskId}/children`);
+}
+
+/**
+ * 재개 (SPEC-003 §4 `POST /api/tasks/{id}/reopen`).
+ *
+ * **완료된 상위가 있으면 거부된다** — 상위를 먼저 재개하라고 답한다(L-13 · `WORK_REOPEN_PARENT_DONE`).
+ * 이전 완료 이력·회차·결과는 보존된다.
+ */
+export async function reopenTask(taskId: string, expectedVersion: number, reason?: string): Promise<DirectTask> {
+  return request<DirectTask>(`/api/tasks/${taskId}/reopen`, {
+    body: JSON.stringify({ expected_version: expectedVersion, ...(reason ? { reason } : {}) }),
+    method: "POST",
+  });
+}
+
+/** 대기 중·지난 제안 (SPEC-003 §4 `GET /api/tasks/{id}/proposals`). 서버가 둘을 **각각** 낸다. */
+export async function getTaskProposals(taskId: string): Promise<TaskProposalsView> {
+  return request<TaskProposalsView>(`/api/tasks/${taskId}/proposals`);
+}
+
+/**
+ * 수락 후의 제안 — 합의 취소와 조건 변경 (SPEC-003 §4 · V-19·V-20).
+ *
+ * **제안만으로는 아무것도 바뀌지 않는다.** 담당자가 동의해야 취소되고 조건이 움직인다.
+ */
+export async function createTaskProposal(
+  taskId: string,
+  expectedVersion: number,
+  body: { kind: "cancellation" | "terms_change"; reason?: string; payload?: Record<string, unknown> },
+): Promise<TaskProposalMutation> {
+  return request<TaskProposalMutation>(`/api/tasks/${taskId}/proposals`, {
+    body: JSON.stringify({ expected_version: expectedVersion, kind: body.kind, ...(body.reason ? { reason: body.reason } : {}), ...(body.payload ? { payload: body.payload } : {}) }),
+    method: "POST",
+  });
+}
+
+/** 동의 / 동의하지 않음 — **담당자만** 부른다 (`WORK_PROPOSAL_RESPONDER_ONLY`). */
+export async function respondTaskProposal(
+  taskId: string,
+  proposalId: string,
+  expectedVersion: number,
+  body: { agree: boolean; reason?: string },
+): Promise<TaskProposalMutation> {
+  return request<TaskProposalMutation>(`/api/tasks/${taskId}/proposals/${proposalId}/respond`, {
+    body: JSON.stringify({ expected_version: expectedVersion, agree: body.agree, ...(body.reason ? { reason: body.reason } : {}) }),
+    method: "POST",
+  });
+}
+
+/** 제안 철회 — 제안한 사람이 부른다. */
+export async function withdrawTaskProposal(taskId: string, proposalId: string, expectedVersion: number): Promise<TaskProposalMutation> {
+  return request<TaskProposalMutation>(`/api/tasks/${taskId}/proposals/${proposalId}/withdraw`, {
+    body: JSON.stringify({ expected_version: expectedVersion }),
+    method: "POST",
+  });
+}
+
 export async function detachTaskMaterial(taskId: string, bindingId: string): Promise<TaskMaterial> {
   return request<TaskMaterial>(`/api/tasks/${taskId}/material-bindings/${bindingId}/detach`, { method: "POST" });
 }
@@ -370,8 +462,19 @@ export async function getDailyReportStatus(
   return request<DailyReportStatus>(`/api/daily-reports/status?${query}`);
 }
 
-export async function getWorkRequests(): Promise<WorkRequest[]> {
-  return request<WorkRequest[]>("/api/work-requests");
+/**
+ * 내가 닿는 요청 전부.
+ *
+ * `includeRemoved` 는 **목록에서 정리(숨김)한 항목까지** 달라는 뜻이다 (L-6 · F-6) — 「숨긴 항목 보기」가
+ * 새로고침 뒤에도 서는 길이다. 숨김 여부는 각 행의 `list_entry_hidden` 이 말한다.
+ */
+export async function getWorkRequests(includeRemoved = false): Promise<WorkRequest[]> {
+  return request<WorkRequest[]>(includeRemoved ? "/api/work-requests?include_removed=true" : "/api/work-requests");
+}
+
+/** 내가 응답할 pending/negotiating 요청. 서버의 수신함·권한 계약을 그대로 사용한다. */
+export async function getWorkRequestInbox(): Promise<WorkRequest[]> {
+  return request<WorkRequest[]>("/api/work-requests/inbox");
 }
 
 export async function getWorkRequest(requestId: string): Promise<WorkRequest> {
@@ -386,15 +489,122 @@ export async function getWorkRequestAssigneeCandidates(): Promise<Persona[]> {
   return request<Persona[]>("/api/work-request-assignee-candidates");
 }
 
+/**
+ * 요청 발송 (SPEC-003 §4 `POST /api/work-requests`).
+ *
+ * 성공하면 `request`(`state=pending`)와 `open` Task 가 **한 덩어리로** 선다 — 담당은 아직 없고
+ * `derived.assignment` 가 `awaiting_acceptance` 다(V-9·V-10). 멱등 키는 **헤더로만** 간다(K-1).
+ *
+ * `parent_task_id` 는 **이 입구에만 있다** — `POST /api/tasks` 의 수평 갈래는 그 값을 거절한다(O-27).
+ * `supersedes_request_id` 는 「다시 요청」이 남기는 이전 요청 연결이다(V-12).
+ */
 export async function createWorkRequest(
   title: string,
   assigneeId: string,
-  extra: { description?: string; due_date?: string | null; cc_member_ids?: string[]; checklist?: string[]; reference_task_ids?: string[] } = {},
+  extra: {
+    description?: string;
+    /** 요청 갈래에도 시작일이 간다 (SPEC-001 U-6-a) — 입력은 원래 이 값을 받고 있었다. */
+    start_date?: string | null;
+    due_date?: string | null;
+    cc_member_ids?: string[];
+    checklist?: string[];
+    reference_task_ids?: string[];
+    parent_task_id?: string;
+    project_id?: string;
+    /** 선행업무 0..N — 같은 프로젝트의 업무만 (SPEC-001 §4). */
+    preceding_task_ids?: string[];
+    supersedes_request_id?: string;
+    /**
+     * 승인자 0..1. 화면 라벨은 「결재자」이고 같은 값이다 (SPEC-001 §4 · OQ-N).
+     *
+     * **두 갈래가 같은 값을 보낸다** (WORK-003 정정) — 요청이 업무가 될 때 결재자가 함께 넘어가야
+     * 하고, 그것을 화면에서만 고르고 버리면 고른 사람이 「저장됐다」고 읽는다.
+     *
+     * **BE 통합 전에는 이 필드가 422 로 돌아올 수 있다** — OQ-M 이 아직 열려 있어 요청 생성
+     * 입력 모델(`extra='forbid'`)이 그 이름을 모른다. 그때도 **화면이 조용히 빼지 않는다**:
+     * 목표 계약이 이것이고, 거절은 서버가 필드를 열면 사라진다.
+     */
+    approver_id?: string;
+    /*
+     * **자료는 이 payload 로 가지 않는다** (WORK-003) — 여기 `material_draft_ids` 라는 칸이
+     * 있었다. 서버가 모르는 이름이라 실리는 순간 422 였고, 요청 자료의 실제 계약은 **두 단계**로
+     * 열렸다: 요청을 만들고 → 돌아온 `request_id` 로 아래 `uploadWorkRequestMaterial` ·
+     * `attachWorkRequestMaterialLink` 에 붙인다. 생성 payload 에 자료 축을 다시 만들지 않는다.
+     */
+  },
+  idempotencyKey: string,
 ): Promise<WorkRequest> {
   return request<WorkRequest>("/api/work-requests", {
     body: JSON.stringify({ title, assignee_id: assigneeId, ...extra }),
+    headers: { "Idempotency-Key": idempotencyKey },
     method: "POST",
   });
+}
+
+/* ------------------------------------------------------- 요청 자료 (WORK-003 · 두 단계)
+ *
+ * 발송한 요청에 자료를 붙이는 한 벌이다. 업무 자료(`/api/tasks/{id}/materials/...`)와 **같은
+ * 모양이고 자리만 다르다** — 업무 자료 입구는 활성 담당에게만 열려 수락 전 요청에는 붙일 사람이
+ * 없었다. 댓글 첨부(`.../comments/{id}/attachments`)와 판단 근거(`.../evidence`)는 뜻이 다른
+ * 자리라 여기서 대용으로 쓰지 않는다.
+ *
+ * `kind` 를 받지 않는다: 서버가 **참고 자료 하나만** 허용한다(`_require_material_role`).
+ * 요청에는 아직 결과가 없어 산출물이 설 자리가 없고, 수락이 이 자료를 업무로 그대로 이어 붙이므로
+ * 여기서 산출물을 만들면 아무도 만들지 않은 산출물이 완료 보고 후보로 선다.
+ */
+
+export async function getWorkRequestMaterials(requestId: string): Promise<WorkRequestMaterial[]> {
+  return request<WorkRequestMaterial[]>(`/api/work-requests/${requestId}/materials`);
+}
+
+/** 파일 한 건을 요청에 붙인다. **보낸 사람만**, 답이 오기 전까지다. */
+export async function uploadWorkRequestMaterial(requestId: string, file: File): Promise<WorkRequestMaterial> {
+  const form = new FormData();
+  form.append("kind", "input");
+  form.append("file", file, file.name);
+  const response = await fetch(`/api/work-requests/${requestId}/materials`, {
+    body: form,
+    credentials: "same-origin",
+    method: "POST",
+  });
+  if (!response.ok) {
+    const error = (await response.json().catch(() => ({}))) as ApiErrorBody;
+    throw new ApiError(response.status, typeof error.detail === "string" ? error.detail : response.statusText);
+  }
+  return response.json() as Promise<WorkRequestMaterial>;
+}
+
+/** 다른 곳에 있는 것을 요청이 가리킨다. 바이트를 들지 않고 판본을 못 박지 않는다. */
+export async function attachWorkRequestMaterialLink(
+  requestId: string,
+  link: { url: string; label: string },
+): Promise<WorkRequestMaterial> {
+  return request<WorkRequestMaterial>(`/api/work-requests/${requestId}/materials/links`, {
+    body: JSON.stringify({ kind: "input", url: link.url, label: link.label }),
+    method: "POST",
+  });
+}
+
+/** 내려받기 주소. 읽을 수 있는 사람이면 받을 수 있다 — 「보이는데 못 받는다」를 만들지 않는다. */
+export function workRequestMaterialContentUrl(requestId: string, materialId: string): string {
+  return `/api/work-requests/${requestId}/materials/${materialId}/content`;
+}
+
+export async function detachWorkRequestMaterial(requestId: string, materialId: string): Promise<WorkRequestMaterial> {
+  return request<WorkRequestMaterial>(`/api/work-requests/${requestId}/materials/${materialId}`, { method: "DELETE" });
+}
+
+/**
+ * 참고 항목 읽음 (SPEC-001 §4 「참고 항목 읽음 — 신규」 · U-12).
+ *
+ * **멱등이다** — 두 번째 호출도 `200` 이고 `read_at` 은 처음 읽은 시각 그대로다. 본문도 회차도
+ * 멱등 키도 요구하지 않는다: 이미 읽었다는 것은 충돌이 아니다. 요청 행의 `version` 을 올리지
+ * 않으므로 남이 쓰던 낙관적 잠금이 내 읽음 때문에 깨지지 않는다.
+ *
+ * **CC 참조자만** 부를 수 있다. 읽을 수는 있는데 참조자가 아니면 403, 없거나 못 읽으면 404다.
+ */
+export async function markWorkRequestRead(requestId: string): Promise<WorkRequestReadReceipt> {
+  return request<WorkRequestReadReceipt>(`/api/work-requests/${requestId}/read`, { method: "POST" });
 }
 
 export async function decideWorkRequest(
@@ -418,6 +628,29 @@ export async function negotiateWorkRequest(
     body: JSON.stringify({ expected_version: expectedVersion, conditions }),
     method: "POST",
   });
+}
+
+/**
+ * 수락 전 철회 (SPEC-003 §4). 요청은 `withdrawn`, 그 Task 는 `cancelled` 가 되고 상위 연결은 남는다.
+ *
+ * W1 까지 이것은 **판단함 명령으로만** 열려 있었다. v2 가 요청자의 일반 명령으로 올린다.
+ */
+export async function withdrawWorkRequest(requestId: string, expectedVersion: number): Promise<WorkRequest> {
+  /* 서버 입력 모델은 **회차 하나만** 받는다(`WorkRequestVersionRequest`) — 모르는 필드를 실으면 422 다.
+     그래서 철회에는 사유 칸을 두지 않는다. 계약이 열리면 그때 싣는다. */
+  return request<WorkRequest>(`/api/work-requests/${requestId}/withdraw`, {
+    body: JSON.stringify({ expected_version: expectedVersion }),
+    method: "POST",
+  });
+}
+
+/**
+ * 취소 항목 목록 정리 (SPEC-003 §4 · L-6 · F-6).
+ *
+ * **요청자 목록에서만 빠지고 이력은 남는다.** 그래서 화면은 이것을 「삭제」가 아니라 「숨기기」로 부른다.
+ */
+export async function hideWorkRequestListEntry(requestId: string): Promise<void> {
+  await request<void>(`/api/work-requests/${requestId}/list-entry`, { method: "DELETE" });
 }
 
 export async function getConversations(limit?: number): Promise<Conversation[]> {
@@ -736,12 +969,18 @@ export async function getTaskAssignmentCandidates(): Promise<Persona[]> {
   return request<Persona[]>("/api/task-assignment-candidates");
 }
 
+/** 관리자 직접 배정 — 조직 범위 검사는 그대로고, W1 부터 수락을 기다리지 않고 즉시 활성 담당으로 선다. */
 export async function assignTask(
   title: string,
   assigneeId: string,
-  extra: { description?: string; start_date?: string; due_date?: string; checklist?: string[] } = {},
+  extra: { description?: string; start_date?: string; due_date?: string; checklist?: string[] },
+  idempotencyKey: string,
 ): Promise<TaskAssignment> {
-  return request<TaskAssignment>("/api/tasks/assign", { body: JSON.stringify({ title, assignee_id: assigneeId, ...extra }), method: "POST" });
+  return request<TaskAssignment>("/api/tasks/assign", {
+    body: JSON.stringify({ title, assignee_id: assigneeId, ...extra }),
+    headers: { "Idempotency-Key": idempotencyKey },
+    method: "POST",
+  });
 }
 
 export async function getSentTaskAssignments(): Promise<TaskAssignment[]> {
@@ -1049,13 +1288,22 @@ export async function readMeetingTranscript(meetingId: string): Promise<MeetingT
  * 후속업무 후보를 **업무 요청으로** 보낸다 (SPEC §9-5) — 갈래는 하나다.
  * 담당은 누르는 사람이 고른다: 이 함수는 고른 값을 그대로 나른다.
  */
+/**
+ * 회의 후속 승격 — 같은 생성 계약을 지난다(WORK-001 Phase 5).
+ *
+ * 멱등에는 **두 층**이 있다. 여기 싣는 키는 **생성 층**이고, 후보 자체의 중복 승격은 서버의 후보 잠금
+ * (`followup_candidate(..., lock=True)`)이 따로 막는다 — 키가 달라도 같은 후보는 한 건이다. 그래서 키는
+ * 후보 identity 에서 만든 안정 값으로 보낸다.
+ */
 export async function promoteMeetingTodo(
   meetingId: string,
   todoId: string,
   body: { assignee_id: string; title?: string; description?: string; due_date?: string | null; checklist?: string[] },
+  idempotencyKey: string,
 ): Promise<MeetingTodo> {
   return request<MeetingTodo>(`/api/meetings/${meetingId}/todos/${todoId}/promote`, {
     body: JSON.stringify(body),
+    headers: { "Idempotency-Key": idempotencyKey },
     method: "POST",
   });
 }

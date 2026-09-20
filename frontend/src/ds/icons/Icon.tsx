@@ -18,7 +18,7 @@ export function Icon({
   title,
 }: {
   name: IconName;
-  size?: 12 | 14 | 16 | 20;
+  size?: 12 | 14 | 16 | 20 | 24;
   className?: string;
   title?: string;
 }) {

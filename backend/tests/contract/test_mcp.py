@@ -6,6 +6,8 @@ from uuid import UUID, uuid4
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 import pytest
+from legacy_acceptance import make_request_look_pending
+from ax_workspace.modules.work.request_errors import WorkRequestError
 from sqlalchemy import delete, select
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
@@ -162,8 +164,10 @@ def test_mcp_facade_uses_the_work_request_public_operations(tmp_path) -> None:
     mina = McpReportsFacade(settings, "mina", ContractTestAiProvider())
     jiho = McpReportsFacade(settings, "jiho", ContractTestAiProvider())
 
-    assert mina.work_request_assignee_candidates() == [{"id": "jiho", "display_name": "지호 (팀장)"}, {"id": "yuna", "display_name": "유나 (대표)"}]
-    created = mina.create_work_request("MCP 업무 요청", "jiho")
+    # 후보는 판단 역량을 묻지 않는다 (WORK-001 Phase 3) — 로그인 가능 · 본인 제외 · 조직 범위만 남는다.
+    candidates = {row["id"] for row in mina.work_request_assignee_candidates()}
+    assert candidates == {"hyeon", "jiho", "minseok", "sora", "yuna"} and "mina" not in candidates
+    created = mina.create_work_request("MCP 업무 요청", "jiho", "mcp-request")
     assert mina.list_work_requests() == [created]
     # The detail read adds the earlier work pointed at and the meeting this request came out of;
     # everything else is the same row the list gave. `source_meeting_title` lives only here on purpose —
@@ -174,7 +178,15 @@ def test_mcp_facade_uses_the_work_request_public_operations(tmp_path) -> None:
     detail_only = {"references", "source_meeting_title"}
     assert {key: value for key, value in detail.items() if key not in detail_only} == created
 
-    accepted = jiho.accept_work_request(created["request_id"], created["version"])
+    # 신규 요청은 `pending` 으로 서고 업무가 이미 있다 — 답할 사람은 **받는 사람**이다.
+    assert created["state"] == "pending" and created["task_id"]
+    # v2: 받는 사람은 **답할 수 있다** — 그것이 되돌린 단계다. 수락하면 같은 업무의 담당이 확정된다.
+    answered = jiho.accept_work_request(created["request_id"], created["version"])
+    assert answered["state"] == "accepted" and answered["task_id"] == created["task_id"]
+    # 업무 없이 답을 기다리던 **옛 행**도 같은 입구로 수락된다 — 그때는 수락이 업무를 세웠다.
+    make_request_look_pending(database_url, created["request_id"])
+    legacy = jiho.list_work_requests()[0]
+    accepted = jiho.accept_work_request(created["request_id"], legacy["version"])
     assert accepted["task_id"]
     assert jiho.list_work_requests()[0]["state"] == "accepted"
 
@@ -357,7 +369,7 @@ def test_stdio_mcp_tool_call_rechecks_a_revoked_capability(tmp_path) -> None:
                     database_session.commit()
 
                 assert "task_create_self" not in {tool.name for tool in (await session.list_tools()).tools}
-                result = await session.call_tool("task_create_self", {"title": "권한 회수 뒤 생성"})
+                result = await session.call_tool("task_create_self", {"title": "권한 회수 뒤 생성", "idempotency_key": "revoked-stdio"})
                 assert result.is_error is True
                 assert result.content[0].text == "Unknown tool"
                 with make_session_factory(database_url)() as database_session:
@@ -373,7 +385,7 @@ def test_stdio_mcp_tool_call_rechecks_a_revoked_capability(tmp_path) -> None:
 
     asyncio.run(scenario())
     with pytest.raises(TaskAccessDenied, match="task.self_manage"):
-        facade.create_self_task("권한 회수 뒤 생성")
+        facade.create_self_task("권한 회수 뒤 생성", "revoked-capability")
     with make_session_factory(database_url)() as session:
         assert session.query(TaskRecord).count() == 0
 
@@ -427,7 +439,7 @@ def test_delegated_stdio_mcp_tool_rechecks_capability_before_proposing_an_action
                     )
                     database_session.commit()
 
-                result = await session.call_tool("task_create_self", {"title": "승인 제안도 금지"})
+                result = await session.call_tool("task_create_self", {"title": "승인 제안도 금지", "idempotency_key": "delegated-stdio"})
                 assert result.is_error is True
                 assert result.content[0].text == "Unknown tool"
 
@@ -485,8 +497,8 @@ def test_mcp_create_mutations_are_idempotent_within_a_server_bound_turn(tmp_path
         "due_date": "2026-09-30",
         "checklist": ["자료 확인"],
     }
-    first_action = facade.create_self_task("재시도해도 하나인 업무", **fields)
-    repeated_action = facade.create_self_task("재시도해도 하나인 업무", **fields)
+    first_action = facade.create_self_task("재시도해도 하나인 업무", "one-intent", **fields)
+    repeated_action = facade.create_self_task("재시도해도 하나인 업무", "one-intent", **fields)
 
     assert first_action["state"] == "pending"
     assert repeated_action["action_id"] == first_action["action_id"]
@@ -499,6 +511,13 @@ def test_mcp_create_mutations_are_idempotent_within_a_server_bound_turn(tmp_path
         "reference_task_ids": [],
         "parent_task_id": None,
         "project_id": None,
+        # 참조자 — 내 업무와 업무 요청이 함께 쓰는 공통 payload 의 칸이다.
+        "cc_member_ids": [],
+        # 선행업무 — 같은 공통 payload 의 칸. 생성 표면 전부가 같은 배열을 받는다 (SPEC-001 §5).
+        "preceding_task_ids": [],
+        # 결재자 — `업무` 갈래만 여는 칸 (SPEC-001 §7 OQ-M).
+        "approver_id": None,
+        "assignee_id": None,
     }
     with make_session_factory(database_url)() as session:
         assert session.query(TaskActivityRecord).count() == 0
@@ -527,10 +546,12 @@ def test_delegated_chat_work_request_is_an_action_until_the_owner_approves(tmp_p
     action = McpReportsFacade(settings, "mina", ContractTestAiProvider()).create_work_request(
         "승인이 필요한 업무 요청",
         "jiho",
+        "approval-needed",
     )
     repeated_action = McpReportsFacade(settings, "mina", ContractTestAiProvider()).create_work_request(
         "승인이 필요한 업무 요청",
         "jiho",
+        "approval-needed",
     )
     assert action["state"] == "pending"
     assert action["action_type"] == "work_request.create"

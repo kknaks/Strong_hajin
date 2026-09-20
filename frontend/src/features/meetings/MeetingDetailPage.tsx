@@ -1302,10 +1302,13 @@ export function MeetingDetailPage({
           onError={onError}
           /* 승격은 언제나 업무 요청이다 (§9-5). 회의록에서 나가는 요청만 이 자리를 쓴다 —
              출처 두 열(회의·안건)이 함께 실려야 같은 후보가 두 번 서지 않는다 */
-          onSubmitRequest={async (input) => {
+          /* 승격의 멱등에는 두 층이 있다 — 여기 싣는 키는 **생성 층**이고(모달이 이 제출 의도에 하나를
+             만들어 재시도 동안 같은 값을 다시 보낸다), 같은 후보가 두 번 서지 않는 것은 서버의
+             **후보 잠금** 층이 따로 진다. 키가 달라도 같은 후보는 한 건이다 (WORK-001 Phase 5). */
+          onSubmitRequest={async (input, idempotencyKey) => {
             const todoId = promoting.todo_id;
             try {
-              await promoteMeetingTodo(meeting.meeting_id, todoId, input);
+              await promoteMeetingTodo(meeting.meeting_id, todoId, input, idempotencyKey);
             } catch (reason) {
               // 이미 누가 보낸 후보다 — 지금 있는 것을 다시 읽어 「요청됨」으로 맞춘다
               if (reason instanceof ApiError && reason.status === 409) {
@@ -1314,7 +1317,8 @@ export function MeetingDetailPage({
               }
               throw reason;
             }
-            return meetingScreen.promoted(input.title);
+            const assignee = assigneeCandidates.find((candidate) => candidate.id === input.assignee_id);
+            return meetingScreen.promoted(input.title, assignee ? personName(assignee.display_name) : undefined);
           }}
           ownerName={ownerName}
         />

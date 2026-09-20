@@ -18,6 +18,19 @@ SORA = {"X-Demo-Persona": "sora"}
 ADMIN = {"X-Demo-Persona": "yuna"}
 
 
+
+def _accept(client, request: dict, headers=JIHO) -> None:
+    """받는 사람이 수락한다 — 여기서 담당이 확정되고 그 업무가 「내 업무」에 선다.
+
+    W1 에서는 이 단계가 없었다(발송이 곧 배정). v2 가 되돌린 것은 **이 한 단계뿐**이고,
+    아래 테스트들이 보는 관계·이력·완료는 그대로다.
+    """
+    answered = client.post(
+        f"/api/work-requests/{request['request_id']}/accept",
+        headers=headers, json={"expected_version": request["version"]},
+    )
+    assert answered.status_code == 200, answered.text
+
 def _stack(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
@@ -27,14 +40,13 @@ def _stack(tmp_path):
 
 
 def _journey(client, title: str = "그래프가 따라갈 업무") -> dict:
-    """The shape the graph is for: someone asked, someone accepted, and the work grew parts and materials."""
+    """The shape the graph is for: someone asked, the work stood at once, and it grew parts and materials.
+
+    수락 단계가 없어졌을 뿐 그래프가 따라가는 관계는 그대로다 — 요청에서 업무로, 업무에서 하위와 자료로.
+    """
     request = client.post("/api/work-requests", headers=MINA, json={"title": title, "assignee_id": "jiho"}).json()
-    [item] = [row for row in client.get("/api/action-items", headers=JIHO).json() if row["subject"] == title]
-    client.post(
-        f"/api/action-items/{item['action_item_id']}/commands/accept",
-        headers=JIHO,
-        json={"expected_version": item["expected_version"]},
-    )
+    # v2: 발송은 업무를 세우고 **담당은 수락이 세운다** (SPEC-003 §4). 그 뒤는 예전과 같다.
+    _accept(client, request)
     [task] = [row for row in client.get("/api/my-work", headers=JIHO).json() if row["title"] == title]
     child = client.post(
         "/api/tasks", headers=JIHO, json={"title": f"{title} 하위", "parent_task_id": task["task_id"]}
@@ -80,8 +92,13 @@ def test_the_graph_never_hands_out_what_a_person_may_not_read(tmp_path) -> None:
     made = _journey(client, "볼 수 없는 업무")
 
     # Someone who may read work in general, but has no relationship to this work, finds none of it.
-    assert client.get("/api/graph/search", headers=MINA, params={"q": "볼 수 없는 업무 하위"}).json()["nodes"] == []
-    walked = client.get("/api/graph/neighbors", headers=MINA, params={"node": f"task:{made['child']['task_id']}"})
+    # **MINA 가 아니라 SORA 로 묻는다** — v2 에서 MINA 는 이 일의 요청자이고, 요청자는 자기가 부탁한
+    # 업무와 그 하위 트리를 읽는다 (정책 V-21). 이 줄이 지키려는 보장은 「관계 없는 사람은 아무것도
+    # 못 본다」이므로, 관계가 정말 없는 사람으로 물어야 그 보장을 본다.
+    found = client.get("/api/graph/search", headers=SORA, params={"q": "볼 수 없는 업무 하위"})
+    # 거절이든 빈 결과든 **지키는 것은 하나**다: 그 이름이 어디에도 새지 않는다.
+    assert found.json().get("nodes", []) == [] and made["child"]["title"] not in found.text
+    walked = client.get("/api/graph/neighbors", headers=SORA, params={"node": f"task:{made['child']['task_id']}"})
     assert walked.status_code in {403, 404}
     assert made["child"]["title"] not in walked.text
 
@@ -91,7 +108,10 @@ def test_the_graph_never_hands_out_what_a_person_may_not_read(tmp_path) -> None:
     assert any(row["kind"] == "task" and row["id"] == made["task"]["task_id"] for row in theirs.json()["nodes"])
     into = client.get("/api/graph/neighbors", headers=MINA, params={"node": f"task:{made['task']['task_id']}"})
     assert into.status_code == 200
-    assert made["child"]["title"] not in into.text
+    # **v2 는 여기서 넓어진다** — 요청자는 자기가 부탁한 업무와 **그 하위 트리 전체**를 읽는다
+    # (정책 V-21 「필요하면 그 업무로 들어가 확인한다」). 그래서 하위 이름이 보이는 것이 맞다.
+    # 읽기만 넓어질 뿐 고치거나 시작하지는 못한다 — 그 경계는 위 테스트가 지킨다.
+    assert made["child"]["title"] in into.text
 
 
 def test_following_connections_needs_the_capability_to_do_it(tmp_path) -> None:

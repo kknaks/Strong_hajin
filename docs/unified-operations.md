@@ -2,6 +2,8 @@
 
 구현 계약은 2026-09-11 SCAX API MCP 승인 실행 경로 일원화 Work Brief의 D1~D11/E1/E2다. 이 문서는 R2의 baseline 관찰, R3 이행, 최종 Acceptance를 고정한다. 행별 현재 상태는 inventory와 함께 판정한다.
 
+> **그 뒤의 변경은 이 기록을 덮지 않는다.** 아래 R2·R3·Acceptance 절은 그 시점에 실제로 관찰하고 통과시킨 것을 그대로 남긴다 — SHA·수치·로그 경로를 나중 작업에 맞춰 고쳐 쓰지 않는다. 2026-09-16 업무 생성 slice(W1)가 **신규 생성 경로의 수락 gate를 걷고 생성 명령에 멱등 키를 필수로 세웠다**: `POST /api/tasks`(담당 지정 포함) · `POST /api/tasks/assign` · `POST /api/work-requests` · `POST /api/meetings/{id}/todos/{todoId}/promote` 가 `Idempotency-Key` 헤더를, 대응 MCP 도구 넷이 `idempotency_key` 명시 인자를 받는다. 신규 요청·배정은 수락을 기다리지 않고 활성 담당을 바로 세우며, 요청·배정 수락 판단은 **과거 행에만** 남는다. 완료 결과 확인과 AX 실행 확인은 그대로다. 현재 동작은 `README.md` 「업무 — 요청과 배정」과 `docs/domain-model.md`가 갖는다.
+
 ## Baseline과 전수 표면
 
 - 기준: PR #3 merge `42e43358b866bc02d4a5e401b19d826a6e8397e1`. 2026-09-11 원격 main 재조회도 같은 SHA다.
@@ -33,9 +35,9 @@ Action repository와 presenter가 Task/Meeting/ActionCenter를 내부에서 재�
 | `list_tasks` / GET `/api/tasks` / `task_list` | 현재 열람 가능한 업무 | 종료 포함 등 같은 조건. `task.read`와 조직/프로젝트/요청 관계. owning `readable_tasks`; 내 업무와 별도 query |
 | `get_task`, `task_history`, `task_history_diff` / 기존 API·tool 및 `task_history_diff` | 한 업무의 현재 상세, 불변 이력, 지정 두 version 차이 | task ID·version이 범위를 넓히지 않음. 대상 열람 불가/미존재를 동일 처리 |
 | `task_subtask_list`, `task_checklist_list`, `task_materials_list` | 특정 읽을 수 있는 업무의 하위 업무·체크리스트·자료 | 같은 Task 권한, 별도 반환 의미. facet마다 명시적 query 사용 |
-| `task_assignment_candidates`, `sent_task_assignments` | 배정 가능한 사람 / 본인이 보낸 배정 | `task.assign`의 현재 범위 / sender 관계. 수신 판단함은 `action_item_list`로 연결 |
+| `task_assignment_candidates`, `sent_task_assignments` | 배정 가능한 사람 / 본인이 보낸 배정 | `task.assign`의 현재 범위 / sender 관계. 신규 배정은 수신 판단을 만들지 않으므로 `action_item_list`에 서지 않는다 — 과거 `pending` 배정만 거기서 답한다 |
 | `list_work_requests`, `get_work_request`, `work_request_timeline` | 참여하는 요청 목록·상세·회차와 논의 | requester/assignee/cc, 요청 capability. 새 승인 이행도 기존 requester와 assignee의 판단 의미 유지 |
-| `work_request_assignee_candidates`, `work_request_cc_candidates` | 요청 수행/참조 대상 후보 | 서로 다른 참여 역할. active/login 판단 가능 조건은 현행 owning query 유지 |
+| `work_request_assignee_candidates`, `work_request_cc_candidates` | 요청 수행/참조 대상 후보 | 서로 다른 참여 역할. 수행 후보는 재직·로그인 가능·본인 제외·조직 범위 교집합으로 고른다. 받는 사람이 판단하지 않으므로 판단 capability는 묻지 않으며, 같은 owning query를 생성 명령의 대상 검사도 그대로 쓴다 |
 | `pending_action_items`, `action_item_detail` | 내가 판단할 항목 / 내가 참여한 한 판단의 회차·허용 command | 현재 capability와 참여관계. AX proposal을 delegated turn이 직접 confirm할 수 없음 |
 | `list_meetings` / GET `/api/meetings` / `meeting_list` | 열람 가능한 조직 일정·공유 회의 | 날짜 구간은 필터. `meeting.read`와 detail 열람 범위. 비인가 private meeting의 busy block도 D9에 따라 결과/건수에서 제거 |
 | 새 `my_meetings` / GET `/api/my-meetings` / `my_meeting_list` | 내가 소유하거나 참석하는 회의 | 날짜 조건만. 공유로 읽을 수 있다는 이유만으로 내 회의에 포함하지 않음. 별도 public query |

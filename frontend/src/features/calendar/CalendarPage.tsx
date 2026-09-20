@@ -60,15 +60,22 @@ export function CalendarPage({
     return () => onRegisterRefresh?.(null);
   }, [onRegisterRefresh, reload]);
 
-  const transition = async (task: DirectTask, action: TaskAction, reason?: string) => {
+  /**
+   * 전이를 보낸다. **서버가 받아들였는지를 돌려준다** — 사유를 받는 자리(취소·막힘)가 거절당했을 때
+   * 사람이 쓴 문장을 지우지 않으려면, 부르는 쪽이 «됐나» 를 알아야 한다. 돌려준 값을 쓰지 않는
+   * 호출부는 지금까지와 똑같이 동작한다.
+   */
+  const transition = async (task: DirectTask, action: TaskAction, reason?: string): Promise<boolean> => {
     setBusy(true);
     try {
       await transitionDirectTask(task.task_id, action, task.version, reason);
       await reload();
       onError(null);
       onNotice("상태를 바꿨습니다.");
+      return true;
     } catch (error) {
       onError(error instanceof Error ? error.message : "업무 상태를 바꾸지 못했습니다.");
+      return false;
     } finally {
       setBusy(false);
     }

@@ -366,8 +366,8 @@ def test_action_preview_is_structured_and_permission_safe(tmp_path) -> None:
     assert projected["commands"] == canonical["commands"] != []
 
     # Resource-referencing Actions: the referenced Task title is shown only when the approver can read that Task.
-    own = application.create_self_task(mina, "민아의 업무")
-    other = application.create_self_task(jiho, "지호의 업무")
+    own = application.create_task(mina, "민아의 업무", idempotency_key="conv-own")
+    other = application.create_task(jiho, "지호의 업무", idempotency_key="conv-other")
     readable = application.propose_action(mina, execution_id, "task.update", "업무 수정 확인", {"task_id": own["task_id"], "expected_version": own["version"], "changes": {"due_date": "2026-10-01"}})
     assert readable["subject"] == "민아의 업무"
     assert readable["preview"] == [

@@ -1,4 +1,5 @@
 """Request results keep the frozen decision basis and discussion distinct."""
+from legacy_acceptance import pending_request
 import asyncio
 from ax_workspace.entrypoints.mcp import McpReportsFacade, _create_bound_persona_server
 from test_unified_commands import _stack
@@ -9,7 +10,8 @@ def test_request_queries_retain_references_evidence_comments_and_decisions(tmp_p
     mina = {'X-Demo-Persona': 'mina'}
     jiho = {'X-Demo-Persona': 'jiho'}
     task = client.post('/api/tasks', headers=mina, json={'title': '참고 업무'}).json()
-    request = client.post('/api/work-requests', headers=mina, json={'title': '검토 요청', 'assignee_id': 'jiho', 'reference_task_ids': [task['task_id']]}).json()
+    # 근거·판단 회차는 과거 행의 것이다 — 신규 요청은 `assigned` 로 서고 그 회차를 만들지 않는다.
+    request = pending_request(client, application._settings.database_url, mina, title='검토 요청', assignee_id='jiho', reference_task_ids=[task['task_id']])
     path = '/api/work-requests/' + request['request_id']
     client.post(path + '/comments', headers=mina, json={'body': '검토 맥락'})
     evidence = client.post(path + '/evidence', headers=mina, files={'file': ('요청.txt', b'basis', 'text/plain')})

@@ -1,10 +1,9 @@
-import type { MeetingStatus, TaskState, WorkRequest } from "./viewModels";
+import type { DerivedApproval, DerivedAssignment, DerivedProposal, MeetingStatus, TaskState, WorkRequest } from "./viewModels";
 
 export const taskStateLabel: Record<TaskState, string> = {
   open: "시작 전",
   in_progress: "진행 중",
   blocked: "막힘",
-  completion_submitted: "완료 확인 대기",
   done: "완료",
   cancelled: "취소",
 };
@@ -13,25 +12,97 @@ export const taskStateTone: Record<TaskState, string> = {
   open: "neutral",
   in_progress: "accent",
   blocked: "danger",
-  completion_submitted: "accent",
   done: "success",
   cancelled: "muted",
 };
 
+/**
+ * 파생 표시의 말 — **상태가 아니다** (SPEC-003 §2.2 · DEC-002 D-4).
+ *
+ * 「수락 대기」와 「시작 전」은 같은 `open` 위에 선다. 그 둘을 한 칸에 쓰면 받은 요청 행과 내가 맡은
+ * 행이 화면에서 구별되지 않는다(U-1). 그래서 상태 라벨과 **다른 표**로 둔다.
+ */
+export const derivedAssignmentLabel: Record<DerivedAssignment, string> = {
+  awaiting_acceptance: "수락 대기",
+  awaiting_handover: "담당 변경 대기",
+};
+
+export const derivedApprovalLabel: Record<DerivedApproval, string> = {
+  awaiting_review: "확인 대기",
+  awaiting_revision: "보완 요청",
+  approved: "확인 완료",
+};
+
+export const derivedProposalLabel: Record<DerivedProposal, string> = {
+  cancellation_pending: "취소 제안 응답 대기",
+  terms_change_pending: "조건 변경 응답 대기",
+};
+
+/** 왜 취소됐나 — 상위 목록에서 읽히는 한 줄 (F-3 · V-11). */
+export const cancelReasonLabel: Record<string, string> = {
+  direct: "취소됨 — 직접 취소",
+  request_rejected: "취소됨 — 요청 거절",
+  request_withdrawn: "취소됨 — 요청 철회",
+  cancellation_agreed: "취소됨 — 합의 취소",
+};
+
+/** 상위 완료를 막는 하위가 **왜** 막는가 (SPEC-003 §4 `blocking_children.why`). */
+export const blockingChildReasonLabel: Record<string, string> = {
+  unfinished: "아직 끝나지 않음",
+  awaiting_approval: "요청자 확인 대기",
+};
+
+/** 제안 종류·상태 (SPEC-003 §4 Data). */
+export const proposalKindLabel: Record<string, string> = {
+  cancellation: "취소 제안",
+  terms_change: "조건 변경 제안",
+};
+
+/**
+ * 조건 변경 제안이 실제로 바꾸자고 하는 칸 (SPEC-003 §4 `payload`).
+ *
+ * **여기 없는 칸은 화면이 제안하지 않는다** — 바꿀 수 있다고 말해 놓고 서버가 받지 않으면 그것은
+ * 빈 약속이다. 계약이 넓어지면 이 표에 한 줄을 더한다.
+ */
+export const proposalFieldLabel: Record<string, string> = {
+  title: "업무 명",
+  due_date: "기한",
+  description: "요청 내용",
+};
+
+export const proposalStateLabel: Record<string, string> = {
+  pending: "응답 대기",
+  agreed: "동의함",
+  declined: "동의하지 않음",
+  withdrawn: "철회됨",
+};
+
+/**
+ * 요청 **출처 상태**의 라벨 — 업무의 수행 상태와 다른 축이다.
+ *
+ * `assigned` 는 W1 의 신규 경로가 세우는 값이고 「판단 없이 업무와 활성 담당이 섰다」는 사실만 말한다.
+ * 「수락됨」과 **섞지 않는다** — 수락은 사람이 한 판단이고 이쪽은 판단이 없었다. 나머지 다섯은
+ * 과거 판단 경로의 행이 그대로 갖는 값이라 문구를 건드리지 않는다.
+ */
 export const workRequestStateLabel: Record<WorkRequest["state"], string> = {
   pending: "판단 대기",
   negotiating: "협의 중",
+  assigned: "즉시 배정됨",
   accepted: "수락됨",
   rejected: "거절됨",
   withdrawn: "철회됨",
+  cancelled_by_agreement: "합의 취소됨",
 };
 
 export const workRequestStateTone: Record<WorkRequest["state"], string> = {
   pending: "warning",
   negotiating: "accent",
+  // 기다리는 것이 없으므로 warning 이 아니고, 사람의 판단이 없었으므로 success 도 아니다.
+  assigned: "accent",
   accepted: "success",
   rejected: "muted",
   withdrawn: "muted",
+  cancelled_by_agreement: "muted",
 };
 
 const executionStateLabel: Record<string, string> = {
@@ -176,6 +247,68 @@ export const taskFilterLabel: Record<string, string> = {
 };
 
 export const taskFilterOptions = ["active", "all", "open", "in_progress", "blocked", "done", "cancelled"] as const;
+
+/**
+ * 시안의 필터 칩 — **상태 나열이 아니라 파생 조건이다** (SPEC-003 §2.6).
+ *
+ * 「받은 요청」은 `derived.assignment=awaiting_acceptance`, 「확인 대기」는
+ * `derived.approval=awaiting_review`, 「기한 지남」은 `overdue_days`(또는 기한과 오늘)로 걸린다.
+ * 상태값 칩(`open`·`in_progress`)은 **기존 상태 필터를 잃지 않으려고** 같은 줄에 남긴 것이다.
+ *
+ * **「막힘」 칩은 없다** — 계약에 `blocked` 상태가 없다(M-6 미정). 막힌 업무 자체는 「전체」에서
+ * 그대로 읽히고 행의 사유도 그대로 선다. 칩만 그리지 않는다.
+ */
+export type WorkChip = "all" | "awaiting_acceptance" | "open" | "in_progress" | "overdue" | "not_started" | "awaiting_review";
+
+export const workChipLabel: Record<WorkChip, string> = {
+  all: "전체",
+  awaiting_acceptance: "받은 요청",
+  open: "시작 전",
+  in_progress: "진행 중",
+  overdue: "기한 지남",
+  not_started: "시작 안함",
+  awaiting_review: "확인 대기",
+};
+
+export const myWorkChips: ReadonlyArray<WorkChip> = ["all", "awaiting_acceptance", "open", "in_progress", "overdue"];
+export const sentWorkChips: ReadonlyArray<WorkChip> = ["all", "not_started", "overdue"];
+export const doneWorkChips: ReadonlyArray<WorkChip> = ["all", "awaiting_review"];
+/**
+ * 「참조 업무」는 **읽는 자리다** — 수락·거절이 없다. 그래서 칩도 판단을 거는 것(「받은 요청」)이 아니라
+ * 읽는 사람이 고르는 조건뿐이다.
+ */
+export const ccWorkChips: ReadonlyArray<WorkChip> = ["all", "overdue"];
+
+/**
+ * 네 탭 (SPEC-003 §2.1 · 4차 발주 1). 소유·종결 축이고, 업무를 만드는 세 «행위» 와 1:1 이 아니다.
+ *
+ * 「참조 업무」가 넷째로 선다 — 지금까지 「보낸 업무」 안의 구획이던 CC 목록이다. 그것은 내가 보낸 것이
+ * 아니라 **남이 나를 참조자로 넣은 것**이라, 소유 축에서 보낸 업무와 다른 자리다.
+ */
+export const workTabLabel = {
+  mine: "내 업무",
+  sent: "보낸 업무",
+  done: "완료 업무",
+  cc: "참조 업무",
+} as const;
+
+/**
+ * 선행업무 때문에 막혔을 때의 말 (SPEC-001 U-14 · Case Matrix `WORK_PREDECESSORS_UNFINISHED`).
+ *
+ * **누르기 전과 눌린 뒤가 같은 문장이다.** 화면이 먼저 막고, 서버가 거절해도 같은 말을 낸다 —
+ * 같은 사실을 두 가지로 말하면 사람은 둘이 다른 일이라고 읽는다.
+ */
+export function predecessorsUnfinishedText(titles: string[]): string {
+  return titles.length > 0 ? `끝나지 않은 선행업무가 있습니다: ${titles.join(", ")}` : "끝나지 않은 선행업무가 있습니다.";
+}
+
+/** 선행이 남은 업무의 프로젝트는 바꿀 수 없다 (SPEC-001 §4 `WORK_PROJECT_LOCKED_BY_PREDECESSORS`). */
+export const projectLockedByPredecessorsText = "선행업무를 먼저 비워야 프로젝트를 바꿀 수 있습니다.";
+
+/** 볼 수 없는 선행 — 제목은 숨기고 건수는 낸다. 막는 이유까지 숨기지 않는다 (U-13). */
+export function hiddenPredecessorsText(count: number): string {
+  return `볼 수 없는 선행업무 ${count}건`;
+}
 
 /** 값이 없을 때 칸에 남기는 것 — 공백이 아니라 대시다 (v2 12 TABLE). */
 export const emptyValue = "—";
@@ -620,7 +753,9 @@ export const meetingScreen = {
   streamNotFound: "볼 수 없는 회의입니다.",
   streamUnauthorized: "다시 로그인해 주세요.",
   /** 안건 저장 충돌 — 확정 문구가 없다 (`OQ-311` 과 같은 자리). 임시다. */
-  promoted: (title: string) => `'${title}' 업무 요청을 보냈습니다.`,
+  /** W1: 승격도 상대의 수락을 기다리지 않는다 — 누구의 업무가 되었는지를 말한다. */
+  promoted: (title: string, assignee?: string) =>
+    assignee ? `'${title}' 업무가 ${assignee}의 업무가 되었습니다. 수락을 기다리지 않습니다.` : `'${title}' 업무를 보냈습니다.`,
   alreadyRequested: "이미 업무 요청으로 보낸 후보입니다.",
   savedElsewhere: "다른 곳에서 먼저 저장됐습니다. 지금 있는 내용으로 바꿔 두었습니다.",
   /** 제목이 비었을 때 합성이 낸 후보 — 아직 제목이 아니다. */

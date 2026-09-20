@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type React from "react";
 
 import { Button } from "../../ds/Button";
 import { CommandConfirmationForm } from "./CommandConfirmationForm";
@@ -6,7 +7,7 @@ import { getActionItem, runActionCommand } from "../../lib/api";
 import { ActionPreviewDetails } from "./ActionPreview";
 import { DateField } from "../../ds/DateField";
 import { datePickerLabel, formatDate, formatDateTime, formatMonthLong, personName, seoulToday, weekdayNames } from "../../lib/labels";
-import { Drawer } from "../../ds/Modal";
+import { Drawer, Modal, type OverlayShellProps } from "../../ds/Modal";
 import { StatusText } from "../work/WorkModals";
 import { Skeleton } from "../../ds/Skeleton";
 import type {
@@ -322,10 +323,23 @@ export function ActionItemDrawer({
   onError,
   onNotice,
   onOpenDerivedTask,
+  presentation = "drawer",
+  onBack,
+  backLabel,
 }: {
   actionItemId: string;
   principalId?: string;
   personas: Persona[];
+  /**
+   * 어느 «겹» 으로 설 것인가 (4차 발주 3).
+   *
+   * 업무 화면은 상세를 **한 가운데 모달 하나**로 세운다 — 업무에서 출처(판단 항목)를 따라 들어간
+   * 자리도 그 약속 안이라야 한다. 오늘 화면처럼 예전 골격을 쓰는 자리는 기본값 그대로다.
+   */
+  presentation?: "drawer" | "modal";
+  /** 넘기면 머리 왼쪽에 「뒤로」가 선다 — 겹을 닫지 않고 내용만 이전 상세로 되돌린다. */
+  onBack?: () => void;
+  backLabel?: string;
   /** Open the Task this judgement produced, closing the round trip from the Task's own source link. */
   onOpenDerivedTask?: (taskId: string) => void;
   onClose: () => void;
@@ -399,9 +413,13 @@ export function ActionItemDrawer({
     [latest],
   );
   const commands = detail?.allowed_commands ?? [];
+  /* 껍데기만 갈린다 — 안의 구성·명령·상태는 한 벌 그대로다. 두 골격은 `OverlayShellProps` 를 같이 받는다. */
+  const Shell: (props: OverlayShellProps) => React.ReactElement = presentation === "modal" ? Modal : Drawer;
   return (
-    <Drawer
+    <Shell
           closeLabel="상세 닫기"
+      onBack={onBack}
+      backLabel={backLabel}
       footer={
         <>
           <Button variant="text" onClick={onClose} type="button">
@@ -564,6 +582,6 @@ export function ActionItemDrawer({
           )}
         </>
       )}
-    </Drawer>
+    </Shell>
   );
 }

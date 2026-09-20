@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatDate, formatDateTime, formatDuration, formatLongDate, formatMonth, meetingElapsed } from "./labels";
+import { formatDate, formatDateTime, formatDuration, formatLongDate, formatMonth, meetingElapsed, workRequestStateLabel, workRequestStateTone } from "./labels";
 
 describe("formatDuration", () => {
   it("shows milliseconds below one second and whole seconds from one second on", () => {
@@ -67,5 +67,32 @@ describe("meetingElapsed", () => {
     expect(meetingElapsed(Number.NaN)).toBe("");
     // 음수는 시작 자리로 본다
     expect(meetingElapsed(-5_000)).toBe("00:00");
+  });
+});
+
+/*
+ * W1 — 요청 **출처 상태**의 라벨 (WORK-001 Phase 4·7).
+ * 신규 경로는 사람의 판단 없이 업무와 활성 담당을 세운다. 그 사실을 「수락됨」으로 적으면 하지 않은
+ * 판단을 기록하는 것이 되고, 「판단 대기」로 적으면 아무도 기다리지 않는데 기다리는 것처럼 읽힌다.
+ */
+describe("요청 출처 상태 라벨", () => {
+  it("`assigned` 는 「즉시 배정됨」이고 「수락됨」과 섞지 않는다", () => {
+    expect(workRequestStateLabel.assigned).toBe("즉시 배정됨");
+    expect(workRequestStateLabel.assigned).not.toBe(workRequestStateLabel.accepted);
+    expect(workRequestStateLabel.assigned).not.toMatch(/수락|대기/);
+  });
+
+  it("과거 판단 경로의 다섯 값은 뜻도 문구도 그대로다", () => {
+    expect(workRequestStateLabel.pending).toBe("판단 대기");
+    expect(workRequestStateLabel.negotiating).toBe("협의 중");
+    expect(workRequestStateLabel.accepted).toBe("수락됨");
+    expect(workRequestStateLabel.rejected).toBe("거절됨");
+    expect(workRequestStateLabel.withdrawn).toBe("철회됨");
+  });
+
+  it("톤도 여섯 값 전부에 있다 — 기다림(warning)도 사람의 판단(success)도 아니다", () => {
+    expect(Object.keys(workRequestStateTone).sort()).toEqual(Object.keys(workRequestStateLabel).sort());
+    expect(workRequestStateTone.assigned).not.toBe(workRequestStateTone.pending);
+    expect(workRequestStateTone.assigned).not.toBe(workRequestStateTone.accepted);
   });
 });

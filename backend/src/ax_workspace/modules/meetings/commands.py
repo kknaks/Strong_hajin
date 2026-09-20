@@ -233,9 +233,28 @@ class MeetingMemoInput(BaseModel):
 
 
 class MeetingTodoPromotionInput(BaseModel):
+    """회의 후보 하나를 업무 요청으로 보낸다 — **같은 생성 프레임이 같은 값을 싣는다** (WORK-003 gap B).
+
+    승격 창과 업무 화면의 창은 **같은 폼**인데 여기만 다섯 칸이었다. 나머지 일곱은 `POST /api/work-requests`
+    가 이미 받는 값인데 이 입구에서 `extra="forbid"` 로 422 가 됐고, 관대하게 열어 두었다면 조용히
+    버려졌을 것이다 — 고른 사람은 어느 쪽도 볼 수 없다. 그래서 **같은 이름으로** 받아 요청 생성에
+    그대로 흘린다.
+
+    기존 다섯의 뜻은 그대로다: `None` 은 「고치지 않았다」이고 그때 후보값이 간다.
+    `extra="forbid"` 도 그대로 — 이름을 지어낸 값은 여전히 거절된다.
+    """
+
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     assignee_id: str = Field(min_length=1, max_length=100)
     title: str | None = Field(default=None, max_length=300)
     description: str | None = None
     due_date: date | None = None
     checklist: list[str] | None = None
+    #: 아래 일곱은 **공통 생성 프레임의 값**이고, 요청 생성 계약(`WorkPayloadFields`)과 같은 이름·같은 뜻이다.
+    start_date: date | None = None
+    cc_member_ids: list[str] | None = None
+    approver_id: str | None = Field(default=None, max_length=100)
+    reference_task_ids: list[UUID] | None = None
+    project_id: UUID | None = None
+    parent_task_id: UUID | None = None
+    preceding_task_ids: list[UUID] | None = None

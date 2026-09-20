@@ -18,7 +18,7 @@ def test_task_creation_rejects_an_oversized_title_before_storing_any_effect(tmp_
             _delegated_turn(client, application, headers, 'jiho', monkeypatch)
         facade = McpReportsFacade(application._settings, 'jiho')
         with pytest.raises(ValueError):
-            facade.create_self_task('x' * 301)
+            facade.create_self_task('x' * 301, 'oversized-title')
     with application._session_factory() as session:
         assert session.query(TaskRecord).count() == 0
         assert session.query(ActionItemRecord).count() == 0
@@ -30,7 +30,7 @@ def test_task_creation_tool_uses_the_same_normalized_values_and_returns_a_real_t
     client, application = _stack(tmp_path)
     monkeypatch.delenv('AX_MCP_CAUSATION_ID', raising=False)
     server = _create_bound_persona_server(McpReportsFacade(application._settings, 'jiho'))
-    result = asyncio.run(server.call_tool('task_create_self', {'title': '  확인할 업무  ', 'description': '   ', 'checklist': ['  자료   읽기 ', '', ' 검토하기 '], 'start_date': '2026-09-10', 'due_date': '2026-09-30'}))
+    result = asyncio.run(server.call_tool('task_create_self', {'title': '  확인할 업무  ', 'idempotency_key': 'normalized-values', 'description': '   ', 'checklist': ['  자료   읽기 ', '', ' 검토하기 '], 'start_date': '2026-09-10', 'due_date': '2026-09-30'}))
     assert not result.is_error, result
     task = result.structured_content
     assert task['title'] == '확인할 업무' and task['description'] is None

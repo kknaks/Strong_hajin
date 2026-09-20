@@ -1,0 +1,33 @@
+cd backend && uv run pytest tests/contract -n auto --dist worksteal
+============================= test session starts ==============================
+platform darwin -- Python 3.13.11, pytest-8.4.2, pluggy-1.6.0
+rootdir: /private/var/folders/_z/ldzs6w2525zbx_49m1zzsx_00000gn/T/strong-hajin-head-audit-9ruxjjca/backend
+configfile: pyproject.toml
+plugins: xdist-3.8.0, anyio-4.15.0
+created: 11/11 workers
+11 workers [6 items]
+
+......                                                                   [100%]
+=============================== warnings summary ===============================
+../../../../../../../../Users/kknaks/orca/workspaces/Strong_hajin/strong-hajin-work/backend/.venv/lib/python3.13/site-packages/starlette/testclient.py:53: 11 warnings
+  /Users/kknaks/orca/workspaces/Strong_hajin/strong-hajin-work/backend/.venv/lib/python3.13/site-packages/starlette/testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+tests/contract/test_subtasks.py::test_one_level_only_and_never_into_work_that_is_over
+  /private/var/folders/_z/ldzs6w2525zbx_49m1zzsx_00000gn/T/strong-hajin-head-audit-9ruxjjca/backend/src/ax_workspace/entrypoints/http.py:1266: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    raise _runtime_error(error) from error
+
+tests/contract/test_task_delivery.py::test_work_nobody_asked_for_still_completes_directly
+  /private/var/folders/_z/ldzs6w2525zbx_49m1zzsx_00000gn/T/strong-hajin-head-audit-9ruxjjca/backend/src/ax_workspace/entrypoints/http.py:1556: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    raise _runtime_error(error) from error
+
+tests/contract/test_task_delivery.py::test_finishing_the_work_is_a_report_not_a_completion
+  /private/var/folders/_z/ldzs6w2525zbx_49m1zzsx_00000gn/T/strong-hajin-head-audit-9ruxjjca/backend/src/ax_workspace/entrypoints/http.py:2085: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    raise _runtime_error(error) from error
+
+tests/contract/test_task_assignments.py::test_declined_assignment_never_enters_my_work_and_records_the_reason
+  /private/var/folders/_z/ldzs6w2525zbx_49m1zzsx_00000gn/T/strong-hajin-head-audit-9ruxjjca/backend/src/ax_workspace/entrypoints/http.py:1390: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    raise _runtime_error(error) from error
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================== 6 passed, 15 warnings in 7.68s ========================

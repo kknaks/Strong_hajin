@@ -107,6 +107,7 @@ from ax_workspace.bootstrap.material_sources import SessionMaterialOwners, reada
 from ax_workspace.modules.work.graph import GraphApplication
 from ax_workspace.modules.work.application import TaskAccessDenied, TaskApplication, TaskNotFound, TaskState
 from ax_workspace.modules.work.assignments import TaskAssignmentApplication
+from ax_workspace.modules.work.creation_commands import TaskCreationApplication
 from ax_workspace.modules.work.task_results import (
     ChecklistMutationResult,
     ChecklistOrderResult,
@@ -165,7 +166,13 @@ from ax_workspace.modules.meetings.rooms import (
     map_participants,
 )
 from ax_workspace.modules.meetings.stream_service import MeetingStreamService
-from ax_workspace.modules.work.request_results import WorkRequestMutationResult
+from ax_workspace.modules.work.request_results import (
+    WorkRequestInboxEntry,
+    WorkRequestMaterialResult,
+    WorkRequestMaterialView,
+    WorkRequestMutationResult,
+    WorkRequestReadReceiptResult,
+)
 from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequestApplication, WorkRequestError
 from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -210,6 +217,7 @@ from ax_workspace.platform.work_tasks import (
     ActivityLedger,
     SqlAlchemyGraphReceiptRepository,
     SqlAlchemyTaskAssignmentRepository,
+    SqlAlchemyTaskCreationLedger,
     SqlAlchemyAttachmentRepository,
     SqlAlchemyCommentRepository,
     SqlAlchemyTaskRepository,
@@ -649,12 +657,16 @@ class _SessionReadableWork:
         self._session = session
 
     def readable_task_ids(self, principal: Principal) -> list[str]:
-        rows = self._application._tasks(self._session).readable_tasks(principal, include_closed=True)
-        return [str(row["task_id"]) for row in rows]
+        return self._application._tasks(self._session).readable_task_ids(principal)
 
     def may_read_task(self, principal: Principal, task_id: UUID) -> bool:
-        """한 업무를 두고 묻는 답과 전체를 두고 묻는 답이 같은 곳에서 나온다."""
-        return str(task_id) in set(self.readable_task_ids(principal))
+        """한 업무를 두고 묻는 답과 전체를 두고 묻는 답이 **같은 곳에서** 나온다.
+
+        예전에는 여기서 전체 목록을 만들어 그 안에 있는지 보았다. 그러면 단건 조회만 인정하는 관계가
+        자료 쪽에서 조용히 사라진다 — 요청자가 상세는 여는데 파일은 못 여는 모양이 그렇게 생겼다.
+        이제 둘 다 업무 모듈이 답하고 여기는 **위임만** 한다.
+        """
+        return self._application._tasks(self._session).may_read_task(principal, task_id)
 
 
 class _SessionGraphSource:
@@ -1826,29 +1838,48 @@ class WorkflowApplication:
         meeting_id: UUID,
         todo_id: UUID,
         *,
+        idempotency_key: str | None,
         assignee_id: str,
         title: str | None = None,
         description: str | None = None,
         due_date: Any = None,
         checklist: list[str] | None = None,
+        start_date: Any = None,
+        cc_member_ids: list[str] | None = None,
+        approver_id: str | None = None,
+        reference_task_ids: list[UUID] | None = None,
+        project_id: UUID | None = None,
+        parent_task_id: UUID | None = None,
+        preceding_task_ids: list[UUID] | None = None,
     ) -> dict[str, Any]:
         """후보 하나를 업무 요청으로 보낸다 — **갈래를 두지 않는다** (SCAX-SPEC-004 §9-5).
 
         모달에서 고친 값이 우선이고 비면 후보값이 그대로 간다. 출처 두 id 는 `reference` 에서 나온다.
         요청을 만드는 것은 work 모듈이다 — 회의는 무엇을 넘기는지까지다.
+
+        공통 생성 프레임의 일곱(시작일·참조자·결재자·참고 업무·프로젝트·상위·선행)은 **후보에 없는
+        값**이므로 고친 값만 간다. 조용히 버리지 않는다 (WORK-003 gap B).
         """
         with self._session_factory() as session:
             meetings = self._meetings(session)
             meeting, todo = meetings.todo_for_promotion(principal, meeting_id, todo_id)
             reference = dict(todo.reference or {})
-            created = self._work_requests(session).create(
+            created = self._task_creation(session).create_work_request(
                 principal,
                 (title or todo.title).strip(),
                 assignee_id,
-                None,
+                idempotency_key=idempotency_key,
                 description=description if description is not None else todo.description,
                 due_date=due_date if due_date is not None else todo.due_candidate,
                 checklist=checklist if checklist is not None else list(todo.checklist_candidate or []),
+                # 후보가 들고 있지 않은 값들 — 창에서 고른 그대로 간다.
+                start_date=start_date,
+                cc_member_ids=cc_member_ids,
+                approver_id=approver_id,
+                reference_task_ids=reference_task_ids,
+                project_id=project_id,
+                parent_task_id=parent_task_id,
+                preceding_task_ids=preceding_task_ids,
                 source_meeting_id=meeting.id,
                 source_agenda_id=UUID(str(reference.get("agenda_id") or todo.agenda_id)),
                 # 담당이 자기 자신이어도 요청으로 간다 — Task 를 바로 세우는 갈래가 없다 (SPEC-004 §9-5).
@@ -2264,12 +2295,13 @@ class WorkflowApplication:
             recordings=self._recording_storage,
         )
 
-    def create_self_task(
+    def create_task(
         self,
         principal: Principal,
         title: str,
-        causation_key: str | None = None,
         *,
+        idempotency_key: str | None,
+        assignee_id: str | None = None,
         description: str | None = None,
         start_date: Any = None,
         due_date: Any = None,
@@ -2277,15 +2309,28 @@ class WorkflowApplication:
         reference_task_ids: list[UUID] | None = None,
         parent_task_id: UUID | None = None,
         project_id: UUID | None = None,
+        cc_member_ids: list[str] | None = None,
+        preceding_task_ids: list[UUID] | None = None,
+        approver_id: str | None = None,
+        source_action_item_id: UUID | None = None,
+        source_decision_item_id: UUID | None = None,
+        source_submission_id: UUID | None = None,
+        source_review_decision_id: UUID | None = None,
     ) -> TaskMutationResult:
-        with self._session_factory() as session:
-            result = self._tasks(session).create_self(
-                principal, title, causation_key,
-                description=description, start_date=start_date, due_date=due_date, checklist=checklist,
-                reference_task_ids=reference_task_ids, parent_task_id=parent_task_id, project_id=project_id,
-            )
-            session.commit()
-            return result
+        """한 번의 명시적 생성 명령 — 본인 것이든 남에게 보낸 것이든 (SPEC-001 §4 `POST /api/tasks`)."""
+        fields = dict(
+            idempotency_key=idempotency_key, assignee_id=assignee_id,
+            description=description, start_date=start_date, due_date=due_date, checklist=checklist,
+            reference_task_ids=reference_task_ids, parent_task_id=parent_task_id, project_id=project_id,
+            cc_member_ids=cc_member_ids, preceding_task_ids=preceding_task_ids, approver_id=approver_id,
+            source_action_item_id=source_action_item_id,
+            source_decision_item_id=source_decision_item_id,
+            source_submission_id=source_submission_id,
+            source_review_decision_id=source_review_decision_id,
+        )
+        return self._created_once(lambda creation, receipt_only: creation.create_task(
+            principal, title, receipt_only=receipt_only, **fields
+        ))
 
     def update_task(self, principal: Principal, task_id: UUID, expected_version: int, changes: dict[str, Any]) -> TaskMutationResult:
         with self._session_factory() as session:
@@ -2891,11 +2936,12 @@ class WorkflowApplication:
             session.commit()
             return result
 
-    def assign_task(self, principal: Principal, title: str, assignee_id: str, **fields: Any) -> TaskAssignmentResult:
-        with self._session_factory() as session:
-            result = self._assignments(session).assign(principal, title, assignee_id, **fields)
-            session.commit()
-            return result
+    def assign_task(
+        self, principal: Principal, title: str, assignee_id: str, *, idempotency_key: str | None, **fields: Any
+    ) -> TaskAssignmentResult:
+        return self._created_once(lambda creation, receipt_only: creation.assign_task(
+            principal, title, assignee_id, idempotency_key=idempotency_key, receipt_only=receipt_only, **fields
+        ))
 
     def task_assignment_candidates(self, principal: Principal) -> list[MemberCandidateView]:
         with self._session_factory() as session:
@@ -3012,35 +3058,54 @@ class WorkflowApplication:
         assignee_id: str,
         causation_key: str | None = None,
         *,
+        idempotency_key: str | None,
         description: str | None = None,
+        start_date: Any = None,
         due_date: Any = None,
+        project_id: UUID | None = None,
+        approver_id: str | None = None,
         cc_member_ids: list[str] | None = None,
+        preceding_task_ids: list[UUID] | None = None,
         checklist: list[str] | None = None,
         reference_task_ids: list[UUID] | None = None,
         source_meeting_id: UUID | None = None,
         source_agenda_id: UUID | None = None,
+        parent_task_id: UUID | None = None,
+        supersedes_request_id: UUID | None = None,
         allow_self_assignment: bool = False,
         promoted_by_member_id: str | None = None,
+        source_action_item_id: UUID | None = None,
+        source_decision_item_id: UUID | None = None,
+        source_submission_id: UUID | None = None,
+        source_review_decision_id: UUID | None = None,
     ) -> dict[str, Any]:
-        with self._session_factory() as session:
-            result = self._work_requests(session).create(
-                principal, title, assignee_id, causation_key,
-                description=description, due_date=due_date, cc_member_ids=cc_member_ids, checklist=checklist,
-                reference_task_ids=reference_task_ids,
-                source_meeting_id=source_meeting_id, source_agenda_id=source_agenda_id,
-                allow_self_assignment=allow_self_assignment,
-                promoted_by_member_id=promoted_by_member_id,
-            )
-            session.commit()
-            return result
+        fields = dict(
+            idempotency_key=idempotency_key, causation_key=causation_key,
+            description=description, start_date=start_date, due_date=due_date, project_id=project_id,
+            approver_id=approver_id,
+            cc_member_ids=cc_member_ids, preceding_task_ids=preceding_task_ids, checklist=checklist,
+            reference_task_ids=reference_task_ids,
+            source_meeting_id=source_meeting_id, source_agenda_id=source_agenda_id,
+            parent_task_id=parent_task_id, supersedes_request_id=supersedes_request_id,
+            allow_self_assignment=allow_self_assignment,
+            promoted_by_member_id=promoted_by_member_id,
+            source_action_item_id=source_action_item_id,
+            source_decision_item_id=source_decision_item_id,
+            source_submission_id=source_submission_id,
+            source_review_decision_id=source_review_decision_id,
+        )
+        return self._created_once(lambda creation, receipt_only: creation.create_work_request(
+            principal, title, assignee_id, receipt_only=receipt_only, **fields
+        ))
 
     def work_request_assignee_candidates(self, principal: Principal) -> list[MemberCandidateView]:
         with self._session_factory() as session:
             return self._work_requests(session).assignee_candidates(principal)
 
-    def list_work_requests(self, principal: Principal) -> list[WorkRequestMutationResult]:
+    def list_work_requests(self, principal: Principal, *, include_removed: bool = False) -> list[WorkRequestMutationResult]:
+        """내 요청 목록. `include_removed` 면 **내가 정리한 항목까지** 낸다 — 각 행이 스스로 그렇다고 말한다."""
         with self._session_factory() as session:
-            return self._work_requests(session).list(principal)
+            return self._work_requests(session).list(principal, include_removed=include_removed)
 
     def get_work_request(self, principal: Principal, request_id: UUID) -> WorkRequestDetailResult:
         with self._session_factory() as session:
@@ -3079,6 +3144,55 @@ class WorkflowApplication:
             session.commit()
             return result
 
+    def withdraw_work_request(self, principal: Principal, request_id: UUID, expected_version: int) -> WorkRequestMutationResult:
+        """수락 전 철회 — **요청자의 일반 명령이다.** 예전에는 판단함 경유로만 열려 있었다."""
+        with self._session_factory() as session:
+            result = self._work_requests(session).withdraw(principal, request_id, expected_version)
+            session.commit()
+            return result
+
+    def remove_work_request_list_entry(self, principal: Principal, request_id: UUID) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._work_requests(session).remove_from_list(principal, request_id)
+            session.commit()
+            return result
+
+    def task_children(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
+        with self._session_factory() as session:
+            return self._tasks(session).children(principal, task_id)
+
+    def task_assignments(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
+        with self._session_factory() as session:
+            return self._assignments(session).assignments(principal, task_id)
+
+    def reopen_task(self, principal: Principal, task_id: UUID, expected_version: int, reason: str | None = None) -> TaskMutationResult:
+        with self._session_factory() as session:
+            result = self._tasks(session).reopen(principal, task_id, expected_version, reason)
+            session.commit()
+            return result
+
+    def propose_task_change(self, principal: Principal, task_id: UUID, kind: str, expected_version: int, **fields: Any) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._tasks(session).propose(principal, task_id, kind, expected_version, **fields)
+            session.commit()
+            return result
+
+    def respond_to_task_proposal(self, principal: Principal, task_id: UUID, proposal_id: UUID, expected_version: int, **fields: Any) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._tasks(session).respond_to_proposal(principal, task_id, proposal_id, expected_version, **fields)
+            session.commit()
+            return result
+
+    def withdraw_task_proposal(self, principal: Principal, task_id: UUID, proposal_id: UUID, expected_version: int) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._tasks(session).withdraw_proposal(principal, task_id, proposal_id, expected_version)
+            session.commit()
+            return result
+
+    def task_proposals(self, principal: Principal, task_id: UUID) -> dict[str, Any]:
+        with self._session_factory() as session:
+            return self._tasks(session).proposals(principal, task_id)
+
     def work_request_cc_candidates(self, principal: Principal) -> list[MemberCandidateView]:
         with self._session_factory() as session:
             return self._work_requests(session).cc_candidates(principal)
@@ -3092,6 +3206,42 @@ class WorkflowApplication:
     def add_work_request_evidence(self, principal: Principal, request_id: UUID, **file: Any) -> WorkRequestEvidenceResult:
         with self._session_factory() as session:
             result = self._work_requests(session).add_evidence(principal, request_id, **file)
+            session.commit()
+            return result
+
+    def list_work_request_materials(self, principal: Principal, request_id: UUID) -> list[WorkRequestMaterialView]:
+        with self._session_factory() as session:
+            return self._work_requests(session).list_materials(principal, request_id)
+
+    def attach_work_request_material(
+        self, principal: Principal, request_id: UUID, *, kind: str, name: str, content_type: str, data: bytes
+    ) -> WorkRequestMaterialResult:
+        with self._session_factory() as session:
+            result = self._work_requests(session).attach_material(
+                principal, request_id, kind=kind, name=name, content_type=content_type, data=data
+            )
+            session.commit()
+            return result
+
+    def attach_work_request_material_link(
+        self, principal: Principal, request_id: UUID, *, kind: str, url: str, label: str
+    ) -> WorkRequestMaterialResult:
+        with self._session_factory() as session:
+            result = self._work_requests(session).attach_material_link(principal, request_id, kind=kind, url=url, label=label)
+            session.commit()
+            return result
+
+    def open_work_request_material(
+        self, principal: Principal, request_id: UUID, material_id: UUID
+    ) -> tuple[dict[str, Any], bytes]:
+        with self._session_factory() as session:
+            return self._work_requests(session).open_material(principal, request_id, material_id)
+
+    def detach_work_request_material(
+        self, principal: Principal, request_id: UUID, material_id: UUID
+    ) -> WorkRequestMaterialResult:
+        with self._session_factory() as session:
+            result = self._work_requests(session).detach_material(principal, request_id, material_id)
             session.commit()
             return result
 
@@ -3545,6 +3695,14 @@ class WorkflowApplication:
                 description=request.description if request.description is not None else todo.description,
                 due_date=request.due_date if request.due_date is not None else todo.due_candidate,
                 checklist=request.checklist if request.checklist is not None else list(todo.checklist_candidate or []),
+                # 확인을 거쳐 실행되는 같은 승격이다 — 직행 경로와 **같은 일곱**을 싣는다.
+                start_date=request.start_date,
+                cc_member_ids=request.cc_member_ids,
+                approver_id=request.approver_id,
+                reference_task_ids=request.reference_task_ids,
+                project_id=request.project_id,
+                parent_task_id=request.parent_task_id,
+                preceding_task_ids=request.preceding_task_ids,
                 source_meeting_id=meeting.id,
                 source_agenda_id=UUID(str(reference.get("agenda_id") or todo.agenda_id)),
                 allow_self_assignment=True,
@@ -3865,7 +4023,18 @@ class WorkflowApplication:
             session.commit()
             return result
 
-    def work_request_inbox(self, principal: Principal) -> list[dict[str, Any]]:
+    def mark_work_request_reference_read(self, principal: Principal, request_id: UUID) -> WorkRequestReadReceiptResult:
+        """참고 항목 읽음 — **화면이 명시적으로 부르는 명령**이다 (SPEC-001 U-12).
+
+        조회가 스스로 읽음을 만들지 않는다: 카드를 여는 것도 이 같은 명령을 부른다.
+        **MCP·AX 에는 내지 않는다** — 사람이 본 사실을 에이전트가 대신 기록하지 않는다 (DEC-001 D-19).
+        """
+        with self._session_factory() as session:
+            result = self._work_requests(session).mark_reference_read(principal, request_id)
+            session.commit()
+            return result
+
+    def work_request_inbox(self, principal: Principal) -> list[WorkRequestInboxEntry]:
         with self._session_factory() as session:
             return self._work_requests(session).inbox(principal)
 
@@ -4019,6 +4188,7 @@ class WorkflowApplication:
         return ActionServices(
             tasks=lambda: self._tasks(session),
             assignments=lambda: self._assignments(session),
+            task_creation=lambda: self._task_creation(session),
             meetings=lambda: self._meetings(session),
             prepare_action=lambda principal, action_id, operation, payload: self._prepare_action_effect(
                 session, principal, action_id, operation, payload
@@ -4058,10 +4228,43 @@ class WorkflowApplication:
             SqlAlchemyAttachmentRepository(session),
             SqlAlchemyOrganizationRepository(session),
             self._projects(session),
+            # 참조자로 적힌 사람이 활동 중인 구성원인가 — **요청이 쓰는 명부와 같은 것**이다.
+            OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
         )
 
     def _projects(self, session: Any) -> ProjectApplication:
-        return ProjectApplication(SqlAlchemyProjectRepository(session))
+        # 선행 배열은 **업무 저장소**가 낸다 — 프로젝트 상세의 업무 줄과 업무 목록이 같은 질의를 쓴다
+        # (SPEC-001 U-15 「새 조회를 부르지 않는다」).
+        return ProjectApplication(SqlAlchemyProjectRepository(session), SqlAlchemyTaskRepository(session))
+
+    def _created_once(self, command: Any) -> Any:
+        """같은 키의 **동시 실행**에서 업무는 한 건이다.
+
+        진 쪽은 멱등 원장의 unique 제약에 막혀 transaction 을 통째로 잃는다 — 업무도 담당도 원장도 남지
+        않는다. 그 뒤 새 transaction 에서 이긴 쪽의 결과를 영수증으로 읽는다. 원장에 그 키가 없으면
+        **다른 제약**이 깨진 것이므로 원래의 오류를 그대로 올린다 — 영수증으로 위장하지 않는다.
+        """
+        try:
+            with self._session_factory() as session:
+                result = self._task_creation(session).create_or_receipt(command, receipt_only=False)
+                session.commit()
+                return result
+        except IntegrityError:
+            with self._session_factory() as session:
+                receipt = self._task_creation(session).create_or_receipt(command, receipt_only=True)
+            if receipt is None:
+                raise
+            return receipt
+
+    def _task_creation(self, session: Any) -> TaskCreationApplication:
+        """세 생성 경로와 그 멱등 계약이 만나는 한 자리 (WORK-001 Phase 1·2)."""
+        return TaskCreationApplication(
+            SqlAlchemyTaskCreationLedger(session),
+            self._tasks(session),
+            self._work_requests(session),
+            self._assignments(session),
+            OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
+        )
 
     def _work_requests(self, session: Any) -> WorkRequestApplication:
         return WorkRequestApplication(
@@ -4073,6 +4276,7 @@ class WorkflowApplication:
             _SessionTaskReferences(self, session),
             SqlAlchemyMaterialExtractionRepository(session),
             self._material_queue(session),
+            self._tasks(session),
         )
 
     def _conversations(self, session: Any) -> ConversationApplication:

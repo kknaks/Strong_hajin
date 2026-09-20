@@ -1,4 +1,8 @@
-"""Assignment creation shares typed values but still awaits the assignee's judgement."""
+"""Assignment creation shares typed values on every surface and **stands at once**.
+
+W1 이후 관리자 배정은 수락을 기다리지 않는다 (WORK-001 Phase 4). 값 정규화와 상위·참고 전달이 주제이고,
+뒤에 붙던 수락 단계만 사라졌다.
+"""
 import asyncio
 import pytest
 from ax_workspace.entrypoints.mcp import McpReportsFacade, _create_bound_persona_server
@@ -21,7 +25,7 @@ def test_assignment_creation_carries_parent_and_reference_values_through_the_sam
         if route == 'confirm':
             _delegated_turn(client, application, jiho, 'jiho', monkeypatch)
         server = _create_bound_persona_server(McpReportsFacade(application._settings, 'jiho'))
-        result = asyncio.run(server.call_tool('task_assign', values))
+        result = asyncio.run(server.call_tool('task_assign', {**values, 'idempotency_key': f'assign-{route}'}))
         assert not result.is_error, result
         assigned = result.structured_content
         if route == 'confirm':
@@ -30,10 +34,8 @@ def test_assignment_creation_carries_parent_and_reference_values_through_the_sam
             confirmed = client.post(path + '/commands/confirm', headers=jiho, json={'expected_version': item['expected_version'], 'base_submission_version': item['submission_version'], 'draft': item['edit_contract']['values']})
             assert confirmed.status_code == 200, confirmed.text
             assigned = confirmed.json()['execution_result']
-    assert assigned['status'] == 'pending'
-    assert client.get('/api/my-work', headers=mina).json() == []
-    accepted = client.post(f"/api/task-assignments/{assigned['assignment_id']}/accept", headers=mina)
-    assert accepted.status_code == 200, accepted.text
+    assert assigned['status'] == 'active'
+    assert [row['task_id'] for row in client.get('/api/my-work', headers=mina).json()] == [assigned['task']['task_id']]
     task = client.get(f"/api/tasks/{assigned['task']['task_id']}", headers=mina).json()
     assert task['title'] == '맡길 하위 업무' and task['description'] == '검토 내용'
     assert task['parent']['task_id'] == parent['task_id']

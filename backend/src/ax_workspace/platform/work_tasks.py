@@ -9,9 +9,11 @@ from zoneinfo import ZoneInfo
 from uuid import UUID
 
 from sqlalchemy import Integer, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ax_workspace.modules.work.application import TaskNotFound, TaskState
+from ax_workspace.modules.work.request_errors import WorkRequestError
 from ax_workspace.modules.work.requests import (
     DECISION_FACTS,
     DECISION_VERSION,
@@ -38,8 +40,13 @@ from ax_workspace.platform.persistence import (
     SubjectVersionRecord,
     SubmissionRecord,
     TaskActivityRecord,
+    TaskCreationAttemptRecord,
+    TaskPredecessorRecord,
+    TaskProposalRecord,
     TaskRecord,
     WorkRequestAuditEventRecord,
+    WorkRequestListEntryRecord,
+    WorkRequestReadReceiptRecord,
     WorkRequestRecord,
     MemberRecord,
     TaskAssignmentRecord,
@@ -302,6 +309,56 @@ class ActivityLedger:
         )
 
 
+class SqlAlchemyTaskCreationLedger:
+    """(행위자 · 명령 종류 · 키) 하나에 생성 결과 하나 — 업무·담당과 **같은 transaction** 에 선다.
+
+    동시 실행에서 둘째는 commit 의 unique 위반으로 막히고, 조립 층이 그 transaction 을 통째로 버린 뒤
+    새 transaction 에서 이긴 쪽의 결과를 영수증으로 읽는다 — 영수증이 빈손으로 돌아가지 않는다.
+    위반을 SAVEPOINT 로 받지 않는 이유는 `claim` 의 주석에 있다.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def find(self, actor_id: str, command_kind: str, request_key: str) -> TaskCreationAttemptRecord | None:
+        return self._session.scalar(
+            select(TaskCreationAttemptRecord).where(
+                TaskCreationAttemptRecord.actor_id == actor_id,
+                TaskCreationAttemptRecord.command_kind == command_kind,
+                TaskCreationAttemptRecord.request_key == request_key,
+            )
+        )
+
+    def claim(
+        self, actor_id: str, command_kind: str, request_key: str, payload_fingerprint: str
+    ) -> TaskCreationAttemptRecord | None:
+        """이 의도를 내가 세운다고 원장에 먼저 적는다. **이미 보이는** 행이 있으면 `None`.
+
+        동시 실행에서 두 transaction 이 여기를 함께 지나갈 수 있다 — 아직 commit 되지 않은 남의 행은
+        보이지 않기 때문이다. 그때는 unique 제약이 commit 에서 둘째를 거절하고, 조립 층이 그 transaction 을
+        통째로 버린 뒤 이긴 쪽의 결과를 영수증으로 다시 읽는다. **SAVEPOINT 로 받지 않는다** — pysqlite 에서
+        savepoint 가 바깥 transaction 과 함께 되돌아가지 않아, 실패한 생성의 원장 한 줄이 남는다.
+        """
+        if self.find(actor_id, command_kind, request_key) is not None:
+            return None
+        attempt = TaskCreationAttemptRecord(
+            actor_id=actor_id,
+            command_kind=command_kind,
+            request_key=request_key,
+            payload_fingerprint=payload_fingerprint,
+            created_at=datetime.now(UTC),
+        )
+        self._session.add(attempt)
+        return attempt
+
+    def bind(self, attempt: TaskCreationAttemptRecord, *, task_id: UUID | None = None, work_request_id: UUID | None = None) -> None:
+        if task_id is not None:
+            attempt.task_id = task_id
+        if work_request_id is not None:
+            attempt.work_request_id = work_request_id
+        self._session.flush()
+
+
 class SqlAlchemyTaskRepository:
     def __init__(self, session: Session) -> None: self.session = session
 
@@ -322,6 +379,8 @@ class SqlAlchemyTaskRepository:
         references: list[UUID] | None = None,
         parent_task_id: UUID | None = None,
         project_id: UUID | None = None,
+        cc_member_ids: list[str] | None = None,
+        approver_id: str | None = None,
     ) -> TaskRecord:
         if causation_key:
             existing = self.session.scalar(
@@ -341,6 +400,8 @@ class SqlAlchemyTaskRepository:
             start_date=start_date,
             due_date=due_date,
             organization_unit_id=_primary_unit(self.session, owner_id),
+            # **WORK-001 이 만든 열에 이제 값이 들어온다** — `업무` 갈래만이다 (SPEC-001 §7 OQ-M).
+            approver_id=approver_id,
             origin_kind="direct",
             version=1,
             created_at=now,
@@ -364,6 +425,7 @@ class SqlAlchemyTaskRepository:
             after_ref=f"task:{task.id}@1", safe_summary=f"업무 생성: {title}",
         )
         self.seed_checklist(task, checklist, owner_id)
+        self.set_cc_members(task.id, cc_member_ids, created_at=now)
         for referenced_task_id in references or []:
             self.add_reference(task.id, referenced_task_id, owner_id)
         # Everything written with the work belongs to version 1, so the first snapshot already holds it.
@@ -419,9 +481,198 @@ class SqlAlchemyTaskRepository:
             )
         )
 
+    def approval_rounds_for(self, task_ids: list[UUID]) -> dict[UUID, dict[str, Any]]:
+        """여러 업무의 **완료 확인 회차**를 한 번에 — 목록 한 줄마다 따로 묻지 않기 위해서다.
+
+        내는 것은 **원장의 사실**뿐이다: 마지막 회차의 번호와 그 회차에 달린 판단들. 「승인됐는가」의
+        판정은 업무 모듈이 한다 (`_approval_state`) — 판정이 두 곳에 있으면 조용히 갈린다.
+        """
+        if not task_ids:
+            return {}
+        wanted = {str(task_id) for task_id in task_ids}
+        items = list(
+            self.session.scalars(
+                select(DecisionItemRecord).where(
+                    DecisionItemRecord.kind == self.DELIVERY_KIND,
+                    DecisionItemRecord.context_type == "task",
+                    DecisionItemRecord.context_id.in_(wanted),
+                )
+            )
+        )
+        if not items:
+            return {}
+        by_item = {item.id: UUID(str(item.context_id)) for item in items}
+        submissions: dict[UUID, list[SubmissionRecord]] = {}
+        for row in self.session.scalars(
+            select(SubmissionRecord)
+            .where(SubmissionRecord.decision_item_id.in_(list(by_item)))
+            .order_by(SubmissionRecord.submission_version)
+        ):
+            submissions.setdefault(by_item[row.decision_item_id], []).append(row)
+        latest = {task_id: rows[-1] for task_id, rows in submissions.items() if rows}
+        decisions: dict[UUID, list[ReviewDecisionRecord]] = {}
+        if latest:
+            by_submission = {row.id: task_id for task_id, row in latest.items()}
+            for row in self.session.scalars(
+                select(ReviewDecisionRecord)
+                .where(ReviewDecisionRecord.submission_id.in_(list(by_submission)))
+                .order_by(ReviewDecisionRecord.decided_at)
+            ):
+                decisions.setdefault(by_submission[row.submission_id], []).append(row)
+        return {
+            task_id: {
+                "rounds": len(submissions.get(task_id, ())),
+                "decisions": tuple(
+                    (row.decision, row.decided_at) for row in decisions.get(task_id, ())
+                ),
+            }
+            for task_id in submissions
+        }
+
+    # ---- 제안: 수락 뒤에 조건을 바꾸거나 일을 접자는 말 (SPEC-003 §4 제안–동의) ----
+
+    def pending_proposal_kinds(self, task_ids: list[UUID]) -> dict[UUID, str]:
+        """업무마다 **응답을 기다리는** 제안의 종류. 한 업무에 같은 종류의 대기 제안은 하나다."""
+        if not task_ids:
+            return {}
+        rows = self.session.scalars(
+            select(TaskProposalRecord)
+            .where(TaskProposalRecord.task_id.in_(task_ids), TaskProposalRecord.state == "pending")
+            .order_by(TaskProposalRecord.created_at)
+        )
+        return {row.task_id: f"{row.kind}_pending" for row in rows}
+
+    def proposals_for(self, task_id: UUID) -> list[TaskProposalRecord]:
+        """대기 중인 것과 지난 것 전부 — 오래된 것부터. 응답한 제안도 지우지 않는다."""
+        return list(
+            self.session.scalars(
+                select(TaskProposalRecord)
+                .where(TaskProposalRecord.task_id == task_id)
+                .order_by(TaskProposalRecord.created_at, TaskProposalRecord.id)
+            )
+        )
+
+    def proposal(self, task_id: UUID, proposal_id: UUID, *, lock: bool = False) -> TaskProposalRecord | None:
+        statement = select(TaskProposalRecord).where(
+            TaskProposalRecord.id == proposal_id, TaskProposalRecord.task_id == task_id
+        )
+        return self.session.scalar(
+            statement.with_for_update().execution_options(populate_existing=True) if lock else statement
+        )
+
+    def open_proposal(
+        self, task: TaskRecord, kind: str, proposed_by: str, payload: dict[str, Any] | None, reason: str | None
+    ) -> TaskProposalRecord:
+        """제안을 연다. **제안만으로는 아무것도 바뀌지 않는다** — Task 의 상태도 조건도 그대로다.
+
+        `task_version` 은 제안이 선 시점의 회차이고, 응답이 그 값을 다시 확인한다.
+        """
+        now = datetime.now(UTC)
+        record = TaskProposalRecord(
+            task_id=task.id,
+            kind=kind,
+            state="pending",
+            proposed_by=proposed_by,
+            payload=payload,
+            reason=reason,
+            task_version=int(task.version),
+            created_at=now,
+        )
+        self.session.add(record)
+        self.session.flush()
+        ActivityLedger(self.session).record(
+            target_type="task", target_id=str(task.id), event_kind=f"task.proposal_{kind}_opened", actor_id=proposed_by,
+            after_ref=f"task_proposal:{record.id}", reason=reason,
+            safe_summary=(
+                f"취소 제안: {task.title}" if kind == "cancellation" else f"조건 변경 제안: {task.title}"
+            ),
+        )
+        return record
+
+    def settle_proposal(self, proposal: TaskProposalRecord, responder_id: str, state: str) -> None:
+        """답이 왔다 — `agreed` · `declined` · `withdrawn`. 행은 남고 상태만 닫힌다."""
+        now = datetime.now(UTC)
+        proposal.state = state
+        proposal.responder_id = responder_id
+        proposal.responded_at = now
+        task = self.session.get(TaskRecord, proposal.task_id)
+        self.session.flush()
+        if task is not None:
+            ActivityLedger(self.session).record(
+                target_type="task", target_id=str(task.id), event_kind=f"task.proposal_{state}", actor_id=responder_id,
+                before_ref=f"task_proposal:{proposal.id}",
+                safe_summary=f"{_person(self.session, responder_id)}가 제안에 답함({state}): {task.title}",
+            )
+
+    def children_map(self, task_ids: list[UUID]) -> dict[UUID, list[TaskRecord]]:
+        """여러 업무의 **직속 하위**를 한 번에. 목록이 하위 진행을 세려면 줄마다 질의할 수 없다."""
+        if not task_ids:
+            return {}
+        rows: dict[UUID, list[TaskRecord]] = {}
+        for child in self.session.scalars(
+            select(TaskRecord)
+            .where(TaskRecord.parent_task_id.in_(task_ids))
+            .order_by(TaskRecord.created_at, TaskRecord.id)
+        ):
+            rows.setdefault(child.parent_task_id, []).append(child)
+        return rows
+
+    def tasks_requested_by(self, requester_id: str, *, include_closed: bool = False) -> list[TaskRecord]:
+        """**내가 요청한 업무** — 읽기의 세 번째 길이 시작하는 곳이다 (정책 V-21).
+
+        승격 요청이면 **누른 사람**도 요청자 자리에 선다 (BASE-002 O-31) — 요청자 전용 조작이 이미
+        그렇게 판정하므로 읽기도 같은 모양이어야 한다. 그렇지 않으면 회의에서 올린 사람이 자기가 올린
+        일을 못 읽는다.
+        """
+        statement = (
+            select(TaskRecord)
+            .join(WorkRequestRecord, WorkRequestRecord.id == TaskRecord.source_work_request_id)
+            .where(
+                or_(
+                    WorkRequestRecord.requester_id == requester_id,
+                    WorkRequestRecord.promoted_by_member_id == requester_id,
+                )
+            )
+        )
+        if not include_closed:
+            statement = statement.where(TaskRecord.state.not_in([TaskState.DONE, TaskState.CANCELLED]))
+        return list(self.session.scalars(statement.order_by(TaskRecord.created_at)))
+
+    def descendant_ids_of(self, task_ids: list[UUID]) -> set[UUID]:
+        """그 업무들 **아래 전부** — 깊이 제한이 없다 (정책 V-21: 「필요하면 그 업무로 들어가 확인한다」).
+
+        한 켜씩 내려가며 **본 것을 다시 보지 않는다**: 원장이 어긋나 고리가 생겨 있어도 여기서 멈춘다.
+        """
+        seen: set[UUID] = set()
+        frontier = [task_id for task_id in task_ids if task_id is not None]
+        while frontier:
+            rows = list(
+                self.session.scalars(select(TaskRecord.id).where(TaskRecord.parent_task_id.in_(frontier)))
+            )
+            frontier = [row for row in rows if row not in seen]
+            seen.update(frontier)
+        return seen
+
+    def tasks_by_ids(self, task_ids: set[UUID], *, include_closed: bool = False) -> list[TaskRecord]:
+        if not task_ids:
+            return []
+        statement = select(TaskRecord).where(TaskRecord.id.in_(list(task_ids)))
+        if not include_closed:
+            statement = statement.where(TaskRecord.state.not_in([TaskState.DONE, TaskState.CANCELLED]))
+        return list(self.session.scalars(statement.order_by(TaskRecord.created_at)))
+
     def open_children_of(self, task_id: UUID) -> list[TaskRecord]:
-        """Children that are neither done nor cancelled: the ones that still hold their parent open."""
-        return [task for task in self.children_of(task_id) if task.state not in {TaskState.DONE, TaskState.CANCELLED}]
+        """아직 상위를 붙들고 있는 하위 — **`state` 만으로 세는 옛 판정이다.**
+
+        완결 판정은 업무 모듈의 `is_child_settled()` 가 한다: 요청 하위는 요청자의 승인까지여야 끝난
+        것이고, 그 사실은 판단 원장에 있지 이 행에 없다. **상위 완료 검사는 그쪽을 쓴다.**
+        이 메서드는 그 판정이 닿지 않는 자리(`state` 만으로 충분한 곳)에만 남는다.
+        """
+        return [
+            task
+            for task in self.children_of(task_id)
+            if task.state not in {TaskState.DONE, TaskState.CANCELLED, TaskState.COMPLETION_SUBMITTED}
+        ]
 
     # ---- references: earlier work this Task points at ----
 
@@ -630,9 +881,13 @@ class SqlAlchemyTaskRepository:
         member = self.session.get(MemberRecord, member_id)
         return member.display_name if member is not None else None
 
-    def task_by_id(self, task_id: UUID) -> TaskRecord | None:
-        """The Task itself, with no holder scope. Callers must decide separately who may see it."""
-        return self.session.get(TaskRecord, task_id)
+    def task_by_id(self, task_id: UUID, *, lock: bool = False) -> TaskRecord | None:
+        """The Task itself, with no holder scope. Callers must decide separately who may see it.
+
+        `lock` 은 회차를 읽기 전에 그 행을 잡는다 — 두 명령이 같은 업무를 두고 경합할 때 둘 다
+        「그때는 맞았던」 회차 검사를 통과하지 못하게 한다 (재개 ↔ 상위 완료, 제안 응답 ↔ 취소).
+        """
+        return self.session.get(TaskRecord, task_id, with_for_update=lock or None, populate_existing=lock)
 
     def origin_facts(self, tasks: list[TaskRecord]) -> dict[UUID, dict[str, Any]]:
         """Raw origin facts per Task, straight from the canonical columns; the application decides what may be shown."""
@@ -645,24 +900,45 @@ class SqlAlchemyTaskRepository:
                 self.session.scalars(select(WorkRequestRecord).where(WorkRequestRecord.id.in_(request_ids))).all() if request_ids else []
             )
         }
-        assignments: dict[UUID, TaskAssignmentRecord] = {}
+        # **출처**는 첫 담당 행이 말하고(누가 이 일을 있게 했나), **지금 누가 드는가**는 `active` 행이,
+        # **누가 답을 기다리나**는 `pending` 행이 말한다. 셋이 다른 질문이라 셋을 각각 담는다 (정책 P-3).
+        # 하나로 뭉쳐 두면 담당 변경 대기(= `active` 1 + `pending` 1 공존)에서 어느 쪽이 나올지가 행
+        # 순서에 달린다.
+        origin_rows: dict[UUID, TaskAssignmentRecord] = {}
+        current_rows: dict[UUID, TaskAssignmentRecord] = {}
+        pending_rows: dict[UUID, TaskAssignmentRecord] = {}
         for assignment in self.session.scalars(
             select(TaskAssignmentRecord)
             .where(TaskAssignmentRecord.task_id.in_([task.id for task in tasks]))
             .order_by(TaskAssignmentRecord.created_at)
         ).all():
-            assignments.setdefault(assignment.task_id, assignment)
+            origin_rows.setdefault(assignment.task_id, assignment)
+            if assignment.status == "active":
+                current_rows[assignment.task_id] = assignment
+            elif assignment.status == "pending":
+                pending_rows.setdefault(assignment.task_id, assignment)
         facts: dict[UUID, dict[str, Any]] = {}
         for task in tasks:
-            assignment = assignments.get(task.id)
+            origin = origin_rows.get(task.id)
+            current = current_rows.get(task.id)
+            waiting = pending_rows.get(task.id)
             request = requests.get(task.source_work_request_id) if task.source_work_request_id else None
             facts[task.id] = {
                 "source_work_request_id": task.source_work_request_id,
                 "request_requester_id": request.requester_id if request is not None else None,
                 "request_title": request.title if request is not None else None,
-                "assignment_kind": assignment.assignment_kind if assignment is not None else None,
-                "assigned_by": assignment.assigned_by if assignment is not None else None,
-                "assignee_id": assignment.assignee_id if assignment is not None else None,
+                "request_state": request.state if request is not None else None,
+                "assignment_kind": origin.assignment_kind if origin is not None else None,
+                "assigned_by": origin.assigned_by if origin is not None else None,
+                # **지금 드는 사람.** 아무도 들지 않으면 `None` 이고, 그것이 수락 대기의 모습이다.
+                "assignee_id": current.assignee_id if current is not None else None,
+                "current_assignment_id": current.id if current is not None else None,
+                "accepted_at": current.accepted_at if current is not None else None,
+                # **답을 기다리는 사람.** 요청 수락 대기 · 첫 지정 · 담당 교체 제안이 여기 선다.
+                "pending_assignee_id": waiting.assignee_id if waiting is not None else None,
+                "pending_assignment_id": waiting.id if waiting is not None else None,
+                "pending_assignment_kind": waiting.assignment_kind if waiting is not None else None,
+                "pending_supersedes_assignment_id": waiting.supersedes_assignment_id if waiting is not None else None,
             }
         return facts
 
@@ -821,6 +1097,141 @@ class SqlAlchemyTaskRepository:
             statement = statement.where(TaskRecord.state.not_in([TaskState.DONE, TaskState.CANCELLED]))
         return list(self.session.scalars(statement.order_by(TaskRecord.created_at)))
 
+    # ---- 선행업무: 상위·참고와 다른 세 번째 관계 ----------------------------------
+
+    def predecessors_for(self, task_ids: list[UUID]) -> dict[UUID, list[UUID]]:
+        """여러 업무의 **활성** 선행을 한 번에 — 목록·프로젝트 상세가 줄마다 다시 묻지 않는 자리다.
+
+        뗀 행은 남아 있지만 여기 서지 않는다 (§4 「활성인 것만 실린다」).
+        """
+        if not task_ids:
+            return {}
+        found: dict[UUID, list[UUID]] = {}
+        rows = self.session.execute(
+            select(TaskPredecessorRecord.task_id, TaskPredecessorRecord.predecessor_task_id)
+            .where(
+                TaskPredecessorRecord.task_id.in_(list(task_ids)),
+                TaskPredecessorRecord.released_at.is_(None),
+            )
+            .order_by(TaskPredecessorRecord.position, TaskPredecessorRecord.created_at)
+        ).all()
+        for task_id, predecessor_task_id in rows:
+            found.setdefault(task_id, []).append(predecessor_task_id)
+        return found
+
+    def active_predecessor_ids(self, task_id: UUID) -> list[UUID]:
+        return self.predecessors_for([task_id]).get(task_id, [])
+
+    def predecessor_edges(self, task_ids: list[UUID]) -> dict[UUID, list[UUID]]:
+        """순환 검사가 걷는 **활성 변**. `predecessors_for` 와 같은 사실이고 이름만 그래프 쪽이다."""
+        return self.predecessors_for(task_ids)
+
+    def replace_predecessors(self, task_id: UUID, wanted: list[UUID], actor_id: str) -> None:
+        """활성 선행을 이 배열 **그대로** 만든다 — 전체 교체다 (SPEC-001 §4).
+
+        **행을 지우지 않는다.** 빠진 것은 `released_at` 으로 닫고, 새로 들어온 것만 행을 더한다.
+        이미 활성인 것은 **건드리지 않는다** — 다시 세우면 「언제부터 선행이었나」가 바뀐다.
+        """
+        now = datetime.now(UTC)
+        keep = list(dict.fromkeys(wanted))
+        active = {
+            row.predecessor_task_id: row
+            for row in self.session.scalars(
+                select(TaskPredecessorRecord).where(
+                    TaskPredecessorRecord.task_id == task_id,
+                    TaskPredecessorRecord.released_at.is_(None),
+                )
+            )
+        }
+        for predecessor_task_id, row in active.items():
+            if predecessor_task_id not in keep:
+                row.released_at = now
+                row.released_by = actor_id
+        for position, predecessor_task_id in enumerate(keep):
+            existing = active.get(predecessor_task_id)
+            if existing is not None:
+                # 이미 활성인 관계는 **다시 세우지 않는다** — 다시 세우면 「언제부터 선행이었나」가
+                # 바뀐다. 순서만 이번에 고른 대로 맞춘다.
+                existing.position = position
+                continue
+            self.session.add(
+                TaskPredecessorRecord(
+                    task_id=task_id,
+                    predecessor_task_id=predecessor_task_id,
+                    position=position,
+                    created_by=actor_id,
+                    created_at=now,
+                )
+            )
+        self.session.flush()
+
+    # ---- 참조자(cc): 읽기와 논의만 여는 한 겹 관계 --------------------------------
+
+    def set_cc_members(self, task_id: UUID, member_ids: list[str] | None, *, created_at: datetime) -> None:
+        """이 업무의 참조자를 세운다 — 요청이 쓰는 것과 **같은 표**다 (`resource_relationships`).
+
+        따로 표를 파지 않는 이유는 하나다: 요청의 cc 가 이미 여기 살고, 업무 cc 를 다른 곳에 두면
+        「참조로 받았다」가 두 모양으로 갈린다. `resource_type` 만 다르다.
+
+        실제로 있는 구성원만 쓴다 — 없는 id 로 관계 행을 만들면 원장이 가리킬 곳 없는 자리를 갖는다.
+        (「활동 중인 구성원인가」는 application 이 먼저 묻는다; 여기는 저장의 마지막 방어선이다.)
+        """
+        for member_id in dict.fromkeys(member_ids or []):
+            if self.session.get(MemberRecord, member_id) is None:
+                continue
+            self.session.add(
+                ResourceRelationshipRecord(
+                    member_id=member_id,
+                    resource_type="task",
+                    resource_id=str(task_id),
+                    relationship_kind="cc",
+                    valid_from=created_at,
+                )
+            )
+
+    def cc_member_ids(self, task_id: UUID) -> list[str]:
+        return self.cc_members_for([task_id]).get(task_id, [])
+
+    def cc_members_for(self, task_ids: list[UUID]) -> dict[UUID, list[str]]:
+        """여러 업무의 참조자를 한 번에 — 목록이 줄마다 같은 질의를 반복하지 않는 자리다."""
+        if not task_ids:
+            return {}
+        wanted = {str(task_id): task_id for task_id in task_ids}
+        found: dict[UUID, list[str]] = {}
+        rows = self.session.execute(
+            select(ResourceRelationshipRecord.resource_id, ResourceRelationshipRecord.member_id)
+            .where(
+                ResourceRelationshipRecord.resource_type == "task",
+                ResourceRelationshipRecord.resource_id.in_(list(wanted)),
+                ResourceRelationshipRecord.relationship_kind == "cc",
+                ResourceRelationshipRecord.valid_until.is_(None),
+            )
+            .order_by(ResourceRelationshipRecord.member_id)
+        ).all()
+        for resource_id, member_id in rows:
+            found.setdefault(wanted[str(resource_id)], []).append(member_id)
+        return found
+
+    def tasks_cc_for(self, member_id: str, *, include_closed: bool = False) -> list[TaskRecord]:
+        """**참조로 받은 업무.** 드는 것도 요청한 것도 아니고, 읽기와 논의만 열린다."""
+        ids = [
+            UUID(resource_id)
+            for resource_id in self.session.scalars(
+                select(ResourceRelationshipRecord.resource_id).where(
+                    ResourceRelationshipRecord.member_id == member_id,
+                    ResourceRelationshipRecord.resource_type == "task",
+                    ResourceRelationshipRecord.relationship_kind == "cc",
+                    ResourceRelationshipRecord.valid_until.is_(None),
+                )
+            )
+        ]
+        if not ids:
+            return []
+        statement = select(TaskRecord).where(TaskRecord.id.in_(ids))
+        if not include_closed:
+            statement = statement.where(TaskRecord.state.not_in([TaskState.DONE, TaskState.CANCELLED]))
+        return list(self.session.scalars(statement.order_by(TaskRecord.created_at)))
+
     @staticmethod
     def _held_by(owner_id: str):
         return (
@@ -870,13 +1281,18 @@ class SqlAlchemyWorkRequestRepository:
         causation_key: str | None = None,
         *,
         description: str | None = None,
+        start_date: date | None = None,
         due_date: date | None = None,
+        project_id: UUID | None = None,
+        approver_id: str | None = None,
         cc_member_ids: list[str] | None = None,
         checklist: list[str] | None = None,
         reference_task_ids: list[UUID] | None = None,
         source_meeting_id: UUID | None = None,
         source_agenda_id: UUID | None = None,
         promoted_by_member_id: str | None = None,
+        parent_task_id: UUID | None = None,
+        supersedes_request_id: UUID | None = None,
     ) -> tuple[WorkRequestRecord, bool]:
         if causation_key:
             existing = self._session.scalar(
@@ -897,7 +1313,20 @@ class SqlAlchemyWorkRequestRepository:
             assignee_id=assignee_id,
             title=title,
             description=description,
+            # 시작일·프로젝트는 **내 업무와 같은 공통 payload** 의 칸이다. 요청 행이 직접 들고 있어야
+            # 발송이 세우는 Task 와 뒤이은 회차가 같은 값을 읽는다 — 호출 인자로만 흘려보내면 재상신에서 사라진다.
+            start_date=start_date,
             due_date=due_date,
+            project_id=project_id,
+            # 결재자도 요청 행이 직접 들고 있어야 **발송이 세우는 업무와 뒤이은 회차가 같은 값을 읽는다** —
+            # 호출 인자로만 흘려보내면 과거 행을 수락해 업무를 세울 때 그 값이 아무 데도 없다.
+            approver_id=approver_id,
+            parent_task_id=parent_task_id,
+            supersedes_request_id=supersedes_request_id,
+            # **`pending`(응답 대기)** — 업무는 발송이 세우고 **담당은 수락이 세운다** (SPEC-003 §4 발송).
+            # W1 은 여기 `assigned` 를 썼다: 판단 없이 활성 담당이 섰다는 사실을 가리키던 값이다. v2 는
+            # 그 한 단계를 되돌리므로 **더는 그 값을 발행하지 않는다** — 다만 과거 행에서는 계속 읽히고
+            # 뜻이 바뀌지 않는다 (정책 P-8 · DEC-002 C-3). 되돌려 쓰지도, 재해석하지도 않는다.
             state="pending",
             version=1,
             conditions=None,
@@ -936,32 +1365,12 @@ class SqlAlchemyWorkRequestRepository:
         snapshot = {"title": title, "description": description, "due_date": due_date.isoformat() if due_date else None, "assignee_id": assignee_id}
         version = SubjectVersionRecord(subject_id=subject.id, version=1, content_hash=_content_hash(snapshot), snapshot=snapshot, captured_at=now)
         self._session.add(version)
-        item = DecisionItemRecord(
-            kind="work_request.acceptance",
-            subject_id=subject.id,
-            context_type="request_thread",
-            context_id=str(thread.id),
-            effect_identity=f"task.create_from_request:{request.id}",
-            status="open",
-            due_at=datetime.combine(due_date, datetime.min.time(), tzinfo=UTC) if due_date else None,
-            created_at=now,
-        )
-        self._session.add(item)
         self._session.flush()
-        submission = SubmissionRecord(
-            decision_item_id=item.id,
-            subject_version_id=version.id,
-            submission_version=1,
-            submitted_by=requester_id,
-            payload_hash=version.content_hash,
-            decision_policy_snapshot={"decisions": ["accept", "negotiate", "reject"], "reason_required_for": ["reject", "negotiate"]},
-            submitted_at=now,
-        )
-        self._session.add(submission)
-        self._session.flush()
-        self._session.add(
-            ReviewAssignmentRecord(submission_id=submission.id, reviewer_member_id=assignee_id, status="pending", assigned_at=now, due_at=item.due_at)
-        )
+        # **수락 회차를 연다.** W1 은 이 자리를 비웠다 — 판단 없이 담당이 섰으니 물을 것이 없었다.
+        # v2 는 받는 사람이 **답해야** 하므로 그 질문이 있어야 한다: 회차가 없으면 판단함에 아무것도
+        # 서지 않고, 수락·거절·협의를 부를 자리가 화면에서 사라진다 (SPEC-002 「하나의 질문 = 하나의
+        # ActionItem」 · SPEC-003 §4 발송).
+        self._open_request_acceptance(request, version, now)
         # 진행 기록 첫 줄. 승격이면 **회의가 보낸 것**이고 누른 사람이 행위자다 (D40) — 「시스템이 보냄」으로
         # 끝내면 사람이 왜 이 요청을 받았는지 읽을 수 없다. 그래서 회의 이름과 누른 사람을 함께 적는다.
         if promoted_by_member_id:
@@ -978,6 +1387,70 @@ class SqlAlchemyWorkRequestRepository:
             request_thread_id=thread.id,
         )
         return request, True
+
+    def request_decisions(self, request: WorkRequestRecord) -> list[ReviewDecisionRecord]:
+        """그 요청에 실제로 내려진 판단들 — 오래된 것부터. 재전송인지 가르는 원장이다."""
+        item = self.open_decision_item(request)
+        if item is None:
+            return []
+        submissions = list(
+            self._session.scalars(select(SubmissionRecord).where(SubmissionRecord.decision_item_id == item.id))
+        )
+        if not submissions:
+            return []
+        return list(
+            self._session.scalars(
+                select(ReviewDecisionRecord)
+                .where(ReviewDecisionRecord.submission_id.in_([row.id for row in submissions]))
+                .order_by(ReviewDecisionRecord.decided_at)
+            )
+        )
+
+    def _open_request_acceptance(
+        self, request: WorkRequestRecord, version: SubjectVersionRecord, now: datetime
+    ) -> DecisionItemRecord:
+        """이 요청 하나가 받는 사람에게 던지는 **질문 하나** (SPEC-002 판단 계약).
+
+        `accept` · `negotiate` · `reject` 셋이 답이고, 거절과 협의에는 사유가 필요하다. 회차가 오르는 것은
+        재상신·수정이며 그때도 **같은 판단 항목**이 identity 를 유지한다 — 새 질문이 생기지 않는다.
+        """
+        item = DecisionItemRecord(
+            kind="work_request.acceptance",
+            subject_id=request.subject_id,
+            context_type="request_thread",
+            context_id=str(request.request_thread_id),
+            effect_identity=f"task.create_from_request:{request.id}",
+            status="open",
+            due_at=datetime.combine(request.due_date, datetime.min.time(), tzinfo=UTC) if request.due_date else None,
+            created_at=now,
+        )
+        self._session.add(item)
+        self._session.flush()
+        submission = SubmissionRecord(
+            decision_item_id=item.id,
+            subject_version_id=version.id,
+            submission_version=1,
+            submitted_by=request.requester_id,
+            payload_hash=version.content_hash,
+            decision_policy_snapshot={
+                "decisions": ["accept", "negotiate", "reject"],
+                "reason_required_for": ["reject", "negotiate"],
+            },
+            submitted_at=now,
+        )
+        self._session.add(submission)
+        self._session.flush()
+        self._session.add(
+            ReviewAssignmentRecord(
+                submission_id=submission.id,
+                reviewer_member_id=request.assignee_id,
+                status="pending",
+                assigned_at=now,
+                due_at=item.due_at,
+            )
+        )
+        self._session.flush()
+        return item
 
     # ---- ERD decision continuity ----
 
@@ -1056,6 +1529,78 @@ class SqlAlchemyWorkRequestRepository:
             safe_summary=f"업무 요청 {decision}: {request.title}", request_thread_id=request.request_thread_id,
         )
         return record
+
+    def settle_by_agreement(self, request_id: UUID, actor_id: str, *, reason: str | None = None) -> None:
+        """합의 취소가 그 **요청**을 끝낸다 — `accepted → cancelled_by_agreement` (SPEC-003 §4 State).
+
+        업무만 닫고 요청을 `accepted` 로 두면 「보낸 업무」는 담당 확정으로 읽고, 담당 관계는 `active` 로
+        남고, 목록 정리는 「진행 중」이라며 그 항목을 거절한다. 세 자리가 같은 사실을 달리 말하게 된다.
+        **행은 지우지 않는다** — 상태가 바뀌고 이력이 한 줄 더 선다.
+        """
+        request = self.request(request_id, lock=True)
+        if request is None or request.state == "cancelled_by_agreement":
+            return
+        now = datetime.now(UTC)
+        request.state = "cancelled_by_agreement"
+        request.version += 1
+        request.updated_at = now
+        # 담당 관계도 함께 끝난다. 「거절」이 아니므로 판단 행으로 적지 않는다 — 둘이 합의해 접은 것이다.
+        task = self.task_for_request(request)
+        if task is not None:
+            for assignment in self._session.scalars(
+                select(TaskAssignmentRecord).where(
+                    TaskAssignmentRecord.task_id == task.id,
+                    TaskAssignmentRecord.status.in_(("active", "pending")),
+                )
+            ):
+                assignment.status = "ended"
+                assignment.superseded_at = now
+        item = self.open_decision_item(request)
+        if item is not None and item.status == "open":
+            item.status = "resolved"
+            item.resolved_at = now
+        self._session.flush()
+        ActivityLedger(self._session).record(
+            target_type="work_request", target_id=str(request.id),
+            event_kind="work_request.cancelled_by_agreement", actor_id=actor_id, reason=reason,
+            safe_summary=f"합의로 요청 취소: {request.title}", request_thread_id=request.request_thread_id,
+        )
+
+    def hidden_request_ids(self, member_id: str) -> set[UUID]:
+        """그 사람이 자기 목록에서 뺀 요청들. **한 사람의 정리가 다른 사람 목록을 바꾸지 않는다.**"""
+        return set(
+            self._session.scalars(
+                select(WorkRequestListEntryRecord.work_request_id).where(
+                    WorkRequestListEntryRecord.member_id == member_id
+                )
+            )
+        )
+
+    def remove_list_entry(self, request: WorkRequestRecord, member_id: str) -> None:
+        """목록에서만 뺀다 — **요청 행도 업무도 로그도 지우지 않는다** (정책 P-12).
+
+        「삭제」가 아니다: 거절·취소·재요청의 이력은 그대로 남고, 되돌리려면 이 행 하나를 지우면 된다.
+        같은 사람이 두 번 눌러도 한 건이다.
+        """
+        existing = self._session.scalar(
+            select(WorkRequestListEntryRecord).where(
+                WorkRequestListEntryRecord.work_request_id == request.id,
+                WorkRequestListEntryRecord.member_id == member_id,
+            )
+        )
+        if existing is not None:
+            return
+        self._session.add(
+            WorkRequestListEntryRecord(
+                work_request_id=request.id, member_id=member_id, removed_at=datetime.now(UTC)
+            )
+        )
+        self._session.flush()
+        ActivityLedger(self._session).record(
+            target_type="work_request", target_id=str(request.id), event_kind="work_request.list_entry_removed",
+            actor_id=member_id, safe_summary=f"요청자 목록에서 정리: {request.title}",
+            request_thread_id=request.request_thread_id,
+        )
 
     def withdraw(self, request: WorkRequestRecord, actor_id: str) -> None:
         """The submitter retracts the question. Not a ReviewDecision: nobody judged it, so the round stays open-ended."""
@@ -1218,29 +1763,167 @@ class SqlAlchemyWorkRequestRepository:
         statement = select(WorkRequestRecord).where(WorkRequestRecord.id == request_id)
         return self._session.scalar(statement.with_for_update().execution_options(populate_existing=True) if lock else statement)
 
-    def create_accepted_task(self, request: WorkRequestRecord) -> TaskRecord:
+    def task_for_request(self, request: WorkRequestRecord, *, lock: bool = False) -> TaskRecord | None:
+        """그 요청이 세운 업무. 연결은 업무 자신의 `source_work_request_id` 한 곳에만 산다."""
+        statement = select(TaskRecord).where(TaskRecord.source_work_request_id == request.id)
+        return self._session.scalar(
+            statement.with_for_update().execution_options(populate_existing=True) if lock else statement
+        )
+
+    def accept_request_assignment(self, request: WorkRequestRecord, actor_id: str) -> TaskRecord:
+        """수락 — **같은 업무의 담당을 확정한다. 새 업무를 만들지 않는다** (SPEC-003 §4 수락).
+
+        W1 에서는 이 자리가 `create_accepted_task()` 였다: 요청 하나에 업무 하나였지만 그 업무는 발송이
+        아니라 **수락**이 만들었다. v2 는 발송이 업무를 세우므로 여기서 만들 것이 없다 — `task_id` 도
+        `parent_task_id` 도 발송 때 그대로이고, 바뀌는 것은 담당 행 하나다.
+
+        `state` 는 `open` **그대로**이고 `started_at` 은 **비워 둔다** — 받아들인 것과 시작한 것은 다른
+        사실이고, 그 둘이 각각 읽혀야 한다 (인수조건 · 정책 V-10·V-13).
+        """
+        now = datetime.now(UTC)
+        task = self.task_for_request(request, lock=True)
+        if task is None:
+            # **업무 없이 답을 기다리는 요청 행의 자리다.** W1 **이전**의 모양이다 — 그때는 수락이
+            # 업무를 세웠다. (W1 신규 생성은 즉시 배정이었으므로 W1 이 만든 행은 여기 오지 않는다.)
+            # 그런 행이 실제 운영 DB 에 남아 있는지는 **확인되지 않았다**: Phase 0 에서 실행 DB 가 비어
+            # 있어 세어 보지 못했고, 있다고 단정하지 않는다. 다만 **없다고 단정할 근거도 없으므로**
+            # 만나면 그 시절 방식대로 세운다 — 기존 행을 일괄 변환하지 않기로 한 이상(정책 P-8)
+            # 그 행을 만나는 자리에서 처리하는 것이 남는 선택이다. 행위자는 수락한 담당자다.
+            # **v2 로 발송된 요청은 이 갈래로 오지 않는다**: 발송이 업무를 세웠고 위에서 찾힌다.
+            return self.create_task_for_request(request, actor_id=request.assignee_id, accepted=True)
+        assignment = self._session.scalar(
+            select(TaskAssignmentRecord).where(
+                TaskAssignmentRecord.task_id == task.id,
+                TaskAssignmentRecord.source_work_request_id == request.id,
+                TaskAssignmentRecord.status == "pending",
+            )
+        )
+        if assignment is None:
+            # 재전송이면 이미 `active` 다 — 두 번째 effect 없이 그 업무를 그대로 돌려준다 (영수증).
+            return task
+        item = self.open_decision_item(request)
+        decision = None
+        submission = self.current_submission(request)
+        if submission is not None:
+            decision = self._session.scalar(
+                select(ReviewDecisionRecord)
+                .where(ReviewDecisionRecord.submission_id == submission.id)
+                .order_by(ReviewDecisionRecord.decided_at.desc())
+            )
+        assignment.status = "active"
+        assignment.accepted_at = now
+        if item is not None:
+            assignment.source_decision_item_id = item.id
+            task.source_decision_item_id = item.id
+        if decision is not None:
+            assignment.source_review_decision_id = decision.id
+            task.source_review_decision_id = decision.id
+        task.version += 1
+        task.updated_at = now
+        self._session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now))
+        ActivityLedger(self._session).record(
+            target_type="task", target_id=str(task.id), event_kind="task.request_accepted", actor_id=actor_id,
+            after_ref=f"task_assignment:{assignment.id}",
+            safe_summary=f"{_person(self._session, actor_id)}가 업무 요청을 수락함: {task.title}",
+        )
+        SqlAlchemyTaskRepository(self._session).capture_version(task, actor_id, "task.request_accepted")
+        self._session.flush()
+        self._session.refresh(task)
+        return task
+
+    def close_request_task(self, request: WorkRequestRecord, actor_id: str, *, cancel_reason: str, summary: str) -> TaskRecord | None:
+        """거절·철회·합의 취소가 그 업무를 닫는다 — **상위 연결과 로그는 남긴다** (SPEC-003 §4 거절).
+
+        행을 지우지 않는다. 요청자의 상위에서 「취소됨 — 요청 거절」로 읽혀야 하고, 재요청이 같은 상위
+        아래에 새로 설 때 이전 시도가 거기 그대로 있어야 한다.
+        """
+        now = datetime.now(UTC)
+        task = self.task_for_request(request, lock=True)
+        if task is None:
+            return None
+        if task.state == TaskState.CANCELLED:
+            return task
+        for assignment in self._session.scalars(
+            select(TaskAssignmentRecord).where(
+                TaskAssignmentRecord.task_id == task.id, TaskAssignmentRecord.status.in_(("active", "pending"))
+            )
+        ):
+            # 수락 전이면 아무도 들지 않았고, 수락 뒤면 들던 사람이 있다. 어느 쪽도 「거절」이 아니므로
+            # 판단 행으로 적지 않고 담당 관계만 끝난 것으로 닫는다.
+            assignment.status = "ended"
+            assignment.superseded_at = now
+        task.state = TaskState.CANCELLED
+        task.cancel_reason = cancel_reason
+        task.version += 1
+        task.updated_at = now
+        self._session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now))
+        ActivityLedger(self._session).record(
+            target_type="task", target_id=str(task.id), event_kind="task.state_changed", actor_id=actor_id,
+            before_ref=f"task:{task.id}@{task.version - 1}", safe_summary=summary,
+        )
+        SqlAlchemyTaskRepository(self._session).capture_version(task, actor_id, "task.state_changed")
+        self._session.flush()
+        self._session.refresh(task)
+        return task
+
+    def create_task_for_request(
+        self,
+        request: WorkRequestRecord,
+        *,
+        actor_id: str,
+        accepted: bool = False,
+        preceding_task_ids: list[UUID] | None = None,
+        source_action_item_id: UUID | None = None,
+        source_decision_item_id: UUID | None = None,
+        source_submission_id: UUID | None = None,
+        source_review_decision_id: UUID | None = None,
+    ) -> TaskRecord:
+        """요청 하나에 업무 하나 + **활성 담당 하나**. 신규 경로는 판단 없이 여기로 바로 온다.
+
+        `actor_id` 는 **이 업무를 있게 한 명령을 실제로 부른 사람**이다. 신규 경로에서는 보낸 사람이고,
+        회의 승격에서는 누른 사람이며, 과거 pending 행의 수락에서는 수락한 담당자다. 받는 사람을 일률로
+        적으면 아무 행위도 하지 않은 사람이 `tasks.created_by_actor_id` 와 최초 회차의 actor 로 남는다.
+
+        요청 자신의 판단 회차가 있으면 그것이 출처다(과거 행). 회차가 없는 신규 경로에서는 호출자가
+        준 계보를 그대로 싣는다 — AX 확인으로 만들어진 업무는 자기를 있게 한 action 과 그 확인 회차를
+        가리켜야 한다. 어느 쪽도 없으면 비는 것이 정상이고, 사람이 하지 않은 판단을 가리키지 않는다.
+        """
         now = datetime.now(UTC)
         item = self.open_decision_item(request)
         submission = self.current_submission(request)
         decision = self._session.scalar(
             select(ReviewDecisionRecord).where(ReviewDecisionRecord.submission_id == submission.id).order_by(ReviewDecisionRecord.decided_at.desc())
         ) if submission else None
+        # 요청 자신의 회차가 있으면 그것이 출처고(과거 행), 없으면 호출자가 준 계보를 싣는다(AX 확인).
+        round_decision_item_id = item.id if item else source_decision_item_id
+        round_submission_id = submission.id if submission else source_submission_id
+        round_review_decision_id = decision.id if decision else source_review_decision_id
         task = TaskRecord(
-            created_by_actor_id=request.assignee_id,
+            created_by_actor_id=actor_id,
             title=request.title,
             description=request.description,
+            # 요청에 실린 공통 payload 가 그대로 업무의 첫 회차가 된다 — 시작일·프로젝트도 예외가 아니다.
+            start_date=getattr(request, "start_date", None),
             due_date=request.due_date,
+            project_id=getattr(request, "project_id", None),
+            # **요청의 결재자가 그 요청이 세우는 업무의 결재자다.** 발송이 세우는 신규 경로에서도,
+            # 수락이 세우는 과거 행에서도 같은 값이라 두 길의 답이 갈리지 않는다.
+            approver_id=getattr(request, "approver_id", None),
+            # 하위 요청이면 **발송 단계부터** 상위 아래에 선다 (정책 V-9). 수락 전에도, 거절된 뒤에도
+            # 이 연결은 유지된다 — 요청자의 상위에서 「취소됨 — 요청 거절」로 읽혀야 하기 때문이다.
+            parent_task_id=getattr(request, "parent_task_id", None),
             organization_unit_id=_primary_unit(self._session, request.assignee_id),
             # 회의에서 온 요청이면 업무도 회의에서 왔다고 말한다 — 받는 사람이 왜 이 일이 생겼는지를 좇는다 (§9-7).
             origin_kind="meeting" if request.source_meeting_id is not None else "request_effect",
             request_thread_id=request.request_thread_id,
             source_work_request_id=request.id,
-            # 수락으로 업무가 설 때 요청의 출처가 업무로 옮겨진다.
+            # 업무가 설 때 요청의 출처가 업무로 옮겨진다.
             source_meeting_id=request.source_meeting_id,
             source_agenda_id=request.source_agenda_id,
-            source_decision_item_id=item.id if item else None,
-            source_submission_id=submission.id if submission else None,
-            source_review_decision_id=decision.id if decision else None,
+            source_action_item_id=source_action_item_id,
+            source_decision_item_id=round_decision_item_id,
+            source_submission_id=round_submission_id,
+            source_review_decision_id=round_review_decision_id,
             state=TaskState.OPEN,
             block_reason=None,
             version=1,
@@ -1258,22 +1941,35 @@ class SqlAlchemyWorkRequestRepository:
                 assignee_id=request.assignee_id,
                 assigned_by=None,
                 assignment_kind="request_effect",
-                status="active",
+                # **수락 대기다.** W1 은 여기서 바로 `active` 를 세웠고, 그래서 받는 사람이 답하기도 전에
+                # 그 사람의 「내 업무」에 일이 섰다. v2 는 그 한 단계만 되돌린다 (SPEC-003 §4 발송 · 정책 V-10):
+                # 행은 지금 서고 **책임은 수락에서** 선다. `accepted_at` 은 사람이 수락한 그 순간에만 찍힌다 —
+                # 하지 않은 수락을 시각으로 남기지 않는다.
+                #
+                # `accepted=True` 는 **과거 행을 수락하는 자리 하나뿐**이다: 업무 없이 답을 기다리던 요청은
+                # 수락이 업무를 세우므로 그 순간 이미 담당이 확정돼 있다 (`accept_request_assignment`).
+                status="active" if accepted else "pending",
                 source_work_request_id=request.id,
                 source_decision_item_id=item.id if item else None,
                 source_review_decision_id=decision.id if decision else None,
                 created_at=now,
-                accepted_at=now,
+                accepted_at=now if accepted else None,
             )
         )
         self._session.flush()
         tasks = SqlAlchemyTaskRepository(self._session)
-        # The steps came with the request, so they were written by the person who asked, not by the one accepting.
+        # 요청의 참조자는 **그 요청이 세운 업무의 참조자이기도 하다.** 업무 쪽에 같은 행을 세우지 않으면
+        # 참조로 받은 사람이 요청은 읽는데 그 요청이 만든 업무는 못 읽는 경계 불일치가 생긴다.
+        tasks.set_cc_members(task.id, self.cc_member_ids(request), created_at=now)
+        # 요청에 실린 선행이 그대로 이 업무의 선행이 된다 — 판정은 이미 업무 모듈이 끝냈다.
+        if preceding_task_ids:
+            tasks.replace_predecessors(task.id, list(preceding_task_ids), actor_id)
+        # The steps came with the request, so they were written by the person who asked, not by the one receiving it.
         tasks.seed_checklist(task, list(request.initial_checklist or []), request.requester_id)
         # So did the earlier work they pointed at: the pointer travels, the permission to open it does not.
         for reference in self.request_references(request.id):
             tasks.add_reference(task.id, reference.referenced_task_id, request.requester_id)
-        tasks.capture_version(task, request.assignee_id, "task.created")
+        tasks.capture_version(task, actor_id, "task.created")
         return task
 
     def request_references(self, request_id: UUID) -> list[WorkRequestReferenceRecord]:
@@ -1413,6 +2109,73 @@ class SqlAlchemyWorkRequestRepository:
             )
         ).all()
         return {request_id: task_id for request_id, task_id in rows}
+
+    def predecessor_task_ids(self, task_id: UUID | None) -> list[UUID]:
+        """그 업무의 **활성 선행**, 고른 순서 그대로.
+
+        요청 행은 선행을 따로 갖지 않는다 — 발송이 세운 업무가 그 관계의 자리다 (SPEC-001 §4). 그래서
+        요청 조회가 「무엇 다음인가」를 답하려면 파생 업무에서 읽어 와야 한다. 업무가 아직 없는 요청
+        행(W1 이전 모양)은 선행도 없다.
+        """
+        if task_id is None:
+            return []
+        return list(
+            self._session.scalars(
+                select(TaskPredecessorRecord.predecessor_task_id)
+                .where(
+                    TaskPredecessorRecord.task_id == task_id,
+                    TaskPredecessorRecord.released_at.is_(None),
+                )
+                .order_by(TaskPredecessorRecord.position, TaskPredecessorRecord.created_at)
+            )
+        )
+
+    # ---- 참조 읽음 영수증 — 사람마다 따로 움직이는 사실 --------------------------
+
+    def read_receipt(self, request_id: UUID, member_id: str) -> WorkRequestReadReceiptRecord | None:
+        return self._session.scalar(
+            select(WorkRequestReadReceiptRecord).where(
+                WorkRequestReadReceiptRecord.work_request_id == request_id,
+                WorkRequestReadReceiptRecord.member_id == member_id,
+            )
+        )
+
+    def mark_read(self, request_id: UUID, member_id: str) -> WorkRequestReadReceiptRecord:
+        """이 사람이 그 참조를 읽었다. **두 번째 호출은 처음 행을 그대로 돌려준다.**
+
+        같은 사람의 **동시 두 번**이 행 하나로 수렴해야 한다 (§5 동시성). application 검사만으로는
+        두 transaction 이 동시에 「없다」를 보고 둘 다 넣는 틈이 남으므로, 실제로 넣어 보고
+        **유일성 제약이 거절하면 이미 선 행을 읽는다.** SAVEPOINT 안에서 시도하므로 진 쪽의 제약
+        위반이 바깥 transaction 을 깨지 않는다 — 읽음은 다른 것을 함께 바꾸지 않지만, 이 저장소의
+        명령은 한 session 에 실려 오므로 바깥을 살려 두는 것이 이 자리의 계약이다.
+        """
+        existing = self.read_receipt(request_id, member_id)
+        if existing is not None:
+            return existing
+        record = WorkRequestReadReceiptRecord(
+            work_request_id=request_id, member_id=member_id, read_at=datetime.now(UTC)
+        )
+        try:
+            with self._session.begin_nested():
+                self._session.add(record)
+                self._session.flush()
+        except IntegrityError:
+            # 진 쪽이다. 이긴 쪽이 이미 세운 행을 읽어 **같은 `read_at`** 을 돌려준다.
+            won = self.read_receipt(request_id, member_id)
+            if won is None:  # pragma: no cover - 유일성 말고 깨질 제약이 이 표에 없다
+                raise
+            return won
+        return record
+
+    def read_request_ids(self, member_id: str) -> set[UUID]:
+        """이 사람이 이미 읽은 참조 요청 전부 — 수신함 한 표면이 쓰는 필터의 원천이다."""
+        return set(
+            self._session.scalars(
+                select(WorkRequestReadReceiptRecord.work_request_id).where(
+                    WorkRequestReadReceiptRecord.member_id == member_id
+                )
+            )
+        )
 
     def cc_member_ids(self, request: WorkRequestRecord) -> list[str]:
         return list(
@@ -1692,12 +2455,14 @@ class SqlAlchemyTaskAssignmentRepository:
         )
         self._session.add(task)
         self._session.flush()
+        # 관리자 배정도 **수락을 기다리지 않는다** — 명령이 성공하면 상대의 업무 목록에 바로 선다
+        # (WORK-001 Phase 4). `accepted_at` 은 본인 생성과 같은 뜻으로만 쓴다: 담당이 선 시각이다.
         assignment = TaskAssignmentRecord(
-            task_id=task.id, assignee_id=assignee_id, assigned_by=assigner_id, assignment_kind="direct", status="pending", created_at=now
+            task_id=task.id, assignee_id=assignee_id, assigned_by=assigner_id, assignment_kind="direct",
+            status="active", created_at=now, accepted_at=now,
         )
         self._session.add(assignment)
         self._session.flush()
-        self._open_assignment_acceptance(task, assignment, now)
         tasks = SqlAlchemyTaskRepository(self._session)
         tasks.seed_checklist(task, checklist, assigner_id)
         for referenced_task_id in references or []:
@@ -1748,25 +2513,55 @@ class SqlAlchemyTaskAssignmentRepository:
         """
         return self._session.get(TaskRecord, task_id, with_for_update=lock or None, populate_existing=lock)
 
-    def active_assignment_for(self, task_id: UUID, *, lock: bool = False) -> TaskAssignmentRecord | None:
-        """Who holds this Task right now. At most one assignment is ever open on it."""
+    def current_assignment_for(self, task_id: UUID, *, lock: bool = False) -> TaskAssignmentRecord | None:
+        """**지금 이 업무를 든 사람.** `active` 한 행이고, 없으면 아무도 들지 않았다.
+
+        `pending` 을 여기 섞지 않는다 — 담당 변경 대기 중에는 `active` 1 + `pending` 1 이 **공존하므로**
+        (SPEC-003 §4 담당 관계 · 정책 V-18) 한 조회가 둘을 함께 받으면 어느 쪽이 나올지가 행 순서에 달린다.
+        「누가 들고 있나」와 「누가 답을 기다리나」는 다른 질문이고, 그래서 조회도 둘이다 (정책 P-3).
+        """
         statement = select(TaskAssignmentRecord).where(
-            TaskAssignmentRecord.task_id == task_id, TaskAssignmentRecord.status.in_(("active", "pending"))
+            TaskAssignmentRecord.task_id == task_id, TaskAssignmentRecord.status == "active"
         )
         return self._session.scalar(
             statement.with_for_update().execution_options(populate_existing=True) if lock else statement
         )
 
-    def reassign(self, task: TaskRecord, current: TaskAssignmentRecord, assigner_id: str, assignee_id: str, reason: str | None) -> TaskAssignmentRecord:
-        """Move the work to someone else: the assignment that was open is closed and a new one is appended.
+    def pending_assignment_for(self, task_id: UUID, *, lock: bool = False) -> TaskAssignmentRecord | None:
+        """**답을 기다리는 담당 제안.** 요청 발송의 수락 대기 · 첫 지정 · 담당 변경 제안이 여기 선다.
 
-        Nothing is written over. The row that was there keeps saying who held it and until when, and the new row says
-        who put this person on it and which assignment it replaced.
+        한 업무에 대기 제안은 하나다 (SPEC-003 §4 Validation).
+        """
+        statement = select(TaskAssignmentRecord).where(
+            TaskAssignmentRecord.task_id == task_id, TaskAssignmentRecord.status == "pending"
+        )
+        return self._session.scalar(
+            statement.with_for_update().execution_options(populate_existing=True) if lock else statement
+        )
+
+    def assignment_rows_for(self, task_id: UUID) -> list[TaskAssignmentRecord]:
+        """이 업무의 담당 이력 전부 — 오래된 것부터. 현재/대기를 각각 내는 조회가 여기서 나온다."""
+        return list(
+            self._session.scalars(
+                select(TaskAssignmentRecord)
+                .where(TaskAssignmentRecord.task_id == task_id)
+                .order_by(TaskAssignmentRecord.created_at, TaskAssignmentRecord.id)
+            )
+        )
+
+    def reassign(self, task: TaskRecord, current: TaskAssignmentRecord, assigner_id: str, assignee_id: str, reason: str | None) -> TaskAssignmentRecord:
+        """담당을 바꾸자고 **제안한다.** 기존 담당은 이 시점에 닫히지 않는다 (SPEC-003 §4 · 정책 V-18).
+
+        예전에는 여기서 기존 행을 `superseded` 로 닫았다. 그러면 제안과 수락 사이에 **아무도 책임지지 않는
+        구간**이 생기고, 새 담당이 거절하면 그 일은 담당자 없이 남는다. v2 는 그 구간을 없앤다 —
+        기존 `active` 는 그대로 두고 새 행을 `pending` 으로 **덧붙이기만** 한다. 실제 교체는
+        `decide(..., "accept")` 한 덩어리에서만 일어난다.
+
+        `supersedes_assignment_id` 가 **이 행이 교체 제안이라는 표식**이다. 그 값이 없는 `pending` 은
+        「담당 없는 업무의 첫 지정」(`hand_to`)이고 거절의 뜻이 다르다 — 그쪽은 현행대로 Task 가 취소된다.
         """
         now = datetime.now(UTC)
         previous_assignee = current.assignee_id
-        current.status = "superseded"
-        current.superseded_at = now
         appended = TaskAssignmentRecord(
             task_id=task.id,
             assignee_id=assignee_id,
@@ -1784,14 +2579,15 @@ class SqlAlchemyTaskAssignmentRepository:
         self._open_assignment_acceptance(task, appended, now)
         self._session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now))
         ActivityLedger(self._session).record(
-            target_type="task", target_id=str(task.id), event_kind="task.reassigned", actor_id=assigner_id,
+            # 제안·수락·거절·실제 교체를 **각각** 남긴다 (정책 L-9). 이 줄은 그중 「제안」이다.
+            target_type="task", target_id=str(task.id), event_kind="task.assignment.change_proposed", actor_id=assigner_id,
             before_ref=f"task_assignment:{current.id}", after_ref=f"task_assignment:{appended.id}", reason=reason,
             safe_summary=(
                 f"{_person(self._session, assigner_id)}가 담당자를 {_person(self._session, previous_assignee)}에서 "
-                f"{_person(self._session, assignee_id)}로 바꿈: {task.title}"
+                f"{_person(self._session, assignee_id)}로 바꾸자고 제안함: {task.title}"
             ),
         )
-        SqlAlchemyTaskRepository(self._session).capture_version(task, assigner_id, "task.reassigned", reason)
+        SqlAlchemyTaskRepository(self._session).capture_version(task, assigner_id, "task.assignment.change_proposed", reason)
         self._session.flush()
         self._session.refresh(task)
         return appended
@@ -1829,25 +2625,58 @@ class SqlAlchemyTaskAssignmentRepository:
         item.resolved_at = now
         self._session.flush()
         assignment.source_review_decision_id = record.id
+        # **교체 제안인가, 첫 지정인가.** `supersedes_assignment_id` 가 그 표식이다 — `reassign()` 만
+        # 그 값을 싣는다. 두 경우는 **거절의 뜻이 다르다**: 첫 지정의 거절은 「아무도 안 받았다」라
+        # 현행대로 Task 를 취소하고, 교체 제안의 거절은 **제안만 닫는다** — 기존 담당이 그대로 있으므로
+        # 취소할 이유가 없다 (정책 V-18 · BASE-002 O-13).
+        replaced = (
+            self._session.get(TaskAssignmentRecord, assignment.supersedes_assignment_id)
+            if assignment.supersedes_assignment_id is not None
+            else None
+        )
         if decision == "accept":
+            if replaced is not None and replaced.status == "active":
+                # 종료와 활성화가 **한 transaction** 이다 — 활성 담당이 0명이거나 2명인 중간 상태는
+                # 관찰되지 않는다 (정책 V-18 · K-3). 부분 유일 인덱스가 둘째 `active` 를 거절한다.
+                replaced.status = "superseded"
+                replaced.superseded_at = now
+                # **닫는 UPDATE 를 먼저 내보낸다.** 두 행을 한 flush 에 맡기면 순서를 ORM 이 정하고
+                # (같은 표에서는 대개 기본키 순), 새 행이 먼저 `active` 가 되는 순간 부분 유일 인덱스가
+                # 둘째 `active` 를 거절해 500 이 된다 — uuid 값에 따라 **간헐적으로만** 터진다.
+                # 트랜잭션은 하나이므로 밖에서 보이는 중간 상태는 여전히 없다.
+                self._session.flush()
             assignment.status = "active"
             assignment.accepted_at = now
             task.source_decision_item_id = item.id
             task.source_review_decision_id = record.id
-            summary = f"배정 수락: {task.title}"
+            summary = f"담당 교체 수락: {task.title}" if replaced is not None else f"배정 수락: {task.title}"
         else:
             assignment.status = "declined"
             assignment.declined_at = now
             assignment.decline_reason = reason
-            task.state = TaskState.CANCELLED
-            task.version += 1
-            task.updated_at = now
-            self._session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now))
-            summary = f"배정 거절: {task.title}"
+            if replaced is None:
+                task.state = TaskState.CANCELLED
+                task.cancel_reason = "direct"
+                task.version += 1
+                task.updated_at = now
+                self._session.add(TaskActivityRecord(task_id=task.id, task_version=task.version, state=task.state, occurred_at=now))
+                summary = f"배정 거절: {task.title}"
+            else:
+                summary = f"담당 교체 거절: {task.title}"
         ActivityLedger(self._session).record(
             target_type="task", target_id=str(task.id), event_kind=f"task.assignment_{decision}ed", actor_id=actor_id,
             before_ref=f"task_assignment:{assignment.id}", after_ref=f"review_decision:{record.id}", reason=reason, safe_summary=summary,
         )
+        if decision == "accept" and replaced is not None:
+            # 「제안」과 「실제 교체」가 각각이다 (정책 L-9) — 수락 줄 다음에 교체가 일어난 줄이 선다.
+            ActivityLedger(self._session).record(
+                target_type="task", target_id=str(task.id), event_kind="task.assignment.changed", actor_id=actor_id,
+                before_ref=f"task_assignment:{replaced.id}", after_ref=f"task_assignment:{assignment.id}",
+                safe_summary=(
+                    f"담당자가 {_person(self._session, replaced.assignee_id)}에서 "
+                    f"{_person(self._session, assignment.assignee_id)}로 바뀜: {task.title}"
+                ),
+            )
         self._session.flush()
         self._session.refresh(task)
         return record

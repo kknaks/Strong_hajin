@@ -40,6 +40,29 @@ export function useEscape(onClose: () => void, active = true) {
 }
 
 /**
+ * Drawer 와 Modal 이 **똑같이** 받는 자리. 골격만 다르고 부르는 쪽의 말은 같다.
+ *
+ * `onBack` 은 바퀴 3차에서 열었다 — 「요청 상세 → 파생 업무 상세」처럼 **한 겹 안에서 내용이 갈아끼워지는**
+ * 자리가 생겼기 때문이다. 중첩 모달도 새 드로어도 열지 않으므로 겹은 계속 하나이고, 돌아가는 길만
+ * 머리 왼쪽에 선다. 안 넘기면 예전과 똑같이 그려진다.
+ */
+export type OverlayShellProps = {
+  label: string;
+  kicker?: string;
+  title: string;
+  headerExtra?: ReactNode;
+  footer?: ReactNode;
+  onClose: () => void;
+  /** 닫기 단추의 이름 — 부르는 쪽이 준다 (바퀴 11: 부품은 말을 모른다) */
+  closeLabel: string;
+  /** 넘기면 머리 왼쪽에 「뒤로」가 선다. 이 겹을 닫지 않고 **내용만** 이전 것으로 되돌리는 자리다. */
+  onBack?: () => void;
+  /** 「뒤로」의 이름 (바퀴 11) */
+  backLabel?: string;
+  children: ReactNode;
+};
+
+/**
  * Drawer — 뒤 화면을 남겨 둔 채 오른쪽에서 열리는 편집·상세 자리.
  *
  * 바퀴 3b 에서 새 DS 골격으로 갔다 — `workspace.css` 의 `.scax-drawer-overlay` / `.scax-drawer` /
@@ -61,19 +84,12 @@ export function Drawer({
   onClose,
   size = "lg",
   closeLabel,
+  onBack,
+  backLabel,
   children,
-}: {
-  label: string;
-  kicker?: string;
-  title: string;
-  headerExtra?: ReactNode;
-  footer?: ReactNode;
-  onClose: () => void;
+}: OverlayShellProps & {
   /** 골격 폭. `lg`(840) 가 기본 — 지금 열리는 여섯 자리가 전부 두 열 폼이다. */
   size?: "sm" | "lg";
-  /** 닫기 단추의 이름 — 부르는 쪽이 준다 (바퀴 11: 부품은 말을 모른다) */
-  closeLabel: string;
-  children: ReactNode;
 }) {
   useEscape(onClose);
   return (
@@ -85,6 +101,7 @@ export function Drawer({
     >
       <section aria-label={label} aria-modal="true" className={`scax-drawer scax-drawer--${size}`} role="dialog">
         <header className="scax-drawer__head">
+          {onBack && <IconButton label={backLabel ?? "뒤로"} name="chevron-left" onClick={onBack} size={16} />}
           {/* 이 칸이 «자라야» 닫기가 머리 오른쪽 끝으로 간다. `flex:1` 이 안쪽 h3 에 걸려 있어서
               (부모가 아니라) 이 div 가 내용 폭만큼만 서고 × 가 파일명 바로 옆에 붙어 있었다
               (현재 화면 29). 제목의 말줄임은 그대로 — 이제 «남는 폭» 안에서 줄어든다. */}
@@ -117,24 +134,25 @@ export function Drawer({
  */
 export function Modal({
   label,
+  kicker,
   title,
   headerExtra,
   footer,
   onClose,
   size,
+  className,
   closeLabel,
+  onBack,
+  backLabel,
   children,
-}: {
-  label: string;
-  title: string;
-  headerExtra?: ReactNode;
-  footer?: ReactNode;
-  onClose: () => void;
+}: OverlayShellProps & {
   /** 안 주면 DS 기본 880 이다. */
   size?: "sm" | "md";
-  /** 닫기 단추의 이름 (바퀴 11) */
-  closeLabel: string;
-  children: ReactNode;
+  /**
+   * 골격에 얹는 우리 modifier 한 자리. 부르는 쪽이 **자기 화면의 배치**를 골격 위에 세울 때 쓴다 —
+   * 업무 생성 모달의 「머리 한 줄 + 왼쪽 세로 탭」이 그 경우다. DS 규약(`.scax-modal*`)은 그대로 남는다.
+   */
+  className?: string;
 }) {
   useEscape(onClose);
   return (
@@ -147,11 +165,15 @@ export function Modal({
       <section
         aria-label={label}
         aria-modal="true"
-        className={size ? `scax-modal scax-modal--${size}` : "scax-modal"}
+        className={["scax-modal", size ? `scax-modal--${size}` : "", className ?? ""].filter(Boolean).join(" ")}
         role="dialog"
       >
         <header className="scax-modal__head">
+          {/* 「뒤로」는 이 겹을 «닫지 않는다» — 같은 자리에서 내용만 이전 것으로 되돌린다. 그래서 닫기(×)와
+              나란히 서지 않고 제목 «앞» 에 선다: 읽는 순서가 곧 돌아가는 방향이다. */}
+          {onBack && <IconButton label={backLabel ?? "뒤로"} name="chevron-left" onClick={onBack} size={16} />}
           <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+            {kicker && <small className="modal-kicker">{kicker}</small>}
             <h3 className="scax-modal__title">{title}</h3>
             {headerExtra}
           </div>
@@ -247,6 +269,7 @@ export function Toast({
   tone,
   icon,
   closeLabel,
+  persist = false,
 }: {
   message: string;
   onClose: () => void;
@@ -260,11 +283,19 @@ export function Toast({
   icon?: IconName;
   /** 알림을 지우는 단추의 이름 (바퀴 11: 부품은 말을 모른다) */
   closeLabel: string;
+  /**
+   * 스스로 사라지지 않는 알림 (4차 발주 6).
+   *
+   * 4초는 **읽고 끝나는** 알림의 시간이다. 「다시 불러오기」처럼 **누를 것이 함께 오는** 알림은
+   * 그 사이에 사라지면 누를 자리가 없어진다 — 그런 자리만 이 값을 켠다. 닫는 길(× )은 그대로다.
+   */
+  persist?: boolean;
 }) {
   useEffect(() => {
+    if (persist) return;
     const timer = window.setTimeout(onClose, 4000);
     return () => window.clearTimeout(timer);
-  }, [message, onClose]);
+  }, [message, onClose, persist]);
   return (
     // 실패는 읽던 자리를 끊고 알려야 한다 — 그때만 role 을 alert 로 올린다.
     <div

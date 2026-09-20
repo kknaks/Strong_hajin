@@ -1,0 +1,1346 @@
+{
+  "tasks": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": true,
+        "fk": []
+      },
+      {
+        "name": "created_by_actor_id",
+        "type": "VARCHAR(100)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "title",
+        "type": "VARCHAR(300)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "state",
+        "type": "VARCHAR(40)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "block_reason",
+        "type": "TEXT",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "description",
+        "type": "TEXT",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "start_date",
+        "type": "DATE",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "due_date",
+        "type": "DATE",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "organization_unit_id",
+        "type": "VARCHAR(100)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "organization_units.id"
+        ]
+      },
+      {
+        "name": "origin_kind",
+        "type": "VARCHAR(30)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "visibility",
+        "type": "VARCHAR(20)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "request_thread_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "request_threads.id"
+        ]
+      },
+      {
+        "name": "source_work_request_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "work_requests.id"
+        ]
+      },
+      {
+        "name": "source_decision_item_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "decision_items.id"
+        ]
+      },
+      {
+        "name": "source_submission_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "submissions.id"
+        ]
+      },
+      {
+        "name": "source_review_decision_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "review_decisions.id"
+        ]
+      },
+      {
+        "name": "source_action_item_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "action_items.id"
+        ]
+      },
+      {
+        "name": "source_task_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "tasks.id"
+        ]
+      },
+      {
+        "name": "source_meeting_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "meetings.id"
+        ]
+      },
+      {
+        "name": "source_agenda_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "meeting_agendas.id"
+        ]
+      },
+      {
+        "name": "parent_task_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "tasks.id"
+        ]
+      },
+      {
+        "name": "project_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "projects.id"
+        ]
+      },
+      {
+        "name": "version",
+        "type": "INTEGER",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "approver_id",
+        "type": "VARCHAR(100)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "created_at",
+        "type": "DATETIME",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "updated_at",
+        "type": "DATETIME",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "causation_key",
+        "type": "VARCHAR(64)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      }
+    ],
+    "indexes": [
+      {
+        "name": "ix_tasks_project_id",
+        "columns": [
+          "project_id"
+        ],
+        "unique": false,
+        "where": "None"
+      },
+      {
+        "name": "uq_tasks_source_work_request",
+        "columns": [
+          "source_work_request_id"
+        ],
+        "unique": true,
+        "where": "source_work_request_id IS NOT NULL"
+      },
+      {
+        "name": "ix_tasks_parent_task_id",
+        "columns": [
+          "parent_task_id"
+        ],
+        "unique": false,
+        "where": "None"
+      }
+    ]
+  },
+  "task_assignments": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": true,
+        "fk": []
+      },
+      {
+        "name": "task_id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": false,
+        "fk": [
+          "tasks.id"
+        ]
+      },
+      {
+        "name": "assignee_id",
+        "type": "VARCHAR(100)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "assigned_by",
+        "type": "VARCHAR(100)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "assignment_kind",
+        "type": "VARCHAR(30)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "status",
+        "type": "VARCHAR(30)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "source_work_request_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "work_requests.id"
+        ]
+      },
+      {
+        "name": "source_decision_item_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "decision_items.id"
+        ]
+      },
+      {
+        "name": "source_review_decision_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "review_decisions.id"
+        ]
+      },
+      {
+        "name": "supersedes_assignment_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "decline_reason",
+        "type": "TEXT",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "created_at",
+        "type": "DATETIME",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "accepted_at",
+        "type": "DATETIME",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "declined_at",
+        "type": "DATETIME",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "superseded_at",
+        "type": "DATETIME",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      }
+    ],
+    "indexes": [
+      {
+        "name": "ix_task_assignments_task_id",
+        "columns": [
+          "task_id"
+        ],
+        "unique": false,
+        "where": "None"
+      },
+      {
+        "name": "uq_task_assignments_active",
+        "columns": [
+          "task_id"
+        ],
+        "unique": true,
+        "where": "status = 'active'"
+      },
+      {
+        "name": "ix_task_assignments_assignee_status",
+        "columns": [
+          "assignee_id",
+          "status"
+        ],
+        "unique": false,
+        "where": "None"
+      }
+    ]
+  },
+  "work_requests": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": true,
+        "fk": []
+      },
+      {
+        "name": "request_thread_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "request_threads.id"
+        ]
+      },
+      {
+        "name": "subject_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "subjects.id"
+        ]
+      },
+      {
+        "name": "organization_context_id",
+        "type": "VARCHAR(100)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "requester_id",
+        "type": "VARCHAR(100)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "assignee_id",
+        "type": "VARCHAR(100)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "title",
+        "type": "VARCHAR(300)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "description",
+        "type": "TEXT",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "due_date",
+        "type": "DATE",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "state",
+        "type": "VARCHAR(40)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "version",
+        "type": "INTEGER",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "conditions",
+        "type": "JSON",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "initial_checklist",
+        "type": "JSON",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "source_meeting_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "meetings.id"
+        ]
+      },
+      {
+        "name": "source_agenda_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "meeting_agendas.id"
+        ]
+      },
+      {
+        "name": "promoted_by_member_id",
+        "type": "VARCHAR(100)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "created_at",
+        "type": "DATETIME",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "updated_at",
+        "type": "DATETIME",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "causation_key",
+        "type": "VARCHAR(64)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      }
+    ],
+    "indexes": []
+  },
+  "task_checklist_items": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": true,
+        "fk": []
+      },
+      {
+        "name": "task_id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": false,
+        "fk": [
+          "tasks.id"
+        ]
+      },
+      {
+        "name": "text",
+        "type": "VARCHAR(300)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "position",
+        "type": "INTEGER",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "done",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "state",
+        "type": "VARCHAR(20)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "version",
+        "type": "INTEGER",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "created_by",
+        "type": "VARCHAR(100)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "completed_by",
+        "type": "VARCHAR(100)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "completed_at",
+        "type": "DATETIME",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "archived_by",
+        "type": "VARCHAR(100)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "archived_at",
+        "type": "DATETIME",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "created_at",
+        "type": "DATETIME",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "updated_at",
+        "type": "DATETIME",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      }
+    ],
+    "indexes": [
+      {
+        "name": "ix_task_checklist_items_task_position",
+        "columns": [
+          "task_id",
+          "position"
+        ],
+        "unique": false,
+        "where": "None"
+      },
+      {
+        "name": "ix_task_checklist_items_task_id",
+        "columns": [
+          "task_id"
+        ],
+        "unique": false,
+        "where": "None"
+      }
+    ]
+  },
+  "request_threads": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": true,
+        "fk": []
+      },
+      {
+        "name": "initiated_by",
+        "type": "VARCHAR(100)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "organization_context_id",
+        "type": "VARCHAR(100)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "purpose",
+        "type": "VARCHAR(300)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "created_at",
+        "type": "DATETIME",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      }
+    ],
+    "indexes": []
+  },
+  "comments": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": true,
+        "fk": []
+      },
+      {
+        "name": "request_thread_id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": false,
+        "fk": [
+          "request_threads.id"
+        ]
+      },
+      {
+        "name": "author_member_id",
+        "type": "VARCHAR(100)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "body",
+        "type": "TEXT",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "created_at",
+        "type": "DATETIME",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "edited_at",
+        "type": "DATETIME",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      }
+    ],
+    "indexes": [
+      {
+        "name": "ix_comments_request_thread_id",
+        "columns": [
+          "request_thread_id"
+        ],
+        "unique": false,
+        "where": "None"
+      }
+    ]
+  },
+  "task_versions": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": true,
+        "fk": []
+      },
+      {
+        "name": "task_id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": false,
+        "fk": [
+          "tasks.id"
+        ]
+      },
+      {
+        "name": "version",
+        "type": "INTEGER",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "change_kind",
+        "type": "VARCHAR(60)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "actor_id",
+        "type": "VARCHAR(100)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "reason",
+        "type": "TEXT",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "snapshot",
+        "type": "JSON",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "captured_at",
+        "type": "DATETIME",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      }
+    ],
+    "indexes": [
+      {
+        "name": "ix_task_versions_task_id",
+        "columns": [
+          "task_id"
+        ],
+        "unique": false,
+        "where": "None"
+      }
+    ]
+  },
+  "task_activities": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": true,
+        "fk": []
+      },
+      {
+        "name": "task_id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": false,
+        "fk": [
+          "tasks.id"
+        ]
+      },
+      {
+        "name": "task_version",
+        "type": "INTEGER",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "state",
+        "type": "VARCHAR(40)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "occurred_at",
+        "type": "DATETIME",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      }
+    ],
+    "indexes": []
+  },
+  "activity_events": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": true,
+        "fk": []
+      },
+      {
+        "name": "request_thread_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "target_type",
+        "type": "VARCHAR(40)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "target_id",
+        "type": "VARCHAR(100)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "event_kind",
+        "type": "VARCHAR(80)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "actor_kind",
+        "type": "VARCHAR(30)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "actor_id",
+        "type": "VARCHAR(100)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "before_ref",
+        "type": "VARCHAR(200)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "after_ref",
+        "type": "VARCHAR(200)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "reason",
+        "type": "TEXT",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "causation_ref",
+        "type": "VARCHAR(200)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "safe_summary",
+        "type": "VARCHAR(300)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "occurred_at",
+        "type": "DATETIME",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      }
+    ],
+    "indexes": [
+      {
+        "name": "ix_activity_events_target",
+        "columns": [
+          "target_type",
+          "target_id"
+        ],
+        "unique": false,
+        "where": "None"
+      }
+    ]
+  },
+  "decision_items": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": true,
+        "fk": []
+      },
+      {
+        "name": "kind",
+        "type": "VARCHAR(60)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "subject_id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": false,
+        "fk": [
+          "subjects.id"
+        ]
+      },
+      {
+        "name": "context_type",
+        "type": "VARCHAR(40)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "context_id",
+        "type": "VARCHAR(100)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "supersedes_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "effect_identity",
+        "type": "VARCHAR(200)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "status",
+        "type": "VARCHAR(30)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "due_at",
+        "type": "DATETIME",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "created_at",
+        "type": "DATETIME",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "resolved_at",
+        "type": "DATETIME",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      }
+    ],
+    "indexes": []
+  },
+  "submissions": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": true,
+        "fk": []
+      },
+      {
+        "name": "decision_item_id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": false,
+        "fk": [
+          "decision_items.id"
+        ]
+      },
+      {
+        "name": "subject_version_id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": false,
+        "fk": [
+          "subject_versions.id"
+        ]
+      },
+      {
+        "name": "submission_version",
+        "type": "INTEGER",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "revises_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "submitted_by",
+        "type": "VARCHAR(100)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "payload_hash",
+        "type": "VARCHAR(64)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "decision_policy_snapshot",
+        "type": "JSON",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "diff",
+        "type": "JSON",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "submitted_at",
+        "type": "DATETIME",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      }
+    ],
+    "indexes": []
+  },
+  "review_assignments": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": true,
+        "fk": []
+      },
+      {
+        "name": "submission_id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": false,
+        "fk": [
+          "submissions.id"
+        ]
+      },
+      {
+        "name": "reviewer_member_id",
+        "type": "VARCHAR(100)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "supersedes_assignment_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "resolution_kind",
+        "type": "VARCHAR(20)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "resolution_ref",
+        "type": "VARCHAR(100)",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "due_at",
+        "type": "DATETIME",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "expires_at",
+        "type": "DATETIME",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "status",
+        "type": "VARCHAR(20)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "assigned_at",
+        "type": "DATETIME",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      }
+    ],
+    "indexes": []
+  },
+  "review_decisions": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": true,
+        "fk": []
+      },
+      {
+        "name": "review_assignment_id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": false,
+        "fk": [
+          "review_assignments.id"
+        ]
+      },
+      {
+        "name": "submission_id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": false,
+        "fk": [
+          "submissions.id"
+        ]
+      },
+      {
+        "name": "actor_member_id",
+        "type": "VARCHAR(100)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "decision",
+        "type": "VARCHAR(30)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "reason",
+        "type": "TEXT",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "conditions",
+        "type": "JSON",
+        "nullable": true,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "decided_at",
+        "type": "DATETIME",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      }
+    ],
+    "indexes": []
+  },
+  "task_creation_attempts": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "CHAR(32)",
+        "nullable": false,
+        "pk": true,
+        "fk": []
+      },
+      {
+        "name": "actor_id",
+        "type": "VARCHAR(100)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "command_kind",
+        "type": "VARCHAR(50)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "request_key",
+        "type": "VARCHAR(200)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "payload_fingerprint",
+        "type": "VARCHAR(64)",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      },
+      {
+        "name": "task_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "tasks.id"
+        ]
+      },
+      {
+        "name": "work_request_id",
+        "type": "CHAR(32)",
+        "nullable": true,
+        "pk": false,
+        "fk": [
+          "work_requests.id"
+        ]
+      },
+      {
+        "name": "created_at",
+        "type": "DATETIME",
+        "nullable": false,
+        "pk": false,
+        "fk": []
+      }
+    ],
+    "indexes": []
+  }
+}

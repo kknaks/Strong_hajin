@@ -50,8 +50,12 @@ it("셸 뼈대가 서고, 화면마다 스크롤 기둥이 본문 칸에 직접 
   expect(container.querySelector(".scax-side-nav__version")).toBeNull();
 
   const nav = within(screen.getByRole("navigation", { name: "제품 탐색" }));
-  const surfaces = ["오늘", "캘린더", "회의", "내 업무", "보고", "프로젝트", "조직", "관계 탐색"];
+  const surfaces = ["홈", "업무", "캘린더", "프로젝트", "회의", "조직", "보고", "관계 탐색"];
   for (const label of surfaces) expect(nav.getByRole("button", { name: label }), label).toBeTruthy();
+  expect(Array.from(container.querySelectorAll(".scax-nav-item")).map((item) => item.textContent)).toEqual(
+    ["알림", "설정", "홈", "업무", "캘린더", "프로젝트", "자료함", "회의", "조직", "보고", "관계 탐색"],
+  );
+  expect(nav.getByRole("button", { name: "자료함" }).hasAttribute("disabled")).toBe(true);
   // 시안에만 있는 메뉴는 만들지 않았다
   for (const absent of ["수신함", "진행 현황", "자료"]) expect(nav.queryByRole("button", { name: absent }), absent).toBeNull();
 

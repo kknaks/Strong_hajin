@@ -4,6 +4,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectTask } from "../../lib/viewModels";
 
 vi.mock("../../lib/api", () => ({
+  getTaskAssignments: vi.fn(),
+  getTaskProposals: vi.fn(),
+  createTaskProposal: vi.fn(),
+  respondTaskProposal: vi.fn(),
+  withdrawTaskProposal: vi.fn(),
+  reopenTask: vi.fn(),
+  getTaskChildren: vi.fn(),
+  withdrawWorkRequest: vi.fn(),
+  hideWorkRequestListEntry: vi.fn(),
+  getWorkRequestAssigneeCandidates: vi.fn(),
   getTask: vi.fn(),
   getTaskMaterials: vi.fn(),
   addChecklistItem: vi.fn(),
@@ -107,7 +117,7 @@ describe("task checklist", () => {
     vi.mocked(api.addChecklistItem).mockResolvedValue(step("i9", "제출하기", 1) as never);
     renderDrawer([]);
     const section = await screen.findByLabelText("체크리스트");
-    expect(within(section).getByText(/아직 단계가 없습니다/)).toBeTruthy();
+    expect(await within(section).findByText(/아직 단계가 없습니다/)).toBeTruthy();
     const field = within(section).getByLabelText("체크리스트 단계");
     fireEvent.change(field, { target: { value: "  제출하기  " } });
 
@@ -161,7 +171,7 @@ describe("task checklist", () => {
     const { onError } = renderDrawer([step("i1", "자료 모으기", 1), step("i2", "초안 쓰기", 2)]);
     const section = await screen.findByLabelText("체크리스트");
 
-    fireEvent.click(within(section).getByRole("button", { name: "자료 모으기 삭제" }));
+    fireEvent.click(await within(section).findByRole("button", { name: "자료 모으기 삭제" }));
     await waitFor(() => expect(section.querySelector('[data-item-id="i1"]')).toBeNull());
     await waitFor(() => expect(within(section).getByText("0/1")).toBeTruthy());
 
@@ -269,7 +279,7 @@ describe("task checklist", () => {
     const { onChanged, onError } = renderDrawer([step("i1", "자료 모으기", 1)]);
     const section = await screen.findByLabelText("체크리스트");
 
-    fireEvent.click(within(section).getByRole("button", { name: "자료 모으기 삭제" }));
+    fireEvent.click(await within(section).findByRole("button", { name: "자료 모으기 삭제" }));
     await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.stringContaining("서버 오류")));
     expect(onChanged).not.toHaveBeenCalled();
   });
@@ -296,8 +306,9 @@ describe("task checklist", () => {
     vi.mocked(api.updateChecklistItem).mockResolvedValue(step("i2", "초안 쓰기", 2, true, 3) as never);
     renderDrawer([step("i1", "자료 모으기", 1, false, 4), step("i2", "초안 쓰기", 2, false, 2)]);
     const section = await screen.findByLabelText("체크리스트");
-
-    fireEvent.click(within(section).getByRole("checkbox", { name: "초안 쓰기" }));
+    /* 구획은 상세를 읽기 «전에» 선다 — 그 안이 「불러오는 중」인 동안에는 단계가 아직 없다.
+       자리를 기다린 것과 값이 도착한 것을 같은 사건으로 쓰면, 느린 기계에서만 깨진다. */
+    fireEvent.click(await within(section).findByRole("checkbox", { name: "초안 쓰기" }));
     await waitFor(() =>
       expect(api.updateChecklistItem).toHaveBeenCalledWith("task-1", "i2", { done: true, expected_version: 2 }),
     );
@@ -310,7 +321,7 @@ describe("task checklist", () => {
     // What the server has by the time the refusal comes back.
     vi.mocked(api.getTask).mockResolvedValue({ ...task, checklist: [step("i1", "다른 사람이 고친 내용", 1, true, 5)] } as never);
 
-    fireEvent.click(within(section).getByRole("checkbox", { name: "자료 모으기" }));
+    fireEvent.click(await within(section).findByRole("checkbox", { name: "자료 모으기" }));
     await waitFor(() => expect(onError).toHaveBeenCalled());
     expect(vi.mocked(onError).mock.calls.at(-1)?.[0]).toContain("다른 사람이 이 단계를 먼저 고쳤습니다");
     // What the server actually has is on screen, not the change that failed.
@@ -322,7 +333,7 @@ describe("task checklist", () => {
     renderDrawer([step("i1", "자료 모으기", 1)]);
     const section = await screen.findByLabelText("체크리스트");
 
-    fireEvent.click(within(section).getByRole("button", { name: "자료 모으기 수정" }));
+    fireEvent.click(await within(section).findByRole("button", { name: "자료 모으기 수정" }));
     const field = within(section).getByLabelText("단계 내용") as HTMLInputElement;
     expect(field.value).toBe("자료 모으기");
     fireEvent.change(field, { target: { value: "자료 정리하기" } });
@@ -395,7 +406,7 @@ describe("task checklist", () => {
   it("is read-only for someone who cannot manage the task", async () => {
     renderDrawer([step("i1", "자료 모으기", 1)], false);
     const section = await screen.findByLabelText("체크리스트");
-    expect((within(section).getByRole("checkbox", { name: "자료 모으기" }) as HTMLInputElement).disabled).toBe(true);
+    expect(((await within(section).findByRole("checkbox", { name: "자료 모으기" })) as HTMLInputElement).disabled).toBe(true);
     expect(within(section).queryByLabelText("체크리스트 단계")).toBeNull();
     expect(within(section).queryByRole("button", { name: "자료 모으기 삭제" })).toBeNull();
   });
@@ -797,7 +808,8 @@ describe("changing who holds the work", () => {
 
     await waitFor(() => expect(api.reassignTask).toHaveBeenCalledTimes(1));
     expect(vi.mocked(api.reassignTask).mock.calls[0]).toEqual(["task-1", 1, "jiho", "제가 이어서 합니다"]);
-    expect(onNotice).toHaveBeenCalledWith(expect.stringContaining("담당자"));
+    // v2: 제안일 뿐 기존 담당은 닫히지 않는다 — 문구도 「바꿨다」가 아니라 「제안했다」다 (V-18)
+    expect(onNotice).toHaveBeenCalledWith(expect.stringContaining("담당 변경을 제안했습니다"));
   });
 
   it("is not offered to someone who may not put people on work", async () => {

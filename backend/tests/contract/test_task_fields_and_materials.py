@@ -83,7 +83,7 @@ def test_start_sets_a_missing_start_date_to_the_seoul_business_day(tmp_path, mon
     assert history["versions"][-1]["snapshot"]["start_date"] == "2026-09-10"
 
 
-def test_request_due_date_flows_into_the_accepted_task(tmp_path) -> None:
+def test_request_due_date_flows_into_the_requested_task(tmp_path) -> None:
     client = _client(tmp_path)
     request = client.post(
         "/api/work-requests",
@@ -92,13 +92,8 @@ def test_request_due_date_flows_into_the_accepted_task(tmp_path) -> None:
     )
     assert request.status_code == 201, request.text
     assert request.json()["due_date"] == "2026-09-12"
-    accepted = client.post(
-        f"/api/work-requests/{request.json()['request_id']}/accept",
-        headers=JIHO,
-        json={"expected_version": request.json()["version"]},
-    )
-    assert accepted.status_code == 200, accepted.text
-    task = client.get(f"/api/tasks/{accepted.json()['task_id']}", headers=JIHO).json()
+    # 수락 단계가 없다 — 요청의 값이 그대로 업무로 흐른다 (WORK-001 Phase 4).
+    task = client.get(f"/api/tasks/{request.json()['task_id']}", headers=JIHO).json()
     assert task["due_date"] == "2026-09-12"
     assert task["description"] == "초안 검토"
     assert task["start_date"] is None

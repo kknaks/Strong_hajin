@@ -144,6 +144,9 @@ def test_the_remaining_lifecycle_moves_are_explicitly_allowed(state: TaskState, 
     transition = _transition(
         _task(state=state, version=2, start_date=date(2026, 9, 10)),
         target,
+        # 취소는 **사유가 필수**다 (SPEC-003 §4 Validation) — 왜 접었는지가 남아야 한다.
+        # 다른 전이는 사유를 묻지 않으므로 실어도 결과가 같다.
+        reason="여기서는 접는 이유가 있다",
     )
 
     assert transition.task.state is target

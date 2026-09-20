@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from datetime import date
 from typing import Literal
 
-from ax_workspace.modules.work.request_errors import WorkRequestAccessDenied, WorkRequestError
+from ax_workspace.modules.work.request_errors import WorkRequestAccessDenied, WorkRequestError, WorkRequestLockedAfterAccept
 
 
 #: 회의에서 승격한 후속 업무의 요청자는 누른 사람이 아니라 회의 시스템이다.
@@ -130,6 +130,12 @@ def revise_work_request(request: WorkRequest, command: ReviseWorkRequest) -> Wor
             raise WorkRequestAccessDenied("only the requester may amend their own request")
         raise WorkRequestError("only the requester may resubmit")
     if command.mode == "amend":
+        if request.state in {"accepted", "cancelled_by_agreement"}:
+            # **수락 뒤에는 한쪽이 혼자 조건을 못 바꾼다** (정책 V-20 · `WORK_REQUEST_LOCKED_AFTER_ACCEPT`).
+            # 이미 받아들인 조건이라 바꾸는 길은 제안–동의 하나다. 어디로 가야 하는지 함께 말한다.
+            raise WorkRequestLockedAfterAccept(
+                "이미 수락된 요청은 수정할 수 없습니다. 조건 변경 제안으로 담당자의 동의를 받으세요"
+            )
         if request.state != "pending":
             raise WorkRequestError("담당자가 판단하고 있는 요청만 수정할 수 있습니다")
         if request.version != command.expected_version:

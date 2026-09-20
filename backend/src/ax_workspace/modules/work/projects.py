@@ -75,11 +75,23 @@ class ProjectRepository(Protocol):
 ASSIGNMENT_KINDS = ("lead", "member")
 
 
+class TaskPredecessorSource(Protocol):
+    """업무 줄이 함께 낼 **활성 선행** (SPEC-001 U-15 「새 조회를 부르지 않는다」).
+
+    **프로젝트 저장소가 아니라 업무 저장소가 갖는다** — 선행은 업무와 업무의 관계이고, 프로젝트는
+    그 관계의 범위일 뿐이다. 여기서 포트로 받는 이유가 그것이다: 같은 질의가 업무 목록과 프로젝트
+    상세에서 두 벌이 되면 한쪽만 고쳤을 때 간트와 상세가 서로 다른 선을 그린다.
+    """
+
+    def predecessors_for(self, task_ids: list[UUID]) -> dict[UUID, list[UUID]]: ...
+
+
 class ProjectApplication:
     """프로젝트를 만들고, 사람을 붙이고, 읽는다. 읽을 수 있는 범위는 언제나 grant가 답한다."""
 
-    def __init__(self, repository: ProjectRepository) -> None:
+    def __init__(self, repository: ProjectRepository, predecessors: "TaskPredecessorSource | None" = None) -> None:
         self._repository = repository
+        self._predecessors = predecessors
 
     # ---- commands ----
 
@@ -210,6 +222,13 @@ class ProjectApplication:
         assignments = self._repository.assignments_for(project.id)
         names = self._repository.member_names([row.member_id for row in assignments])
         tasks = self._repository.tasks_in(project.id)
+        # **새 조회를 만들지 않는다** (SPEC-001 §4 · U-15). 업무 줄이 선행을 함께 내고, 화면은
+        # 그 배열 하나로 연결선을 그린다. 줄마다 따로 묻지 않도록 한 번에 모은다.
+        preceding = (
+            self._predecessors.predecessors_for([task.id for task in tasks])
+            if self._predecessors is not None
+            else {}
+        )
         return {
             **self._view(project),
             # 무엇을 할 수 있는지는 서버가 말한다. 화면이 권한을 추측해 버튼을 그리면 눌러야 아는 거절이 된다.
@@ -226,6 +245,7 @@ class ProjectApplication:
                     "start_date": task.start_date.isoformat() if task.start_date else None,
                     "due_date": task.due_date.isoformat() if task.due_date else None,
                     "parent_task_id": str(task.parent_task_id) if task.parent_task_id else None,
+                    "preceding_task_ids": [str(item) for item in preceding.get(task.id, [])],
                 }
                 for task in tasks
             ],

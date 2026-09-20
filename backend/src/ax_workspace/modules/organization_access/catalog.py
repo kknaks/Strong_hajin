@@ -81,6 +81,12 @@ _MEMBER_CAPABILITIES = (
     "task.accept",
     "work_request.read",
     "work_request.create",
+    # **자기에게 온 요청은 자기가 답한다** (SPEC-003 §5 권한 「수락·거절·협의 — 그 요청의 수신자만」).
+    # W1 에서는 답할 것이 없었으므로(발송이 곧 배정) 구성원에게 이 역량이 없어도 드러나지 않았다.
+    # v2 는 응답 단계를 되돌렸으므로, 없으면 **받은 요청을 수락할 수 없는 사람**이 생긴다.
+    # 이 역량은 「남의 요청을 판단한다」가 아니라 「나에게 온 요청에 답한다」이고, 수신자 검사는
+    # 그 위에 따로 선다(`_decision_target`) — 역량만으로 남의 요청에 답하게 되지 않는다.
+    "work_request.decide",
     "action.read",
     "action.decide",
     "daily_report.read",

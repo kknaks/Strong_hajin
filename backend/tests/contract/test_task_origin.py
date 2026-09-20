@@ -17,6 +17,19 @@ JIHO = {"X-Demo-Persona": "jiho"}
 SORA = {"X-Demo-Persona": "sora"}
 
 
+
+def _accept(client, request: dict, headers=JIHO) -> None:
+    """받는 사람이 수락한다 — 여기서 담당이 확정되고 그 업무가 「내 업무」에 선다.
+
+    W1 에서는 이 단계가 없었다(발송이 곧 배정). v2 가 되돌린 것은 **이 한 단계뿐**이고,
+    아래 테스트들이 보는 관계·이력·완료는 그대로다.
+    """
+    answered = client.post(
+        f"/api/work-requests/{request['request_id']}/accept",
+        headers=headers, json={"expected_version": request["version"]},
+    )
+    assert answered.status_code == 200, answered.text
+
 def _stack(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
@@ -47,16 +60,11 @@ def test_a_task_i_made_for_myself_has_no_counterpart_to_name(tmp_path) -> None:
     assert listed["assignee"] == {"member_id": "mina", "display_name": "민아 (구성원)"}
 
 
-def test_an_accepted_request_names_the_requester_and_survives_a_new_session(tmp_path) -> None:
+def test_a_sent_request_names_the_requester_and_survives_a_new_session(tmp_path) -> None:
     client, _, database_url = _stack(tmp_path)
     request = client.post("/api/work-requests", headers=MINA, json={"title": "요청해서 생긴 업무", "assignee_id": "jiho"}).json()
-    [judgement] = client.get("/api/action-items", headers=JIHO).json()
-    accepted = client.post(
-        f"/api/action-items/{judgement['action_item_id']}/commands/accept",
-        headers=JIHO,
-        json={"expected_version": judgement["expected_version"]},
-    )
-    assert accepted.status_code == 200, accepted.text
+    # v2: 발송은 업무를 세우고 **담당은 수락이 세운다** (SPEC-003 §4). 그 뒤는 예전과 같다.
+    _accept(client, request)
     [task] = client.get("/api/my-work", headers=JIHO).json()
 
     # The assignee sees who asked for the work, not who happened to create the row.
@@ -80,8 +88,8 @@ def test_an_accepted_request_names_the_requester_and_survives_a_new_session(tmp_
 def test_a_direct_assignment_names_the_assigner_not_the_assignee(tmp_path) -> None:
     client, application, database_url = _stack(tmp_path)
     jiho = application.authenticated_principal("jiho")
-    assigned = application.assign_task(jiho, "배정된 업무", "mina")
-    client.post(f"/api/task-assignments/{assigned['assignment_id']}/accept", headers=MINA)
+    assigned = application.assign_task(jiho, "배정된 업무", "mina", idempotency_key="origin-assign-1")
+    # 수락 단계가 없다 — 배정이 성공한 자리에서 이미 민아가 들고 있다 (WORK-001 Phase 4).
     [task] = [row for row in client.get("/api/my-work", headers=MINA).json() if row["title"] == "배정된 업무"]
 
     origin = _origin(client, MINA, task["task_id"])
@@ -129,12 +137,8 @@ def test_the_origin_source_is_hidden_from_someone_who_cannot_read_it(tmp_path) -
     """A Task may be readable while the request behind it is not; the actor label stays, the source does not."""
     client, application, _ = _stack(tmp_path)
     request = client.post("/api/work-requests", headers=MINA, json={"title": "비공개 요청 제목", "assignee_id": "jiho"}).json()
-    [judgement] = client.get("/api/action-items", headers=JIHO).json()
-    client.post(
-        f"/api/action-items/{judgement['action_item_id']}/commands/accept",
-        headers=JIHO,
-        json={"expected_version": judgement["expected_version"]},
-    )
+    # v2: 발송은 업무를 세우고 **담당은 수락이 세운다** (SPEC-003 §4). 그 뒤는 예전과 같다.
+    _accept(client, request)
     [task] = client.get("/api/my-work", headers=JIHO).json()
 
     # Sora holds no relationship to either the task or the request.
@@ -146,16 +150,17 @@ def test_the_origin_source_is_hidden_from_someone_who_cannot_read_it(tmp_path) -
     assert request["request_id"] not in str(client.get("/api/my-work", headers=SORA).json())
 
 
-def test_accepting_the_same_request_twice_creates_exactly_one_task(tmp_path) -> None:
+def test_resending_the_same_request_creates_exactly_one_task(tmp_path) -> None:
+    """한 요청에 업무 하나. 같은 멱등 키의 재전송은 **영수증**이지 두 번째 생성이 아니다."""
     client, _, database_url = _stack(tmp_path)
-    client.post("/api/work-requests", headers=MINA, json={"title": "한 번만 생기는 업무", "assignee_id": "jiho"}).json()
-    [judgement] = client.get("/api/action-items", headers=JIHO).json()
-    body = {"expected_version": judgement["expected_version"]}
-    first = client.post(f"/api/action-items/{judgement['action_item_id']}/commands/accept", headers=JIHO, json=body)
-    second = client.post(f"/api/action-items/{judgement['action_item_id']}/commands/accept", headers=JIHO, json=body)
+    body = {"title": "한 번만 생기는 업무", "assignee_id": "jiho"}
+    first = client.post("/api/work-requests", headers={**MINA, "Idempotency-Key": "once"}, json=body)
+    second = client.post("/api/work-requests", headers={**MINA, "Idempotency-Key": "once"}, json=body)
 
-    assert first.status_code == 200
-    assert second.status_code in {200, 422}
+    assert first.status_code == 201
+    assert second.status_code == 201 and second.json()["request_id"] == first.json()["request_id"]
+    # 재전송은 **한 건**이다 — 수락도 한 번이고, 그 뒤 담당자의 목록에 한 줄만 선다.
+    _accept(client, first.json())
     assert [row["title"] for row in client.get("/api/my-work", headers=JIHO).json()] == ["한 번만 생기는 업무"]
     with __import__("sqlalchemy").create_engine(database_url).begin() as connection:
         count = connection.execute(__import__("sqlalchemy").text("SELECT count(*) FROM tasks WHERE source_work_request_id IS NOT NULL")).scalar_one()
@@ -174,13 +179,9 @@ def test_reading_a_source_requires_the_request_capability_not_just_a_relationshi
     from ax_workspace.platform.persistence import make_session_factory
     from ax_workspace.platform.work_tasks import SqlAlchemyTaskRepository, SqlAlchemyWorkRequestRepository
 
-    client.post("/api/work-requests", headers=MINA, json={"title": "권한 확인용 요청", "assignee_id": "jiho"}).json()
-    [judgement] = client.get("/api/action-items", headers=JIHO).json()
-    client.post(
-        f"/api/action-items/{judgement['action_item_id']}/commands/accept",
-        headers=JIHO,
-        json={"expected_version": judgement["expected_version"]},
-    )
+    request = client.post("/api/work-requests", headers=MINA, json={"title": "권한 확인용 요청", "assignee_id": "jiho"}).json()
+    # v2: 발송은 업무를 세우고 **담당은 수락이 세운다** (SPEC-003 §4). 그 뒤는 예전과 같다.
+    _accept(client, request)
     [task] = client.get("/api/my-work", headers=JIHO).json()
 
     full = application.authenticated_principal("jiho")
@@ -209,12 +210,8 @@ def test_the_requester_can_open_the_derived_task_read_only_and_navigate_back(tmp
     """
     client, _, _ = _stack(tmp_path)
     request = client.post("/api/work-requests", headers=MINA, json={"title": "왕복 확인 요청", "assignee_id": "jiho"}).json()
-    [judgement] = client.get("/api/action-items", headers=JIHO).json()
-    client.post(
-        f"/api/action-items/{judgement['action_item_id']}/commands/accept",
-        headers=JIHO,
-        json={"expected_version": judgement["expected_version"]},
-    )
+    # v2: 발송은 업무를 세우고 **담당은 수락이 세운다** (SPEC-003 §4). 그 뒤는 예전과 같다.
+    _accept(client, request)
     [task] = client.get("/api/my-work", headers=JIHO).json()
 
     # Forward: the requester opens the derived Task without holding it.
@@ -227,7 +224,10 @@ def test_the_requester_can_open_the_derived_task_read_only_and_navigate_back(tmp
     assert client.patch(f"/api/tasks/{task['task_id']}", headers=MINA, json={"expected_version": detail["version"], "title": "몰래 수정"}).status_code in {403, 404}
     assert client.post(f"/api/tasks/{task['task_id']}/start", headers=MINA, json={"expected_version": detail["version"]}).status_code in {403, 404}
     assert client.post(f"/api/tasks/{task['task_id']}/checklist", headers=MINA, json={"text": "몰래 추가"}).status_code in {403, 404}
-    assert client.get(f"/api/tasks/{task['task_id']}/materials", headers=MINA).status_code in {403, 404}
+    # **자료는 이제 열린다** — 요청자는 자기가 부탁한 업무의 연결 자료를 읽는다 (정책 V-21).
+    # 이 줄이 W1 에서 막혀 있던 것이 「상세는 보이는데 파일은 못 연다」의 실체였고, v2 가 닫는 자리다.
+    # **읽기가 열린다고 쓰기가 열리는 것이 아니다** — 바로 위 세 줄(수정·시작·체크리스트)은 그대로 막힌다.
+    assert client.get(f"/api/tasks/{task['task_id']}/materials", headers=MINA).status_code == 200
 
     # Backward: the source names the request it came from, for a principal allowed to read it.
     assert detail["origin"]["source"] == {"type": "work_request", "id": request["request_id"], "title": "왕복 확인 요청"}
@@ -248,13 +248,9 @@ def test_the_task_names_its_current_assignee_from_the_active_assignment(tmp_path
     guess goes wrong.
     """
     client, _, _ = _stack(tmp_path)
-    client.post("/api/work-requests", headers=MINA, json={"title": "담당자 확인 요청", "assignee_id": "jiho"}).json()
-    [judgement] = client.get("/api/action-items", headers=JIHO).json()
-    client.post(
-        f"/api/action-items/{judgement['action_item_id']}/commands/accept",
-        headers=JIHO,
-        json={"expected_version": judgement["expected_version"]},
-    )
+    request = client.post("/api/work-requests", headers=MINA, json={"title": "담당자 확인 요청", "assignee_id": "jiho"}).json()
+    # v2: 발송은 업무를 세우고 **담당은 수락이 세운다** (SPEC-003 §4). 그 뒤는 예전과 같다.
+    _accept(client, request)
     [task] = client.get("/api/my-work", headers=JIHO).json()
 
     # The requester reads the Task: the origin names them, the assignee names the other person.
@@ -270,8 +266,8 @@ def test_a_direct_assigner_can_follow_the_work_they_handed_out_without_holding_i
     """The assigner keeps a read on what they assigned: current assignee and state, and no way to drive it."""
     client, application, _ = _stack(tmp_path)
     jiho = application.authenticated_principal("jiho")
-    assigned = application.assign_task(jiho, "배정한 업무", "mina")
-    client.post(f"/api/task-assignments/{assigned['assignment_id']}/accept", headers=MINA)
+    assigned = application.assign_task(jiho, "배정한 업무", "mina", idempotency_key="origin-assign-2")
+    # 수락 단계가 없다 — 배정이 성공한 자리에서 이미 민아가 들고 있다 (WORK-001 Phase 4).
     [task] = [row for row in client.get("/api/my-work", headers=MINA).json() if row["title"] == "배정한 업무"]
 
     seen = client.get(f"/api/tasks/{task['task_id']}", headers=JIHO)
@@ -459,7 +455,7 @@ def test_the_activity_says_who_did_what_to_whom(tmp_path) -> None:
     from sqlalchemy import select
 
     jiho = application.authenticated_principal("jiho")
-    application.assign_task(jiho, "배정한 업무", "mina")
+    application.assign_task(jiho, "배정한 업무", "mina", idempotency_key="origin-assign-2")
     client.post("/api/work-requests", headers=MINA, json={"title": "요청한 업무", "assignee_id": "jiho"})
     client.post("/api/tasks", headers=MINA, json={"title": "내가 만든 업무"})
 

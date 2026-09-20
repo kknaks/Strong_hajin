@@ -288,6 +288,7 @@ def test_a_meeting_without_a_room_never_calls_the_booking_system(tmp_path) -> No
     assert made.json()["meeting"]["location"] is None
 
 
+@pytest.mark.no_auto_idempotency_key
 def test_room_creation_requires_a_durable_caller_key_before_the_provider_is_called(tmp_path) -> None:
     client, _, gateway = _stack(tmp_path)
     starts = datetime.now(UTC) + timedelta(days=2)

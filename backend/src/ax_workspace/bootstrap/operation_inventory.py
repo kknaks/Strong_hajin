@@ -36,6 +36,12 @@ HTTP_TOOL_TARGET_OVERRIDES = MappingProxyType(
         'DELETE /api/meetings/{meeting_id}/materials/{material_id}': ('meeting_material_detach',),
         'POST /api/meetings/{meeting_id}/shares': ('meeting_share',),
         'DELETE /api/meetings/{meeting_id}/shares/{member_id}': ('meeting_revoke_share',),
+        # 생성 라우트와 도구가 같은 명령을 다른 facade 이름으로 지난다 — 라우트는 `create_task`,
+        # 도구는 `create_self_task` 다(도구 이름은 외부 계약이라 W1 이 바꾸지 않는다).
+        'POST /api/tasks': ('task_create_self',),
+        # 같은 질문이 두 이름으로 선다 — REST 는 `children`, 도구는 이미 있던 `task_subtask_list` 다.
+        # 같은 판정(`_hierarchy_view`)을 지나므로 새 도구를 만들지 않는다.
+        'GET /api/tasks/{task_id}/children': ('task_subtask_list',),
         'POST /api/task-assignments/{assignment_id}/accept': ('action_item_command',),
         'POST /api/task-assignments/{assignment_id}/decline': ('action_item_command',),
         'POST /api/tasks/{task_id}/block': ('task_block',),

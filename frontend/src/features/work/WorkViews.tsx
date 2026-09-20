@@ -391,18 +391,27 @@ export function TaskTimeline({ tasks, onOpen }: { tasks: DirectTask[]; onOpen: (
   const days = Array.from({ length: 14 }, (_, index) => addDays(windowStart, index));
   const windowEnd = days[days.length - 1];
 
+  const months = days.reduce<Array<{ label: string; start: number; length: number }>>((groups, day, index) => {
+    const [year, month] = day.split("-").map(Number);
+    const label = `${year}년 ${month}월`;
+    const last = groups.at(-1);
+    if (last?.label === label) last.length += 1;
+    else groups.push({ label, start: index, length: 1 });
+    return groups;
+  }, []);
+
   return (
-    <div className="timeline">
+    <div className="timeline work-timeline">
       <div className="calendar-toolbar">
         <div className="stepper">
           <IconButton label="이전 2주" onClick={() => setOffset((value) => value - 1)}>
-            ‹
+            <Icon name="chevron-left-small" size={20} />
           </IconButton>
           <b>
             {formatDate(windowStart)} – {formatDate(windowEnd)}
           </b>
           <IconButton label="다음 2주" onClick={() => setOffset((value) => value + 1)}>
-            ›
+            <Icon name="chevron-right-small" size={20} />
           </IconButton>
         </div>
         <div className="timeline-legend">
@@ -412,11 +421,16 @@ export function TaskTimeline({ tasks, onOpen }: { tasks: DirectTask[]; onOpen: (
           <span className="status open">시작 전</span>
         </div>
       </div>
+      <div className="timeline-scroll">
       <div className="timeline-grid" style={{ ["--days" as string]: days.length }}>
+        <div className="timeline-months">
+          <span className="timeline-label-col">기간</span>
+          {months.map((month) => <span key={month.label} title={month.label} style={{ gridColumn: `${month.start + 2} / span ${month.length}` }}>{month.label}</span>)}
+        </div>
         <div className="timeline-head">
           <span className="timeline-label-col">업무명</span>
           {days.map((day) => (
-            <span className={day === today ? "today" : ""} key={day}>
+            <span aria-current={day === today ? "date" : undefined} className={day === today ? "today" : ""} key={day} title={formatDate(day)}>
               {Number(day.slice(8))}
             </span>
           ))}
@@ -447,6 +461,7 @@ export function TaskTimeline({ tasks, onOpen }: { tasks: DirectTask[]; onOpen: (
                 ))}
                 {visible && (
                   <button
+                    aria-label={`${task.title} · ${formatDate(span!.start)} – ${formatDate(span!.end)} · ${taskStateLabel[task.state]}`}
                     className={`timeline-bar ${task.state}`}
                     onClick={() => onOpen(task)}
                     style={{ gridColumn: `${startIndex + 1} / ${endIndex + 2}` }}
@@ -461,6 +476,7 @@ export function TaskTimeline({ tasks, onOpen }: { tasks: DirectTask[]; onOpen: (
           );
         })}
       </div>
+      </div>
     </div>
   );
 }
@@ -471,8 +487,8 @@ const kanbanColumns: Array<{ state: TaskState; title: string }> = [
   { state: "open", title: "시작 전" },
   { state: "in_progress", title: "진행 중" },
   { state: "blocked", title: "막힘" },
-  // Reported and waiting on the person who asked: in flight, not finished.
-  { state: "completion_submitted", title: "완료 확인 대기" },
+  /* 「완료 확인 대기」 칸은 없다 — 그것은 상태가 아니라 `derived.approval` 이다(SPEC-003 §2.2).
+     보고가 들어간 업무는 밖으로 `done` 이라 「완료」 칸에 서고, 확인 대기인지는 행의 배지가 말한다. */
   { state: "done", title: "완료" },
 ];
 
@@ -488,7 +504,8 @@ export function TaskKanban({
   canManage: boolean;
   busy: boolean;
   onOpen: (task: DirectTask) => void;
-  onTransition: (task: DirectTask, action: TaskAction, reason?: string) => Promise<void>;
+  /** 전이를 보낸다. 돌려주는 값(받아들여졌나)은 이 자리가 쓰지 않는다 — 사유 자리만 그것을 읽는다. */
+  onTransition: (task: DirectTask, action: TaskAction, reason?: string) => Promise<boolean | void>;
   onInvalidMove: (message: string) => void;
 }) {
   const [dragging, setDragging] = useState<string | null>(null);

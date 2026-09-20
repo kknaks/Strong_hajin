@@ -1,0 +1,16 @@
+{
+  "observed_at": "2026-09-16T01:07:06.957255+00:00",
+  "head": "8973791982228f9b5400c2bcaba7e1a9bdda97d7",
+  "files": {
+    "backend/src/ax_workspace/platform/persistence.py": "63659913e2a2b8f32d660bfcc12629f653bd115f9df0da8169c4b7f6fcf406f2",
+    "backend/src/ax_workspace/platform/work_tasks.py": "c3fe500d74c1e648c928b6334b5eec56ccf94ec760296ca53c14f28e28536447",
+    "backend/src/ax_workspace/modules/work/application.py": "f8ab31189e99b6b3c530935436524c35a402f447b13a9965a554823f74b7ca8d",
+    "backend/src/ax_workspace/modules/work/requests.py": "e980f3cf01b2c84c3bf2371198ed94938d987a47555d65e4f44f45589607b76f",
+    "backend/src/ax_workspace/modules/work/assignments.py": "61c6ec8a33d2bfef29d4fee8560629da9b9df2e69d24a5f1aec5c63d7d12e51b",
+    "backend/src/ax_workspace/modules/work/creation.py": "99fbb7b3e233eb8db189c19a0ad9cf116159b0e4cb235fd787c0b6ef96f7d6a1",
+    "backend/src/ax_workspace/modules/work/creation_commands.py": "62a0144febf9a76ee7f68bb0dc687e40e0aa74c42425c267ff3c6faf700a2a58",
+    "backend/src/ax_workspace/bootstrap/application.py": "366a50e72201b6c7b7046988128d0d827f2a21e0e746df07c35ef80bc642e156",
+    "backend/src/ax_workspace/entrypoints/http.py": "ca075699cc5a924596a39c0d0967fac728f7b9492e03a91d61411ebd98f612dc"
+  },
+  "git_status": " M backend/src/ax_workspace/bootstrap/application.py\n M backend/src/ax_workspace/entrypoints/http.py\n M backend/src/ax_workspace/entrypoints/mcp.py\n M backend/src/ax_workspace/modules/meetings/followups.py\n M backend/src/ax_workspace/modules/work/assignments.py\n M backend/src/ax_workspace/modules/work/errors.py\n M backend/src/ax_workspace/modules/work/requests.py\n M backend/src/ax_workspace/modules/work/task_creation.py\n M backend/src/ax_workspace/platform/actions.py\n M backend/src/ax_workspace/platform/persistence.py\n M backend/src/ax_workspace/platform/work_tasks.py\n?? backend/src/ax_workspace/modules/work/creation.py\n?? backend/src/ax_workspace/modules/work/creation_commands.py\n?? definition.md\n?? docs/work-code-db-audit-2026-09-16-head-tests.txt\n?? docs/work-code-db-audit-2026-09-16-schema.json\n?? docs/work-code-db-audit-2026-09-16-working-tests.txt\n?? docs/work-code-db-audit-2026-09-16.md\n?? frontend/frontend/\n?? lifecycle.md\n"
+}

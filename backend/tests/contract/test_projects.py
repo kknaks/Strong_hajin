@@ -343,7 +343,8 @@ def test_a_project_member_sees_the_parts_they_could_already_open(client: TestCli
     body = seen.json()
     assert body["access"] == "read_only"
     assert [child["title"] for child in body["children"]] == ["홈페이지 디자인 기획"]
-    assert body["child_progress"] == {"done": 0, "total": 1}
+    # v2: 하위 진행이 넷으로 갈린다 — `blocking` 이 0이어야 상위를 끝낼 수 있다 (SPEC-003 §4 Data).
+    assert body["child_progress"] == {"done": 0, "blocking": 1, "cancelled": 0, "total": 1}
     # 안을 열어 준 것은 아니다: 그 사람의 작업 공간인 체크리스트는 여전히 오지 않는다.
     assert "checklist" not in body
 
@@ -383,6 +384,7 @@ def test_work_can_sit_on_a_project_before_anyone_holds_it(client: TestClient) ->
     assert handed.json()["status"] == "pending"
     assert task_id not in {row["task_id"] for row in client.get("/api/my-work", headers=MINA).json()}
     # 붙였다는 사실이 그 사람의 판단함에 닿는다. 닿지 않으면 수락할 방법이 없다.
+    # **담당자 변경은 신규 생성이 아니다** — 별도 명령·별도 권한이고 W1 이 그 회차를 걷지 않았다 (WORK-001 Scope).
     [item] = [row for row in client.get("/api/action-items", headers=MINA).json() if row["subject"] == "플레이스 썸네일 이미지 제작"]
     accepted = client.post(
         f"/api/action-items/{item['action_item_id']}/commands/accept",

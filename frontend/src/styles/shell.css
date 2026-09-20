@@ -189,3 +189,8 @@ span.scax-side-nav__avatar{display:flex;align-items:center;justify-content:cente
    로 «밖에» 나갔으므로 되감을 것이 없다 — 그대로 두면 띠의 위 50px 이 스크롤 칸 위로 잘려 나간다.
    가로 -40px/40px 은 아래 .scax-page-scroll 의 좌우 여백과 짝이 맞아 그대로 둔다. */
 .scax-page-scroll > .hero:first-child{margin-top:0}
+
+/* 업무 표는 자체 탭·칩·행의 24px 여백을 쓴다. */
+.scax-page-scroll--work{padding:0 0 152px}
+.scax-page-scroll--work > .my-work-page{margin-top:0}
+.my-work-page__filters{display:flex;align-items:center;gap:var(--scax-space-200)}
