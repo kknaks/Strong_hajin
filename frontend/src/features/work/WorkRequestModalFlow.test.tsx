@@ -18,6 +18,8 @@ import type { DirectTask, WorkRequest } from "../../lib/viewModels";
  */
 
 vi.mock("../../lib/api", () => ({
+  // 우 레일의 회의 절반 (증보 K23) — 업무 목록과 **다른 질의**다.
+  getCalendar: vi.fn().mockResolvedValue([]),
   getMyWork: vi.fn(),
   getTask: vi.fn(),
   getTaskHistory: vi.fn(),

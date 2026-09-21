@@ -27,6 +27,42 @@ class MeetingStateConflict(MeetingError):
     """The command is well formed but the meeting is not in a status that allows it."""
 
 
+class MeetingTimeOverlap(MeetingError):
+    """주최자 또는 참석자의 일정과 시간이 겹친다 (SPEC-004 `MEETING_TIME_OVERLAP`, 409 · 증보 K22).
+
+    **반열림 `[시작, 끝)`** 이다 — 11:00 에 끝나는 일정과 11:00 에 시작하는 회의는 둘 다 선다.
+    막는 것은 **주최자 + 활성 참석자 전원**의 시간이고, 그 근거는 「참석 회의는 **이미 그 사람
+    캘린더에 선다**」다 — 안 보이는 것을 근거로 막는 것이 아니다 (증보 K25 가 그 집합을 주최·참석으로
+    좁혔다: 공유받은 회의와 조직 범위로 보이는 옆 팀 회의는 블록이 아니다).
+
+    **이름은 말하고 내용은 말하지 않는다.** 남의 시간은 **busy/free 만** 읽으므로 이 문장이 낼 수
+    있는 것은 사람 이름까지다 — 제목은 애초에 블록에 실려 오지 않는다.
+
+    **`quick-start` 는 이 검사를 지나지 않는다** — 지금 당장 시작하는 것이라 막으면 못 쓴다.
+    **사외 참석자는 대상이 아니다** — 계정이 없어 일정이 없다.
+
+    **멱등 원장과의 관계 — 여기가 그 정본이다.** 회의실을 고른 생성은 `Idempotency-Key` 가 **필수**이고
+    (`bootstrap/application.py` 의 `_room_creation_request_key`) **생성 멱등 원장을 지난다.**
+    그 영수증이 이 검사보다 **뒤**에 있으므로, 조립 층이 **그 키가 이미 세운 회의를 검사에서 뺀다**
+    (`bootstrap` 이 넘기는 `ignore_meeting_id`). 빼지 않으면 재전송이 **자기가 1차 시도에 세운 회의와
+    겹쳐** `409` 를 받는다. **방을 안 고른 생성과 시각 변경에는 멱등 원장이 없다.**
+
+    **잔여 틈 (Open Issue — 후속).** 빼는 것은 **그 회의 하나**뿐이다. 1차 시도와 재전송 **사이에
+    다른 블록이 생기면**(끝난 업무를 되열거나 `quick_start` 로 그 시간을 덮으면) 재전송이 영수증 대신
+    겹침 `409` 를 받는다. 배정 쪽(`modules/work/creation_commands.py`)은 **원장 조회 → 영수증 →
+    검사** 순서라 그 틈이 없다 — 회의 쪽을 같은 순서로 맞추는 것은 **잠금 순서를 바꾸는 일**이라
+    방예약 경로의 위험이 실재하고, 도달 경로도 좁아 **후속으로 남긴다.**
+    """
+
+
+class MeetingRangeIncomplete(MeetingError):
+    """회의 목록에 `from`·`to` 중 하나만 왔다 (SPEC-004 `MEETING_RANGE_INCOMPLETE`, 422).
+
+    **두 파라미터는 같이 온다.** 한쪽만으로는 「어느 기간」이 성립하지 않는다 — 없으면 기존 동작
+    (`upcoming`/`past` + 커서) 그대로다. 뒤집힌 기간(`from > to`)도 같은 거절이다.
+    """
+
+
 class MeetingStaleWrite(MeetingError):
     """다른 탭이 먼저 저장했다 — 덮어쓰지 않고 지금 있는 것을 함께 돌려준다 (SPEC-004 §8-9).
 

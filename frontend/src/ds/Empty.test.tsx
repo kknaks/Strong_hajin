@@ -41,6 +41,29 @@ describe("Empty", () => {
     expect(screen.getByRole("button", { name: "첫 업무 만들기" })).toBeTruthy();
   });
 
+  /* G-CAL-02 (WORK-004): `icon` 은 **더한 것**이다 — 안 넘기면 예전 그대로 `variant` 가 고른다.
+     이 둘이 같이 있어야 「소비처 19곳을 고치지 않는다」가 검사로 지켜진다. */
+  it("아이콘을 안 주면 variant 가 고르던 글리프 그대로다", () => {
+    const { container } = render(<Empty title="비었습니다" />);
+    const filtered = render(<Empty title="조건에 맞는 것이 없습니다" variant="filter" />);
+    expect(container.querySelector(".scax-empty__icon svg")).toBeTruthy();
+    expect(filtered.container.querySelector(".scax-empty__icon svg")?.innerHTML).not.toBe(
+      container.querySelector(".scax-empty__icon svg")?.innerHTML,
+    );
+  });
+
+  it("아이콘을 주면 그것을 그린다 — 「못 불러왔다」 자리는 그래도 경고 글리프를 지킨다", () => {
+    const chosen = render(<Empty icon="calendar" title="해당 일정이 없습니다" />);
+    const fallback = render(<Empty title="해당 일정이 없습니다" />);
+    expect(chosen.container.querySelector(".scax-empty__icon svg")?.innerHTML).not.toBe(
+      fallback.container.querySelector(".scax-empty__icon svg")?.innerHTML,
+    );
+    const failed = render(<Empty icon="calendar" title="불러오지 못했습니다" variant="error" />);
+    expect(failed.container.querySelector(".scax-status-note__icon svg")?.innerHTML).toBe(
+      render(<Empty title="불러오지 못했습니다" variant="error" />).container.querySelector(".scax-status-note__icon svg")?.innerHTML,
+    );
+  });
+
   it("아이콘 자리는 두되 읽을 것을 두지 않는다 — 글리프는 보조기술에서 감춘다", () => {
     const { container } = render(<Empty title="비었습니다" />);
     const slot = container.querySelector(".scax-empty__icon");

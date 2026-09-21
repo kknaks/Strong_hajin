@@ -455,7 +455,9 @@ export default function App() {
             밀지 않고, 성공과 실패가 같은 자리에서 읽힌다. */}
         {/* 셸이 overflow:hidden 이라 본문이 자기 스크롤 기둥을 갖는다 (바퀴 2 D-B).
            회의는 «한 화면에 갇히는» 화면이라 스크롤은 안쪽 패널이 갖는다 — 여기서는 잡지 않는다. */}
-        <div className={surface === "meetings" ? "scax-page-scroll scax-page-scroll--fixed" : surface === "work" ? "scax-page-scroll scax-page-scroll--work" : "scax-page-scroll"}>
+        {/* 캘린더도 회의처럼 «한 화면에 갇히는» 화면이다 — 격자가 칸을 꽉 채우고 주 뷰의 시간 격자가
+              자기 안에서 스크롤한다(`styles/calendar.css` 의 `.scax-cal-main`). 바깥이 스크롤하면 주인이 둘이 된다. */}
+          <div className={surface === "meetings" || surface === "calendar" ? "scax-page-scroll scax-page-scroll--fixed" : surface === "work" ? "scax-page-scroll scax-page-scroll--work" : "scax-page-scroll"}>
           {surface === "today" && (
             <TodayPage
               {...pageProps}
@@ -465,7 +467,16 @@ export default function App() {
               onNavigate={setSurface}
             />
           )}
-          {surface === "calendar" && <CalendarPage {...pageProps} {...sharedWorkProps} />}
+          {/* 바퀴 8-B 가 이 화면을 본문 한 칸으로 두었던 것을 WORK-004 FE-1 이 세 칸으로 넓혔다 —
+              좌측 일정 레일이 셸의 AppBody 슬롯에 선다(오른쪽은 비운다). 선례는 아래 MyWorkPage 다. */}
+          {surface === "calendar" && (
+            <CalendarPage
+              {...pageProps}
+              {...sharedWorkProps}
+              onRegisterHeaderActions={registerSurfaceActions}
+              onRegisterRails={registerSurfaceRails}
+            />
+          )}
           {surface === "meetings" && (
             <MeetingWorkspace
               canCreateWorkRequests={has("work_request.create")}

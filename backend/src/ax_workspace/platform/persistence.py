@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Identity, Index, Integer, JSON, String, Text, Uuid, UniqueConstraint, create_engine, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Identity, Index, Integer, JSON, String, Text, Time, Uuid, UniqueConstraint, create_engine, text
 from sqlalchemy import text as sql_text  # `text` 를 열 이름으로 쓰는 클래스 안에서 부를 별칭
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
@@ -1038,6 +1038,60 @@ class TaskPredecessorRecord(Base):
     #: 뗀 시각. 비어 있으면 **활성**이고, 활성 행만 투영과 시작 게이트가 본다.
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     released_by: Mapped[str | None] = mapped_column(String(100))
+
+
+class TaskScheduleRecord(Base):
+    """업무 하루치의 **시간 한 칸** — 날짜 단위로 사는 업무 위에 얹히는 시간 축 (SPEC-004 §4 Data Contract).
+
+    **업무에 완전히 종속한다.** 제목도 담당도 복사하지 않는다 — 복사하면 업무 제목이 바뀔 때 캘린더가
+    조용히 낡는다. 자기 가시성 규칙도 갖지 않는다: 업무를 읽을 수 있으면 배정도 읽을 수 있다.
+    범용 `schedules` 표가 아니다 — 회의의 시간은 `meetings` 가 그대로 갖는다 (DEC-003 §A).
+
+    **행을 지우지 않고 닫는다** (`released_at`). 선행·참고 연결이 같은 이유로 같은 모양을 쓴다.
+    닫는 행위자를 남기지 않는 것만 다르다 — 닫기는 **시스템 판정**이라 member id 가 없고,
+    **왜**는 `released_reason` 이 말한다 (DEC-003 §J).
+
+    데이터베이스가 답하는 것과 application 이 답하는 것을 가른다.
+
+    - **하루 한 칸**은 부분 unique 가 답한다 — 두 명령이 같은 (업무, 날)에 동시에 들어오면
+      application 검사만으로는 둘 다 「없다」를 보는 틈이 남는다 (§5 동시성).
+      **닫힌 행은 유일성에서 빠진다** — 그래서 닫힌 날에 다시 배정할 수 있다.
+    - **종료가 시작보다 뒤**라는 것은 CHECK 이 답한다 — 어떤 상태에서도 참이 될 수 없는 값이다
+      (`TaskPredecessorRecord` 의 자기참조 금지와 같은 자리). 사용자 계약은 그대로 422 다.
+    - **기간 안인가는 application 이 답한다** — 업무의 날짜를 읽어야 해서 DB 제약으로 못 내린다
+      (`modules/work/schedule.py`).
+
+    **회차의 주인은 이 행이다** (증보 K8). 배정만 바뀌는데 업무 회차를 올리면 다른 화면의 낙관적
+    잠금이 멋대로 깨진다. 30분 눈금은 **박지 않는다** — 나중에 15분으로 바꿀 때 마이그레이션이 필요해진다.
+    """
+
+    __tablename__ = "task_schedules"
+    __table_args__ = (
+        Index(
+            "uq_task_schedules_active",
+            "task_id",
+            "on_date",
+            unique=True,
+            sqlite_where=text("released_at IS NULL"),
+            postgresql_where=text("released_at IS NULL"),
+        ),
+        CheckConstraint("ends_at > starts_at", name="ck_task_schedules_time_order"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"), nullable=False, index=True)
+    #: 배정된 날. 업무의 기간 안이어야 한다 — 그 기간을 읽는 법은 네 경우다 (증보 K7·K11).
+    on_date: Mapped[date] = mapped_column(Date, nullable=False)
+    starts_at: Mapped[time] = mapped_column(Time, nullable=False)
+    ends_at: Mapped[time] = mapped_column(Time, nullable=False)
+    #: **이 배정 자신의 회차.** 업무의 회차가 아니다 (증보 K8). 시각 변경마다 +1.
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    #: 닫힌 시각. 비어 있으면 **살아 있다**. 되살아나는 전이는 없다.
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: `out_of_range` · `task_dates_cleared` **둘뿐이다** (`modules/work/schedule.py`).
+    released_reason: Mapped[str | None] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class TaskChecklistItemRecord(Base):

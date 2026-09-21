@@ -31,6 +31,10 @@ def test_stack_and_acceptance_targets_start_every_required_process() -> None:
     assert "to_regclass('action_material_drafts')" in recipe
     assert "to_regclass('notifications')" in recipe
     assert "grep -qx 'notifications'" in recipe
+    # 시간 배정 표지 — 표지와 **그 표지를 세는 grep 패턴**을 함께 본다 (WORK-004 Phase BE-2).
+    # 한쪽만 고치면 psql 이 내는 열 수와 grep 이 기다리는 글자가 어긋나 preflight 가 영원히 거절한다.
+    assert "to_regclass('task_schedules')" in recipe
+    assert "task_checklist_items|task_schedules|meeting_transcripts" in recipe
     # 회의 쪽 표지는 `meeting_transcripts` 하나다 — main 이 보던 옛 회의 열들(meetings.description·source_* ·
     # meeting_note_versions.source_status)은 SCAX-SPEC-004 가 그 모델을 대체하면서 사라졌다. 그것을 계속
     # 확인하면 스키마가 멀쩡해도 local-stack 이 영원히 거절한다.

@@ -4,8 +4,16 @@ from __future__ import annotations
 from ax_workspace.modules.work.task_results import TaskCompletionResult, TaskReferenceResult, TaskReferenceReleaseResult
 
 from ax_workspace.modules.work.task_results import TaskDetailResult, TaskHistoryDiffResult, TaskHistoryResult, TaskListEntry
+from ax_workspace.modules.work.task_results import (
+    CalendarScheduleEntry,
+    CalendarTaskRow,
+    TaskDateMutationResult,
+    TaskScheduleReleaseView,
+    TaskScheduleView,
+)
 
 from ax_workspace.modules.work.errors import (
+    CalendarRangeInvalid,
     InvalidTaskTransition,
     TaskApproverInvalid,
     TaskApproverLocked,
@@ -29,10 +37,26 @@ from ax_workspace.modules.work.errors import (
     TaskParentUnassigned,
     TaskReopenForbidden,
     TaskReopenParentDone,
+    TaskScheduleDayTaken,
+    TaskScheduleForbidden,
+    TaskScheduleInvalidRange,
+    TaskScheduleOutOfRange,
+    TaskScheduleOverlap,
+    TaskScheduleTaskClosed,
+    TaskScheduleTaskUnscheduled,
+    TaskScheduleVersionConflict,
+)
+from ax_workspace.modules.time_blocks import TimeBlockRepository, office_span
+from ax_workspace.modules.work.schedule import (
+    TaskSpan,
+    is_valid_time_range,
+    is_within_span,
+    release_reason_for,
+    task_span,
 )
 from ax_workspace.modules.work.task_values import validate_schedule
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from typing import Any, Protocol
 from uuid import UUID
 from ax_workspace.modules.work.task_creation import TaskCreateInput
@@ -64,6 +88,10 @@ from ax_workspace.modules.organization_access.domain import (
 
 
 _TASK_TIMEZONE = ZoneInfo("Asia/Seoul")
+
+#: 닫힌 것이 없다. **날짜가 안 바뀐 명령도 이 묶음을 낸다** — 「말할 것이 없다」를
+#: 화면이 읽을 수 있어야 한다 (증보 K3).
+_NO_SCHEDULE_RELEASE: "TaskScheduleReleaseView" = {"released_count": 0, "reason": None}
 
 
 class TaskRepository(Protocol):
@@ -130,6 +158,18 @@ class TaskRepository(Protocol):
     def record_activity(self, task: Any, actor_id: str, event_kind: str, summary: str, *, before_ref: str | None = None, reason: str | None = None) -> None: ...
 
 
+class TaskScheduleRepository(Protocol):
+    """배정의 조회·쓰기. **조회는 기본으로 살아 있는 행만** 낸다 (`platform/task_schedules.py`)."""
+
+    def active_on(self, task_id: UUID, on_date: date, *, lock: bool = False) -> Any | None: ...
+    def schedule(self, schedule_id: UUID, *, lock: bool = False) -> Any | None: ...
+    def in_range(self, task_ids: list[UUID], span_from: date, span_to: date) -> dict[UUID, list[Any]]: ...
+    def active_for(self, task_id: UUID) -> list[Any]: ...
+    def create(self, task_id: UUID, on_date: date, starts_at: time, ends_at: time) -> Any: ...
+    def retime(self, schedule: Any, starts_at: time, ends_at: time) -> Any: ...
+    def release(self, schedule: Any, reason: str) -> None: ...
+
+
 class ActionSourcePort(Protocol):
     """The authorized Action lookup a Task's origin needs. Passing anything else is a type error, not a 500."""
 
@@ -177,8 +217,14 @@ class TaskApplication:
         member_scope: MemberScopePort | None = None,
         projects: ProjectScopePort | None = None,
         directory: MemberDirectoryPort | None = None,
+        schedules: TaskScheduleRepository | None = None,
+        time_blocks: TimeBlockRepository | None = None,
     ) -> None:
         self.repository = repository
+        # 시간 배정 — **업무의 자식**이라 자기 가시성 규칙을 갖지 않는다 (SPEC-004 §4 Data Contract).
+        self._schedules = schedules
+        # 겹침을 읽는 **문 하나**. 두 표를 함께 조회한다 — 회의 쪽도 같은 문을 쓴다 (증보 K22).
+        self._time_blocks = time_blocks
         # 참조자로 적힌 사람이 실제로 있는 구성원인가. 요청이 쓰는 것과 같은 명부다.
         self._directory = directory
         # **선행 요약이 자기 자신을 다시 부르는 것을 막는 빗장** (`predecessor_views` 참조).
@@ -461,7 +507,7 @@ class TaskApplication:
         principal: Principal,
         expected_version: int,
         changes: dict[str, Any],
-    ) -> TaskMutationResult:
+    ) -> TaskDateMutationResult:
         """Owner-only field edits (title, description, schedule); no approval gate and no state change."""
         self._require(principal, TASK_SELF_MANAGE)
         task = self.repository.task(task_id, str(principal.id), lock=True)
@@ -516,15 +562,19 @@ class TaskApplication:
         start_date = changes.get("start_date", task.start_date)
         due_date = changes.get("due_date", task.due_date)
         validate_schedule(start_date, due_date)
+        # **D1 의 첫 자리** (SPEC-004 §5). 날짜가 실제로 바뀐 경우에만 배정을 검증해 밖인 것을 닫는다 —
+        # 새 날짜를 먼저 싣고 나서 묻는다. **닫기와 이 수정이 한 transaction** 이다.
+        dates_before = (task.start_date, task.due_date)
         task.start_date = start_date
         task.due_date = due_date
+        released = self._schedule_release_for(task, dates_before)
         task.version += 1
         self.repository.touch(task)
         self.repository.record_activity(
             task, str(principal.id), "task.updated", f"업무 내용 수정: {task.title} ({', '.join(sorted(changes))})",
             before_ref=f"task:{task.id}@{expected_version}",
         )
-        return self._view(task, principal)
+        return {**self._view(task, principal), "schedule_release": released}
 
     def _require_project_unlocked(self, task: Any) -> None:
         """선행이 남아 있으면 그 업무의 프로젝트는 잠겨 있다 (`WORK_PROJECT_LOCKED_BY_PREDECESSORS`).
@@ -535,6 +585,219 @@ class TaskApplication:
             raise TaskProjectLockedByPredecessors(
                 f"선행업무를 먼저 비워야 프로젝트를 바꿀 수 있습니다: {task.title}"
             )
+
+    # ---- D1 — 업무의 날짜가 바뀌는 **세 자리**가 함께 부르는 자리 (SPEC-004 §5 · 증보 K3) ----
+
+    def _release_schedules_outside(self, task: Any) -> TaskScheduleReleaseView:
+        """새 기간 밖의 배정을 닫는다. **부르는 쪽이 「날짜가 바뀌었다」를 이미 판정한 뒤**다.
+
+        **공통 지점 `repository.touch()` 에 걸지 않는다** — 날짜와 무관한 변경에도 아홉 번 불리므로
+        거기 걸면 「날짜가 바뀌었나」를 이 함수가 스스로 판정해야 하고 **틀리면 조용히 안 돈다** (§J).
+        그래서 세 자리가 **명시적으로** 부른다.
+
+        **검증과 저장이 한 transaction 에 있다** — 조립 층이 명령 하나를 한 session 에 싣는다.
+        나뉘면 「배정은 닫혔는데 업무 날짜는 안 바뀐」 상태가 **복구 경로 없이** 남는다.
+
+        **사유는 둘뿐이다.** 날짜를 전부 지웠으면 `task_dates_cleared`, 기간은 있는데 그 밖이면
+        `out_of_range` 다 — 한쪽만 지운 것은 남은 한쪽을 그 날 하루로 읽으므로 **여전히 기간이 있고**
+        `out_of_range` 로 간다 (증보 K7). 그래서 셋째 사유가 생기지 않는다.
+        """
+        span = task_span(task.start_date, task.due_date)
+        schedules = self._schedule_repository()
+        doomed = [row for row in schedules.active_for(task.id) if not is_within_span(span, row.on_date)]
+        if not doomed:
+            return _NO_SCHEDULE_RELEASE
+        reason = release_reason_for(span)
+        for row in doomed:
+            schedules.release(row, reason)
+        return {"released_count": len(doomed), "reason": reason}
+
+    def _schedule_release_for(
+        self, task: Any, before: tuple[date | None, date | None]
+    ) -> TaskScheduleReleaseView:
+        """**날짜가 실제로 바뀌었을 때만** 검증을 돌린다.
+
+        안 바뀌었으면 저장소를 건드리지 않고 `0` 건을 낸다 — **0 을 내는 것도 계약이다** (증보 K3).
+        """
+        if (task.start_date, task.due_date) == before:
+            return _NO_SCHEDULE_RELEASE
+        return self._release_schedules_outside(task)
+
+    # ---- 시간 배정 — 날짜 단위로 사는 업무 위에 얹히는 시간 축 (SPEC-004) ----
+
+    def _schedule_repository(self) -> TaskScheduleRepository:
+        if self._schedules is None:  # pragma: no cover - 조립이 빠진 경우에만 닿는다
+            raise TaskError("시간 배정 저장소가 조립되지 않았습니다")
+        return self._schedules
+
+    def _time_block_repository(self) -> TimeBlockRepository:
+        if self._time_blocks is None:  # pragma: no cover - 조립이 빠진 경우에만 닿는다
+            raise TaskError("시간 블록 조회가 조립되지 않았습니다")
+        return self._time_blocks
+
+    def _require_free_time(
+        self, principal: Principal, on_date: date, starts_at: time, ends_at: time, *, ignoring: UUID | None = None
+    ) -> None:
+        """그 시간이 **비어 있나** — 배정 생성·시각 변경이 함께 지나는 **한 자리** (증보 K22).
+
+        **나의 시간만 본다.** 남의 일정은 애초에 조회 대상이 아니다 — 회의 쪽의 「주최자 + 참석자
+        전원」은 Phase BE-4 이고, 같은 문(`overlapping_blocks`)에 `member_ids` 를 더 넣는 것으로 된다.
+
+        **반열림 `[시작, 끝)`** 이라 경계가 닿는 것은 통과한다 — 11:00 에 끝나는 일정이 있어도
+        11:00 시작 배정이 선다. 그 판정은 이 함수가 아니라 **문 안에 있다**: 두 자리에 있으면
+        두 규칙이 된다.
+
+        `ignoring` 은 **고치는 중인 그 배정 자신**이다. 빼지 않으면 10:00–11:00 을 10:30–11:30 으로
+        옮기는 것이 자기와 겹쳐 거절된다.
+
+        **검사와 저장이 한 트랜잭션에 있다** — 조립 층이 명령 하나를 한 session 에 싣는다. 그래도
+        **틈이 남는다**: 두 표에 걸쳐 있어 제약을 걸 수 없으므로 동시 요청 둘이 각각 통과할 수 있다.
+        **「하루 한 칸」과 같은 세기의 보장이 아니다** (SPEC §2.9).
+        """
+        blocks = self._time_block_repository().overlapping_blocks(
+            frozenset({str(principal.id)}),
+            office_span(on_date, starts_at, ends_at),
+            ignore_schedule_id=ignoring,
+        )
+        if blocks:
+            raise TaskScheduleOverlap("이미 다른 일정이 있는 시간입니다")
+
+    def _assignable_task(self, principal: Principal, task_id: UUID, *, lock: bool = False) -> Any:
+        """배정 쓰기가 지나는 문 — 판정은 **그 업무의 활성 담당 관계**다 (증보 K5).
+
+        `task.self_manage` 봉투로 판정하지 않는다. 그것은 **전역 권한 비트 하나**라 업무별 담당 관계와
+        무관하고, 봉투만 검사하면 **읽을 수 있는 남의 업무에도 배정이 생긴다**.
+
+        **읽을 수 있으나 담당이 아니면 403, 읽을 수 없으면 404** 다 (증보 K6). 읽을 수 있다는 것은
+        존재를 이미 안다는 뜻이라, 그것을 404 로 숨기면 「내 화면에 떠 있는 업무인데 없다고 한다」가 된다.
+
+        **`TASK_SELF_MANAGE` 문은 그 앞에 그대로 선다** (증보 K16). K5 의 「판정은 담당 관계이고
+        봉투가 아니다」는 **봉투로 판정하지 말라**는 뜻이지 **봉투를 걷으라**는 뜻이 아니다 —
+        역량 문과 관계 검사는 대체재가 아니라 **겹겹**이고, 내 업무를 내가 다루는 다른 명령
+        (`create_self`·`update`·`transition`)이 전부 같은 문을 지난다.
+        """
+        self._require(principal, TASK_SELF_MANAGE)
+        try:
+            return self.repository.task(task_id, str(principal.id), lock=lock)
+        except TaskNotFound:
+            if self.may_read_task(principal, task_id):
+                raise TaskScheduleForbidden("내가 맡은 업무에만 시간을 배정할 수 있습니다") from None
+            raise
+
+    def create_schedule(
+        self, principal: Principal, task_id: UUID, *, on_date: date, starts_at: time, ends_at: time
+    ) -> TaskScheduleView:
+        """배정 생성 — **생성 전용이다** (증보 K10). `expected_version` 을 받지 않는다.
+
+        **그 날에 살아 있는 배정이 이미 있으면 거절한다** — 덮어쓰지 않는다. 그 날의 시각을 바꾸는 것은
+        `retime_schedule` 의 일이다. 회차를 「그 날에 배정이 있을 때만 필수」로 두면 **잃은 갱신이
+        열린다**: 서버가 「몰라서 뺐다」와 「알고 뺐다」를 구분할 수 없어 불변식이 화면에 의존하게 된다.
+
+        **멱등 키는 이 자리에 없다** — 같은 키의 재전송은 영수증이고, 그 판정은 생성 원장을 가진
+        `TaskCreationApplication` 이 이 명령보다 **먼저** 한다 (증보 K12).
+        """
+        task = self._assignable_task(principal, task_id, lock=True)
+        if TaskState(task.state) in {TaskState.DONE, TaskState.CANCELLED}:
+            raise TaskScheduleTaskClosed("끝난 업무에는 시간을 배정할 수 없습니다")
+        if not is_valid_time_range(starts_at, ends_at):
+            raise TaskScheduleInvalidRange("종료 시각은 시작 시각보다 뒤여야 합니다")
+        span = task_span(task.start_date, task.due_date)
+        if span is None:
+            raise TaskScheduleTaskUnscheduled("먼저 업무 기간을 정해 주세요. 기간이 있어야 시간을 배정할 수 있습니다")
+        if not span.covers(on_date):
+            # **정규화 구간을 적는다** (증보 K11·K14) — 뒤집힌 업무면 `start_date`~`due_date` 가 아니다.
+            raise TaskScheduleOutOfRange(
+                f"이 업무의 기간({span.span_from.isoformat()}~{span.span_to.isoformat()}) 안에만 "
+                "시간을 배정할 수 있습니다"
+            )
+        schedules = self._schedule_repository()
+        if schedules.active_on(task.id, on_date) is not None:
+            # 사람에게 이유를 말하기 위한 질문이다. **동시 두 명령을 가르는 것은 부분 unique** 다.
+            raise TaskScheduleDayTaken("이 날에는 이미 시간 배정이 있습니다")
+        # **겹침은 마지막 409 다** — 영수증은 이 명령보다 먼저 지났으므로(증보 K12) 재전송이 자기 자신과
+        # 겹쳐 거절되는 일이 없다. 뺄 자기 자신도 없다: 같은 (업무, 날) 은 위 줄이 이미 막았다.
+        self._require_free_time(principal, on_date, starts_at, ends_at)
+        return _schedule_view(schedules.create(task.id, on_date, starts_at, ends_at))
+
+    def retime_schedule(
+        self, principal: Principal, schedule_id: UUID, *, expected_version: int, starts_at: time, ends_at: time
+    ) -> TaskScheduleView:
+        """시각 변경 — **같은 날 재배정도 여기로 온다** (증보 K1·K10).
+
+        **날짜는 못 바꾼다** (§2.3 R6). **회차는 무조건 필수**이고 그 주인은 **이 배정 자신**이다
+        (증보 K8) — 업무 회차를 올리면 다른 화면의 낙관적 잠금이 멋대로 깨진다.
+        **닫힌 배정은 존재를 숨긴다.**
+        """
+        schedules = self._schedule_repository()
+        schedule = schedules.schedule(schedule_id, lock=True)
+        if schedule is None:
+            raise TaskNotFound("task schedule was not found")
+        self._assignable_task(principal, schedule.task_id)
+        if schedule.version != expected_version:
+            raise TaskScheduleVersionConflict("다른 곳에서 먼저 바뀌었습니다")
+        if not is_valid_time_range(starts_at, ends_at):
+            raise TaskScheduleInvalidRange("종료 시각은 시작 시각보다 뒤여야 합니다")
+        # **날짜는 그대로**이므로 같은 날의 다른 일정과만 겹칠 수 있다 — 그리고 **자기 자신은 뺀다.**
+        self._require_free_time(principal, schedule.on_date, starts_at, ends_at, ignoring=schedule.id)
+        return _schedule_view(schedules.retime(schedule, starts_at, ends_at))
+
+    def schedule_receipt(self, principal: Principal, task_id: UUID, on_date: date) -> TaskScheduleView:
+        """같은 멱등 키의 재전송이 돌려받는 **영수증** — 두 번째 effect 없이 지금의 배정을 낸다.
+
+        **돌려주기 전에 지금의 권한을 다시 검사한다** (SPEC-003 K-2 계승). 하루 한 칸이므로
+        (업무, 날) 하나가 배정 하나를 가리킨다 — 그 사이에 닫혔다면 **없는 것으로 답한다**.
+        """
+        self._assignable_task(principal, task_id)
+        schedule = self._schedule_repository().active_on(task_id, on_date)
+        if schedule is None:
+            raise TaskNotFound("task schedule was not found")
+        return _schedule_view(schedule)
+
+    def calendar_tasks(self, principal: Principal, span_from: date, span_to: date) -> list[CalendarTaskRow]:
+        """합본 조회의 업무 절반 — 축은 `my_work` 다 (§2.7 · 증보 K13).
+
+        **기존 조회를 재사용한다.** 새 질의를 직접 쓰면 「이 사람이 그 업무를 열 수 있는가는 한 자리에서만
+        답한다」가 깨진다. `my_work` 는 `include_closed=False` 로 내부 `DONE`·`CANCELLED` 를 이미
+        거르고 **`COMPLETION_SUBMITTED` 는 남긴다** — 완료 보고를 냈지만 아직 승인 전인 일은
+        캘린더에 서 있어야 한다 (§C).
+
+        **기간으로 업무를 거르지 않는다** — 좌측 레일이 기간 없는 업무도 들어야 날짜부터 정할 수 있다
+        (R2). 기간이 거르는 것은 `schedules[]` 뿐이다.
+
+        **역량 문과 관계 검사는 겹겹이다** (증보 K16). 행 집합을 좁히는 것은 활성 담당 관계지만,
+        `TASK_READ` 문은 그것과 별개로 지난다 — 같은 파일의 다른 읽기 표면 열둘이 그 문을 지나고,
+        여기만 빼 두면 **그 역량이 없는 역할이 생기는 순간 이 표면만 샌다.**
+        """
+        self._require(principal, TASK_READ)
+        if span_from > span_to:
+            raise CalendarRangeInvalid("조회 기간의 시작이 끝보다 뒤일 수 없습니다")
+        tasks = self.repository.tasks_for(str(principal.id), include_closed=False)
+        grouped = self._schedule_repository().in_range([task.id for task in tasks], span_from, span_to)
+        # **승인 회차는 한 번에 묻는다** (증보 K19). 줄마다 물으면 좌측 레일 한 판이 업무 수만큼
+        # 질의를 낸다 — 목록 표면이 쓰는 `approval_rounds_for` 를 그대로 재사용한다.
+        # **부모 것만 묻는다.** 목록 쪽은 「막는 하위」까지 세려고 하위 id 를 함께 싣지만,
+        # 캘린더 행이 내는 것은 **그 업무 자신의 승인 여부 한 값**이다.
+        rounds = self.repository.approval_rounds_for([task.id for task in tasks])
+        rows: list[CalendarTaskRow] = []
+        for task in tasks:
+            span = task_span(task.start_date, task.due_date)
+            rows.append(
+                {
+                    "kind": "task",
+                    "task_id": str(task.id),
+                    "title": task.title,
+                    "state": _external_state(task.state),
+                    # **판정은 목록·상세와 같은 규칙이다** — 같은 함수를 지난다. 어휘도 저장소 것 그대로다.
+                    "approval": self._approval_from_rounds(task, rounds.get(task.id)),
+                    "start_date": _iso(task.start_date),
+                    "due_date": _iso(task.due_date),
+                    "span_from": _span_end(span, "span_from"),
+                    "span_to": _span_end(span, "span_to"),
+                    "version": task.version,
+                    "schedules": [_schedule_entry(row) for row in grouped.get(task.id, [])],
+                }
+            )
+        return rows
 
     def my_work(self, principal: Principal, *, include_closed: bool = False) -> list[TaskListEntry]:
         """**지금 이 사람이 활성 담당으로 들고 있는 것만.**
@@ -1396,7 +1659,7 @@ class TaskApplication:
         target: TaskState,
         reason: str | None = None,
         expected_version: int = 0,
-    ) -> TaskMutationResult:
+    ) -> TaskDateMutationResult:
         self._require(principal, TASK_SELF_MANAGE)
         if target is TaskState.CANCELLED:
             # **이 거절은 담당자보다 먼저 온다.** 수락된 요청 업무의 직접 취소는 요청자·담당자·관리자
@@ -1439,6 +1702,10 @@ class TaskApplication:
             # 전이 전에 선행이 다시 열리는 틈이 이 transaction 안에 없다.
             self._predecessor_gate(task, principal),
         )
+        # **D1 의 두 번째 자리** (SPEC-004 §5). `open → in_progress` 가 **비어 있던 시작일을 오늘로
+        # 채운다** — 그것도 날짜 변경이다. 이 자리는 `validate_schedule` 을 지나지 않으므로
+        # **뒤집힌 기간이 실재하고**, 그래서 계약이 K11 정규화로 그것을 덮는다.
+        dates_before = (task.start_date, task.due_date)
         task.state = transition.task.state
         task.start_date = transition.task.start_date
         task.block_reason = transition.task.block_reason
@@ -1453,6 +1720,7 @@ class TaskApplication:
             task.completed_at = now
         if target is TaskState.CANCELLED and task.cancel_reason is None:
             task.cancel_reason = "direct"
+        released = self._schedule_release_for(task, dates_before)
         self.repository.touch(task)
         self.repository.record_activity(
             task,
@@ -1462,7 +1730,7 @@ class TaskApplication:
             before_ref=transition.event.before_ref,
             reason=transition.event.reason,
         )
-        return self._view(task, principal)
+        return {**self._view(task, principal), "schedule_release": released}
 
     def _require_cancellable(self, task: Any) -> None:
         """**수락된 요청 업무는 직접 취소할 수 없다** (정책 V-19 · `WORK_CANCEL_REQUIRES_AGREEMENT`).
@@ -1601,7 +1869,13 @@ class TaskApplication:
             and record.state == ("agreed" if agree else "declined")
             and int(record.task_version) == int(expected_version)
         ):
-            return {"task_id": str(task.id), "proposal": _proposal_view(record), "task_version": int(task.version)}
+            # **재전송은 영수증이다** — 두 번째 effect 가 없으므로 닫힌 건수도 `0` 이다.
+            return {
+                "task_id": str(task.id),
+                "proposal": _proposal_view(record),
+                "task_version": int(task.version),
+                "schedule_release": _NO_SCHEDULE_RELEASE,
+            }
         if record.state != "pending":
             # **「이미 답했다」가 「회차가 낡았다」보다 먼저다.** 위에서 재전송이 아니라고 갈렸으므로
             # 여기 오는 것은 *다른 답*이거나 *지금 회차로 다시 답하는 것*이고, 둘 다 사람에게 알려 줄
@@ -1614,9 +1888,14 @@ class TaskApplication:
         if facts.get("assignee_id") != str(principal.id):
             raise TaskProposalResponderOnly("이 제안에 답할 수 있는 사람은 담당자입니다")
         self.repository.settle_proposal(record, str(principal.id), "agreed" if agree else "declined")
-        if agree:
-            self._apply_proposal(principal, task, record)
-        return {"task_id": str(task.id), "proposal": _proposal_view(record), "task_version": int(task.version)}
+        # **거절은 아무것도 바꾸지 않는다** — 그래도 묶음은 낸다 (증보 K3: 세 자리 전부).
+        released = self._apply_proposal(principal, task, record) if agree else _NO_SCHEDULE_RELEASE
+        return {
+            "task_id": str(task.id),
+            "proposal": _proposal_view(record),
+            "task_version": int(task.version),
+            "schedule_release": released,
+        }
 
     def withdraw_proposal(self, principal: Principal, task_id: UUID, proposal_id: UUID, expected_version: int) -> dict[str, Any]:
         """제안한 사람이 거둔다. 답하기 전에만 열려 있고 **회차가 필수다** (K-4).
@@ -1655,8 +1934,12 @@ class TaskApplication:
             "history": rows,
         }
 
-    def _apply_proposal(self, principal: Principal, task: Any, record: Any) -> None:
-        """동의가 실제로 바꾸는 것. 그 전에는 **원래 조건과 상태가 유지된다.**"""
+    def _apply_proposal(self, principal: Principal, task: Any, record: Any) -> TaskScheduleReleaseView:
+        """동의가 실제로 바꾸는 것. 그 전에는 **원래 조건과 상태가 유지된다.**
+
+        **D1 의 세 번째 자리** (SPEC-004 §5) — 제안이 마감일을 덮어쓰면 그것도 날짜 변경이다.
+        이 자리도 `validate_schedule` 을 지나지 않으므로 뒤집힌 기간이 설 수 있고, K11 정규화가 덮는다.
+        """
         now = datetime.now(UTC)
         if record.kind == "cancellation":
             task.state = TaskState.CANCELLED
@@ -1671,9 +1954,12 @@ class TaskApplication:
             # 「진행 중」이라며 거절한다 — 합의로 접은 바로 그 항목을 치울 수 없게 된다.
             # 요청 상태도의 `accepted → cancelled_by_agreement` 가 이 전이다 (SPEC-003 §4 State).
             self._settle_cancelled_request(principal, task, record)
-            return
+            # **업무 종료는 쓰기가 아니다** (§B) — 취소된 업무의 배정은 닫지 않고, 합본 조회가
+            # 상태로 거른다. 상태 변경 아홉 경로에 아무것도 더하지 않는 이유가 그것이다.
+            return _NO_SCHEDULE_RELEASE
         payload = dict(record.payload or {})
         changed: list[str] = []
+        dates_before = (task.start_date, task.due_date)
         if "due_date" in payload:
             wanted = payload["due_date"]
             task.due_date = date.fromisoformat(str(wanted)) if wanted else None
@@ -1686,6 +1972,7 @@ class TaskApplication:
             changed.append("description")
         if not changed:
             raise TaskError("조건 변경 제안에 적용할 내용이 없습니다")
+        released = self._schedule_release_for(task, dates_before)
         task.version += 1
         self.repository.touch(task)
         self.repository.record_activity(
@@ -1693,6 +1980,7 @@ class TaskApplication:
             reason=record.reason,
         )
         _ = now
+        return released
 
     def _settle_cancelled_request(self, principal: Principal, task: Any, record: Any) -> None:
         """합의 취소가 그 **요청**도 끝낸다 — 상태·이력·담당 관계를 한 덩어리로 맞춘다.
@@ -2307,6 +2595,37 @@ def _clean_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _hhmm(value: Any) -> str:
+    """시각은 `HH:MM` 이다 — 저장은 `Time` 이지만 계약의 정밀도는 분이다 (SPEC-004 §4)."""
+    return value.strftime("%H:%M")
+
+
+def _span_end(span: TaskSpan | None, field: str) -> str | None:
+    return getattr(span, field).isoformat() if span is not None else None
+
+
+def _schedule_view(schedule: Any) -> TaskScheduleView:
+    return {
+        "schedule_id": str(schedule.id),
+        "task_id": str(schedule.task_id),
+        "on_date": schedule.on_date.isoformat(),
+        "starts_at": _hhmm(schedule.starts_at),
+        "ends_at": _hhmm(schedule.ends_at),
+        "version": schedule.version,
+    }
+
+
+def _schedule_entry(schedule: Any) -> CalendarScheduleEntry:
+    """합본 조회 원소 — `task_id` 는 매달린 업무 행이 이미 갖는다."""
+    return {
+        "schedule_id": str(schedule.id),
+        "on_date": schedule.on_date.isoformat(),
+        "starts_at": _hhmm(schedule.starts_at),
+        "ends_at": _hhmm(schedule.ends_at),
+        "version": schedule.version,
+    }
 
 
 def _iso(value: Any) -> str | None:

@@ -172,9 +172,24 @@ class MeetingInfoPatch(BaseModel):
 
     @model_validator(mode="after")
     def validate_times(self) -> Self:
+        """시각은 tz 를 달고 와야 하고, **UTC 로 정규화해서 넘긴다** (DEC-003 증보 10 K28).
+
+        형제 모델 `MeetingReservationInput.validate_schedule` 이 생성에서 이미 그렇게 한다 —
+        여기서 빠져 있던 것은 **설계 선택이 아니라 빠뜨림**이다. 화면은 실제로 `+09:00` 을 실어
+        보낸다(`frontend/src/lib/labels.ts` 의 `meetingIsoAt`).
+
+        **계약을 바꾸는 것이 아니다.** 순간의 의미는 양쪽에서 같고 `timestamptz` 인 PostgreSQL 에서는
+        no-op 이다. 다만 SQLite 의 `DateTime` bind 는 **오프셋을 버리고 벽시계만** 넘기므로, 정규화가
+        없으면 같은 명령이 **엔진에 따라 아홉 시간 다른 순간**으로 저장된다 — 그러면 K22 의 회의 시각
+        변경 경로를 계약 테스트가 정직하게 증명할 수 없다.
+        """
         for value in (self.starts_at, self.ends_at):
             if value is not None and value.tzinfo is None:
                 raise ValueError("meeting times must include a timezone")
+        if self.starts_at is not None:
+            self.starts_at = self.starts_at.astimezone(UTC)
+        if self.ends_at is not None:
+            self.ends_at = self.ends_at.astimezone(UTC)
         return self
 
     def changes(self) -> dict:

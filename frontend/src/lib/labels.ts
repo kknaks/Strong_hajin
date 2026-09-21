@@ -8,13 +8,22 @@ export const taskStateLabel: Record<TaskState, string> = {
   cancelled: "취소",
 };
 
-export const taskStateTone: Record<TaskState, string> = {
+/**
+ * 상태 배지의 톤 — **`ds/Badge` 의 `BadgeTone` 어휘**다.
+ *
+ * ⚠ 값 둘이 그 어휘에 없어서 **쓸 수 없는 표였다**(`success`·`muted` — `.scax-badge--success` 도
+ * `--muted` 도 `components.css` 에 없다). 소비처가 0곳이라 아무도 그것을 몰랐다.
+ * **저장소가 상태를 실제로 배지로 내는 유일한 자리**(`WorkTables.tsx` 의 `ClosedBadge`)가
+ * `done` 을 `positive` 로, `cancelled` 를 `neutral` 로 내므로 **그 둘에 맞췄다.**
+ * `as const` 라 `Badge` 의 `tone` 에 그대로 들어간다 — 형변환이 필요 없다.
+ */
+export const taskStateTone = {
   open: "neutral",
   in_progress: "accent",
   blocked: "danger",
-  done: "success",
-  cancelled: "muted",
-};
+  done: "positive",
+  cancelled: "neutral",
+} as const satisfies Record<TaskState, string>;
 
 /**
  * 파생 표시의 말 — **상태가 아니다** (SPEC-003 §2.2 · DEC-002 D-4).
@@ -893,3 +902,126 @@ export const meetingTimeOptions: string[] = Array.from({ length: 48 }, (_, index
 export function meetingIsoAt(date: string, time: string): string {
   return `${date}T${time}:00+09:00`;
 }
+
+/* ---- 캘린더 (SPEC-004) ----
+   시안은 레이아웃의 정본이고 **말은 우리 것이 정본**이다 (SPEC §2 읽는 규칙 1).
+   서버 오류 본문에는 `code` 가 없고 문장 하나뿐이라, 화면에 서는 말은 여기서만 만든다. */
+
+export const calendarScreen = {
+  /* 좌측 일정 레일 */
+  railTitle: "일정",
+  railEmptyTitle: "해당 일정이 없습니다",
+  railEmptyDescription: "다른 구분이나 날짜를 골라 보세요.",
+  railScopeAll: "전체 보기",
+  /* 격자 */
+  allDay: "종일",
+  today: "오늘",
+  monthLabel: "달력",
+  weekLabel: "주별 달력",
+  prev: { month: "이전 달", week: "이전 주" },
+  next: { month: "다음 달", week: "다음 주" },
+  viewAria: "기간 보기",
+  tabAria: "일정 구분",
+  /* 상태 */
+  loading: "캘린더를 불러오는 중",
+  loadFailed: "캘린더를 불러오지 못했습니다.",
+  retry: "다시 시도",
+  /* 카드 — 유형 배지 + 상태 배지 + 승인 배지 (증보 K19 가 K15 를 뒤집었다).
+     상태·승인의 «말» 은 여기 없다: 업무 화면의 `taskStateLabel`·`derivedApprovalLabel` 을 그대로 쓴다. */
+  taskBadge: "업무",
+  meetingBadge: "회의",
+  undated: "기한 없음",
+  dueOnly: (date: string) => `${formatDate(date)} 마감`,
+  range: (from: string, to: string) => (from === to ? formatDate(from) : `${formatDate(from)} ~ ${formatDate(to)}`),
+  /** 업무 카드가 자기 시간 배정을 접어 넣는 줄 — `3일 10:00` 꼴 (SPEC §2.1). */
+  scheduleChip: (onDate: string, startsAt: string) => `${Number(onDate.slice(8, 10))}일 ${startsAt}`,
+  clockRange: (startsAt: string, endsAt: string) => `${startsAt}–${endsAt}`,
+  more: (count: number) => `+${count}건 더`,
+  unfold: (count: number) => `${count}건 펴기`,
+  fold: "접기",
+  /* 손잡이 — 정체는 «화면의 좌우»가 아니라 «필드»다 (WARN-A). 뒤집힌 업무에서는 띠 위의 좌우가
+     바뀌어 보일 수 있지만, `start` 손잡이는 언제나 시작일을 정한다. */
+  grabStart: "끌어서 시작일 정하기",
+  grabEnd: "끌어서 마감일 정하기",
+  grabSlotStart: "끌어서 시작 시각 정하기",
+  grabSlotEnd: "끌어서 종료 시각 정하기",
+  dragHint: "캘린더로 끌어다 기간·시간 정하기",
+  create: "업무 만들기",
+} as const;
+
+/**
+ * 쓰기가 성공했을 때 — **캘린더가 내는 말**.
+ *
+ * K3 의 「해제」는 **오류가 아니다.** 업무 수정은 성공했고 기간 밖으로 나간 배정이 닫힌 것이라,
+ * 성공 알림과 **같은 자리에서 이어 말한다.** `released_count` 가 **0 이면 이 문장을 만들지 않는다.**
+ */
+export const calendarDone = {
+  moved: "업무 기간을 옮겼습니다.",
+  resized: "업무 기간을 바꿨습니다.",
+  scheduled: "시간을 배정했습니다.",
+  rescheduled: "시간 배정을 바꿨습니다.",
+  released: (count: number) => `${count}건의 시간 배정이 기간 밖이라 해제되었습니다.`,
+} as const;
+
+/**
+ * 쓰기가 거절됐을 때 — **조용한 거절 0개** (SPEC §I).
+ *
+ * 시안은 `canDrop` 이 거짓이면 `preventDefault` 를 안 불러 **브라우저가 말없이 막는다.**
+ * 저장소의 같은 자리는 문구로 말한다(칸반 `onInvalidMove` — `WorkViews.tsx:521`). **그쪽을 따른다.**
+ *
+ * ⚠ **서버 본문을 그대로 뿌리지 않는다.** 오류 본문은 `{"detail": "<문장>"}` 뿐이고 `code` 가 없다 —
+ * 게다가 `WORK_SCHEDULE_START_AFTER_DUE` 의 서버 문구는 **영문**이다. 화면의 말은 여기 것이 정본이고,
+ * 무엇을 낼지는 **상태 코드 + 어떤 명령을 불렀는지**로 고른다(`calendarWrites.denyMessage`).
+ */
+export const calendarDeny = {
+  /** 기간 밖 — **정규화 구간**을 적는다(K11·K14). 뒤집힌 업무면 원본 두 날짜가 아니라 `[min, max]` 다. */
+  outOfRange: (from: string, to: string) =>
+    `이 업무의 기간(${formatDate(from)}~${formatDate(to)}) 안에만 시간을 배정할 수 있습니다.`,
+  unscheduled: "먼저 업무 기간을 정해 주세요. 기간이 있어야 시간을 배정할 수 있습니다.",
+  invalidRange: "종료 시각은 시작 시각보다 뒤여야 합니다.",
+  startAfterDue: "시작일은 마감일보다 뒤일 수 없습니다.",
+  taskClosed: "끝난 업무에는 시간을 배정할 수 없습니다.",
+  notMine: "내가 맡은 업무에만 시간을 배정할 수 있습니다.",
+  /**
+   * 시간이 겹친다 (증보 K22).
+   *
+   * ⚠ **마침표가 없다.** 이 줄의 정본은 **서버 문자열**(`application.py` 의
+   * `TaskScheduleOverlap("이미 다른 일정이 있는 시간입니다")`)이고 거기에 마침표가 없다 —
+   * 같은 거절을 화면이 두 자리(가드 · `409`)에서 말하므로 **두 자리가 한 글자도 달라선 안 된다.**
+   * SPEC Case Matrix 의 예시에는 마침표가 있지만 그것은 `(제안 — 문구)` 표기다.
+   *
+   * **이름도 내용도 말하지 않는다** — 배정 겹침은 **내 일정끼리**라 말할 이름이 없다.
+   * 이름이 드는 것은 회의 쪽이고, 그 문장은 **서버가 만든다**(§2.9 · 아래 `ScheduleCommand` 주석).
+   */
+  overlap: "이미 다른 일정이 있는 시간입니다",
+  versionConflict: "다른 곳에서 먼저 바뀌었습니다. 새로고침 후 다시 시도해 주세요.",
+  notFound: "그 업무를 더는 찾을 수 없습니다. 새로고침 후 다시 시도해 주세요.",
+  /** 회의는 캘린더에서 읽기 전용이다 (§F) — 끌 수도, 시각을 늘릴 수도 없다. */
+  meetingReadOnly: "회의는 캘린더에서 옮길 수 없습니다. 회의 화면에서 바꿔 주세요.",
+  datesFailed: "업무 기간을 바꾸지 못했습니다.",
+  scheduleFailed: "시간 배정을 저장하지 못했습니다.",
+} as const;
+
+/** 캘린더 탭 셋 — 레일과 격자를 **동시에** 가른다 (SPEC §2.1). */
+export const calendarTabLabel = { all: "전체", meeting: "회의", task: "업무" } as const;
+
+/** 월·주 두 뷰 (SPEC §2.1). */
+export const calendarViewLabel = { week: "주", month: "월" } as const;
+
+/** 주 뷰 시간 눈금 — `오전 8시` 꼴. 0 시와 12 시는 「오전/오후 12시」다. */
+export function calendarHourLabel(hour: number): string {
+  if (hour === 0) return "오전 12시";
+  if (hour < 12) return `오전 ${hour}시`;
+  if (hour === 12) return "오후 12시";
+  return `오후 ${hour - 12}시`;
+}
+
+/** 격자 머리의 달·주 표기 — 읽기 전용 날짜 문법(`/`)과 어긋나지 않게 숫자로만 쓴다. */
+export const calendarCursorText = {
+  month: (year: number, month: number) => `${month}월`,
+  year: (year: number) => `${year}년`,
+  yearMonth: (year: number, month: number) => `${year}년 ${month}월`,
+  week: (week: number) => `${week}주차`,
+};
+
+export const calendarDow = ["일", "월", "화", "수", "목", "금", "토"] as const;

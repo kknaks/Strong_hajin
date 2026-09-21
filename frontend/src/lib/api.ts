@@ -2,6 +2,7 @@ import type {
   ActionMaterialDraft,
   AccessGrant,
   ActionItemDetail,
+  CalendarEntry,
   InstalledAccessRole,
   MemberAccess,
   MeetingAgenda,
@@ -11,6 +12,7 @@ import type {
   MeetingMaterialUpload,
   MeetingRecord,
   MeetingRoom,
+  MeetingRow,
   MeetingTodo,
   MeetingTranscript,
   MeetingViewer,
@@ -28,6 +30,7 @@ import type {
   TaskMaterial,
   TaskMaterialKind,
   TaskPatch,
+  TaskScheduleMutation,
   OrganizationProfile,
   Persona,
   TaskAssignment,
@@ -1402,4 +1405,63 @@ export async function revokeMeetingShare(meetingId: string, memberId: string): P
 export async function readMeetingRooms(range?: { starts_at: string; ends_at: string }): Promise<MeetingRoom[]> {
   const query = range ? `?starts_at=${encodeURIComponent(range.starts_at)}&ends_at=${encodeURIComponent(range.ends_at)}` : "";
   return request<MeetingRoom[]>(`/api/meetings/rooms${query}`);
+}
+
+/* ---- 캘린더 시간 배정 (SPEC-004) — 합본 조회 · 배정 CRUD ---- */
+
+/**
+ * 한 화면 = 한 요청. 주 뷰 7일·월 뷰 42일이 **각각 이 호출 한 번**으로 그려진다.
+ *
+ * `from`·`to` 는 **둘 다 필수**이고 역전이면 422 다. 돌아오는 것은 업무와 회의가 섞인 **한 배열**이고
+ * `kind` 로 가른다(순서는 업무 전부 → 회의 전부). 끝난 업무는 애초에 실리지 않는다.
+ * **기간이 거르는 것은 `schedules[]` 뿐** — 기간 없는 업무도 행으로 온다.
+ */
+export async function getCalendar(from: string, to: string): Promise<CalendarEntry[]> {
+  return request<CalendarEntry[]>(`/api/calendar?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+}
+
+/**
+ * 그 업무의 그 날에 시간 배정을 만든다 — **생성 전용**이다.
+ *
+ * `Idempotency-Key` 가 필수고, 같은 키의 재전송은 `201` 이 아니라 `200` 으로 **같은 본문**을 돌려준다
+ * (연타가 409 가 되지 않는 자리 — K12). `expected_version` 을 **받지 않는다**(보내면 422).
+ * 그 날에 이미 살아 있는 배정이 있으면 409 이므로, 화면은 `schedules[]` 의 `schedule_id` 를 보고
+ * 처음부터 아래 `updateTaskSchedule` 을 부른다 (K10).
+ */
+export async function createTaskSchedule(
+  taskId: string,
+  input: { on_date: string; starts_at: string; ends_at: string },
+  idempotencyKey: string,
+): Promise<TaskScheduleMutation> {
+  return request<TaskScheduleMutation>(`/api/tasks/${encodeURIComponent(taskId)}/schedules`, {
+    body: JSON.stringify(input),
+    headers: { "Idempotency-Key": idempotencyKey },
+    method: "POST",
+  });
+}
+
+/**
+ * 배정의 **시각**을 바꾼다. 날짜는 못 바꾼다 — `on_date` 를 보내면 422 다(시간 블록의 날짜 이동은 없다).
+ * `expected_version` 은 **그 배정 자신의 회차**이고 빠지면 422, 낡으면 409 다 (K8).
+ */
+export async function updateTaskSchedule(
+  scheduleId: string,
+  expectedVersion: number,
+  input: { starts_at: string; ends_at: string },
+): Promise<TaskScheduleMutation> {
+  return request<TaskScheduleMutation>(`/api/task-schedules/${encodeURIComponent(scheduleId)}`, {
+    body: JSON.stringify({ expected_version: expectedVersion, ...input }),
+    method: "PATCH",
+  });
+}
+
+/**
+ * 회의 목록의 **기간 갈래** — `from`·`to` 가 함께 가면 구획도 커서도 없이 **한 배열**이 온다.
+ *
+ * 위 `listMeetings(cursor)` 는 그대로 둔다: 인자 없는 경로는 `{upcoming, past}` 라는 **다른 모양**이고
+ * 회의 화면이 그것을 쓴다. 두 모양을 한 함수에 담으면 부르는 쪽이 반환형을 좁혀야 한다.
+ * ⚠ 이 갈래에는 **`created_by_display_name` 이 없다** — 주최자 이름은 합본 조회에만 있다 (K4).
+ */
+export async function listMeetingsInRange(from: string, to: string): Promise<MeetingRow[]> {
+  return request<MeetingRow[]>(`/api/meetings?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
 }

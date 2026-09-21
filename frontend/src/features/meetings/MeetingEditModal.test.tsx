@@ -167,6 +167,31 @@ describe("회의 정보 수정 — 목록 카드의 [수정]이 여는 모달", 
     await waitFor(() => expect(onMeetingUpdated).toHaveBeenCalledWith("p2"));
   });
 
+  /**
+   * 증보 K22 — **겹침 문구의 주인이 서버다.**
+   *
+   * 「민아 님의」처럼 **이름이 들어 있어** 화면이 지을 수 없는 문장이다. 남의 시간은 busy/free 만
+   * 읽으므로 화면은 그 이름을 알 자리가 없다 — `ApiError.message` 를 **그대로** 낸다.
+   *
+   * ⚠ **`detail` 은 문자열이다** — 방예약 `409` 들만 `{code, message}` 객체를 낸다.
+   * `detail.code` 를 읽는 길로 새면 `undefined` 라 이 문장이 조용히 사라진다.
+   */
+  it("겹침 409 는 서버 문장을 그대로 낸다 — 화면이 문장을 짓지 않는다 (K22)", async () => {
+    const onError = vi.fn();
+    vi.mocked(api.listMeetings).mockResolvedValue({ upcoming: [row({ meeting_id: "p1" })], past: { items: [], next_cursor: null } });
+    render(<ListHost onError={onError} onMeetingUpdated={vi.fn()} onNotice={vi.fn()} onOpenMeeting={vi.fn()} selected={null} />);
+    const modal = await openEdit();
+    fireEvent.change(within(modal).getByLabelText(meetingScreen.titleField), { target: { value: "옮긴 회의" } });
+
+    const detail = "민아 님의 일정과 겹칩니다";
+    vi.mocked(api.updateMeetingInfo).mockRejectedValue(new api.ApiError(409, detail, detail));
+    fireEvent.click(within(modal).getByRole("button", { name: meetingScreen.save }));
+
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(detail));
+    // 마침표도 붙이지 않는다 — 서버 문자열이 정본이다.
+    expect(onError.mock.calls.at(-1)![0]).toBe("민아 님의 일정과 겹칩니다");
+  });
+
   /*
    * 이탈 가드의 «모달 쪽 절반». 워크스페이스가 「다른 회의를 고를 때」를 막는 것과 짝이다 —
    * 고치던 것이 있는데 닫기가 조용히 통과하면 쓴 것이 그대로 사라진다.

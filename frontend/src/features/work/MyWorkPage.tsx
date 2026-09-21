@@ -9,6 +9,7 @@ import { Tabs } from "../../ds/SegmentedControl";
 import {
   decideWorkRequest,
   generateDailyReportDraft,
+  getCalendar,
   getWorkRequestInbox,
   getTask,
   getMyWork,
@@ -44,6 +45,7 @@ import {
 } from "../../lib/labels";
 import {
   type ActionItemEnvelope,
+  type CalendarMeetingRow,
   type DirectTask,
   type Persona,
   type ProductSurface,
@@ -190,6 +192,17 @@ export function MyWorkPage({
 }: MyWorkPageProps) {
   const me = personName(personaName);
   const [tasks, setTasks] = useState<DirectTask[]>([]);
+  /**
+   * 우 레일의 **회의 절반** (확정 — 증보 K23·K24).
+   *
+   * **업무는 다시 묻지 않는다** — 레일은 이 화면이 이미 들고 있는 `tasks`(그 탭의 것)를 그대로 받는다.
+   * 합본 조회를 **회의에만** 쓰는 이유가 여기 있다: 업무까지 그쪽으로 갈아타면 그 축이 `my_work` 라
+   * **「보낸 업무」 탭에서 보낸 업무가 사라진다.**
+   */
+  const [railMeetings, setRailMeetings] = useState<CalendarMeetingRow[]>([]);
+  const [railMeetingsFailed, setRailMeetingsFailed] = useState(false);
+  /** 마지막으로 읽은 범위. 레일이 같은 범위를 다시 알려도 **다시 묻지 않는다**(날짜만 고른 경우). */
+  const railRange = useRef("");
   const [actionItems, setActionItems] = useState<ActionItemEnvelope[]>([]);
   const [selectedActionItem, setSelectedActionItem] = useState<ActionItemEnvelope | null>(null);
   const [relatedTask, setRelatedTask] = useState<DirectTask | null>(null);
@@ -894,6 +907,34 @@ export function MyWorkPage({
     }
   }, [onError, settleError]);
 
+  /**
+   * 레일이 그리는 범위의 **내 회의**를 읽는다 (증보 K23·K24).
+   *
+   * **새 표면을 만들지 않는다** — 캘린더 화면이 쓰는 합본 조회 그대로이고, 여기서는
+   * **`kind:'meeting'` 절반만** 쓴다. 업무 절반은 버린다: 그 축은 `my_work` 라 이 화면의 탭과 다르다.
+   *
+   * **탭이 바뀌어도 다시 묻지 않는다** — 회의는 업무의 분류 축에 속하지 않으므로 탭과 무관하다.
+   * 범위가 같으면(그 주 안에서 날짜만 고른 경우) 그것도 다시 묻지 않는다.
+   *
+   * 실패는 **업무 목록을 흔들지 않는다** — 화면 전체를 빨갛게 만들 일이 아니다. 다만
+   * **조용히 「회의 없음」으로 보이게 두지도 않는다**: 레일이 그 사실을 한 줄로 말한다.
+   */
+  const loadRailMeetings = useCallback((from: string, to: string) => {
+    const scope = `${from}|${to}`;
+    if (railRange.current === scope) return;
+    railRange.current = scope;
+    void (async () => {
+      try {
+        const entries = await getCalendar(from, to);
+        setRailMeetings(entries.filter((entry): entry is CalendarMeetingRow => entry.kind === "meeting"));
+        setRailMeetingsFailed(false);
+      } catch {
+        railRange.current = "";
+        setRailMeetingsFailed(true);
+      }
+    })();
+  }, []);
+
   /* 바퀴 5b K-6: 레일 두 칸을 셸의 AppBody 슬롯으로 넘긴다. 본문 안에 직접 그리지 않는다 —
      안 넘기면 그 칸이 렌더되지 않는 것이 셸 규약이라, 떠날 때 빈 것으로 되돌려 다음 화면이 두 칸으로 돌아간다. */
   useEffect(() => {
@@ -915,10 +956,20 @@ export function MyWorkPage({
           state={loadState === "loading" ? "loading" : inboxState}
         />
       ),
-      right: <CalendarRail onOpen={openMyTask} onRetry={() => void reload()} state={loadState} tasks={tasks} />,
+      right: (
+        <CalendarRail
+          meetings={railMeetings}
+          meetingsFailed={railMeetingsFailed}
+          onOpen={openMyTask}
+          onRange={loadRailMeetings}
+          onRetry={() => void reload()}
+          state={loadState}
+          tasks={tasks}
+        />
+      ),
     });
     return () => onRegisterRails({});
-  }, [busy, canDecideWorkRequests, decideRequest, inboxItems, inboxState, openMyTask, people, openWorkRequest, personaId, readReference, reading, reloadInbox, loadState, onRegisterRails, reload, tasks]);
+  }, [busy, canDecideWorkRequests, decideRequest, inboxItems, inboxState, loadRailMeetings, openMyTask, people, openWorkRequest, personaId, railMeetings, railMeetingsFailed, readReference, reading, reloadInbox, loadState, onRegisterRails, reload, tasks]);
 
   /**
    * 열려 있는 겹을 **전부** 접는다 (3차 발주 4).

@@ -1,0 +1,136 @@
+/* 캘린더 화면 전용 부품 (WORK-004 Phase FE-1) — 3분할 · 좌측 일정 레일 · 월/주 뷰.
+ *
+ * 시안 `handoff/calendar/css/calendar.css` 103줄에서 **규칙 89줄을 값 수정 없이** 옮겼다.
+ * 토큰 `--scax-*` 51종은 저장소에 전부 있고(`styles/scax.css`), 클래스 71종은 저장소와 **한 종도
+ * 겹치지 않는다** — 그래서 이 파일은 남의 화면에 닿지 않는다.
+ *
+ * **착수 전 조사 ① (WORK-004 FE-1 작업 0) — 토큰 «값» 대조 결과:** 핸드오프 `_ds_bundle.css` 의
+ * `--scax-*` 정의 143줄(고유 139종)과 저장소 `styles/scax.css` 의 정의가 **한 줄도 다르지 않다**
+ * (정규화 후 `diff` 출력 0). 시안 `calendar.css` 가 참조하는 51종은 전부 그 안에 있다.
+ * `_ds_bundle.js` 에는 토큰 정의가 없다. **고칠 것이 없었고, 값의 정본은 저장소 파일이다.**
+ *
+ * 시안에서 **고친 자리는 셋뿐**이고 전부 「바깥과의 접합」이다:
+ *
+ * 1. **스크롤 주인** — `.scax-cal-main{flex:1 1 auto;min-height:0}` 은 칸을 꽉 채우고 자기 안에서
+ *    스크롤하겠다는 선언이라, 바깥이 스크롤하는 기본 `.scax-page-scroll` 과 주인이 겹친다.
+ *    회의 화면이 같은 충돌을 푼 방식을 그대로 쓴다 — `App.tsx` 가 캘린더에도
+ *    `.scax-page-scroll--fixed` 를 준다(`shell.css:182`). **규칙 값은 시안 그대로다.**
+ * 2. **원색 `#fff` 세 자리** → `var(--scax-color-ink-inverse)`. 저장소에 같은 뜻의 토큰이 있고
+ *    (`scax.css:22`), 「컴포넌트에 임의 hex 리터럴을 두지 않는다」가 이 저장소의 규칙이다.
+ * 3. **`.scax-month__cell` 이 `<button>` 으로 선다** — 시안은 `div` + `onClick` 이다. 시안 규칙에
+ *    이미 `text-align:left` 가 들어 있어(단추에만 뜻이 있는 값) 값은 그대로 두고, 단추가 물고 오는
+ *    `font`·`color` 상속만 아래 한 줄로 되돌린다. 달 밖 칸은 누를 데가 없어 `div` 로 남는다.
+ *
+ * ⚠ `.scax-week__hours` 의 `repeating-linear-gradient(… 0 1px, transparent 1px 56px)` 에서 **56px 는
+ * `WeekGrid` 의 `WEEK_ROW` 상수와 짝**이다 — 한쪽만 고치면 시간 격자와 블록이 어긋난다.
+ *
+ * FE-1 은 **읽기까지**다. 손잡이·고스트·드롭 규칙(`--resizable` · `--ghost` · `--drop` ·
+ * `__slot-handle` · `__ghost` · `--draggable`)은 시안대로 미리 실려 있고 **쓰는 곳이 FE-2 다.**
+ */
+
+/* ---------- 월 이동 툴바 ---------- */
+.scax-cal-main{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;padding:var(--scax-space-400) var(--scax-space-500) var(--scax-space-500)}
+.scax-cal-toolbar{display:flex;align-items:center;gap:var(--scax-space-300);flex:0 0 auto;padding-bottom:var(--scax-space-300)}
+.scax-cal-toolbar__month{margin:0;flex:0 0 auto;white-space:nowrap;font-size:var(--scax-text-headline-size);line-height:var(--scax-text-headline-lh);letter-spacing:var(--scax-text-headline-ls);font-weight:var(--scax-fw-bold);color:var(--scax-color-ink)}
+.scax-cal-toolbar__nav{display:flex;align-items:center;gap:var(--scax-space-100)}
+.scax-cal-toolbar__spacer{flex:1 1 auto}
+.scax-cal-toolbar__prev svg{transform:rotate(180deg)}
+.scax-cal-toolbar__year{flex:0 0 auto;font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);letter-spacing:var(--scax-text-body1-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink-alt);white-space:nowrap}
+.scax-cal-toolbar__nav .scax-cal-toolbar__month{display:inline-flex;align-items:center;justify-content:center;min-width:88px;height:var(--scax-control-height-md);padding:0 var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-md);background:var(--scax-color-surface);font-size:var(--scax-text-headline-size);line-height:var(--scax-text-headline-lh);letter-spacing:var(--scax-text-headline-ls);text-align:center}
+
+/* ---------- 월별 그리드 ---------- */
+.scax-cal-main>.scax-month{flex:1 1 auto}
+.scax-month{display:flex;flex-direction:column;min-height:0;border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-md);background:var(--scax-color-surface);overflow:hidden}
+.scax-month__head{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));border-bottom:1px solid var(--scax-color-line)}
+.scax-month__dow{padding:var(--scax-space-200) var(--scax-space-250);text-align:center;font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink-alt)}
+.scax-month__dow--sun{color:var(--scax-color-danger)}
+.scax-month__grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));grid-auto-rows:minmax(112px,1fr);flex:1 1 auto;min-height:0}
+.scax-month__cell{display:flex;flex-direction:column;gap:var(--scax-space-100);min-width:0;overflow:hidden;padding:var(--scax-space-150);border-right:1px solid var(--scax-color-line);border-bottom:1px solid var(--scax-color-line);background:var(--scax-color-surface);text-align:left}
+.scax-month__cell:nth-child(7n){border-right:0}
+.scax-month__grid>.scax-month__cell:nth-last-child(-n+7){border-bottom:0}
+.scax-month__cell{cursor:pointer}
+.scax-month__cell--selected{background:var(--scax-color-popover-current);box-shadow:inset 0 0 0 1px var(--scax-color-accent-20)}
+.scax-month__cell--out{cursor:default;background:var(--scax-color-fill-weak)}
+.scax-month__cell--out .scax-month__date{color:var(--scax-color-ink-disabled)}
+.scax-month__date{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:24px;padding:0 var(--scax-space-050);border-radius:var(--scax-radius-pill);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink-neutral)}
+.scax-month__date--sun{color:var(--scax-color-danger)}
+.scax-month__date--today{background:var(--scax-color-accent);color:var(--scax-color-ink-inverse);font-weight:var(--scax-fw-semibold)}
+.scax-month__today-label{margin-left:var(--scax-space-100);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-accent)}
+.scax-month__daytop{display:flex;align-items:center;min-height:24px}
+
+/* ---------- 일정 조각 ---------- */
+.scax-event{position:relative;display:flex;align-items:center;flex:0 0 auto;min-width:0;height:22px;padding:0 var(--scax-space-200);border-radius:var(--scax-radius-xs);background:var(--scax-color-accent-08);color:var(--scax-color-ink-neutral);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);font-weight:var(--scax-fw-medium);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.scax-event__label{overflow:hidden;text-overflow:ellipsis}
+.scax-event--ghost{background:transparent;pointer-events:none}
+.scax-event--more{border:0;background:var(--scax-color-fill-weak);color:var(--scax-color-ink-alt);cursor:pointer;text-align:left}
+.scax-event--more:hover{background:var(--scax-color-fill)}
+/* 여러 날 띠 — 칸 여백을 넘어 이어 붙는다. 색은 유형 그대로 */
+.scax-event--bar{margin:0 calc(var(--scax-space-150) * -1);padding:0 var(--scax-space-200);border-radius:0;font-weight:var(--scax-fw-semibold);overflow:visible}
+.scax-event__span-label{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;pointer-events:none}
+.scax-event--bar-head{margin-left:0;border-top-left-radius:var(--scax-radius-xs);border-bottom-left-radius:var(--scax-radius-xs)}
+.scax-event--bar-tail{margin-right:0;border-top-right-radius:var(--scax-radius-xs);border-bottom-right-radius:var(--scax-radius-xs)}
+
+/* 유형은 둘뿐 — 업무는 진한 면, 회의는 연한 면. 둘 다 같은 강조색 하나만 생다 */
+.scax-event--task{background:var(--scax-color-accent);color:var(--scax-color-ink-inverse)}
+.scax-event--meeting{background:var(--scax-color-accent-08);color:var(--scax-color-accent)}
+.scax-event--resizable .scax-event__handle{position:absolute;top:0;bottom:0;width:8px;border-radius:var(--scax-radius-xs);background:var(--scax-color-accent-strong);opacity:0;cursor:ew-resize}
+.scax-event--resizable:hover .scax-event__handle{opacity:.5}
+.scax-event--resizable .scax-event__handle:hover{opacity:1}
+.scax-event__handle--start{left:-1px}
+.scax-event__handle--end{right:-1px}
+.scax-month__cell--grabbing{cursor:ew-resize}
+
+.scax-event--draggable{cursor:grab}
+.scax-event--draggable:active{cursor:grabbing}
+.scax-month__cell--drop{background:var(--scax-color-accent-08);box-shadow:inset 0 0 0 2px var(--scax-color-accent)}
+.scax-inbox-card--draggable{cursor:grab}
+.scax-inbox-card--draggable:active{cursor:grabbing}
+.scax-cal-rail__scope{display:flex;align-items:center;justify-content:space-between;gap:var(--scax-space-200);padding:var(--scax-space-150) var(--scax-space-250);border-radius:var(--scax-radius-sm);background:var(--scax-color-fill-weak);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink-neutral)}
+.scax-cal-rail__more{display:flex;justify-content:center;padding-top:var(--scax-space-100)}
+
+/* ---------- 주별 뷰 ---------- */
+/* 위(머리+종일) 고정 · 아래(시간 0~24시) 스크롤. 두 구역 모두 날짜 열 7개를 공유한다. */
+.scax-week{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-md);background:var(--scax-color-surface);overflow:hidden}
+.scax-week__top{display:grid;grid-template-columns:80px minmax(0,1fr);flex:0 0 auto;border-bottom:1px solid var(--scax-color-line)}
+.scax-week__scroll{display:grid;grid-template-columns:80px minmax(0,1fr);flex:1 1 auto;min-height:0;overflow-y:auto}
+.scax-week__ruler-top{display:flex;flex-direction:column;border-right:1px solid var(--scax-color-line)}
+.scax-week__ruler-head{height:64px;border-bottom:1px solid var(--scax-color-line)}
+.scax-week__ruler-allday{display:flex;flex-direction:column;align-items:flex-end;gap:var(--scax-space-100);padding:var(--scax-space-200) var(--scax-space-250) 0;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+.scax-week__fold{padding:0;border:0;background:transparent;color:var(--scax-color-accent);font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);letter-spacing:var(--scax-text-caption2-ls);font-weight:var(--scax-fw-medium);white-space:nowrap;cursor:pointer}
+.scax-week__fold:hover{text-decoration:underline}
+.scax-week__ruler-hours{display:flex;flex-direction:column;border-right:1px solid var(--scax-color-line)}
+.scax-week__ruler-hour{display:flex;align-items:flex-start;justify-content:flex-end;padding:var(--scax-space-100) var(--scax-space-250) 0;font-size:var(--scax-text-caption1-size);line-height:1;letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive);white-space:nowrap}
+.scax-week__days{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}
+.scax-week__day,.scax-week__hours{border-right:1px solid var(--scax-color-line);cursor:pointer}
+.scax-week__day:last-child,.scax-week__hours:last-child{border-right:0}
+.scax-week__day{display:flex;flex-direction:column;min-width:0}
+.scax-week__day:hover,.scax-week__hours:hover{background-color:var(--scax-color-surface-selected)}
+.scax-week__day--picked,.scax-week__hours--picked{background-color:var(--scax-color-popover-current);box-shadow:inset 1px 0 0 var(--scax-color-accent-20),inset -1px 0 0 var(--scax-color-accent-20)}
+.scax-week__day-head{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;height:64px;border-bottom:1px solid var(--scax-color-line)}
+.scax-week__day-dow{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-alt)}
+.scax-week__day-dow--sun{color:var(--scax-color-danger)}
+.scax-week__day-date{display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:26px;border-radius:var(--scax-radius-pill);font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink)}
+.scax-week__day-date--today{background:var(--scax-color-accent);color:var(--scax-color-ink-inverse)}
+.scax-week__day-allday{display:flex;flex-direction:column;gap:4px;padding:var(--scax-space-200) 0 0;overflow:hidden}
+.scax-week__hours{position:relative;background-image:repeating-linear-gradient(to bottom,var(--scax-color-line-weak) 0 1px,transparent 1px 56px)}
+/* 종일 띠 — 열 경계를 넘어 이어 붙는다 */
+.scax-week__band{flex:0 0 auto;height:22px;margin:0 -1px;border-radius:0}
+.scax-week__band--head{margin-left:3px;border-top-left-radius:var(--scax-radius-xs);border-bottom-left-radius:var(--scax-radius-xs)}
+.scax-week__band--tail{margin-right:3px;border-top-right-radius:var(--scax-radius-xs);border-bottom-right-radius:var(--scax-radius-xs)}
+.scax-week__band--empty{background:transparent}
+.scax-week__band.scax-event--resizable .scax-event__handle{background:var(--scax-color-accent-strong)}
+/* 시간 블록 */
+/* 좌우는 `WeekGrid` 가 «줄 수»에 맞춰 인라인으로 준다 — 겹치면 나란히 앉는다(K21).
+   혼자 선 블록은 `left:3px` · `width:calc(100% - 6px)` 라 예전 값과 같다. */
+.scax-week__slot{position:absolute;flex-direction:column;align-items:flex-start;justify-content:flex-start;gap:2px;padding:var(--scax-space-150) var(--scax-space-200);border-radius:var(--scax-radius-sm);white-space:normal;overflow:hidden}
+.scax-week__slot-title{font-weight:var(--scax-fw-semibold)}
+.scax-week__slot-time{font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);letter-spacing:var(--scax-text-caption2-ls);opacity:.85}
+.scax-week__slot-handle{position:absolute;left:0;right:0;height:8px;cursor:ns-resize;opacity:0;background:var(--scax-color-accent-strong)}
+.scax-week__slot:hover .scax-week__slot-handle{opacity:.5}
+.scax-week__slot-handle:hover{opacity:1!important}
+.scax-week__slot-handle--start{top:0}
+.scax-week__slot-handle--end{bottom:0}
+.scax-week__ghost{position:absolute;left:3px;right:3px;display:flex;align-items:center;padding:0 var(--scax-space-200);border:1px dashed var(--scax-color-accent);border-radius:var(--scax-radius-sm);background:var(--scax-color-accent-08);font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);letter-spacing:var(--scax-text-caption2-ls);color:var(--scax-color-accent);pointer-events:none}
+
+/* 접합 3 — 날짜 칸이 `<button>` 이라 브라우저 기본 글꼴·색이 끼어든다. 시안의 `div` 와 같게 되돌린다. */
+button.scax-month__cell{appearance:none;border-top:0;border-left:0;font:inherit;color:inherit}

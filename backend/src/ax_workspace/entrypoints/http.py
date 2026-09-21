@@ -48,8 +48,10 @@ from ax_workspace.modules.work.task_results import (
     TaskHistoryDiffResult,
     TaskHistoryResult,
     TaskListEntry,
+    TaskDateMutationResult,
     TaskReferenceReleaseResult,
     TaskReferenceResult,
+    TaskScheduleView,
 )
 
 from ax_workspace.modules.work.request_results import (
@@ -67,6 +69,10 @@ from ax_workspace.modules.work.checklist_commands import ChecklistAddInput as Ch
 from ax_workspace.modules.work.task_results import TaskAssignmentResult, ChecklistMutationResult, ChecklistOrderResult, TaskMutationResult
 from ax_workspace.modules.work.task_commands import TaskVersionInput as TaskTransitionRequest, TaskBlockInput as BlockTaskRequest, TaskCancelInput as CancelTaskRequest
 from ax_workspace.modules.work.task_commands import TaskReassignInput as ReassignTaskRequest, TaskUpdateInput as UpdateTaskRequest
+from ax_workspace.modules.work.task_commands import (
+    TaskScheduleCreateInput as CreateTaskScheduleRequest,
+    TaskScheduleRetimeInput as RetimeTaskScheduleRequest,
+)
 from ax_workspace.modules.work.task_commands import TaskCompletionInput as TaskCompletionReportRequest, TaskReferenceInput as TaskReferenceRequest
 from ax_workspace.modules.work.folder_commands import FolderCreateInput as MaterialFolderCreateRequest
 from ax_workspace.modules.work.project_commands import (
@@ -133,6 +139,10 @@ from ax_workspace.modules.work.errors import (
     TaskRecipientNotAllowed,
     TaskReopenForbidden,
     TaskReopenParentDone,
+    TaskScheduleDayTaken,
+    TaskScheduleOverlap,
+    TaskScheduleTaskClosed,
+    TaskScheduleVersionConflict,
 )
 from ax_workspace.modules.work.graph import GraphAccessDenied, GraphError, GraphNotFound
 from ax_workspace.modules.work.materials import MaterialNotFound
@@ -152,6 +162,7 @@ from ax_workspace.modules.meetings.domain import (
     MeetingNotFound,
     MeetingStaleWrite,
     MeetingStateConflict,
+    MeetingTimeOverlap,
     MeetingVersionConflict,
 )
 from ax_workspace.modules.meetings.materials import MaterialUpload, MeetingMaterialsRejected
@@ -517,7 +528,8 @@ def _runtime_error(error: Exception) -> HTTPException:
     # 회의는 권한 밖도 없는 것처럼 응답한다 — 참석자가 아닌 사람에게 존재를 알리지 않는다 (SPEC-004 §3.2-1).
     if isinstance(error, (TaskNotFound, MaterialNotFound, MeetingNotFound, MeetingAccessDenied)):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
-    if isinstance(error, (MeetingStateConflict, MeetingVersionConflict)):
+    # 겹침도 같은 기준이다 (증보 K22): 명령 자체는 말이 되는데 **그 사람들의 그 시간이 이미 찼다.**
+    if isinstance(error, (MeetingStateConflict, MeetingVersionConflict, MeetingTimeOverlap)):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
     if isinstance(error, (TaskAccessDenied, WorkRequestAccessDenied, DailyReportAccessDenied)):
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
@@ -539,6 +551,15 @@ def _runtime_error(error: Exception) -> HTTPException:
             TaskPredecessorsUnfinished,
             TaskProjectLockedByPredecessors,
             TaskApproverLocked,
+            # SPEC-004 § Case Matrix — 시간 배정이 더하는 셋. 같은 기준이다: 명령 자체는 말이 되는데
+            # 지금 그 업무·그 날·그 회차가 받지 않는다. **배정 회차는 업무 회차와 다른 예외**이므로
+            # 기존 업무 표면의 422 계약이 그대로 남는다 (증보 K8).
+            TaskScheduleTaskClosed,
+            TaskScheduleDayTaken,
+            TaskScheduleVersionConflict,
+            # 겹침도 같은 기준이다 (증보 K22): 시각 자체는 말이 되는데 **그 사람의 그 시간이 이미 찼다.**
+            # 422 가 아닌 이유가 여기 있다 — 다른 시간이면 같은 값이 통과한다.
+            TaskScheduleOverlap,
         ),
     ):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
@@ -665,11 +686,20 @@ def create_app(
         @app.get("/api/meetings")
         def list_meetings(
             cursor: str | None = None,
+            from_: date | None = Query(default=None, alias="from"),
+            to: date | None = Query(default=None, alias="to"),
             principal: Principal = Depends(developer_principal),
-        ) -> dict[str, object]:
-            """예정·지난 두 구획. 「지난」은 20건씩 커서로 잇는다."""
+        ) -> dict[str, object] | list[dict[str, object]]:
+            """예정·지난 두 구획. 「지난」은 20건씩 커서로 잇는다.
+
+            **`from`·`to` 가 둘 다 오면 구획도 커서도 쓰지 않는다** — 그 기간과 겹치는 회의의 한
+            배열이다 (SPEC-004 §4 · 증보 K2). 둘 다 없으면 **지금 그대로**이므로 회의 화면은 영향을
+            받지 않는다. 한쪽만 오면 거절한다.
+            """
             try:
-                return app.state.workflow_application.meeting_board(principal, cursor=cursor)
+                return app.state.workflow_application.meeting_board(
+                    principal, cursor=cursor, span_from=from_, span_to=to
+                )
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -1487,7 +1517,7 @@ def create_app(
                 raise _runtime_error(error) from error
 
         @app.patch("/api/tasks/{task_id}")
-        def update_task(task_id: UUID, request: UpdateTaskRequest, principal: Principal = Depends(developer_principal)) -> TaskMutationResult:
+        def update_task(task_id: UUID, request: UpdateTaskRequest, principal: Principal = Depends(developer_principal)) -> TaskDateMutationResult:
             try:
                 return app.state.workflow_application.update_task(principal, task_id, request.expected_version, request.changes())
             except Exception as error:
@@ -1658,6 +1688,66 @@ def create_app(
         ) -> TaskReferenceReleaseResult:
             try:
                 return app.state.workflow_application.release_task_reference(principal, task_id, reference_id)
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        # ---- 시간 배정: 날짜 단위로 사는 업무 위에 얹히는 시간 축 (SPEC-004) ----
+
+        @app.post("/api/tasks/{task_id}/schedules", status_code=status.HTTP_201_CREATED)
+        def create_task_schedule(
+            task_id: UUID,
+            request: CreateTaskScheduleRequest,
+            response: Response,
+            idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+            principal: Principal = Depends(developer_principal),
+        ) -> TaskScheduleView:
+            """배정 생성 — **생성 전용**이다. 그 날이 이미 차 있으면 `409` 이고 덮어쓰지 않는다.
+
+            **같은 멱등 키의 재전송은 그 `409` 에 걸리지 않는다** — 영수증이 먼저다 (증보 K12).
+            **영수증은 `200`** 이다: 새로 만들어진 것이 없기 때문이다.
+            멱등 키는 `Idempotency-Key` **헤더**로 받는다.
+            """
+            try:
+                view, created = app.state.workflow_application.create_task_schedule(
+                    principal,
+                    task_id,
+                    idempotency_key=idempotency_key,
+                    on_date=request.on_date,
+                    starts_at=request.starts_at,
+                    ends_at=request.ends_at,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+            response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+            return view
+
+        @app.patch("/api/task-schedules/{schedule_id}")
+        def retime_task_schedule(
+            schedule_id: UUID,
+            request: RetimeTaskScheduleRequest,
+            principal: Principal = Depends(developer_principal),
+        ) -> TaskScheduleView:
+            """시각 변경 — 같은 날 재배정도 여기로 온다. **날짜는 못 바꾼다** (§2.3 R6)."""
+            try:
+                return app.state.workflow_application.retime_task_schedule(
+                    principal,
+                    schedule_id,
+                    expected_version=request.expected_version,
+                    starts_at=request.starts_at,
+                    ends_at=request.ends_at,
+                )
+            except Exception as error:
+                raise _runtime_error(error) from error
+
+        @app.get("/api/calendar")
+        def calendar(
+            from_: date = Query(alias="from"),
+            to: date = Query(alias="to"),
+            principal: Principal = Depends(developer_principal),
+        ) -> list[dict[str, object]]:
+            """업무 + 회의 **합본** — 한 배열이고 `kind` 로 가른다. 한 화면 = 한 요청이다 (증보 K2)."""
+            try:
+                return app.state.workflow_application.calendar(principal, from_, to)
             except Exception as error:
                 raise _runtime_error(error) from error
 
@@ -2402,14 +2492,19 @@ def create_app(
             except ValueError as error:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
 
-        def task_transition(task_id: UUID, target: TaskState, principal: Principal, reason: str | None = None, expected_version: int = 0) -> TaskMutationResult:
+        def task_transition(task_id: UUID, target: TaskState, principal: Principal, reason: str | None = None, expected_version: int = 0) -> TaskDateMutationResult:
             try:
                 return app.state.workflow_application.transition_task(task_id, principal, target, reason, expected_version)
             except Exception as error:
                 raise _runtime_error(error) from error
 
         @app.post("/api/tasks/{task_id}/start")
-        def start_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> TaskMutationResult:
+        def start_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> TaskDateMutationResult:
+            """시작 — **비어 있던 시작일을 오늘로 채운다**. 날짜가 바뀌는 자리라 `schedule_release` 를 싣는다.
+
+            **막힘·재개·완료·취소는 날짜를 바꾸지 않으므로 그 묶음을 내지 않는다** (증보 K3 의 세 자리).
+            같은 operation 을 지나지만 **표면이 약속하는 것**은 여기서 갈린다.
+            """
             return task_transition(task_id, TaskState.IN_PROGRESS, principal, expected_version=request.expected_version)
 
         @app.post("/api/tasks/{task_id}/block")

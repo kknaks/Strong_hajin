@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -21,6 +21,7 @@ from ax_workspace.modules.work.assignments import TaskAssignmentApplication
 from ax_workspace.modules.work.creation import (
     ASSIGN_TASK_COMMAND,
     CREATE_TASK_COMMAND,
+    CREATE_TASK_SCHEDULE_COMMAND,
     CREATE_WORK_REQUEST_COMMAND,
     TaskCreationContext,
     TaskCreationDecision,
@@ -37,7 +38,7 @@ from ax_workspace.modules.work.errors import (
 )
 from ax_workspace.modules.work.requests import WorkRequestApplication
 from ax_workspace.modules.work.task_creation import TaskCreateInput
-from ax_workspace.modules.work.task_results import TaskAssignmentResult, TaskMutationResult
+from ax_workspace.modules.work.task_results import TaskAssignmentResult, TaskMutationResult, TaskScheduleView
 
 
 class TaskCreationLedger(Protocol):
@@ -195,6 +196,74 @@ class TaskCreationApplication:
             raise TaskError(
                 f"담당을 지정한 생성에는 쓸 수 없는 항목입니다: {', '.join(unsupported)}"
             )
+
+    # ---- POST /api/tasks/{task_id}/schedules — 시간 배정 생성 --------------------
+
+    def create_task_schedule(
+        self,
+        principal: Principal,
+        task_id: UUID,
+        *,
+        idempotency_key: str | None,
+        on_date: date,
+        starts_at: time,
+        ends_at: time,
+        receipt_only: bool = False,
+    ) -> tuple[TaskScheduleView, bool] | None:
+        """배정 생성의 **멱등 계약**. 실제 생성은 그 명령을 소유한 `TaskApplication` 이 한다.
+
+        **영수증이 409 보다 먼저다** (증보 K12). 순서는 하나다 — 멱등 키 조회 → 같은 키면 영수증 →
+        아니면 나머지 검사(담당 관계 · 업무 상태 · 기간 · 하루 한 칸). 순서를 바꾸면 **드래그 연타가
+        자기 자신 때문에 거절된다**: 키가 존재하는 이유가 바로 그 연타인데 거기서 `409` 가 나면
+        키가 아무 일도 안 한 셈이고, 아무 일도 안 일어났는데 사람에게 「방금 바뀌었습니다」라고
+        거짓말을 하게 된다.
+
+        **회차를 받지 않는다** (증보 K10) — 생성 전용이라 바꿀 값이 없다.
+
+        함께 내는 참·거짓은 **새로 만들어진 것이 있는가**다. 영수증은 `201` 이 아니라 `200` 이어야
+        하는데 그 사실을 아는 자리가 여기뿐이다 — 표면이 다시 세지 않게 같이 낸다.
+        """
+        key = require_idempotency_key(idempotency_key)
+        fingerprint = creation_fingerprint(
+            {
+                "command": CREATE_TASK_SCHEDULE_COMMAND,
+                "task_id": str(task_id),
+                "on_date": on_date,
+                "starts_at": starts_at,
+                "ends_at": ends_at,
+            }
+        )
+        if receipt_only:
+            receipt = self._schedule_receipt(principal, key, fingerprint, on_date, absent_is_none=True)
+            return None if receipt is None else (receipt, False)
+        attempt = self._ledger.claim(str(principal.id), CREATE_TASK_SCHEDULE_COMMAND, key, fingerprint)
+        if attempt is None:
+            return self._schedule_receipt(principal, key, fingerprint, on_date), False
+        created = self._tasks.create_schedule(
+            principal, task_id, on_date=on_date, starts_at=starts_at, ends_at=ends_at
+        )
+        self._ledger.bind(attempt, task_id=UUID(str(created["task_id"])))
+        return created, True
+
+    def _schedule_receipt(
+        self, principal: Principal, key: str, fingerprint: str, on_date: date, *, absent_is_none: bool = False
+    ) -> TaskScheduleView | None:
+        """그 키가 세운 배정을 **(업무, 날)로 되찾는다.**
+
+        원장은 업무까지만 가리킨다. 그것으로 충분한 이유는 **하루 한 칸**이기 때문이다 — 같은 키면
+        지문이 같고, 지문이 같으면 `on_date` 도 같으며, 그 (업무, 날)에 살아 있는 배정은 부분 unique 가
+        **0 또는 1** 로 묶는다. 그래서 원장에 배정 식별자를 따로 두지 않는다 (표는 하나만 더한다).
+
+        그 사이에 배정이 닫혔다면 **없는 것으로 답한다** — 닫힘은 끝이고 되살리는 전이가 없다.
+        """
+        attempt = self._claimed(
+            principal, CREATE_TASK_SCHEDULE_COMMAND, key, fingerprint, absent_is_none=absent_is_none
+        )
+        if attempt is None:
+            return None
+        if attempt.task_id is None:
+            raise TaskNotFound("task schedule was not found")
+        return self._tasks.schedule_receipt(principal, attempt.task_id, on_date)
 
     # ---- POST /api/work-requests — 수평 요청 그대로의 표면 ----------------------
 

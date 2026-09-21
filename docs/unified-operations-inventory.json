@@ -575,7 +575,7 @@
         "meeting_board"
       ],
       "acceptance_evidence": "docs/unified-operations.md의 R3a~R3f 경로·권한·동등성 검증",
-      "http_signature": "(cursor: str | None, principal: Principal) -> dict[str, object]"
+      "http_signature": "(cursor: str | None, from_: date | None, to: date | None, principal: Principal) -> dict[str, object] | list[dict[str, object]]"
     },
     {
       "http": "GET /api/meetings/{meeting_id}",
@@ -1289,7 +1289,7 @@
         "update_task"
       ],
       "acceptance_evidence": "docs/unified-operations.md의 R3a~R3f 경로·권한·동등성 검증",
-      "http_signature": "(task_id: UUID, request: UpdateTaskRequest, principal: Principal) -> TaskMutationResult"
+      "http_signature": "(task_id: UUID, request: UpdateTaskRequest, principal: Principal) -> TaskDateMutationResult"
     },
     {
       "http": "PATCH /api/tasks/{task_id}/checklist/{item_id}",
@@ -2360,7 +2360,7 @@
         "transition_task"
       ],
       "acceptance_evidence": "docs/unified-operations.md의 R3a~R3f 경로·권한·동등성 검증",
-      "http_signature": "(task_id: UUID, request: TaskTransitionRequest, principal: Principal) -> TaskMutationResult"
+      "http_signature": "(task_id: UUID, request: TaskTransitionRequest, principal: Principal) -> TaskDateMutationResult"
     },
     {
       "http": "POST /api/work-requests",
@@ -2965,7 +2965,7 @@
   ],
   "current_runtime": {
     "phase": "main-sync",
-    "http_count": 156,
+    "http_count": 159,
     "tool_count": 129,
     "tools": [
       {
@@ -71817,6 +71817,77 @@
           "reconsider_when": "AX 가 남의 요청 자료를 직접 붙이고 떼는 계약이 확정될 때"
         },
         "http_signature": "(request_id: UUID, material_id: UUID, principal: Principal) -> WorkRequestMaterialResult"
+      },
+      {
+        "http": "POST /api/tasks/{task_id}/schedules",
+        "http_handler": "create_task_schedule",
+        "screen_callers": [],
+        "operation": "create_task_schedule",
+        "owning_calls": [
+          "SqlAlchemyTaskScheduleRepository(session).active_on",
+          "self._task_creation(session).create_or_receipt"
+        ],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "create_task_schedule"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "업무 시간 배분은 캘린더 격자 위의 직접 조작이다. 에이전트가 대신 잡을 근거가 지금은 없다.",
+          "alternative": "캘린더 격자에 카드를 떨어뜨리는 화면 경로가 이 명령을 부른다.",
+          "reconsider_when": "AX 가 일정 제안을 하게 될 때"
+        },
+        "http_signature": "(task_id: UUID, request: CreateTaskScheduleRequest, response: Response, idempotency_key: str | None, principal: Principal) -> TaskScheduleView"
+      },
+      {
+        "http": "PATCH /api/task-schedules/{schedule_id}",
+        "http_handler": "retime_task_schedule",
+        "screen_callers": [],
+        "operation": "retime_task_schedule",
+        "owning_calls": [
+          "self._tasks(session).retime_schedule"
+        ],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "retime_task_schedule"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "업무 시간 배분은 캘린더 격자 위의 직접 조작이다. 에이전트가 대신 잡을 근거가 지금은 없다.",
+          "alternative": "시간 블록의 세로 손잡이와 같은 날 재배정이 화면에서 이 명령을 부른다.",
+          "reconsider_when": "AX 가 일정 제안을 하게 될 때"
+        },
+        "http_signature": "(schedule_id: UUID, request: RetimeTaskScheduleRequest, principal: Principal) -> TaskScheduleView"
+      },
+      {
+        "http": "GET /api/calendar",
+        "http_handler": "calendar",
+        "screen_callers": [],
+        "operation": "calendar",
+        "owning_calls": [
+          "self._meetings(session).calendar_rows",
+          "self._tasks(session).calendar_tasks"
+        ],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "calendar"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "업무 시간 배분은 캘린더 격자 위의 직접 조작이다. 에이전트가 대신 잡을 근거가 지금은 없다.",
+          "alternative": "캘린더 화면이 보고 있는 기간으로 한 번 묻는다. 회의는 my_meeting_list 가, 업무는 my_task_list 가 각자의 축으로 이미 답한다.",
+          "reconsider_when": "AX 가 일정 제안을 하게 될 때"
+        },
+        "http_signature": "(from_: date, to: date, principal: Principal) -> list[dict[str, object]]"
       }
     ],
     "status": "verified",
