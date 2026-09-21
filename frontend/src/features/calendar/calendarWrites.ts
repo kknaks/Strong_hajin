@@ -99,6 +99,48 @@ export function slotGuard(row: CalendarTaskRow, date: string, canManage: boolean
   return null;
 }
 
+/** 겹침을 볼 때 필요한 한 칸. `TimedBlock` 이 이 모양을 만족한다. */
+export type BusySpan = { key: string; date: string; startMin: number; endMin: number };
+
+/**
+ * **반열림 `[시작, 끝)`** — 경계가 닿는 것은 겹침이 **아니다** (증보 K22).
+ *
+ * 10:00–11:00 과 11:00–12:00 은 **둘 다 선다.** 서버의 `modules/time_blocks.overlaps` 와
+ * **같은 규칙**이어야 한다 — 화면이 더 엄하면 **서버가 받는 것을 화면이 막는다.**
+ */
+export function overlapsMinutes(left: { startMin: number; endMin: number }, right: { startMin: number; endMin: number }): boolean {
+  return left.startMin < right.endMin && right.startMin < left.endMin;
+}
+
+/**
+ * 그 자리가 **내 다른 일정과 겹치나** — 겹치면 **문구**를 돌려준다 (§I 조용한 거절 0개).
+ *
+ * **왜 화면이 먼저 보는가.** 서버가 같은 것을 다시 본다(그쪽이 정본이다). 여기서 보는 이유는
+ * 겹침이 **정상적인 손놀림**이기 때문이다 — 빈 줄처럼 보이는 자리에 떨어뜨렸는데 왜 안 되는지를
+ * **보내기 전에** 말해야 한다. 서버까지 갔다 오면 그 사이에 화면이 한 번 흔들린다.
+ *
+ * **화면은 서버보다 엄하지 않다** — `blocks` 는 `calendarModel.blockingBlocks()` 가 고른
+ * **서버의 블록 집합과 같은 것**이고(K25·K26·K27), 판정은 위의 반열림 하나다.
+ * 자정을 넘는 회의처럼 화면이 **덜** 아는 자리는 남지만, 그쪽은 서버가 말한다 — 안전한 방향이다.
+ *
+ * `ignoreKey` 는 **고치는 중인 자기 자신**을 뺀다. 없으면 10:00–11:00 을 10:30–11:30 으로 옮기는 것이
+ * **자기와 겹쳐** 거절된다 — 서버의 `ignore_schedule_id` 와 같은 자리다.
+ */
+export function overlapGuard(
+  blocks: BusySpan[],
+  at: { date: string; startMin: number; endMin: number },
+  ignoreKey: string | null = null,
+): string | null {
+  const hit = blocks.some((block) => block.date === at.date && block.key !== ignoreKey && overlapsMinutes(block, at));
+  return hit ? calendarDeny.overlap : null;
+}
+
+/** `HH:MM` → 자정부터의 분. 가드가 벽시계와 눈금을 같은 축에서 보게 한다. */
+export function minutesOfClock(clock: string): number {
+  const [hour, minute] = clock.split(":").map(Number);
+  return (Number.isFinite(hour) ? hour : 0) * 60 + (Number.isFinite(minute) ? minute : 0);
+}
+
 /** 30분 눈금. **DB 가 강제하지 않는다** — 화면 편의다(§J). 자정을 넘지 않는다(§A). */
 export function snapClock(minutes: number): string {
   if (!Number.isFinite(minutes)) return clock(0);
@@ -148,17 +190,26 @@ export function scheduleKey(
 /**
  * 서버가 거절했을 때 낼 말.
  *
- * 본문에 `code` 가 없으므로 **상태 코드 + 어떤 명령을 불렀는지**로 가른다.
+ * **본문에 `code` 가 없다.** 겹침 `409` 의 `detail` 은 **문자열**이고(방예약 `409` 들만 `{code, message}`
+ * 객체다), 그래서 `detail.code` 를 읽으면 `undefined` 다. 가를 수 있는 것은
+ * **상태 코드 + 어떤 명령을 불렀는지** 둘뿐이다.
  *
- * `POST` 의 `409` 는 계약상 둘(`TASK_SCHEDULE_DAY_TAKEN` · `TASK_SCHEDULE_TASK_CLOSED`)인데,
- * **끝난 업무는 캘린더에 애초에 실리지 않으므로**(§B 읽기 필터) 화면에서 올 수 있는 것은 앞엣것뿐이다.
- * 그리고 정상 흐름에서는 그것도 안 보인다 — 그 날에 배정이 있으면 화면이 처음부터 `PATCH` 를 부른다(K10).
- * 여기 남는 것은 **경합**이다.
+ * **`409` 의 갈래 — 무엇이 실제로 올 수 있나.**
+ *
+ * | 명령 | 계약상 올 수 있는 것 | 화면에서 실제로 |
+ * |---|---|---|
+ * | `schedule_create` | `DAY_TAKEN` · `TASK_CLOSED` · **`OVERLAP`** | 앞의 둘은 **구조적으로 안 온다** — 끝난 업무는 합본 조회에 없고(§B), 그 날에 배정이 있으면 화면이 처음부터 `PATCH` 를 부른다(K10). 남는 것이 **겹침**이다 |
+ * | `schedule_update` | `VERSION_CONFLICT` · **`OVERLAP`** | **둘을 가를 수 없다.** 문구는 회차 쪽을 쓴다 — 아래 |
+ *
+ * **`schedule_update` 의 `409` 에 겹침 문구를 쓰지 않는 이유.** 겹침은 **보내기 전에**
+ * `overlapGuard` 가 잡아 그 문장을 이미 말했다. 여기까지 온 것은 **그 사이에 무언가 바뀐 것**이고,
+ * 회차가 어긋났든 남이 그 시간을 방금 채웠든 **답은 같다 — 다시 읽어야 한다.**
+ * 「다른 곳에서 먼저 바뀌었습니다」가 두 경우 모두에 참이다. **가를 수 없는 것을 가른 척하지 않는다.**
  */
 export function denyMessage(command: ScheduleCommand, status: number, span: Span | null): string {
   if (status === 403) return calendarDeny.notMine;
   if (status === 404) return calendarDeny.notFound;
-  if (status === 409) return command === "schedule_create" ? calendarDeny.dayTaken : calendarDeny.versionConflict;
+  if (status === 409) return command === "schedule_create" ? calendarDeny.overlap : calendarDeny.versionConflict;
   if (status === 422) {
     if (command === "task_dates") return calendarDeny.startAfterDue;
     if (command === "schedule_update") return calendarDeny.invalidRange;

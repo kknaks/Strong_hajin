@@ -5,7 +5,10 @@ import {
   defaultSlot,
   denyMessage,
   dropGuard,
+  minutesOfClock,
   moveTaskDates,
+  overlapGuard,
+  overlapsMinutes,
   previewResize,
   releaseNotice,
   resizeTaskDates,
@@ -163,10 +166,19 @@ describe("거절 문구 — 상태 코드 + 어떤 명령을 불렀는지로 가
     expect(denyMessage("schedule_update", 422, span)).toBe("종료 시각은 시작 시각보다 뒤여야 합니다.");
   });
 
-  it("409 도 명령마다 다르다 — 생성만 «그 날이 방금 찼다»이고 나머지는 회차 충돌이다", () => {
-    expect(denyMessage("schedule_create", 409, span)).toBe("이 날의 시간 배정이 방금 바뀌었습니다. 새로고침 후 다시 시도해 주세요.");
+  /* FE-4 가 이 줄을 바꿨다 (증보 K22). 앞 판은 생성 409 를 «그 날이 방금 찼다»로 읽었는데,
+     그 갈래(`DAY_TAKEN`)는 K10 이후 **구조적으로 오지 않는다** — 그 날에 배정이 있으면 화면이
+     처음부터 `PATCH` 를 부른다. 남는 것이 **겹침**이다. */
+  it("409 도 명령마다 다르다 — 생성은 «겹침»이고 나머지는 회차 충돌이다", () => {
+    expect(denyMessage("schedule_create", 409, span)).toBe("이미 다른 일정이 있는 시간입니다");
     expect(denyMessage("schedule_update", 409, span)).toBe("다른 곳에서 먼저 바뀌었습니다. 새로고침 후 다시 시도해 주세요.");
     expect(denyMessage("task_dates", 409, span)).toBe("다른 곳에서 먼저 바뀌었습니다. 새로고침 후 다시 시도해 주세요.");
+  });
+
+  /* 서버 문자열이 이 줄의 정본이다 — `TaskScheduleOverlap("이미 다른 일정이 있는 시간입니다")`.
+     가드가 내는 말과 `409` 가 내는 말이 **한 글자도 달라선 안 된다.** */
+  it("겹침 문구에는 마침표가 없다 — 서버 문자열 그대로다", () => {
+    expect(denyMessage("schedule_create", 409, span).endsWith(".")).toBe(false);
   });
 
   it("404 는 없는 것과 못 읽는 것을 같은 말로 답한다", () => {
@@ -176,6 +188,39 @@ describe("거절 문구 — 상태 코드 + 어떤 명령을 불렀는지로 가
   it("모르는 코드에는 명령별 기본 문구를 낸다 — 빈손으로 두지 않는다", () => {
     expect(denyMessage("task_dates", 500, span)).toBe("업무 기간을 바꾸지 못했습니다.");
     expect(denyMessage("schedule_update", 500, span)).toBe("시간 배정을 저장하지 못했습니다.");
+  });
+});
+
+describe("K22 — 겹침 가드는 보내기 전에 말한다", () => {
+  const block = (key: string, startMin: number, endMin: number, date = "2027-03-03") => ({ key, date, startMin, endMin });
+
+  it("겹치면 문구를 낸다 — 조용히 막지 않는다", () => {
+    expect(overlapGuard([block("meeting:m1", 600, 660)], { date: "2027-03-03", startMin: 630, endMin: 690 })).toBe(
+      "이미 다른 일정이 있는 시간입니다",
+    );
+  });
+
+  /* 이것이 이 가드의 핵심이다 — **서버가 받는 것을 화면이 막으면 안 된다.**
+     10:00–11:00 과 11:00–12:00 은 서버에서 둘 다 선다(반열림 `[시작, 끝)`). */
+  it("경계가 닿는 것은 겹침이 아니다 — 11:00 에 끝나는 일정과 11:00 시작은 둘 다 선다", () => {
+    expect(overlapGuard([block("meeting:m1", 600, 660)], { date: "2027-03-03", startMin: 660, endMin: 720 })).toBeNull();
+    expect(overlapGuard([block("meeting:m1", 660, 720)], { date: "2027-03-03", startMin: 600, endMin: 660 })).toBeNull();
+    expect(overlapsMinutes({ startMin: 600, endMin: 660 }, { startMin: 660, endMin: 720 })).toBe(false);
+  });
+
+  it("다른 날은 겹치지 않는다", () => {
+    expect(overlapGuard([block("meeting:m1", 600, 660, "2027-03-04")], { date: "2027-03-03", startMin: 600, endMin: 660 })).toBeNull();
+  });
+
+  it("고치는 중인 자기 자신은 뺀다 — 안 그러면 10:00–11:00 을 10:30 으로 옮기는 것이 자기와 겹친다", () => {
+    const mine = block("schedule:s1", 600, 660);
+    expect(overlapGuard([mine], { date: "2027-03-03", startMin: 630, endMin: 690 })).not.toBeNull();
+    expect(overlapGuard([mine], { date: "2027-03-03", startMin: 630, endMin: 690 }, "schedule:s1")).toBeNull();
+  });
+
+  it("벽시계를 분으로 읽는다 — 가드와 눈금이 같은 축을 쓴다", () => {
+    expect(minutesOfClock("10:00")).toBe(600);
+    expect(minutesOfClock("23:59")).toBe(1439);
   });
 });
 

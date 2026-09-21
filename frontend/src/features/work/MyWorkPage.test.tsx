@@ -3,9 +3,12 @@ import { useState } from "react";
 import type React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { seoulToday } from "../../lib/labels";
 import type { WorkRequest } from "../../lib/viewModels";
 
 vi.mock("../../lib/api", () => ({
+  // 우 레일의 회의 절반 (증보 K23) — 업무 목록과 **다른 질의**다.
+  getCalendar: vi.fn().mockResolvedValue([]),
   getMyWork: vi.fn(),
   getTask: vi.fn(),
   getTaskHistory: vi.fn(),
@@ -261,6 +264,44 @@ describe("work relation information architecture", () => {
     expect(table.getByText("협의 중")).toBeTruthy();
     // 받은 요청은 여기 서지 않는다 — 내가 보낸 것만 담는 탭이다.
     expect(table.queryByText("내게 온 검토 요청")).toBeNull();
+  });
+
+  /**
+   * 증보 K23·K24 — 우 레일의 **축이 둘이고 다르다.**
+   *
+   * 업무는 **그 탭이 들고 있는 것 그대로**(지금 동작 유지)이고, 회의는 **탭과 무관하게 내 회의**다.
+   * 업무까지 합본 조회로 갈아타면 그 축이 `my_work` 라 **「보낸 업무」 탭에서 보낸 업무가 사라진다** —
+   * 이 검사가 그 자리를 막는다.
+   */
+  it("우 레일에 회의가 서고, 탭을 바꿔도 회의는 그대로다 (K23·K24)", async () => {
+    vi.mocked(api.getCalendar).mockResolvedValue([
+      {
+        kind: "meeting",
+        meeting_id: "m1",
+        title: "주간 회의",
+        starts_at: `${seoulToday()}T01:00:00+00:00`,
+        ends_at: `${seoulToday()}T02:00:00+00:00`,
+        location: null,
+        status: "scheduled",
+        viewer_relation: "attendee",
+        created_by: "mina",
+        attendee_count: 2,
+        created_by_display_name: "민아 (구성원)",
+      },
+    ] as never);
+    renderPage({ canAssignTasks: true });
+
+    const rail = () => within(screen.getByLabelText("캘린더"));
+    await waitFor(() => expect(rail().getByText("주간 회의")).toBeTruthy());
+    // 합본 조회는 **회의 절반에만** 쓴다 — 업무는 이 화면이 이미 들고 있다.
+    expect(api.getMyWork).toHaveBeenCalled();
+
+    await openSentTab();
+    // 보낸 업무가 사라지지 않는다 — 레일의 업무 축은 그 탭 것 그대로다.
+    expect(within(screen.getByLabelText("보낸 업무")).getByText("내가 보낸 요청")).toBeTruthy();
+    // 회의는 탭과 무관하다 — 다시 묻지도 않는다.
+    expect(rail().getByText("주간 회의")).toBeTruthy();
+    expect(vi.mocked(api.getCalendar).mock.calls).toHaveLength(1);
   });
 
   it("keeps the 참조 section standing when nothing has been referenced yet", async () => {

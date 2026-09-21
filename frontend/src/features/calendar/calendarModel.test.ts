@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { CalendarEntry, CalendarMeetingRow, CalendarTaskRow } from "../../lib/viewModels";
 import {
+  blockingBlocks,
   laneSeats,
   monthGridDays,
   monthSegments,
@@ -188,6 +189,35 @@ describe("timedBlocks", () => {
     expect(assigned).toMatchObject({ date: "2027-03-03", startMin: 600, endMin: 690, version: 1, taskId: "t1" });
     const booked = blocks.find((block) => block.kind === "meeting");
     expect(booked).toMatchObject({ date: "2027-03-04", startMin: 600, endMin: 660 });
+  });
+});
+
+describe("blockingBlocks — 보이는 것과 시간을 막는 것은 같지 않다 (K25·K26·K27)", () => {
+  const booked = task({
+    schedules: [{ schedule_id: "s1", on_date: "2027-03-03", starts_at: "10:00", ends_at: "11:30", version: 1 }],
+  });
+
+  it("내 배정은 전부 막는다", () => {
+    expect(blockingBlocks([booked]).map((block) => block.scheduleId)).toEqual(["s1"]);
+  });
+
+  it("참석하는 회의는 막는다 — 주최자도 서버에서 `attendee` 로 온다", () => {
+    expect(blockingBlocks([meeting({ viewer_relation: "attendee" })]).map((block) => block.kind)).toEqual(["meeting"]);
+  });
+
+  /* K25 — 공유받은 회의는 「참고하라」고 공유된 것이지 내가 그 시간에 잡혀 있다는 뜻이 아니다.
+     세면 **옆 팀 회의가 내 배정을 막는다.** */
+  it("공유받기만 한 회의는 막지 않는다 (K25)", () => {
+    expect(blockingBlocks([meeting({ viewer_relation: "shared" })])).toEqual([]);
+  });
+
+  /* K26 — 자동 취소가 기록 없이 지난 「예정」을 옮긴다. 세면 그 시간이 영구히 막힌다. */
+  it("취소된 회의는 막지 않는다 (K26)", () => {
+    expect(blockingBlocks([meeting({ status: "cancelled" })])).toEqual([]);
+  });
+
+  it("탭으로 거르지 않는다 — 「업무」 탭을 보고 있어도 회의는 내 시간을 막는다", () => {
+    expect(blockingBlocks([booked, meeting()]).map((block) => block.kind).sort()).toEqual(["meeting", "task"]);
   });
 });
 

@@ -13,6 +13,8 @@ vi.mock("../../lib/api", () => ({
   hideWorkRequestListEntry: vi.fn(),
   getWorkRequestAssigneeCandidates: vi.fn(),
   createDirectTask: vi.fn(),
+  // 우 레일의 회의 절반 (증보 K23) — 업무 목록과 **다른 질의**다.
+  getCalendar: vi.fn().mockResolvedValue([]),
   addTaskReference: vi.fn(),
   releaseTaskReference: vi.fn(),
   createWorkRequest: vi.fn(),

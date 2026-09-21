@@ -31,6 +31,7 @@ import { MonthGrid } from "./MonthGrid";
 import { ScheduleRail } from "./ScheduleRail";
 import { WeekGrid } from "./WeekGrid";
 import {
+  blockingBlocks,
   monthGridDays,
   monthSegments,
   railCards,
@@ -48,7 +49,9 @@ import {
   defaultSlot,
   denyMessage,
   dropGuard,
+  minutesOfClock,
   moveTaskDates,
+  overlapGuard,
   previewResize,
   releaseNotice,
   resizeTaskDates,
@@ -201,6 +204,11 @@ export function CalendarPage({
   const segments = useMemo(() => monthSegments(entries, tab), [entries, tab]);
   const spans = useMemo(() => spanSegments(entries, tab), [entries, tab]);
   const blocks = useMemo(() => timedBlocks(entries, tab), [entries, tab]);
+  /**
+   * 겹침 가드가 보는 칸 — **탭과 무관하다**(K25·K26·K27). 위의 `blocks` 는 «그리는» 것이라
+   * 탭으로 걸러지지만, 「내 시간이 찼는가」는 지금 무엇을 보고 있든 같은 답이어야 한다.
+   */
+  const busySpans = useMemo(() => blockingBlocks(entries), [entries]);
 
   /** 합본 조회가 실어 준 업무 행 — 가드도 쓰기도 **이 행의 `span_*`** 를 쓴다(K14). */
   const taskRow = useCallback(
@@ -341,6 +349,17 @@ export function CalendarPage({
       }
       const slot = defaultSlot(minutes);
       const standing = row.schedules.find((schedule) => schedule.on_date === date);
+      /* 겹침은 **보내기 전에** 말한다 (K22 · §I). 같은 날 재배정이면 «고치는 중인 그 칸»은 뺀다 —
+         빼지 않으면 자기 자신과 겹쳐 거절된다(서버의 `ignore_schedule_id` 와 같은 자리다). */
+      const taken = overlapGuard(
+        busySpans,
+        { date, startMin: minutesOfClock(slot.starts_at), endMin: minutesOfClock(slot.ends_at) },
+        standing ? `schedule:${standing.schedule_id}` : null,
+      );
+      if (taken) {
+        onError(taken);
+        return;
+      }
       void (async () => {
         setBusy(true);
         try {
@@ -359,7 +378,7 @@ export function CalendarPage({
         }
       })();
     },
-    [canManageOwnTasks, deny, onError, onNotice, reload, taskRow],
+    [busySpans, canManageOwnTasks, deny, onError, onNotice, reload, taskRow],
   );
 
   /**
@@ -380,6 +399,17 @@ export function CalendarPage({
         return;
       }
       if (starts_at === block.startLabel && ends_at === block.endLabel) return;
+      /* 겹침은 **보내기 전에** 말한다. 자기 자신(`block.key`)은 빼야 10:00–11:00 을 10:30 으로
+         옮기는 것이 «자기와 겹쳐» 거절되지 않는다 — 서버의 `ignore_schedule_id` 와 같은 자리다. */
+      const taken = overlapGuard(
+        busySpans,
+        { date: block.date, startMin: minutesOfClock(starts_at), endMin: minutesOfClock(ends_at) },
+        block.key,
+      );
+      if (taken) {
+        onError(taken);
+        return;
+      }
       void (async () => {
         setBusy(true);
         try {
@@ -394,7 +424,7 @@ export function CalendarPage({
         }
       })();
     },
-    [deny, onError, onNotice, reload, taskRow],
+    [busySpans, deny, onError, onNotice, reload, taskRow],
   );
 
   /** 손잡이를 잡았다 — 아직 어느 칸도 지나지 않았다. */

@@ -338,6 +338,27 @@ describe("SCR-105 회의 목록", () => {
     await waitFor(() => expect(vi.mocked(api.bookMeeting).mock.calls[0][0].room_id).toBe(9));
   });
 
+  /**
+   * 증보 K22 — 예약 쪽에도 같은 겹침이 붙는다. 여기가 특히 미끄러운 자리다:
+   * **방예약 `409` 는 `{code, …}` 객체**라 이 모달이 `detail.code` 를 먼저 본다.
+   * 겹침 `409` 의 `detail` 은 **문자열**이라 그 길로 새면 안 되고, 서버 문장이 그대로 나와야 한다.
+   */
+  it("겹침 409 는 서버 문장을 그대로 낸다 — 방예약 409 의 code 길로 새지 않는다 (K22)", async () => {
+    vi.mocked(api.listMeetings).mockResolvedValue({ upcoming: [], past: { items: [], next_cursor: null } });
+    const onError = vi.fn();
+    render(<ListHost onError={onError} onNotice={vi.fn()} onOpenMeeting={vi.fn()} selected={null} />);
+    fireEvent.click(await screen.findByRole("button", { name: "회의 생성" }));
+    const modal = await screen.findByRole("dialog", { name: "회의 예약" });
+    fireEvent.change(within(modal).getByPlaceholderText("회의명을 적으세요"), { target: { value: "주간 회의" } });
+    addGuest(modal, "한서린");
+
+    const detail = "민아 님의 일정과 겹칩니다";
+    vi.mocked(api.bookMeeting).mockRejectedValue(new api.ApiError(409, detail, detail));
+    fireEvent.click(within(modal).getByRole("button", { name: "회의 생성" }));
+
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(detail));
+  });
+
   it("회의실을 못 잡아도 회의는 서고, 왜 비었는지 한 줄로 말한다", async () => {
     vi.mocked(api.readMeetingRooms).mockResolvedValue([{ room_id: 7, name: "5F 대회의실 (20인)", capacity: 20 }]);
     const { onNotice } = renderList([], []);

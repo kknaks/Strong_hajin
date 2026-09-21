@@ -273,6 +273,33 @@ export function timedBlocks(entries: CalendarEntry[], tab: CalendarTab): TimedBl
 }
 
 /**
+ * **내 시간을 막는 칸만** — 서버의 블록 집합과 **같은 것**을 고른다 (증보 K25·K26·K27).
+ *
+ * **캘린더에 «보이는» 것과 시간을 «막는» 것은 겹치지만 같지 않다.** 회의의 가시성 축은
+ * `board`(참석 · 공유 · 조직 범위)인데 **블록은 주최·참석뿐**이다 — 공유받은 회의는
+ * 「참고하라」고 공유된 것이지 **내가 그 시간에 잡혀 있다는 뜻이 아니고**, 옆 팀 회의는 더 그렇다.
+ * 그것까지 세면 **옆 팀 회의가 내 배정을 막는다**(K25).
+ *
+ * | 무엇 | 세나 | 왜 |
+ * |---|---|---|
+ * | 업무의 시간 배정 | **전부** | 합본 조회가 끝난 업무를 이미 걸렀고(§2.5 나 · K27) `schedules[]` 는 살아 있는 것뿐이다 |
+ * | `viewer_relation === "attendee"` 인 회의 | **센다** | 주최자도 여기 든다 — 서버의 `relation` 이 「주최자이거나 참석자」다 |
+ * | `viewer_relation === "shared"` 인 회의 | **안 센다** | K25 |
+ * | `status === "cancelled"` 인 회의 | **안 센다** | 자동 취소가 기록 없이 지난 「예정」을 옮기므로, 세면 **되살릴 수 없는 이유로 그 시간이 영구히 막힌다**(K26) |
+ *
+ * **탭으로 거르지 않는다** — 「업무」 탭을 보고 있어도 회의는 내 시간을 막는다. 탭은 **보는 것**을
+ * 가르지 그 사람의 시간이 찼는지를 바꾸지 않는다.
+ */
+export function blockingBlocks(entries: CalendarEntry[]): TimedBlock[] {
+  return timedBlocks(
+    entries.filter((entry) =>
+      entry.kind === "task" ? true : entry.viewer_relation === "attendee" && entry.status !== "cancelled",
+    ),
+    "all",
+  );
+}
+
+/**
  * 시간 블록의 **최소 높이**(분). 30분보다 짧은 배정도 제목과 시각을 읽을 수 있어야 한다.
  *
  * ⚠ **겹침 판정이 이 값을 쓴다** — 10:00–10:10 과 10:20–10:50 은 «시간»으로는 안 겹치지만

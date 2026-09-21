@@ -284,6 +284,30 @@ describe("R5 — 시간 격자 드롭", () => {
     expect(createTaskSchedule).not.toHaveBeenCalled();
   });
 
+  /* K22 — 회의(03-04 10:00–11:00)가 그 자리를 이미 쓰고 있다. 겹침은 **보내기 전에** 말한다. */
+  it("겹치면 보내기 전에 말한다 — 아무것도 나가지 않는다 (K22)", async () => {
+    const { container } = await weekReady();
+    dragCardTo(container, "flip", hours("2027-03-04"), 560);
+    expect(onError).toHaveBeenCalledWith("이미 다른 일정이 있는 시간입니다");
+    expect(createTaskSchedule).not.toHaveBeenCalled();
+  });
+
+  /* **서버가 받는 것을 화면이 막으면 안 된다.** 반열림이라 11:00 에 끝나는 회의 뒤의
+     11:00 시작은 서버에서 통과한다 — 화면도 통과시켜야 한다. */
+  it("경계는 겹침이 아니다 — 11:00 에 끝나는 회의 바로 뒤 11:00 배정이 나간다 (K22)", async () => {
+    const { container } = await weekReady();
+    dragCardTo(container, "flip", hours("2027-03-04"), 616);
+    await waitFor(() => expect(createTaskSchedule).toHaveBeenCalledTimes(1));
+    expect(createTaskSchedule.mock.calls[0][1]).toEqual({ on_date: "2027-03-04", starts_at: "11:00", ends_at: "12:00" });
+  });
+
+  it("**서버가 409 로 겹침을 말하면 같은 문장**을 낸다 — 가드가 놓친 경합이다", async () => {
+    createTaskSchedule.mockRejectedValue(new ApiError(409, "이미 다른 일정이 있는 시간입니다"));
+    const { container } = await weekReady();
+    dragCardTo(container, "flip", hours("2027-03-03"), 560);
+    await waitFor(() => expect(onError).toHaveBeenCalledWith("이미 다른 일정이 있는 시간입니다"));
+  });
+
   it("서버가 거절하면 **우리 문구**를 낸다 — 본문에 code 가 없고 한 자리는 영문이다", async () => {
     createTaskSchedule.mockRejectedValue(new ApiError(403, "…"));
     const { container } = await weekReady();
@@ -325,6 +349,27 @@ describe("R6 — 시간 블록의 세로 손잡이", () => {
     fireEvent(window, pointerish("pointermove", { clientY: 0 }));
     fireEvent(window, pointerish("pointerup"));
     await waitFor(() => expect(onError).toHaveBeenCalledWith("종료 시각은 시작 시각보다 뒤여야 합니다."));
+    expect(updateTaskSchedule).not.toHaveBeenCalled();
+  });
+
+  it("늘리다 옆 배정과 겹치면 거절한다 — 자기 자신과는 겹치지 않는다 (K22)", async () => {
+    const twoSlots: CalendarEntry = {
+      ...flipped,
+      schedules: [
+        { schedule_id: "s1", on_date: "2027-03-03", starts_at: "10:00", ends_at: "11:30", version: 4 },
+        { schedule_id: "s2", on_date: "2027-03-03", starts_at: "14:00", ends_at: "15:00", version: 2 },
+      ],
+    };
+    getCalendar.mockResolvedValue([twoSlots, meeting]);
+    const { container } = await ready();
+    fireEvent.click(screen.getByRole("tab", { name: "주" }));
+    await waitFor(() => expect(container.querySelectorAll(".scax-week__slot").length).toBeGreaterThan(1));
+    // s1 의 끝을 14:30 까지 끈다 → s2(14:00–15:00)와 겹친다. 자기(s1)는 세지 않는다.
+    const handle = container.querySelector(".scax-week__slot-handle--end") as HTMLElement;
+    fireEvent.pointerDown(handle);
+    fireEvent(window, pointerish("pointermove", { clientY: 812 }));
+    fireEvent(window, pointerish("pointerup"));
+    await waitFor(() => expect(onError).toHaveBeenCalledWith("이미 다른 일정이 있는 시간입니다"));
     expect(updateTaskSchedule).not.toHaveBeenCalled();
   });
 
