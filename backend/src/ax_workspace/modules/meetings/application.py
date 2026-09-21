@@ -19,6 +19,7 @@ from ax_workspace.modules.meetings.domain import (
     MeetingNotFound,
     MeetingStateConflict,
     MeetingStatus,
+    MeetingTimeOverlap,
     MeetingVersionConflict,
     ORIGIN_TRACKS,
     TRACK_AI,
@@ -37,6 +38,7 @@ from ax_workspace.modules.meetings.domain import (
     parse_status,
     validate_meeting_schedule,
 )
+from ax_workspace.modules.time_blocks import TimeBlockRepository
 from ax_workspace.modules.meetings.finalize import describe_day
 from ax_workspace.modules.meetings.policy import (
     MeetingActorContext,
@@ -161,10 +163,15 @@ class MeetingRepository(Protocol):
     def record_recording_file(self, meeting_id: UUID, *, storage_key: str, content_type: str) -> None: ...
 
 class MeetingApplication:
-    def __init__(self, repository: MeetingRepository, recordings: Any = None) -> None:
+    def __init__(
+        self, repository: MeetingRepository, recordings: Any = None, time_blocks: TimeBlockRepository | None = None
+    ) -> None:
         self._repository = repository
         # 종료 뒤 재전사가 음원을 읽는 자리 (D44). 없으면 재전사를 건너뛴다 — 나머지 명령은 그대로 돈다.
         self._recordings = recordings
+        # 겹침을 읽는 **문 하나** — 배정 쪽(`modules/work`)이 쓰는 것과 **같은 것**이다 (증보 K22).
+        # 없으면 겹침 검사가 서지 않는다: 조립이 빠진 경우에만 그렇고, 그때는 명령이 오류를 낸다.
+        self._time_blocks = time_blocks
 
     def list(self, principal: Principal) -> list[dict[str, Any]]:
         """Calendar-safe projection: a meeting this person may not open contributes only a busy block.
@@ -325,9 +332,59 @@ class MeetingApplication:
         self._repository.append_audit(meeting, str(principal.id), "meeting.created", f"회의 생성: {meeting.title or '제목 없는 회의'}")
         return self._detail(principal, meeting)
 
-    def validate_creation(self, principal: Principal, **fields: Any) -> None:
-        """Apply every local creation rule before an irreversible room-provider call."""
-        self._validated_creation(principal, **fields)
+    def validate_creation(
+        self, principal: Principal, *, ignore_meeting_id: UUID | None = None, **fields: Any
+    ) -> None:
+        """Apply every local creation rule before an irreversible room-provider call.
+
+        **겹침 검사도 여기 든다** (증보 K22). `_validated_creation` 안에 있으므로 회의실을 잡는
+        되돌릴 수 없는 provider 호출 **앞**에서 거절된다 — 뒤에 두면 자리를 잡아 놓고 회의가 안 서는
+        **고아 예약**이 남고, 그것을 거둘 경로가 이 흐름에 없다.
+
+        `ignore_meeting_id` 는 **그 재시도 키가 이미 세운 회의**다. 회의실 예약 생성은 같은 키의
+        재전송이 **provider 를 다시 부르지 않고 같은 회의를 돌려주는** 계약인데(그 영수증은 이
+        검사보다 **뒤**에 있다), 빼지 않으면 재전송이 **자기가 방금 세운 회의와 겹쳐** 거절된다.
+        **K12 를 회의로 들여오는 것이 아니다** — 이미 있는 재시도 원장을 이 검사가 깨지 않게 하는 것이다.
+        """
+        self._validated_creation(principal, ignore_meeting_id=ignore_meeting_id, **fields)
+
+    # ---- 겹침: 주최자 + 활성 참석자 전원의 시간 (SPEC-004 §2.9 · 증보 K22·K25) ----
+
+    def _time_block_repository(self) -> TimeBlockRepository:
+        if self._time_blocks is None:  # pragma: no cover - 조립이 빠진 경우에만 닿는다
+            raise MeetingError("시간 블록 조회가 조립되지 않았습니다")
+        return self._time_blocks
+
+    def _require_free_time(
+        self,
+        member_ids: frozenset[str],
+        starts_at: datetime,
+        ends_at: datetime,
+        *,
+        ignoring: UUID | None = None,
+    ) -> None:
+        """그 사람들의 그 시간이 **비어 있나** — 회의 생성·시각 변경이 함께 지나는 **한 자리**.
+
+        **배정 쪽과 같은 문을 쓴다** (`overlapping_blocks`). 갈리면 두 규칙이 되고, 「경계가 닿는 것은
+        겹침이 아니다」가 한쪽에서만 참이 된다. 반열림 판정도 자정 분할도 그 문 안에 있다.
+
+        **`member_ids` 는 주최자 + 활성 참석자 전원**이다. **사외 참석자는 member id 가 없어 애초에
+        이 집합에 들어오지 못한다** — 빼는 분기를 따로 두지 않는다. 검사 대상에서 빠지는 이유는
+        「계정이 없어 일정이 없다」이고, 그 사실이 곧 집합의 모양이다.
+
+        `ignoring` 은 **고치는 중인 그 회의 자신**이다. 빼지 않으면 시각을 한 칸도 못 옮긴다.
+
+        **이름은 말하고 내용은 말하지 않는다.** 블록이 싣고 오는 것은 busy 라는 사실과 `member_id`
+        까지이고, 제목·내용은 그 문을 지나지 않는다 — 문구가 낼 수 있는 것이 이름뿐인 이유가 그것이다.
+        """
+        blocks = self._time_block_repository().overlapping_blocks(
+            member_ids, (starts_at, ends_at), ignore_meeting_id=ignoring
+        )
+        if not blocks:
+            return
+        # 가장 먼저 시작하는 블록의 주인을 부른다 — 여럿이 겹쳐도 문장은 한 사람을 말한다.
+        member_id = blocks[0].member_id
+        raise MeetingTimeOverlap(f"{_person_name(self._repository.member_display_name(member_id), member_id)} 님의 일정과 겹칩니다")
 
     def _validated_creation(
         self,
@@ -343,6 +400,7 @@ class MeetingApplication:
         agendas: list[dict[str, Any]] | None = None,
         carried_from_meeting_id: UUID | None = None,
         organization_id: str | None = None,
+        ignore_meeting_id: UUID | None = None,
     ) -> tuple[dict[str, Any], list[str], str]:
         self._require(principal, MEETING_MANAGE)
         organization_id = organization_id or self._repository.primary_organization(str(principal.id))
@@ -355,6 +413,9 @@ class MeetingApplication:
         drafts = [normalize_agenda_title(row.get("title")) for row in (agendas or [])]
         ensure_agenda_capacity(max(len(drafts) - 1, 0))
         source = "carried" if carried is not None else "manual"
+        # **겹침은 마지막 409 다** — 입력이 틀린 것(422)과 읽을 수 없는 것(404)이 먼저 답한다.
+        # **`quick_start` 는 이 함수를 지나지 않으므로 자연히 안 탄다** — 제외 분기를 두지 않았다.
+        self._require_free_time(frozenset(attendees), starts_at, ends_at, ignoring=ignore_meeting_id)
         return (
             {
                 "organization_id": organization_id,
@@ -434,6 +495,23 @@ class MeetingApplication:
         starts_at = _aware(changes.get("starts_at") or meeting.starts_at)
         ends_at = _aware(changes.get("ends_at") or meeting.ends_at)
         validate_meeting_schedule(starts_at, ends_at)
+        # **참석자 명부를 먼저 정한다** — 겹침은 **바뀐 뒤의 명부**로 물어야 한다. 아래 쓰기가 이 값을
+        # 그대로 쓰므로 두 번 풀지 않는다.
+        attendees = (
+            self._resolved_attendees(principal, list(changes["attendee_ids"] or []), owner_id=meeting.owner_id)
+            if "attendee_ids" in changes
+            else None
+        )
+        # **시각이 실제로 바뀐 경우에만 검사한다** (증보 K22 「검증은 새 쓰기에만」 · BE-2 의 D1 과 같은 결).
+        # 안 걸면 **이미 겹쳐 있는 회의의 제목조차 고칠 수 없다** — 기존 데이터를 소급해 막는 셈이 된다.
+        # **참석자만 바뀌는 것은 「시각 변경」이 아니라 이 검사를 지나지 않는다** (§2.9 가 그 둘만 든다).
+        if (starts_at, ends_at) != (_aware(meeting.starts_at), _aware(meeting.ends_at)):
+            self._require_free_time(
+                frozenset(attendees if attendees is not None else self._repository.attendee_ids(meeting)),
+                starts_at,
+                ends_at,
+                ignoring=meeting.id,
+            )
         if "title" in changes:
             meeting.title = normalize_optional_text(changes["title"], label="meeting title", limit=300)
         if "purpose" in changes:
@@ -442,8 +520,7 @@ class MeetingApplication:
             meeting.location = normalize_optional_text(changes["location"], label="meeting location", limit=300)
         meeting.starts_at = starts_at
         meeting.ends_at = ends_at
-        if "attendee_ids" in changes:
-            attendees = self._resolved_attendees(principal, list(changes["attendee_ids"] or []), owner_id=meeting.owner_id)
+        if attendees is not None:
             self._repository.replace_attendees(meeting, attendees, str(principal.id))
         if "external_attendees" in changes:
             meeting.external_attendees = list(
@@ -1920,6 +1997,16 @@ def _place_of(row: dict[str, Any]) -> str:
 
 def _cursor_of(row: dict[str, Any]) -> str:
     return base64.urlsafe_b64encode(_place_of(row).encode()).decode().rstrip("=")
+
+
+def _person_name(display_name: str | None, member_id: str) -> str:
+    """문장 안에서 부를 이름 — `민아 (구성원)` 은 `민아` 다. 역할은 조직 화면의 것이지 문장의 것이 아니다.
+
+    저장소의 진행 기록이 같은 규칙을 쓴다 (`platform/work_tasks.py` 의 `_person`). 표시 이름이 없으면
+    member id 로 답한다 — **없는 이름을 지어내지 않는다.**
+    """
+    name = (display_name or "").split(" (")[0].strip()
+    return name or (display_name or "").strip() or member_id
 
 
 def _day_window(span_from: date | None, span_to: date | None) -> tuple[datetime, datetime] | None:

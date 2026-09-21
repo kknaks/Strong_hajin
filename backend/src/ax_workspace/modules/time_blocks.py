@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from typing import Protocol
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 
@@ -66,6 +68,30 @@ class TimeBlock:
     @property
     def window(self) -> TimeWindow:
         return (self.starts_at, self.ends_at)
+
+
+class TimeBlockRepository(Protocol):
+    """겹침을 **읽는 문 하나** (`platform/time_blocks.py` · SPEC-004 §2.9 · 증보 K22).
+
+    **표는 둘이어도 문은 하나다** — 이 포트가 `task_schedules` 와 `meetings` 를 함께 조회한다.
+    배정 쪽과 회의 쪽이 각자 조회를 쓰면 두 규칙이 되고, 반열림 판정이 두 곳에 있게 된다.
+
+    **포트가 이 파일에 있는 이유.** 배정 쪽(`modules/work`)과 회의 쪽(`modules/meetings`)이 **둘 다**
+    이 포트를 든다. 어느 한쪽 도메인에 두면 다른 쪽이 그 도메인의 `application` 을 import 해야 하고,
+    그러면 문이 하나인데 **의존이 한 방향으로 기울어진다**.
+
+    **`member_ids` 는 복수다.** 배정 쪽은 「나의 시간만」이라 하나를 넣고, 회의 쪽은
+    **주최자 + 활성 참석자 전원**을 넣는다. **사외 참석자는 member id 가 없으므로 자동으로 대상 밖**이다.
+    """
+
+    def overlapping_blocks(
+        self,
+        member_ids: frozenset[str],
+        window: TimeWindow,
+        *,
+        ignore_schedule_id: UUID | None = None,
+        ignore_meeting_id: UUID | None = None,
+    ) -> list[TimeBlock]: ...
 
 
 def aware(value: datetime) -> datetime:

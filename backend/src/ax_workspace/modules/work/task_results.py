@@ -362,6 +362,10 @@ class CalendarTaskRow(TypedDict):
     task_id: str
     title: str
     state: str
+    #: 완료 확인이 어디까지 왔나 — `None`·`awaiting_review`·`awaiting_revision`·`approved` (증보 K19).
+    #: **`state` 만으로는 `COMPLETION_SUBMITTED` 인 업무가 「완료」로 읽힌다** — 그 투영이 `"done"` 이라
+    #: 카드가 상태 배지 하나로는 승인 대기를 말할 수 없다. **`derived` 묶음 전체가 아니라 이 한 값만**이다.
+    approval: str | None
     start_date: str | None
     due_date: str | None
     #: **서버가 정규화한 기간** (증보 K14). 화면은 이것을 계산하지 않고 받는다. 기간이 없으면 둘 다 `None`.

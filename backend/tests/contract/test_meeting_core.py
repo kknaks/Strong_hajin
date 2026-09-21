@@ -336,7 +336,9 @@ def test_cancelling_the_meeting_and_deleting_only_the_note_delete_different_thin
     assert [agenda["title"] for agenda in detail["agendas"]] == ["권한 모델"]
     assert detail["agendas"][0]["lines"] == []
 
-    cancelled_id = _schedule(client, title="취소할 회의")["meeting"]["meeting_id"]
+    # **다른 날에 세운다** — 같은 시간에 두 번째 회의를 잡으면 겹침으로 거절되고(증보 K22),
+    # 이 테스트가 재는 「취소」가 그 거절에 가려진다.
+    cancelled_id = _schedule(client, title="취소할 회의", days=5.0)["meeting"]["meeting_id"]
     cancelled = client.delete(f"/api/meetings/{cancelled_id}", headers=MINA, params={"scope": "meeting"})
     assert cancelled.status_code == 204, cancelled.text
     after = client.get(f"/api/meetings/{cancelled_id}", headers=MINA).json()

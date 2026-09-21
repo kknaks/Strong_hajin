@@ -46,7 +46,7 @@ from ax_workspace.modules.work.errors import (
     TaskScheduleTaskUnscheduled,
     TaskScheduleVersionConflict,
 )
-from ax_workspace.modules.time_blocks import TimeBlock, TimeWindow, office_span
+from ax_workspace.modules.time_blocks import TimeBlockRepository, office_span
 from ax_workspace.modules.work.schedule import (
     TaskSpan,
     is_valid_time_range,
@@ -168,26 +168,6 @@ class TaskScheduleRepository(Protocol):
     def create(self, task_id: UUID, on_date: date, starts_at: time, ends_at: time) -> Any: ...
     def retime(self, schedule: Any, starts_at: time, ends_at: time) -> Any: ...
     def release(self, schedule: Any, reason: str) -> None: ...
-
-
-class TimeBlockRepository(Protocol):
-    """겹침을 **읽는 문 하나** (`platform/time_blocks.py` · SPEC-004 §2.9 · 증보 K22).
-
-    **표는 둘이어도 문은 하나다** — 이 포트가 `task_schedules` 와 `meetings` 를 함께 조회한다.
-    배정 쪽과 회의 쪽이 각자 조회를 쓰면 두 규칙이 되고, 반열림 판정이 두 곳에 있게 된다.
-
-    **`member_ids` 가 처음부터 복수다.** 배정 쪽은 「나의 시간만」이라 하나를 넣지만 회의 쪽은
-    **주최자 + 참석자 전원**을 묻는다 (Phase BE-4 가 이 포트를 그대로 재사용한다).
-    """
-
-    def overlapping_blocks(
-        self,
-        member_ids: frozenset[str],
-        window: TimeWindow,
-        *,
-        ignore_schedule_id: UUID | None = None,
-        ignore_meeting_id: UUID | None = None,
-    ) -> list[TimeBlock]: ...
 
 
 class ActionSourcePort(Protocol):
@@ -793,6 +773,11 @@ class TaskApplication:
             raise CalendarRangeInvalid("조회 기간의 시작이 끝보다 뒤일 수 없습니다")
         tasks = self.repository.tasks_for(str(principal.id), include_closed=False)
         grouped = self._schedule_repository().in_range([task.id for task in tasks], span_from, span_to)
+        # **승인 회차는 한 번에 묻는다** (증보 K19). 줄마다 물으면 좌측 레일 한 판이 업무 수만큼
+        # 질의를 낸다 — 목록 표면이 쓰는 `approval_rounds_for` 를 그대로 재사용한다.
+        # **부모 것만 묻는다.** 목록 쪽은 「막는 하위」까지 세려고 하위 id 를 함께 싣지만,
+        # 캘린더 행이 내는 것은 **그 업무 자신의 승인 여부 한 값**이다.
+        rounds = self.repository.approval_rounds_for([task.id for task in tasks])
         rows: list[CalendarTaskRow] = []
         for task in tasks:
             span = task_span(task.start_date, task.due_date)
@@ -802,6 +787,8 @@ class TaskApplication:
                     "task_id": str(task.id),
                     "title": task.title,
                     "state": _external_state(task.state),
+                    # **판정은 목록·상세와 같은 규칙이다** — 같은 함수를 지난다. 어휘도 저장소 것 그대로다.
+                    "approval": self._approval_from_rounds(task, rounds.get(task.id)),
                     "start_date": _iso(task.start_date),
                     "due_date": _iso(task.due_date),
                     "span_from": _span_end(span, "span_from"),

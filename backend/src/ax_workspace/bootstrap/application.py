@@ -1529,7 +1529,15 @@ class WorkflowApplication:
         fingerprint = self._room_creation_fingerprint(request)
         with self._session_factory() as session:
             meetings = self._meetings(session)
-            meetings.validate_creation(principal, **request.values())
+            # **이 키가 이미 세운 회의는 자기 자신이다.** 재전송의 영수증은 아래 잠금 안에 있어
+            # 이 검사보다 뒤에 오므로, 빼지 않으면 재전송이 자기와 겹쳐 `409` 를 맞는다 (증보 K22).
+            settled = session.scalar(
+                select(MeetingRoomCreationAttemptRecord.meeting_id).where(
+                    MeetingRoomCreationAttemptRecord.owner_id == str(principal.id),
+                    MeetingRoomCreationAttemptRecord.request_key == request_key,
+                )
+            )
+            meetings.validate_creation(principal, ignore_meeting_id=settled, **request.values())
             source = meetings.reservation_draft(
                 principal,
                 title=request.title,
@@ -2380,6 +2388,9 @@ class WorkflowApplication:
         return MeetingApplication(
             SqlAlchemyMeetingRepository(session),
             recordings=self._recording_storage,
+            # 겹침을 읽는 **문 하나** — 배정 쪽이 드는 것과 같은 클래스이고, **같은 session** 이라
+            # 검사와 저장이 한 트랜잭션에 있다 (증보 K22).
+            time_blocks=SqlAlchemyTimeBlockRepository(session),
         )
 
     def create_task(

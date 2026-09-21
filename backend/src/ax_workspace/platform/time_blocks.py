@@ -160,9 +160,11 @@ class SqlAlchemyTimeBlockRepository:
         )
         if ignore_meeting_id is not None:
             statement = statement.where(MeetingRecord.id != ignore_meeting_id)
+        meetings = list(self.session.scalars(statement))
+        attendees = self._attendees_of(meetings, member_ids)
         blocks: list[TimeBlock] = []
-        for meeting in self.session.scalars(statement):
-            held_by = self._members_held_by(meeting, member_ids)
+        for meeting in meetings:
+            held_by = sorted(({meeting.owner_id} & member_ids) | attendees.get(meeting.id, set()))
             if not held_by:
                 continue
             for segment in split_across_office_dates(meeting.starts_at, meeting.ends_at, within=window):
@@ -179,16 +181,27 @@ class SqlAlchemyTimeBlockRepository:
                     )
         return blocks
 
-    def _members_held_by(self, meeting: MeetingRecord, member_ids: frozenset[str]) -> list[str]:
-        """그 회의가 **누구의 시간을 차지하는가** — 주최자와 활성 참석자까지다. 공유는 아니다."""
-        held = {meeting.owner_id} & member_ids
-        held.update(
-            self.session.scalars(
-                select(MeetingAttendeeRecord.member_id).where(
-                    MeetingAttendeeRecord.meeting_id == meeting.id,
-                    MeetingAttendeeRecord.removed_at.is_(None),
-                    MeetingAttendeeRecord.member_id.in_(member_ids),
-                )
+    def _attendees_of(
+        self, meetings: list[MeetingRecord], member_ids: frozenset[str]
+    ) -> dict[UUID, set[str]]:
+        """그 회의들이 **누구의 시간을 차지하는가** — 활성 참석 관계를 **한 질의로** 읽어 나눈다.
+
+        회의마다 따로 물으면 **회의 수 × 1 질의**가 되고, 그것이 회의 생성·시각 변경마다 돈다.
+        `member_ids` 가 하나였을 때(배정 쪽)는 무해했지만 **주최자 + 참석자 전원으로 넓히면 아프다.**
+
+        **공유는 참석이 아니다** (증보 K25) — 공유받은 회의는 「참고하라」고 온 것이지 내가 그 시간에
+        잡혀 있다는 뜻이 아니므로 여기서 읽지 않는다.
+        """
+        if not meetings:
+            return {}
+        rows = self.session.execute(
+            select(MeetingAttendeeRecord.meeting_id, MeetingAttendeeRecord.member_id).where(
+                MeetingAttendeeRecord.meeting_id.in_([meeting.id for meeting in meetings]),
+                MeetingAttendeeRecord.removed_at.is_(None),
+                MeetingAttendeeRecord.member_id.in_(member_ids),
             )
-        )
-        return sorted(held)
+        ).all()
+        grouped: dict[UUID, set[str]] = {}
+        for meeting_id, member_id in rows:
+            grouped.setdefault(meeting_id, set()).add(member_id)
+        return grouped

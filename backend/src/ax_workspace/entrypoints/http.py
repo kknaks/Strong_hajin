@@ -162,6 +162,7 @@ from ax_workspace.modules.meetings.domain import (
     MeetingNotFound,
     MeetingStaleWrite,
     MeetingStateConflict,
+    MeetingTimeOverlap,
     MeetingVersionConflict,
 )
 from ax_workspace.modules.meetings.materials import MaterialUpload, MeetingMaterialsRejected
@@ -527,7 +528,8 @@ def _runtime_error(error: Exception) -> HTTPException:
     # 회의는 권한 밖도 없는 것처럼 응답한다 — 참석자가 아닌 사람에게 존재를 알리지 않는다 (SPEC-004 §3.2-1).
     if isinstance(error, (TaskNotFound, MaterialNotFound, MeetingNotFound, MeetingAccessDenied)):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
-    if isinstance(error, (MeetingStateConflict, MeetingVersionConflict)):
+    # 겹침도 같은 기준이다 (증보 K22): 명령 자체는 말이 되는데 **그 사람들의 그 시간이 이미 찼다.**
+    if isinstance(error, (MeetingStateConflict, MeetingVersionConflict, MeetingTimeOverlap)):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
     if isinstance(error, (TaskAccessDenied, WorkRequestAccessDenied, DailyReportAccessDenied)):
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
