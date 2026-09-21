@@ -73,6 +73,7 @@ const flipped: CalendarEntry = {
   span_from: "2027-03-03",
   span_to: "2027-03-05",
   version: 7,
+  approval: null,
   schedules: [],
 };
 
@@ -86,6 +87,7 @@ const undated: CalendarEntry = {
   span_from: null,
   span_to: null,
   version: 2,
+  approval: null,
   schedules: [],
 };
 

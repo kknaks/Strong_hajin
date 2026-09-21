@@ -25,6 +25,7 @@ const task = (over: Partial<CalendarTaskRow> = {}): CalendarTaskRow => ({
   span_from: "2027-03-01",
   span_to: "2027-03-05",
   version: 1,
+  approval: null,
   schedules: [],
   ...over,
 });

@@ -120,7 +120,9 @@
 .scax-week__band--empty{background:transparent}
 .scax-week__band.scax-event--resizable .scax-event__handle{background:var(--scax-color-accent-strong)}
 /* 시간 블록 */
-.scax-week__slot{position:absolute;left:3px;right:3px;flex-direction:column;align-items:flex-start;justify-content:flex-start;gap:2px;padding:var(--scax-space-150) var(--scax-space-200);border-radius:var(--scax-radius-sm);white-space:normal;overflow:hidden}
+/* 좌우는 `WeekGrid` 가 «줄 수»에 맞춰 인라인으로 준다 — 겹치면 나란히 앉는다(K21).
+   혼자 선 블록은 `left:3px` · `width:calc(100% - 6px)` 라 예전 값과 같다. */
+.scax-week__slot{position:absolute;flex-direction:column;align-items:flex-start;justify-content:flex-start;gap:2px;padding:var(--scax-space-150) var(--scax-space-200);border-radius:var(--scax-radius-sm);white-space:normal;overflow:hidden}
 .scax-week__slot-title{font-weight:var(--scax-fw-semibold)}
 .scax-week__slot-time{font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);letter-spacing:var(--scax-text-caption2-ls);opacity:.85}
 .scax-week__slot-handle{position:absolute;left:0;right:0;height:8px;cursor:ns-resize;opacity:0;background:var(--scax-color-accent-strong)}

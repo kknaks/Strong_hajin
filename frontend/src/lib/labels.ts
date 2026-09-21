@@ -8,13 +8,22 @@ export const taskStateLabel: Record<TaskState, string> = {
   cancelled: "취소",
 };
 
-export const taskStateTone: Record<TaskState, string> = {
+/**
+ * 상태 배지의 톤 — **`ds/Badge` 의 `BadgeTone` 어휘**다.
+ *
+ * ⚠ 값 둘이 그 어휘에 없어서 **쓸 수 없는 표였다**(`success`·`muted` — `.scax-badge--success` 도
+ * `--muted` 도 `components.css` 에 없다). 소비처가 0곳이라 아무도 그것을 몰랐다.
+ * **저장소가 상태를 실제로 배지로 내는 유일한 자리**(`WorkTables.tsx` 의 `ClosedBadge`)가
+ * `done` 을 `positive` 로, `cancelled` 를 `neutral` 로 내므로 **그 둘에 맞췄다.**
+ * `as const` 라 `Badge` 의 `tone` 에 그대로 들어간다 — 형변환이 필요 없다.
+ */
+export const taskStateTone = {
   open: "neutral",
   in_progress: "accent",
   blocked: "danger",
-  done: "success",
-  cancelled: "muted",
-};
+  done: "positive",
+  cancelled: "neutral",
+} as const satisfies Record<TaskState, string>;
 
 /**
  * 파생 표시의 말 — **상태가 아니다** (SPEC-003 §2.2 · DEC-002 D-4).
@@ -917,7 +926,8 @@ export const calendarScreen = {
   loading: "캘린더를 불러오는 중",
   loadFailed: "캘린더를 불러오지 못했습니다.",
   retry: "다시 시도",
-  /* 카드 — 유형만 낸다. 상태는 카드를 열어 상세에서 읽는다 (K15) */
+  /* 카드 — 유형 배지 + 상태 배지 + 승인 배지 (증보 K19 가 K15 를 뒤집었다).
+     상태·승인의 «말» 은 여기 없다: 업무 화면의 `taskStateLabel`·`derivedApprovalLabel` 을 그대로 쓴다. */
   taskBadge: "업무",
   meetingBadge: "회의",
   undated: "기한 없음",

@@ -1,5 +1,5 @@
 import { addDays, calendarScreen, dayDifference, formatDate, isoDateInSeoul, meetingScreen, personName } from "../../lib/labels";
-import type { CalendarEntry, CalendarMeetingRow, CalendarTaskRow } from "../../lib/viewModels";
+import type { CalendarEntry, CalendarMeetingRow, CalendarTaskRow, DerivedApproval, TaskState } from "../../lib/viewModels";
 
 /**
  * 캘린더가 격자와 레일을 그리기 위해 하는 **계산 전부** — 화면 부품이 아니라 값만 다룬다.
@@ -117,18 +117,6 @@ function taskBar(row: CalendarTaskRow): CalendarSegment | null {
   return { key: `task:${row.task_id}`, kind: "task", title: row.title, from: row.span_from, to: row.span_to, time: null, taskId: row.task_id };
 }
 
-function taskSlots(row: CalendarTaskRow): CalendarSegment[] {
-  return row.schedules.map((schedule) => ({
-    key: `schedule:${schedule.schedule_id}`,
-    kind: "task" as const,
-    title: row.title,
-    from: schedule.on_date,
-    to: schedule.on_date,
-    time: schedule.starts_at,
-    taskId: row.task_id,
-  }));
-}
-
 function meetingChip(row: CalendarMeetingRow): CalendarSegment {
   return {
     key: `meeting:${row.meeting_id}`,
@@ -142,17 +130,30 @@ function meetingChip(row: CalendarMeetingRow): CalendarSegment {
 }
 
 /**
- * 탭은 레일과 격자를 **동시에** 가른다 — 다만 대칭이 아니다(SPEC §2.1).
- * 격자의 「업무」 탭은 **업무 날짜 띠와 업무 시간 배정 둘 다**를 낸다.
+ * 월 격자에 서는 조각 — **업무 날짜 띠와 회의뿐이다** (확정 — 증보 K20).
+ *
+ * **업무의 시간 배정을 그리지 않는다.** 그리면 같은 업무가 띠로 한 번, 시간 조각으로 또 한 번
+ * **한 칸에 두 번** 뜬다 — 사용자가 실물에서 찾은 자리다.
+ * **회의는 계속 그린다**: 회의는 **그 자체가 일정**이지 업무의 배정이 아니라, 안 그리면
+ * 월 뷰에서 회의가 통째로 사라진다.
+ *
+ * **주 뷰는 이 함수를 쓰지 않는다** — 종일 칸(`spanSegments`)과 시간 격자(`timedBlocks`)가
+ * **이미 나뉘어 있어** 두 번 뜨지 않는다. 그래서 이름이 `grid*` 가 아니라 `month*` 다:
+ * 「띠와 배정을 함께 내는 함수」가 **이 파일에 더는 없다.**
+ *
+ * ⚠ **시안과 다르게 간다** — 시안 `calEntries`(`calendar.v1.jsx:33-38`)는 월 뷰에 둘 다 넣는다.
+ * 목데이터라 두 번 뜨는 것이 눈에 안 띄었을 뿐이고, **레이아웃이 아니라 기능의 문제**라
+ * 우리 것이 정본이다 (SPEC §2.1).
+ *
+ * 탭은 레일과 격자를 **동시에** 가른다(SPEC §2.1).
  */
-export function gridSegments(entries: CalendarEntry[], tab: CalendarTab): CalendarSegment[] {
+export function monthSegments(entries: CalendarEntry[], tab: CalendarTab): CalendarSegment[] {
   const segments: CalendarSegment[] = [];
   for (const entry of entries) {
     if (entry.kind === "task") {
       if (tab === "meeting") continue;
       const bar = taskBar(entry);
       if (bar) segments.push(bar);
-      segments.push(...taskSlots(entry));
     } else if (tab !== "task") {
       segments.push(meetingChip(entry));
     }
@@ -169,6 +170,13 @@ export function spanSegments(entries: CalendarEntry[], tab: CalendarTab): Calend
 /**
  * 한 주 안에서 조각을 줄로 나눈다 — **같은 항목은 그 주 내내 같은 줄에 앉는다**(SPEC §2.1).
  * 그렇지 않으면 여러 날 띠가 칸마다 다른 높이에 서서 끊긴다.
+ *
+ * **줄 순서가 곧 칸 안의 순서다.** 그래서 정렬이 「셀 안은 시간순」(증보 K20)을 함께 만든다 —
+ * 같은 날 시작하는 것들 중 **종일 띠가 먼저**, 시간이 붙은 것은 **이른 것부터**다.
+ * 그 앞에 `from` 이 오는 것은 바꿀 수 없다: 여러 날 띠가 칸마다 줄을 옮기면 띠가 끊기기 때문이다.
+ *
+ * 주 뷰 종일 칸이 넘기는 조각은 **전부 `time === null`** 이라 이 두 단계가 **아무것도 바꾸지 않는다** —
+ * 그쪽 순서는 예전 그대로다(회귀).
  */
 export function packLanes(segments: CalendarSegment[], days: string[]): CalendarSegment[][] {
   if (!days.length) return [];
@@ -178,6 +186,9 @@ export function packLanes(segments: CalendarSegment[], days: string[]): Calendar
     .filter((segment) => segment.to >= first && segment.from <= last)
     .sort((left, right) => {
       if (left.from !== right.from) return left.from < right.from ? -1 : 1;
+      // **시간순** (증보 K20) — 종일 띠가 먼저 서고, 시간이 붙은 것끼리는 이른 것부터.
+      if ((left.time === null) !== (right.time === null)) return left.time === null ? -1 : 1;
+      if (left.time !== null && right.time !== null && left.time !== right.time) return left.time < right.time ? -1 : 1;
       const leftSpan = length(left);
       const rightSpan = length(right);
       if (leftSpan !== rightSpan) return rightSpan - leftSpan;
@@ -261,14 +272,82 @@ export function timedBlocks(entries: CalendarEntry[], tab: CalendarTab): TimedBl
   return blocks;
 }
 
+/**
+ * 시간 블록의 **최소 높이**(분). 30분보다 짧은 배정도 제목과 시각을 읽을 수 있어야 한다.
+ *
+ * ⚠ **겹침 판정이 이 값을 쓴다** — 10:00–10:10 과 10:20–10:50 은 «시간»으로는 안 겹치지만
+ * 화면에서는 둘 다 30분 높이로 그려져 **겹쳐 보인다**. 나란히 앉히는 것은 그리기의 문제이므로
+ * **그려지는 크기**로 판정한다. `WeekGrid` 가 높이에 쓰는 값과 **같은 상수**여야 한다.
+ */
+export const MIN_BLOCK_MINUTES = 30;
+
+/** 줄(`lane`)을 배정받은 시간 블록. `lanes` 는 **그 덩어리 전체가 나눠 쓰는 줄 수**다. */
+export type PackedBlock = TimedBlock & { lane: number; lanes: number };
+
+/** 화면에서 그 블록이 실제로 덮는 끝 — 최소 높이만큼은 언제나 자리를 차지한다. */
+function drawnEnd(block: TimedBlock): number {
+  return Math.max(block.endMin, block.startMin + MIN_BLOCK_MINUTES);
+}
+
+/**
+ * **겹치면 나란히 앉힌다** (확정 — 증보 K21). 하루치 블록을 좌우로 나눈다.
+ *
+ * 지금까지 줄 배치는 **종일 띠에만** 있었고 시간 격자엔 없었다. 그래서 09:30–12:30 안에 든
+ * 10:00–11:00 회의가 **밑에 깔려 안 보였다**(사용자가 실물에서 찾았다).
+ *
+ * **이것은 그리기이지 막는 것이 아니다** — 겹침 금지(§2.9 · K22)와 **다른 물음**이다.
+ * 기존 데이터든 남의 회의든 **이미 겹쳐 있는 것은 여전히 그려져야 한다.** 여기서 거르는 것은 없다.
+ *
+ * 겹침은 **반열림 `[시작, 끝)`** 이다 — 11:00 에 끝나는 것과 11:00 에 시작하는 것은 같은 줄에 앉아
+ * **둘 다 칸을 꽉 쓴다**. 겹침 금지가 쓰는 정의와 같은 규칙이다(§2.9).
+ *
+ * **덩어리(cluster) 단위로 폭을 맞춘다** — 서로 사슬처럼 이어 겹치는 무리가 같은 줄 수를 나눠 쓴다.
+ * 블록마다 폭을 따로 재면 같은 무리 안에서 폭이 들쭉날쭉해 읽기 어렵다.
+ */
+export function packBlocks(blocks: TimedBlock[]): PackedBlock[] {
+  const sorted = [...blocks].sort((left, right) => {
+    if (left.startMin !== right.startMin) return left.startMin - right.startMin;
+    const ends = drawnEnd(right) - drawnEnd(left);
+    if (ends !== 0) return ends;
+    return left.key < right.key ? -1 : 1;
+  });
+  const packed: PackedBlock[] = [];
+  let cluster: PackedBlock[] = [];
+  /** 줄마다 «몇 분까지 차 있나». 길이가 곧 그 덩어리의 줄 수다. */
+  let columns: number[] = [];
+  const close = () => {
+    for (const block of cluster) block.lanes = columns.length;
+    packed.push(...cluster);
+    cluster = [];
+    columns = [];
+  };
+  for (const block of sorted) {
+    // 앞 덩어리가 통째로 끝난 뒤에 시작하면 폭을 나눌 이유가 없다 — 거기서 끊는다.
+    if (columns.length && columns.every((end) => end <= block.startMin)) close();
+    let lane = columns.findIndex((end) => end <= block.startMin);
+    if (lane === -1) {
+      lane = columns.length;
+      columns.push(0);
+    }
+    columns[lane] = drawnEnd(block);
+    cluster.push({ ...block, lane, lanes: 1 });
+  }
+  close();
+  return packed;
+}
+
 /* ---- 좌측 일정 레일 ---- */
 
 /**
  * 레일 카드 하나.
  *
- * **상태를 싣지 않는다** (K15) — 합본 조회의 `state` 는 `completion_submitted` 를 `"done"` 으로
- * 투영하고 행에 `derived` 가 없어서, 카드가 상태를 내면 승인 대기인 업무를 「완료」라고 말한다.
- * 유형 배지 하나만 낸다. 상태는 카드를 열어 상세에서 읽는다.
+ * **상태와 승인을 둘 다 싣는다** (확정 — 증보 K19 가 K15 를 뒤집었다).
+ *
+ * K15 는 「상태를 **보여줄 방법이 없어서**」 뺐다 — 합본 조회의 `state` 가
+ * `completion_submitted` 를 `"done"` 으로 투영하는데 그것을 가를 값이 행에 없었기 때문이다.
+ * **BE-4 가 `approval` 한 값을 실어 주면서 방법이 생겼다.** 감추는 대신 **승인 배지로 말한다.**
+ *
+ * 회의 카드는 둘 다 `null` 이다 — 회의에는 업무의 상태도 승인도 없다.
  */
 export type RailCard = {
   key: string;
@@ -278,6 +357,10 @@ export type RailCard = {
   when: string;
   meta: string[];
   sort: string;
+  /** 업무 카드만. **이것 하나로는 승인 대기가 「완료」로 읽힌다** — 그래서 아래가 함께 온다. */
+  state: TaskState | null;
+  /** 업무 카드만. 업무 화면의 `derivedApprovalLabel` 이 그대로 읽는 저장소 어휘다. */
+  approval: DerivedApproval | null;
 };
 
 export type RailScope = { from: string; to: string; selected: string | null };
@@ -313,6 +396,8 @@ export function railCards(entries: CalendarEntry[], tab: CalendarTab, scope: Rai
         // 업무의 시간 배정은 자기 카드를 세우지 않고 이 줄로 접힌다 (SPEC §2.1).
         meta: entry.schedules.map((schedule) => calendarScreen.scheduleChip(schedule.on_date, schedule.starts_at)),
         sort: dated ? entry.span_from! : "9999-12-31",
+        state: entry.state,
+        approval: entry.approval,
       });
       continue;
     }
@@ -328,6 +413,8 @@ export function railCards(entries: CalendarEntry[], tab: CalendarTab, scope: Rai
       // 주최자는 **표시 이름**으로 낸다 — `created_by` 는 member id 라 화면에 내지 않는다 (K4).
       meta: [entry.location, personName(entry.created_by_display_name)].filter((value): value is string => Boolean(value)),
       sort: `${date}T${seoulClock(entry.starts_at)}`,
+      state: null,
+      approval: null,
     });
   }
   return cards.sort((left, right) => (left.sort === right.sort ? (left.key < right.key ? -1 : 1) : left.sort < right.sort ? -1 : 1));

@@ -31,8 +31,8 @@ import { MonthGrid } from "./MonthGrid";
 import { ScheduleRail } from "./ScheduleRail";
 import { WeekGrid } from "./WeekGrid";
 import {
-  gridSegments,
   monthGridDays,
+  monthSegments,
   railCards,
   shiftMonth,
   shiftWeek,
@@ -197,7 +197,8 @@ export function CalendarPage({
     () => railCards(entries, tab, { ...railScope, selected }),
     [entries, railScope, selected, tab],
   );
-  const segments = useMemo(() => gridSegments(entries, tab), [entries, tab]);
+  /** **월 격자에만** 쓴다 — 주 뷰는 `spans`·`blocks` 로 나뉘어 있다 (증보 K20). */
+  const segments = useMemo(() => monthSegments(entries, tab), [entries, tab]);
   const spans = useMemo(() => spanSegments(entries, tab), [entries, tab]);
   const blocks = useMemo(() => timedBlocks(entries, tab), [entries, tab]);
 

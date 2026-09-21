@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import type { CalendarEntry, CalendarMeetingRow, CalendarTaskRow } from "../../lib/viewModels";
 import {
-  gridSegments,
+  laneSeats,
   monthGridDays,
+  monthSegments,
+  packBlocks,
   packLanes,
   railCards,
   seoulClock,
@@ -23,6 +25,7 @@ const task = (over: Partial<CalendarTaskRow> = {}): CalendarTaskRow => ({
   span_from: "2027-03-01",
   span_to: "2027-03-05",
   version: 1,
+  approval: null,
   schedules: [],
   ...over,
 });
@@ -67,36 +70,53 @@ describe("weekGridDays", () => {
   });
 });
 
-describe("gridSegments", () => {
+describe("monthSegments", () => {
   it("뒤집힌 업무의 띠를 서버가 준 구간 그대로 그린다 — start_date 를 쓰지 않는다", () => {
     const flipped = task({ start_date: "2027-09-06", due_date: "2027-09-04", span_from: "2027-09-04", span_to: "2027-09-06" });
-    const [bar] = gridSegments([flipped], "all").filter((segment) => segment.time === null);
+    const [bar] = monthSegments([flipped], "all").filter((segment) => segment.time === null);
     expect([bar.from, bar.to]).toEqual(["2027-09-04", "2027-09-06"]);
   });
 
   it("기간 없는 업무는 격자에 띠를 내지 않는다", () => {
     const undated = task({ start_date: null, due_date: null, span_from: null, span_to: null });
-    expect(gridSegments([undated], "all")).toEqual([]);
+    expect(monthSegments([undated], "all")).toEqual([]);
   });
 
   it("회의는 UTC 를 서울 날짜·시각으로 옮겨 놓는다", () => {
-    const [segment] = gridSegments([meeting()], "meeting");
+    const [segment] = monthSegments([meeting()], "meeting");
     expect(segment.from).toBe("2027-03-04");
     expect(segment.time).toBe("10:00");
   });
 
-  it("탭이 격자를 가른다 — 업무 탭에 회의가 서지 않고, 회의 탭에 업무 띠·배정이 서지 않는다", () => {
+  /* K20 — 앞 판은 여기서 띠와 배정을 **둘 다** 냈다(업무 탭 2건 · 전체 3건).
+     같은 업무가 한 칸에 두 번 뜨는 자리라 1건 · 2건으로 바뀐다. */
+  it("월 뷰는 업무의 시간 배정을 그리지 않는다 — 같은 업무가 두 번 뜨지 않는다 (K20)", () => {
+    const withSchedule = task({ schedules: [{ schedule_id: "s1", on_date: "2027-03-03", starts_at: "10:00", ends_at: "11:30", version: 1 }] });
+    const segments = monthSegments([withSchedule], "all");
+    expect(segments).toHaveLength(1);
+    expect(segments[0].time).toBeNull();
+    expect(segments.some((segment) => segment.key.startsWith("schedule:"))).toBe(false);
+  });
+
+  it("회의는 월 뷰에도 그려진다 — 회의는 그 자체가 일정이다 (K20)", () => {
     const withSchedule = task({ schedules: [{ schedule_id: "s1", on_date: "2027-03-03", starts_at: "10:00", ends_at: "11:30", version: 1 }] });
     const entries: CalendarEntry[] = [withSchedule, meeting()];
-    expect(gridSegments(entries, "task").every((segment) => segment.kind === "task")).toBe(true);
-    expect(gridSegments(entries, "task")).toHaveLength(2);
-    expect(gridSegments(entries, "meeting").every((segment) => segment.kind === "meeting")).toBe(true);
-    expect(gridSegments(entries, "all")).toHaveLength(3);
+    expect(monthSegments(entries, "all").map((segment) => segment.key)).toEqual(["task:t1", "meeting:m1"]);
+  });
+
+  it("탭이 격자를 가른다 — 업무 탭에 회의가 서지 않고, 회의 탭에 업무 띠가 서지 않는다", () => {
+    const withSchedule = task({ schedules: [{ schedule_id: "s1", on_date: "2027-03-03", starts_at: "10:00", ends_at: "11:30", version: 1 }] });
+    const entries: CalendarEntry[] = [withSchedule, meeting()];
+    expect(monthSegments(entries, "task").every((segment) => segment.kind === "task")).toBe(true);
+    expect(monthSegments(entries, "task")).toHaveLength(1);
+    expect(monthSegments(entries, "meeting").every((segment) => segment.kind === "meeting")).toBe(true);
+    expect(monthSegments(entries, "all")).toHaveLength(2);
   });
 
   it("격자 조각은 상태를 싣지 않는다 — 유형 둘뿐이다", () => {
-    const segment = gridSegments([task({ state: "blocked" })], "all")[0] as unknown as Record<string, unknown>;
+    const segment = monthSegments([task({ state: "blocked" })], "all")[0] as unknown as Record<string, unknown>;
     expect(Object.keys(segment)).not.toContain("state");
+    expect(Object.keys(segment)).not.toContain("approval");
   });
 });
 
@@ -125,6 +145,32 @@ describe("packLanes", () => {
     expect(lanes[1].map((segment) => segment.key)).toEqual(["c"]);
   });
 
+  it("한 칸 안은 시간순이다 — 종일 띠가 먼저, 시간이 붙은 것은 이른 것부터 (K20)", () => {
+    const week = weekGridDays("2027-03-03");
+    const lanes = packLanes(
+      [
+        { key: "meeting:late", kind: "meeting", title: "오후", from: "2027-03-03", to: "2027-03-03", time: "14:00", taskId: null },
+        { key: "meeting:early", kind: "meeting", title: "오전", from: "2027-03-03", to: "2027-03-03", time: "09:00", taskId: null },
+        { key: "task:bar", kind: "task", title: "띠", from: "2027-03-03", to: "2027-03-03", time: null, taskId: "t1" },
+      ],
+      week,
+    );
+    expect(laneSeats(lanes, "2027-03-03").map((segment) => segment?.key)).toEqual(["task:bar", "meeting:early", "meeting:late"]);
+  });
+
+  it("종일 칸의 줄 순서는 그대로다 — 시간이 없는 것끼리는 예전 규칙이다 (회귀)", () => {
+    const week = weekGridDays("2027-03-03");
+    const lanes = packLanes(
+      [
+        { key: "short", kind: "task", title: "짧다", from: "2027-03-03", to: "2027-03-03", time: null, taskId: "s" },
+        { key: "long", kind: "task", title: "길다", from: "2027-03-03", to: "2027-03-05", time: null, taskId: "l" },
+      ],
+      week,
+    );
+    // 같은 날 시작이면 «긴 것이 위». 시간이 없으니 K20 의 두 단계는 아무것도 바꾸지 않는다.
+    expect(lanes.map((lane) => lane[0].key)).toEqual(["long", "short"]);
+  });
+
   it("그 주에 닿지 않는 것은 줄을 차지하지 않는다", () => {
     const lanes = packLanes(
       [{ key: "z", kind: "task", title: "z", from: "2027-04-01", to: "2027-04-02", time: null, taskId: "z" }],
@@ -142,6 +188,51 @@ describe("timedBlocks", () => {
     expect(assigned).toMatchObject({ date: "2027-03-03", startMin: 600, endMin: 690, version: 1, taskId: "t1" });
     const booked = blocks.find((block) => block.kind === "meeting");
     expect(booked).toMatchObject({ date: "2027-03-04", startMin: 600, endMin: 660 });
+  });
+});
+
+describe("packBlocks", () => {
+  const block = (key: string, startMin: number, endMin: number) => ({
+    key,
+    kind: "task" as const,
+    title: key,
+    date: "2027-03-03",
+    startMin,
+    endMin,
+    startLabel: "",
+    endLabel: "",
+    scheduleId: null,
+    version: null,
+    taskId: null,
+  });
+
+  it("겹치면 나란히 앉는다 — 09:30–12:30 안에 든 10:00–11:00 이 밑에 깔리지 않는다 (K21)", () => {
+    const packed = packBlocks([block("long", 570, 750), block("inside", 600, 660)]);
+    expect(packed.map((row) => row.lanes)).toEqual([2, 2]);
+    expect(new Set(packed.map((row) => row.lane)).size).toBe(2);
+  });
+
+  it("겹치지 않으면 칸을 통째로 쓴다 — 반열림이라 경계가 닿는 것은 겹침이 아니다", () => {
+    const packed = packBlocks([block("a", 600, 660), block("b", 660, 720)]);
+    expect(packed.map((row) => row.lanes)).toEqual([1, 1]);
+    expect(packed.map((row) => row.lane)).toEqual([0, 0]);
+  });
+
+  it("사슬처럼 이어 겹치는 무리는 같은 줄 수를 나눠 쓴다 — 폭이 들쭉날쭉하지 않다", () => {
+    const packed = packBlocks([block("a", 600, 700), block("b", 660, 760), block("c", 720, 820)]);
+    expect(packed.map((row) => row.lanes)).toEqual([2, 2, 2]);
+    expect(packed.find((row) => row.key === "c")!.lane).toBe(0);
+  });
+
+  it("그려지는 최소 높이로 판정한다 — 10분짜리 둘이 겹쳐 보이면 나란히 앉힌다", () => {
+    const packed = packBlocks([block("a", 600, 610), block("b", 620, 650)]);
+    expect(packed.map((row) => row.lanes)).toEqual([2, 2]);
+  });
+
+  it("이미 겹쳐 있는 것을 거르지 않는다 — 그리기이지 막는 것이 아니다 (K21)", () => {
+    const packed = packBlocks([block("a", 600, 660), block("b", 600, 660), block("c", 600, 660)]);
+    expect(packed).toHaveLength(3);
+    expect(packed.map((row) => row.lane).sort()).toEqual([0, 1, 2]);
   });
 });
 
@@ -169,9 +260,14 @@ describe("railCards", () => {
     expect(cards[0].when).toContain("10:00–11:00");
   });
 
-  it("카드는 상태를 싣지 않는다 — 유형 배지 하나뿐이다 (K15)", () => {
-    const card = railCards([task({ state: "done" })], "all", scope)[0] as unknown as Record<string, unknown>;
-    expect(Object.keys(card)).not.toContain("state");
+  /* K19 가 K15 를 뒤집었다 — 앞 판은 여기서 `state` 가 «없음»을 지켰다. */
+  it("카드가 상태와 승인을 둘 다 싣는다 — 배지 둘의 재료다 (K19)", () => {
+    const submitted = task({ state: "done", approval: "awaiting_review" });
+    expect(railCards([submitted], "all", scope)[0]).toMatchObject({ state: "done", approval: "awaiting_review" });
+  });
+
+  it("회의 카드는 상태도 승인도 없다 — 회의에는 그런 것이 없다", () => {
+    expect(railCards([meeting()], "meeting", scope)[0]).toMatchObject({ state: null, approval: null });
   });
 
   it("날짜를 고르면 그 날에 걸치는 것만 남고 기한 없는 업무는 빠진다", () => {

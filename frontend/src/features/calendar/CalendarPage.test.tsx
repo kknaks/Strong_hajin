@@ -59,7 +59,23 @@ const flipped: CalendarEntry = {
   span_from: "2027-03-04",
   span_to: "2027-03-06",
   version: 3,
+  approval: null,
   schedules: [{ schedule_id: "s-flip", on_date: "2027-03-05", starts_at: "10:00", ends_at: "11:30", version: 1 }],
+};
+
+/** `COMPLETION_SUBMITTED` 인 업무 — 합본 조회가 `state:"done"` 으로 투영해 내려보낸다 (K19). */
+const submitted: CalendarEntry = {
+  kind: "task",
+  task_id: "sub",
+  title: "확인 기다리는 업무",
+  state: "done",
+  start_date: "2027-03-02",
+  due_date: "2027-03-03",
+  span_from: "2027-03-02",
+  span_to: "2027-03-03",
+  version: 1,
+  approval: "awaiting_review",
+  schedules: [],
 };
 
 const shared: CalendarEntry = {
@@ -141,13 +157,84 @@ describe("캘린더 골격", () => {
     expect(rail.textContent).not.toContain("mina");
   });
 
-  it("업무 카드는 상태를 내지 않고 유형 배지 하나만 낸다", async () => {
+  /* K19 가 K15 를 뒤집었다 — 앞 판은 여기서 상태 라벨 5종이 «없음»을 지켰다.
+     감추는 대신 **승인 배지로 말한다**: 방법이 없어서 뺐던 것이지 내면 안 돼서가 아니었다. */
+  it("업무 카드가 상태 배지와 승인 배지를 둘 다 낸다 — 승인 대기가 「완료」로만 읽히지 않는다 (K19)", async () => {
+    getCalendar.mockResolvedValue([flipped, submitted, thisWeek]);
     render(<Harness />);
     const rail = await screen.findByTestId("rail-left");
-    expect(rail.textContent).toContain("업무");
-    for (const label of ["진행 중", "시작 전", "완료", "막힘", "취소"]) {
-      expect(rail.textContent).not.toContain(label);
-    }
+    await waitFor(() => expect(rail.textContent).toContain("확인 기다리는 업무"));
+    const card = rail.querySelector('[data-calendar-key="task:sub"]') as HTMLElement;
+    const badges = [...card.querySelectorAll(".scax-badge")].map((node) => node.textContent);
+    // 유형 · 상태 · 승인. 상태만 내면 이 업무가 「완료」라고만 읽힌다.
+    expect(badges).toEqual(["업무", "완료", "확인 대기"]);
+    // 다른 업무 카드는 상태만 낸다 — 기다리는 것이 없으면 승인 배지를 내지 않는다(업무 화면과 같다).
+    const other = rail.querySelector('[data-calendar-key="task:flip"]') as HTMLElement;
+    expect([...other.querySelectorAll(".scax-badge")].map((node) => node.textContent)).toEqual(["업무", "진행 중"]);
+    // 회의 카드는 유형 배지 하나뿐이다.
+    const booked = rail.querySelector('[data-calendar-key="meeting:m-now"]') as HTMLElement;
+    expect([...booked.querySelectorAll(".scax-badge")].map((node) => node.textContent)).toEqual(["회의"]);
+  });
+
+  it("격자는 여전히 상태를 말하지 않는다 — 배지는 좌측 카드만의 것이다 (K19)", async () => {
+    getCalendar.mockResolvedValue([submitted, thisWeek]);
+    const { container } = render(<Harness />);
+    await waitFor(() => expect(getCalendar).toHaveBeenCalled());
+    expect(container.querySelectorAll(".scax-month__grid .scax-badge")).toHaveLength(0);
+    expect(container.querySelector(".scax-month__grid")!.textContent).not.toContain("확인 대기");
+  });
+
+  /* K20 — `flipped` 는 3/4~3/6 짜리 띠 하나와 3/5 의 시간 배정 하나를 함께 들고 온다.
+     앞 판은 3/5 칸에 그 둘을 **다 그려** 같은 업무가 두 번 떴다(사용자가 실물에서 찾은 자리다). */
+  it("월 뷰는 업무의 시간 배정을 그리지 않는다 — 같은 업무가 한 칸에 두 번 뜨지 않는다 (K20)", async () => {
+    const { container } = render(<Harness />);
+    await waitFor(() => expect(getCalendar).toHaveBeenCalled());
+    const cell = container.querySelector('[data-date="2027-03-05"]') as HTMLElement;
+    // 띠 하나뿐이다. 배정 칩이 함께 서면 여기가 2가 된다.
+    expect(cell.querySelectorAll(".scax-event--task")).toHaveLength(1);
+    expect(cell.textContent).not.toContain("10:00");
+    // 회의는 월 뷰에도 그려진다 — 회의는 그 자체가 일정이다.
+    const withMeeting = container.querySelector('[data-date="2027-03-04"]') as HTMLElement;
+    expect(withMeeting.querySelectorAll(".scax-event--meeting")).toHaveLength(1);
+  });
+
+  it("주 뷰는 그대로다 — 종일 칸과 시간 격자가 나뉜 채 둘 다 그린다 (K20 회귀)", async () => {
+    const { container } = render(<Harness />);
+    await waitFor(() => expect(getCalendar).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("tab", { name: "주" }));
+    await waitFor(() => expect(getCalendar).toHaveBeenCalledWith("2027-02-28", "2027-03-06"));
+    // 종일 칸에 띠, 시간 격자에 그 업무의 배정 — 월 뷰와 달리 «두 구역»이라 겹쳐 읽히지 않는다.
+    await waitFor(() => expect(container.querySelectorAll(".scax-week__band .scax-event__label").length).toBeGreaterThan(0));
+    const slot = container.querySelector('.scax-week__hours[data-date="2027-03-05"] .scax-week__slot') as HTMLElement;
+    expect(slot.textContent).toContain("뒤집힌 업무");
+  });
+
+  it("시간 격자에서 겹치는 블록이 나란히 앉는다 — 밑에 깔리지 않는다 (K21)", async () => {
+    // 09:30–12:30 배정 «안»에 10:00–11:00 회의가 든다 — 사용자가 찾은 바로 그 모양이다.
+    const wide: CalendarEntry = { ...(flipped as CalendarEntry & { schedules: unknown[] }), task_id: "wide", title: "긴 배정",
+      schedules: [{ schedule_id: "s-wide", on_date: "2027-03-04", starts_at: "09:30", ends_at: "12:30", version: 1 }] } as CalendarEntry;
+    getCalendar.mockResolvedValue([wide, thisWeek]);
+    const { container } = render(<Harness />);
+    await waitFor(() => expect(getCalendar).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("tab", { name: "주" }));
+    await waitFor(() =>
+      expect(container.querySelectorAll('.scax-week__hours[data-date="2027-03-04"] .scax-week__slot')).toHaveLength(2),
+    );
+    const slots = [...container.querySelectorAll('.scax-week__hours[data-date="2027-03-04"] .scax-week__slot')] as HTMLElement[];
+    // 둘이 칸을 반씩 나눠 쓰고 **서로 다른 자리**에 선다 — 하나가 다른 하나를 덮지 않는다.
+    expect(slots.map((slot) => slot.style.width)).toEqual(["calc(50% - 6px)", "calc(50% - 6px)"]);
+    expect(new Set(slots.map((slot) => slot.style.left)).size).toBe(2);
+  });
+
+  it("혼자 선 블록은 칸을 통째로 쓴다 — 나란히 앉히기가 예전 폭을 바꾸지 않는다 (회귀)", async () => {
+    getCalendar.mockResolvedValue([thisWeek]);
+    const { container } = render(<Harness />);
+    await waitFor(() => expect(getCalendar).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("tab", { name: "주" }));
+    await waitFor(() => expect(container.querySelector(".scax-week__slot")).not.toBeNull());
+    const slot = container.querySelector(".scax-week__slot") as HTMLElement;
+    expect(slot.style.left).toBe("calc(0% + 3px)");
+    expect(slot.style.width).toBe("calc(100% - 6px)");
   });
 
   it("업무의 시간 배정은 자기 카드가 아니라 업무 카드의 meta 줄로 접힌다", async () => {

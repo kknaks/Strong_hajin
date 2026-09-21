@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { calendarDow, calendarHourLabel, calendarScreen } from "../../lib/labels";
-import { laneSeats, packLanes, type CalendarSegment, type TimedBlock } from "./calendarModel";
+import { laneSeats, MIN_BLOCK_MINUTES, packBlocks, packLanes, type CalendarSegment, type TimedBlock } from "./calendarModel";
 import { snapClock, type DateEdge } from "./calendarWrites";
 import { EventHandle } from "./EventBar";
 
@@ -48,6 +48,10 @@ type SlotDrag = { key: string; edge: DateEdge; column: Element; minutes: number 
  *   딸려 있어 캘린더에서 조용히 시각을 바꾸면 안 된다. 회의 시각은 **회의 화면**이 바꾼다.
  * - **놓을 때 한 번만 부른다.** 끄는 동안에는 여기서 미리 그려 보여 줄 뿐이다 — 모든 쓰기가
  *   낙관적 잠금이라 끌 때마다 부르면 회차가 매번 어긋난다(§2.3 R6).
+ *
+ * **FE-3 이 시간 격자에 줄 배치를 얹었다** (증보 K21) — 겹치는 블록이 **밑에 깔리지 않고 나란히**
+ * 앉는다. 줄 수와 자리는 `packBlocks` 가 계산하고 여기서는 **좌우 폭으로만** 옮긴다.
+ * **줄은 «저장된» 시각으로 잡는다** — 세로 손잡이를 끄는 동안 줄이 바뀌면 블록이 좌우로 튄다.
  */
 export function WeekGrid({
   days,
@@ -244,56 +248,60 @@ export function WeekGrid({
                     {snapClock(ghost.minutes)} – {snapClock(Math.min(ghost.minutes + 60, DAY_MINUTES - 1))}
                   </span>
                 ) : null}
-                {blocks
-                  .filter((block) => block.date === date)
-                  .map((block) => {
-                    const held = slotDrag?.key === block.key ? slotDrag : null;
-                    const startMin = held?.edge === "start" ? held.minutes : block.startMin;
-                    const endMin = held?.edge === "end" ? held.minutes : block.endMin;
-                    // 손잡이는 **업무 배정에만**. 회의 블록에는 붙지 않는다 (§F).
-                    const resizable = Boolean(onResizeSlot) && block.scheduleId !== null;
-                    return (
-                      <span
-                        className={`scax-event scax-event--${block.kind} scax-week__slot`}
-                        key={block.key}
-                        style={{
-                          top: px(Math.min(startMin, DAY_MINUTES)),
-                          // 30분보다 짧은 배정도 읽을 수 있는 높이는 갖는다.
-                          height: Math.max(px(30), px(endMin - startMin)) - 2,
-                        }}
-                      >
-                        <span className="scax-week__slot-title">{block.title}</span>
-                        <span className="scax-week__slot-time">
-                          {held
-                            ? calendarScreen.clockRange(snapClock(startMin), snapClock(endMin))
-                            : calendarScreen.clockRange(block.startLabel, block.endLabel)}
-                        </span>
-                        {resizable
-                          ? (["start", "end"] as const).map((edge) => (
-                              <span
-                                className={`scax-week__slot-handle scax-week__slot-handle--${edge}`}
-                                key={edge}
-                                onClick={(event) => event.stopPropagation()}
-                                onPointerDown={(event) => {
-                                  event.stopPropagation();
-                                  event.preventDefault();
-                                  const column = (event.currentTarget as HTMLElement).closest(".scax-week__hours");
-                                  if (!column) return;
-                                  setSlotDrag({
-                                    column,
-                                    edge,
-                                    key: block.key,
-                                    minutes: edge === "start" ? block.startMin : block.endMin,
-                                  });
-                                }}
-                                role="presentation"
-                                title={edge === "start" ? calendarScreen.grabSlotStart : calendarScreen.grabSlotEnd}
-                              />
-                            ))
-                          : null}
+                {packBlocks(blocks.filter((block) => block.date === date)).map((block) => {
+                  const held = slotDrag?.key === block.key ? slotDrag : null;
+                  const startMin = held?.edge === "start" ? held.minutes : block.startMin;
+                  const endMin = held?.edge === "end" ? held.minutes : block.endMin;
+                  // 손잡이는 **업무 배정에만**. 회의 블록에는 붙지 않는다 (§F).
+                  const resizable = Boolean(onResizeSlot) && block.scheduleId !== null;
+                  /* 겹치는 것끼리 칸을 나눠 쓴다 (K21). 혼자면 `lanes === 1` 이라
+                     `left:3px`·`width:calc(100% - 6px)` 가 되어 **예전 그대로**다 — 회귀가 없다.
+                     3px 은 `styles/calendar.css` 가 쓰던 좌우 여백 그대로다. */
+                  const share = 100 / block.lanes;
+                  return (
+                    <span
+                      className={`scax-event scax-event--${block.kind} scax-week__slot`}
+                      key={block.key}
+                      style={{
+                        top: px(Math.min(startMin, DAY_MINUTES)),
+                        // 30분보다 짧은 배정도 읽을 수 있는 높이는 갖는다 — 겹침 판정과 같은 상수다.
+                        height: Math.max(px(MIN_BLOCK_MINUTES), px(endMin - startMin)) - 2,
+                        left: `calc(${block.lane * share}% + 3px)`,
+                        width: `calc(${share}% - 6px)`,
+                      }}
+                    >
+                      <span className="scax-week__slot-title">{block.title}</span>
+                      <span className="scax-week__slot-time">
+                        {held
+                          ? calendarScreen.clockRange(snapClock(startMin), snapClock(endMin))
+                          : calendarScreen.clockRange(block.startLabel, block.endLabel)}
                       </span>
-                    );
-                  })}
+                      {resizable
+                        ? (["start", "end"] as const).map((edge) => (
+                            <span
+                              className={`scax-week__slot-handle scax-week__slot-handle--${edge}`}
+                              key={edge}
+                              onClick={(event) => event.stopPropagation()}
+                              onPointerDown={(event) => {
+                                event.stopPropagation();
+                                event.preventDefault();
+                                const column = (event.currentTarget as HTMLElement).closest(".scax-week__hours");
+                                if (!column) return;
+                                setSlotDrag({
+                                  column,
+                                  edge,
+                                  key: block.key,
+                                  minutes: edge === "start" ? block.startMin : block.endMin,
+                                });
+                              }}
+                              role="presentation"
+                              title={edge === "start" ? calendarScreen.grabSlotStart : calendarScreen.grabSlotEnd}
+                            />
+                          ))
+                        : null}
+                    </span>
+                  );
+                })}
               </div>
             );
           })}

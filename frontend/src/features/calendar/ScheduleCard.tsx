@@ -1,7 +1,7 @@
 import { Fragment } from "react";
 
 import { Badge } from "../../ds/Badge";
-import { calendarScreen } from "../../lib/labels";
+import { calendarScreen, derivedApprovalLabel, taskStateLabel, taskStateTone } from "../../lib/labels";
 import type { RailCard } from "./calendarModel";
 
 /**
@@ -14,9 +14,18 @@ import type { RailCard } from "./calendarModel";
  * 반면 **업무 카드는 «할 수 없을 때도» 끌 수 있다.** 끌 수 없게 막으면 왜 안 되는지 말할 자리가
  * 사라지기 때문이다 — 떨어뜨린 뒤에 화면이 말한다 (§I 조용한 거절 0개).
  *
- * **배지는 유형 하나뿐이다 — 상태를 내지 않는다** (K15). 합본 조회의 `state` 는 내부
- * `completion_submitted` 를 `"done"` 으로 투영하고 행에 `derived` 가 없어서, 여기서 상태를 쓰면
- * 「승인 대기」인 업무를 **「완료」라고 말하게 된다**. 상태는 카드를 열어 상세에서 읽는다.
+ * **배지는 상태 배지 + 승인 배지 둘이다** (확정 — 증보 K19 가 K15 를 뒤집었다).
+ *
+ * 합본 조회의 `state` 는 내부 `completion_submitted` 를 `"done"` 으로 투영한다 —
+ * **상태 배지 하나만 내면 「승인 대기」인 업무를 「완료」라고 말하게 된다.** K15 는 그래서 상태를
+ * 감췄지만, **BE-4 가 `approval` 을 실어 주면서 말할 수 있게 됐다.**
+ *
+ * **새로 만든 것이 없다 — 업무 화면의 것을 그대로 쓴다.**
+ * 상태는 `taskStateLabel`·`taskStateTone`, 승인은 `derivedApprovalLabel` 과
+ * `WorkTables.tsx` 의 `WaitingBadge` 가 쓰는 **같은 톤**(확인 대기 `accent` · 보완 요청 `danger`)이다.
+ * `approved`·`null` 에는 배지를 내지 않는 것도 그쪽과 같다 — 「기다리는 것」이 없으면 말하지 않는다.
+ *
+ * **격자는 여전히 상태를 말하지 않는다**(SPEC §2.6) — 배지는 **이 카드만**의 것이다.
  */
 export function ScheduleCard({
   card,
@@ -54,6 +63,9 @@ export function ScheduleCard({
           <Badge tone={card.kind === "meeting" ? "neutral" : "accent"}>
             {card.kind === "meeting" ? calendarScreen.meetingBadge : calendarScreen.taskBadge}
           </Badge>
+          {card.state ? <Badge tone={taskStateTone[card.state]}>{taskStateLabel[card.state]}</Badge> : null}
+          {card.approval === "awaiting_review" ? <Badge tone="accent">{derivedApprovalLabel.awaiting_review}</Badge> : null}
+          {card.approval === "awaiting_revision" ? <Badge tone="danger">{derivedApprovalLabel.awaiting_revision}</Badge> : null}
         </div>
         <h3 className="scax-inbox-card__title">
           {openable ? (

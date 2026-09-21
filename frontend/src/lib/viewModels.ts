@@ -1270,14 +1270,19 @@ export type TaskScheduleRow = {
  * 좌측 레일이 「날짜부터」(R2)를 하려면 필요하다.
  *
  * `state` 는 화면 어휘 5종 그대로다. 다만 내부 `completion_submitted` 가 여기서 **`"done"` 으로
- * 투영**되고 행에 `derived` 가 없어 승인 대기인지 **가려지지 않는다** — 그래서 좌측 카드는
- * 상태를 내지 않는다 (K15).
+ * 투영**되므로 **`state` 하나로는 승인 대기인 업무가 「완료」로 읽힌다.** 그것을 가르는 것이
+ * 아래 `approval` 이고, 좌측 카드는 그 둘을 **배지 둘로 따로** 낸다 (증보 K19 — K15 를 뒤집었다).
  */
 export type CalendarTaskRow = {
   kind: "task";
   task_id: string;
   title: string;
   state: TaskState;
+  /**
+   * 완료 확인이 어디까지 왔나 (증보 K19). **`derived` 묶음 전체가 아니라 이 한 값**이다 —
+   * 값은 저장소 어휘 그대로라 업무 화면의 `derivedApprovalLabel` 이 그대로 읽는다.
+   */
+  approval: DerivedApproval | null;
   start_date: string | null;
   due_date: string | null;
   span_from: string | null;
