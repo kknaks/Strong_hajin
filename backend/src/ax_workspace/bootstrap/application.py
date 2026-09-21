@@ -229,6 +229,7 @@ from ax_workspace.platform.work_tasks import (
 )
 from ax_workspace.platform.meetings import SqlAlchemyMeetingRepository
 from ax_workspace.platform.task_schedules import SqlAlchemyTaskScheduleRepository
+from ax_workspace.platform.time_blocks import SqlAlchemyTimeBlockRepository
 
 
 
@@ -4318,6 +4319,8 @@ class WorkflowApplication:
             OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
             # 시간 배정 — 업무의 자식이라 같은 application 이 든다 (SPEC-004 §4 Data Contract).
             schedules=SqlAlchemyTaskScheduleRepository(session),
+            # 겹침을 읽는 **문 하나** — 같은 session 이라 **검사와 저장이 한 트랜잭션**에 있다 (증보 K22).
+            time_blocks=SqlAlchemyTimeBlockRepository(session),
         )
 
     def _projects(self, session: Any) -> ProjectApplication:

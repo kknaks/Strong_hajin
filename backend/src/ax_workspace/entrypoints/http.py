@@ -140,6 +140,7 @@ from ax_workspace.modules.work.errors import (
     TaskReopenForbidden,
     TaskReopenParentDone,
     TaskScheduleDayTaken,
+    TaskScheduleOverlap,
     TaskScheduleTaskClosed,
     TaskScheduleVersionConflict,
 )
@@ -554,6 +555,9 @@ def _runtime_error(error: Exception) -> HTTPException:
             TaskScheduleTaskClosed,
             TaskScheduleDayTaken,
             TaskScheduleVersionConflict,
+            # 겹침도 같은 기준이다 (증보 K22): 시각 자체는 말이 되는데 **그 사람의 그 시간이 이미 찼다.**
+            # 422 가 아닌 이유가 여기 있다 — 다른 시간이면 같은 값이 통과한다.
+            TaskScheduleOverlap,
         ),
     ):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))

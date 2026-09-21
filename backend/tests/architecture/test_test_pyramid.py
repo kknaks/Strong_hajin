@@ -17,6 +17,9 @@ PURE_DOMAIN_MODULES = (
     "meetings/finalize.py",
     "meetings/material_policy.py",
     "meetings/policy.py",
+    # 겹침 판정의 규칙 — 반열림과 자정 분할 (SPEC-004 §2.9). 두 표를 조회하는 문은 platform 이지만
+    # **그 문이 쓰는 규칙**은 데이터베이스 없이 서야 한다: 규칙이 두 곳에 있으면 두 규칙이 된다.
+    "time_blocks.py",
     "work/checklist.py",
     "work/lifecycle.py",
     "work/material_folder_policy.py",

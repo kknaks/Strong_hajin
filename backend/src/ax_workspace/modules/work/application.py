@@ -41,10 +41,12 @@ from ax_workspace.modules.work.errors import (
     TaskScheduleForbidden,
     TaskScheduleInvalidRange,
     TaskScheduleOutOfRange,
+    TaskScheduleOverlap,
     TaskScheduleTaskClosed,
     TaskScheduleTaskUnscheduled,
     TaskScheduleVersionConflict,
 )
+from ax_workspace.modules.time_blocks import TimeBlock, TimeWindow, office_span
 from ax_workspace.modules.work.schedule import (
     TaskSpan,
     is_valid_time_range,
@@ -168,6 +170,26 @@ class TaskScheduleRepository(Protocol):
     def release(self, schedule: Any, reason: str) -> None: ...
 
 
+class TimeBlockRepository(Protocol):
+    """겹침을 **읽는 문 하나** (`platform/time_blocks.py` · SPEC-004 §2.9 · 증보 K22).
+
+    **표는 둘이어도 문은 하나다** — 이 포트가 `task_schedules` 와 `meetings` 를 함께 조회한다.
+    배정 쪽과 회의 쪽이 각자 조회를 쓰면 두 규칙이 되고, 반열림 판정이 두 곳에 있게 된다.
+
+    **`member_ids` 가 처음부터 복수다.** 배정 쪽은 「나의 시간만」이라 하나를 넣지만 회의 쪽은
+    **주최자 + 참석자 전원**을 묻는다 (Phase BE-4 가 이 포트를 그대로 재사용한다).
+    """
+
+    def overlapping_blocks(
+        self,
+        member_ids: frozenset[str],
+        window: TimeWindow,
+        *,
+        ignore_schedule_id: UUID | None = None,
+        ignore_meeting_id: UUID | None = None,
+    ) -> list[TimeBlock]: ...
+
+
 class ActionSourcePort(Protocol):
     """The authorized Action lookup a Task's origin needs. Passing anything else is a type error, not a 500."""
 
@@ -216,10 +238,13 @@ class TaskApplication:
         projects: ProjectScopePort | None = None,
         directory: MemberDirectoryPort | None = None,
         schedules: TaskScheduleRepository | None = None,
+        time_blocks: TimeBlockRepository | None = None,
     ) -> None:
         self.repository = repository
         # 시간 배정 — **업무의 자식**이라 자기 가시성 규칙을 갖지 않는다 (SPEC-004 §4 Data Contract).
         self._schedules = schedules
+        # 겹침을 읽는 **문 하나**. 두 표를 함께 조회한다 — 회의 쪽도 같은 문을 쓴다 (증보 K22).
+        self._time_blocks = time_blocks
         # 참조자로 적힌 사람이 실제로 있는 구성원인가. 요청이 쓰는 것과 같은 명부다.
         self._directory = directory
         # **선행 요약이 자기 자신을 다시 부르는 것을 막는 빗장** (`predecessor_views` 참조).
@@ -625,6 +650,38 @@ class TaskApplication:
             raise TaskError("시간 배정 저장소가 조립되지 않았습니다")
         return self._schedules
 
+    def _time_block_repository(self) -> TimeBlockRepository:
+        if self._time_blocks is None:  # pragma: no cover - 조립이 빠진 경우에만 닿는다
+            raise TaskError("시간 블록 조회가 조립되지 않았습니다")
+        return self._time_blocks
+
+    def _require_free_time(
+        self, principal: Principal, on_date: date, starts_at: time, ends_at: time, *, ignoring: UUID | None = None
+    ) -> None:
+        """그 시간이 **비어 있나** — 배정 생성·시각 변경이 함께 지나는 **한 자리** (증보 K22).
+
+        **나의 시간만 본다.** 남의 일정은 애초에 조회 대상이 아니다 — 회의 쪽의 「주최자 + 참석자
+        전원」은 Phase BE-4 이고, 같은 문(`overlapping_blocks`)에 `member_ids` 를 더 넣는 것으로 된다.
+
+        **반열림 `[시작, 끝)`** 이라 경계가 닿는 것은 통과한다 — 11:00 에 끝나는 일정이 있어도
+        11:00 시작 배정이 선다. 그 판정은 이 함수가 아니라 **문 안에 있다**: 두 자리에 있으면
+        두 규칙이 된다.
+
+        `ignoring` 은 **고치는 중인 그 배정 자신**이다. 빼지 않으면 10:00–11:00 을 10:30–11:30 으로
+        옮기는 것이 자기와 겹쳐 거절된다.
+
+        **검사와 저장이 한 트랜잭션에 있다** — 조립 층이 명령 하나를 한 session 에 싣는다. 그래도
+        **틈이 남는다**: 두 표에 걸쳐 있어 제약을 걸 수 없으므로 동시 요청 둘이 각각 통과할 수 있다.
+        **「하루 한 칸」과 같은 세기의 보장이 아니다** (SPEC §2.9).
+        """
+        blocks = self._time_block_repository().overlapping_blocks(
+            frozenset({str(principal.id)}),
+            office_span(on_date, starts_at, ends_at),
+            ignore_schedule_id=ignoring,
+        )
+        if blocks:
+            raise TaskScheduleOverlap("이미 다른 일정이 있는 시간입니다")
+
     def _assignable_task(self, principal: Principal, task_id: UUID, *, lock: bool = False) -> Any:
         """배정 쓰기가 지나는 문 — 판정은 **그 업무의 활성 담당 관계**다 (증보 K5).
 
@@ -677,6 +734,9 @@ class TaskApplication:
         if schedules.active_on(task.id, on_date) is not None:
             # 사람에게 이유를 말하기 위한 질문이다. **동시 두 명령을 가르는 것은 부분 unique** 다.
             raise TaskScheduleDayTaken("이 날에는 이미 시간 배정이 있습니다")
+        # **겹침은 마지막 409 다** — 영수증은 이 명령보다 먼저 지났으므로(증보 K12) 재전송이 자기 자신과
+        # 겹쳐 거절되는 일이 없다. 뺄 자기 자신도 없다: 같은 (업무, 날) 은 위 줄이 이미 막았다.
+        self._require_free_time(principal, on_date, starts_at, ends_at)
         return _schedule_view(schedules.create(task.id, on_date, starts_at, ends_at))
 
     def retime_schedule(
@@ -697,6 +757,8 @@ class TaskApplication:
             raise TaskScheduleVersionConflict("다른 곳에서 먼저 바뀌었습니다")
         if not is_valid_time_range(starts_at, ends_at):
             raise TaskScheduleInvalidRange("종료 시각은 시작 시각보다 뒤여야 합니다")
+        # **날짜는 그대로**이므로 같은 날의 다른 일정과만 겹칠 수 있다 — 그리고 **자기 자신은 뺀다.**
+        self._require_free_time(principal, schedule.on_date, starts_at, ends_at, ignoring=schedule.id)
         return _schedule_view(schedules.retime(schedule, starts_at, ends_at))
 
     def schedule_receipt(self, principal: Principal, task_id: UUID, on_date: date) -> TaskScheduleView:

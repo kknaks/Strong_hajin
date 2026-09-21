@@ -379,8 +379,10 @@ def test_a_finished_task_leaves_the_calendar_while_a_submitted_one_stays(tmp_pat
     client, _ = _stack(tmp_path)
     done_id = _spanned_task(client)
     kept_id = _spanned_task(client)
-    for task_id in (done_id, kept_id):
-        _schedule(client, task_id, date(2027, 3, 3), "10:00", "11:00")
+    # **두 업무가 같은 날의 다른 시간을 든다** — 같은 시간을 주면 겹침으로 거절되어(증보 K22)
+    # 뒤 업무가 배정 없이 서고, 이 테스트가 재는 것이 조용히 사라진다.
+    for task_id, start, end in ((done_id, "10:00", "11:00"), (kept_id, "11:00", "12:00")):
+        assert _schedule(client, task_id, date(2027, 3, 3), start, end).status_code == 201
     finished = client.post(
         f"/api/tasks/{done_id}/complete",
         headers=MINA,
