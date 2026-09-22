@@ -85,5 +85,13 @@
    ⚠ screens-b.css 의 구 `.calendar-*`(TaskCalendar)와는 **다른 계열**이다 — 그 화면은 그대로 산다. */
 @import "./calendar.css";
 
+/* 프로젝트 3레일 화면 (WORK-005 FE-1) — 시안 handoff/projects/css/projects.css 를 옮겼다.
+   클래스 `.scax-pj-*` 는 위의 어느 파일과도 겹치지 않고, 이 화면이 공용 자산에 더하는 규칙은
+   `.scax-inbox-card[role="button"]`(수신함·캘린더 카드에는 role 이 없어 안 걸린다) **하나뿐**이다 —
+   그 파일 머리 주석 참조. ~~`.scax-gutter-list__header--sub`~~ 는 레일 머리가 한 줄이 되면서
+   (D-34 · FE-5) 쓰는 곳이 0 이 되어 **놓았다.**
+   ⚠ screens-a.css 의 구 `.project-*`(2컬럼 관리 화면)는 이 판에서 사라졌다. */
+@import "./projects.css";
+
 /* AX 대화 드로어 · 액션 센터 (바퀴 7) */
 @import "./ax.css";

@@ -55,6 +55,13 @@ from ax_workspace.modules.work.schedule import (
     task_span,
 )
 from ax_workspace.modules.work.task_values import validate_schedule
+# **상태 투영·기한 경과일은 순수 모듈이 갖는다** (SPEC-005 §4). 프로젝트 상세가 같은 판정을
+# 지나야 하는데 `work/projects.py` 는 이 파일을 import 하지 않는다 — 규칙을 두 벌로 쓰지 않는다.
+from ax_workspace.modules.work.task_projection import (
+    external_state,
+    overdue_days,
+    today_for_tasks,
+)
 
 from datetime import UTC, date, datetime, time
 from typing import Any, Protocol
@@ -64,7 +71,6 @@ from ax_workspace.modules.work.parties import may_read, party_of
 from ax_workspace.modules.work.task_results import ChecklistMutationResult, ChecklistOrderResult, TaskMutationResult, TaskAssignmentView
 from ax_workspace.modules.work.checklist_commands import ChecklistAddInput, ChecklistUpdateInput, ChecklistArchiveInput, ChecklistOrderInput
 from ax_workspace.modules.work.task_commands import TaskEditFields, TaskCompletionInput, TaskReferenceCommand, TaskReferenceReleaseCommand
-from zoneinfo import ZoneInfo
 
 from ax_workspace.modules.work.checklist import ChecklistItem, UpdateChecklistItem, update_checklist_item
 from ax_workspace.modules.work.lifecycle import (
@@ -87,7 +93,6 @@ from ax_workspace.modules.organization_access.domain import (
 )
 
 
-_TASK_TIMEZONE = ZoneInfo("Asia/Seoul")
 
 #: 닫힌 것이 없다. **날짜가 안 바뀐 명령도 이 묶음을 낸다** — 「말할 것이 없다」를
 #: 화면이 읽을 수 있어야 한다 (증보 K3).
@@ -135,6 +140,8 @@ class TaskRepository(Protocol):
     ) -> Any: ...
     def references_for(self, task_id: UUID, *, include_released: bool = False) -> list[Any]: ...
     def children_of(self, task_id: UUID) -> list[Any]: ...
+    #: 자손 **전부**. 직속만 도는 `children_of` 와 다른 질문이다 (SPEC-005 §4 · D-19).
+    def descendants_of(self, task_id: UUID) -> list[Any]: ...
     def open_children_of(self, task_id: UUID) -> list[Any]: ...
     def tasks_requested_by(self, requester_id: str, *, include_closed: bool = False) -> list[Any]: ...
     def descendant_ids_of(self, task_ids: list[UUID]) -> set[UUID]: ...
@@ -527,13 +534,20 @@ class TaskApplication:
             # 선행이 「같은 프로젝트 안」이라는 불변을 프로젝트 쪽에서 깨는 길이라 여기서 막는다.
             # 선행 배열을 같은 명령으로 비우는 길은 열려 있다 — 아래에서 먼저 비운 뒤 다시 부르면 된다.
             self._require_project_unlocked(task)
-            wanted = changes["project_id"]
-            task.project_id = self.project_for(principal, UUID(str(wanted))) if wanted else None
-            for child in self.repository.children_of(task.id):
+            # **자손 전체가 따라간다 — 자식만이 아니다** (SPEC-005 §4 · D-19 · BASE-004 어긋남 ③).
+            # 직속만 옮기면 **손자가 옛 프로젝트에 남고**, 선행은 같은 프로젝트 안에서만 성립하므로
+            # 저장소가 강제하는 불변식이 데이터 안에서 깨진다.
+            descendants = self.repository.descendants_of(task.id)
+            for descendant in descendants:
                 # **하위가 상위를 따라 옮겨 가는 경로에도 같은 규칙이 걸린다.** 여기를 비워 두면
                 # 상위를 옮기는 것만으로 하위의 선행이 다른 프로젝트로 끌려간다.
-                self._require_project_unlocked(child)
-                child.project_id = task.project_id
+                # **게이트를 전부 먼저 건 뒤에 옮긴다** — 걸으면서 옮기면 자손 하나가 잠겨 있을 때
+                # **부분 이동**이 남는다. 거절이면 아무것도 움직이지 않는다.
+                self._require_project_unlocked(descendant)
+            wanted = changes["project_id"]
+            task.project_id = self.project_for(principal, UUID(str(wanted))) if wanted else None
+            for descendant in descendants:
+                descendant.project_id = task.project_id
         if "approver_id" in changes:
             # **`승인 대기` 뒤에는 아무도 못 바꾼다** (§5 권한). 이미 그 사람 앞에 판단이 놓였다.
             if self._approval_state(task) == "awaiting_review":
@@ -971,6 +985,17 @@ class TaskApplication:
             # The person who asked for the work may follow where their request got to, without holding the work.
             "delivery": self.delivery_view(principal, task),
             "predecessors": self._predecessor_summary(principal, task),
+            # **프로젝트에 붙은 사람이면 남의 업무에서도 체크리스트를 읽는다** (SPEC-005 §4 · D-29).
+            #
+            # **접근 값을 셋으로 늘리지 않고 싣는 조건만 따로 둔다** (§4 ⓑ). 그 값은 이미 밖으로 나가는
+            # 계약이라 값을 늘리면 읽는 곳 전부가 함께 움직이고, 이 변경이 필요한 것보다 넓어진다.
+            # 그래서 **`read_only` 인데 항목이 실리는 조합**이 생기고 **그것이 정상**이다 —
+            # 접근 값은 이제 **쓰기 범위**만 뜻한다.
+            #
+            # **읽기만 넓어진다**: 더하고 체크하고 지우고 순서를 바꾸는 가드(`_holding`)는 그대로
+            # 활성 담당자다. **프로젝트 밖에서 조직 축으로 읽는 갈래는 전과 같이 항목이 없다** —
+            # 그 갈래의 미터는 프로젝트 상세 `tasks[]` 의 집계가 그린다.
+            **(self._checklist_fields(task) if self._on_that_tasks_project(principal, task) else {}),
         }
 
     # ---- derived: 서버가 만드는 파생 표시 (SPEC-003 §4 Data) ----
@@ -1008,7 +1033,7 @@ class TaskApplication:
             ids + [child.id for rows in shown.values() for child in rows]
         )
         proposals = self.repository.pending_proposal_kinds(ids)
-        today = datetime.now(UTC).astimezone(_TASK_TIMEZONE).date()
+        today = today_for_tasks()
         derived: dict[UUID, dict[str, Any]] = {}
         for task in tasks:
             fact = facts.get(task.id, {})
@@ -1094,13 +1119,25 @@ class TaskApplication:
             return frozenset()
         return principal.projects_for(PROJECT_READ)
 
+    def _on_that_tasks_project(self, principal: Principal, task: Any) -> bool:
+        """**그 업무의 프로젝트에 이 사람이 붙어 있나** — 읽기를 여는 두 길 중 «프로젝트» 쪽 하나다.
+
+        **리드와 참여자를 가르지 않는다** (SPEC-005 §4 · D-29): 붙었다는 사실 하나가 답이고,
+        그 사실은 이미 grant 의 프로젝트 축에 있다 — **새 질의를 만들지 않는다.**
+
+        **조직 축과 갈라 둔다.** 읽기를 여는 길은 둘인데 **체크리스트를 여는 길은 프로젝트 하나**라
+        (D-29), 둘을 한 값으로 묶어 두면 「프로젝트 밖에서 조직 축으로 읽는 사람」에게도 항목이
+        새어 나간다.
+        """
+        projects = self._project_scope(principal)
+        return bool(projects) and str(getattr(task, "project_id", None) or "") in projects
+
     def _may_read_beyond_holding(self, principal: Principal, task: Any) -> bool:
         """자기 것이 아닌 업무를 읽는 두 가지 길 — 조직 범위, 그리고 프로젝트 범위.
 
         한 자리에서 함께 판정한다. 두 곳에서 각자 판정하면 한쪽만 고쳤을 때 조용히 새거나 조용히 막힌다.
         """
-        projects = self._project_scope(principal)
-        if projects and str(getattr(task, "project_id", None) or "") in projects:
+        if self._on_that_tasks_project(principal, task):
             return True
         members = self._organization_scope_members(principal)
         if not members:
@@ -1691,7 +1728,7 @@ class TaskApplication:
                 target=target,
                 expected_version=expected_version,
                 reason=reason,
-                today=datetime.now(UTC).astimezone(_TASK_TIMEZONE).date(),
+                today=today_for_tasks(),
             ),
             TaskCompletionContext(
                 requires_completion_review=requires_review,
@@ -2311,12 +2348,18 @@ class TaskApplication:
             raise TaskError("task version is stale")
         return task
 
-    def _with_checklist(self, task: Any, principal: Principal) -> dict[str, Any]:
+    def _checklist_fields(self, task: Any) -> dict[str, Any]:
+        """항목과 집계를 **함께** 낸다 — 하나만 실으면 같은 사실을 두 규칙으로 읽는 것이 된다 (D-29)."""
         items = [_checklist_view(item) for item in self.repository.checklist_for(task.id)]
         return {
-            **self._view(task, principal),
             "checklist": items,
             "checklist_progress": {"done": sum(1 for item in items if item["done"]), "total": len(items)},
+        }
+
+    def _with_checklist(self, task: Any, principal: Principal) -> dict[str, Any]:
+        return {
+            **self._view(task, principal),
+            **self._checklist_fields(task),
             "references": self.references(principal, task),
             "delivery": self.delivery_view(principal, task),
             **self._hierarchy_view(principal, task),
@@ -2492,18 +2535,9 @@ def _proposal_view(record: Any) -> dict[str, Any]:
     }
 
 
-def _external_state(state: Any) -> str:
-    """밖으로 나가는 수행 상태는 **넷뿐이다** — `open` · `in_progress` · `done` · `cancelled`.
-
-    코드에는 `completion_submitted` 가 남아 있다. 그것은 「완료 보고를 냈고 요청자가 아직 답하지
-    않았다」는 사실이고, 계약은 그 사실을 **`state=done` + `derived.approval=awaiting_review`** 로
-    말한다 (SPEC-003 §4 State · SPEC-001 §4). **enum 자체를 없애지 않는다** — 제출 가드와 승인 가드가
-    그 내부 값을 읽고 있고, 정리는 후속이다. 여기서는 **투영만** 바꾼다.
-
-    `blocked` 도 계약에 없지만 이 work 는 그 값을 **발행하지도 없애지도 않는다**(M-6) — 들어오는
-    그대로 낸다. 없는 계약을 여기서 지어내지 않는다.
-    """
-    return TaskState.DONE.value if str(state) == TaskState.COMPLETION_SUBMITTED.value else str(state)
+#: 상태 투영과 기한 경과일의 **판정 한 자리** (SPEC-005 §4 · 어긋남 ①). 프로젝트 상세도 같은 함수를
+#: 지나므로 여기서 이름만 잇는다 — 규칙을 두 벌로 쓰지 않는다.
+_external_state = external_state
 
 
 def _assignment_wait(fact: dict[str, Any]) -> str | None:
@@ -2518,15 +2552,7 @@ def _assignment_wait(fact: dict[str, Any]) -> str | None:
     return "awaiting_handover" if fact.get("assignee_id") is not None else "awaiting_acceptance"
 
 
-def _overdue_days(due_date: Any, state: Any, today: date) -> int | None:
-    """기한이 며칠 지났는가. **표시값이다** — 상태·담당·기한을 아무것도 바꾸지 않는다 (정책 V-19).
-
-    끝난 일에는 지연이 없다: 이미 끝난 것을 늦었다고 계속 말하지 않는다.
-    """
-    if due_date is None or str(state) in {TaskState.DONE.value, TaskState.CANCELLED.value, TaskState.COMPLETION_SUBMITTED.value}:
-        return None
-    overdue = (today - due_date).days
-    return overdue if overdue > 0 else None
+_overdue_days = overdue_days
 
 
 def _assignment_view(assignments: Any) -> TaskAssignmentView | None:

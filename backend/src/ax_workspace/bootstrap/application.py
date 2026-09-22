@@ -4335,8 +4335,9 @@ class WorkflowApplication:
         )
 
     def _projects(self, session: Any) -> ProjectApplication:
-        # 선행 배열은 **업무 저장소**가 낸다 — 프로젝트 상세의 업무 줄과 업무 목록이 같은 질의를 쓴다
-        # (SPEC-001 U-15 「새 조회를 부르지 않는다」).
+        # 선행 배열·체크리스트 집계·담당은 **업무 저장소**가 낸다 — 프로젝트 상세의 업무 줄과 업무
+        # 목록이 같은 질의를 쓴다 (SPEC-001 U-15 「새 조회를 부르지 않는다」 · SPEC-005 §4).
+        # 같은 session 이라 **읽기가 한 트랜잭션** 안이다.
         return ProjectApplication(SqlAlchemyProjectRepository(session), SqlAlchemyTaskRepository(session))
 
     def _created_once(self, command: Any) -> Any:
@@ -4379,6 +4380,10 @@ class WorkflowApplication:
             SqlAlchemyMaterialExtractionRepository(session),
             self._material_queue(session),
             self._tasks(session),
+            # **일을 보내면 사람도 따라간다** (SPEC-005 §4). 같은 session 이라 **붙이는 것·떼는 것과
+            # 그 명령이 한 트랜잭션**이다 — 나뉘면 「업무는 갔는데 사람은 안 붙은」 상태가 복구 경로
+            # 없이 남는다.
+            self._projects(session),
         )
 
     def _conversations(self, session: Any) -> ConversationApplication:

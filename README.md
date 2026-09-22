@@ -230,6 +230,7 @@ application/service에서 조회 뒤 이어지는 도메인 `if/elif`와 contrac
 make test              # backend unit·architecture·regular contract 전체를 같은 범위로 실행
 make test-unit         # DB·transport 없는 unit·architecture focused loop
 make test-contract     # application·HTTP·MCP·SQLite adapter 경계 검증을 병렬 실행
+make test-serial       # 위 둘이 이어서 부르는 `-n0` 직렬 패스 — 따로 부를 일은 재측정뿐이다
 make test-scale        # 큰 합성 원장 검증을 fixture 1회로 직렬 실행
 make test-release      # wheel build·격리 설치 검증 (PyPI 네트워크 필요)
 make verify            # 위 backend test 전부 + frontend 동작 test + Vite production build
@@ -238,6 +239,26 @@ make acceptance-e2e    # 브라우저 journey 전부, 자기 데이터베이스�
 make protected-build   # pinned Python/Nuitka/Codex의 linux/amd64 source-free image
 make protected-inspect # filesystem·layer·ABI·문자열 노출 검사
 ```
+
+`make test`·`make test-contract`는 **두 패스**다: 대부분을 `-n auto --dist worksteal`로 병렬 실행한 뒤
+(`-m "... and not serial"`), `@pytest.mark.serial`이 달린 것만 `-n0`으로 이어 돈다(`make test-serial`).
+
+그 마커가 고르는 부류는 하나의 기준이다 — **한 테스트가 자기 안에서 진짜 동시성을 만들고**
+(자식 **프로세스** — 자료·보고서 워커의 `IsolatedWork` spawn · MCP `stdio_client` · 직접 부른
+`subprocess` — **또는** 자기가 직접 띄운 **스레드**) **그 진행을 초 단위 실시간 창으로 재는** 테스트다.
+워커 수가 코어 수와 같아지면 「워커 × 각자가 만든 동시성」이 그 창보다 큰 스케줄 지터를 만든다 —
+계약이 틀린 것이 아니라 창을 놓친 것이다. **무엇으로 동시성을 만들었는지는 원인의 본질이 아니다**:
+기준이 「프로세스」로만 적혀 있던 동안, `Event`·`Lock` 으로 스레드를 돌리고 `release.wait(5)` 로 5초
+창을 재던 회의실 계약이 마커 없이 병렬 패스에 남아 `make verify` 두 회차를 다 깼다(단독으로 돌리면
+통과한다). **파일 이름을 세지 않는다**: 새 테스트는 마커만 달면 자동으로 옳은 쪽에 서고, 마커 없이
+자식을 띄우거나 테스트 코드가 직접 스레드를 띄우면 `tests/conftest.py`의 걸개가 병렬 패스에서
+**즉시** 실패시킨다(흔들리는 대신 무엇을 달아야 하는지 말한다). 스레드 문은 **테스트 코드가 직접
+띄운 것만** 본다 — anyio 의 blocking portal(`TestClient`가 쓴다)·asyncio 의 기본 executor 처럼
+라이브러리 내부가 늘 쓰는 스레드까지 물면 멀쩡한 테스트가 다 빨개지기 때문이다. 판정은 하나다:
+`Thread.start()`·`Executor.submit()`을 부른 **바로 그 프레임이 `backend/tests/` 안인가**, 아니면 그
+스레드가 돌릴 함수가 거기 정의됐는가. 가르기가 성립하는지는
+`tests/architecture/test_serial_test_targets.py`가 지킨다.
+한 명령이 두 패스를 모두 돌므로 초록은 여전히 한 자리에서 난다.
 
 보호 이미지의 버전 고정, 역할별 실행, 설치 환경 차이와 한계는 [SCAX 보호 이미지 빌드와 납품](delivery/README.md)에 있다.
 

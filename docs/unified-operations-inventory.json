@@ -8713,6 +8713,44 @@
               "title": "ProjectMemberView",
               "type": "object"
             },
+            "ProjectTaskAssigneeView": {
+              "description": "**지금 이 업무를 든 사람** — 업무의 열이 아니라 활성 배정이 답한다 (SPEC-005 §4 · D-08).\n\n아무도 들지 않은 업무가 **정상**이라 `None` 으로 온다. 「미정」 같은 말을 서버가 지어내지 않는다.",
+              "properties": {
+                "member_id": {
+                  "title": "Member Id",
+                  "type": "string"
+                },
+                "display_name": {
+                  "title": "Display Name",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "member_id",
+                "display_name"
+              ],
+              "title": "ProjectTaskAssigneeView",
+              "type": "object"
+            },
+            "ProjectTaskProgressView": {
+              "description": "체크리스트 **두 수만**. 항목은 싣지 않는다 (SPEC-005 §4 · D-01·D-02).\n\n`total` 이 0 이면 화면이 % 를 **그리지 않는다** — 0% 가 아니다. 서버는 그 판정을 하지 않고\n두 수만 낸다.",
+              "properties": {
+                "done": {
+                  "title": "Done",
+                  "type": "integer"
+                },
+                "total": {
+                  "title": "Total",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "done",
+                "total"
+              ],
+              "title": "ProjectTaskProgressView",
+              "type": "object"
+            },
             "ProjectTaskView": {
               "properties": {
                 "task_id": {
@@ -8766,6 +8804,52 @@
                   },
                   "title": "Preceding Task Ids",
                   "type": "array"
+                },
+                "assignee": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ProjectTaskAssigneeView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "checklist_progress": {
+                  "$ref": "#/$defs/ProjectTaskProgressView"
+                },
+                "span_from": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Span From"
+                },
+                "span_to": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Span To"
+                },
+                "overdue_days": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Overdue Days"
                 }
               },
               "required": [
@@ -8775,7 +8859,12 @@
                 "start_date",
                 "due_date",
                 "parent_task_id",
-                "preceding_task_ids"
+                "preceding_task_ids",
+                "assignee",
+                "checklist_progress",
+                "span_from",
+                "span_to",
+                "overdue_days"
               ],
               "title": "ProjectTaskView",
               "type": "object"

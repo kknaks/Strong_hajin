@@ -282,6 +282,7 @@ def test_a_reference_says_where_in_the_source_and_whether_it_moved_since(tmp_pat
     assert after["title"] == "회차가 움직인 업무"
 
 
+@pytest.mark.serial
 def test_a_material_the_answer_read_says_which_page_without_repeating_the_text(tmp_path, monkeypatch) -> None:
     """자료를 읽고 답했으면 그 자료도 답이 가리키는 것이다. 어디였는지는 함께 가고, 원문은 가지 않는다.
 

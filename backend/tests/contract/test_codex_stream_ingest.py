@@ -3,10 +3,15 @@
 import json
 import time
 
-import pytest
 
+import pytest
 from ax_workspace.platform.codex_cli import ProcessResult
 from codex_stream_support import codex_adapter, codex_request
+
+# 이 파일의 테스트는 **진짜 자식 프로세스**를 띄우고(자료·보고서 워커의 `IsolatedWork` spawn ·
+# MCP `stdio_client` · `subprocess`) 그 진행을 초 단위 실시간 창으로 잰다 — 그래서 병렬 패스가 아니라
+# `-n0` 직렬 패스에서 돈다. 기준과 걸개는 `tests/conftest.py`, 가르는 자리는 `Makefile` 의 `test-serial`.
+pytestmark = pytest.mark.serial
 
 
 def test_real_subprocess_runner_streams_and_cancels(tmp_path) -> None:

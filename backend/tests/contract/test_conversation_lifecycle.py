@@ -6,6 +6,7 @@ import time
 from uuid import UUID
 
 from fastapi.testclient import TestClient
+import pytest
 
 from ax_workspace.bootstrap.conversation_worker import ConversationWorker
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
@@ -244,6 +245,9 @@ def test_failed_turn_keeps_partial_text_and_retry_creates_a_linked_idempotent_tu
     assert client.post(f"/api/conversations/{conversation_id}/turns/{turn_id}/retry", headers=JIHO).status_code == 404
 
 
+#: 워커를 스레드로 돌려 놓고 그 진행을 `release.wait(timeout=10)`·`join(timeout=15)` 라는
+#: 초 단위 실시간 창으로 잰다 — tests/conftest.py 위 기준 한 문장.
+@pytest.mark.serial
 def test_cancelling_a_turn_keeps_what_was_said_and_ignores_what_came_after(tmp_path) -> None:
     """Stopping is a decision the ledger makes first; the provider's later words do not undo it."""
     from threading import Thread

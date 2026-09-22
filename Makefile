@@ -29,19 +29,56 @@ PROTECTED_CODEX_BASE ?= node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a046
 PROTECTED_RUNTIME_BASE ?= debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 PROTECTED_EXPECT_CONSTANTS ?= visible
 
-.PHONY: install test test-unit test-contract test-scale test-release test-postgres frontend-test frontend-build frontend-assets verify protected-build protected-inspect postgres-up postgres-down reset-demo reset-catalog sync-demo-schema dataset-import dataset-inspect api conversation-worker material-worker meeting-worker mcp frontend-install frontend storybook storybook-build api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-ax-editable-task e2e-ax-editable-meeting e2e-ax-meeting-draft e2e-assistant-character e2e-assistant-preference e2e-follow-up-continuation e2e-ax-action-draft e2e-ax-action-materials e2e-conversation-report-edit-action e2e-daily-report e2e-material-search e2e-meeting-live-transcript e2e-meeting-three-tracks e2e-access-roles e2e-project-participation-history e2e-graph-question local-stack acceptance-e2e live-report-smoke soniox-smoke
+.PHONY: install test test-unit test-contract test-contract-serial test-serial test-scale test-release test-postgres frontend-test frontend-build frontend-assets verify protected-build protected-inspect postgres-up postgres-down reset-demo reset-catalog sync-demo-schema dataset-import dataset-inspect api conversation-worker material-worker meeting-worker mcp frontend-install frontend storybook storybook-build api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-ax-editable-task e2e-ax-editable-meeting e2e-ax-meeting-draft e2e-assistant-character e2e-assistant-preference e2e-follow-up-continuation e2e-ax-action-draft e2e-ax-action-materials e2e-conversation-report-edit-action e2e-daily-report e2e-material-search e2e-meeting-live-transcript e2e-meeting-three-tracks e2e-access-roles e2e-project-participation-history e2e-graph-question local-stack acceptance-e2e live-report-smoke soniox-smoke
 
 install:
 	cd backend && uv sync --all-groups
 
+# ── 자기 안에서 동시성을 만드는 테스트는 직렬 패스에서 돈다 ─────────────────────────────
+# **기준 한 문장**: 흔들리는 부류는 「**한 테스트가 자기 안에서 진짜 동시성을 만들고**
+# (자식 **프로세스** — 자료·보고서 워커의 `IsolatedWork` spawn · MCP `stdio_client` · 직접 부른
+# `subprocess` — **또는** 자기가 직접 띄운 **스레드**) **그 진행을 초 단위 실시간 창으로 재는**」 테스트다.
+# `-n auto`(= 코어 수 11) 가 되면 「11 xdist 워커 × 각자가 만든 동시성」이 그 창보다 큰 스케줄 지터를
+# 만든다 — 계약이 틀린 것이 아니라 **잰 창을 놓친 것**이다(단독·`-n0` 로는 통과한다).
+# **프로세스냐 스레드냐는 원인의 본질이 아니다**: 기준이 「프로세스」로만 적혀 있던 동안 `Event` 로
+# 5초 창을 재던 회의실 계약이 마커 없이 새서 `make verify` 두 회차를 다 깼다.
+# 근거와 버린 가설: orchestration/work/strong-hajin-projects/phase0-report.md ·
+# phase0-followup-report.md · phase0-fix3-report.md.
+#
+# **그래서 파일 이름을 세지 않는다.** 그 부류는 `@pytest.mark.serial` 을 달고 여기서 `-m` 으로 가른다:
+# 새 테스트는 마커만 달면 자동으로 옳은 쪽에 서고, 마커 없이 자식 프로세스를 띄우거나 테스트 코드가
+# 직접 스레드를 띄우면 `tests/conftest.py` 의 걸개가 병렬 패스에서 **즉시·결정적으로** 실패시킨다.
+# `-m` 은 pyproject 의 `addopts` 를 덮으므로 기본 제외(integration·release·scale)를 여기서 다시 적는다.
+DEFAULT_DESELECT = not integration and not release and not scale
+PARALLEL_MARKERS = $(DEFAULT_DESELECT) and not serial
+SERIAL_MARKERS = serial and $(DEFAULT_DESELECT)
+
 test:
-	cd backend && uv run pytest -n auto --dist worksteal
+	cd backend && uv run pytest -n auto --dist worksteal -m "$(PARALLEL_MARKERS)"
+	$(MAKE) test-serial
 
 test-unit:
 	cd backend && uv run pytest tests/unit tests/architecture
 
 test-contract:
-	cd backend && uv run pytest tests/contract -n auto --dist worksteal
+	cd backend && uv run pytest tests/contract -n auto --dist worksteal -m "$(PARALLEL_MARKERS)"
+	$(MAKE) test-serial SERIAL_PATHS=tests/contract
+
+# 마커가 달린 것만 직렬로. `test`·`test-contract` 가 이어서 부르므로 따로 부를 일은 재측정뿐이다.
+# `PYTEST_ADDOPTS='-k "..."' make test-contract`(docs/demo-work-seed.md) 처럼 필터를 걸면 이 패스가
+# **한 건도 못 고를 수** 있다. pytest 는 그때 5 로 끝나는데, 그것은 실패가 아니라 «고를 것이 없었다» 다 —
+# 필터 하나가 초록을 빨갛게 만들지 않게 5 만 삼킨다. 마커가 실제로 갈라지는지는
+# `tests/architecture/test_serial_test_targets.py` 가 따로 지킨다.
+SERIAL_PATHS ?=
+test-serial:
+	cd backend && uv run pytest $(SERIAL_PATHS) -m "$(SERIAL_MARKERS)" -n0 || { status=$$?; [ $$status -eq 5 ] || exit $$status; \
+		echo "test-serial: 필터가 이 부류를 모두 걸렀다 — 이 패스는 건너뛴다" >&2; }
+
+# 고른 파일만 **직렬로** 다시 돌리는 자리. `-n0` 하나가 실효 스위치다 — `-n auto` 를 끈다.
+# **격리 수단이 아니다**: 어떤 부류를 갈라 도는 타겟이 아니라 재실행 편의다 (가르는 것은 `test-serial`).
+# `FILES` 로 받은 것만 돈다. 예: make test-contract-serial FILES="tests/contract/test_projects.py"
+test-contract-serial:
+	cd backend && uv run pytest $(FILES) -n0
 
 test-scale:
 	cd backend && uv run pytest -m scale

@@ -20,6 +20,7 @@ from ax_workspace.modules.work.task_commands import TaskReassignInput
 from ax_workspace.modules.organization_access.domain import Principal, TASK_ASSIGN, TASK_READ, TASK_SELF_MANAGE
 from ax_workspace.modules.work.application import InvalidTaskTransition, TaskAccessDenied, TaskApplication, TaskError, TaskNotFound, validate_schedule, _iso
 from ax_workspace.modules.work.errors import TaskAssignmentProposalExists
+from ax_workspace.modules.work.projects import PROJECT_END_REQUEST_REJECTED, PROJECT_END_REQUEST_WITHDRAWN, auto_joined_by
 
 
 class TaskAssignmentRepository(Protocol):
@@ -47,11 +48,27 @@ class TaskAssigneeDirectory(Protocol):
 
 
 class ProjectAssigneePort(Protocol):
-    """프로젝트 축이 아는 것: 이 사람이 배정할 수 있는 프로젝트의 사람들."""
+    """프로젝트 축이 아는 것: 이 사람이 배정할 수 있는 프로젝트의 사람들, 그리고 **소속이 오가는 두 문**.
+
+    **붙이고 떼는 것은 사람이 누르는 `assign`·`release` 가 아니라 업무 명령의 부수 효과다** —
+    프로젝트 관리 권한을 요구하지 않고, 조건이 안 맞으면 **거절이 아니라 무동작**이다
+    (SPEC-005 §4 자동 초대 · 자동 해제).
+    """
 
     def assignable_members(self, principal: Principal) -> list[dict[str, str]]: ...
     def may_assign_in(self, principal: Principal, project_id: UUID) -> bool: ...
     def readable_project_ids(self, principal: Principal) -> frozenset[str]: ...
+    def join_for_assignment(self, principal: Principal, project_id: UUID, member_id: str) -> bool: ...
+    def release_for_assignment(
+        self,
+        project_id: UUID | None,
+        member_id: str | None,
+        *,
+        auto_joined: bool,
+        except_task_id: UUID | None,
+        reason: str,
+        ended_by: str,
+    ) -> bool: ...
 
 
 class TaskAssignmentApplication:
@@ -204,7 +221,20 @@ class TaskAssignmentApplication:
             if current is None
             else self._repository.reassign(task, current, str(principal.id), assignee_id, (reason or "").strip() or None)
         )
+        # **붙는 자리 #2 — 담당 교체 제안** (SPEC-005 §4 · D-11·D-12). 새 담당이 그 프로젝트 밖일 수
+        # 있다. **entrypoint 가 아니라 여기 건다** — 같은 명령이 HTTP 와 MCP 로 들어오고, 라우트에만
+        # 걸면 MCP 로 들어온 배정이 조용히 초대를 안 한다 (SPEC-005 §5).
+        # **업무에 프로젝트가 없으면 아무 일도 일어나지 않는다** — 오류가 아니다.
+        # 붙였다는 사실은 **붙이는 그 순간에만** 설 수 있어 배정 행에 적는다 (D-14 조건 ①).
+        appended.auto_project_join = self._join_project_for(principal, task, assignee_id)
         return self._view(appended, task, principal)
+
+    def _join_project_for(self, principal: Principal, task: Any, assignee_id: str) -> bool:
+        """자동 초대 — **붙였으면 참, 아니면 거짓.** 어느 쪽도 거절이 아니다."""
+        project_id = getattr(task, "project_id", None)
+        if project_id is None:
+            return False
+        return self._projects.join_for_assignment(principal, UUID(str(project_id)), assignee_id)
 
     def assignment_receipt(self, principal: Principal, task_id: UUID) -> TaskAssignmentResult:
         """이미 만들어진 배정의 영수증. **돌려주기 전에 지금 그 업무를 읽을 수 있는지 다시 묻는다.**"""
@@ -290,7 +320,13 @@ class TaskAssignmentApplication:
         if assignment is None:
             return self._answer_receipt(principal, assignment_id, "declined") or self._not_found()
         self._repository.decide(assignment, str(principal.id), "reject", reason=reason.strip())
-        return self._view(assignment, self._repository.task_for(assignment), principal)
+        task = self._repository.task_for(assignment)
+        # **떼는 자리 #3 — 배정 거절.** 요청 발송이 세운 `pending` 행도, 담당 교체 제안이 세운 행도
+        # **둘 다 이 문으로 닫힌다**(`_pending_target` 이 `assignment_kind` 를 안 가린다) — 그래서
+        # 이 한 자리가 붙는 자리 둘의 종결을 함께 받는다 (SPEC-005 §4 떼는 자리 3번).
+        # 사유는 **「요청 거절」을 그대로 쓴다** — 셋째 사유를 만들지 않는다 (D-13).
+        self._release_project_for(assignment, task, reason=PROJECT_END_REQUEST_REJECTED, ended_by=str(principal.id))
+        return self._view(assignment, task, principal)
 
     def cancel(self, principal: Principal, assignment_id: UUID) -> TaskAssignmentResult:
         """Withdraw a direct assignment before the assignee answers it.
@@ -309,7 +345,31 @@ class TaskAssignmentApplication:
         if assignment.status != "pending":
             raise TaskError("task assignment is no longer awaiting acceptance")
         self._repository.cancel(assignment, str(principal.id))
-        return self._view(assignment, self._repository.task_for(assignment), principal)
+        task = self._repository.task_for(assignment)
+        # **떼는 자리 #4 — 배정 철회.** 받는 사람이 답하기 전에 보낸 쪽이 거두는 길이고, 그 철회가
+        # 거두는 배정을 **담당 교체 제안이 만든다**(붙는 자리 #2 의 나머지 절반). 거절만 다루고
+        # 여기를 빠뜨리면 **「보냈다 거뒀는데 사람은 프로젝트에 남는」** 자리가 생긴다 (D-13).
+        # 사유는 **「요청 철회」를 그대로 쓴다.**
+        self._release_project_for(assignment, task, reason=PROJECT_END_REQUEST_WITHDRAWN, ended_by=str(principal.id))
+        return self._view(assignment, task, principal)
+
+    def _release_project_for(self, assignment: Any, task: Any, *, reason: str, ended_by: str) -> None:
+        """자동 해제 — **조건 ①·② 의 판정은 프로젝트 모듈이 한다** (SPEC-005 §4 · D-14).
+
+        여기서 내는 것은 사실 셋뿐이다: 어느 프로젝트인가 · 누구인가 · **이 배정이 붙였나.**
+        조건이 안 맞으면 아무 일도 일어나지 않고, 그것은 거절이 아니다.
+        """
+        project_id = getattr(task, "project_id", None) if task is not None else None
+        self._projects.release_for_assignment(
+            UUID(str(project_id)) if project_id is not None else None,
+            assignment.assignee_id,
+            # **조건 ① 은 `auto_joined_by()` 한 자리가 읽는다** — 폴백 없는 직접 속성 접근이라
+            # 칸이 사라지면 조용한 무동작이 아니라 `AttributeError` 가 난다.
+            auto_joined=auto_joined_by(assignment),
+            except_task_id=assignment.task_id,
+            reason=reason,
+            ended_by=ended_by,
+        )
 
     @staticmethod
     def _not_found() -> Any:

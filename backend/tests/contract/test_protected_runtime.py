@@ -2,12 +2,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from ax_workspace.entrypoints import material_worker, protected
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.serial
 def test_protected_build_entrypoint_runs_outside_the_package_import_root(tmp_path: Path) -> None:
     result = subprocess.run(
         [sys.executable, str(BACKEND_ROOT / "src" / "scax_protected.py"), "--help"],

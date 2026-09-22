@@ -11,6 +11,11 @@ from ax_workspace.platform.persistence import MembershipRecord, OrganizationUnit
 from ax_workspace.platform.work_tasks import SqlAlchemyAttachmentRepository
 from test_material_search import MINA, JIHO, _stack
 
+# 이 파일의 테스트는 **진짜 자식 프로세스**를 띄우고(자료·보고서 워커의 `IsolatedWork` spawn ·
+# MCP `stdio_client` · `subprocess`) 그 진행을 초 단위 실시간 창으로 잰다 — 그래서 병렬 패스가 아니라
+# `-n0` 직렬 패스에서 돈다. 기준과 걸개는 `tests/conftest.py`, 가르는 자리는 `Makefile` 의 `test-serial`.
+pytestmark = pytest.mark.serial
+
 
 def test_personal_and_team_folder_uploads_search_without_tasks_and_open_through_their_owner(tmp_path):
     client, application, worker, _ = _stack(tmp_path)

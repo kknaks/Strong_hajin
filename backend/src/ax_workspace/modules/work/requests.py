@@ -57,6 +57,7 @@ from ax_workspace.modules.work.request_lifecycle import (
     withdraw_work_request,
 )
 from ax_workspace.modules.work.parties import may_read, party_of
+from ax_workspace.modules.work.projects import PROJECT_END_REQUEST_REJECTED, PROJECT_END_REQUEST_WITHDRAWN, auto_joined_by
 from ax_workspace.modules.work.material_extraction import MaterialExtractionJob, MaterialExtractionQueue, MaterialExtractionRepository
 from ax_workspace.modules.work.materials import AttachmentRepository, MaterialNotFound, MaterialStorage, material_view, store_file
 from ax_workspace.modules.work.material_values import MaterialError, MaterialLink
@@ -114,6 +115,8 @@ class WorkRequestRepository(Protocol):
     def evidence_count_for(self, submission: Any) -> int: ...
     def evidence_for(self, request: Any) -> list[tuple[Any, Any, Any]]: ...
     def task_for_request(self, request: Any, *, lock: bool = False) -> Any: ...
+    #: 그 요청이 세운 **배정 행**. 자동 해제 조건 ① 이 거기 적혀 있다 (SPEC-005 §4 · D-14).
+    def request_assignment(self, request: Any, *, lock: bool = False) -> Any: ...
     def accept_request_assignment(self, request: Any, actor_id: str) -> Any: ...
     def close_request_task(self, request: Any, actor_id: str, *, cancel_reason: str, summary: str) -> Any: ...
     def create_task_for_request(
@@ -144,6 +147,27 @@ class CommentRepository(Protocol):
     def list_for(self, request_thread_id: UUID) -> list[Any]: ...
     def comment(self, request_thread_id: UUID, comment_id: UUID) -> Any: ...
     def lock_thread(self, request_thread_id: UUID) -> None: ...
+
+
+class RequestProjectMembershipPort(Protocol):
+    """**일을 보내면 사람도 따라간다** — 요청 명령의 부수 효과로 프로젝트 소속이 오가는 자리.
+
+    붙이는 열쇠는 **그 프로젝트에서의 업무 배정 권한**이지 프로젝트 관리 권한이 아니고, 조건이
+    안 맞으면 **거절이 아니라 무동작**이다. 판정은 전부 프로젝트 모듈이 갖는다
+    (SPEC-005 §4 자동 초대 · 자동 해제 · D-11~D-15).
+    """
+
+    def join_for_assignment(self, principal: Principal, project_id: UUID, member_id: str) -> bool: ...
+    def release_for_assignment(
+        self,
+        project_id: UUID | None,
+        member_id: str | None,
+        *,
+        auto_joined: bool,
+        except_task_id: UUID | None,
+        reason: str,
+        ended_by: str,
+    ) -> bool: ...
 
 
 class RequestParentPort(Protocol):
@@ -291,6 +315,7 @@ class WorkRequestApplication:
         extractions: MaterialExtractionRepository | None = None,
         extraction_queue: MaterialExtractionQueue | None = None,
         parents: "RequestParentPort | None" = None,
+        projects: "RequestProjectMembershipPort | None" = None,
     ) -> None:
         self._repository = repository
         # 상위를 붙여도 되는지는 **업무 모듈이 판정한다** — 중심 업무·순환·수락 전 부모 금지가 거기 한 곳에
@@ -302,6 +327,9 @@ class WorkRequestApplication:
         self._storage = storage
         self._references = references
         self._extractions, self._extraction_queue = extractions, extraction_queue
+        # **소속은 프로젝트 모듈이 판정한다** (SPEC-005 §4). 요청은 「누구에게 무엇이 갔나」만 알고,
+        # 「붙일 수 있나 · 떼도 되나」는 거기 한 곳에서 답한다 — 여기서 다시 쓰면 두 벌이 갈린다.
+        self._projects = projects
 
     def create(
         self,
@@ -438,6 +466,21 @@ class WorkRequestApplication:
             source_submission_id=source_submission_id,
             source_review_decision_id=source_review_decision_id,
         )
+        # **붙는 자리 #1 — 요청 발송** (SPEC-005 §4 · D-11·D-12). 요청은 묻지 않고 상위의 프로젝트를
+        # 물려받으면서도 **받는 사람이 그 프로젝트에 있는지는 보지 않았다**(BASE-004 어긋남 ④).
+        # **entrypoint 가 아니라 여기 건다** — 같은 명령이 HTTP·MCP·판단함으로 들어오고, 라우트에만
+        # 걸면 다른 입구로 들어온 발송이 조용히 초대를 안 한다 (SPEC-005 §5).
+        # **붙였다는 사실은 붙이는 그 순간에만 설 수 있다** — 그래서 발송이 세운 배정 행에 적는다
+        # (D-14 조건 ①). 프로젝트가 없으면 아무 일도 일어나지 않는다 — 오류가 아니다.
+        joined = (
+            self._projects.join_for_assignment(principal, UUID(str(project)), assignee_id)
+            if self._projects is not None and project is not None
+            else False
+        )
+        if joined:
+            assignment = self._repository.request_assignment(request)
+            if assignment is not None:
+                assignment.auto_project_join = True
         return self._view(request, task)
 
     def accept(self, principal: Principal, request_id: UUID, expected_version: int) -> WorkRequestMutationResult:
@@ -483,6 +526,8 @@ class WorkRequestApplication:
         task = self._repository.close_request_task(
             request, str(principal.id), cancel_reason="request_rejected", summary=f"업무 요청 거절로 취소: {request.title}"
         )
+        # **떼는 자리 #1 — 요청 거절** (SPEC-005 §4 · D-13). 붙은 근거가 그 요청인데 그 근거가 사라졌다.
+        self._release_project_for(request, task, reason=PROJECT_END_REQUEST_REJECTED, ended_by=str(principal.id))
         self._repository.append_audit(request.id, str(principal.id), "work_request.rejected", {"reason": reason.strip()})
         return self._view(request, task)
 
@@ -673,8 +718,32 @@ class WorkRequestApplication:
         task = self._repository.close_request_task(
             request, str(principal.id), cancel_reason="request_withdrawn", summary=f"업무 요청 철회로 취소: {request.title}"
         )
+        # **떼는 자리 #2 — 요청 철회** (SPEC-005 §4 · D-13). **철회라고 조건이 느슨해지지 않는다.**
+        self._release_project_for(request, task, reason=PROJECT_END_REQUEST_WITHDRAWN, ended_by=str(principal.id))
         self._repository.append_audit(request.id, str(principal.id), "work_request.withdrawn", {})
         return self._view(request, task)
+
+    def _release_project_for(self, request: Any, task: Any, *, reason: str, ended_by: str) -> None:
+        """자동 해제 — **조건 ①·② 의 판정은 프로젝트 모듈이 한다** (SPEC-005 §4 · D-14).
+
+        조건 ① 은 **발송이 세운 배정 행**이 갖는다 — `work_requests` 에 칸을 두지 않았다. 같은 사실을
+        배정 거절(`decline`)도 읽어야 하고 그쪽은 요청을 지나지 않기 때문이다. 나누면 **한쪽 문으로
+        닫았을 때 흔적을 못 찾는다.**
+        """
+        if self._projects is None:
+            return
+        assignment = self._repository.request_assignment(request)
+        project_id = getattr(task, "project_id", None) if task is not None else None
+        self._projects.release_for_assignment(
+            UUID(str(project_id)) if project_id is not None else None,
+            str(request.assignee_id),
+            # **조건 ① 은 `auto_joined_by()` 한 자리가 읽는다.** 배정 행이 아직 없는 것(`None`)은
+            # 「안 붙였다」가 맞고, **칸이 사라진 것**은 거기서 `AttributeError` 로 깨진다.
+            auto_joined=auto_joined_by(assignment),
+            except_task_id=getattr(task, "id", None),
+            reason=reason,
+            ended_by=ended_by,
+        )
 
     @staticmethod
     def _domain_request(request: Any) -> WorkRequest:

@@ -8,6 +8,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
@@ -233,6 +234,7 @@ def _speech(application, meeting_id: str, texts: list[str]) -> None:
         session.commit()
 
 
+@pytest.mark.serial
 def test_the_settled_speech_of_a_meeting_is_searchable_by_the_people_who_may_read_it(tmp_path) -> None:
     client, application, settings = _stack(tmp_path)
     meeting_id = _meeting(client)["meeting"]["meeting_id"]
@@ -265,6 +267,7 @@ def test_a_meeting_that_has_not_spoken_yet_has_nothing_to_search(tmp_path) -> No
     assert application.search_materials(principal, "아무말", resource_types=["meeting"])["results"] == []
 
 
+@pytest.mark.serial
 def test_a_file_attached_to_a_meeting_is_searchable_through_the_meeting(tmp_path) -> None:
     client, application, settings = _stack(tmp_path)
     meeting_id = _meeting(client)["meeting"]["meeting_id"]
@@ -280,6 +283,7 @@ def test_a_file_attached_to_a_meeting_is_searchable_through_the_meeting(tmp_path
     assert client.get(hit["origin"], headers=SORA).status_code == 404
 
 
+@pytest.mark.serial
 def test_the_transcript_material_follows_the_meeting_as_it_keeps_talking(tmp_path) -> None:
     """회의는 판을 쌓지 않는다 — 자료도 하나이고 내용이 자라면 그 자리를 갱신한다."""
     client, application, settings = _stack(tmp_path)

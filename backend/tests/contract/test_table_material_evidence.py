@@ -1,14 +1,19 @@
 """Source regions and header context survive indexing, transport and an observed turn receipt."""
-import pytest
 import asyncio
 from io import BytesIO
 from uuid import UUID
 
+import pytest
 from sqlalchemy import select, update
 from docx import Document
 from ax_workspace.entrypoints.mcp import McpReportsFacade
 from ax_workspace.platform.persistence import ConversationContentEvidenceRecord, ConversationTurnRecord, MaterialChunkRecord, make_session_factory
 from test_material_search import MINA, _stack, _upload
+
+# 이 파일의 테스트는 **진짜 자식 프로세스**를 띄우고(자료·보고서 워커의 `IsolatedWork` spawn ·
+# MCP `stdio_client` · `subprocess`) 그 진행을 초 단위 실시간 창으로 잰다 — 그래서 병렬 패스가 아니라
+# `-n0` 직렬 패스에서 돈다. 기준과 걸개는 `tests/conftest.py`, 가르는 자리는 `Makefile` 의 `test-serial`.
+pytestmark = pytest.mark.serial
 
 
 @pytest.mark.parametrize("location", ["body", "header"])

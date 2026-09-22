@@ -950,6 +950,132 @@ export const calendarScreen = {
 } as const;
 
 /**
+ * 「프로젝트」 화면이 내는 말 (WORK-005 FE-1~FE-3).
+ *
+ * 상태의 «말» 은 여기 없다 — `taskStateLabel`·`taskStateTone` 을 그대로 쓴다. 이 화면이 상태를
+ * 다르게 부르면 같은 업무가 두 화면에서 다른 이름을 갖는다.
+ *
+ * ⚠ **「미정」이 없다.** 담당이 비어 있으면 그 칸을 **비운다** — 서버가 지어내지 않는 것을
+ * 화면도 지어내지 않는다(I-1).
+ */
+export const projectScreen = {
+  /* 좌 레일 — 머리는 **한 줄**이다: 아이콘 + 이 말 + 건수 배지, 오른쪽 끝에 셀렉터 (D-34).
+     시안은 「업무」였지만 사용자 지시가 시안보다 우선한다. */
+  railTitle: "프로젝트",
+  projectSelect: "프로젝트 선택",
+  railEmptyTitle: "이 프로젝트의 업무가 없습니다",
+  railEmptyDescription: "업무가 생기면 여기에서 진행 라인과 함께 봅니다.",
+  /* 기간의 말 — 원값이 말하는 자리다 */
+  undated: "기한 없음",
+  dueOnly: (date: string) => `${formatDate(date)} 마감`,
+  startOnly: (date: string) => `${formatDate(date)} 시작`,
+  /* 요약 스트립 */
+  summaryTitle: "프로젝트 요약",
+  summaryTotal: "전체 업무",
+  summaryInProgress: "진행 중",
+  summaryOverdue: "지연",
+  summaryDone: "완료",
+  summaryPercent: "전체 진행률",
+  /* 간트 */
+  ganttTitle: "진행 라인",
+  ganttLegend: "화살표는 선행 → 후행",
+  ganttRange: (from: string, to: string) => `${formatDate(from)} ~ ${formatDate(to)}`,
+  ganttEmpty: "기간이 정해진 업무가 없습니다",
+  ganttEmptyDescription: "시작일이나 마감일이 정해지면 여기에 막대로 섭니다.",
+  expand: "하위 업무 펼치기",
+  collapse: "하위 업무 접기",
+  childCount: (count: number) => `하위 ${count}`,
+  /** 접힌 가지가 삼킨 선 — **사라진 것이 아니라 이 바에 붙어 있다**는 말이다 (D-17). */
+  foldedLinks: (count: number) => `접힌 하위 사이의 선행 ${count}건`,
+  /** 간트에 자리가 없는 선 — 기간이 없거나 볼 수 없는 업무에 걸렸다. **왜 없는지가 드러나야 한다**. */
+  unplacedLinks: (count: number) => `기간이 없거나 볼 수 없는 업무에 걸린 선행 ${count}건`,
+  /* 우 레일 */
+  sideEmptyTitle: "업무를 선택하세요",
+  sideEmptyDescription: "진행 라인이나 업무 목록에서 골라 상자를 엽니다.",
+  sideLoading: "업무를 불러오는 중",
+  sideFailed: "업무를 불러오지 못했습니다.",
+  metaTitle: "메타 정보",
+  metaState: "상태",
+  metaWhen: "기간",
+  metaAssignee: "담당",
+  metaRequester: "요청",
+  metaParent: "상위 업무",
+  /** 상태 칸이 드롭다운일 때의 이름 — 「무엇의」 상태인지 말한다 (업무 화면 `TaskStateCell` 과 같은 꼴). */
+  metaStateSelect: (title: string) => `${title} 상태`,
+  /** 「업무 정보」 — 설명과 체크리스트를 한 블록이 든다 (D-33). */
+  taskInfoTitle: "업무 정보",
+  relationTitle: "관계",
+  predecessors: "선행",
+  successors: "후행",
+  /** 읽을 수 없는 선행은 **자리가 남는다** — 제목·상태가 비고 건수는 난다 (SPEC-001 §4). */
+  hiddenTask: "볼 수 없는 업무",
+  checklistTitle: "체크리스트",
+  checklistNone: "등록된 항목이 없습니다.",
+  /**
+   * 항목이 **안 실리는 갈래** — 이제 「프로젝트 밖에서 그 업무를 읽는 경우」 하나다 (D-29, 2026-09-22).
+   *
+   * ~~「맡은 사람에게만 보입니다」~~ 는 **거짓이 됐다** — 같은 프로젝트면 남의 업무 항목도 실린다.
+   * ⚠ 이 갈래의 최종 문구는 **미결(SPEC-005 §7 OQ-604)** 이다. 지금 문장은 **참인 것만** 말한다.
+   */
+  checklistHidden: "항목은 이 프로젝트에 참여한 사람에게 보입니다.",
+  childrenTitle: "하위 업무",
+  childrenNone: "하위 업무가 없습니다.",
+  none: "없음",
+  openTask: "업무 열기",
+  /* 빈 상태 */
+  noProjectsTitle: "담당 프로젝트가 없습니다",
+  noProjectsDescription: "프로젝트에 붙으면 그 프로젝트의 업무를 여기에서 봅니다.",
+  notMember: "이 프로젝트의 업무는 담당자에게만 보입니다. 나를 담당자로 붙이면 여기에서 함께 봅니다.",
+  loadFailed: "프로젝트를 불러오지 못했습니다.",
+  /* 관리 모달 — 시안이 없어 어휘만 빌렸다 (D-05 · M-1) */
+  manage: "프로젝트 관리",
+  manageClose: "닫기",
+  manageDone: "닫기",
+  members: "현재 참여자",
+  membersHint: "부서와 무관하게 붙습니다",
+  membersNone: "아직 아무도 붙어 있지 않습니다.",
+  memberLead: "담당",
+  memberMember: "참여",
+  joinField: "붙일 구성원",
+  joinSearch: "이름으로 찾기",
+  joinAsMember: "참여로 붙이기",
+  joinAsLead: "담당으로 붙이기",
+  release: (name: string) => `${name} 참여 종료`,
+  releaseReason: "참여 종료 사유 (선택)",
+  releaseReasonPlaceholder: (name: string) => `${name}의 종료 사유`,
+  releaseConfirm: "종료 기록",
+  releaseCancel: "취소",
+  historyTitle: "참여 이력",
+  historyNone: "기록된 참여가 없습니다.",
+  historyEnded: "종료",
+  historyActive: "현재",
+  historyEndedBy: (name: string) => `처리 ${name}`,
+  newProject: "새 프로젝트",
+  newProjectName: "이름",
+  newProjectOpen: "열기",
+  newProjectFailed: "프로젝트를 열지 못했습니다.",
+  /* 생성 전용 모달 — 헤더 「프로젝트 추가」가 여는 자리 (D-30 · §2.10).
+     ⚠ 칸은 **넷**이다. `external_key` 칸을 만들지 않는다 — 표면은 그 값을 «받지만»
+     데이터셋 import 의 외부 식별자라 사람이 손으로 채울 값이 아니다(미결 OQ-607). */
+  createProject: "프로젝트 추가",
+  createTitle: "프로젝트 추가",
+  createName: "이름",
+  createNamePlaceholder: "무엇을 하는 프로젝트인가",
+  createDescription: "설명",
+  createDescriptionPlaceholder: "무엇을, 누구와, 어디까지 하는지 적어 둡니다.",
+  createStartsOn: "시작일",
+  createEndsOn: "종료일",
+  createSubmit: "만들기",
+  createCancel: "취소",
+  createClose: "닫기",
+  createFailed: "프로젝트를 만들지 못했습니다.",
+  /** 상태 전이가 거절됐을 때의 **마지막 말** — 서버 문구가 있으면 그것이 먼저다. */
+  transitionFailed: "업무 상태를 바꾸지 못했습니다.",
+  joinFailed: "담당자를 붙이지 못했습니다.",
+  releaseFailed: "담당자를 떼지 못했습니다.",
+} as const;
+
+/**
  * 쓰기가 성공했을 때 — **캘린더가 내는 말**.
  *
  * K3 의 「해제」는 **오류가 아니다.** 업무 수정은 성공했고 기간 밖으로 나간 배정이 닫힌 것이라,

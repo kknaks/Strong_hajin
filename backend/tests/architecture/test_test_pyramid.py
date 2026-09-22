@@ -27,6 +27,9 @@ PURE_DOMAIN_MODULES = (
     "work/material_values.py",
     "work/request_lifecycle.py",
     "work/schedule.py",
+    # 상태 투영과 기한 경과일 — **판정 한 자리** (SPEC-005 §4 · 어긋남 ①). 업무 목록·상세·캘린더와
+    # 프로젝트 상세가 같은 함수를 지나야 같은 값을 낸다. 규칙이 두 곳에 있으면 두 규칙이 된다.
+    "work/task_projection.py",
 )
 
 

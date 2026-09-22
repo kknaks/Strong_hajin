@@ -3,9 +3,9 @@ import os
 import sys
 from uuid import UUID, uuid4
 
+import pytest
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
-import pytest
 from legacy_acceptance import make_request_look_pending
 from ax_workspace.modules.work.request_errors import WorkRequestError
 from sqlalchemy import delete, select
@@ -90,6 +90,7 @@ def test_graph_discovery_names_all_supported_nodes_and_only_canonical_arguments(
     assert "evidence" in search.description
 
 
+@pytest.mark.serial
 def test_mcp_facade_uses_direct_daily_report_operations(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
@@ -122,6 +123,7 @@ def test_mcp_facade_uses_direct_daily_report_operations(tmp_path) -> None:
     assert submitted["body"] == "MCP에서 수정한 초안"
 
 
+@pytest.mark.serial
 def test_delegated_daily_report_generation_reuses_one_draft_and_workflow_run(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -232,6 +234,7 @@ def test_mcp_tool_exposure_is_bound_to_the_server_persona(
     assert all("persona" not in tool.name for tool in asyncio.run(create_mcp_server(settings).list_tools()))
 
 
+@pytest.mark.serial
 def test_stdio_mcp_client_discovers_persona_bound_tools(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
@@ -301,6 +304,7 @@ def test_stdio_mcp_client_discovers_persona_bound_tools(tmp_path) -> None:
     asyncio.run(scenario())
 
 
+@pytest.mark.serial
 def test_stdio_mcp_server_supports_2026_discovery_and_persona_filtered_tools(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
@@ -335,6 +339,7 @@ def test_stdio_mcp_server_supports_2026_discovery_and_persona_filtered_tools(tmp
     asyncio.run(scenario())
 
 
+@pytest.mark.serial
 def test_stdio_mcp_tool_call_rechecks_a_revoked_capability(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'demo.db'}"
     reset_database(database_url)
@@ -390,6 +395,7 @@ def test_stdio_mcp_tool_call_rechecks_a_revoked_capability(tmp_path) -> None:
         assert session.query(TaskRecord).count() == 0
 
 
+@pytest.mark.serial
 def test_delegated_stdio_mcp_tool_rechecks_capability_before_proposing_an_action(
     tmp_path,
 ) -> None:

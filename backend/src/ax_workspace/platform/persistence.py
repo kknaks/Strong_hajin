@@ -1776,6 +1776,18 @@ class TaskAssignmentRecord(Base):
     #: The assignment this one replaced, so a change of holder reads as an append-only chain.
     supersedes_assignment_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     decline_reason: Mapped[str | None] = mapped_column(Text)
+    #: **이 배정이 받는 사람을 그 프로젝트에 새로 붙였나** (SPEC-005 §4 자동 해제 조건 ① · D-14).
+    #:
+    #: 붙이는 명령은 **이미 붙어 있으면 새 행을 만들지 않으므로**, 「이 요청이 붙였나」의 구분은
+    #: **붙이는 그 순간에만** 설 수 있다 — 나중에 되돌아보면 원래 멤버와 구별되지 않는다.
+    #: 붙는 자리 둘(요청 발송 · 담당 교체 제안)이 **전부 이 표에 행을 세우고**, 떼는 자리 넷이
+    #: 전부 그 행에 닿는다(요청 거절·철회는 `source_work_request_id` 로 찾는다). 그래서 한 칸이다.
+    #:
+    #: **nullable 이다.** 이 판 이전의 행은 「이 요청이 붙였다」가 **거짓인 것이 사실**이라 비어
+    #: 있음을 그대로 「아니다」로 읽는다 — `schema_sync` 의 `manual[]` 을 비운 채로 들어간다.
+    #: **인덱스도 CHECK 도 두지 않는다**: 그 행을 이미 손에 쥔 뒤에만 읽히고, 불변식이 아니라
+    #: **한 순간의 사실 기록**이다.
+    auto_project_join: Mapped[bool | None] = mapped_column(Boolean)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     declined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
