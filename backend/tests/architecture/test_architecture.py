@@ -82,18 +82,28 @@ def test_production_has_no_developer_login_surface() -> None:
 def test_production_exposes_no_persona_surface_at_all(tmp_path) -> None:
     """Not two examples: every route the production app registers, and none of them is a way in without an identity.
 
-    The real login is Google OIDC and is not built yet. Until it is, production must have no door at all rather than
-    a development one left ajar.
+    The real login is Google OIDC and is not built yet. Until it is, **nothing may authenticate without a session.**
+
+    **2026-09-22 (WORK-006 Phase 6b): 문이 «없는 것»에서 «잠긴 것»으로 바뀌었다.** 예전에는 PRODUCTION 이
+    라우트를 하나도 등록하지 않아 모든 경로가 404 였다 — 데스크톱 래퍼가 여는 운영 웹은 그 상태로는
+    아무것도 못 한다. 이제 라우트는 **프로파일과 무관하게 등록**되고, 막는 것은 **권한 판정**이다.
+    그래서 이 시험이 재는 것도 「경로가 없는가」가 아니라 **「세션 없이는 하나도 통과하지 못하는가」**다.
+    개발 페르소나 헤더가 PRODUCTION 에서 **사람을 증명하지 못한다**는 것이 그 핵심이고, 그 성질이
+    약해지면 여기서 붉어진다.
     """
     app = create_app(Settings(RuntimeProfile.PRODUCTION, "postgresql+psycopg://unused"))
     paths = {getattr(route, "path", "") for route in app.routes}
     assert not any("developer" in path or "persona" in path for path in paths), sorted(paths)
-    # And nothing carrying work data is registered either, so a missing session cannot fall through to data.
-    assert not any(path.startswith(("/api/tasks", "/api/work-requests", "/api/meetings", "/api/graph")) for path in paths)
+    # 업무 데이터를 나르는 경로는 **등록되어 있다** — 래퍼가 여는 운영 웹이 쓰는 표면이다.
+    assert any(path.startswith("/api/tasks") for path in paths), sorted(paths)
+    assert "/api/meetings/{meeting_id}/stream" in paths
 
     client = TestClient(app)
-    for path in ("/api/developer/personas", "/api/my-work", "/api/graph/search?q=x"):
-        assert client.get(path, headers={"X-Demo-Persona": "yuna"}).status_code == 404
+    # 등록되어 있어도 **페르소나 헤더로는 들어가지 못한다** — 401 이지 200 이 아니다.
+    for path in ("/api/my-work", "/api/graph/search?q=x"):
+        assert client.get(path, headers={"X-Demo-Persona": "yuna"}).status_code == 401, path
+    # 개발 전용 표면은 여전히 아예 없다.
+    assert client.get("/api/developer/personas", headers={"X-Demo-Persona": "yuna"}).status_code == 404
 
 
 def test_the_development_seam_names_a_member_and_never_invents_one(tmp_path) -> None:

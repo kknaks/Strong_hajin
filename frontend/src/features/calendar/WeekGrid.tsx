@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type DragEvent } from "react";
 
 import { calendarDow, calendarHourLabel, calendarScreen } from "../../lib/labels";
 import { laneSeats, MIN_BLOCK_MINUTES, packBlocks, packLanes, type CalendarSegment, type TimedBlock } from "./calendarModel";
 import { snapClock, type DateEdge } from "./calendarWrites";
 import { EventHandle } from "./EventBar";
+import { debugCalendarDnd } from "./calendarDndDebug";
 
 /**
  * ⚠ 이 값은 `styles/calendar.css` 의 `.scax-week__hours` 배경
@@ -98,6 +99,16 @@ export function WeekGrid({
   /* 종일 칸의 높이는 줄 수가 정한다 — 22px 띠 + 4px 사이 + 위아래 여백 16px (시안 `week.jsx:54`). */
   const alldayHeight = (shownLanes.length + (hidden ? 1 : 0)) * 22 + shownLanes.length * 4 + 16;
   const px = (minutes: number) => (minutes / 60) * WEEK_ROW;
+  const taskIdFromDrop = (event: DragEvent): string | null => {
+    // `text/plain` is the product contract. `text` is the WebKit alias published
+    // by ScheduleCard for Tauri's native drag implementation.
+    const transfer = event.dataTransfer;
+    for (const type of ["text/plain", "text"]) {
+      const value = transfer?.getData(type).trim() ?? "";
+      if (value) return value;
+    }
+    return null;
+  };
 
   // 하루를 0시부터 펴 두고 «처음 보이는 자리»만 8시로 맞춘다 — 그 앞 시간도 올려서 볼 수 있다.
   useEffect(() => {
@@ -170,10 +181,14 @@ export function WeekGrid({
                 <div
                   className="scax-week__day-allday"
                   /* 언제나 받는다 — 안 되는 이유는 화면이 말로 한다 (§I). */
-                  onDragOver={(event) => event.preventDefault()}
-                  onDrop={(event) => {
+                  onDragOver={(event) => {
+                    debugCalendarDnd("dragover", event.dataTransfer);
                     event.preventDefault();
-                    const taskId = event.dataTransfer.getData("text/plain");
+                  }}
+                  onDrop={(event) => {
+                    debugCalendarDnd("drop", event.dataTransfer);
+                    event.preventDefault();
+                    const taskId = taskIdFromDrop(event);
                     if (taskId) onDropTask?.(taskId, date);
                   }}
                   style={{ height: alldayHeight }}
@@ -230,14 +245,16 @@ export function WeekGrid({
                 /* 고스트는 «놓을 수 있는 자리» 에만 뜨지만(R5), 받는 것은 언제나 받는다 —
                    못 받는 자리에서 조용히 튕기면 사람이 이유를 못 듣는다 (§I). */
                 onDragOver={(event) => {
+                  debugCalendarDnd("dragover", event.dataTransfer);
                   event.preventDefault();
                   setGhost({ date, minutes: minutesAt(event.currentTarget, event.clientY) });
                 }}
                 onDrop={(event) => {
+                  debugCalendarDnd("drop", event.dataTransfer);
                   event.preventDefault();
                   const minutes = minutesAt(event.currentTarget, event.clientY);
                   setGhost(null);
-                  const taskId = event.dataTransfer.getData("text/plain");
+                  const taskId = taskIdFromDrop(event);
                   if (taskId) onDropSlot?.(taskId, date, minutes);
                 }}
                 role="presentation"

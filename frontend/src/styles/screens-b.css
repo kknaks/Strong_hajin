@@ -721,6 +721,7 @@
 }
 .calendar-weekdays span {
   padding: var(--scax-space-200) 0;
+  text-align: center;
   color: var(--scax-color-ink-assistive);
   font-size: var(--scax-text-caption1-size);
   line-height: var(--scax-text-caption1-lh);

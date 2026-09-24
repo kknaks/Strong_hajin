@@ -116,7 +116,13 @@ function pointerish(type: string, init: { taskId?: string; clientY?: number } = 
   const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientY: init.clientY ?? 0 });
   if (init.taskId !== undefined) {
     Object.defineProperty(event, "dataTransfer", {
-      value: { getData: () => init.taskId, setData: () => undefined, effectAllowed: "" },
+      value: {
+        types: init.taskId !== undefined ? ["text/plain"] : [],
+        getData: () => init.taskId,
+        clearData: () => undefined,
+        setData: () => undefined,
+        effectAllowed: "",
+      },
     });
   }
   return event;
@@ -150,6 +156,19 @@ function dragCardTo(container: HTMLElement, taskId: string, selector: string, cl
 }
 
 describe("R1 — 날짜 칸 드롭은 실제 PATCH /api/tasks 로 나간다", () => {
+  it("HTML5 DnD 계측이 dragstart·dragover·drop의 payload를 기록한다", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const { container } = await ready();
+    delete (window as Window & { __SCAX_CALENDAR_DND_LOG__?: unknown }).__SCAX_CALENDAR_DND_LOG__;
+    dragCardTo(container, "flip", '[data-date="2027-03-10"]');
+    await waitFor(() => expect(updateTask).toHaveBeenCalledTimes(1));
+    const records = (window as Window & { __SCAX_CALENDAR_DND_LOG__?: Array<{ stage: string; plain: string }> }).__SCAX_CALENDAR_DND_LOG__ ?? [];
+    expect(records.map((record) => record.stage)).toEqual(["dragstart", "dragover", "drop"]);
+    expect(records.map((record) => record.plain)).toEqual(["flip", "flip", "flip"]);
+    expect(info).toHaveBeenCalled();
+    info.mockRestore();
+  });
+
   it("span 길이(2일)를 유지한 채 옮긴다 — 뒤집힌 원본 두 날짜의 차이가 아니다 (WARN-A)", async () => {
     const { container } = await ready();
     dragCardTo(container, "flip", '[data-date="2027-03-10"]');
@@ -246,6 +265,44 @@ describe("R5 — 시간 격자 드롭", () => {
     expect(createTaskSchedule.mock.calls[0][1]).toEqual({ on_date: "2027-03-03", starts_at: "10:00", ends_at: "11:00" });
     expect(typeof createTaskSchedule.mock.calls[0][2]).toBe("string");
     await waitFor(() => expect(onNotice).toHaveBeenCalledWith("시간을 배정했습니다."));
+  });
+
+  it("Tauri WebView용 text 별칭으로도 시간 칸 드롭이 업무 id를 보존한다", async () => {
+    const { container } = await weekReady();
+    const card = container.querySelector('[data-calendar-key="task:flip"]') as HTMLElement;
+    const transfer = {
+      values: new Map<string, string>(),
+      get types() { return [...this.values.keys()]; },
+      clearData() { this.values.clear(); },
+      setData(type: string, value: string) { this.values.set(type, value); },
+      getData(type: string) { return this.values.get(type) ?? ""; },
+      effectAllowed: "",
+    };
+    const start = pointerish("dragstart");
+    Object.defineProperty(start, "dataTransfer", { value: transfer });
+    fireEvent(card, start);
+    const target = container.querySelector(hours("2027-03-03")) as HTMLElement;
+    const drop = pointerish("drop", { clientY: 560 });
+    Object.defineProperty(drop, "dataTransfer", { value: { ...transfer, getData: (type: string) => transfer.values.get(type === "text/plain" ? "text" : type) ?? "" } });
+    fireEvent(target, drop);
+    await waitFor(() => expect(createTaskSchedule).toHaveBeenCalledWith(
+      "flip",
+      { on_date: "2027-03-03", starts_at: "10:00", ends_at: "11:00" },
+      expect.any(String),
+    ));
+  });
+
+  it("text/plain 드롭 데이터로 종일 칸에 업무 기간을 저장한다", async () => {
+    const { container } = await weekReady();
+    const card = container.querySelector('[data-calendar-key="task:flip"]') as HTMLElement;
+    fireEvent(card, pointerish("dragstart", { taskId: "flip" }));
+    const target = container.querySelector('.scax-week__day[data-date="2027-03-04"] .scax-week__day-allday') as HTMLElement;
+    fireEvent(target, pointerish("drop", { taskId: "flip" }));
+    await waitFor(() => expect(updateTask).toHaveBeenCalledWith(
+      "flip",
+      7,
+      { start_date: "2027-03-04", due_date: "2027-03-06" },
+    ));
   });
 
   it("**연타는 같은 멱등 키**로 나간다 — 두 번째가 409 가 아니라 영수증이 되게 (K12)", async () => {

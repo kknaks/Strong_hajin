@@ -625,7 +625,7 @@ input.title-input { height: 48px; font-size: 17px; font-weight: 700; }
 /* 고른 날의 hover 는 «검은 면 위 한 단» — 면과 잉크를 함께 옮긴다(켜진 칩과 같은 규칙). */
 .date-picker-cell[aria-selected="true"]:hover:not(:disabled) { color: var(--scax-color-ink-inverse); background: var(--scax-color-surface-inverse); }
 .date-picker-cell:disabled { cursor: not-allowed; color: var(--scax-color-ink-disabled); background: transparent; }
-.date-picker-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--scax-color-line-weak); }
+.date-picker-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; padding-top: 8px; padding-inline: 12px; border-top: 1px solid var(--scax-color-line-weak); }
 .checklist-cue.complete { background: var(--scax-color-progress-soft); color: var(--scax-color-progress-ink); }
 /* The description must not push the steps out of the first screen. */
 .form-stack .scax-field textarea.task-description { min-height: 84px; max-height: 132px; } /* 바퀴 12: 조상이 .field → .scax-field */

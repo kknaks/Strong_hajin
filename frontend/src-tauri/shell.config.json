@@ -1,0 +1,12 @@
+{
+  "$comment": [
+    "제품 셸의 주소 설정. **운영 origin 은 아직 미정이다(OQ-T02)** — 여기는 «자리»이고,",
+    "Phase 8(운영 origin 확정 · 최종 빌드)이 값을 채운다.",
+    "fixture 주소를 이 자리에 올려 제품 운영값으로 승격하지 않는다.",
+    "operationalOrigin 이 null 이면 셸은 «서버 주소가 설정되지 않았습니다» 화면을 연다.",
+    "navigationAllowlist 는 커맨드 허용 origin(capabilities/*.json)과 **다른 목록**이다 —",
+    "인증 흐름이 거치는 주소가 생기면 여기만 넓히고, 그 주소에 네이티브 권한은 주지 않는다."
+  ],
+  "operationalOrigin": null,
+  "navigationAllowlist": []
+}

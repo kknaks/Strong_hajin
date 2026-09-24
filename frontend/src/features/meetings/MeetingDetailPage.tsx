@@ -930,6 +930,15 @@ export function MeetingDetailPage({
               <StatusNote tone={stream.phase === "closed" && !takenElsewhere ? "danger" : "muted"}>{streamNotice}</StatusNote>
             )}
             {stream.micDenied && <StatusNote tone="danger">{meetingScreen.micDenied}</StatusNote>}
+            {/* SPEC-006 U-3 — 마이크 안내와 **같은 자리·같은 세기**로 붙인다.
+                점유가 잘 걸렸거나 셸이 없으면(`E-01`) 아무것도 보이지 않는다.
+                녹음을 막지 않는 안내일 뿐이라 CTA 를 두지 않는다. */}
+            {stream.wakeGuard === "degraded" && (
+              <StatusNote tone="danger">{meetingScreen.wakeGuardDegraded}</StatusNote>
+            )}
+            {stream.wakeGuard === "cleanupFailed" && (
+              <StatusNote tone="danger">{meetingScreen.wakeGuardCleanupFailed}</StatusNote>
+            )}
           </span>
           <span className="scax-live-bar__who">{meetingScreen.startedBy(personName(meeting.created_by))}</span>
         </div>

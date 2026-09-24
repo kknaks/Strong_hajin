@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { MeetingAgenda, MeetingLine, MeetingTodo } from "../../lib/viewModels";
 import { AUDIO_DECLARATION, startMicrophone, type MicrophoneHandle } from "./microphone";
+import { acquireWakeGuard, newWakeSession, releaseWakeGuard } from "../../lib/shell";
 
 /**
  * 회의 스트림 클라이언트 — **이 파일이 `WebSocket` 을 만드는 유일한 자리다** (`api.ts` 와 같은 규약).
@@ -13,6 +14,12 @@ import { AUDIO_DECLARATION, startMicrophone, type MicrophoneHandle } from "./mic
  * 멈췄다 잇는 조작(pause·resume)은 데모 범위 밖이다.
  */
 export type MeetingStreamRole = "upstream" | "subscribe";
+
+/**
+ * 절전 방지 점유에 대해 **마지막으로 확인된** 사실. 한 번 뜨고 마는 알림이 아니다.
+ * `null` 이면 아무것도 보이지 않는다 — 셸이 없을 때(`E-01`)와 잘 걸렸을 때가 여기 속한다.
+ */
+export type WakeGuardNotice = null | "degraded" | "cleanupFailed";
 
 /** 첫 프레임이 선언하는 오디오 형식. 서버가 provider 설정에 그대로 옮긴다 (§5.2-3). */
 export type AudioDeclaration = { format: string; sampleRate: number; channels: 1 };
@@ -187,6 +194,8 @@ export type MeetingStreamState = {
   removedAgendas: string[];
   /** 마이크를 못 얻었다. 화면은 멈추지 않고 상태 줄로만 알린다. */
   micDenied: boolean;
+  /** 절전 방지 점유의 마지막 확인값. 화면이 U-3 한 줄을 내는 근거다. */
+  wakeGuard: WakeGuardNotice;
   /**
    * 업스트림 자리를 이미 다른 창이 갖고 있어 **구독으로 붙었다.**
    * 오디오도 메모도 이 창의 것이 아니지만, 갱신되는 것은 그대로 받는다.
@@ -206,6 +215,7 @@ const IDLE: MeetingStreamState = {
   agendas: [],
   removedAgendas: [],
   micDenied: false,
+  wakeGuard: null,
   takenOver: false,
 };
 
@@ -241,6 +251,43 @@ export function useMeetingStream({
     }
     let stopped = false;
     let microphone: MicrophoneHandle | null = null;
+    /* 이 회차의 점유 키. **마이크가 실제로 열린 뒤에만** 세워지고, 녹음이 실제로 끝나면 비워진다.
+       회의 id 를 쓰지 않는다 — 회차를 넘어 같은 값을 쓰면 `E-08`·`E-09` 의 보호가 사라진다. */
+    let wakeSession: string | null = null;
+
+    /** 마이크가 «실제로» 닫히는 자리에서만 부른다(L-02 · L-05 · L-10). 멱등이다. */
+    const releaseWake = () => {
+      const session = wakeSession;
+      if (!session) return; // 마이크가 열린 적이 없다 — 걸지 않았으니 풀 것도 없다(L-03 · L-04).
+      wakeSession = null;
+      void releaseWakeGuard(session).then((outcome) => {
+        if (outcome.kind !== "failed") return;
+        /* `E-14b` — 이미 끝난 녹음을 **다시 켜지 않는다.** 정리 실패 사실만 드러낸다.
+           **사실 자체는 `shell.ts` 가 이미 기록했다**(모듈 기록 + 콘솔) — 언마운트 정리에서는
+           이 화면이 이미 없어 `setState` 로 드러낼 방법이 없기 때문이다(리뷰 W-3).
+           여기서는 **화면이 아직 살아 있을 때만** 한 줄을 띄운다. */
+        if (!stopped) setState((current) => ({ ...current, wakeGuard: "cleanupFailed" }));
+      });
+    };
+
+    /* **L-14 — 문서가 다시 보이게 되면 같은 키로 «한 번» 다시 확인한다**(`E-09` 재무장).
+       잠든 사이 OS 쪽에서 풀렸으면 그때 다시 걸린다. 응답이 `on` 이면 U-3 이 사라진다.
+       **주기적으로 도는 것이 아니다**(WORK I-3) — 사건이 있을 때만이고, 이 호출은
+       «거는» 방향이라 점유를 풀지 않는다. */
+    const recheckWake = () => {
+      if (document.visibilityState !== "visible") return;
+      const session = wakeSession;
+      if (!session) return;
+      void acquireWakeGuard(session).then((outcome) => {
+        if (stopped || wakeSession !== session) return;
+        setState((current) => ({
+          ...current,
+          wakeGuard: outcome.kind === "degraded" ? "degraded" : null,
+        }));
+      });
+    };
+    document.addEventListener("visibilitychange", recheckWake);
+
     setState({ ...IDLE, phase: "connecting" });
 
     const socket = openMeetingStream(meetingId, effectiveRole, effectiveRole === "upstream" ? AUDIO_DECLARATION : null, {
@@ -250,11 +297,29 @@ export function useMeetingStream({
         if (effectiveRole !== "upstream") return;
         void startMicrophone((chunk) => socket.send(chunk))
           .then((handle) => {
-            if (stopped) handle.stop();
-            else microphone = handle;
+            if (stopped) {
+              // 이미 정리된 회차다 — **점유를 걸지 않는다.** 늦게 건 점유는 남는다.
+              handle.stop();
+              return;
+            }
+            microphone = handle;
+            /* **L-01 — 마이크가 «실제로» 열린 바로 이 시점**에 건다.
+               연결 시도나 준비 신호가 아니다. 이 회차의 키를 여기서 만든다. */
+            const session = newWakeSession();
+            wakeSession = session;
+            void acquireWakeGuard(session).then((outcome) => {
+              if (stopped || wakeSession !== session) return; // 그 사이 회차가 끝났다.
+              /* 셸이 없으면(`E-01`) 아무것도 보이지 않는다. `degraded`·호출 실패(`E-14a`)는
+                 **녹음을 막지 않고** U-3 한 줄만 낸다. */
+              setState((current) => ({
+                ...current,
+                wakeGuard: outcome.kind === "degraded" ? "degraded" : null,
+              }));
+            });
           })
           .catch(() => {
             // 마이크를 거부해도 화면은 멈추지 않는다 — 스크립트와 AI 요약은 계속 받는다.
+            // **점유를 걸지 않는다**(L-03): 녹음이 없는데 기기를 깨워 둘 이유가 없다.
             if (!stopped) setState((current) => ({ ...current, micDenied: true }));
           });
       },
@@ -317,6 +382,9 @@ export function useMeetingStream({
       onClosed: (closure) => {
         microphone?.stop();
         microphone = null;
+        /* **L-02 — 스트림이 닫혔다.** 사유를 가리지 않는다(정상 종료·미인증·끊김…).
+           자리를 뺏긴 경우(`taken`)도 마이크가 닫히는 같은 시점이라 여기서 함께 풀린다(L-05). */
+        releaseWake();
         if (!stopped) setState((current) => ({ ...current, phase: "closed", closure, partial: [] }));
         // 오디오를 올릴 자리는 회의당 하나다 — 그 자리가 찼으면 구독으로 붙어 갱신은 그대로 받는다
         if (closure.kind === "taken" && effectiveRole === "upstream") setTakenOver(true);
@@ -327,7 +395,11 @@ export function useMeetingStream({
     return () => {
       stopped = true;
       microphone?.stop();
+      /* **L-10 — 마이크를 멈추는 그 정리 코드가 같은 자리에서 푼다.**
+         「화면을 잠깐 가렸다」가 아니라 **녹음이 실제로 끝나는** 자리다. */
+      releaseWake();
       socket.close();
+      document.removeEventListener("visibilitychange", recheckWake);
     };
   }, [effectiveRole, enabled, meetingId]);
 

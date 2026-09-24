@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS 마이크 권한 문구. 번들 Info.plist 에 병합되고(tauri.conf.json bundle.macOS.infoPlist),
+  `tauri dev` 에서는 코드젠이 실행파일의 __TEXT,__info_plist 섹션에 박아 넣는다 —
+  그래서 번들 없이 떠도 macOS 가 마이크 권한을 묻는다(M-4).
+  이 키가 없으면 WKWebView 의 getUserMedia 가 **프롬프트 없이** 실패한다.
+-->
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>회의 녹음과 실시간 스크립트를 위해 마이크를 사용합니다.</string>
+</dict>
+</plist>

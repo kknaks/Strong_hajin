@@ -5,6 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "probe:cert": "node scripts/dev-https-cert.mjs",
+    "probe:fixture": "vite --config vite.probe.config.ts",
+    "probe:shell": "tauri dev",
+    "tauri": "tauri",
     "build": "tsc -b && vite build",
     "test": "vitest run",
     "verify:assistant-assets": "node scripts/verify-assistant-character-assets.mjs",
@@ -50,6 +54,7 @@
     "e2e:meeting-three-tracks": "node scripts/meeting-three-tracks-e2e.mjs"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
     "graphology": "0.26.0",
     "graphology-layout-forceatlas2": "0.10.1",
     "micromark-util-decode-string": "^2.0.1",
@@ -62,6 +67,7 @@
   "devDependencies": {
     "@playwright/test": "^1.62.1",
     "@storybook/react-vite": "^10.6.0",
+    "@tauri-apps/cli": "^2.11.1",
     "@testing-library/react": "^16.3.0",
     "@types/react": "^19.1.16",
     "@types/react-dom": "^19.1.9",

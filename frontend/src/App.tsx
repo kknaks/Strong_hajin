@@ -18,6 +18,7 @@ import { ChatDrawer, contextKey, type LabeledContextReference } from "./features
 import { NEW_DRAFT_KEY, useConversations } from "./features/chat/useConversations";
 import { DailyReportPage } from "./features/report/DailyReportPage";
 import { personName } from "./lib/labels";
+import { openExternal } from "./lib/shell";
 import { LoginPage } from "./features/auth/LoginPage";
 import { MeetingWorkspace } from "./features/meetings/MeetingWorkspace";
 import { Toast } from "./ds/Modal";
@@ -681,7 +682,16 @@ export default function App() {
               }
             }
             if (resource.resource_type === "material" && resource.origin) {
-              window.open(resource.origin, "_blank", "noopener,noreferrer");
+              /* U-4 — 셸이 있으면 OS 기본 브라우저로 넘긴다. 앱 창이 남의 사이트로 바뀌거나
+                 앱 안에 두 번째 웹뷰가 앉지 않게 하는 것이 요점이다.
+                 **셸이 없으면 지금 그대로** 웹이 연다(`E-01`). */
+              void openExternal(resource.origin).then((outcome) => {
+                /* 셸이 없을 때만 웹이 열던 그대로 연다(`E-01`).
+                   셸이 있는데 실패한 경우(`E-14c`)는 **폴백하지 않는다** — 앱 창 안에
+                   두 번째 웹뷰가 앉는 것이 U-4 가 막으려는 사고다. 실패 사실은
+                   `shell.ts` 가 기록한다(조용히 삼키지 않는다). */
+                if (outcome === "absent") window.open(resource.origin, "_blank", "noopener,noreferrer");
+              });
               return;
             }
             if (resource.resource_type === "report") setSurface("report");

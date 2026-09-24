@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  서명본(hardened runtime)용 entitlements. 서명 identity 없이 로컬에서 구울 때는 적용되지 않고,
+  그때는 Info.plist 의 NSMicrophoneUsageDescription 만으로 프롬프트가 뜬다.
+  hardened runtime 으로 서명하면 이 키가 없을 때 마이크 접근이 거부된다.
+  ⚠ 서명·공증 자체는 이번 Phase 가 만들지 않는다(OQ-T03).
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+</dict>
+</plist>
