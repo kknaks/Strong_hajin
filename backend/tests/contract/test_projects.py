@@ -345,8 +345,12 @@ def test_a_project_member_sees_the_parts_they_could_already_open(client: TestCli
     assert [child["title"] for child in body["children"]] == ["홈페이지 디자인 기획"]
     # v2: 하위 진행이 넷으로 갈린다 — `blocking` 이 0이어야 상위를 끝낼 수 있다 (SPEC-003 §4 Data).
     assert body["child_progress"] == {"done": 0, "blocking": 1, "cancelled": 0, "total": 1}
-    # 안을 열어 준 것은 아니다: 그 사람의 작업 공간인 체크리스트는 여전히 오지 않는다.
-    assert "checklist" not in body
+    # **2026-09-22 (D-29) — 이 줄의 주장이 뒤집혔다.** 전에는 「안을 열어 준 것은 아니다: 그 사람의
+    # 작업 공간인 체크리스트는 여전히 오지 않는다」였다. **이제 프로젝트에 붙은 사람이면 남의 업무에서도
+    # 항목을 읽는다** (SPEC-005 §4 「체크리스트·업무 내용의 읽기 범위」 · L-07).
+    # **열린 것은 읽기뿐이다** — 접근 값은 `read_only` 그대로이고(바로 위 단언) 쓰기 가드는 안 움직였다.
+    assert body["checklist"] == []
+    assert body["checklist_progress"] == {"done": 0, "total": 0}
 
 
 def test_work_can_sit_on_a_project_before_anyone_holds_it(client: TestClient) -> None:
@@ -512,3 +516,185 @@ def test_a_project_opens_by_assignment_and_by_nothing_else(client: TestClient) -
     assert {row["name"] for row in client.get("/api/projects", headers=MINA).json()} == {"한빛 통합 마케팅"}
     # 붙었다고 관리까지 되는 것은 아니다. 관리는 담당자의 일이다.
     assert client.get(f"/api/projects/{project['project_id']}", headers=MINA).json()["may_manage"] is False
+
+
+# ---- 프로젝트 상세의 `tasks[]` — 화면의 모든 칸이 이 배열에서 나온다 (SPEC-005 §4) ----
+
+
+def _joined(client: TestClient, member_id: str, project: dict, *, kind: str = "member") -> None:
+    added = client.post(
+        f"/api/projects/{project['project_id']}/members", headers=JIHO, json={"member_id": member_id, "kind": kind}
+    )
+    assert added.status_code in (200, 201), added.text
+
+
+def _rows(client: TestClient, project: dict, *, by: dict | None = None) -> dict[str, dict]:
+    detail = client.get(f"/api/projects/{project['project_id']}", headers=by or JIHO)
+    assert detail.status_code == 200, detail.text
+    return {row["title"]: row for row in detail.json()["tasks"]}
+
+
+def test_the_project_detail_row_carries_what_the_screen_draws(client: TestClient) -> None:
+    """**여섯 필드로는 화면을 못 그린다** (SPEC-005 §4). 담당·체크리스트 집계·정규화 기간·기한 경과일이 함께 온다.
+
+    넷 다 **줄마다 묻지 않는다** — 그 프로젝트의 업무 전부를 한 번에 모아 나눠 싣는다.
+    """
+    project = _project(client)
+    _joined(client, "mina", project)
+    _joined(client, "jiho", project, kind="lead")
+    planned = client.post(
+        f"/api/projects/{project['project_id']}/tasks",
+        headers=JIHO,
+        json={"title": "플레이스 썸네일 이미지 제작", "start_date": "2026-09-10", "due_date": "2026-09-20"},
+    ).json()
+    client.post(
+        f"/api/tasks/{planned['task_id']}/reassign",
+        headers=JIHO,
+        json={"expected_version": planned["version"], "assignee_id": "mina"},
+    )
+
+    row = _rows(client, project)["플레이스 썸네일 이미지 제작"]
+
+    # **담당은 활성 배정이 답한다** (D-08) — 아직 수락 전이면 답을 기다리는 사람이 그 자리에 선다.
+    assert row["assignee"] == {"member_id": "mina", "display_name": row["assignee"]["display_name"]}
+    assert row["assignee"]["display_name"] and row["assignee"]["display_name"] != "mina"
+    # **체크리스트는 두 수만.** 항목은 싣지 않는다 — 우 레일이 상세에서 읽는다.
+    assert row["checklist_progress"] == {"done": 0, "total": 0}
+    assert "checklist" not in row
+    # **정규화 기간은 SPEC-004 와 같은 이름**이다.
+    assert (row["span_from"], row["span_to"]) == ("2026-09-10", "2026-09-20")
+    assert "overdue_days" in row
+    # **싣지 않는 것도 계약이다** (SPEC-005 §4 「싣지 않는 것」).
+    assert not {"progress", "following_task_ids", "child_progress", "category", "approval"} & set(row)
+
+
+def test_a_project_task_nobody_holds_comes_back_with_an_empty_assignee(client: TestClient) -> None:
+    """**담당 없는 업무가 정상**이다 — 서버가 「미정」을 지어내지 않는다 (D-08)."""
+    project = _project(client)
+    _joined(client, "jiho", project, kind="lead")
+    client.post(
+        f"/api/projects/{project['project_id']}/tasks", headers=JIHO, json={"title": "아직 사람이 없는 일"}
+    )
+
+    assert _rows(client, project)["아직 사람이 없는 일"]["assignee"] is None
+
+
+def test_the_server_folds_a_one_sided_or_reversed_period_before_the_screen_sees_it(client: TestClient) -> None:
+    """한쪽만이면 **그 날 하루**, 뒤집혔으면 **`[min, max]`**, 둘 다 없으면 기간 없음 (D-09 · SPEC-004 증보 K7·K11).
+
+    화면이 그 규칙을 다시 계산하지 않는다 — 다시 계산하면 두 규칙이 된다.
+    """
+    project = _project(client)
+    _joined(client, "jiho", project, kind="lead")
+    for title, dates in (
+        ("마감만 있는 일", {"due_date": "2026-09-30"}),
+        ("시작만 있는 일", {"start_date": "2026-09-02"}),
+        ("기간이 없는 일", {}),
+    ):
+        client.post(f"/api/projects/{project['project_id']}/tasks", headers=JIHO, json={"title": title, **dates})
+    # 뒤집힌 기간은 가정이 아니라 **실재한다**: `open → in_progress` 가 비어 있던 시작일을 오늘로
+    # 채우는 자리는 `validate_schedule` 을 지나지 않는다 (SPEC-004 §5 D1 두 번째 자리).
+    _joined(client, "mina", project)
+    flipped = client.post(
+        "/api/tasks",
+        headers=MINA,
+        json={"title": "뒤집힌 일", "project_id": project["project_id"], "due_date": "2020-01-01"},
+    ).json()
+    started = client.post(
+        f"/api/tasks/{flipped['task_id']}/start", headers=MINA, json={"expected_version": flipped["version"]}
+    )
+    assert started.status_code == 200, started.text
+
+    rows = _rows(client, project)
+
+    assert (rows["마감만 있는 일"]["span_from"], rows["마감만 있는 일"]["span_to"]) == ("2026-09-30", "2026-09-30")
+    assert (rows["시작만 있는 일"]["span_from"], rows["시작만 있는 일"]["span_to"]) == ("2026-09-02", "2026-09-02")
+    assert (rows["기간이 없는 일"]["span_from"], rows["기간이 없는 일"]["span_to"]) == (None, None)
+    # 빈 바가 아니다 — 뒤집힌 원값이 `[min, max]` 로 접혀서 나온다.
+    row = rows["뒤집힌 일"]
+    assert row["due_date"] < row["start_date"], "뒤집힌 기간이 서지 않아 이 검사가 무의미해졌습니다"
+    assert (row["span_from"], row["span_to"]) == (row["due_date"], row["start_date"])
+
+
+def test_the_checklist_aggregate_is_the_same_two_numbers_the_task_detail_gives(client: TestClient) -> None:
+    """진행률을 **저장하지 않는다** (D-01). 두 수가 같은 규칙에서 나오고, 화면이 그 둘로 % 를 만든다."""
+    project = _project(client)
+    _joined(client, "mina", project)
+    task = client.post(
+        "/api/tasks",
+        headers=MINA,
+        json={"title": "체크리스트가 있는 일", "project_id": project["project_id"], "checklist": ["하나", "둘", "셋", "넷", "다섯"]},
+    ).json()
+    detail = client.get(f"/api/tasks/{task['task_id']}", headers=MINA).json()
+    for item in detail["checklist"][:2]:
+        current = client.get(f"/api/tasks/{task['task_id']}", headers=MINA).json()
+        client.patch(
+            f"/api/tasks/{task['task_id']}/checklist/{item['item_id']}",
+            headers=MINA,
+            json={"done": True, "expected_task_version": current["version"]},
+        )
+
+    row = _rows(client, project, by=MINA)["체크리스트가 있는 일"]
+
+    assert row["checklist_progress"] == {"done": 2, "total": 5}
+    assert row["checklist_progress"] == client.get(f"/api/tasks/{task['task_id']}", headers=MINA).json()["checklist_progress"]
+
+
+def test_a_task_awaiting_approval_reads_as_done_on_the_project_screen_too(client: TestClient) -> None:
+    """**`completion_submitted` 가 밖으로 새지 않는다** (어긋남 ① · SPEC-005 §2.9).
+
+    같은 업무가 프로젝트 상세와 업무 상세에서 **같은 상태 값**을 낸다. 프론트 어휘에 없는 값을 만나면
+    배지도 바도 라벨과 톤을 찾지 못한다.
+    """
+    project = _project(client)
+    _joined(client, "mina", project)
+    _joined(client, "jiho", project, kind="lead")
+    sent = client.post(
+        "/api/work-requests",
+        headers=JIHO,
+        json={"title": "확인을 기다릴 업무", "assignee_id": "mina", "project_id": project["project_id"]},
+    )
+    assert sent.status_code == 201, sent.text
+    task_id = sent.json()["task_id"]
+    [item] = [row for row in client.get("/api/action-items", headers=MINA).json() if row["subject"] == "확인을 기다릴 업무"]
+    client.post(
+        f"/api/action-items/{item['action_item_id']}/commands/accept",
+        headers=MINA,
+        json={"expected_version": item["expected_version"]},
+    )
+    current = client.get(f"/api/tasks/{task_id}", headers=MINA).json()
+    client.post(f"/api/tasks/{task_id}/start", headers=MINA, json={"expected_version": current["version"]})
+    current = client.get(f"/api/tasks/{task_id}", headers=MINA).json()
+    reported = client.post(
+        f"/api/tasks/{task_id}/completion-report",
+        headers=MINA,
+        json={"expected_version": current["version"], "summary": "정리했습니다"},
+    )
+    assert reported.status_code == 200, reported.text
+
+    row = _rows(client, project)["확인을 기다릴 업무"]
+
+    assert row["state"] == "done"
+    assert row["state"] == client.get(f"/api/tasks/{task_id}", headers=JIHO).json()["state"]
+    # **끝난 업무에는 지연이 없다** — 승인 대기도 끝난 쪽이다.
+    assert row["overdue_days"] is None
+
+
+def test_the_project_screen_counts_lateness_from_the_same_day_the_task_list_does(client: TestClient) -> None:
+    """「오늘」이 두 곳에서 판정되면 목록의 `+N` 과 요약 스트립의 「지연」이 서로 다른 수를 낸다."""
+    project = _project(client)
+    _joined(client, "mina", project)
+    late = client.post(
+        "/api/tasks",
+        headers=MINA,
+        json={"title": "기한이 지난 일", "project_id": project["project_id"], "due_date": "2020-01-01"},
+    ).json()
+    client.post(
+        "/api/tasks", headers=MINA, json={"title": "기한이 없는 일", "project_id": project["project_id"]}
+    )
+
+    rows = _rows(client, project, by=MINA)
+
+    [listed] = [row for row in client.get("/api/my-work", headers=MINA).json() if row["task_id"] == late["task_id"]]
+    assert rows["기한이 지난 일"]["overdue_days"] == listed["derived"]["overdue_days"] > 0
+    assert rows["기한이 없는 일"]["overdue_days"] is None

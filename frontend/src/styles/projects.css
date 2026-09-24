@@ -1,0 +1,234 @@
+/* 「프로젝트」 화면 전용 부품 (WORK-005 FE-1~FE-3) — 3레일 · 요약 스트립 · 진행 라인(간트 + 의존선) ·
+ * 우 레일 업무 상자 · 관리 모달.
+ *
+ * 시안 `handoff/projects/css/projects.css` 를 옮겼다. 참조하는 `--scax-*` 토큰은 **저장소에 전부
+ * 있고 값도 같다**(조사 `research-fe-structure.md` §2-1 의 전수 대조 — 누락 0개). 클래스 `.scax-pj-*`
+ * 는 저장소의 어느 파일과도 겹치지 않는다 — 그래서 이 파일은 남의 화면에 닿지 않는다.
+ *
+ * **시안에서 고친 자리 — 전부 「바깥과의 접합」이다:**
+ *
+ * 1. **`.scax-page-header__title-row` 한 줄을 버렸다** (D-25). 그것은 `AppHeader` 에 `titleEnd` 슬롯이
+ *    있다는 전제의 **셸 규칙**이고, 우리 `AppHeader`(`shell/AppShell.tsx:46-72`)에는 그 슬롯이 없다.
+ *    5개 화면이 공유하는 셸이라 여기서 슬롯을 신설하지 않는다.
+ * 2. **카드 선택 CSS 를 `[role="button"]` 안으로 좁혔다.** 시안은 `.scax-inbox-card--selected` 를
+ *    무조건 규칙으로 두는데, 그러면 `role` 이 없는 수신함(`shell/InboxRail.tsx:59`)·
+ *    캘린더(`features/calendar/ScheduleCard.tsx:43`) 카드에도 새 규칙이 얹힌다.
+ * 3. **레일 헤더는 `--sub` 에서만 세로로 선다.** 우리 `.scax-gutter-list__header` 는 `height` 가
+ *    32px 고정(`components.css:106`)이라 시안의 `min-height:auto` 한 줄로는 안 풀린다. 이 화면은
+ *    제목 줄 아래 프로젝트 셀렉터가 한 줄 더 서야 해서 `--sub` 에만 `height:auto` 를 준다 —
+ *    수신함·캘린더 레일은 `--sub` 를 안 쓰므로 그대로다.
+ * 4. **`--cancelled` 바를 더했다** (D-23). 시안 CSS 에 취소 바 색이 없다 — 목데이터에 취소가
+ *    없었기 때문이다. 우리 화면에는 취소된 업무가 **간트에 그대로 선다**(세지 않는 것과 감추는 것은
+ *    다르다). 배경 `fill-weak` · fill 없음 · 제목 취소선.
+ * 5. **`__folded` · `__legend--warn` 을 더했다** (D-17). 접힌 가지가 삼킨 선과 기간이 없어 자리를
+ *    못 찾은 선의 **건수를 말하는 자리**다. 시안은 그 선들을 말없이 버린다.
+ * 6. **관리 모달의 `.scax-pj-manage-*`** — 시안에 없는 자리다(M-1). 어휘는 시안 `work-modal.jsx` 의
+ *    `Modal`·`Field`·`TextField`·`AutoComplete` 를 쓰고, 그 골격 CSS 는 이미 `components.css` 에 있다.
+ */
+
+/* 레일 머리 — **한 줄이다** (D-34, 2026-09-22). 아이콘 + 「프로젝트」 + 건수 배지가 왼쪽,
+   셀렉터가 오른쪽 끝. ~~`--sub`(제목 줄 아래 셀렉터 한 줄 더)~~ 는 놓았다 —
+   `.scax-gutter-list__header` 의 기본(row · align-center · 32px)이 정확히 이 배치다.
+   ⚠ 그래서 이 화면이 `components.css` 에 더하던 modifier 하나가 **사라졌다** — 공유 자산 0줄이다. */
+/* ⚠ **남는 폭은 «이름» 이 가져간다** (사용자 지시, 2026-09-22). ~~`max-width:60%`~~ 로는
+   380px 레일에서 글자에 150px 남짓만 남아 「하반기 제**풀**」처럼 **글자 중간에서 잘렸다.**
+   제목 쪽은 길이가 고정(아이콘 + 「프로젝트」 + 배지)이고 가변인 것은 프로젝트 이름이므로,
+   제목을 `flex:0 0 auto` 로 **안 줄어들게** 두고 셀렉터가 나머지를 다 쓴다.
+   트리거 높이는 26px 그대로라 **32px 머리를 안 넘는다**(`components.css:45` · `:106`). */
+/* **제목이 남는 폭을 먹어 셀렉터를 오른쪽 끝으로 민다** (사용자 지시 2026-09-22:
+   「아이콘 + 프로젝트 ~~~ 셀렉터」). 제목 «내용»(아이콘·글자·배지)은 왼쪽에 그대로 서고,
+   늘어나는 것은 그 뒤의 빈 자리다 — `.scax-gutter-list__header` 가 공유라 `justify-content` 를
+   건드릴 수 없어서 이 방향으로 푼다. */
+.scax-pj-rail__title{flex:1 1 auto;min-width:0}
+/* 셀렉터는 **자기 내용만큼만** 차지하고, 자리가 모자랄 때만 줄어든다(그때 이름이 말줄임된다).
+   `flex:1 1 auto` 로 두면 제목에 딱 붙어 버린다 — 그것이 2026-09-22 에 잡힌 자리다. */
+.scax-pj-rail__project{flex:0 1 auto;min-width:0;overflow:hidden;white-space:nowrap}
+/* 말줄임표는 **글자를 담은 요소**에 걸어야 듣는다 — 트리거는 flex 컨테이너라 그 위에 얹으면
+   아이콘 둘 사이의 익명 item 에 닿지 않는다. 아주 긴 이름은 여기서 「…」로 끝난다. */
+.scax-pj-rail__project-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
+
+/* 업무 카드는 업무 탭 InboxCard 규칙을 그대로 쓰고, 선택 상태만 여기서 더한다 */
+.scax-inbox-card[role="button"]{cursor:pointer;transition:border-color var(--scax-duration-fast),background var(--scax-duration-fast)}
+.scax-inbox-card[role="button"]:hover{border-color:var(--scax-color-accent-20);background:var(--scax-color-accent-05)}
+.scax-inbox-card[role="button"]:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-inbox-card[role="button"].scax-inbox-card--selected{border-color:var(--scax-color-accent);background:var(--scax-color-accent-08)}
+
+/* ---------- 본문 틀 ---------- */
+.scax-pj-view{display:flex;flex-direction:column;gap:var(--scax-space-500);flex:1 1 auto;min-height:0;padding:var(--scax-space-500) var(--scax-space-600);overflow-y:auto}
+.scax-pj-view--empty{justify-content:center}
+.scax-pj-view__note{margin:0;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-assistive)}
+
+/* ---------- ① 요약 스트립 ---------- */
+.scax-pj-summary{display:grid;grid-template-columns:repeat(4,minmax(96px,1fr)) minmax(180px,1.6fr);gap:var(--scax-space-300);flex:0 0 auto}
+.scax-pj-summary__cell{display:flex;flex-direction:column;gap:var(--scax-space-150);padding:var(--scax-space-400);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-xl);background:var(--scax-color-surface)}
+.scax-pj-summary__label{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+.scax-pj-summary__value{font-size:24px;line-height:32px;font-weight:var(--scax-fw-bold);color:var(--scax-color-ink-strong);font-variant-numeric:tabular-nums}
+.scax-pj-summary__cell[data-tone="accent"] .scax-pj-summary__value{color:var(--scax-color-accent)}
+.scax-pj-summary__cell[data-tone="danger"] .scax-pj-summary__value{color:var(--scax-color-danger)}
+.scax-pj-summary__cell[data-tone="positive"] .scax-pj-summary__value{color:var(--scax-color-positive)}
+.scax-pj-summary__meter{display:flex;align-items:center;gap:var(--scax-space-300);margin-top:var(--scax-space-200)}
+.scax-pj-summary__track{flex:1 1 auto;height:6px;border-radius:var(--scax-radius-pill);background:var(--scax-color-fill-weak)}
+.scax-pj-summary__fill{display:block;height:100%;border-radius:var(--scax-radius-pill);background:var(--scax-color-accent)}
+.scax-pj-summary__pct{flex:0 0 auto;font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-strong);font-variant-numeric:tabular-nums}
+
+/* ---------- ② 간트 + ③ 의존선 ---------- */
+.scax-pj-gantt{display:flex;flex-direction:column;gap:var(--scax-space-300);flex:0 0 auto;padding:var(--scax-space-500);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-2xl);background:var(--scax-color-surface)}
+.scax-pj-gantt__head{display:flex;align-items:baseline;gap:var(--scax-space-300);flex-wrap:wrap}
+.scax-pj-gantt__title{margin:0;font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);letter-spacing:var(--scax-text-body1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-strong)}
+.scax-pj-gantt__legend{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+/* 자리를 못 찾은 선은 «없는 것» 이 아니다 — 그 사실이 눈에 띄어야 한다 */
+.scax-pj-gantt__legend--warn{color:var(--scax-color-danger)}
+.scax-pj-gantt__scroll{overflow-x:auto}
+.scax-pj-gantt__canvas{position:relative}
+.scax-pj-gantt__axis{display:flex;border-bottom:1px solid var(--scax-color-line-weak)}
+/* 머리줄의 이름 칸 자리. 예전에는 `paddingLeft` 로 «비워» 두었는데, 비운 자리는 아무것도 덮지
+   못해서 스크롤한 날짜 숫자가 고정된 이름 칸 위로 그대로 올라왔다 (L-44). 이제 요소가 선다. */
+.scax-pj-gantt__axis-pad{flex:0 0 auto;position:sticky;left:0;z-index:2;background:var(--scax-color-surface)}
+.scax-pj-gantt__day{flex:0 0 auto;padding-bottom:var(--scax-space-200);text-align:center;font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);color:var(--scax-color-ink-assistive);font-variant-numeric:tabular-nums}
+.scax-pj-gantt__day--today{color:var(--scax-color-accent);font-weight:var(--scax-fw-semibold)}
+.scax-pj-gantt__plot{position:relative}
+.scax-pj-gantt__grid{position:absolute;top:0;right:0;bottom:0;background-image:linear-gradient(to right,var(--scax-color-line-weak) 0 1px,transparent 1px),linear-gradient(to bottom,var(--scax-color-line-weak) 0 1px,transparent 1px)}
+/* **오늘은 «선»이 아니라 «칸»이다** (사용자 지시 2026-09-22). 1px 선이면 머리줄의 날짜와
+   아래 칸을 눈으로 세어 맞춰야 했다. 하루 폭(`--scax-pj-gantt-day`)만큼 옅게 칠한다.
+   `left` 는 그 날 칸의 «왼쪽 모서리»다(`ProjectGantt.tsx` 의 `nowLeft`).
+   **막대보다 아래에 깔린다** — DOM 에서 행들보다 먼저 서므로 진행률 막대를 가리지 않는다.
+   폭은 `ProjectGantt.tsx` 가 `GANTT.day` 에서 인라인으로 넘긴다 — 격자(`backgroundSize`)와 같은
+   방식이다. 여기 숫자를 박으면 하루 폭이 두 자리에 살게 된다. */
+.scax-pj-gantt__now{position:absolute;top:0;bottom:0;background:var(--scax-color-accent-05)}
+.scax-pj-gantt__links{position:absolute;inset:0;pointer-events:none}
+.scax-pj-gantt__link{fill:none;stroke:var(--scax-color-line-strong);stroke-width:1.2}
+.scax-pj-gantt__link--on{stroke:var(--scax-color-accent);stroke-width:1.6}
+/* 화살촉은 «marker 자신의» 문맥에서 색을 받는다 — 참조하는 선의 currentColor 가 닿지 않는다.
+   그래서 강조용 촉을 따로 둔다: 선만 accent 이고 촉이 회색인 어긋남이 없다 */
+.scax-pj-gantt__arrow{fill:var(--scax-color-line-strong)}
+.scax-pj-gantt__arrow--on{fill:var(--scax-color-accent)}
+.scax-pj-gantt__row{position:absolute;left:0;right:0;display:flex;align-items:center}
+/* 이름 칸은 «가로 스크롤에» 고정된다 (D-36). **셋이 함께여야 읽힌다** —
+   ① sticky ② z-index(같은 행에서 바가 이름 칸보다 DOM 뒤라, 고정만 하면 막대가 이름을 덮는다)
+   ③ background(없으면 격자·오늘선·의존선 SVG 가 글자 밑으로 지나간다).
+   넷째는 머리줄 몫이라 위의 `__axis-pad` 가 맡는다.
+   ⚠ `align-self:stretch` 는 ③ 의 짝이다 — 행이 `align-items:center` 라 그냥 두면 이 칸의 높이가
+   «글자 높이» 뿐이고, 남은 위아래로 격자가 그대로 샌다. 칸이 행 40px 를 다 덮어야 배경이 산다. */
+.scax-pj-gantt__name-cell{display:flex;align-items:center;align-self:stretch;gap:var(--scax-space-150);flex:0 0 auto;padding-right:var(--scax-space-300);box-sizing:border-box;position:sticky;left:0;z-index:2;background:var(--scax-color-surface)}
+.scax-pj-gantt__twisty{display:flex;align-items:center;justify-content:center;flex:0 0 auto;width:16px;height:16px;padding:0;border:0;border-radius:var(--scax-radius-xs);background:none;color:var(--scax-color-ink-assistive);cursor:pointer}
+.scax-pj-gantt__twisty:hover{background:var(--scax-color-fill-weak);color:var(--scax-color-ink)}
+.scax-pj-gantt__twisty:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-pj-gantt__twisty--blank{pointer-events:none}
+.scax-pj-gantt__name{display:flex;flex-direction:column;gap:2px;flex:1 1 auto;min-width:0;padding:0;border:0;background:none;text-align:left;cursor:pointer}
+.scax-pj-gantt__name:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-pj-gantt__name-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink)}
+.scax-pj-gantt__name-owner{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);color:var(--scax-color-ink-assistive)}
+.scax-pj-gantt__name--on .scax-pj-gantt__name-text{color:var(--scax-color-accent);font-weight:var(--scax-fw-semibold)}
+/* 접힌 가지가 삼킨 선의 수 — 사라진 것이 아니라 이 바에 붙어 있다 */
+.scax-pj-gantt__folded{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;min-width:16px;height:16px;padding:0 var(--scax-space-100);border-radius:var(--scax-radius-pill);background:var(--scax-color-fill-weak);color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);font-variant-numeric:tabular-nums}
+.scax-pj-gantt__bar{position:absolute;display:flex;align-items:center;gap:var(--scax-space-200);height:22px;padding:0 var(--scax-space-200);border:0;border-radius:var(--scax-radius-sm);background:var(--scax-color-accent-20);cursor:pointer;overflow:hidden}
+.scax-pj-gantt__bar-fill{position:absolute;inset:0 auto 0 0;background:var(--scax-color-accent);opacity:.9}
+.scax-pj-gantt__bar-pct{position:relative;font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);color:var(--scax-color-ink-strong);font-variant-numeric:tabular-nums}
+.scax-pj-gantt__bar--blocked{background:var(--scax-color-danger-soft)}
+.scax-pj-gantt__bar--blocked .scax-pj-gantt__bar-fill{background:var(--scax-color-danger)}
+.scax-pj-gantt__bar--done{background:var(--scax-color-fill-weak)}
+/* 완료 초록만 «혼자 쨍했다» (D-35). 토큰을 고치면 다른 화면이 같이 움직이므로 여기서 낮춘다 —
+   accent(.9 over accent-20) · danger(.9 over danger-soft) 와 톤이 맞는 자리까지.
+   ⚠ 흰 트랙(fill-weak) 위에서 투명도를 낮추면 **채도만 내려가는 게 아니라 밝기가 올라간다.**
+   .55 는 그 사이를 지나쳐 셋 중 가장 연한 색이 됐다(채도 0.48 · 휘도 0.55 = accent/danger 의 2.5배).
+   .71 이면 rgb(69,207,116) · 채도 0.67 로 accent(.61)·danger(.77) 사이에 든다.
+   **최종 판정은 눈이 한다 — 고칠 곳은 이 한 줄이다.** */
+.scax-pj-gantt__bar--done .scax-pj-gantt__bar-fill{background:var(--scax-color-positive);opacity:.71}
+.scax-pj-gantt__bar--not-started{background:var(--scax-color-fill-weak)}
+.scax-pj-gantt__bar--not-started .scax-pj-gantt__bar-fill{background:var(--scax-color-line-strong)}
+/* 취소 — 시안에 없다(D-23). 배경만 남고 fill 도 % 도 없다 */
+.scax-pj-gantt__bar--cancelled{background:var(--scax-color-fill-weak);opacity:.7}
+.scax-pj-gantt__row--cancelled .scax-pj-gantt__name-text{text-decoration:line-through;color:var(--scax-color-ink-assistive)}
+.scax-pj-gantt__bar:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-pj-gantt__bar--on{box-shadow:0 0 0 2px var(--scax-color-accent)}
+/* 상위 마디는 낮게, 하위는 한 급 연하게.
+   «상위이면서 하위» 인 중간 깊이 바는 **상위가 이긴다** — 높이 14px 이다. 그래서 `--child` 를 먼저 쓰고
+   `--parent` 를 뒤에 둔다(같은 명시도이므로 나중 규칙이 이긴다). 연함(.92)은 그대로 남는다 */
+.scax-pj-gantt__bar--child{height:18px;opacity:.92}
+.scax-pj-gantt__bar--parent{height:14px;border-radius:var(--scax-radius-xs)}
+.scax-pj-gantt__bar--parent .scax-pj-gantt__bar-pct{display:none}
+.scax-pj-gantt__row--child .scax-pj-gantt__name-text{font-weight:var(--scax-fw-regular);color:var(--scax-color-ink-neutral)}
+
+/* ---------- 우 레일: 업무 상자 ---------- */
+.scax-pj-side{display:flex;flex-direction:column;gap:var(--scax-space-400);height:100%;min-height:0;padding:var(--scax-space-500) var(--scax-space-600);overflow:hidden}
+.scax-pj-side__head{display:flex;flex-direction:column;gap:var(--scax-space-250);flex:0 0 auto}
+.scax-pj-side__title{margin:0;font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);letter-spacing:var(--scax-text-body1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-strong);text-wrap:pretty}
+.scax-pj-side__meter{display:flex;align-items:center;gap:var(--scax-space-250)}
+.scax-pj-side__track{flex:1 1 auto;height:6px;border-radius:var(--scax-radius-pill);background:var(--scax-color-fill-weak)}
+.scax-pj-side__fill{display:block;height:100%;border-radius:var(--scax-radius-pill);background:var(--scax-color-accent)}
+.scax-pj-side__pct{flex:0 0 auto;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-strong);font-variant-numeric:tabular-nums}
+.scax-pj-side__body{display:flex;flex-direction:column;gap:var(--scax-space-600);flex:1 1 auto;min-height:0;overflow-y:auto}
+.scax-pj-side__block{display:flex;flex-direction:column;gap:var(--scax-space-250);flex:0 0 auto}
+/* 소제목이 **연한 회색이 아니다** (D-35 · L-37) — 브라우저에서 블록의 머리가 안 읽혔다.
+   제목(`__title`)은 이미 `ink-strong` 이라 안 건드렸다. 토큰은 0줄이다. */
+.scax-pj-side__block-title{display:flex;align-items:center;gap:var(--scax-space-150);margin:0;font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-strong)}
+.scax-pj-side__count{color:var(--scax-color-ink-assistive);font-weight:var(--scax-fw-regular);font-variant-numeric:tabular-nums}
+.scax-pj-side__none{margin:0;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-assistive)}
+/* 업무 내용 — 없으면 이 요소 자체가 안 선다(자리를 비운다). 줄바꿈은 쓴 그대로 남긴다. */
+.scax-pj-side__desc{margin:0;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink);white-space:pre-wrap;text-wrap:pretty}
+
+/* 메타 표 — **읽히게 고치는 셋** (D-35 · L-38·L-39).
+   ① **값의 좌측 정렬선이 하나다.** 배지(`padding:0 space-200`) · 상태 드롭다운 트리거
+      (`padding-left:space-200`) · 상위 업무 버튼(`padding:… space-200`)이 **자기 좌측 여백**을 갖는다 —
+      그대로 두면 텍스트 값(「기간」·「담당」)보다 한 칸씩 안으로 밀려 값 열의 시작선이 셋이 된다.
+      그 여백을 **음수 마진으로 상쇄**한다: 셋 다 같은 `space-200` 이라 상쇄도 한 값이다.
+   ② **행 높이를 넉넉하게 통일하고 수직 가운데.** 키 칸까지 같은 최소 높이를 져야 배지 행·버튼 행이
+      텍스트 행과 기준선이 어긋나지 않는다 — 28px 은 배지(22) · 트리거(26) · 관계 줄(28)을 다 담는다. */
+.scax-pj-facts{display:grid;grid-template-columns:64px 1fr;gap:var(--scax-space-200) var(--scax-space-300);margin:0}
+.scax-pj-facts__key,.scax-pj-facts__val{display:flex;align-items:center;min-height:28px}
+.scax-pj-facts__key{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+.scax-pj-facts__val{gap:var(--scax-space-200);margin:0;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink);text-wrap:pretty}
+.scax-pj-facts__val>.scax-badge,.scax-pj-facts__val>.scax-pj-rel__item,.scax-pj-facts__val .scax-select__trigger{margin-left:calc(-1 * var(--scax-space-200))}
+
+/* 선행·후행은 여러 개일 수 있다 — 줄마다 한 건, 누르면 그 업무로 */
+.scax-pj-rel{display:flex;flex-direction:column;gap:var(--scax-space-150)}
+.scax-pj-rel__head{display:flex;align-items:center;gap:var(--scax-space-150);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+.scax-pj-rel__list{display:flex;flex-direction:column;gap:var(--scax-space-100);margin:0;padding:0;list-style:none}
+/* **누를 수 있는 것은 테두리와 배경으로 그것을 말한다** (D-35 · L-40) — hover 에만 기대지 않는다.
+   ⚠ 이 규칙이 **두 자리를 동시에** 고친다: 메타 표의 「상위 업무」 버튼과 관계 블록의 선행·후행 줄이
+   **같은 `.scax-pj-rel__item`** 이다. 누르면 그 업무로 가는 **동작은 그대로**다 (L-41) —
+   바뀐 것은 꼴뿐이고 `onClick` 은 한 줄도 안 움직였다. */
+.scax-pj-rel__item{display:flex;align-items:center;gap:var(--scax-space-200);width:100%;min-height:28px;padding:var(--scax-space-100) var(--scax-space-200);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-md);background:var(--scax-color-surface);text-align:left;color:var(--scax-color-ink-assistive);cursor:pointer}
+.scax-pj-rel__item:hover{border-color:var(--scax-color-accent-20);background:var(--scax-color-accent-05)}
+.scax-pj-rel__item:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+/* 읽을 수 없는 선행 — 자리는 남고 누를 수는 없다. **테두리를 점선으로 낮춰** 「눌리는 것」과 가른다:
+   위 규칙을 그대로 물려받으면 못 누르는 줄이 누를 수 있어 보인다. */
+.scax-pj-rel__item--hidden{border-style:dashed;background:none;cursor:default}
+.scax-pj-rel__item--hidden:hover{border-color:var(--scax-color-line);background:none}
+.scax-pj-rel__item--hidden .scax-pj-rel__name{color:var(--scax-color-ink-assistive);font-style:italic}
+.scax-pj-rel__dot{flex:0 0 auto;width:6px;height:6px;border-radius:var(--scax-radius-pill);background:var(--scax-color-line-strong)}
+.scax-pj-rel__dot[data-tone="accent"]{background:var(--scax-color-accent)}
+.scax-pj-rel__dot[data-tone="danger"]{background:var(--scax-color-danger)}
+.scax-pj-rel__dot[data-tone="positive"]{background:var(--scax-color-positive)}
+.scax-pj-rel__name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink)}
+
+.scax-pj-check{display:flex;flex-direction:column;gap:var(--scax-space-150);margin:0;padding:0;list-style:none}
+.scax-pj-check__item{display:flex;align-items:flex-start;gap:var(--scax-space-200);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink)}
+.scax-pj-check__box{display:flex;align-items:center;justify-content:center;flex:0 0 auto;width:16px;height:16px;margin-top:1px;border:1px solid var(--scax-color-line-strong);border-radius:var(--scax-radius-xs);background:var(--scax-color-surface);color:var(--scax-color-ink-inverse)}
+.scax-pj-check__item--done .scax-pj-check__box{border-color:var(--scax-color-accent);background:var(--scax-color-accent)}
+.scax-pj-check__item--done .scax-pj-check__text{color:var(--scax-color-ink-assistive);text-decoration:line-through}
+
+.scax-pj-sub{display:flex;flex-direction:column;gap:var(--scax-space-200);margin:0;padding:0;list-style:none}
+.scax-pj-sub__row{display:flex;flex-direction:column;gap:var(--scax-space-150);width:100%;padding:var(--scax-space-250) var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-lg);background:var(--scax-color-surface);text-align:left;cursor:pointer}
+.scax-pj-sub__row:hover{border-color:var(--scax-color-accent-20);background:var(--scax-color-accent-05)}
+.scax-pj-sub__row:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-pj-sub__top{display:flex;align-items:center;gap:var(--scax-space-200)}
+.scax-pj-sub__name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink-strong)}
+.scax-pj-sub__meta{font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);color:var(--scax-color-ink-assistive);font-variant-numeric:tabular-nums}
+
+/* ---------- 생성 전용 모달 (D-30 · 시안 없음 — 관리 모달과 같은 어휘) ---------- */
+/* 칸은 **넷**이다. `external_key` 칸이 없는 것은 표면이 못 받아서가 아니다 (§2.10 · OQ-607). */
+.scax-pj-create{display:flex;flex-direction:column;gap:var(--scax-space-400)}
+.scax-pj-create__text{width:100%;min-height:72px;padding:var(--scax-space-250) var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-md);background:var(--scax-color-surface);color:var(--scax-color-ink);font:inherit;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);resize:vertical}
+.scax-pj-create__text:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+/* 시작일·종료일은 나란히 선다 — 기간 역전은 **서버가** 거절하고 그 문구가 모달 안에 뜬다. */
+.scax-pj-create__dates{display:grid;grid-template-columns:1fr 1fr;gap:var(--scax-space-300)}
+
+/* ---------- 관리 모달 (시안 없음 — 어휘만 빌렸다) ---------- */
+.scax-pj-manage__block{display:flex;flex-direction:column;gap:var(--scax-space-300)}
+.scax-pj-manage__title{display:flex;align-items:center;gap:var(--scax-space-150);margin:0;font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-assistive)}
+.scax-pj-manage__hint{font-weight:var(--scax-fw-regular);color:var(--scax-color-ink-assistive)}
+.scax-pj-manage__list{display:flex;flex-direction:column;gap:var(--scax-space-200);margin:0;padding:0;list-style:none}
+.scax-pj-manage__list>li{display:flex;align-items:center;gap:var(--scax-space-200);flex-wrap:wrap;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink)}
+.scax-pj-manage__name{font-weight:var(--scax-fw-medium);color:var(--scax-color-ink-strong)}
+.scax-pj-manage__row{display:flex;align-items:center;gap:var(--scax-space-200);flex-wrap:wrap}

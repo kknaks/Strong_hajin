@@ -45,7 +45,7 @@
 .scax-month__dow{padding:var(--scax-space-200) var(--scax-space-250);text-align:center;font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink-alt)}
 .scax-month__dow--sun{color:var(--scax-color-danger)}
 .scax-month__grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));grid-auto-rows:minmax(112px,1fr);flex:1 1 auto;min-height:0}
-.scax-month__cell{display:flex;flex-direction:column;gap:var(--scax-space-100);min-width:0;overflow:hidden;padding:var(--scax-space-150);border-right:1px solid var(--scax-color-line);border-bottom:1px solid var(--scax-color-line);background:var(--scax-color-surface);text-align:left}
+.scax-month__cell{display:flex;flex-direction:column;align-items:stretch;gap:var(--scax-space-100);min-width:0;overflow:hidden;padding:var(--scax-space-150);border-right:1px solid var(--scax-color-line);border-bottom:1px solid var(--scax-color-line);background:var(--scax-color-surface);text-align:left}
 .scax-month__cell:nth-child(7n){border-right:0}
 .scax-month__grid>.scax-month__cell:nth-last-child(-n+7){border-bottom:0}
 .scax-month__cell{cursor:pointer}

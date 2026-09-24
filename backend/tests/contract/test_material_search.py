@@ -1,10 +1,17 @@
 """Material extraction lifecycle and authorized `material.search` through the public API, MCP facade, and conversation view.
 
 Runs on SQLite with the in-memory job fake; queue correctness is covered by the PostgreSQL integration tests.
+
+여기 테스트는 한 건 안에서 `IsolatedWork` 로 **진짜 자식 인터프리터를 최대 둘** 띄우고, 그 위에서
+**초 단위 lease 창을 실시간 시계로 잰다** — `-n auto`(= 코어 수) 아래서는 그 창이 스케줄 지터보다
+작아져 흔들린다. 그래서 아래 `pytestmark = pytest.mark.serial` 이 이 파일을 **병렬 패스에서 빼고
+`-n0` 직렬 패스로 보낸다**(`Makefile` 의 `test-serial`). 목록이 아니라 마커가 기준이므로 파일을
+옮기거나 이름을 바꿔도 따라 고칠 것은 없다 — 새 테스트를 더할 때 마커만 함께 서면 된다.
 """
 import asyncio
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -15,6 +22,9 @@ from ax_workspace.entrypoints.mcp import McpReportsFacade
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.modules.jobs.domain import JOB_KIND_MATERIAL_EXTRACTION
 from ax_workspace.platform.persistence import ConversationTurnRecord, MaterialChunkRecord, make_session_factory
+
+# 위 docstring 의 이유로 직렬 패스에서 돈다. 부류의 기준과 걸개는 `tests/conftest.py`.
+pytestmark = pytest.mark.serial
 
 MINA = {"X-Demo-Persona": "mina"}
 JIHO = {"X-Demo-Persona": "jiho"}

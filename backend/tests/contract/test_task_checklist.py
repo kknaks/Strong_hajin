@@ -1,7 +1,11 @@
 """A Task's checklist: the small steps inside one piece of work.
 
 A checklist item is not a Task. It carries no assignment, no lineage and no judgement; it belongs to exactly one Task
-and only the person who holds that Task can see or change it.
+and only the person who holds that Task can change it.
+
+**2026-09-22 (D-29): 읽기는 프로젝트가 열고 쓰기는 담당이 쥔다.** 같은 프로젝트에 붙은 사람은 남의 업무에서도
+항목을 읽는다 — 그 범위는 `test_task_checklist_read_scope.py` 가 잰다. **이 파일이 재는 것은 쓰기 쪽**이고,
+그 가드는 **활성 담당자 그대로**다.
 """
 from fastapi.testclient import TestClient
 
@@ -81,13 +85,14 @@ def test_an_item_can_be_renamed_and_removed_without_touching_the_others(tmp_path
     assert client.delete(f"{url}/{third['item_id']}", headers=MINA).status_code == 404
 
 
-def test_only_the_person_holding_the_task_can_see_or_change_its_checklist(tmp_path) -> None:
+def test_only_the_person_holding_the_task_can_change_its_checklist_and_no_project_opens_this_one(tmp_path) -> None:
     client = _client(tmp_path)
     task = _task(client)
     url = f"/api/tasks/{task['task_id']}/checklist"
     item = client.post(url, headers=MINA, json={"text": "자료 모으기"}).json()
 
-    # Jiho holds no assignment on Mina's task: the checklist is not readable, writable or deletable.
+    # Jiho holds no assignment on Mina's task, and no project puts them side by side: the checklist is not readable,
+    # writable or deletable. **읽기를 여는 것은 프로젝트고, 여기에는 프로젝트가 없다** (D-29).
     assert client.post(url, headers=JIHO, json={"text": "몰래 추가"}).status_code == 404
     assert client.patch(f"{url}/{item['item_id']}", headers=JIHO, json={"done": True}).status_code == 404
     assert client.delete(f"{url}/{item['item_id']}", headers=JIHO).status_code == 404

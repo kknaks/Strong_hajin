@@ -481,6 +481,32 @@ class SqlAlchemyTaskRepository:
             )
         )
 
+    def descendants_of(self, task_id: UUID) -> list[TaskRecord]:
+        """자식·손자·증손자 **전부** — 깊이 제한이 없다 (SPEC-005 §4 손자 프로젝트 종속 · D-19).
+
+        **`children_of()` 를 고치지 않고 곁에 선다.** 다른 소비처가 「직속만」을 전제하고 있고,
+        그 함수를 자손 전체로 바꾸면 그 전제들이 한꺼번에 움직인다.
+
+        **너비 우선 반복이다 — 재귀 CTE 가 아니다.** 이 저장소는 SQLite 와 PostgreSQL 둘 다에서
+        도는 재귀 SQL 을 아직 한 번도 쓰지 않았고, 실무 깊이가 서너 층이라 왕복 수가 문제가 아니다.
+        **본 것을 다시 보지 않는다** — 원장이 이미 어긋나 부모 고리가 있어도 무한히 걷지 않는다
+        (`_require_no_predecessor_cycle()` 이 활성 변을 걷는 것과 같은 규율).
+        """
+        found: list[TaskRecord] = []
+        seen: set[UUID] = {task_id}
+        frontier = [task_id]
+        while frontier:
+            layer: list[UUID] = []
+            for parent_id in frontier:
+                for child in self.children_of(parent_id):
+                    if child.id in seen:
+                        continue
+                    seen.add(child.id)
+                    found.append(child)
+                    layer.append(child.id)
+            frontier = layer
+        return found
+
     def approval_rounds_for(self, task_ids: list[UUID]) -> dict[UUID, dict[str, Any]]:
         """여러 업무의 **완료 확인 회차**를 한 번에 — 목록 한 줄마다 따로 묻지 않기 위해서다.
 
@@ -1769,6 +1795,26 @@ class SqlAlchemyWorkRequestRepository:
         return self._session.scalar(
             statement.with_for_update().execution_options(populate_existing=True) if lock else statement
         )
+
+    def request_assignment(self, request: WorkRequestRecord, *, lock: bool = False) -> TaskAssignmentRecord | None:
+        """그 요청이 세운 **배정 행** — 자동 해제 조건 ① 을 읽는 자리 (SPEC-005 §4 · D-14).
+
+        요청은 업무만 세우는 것이 아니라 받는 사람 앞으로 **「기다리는」 배정도 함께** 세운다
+        (`create_task_for_request`). 「이 요청이 그 사람을 프로젝트에 붙였나」는 그 행의
+        `auto_project_join` 이 갖고 있다 — **`work_requests` 에 칸을 두지 않는 이유가 그것이다**:
+        같은 사실을 배정 거절(`decline`)도 읽어야 하고, 그쪽은 요청을 지나지 않는다.
+
+        첫 행을 낸다. 한 요청이 세우는 배정은 발송 시점의 하나이고, 그 뒤 담당 교체는 **자기
+        `direct` 행**을 따로 세운다.
+        """
+        statement = (
+            select(TaskAssignmentRecord)
+            .where(TaskAssignmentRecord.source_work_request_id == request.id)
+            .order_by(TaskAssignmentRecord.created_at, TaskAssignmentRecord.id)
+        )
+        return self._session.scalars(
+            statement.with_for_update().execution_options(populate_existing=True) if lock else statement
+        ).first()
 
     def accept_request_assignment(self, request: WorkRequestRecord, actor_id: str) -> TaskRecord:
         """수락 — **같은 업무의 담당을 확정한다. 새 업무를 만들지 않는다** (SPEC-003 §4 수락).

@@ -3,6 +3,7 @@ import asyncio
 from pathlib import Path
 from uuid import UUID
 
+import pytest
 from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
 from ax_workspace.platform.persistence import AttachmentRecord, make_session_factory
 from test_material_search import MINA, _stack, _upload
@@ -13,6 +14,7 @@ class UnreachableParser:
         raise AssertionError("Changed bytes must be rejected before parser execution")
 
 
+@pytest.mark.serial
 def test_worker_rejects_source_bytes_that_no_longer_match_the_uploaded_revision(tmp_path):
     client, _, worker, settings = _stack(tmp_path)
     task = client.post("/api/tasks", headers=MINA, json={"title": "원본 무결성"}).json()

@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      WORK-006 Phase 1 계측 페이지의 전용 엔트리.
+      제품 엔트리(`index.html`)와 갈라 둔다 — `npm run build` 의 입력은 `index.html` 하나라
+      이 파일과 `src/dev/` 는 **제품 번들에 들어가지 않는다**.
+    -->
+    <title>SCAX 탐침 계측 (WORK-006 Phase 1)</title>
+  </head>
+  <body>
+    <div id="probe-root"></div>
+    <script type="module" src="/src/dev/probeMain.tsx"></script>
+  </body>
+</html>

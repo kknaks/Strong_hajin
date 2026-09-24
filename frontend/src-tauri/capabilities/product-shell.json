@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "product-shell",
+  "description": "웹 문서에 여는 것은 커맨드 넷뿐이다. 파일·프로세스·범용 셸·open_path 권한은 하나도 없다(AC-T23). local:false 라 셸 자기 화면(stronghajin://)도 커맨드를 부르지 못한다.",
+  "windows": ["main"],
+  "local": false,
+  "remote": {
+    "urls": ["https://operational-origin-not-yet-decided.invalid/*"]
+  },
+  "permissions": [
+    "allow-shell-info",
+    "allow-wake-guard-acquire",
+    "allow-wake-guard-release",
+    "allow-open-external"
+  ]
+}

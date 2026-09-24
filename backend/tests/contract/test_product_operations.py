@@ -1,10 +1,10 @@
 import asyncio
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
-import pytest
 from legacy_acceptance import pending_request
 
 from ax_workspace.entrypoints.http import create_app
@@ -216,6 +216,7 @@ def test_action_routes_require_current_read_and_decide_capabilities(tmp_path) ->
     assert client.get("/api/conversations", headers=revoked).json()[0]["actions"] == []
 
 
+@pytest.mark.serial
 def test_generate_draft_creates_a_report_owned_draft_from_authorized_task_events(tmp_path) -> None:
     client = _client_with_seeded_database(tmp_path, report_provider=ContractTestAiProvider())
     task = client.post("/api/tasks", headers={"X-Demo-Persona": "mina"}, json={"title": "보고 근거 업무"}).json()
@@ -276,6 +277,7 @@ def test_generate_draft_creates_a_report_owned_draft_from_authorized_task_events
         assert provider_call.observed_tier == "fast"
 
 
+@pytest.mark.serial
 def test_generate_draft_fails_explicitly_without_the_codex_cli_binary(tmp_path) -> None:
     client = _client_with_seeded_database(
         tmp_path,
@@ -295,6 +297,7 @@ def test_generate_draft_fails_explicitly_without_the_codex_cli_binary(tmp_path) 
     assert failed["report_id"] is None
 
 
+@pytest.mark.serial
 def test_daily_report_edit_submit_and_history_are_report_owned_operations(tmp_path) -> None:
     client = _client_with_seeded_database(tmp_path, report_provider=ContractTestAiProvider())
     before_generation = client.get(

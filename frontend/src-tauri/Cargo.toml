@@ -1,0 +1,38 @@
+[package]
+name = "strong-hajin-shell"
+version = "0.0.1"
+description = "Strong Hajin 데스크톱 셸 — 배포된 HTTPS 웹을 여는 창과 네이티브 커맨드 넷"
+authors = ["kknaks"]
+license = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "strong_hajin_shell_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+# 앱 커맨드의 ACL 권한을 자동 생성한다(build.rs 의 `AppManifest::commands`).
+# 원격 origin 에서 오는 호출은 tauri 2.11 의 `webview/mod.rs` 가 **앱 커맨드까지 ACL 로 막는다** —
+# capability 가 그 커맨드를 명시하지 않으면 remote 문서는 부를 수 없다. 그래서 자동 생성이 필요하다.
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# SPEC-006 §5: 하한 2.11.1 (GHSA-7gmj-67g7-phm9 — origin 혼동으로 원격 문서가 로컬 전용 커맨드를 부른다).
+tauri = { version = "2.11.1", features = [] }
+# 연결 실패 전수(U-2)의 수단. **HTTP 클라이언트가 아니라 TLS 악수까지만** 쓴다.
+# macOS 는 Security.framework, Windows 는 SChannel 로 내려가 **웹뷰와 같은 OS 신뢰 저장소**를 본다 —
+# 그래서 「웹뷰가 거절할 인증서」를 셸도 같은 기준으로 거절한다(Phase 2 의 M-7 대응).
+native-tls = "0.2"
+
+# `open_external` 의 구현 수단. **플러그인 권한을 webview 에 주지 않는다** —
+# 원격 문서가 부를 수 있는 것은 우리 커맨드 넷뿐이고, opener 는 Rust 쪽에서만 쓴다.
+# 그래서 `open_path`·`reveal_item_in_dir` 같은 파일 시스템 표면이 웹에 열리지 않는다(AC-T23).
+tauri-plugin-opener = "2"
+
+# Windows(WebView2) 마이크 권한 — 참조 제품 `app/front/src-tauri/src/lib.rs` 의
+# `allow_microphone_on_webview2` 를 이식한다. 없으면 `getUserMedia` 가 **프롬프트 없이** 실패한다.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"

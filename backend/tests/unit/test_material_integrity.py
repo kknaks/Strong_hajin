@@ -253,6 +253,9 @@ def test_pdf_form_invocation_ceiling_cannot_hide_a_final_form(repeats, pdf_log_l
         outcome.close()
 
 
+#: 스레드 둘을 `ThreadPoolExecutor` 로 띄워 `Barrier` 에서 만나게 하고 `wait(timeout=5)` 로
+#: 5초 창을 잰다 — tests/conftest.py 위 기준 한 문장.
+@pytest.mark.serial
 def test_pdf_warnings_do_not_contaminate_another_workers_document(monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     import logging

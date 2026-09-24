@@ -13,11 +13,11 @@ import asyncio
 import os
 import sys
 
+import pytest
 from fastapi.testclient import TestClient
 from legacy_acceptance import pending_assignment, pending_request
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
-import pytest
 from sqlalchemy import delete
 
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
@@ -268,6 +268,7 @@ def test_the_server_tells_a_delegated_turn_to_judge_through_the_one_ledger(tmp_p
     assert "pending confirmation" in instructions
 
 
+@pytest.mark.serial
 def test_stdio_client_runs_the_ledger_and_keeps_it_bound_to_the_server_persona(tmp_path) -> None:
     database_url, settings, client = _stack(tmp_path)
     pending_request(client, client.database_url, MINA, title="stdio 판단 요청", assignee_id="jiho")
@@ -313,6 +314,7 @@ def test_stdio_client_runs_the_ledger_and_keeps_it_bound_to_the_server_persona(t
     assert client.get("/api/action-items", headers=MINA).json()[0]["suggested_changes"] == {"due_date": "2026-11-11"}
 
 
+@pytest.mark.serial
 def test_a_capability_revoked_after_discovery_is_refused_at_call_time(tmp_path) -> None:
     database_url, settings, client = _stack(tmp_path)
     pending_request(client, client.database_url, MINA, title="권한 회수 요청", assignee_id="jiho")
@@ -486,6 +488,7 @@ def test_only_the_one_judgement_surface_is_registered(tmp_path, monkeypatch) -> 
         })
 
 
+@pytest.mark.serial
 def test_stdio_delegated_command_returns_a_pending_confirmation_and_changes_nothing(tmp_path) -> None:
     database_url, settings, client = _stack(tmp_path)
     pending_request(client, client.database_url, MINA, title="stdio 위임 판단", assignee_id="jiho")
@@ -648,6 +651,7 @@ def test_a_pending_confirmation_says_nothing_about_work_the_approver_may_no_long
     assert withheld["preview"] == []
 
 
+@pytest.mark.serial
 def test_an_action_item_no_one_may_read_answers_exactly_like_one_that_does_not_exist(tmp_path) -> None:
     database_url, settings, client = _stack(tmp_path)
     application = client.app.state.workflow_application
@@ -678,6 +682,7 @@ def test_an_action_item_no_one_may_read_answers_exactly_like_one_that_does_not_e
     assert "task.create_self" not in body and "ax." not in body
 
 
+@pytest.mark.serial
 def test_a_command_may_only_carry_the_fields_its_own_kind_owns_over_stdio(tmp_path) -> None:
     database_url, settings, client = _stack(tmp_path)
     pending_request(client, client.database_url, MINA, title="필드 계약", assignee_id="jiho")

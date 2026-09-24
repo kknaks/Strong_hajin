@@ -3,6 +3,7 @@ import { Fragment } from "react";
 import { Badge } from "../../ds/Badge";
 import { calendarScreen, derivedApprovalLabel, taskStateLabel, taskStateTone } from "../../lib/labels";
 import type { RailCard } from "./calendarModel";
+import { debugCalendarDnd } from "./calendarDndDebug";
 
 /**
  * 좌측 일정 레일의 카드 한 장 (G-CAL-04).
@@ -50,8 +51,13 @@ export function ScheduleCard({
       onDragStart={
         draggable
           ? (event) => {
+              // WebKit normalizes the legacy `text` flavor differently from Chromium.
+              // Publish both aliases; `text/plain` remains the canonical contract.
+              event.dataTransfer.clearData();
               event.dataTransfer.setData("text/plain", card.id);
+              event.dataTransfer.setData("text", card.id);
               event.dataTransfer.effectAllowed = "move";
+              debugCalendarDnd("dragstart", event.dataTransfer);
               onDragStart?.(card);
             }
           : undefined

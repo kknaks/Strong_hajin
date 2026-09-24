@@ -47,5 +47,6 @@ markers = [
   "scale: high-cost synthetic ledger validation run explicitly or by make verify",
   "release: requires network access and validates the distributable package",
   "architecture: package and dependency-boundary assertions",
+  "serial: makes real concurrency of its own — a child process (IsolatedWork spawn, MCP stdio, subprocess) or a thread the test itself starts — and times its progress on the wall clock in seconds; runs in the `-n0` pass, never with `-n auto`",
   "e2e: golden user journeys",
 ]

@@ -7,6 +7,7 @@ from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.modules.work import application as work_application
+from ax_workspace.modules.work import task_projection
 
 MINA = {"X-Demo-Persona": "mina"}
 JIHO = {"X-Demo-Persona": "jiho"}
@@ -65,6 +66,10 @@ def test_start_sets_a_missing_start_date_to_the_seoul_business_day(tmp_path, mon
             instant = datetime(2026, 9, 9, 16, 30, tzinfo=UTC)
             return instant if tz is None else instant.astimezone(tz)
 
+    # **서울의 「오늘」을 읽는 자리는 순수 모듈 하나다** (SPEC-005 §4 · `work/task_projection.py`).
+    # 목록의 `+N` 과 프로젝트 요약 스트립의 「지연」이 같은 날을 읽어야 해서 그리로 내렸다 —
+    # 그래서 이 테스트도 그 자리의 시계를 멈춘다. 업무 쪽 `datetime` 도 함께 멈춰 둔다.
+    monkeypatch.setattr(task_projection, "datetime", FrozenDateTime)
     monkeypatch.setattr(work_application, "datetime", FrozenDateTime)
     client = _client(tmp_path)
     created = client.post("/api/tasks", headers=MINA, json={"title": "시작일 없는 업무"}).json()

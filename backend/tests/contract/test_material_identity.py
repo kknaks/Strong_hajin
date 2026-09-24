@@ -1,7 +1,7 @@
 """Artifact identity is shared by search, graph and Task views; a binding owns only a connection."""
 import asyncio
-import pytest
 from uuid import UUID
+import pytest
 from ax_workspace.platform.persistence import make_session_factory
 from ax_workspace.platform.work_tasks import SqlAlchemyAttachmentRepository
 from test_material_search import _stack, _upload
@@ -11,6 +11,7 @@ from ax_workspace.entrypoints.mcp import McpReportsFacade
 MINA = {"X-Demo-Persona": "mina"}
 
 
+@pytest.mark.serial
 @pytest.mark.parametrize("observe_second", [False, True])
 def test_one_artifact_has_one_graph_node_and_independent_task_bindings(tmp_path, monkeypatch, observe_second):
     client, app, worker, settings = _stack(tmp_path)

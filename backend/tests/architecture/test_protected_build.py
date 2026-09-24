@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
@@ -32,6 +34,7 @@ def test_delivery_dockerfile_pins_the_selected_runtime_and_all_base_images() -> 
     assert "LicenseReport.rst.j2:/build/output/third-party-licenses.rst" in dockerfile
 
 
+@pytest.mark.serial
 def test_delivery_transform_removes_only_source_docstrings(tmp_path: Path) -> None:
     source = tmp_path / "example.py"
     source.write_text(

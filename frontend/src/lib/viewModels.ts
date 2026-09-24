@@ -88,18 +88,51 @@ export type ProjectParticipation = ProjectMember & {
   end_reason: string | null;
 };
 
+/**
+ * 프로젝트 상세가 싣는 업무 한 줄 (SPEC-005 §4 `GET /api/projects/{id}`).
+ *
+ * **여섯 필드였던 것을 BE-1 이 넓혔다.** 화면이 간트·의존선·요약 스트립을 그리려면 필요한 사실이
+ * 전부 여기 있어야 하고, 업무마다 상세를 긁으면 업무 수만큼 호출이 된다.
+ *
+ * 틀리기 쉬운 자리 넷 — **서버가 판정한 것을 화면이 다시 판정하지 않는다**:
+ *
+ * 1. `assignee` 가 `null` 인 것이 **정상**이다. 「미정」을 서버가 지어내지 않으니 화면도 지어내지 않는다.
+ * 2. `checklist_progress.total === 0` 은 **0% 가 아니다.** fill 도 % 도 그리지 않는다 —
+ *    0% 로 그리면 「아무것도 안 한 일」이라는 허위가 생긴다.
+ * 3. `span_from`·`span_to` 는 **이미 접혀서 온다** (SPEC-004 와 같은 이름·같은 규칙). 마감만 있는 일은
+ *    그 날 하루, 뒤집힌 기간은 `[min, max]`. `start_date`·`due_date` 원값도 그대로 함께 온다.
+ * 4. `overdue_days` 는 **끝난 업무에 안 온다**(완료·취소·승인 대기). 「지연」은 **값이 온 업무만 센다** —
+ *    화면이 「오늘」을 다시 판정하지 않는다.
+ *
+ * `state` 는 계약의 넷이고(`completion_submitted` 는 서버가 `done` 으로 접는다), `blocked` 는
+ * M-6 승계라 들어올 수 있다 — `TaskState` 가 그 다섯을 전부 든다.
+ */
+export type ProjectTaskRow = {
+  task_id: string;
+  title: string;
+  state: TaskState;
+  start_date: string | null;
+  due_date: string | null;
+  parent_task_id: string | null;
+  /**
+   * 선행 — **깊이와 무관하게 손자까지 평평하게 전부** 실린다. 의존선의 유일한 원천이자
+   * **후행 역산의 재료**다. 후행을 서버에 묻는 호출은 0건이다 (DEC-004 D-07).
+   */
+  preceding_task_ids: string[];
+  /** 활성 배정이 없으면 `null` — **답을 기다리는 사람**이 여기 선다(업무 상세와 같은 말). */
+  assignee: { member_id: string; display_name: string } | null;
+  /** 업무 상세의 `checklist_progress` 와 **같은 규칙**의 두 수. */
+  checklist_progress: { done: number; total: number } | null;
+  span_from: string | null;
+  span_to: string | null;
+  overdue_days: number | null;
+};
+
 export type ProjectDetail = Project & {
   /** 이 프로젝트의 담당자를 붙이고 뗄 수 있는가. 서버가 판정하고 화면은 그대로 따른다. */
   may_manage: boolean;
   members: ProjectMember[];
-  tasks: Array<{
-    task_id: string;
-    title: string;
-    state: string;
-    start_date: string | null;
-    due_date: string | null;
-    parent_task_id: string | null;
-  }>;
+  tasks: ProjectTaskRow[];
 };
 
 export type Persona = {

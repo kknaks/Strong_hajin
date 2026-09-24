@@ -4,6 +4,7 @@ import { calendarDow, calendarScreen, calendarCursorText } from "../../lib/label
 import { EventBar, EventGhost, EventMore } from "./EventBar";
 import { laneSeats, packLanes, type CalendarSegment, type MonthDay } from "./calendarModel";
 import type { DateEdge } from "./calendarWrites";
+import { debugCalendarDnd } from "./calendarDndDebug";
 
 /** 한 칸에 세우는 줄의 상한. 넘치면 「+N건 더」로 접는다 (SPEC §2.1 — 시안 `CAL_CELL_LIMIT`). */
 const MONTH_LANE_LIMIT = 4;
@@ -140,10 +141,12 @@ export function MonthGrid({
               /* 시안은 받을 수 없으면 `preventDefault` 를 안 불러 «브라우저가 말없이» 막는다.
                  우리는 언제나 받고, 안 되는 이유를 화면이 말한다 (§I 조용한 거절 0개). */
               onDragOver={(event) => {
+                debugCalendarDnd("dragover", event.dataTransfer);
                 event.preventDefault();
                 setOver(day.date);
               }}
               onDrop={(event) => {
+                debugCalendarDnd("drop", event.dataTransfer);
                 event.preventDefault();
                 setOver(null);
                 const taskId = event.dataTransfer.getData("text/plain");

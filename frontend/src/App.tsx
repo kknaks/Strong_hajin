@@ -18,6 +18,7 @@ import { ChatDrawer, contextKey, type LabeledContextReference } from "./features
 import { NEW_DRAFT_KEY, useConversations } from "./features/chat/useConversations";
 import { DailyReportPage } from "./features/report/DailyReportPage";
 import { personName } from "./lib/labels";
+import { openExternal } from "./lib/shell";
 import { LoginPage } from "./features/auth/LoginPage";
 import { MeetingWorkspace } from "./features/meetings/MeetingWorkspace";
 import { Toast } from "./ds/Modal";
@@ -110,6 +111,17 @@ export default function App() {
       if (canNavigate("workspace")) changeSurface(next);
     },
     [canNavigate],
+  );
+  /* 업무를 «여는» 길은 업무 화면의 드로어 하나뿐이다 — 밖에서 업무를 여는 화면(관계 그래프 · 프로젝트)이
+     같은 seam 을 쓴다. ⚠ **인라인 화살표로 두면 안 된다**: 레일을 등록하는 화면(프로젝트)이 이것을
+     의존성에 물고 있어서, 매 렌더 새 함수가 되면 등록 → App 상태 변경 → 렌더 → 다시 등록 으로
+     무한히 돈다. 위 `canNavigate` 주석이 적어 둔 그 함정과 같은 자리다. */
+  const openTaskInWork = useCallback(
+    (taskId: string) => {
+      setSurface("work");
+      setFocusTaskId(taskId);
+    },
+    [setSurface],
   );
   // 새 셸의 내비는 덮개가 아니라 180 ↔ 65px 접힘이다 (바퀴 2).
   const [navCollapsed, setNavCollapsed] = useState(false);
@@ -457,7 +469,9 @@ export default function App() {
            회의는 «한 화면에 갇히는» 화면이라 스크롤은 안쪽 패널이 갖는다 — 여기서는 잡지 않는다. */}
         {/* 캘린더도 회의처럼 «한 화면에 갇히는» 화면이다 — 격자가 칸을 꽉 채우고 주 뷰의 시간 격자가
               자기 안에서 스크롤한다(`styles/calendar.css` 의 `.scax-cal-main`). 바깥이 스크롤하면 주인이 둘이 된다. */}
-          <div className={surface === "meetings" || surface === "calendar" ? "scax-page-scroll scax-page-scroll--fixed" : surface === "work" ? "scax-page-scroll scax-page-scroll--work" : "scax-page-scroll"}>
+          {/* 프로젝트도 «한 화면에 갇히는» 화면이다 (WORK-005) — 요약 스트립과 진행 라인이 칸을 채우고
+              `.scax-pj-view` 가 자기 안에서 스크롤한다. 바깥이 또 스크롤하면 주인이 둘이 된다. */}
+          <div className={surface === "meetings" || surface === "calendar" || surface === "project" ? "scax-page-scroll scax-page-scroll--fixed" : surface === "work" ? "scax-page-scroll scax-page-scroll--work" : "scax-page-scroll"}>
           {surface === "today" && (
             <TodayPage
               {...pageProps}
@@ -512,7 +526,25 @@ export default function App() {
           {surface === "report" && (
             <DailyReportPage {...pageProps} onRegisterHeaderActions={registerSurfaceActions} personaName={currentPersonaName} />
           )}
-          {surface === "project" && <ProjectPage {...pageProps} />}
+          {/* WORK-005 FE-1: 본문 한 칸이던 화면을 셋으로 넓혔다 — 좌 레일(프로젝트 셀렉터 + 업무 카드)과
+              우 레일(선택 업무 상자)이 셸의 AppBody 슬롯에 선다. 관리 모달의 손잡이는 머리의 actions 다.
+              업무를 «여는» 길은 업무 화면의 드로어 하나뿐이라 관계 그래프와 같은 seam 을 쓴다. */}
+          {surface === "project" && (
+            <ProjectPage
+              {...pageProps}
+              /* 상태 드롭다운의 게이트 하나만 **세션 봉투의 역량**이다 (WORK-005 FE-5 작업 0 · D-32).
+                 ⚠ ~~「프로젝트 추가」의 `project.manage` 게이트~~ 는 **없앴다** (사용자 확정, 2026-09-22):
+                 **만드는 것은 모든 사람이 한다.** 자격이 없으면 **서버가 거절하고 그 문구가 모달 안에 선다** —
+                 버튼을 감춰 「왜 없지」를 만들지 않는다. 「프로젝트 관리」의 `may_manage` 는 **그대로**다.
+                 ⚠ `sharedWorkProps` 를 통째로 넘기지 않는다: 이 화면은 업무 화면의 열 갈래 props 를
+                 쓰지 않고, 새 조회도 만들지 않는다 — 셸이 이미 쥔 값을 그대로 내릴 뿐이다. */
+              canManageOwnTasks={has("task.self_manage")}
+              onNotice={setToast}
+              onOpenTask={openTaskInWork}
+              onRegisterHeaderActions={registerSurfaceActions}
+              onRegisterRails={registerSurfaceRails}
+            />
+          )}
           {surface === "org" && <OrgPage {...pageProps} />}
           {surface === "graph" && (
             <RelationGraphPage
@@ -650,7 +682,16 @@ export default function App() {
               }
             }
             if (resource.resource_type === "material" && resource.origin) {
-              window.open(resource.origin, "_blank", "noopener,noreferrer");
+              /* U-4 — 셸이 있으면 OS 기본 브라우저로 넘긴다. 앱 창이 남의 사이트로 바뀌거나
+                 앱 안에 두 번째 웹뷰가 앉지 않게 하는 것이 요점이다.
+                 **셸이 없으면 지금 그대로** 웹이 연다(`E-01`). */
+              void openExternal(resource.origin).then((outcome) => {
+                /* 셸이 없을 때만 웹이 열던 그대로 연다(`E-01`).
+                   셸이 있는데 실패한 경우(`E-14c`)는 **폴백하지 않는다** — 앱 창 안에
+                   두 번째 웹뷰가 앉는 것이 U-4 가 막으려는 사고다. 실패 사실은
+                   `shell.ts` 가 기록한다(조용히 삼키지 않는다). */
+                if (outcome === "absent") window.open(resource.origin, "_blank", "noopener,noreferrer");
+              });
               return;
             }
             if (resource.resource_type === "report") setSurface("report");

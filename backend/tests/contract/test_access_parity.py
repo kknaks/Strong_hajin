@@ -91,6 +91,7 @@ def test_every_channel_gives_the_same_answer_about_the_same_work(tmp_path) -> No
     assert secret not in str(client.get("/api/graph/search", headers={"X-Demo-Persona": "jiho"}, params={"q": secret[:4]}).json())
 
 
+@pytest.mark.serial
 def test_every_channel_gives_the_same_answer_about_the_same_file(tmp_path) -> None:
     """자료도 업무와 같다 — 창구가 달라도 답이 같고, 아니오일 때는 어디서도 이름도 건수도 나오지 않는다.
 

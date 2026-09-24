@@ -3,8 +3,9 @@
 
    사다리 ③ 이다: **레이아웃은 구 `styles.css` 그대로 두고 값만 `--scax-*` 로 갈았다.**
    그래서 클래스 «이름» 도 그대로다 — 이름이 곧 레이아웃이고, 이름을 바꾸면 사다리 ③ 이 아니라
-   새로 그리는 일이 된다. `App.test.tsx` 가 `.decision-panel` 을, `ProjectPage.test.tsx` 가
-   `.project-row-name` 과 `li.child` 를 겨누고 있는 것도 같은 이유로 그대로 산다.
+   새로 그리는 일이 된다. `App.test.tsx` 가 `.decision-panel` 을 겨누고 있는 것도 같은 이유로 그대로 산다.
+   (`ProjectPage.test.tsx` 가 겨누던 `.project-row-name`·`li.child` 는 WORK-005 FE-1 이 그 화면을
+   시안의 3레일로 다시 그리면서 함께 사라졌다 — 아래 §4 참조.)
 
    싣는 순서: `index.css` 가 `overrides-transitional.css` «다음» 에 이 파일을 싣는다.
    구 `styles.css` 는 `main.tsx` 에서 `styles/index.css` «앞» 에 실리므로, 같은 특정도면
@@ -222,43 +223,16 @@
 .report-grid .scax-composer__input { min-height: 232px; max-height: none; }
 
 
-/* ════════════ 4. 프로젝트 ══════════════════════════════════════════════════════
-   구 styles.css:1362~1381 을 덮는다.
+/* ════════════ 4. 프로젝트 — 이 파일에서 사라졌다 ══════════════════════════════
+   WORK-005 FE-1 이 「프로젝트」를 **시안의 3레일**(좌 레일 + 요약 스트립 + 진행 라인 + 우 레일)로
+   다시 그렸다. 구 2컬럼 관리 화면의 `.project-page` · `.project-layout` · `.project-list` ·
+   `.project-row(-name)` · `.project-detail` · `.project-members` · `.project-tasks` ·
+   `.project-new` · `.project-join` 열한 종은 **쓰는 곳이 0곳**이 되어 지웠다(조사 §4-3 A: 다른 소비처 0).
+   새 자리는 `styles/projects.css` 의 `.scax-pj-*` 다.
 
-   일일보고와 같은 「머리 두 줄」이다 — 셸 `AppHeader`(「프로젝트」) 위에 페이지 `<h2>프로젝트</h2>`
-   가 또 선다. 같은 이유(P-4)로 안 합치고 보고만 한다. */
-
-.project-page { display: grid; gap: var(--scax-space-400); }
-.project-layout { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); gap: var(--scax-space-400); align-items: start; }
-
-.project-list { display: grid; gap: var(--scax-space-200); padding: var(--scax-space-300); border: 1px solid var(--scax-color-line); border-radius: var(--scax-radius-xl); background: var(--scax-color-surface); box-shadow: var(--scax-shadow-card); }
-.project-list-head { display: flex; align-items: center; justify-content: space-between; gap: var(--scax-space-200); }
-.project-list-head b { font-size: var(--scax-text-label2-size); line-height: var(--scax-text-label2-lh); letter-spacing: var(--scax-text-label2-ls); font-weight: var(--scax-fw-semibold); color: var(--scax-color-ink-neutral); }
-.project-list ul { display: grid; gap: var(--scax-space-100); margin: 0; padding: 0; list-style: none; }
-.project-new { display: grid; gap: var(--scax-space-200); padding: var(--scax-space-300); border: 1px solid var(--scax-color-line-weak); border-radius: var(--scax-radius-sm); background: var(--scax-color-fill-weak); }
-
-.project-row { display: grid; gap: var(--scax-space-050); width: 100%; padding: var(--scax-space-200) var(--scax-space-300); border: 1px solid transparent; border-radius: var(--scax-radius-sm); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: background var(--scax-duration-fast) var(--scax-easing); }
-.project-row:hover { background: var(--scax-color-fill-weak); }
-.project-row.on { border-color: var(--scax-color-accent-20); background: var(--scax-color-accent-05); }
-.project-row-name { font-size: var(--scax-text-label2-size); line-height: var(--scax-text-label2-lh); letter-spacing: var(--scax-text-label2-ls); font-weight: var(--scax-fw-semibold); color: var(--scax-color-ink); }
-.project-row.on .project-row-name { color: var(--scax-color-accent); }
-
-.project-detail { display: grid; gap: var(--scax-space-400); padding: var(--scax-space-400); border: 1px solid var(--scax-color-line); border-radius: var(--scax-radius-xl); background: var(--scax-color-surface); box-shadow: var(--scax-shadow-card); }
-.project-detail.empty { display: grid; place-content: center; min-height: 200px; }
-.project-detail h3 { margin: 0; font-family: var(--scax-font-ui); font-size: var(--scax-text-title-size); line-height: var(--scax-text-title-lh); letter-spacing: var(--scax-text-title-ls); font-weight: var(--scax-fw-semibold); color: var(--scax-color-ink); }
-.project-detail > p { font-size: var(--scax-text-label1-size); line-height: var(--scax-text-label1-lh); letter-spacing: var(--scax-text-label1-ls); color: var(--scax-color-ink-neutral); }
-.project-detail section { display: grid; gap: var(--scax-space-200); }
-.project-detail section > b { font-size: var(--scax-text-label1-size); line-height: var(--scax-text-label1-lh); letter-spacing: var(--scax-text-label1-ls); font-weight: var(--scax-fw-semibold); color: var(--scax-color-ink); }
-
-.project-members, .project-tasks { display: grid; gap: var(--scax-space-150); margin: 0; padding: 0; list-style: none; }
-.project-members li, .project-tasks li { display: flex; align-items: center; gap: var(--scax-space-200); flex-wrap: wrap; font-size: var(--scax-text-label2-size); line-height: var(--scax-text-label2-lh); letter-spacing: var(--scax-text-label2-ls); color: var(--scax-color-ink); }
-/* `ProjectPage.test.tsx:93` 이 `li[data-task-id="t-2"].className` 에 "child" 가 있는지 본다 —
-   하위 업무를 들여쓰는 이 규칙이 그 단언의 «뜻» 이다. 이름을 못 바꾼다. */
-.project-tasks li.child { padding-left: var(--scax-space-400); }
-.project-tasks li.child::before { content: "└"; color: var(--scax-color-ink-assistive); }
-
-.project-join { display: flex; align-items: flex-end; gap: var(--scax-space-200); flex-wrap: wrap; }
-
+   ⚠ `components.css:692-693` 의 반응형 줄에 남은 `.project-layout` 은 **건드리지 않았다** —
+   `.dashboard-columns`·`.report-grid` 와 **같은 규칙에 묶여 있어서** 그 줄을 손대면 홈·보고가 같이 움직인다.
+   선택자 하나가 죽은 채 남는 비용이, 두 화면을 흔드는 비용보다 싸다. */
 
 /* ════════════ 좁은 폭 ═══════════════════════════════════════════════════════════
    구 styles.css:825~827 이 `.dashboard-columns`·`.report-grid`·`.project-layout` 셋을

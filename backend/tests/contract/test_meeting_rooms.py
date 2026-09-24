@@ -1106,6 +1106,9 @@ def test_room_sync_patches_only_room_fields_into_the_frozen_action_receipt(tmp_p
     assert current["location"] == "동기화와 무관한 별도 장소"
 
 
+#: 스레드 둘로 «동시 승인 + 만료 재생»을 만들고 그 진행을 `release.wait(5)`·`entered.wait(2)` 라는
+#: 초 단위 실시간 창으로 잰다 — 마커가 왜 여기 있는지는 tests/conftest.py 위 기준 한 문장.
+@pytest.mark.serial
 def test_expired_replay_waits_for_the_live_room_sync_before_recovery(tmp_path) -> None:
     class BlockingGateway(FakeRoomGateway):
         def __init__(self) -> None:

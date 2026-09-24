@@ -208,9 +208,22 @@ def test_the_demo_offers_its_own_accounts_as_a_shortcut_and_production_offers_no
 
 
 def test_production_is_offered_no_accounts_and_no_route(tmp_path) -> None:
+    """PRODUCTION 은 «무엇으로 로그인할 수 있는가»를 답하되, 지름길도 로컬 로그인도 내놓지 않는다.
+
+    **2026-09-22 (WORK-006 Phase 6b)**: 라우트 등록이 프로파일에서 분리되면서 이 조회는 404 가 아니라
+    200 이 된다. 바뀐 것은 **등록**이지 **권한**이 아니다 — 답은 여전히 「로컬 로그인 없음」이고,
+    데모 계정·데모 비밀번호는 **한 줄도 실리지 않는다.**
+    """
     client, _ = _stack(tmp_path, RuntimeProfile.PRODUCTION)
-    assert client.get("/api/auth/providers").status_code == 404
-    assert "/api/developer/personas" not in {route.path for route in client.app.routes}
+    providers = client.get("/api/auth/providers")
+    assert providers.status_code == 200
+    assert providers.json() == {"local": False, "oidc": False}
+    # 지름길이 새지 않는다 — 계정 목록도 비밀번호도 없다.
+    assert "demo_accounts" not in providers.json() and "demo_password" not in providers.json()
+    # 로그인 route 자체가 없고, 개발 전용 표면도 없다.
+    paths = {route.path for route in client.app.routes}
+    assert "/api/auth/login" not in paths
+    assert "/api/developer/personas" not in paths
 
 
 def test_the_member_directory_puts_names_to_ids_for_anyone_signed_in(tmp_path) -> None:

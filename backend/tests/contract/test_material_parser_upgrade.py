@@ -1,13 +1,14 @@
 """A historical completion is not evidence that the current projection contract was met."""
 import asyncio
-import pytest
 from uuid import UUID
 
+import pytest
 from ax_workspace.entrypoints.mcp import McpReportsFacade
 from ax_workspace.platform.persistence import MaterialExtractionRecord, make_session_factory
 from test_material_search import MINA, _stack, _upload
 
 
+@pytest.mark.serial
 def test_legacy_completion_is_unavailable_until_the_current_parser_reads_the_source(tmp_path):
     client, _, worker, settings = _stack(tmp_path)
     task = client.post("/api/tasks", headers=MINA, json={"title": "이전 추출 검증"}).json()
@@ -32,6 +33,7 @@ def test_legacy_completion_is_unavailable_until_the_current_parser_reads_the_sou
         assert old.status == "completed" and old.coverage is None and old.superseded_at is None
 
 
+@pytest.mark.serial
 def test_idle_worker_upgrades_legacy_projection_once_without_rewriting_old_blocks(tmp_path):
     from sqlalchemy import select
     from ax_workspace.modules.work.material_extraction import PARSER_VERSION, MaterialExtractionJob
@@ -68,6 +70,7 @@ def test_idle_worker_upgrades_legacy_projection_once_without_rewriting_old_block
     assert worker.process(MaterialExtractionJob(old_id, UUID(material["attachment_id"]))) == "skipped"
 
 
+@pytest.mark.serial
 @pytest.mark.parametrize("old_status", ["queued", "running"])
 def test_old_pending_delivery_is_redirected_without_publishing_under_the_old_version(tmp_path, old_status):
     from sqlalchemy import select
