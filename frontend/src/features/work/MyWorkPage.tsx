@@ -573,9 +573,30 @@ export function MyWorkPage({
   const backDetail = useCallback(() => setDetailStack((stack) => stack.slice(0, -1)), []);
   const closeDetail = useCallback(() => setDetailStack([]), []);
 
-  /** 목록에서 내 업무 하나를 연다 — 여기서만 명령을 부를 수 있다. */
+  /**
+   * 목록에서 내 업무 하나를 연다 — 여기서만 명령을 부를 수 있다.
+   *
+   * **상세 조회를 거친다** (SPEC-007 §4 「선행 배선 복구」 · S-8). 목록 투영에는 `predecessors` 도
+   * `successors` 도 없어서, 그것을 그대로 넘기면 **선행 칸과 시작 게이트가 통째로 사라졌다**
+   * (BASE-005 결함 ①). 이제 **목록에서 연 길과 상세 «안에서» 따라 들어간 길이 같은 화면**이다 —
+   * `pushDerivedTask` 가 이미 `getTask` 를 거치고 있었고 이 자리만 안 그랬다.
+   *
+   * ⚠ 조회가 실패해도 **연다** — 목록이 이미 내준 행이므로 읽을 수는 있는 업무이고, 서랍이
+   * 자기 안에서 상세를 한 번 더 읽어 그때 칸마다 실패를 말한다. 여기서 막으면 그 자리도 못 본다.
+   */
   const openMyTask = useCallback(
-    (task: DirectTask) => openDetail({ kind: "task", taskId: task.task_id, task, manage: canManageOwnTasks, tracked: true }),
+    (task: DirectTask) => {
+      openDetail({ kind: "task", taskId: task.task_id, task, manage: canManageOwnTasks, tracked: true });
+      void getTask(task.task_id)
+        .then((detail) =>
+          setDetailStack((stack) =>
+            stack.map((entry) =>
+              entry.kind === "task" && entry.taskId === detail.task_id ? { ...entry, task: detail } : entry,
+            ),
+          ),
+        )
+        .catch(() => undefined);
+    },
     [canManageOwnTasks, openDetail],
   );
 
@@ -1222,7 +1243,11 @@ export function MyWorkPage({
           onChanged={reload}
           onOpenTask={(taskId) => void pushDerivedTask(taskId)}
           onTransition={detail.manage ? transitionTask : async () => undefined}
-          onOpenSource={detail.task.origin?.source ? (source) => void openSource(source) : undefined}
+          /* **언제나 넘긴다** — 출처 칩만 쓰던 통로를 프로젝트 칸도 쓴다(검수 FAIL-2).
+             출처 칩 쪽 동작은 그대로다: 그 칩은 `origin.source` 가 있을 때만 서고, 없으면
+             이 값이 있든 없든 아무것도 안 그린다. `openSource` 는 자기가 모르는 종류를
+             조용히 되돌린다 — 그 갈래는 예전부터 있었다(회의 출처 등). */
+          onOpenSource={(source) => void openSource(source)}
           onUpdate={detail.manage ? updateTaskFields : async () => undefined}
           ownerName={detail.task.assignee ? personName(detail.task.assignee.display_name) : detail.manage ? me : "미할당"}
           personaId={personaId}

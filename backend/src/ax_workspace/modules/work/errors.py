@@ -44,6 +44,33 @@ class TaskDirectNesting(TaskError):
     """같은 담당자의 직접 작업 아래에 직접 작업을 두려 했다 (SPEC-003 `WORK_DIRECT_NESTING`, 409)."""
 
 
+class TaskChildrenDirectNesting(TaskError):
+    """**이동하면 이미 있는 하위가 V-8 을 어기게 된다** (SPEC-007 `WORK_CHILDREN_DIRECT_NESTING`, 409).
+
+    **`TaskDirectNesting` 과 합치지 않는다.** 그 코드는 「**지금 만들려는 관계**가 규칙을 어긴다」이고
+    이것은 「**이미 있는 관계**가 깨진다」다. 같은 문장을 쓰면 상위를 바꾸려 했는데 「직접 작업은…」이
+    떠서 **무엇을 고쳐야 하는지 모른다** (D-18). 선행·하위 코드를 합치지 않는 선례가 같은 논리다.
+
+    **판정은 하나다**: 이동 후 이 업무가 중심 업무가 아니게 되는데(= 새 상위의 활성 담당자가 이 업무의
+    담당자와 **같다**) **담당자가 이 업무의 담당자와 같은 직속 하위**가 하나라도 있으면 거절이다.
+    `TaskDirectNesting` 은 그보다 앞에서 「새 상위가 중심 업무가 아닌」 갈래를 이미 걷어 내므로
+    **둘이 겹치지 않는다** — 이 예외가 서는 자리는 새 상위가 중심 업무일 때뿐이다.
+
+    **직속 하위만 본다.** 손자의 V-8 판정은 자기 부모(= 이 업무의 하위)의 중심 업무 여부를 보고,
+    **그 값은 이 이동으로 바뀌지 않는다** — 이동이 이 업무의 담당자를 바꾸지 않기 때문이다.
+    그래서 프로젝트 파급(자손 전체)과 **범위가 다르다**: 프로젝트는 값이 자손에 전파되고 V-8 은
+    부모–자식 **한 쌍**의 판정이다.
+
+    **막는 하위의 이름을 본문에 낸다.** 읽을 수 없는 하위는 이름 없이 **건수로** 말한다 —
+    막을지는 하위 **전부**로 정하고(권한으로 게이트를 우회하지 못한다) 이름은 읽을 수 있는 것만
+    낸다. 미완 하위 거절과 선행 게이트가 이미 그 모양이다.
+    """
+
+    def __init__(self, message: str, blocking: tuple[dict[str, str], ...] = ()) -> None:
+        super().__init__(message)
+        self.blocking = blocking
+
+
 class TaskParentUnassigned(TaskError):
     """수락 전 요청 Task 아래에 하위를 만들려 했다 (SPEC-003 `WORK_PARENT_UNASSIGNED`, 409)."""
 
@@ -159,6 +186,21 @@ class TaskPredecessorsUnfinished(InvalidTaskTransition):
     def __init__(self, message: str, blocking: tuple[dict[str, str], ...] = ()) -> None:
         super().__init__(message)
         self.blocking = blocking
+
+
+class TaskSuccessorVersionConflict(TaskError):
+    """후행 해제의 **B 의 회차**가 어긋났다 (SPEC-007 `WORK_VERSION_STALE`, 409).
+
+    **왜 새 예외인가.** 기존 업무 표면의 회차 어긋남은 `InvalidTaskTransition("task version is
+    stale")` 이고 **422** 로 나간다(그 자리의 현행 계약이며 SPEC-004 증보 K8 이 그것을 그대로 두라고
+    적는다). SPEC-007 § Case Matrix 는 이 명령의 회차 어긋남을 **409** 로 고정했다 — 「명령 자체는
+    말이 되는데 지금 그 업무의 회차가 그 명령을 받지 않는다」이기 때문이다.
+
+    **기존 422 를 409 로 바꾸지 않는다.** 그러면 이 판이 허가받지 않은 계약 변경을 하게 된다.
+    새 표면에만 새 예외를 두고, 두 자리가 다른 상태를 낸다는 사실을 리포트에 남긴다.
+    **선례가 그 모양이다** — `TaskScheduleVersionConflict` 도 「배정 회차는 업무 회차와 다른 예외」로
+    409 에 따로 서 있다.
+    """
 
 
 class TaskApproverInvalid(TaskError):

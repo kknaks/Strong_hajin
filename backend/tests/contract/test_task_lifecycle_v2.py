@@ -16,8 +16,10 @@
 - `derived.reply` · `derived.status_note` 는 그 원장이 아직 없어 **`null` 이 정상**이다.
 - `child_progress.blocking` 은 **보이는 하위**만 센다 — 0 이라고 완료가 허용된다는 뜻이 아니다
   (읽을 수 없는 하위도 막는다 · `..._without_naming_them`).
-- `WORK_PARENT_CYCLE` 은 **도달 경로가 없다** — 부모는 생성 시점에 정해지고 이동 명령이 없다(EU-15).
-  그 자리는 「고리를 만들 입구가 없다」로 확인한다.
+- `WORK_PARENT_CYCLE` 은 **이제 도달 경로가 있다** — SPEC-007 §4 가 `PATCH` 에 `parent_task_id` ·
+  `clear_parent` 를 열었다(D-17). 앞판은 「이동 명령이 없어 고리를 만들 입구가 없다」로 확인했고,
+  지금은 **입구에서 거절되는 것**으로 확인한다. 상위 이동의 검증 0~7 전수는
+  `test_task_parent_change.py` 가 갖는다 — 이 파일은 생명주기 축만 센다.
 """
 
 from __future__ import annotations
@@ -377,18 +379,33 @@ def test_lifecycle_v2_no_child_stands_under_a_request_nobody_has_taken(tmp_path)
 
 
 def test_lifecycle_v2_the_parent_link_is_fixed_at_creation_so_no_cycle_can_be_made(tmp_path) -> None:
-    """상위 관계를 **옮기는 명령이 없다** (미정 EU-15) — 그래서 자기 조상을 부모로 둘 입구도 없다."""
+    """자기 하위를 상위로 둘 수 없다 — **이제 입구가 있고 거기서 거절한다** (SPEC-007 §4 · D-17).
+
+    **이 테스트의 앞판은 「이동 명령이 없다」(미정 EU-15)를 근거로 422 를 셌다.** SPEC-007 이 그 자리를
+    열었으므로(§4 「지금은 이 칸을 보내면 422 이고 **이 SPEC 이 그 자리를 연다**」) 근거가 달라진다 —
+    **막는 것은 `extra='forbid'` 가 아니라 순환 검사**(`WORK_PARENT_CYCLE`)다. 코드는 그대로 422 이고
+    「고리를 만들 수 없다」도 그대로다. 바뀐 것은 **왜** 막히는가 하나다.
+    """
     client, _ = stack(tmp_path)
     parent = own_task(client, "상위", MINA)
     child = own_task(client, "하위", MINA, parent_task_id=parent)
 
-    # 수정 명령은 상위를 아예 받지 않는다 — 「받고 거절한다」가 아니라 **입력에 그 자리가 없다**.
+    # 자기 하위를 자기 상위로 — 고리가 된다.
     moved = client.patch(
         f"/api/tasks/{parent}",
         headers=MINA,
         json={"expected_version": version(client, parent, MINA), "parent_task_id": child},
     )
-    assert moved.status_code == 422 and "parent_task_id" in moved.text
+    assert moved.status_code == 422, moved.text
+    assert "상위 업무를 하위로" in moved.json()["detail"]
+    # 자기 자신도 같은 거절이다.
+    itself = client.patch(
+        f"/api/tasks/{parent}",
+        headers=MINA,
+        json={"expected_version": version(client, parent, MINA), "parent_task_id": parent},
+    )
+    assert itself.status_code == 422, itself.text
+    # **아무것도 움직이지 않았다.**
     assert detail(client, parent, MINA)["parent"] is None
     assert detail(client, child, MINA)["parent"]["task_id"] == parent
 

@@ -13,6 +13,8 @@ vi.mock("../../lib/api", () => ({
   getTask: vi.fn(),
   getTaskHistory: vi.fn(),
   getTasks: vi.fn(),
+  // 업무 상세가 프로젝트 «이름»을 이 목록에서 맞춘다 (SPEC-007 §2.4.4).
+  listProjects: vi.fn().mockResolvedValue([]),
   getActionItems: vi.fn(),
   getActionItem: vi.fn(),
   runActionCommand: vi.fn(),
@@ -557,12 +559,20 @@ describe("what the list says about dates", () => {
     /* 바퀴 5a J-6: 목록이 시안대로 5열이 되면서 «시작일 열» 이 빠졌다. 값은 사라지지 않았고
        상세로 자리를 옮겼을 뿐이라(거기서는 고칠 수도 있다), 같은 사실을 그 자리에서 검사한다. */
     fireEvent.click(await screen.findByText("시작일이 있는 업무"));
+    /* 업무 상세가 다시 그려지면서 날짜는 **「편집」 안에서만** 입력칸이 된다 (SPEC-007 §2.2).
+       읽을 때는 메타 한 줄의 `시작` 이고, 고칠 때는 이 칸이다 — 값이 옮겨 간 것은 아니다. */
+    expect(within(await screen.findByLabelText("업무 메타")).getByText("2026/09/01")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "편집" }));
     expect((await screen.findByLabelText("시작일")).textContent).toContain("2026-09-01");
     fireEvent.click(screen.getByRole("button", { name: "상세 닫기" }));
 
     // A task nobody scheduled has no start date. The day it was created is not one.
     fireEvent.click(await screen.findByText("시작일이 없는 업무"));
-    // 아무도 잡아 주지 않은 업무에는 시작일이 없다. 만든 날은 시작일이 아니다.
+    // 아무도 잡아 주지 않은 업무에는 시작일이 없다. 만든 날은 시작일이 아니다 —
+    // **값이 없는 메타 칸은 아예 서지 않으므로** 「시작」이라는 글자부터 없다.
+    const meta = await screen.findByLabelText("업무 메타");
+    expect(within(meta).queryByText("시작")).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "편집" }));
     const without = await screen.findByLabelText("시작일");
     expect(without.textContent).not.toContain("2026-08-20");
     expect(without.textContent).toContain("YYYY-MM-DD");

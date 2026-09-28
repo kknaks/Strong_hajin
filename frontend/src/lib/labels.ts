@@ -319,6 +319,135 @@ export function hiddenPredecessorsText(count: number): string {
   return `볼 수 없는 선행업무 ${count}건`;
 }
 
+/**
+ * 업무 상세 한 장이 내는 말 (SPEC-007 · 확정 시안 `TaskDetail.html`).
+ *
+ * **배치·칸·셈·문구는 시안이 정본이다** — 여기 적힌 글자는 그 시안에서 그대로 옮긴 것이고
+ * 줄 번호를 같은 줄에 단다. 시안이 답하지 않은 자리만 `(제안)` 으로 표시했다.
+ *
+ * 낱말 하나가 이 화면에서만 갈린다 — **「산출물」이 「결과 자료」**다 (D-05 · OQ-705).
+ * 저장 쪽 값 이름(`input`/`output`)은 그대로이고 **다른 표면의 「산출물」도 그대로 둔다.**
+ */
+export const taskDetail = {
+  /* 덩어리 여섯 — 순서가 계약이다 (SPEC-007 §2.1) */
+  blockInfo: "업무 정보",
+  blockRelations: "연관 업무",
+  blockRelationsEditing: "연관 업무 편집",
+  blockMaterials: "자료",
+  blockProgress: "진행과 판단",
+  blockHistory: "이력",
+
+  /* 업무 메타 한 줄 (§2.2 · 시안 `:134-145`) */
+  metaAssignee: "담당",
+  metaDue: "기한",
+  metaStart: "시작",
+  /** 화면 라벨은 「결재」이고 계약의 이름은 승인자(`approver_id`)다 (SPEC-001 §7 OQ-N). */
+  metaApprover: "결재",
+  metaCc: "참조",
+  edit: "편집",
+  editDone: "편집 끝내기",
+  ax: "AX",
+
+  /* 업무 정보 (§2.3 · 시안 `:152-164`) */
+  description: "업무 내용",
+  descriptionNone: "적어 둔 내용이 없습니다.",
+  checklist: "체크리스트",
+  checklistNone: "단계가 없습니다.",
+
+  /* 연관 업무 여섯 칸 (§2.4 · 시안 `:174-225`) */
+  relationsEdit: "연결 편집",
+  relationsCancel: "취소",
+  relationsSave: "저장",
+  parent: "상위 업무",
+  parentNone: "없음",
+  project: "프로젝트",
+  projectNone: "없음",
+  /** `project_id` 는 아는데 그 프로젝트를 읽을 수 없는 갈래 (§2.4.4 · (제안)). */
+  projectHidden: "비공개 프로젝트",
+  children: "하위 업무",
+  childrenNone: "하위 업무가 없습니다.",
+  preceding: "선행 업무",
+  precedingNone: "연결된 선행 업무가 없습니다.",
+  references: "참고 업무",
+  referencesNone: "연결된 참고 업무가 없습니다.",
+  successors: "후행 업무",
+  successorsNone: "이 업무를 기다리는 업무가 없습니다.",
+  add: "추가",
+  /**
+   * 하위 칸 머리의 단추 — **새 업무를 만드는** 입구다 (사용자 지시 2026-09-28).
+   *
+   * 「추가」라고만 쓰면 **기존 것을 붙이는 것**으로 읽힌다 — 연결 편집의 「추가 [업무 고르기]」가
+   * 바로 그 일이라 한 화면에 같은 낱말이 **다른 뜻**으로 두 번 선다. 이쪽은 생성 모달을 연다.
+   */
+  childCreate: "하위 업무 생성",
+  release: "해제",
+  /** 셀렉터의 첫 옵션 (시안 `:367`·`:378`·`:388`). */
+  pickTask: "업무 고르기",
+  /** 셀렉터의 「비우기」 옵션 (시안 `:346`·`:354`). */
+  pickNone: "— 없음 —",
+
+  /* 셈 (§2.4.1) */
+  /** 하위 — `2 / 5 · 완료 막음 3` (시안 `:186`). 취소는 그 뒤에 따로 붙는다. */
+  childCount: (done: number, total: number, blocking: number, cancelled: number): string => {
+    const parts = [`${done} / ${total}`];
+    if (blocking > 0) parts.push(`완료 막음 ${blocking}`);
+    if (cancelled > 0) parts.push(`취소 ${cancelled}`);
+    return parts.join(" · ");
+  },
+  /**
+   * 선행 — `2 · 모두 완료` / `1 · 미완 1` (시안 `:197`·`:308`).
+   * **건수에 못 읽는 선행이 들어가고 그것을 미완으로 센다** (§2.4.3 W-2).
+   */
+  precedingCount: (total: number, unfinished: number): string =>
+    unfinished === 0 ? `${total} · 모두 완료` : `${total} · 미완 ${unfinished}`,
+  /** 참고·후행 — 건수 하나 (시안 `:207`·`:215`). 편집 상태의 셈도 전부 이 모양이다 (§2.8). */
+  plainCount: (total: number): string => `${total}`,
+
+  /* 못 읽는 것 — 제목은 감추고 건수는 낸다 */
+  /** 시안 `:222`. */
+  hiddenSuccessors: (count: number): string => `🔒 비공개 업무 ${count}건이 이 업무를 기다립니다.`,
+  /** 시안 `:399`. */
+  hiddenSuccessorsLocked: (count: number): string => `🔒 비공개 ${count}건은 여기서 해제할 수 없습니다.`,
+  /** 선행도 **건수 한 줄**이다 — 빈 줄을 늘어놓지 않는다 (§2.4.3 W-1 · (제안)). */
+  hiddenPreceding: (count: number): string => `🔒 비공개 선행 업무 ${count}건`,
+
+  /* 시작 막힘 배너 (§2.6 · 시안 `:268-271`) */
+  blockedHeading: "시작할 수 없습니다",
+  /**
+   * 막는 선행의 제목 — **최대 셋**까지 (§2.6). 뒤에 붙는 말과 **갈라 둔다**:
+   * 배너가 **제목만 굵게** 내기 때문이다 (시안 `TaskDetail.html:270`). 한 문장으로 두면
+   * 강조할 조각을 고를 수가 없다.
+   */
+  blockedTitles: (titles: string[]): string => titles.slice(0, 3).join(", "),
+  blockedTitlesSuffix: "이 끝나지 않았습니다.",
+  /** 제목을 쓸 수 없는 선행이 섞였을 때 뒤에 덧붙인다 (§2.6). */
+  blockedHiddenSuffix: (count: number): string => `끝나지 않은 선행 ${count}건`,
+  /** 하위는 **완료**를 막는다 — 배너를 공유하지 않는다 (D-11). */
+  childrenBlockHeading: "아직 끝나지 않은 하위가 있습니다",
+
+  /* 자료 (§2.5 · 시안 `:230-246`) */
+  materialsInput: "참고 자료",
+  /** **「산출물」을 이 화면에서만 갈아 쓴다** (D-05 · OQ-705). */
+  materialsOutput: "결과 자료",
+  materialsInputNone: "등록된 참고 자료가 없습니다.",
+  materialsOutputNone: "등록된 결과 자료가 없습니다.",
+
+  /*
+   * 목록의 길이를 잡는 자리 (사용자 지시 2026-09-28).
+   *
+   * 테두리 통을 걷으면서 스크롤도 함께 사라졌다 — 30줄짜리 하위 목록이 덩어리를 밀어내지 않게
+   * **접는다.** 셈은 머리에 그대로 있으므로 접혀 있어도 «전체 몇 개인지»는 늘 읽힌다.
+   */
+  listMore: (rest: number): string => `더 보기 ${rest}개`,
+  listFold: "접기",
+
+  /* 로딩·실패 — 0건과 «아직 안 온 것»을 다르게 그린다 (§2 읽는 규칙 3) */
+  loading: "불러오는 중",
+  /** 한 칸이 실패해도 나머지는 조작할 수 있다 (SPEC-001 `:832`). */
+  loadFailed: "이 칸을 불러오지 못했습니다.",
+  retry: "다시 시도",
+} as const;
+
 /** 값이 없을 때 칸에 남기는 것 — 공백이 아니라 대시다 (v2 12 TABLE). */
 export const emptyValue = "—";
 

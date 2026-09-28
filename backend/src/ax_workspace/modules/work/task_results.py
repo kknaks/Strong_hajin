@@ -209,6 +209,24 @@ class TaskSummaryView(TaskParentView):
     derived: NotRequired[TaskDerivedView | None]
 
 
+class TaskSuccessorView(TaskSummaryView):
+    """**나를 선행으로 삼는 업무** 하나 (SPEC-007 §4 Data Contract).
+
+    **후행은 넷째 관계가 아니다** — `task_predecessors` 의 같은 행을 반대쪽에서 읽은 것이고
+    저장되지 않는다. 그래서 `reference_id` 같은 **관계 자신의 식별자가 없다**: 관계는 (이 업무 ·
+    그 업무) 한 쌍으로 유일하게 지목된다.
+
+    **`version` 을 더한다.** 후행 해제가 바꾸는 것은 **그 후행 업무**이고, 그 업무의 회차를 화면이
+    따로 들고 있지 않다 — 「상태·값을 바꾸는 모든 명령에 회차 필수」가 계약이므로 이 줄이 그 값을
+    함께 낸다. 선례는 참고 추가 응답이 대상 업무의 `task_version` 을 함께 내는 자리다.
+
+    **못 읽는 후행은 이 배열에 서지 않는다** — `task_id` 도 내지 않고 `hidden_successor_count` 로만
+    센다. 선행과 **반대 규칙**인 것이 계약이다: 선행은 자리를 남기고 후행은 건수로 접는다.
+    """
+
+    version: int
+
+
 class TaskReferenceView(TypedDict):
     reference_id: str
     created_by: str
@@ -236,6 +254,14 @@ class TaskDetailResult(TaskMutationResult):
     access: Literal['owner', 'read_only']
     #: 각 선행의 제목·상태. `preceding_task_ids` 와 **같은 순서·같은 길이**다.
     predecessors: list[TaskPredecessorView]
+    #: **나를 기다리는 업무들 — 읽을 수 있는 것만** (SPEC-007 §4). 정렬은 **관계가 선 순서**
+    #: (오래된 것이 위)다. 취소·완료된 후행도 관계가 살아 있으면 남고 상태가 그 줄에 보인다.
+    #: **상세 하나에만 실린다** — 목록·프로젝트 상세·요청 응답에는 없다(줄마다 역방향 조회 +
+    #: per-후행 권한 판정이 돌아 N×M 이 된다). `access` 갈래는 **가르지 않는다**.
+    successors: list[TaskSuccessorView]
+    #: **읽을 수 없는 후행의 건수.** 배열에 자리를 남기지 않는 대신 이 수가 그것을 말한다 —
+    #: 선행은 자리를 남기고(`predecessors` 의 `title: null`) 후행은 건수로 접는다.
+    hidden_successor_count: int
     checklist: NotRequired[list[ChecklistItemView]]
     checklist_progress: NotRequired[TaskProgressView]
     references: NotRequired[list[TaskReferenceView]]
@@ -319,6 +345,24 @@ class TaskReferenceResult(TaskReferenceView):
 class TaskReferenceReleaseResult(TypedDict):
     reference_id: str
     task_version: int
+
+
+class TaskSuccessorReleaseResult(TypedDict):
+    """후행 하나를 닫은 영수증 — **갱신된 A 의 후행 묶음** (SPEC-007 §4 후행 해제).
+
+    **관계 식별자를 내지 않는다** — 후행은 저장되는 관계가 아니라 같은 행을 반대로 읽은 것이고,
+    화면이 다음에 쓸 값은 「지금 남은 후행」이다. 그래서 상세와 **같은 두 칸**을 그대로 낸다.
+
+    **`task_version` 은 «후행 쪽» 업무의 새 회차다.** 바뀐 값이 B 의 선행 배열이므로 회차가 오르는
+    쪽도 B 다 — **A 의 회차는 움직이지 않는다**(A 의 값이 바뀌지 않았다). 그래서 A 의 회차를 이
+    응답에 싣지 않는다: 안 바뀐 값을 바뀐 것처럼 보이게 하지 않는다.
+    """
+
+    task_id: str
+    successor_task_id: str
+    task_version: int
+    successors: list[TaskSuccessorView]
+    hidden_successor_count: int
 
 
 class TaskCompletionResult(TaskMutationResult):

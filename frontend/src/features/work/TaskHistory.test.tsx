@@ -26,6 +26,8 @@ vi.mock("../../lib/api", () => ({
   attachTaskMaterialLink: vi.fn(),
   attachTaskMaterialReference: vi.fn(),
   getTasks: vi.fn(),
+  // 업무 상세가 프로젝트 «이름»을 이 목록에서 맞춘다 (SPEC-007 §2.4.4).
+  listProjects: vi.fn().mockResolvedValue([]),
   getTaskAssignmentCandidates: vi.fn(),
   reassignTask: vi.fn(),
   taskMaterialContentUrl: () => "",

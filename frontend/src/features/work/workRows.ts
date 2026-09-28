@@ -138,9 +138,48 @@ export function visiblePredecessorsOf(task: DirectTask | null | undefined): Arra
  *
  * **`시작 전` 에서만 본다** — `진행 중` 의 완료는 선행을 보지 않는다(막는 것은 시작이다).
  * 이미 시작한 뒤에 선행이 다시 열려도 되돌리지 않는다: 게이트는 시작 시점 판정이다.
+ *
+ * **못 읽는 선행은 이 판정에 들어가지 않는다** (SPEC-007 OQ-709 · 사용자 확정 2026-09-28).
+ * 셈에서는 그것을 「미완」으로 세지만(`unfinishedPrecedingCountOf`) **단추는 열어 둔다** —
+ * 서버는 그 선행의 상태를 «알고» 판정하므로 실제로 끝났으면 열어 준다. 화면이 잠그면
+ * **출구가 없다.** 아직 안 끝났으면 서버가 409 로 거절하고 그 문장이 그대로 뜬다.
  */
 export function startBlockedByPredecessors(task: DirectTask | null | undefined): boolean {
   return task?.state === "open" && blockingPredecessorsOf(task).length > 0;
+}
+
+/**
+ * 선행 전부의 건수 — **읽을 수 있는 수 + 못 읽는 수** (SPEC-007 §2.4.3 W-2).
+ *
+ * 배열이 못 읽는 선행의 **자리를 남기므로** 길이가 곧 건수다. 후행과 같은 규칙이다 —
+ * 다른 것은 응답의 모양뿐이고(후행 배열은 아예 빠진다) 화면이 내는 셈은 하나다.
+ */
+export function precedingCountOf(task: DirectTask | null | undefined): number {
+  return (task?.predecessors ?? []).length;
+}
+
+/**
+ * 미완 선행의 수 — **못 읽는 선행을 「미완」으로 센다** (SPEC-007 §2.4.3 W-2).
+ *
+ * `state` 가 `null` 이라 **끝났는지 확인할 수 없고**, 확인할 수 없는 것을 끝난 것으로 치지
+ * 않는다. 그래서 못 읽는 선행이 하나라도 있으면 **「모두 완료」가 서지 않는다.**
+ *
+ * ⚠ **이 셈과 시작 게이트는 갈린다** — 게이트는 읽을 수 있는 미완만 본다
+ * (`startBlockedByPredecessors`). 셈은 「모르는 것을 끝났다고 말하지 않는다」이고
+ * 게이트는 「서버가 열어 줄 것을 화면이 잠그지 않는다」다 (OQ-709).
+ */
+export function unfinishedPrecedingCountOf(task: DirectTask | null | undefined): number {
+  return (task?.predecessors ?? []).filter((row) => row.state !== "done" && row.state !== "cancelled").length;
+}
+
+/**
+ * 후행의 건수 — **읽을 수 있는 수 + 못 읽는 수** (SPEC-007 §2.4.5).
+ *
+ * 못 읽는 후행은 배열에 자리도 `task_id` 도 없고 `hidden_successor_count` 로만 오므로,
+ * 줄 수만 세면 「기다리는 업무의 규모」가 샌다.
+ */
+export function successorCountOf(task: DirectTask | null | undefined): number {
+  return (task?.successors ?? []).length + (task?.hidden_successor_count ?? 0);
 }
 
 /** 기한이 지난 날수 — 서버 값이 먼저다. 없으면 기한과 오늘로 센다(표시만 바뀐다 · U-14). */

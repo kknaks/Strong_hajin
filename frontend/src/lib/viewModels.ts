@@ -203,6 +203,25 @@ export type TaskChild = {
 };
 
 /**
+ * 나를 선행으로 삼는 업무 한 건 (SPEC-007 §4 `TaskSuccessorView`).
+ *
+ * 하위 줄(`TaskChild`)과 같은 모양에 **`version` 하나가 더 붙는다** — 해제가 바꾸는 것은
+ * **그 후행 업무**이고 그 업무의 회차를 이 화면이 달리 알 길이 없기 때문이다.
+ * 「상태·값을 바꾸는 모든 명령에 회차 필수」가 계약이라 줄이 그 값을 함께 싣는다.
+ *
+ * 취소·완료된 후행도 **목록에 남는다** — 관계가 살아 있으면 실리고 상태가 그 줄에 보인다.
+ */
+export type TaskSuccessor = {
+  task_id: string;
+  title: string;
+  state: TaskState;
+  due_date?: string | null;
+  assignee?: { member_id: string; display_name: string } | null;
+  /** **그 후행 업무의** 회차. 후행 해제의 `expected_version` 이 된다. */
+  version: number;
+};
+
+/**
  * Where requested work stands with the person who asked for it. Present only on Tasks whose completion they confirm.
  * `awaiting_review` means reported and waiting; `awaiting_revision` means they said what is still missing.
  */
@@ -261,8 +280,29 @@ export type DirectTask = {
    * 고를 수 없다. 제목은 감추고 건수는 낸다 — **배열 안의 빈 자리가 그 건수다.**
    */
   predecessors?: Array<{ task_id: string; title: string | null; state: TaskState | null }>;
+  /**
+   * 후행 — **나를 선행으로 삼는 업무** (SPEC-007 §4 · D-08). 같은 표(`task_predecessors`)를
+   * 반대쪽에서 읽은 것이라 **넷째 관계가 아니다** — 저장되지 않고 쓰기 입력으로도 받지 않는다.
+   *
+   * **읽을 수 있는 것만 실린다.** 못 읽는 후행은 배열에 자리도 `task_id` 도 없고
+   * `hidden_successor_count` 로만 온다 (D-10). 선행 배열은 자리를 남기고 이쪽은 접는다 —
+   * **응답의 모양만 다르고 화면 규칙은 하나다**(제목은 감추고 건수는 낸다).
+   *
+   * **상세 조회 두 갈래 모두에 실린다** — `read_only` 도 가르지 않는다 (SPEC-007 §2.7 W-3).
+   * 목록·프로젝트 상세에는 실리지 않는다.
+   */
+  successors?: TaskSuccessor[];
+  /** 읽을 수 없는 후행의 건수. **셈에는 들어간다** (SPEC-007 §2.4.5). */
+  hidden_successor_count?: number;
   /** 승인자 0..1. 화면 라벨은 「결재자」다 (SPEC-001 §4 · OQ-N). */
   approver_id?: string | null;
+  /**
+   * 참조자 — **읽기와 논의만** 열린다 (SPEC-001 §4). 업무 요청의 같은 이름과 같은 뜻이다.
+   *
+   * 서버의 업무 투영이 예전부터 내던 값이고 **타입에만 빠져 있었다** — `project_id` 와 같은
+   * 자리다. 업무 메타 한 줄의 「참조」가 이것을 읽는다 (SPEC-007 §2.2).
+   */
+  cc_member_ids?: string[];
   /** Steps inside this Task. Present on the detail read, not on list projections. */
   checklist?: ChecklistItem[];
   /** Earlier work this Task points at. Present on the detail read. */
@@ -542,6 +582,22 @@ export type TaskPatch = {
   due_date?: string | null;
   /** 어느 프로젝트의 일로 둘 것인가. `null`이면 프로젝트에서 뗀다. */
   project_id?: string | null;
+  /**
+   * 어느 업무 아래로 옮길 것인가 (SPEC-007 §4 · D-17). `null` 이면 상위를 비운다(`clear_parent`).
+   *
+   * **`project_id` 와 한 PATCH 에 함께 실어 보내지 않는다** — 서버가 422 로 거절한다.
+   * 상위를 옮기면 프로젝트가 **자손 전체로 따라가므로** 두 값을 한 번에 받으면 어느 쪽이
+   * 이기는지가 정해지지 않는다. 화면도 두 칸을 **따로 저장한다**(§2.8.3).
+   */
+  parent_task_id?: string | null;
+  /**
+   * 선행업무 **배열 전체 교체** (SPEC-001 §4 · SPEC-007 §2.8.3).
+   *
+   * 한 건씩 붙였다 떼는 전용 명령이 없다 — 선행은 화면이 프로젝트 안에서 한 번에 여러 개를
+   * 고르는 **집합**이기 때문이다. 그래서 **한 칸 안에서는 원자다**: 해제와 추가가 한 번에
+   * 반영되고 그 안에 부분 성공이 없다.
+   */
+  preceding_task_ids?: string[];
 };
 
 

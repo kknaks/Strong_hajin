@@ -47,7 +47,8 @@ vi.mock("../../lib/api", () => ({
   createDirectTask: vi.fn(),
   createWorkRequest: vi.fn(),
   assignTask: vi.fn(),
-  listProjects: vi.fn(),
+  // 업무 상세가 프로젝트 «이름»을 이 목록에서 맞춘다 (SPEC-007 §2.4.4).
+  listProjects: vi.fn().mockResolvedValue([]),
 }));
 
 import * as api from "../../lib/api";
@@ -102,7 +103,14 @@ describe("선행업무 표시와 시작 게이트", () => {
   it("선행이 없으면 줄 자체가 없다", async () => {
     renderDetail(base);
     await screen.findByLabelText("체크리스트");
-    expect(screen.queryByLabelText("선행업무")).toBeNull();
+    /*
+     * **칸은 선다.** 예전에는 선행이 0건이면 구획 자체가 없었는데, 시안은 여섯 칸을 «짝»으로
+     * 세우므로(§2.4) 한 칸이 사라지면 격자가 어긋난다. 비는 것은 «목록»이고 그 자리에
+     * 빈 상태 문구가 선다 — 「0건」과 「아직 안 왔다」를 그 문구가 가른다.
+     */
+    const section = await screen.findByLabelText("선행 업무");
+    expect(within(section).getByText("연결된 선행 업무가 없습니다.")).toBeTruthy();
+    expect(section.querySelector(".cell__n")!.textContent).toBe("0 · 모두 완료");
   });
 
   it("선행 줄에 제목과 상태가 서고, 끝나지 않은 것이 눈에 띈다", async () => {
@@ -110,7 +118,7 @@ describe("선행업무 표시와 시작 게이트", () => {
       { task_id: "p-1", title: "설계 확정", state: "in_progress" },
       { task_id: "p-2", title: "예산 승인", state: "done" },
     ]));
-    const section = await screen.findByLabelText("선행업무");
+    const section = await screen.findByLabelText("선행 업무");
 
     expect(within(section).getByRole("button", { name: "설계 확정 열기" })).toBeTruthy();
     expect(within(section).getByRole("button", { name: "예산 승인 열기" })).toBeTruthy();
@@ -125,8 +133,11 @@ describe("선행업무 표시와 시작 게이트", () => {
       { task_id: "p-9", title: null, state: null },
       { task_id: "p-8", title: null, state: null },
     ]));
-    const section = await screen.findByLabelText("선행업무");
-    expect(within(section).getByText("볼 수 없는 선행업무 2건")).toBeTruthy();
+    const section = await screen.findByLabelText("선행 업무");
+    // **건수 한 줄**이다 — 빈 줄을 늘어놓지 않는다 (W-1). 그리고 그 건수는 셈에도 들어가고
+    // **「미완」으로 센다**(W-2) — `state` 가 `null` 이라 끝났는지 확인할 수 없기 때문이다.
+    expect(within(section).getByText("🔒 비공개 선행 업무 2건")).toBeTruthy();
+    expect(section.querySelector(".cell__n")!.textContent).toBe("2 · 미완 2");
   });
 
   it("미완 선행이 있으면 [시작] 과 [완료] 가 «누르기 전에» 막히고 막는 이름이 선다", async () => {
@@ -193,6 +204,6 @@ describe("선행업무 표시와 시작 게이트", () => {
     await screen.findByLabelText("체크리스트");
     // 하위는 «완료» 를 막고 선행은 «시작» 을 막는다. 두 구획이 각자 선다.
     await waitFor(() => expect(screen.getByLabelText("완료를 막는 하위")).toBeTruthy());
-    expect(screen.getByLabelText("선행업무")).toBeTruthy();
+    expect(screen.getByLabelText("선행 업무")).toBeTruthy();
   });
 });

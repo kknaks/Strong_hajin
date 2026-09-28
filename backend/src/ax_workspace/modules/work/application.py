@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from ax_workspace.modules.work.task_results import TaskCompletionResult, TaskReferenceResult, TaskReferenceReleaseResult
+from ax_workspace.modules.work.task_results import TaskSuccessorReleaseResult
 
 from ax_workspace.modules.work.task_results import TaskDetailResult, TaskHistoryDiffResult, TaskHistoryResult, TaskListEntry
 from ax_workspace.modules.work.task_results import (
@@ -28,6 +29,7 @@ from ax_workspace.modules.work.errors import (
     TaskProposalResponderOnly,
     TaskAccessDenied,
     TaskCancelRequiresAgreement,
+    TaskChildrenDirectNesting,
     TaskChildrenUnfinished,
     TaskDirectNesting,
     TaskError,
@@ -45,6 +47,7 @@ from ax_workspace.modules.work.errors import (
     TaskScheduleTaskClosed,
     TaskScheduleTaskUnscheduled,
     TaskScheduleVersionConflict,
+    TaskSuccessorVersionConflict,
 )
 from ax_workspace.modules.time_blocks import TimeBlockRepository, office_span
 from ax_workspace.modules.work.schedule import (
@@ -125,6 +128,11 @@ class TaskRepository(Protocol):
     def active_predecessor_ids(self, task_id: UUID) -> list[UUID]: ...
     def predecessor_edges(self, task_ids: list[UUID]) -> dict[UUID, list[UUID]]: ...
     def replace_predecessors(self, task_id: UUID, wanted: list[UUID], actor_id: str) -> None: ...
+    #: **같은 표를 반대로 읽는 문** — 나를 선행으로 삼는 업무들 (SPEC-007 §4). 후행은 저장되지 않는다.
+    def successors_for(self, task_ids: list[UUID]) -> dict[UUID, list[UUID]]: ...
+    def active_successor_ids(self, task_id: UUID) -> list[UUID]: ...
+    def predecessor_link(self, task_id: UUID, predecessor_task_id: UUID, *, lock: bool = False) -> Any | None: ...
+    def release_predecessor_link(self, link: Any, actor_id: str) -> None: ...
     def cc_members_for(self, task_ids: list[UUID]) -> dict[UUID, list[str]]: ...
     def tasks_cc_for(self, member_id: str, *, include_closed: bool = False) -> list[Any]: ...
     def checklist_progress_for(self, task_ids: list[UUID]) -> dict[UUID, tuple[int, int]]: ...
@@ -234,8 +242,12 @@ class TaskApplication:
         self._time_blocks = time_blocks
         # 참조자로 적힌 사람이 실제로 있는 구성원인가. 요청이 쓰는 것과 같은 명부다.
         self._directory = directory
-        # **선행 요약이 자기 자신을 다시 부르는 것을 막는 빗장** (`predecessor_views` 참조).
-        self._resolving_predecessor_access = False
+        # **관계 요약이 자기 자신을 다시 부르는 것을 막는 빗장** (`predecessor_views` ·
+        # `successor_views` 참조). 뜻은 「지금 «열 수 있나» 하나를 묻는 중이다」이고, 그 동안에는
+        # 상세가 관계 요약을 접는다 — 선행·후행 **둘이 같은 빗장을 쓴다**: 둘을 따로 두면 선행을
+        # 묻는 사슬이 후행 투영을 지나 다시 선행으로 돌아오는 길이 열린다 (SPEC-007 §4 「같은 모양의
+        # 빗장을 쓴다」).
+        self._resolving_relation_access = False
         # 어느 프로젝트에 일을 매달 수 있는지는 프로젝트 모듈이 답한다. 여기서 다시 계산하지 않는다.
         self._projects = projects
         # Resolving an organization-wide read to the people it covers; never used to widen anything else.
@@ -369,6 +381,11 @@ class TaskApplication:
 
         프로젝트를 말하지 않는 것이 정상이고, 말한다면 그 프로젝트를 읽을 수 있는 사람이어야 한다 — 읽을 수 없는
         프로젝트에 일을 밀어 넣어 그 프로젝트를 아는 사람들에게 보이게 할 수는 없다.
+
+        ⚠ **`parent` 를 주면 그 가드를 지나지 않는다** — 상위를 따르는 갈래가 위에서 바로 돌아간다.
+        의도된 모양이고 **생성 경로는 그대로다**. 상위를 **옮기는** 경로는 그 값을 이 함수에
+        `parent=None` 으로 다시 넣어 가드를 한 번 더 지난다 — 이유는
+        `_apply_parent_change()` 의 그 자리에 적혀 있다(검수 W-6). **두 경로가 여기서 갈린다.**
         """
         if parent is not None:
             return getattr(parent, "project_id", None)
@@ -526,6 +543,11 @@ class TaskApplication:
             changes = TaskEditFields.model_validate(changes).changes()
         except ValueError as error:
             raise TaskError(str(error)) from error
+        # **상위가 먼저다** (SPEC-007 §4 검증 0~7). 이동이 프로젝트를 바꿀 수 있고, 그 아래의
+        # `project_id`·`preceding_task_ids` 갈래는 **이 명령이 끝난 뒤의 프로젝트**를 기준으로
+        # 판정해야 한다 — 순서가 뒤면 선행 검사가 옛 프로젝트를 본다.
+        # 0(취소됨)은 위에서 이미 걸렸다.
+        self._apply_parent_change(principal, task, changes)
         if "project_id" in changes:
             if getattr(task, "parent_task_id", None) is not None:
                 # 하위 업무는 자기 프로젝트를 따로 갖지 않는다. 상위 업무가 옮겨 가면 함께 간다.
@@ -533,17 +555,15 @@ class TaskApplication:
             # **남은 선행이 있으면 프로젝트를 바꿀 수 없다** (SPEC-001 §4 Validation · U-13).
             # 선행이 「같은 프로젝트 안」이라는 불변을 프로젝트 쪽에서 깨는 길이라 여기서 막는다.
             # 선행 배열을 같은 명령으로 비우는 길은 열려 있다 — 아래에서 먼저 비운 뒤 다시 부르면 된다.
-            self._require_project_unlocked(task)
             # **자손 전체가 따라간다 — 자식만이 아니다** (SPEC-005 §4 · D-19 · BASE-004 어긋남 ③).
             # 직속만 옮기면 **손자가 옛 프로젝트에 남고**, 선행은 같은 프로젝트 안에서만 성립하므로
             # 저장소가 강제하는 불변식이 데이터 안에서 깨진다.
             descendants = self.repository.descendants_of(task.id)
-            for descendant in descendants:
-                # **하위가 상위를 따라 옮겨 가는 경로에도 같은 규칙이 걸린다.** 여기를 비워 두면
-                # 상위를 옮기는 것만으로 하위의 선행이 다른 프로젝트로 끌려간다.
-                # **게이트를 전부 먼저 건 뒤에 옮긴다** — 걸으면서 옮기면 자손 하나가 잠겨 있을 때
-                # **부분 이동**이 남는다. 거절이면 아무것도 움직이지 않는다.
-                self._require_project_unlocked(descendant)
+            # **하위가 상위를 따라 옮겨 가는 경로에도 같은 규칙이 걸린다.** 여기를 비워 두면
+            # 상위를 옮기는 것만으로 하위의 선행이 다른 프로젝트로 끌려간다.
+            # **게이트를 전부 먼저 건 뒤에 옮긴다** — 걸으면서 옮기면 자손 하나가 잠겨 있을 때
+            # **부분 이동**이 남는다. 거절이면 아무것도 움직이지 않는다.
+            self._require_project_unlocked(principal, [task, *descendants])
             wanted = changes["project_id"]
             task.project_id = self.project_for(principal, UUID(str(wanted))) if wanted else None
             for descendant in descendants:
@@ -590,15 +610,176 @@ class TaskApplication:
         )
         return {**self._view(task, principal), "schedule_release": released}
 
-    def _require_project_unlocked(self, task: Any) -> None:
-        """선행이 남아 있으면 그 업무의 프로젝트는 잠겨 있다 (`WORK_PROJECT_LOCKED_BY_PREDECESSORS`).
+    def _require_project_unlocked(self, principal: Principal, tasks: list[Any]) -> None:
+        """선행이 남아 있는 업무가 하나라도 있으면 그 트리의 프로젝트는 잠겨 있다
+        (`WORK_PROJECT_LOCKED_BY_PREDECESSORS`).
 
         **닫힌 관계는 세지 않는다** — 뗀 선행은 행으로 남지만 잠그지 않는다.
+
+        **막는 것 전부를 한 번에 본다.** 한 건씩 검사해 첫 잠금에서 튀어나오면 사람이 하나를 비우고
+        다시 눌러 또 거절을 받는다 — 그리고 **부분 이동이 없다**는 규율이 「전부 먼저 검사한다」를
+        이미 요구한다. 그래서 목록을 받아 한 번에 답한다.
+
+        **못 읽는 업무의 제목을 문장에 담지 않는다** (검수 W-5).
+        막을지는 **전부**로 정하고 이름은 **읽을 수 있는 것만** 낸다 — 거절 사유로 남의 업무 제목을
+        알려 주면 그 자체가 곁수로다. **게이트 6(`_require_children_may_follow`)이 이미 그 모양**이고
+        선행 게이트·미완 하위 거절도 같다. 앞판은 이 함수만 그 규율 밖에 있었다:
+        자손 전체를 도는 자리가 **읽을 수 없는 자손의 제목까지** 본문에 실었다.
+
+        ⚠ **두 경로가 이 함수를 함께 쓴다** — 프로젝트를 직접 바꾸는 기존 경로와 상위를 옮기는 새
+        경로다. 제목을 가리는 규칙은 **둘 다에 걸린다**: 같은 문장이 두 입구에서 나오는데 한쪽만
+        가리면 같은 사실이 입구에 따라 새거나 안 새게 된다.
         """
-        if self.repository.active_predecessor_ids(task.id):
+        locked = [task for task in tasks if self.repository.active_predecessor_ids(task.id)]
+        if not locked:
+            return
+        # **잠긴 것에만 읽기를 묻는다** — 잠금이 없는 정상 경로에서 판정 비용을 쓰지 않는다.
+        shown = [task for task in locked if self.may_read_task(principal, task.id)]
+        hidden = len(locked) - len(shown)
+        if shown:
+            names = ", ".join(str(task.title) for task in shown[:3])
+            tail = f" (그리고 볼 수 없는 업무 {hidden}건)" if hidden else ""
             raise TaskProjectLockedByPredecessors(
-                f"선행업무를 먼저 비워야 프로젝트를 바꿀 수 있습니다: {task.title}"
+                f"선행업무를 먼저 비워야 프로젝트를 바꿀 수 있습니다: {names}{tail}"
             )
+        # 읽을 수 있는 것이 하나도 없으면 **이름도 제목도 내지 않고 건수로만** 말한다.
+        raise TaskProjectLockedByPredecessors(
+            f"선행업무를 먼저 비워야 프로젝트를 바꿀 수 있습니다: 볼 수 없는 업무 {hidden}건"
+        )
+
+    # ---- 상위 이동: 검증 0~7 과 프로젝트 자손 파급 (SPEC-007 §4) --------------------
+
+    def _apply_parent_change(self, principal: Principal, task: Any, changes: dict[str, Any]) -> None:
+        """만든 뒤 상위를 옮긴다 — **검증 0~7 을 순서대로 걸고 나서** 움직인다 (SPEC-007 §4 · D-17).
+
+        | # | 무엇 | 어디가 답하나 |
+        |---|---|---|
+        | 0 | 취소된 업무는 편집할 수 없다 | `update()` 가 이미 걸렀다 |
+        | 1~5 | 읽기 · 끝난 업무 · 담당 미확정 · 순환 · **이 업무**의 V-8 | **기존 `parent_for()` 그대로** |
+        | 6 | **직속 하위**의 V-8 파급 | `_require_children_may_follow()` — **이 판의 신규** |
+        | 7 | 프로젝트 자손 파급의 선행 잠금 | **기존 `_require_project_unlocked()` 재사용** |
+
+        **1~5 를 다시 짓지 않는다.** 생성 경로가 쓰는 그 함수를 그대로 부른다 — 두 벌이 되면
+        「만들 때는 막히는데 옮길 때는 통과하는」 갈래가 조용히 생긴다.
+        ⚠ `parent_for()` 안의 실제 순서는 1 → 4 → 2 → 3 → 5 다. **거절의 집합은 같고** 한 요청에
+        여럿이 걸렸을 때 먼저 말하는 것만 다르다 — 그 함수를 갈래마다 포크하지 않기 위해 그대로 쓴다.
+
+        **6 을 맨 뒤에 두는 이유**: 앞의 검사를 통과한 뒤에만 「이동 후의 모양」을 물을 의미가 있다.
+
+        **부분 이동이 없다** — 게이트 전부가 먼저 돌고 나서 값이 움직인다. 거절이면 상위도
+        프로젝트도 그대로다. 검사와 저장이 **한 transaction** 이다(조립 층이 한 session 에 싣는다).
+
+        **소급 재배치를 하지 않는다** — 어긋남이 되는 이동을 **거절**할 뿐, 서버가 하위를 다른 상위로
+        옮기는 코드는 여기에 없다 (SPEC-007 §1 Scope Out).
+
+        **자손의 프로젝트는 같은 session 의 행을 고쳐 반영한다** — 프로젝트를 바꾸는 기존 경로가
+        이미 그 모양이고, 자손마다 진행 기록을 남기지 않는 것도 그 경로와 같다.
+        """
+        if "parent_task_id" not in changes:
+            return
+        wanted = changes["parent_task_id"]
+        new_parent_id = UUID(str(wanted)) if wanted else None
+        current_parent_id = getattr(task, "parent_task_id", None)
+        if str(new_parent_id or "") == str(current_parent_id or ""):
+            # 같은 값을 다시 보낸 것은 **아무 일도 아니다** — 게이트를 걸어 거절하면 재전송이
+            # 실패가 된다. 프로젝트 파급도 일어나지 않는다.
+            return
+        # 1~5 — 생성 경로와 **같은 문**이다. `child_task_id` 가 순환 검사를 켠다(생성에는 업무가
+        # 아직 없어 그 인자가 비어 있다). `assignee_id` 는 **옮겨지는 이 업무를 든 사람**이고,
+        # 그 값으로 V-8 이 판정된다.
+        parent = self.parent_for(
+            principal,
+            new_parent_id,
+            assignee_id=self._holder_of(task),
+            child_task_id=task.id,
+        )
+        # 6 — 이 판이 더하는 하나.
+        self._require_children_may_follow(principal, task, parent)
+        # 7 — 프로젝트가 **자손 전체**에 따라간다. `clear_parent` 면 따라갈 상위가 없으므로
+        # 이 업무의 프로젝트는 **그대로 남는다** (SPEC-007 §4 7번 표).
+        if parent is not None:
+            # **어느 프로젝트로 가는가는 생성이 부르는 그 문이 답한다** — `project_for(…, parent)` 는
+            # 「하위는 묻지 않고 상위를 따른다」다. 생성과 이동이 다른 답을 내면 같은 트리가
+            # **어떻게 만들어졌는지에 따라** 달라진다 (SPEC-007 §4 「왜 따라가나」 이유 1).
+            inherited = self.project_for(principal, None, parent)
+            # **그리고 이동 경로만 그 값에 «읽기 가드»를 건다** (검수 W-6).
+            # `project_for(…, parent)` 는 상위를 따르는 갈래에서 **그 자리에서 돌아가므로** 아래의
+            # 「읽을 수 없는 프로젝트에 일을 밀어 넣을 수 없다」 가드를 지나지 않는다. 같은 함수에
+            # `parent=None` 으로 그 값을 다시 넣어 **가드만 한 번 더** 지난다 — 판정을 복제하지 않고
+            # 거절도 기존 것(`TaskNotFound("project was not found")`) 그대로다.
+            #
+            # ⚠ **두 경로가 여기서 갈린다. 의도한 것이다.**
+            # **생성**은 가드 없이 상위를 따른다 — 그 갈래는 이 판의 범위 밖이고 기존 계약·테스트가
+            # 그 모양에 걸려 있다(SPEC-007 이 「그 문을 그대로 쓰라」고 명령한 자리이기도 하다).
+            # **이동**은 가드를 지난다 — 범위가 다르기 때문이다: 생성은 **새 업무 하나**를 세우는데
+            # 이동은 **이미 있는 서브트리 전체**를 옮긴다. 상위 P 는 읽으면서 P 의 프로젝트는 못 읽는
+            # 사람이 자기 트리를 그 프로젝트로 밀어 넣으면, 그 프로젝트를 아는 사람들의 화면에
+            # 그가 읽을 수도 없는 자리로 업무가 나타난다.
+            new_project = self.project_for(principal, inherited)
+            if str(new_project or "") != str(getattr(task, "project_id", None) or ""):
+                descendants = self.repository.descendants_of(task.id)
+                # **게이트를 전부 먼저 건 뒤에 옮긴다** — 걸으면서 옮기면 자손 하나가 잠겨 있을 때
+                # 부분 이동이 남는다. 프로젝트를 바꾸는 기존 경로가 이미 그 모양이다.
+                self._require_project_unlocked(principal, [task, *descendants])
+                task.project_id = new_project
+                for descendant in descendants:
+                    descendant.project_id = new_project
+                # ⚠ **알림의 자리다 — 이 판의 범위 밖이다** (SPEC-007 §5 「알림의 자리」 · D-20).
+                # 자손의 담당자는 **자기 업무의 프로젝트가 옮겨진 것을 모른다.** 종류·문구·전달
+                # 경로·수신자·시점이 아무것도 정해지지 않았으므로 `modules/notifications.py` 를
+                # 부르지 않는다. 다음 판이 이 자리를 찾을 수 있게 표시만 남긴다.
+        task.parent_task_id = parent.id if parent is not None else None
+
+    def _require_children_may_follow(self, principal: Principal, task: Any, parent: Any | None) -> None:
+        """**이동하면 이미 있는 직속 하위가 V-8 을 어기게 되는가** (SPEC-007 §4 6번 · D-18).
+
+        판정은 한 문장이다 — **이동 후 이 업무가 중심 업무가 아니게 되는데, 담당자가 이 업무의
+        담당자와 같은 «직속» 하위가 하나라도 있으면 거절한다.**
+
+        중심 업무 판정은 SPEC-003 §5 그대로다: 「부모가 없다, 또는 부모의 활성 담당자가 이 업무의
+        담당자와 다르다」. 그래서 **어긋남을 만드는 이동은 하나**다 — 새 상위의 활성 담당자가 이
+        업무의 담당자와 **같을** 때. 그 밖의 이동에서는 이 업무가 중심 업무로 남아 하위가 안전하다.
+
+        **`TaskDirectNesting` 과 겹치지 않는다.** 그 거절(`parent_for` 안의 5)은 「새 상위가 중심
+        업무가 아닌」 갈래를 앞에서 이미 걷어 낸다. 여기 닿는 것은 **새 상위가 중심 업무일 때**뿐이고,
+        그때 이 업무가 직접 작업이 되어 중심 업무 자격을 잃는다.
+
+        **직속 하위만 본다 — 자손 전체를 돌지 않는다.** 손자의 V-8 판정은 자기 부모(= 이 업무의
+        하위)의 중심 업무 여부를 보고, **그 값은 이 이동으로 바뀌지 않는다**: 이동이 이 업무의
+        **담당자**를 바꾸지 않기 때문이다. 그래서 프로젝트 파급(자손 전체)과 **범위가 다르다** —
+        프로젝트는 값이 자손에 전파되고 V-8 은 부모–자식 **한 쌍**의 판정이다.
+
+        **막을지는 하위 전부로 정하고 이름은 읽을 수 있는 것만 낸다.** 읽을 수 없는 하위를 세지
+        않으면 권한으로 게이트를 우회하고, 이름을 내면 거절 사유로 남의 업무 제목이 새어 나간다 —
+        미완 하위 거절과 선행 게이트가 이미 그 모양이다.
+        """
+        if parent is None:
+            # 상위를 비우면 이 업무는 **반드시 중심 업무**다(부모가 없다). 어긋남이 생길 수 없다.
+            return
+        holder = self._holder_of(task)
+        if holder is None:
+            # 아무도 들지 않은 업무는 「같은 사람의 직접 작업」이 성립하지 않는다. 그리고 새 상위는
+            # 검증 3 을 지났으므로 담당이 있다 — 두 값이 다르니 이 업무는 중심 업무로 남는다.
+            return
+        if self._holder_of(parent) != holder:
+            # 이동 후에도 중심 업무다 — 부모의 담당자가 나와 다르다 (SPEC-003 §5).
+            return
+        blocking = [child for child in self.repository.children_of(task.id) if self._holder_of(child) == holder]
+        if not blocking:
+            return
+        shown = [child for child in blocking if self.may_read_task(principal, child.id)]
+        hidden = len(blocking) - len(shown)
+        rows = tuple({"task_id": str(child.id), "title": str(child.title)} for child in shown)
+        if shown:
+            names = ", ".join(str(child.title) for child in shown[:3])
+            tail = f" (그리고 볼 수 없는 하위 {hidden}건)" if hidden else ""
+            raise TaskChildrenDirectNesting(
+                f"이 업무를 옮기면 같은 담당자의 직속 하위가 중심 업무 밖에 놓입니다: {names}{tail}", rows
+            )
+        # 읽을 수 있는 것이 하나도 없으면 **이름도 제목도 내지 않고 건수로만** 말한다.
+        raise TaskChildrenDirectNesting(
+            f"이 업무를 옮기면 같은 담당자의 직속 하위 {hidden}건이 중심 업무 밖에 놓입니다", rows
+        )
 
     # ---- D1 — 업무의 날짜가 바뀌는 **세 자리**가 함께 부르는 자리 (SPEC-004 §5 · 증보 K3) ----
 
@@ -985,6 +1166,11 @@ class TaskApplication:
             # The person who asked for the work may follow where their request got to, without holding the work.
             "delivery": self.delivery_view(principal, task),
             "predecessors": self._predecessor_summary(principal, task),
+            # **읽기 전용 갈래에도 후행이 실린다** — 갈래를 가르지 않는다 (SPEC-007 §4 · 코디 판정
+            # 2026-09-28 · W-3). 읽기 전용은 **보는 범위가 아니라 고치는 범위**다: 사라지는 것은
+            # 고치는 입구뿐이고, 관계 칸 자체는 선다. `references` 만 이 갈래에서 빠져 있는데
+            # **이 판이 그것을 고치지 않는다**(SPEC-007 §2.7 이 그 사실을 적고 넘어간다).
+            **self._successor_fields(principal, task),
             # **프로젝트에 붙은 사람이면 남의 업무에서도 체크리스트를 읽는다** (SPEC-005 §4 · D-29).
             #
             # **접근 값을 셋으로 늘리지 않고 싣는 조건만 따로 둔다** (§4 ⓑ). 그 값은 이미 밖으로 나가는
@@ -1259,7 +1445,7 @@ class TaskApplication:
         그 호출의 결과는 「열 수 있나」 하나를 묻고 버려진다 — 거기까지 요약을 만들면 사슬을 따라
         같은 질의가 겹쳐 쌓인다. 밖으로 나가는 상세는 언제나 이 빗장 밖에서 만들어진다.
         """
-        if self._resolving_predecessor_access:
+        if self._resolving_relation_access:
             return []
         return self.predecessor_views(principal, [task.id]).get(task.id, [])
 
@@ -1298,13 +1484,148 @@ class TaskApplication:
         그래서 **되돌이 동안에만** 선행 요약을 접는다. 그때의 상세 결과는 「열 수 있나」 하나를 묻고
         버려지므로 접어도 밖으로 나가는 답이 달라지지 않는다 — 판정을 느슨하게 하지 않는다.
         """
-        if self._resolving_predecessor_access:
+        if self._resolving_relation_access:
             return self.may_read_task(principal, task_id)
-        self._resolving_predecessor_access = True
+        self._resolving_relation_access = True
         try:
             return self.may_read_task(principal, task_id)
         finally:
-            self._resolving_predecessor_access = False
+            self._resolving_relation_access = False
+
+    # ---- 후행: 같은 표를 반대로 읽는다 (SPEC-007 §4) -------------------------------
+
+    def _successor_fields(self, principal: Principal, task: Any) -> dict[str, Any]:
+        """상세가 싣는 후행 두 칸. **읽기 판정이 부른 상세에서는 비운다** — 선행과 같은 빗장이다.
+
+        **`access` 갈래를 가르지 않는다** — `owner` 상세와 `read_only` 상세가 이 함수를 같이 부른다.
+        읽기 전용은 **보는 범위가 아니라 고치는 범위**다 (SPEC-007 §2.7 · 코디 판정 2026-09-28).
+        """
+        if self._resolving_relation_access:
+            # 그 호출의 결과는 「열 수 있나」 하나를 묻고 버려진다. 여기까지 투영을 만들면 후행 사슬
+            # 길이만큼 같은 질의가 겹쳐 쌓인다 — 밖으로 나가는 상세는 언제나 이 빗장 밖에서 만들어진다.
+            return {"successors": [], "hidden_successor_count": 0}
+        rows, hidden = self.successor_views(principal, task.id)
+        return {"successors": rows, "hidden_successor_count": hidden}
+
+    def successor_views(self, principal: Principal, task_id: UUID) -> tuple[list[dict[str, Any]], int]:
+        """나를 선행으로 삼는 업무들 — **읽을 수 있는 것만 배열에, 나머지는 건수로** (SPEC-007 §4).
+
+        **선행과 반대 규칙인 것이 계약이다.** 선행은 「시작을 막는 이유」라 못 읽어도 자리를 남기고
+        건수를 세게 하는데, 후행은 막는 것이 없다 — 이유를 숨겨도 사람이 다음 걸음을 고를 수 있다.
+        그래서 **`task_id` 조차 내지 않는다**: 내면 그 식별자로 해제 명령을 부를 수 있고, 그것이
+        「비공개 후행에는 이 명령을 부를 입구가 없다」(D-16)를 뒷문으로 깬다.
+
+        **취소·완료된 후행도 배열에 남는다** — 관계가 살아 있으면 실리고 상태가 그 줄에 보인다.
+        선행 쪽이 이미 그 모양이다(활성 여부만 보고 상태는 안 본다).
+
+        **쓰기 경로가 없다** — 이 함수가 읽는 행은 선행 편집이 세운 그 행이다.
+        """
+        successor_ids = self.repository.successors_for([task_id]).get(task_id, [])
+        if not successor_ids:
+            return [], 0
+        rows: list[dict[str, Any]] = []
+        hidden = 0
+        for successor_id in successor_ids:
+            if not self._may_read_predecessor(principal, successor_id):
+                # 못 읽는 후행은 **배열에 자리를 남기지 않는다.** 건수만 오른다 (D-10).
+                hidden += 1
+                continue
+            node = self.repository.task_by_id(successor_id)
+            if node is None:  # pragma: no cover - 외래키가 막는다
+                continue
+            rows.append(
+                {
+                    "task_id": str(node.id),
+                    "title": str(node.title),
+                    "state": _external_state(node.state),
+                    "due_date": _iso(getattr(node, "due_date", None)),
+                    "assignee": self._assignee_projection([node]).get(node.id),
+                    # **해제 명령의 `expected_version` 이 이 값이다** — 바뀌는 것이 이 업무의 선행
+                    # 배열이므로 회차도 이 업무의 것이다 (SPEC-007 §4 후행 해제).
+                    "version": int(node.version),
+                }
+            )
+        return rows, hidden
+
+    def release_successor(
+        self, principal: Principal, task_id: UUID, successor_task_id: UUID, expected_version: int
+    ) -> TaskSuccessorReleaseResult:
+        """A 의 화면에서 후행 관계 하나를 **닫는다** — 제안이 아니라 즉시다 (SPEC-007 §4 후행 해제).
+
+        **권한이 양쪽이다** (코디 판정 2026-09-28 · OQ-708): **A 를 고칠 수 있거나 B 를 고칠 수
+        있으면** 통과한다. 후행 칸의 해제 단추가 A 의 화면에 서는데 대개 거절되면 그 단추가 있을
+        이유가 없다. 그래서 관계 하나에 고치는 사람이 둘이고, **둘이 충돌하지 않는다** — 먼저 닫은
+        쪽이 이기고 늦은 쪽은 대상이 없어 404 다.
+
+        **바뀌는 것도 회차가 오르는 것도 B 다.** A 의 값은 하나도 바뀌지 않으므로 A 의 회차는
+        움직이지 않는다 — 그래서 `expected_version` 은 **B 의 회차**이고 후행 줄이 함께 낸 값이다.
+
+        **멱등이 아니다** — 이미 닫힌 관계에는 대상이 없으므로 404 다. 없는 것과 못 읽는 것을 같은
+        말로 답한다.
+
+        ⚠ **알림의 자리다 — 이 판의 범위 밖이다** (SPEC-007 §5 「알림의 자리」 · D-20).
+        해제가 성공하면 **B 의 시작 게이트가 열릴 수 있고 B 의 담당자는 그것을 모른다.** A 쪽에도
+        해제가 열리면서 그 구멍이 넓어졌다(A 의 담당자가 B 의 게이트를 연다). `modules/notifications.py`
+        가 이미 있지만 **이 명령은 그 모듈을 부르지 않는다** — 종류·문구·전달 경로·수신자·시점이
+        아무것도 정해지지 않았다. 다음 판이 이 자리를 찾을 수 있게 표시만 남긴다.
+        """
+        self._require(principal, TASK_READ)
+        # **A 를 읽을 수 없으면 없는 것과 같다** — 그 업무의 후행이라는 사실 자체를 알려주지 않는다.
+        if not self.may_read_task(principal, task_id):
+            raise TaskNotFound("task was not found")
+        # **B 를 읽을 수 없으면 대상이 없다** — 비공개 후행은 배열에도 서지 않았으므로 여기 닿는
+        # 식별자가 아니다. 없는 것과 못 읽는 것을 **같은 말로** 답한다 (§4).
+        if not self.may_read_task(principal, successor_task_id):
+            raise TaskNotFound("successor was not found")
+        # **B 를 먼저 잠근다** — 회차를 읽기 전에 잠가야 「읽은 회차」와 「올리는 회차」 사이에 남이
+        # 끼어드는 틈이 없다. 관계 행도 같은 transaction 에서 잠긴다.
+        successor = self.repository.task_by_id(successor_task_id, lock=True)
+        if successor is None:
+            raise TaskNotFound("successor was not found")
+        if not self._may_edit_either(principal, task_id, successor):
+            raise TaskAccessDenied("이 후행 관계를 해제할 수 있는 자격이 없습니다")
+        link = self.repository.predecessor_link(successor_task_id, task_id, lock=True)
+        if link is None:
+            # 이미 닫혔거나 애초에 없었다 — **같은 404** 다. 두 사람이 동시에 닫으면 늦은 쪽이 여기 온다.
+            raise TaskNotFound("successor link was not found")
+        if int(successor.version) != int(expected_version):
+            # **409 다** (SPEC-007 § Case Matrix `WORK_VERSION_STALE`) — 기존 업무 편집의 회차
+            # 어긋남이 422 인 것과 **다르다**. 이유는 예외 docstring 에 있다.
+            raise TaskSuccessorVersionConflict("후행 업무의 회차가 어긋났습니다. 다시 불러와 주세요")
+        self.repository.release_predecessor_link(link, str(principal.id))
+        # **B 의 회차가 오르고 B 의 진행 기록에 남는다.** A 는 움직이지 않는다.
+        self._moved(successor)
+        self.repository.record_activity(
+            successor,
+            str(principal.id),
+            "task.predecessor_released",
+            f"선행업무 해제: {str(getattr(self.repository.task_by_id(task_id), 'title', '') or '')[:80]}",
+            before_ref=f"task:{successor.id}@{expected_version}",
+        )
+        rows, hidden = self.successor_views(principal, task_id)
+        return {
+            "task_id": str(task_id),
+            "successor_task_id": str(successor_task_id),
+            "task_version": int(successor.version),
+            "successors": rows,
+            "hidden_successor_count": hidden,
+        }
+
+    def _may_edit_either(self, principal: Principal, task_id: UUID, successor: Any) -> bool:
+        """**A 를 고칠 수 있거나 B 를 고칠 수 있으면** 통과 (SPEC-007 §5 권한 · OQ-708).
+
+        「고칠 수 있다」의 판정을 새로 만들지 않는다 — 편집 명령이 쓰는 것과 **같은 문**(`task()` 의
+        소유 투영)을 묻고, 거기서 걸리면 다른 쪽을 묻는다. 새 권한을 만들지 않는다.
+        """
+        if TASK_SELF_MANAGE not in principal.capabilities:
+            return False
+        for identifier in (task_id, successor.id):
+            try:
+                self.repository.task(identifier, str(principal.id))
+                return True
+            except (TaskNotFound, TaskAccessDenied):
+                continue
+        return False
 
     def _party_of(self, principal: Principal, task: Any) -> Any:
         """이 사람이 이 업무의 **어느 자리**에 있는가 — 요청자 · 담당 · 참조자, 아니면 아무 자리도 아니다.
@@ -2367,6 +2688,8 @@ class TaskApplication:
             "assignee": self._assignee_projection([task]).get(task.id),
             # 상세는 선행의 **제목과 상태**까지 낸다 — 무엇이 시작을 막는지가 그 줄의 쓸모다 (U-13).
             "predecessors": self._predecessor_summary(principal, task),
+            # 후행 — **읽기 전용 갈래와 같은 함수**다 (SPEC-007 §4 「갈래를 가르지 않는다」).
+            **self._successor_fields(principal, task),
         }
 
     # ---- references: earlier work this Task points at ----

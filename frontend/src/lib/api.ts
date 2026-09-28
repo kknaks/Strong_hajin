@@ -46,6 +46,7 @@ import type {
   TaskHistory,
   TaskHistoryDiff,
   TaskReference,
+  TaskSuccessor,
   GraphNode,
   GraphNeighborhood,
   GraphOverview,
@@ -259,7 +260,41 @@ export async function updateTask(taskId: string, expectedVersion: number, patch:
     if (patch.project_id) body.project_id = patch.project_id;
     else body.clear_project = true;
   }
+  /*
+   * 상위 이동 (SPEC-007 §4 · D-17) — 「생략」과 「비우기」를 한 필드로 가를 수 없어
+   * 프로젝트와 **같은 모양**의 플래그를 쓴다. 둘을 함께 보내면 서버가 422 다.
+   *
+   * ⚠ **`project_id` 와 한 요청에 함께 싣지 않는다** — 서버가 그 조합도 422 로 거절한다.
+   * 부르는 쪽이 두 칸을 따로 저장하므로 이 함수가 그것을 막지 않고 그대로 보낸다:
+   * 화면이 서버 판정을 흉내 내면 판정이 두 벌이 된다(§2.8.2).
+   */
+  if (patch.parent_task_id !== undefined) {
+    if (patch.parent_task_id) body.parent_task_id = patch.parent_task_id;
+    else body.clear_parent = true;
+  }
+  /* 선행은 **배열 전체 교체**다 — 빈 배열이 「전부 뗀다」이므로 `clear_*` 플래그가 필요 없다. */
+  if (patch.preceding_task_ids !== undefined) body.preceding_task_ids = patch.preceding_task_ids;
   return request<DirectTask>(`/api/tasks/${taskId}`, { body: JSON.stringify(body), method: "PATCH" });
+}
+
+/**
+ * 후행 하나를 해제한다 — **그 업무(B)의 선행 목록에서 나(A)를 빼는 일**이다 (SPEC-007 §4 · D-19).
+ *
+ * `expectedVersion` 은 **B 의 회차**다 — 후행 줄이 함께 싣고 온 값이고, 바뀌는 값이 B 의
+ * 선행 배열이기 때문이다. A 의 회차는 움직이지 않는다.
+ *
+ * **멱등이 아니다.** 이미 닫힌 관계에 다시 보내면 대상이 없어 **404** 다 — 두 사람이 동시에
+ * 닫으면 먼저가 이기고 늦은 쪽이 그 404 를 본다. 성공 응답은 **갱신된 A 의 후행 묶음**이다.
+ */
+export async function releaseSuccessor(
+  taskId: string,
+  successorTaskId: string,
+  expectedVersion: number,
+): Promise<{ successors: TaskSuccessor[]; hidden_successor_count: number }> {
+  return request<{ successors: TaskSuccessor[]; hidden_successor_count: number }>(
+    `/api/tasks/${taskId}/successors/${encodeURIComponent(successorTaskId)}?expected_version=${expectedVersion}`,
+    { method: "DELETE" },
+  );
 }
 
 export async function getMaterialMetadata(materialId: string): Promise<{ material_id: string; name: string; origin: string; integrity_ref: string }> {

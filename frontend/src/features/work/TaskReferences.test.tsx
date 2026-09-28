@@ -17,6 +17,8 @@ vi.mock("../../lib/api", () => ({
   getTask: vi.fn(),
   getTaskMaterials: vi.fn(),
   getTasks: vi.fn(),
+  // 업무 상세가 프로젝트 «이름»을 이 목록에서 맞춘다 (SPEC-007 §2.4.4).
+  listProjects: vi.fn().mockResolvedValue([]),
   addTaskReference: vi.fn(),
   releaseTaskReference: vi.fn(),
   getTaskHistory: vi.fn(),
@@ -24,6 +26,8 @@ vi.mock("../../lib/api", () => ({
   addChecklistItem: vi.fn(),
   reorderChecklist: vi.fn(),
   updateChecklistItem: vi.fn(),
+  updateTask: vi.fn(),
+  releaseSuccessor: vi.fn(),
   removeChecklistItem: vi.fn(),
   uploadTaskMaterial: vi.fn(),
   detachTaskMaterial: vi.fn(),
@@ -112,7 +116,9 @@ describe("참고 업무", () => {
     const row = await within(section).findByRole("listitem");
     expect(row.textContent).toContain("1분기 정산");
     expect(row.textContent).toContain("완료"); // the state, in the words the product uses
-    expect(row.textContent).toContain("2026/06/30");
+    // 줄에 내는 것은 «상태 · 담당» 둘이다 — 기한은 시안이 그 줄에 두지 않는다 (§2.4.1 · `:210`).
+    expect(row.textContent).not.toContain("2026/06/30");
+    expect(row.textContent).toContain("민아");
 
     fireEvent.click(within(row).getByRole("button", { name: "1분기 정산 열기" }));
     expect(onOpenTask).toHaveBeenCalledWith("task-0");
@@ -129,30 +135,65 @@ describe("참고 업무", () => {
     expect(within(row).queryByRole("button", { name: /열기/ })).toBeNull();
   });
 
-  it("connects earlier work chosen from what this person can read, and settles the version", async () => {
+  /**
+   * **참고를 잇는 자리가 「연결 편집」으로 옮겼다** (SPEC-007 §2.8 · WORK-007 F-3).
+   *
+   * 예전에는 참고 칸 머리에 「업무 연결」이 따로 있었다. 이제 관계 여섯을 **한 자리에서** 고치고
+   * 참고는 그중 한 칸이다 — 칸마다 명령이 다르므로(참고는 전용 명령 둘) **저장도 칸마다 따로**다.
+   */
+  it("「연결 편집」의 참고 칸에서 이전 업무를 잇는다", async () => {
     vi.mocked(api.addTaskReference).mockResolvedValue({ ...reference, reference_id: "ref-2", task_version: 4 } as never);
     const { onChanged } = renderDrawer([]);
     const section = await screen.findByLabelText("참고 업무");
-    expect(within(section).getByText(/연결된 업무가 없습니다/)).toBeTruthy();
+    expect(within(section).getByText(/연결된 참고 업무가 없습니다/)).toBeTruthy();
 
-    fireEvent.click(within(section).getByRole("button", { name: "업무 연결" }));
+    fireEvent.click(screen.getByRole("button", { name: "연결 편집" }));
     await waitFor(() => expect(api.getTasks).toHaveBeenCalled());
-    fireEvent.click(await within(section).findByLabelText("연결할 업무"));
+    const editing = await screen.findByLabelText("참고 업무");
+    fireEvent.click(await within(editing).findByLabelText("참고 업무 추가"));
     // 목록은 포털로 body 에 선다 (DS-18) — 구획 안이 아니라 화면에서 찾는다
     fireEvent.click(await screen.findByRole("option", { name: "다른 업무" }));
-    fireEvent.click(within(section).getByRole("button", { name: "연결" }));
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
 
     await waitFor(() => expect(api.addTaskReference).toHaveBeenCalledWith("task-1", "task-9"));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
-    expect(within(section).getByText("1분기 정산")).toBeTruthy();
+    // **낙관적 갱신이 없다** — 성공하면 상세를 다시 읽고 그 값으로 그린다.
+    await waitFor(() => expect(api.getTask).toHaveBeenCalledTimes(2));
   });
 
-  it("lets go of a reference without pretending it deleted the work", async () => {
+  it("「연결 편집」의 해제가 업무를 지우지 않고 연결만 끊는다", async () => {
     vi.mocked(api.releaseTaskReference).mockResolvedValue({ reference_id: "ref-1", task_version: 4 } as never);
     renderDrawer([reference]);
-    const section = await screen.findByLabelText("참고 업무");
-    fireEvent.click(await within(section).findByRole("button", { name: "1분기 정산 연결 해제" }));
+    await screen.findByLabelText("참고 업무");
+
+    fireEvent.click(screen.getByRole("button", { name: "연결 편집" }));
+    const editing = await screen.findByLabelText("참고 업무");
+    fireEvent.click(await within(editing).findByRole("button", { name: "1분기 정산 해제" }));
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
     await waitFor(() => expect(api.releaseTaskReference).toHaveBeenCalledWith("task-1", "ref-1"));
-    await waitFor(() => expect(within(section).queryByText("1분기 정산")).toBeNull());
+  });
+
+  /**
+   * **거절은 그 칸 «아래»에 서버 문장 그대로** 선다 (SPEC-007 §2.8.3 · OQ-707 ②).
+   *
+   * HTTP 본문에 기계용 `code` 가 없으므로 화면이 코드로 갈라 문장을 고르지 않는다 —
+   * 저장이 여러 칸을 건드리는데 문장이 한 자리에만 서면 **어느 칸이 거절됐는지** 알 수 없다.
+   */
+  it("저장이 거절되면 그 칸 아래에 서버 문장이 그대로 선다", async () => {
+    vi.mocked(api.addTaskReference).mockRejectedValue(new Error("이미 연결된 업무입니다."));
+    renderDrawer([]);
+    await screen.findByLabelText("참고 업무");
+
+    fireEvent.click(screen.getByRole("button", { name: "연결 편집" }));
+    const editing = await screen.findByLabelText("참고 업무");
+    fireEvent.click(await within(editing).findByLabelText("참고 업무 추가"));
+    fireEvent.click(await screen.findByRole("option", { name: "다른 업무" }));
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    const message = await within(await screen.findByLabelText("참고 업무")).findByRole("alert");
+    expect(message.textContent).toBe("이미 연결된 업무입니다.");
+    // 거절이면 **편집을 닫지 않는다** — 고칠 자리가 그대로 남아야 한다.
+    expect(screen.getByRole("button", { name: "저장" })).toBeTruthy();
   });
 });
