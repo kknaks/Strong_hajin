@@ -95,3 +95,10 @@
 
 /* AX 대화 드로어 · 액션 센터 (바퀴 7) */
 @import "./ax.css";
+
+/* 업무 상세 — 덩어리 여섯 (WORK-007 F-1·F-2·F-3). 확정 시안 `TaskDetail.html` 의 `<style>` 을 옮겼다.
+   규칙이 **전부 `.scax-td` 아래**라 이 화면 밖으로 새지 않는다 — 시안이 쓰는 이름이
+   `.block`·`.cols`·`.cell`·`.one`·`.meta` 처럼 일반적인 낱말이라서다. 그 파일 머리 주석 참조.
+   시안이 함께 고친 공용 버그 둘(`.section-row` · `.material-list li > .scax-button--inline`)은
+   업무 상세 밖에서도 같은 증상이라 `components.css` 가 가져갔다. */
+@import "./task-detail.css";

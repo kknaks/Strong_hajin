@@ -52,6 +52,7 @@ from ax_workspace.modules.work.task_results import (
     TaskReferenceReleaseResult,
     TaskReferenceResult,
     TaskScheduleView,
+    TaskSuccessorReleaseResult,
 )
 
 from ax_workspace.modules.work.request_results import (
@@ -134,6 +135,8 @@ from ax_workspace.modules.work.errors import (
     TaskParentUnassigned,
     TaskPredecessorsUnfinished,
     TaskProjectLockedByPredecessors,
+    TaskChildrenDirectNesting,
+    TaskSuccessorVersionConflict,
     TaskProposalNotPending,
     TaskProposalResponderOnly,
     TaskRecipientNotAllowed,
@@ -541,6 +544,10 @@ def _runtime_error(error: Exception) -> HTTPException:
             TaskCancelRequiresAgreement,
             TaskChildrenUnfinished,
             TaskDirectNesting,
+            # SPEC-007 § Case Matrix — **상위 «이동»이 더하는 하나.** 같은 기준으로 같은 자리에
+            # 선다: 명령 자체는 말이 되는데 지금 그 업무의 하위 모양이 그 이동을 받지 않는다.
+            # `TaskDirectNesting` 과 **다른 코드**인 이유는 예외 docstring 에 있다 (D-18).
+            TaskChildrenDirectNesting,
             TaskParentClosed,
             TaskParentUnassigned,
             TaskProposalNotPending,
@@ -560,6 +567,9 @@ def _runtime_error(error: Exception) -> HTTPException:
             # 겹침도 같은 기준이다 (증보 K22): 시각 자체는 말이 되는데 **그 사람의 그 시간이 이미 찼다.**
             # 422 가 아닌 이유가 여기 있다 — 다른 시간이면 같은 값이 통과한다.
             TaskScheduleOverlap,
+            # SPEC-007 § Case Matrix — 후행 해제의 **B 의 회차**. 기존 업무 편집의 422 와 **다른
+            # 예외**인 이유는 `TaskSuccessorVersionConflict` docstring 에 있다.
+            TaskSuccessorVersionConflict,
         ),
     ):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
@@ -1693,6 +1703,32 @@ def create_app(
     ) -> TaskReferenceReleaseResult:
         try:
             return app.state.workflow_application.release_task_reference(principal, task_id, reference_id)
+        except Exception as error:
+            raise _runtime_error(error) from error
+
+    @app.delete("/api/tasks/{task_id}/successors/{successor_task_id}")
+    def release_task_successor(
+        task_id: UUID,
+        successor_task_id: UUID,
+        expected_version: int = Query(..., ge=1),
+        principal: Principal = Depends(developer_principal),
+    ) -> TaskSuccessorReleaseResult:
+        """**A 의 화면에서 후행 관계 하나를 닫는다** (SPEC-007 §4 후행 해제 · WORK-007 Phase B-3).
+
+        경로가 **A 를 주체로 잡는다** — 화면이 들고 있는 것은 A 와 그 줄의 `task_id` 둘뿐이고,
+        활성 행 유일성이 그 둘로 관계 하나를 유일하게 지목한다.
+
+        **`PATCH`(B 의 선행 배열 전체 교체)를 쓰지 않는 이유**: A 의 화면은 B 의 선행 배열 전체를
+        모른다. 전체를 다시 보내려면 그것을 받아야 하는데 **B 의 선행에는 A 가 읽을 수 없는 업무가
+        있을 수 있고**, 그러면 A 가 못 읽는 선행을 지워 버린다. 한 건 해제가 그 사고를 없앤다.
+
+        회차는 **본문이 아니라 질의 문자열**로 받는다 — 같은 모양이 이미 있다
+        (`DELETE …/checklist/{item_id}` 의 `expected_version`). **B 의 회차**이고 필수다.
+        """
+        try:
+            return app.state.workflow_application.release_task_successor(
+                principal, task_id, successor_task_id, expected_version
+            )
         except Exception as error:
             raise _runtime_error(error) from error
 

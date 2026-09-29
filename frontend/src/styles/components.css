@@ -548,11 +548,23 @@ input.title-input { height: 48px; font-size: 17px; font-weight: 700; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .graph-overlay.top { top: 16px; left: 16px; right: 16px; display: flex; gap: 8px; flex-wrap: wrap; pointer-events: none; }
 /* ---------- task fields, materials, calendar week mode ---------- */
-.section-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+/* WORK-007 §6 고침 ① — `justify-content: space-between` 은 자식이 «둘»일 때만 맞는 답이다.
+   셋 이상이면 남는 공간이 사이사이로 갈려 **가운데 단추 하나가 허공에 뜬다** — 실제로
+   「하위 업무」 머리(제목 + 「직접 작업 추가」 + 「하위 요청 보내기」)가 그 모양이었다.
+   제목이 남는 공간을 전부 먹게 하면 단추들이 오른쪽에 붙어 선다. 자식이 둘인 기존 다섯 자리는
+   결과가 같다 — `margin-right:auto` 가 `space-between` 과 같은 자리에 단추를 둔다.
+   확정 시안이 이미 이 답을 쓴다 (`TaskDetail.html:28-29`). */
+.section-row { display: flex; align-items: center; justify-content: flex-start; gap: 12px; margin-bottom: 8px; }
 .section-row h4 { margin: 0; }
+.section-row > h4 { margin-right: auto; }
 .material-list { display: grid; gap: 0; border: 1px solid var(--scax-color-line); border-radius: 12px; overflow: hidden; }
 .material-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; min-height: 44px; padding: 6px 12px; border-bottom: 1px solid var(--scax-color-line-weak); font-size: 14px; }
 .material-list li:last-child { border-bottom: 0; }
+/* WORK-007 §6 고침 ② — `.scax-button` 은 `justify-content:center` 인 flex 라, 목록 첫 칸의
+   `minmax(0,1fr)` 을 버튼이 통째로 받으면 **제목이 칸 가운데로 간다.** 줄마다 제목 길이가
+   달라서 왼쪽 끝이 들쭉날쭉해지고 목록이 목록으로 안 읽힌다. 첫 칸의 인라인 버튼만 왼쪽으로
+   되돌린다 — 확정 시안이 쓰는 답 그대로다 (`TaskDetail.html:31`). */
+.material-list li > .scax-button--inline { justify-content: flex-start; text-align: left; }
 .material-list a { overflow: hidden; color: var(--scax-color-ink); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .material-list a:hover { color: var(--scax-color-accent); text-decoration: underline; }
 .meta-grid.columns input[type="date"] { width: 100%; height: 34px; padding: 0 8px; font-size: 13px; }

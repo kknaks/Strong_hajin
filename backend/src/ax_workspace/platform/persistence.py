@@ -1022,6 +1022,16 @@ class TaskPredecessorRecord(Base):
         ),
         CheckConstraint("task_id <> predecessor_task_id", name="ck_task_predecessors_not_self"),
         Index("ix_task_predecessors_task_id", "task_id"),
+        #: **후행을 읽는 쪽의 인덱스** (SPEC-007 §4 Data Contract · WORK-007 Phase B-1).
+        #: 위의 `task_id` 인덱스는 「내 선행」을 답하고 이것은 「나를 선행으로 삼는 업무」를 답한다 —
+        #: 같은 표를 반대로 읽는 질의라 **거는 열이 다르다.** `uq_task_predecessors_active` 의 선두
+        #: 열도 `task_id` 라서 그 유일 인덱스로도 이 방향은 서지 않는다.
+        #:
+        #: **기존 표에 더하는 인덱스라 `schema_sync` 가 만들지 않는다** (BASE-002 O-24) — 새로 만드는
+        #: DB 는 `create_all` 이 여기서 만들고, 이미 사는 DB 는
+        #: `backend/migrations/manual/2026-09-28-w7-successor-index*.sql` 을 손으로 적용한다.
+        #: `ix_work_requests_parent_task_id` 가 이미 그 모양이다. 두 자리의 정의가 같아야 한다.
+        Index("ix_task_predecessors_predecessor_task_id", "predecessor_task_id"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)

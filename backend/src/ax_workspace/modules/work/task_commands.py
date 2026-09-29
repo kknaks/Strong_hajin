@@ -51,6 +51,18 @@ class TaskEditFields(BaseModel):
     start_date: date | None = Field(default=None, title='시작일')
     due_date: date | None = Field(default=None, title='기한')
     project_id: UUID | None = Field(default=None, title='프로젝트')
+    #: 상위 업무 **0..1** — 만든 뒤에도 옮길 수 있다 (SPEC-007 §4 · D-17). 배열도 집합도 아니라서
+    #: 한 건씩 붙였다 떼는 전용 명령을 두지 않는다. **하위 해제·추가도 이 칸을 쓴다** — 대상이
+    #: 「그 하위 업무」이고, 「해제」는 그 업무의 `clear_parent`, 「추가」는 그 업무의 `parent_task_id` 다.
+    parent_task_id: UUID | None = Field(default=None, title='상위 업무')
+    #: **상위를 비운다.** 「생략」과 「비우기」를 한 필드로 가를 수 없어 플래그를 따로 둔다 —
+    #: `project_id` + `clear_project` 가 같은 모양을 이미 쓴다. `parent_task_id` 와 **함께 보내면
+    #: 거절**이다 (아래 `validate_edits`).
+    #:
+    #: **이 칸이 `TaskUpdateInput` 이 아니라 여기 있는 이유**: 확인 카드(AX)와 MCP 는
+    #: `TaskUpdateCommand` 로 payload 를 **직접** 검증해 `TaskUpdateInput` 을 지나지 않는다.
+    #: 「둘을 함께 보내면 거절」을 HTTP 표면에만 두면 그 갈래에서 규칙이 빠진다.
+    clear_parent: bool = Field(default=False, title='상위 연결 해제')
     #: 선행업무 — **배열 전체 교체**다 (SPEC-001 §4). 한 건씩 붙였다 떼는 전용 명령을 두지 않는다:
     #: 선행은 화면이 프로젝트 안에서 한 번에 여러 개를 고르는 **집합**이다.
     #: **생략하면 건드리지 않고**(`exclude_unset`), 빈 배열은 「전부 뗀다」다.
@@ -74,12 +86,23 @@ class TaskEditFields(BaseModel):
     def validate_edits(self) -> Self:
         if 'title' in self.model_fields_set and self.title is None:
             raise ValueError('title cannot be cleared')
+        if self.clear_parent and self.parent_task_id is not None:
+            # 「이 업무 아래로 옮겨라」와 「상위를 비워라」가 한 명령에 함께 오면 **무엇을 원했는지
+            # 알 수 없다.** 하나를 골라 실행하면 사람이 고르지 않은 쪽이 조용히 일어난다.
+            raise ValueError('parent_task_id and clear_parent cannot be sent together')
+        if self.clear_parent:
+            # **여기서 하나의 모양으로 접는다** — 아래층은 `parent_task_id` 한 키만 읽으면 되고
+            # 「없음」은 `None` 이다. `project_id` + `clear_project` 가 이미 그 모양으로 접힌다.
+            # `model_fields_set` 에 넣어야 `changes()` 의 `exclude_unset` 을 지난다.
+            self.model_fields_set.add('parent_task_id')
         if not (self.model_fields_set - {'task_id', 'expected_version'}):
             raise ValueError('at least one field is required')
         return self
 
     def changes(self) -> dict:
-        return self.model_dump(exclude_unset=True, exclude={'task_id', 'expected_version'})
+        # `clear_parent` 는 **플래그이지 값이 아니다** — 위에서 `parent_task_id=None` 으로 접혔으므로
+        # 아래층에 그대로 흘려보내면 같은 사실이 두 키로 도착한다.
+        return self.model_dump(exclude_unset=True, exclude={'task_id', 'expected_version', 'clear_parent'})
 
 
 class TaskUpdateCommand(TaskEditFields):
@@ -110,6 +133,10 @@ class TaskUpdateInput(BaseModel):
     clear_due_date: bool = Field(default=False, title='기한 삭제')
     project_id: UUID | None = Field(default=None, title='프로젝트')
     clear_project: bool = Field(default=False, title='프로젝트 연결 해제')
+    #: 상위 업무 — 보내면 그 업무 아래로 옮기고, `clear_parent` 면 비운다 (SPEC-007 §4 · D-17).
+    #: 둘을 함께 보내면 거절이다 — 판정은 `TaskEditFields` 한 곳에 있다.
+    parent_task_id: UUID | None = Field(default=None, title='상위 업무')
+    clear_parent: bool = Field(default=False, title='상위 연결 해제')
     #: 선행업무 — 보내면 **전체 교체**, 생략하면 건드리지 않는다. 빈 배열은 「전부 뗀다」다.
     preceding_task_ids: list[UUID] | None = Field(default=None, title='선행업무')
     approver_id: str | None = Field(default=None, title='승인자')
@@ -126,6 +153,13 @@ class TaskUpdateInput(BaseModel):
             values['preceding_task_ids'] = self.preceding_task_ids
         if self.clear_approver or self.approver_id is not None:
             values['approver_id'] = None if self.clear_approver else self.approver_id
+        # **상위는 접지 않고 둘을 그대로 넘긴다** — 「둘을 함께 보냈다」는 거절이 `TaskEditFields` 의
+        # 몫이고, 여기서 미리 접으면 그 거절이 이 표면에 닿지 않는다. 다른 칸들과 다른 이유로
+        # 다르게 다룬다: 저쪽은 플래그가 그 모델에 없어 여기서 접을 수밖에 없다.
+        if self.clear_parent:
+            values['clear_parent'] = True
+        if self.parent_task_id is not None:
+            values['parent_task_id'] = self.parent_task_id
         return TaskEditFields.model_validate(values).changes()
 
 

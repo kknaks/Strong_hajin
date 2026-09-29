@@ -25,6 +25,8 @@ vi.mock("../../lib/api", () => ({
   attachTaskMaterialLink: vi.fn(),
   attachTaskMaterialReference: vi.fn(),
   getTasks: vi.fn(),
+  // 업무 상세가 프로젝트 «이름»을 이 목록에서 맞춘다 (SPEC-007 §2.4.4).
+  listProjects: vi.fn().mockResolvedValue([]),
   getTaskAssignmentCandidates: vi.fn(),
   reassignTask: vi.fn(),
   taskMaterialContentUrl: (taskId: string, materialId: string) => `/api/tasks/${taskId}/materials/${materialId}/content`,
@@ -117,7 +119,8 @@ describe("task checklist", () => {
     vi.mocked(api.addChecklistItem).mockResolvedValue(step("i9", "제출하기", 1) as never);
     renderDrawer([]);
     const section = await screen.findByLabelText("체크리스트");
-    expect(await within(section).findByText(/아직 단계가 없습니다/)).toBeTruthy();
+    // 0건 문구는 **시안의 것**이다 (`TaskDetail.html:283`) — 옛 문장이 상수를 두고도 남아 있었다.
+    expect(await within(section).findByText("단계가 없습니다.")).toBeTruthy();
     const field = within(section).getByLabelText("체크리스트 단계");
     fireEvent.change(field, { target: { value: "  제출하기  " } });
 
@@ -180,7 +183,14 @@ describe("task checklist", () => {
     expect(section.querySelector('[data-item-id="i2"]')).toBeTruthy(); // still there, because the server refused
   });
 
-  it("puts the checklist above the description so it is on the first screen, with progress in the header", async () => {
+  /**
+   * **순서가 뒤집혔다** (SPEC-007 §2.3 · 확정 시안 `TaskDetail.html:149-166`).
+   *
+   * 예전에는 체크리스트가 업무 내용 «위»였다 — 「긴 설명 뒤에 묻히지 않게」가 그 이유였다.
+   * 시안은 `업무 정보` 를 **1열**로 두고 **업무 내용 → 체크리스트** 로 세운다: 무엇을 하는
+   * 일인지 읽은 «다음» 그 단계를 본다. 체크리스트 칸만 `280px` 로 더 높아 여전히 묻히지 않는다.
+   */
+  it("업무 내용 다음에 체크리스트가 오고, 셈은 여전히 머리에 있다", async () => {
     renderDrawer([step("i1", "자료 모으기", 1, true), step("i2", "초안 쓰기", 2)]);
     const section = await screen.findByLabelText("체크리스트");
     // The count reads as a chip, not buried in the item list.
@@ -191,10 +201,28 @@ describe("task checklist", () => {
     // The add control ships with the section rather than after a long description field.
     expect(within(section).getByLabelText("체크리스트 단계")).toBeTruthy();
 
-    const description = document.getElementById("task-description-task-1") as HTMLElement;
+    // 이 업무에는 적어 둔 내용이 없다 — 그 자리도 «업무 내용» 칸이고 문구만 다르다.
+    const description = screen.getByText("적어 둔 내용이 없습니다.") as HTMLElement;
     const order = section.compareDocumentPosition(description);
-    expect(order & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy(); // checklist comes first in the document
-    expect((description as HTMLTextAreaElement).rows).toBe(4); // and the description cannot grow past it
+    expect(order & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy(); // 업무 내용이 «먼저» 온다
+  });
+
+  /**
+   * **업무 내용은 「편집」 안에서만 입력칸이 된다** (SPEC-007 §2.2 · OQ-702).
+   *
+   * 읽으러 온 사람에게 고치는 화면을 먼저 보여 주지 않는다 — 읽을 때는 글자이고,
+   * 「편집」을 눌러야 제목·시작일·기한·업무 내용 넷이 입력칸이 된다.
+   */
+  it("「편집」 전에는 업무 내용이 글자이고, 누르면 입력칸이 된다", async () => {
+    renderDrawer([]);
+    await screen.findByLabelText("체크리스트");
+    expect(document.getElementById("task-description-task-1")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "편집" }));
+    const description = document.getElementById("task-description-task-1") as HTMLTextAreaElement;
+    expect(description).toBeTruthy();
+    expect(description.rows).toBe(4); // and the description cannot grow past it
+    expect(screen.getByLabelText("제목")).toBeTruthy();
   });
 
   it("shows a compact cue on list rows only when the task actually has steps", async () => {
@@ -241,7 +269,8 @@ describe("task checklist", () => {
     fireEvent.click(within(section).getByRole("button", { name: "추가" }));
     await waitFor(() => expect(within(section).getByText("제출하기")).toBeTruthy());
 
-    const titleField = document.querySelector("input.title-input") as HTMLInputElement;
+    fireEvent.click(screen.getByRole("button", { name: "편집" }));
+    const titleField = document.querySelector("input.meta__title-input") as HTMLInputElement;
     fireEvent.change(titleField, { target: { value: "바로 이어서 고친 제목" } });
     fireEvent.click(screen.getByRole("button", { name: "변경 저장" }));
     await waitFor(() => expect(onUpdate).toHaveBeenCalled());
@@ -288,7 +317,8 @@ describe("task checklist", () => {
     vi.mocked(api.addChecklistItem).mockResolvedValue(step("i9", "제출하기", 1) as never);
     const { rerenderWith, onUpdate } = renderDrawer([]);
     const section = await screen.findByLabelText("체크리스트");
-    const titleField = document.querySelector("input.title-input") as HTMLInputElement;
+    fireEvent.click(screen.getByRole("button", { name: "편집" }));
+    const titleField = document.querySelector("input.meta__title-input") as HTMLInputElement;
     fireEvent.change(titleField, { target: { value: "아직 저장하지 않은 제목" } });
 
     fireEvent.change(within(section).getByLabelText("체크리스트 단계"), { target: { value: "제출하기" } });
@@ -470,8 +500,9 @@ describe("task origin", () => {
     render(
       <TaskDetailDrawer busy={false} canManage={false} onClose={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} onTransition={vi.fn()} onUpdate={vi.fn()} ownerName="지호" task={requested as never} />,
     );
-    const assigneeRow = (await screen.findByText("담당자")).closest("div") as HTMLElement;
-    expect(within(assigneeRow).getByText("지호")).toBeTruthy();
+    const meta = await screen.findByLabelText("업무 메타");
+    expect(within(meta).getByText("담당")).toBeTruthy();
+    expect(within(meta).getByText("지호")).toBeTruthy();
     const chip = await screen.findByLabelText("업무 출처");
     expect(chip.textContent).toContain("민아가 보낸 업무");
   });
@@ -489,9 +520,23 @@ describe("task origin", () => {
     await screen.findByLabelText("업무 출처");
     // The holder's workspace is absent, and the materials are never even fetched.
     expect(screen.queryByLabelText("체크리스트")).toBeNull();
-    expect(screen.queryByText("참고 자료")).toBeNull();
+    expect(screen.queryByLabelText("참고 자료")).toBeNull();
     expect(api.getTaskMaterials).not.toHaveBeenCalled();
-    expect((screen.getByLabelText("제목") as HTMLInputElement).disabled).toBe(true);
+    // **고치는 입구가 없다** — 비활성이 아니라 «그려지지 않는다» (SPEC-007 §2.7).
+    expect(screen.queryByRole("button", { name: "편집" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "연결 편집" })).toBeNull();
+    expect(screen.queryByLabelText("제목")).toBeNull();
+    /*
+     * **읽기 전용은 「보는」 범위가 아니라 「고치는」 범위다** (SPEC-007 §2.7 W-3).
+     * 관계 칸 다섯은 그대로 선다 — 지금까지 하위 칸이 `!readOnly` 로 통째로 사라졌고
+     * 이 판이 그 자리를 바꿨다. 참고 칸만 예외이고 그것은 **서버가 값을 안 주기 때문**이다.
+     */
+    expect(screen.getByLabelText("상위 업무")).toBeTruthy();
+    expect(screen.getByLabelText("프로젝트")).toBeTruthy();
+    expect(screen.getByLabelText("하위 업무")).toBeTruthy();
+    expect(screen.getByLabelText("선행 업무")).toBeTruthy();
+    expect(screen.getByLabelText("후행 업무")).toBeTruthy();
+    expect(screen.queryByLabelText("참고 업무")).toBeNull();
   });
 
   it("names the assigner for a direct assignment and shows no source when one is withheld", async () => {
@@ -541,7 +586,7 @@ describe("what a task detail says about where it came from", () => {
     renderTask({ origin: null });
     await screen.findByLabelText("업무 상세");
     // The holder is always named; a counterpart is only named when there is one.
-    expect(screen.getByText("담당자")).toBeTruthy();
+    expect(within(screen.getByLabelText("업무 메타")).getByText("담당")).toBeTruthy();
     expect(screen.queryByText("요청자")).toBeNull();
     expect(screen.queryByText("배정자")).toBeNull();
     expect(screen.queryByText("생성자")).toBeNull();
@@ -650,7 +695,7 @@ describe("materials that live somewhere else", () => {
     renderWithMaterials([]);
 
     // Both sections offer it; this is the 참고 자료 one.
-    const inputSection = (await screen.findByText("참고 자료")).closest("section") as HTMLElement;
+    const inputSection = await screen.findByLabelText("참고 자료");
     fireEvent.click(within(inputSection).getByRole("button", { name: "링크 추가" }));
     fireEvent.change(screen.getByLabelText("참고 자료 링크 주소"), { target: { value: "https://docs.example.com/spec" } });
     fireEvent.change(screen.getByLabelText("참고 자료 링크 이름"), { target: { value: "설계 문서" } });
@@ -671,7 +716,7 @@ describe("materials that live somewhere else", () => {
     vi.mocked(api.detachTaskMaterial).mockResolvedValue({ ...link, task_version: 2 } as never);
     renderWithMaterials([link, { ...link, binding_id: "binding-output", kind: "output" }]);
     await screen.findAllByRole("link", { name: "설계 문서" });
-    const inputSection = screen.getByText("참고 자료").closest("section") as HTMLElement;
+    const inputSection = screen.getByLabelText("참고 자료");
     fireEvent.click(within(inputSection).getByRole("button", { name: "떼기" }));
     await waitFor(() => expect(api.detachTaskMaterial).toHaveBeenCalledWith("task-1", "binding-m1"));
     await waitFor(() => expect(screen.getAllByRole("link", { name: "설계 문서" })).toHaveLength(1));
@@ -746,13 +791,20 @@ describe("materials that point at other work in SCAX", () => {
     expect(document.body.textContent).not.toContain("먼저 한 업무");
   });
 
-  it("no longer offers work as a material: earlier work is connected as 참고 업무 instead", async () => {
+  /**
+   * 자료 칸은 **자료만** 붙인다 — 업무와 업무를 잇는 자리는 `연관 업무` 다.
+   *
+   * **그 입구가 「연결 편집」으로 옮겨 갔다** (SPEC-007 §2.8) — 예전에는 참고 칸 머리에
+   * 「업무 연결」이 따로 있었고, 이제 여섯 관계를 **한 자리에서** 고친다.
+   */
+  it("자료 칸은 업무를 붙이지 않는다 — 그 자리는 「연결 편집」이다", async () => {
     renderWithMaterials([]);
-    const inputSection = (await screen.findByText("참고 자료")).closest("section") as HTMLElement;
+    const inputSection = await screen.findByLabelText("참고 자료");
     expect(within(inputSection).queryByRole("button", { name: "업무 연결" })).toBeNull();
-    // The one place that connects work to work is its own section.
-    const references = screen.getByLabelText("참고 업무");
-    expect(within(references).getByRole("button", { name: "업무 연결" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "업무 연결" })).toBeNull();
+    // The one place that connects work to work is its own block.
+    expect(screen.getByLabelText("참고 업무")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "연결 편집" })).toBeTruthy();
   });
 });
 

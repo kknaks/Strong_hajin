@@ -46,7 +46,8 @@ vi.mock("../../lib/api", () => ({
   amendWorkRequest: vi.fn(),
   createWorkRequest: vi.fn(),
   assignTask: vi.fn(),
-  listProjects: vi.fn(),
+  // 업무 상세가 프로젝트 «이름»을 이 목록에서 맞춘다 (SPEC-007 §2.4.4).
+  listProjects: vi.fn().mockResolvedValue([]),
 }));
 
 import * as api from "../../lib/api";

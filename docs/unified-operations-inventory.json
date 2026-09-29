@@ -2965,7 +2965,7 @@
   ],
   "current_runtime": {
     "phase": "main-sync",
-    "http_count": 159,
+    "http_count": 160,
     "tool_count": 129,
     "tools": [
       {
@@ -17253,6 +17253,68 @@
               "title": "TaskReferenceView",
               "type": "object"
             },
+            "TaskSuccessorView": {
+              "description": "**나를 선행으로 삼는 업무** 하나 (SPEC-007 §4 Data Contract).\n\n**후행은 넷째 관계가 아니다** — `task_predecessors` 의 같은 행을 반대쪽에서 읽은 것이고\n저장되지 않는다. 그래서 `reference_id` 같은 **관계 자신의 식별자가 없다**: 관계는 (이 업무 ·\n그 업무) 한 쌍으로 유일하게 지목된다.\n\n**`version` 을 더한다.** 후행 해제가 바꾸는 것은 **그 후행 업무**이고, 그 업무의 회차를 화면이\n따로 들고 있지 않다 — 「상태·값을 바꾸는 모든 명령에 회차 필수」가 계약이므로 이 줄이 그 값을\n함께 낸다. 선례는 참고 추가 응답이 대상 업무의 `task_version` 을 함께 내는 자리다.\n\n**못 읽는 후행은 이 배열에 서지 않는다** — `task_id` 도 내지 않고 `hidden_successor_count` 로만\n센다. 선행과 **반대 규칙**인 것이 계약이다: 선행은 자리를 남기고 후행은 건수로 접는다.",
+              "properties": {
+                "task_id": {
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "title": {
+                  "title": "Title",
+                  "type": "string"
+                },
+                "state": {
+                  "title": "State",
+                  "type": "string"
+                },
+                "due_date": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Due Date"
+                },
+                "assignee": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskMemberView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "derived": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskDerivedView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "version": {
+                  "title": "Version",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "task_id",
+                "title",
+                "state",
+                "due_date",
+                "assignee",
+                "version"
+              ],
+              "title": "TaskSuccessorView",
+              "type": "object"
+            },
             "TaskSummaryView": {
               "properties": {
                 "task_id": {
@@ -17580,6 +17642,17 @@
               "title": "Predecessors",
               "type": "array"
             },
+            "successors": {
+              "items": {
+                "$ref": "#/$defs/TaskSuccessorView"
+              },
+              "title": "Successors",
+              "type": "array"
+            },
+            "hidden_successor_count": {
+              "title": "Hidden Successor Count",
+              "type": "integer"
+            },
             "checklist": {
               "items": {
                 "$ref": "#/$defs/ChecklistItemView"
@@ -17630,7 +17703,9 @@
             "child_progress",
             "delivery",
             "access",
-            "predecessors"
+            "predecessors",
+            "successors",
+            "hidden_successor_count"
           ],
           "title": "TaskDetailResult",
           "type": "object"
@@ -71977,6 +72052,29 @@
           "reconsider_when": "AX 가 일정 제안을 하게 될 때"
         },
         "http_signature": "(from_: date, to: date, principal: Principal) -> list[dict[str, object]]"
+      },
+      {
+        "http": "DELETE /api/tasks/{task_id}/successors/{successor_task_id}",
+        "http_handler": "release_task_successor",
+        "screen_callers": [],
+        "operation": "release_task_successor",
+        "owning_calls": [
+          "self._tasks(session).release_successor"
+        ],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "release_task_successor"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "후행 해제는 업무 상세의 연결 편집에서 «그 줄의 해제» 단추 하나로 일어난다. 대상이 (이 업무 · 그 후행) 한 쌍이고 그 쌍은 화면이 이미 들고 있으므로, 에이전트가 대신 고를 자리가 없다. SPEC-007 §4 가 「MCP 에 새 도구를 내지 않는다」로 그것을 못 박았다.",
+          "alternative": "업무 상세를 내는 기존 도구(task_get)가 successors 를 그대로 실어 나르므로 에이전트는 무엇이 이 업무를 기다리는지 읽을 수 있다. 해제는 화면 경로가 부른다.",
+          "reconsider_when": "AX 가 관계 정리를 제안하게 될 때"
+        },
+        "http_signature": "(task_id: UUID, successor_task_id: UUID, expected_version: int, principal: Principal) -> TaskSuccessorReleaseResult"
       }
     ],
     "status": "verified",

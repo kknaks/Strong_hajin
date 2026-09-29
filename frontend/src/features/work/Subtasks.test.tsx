@@ -19,6 +19,8 @@ vi.mock("../../lib/api", () => ({
   createDirectTask: vi.fn(),
   submitTaskCompletion: vi.fn(),
   getTasks: vi.fn(),
+  // 업무 상세가 프로젝트 «이름»을 이 목록에서 맞춘다 (SPEC-007 §2.4.4).
+  listProjects: vi.fn().mockResolvedValue([]),
   addTaskReference: vi.fn(),
   releaseTaskReference: vi.fn(),
   getTaskHistory: vi.fn(),
@@ -93,35 +95,55 @@ describe("하위 업무", () => {
     const { onOpenTask } = renderDrawer({ children: [child], child_progress: { done: 0, total: 1 } });
     const section = await screen.findByLabelText("하위 업무");
     // 구획은 상세를 읽기 전에 선다 — 셈과 행은 그 «뒤에» 온다.
-    expect(await within(section).findByText("0/1")).toBeTruthy();
+    // 셈은 **완결·막힘을 각각** 낸다 — `2 / 5 · 완료 막음 3` 이 시안의 모양이다 (§2.4.1 · `:186`).
+    expect(await within(section).findByText("0 / 1 · 완료 막음 1")).toBeTruthy();
     const row = within(section).getByRole("listitem");
     expect(row.textContent).toContain("매출 집계");
     expect(row.textContent).toContain("진행 중");
     expect(row.textContent).toContain("지호");
-    expect(row.textContent).toContain("2026/10/10");
+    // 줄에 내는 것은 «상태 · 담당» 둘이다 — 34px 한 줄에 기한까지 넣으면 제목이 잘린다 (시안 `:190`).
+    expect(row.textContent).not.toContain("2026/10/10");
 
     fireEvent.click(within(row).getByRole("button", { name: "매출 집계 열기" }));
     expect(onOpenTask).toHaveBeenCalledWith("task-2");
 
     // Steps and subtasks are different things, in different places.
     expect(screen.getByLabelText("체크리스트")).toBeTruthy();
-    expect(within(screen.getByLabelText("체크리스트")).queryByRole("button", { name: "직접 작업 추가" })).toBeNull();
+    expect(within(screen.getByLabelText("체크리스트")).queryByRole("button", { name: "추가" })).toBeTruthy();
+    /* 체크리스트의 「추가」는 «단계»를 더하고 하위 칸의 단추는 «업무»를 만든다 — 다른 일이라
+       문구도 다르다(「하위 업무 생성」). 한 화면에서 같은 낱말이 두 뜻으로 읽히지 않는다. */
+    expect(within(screen.getByLabelText("체크리스트")).queryByRole("button", { name: "하위 업무 생성" })).toBeNull();
   });
 
-  it("creates a part of this work rather than a free-standing task", async () => {
-    vi.mocked(api.createDirectTask).mockResolvedValue({ ...child, task_id: "task-3", title: "비용 정리" } as never);
-    const { onChanged } = renderDrawer({ children: [], child_progress: { done: 0, total: 0 } });
+  /**
+   * **입구가 하나다** (`design-items.md` 항목 #2 확정 설계 · WORK-007 F-2).
+   *
+   * 예전에는 머리에 단추 둘이 섰다 — 「직접 작업 추가」(인라인 입력칸)와 「하위 요청 보내기」(모달).
+   * 같은 일이 **모양 둘**로 갈려 있었고 인라인 쪽은 제목 한 칸뿐이라 기한·담당을 못 적었다.
+   * 이제 「추가」 하나가 생성 모달을 열고, 그 안의 세그먼트가 **내 업무 / 요청 업무**를 고른다.
+   */
+  it("머리의 「하위 업무 생성」 하나가 모달을 열고, 상위가 이 업무로 채워진다", async () => {
+    vi.mocked(api.getWorkRequestAssigneeCandidates).mockResolvedValue([{ id: "jiho", display_name: "지호" }] as never);
+    renderDrawer({ children: [], child_progress: { done: 0, total: 0 } });
     const section = await screen.findByLabelText("하위 업무");
     expect(await within(section).findByText(/하위 업무가 없습니다/)).toBeTruthy();
+    // 인라인 입력칸은 사라졌다 — 그 자리가 모달이다.
+    expect(within(section).queryByLabelText("하위 업무 제목")).toBeNull();
+    expect(within(section).queryByRole("button", { name: "하위 요청 보내기" })).toBeNull();
 
-    fireEvent.click(within(section).getByRole("button", { name: "직접 작업 추가" }));
-    fireEvent.change(within(section).getByLabelText("하위 업무 제목"), { target: { value: "  비용 정리 " } });
-    fireEvent.click(within(section).getByRole("button", { name: "만들기" }));
+    fireEvent.click(within(section).getByRole("button", { name: "하위 업무 생성" }));
 
-    // 하위 업무도 생성 명령이라 멱등 키를 함께 싣는다 (W1).
-    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalledWith("비용 정리", { parent_task_id: "task-1" }, expect.any(String)));
-    await waitFor(() => expect(onChanged).toHaveBeenCalled());
-    expect(within(section).getByText("비용 정리")).toBeTruthy();
+    /*
+     * **두 갈래가 다 열린다** — 예전에는 `parentTaskId` 하나로 요청 갈래에 잠겼다.
+     * 부모가 중심 업무가 아니어서 본인 갈래가 막히는 자리는 **서버가 판정한다**(V-8).
+     */
+    const modal = await screen.findByRole("dialog", { name: "새 업무 추가" });
+    const branches = within(modal).getByRole("tablist", { name: "생성 유형" });
+    expect(within(branches).getByRole("tab", { name: "내 업무" })).toBeTruthy();
+    expect(within(branches).getByRole("tab", { name: "요청 업무" })).toBeTruthy();
+    // 상위는 여는 쪽이 정했으므로 그 안에서 바꾸지 못한다.
+    fireEvent.click(within(modal).getByRole("tab", { name: "업무 연결" }));
+    expect((within(modal).getByLabelText("상위 업무") as HTMLButtonElement).disabled).toBe(true);
   });
 
   /**
@@ -151,7 +173,10 @@ describe("하위 업무", () => {
     renderDrawer({ children: [], child_progress: { done: 0, blocking: 0, cancelled: 0, total: 0 } });
     const section = await screen.findByLabelText("하위 업무");
 
-    fireEvent.click(within(section).getByRole("button", { name: "하위 요청 보내기" }));
+    fireEvent.click(within(section).getByRole("button", { name: "하위 업무 생성" }));
+    const opened = await screen.findByRole("dialog", { name: "새 업무 추가" });
+    // 같은 「추가」에서 갈래를 고른다 — 요청 갈래를 고르면 머리도 따라 바뀐다.
+    fireEvent.click(within(within(opened).getByRole("tablist", { name: "생성 유형" })).getByRole("tab", { name: "요청 업무" }));
     const modal = await screen.findByRole("dialog", { name: "새 업무 요청" });
     fireEvent.change(within(modal).getByLabelText("요청할 업무"), { target: { value: "매출 집계" } });
     await waitFor(() => expect(within(modal).getByLabelText("담당 후보")).toBeTruthy());

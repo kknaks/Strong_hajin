@@ -1152,6 +1152,66 @@ class SqlAlchemyTaskRepository:
         """순환 검사가 걷는 **활성 변**. `predecessors_for` 와 같은 사실이고 이름만 그래프 쪽이다."""
         return self.predecessors_for(task_ids)
 
+    def successors_for(self, task_ids: list[UUID]) -> dict[UUID, list[UUID]]:
+        """**같은 표를 반대로 읽는다** — 나를 선행으로 삼는 업무들 (SPEC-007 §4 · WORK-007 Phase B-1).
+
+        **후행을 저장하지 않는다.** `task_predecessors` 행 하나가 양쪽을 답하고, 이 문이 그 행을
+        `predecessor_task_id` 쪽에서 건다 — 위의 넷은 전부 `task_id` 쪽이었다. 그래서
+        `ix_task_predecessors_predecessor_task_id` 가 필요하다(`platform/persistence.py`).
+
+        **정렬은 `position` 이 아니라 `created_at` 이다.** `position` 은 **그 업무가 고른 순서**라
+        내 화면에서 뜻이 없고, 「그 업무가 나를 기다리기 시작한 순서」가 유일하게 뜻이 있다
+        (SPEC-007 §4 「정렬은 관계가 선 순서(오래된 것이 위)」). 한 번의 배열 교체가 여러 행을 같은
+        시각에 세우므로 `id` 를 동반 키로 둔다 — 없으면 같은 시각의 차례가 조회마다 달라진다.
+
+        뗀 행은 남아 있지만 여기 서지 않는다 — 선행 쪽과 **같은 규칙**이다.
+        """
+        if not task_ids:
+            return {}
+        found: dict[UUID, list[UUID]] = {}
+        rows = self.session.execute(
+            select(TaskPredecessorRecord.predecessor_task_id, TaskPredecessorRecord.task_id)
+            .where(
+                TaskPredecessorRecord.predecessor_task_id.in_(list(task_ids)),
+                TaskPredecessorRecord.released_at.is_(None),
+            )
+            .order_by(TaskPredecessorRecord.created_at, TaskPredecessorRecord.id)
+        ).all()
+        for predecessor_task_id, task_id in rows:
+            found.setdefault(predecessor_task_id, []).append(task_id)
+        return found
+
+    def active_successor_ids(self, task_id: UUID) -> list[UUID]:
+        return self.successors_for([task_id]).get(task_id, [])
+
+    def predecessor_link(self, task_id: UUID, predecessor_task_id: UUID, *, lock: bool = False) -> Any | None:
+        """그 **활성** 관계 행 하나 — 후행 해제가 닫을 대상이다 (WORK-007 Phase B-3).
+
+        **활성 행 유일성**(`uq_task_predecessors_active`)이 「둘 중 어느 것이냐」를 없앤다 — (뒤 업무 ·
+        앞 업무) 한 쌍에 열린 행은 최대 하나다. 그래서 화면이 든 식별자 둘로 대상이 유일하게 지목된다.
+
+        **이미 닫힌 행은 내지 않는다** — 그래서 두 번째 해제가 404 다(멱등이 아니다).
+        `lock` 은 그 행을 잠근다: 두 사람이 동시에 닫으면 먼저가 이기고 늦은 쪽이 「없다」를 본다.
+        """
+        statement = select(TaskPredecessorRecord).where(
+            TaskPredecessorRecord.task_id == task_id,
+            TaskPredecessorRecord.predecessor_task_id == predecessor_task_id,
+            TaskPredecessorRecord.released_at.is_(None),
+        )
+        if lock:
+            statement = statement.with_for_update()
+        return self.session.scalars(statement).first()
+
+    def release_predecessor_link(self, link: Any, actor_id: str) -> None:
+        """관계 하나를 **닫는다 — 지우지 않는다** (SPEC-007 §5 보존).
+
+        `replace_predecessors` 가 배열 교체로 닫는 것과 **같은 두 열**을 쓴다. 닫는 길이 둘이어도
+        남는 모양은 하나여야 한다 — 다르면 이력이 두 가지로 읽힌다.
+        """
+        link.released_at = datetime.now(UTC)
+        link.released_by = actor_id
+        self.session.flush()
+
     def replace_predecessors(self, task_id: UUID, wanted: list[UUID], actor_id: str) -> None:
         """활성 선행을 이 배열 **그대로** 만든다 — 전체 교체다 (SPEC-001 §4).
 

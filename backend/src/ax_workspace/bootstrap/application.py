@@ -30,6 +30,7 @@ from ax_workspace.modules.ax_execution.conversation_results import ConversationV
 
 from ax_workspace.modules.work.material_results import TaskMaterialView, TaskMaterialResult
 from ax_workspace.modules.work.task_results import TaskCompletionResult, TaskReferenceResult, TaskReferenceReleaseResult
+from ax_workspace.modules.work.task_results import TaskSuccessorReleaseResult
 
 from ax_workspace.modules.work.project_results import ProjectView, ProjectDetailResult, ProjectAssignmentView, ProjectParticipationView
 
@@ -2463,6 +2464,19 @@ class WorkflowApplication:
     def release_task_reference(self, principal: Principal, task_id: UUID, reference_id: UUID) -> TaskReferenceReleaseResult:
         with self._session_factory() as session:
             result = self._tasks(session).release_reference(principal, task_id, reference_id)
+            session.commit()
+            return result
+
+    def release_task_successor(
+        self, principal: Principal, task_id: UUID, successor_task_id: UUID, expected_version: int
+    ) -> TaskSuccessorReleaseResult:
+        """후행 관계 하나를 닫는다 — **판정과 저장이 한 session** 이다 (SPEC-007 §5 동시성).
+
+        잠금·회차 검사·닫기·회차 올리기·진행 기록이 전부 이 transaction 안이라, 검사한 뒤 저장
+        전에 남이 끼어드는 틈이 없다.
+        """
+        with self._session_factory() as session:
+            result = self._tasks(session).release_successor(principal, task_id, successor_task_id, expected_version)
             session.commit()
             return result
 
