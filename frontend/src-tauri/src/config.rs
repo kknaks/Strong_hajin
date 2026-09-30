@@ -1,20 +1,22 @@
 //! 셸이 여는 주소와 **네비게이션** 허용 목록.
 //!
 //! **허용 목록이 둘이고 서로 다르다**(SPEC-006 §5).
-//! - **커맨드** 허용 origin → `capabilities/*.json` 의 `remote.urls`. 운영 origin **정확히 하나**
+//! - **커맨드** 허용 origin → `flavors/<판>/capabilities/*.json` 의 `remote.urls`. 운영 origin **정확히 하나**
 //! - **네비게이션** 허용 origin → 여기. 운영 origin + 인증 흐름이 실제로 거치는 주소들
 //!
 //! 두 목록을 같은 것으로 다루지 않는다. 로그인 때문에 창이 거쳐야 하는 주소가 생기더라도
 //! **그 주소에 네이티브 권한을 주지 않는다** — 넓어지는 것은 이쪽 목록뿐이다.
 //!
-//! 운영 origin 은 **미정이다**(OQ-T02). 값이 비어 있으면 셸은 가짜 주소로 도는 대신
-//! 「설정되지 않았습니다」 화면을 연다.
+//! 설정은 **판마다 하나**다(`flavors/<판>/shell.config.json`, 판은 build.rs 가 정한다).
+//! 개인판(strong-hajin)은 운영 origin 이 **미정이다**(OQ-T02). 값이 비어 있으면 셸은 가짜 주소로
+//! 도는 대신 「설정되지 않았습니다」 화면을 연다. 회사판(medi-ax)은 https://ax.medisolveai.xyz 다.
 
 use serde::Deserialize;
 use tauri::Url;
 
 /// 설정 파일의 자리 이름 — 화면과 로그에 그대로 보인다.
-pub const CONFIG_SLOT: &str = "shell.config.json · operationalOrigin";
+pub const CONFIG_SLOT: &str =
+    concat!("flavors/", env!("SHELL_FLAVOR"), "/shell.config.json · operationalOrigin");
 
 #[derive(Debug, Deserialize)]
 // JSON 키는 camelCase 다. 이 줄이 없으면 값을 채워도 **조용히 무시되고**
@@ -41,7 +43,7 @@ pub enum Target {
 }
 
 /// 컴파일 시점에 설정을 싣는다 — 실행 파일만 보고도 무엇을 여는지 확인할 수 있다.
-const RAW: &str = include_str!("../shell.config.json");
+const RAW: &str = include_str!(concat!("../flavors/", env!("SHELL_FLAVOR"), "/shell.config.json"));
 
 pub fn load() -> Result<Target, String> {
     parse(RAW)
@@ -84,15 +86,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn 저장소에_실린_설정은_확정된_운영_origin_이다() {
-        // Phase 8(2026-10-01) — 운영 origin 이 확정됐다(OQ-T02 해소). 그 값만 싣는다.
-        match load().unwrap() {
+    fn 판마다_실린_주소가_정해진_값이다() {
+        // 개인판은 운영 origin 을 **발명하지 않았다**(OQ-T02 — 미정이면 null).
+        // 회사판은 Phase 8(2026-10-01)에 확정된 값 하나만 싣는다. 어느 판이든 빌드와 무관하게 둘 다 본다.
+        let personal = include_str!("../flavors/strong-hajin/shell.config.json");
+        assert_eq!(parse(personal).unwrap(), Target::Missing);
+
+        let company = include_str!("../flavors/medi-ax/shell.config.json");
+        match parse(company).unwrap() {
             Target::Configured { url, navigation_allowlist } => {
                 assert_eq!(url.as_str(), "https://ax.medisolveai.xyz/");
                 assert_eq!(navigation_allowlist, vec!["https://ax.medisolveai.xyz".to_string()]);
             }
-            Target::Missing => panic!("운영 origin 이 비어 있다"),
+            Target::Missing => panic!("회사판 운영 origin 이 비어 있다"),
         }
+
+        // 이번 빌드가 실은 것은 그 판의 파일이다.
+        let expected = match env!("SHELL_FLAVOR") {
+            "strong-hajin" => personal,
+            "medi-ax" => company,
+            other => panic!("모르는 판: {other}"),
+        };
+        assert_eq!(RAW, expected);
     }
 
     #[test]

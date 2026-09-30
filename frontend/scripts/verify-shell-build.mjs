@@ -33,13 +33,26 @@
  *   node scripts/verify-shell-build.mjs --strict       # 검증 불가를 **실패로 승격**
  *   SHELL_STRICT=1 node scripts/verify-shell-build.mjs # 위와 같다
  *   node scripts/verify-shell-build.mjs --tag v0.0.1   # 코드 태그까지 같은 판인지 대조
+ *   node scripts/verify-shell-build.mjs --flavor medi-ax  # 판(flavor) 지정 — SHELL_FLAVOR 와 같다
+ *
+ * **판(flavor)** — `src-tauri/flavors/<판>/` 의 오버레이를 기본 `tauri.conf.json` 에 얹은 설정과
+ * 그 판의 `shell.config.json`·`capabilities/` 를 본다(`scripts/shell-flavor.mjs`). 기본은 개인판.
  */
 import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { DEFAULT_FLAVOR, flavorNames, loadFlavor, requestedFlavor } from "./shell-flavor.mjs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const shell = resolve(here, "..", "src-tauri");
+
+let flavor;
+try {
+  flavor = loadFlavor(shell, requestedFlavor());
+} catch (error) {
+  console.error(error.message);
+  process.exit(2);
+}
 
 const problems = [];
 const notes = [];
@@ -67,7 +80,8 @@ function cargoVersion() {
 }
 
 // ── 1. 판 번호가 한 곳에서 나오는가 ─────────────────────────────────────────
-const conf = readJson(join(shell, "tauri.conf.json"));
+// 판 오버레이를 얹은 설정 — 실제로 구워지는 이름·identifier 다.
+const conf = flavor.conf;
 const cargo = cargoVersion();
 
 if (!cargo) fail("Cargo.toml 의 [package] version 을 읽지 못했다");
@@ -176,8 +190,34 @@ if (conf.app?.withGlobalTauri !== false) fail("app.withGlobalTauri 가 false 가
 if (conf.app?.security?.csp) fail("셸이 CSP 를 박고 있다 — 원격 문서의 CSP 는 서버 응답 헤더가 정한다");
 if (conf.identifier === "com.kknaks.task-management") fail("참조 제품과 식별자가 겹친다(AC-T34)");
 
+// ── 4½. 판 ──────────────────────────────────────────────────────────────────
+// 오버레이는 이름·실행 파일 이름·identifier 만 바꾼다. identifier 는 판마다 달라야 한다 —
+// 같으면 두 판이 한 저장소(쿠키)를 밟는다. 판 «안에서» 바뀌면 그 판 사용자가 로그아웃된다.
+note(`판 = ${flavor.name}${flavor.name === DEFAULT_FLAVOR ? "(기본)" : ""} · 이름 ${conf.productName} · identifier ${conf.identifier}`);
+for (const key of Object.keys(flavor.overlay)) {
+  if (!["$schema", "productName", "mainBinaryName", "identifier"].includes(key)) {
+    fail(`판 ${flavor.name} 오버레이가 공통 설정을 바꾼다: ${key}`);
+  }
+}
+{
+  const seen = new Map();
+  for (const name of flavorNames(shell)) {
+    const identifier = loadFlavor(shell, name).conf.identifier;
+    if (seen.has(identifier)) fail(`판 ${seen.get(identifier)} 와 ${name} 의 identifier 가 같다: ${identifier}`);
+    seen.set(identifier, name);
+  }
+}
+if (flavor.name === DEFAULT_FLAVOR) {
+  const base = readJson(join(shell, "tauri.conf.json"));
+  for (const key of ["productName", "identifier"]) {
+    if (base[key] !== flavor.overlay[key]) {
+      fail(`기본 tauri.conf.json 의 ${key}(${base[key]}) 가 기본판(${DEFAULT_FLAVOR}) 과 다르다 — 오버레이 없이 도는 빌드가 딴 판이 된다`);
+    }
+  }
+}
+
 // ── 5. 권한 경계 ────────────────────────────────────────────────────────────
-const capabilityDir = join(shell, "capabilities");
+const capabilityDir = flavor.capabilityDir;
 const capabilities = readdirSync(capabilityDir).filter((name) => name.endsWith(".json"));
 if (capabilities.length !== 1) fail(`capability 파일이 하나가 아니다: ${capabilities.join(", ")}`);
 for (const name of capabilities) {
@@ -192,6 +232,15 @@ for (const name of capabilities) {
   if (urls.some((url) => url.includes(".invalid"))) {
     notes.push(`${name}: 운영 origin 이 아직 자리표시다(${urls[0]}) — fixture/운영 판을 구우려면 먼저 채워야 한다`);
   }
+  // 같은 판의 shell.config 와 대조한다 — 「창은 A 를 여는데 커맨드는 B 에만」(E-06)을 굽기 전에 잡는다.
+  const configured = readJson(flavor.shellConfigPath).operationalOrigin ?? null;
+  if (configured) {
+    if (urls[0] !== `${new URL(configured).origin}/*`) {
+      fail(`${name}: shell.config(${configured}) 와 remote.urls(${urls[0]}) 가 갈렸다`);
+    }
+  } else if (!urls.some((url) => url.includes(".invalid"))) {
+    fail(`${name}: 여는 주소가 없는(null) 판인데 커맨드 허용 origin 이 실주소다(${urls[0]})`);
+  }
 }
 
 // ── 이 호스트에서 «구울 수» 있는 것 ─────────────────────────────────────────
@@ -204,7 +253,7 @@ hostNotes.push(
 );
 
 // ── 결과 ────────────────────────────────────────────────────────────────────
-console.log(`== 셸 빌드 구성 검증 ==${strict ? "  [strict]" : ""}`);
+console.log(`== 셸 빌드 구성 검증 [판 ${flavor.name}] ==${strict ? "  [strict]" : ""}`);
 for (const line of notes) console.log(`  · ${line}`);
 
 console.log("");

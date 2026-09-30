@@ -60,6 +60,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadFlavor, requestedFlavor } from "./shell-flavor.mjs";
 
 const EXIT_PASS = 0;
 const EXIT_USAGE = 2;
@@ -174,12 +175,19 @@ function shellApi() {
   const found = raw.match(/const\s+SHELL_API\s*:\s*u32\s*=\s*(\d+)/);
   return found ? Number(found[1]) : null;
 }
+// 판 — manifest 가 기록한 판을 믿는다(없던 시절의 기록이면 --flavor · SHELL_FLAVOR · 기본판).
+let flavor;
+try {
+  flavor = loadFlavor(shell, manifest.flavor ?? requestedFlavor());
+} catch (error) {
+  die(EXIT_COMBINATION, `**조합 불일치** — ${error.message}`);
+}
 function configOrigin() {
-  const raw = JSON.parse(readFileSync(join(shell, "shell.config.json"), "utf8"));
+  const raw = JSON.parse(readFileSync(flavor.shellConfigPath, "utf8"));
   return raw.operationalOrigin ?? null;
 }
 function capabilityUrl() {
-  const dir = join(shell, "capabilities");
+  const dir = flavor.capabilityDir;
   const files = readdirSync(dir).filter((n) => n.endsWith(".json"));
   if (files.length !== 1) return null;
   return (JSON.parse(readFileSync(join(dir, files[0]), "utf8")).remote?.urls ?? [])[0] ?? null;
@@ -194,11 +202,14 @@ const treeCapability = capabilityUrl();
 if (manifest.appVersion !== treeVersion) {
   combination.push(`판 번호 — manifest=${manifest.appVersion} · 트리(Cargo.toml)=${treeVersion}`);
 }
+if (manifest.identifier !== flavor.conf.identifier) {
+  combination.push(`identifier — manifest=${manifest.identifier} · 트리(판 ${flavor.name})=${flavor.conf.identifier}`);
+}
 if (manifest.shellApi !== treeApi) {
   combination.push(`shell_api — manifest=${manifest.shellApi} · 트리(lib.rs)=${treeApi}`);
 }
 if (manifest.operationalOrigin !== treeOrigin) {
-  combination.push(`origin — manifest=${manifest.operationalOrigin} · 트리(shell.config.json)=${treeOrigin}`);
+  combination.push(`origin — manifest=${manifest.operationalOrigin} · 트리(flavors/${flavor.name}/shell.config.json)=${treeOrigin}`);
 }
 if (manifest.capabilityRemoteUrl !== treeCapability) {
   combination.push(`capability — manifest=${manifest.capabilityRemoteUrl} · 트리=${treeCapability}`);

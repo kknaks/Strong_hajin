@@ -372,7 +372,8 @@ pub fn run() {
 
             let window =
                 WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::External(start_url.clone()))
-                    .title("Strong Hajin")
+                    // 창 제목 = 판의 productName(flavors/<판>/tauri.conf.json). 이름을 두 곳에 두지 않는다.
+                    .title(app.package_info().name.clone())
                     .inner_size(1280.0, 860.0)
                     // 원격 웹의 HTML5 drag/drop 을 WKWebView 가 직접 처리해야 한다.
                     // Tauri 의 네이티브 파일 드롭 핸들러를 켜 두면 웹의 drag/drop 이벤트를 소비한다.
@@ -562,8 +563,17 @@ mod tests {
     // 운영 origin 이 없어도(OQ-T02) 여기까지는 지금 확인할 수 있다. AC-T23·AC-T24·AC-T25 의
     // 증거 자리이고, 「설정 파일을 사람이 읽어 확인할 수 있어야 한다」를 기계로도 고정한다.
 
-    const CAPABILITY: &str = include_str!("../capabilities/product-shell.json");
+    const CAPABILITY: &str =
+        include_str!(concat!("../flavors/", env!("SHELL_FLAVOR"), "/capabilities/product-shell.json"));
     const TAURI_CONF: &str = include_str!("../tauri.conf.json");
+    const PERSONAL_CONF: &str = include_str!("../flavors/strong-hajin/tauri.conf.json");
+    const COMPANY_CONF: &str = include_str!("../flavors/medi-ax/tauri.conf.json");
+    const PERSONAL_CAPABILITY: &str = include_str!("../flavors/strong-hajin/capabilities/product-shell.json");
+    const COMPANY_CAPABILITY: &str = include_str!("../flavors/medi-ax/capabilities/product-shell.json");
+
+    fn json(raw: &str) -> serde_json::Value {
+        serde_json::from_str(raw).expect("JSON")
+    }
     const CARGO_TOML: &str = include_str!("../Cargo.toml");
 
     fn capability() -> serde_json::Value {
@@ -612,24 +622,52 @@ mod tests {
     }
 
     #[test]
-    fn 운영_origin_은_설정과_커맨드_허용이_같다() {
-        // Phase 8(2026-10-01) — 운영 origin 확정(OQ-T02 해소). 설정은 A 인데 권한은 B 인 판을 막는다.
-        let capability = capability();
-        let url = capability["remote"]["urls"][0].as_str().unwrap();
-        assert_eq!(url, "https://ax.medisolveai.xyz/*");
+    fn 판마다_운영_origin_은_설정과_커맨드_허용이_같다() {
+        // 개인판 — OQ-T02: fixture 주소를 운영값으로 승격하지 않았다. `.invalid` 는 예약 TLD(RFC 2606)라
+        // 실재할 수 없다. 개인판 주소가 정해지면 그때 이 단언이 바뀐다.
+        let personal = json(PERSONAL_CAPABILITY);
+        let url = personal["remote"]["urls"][0].as_str().unwrap();
+        assert!(url.contains(".invalid"), "개인판 운영 origin 을 발명했다: {url}");
+        assert!(!url.contains("medisolveai"), "회사판 주소가 개인판으로 새었다: {url}");
+
+        // 회사판 — Phase 8(2026-10-01) 확정. 설정은 A 인데 권한은 B 인 판을 막는다.
+        let company = json(COMPANY_CAPABILITY);
+        assert_eq!(company["remote"]["urls"][0].as_str().unwrap(), "https://ax.medisolveai.xyz/*");
+
+        // 이번 빌드가 실은 판: capability 와 shell.config 가 같은 origin 이다(주소가 서 있다면).
+        let url = capability()["remote"]["urls"][0].as_str().unwrap().to_string();
         assert!(!url.contains("localhost"), "fixture 주소가 승격됐다: {url}");
         match config::load().unwrap() {
             config::Target::Configured { url: target, .. } => {
                 assert_eq!(format!("{}/*", target.origin().ascii_serialization()), url);
             }
-            config::Target::Missing => panic!("운영 origin 이 비어 있다"),
+            config::Target::Missing => assert!(url.contains(".invalid"), "주소 없는 판이 커맨드를 연다: {url}"),
         }
     }
 
     #[test]
     fn 셸_설정이_제품_정체성을_지킨다() {
-        // AC-T34 — 참조 제품과 겹치지 않는다. 식별자는 판을 넘어 고정한다.
+        // AC-T34 — 참조 제품과 겹치지 않는다. 식별자는 **판마다 고정**한다 — 한 판 안에서 바뀌면
+        // 저장소(쿠키)가 새로 잡혀 그 판 사용자가 로그아웃된다. 판끼리는 달라야 서로의 저장소를 밟지 않는다.
+        let personal = json(PERSONAL_CONF);
+        let company = json(COMPANY_CONF);
+        assert_eq!(personal["identifier"], "app.stronghajin.desktop");
+        assert_eq!(personal["productName"], "Strong Hajin");
+        assert_eq!(company["identifier"], "app.ax.desktop");
+        assert_eq!(company["productName"], "medi-ax");
+        assert_eq!(company["mainBinaryName"], "medi-ax");
+        // 기본 설정(오버레이 없이 도는 cargo·tauri dev)은 개인판이다.
         assert!(TAURI_CONF.contains(r#""identifier": "app.stronghajin.desktop""#));
+        assert!(TAURI_CONF.contains(r#""productName": "Strong Hajin""#));
+        // 판 오버레이는 이름·실행 파일 이름·식별자만 바꾼다 — 권한·창·번들 구성은 공통이다.
+        for overlay in [&personal, &company] {
+            for key in overlay.as_object().unwrap().keys() {
+                assert!(
+                    ["$schema", "productName", "mainBinaryName", "identifier"].contains(&key.as_str()),
+                    "판 오버레이가 공통 설정을 바꾼다: {key}"
+                );
+            }
+        }
         assert!(!TAURI_CONF.contains("com.kknaks.task-management"));
         // 원격 문서의 CSP 는 **서버 응답 헤더가 정한다** — 셸이 박지 않는다(SPEC §5).
         assert!(!TAURI_CONF.contains("\"csp\""));
