@@ -62,8 +62,8 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: (profile: OrganizationPr
     <main className="login-shell">
       <section className="login-brand" aria-hidden>
         <div className="wordmark">
-          <span className="wordmark-mark">SC</span>
-          SCAX
+          <span className="wordmark-mark">M</span>
+          MEDISOLVE
         </div>
         <h1>기록 → 판단 → 수행 → 보고를 한 흐름으로</h1>
         <p>조직의 업무를 하나의 원장에서 다루고, AX가 허용된 범위 안에서 조회하고 제안합니다.</p>
@@ -71,7 +71,7 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: (profile: OrganizationPr
       <section aria-label="로그인" className="login-panel">
         <header className="login-heading">
           <h2>로그인</h2>
-          <p className="login-lead">SCAX 계정으로 업무를 시작하세요.</p>
+          <p className="login-lead">MEDISOLVE 계정으로 업무를 시작하세요.</p>
         </header>
 
         {(providers?.demo_accounts?.length ?? 0) > 0 && (

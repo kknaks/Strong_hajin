@@ -73,7 +73,8 @@ def test_application_startup_never_mutates_schema(monkeypatch: pytest.MonkeyPatc
 def test_production_has_no_developer_login_surface() -> None:
     app = create_app(Settings(RuntimeProfile.PRODUCTION, "postgresql+psycopg://unused"))
     client = TestClient(app)
-    assert client.post("/api/auth/login", json={"email": "a@b.c", "password": "x"}).status_code == 404
+    # 로그인 route 는 있다(2026-09-30 — 운영에도 로그인 수단이 있어야 한다). 개발 이음새는 여전히 없다.
+    assert "/api/auth/login" in {getattr(route, "path", "") for route in app.routes}
     assert client.get("/api/catalog", headers={"X-Demo-Persona": "yuna"}).status_code == 404
     with pytest.raises(RuntimeError, match="forbidden"):
         DeveloperAuthAdapter(Settings(RuntimeProfile.PRODUCTION, "postgresql+psycopg://unused"))

@@ -256,8 +256,15 @@ class McpReportsFacade:
         persona_id: str,
         report_provider: AiProvider | None = None,
     ) -> None:
-        if not settings.developer_auth_enabled:
-            raise RuntimeError("MCP developer adapter is available only in development and test profiles")
+        # 개발·시험에서는 누구로든 띄울 수 있다(테스트·직접 호출). 운영에서는 AX 한 턴의 도구 서버로만 선다 —
+        # 워커의 AI provider 가 stdio 로 띄우며 AX_MCP_PERSONA·AX_MCP_CAUSATION_ID 를 함께 준다
+        # (platform/codex_cli.py · claude_cli.py). 네트워크 입구는 없다(`create_mcp_server().run(transport="stdio")`).
+        # 이 검사는 «워커가 띄웠다»는 표시이지 인증이 아니다: 턴 id 를 원장과 대조하지 않으며, 그 프로세스를 띄울 수
+        # 있는 쪽은 이미 같은 DATABASE_URL 을 갖고 있다.
+        if not settings.developer_auth_enabled and not os.getenv("AX_MCP_CAUSATION_ID"):
+            raise RuntimeError(
+                "In production the MCP server runs only as the tool server of an AX turn (AX_MCP_CAUSATION_ID is required)"
+            )
         self._application: WorkflowApplication = create_workflow_application(settings, report_provider)
         self._persona_id = persona_id
 

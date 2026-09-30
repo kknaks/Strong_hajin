@@ -94,12 +94,12 @@ def test_the_development_persona_header_proves_nothing_in_production() -> None:
         assert client.get(path, headers=PERSONA).status_code == 401, path
 
 
-def test_local_login_and_demo_shortcuts_stay_closed_in_production() -> None:
-    """로그인 방식은 이번 작업이 건드리지 않는다 — 로컬 로그인은 PRODUCTION 에서 계속 닫힌다."""
+def test_login_is_open_and_demo_shortcuts_stay_closed_in_production() -> None:
+    """이메일/비밀번호 로그인은 PRODUCTION 에도 열린다(2026-09-30). 데모 지름길은 계속 닫힌다."""
     app = _production_app()
-    assert "/api/auth/login" not in _paths(app)
+    assert "/api/auth/login" in _paths(app)
     answer = TestClient(app).get("/api/auth/providers").json()
-    assert answer == {"local": False, "oidc": False}
+    assert answer == {"local": True, "oidc": False}
 
 
 def test_the_secure_cookie_condition_is_unchanged() -> None:
@@ -116,3 +116,19 @@ def test_development_keeps_both_the_routes_and_its_own_seam() -> None:
     assert "/api/tasks" in paths and "/api/meetings/{meeting_id}/stream" in paths
     assert "/api/auth/login" in paths          # 로컬 로그인은 개발에서 열려 있다
     assert hasattr(app.state, "developer_auth")  # 페르소나 이음새도 그대로다
+
+
+def test_production_mcp_runs_only_as_the_tool_server_of_an_ax_turn(monkeypatch) -> None:
+    """운영의 MCP 는 워커가 AX 한 턴을 위해 띄운 도구 서버로만 선다 (2026-09-30).
+
+    턴 표시(`AX_MCP_CAUSATION_ID`) 없이 운영 프로파일로 띄우면 거절한다. 워커가 띄운 경우 — 페르소나와 턴 표시를
+    함께 받은 경우 — 는 선다. 운영에서 AX 대화가 도구를 쓰지 못하던 자리를 닫는다.
+    """
+    from ax_workspace.entrypoints.mcp import McpReportsFacade
+
+    settings = Settings(RuntimeProfile.PRODUCTION, UNUSED_DATABASE)
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
+    with pytest.raises(RuntimeError, match="AX_MCP_CAUSATION_ID"):
+        McpReportsFacade(settings, "mina")
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", "00000000-0000-0000-0000-000000000001")
+    assert McpReportsFacade(settings, "mina") is not None

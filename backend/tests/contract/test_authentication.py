@@ -174,11 +174,19 @@ def test_the_password_itself_is_never_stored(tmp_path) -> None:
     assert hash_password(DEMO_PASSWORD) != stored
 
 
-def test_the_login_route_does_not_exist_in_production(tmp_path) -> None:
+def test_production_signs_in_with_an_email_and_password_and_marks_the_cookie_secure(tmp_path) -> None:
+    """운영에도 로그인 수단이 있어야 한다 — 이메일/비밀번호 로그인은 프로파일과 무관하게 열린다.
+
+    **2026-09-30**: 예전에는 PRODUCTION 이 이 라우트를 등록하지 않았고, 대신 들어올 외부 로그인도 없어서 운영에는
+    들어올 길이 하나도 없었다. 달라지지 않은 것은 둘이다 — 틀린 자격은 똑같이 401 이고, 쿠키는 운영에서만 Secure 다.
+    """
     client, _ = _stack(tmp_path, RuntimeProfile.PRODUCTION)
-    assert client.post("/api/auth/login", json={"email": demo_email("mina"), "password": DEMO_PASSWORD}).status_code == 404
-    paths = {route.path for route in client.app.routes}
-    assert "/api/auth/login" not in paths
+    wrong = client.post("/api/auth/login", json={"email": demo_email("mina"), "password": DEMO_PASSWORD + "x"})
+    assert wrong.status_code == 401
+    signed_in = client.post("/api/auth/login", json={"email": demo_email("mina"), "password": DEMO_PASSWORD})
+    assert signed_in.status_code == 200 and signed_in.json()["member_id"] == "mina"
+    cookie = signed_in.headers["set-cookie"].lower()
+    assert "scax_session=" in cookie and "secure" in cookie and "httponly" in cookie
 
 
 def test_the_demo_offers_its_own_accounts_as_a_shortcut_and_production_offers_nothing(tmp_path) -> None:
@@ -207,22 +215,20 @@ def test_the_demo_offers_its_own_accounts_as_a_shortcut_and_production_offers_no
     assert "real.person@example.com" not in str(listed)
 
 
-def test_production_is_offered_no_accounts_and_no_route(tmp_path) -> None:
-    """PRODUCTION 은 «무엇으로 로그인할 수 있는가»를 답하되, 지름길도 로컬 로그인도 내놓지 않는다.
+def test_production_offers_the_login_but_never_the_demo_shortcut(tmp_path) -> None:
+    """PRODUCTION 은 이메일/비밀번호 로그인을 내놓고, 지름길은 내놓지 않는다.
 
-    **2026-09-22 (WORK-006 Phase 6b)**: 라우트 등록이 프로파일에서 분리되면서 이 조회는 404 가 아니라
-    200 이 된다. 바뀐 것은 **등록**이지 **권한**이 아니다 — 답은 여전히 「로컬 로그인 없음」이고,
-    데모 계정·데모 비밀번호는 **한 줄도 실리지 않는다.**
+    **2026-09-30**: 로그인은 운영에도 열린다(`local: true`). 닫혀 있는 것은 모두가 같은 비밀번호를 쓰는 데모
+    계정 목록과 그 비밀번호, 그리고 개발 전용 표면이다 — 한 줄도 실리지 않는다.
     """
     client, _ = _stack(tmp_path, RuntimeProfile.PRODUCTION)
     providers = client.get("/api/auth/providers")
     assert providers.status_code == 200
-    assert providers.json() == {"local": False, "oidc": False}
+    assert providers.json() == {"local": True, "oidc": False}
     # 지름길이 새지 않는다 — 계정 목록도 비밀번호도 없다.
     assert "demo_accounts" not in providers.json() and "demo_password" not in providers.json()
-    # 로그인 route 자체가 없고, 개발 전용 표면도 없다.
     paths = {route.path for route in client.app.routes}
-    assert "/api/auth/login" not in paths
+    assert "/api/auth/login" in paths
     assert "/api/developer/personas" not in paths
 
 

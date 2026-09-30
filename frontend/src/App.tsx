@@ -43,7 +43,8 @@ const navigation: ReadonlyArray<{ id: ProductSurface | "materials"; label: strin
   { id: "meetings", label: "회의", icon: "persons" },
   { id: "org", label: "조직", icon: "company" },
   { id: "report", label: "보고", icon: "document" },
-  { id: "graph", label: "관계 탐색", icon: "link" },
+  // 데모 기간에는 사이드 탭에서 닫는다. 화면 자체와 다른 진입 경로는 그대로 둔다.
+  { id: "graph", label: "관계 탐색", icon: "link", disabled: true },
 ];
 
 const surfaceLabel: Record<ProductSurface, string> = {
@@ -411,7 +412,7 @@ export default function App() {
           collapsed={navCollapsed}
           items={visibleNavigation.map((item) => ({ id: item.id, label: item.label, icon: item.icon, disabled: item.disabled }))}
           label="제품 탐색"
-          logo="SCAX"
+          logo="MEDISOLVE"
           onCollapse={() => setNavCollapsed((collapsed) => !collapsed)}
           onSelect={(id) => setSurface(id as ProductSurface)}
           onUserClick={() => {
