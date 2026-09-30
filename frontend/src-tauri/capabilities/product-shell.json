@@ -5,7 +5,7 @@
   "windows": ["main"],
   "local": false,
   "remote": {
-    "urls": ["https://operational-origin-not-yet-decided.invalid/*"]
+    "urls": ["https://ax.medisolveai.xyz/*"]
   },
   "permissions": [
     "allow-shell-info",

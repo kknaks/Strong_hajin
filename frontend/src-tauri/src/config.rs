@@ -84,10 +84,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn 저장소에_실린_설정은_아직_미정이다() {
-        // 운영 origin 을 **발명하지 않았다**는 것을 코드로 고정한다(OQ-T02).
-        // Phase 8 이 값을 채우면 이 시험은 그때 함께 바뀐다.
-        assert_eq!(load().unwrap(), Target::Missing);
+    fn 저장소에_실린_설정은_확정된_운영_origin_이다() {
+        // Phase 8(2026-10-01) — 운영 origin 이 확정됐다(OQ-T02 해소). 그 값만 싣는다.
+        match load().unwrap() {
+            Target::Configured { url, navigation_allowlist } => {
+                assert_eq!(url.as_str(), "https://ax.medisolveai.xyz/");
+                assert_eq!(navigation_allowlist, vec!["https://ax.medisolveai.xyz".to_string()]);
+            }
+            Target::Missing => panic!("운영 origin 이 비어 있다"),
+        }
     }
 
     #[test]

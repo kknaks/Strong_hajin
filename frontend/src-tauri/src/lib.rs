@@ -612,14 +612,18 @@ mod tests {
     }
 
     #[test]
-    fn 운영_origin_은_아직_자리로만_있다() {
-        // OQ-T02 — fixture 주소를 제품 운영값으로 승격하지 않았다는 것을 코드로 고정한다.
-        // `.invalid` 는 예약 TLD(RFC 2606)라 실재할 수 없다. Phase 8 이 값을 채운다.
+    fn 운영_origin_은_설정과_커맨드_허용이_같다() {
+        // Phase 8(2026-10-01) — 운영 origin 확정(OQ-T02 해소). 설정은 A 인데 권한은 B 인 판을 막는다.
         let capability = capability();
         let url = capability["remote"]["urls"][0].as_str().unwrap();
-        assert!(url.contains(".invalid"), "운영 origin 을 발명했다: {url}");
+        assert_eq!(url, "https://ax.medisolveai.xyz/*");
         assert!(!url.contains("localhost"), "fixture 주소가 승격됐다: {url}");
-        assert_eq!(config::load().unwrap(), config::Target::Missing);
+        match config::load().unwrap() {
+            config::Target::Configured { url: target, .. } => {
+                assert_eq!(format!("{}/*", target.origin().ascii_serialization()), url);
+            }
+            config::Target::Missing => panic!("운영 origin 이 비어 있다"),
+        }
     }
 
     #[test]
