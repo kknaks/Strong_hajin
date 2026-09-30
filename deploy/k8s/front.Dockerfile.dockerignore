@@ -1,0 +1,9 @@
+**
+!frontend/
+!frontend/**
+frontend/node_modules
+frontend/dist
+frontend/src-tauri
+frontend/test-results
+frontend/playwright-report
+!deploy/k8s/nginx.conf

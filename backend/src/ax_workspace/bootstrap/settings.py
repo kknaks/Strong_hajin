@@ -126,9 +126,10 @@ class Settings:
         return self.profile in {RuntimeProfile.DEVELOPMENT, RuntimeProfile.TEST}
 
     @property
-    def local_login_enabled(self) -> bool:
-        """Email/password sign-in. Production proves identity through an external provider instead."""
-        return self.profile is not RuntimeProfile.PRODUCTION
+    def demo_shortcuts_enabled(self) -> bool:
+        """「바로 로그인」 목록과 데모 비밀번호를 내놓을지. 이메일/비밀번호 로그인 자체는 어느 프로파일에서나 열려 있다 —
+        닫히는 것은 모두가 같은 비밀번호를 쓰는 로컬 데모 계정을 나열하는 지름길뿐이다."""
+        return self.developer_auth_enabled
 
     @classmethod
     def from_environment(cls) -> "Settings":

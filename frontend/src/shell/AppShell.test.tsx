@@ -40,7 +40,7 @@ it("셸 뼈대가 서고, 화면마다 스크롤 기둥이 본문 칸에 직접 
   // 신원·접기·로고
   expect(screen.getByRole("button", { name: "내 AX 캐릭터" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "메뉴 접기" })).toBeTruthy();
-  expect(container.querySelector(".scax-side-nav__logo")?.textContent).toBe("SCAX");
+  expect(container.querySelector(".scax-side-nav__logo")?.textContent).toBe("MEDISOLVE");
   /* 아바타 URL 이 없으니 **`<img>` 는 안 그린다** — 없는 주소를 넣으면 깨진 이미지가 뜬다.
      대신 시안 31 의 그 자리를 DS `Avatar` 의 첫 글자로 채운다(자리를 비워 두지 않는다).
      세션에 사진 URL 이 생기면 그때 `<img>` 가 선다. */

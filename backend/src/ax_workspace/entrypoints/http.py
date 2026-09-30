@@ -627,12 +627,13 @@ def create_app(
     def auth_providers() -> dict[str, object]:
         """Which ways of proving who you are exist here — and, on a developer machine, the demo's own accounts.
 
-        The shortcut list is the local demo's own accounts and the one password `reset-demo` gave them, which the
-        README already prints. It is a way to skip typing, not a way to skip signing in: pressing one still posts
-        the same credentials to the same login route and gets an ordinary session. Production returns neither.
+        Email/password sign-in exists in every profile. The shortcut list is the local demo's own accounts and the one
+        password `reset-demo` gave them, which the README already prints. It is a way to skip typing, not a way to skip
+        signing in: pressing one still posts the same credentials to the same login route and gets an ordinary
+        session. Production never returns the shortcut.
         """
-        answer: dict[str, object] = {"local": settings.local_login_enabled, "oidc": False}
-        if settings.local_login_enabled:
+        answer: dict[str, object] = {"local": True, "oidc": False}
+        if settings.demo_shortcuts_enabled:
             accounts = app.state.workflow_application.demo_accounts(settings.demo_email_domain)
             # Read as an organization — 대표 first, then the team — rather than in identifier order.
             order = {member.id: index for index, member in enumerate(SEEDED_MEMBERS)}
@@ -640,27 +641,25 @@ def create_app(
             answer["demo_password"] = DEMO_PASSWORD
         return answer
 
-    if settings.local_login_enabled:
-
-        @app.post("/api/auth/login")
-        def login(request: LoginRequest, response: Response) -> dict[str, object]:
-            try:
-                principal = app.state.workflow_application.authenticate_with_password(
-                    request.email, request.password
-                )
-            except AuthenticationFailed as error:
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error)) from error
-            session_id = app.state.auth_sessions.create(str(principal.id), "local")
-            response.set_cookie(
-                SESSION_COOKIE,
-                str(session_id),
-                max_age=SESSION_MAX_AGE,
-                httponly=True,
-                samesite="lax",
-                secure=cookie_secure(settings),
-                path="/",
-            )
-            return app.state.workflow_application.my_organization_profile(principal)
+    # 이메일/비밀번호 로그인은 프로파일과 무관하게 연다. 운영에 로그인 수단이 하나도 없던 자리를 닫는다 —
+    # 개발에만 남는 것은 위의 「바로 로그인」 지름길과 `X-Demo-Persona` 이음새다.
+    @app.post("/api/auth/login")
+    def login(request: LoginRequest, response: Response) -> dict[str, object]:
+        try:
+            principal = app.state.workflow_application.authenticate_with_password(request.email, request.password)
+        except AuthenticationFailed as error:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error)) from error
+        session_id = app.state.auth_sessions.create(str(principal.id), "local")
+        response.set_cookie(
+            SESSION_COOKIE,
+            str(session_id),
+            max_age=SESSION_MAX_AGE,
+            httponly=True,
+            samesite="lax",
+            secure=cookie_secure(settings),
+            path="/",
+        )
+        return app.state.workflow_application.my_organization_profile(principal)
 
     @app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
     def logout(request: Request, response: Response) -> Response:

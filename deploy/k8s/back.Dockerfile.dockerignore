@@ -1,0 +1,6 @@
+**
+!backend/pyproject.toml
+!backend/uv.lock
+!backend/src/
+!backend/src/**
+backend/src/**/__pycache__

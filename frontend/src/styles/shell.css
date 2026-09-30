@@ -95,9 +95,9 @@ span.scax-side-nav__avatar{display:flex;align-items:center;justify-content:cente
 .scax-side-nav__group{display:flex;flex-direction:column;gap:var(--scax-space-050)}
 .scax-side-nav__divider{height:1px;margin:var(--scax-space-400) var(--scax-space-100);background:var(--scax-color-line-weak)}
 .scax-side-nav__spacer{flex:1 1 auto}
-/* 계정 행동(설정·로그아웃) — 워드마크 «위» 에 한 칸. 내비 항목과 같은 왼쪽 정렬·같은 높이로 서서 기둥의 결을 따른다. */
+/* 계정 행동(설정·로그아웃) — 워드마크 «위» 에 한 칸. 글자는 아래 워드마크와 같은 가운데 축에 선다. */
 .scax-side-nav__actions{display:flex;flex-direction:column;align-items:stretch;gap:var(--scax-space-050);padding:0 0 var(--scax-space-300)}
-.scax-side-nav__actions>.scax-button{justify-content:flex-start;width:100%;padding:0 var(--scax-space-200)}
+.scax-side-nav__actions>.scax-button{justify-content:center;width:100%;padding:0 var(--scax-space-200)}
 .scax-side-nav__footer{display:flex;flex-direction:column;align-items:center;gap:var(--scax-space-100);padding-bottom:var(--scax-space-400)}
 .scax-side-nav__logo{font-family:var(--scax-font-display);font-size:var(--scax-text-headline-size);font-weight:var(--scax-fw-bold);letter-spacing:0.02em;color:var(--scax-color-ink)}
 .scax-side-nav__version{font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);letter-spacing:var(--scax-text-caption2-ls);color:var(--scax-color-ink-assistive)}
