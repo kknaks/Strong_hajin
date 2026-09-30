@@ -29,7 +29,7 @@ PROTECTED_CODEX_BASE ?= node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a046
 PROTECTED_RUNTIME_BASE ?= debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 PROTECTED_EXPECT_CONSTANTS ?= visible
 
-.PHONY: install test test-unit test-contract test-contract-serial test-serial test-scale test-release test-postgres frontend-test frontend-build frontend-assets shell-verify shell-verify-strict shell-build-fixture shell-final-preflight shell-release-preflight tauri-local verify protected-build protected-inspect postgres-up postgres-down reset-demo reset-catalog sync-demo-schema dataset-import dataset-inspect api conversation-worker material-worker meeting-worker mcp frontend-install frontend storybook storybook-build api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-ax-editable-task e2e-ax-editable-meeting e2e-ax-meeting-draft e2e-assistant-character e2e-assistant-preference e2e-follow-up-continuation e2e-ax-action-draft e2e-ax-action-materials e2e-conversation-report-edit-action e2e-daily-report e2e-material-search e2e-meeting-live-transcript e2e-meeting-three-tracks e2e-access-roles e2e-project-participation-history e2e-graph-question local-stack acceptance-e2e live-report-smoke soniox-smoke
+.PHONY: install test test-unit test-contract test-contract-serial test-serial test-scale test-release test-postgres frontend-test frontend-build frontend-assets shell-verify shell-verify-strict shell-build shell-build-fixture shell-final-preflight shell-release-preflight tauri-local verify protected-build protected-inspect postgres-up postgres-down reset-demo reset-catalog sync-demo-schema dataset-import dataset-inspect api conversation-worker material-worker meeting-worker mcp frontend-install frontend storybook storybook-build api-e2e frontend-e2e e2e-task-lifecycle e2e-task-checklist e2e-task-history e2e-task-reference e2e-calendar-tasks e2e-task-delivery e2e-chat-checklist e2e-task-detail-layout e2e-task-origin e2e-work-request e2e-work-relations e2e-action-item e2e-conversation e2e-conversation-action e2e-chat-lifecycle e2e-chat-approval e2e-ax-editable-task e2e-ax-editable-meeting e2e-ax-meeting-draft e2e-assistant-character e2e-assistant-preference e2e-follow-up-continuation e2e-ax-action-draft e2e-ax-action-materials e2e-conversation-report-edit-action e2e-daily-report e2e-material-search e2e-meeting-live-transcript e2e-meeting-three-tracks e2e-access-roles e2e-project-participation-history e2e-graph-question local-stack acceptance-e2e live-report-smoke soniox-smoke
 
 install:
 	cd backend && uv sync --all-groups
@@ -99,6 +99,14 @@ frontend-test:
 frontend-assets:
 	cd frontend && npm run verify:assistant-assets
 
+# ── 데스크톱 셸의 판(flavor) ─────────────────────────────────────────────────
+# 코드 한 벌, 판마다 설정 한 폴더(frontend/src-tauri/flavors/<판>/ — 이름·identifier 오버레이 ·
+# shell.config · capabilities). 아래 shell-* 타깃은 모두 SHELL_FLAVOR 로 판을 받는다.
+#   strong-hajin(기본) — 개인판 · Strong Hajin · app.stronghajin.desktop · 주소 미정(null)
+#   medi-ax            — 회사판 · medi-ax · app.ax.desktop · https://ax.medisolveai.xyz
+#   make shell-verify-strict SHELL_FLAVOR=medi-ax
+SHELL_FLAVOR ?= strong-hajin
+
 # 데스크톱 셸의 **빌드 구성 정적 검증**(WORK-006 Phase 7).
 # 설치파일을 굽지 않고 기기에 아무것도 설치하지 않는다 — 읽고 대조만 하므로 몇 번이든 안전하다.
 # 재는 것: 판 번호 단일 출처(Cargo.toml → tauri.conf → shell_info) · 양 플랫폼 번들 타깃 ·
@@ -115,11 +123,19 @@ frontend-assets:
 # 발행 직전 관문으로 쓰는 조합이다:
 #   SHELL_TAG=v0.0.1 SHELL_STRICT=1 make shell-verify
 shell-verify:
-	cd frontend && node scripts/verify-shell-build.mjs $(if $(SHELL_TAG),--tag $(SHELL_TAG),) $(if $(SHELL_STRICT),--strict,)
+	cd frontend && node scripts/verify-shell-build.mjs --flavor "$(SHELL_FLAVOR)" $(if $(SHELL_TAG),--tag $(SHELL_TAG),) $(if $(SHELL_STRICT),--strict,)
 
 # 위와 같되 **검증 불가를 실패로 본다.** fixture/운영 판을 굽기 직전의 관문으로 쓴다.
 shell-verify-strict:
-	$(MAKE) shell-verify SHELL_STRICT=1
+	$(MAKE) shell-verify SHELL_STRICT=1 SHELL_FLAVOR="$(SHELL_FLAVOR)"
+
+# 판 하나를 **호스트 플랫폼으로 굽는다**(strict 검증을 먼저 통과해야 한다). 설치·서명·공증은 하지 않는다 —
+# 서명은 APPLE_SIGNING_IDENTITY 를 환경으로 주면 tauri 가 한다. 판 오버레이(--config)와 SHELL_FLAVOR 를
+# **함께** 넘긴다 — 둘이 갈리면 build.rs 가 빌드를 멈춘다(이름은 A 판인데 주소는 B 판인 실행 파일 방지).
+#   make shell-build SHELL_FLAVOR=medi-ax SHELL_BUILD_ARGS="--bundles app,dmg"
+shell-build: shell-verify-strict
+	cd frontend && SHELL_FLAVOR="$(SHELL_FLAVOR)" npx --no-install tauri build \
+	  --config "src-tauri/flavors/$(SHELL_FLAVOR)/tauri.conf.json" $(SHELL_BUILD_ARGS)
 
 # fixture origin 판을 굽기 «전» 점검 + 명령 안내. **기본은 dry-run 이라 굽지 않는다.**
 # 주소를 정하는 두 곳(shell.config.json · capabilities/product-shell.json)이 서로, 그리고
@@ -128,7 +144,7 @@ shell-verify-strict:
 #   make shell-build-fixture SHELL_FIXTURE_ORIGIN=https://<fixture-host> SHELL_BUILD=1   # 실제 빌드(호스트 플랫폼만)
 shell-build-fixture:
 	@test -n "$(SHELL_FIXTURE_ORIGIN)" || { echo "SHELL_FIXTURE_ORIGIN 을 주세요 — 예: make shell-build-fixture SHELL_FIXTURE_ORIGIN=https://<fixture-host>"; exit 2; }
-	cd frontend && node scripts/build-shell-fixture.mjs --origin "$(SHELL_FIXTURE_ORIGIN)" $(if $(SHELL_BUILD),--run,)
+	cd frontend && node scripts/build-shell-fixture.mjs --flavor "$(SHELL_FLAVOR)" --origin "$(SHELL_FIXTURE_ORIGIN)" $(if $(SHELL_BUILD),--run,)
 
 # 운영 origin **최종 빌드 관문**(WORK-006 Phase 8). **굽지 않고, 설치하지 않고, 설정 파일을 쓰지 않는다.**
 # shell-verify 와 범위가 다르다 — 저쪽은 「구성이 일관한가」를 보고 자리표시여도 초록이다.
@@ -154,7 +170,7 @@ shell-build-fixture:
 # **이 타깃은 사람이 보는 편의 진입점이다** — 출력을 눈으로 읽을 때 쓰고,
 # 판정을 기계가 집계할 때는 위의 직접 호출을 쓴다.
 shell-final-preflight:
-	cd frontend && node scripts/verify-final-build.mjs \
+	cd frontend && node scripts/verify-final-build.mjs --flavor "$(SHELL_FLAVOR)" \
 	  $(if $(SHELL_OPERATING_ORIGIN),--origin "$(SHELL_OPERATING_ORIGIN)",) \
 	  $(if $(SHELL_FINAL_EVIDENCE),--evidence "$(SHELL_FINAL_EVIDENCE)",)
 
@@ -174,7 +190,7 @@ shell-final-preflight:
 # 코드를 읽어야 하는 쪽은 직접 부른다:
 #   cd frontend && node scripts/verify-release-artifact.mjs --manifest <path> --candidate <dir>
 shell-release-preflight:
-	cd frontend && node scripts/verify-release-artifact.mjs \
+	cd frontend && SHELL_FLAVOR="$(SHELL_FLAVOR)" node scripts/verify-release-artifact.mjs \
 	  $(if $(SHELL_RELEASE_MANIFEST),--manifest "$(SHELL_RELEASE_MANIFEST)",) \
 	  $(if $(SHELL_RELEASE_CANDIDATE),--candidate "$(SHELL_RELEASE_CANDIDATE)",)
 
@@ -184,7 +200,7 @@ shell-release-preflight:
 #   make tauri-local
 #   TAURI_LOCAL_ORIGIN=http://127.0.0.1:5176 make tauri-local
 tauri-local:
-	cd frontend && node scripts/run-tauri-local.mjs
+	cd frontend && SHELL_FLAVOR="$(SHELL_FLAVOR)" node scripts/run-tauri-local.mjs
 
 verify: test test-scale test-release frontend-test frontend-assets frontend-build
 

@@ -8,6 +8,10 @@
  * work: this command builds a disposable copy of src-tauri, patches only the
  * local origin in that copy, and runs Tauri from there. The temporary tree is
  * removed when the process exits.
+ *
+ * Flavor: the local run patches only the chosen flavor's files
+ * (src-tauri/flavors/<flavor>/, SHELL_FLAVOR or the personal default) and
+ * builds that flavor, so its name and identifier are the ones you see.
  */
 
 import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -15,6 +19,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
+import { loadFlavor, requestedFlavor } from "./shell-flavor.mjs";
 
 const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceShell = join(frontendRoot, "src-tauri");
@@ -32,6 +37,14 @@ function originOf(raw) {
     throw new Error("TAURI_LOCAL_ORIGIN is local-only (use 127.0.0.1, localhost, or ::1)");
   }
   return parsed.origin;
+}
+
+let flavor;
+try {
+  flavor = loadFlavor(sourceShell, requestedFlavor());
+} catch (error) {
+  console.error(`tauri-local: ${error.message}`);
+  process.exit(2);
 }
 
 let localOrigin;
@@ -70,25 +83,34 @@ cpSync(sourceShell, tempShell, {
 // tauri.conf.json's schema path is relative to the project root.
 symlinkSync(join(frontendRoot, "node_modules"), join(tempRoot, "node_modules"), "junction");
 
-const shellConfigPath = join(tempShell, "shell.config.json");
+const tempFlavor = join(tempShell, "flavors", flavor.name);
+const shellConfigPath = join(tempFlavor, "shell.config.json");
 const shellConfig = JSON.parse(readFileSync(shellConfigPath, "utf8"));
 shellConfig.operationalOrigin = localOrigin;
 shellConfig.navigationAllowlist = [localOrigin];
 writeFileSync(shellConfigPath, `${JSON.stringify(shellConfig, null, 2)}\n`);
 
-const capabilityPath = join(tempShell, "capabilities", "product-shell.json");
+const capabilityPath = join(tempFlavor, "capabilities", "product-shell.json");
 const capability = JSON.parse(readFileSync(capabilityPath, "utf8"));
 capability.remote.urls = [`${localOrigin}/*`];
 writeFileSync(capabilityPath, `${JSON.stringify(capability, null, 2)}\n`);
 
+console.log(`tauri-local: flavor ${flavor.name} (${flavor.conf.productName} · ${flavor.conf.identifier})`);
 console.log(`tauri-local: opening ${localOrigin}`);
 console.log(`tauri-local: disposable Rust tree ${tempShell}`);
-console.log("tauri-local: production shell.config.json and product-shell.json are untouched");
+console.log(`tauri-local: flavors/${flavor.name} shell.config.json and product-shell.json are untouched`);
 
 child = spawn(
   "npx",
-  ["--prefix", frontendRoot, "--no-install", "tauri", "dev", "--no-dev-server"],
-  { cwd: tempRoot, stdio: "inherit", env: { ...process.env, TAURI_LOCAL_ORIGIN: localOrigin } },
+  [
+    "--prefix", frontendRoot, "--no-install", "tauri", "dev", "--no-dev-server",
+    "--config", join(tempFlavor, "tauri.conf.json"),
+  ],
+  {
+    cwd: tempRoot,
+    stdio: "inherit",
+    env: { ...process.env, TAURI_LOCAL_ORIGIN: localOrigin, SHELL_FLAVOR: flavor.name },
+  },
 );
 
 child.once("error", (error) => {

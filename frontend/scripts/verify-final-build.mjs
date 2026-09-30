@@ -40,6 +40,10 @@
  *   node scripts/verify-final-build.mjs                                  # 현재 상태 점검(대개 막힌다)
  *   SHELL_OPERATING_ORIGIN=https://app.example.com node scripts/verify-final-build.mjs
  *   node scripts/verify-final-build.mjs --origin https://app.example.com --evidence final-evidence.json
+ *   node scripts/verify-final-build.mjs --flavor medi-ax --origin https://ax.medisolveai.xyz   # 판 지정
+ *
+ * **판(flavor)** — `src-tauri/flavors/<판>/` 의 shell.config·capability·오버레이를 읽는다
+ * (`--flavor` · `SHELL_FLAVOR` · 기본 개인판). manifest 에 판 이름과 판의 identifier 를 싣는다.
  *
  * 종료 코드: 0 = 통과 · 1 = 관문이 막았다 · 2 = 사용법 오류
  */
@@ -47,6 +51,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadFlavor, requestedFlavor } from "./shell-flavor.mjs";
 
 function argument(flag) {
   const at = process.argv.indexOf(flag);
@@ -86,13 +91,7 @@ const rehearsal = shell !== defaultShell;
  * 없는 경로를 주면 `readFileSync` 가 ENOENT 스택을 토한다 — 그것은 **관문의 판정이 아니라
  * 도구의 사고**로 읽히고, 무엇을 고쳐야 하는지도 말해 주지 않는다. 읽기 전에 여기서 막는다.
  */
-const REQUIRED = [
-  "shell.config.json",
-  "tauri.conf.json",
-  "Cargo.toml",
-  join("src", "lib.rs"),
-  "capabilities",
-];
+const REQUIRED = ["tauri.conf.json", "Cargo.toml", join("src", "lib.rs"), "flavors"];
 
 if (!existsSync(shell) || !statSync(shell).isDirectory()) {
   console.error(`셸 설정 트리가 없다: ${shell}`);
@@ -111,6 +110,14 @@ if (!existsSync(shell) || !statSync(shell).isDirectory()) {
     console.error("  **관문을 돌릴 수 없다** — 읽을 것이 없는 것은 «통과»도 «차단»도 아니다.");
     process.exit(EXIT_USAGE);
   }
+}
+
+let flavor;
+try {
+  flavor = loadFlavor(shell, requestedFlavor());
+} catch (error) {
+  console.error(`${error.message}\n  **관문을 돌릴 수 없다** — 없는 판을 다른 판으로 바꿔 읽지 않는다.`);
+  process.exit(EXIT_USAGE);
 }
 
 /** 관문을 막는 것. 하나라도 있으면 exit 1. */
@@ -192,7 +199,7 @@ if (rawInput === null) {
 }
 
 // ── G2. shell.config.json 의 operationalOrigin ──────────────────────────────
-const configPath = join(shell, "shell.config.json");
+const configPath = flavor.shellConfigPath;
 const config = readJson(configPath);
 let configOrigin = null;
 {
@@ -208,7 +215,7 @@ let configOrigin = null;
 }
 
 // ── G3. capability remote.urls ──────────────────────────────────────────────
-const capabilityDir = join(shell, "capabilities");
+const capabilityDir = flavor.capabilityDir;
 const capabilityFiles = readdirSync(capabilityDir).filter((name) => name.endsWith(".json"));
 let capabilityOrigin = null;
 let capabilityUrl = null;
@@ -345,6 +352,13 @@ function collectArtifacts() {
     for (const name of readdirSync(dir)) {
       const path = join(dir, name);
       const info = statSync(path);
+      // 번들 폴더는 판끼리 같이 쓴다 — **이 판의 이름으로 구운 것만** 싣는다.
+      const ours = name.startsWith(`${conf.productName}.`) || name.startsWith(`${conf.productName}_`);
+      if (info.isDirectory() && !name.endsWith(".app")) {
+        walk(path);
+        continue;
+      }
+      if (!ours) continue;
       if (info.isDirectory()) {
         // .app 은 디렉터리다 — 통째로 해시하지 않고 «있다»는 사실만 적는다.
         if (name.endsWith(".app")) found.push({ path, bundleDir: true, bytes: null, sha256: null });
@@ -366,7 +380,8 @@ function collectArtifacts() {
   };
 }
 
-const conf = readJson(join(shell, "tauri.conf.json"));
+// 판 오버레이를 얹은 설정 — 실제로 구워지는 이름·identifier.
+const conf = flavor.conf;
 const { artifacts, reason: artifactReason } = collectArtifacts();
 
 const manifest = {
@@ -376,6 +391,7 @@ const manifest = {
   generatedAt: new Date().toISOString(),
   appVersion: cargoVersion(),
   shellApi: shellApi(),
+  flavor: flavor.name,
   identifier: conf.identifier ?? null,
   productName: conf.productName ?? null,
   bundleTargets: conf.bundle?.targets ?? null,
@@ -398,7 +414,7 @@ const manifest = {
 };
 
 // ── 출력 ────────────────────────────────────────────────────────────────────
-console.log("== 운영 origin 최종 빌드 관문 (Phase 8) ==");
+console.log(`== 운영 origin 최종 빌드 관문 (Phase 8) [판 ${flavor.name} · ${conf.productName} · ${conf.identifier}] ==`);
 if (rehearsal) {
   console.log("");
   console.log(`⚠⚠ **연습 실행** — 설정을 ${shell} 에서 읽었다(기본 src-tauri 가 아니다).`);
@@ -437,10 +453,10 @@ console.log("");
 console.log("다음 단계(사람이 판단해 실행한다):");
 console.log(
   rehearsal
-    ? `  1) **진짜** shell.config.json · capability 를 ${inputOrigin} 로 확정 — 이번 실행은 사본만 보았다`
-    : `  1) shell.config.json · capability 를 ${inputOrigin} 로 확정(이미 일치함을 확인했다)`,
+    ? `  1) **진짜** flavors/${flavor.name} 의 shell.config.json · capability 를 ${inputOrigin} 로 확정 — 이번 실행은 사본만 보았다`
+    : `  1) flavors/${flavor.name} 의 shell.config.json · capability 를 ${inputOrigin} 로 확정(이미 일치함을 확인했다)`,
 );
-console.log("  2) make shell-verify SHELL_STRICT=1   — 구성 미비 0건 확인");
+console.log(`  2) make shell-verify SHELL_STRICT=1 SHELL_FLAVOR=${flavor.name}   — 구성 미비 0건 확인`);
 console.log("  3) 호스트 플랫폼 번들 빌드 → 이 스크립트를 다시 돌려 manifest 의 해시를 채운다");
 console.log("(이 실행은 아무것도 굽지 않았고, 설정 파일을 한 글자도 쓰지 않았다)");
 
