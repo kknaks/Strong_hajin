@@ -984,7 +984,7 @@ export type AnswerResource = {
   reference_id: string;
   turn_id: string;
   sequence: number;
-  resource_type: "task" | "meeting" | "work_request" | "material" | "report";
+  resource_type: "task" | "meeting" | "work_request" | "material" | "report" | "project";
   resource_id: string;
   resource_version: number | null;
   title: string;

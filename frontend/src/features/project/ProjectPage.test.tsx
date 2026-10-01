@@ -205,10 +205,14 @@ function Harness({
   personaId = "mina",
   canManageOwnTasks = false,
   mounted = true,
+  focusProjectId = null,
+  onFocusHandled,
 }: {
   personaId?: string;
   canManageOwnTasks?: boolean;
   mounted?: boolean;
+  focusProjectId?: string | null;
+  onFocusHandled?: () => void;
 }) {
   const [rails, setRails] = useState<{ left?: React.ReactNode; right?: React.ReactNode }>({});
   const [actions, setActions] = useState<React.ReactNode>(null);
@@ -239,6 +243,8 @@ function Harness({
       {mounted ? (
         <ProjectPage
           canManageOwnTasks={canManageOwnTasks}
+          focusProjectId={focusProjectId}
+          onFocusHandled={onFocusHandled}
           onError={handleError}
           onNotice={handleNotice}
           onOpenTask={noop}
@@ -1398,5 +1404,38 @@ describe("프로젝트 — 탭 재진입 (B-01)", () => {
     await act(async () => answer([project]));
     await waitFor(() => expect(api.getProject).toHaveBeenCalledWith("p-1"));
     expect(screen.getByText("한빛 9월 통합 마케팅", { selector: ".scax-pj-gantt__name-text" })).toBeTruthy();
+  });
+});
+
+/* WORK-008 Phase 5 — AX 답변의 프로젝트 참조로 오면 그 프로젝트를 연다(「보던 프로젝트」 경로 재사용). */
+describe("프로젝트 — 밖에서 열어 달라고 온 프로젝트 (Phase 5)", () => {
+  const other = { ...project, project_id: "p-2", name: "내년 리뉴얼" };
+
+  it("첫 진입이면 목록의 첫 프로젝트가 아니라 그 프로젝트로 연다", async () => {
+    // 기본 응답(상세·이력·명부)을 세우는 판을 한 번 그리고, 그 판의 읽기가 다 끝난 뒤 걷는다.
+    renderPage();
+    await waitFor(() => expect(api.getProject).toHaveBeenCalledWith("p-1"));
+    await screen.findAllByText("한빛 9월 통합 마케팅", { selector: ".scax-pj-gantt__name-text" });
+    cleanup();
+    vi.mocked(api.listProjects).mockResolvedValue([project, other] as never);
+    vi.mocked(api.getProject).mockClear();
+    const onFocusHandled = vi.fn();
+    render(<Harness focusProjectId="p-2" onFocusHandled={onFocusHandled} />);
+    await waitFor(() => expect(api.getProject).toHaveBeenCalledWith("p-2"));
+    expect(api.getProject).not.toHaveBeenCalledWith("p-1");
+    expect(onFocusHandled).toHaveBeenCalled();
+  });
+
+  it("목록에 없는(읽을 수 없는) 프로젝트면 첫 프로젝트로 서고 「열 수 없음」을 말한다", async () => {
+    // 기본 응답(상세·이력·명부)을 세우는 판을 한 번 그리고, 그 판의 읽기가 다 끝난 뒤 걷는다.
+    renderPage();
+    await waitFor(() => expect(api.getProject).toHaveBeenCalledWith("p-1"));
+    await screen.findAllByText("한빛 9월 통합 마케팅", { selector: ".scax-pj-gantt__name-text" });
+    cleanup();
+    vi.mocked(api.listProjects).mockResolvedValue([project] as never);
+    vi.mocked(api.getProject).mockClear();
+    render(<Harness focusProjectId="p-hidden" />);
+    await waitFor(() => expect(api.getProject).toHaveBeenCalledWith("p-1"));
+    expect(await screen.findByTestId("error-banner")).toHaveProperty("textContent", "그 프로젝트를 열 수 없습니다 — 볼 수 있는 프로젝트 목록에 없습니다.");
   });
 });

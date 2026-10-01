@@ -6,6 +6,7 @@ is read back, each reference is asked of the module that owns it. A person who h
 sees no title, no placeholder and no count.
 """
 import asyncio
+import json
 from uuid import UUID
 
 import pytest
@@ -550,3 +551,170 @@ def test_a_tool_receipt_stops_naming_what_the_reader_may_no_longer_open(tmp_path
     hidden = [row for row in after["tool_invocations"] if row["tool_name"] == "task_get"]
     assert hidden and hidden[0]["result_summary"] == "결과를 볼 수 없습니다"
     assert "요약에 남을 업무" not in str(after["tool_invocations"])
+
+
+def _project_with_task(client) -> tuple[dict, dict]:
+    project = client.post("/api/projects", headers=JIHO, json={"name": "하반기 제품 개편"}).json()
+    assert client.post(f"/api/projects/{project['project_id']}/members", headers=JIHO,
+                       json={"member_id": "mina"}).status_code == 201
+    task = client.post("/api/tasks", headers={**MINA, "Idempotency-Key": "project-task"},
+                       json={"title": "개편 범위 확정", "project_id": project["project_id"]}).json()
+    assert task["project_id"] == project["project_id"]
+    return project, task
+
+
+def _answer_with(application, settings, elements: list[dict]):
+    class Provider:
+        def converse(self, request, **kwargs):
+            key = "{{" + elements[0]["key"] + "}}"
+            # 목록은 독립 문단이어야 한다 — 단일 참조는 문장 안에 둔다.
+            body = f"관련 업무입니다.\n\n{key}" if elements[0]["type"] == "resource_list" else f"연결할 곳은 {key}입니다."
+            return AiConversationResult(None, None, body, [], answer_elements=elements)
+
+    worker = ConversationWorker(settings, provider=Provider(), queue_factory=lambda session: ConversationJobQueue(application.memory_job_queue))
+    assert asyncio.run(worker.run_once())
+
+
+def test_a_project_found_through_the_graph_can_be_cited_and_the_turn_completes(tmp_path, monkeypatch) -> None:
+    """E2E-12 — 프로젝트를 가리킨 답변이 턴 전체 실패가 되면 안 된다. graph 로 본 대상도 근거로 묶인다."""
+    client, settings, database_url, application = _stack(tmp_path)
+    project, _ = _project_with_task(client)
+    conversation, execution_id = _delegated_turn(client, database_url, MINA, "project-answer")
+
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", execution_id)
+    found = McpReportsFacade(settings, "mina").graph_search("하반기 제품 개편")
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
+    assert ("project", project["project_id"]) in {(node["kind"], node["id"]) for node in found["nodes"]}
+
+    _answer_with(application, settings, [
+        {"key": "project", "type": "resource_reference", "ref": f"project:{project['project_id']}"},
+    ])
+    detail = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()
+    assert detail["turns"][0]["state"] == "completed"
+    cited = detail["messages"][-1]["answer_document"]["elements"][0]["ref"]
+    resource = next(row for row in detail["answer_resources"] if row["reference_id"] == cited)
+    assert (resource["resource_type"], resource["resource_id"], resource["title"]) == (
+        "project", project["project_id"], "하반기 제품 개편"
+    )
+    # 사람은 답변이 가리킬 대상이 아니다 — graph 가 보여 줬어도 근거로 남기지 않는다.
+    assert {row["resource_type"] for row in detail["answer_resources"]} <= {"project", "task", "work_request", "meeting"}
+
+
+def test_tasks_seen_only_through_graph_neighbors_can_be_cited(tmp_path, monkeypatch) -> None:
+    client, settings, database_url, application = _stack(tmp_path)
+    project, task = _project_with_task(client)
+    conversation, execution_id = _delegated_turn(client, database_url, MINA, "neighbor-answer")
+
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", execution_id)
+    McpReportsFacade(settings, "mina").graph_neighbors(f"project:{project['project_id']}", 50)
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
+
+    _answer_with(application, settings, [
+        {"key": "work", "type": "resource_list", "ordered": False, "items": [
+            {"ref": f"task:{task['task_id']}", "description": "진행 전"},
+        ]},
+    ])
+    detail = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()
+    assert detail["turns"][0]["state"] == "completed"
+    ref = detail["messages"][-1]["answer_document"]["elements"][0]["items"][0]["ref"]
+    assert next(row for row in detail["answer_resources"] if row["reference_id"] == ref)["resource_id"] == task["task_id"]
+
+
+def test_a_project_listed_while_drafting_work_can_be_cited(tmp_path, monkeypatch) -> None:
+    client, settings, database_url, application = _stack(tmp_path)
+    project, _ = _project_with_task(client)
+    conversation, execution_id = _delegated_turn(client, database_url, MINA, "project-list-answer")
+
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", execution_id)
+    McpReportsFacade(settings, "mina").list_projects()
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
+
+    _answer_with(application, settings, [
+        {"key": "project", "type": "resource_reference", "ref": f"project:{project['project_id']}"},
+    ])
+    detail = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()
+    assert detail["turns"][0]["state"] == "completed"
+
+
+def test_a_project_cited_as_a_task_still_fails_the_turn(tmp_path, monkeypatch) -> None:
+    """실제로 일어난 모양 — 프로젝트 id 를 `task:` 로 가리키면 그런 업무는 없다. 종류는 대상과 같아야 한다."""
+    client, settings, database_url, application = _stack(tmp_path)
+    project, _ = _project_with_task(client)
+    conversation, execution_id = _delegated_turn(client, database_url, MINA, "wrong-kind-answer")
+
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", execution_id)
+    McpReportsFacade(settings, "mina").graph_search("하반기 제품 개편")
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
+
+    _answer_with(application, settings, [
+        {"key": "project", "type": "resource_reference", "ref": f"task:{project['project_id']}"},
+    ])
+    detail = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()
+    assert detail["turns"][0]["state"] == "failed"
+
+
+@pytest.mark.parametrize("causation", ["meeting-batch:mina", "meeting-finalize:mina"])
+def test_meeting_runs_can_use_their_read_tools_without_a_conversation_turn(tmp_path, monkeypatch, causation) -> None:
+    """회의 배치·합성의 causation 은 턴 id(UUID)가 아니다. 근거를 기억할 답변이 없을 뿐 — 도구는 성공한다.
+
+    `_remember` 가 그것을 UUID 로 읽으면 회의 레지스트리의 `project_list`·`task_list`·`meeting_get` 이 매번 죽는다.
+    """
+    from ax_workspace.entrypoints.mcp import _create_bound_persona_server
+
+    client, settings, database_url, application = _stack(tmp_path)
+    project, task = _project_with_task(client)
+    meeting = client.post("/api/meetings", headers=MINA, json={
+        "title": "후속 업무를 정할 회의", "starts_at": "2026-09-10T01:00:00Z", "ends_at": "2026-09-10T02:00:00Z",
+        "attendee_ids": [],
+    }).json()["meeting"]
+
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", causation)
+    server = _create_bound_persona_server(McpReportsFacade(settings, "mina"))
+    projects = asyncio.run(server.call_tool("project_list", {})).structured_content
+    tasks = asyncio.run(server.call_tool("task_list", {})).structured_content
+    detail = asyncio.run(server.call_tool("meeting_get", {"meeting_id": meeting["meeting_id"]})).structured_content
+    found = asyncio.run(server.call_tool("graph_search", {"query": "하반기 제품 개편"})).structured_content
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
+
+    assert project["project_id"] in {row["project_id"] for row in projects["entries"]}
+    assert task["task_id"] in json.dumps(tasks)
+    assert meeting["meeting_id"] in json.dumps(detail)
+    assert ("project", project["project_id"]) in {(node["kind"], node["id"]) for node in found["nodes"]}
+
+
+def test_a_project_the_reader_can_no_longer_open_disappears_from_an_old_answer(tmp_path, monkeypatch) -> None:
+    client, settings, database_url, application = _stack(tmp_path)
+    project, _ = _project_with_task(client)
+    conversation, execution_id = _delegated_turn(client, database_url, MINA, "project-access-lost")
+
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", execution_id)
+    McpReportsFacade(settings, "mina").get_project(project["project_id"].upper())
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
+    _answer_with(application, settings, [
+        {"key": "project", "type": "resource_reference", "ref": f"project:{project['project_id']}"},
+    ])
+    path = f"/api/conversations/{conversation['conversation_id']}"
+    before = client.get(path, headers=MINA).json()
+    assert before["turns"][0]["state"] == "completed", "대문자로 불러도 정규형으로 남아 묶여야 합니다"
+    assert [row["title"] for row in before["answer_resources"] if row["resource_type"] == "project"] == ["하반기 제품 개편"]
+
+    assert client.delete(f"/api/projects/{project['project_id']}/members/mina", headers=JIHO).status_code == 204
+    after = client.get(path, headers=MINA).json()
+    assert [row for row in after["answer_resources"] if row["resource_type"] == "project"] == []
+    assert after["messages"][-1]["answer_document"]["elements"][0]["ref"] is None
+    assert "하반기 제품 개편" not in json.dumps(after, ensure_ascii=False)
+
+
+def test_the_overview_is_not_remembered_as_evidence(tmp_path, monkeypatch) -> None:
+    """개요는 많게는 120 node 를 스친다 — 스친 것을 근거로 삼지 않는다. 좁혀 본 것만 근거가 된다."""
+    client, settings, database_url, application = _stack(tmp_path)
+    project, task = _project_with_task(client)
+    conversation, execution_id = _delegated_turn(client, database_url, MINA, "overview-not-evidence")
+
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", execution_id)
+    overview = McpReportsFacade(settings, "mina").graph_overview(limit=120)
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
+    assert task["task_id"] in {node["id"] for node in overview["nodes"]}, "개요에 보였어야 시험이 의미가 있습니다"
+
+    detail = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()
+    assert detail["answer_resources"] == []

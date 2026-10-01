@@ -238,7 +238,7 @@ _DEFINITIONS = (
     ToolDefinition(
         "list_projects",
         "참여 프로젝트 조회",
-        "List projects this person currently participates in. Broad organization authority does not replace participation.",
+        "List projects this person currently participates in. Broad organization authority does not replace participation. Use it to find the project_id for a Task or WorkRequest draft; returned projects can be cited in an answer as `project:<project_id>`.",
         "list_projects",
         all_capabilities=("project.read",),
     ),
@@ -394,7 +394,7 @@ _DEFINITIONS = (
     ToolDefinition(
         "graph_search",
         "관련 항목 검색",
-        "Find authorized start nodes by name: `person`, `team`, `project`, `task`, `work_request`, `meeting`. Person references may use a Korean honorific such as `님`; the server normalizes it and searches active appointment position names within the current persona's membership hierarchy as well as display names. Position matches include their position and organization evidence. Material and report are evidence nodes reached through relationships, not title search. Use returned kind and id as `<kind>:<id>`; numbers in titles are not IDs. Results are bounded (default 20, maximum 50); truncated means more readable matches exist.",
+        "Find authorized start nodes by name. Arguments are exactly `query` (the name to find) and optional `limit`; there is no kind filter — read each returned node's `kind` instead. Searchable kinds: `person`, `team`, `project`, `task`, `work_request`, `meeting`. Person references may use a Korean honorific such as `님`; the server normalizes it and searches active appointment position names within the current persona's membership hierarchy as well as display names. Position matches include their position and organization evidence. Material and report are evidence nodes reached through relationships, not title search. Use returned kind and id as `<kind>:<id>`; numbers in titles are not IDs. Results are bounded (default 20, maximum 50); truncated means more readable matches exist.",
         "graph_search",
         any_capabilities=("task.read", "work_request.read"),
         all_capabilities=(),
@@ -430,8 +430,8 @@ _DEFINITIONS = (
     ToolDefinition("meeting_list", "열람 가능한 조직 일정 조회", "Read the organization calendar projection. Meetings outside detail access appear only as busy blocks. For meetings this person owns or attends use my_meeting_list.", "list_meetings", all_capabilities=("meeting.read",)),
     ToolDefinition(
         "project_list",
-        "회의용 프로젝트 후보 조회",
-        "Read projects this person may use when preparing meeting follow-up work.",
+        "프로젝트 후보 조회",
+        "Read projects this person may link work to — when drafting a Task or WorkRequest (project_id) or preparing meeting follow-up work. Returned projects can be cited in an answer as `project:<project_id>`.",
         "list_projects",
         all_capabilities=("project.read",),
     ),
@@ -543,7 +543,7 @@ _DEFINITIONS = (
     ToolDefinition(
         "task_create_self",
         "내 업무 생성 준비",
-        "Fill in the fields of the 「새 업무 추가」 form to prepare a Task draft — the same fields, required values and validation as direct creation. Fill every field the conversation gives you: title (required, 1–300 characters), description, ISO start_date and due_date, project_id, cc_member_ids (참조자), approver_id (결재자), preceding_task_ids (선행업무, same project), parent_task_id (one-level 상위 업무), checklist (up to 50 first steps in order) and reference_task_ids (`참고 업무` — a pointer, never a claim about cause or a grant of access). Only the title is required; a due date is optional, so leave a value empty rather than inventing one. Leave assignee_id empty (or name yourself) for your own work; name an allowed recipient from work_request_assignee_candidates to send it, and it becomes their Task at once with no acceptance step (start_date, parent and project are refused on that path). Files and links are not form fields — stage them on the draft separately. idempotency_key is required: make one key per creation intent, resend the same key on a retry, and use a new key for a new Task. In a delegated AX conversation, this returns a pending Action proposal (the filled draft) for human approval; it does not create the Task before approval.",
+        "Fill in the fields of the 「새 업무 추가」 form to prepare a Task draft — the same fields, required values and validation as direct creation. Before drafting, look up what a person would pick in that form: the project this work belongs to (list_projects, or graph_search by name) and related existing Tasks (graph_neighbors on `project:<id>`, or task_list) for parent, preceding and reference. Fill a link only when one candidate clearly matches; if none or several match, leave it empty and say so in the answer — never invent an ID. Fill every field the conversation gives you or that lookup confirmed: title (required, 1–300 characters), description, ISO start_date and due_date, project_id, cc_member_ids (참조자), approver_id (결재자), preceding_task_ids (선행업무, same project), parent_task_id (one-level 상위 업무), checklist (up to 50 first steps in order) and reference_task_ids (`참고 업무` — a pointer, never a claim about cause or a grant of access). Only the title is required; a due date is optional, so leave a value empty rather than inventing one. Leave assignee_id empty (or name yourself) for your own work; name an allowed recipient from work_request_assignee_candidates to send it, and it becomes their Task at once with no acceptance step (start_date, parent and project are refused on that path). Files and links are not form fields — stage them on the draft separately. idempotency_key is required: make one key per creation intent, resend the same key on a retry, and use a new key for a new Task. In a delegated AX conversation, this returns a pending Action proposal (the filled draft) for human approval; it does not create the Task before approval.",
         "create_self_task",
         any_capabilities=(),
         all_capabilities=("task.self_manage",),
@@ -645,7 +645,7 @@ _DEFINITIONS = (
     ToolDefinition(
         "work_request_create",
         "업무 요청 생성 준비",
-        "Prepare a horizontal WorkRequest when the user says 업무 요청, 수평 요청, 부탁, or 협업 요청, including when they explicitly distinguish it from assignment. This fills in the fields of the 「새 업무 추가」 form on its 요청 branch to prepare a draft — the same fields, required values and validation as direct creation. Resolve a named recipient with work_request_assignee_candidates, then fill every field the conversation gives you: title (required, 1–300 characters), assignee_id (required), description, ISO start_date and due_date, project_id, cc_member_ids (참조자), approver_id (결재자), preceding_task_ids (선행업무, same project), parent_task_id (one-level 상위 업무), checklist and readable reference_task_ids. Only the title and the recipient are required; a due date is optional, so leave a value empty rather than inventing one. CC excludes the requester and recipient. Files and links are not form fields. idempotency_key is required: one key per request intent, the same key on a retry, a new key for a new request. Direct calls submit the request; delegated calls prepare the filled draft for editable confirmation first. The Task is created with the request and enters the recipient's work at once — there is no acceptance step. Use task_assign only for manager/directive assignment.",
+        "Prepare a horizontal WorkRequest when the user says 업무 요청, 수평 요청, 부탁, or 협업 요청, including when they explicitly distinguish it from assignment. This fills in the fields of the 「새 업무 추가」 form on its 요청 branch to prepare a draft — the same fields, required values and validation as direct creation. Resolve a named recipient with work_request_assignee_candidates. Before drafting, look up the project this work belongs to (list_projects, or graph_search by name) and related existing Tasks (graph_neighbors on `project:<id>`, or task_list) for parent, preceding and reference; fill a link only when one candidate clearly matches, otherwise leave it empty and say so in the answer — never invent an ID. Then fill every field the conversation gives you or that lookup confirmed: title (required, 1–300 characters), assignee_id (required), description, ISO start_date and due_date, project_id, cc_member_ids (참조자), approver_id (결재자), preceding_task_ids (선행업무, same project), parent_task_id (one-level 상위 업무), checklist and readable reference_task_ids. Only the title and the recipient are required; a due date is optional, so leave a value empty rather than inventing one. CC excludes the requester and recipient. Files and links are not form fields. idempotency_key is required: one key per request intent, the same key on a retry, a new key for a new request. Direct calls submit the request; delegated calls prepare the filled draft for editable confirmation first. The Task is created with the request and enters the recipient's work at once — there is no acceptance step. Use task_assign only for manager/directive assignment.",
         "create_work_request",
         any_capabilities=(),
         all_capabilities=("work_request.create",),

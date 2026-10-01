@@ -83,3 +83,23 @@ it("handles escaped braces before a real marker and renders an empty list", () =
   expect(screen.getAllByRole("button")).toHaveLength(1);
   expect(screen.getByText("조회된 항목이 없습니다.")).toBeTruthy();
 });
+
+/* WORK-008 Phase 5 — AX 답변의 project 참조도 다른 종류와 같은 모양으로 서고 눌린다. */
+const project: AnswerResource = { ...task, reference_id: "p", resource_type: "project", resource_id: "project-1", title: "한빛 리뉴얼", state: null };
+
+it("renders a project reference like any other and opens it", () => {
+  const onOpen = vi.fn();
+  const document: AnswerDocument = { version: 1, elements: [{ key: "pj", type: "resource_reference", ref: "p" }] };
+  render(<AssistantMarkdown body={"관련 프로젝트는 {{pj}}입니다."} document={document} resources={[project]} onOpenResource={onOpen} />);
+  const button = screen.getByRole("button", { name: "한빛 리뉴얼" });
+  expect(button.className).toBe("scax-md__ref");
+  fireEvent.click(button);
+  expect(onOpen).toHaveBeenLastCalledWith(project);
+});
+
+it("resolves an internal /api/projects/{id} link to the project reference", () => {
+  const onOpen = vi.fn();
+  render(<AssistantMarkdown body={"[프로젝트 보기](/api/projects/project-1)"} resources={[project]} onOpenResource={onOpen} />);
+  fireEvent.click(screen.getByRole("button", { name: "프로젝트 보기" }));
+  expect(onOpen).toHaveBeenLastCalledWith(project);
+});

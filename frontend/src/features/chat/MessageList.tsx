@@ -681,6 +681,7 @@ const RESOURCE_LABEL: Record<string, string> = {
   work_request: "업무 요청",
   material: "자료",
   report: "보고",
+  project: "프로젝트",
 };
 
 /**

@@ -45,6 +45,8 @@ import { railCards, summarize } from "./projectModel";
  */
 export function ProjectPage({
   personaId,
+  focusProjectId = null,
+  onFocusHandled,
   onError,
   onNotice,
   onRegisterRails,
@@ -70,6 +72,13 @@ export function ProjectPage({
    * 고를 때마다 서버가 거절한다.**
    */
   canManageOwnTasks?: boolean;
+  /**
+   * 밖(AX 답변의 프로젝트 참조)에서 «이 프로젝트를 열어 달라» 고 온 id (WORK-008 Phase 5). 이 화면의 「보던
+   * 프로젝트」 경로를 그대로 탄다 — 첫 진입이면 그 프로젝트로 시작하고, 이미 서 있으면 그 프로젝트로 다시 읽는다.
+   * 목록에 없으면(읽을 수 없으면) 첫 프로젝트로 서고 그 사실을 배너로 말한다.
+   */
+  focusProjectId?: string | null;
+  onFocusHandled?: () => void;
 }) {
   /*
    * 받아 둔 화면 데이터로 시작한다 (WORK-008 Phase 2 · `lib/screenCache.ts`) — 탭을 옮겨 갔다 돌아오면
@@ -82,7 +91,9 @@ export function ProjectPage({
   const [directory, setDirectory] = useRemembered<Persona[]>("project.directory", []);
   const [loadState, setLoadState] = useState<"loading" | "error" | "ready">(projectsRemembered ? "ready" : "loading");
   /** 다시 들어왔을 때 이어서 볼 프로젝트 — 받아 둔 것이 없으면 목록의 첫 프로젝트다. */
-  const resumeProjectId = useRef(projectsRemembered ? selected?.project_id : undefined);
+  const resumeProjectId = useRef(focusProjectId ?? (projectsRemembered ? selected?.project_id : undefined));
+  /** 밖에서 열어 달라고 온 프로젝트 — 다시 읽기가 그 id 를 목록에서 못 찾으면 「열 수 없음」을 말한다. */
+  const focusRequest = useRef<string | null>(focusProjectId);
   /**
    * 이번 진입의 응답을 받았나 (fix1 · 검수 WARN-1). 받아 둔 프로젝트로 그린 상태 변경·관리 명령은 기억한
    * envelope 로 그린 것이라 갱신 응답이 올 때까지 잠근다. 받아 둔 것 없이 시작했으면 처음부터 참이다.
@@ -130,6 +141,9 @@ export function ProjectPage({
         setLoadState("ready");
         setProjectFresh(true);
         onError(null);
+        const requested = focusRequest.current;
+        focusRequest.current = null;
+        if (requested && !rows.some((row) => row.project_id === requested)) onError(projectScreen.focusUnavailable);
       } catch (error) {
         // 이미 그린 프로젝트가 있으면 지우지 않는다 — 실패는 배너가 말한다. 처음부터 없으면 오류 상태다.
         setLoadState((current) => (current === "ready" ? "ready" : "error"));
@@ -138,6 +152,25 @@ export function ProjectPage({
     },
     [loadProject, onError],
   );
+
+  /* 이미 서 있는 화면으로 프로젝트 참조가 오면 그 프로젝트로 다시 읽는다. 첫 진입의 참조는 위 `resumeProjectId` 가
+     이미 실었으므로 여기서 한 번 더 읽지 않는다. 어느 쪽이든 받았다고 셸에 알린다. */
+  const mountedFocus = useRef(focusProjectId);
+  useEffect(() => {
+    if (!focusProjectId) return;
+    if (mountedFocus.current === focusProjectId) {
+      mountedFocus.current = null;
+      onFocusHandled?.();
+      return;
+    }
+    focusRequest.current = focusProjectId;
+    setTaskId(null);
+    setCollapsed(new Set());
+    void reload(focusProjectId);
+    onFocusHandled?.();
+    // 참조가 올 때만 돈다 — reload·콜백이 바뀌어도 다시 열지 않는다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusProjectId]);
 
   useEffect(() => {
     void reload(resumeProjectId.current);

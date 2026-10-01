@@ -90,6 +90,8 @@ export default function App() {
      여기서 들지 않는다. 밖(채팅·관계 그래프)에서 회의를 열어 주는 길만 남긴다 — focusTaskId 와 같은 꼴이다.
      이탈 가드도 그 화면으로 옮겨 갔다(M-2) — 이제 «선택을 바꿀 때» 묻는다. */
   const [focusMeetingId, setFocusMeetingId] = useState<string | null>(null);
+  /** 밖(AX 답변의 프로젝트 참조)에서 열어 달라고 온 프로젝트 — focusMeetingId 와 같은 꼴이다 (WORK-008 Phase 5). */
+  const [focusProjectId, setFocusProjectId] = useState<string | null>(null);
   const capabilities = session?.capabilities ?? null;
   const organizationNames = session?.organizations.map((organization) => organization.name) ?? [];
   const [surface, changeSurface] = useState<ProductSurface>("today");
@@ -224,6 +226,7 @@ export default function App() {
     chat.reset();
     setSurface("today");
     setFocusMeetingId(null);
+    setFocusProjectId(null);
     setIsAxOpen(false);
     setContextOptions([]);
     setSelectedContextKey("");
@@ -562,6 +565,8 @@ export default function App() {
                  ⚠ `sharedWorkProps` 를 통째로 넘기지 않는다: 이 화면은 업무 화면의 열 갈래 props 를
                  쓰지 않고, 새 조회도 만들지 않는다 — 셸이 이미 쥔 값을 그대로 내릴 뿐이다. */
               canManageOwnTasks={has("task.self_manage")}
+              focusProjectId={focusProjectId}
+              onFocusHandled={() => setFocusProjectId(null)}
               onNotice={setToast}
               onOpenTask={openTaskInWork}
               onRegisterHeaderActions={registerSurfaceActions}
@@ -715,6 +720,12 @@ export default function App() {
                    `shell.ts` 가 기록한다(조용히 삼키지 않는다). */
                 if (outcome === "absent") window.open(resource.origin, "_blank", "noopener,noreferrer");
               });
+              return;
+            }
+            if (resource.resource_type === "project") {
+              // 프로젝트 화면의 「보던 프로젝트」 경로로 그 프로젝트를 연다 — 화면이 이 사람의 권한으로 다시 읽는다.
+              setFocusProjectId(resource.resource_id);
+              setSurface("project");
               return;
             }
             if (resource.resource_type === "report") setSurface("report");

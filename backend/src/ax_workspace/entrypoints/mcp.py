@@ -471,12 +471,27 @@ class McpReportsFacade:
             principal, UUID(causation_id), ACTION_ITEM_COMMAND, ACTION_ITEM_COMMAND_TITLE, canonical
         )
 
+    @staticmethod
+    def _delegated_turn_id() -> UUID | None:
+        """이 실행이 **대화 턴**이면 그 execution id, 아니면 `None`.
+
+        causation 이 늘 턴은 아니다 — 회의 배치·합성은 `meeting-batch:<id>`·`meeting-finalize:<id>` 로 돈다.
+        그 실행에는 답변이 없으므로 기억할 근거도 걸음 기록도 없다. 읽기 도구는 그대로 성공해야 한다.
+        """
+        causation_id = os.getenv("AX_MCP_CAUSATION_ID")
+        if not causation_id:
+            return None
+        try:
+            return UUID(causation_id)
+        except ValueError:
+            return None
+
     def _remember(self, references: list[dict[str, Any]]) -> None:
         """Inside a delegated turn, what a read returned becomes something the answer can point at, item by item."""
-        causation_id = os.getenv("AX_MCP_CAUSATION_ID")
-        if not causation_id or not references:
+        execution_id = self._delegated_turn_id()
+        if execution_id is None or not references:
             return
-        self._application.record_answer_resources(self.principal, UUID(causation_id), references)
+        self._application.record_answer_resources(self.principal, execution_id, references)
 
     def my_work(self, *, include_closed: bool = False) -> list[TaskListEntry]:
         tasks = self._application.my_work(self.principal, include_closed=include_closed)
@@ -1028,26 +1043,37 @@ class McpReportsFacade:
         return {"turns": matches}
 
     def graph_overview(self, view: str = "member", limit: int = 120) -> GraphOverviewResult:
-        causation_id = os.getenv("AX_MCP_CAUSATION_ID")
+        # 개요는 한 번에 많게는 120 node 를 스친다 — 그것을 근거로 기억하지 않는다. 좁혀 본 것만 근거가 된다
+        # (graph_search·graph_neighbors·project 조회). 스치기만 한 업무를 「관련 업무」로 인용하는 문턱을 높게 둔다.
         return self._application.graph_overview(
             self.principal,
             view=view,
             limit=limit,
-            execution_id=UUID(causation_id) if causation_id else None,
+            execution_id=self._delegated_turn_id(),
         )
 
     def graph_search(self, query: str, limit: int = 20) -> GraphSearchResult:
         """Inside a delegated turn, what this finds becomes that turn's own record of where it looked."""
-        causation_id = os.getenv("AX_MCP_CAUSATION_ID")
-        return self._application.graph_search(
-            self.principal, query, limit, execution_id=UUID(causation_id) if causation_id else None
-        )
+        result = self._application.graph_search(self.principal, query, limit, execution_id=self._delegated_turn_id())
+        self._remember_graph_nodes(result.get("nodes") or [])
+        return result
 
     def graph_neighbors(self, node: str, limit: int = 20) -> GraphNeighborsResult:
-        causation_id = os.getenv("AX_MCP_CAUSATION_ID")
-        return self._application.graph_neighbors(
-            self.principal, node, limit, execution_id=UUID(causation_id) if causation_id else None
-        )
+        result = self._application.graph_neighbors(self.principal, node, limit, execution_id=self._delegated_turn_id())
+        self._remember_graph_nodes(result.get("nodes") or [])
+        return result
+
+    #: graph 가 보여 준 것 중 답변이 가리킬 수 있는 종류. 사람·팀은 참조 대상이 아니고, 자료·보고서는
+    #: 무결성 근거(integrity_ref)를 가진 소유 도구로만 근거가 된다 — graph 의 한 줄로는 그것을 대신하지 않는다.
+    _GRAPH_ANSWERABLE_KINDS = frozenset({"task", "work_request", "meeting", "project"})
+
+    def _remember_graph_nodes(self, nodes: list[dict[str, Any]]) -> None:
+        """graph 로 **좁혀** 찾은 대상도 답변이 가리킬 수 있다 — 보여 준 것만, 읽을 때 소유 모듈이 다시 확인한다 (E2E-12)."""
+        self._remember([
+            {"resource_type": str(row["kind"]), "resource_id": str(row["id"])}
+            for row in nodes
+            if row.get("kind") in self._GRAPH_ANSWERABLE_KINDS and row.get("id")
+        ])
 
     def task_subtasks(self, task_id: str) -> TaskSubtasksResult:
         task = self.get_task(task_id)
@@ -1126,11 +1152,10 @@ class McpReportsFacade:
                          resource_type: MaterialResourceType | None = None, resource_id: str | None = None,
                          material_id: str | None = None, limit: int = 5,
                          registered_from: str | None = None, registered_until: str | None = None) -> MaterialSearchResult:
-        causation_id = os.getenv("AX_MCP_CAUSATION_ID")
         found = self._application.search_materials(self.principal, query, limit=limit, resource_types=resource_types,
             resource_type=resource_type, resource_id=resource_id, material_id=UUID(material_id) if material_id else None,
             registered_from=_parse_iso_date(registered_from), registered_until=_parse_iso_date(registered_until),
-            execution_id=UUID(causation_id) if causation_id else None)
+            execution_id=self._delegated_turn_id())
         seen = {hit["material_id"]: {"resource_type": "material", "resource_id": hit["material_id"],
                 "source_contexts": hit["source_contexts"], "integrity_ref": hit["integrity_ref"], "source_locator": hit.get("source_locator")} for hit in reversed(found["results"])}
         self._remember(list(seen.values()))
@@ -1274,10 +1299,19 @@ class McpReportsFacade:
         return self._application.plan_project_work(self.principal, **command.model_dump())
 
     def list_projects(self) -> list[ProjectView]:
-        return self._application.list_projects(self.principal)
+        projects = self._application.list_projects(self.principal)
+        self._remember([
+            {"resource_type": "project", "resource_id": str(row["project_id"]), "resource_version": row.get("version")}
+            for row in projects
+        ])
+        return projects
 
     def get_project(self, project_id: str) -> ProjectDetailResult:
-        return self._application.get_project(self.principal, UUID(project_id))
+        parsed = UUID(project_id)
+        project = self._application.get_project(self.principal, parsed)
+        # 인자 문자열이 아니라 정규형으로 남긴다 — 대문자·하이픈 없는 표기로 불러도 `project:<id>` 와 맞는다.
+        self._remember([{"resource_type": "project", "resource_id": str(parsed)}])
+        return project
 
     def sent_task_assignments(self) -> list[TaskAssignmentResult]:
         return self._application.sent_task_assignments(self.principal)

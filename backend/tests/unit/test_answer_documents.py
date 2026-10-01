@@ -50,3 +50,20 @@ def test_unobserved_reference_is_not_guessed_from_a_matching_title():
     with pytest.raises(ValueError):
         bind_answer_resources("{{a}}", [{"key": "a", "type": "resource_reference", "ref": "task:missing"}],
                               [{"reference_id": "other", "resource_type": "task", "resource_id": "t1", "title": "missing"}])
+
+
+def test_a_project_is_a_reference_an_answer_can_bind():
+    """E2E-12 — 프로젝트를 가리킬 형식이 없으면 모델은 `task:<프로젝트 id>` 를 지어내고 턴 전체가 실패한다."""
+    project = {"reference_id": "project-receipt", "resource_type": "project", "resource_id": "p1", "title": "하반기 제품 개편"}
+    elements = [{"key": "project", "type": "resource_reference", "ref": "project:p1"}]
+
+    assert bind_answer_resources("연결할 곳은 {{project}}입니다.", elements, [project]) == [
+        {"key": "project", "type": "resource_reference", "ref": "project-receipt"},
+    ]
+
+
+def test_the_provider_output_schema_admits_project_references():
+    from ax_workspace.platform.codex_cli import _CONVERSATION_OUTPUT_SCHEMA
+
+    pattern = _CONVERSATION_OUTPUT_SCHEMA["$defs"]["ResourceReference"]["properties"]["ref"]["pattern"]
+    assert "project" in pattern

@@ -30,7 +30,7 @@ function stripLeadingTitle(description: string, title: string): string {
 const ALLOWED_ELEMENTS = ["p", "strong", "em", "del", "ul", "ol", "li", "a", "code", "pre", "blockquote", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "table", "thead", "tbody", "tr", "th", "td"];
 const RESOURCE_LINK_PREFIX = "#scax-resource-";
 const STRUCTURED_ELEMENTS = [...ALLOWED_ELEMENTS, "div", "span"];
-const INTERNAL_RESOURCE_PATH = /^\/api\/(tasks|meetings|work-requests)\/([^/]+)\/?$/;
+const INTERNAL_RESOURCE_PATH = /^\/api\/(tasks|meetings|work-requests|projects)\/([^/]+)\/?$/;
 const CONTENT_PATH = /^\/api\/(?:tasks\/[^/]+\/materials\/[^/]+|meetings\/[^/]+\/materials\/[^/]+|work-requests\/[^/]+\/attachments\/[^/]+|daily-reports\/[^/]+\/materials\/[^/]+|material-folders\/[^/]+\/materials\/[^/]+)\/content\/?$/;
 
 type InternalLinkResolution =
@@ -54,7 +54,8 @@ function resolveInternalLink(href: string, resources: AnswerResource[]): Interna
 
   const match = url.pathname.match(INTERNAL_RESOURCE_PATH);
   if (!match) return { kind: "blocked" };
-  const resourceType = match[1] === "tasks" ? "task" : match[1] === "meetings" ? "meeting" : "work_request";
+  const resourceType =
+    match[1] === "tasks" ? "task" : match[1] === "meetings" ? "meeting" : match[1] === "projects" ? "project" : "work_request";
   let resourceId: string;
   try {
     resourceId = decodeURIComponent(match[2]);

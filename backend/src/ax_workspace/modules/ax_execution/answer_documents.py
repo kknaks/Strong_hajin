@@ -19,7 +19,7 @@ class _StrictModel(BaseModel):
 
 
 Key = Annotated[str, Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")]
-ResourceRef = Annotated[str, Field(pattern=r"^(task|meeting|work_request|material|report):[^\s:]+$", max_length=180)]
+ResourceRef = Annotated[str, Field(pattern=r"^(task|meeting|work_request|project|material|report):[^\s:]+$", max_length=180)]
 
 
 class ResourceReference(_StrictModel):

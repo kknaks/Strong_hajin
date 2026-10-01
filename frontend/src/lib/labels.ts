@@ -1164,6 +1164,8 @@ export const projectScreen = {
   noProjectsDescription: "프로젝트에 붙으면 그 프로젝트의 업무를 여기에서 봅니다.",
   notMember: "이 프로젝트의 업무는 담당자에게만 보입니다. 나를 담당자로 붙이면 여기에서 함께 봅니다.",
   loadFailed: "프로젝트를 불러오지 못했습니다.",
+  /** AX 답변의 프로젝트 참조로 왔는데 그 프로젝트가 내 목록에 없다 (WORK-008 Phase 5). */
+  focusUnavailable: "그 프로젝트를 열 수 없습니다 — 볼 수 있는 프로젝트 목록에 없습니다.",
   /* 관리 모달 — 시안이 없어 어휘만 빌렸다 (D-05 · M-1) */
   manage: "프로젝트 관리",
   manageClose: "닫기",
