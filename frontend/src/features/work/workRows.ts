@@ -281,6 +281,10 @@ export function matchesChip(row: WorkRow, chip: WorkChip, today: string): boolea
       return true;
     case "awaiting_acceptance":
       return row.awaitingAcceptance;
+    case "ax_drafts":
+      /* 「AX 제안」은 업무 행을 거르지 않는다 — 초안은 아직 업무가 아니라 그 칩을 켜면 «초안 줄»만 선다
+         (SPEC-001 U-2). 건수는 화면이 초안 수로 따로 센다. */
+      return false;
     case "overdue":
       return overdueDaysOf(row.task, today) > 0 || (!row.task && isOverdueDate(row.dueDate, today));
     case "open":

@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { scopeScreenCache } from "../../lib/screenCache";
@@ -109,5 +109,34 @@ describe("홈 — 탭 재진입 (B-01)", () => {
     expect(screen.getByText("다시 읽은 AX 제안")).toBeTruthy();
     expect((screen.getByRole("button", { name: "판단하기" }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole("button", { name: "시작" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  /* WORK-008 A-01 · SPEC-002 §2.4 — 홈 판단 대기의 AX 업무 초안을 누르면 채팅과 같은 요약 카드가 뜬다. */
+  it("AX 업무 초안 카드를 누르면 같은 요약 카드(모달)가 뜬다", async () => {
+    const draft = {
+      ...judgement("AX 가 만든 초안"),
+      kind: "ax.task.create_self",
+      submission_version: 1,
+      expected_version: 3,
+      created_at: "2026-09-30T01:00:00+00:00",
+      allowed_commands: [{ id: "confirm", label: "등록", tone: "primary" }],
+      edit_contract: {
+        editor: "task",
+        base_submission_version: 1,
+        values: { title: "AX 가 만든 초안", due_date: null, checklist: [] },
+        fields: [{ id: "title", label: "제목", type: "text", required: true, editable: true }],
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/action-items") return json([draft]);
+      return homeApi("x", "y")(input);
+    }));
+    render(<TodayPage {...props} />);
+    fireEvent.click(await screen.findByRole("button", { name: "판단하기" }));
+    const modal = await screen.findByRole("dialog", { name: "AX 제안" });
+    expect(within(modal).getByRole("region", { name: /AX 업무 생성/ })).toBeTruthy();
+    expect(within(modal).getAllByRole("tab")).toHaveLength(4);
+    expect(within(modal).getByRole("button", { name: "등록" })).toBeTruthy();
   });
 });

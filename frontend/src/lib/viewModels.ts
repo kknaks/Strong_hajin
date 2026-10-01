@@ -774,6 +774,8 @@ export type ActionItem = {
   /** Pre-create link/file identities owned by this Action; confirmation alone claims them into a Task. */
   material_drafts?: ActionMaterialDraft[];
   material_results?: Array<Record<string, unknown>>;
+  /** When the action was made — ISO 8601 (WORK-008 3b fix1). Optional: the AX draft card counts 「만든 지 며칠」 from it. */
+  created_at?: string | null;
 };
 
 /** One independent judgement question, whatever raised it. The server decides everything the client renders. */
@@ -803,6 +805,8 @@ export type ActionItemEnvelope = {
   result_summary?: string;
   /** Per-effect receipt for a server-executed batch. */
   execution_result?: Record<string, unknown>;
+  /** When the item was made — `ax.*` only (WORK-008 3a). ISO 8601. The card counts 「만든 지 며칠」 from it. */
+  created_at?: string | null;
 };
 
 export type ActionMaterialDraft = {

@@ -1,4 +1,5 @@
 import { useRemembered } from "../../lib/screenCache";
+import { AxDraftModal, axDraftFromEnvelope } from "../action/AxDraftCard";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Avatar } from "../../ds/Avatar";
 import { ActionItemCard, ActionItemDrawer } from "../action/ActionCenter";
@@ -427,7 +428,19 @@ export function TodayPage({
           task={selectedTask}
         />
       )}
-      {selectedActionItem && (
+      {selectedActionItem && axDraftFromEnvelope(selectedActionItem) ? (
+        /* AX 업무 생성·요청 초안 — 채팅과 같은 요약 카드로 거절·수정·등록한다 (SPEC-002 §2.4 · WORK-008 A-01).
+           편집 계약이 없는 옛 모양의 봉투는 지금까지의 판단 상세로 연다. */
+        <AxDraftModal
+          item={selectedActionItem}
+          key={selectedActionItem.action_item_id}
+          locked={!todayFresh}
+          onClose={() => setSelectedActionItem(null)}
+          onDone={onDecided}
+          onError={onError}
+          onNotice={onNotice}
+        />
+      ) : selectedActionItem && (
         <ActionItemDrawer
           principalId={personaId}
           actionItemId={selectedActionItem?.action_item_id ?? ""}

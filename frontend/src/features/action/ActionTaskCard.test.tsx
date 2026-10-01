@@ -131,7 +131,7 @@ describe("AX Task proposal card", () => {
     const onCommand = vi.fn().mockResolvedValue(undefined);
     const { container } = render(<ActionTaskCard action={withAttachments} onCommand={onCommand} principalId="jiho" />);
     const card = container.querySelector(".action-task-card") as HTMLElement;
-    expect(within(card).getByText("SC AX")).toBeTruthy();
+    expect(within(card).getByText("AX")).toBeTruthy();
     expect(within(card).getByText("초안")).toBeTruthy();
     expect(within(card).getByText("담당자")).toBeTruthy();
     expect(within(card).queryByText("담당")).toBeNull();

@@ -4,6 +4,7 @@ import { useRemembered } from "../../lib/screenCache";
 import { CalendarRail } from "../../shell/CalendarRail";
 import { Chip } from "../../ds/Chip";
 import { ActionItemDrawer } from "../action/ActionCenter";
+import { AxDraftModal, axDraftAgeDays, axDraftFromEnvelope, isAxDraftKind } from "../action/AxDraftCard";
 import { InboxRail } from "../../shell/InboxRail";
 import { Tabs } from "../../ds/SegmentedControl";
 
@@ -13,6 +14,7 @@ import {
   getCalendar,
   getWorkRequestInbox,
   getTask,
+  getActionItems,
   getMyWork,
   getSentTaskAssignments,
   getTaskAssignmentCandidates,
@@ -76,6 +78,7 @@ import { DataTable, Td, Th, TrOpenable } from "../../ds/DataTable";
 import { Select } from "../../ds/Select";
 import { Icon } from "../../ds/icons/Icon";
 import {
+  AxDraftTable,
   CcTaskTable,
   DoneTaskTable,
   OrganizationTaskTable,
@@ -186,6 +189,7 @@ export function MyWorkPage({
   onDecided,
   onError,
   onRegisterRefresh,
+  canReadActions,
   focusTaskId,
   onFocusHandled,
   focusWorkRequestId,
@@ -208,8 +212,14 @@ export function MyWorkPage({
   const [railMeetingsFailed, setRailMeetingsFailed] = useState(false);
   /** 마지막으로 읽은 범위. 레일이 같은 범위를 다시 알려도 **다시 묻지 않는다**(날짜만 고른 경우). */
   const railRange = useRef("");
-  const [actionItems, setActionItems] = useState<ActionItemEnvelope[]>([]);
-  const [selectedActionItem, setSelectedActionItem] = useState<ActionItemEnvelope | null>(null);
+  /*
+   * 나에게 걸린 AX 업무 초안 (WORK-008 A-01 · SPEC-001 U-2) — 「AX 제안 N」 칩의 수이자 그 칩을 켰을 때의 초안 줄.
+   * 판단 대기와 같은 응답(`GET /api/action-items`)에서 두 kind 만 고른다. 다른 AX 카드는 세지 않는다.
+   * 화면 기억(Phase 2)도 같이 쓴다 — 재진입 때 칩 숫자와 초안 줄이 늦게 끼어들지 않는다.
+   */
+  const [axDrafts, setAxDrafts] = useRemembered<ActionItemEnvelope[]>("work.axDrafts", []);
+  /** 초안 줄을 눌러 연 요약 카드. */
+  const [openAxDraft, setOpenAxDraft] = useState<ActionItemEnvelope | null>(null);
   const [relatedTask, setRelatedTask] = useState<DirectTask | null>(null);
   const [inboxRequests, setInboxRequests, inboxRemembered] = useRemembered<WorkRequest[]>("work.inboxRequests", []);
   const [inboxState, setInboxState] = useState<"loading" | "error" | "ready">(inboxRemembered ? "ready" : "loading");
@@ -299,7 +309,7 @@ export function MyWorkPage({
   }, [canDecideWorkRequests]);
 
   const reload = useCallback(async () => {
-    const [work, closed, incoming, requests, nextSent] = await Promise.all([
+    const [work, closed, incoming, requests, nextSent, judgements] = await Promise.all([
       getMyWork(),
       getTasks(true).catch(() => [] as DirectTask[]),
       reloadInbox(),
@@ -323,7 +333,14 @@ export function MyWorkPage({
             .catch(() => [] as WorkRequest[]),
         ),
       canAssignTasks ? getSentTaskAssignments().catch(() => [] as TaskAssignment[]) : Promise.resolve([] as TaskAssignment[]),
+      /* AX 업무 초안 — 못 읽어도 업무 목록을 흔들지 않는다(칩은 0 으로 선다). */
+      canReadActions
+        ? Promise.resolve()
+            .then(() => getActionItems())
+            .catch(() => [] as ActionItemEnvelope[])
+        : Promise.resolve([] as ActionItemEnvelope[]),
     ]);
+    setAxDrafts((judgements ?? []).filter((item) => isAxDraftKind(item.kind) && item.status !== "resolved"));
     // 할일 is what this person holds. Someone who may read the organization's work sees the rest in its own section,
     // never mixed into their own list.
     const held = new Set(work.map((task) => task.task_id));
@@ -357,7 +374,7 @@ export function MyWorkPage({
     );
     // 어떤 다시 읽기든(진입·셸 refresh·쓰기 뒤) 성공하면 행 명령의 잠금이 풀린다 (fix2 · WARN-A).
     setWorkFresh(true);
-  }, [canAssignTasks, personaId, reloadInbox]);
+  }, [canAssignTasks, canReadActions, personaId, reloadInbox]);
 
   /**
    * 읽기가 끝난 뒤 배너를 정리한다 — **반쪽으로 온 것이 있으면 지우지 않고 그것을 남긴다.**
@@ -720,7 +737,21 @@ export function MyWorkPage({
   const mineRows = useMemo(() => myWorkRows(liveTasks, requestsToMe), [liveTasks, allRequests, personaId]);
   const chips = chipsForTab[tab];
   const activeChip = chips.includes(chip) ? chip : "all";
-  const mineCounts = useMemo(() => chipCounts(mineRows, myWorkChips, today), [mineRows, today]);
+  /* 「AX 제안 N」 은 업무 행이 아니라 초안 수로 센다 — 0건이어도 「AX 제안 0」 으로 선다 (U-2). */
+  const mineCounts = useMemo(
+    (): Record<string, number> => ({ ...chipCounts(mineRows, myWorkChips, today), ax_drafts: axDrafts.length }),
+    [axDrafts.length, mineRows, today],
+  );
+  const axDraftRows = useMemo(
+    () =>
+      axDrafts.map((item) => ({
+        id: item.action_item_id,
+        title: item.subject,
+        dueDate: item.edit_contract?.values.due_date ? String(item.edit_contract.values.due_date) : null,
+        ageDays: axDraftAgeDays(item.created_at, today),
+      })),
+    [axDrafts, today],
+  );
   const visibleRows = useMemo(
     () => (tab === "mine" ? mineRows.filter((row) => matchesChip(row, activeChip, today)) : mineRows),
     [activeChip, mineRows, tab, today],
@@ -1128,7 +1159,16 @@ export function MyWorkPage({
             </span>
           </div>
 
-          {tab === "mine" ? (
+          {tab === "mine" && activeChip === "ax_drafts" ? (
+            /* 「AX 제안」을 켰을 때만 초안 줄이 선다 — 「전체」·다른 칩의 업무 목록에는 섞지 않는다 (U-2). */
+            <AxDraftTable
+              onClearFilter={() => setChip("all")}
+              onOpen={(row) => setOpenAxDraft(axDrafts.find((item) => item.action_item_id === row.id) ?? null)}
+              onRetry={() => void reload()}
+              rows={axDraftRows}
+              state={loadState}
+            />
+          ) : tab === "mine" ? (
             view === "timeline" ? (
               <TaskTimeline onOpen={openMyTask} tasks={visibleTasks} />
             ) : (
@@ -1279,6 +1319,38 @@ export function MyWorkPage({
           task={detail.task}
           viewerIsRequester={isRequestOwner(requestOf(detail.task), personaId)}
           viewerIsRecordRequester={isRequestRecordRequester(requestOf(detail.task), personaId)}
+        />
+      )}
+      {openAxDraft && !axDraftFromEnvelope(openAxDraft) && (
+        /* 편집 계약이 없는 옛 모양의 초안은 지금까지의 판단 상세로 연다. */
+        <ActionItemDrawer
+          actionItemId={openAxDraft.action_item_id}
+          key={`legacy-${openAxDraft.action_item_id}`}
+          onClose={() => setOpenAxDraft(null)}
+          onDone={async () => {
+            await reload();
+            return onDecided();
+          }}
+          onError={onError}
+          onNotice={onNotice}
+          personas={people}
+          presentation="modal"
+          principalId={personaId}
+        />
+      )}
+      {openAxDraft && axDraftFromEnvelope(openAxDraft) && (
+        /* 초안 줄을 누르면 채팅·홈과 같은 요약 카드 — 기억한 봉투로는 명령을 열지 않는다(Phase 2 규칙). */
+        <AxDraftModal
+          item={openAxDraft}
+          key={openAxDraft.action_item_id}
+          locked={!workFresh}
+          onClose={() => setOpenAxDraft(null)}
+          onDone={async () => {
+            await reload();
+            await onDecided();
+          }}
+          onError={onError}
+          onNotice={onNotice}
         />
       )}
       {detail?.kind === "action" && (

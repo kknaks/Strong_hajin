@@ -756,7 +756,7 @@ class AxProposalActionHandler:
             # Closing the round trip and carrying the same server-authored editor contract as the chat projection.
             extra={
                 # 만든 시각 — AX 제안은 자동으로 만료되지 않고 카드가 「만든 지 며칠」을 센다 (SPEC-002 §2.4).
-                "created_at": record.created_at.isoformat(),
+                "created_at": (record.created_at if record.created_at.tzinfo else record.created_at.replace(tzinfo=UTC)).isoformat(),
                 "derived_task_id": self._derived_task_id(record),
                 "derived_meeting_id": self._derived_meeting_id(record),
                 "material_drafts": self._material_drafts.list(principal, record.id) if self._material_drafts else [],

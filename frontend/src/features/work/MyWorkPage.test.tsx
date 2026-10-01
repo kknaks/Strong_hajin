@@ -359,7 +359,9 @@ describe("work relation information architecture", () => {
     const requestCard = inbox.getByText("내게 온 검토 요청").closest(".scax-inbox-card") as HTMLElement;
     expect(within(requestCard).getByText("업무 요청")).toBeTruthy();
     expect(inbox.queryByText("AX가 제안한 업무")).toBeNull();
-    expect(api.getActionItems).not.toHaveBeenCalled();
+    /* WORK-008 A-01: 이 화면은 이제 판단 대기를 읽는다 — 「AX 제안 N」 칩의 수를 세려고. 그래도 수신함·업무
+       표에는 섞이지 않는다(위·아래 단언). 칩은 두 kind 만 센다 — 위 판단 항목 둘 중 ax.task.create_self 하나다. */
+    expect(await screen.findByRole("button", { name: "AX 제안 1" })).toBeTruthy();
 
     // 업무 표와 수신함 모두 AX 제안을 섞지 않는다.
     await openSentTab();
@@ -934,5 +936,80 @@ describe("탭 재진입 — 받아 둔 목록을 먼저 보여 준다 (B-01)", (
     render(<RailHost {...(first.props as unknown as Parameters<typeof MyWorkPage>[0])} />);
     expect(screen.queryByText("민아의 업무")).toBeNull();
     expect(listSkeleton()).toBeTruthy();
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   WORK-008 A-01 · SPEC-001 U-2 — 「AX 제안 N」 칩. 두 kind 만 세고 0건이어도 서며, 켰을 때만 초안 줄이 선다.
+   ════════════════════════════════════════════════════════════════════════════ */
+describe("「AX 제안 N」 칩 (A-01)", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  const axDraft = (id: string, kind: string, subject: string) => ({
+    action_item_id: id,
+    kind,
+    status: "awaiting_review",
+    subject,
+    operation_label: "업무 생성",
+    current_question: "등록할까요?",
+    preview: [],
+    allowed_commands: [{ id: "confirm", label: "등록", tone: "primary" }],
+    submission_version: 1,
+    waiting_on: null,
+    resource: { type: "action", id },
+    expected_version: 1,
+    created_at: `${seoulToday()}T00:00:00+09:00`,
+    edit_contract: {
+      editor: "task",
+      base_submission_version: 1,
+      values: { title: subject, due_date: "2030-01-05", checklist: [] },
+      fields: [{ id: "title", label: "제목", type: "text", required: true, editable: true }],
+    },
+  });
+  const chipBar = () => within(screen.getByRole("group", { name: "업무 필터" }));
+  const chipNames = () => chipBar().getAllByRole("button").map((button) => button.textContent);
+
+  it("0건이어도 「AX 제안 0」 으로 서고, 자리는 받은 요청 바로 뒤 · 기한 지남은 맨 끝이다", async () => {
+    renderPage({}, { judgements: [] });
+    expect(await chipBar().findByRole("button", { name: "AX 제안 0" })).toBeTruthy();
+    const names = chipNames().map((name) => name?.replace(/\s\d+$/, ""));
+    expect(names.indexOf("AX 제안")).toBe(names.indexOf("받은 요청") + 1);
+    expect(names.at(-1)).toBe("기한 지남");
+  });
+
+  it("두 kind 만 세고, 켰을 때만 초안 줄이 서며, 줄을 누르면 같은 요약 카드가 뜬다", async () => {
+    renderPage({}, {
+      judgements: [
+        axDraft("ax-1", "ax.task.create_self", "AX 업무 초안"),
+        axDraft("ax-2", "ax.work_request.create", "AX 요청 초안"),
+        axDraft("ax-3", "ax.meeting.reservation.create", "회의실 예약 제안"),
+      ],
+      work: [{ task_id: "t-1", title: "원래 업무", state: "open", version: 1, block_reason: null }],
+    });
+    const chip = await chipBar().findByRole("button", { name: "AX 제안 2" });
+    // 「전체」 목록에는 초안이 섞이지 않는다.
+    expect(await screen.findByText("원래 업무")).toBeTruthy();
+    expect(screen.queryByText("AX 업무 초안")).toBeNull();
+    // 「받은 요청」 수신함에도 서지 않는다.
+    expect(within(screen.getByRole("region", { name: "업무 요청 수신함" })).queryByText("AX 업무 초안")).toBeNull();
+
+    fireEvent.click(chip);
+    const table = screen.getByRole("table", { name: "AX 제안" });
+    expect(within(table).getByText("AX 업무 초안")).toBeTruthy();
+    expect(within(table).getByText("AX 요청 초안")).toBeTruthy();
+    expect(within(table).queryByText("회의실 예약 제안")).toBeNull();
+    expect(screen.queryByText("원래 업무")).toBeNull();
+    const row = within(table).getByText("AX 업무 초안").closest('[role="row"]') as HTMLElement;
+    expect(within(row).getByText("AX")).toBeTruthy();
+    expect(within(row).getByText("초안")).toBeTruthy();
+    expect(within(row).getByText("오늘 만듦")).toBeTruthy();
+    expect(within(row).queryAllByRole("button")).toHaveLength(0); // 행 액션 칸은 비운다
+
+    fireEvent.click(row);
+    const modal = await screen.findByRole("dialog", { name: "AX 제안" });
+    expect(within(modal).getByRole("region", { name: /AX 업무 생성 · AX 업무 초안/ })).toBeTruthy();
   });
 });

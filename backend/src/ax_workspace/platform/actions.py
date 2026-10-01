@@ -554,6 +554,8 @@ class SqlAlchemyActionRepository:
             "material_drafts": self._material_drafts(action, principal),
             "material_results": list((action.result or {}).get("material_results") or []),
             "audit_ref": action.audit_ref,
+            # 만든 시각 — 판단 대기 봉투(`action_center`)와 같은 형식이다 (SPEC-002 §2.4 · §2.9).
+            "created_at": (action.created_at if action.created_at.tzinfo else action.created_at.replace(tzinfo=UTC)).isoformat(),
             **presented,
             "commands": commands,
         }

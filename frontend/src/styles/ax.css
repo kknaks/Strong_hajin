@@ -613,3 +613,37 @@
 .action-command-editor .action-task-buttons{display:flex;flex-wrap:wrap;gap:var(--scax-space-200)}
 .action-command-editor input[type="datetime-local"]{width:100%;height:38px;padding:0 var(--scax-space-300);border:1px solid var(--scax-color-line-strong);border-radius:var(--scax-radius-sm);color:var(--scax-color-ink);background:var(--scax-color-surface);font-size:var(--scax-text-body1-size)}
 
+
+/* ───────────────────────────────────────── AX 업무 초안 요약 카드 (WORK-008 3b · SPEC-002 §2.9)
+   골격은 `.scax-actioncard` 그대로이고 그 안의 배치만 더한다. 시안이 없는 자리(4칸 바 · 호버 화살표)는
+   기존 토큰으로만 세웠다 — DS-gaps 에 적는다. 높이는 «고정»이다: 페이지를 넘겨도 카드가 자라지 않는다. */
+.ax-draft-card{display:flex;flex-direction:column;gap:var(--scax-space-200)}
+.ax-draft-card__head{display:flex;flex-direction:column;gap:var(--scax-space-150)}
+.ax-draft-card__kind{margin-left:auto;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size)}
+.ax-draft-card .scax-actioncard__badges{display:flex;align-items:center;gap:var(--scax-space-150)}
+.ax-draft-card__title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ax-draft-card__bar{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--scax-space-100)}
+.ax-draft-card__step{height:4px;padding:0;border:0;border-radius:var(--scax-radius-xs);background:var(--scax-color-line);cursor:pointer}
+.ax-draft-card__step--on{background:var(--scax-color-ink)}
+.ax-draft-card__step:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.ax-draft-card__page{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size)}
+/* 본문 높이 (3b fix1 · WARN-2) — 기본 정보의 최대 여섯 줄(갈래·기간 · 담당 후보 · 내용 두 줄 · 참조자 · 결재자)이
+   다 들어가는 높이로 고정한다. 모든 페이지가 같은 높이다. 줄 하나 = caption1 줄높이, 줄 사이 space-100. */
+.ax-draft-card__body{position:relative;height:calc(6 * var(--scax-text-caption1-size) * var(--scax-text-caption1-lh) + 5 * var(--scax-space-100) + 2 * var(--scax-space-200));overflow:hidden;padding:var(--scax-space-200) var(--scax-space-600);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface)}
+.ax-draft-card__body:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.ax-draft-card__rows{display:grid;gap:var(--scax-space-100);margin:0}
+.ax-draft-card__rows > div{display:flex;gap:var(--scax-space-200);min-width:0;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh)}
+.ax-draft-card__rows dt{flex:none;color:var(--scax-color-ink-assistive)}
+.ax-draft-card__rows dd{min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--scax-color-ink)}
+.ax-draft-card__rows dd.ax-draft-card__clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal}
+.ax-draft-card__none{color:var(--scax-color-ink-assistive)}
+/* ‹ › 는 본문 «호버 때만» 본문 위에 겹친다 — 키보드로 들어오면(focus-within) 함께 선다. */
+.ax-draft-card__nav{position:absolute;top:50%;transform:translateY(-50%);opacity:0;transition:opacity 120ms}
+.ax-draft-card__nav--prev{left:var(--scax-space-100)}
+.ax-draft-card__nav--next{right:var(--scax-space-100)}
+.ax-draft-card__body:hover .ax-draft-card__nav,.ax-draft-card__body:focus-within .ax-draft-card__nav{opacity:1}
+.ax-draft-card__foot{display:flex;align-items:center;justify-content:flex-end;gap:var(--scax-space-200)}
+.ax-draft-card__foot .t-meta{margin-right:auto}
+.ax-draft-card--done{flex-direction:row;align-items:center;justify-content:space-between}
+.ax-draft-card__line{display:flex;align-items:center;gap:var(--scax-space-200);min-width:0;margin:0}
+.ax-draft-card__line b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

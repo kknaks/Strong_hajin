@@ -840,6 +840,23 @@ def test_pending_ax_drafts_carry_every_creation_field_and_when_they_were_made(tm
         assert made.year >= 2026
 
 
+def test_the_chat_card_carries_the_same_made_at_as_the_pending_envelope(tmp_path) -> None:
+    """채팅 카드도 「만든 지 며칠」을 센다 — 대화 조회의 action 에 판단 대기와 같은 `created_at` (SPEC-002 §2.9)."""
+    from datetime import datetime
+
+    client, application = _stack(tmp_path)
+    proposal = _ax_proposal(
+        client, application, JIHO, "jiho", "task.create_self", "업무 생성 확인", {"title": "채팅 카드 초안"}
+    )
+    conversation = client.get(f"/api/conversations/{proposal['conversation_id']}", headers=JIHO).json()
+    [chat_action] = [row for row in conversation["actions"] if row["action_id"] == proposal["action_id"]]
+    # 시간대를 싣는다 — 시간대 없는 문자열은 브라우저가 현지 시각으로 읽어 「며칠」이 어긋난다.
+    assert datetime.fromisoformat(chat_action["created_at"]).tzinfo is not None
+    [item] = [row for row in _pending(client, JIHO) if row["action_item_id"] == proposal["action_id"]]
+    assert chat_action["created_at"] == item["created_at"]
+    assert proposal["created_at"] == item["created_at"]
+
+
 def test_ax_draft_fields_are_the_creation_command_fields(tmp_path) -> None:
     """P-1 대조 — 정규화 · 편집 계약 · MCP 도구 인자가 생성 명령의 필드를 **빠짐없이** 싣는다.
 

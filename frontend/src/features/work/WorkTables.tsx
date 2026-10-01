@@ -7,6 +7,7 @@ import { Empty, EmptyValue } from "../../ds/Empty";
 import { Icon } from "../../ds/icons/Icon";
 import { Skeleton } from "../../ds/Skeleton";
 import {
+  axDraftCard,
   cancelReasonLabel,
   derivedApprovalLabel,
   derivedAssignmentLabel,
@@ -294,6 +295,59 @@ function TitleCell({ title, cancelled, children }: { title: string; cancelled?: 
         {children}
       </span>
     </span>
+  );
+}
+
+/* ---------------------------------------------------------------- AX 초안 줄 (WORK-008 A-01) */
+
+/** AX 업무 초안 한 줄 — 아직 업무가 아니라 «초안 줄»이다 (SPEC-001 U-2). */
+export type AxDraftRow = { id: string; title: string; dueDate: string | null; ageDays: number | null };
+
+/**
+ * 「AX 제안 N」 칩을 켰을 때만 서는 표 — 업무 행과 **같은 열 틀**(업무명 · 요청자 · 기한 · 상태 · 액션)이다.
+ * 요청자 자리는 「AX」, 상태는 「초안」, 만든 지 며칠은 제목 밑에 선다. **행 액션 칸은 비운다** — 처리는 줄을
+ * 눌러 여는 요약 카드에서 한다(SPEC-002 §2.9).
+ */
+export function AxDraftTable({
+  rows,
+  state,
+  onOpen,
+  onRetry,
+  onClearFilter,
+}: {
+  rows: AxDraftRow[];
+  state: TableState;
+  onOpen: (row: AxDraftRow) => void;
+  onRetry: () => void;
+  onClearFilter: () => void;
+}) {
+  return (
+    <WorkTableShell headers={["업무명", "요청자", "기한", "상태", "액션"]} label="AX 제안">
+      <TableStates
+        emptyDescription="AX 가 제안한 업무 초안이 오면 여기에 섭니다."
+        emptyTitle="AX 제안이 없습니다"
+        errorTitle="AX 제안을 불러오지 못했습니다"
+        filtered
+        onClearFilter={onClearFilter}
+        onRetry={onRetry}
+        rows={rows.length}
+        state={state}
+      />
+      {state === "ready" &&
+        rows.map((row) => (
+          <WorkTableRow data-ax-draft-row={row.id} key={row.id} onOpen={() => onOpen(row)}>
+            <TitleCell title={row.title}>
+              {row.ageDays !== null && <small className="t-meta">{axDraftCard.age(row.ageDays)}</small>}
+            </TitleCell>
+            <WorkTableCell muted>{axDraftCard.requester}</WorkTableCell>
+            <WorkTableCell>
+              <DueCell dueDate={row.dueDate} overdueDays={0} />
+            </WorkTableCell>
+            <WorkTableCell muted>{axDraftCard.draftState}</WorkTableCell>
+            <WorkTableActions>{null}</WorkTableActions>
+          </WorkTableRow>
+        ))}
+    </WorkTableShell>
   );
 }
 
