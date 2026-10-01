@@ -31,6 +31,7 @@ import { TodayPage } from "./features/today/TodayPage";
 import type { ConversationContextReference, DirectTask, OrganizationProfile, Persona, ProductSurface } from "./lib/viewModels";
 import { type IconName } from "./ds/icons/Icon";
 import { shellNav } from "./lib/labels";
+import { forgetScreenCache, scopeScreenCache } from "./lib/screenCache";
 
 /* 표시 순서는 시안에 맞추고 기존 화면 id·권한 필터·동작은 유지한다. */
 const navigation: ReadonlyArray<{ id: ProductSurface | "materials"; label: string; icon: IconName; disabled?: boolean }> = [
@@ -64,6 +65,25 @@ export default function App() {
   const [focusTaskId, setFocusTaskId] = useState<string | null>(null);
   const [focusWorkRequestId, setFocusWorkRequestId] = useState<string | null>(null);
   const personaId = session?.member_id ?? "";
+  /*
+   * 화면 데이터 기억의 주인 (WORK-008 Phase 2 · `lib/screenCache.ts`).
+   *
+   * 앱이 새로 서면 비우고 시작한다 — 남의 것도 지난 앱의 것도 비치지 않는다. 주인은 **렌더 중에** 정한다:
+   * 자식 화면의 첫 렌더(`useState` 초깃값)와 진입 effect 가 이 값보다 먼저 돌기 때문이다. 사람이 바뀌거나
+   * 비면(로그아웃·세션 만료) `scopeScreenCache` 가 통째로 버린다.
+   */
+  useState(() => {
+    forgetScreenCache();
+    scopeScreenCache(null);
+    return null;
+  });
+  scopeScreenCache(personaId);
+  useEffect(() => {
+    scopeScreenCache(personaId);
+  }, [personaId]);
+  /* 언마운트 때 주인을 내리는 effect 는 두지 않는다 (fix1) — StrictMode 의 이중 effect 가 주인을 내렸다 세우며
+     세대를 올리면, 이미 선 화면들의 세대가 어긋나 개발 모드에서 아무것도 기억하지 못한다. 앱이 새로 설 때
+     위의 초깃값이 비우므로 지난 앱의 데이터는 남지 않는다. */
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [graphFocus, setGraphFocus] = useState<string | null>(null);
   /* 바퀴 6a M-1: 회의는 이제 «한 화면 4칸» 이다. 어느 회의를 보고 있는지는 그 화면의 선택 상태라
@@ -199,6 +219,8 @@ export default function App() {
   }, [session]);
 
   function resetWorkspace() {
+    // 로그아웃·다른 사람의 로그인·세션 만료 — 이전 사람이 받아 둔 화면 데이터를 남기지 않는다.
+    forgetScreenCache();
     chat.reset();
     setSurface("today");
     setFocusMeetingId(null);

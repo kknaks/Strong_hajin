@@ -1,3 +1,4 @@
+import { useRemembered } from "../../lib/screenCache";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Avatar } from "../../ds/Avatar";
 import { ActionItemCard, ActionItemDrawer } from "../action/ActionCenter";
@@ -77,15 +78,25 @@ export function TodayPage({
 }: TodayPageProps) {
   const today = seoulToday();
   const me = personName(personaName);
-  const [tasks, setTasks] = useState<DirectTask[]>([]);
-  const [actionItems, setActionItems] = useState<ActionItemEnvelope[]>([]);
+  /*
+   * 받아 둔 화면 데이터로 시작한다 (WORK-008 Phase 2 · `lib/screenCache.ts`). 이 화면은 스켈레톤 대신
+   * 빈 칸(0건·「요청된 업무가 없습니다」)을 먼저 그렸다 — 다시 들어오면 그 빈 칸 대신 지난 값을 보여 주고
+   * 아래 진입 effect 가 뒤에서 다시 읽어 갈아 끼운다.
+   */
+  const [tasks, setTasks, todayRemembered] = useRemembered<DirectTask[]>("today.tasks", []);
+  /**
+   * 이번 진입의 응답을 받았나 (fix1 · 검수 WARN-1). 받아 둔 값으로 그린 판단 카드·「시작」은 기억한 envelope 로
+   * 그린 것이라, 이 화면의 갱신 응답이 올 때까지 잠근다 — 권한 판단은 갱신된 응답 기준이다.
+   */
+  const [todayFresh, setTodayFresh] = useState(!todayRemembered);
+  const [actionItems, setActionItems] = useRemembered<ActionItemEnvelope[]>("today.actionItems", []);
   const [selectedActionItem, setSelectedActionItem] = useState<ActionItemEnvelope | null>(null);
-  const [reportStatus, setReportStatus] = useState<DailyReportStatus | null>(null);
+  const [reportStatus, setReportStatus] = useRemembered<DailyReportStatus | null>("today.reportStatus", null);
   const [prompt, setPrompt] = useState("");
   const [selectedTask, setSelectedTask] = useState<DirectTask | null>(null);
   const [selectedRequest, setSelectedRequest] = useState<WorkRequest | null>(null);
   const [isCreating, setIsCreating] = useState(false);
-  const [assigneeCandidates, setAssigneeCandidates] = useState<Persona[]>([]);
+  const [assigneeCandidates, setAssigneeCandidates] = useRemembered<Persona[]>("today.assigneeCandidates", []);
   /**
    * 참조 후보 — **오늘 화면의 생성 창에도 참조자·결재자 칸이 서야 한다** (최종 프레임 FE 정리).
    *
@@ -93,7 +104,7 @@ export function TodayPage({
    * 그 칸을 그리지 않는다 — 같은 창인데 업무 화면에서는 서고 오늘 화면에서는 없었다. 두 값 모두
    * `POST /api/tasks` 본인 갈래가 받으므로(`cc_member_ids`·`approver_id`) 감출 이유가 없다.
    */
-  const [ccCandidates, setCcCandidates] = useState<Persona[]>([]);
+  const [ccCandidates, setCcCandidates] = useRemembered<Persona[]>("today.ccCandidates", []);
   const [busy, setBusy] = useState(false);
 
   const reload = useCallback(async () => {
@@ -108,6 +119,8 @@ export function TodayPage({
     setSelectedTask((current) => (current ? nextTasks.find((task) => task.task_id === current.task_id) ?? null : null));
     setSelectedRequest((current) => (current ? related.find((request) => request.request_id === current.request_id) ?? null : null));
     setReportStatus(canGenerateDailyReport ? await getDailyReportStatus(today) : null);
+    // 어떤 다시 읽기든(진입·셸 refresh·쓰기 뒤) 성공하면 잠금이 풀린다 (fix2 · WARN-A).
+    setTodayFresh(true);
   }, [canGenerateDailyReport, personaId, today]);
 
   useEffect(() => {
@@ -310,7 +323,7 @@ export function TodayPage({
           ) : (
             <ul className="card-stack">
               {actionItems.map((item) => (
-                <ActionItemCard item={item} key={item.action_item_id} personas={personas} onOpen={setSelectedActionItem} />
+                <ActionItemCard disabled={!todayFresh} item={item} key={item.action_item_id} personas={personas} onOpen={setSelectedActionItem} />
               ))}
             </ul>
           )}
@@ -361,7 +374,7 @@ export function TodayPage({
                         onOpen={() => setSelectedTask(task)}
                         right={
                           canManageOwnTasks && (
-                            <Button variant="solid" tone="primary" size="sm" disabled={busy} onClick={() => void transitionTask(task, "start")} type="button">
+                            <Button variant="solid" tone="primary" size="sm" disabled={busy || !todayFresh} onClick={() => void transitionTask(task, "start")} type="button">
                               시작
                             </Button>
                           )

@@ -1,3 +1,4 @@
+import { useRemembered } from "../../lib/screenCache";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -70,11 +71,23 @@ export function ProjectPage({
    */
   canManageOwnTasks?: boolean;
 }) {
-  const [projects, setProjects] = useState<Project[] | null>(null);
-  const [selected, setSelected] = useState<ProjectDetail | null>(null);
-  const [history, setHistory] = useState<ProjectParticipation[] | null>(null);
-  const [directory, setDirectory] = useState<Persona[]>([]);
-  const [loadState, setLoadState] = useState<"loading" | "error" | "ready">("loading");
+  /*
+   * 받아 둔 화면 데이터로 시작한다 (WORK-008 Phase 2 · `lib/screenCache.ts`) — 탭을 옮겨 갔다 돌아오면
+   * 보던 프로젝트를 바로 그리고, 진입 effect 가 «그 프로젝트를» 뒤에서 다시 읽어 갈아 끼운다.
+   * 레일 스켈레톤(`loading`)은 받아 둔 것이 없는 첫 진입에만 선다.
+   */
+  const [projects, setProjects, projectsRemembered] = useRemembered<Project[] | null>("project.list", null);
+  const [selected, setSelected] = useRemembered<ProjectDetail | null>("project.selected", null);
+  const [history, setHistory] = useRemembered<ProjectParticipation[] | null>("project.history", null);
+  const [directory, setDirectory] = useRemembered<Persona[]>("project.directory", []);
+  const [loadState, setLoadState] = useState<"loading" | "error" | "ready">(projectsRemembered ? "ready" : "loading");
+  /** 다시 들어왔을 때 이어서 볼 프로젝트 — 받아 둔 것이 없으면 목록의 첫 프로젝트다. */
+  const resumeProjectId = useRef(projectsRemembered ? selected?.project_id : undefined);
+  /**
+   * 이번 진입의 응답을 받았나 (fix1 · 검수 WARN-1). 받아 둔 프로젝트로 그린 상태 변경·관리 명령은 기억한
+   * envelope 로 그린 것이라 갱신 응답이 올 때까지 잠근다. 받아 둔 것 없이 시작했으면 처음부터 참이다.
+   */
+  const [projectFresh, setProjectFresh] = useState(!projectsRemembered);
   /** 선택 축 — 이 하나가 좌 레일 · 간트 · 의존선 · 우 레일 넷을 움직인다. */
   const [taskId, setTaskId] = useState<string | null>(null);
   /** 접힌 가지. **기본은 모두 펼침**이라 비어 있는 것이 기본값이다 (D-16). */
@@ -106,7 +119,8 @@ export function ProjectPage({
       try {
         const rows = await listProjects();
         setProjects(rows);
-        const target = keep ?? rows[0]?.project_id;
+        // 이어서 볼 프로젝트가 그새 목록에서 빠졌으면 첫 프로젝트로 간다 — 없는 프로젝트를 묻지 않는다.
+        const target = keep && rows.some((row) => row.project_id === keep) ? keep : rows[0]?.project_id;
         if (target) {
           await loadProject(target);
         } else {
@@ -114,9 +128,11 @@ export function ProjectPage({
           setHistory(null);
         }
         setLoadState("ready");
+        setProjectFresh(true);
         onError(null);
       } catch (error) {
-        setLoadState("error");
+        // 이미 그린 프로젝트가 있으면 지우지 않는다 — 실패는 배너가 말한다. 처음부터 없으면 오류 상태다.
+        setLoadState((current) => (current === "ready" ? "ready" : "error"));
         onError(error instanceof Error ? error.message : projectScreen.loadFailed);
       }
     },
@@ -124,7 +140,7 @@ export function ProjectPage({
   );
 
   useEffect(() => {
-    void reload();
+    void reload(resumeProjectId.current);
     void getMemberDirectory().then(setDirectory).catch(() => setDirectory([]));
     // 사람이 바뀌면 보이는 프로젝트도 바뀐다 — 그때만 처음부터 다시 읽는다.
   }, [personaId, reload]);
@@ -357,7 +373,7 @@ export function ProjectPage({
       ),
       right: (
         <ProjectTaskPanel
-          busy={busy}
+          busy={busy || !projectFresh}
           canManageOwnTasks={canManageOwnTasks}
           detail={taskDetail}
           detailState={taskDetailState}
@@ -459,7 +475,7 @@ export function ProjectPage({
       />
       {managing && selected && (
         <ProjectManageModal
-          busy={busy}
+          busy={busy || !projectFresh}
           directory={directory}
           history={history}
           onClose={() => setManaging(false)}

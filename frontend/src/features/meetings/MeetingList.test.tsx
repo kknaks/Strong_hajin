@@ -35,6 +35,7 @@ import type React from "react";
 
 import { MeetingListPage } from "./MeetingListPage";
 import { resetRoster } from "./roster";
+import { scopeScreenCache } from "../../lib/screenCache";
 
 const row = (over: Partial<MeetingRow> & { meeting_id: string }): MeetingRow => ({
   title: "주간 회의",
@@ -792,5 +793,34 @@ describe("[회의 시작] — 한 번 누르면 회의 하나다", () => {
     const [, secondKey] = vi.mocked(api.bookMeeting).mock.calls[1];
     expect(firstKey).toBeTruthy();
     expect(secondKey).toBe(firstKey);
+  });
+});
+
+/* WORK-008 Phase 2 (B-01 · fix1) — 탭 재진입. 탭 이동 = 언마운트 → 다시 마운트, 주인은 App 경로처럼 세운다. */
+describe("회의 목록 — 탭 재진입 (B-01)", () => {
+  afterEach(() => {
+    scopeScreenCache(null);
+    cleanup();
+  });
+
+  it("다시 들어오면 받아 둔 목록이 스켈레톤 없이 바로 서고, 갱신 전엔 [수정]·[삭제]가 잠기며, 뒤에서 받은 목록으로 바뀐다", async () => {
+    scopeScreenCache("mina");
+    renderList([row({ meeting_id: "m-1", title: "어제 본 회의", status: "scheduled" })], []);
+    expect(await screen.findByText("어제 본 회의")).toBeTruthy();
+    cleanup();
+
+    let answer!: (payload: unknown) => void;
+    vi.mocked(api.listMeetings).mockReturnValue(new Promise((done) => (answer = done)) as never);
+    render(<ListHost onError={vi.fn()} onNotice={vi.fn()} onOpenMeeting={vi.fn()} selected={null} />);
+    expect(screen.getByText("어제 본 회의")).toBeTruthy();
+    expect(screen.queryByText("회의를 불러오는 중")).toBeNull();
+    const card = screen.getByText("어제 본 회의").closest(".scax-meeting-card") as HTMLElement;
+    for (const button of within(card).getAllByRole("button")) expect((button as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () => answer({ upcoming: [row({ meeting_id: "m-2", title: "오늘 잡힌 회의", status: "scheduled" })], past: { items: [], next_cursor: null } }));
+    expect(await screen.findByText("오늘 잡힌 회의")).toBeTruthy();
+    expect(screen.queryByText("어제 본 회의")).toBeNull();
+    const fresh = screen.getByText("오늘 잡힌 회의").closest(".scax-meeting-card") as HTMLElement;
+    for (const button of within(fresh).getAllByRole("button")) expect((button as HTMLButtonElement).disabled).toBe(false);
   });
 });

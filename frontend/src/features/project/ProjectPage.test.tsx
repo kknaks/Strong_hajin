@@ -1,7 +1,8 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type React from "react";
 import { useCallback, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { scopeScreenCache } from "../../lib/screenCache";
 
 vi.mock("../../lib/labels", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/labels")>()),
@@ -1375,4 +1376,27 @@ describe("프로젝트", () => {
     expect(kids.indexOf(now!)).toBeLessThan(firstRow);
   });
 
+});
+
+/* WORK-008 Phase 2 (B-01 · fix1) — 탭 재진입. 탭 이동 = 언마운트 → 다시 마운트, 주인은 App 경로처럼 세운다. */
+describe("프로젝트 — 탭 재진입 (B-01)", () => {
+  afterEach(() => scopeScreenCache(null));
+
+  it("다시 들어오면 보던 프로젝트가 스켈레톤 없이 바로 서고, 그 프로젝트를 뒤에서 다시 읽는다", async () => {
+    scopeScreenCache("mina");
+    const first = renderPage();
+    await screen.findByText("한빛 9월 통합 마케팅", { selector: ".scax-pj-gantt__name-text" });
+    first.unmount();
+
+    let answer!: (rows: unknown) => void;
+    vi.mocked(api.listProjects).mockReturnValue(new Promise((done) => (answer = done)) as never);
+    vi.mocked(api.getProject).mockClear();
+    render(<Harness personaId="mina" />);
+    expect(screen.getByText("한빛 9월 통합 마케팅", { selector: ".scax-pj-gantt__name-text" })).toBeTruthy();
+    expect(document.querySelector('[data-testid="rail-left"] [aria-busy="true"]')).toBeNull();
+
+    await act(async () => answer([project]));
+    await waitFor(() => expect(api.getProject).toHaveBeenCalledWith("p-1"));
+    expect(screen.getByText("한빛 9월 통합 마케팅", { selector: ".scax-pj-gantt__name-text" })).toBeTruthy();
+  });
 });

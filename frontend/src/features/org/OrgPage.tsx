@@ -1,3 +1,4 @@
+import { recallScreenValue, rememberScreenValue, useRemembered, useScreenEpoch } from "../../lib/screenCache";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -51,29 +52,45 @@ const ACTIVITY_PAGE = 50;
  * 것처럼 보이게 하지 않는다 (SPEC-005 §5).
  */
 export function OrgPage({ personaId, onError }: OrgPageProps) {
-  const [profile, setProfile] = useState<OrganizationProfile | null>(null);
-  const [units, setUnits] = useState<OrganizationUnitNode[] | null>(null);
+  /*
+   * 받아 둔 화면 데이터로 시작한다 (WORK-008 Phase 2 · `lib/screenCache.ts`) — 탭을 옮겨 갔다 돌아오면
+   * 조직 tree·고른 조직·그 조직의 구성원·변경 기록을 바로 그리고, 진입 effect 들이 뒤에서 다시 읽어 갈아 끼운다.
+   * 각 칸의 스켈레톤(`null`)은 받아 둔 것이 없을 때만 선다. 구성원·변경 기록은 조직마다 따로 기억한다.
+   */
+  /** 이 마운트의 세대 — 직접 기억하는 자리(구성원·변경 기록)가 넘긴다 (fix1). */
+  const screenEpoch = useScreenEpoch();
+  const [profile, setProfile, profileRemembered] = useRemembered<OrganizationProfile | null>("org.profile", null);
+  /**
+   * 이번 진입의 내 조직 프로필을 받았나 (fix2 · WARN-C). 기억한 프로필의 권한으로는 관리 입구(관리 배지 ·
+   * 권한 변경 · 변경 기록)를 열지 않는다 — 권한(envelope) 판단은 갱신된 응답 기준이다.
+   */
+  const [profileFresh, setProfileFresh] = useState(!profileRemembered);
+  const [units, setUnits] = useRemembered<OrganizationUnitNode[] | null>("org.units", null);
   const [treeFailed, setTreeFailed] = useState(false);
-  const [selectedUnitId, setSelectedUnitId] = useState<string | null>(null);
-  const [expandedUnitIds, setExpandedUnitIds] = useState<Set<string>>(new Set());
-  const [members, setMembers] = useState<OrganizationMember[] | null>(null);
+  const [selectedUnitId, setSelectedUnitId] = useRemembered<string | null>("org.selectedUnitId", null);
+  const [expandedUnitIds, setExpandedUnitIds, expandedRemembered] = useRemembered<Set<string>>("org.expandedUnitIds", new Set());
+  const [members, setMembers] = useState<OrganizationMember[] | null>(() =>
+    selectedUnitId ? recallScreenValue<OrganizationMember[]>(`org.members:${selectedUnitId}`) ?? null : null,
+  );
   const [membersFailed, setMembersFailed] = useState(false);
   const [selectedMember, setSelectedMember] = useState<OrganizationMember | null>(null);
-  const [roles, setRoles] = useState<InstalledAccessRole[]>([]);
+  const [roles, setRoles] = useRemembered<InstalledAccessRole[]>("org.roles", []);
   const [detail, setDetail] = useState<DetailView>({ status: "empty" });
-  const [activity, setActivity] = useState<OrganizationActivityEvent[] | null>(null);
+  const [activity, setActivity] = useState<OrganizationActivityEvent[] | null>(() =>
+    selectedUnitId ? recallScreenValue<OrganizationActivityEvent[]>(`org.activity:${selectedUnitId}`) ?? null : null,
+  );
   const [activityFailed, setActivityFailed] = useState(false);
   const [activityHasMore, setActivityHasMore] = useState(false);
   const [activityLoadingMore, setActivityLoadingMore] = useState(false);
   const [query, setQuery] = useState("");
   /** 이름 검색은 조직이 아니라 사람을 찾는다. 그래서 조직 전체의 명부를 한 번 받아 색인으로 쓴다. */
-  const [directory, setDirectory] = useState<OrganizationMember[]>([]);
+  const [directory, setDirectory] = useRemembered<OrganizationMember[]>("org.directory", []);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [pendingRevoke, setPendingRevoke] = useState<PendingRevoke | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
 
-  const administers = (profile?.capabilities ?? []).includes("organization.manage");
+  const administers = profileFresh && (profile?.capabilities ?? []).includes("organization.manage");
   /**
    * 권한·회수분·이력을 볼 수 있는가. 서버의 기준과 같게 둔다 — **본인이거나 그 사람을 관리할 수 있는 사람**.
    *
@@ -91,6 +108,7 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
       .then(([nextProfile, tree]) => {
         if (cancelled) return;
         setProfile(nextProfile);
+        setProfileFresh(true);
         setUnits(tree);
         setTreeFailed(false);
         // 회사 이름은 고객마다 다르다. 꼭대기는 위로 더 올라갈 곳이 없는 단위이지 특정한 이름이 아니다.
@@ -105,7 +123,8 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
           path.add(cursor.id);
           cursor = cursor.parent_id ? byId.get(cursor.parent_id) : undefined;
         }
-        setExpandedUnitIds(path);
+        // 다시 들어온 화면은 사람이 펼쳐 둔 그대로 둔다 — 처음 진입만 고른 조직까지의 길을 편다.
+        if (!expandedRemembered) setExpandedUnitIds(path);
         onError(null);
       })
       .catch((error: unknown) => {
@@ -117,7 +136,8 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
     return () => {
       cancelled = true;
     };
-  }, [onError, personaId]);
+    // expandedRemembered 는 마운트 동안 바뀌지 않는다.
+  }, [expandedRemembered, onError, personaId]);
 
   const rootUnitId = useMemo(() => (units ?? []).find((unit) => !unit.parent_id)?.id ?? null, [units]);
 
@@ -140,12 +160,16 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
   useEffect(() => {
     if (!selectedUnitId) return;
     let cancelled = false;
-    setMembers(null);
+    const membersKey = `org.members:${selectedUnitId}`;
+    // 이 조직의 구성원을 받아 둔 적이 있으면 그것을 먼저 그린다 — 없을 때만 스켈레톤(`null`)이다.
+    setMembers(recallScreenValue<OrganizationMember[]>(membersKey) ?? null);
     setMembersFailed(false);
     setSelectedMember(null);
     void getOrganizationUnitMembers(selectedUnitId)
       .then((items) => {
-        if (!cancelled) setMembers(items);
+        if (cancelled) return;
+        setMembers(items);
+        rememberScreenValue(membersKey, items, screenEpoch);
       })
       .catch(() => {
         if (cancelled) return;
@@ -155,7 +179,7 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
     return () => {
       cancelled = true;
     };
-  }, [selectedUnitId]);
+  }, [screenEpoch, selectedUnitId]);
 
   useEffect(() => {
     if (!administers) return;
@@ -212,7 +236,9 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
     async (unitId: string | null) => {
       if (!administers) return;
       const generation = ++activityGeneration.current;
-      setActivity(null);
+      const activityKey = `org.activity:${unitId ?? ""}`;
+      // 받아 둔 첫 쪽이 있으면 그것을 먼저 그린다 — 없을 때만 스켈레톤(`null`)이다.
+      setActivity(recallScreenValue<OrganizationActivityEvent[]>(activityKey) ?? null);
       setActivityFailed(false);
       setActivityHasMore(false);
       try {
@@ -220,6 +246,7 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
         // 조직을 바꾸면 세대가 올라간다 — 이전 조직의 첫 쪽이 늦게 와도 새 표를 덮지 않는다.
         if (activityGeneration.current !== generation) return;
         setActivity(events);
+        rememberScreenValue(activityKey, events, screenEpoch);
         setActivityHasMore(events.length === ACTIVITY_PAGE);
       } catch {
         if (activityGeneration.current !== generation) return;
@@ -227,7 +254,7 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
         setActivity([]);
       }
     },
-    [administers],
+    [administers, screenEpoch],
   );
 
   useEffect(() => {
@@ -351,7 +378,8 @@ export function OrgPage({ personaId, onError }: OrgPageProps) {
           읽기 전용 쪽도 맨 클래스 `.badge outline` 이던 것을 새 DS 의 Badge 부품으로 옮겼다. */}
       <div className="screens-b-lead">
         <div className="screens-b-lead__actions">
-          <Badge tone={administers ? "accent" : "neutral"}>{administers ? orgScreen.adminBadge : orgScreen.readOnlyBadge}</Badge>
+          {/* 기억한 프로필로는 권한 배지를 세우지 않는다 — 갱신 응답이 와야 「관리」·「읽기 전용」 중 하나가 선다 (fix2 · WARN-C). */}
+          {profileFresh && <Badge tone={administers ? "accent" : "neutral"}>{administers ? orgScreen.adminBadge : orgScreen.readOnlyBadge}</Badge>}
         </div>
       </div>
 
