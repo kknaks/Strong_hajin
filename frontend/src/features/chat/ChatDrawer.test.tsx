@@ -1578,3 +1578,35 @@ describe("실행 영수증 위치", () => {
     expectNoGraphUi(container);
   });
 });
+
+/*
+ * WORK-008 F-02 — 「대화 검색」은 다른 입력칸과 같은 DS 기본값을 받고, 엔진이 검색칸에만 얹는 꾸밈이 걷힌다.
+ *
+ * jsdom 은 cascade 를 계산하지 않으므로 «그려진 모양» 이 아니라 **규칙이 서 있는지** 를 잰다
+ * (`ds/HoverContrast.test.tsx` 와 같은 방식). 실제 모양은 웹·Tauri 화면으로 확인한다.
+ */
+describe("대화 검색 입력의 모양 (F-02)", () => {
+  async function flatCss(path: string): Promise<string> {
+    // @ts-expect-error — 이 리포는 @types/node 를 두지 않는다.
+    const { readFileSync } = await import("node:fs");
+    return (readFileSync(path, "utf8") as string).replace(/\s+/g, "");
+  }
+
+  it("전역 입력 기본값(테두리·반경·높이·글자)이 search 입력도 잡는다", async () => {
+    const css = await flatCss("src/styles/components.css");
+    expect(css).toContain('input[type="text"],input:not([type]),input[type="date"],input[type="search"],select,textarea{width:100%;height:38px;');
+  });
+
+  it("WebKit/Blink 의 검색칸 꾸밈을 걷는다 — appearance 와 의사 요소 넷", async () => {
+    const css = await flatCss("src/styles/components.css");
+    expect(css).toContain('input[type="search"]{-webkit-appearance:none;appearance:none}');
+    for (const part of ["decoration", "cancel-button", "results-button", "results-decoration"]) {
+      expect(css).toContain(`input[type="search"]::-webkit-search-${part}`);
+    }
+  });
+
+  it("대화 검색 자기 규칙은 테두리·높이를 덮어쓰지 않는다 — 다른 입력칸과 같은 값을 쓴다", async () => {
+    const css = await flatCss("src/styles/ax.css");
+    expect(css).toContain(".scax-chat__search{flex:none}");
+  });
+});

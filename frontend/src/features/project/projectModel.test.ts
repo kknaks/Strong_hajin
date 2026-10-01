@@ -142,17 +142,62 @@ describe("projectModel", () => {
       /* 뒤집힌 기간: 원값은 그대로 오고 span 만 [min, max] 다. */
       task({ task_id: "flip", start_date: "2026-09-06", due_date: "2026-09-04", span_from: "2026-09-04", span_to: "2026-09-06" }),
     ];
-    const axis = ganttAxis(tasks);
+    /* 오늘 2026-09-03(목) → 기본 범위 W-1 ~ W+3 = 2026-08-24(월) ~ 2026-09-27(일). 두 업무 모두 그 안이다. */
+    const axis = ganttAxis(tasks, "2026-09-03");
     expect(axis).not.toBeNull();
-    expect(axis?.from).toBe("2026-09-03");
-    expect(axis?.to).toBe("2026-09-06");
-    expect(axis?.days.length).toBe(4);
+    expect(axis?.from).toBe("2026-08-24");
+    expect(axis?.to).toBe("2026-09-27");
+    expect(axis?.days.length).toBe(35);
 
-    expect(barGeometry(tasks[0], axis!)).toEqual({ left: GANTT.label, width: GANTT.day });
-    expect(barGeometry(tasks[1], axis!)).toEqual({ left: GANTT.label + GANTT.day, width: GANTT.day * 3 });
+    /* 막대는 축 첫날(08-24)로부터의 거리에 선다 — 09-03 은 열흘째다. */
+    expect(barGeometry(tasks[0], axis!)).toEqual({ left: GANTT.label + 10 * GANTT.day, width: GANTT.day });
+    expect(barGeometry(tasks[1], axis!)).toEqual({ left: GANTT.label + 11 * GANTT.day, width: GANTT.day * 3 });
     /* 기간이 없으면 막대가 없다 — 간트에 안 선다. */
     expect(barGeometry(task({ task_id: "none" }), axis!)).toBeNull();
-    expect(ganttAxis([task({ task_id: "none" })])).toBeNull();
+    /* L-56 — 간트에 설 업무가 없으면 기본 범위만으로 빈 간트를 세우지 않는다. */
+    expect(ganttAxis([task({ task_id: "none" })], "2026-09-03")).toBeNull();
+    expect(ganttAxis([], "2026-09-03")).toBeNull();
+  });
+
+  /* ── WORK-008 F-03 · SPEC-005 §2.4 기본 범위 규칙 · L-53 ~ L-56 ── */
+  it("L-53 기본 범위는 오늘 기준 W-1 ~ W+3 이다 — 오늘이 2026-10-01(목)이면 09-21 ~ 10-25", () => {
+    const axis = ganttAxis([task({ task_id: "a", span_from: "2026-10-01", span_to: "2026-10-02" })], "2026-10-01");
+    expect(axis?.from).toBe("2026-09-21");
+    expect(axis?.to).toBe("2026-10-25");
+    expect(axis?.days.length).toBe(35);
+  });
+
+  it("L-53 월요일 경계 — 오늘이 월요일이면 그 주가, 일요일이면 그 앞 월요일의 주가 W0 이다", () => {
+    const inside = [task({ task_id: "a", span_from: "2026-10-01", span_to: "2026-10-01" })];
+    // 2026-09-28 은 월요일 — W0 = 09-28 주
+    expect(ganttAxis(inside, "2026-09-28")?.from).toBe("2026-09-21");
+    // 2026-10-04 는 일요일 — 아직 09-28 주다(다음 주가 아니다)
+    expect(ganttAxis(inside, "2026-10-04")?.from).toBe("2026-09-21");
+    expect(ganttAxis(inside, "2026-10-04")?.to).toBe("2026-10-25");
+    // 2026-10-05 는 월요일 — W0 가 한 주 밀린다
+    expect(ganttAxis(inside, "2026-10-05")?.from).toBe("2026-09-28");
+  });
+
+  it("L-54 범위 밖 업무는 범위를 주 경계까지 넓혀 자르지 않는다 — 앞·뒤 두 방향", () => {
+    const tasks = [
+      // 앞쪽 밖: 09-10(목) 시작 → 그 주 월요일 09-07 까지
+      task({ task_id: "early", span_from: "2026-09-10", span_to: "2026-09-25" }),
+      // 뒤쪽 밖: 11-04(수) 끝 → 그 주 일요일 11-08 까지
+      task({ task_id: "late", span_from: "2026-10-20", span_to: "2026-11-04" }),
+    ];
+    const axis = ganttAxis(tasks, "2026-10-01");
+    expect(axis?.from).toBe("2026-09-07");
+    expect(axis?.to).toBe("2026-11-08");
+    // 막대가 잘리지 않는다 — 두 끝이 축 안에 있다.
+    for (const row of tasks) {
+      const bar = barGeometry(row, axis!)!;
+      expect(bar.left).toBeGreaterThanOrEqual(GANTT.label);
+      expect(bar.left + bar.width).toBeLessThanOrEqual(GANTT.label + axis!.days.length * GANTT.day);
+    }
+  });
+
+  it("L-55 하루 폭은 34px 그대로다", () => {
+    expect(GANTT.day).toBe(34);
   });
 
   it("바의 % — 체크리스트가 정본이고, 없으면 그리지 않는다", () => {

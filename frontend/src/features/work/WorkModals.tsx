@@ -746,6 +746,12 @@ export function TaskDetailDrawer({
   /** 완료 보고 모달이 열려 있나 — 초안(요약·산출물)은 그 모달이 든다 (5차 발주). */
   const [reporting, setReporting] = useState(false);
   const [handover, setHandover] = useState<{ assigneeId: string; reason: string } | null>(null);
+  /** 담당자 변경 작은 모달 안에 서는 실패 문장 (SPEC-007 §2.9 — 서버 문장을 모달 안에 낸다). */
+  const [handoverError, setHandoverError] = useState<string | null>(null);
+  /** 대상 칸 오류 — 대상을 안 고르고 [변경]을 누른 경우. 대상 칸 «아래» 에 선다 (그 칸의 말이다). */
+  const [handoverTargetError, setHandoverTargetError] = useState<string | null>(null);
+  /** 보내는 중 — 두 번째 누름이 두 번째 명령이 되지 않게 막는다. */
+  const [handoverPending, setHandoverPending] = useState(false);
   const [handoverChoices, setHandoverChoices] = useState<Persona[] | null>(null);
   /**
    * 담당 관계 — **현재와 대기를 각각** 읽는다 (V-18 · P-3). 서버가 이 조회를 아직 내지 않으면 `null` 로
@@ -1225,11 +1231,15 @@ export function TaskDetailDrawer({
     }
   };
 
+  /*
+   * 담당자 변경은 **업무 상세 위의 작은 모달**이다 (SPEC-007 §2.9 · WORK-008 F-01).
+   * 상세 안에 펼치지 않는다. 모달 위 모달은 기존 선례 그대로 — 상세 `Shell` 의 형제로 그리고
+   * ESC 는 `useEscape` 스택이 맨 위 한 겹만 닫는다.
+   */
   const openHandover = async () => {
-    if (handover) {
-      setHandover(null);
-      return;
-    }
+    if (handover) return;
+    setHandoverError(null);
+    setHandoverTargetError(null);
     setHandover({ assigneeId: "", reason: "" });
     if (handoverChoices === null) {
       try {
@@ -1240,26 +1250,41 @@ export function TaskDetailDrawer({
     }
   };
 
+  const closeHandover = () => {
+    setHandover(null);
+    setHandoverError(null);
+    setHandoverTargetError(null);
+  };
+
   const submitHandover = async () => {
-    if (!handover?.assigneeId) {
-      onError("옮길 담당자를 골라 주세요.");
+    if (!handover || handoverPending) return;
+    if (!handover.assigneeId) {
+      setHandoverTargetError("옮길 담당자를 골라 주세요.");
       return;
     }
-    onError(null);
+    setHandoverTargetError(null);
+    setHandoverError(null);
+    setHandoverPending(true);
     try {
       await reassignTask(task.task_id, current.version, handover.assigneeId, handover.reason.trim() || undefined);
-      setHandover(null);
-      /* v2: 제안일 뿐 **기존 담당은 닫히지 않는다**(V-18) — 그래서 「바꿨다」가 아니라 「보냈다」다.
-         상대가 수락하는 순간 교체가 한 덩어리로 일어나고, 중간에 담당 없는 구간이 생기지 않는다. */
-      onNotice?.("담당 변경을 제안했습니다. 상대가 수락할 때까지 기존 담당이 그대로입니다.");
-      await onChanged?.();
-      try {
-        setAssignments((await getTaskAssignments(task.task_id)) ?? null);
-      } catch {
-        // 제안 자체는 성공했다 — 다시 읽기 실패를 제안 실패로 말하지 않는다.
-      }
     } catch (error) {
-      onError(error instanceof Error ? error.message : "담당자를 바꾸지 못했습니다.");
+      // 실패는 **작은 모달 안에** 말하고 쓰던 입력은 남긴다 (§2.9).
+      setHandoverError(error instanceof Error ? error.message : "담당자를 바꾸지 못했습니다.");
+      setHandoverPending(false);
+      return;
+    }
+    setHandoverPending(false);
+    closeHandover();
+    /* v2: 제안일 뿐 **기존 담당은 닫히지 않는다**(V-18) — 그래서 「바꿨다」가 아니라 「보냈다」다.
+       상대가 수락하는 순간 교체가 한 덩어리로 일어나고, 중간에 담당 없는 구간이 생기지 않는다. */
+    onNotice?.("담당 변경을 제안했습니다. 상대가 수락할 때까지 기존 담당이 그대로입니다.");
+    /* 성공하면 **상세를 다시 읽어** 서버가 낸 담당 관계대로 선다 — 낙관적 갱신을 하지 않는다 (§2.9). */
+    await settleVersion();
+    await readDetail();
+    try {
+      setAssignments((await getTaskAssignments(task.task_id)) ?? null);
+    } catch {
+      // 제안 자체는 성공했다 — 다시 읽기 실패를 제안 실패로 말하지 않는다.
     }
   };
 
@@ -2328,40 +2353,6 @@ export function TaskDetailDrawer({
                 <Button variant="text" size="sm" onClick={() => void openHandover()} type="button">
                   담당자 변경
                 </Button>
-                {handover && (
-                  <div className="form-stack link-draft">
-                    <div className="scax-field">
-                      <span>담당자 변경 대상</span>
-                      <Select
-              emptyActionLabel={emptyActionLabel.filter}
-              labels={selectLabel}
-                        id={`task-handover-${task.task_id}`}
-                        label="담당자 변경 대상"
-                        onChange={(next) => setHandover({ ...handover, assigneeId: next })}
-                        options={(handoverChoices ?? []).map((choice) => ({ value: choice.id, label: personName(choice.display_name) }))}
-                        placeholder="담당자 고르기"
-                        value={handover.assigneeId}
-                      />
-                    </div>
-                    <div className="scax-field">
-                      <label className="scax-field__label" htmlFor={`task-handover-reason-${task.task_id}`}>담당자 변경 사유</label>
-                      <input
-                        id={`task-handover-reason-${task.task_id}`}
-                        onChange={(event) => setHandover({ ...handover, reason: event.target.value })}
-                        placeholder="왜 옮기는지 적어 두면 이력에 남습니다"
-                        value={handover.reason}
-                      />
-                    </div>
-                    <div className="row-actions">
-                      <Button variant="solid" tone="primary" size="sm" disabled={busy} onClick={() => void submitHandover()} type="button">
-                        변경
-                      </Button>
-                      <Button variant="text" size="sm" onClick={() => setHandover(null)} type="button">
-                        취소
-                      </Button>
-                    </div>
-                  </div>
-                )}
               </div>
             )}
           {shown.block_reason && (
@@ -2805,6 +2796,61 @@ export function TaskDetailDrawer({
         </section>
         </div>
       </Shell>
+      {handover && (
+        /*
+         * 담당자 변경 — 기존 DS 의 작은 모달(`Modal size="sm"`, 420)이다 (SPEC-007 §2.9 · WORK-008 F-01).
+         * 내용은 예전 펼침 폼 그대로다: 대상 담당자(빈칸 시작) · 사유(선택) · [변경]·[취소].
+         * ESC · 바깥 클릭 · [취소] 는 이 모달만 닫고 업무 상세는 남는다.
+         */
+        <Modal
+          closeLabel="담당자 변경 닫기"
+          footer={
+            <>
+              <Button variant="text" disabled={handoverPending} onClick={closeHandover} type="button">
+                취소
+              </Button>
+              <Button variant="solid" tone="primary" disabled={busy || handoverPending} onClick={() => void submitHandover()} type="button">
+                변경
+              </Button>
+            </>
+          }
+          label="담당자 변경"
+          onClose={closeHandover}
+          size="sm"
+          title="담당자 변경"
+        >
+          <div className="form-stack">
+            <div className="scax-field">
+              <span className="scax-field__label">담당자 변경 대상</span>
+              <Select
+                emptyActionLabel={emptyActionLabel.filter}
+                labels={selectLabel}
+                id={`task-handover-${task.task_id}`}
+                label="담당자 변경 대상"
+                onChange={(next) => {
+                  setHandover({ ...handover, assigneeId: next });
+                  setHandoverTargetError(null);
+                }}
+                options={(handoverChoices ?? []).map((choice) => ({ value: choice.id, label: personName(choice.display_name) }))}
+                placeholder="담당자 고르기"
+                value={handover.assigneeId}
+              />
+              <FieldMessage error={handoverTargetError} id={`task-handover-error-${task.task_id}`} />
+            </div>
+            <div className="scax-field">
+              <label className="scax-field__label" htmlFor={`task-handover-reason-${task.task_id}`}>담당자 변경 사유</label>
+              <input
+                id={`task-handover-reason-${task.task_id}`}
+                onChange={(event) => setHandover({ ...handover, reason: event.target.value })}
+                placeholder="왜 옮기는지 적어 두면 이력에 남습니다"
+                value={handover.reason}
+              />
+              {/* 서버가 거절한 문장 등 대상 칸의 말이 아닌 실패는 모달 안 이 자리에 선다 (§2.9). */}
+              <FieldMessage error={handoverError} />
+            </div>
+          </div>
+        </Modal>
+      )}
       {/*
         * 완료 보고 (4차 발주 5 · 5차 발주) — **입력 모달 한 벌이다.**
         *
@@ -4383,8 +4429,15 @@ export function CreateWorkModal({
   const [description, setDescription] = useState(initial?.description ?? "");
   const [startDate, setStartDate] = useState("");
   const [dueDate, setDueDate] = useState(initial?.dueDate ?? "");
-  // 미리 채운 값으로 열 때는 담당을 비워 둔다 — 첫 후보를 자동으로 고르지 않는다.
-  const [assigneeId, setAssigneeId] = useState(initial ? initial.assigneeId ?? "" : assigneeCandidates[0]?.id ?? "");
+  /*
+   * **담당은 아무도 미리 고르지 않는다** (SPEC-001 U-6-a · WORK-008 B-02).
+   *
+   * 예전에는 미리 채운 값 없이 열면 담당 후보 첫 사람을 골라 두었다. `업무` 갈래에는 이 칸이
+   * 없는데도 그 숨은 값이 참조자 후보를 걸러 동료 한 명이 사라졌다. 이제 `요청` 갈래는 빈칸으로
+   * 시작하고, `업무` 갈래의 담당은 본인이라(서버가 기록한다) 이 값을 읽지 않는다.
+   * 「다시 요청」처럼 미리 채운 수신자(`initial.assigneeId`)는 그대로 쓴다.
+   */
+  const [assigneeId, setAssigneeId] = useState(initial?.assigneeId ?? "");
   /** 고른 첨부 파일. **경로가 바뀌어도 조용히 버리지 않는다** — 아래 `attachSupported` 가 말만 바꾼다. */
   const [attachments, setAttachments] = useState<File[]>([]);
   /**
@@ -4963,6 +5016,12 @@ export function CreateWorkModal({
    * 읽힌다. 그래서 항목에는 표시용 값을 주고, 나가는 값은 여기서 빈 값으로 되돌린다.
    */
   const NO_PARENT = "__no_parent__";
+  /*
+   * 참조자 후보에서 빠지는 사람은 **`요청` 갈래에서 고른 담당자 한 명뿐**이다 (U-6-a).
+   * `업무` 갈래의 담당은 본인이고 본인은 서버가 이미 후보에서 뺐다 — 다른 갈래에서 고른 값이
+   * 남아 있어도 이 갈래의 참조자를 거르지 않는다.
+   */
+  const requestAssigneeId = kind === "request" ? assigneeId : "";
   const approverCandidates = [
     ...ccCandidates,
     ...assigneeCandidates.filter((candidate) => !ccCandidates.some((cc) => cc.id === candidate.id)),
@@ -5181,7 +5240,11 @@ export function CreateWorkModal({
                     disabled={assigneeCandidates.length === 0}
                     id="work-request-assignee"
                     label="담당 후보"
-                    onChange={setAssigneeId}
+                    onChange={(next) => {
+                      setAssigneeId(next);
+                      // 참조자로 고른 사람을 담당으로 고르면 그 참조자 선택은 풀린다 (U-6-a).
+                      setCcIds((current) => current.filter((id) => id !== next));
+                    }}
                     options={assigneeCandidates.map((candidate) => ({ value: candidate.id, label: candidate.display_name }))}
                     // 고를 사람이 있는데 아직 안 고른 것과, 고를 사람이 아예 없는 것은 다른 말이다.
                     placeholder={assigneeCandidates.length === 0 ? "요청 가능한 동료가 없습니다." : undefined}
@@ -5225,7 +5288,7 @@ export function CreateWorkModal({
                   <legend>참조자</legend>
                   <ChipRow>
                     {ccCandidates
-                      .filter((candidate) => candidate.id !== assigneeId)
+                      .filter((candidate) => candidate.id !== requestAssigneeId)
                       .map((candidate) => (
                         <ChipToggle
                           checked={ccIds.includes(candidate.id)}

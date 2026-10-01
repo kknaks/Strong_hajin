@@ -113,7 +113,9 @@
 .scax-chat__utility{display:flex;flex:1;min-height:0;flex-direction:column;gap:var(--scax-space-500);overflow-y:auto;padding:var(--scax-space-600) var(--scax-space-500);background:var(--scax-color-surface)}
 .scax-chat__utility-head h2{margin:0;font-size:var(--scax-text-title-size);line-height:var(--scax-text-title-lh);letter-spacing:var(--scax-text-title-ls);font-weight:var(--scax-fw-semibold)}
 .scax-chat__utility-head p{margin:var(--scax-space-150) 0 0;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size)}
-.scax-chat__search{flex:none;height:42px;padding:0 var(--scax-space-300);font-size:var(--scax-text-label2-size)}
+/* 대화 검색 (WORK-008 F-02) — 테두리·반경·높이·글자는 다른 입력칸과 같은 전역 기본값(`components.css` 의 폼
+   element 기본값, `input[type="search"]` 포함)이 준다. 여기서는 세로 흐름에서 줄어들지 않게만 한다. */
+.scax-chat__search{flex:none}
 .scax-chat__list-note{display:flex;align-items:center;justify-content:space-between;gap:var(--scax-space-200);margin:0;padding:var(--scax-space-200) var(--scax-space-250);border:1px dashed var(--scax-color-line);border-radius:var(--scax-radius-sm);color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size)}
 .scax-chat__list-note--error{color:var(--scax-color-danger);border-color:var(--scax-color-danger)}
 .scax-chat__history{display:grid;gap:var(--scax-space-200);margin:0;padding:0;list-style:none;overflow-y:auto}

@@ -397,38 +397,40 @@ describe("프로젝트", () => {
     const { container } = renderPage();
     await screen.findByText("한빛 9월 통합 마케팅", { selector: ".scax-pj-gantt__name-text" });
     const scroll = container.querySelector(".scax-pj-gantt__scroll") as HTMLElement;
-    /* 축은 2026-09-01 ~ 09-12, 오늘은 09-05 (위의 `seoulToday` 고정) → 넷째 날.
-       앞 두 날을 남기므로 **(4 - 2) × 34px = 68px** 다 — 구현 상수를 되계산하지 않고 «기대하는 수»
+    /* WORK-008 F-03: 축은 기본 범위 W-1 ~ W+3 이다. 오늘은 09-05(토, 위의 `seoulToday` 고정)이고 그 주
+       월요일이 08-31 이라 축은 08-24 ~ 09-27, 오늘은 열세째 날(offset 12)이다.
+       앞 두 날을 남기므로 **(12 - 2) × 34px = 340px** 다 — 구현 상수를 되계산하지 않고 «기대하는 수»
        를 적는다. 되계산하면 `openLead` 를 0 으로 바꿔도 단언이 따라 움직여 아무것도 붙들지 않는다.
        **0 이 아니라는 것이 이 판의 요점이다.**
        이 값을 쓰는 것은 «패시브 effect»(`ProjectGantt.tsx` 첫 진입 스크롤)라 `findByText` 가 돌아온
        커밋과 같은 태스크에서 보장되지 않는다 — 부하가 걸리면 0 으로 먼저 읽힌다. 그래서 `waitFor` 다
        (선례 `features/calendar/CalendarPage.test.tsx:268`). */
-    await waitFor(() => expect(scroll.scrollLeft).toBe(68));
+    await waitFor(() => expect(scroll.scrollLeft).toBe(340));
     expect(scroll.scrollLeft).not.toBe(0);
   });
 
-  it("오늘이 기간 밖이면 가장 가까운 끝으로 접는다 — 없는 날로 스크롤하지 않는다", async () => {
-    /* 이미 끝난 프로젝트(8월) 를 9월 5일에 연다 — 오늘은 축 오른쪽 «밖» 이다. */
+  it("범위 밖의 지난 업무가 있어도 축이 넓어질 뿐 «오늘» 이 보이는 자리에서 연다 (L-54 · L-55)", async () => {
+    /* 이미 끝난 업무(8월 초)를 9월 5일에 연다 — 기본 범위(08-24 ~)보다 앞이라 축이 그 주 월요일(07-27)까지
+       넓어진다. 축이 오늘을 늘 품으므로(기본 범위가 W0 를 품는다) 「오늘이 축 밖」인 경우는 더 없다. */
     const { container } = renderPage("mina", {
       tasks: [task({ task_id: "past", title: "지난 달 일", span_from: "2026-08-01", span_to: "2026-08-20" })],
     });
     await screen.findByText("지난 달 일", { selector: ".scax-pj-gantt__name-text" });
     const scroll = container.querySelector(".scax-pj-gantt__scroll") as HTMLElement;
-    /* 20일 축의 마지막 날(offset 19)에서 두 날을 남긴다 → **(19 - 2) × 34px = 578px.**
-       축 밖의 35일째로 밀지 않는다. 여기도 패시브 effect 의 값이라 `waitFor` 로 읽는다. */
-    await waitFor(() => expect(scroll.scrollLeft).toBe(578));
+    /* 축 07-27 ~ 09-27 에서 오늘은 offset 40 → 앞 두 날을 남겨 **(40 - 2) × 34px = 1292px.**
+       막대도 잘리지 않는다 — 축 첫날이 업무 시작보다 앞이다. 패시브 effect 의 값이라 `waitFor` 로 읽는다. */
+    await waitFor(() => expect(scroll.scrollLeft).toBe(1292));
+    expect(container.querySelector(".scax-pj-gantt__now")).toBeTruthy();
   });
 
-  it("아직 시작 안 한 프로젝트는 기간의 «첫날» 에서 연다 — 오늘이 축 왼쪽 밖이다", async () => {
+  it("아직 시작 안 한 프로젝트도 «오늘» 이 보이는 자리에서 연다 — 축이 기본 범위로 오늘을 품는다 (L-53 · L-55)", async () => {
     /**
-     * **계약이 비운 자리를 우리가 정한다** — L-45 는 「오늘이 보이는 위치」만 말하는데 오늘이 축
-     * **왼쪽** 밖이면 보일 「오늘」이 애초에 없다. 그러면 **가장 가까운 끝 = 기간의 첫날**이다
-     * (오른쪽 밖의 대칭). SPEC 문면과는 어긋나므로 리포트로 올린다.
+     * **업무가 모두 미래여도 축은 기본 범위(W-1 ~ W+3)로 오늘을 품는다** (WORK-008 F-03 · SPEC-005 §2.4 ·
+     * L-53 · L-55). 그래서 「오늘이 축 밖」인 경우가 없고, 첫 진입은 늘 「오늘」이 보이는 자리다.
      *
-     * 단언이 **정말 무는** 자리로 만들려고 프로젝트를 «전환»한다 — jsdom 의 `scrollLeft` 초기값이
-     * 0 이라 첫 렌더에서 `toBe(0)` 을 재면 effect 가 안 돌아도 통과한다. 68 에서 열린 화면을
-     * 미래 프로젝트로 갈아타면 **0 을 덮어써야** 통과한다.
+     * 단언이 **정말 무는** 자리로 만들려고 프로젝트를 «전환»한다 — 340 에서 열린 화면의 스크롤을
+     * 0 으로 밀어 둔 뒤 미래 프로젝트로 갈아타면, 첫 진입 스크롤이 **전환에서도 다시 돌아 340 으로
+     * 맞춰야** 통과한다. effect 가 안 돌면 0 에 남아 실패한다.
      */
     const future = { ...project, project_id: "p-2", name: "내년 리뉴얼", starts_on: "2026-10-01" };
     vi.mocked(api.listProjects).mockResolvedValue([project, future] as never);
@@ -442,18 +444,20 @@ describe("프로젝트", () => {
 
     await screen.findByText("한빛 9월 통합 마케팅", { selector: ".scax-pj-gantt__name-text" });
     const scroll = container.querySelector(".scax-pj-gantt__scroll") as HTMLElement;
-    await waitFor(() => expect(scroll.scrollLeft).toBe(68));
+    await waitFor(() => expect(scroll.scrollLeft).toBe(340));
+    /* 사람이 민 자리 — 전환하면 이것을 덮어써야 통과한다. */
+    scroll.scrollLeft = 0;
 
     /* 프로젝트 전환은 레일 헤더의 셀렉터가 한다 (D-05 · 선례는 아래 「프로젝트를 바꾸면…」). */
     fireEvent.click(screen.getByRole("button", { name: "프로젝트 선택" }));
     fireEvent.click(await screen.findByRole("option", { name: "내년 리뉴얼" }));
     await screen.findByText("내년 일", { selector: ".scax-pj-gantt__name-text" });
 
-    /* 축이 10-01 ~ 10-09 이고 오늘(09-05)은 그 왼쪽 밖이다 → 첫날에서 연다. */
+    /* 업무는 10-01 ~ 10-09 뿐이지만 축은 기본 범위 08-24 ~ 에서 시작하고(뒤쪽은 10-09 가 든 주의 일요일
+       10-11 까지 넓어진다) 오늘(09-05)은 offset 12 다 → 340px. 「오늘」 선이 선다. */
     const next = container.querySelector(".scax-pj-gantt__scroll") as HTMLElement;
-    await waitFor(() => expect(next.scrollLeft).toBe(0));
-    /* 「오늘」 선은 축 밖이라 서지 않는다 — 없는 날에 선을 그리지 않는다. */
-    expect(container.querySelector(".scax-pj-gantt__now")).toBeNull();
+    await waitFor(() => expect(next.scrollLeft).toBe(340));
+    expect(container.querySelector(".scax-pj-gantt__now")).toBeTruthy();
   });
 
   it("간트에서 고르면 좌 레일 카드가 «보이는 자리로» 온다 — 선택 표시만 서지 않는다 (L-46)", async () => {
@@ -485,9 +489,9 @@ describe("프로젝트", () => {
     const hit = calls.find((call) => call.target === row);
     expect(hit).toBeTruthy();
     /* 가로도 `nearest` 다 — 행은 스크롤 폭 전체를 차지하므로 첫 진입에 맞춰 둔 «오늘» 자리가 남는다.
-       그 자리는 68px(= (4-2)×34)이고, 여기서도 구현 상수를 되계산하지 않는다. */
+       그 자리는 340px(= (12-2)×34)이고, 여기서도 구현 상수를 되계산하지 않는다. */
     expect(hit?.options).toEqual({ block: "nearest", inline: "nearest" });
-    expect((container.querySelector(".scax-pj-gantt__scroll") as HTMLElement).scrollLeft).toBe(68);
+    expect((container.querySelector(".scax-pj-gantt__scroll") as HTMLElement).scrollLeft).toBe(340);
   });
 
   it("가지를 접어도 선이 사라지지 않는다 — 접힌 부모 바가 그 선을 들고 있다", async () => {

@@ -445,6 +445,9 @@ describe("product surfaces", () => {
     expect(within(createDrawer).queryByRole("tab", { name: "업무" })).toBeNull();
     expect(within(createDrawer).queryByRole("tab", { name: "요청" })).toBeNull();
     await screen.findByLabelText("담당 후보");
+    // WORK-008 B-02: 요청 갈래의 담당은 빈칸으로 시작한다 — 보낼 사람을 직접 고른다.
+    fireEvent.click(screen.getByLabelText("담당 후보"));
+    fireEvent.click(await screen.findByRole("option", { name: /지호/ }));
     fireEvent.change(screen.getByLabelText("요청할 업무"), { target: { value: "UI로 만든 업무 요청" } });
     fireEvent.click(screen.getByRole("button", { name: "업무 요청 보내기" }));
 
