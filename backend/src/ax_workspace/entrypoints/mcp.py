@@ -378,9 +378,10 @@ class McpReportsFacade:
         cc_member_ids: list[str] | None = None, checklist: list[str] | None = None,
         reference_task_ids: list[str] | None = None, start_date: str | None = None, project_id: str | None = None,
         preceding_task_ids: list[str] | None = None, approver_id: str | None = None,
+        parent_task_id: str | None = None,
     ) -> WorkRequestMutationResult | ActionProposalResult:
         """업무 요청 — 담당은 **수락 없이** 즉시 선다. 멱등 키는 명시적 인자이고 서버가 채우지 않는다."""
-        command = WorkRequestCreateInput(title=title, assignee_id=assignee_id, start_date=start_date, due_date=due_date, project_id=project_id, description=description, cc_member_ids=cc_member_ids, checklist=checklist, reference_task_ids=reference_task_ids, preceding_task_ids=preceding_task_ids, approver_id=approver_id).for_requester(str(self.principal.id))
+        command = WorkRequestCreateInput(title=title, assignee_id=assignee_id, start_date=start_date, due_date=due_date, project_id=project_id, description=description, cc_member_ids=cc_member_ids, checklist=checklist, reference_task_ids=reference_task_ids, preceding_task_ids=preceding_task_ids, approver_id=approver_id, parent_task_id=parent_task_id).for_requester(str(self.principal.id))
         payload = command.model_dump(mode='json')
         action = self._propose_chat_action('work_request.create', '업무 요청 생성 확인', payload)
         if action is not None:
@@ -1646,10 +1647,11 @@ def _register_work_request_create_tools(server: MCPServer, facade: McpReportsFac
         start_date: str | None = None, project_id: str | None = None,
         preceding_task_ids: list[str] | None = None,
         approver_id: Annotated[str | None, WorkRequestCreateInput.model_fields["approver_id"]] = None,
+        parent_task_id: str | None = None,
     ) -> CommandResult[WorkRequestMutationResult]:
         return CommandResult[WorkRequestMutationResult](facade.create_work_request(
             title, assignee_id, idempotency_key, due_date, description, cc_member_ids, checklist,
-            reference_task_ids, start_date, project_id, preceding_task_ids, approver_id,
+            reference_task_ids, start_date, project_id, preceding_task_ids, approver_id, parent_task_id,
         ))
 
 

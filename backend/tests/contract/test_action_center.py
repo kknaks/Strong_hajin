@@ -534,6 +534,8 @@ def test_ax_task_proposal_publishes_a_typed_server_authored_edit_contract(tmp_pa
         "approver_id",
         "checklist",
         "reference_task_ids",
+        # 상위 업무도 생성 명령의 칸이다 — 초안 편집이 생성 명령의 필드를 빠짐없이 싣는다 (WORK-008 P-1).
+        "parent_task_id",
     }
     assert fields["title"] == {
         "id": "title",
@@ -545,7 +547,8 @@ def test_ax_task_proposal_publishes_a_typed_server_authored_edit_contract(tmp_pa
     assert fields["assignee_id"]["editable"] is False
     assert fields["assignee_id"]["value"] == "jiho"
     assert fields["assignee_id"]["label_value"] == "지호 (팀장)"
-    assert fields["due_date"]["required"] is True
+    # 기한은 「새 업무 추가」처럼 선택이다 — AX 초안에만 걸리는 필수가 없다 (SPEC-001 S-9 6).
+    assert fields["due_date"]["required"] is False
     assert fields["project_id"]["options"] == []
     assert fields["reference_task_ids"]["options"] == []
     # 참조자 후보에 **자기 자신은 없다** — 초안을 만든 사람이 이미 담당 자리에 서 있다.
@@ -727,25 +730,158 @@ def test_ax_work_request_confirmation_rechecks_current_creation_authority(tmp_pa
     assert detail["rounds"][0]["decisions"] == []
 
 
-def test_ax_task_confirmation_requires_the_due_date_shown_as_required(tmp_path) -> None:
+def test_ax_task_draft_without_a_due_date_confirms_like_new_task_creation(tmp_path) -> None:
+    """기한은 「새 업무 추가」처럼 **선택**이다 — AX 경로에만 걸리던 기한 필수가 없다 (SPEC-001 S-9 6 · WORK-008 P-1)."""
     client, application = _stack(tmp_path)
     proposal = _ax_proposal(
         client, application, JIHO, "jiho", "task.create_self", "업무 생성 확인", {"title": "기한 없는 업무"}
     )
     [item] = [row for row in _pending(client, JIHO) if row["action_item_id"] == proposal["action_id"]]
+    due = next(field for field in item["edit_contract"]["fields"] if field["id"] == "due_date")
+    assert due["required"] is False
 
-    refused = _command(
+    confirmed = _command(
         client,
         JIHO,
         item["action_item_id"],
         "confirm",
         expected_version=item["expected_version"],
         base_submission_version=item["submission_version"],
-        draft={"title": "기한 없는 업무"},
     )
 
-    assert refused.status_code == 422 and "기한" in refused.text
-    assert [task for task in client.get("/api/my-work", headers=JIHO).json() if task["title"] == "기한 없는 업무"] == []
+    assert confirmed.status_code == 200, confirmed.text
+    [task] = [row for row in client.get("/api/my-work", headers=JIHO).json() if row["title"] == "기한 없는 업무"]
+    assert client.get(f"/api/tasks/{task['task_id']}", headers=JIHO).json()["due_date"] is None
+
+
+def test_ax_drafts_refuse_only_what_new_task_creation_refuses(tmp_path) -> None:
+    """필수는 만들기 창과 같다 — 제목, 요청이면 담당자. 그 밖의 빈 칸으로는 막히지 않는다."""
+    client, application = _stack(tmp_path)
+    direct = client.post("/api/tasks", headers={**JIHO, "Idempotency-Key": "blank-title"}, json={"title": "   "})
+    assert direct.status_code == 422
+    task = _ax_proposal(
+        client, application, JIHO, "jiho", "task.create_self", "업무 생성 확인", {"title": "제목 있는 원안"}
+    )
+    [item] = [row for row in _pending(client, JIHO) if row["action_item_id"] == task["action_id"]]
+    blank = _command(
+        client, JIHO, item["action_item_id"], "confirm",
+        expected_version=item["expected_version"], base_submission_version=1, draft={"title": "   "},
+    )
+    assert blank.status_code == 422 and "기한" not in blank.text
+
+    request = _ax_proposal(
+        client, application, MINA, "mina", "work_request.create", "업무 요청 생성 확인",
+        {"title": "기한 없는 요청", "assignee_id": "jiho"},
+    )
+    [item] = [row for row in _pending(client, MINA) if row["action_item_id"] == request["action_id"]]
+    fields = {field["id"]: field for field in item["edit_contract"]["fields"]}
+    assert {key for key, field in fields.items() if field["required"]} == {"title", "assignee_id"}
+    nobody = _command(
+        client, MINA, item["action_item_id"], "confirm",
+        expected_version=item["expected_version"], base_submission_version=1,
+        draft={"title": "기한 없는 요청"},
+    )
+    assert nobody.status_code == 422
+    assert client.get("/api/work-requests", headers=MINA).json() == []
+
+    sent = _command(
+        client, MINA, item["action_item_id"], "confirm",
+        expected_version=item["expected_version"], base_submission_version=1,
+    )
+    assert sent.status_code == 200, sent.text
+    [row] = client.get("/api/work-requests", headers=MINA).json()
+    assert client.get(f"/api/work-requests/{row['request_id']}", headers=MINA).json()["due_date"] is None
+
+
+def test_a_dateless_draft_revised_by_a_person_is_round_two_with_its_diff(tmp_path) -> None:
+    """고친 초안으로 확인하는 길은 그대로다 — 회차가 늘고 고친 차이가 남는다 (SPEC-002 §4 · 기존 동작 보존)."""
+    client, application = _stack(tmp_path)
+    proposal = _ax_proposal(
+        client, application, JIHO, "jiho", "task.create_self", "업무 생성 확인", {"title": "기한 없는 AI 원안"}
+    )
+    [item] = [row for row in _pending(client, JIHO) if row["action_item_id"] == proposal["action_id"]]
+    confirmed = _command(
+        client, JIHO, item["action_item_id"], "confirm",
+        expected_version=item["expected_version"], base_submission_version=1,
+        draft={**item["edit_contract"]["values"], "title": "사람이 고친 안", "checklist": ["준비"]},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+
+    detail = client.get(f"/api/action-items/{proposal['action_id']}", headers=JIHO).json()
+    assert [round_["submission_version"] for round_ in detail["rounds"]] == [1, 2]
+    final = detail["rounds"][1]
+    assert final["diff"]["title"] == {"before": "기한 없는 AI 원안", "after": "사람이 고친 안"}
+    assert final["snapshot"]["due_date"] is None
+    [task] = [row for row in client.get("/api/my-work", headers=JIHO).json() if row["title"] == "사람이 고친 안"]
+    assert client.get(f"/api/tasks/{task['task_id']}", headers=JIHO).json()["due_date"] is None
+
+
+def test_pending_ax_drafts_carry_every_creation_field_and_when_they_were_made(tmp_path) -> None:
+    """판단 대기 목록만으로 카드가 그려진다 — 초안 필드 전체(`edit_contract.values`)와 만든 시각(`created_at`)."""
+    from datetime import datetime
+
+    from ax_workspace.modules.work.request_commands import WorkRequestCreateInput
+    from ax_workspace.modules.work.task_creation import TaskCreateInput
+
+    client, application = _stack(tmp_path)
+    task = _ax_proposal(
+        client, application, JIHO, "jiho", "task.create_self", "업무 생성 확인", {"title": "내 업무 초안"}
+    )
+    request = _ax_proposal(
+        client, application, MINA, "mina", "work_request.create", "업무 요청 생성 확인",
+        {"title": "요청 초안", "assignee_id": "jiho"},
+    )
+    for headers, proposal, model in ((JIHO, task, TaskCreateInput), (MINA, request, WorkRequestCreateInput)):
+        [item] = [row for row in _pending(client, headers) if row["action_item_id"] == proposal["action_id"]]
+        assert set(item["edit_contract"]["values"]) == set(model.model_fields)
+        made = datetime.fromisoformat(item["created_at"])
+        detail = client.get(f"/api/action-items/{proposal['action_id']}", headers=headers).json()
+        assert detail["created_at"] == item["created_at"]
+        assert made.year >= 2026
+
+
+def test_ax_draft_fields_are_the_creation_command_fields(tmp_path) -> None:
+    """P-1 대조 — 정규화 · 편집 계약 · MCP 도구 인자가 생성 명령의 필드를 **빠짐없이** 싣는다.
+
+    요청의 `supersedes_request_id`(이전 요청)는 재요청의 계보다 — 만들기 창의 칸이 아니라서 편집 계약과
+    MCP 인자에는 서지 않고, 정규화된 초안 값에는 그대로 실린다.
+    """
+    import asyncio
+
+    from ax_workspace.entrypoints.mcp import McpReportsFacade, _create_bound_persona_server
+    from ax_workspace.modules.actions.confirmation import normalize_ax_draft
+    from ax_workspace.modules.work.request_commands import WorkRequestCreateInput
+    from ax_workspace.modules.work.task_creation import TaskCreateInput
+
+    task_fields = set(TaskCreateInput.model_fields)
+    request_fields = set(WorkRequestCreateInput.model_fields)
+    lineage_only = {"supersedes_request_id"}
+    assert set(normalize_ax_draft("task.create_self", {"title": "x"})) == task_fields
+    assert set(normalize_ax_draft("work_request.create", {"title": "x", "assignee_id": "jiho"}, requester_id="mina")) == request_fields
+
+    client, application = _stack(tmp_path)
+    task = _ax_proposal(
+        client, application, JIHO, "jiho", "task.create_self", "업무 생성 확인", {"title": "내 업무 초안"}
+    )
+    request = _ax_proposal(
+        client, application, MINA, "mina", "work_request.create", "업무 요청 생성 확인",
+        {"title": "요청 초안", "assignee_id": "jiho"},
+    )
+    [task_item] = [row for row in _pending(client, JIHO) if row["action_item_id"] == task["action_id"]]
+    [request_item] = [row for row in _pending(client, MINA) if row["action_item_id"] == request["action_id"]]
+    assert {field["id"] for field in task_item["edit_contract"]["fields"]} == task_fields
+    assert {field["id"] for field in request_item["edit_contract"]["fields"]} == request_fields - lineage_only
+
+    server = _create_bound_persona_server(McpReportsFacade(application._settings, "mina"))
+    tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
+    for name, fields, required in (
+        ("task_create_self", task_fields, {"title", "idempotency_key"}),
+        ("work_request_create", request_fields - lineage_only, {"title", "assignee_id", "idempotency_key"}),
+    ):
+        schema = tools[name].input_schema
+        assert set(schema["properties"]) == fields | {"idempotency_key"}
+        assert set(schema.get("required", [])) == required
+        assert "새 업무 추가" in tools[name].description
 
 
 def test_ax_meeting_confirm_rechecks_current_manage_authority_before_writing(tmp_path) -> None:

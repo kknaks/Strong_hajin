@@ -1749,13 +1749,8 @@ class ActionPresenter:
                 }
             ),
             {"id": "start_date", "label": "시작일", "type": "date", "required": False, "editable": True},
-            {
-                "id": "due_date",
-                "label": "기한",
-                "type": "date",
-                "required": action.action_type == "task.create_self",
-                "editable": True,
-            },
+            # 기한은 「새 업무 추가」처럼 **선택**이다 — AX 초안에만 걸리는 필수를 두지 않는다 (SPEC-001 S-9 6).
+            {"id": "due_date", "label": "기한", "type": "date", "required": False, "editable": True},
         ]
         if action.action_type == "task.create_self":
             fields.extend([
@@ -1807,6 +1802,15 @@ class ActionPresenter:
                     "id": "reference_task_ids",
                     "label": "참고 업무",
                     "type": "multi_select",
+                    "required": False,
+                    "editable": True,
+                    "options": reference_options,
+                },
+                {
+                    # 상위 업무 — 생성 명령의 칸이라 초안 편집에도 선다 (SPEC-001 §5 · WORK-008 P-1).
+                    "id": "parent_task_id",
+                    "label": "상위 업무",
+                    "type": "select",
                     "required": False,
                     "editable": True,
                     "options": reference_options,
@@ -2024,6 +2028,15 @@ class ActionPresenter:
                     "id": "reference_task_ids",
                     "label": "참고 업무",
                     "type": "multi_select",
+                    "required": False,
+                    "editable": True,
+                    "options": reference_options,
+                },
+                {
+                    # 상위 업무 — 요청 생성 명령도 같은 칸을 받는다 (SPEC-001 §4 「같은 값 한 벌」).
+                    "id": "parent_task_id",
+                    "label": "상위 업무",
+                    "type": "select",
                     "required": False,
                     "editable": True,
                     "options": reference_options,
