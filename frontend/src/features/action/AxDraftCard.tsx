@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 
 import { Badge } from "../../ds/Badge";
 import { Button, IconButton } from "../../ds/Button";
-import { FieldMessage } from "../../ds/FormControls";
+import { CheckboxBox, FieldMessage } from "../../ds/FormControls";
 import { Modal } from "../../ds/Modal";
 import { runActionCommand } from "../../lib/api";
 import { Icon } from "../../ds/icons/Icon";
@@ -125,17 +125,43 @@ function people(contract: ActionEditContract, fieldId: string): Persona[] {
 
 const PAGE_COUNT = axDraftCard.pages.length;
 
-/** 라벨 · 값 한 줄. 값이 비면 「없음」(옅은 회색)으로 선다 — 숨기지 않는다 (E2E 1). */
-function Row({ label, value, clamp = false }: { label: string; value: string | null; clamp?: boolean }) {
+/**
+ * 본문의 한 줄 — 라벨 · 값. 값이 비면 「없음」(옅은 회색)으로 선다 — 숨기지 않는다 (E2E 1).
+ * 목록 페이지(체크리스트 · 업무 연결 · 자료)는 이름을 줄마다 세우고 라벨은 무리의 첫 줄에만 단다 (E2E 7).
+ */
+type Line = { label: string; value: string | null; clamp?: boolean; box?: boolean };
+
+/**
+ * 본문이 담는 줄 수 — 가장 긴 페이지(요청 갈래 기본 정보: 다섯 줄 + 내용 두 줄 = 일곱 줄)에 맞춘 고정 높이다
+ * (E2E 6 · `ax.css` 의 `.ax-draft-card__body` 높이와 짝). 목록이 넘치면 마지막 줄을 「외 N개」로 접는다.
+ */
+const LINE_BUDGET = 7;
+
+function group(label: string, names: string[]): Line[] {
+  return names.length === 0 ? [{ label, value: null }] : names.map((name, index) => ({ label: index === 0 ? label : "", value: name }));
+}
+
+function Lines({ lines }: { lines: Line[] }) {
+  const shown =
+    lines.length > LINE_BUDGET
+      ? [...lines.slice(0, LINE_BUDGET - 1), { label: "", value: axDraftCard.more(lines.length - (LINE_BUDGET - 1)) }]
+      : lines;
   return (
-    <div>
-      <dt>{label}</dt>
-      {value ? (
-        <dd className={clamp ? "ax-draft-card__clamp" : undefined}>{value}</dd>
-      ) : (
-        <dd className="ax-draft-card__none">{axDraftCard.none}</dd>
-      )}
-    </div>
+    <dl className="ax-draft-card__rows">
+      {shown.map((line, index) => (
+        <div key={`${index}-${line.label}`}>
+          <dt>{line.label}</dt>
+          {line.value ? (
+            <dd className={line.clamp ? "ax-draft-card__clamp" : line.box ? "ax-draft-card__step-line" : undefined}>
+              {line.box && <CheckboxBox checked={false} />}
+              {line.value}
+            </dd>
+          ) : (
+            <dd className="ax-draft-card__none">{axDraftCard.none}</dd>
+          )}
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -156,45 +182,46 @@ function PageBody({ source, page }: { source: AxDraftSource; page: number }) {
     const approver = text(values.approver_id);
     const assignee = text(values.assignee_id);
     return (
-      <dl className="ax-draft-card__rows">
-        <Row label={axDraftCard.branchLabel} value={axDraftCard.branch[kind]} />
-        <Row label={axDraftCard.period} value={periodText(text(values.start_date), text(values.due_date))} />
-        {kind === "request" && <Row label={axDraftCard.assignee} value={assignee ? nameOf(contract, "assignee_id", assignee) : null} />}
-        <Row label={axDraftCard.cc} value={cc.length > 0 ? cc.join(", ") : null} />
-        <Row label={axDraftCard.approver} value={approver ? nameOf(contract, "approver_id", approver) : null} />
-        <Row clamp label={axDraftCard.description} value={text(values.description) || null} />
-      </dl>
+      <Lines
+        lines={[
+          { label: axDraftCard.branchLabel, value: axDraftCard.branch[kind] },
+          { label: axDraftCard.period, value: periodText(text(values.start_date), text(values.due_date)) },
+          ...(kind === "request" ? [{ label: axDraftCard.assignee, value: assignee ? nameOf(contract, "assignee_id", assignee) : null }] : []),
+          { label: axDraftCard.cc, value: cc.length > 0 ? cc.join(", ") : null },
+          { label: axDraftCard.approver, value: approver ? nameOf(contract, "approver_id", approver) : null },
+          { label: axDraftCard.description, value: text(values.description) || null, clamp: true },
+        ]}
+      />
     );
   }
   if (page === 1) {
+    /* 체크리스트 — 항목을 줄마다(☐ 항목명). 체크 상자는 DS 의 장식용 체크박스다. */
     const steps = list(values.checklist);
-    return (
-      <dl className="ax-draft-card__rows">
-        <Row label={axDraftCard.pages[1]} value={steps.length > 0 ? axDraftCard.checklist(steps.length, steps[0]) : null} />
-      </dl>
-    );
+    return <Lines lines={steps.length === 0 ? [{ label: "", value: null }] : steps.map((step) => ({ label: "", value: step, box: true }))} />;
   }
   if (page === 2) {
+    /* 업무 연결 — 상위 · 프로젝트 · 참고 · 선행의 «이름». 이름은 편집 계약의 선택지에서 찾는다. */
     const parent = text(values.parent_task_id);
     const project = text(values.project_id);
-    const references = list(values.reference_task_ids).length;
-    const preceding = list(values.preceding_task_ids).length;
     return (
-      <dl className="ax-draft-card__rows">
-        <Row label={axDraftCard.parent} value={parent ? nameOf(contract, "parent_task_id", parent) : null} />
-        <Row label={axDraftCard.project} value={project ? nameOf(contract, "project_id", project) : null} />
-        <Row label={axDraftCard.referencesLabel} value={references > 0 ? axDraftCard.count(references) : null} />
-        <Row label={axDraftCard.precedingLabel} value={preceding > 0 ? axDraftCard.count(preceding) : null} />
-      </dl>
+      <Lines
+        lines={[
+          ...group(axDraftCard.parent, parent ? [nameOf(contract, "parent_task_id", parent)] : []),
+          ...group(axDraftCard.project, project ? [nameOf(contract, "project_id", project)] : []),
+          ...group(axDraftCard.referencesLabel, list(values.reference_task_ids).map((id) => nameOf(contract, "reference_task_ids", id))),
+          ...group(axDraftCard.precedingLabel, list(values.preceding_task_ids).map((id) => nameOf(contract, "preceding_task_ids", id))),
+        ]}
+      />
     );
   }
-  const files = source.materials.filter((item) => item.source_kind === "file").length;
-  const links = source.materials.length - files;
+  /* 자료 — 파일 · 링크의 이름. */
   return (
-    <dl className="ax-draft-card__rows">
-      <Row label={axDraftCard.filesLabel} value={files > 0 ? axDraftCard.count(files) : null} />
-      <Row label={axDraftCard.linksLabel} value={links > 0 ? axDraftCard.count(links) : null} />
-    </dl>
+    <Lines
+      lines={[
+        ...group(axDraftCard.filesLabel, source.materials.filter((item) => item.source_kind === "file").map((item) => item.name)),
+        ...group(axDraftCard.linksLabel, source.materials.filter((item) => item.source_kind !== "file").map((item) => item.name)),
+      ]}
+    />
   );
 }
 
@@ -316,7 +343,8 @@ export function AxDraftCard({
             <button
               aria-label={name}
               aria-selected={index === page}
-              className={index === page ? "ax-draft-card__step ax-draft-card__step--on" : "ax-draft-card__step"}
+              /* 채워지는 진행 바 — 지금 페이지까지 검정, 그 뒤 회색 (E2E 10). */
+              className={index <= page ? "ax-draft-card__step ax-draft-card__step--on" : "ax-draft-card__step"}
               key={name}
               onClick={() => go(index)}
               role="tab"
@@ -324,7 +352,6 @@ export function AxDraftCard({
             />
           ))}
         </div>
-        <span className="ax-draft-card__page">{axDraftCard.pages[page]}</span>
       </header>
       <div
         aria-label={axDraftCard.pages[page]}
@@ -334,17 +361,15 @@ export function AxDraftCard({
         role="tabpanel"
         tabIndex={0}
       >
-        {page > 0 && (
-          <span className="ax-draft-card__nav ax-draft-card__nav--prev">
-            <IconButton label={axDraftCard.previous} name="chevron-left" onClick={() => go(page - 1)} size={16} />
+        {/* 제목 줄 — 왼쪽 지금 페이지 이름(진하게, 한 단계 큰 글씨), 오른쪽 ‹ › (늘 보이고 첫/끝에서 비활성) (E2E 8 · 9). */}
+        <div className="ax-draft-card__pagehead">
+          <b className="ax-draft-card__pagetitle">{axDraftCard.pages[page]}</b>
+          <span className="ax-draft-card__arrows">
+            <IconButton disabled={page === 0} label={axDraftCard.previous} name="chevron-left" onClick={() => go(page - 1)} size={16} />
+            <IconButton disabled={page === PAGE_COUNT - 1} label={axDraftCard.next} name="chevron-right" onClick={() => go(page + 1)} size={16} />
           </span>
-        )}
+        </div>
         <PageBody page={page} source={view} />
-        {page < PAGE_COUNT - 1 && (
-          <span className="ax-draft-card__nav ax-draft-card__nav--next">
-            <IconButton label={axDraftCard.next} name="chevron-right" onClick={() => go(page + 1)} size={16} />
-          </span>
-        )}
       </div>
       {error && <FieldMessage error={error} />}
       {source.state === "pending" && (

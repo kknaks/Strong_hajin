@@ -1306,6 +1306,7 @@ export const axDraftCard = {
   filesLabel: "파일",
   linksLabel: "링크",
   count: (count: number) => `${count}개`,
+  more: (count: number) => `외 ${count}개`,
   period: "기간",
   assignee: "담당 후보",
   description: "내용",

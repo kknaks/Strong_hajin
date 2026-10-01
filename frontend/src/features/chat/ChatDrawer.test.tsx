@@ -1610,3 +1610,48 @@ describe("대화 검색 입력의 모양 (F-02)", () => {
     expect(css).toContain(".scax-chat__search{flex:none}");
   });
 });
+
+/*
+ * WORK-008 E2E 묶음 3~11 — 채팅 서랍 안 색 원칙(파랑 = AI 가 하는 것, 사람이 누르는 단추 = 검정)과 추천 대화 ·
+ * 실행 단계 배치. jsdom 은 cascade 를 계산하지 않으므로 규칙이 서 있는지를 잰다(위 F-02 와 같은 방식).
+ */
+describe("채팅 서랍 — E2E 묶음 3~11 의 규칙", () => {
+  async function axCss(): Promise<string> {
+    // @ts-expect-error — 이 리포는 @types/node 를 두지 않는다.
+    const { readFileSync } = await import("node:fs");
+    return (readFileSync("src/styles/ax.css", "utf8") as string).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, "");
+  }
+
+  it("E2E-3 서랍 안 주 단추(solid-primary)는 검정이고, 비활성은 DS 비활성 그대로다", async () => {
+    const css = await axCss();
+    expect(css).toContain(".scax-drawer--chat.scax-button--solid-primary:not(:disabled),");
+    expect(css).toContain("{border-color:transparent;background:var(--scax-color-ink);color:var(--scax-color-surface)}");
+  });
+
+  it("E2E-4 · 5 추천 대화는 가로로 나란한 회색 테두리 칩이다", async () => {
+    const css = await axCss();
+    expect(css).toContain(".scax-followup__list{display:flex;flex-wrap:wrap;");
+    expect(css).toMatch(/\.scax-followup__item\{display:inline-flex;[^}]*border:1pxsolidvar\(--scax-color-line\);[^}]*color:var\(--scax-color-ink\)/);
+    expect(css).not.toContain("--scax-color-accent-20);border-radius:var(--scax-radius-lg);color:var(--scax-color-ink-alt)");
+  });
+
+  it("E2E-11 펼친 실행 단계는 한 번만 들여쓴다", async () => {
+    const css = await axCss();
+    expect(css).toContain(".scax-rail__expanded.scax-rail__steps{margin:0}");
+  });
+
+  it("사람이 누르는 도구·시작 질문·문맥 칩·고른 대화는 파랑을 쓰지 않는다 — AI 진행 표시는 파랑을 지킨다", async () => {
+    const css = await axCss();
+    for (const rule of [
+      /\.scax-chat__tool:hover,\.scax-chat__tool\[aria-pressed="true"\]\{[^}]*\}/,
+      /\.scax-chat__starters button:hover\{[^}]*\}/,
+      /\.scax-chat__history button\[aria-pressed="true"\]\{[^}]*\}/,
+    ]) {
+      const found = css.match(new RegExp(rule.source.replace(/ /g, "")));
+      expect(found?.[0]).toBeTruthy();
+      expect(found?.[0]).not.toContain("accent");
+    }
+    expect(css).toContain(".scax-rail__phrase{color:var(--scax-color-accent)");
+    expect(css).toContain(".scax-rail__step--running.scax-rail__check{border-color:var(--scax-color-accent)");
+  });
+});
