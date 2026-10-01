@@ -1,6 +1,7 @@
 import json
 import threading
 
+from ax_workspace.modules.meetings.finalize import FinalizeSessionLost
 from ax_workspace.modules.meetings.finalize_service import (
     FAILURE_UNFINISHED,
     MeetingFinalizeService,
@@ -142,6 +143,57 @@ def test_finalize_cold_start_sends_the_transcript_when_the_session_is_missing() 
     assert service.cold_starts == 1
     assert agent.calls[0]["session_ref"] is None
     assert "다시 들은 말" in agent.calls[0]["prompt"]
+
+
+class _LostSessionAgent(_Agent):
+    """resume 는 언제나 「세션이 여기 없다」. 새 세션(콜드 스타트)은 `cold_failures` 번 실패한 뒤 된다."""
+
+    def __init__(self, *, cold_failures: int = 0) -> None:
+        super().__init__()
+        self.cold_failures = cold_failures
+
+    def run_final(self, **request):
+        self.calls.append(request)
+        if request["session_ref"] is not None:
+            raise FinalizeSessionLost("session not here")
+        if self.cold_failures:
+            self.cold_failures -= 1
+            raise RuntimeError("provider failed")
+        return VALID_OUTPUT
+
+
+def test_finalize_falls_back_to_cold_start_when_the_session_cannot_be_resumed() -> None:
+    """B-03 — 세션은 API 파드가 열고 합성은 워커 파드가 돈다. resume 이 안 되면 **같은 시도 안에서** 콜드 스타트."""
+    gateway = _Gateway(session_ref="session-from-another-pod")
+    agent = _LostSessionAgent()
+    service = _service(gateway, agent)
+
+    assert service.run("meeting-1") is True
+    assert [call["session_ref"] for call in agent.calls] == ["session-from-another-pod", None]
+    assert "다시 들은 말" not in agent.calls[0]["prompt"], "resume 은 세션이 기억하는 원문을 다시 싣지 않는다"
+    assert "다시 들은 말" in agent.calls[1]["prompt"], "콜드 스타트는 저장된 원문 전량을 싣는다"
+    assert service.cold_starts == 1
+    assert len(gateway.committed) == 1 and gateway.committed[0][1] is True
+    assert gateway.failures == []
+
+
+def test_a_lost_session_does_not_spend_retries_on_the_same_resume() -> None:
+    """세션 없음은 세 번 다시 걸 이유가 아니다 — 첫 시도에서 콜드로 넘어가면 남은 시도도 콜드다."""
+    gateway = _Gateway(session_ref="session-from-another-pod")
+    agent = _LostSessionAgent(cold_failures=1)
+
+    assert _service(gateway, agent).run("meeting-1") is True
+    assert [call["session_ref"] for call in agent.calls] == ["session-from-another-pod", None, None]
+
+
+def test_cold_start_that_also_fails_settles_the_same_failure_as_before() -> None:
+    gateway = _Gateway(session_ref="session-from-another-pod")
+    agent = _LostSessionAgent(cold_failures=99)
+
+    assert _service(gateway, agent).run("meeting-1") is False
+    assert [call["session_ref"] for call in agent.calls] == ["session-from-another-pod", None, None, None]
+    assert gateway.failures == [FAILURE_UNFINISHED]
+    assert gateway.committed == []
 
 
 def test_retranscription_failures_stop_before_final_generation() -> None:

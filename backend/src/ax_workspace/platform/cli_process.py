@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -68,6 +69,38 @@ def invalid_response_message(output_schema: dict[str, Any] | None) -> str:
     if output_schema is not None:
         return "요청한 형식의 응답을 받지 못했습니다."
     return "답변 형식을 확인하지 못했습니다. 다시 요청해 주세요."
+
+
+#: 로그로 남길 stderr 요약의 상한(자). 원인 한 줄이면 충분하고, 길면 프롬프트 조각이 따라 나온다.
+STDERR_SUMMARY_LIMIT = 600
+_MASK = "***"
+#: 비밀이 실릴 수 있는 모양들. 키 이름이 있으면 값만, 없으면 토큰 자체를 가린다.
+_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+"), rf"\1 {_MASK}"),
+    (
+        re.compile(
+            r"(?i)\b([A-Za-z0-9_-]*(?:api[_-]?key|token|secret|password|passwd|authorization|cookie|credential)s?)"
+            r"(\"?\s*[:=]\s*\"?)[^\s\"',;]+"
+        ),
+        rf"\1\2{_MASK}",
+    ),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?"), _MASK),
+    (re.compile(r"\b(?:sk|pk|rk|sess)-[A-Za-z0-9_-]{8,}"), _MASK),
+    (re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@"), rf"\1{_MASK}@"),
+)
+
+
+def summarize_stderr(stderr: str, *, limit: int = STDERR_SUMMARY_LIMIT) -> str:
+    """CLI 가 실패하며 남긴 stderr 를 **로그 한 줄**로 줄인다 — 비밀은 가리고 길이는 자른다.
+
+    원인은 대개 끝에 있으므로 뒤쪽을 남긴다. 비어 있으면 빈 문자열이다.
+    """
+    text = " | ".join(line.strip() for line in stderr.splitlines() if line.strip())
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    if len(text) > limit:
+        text = "…" + text[-(limit - 1):]
+    return text
 
 
 def invoke_runner(runner, command, arguments, cwd, environment, timeout_seconds, on_line, should_cancel) -> ProcessResult:

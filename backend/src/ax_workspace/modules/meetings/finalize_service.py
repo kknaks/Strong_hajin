@@ -36,6 +36,7 @@ from ax_workspace.modules.meetings.finalize import (
     FinalizationContext,
     FINAL_ATTEMPTS,
     FinalizeFailed,
+    FinalizeSessionLost,
     FinalNotes,
     build_final_prompt,
     parse_final_output,
@@ -78,7 +79,10 @@ class FinalizeAgent(Protocol):
     """provider 경계. 테스트가 여기서 대역을 끼운다."""
 
     def run_final(self, *, persona_id: str, session_ref: str | None, prompt: str) -> str:
-        """세션이 있으면 이어 쓰고(resume), 없으면 새로 열어 한 번에 돈다. 스키마로 강제한 본문을 돌려준다."""
+        """세션이 있으면 이어 쓰고(resume), 없으면 새로 열어 한 번에 돈다. 스키마로 강제한 본문을 돌려준다.
+
+        이어 쓸 세션이 이 자리에 없으면 `FinalizeSessionLost` 를 던진다 — 합성이 콜드 스타트로 넘어간다.
+        """
 
 
 class FinalizeGateway(Protocol):
@@ -204,8 +208,25 @@ class MeetingFinalizeService:
         logger.info("회의 %s 재전사 완료 — 블록 %d개로 원문을 갈아 끼웠습니다", meeting_id, written)
 
     def _attempt(self, source: dict[str, Any]) -> tuple[FinalNotes, bool]:
-        """읽기는 끝났다 — 여기부터는 트랜잭션 밖이다. 적재는 부르는 쪽이 한다."""
+        """읽기는 끝났다 — 여기부터는 트랜잭션 밖이다. 적재는 부르는 쪽이 한다.
+
+        세션을 이어 가지 못하면(`FinalizeSessionLost`) **이 시도 안에서** 콜드 스타트로 다시 돈다 —
+        세션이 없는 것은 세 번 다시 걸 이유가 아니다. 운영에서 세션은 API 파드에서 열리고 합성은 워커 파드에서
+        돌아, 세션 파일이 없는 자리에서 resume 이 세 번 모두 즉시 실패했다 (B-03).
+        """
         session_ref = source.get("session_ref")
+        if session_ref:
+            try:
+                return self._compose(source, session_ref=session_ref)
+            except FinalizeSessionLost:
+                logger.warning(
+                    "회의 %s 합성이 이전 세션을 이어 가지 못합니다 — 콜드 스타트로 돕니다", source["meeting_id"]
+                )
+                # 이 회차의 남은 시도도 같은 세션을 다시 찾지 않는다. `source` 는 이 회차가 읽은 한 벌이다.
+                source["session_ref"] = None
+        return self._compose(source, session_ref=None)
+
+    def _compose(self, source: dict[str, Any], *, session_ref: str | None) -> tuple[FinalNotes, bool]:
         cold_start = not session_ref
         if cold_start:
             # 세션이 없다 — 회의를 기억하는 상대가 없으므로 확정 발화 전량을 한 번에 싣는다.

@@ -56,6 +56,8 @@ docker run --rm -i --env-file scax.env scax-protected:test mcp
 
 `AX_MATERIALS_DIR`와 `AX_RECORDINGS_DIR`는 운영에서 영속 volume으로 지정한다. 지정하지 않으면 기본 working directory 아래 `.scax/`를 사용하므로 container writable layer 용량 부족 시 시작에 실패하고 교체 시 데이터가 사라진다. `ENOSPC`가 보이면 image 문제가 아닌지 먼저 확인한 뒤, 정확한 volume mount와 host/container 용량을 점검한다. 공용 Docker cache/volume을 무차별 prune하지 않는다.
 
+Codex 세션은 격리 런타임 홈(`CODEX_HOME`)에 남는다. 기본은 working directory 아래 `.scax/codex-runtime`이고 `SCAX_CODEX_RUNTIME_HOME`으로 바꿀 수 있다. 회의 세션은 API 프로세스가 열고 종료 합성은 meeting worker가 이어 쓰므로, 여러 프로세스(pod)로 나눠 띄우면 이 자리를 공유 volume으로 맞춘다. 맞추지 않아도 종료 합성은 세션을 찾지 못하면 저장된 원문으로 콜드 스타트한다.
+
 보호 이미지에서 Codex가 MCP를 다시 열 때는 `SCAX_RUNTIME_EXECUTABLE=/opt/scax/scax`를 사용한다. source 개발 경로의 `python -m ax_workspace.entrypoints.mcp`는 그대로 유지한다.
 
 ## 노출 결과와 보호 gate

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import glob
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -27,6 +29,7 @@ from ax_workspace.platform.cli_process import (
     invoke_runner as _invoke_runner,
     structured_body as _structured_body,
     subprocess_runner as _subprocess_runner,
+    summarize_stderr as _summarize_stderr,
 )
 from ax_workspace.platform.tool_receipts import (
     display_name as _display_name,
@@ -49,9 +52,13 @@ from ax_workspace.modules.ax_execution.ai import (
     ProviderCancelled,
     ProviderRequestFailed,
     ProviderResponseInvalid,
+    ProviderSessionUnavailable,
     ProviderUnavailable,
 )
 from ax_workspace.modules.ax_execution.answer_documents import AnswerDocument
+
+
+logger = logging.getLogger(__name__)
 
 
 _ANSWER_SCHEMA = AnswerDocument.model_json_schema()
@@ -151,6 +158,7 @@ class CodexCliProviderAdapter:
                 usage=usage,
             )
             if result.returncode != 0:
+                _log_failure("generation", result)
                 raise ProviderRequestFailed("Codex CLI generation failed", provenance)
             try:
                 payload = json.loads(output_path.read_text(encoding="utf-8"))
@@ -230,6 +238,11 @@ class CodexCliProviderAdapter:
             if cancel is not None and cancel.is_set():
                 raise ProviderCancelled("Codex CLI conversation was cancelled", provenance)
             if result.returncode != 0:
+                _log_failure("conversation", result)
+                if request.provider_session_ref and not _session_on_disk(runtime_home, request.provider_session_ref):
+                    # 이어 갈 세션이 이 런타임 홈에 없다 — 다른 프로세스(파드)가 열었거나 재시작으로 사라졌다.
+                    # 같은 resume 은 몇 번을 다시 걸어도 같다. 맥락을 다시 실을 수 있는 부르는 쪽이 새 세션으로 간다.
+                    raise ProviderSessionUnavailable("Codex CLI session to resume is not available here", provenance)
                 raise ProviderRequestFailed("Codex CLI conversation failed", provenance)
             try:
                 payload = json.loads(output_path.read_text(encoding="utf-8"))
@@ -768,6 +781,24 @@ class CodexEventIngest:
 
 
 
+def _log_failure(kind: str, result: ProcessResult) -> None:
+    """실패한 codex 의 stderr 요약을 남긴다 — 다음 장애의 원인을 로그로 보려고. 비밀은 가리고 길이는 자른다."""
+    logger.warning(
+        "Codex CLI %s 이(가) 종료 코드 %s 로 실패했습니다: %s",
+        kind,
+        result.returncode,
+        _summarize_stderr(result.stderr or "") or "(stderr 없음)",
+    )
+
+
+def _session_on_disk(runtime_home: Path, session_ref: str) -> bool:
+    """이 런타임 홈에 그 세션의 rollout 이 있는가. codex 는 `sessions/YYYY/MM/DD/rollout-<시각>-<id>.jsonl` 에 둔다."""
+    sessions = runtime_home / "sessions"
+    if not sessions.is_dir():
+        return False
+    return any(sessions.rglob(f"rollout-*{glob.escape(session_ref)}.jsonl"))
+
+
 def prepare_isolated_codex_home(runtime_home: Path, *, auth_file: Path) -> Path:
     """Prepare a minimal runtime home that contains only the auth symlink."""
     runtime_home = runtime_home.resolve()
@@ -792,5 +823,10 @@ def prepare_isolated_codex_home(runtime_home: Path, *, auth_file: Path) -> Path:
         if runtime_auth.resolve() != auth_file.resolve():
             raise ProviderUnavailable("isolated Codex runtime authentication is invalid")
     else:
-        runtime_auth.symlink_to(auth_file)
+        try:
+            runtime_auth.symlink_to(auth_file)
+        except FileExistsError:
+            # 런타임 홈을 여러 프로세스(파드)가 함께 쓰면 다른 쪽이 먼저 걸었을 수 있다 — 같은 곳을 가리키면 된다.
+            if runtime_auth.resolve() != auth_file.resolve():
+                raise ProviderUnavailable("isolated Codex runtime authentication is invalid") from None
     return runtime_home
