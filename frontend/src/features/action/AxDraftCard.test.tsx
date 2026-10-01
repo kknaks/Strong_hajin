@@ -70,6 +70,11 @@ afterEach(() => {
 });
 
 const card = () => screen.getByRole("region", { name: /AX 업무 생성/ });
+/** 지금 페이지의 라벨 · 값 줄 — 「라벨=값」 으로 읽는다(E2E 1: 항목은 늘 서고 빈 값은 「없음」). */
+const rows = () =>
+  Array.from(within(card()).getByRole("tabpanel").querySelectorAll("dl > div")).map(
+    (row) => `${row.querySelector("dt")?.textContent}=${row.querySelector("dd")?.textContent}`,
+  );
 const pageName = () => within(card()).getByRole("tabpanel").getAttribute("aria-label");
 
 describe("AX 초안 요약 카드 — 머리와 넘기기", () => {
@@ -81,6 +86,9 @@ describe("AX 초안 요약 카드 — 머리와 넘기기", () => {
     expect(within(card()).getAllByRole("tab")).toHaveLength(4);
     expect(within(card()).getByRole("tab", { name: "기본 정보" }).getAttribute("aria-selected")).toBe("true");
     expect(document.body.textContent).not.toContain("SC AX");
+    // 무채색 — 배지 「AX」·「초안 · N회차」 는 회색 중립 배지다 (E2E 1).
+    expect(within(card()).getByText("AX").className).toContain("neutral");
+    expect(within(card()).getByText("초안 · 1회차").className).toContain("neutral");
   });
 
   it("4칸 바 · ‹ › · ← → · 좌우 스와이프로 넘어가고, 첫/끝 페이지에서는 그쪽 화살표가 없다", () => {
@@ -103,18 +111,31 @@ describe("AX 초안 요약 카드 — 머리와 넘기기", () => {
     expect(pageName()).toBe("체크리스트");
   });
 
-  it("본문은 창의 탭 넷의 읽기 전용 요약이고, 빈 페이지는 「없음」 한 줄이다", () => {
+  it("본문은 라벨 · 값 두 열이고 순서가 고정이며, 빈 값은 숨기지 않고 「없음」 이다 (E2E 1)", () => {
     render(<AxDraftCard onCommand={vi.fn()} source={source()} />);
-    const body = () => within(card()).getByRole("tabpanel");
-    expect(body().textContent).toContain("내 업무");
-    expect(body().textContent).toContain("2026/10/01");
-    expect(body().textContent).toContain("2026/10/06");
-    expect(body().textContent).toContain("분기 KPI 를 정한다");
-    expect(body().textContent).toContain("소라");
-    for (const name of ["체크리스트", "업무 연결", "자료"]) {
-      fireEvent.click(within(card()).getByRole("tab", { name }));
-      expect(body().textContent).toBe("없음");
-    }
+    // 갈래 · 기간 · 참조자 · 결재자 · 내용 — 결재자가 비어도 줄은 선다.
+    expect(rows()).toEqual(["갈래=내 업무", "기간=2026/10/01 → 2026/10/06", "참조자=소라", "결재자=없음", "내용=분기 KPI 를 정한다"]);
+    fireEvent.click(within(card()).getByRole("tab", { name: "체크리스트" }));
+    expect(rows()).toEqual(["체크리스트=없음"]);
+    fireEvent.click(within(card()).getByRole("tab", { name: "업무 연결" }));
+    expect(rows()).toEqual(["상위=없음", "프로젝트=없음", "참고=없음", "선행=없음"]);
+    fireEvent.click(within(card()).getByRole("tab", { name: "자료" }));
+    expect(rows()).toEqual(["파일=없음", "링크=없음"]);
+  });
+
+  it("기간은 하나만 있으면 있는 쪽만, 둘 다 없으면 없음 · 요청은 담당 후보가 기간 뒤에 선다", () => {
+    const { unmount } = render(<AxDraftCard onCommand={vi.fn()} source={source({ contract: contract({ start_date: null }) })} />);
+    expect(rows()[1]).toBe("기간=~ 2026/10/06");
+    unmount();
+    const empty = render(<AxDraftCard onCommand={vi.fn()} source={source({ contract: contract({ start_date: null, due_date: null, cc_member_ids: [], description: null }) })} />);
+    expect(rows()).toEqual(["갈래=내 업무", "기간=없음", "참조자=없음", "결재자=없음", "내용=없음"]);
+    empty.unmount();
+    const request = contract({ assignee_id: "jiho" });
+    request.fields = request.fields.map((field) => (field.id === "assignee_id" ? { ...field, options: [{ value: "jiho", label: "지호 (팀장)" }] } : field));
+    render(<AxDraftCard onCommand={vi.fn()} source={source({ kind: "request", contract: request })} />);
+    expect(screen.getByRole("region", { name: /AX 업무 요청/ })).toBeTruthy();
+    const requestRows = Array.from(screen.getByRole("tabpanel").querySelectorAll("dl > div")).map((row) => row.querySelector("dt")?.textContent);
+    expect(requestRows).toEqual(["갈래", "기간", "담당 후보", "참조자", "결재자", "내용"]);
   });
 
   it("채운 페이지는 요약 문구로 선다 — 체크리스트 · 업무 연결 · 자료", () => {
@@ -130,13 +151,12 @@ describe("AX 초안 요약 카드 — 머리와 넘기기", () => {
         })}
       />,
     );
-    const body = () => within(card()).getByRole("tabpanel");
     fireEvent.click(within(card()).getByRole("tab", { name: "체크리스트" }));
-    expect(body().textContent).toBe("2개 · 자료 모으기");
+    expect(rows()).toEqual(["체크리스트=2개 · 자료 모으기"]);
     fireEvent.click(within(card()).getByRole("tab", { name: "업무 연결" }));
-    expect(body().textContent).toBe("상위 상위 일 · 프로젝트 한빛 마케팅 · 참고 2 · 선행 1");
+    expect(rows()).toEqual(["상위=상위 일", "프로젝트=한빛 마케팅", "참고=2개", "선행=1개"]);
     fireEvent.click(within(card()).getByRole("tab", { name: "자료" }));
-    expect(body().textContent).toBe("파일 1 · 링크 1");
+    expect(rows()).toEqual(["파일=1개", "링크=1개"]);
   });
 });
 
@@ -370,7 +390,7 @@ describe("수정 창 — 확인 전에 자료를 붙인다 (WARN-1)", () => {
     await act(async () => fireEvent.click(within(modal).getByRole("button", { name: "링크 추가" })));
     fireEvent.click(within(modal).getAllByRole("button", { name: "닫기" }).at(-1)!);
     fireEvent.click(within(card()).getByRole("tab", { name: "자료" }));
-    expect(within(card()).getByRole("tabpanel").textContent).toBe("파일 0 · 링크 1");
+    expect(rows()).toEqual(["파일=없음", "링크=1개"]);
 
     // 다시 열어 빼면 서버의 초안을 버리고 요약도 「없음」으로 돌아간다.
     fireEvent.click(screen.getByRole("button", { name: "수정" }));
@@ -379,7 +399,7 @@ describe("수정 창 — 확인 전에 자료를 붙인다 (WARN-1)", () => {
     await act(async () => fireEvent.click(within(modal).getByRole("button", { name: "회의록 빼기" })));
     expect(api.discardActionMaterialDraft).toHaveBeenCalledWith("action-1", "md-2");
     fireEvent.click(within(modal).getAllByRole("button", { name: "닫기" }).at(-1)!);
-    expect(within(card()).getByRole("tabpanel").textContent).toBe("없음");
+    expect(rows()).toEqual(["파일=없음", "링크=없음"]);
   });
 });
 
@@ -453,7 +473,7 @@ describe("수정 창 — 재검수 N-1 ~ N-3", () => {
     expect(within(modal).getByText("b.pdf")).toBeTruthy();
     fireEvent.click(within(modal).getAllByRole("button", { name: "닫기" }).at(-1)!);
     fireEvent.click(within(card()).getByRole("tab", { name: "자료" }));
-    expect(within(card()).getByRole("tabpanel").textContent).toBe("파일 2 · 링크 0");
+    expect(rows()).toEqual(["파일=2개", "링크=없음"]);
   });
 
   it("N-3 목록 조회가 실패하면 「불러오지 못했다」고 말하고, 표에 못 선 참고 업무도 빼면 draft 에서 빠진다", async () => {

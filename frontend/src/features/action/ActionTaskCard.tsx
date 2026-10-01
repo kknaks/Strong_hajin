@@ -464,7 +464,7 @@ export function ActionTaskCard({
       <section className="scax-actioncard action-task-card" data-action-id={action.action_id} data-state={action.state} data-view={editing ? "editing" : action.state} ref={cardRef}>
       <div className="action-task-content">
         <div className="scax-actioncard__badges">
-          <Badge tone="info">{axDraftCard.badge}</Badge>
+          <Badge tone="neutral">{axDraftCard.badge}</Badge>
           <Badge tone={statusBadge.tone}>{statusBadge.label}</Badge>
         </div>
         {editing && contract ? (

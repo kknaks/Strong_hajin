@@ -241,7 +241,9 @@
 .scax-evidence__card blockquote{margin:var(--scax-space-150) 0 0;padding:0 0 0 var(--scax-space-300);border-left:2px solid var(--scax-color-line);color:var(--scax-color-ink-alt);font-size:var(--scax-text-caption1-size);white-space:pre-wrap}
 
 /* ───────────────────────────────────────────────── 승인 카드 (구 592~597 · 1134) */
-.scax-actioncard{margin:var(--scax-space-200) var(--scax-space-600) var(--scax-space-200) 0;padding:var(--scax-space-300) var(--scax-space-400);border:1px solid var(--scax-color-line);border-left:3px solid var(--scax-color-accent);border-radius:var(--scax-radius-sm);background:var(--scax-color-accent-08)}
+/* AX 카드 골격 — 무채색 (WORK-008 E2E 1 · 사용자 2026-10-01 「검은색 회색으로 … 통일성」). 파란 배경과 왼쪽 3px
+   띠를 걷고 앱의 다른 카드처럼 흰 바탕 + 1px 회색 테두리다. 강조색은 각 카드의 주 단추(solid-primary)만 진다. */
+.scax-actioncard{margin:var(--scax-space-200) var(--scax-space-600) var(--scax-space-200) 0;padding:var(--scax-space-300) var(--scax-space-400);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface)}
 .scax-actioncard b{display:block;font-size:var(--scax-text-label1-size)}
 .scax-actioncard p{margin:var(--scax-space-100) 0 0;padding:0;border:0;background:transparent;color:var(--scax-color-ink-alt);font-size:var(--scax-text-label2-size)}
 .scax-actioncard>small{display:block;margin-top:var(--scax-space-200);color:var(--scax-color-accent);font-size:var(--scax-text-caption1-size);font-weight:var(--scax-fw-bold)}
@@ -627,16 +629,20 @@
 .ax-draft-card__step--on{background:var(--scax-color-ink)}
 .ax-draft-card__step:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
 .ax-draft-card__page{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size)}
-/* 본문 높이 (3b fix1 · WARN-2) — 기본 정보의 최대 여섯 줄(갈래·기간 · 담당 후보 · 내용 두 줄 · 참조자 · 결재자)이
-   다 들어가는 높이로 고정한다. 모든 페이지가 같은 높이다. 줄 하나 = caption1 줄높이, 줄 사이 space-100. */
-.ax-draft-card__body{position:relative;height:calc(6 * var(--scax-text-caption1-size) * var(--scax-text-caption1-lh) + 5 * var(--scax-space-100) + 2 * var(--scax-space-200));overflow:hidden;padding:var(--scax-space-200) var(--scax-space-600);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface)}
+/* 본문 높이 (3b fix1 · WARN-2 → E2E 1) — 기본 정보의 가장 긴 모양(요청 갈래: 갈래 · 기간 · 담당 후보 · 참조자 ·
+   결재자 · 내용 두 줄 = 일곱 줄)이 다 들어가는 높이로 고정한다. 모든 페이지가 같은 높이다. 줄 하나 = caption1
+   크기 × 줄높이, 줄 사이 space-100 다섯. */
+.ax-draft-card__body{position:relative;height:calc(7 * var(--scax-text-caption1-size) * var(--scax-text-caption1-lh) + 5 * var(--scax-space-100) + 2 * var(--scax-space-200));overflow:hidden;padding:var(--scax-space-200) var(--scax-space-600);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface)}
 .ax-draft-card__body:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
-.ax-draft-card__rows{display:grid;gap:var(--scax-space-100);margin:0}
-.ax-draft-card__rows > div{display:flex;gap:var(--scax-space-200);min-width:0;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh)}
-.ax-draft-card__rows dt{flex:none;color:var(--scax-color-ink-assistive)}
-.ax-draft-card__rows dd{min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--scax-color-ink)}
+/* 본문은 블록이다 — 공용 `.scax-actioncard>div`(flex 가로) 를 받으면 dl 이 고정 높이로 늘어나 줄이 위아래로
+   벌어졌다(E2E 1). 줄은 위에서부터 붙여 쌓는다(align-content:start). 라벨 · 값 두 열. */
+.ax-draft-card > .ax-draft-card__body{display:block;margin-top:0}
+.ax-draft-card__rows{display:grid;grid-template-columns:max-content minmax(0,1fr);align-content:start;column-gap:var(--scax-space-300);row-gap:var(--scax-space-100);margin:0}
+.ax-draft-card__rows > div{display:contents;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh)}
+.ax-draft-card__rows dt{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh)}
+.ax-draft-card__rows dd{min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--scax-color-ink);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh)}
 .ax-draft-card__rows dd.ax-draft-card__clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal}
-.ax-draft-card__none{color:var(--scax-color-ink-assistive)}
+.ax-draft-card__rows dd.ax-draft-card__none{color:var(--scax-color-ink-disabled)}
 /* ‹ › 는 본문 «호버 때만» 본문 위에 겹친다 — 키보드로 들어오면(focus-within) 함께 선다. */
 .ax-draft-card__nav{position:absolute;top:50%;transform:translateY(-50%);opacity:0;transition:opacity 120ms}
 .ax-draft-card__nav--prev{left:var(--scax-space-100)}

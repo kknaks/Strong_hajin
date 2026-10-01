@@ -125,71 +125,77 @@ function people(contract: ActionEditContract, fieldId: string): Persona[] {
 
 const PAGE_COUNT = axDraftCard.pages.length;
 
+/** 라벨 · 값 한 줄. 값이 비면 「없음」(옅은 회색)으로 선다 — 숨기지 않는다 (E2E 1). */
+function Row({ label, value, clamp = false }: { label: string; value: string | null; clamp?: boolean }) {
+  return (
+    <div>
+      <dt>{label}</dt>
+      {value ? (
+        <dd className={clamp ? "ax-draft-card__clamp" : undefined}>{value}</dd>
+      ) : (
+        <dd className="ax-draft-card__none">{axDraftCard.none}</dd>
+      )}
+    </div>
+  );
+}
+
+/** 기간 — 둘 다 있으면 「시작 → 마감」, 하나만 있으면 있는 쪽만, 둘 다 없으면 없음. */
+function periodText(start: string, due: string): string | null {
+  if (start && due) return `${formatDate(start)} → ${formatDate(due)}`;
+  if (start) return `${formatDate(start)} ~`;
+  if (due) return `~ ${formatDate(due)}`;
+  return null;
+}
+
 function PageBody({ source, page }: { source: AxDraftSource; page: number }) {
   const { contract, kind } = source;
   const values = contract.values;
   if (page === 0) {
-    const start = text(values.start_date);
-    const due = text(values.due_date);
+    /* 순서 고정: 갈래 · 기간 · 담당 후보(요청) · 참조자 · 결재자 · 내용(두 줄). 위에서부터 붙여 쌓는다. */
     const cc = list(values.cc_member_ids).map((id) => nameOf(contract, "cc_member_ids", id));
     const approver = text(values.approver_id);
     const assignee = text(values.assignee_id);
-    const description = text(values.description);
     return (
       <dl className="ax-draft-card__rows">
-        <div>
-          <dt>{axDraftCard.branch[kind]}</dt>
-          <dd>
-            {axDraftCard.period} {start ? formatDate(start) : "—"} → {due ? formatDate(due) : "—"}
-          </dd>
-        </div>
-        {kind === "request" && (
-          <div>
-            <dt>{axDraftCard.assignee}</dt>
-            <dd>{assignee ? nameOf(contract, "assignee_id", assignee) : "—"}</dd>
-          </div>
-        )}
-        {description && (
-          <div>
-            <dt>{axDraftCard.description}</dt>
-            <dd className="ax-draft-card__clamp">{description}</dd>
-          </div>
-        )}
-        {cc.length > 0 && (
-          <div>
-            <dt>{axDraftCard.cc}</dt>
-            <dd>{cc.join(", ")}</dd>
-          </div>
-        )}
-        {approver && (
-          <div>
-            <dt>{axDraftCard.approver}</dt>
-            <dd>{nameOf(contract, "approver_id", approver)}</dd>
-          </div>
-        )}
+        <Row label={axDraftCard.branchLabel} value={axDraftCard.branch[kind]} />
+        <Row label={axDraftCard.period} value={periodText(text(values.start_date), text(values.due_date))} />
+        {kind === "request" && <Row label={axDraftCard.assignee} value={assignee ? nameOf(contract, "assignee_id", assignee) : null} />}
+        <Row label={axDraftCard.cc} value={cc.length > 0 ? cc.join(", ") : null} />
+        <Row label={axDraftCard.approver} value={approver ? nameOf(contract, "approver_id", approver) : null} />
+        <Row clamp label={axDraftCard.description} value={text(values.description) || null} />
       </dl>
     );
   }
   if (page === 1) {
     const steps = list(values.checklist);
-    return steps.length === 0 ? <p className="ax-draft-card__none">{axDraftCard.none}</p> : <p>{axDraftCard.checklist(steps.length, steps[0])}</p>;
+    return (
+      <dl className="ax-draft-card__rows">
+        <Row label={axDraftCard.pages[1]} value={steps.length > 0 ? axDraftCard.checklist(steps.length, steps[0]) : null} />
+      </dl>
+    );
   }
   if (page === 2) {
     const parent = text(values.parent_task_id);
     const project = text(values.project_id);
     const references = list(values.reference_task_ids).length;
     const preceding = list(values.preceding_task_ids).length;
-    const parts = [
-      parent ? `${axDraftCard.parent} ${nameOf(contract, "parent_task_id", parent)}` : null,
-      project ? `${axDraftCard.project} ${nameOf(contract, "project_id", project)}` : null,
-      references > 0 ? axDraftCard.references(references) : null,
-      preceding > 0 ? axDraftCard.preceding(preceding) : null,
-    ].filter((part): part is string => Boolean(part));
-    return parts.length === 0 ? <p className="ax-draft-card__none">{axDraftCard.none}</p> : <p>{parts.join(" · ")}</p>;
+    return (
+      <dl className="ax-draft-card__rows">
+        <Row label={axDraftCard.parent} value={parent ? nameOf(contract, "parent_task_id", parent) : null} />
+        <Row label={axDraftCard.project} value={project ? nameOf(contract, "project_id", project) : null} />
+        <Row label={axDraftCard.referencesLabel} value={references > 0 ? axDraftCard.count(references) : null} />
+        <Row label={axDraftCard.precedingLabel} value={preceding > 0 ? axDraftCard.count(preceding) : null} />
+      </dl>
+    );
   }
   const files = source.materials.filter((item) => item.source_kind === "file").length;
   const links = source.materials.length - files;
-  return source.materials.length === 0 ? <p className="ax-draft-card__none">{axDraftCard.none}</p> : <p>{axDraftCard.materials(files, links)}</p>;
+  return (
+    <dl className="ax-draft-card__rows">
+      <Row label={axDraftCard.filesLabel} value={files > 0 ? axDraftCard.count(files) : null} />
+      <Row label={axDraftCard.linksLabel} value={links > 0 ? axDraftCard.count(links) : null} />
+    </dl>
+  );
 }
 
 export function AxDraftCard({
@@ -276,7 +282,7 @@ export function AxDraftCard({
     return (
       <section className="scax-actioncard ax-draft-card ax-draft-card--done" data-action-id={source.actionId} data-state="approved">
         <p className="ax-draft-card__line">
-          <Badge tone="info">{axDraftCard.registered}</Badge>
+          <Badge tone="neutral">{axDraftCard.registered}</Badge>
           <b>{source.title}</b>
           <span>{due ? formatDate(due) : "—"}</span>
           {assignee && <span>{nameOf(contract, "assignee_id", assignee)}</span>}
@@ -300,7 +306,7 @@ export function AxDraftCard({
     >
       <header className="ax-draft-card__head">
         <div className="scax-actioncard__badges">
-          <Badge tone="info">{axDraftCard.badge}</Badge>
+          <Badge tone="neutral">{axDraftCard.badge}</Badge>
           <Badge tone="neutral">{source.state === "rejected" ? axDraftCard.rejected : axDraftCard.round(source.round)}</Badge>
           <span className="ax-draft-card__kind">{axDraftCard.kind[kind]}</span>
         </div>
