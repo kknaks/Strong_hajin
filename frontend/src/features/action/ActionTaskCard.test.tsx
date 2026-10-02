@@ -136,7 +136,7 @@ describe("AX Task proposal card", () => {
     expect(within(card).getByText("담당자")).toBeTruthy();
     expect(within(card).queryByText("담당")).toBeNull();
     expect(card.querySelector(".action-task-summary")).toBeTruthy();
-    expect(within(card).getByText("2026.09.20")).toBeTruthy();
+    expect(within(card).getByText("2026/09/20")).toBeTruthy();
     expect(card.querySelector("details")).toBeNull();
     const group = within(container).getByRole("region", { name: "첨부" });
     expect(within(group).getByText("선행 업무")).toBeTruthy();
@@ -185,7 +185,7 @@ describe("AX Task proposal card", () => {
     expect(within(summary).getByText("담당자")).toBeTruthy();
     expect(within(summary).getByText("유나")).toBeTruthy();
     expect(within(summary).getByText("기한")).toBeTruthy();
-    expect(within(summary).getByText("2026.10.10")).toBeTruthy();
+    expect(within(summary).getByText("2026/10/10")).toBeTruthy();
     expect(within(summary).queryByText("유나 (대표)")).toBeNull();
     expect(within(summary).queryByText("시작일")).toBeNull();
     expect(within(summary).queryByText("2026.09.10")).toBeNull();
@@ -197,7 +197,7 @@ describe("AX Task proposal card", () => {
     expect(within(summary).queryByText("참고 업무")).toBeNull();
 
     fireEvent.click(within(card).getByRole("button", { name: "수정" }));
-    expect(dateTrigger(card, "시작일").textContent).toBe("2026.09.10");
+    expect(dateTrigger(card, "시작일").textContent).toBe("2026/09/10");
     expect(within(card).getByText("유나")).toBeTruthy();
     expect(within(card).queryByText("유나 (대표)")).toBeNull();
   });
@@ -330,14 +330,14 @@ describe("AX Task proposal card", () => {
     expect(within(container).queryByText("새 링크")).toBeNull();
   });
 
-  it("uses the required dotted due-date control and a DS reset icon", () => {
+  it("uses the required due-date control in the 2026/09/20 form and a DS reset icon", () => {
     const { container } = render(<ActionTaskCard action={proposal} onCommand={vi.fn()} principalId="jiho" />);
     fireEvent.click(within(container).getByRole("button", { name: "수정" }));
     const due = dateTrigger(container, "기한");
     // 브라우저 기본 달력 칸을 쓰지 않는다 — 우리 달력을 여는 단추 하나다 (DS-17)
     expect(due.tagName).toBe("BUTTON");
     expect(container.querySelector('input[type="date"]')).toBeNull();
-    expect(due.textContent).toBe("2026.09.20");
+    expect(due.textContent).toBe("2026/09/20");
     // 필수는 레이블의 * 로 선다 (required 프롭)
     expect(container.querySelector('label[for="action-task-due_date"]')?.textContent).toBe("기한 *");
     // pickerIcon="chevron-down" — 칸 안 오른쪽 아이콘
@@ -718,9 +718,9 @@ describe("AX Task proposal card", () => {
 
     fireEvent.click(within(card).getByRole("button", { name: "저장" }));
 
-    expect(within(card).getByRole("alert").textContent).toContain("기한은 시작일보다 빠를 수 없습니다");
+    expect(within(card).getByRole("alert").textContent).toContain("마감일은 시작일보다 빠를 수 없습니다");
     expect(document.activeElement).toBe(dateTrigger(card, "기한"));
-    expect(dateTrigger(card, "시작일").textContent).toBe("2026.09.30");
+    expect(dateTrigger(card, "시작일").textContent).toBe("2026/09/30");
     expect(onCommand).not.toHaveBeenCalled();
   });
 

@@ -6,7 +6,7 @@ import { CommandConfirmationForm } from "./CommandConfirmationForm";
 import { getActionItem, runActionCommand } from "../../lib/api";
 import { ActionPreviewDetails } from "./ActionPreview";
 import { DateField } from "../../ds/DateField";
-import { datePickerLabel, formatDate, formatDateTime, formatMonthLong, personName, seoulToday, weekdayNames } from "../../lib/labels";
+import { datePickerLabel, formatDate, formatDateTime, formatMonthLong, personName, seoulToday, taskDateLabel, weekdayNames } from "../../lib/labels";
 import { Drawer, Modal, type OverlayShellProps } from "../../ds/Modal";
 import { StatusText } from "../work/WorkModals";
 import { Skeleton } from "../../ds/Skeleton";
@@ -51,7 +51,7 @@ const decisionLabel: Record<string, string> = {
 const REVISABLE = [
   { id: "title", label: "요청할 업무", type: "text" as const },
   { id: "description", label: "요청 내용", type: "textarea" as const },
-  { id: "due_date", label: "희망 기한", type: "date" as const },
+  { id: "due_date", label: taskDateLabel.due, type: "date" as const },
 ];
 
 function nameOf(personas: Persona[], id: string): string {

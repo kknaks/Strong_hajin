@@ -340,7 +340,7 @@ describe("프로젝트", () => {
     const noOwner = within(rail).getByText("사람도 기간도 없는 일").closest(".scax-inbox-card") as HTMLElement;
     /* 「미정」을 지어내지 않는다 — meta 칸이 기간 하나뿐이다. */
     expect(noOwner.querySelectorAll(".scax-inbox-card__meta-sep").length).toBe(0);
-    expect(noOwner.textContent).toContain("기한 없음");
+    expect(noOwner.textContent).toContain("마감일 없음");
 
     /* 취소된 업무는 «세지 않을» 뿐 감추지 않는다. */
     expect(within(rail).getByText("취소된 광고안")).toBeTruthy();

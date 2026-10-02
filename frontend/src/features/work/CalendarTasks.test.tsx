@@ -102,7 +102,7 @@ describe("the calendar a person reads", () => {
     expect(range.style.gridColumn).toBe("2 / span 3"); // Mon–Wed, with Sunday as the first column
 
     const deadline = within(grid).getByRole("button", { name: /기한만 업무/ });
-    expect(deadline.getAttribute("aria-label")).toContain("2026/09/10 기한");
+    expect(deadline.getAttribute("aria-label")).toContain("마감일 2026/09/10");
     expect(deadline.style.gridColumn).toBe("5 / span 1");
 
     expect(within(grid).queryByText("날짜 없는 업무")).toBeNull();

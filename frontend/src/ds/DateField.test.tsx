@@ -7,12 +7,12 @@ import { DateField } from "./DateField";
 describe("date field", () => {
   afterEach(cleanup);
 
-  it("칸 하나다 — 값은 ISO 표기이고 달력 아이콘이 그 칸 안에 선다 (DS-17)", () => {
+  it("칸 하나다 — 값은 `2026/09/30` 표기이고 달력 아이콘이 그 칸 안에 선다 (DS-17)", () => {
     render(<DateField formatMonth={formatMonthLong} labels={datePickerLabel} today={seoulToday()} weekdayNames={weekdayNames} id="due" label="기한" onChange={vi.fn()} value="2026-09-30" />);
 
     const field = screen.getByRole("button", { name: "기한 달력 열기" });
-    // 값은 하이픈 표기이고, 아이콘은 칸 «안» 오른쪽이다 — 바깥에 따로 선 단추가 아니다
-    expect(field.textContent).toBe("2026-09-30");
+    // 값은 읽기 화면과 같은 `/` 표기이고(SPEC-001 U-17 · OQ-Q ③), 아이콘은 칸 «안» 오른쪽이다
+    expect(field.textContent).toBe("2026/09/30");
     expect(field.querySelector("svg")).toBeTruthy();
     expect(screen.getAllByRole("button")).toHaveLength(1);
     // 브라우저 기본 달력을 쓰지 않는다 — 같은 칸이 사람마다 다른 글자 순서로 보이던 이유였다
@@ -23,7 +23,7 @@ describe("date field", () => {
 
   it("값이 없으면 자리표시가 선다", () => {
     render(<DateField formatMonth={formatMonthLong} labels={datePickerLabel} today={seoulToday()} weekdayNames={weekdayNames} id="due" label="기한" onChange={vi.fn()} value="" />);
-    expect(screen.getByRole("button", { name: "기한 달력 열기" }).textContent).toBe("YYYY-MM-DD");
+    expect(screen.getByRole("button", { name: "기한 달력 열기" }).textContent).toBe("YYYY/MM/DD");
   });
 
   // AX 카드는 점 구분자와 「▾」로 낸다 — 보이는 글자만 바뀌고 오가는 값은 그대로 ISO 다 (main #3)

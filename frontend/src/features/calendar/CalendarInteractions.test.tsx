@@ -226,7 +226,7 @@ describe("R3·R4 — 좌우 손잡이 (WARN-A 가 코드에 있다)", () => {
     pointAt(container, "2027-03-20");
     fireEvent(window, pointerish("pointermove"));
     fireEvent(window, pointerish("pointerup"));
-    await waitFor(() => expect(onError).toHaveBeenCalledWith("시작일은 마감일보다 뒤일 수 없습니다."));
+    await waitFor(() => expect(onError).toHaveBeenCalledWith("시작일은 마감일보다 늦을 수 없습니다."));
     expect(updateTask).not.toHaveBeenCalled();
   });
 

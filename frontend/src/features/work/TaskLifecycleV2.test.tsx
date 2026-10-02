@@ -393,7 +393,7 @@ describe("수락 뒤의 제안 (U-9 · V-19·V-20)", () => {
     const prompt = await screen.findByRole("dialog", { name: "조건 변경 제안" });
     fireEvent.change(within(prompt).getByLabelText("업무 명"), { target: { value: "디자인 시안 두 벌" } });
     // 기한을 «비우는» 것도 조건 변경이다 — 그 뜻은 `null` 이지 빈 문자열이 아니다.
-    fireEvent.click(within(prompt).getByRole("button", { name: `${"기한"} ${"달력 열기"}` }));
+    fireEvent.click(within(prompt).getByRole("button", { name: `${"마감일"} ${"달력 열기"}` }));
     fireEvent.click(await screen.findByRole("button", { name: "지우기" }));
     fireEvent.click(within(prompt).getByRole("button", { name: "제안 보내기" }));
 
@@ -433,7 +433,7 @@ describe("수락 뒤의 제안 (U-9 · V-19·V-20)", () => {
     renderDrawer(requestTask);
 
     const section = await screen.findByLabelText("응답 대기 제안");
-    expect(section.textContent).toContain("기한");
+    expect(section.textContent).toContain("마감일");
     expect(section.textContent).toContain("2026/09/30");
 
     fireEvent.click(within(section).getByRole("button", { name: "동의" }));

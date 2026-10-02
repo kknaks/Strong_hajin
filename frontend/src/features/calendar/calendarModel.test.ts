@@ -273,7 +273,7 @@ describe("railCards", () => {
     const undated = task({ task_id: "t9", start_date: null, due_date: null, span_from: null, span_to: null });
     const cards = railCards([undated], "all", scope);
     expect(cards).toHaveLength(1);
-    expect(cards[0].when).toBe("기한 없음");
+    expect(cards[0].when).toBe("마감일 없음");
   });
 
   it("업무의 시간 배정은 카드가 아니라 업무 카드의 meta 줄로 접힌다", () => {

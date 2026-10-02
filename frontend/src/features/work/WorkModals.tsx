@@ -58,7 +58,7 @@ import {
   stageActionMaterialFile,
   stageActionMaterialLink,
 } from "../../lib/api";
-import { blockingChildReasonLabel, cancelReasonLabel, datePickerLabel, taskDetail, hiddenPredecessorsText, predecessorsUnfinishedText, projectLockedByPredecessorsText, derivedApprovalLabel, derivedAssignmentLabel, dueDayText, emptyActionLabel, formatDate, formatDateTime, formatMonthLong, isOverdue, isoDateInSeoul, personName, proposalFieldLabel, proposalKindLabel, selectLabel, seoulToday, taskStateLabel, weekdayNames, workRequestStateLabel } from "../../lib/labels";
+import { blockingChildReasonLabel, cancelReasonLabel, datePickerLabel, taskDetail, hiddenPredecessorsText, predecessorsUnfinishedText, projectLockedByPredecessorsText, derivedApprovalLabel, derivedAssignmentLabel, dueDayText, emptyActionLabel, formatDate, formatDateTime, formatMonthLong, isOverdue, isoDateInSeoul, personName, proposalFieldLabel, taskDateLabel, proposalKindLabel, selectLabel, seoulToday, taskStateLabel, weekdayNames, workRequestStateLabel } from "../../lib/labels";
 import { DateField } from "../../ds/DateField";
 import { ConfirmModal, Drawer, Modal, type OverlayShellProps } from "../../ds/Modal";
 import { Skeleton } from "../../ds/Skeleton";
@@ -162,8 +162,9 @@ const HISTORY_FIELD_LABEL: Record<string, string> = {
   description: "업무 내용",
   state: "상태",
   block_reason: "막힘 사유",
-  start_date: "시작일",
-  due_date: "기한",
+  /* 이력도 업무 상세 안이라 상세의 이름을 쓴다 — 「시작 예정일」 (SPEC-007 §2.2). */
+  start_date: taskDateLabel.plannedStart,
+  due_date: taskDateLabel.due,
   assignee: "담당자",
   checklist: "체크리스트",
   materials: "참고 자료",
@@ -1075,7 +1076,7 @@ export function TaskDetailDrawer({
       return;
     }
     if (startDate && dueDate && startDate > dueDate) {
-      onError("시작일은 기한보다 늦을 수 없습니다.");
+      onError(`${taskDateLabel.plannedStart}은 ${taskDateLabel.due}보다 늦을 수 없습니다.`);
       return;
     }
     const patch: TaskPatch = {};
@@ -1894,7 +1895,7 @@ export function TaskDetailDrawer({
            */
           <ChipRow>
             <StatusText state={task.state} />
-            {isOverdue(task, today) && <Badge tone="danger">기한 초과</Badge>}
+            {isOverdue(task, today) && <Badge tone="danger">{taskDateLabel.overdue}</Badge>}
             <Badge tone="outline">v{current.version}</Badge>
             {/*
               * **「편집」은 A(기본)에만 선다** (OQ-702) — 연결 편집 중(C)에는 없고, 읽기 전용에는
@@ -1973,8 +1974,15 @@ export function TaskDetailDrawer({
             )}
             <div className="meta__facts">
               <span>{taskDetail.metaAssignee} <b>{ownerName}</b></span>
+              {/*
+                * 날짜 넷 — 시작 예정일 · 실제 시작일 · 실제 종료일 · 마감일 순이고 **값이 없는 칸은 서지 않는다**
+                * (SPEC-007 §2.2 · WORK-009 2b-1). 「편집」 중에는 예정 둘이 아래 입력칸이 되고 실제 둘은 글자로 남는다.
+                * 실제 두 값은 시각이라 `formatDate` 가 서울 날짜로 옮겨 낸다.
+                */}
+              {!metaEditing && shown.start_date && <span>{taskDetail.metaPlannedStart} <b>{formatDate(shown.start_date)}</b></span>}
+              {shown.started_at && <span>{taskDetail.metaActualStart} <b>{formatDate(shown.started_at)}</b></span>}
+              {shown.completed_at && <span>{taskDetail.metaActualEnd} <b>{formatDate(shown.completed_at)}</b></span>}
               {!metaEditing && shown.due_date && <span>{taskDetail.metaDue} <b>{formatDate(shown.due_date)}</b></span>}
-              {!metaEditing && shown.start_date && <span>{taskDetail.metaStart} <b>{formatDate(shown.start_date)}</b></span>}
               {shown.approver_id && (
                 <span>{taskDetail.metaApprover} <b>{displayNameOf(personas ?? [], shown.approver_id)}</b></span>
               )}
@@ -2010,7 +2018,7 @@ export function TaskDetailDrawer({
                   formatMonth={formatMonthLong}
                   hideLabel={false}
                   id={`task-start-${task.task_id}`}
-                  label="시작일"
+                  label={taskDateLabel.plannedStart}
                   labels={datePickerLabel}
                   onChange={setStartDate}
                   today={seoulToday()}
@@ -2021,7 +2029,7 @@ export function TaskDetailDrawer({
                   formatMonth={formatMonthLong}
                   hideLabel={false}
                   id={`task-due-${task.task_id}`}
-                  label="기한"
+                  label={taskDateLabel.due}
                   labels={datePickerLabel}
                   onChange={setDueDate}
                   today={seoulToday()}
@@ -3850,7 +3858,7 @@ export function WorkRequestDetailDrawer({
           <dd>{assigneeName}</dd>
         </div>
         <div>
-          <dt>희망 기한</dt>
+          <dt>{taskDateLabel.due}</dt>
           <dd>{request.due_date ? `${formatDate(request.due_date)} (${dueDayText(request.due_date, today)})` : "없음"}</dd>
         </div>
         <div>
@@ -3950,7 +3958,7 @@ export function WorkRequestDetailDrawer({
           formatMonth={formatMonthLong}
           labels={datePickerLabel}
           today={seoulToday()}
-          weekdayNames={weekdayNames} id="revision-due" label="희망 기한" onChange={(next) => setRevision({ ...revision, due_date: next })} value={revision.due_date} />
+          weekdayNames={weekdayNames} id="revision-due" label={taskDateLabel.due} onChange={(next) => setRevision({ ...revision, due_date: next })} value={revision.due_date} />
             </div>
             <div className="scax-field">
               <label className="scax-field__label" htmlFor="revision-description">요청 내용</label>
@@ -3973,7 +3981,7 @@ export function WorkRequestDetailDrawer({
                   )}
                   {revisionChanges(revision).due_date !== undefined && (
                     <li>
-                      <b>희망 기한</b>: <s>{request.due_date ? formatDate(request.due_date) : "없음"}</s> →{" "}
+                      <b>{taskDateLabel.due}</b>: <s>{request.due_date ? formatDate(request.due_date) : "없음"}</s> →{" "}
                       <b>{revision.due_date ? formatDate(revision.due_date) : "없음"}</b>
                     </li>
                   )}
@@ -4066,7 +4074,7 @@ export function WorkRequestDetailDrawer({
                     <ul className="diff-list">
                       {Object.entries(submission.diff).map(([key, change]) => (
                         <li key={key}>
-                          <span className="t-meta">{key === "title" ? "제목" : key === "description" ? "내용" : key === "due_date" ? "기한" : key}</span>
+                          <span className="t-meta">{key === "title" ? "제목" : key === "description" ? "내용" : key === "due_date" ? taskDateLabel.due : key}</span>
                           <s>{diffValue(key, change.before)}</s> → <b>{diffValue(key, change.after)}</b>
                         </li>
                       ))}
@@ -4827,7 +4835,7 @@ export function CreateWorkModal({
      * 제출을 막지는 않는다 — 안 보내는 값이 사람을 세우면 고칠 자리가 없다.
      */
     if (effectiveStartDate && dueDate && effectiveStartDate > dueDate) {
-      onError(kind === "task" ? "시작일은 기한보다 늦을 수 없습니다." : "시작일은 희망 기한보다 늦을 수 없습니다.");
+      onError(taskDateLabel.startAfterDue);
       return;
     }
     /*
@@ -5359,7 +5367,7 @@ export function CreateWorkModal({
               <div className="scax-field-row">
                 {(
                   <div className="scax-field">
-                    <label className="scax-field__label" htmlFor="new-task-start">시작일</label>
+                    <label className="scax-field__label" htmlFor="new-task-start">{taskDateLabel.start}</label>
                     <DateField
                       formatMonth={formatMonthLong}
                       labels={datePickerLabel}
@@ -5367,14 +5375,14 @@ export function CreateWorkModal({
                       weekdayNames={weekdayNames}
                       hideLabel
                       id="new-task-start"
-                      label="시작일"
+                      label={taskDateLabel.start}
                       onChange={setStartDate}
                       value={startDate}
                     />
                   </div>
                 )}
                 <div className="scax-field">
-                  <label className="scax-field__label" htmlFor="new-task-due">{kind === "task" ? "마감일" : "희망 기한"}</label>
+                  <label className="scax-field__label" htmlFor="new-task-due">{taskDateLabel.due}</label>
                   <DateField
                     formatMonth={formatMonthLong}
                     labels={datePickerLabel}
@@ -5382,7 +5390,7 @@ export function CreateWorkModal({
                     weekdayNames={weekdayNames}
                     hideLabel
                     id="new-task-due"
-                    label={kind === "task" ? "마감일" : "희망 기한"}
+                    label={taskDateLabel.due}
                     onChange={setDueDate}
                     value={dueDate}
                   />

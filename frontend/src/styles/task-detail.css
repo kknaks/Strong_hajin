@@ -103,6 +103,13 @@
   color: var(--scax-color-ink-assistive);
 }
 .scax-td .meta__facts b { color: var(--scax-color-ink-alt); font-weight: 600; }
+/* 출처 줄(「AX 제안에서 생성됨 [링크]」) — 사실 줄 **아래**에 DS 간격 하나를 두고 같은 글자 계층(12px)으로 선다
+   (SPEC-007 §2.2 「출처 줄」 · WORK-009 2b-1 · E2E-4). `.origin-chip` 의 전역 규칙(screens-a.css)은 위 여백이 0 이라
+   두 줄이 붙어 있었다 — 이 자리만 `.scax-td` 스코프로 덮는다. */
+.scax-td .meta__facts + .origin-chip { margin: var(--scax-space-200) 0 var(--scax-space-100); font-size: var(--scax-text-caption1-size); }
+/* 줄 안의 자식은 자기 클래스가 크기를 정한다 — 배지는 이미 caption1(12px)이고, 링크(`.scax-button--inline` · label2 13px)와
+   링크가 없는 화면의 글자(`small.t-meta` 13px)를 같은 caption1 로 내린다. 사실 줄(12px)과 한 계층이다 (W1). */
+.scax-td .meta__facts + .origin-chip :is(.scax-button--inline, .t-meta) { font-size: var(--scax-text-caption1-size); line-height: var(--scax-text-caption1-lh); }
 /* ~~`.meta__right`~~ 는 **놓았다** — 시안에서는 메타 줄이 오른쪽(상태 배지·「편집」·「AX」)까지
    들지만 우리는 그것을 **겹의 머리줄**(`headerExtra`)에 얹는다. 제목을 두 번 그리지 않으려는
    선택이고(§2.2), 그래서 이 클래스를 붙이는 요소가 **하나도 없다.** 안 맞는 규칙을 남겨 두면

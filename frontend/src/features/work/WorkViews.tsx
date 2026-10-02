@@ -4,7 +4,7 @@ import { Avatar } from "../../ds/Avatar";
 import { Badge } from "../../ds/Badge";
 import { Button, IconButton } from "../../ds/Button";
 import { SegmentedControl } from "../../ds/SegmentedControl";
-import { addDays, dayDifference, dueDayText, formatDate, formatMonth, isOverdue, isoDateInSeoul, seoulToday, taskStateLabel } from "../../lib/labels";
+import { addDays, dayDifference, dueDayText, formatDate, formatMonth, isOverdue, isoDateInSeoul, seoulToday, taskDateLabel, taskStateLabel } from "../../lib/labels";
 import type { DirectTask, TaskState } from "../../lib/viewModels";
 import { mondayOf, weekWindow } from "../../lib/weekWindow";
 import { allowedTaskTransitions, BlockReasonPrompt, StatusText, type TaskAction } from "./WorkModals";
@@ -150,14 +150,14 @@ export function TaskListRow({ task, onOpen, right }: { task: DirectTask; onOpen:
           {task.block_reason
             ? `막힘 사유: ${task.block_reason}`
             : task.due_date
-              ? `기한 ${formatDate(task.due_date)} (${dueDayText(task.due_date, seoulToday())})`
+              ? `${taskDateLabel.due} ${formatDate(task.due_date)} (${dueDayText(task.due_date, seoulToday())})`
               : task.start_date
-                ? `${formatDate(task.start_date)} 시작`
-                : `${formatDate(isoDateInSeoul(task.created_at))} 등록`}
+                ? `시작 ${formatDate(task.start_date)}`
+                : `등록 ${formatDate(isoDateInSeoul(task.created_at))}`}
         </small>
       </div>
       <div className="task-row-right">
-        {isOverdue(task, seoulToday()) && <Badge tone="danger">기한 초과</Badge>}
+        {isOverdue(task, seoulToday()) && <Badge tone="danger">{taskDateLabel.overdue}</Badge>}
         <StatusText state={task.state} />
         {right}
       </div>
@@ -249,8 +249,8 @@ function segmentLabel(segment: CalendarSegment): string {
   const dates =
     span.start === span.end
       ? task.due_date && !task.start_date
-        ? `${formatDate(span.start)} 기한`
-        : `${formatDate(span.start)} 시작`
+        ? `${taskDateLabel.due} ${formatDate(span.start)}`
+        : `시작 ${formatDate(span.start)}`
       : `${formatDate(span.start)} – ${formatDate(span.end)}`;
   return `${task.title} · ${dates} · ${taskStateLabel[task.state]}`;
 }
@@ -603,7 +603,7 @@ export function TaskKanban({
                 >
                   <b>{task.title}</b>
                   <small className={task.block_reason ? "reason" : ""}>
-                    {task.block_reason ? `막힘 사유: ${task.block_reason}` : `${formatDate(isoDateInSeoul(task.created_at))} 시작 · v${task.version}`}
+                    {task.block_reason ? `막힘 사유: ${task.block_reason}` : `시작 ${formatDate(isoDateInSeoul(task.created_at))} · v${task.version}`}
                   </small>
                 </article>
               ))}

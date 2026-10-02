@@ -7,7 +7,7 @@ import { Button } from "../ds/Button";
 import { Empty } from "../ds/Empty";
 import { Skeleton } from "../ds/Skeleton";
 import { StatusNote } from "../ds/StatusNote";
-import { formatDate, personName, workRequestStateLabel } from "../lib/labels";
+import { formatDate, personName, taskDateLabel, workRequestStateLabel } from "../lib/labels";
 import type { Persona } from "../lib/viewModels";
 
 export type InboxState = "loading" | "error" | "ready";
@@ -68,7 +68,7 @@ export function InboxRail({ items, state, personas, personaId = "", onOpen, onRe
             <span className="scax-inbox-card__meta-who">
               {item.requester_kind === "system" ? "회의" : personName(personas.find((person) => person.id === item.requester_id)?.display_name ?? "요청자")}
             </span>
-            {item.due_date && <><span className="scax-inbox-card__meta-sep" /><span>기한 {formatDate(item.due_date)}</span></>}
+            {item.due_date && <><span className="scax-inbox-card__meta-sep" /><span>{taskDateLabel.due} {formatDate(item.due_date)}</span></>}
           </div>
         </div>
         {/*

@@ -230,7 +230,7 @@ describe("adjustment and resubmission", () => {
     expect(within(summary).getByText(/견적 재검토 \(기한 조정\)/)).toBeTruthy();
     // A changed due date in the pre-submit summary is formatted too, never raw ISO.
     // 9월 격자는 8/30~10/10 이라 10/05 를 그 자리에서 누를 수 있다
-    pickDate(drawer, "희망 기한", "2026-10-05");
+    pickDate(drawer, "마감일", "2026-10-05");
     expect(within(summary).getByText("2026/09/20")).toBeTruthy();
     expect(within(summary).getByText("2026/10/05")).toBeTruthy();
     expect(summary.textContent).not.toMatch(/2026-\d\d-\d\d/);
@@ -363,8 +363,8 @@ describe("the structured change proposal and the discussion", () => {
     fireEvent.click(await within(drawer).findByRole("button", { name: "제안대로 채우기" }));
 
     expect((within(drawer).getByLabelText("요청할 업무") as HTMLInputElement).value).toBe("견적 재검토 (기한 조정)");
-    // 달력 트리거의 글자가 곧 값이다 — 이 화면은 구분자를 주지 않아 ISO 그대로 선다
-    expect(dateTrigger(drawer, "희망 기한").textContent).toBe("2026-09-30");
+    // 달력 트리거의 글자가 곧 값이다 — 입력칸도 읽기 화면과 같은 `2026/09/30` 이다(SPEC-001 U-17 · OQ-Q ③)
+    expect(dateTrigger(drawer, "마감일").textContent).toBe("2026/09/30");
     // Untouched fields keep the round's own value rather than being blanked by the proposal.
     expect((within(drawer).getByLabelText("요청 내용") as HTMLTextAreaElement).value).toBe("처음 설명");
     expect(api.runActionCommand).not.toHaveBeenCalled();
@@ -387,7 +387,7 @@ describe("the structured change proposal and the discussion", () => {
     const drawer = await screen.findByRole("dialog", { name: "판단 상세" });
     fireEvent.click(within(drawer).getByRole("button", { name: "조정 요청" }));
     fireEvent.change(await within(drawer).findByLabelText("조정 요청 사유"), { target: { value: "기한을 늦춰 주세요" } });
-    pickDate(drawer, "제안: 희망 기한", "2026-09-30");
+    pickDate(drawer, "제안: 마감일", "2026-09-30");
     fireEvent.click(within(drawer).getByRole("button", { name: "조정 요청 확정" }));
 
     await waitFor(() => expect(api.runActionCommand).toHaveBeenCalled());

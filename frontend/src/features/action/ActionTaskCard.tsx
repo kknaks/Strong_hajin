@@ -9,7 +9,7 @@ import { Button } from "../../ds/Button";
 import { discardActionMaterialDraft, stageActionMaterialFile, stageActionMaterialLink } from "../../lib/api";
 import { DateField } from "../../ds/DateField";
 import { Empty } from "../../ds/Empty";
-import { axDraftCard, datePickerLabel, formatDate, formatDateTime, formatMonthLong, seoulToday, weekdayNames } from "../../lib/labels";
+import { axDraftCard, datePickerLabel, formatDate, formatDateTime, formatMonthLong, seoulToday, taskDateLabel, weekdayNames } from "../../lib/labels";
 import { Icon } from "../../ds/icons/Icon";
 import { useEscape } from "../../ds/Modal";
 import { useActionDraft } from "../work/useActionDraft";
@@ -29,7 +29,7 @@ export type TaskDraft = {
 };
 
 function taskPreviewValue(kind: string, value: string): string {
-  if (kind === "date") return formatDate(value).replaceAll("/", ".");
+  if (kind === "date") return formatDate(value);
   if (kind === "datetime") return formatDateTime(value);
   if (kind === "person") return personDisplayName(value);
   return value;
@@ -137,7 +137,6 @@ export function TaskDraftFields({
           today={seoulToday()}
           weekdayNames={weekdayNames}
           disabled={disabled}
-          displaySeparator="."
           id={id}
           label={field.label}
           onChange={(value) => onChange(replace(draft, field.id, value || null))}
@@ -363,7 +362,7 @@ export function ActionTaskCard({
       }
     }
     if (draft.start_date && draft.due_date && draft.start_date > draft.due_date) {
-      return { field: "due_date", message: "기한은 시작일보다 빠를 수 없습니다." };
+      return { field: "due_date", message: `${taskDateLabel.due}은 시작일보다 빠를 수 없습니다.` };
     }
     return null;
   }
@@ -372,7 +371,7 @@ export function ActionTaskCard({
     if (/제목|title/i.test(message)) return "title";
     if (/담당|assignee/i.test(message)) return "assignee_id";
     if (/시작|start_date/i.test(message)) return "start_date";
-    if (/기한|due_date|schedule/i.test(message)) return "due_date";
+    if (/마감일|기한|due_date|schedule/i.test(message)) return "due_date";
     if (/project|프로젝트/i.test(message)) return "project_id";
     if (/reference|참고 업무/i.test(message)) return "reference_task_ids";
     return null;

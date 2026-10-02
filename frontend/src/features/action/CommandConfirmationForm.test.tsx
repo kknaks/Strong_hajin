@@ -103,3 +103,21 @@ it('selects report occurrences by labels and keeps their complete references aft
   fireEvent.click(screen.getByRole('button', { name: '이 내용으로 반영' }));
   await waitFor(() => expect(onCommand).toHaveBeenCalledWith('confirm', { base_submission_version: 1, draft: { report_id: 'bound', exclude_source_refs: [source] } }));
 });
+
+/* 날짜 칸은 DS 달력 칸이다 — 보이는 날짜가 `2026/10/06` 이고 값은 ISO 로 오간다 (SPEC-001 U-17 · WORK-009 2b fix1 · W3). */
+it('renders a date field as the DS date control in the 2026/10/06 form and sends ISO', async () => {
+  const dated: ActionEditContract = {
+    editor: 'command', base_submission_version: 1,
+    values: { task_id: 'task-1', due_date: '2026-10-06' },
+    fields: [{ id: 'due_date', label: '마감일', type: 'date', required: false, editable: true, empty_policy: 'omit' }],
+  };
+  const onCommand = vi.fn().mockResolvedValue(undefined);
+  render(<CommandConfirmationForm actionId="dated" principalId="mina" contract={dated} commands={commands} onCommand={onCommand} />);
+  expect(document.querySelector('input[type="date"]')).toBeNull();
+  const trigger = screen.getByRole('button', { name: '마감일 달력 열기' });
+  expect(trigger.textContent).toBe('2026/10/06');
+  fireEvent.click(trigger);
+  fireEvent.click(screen.getByRole('group', { name: '마감일' }).querySelector('[data-date="2026-10-08"]') as HTMLElement);
+  fireEvent.click(screen.getByRole('button', { name: '이 내용으로 반영' }));
+  await waitFor(() => expect(onCommand).toHaveBeenCalledWith('confirm', { base_submission_version: 1, draft: { task_id: 'task-1', due_date: '2026-10-08' } }));
+});

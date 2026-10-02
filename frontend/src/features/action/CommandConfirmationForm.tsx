@@ -1,5 +1,7 @@
 import { useId, useState } from 'react';
 import { Button } from "../../ds/Button";
+import { DateField } from "../../ds/DateField";
+import { datePickerLabel, formatMonthLong, seoulToday, weekdayNames } from "../../lib/labels";
 import { useActionDraft } from '../work/useActionDraft';
 import type { ActionCommand, ActionEditContract, ActionEditField } from '../../lib/viewModels';
 
@@ -94,7 +96,11 @@ export function CommandConfirmationForm({ actionId, principalId, contract, comma
     if (field.type === 'string_list') return <textarea id={id} required={field.required} value={Array.isArray(value) ? value.join('\n') : ''} onChange={event => set(field.id, event.target.value.split('\n').filter(Boolean))} />;
     if (field.type === 'textarea') return <textarea id={id} required={required} value={String(value ?? '')} onChange={event => set(field.id, event.target.value || empty)} />;
     if (field.type === 'datetime') return <input id={id} type="datetime-local" required={required} value={localDateTime(value)} onChange={event => set(field.id, event.target.value ? new Date(event.target.value).toISOString() : empty)} />;
-    return <input id={id} type={field.type === 'date' ? 'date' : 'text'} required={required} value={String(value ?? '')} onChange={event => set(field.id, event.target.value || empty)} />;
+    /* 날짜 칸은 DS 달력 칸 — 보이는 날짜가 `2026/10/06` 이고(SPEC-001 U-17 · OQ-Q ③) 값은 ISO 그대로 오간다.
+       네이티브 `type="date"` 는 브라우저 로캘을 따라 `2026. 10. 06.` 처럼 보였다(WORK-009 2b fix1 · W3).
+       이름은 위의 라벨이 이미 그리므로 칸 안의 라벨은 화면에서 숨긴다. */
+    if (field.type === 'date') return <DateField formatMonth={formatMonthLong} hideLabel id={id} label={field.label} labels={datePickerLabel} onChange={next => set(field.id, next || empty)} required={required} today={seoulToday()} value={String(value ?? '')} weekdayNames={weekdayNames} />;
+    return <input id={id} type="text" required={required} value={String(value ?? '')} onChange={event => set(field.id, event.target.value || empty)} />;
   }
 
   return <form className="action-command-editor" aria-label="변경 내용 확인" onSubmit={event => { event.preventDefault(); if (confirm && !recovered.stale) void run(confirm.id); }}>
