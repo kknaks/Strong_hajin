@@ -173,5 +173,12 @@ class ProviderResponseInvalid(ProviderRequestFailed):
     """Invalid final output is terminal; repeating the agent could repeat domain effects."""
 
 
+class ProviderSessionUnavailable(ProviderRequestFailed):
+    """The session asked to resume does not exist where this process runs (e.g. it was opened in another pod).
+
+    Repeating the same resume cannot succeed; a caller that can rebuild the context opens a new session instead.
+    """
+
+
 class ProviderCancelled(ProviderFailure):
     """The execution was stopped because the turn was cancelled; not a provider fault."""

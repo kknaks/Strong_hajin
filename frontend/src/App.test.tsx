@@ -445,6 +445,9 @@ describe("product surfaces", () => {
     expect(within(createDrawer).queryByRole("tab", { name: "업무" })).toBeNull();
     expect(within(createDrawer).queryByRole("tab", { name: "요청" })).toBeNull();
     await screen.findByLabelText("담당 후보");
+    // WORK-008 B-02: 요청 갈래의 담당은 빈칸으로 시작한다 — 보낼 사람을 직접 고른다.
+    fireEvent.click(screen.getByLabelText("담당 후보"));
+    fireEvent.click(await screen.findByRole("option", { name: /지호/ }));
     fireEvent.change(screen.getByLabelText("요청할 업무"), { target: { value: "UI로 만든 업무 요청" } });
     fireEvent.click(screen.getByRole("button", { name: "업무 요청 보내기" }));
 
@@ -553,6 +556,56 @@ describe("product surfaces", () => {
     await waitFor(() => expect(decided).not.toBeNull());
     expect(JSON.parse(String(decided))).toEqual({ expected_version: 4 });
     await waitFor(() => expect(document.body.contains(panel)).toBe(false));
+  });
+
+  /* WORK-008 Phase 5 — AX 답변이 가리킨 프로젝트를 누르면 프로젝트 화면으로 가서 «그 프로젝트» 를 연다. */
+  it("opens a project the AX answer referenced on the project surface, on that project", async () => {
+    const projectRow = (id: string, name: string) => ({ project_id: id, name, description: null, starts_on: null, ends_on: null, status: "active", member_count: 1, task_count: 0 });
+    const conversation = {
+      conversation_id: "conversation-1",
+      title: "프로젝트 질문",
+      version: 2,
+      messages: [
+        { message_id: "q", turn_id: "turn-1", role: "user", body: "리뉴얼 프로젝트 어때?", sequence: 1, state: "accepted" },
+        { message_id: "a", turn_id: "turn-1", role: "assistant", body: "리뉴얼 프로젝트는 순조롭습니다.", body_state: "final", sequence: 2, state: "accepted" },
+      ],
+      turns: [{ turn_id: "turn-1", state: "completed", provider_run_ref: null, provider_session_ref: null, error: null }],
+      context_references: [],
+      tool_invocations: [],
+      actions: [],
+      answer_resources: [
+        { reference_id: "ref-p", turn_id: "turn-1", sequence: 1, resource_type: "project", resource_id: "p-2", resource_version: null, title: "내년 리뉴얼", state: null },
+      ],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/organization/members") return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      if (path === "/api/organization/me") {
+        return jsonResponse({ member_id: "mina", display_name: "민아 (구성원)", organizations: [], capabilities: [] });
+      }
+      if (path === "/api/my-work") return jsonResponse([]);
+      if (path === "/api/conversations") return jsonResponse([conversation]);
+      if (path.startsWith("/api/conversations/conversation-1")) return jsonResponse(conversation);
+      if (path === "/api/projects") return jsonResponse([projectRow("p-1", "올해 캠페인"), projectRow("p-2", "내년 리뉴얼")]);
+      if (path === "/api/projects/p-1" || path === "/api/projects/p-2") {
+        const id = path.split("/").at(-1)!;
+        return jsonResponse({ ...projectRow(id, id === "p-2" ? "내년 리뉴얼" : "올해 캠페인"), may_manage: false, members: [], tasks: [] });
+      }
+      if (path.endsWith("/participation-history")) return jsonResponse([]);
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", withSession(fetchMock));
+
+    render(<App />);
+    await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(await screen.findByRole("button", { name: "AX" }));
+    const sources = await screen.findByRole("region", { name: "답변이 가리키는 것" });
+    expect(within(sources).getByText("프로젝트")).toBeTruthy(); // 참조 종류 라벨
+    fireEvent.click(within(sources).getByRole("button", { name: "상세 열기" }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input) === "/api/projects/p-2")).toBe(true));
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === "/api/projects/p-1")).toBe(false);
+    expect(screen.queryByRole("region", { name: "답변이 가리키는 것" })).toBeNull(); // 채팅 서랍은 닫혔다
   });
 
   it("shows an AX ActionItem without decision controls when action.decide is not granted", async () => {

@@ -1,3 +1,4 @@
+import { recallScreenValue, rememberScreenValue, useRemembered, useScreenEpoch } from "../../lib/screenCache";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { Badge, type BadgeTone } from "../../ds/Badge";
@@ -56,15 +57,42 @@ const phaseTone: Record<ReportPhase, BadgeTone> = {
   submitted: "accent",
 };
 
+/** 날짜 하나의 보고 — 생성 상태 · 이력 · 최신 초안. 화면 데이터 기억의 한 칸이다. */
+type ReportSnapshot = {
+  status: DailyReportStatus["generation_status"];
+  history: DailyReportHistory | null;
+  draft: DailyReportDraft | null;
+};
+const reportSnapshotKey = (date: string) => `report.day:${date}`;
+/**
+ * 기억에서 되살리는 생성 상태 (fix1 · 검수 WARN-5). 「생성 중」(queued·running)은 되살리지 않는다 — 그새 끝났을 수
+ * 있는 진행 표시가 잠깐 비치고 폴링이 옛 상태로 다시 도는 것을 막는다. 정말 진행 중이면 갱신 응답이 곧 다시 세운다.
+ */
+const restoredStatus = (status: ReportSnapshot["status"] | undefined): ReportSnapshot["status"] =>
+  status === "queued" || status === "running" ? null : status ?? null;
+
 export function DailyReportPage({ personaId, personaName, onError, onRegisterHeaderActions, onRegisterRefresh }: DailyReportPageProps) {
   const [reportDate, setReportDate] = useState(seoulToday);
-  const [evidence, setEvidence] = useState<DirectTask[]>([]);
-  const [draft, setDraft] = useState<DailyReportDraft | null>(null);
-  const [body, setBody] = useState("");
-  const [history, setHistory] = useState<DailyReportHistory | null>(null);
+  /*
+   * 받아 둔 화면 데이터로 시작한다 (WORK-008 Phase 2 · `lib/screenCache.ts`). 탭을 옮겨 갔다 돌아오면
+   * 근거 업무와 그 날의 보고(초안·이력·생성 상태)를 바로 그리고, 진입 effect 가 뒤에서 다시 읽어 갈아 끼운다.
+   * 보고는 날짜마다 따로 기억한다. 쓰던 글(편집 중인 본문)은 기억하지 않는다 — 받아 둔 초안 본문으로 시작한다.
+   */
+  /** 이 마운트의 세대 — 날짜별 보고를 직접 기억하는 자리가 넘긴다 (fix1). */
+  const screenEpoch = useScreenEpoch();
+  const [initialSnapshot] = useState(() => recallScreenValue<ReportSnapshot>(reportSnapshotKey(seoulToday())));
+  const [evidence, setEvidence] = useRemembered<DirectTask[]>("report.evidence", []);
+  const [draft, setDraft] = useState<DailyReportDraft | null>(initialSnapshot?.draft ?? null);
+  const [body, setBody] = useState(initialSnapshot?.draft?.body ?? "");
+  const [history, setHistory] = useState<DailyReportHistory | null>(initialSnapshot?.history ?? null);
   const [isWorking, setIsWorking] = useState<"generate" | "edit" | "submit" | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [generationStatus, setGenerationStatus] = useState<DailyReportStatus["generation_status"]>(null);
+  const [generationStatus, setGenerationStatus] = useState<DailyReportStatus["generation_status"]>(restoredStatus(initialSnapshot?.status));
+  /**
+   * 이 날의 응답을 받았나 (fix1 · WARN-1). 받아 둔 초안·이력으로 그린 생성·저장·제출 단추는 갱신 응답이 올 때까지
+   * 잠근다 — 기억한 회차로 명령을 보내지 않는다. 받아 둔 것 없이 시작했으면 처음부터 참이다.
+   */
+  const [reportFresh, setReportFresh] = useState(!initialSnapshot);
 
   const submissions = history?.submissions ?? [];
   const generationActive = generationStatus === "queued" || generationStatus === "running";
@@ -144,37 +172,59 @@ export function DailyReportPage({ personaId, personaName, onError, onRegisterHea
           setDraft(null);
           setHistory(null);
         }
+        rememberScreenValue<ReportSnapshot>(reportSnapshotKey(reportDate), { status: status.generation_status, history: null, draft: null }, screenEpoch);
+        setReportFresh(true);
         return status;
       }
       const nextHistory = await getDailyReportHistory(status.report_id);
       if (!shouldApply()) return;
       setHistory(nextHistory);
       const latestDraft = nextHistory.drafts.at(-1);
-      if (!latestDraft) return;
-      setDraft({
+      if (!latestDraft) {
+        rememberScreenValue<ReportSnapshot>(reportSnapshotKey(reportDate), { status: status.generation_status, history: nextHistory, draft: null }, screenEpoch);
+        setReportFresh(true);
+        return;
+      }
+      const nextDraft: DailyReportDraft = {
         report_id: nextHistory.report_id,
         draft_id: latestDraft.draft_id,
         draft_version: latestDraft.version,
         body: latestDraft.body,
         source_refs: latestDraft.source_refs,
         status: nextHistory.status,
-      });
+      };
+      setDraft(nextDraft);
+      rememberScreenValue<ReportSnapshot>(reportSnapshotKey(reportDate), { status: status.generation_status, history: nextHistory, draft: nextDraft }, screenEpoch);
+      // 어떤 다시 읽기든(진입·셸 refresh·생성 폴링) 이 날의 응답을 받으면 잠금이 풀린다 (fix2 · WARN-A).
+      setReportFresh(true);
       setBody((current) => (reset || !isDirtyRef.current ? latestDraft.body : current));
       return status;
     },
-    [reportDate],
+    [reportDate, screenEpoch],
   );
 
   useEffect(() => {
     let cancelled = false;
     onError(null);
-    void loadReport({ reset: true, shouldApply: () => !cancelled }).catch((error: unknown) => {
+    /* 이 날의 보고를 받아 둔 적이 있으면 그것을 먼저 세우고 «비우지 않고» 다시 읽는다 — 빈 화면이 번쩍이지
+       않는다. 없으면 지금처럼 비운 채 읽는다(새 날짜 · 새 사람은 깨끗이 시작한다). */
+    const snapshot = recallScreenValue<ReportSnapshot>(reportSnapshotKey(reportDate));
+    if (snapshot) {
+      setDraft(snapshot.draft);
+      setBody(snapshot.draft?.body ?? "");
+      setHistory(snapshot.history);
+      setNotice(null);
+      setGenerationStatus(restoredStatus(snapshot.status));
+    }
+    setReportFresh(!snapshot);
+    void loadReport({ reset: !snapshot, shouldApply: () => !cancelled })
+      .catch((error: unknown) => {
       if (!cancelled) onError(error instanceof Error ? error.message : "기존 보고 초안을 불러오지 못했습니다.");
     });
     return () => {
       cancelled = true;
     };
-  }, [loadReport, onError, personaId]);
+  }, [loadReport, onError, personaId, reportDate]);
 
   /* 보고일은 이 화면의 유일한 머리 행동이다 — 셸 머리줄에 올린다 (바퀴 8-C). */
   useEffect(() => {
@@ -223,6 +273,13 @@ export function DailyReportPage({ personaId, personaName, onError, onRegisterHea
     return () => onRegisterRefresh?.(null);
   }, [onRegisterRefresh, refreshReport]);
 
+  /** 쓰기 뒤의 새 값을 그 날의 기억에도 남긴다 — 다시 들어왔을 때 옛 초안·이력이 비치지 않는다. */
+  function rememberReport(patch: Partial<ReportSnapshot>) {
+    const key = reportSnapshotKey(reportDate);
+    const current = recallScreenValue<ReportSnapshot>(key) ?? { status: generationStatus, history, draft };
+    rememberScreenValue<ReportSnapshot>(key, { ...current, ...patch }, screenEpoch);
+  }
+
   async function generateDraft() {
     if (draft && isDirty && !window.confirm("저장하지 않은 편집 내용이 있습니다. 새 초안을 만들면 편집 중인 내용은 사라집니다. 계속할까요?")) {
       return;
@@ -233,6 +290,7 @@ export function DailyReportPage({ personaId, personaName, onError, onRegisterHea
     try {
       const accepted = await generateDailyReportDraft(reportDate);
       setGenerationStatus(accepted.generation_status);
+      rememberReport({ status: accepted.generation_status });
       setNotice("일일보고 초안 생성을 접수했습니다. 이 페이지를 닫아도 계속 진행됩니다.");
     } catch (error) {
       onError(error instanceof Error ? error.message : "초안을 생성하지 못했습니다.");
@@ -252,9 +310,13 @@ export function DailyReportPage({ personaId, personaName, onError, onRegisterHea
         draft.draft_version,
         body,
       );
-      setDraft({ ...draft, ...nextDraft });
+      const savedDraft = { ...draft, ...nextDraft };
+      setDraft(savedDraft);
       setBody(nextDraft.body);
-      setHistory(await getDailyReportHistory(draft.report_id));
+      rememberReport({ draft: savedDraft });
+      const savedHistory = await getDailyReportHistory(draft.report_id);
+      setHistory(savedHistory);
+      rememberReport({ history: savedHistory });
       setNotice(`편집을 초안 v${nextDraft.draft_version}으로 저장했습니다.`);
     } catch (error) {
       onError(error instanceof Error ? error.message : "초안을 저장하지 못했습니다.");
@@ -274,7 +336,9 @@ export function DailyReportPage({ personaId, personaName, onError, onRegisterHea
     setNotice(null);
     try {
       await submitDailyReport(draft.report_id, draft.draft_id, draft.draft_version);
-      setHistory(await getDailyReportHistory(draft.report_id));
+      const submittedHistory = await getDailyReportHistory(draft.report_id);
+      setHistory(submittedHistory);
+      rememberReport({ history: submittedHistory });
       setNotice("보고를 제출했습니다. 제출본은 변경되지 않으며 정정이 필요하면 새 초안을 만들어 다시 제출합니다.");
     } catch (error) {
       onError(error instanceof Error ? error.message : "보고를 제출하지 못했습니다.");
@@ -347,7 +411,7 @@ export function DailyReportPage({ personaId, personaName, onError, onRegisterHea
           <div className="report-actions">
             {/* 바퀴 12: 껍데기는 우리 Button(바퀴 3c), 막는 조건은 main(#10)의 generationBlocked 다 */}
             <Button
-              disabled={isWorking !== null || generationBlocked || !reportDate}
+              disabled={isWorking !== null || generationBlocked || !reportDate || !reportFresh}
               onClick={() => void generateDraft()}
               size="sm"
               tone={draft ? "neutral" : "primary"}
@@ -395,12 +459,12 @@ export function DailyReportPage({ personaId, personaName, onError, onRegisterHea
                 />
               </div>
               <div className="report-actions">
-                <Button size="sm" disabled={isWorking !== null || !body.trim() || !isDirty} onClick={() => void saveEdit()}
+                <Button size="sm" disabled={isWorking !== null || !body.trim() || !isDirty || !reportFresh} onClick={() => void saveEdit()}
                   type="button"
                 >
                   {isWorking === "edit" ? "저장 중…" : "편집 저장"}
                 </Button>
-                <Button variant="solid" tone="primary" size="sm" disabled={isWorking !== null || isDirty} onClick={() => void submit()}
+                <Button variant="solid" tone="primary" size="sm" disabled={isWorking !== null || isDirty || !reportFresh} onClick={() => void submit()}
                   type="button"
                 >
                   {isWorking === "submit" ? "제출 중…" : "보고 제출"}

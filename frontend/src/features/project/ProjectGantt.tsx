@@ -55,7 +55,7 @@ export function ProjectGantt({
   /** 오늘 (ISO). **화면이 시계를 들지 않는다** — 부르는 쪽이 넘긴다. */
   today: string;
 }) {
-  const axis = ganttAxis(tasks);
+  const axis = ganttAxis(tasks, today);
   /* 자리 → 닻 → 선 → 접힌 셈. 이 순서가 규칙이다: 닻은 «지금 서 있는 행» 을 보고 정해진다. */
   const placedRows = ganttRows(tasks, collapsed);
   const anchors = anchorIndex(tasks, placedRows);
@@ -135,8 +135,10 @@ function GanttCanvas({
    * 오른쪽에 온다**는 뜻이다: `scrollLeft ≤ offset × day`. 거기서 `openLead` 일만큼 더 물려
    * **앞 며칠도 함께** 보이게 둔다 — 오늘이 화면 맨 왼쪽에 붙으면 「어제까지 무엇이 있었나」가 잘린다.
    *
-   * 오늘이 축 **밖**이면(프로젝트가 이미 끝났거나 아직 시작 전) 가장 가까운 끝으로 접는다 —
-   * 없는 날로 스크롤하지 않는다. 선례는 캘린더 주 뷰(`features/calendar/WeekGrid.tsx:101-111`)다.
+   * **F-03 이후 방어용** — 축은 이제 기본 범위(W-1 ~ W+3, `weekWindow`)가 늘 오늘을 품으므로
+   * 아래 접기(`clamp`)는 도달하지 않는다 (WORK-008 F-03 · SPEC-005 §2.4). 그래도 축 계산이 바뀌어
+   * 오늘이 축 **밖**에 서는 날이 오면 가장 가까운 끝으로 접어 없는 날로 스크롤하지 않게 남겨 둔다.
+   * 선례는 캘린더 주 뷰(`features/calendar/WeekGrid.tsx:101-111`)다. 같은 이유로 `nowLeft` 의 범위 검사도 남긴다.
    */
   const openOffset = Math.min(Math.max(offset, 0), axis.days.length - 1);
   const openLeft = Math.max(0, (openOffset - GANTT.openLead) * GANTT.day);

@@ -19,6 +19,8 @@ class ActionResourceView(TypedDict):
 
 
 class ActionEnvelopeExtensions(TypedDict):
+    #: AX 제안을 만든 시각(ISO 8601). 자동 만료가 없어 화면이 「만든 지 며칠」을 센다 (SPEC-002 §2.4).
+    created_at: NotRequired[str]
     suggested_changes: NotRequired[dict[str, JsonValue]]
     derived_task_id: NotRequired[str | None]
     derived_meeting_id: NotRequired[str | None]

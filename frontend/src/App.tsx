@@ -31,6 +31,7 @@ import { TodayPage } from "./features/today/TodayPage";
 import type { ConversationContextReference, DirectTask, OrganizationProfile, Persona, ProductSurface } from "./lib/viewModels";
 import { type IconName } from "./ds/icons/Icon";
 import { shellNav } from "./lib/labels";
+import { forgetScreenCache, scopeScreenCache } from "./lib/screenCache";
 
 /* 표시 순서는 시안에 맞추고 기존 화면 id·권한 필터·동작은 유지한다. */
 const navigation: ReadonlyArray<{ id: ProductSurface | "materials"; label: string; icon: IconName; disabled?: boolean }> = [
@@ -64,12 +65,33 @@ export default function App() {
   const [focusTaskId, setFocusTaskId] = useState<string | null>(null);
   const [focusWorkRequestId, setFocusWorkRequestId] = useState<string | null>(null);
   const personaId = session?.member_id ?? "";
+  /*
+   * 화면 데이터 기억의 주인 (WORK-008 Phase 2 · `lib/screenCache.ts`).
+   *
+   * 앱이 새로 서면 비우고 시작한다 — 남의 것도 지난 앱의 것도 비치지 않는다. 주인은 **렌더 중에** 정한다:
+   * 자식 화면의 첫 렌더(`useState` 초깃값)와 진입 effect 가 이 값보다 먼저 돌기 때문이다. 사람이 바뀌거나
+   * 비면(로그아웃·세션 만료) `scopeScreenCache` 가 통째로 버린다.
+   */
+  useState(() => {
+    forgetScreenCache();
+    scopeScreenCache(null);
+    return null;
+  });
+  scopeScreenCache(personaId);
+  useEffect(() => {
+    scopeScreenCache(personaId);
+  }, [personaId]);
+  /* 언마운트 때 주인을 내리는 effect 는 두지 않는다 (fix1) — StrictMode 의 이중 effect 가 주인을 내렸다 세우며
+     세대를 올리면, 이미 선 화면들의 세대가 어긋나 개발 모드에서 아무것도 기억하지 못한다. 앱이 새로 설 때
+     위의 초깃값이 비우므로 지난 앱의 데이터는 남지 않는다. */
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [graphFocus, setGraphFocus] = useState<string | null>(null);
   /* 바퀴 6a M-1: 회의는 이제 «한 화면 4칸» 이다. 어느 회의를 보고 있는지는 그 화면의 선택 상태라
      여기서 들지 않는다. 밖(채팅·관계 그래프)에서 회의를 열어 주는 길만 남긴다 — focusTaskId 와 같은 꼴이다.
      이탈 가드도 그 화면으로 옮겨 갔다(M-2) — 이제 «선택을 바꿀 때» 묻는다. */
   const [focusMeetingId, setFocusMeetingId] = useState<string | null>(null);
+  /** 밖(AX 답변의 프로젝트 참조)에서 열어 달라고 온 프로젝트 — focusMeetingId 와 같은 꼴이다 (WORK-008 Phase 5). */
+  const [focusProjectId, setFocusProjectId] = useState<string | null>(null);
   const capabilities = session?.capabilities ?? null;
   const organizationNames = session?.organizations.map((organization) => organization.name) ?? [];
   const [surface, changeSurface] = useState<ProductSurface>("today");
@@ -199,9 +221,12 @@ export default function App() {
   }, [session]);
 
   function resetWorkspace() {
+    // 로그아웃·다른 사람의 로그인·세션 만료 — 이전 사람이 받아 둔 화면 데이터를 남기지 않는다.
+    forgetScreenCache();
     chat.reset();
     setSurface("today");
     setFocusMeetingId(null);
+    setFocusProjectId(null);
     setIsAxOpen(false);
     setContextOptions([]);
     setSelectedContextKey("");
@@ -540,6 +565,8 @@ export default function App() {
                  ⚠ `sharedWorkProps` 를 통째로 넘기지 않는다: 이 화면은 업무 화면의 열 갈래 props 를
                  쓰지 않고, 새 조회도 만들지 않는다 — 셸이 이미 쥔 값을 그대로 내릴 뿐이다. */
               canManageOwnTasks={has("task.self_manage")}
+              focusProjectId={focusProjectId}
+              onFocusHandled={() => setFocusProjectId(null)}
               onNotice={setToast}
               onOpenTask={openTaskInWork}
               onRegisterHeaderActions={registerSurfaceActions}
@@ -693,6 +720,12 @@ export default function App() {
                    `shell.ts` 가 기록한다(조용히 삼키지 않는다). */
                 if (outcome === "absent") window.open(resource.origin, "_blank", "noopener,noreferrer");
               });
+              return;
+            }
+            if (resource.resource_type === "project") {
+              // 프로젝트 화면의 「보던 프로젝트」 경로로 그 프로젝트를 연다 — 화면이 이 사람의 권한으로 다시 읽는다.
+              setFocusProjectId(resource.resource_id);
+              setSurface("project");
               return;
             }
             if (resource.resource_type === "report") setSurface("report");

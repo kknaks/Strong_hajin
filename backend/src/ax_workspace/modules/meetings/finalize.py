@@ -43,6 +43,14 @@ class FinalizeFailed(Exception):
     """
 
 
+class FinalizeSessionLost(Exception):
+    """이어 쓰려던 세션이 **이 자리에 없다** — 다른 프로세스(파드)가 열었거나 재시작으로 사라졌다.
+
+    일반 실패와 다르다: 같은 resume 을 다시 걸어도 같다. 합성은 시도를 쓰지 않고 그 자리에서
+    **콜드 스타트**(확정 발화 전량을 실어 새 세션)로 넘어간다 (WORK-008 Phase 4 · B-03).
+    """
+
+
 @dataclass(slots=True)
 class FinalLine(BatchLine):
     """최종 벌의 줄 하나 — 배치 줄에 **계보 하나**를 더한다 (SPEC §4.2-10 · D54).

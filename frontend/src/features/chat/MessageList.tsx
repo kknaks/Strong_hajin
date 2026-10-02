@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { CommandConfirmationForm } from "../action/CommandConfirmationForm";
 import { ActionCommandButtons, ActionPreviewDetails, actionKicker, actionSubject } from "../action/ActionPreview";
 import { ActionTaskCard } from "../action/ActionTaskCard";
+import { AxDraftCard, axDraftFromAction } from "../action/AxDraftCard";
 import { ActionMeetingCard } from "../action/ActionMeetingCard";
 import { ActionProgressBatchCard } from "../action/ActionProgressBatchCard";
 import { Badge } from "../../ds/Badge";
@@ -303,6 +304,14 @@ function ConversationTimeline({
                 action={action}
                 key={action.action_id}
                 onCommand={(command, payload) => onDecide(action.action_id, action.version, command, payload)}
+              />
+            ) : axDraftFromAction(action) ? (
+              /* AX 업무 생성·요청 초안 — 높이 고정 요약 카드 (SPEC-002 §2.9 · WORK-008 3b). 다른 task 편집 카드는 아래 그대로다. */
+              <AxDraftCard
+                key={`${personaId}:${action.action_id}`}
+                onCommand={(command, payload) => onDecide(action.action_id, action.version, command, payload)}
+                onOpenTask={onOpenTask}
+                source={axDraftFromAction(action)!}
               />
             ) : action.edit_contract?.editor === "task" ? (
               <ActionTaskCard
@@ -672,6 +681,7 @@ const RESOURCE_LABEL: Record<string, string> = {
   work_request: "업무 요청",
   material: "자료",
   report: "보고",
+  project: "프로젝트",
 };
 
 /**

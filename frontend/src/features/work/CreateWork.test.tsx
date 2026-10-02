@@ -170,6 +170,9 @@ describe("writing down the first steps with the work", () => {
     renderDrawer();
     fireEvent.click(screen.getByRole("tab", { name: "요청 업무" }));
     fireEvent.change(screen.getByLabelText("요청할 업무"), { target: { value: "부탁한 업무" } });
+    // WORK-008 B-02: 요청 갈래의 담당은 빈칸으로 시작한다 — 보낼 사람을 직접 고른다.
+    fireEvent.click(screen.getByLabelText("담당 후보"));
+    fireEvent.click(screen.getByRole("option", { name: /지호/ }));
     addStep("현황 파악");
 
     fireEvent.click(screen.getByRole("button", { name: "업무 요청 보내기" }));
@@ -838,5 +841,134 @@ describe("업무만 만들 수 있는 사람의 참조자·결재자", () => {
     await waitFor(() => expect(api.createDirectTask).toHaveBeenCalled());
     expect(vi.mocked(api.createDirectTask).mock.calls[0][1]?.cc_member_ids).toEqual(["sora"]);
     expect(vi.mocked(api.createDirectTask).mock.calls[0][1]?.approver_id).toBe("yuna");
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   WORK-008 B-02 · SPEC-001 U-6-a — 담당자 초깃값과 참조자 후보.
+
+   예전에는 미리 채운 값 없이 열면 담당 후보 첫 사람이 숨은 담당으로 골라졌고, `업무` 갈래에는
+   그 칸이 없는데도 그 값이 참조자 칩을 걸러 동료 한 명이 사라졌다.
+   ════════════════════════════════════════════════════════════════════════════ */
+describe("담당자 초깃값과 참조자 후보 (B-02)", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  const sora = { id: "sora", display_name: "소라 (기획)" } as never;
+  const yuna = { id: "yuna", display_name: "유나" } as never;
+  const onError = vi.fn();
+
+  function renderCreate(extra: Record<string, unknown> = {}) {
+    return render(
+      <CreateWorkModal
+        assigneeCandidates={[jiho, sora]}
+        canCreateRequest
+        canCreateTask
+        ccCandidates={[jiho, sora, yuna]}
+        onClose={vi.fn()}
+        onCreated={vi.fn()}
+        onError={onError}
+        ownerName="민아"
+        {...extra}
+      />,
+    );
+  }
+
+  const ccNames = () =>
+    within(screen.getByRole("group", { name: "참조자" }))
+      .getAllByRole("checkbox")
+      .map((box) => box.closest("label")?.textContent?.trim());
+  const ccBox = (name: string) => within(screen.getByRole("group", { name: "참조자" })).getByRole("checkbox", { name });
+  const toRequest = () => fireEvent.click(within(screen.getByRole("tablist", { name: "생성 유형" })).getByRole("tab", { name: "요청 업무" }));
+  const toTask = () => fireEvent.click(within(screen.getByRole("tablist", { name: "생성 유형" })).getByRole("tab", { name: "내 업무" }));
+  const pickAssignee = (name: RegExp) => {
+    fireEvent.click(screen.getByLabelText("담당 후보"));
+    fireEvent.click(screen.getByRole("option", { name }));
+  };
+
+  it("업무 갈래: 처음 열면 참조자 후보가 본인을 뺀 전원이다 — 담당 후보 첫 사람이 빠지지 않는다", () => {
+    renderCreate();
+    expect(screen.queryByLabelText("담당 후보")).toBeNull();
+    expect(ccNames()).toEqual(["지호", "소라", "유나"]);
+  });
+
+  it("업무 갈래: 숨은 담당 값이 실려 나가지 않는다 — 참조자로 첫 담당 후보를 고를 수 있다", async () => {
+    vi.mocked(api.createDirectTask).mockResolvedValue({ task_id: "t1" } as never);
+    renderCreate();
+    fireEvent.change(screen.getByLabelText("업무 제목"), { target: { value: "내 업무" } });
+    fireEvent.click(ccBox("지호"));
+    fireEvent.click(screen.getByRole("button", { name: "업무 추가" }));
+    await waitFor(() => expect(api.createDirectTask).toHaveBeenCalled());
+    const body = vi.mocked(api.createDirectTask).mock.calls[0][1] as Record<string, unknown>;
+    expect(body.cc_member_ids).toEqual(["jiho"]);
+    expect(body.assignee_id).toBeUndefined();
+  });
+
+  it("요청 갈래: 처음 열면 담당자는 빈칸이고 참조자 후보는 전원이다", () => {
+    renderCreate();
+    toRequest();
+    expect(ccNames()).toEqual(["지호", "소라", "유나"]);
+  });
+
+  it("요청 갈래: 담당자를 고르지 않으면 기존 필수 검사가 막는다", () => {
+    renderCreate();
+    toRequest();
+    fireEvent.change(screen.getByLabelText("요청할 업무"), { target: { value: "부탁" } });
+    fireEvent.click(screen.getByRole("button", { name: "업무 요청 보내기" }));
+    expect(onError).toHaveBeenCalledWith("담당 후보를 선택해 주세요.");
+    expect(api.createWorkRequest).not.toHaveBeenCalled();
+  });
+
+  it("요청 갈래: 고른 담당자만 참조자 후보에서 빠지고, 바꾸면 이전 사람이 돌아온다", () => {
+    renderCreate();
+    toRequest();
+    pickAssignee(/지호/);
+    expect(ccNames()).toEqual(["소라", "유나"]);
+    pickAssignee(/소라/);
+    expect(ccNames()).toEqual(["지호", "유나"]);
+  });
+
+  it("요청 갈래: 참조자로 고른 사람을 담당자로 고르면 그 참조자 선택이 풀린다", async () => {
+    vi.mocked(api.createWorkRequest).mockResolvedValue({ request_id: "r1", title: "부탁" } as never);
+    renderCreate();
+    toRequest();
+    fireEvent.click(ccBox("소라"));
+    fireEvent.click(ccBox("유나"));
+    pickAssignee(/소라/);
+    pickAssignee(/지호/);
+    // 소라는 후보로 돌아오지만 선택은 풀려 있다.
+    expect((ccBox("소라") as HTMLInputElement).checked).toBe(false);
+    expect((ccBox("유나") as HTMLInputElement).checked).toBe(true);
+    fireEvent.change(screen.getByLabelText("요청할 업무"), { target: { value: "부탁" } });
+    fireEvent.click(screen.getByRole("button", { name: "업무 요청 보내기" }));
+    await waitFor(() => expect(api.createWorkRequest).toHaveBeenCalled());
+    expect(vi.mocked(api.createWorkRequest).mock.calls[0][1]).toBe("jiho");
+    expect(vi.mocked(api.createWorkRequest).mock.calls[0][2]?.cc_member_ids).toEqual(["yuna"]);
+  });
+
+  it("요청 갈래에서 고른 담당자가 업무 갈래의 참조자를 거르지 않는다", () => {
+    renderCreate();
+    toRequest();
+    pickAssignee(/지호/);
+    toTask();
+    expect(ccNames()).toEqual(["지호", "소라", "유나"]);
+  });
+
+  it("미리 채운 값으로 여는 「다시 요청」은 그대로다 — 이전 수신자가 담당이고 참조자에서 빠진다", async () => {
+    vi.mocked(api.createWorkRequest).mockResolvedValue({ request_id: "r2", title: "다시" } as never);
+    renderCreate({ initial: { title: "다시", assigneeId: "sora", supersedesRequestId: "r0" } });
+    expect(ccNames()).toEqual(["지호", "유나"]);
+    fireEvent.click(screen.getByRole("button", { name: "업무 요청 보내기" }));
+    await waitFor(() => expect(api.createWorkRequest).toHaveBeenCalled());
+    expect(vi.mocked(api.createWorkRequest).mock.calls[0][1]).toBe("sora");
+  });
+
+  it("미리 채운 값으로 여는 하위 업무는 그대로다 — 담당이 비어 있다", () => {
+    renderCreate({ initial: { parentTaskId: "task-1" } });
+    expect(ccNames()).toEqual(["지호", "소라", "유나"]);
+    toRequest();
+    expect(ccNames()).toEqual(["지호", "소라", "유나"]);
   });
 });

@@ -13,6 +13,9 @@ DEFAULT_DEMO_EMAIL_DOMAIN = "scax.example"
 DEFAULT_MEETING_AI_TOOLS: tuple[str, ...] = ("task_list", "project_list", "meeting_get", "member_list")
 
 
+#: Codex 격리 런타임 홈의 기본 자리. `SCAX_CODEX_RUNTIME_HOME` 이 덮어쓴다.
+DEFAULT_CODEX_RUNTIME_HOME = ".scax/codex-runtime"
+
 #: `AX_AI_PROVIDER`가 받는 값. 순서가 곧 `Settings.ai_provider`의 기본값(`codex`)이다.
 AI_PROVIDERS = ("codex", "claude")
 
@@ -77,6 +80,9 @@ class Settings:
     #: `AiProvider` 계약(`generate`/`converse`)을 구현한다. 결제/쿼터 문제로 한쪽이 막혔을 때 코드
     #: 변경 없이 전환하는 자리이지, 응답 품질이나 도구 선택 정책을 바꾸는 자리가 아니다.
     ai_provider: str = "codex"
+    #: Codex 가 세션·캐시를 두는 격리 런타임 홈(`CODEX_HOME`). 기본은 작업 디렉터리 아래 상대경로다 —
+    #: 프로세스(파드)마다 따로이므로 세션을 다른 프로세스가 이어 쓰려면 같은 자리를 가리켜야 한다.
+    codex_runtime_home: str = DEFAULT_CODEX_RUNTIME_HOME
     #: 이 도메인의 계정만 「바로 로그인」 목록에 오른다 — 그 밖의 실제 계정은 로컬 DB에 있어도 나열되지 않는다.
     demo_email_domain: str = DEFAULT_DEMO_EMAIL_DOMAIN
     web_origin: str = "http://localhost:5173"
@@ -167,6 +173,7 @@ class Settings:
             report_total_timeout_seconds=int(os.getenv("AX_REPORT_TOTAL_TIMEOUT_SECONDS", "900")),
             report_worker_concurrency=int(os.getenv("AX_REPORT_WORKER_CONCURRENCY", "1")),
             ai_provider=os.getenv("AX_AI_PROVIDER", "codex"),
+            codex_runtime_home=os.getenv("SCAX_CODEX_RUNTIME_HOME") or DEFAULT_CODEX_RUNTIME_HOME,
             demo_email_domain=os.getenv("AX_DEMO_EMAIL_DOMAIN", DEFAULT_DEMO_EMAIL_DOMAIN),
             web_origin=os.getenv("AX_WEB_ORIGIN", "http://localhost:5173"),
             room_booking_base_url=os.getenv("TDL_BASE_URL", DEFAULT_ROOM_BOOKING_BASE_URL),

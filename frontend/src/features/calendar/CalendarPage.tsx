@@ -1,3 +1,4 @@
+import { hasScreenValue, recallScreenValue, rememberScreenValue, useScreenEpoch } from "../../lib/screenCache";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 
@@ -117,8 +118,6 @@ export function CalendarPage({
   /** 지금 보고 있는 구간의 기준 날짜. 월 뷰에서는 그 달의 1일, 주 뷰에서는 그 주의 아무 날이다. */
   const [anchor, setAnchor] = useState<string>(() => today);
   const [selected, setSelected] = useState<string | null>(null);
-  const [entries, setEntries] = useState<CalendarEntry[]>([]);
-  const [state, setState] = useState<"loading" | "error" | "ready">("loading");
   const [task, setTask] = useState<DirectTask | null>(null);
   const [busy, setBusy] = useState(false);
   /** 지금 끌고 있는 업무 — 고스트를 그릴지와 가드에 쓴다. 끌 수 있는 것은 업무뿐이다(§F). */
@@ -148,14 +147,40 @@ export function CalendarPage({
     [monthDays, view, weekDays],
   );
 
+  /*
+   * 구간별로 받아 둔 값으로 시작한다 (WORK-008 Phase 2 · `lib/screenCache.ts`). 탭을 옮겨 갔다 돌아오거나
+   * 본 적 있는 달·주로 돌아오면 그 값을 바로 그리고, 아래 진입 effect 가 뒤에서 다시 읽어 갈아 끼운다.
+   * 받아 둔 것이 없는 구간만 「불러오는 중」(레일 스켈레톤)이다.
+   */
+  const rangeKey = `calendar.entries:${range.from}|${range.to}`;
+  const screenEpoch = useScreenEpoch();
+  const [entries, setEntries] = useState<CalendarEntry[]>(() => recallScreenValue<CalendarEntry[]>(rangeKey) ?? []);
+  const [state, setState] = useState<"loading" | "error" | "ready">(() => (hasScreenValue(rangeKey) ? "ready" : "loading"));
+  /**
+   * 갱신 응답을 받은 구간 (fix1 · 검수 WARN-1). 받아 둔 일정으로 그린 업무를 끌어 옮기는 명령은 기억한 envelope
+   * 로 그린 것이라, 그 구간의 갱신 응답이 올 때까지 잠근다. 받아 둔 것 없이 시작했으면 처음부터 그 구간이다.
+   */
+  const [freshRange, setFreshRange] = useState<string | null>(() => (hasScreenValue(rangeKey) ? null : rangeKey));
+  const commandsFresh = freshRange === rangeKey;
+
   const reload = useCallback(async () => {
     const rows = await getCalendar(range.from, range.to);
     setEntries(rows);
-  }, [range.from, range.to]);
+    // 이 마운트의 세대일 때만 기억한다 — 로그아웃 뒤 늦게 온 응답이 다음 사람의 기억에 들지 않는다 (fix1).
+    rememberScreenValue(`calendar.entries:${range.from}|${range.to}`, rows, screenEpoch);
+    // 어떤 다시 읽기든(진입·셸 refresh·쓰기 뒤) 이 구간을 받으면 잠금이 풀린다 (fix2 · WARN-A).
+    setFreshRange(`calendar.entries:${range.from}|${range.to}`);
+  }, [range.from, range.to, screenEpoch]);
 
   useEffect(() => {
     let cancelled = false;
-    setState("loading");
+    const recalled = recallScreenValue<CalendarEntry[]>(rangeKey);
+    if (recalled) {
+      setEntries(recalled);
+      setState("ready");
+    } else {
+      setState("loading");
+    }
     void reload()
       .then(() => {
         if (cancelled) return;
@@ -164,13 +189,14 @@ export function CalendarPage({
       })
       .catch((error: unknown) => {
         if (cancelled) return;
-        setState("error");
+        // 받아 둔 값이 보이고 있으면 지우지 않는다 — 실패는 배너가 말한다.
+        setState(recalled ? "ready" : "error");
         onError(error instanceof Error ? error.message : calendarScreen.loadFailed);
       });
     return () => {
       cancelled = true;
     };
-  }, [onError, reload]);
+  }, [onError, rangeKey, reload]);
 
   // The shell awaits this to know the visible projection has settled; re-reading in place keeps filter/view state.
   useEffect(() => {
@@ -263,6 +289,8 @@ export function CalendarPage({
   const dropTask = useCallback(
     (taskId: string, date: string) => {
       setDragTaskId(null);
+      // 기억한 일정으로 그린 칸에 놓은 것은 보내지 않는다 — 갱신 응답 뒤에만 옮긴다 (fix1 · WARN-1).
+      if (!commandsFresh) return;
       const row = taskRow(taskId);
       // 회의는 애초에 끌리지 않지만(§F), 다른 데서 온 것이면 말로 돌려보낸다.
       if (!row) {
@@ -276,7 +304,7 @@ export function CalendarPage({
       }
       void saveDates(row, moveTaskDates(row, date), calendarDone.moved);
     },
-    [canManageOwnTasks, onError, saveDates, taskRow],
+    [canManageOwnTasks, commandsFresh, onError, saveDates, taskRow],
   );
 
   /**
@@ -337,6 +365,8 @@ export function CalendarPage({
   const dropSlot = useCallback(
     (taskId: string, date: string, minutes: number) => {
       setDragTaskId(null);
+      // 기억한 일정으로 그린 칸에 놓은 것은 보내지 않는다 — 갱신 응답 뒤에만 옮긴다 (fix1 · WARN-1).
+      if (!commandsFresh) return;
       const row = taskRow(taskId);
       if (!row) {
         onError(calendarDeny.meetingReadOnly);
@@ -378,7 +408,7 @@ export function CalendarPage({
         }
       })();
     },
-    [busySpans, canManageOwnTasks, deny, onError, onNotice, reload, taskRow],
+    [busySpans, canManageOwnTasks, commandsFresh, deny, onError, onNotice, reload, taskRow],
   );
 
   /**
@@ -428,7 +458,13 @@ export function CalendarPage({
   );
 
   /** 손잡이를 잡았다 — 아직 어느 칸도 지나지 않았다. */
-  const grabHandle = useCallback((taskId: string, edge: DateEdge) => setGrab({ date: null, edge, taskId }), []);
+  const grabHandle = useCallback(
+    (taskId: string, edge: DateEdge) => {
+      if (!commandsFresh) return; // 기억한 일정으로는 옮기지 않는다 (fix1 · WARN-1)
+      setGrab({ date: null, edge, taskId });
+    },
+    [commandsFresh],
+  );
 
   /**
    * 고스트는 **놓을 수 있는 자리에만** 뜬다 (§2.3 R5). 못 놓는 자리에서도 **받기는 받는다** —
@@ -463,7 +499,9 @@ export function CalendarPage({
         <ScheduleRail
           cards={cards}
           onClearDay={() => setSelected(null)}
-          onDragStart={(card) => setDragTaskId(card.id)}
+          onDragStart={(card) => {
+            if (commandsFresh) setDragTaskId(card.id);
+          }}
           onOpen={(card) => void openTask(card.id)}
           onRetry={() => void reload()}
           onTab={setTab}

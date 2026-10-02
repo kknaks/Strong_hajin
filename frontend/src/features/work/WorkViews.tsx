@@ -1,4 +1,4 @@
-import { useMemo, useState, type DragEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { Avatar } from "../../ds/Avatar";
 
 import { Badge } from "../../ds/Badge";
@@ -6,6 +6,7 @@ import { Button, IconButton } from "../../ds/Button";
 import { SegmentedControl } from "../../ds/SegmentedControl";
 import { addDays, dayDifference, dueDayText, formatDate, formatMonth, isOverdue, isoDateInSeoul, seoulToday, taskStateLabel } from "../../lib/labels";
 import type { DirectTask, TaskState } from "../../lib/viewModels";
+import { mondayOf, weekWindow } from "../../lib/weekWindow";
 import { allowedTaskTransitions, BlockReasonPrompt, StatusText, type TaskAction } from "./WorkModals";
 import { EmptyValue } from "../../ds/Empty";
 import { Icon, type IconName } from "../../ds/icons/Icon";
@@ -382,14 +383,51 @@ export function TaskCalendar({
   );
 }
 
-/* ---------------------------------------------------------------- timeline view (2 weeks) */
+/* ---------------------------------------------------------------- timeline view (W-1 ~ W+3) */
 
+/** 타임라인 하루 칸의 최소 폭 — 프로젝트 간트의 하루 폭(34px)과 같다. CSS `.work-timeline` 의 34px 와 짝이다. */
+const TIMELINE_DAY = 34;
+/** 첫 화면에서 「오늘」 앞에 남겨 두는 날 수 — 간트의 `openLead` 와 같은 뜻이다. */
+const TIMELINE_OPEN_LEAD = 2;
+
+/**
+ * 내 업무 › 타임라인 (SPEC-001 U-16 · WORK-008 D-01).
+ *
+ * 범위는 **프로젝트 간트와 같은 계산**(`weekWindow`)이다 — 오늘 기준 W-1 ~ W+3(월요일 시작 5주),
+ * 범위 밖 업무면 주 경계까지 넓힌다. `‹` `›` 는 기준 주를 1주씩 밀고, **민 창에서는 넓히지 않는다** —
+ * 넓힘은 오늘 기준 첫 화면에만 건다(OQ-P). 「오늘」은 그 첫 화면으로 돌아온다.
+ */
 export function TaskTimeline({ tasks, onOpen }: { tasks: DirectTask[]; onOpen: (task: DirectTask) => void }) {
   const today = seoulToday();
-  const [offset, setOffset] = useState(0);
-  const windowStart = addDays(today, -7 + offset * 14);
-  const days = Array.from({ length: 14 }, (_, index) => addDays(windowStart, index));
-  const windowEnd = days[days.length - 1];
+  /** 기준 주를 오늘의 주에서 몇 주 밀었나. 0 이 오늘 기준 첫 화면이다. */
+  const [weekShift, setWeekShift] = useState(0);
+  const baseWeek = addDays(mondayOf(today), weekShift * 7);
+  const spans = weekShift === 0 ? tasks.flatMap((task) => taskSpan(task) ?? []) : [];
+  const { from: windowStart, to: windowEnd, days } = weekWindow(baseWeek, spans);
+
+  /*
+   * 처음 열 때와 「오늘」을 누를 때 **오늘이 보이게** 가로 스크롤을 맞춘다 (SPEC-005 §2.4 첫 진입 · U-16).
+   * 칸이 최소 폭(34px)으로 접혀야 스크롤이 생기므로 그 폭으로 잰다 — 칸이 넓어진 화면은 스크롤할 것이 없다.
+   * 업무명 열은 왼쪽에 고정돼(`.work-timeline .timeline-label-col` sticky) 뷰포트 왼쪽 그 폭을 늘 덮는다.
+   * 날짜 칸은 그 열 «뒤» 에서 시작하므로 오늘 칸의 x 는 `열 폭 + idx × 34` 이고, 고정 열 바로 오른쪽이
+   * `scrollLeft + 열 폭` 이다 — 그래서 `scrollLeft = (idx - 2) × 34` 면 오늘이 고정 열 뒤에 숨지 않고 두 칸 오른쪽에 선다.
+   * 자료가 갱신될 때마다 되감지 않는다 — 사람이 민 자리를 화면이 도로 빼앗지 않는다 (간트와 같은 규율).
+   */
+  const scroller = useRef<HTMLDivElement | null>(null);
+  const [scrollRequest, setScrollRequest] = useState(0);
+  const todayIndex = days.indexOf(today);
+  const openLeft = todayIndex < 0 ? 0 : Math.max(0, (todayIndex - TIMELINE_OPEN_LEAD) * TIMELINE_DAY);
+  const latestOpen = useRef(openLeft);
+  useEffect(() => {
+    latestOpen.current = openLeft;
+  });
+  useEffect(() => {
+    if (scroller.current) scroller.current.scrollLeft = latestOpen.current;
+  }, [scrollRequest]);
+  const backToToday = () => {
+    setWeekShift(0);
+    setScrollRequest((count) => count + 1);
+  };
 
   const months = days.reduce<Array<{ label: string; start: number; length: number }>>((groups, day, index) => {
     const [year, month] = day.split("-").map(Number);
@@ -404,15 +442,19 @@ export function TaskTimeline({ tasks, onOpen }: { tasks: DirectTask[]; onOpen: (
     <div className="timeline work-timeline">
       <div className="calendar-toolbar">
         <div className="stepper">
-          <IconButton label="이전 2주" onClick={() => setOffset((value) => value - 1)}>
+          <IconButton label="이전 주" onClick={() => setWeekShift((value) => value - 1)}>
             <Icon name="chevron-left-small" size={20} />
           </IconButton>
           <b>
             {formatDate(windowStart)} – {formatDate(windowEnd)}
           </b>
-          <IconButton label="다음 2주" onClick={() => setOffset((value) => value + 1)}>
+          <IconButton label="다음 주" onClick={() => setWeekShift((value) => value + 1)}>
             <Icon name="chevron-right-small" size={20} />
           </IconButton>
+          {/* 「오늘」 — 오늘 기준 첫 화면(넓힘 포함)으로 돌아온다. 모양은 캘린더 보기의 「오늘」과 같은 부품이다. */}
+          <Button size="sm" onClick={backToToday} type="button">
+            오늘
+          </Button>
         </div>
         <div className="timeline-legend">
           <span className="status in_progress">진행 중</span>
@@ -421,7 +463,7 @@ export function TaskTimeline({ tasks, onOpen }: { tasks: DirectTask[]; onOpen: (
           <span className="status open">시작 전</span>
         </div>
       </div>
-      <div className="timeline-scroll">
+      <div className="timeline-scroll" ref={scroller}>
       <div className="timeline-grid" style={{ ["--days" as string]: days.length }}>
         <div className="timeline-months">
           <span className="timeline-label-col">기간</span>

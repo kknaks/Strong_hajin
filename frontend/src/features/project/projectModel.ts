@@ -1,4 +1,5 @@
-import { addDays, dayDifference, formatDate, personName, projectScreen } from "../../lib/labels";
+import { dayDifference, formatDate, personName, projectScreen } from "../../lib/labels";
+import { weekWindow, type WeekWindow } from "../../lib/weekWindow";
 import type { ProjectTaskRow, TaskState } from "../../lib/viewModels";
 
 /**
@@ -229,25 +230,25 @@ export type GanttFlatRow = {
 };
 
 /**
- * 축 — **데이터가 정한다.** 시안의 `{days: 30, today: 17}` 은 목데이터 하드코딩이고 우리에게는 없다.
- * 간트에 설 업무가 하나도 없으면 `null` 이고, 그때 화면은 축 대신 빈 상태를 낸다.
+ * 축 — **기본 범위가 먼저 서고, 데이터는 그것을 넓힐 때만 쓴다** (SPEC-005 §2.4 · WORK-008 F-03).
+ *
+ * 기본 범위는 오늘 기준 W-1 ~ W+3(월요일 시작 5주)이고, 범위 밖으로 나가는 업무가 있으면 주 경계까지
+ * 넓혀 막대를 자르지 않는다. 그 계산은 내 업무 타임라인과 같은 함수(`weekWindow`)다.
+ * 간트에 설 업무가 하나도 없으면 `null` 이고, 그때 화면은 축 대신 빈 상태를 낸다 — 기본 범위만으로
+ * 빈 간트를 세우지 않는다 (L-56).
  */
-export type GanttAxis = { from: string; to: string; days: string[] };
+export type GanttAxis = WeekWindow;
 
-export function ganttAxis(tasks: readonly ProjectTaskRow[]): GanttAxis | null {
+export function ganttAxis(tasks: readonly ProjectTaskRow[], today: string): GanttAxis | null {
   const placed = tasks.filter(hasSpan);
   if (placed.length === 0) return null;
-  let from = placed[0].span_from as string;
-  let to = placed[0].span_to as string;
-  for (const task of placed) {
-    if ((task.span_from as string) < from) from = task.span_from as string;
-    if ((task.span_to as string) > to) to = task.span_to as string;
-  }
-  const length = dayDifference(from, to) + 1;
-  return { from, to, days: Array.from({ length }, (_, offset) => addDays(from, offset)) };
+  return weekWindow(
+    today,
+    placed.map((task) => ({ start: task.span_from as string, end: task.span_to as string })),
+  );
 }
 
-/** 막대의 왼쪽 x 와 폭. 축 밖으로 나가지 않는다 — 축이 데이터에서 나오므로 그럴 일도 없다. */
+/** 막대의 왼쪽 x 와 폭. 축 밖으로 나가지 않는다 — 축이 범위 밖 업무까지 넓혀 서므로 그럴 일도 없다. */
 export function barGeometry(row: ProjectTaskRow, axis: GanttAxis): { left: number; width: number } | null {
   if (!hasSpan(row)) return null;
   const start = dayDifference(axis.from, row.span_from as string);

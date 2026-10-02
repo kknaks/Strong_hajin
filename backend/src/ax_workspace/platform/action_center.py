@@ -588,14 +588,13 @@ class AxProposalActionHandler:
                 else recovery_payload or (dict(version.snapshot) if version else {})
             )
             if item.action_type in SUPPORTED_ACTION_TYPES:
-                normalized_draft = _normalize_ax_draft(
+                # 초안의 필수·검증은 생성 명령의 것뿐이다 — AX 경로에만 거는 필수(예: 기한)를 두지 않는다
+                # (SPEC-001 S-9 6 · WORK-008 P-1). 정규화가 곧 「새 업무 추가」와 같은 입력 모델이다.
+                normalized["draft"] = _normalize_ax_draft(
                     item.action_type,
                     draft,
                     requester_id=str(item.owner_id),
                 )
-                if item.action_type == "task.create_self" and not normalized_draft.get("due_date"):
-                    raise ActionError("업무 기한을 입력해 주세요")
-                normalized["draft"] = normalized_draft
                 if item.action_type in ATTACHABLE_ACTION_TYPES:
                     attachment_source = (
                         payload.get("attachment_draft_ids")
@@ -756,6 +755,8 @@ class AxProposalActionHandler:
             if pending and ACTION_DECIDE in principal.capabilities and not presented.get('obsolete') and record.action_type in COMMAND_CONTRACTS else [],
             # Closing the round trip and carrying the same server-authored editor contract as the chat projection.
             extra={
+                # 만든 시각 — AX 제안은 자동으로 만료되지 않고 카드가 「만든 지 며칠」을 센다 (SPEC-002 §2.4).
+                "created_at": (record.created_at if record.created_at.tzinfo else record.created_at.replace(tzinfo=UTC)).isoformat(),
                 "derived_task_id": self._derived_task_id(record),
                 "derived_meeting_id": self._derived_meeting_id(record),
                 "material_drafts": self._material_drafts.list(principal, record.id) if self._material_drafts else [],

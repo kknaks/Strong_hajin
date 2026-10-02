@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OrgPage } from "./OrgPage";
+import { scopeScreenCache } from "../../lib/screenCache";
 
 afterEach(cleanup);
 
@@ -656,5 +657,58 @@ describe("OrgPage — 겹친 오버레이의 Esc", () => {
     // 한 번 더 누르면 그때 Drawer 가 닫힌다 — 한 번에 한 겹씩.
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "권한 변경" })).toBeNull();
+  });
+});
+
+/* WORK-008 Phase 2 (B-01 · fix1) — 탭 재진입. 탭 이동 = 언마운트 → 다시 마운트, 주인은 App 경로처럼 세운다. */
+describe("OrgPage — 탭 재진입 (B-01)", () => {
+  afterEach(() => scopeScreenCache(null));
+
+  it("다시 들어오면 조직 tree·고른 조직의 구성원이 스켈레톤 없이 바로 서고, 뒤에서 다시 읽는다", async () => {
+    scopeScreenCache("1001");
+    const calls = mockApi({ administers: false });
+    const first = render(<OrgPage onError={vi.fn()} personaId="1001" />);
+    expect(await screen.findByRole("button", { name: /유하람/ })).toBeTruthy();
+    first.unmount();
+
+    // 다시 들어온다 — 서버는 아직 답하지 않는다.
+    const hold = gate();
+    const answered = globalThis.fetch;
+    vi.stubGlobal("fetch", async (...args: Parameters<typeof fetch>) => {
+      await hold.promise;
+      return answered(...args);
+    });
+    const before = calls.length;
+    render(<OrgPage onError={vi.fn()} personaId="1001" />);
+    expect(screen.getByRole("button", { name: /유하람/ })).toBeTruthy();
+    expect(screen.getAllByText("재무회계팀").length).toBeGreaterThan(0);
+    expect(document.querySelector('[aria-busy="true"]')).toBeNull();
+
+    // 뒤에서 다시 읽는다 — 받은 뒤에도 같은 자리가 그대로 선다.
+    await act(async () => hold.open());
+    await waitFor(() => expect(calls.length).toBeGreaterThan(before));
+    expect(screen.getByRole("button", { name: /유하람/ })).toBeTruthy();
+  });
+
+  it("기억한 프로필의 권한으로는 관리 입구를 열지 않는다 — 갱신 응답이 와야 관리 배지가 선다 (fix2 · WARN-C)", async () => {
+    scopeScreenCache("1001");
+    mockApi({ administers: true });
+    const first = render(<OrgPage onError={vi.fn()} personaId="1001" />);
+    expect(await screen.findByText("조직 관리 권한 있음")).toBeTruthy();
+    first.unmount();
+
+    const hold = gate();
+    const answered = globalThis.fetch;
+    vi.stubGlobal("fetch", async (...args: Parameters<typeof fetch>) => {
+      await hold.promise;
+      return answered(...args);
+    });
+    render(<OrgPage onError={vi.fn()} personaId="1001" />);
+    expect(screen.getByRole("button", { name: /유하람/ })).toBeTruthy();
+    expect(screen.queryByText("조직 관리 권한 있음")).toBeNull();
+    expect(screen.queryByRole("region", { name: "변경 기록" })).toBeNull();
+
+    await act(async () => hold.open());
+    expect(await screen.findByText("조직 관리 권한 있음")).toBeTruthy();
   });
 });

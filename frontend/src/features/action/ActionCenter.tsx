@@ -76,13 +76,16 @@ export function ActionItemCard({
   item,
   personas,
   onOpen,
+  disabled = false,
 }: {
   item: ActionItemEnvelope;
   personas: Persona[];
   onOpen: (item: ActionItemEnvelope) => void;
+  /** 기억한 envelope 로 그린 카드 — 화면의 갱신 응답이 오기 전에는 판단을 열지 않는다 (WORK-008 Phase 2 fix1). */
+  disabled?: boolean;
 }) {
   return (
-    <article className="task-card openable" data-action-item-id={item.action_item_id} data-kind={item.kind} onClick={() => onOpen(item)}>
+    <article aria-disabled={disabled || undefined} className="task-card openable" data-action-item-id={item.action_item_id} data-kind={item.kind} onClick={() => !disabled && onOpen(item)}>
       <div className="task-card-top">
         <small className="task-card-kicker">{item.operation_label}</small>
         <StatusText label={statusLabel[item.status]} state={statusTone[item.status]} />
@@ -94,7 +97,7 @@ export function ActionItemCard({
         <span className="task-card-people">{item.waiting_on ? `${personName(item.waiting_on.display_name)} 차례` : "—"}</span>
       </div>
       <div className="task-card-actions">
-        <Button variant="solid" tone="primary" size="sm" onClick={(event) => {
+        <Button variant="solid" tone="primary" size="sm" disabled={disabled} onClick={(event) => {
             event.stopPropagation();
             onOpen(item);
           }}

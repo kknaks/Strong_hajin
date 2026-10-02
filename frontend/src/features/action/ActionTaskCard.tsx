@@ -9,7 +9,7 @@ import { Button } from "../../ds/Button";
 import { discardActionMaterialDraft, stageActionMaterialFile, stageActionMaterialLink } from "../../lib/api";
 import { DateField } from "../../ds/DateField";
 import { Empty } from "../../ds/Empty";
-import { datePickerLabel, formatDate, formatDateTime, formatMonthLong, seoulToday, weekdayNames } from "../../lib/labels";
+import { axDraftCard, datePickerLabel, formatDate, formatDateTime, formatMonthLong, seoulToday, weekdayNames } from "../../lib/labels";
 import { Icon } from "../../ds/icons/Icon";
 import { useEscape } from "../../ds/Modal";
 import { useActionDraft } from "../work/useActionDraft";
@@ -464,7 +464,7 @@ export function ActionTaskCard({
       <section className="scax-actioncard action-task-card" data-action-id={action.action_id} data-state={action.state} data-view={editing ? "editing" : action.state} ref={cardRef}>
       <div className="action-task-content">
         <div className="scax-actioncard__badges">
-          <Badge tone="info">SC AX</Badge>
+          <Badge tone="neutral">{axDraftCard.badge}</Badge>
           <Badge tone={statusBadge.tone}>{statusBadge.label}</Badge>
         </div>
         {editing && contract ? (
@@ -931,7 +931,7 @@ function AttachmentPickerModal({
           {initialMode === "link" && (
             <div className="attachment-picker-form">
               <label>링크 주소<input aria-label="링크 주소" disabled={disabled || linkBusy} onChange={(event) => onChangeLinkUrl(event.target.value)} placeholder="https://" value={linkUrl} /></label>
-              <label>표시할 이름<input aria-label="링크 이름" disabled={disabled || linkBusy} onChange={(event) => onChangeLinkLabel(event.target.value)} placeholder="예: SC AX 디자인 가이드" value={linkLabel} /></label>
+              <label>표시할 이름<input aria-label="링크 이름" disabled={disabled || linkBusy} onChange={(event) => onChangeLinkLabel(event.target.value)} placeholder="예: 디자인 가이드" value={linkLabel} /></label>
               <Button disabled={disabled || linkBusy || !linkUrl.trim() || !linkLabel.trim()} onClick={onSubmitLink} type="button">링크 추가</Button>
             </div>
           )}

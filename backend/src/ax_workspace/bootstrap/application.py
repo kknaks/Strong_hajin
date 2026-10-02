@@ -82,8 +82,9 @@ from ax_workspace.modules.ax_execution.ai import (
     AiDelegatedToolContext,
     AiProvider,
     ProviderFailure,
+    ProviderSessionUnavailable,
 )
-from ax_workspace.platform.codex_cli import CodexCliMcpServer, CodexCliProviderAdapter
+from ax_workspace.platform.codex_cli import CodexCliMcpServer, CodexCliProfile, CodexCliProviderAdapter
 from ax_workspace.platform.claude_cli import ClaudeCliProviderAdapter
 from ax_workspace.platform.conversation_jobs import ConversationJobQueue
 from ax_workspace.platform.durable_jobs import MemoryDurableJobQueue, build_job_queue
@@ -146,7 +147,12 @@ from ax_workspace.modules.meetings.materials import (
     MaterialUpload,
     MeetingMaterialApplication,
 )
-from ax_workspace.modules.meetings.finalize import FINAL_OUTPUT_SCHEMA, FinalNotes, normalize_title
+from ax_workspace.modules.meetings.finalize import (
+    FINAL_OUTPUT_SCHEMA,
+    FinalizeSessionLost,
+    FinalNotes,
+    normalize_title,
+)
 from ax_workspace.modules.meetings.finalize_service import MeetingFinalizeService
 from ax_workspace.modules.meetings.rooms import (
     STATUS_BOOKED,
@@ -488,18 +494,21 @@ class _CodexFinalizeAgent:
 
     def run_final(self, *, persona_id: str, session_ref: str | None, prompt: str) -> str:
         provider = self._application.meeting_batch_provider(self._application._settings.meeting_ai_tool_registry)
-        return provider.converse(
-            AiConversationRequest(
-                prompt=prompt,
-                provider_session_ref=session_ref,
-                context_references=[],
-                delegated_tool_context=AiDelegatedToolContext(
-                    principal_id=persona_id, causation_id=f"meeting-finalize:{persona_id}"
-                ),
-                # 합성도 같은 자리에 자기 스키마를 건다 — 최종 전용 필드가 들어 있는 한 벌이다.
-                output_schema=FINAL_OUTPUT_SCHEMA,
-            )
-        ).body
+        request = AiConversationRequest(
+            prompt=prompt,
+            provider_session_ref=session_ref,
+            context_references=[],
+            delegated_tool_context=AiDelegatedToolContext(
+                principal_id=persona_id, causation_id=f"meeting-finalize:{persona_id}"
+            ),
+            # 합성도 같은 자리에 자기 스키마를 건다 — 최종 전용 필드가 들어 있는 한 벌이다.
+            output_schema=FINAL_OUTPUT_SCHEMA,
+        )
+        try:
+            return provider.converse(request).body
+        except ProviderSessionUnavailable as error:
+            # 세션은 회의 중 API 프로세스가 열었고 합성은 워커가 돈다 — 그 세션이 여기 없을 수 있다.
+            raise FinalizeSessionLost(str(error)) from error
 
 
 class _SessionBatchGateway:
@@ -4531,7 +4540,8 @@ def create_codex_cli_provider(
 ) -> CodexCliProviderAdapter:
     """Compose the isolated CLI adapter with exactly one server-bound SCAX MCP."""
     return CodexCliProviderAdapter(
-        scax_mcp_server=create_scax_mcp_server(settings, enabled_tools=enabled_tools)
+        CodexCliProfile(runtime_home=Path(settings.codex_runtime_home)),
+        scax_mcp_server=create_scax_mcp_server(settings, enabled_tools=enabled_tools),
     )
 
 

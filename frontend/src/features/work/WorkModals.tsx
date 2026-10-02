@@ -54,6 +54,9 @@ import {
   uploadTaskMaterial,
   uploadWorkRequestMaterial,
   attachWorkRequestMaterialLink,
+  discardActionMaterialDraft,
+  stageActionMaterialFile,
+  stageActionMaterialLink,
 } from "../../lib/api";
 import { blockingChildReasonLabel, cancelReasonLabel, datePickerLabel, taskDetail, hiddenPredecessorsText, predecessorsUnfinishedText, projectLockedByPredecessorsText, derivedApprovalLabel, derivedAssignmentLabel, dueDayText, emptyActionLabel, formatDate, formatDateTime, formatMonthLong, isOverdue, isoDateInSeoul, personName, proposalFieldLabel, proposalKindLabel, selectLabel, seoulToday, taskStateLabel, weekdayNames, workRequestStateLabel } from "../../lib/labels";
 import { DateField } from "../../ds/DateField";
@@ -68,6 +71,7 @@ import { EmptyValue } from "../../ds/Empty";
 import { ProgressBar } from "../../ds/ProgressBar";
 import type {
   ActionItemEnvelope,
+  ActionMaterialDraft,
   ChecklistItem,
   DirectTask,
   MaterialExtraction,
@@ -746,6 +750,12 @@ export function TaskDetailDrawer({
   /** 완료 보고 모달이 열려 있나 — 초안(요약·산출물)은 그 모달이 든다 (5차 발주). */
   const [reporting, setReporting] = useState(false);
   const [handover, setHandover] = useState<{ assigneeId: string; reason: string } | null>(null);
+  /** 담당자 변경 작은 모달 안에 서는 실패 문장 (SPEC-007 §2.9 — 서버 문장을 모달 안에 낸다). */
+  const [handoverError, setHandoverError] = useState<string | null>(null);
+  /** 대상 칸 오류 — 대상을 안 고르고 [변경]을 누른 경우. 대상 칸 «아래» 에 선다 (그 칸의 말이다). */
+  const [handoverTargetError, setHandoverTargetError] = useState<string | null>(null);
+  /** 보내는 중 — 두 번째 누름이 두 번째 명령이 되지 않게 막는다. */
+  const [handoverPending, setHandoverPending] = useState(false);
   const [handoverChoices, setHandoverChoices] = useState<Persona[] | null>(null);
   /**
    * 담당 관계 — **현재와 대기를 각각** 읽는다 (V-18 · P-3). 서버가 이 조회를 아직 내지 않으면 `null` 로
@@ -1225,11 +1235,15 @@ export function TaskDetailDrawer({
     }
   };
 
+  /*
+   * 담당자 변경은 **업무 상세 위의 작은 모달**이다 (SPEC-007 §2.9 · WORK-008 F-01).
+   * 상세 안에 펼치지 않는다. 모달 위 모달은 기존 선례 그대로 — 상세 `Shell` 의 형제로 그리고
+   * ESC 는 `useEscape` 스택이 맨 위 한 겹만 닫는다.
+   */
   const openHandover = async () => {
-    if (handover) {
-      setHandover(null);
-      return;
-    }
+    if (handover) return;
+    setHandoverError(null);
+    setHandoverTargetError(null);
     setHandover({ assigneeId: "", reason: "" });
     if (handoverChoices === null) {
       try {
@@ -1240,26 +1254,41 @@ export function TaskDetailDrawer({
     }
   };
 
+  const closeHandover = () => {
+    setHandover(null);
+    setHandoverError(null);
+    setHandoverTargetError(null);
+  };
+
   const submitHandover = async () => {
-    if (!handover?.assigneeId) {
-      onError("옮길 담당자를 골라 주세요.");
+    if (!handover || handoverPending) return;
+    if (!handover.assigneeId) {
+      setHandoverTargetError("옮길 담당자를 골라 주세요.");
       return;
     }
-    onError(null);
+    setHandoverTargetError(null);
+    setHandoverError(null);
+    setHandoverPending(true);
     try {
       await reassignTask(task.task_id, current.version, handover.assigneeId, handover.reason.trim() || undefined);
-      setHandover(null);
-      /* v2: 제안일 뿐 **기존 담당은 닫히지 않는다**(V-18) — 그래서 「바꿨다」가 아니라 「보냈다」다.
-         상대가 수락하는 순간 교체가 한 덩어리로 일어나고, 중간에 담당 없는 구간이 생기지 않는다. */
-      onNotice?.("담당 변경을 제안했습니다. 상대가 수락할 때까지 기존 담당이 그대로입니다.");
-      await onChanged?.();
-      try {
-        setAssignments((await getTaskAssignments(task.task_id)) ?? null);
-      } catch {
-        // 제안 자체는 성공했다 — 다시 읽기 실패를 제안 실패로 말하지 않는다.
-      }
     } catch (error) {
-      onError(error instanceof Error ? error.message : "담당자를 바꾸지 못했습니다.");
+      // 실패는 **작은 모달 안에** 말하고 쓰던 입력은 남긴다 (§2.9).
+      setHandoverError(error instanceof Error ? error.message : "담당자를 바꾸지 못했습니다.");
+      setHandoverPending(false);
+      return;
+    }
+    setHandoverPending(false);
+    closeHandover();
+    /* v2: 제안일 뿐 **기존 담당은 닫히지 않는다**(V-18) — 그래서 「바꿨다」가 아니라 「보냈다」다.
+       상대가 수락하는 순간 교체가 한 덩어리로 일어나고, 중간에 담당 없는 구간이 생기지 않는다. */
+    onNotice?.("담당 변경을 제안했습니다. 상대가 수락할 때까지 기존 담당이 그대로입니다.");
+    /* 성공하면 **상세를 다시 읽어** 서버가 낸 담당 관계대로 선다 — 낙관적 갱신을 하지 않는다 (§2.9). */
+    await settleVersion();
+    await readDetail();
+    try {
+      setAssignments((await getTaskAssignments(task.task_id)) ?? null);
+    } catch {
+      // 제안 자체는 성공했다 — 다시 읽기 실패를 제안 실패로 말하지 않는다.
     }
   };
 
@@ -2328,40 +2357,6 @@ export function TaskDetailDrawer({
                 <Button variant="text" size="sm" onClick={() => void openHandover()} type="button">
                   담당자 변경
                 </Button>
-                {handover && (
-                  <div className="form-stack link-draft">
-                    <div className="scax-field">
-                      <span>담당자 변경 대상</span>
-                      <Select
-              emptyActionLabel={emptyActionLabel.filter}
-              labels={selectLabel}
-                        id={`task-handover-${task.task_id}`}
-                        label="담당자 변경 대상"
-                        onChange={(next) => setHandover({ ...handover, assigneeId: next })}
-                        options={(handoverChoices ?? []).map((choice) => ({ value: choice.id, label: personName(choice.display_name) }))}
-                        placeholder="담당자 고르기"
-                        value={handover.assigneeId}
-                      />
-                    </div>
-                    <div className="scax-field">
-                      <label className="scax-field__label" htmlFor={`task-handover-reason-${task.task_id}`}>담당자 변경 사유</label>
-                      <input
-                        id={`task-handover-reason-${task.task_id}`}
-                        onChange={(event) => setHandover({ ...handover, reason: event.target.value })}
-                        placeholder="왜 옮기는지 적어 두면 이력에 남습니다"
-                        value={handover.reason}
-                      />
-                    </div>
-                    <div className="row-actions">
-                      <Button variant="solid" tone="primary" size="sm" disabled={busy} onClick={() => void submitHandover()} type="button">
-                        변경
-                      </Button>
-                      <Button variant="text" size="sm" onClick={() => setHandover(null)} type="button">
-                        취소
-                      </Button>
-                    </div>
-                  </div>
-                )}
               </div>
             )}
           {shown.block_reason && (
@@ -2805,6 +2800,61 @@ export function TaskDetailDrawer({
         </section>
         </div>
       </Shell>
+      {handover && (
+        /*
+         * 담당자 변경 — 기존 DS 의 작은 모달(`Modal size="sm"`, 420)이다 (SPEC-007 §2.9 · WORK-008 F-01).
+         * 내용은 예전 펼침 폼 그대로다: 대상 담당자(빈칸 시작) · 사유(선택) · [변경]·[취소].
+         * ESC · 바깥 클릭 · [취소] 는 이 모달만 닫고 업무 상세는 남는다.
+         */
+        <Modal
+          closeLabel="담당자 변경 닫기"
+          footer={
+            <>
+              <Button variant="text" disabled={handoverPending} onClick={closeHandover} type="button">
+                취소
+              </Button>
+              <Button variant="solid" tone="primary" disabled={busy || handoverPending} onClick={() => void submitHandover()} type="button">
+                변경
+              </Button>
+            </>
+          }
+          label="담당자 변경"
+          onClose={closeHandover}
+          size="sm"
+          title="담당자 변경"
+        >
+          <div className="form-stack">
+            <div className="scax-field">
+              <span className="scax-field__label">담당자 변경 대상</span>
+              <Select
+                emptyActionLabel={emptyActionLabel.filter}
+                labels={selectLabel}
+                id={`task-handover-${task.task_id}`}
+                label="담당자 변경 대상"
+                onChange={(next) => {
+                  setHandover({ ...handover, assigneeId: next });
+                  setHandoverTargetError(null);
+                }}
+                options={(handoverChoices ?? []).map((choice) => ({ value: choice.id, label: personName(choice.display_name) }))}
+                placeholder="담당자 고르기"
+                value={handover.assigneeId}
+              />
+              <FieldMessage error={handoverTargetError} id={`task-handover-error-${task.task_id}`} />
+            </div>
+            <div className="scax-field">
+              <label className="scax-field__label" htmlFor={`task-handover-reason-${task.task_id}`}>담당자 변경 사유</label>
+              <input
+                id={`task-handover-reason-${task.task_id}`}
+                onChange={(event) => setHandover({ ...handover, reason: event.target.value })}
+                placeholder="왜 옮기는지 적어 두면 이력에 남습니다"
+                value={handover.reason}
+              />
+              {/* 서버가 거절한 문장 등 대상 칸의 말이 아닌 실패는 모달 안 이 자리에 선다 (§2.9). */}
+              <FieldMessage error={handoverError} />
+            </div>
+          </div>
+        </Modal>
+      )}
       {/*
         * 완료 보고 (4차 발주 5 · 5차 발주) — **입력 모달 한 벌이다.**
         *
@@ -4288,6 +4338,7 @@ export function CreateWorkModal({
   assignCandidates = [],
   ccCandidates = [],
   initial,
+  axDraft,
   onSubmitRequest,
   projectCandidates = noProjectCandidates,
   onCreated,
@@ -4322,6 +4373,13 @@ export function CreateWorkModal({
     parentTaskId?: string;
     /** 재요청이면 이전 요청 (V-12). 「다시 요청」과 「독촉」은 다른 것이고, 이 값이 그 둘을 가른다. */
     supersedesRequestId?: string;
+    /* 아래는 AX 초안 수정(`axDraft`)이 채우는 값이다 — 다른 여는 자리는 넘기지 않아 지금 동작 그대로다. */
+    startDate?: string;
+    projectId?: string;
+    ccIds?: string[];
+    approverId?: string;
+    precedingTaskIds?: string[];
+    referenceTaskIds?: string[];
   };
   /**
    * 요청을 보내는 자리를 갈아 끼운다 — 회의록의 후속업무 후보는 **승격**으로 나가야 출처 두 열이 함께 실린다.
@@ -4361,6 +4419,30 @@ export function CreateWorkModal({
    * 업무/오늘 화면이 쓴다. 회의록의 승격은 요청 전용이라 필드가 적어 `md`(560)로 연다.
    */
   size?: "sm" | "md";
+  /**
+   * **AX 업무 초안 수정** (WORK-008 3b · SPEC-002 §2.9). 주면 이 창은 새 업무를 만들지 않는다 —
+   * 갈래는 초안의 것으로 고정되고(바꾸면 다른 명령이 된다), 제출은 **고친 값으로 초안을 확인**한다
+   * (`onSubmit(draft)` = confirm + draft). 탭·필드·검증은 이 창 그대로다. 초깃값은 `initial` 이 싣는다.
+   */
+  axDraft?: {
+    kind: "task" | "request";
+    /** 초안의 값 전부 — 이 창에 칸이 없는 값(`supersedes_request_id` 등)도 그대로 돌려보낸다. */
+    baseValues: Record<string, unknown>;
+    /** 자료 초안을 붙이고 뺄 판단 항목(`/api/action-items/{id}/material-drafts…`). */
+    actionId: string;
+    materials: ActionMaterialDraft[];
+    /** 고친 값과 «지금 붙어 있는» 자료 초안 id 로 확인한다. */
+    onSubmit: (draft: Record<string, unknown>, attachmentDraftIds: string[]) => Promise<void>;
+    /** 자료 초안이 바뀌면 카드의 자료 요약도 따라간다 — 붙이고 빼는 것은 서버에 바로 남는다. */
+    onMaterialsChange?: (materials: ActionMaterialDraft[]) => void;
+    /**
+     * 편집 계약의 결재자 선택지 (WORK-008 3b fix1 · 검수 WARN-4). 이 창의 결재자 후보(참조자 + 담당 후보)에 합친다 —
+     * 초안의 결재자가 그 둘에 없으면 이름 없이 서기 때문이다.
+     */
+    approverOptions?: Persona[];
+    /** 창 안에 낼 실패 문장 — 이 창은 오류를 부르는 쪽(`onError`)으로 넘기는데, 카드 위에 뜬 창은 그 자리가 안 보인다. */
+    error?: string | null;
+  };
 }) {
   /*
    * 재요청은 **요청 입구로만** 갈 수 있다 — 이전 요청을 잇는 일이라 갈래를 고를 것이 없다.
@@ -4378,13 +4460,20 @@ export function CreateWorkModal({
    * 「화면이 미리 막지 않는다」와 같은 규율이다. 칸이 열리면 이 자리를 비활성으로 좁힌다.
    */
   const requestOnly = Boolean(initial?.supersedesRequestId);
-  const [kind, setKind] = useState<"task" | "request">(canCreateTask && !requestOnly ? "task" : "request");
+  const [kind, setKind] = useState<"task" | "request">(axDraft ? axDraft.kind : canCreateTask && !requestOnly ? "task" : "request");
   const [title, setTitle] = useState(initial?.title ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
-  const [startDate, setStartDate] = useState("");
+  const [startDate, setStartDate] = useState(initial?.startDate ?? "");
   const [dueDate, setDueDate] = useState(initial?.dueDate ?? "");
-  // 미리 채운 값으로 열 때는 담당을 비워 둔다 — 첫 후보를 자동으로 고르지 않는다.
-  const [assigneeId, setAssigneeId] = useState(initial ? initial.assigneeId ?? "" : assigneeCandidates[0]?.id ?? "");
+  /*
+   * **담당은 아무도 미리 고르지 않는다** (SPEC-001 U-6-a · WORK-008 B-02).
+   *
+   * 예전에는 미리 채운 값 없이 열면 담당 후보 첫 사람을 골라 두었다. `업무` 갈래에는 이 칸이
+   * 없는데도 그 숨은 값이 참조자 후보를 걸러 동료 한 명이 사라졌다. 이제 `요청` 갈래는 빈칸으로
+   * 시작하고, `업무` 갈래의 담당은 본인이라(서버가 기록한다) 이 값을 읽지 않는다.
+   * 「다시 요청」처럼 미리 채운 수신자(`initial.assigneeId`)는 그대로 쓴다.
+   */
+  const [assigneeId, setAssigneeId] = useState(initial?.assigneeId ?? "");
   /** 고른 첨부 파일. **경로가 바뀌어도 조용히 버리지 않는다** — 아래 `attachSupported` 가 말만 바꾼다. */
   const [attachments, setAttachments] = useState<File[]>([]);
   /**
@@ -4396,6 +4485,64 @@ export function CreateWorkModal({
   const [materialLinks, setMaterialLinks] = useState<MaterialLinkDraft[]>([]);
   /** 아직 목록에 들어가지 않은, 지금 적고 있는 링크 한 줄. */
   const [linkDraft, setLinkDraft] = useState<MaterialLinkDraft>({ url: "", label: "" });
+  /*
+   * AX 초안의 자료 (WORK-008 3b fix1 · 검수 WARN-1) — 확인 «전에» 붙이는 길을 되살린다. 예전 채팅 카드의
+   * 첨부 피커와 같은 규칙이다: 고르는 즉시 판단 항목의 자료 초안으로 올리고(`stageActionMaterial*`), 빼면 버리고
+   * (`discardActionMaterialDraft`), 확인이 그 초안 id 를 싣는다. 올리는 중이거나 실패한 것이 있으면 등록을 막는다.
+   */
+  const [axMaterials, setAxMaterials] = useState<ActionMaterialDraft[]>(axDraft?.materials ?? []);
+  const [axUploads, setAxUploads] = useState<Array<{ id: string; name: string; failed: boolean }>>([]);
+  const [axMaterialError, setAxMaterialError] = useState<string | null>(null);
+  const axUploadPending = axUploads.length > 0;
+  /* 올리는 중에는 새로 고침·이탈을 막는다 — 예전 채팅 카드 첨부 피커와 같은 가드다 (3b fix2 · N-1). */
+  useBrowserOperationGuard(axUploads.some((item) => !item.failed));
+  /*
+   * 자료 초안 목록의 «지금 값». 올리기·빼기는 서로 겹쳐 끝날 수 있어 마지막으로 그린 값이 아니라 이 ref 에서
+   * 다음 값을 계산한다. 계산한 뒤 이 창의 setter 와 카드의 알림을 **따로** 부른다 — state updater 안에서 부모를
+   * 바꾸지 않는다(updater 는 순수해야 한다 · 3b fix2 · N-2).
+   */
+  const axMaterialsNow = useRef<ActionMaterialDraft[]>(axMaterials);
+  function changeAxMaterials(next: (current: ActionMaterialDraft[]) => ActionMaterialDraft[]) {
+    const updated = next(axMaterialsNow.current);
+    axMaterialsNow.current = updated;
+    setAxMaterials(updated);
+    axDraft?.onMaterialsChange?.(updated);
+  }
+  async function stageAxFile(file: File) {
+    if (!axDraft) return;
+    const localId = `upload-${Date.now()}-${file.name}`;
+    setAxUploads((current) => [...current, { id: localId, name: file.name, failed: false }]);
+    setAxMaterialError(null);
+    try {
+      const staged = await stageActionMaterialFile(axDraft.actionId, file);
+      setAxUploads((current) => current.filter((item) => item.id !== localId));
+      changeAxMaterials((current) => [...current.filter((item) => item.material_draft_id !== staged.material_draft_id), staged]);
+    } catch (reason) {
+      setAxUploads((current) => current.map((item) => (item.id === localId ? { ...item, failed: true } : item)));
+      setAxMaterialError(reason instanceof Error ? reason.message : "파일을 업로드하지 못했습니다.");
+    }
+  }
+  async function stageAxLink(link: MaterialLinkDraft) {
+    if (!axDraft) return;
+    setAxMaterialError(null);
+    try {
+      const staged = await stageActionMaterialLink(axDraft.actionId, link);
+      changeAxMaterials((current) => [...current.filter((item) => item.material_draft_id !== staged.material_draft_id), staged]);
+      setLinkDraft({ url: "", label: "" });
+    } catch (reason) {
+      setAxMaterialError(reason instanceof Error ? reason.message : "링크를 첨부하지 못했습니다.");
+    }
+  }
+  async function discardAxMaterial(materialDraftId: string) {
+    if (!axDraft) return;
+    setAxMaterialError(null);
+    try {
+      await discardActionMaterialDraft(axDraft.actionId, materialDraftId);
+      changeAxMaterials((current) => current.filter((item) => item.material_draft_id !== materialDraftId));
+    } catch (reason) {
+      setAxMaterialError(reason instanceof Error ? reason.message : "첨부를 제외하지 못했습니다.");
+    }
+  }
   /**
    * **업무는 섰는데 첨부가 남은 자리.**
    *
@@ -4414,12 +4561,20 @@ export function CreateWorkModal({
     assignedToOther: boolean;
   } | null>(null);
   const [taskOwnerId, setTaskOwnerId] = useState("me");
-  const [projectId, setProjectId] = useState("");
+  const [projectId, setProjectId] = useState(initial?.projectId ?? "");
   const [availableProjects, setAvailableProjects] = useState<Project[]>(projectCandidates);
-  const [ccIds, setCcIds] = useState<string[]>([]);
+  const [ccIds, setCcIds] = useState<string[]>(initial?.ccIds ?? []);
   const [steps, setSteps] = useState<string[]>(initial?.checklist ?? []);
   const [newStep, setNewStep] = useState("");
   const [linkedTasks, setLinkedTasks] = useState<DirectTask[]>([]);
+  /*
+   * 미리 채운 참고 업무 중 **표의 줄로 세울 수 없는 것** (WORK-008 3b fix1 · 검수 FAIL-1).
+   *
+   * 표는 읽을 수 있는 업무 목록(`getTasks`)이 와야 줄을 세운다. 그 목록이 오기 전, 조회가 실패했을 때, 또는
+   * 그 업무를 내가 읽을 수 없을 때 미리 채운 id 는 표에 없다 — 그래도 **버리지 않고** 그대로 싣는다.
+   * 표에 선 것은 사람이 체크를 풀어 뺄 수 있고, 표에 못 선 것은 손대지 않은 값이라 그대로 간다.
+   */
+  const presetReferenceIds = initial?.referenceTaskIds ?? [];
   /**
    * 상위 업무 — **실제로 보내는 값이다** (`parent_task_id`).
    *
@@ -4435,7 +4590,7 @@ export function CreateWorkModal({
    * 생성 payload 에 고정하면서 그 임시 상태가 끝났다 — 이제 고른 것은 저장되고, 「아직 저장되지
    * 않습니다」류의 안내를 남기지 않는다. 저장된 척도, 저장 안 된 척도 하지 않는다.
    */
-  const [precedingTaskIds, setPrecedingTaskIds] = useState<string[]>([]);
+  const [precedingTaskIds, setPrecedingTaskIds] = useState<string[]>(initial?.precedingTaskIds ?? []);
   /**
    * 결재자 — 계약 이름은 **승인자**(`approver_id`)이고 화면 라벨만 「결재자」다 (SPEC-001 §4 · OQ-N).
    *
@@ -4446,10 +4601,19 @@ export function CreateWorkModal({
    * 닫혔다** — `WorkRequestService.create` 가 `approver_id` 를 받아 `valid_approver` 로 검증하고
    * 요청 조회에도 같은 이름으로 낸다. 사실이 아닌 메모는 고른 값을 버리는 것만큼 나쁘다.
    */
-  const [approverId, setApproverId] = useState("");
+  const [approverId, setApproverId] = useState(initial?.approverId ?? "");
   /** 지금 보고 있는 탭. 처음은 늘 「기본 정보」다 — 제목 없이는 아무것도 만들 수 없다. */
   const [tab, setTab] = useState<CreateTab>("basic");
   const [referenceChoices, setReferenceChoices] = useState<DirectTask[] | null>(null);
+  /** 참고 업무 목록 조회가 실패했나 — 「목록을 못 받았다」와 「목록 밖의 업무다」는 다른 말이다 (3b fix2 · N-3). */
+  const [referenceLoadFailed, setReferenceLoadFailed] = useState(false);
+  /** 표에 못 선 미리 채운 참고 업무 중 사람이 뺀 것 — 표에 선 것처럼 이것도 뺄 수 있어야 한다 (N-3). */
+  const [droppedReferenceIds, setDroppedReferenceIds] = useState<string[]>([]);
+  const unplacedReferenceIds = presetReferenceIds.filter(
+    (id) =>
+      !droppedReferenceIds.includes(id) &&
+      (referenceChoices === null || !referenceChoices.some((row) => row.task_id === id)),
+  );
   const [isWorking, setIsWorking] = useState(false);
   /**
    * 담당 후보는 **envelope 이 허용한 경로의 목록만** 합친다 (W1 계약 §4).
@@ -4502,9 +4666,15 @@ export function CreateWorkModal({
     void (async () => {
       try {
         const rows = await getTasks(true);
-        if (!cancelled) setReferenceChoices(rows ?? []);
+        if (cancelled) return;
+        setReferenceChoices(rows ?? []);
+        /* AX 초안이 고른 참고 업무 — 읽을 수 있는 업무 목록이 와야 표의 줄로 세울 수 있다. */
+        const preset = initial?.referenceTaskIds ?? [];
+        if (preset.length > 0) setLinkedTasks((current) => (current.length > 0 ? current : (rows ?? []).filter((row) => preset.includes(row.task_id))));
       } catch {
-        if (!cancelled) setReferenceChoices([]);
+        if (cancelled) return;
+        setReferenceLoadFailed(true);
+        setReferenceChoices([]);
       }
     })();
     return () => {
@@ -4678,7 +4848,47 @@ export function CreateWorkModal({
     // Steps written here belong to the work from the start, in the order they were written.
     const checklist = steps.length > 0 ? steps : undefined;
     // Earlier work pointed at here travels with the request into the Task it becomes.
-    const reference_task_ids = linkedTasks.length > 0 ? linkedTasks.map((row) => row.task_id) : undefined;
+    /* 표에 선 참고 업무 + 표에 세울 수 없는 미리 채운 참고 업무(목록이 오기 전 · 목록 조회 실패 · 내가 못 읽는
+       업무) — 후자를 버리면 사람이 건드리지 않은 초안 값이 지워진다 (WORK-008 3b fix1 · P-1). */
+    const referenceIds = [...new Set([...linkedTasks.map((row) => row.task_id), ...unplacedReferenceIds])];
+    const reference_task_ids = referenceIds.length > 0 ? referenceIds : undefined;
+    if (axDraft) {
+      /*
+       * AX 초안 수정 — **새 업무를 만들지 않고 고친 값으로 초안을 확인한다** (SPEC-002 §2.9 · §4).
+       * 실는 모양은 초안 값(`edit_contract.values`) 그대로다: 이 창에 칸이 없는 값은 초안 것을 둔 채,
+       * 칸이 있는 값만 지금 창의 값으로 덮는다. 검증은 위의 이 창 검증을 그대로 지났다.
+       */
+      const draft: Record<string, unknown> = {
+        ...axDraft.baseValues,
+        title: trimmed,
+        description: description.trim() || null,
+        start_date: effectiveStartDate || null,
+        due_date: dueDate || null,
+        checklist: steps,
+        reference_task_ids: reference_task_ids ?? [],
+        parent_task_id: parentTaskId || null,
+        project_id: projectId || null,
+        cc_member_ids: kind === "request" ? ccIds.filter((id) => id !== assigneeId) : ccIds,
+        preceding_task_ids: precedingTaskIds,
+        approver_id: approverId || null,
+        ...(kind === "request" ? { assignee_id: assigneeId } : {}),
+      };
+      submitting.current = true;
+      setIsWorking(true);
+      onError(null);
+      try {
+        await axDraft.onSubmit(
+          draft,
+          axMaterials.filter((item) => item.state === "staged").map((item) => item.material_draft_id),
+        );
+      } catch (error) {
+        onError(error instanceof Error ? error.message : "AX 초안을 등록하지 못했습니다.");
+      } finally {
+        submitting.current = false;
+        setIsWorking(false);
+      }
+      return;
+    }
     const payload = {
       kind,
       route,
@@ -4963,10 +5173,19 @@ export function CreateWorkModal({
    * 읽힌다. 그래서 항목에는 표시용 값을 주고, 나가는 값은 여기서 빈 값으로 되돌린다.
    */
   const NO_PARENT = "__no_parent__";
+  /*
+   * 참조자 후보에서 빠지는 사람은 **`요청` 갈래에서 고른 담당자 한 명뿐**이다 (U-6-a).
+   * `업무` 갈래의 담당은 본인이고 본인은 서버가 이미 후보에서 뺐다 — 다른 갈래에서 고른 값이
+   * 남아 있어도 이 갈래의 참조자를 거르지 않는다.
+   */
+  const requestAssigneeId = kind === "request" ? assigneeId : "";
   const approverCandidates = [
     ...ccCandidates,
     ...assigneeCandidates.filter((candidate) => !ccCandidates.some((cc) => cc.id === candidate.id)),
   ];
+  for (const option of axDraft?.approverOptions ?? []) {
+    if (!approverCandidates.some((candidate) => candidate.id === option.id)) approverCandidates.push(option);
+  }
   const projectNameOf = (id: string | null | undefined) =>
     id ? availableProjects.find((project) => project.project_id === id)?.name ?? null : null;
   /**
@@ -5034,10 +5253,10 @@ export function CreateWorkModal({
             <Button variant="text" disabled={isWorking} onClick={onClose} type="button">
               닫기
             </Button>
-            <Button variant="solid" tone="primary" disabled={isWorking || (kind === "request" && assigneeCandidates.length === 0)} onClick={() => void submit()}
+            <Button variant="solid" tone="primary" disabled={isWorking || (kind === "request" && assigneeCandidates.length === 0) || (Boolean(axDraft) && axUploadPending)} onClick={() => void submit()}
               type="button"
             >
-              {isWorking ? "만드는 중…" : kind === "task" ? "업무 추가" : "업무 요청 보내기"}
+              {axDraft ? (isWorking ? "등록 중…" : "등록") : isWorking ? "만드는 중…" : kind === "task" ? "업무 추가" : "업무 요청 보내기"}
             </Button>
           </>
         )
@@ -5048,7 +5267,8 @@ export function CreateWorkModal({
           * 「내가 할 업무를 만듭니다…」류의 설명 문구는 걷었다: 갈래가 무엇을 하는지는 토글과 아래 폼이
           * 이미 말하고, 그 문구들이 머리를 두 줄·세 줄로 늘려 본문을 밀고 있었다.
           */
-        canCreateTask && canCreateRequest ? (
+        /* AX 초안 수정이면 갈래 토글을 세우지 않는다 — 초안의 갈래가 곧 명령이다(업무 생성 ≠ 업무 요청). */
+        canCreateTask && canCreateRequest && !axDraft ? (
           <SegmentedControl
             ariaLabel="생성 유형"
             onChange={setKind}
@@ -5067,6 +5287,8 @@ export function CreateWorkModal({
       size={size}
       title={drawerTitle}
     >
+      {/* AX 초안 수정 — 이 창이 낸 실패를 창 안에 낸다(카드 위에 뜬 창이라 부르는 쪽 배너가 안 보인다). */}
+      {axDraft?.error && <FieldMessage error={axDraft.error} />}
       {/*
         * 최종 발주 1·2 — **크기가 고정된 모달 안의 왼쪽 세로 탭.**
         *
@@ -5181,7 +5403,11 @@ export function CreateWorkModal({
                     disabled={assigneeCandidates.length === 0}
                     id="work-request-assignee"
                     label="담당 후보"
-                    onChange={setAssigneeId}
+                    onChange={(next) => {
+                      setAssigneeId(next);
+                      // 참조자로 고른 사람을 담당으로 고르면 그 참조자 선택은 풀린다 (U-6-a).
+                      setCcIds((current) => current.filter((id) => id !== next));
+                    }}
                     options={assigneeCandidates.map((candidate) => ({ value: candidate.id, label: candidate.display_name }))}
                     // 고를 사람이 있는데 아직 안 고른 것과, 고를 사람이 아예 없는 것은 다른 말이다.
                     placeholder={assigneeCandidates.length === 0 ? "요청 가능한 동료가 없습니다." : undefined}
@@ -5225,7 +5451,7 @@ export function CreateWorkModal({
                   <legend>참조자</legend>
                   <ChipRow>
                     {ccCandidates
-                      .filter((candidate) => candidate.id !== assigneeId)
+                      .filter((candidate) => candidate.id !== requestAssigneeId)
                       .map((candidate) => (
                         <ChipToggle
                           checked={ccIds.includes(candidate.id)}
@@ -5347,7 +5573,7 @@ export function CreateWorkModal({
                   <Select
                     emptyActionLabel={emptyActionLabel.filter}
                     labels={selectLabel}
-                    disabled={Boolean(initial?.parentTaskId)}
+                    disabled={Boolean(initial?.parentTaskId) && !axDraft}
                     id="new-task-parent"
                     label="상위 업무"
                     onChange={(value) => setParentTaskId(!value || value === NO_PARENT ? "" : value)}
@@ -5365,7 +5591,7 @@ export function CreateWorkModal({
                     placeholder="상위 업무 선택"
                     value={parentTaskId}
                   />
-                  {initial?.parentTaskId && (
+                  {initial?.parentTaskId && !axDraft && (
                     <p className="t-meta">
                       {initial?.supersedesRequestId
                         ? "이전 요청을 잇는 다시 요청입니다 — 새 요청·새 업무가 서고 이전 기록은 남습니다."
@@ -5423,6 +5649,26 @@ export function CreateWorkModal({
                   selected={linkedTasks.map((row) => row.task_id)}
                   tasks={referenceChoices ?? []}
                 />
+                {referenceChoices !== null && unplacedReferenceIds.length > 0 && (
+                  <>
+                    <p className="t-meta">
+                      {referenceLoadFailed
+                        ? `참고 업무 목록을 불러오지 못했습니다 — 초안의 참고 업무 ${unplacedReferenceIds.length}건은 그대로 함께 등록됩니다.`
+                        : `목록에 없는 참고 업무 ${unplacedReferenceIds.length}건 — 초안 그대로 함께 등록됩니다.`}
+                    </p>
+                    <FileList
+                      label="목록에 없는 참고 업무"
+                      rows={unplacedReferenceIds.map((id) => ({
+                        key: id,
+                        name: `참고 업무 ${id.slice(0, 8)}`,
+                        size: "",
+                        reason: null,
+                        removeLabel: `참고 업무 ${id.slice(0, 8)} 빼기`,
+                        onRemove: isWorking ? undefined : () => setDroppedReferenceIds((current) => [...current, id]),
+                      }))}
+                    />
+                  </>
+                )}
                 <p className="t-meta">참고 업무는 함께 읽히는 업무입니다 — 순서를 정하는 선행 업무와 다릅니다.</p>
               </fieldset>
 
@@ -5487,6 +5733,74 @@ export function CreateWorkModal({
              * `false` 이고, 그때는 판 맨 위에서 **왜 저장되지 않는지**를 먼저 말한다 — 고른 것을
              * 조용히 버리지도, 저장된 척하지도 않는다.
              */
+            axDraft ? (
+              /* AX 초안 수정 (WORK-008 3b fix1) — 자료는 판단 항목의 자료 초안이다. 고르면 바로 그 초안으로 올라가고
+                 확인 때 업무에 붙는다(예전 채팅 카드 첨부 피커와 같은 규칙). 생성 «뒤» 업로드 경로는 쓰지 않는다. */
+              <fieldset aria-label="첨부파일" className="scax-field cc-picker">
+                <legend>참고 자료</legend>
+                <FieldMessage error={axMaterialError} />
+                <DropZone
+                  disabled={isWorking}
+                  drop="첨부할 파일을 끌어다 놓거나 추가하세요"
+                  hint="고르면 바로 이 초안의 자료로 올라가고, 등록할 때 함께 붙습니다. 한 건당 25MB."
+                  onFiles={(files) => files.forEach((file) => void stageAxFile(file))}
+                  pickLabel="파일 추가"
+                >
+                  {(axMaterials.length > 0 || axUploads.length > 0) && (
+                    <FileList
+                      label="AX 초안 자료"
+                      rows={[
+                        ...axMaterials.map((item) => ({
+                          key: item.material_draft_id,
+                          name: item.name,
+                          size: item.source_kind === "file" ? formatBytes(item.size_bytes) : item.url ?? "",
+                          reason: null,
+                          removeLabel: `${item.name} 빼기`,
+                          onRemove: isWorking ? undefined : () => void discardAxMaterial(item.material_draft_id),
+                        })),
+                        ...axUploads.map((item) => ({
+                          key: item.id,
+                          name: item.name,
+                          size: "",
+                          reason: item.failed ? "올리지 못했습니다" : "올리는 중…",
+                          removeLabel: `${item.name} 빼기`,
+                          onRemove: item.failed ? () => setAxUploads((current) => current.filter((upload) => upload.id !== item.id)) : undefined,
+                        })),
+                      ]}
+                    />
+                  )}
+                </DropZone>
+                <div className="scax-create-add-row">
+                  <div className="scax-field">
+                    <label className="scax-field__label" htmlFor="new-task-material-link-url">링크 주소</label>
+                    <input
+                      id="new-task-material-link-url"
+                      inputMode="url"
+                      onChange={(event) => setLinkDraft((current) => ({ ...current, url: event.target.value }))}
+                      placeholder="https://"
+                      value={linkDraft.url}
+                    />
+                  </div>
+                  <div className="scax-field">
+                    <label className="scax-field__label" htmlFor="new-task-material-link-label">링크 이름</label>
+                    <input
+                      id="new-task-material-link-label"
+                      onChange={(event) => setLinkDraft((current) => ({ ...current, label: event.target.value }))}
+                      placeholder="사람이 읽는 이름"
+                      value={linkDraft.label}
+                    />
+                  </div>
+                  <Button
+                    size="sm"
+                    disabled={!linkDraft.url.trim() || !linkDraft.label.trim() || isWorking}
+                    onClick={() => void stageAxLink({ url: linkDraft.url.trim(), label: linkDraft.label.trim() })}
+                    type="button"
+                  >
+                    링크 추가
+                  </Button>
+                </div>
+              </fieldset>
+            ) : (
             <fieldset aria-label="첨부파일" className="scax-field cc-picker">
               <legend>참고 자료</legend>
               {!materialsSaved && (
@@ -5583,7 +5897,8 @@ export function CreateWorkModal({
                   }))}
                 />
               )}
-            </fieldset>,
+            </fieldset>
+            ),
           )}
         </div>
       </div>

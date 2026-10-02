@@ -89,6 +89,8 @@ class ActionProposalResult(TypedDict):
     material_drafts: list[ActionMaterialDraftView]
     material_results: list[ActionMaterialReceipt]
     audit_ref: str | None
+    #: 만든 시각(ISO 8601) — 판단 대기 봉투의 `created_at` 과 같은 값. 채팅 카드도 「만든 지 며칠」을 센다 (SPEC-002 §2.9).
+    created_at: str
     subject: str
     operation_label: str
     preview: list[ActionPreviewField]

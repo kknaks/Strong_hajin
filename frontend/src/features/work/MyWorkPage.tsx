@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
+import { useRemembered } from "../../lib/screenCache";
 import { CalendarRail } from "../../shell/CalendarRail";
 import { Chip } from "../../ds/Chip";
 import { ActionItemDrawer } from "../action/ActionCenter";
+import { AxDraftModal, axDraftAgeDays, axDraftFromEnvelope, isAxDraftKind } from "../action/AxDraftCard";
 import { InboxRail } from "../../shell/InboxRail";
 import { Tabs } from "../../ds/SegmentedControl";
 
@@ -12,6 +14,7 @@ import {
   getCalendar,
   getWorkRequestInbox,
   getTask,
+  getActionItems,
   getMyWork,
   getSentTaskAssignments,
   getTaskAssignmentCandidates,
@@ -75,6 +78,7 @@ import { DataTable, Td, Th, TrOpenable } from "../../ds/DataTable";
 import { Select } from "../../ds/Select";
 import { Icon } from "../../ds/icons/Icon";
 import {
+  AxDraftTable,
   CcTaskTable,
   DoneTaskTable,
   OrganizationTaskTable,
@@ -185,13 +189,18 @@ export function MyWorkPage({
   onDecided,
   onError,
   onRegisterRefresh,
+  canReadActions,
   focusTaskId,
   onFocusHandled,
   focusWorkRequestId,
   onRequestFocusHandled,
 }: MyWorkPageProps) {
   const me = personName(personaName);
-  const [tasks, setTasks] = useState<DirectTask[]>([]);
+  /*
+   * 받아 둔 화면 데이터로 시작한다 (WORK-008 Phase 2 · `lib/screenCache.ts`) — 탭을 옮겨 갔다 돌아오면
+   * 이전 목록을 바로 보여 주고, 아래 진입 effect 가 뒤에서 다시 읽어 갈아 끼운다.
+   */
+  const [tasks, setTasks, workRemembered] = useRemembered<DirectTask[]>("work.tasks", []);
   /**
    * 우 레일의 **회의 절반** (확정 — 증보 K23·K24).
    *
@@ -199,25 +208,33 @@ export function MyWorkPage({
    * 합본 조회를 **회의에만** 쓰는 이유가 여기 있다: 업무까지 그쪽으로 갈아타면 그 축이 `my_work` 라
    * **「보낸 업무」 탭에서 보낸 업무가 사라진다.**
    */
-  const [railMeetings, setRailMeetings] = useState<CalendarMeetingRow[]>([]);
+  const [railMeetings, setRailMeetings] = useRemembered<CalendarMeetingRow[]>("work.railMeetings", []);
   const [railMeetingsFailed, setRailMeetingsFailed] = useState(false);
   /** 마지막으로 읽은 범위. 레일이 같은 범위를 다시 알려도 **다시 묻지 않는다**(날짜만 고른 경우). */
   const railRange = useRef("");
-  const [actionItems, setActionItems] = useState<ActionItemEnvelope[]>([]);
-  const [selectedActionItem, setSelectedActionItem] = useState<ActionItemEnvelope | null>(null);
+  /*
+   * 나에게 걸린 AX 업무 초안 (WORK-008 A-01 · SPEC-001 U-2) — 「AX 제안 N」 칩의 수이자 그 칩을 켰을 때의 초안 줄.
+   * 판단 대기와 같은 응답(`GET /api/action-items`)에서 두 kind 만 고른다. 다른 AX 카드는 세지 않는다.
+   * 화면 기억(Phase 2)도 같이 쓴다 — 재진입 때 칩 숫자와 초안 줄이 늦게 끼어들지 않는다.
+   */
+  const [axDrafts, setAxDrafts] = useRemembered<ActionItemEnvelope[]>("work.axDrafts", []);
+  /** 초안 줄을 눌러 연 요약 카드. */
+  const [openAxDraft, setOpenAxDraft] = useState<ActionItemEnvelope | null>(null);
   const [relatedTask, setRelatedTask] = useState<DirectTask | null>(null);
-  const [inboxRequests, setInboxRequests] = useState<WorkRequest[]>([]);
-  const [inboxState, setInboxState] = useState<"loading" | "error" | "ready">("loading");
-  const [allRequests, setAllRequests] = useState<WorkRequest[]>([]);
-  const [assigneeCandidates, setAssigneeCandidates] = useState<Persona[]>([]);
-  const [assignCandidates, setAssignCandidates] = useState<Persona[]>([]);
-  const [ccCandidates, setCcCandidates] = useState<Persona[]>([]);
-  const [sentAssignments, setSentAssignments] = useState<TaskAssignment[]>([]);
+  const [inboxRequests, setInboxRequests, inboxRemembered] = useRemembered<WorkRequest[]>("work.inboxRequests", []);
+  const [inboxState, setInboxState] = useState<"loading" | "error" | "ready">(inboxRemembered ? "ready" : "loading");
+  /** 수신함을 한 번이라도 그렸나 — 그렸으면 다시 읽는 동안 스켈레톤으로 덮지 않는다. */
+  const inboxShown = useRef(inboxRemembered);
+  const [allRequests, setAllRequests] = useRemembered<WorkRequest[]>("work.allRequests", []);
+  const [assigneeCandidates, setAssigneeCandidates] = useRemembered<Persona[]>("work.assigneeCandidates", []);
+  const [assignCandidates, setAssignCandidates] = useRemembered<Persona[]>("work.assignCandidates", []);
+  const [ccCandidates, setCcCandidates] = useRemembered<Persona[]>("work.ccCandidates", []);
+  const [sentAssignments, setSentAssignments] = useRemembered<TaskAssignment[]>("work.sentAssignments", []);
   const [busy, setBusy] = useState(false);
   const [chip, setChip] = useState<WorkChip>("all");
   const [view, setView] = useState<ViewMode>("list");
   const [tab, setTab] = useState<WorkTab>("mine");
-  const [organizationTasks, setOrganizationTasks] = useState<DirectTask[]>([]);
+  const [organizationTasks, setOrganizationTasks] = useRemembered<DirectTask[]>("work.organizationTasks", []);
   const [generating, setGenerating] = useState(false);
   const [selectedTask, setSelectedTask] = useState<DirectTask | null>(null);
   const [selectedRequest, setSelectedRequest] = useState<WorkRequest | null>(null);
@@ -259,7 +276,17 @@ export function MyWorkPage({
   // 볼 것이 있을 때만 펼친다. 사람이 접거나 편 뒤에는 그 선택이 이긴다.
   /* K-5: 칸마다 default/empty/loading/error 를 그리려면 그 상태가 화면에 있어야 한다.
      새로 읽는 것이 아니라, 지금까지 전역 오류 배너로만 나가던 reload 의 결과를 레일도 읽게 드러낸 것뿐이다. */
-  const [loadState, setLoadState] = useState<"loading" | "error" | "ready">("loading");
+  const [loadState, setLoadState] = useState<"loading" | "error" | "ready">(workRemembered ? "ready" : "loading");
+  /** 목록을 한 번이라도 그렸나 — 스켈레톤은 «데이터가 하나도 없는 첫 진입»에만 뜬다 (WORK-008 Phase 2). */
+  const workShown = useRef(workRemembered);
+  /**
+   * 이번 진입의 응답을 받았나 (fix1 · 검수 WARN-1). 받아 둔 목록으로 그린 행의 명령(수락·거절·전이·철회 등)은
+   * **기억한 envelope** 로 그린 것이라, 이 화면의 갱신 응답이 올 때까지 잠근다 — 권한 판단은 갱신된 응답 기준이다.
+   * 받아 둔 것 없이 시작했으면 처음부터 참이다(행이 곧 갱신 응답이다).
+   */
+  const [workFresh, setWorkFresh] = useState(!workRemembered);
+  /** 목록·수신함 행의 명령 단추가 쓰는 잠금 — 보내는 중이거나 아직 기억한 envelope 로 그린 동안이다. */
+  const listBusy = busy || !workFresh;
 
   const reloadInbox = useCallback(async () => {
     if (!canDecideWorkRequests) {
@@ -267,10 +294,12 @@ export function MyWorkPage({
       setInboxState("ready");
       return [] as WorkRequest[];
     }
-    setInboxState("loading");
+    // 이미 그린 수신함이 있으면 다시 읽는 동안 스켈레톤으로 덮지 않는다 — 받은 것을 둔 채 갈아 끼운다.
+    if (!inboxShown.current) setInboxState("loading");
     try {
       const requests = await getWorkRequestInbox();
       setInboxRequests(requests);
+      inboxShown.current = true;
       setInboxState("ready");
       return requests;
     } catch {
@@ -280,7 +309,7 @@ export function MyWorkPage({
   }, [canDecideWorkRequests]);
 
   const reload = useCallback(async () => {
-    const [work, closed, incoming, requests, nextSent] = await Promise.all([
+    const [work, closed, incoming, requests, nextSent, judgements] = await Promise.all([
       getMyWork(),
       getTasks(true).catch(() => [] as DirectTask[]),
       reloadInbox(),
@@ -304,7 +333,14 @@ export function MyWorkPage({
             .catch(() => [] as WorkRequest[]),
         ),
       canAssignTasks ? getSentTaskAssignments().catch(() => [] as TaskAssignment[]) : Promise.resolve([] as TaskAssignment[]),
+      /* AX 업무 초안 — 못 읽어도 업무 목록을 흔들지 않는다(칩은 0 으로 선다). */
+      canReadActions
+        ? Promise.resolve()
+            .then(() => getActionItems())
+            .catch(() => [] as ActionItemEnvelope[])
+        : Promise.resolve([] as ActionItemEnvelope[]),
     ]);
+    setAxDrafts((judgements ?? []).filter((item) => isAxDraftKind(item.kind) && item.status !== "resolved"));
     // 할일 is what this person holds. Someone who may read the organization's work sees the rest in its own section,
     // never mixed into their own list.
     const held = new Set(work.map((task) => task.task_id));
@@ -336,7 +372,9 @@ export function MyWorkPage({
           return entry;
         }),
     );
-  }, [canAssignTasks, personaId, reloadInbox]);
+    // 어떤 다시 읽기든(진입·셸 refresh·쓰기 뒤) 성공하면 행 명령의 잠금이 풀린다 (fix2 · WARN-A).
+    setWorkFresh(true);
+  }, [canAssignTasks, canReadActions, personaId, reloadInbox]);
 
   /**
    * 읽기가 끝난 뒤 배너를 정리한다 — **반쪽으로 온 것이 있으면 지우지 않고 그것을 남긴다.**
@@ -351,16 +389,19 @@ export function MyWorkPage({
 
   useEffect(() => {
     let cancelled = false;
-    setLoadState("loading");
+    // 받아 둔 목록이 있으면 그것을 둔 채 뒤에서 다시 읽는다 — 스켈레톤으로 되돌리지 않는다.
+    if (!workShown.current) setLoadState("loading");
     void reload()
       .then(() => {
         if (cancelled) return;
+        workShown.current = true;
         setLoadState("ready");
         settleError();
       })
       .catch((error: unknown) => {
         if (cancelled) return;
-        setLoadState("error");
+        // 이미 보이는 목록은 지우지 않는다 — 실패는 배너가 말한다. 처음부터 없으면 오류 상태다.
+        setLoadState(workShown.current ? "ready" : "error");
         onError(error instanceof Error ? error.message : "내 업무를 불러오지 못했습니다.");
       });
     return () => {
@@ -696,7 +737,21 @@ export function MyWorkPage({
   const mineRows = useMemo(() => myWorkRows(liveTasks, requestsToMe), [liveTasks, allRequests, personaId]);
   const chips = chipsForTab[tab];
   const activeChip = chips.includes(chip) ? chip : "all";
-  const mineCounts = useMemo(() => chipCounts(mineRows, myWorkChips, today), [mineRows, today]);
+  /* 「AX 제안 N」 은 업무 행이 아니라 초안 수로 센다 — 0건이어도 「AX 제안 0」 으로 선다 (U-2). */
+  const mineCounts = useMemo(
+    (): Record<string, number> => ({ ...chipCounts(mineRows, myWorkChips, today), ax_drafts: axDrafts.length }),
+    [axDrafts.length, mineRows, today],
+  );
+  const axDraftRows = useMemo(
+    () =>
+      axDrafts.map((item) => ({
+        id: item.action_item_id,
+        title: item.subject,
+        dueDate: item.edit_contract?.values.due_date ? String(item.edit_contract.values.due_date) : null,
+        ageDays: axDraftAgeDays(item.created_at, today),
+      })),
+    [axDrafts, today],
+  );
   const visibleRows = useMemo(
     () => (tab === "mine" ? mineRows.filter((row) => matchesChip(row, activeChip, today)) : mineRows),
     [activeChip, mineRows, tab, today],
@@ -964,7 +1019,7 @@ export function MyWorkPage({
       left: (
         <InboxRail
           items={inboxItems}
-          busy={busy}
+          busy={listBusy}
           personaId={personaId}
           onRead={(request) => void readReference(request)}
           reading={reading}
@@ -990,7 +1045,7 @@ export function MyWorkPage({
       ),
     });
     return () => onRegisterRails({});
-  }, [busy, canDecideWorkRequests, decideRequest, inboxItems, inboxState, loadRailMeetings, openMyTask, people, openWorkRequest, personaId, railMeetings, railMeetingsFailed, readReference, reading, reloadInbox, loadState, onRegisterRails, reload, tasks]);
+  }, [busy, canDecideWorkRequests, decideRequest, inboxItems, inboxState, listBusy, loadRailMeetings, openMyTask, people, openWorkRequest, personaId, railMeetings, railMeetingsFailed, readReference, reading, reloadInbox, loadState, onRegisterRails, reload, tasks]);
 
   /**
    * 열려 있는 겹을 **전부** 접는다 (3차 발주 4).
@@ -1026,10 +1081,10 @@ export function MyWorkPage({
     if (row.awaitingAcceptance && row.request && canDecideWorkRequests) {
       return (
         <>
-          <Button disabled={busy} onClick={() => void decideRequest(row.request!, "accept")} size="sm" tone="primary" type="button" variant="outlined">
+          <Button disabled={listBusy} onClick={() => void decideRequest(row.request!, "accept")} size="sm" tone="primary" type="button" variant="outlined">
             수락
           </Button>
-          <Button disabled={busy} onClick={() => setRequestPrompt({ request: row.request!, command: "reject" })} size="sm" tone="neutral" type="button" variant="outlined">
+          <Button disabled={listBusy} onClick={() => setRequestPrompt({ request: row.request!, command: "reject" })} size="sm" tone="neutral" type="button" variant="outlined">
             거절
           </Button>
         </>
@@ -1038,7 +1093,7 @@ export function MyWorkPage({
     // 수락 전인데 내가 답할 자리가 아니면 부를 명령이 없다 — 없는 명령의 단추를 그리지 않는다.
     if (row.awaitingAcceptance || !row.task) return null;
     return canManageOwnTasks ? (
-      <TaskQuickActions busy={busy} onChanged={reload} onError={onError} onNotice={onNotice} onTransition={transitionTask} task={row.task} />
+      <TaskQuickActions busy={listBusy} onChanged={reload} onError={onError} onNotice={onNotice} onTransition={transitionTask} task={row.task} />
     ) : null;
   };
 
@@ -1104,7 +1159,16 @@ export function MyWorkPage({
             </span>
           </div>
 
-          {tab === "mine" ? (
+          {tab === "mine" && activeChip === "ax_drafts" ? (
+            /* 「AX 제안」을 켰을 때만 초안 줄이 선다 — 「전체」·다른 칩의 업무 목록에는 섞지 않는다 (U-2). */
+            <AxDraftTable
+              onClearFilter={() => setChip("all")}
+              onOpen={(row) => setOpenAxDraft(axDrafts.find((item) => item.action_item_id === row.id) ?? null)}
+              onRetry={() => void reload()}
+              rows={axDraftRows}
+              state={loadState}
+            />
+          ) : tab === "mine" ? (
             view === "timeline" ? (
               <TaskTimeline onOpen={openMyTask} tasks={visibleTasks} />
             ) : (
@@ -1130,7 +1194,7 @@ export function MyWorkPage({
                 statusCell={(row) =>
                   row.task ? (
                     <TaskStateCell
-                      busy={busy}
+                      busy={listBusy}
                       canManage={canManageOwnTasks && !row.awaitingAcceptance}
                       onChanged={reload}
                       onError={onError}
@@ -1153,18 +1217,18 @@ export function MyWorkPage({
                     {/* 「다시 요청」은 **재요청**이다 — `supersedes_request_id` 를 실은 새 요청·새 Task (V-12).
                         독촉(`reminders`)과 다른 것이고, 같은 단추가 둘 다일 수는 없다. */}
                     {row.request && !isOpenRequest(row.request) && canCreateWorkRequests && (
-                      <Button disabled={busy} onClick={() => setResending(row.request)} size="sm" tone="neutral" type="button" variant="outlined">
+                      <Button disabled={listBusy} onClick={() => setResending(row.request)} size="sm" tone="neutral" type="button" variant="outlined">
                         다시 요청
                       </Button>
                     )}
                     {row.request && isOpenRequest(row.request) && (
-                      <Button disabled={busy} onClick={() => setRequestPrompt({ request: row.request!, command: "withdraw" })} size="sm" tone="neutral" type="button" variant="outlined">
+                      <Button disabled={listBusy} onClick={() => setRequestPrompt({ request: row.request!, command: "withdraw" })} size="sm" tone="neutral" type="button" variant="outlined">
                         철회
                       </Button>
                     )}
                     {/* 취소로 끝난 항목만 정리한다 — 목록에서 빠지고 이력은 남는다 (L-6). */}
                     {row.request && (row.request.state === "rejected" || row.request.state === "withdrawn" || row.request.state === "cancelled_by_agreement") && !hiddenRequestIds.has(row.request.request_id) && (
-                      <Button disabled={busy} onClick={() => void hideFromList(row.request!)} size="sm" type="button" variant="text">
+                      <Button disabled={listBusy} onClick={() => void hideFromList(row.request!)} size="sm" type="button" variant="text">
                         숨기기
                       </Button>
                     )}
@@ -1255,6 +1319,38 @@ export function MyWorkPage({
           task={detail.task}
           viewerIsRequester={isRequestOwner(requestOf(detail.task), personaId)}
           viewerIsRecordRequester={isRequestRecordRequester(requestOf(detail.task), personaId)}
+        />
+      )}
+      {openAxDraft && !axDraftFromEnvelope(openAxDraft) && (
+        /* 편집 계약이 없는 옛 모양의 초안은 지금까지의 판단 상세로 연다. */
+        <ActionItemDrawer
+          actionItemId={openAxDraft.action_item_id}
+          key={`legacy-${openAxDraft.action_item_id}`}
+          onClose={() => setOpenAxDraft(null)}
+          onDone={async () => {
+            await reload();
+            return onDecided();
+          }}
+          onError={onError}
+          onNotice={onNotice}
+          personas={people}
+          presentation="modal"
+          principalId={personaId}
+        />
+      )}
+      {openAxDraft && axDraftFromEnvelope(openAxDraft) && (
+        /* 초안 줄을 누르면 채팅·홈과 같은 요약 카드 — 기억한 봉투로는 명령을 열지 않는다(Phase 2 규칙). */
+        <AxDraftModal
+          item={openAxDraft}
+          key={openAxDraft.action_item_id}
+          locked={!workFresh}
+          onClose={() => setOpenAxDraft(null)}
+          onDone={async () => {
+            await reload();
+            await onDecided();
+          }}
+          onError={onError}
+          onNotice={onNotice}
         />
       )}
       {detail?.kind === "action" && (

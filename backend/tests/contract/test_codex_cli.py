@@ -495,3 +495,112 @@ def test_a_schema_bearing_turn_that_returns_broken_json_is_still_an_invalid_resp
             )
         )
     assert "다시 요청해 주세요" not in str(raised.value)
+
+
+def _failing_resume_runner(stderr: str):
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+        assert arguments[:2] == ["exec", "resume"]
+        return ProcessResult("", stderr, 1)
+
+    return runner
+
+
+def _resume_request(session_ref: str) -> AiConversationRequest:
+    return AiConversationRequest(
+        "회의를 마무리해 주세요",
+        session_ref,
+        [],
+        AiDelegatedToolContext("mina", "meeting-finalize:mina"),
+        output_schema={"type": "object", "properties": {"agendas": {"type": "array"}}, "required": ["agendas"]},
+    )
+
+
+def test_a_resume_whose_session_is_not_in_this_runtime_home_is_session_unavailable(tmp_path) -> None:
+    """B-03 — 세션은 다른 파드의 런타임 홈에 있다. 같은 resume 은 다시 걸어도 같으므로 따로 알린다."""
+    from ax_workspace.modules.ax_execution.ai import ProviderSessionUnavailable
+
+    provider = _conversation_provider(tmp_path, _failing_resume_runner("Error: no rollout found for thread id"))
+
+    with pytest.raises(ProviderSessionUnavailable):
+        provider.converse(_resume_request("01a0f5e3-7ea6-7120-b0d1-93f21361c04a"))
+
+
+def test_a_resume_that_fails_with_the_session_present_is_an_ordinary_failure(tmp_path) -> None:
+    from ax_workspace.modules.ax_execution.ai import ProviderSessionUnavailable
+
+    session_ref = "01a0f5e3-7ea6-7120-b0d1-93f21361c04a"
+    rollout = tmp_path / "runtime" / "sessions" / "2026" / "10" / "01" / f"rollout-2026-10-01T05-15-22-{session_ref}.jsonl"
+    rollout.parent.mkdir(parents=True)
+    rollout.write_text("{}\n", encoding="utf-8")
+    provider = _conversation_provider(tmp_path, _failing_resume_runner("stream error: 500"))
+
+    with pytest.raises(ProviderRequestFailed) as raised:
+        provider.converse(_resume_request(session_ref))
+    assert not isinstance(raised.value, ProviderSessionUnavailable)
+
+
+def test_a_failed_codex_run_logs_a_masked_bounded_stderr_summary(tmp_path, caplog) -> None:
+    stderr = (
+        "Authorization: Bearer abc.def.ghi\n"
+        "api_key=sk-proj-0123456789abcdef token: eyJhbGciOi.eyJzdWIiOi.c2lnbmF0dXJl\n"
+        "postgresql://ax:hunter2@db:5432/ax\n"
+        + "x" * 2000
+        + "\nError: session not found"
+    )
+    provider = _conversation_provider(tmp_path, _failing_resume_runner(stderr))
+
+    with caplog.at_level("WARNING", logger="ax_workspace.platform.codex_cli"), pytest.raises(ProviderRequestFailed):
+        provider.converse(_resume_request("thread-1"))
+
+    logged = " ".join(record.getMessage() for record in caplog.records)
+    assert "Error: session not found" in logged, "원인은 대개 끝에 있다 — 뒤쪽을 남긴다"
+    assert "종료 코드 1" in logged
+    for secret in ("abc.def.ghi", "sk-proj-0123456789abcdef", "eyJhbGciOi", "hunter2"):
+        assert secret not in logged
+    assert max(len(record.getMessage()) for record in caplog.records) < 800
+
+
+def test_summarize_stderr_masks_secrets_and_keeps_the_tail() -> None:
+    from ax_workspace.platform.cli_process import STDERR_SUMMARY_LIMIT, summarize_stderr
+
+    assert summarize_stderr("") == ""
+    summary = summarize_stderr("Bearer abc123\nOPENAI_API_KEY=sk-live-abcdefghijk\npassword: \"p@ss\"\n")
+    assert "abc123" not in summary and "sk-live-abcdefghijk" not in summary and "p@ss" not in summary
+    assert "Bearer ***" in summary and " | " in summary
+    long = summarize_stderr("a" * 5000 + "TAIL")
+    assert len(long) == STDERR_SUMMARY_LIMIT and long.endswith("TAIL")
+
+
+def test_runtime_home_comes_from_settings_and_defaults_to_the_old_path(tmp_path, monkeypatch) -> None:
+    """런타임 홈은 `SCAX_CODEX_RUNTIME_HOME` 이 정한다 — 없으면 지금까지의 자리다(배포 변경 없이 동작)."""
+    from ax_workspace.bootstrap.application import create_codex_cli_provider
+
+    monkeypatch.delenv("SCAX_CODEX_RUNTIME_HOME", raising=False)
+    default = Settings.from_environment()
+    assert default.codex_runtime_home == ".scax/codex-runtime"
+    assert create_codex_cli_provider(default)._profile.runtime_home == Path(".scax/codex-runtime")
+
+    monkeypatch.setenv("SCAX_CODEX_RUNTIME_HOME", str(tmp_path / "shared-codex"))
+    configured = Settings.from_environment()
+    assert configured.codex_runtime_home == str(tmp_path / "shared-codex")
+    assert create_codex_cli_provider(configured)._profile.runtime_home == tmp_path / "shared-codex"
+
+    monkeypatch.setenv("SCAX_CODEX_RUNTIME_HOME", "")
+    assert Settings.from_environment().codex_runtime_home == ".scax/codex-runtime"
+
+
+def test_a_shared_runtime_home_tolerates_another_process_linking_auth_first(tmp_path, monkeypatch) -> None:
+    from ax_workspace.platform.codex_cli import prepare_isolated_codex_home
+
+    auth = tmp_path / "auth.json"
+    auth.write_text("{}", encoding="utf-8")
+    home = tmp_path / "shared"
+    home.mkdir()
+    original = Path.symlink_to
+
+    def raced(self, target, *args, **kwargs):
+        original(self, target, *args, **kwargs)  # 다른 파드가 먼저 걸었다
+        raise FileExistsError(str(self))
+
+    monkeypatch.setattr(Path, "symlink_to", raced)
+    assert prepare_isolated_codex_home(home, auth_file=auth) == home.resolve()

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import glob
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -27,6 +29,7 @@ from ax_workspace.platform.cli_process import (
     invoke_runner as _invoke_runner,
     structured_body as _structured_body,
     subprocess_runner as _subprocess_runner,
+    summarize_stderr as _summarize_stderr,
 )
 from ax_workspace.platform.tool_receipts import (
     display_name as _display_name,
@@ -49,9 +52,13 @@ from ax_workspace.modules.ax_execution.ai import (
     ProviderCancelled,
     ProviderRequestFailed,
     ProviderResponseInvalid,
+    ProviderSessionUnavailable,
     ProviderUnavailable,
 )
 from ax_workspace.modules.ax_execution.answer_documents import AnswerDocument
+
+
+logger = logging.getLogger(__name__)
 
 
 _ANSWER_SCHEMA = AnswerDocument.model_json_schema()
@@ -151,6 +158,7 @@ class CodexCliProviderAdapter:
                 usage=usage,
             )
             if result.returncode != 0:
+                _log_failure("generation", result)
                 raise ProviderRequestFailed("Codex CLI generation failed", provenance)
             try:
                 payload = json.loads(output_path.read_text(encoding="utf-8"))
@@ -230,6 +238,11 @@ class CodexCliProviderAdapter:
             if cancel is not None and cancel.is_set():
                 raise ProviderCancelled("Codex CLI conversation was cancelled", provenance)
             if result.returncode != 0:
+                _log_failure("conversation", result)
+                if request.provider_session_ref and not _session_on_disk(runtime_home, request.provider_session_ref):
+                    # 이어 갈 세션이 이 런타임 홈에 없다 — 다른 프로세스(파드)가 열었거나 재시작으로 사라졌다.
+                    # 같은 resume 은 몇 번을 다시 걸어도 같다. 맥락을 다시 실을 수 있는 부르는 쪽이 새 세션으로 간다.
+                    raise ProviderSessionUnavailable("Codex CLI session to resume is not available here", provenance)
                 raise ProviderRequestFailed("Codex CLI conversation failed", provenance)
             try:
                 payload = json.loads(output_path.read_text(encoding="utf-8"))
@@ -366,7 +379,8 @@ class CodexCliProviderAdapter:
         " 소유 도구의 상세 조회만으로 관계 경로를 확인했다고 대신하지 않는다.\n"
         "- 관계 답변의 주대상이 Task·업무 요청·회의이면 해당 소유 조회 도구로 한 번 확인하여 답변의 정본 링크를"
         " 남긴다. 주변 node의 상세를 일괄 조회하지 않는다.\n"
-        "- graph_search 시작 종류는 person/team/project/task/work_request/meeting이다. material/report는 관계로 도달한다."
+        "- `graph_search`의 인자는 `query`(찾을 이름)와 `limit` 둘뿐이다. 종류를 거르는 인자는 없다 — 결과 node의 kind를 보고 고른다."
+        " 이름으로 찾히는 것은 person/team/project/task/work_request/meeting이고 material/report는 관계로 도달한다."
         " graph_neighbors(node='<kind>:<id>')에는 반환된 kind와 id만 쓴다. 제목의 숫자를 ID로 추측하지 않는다.\n"
         "- 회의에서 결정한 날짜·담당자·재논의 이유 등 회의 내용을 묻는 질문은 `material_search`로 시작한다. 회의 제목도"
         " 본문 검색의 단서로 사용하고, 회의 ID를 찾기 위한 graph 조회를 먼저 하지 않는다. MeetingNote는 draft/final 상태와 immutable version을,"
@@ -385,8 +399,9 @@ class CodexCliProviderAdapter:
         "- 자료 조회와 Graph의 material_id는 모두 canonical artifact UUID다. binding_id는 원본이 붙은 연결의 ID다. 부분 추출 파일은 사용자가 명시했을 때만 artifact ID로 선택한다."
         " owner만 지정한 것은 파일 선택이 아니다. extraction.coverage/warnings와 no-hit의 selected_material.extraction도"
         " 확인하고 미처리 범위를 밝힌다. 결과가 준 origin과 정확한 source_locator를 근거로 사용한다.\n"
-        "- 사용자가 본인 업무 생성이나 승인할 수 있는 생성안을 요청하면 필요한 자료 근거를 먼저 조회한 뒤"
-        " `task_create_self`로 Action 제안을 준비한다. 이 대화에서는 사람의 승인 전까지 업무가 생성되지 않는다."
+        "- 사용자가 본인 업무 생성이나 승인할 수 있는 생성안을 요청하면 필요한 자료 근거와 연결할 프로젝트·기존 업무를"
+        " 먼저 조회한 뒤(업무 생성·보고 상태 선택 지침의 탐색 규칙) `task_create_self`로 Action 제안을 준비한다."
+        " 이 대화에서는 사람의 승인 전까지 업무가 생성되지 않는다."
         " 단순 아이디어를 묻는 경우에는 문장으로 답한다.\n"
         "- 날짜는 두 가지로 갈린다. `지난달 등록한 자료`는 등록 시각의 조건이고 `8월 실적을 언급한 자료`는 본문에"
         " 찾을 말이다. 날짜를 본문 검색어에 섞지 않는다.\n"
@@ -440,8 +455,15 @@ class CodexCliProviderAdapter:
         "- 다른 사람에게 새 일을 제안할 때 관리자 지시·업무 배정이면 `task_assignment_candidates`로 표시 이름을 확인한 뒤 "
         "`task_assign`을 사용한다. 수평 업무 요청·부탁·협업 요청이면 `work_request_assignee_candidates`로 확인한 뒤 "
         "`work_request_create`를 사용한다. 사용자가 배정이 아니라고 명시하면 `task_assign`으로 바꾸지 않는다.\n"
-        "- 수신자의 표시 이름을 말했으면 후보 도구에서 ID를 찾는다. 직책·소속 관계로 사람을 특정하거나 관계 자체를 묻지 않은 한 "
-        "`graph_search`를 먼저 호출하지 않는다. 두 생성 도구 모두 사람의 확인 전에는 실제 업무나 요청을 만들지 않는다."
+        "- 수신자의 표시 이름을 말했으면 후보 도구에서 ID를 찾는다. **사람을 찾으려고** `graph_search`를 먼저 호출하지 않는다 — "
+        "직책·소속 관계로 사람을 특정하거나 관계 자체를 물었을 때만 graph로 사람을 찾는다. "
+        "두 생성 도구 모두 사람의 확인 전에는 실제 업무나 요청을 만들지 않는다.\n"
+        "- 업무(`task_create_self`)·업무 요청(`work_request_create`) 초안을 만들기 전에 **연결할 프로젝트와 관련 기존 업무를 찾는다** — "
+        "사람이 「새 업무 추가」 창에서 프로젝트·상위·선행·참고 업무를 고르듯이. 프로젝트는 `list_projects`(참여 프로젝트) 또는 "
+        "이름으로 `graph_search`, 그 프로젝트의 업무는 `graph_neighbors(node='project:<id>')` 또는 `task_list`로 찾는다. "
+        "대화에 나온 이름이나 업무 주제와 **한 후보로 확정될 때만** `project_id`·`parent_task_id`·`preceding_task_ids`(같은 프로젝트의 업무)·"
+        "`reference_task_ids`를 채운다. 못 찾았거나 후보가 여럿이면 비워 두고, 답변에 「연결할 프로젝트를 찾지 못했습니다」처럼 "
+        "무엇을 비웠는지(후보가 여럿이면 그 이름들)를 말한다. 조회 결과에 없는 ID를 지어내지 않는다."
     )
 
     ANSWER_PRESENTATION_POLICY = (
@@ -452,10 +474,11 @@ class CodexCliProviderAdapter:
         "사용자가 식별자 자체를 명시적으로 요청한 경우에만 필요한 값을 답한다.\n"
         "- 최종 응답은 body(Markdown), elements, follow_up_candidates로 구성한다. 일반 설명은 Markdown으로 "
         "자유롭게 작성하고 리소스가 필요 없으면 elements는 빈 배열이다.\n"
-        "- 업무·회의·업무 요청·자료·보고서의 실제 대상을 언급할 때는 내부 URL이나 제목 매칭 대신 "
+        "- 업무·회의·업무 요청·프로젝트·자료·보고서의 실제 대상을 언급할 때는 내부 URL이나 제목 매칭 대신 "
         "body에 {{key}}를 넣고 elements에 같은 key의 resource_reference를 정의한다. ref는 "
         "현재 도구 결과나 서버가 재확인한 대화 근거의 type:id(task:<task_id>, meeting:<meeting_id>, "
-        "work_request:<request_id>, material:<material_id>, report:<report_id>)다. ID를 추측하지 않는다.\n"
+        "work_request:<request_id>, project:<project_id>, material:<material_id>, report:<report_id>)다. "
+        "type은 그 대상이 실제로 무엇인지와 같아야 한다 — 프로젝트를 task:로 가리키지 않는다. ID를 추측하지 않는다.\n"
         "- 대상을 여러 개 나열하거나 실행 순서를 제안할 때는 resource_list를 쓴다. ordered는 순서 여부, "
         "items는 각 대상의 ref와 description(Markdown 설명)이다. 제목·링크·번호·줄바꿈은 화면이 표시하므로 "
         "description에 제목을 다시 쓰지 않는다 — description은 상태·마감·사유 같은 제목 이후의 정보만 "
@@ -768,6 +791,24 @@ class CodexEventIngest:
 
 
 
+def _log_failure(kind: str, result: ProcessResult) -> None:
+    """실패한 codex 의 stderr 요약을 남긴다 — 다음 장애의 원인을 로그로 보려고. 비밀은 가리고 길이는 자른다."""
+    logger.warning(
+        "Codex CLI %s 이(가) 종료 코드 %s 로 실패했습니다: %s",
+        kind,
+        result.returncode,
+        _summarize_stderr(result.stderr or "") or "(stderr 없음)",
+    )
+
+
+def _session_on_disk(runtime_home: Path, session_ref: str) -> bool:
+    """이 런타임 홈에 그 세션의 rollout 이 있는가. codex 는 `sessions/YYYY/MM/DD/rollout-<시각>-<id>.jsonl` 에 둔다."""
+    sessions = runtime_home / "sessions"
+    if not sessions.is_dir():
+        return False
+    return any(sessions.rglob(f"rollout-*{glob.escape(session_ref)}.jsonl"))
+
+
 def prepare_isolated_codex_home(runtime_home: Path, *, auth_file: Path) -> Path:
     """Prepare a minimal runtime home that contains only the auth symlink."""
     runtime_home = runtime_home.resolve()
@@ -792,5 +833,10 @@ def prepare_isolated_codex_home(runtime_home: Path, *, auth_file: Path) -> Path:
         if runtime_auth.resolve() != auth_file.resolve():
             raise ProviderUnavailable("isolated Codex runtime authentication is invalid")
     else:
-        runtime_auth.symlink_to(auth_file)
+        try:
+            runtime_auth.symlink_to(auth_file)
+        except FileExistsError:
+            # 런타임 홈을 여러 프로세스(파드)가 함께 쓰면 다른 쪽이 먼저 걸었을 수 있다 — 같은 곳을 가리키면 된다.
+            if runtime_auth.resolve() != auth_file.resolve():
+                raise ProviderUnavailable("isolated Codex runtime authentication is invalid") from None
     return runtime_home

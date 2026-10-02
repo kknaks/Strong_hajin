@@ -103,7 +103,8 @@
 .scax-chat__identity b,.scax-chat__identity small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .scax-chat__tools{display:flex;flex:none;align-items:center;gap:var(--scax-space-100)}
 .scax-chat__tool{display:grid;width:32px;height:32px;padding:0;place-items:center;border:1px solid transparent;border-radius:var(--scax-radius-sm);color:var(--scax-color-ink-alt);background:var(--scax-color-surface-alt);cursor:pointer}
-.scax-chat__tool:hover,.scax-chat__tool[aria-pressed="true"]{border-color:var(--scax-color-line-strong);color:var(--scax-color-accent);background:var(--scax-color-accent-08)}
+/* 사람이 누르는 도구 — 회색/검정 (E2E 3 · 채팅 서랍 색 원칙) */
+.scax-chat__tool:hover,.scax-chat__tool[aria-pressed="true"]{border-color:var(--scax-color-line-strong);color:var(--scax-color-ink);background:var(--scax-color-fill-weak)}
 .scax-chat__tool--close{color:var(--scax-color-ink-assistive);background:transparent}
 .scax-chat__tool:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
 .scax-chat__tool-divider{width:1px;height:24px;margin:0 var(--scax-space-100);background:var(--scax-color-line)}
@@ -113,7 +114,9 @@
 .scax-chat__utility{display:flex;flex:1;min-height:0;flex-direction:column;gap:var(--scax-space-500);overflow-y:auto;padding:var(--scax-space-600) var(--scax-space-500);background:var(--scax-color-surface)}
 .scax-chat__utility-head h2{margin:0;font-size:var(--scax-text-title-size);line-height:var(--scax-text-title-lh);letter-spacing:var(--scax-text-title-ls);font-weight:var(--scax-fw-semibold)}
 .scax-chat__utility-head p{margin:var(--scax-space-150) 0 0;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size)}
-.scax-chat__search{flex:none;height:42px;padding:0 var(--scax-space-300);font-size:var(--scax-text-label2-size)}
+/* 대화 검색 (WORK-008 F-02) — 테두리·반경·높이·글자는 다른 입력칸과 같은 전역 기본값(`components.css` 의 폼
+   element 기본값, `input[type="search"]` 포함)이 준다. 여기서는 세로 흐름에서 줄어들지 않게만 한다. */
+.scax-chat__search{flex:none}
 .scax-chat__list-note{display:flex;align-items:center;justify-content:space-between;gap:var(--scax-space-200);margin:0;padding:var(--scax-space-200) var(--scax-space-250);border:1px dashed var(--scax-color-line);border-radius:var(--scax-radius-sm);color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size)}
 .scax-chat__list-note--error{color:var(--scax-color-danger);border-color:var(--scax-color-danger)}
 .scax-chat__history{display:grid;gap:var(--scax-space-200);margin:0;padding:0;list-style:none;overflow-y:auto}
@@ -122,8 +125,8 @@
 .scax-chat__history button b{grid-column:1;overflow:hidden;font-size:var(--scax-text-label2-size);font-weight:var(--scax-fw-bold);text-overflow:ellipsis;white-space:nowrap}
 .scax-chat__history button small{grid-column:2;grid-row:1;overflow:hidden;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size);text-overflow:ellipsis;white-space:nowrap}
 .scax-chat__history-excerpt{grid-column:1 / -1;overflow:hidden;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size);text-overflow:ellipsis;white-space:nowrap}
-.scax-chat__history button[aria-pressed="true"]{border-color:transparent;background:var(--scax-color-accent-08)}
-.scax-chat__history button[aria-pressed="true"] b{color:var(--scax-color-accent)}
+.scax-chat__history button[aria-pressed="true"]{border-color:transparent;background:var(--scax-color-fill-weak)}
+.scax-chat__history button[aria-pressed="true"] b{color:var(--scax-color-ink)}
 
 /* ──────────────────────────────────────────────── 대화 흐름 (구 558~563 · 1058~1075) */
 .scax-chat__stream{position:relative;display:flex;flex:1;min-height:0;flex-direction:column}
@@ -138,8 +141,8 @@
 .scax-chat__start-card>p{margin:0 0 var(--scax-space-150);color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size)}
 .scax-chat__starters{display:grid;width:100%;gap:var(--scax-space-200)}
 .scax-chat__starters button{display:flex;align-items:center;gap:var(--scax-space-150);min-height:34px;padding:var(--scax-space-150) var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-pill);color:var(--scax-color-ink-alt);background:var(--scax-color-surface);text-align:left;cursor:pointer;font-size:var(--scax-text-caption1-size)}
-.scax-chat__starters button span{color:var(--scax-color-accent);font-size:var(--scax-text-headline-size);line-height:1}
-.scax-chat__starters button:hover{border-color:var(--scax-color-accent);color:var(--scax-color-accent);background:var(--scax-color-accent-08)}
+.scax-chat__starters button span{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-headline-size);line-height:1}
+.scax-chat__starters button:hover{border-color:var(--scax-color-line-strong);color:var(--scax-color-ink);background:var(--scax-color-fill-weak)}
 .scax-chat__queue{display:grid;gap:var(--scax-space-150);margin:0 0 var(--scax-space-200);padding:0;list-style:none}
 .scax-chat__queued .scax-msg--user,.scax-chat__fragment .scax-msg--user{margin-bottom:var(--scax-space-150)}
 .scax-chat__fragment-actions{display:flex;align-items:center;gap:var(--scax-space-150);margin-top:var(--scax-space-150)}
@@ -165,13 +168,15 @@
 .scax-followup__head{display:flex;align-items:center;justify-content:space-between;gap:var(--scax-space-300);min-width:0}
 .scax-followup__head strong{color:var(--scax-color-ink-alt);font-size:var(--scax-text-caption1-size);font-weight:var(--scax-fw-bold)}
 .scax-followup__head small{flex:none;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size);white-space:nowrap}
-.scax-followup__list{display:grid;gap:var(--scax-space-150);min-width:0}
-.scax-followup__item{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:var(--scax-space-150);width:100%;min-width:0;min-height:44px;padding:var(--scax-space-250) var(--scax-space-300);border:1px solid var(--scax-color-accent-20);border-radius:var(--scax-radius-lg);color:var(--scax-color-ink-alt);background:var(--scax-color-surface);font-size:var(--scax-text-caption1-size);line-height:1.45;text-align:left;cursor:pointer}
-.scax-followup__item>span:first-child{display:-webkit-box;min-width:0;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal}
-.scax-followup__arrow{color:var(--scax-color-accent);font-size:var(--scax-text-title-size);line-height:1}
-.scax-followup__item:hover:not(:disabled){border-color:var(--scax-color-accent);color:var(--scax-color-accent)}
+/* 추천 대화 (E2E 4 · 5) — 세로 전폭 목록이 아니라 가로로 나란한 짧은 칩이다. 넘치면 줄을 바꾼다. 테두리는 회색,
+   글씨는 검정 계열 — 파랑은 AI 가 하는 것에만 쓴다(채팅 서랍 색 원칙). */
+.scax-followup__list{display:flex;flex-wrap:wrap;gap:var(--scax-space-150);min-width:0}
+.scax-followup__item{display:inline-flex;align-items:center;gap:var(--scax-space-100);width:auto;max-width:100%;min-width:0;min-height:30px;padding:var(--scax-space-100) var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-lg);color:var(--scax-color-ink);background:var(--scax-color-surface);font-size:var(--scax-text-caption1-size);line-height:1.45;text-align:left;cursor:pointer}
+.scax-followup__item>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scax-followup__arrow{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-label1-size);line-height:1}
+.scax-followup__item:hover:not(:disabled){border-color:var(--scax-color-line-strong);background:var(--scax-color-fill-weak);color:var(--scax-color-ink)}
 .scax-followup__item:disabled{cursor:default;opacity:.58}
-.scax-followup__item[data-state="sending"],.scax-followup__item[data-state="selected"]{border-color:var(--scax-color-accent);color:var(--scax-color-accent);background:var(--scax-color-accent-08);opacity:1}
+.scax-followup__item[data-state="sending"],.scax-followup__item[data-state="selected"]{border-color:var(--scax-color-line-strong);color:var(--scax-color-ink);background:var(--scax-color-fill-weak);opacity:1}
 .scax-followup__item[data-state="failed"]{border-color:var(--scax-color-danger);color:var(--scax-color-danger)}
 .scax-followup__item small{color:inherit;font-size:var(--scax-text-caption2-size);white-space:nowrap}
 .scax-followup__item:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
@@ -203,7 +208,9 @@
 .scax-rail__expanded{display:grid;gap:var(--scax-space-250);margin:var(--scax-space-200) 0 0 var(--scax-space-500);padding-top:var(--scax-space-200);border-top:1px solid var(--scax-color-line-weak)}
 .scax-rail__execution,.scax-rail__evidence{display:grid;gap:var(--scax-space-150)}
 .scax-rail__execution>b,.scax-rail__evidence>b{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size)}
-.scax-rail__expanded .scax-rail__steps{margin-top:0}
+/* 펼침 안의 단계 목록은 다시 들여쓰지 않는다 — 펼침(margin-left)이 한 번 들여쓴 자리다 (E2E 11). 체크 표는
+   목록 왼쪽 바깥(-20px)에 서므로 그 펼침 여백 안에 놓인다. */
+.scax-rail__expanded .scax-rail__steps{margin:0}
 .scax-rail__code{margin-left:var(--scax-space-150);padding:1px 5px;border-radius:var(--scax-radius-xs);color:var(--scax-color-ink-assistive);background:var(--scax-color-surface-alt);font:9px ui-monospace,SFMono-Regular,Menlo,monospace}
 /* 레일 안의 근거는 본문보다 한 단 작다 — 판을 좁혀 쓴다 */
 .scax-rail__evidence .scax-sources,.scax-rail__evidence .scax-evidence{gap:5px;margin:0;padding:7px 9px;border-left-width:1px;font-size:var(--scax-text-caption2-size)}
@@ -239,7 +246,9 @@
 .scax-evidence__card blockquote{margin:var(--scax-space-150) 0 0;padding:0 0 0 var(--scax-space-300);border-left:2px solid var(--scax-color-line);color:var(--scax-color-ink-alt);font-size:var(--scax-text-caption1-size);white-space:pre-wrap}
 
 /* ───────────────────────────────────────────────── 승인 카드 (구 592~597 · 1134) */
-.scax-actioncard{margin:var(--scax-space-200) var(--scax-space-600) var(--scax-space-200) 0;padding:var(--scax-space-300) var(--scax-space-400);border:1px solid var(--scax-color-line);border-left:3px solid var(--scax-color-accent);border-radius:var(--scax-radius-sm);background:var(--scax-color-accent-08)}
+/* AX 카드 골격 — 무채색 (WORK-008 E2E 1 · 사용자 2026-10-01 「검은색 회색으로 … 통일성」). 파란 배경과 왼쪽 3px
+   띠를 걷고 앱의 다른 카드처럼 흰 바탕 + 1px 회색 테두리다. 강조색은 각 카드의 주 단추(solid-primary)만 진다. */
+.scax-actioncard{margin:var(--scax-space-200) var(--scax-space-600) var(--scax-space-200) 0;padding:var(--scax-space-300) var(--scax-space-400);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface)}
 .scax-actioncard b{display:block;font-size:var(--scax-text-label1-size)}
 .scax-actioncard p{margin:var(--scax-space-100) 0 0;padding:0;border:0;background:transparent;color:var(--scax-color-ink-alt);font-size:var(--scax-text-label2-size)}
 .scax-actioncard>small{display:block;margin-top:var(--scax-space-200);color:var(--scax-color-accent);font-size:var(--scax-text-caption1-size);font-weight:var(--scax-fw-bold)}
@@ -300,9 +309,9 @@
 .scax-chat__composer-actions{display:flex;align-items:center;justify-content:space-between;gap:var(--scax-space-200)}
 .scax-chat__context{display:grid;gap:var(--scax-space-100)}
 .scax-chat__context small{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size)}
-.scax-chat__context-chip{display:inline-flex;align-items:center;gap:var(--scax-space-200);width:max-content;max-width:100%;height:30px;padding:0 var(--scax-space-200) 0 var(--scax-space-300);border-radius:var(--scax-radius-pill);color:var(--scax-color-accent);background:var(--scax-color-accent-08);font-size:var(--scax-text-caption1-size);font-weight:var(--scax-fw-medium)}
+.scax-chat__context-chip{display:inline-flex;align-items:center;gap:var(--scax-space-200);width:max-content;max-width:100%;height:30px;padding:0 var(--scax-space-200) 0 var(--scax-space-300);border-radius:var(--scax-radius-pill);color:var(--scax-color-ink);background:var(--scax-color-fill-weak);font-size:var(--scax-text-caption1-size);font-weight:var(--scax-fw-medium)}
 .scax-chat__context-chip>span:last-of-type{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.scax-chat__context-chip button{color:var(--scax-color-accent);font-size:var(--scax-text-label1-size)}
+.scax-chat__context-chip button{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-label1-size)}
 
 /* ──────────────────────────────────────────────────────────────── 좁은 화면
    구 styles.css:793 · 801~809 · 840~845 의 내 몫. */
@@ -454,7 +463,7 @@
 .action-meeting-card .action-task-attachment-heading > b { color: var(--task-card-title); font-size: 14px; font-weight: 600; line-height: 20px; }
 .action-meeting-card .action-meeting-note-section > .action-task-attachment-trigger { width: 100%; }
 .action-meeting-note-list .action-meeting-note-edit { justify-self: stretch; width: auto; height: auto; padding: 0; border-radius: 0; color: #000; font: inherit; text-align: left; }
-.action-meeting-note-list .action-meeting-note-edit:hover:not(:disabled) { background: transparent; color: var(--scax-color-accent); }
+.action-meeting-note-list .action-meeting-note-edit:hover:not(:disabled) { background: transparent; color: var(--scax-color-ink); }
 .action-task-card .action-task-attachments { display: grid; gap: 8px; margin-top: 0; }
 .action-task-card .action-task-summary + .action-task-attachments,
 .action-task-card .action-task-fields + .action-task-attachments { padding-top: 16px; border-top: 1px solid var(--task-card-border); }
@@ -467,7 +476,7 @@
 .action-task-attachment-list em { color: var(--scax-color-ink-assistive); font-size: 12px; font-style: normal; }
 .action-task-attachment-list [data-upload-state="failed"] { border-color: var(--scax-color-danger); background: var(--scax-color-danger-soft); }
 .action-task-attachment-list button { width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; color: var(--scax-color-ink-alt); background: transparent; cursor: pointer; font-size: 18px; }
-.action-task-attachment-list button:hover { background: var(--scax-color-accent-08); color: var(--scax-color-ink); }
+.action-task-attachment-list button:hover { background: var(--scax-color-fill-weak); color: var(--scax-color-ink); }
 .action-task-attachment-trigger { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; min-height: 40px; padding: 0 14px; border: 1px solid var(--task-card-border, var(--scax-color-line-strong)); border-radius: 10px; color: #171719; background: var(--scax-color-surface); font-size: 15px; font-weight: 500; line-height: 22.5px; letter-spacing: 0.0855px; }
 .action-task-attachment-trigger.empty { border-color: var(--scax-color-line); color: var(--scax-color-ink-assistive); }
 .action-task-attachment-trigger:hover:not(:disabled) { border-color: var(--scax-color-line-strong); background: var(--scax-color-surface-alt); }
@@ -611,3 +620,54 @@
 .action-command-editor .action-task-buttons{display:flex;flex-wrap:wrap;gap:var(--scax-space-200)}
 .action-command-editor input[type="datetime-local"]{width:100%;height:38px;padding:0 var(--scax-space-300);border:1px solid var(--scax-color-line-strong);border-radius:var(--scax-radius-sm);color:var(--scax-color-ink);background:var(--scax-color-surface);font-size:var(--scax-text-body1-size)}
 
+
+/* ───────────────────────────────────────── AX 업무 초안 요약 카드 (WORK-008 3b · SPEC-002 §2.9)
+   골격은 `.scax-actioncard` 그대로이고 그 안의 배치만 더한다. 시안이 없는 자리(4칸 바 · 호버 화살표)는
+   기존 토큰으로만 세웠다 — DS-gaps 에 적는다. 높이는 «고정»이다: 페이지를 넘겨도 카드가 자라지 않는다. */
+.ax-draft-card{display:flex;flex-direction:column;gap:var(--scax-space-200)}
+.ax-draft-card__head{display:flex;flex-direction:column;gap:var(--scax-space-150)}
+.ax-draft-card__kind{margin-left:auto;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size)}
+.ax-draft-card .scax-actioncard__badges{display:flex;align-items:center;gap:var(--scax-space-150)}
+.ax-draft-card__title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ax-draft-card__bar{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--scax-space-100)}
+.ax-draft-card__step{height:4px;padding:0;border:0;border-radius:var(--scax-radius-xs);background:var(--scax-color-line);cursor:pointer}
+.ax-draft-card__step--on{background:var(--scax-color-ink)}
+.ax-draft-card__step:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+/* 본문 높이 (E2E 6) — 제목 줄(24px) + 가장 긴 페이지(요청 갈래 기본 정보: 다섯 줄 + 내용 두 줄 = 일곱 줄)에
+   «딱 맞게» 고정한다. 모든 페이지가 같은 높이이고, 목록이 넘치면 마지막 줄이 「외 N개」로 접힌다(LINE_BUDGET=7).
+   줄 하나 = caption1 크기 × 줄높이, 줄 사이 space-050 여섯, 위아래 패딩 space-200. */
+.ax-draft-card__body{position:relative;height:calc(24px + var(--scax-space-150) + 7 * var(--scax-text-caption1-size) * var(--scax-text-caption1-lh) + 6 * var(--scax-space-050) + 2 * var(--scax-space-200));overflow:hidden;padding:var(--scax-space-200) var(--scax-space-300);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface)}
+.ax-draft-card__body:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+/* 본문은 블록이다 — 공용 `.scax-actioncard>div`(flex 가로) 를 받으면 dl 이 고정 높이로 늘어나 줄이 위아래로
+   벌어졌다(E2E 1). 줄은 위에서부터 붙여 쌓는다(align-content:start). 라벨 · 값 두 열. */
+.ax-draft-card > .ax-draft-card__body{display:block;margin-top:0}
+/* 제목 줄 (E2E 8 · 9) — 왼쪽 지금 페이지 이름(진하게 · label2, 아래 줄보다 한 단계 큼), 오른쪽 ‹ › (늘 보임). */
+.ax-draft-card__pagehead{display:flex;align-items:center;justify-content:space-between;gap:var(--scax-space-200);height:24px;margin-bottom:var(--scax-space-150)}
+.ax-draft-card__pagetitle{color:var(--scax-color-ink);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);font-weight:var(--scax-fw-bold)}
+.ax-draft-card__arrows{display:flex;align-items:center;gap:var(--scax-space-050)}
+.ax-draft-card__arrows .scax-icon-button{width:24px;height:24px}
+.ax-draft-card__rows{display:grid;grid-template-columns:max-content minmax(0,1fr);align-content:start;column-gap:var(--scax-space-300);row-gap:var(--scax-space-050);margin:0}
+.ax-draft-card__rows > div{display:contents;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh)}
+.ax-draft-card__rows dt{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh)}
+.ax-draft-card__rows dd{min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--scax-color-ink);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh)}
+.ax-draft-card__rows dd.ax-draft-card__clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal}
+.ax-draft-card__rows dd.ax-draft-card__none{color:var(--scax-color-ink-disabled)}
+/* 체크리스트 한 줄 — DS 장식용 체크박스(☐) + 항목명. 상자는 줄높이에 맞춰 작게 (E2E 7). */
+.ax-draft-card__rows dd.ax-draft-card__step-line{display:flex;align-items:center;gap:var(--scax-space-150)}
+.ax-draft-card__step-line .scax-checkbox__box{width:12px;height:12px}
+.ax-draft-card__step-line .scax-checkbox__box svg{display:none}
+.ax-draft-card__foot{display:flex;align-items:center;justify-content:flex-end;gap:var(--scax-space-200)}
+.ax-draft-card__foot .t-meta{margin-right:auto}
+.ax-draft-card--done{flex-direction:row;align-items:center;justify-content:space-between}
+.ax-draft-card__line{display:flex;align-items:center;gap:var(--scax-space-200);min-width:0;margin:0}
+.ax-draft-card__line b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ───────────────────────────────────────── AX 채팅 서랍 안 단추 색 (WORK-008 E2E 3)
+   원칙: 파랑 = AI 가 하는 것(진행 · 생각 · AI 상태)에만, 사람이 누르는 행동 단추 = 검정. **채팅 서랍 안만**이다 —
+   다른 화면의 단추는 그대로다. DS 에 검정 solid 변형이 없어 여기서 세운다(DS-gaps): 주 단추(solid-primary)를
+   잉크로 칠한다. 비활성은 DS 의 `.scax-button:disabled` 가 그대로 이긴다(:not(:disabled)).
+   카드별 오버라이드(`.action-task-card … solid-primary`, 0,3,0)도 같은 자리라 함께 덮는다. */
+.scax-drawer--chat .scax-button--solid-primary:not(:disabled),
+.scax-drawer--chat .action-task-card > .action-task-actions .scax-button--solid-primary:not(:disabled){border-color:transparent;background:var(--scax-color-ink);color:var(--scax-color-surface)}
+.scax-drawer--chat .scax-button--solid-primary:hover:not(:disabled),
+.scax-drawer--chat .action-task-card > .action-task-actions .scax-button--solid-primary:hover:not(:disabled){border-color:transparent;background:var(--scax-color-ink-alt);color:var(--scax-color-surface)}

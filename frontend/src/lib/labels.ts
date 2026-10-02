@@ -267,11 +267,12 @@ export const taskFilterOptions = ["active", "all", "open", "in_progress", "block
  * **「막힘」 칩은 없다** — 계약에 `blocked` 상태가 없다(M-6 미정). 막힌 업무 자체는 「전체」에서
  * 그대로 읽히고 행의 사유도 그대로 선다. 칩만 그리지 않는다.
  */
-export type WorkChip = "all" | "awaiting_acceptance" | "open" | "in_progress" | "overdue" | "not_started" | "awaiting_review";
+export type WorkChip = "all" | "awaiting_acceptance" | "ax_drafts" | "open" | "in_progress" | "overdue" | "not_started" | "awaiting_review";
 
 export const workChipLabel: Record<WorkChip, string> = {
   all: "전체",
   awaiting_acceptance: "받은 요청",
+  ax_drafts: "AX 제안",
   open: "시작 전",
   in_progress: "진행 중",
   overdue: "기한 지남",
@@ -279,7 +280,8 @@ export const workChipLabel: Record<WorkChip, string> = {
   awaiting_review: "확인 대기",
 };
 
-export const myWorkChips: ReadonlyArray<WorkChip> = ["all", "awaiting_acceptance", "open", "in_progress", "overdue"];
+/* 「AX 제안」은 `받은 요청` 바로 뒤, `기한 지남` 은 늘 맨 끝 (SPEC-001 U-2 · WORK-008 A-01). */
+export const myWorkChips: ReadonlyArray<WorkChip> = ["all", "awaiting_acceptance", "ax_drafts", "open", "in_progress", "overdue"];
 export const sentWorkChips: ReadonlyArray<WorkChip> = ["all", "not_started", "overdue"];
 export const doneWorkChips: ReadonlyArray<WorkChip> = ["all", "awaiting_review"];
 /**
@@ -1162,6 +1164,8 @@ export const projectScreen = {
   noProjectsDescription: "프로젝트에 붙으면 그 프로젝트의 업무를 여기에서 봅니다.",
   notMember: "이 프로젝트의 업무는 담당자에게만 보입니다. 나를 담당자로 붙이면 여기에서 함께 봅니다.",
   loadFailed: "프로젝트를 불러오지 못했습니다.",
+  /** AX 답변의 프로젝트 참조로 왔는데 그 프로젝트가 내 목록에 없다 (WORK-008 Phase 5). */
+  focusUnavailable: "그 프로젝트를 열 수 없습니다 — 볼 수 있는 프로젝트 목록에 없습니다.",
   /* 관리 모달 — 시안이 없어 어휘만 빌렸다 (D-05 · M-1) */
   manage: "프로젝트 관리",
   manageClose: "닫기",
@@ -1286,3 +1290,50 @@ export const calendarCursorText = {
 };
 
 export const calendarDow = ["일", "월", "화", "수", "목", "금", "토"] as const;
+
+/**
+ * AX 업무 초안 요약 카드 (SPEC-002 §2.9 · WORK-008 D-02 · A-01).
+ * 페이지 넷은 「새 업무 추가」 창의 탭 넷과 이름·순서가 같다(1:1).
+ */
+export const axDraftCard = {
+  badge: "AX",
+  round: (round: number) => `초안 · ${round}회차`,
+  kind: { task: "업무 생성", request: "업무 요청" } as const,
+  branch: { task: "내 업무", request: "요청 업무" } as const,
+  pages: ["기본 정보", "체크리스트", "업무 연결", "자료"] as const,
+  none: "없음",
+  branchLabel: "갈래",
+  referencesLabel: "참고",
+  precedingLabel: "선행",
+  filesLabel: "파일",
+  linksLabel: "링크",
+  count: (count: number) => `${count}개`,
+  more: (count: number) => `외 ${count}개`,
+  period: "기간",
+  assignee: "담당 후보",
+  description: "내용",
+  cc: "참조자",
+  approver: "결재자",
+  parent: "상위",
+  project: "프로젝트",
+  references: (count: number) => `참고 ${count}`,
+  preceding: (count: number) => `선행 ${count}`,
+  checklist: (count: number, first: string) => `${count}개 · ${first}`,
+  materials: (files: number, links: number) => `파일 ${files} · 링크 ${links}`,
+  previous: "이전 페이지",
+  next: "다음 페이지",
+  reject: "거절",
+  edit: "수정",
+  confirm: "등록",
+  confirming: "등록 중…",
+  openTask: "업무 열기",
+  registered: "등록됨",
+  rejected: "거절됨",
+  age: (days: number) => (days <= 0 ? "오늘 만듦" : `만든 지 ${days}일`),
+  draftState: "초안",
+  requester: "AX",
+  rejectTitle: "AX 초안 거절",
+  modalTitle: "AX 제안",
+  decided: (subject: string) => `'${subject}' 판단을 반영했습니다.`,
+  rejectField: "거절 사유",
+} as const;

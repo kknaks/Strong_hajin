@@ -1,3 +1,4 @@
+import { useRemembered } from "../../lib/screenCache";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "../../ds/Button";
@@ -50,7 +51,15 @@ export function MeetingListPage({
    */
   reloadToken?: number;
 }) {
-  const [payload, setPayload] = useState<MeetingListPayload | null>(null);
+  /*
+   * 받아 둔 목록으로 시작한다 (WORK-008 Phase 2 · `lib/screenCache.ts`) — 탭을 옮겨 갔다 돌아오면 지난 목록을
+   * 바로 그리고 아래 effect 가 뒤에서 다시 읽어 갈아 끼운다. 스켈레톤(`null`)은 받아 둔 것이 없을 때만이다.
+   */
+  const [payload, setPayload, listRemembered] = useRemembered<MeetingListPayload | null>("meetings.list", null);
+  /** 목록을 한 번이라도 그렸나 — 그렸으면 다시 읽기가 실패해도 그 목록을 오류 화면으로 덮지 않는다. */
+  const listShown = useRef(listRemembered);
+  /** 이번 진입의 목록을 받았나 (fix1 · WARN-1) — 기억한 줄의 [수정]·[삭제]는 갱신 응답이 올 때까지 잠근다. */
+  const [listFresh, setListFresh] = useState(!listRemembered);
   const [failed, setFailed] = useState(false);
   const [moreBusy, setMoreBusy] = useState(false);
   const [confirm, setConfirm] = useState<MeetingRow | null>(null);
@@ -63,12 +72,15 @@ export function MeetingListPage({
     setFailed(false);
     const next = await listMeetings();
     setPayload(next);
-  }, []);
+    listShown.current = true;
+    setListFresh(true);
+  }, [setPayload]);
 
   useEffect(() => {
     let cancelled = false;
     void reload().catch(() => {
-      if (!cancelled) setFailed(true);
+      // 이미 보이는 목록은 그대로 둔다 — 처음부터 없을 때만 오류 화면이다.
+      if (!cancelled && !listShown.current) setFailed(true);
     });
     return () => {
       cancelled = true;
@@ -231,7 +243,7 @@ export function MeetingListPage({
               </h2>
               <ul aria-labelledby="meeting-running" className="scax-meeting-section__list">
                 {running.map((row) => (
-                  <MeetingRowItem key={row.meeting_id} onAskDelete={setConfirm} onEdit={setEditing} onSelect={onOpenMeeting} row={row} selected={selected === row.meeting_id} />
+                  <MeetingRowItem key={row.meeting_id} locked={!listFresh} onAskDelete={setConfirm} onEdit={setEditing} onSelect={onOpenMeeting} row={row} selected={selected === row.meeting_id} />
                 ))}
               </ul>
             </section>
@@ -246,7 +258,7 @@ export function MeetingListPage({
               </h2>
               <ul aria-labelledby="meeting-upcoming" className="scax-meeting-section__list">
                 {upcoming.map((row) => (
-                  <MeetingRowItem key={row.meeting_id} onAskDelete={setConfirm} onEdit={setEditing} onSelect={onOpenMeeting} row={row} selected={selected === row.meeting_id} />
+                  <MeetingRowItem key={row.meeting_id} locked={!listFresh} onAskDelete={setConfirm} onEdit={setEditing} onSelect={onOpenMeeting} row={row} selected={selected === row.meeting_id} />
                 ))}
               </ul>
             </section>
@@ -258,7 +270,7 @@ export function MeetingListPage({
               </h2>
               <ul aria-labelledby="meeting-past" className="scax-meeting-section__list">
                 {past.map((row) => (
-                  <MeetingRowItem key={row.meeting_id} onAskDelete={setConfirm} onEdit={setEditing} onSelect={onOpenMeeting} row={row} selected={selected === row.meeting_id} />
+                  <MeetingRowItem key={row.meeting_id} locked={!listFresh} onAskDelete={setConfirm} onEdit={setEditing} onSelect={onOpenMeeting} row={row} selected={selected === row.meeting_id} />
                 ))}
               </ul>
               {/* §8-B 12: [더 보기]는 구획 바닥 한가운데다. `listMeetings(cursor)` · `past.next_cursor`
@@ -351,8 +363,11 @@ function MeetingRowItem({
   onSelect,
   onEdit,
   onAskDelete,
+  locked = false,
 }: {
   row: MeetingRow;
+  /** 기억한 목록으로 그린 줄 — 이 화면의 갱신 응답이 오기 전에는 명령을 열지 않는다 (fix1 · WARN-1). */
+  locked?: boolean;
   selected: boolean;
   onSelect: (meetingId: string) => void;
   onEdit: (meetingId: string) => void;
@@ -394,6 +409,7 @@ function MeetingRowItem({
         {row.status === "scheduled" && (
           <div className="scax-meeting-card__actions">
             <Button
+              disabled={locked}
               onClick={(event) => {
                 event.stopPropagation();
                 onEdit(row.meeting_id);
@@ -404,6 +420,7 @@ function MeetingRowItem({
               {meetingScreen.edit}
             </Button>
             <Button
+              disabled={locked}
               onClick={(event) => {
                 event.stopPropagation();
                 onAskDelete(row);

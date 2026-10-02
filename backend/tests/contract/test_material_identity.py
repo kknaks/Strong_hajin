@@ -44,11 +44,16 @@ def test_one_artifact_has_one_graph_node_and_independent_task_bindings(tmp_path,
     assert any(r['resource_id'] == artifact for r in before['answer_resources'])
     assert client.post(f'/api/tasks/{first}/material-bindings/{binding}/detach', headers=MINA).status_code == 200
     after = client.get(f'/api/conversations/{cid}', headers=MINA).json()
+    # graph 로 본 업무도 답변 근거가 된다(E2E-12) — 이 시험이 보는 것은 **자료** 관찰뿐이다.
+    materials = [r for r in after['answer_resources'] if r['resource_type'] == 'material']
+    # 자료 말고 남는 것은 graph 가 보여 준 두 업무뿐이다 — 사람·팀 같은 다른 종류가 섞이지 않는다.
+    assert {(r['resource_type'], r['resource_id']) for r in after['answer_resources'] if r['resource_type'] != 'material'} == {
+        ('task', first), ('task', second)}
     if observe_second:
-        assert len(after['answer_resources']) == 1
-        assert {r['resource_id'] for r in after['answer_resources'][0]['source_contexts']} == {second}
+        assert len(materials) == 1
+        assert {r['resource_id'] for r in materials[0]['source_contexts']} == {second}
     else:
-        assert after['answer_resources'] == []  # another readable context cannot restore this observation
+        assert materials == []  # another readable context cannot restore this observation
     assert {r['from_ref'] for r in after['graph_receipts'] if r['kind']=='edge'} == {'task:' + second}
     assert client.get(f'/api/tasks/{first}/materials/{artifact}/content', headers=MINA).status_code == 404
     assert client.get(f'/api/tasks/{second}/materials/{artifact}/content', headers=MINA).status_code == 200

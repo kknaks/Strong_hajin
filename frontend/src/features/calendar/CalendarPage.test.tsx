@@ -1,10 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type React from "react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CalendarEntry } from "../../lib/viewModels";
 import { CalendarPage } from "./CalendarPage";
+import { forgetScreenCache, scopeScreenCache } from "../../lib/screenCache";
 
 vi.mock("../../lib/labels", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/labels")>()),
@@ -317,5 +318,57 @@ describe("캘린더 골격", () => {
     expect(rail.textContent).not.toContain("이번 주 회의");
     fireEvent.click(screen.getByRole("button", { name: "다음 달" }));
     await waitFor(() => expect(rail.textContent).not.toContain("전체 보기"));
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   WORK-008 Phase 2 (B-01 · fix1) — 탭 재진입과 주인이 바뀐 뒤의 늦은 응답.
+   탭 이동 = 언마운트 → 다시 마운트. 기억의 주인은 `App` 이 세우므로 여기서는 직접 세운다(App 경로와 같은 조건).
+   ════════════════════════════════════════════════════════════════════════════ */
+describe("캘린더 재진입 (B-01)", () => {
+  afterEach(() => scopeScreenCache(null));
+
+  function pending<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  }
+  const railBusy = () => document.querySelector('[data-testid="rail-left"] [aria-busy="true"]');
+
+  it("다시 들어오면 받아 둔 일정이 바로 서고 레일 스켈레톤이 없으며, 뒤에서 받은 값으로 바뀐다", async () => {
+    scopeScreenCache("me");
+    const first = render(<Harness />);
+    expect(await screen.findAllByText("뒤집힌 업무")).not.toHaveLength(0);
+    first.unmount();
+
+    const later = pending<CalendarEntry[]>();
+    getCalendar.mockReturnValue(later.promise);
+    render(<Harness />);
+    expect(screen.getAllByText("뒤집힌 업무")).not.toHaveLength(0);
+    expect(railBusy()).toBeNull();
+
+    await act(async () => later.resolve([submitted]));
+    expect(await screen.findAllByText("확인 기다리는 업무")).not.toHaveLength(0);
+    expect(screen.queryAllByText("뒤집힌 업무")).toHaveLength(0);
+  });
+
+  it("A 의 요청이 걸린 채 로그아웃 → B 로그인 뒤 A 의 응답이 와도 B 의 화면·기억에 A 의 일정이 없다 (FAIL-1)", async () => {
+    scopeScreenCache("alice");
+    const forAlice = pending<CalendarEntry[]>();
+    getCalendar.mockReturnValue(forAlice.promise);
+    const first = render(<Harness />);
+    first.unmount(); // 로그아웃 — 화면이 내려간다
+    forgetScreenCache();
+    scopeScreenCache(null);
+    scopeScreenCache("bob"); // B 로그인
+
+    await act(async () => forAlice.resolve([flipped])); // A 의 응답이 늦게 도착
+
+    getCalendar.mockReturnValue(pending<CalendarEntry[]>().promise); // B 의 응답은 아직
+    render(<Harness />);
+    expect(screen.queryAllByText("뒤집힌 업무")).toHaveLength(0);
+    expect(railBusy()).toBeTruthy();
   });
 });
