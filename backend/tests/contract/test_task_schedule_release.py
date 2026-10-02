@@ -217,7 +217,10 @@ def test_starting_a_task_that_already_had_a_start_date_changes_no_date_at_all(tm
 
 
 def test_the_transitions_that_do_not_move_a_date_keep_their_old_response_shape(tmp_path) -> None:
-    """**막힘·완료·취소는 날짜를 바꾸지 않는다** — 그 표면의 계약은 그대로다 (증보 K3 의 세 자리)."""
+    """**막힘·취소는 날짜를 바꾸지 않는다** — 그 표면의 계약은 그대로다 (증보 K3).
+
+    완료는 비어 있던 마감일을 채우는 넷째 자리라 묶음을 낸다 — `test_task_due_date_fill.py` 가 본다 (OQ-405).
+    """
     client, _ = _stack(tmp_path)
     task_id = _spanned_task(client)
     started = client.post(

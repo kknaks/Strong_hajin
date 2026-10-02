@@ -49,7 +49,7 @@ class TaskEditFields(BaseModel):
     title: str | None = Field(default=None, min_length=1, title='업무 명')
     description: str | None = Field(default=None, title='내용')
     start_date: date | None = Field(default=None, title='시작일')
-    due_date: date | None = Field(default=None, title='기한')
+    due_date: date | None = Field(default=None, title='마감일')
     project_id: UUID | None = Field(default=None, title='프로젝트')
     #: 상위 업무 **0..1** — 만든 뒤에도 옮길 수 있다 (SPEC-007 §4 · D-17). 배열도 집합도 아니라서
     #: 한 건씩 붙였다 떼는 전용 명령을 두지 않는다. **하위 해제·추가도 이 칸을 쓴다** — 대상이
@@ -128,9 +128,9 @@ class TaskUpdateInput(BaseModel):
     title: str | None = Field(default=None, title='업무 명')
     description: str | None = Field(default=None, title='내용')
     start_date: date | None = Field(default=None, title='시작일')
-    due_date: date | None = Field(default=None, title='기한')
+    due_date: date | None = Field(default=None, title='마감일')
     clear_start_date: bool = Field(default=False, title='시작일 삭제')
-    clear_due_date: bool = Field(default=False, title='기한 삭제')
+    clear_due_date: bool = Field(default=False, title='마감일 삭제')
     project_id: UUID | None = Field(default=None, title='프로젝트')
     clear_project: bool = Field(default=False, title='프로젝트 연결 해제')
     #: 상위 업무 — 보내면 그 업무 아래로 옮기고, `clear_parent` 면 비운다 (SPEC-007 §4 · D-17).

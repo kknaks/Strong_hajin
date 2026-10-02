@@ -76,12 +76,17 @@ def validate_task_progress_batch_edit(base: dict[str, Any], final: dict[str, Any
 
 
 def attachment_draft_ids(value: Any) -> list[str]:
+    """고른 자료 초안의 **집합** — 중복을 걷고 정렬한다 (WORK-009 fix2 W5).
+
+    저장·확인의 「바뀌었나」 비교와 영수증 해시가 이 목록을 그대로 본다. 순서만 다른 같은 집합이 다른 회차가
+    되지 않게 정본 순서를 하나로 둔다. 업무에 붙는 순서는 이 목록이 아니라 **올린 순서**다(`claim`).
+    """
     if value is None:
         return []
     if not isinstance(value, list):
         raise ActionError("attachment_draft_ids must be a list")
     try:
-        return list(dict.fromkeys(str(UUID(str(item))) for item in value))
+        return sorted({str(UUID(str(item))) for item in value})
     except (TypeError, ValueError) as error:
         raise ActionError("attachment_draft_ids must contain UUID values") from error
 

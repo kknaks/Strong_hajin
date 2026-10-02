@@ -51,8 +51,8 @@ class WorkRequestRevisionInput(BaseModel):
     expected_version: int = Field(ge=1, title='요청 버전')
     title: str | None = Field(default=None, min_length=1, max_length=300, title='요청 제목')
     description: str | None = Field(default=None, title='설명')
-    due_date: date | None = Field(default=None, title='기한')
-    clear_due_date: bool = Field(default=False, title='기한 없애기')
+    due_date: date | None = Field(default=None, title='마감일')
+    clear_due_date: bool = Field(default=False, title='마감일 없애기')
 
     @field_validator('due_date', mode='before')
     @classmethod

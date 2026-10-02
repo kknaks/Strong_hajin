@@ -73,6 +73,8 @@ class ActionEditContract(TypedDict):
     values: dict[str, JsonValue]
     fields: list[ActionEditField]
     warnings: NotRequired[list[str]]
+    #: 「초안 저장」 명령 id — 확정 없이 고친 값을 다음 회차로 남긴다. 저장이 열리는 두 kind 에만 선다 (SPEC-002 §4).
+    save_command: NotRequired[str]
 
 
 class ActionProposalResult(TypedDict):

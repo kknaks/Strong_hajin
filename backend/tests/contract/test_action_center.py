@@ -767,7 +767,7 @@ def test_ax_drafts_refuse_only_what_new_task_creation_refuses(tmp_path) -> None:
         client, JIHO, item["action_item_id"], "confirm",
         expected_version=item["expected_version"], base_submission_version=1, draft={"title": "   "},
     )
-    assert blank.status_code == 422 and "기한" not in blank.text
+    assert blank.status_code == 422 and "기한" not in blank.text and "마감일" not in blank.text
 
     request = _ax_proposal(
         client, application, MINA, "mina", "work_request.create", "업무 요청 생성 확인",
@@ -1264,7 +1264,7 @@ def test_one_query_returns_every_kind_of_pending_judgement_with_its_own_commands
 
     proposal_item = items["ax.task.create_self"]
     assert proposal_item["subject"] == "AX가 만든 업무" and proposal_item["operation_label"] == "업무 생성"
-    assert [command["id"] for command in proposal_item["allowed_commands"]] == ["confirm", "reject"]
+    assert [command["id"] for command in proposal_item["allowed_commands"]] == ["confirm", "save_draft", "reject"]
     assert proposal_item["resource"] == {"type": "action", "id": proposal["action_id"]}
 
     # The same ledger is principal-scoped: Mina owes nothing here, she is waiting on Jiho.
@@ -1692,3 +1692,274 @@ def test_a_decision_keeps_the_server_facts_apart_from_the_conditions_a_person_wr
     assert [row["attachment_id"] for row in facts["evidence_manifest"]] == [row["attachment_id"] for row in timeline["submissions"][0]["evidence"]]
     # The requester still reads the proposal the way they always did.
     assert _pending(client, MINA)[0]["suggested_changes"] == {"due_date": "2026-12-01"}
+
+
+# ---- 「초안 저장」 — 확정 없이 고친 초안을 다음 회차로 (SPEC-002 §4 · WORK-009 1-1) ----------------
+
+
+def _ax_draft(client, application, kind: str):
+    if kind == "task.create_self":
+        headers = JIHO
+        proposal = _ax_proposal(client, application, JIHO, "jiho", kind, "업무 생성 확인", {"title": "AI 원안"})
+    else:
+        headers = MINA
+        proposal = _ax_proposal(
+            client, application, MINA, "mina", kind, "업무 요청 생성 확인", {"title": "AI 원안", "assignee_id": "jiho"}
+        )
+    [item] = [row for row in _pending(client, headers) if row["action_item_id"] == proposal["action_id"]]
+    return headers, proposal, item
+
+
+def test_saving_an_ax_draft_keeps_it_pending_and_opens_round_two_with_the_diff(tmp_path) -> None:
+    """저장은 확정이 아니다 — 확인 대기 그대로 · 회차 +1 · 고친 차이 · 업무·요청 원장은 그대로."""
+    client, application = _stack(tmp_path)
+    for kind in ("task.create_self", "work_request.create"):
+        headers, proposal, item = _ax_draft(client, application, kind)
+        commands = [command["id"] for command in item["allowed_commands"]]
+        assert commands == ["confirm", "save_draft", "reject"], commands
+        assert item["edit_contract"]["save_command"] == "save_draft"
+        tasks_before = client.get("/api/my-work", headers=headers).json()
+        requests_before = client.get("/api/work-requests", headers=headers).json()
+
+        saved = _command(
+            client, headers, item["action_item_id"], "save_draft",
+            expected_version=item["expected_version"], base_submission_version=1,
+            draft={**item["edit_contract"]["values"], "title": "사람이 고친 안", "checklist": ["자료 모으기", "초안 쓰기"]},
+        )
+        assert saved.status_code == 200, saved.text
+        envelope = saved.json()
+        assert envelope["status"] == "awaiting_review"
+        assert envelope["submission_version"] == 2
+        assert envelope["expected_version"] == item["expected_version"]
+        assert envelope["edit_contract"]["base_submission_version"] == 2
+        assert envelope["edit_contract"]["values"]["title"] == "사람이 고친 안"
+        assert envelope["edit_contract"]["values"]["checklist"] == ["자료 모으기", "초안 쓰기"]
+
+        # effect 없음 — 업무도 요청도 생기지 않았다.
+        assert client.get("/api/my-work", headers=headers).json() == tasks_before
+        assert client.get("/api/work-requests", headers=headers).json() == requests_before
+
+        detail = client.get(f"/api/action-items/{proposal['action_id']}", headers=headers).json()
+        assert [round_["submission_version"] for round_ in detail["rounds"]] == [1, 2]
+        assert detail["rounds"][1]["diff"]["title"] == {"before": "AI 원안", "after": "사람이 고친 안"}
+        assert detail["rounds"][1]["submitted_by"] == headers["X-Demo-Persona"]
+        assert detail["rounds"][1]["decisions"] == []
+        # 판단 대기·채팅 둘 다 새 회차를 그린다.
+        [listed] = [row for row in _pending(client, headers) if row["action_item_id"] == proposal["action_id"]]
+        assert listed["submission_version"] == 2 and listed["edit_contract"]["values"]["title"] == "사람이 고친 안"
+        conversation = client.get(f"/api/conversations/{proposal['conversation_id']}", headers=headers).json()
+        [chat] = [row for row in conversation["actions"] if row["action_id"] == proposal["action_id"]]
+        assert chat["state"] == "pending"
+        assert chat["edit_contract"]["base_submission_version"] == 2
+        assert [command["id"] for command in chat["commands"]] == ["confirm", "save_draft", "reject"]
+
+
+def test_saving_an_unchanged_draft_succeeds_without_a_new_round(tmp_path) -> None:
+    client, application = _stack(tmp_path)
+    headers, proposal, item = _ax_draft(client, application, "task.create_self")
+    saved = _command(
+        client, headers, item["action_item_id"], "save_draft",
+        expected_version=item["expected_version"], base_submission_version=1, draft=item["edit_contract"]["values"],
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["submission_version"] == 1
+    detail = client.get(f"/api/action-items/{proposal['action_id']}", headers=headers).json()
+    assert [round_["submission_version"] for round_ in detail["rounds"]] == [1]
+
+
+def test_a_stale_save_is_refused_like_a_stale_confirm_and_a_resent_save_is_a_receipt(tmp_path) -> None:
+    client, application = _stack(tmp_path)
+    headers, proposal, item = _ax_draft(client, application, "task.create_self")
+    draft = {**item["edit_contract"]["values"], "description": "두 번째 회차"}
+    first = _command(
+        client, headers, item["action_item_id"], "save_draft",
+        expected_version=item["expected_version"], base_submission_version=1, draft=draft,
+    )
+    assert first.status_code == 200, first.text
+    # 응답을 잃은 같은 저장의 재전송 — 영수증. 회차가 또 오르지 않는다.
+    resent = _command(
+        client, headers, item["action_item_id"], "save_draft",
+        expected_version=item["expected_version"], base_submission_version=1, draft=draft,
+    )
+    assert resent.status_code == 200, resent.text
+    assert resent.json()["submission_version"] == 2
+    # 지난 회차를 기준으로 한 **다른** 저장 — 확인과 같은 낡음 오류다.
+    stale = _command(
+        client, headers, item["action_item_id"], "save_draft",
+        expected_version=item["expected_version"], base_submission_version=1,
+        draft={**item["edit_contract"]["values"], "description": "다른 탭의 수정"},
+    )
+    stale_confirm = _command(
+        client, headers, item["action_item_id"], "confirm",
+        expected_version=item["expected_version"], base_submission_version=1,
+    )
+    assert stale.status_code == stale_confirm.status_code == 422
+    assert stale.json()["detail"] == stale_confirm.json()["detail"] == "base submission version is stale"
+    wrong_version = _command(
+        client, headers, item["action_item_id"], "save_draft",
+        expected_version=item["expected_version"] + 5, base_submission_version=2, draft=draft,
+    )
+    assert wrong_version.status_code == 422 and wrong_version.json()["detail"] == "action version is stale"
+    detail = client.get(f"/api/action-items/{proposal['action_id']}", headers=headers).json()
+    assert [round_["submission_version"] for round_ in detail["rounds"]] == [1, 2]
+
+
+def test_confirming_a_saved_draft_without_a_draft_creates_the_saved_values_in_the_same_round(tmp_path) -> None:
+    """카드 「등록」 = 마지막 저장 회차를 그대로 확인한다 — 회차가 또 늘지 않는다."""
+    client, application = _stack(tmp_path)
+    headers, proposal, item = _ax_draft(client, application, "task.create_self")
+    saved = _command(
+        client, headers, item["action_item_id"], "save_draft",
+        expected_version=item["expected_version"], base_submission_version=1,
+        draft={**item["edit_contract"]["values"], "title": "저장한 제목", "checklist": ["첫 단계"]},
+    ).json()
+    confirmed = _command(
+        client, headers, item["action_item_id"], "confirm",
+        expected_version=saved["expected_version"], base_submission_version=saved["submission_version"],
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    detail = client.get(f"/api/action-items/{proposal['action_id']}", headers=headers).json()
+    assert [round_["submission_version"] for round_ in detail["rounds"]] == [1, 2]
+    assert [decision["decision"] for decision in detail["rounds"][1]["decisions"]] == ["confirm"]
+    [task] = [row for row in client.get("/api/my-work", headers=headers).json() if row["title"] == "저장한 제목"]
+    assert [step["text"] for step in client.get(f"/api/tasks/{task['task_id']}", headers=headers).json()["checklist"]] == ["첫 단계"]
+    # 확정 뒤에는 저장이 열리지 않는다.
+    after = _command(
+        client, headers, item["action_item_id"], "save_draft",
+        expected_version=saved["expected_version"], base_submission_version=2, draft={"title": "늦은 저장"},
+    )
+    assert after.status_code == 422
+
+
+def test_save_is_offered_only_on_the_two_task_draft_kinds(tmp_path) -> None:
+    client, application = _stack(tmp_path)
+    meeting = _ax_proposal(
+        client, application, JIHO, "jiho", "meeting.reservation.create", "회의 생성 확인",
+        {"title": "주간 회의", "starts_at": "2026-10-05T10:00:00+09:00", "ends_at": "2026-10-05T11:00:00+09:00"},
+    )
+    [item] = [row for row in _pending(client, JIHO) if row["action_item_id"] == meeting["action_id"]]
+    assert "save_draft" not in [command["id"] for command in item["allowed_commands"]]
+    assert "save_command" not in (item.get("edit_contract") or {})
+    refused = _command(
+        client, JIHO, item["action_item_id"], "save_draft",
+        expected_version=item["expected_version"], base_submission_version=1, draft={"title": "x"},
+    )
+    assert refused.status_code == 422
+
+
+def test_a_saved_draft_keeps_its_staged_materials_so_confirming_opens_no_third_round(tmp_path) -> None:
+    """저장도 지금 붙인 자료 ID 를 함께 남긴다 — 등록(같은 자료 ID, draft 없음)의 스냅샷이 저장 회차와 같아
+    회차가 또 오르지 않고, 그 자료가 만들어진 업무에 붙는다 (WORK-009 fix1 W1 (a))."""
+    client, application = _stack(tmp_path)
+    headers, proposal, item = _ax_draft(client, application, "task.create_self")
+    staged = client.post(
+        f"/api/action-items/{item['action_item_id']}/material-drafts/links",
+        headers=headers, json={"url": "https://example.com/brief", "label": "기획 문서"},
+    )
+    assert staged.status_code == 201, staged.text
+    attachments = [staged.json()["material_draft_id"]]
+
+    saved = _command(
+        client, headers, item["action_item_id"], "save_draft",
+        expected_version=item["expected_version"], base_submission_version=1,
+        draft={**item["edit_contract"]["values"], "title": "자료 붙인 저장"}, attachment_draft_ids=attachments,
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["submission_version"] == 2
+    detail = client.get(f"/api/action-items/{proposal['action_id']}", headers=headers).json()
+    assert detail["rounds"][1]["snapshot"]["attachment_draft_ids"] == attachments
+
+    confirmed = _command(
+        client, headers, item["action_item_id"], "confirm",
+        expected_version=saved.json()["expected_version"], base_submission_version=2, attachment_draft_ids=attachments,
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    detail = client.get(f"/api/action-items/{proposal['action_id']}", headers=headers).json()
+    assert [round_["submission_version"] for round_ in detail["rounds"]] == [1, 2]
+    assert [decision["decision"] for decision in detail["rounds"][1]["decisions"]] == ["confirm"]
+    task_id = confirmed.json()["derived_task_id"]
+    assert client.get(f"/api/tasks/{task_id}", headers=headers).json()["title"] == "자료 붙인 저장"
+    materials = client.get(f"/api/tasks/{task_id}/materials", headers=headers).json()
+    assert [row["source_kind"] for row in materials] == ["external_link"]
+
+
+def test_only_the_owner_of_the_draft_may_save_it(tmp_path) -> None:
+    """저장은 봉투가 내려 준 사람만 — 남의 초안 저장은 거부되고 회차는 그대로다 (SPEC-002 §4 「누가」 · fix1 W2)."""
+    client, application = _stack(tmp_path)
+    headers, proposal, item = _ax_draft(client, application, "task.create_self")
+    assert headers is JIHO
+    refused = _command(
+        client, MINA, item["action_item_id"], "save_draft",
+        expected_version=item["expected_version"], base_submission_version=1,
+        draft={**item["edit_contract"]["values"], "title": "남이 고친 안"},
+    )
+    assert refused.status_code == 404, refused.text
+    detail = client.get(f"/api/action-items/{proposal['action_id']}", headers=headers).json()
+    assert [round_["submission_version"] for round_ in detail["rounds"]] == [1]
+    assert detail["status"] == "awaiting_review"
+    assert detail["edit_contract"]["values"]["title"] == "AI 원안"
+
+
+def _stage_links(client, headers, action_item_id: str, count: int) -> list[str]:
+    ids = []
+    for index in range(count):
+        staged = client.post(
+            f"/api/action-items/{action_item_id}/material-drafts/links",
+            headers=headers, json={"url": f"https://example.com/{index}", "label": f"자료 {index}"},
+        )
+        assert staged.status_code == 201, staged.text
+        ids.append(staged.json()["material_draft_id"])
+    return ids
+
+
+def test_the_same_materials_in_another_order_are_the_same_round(tmp_path) -> None:
+    """자료 ID 는 집합이다 — 순서만 다르게 다시 보내도 회차가 오르지 않고, 업무엔 올린 순서로 붙는다 (fix2 W5)."""
+    client, application = _stack(tmp_path)
+    headers, proposal, item = _ax_draft(client, application, "task.create_self")
+    staged = _stage_links(client, headers, item["action_item_id"], 2)
+    draft = {**item["edit_contract"]["values"], "title": "자료 둘"}
+    saved = _command(
+        client, headers, item["action_item_id"], "save_draft",
+        expected_version=item["expected_version"], base_submission_version=1, draft=draft, attachment_draft_ids=staged,
+    )
+    assert saved.status_code == 200 and saved.json()["submission_version"] == 2, saved.text
+    resaved = _command(
+        client, headers, item["action_item_id"], "save_draft",
+        expected_version=item["expected_version"], base_submission_version=2, draft=draft,
+        attachment_draft_ids=list(reversed(staged)) + [staged[0]],
+    )
+    assert resaved.status_code == 200 and resaved.json()["submission_version"] == 2, resaved.text
+    confirmed = _command(
+        client, headers, item["action_item_id"], "confirm",
+        expected_version=item["expected_version"], base_submission_version=2,
+        attachment_draft_ids=list(reversed(staged)),
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    detail = client.get(f"/api/action-items/{proposal['action_id']}", headers=headers).json()
+    assert [round_["submission_version"] for round_ in detail["rounds"]] == [1, 2]
+    assert detail["rounds"][1]["snapshot"]["attachment_draft_ids"] == sorted(staged)
+    materials = client.get(f"/api/tasks/{confirmed.json()['derived_task_id']}/materials", headers=headers).json()
+    assert [row["name"] for row in materials] == ["자료 0", "자료 1"]
+
+
+def test_a_confirm_without_the_materials_key_uses_the_saved_rounds_materials(tmp_path) -> None:
+    """draft 를 생략하면 최신 스냅샷을 쓰듯, 자료 ID 키를 생략하면 저장 회차의 자료로 업무가 선다 (fix2 W5)."""
+    client, application = _stack(tmp_path)
+    headers, proposal, item = _ax_draft(client, application, "task.create_self")
+    staged = _stage_links(client, headers, item["action_item_id"], 1)
+    saved = _command(
+        client, headers, item["action_item_id"], "save_draft",
+        expected_version=item["expected_version"], base_submission_version=1,
+        draft={**item["edit_contract"]["values"], "title": "키 없이 등록"}, attachment_draft_ids=staged,
+    )
+    assert saved.status_code == 200, saved.text
+    confirmed = _command(
+        client, headers, item["action_item_id"], "confirm",
+        expected_version=item["expected_version"], base_submission_version=2,
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    detail = client.get(f"/api/action-items/{proposal['action_id']}", headers=headers).json()
+    assert [round_["submission_version"] for round_ in detail["rounds"]] == [1, 2]
+    materials = client.get(f"/api/tasks/{confirmed.json()['derived_task_id']}/materials", headers=headers).json()
+    assert [row["source_kind"] for row in materials] == ["external_link"]
+    assert {row["state"] for row in confirmed.json()["material_drafts"]} == {"claimed"}

@@ -143,8 +143,21 @@ def _ax_facts(**overrides) -> AxProposalActionContext:
 def test_ax_proposal_commands_cover_meaningful_equivalence_classes() -> None:
     cases = [
         (
+            # 「새 업무 추가」 초안 두 kind 는 확정하지 않는 「초안 저장」도 받는다 (SPEC-002 §4 · WORK-009 1-1).
             "confirm-current-submission",
             _ax_facts(pending=True, has_submission=True),
+            (ACTION_DECIDE,),
+            ["confirm", "save_draft", "reject"],
+        ),
+        (
+            "work-request-draft-also-saves",
+            _ax_facts(action_type="work_request.create", pending=True, has_submission=True),
+            (ACTION_DECIDE,),
+            ["confirm", "save_draft", "reject"],
+        ),
+        (
+            "other-editable-proposals-do-not-save",
+            _ax_facts(action_type="meeting.reservation.create", pending=True, has_submission=True),
             (ACTION_DECIDE,),
             ["confirm", "reject"],
         ),
@@ -258,7 +271,7 @@ def test_ax_proposal_can_forbid_reject_during_required_recovery() -> None:
         _principal(ACTION_DECIDE),
     )
 
-    assert _ids(commands) == ["confirm"]
+    assert _ids(commands) == ["confirm", "save_draft"]
 
 
 class _Handler:

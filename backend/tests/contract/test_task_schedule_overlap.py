@@ -173,7 +173,8 @@ def test_a_range_outside_the_task_span_is_still_answered_by_the_span(tmp_path) -
     refused = _slot(client, wanted, date(2027, 3, 9), "10:30", "11:30")
 
     assert refused.status_code == 422, refused.text
-    assert "2027-03-01~2027-03-05" in refused.json()["detail"]
+    # 문장 속 업무 날짜는 화면과 같은 형식이다 (SPEC-001 U-17 · OQ-Q ⑤).
+    assert "2027/03/01~2027/03/05" in refused.json()["detail"]
 
 
 # ---- 시각 변경: 옮겨서 겹치게 만들어도 같다. 그리고 **자기 자신은 뺀다** ----------------

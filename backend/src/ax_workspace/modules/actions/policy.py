@@ -25,6 +25,15 @@ CONFIRM_LABELS = {
     "task.progress.batch": "이 내용으로 반영",
 }
 
+#: 「초안 저장」 — 확정 없이 고친 초안을 다음 회차로 남기는 명령 (SPEC-002 §4 「초안 저장」 · WORK-009 1-1).
+#: 기존 `revise`(업무 요청 판단의 「수정안 재상신」)와 이름을 나누는 이유: 그쪽은 협의로 돌아온 요청을 상대에게
+#: **다시 보내** 판단 대기를 상대 차례로 되돌리고 `changes`(제목·내용·기한)만 받는다. 이 명령은 **내 차례 그대로**
+#: 회차만 올리고 생성 명령의 필드 전체(`draft`)를 받는다 — 같은 id 를 쓰면 봉투가 다른 두 계약을 한 이름으로 내린다.
+SAVE_DRAFT_COMMAND = "save_draft"
+SAVE_DRAFT_LABEL = "저장"
+#: 저장이 열리는 AX 초안 — 「새 업무 추가」를 AI 가 채운 두 kind 만이다 (SPEC-002 §4 · P-1).
+DRAFT_SAVE_ACTION_TYPES = frozenset({"task.create_self", "work_request.create"})
+
 #: Action types whose execution path was withdrawn, and the reason a person sees instead.
 #: Rows left behind stay readable in history; nothing proposes them and nothing runs them again.
 RETIRED_ACTION_TYPES = {
@@ -123,6 +132,9 @@ def available_ax_proposal_commands(
                 if context.has_submission and context.action_type in CONFIRM_LABELS
                 else ActionCommand("approve", "승인", "primary")
             )
+            if context.has_submission and context.action_type in DRAFT_SAVE_ACTION_TYPES:
+                # 확정하지 않는 저장 — 봉투가 내려 준 사람만 부른다(§5 「명령의 권한은 봉투 자체다」).
+                commands.append(ActionCommand(SAVE_DRAFT_COMMAND, SAVE_DRAFT_LABEL, "neutral"))
         if context.allow_reject:
             commands.append(ActionCommand("reject", "거절", "neutral"))
         return commands

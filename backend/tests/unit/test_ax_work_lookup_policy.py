@@ -55,3 +55,29 @@ def test_answers_may_point_at_projects_by_their_own_kind() -> None:
 def test_the_claude_adapter_reads_the_same_policies() -> None:
     for name in ("RELATIONSHIP_POLICY", "WORK_AND_REPORT_ROUTING_POLICY", "ANSWER_PRESENTATION_POLICY"):
         assert getattr(ClaudeCliProviderAdapter, name) is getattr(CodexCliProviderAdapter, name), name
+
+
+def test_creation_tools_propose_checklist_and_description_but_only_evidenced_ids_and_dates() -> None:
+    """E2E-1 — 체크리스트·내용은 AI 가 제안으로 채우고, ID·날짜는 근거가 있을 때만 (SPEC-001 S-9 7 · WORK-009 1-2)."""
+    for name in ("task_create_self", "work_request_create"):
+        description = TOOL_CATALOG[name].description
+        assert "Propose the content yourself" in description, name
+        assert "do not leave description or checklist empty" in description, name
+        assert "IDs and dates come only from the conversation or lookup" in description, name
+        assert "Never invent an ID or a date" in description, name
+        # 앞 판의 「대화가 준 필드만 채우고 지어내느니 비워라」는 체크리스트·내용까지 비우게 했다.
+        assert "Fill every field the conversation gives you" not in description, name
+        assert "fill every field the conversation gives you" not in description, name
+        assert "leave a value empty rather than inventing one" not in description, name
+
+
+def test_routing_and_answer_policies_say_the_same_split() -> None:
+    routing = CodexCliProviderAdapter.WORK_AND_REPORT_ROUTING_POLICY
+    assert "체크리스트(첫 단계들을 순서대로)와 업무 내용(`description`)은 대화의 업무 주제로부터 제안해 채운다" in routing
+    assert "ID(프로젝트·업무·사람)와 날짜(`start_date`·`due_date`)는 대화·조회가 준 것만" in routing
+    assert "말하지 않은 날짜나 조회 결과에 없는 ID를 지어내지 않는다" in routing
+    answer = CodexCliProviderAdapter.ANSWER_PRESENTATION_POLICY
+    assert "「비워 두었으니 카드에서 보완하라」고 말하지 않는다" in answer
+    assert "근거가 없어 비운 ID·날짜만 말한다" in answer
+    for name in ("WORK_AND_REPORT_ROUTING_POLICY", "ANSWER_PRESENTATION_POLICY"):
+        assert getattr(ClaudeCliProviderAdapter, name) is getattr(CodexCliProviderAdapter, name), name

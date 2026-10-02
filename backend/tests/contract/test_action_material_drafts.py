@@ -106,12 +106,21 @@ def test_link_and_file_drafts_are_projected_and_claimed_by_confirm(tmp_path) -> 
     wrong_replay = client.post(
         f"/api/action-items/{action_id}/commands/confirm",
         headers=JIHO,
-        json={"expected_version": item["expected_version"], "base_submission_version": 1},
+        # 다른 내용 — 자료를 **명시적으로 비운** 확인. 키를 빼면 최신 스냅샷의 자료를 쓰므로 같은 확인의
+        # 영수증이 된다(fix2 W5) — 그래서 「다른 재전송」은 빈 목록으로 만든다.
+        json={"expected_version": item["expected_version"], "base_submission_version": 1, "attachment_draft_ids": []},
     )
     assert wrong_replay.status_code == 422
+    omitted = client.post(
+        f"/api/action-items/{action_id}/commands/confirm",
+        headers=JIHO,
+        json={"expected_version": item["expected_version"], "base_submission_version": 1},
+    )
+    assert omitted.status_code == 200 and omitted.json()["derived_task_id"] == task_id
     detail = client.get(f"/api/action-items/{action_id}", headers=JIHO).json()
     assert [round_["submission_version"] for round_ in detail["rounds"]] == [1, 2]
-    assert detail["rounds"][1]["snapshot"]["attachment_draft_ids"] == selected
+    # 자료 ID 는 정렬된 집합으로 남는다(fix2 W5). 업무에 붙은 순서는 올린 순서다 — 아래 creation 스냅샷.
+    assert detail["rounds"][1]["snapshot"]["attachment_draft_ids"] == sorted(selected)
     with make_session_factory(application._settings.database_url)() as session:
         creation = session.query(TaskVersionRecord).filter_by(task_id=UUID(task_id), version=1).one()
         assert [row["source_kind"] for row in creation.snapshot["materials"]] == ["external_link", "file"]

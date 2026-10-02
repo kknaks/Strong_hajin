@@ -157,7 +157,7 @@ def test_a_day_outside_the_span_is_refused_and_the_message_carries_that_span(tmp
     refused = _schedule(client, task_id, date(2027, 3, 9), "10:00", "11:00")
 
     assert refused.status_code == 422, refused.text
-    assert "2027-03-01" in refused.text and "2027-03-05" in refused.text
+    assert "2027/03/01" in refused.text and "2027/03/05" in refused.text
 
 
 def test_a_task_with_only_a_due_date_accepts_that_single_day_and_nothing_else(tmp_path) -> None:

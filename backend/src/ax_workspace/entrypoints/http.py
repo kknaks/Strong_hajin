@@ -2542,8 +2542,9 @@ def create_app(
     def start_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> TaskDateMutationResult:
         """시작 — **비어 있던 시작일을 오늘로 채운다**. 날짜가 바뀌는 자리라 `schedule_release` 를 싣는다.
 
-        **막힘·재개·완료·취소는 날짜를 바꾸지 않으므로 그 묶음을 내지 않는다** (증보 K3 의 세 자리).
-        같은 operation 을 지나지만 **표면이 약속하는 것**은 여기서 갈린다.
+        **막힘·재개·취소는 날짜를 바꾸지 않으므로 그 묶음을 내지 않는다** (증보 K3). **완료는 낸다** — 비어 있던
+        마감일을 그 날로 채우는 넷째 자리다(SPEC-004 §5 · OQ-405, 2026-10-02). 같은 operation 을 지나지만
+        **표면이 약속하는 것**은 여기서 갈린다.
         """
         return task_transition(task_id, TaskState.IN_PROGRESS, principal, expected_version=request.expected_version)
 
@@ -2556,7 +2557,8 @@ def create_app(
         return task_transition(task_id, TaskState.IN_PROGRESS, principal, expected_version=request.expected_version)
 
     @app.post("/api/tasks/{task_id}/complete")
-    def complete_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> TaskMutationResult:
+    def complete_task(task_id: UUID, request: TaskTransitionRequest, principal: Principal = Depends(developer_principal)) -> TaskDateMutationResult:
+        """완료 — **비어 있던 마감일을 그 날(서울)로 채운다** (SPEC-003 §4 「날짜 채움」). 날짜가 바뀌는 자리라 `schedule_release` 를 싣는다."""
         return task_transition(task_id, TaskState.DONE, principal, expected_version=request.expected_version)
 
     @app.post("/api/tasks/{task_id}/cancel")
