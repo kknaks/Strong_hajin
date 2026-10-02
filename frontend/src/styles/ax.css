@@ -235,7 +235,9 @@
 .scax-sources__why{flex-basis:100%;padding-left:var(--scax-space-050);font-size:var(--scax-text-caption2-size)}
 /* 「답변 뒤 바뀜」 — 새 DS 의 Badge 에 경고 톤이 없어서 구 --warning-* 두 토큰을 그대로 쓴다 (DS-gaps G-19) */
 .scax-sources__changed{padding:1px var(--scax-space-150);border-radius:var(--scax-radius-xs);background:var(--scax-color-warning-soft);color:var(--scax-color-warning-ink);font-size:var(--scax-text-caption2-size);font-weight:var(--scax-fw-bold)}
-.scax-sources__more{padding:0;border:0;background:transparent;color:var(--scax-color-accent);font-size:var(--scax-text-caption1-size);text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+.scax-sources__more{padding:0;border:0;background:transparent;color:var(--scax-color-ink-neutral);font-size:var(--scax-text-caption1-size);text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+/* 「근거 N개 더 보기」는 사람이 누르는 단추 — 채팅 서랍 안이라 검정 계열 글자 단추다(파랑은 AI 진행만 · WORK-009 2a-2). */
+.scax-sources__more:hover{color:var(--scax-color-ink)}
 .scax-evidence{margin:var(--scax-space-200) var(--scax-space-600) var(--scax-space-200) 0;padding:var(--scax-space-300);border:1px solid var(--scax-color-line);border-left:3px solid var(--scax-color-accent);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface);font-size:var(--scax-text-caption1-size)}
 .scax-evidence>b{display:block;color:var(--scax-color-ink)}
 .scax-evidence>b small{color:var(--scax-color-ink-assistive);font-weight:var(--scax-fw-regular)}
@@ -671,3 +673,18 @@
 .scax-drawer--chat .action-task-card > .action-task-actions .scax-button--solid-primary:not(:disabled){border-color:transparent;background:var(--scax-color-ink);color:var(--scax-color-surface)}
 .scax-drawer--chat .scax-button--solid-primary:hover:not(:disabled),
 .scax-drawer--chat .action-task-card > .action-task-actions .scax-button--solid-primary:hover:not(:disabled){border-color:transparent;background:var(--scax-color-ink-alt);color:var(--scax-color-surface)}
+/* 진행 중·비활성 — **포인터가 위에 있어도** 파랑이 되지 않는다 (WORK-009 2a-2 · SPEC-002 §2.9 「채팅 서랍 안의 색」 · E2E-3).
+   DS 의 solid/outlined/text hover(`components.css:14·16·18·25·274`, 0,2,0)에는 `:not(:disabled)` 가 없어서, 같은 명시도의
+   `.scax-button:disabled`(0,2,0)를 뒤에서 이겼다 — 「등록 중…」이 accent-strong 파랑으로 섰던 이유다. DS 원본은 앱 전체가 쓰므로
+   고치지 않고(DS-gaps) 서랍 안에서만 0,3,0 으로 덮는다.
+   · 주 단추(solid)는 `.action-task-card` 의 비활성(`:546`)과 **같은 모양** — line 테두리 · surface-alt 면 · ink-disabled 글자.
+   · 테두리·글자 단추(outlined·text-neutral)는 DS 비활성 값(`components.css:10`) 그대로 — hover 가 활성처럼 칠하지 못하게만 한다. */
+.scax-drawer--chat .scax-button--solid-primary:disabled,
+.scax-drawer--chat .scax-button--solid-danger:disabled{border-color:var(--scax-color-line);background:var(--scax-color-surface-alt);color:var(--scax-color-ink-disabled)}
+.scax-drawer--chat .scax-button--outlined-neutral:disabled,
+.scax-drawer--chat .scax-button--text-neutral:disabled{border-color:transparent;background:var(--scax-color-fill-weak);color:var(--scax-color-ink-disabled)}
+/* 「상세 보기」 펼치기 머리(`ActionPreview` 의 `.scax-preview>summary`)도 사람이 누르는 것 — 서랍 안에서는 「근거 N개 더 보기」와
+   같은 검정 계열 글자다(2a-2 fix1 · W1). 서랍 밖(판단 상세 등)은 원래 규칙(`accent`) 그대로다. 처리 끝난 진행 묶음의
+   흐린 머리(`.action-progress-batch-card[data-state="approved"] …`, 0,3,1)는 이 규칙(0,2,1)보다 높아 그대로 남는다. */
+.scax-drawer--chat .scax-preview>summary{color:var(--scax-color-ink-neutral)}
+.scax-drawer--chat .scax-preview>summary:hover{color:var(--scax-color-ink)}
