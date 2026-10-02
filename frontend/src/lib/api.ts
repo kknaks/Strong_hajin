@@ -64,6 +64,14 @@ type ApiErrorBody = {
   detail?: unknown;
 };
 
+/**
+ * 판단 원장 명령이 **낡은 기준**으로 거절됐나 — 「base submission version is stale」·「action version is stale」(422, 서버 문장).
+ * 그때는 최신 회차를 다시 읽어야 다음 시도가 통과한다(SPEC-002 §4 「낡은 저장」 · §5 · WORK-009 2a-1 fix1 W-1).
+ */
+export function isStaleActionError(reason: unknown): boolean {
+  return reason instanceof ApiError && (reason.status === 422 || reason.status === 409) && /version is stale/.test(reason.message);
+}
+
 export class ApiError extends Error {
   status: number;
   /** 서버가 문장 대신 구조를 낼 때가 있다 — 409 저장 충돌은 「지금 있는 것」을 함께 싣는다. */
@@ -734,7 +742,8 @@ export async function decideAction(
   decision: string,
   payload: { base_submission_version?: number; draft?: Record<string, unknown> } = {},
 ): Promise<void> {
-  if (decision === "confirm" || decision === "cancel_assignment") {
+  /* `save_draft` 도 판단 원장 명령이다 — 확정 없이 고친 초안을 새 회차로 남긴다(WORK-009 2a-1 · SPEC-002 §4 「초안 저장」). */
+  if (decision === "confirm" || decision === "cancel_assignment" || decision === "save_draft") {
     await runActionCommand(actionId, decision, { expected_version: expectedVersion, ...payload });
     return;
   }

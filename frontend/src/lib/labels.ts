@@ -1356,6 +1356,11 @@ export const axDraftCard = {
   edit: "수정",
   confirm: "등록",
   confirming: "등록 중…",
+  /* 「수정」 창(새 업무 추가)의 주 단추 — 확정이 아니라 초안 저장이다 (WORK-009 2a-1 · SPEC-002 §2.9). */
+  save: "저장",
+  saving: "저장 중…",
+  saved: "AX 초안을 저장했습니다.",
+  saveFailed: "AX 초안을 저장하지 못했습니다.",
   openTask: "업무 열기",
   registered: "등록됨",
   rejected: "거절됨",

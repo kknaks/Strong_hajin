@@ -58,7 +58,7 @@ import {
   stageActionMaterialFile,
   stageActionMaterialLink,
 } from "../../lib/api";
-import { blockingChildReasonLabel, cancelReasonLabel, datePickerLabel, taskDetail, hiddenPredecessorsText, predecessorsUnfinishedText, projectLockedByPredecessorsText, derivedApprovalLabel, derivedAssignmentLabel, dueDayText, emptyActionLabel, formatDate, formatDateTime, formatMonthLong, isOverdue, isoDateInSeoul, personName, proposalFieldLabel, taskDateLabel, proposalKindLabel, selectLabel, seoulToday, taskStateLabel, weekdayNames, workRequestStateLabel } from "../../lib/labels";
+import { axDraftCard, blockingChildReasonLabel, cancelReasonLabel, datePickerLabel, taskDetail, hiddenPredecessorsText, predecessorsUnfinishedText, projectLockedByPredecessorsText, derivedApprovalLabel, derivedAssignmentLabel, dueDayText, emptyActionLabel, formatDate, formatDateTime, formatMonthLong, isOverdue, isoDateInSeoul, personName, proposalFieldLabel, taskDateLabel, proposalKindLabel, selectLabel, seoulToday, taskStateLabel, weekdayNames, workRequestStateLabel } from "../../lib/labels";
 import { DateField } from "../../ds/DateField";
 import { ConfirmModal, Drawer, Modal, type OverlayShellProps } from "../../ds/Modal";
 import { Skeleton } from "../../ds/Skeleton";
@@ -4429,8 +4429,9 @@ export function CreateWorkModal({
   size?: "sm" | "md";
   /**
    * **AX 업무 초안 수정** (WORK-008 3b · SPEC-002 §2.9). 주면 이 창은 새 업무를 만들지 않는다 —
-   * 갈래는 초안의 것으로 고정되고(바꾸면 다른 명령이 된다), 제출은 **고친 값으로 초안을 확인**한다
-   * (`onSubmit(draft)` = confirm + draft). 탭·필드·검증은 이 창 그대로다. 초깃값은 `initial` 이 싣는다.
+   * 갈래는 초안의 것으로 고정되고(바꾸면 다른 명령이 된다), 제출은 **고친 값을 초안의 새 회차로 저장**한다
+   * (`onSubmit(draft)` = `save_draft` + draft — 확정이 아니다, WORK-009 2a-1). 확정은 카드의 「등록」 하나다.
+   * 탭·필드·검증은 이 창 그대로다. 초깃값은 `initial` 이 싣는다.
    */
   axDraft?: {
     kind: "task" | "request";
@@ -4439,7 +4440,7 @@ export function CreateWorkModal({
     /** 자료 초안을 붙이고 뺄 판단 항목(`/api/action-items/{id}/material-drafts…`). */
     actionId: string;
     materials: ActionMaterialDraft[];
-    /** 고친 값과 «지금 붙어 있는» 자료 초안 id 로 확인한다. */
+    /** 고친 값과 «지금 붙어 있는» 자료 초안 id 로 초안을 저장한다(확정 아님). */
     onSubmit: (draft: Record<string, unknown>, attachmentDraftIds: string[]) => Promise<void>;
     /** 자료 초안이 바뀌면 카드의 자료 요약도 따라간다 — 붙이고 빼는 것은 서버에 바로 남는다. */
     onMaterialsChange?: (materials: ActionMaterialDraft[]) => void;
@@ -4862,7 +4863,7 @@ export function CreateWorkModal({
     const reference_task_ids = referenceIds.length > 0 ? referenceIds : undefined;
     if (axDraft) {
       /*
-       * AX 초안 수정 — **새 업무를 만들지 않고 고친 값으로 초안을 확인한다** (SPEC-002 §2.9 · §4).
+       * AX 초안 수정 — **새 업무를 만들지 않고 고친 값을 초안의 새 회차로 저장한다** (SPEC-002 §2.9 · §4 「초안 저장」 · WORK-009 2a-1).
        * 실는 모양은 초안 값(`edit_contract.values`) 그대로다: 이 창에 칸이 없는 값은 초안 것을 둔 채,
        * 칸이 있는 값만 지금 창의 값으로 덮는다. 검증은 위의 이 창 검증을 그대로 지났다.
        */
@@ -4890,7 +4891,7 @@ export function CreateWorkModal({
           axMaterials.filter((item) => item.state === "staged").map((item) => item.material_draft_id),
         );
       } catch (error) {
-        onError(error instanceof Error ? error.message : "AX 초안을 등록하지 못했습니다.");
+        onError(error instanceof Error ? error.message : axDraftCard.saveFailed);
       } finally {
         submitting.current = false;
         setIsWorking(false);
@@ -5116,6 +5117,7 @@ export function CreateWorkModal({
    * 토글은 그대로 두고 **이름만** 따라 움직인다.
    */
   const drawerTitle = kind === "task" ? "새 업무 추가" : "새 업무 요청";
+  const ignoreClose = () => undefined;
   /* 상태·요청자 카드는 어느 갈래에도 서지 않는다 (WORK-003 정정) — 둘 다 생성 입력값이 아니라
      서버가 정하는 값이고, 그래서 그것을 그리던 `showOriginMeta`·`metaGridShown` 도 함께 지웠다.
      한때 회의 승격에서만 걷던 두 줄이다(§9-5 D40) — 이제 «회의에서만» 이 아니라 «어디서도» 다. */
@@ -5264,7 +5266,8 @@ export function CreateWorkModal({
             <Button variant="solid" tone="primary" disabled={isWorking || (kind === "request" && assigneeCandidates.length === 0) || (Boolean(axDraft) && axUploadPending)} onClick={() => void submit()}
               type="button"
             >
-              {axDraft ? (isWorking ? "등록 중…" : "등록") : isWorking ? "만드는 중…" : kind === "task" ? "업무 추가" : "업무 요청 보내기"}
+              {/* AX 초안 수정이면 「저장」 — 확정은 카드의 「등록」이 한다(WORK-009 2a-1). 색은 앱 DS 그대로다(서랍 밖 창). */}
+              {axDraft ? (isWorking ? axDraftCard.saving : axDraftCard.save) : isWorking ? "만드는 중…" : kind === "task" ? "업무 추가" : "업무 요청 보내기"}
             </Button>
           </>
         )
@@ -5291,7 +5294,9 @@ export function CreateWorkModal({
         ) : null
       }
       label={drawerTitle}
-      onClose={onClose}
+      /* AX 초안 저장 중에는 ×·Esc·바깥 클릭으로 닫히지 않는다 — 닫히면 저장 실패가 보일 자리가 없고, 카드가 그 사이
+         옛 회차로 명령을 받을 수 있다(WORK-009 2a-1 fix1 W-2). 일반 「새 업무 추가」의 닫기는 그대로다. */
+      onClose={axDraft && isWorking ? ignoreClose : onClose}
       size={size}
       title={drawerTitle}
     >
@@ -5661,8 +5666,8 @@ export function CreateWorkModal({
                   <>
                     <p className="t-meta">
                       {referenceLoadFailed
-                        ? `참고 업무 목록을 불러오지 못했습니다 — 초안의 참고 업무 ${unplacedReferenceIds.length}건은 그대로 함께 등록됩니다.`
-                        : `목록에 없는 참고 업무 ${unplacedReferenceIds.length}건 — 초안 그대로 함께 등록됩니다.`}
+                        ? `참고 업무 목록을 불러오지 못했습니다 — 초안의 참고 업무 ${unplacedReferenceIds.length}건은 그대로 함께 저장됩니다.`
+                        : `목록에 없는 참고 업무 ${unplacedReferenceIds.length}건 — 초안 그대로 함께 저장됩니다.`}
                     </p>
                     <FileList
                       label="목록에 없는 참고 업무"

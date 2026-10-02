@@ -1,6 +1,7 @@
 import { useId, useState } from 'react';
 import { Button } from "../../ds/Button";
 import { DateField } from "../../ds/DateField";
+import { withoutEditorOnlyCommands } from "./ActionPreview";
 import { datePickerLabel, formatMonthLong, seoulToday, weekdayNames } from "../../lib/labels";
 import { useActionDraft } from '../work/useActionDraft';
 import type { ActionCommand, ActionEditContract, ActionEditField } from '../../lib/viewModels';
@@ -121,7 +122,7 @@ export function CommandConfirmationForm({ actionId, principalId, contract, comma
     <div className="action-task-buttons">
       {/* 바퀴 12(M-5): 구 `.btn h36` 은 CSS 가 이미 없어 벗겨진 채로 떴다. DS Button 으로 바꾼다 —
           h36 은 새 램프의 sm(32)·md(39) 중 md 에 가까워 기본 크기를 쓰고, 구 `ghost` 는 `variant="text"` 다. */}
-      {commands.map(command => (
+      {withoutEditorOnlyCommands(commands).map(command => (
         <Button
           disabled={busy || (command.id === 'confirm' && Boolean(recovered.stale))}
           key={command.id}

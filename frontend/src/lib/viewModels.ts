@@ -888,6 +888,11 @@ export type ActionEditContract = {
   values: Record<string, unknown>;
   fields: ActionEditField[];
   warnings?: string[];
+  /**
+   * 확정 없이 고친 초안을 새 회차로 남기는 명령의 id — AX 업무 초안 두 kind 에만 선다(`"save_draft"`, WORK-009 2a-1 ·
+   * SPEC-002 §4 「초안 저장」). 그 명령은 편집 창의 「저장」 단추가 부르고, 범용 명령 단추로는 그리지 않는다.
+   */
+  save_command?: string;
 };
 
 export type TurnProgressState = "queued" | "preparing" | "tool_running" | "composing" | "retrying" | "completed" | "failed" | "cancelled";

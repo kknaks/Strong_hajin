@@ -3,7 +3,7 @@ import type React from "react";
 
 import { Button } from "./ds/Button";
 import { BrowserOperationScope, hasPendingBrowserOperation } from "./lib/browserOperationGuard";
-import { getMemberDirectory, getMyWork, getSession, getWorkRequests, logout, setAssistantCharacterPreference } from "./lib/api";
+import { getMemberDirectory, getMyWork, getSession, getWorkRequests, isStaleActionError, logout, setAssistantCharacterPreference } from "./lib/api";
 import { AppBody, AppHeader, AppShell } from "./shell/AppShell";
 import { AssistantLauncher } from "./features/assistant/AssistantCharacter";
 import { AssistantCharacterPicker } from "./features/assistant/AssistantCharacterPicker";
@@ -17,7 +17,7 @@ import { BrowserInteractionPage } from "./features/browser/BrowserInteractionPag
 import { ChatDrawer, contextKey, type LabeledContextReference } from "./features/chat/ChatDrawer";
 import { NEW_DRAFT_KEY, useConversations } from "./features/chat/useConversations";
 import { DailyReportPage } from "./features/report/DailyReportPage";
-import { personName } from "./lib/labels";
+import { axDraftCard, personName } from "./lib/labels";
 import { openExternal } from "./lib/shell";
 import { LoginPage } from "./features/auth/LoginPage";
 import { MeetingWorkspace } from "./features/meetings/MeetingWorkspace";
@@ -360,13 +360,20 @@ export default function App() {
     try {
       await chat.decide(actionId, expectedVersion, decision, payload);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "AX 확인 항목을 처리하지 못했습니다.");
+      /* 초안 저장(`save_draft`)의 실패는 그 「수정」 창이 창 안에 낸다(SPEC-002 §2.9 · WORK-009 2a-1 fix0) — 전역 띠를
+         함께 세우면 같은 실패가 두 자리에 선다. 확정·거절은 창이 없으니 지금처럼 띠에 낸다. */
+      if (decision !== "save_draft") setError(reason instanceof Error ? reason.message : "AX 확인 항목을 처리하지 못했습니다.");
+      /* 낡은 기준의 저장은 거부되고 **최신 회차를 다시 읽는다**(SPEC-002 §4 「낡은 저장」 · WORK-009 2a-1 fix1 W-1) — 카드가 새 회차로
+         다시 그려지면 창의 다음 「저장」이 새 기준을 싣는다. 창의 입력은 그대로 남는다. 확정 낡음은 이번 범위 밖(기존 부채). */
+      if (decision === "save_draft" && isStaleActionError(reason)) await refreshProjections();
       throw reason;
     }
     // The decision is persisted; claim it is reflected on screen only when every affected projection settled.
     const reflected = await refreshProjections();
     setToast(
-      decision === "cancel_assignment"
+      decision === "save_draft"
+        ? axDraftCard.saved
+        : decision === "cancel_assignment"
         ? "업무 요청을 취소했습니다."
         : decision === "approve" || decision === "confirm"
         ? reflected

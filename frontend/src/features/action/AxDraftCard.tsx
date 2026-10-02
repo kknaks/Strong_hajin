@@ -5,7 +5,7 @@ import { Badge } from "../../ds/Badge";
 import { Button, IconButton } from "../../ds/Button";
 import { CheckboxBox, FieldMessage } from "../../ds/FormControls";
 import { Modal } from "../../ds/Modal";
-import { runActionCommand } from "../../lib/api";
+import { getActionItems, isStaleActionError, runActionCommand } from "../../lib/api";
 import { Icon } from "../../ds/icons/Icon";
 import { axDraftCard, dayDifference, formatDate, isoDateInSeoul, personName, seoulToday } from "../../lib/labels";
 import type {
@@ -240,6 +240,8 @@ export function AxDraftCard({
 }) {
   const [page, setPage] = useState(0);
   const [busy, setBusy] = useState(false);
+  /* 「수정」 창이 저장하는 중 — 카드의 명령을 잠그되 「등록 중…」이라고 말하지는 않는다(저장이지 등록이 아니다 · fix1 W-2). */
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
@@ -253,8 +255,12 @@ export function AxDraftCard({
   const view: AxDraftSource = { ...source, materials };
   const confirm = source.commands.find((command) => command.id === "confirm");
   const reject = source.commands.find((command) => command.id === "reject");
-  /* [수정]은 명령이 아니라 편집 계약이 있을 때 선다 — 고칠 수 있는 칸이 하나라도 있어야 한다(§2.9). */
-  const editable = source.state === "pending" && contract.fields.some((candidate) => candidate.editable);
+  /* 「수정」 창의 「저장」이 부르는 명령 — 편집 계약이 이름을 대고(`save_command`) 봉투가 지금 열어 둔 것이어야 한다
+     (WORK-009 2a-1 · SPEC-002 §4 「초안 저장」). 확정은 카드의 「등록」(confirm) 하나다. */
+  const save = source.commands.find((command) => command.id === (contract.save_command ?? "save_draft"));
+  /* [수정]은 명령이 아니라 편집 계약이 있을 때 선다 — 고칠 수 있는 칸이 하나라도 있어야 한다(§2.9).
+     고친 것을 남길 저장 명령이 열려 있을 때만이다 — 없으면 창을 열어도 남길 길이 없다. */
+  const editable = source.state === "pending" && Boolean(save) && contract.fields.some((candidate) => candidate.editable);
   const staged = materials.filter((item) => item.state === "staged").map((item) => item.material_draft_id);
   const ageDays = axDraftAgeDays(source.createdAt);
   const go = (next: number) => setPage(Math.max(0, Math.min(PAGE_COUNT - 1, next)));
@@ -273,11 +279,18 @@ export function AxDraftCard({
     }
   }
 
-  const confirmPayload = (draft?: Record<string, unknown>, attachmentIds: string[] = staged) => ({
-    base_submission_version: contract.base_submission_version,
-    ...(draft ? { draft } : {}),
-    ...(attachmentIds.length > 0 ? { attachment_draft_ids: attachmentIds } : {}),
-  });
+  /* 확정(「등록」)과 저장(「수정」 창)은 같은 모양을 싣는다 — `base_submission_version` 은 **지금 카드가 보이는 회차**다.
+     저장 뒤에는 카드가 서버의 새 회차로 다시 그려지므로 다음 「등록」도 그 회차로 간다. */
+  /* 자료 초안 id 는 **정해진 순서**로 싣는다 — 서버는 저장 회차의 스냅샷에 이 목록을 순서대로 남기고, 「등록」이 같은 목록을
+     실어야 회차를 다시 올리지 않는다(add1). 수정 창의 목록과 카드의 목록(다시 읽은 봉투)은 순서가 다를 수 있다. */
+  const confirmPayload = (draft?: Record<string, unknown>, attachmentIds: string[] = staged) => {
+    const ids = [...new Set(attachmentIds)].sort();
+    return {
+      base_submission_version: contract.base_submission_version,
+      ...(draft ? { draft } : {}),
+      ...(ids.length > 0 ? { attachment_draft_ids: ids } : {}),
+    };
+  };
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key === "ArrowLeft") {
@@ -377,7 +390,7 @@ export function AxDraftCard({
           {ageDays !== null && <span className="t-meta">{axDraftCard.age(ageDays)}</span>}
           {reject && (
             <Button
-              disabled={busy || locked}
+              disabled={busy || saving || locked}
               onClick={() => (reject.requires_reason ? setRejecting(reject) : void send(reject.id))}
               size="sm"
               type="button"
@@ -385,9 +398,9 @@ export function AxDraftCard({
               {axDraftCard.reject}
             </Button>
           )}
-          {editable && confirm && (
+          {editable && (
             <Button
-              disabled={busy || locked}
+              disabled={busy || saving || locked}
               onClick={() => {
                 setEditError(null);
                 setEditing(true);
@@ -400,16 +413,17 @@ export function AxDraftCard({
             </Button>
           )}
           {confirm && (
-            <Button disabled={busy || locked} onClick={() => void send(confirm.id, confirmPayload())} size="sm" tone="primary" type="button" variant="solid">
+            <Button disabled={busy || saving || locked} onClick={() => void send(confirm.id, confirmPayload())} size="sm" tone="primary" type="button" variant="solid">
               {busy ? axDraftCard.confirming : axDraftCard.confirm}
             </Button>
           )}
         </footer>
       )}
       {editing &&
-        confirm &&
+        save &&
         createPortal(
-          /* [수정] = AI 초안이 채워진 「새 업무 추가」 창 그대로(§2.9). 닫으면 고친 것을 버리고 카드는 초안 그대로다. */
+          /* [수정] = AI 초안이 채워진 「새 업무 추가」 창 그대로(§2.9). 「저장」은 확정이 아니라 초안의 새 회차다(WORK-009 2a-1) —
+             성공하면 창을 닫고, 카드는 부르는 쪽이 다시 읽어 온 새 회차 값으로 다시 그려진다. 닫으면 고친 것을 버린다. */
           <CreateWorkModal
             assigneeCandidates={kind === "request" ? people(contract, "assignee_id") : []}
             axDraft={{
@@ -420,10 +434,16 @@ export function AxDraftCard({
               onMaterialsChange: setMaterials,
               approverOptions: people(contract, "approver_id"),
               error: editError,
-              /* 실패는 창이 받아 창 안에 낸다(`onError` → `error`) — 쓰던 값은 남는다. */
+              /* 실패는 창이 받아 창 안에 낸다(`onError` → `error`) — 쓰던 값은 남는다.
+                 저장하는 동안 카드도 잠근다(`busy`) — 그 사이 「등록」이 옛 회차로 나가 고치기 전 값으로 업무가 서지 않게(fix1 W-2). */
               onSubmit: async (draft, attachmentIds) => {
-                await onCommand(confirm.id, confirmPayload(draft, attachmentIds));
-                setEditing(false);
+                setSaving(true);
+                try {
+                  await onCommand(save.id, confirmPayload(draft, attachmentIds));
+                  setEditing(false);
+                } finally {
+                  setSaving(false);
+                }
               },
             }}
             canCreateRequest={kind === "request"}
@@ -493,17 +513,50 @@ export function AxDraftModal({
   onOpenTask?: (taskId: string) => void;
   locked?: boolean;
 }) {
-  const source = axDraftFromEnvelope(item);
+  /*
+   * 지금 카드가 그리는 봉투. 처음은 부르는 쪽이 건넨 것이고, **저장하면 서버가 돌려준 새 회차 봉투**로 바뀐다
+   * (WORK-009 2a-1) — 부르는 쪽이 목록을 다시 읽어도 이 창에 건넨 `item` 은 옛 값이라, 그것으로 그리면 카드가
+   * 옛 회차를 보이고 다음 「등록」이 낡은 회차로 거절된다.
+   */
+  const [current, setCurrent] = useState(item);
+  useEffect(() => setCurrent((shown) => (item.submission_version >= shown.submission_version ? item : shown)), [item]);
+  const source = axDraftFromEnvelope(current);
   if (!source) return null;
   return (
     <Modal closeLabel="닫기" label={axDraftCard.modalTitle} onClose={onClose} size="sm" title={axDraftCard.modalTitle}>
       <AxDraftCard
         locked={locked}
         onCommand={async (commandId, payload) => {
-          await runActionCommand(item.action_item_id, commandId, { expected_version: item.expected_version, ...payload });
+          let answered: ActionItemEnvelope;
+          try {
+            answered = await runActionCommand(current.action_item_id, commandId, { expected_version: current.expected_version, ...payload });
+          } catch (reason) {
+            /* 낡은 기준의 저장은 거부되고 **최신 회차를 다시 읽는다**(SPEC-002 §4 · fix1 W-1). 부르는 쪽 목록(`onDone`)과 함께
+               이 창의 봉투도 새로 받아야 다음 「저장」·「등록」이 새 기준을 싣는다 — 부르는 쪽이 건넨 `item` 은 옛 값이다.
+               실패 문구는 수정 창이 받아 창 안에 낸다(아래 throw). 확정 낡음은 이번 범위 밖이다. */
+            if (commandId === "save_draft" && isStaleActionError(reason)) {
+              await Promise.allSettled([
+                Promise.resolve().then(onDone),
+                getActionItems().then((rows) => {
+                  const latest = rows.find((row) => row.action_item_id === current.action_item_id);
+                  if (latest) setCurrent((shown) => (latest.submission_version >= shown.submission_version ? latest : shown));
+                }),
+              ]);
+            }
+            throw reason;
+          }
           onError?.(null);
+          if (commandId === "save_draft") {
+            /* 저장은 판단을 끝내지 않는다 — 카드는 새 회차로 남고(거절·수정·등록 그대로), 목록도 새 회차를 읽는다.
+               저장은 이미 됐다 — 목록을 다시 읽지 못해도 저장 실패로 돌리지 않는다(fix1 W-3). 화면 갱신 실패는 부르는 쪽의
+               갱신 띠(`staleProjection`)가 맡는다. */
+            setCurrent(answered);
+            await Promise.resolve().then(onDone).catch(() => undefined);
+            onNotice?.(axDraftCard.saved);
+            return;
+          }
           await onDone();
-          onNotice?.(axDraftCard.decided(item.subject));
+          onNotice?.(axDraftCard.decided(current.subject));
           onClose();
         }}
         onOpenTask={onOpenTask}

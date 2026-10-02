@@ -42,6 +42,18 @@ export function ActionPreviewDetails({
   );
 }
 
+/**
+ * 범용 명령 단추로 그리지 않는 명령 — 자기 편집 창이 부르는 것들이다.
+ *
+ * `save_draft`(AX 초안 저장, WORK-009 2a-1)는 「수정」 창의 「저장」 단추만 부른다. 봉투가 `allowed_commands` 에
+ * 함께 싣기 때문에 명령을 전부 단추로 그리는 자리(결과 카드 · 판단 상세 footer 등)로 떨어지면 「저장」 단추가 따로 서게 된다.
+ */
+export const EDITOR_ONLY_COMMANDS: ReadonlySet<string> = new Set(["save_draft"]);
+
+export function withoutEditorOnlyCommands<T extends { id: string }>(commands: ReadonlyArray<T>): T[] {
+  return commands.filter((command) => !EDITOR_ONLY_COMMANDS.has(command.id));
+}
+
 export function ActionCommandButtons({
   commands,
   disabled,
@@ -51,10 +63,11 @@ export function ActionCommandButtons({
   disabled?: boolean;
   onCommand: (commandId: string) => void;
 }) {
-  if (!commands || commands.length === 0) return null;
+  const shown = withoutEditorOnlyCommands(commands ?? []);
+  if (shown.length === 0) return null;
   return (
     <>
-      {commands.map((command) => (
+      {shown.map((command) => (
         <Button
           disabled={disabled}
           key={command.id}
