@@ -195,11 +195,11 @@ class ActionMaterialDraftApplication:
         rows = self.validate_claim(principal, action_id, draft_ids, context_type)
         if not rows:
             return []
-        by_id = {row.id: row for row in rows}
         now = datetime.now(UTC)
         results: list[dict[str, Any]] = []
-        for draft_id in draft_ids:
-            row = by_id.get(draft_id)
+        # **올린 순서대로 붙인다** — 고른 목록은 정렬된 집합이라(`attachment_draft_ids`) 그 순서는 뜻이 없다.
+        # 카드가 보여 주는 순서(`created_at`)가 업무의 자료 순서다.
+        for row in sorted(rows, key=lambda candidate: (candidate.created_at, str(candidate.id))):
             if row.source_kind == "file":
                 attachment = self._attachments.add_file(
                     storage_key=row.source_ref,

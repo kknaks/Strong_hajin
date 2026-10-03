@@ -32,7 +32,7 @@ import { Drawer } from "../../ds/Modal";
 import { Skeleton } from "../../ds/Skeleton";
 import { Spinner } from "../../ds/Spinner";
 import { StatusNote } from "../../ds/StatusNote";
-import { emptyActionLabel, meetingAgendaSourceText, meetingBadgeTone, meetingClock, meetingDateInput, meetingElapsed, meetingIsoAt, meetingRange, meetingScreen, meetingSpeakerName, meetingStatusLabel, meetingTimeOptions, personName } from "../../lib/labels";
+import { emptyActionLabel, formatDate, meetingAgendaSourceText, meetingBadgeTone, meetingClock, meetingDateInput, meetingElapsed, meetingIsoAt, meetingRange, meetingScreen, meetingSpeakerName, meetingStatusLabel, meetingTimeOptions, personName } from "../../lib/labels";
 import type {
   MeetingAgenda,
   MeetingEvidence,
@@ -1186,14 +1186,14 @@ export function MeetingDetailPage({
                       ? (stream.batch ? agenda.todos : agenda.todos.filter((todo) => todo.provisional)).map((todo) => ({
                           key: todo.todo_id,
                           what: todo.title,
-                          due: todo.due_candidate ?? undefined,
+                          due: todo.due_candidate ? formatDate(todo.due_candidate) : undefined,
                         }))
                       : settled && !noteEditing
                         ? agenda.todos.map((todo) => ({
                             key: todo.todo_id,
                             what: todo.title,
                             /* 담당 후보 칸은 없다 (D19-3) — 기한 후보만, 그것도 있을 때만 낸다 */
-                            due: todo.due_candidate ?? undefined,
+                            due: todo.due_candidate ? formatDate(todo.due_candidate) : undefined,
                             /* 이미 요청으로 선 줄은 목록에서 빼지 않고 「요청됨」으로 남는다 — 누르는 자리는
                                두지 않는다 (D24). `linked` 는 데이터로만 쓴다.
                                아직 후보인 줄에는 [업무 생성]과 후보 빼기가 함께 선다 */

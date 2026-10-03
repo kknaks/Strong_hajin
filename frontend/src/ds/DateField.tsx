@@ -11,7 +11,7 @@ import { Icon, type IconName } from "./icons/Icon";
  * 칸은 **하나**다: 값(`YYYY-MM-DD`)이 왼쪽, 달력 아이콘이 그 칸 «안» 오른쪽에 서고 칸 어디를 눌러도
  * 달력이 열린다 — 옆에 서는 시각 칸(`TimeField`)과 같은 자리·같은 크기다.
  *
- * 화면마다 구분자와 아이콘은 갈아 끼울 수 있다 (AX 카드는 `2026.09.30` + 「▾」로 낸다). 값 자체는
+ * 보이는 날짜는 읽기 전용 화면과 같은 `2026/09/30` 이다(SPEC-001 U-17). 아이콘은 갈아 끼울 수 있다(AX 카드는 「▾」). 값 자체는
  * 언제나 ISO `YYYY-MM-DD`(또는 빈 문자열)로 오가므로 API·DB 경계는 그대로다.
  */
 export function DateField({
@@ -21,7 +21,7 @@ export function DateField({
   onChange,
   disabled = false,
   hideLabel = false,
-  displaySeparator,
+  displaySeparator = "/",
   pickerIcon = "calendar",
   required = false,
   today,
@@ -36,7 +36,10 @@ export function DateField({
   onChange: (isoValue: string) => void;
   disabled?: boolean;
   hideLabel?: boolean;
-  /** 화면에 낼 때의 구분자. 주지 않으면 ISO 그대로(`2026-09-30`)다. */
+  /**
+   * 화면에 낼 때의 구분자. 주지 않으면 `/` — **입력칸에 보이는 날짜도 `2026/09/30`** 이다(SPEC-001 U-17 · OQ-Q ③).
+   * 값 자체는 언제나 ISO 다.
+   */
   displaySeparator?: "/" | ".";
   pickerIcon?: Extract<IconName, "calendar" | "chevron-down">;
   required?: boolean;

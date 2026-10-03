@@ -59,6 +59,7 @@ const source = (over: Partial<AxDraftSource> = {}): AxDraftSource => ({
   commands: [
     { id: "reject", label: "거절", tone: "neutral" },
     { id: "confirm", label: "등록", tone: "primary" },
+    { id: "save_draft", label: "저장", tone: "neutral" },
   ],
   createdAt: null,
   ...over,
@@ -211,7 +212,7 @@ describe("AX 초안 요약 카드 — 명령", () => {
 });
 
 describe("AX 초안 요약 카드 — [수정] = 「새 업무 추가」 창", () => {
-  it("초안 값으로 열리고 갈래가 고정되며, 창의 등록이 고친 값으로 확인한다(confirm + draft)", async () => {
+  it("초안 값으로 열리고 갈래가 고정되며, 창의 저장이 고친 값을 새 회차로 남긴다(save_draft + draft — 확정 아님)", async () => {
     const onCommand = vi.fn().mockResolvedValue(undefined);
     render(<AxDraftCard onCommand={onCommand} source={source()} />);
     fireEvent.click(screen.getByRole("button", { name: "수정" }));
@@ -222,11 +223,11 @@ describe("AX 초안 요약 카드 — [수정] = 「새 업무 추가」 창", (
     expect((within(within(modal).getByRole("group", { name: "참조자" })).getByRole("checkbox", { name: "소라" }) as HTMLInputElement).checked).toBe(true);
 
     fireEvent.change(within(modal).getByLabelText("업무 제목"), { target: { value: "KPI 설정 (고침)" } });
-    await act(async () => fireEvent.click(within(modal).getByRole("button", { name: "등록" })));
+    await act(async () => fireEvent.click(within(modal).getByRole("button", { name: "저장" })));
 
     await waitFor(() => expect(onCommand).toHaveBeenCalled());
     const [command, payload] = onCommand.mock.calls[0];
-    expect(command).toBe("confirm");
+    expect(command).toBe("save_draft");
     expect(payload.base_submission_version).toBe(2);
     expect(payload.draft).toMatchObject({
       title: "KPI 설정 (고침)",
@@ -277,7 +278,7 @@ describe("판단 대기 봉투 → 같은 카드", () => {
     operation_label: "업무 생성",
     current_question: "등록할까요?",
     preview: [],
-    allowed_commands: [{ id: "confirm", label: "등록", tone: "primary" }],
+    allowed_commands: [{ id: "confirm", label: "등록", tone: "primary" }, { id: "save_draft", label: "저장", tone: "neutral" }],
     submission_version: 2,
     waiting_on: null,
     resource: { type: "action", id: "action-1" },
@@ -321,12 +322,12 @@ describe("수정 창 — 참고 업무는 목록이 오기 전·실패·못 읽�
   async function editAndRegister(onCommand: ReturnType<typeof vi.fn>) {
     fireEvent.click(screen.getByRole("button", { name: "수정" }));
     const modal = await screen.findByRole("dialog", { name: "새 업무 추가" });
-    await act(async () => fireEvent.click(within(modal).getByRole("button", { name: "등록" })));
+    await act(async () => fireEvent.click(within(modal).getByRole("button", { name: "저장" })));
     await waitFor(() => expect(onCommand).toHaveBeenCalled());
     return onCommand.mock.calls[0][1].draft as Record<string, unknown>;
   }
 
-  it("읽을 수 있는 업무 목록이 오기 전에 등록해도 참고 업무가 남는다", async () => {
+  it("읽을 수 있는 업무 목록이 오기 전에 저장해도 참고 업무가 남는다", async () => {
     vi.mocked(api.getTasks).mockReturnValue(new Promise(() => {}) as never);
     const onCommand = vi.fn().mockResolvedValue(undefined);
     render(<AxDraftCard onCommand={onCommand} source={withReferences()} />);
@@ -347,15 +348,15 @@ describe("수정 창 — 참고 업무는 목록이 오기 전·실패·못 읽�
     fireEvent.click(screen.getByRole("button", { name: "수정" }));
     const modal = await screen.findByRole("dialog", { name: "새 업무 추가" });
     fireEvent.click(within(modal).getByRole("tab", { name: "업무 연결" }));
-    expect(await within(modal).findByText("목록에 없는 참고 업무 1건 — 초안 그대로 함께 등록됩니다.")).toBeTruthy();
-    await act(async () => fireEvent.click(within(modal).getByRole("button", { name: "등록" })));
+    expect(await within(modal).findByText("목록에 없는 참고 업무 1건 — 초안 그대로 함께 저장됩니다.")).toBeTruthy();
+    await act(async () => fireEvent.click(within(modal).getByRole("button", { name: "저장" })));
     await waitFor(() => expect(onCommand).toHaveBeenCalled());
     expect(onCommand.mock.calls[0][1].draft.reference_task_ids).toEqual(["r-1", "r-2"]);
   });
 });
 
 describe("수정 창 — 확인 전에 자료를 붙인다 (WARN-1)", () => {
-  it("링크를 붙이면 판단 항목 자료 초안으로 올라가고, 등록이 그 id 를 싣고, 카드 요약도 따라간다", async () => {
+  it("링크를 붙이면 판단 항목 자료 초안으로 올라가고, 저장이 그 id 를 싣고, 카드 요약도 따라간다", async () => {
     vi.mocked(api.getTasks).mockResolvedValue([] as never);
     vi.mocked(api.stageActionMaterialLink).mockResolvedValue({
       material_draft_id: "md-1", action_item_id: "action-1", source_kind: "external_link", name: "가이드", content_type: "", size_bytes: 0,
@@ -372,7 +373,7 @@ describe("수정 창 — 확인 전에 자료를 붙인다 (WARN-1)", () => {
     expect(api.stageActionMaterialLink).toHaveBeenCalledWith("action-1", { url: "https://example.test", label: "가이드" });
     expect(await within(modal).findByText("가이드")).toBeTruthy();
 
-    await act(async () => fireEvent.click(within(modal).getByRole("button", { name: "등록" })));
+    await act(async () => fireEvent.click(within(modal).getByRole("button", { name: "저장" })));
     await waitFor(() => expect(onCommand).toHaveBeenCalled());
     expect(onCommand.mock.calls[0][1].attachment_draft_ids).toEqual(["md-1"]);
   });
@@ -412,7 +413,7 @@ describe("채팅 카드의 만든 지 며칠 · 결재자 선택지 (WARN-3 · W
     const action = {
       action_id: "action-1", conversation_id: "c", turn_id: "t", action_type: "task.create_self", title: "업무 만들기",
       state: "pending" as const, version: 1, payload_summary: "", result: null, audit_ref: null, subject: "KPI 설정",
-      commands: [{ id: "confirm", label: "등록", tone: "primary" }], edit_contract: contract(),
+      commands: [{ id: "confirm", label: "등록", tone: "primary" }, { id: "save_draft", label: "저장", tone: "neutral" }], edit_contract: contract(),
     };
     expect(axDraftFromAction({ ...action, created_at: "2026-09-29T01:00:00+00:00" })?.createdAt).toBe("2026-09-29T01:00:00+00:00");
     expect(axDraftFromAction(action)?.createdAt).toBeNull();
@@ -487,10 +488,10 @@ describe("수정 창 — 재검수 N-1 ~ N-3", () => {
     fireEvent.click(screen.getByRole("button", { name: "수정" }));
     const modal = await screen.findByRole("dialog", { name: "새 업무 추가" });
     fireEvent.click(within(modal).getByRole("tab", { name: "업무 연결" }));
-    expect(await within(modal).findByText("참고 업무 목록을 불러오지 못했습니다 — 초안의 참고 업무 2건은 그대로 함께 등록됩니다.")).toBeTruthy();
+    expect(await within(modal).findByText("참고 업무 목록을 불러오지 못했습니다 — 초안의 참고 업무 2건은 그대로 함께 저장됩니다.")).toBeTruthy();
     fireEvent.click(within(modal).getByRole("button", { name: "참고 업무 ref-aaaa 빼기" }));
-    expect(within(modal).getByText("참고 업무 목록을 불러오지 못했습니다 — 초안의 참고 업무 1건은 그대로 함께 등록됩니다.")).toBeTruthy();
-    await act(async () => fireEvent.click(within(modal).getByRole("button", { name: "등록" })));
+    expect(within(modal).getByText("참고 업무 목록을 불러오지 못했습니다 — 초안의 참고 업무 1건은 그대로 함께 저장됩니다.")).toBeTruthy();
+    await act(async () => fireEvent.click(within(modal).getByRole("button", { name: "저장" })));
     await waitFor(() => expect(onCommand).toHaveBeenCalled());
     expect(onCommand.mock.calls[0][1].draft.reference_task_ids).toEqual(["ref-bbbb-2222"]);
   });

@@ -18,7 +18,13 @@ from ax_workspace.modules.actions.domain import ActionCenterApplication
 from ax_workspace.modules.errors import ResourceNotFound
 from ax_workspace.modules.actions.payloads import normalize_task_progress_batch as _normalize_task_progress_batch
 from ax_workspace.modules.actions.confirmation import SUPPORTED_ACTION_TYPES
-from ax_workspace.modules.actions.policy import CONFIRM_LABELS, RETIRED_ACTION_TYPES
+from ax_workspace.modules.actions.policy import (
+    CONFIRM_LABELS,
+    DRAFT_SAVE_ACTION_TYPES,
+    RETIRED_ACTION_TYPES,
+    SAVE_DRAFT_COMMAND,
+    SAVE_DRAFT_LABEL,
+)
 from ax_workspace.modules.organization_access.application import OrganizationApplication
 from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, DAILY_REPORT_READ, DAILY_REPORT_SUBMIT, PROJECT_READ, TASK_ASSIGN, Principal
 from ax_workspace.modules.meetings.application import MeetingApplication
@@ -524,6 +530,12 @@ class SqlAlchemyActionRepository:
         if presented.get("edit_contract") is not None and action.state == "pending" and can_decide and not presented.get("obsolete"):
             commands = [
                 {"id": "confirm", "label": CONFIRM_LABELS[action.action_type], "tone": "primary"},
+                # 판단 대기 봉투와 같은 명령 목록 — 저장은 두 kind 에만 선다 (SPEC-002 §4 「초안 저장」).
+                *(
+                    [{"id": SAVE_DRAFT_COMMAND, "label": SAVE_DRAFT_LABEL, "tone": "neutral"}]
+                    if action.action_type in DRAFT_SAVE_ACTION_TYPES
+                    else []
+                ),
                 {"id": "reject", "label": "거절", "tone": "neutral"},
             ]
         assignment = self._assignment(action)
@@ -1285,7 +1297,7 @@ class ActionPresenter:
                     self._text(fields, "title", "업무 명", payload.get("title"))
                     self._text(fields, "description", "설명", payload.get("description"))
                     self._date(fields, "start_date", "시작일", payload.get("start_date"))
-                    self._date(fields, "due_date", "기한", payload.get("due_date"))
+                    self._date(fields, "due_date", "마감일", payload.get("due_date"))
                 else:
                     self._person(fields, "member", "구성원", payload.get("member_id"), principal)
                     if kind == "project.release_member":
@@ -1383,7 +1395,7 @@ class ActionPresenter:
             else:
                 self._person(fields, "assignee", "담당", action.owner_id, principal)
             self._date(fields, "start_date", "시작일", payload.get("start_date"))
-            self._date(fields, "due_date", "기한", payload.get("due_date"))
+            self._date(fields, "due_date", "마감일", payload.get("due_date"))
             pointers = [str(item) for item in payload.get("reference_task_ids") or []]
             if pointers:
                 titles = [self._readable_task_title(item, principal) for item in pointers]
@@ -1463,7 +1475,7 @@ class ActionPresenter:
             if kind == "task.update":
                 changes = TaskUpdateCommand.model_validate(payload).model_dump(mode='json', exclude_unset=True, exclude={'task_id', 'expected_version'})
                 obsolete = task_title is None and action.state == 'pending'
-                for key, label in [('title', '제목'), ('description', '설명'), ('start_date', '시작일'), ('due_date', '기한')]:
+                for key, label in [('title', '제목'), ('description', '설명'), ('start_date', '시작일'), ('due_date', '마감일')]:
                     if key in changes:
                         if key in {'start_date', 'due_date'} and changes[key]:
                             self._date(fields, key, label, changes[key])
@@ -1618,12 +1630,12 @@ class ActionPresenter:
             self._text(fields, "title", "제목", payload.get("title"))
             self._text(fields, "description", "설명", payload.get("description"))
             if payload.get("clear_due_date"):
-                fields.append({"id": "due_date", "label": "기한", "value": "없앰", "kind": "state"})
+                fields.append({"id": "due_date", "label": "마감일", "value": "없앰", "kind": "state"})
             else:
-                self._date(fields, "due_date", "기한", payload.get("due_date"))
+                self._date(fields, "due_date", "마감일", payload.get("due_date"))
         elif kind == "work_request.negotiate":
             conditions = dict(payload.get("conditions") or {})
-            self._date(fields, "due_date", "제안 기한", conditions.get("due_date"))
+            self._date(fields, "due_date", "제안 마감일", conditions.get("due_date"))
             self._text(fields, "note", "메모", conditions.get("note") or conditions.get("reason"))
         elif kind == ACTION_ITEM_COMMAND:
             return self._action_item_command(action, payload, principal, fields)
@@ -1752,7 +1764,7 @@ class ActionPresenter:
             ),
             {"id": "start_date", "label": "시작일", "type": "date", "required": False, "editable": True},
             # 기한은 「새 업무 추가」처럼 **선택**이다 — AX 초안에만 걸리는 필수를 두지 않는다 (SPEC-001 S-9 6).
-            {"id": "due_date", "label": "기한", "type": "date", "required": False, "editable": True},
+            {"id": "due_date", "label": "마감일", "type": "date", "required": False, "editable": True},
         ]
         if action.action_type == "task.create_self":
             fields.extend([
@@ -1841,6 +1853,8 @@ class ActionPresenter:
             "base_submission_version": int(submission.submission_version),
             "values": values,
             "fields": fields,
+            # 고친 값을 확정 없이 남기는 명령 id — 수정 창의 「저장」이 이 명령을 부른다 (SPEC-002 §4 「초안 저장」).
+            **({"save_command": SAVE_DRAFT_COMMAND} if action.action_type in DRAFT_SAVE_ACTION_TYPES else {}),
         }
 
     def _command_edit_contract(self, action: ActionItemRecord, principal: Principal, payload: dict[str, Any], submission: SubmissionRecord) -> dict[str, Any] | None:
@@ -1971,6 +1985,7 @@ class ActionPresenter:
             "editor": "task",
             "base_submission_version": int(submission.submission_version),
             "values": values,
+            "save_command": SAVE_DRAFT_COMMAND,
             "fields": [
                 {"id": "title", "label": "업무 명", "type": "text", "required": True, "editable": True},
                 {"id": "description", "label": "내용", "type": "textarea", "required": False, "editable": True},
@@ -1983,7 +1998,7 @@ class ActionPresenter:
                     "options": assignee_options,
                 },
                 {"id": "start_date", "label": "시작일", "type": "date", "required": False, "editable": True},
-                {"id": "due_date", "label": "기한", "type": "date", "required": False, "editable": True},
+                {"id": "due_date", "label": "마감일", "type": "date", "required": False, "editable": True},
                 {
                     "id": "project_id",
                     "label": "프로젝트",
@@ -2150,7 +2165,7 @@ class ActionPresenter:
         changes = dict(payload.get("changes") or {})
         self._text(fields, "changes_title", "제안 제목", changes.get("title"))
         self._text(fields, "changes_description", "제안 설명", changes.get("description"))
-        self._date(fields, "changes_due_date", "제안 기한", changes.get("due_date"))
+        self._date(fields, "changes_due_date", "제안 마감일", changes.get("due_date"))
         # The target's own preview rows are already permission-safe for this principal.
         fields.extend(target.get("preview", []))
         self._evidence(fields, action, principal)

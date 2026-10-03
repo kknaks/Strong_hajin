@@ -68,6 +68,24 @@ export const proposalKindLabel: Record<string, string> = {
 };
 
 /**
+ * 업무 날짜의 **이름** — 화면 어디서나 같은 말이다 (SPEC-001 U-17 · SPEC-007 §2.2).
+ *
+ * `due_date` 는 「마감일」 하나다(기한 · 희망 기한 · 「… 마감」을 그 값의 이름으로 쓰지 않는다).
+ * `start_date` 는 업무 상세에서만 「시작 예정일」이고, 만들기 창·캘린더는 「시작일」 그대로다(OQ-Q ②).
+ */
+export const taskDateLabel = {
+  due: "마감일",
+  start: "시작일",
+  plannedStart: "시작 예정일",
+  actualStart: "실제 시작일",
+  actualEnd: "실제 종료일",
+  overdue: "마감일 초과",
+  undated: "마감일 없음",
+  /** 「시작 ≤ 마감」 검사 문장 — 창마다 다른 말로 같은 규칙을 말하지 않는다. */
+  startAfterDue: "시작일은 마감일보다 늦을 수 없습니다.",
+} as const;
+
+/**
  * 조건 변경 제안이 실제로 바꾸자고 하는 칸 (SPEC-003 §4 `payload`).
  *
  * **여기 없는 칸은 화면이 제안하지 않는다** — 바꿀 수 있다고 말해 놓고 서버가 받지 않으면 그것은
@@ -75,7 +93,7 @@ export const proposalKindLabel: Record<string, string> = {
  */
 export const proposalFieldLabel: Record<string, string> = {
   title: "업무 명",
-  due_date: "기한",
+  due_date: taskDateLabel.due,
   description: "요청 내용",
 };
 
@@ -159,12 +177,20 @@ export function seoulToday(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
 }
 
-/** Read-only calendar dates are shown as YYYY/MM/DD on every surface; inputs and API/DB values stay ISO YYYY-MM-DD. */
+/**
+ * **업무 날짜의 표시 형식은 이것 하나다** — `2026/10/06` (SPEC-001 U-17 · WORK-009 2b-2).
+ *
+ * 날짜(`YYYY-MM-DD`)는 그대로 `/` 로 잇는다. 시각(`started_at`·`completed_at` 처럼 시간이 붙은 ISO)은
+ * **서울 날짜로 옮긴 뒤** 낸다 — 앞 10자를 자르면 UTC 날짜가 되어 서울 자정~09시 사이의 값이 하루 앞으로 밀린다.
+ * 입력칸·API·DB 의 값은 ISO `YYYY-MM-DD` 그대로다.
+ */
 export function formatDate(isoDate: string | null | undefined): string {
   if (!isoDate) return "—";
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(isoDate);
+  const value = /^\d{4}-\d{2}-\d{2}[T\s]\d/.test(isoDate) ? isoDateInSeoul(isoDate) ?? isoDate : isoDate;
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
   return match ? `${match[1]}/${match[2]}/${match[3]}` : isoDate;
 }
+
 
 /**
  * Observed durations: below one second in milliseconds, from one second on as whole seconds (floored, so a live
@@ -275,7 +301,7 @@ export const workChipLabel: Record<WorkChip, string> = {
   ax_drafts: "AX 제안",
   open: "시작 전",
   in_progress: "진행 중",
-  overdue: "기한 지남",
+  overdue: `${taskDateLabel.due} 지남`,
   not_started: "시작 안함",
   awaiting_review: "확인 대기",
 };
@@ -341,8 +367,11 @@ export const taskDetail = {
 
   /* 업무 메타 한 줄 (§2.2 · 시안 `:134-145`) */
   metaAssignee: "담당",
-  metaDue: "기한",
-  metaStart: "시작",
+  /* 날짜 넷 — 시작 예정일 · 실제 시작일 · 실제 종료일 · 마감일 순 (SPEC-007 §2.2 · WORK-009 2b-1) */
+  metaPlannedStart: taskDateLabel.plannedStart,
+  metaActualStart: taskDateLabel.actualStart,
+  metaActualEnd: taskDateLabel.actualEnd,
+  metaDue: taskDateLabel.due,
   /** 화면 라벨은 「결재」이고 계약의 이름은 승인자(`approver_id`)다 (SPEC-001 §7 OQ-N). */
   metaApprover: "결재",
   metaCc: "참조",
@@ -1067,8 +1096,8 @@ export const calendarScreen = {
      상태·승인의 «말» 은 여기 없다: 업무 화면의 `taskStateLabel`·`derivedApprovalLabel` 을 그대로 쓴다. */
   taskBadge: "업무",
   meetingBadge: "회의",
-  undated: "기한 없음",
-  dueOnly: (date: string) => `${formatDate(date)} 마감`,
+  undated: taskDateLabel.undated,
+  dueOnly: (date: string) => `${taskDateLabel.due} ${formatDate(date)}`,
   range: (from: string, to: string) => (from === to ? formatDate(from) : `${formatDate(from)} ~ ${formatDate(to)}`),
   /** 업무 카드가 자기 시간 배정을 접어 넣는 줄 — `3일 10:00` 꼴 (SPEC §2.1). */
   scheduleChip: (onDate: string, startsAt: string) => `${Number(onDate.slice(8, 10))}일 ${startsAt}`,
@@ -1103,9 +1132,10 @@ export const projectScreen = {
   railEmptyTitle: "이 프로젝트의 업무가 없습니다",
   railEmptyDescription: "업무가 생기면 여기에서 진행 라인과 함께 봅니다.",
   /* 기간의 말 — 원값이 말하는 자리다 */
-  undated: "기한 없음",
-  dueOnly: (date: string) => `${formatDate(date)} 마감`,
-  startOnly: (date: string) => `${formatDate(date)} 시작`,
+  undated: taskDateLabel.undated,
+  dueOnly: (date: string) => `${taskDateLabel.due} ${formatDate(date)}`,
+  /* 「라벨 값」 어순 하나 — 「마감일 2026/10/06」과 나란히 「시작 2026/10/01」 (WORK-009 2b fix1 · W4). */
+  startOnly: (date: string) => `시작 ${formatDate(date)}`,
   /* 요약 스트립 */
   summaryTitle: "프로젝트 요약",
   summaryTotal: "전체 업무",
@@ -1244,7 +1274,7 @@ export const calendarDeny = {
     `이 업무의 기간(${formatDate(from)}~${formatDate(to)}) 안에만 시간을 배정할 수 있습니다.`,
   unscheduled: "먼저 업무 기간을 정해 주세요. 기간이 있어야 시간을 배정할 수 있습니다.",
   invalidRange: "종료 시각은 시작 시각보다 뒤여야 합니다.",
-  startAfterDue: "시작일은 마감일보다 뒤일 수 없습니다.",
+  startAfterDue: taskDateLabel.startAfterDue,
   taskClosed: "끝난 업무에는 시간을 배정할 수 없습니다.",
   notMine: "내가 맡은 업무에만 시간을 배정할 수 있습니다.",
   /**
@@ -1326,6 +1356,11 @@ export const axDraftCard = {
   edit: "수정",
   confirm: "등록",
   confirming: "등록 중…",
+  /* 「수정」 창(새 업무 추가)의 주 단추 — 확정이 아니라 초안 저장이다 (WORK-009 2a-1 · SPEC-002 §2.9). */
+  save: "저장",
+  saving: "저장 중…",
+  saved: "AX 초안을 저장했습니다.",
+  saveFailed: "AX 초안을 저장하지 못했습니다.",
   openTask: "업무 열기",
   registered: "등록됨",
   rejected: "거절됨",

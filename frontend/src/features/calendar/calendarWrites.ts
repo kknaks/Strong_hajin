@@ -222,8 +222,9 @@ export function denyMessage(command: ScheduleCommand, status: number, span: Span
  * K3 — 기간이 줄어 **닫힌 배정의 건수**를 말한다.
  *
  * **0 건이면 아무 말도 하지 않는다.** 칸 자체가 없는 응답에서도 마찬가지다 —
- * `schedule_release` 를 싣는 표면은 셋뿐이고(`PATCH /api/tasks` · `POST …/start` ·
- * `POST …/proposals/{id}/respond`), `/block`·`/resume`·`/complete`·`/cancel` 에는 **없다.**
+ * `schedule_release` 를 싣는 표면은 넷이고(`PATCH /api/tasks` · `POST …/start` ·
+ * `POST …/proposals/{id}/respond` · 완료 — `POST …/complete` 와 완료 보고 제출, 빈 마감일을 채울 때 · WORK-009 Phase 1),
+ * `/block`·`/resume`·`/cancel` 에는 **없다.**
  */
 export function releaseNotice(release: ScheduleRelease | null | undefined): string | null {
   if (!release || release.released_count <= 0) return null;

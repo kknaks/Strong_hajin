@@ -319,6 +319,8 @@ def test_action_commands_come_from_the_server_and_follow_capability(tmp_path, mo
     [projected] = view["actions"]
     expected_commands = [
         {"id": "confirm", "label": "이 내용으로 업무 생성", "tone": "primary"},
+        # 확정하지 않는 「초안 저장」 — 판단 대기 봉투와 같은 목록 (SPEC-002 §4 · WORK-009 1-1).
+        {"id": "save_draft", "label": "저장", "tone": "neutral"},
         {"id": "reject", "label": "거절", "tone": "neutral"},
     ]
     assert projected["action_id"] == action["action_id"] and projected["commands"] == expected_commands
@@ -358,7 +360,7 @@ def test_action_preview_is_structured_and_permission_safe(tmp_path) -> None:
         {"id": "description", "label": "설명", "value": "9월 견적 재검토", "kind": "text"},
         {"id": "requester", "label": "요청자", "value": "민아 (구성원)", "kind": "person"},
         {"id": "assignee", "label": "요청 대상", "value": "지호 (팀장)", "kind": "person"},
-        {"id": "due_date", "label": "기한", "value": "2026-09-30", "kind": "date"},
+        {"id": "due_date", "label": "마감일", "value": "2026-09-30", "kind": "date"},
         {"id": "cc", "label": "참조자", "value": "소라 (법무 자문), 확인할 수 없는 구성원", "kind": "people"},
     ]
     assert "assignee_id" not in str(action["preview"]) and "no-such-member" not in str(action["preview"])
@@ -376,7 +378,7 @@ def test_action_preview_is_structured_and_permission_safe(tmp_path) -> None:
     assert readable["subject"] == "민아의 업무"
     assert readable["preview"] == [
         {"id": "task", "label": "대상 업무", "value": "민아의 업무", "kind": "text"},
-        {"id": "due_date", "label": "기한", "value": "2026-10-01", "kind": "date"},
+        {"id": "due_date", "label": "마감일", "value": "2026-10-01", "kind": "date"},
     ]
     # Another Action type on the same execution has its own slot; this one references a Task the approver cannot read.
     hidden = application.propose_action(mina, execution_id, "task.transition", "업무 상태 변경 확인", {"task_id": other["task_id"], "expected_version": other["version"], "target": "in_progress"})

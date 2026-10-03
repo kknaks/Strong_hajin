@@ -76,8 +76,8 @@ describe("R3·R4 — 손잡이의 정체는 «필드»다 (WARN-A)", () => {
   });
 
   it("역전은 조용히 접지 않고 **말한다** — 시작이 마감을 넘으면 거절 문구가 난다", () => {
-    expect(resizeTaskDates(task(), "start", "2027-03-09")).toEqual({ deny: "시작일은 마감일보다 뒤일 수 없습니다." });
-    expect(resizeTaskDates(task(), "end", "2027-02-20")).toEqual({ deny: "시작일은 마감일보다 뒤일 수 없습니다." });
+    expect(resizeTaskDates(task(), "start", "2027-03-09")).toEqual({ deny: "시작일은 마감일보다 늦을 수 없습니다." });
+    expect(resizeTaskDates(task(), "end", "2027-02-20")).toEqual({ deny: "시작일은 마감일보다 늦을 수 없습니다." });
   });
 
   it("맞은편이 비어 있으면 넘을 것이 없다 — 거절하지 않는다", () => {
@@ -158,7 +158,7 @@ describe("거절 문구 — 상태 코드 + 어떤 명령을 불렀는지로 가
   });
 
   it("422 는 명령마다 다르다 — 서버의 영문 문구를 그대로 내보내지 않는다", () => {
-    expect(denyMessage("task_dates", 422, span)).toBe("시작일은 마감일보다 뒤일 수 없습니다.");
+    expect(denyMessage("task_dates", 422, span)).toBe("시작일은 마감일보다 늦을 수 없습니다.");
     expect(denyMessage("schedule_create", 422, span)).toBe(
       "이 업무의 기간(2027/09/04~2027/09/06) 안에만 시간을 배정할 수 있습니다.",
     );

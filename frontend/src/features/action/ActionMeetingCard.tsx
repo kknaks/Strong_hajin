@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useBrowserOperationGuard } from "../../lib/browserOperationGuard";
 
-import { actionSubject } from "./ActionPreview";
+import { actionSubject, withoutEditorOnlyCommands } from "./ActionPreview";
 import { Badge } from "../../ds/Badge";
 import { Button } from "../../ds/Button";
 import { discardActionMaterialDraft, stageActionMaterialFile, stageActionMaterialLink } from "../../lib/api";
@@ -343,7 +343,7 @@ export function ActionMeetingCard({
             {busy ? (editing ? "저장 중…" : "등록 중…") : editing ? "저장" : "등록"}
           </Button>
         )}
-        {(action.commands ?? []).filter((command) => !["confirm", "reject"].includes(command.id)).map((command) => (
+        {withoutEditorOnlyCommands(action.commands ?? []).filter((command) => !["confirm", "reject"].includes(command.id)).map((command) => (
           <Button disabled={busy || uploadingMaterial} key={command.id} onClick={() => void run(command.id)} size="sm" tone={command.tone === "danger" ? "danger" : "neutral"} type="button" variant={command.tone === "danger" ? "solid" : "text"}>{command.label}</Button>
         ))}
         {meetingId && onOpenMeeting && (

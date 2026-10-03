@@ -424,7 +424,7 @@ describe("업무 연결 판", () => {
  * WORK-003 정정 — **기본 정보의 갈래별 필드와 라벨.**
  *
  * 두 갈래가 같은 판을 쓰지만 같은 칸을 다른 이름으로 부른다: 「업무 제목」↔「요청할 업무」,
- * 「마감일」↔「희망 기한」, 「업무 내용」↔「요청 내용」. 담당 후보는 요청에만 있고, 참조자와
+ * 「마감일」↔「마감일」, 「업무 내용」↔「요청 내용」. 담당 후보는 요청에만 있고, 참조자와
  * 결재자는 둘 다 있다. 그 목록이 조용히 어긋나지 않게 여기서 한 번에 못박는다.
  */
 describe("기본 정보의 갈래별 필드", () => {
@@ -445,26 +445,25 @@ describe("기본 정보의 갈래별 필드", () => {
     // 내 업무는 만드는 순간 내 업무다 — 담당을 고를 자리가 없다.
     expect(basic.queryByLabelText("담당 후보")).toBeNull();
     expect(basic.queryByLabelText("요청할 업무")).toBeNull();
-    expect(basic.queryByRole("button", { name: "희망 기한 달력 열기" })).toBeNull();
+    /* 두 갈래의 기한 칸은 이제 같은 이름 「마감일」이다(SPEC-001 U-17) — 갈래마다 다른 이름을 세지 않는다. */
   });
 
-  it("요청 업무: 요청할 업무 · 시작일 · 희망 기한 · 담당 후보 · 요청 내용 · 참조자 · 결재자", () => {
+  it("요청 업무: 요청할 업무 · 시작일 · 마감일 · 담당 후보 · 요청 내용 · 참조자 · 결재자", () => {
     renderModal();
     fireEvent.click(within(screen.getByRole("tablist", { name: "생성 유형" })).getByRole("tab", { name: "요청 업무" }));
     const basic = within(panelOf("basic"));
     expect(basic.getByLabelText("요청할 업무")).toBeTruthy();
     expect(basic.getByRole("button", { name: "시작일 달력 열기" })).toBeTruthy();
-    expect(basic.getByRole("button", { name: "희망 기한 달력 열기" })).toBeTruthy();
+    expect(basic.getByRole("button", { name: "마감일 달력 열기" })).toBeTruthy();
     expect(basic.getByLabelText("담당 후보")).toBeTruthy();
     expect(basic.getByLabelText("요청 내용")).toBeTruthy();
     expect(basic.getByRole("group", { name: "참조자" })).toBeTruthy();
     expect(basic.getByLabelText("결재자")).toBeTruthy();
     expect(basic.queryByLabelText("업무 제목")).toBeNull();
-    expect(basic.queryByRole("button", { name: "마감일 달력 열기" })).toBeNull();
     /* **차례도 확정이다** — 요청은 «무엇을 · 언제까지 · 누구에게» 로 읽힌다. 담당 후보가 두 날짜
        앞에 서 있던 때가 있어, 여기서 자리를 글자가 아니라 DOM 순서로 못박는다. */
     const order = Array.from(panelOf("basic").querySelectorAll(".scax-field__label")).map((node) => node.textContent);
-    expect(order).toEqual(["요청할 업무", "시작일", "희망 기한", "담당 후보", "요청 내용", "결재자"]);
+    expect(order).toEqual(["요청할 업무", "시작일", "마감일", "담당 후보", "요청 내용", "결재자"]);
     /* WORK-003 정정 — **상태·요청자 카드는 없다.** 둘 다 생성 입력값이 아니라 서버가 정하는
        값이고(요청자는 부르는 사람, 상태는 「판단 대기」), 카드로 내면 고칠 수 있는 값처럼 읽힌다. */
     expect(basic.queryByText("상태")).toBeNull();

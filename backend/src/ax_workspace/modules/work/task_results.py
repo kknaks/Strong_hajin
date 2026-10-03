@@ -50,7 +50,8 @@ class TaskDerivedView(TypedDict):
 class TaskScheduleReleaseView(TypedDict):
     """이번 명령이 **닫은 배정 건수와 그 사유** (SPEC-004 §4 · 증보 K3).
 
-    **날짜가 바뀌는 세 자리 전부가 이 묶음을 낸다** — 업무 수정 · 시작 전이 · 조건 변경 제안 동의.
+    **날짜가 바뀌는 네 자리 전부가 이 묶음을 낸다** — 업무 수정 · 시작 전이 · 조건 변경 제안 동의 ·
+    완료의 마감일 채움(완료 · 완료 보고 제출 — SPEC-004 §5 · OQ-405).
     닫힌 것이 없으면 `released_count = 0` 이고 `reason` 은 `None` 이다. **0 을 내는 것도 계약이다.**
 
     **문구는 서버가 만들지 않는다** — 화면이 이 두 값으로 「N건의 시간 배정이 기간 밖이라
@@ -367,6 +368,8 @@ class TaskSuccessorReleaseResult(TypedDict):
 
 class TaskCompletionResult(TaskMutationResult):
     delivery: TaskDeliveryView | None
+    #: 비어 있던 마감일을 채웠을 때 닫힌 배정 묶음 — 날짜가 바뀌는 넷째 자리도 같은 묶음을 낸다 (SPEC-004 §5).
+    schedule_release: NotRequired[TaskScheduleReleaseView]
 
 
 class TaskScheduleView(TypedDict):

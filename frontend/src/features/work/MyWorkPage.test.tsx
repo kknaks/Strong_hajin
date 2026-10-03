@@ -566,7 +566,7 @@ describe("what the list says about dates", () => {
        읽을 때는 메타 한 줄의 `시작` 이고, 고칠 때는 이 칸이다 — 값이 옮겨 간 것은 아니다. */
     expect(within(await screen.findByLabelText("업무 메타")).getByText("2026/09/01")).toBeTruthy();
     fireEvent.click(await screen.findByRole("button", { name: "편집" }));
-    expect((await screen.findByLabelText("시작일")).textContent).toContain("2026-09-01");
+    expect((await screen.findByLabelText("시작 예정일")).textContent).toContain("2026/09/01");
     fireEvent.click(screen.getByRole("button", { name: "상세 닫기" }));
 
     // A task nobody scheduled has no start date. The day it was created is not one.
@@ -574,11 +574,12 @@ describe("what the list says about dates", () => {
     // 아무도 잡아 주지 않은 업무에는 시작일이 없다. 만든 날은 시작일이 아니다 —
     // **값이 없는 메타 칸은 아예 서지 않으므로** 「시작」이라는 글자부터 없다.
     const meta = await screen.findByLabelText("업무 메타");
-    expect(within(meta).queryByText("시작")).toBeNull();
+    expect(within(meta).queryByText("시작 예정일")).toBeNull();
+    expect(meta.textContent).not.toContain("시작 예정일");
     fireEvent.click(await screen.findByRole("button", { name: "편집" }));
-    const without = await screen.findByLabelText("시작일");
-    expect(without.textContent).not.toContain("2026-08-20");
-    expect(without.textContent).toContain("YYYY-MM-DD");
+    const without = await screen.findByLabelText("시작 예정일");
+    expect(without.textContent).not.toContain("2026/08/20");
+    expect(without.textContent).toContain("YYYY/MM/DD");
   });
 
   it("renders pending and negotiating requests with the confirmed inbox categories", async () => {
@@ -972,12 +973,12 @@ describe("「AX 제안 N」 칩 (A-01)", () => {
   const chipBar = () => within(screen.getByRole("group", { name: "업무 필터" }));
   const chipNames = () => chipBar().getAllByRole("button").map((button) => button.textContent);
 
-  it("0건이어도 「AX 제안 0」 으로 서고, 자리는 받은 요청 바로 뒤 · 기한 지남은 맨 끝이다", async () => {
+  it("0건이어도 「AX 제안 0」 으로 서고, 자리는 받은 요청 바로 뒤 · 마감일 지남은 맨 끝이다", async () => {
     renderPage({}, { judgements: [] });
     expect(await chipBar().findByRole("button", { name: "AX 제안 0" })).toBeTruthy();
     const names = chipNames().map((name) => name?.replace(/\s\d+$/, ""));
     expect(names.indexOf("AX 제안")).toBe(names.indexOf("받은 요청") + 1);
-    expect(names.at(-1)).toBe("기한 지남");
+    expect(names.at(-1)).toBe("마감일 지남");
   });
 
   it("두 kind 만 세고, 켰을 때만 초안 줄이 서며, 줄을 누르면 같은 요약 카드가 뜬다", async () => {

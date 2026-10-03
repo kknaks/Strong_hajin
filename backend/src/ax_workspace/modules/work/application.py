@@ -61,6 +61,7 @@ from ax_workspace.modules.work.task_values import validate_schedule
 # **상태 투영·기한 경과일은 순수 모듈이 갖는다** (SPEC-005 §4). 프로젝트 상세가 같은 판정을
 # 지나야 하는데 `work/projects.py` 는 이 파일을 import 하지 않는다 — 규칙을 두 벌로 쓰지 않는다.
 from ax_workspace.modules.work.task_projection import (
+    due_date_on_completion,
     external_state,
     overdue_days,
     today_for_tasks,
@@ -781,14 +782,14 @@ class TaskApplication:
             f"이 업무를 옮기면 같은 담당자의 직속 하위 {hidden}건이 중심 업무 밖에 놓입니다", rows
         )
 
-    # ---- D1 — 업무의 날짜가 바뀌는 **세 자리**가 함께 부르는 자리 (SPEC-004 §5 · 증보 K3) ----
+    # ---- D1 — 업무의 날짜가 바뀌는 **네 자리**가 함께 부르는 자리 (SPEC-004 §5 · 증보 K3 · OQ-405) ----
 
     def _release_schedules_outside(self, task: Any) -> TaskScheduleReleaseView:
         """새 기간 밖의 배정을 닫는다. **부르는 쪽이 「날짜가 바뀌었다」를 이미 판정한 뒤**다.
 
         **공통 지점 `repository.touch()` 에 걸지 않는다** — 날짜와 무관한 변경에도 아홉 번 불리므로
         거기 걸면 「날짜가 바뀌었나」를 이 함수가 스스로 판정해야 하고 **틀리면 조용히 안 돈다** (§J).
-        그래서 세 자리가 **명시적으로** 부른다.
+        그래서 네 자리(수정 · 시작 전이 · 제안 동의 · 완료의 마감일 채움)가 **명시적으로** 부른다.
 
         **검증과 저장이 한 transaction 에 있다** — 조립 층이 명령 하나를 한 session 에 싣는다.
         나뉘면 「배정은 닫혔는데 업무 날짜는 안 바뀐」 상태가 **복구 경로 없이** 남는다.
@@ -901,8 +902,9 @@ class TaskApplication:
             raise TaskScheduleTaskUnscheduled("먼저 업무 기간을 정해 주세요. 기간이 있어야 시간을 배정할 수 있습니다")
         if not span.covers(on_date):
             # **정규화 구간을 적는다** (증보 K11·K14) — 뒤집힌 업무면 `start_date`~`due_date` 가 아니다.
+            # 문장 속 업무 날짜는 화면과 같은 `2026/10/06` 형식이다 (SPEC-001 U-17 · OQ-Q ⑤).
             raise TaskScheduleOutOfRange(
-                f"이 업무의 기간({span.span_from.isoformat()}~{span.span_to.isoformat()}) 안에만 "
+                f"이 업무의 기간({span.span_from:%Y/%m/%d}~{span.span_to:%Y/%m/%d}) 안에만 "
                 "시간을 배정할 수 있습니다"
             )
         schedules = self._schedule_repository()
@@ -1899,12 +1901,21 @@ class TaskApplication:
         task.block_reason = None
         # 밖으로 `done` 인 순간이 이때다. 승인은 `state` 를 바꾸지 않으므로 이 시각이 완료 시각이다.
         task.completed_at = datetime.now(UTC)
+        # **완료 보고 제출도 마감일을 채운다** (SPEC-003 §4 「날짜 채움」) — 요청 Task 의 실제 종료일이 이 시각이다.
+        # 보완 요청이 `completed_at` 을 지워도 채운 마감일은 남는다(되돌리지 않는다).
+        dates_before = (task.start_date, task.due_date)
+        task.due_date = due_date_on_completion(task.due_date, task.completed_at)
+        released = self._schedule_release_for(task, dates_before)
         task.version += 1
         self.repository.touch(task)
         self.repository.record_activity(
             task, str(principal.id), "task.completion_submitted", f"완료 보고: {clean_summary[:80]}"
         )
-        return {**self._view(task, principal), "delivery": self.delivery_view(principal, task)}
+        return {
+            **self._view(task, principal),
+            "delivery": self.delivery_view(principal, task),
+            "schedule_release": released,
+        }
 
     def accept_delivery(self, principal: Principal, task: Any, submission: Any, expected_version: int) -> None:
         """The person who asked says this is what they wanted. Only this closes the work."""
@@ -2076,6 +2087,9 @@ class TaskApplication:
             task.started_at = now
         if target is TaskState.DONE:
             task.completed_at = now
+            # **D1 의 넷째 자리** (SPEC-004 §5 · OQ-405) — 비어 있던 마감일을 완료한 날로 채운다. 위에서 잡은
+            # `dates_before` 와 비교되어 아래 배정 검증이 시작일 채움과 같은 수준으로 돈다.
+            task.due_date = due_date_on_completion(task.due_date, now)
         if target is TaskState.CANCELLED and task.cancel_reason is None:
             task.cancel_reason = "direct"
         released = self._schedule_release_for(task, dates_before)

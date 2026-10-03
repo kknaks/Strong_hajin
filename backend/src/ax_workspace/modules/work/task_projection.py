@@ -27,9 +27,24 @@ _FINISHED_STATES = frozenset(
 )
 
 
+def task_day(moment: datetime) -> date:
+    """한 시각이 업무에서 **어느 날**인가 — 업무 날짜의 시간대는 하나다."""
+    return moment.astimezone(TASK_TIMEZONE).date()
+
+
 def today_for_tasks() -> date:
     """업무 표시값이 읽는 「오늘」."""
-    return datetime.now(UTC).astimezone(TASK_TIMEZONE).date()
+    return task_day(datetime.now(UTC))
+
+
+def due_date_on_completion(due_date: date | None, completed_at: datetime) -> date:
+    """**완료가 비어 있는 마감일을 채운다** (SPEC-003 §4 「날짜 채움」 · WORK-009 1-3).
+
+    `completed_at` 이 찍히는 순간 마감일이 비어 있으면 **그 날(서울)** 이 마감일이 된다 — 시작이 비어 있던
+    시작 예정일을 오늘로 채우는 것과 같은 규칙·같은 시간대다. 값이 있으면 건드리지 않고, 「시작 ≤ 마감」
+    검사를 지나지 않는다(뒤집힌 기간은 캘린더가 정규화해 읽는다 — SPEC-004 K11).
+    """
+    return due_date if due_date is not None else task_day(completed_at)
 
 
 def external_state(state: Any) -> str:

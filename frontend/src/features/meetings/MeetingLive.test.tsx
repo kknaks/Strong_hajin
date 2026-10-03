@@ -749,7 +749,7 @@ describe("SCR-106 「진행 중」 — 회의 스트림", () => {
     });
 
     expect(screen.getByText("전망치 다시 뽑기")).toBeTruthy();
-    expect(screen.getByText("2026-09-15")).toBeTruthy();
+    expect(screen.getByText("2026/09/15")).toBeTruthy();
     // 기한 후보가 없는 줄은 그 자리를 비운다 — 없는 날짜를 지어내지 않는다
     expect(screen.getByText("협력 범위 정리")).toBeTruthy();
     // 회의 중에는 승격도 후보 빼기도 없다 — 종료 뒤 최종에서만 한다

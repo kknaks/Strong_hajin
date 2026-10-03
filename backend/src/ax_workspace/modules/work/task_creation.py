@@ -14,7 +14,7 @@ class TaskCreationFields(BaseModel):
     title: str = Field(min_length=1, max_length=300, title='업무 명')
     description: str | None = Field(default=None, title='내용')
     start_date: date | None = Field(default=None, title='시작일')
-    due_date: date | None = Field(default=None, title='기한')
+    due_date: date | None = Field(default=None, title='마감일')
     checklist: list[str] = Field(default_factory=list, title='체크리스트')
     reference_task_ids: list[UUID] = Field(default_factory=list, title='참고 업무')
     parent_task_id: UUID | None = Field(default=None, title='상위 업무')

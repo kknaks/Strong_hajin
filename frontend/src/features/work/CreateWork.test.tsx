@@ -293,13 +293,13 @@ describe("회의에서 여는 후속 요청 (origin=\"meeting\")", () => {
     expect(modal.querySelector(".meta-grid")).toBeNull();
   });
 
-  it("나머지 필드는 그대로다 — 담당 후보 · 희망 기한 · 참조자 · 시작 단계 · 요청 내용", () => {
+  it("나머지 필드는 그대로다 — 담당 후보 · 마감일 · 참조자 · 시작 단계 · 요청 내용", () => {
     renderFromMeeting();
     const modal = screen.getByRole("dialog", { name: "새 업무 요청" });
 
     expect((within(modal).getByLabelText("요청할 업무") as HTMLInputElement).value).toBe("업무 진행과 문제 정기 공유");
     expect(within(modal).getByLabelText("담당 후보")).toBeTruthy();
-    expect(within(modal).getByLabelText("희망 기한")).toBeTruthy();
+    expect(within(modal).getByLabelText("마감일")).toBeTruthy();
     expect(within(modal).getByRole("group", { name: "참조자" })).toBeTruthy();
     // 체크리스트는 「선택」 무리의 판에 있다 — 필드는 그대로이고 자리만 옮겼다.
     expect(within(modal).getByLabelText("시작 단계")).toBeTruthy();
@@ -721,12 +721,12 @@ describe("상위 업무와 선행 업무는 같은 업무일 수 없다", () => 
 });
 
 /* ════════════════════════════════════════════════════════════════════════════
-   요청 갈래의 날짜 순서 — **시작일이 희망 기한보다 늦을 수 없다.**
+   요청 갈래의 날짜 순서 — **시작일이 마감일보다 늦을 수 없다.**
 
    요청 생성도 `start_date` 를 받으므로(SPEC-001 U-6-a) 뒤집힌 두 날짜를 업무 갈래에서만 막던 것은
    갈래마다 다른 규칙이 아니라 **빠뜨린 것**이었다. 서버가 거절할 값을 왕복시키지 않는다.
    ════════════════════════════════════════════════════════════════════════════ */
-describe("요청 갈래의 시작일과 희망 기한", () => {
+describe("요청 갈래의 시작일과 마감일", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
@@ -753,18 +753,18 @@ describe("요청 갈래의 시작일과 희망 기한", () => {
     fireEvent.click(screen.getByRole("group", { name: label }).querySelector(`[data-date="${iso}"]`) as HTMLElement);
   };
 
-  it("시작일이 희망 기한보다 늦으면 보내기 전에 막는다", async () => {
+  it("시작일이 마감일보다 늦으면 보내기 전에 막는다", async () => {
     const { onError } = renderRequest();
     fireEvent.change(screen.getByLabelText("요청할 업무"), { target: { value: "뒤집힌 요청" } });
     fireEvent.click(screen.getByLabelText("담당 후보"));
     fireEvent.click(await screen.findByRole("option", { name: "지호 (팀장)" }));
     pickDate("시작일", "2026-10-05");
-    pickDate("희망 기한", "2026-09-18");
+    pickDate("마감일", "2026-09-18");
 
     fireEvent.click(screen.getByRole("button", { name: "업무 요청 보내기" }));
 
-    // 「기한」이 아니라 이 갈래가 쓰는 말(희망 기한)로 말한다
-    await waitFor(() => expect(onError).toHaveBeenCalledWith("시작일은 희망 기한보다 늦을 수 없습니다."));
+    // 「기한」이 아니라 이 갈래가 쓰는 말(마감일)로 말한다
+    await waitFor(() => expect(onError).toHaveBeenCalledWith("시작일은 마감일보다 늦을 수 없습니다."));
     expect(api.createWorkRequest).not.toHaveBeenCalled();
   });
 
@@ -775,7 +775,7 @@ describe("요청 갈래의 시작일과 희망 기한", () => {
     fireEvent.click(screen.getByLabelText("담당 후보"));
     fireEvent.click(await screen.findByRole("option", { name: "지호 (팀장)" }));
     pickDate("시작일", "2026-09-18");
-    pickDate("희망 기한", "2026-10-05");
+    pickDate("마감일", "2026-10-05");
 
     fireEvent.click(screen.getByRole("button", { name: "업무 요청 보내기" }));
 

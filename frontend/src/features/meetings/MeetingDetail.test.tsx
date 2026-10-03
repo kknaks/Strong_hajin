@@ -404,11 +404,11 @@ describe("SCR-106 회의 상세 — 상태와 관계가 무엇을 낼지 정한�
   it("다음 할 일 행에 담당 후보 칸이 없다 — 기한과 [업무 생성]과 후보 빼기만 선다", async () => {
     renderDetail();
     expect(await screen.findByText("전망치 다시 뽑기")).toBeTruthy();
-    expect(screen.getByText("2026-09-12")).toBeTruthy();
+    expect(screen.getByText("2026/09/12")).toBeTruthy();
     expect(screen.getByRole("button", { name: "업무 생성" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "후보 빼기" })).toBeTruthy();
     // 담당은 AI 가 지목하지 않는다 (D19-3)
-    expect(screen.queryByText("정우성 · 2026-09-12")).toBeNull();
+    expect(screen.queryByText("정우성 · 2026/09/12")).toBeNull();
   });
 
   it("후보 빼기는 묻지 않고 서버로 간다", async () => {
@@ -433,9 +433,9 @@ describe("SCR-106 회의 상세 — 상태와 관계가 무엇을 낼지 정한�
     expect((within(drawer).getByLabelText("요청할 업무") as HTMLInputElement).value).toBe("전망치 다시 뽑기");
     expect(within(drawer).getByDisplayValue("분기별 전망치를 다시 뽑아 다음 회의에 올린다.")).toBeTruthy();
     // 기한 칸은 입력칸이 아니라 달력을 여는 트리거다 (DS-17) — 미리 채운 값은 그 글자로 선다
-    /* 날짜 칸의 접근 이름이 보이는 라벨과 같아졌다 — 요청 갈래는 「희망 기한」 하나로 읽힌다
-       (예전에는 눈에 보이는 라벨만 「희망 기한」이고 접근 이름은 「기한」이었다). */
-    expect(within(drawer).getByRole("button", { name: "희망 기한 달력 열기" }).textContent).toBe("2026-09-12");
+    /* 날짜 칸의 접근 이름이 보이는 라벨과 같아졌다 — 요청 갈래는 「마감일」 하나로 읽힌다
+       (예전에는 눈에 보이는 라벨만 「마감일」이고 접근 이름은 「기한」이었다). */
+    expect(within(drawer).getByRole("button", { name: "마감일 달력 열기" }).textContent).toBe("2026/09/12");
     expect(within(drawer).getByText("지난 분기 실적 모으기")).toBeTruthy();
     expect(within(drawer).getByText("전망치 초안 쓰기")).toBeTruthy();
     // 담당 후보는 비어 있고, **서버가 앞에 둔** 참석자(정우성)가 목록 앞에 선다

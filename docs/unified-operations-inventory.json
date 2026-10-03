@@ -2153,7 +2153,7 @@
         "transition_task"
       ],
       "acceptance_evidence": "docs/unified-operations.md의 R3a~R3f 경로·권한·동등성 검증",
-      "http_signature": "(task_id: UUID, request: TaskTransitionRequest, principal: Principal) -> TaskMutationResult"
+      "http_signature": "(task_id: UUID, request: TaskTransitionRequest, principal: Principal) -> TaskDateMutationResult"
     },
     {
       "http": "POST /api/tasks/{task_id}/completion-report",
@@ -3059,6 +3059,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -3755,6 +3759,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -4581,6 +4589,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -9903,6 +9915,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -11491,6 +11507,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -13255,6 +13275,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -13885,6 +13909,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -15958,7 +15986,7 @@
       {
         "name": "task_list",
         "title": "열람 가능한 업무 조회",
-        "description": "List Tasks this person may currently read through organization and project access. Use only when the request explicitly asks for readable team/project work. For 내 업무 use my_task_list instead. include_closed filters status within this same authorized scope.",
+        "description": "List Tasks this person may currently read through organization and project access. Use only when the request explicitly asks for readable team/project work — except before drafting a Task or WorkRequest, when it may be used to find related existing work. For 내 업무 use my_task_list instead. include_closed filters status within this same authorized scope.",
         "adapter_operation": "list_tasks",
         "exposure": {
           "any_capabilities": [],
@@ -18900,6 +18928,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -19553,6 +19585,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -20164,6 +20200,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -20709,6 +20749,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -21336,6 +21380,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -21869,7 +21917,7 @@
       {
         "name": "task_create_self",
         "title": "내 업무 생성 준비",
-        "description": "Fill in the fields of the 「새 업무 추가」 form to prepare a Task draft — the same fields, required values and validation as direct creation. Before drafting, look up what a person would pick in that form: the project this work belongs to (list_projects, or graph_search by name) and related existing Tasks (graph_neighbors on `project:<id>`, or task_list) for parent, preceding and reference. Fill a link only when one candidate clearly matches; if none or several match, leave it empty and say so in the answer — never invent an ID. Fill every field the conversation gives you or that lookup confirmed: title (required, 1–300 characters), description, ISO start_date and due_date, project_id, cc_member_ids (참조자), approver_id (결재자), preceding_task_ids (선행업무, same project), parent_task_id (one-level 상위 업무), checklist (up to 50 first steps in order) and reference_task_ids (`참고 업무` — a pointer, never a claim about cause or a grant of access). Only the title is required; a due date is optional, so leave a value empty rather than inventing one. Leave assignee_id empty (or name yourself) for your own work; name an allowed recipient from work_request_assignee_candidates to send it, and it becomes their Task at once with no acceptance step (start_date, parent and project are refused on that path). Files and links are not form fields — stage them on the draft separately. idempotency_key is required: make one key per creation intent, resend the same key on a retry, and use a new key for a new Task. In a delegated AX conversation, this returns a pending Action proposal (the filled draft) for human approval; it does not create the Task before approval.",
+        "description": "Fill in the fields of the 「새 업무 추가」 form to prepare a Task draft — the same fields, required values and validation as direct creation. Before drafting, look for related records with a short topic keyword (2–3 words, not the whole task name — name search is a title substring match): graph_search for related meetings, Tasks and projects, my_meeting_list for meetings, and material_search for material and meeting-note content. Read the details of at most 3 of the most relevant ones — meeting_get for a meeting's notes and follow-up items, task_get for a Task's description and checklist — and use them as the basis for description and checklist; name those meetings and Tasks as sources in the answer. Call each search once (no re-search), read at most 3 details, and look up project and link candidates once when needed — the turn has a time limit, so draft from what you read rather than searching further. If nothing related is found, propose general steps and say in the answer that no related meeting or Task was found. Also look up what a person would pick in that form: the project this work belongs to (list_projects, or graph_search by name) and related existing Tasks (graph_neighbors on `project:<id>`, or task_list) for parent, preceding and reference. Fill a link only when one candidate clearly matches; if none or several match, leave it empty and say so in the answer — never invent an ID. Fill title (required, 1–300 characters). Propose the content yourself: write description (업무 내용 — what this work is for and what it should produce) and checklist (the first concrete steps in order, up to 50) from the topic of the conversation and the related records you read, even when the user named no steps. This is a draft the person reviews and edits on the card, so do not leave description or checklist empty and do not tell the user to fill them in later. IDs come only from the conversation or lookup: project_id, preceding_task_ids (선행업무, same project), parent_task_id (one-level 상위 업무) and reference_task_ids (`참고 업무` — a pointer, never a claim about cause or a grant of access); people (cc_member_ids 참조자, approver_id 결재자) follow the person rule below. Dates (ISO start_date and due_date) come only from the conversation — never from a record you looked at. Never invent an ID or a date; when nothing supports one, leave it empty — a due date is optional. Put a person (assignee_id, cc_member_ids, approver_id) only when the conversation named that person — lookup only resolves that name to an ID; never copy meeting attendees, follow-up owners or Task holders seen while looking, and never turn a follow-up due candidate or a date in a record into start_date or due_date. Leave assignee_id empty (or name yourself) for your own work; name an allowed recipient from work_request_assignee_candidates to send it, and it becomes their Task at once with no acceptance step (start_date, parent and project are refused on that path). Files and links are not form fields — stage them on the draft separately. idempotency_key is required: make one key per creation intent, resend the same key on a retry, and use a new key for a new Task. In a delegated AX conversation, this returns a pending Action proposal (the filled draft) for human approval; it does not create the Task before approval.",
         "adapter_operation": "create_self_task",
         "exposure": {
           "any_capabilities": [],
@@ -22107,6 +22155,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -23272,6 +23324,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -24461,6 +24517,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -25495,6 +25555,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -26529,6 +26593,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -27563,6 +27631,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -28597,6 +28669,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -29631,6 +29707,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -31981,6 +32061,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -32509,6 +32593,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -33153,6 +33241,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -33689,6 +33781,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -34225,6 +34321,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -34761,6 +34861,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -35297,6 +35401,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -35833,6 +35941,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -36555,6 +36667,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -37096,6 +37212,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -37654,6 +37774,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -38302,6 +38426,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -38843,6 +38971,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -39406,6 +39538,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -39947,6 +40083,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -40507,6 +40647,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -41048,6 +41192,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -41652,6 +41800,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -42320,6 +42472,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -42924,6 +43080,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -43650,7 +43810,7 @@
                     }
                   ],
                   "default": null,
-                  "title": "기한"
+                  "title": "마감일"
                 }
               },
               "required": [
@@ -43736,6 +43896,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -44788,6 +44952,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -45328,6 +45496,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -45874,6 +46046,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -47546,6 +47722,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -48124,6 +48304,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -49713,6 +49897,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -50269,6 +50457,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -50918,6 +51110,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -51536,6 +51732,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -52145,6 +52345,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -52729,6 +52933,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -53285,6 +53493,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -53881,6 +54093,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -54757,6 +54973,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -55598,6 +55818,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -56475,6 +56699,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -57626,6 +57854,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -58341,6 +58573,9 @@
                       "type": "null"
                     }
                   ]
+                },
+                "schedule_release": {
+                  "$ref": "#/$defs/TaskScheduleReleaseView"
                 }
               },
               "required": [
@@ -58617,6 +58852,32 @@
               ],
               "title": "TaskLineageView",
               "type": "object"
+            },
+            "TaskScheduleReleaseView": {
+              "description": "이번 명령이 **닫은 배정 건수와 그 사유** (SPEC-004 §4 · 증보 K3).\n\n**날짜가 바뀌는 네 자리 전부가 이 묶음을 낸다** — 업무 수정 · 시작 전이 · 조건 변경 제안 동의 ·\n완료의 마감일 채움(완료 · 완료 보고 제출 — SPEC-004 §5 · OQ-405).\n닫힌 것이 없으면 `released_count = 0` 이고 `reason` 은 `None` 이다. **0 을 내는 것도 계약이다.**\n\n**문구는 서버가 만들지 않는다** — 화면이 이 두 값으로 「N건의 시간 배정이 기간 밖이라\n해제되었습니다」를 만든다. 말은 프론트가 갖는 것이 저장소의 결이다.\n**닫힌 배정의 식별자를 내지 않는다** — 되돌릴 경로가 없으므로 화면이 그것으로 할 수 있는 일이 없다.",
+              "properties": {
+                "released_count": {
+                  "title": "Released Count",
+                  "type": "integer"
+                },
+                "reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Reason"
+                }
+              },
+              "required": [
+                "released_count",
+                "reason"
+              ],
+              "title": "TaskScheduleReleaseView",
+              "type": "object"
             }
           },
           "anyOf": [
@@ -58729,6 +58990,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -59502,6 +59767,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -62727,6 +62996,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -63740,7 +64013,7 @@
       {
         "name": "work_request_create",
         "title": "업무 요청 생성 준비",
-        "description": "Prepare a horizontal WorkRequest when the user says 업무 요청, 수평 요청, 부탁, or 협업 요청, including when they explicitly distinguish it from assignment. This fills in the fields of the 「새 업무 추가」 form on its 요청 branch to prepare a draft — the same fields, required values and validation as direct creation. Resolve a named recipient with work_request_assignee_candidates. Before drafting, look up the project this work belongs to (list_projects, or graph_search by name) and related existing Tasks (graph_neighbors on `project:<id>`, or task_list) for parent, preceding and reference; fill a link only when one candidate clearly matches, otherwise leave it empty and say so in the answer — never invent an ID. Then fill every field the conversation gives you or that lookup confirmed: title (required, 1–300 characters), assignee_id (required), description, ISO start_date and due_date, project_id, cc_member_ids (참조자), approver_id (결재자), preceding_task_ids (선행업무, same project), parent_task_id (one-level 상위 업무), checklist and readable reference_task_ids. Only the title and the recipient are required; a due date is optional, so leave a value empty rather than inventing one. CC excludes the requester and recipient. Files and links are not form fields. idempotency_key is required: one key per request intent, the same key on a retry, a new key for a new request. Direct calls submit the request; delegated calls prepare the filled draft for editable confirmation first. The Task is created with the request and enters the recipient's work at once — there is no acceptance step. Use task_assign only for manager/directive assignment.",
+        "description": "Prepare a horizontal WorkRequest when the user says 업무 요청, 수평 요청, 부탁, or 협업 요청, including when they explicitly distinguish it from assignment. This fills in the fields of the 「새 업무 추가」 form on its 요청 branch to prepare a draft — the same fields, required values and validation as direct creation. Resolve a named recipient with work_request_assignee_candidates. Before drafting, look for related records with a short topic keyword (2–3 words, not the whole task name — name search is a title substring match): graph_search for related meetings, Tasks and projects, my_meeting_list for meetings, and material_search for material and meeting-note content. Read the details of at most 3 of the most relevant ones — meeting_get for a meeting's notes and follow-up items, task_get for a Task's description and checklist — and use them as the basis for description and checklist; name those meetings and Tasks as sources in the answer. Call each search once (no re-search), read at most 3 details, and look up project and link candidates once when needed — the turn has a time limit, so draft from what you read rather than searching further. If nothing related is found, propose general steps and say in the answer that no related meeting or Task was found. Also look up the project this work belongs to (list_projects, or graph_search by name) and related existing Tasks (graph_neighbors on `project:<id>`, or task_list) for parent, preceding and reference; fill a link only when one candidate clearly matches, otherwise leave it empty and say so in the answer — never invent an ID. Then fill title (required, 1–300 characters) and assignee_id (required). Propose the content yourself: write description (업무 내용 — what this work is for and what it should produce) and checklist (the first concrete steps in order, up to 50) from the topic of the conversation and the related records you read, even when the user named no steps. This is a draft the person reviews and edits on the card, so do not leave description or checklist empty and do not tell the user to fill them in later. IDs come only from the conversation or lookup: project_id, preceding_task_ids (선행업무, same project), parent_task_id (one-level 상위 업무) and readable reference_task_ids; people (cc_member_ids 참조자, approver_id 결재자) follow the person rule below. Dates (ISO start_date and due_date) come only from the conversation — never from a record you looked at. Never invent an ID or a date; when nothing supports one, leave it empty — a due date is optional. Put a person (assignee_id, cc_member_ids, approver_id) only when the conversation named that person — lookup only resolves that name to an ID; never copy meeting attendees, follow-up owners or Task holders seen while looking, and never turn a follow-up due candidate or a date in a record into start_date or due_date. CC excludes the requester and recipient. Files and links are not form fields. idempotency_key is required: one key per request intent, the same key on a retry, a new key for a new request. Direct calls submit the request; delegated calls prepare the filled draft for editable confirmation first. The Task is created with the request and enters the recipient's work at once — there is no acceptance step. Use task_assign only for manager/directive assignment.",
         "adapter_operation": "create_work_request",
         "exposure": {
           "any_capabilities": [],
@@ -63970,6 +64243,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [
@@ -69406,6 +69683,10 @@
                   },
                   "title": "Warnings",
                   "type": "array"
+                },
+                "save_command": {
+                  "title": "Save Command",
+                  "type": "string"
                 }
               },
               "required": [

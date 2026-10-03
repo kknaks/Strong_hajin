@@ -2237,3 +2237,214 @@ describe("product surfaces", () => {
     expect(screen.getByRole("button", { name: "AX" })).toBeTruthy();
   });
 });
+
+describe("AX 초안 저장 실패 — 창 안에만 (WORK-009 2a-1 fix0 · SPEC-002 §2.9)", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("채팅 카드 「수정」 창의 저장이 실패하면 서버 문장이 창 안에만 서고 전역 오류 띠는 서지 않는다", async () => {
+    const editContract = {
+      editor: "task",
+      base_submission_version: 2,
+      save_command: "save_draft",
+      values: { title: "월말 정산", description: null, start_date: null, due_date: null, checklist: [], reference_task_ids: [], preceding_task_ids: [], parent_task_id: null, project_id: null, cc_member_ids: [], approver_id: null },
+      fields: [{ id: "title", label: "제목", type: "text", required: true, editable: true }],
+    };
+    const action = {
+      action_id: "action-7",
+      conversation_id: "conversation-1",
+      turn_id: "turn-1",
+      action_type: "task.create_self",
+      title: "업무 생성 확인",
+      subject: "월말 정산",
+      operation_label: "업무 생성",
+      preview: [],
+      state: "pending",
+      version: 1,
+      payload_summary: "업무 생성 확인",
+      result: null,
+      audit_ref: null,
+      commands: [
+        { id: "confirm", label: "등록", tone: "primary" },
+        { id: "save_draft", label: "저장", tone: "neutral" },
+        { id: "reject", label: "거절", tone: "neutral" },
+      ],
+      edit_contract: editContract,
+    };
+    const conversation = {
+      conversation_id: "conversation-1",
+      title: "새 대화",
+      version: 3,
+      messages: [{ message_id: "m1", turn_id: "turn-1", role: "user", body: "업무 만들어줘", sequence: 1, state: "accepted" }],
+      turns: [{ turn_id: "turn-1", state: "completed", progress_state: "completed", provider_run_ref: null, provider_session_ref: null, error: null }],
+      context_references: [],
+      tool_invocations: [],
+      actions: [action],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/organization/members") return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      if (path === "/api/organization/me") {
+        return jsonResponse({ member_id: "mina", display_name: "민아 (구성원)", organizations: [], capabilities: ["task.read", "task.self_manage", "action.read", "action.decide"] });
+      }
+      if (path === "/api/my-work" || path === "/api/tasks?include_closed=true" || path === "/api/work-requests" || path === "/api/action-inbox") return jsonResponse([]);
+      if (path === "/api/actions") return jsonResponse([action]);
+      if (path === "/api/conversations") return jsonResponse([conversation]);
+      if (path === "/api/conversations/conversation-1") return jsonResponse(conversation);
+      if (path === "/api/action-items/action-7/commands/save_draft" && init?.method === "POST") {
+        return new Response(JSON.stringify({ detail: "base submission version is stale" }), { status: 422, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", withSession(fetchMock));
+
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(within(navigation).getByRole("button", { name: "업무" }));
+    await screen.findByRole("button", { name: /^전체 / });
+    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    const card = await screen.findByRole("region", { name: /AX 업무 생성 · 월말 정산/ });
+    fireEvent.click(within(card).getByRole("button", { name: "수정" }));
+    const editor = await screen.findByRole("dialog", { name: "새 업무 추가" });
+    fireEvent.change(within(editor).getByLabelText("업무 제목"), { target: { value: "월말 정산 (고침)" } });
+    await act(async () => fireEvent.click(within(editor).getByRole("button", { name: "저장" })));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([path]) => String(path) === "/api/action-items/action-7/commands/save_draft")).toBe(true));
+    expect(await within(editor).findByText("base submission version is stale")).toBeTruthy();
+    // 같은 실패가 창 밖(전역 오류 띠)에는 서지 않는다 — 화면 전체에 그 문장이 한 번뿐이고 그것이 창 안이다.
+    const shown = screen.getAllByText("base submission version is stale");
+    expect(shown).toHaveLength(1);
+    expect(editor.contains(shown[0])).toBe(true);
+    expect(screen.queryByText("AX 확인 항목을 처리하지 못했습니다.")).toBeNull();
+    // 고친 값은 남는다.
+    expect((within(editor).getByLabelText("업무 제목") as HTMLInputElement).value).toBe("월말 정산 (고침)");
+  });
+
+  /** 채팅 AX 초안 하나 — 회차(`round`)와 제목을 바꿔 가며 같은 대화를 다시 내려 준다. */
+  function chatDraftFixture() {
+    const state = { round: 2, title: "월말 정산" };
+    const action = () => ({
+      action_id: "action-7", conversation_id: "conversation-1", turn_id: "turn-1", action_type: "task.create_self",
+      title: "업무 생성 확인", subject: state.title, operation_label: "업무 생성", preview: [], state: "pending", version: 1,
+      payload_summary: "업무 생성 확인", result: null, audit_ref: null,
+      commands: [
+        { id: "confirm", label: "등록", tone: "primary" },
+        { id: "save_draft", label: "저장", tone: "neutral" },
+        { id: "reject", label: "거절", tone: "neutral" },
+      ],
+      edit_contract: {
+        editor: "task", base_submission_version: state.round, save_command: "save_draft",
+        values: { title: state.title, description: null, start_date: null, due_date: null, checklist: [], reference_task_ids: [], preceding_task_ids: [], parent_task_id: null, project_id: null, cc_member_ids: [], approver_id: null },
+        fields: [{ id: "title", label: "제목", type: "text", required: true, editable: true }],
+      },
+    });
+    const conversation = () => ({
+      conversation_id: "conversation-1", title: "새 대화", version: 3,
+      messages: [{ message_id: "m1", turn_id: "turn-1", role: "user", body: "업무 만들어줘", sequence: 1, state: "accepted" }],
+      turns: [{ turn_id: "turn-1", state: "completed", progress_state: "completed", provider_run_ref: null, provider_session_ref: null, error: null }],
+      context_references: [], tool_invocations: [], actions: [action()],
+    });
+    const base = (path: string): Response | null => {
+      if (path === "/api/organization/members") return jsonResponse([{ id: "mina", display_name: "민아 (구성원)" }]);
+      if (path === "/api/organization/me") {
+        return jsonResponse({ member_id: "mina", display_name: "민아 (구성원)", organizations: [], capabilities: ["task.read", "task.self_manage", "action.read", "action.decide"] });
+      }
+      if (path === "/api/my-work" || path === "/api/tasks?include_closed=true" || path === "/api/work-requests" || path === "/api/action-inbox") return jsonResponse([]);
+      if (path === "/api/actions") return jsonResponse([action()]);
+      if (path === "/api/conversations") return jsonResponse([conversation()]);
+      if (path === "/api/conversations/conversation-1") return jsonResponse(conversation());
+      return null;
+    };
+    return { state, base };
+  }
+
+  async function openChatEditor() {
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(within(navigation).getByRole("button", { name: "업무" }));
+    await screen.findByRole("button", { name: /^전체 / });
+    fireEvent.click(screen.getByRole("button", { name: "AX" }));
+    const card = await screen.findByRole("region", { name: /AX 업무 생성/ });
+    expect(within(card).getByText("초안 · 2회차")).toBeTruthy();
+    fireEvent.click(within(card).getByRole("button", { name: "수정" }));
+    return screen.findByRole("dialog", { name: "새 업무 추가" });
+  }
+
+  const conversationReads = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls.filter(([path]) => String(path) === "/api/conversations/conversation-1").length;
+
+  it("성공 경로 — 저장이 save_draft 로 가고, 대화를 다시 읽어 카드가 3회차가 되며, 등록이 새 기준으로 간다 (fix1 W-4)", async () => {
+    const { state, base } = chatDraftFixture();
+    const bodies: Record<string, unknown>[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/action-items/action-7/commands/save_draft" && init?.method === "POST") {
+        bodies.push(JSON.parse(String(init.body)));
+        state.round = 3;
+        state.title = "월말 정산 (고침)";
+        return jsonResponse({});
+      }
+      if (path === "/api/action-items/action-7/commands/confirm" && init?.method === "POST") {
+        bodies.push(JSON.parse(String(init.body)));
+        return jsonResponse({});
+      }
+      return base(path) ?? new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", withSession(fetchMock));
+
+    const editor = await openChatEditor();
+    fireEvent.change(within(editor).getByLabelText("업무 제목"), { target: { value: "월말 정산 (고침)" } });
+    const readsBefore = conversationReads(fetchMock);
+    await act(async () => fireEvent.click(within(editor).getByRole("button", { name: "저장" })));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "새 업무 추가" })).toBeNull());
+    expect(bodies[0]).toMatchObject({ expected_version: 1, base_submission_version: 2, draft: expect.objectContaining({ title: "월말 정산 (고침)" }) });
+    expect(conversationReads(fetchMock)).toBeGreaterThan(readsBefore);
+    const card = await screen.findByRole("region", { name: /AX 업무 생성/ });
+    await waitFor(() => expect(within(card).getByText("초안 · 3회차")).toBeTruthy());
+    expect(await screen.findByText("AX 초안을 저장했습니다.")).toBeTruthy();
+    for (const name of ["거절", "수정", "등록"]) expect(within(card).getByRole("button", { name })).toBeTruthy();
+
+    await act(async () => fireEvent.click(within(card).getByRole("button", { name: "등록" })));
+    await waitFor(() => expect(bodies).toHaveLength(2));
+    expect(bodies[1]).toEqual({ expected_version: 1, base_submission_version: 3 });
+  });
+
+  it("낡은 저장 — 422 낡음이면 대화를 다시 읽고 창 입력은 남으며, 다시 저장하면 새 기준으로 통과한다 (fix1 W-1)", async () => {
+    const { state, base } = chatDraftFixture();
+    const bodies: Record<string, unknown>[] = [];
+    let attempts = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/action-items/action-7/commands/save_draft" && init?.method === "POST") {
+        bodies.push(JSON.parse(String(init.body)));
+        attempts += 1;
+        if (attempts === 1) {
+          state.round = 3; // 다른 자리(홈 「AX 제안」)에서 먼저 저장했다
+          return new Response(JSON.stringify({ detail: "base submission version is stale" }), { status: 422, headers: { "Content-Type": "application/json" } });
+        }
+        state.round = 4;
+        return jsonResponse({});
+      }
+      return base(path) ?? new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", withSession(fetchMock));
+
+    const editor = await openChatEditor();
+    fireEvent.change(within(editor).getByLabelText("업무 제목"), { target: { value: "내 고침" } });
+    const readsBefore = conversationReads(fetchMock);
+    await act(async () => fireEvent.click(within(editor).getByRole("button", { name: "저장" })));
+
+    expect(await within(editor).findByText("base submission version is stale")).toBeTruthy();
+    await waitFor(() => expect(conversationReads(fetchMock)).toBeGreaterThan(readsBefore));
+    await waitFor(() => expect(within(screen.getByRole("region", { name: /AX 업무 생성/ })).getByText("초안 · 3회차")).toBeTruthy());
+    expect((within(editor).getByLabelText("업무 제목") as HTMLInputElement).value).toBe("내 고침");
+
+    await act(async () => fireEvent.click(within(editor).getByRole("button", { name: "저장" })));
+    await waitFor(() => expect(bodies).toHaveLength(2));
+    expect(bodies[1]).toMatchObject({ base_submission_version: 3, draft: expect.objectContaining({ title: "내 고침" }) });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "새 업무 추가" })).toBeNull());
+  });
+});

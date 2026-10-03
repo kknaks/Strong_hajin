@@ -44,7 +44,9 @@ from ax_workspace.modules.actions.payloads import (
     suggested_changes,
 )
 from ax_workspace.modules.actions.policy import (
+    DRAFT_SAVE_ACTION_TYPES,
     RETIRED_ACTION_TYPES,
+    SAVE_DRAFT_COMMAND,
     AssignmentActionContext,
     AxProposalActionContext,
     DeliveryActionContext,
@@ -426,7 +428,7 @@ class WorkRequestActionHandler:
         if assignee:
             rows.append({"id": "assignee", "label": "담당", "value": assignee["display_name"], "kind": "person"})
         if snapshot.get("due_date"):
-            rows.append({"id": "due_date", "label": "기한", "value": str(snapshot["due_date"]), "kind": "date"})
+            rows.append({"id": "due_date", "label": "마감일", "value": str(snapshot["due_date"]), "kind": "date"})
         return rows
 
     def _current_submission(self, item: DecisionItemRecord) -> SubmissionRecord | None:
@@ -575,7 +577,12 @@ class AxProposalActionHandler:
                 raise ActionError("업무 요청 취소는 수정안이나 사유를 받지 않습니다")
             return {}
         normalized: dict[str, Any] = {"expected_version": _required_version(payload)}
-        if command == "confirm":
+        if command == SAVE_DRAFT_COMMAND and item.action_type not in DRAFT_SAVE_ACTION_TYPES:
+            # 봉투가 이미 막지만 정규화도 같은 경계를 말한다 — 저장은 「새 업무 추가」 초안 두 kind 만이다.
+            raise ActionError("이 AX 제안은 초안 저장을 받지 않습니다")
+        if command in {"confirm", SAVE_DRAFT_COMMAND}:
+            # **저장은 확인과 같은 입력·같은 검증이다** (SPEC-002 §4 「초안 저장」 · P-1) — 고친 초안 전체와
+            # 낡음 검사 값 둘. 다른 것은 결과뿐이다: 저장은 회차만 남기고 확정·실행을 하지 않는다.
             normalized["base_submission_version"] = _required_base_submission_version(payload)
             current = self._current_submission(item)
             if current is None:
@@ -596,11 +603,16 @@ class AxProposalActionHandler:
                     requester_id=str(item.owner_id),
                 )
                 if item.action_type in ATTACHABLE_ACTION_TYPES:
-                    attachment_source = (
-                        payload.get("attachment_draft_ids")
-                        if "attachment_draft_ids" in payload
-                        else (recovery_payload or {}).get("attachment_draft_ids")
-                    )
+                    if "attachment_draft_ids" in payload:
+                        attachment_source = payload.get("attachment_draft_ids")
+                    elif payload.get("draft") is None:
+                        # draft 를 생략하면 최신 스냅샷을 쓰듯 자료 목록도 최신 스냅샷의 것이다 (fix2 W5) —
+                        # 저장한 회차를 그대로 확인할 때 자료가 빠져 회차가 또 열리지 않는다.
+                        attachment_source = (
+                            recovery_payload or (dict(version.snapshot) if version else {})
+                        ).get("attachment_draft_ids")
+                    else:
+                        attachment_source = (recovery_payload or {}).get("attachment_draft_ids")
                     normalized["attachment_draft_ids"] = attachment_draft_ids(attachment_source)
             elif payload.get("draft") is not None:
                 raise ActionError("이 AX 제안은 수정 가능한 초안을 받지 않습니다")
@@ -631,6 +643,9 @@ class AxProposalActionHandler:
                     if draft["state"] == "staged":
                         self._material_drafts.discard(principal, item.id, UUID(draft["material_draft_id"]))
             self._actions.decide(principal, item.id, _required_version(payload), command)
+            return
+        if command == SAVE_DRAFT_COMMAND:
+            self._save_draft(principal, item, payload)
             return
         if command != "confirm":  # pragma: no cover - the envelope already refused anything else
             raise ActionError(f"unsupported command {command}")
@@ -854,60 +869,10 @@ class AxProposalActionHandler:
         )
         selected = submission
         now = datetime.now(UTC)
-        superseded_assignment_id: UUID | None = None
         if decision.open_round is not None:
-            round_effect = decision.open_round
-            if assignment is not None:
-                assignment.status = "superseded"
-                assignment.resolution_kind = "revised"
-                superseded_assignment_id = assignment.id
-            next_version = SubjectVersionRecord(
-                subject_id=decision_item.subject_id,
-                version=round_effect.submission_version,
-                content_hash=action_payload_hash(round_effect.snapshot),
-                snapshot=round_effect.snapshot,
-                captured_at=now,
+            selected, assignment = self._open_revised_round(
+                principal, decision_item, submission, assignment, decision.open_round, now
             )
-            self._session.add(next_version)
-            self._session.flush()
-            selected = SubmissionRecord(
-                decision_item_id=decision_item.id,
-                subject_version_id=next_version.id,
-                submission_version=round_effect.submission_version,
-                revises_id=submission.id,
-                submitted_by=str(principal.id),
-                payload_hash=next_version.content_hash,
-                decision_policy_snapshot=dict(submission.decision_policy_snapshot or {}),
-                diff=round_effect.diff,
-                submitted_at=now,
-            )
-            self._session.add(selected)
-            self._session.flush()
-            # Editing the proposal does not detach the basis the proposing Turn actually used. Each Submission owns
-            # its own immutable adoption rows, so later history never has to follow a mutable pointer backwards.
-            for evidence in self._session.scalars(
-                select(EvidenceRecord).where(EvidenceRecord.submission_id == submission.id)
-            ).all():
-                self._session.add(
-                    EvidenceRecord(
-                        submission_id=selected.id,
-                        attachment_id=evidence.attachment_id,
-                        evidence_role=evidence.evidence_role,
-                        fixed_snapshot_ref=evidence.fixed_snapshot_ref,
-                        mutable_source=evidence.mutable_source,
-                        adopted_by=str(principal.id),
-                        adopted_at=now,
-                    )
-                )
-            assignment = ReviewAssignmentRecord(
-                submission_id=selected.id,
-                reviewer_member_id=str(principal.id),
-                supersedes_assignment_id=superseded_assignment_id,
-                status="pending",
-                assigned_at=now,
-            )
-            self._session.add(assignment)
-            self._session.flush()
         if assignment is None:
             raise ActionError("active AX review assignment was not found")
         basis = self._canonical_evidence(selected.id)
@@ -959,6 +924,148 @@ class AxProposalActionHandler:
             .where(ReviewAssignmentRecord.submission_id == submission.id, ReviewAssignmentRecord.status == "pending")
             .order_by(ReviewAssignmentRecord.assigned_at.desc())
         )
+
+    def _open_revised_round(
+        self,
+        principal: Principal,
+        decision_item: DecisionItemRecord,
+        submission: SubmissionRecord,
+        assignment: ReviewAssignmentRecord | None,
+        round_effect: Any,
+        now: datetime,
+    ) -> tuple[SubmissionRecord, ReviewAssignmentRecord]:
+        """사람이 고친 초안을 **다음 회차**로 남긴다 — 확인과 저장이 같은 기록을 같은 방식으로 쓴다.
+
+        새 SubjectVersion · `revises_id` 와 diff 를 단 Submission · 근거 행 복사 · 앞 배정을 `superseded` 로
+        닫고 새 `pending` 배정. 회차와 차이는 **한 덩어리**로 선다(SPEC-002 §5 원자성) — 같은 transaction 이다.
+        """
+        superseded_assignment_id: UUID | None = None
+        if assignment is not None:
+            assignment.status = "superseded"
+            assignment.resolution_kind = "revised"
+            superseded_assignment_id = assignment.id
+        next_version = SubjectVersionRecord(
+            subject_id=decision_item.subject_id,
+            version=round_effect.submission_version,
+            content_hash=action_payload_hash(round_effect.snapshot),
+            snapshot=round_effect.snapshot,
+            captured_at=now,
+        )
+        self._session.add(next_version)
+        self._session.flush()
+        selected = SubmissionRecord(
+            decision_item_id=decision_item.id,
+            subject_version_id=next_version.id,
+            submission_version=round_effect.submission_version,
+            revises_id=submission.id,
+            submitted_by=str(principal.id),
+            payload_hash=next_version.content_hash,
+            decision_policy_snapshot=dict(submission.decision_policy_snapshot or {}),
+            diff=round_effect.diff,
+            submitted_at=now,
+        )
+        self._session.add(selected)
+        self._session.flush()
+        # Editing the proposal does not detach the basis the proposing Turn actually used. Each Submission owns
+        # its own immutable adoption rows, so later history never has to follow a mutable pointer backwards.
+        for evidence in self._session.scalars(
+            select(EvidenceRecord).where(EvidenceRecord.submission_id == submission.id)
+        ).all():
+            self._session.add(
+                EvidenceRecord(
+                    submission_id=selected.id,
+                    attachment_id=evidence.attachment_id,
+                    evidence_role=evidence.evidence_role,
+                    fixed_snapshot_ref=evidence.fixed_snapshot_ref,
+                    mutable_source=evidence.mutable_source,
+                    adopted_by=str(principal.id),
+                    adopted_at=now,
+                )
+            )
+        reopened = ReviewAssignmentRecord(
+            submission_id=selected.id,
+            reviewer_member_id=str(principal.id),
+            supersedes_assignment_id=superseded_assignment_id,
+            status="pending",
+            assigned_at=now,
+        )
+        self._session.add(reopened)
+        self._session.flush()
+        return selected, reopened
+
+    def _save_draft(self, principal: Principal, item: ActionItemRecord, payload: dict[str, Any]) -> None:
+        """「초안 저장」 — 고친 초안을 **확정 없이** 다음 회차로 남긴다 (SPEC-002 §4 · WORK-009 1-1).
+
+        확인 대기 그대로(결정 항목 `open` · 새 배정 `pending` · `action_items` 는 `pending`·같은 version)이고
+        **effect 가 없다** — 업무·요청 원장을 부르지 않는다. 고친 것이 없으면 회차를 올리지 않고 성공한다.
+        낡은 기준(대상 version · 기준 회차)은 확인과 같은 판정·같은 오류로 거부된다.
+        """
+        locked = self._session.scalar(
+            select(ActionItemRecord)
+            .where(ActionItemRecord.id == item.id, ActionItemRecord.owner_id == str(principal.id))
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if locked is None:
+            raise ActionNotFound("action item was not found")
+        decision_item = self._decision(locked)
+        submission = self._current_submission(locked)
+        base_version = (
+            self._session.get(SubjectVersionRecord, submission.subject_version_id)
+            if submission is not None
+            else None
+        )
+        if self._is_saved_draft_receipt(principal, locked, submission, base_version, payload):
+            # 응답을 잃은 같은 저장의 재전송 — 두 번째 회차 없이 지금 봉투를 돌려준다(영수증).
+            return
+        assignment = self._active_assignment(submission) if submission is not None else None
+        decision = decide_ax_confirmation(
+            AxConfirmationContext(
+                action_type=str(locked.action_type),
+                state=str(locked.state),
+                version=int(locked.version),
+                owner_id=str(locked.owner_id),
+                decision_open=decision_item is not None and decision_item.status == "open" and submission is not None,
+                submission_version=int(submission.submission_version) if submission is not None else 0,
+                base_snapshot=dict(base_version.snapshot) if base_version else {},
+                has_active_assignment=assignment is not None,
+            ),
+            payload,
+        )
+        if decision_item is None or submission is None:  # pragma: no cover - rejected by the pure plan above
+            raise ActionError("action is no longer pending")
+        attachment_ids = list(decision.attachment_draft_ids)
+        if attachment_ids:
+            if self._material_drafts is None:
+                raise ActionError("action material staging is not available")
+            self._material_drafts.validate_claim(principal, locked.id, [UUID(value) for value in attachment_ids], "task")
+        if decision.open_round is None:
+            return
+        self._open_revised_round(
+            principal, decision_item, submission, assignment, decision.open_round, datetime.now(UTC)
+        )
+
+    def _is_saved_draft_receipt(
+        self,
+        principal: Principal,
+        item: ActionItemRecord,
+        current: SubmissionRecord | None,
+        current_version: SubjectVersionRecord | None,
+        payload: dict[str, Any],
+    ) -> bool:
+        """이 저장이 **이미 지금 회차를 만들었나** — 같은 사람이 바로 앞 회차를 기준으로 같은 내용을 보냈다."""
+        if item.state != "pending" or current is None or current_version is None or current.revises_id is None:
+            return False
+        if current.submitted_by != str(principal.id):
+            return False
+        previous = self._session.get(SubmissionRecord, current.revises_id)
+        if previous is None or int(previous.submission_version) != int(payload.get("base_submission_version") or 0):
+            return False
+        if int(item.version) != int(payload.get("expected_version") or 0):
+            return False
+        attachments = list(payload.get("attachment_draft_ids") or [])
+        final = {**dict(payload.get("draft") or {}), **({"attachment_draft_ids": attachments} if attachments else {})}
+        return current_version.content_hash == action_payload_hash(final)
 
     def _derived_task_id(self, record: ActionItemRecord) -> str | None:
         task_id = self._session.scalar(select(TaskRecord.id).where(TaskRecord.source_action_item_id == record.id))
@@ -1040,7 +1147,7 @@ class TaskAssignmentActionHandler:
         if assigner:
             preview.append({"id": "assigner", "label": "배정자", "value": assigner["display_name"], "kind": "person"})
         if snapshot.get('due_date'):
-            preview.append({"id": "due_date", "label": "기한", "value": str(snapshot['due_date']), "kind": "date"})
+            preview.append({"id": "due_date", "label": "마감일", "value": str(snapshot['due_date']), "kind": "date"})
         return ActionEnvelope(
             action_item_id=str(assignment.id),
             kind="task.assignment",
@@ -1256,7 +1363,7 @@ class TaskDeliveryActionHandler:
             done = sum(1 for row in steps if row.get("done"))
             preview.append({"id": "checklist", "label": "체크리스트", "value": f"{done}/{len(steps)} 완료", "kind": "text"})
         if task.due_date:
-            preview.append({"id": "due_date", "label": "기한", "value": task.due_date.isoformat(), "kind": "date"})
+            preview.append({"id": "due_date", "label": "마감일", "value": task.due_date.isoformat(), "kind": "date"})
         # What the reviewer is looking at was frozen when it was reported; say so when the work has moved since.
         if int(snapshot.get("task_version") or 0) + 1 != int(task.version) and waiting:
             preview.append({"id": "stale", "label": "안내", "value": "보고 이후 업무가 변경되었습니다", "kind": "state"})

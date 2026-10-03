@@ -1346,8 +1346,13 @@ export function MyWorkPage({
           locked={!workFresh}
           onClose={() => setOpenAxDraft(null)}
           onDone={async () => {
-            await reload();
-            await onDecided();
+            /* 목록을 다시 읽지 못해도 화면 갱신 띠(`refreshProjections` 의 staleProjection)까지는 간다 — 저장은 이미 됐고,
+               그 실패는 저장 실패가 아니라 「화면을 갱신하지 못했다」이다(WORK-009 2a-1 fix1 W-3). 실패 자체는 그대로 올린다. */
+            try {
+              await reload();
+            } finally {
+              await onDecided();
+            }
           }}
           onError={onError}
           onNotice={onNotice}

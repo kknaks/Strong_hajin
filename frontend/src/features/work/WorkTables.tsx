@@ -13,6 +13,7 @@ import {
   derivedAssignmentLabel,
   emptyActionLabel,
   formatDate,
+  taskDateLabel,
   taskStateLabel,
   workRequestStateLabel,
   workRequestStateTone,
@@ -243,7 +244,7 @@ export function TaskTable({
   actions: (row: WorkRow) => React.ReactNode;
 }) {
   return (
-    <WorkTableShell headers={["업무명", "요청자", "기한", "상태", "액션"]} label="내 업무">
+    <WorkTableShell headers={["업무명", "요청자", taskDateLabel.due, "상태", "액션"]} label="내 업무">
       <TableStates
         emptyActionLabel={onCreate ? "첫 업무 만들기" : undefined}
         emptyDescription="오늘 할 일을 등록하면 여기에 쌓입니다."
@@ -322,7 +323,7 @@ export function AxDraftTable({
   onClearFilter: () => void;
 }) {
   return (
-    <WorkTableShell headers={["업무명", "요청자", "기한", "상태", "액션"]} label="AX 제안">
+    <WorkTableShell headers={["업무명", "요청자", taskDateLabel.due, "상태", "액션"]} label="AX 제안">
       <TableStates
         emptyDescription="AX 가 제안한 업무 초안이 오면 여기에 섭니다."
         emptyTitle="AX 제안이 없습니다"
@@ -396,7 +397,7 @@ export function SentTaskTable({
   actions: (row: SentRow) => React.ReactNode;
 }) {
   return (
-    <WorkTableShell headers={["제목", "담당자", "기한", "상태", "액션"]} label="보낸 업무">
+    <WorkTableShell headers={["제목", "담당자", taskDateLabel.due, "상태", "액션"]} label="보낸 업무">
       <TableStates
         emptyDescription="업무를 만들어 담당자에게 요청해 보세요."
         emptyTitle="보낸 업무가 없습니다"
@@ -470,7 +471,7 @@ export function CcTaskTable({
   onClearFilter: () => void;
 }) {
   return (
-    <WorkTableShell headers={["업무명", "보낸 사람 → 담당자", "기한", "상태", "액션"]} label="참조 업무">
+    <WorkTableShell headers={["업무명", "보낸 사람 → 담당자", taskDateLabel.due, "상태", "액션"]} label="참조 업무">
       <TableStates
         emptyDescription="동료가 나를 참조자로 넣어 보낸 요청이 여기에 쌓입니다."
         emptyTitle="참조된 업무가 없습니다"
@@ -612,7 +613,7 @@ export function OrganizationTaskTable({
   onRetry: () => void;
 }) {
   return (
-    <WorkTableShell headers={["업무명", "담당자", "기한", "상태", "액션"]} label="조직 업무">
+    <WorkTableShell headers={["업무명", "담당자", taskDateLabel.due, "상태", "액션"]} label="조직 업무">
       <TableStates
         emptyDescription="누군가 업무를 맡으면 여기에서 보입니다."
         emptyTitle="조직에 진행 중인 다른 업무가 없습니다"

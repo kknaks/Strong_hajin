@@ -4,9 +4,9 @@ import type React from "react";
 import { Button } from "../../ds/Button";
 import { CommandConfirmationForm } from "./CommandConfirmationForm";
 import { getActionItem, runActionCommand } from "../../lib/api";
-import { ActionPreviewDetails } from "./ActionPreview";
+import { ActionPreviewDetails, withoutEditorOnlyCommands } from "./ActionPreview";
 import { DateField } from "../../ds/DateField";
-import { datePickerLabel, formatDate, formatDateTime, formatMonthLong, personName, seoulToday, weekdayNames } from "../../lib/labels";
+import { datePickerLabel, formatDate, formatDateTime, formatMonthLong, personName, seoulToday, taskDateLabel, weekdayNames } from "../../lib/labels";
 import { Drawer, Modal, type OverlayShellProps } from "../../ds/Modal";
 import { StatusText } from "../work/WorkModals";
 import { Skeleton } from "../../ds/Skeleton";
@@ -51,7 +51,7 @@ const decisionLabel: Record<string, string> = {
 const REVISABLE = [
   { id: "title", label: "요청할 업무", type: "text" as const },
   { id: "description", label: "요청 내용", type: "textarea" as const },
-  { id: "due_date", label: "희망 기한", type: "date" as const },
+  { id: "due_date", label: taskDateLabel.due, type: "date" as const },
 ];
 
 function nameOf(personas: Persona[], id: string): string {
@@ -415,7 +415,8 @@ export function ActionItemDrawer({
     () => (latest?.decisions ?? []).filter((decision) => decision.decision === "negotiate").at(-1) ?? null,
     [latest],
   );
-  const commands = detail?.allowed_commands ?? [];
+  /* 편집 창 전용 명령(`save_draft`)은 이 상세의 단추로 세우지 않는다 (WORK-009 2a-1). */
+  const commands = withoutEditorOnlyCommands(detail?.allowed_commands ?? []);
   /* 껍데기만 갈린다 — 안의 구성·명령·상태는 한 벌 그대로다. 두 골격은 `OverlayShellProps` 를 같이 받는다. */
   const Shell: (props: OverlayShellProps) => React.ReactElement = presentation === "modal" ? Modal : Drawer;
   return (
