@@ -718,3 +718,40 @@ def test_the_overview_is_not_remembered_as_evidence(tmp_path, monkeypatch) -> No
 
     detail = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()
     assert detail["answer_resources"] == []
+
+
+def test_details_read_before_drafting_work_can_be_cited_as_sources(tmp_path, monkeypatch) -> None:
+    """E2E-6 — 초안 전에 상세로 읽은 회의(`meeting_get`)·업무(`task_get`)가 그 턴의 답변 참조로 묶여 출처로 선다.
+
+    기존 종류(`meeting`·`task`) 그대로다. 새 근거 종류를 만들지 않는다 (SPEC-001 S-9 8 · WORK-009 Phase 3).
+    """
+    client, settings, database_url, application = _stack(tmp_path)
+    _, task = _project_with_task(client)
+    meeting = client.post("/api/meetings", headers=MINA, json={
+        "title": "개편 범위 회의",
+        "starts_at": "2027-03-02T10:00:00+09:00",
+        "ends_at": "2027-03-02T11:00:00+09:00",
+    })
+    assert meeting.status_code == 201, meeting.text
+    meeting_id = meeting.json()["meeting"]["meeting_id"]
+    conversation, execution_id = _delegated_turn(client, database_url, MINA, "draft-sources")
+
+    monkeypatch.setenv("AX_MCP_CAUSATION_ID", execution_id)
+    facade = McpReportsFacade(settings, "mina")
+    facade.get_task(task["task_id"])
+    facade.get_meeting(meeting_id)
+    monkeypatch.delenv("AX_MCP_CAUSATION_ID", raising=False)
+
+    _answer_with(application, settings, [
+        {"key": "sources", "type": "resource_list", "ordered": False, "items": [
+            {"ref": f"meeting:{meeting_id}", "description": "회의록의 결정"},
+            {"ref": f"task:{task['task_id']}", "description": "기존 업무의 체크리스트"},
+        ]},
+    ])
+    detail = client.get(f"/api/conversations/{conversation['conversation_id']}", headers=MINA).json()
+    assert detail["turns"][0]["state"] == "completed"
+    cited = {item["ref"] for item in detail["messages"][-1]["answer_document"]["elements"][0]["items"]}
+    resources = {row["reference_id"]: row for row in detail["answer_resources"]}
+    assert {(resources[ref]["resource_type"], resources[ref]["title"]) for ref in cited} == {
+        ("meeting", "개편 범위 회의"), ("task", "개편 범위 확정"),
+    }
