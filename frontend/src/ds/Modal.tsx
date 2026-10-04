@@ -49,7 +49,11 @@ export function useEscape(onClose: () => void, active = true) {
 export type OverlayShellProps = {
   label: string;
   kicker?: string;
-  title: string;
+  /**
+   * 머리 제목. 글자가 기본이고, **업무 상세만** 그 자리에 제자리 편집(`InlineText`)을 넣는다
+   * (WORK-010 2a-1 · SPEC-007 §2.10.1 「헤더의 제목이 곧 입력칸」). 글자를 넘기는 다른 표면은 그대로다.
+   */
+  title: ReactNode;
   headerExtra?: ReactNode;
   footer?: ReactNode;
   onClose: () => void;

@@ -60,6 +60,7 @@ import {
 } from "../../lib/api";
 import { axDraftCard, blockingChildReasonLabel, cancelReasonLabel, datePickerLabel, taskDetail, hiddenPredecessorsText, predecessorsUnfinishedText, projectLockedByPredecessorsText, derivedApprovalLabel, derivedAssignmentLabel, dueDayText, emptyActionLabel, formatDate, formatDateTime, formatMonthLong, isOverdue, isoDateInSeoul, personName, proposalFieldLabel, taskDateLabel, proposalKindLabel, selectLabel, seoulToday, taskStateLabel, weekdayNames, workRequestStateLabel } from "../../lib/labels";
 import { DateField } from "../../ds/DateField";
+import { InlineText } from "../../ds/InlineText";
 import { ConfirmModal, Drawer, Modal, type OverlayShellProps } from "../../ds/Modal";
 import { Skeleton } from "../../ds/Skeleton";
 import { Checkbox, FieldMessage } from "../../ds/FormControls";
@@ -603,6 +604,27 @@ function RelationAddRow({
   );
 }
 
+/** 업무 상세가 인라인으로 고치는 네 칸 (SPEC-007 §2.10.4). */
+type InlineField = "title" | "description" | "start_date" | "due_date";
+
+/**
+ * **422 `task version is stale`** 인가 — 서버가 회차 어긋남을 이 문장으로 낸다(be-survey §4-3).
+ * `instanceof ApiError` 로 가르지 않는다 — 목을 쓰는 테스트에서 그 클래스가 없을 수 있다. 문장과 상태를 본다.
+ */
+function isStaleVersion(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const status = (error as { status?: unknown }).status;
+  return (status === undefined || status === 422) && /stale/i.test(error.message);
+}
+
+/**
+ * 업무 상세의 모달 껍데기 — 공용 `Modal` 에 **이 화면 전용 modifier** 하나만 얹는다 (WORK-010 2a-4 · R6).
+ * 모듈 자리에 두어야 렌더마다 새 부품이 되지 않는다(그러면 본문 전체가 매번 다시 마운트된다).
+ */
+function TaskDetailModalShell(props: OverlayShellProps) {
+  return <Modal {...props} className="scax-modal--task-detail" />;
+}
+
 export function TaskDetailDrawer({
   onOpenTask,
   canAssign = false,
@@ -618,7 +640,6 @@ export function TaskDetailDrawer({
   busy,
   onTransition,
   onUpdate,
-  onAskAx,
   onNotice,
   onError,
   onClose,
@@ -674,8 +695,14 @@ export function TaskDetailDrawer({
   busy: boolean;
   /** 전이를 보낸다. **`false` 면 서버가 거절한 것**이다 — 사유 입력 자리가 그때 열린 채로 남는다. */
   onTransition: (task: DirectTask, action: TaskAction, reason?: string) => Promise<boolean | void>;
-  onUpdate: (task: DirectTask, patch: TaskPatch) => Promise<void>;
-  onAskAx?: (task: DirectTask) => void;
+  /**
+   * 한 칸을 저장한다 — **`PATCH /api/tasks/{id}` 하나**다 (SPEC-007 §2.10.4 · WORK-010 2a-3).
+   *
+   * **저장된 업무를 돌려준다** — 직렬 저장의 다음 요청이 그 `version` 을 `expected_version` 으로 싣는다.
+   * **실패는 던진다** — 그 칸이 원래 값으로 돌아가고 칸 옆에 문장이 선다(전역 띠로 내지 않는다).
+   * 읽기 전용으로 여는 호출부는 이것을 부를 일이 없다(인라인 편집이 꺼진다).
+   */
+  onUpdate: (task: DirectTask, patch: TaskPatch) => Promise<DirectTask | void>;
   onNotice?: (message: string) => void;
   onError: (message: string | null) => void;
   onClose: () => void;
@@ -685,10 +712,6 @@ export function TaskDetailDrawer({
   const [blockReason, setBlockReason] = useState("");
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [confirmUnfinished, setConfirmUnfinished] = useState(false);
-  const [title, setTitle] = useState(task.title);
-  const [description, setDescription] = useState(task.description ?? "");
-  const [startDate, setStartDate] = useState(task.start_date ?? "");
-  const [dueDate, setDueDate] = useState(task.due_date ?? "");
   const [materials, setMaterials] = useState<TaskMaterial[] | null>(null);
   const [checklist, setChecklist] = useState<ChecklistItem[] | null>(task.checklist ?? null);
   const [newStep, setNewStep] = useState("");
@@ -740,13 +763,18 @@ export function TaskDetailDrawer({
   const [detailState, setDetailState] = useState<"loading" | "ready" | "error">("ready");
   /** 프로젝트 이름과 편집 셀렉터의 후보 — **새 응답 필드를 만들지 않고** 이 목록에서 맞춘다. */
   const [projects, setProjects] = useState<Project[] | null>(null);
-  /**
-   * 「편집」이 눌려 있나 — **A(기본)에만 서는 단추다** (SPEC-007 §2.2 · OQ-702).
+  /*
+   * ── 인라인 즉시 저장 (SPEC-007 §2.10.4 · WORK-010 2a-3) ─────────────────────────────
    *
-   * 제목·기한·시작일·업무 내용 넷이 그 안에서만 입력칸이 된다. 예전에는 늘 입력칸이라
-   * **읽으러 온 사람에게도 고치는 화면**이 보였고, 시안이 그것을 한 줄로 접었다.
+   * 편집 모드가 없다 — 제목·업무 내용·시작 예정일·마감일이 **그 자리에서** 고쳐지고 바로 저장된다.
+   * 칸마다 들고 있는 것은 셋이다: 칸 옆 실패 문장(`fieldErrors`), 보내는 동안 보여 줄 값(`pending` —
+   * 실패하면 비워서 원래 값으로 돌아간다), 업무 내용의 쓰는 중 초안(`descDraft`).
    */
-  const [metaEditing, setMetaEditing] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<InlineField, string>>>({});
+  const [pending, setPending] = useState<Partial<Record<InlineField, string>>>({});
+  const [descDraft, setDescDraft] = useState<string | null>(null);
+  /** 업무 내용의 Esc — 초안을 접으며 도는 blur 저장을 건너뛴다(`InlineText` 와 같은 결). */
+  const descCancelled = useRef(false);
   const [refChoices, setRefChoices] = useState<DirectTask[] | null>(null);
   /** 완료 보고 모달이 열려 있나 — 초안(요약·산출물)은 그 모달이 든다 (5차 발주). */
   const [reporting, setReporting] = useState(false);
@@ -792,41 +820,25 @@ export function TaskDetailDrawer({
   // to. Hold that here so the very next save carries it, without waiting for the parent's refresh to come back.
   const [settledVersion, setSettledVersion] = useState(task.version);
   useEffect(() => setSettledVersion(task.version), [task.task_id, task.version]);
+  /**
+   * **마지막으로 받은 회차** — 어느 명령의 응답이든(인라인 저장·체크리스트·자료·상세 다시 읽기) 가장 큰 값
+   * (SPEC-007 §2.10.4 「회차의 원천」). 직렬 저장의 다음 요청이 이것을 `expected_version` 으로 싣는다 —
+   * state 는 렌더를 기다리므로 같은 줄에 선 다음 저장이 옛 값을 본다. 그래서 ref 다.
+   */
+  const versionRef = useRef(task.version);
+  const versionTaskId = useRef(task.task_id);
+  if (versionTaskId.current !== task.task_id) {
+    versionTaskId.current = task.task_id;
+    versionRef.current = task.version;
+  } else if (task.version > versionRef.current) {
+    versionRef.current = task.version;
+  }
+  /** 저장 줄 — 앞 저장이 끝나야 다음 저장이 나간다. 실패해도 줄은 이어진다. */
+  const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
   const current = settledVersion > task.version ? { ...task, version: settledVersion } : task;
   const closed = task.state === "cancelled";
   const readOnly = task.access === "read_only";
   const editable = canManage && !closed && !readOnly;
-  /**
-   * 지금 고쳐 쓰는 중인가 — **회차 충돌로 다시 읽을 때 그 입력을 지키는 자리다** (WORK-003 Phase 6).
-   *
-   * 저장이 회차 충돌로 거절되면 부르는 쪽이 최신 값을 다시 읽어 온다. 그때 초기화 effect 가 그대로
-   * 돌면 서버 값이 **사람이 쓰던 문장을 덮어쓴다** — 충돌을 알려 주려다 그 사람의 일을 지운다.
-   */
-  const editingRef = useRef(false);
-  const dirty =
-    title.trim() !== task.title ||
-    description.trim() !== (task.description ?? "") ||
-    startDate !== (task.start_date ?? "") ||
-    dueDate !== (task.due_date ?? "");
-  editingRef.current = dirty;
-
-  /**
-   * 지금 고쳐 쓰는 중인가 — **회차 충돌로 다시 읽을 때 그 입력을 지키는 자리다** (WORK-003 Phase 6).
-   *
-   * 저장이 회차 충돌로 거절되면 부르는 쪽이 최신 값을 다시 읽어 온다. 그때 아래 effect 가 그대로
-   * 돌면 서버 값이 **사람이 쓰던 문장을 덮어쓴다** — 충돌을 알려 주려다 그 사람의 일을 지운다.
-   * 그래서 쓰던 것이 있으면 새 값으로 갈아끼우지 않는다: 최신 값은 회차로 들어오고(`settledVersion`),
-   * 화면의 글자는 사람 것으로 남는다.
-   */
-  useEffect(() => {
-    if (editingRef.current) return;
-    setTitle(task.title);
-    setDescription(task.description ?? "");
-    setStartDate(task.start_date ?? "");
-    setDueDate(task.due_date ?? "");
-    // Deliberately not keyed on `task.version`: a checklist or material change moves the version without moving
-    // any of these fields, and resetting there would wipe an edit the person is still writing.
-  }, [task.task_id, task.title, task.description, task.start_date, task.due_date]);
 
   /**
    * 상세를 읽어 **이 화면이 그리는 값을 전부** 담는다 (SPEC-007 §4).
@@ -847,6 +859,7 @@ export function TaskDetailDrawer({
       setHiddenSuccessorCount(detail.hidden_successor_count ?? 0);
       setProjectId(detail.project_id ?? null);
       setDetailTask(detail);
+      moved(detail.version);
       setDetailState("ready");
       return true;
     } catch {
@@ -963,7 +976,9 @@ export function TaskDetailDrawer({
   // Settle it here, or the next save from this open drawer is refused as stale.
   /** Take the version a mutation answered with, so this drawer stops holding the one it opened at. */
   function moved(version: number | undefined) {
-    if (typeof version === "number") setSettledVersion((held) => (version > held ? version : held));
+    if (typeof version !== "number") return;
+    if (version > versionRef.current) versionRef.current = version;
+    setSettledVersion((held) => (version > held ? version : held));
   }
 
   async function settleVersion() {
@@ -1070,21 +1085,92 @@ export function TaskDetailDrawer({
     }
   }
 
-  const save = async () => {
-    if (!title.trim()) {
-      onError("업무 제목을 입력해 주세요.");
+  /**
+   * 한 칸을 **줄에 세워** 저장한다 (SPEC-007 §2.10.4).
+   *
+   * - 앞 저장이 끝난 뒤에 나가고, **그때의 마지막 회차**(`versionRef`)를 `expected_version` 으로 싣는다.
+   * - 성공하면 응답의 회차와 그 칸들을 세운다 — 상세를 다시 읽지 않는다(부르는 쪽이 목록을 다시 읽는다).
+   * - **422 `task version is stale`** 이면 다시 보내지 않는다. 상세를 다시 읽어 그 칸이 **서버 값**으로
+   *   서고, 칸 옆에 「다른 곳에서 바뀌어…」가 선다.
+   * - 그 밖의 실패는 칸 옆에 서버 문장. 어느 실패든 **던진다** — 부르는 칸이 원래 값으로 돌아간다.
+   */
+  const saveInline = (field: InlineField, patch: TaskPatch): Promise<void> => {
+    setFieldErrors(({ [field]: _cleared, ...rest }) => rest);
+    const run = async () => {
+      try {
+        const saved = await onUpdate({ ...task, version: versionRef.current }, patch);
+        if (saved) {
+          moved(saved.version);
+          setDetailTask((held) => ({
+            ...(held ?? task),
+            title: saved.title,
+            description: saved.description,
+            start_date: saved.start_date,
+            due_date: saved.due_date,
+            version: saved.version,
+          }));
+        }
+      } catch (error) {
+        if (isStaleVersion(error)) {
+          await readDetail();
+          setFieldErrors((errors) => ({ ...errors, [field]: taskDetail.inlineStale }));
+        } else {
+          setFieldErrors((errors) => ({ ...errors, [field]: error instanceof Error ? error.message : taskDetail.inlineFailed }));
+        }
+        throw error;
+      }
+    };
+    const next = saveQueue.current.then(run, run);
+    saveQueue.current = next.catch(() => undefined);
+    return next;
+  };
+
+  /** 보내는 동안 그 칸에 보낸 값을 세우고, 끝나면(성공이든 실패든) 걷는다 — 실패면 그 순간 원래 값이다. */
+  const saveShown = async (field: InlineField, value: string, patch: TaskPatch) => {
+    setPending((held) => ({ ...held, [field]: value }));
+    try {
+      await saveInline(field, patch);
+    } catch {
+      // 칸 옆 문장은 `saveInline` 이 이미 세웠다.
+    } finally {
+      setPending(({ [field]: _done, ...rest }) => rest);
+    }
+  };
+
+  /** 제목 — `InlineText` 가 빈 값·안 바뀐 값을 이미 걸렀다. 던지면 그 부품이 원래 글자로 돌아간다. */
+  const saveTitle = (next: string) => saveInline("title", { title: next });
+
+  const openDescription = () => {
+    descCancelled.current = false;
+    setDescDraft(pending.description ?? (detailTask ?? task).description ?? "");
+  };
+  /** 업무 내용 — **blur 저장**(Enter 는 줄바꿈). 안 바뀌었으면 보내지 않는다. 비우는 것은 막지 않는다(§2.10.4). */
+  const commitDescription = () => {
+    if (descCancelled.current) {
+      descCancelled.current = false;
       return;
     }
-    if (startDate && dueDate && startDate > dueDate) {
-      onError(`${taskDateLabel.plannedStart}은 ${taskDateLabel.due}보다 늦을 수 없습니다.`);
+    if (descDraft === null) return;
+    const next = descDraft.trim();
+    setDescDraft(null);
+    if (next === ((detailTask ?? task).description ?? "")) return;
+    void saveShown("description", next, { description: next });
+  };
+
+  /**
+   * 날짜 — **고르는 즉시 저장**. 안 바뀌었으면 보내지 않는다. 시작 예정일이 마감일보다 늦어지는 선택은
+   * **보내지 않고** 원래 값으로 둔 채 칸 옆에 문장을 낸다(§2.10.4 · 지금 문구 그대로).
+   */
+  const saveDate = (field: "start_date" | "due_date", value: string) => {
+    const held = detailTask ?? task;
+    if (value === (held[field] ?? "")) return;
+    const start = field === "start_date" ? value : pending.start_date ?? held.start_date ?? "";
+    const due = field === "due_date" ? value : pending.due_date ?? held.due_date ?? "";
+    if (start && due && start > due) {
+      setFieldErrors((errors) => ({ ...errors, [field]: `${taskDateLabel.plannedStart}은 ${taskDateLabel.due}보다 늦을 수 없습니다.` }));
       return;
     }
-    const patch: TaskPatch = {};
-    if (title.trim() !== task.title) patch.title = title.trim();
-    if (description.trim() !== (task.description ?? "")) patch.description = description.trim();
-    if (startDate !== (task.start_date ?? "")) patch.start_date = startDate || null;
-    if (dueDate !== (task.due_date ?? "")) patch.due_date = dueDate || null;
-    await onUpdate(current, patch);
+    void saveShown(field, value, field === "start_date" ? { start_date: value || null } : { due_date: value || null });
   };
 
   const openSteps = (checklist ?? []).filter((item) => !item.done).length;
@@ -1341,21 +1427,6 @@ export function TaskDetailDrawer({
   const unfinishedPreceding = unfinishedPrecedingCountOf(related);
   /** 후행의 셈 — 읽을 수 있는 수 + 못 읽는 수 (SPEC-007 §2.4.5). */
   const successorCount = successorCountOf(related);
-  /**
-   * 시작 막힘 배너의 본문 (SPEC-007 §2.6).
-   *
-   * **제목을 쓸 수 있으면 제목(최대 셋), 못 읽는 것이 섞였으면 그 건수를 덧붙인다.**
-   * 배너는 **게이트와 같은 조건으로만** 선다 — 게이트가 열려 있는데 「시작할 수 없습니다」가
-   * 서면 사람이 무엇을 믿을지 모른다(OQ-709 판정: 못 읽는 선행만 남으면 막지 않는다).
-   */
-  const blockedBanner = startBlocked ? (
-    <>
-      {/* **막는 이름을 굵게 낸다** (시안 `:270` · 검수 W-6) — 「무엇이 막는지」가 먼저 읽혀야 한다. */}
-      <b>{taskDetail.blockedTitles(blockingPredecessors.map((row) => row.title))}</b>
-      {taskDetail.blockedTitlesSuffix}
-      {hiddenPredecessors > 0 && ` ${taskDetail.blockedHiddenSuffix(hiddenPredecessors)}`}
-    </>
-  ) : null;
   /**
    * 프로젝트 칸이 내는 것 (SPEC-007 §2.4.4).
    *
@@ -1778,8 +1849,13 @@ export function TaskDetailDrawer({
     );
   };
 
-  /* 껍데기만 갈린다 — 안의 구성·명령·상태는 한 벌 그대로다. 두 골격은 `OverlayShellProps` 를 같이 받는다. */
-  const Shell: (props: OverlayShellProps) => React.ReactElement = presentation === "modal" ? Modal : Drawer;
+  /* 껍데기만 갈린다 — 안의 구성·명령·상태는 한 벌 그대로다. 두 골격은 `OverlayShellProps` 를 같이 받는다.
+     모달 쪽은 **업무 상세 전용 modifier** 를 얹는 얇은 껍데기다 — 공용 `Modal` 의 다른 12 표면은 그대로다(R6). */
+  const Shell: (props: OverlayShellProps) => React.ReactElement = presentation === "modal" ? TaskDetailModalShell : Drawer;
+  /** 마감일·시작 예정일 — 보내는 동안은 보낸 값, 아니면 서버가 준 값. */
+  const startShown = pending.start_date ?? shown.start_date ?? "";
+  const dueShown = pending.due_date ?? shown.due_date ?? "";
+  const descriptionShown = pending.description ?? shown.description ?? "";
 
   return (
     <>
@@ -1816,11 +1892,6 @@ export function TaskDetailDrawer({
                 </>
               )}
               <span className="scax-drawer__spacer" />
-              {editable && dirty && (
-                <Button disabled={busy} onClick={() => void save()} type="button">
-                  변경 저장
-                </Button>
-              )}
               {task.state === "in_progress" && (
                 <Button disabled={busy || isBlocking} onClick={() => setIsBlocking(true)} type="button">
                   막힘
@@ -1886,204 +1957,241 @@ export function TaskDetailDrawer({
             </Button>
           )
         }
-        headerExtra={
-          /*
-           * `업무 메타` 의 **오른쪽** — 상태 배지 · 「편집」 · 「AX」 (SPEC-007 §2.2 · 시안 `:142-145`).
-           *
-           * 이 겹의 머리줄이 제목을 이미 그리므로 그 줄의 오른쪽이 곧 메타의 오른쪽이다.
-           * 아래 본문에는 **사실 한 줄만** 남는다 — 제목을 두 번 그리지 않는다.
-           */
-          <ChipRow>
-            <StatusText state={task.state} />
-            {isOverdue(task, today) && <Badge tone="danger">{taskDateLabel.overdue}</Badge>}
-            <Badge tone="outline">v{current.version}</Badge>
-            {/*
-              * **「편집」은 A(기본)에만 선다** (OQ-702) — 연결 편집 중(C)에는 없고, 읽기 전용에는
-              * **그리지 않는다**(비활성으로 두지 않는다 · §2.7). 시안 B 에도 없지만 그것은
-              * 「막혔다」가 아니라 **그 무대의 사람이 담당이 아니어서**다 — 조건은 `editable` 하나다.
-              */}
-            {editable && relDraft === null && (
-              <Button onClick={() => setMetaEditing((on) => !on)} size="sm" type="button" variant="text">
-                {metaEditing ? taskDetail.editDone : taskDetail.edit}
-              </Button>
-            )}
-            {/* 「AX」는 **세 무대 모두** 선다 — 업무를 읽을 수 있으면 물을 수 있다. */}
-            {onAskAx && (
-              /* 글자는 「AX」 두 자이고(시안 `:145`) **읽어 주는 이름은 무엇을 하는 단추인지**를 말한다 —
-                 두 자만으로는 스크린리더에서 무슨 일이 일어날지 알 수 없다. */
-              <Button
-                aria-label="AX에게 이 업무 묻기"
-                onClick={() => {
-                  // Hand the task to the AX panel and close this drawer; the drawer would otherwise cover the panel.
-                  if (!canLeave()) return;
-                  onAskAx(task);
-                  onClose();
-                }}
-                size="sm"
-                type="button"
-                variant="ai"
-              >
-                <Icon name="sparkle" size={14} /> {taskDetail.ax}
-              </Button>
-            )}
-          </ChipRow>
-        }
-        kicker="업무 상세"
+        /*
+         * 머리 = (겹일 때) 뒤로 · **제목** · × (SPEC-007 §2.10.1 · WORK-010 2a-1).
+         * 「업무 상세」 머리글·상태·버전·「편집」·「AX」는 없다 — 상태·버전은 메타 정보의 행이다.
+         * 제목은 그 자리에서 고친다(blur·Enter 저장 · Esc 취소 · 빈 값/안 바뀜은 보내지 않음 — `InlineText`).
+         * 고칠 수 없는 입구(§2.10.7)에서는 글자만 선다. 접근성 이름은 「업무 상세」 그대로다.
+         */
         label="업무 상세"
         onClose={close}
-        title={task.title}
+        title={
+          editable ? (
+            <>
+              <InlineText label={taskDetail.titleEdit} onCommit={saveTitle} value={shown.title} />
+              {/* 제목 칸 옆 실패 — 머리 `h3` 안이라 `FieldMessage`(p) 대신 같은 클래스의 span 이다. */}
+              {fieldErrors.title && (
+                <span className="scax-field__error" role="alert">
+                  {fieldErrors.title}
+                </span>
+              )}
+            </>
+          ) : (
+            shown.title
+          )
+        }
       >
         {/*
           * ── 시안 CSS 가 사는 스코프 (WORK-007 F-1 · `styles/task-detail.css`) ────────────
           *
-          * **이 한 줄이 그 파일 전부를 켠다.** 시안이 쓰는 이름은 `.block`·`.cols`·`.cell`·
-          * `.one`·`.meta` 처럼 **일반적인 낱말**이라 전역에 풀면 다음 화면이 같은 이름을 쓰는
-          * 순간 서로를 덮는다. 그래서 규칙을 전부 `.scax-td` 아래에 두었는데 — **그 클래스를
-          * 붙이는 자리를 안 만들어 129줄이 통째로 죽어 있었다.** 선택자가 아무 데도 안 맞으니
-          * 2열도, 3행 상한도, 「추가」의 파란색도 화면에 없었다(검수 FAIL-1).
-          *
-          * **jsdom 은 CSS 를 적용하지 않아 테스트 1082건이 초록인 채로 그랬다** — 그래서
+          * 이 한 줄이 그 파일 전부를 켠다. 시안의 이름(`.block`·`.cols`·`.cell` …)이 일반적인 낱말이라
+          * 전역에 풀지 않고 전부 `.scax-td` 아래에 둔다. jsdom 은 CSS 를 적용하지 않으므로
           * `TaskDetailRelations.test.tsx` 가 「`.cols` 의 조상에 `.scax-td` 가 있는가」를 센다.
-          * 계산된 스타일이 아니라 **선택자가 닿는 구조**를 세는 것이 jsdom 에서 할 수 있는 검사다.
-          *
-          * 겹의 골격(`Drawer`·`Modal`)은 `className` 을 받지 않고 **그 시그니처를 바꾸지 않는다** —
-          * 본문을 감싸는 이 요소 하나면 된다.
           */}
         <div className="scax-td">
         {/*
-          * ── 덩어리 ① 업무 메타 (SPEC-007 §2.1 · §2.2 · 시안 `TaskDetail.html:131-146`) ──
+          * ── 메타 정보 — 라벨·값 2열 격자 (SPEC-007 §2.10.2 · WORK-010 2a-2) ──────────────
           *
-          * **덩어리 머리를 쓰지 않는다** — 제목 자체가 그 덩어리다. 제목·상태 배지·「편집」·「AX」는
-          * 이 겹의 **머리줄**이 이미 그리는 자리라 거기 얹었다(`title`·`headerExtra`) — 같은 것을
-          * 두 번 그리면 제목이 화면에 두 개 선다. 여기 남는 것은 **사실 한 줄**이다.
+          * `업무 정보` 와 같은 레벨의 구역이다. 행 순서가 계약이다 — 진행 상태 · 버전 · 담당 · 시작 예정일 ·
+          * 실제 시작일 · 실제 종료일 · 마감일 · 결재 · 참조 · 출처(날짜 넷은 E2E-5 순서, OQ-712).
+          * 격자는 기존 `.meta-grid`(dt/dd)를 쓴다 — 이 화면만의 촘촘함은 `task-detail.css` 가 스코프로 준다.
           *
-          * **값이 없는 칸은 서지 않는다** — 시안 B 가 시작·참조를 빼고 그렸다.
+          * 이 판(2a)에서 진행 상태·담당은 **읽기 글자**다 — 셀렉트는 2b 다.
+          * 고칠 수 있는 화면에서 시작 예정일·마감일은 **비어 있어도 선다**(처음 정할 자리). 값이 없는
+          * 읽기 전용 행은 서지 않는다.
           */}
-        <div aria-label="업무 메타" className="meta">
-          <div className="meta__left">
-            {metaEditing && (
-              <>
-                <label className="sr-only" htmlFor={`task-title-${task.task_id}`}>제목</label>
-                <input
-                  className="meta__title-input"
-                  id={`task-title-${task.task_id}`}
-                  onChange={(event) => setTitle(event.target.value)}
-                  value={title}
-                />
-              </>
-            )}
-            <div className="meta__facts">
-              <span>{taskDetail.metaAssignee} <b>{ownerName}</b></span>
-              {/*
-                * 날짜 넷 — 시작 예정일 · 실제 시작일 · 실제 종료일 · 마감일 순이고 **값이 없는 칸은 서지 않는다**
-                * (SPEC-007 §2.2 · WORK-009 2b-1). 「편집」 중에는 예정 둘이 아래 입력칸이 되고 실제 둘은 글자로 남는다.
-                * 실제 두 값은 시각이라 `formatDate` 가 서울 날짜로 옮겨 낸다.
-                */}
-              {!metaEditing && shown.start_date && <span>{taskDetail.metaPlannedStart} <b>{formatDate(shown.start_date)}</b></span>}
-              {shown.started_at && <span>{taskDetail.metaActualStart} <b>{formatDate(shown.started_at)}</b></span>}
-              {shown.completed_at && <span>{taskDetail.metaActualEnd} <b>{formatDate(shown.completed_at)}</b></span>}
-              {!metaEditing && shown.due_date && <span>{taskDetail.metaDue} <b>{formatDate(shown.due_date)}</b></span>}
-              {shown.approver_id && (
-                <span>{taskDetail.metaApprover} <b>{displayNameOf(personas ?? [], shown.approver_id)}</b></span>
-              )}
-              {(shown.cc_member_ids ?? []).length > 0 && (
-                <span>
-                  {taskDetail.metaCc}{" "}
-                  <b>{(shown.cc_member_ids ?? []).map((id) => displayNameOf(personas ?? [], id)).join(" · ")}</b>
-                </span>
-              )}
+        <section aria-label={taskDetail.blockMeta} className="block">
+          <div className="block__row"><h3>{taskDetail.blockMeta}</h3></div>
+          <dl className="meta-grid meta-info">
+            <div>
+              <dt>{taskDetail.metaState}</dt>
+              <dd><StatusText state={task.state} /></dd>
             </div>
-{task.origin && (
-            /* Only a real counterpart or a real source is named, and it is named as what happened rather than as a
-               role column. A task nobody handed over has neither. */
-            <p aria-label="업무 출처" className="origin-chip">
-              {originSentence(task.origin) && <Badge tone="outline">{originSentence(task.origin)}</Badge>}
-              {task.origin.source &&
-                (onOpenSource ? (
-                  <Button variant="inline" onClick={() => { if (canLeave()) onOpenSource(task.origin!.source!); }} type="button">
-                    {task.origin.source.title ?? "출처 보기"}
-                  </Button>
-                ) : (
-                  <small className="t-meta">{task.origin.source.title}</small>
-                ))}
-            </p>
-          )}
-            {/*
-              * 「편집」 안에서만 날짜가 입력칸이 된다 (SPEC-007 §2.2 · OQ-702).
-              * 저장은 아래 머리줄의 「변경 저장」 하나이고 그 명령은 예전 그대로다.
-              */}
-            {metaEditing && (
-              <div className="meta__edit">
-                <DateField
-                  formatMonth={formatMonthLong}
-                  hideLabel={false}
-                  id={`task-start-${task.task_id}`}
-                  label={taskDateLabel.plannedStart}
-                  labels={datePickerLabel}
-                  onChange={setStartDate}
-                  today={seoulToday()}
-                  value={startDate}
-                  weekdayNames={weekdayNames}
-                />
-                <DateField
-                  formatMonth={formatMonthLong}
-                  hideLabel={false}
-                  id={`task-due-${task.task_id}`}
-                  label={taskDateLabel.due}
-                  labels={datePickerLabel}
-                  onChange={setDueDate}
-                  today={seoulToday()}
-                  value={dueDate}
-                  weekdayNames={weekdayNames}
-                />
+            <div>
+              <dt>{taskDetail.metaVersion}</dt>
+              <dd>v{current.version}</dd>
+            </div>
+            <div>
+              <dt>{taskDetail.metaAssignee}</dt>
+              <dd>
+                {ownerName}
+                {assignments?.pending && <Badge tone="outline">{taskDetail.assigneeProposed}</Badge>}
+              </dd>
+            </div>
+            {(editable || startShown) && (
+              <div>
+                <dt>{taskDetail.metaPlannedStart}</dt>
+                <dd>
+                  {editable ? (
+                    <DateField
+                      formatMonth={formatMonthLong}
+                      hideLabel
+                      id={`task-start-${task.task_id}`}
+                      label={taskDateLabel.plannedStart}
+                      labels={datePickerLabel}
+                      onChange={(value) => saveDate("start_date", value)}
+                      today={seoulToday()}
+                      value={startShown}
+                      weekdayNames={weekdayNames}
+                    />
+                  ) : (
+                    formatDate(startShown)
+                  )}
+                  <FieldMessage error={fieldErrors.start_date} />
+                </dd>
               </div>
             )}
-          </div>
-        </div>
-
-        {/*
-          * ── 시작 막힘 배너 (SPEC-007 §2.6 · 시안 `:268-271`) ──────────────────────────
-          *
-          * `업무 메타` **아래**, `업무 정보` **위**. **선행은 «시작»을, 하위는 «완료»를 막는다** —
-          * 그래서 이 배너는 하위의 「아직 끝나지 않은 하위가 있습니다」와 **문구도 자리도 다르고**
-          * 오류 코드도 합치지 않는다(D-11).
-          *
-          * **배너와 단추가 같은 조건으로 움직인다** — 게이트가 열려 있는데 「시작할 수 없습니다」가
-          * 서면 사람이 무엇을 믿을지 모른다. 못 읽는 선행만 남으면 **둘 다 열린다**(OQ-709).
-          */}
-        {startBlocked && (
-          <section aria-label={taskDetail.blockedHeading} className="drawer-section notice danger">
-            <h4>{taskDetail.blockedHeading}</h4>
-            <p>{blockedBanner}</p>
-          </section>
-        )}
+            {/* 실제 두 값은 시각이라 `formatDate` 가 서울 날짜로 옮겨 낸다 (WORK-009 2b-1). */}
+            {shown.started_at && (
+              <div>
+                <dt>{taskDetail.metaActualStart}</dt>
+                <dd>{formatDate(shown.started_at)}</dd>
+              </div>
+            )}
+            {shown.completed_at && (
+              <div>
+                <dt>{taskDetail.metaActualEnd}</dt>
+                <dd>{formatDate(shown.completed_at)}</dd>
+              </div>
+            )}
+            {(editable || dueShown) && (
+              <div>
+                <dt>{taskDetail.metaDue}</dt>
+                <dd>
+                  <span className="meta-info__value">
+                    {editable ? (
+                      <DateField
+                        formatMonth={formatMonthLong}
+                        hideLabel
+                        id={`task-due-${task.task_id}`}
+                        label={taskDateLabel.due}
+                        labels={datePickerLabel}
+                        onChange={(value) => saveDate("due_date", value)}
+                        today={seoulToday()}
+                        value={dueShown}
+                        weekdayNames={weekdayNames}
+                      />
+                    ) : (
+                      formatDate(dueShown)
+                    )}
+                    {/* 「마감일 초과」는 머리가 아니라 **마감일 값 옆**이다 (OQ-711). 서는 조건은 예전 그대로. */}
+                    {isOverdue({ due_date: dueShown || null, state: task.state }, today) && (
+                      <Badge tone="danger">{taskDateLabel.overdue}</Badge>
+                    )}
+                  </span>
+                  <FieldMessage error={fieldErrors.due_date} />
+                </dd>
+              </div>
+            )}
+            {shown.approver_id && (
+              <div>
+                <dt>{taskDetail.metaApprover}</dt>
+                <dd>{displayNameOf(personas ?? [], shown.approver_id)}</dd>
+              </div>
+            )}
+            {(shown.cc_member_ids ?? []).length > 0 && (
+              <div>
+                <dt>{taskDetail.metaCc}</dt>
+                <dd>{(shown.cc_member_ids ?? []).map((id) => displayNameOf(personas ?? [], id)).join(" · ")}</dd>
+              </div>
+            )}
+            {/*
+              * 출처 (SPEC-007 §2.10.8). 출처가 없거나 볼 수 없으면 **행이 서지 않는다**(서버가 싣지 않는다).
+              * AX 제안에서 생긴 업무는 「AX 제안 · 판단 보기」 — 링크 글자가 업무 제목이 아니다(결정 e).
+              * 판단 상세를 열 수 없는 화면(홈·캘린더 — `onOpenSource` 없음)은 「AX 제안」 글자만이다.
+              * 요청·직접 배정의 문구·링크는 지금 그대로다.
+              */}
+            {task.origin && (
+              <div>
+                <dt>{taskDetail.metaOrigin}</dt>
+                <dd aria-label="업무 출처" className="origin-chip">
+                  {task.origin.source?.type === "action_item" ? (
+                    <>
+                      <span>{taskDetail.originAx}</span>
+                      {onOpenSource && (
+                        <>
+                          <span aria-hidden>·</span>
+                          <Button variant="inline" onClick={() => { if (canLeave()) onOpenSource(task.origin!.source!); }} type="button">
+                            {taskDetail.originOpenDecision}
+                          </Button>
+                        </>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      {originSentence(task.origin) && <Badge tone="outline">{originSentence(task.origin)}</Badge>}
+                      {task.origin.source &&
+                        (onOpenSource ? (
+                          <Button variant="inline" onClick={() => { if (canLeave()) onOpenSource(task.origin!.source!); }} type="button">
+                            {task.origin.source.title ?? "출처 보기"}
+                          </Button>
+                        ) : (
+                          <small className="t-meta">{task.origin.source.title}</small>
+                        ))}
+                    </>
+                  )}
+                </dd>
+              </div>
+            )}
+          </dl>
+        </section>
 
         {/*
           * ── 덩어리 ② 업무 정보 — **1열**, 내용 다음 체크리스트 (§2.3 · 시안 `:149-166`) ──
+          *
+          * 「시작할 수 없습니다」 배너는 **없다** (R5 · §2.10.9) — 막는 것은 서버이고, 그 문장은 상태를 바꾸려 할 때
+          * 토스트로 온다. 「연관 업무」 선행 칸의 미완 배지는 그대로다.
           */}
         <section aria-label={taskDetail.blockInfo} className="block">
           <div className="block__row"><h3>{taskDetail.blockInfo}</h3></div>
           <div className="stack">
             <div className="cell">
+              {/* 칸 머리는 **하나**다 — 고치는 동안에도 라벨이 두 번 서지 않는다(입력의 이름은 aria-label). */}
               <div className="cell__head"><h5>{taskDetail.description}</h5></div>
-              {metaEditing ? (
-                <div className="scax-field">
-                  <label className="scax-field__label" htmlFor={`task-description-${task.task_id}`}>업무 내용</label>
-                  <textarea
-                    className="task-description"
-                    disabled={!editable}
-                    id={`task-description-${task.task_id}`}
-                    rows={4}
-                    onChange={(event) => setDescription(event.target.value)}
-                    placeholder="무엇을, 왜, 어디까지 할지 적어 두면 요청자와 AX가 같은 맥락을 봅니다."
-                    value={description}
-                  />
-                </div>
-              ) : shown.description ? (
-                <p className="desc">{shown.description}</p>
+              {descDraft !== null ? (
+                /*
+                 * 업무 내용 — **그 자리 여러 줄** (§2.10.4). blur = 저장 · Enter = 줄바꿈 · Esc = 취소.
+                 * 이 화면이 이미 갖고 있던 `textarea.desc` 규칙(`task-detail.css`)을 쓴다 — 새 모양이 아니다.
+                 */
+                <textarea
+                  aria-label={taskDetail.descriptionEdit}
+                  autoFocus
+                  className="desc"
+                  onBlur={commitDescription}
+                  onChange={(event) => setDescDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Escape") return;
+                    // 고치기 취소다 — 겹(모달)까지 닫지 않는다.
+                    event.preventDefault();
+                    event.stopPropagation();
+                    descCancelled.current = true;
+                    setDescDraft(null);
+                  }}
+                  placeholder={taskDetail.descriptionPlaceholder}
+                  rows={4}
+                  value={descDraft}
+                />
+              ) : editable ? (
+                <p
+                  aria-label={taskDetail.descriptionEdit}
+                  className={descriptionShown ? "desc desc--editable" : "desc desc--empty desc--editable"}
+                  onClick={openDescription}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" && event.key !== " ") return;
+                    event.preventDefault();
+                    openDescription();
+                  }}
+                  role="button"
+                  tabIndex={0}
+                >
+                  {descriptionShown || taskDetail.descriptionNone}
+                </p>
+              ) : descriptionShown ? (
+                <p className="desc">{descriptionShown}</p>
               ) : (
                 <p className="desc desc--empty">{taskDetail.descriptionNone}</p>
               )}
+              <FieldMessage error={fieldErrors.description} />
             </div>
             {/*
               * **체크리스트의 읽기 범위·쓰기 범위는 이 판이 건드리지 않는다** (SPEC-007 §6 회귀 ·

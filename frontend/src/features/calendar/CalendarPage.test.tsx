@@ -38,7 +38,6 @@ function Harness() {
         canAssignTasks={false}
         canCreateWorkRequests={false}
         canManageOwnTasks
-        onAskAboutTask={noop}
         onError={noop}
         onNotice={noop}
         onRegisterRails={setRails}

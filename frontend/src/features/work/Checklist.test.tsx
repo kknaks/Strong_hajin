@@ -213,16 +213,19 @@ describe("task checklist", () => {
    * 읽으러 온 사람에게 고치는 화면을 먼저 보여 주지 않는다 — 읽을 때는 글자이고,
    * 「편집」을 눌러야 제목·시작일·기한·업무 내용 넷이 입력칸이 된다.
    */
-  it("「편집」 전에는 업무 내용이 글자이고, 누르면 입력칸이 된다", async () => {
+  /* WORK-010 2a-3 · SPEC-007 §2.10.4 — 편집 모드가 없다. 업무 내용은 누르면 그 자리에서 여러 줄 입력이 되고
+     칸 머리 「업무 내용」은 하나뿐이다(예전에는 편집 중 라벨이 두 번 섰다). */
+  it("업무 내용은 누르면 그 자리에서 여러 줄 입력이 되고, 「편집」 단추도 두 번째 라벨도 없다", async () => {
     renderDrawer([]);
     await screen.findByLabelText("체크리스트");
-    expect(document.getElementById("task-description-task-1")).toBeNull();
+    expect(screen.queryByRole("button", { name: "편집" })).toBeNull();
+    expect(document.querySelector("textarea")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "편집" }));
-    const description = document.getElementById("task-description-task-1") as HTMLTextAreaElement;
-    expect(description).toBeTruthy();
-    expect(description.rows).toBe(4); // and the description cannot grow past it
-    expect(screen.getByLabelText("제목")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "업무 내용 고치기" }));
+    const description = screen.getByRole("textbox", { name: "업무 내용 고치기" }) as HTMLTextAreaElement;
+    expect(description.tagName).toBe("TEXTAREA");
+    expect(description.rows).toBe(4);
+    expect(screen.getAllByText("업무 내용")).toHaveLength(1);
   });
 
   it("shows a compact cue on list rows only when the task actually has steps", async () => {
@@ -269,10 +272,11 @@ describe("task checklist", () => {
     fireEvent.click(within(section).getByRole("button", { name: "추가" }));
     await waitFor(() => expect(within(section).getByText("제출하기")).toBeTruthy());
 
-    fireEvent.click(screen.getByRole("button", { name: "편집" }));
-    const titleField = document.querySelector("input.meta__title-input") as HTMLInputElement;
-    fireEvent.change(titleField, { target: { value: "바로 이어서 고친 제목" } });
-    fireEvent.click(screen.getByRole("button", { name: "변경 저장" }));
+    // 제목은 그 자리에서 고치고 Enter 로 바로 저장한다 (WORK-010 2a-3).
+    const titleSlot = screen.getByLabelText("업무 제목");
+    fireEvent.click(titleSlot);
+    titleSlot.textContent = "바로 이어서 고친 제목";
+    fireEvent.keyDown(titleSlot, { key: "Enter" });
     await waitFor(() => expect(onUpdate).toHaveBeenCalled());
     expect(vi.mocked(onUpdate).mock.calls[0][0].version).toBe(2);
     expect(vi.mocked(onUpdate).mock.calls[0][1]).toEqual({ title: "바로 이어서 고친 제목" });
@@ -317,17 +321,15 @@ describe("task checklist", () => {
     vi.mocked(api.addChecklistItem).mockResolvedValue(step("i9", "제출하기", 1) as never);
     const { rerenderWith, onUpdate } = renderDrawer([]);
     const section = await screen.findByLabelText("체크리스트");
-    fireEvent.click(screen.getByRole("button", { name: "편집" }));
-    const titleField = document.querySelector("input.meta__title-input") as HTMLInputElement;
-    fireEvent.change(titleField, { target: { value: "아직 저장하지 않은 제목" } });
+    const titleSlot = screen.getByLabelText("업무 제목");
+    fireEvent.click(titleSlot);
+    titleSlot.textContent = "아직 저장하지 않은 제목";
 
-    fireEvent.change(within(section).getByLabelText("체크리스트 단계"), { target: { value: "제출하기" } });
-    fireEvent.click(within(section).getByRole("button", { name: "추가" }));
-    // The refresh comes back with the same fields at a new version: nothing the user wrote was overwritten.
+    // The refresh comes back with the same fields at a new version: nothing the user is writing is overwritten.
     rerenderWith({ ...task, version: 2 });
-
-    expect(titleField.value).toBe("아직 저장하지 않은 제목");
-    fireEvent.click(screen.getByRole("button", { name: "변경 저장" }));
+    expect(within(section).getByLabelText("체크리스트 단계")).toBeTruthy();
+    expect(titleSlot.textContent).toBe("아직 저장하지 않은 제목");
+    fireEvent.keyDown(titleSlot, { key: "Enter" });
     await waitFor(() => expect(onUpdate).toHaveBeenCalled());
     expect(vi.mocked(onUpdate).mock.calls[0][0].version).toBe(2); // and the save carries the version the server has
   });
@@ -500,7 +502,7 @@ describe("task origin", () => {
     render(
       <TaskDetailDrawer busy={false} canManage={false} onClose={vi.fn()} onError={vi.fn()} onNotice={vi.fn()} onTransition={vi.fn()} onUpdate={vi.fn()} ownerName="지호" task={requested as never} />,
     );
-    const meta = await screen.findByLabelText("업무 메타");
+    const meta = await screen.findByLabelText("메타 정보");
     expect(within(meta).getByText("담당")).toBeTruthy();
     expect(within(meta).getByText("지호")).toBeTruthy();
     const chip = await screen.findByLabelText("업무 출처");
@@ -586,7 +588,7 @@ describe("what a task detail says about where it came from", () => {
     renderTask({ origin: null });
     await screen.findByLabelText("업무 상세");
     // The holder is always named; a counterpart is only named when there is one.
-    expect(within(screen.getByLabelText("업무 메타")).getByText("담당")).toBeTruthy();
+    expect(within(screen.getByLabelText("메타 정보")).getByText("담당")).toBeTruthy();
     expect(screen.queryByText("요청자")).toBeNull();
     expect(screen.queryByText("배정자")).toBeNull();
     expect(screen.queryByText("생성자")).toBeNull();
@@ -615,14 +617,29 @@ describe("what a task detail says about where it came from", () => {
     expect(screen.queryByRole("term", { name: "요청자" })).toBeNull();
   });
 
-  it("keeps the source chip readable when only the proposal behind it survives", async () => {
+  /* SPEC-007 §2.10.8 · 결정 e — AX 제안의 출처는 「AX 제안 · 판단 보기」다. 링크 글자가 업무(초안) 제목이 아니다.
+     판단 상세를 열 수 없는 화면(`onOpenSource` 없음 — 홈·캘린더)은 「AX 제안」 글자만이다. */
+  it("keeps the source readable when only the proposal behind it survives — 「AX 제안」, never the draft title", async () => {
     renderTask({
       origin: { kind: "self_created", actor_role: null, actor: null, source: { type: "action_item", id: "a1", title: "AX가 만든 업무" } },
     });
     const chip = await screen.findByLabelText("업무 출처");
-    expect(within(chip).getByText(/AX가 만든 업무/)).toBeTruthy();
-    expect(chip.textContent).toContain("AX 제안에서 생성됨");
+    expect(chip.textContent).toBe("AX 제안");
+    expect(within(chip).queryByRole("button")).toBeNull();
+    expect(chip.textContent).not.toContain("AX가 만든 업무");
     expect(chip.textContent).not.toContain("생성자");
+  });
+
+  it("links an AX proposal source as 「판단 보기」 where the decision can be opened", async () => {
+    const onOpenSource = vi.fn();
+    renderTask(
+      { origin: { kind: "self_created", actor_role: null, actor: null, source: { type: "action_item", id: "a1", title: "AX가 만든 업무" } } },
+      onOpenSource,
+    );
+    const chip = await screen.findByLabelText("업무 출처");
+    expect(chip.textContent).toContain("AX 제안");
+    fireEvent.click(within(chip).getByRole("button", { name: "판단 보기" }));
+    expect(onOpenSource).toHaveBeenCalledWith({ type: "action_item", id: "a1", title: "AX가 만든 업무" });
   });
 });
 

@@ -28,7 +28,7 @@ import { ProjectPage } from "./features/project/ProjectPage";
 import { RelationGraphPage } from "./features/graph/RelationGraphPage";
 import { SideNav } from "./shell/SideNav";
 import { TodayPage } from "./features/today/TodayPage";
-import type { ConversationContextReference, DirectTask, OrganizationProfile, Persona, ProductSurface } from "./lib/viewModels";
+import type { ConversationContextReference, OrganizationProfile, Persona, ProductSurface } from "./lib/viewModels";
 import { type IconName } from "./ds/icons/Icon";
 import { shellNav } from "./lib/labels";
 import { forgetScreenCache, scopeScreenCache } from "./lib/screenCache";
@@ -320,22 +320,6 @@ export default function App() {
     await chat.sendCurrent(text, []);
   }
 
-  function askAboutTask(task: DirectTask) {
-    const reference: LabeledContextReference = {
-      resource_type: "task",
-      resource_id: task.task_id,
-      resource_version: task.version,
-      included: true,
-      label: task.title,
-      pinned: true,
-    };
-    setContextOptions((current) => (current.some((item) => contextKey(item) === contextKey(reference)) ? current : [reference, ...current]));
-    setSelectedContextKey(contextKey(reference));
-    // Prefill only when that conversation's draft is empty; drafts stay per conversation.
-    if (!chat.draft.trim()) chat.setDraft(`'${task.title}' 업무에 대해 알려줘.`, chat.activeConversation?.conversation_id ?? NEW_DRAFT_KEY);
-    setIsAxOpen(true);
-  }
-
   async function sendMessage(bodyOverride?: string) {
     const body = bodyOverride ?? chat.draft;
     if (!body.trim()) return;
@@ -414,7 +398,6 @@ export default function App() {
     canAssignTasks: has("task.assign"),
     canReadOrganizationWork: has("work.read.all"),
     canReadActions,
-    onAskAboutTask: askAboutTask,
     onNotice: setToast,
     onDecided: refreshProjections,
   };

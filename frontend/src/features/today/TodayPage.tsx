@@ -48,7 +48,6 @@ type TodayPageProps = {
   canCreateWorkRequests: boolean;
   canGenerateDailyReport: boolean;
   onAskAx: (message: string) => void;
-  onAskAboutTask: (task: DirectTask) => void;
   onNotice: (message: string) => void;
   /** Settles every projection an approved effect may have changed. Never throws; returns false when a read failed. */
   onDecided: () => Promise<boolean>;
@@ -70,7 +69,6 @@ export function TodayPage({
   canCreateWorkRequests,
   canGenerateDailyReport,
   onAskAx,
-  onAskAboutTask,
   onNotice,
   onDecided,
   onError,
@@ -222,19 +220,23 @@ export function TodayPage({
     }
   };
 
-  const updateTaskFields = async (task: DirectTask, patch: TaskPatch) => {
-    setBusy(true);
+  /**
+   * 업무 상세의 **인라인 저장 한 칸** (SPEC-007 §2.10.4 · WORK-010 2a-3).
+   *
+   * 저장된 업무를 **돌려준다** — 상세의 직렬 저장이 그 `version` 을 다음 요청에 싣는다. 실패는 **던진다** —
+   * 상세가 그 칸을 원래 값으로 돌리고 칸 옆에 문장을 낸다(전역 띠에 또 내지 않는다). 저장마다 성공 토스트를
+   * 띄우지 않는다. 목록은 다시 읽는다 — 다시 읽기의 실패는 저장의 실패가 아니다.
+   */
+  const updateTaskFields = async (task: DirectTask, patch: TaskPatch): Promise<DirectTask> => {
+    const saved = await updateTask(task.task_id, task.version, patch);
     try {
-      await updateTask(task.task_id, task.version, patch);
       await reload();
-      onError(null);
-      onNotice("업무 내용을 저장했습니다.");
-    } catch (error) {
-      onError(error instanceof Error ? error.message : "업무를 저장하지 못했습니다.");
-    } finally {
-      setBusy(false);
+    } catch {
+      // 저장은 이미 됐다.
     }
+    return saved;
   };
+
 
   const acceptRequest = async (request: WorkRequest) => {
     setBusy(true);
@@ -418,7 +420,6 @@ export function TodayPage({
         <TaskDetailDrawer
           busy={busy}
           canManage={canManageOwnTasks}
-          onAskAx={onAskAboutTask}
           onClose={() => setSelectedTask(null)}
           onError={onError}
           onNotice={onNotice}

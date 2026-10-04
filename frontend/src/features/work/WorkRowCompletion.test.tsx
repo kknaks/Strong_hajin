@@ -91,7 +91,6 @@ function renderPage(work: DirectTask[], detail?: Record<string, unknown>) {
     canCreateWorkRequests: true,
     canDecideWorkRequests: true,
     canReadActions: true,
-    onAskAboutTask: vi.fn(),
     onNotice: vi.fn(),
     onError: vi.fn(),
     onDecided: vi.fn().mockResolvedValue(true),

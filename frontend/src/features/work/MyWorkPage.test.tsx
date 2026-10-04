@@ -105,7 +105,6 @@ function renderPage(overrides: Record<string, unknown> = {}, mocks: { actions?: 
     canCreateWorkRequests: true,
     canDecideWorkRequests: true,
     canReadActions: true,
-    onAskAboutTask: vi.fn(),
     onNotice: vi.fn(),
     onError: vi.fn(),
     onDecided: vi.fn().mockResolvedValue(true),
@@ -562,22 +561,17 @@ describe("what the list says about dates", () => {
     /* 바퀴 5a J-6: 목록이 시안대로 5열이 되면서 «시작일 열» 이 빠졌다. 값은 사라지지 않았고
        상세로 자리를 옮겼을 뿐이라(거기서는 고칠 수도 있다), 같은 사실을 그 자리에서 검사한다. */
     fireEvent.click(await screen.findByText("시작일이 있는 업무"));
-    /* 업무 상세가 다시 그려지면서 날짜는 **「편집」 안에서만** 입력칸이 된다 (SPEC-007 §2.2).
-       읽을 때는 메타 한 줄의 `시작` 이고, 고칠 때는 이 칸이다 — 값이 옮겨 간 것은 아니다. */
-    expect(within(await screen.findByLabelText("업무 메타")).getByText("2026/09/01")).toBeTruthy();
-    fireEvent.click(await screen.findByRole("button", { name: "편집" }));
-    expect((await screen.findByLabelText("시작 예정일")).textContent).toContain("2026/09/01");
+    /* 업무 상세의 메타 정보에서 시작 예정일은 **그 자리에서 고치는 날짜 칸**이다 (SPEC-007 §2.10.2 · WORK-010 2a) —
+       편집 모드가 없으므로 읽을 때와 고칠 때가 같은 칸이다. */
+    const meta = await screen.findByLabelText("메타 정보");
+    expect(within(meta).getByRole("button", { name: "시작 예정일 달력 열기" }).textContent).toContain("2026/09/01");
     fireEvent.click(screen.getByRole("button", { name: "상세 닫기" }));
 
     // A task nobody scheduled has no start date. The day it was created is not one.
     fireEvent.click(await screen.findByText("시작일이 없는 업무"));
     // 아무도 잡아 주지 않은 업무에는 시작일이 없다. 만든 날은 시작일이 아니다 —
-    // **값이 없는 메타 칸은 아예 서지 않으므로** 「시작」이라는 글자부터 없다.
-    const meta = await screen.findByLabelText("업무 메타");
-    expect(within(meta).queryByText("시작 예정일")).toBeNull();
-    expect(meta.textContent).not.toContain("시작 예정일");
-    fireEvent.click(await screen.findByRole("button", { name: "편집" }));
-    const without = await screen.findByLabelText("시작 예정일");
+    // 고칠 수 있는 화면이라 행은 서지만(처음 정할 자리) **값은 비어 있다**.
+    const without = within(await screen.findByLabelText("메타 정보")).getByRole("button", { name: "시작 예정일 달력 열기" });
     expect(without.textContent).not.toContain("2026/08/20");
     expect(without.textContent).toContain("YYYY/MM/DD");
   });
@@ -791,7 +785,6 @@ describe("머리의 일일보고 (바퀴 5c)", () => {
       canReadActions: true,
       canGenerateDailyReport: true,
       onNavigate: vi.fn(),
-      onAskAboutTask: vi.fn(),
       onNotice: vi.fn(),
       onError: vi.fn(),
       onDecided: vi.fn().mockResolvedValue(true),

@@ -43,7 +43,6 @@ const props = {
   canCreateWorkRequests: false,
   canGenerateDailyReport: false,
   onAskAx: noop,
-  onAskAboutTask: noop,
   onNotice: noop,
   onDecided: async () => true,
   onError: noop,

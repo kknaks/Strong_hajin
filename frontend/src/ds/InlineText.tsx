@@ -201,6 +201,9 @@ export function InlineText({
         }
         if (event.key === "Escape") {
           event.preventDefault();
+          /* 이 Esc 는 «고치기 취소» 다 — 이 칸을 품은 겹(모달·드로어)까지 닫으면 안 된다. 겹의 Esc 는
+             window 에서 받으므로(`useEscape`) 여기서 전파를 끊는다. 닫힌 칸의 Esc 는 그대로 겹에 간다. */
+          event.stopPropagation();
           cancelled.current = true;
           close();
         }

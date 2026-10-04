@@ -364,6 +364,8 @@ export const taskDetail = {
   blockMaterials: "자료",
   blockProgress: "진행과 판단",
   blockHistory: "이력",
+  /** 헤더 바로 아래 첫 구역 — 라벨·값 2열 격자 (SPEC-007 §2.10.2 · WORK-010 2a-2). */
+  blockMeta: "메타 정보",
 
   /* 업무 메타 한 줄 (§2.2 · 시안 `:134-145`) */
   metaAssignee: "담당",
@@ -375,9 +377,25 @@ export const taskDetail = {
   /** 화면 라벨은 「결재」이고 계약의 이름은 승인자(`approver_id`)다 (SPEC-001 §7 OQ-N). */
   metaApprover: "결재",
   metaCc: "참조",
-  edit: "편집",
-  editDone: "편집 끝내기",
-  ax: "AX",
+  /* 메타 정보 격자의 행 (SPEC-007 §2.10.2) */
+  metaState: "진행 상태",
+  metaVersion: "버전",
+  metaOrigin: "출처",
+  /** 담당 변경 제안이 대기 중일 때 담당 값 옆 (§2.10.2 행 3). */
+  assigneeProposed: "변경 제안 중",
+  /** AX 제안에서 생긴 업무의 출처 — 링크 글자가 업무 제목이 아니라 「판단 보기」다 (§2.10.8 · 결정 e). */
+  originAx: "AX 제안",
+  originOpenDecision: "판단 보기",
+
+  /* 인라인 즉시 저장 (SPEC-007 §2.10.4 · WORK-010 2a-3) — 편집 모드·「변경 저장」이 없다 */
+  /** 머리 제목을 그 자리에서 고치는 칸의 읽어 주는 이름. */
+  titleEdit: "업무 제목",
+  /** 업무 내용을 그 자리에서 고치는 칸의 읽어 주는 이름. */
+  descriptionEdit: "업무 내용 고치기",
+  descriptionPlaceholder: "무엇을, 왜, 어디까지 할지 적어 두면 요청자와 AX가 같은 맥락을 봅니다.",
+  /** 422 `task version is stale` — 다시 보내지 않고 최신 값으로 다시 읽었다. */
+  inlineStale: "다른 곳에서 바뀌어 최신 값으로 다시 불렀습니다.",
+  inlineFailed: "저장하지 못했습니다.",
 
   /* 업무 정보 (§2.3 · 시안 `:152-164`) */
   description: "업무 내용",
@@ -442,17 +460,6 @@ export const taskDetail = {
   /** 선행도 **건수 한 줄**이다 — 빈 줄을 늘어놓지 않는다 (§2.4.3 W-1 · (제안)). */
   hiddenPreceding: (count: number): string => `🔒 비공개 선행 업무 ${count}건`,
 
-  /* 시작 막힘 배너 (§2.6 · 시안 `:268-271`) */
-  blockedHeading: "시작할 수 없습니다",
-  /**
-   * 막는 선행의 제목 — **최대 셋**까지 (§2.6). 뒤에 붙는 말과 **갈라 둔다**:
-   * 배너가 **제목만 굵게** 내기 때문이다 (시안 `TaskDetail.html:270`). 한 문장으로 두면
-   * 강조할 조각을 고를 수가 없다.
-   */
-  blockedTitles: (titles: string[]): string => titles.slice(0, 3).join(", "),
-  blockedTitlesSuffix: "이 끝나지 않았습니다.",
-  /** 제목을 쓸 수 없는 선행이 섞였을 때 뒤에 덧붙인다 (§2.6). */
-  blockedHiddenSuffix: (count: number): string => `끝나지 않은 선행 ${count}건`,
   /** 하위는 **완료**를 막는다 — 배너를 공유하지 않는다 (D-11). */
   childrenBlockHeading: "아직 끝나지 않은 하위가 있습니다",
 
