@@ -100,7 +100,7 @@
 .scax-modal--task-detail .scax-modal__head { padding-bottom: var(--scax-space-300); }
 .scax-modal--task-detail .scax-modal__body { padding-top: var(--scax-space-300); }
 /* 제목 칸 옆 실패 문장 — 머리 활자(17px semibold)를 물려받지 않고 필드 오류 활자로 선다. */
-.scax-modal--task-detail .scax-modal__title .scax-field__error { display: block; margin-top: var(--scax-space-100); font-size: var(--scax-text-caption1-size); font-weight: var(--scax-fw-regular); }
+.scax-modal--task-detail .scax-modal__title :is(.scax-field__error, .scax-field__hint) { display: block; margin-top: var(--scax-space-100); font-size: var(--scax-text-caption1-size); font-weight: var(--scax-fw-regular); }
 
 /* ── 메타 정보 — 라벨·값 2열 격자 (SPEC-007 §2.10.2 · WORK-010 2a-2) ─────────────────
  *
@@ -109,6 +109,9 @@
 .scax-td .meta-info > div { min-height: 36px; padding: var(--scax-space-100) var(--scax-space-300); font-size: 13px; }
 .scax-td .meta-info dt { font-size: 12px; }
 .scax-td .meta-info dd { display: flex; flex-direction: column; align-items: flex-start; gap: var(--scax-space-100); }
+/* 걸린 일 상자 — 메타 정보 바로 아래, 있을 때만 (SPEC-007 §2.10.3 · WORK-010 2b-3). 「진행과 판단」 구역 머리는 없다. */
+.scax-td .task-blockers { display: grid; gap: var(--scax-space-250); margin-top: var(--scax-space-400); }
+.scax-td .task-blockers > .drawer-section.notice { margin-top: 0; }
 /* 마감일 값 + 「마감일 초과」 배지는 한 줄이다 (OQ-711). */
 .scax-td .meta-info__value { display: flex; align-items: center; gap: var(--scax-space-200); }
 /* 날짜 칸은 값 칸의 폭을 다 쓰지 않는다 — 날짜 하나가 들어갈 폭이면 된다. */
@@ -122,9 +125,14 @@
 /* ── 업무 정보 (시안 `:90-94`) ───────────────────────────────────────────── */
 .scax-td .desc { margin: 0; font-size: 13px; line-height: 1.65; color: var(--scax-color-ink-alt); white-space: pre-wrap; }
 .scax-td .desc--empty { color: var(--scax-color-ink-disabled); }
-/* 그 자리에서 고치는 업무 내용 — 누를 수 있다는 것만 커서가 말한다 (§2.10.4). 모양은 읽기와 같다. */
-.scax-td .desc--editable { cursor: text; }
+/* 그 자리에서 고치는 업무 내용 — 누르면 같은 자리에 `textarea.desc` 가 선다 (§2.10.4 · WORK-010 2b W3).
+   **글자가 뛰지 않게** 읽는 칸이 입력과 같은 상자(투명한 1px 선 + 안여백 8·10)를 미리 쥔다 — 열리면 선만 보인다.
+   글자 크기·줄 간격은 둘 다 `.desc`(13px · 1.65)다. */
+.scax-td .desc--editable { cursor: text; padding: var(--scax-space-200) var(--scax-space-250); border: 1px solid transparent; border-radius: 8px; }
+.scax-td .desc--editable:hover { border-color: var(--scax-color-line); }
 .scax-td textarea.desc {
+  /* 전역 textarea 의 최소 높이·글자 크기를 이 칸의 것으로 — 읽는 칸과 같은 활자다. */
+  min-height: 0; font-size: 13px; line-height: 1.65;
   width: 100%; padding: 8px 10px; border: 1px solid var(--scax-color-line-strong); border-radius: 8px;
   background: var(--scax-color-surface); font-family: inherit; resize: vertical;
 }

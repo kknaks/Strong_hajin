@@ -54,6 +54,7 @@ vi.mock("../../lib/api", () => ({
 
 import * as api from "../../lib/api";
 import { TaskDetailDrawer } from "./WorkModals";
+import { stateOptions } from "./taskDetailHarness.test-utils";
 
 /**
  * 업무 상세 — 덩어리 여섯과 연관 업무 2열 (WORK-007 F-1·F-2·F-3 · SPEC-007 §2).
@@ -143,8 +144,8 @@ describe("F-1 · 덩어리 여섯과 선행 배선", () => {
     const cell = await screen.findByLabelText("선행 업무");
     await waitFor(() => expect(within(cell).getByRole("button", { name: "설계 확정 열기" })).toBeTruthy());
     expect(cell.querySelector(".cell__n")!.textContent).toBe("1 · 미완 1");
-    // 그 값으로 게이트도 함께 닫힌다 — 두 사실이 한 재료에서 나온다.
-    expect((screen.getByRole("button", { name: "시작" }) as HTMLButtonElement).disabled).toBe(true);
+    // 상세는 선행으로 미리 막지 않는다 — 셀렉트에 진행 중이 있고, 막는 것은 서버다 (R5 · SPEC-007 §2.10.5).
+    expect(await stateOptions()).toContain("진행 중");
   });
 
   /**
@@ -183,7 +184,9 @@ describe("F-1 · 덩어리 여섯과 선행 배선", () => {
    * `진행과 판단` 에 서고 하위 **관계**는 `연관 업무` 에 따로 선다 — **같은 값을 두 자리에서
    * 다르게 쓴다**: 관계는 구조, 이것은 지금 못 끝내는 이유다.
    */
-  it("상태·판단 구획 여덟이 「진행과 판단」 안에 그대로 있다", async () => {
+  /* WORK-010 2b-3 · SPEC-007 §2.10.3 — 「진행과 판단」 구역은 없다. 구획 중 조건이 참인 것만 메타 정보 바로 아래
+     **걸린 일 상자**로 선다(순서는 SPEC 표). 「담당자 변경」 단추는 담당 셀렉트로, 막힘 사유 입력은 작은 모달로 갔다. */
+  it("걸린 일 상자 여섯이 메타 정보 바로 아래 SPEC 순서로 서고, 「진행과 판단」·「담당자 변경」은 없다", async () => {
     vi.mocked(api.getTask).mockResolvedValue(
       detail({
         block_reason: "외부 응답을 기다리는 중",
@@ -199,18 +202,40 @@ describe("F-1 · 덩어리 여섯과 선행 배선", () => {
     vi.mocked(api.getTaskProposals).mockResolvedValue({
       pending: [{ proposal_id: "p1", kind: "cancellation", reason: "범위가 바뀌었습니다", proposed_by: "jiho", payload: null }],
     } as never);
-    renderDrawer({ canAssign: true, personaId: "mina" });
+    vi.mocked(api.getTaskAssignmentCandidates).mockResolvedValue([] as never);
+    renderDrawer({ canAssign: true, personaId: "mina", personas: [{ id: "mina", display_name: "민아 (구성원)" }, { id: "jiho", display_name: "지호 (팀장)" }] });
 
-    const block = await screen.findByLabelText("진행과 판단");
-    for (const name of ["완료 확인 대기", "보완 필요", "담당 변경 대기", "응답 대기 제안", "완료를 막는 하위"]) {
-      await waitFor(() => expect(within(block).getByLabelText(name)).toBeTruthy());
-    }
-    expect(within(block).getByText("막힘 사유")).toBeTruthy();
-    expect(within(block).getByRole("button", { name: "담당자 변경" })).toBeTruthy();
+    const group = await screen.findByRole("group", { name: "걸린 일" });
+    await waitFor(() =>
+      expect([...group.querySelectorAll(":scope > section")].map((box) => box.getAttribute("aria-label"))).toEqual([
+        "막힘 사유",
+        "완료 확인 대기",
+        "보완 필요",
+        "담당 변경 대기",
+        "응답 대기 제안",
+        "완료를 막는 하위",
+      ]),
+    );
+    // 메타 정보 «바로 아래»다.
+    expect(screen.getByLabelText("메타 정보").nextElementSibling).toBe(group);
+    expect(screen.queryByLabelText("진행과 판단")).toBeNull();
+    expect(screen.queryByText("진행과 판단")).toBeNull();
+    expect(screen.queryByRole("button", { name: "담당자 변경" })).toBeNull();
+    // 담당 변경 대기 중이면 담당 칸에 대상이 서고 셀렉트는 열리지 않는다(§2.10.6).
+    expect(within(screen.getByLabelText("메타 정보")).getByText("지호에게 변경 제안 중")).toBeTruthy();
     // 이력은 자기 덩어리를 혼자 쓴다.
     expect(within(screen.getByLabelText("이력")).getByLabelText("활동·이력")).toBeTruthy();
     // 하위 **관계**는 여전히 `연관 업무` 쪽이다 — 두 자리가 같은 값을 다르게 쓴다.
     expect(within(screen.getByLabelText("연관 업무")).getByLabelText("하위 업무")).toBeTruthy();
+  });
+
+  it("걸린 일이 하나도 없으면 아무것도 서지 않는다 — 제목도 빈 문구도 없다", async () => {
+    vi.mocked(api.getTask).mockResolvedValue(detail() as never);
+    vi.mocked(api.getTaskAssignments).mockResolvedValue(null as never);
+    vi.mocked(api.getTaskProposals).mockResolvedValue(null as never);
+    renderDrawer();
+    await screen.findByLabelText("선행 업무");
+    expect(screen.queryByRole("group", { name: "걸린 일" })).toBeNull();
   });
 
   /** **「산출물」을 이 화면에서만 걷는다** (D-05 · OQ-705). 저장 쪽 값 이름은 그대로다. */
@@ -348,7 +373,7 @@ describe("F-2 · 연관 업무 2열 여섯 칸", () => {
     await waitFor(() => expect(cell.querySelector(".cell__n")!.textContent).toBe("1 · 미완 1"));
     expect(within(cell).getByText("🔒 비공개 선행 업무 1건")).toBeTruthy();
     expect(screen.queryByLabelText("시작할 수 없습니다")).toBeNull();
-    expect((screen.getByRole("button", { name: "시작" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(await stateOptions()).toContain("진행 중");
   });
 
   /** **취소된 선행은 막지 않는다** — 그 일은 더 기다릴 것이 없다 (SPEC-001 계승). */
@@ -366,7 +391,7 @@ describe("F-2 · 연관 업무 2열 여섯 칸", () => {
     const cell = await screen.findByLabelText("선행 업무");
     await waitFor(() => expect(cell.querySelector(".cell__n")!.textContent).toBe("2 · 모두 완료"));
     expect(screen.queryByLabelText("시작할 수 없습니다")).toBeNull();
-    expect((screen.getByRole("button", { name: "시작" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(await stateOptions()).toContain("진행 중");
   });
 
   /** 여섯 칸 전부 **줄을 누르면 그 업무가 열린다** (§2.4.1). */

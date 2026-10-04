@@ -42,6 +42,7 @@ vi.mock("../../lib/api", () => ({
 
 import * as api from "../../lib/api";
 import { TaskDetailDrawer } from "./WorkModals";
+import { chooseProposal, chooseState, proposalItems, stateOptions } from "./taskDetailHarness.test-utils";
 
 const task: DirectTask = { task_id: "task-1", title: "분기 보고 준비", state: "open", version: 1, block_reason: null };
 
@@ -128,6 +129,8 @@ describe("task checklist", () => {
     fireEvent.keyDown(field, { key: "Enter", repeat: true });
     fireEvent.click(within(section).getByRole("button", { name: "추가" }));
 
+    // 체크리스트 명령도 **인라인 저장과 같은 줄**에 선다(WORK-010 2b W1) — 줄을 지나 한 번만 나간다.
+    await waitFor(() => expect(api.addChecklistItem).toHaveBeenCalledTimes(1));
     expect(api.addChecklistItem).toHaveBeenCalledTimes(1);
     expect(vi.mocked(api.addChecklistItem).mock.calls[0]).toEqual(["task-1", "제출하기"]);
     await waitFor(() => expect((field as HTMLInputElement).value).toBe(""));
@@ -427,7 +430,7 @@ describe("task checklist", () => {
     );
     await screen.findByLabelText("체크리스트");
 
-    fireEvent.click(screen.getByRole("button", { name: "완료 처리" }));
+    chooseState("완료");
     expect(onTransition).not.toHaveBeenCalled();
     // It says what is unfinished rather than refusing, because whether that matters is the person's call.
     expect(screen.getByText(/아직 끝나지 않은 단계가 1개/)).toBeTruthy();
@@ -852,27 +855,50 @@ describe("changing who holds the work", () => {
     return { onNotice };
   }
 
-  it("is its own command, never a field on the task form", async () => {
-    vi.mocked(api.getTaskAssignmentCandidates).mockResolvedValue([{ id: "jiho", display_name: "지호 (팀장)" }] as never);
-    renderDrawer({ canAssign: true });
-    await screen.findByLabelText("업무 상세");
-    // The edit form has no assignee input; moving the work is a separate action.
-    expect(screen.queryByLabelText("담당자 변경 대상")).toBeNull();
-    expect(screen.getByRole("button", { name: "담당자 변경" })).toBeTruthy();
+  /* ── WORK-010 2b-2 · SPEC-007 §2.10.6 — 담당은 메타 정보의 **셀렉트**다. 고르면 변경 «제안» 작은 모달 ── */
+  const candidates = [{ id: "jiho", display_name: "지호 (팀장)" }];
+  const assigned = { ...task, assignee: { member_id: "mina", display_name: "민아 (구성원)" } };
+
+  function pickTarget(name: string) {
+    fireEvent.click(screen.getByRole("button", { name: "담당 변경 제안" }));
+    fireEvent.click(screen.getByRole("option", { name }));
+  }
+
+  async function openHandoverModal(props: Record<string, unknown> = {}) {
+    vi.mocked(api.getTaskAssignmentCandidates).mockResolvedValue(candidates as never);
+    const rendered = renderDrawer({ canAssign: true, task: assigned, ...props });
+    await screen.findByRole("button", { name: "담당 변경 제안" });
+    await waitFor(() => expect(api.getTaskAssignmentCandidates).toHaveBeenCalled());
+    pickTarget("지호");
+    return { ...rendered, modal: await screen.findByRole("dialog", { name: "담당자 변경" }) };
+  }
+
+  it("is its own command — a select in the meta info, and there is no 「담당자 변경」 button any more", async () => {
+    vi.mocked(api.getTaskAssignmentCandidates).mockResolvedValue(candidates as never);
+    renderDrawer({ canAssign: true, task: assigned });
+    const meta = await screen.findByLabelText("메타 정보");
+    expect(within(meta).getByRole("button", { name: "담당 변경 제안" }).textContent).toContain("민아");
+    expect(screen.queryByRole("button", { name: "담당자 변경" })).toBeNull();
+    expect(screen.queryByLabelText("진행과 판단")).toBeNull();
   });
 
-  it("moves the work to someone else with a reason and the version it was shown", async () => {
-    vi.mocked(api.getTaskAssignmentCandidates).mockResolvedValue([{ id: "jiho", display_name: "지호 (팀장)" }] as never);
-    vi.mocked(api.reassignTask).mockResolvedValue({ assignment_id: "as-2", assignee_id: "jiho" } as never);
-    const onChanged = vi.fn();
-    const { onNotice } = renderDrawer({ canAssign: true, onChanged });
+  it("picking the current holder again does nothing", async () => {
+    vi.mocked(api.getTaskAssignmentCandidates).mockResolvedValue([...candidates, { id: "mina", display_name: "민아 (구성원)" }] as never);
+    renderDrawer({ canAssign: true, task: assigned });
+    await screen.findByRole("button", { name: "담당 변경 제안" });
+    await waitFor(() => expect(api.getTaskAssignmentCandidates).toHaveBeenCalled());
+    pickTarget("민아");
+    expect(screen.queryByRole("dialog", { name: "담당자 변경" })).toBeNull();
+    expect(api.reassignTask).not.toHaveBeenCalled();
+  });
 
-    fireEvent.click(await screen.findByRole("button", { name: "담당자 변경" }));
-    fireEvent.click(await screen.findByLabelText("담당자 변경 대상"));
-    fireEvent.click(screen.getByRole("option", { name: "지호" }));
-    fireEvent.change(screen.getByLabelText("담당자 변경 사유"), { target: { value: "제가 이어서 합니다" } });
+  it("proposes the move with an optional reason and the version it was shown", async () => {
+    vi.mocked(api.reassignTask).mockResolvedValue({ assignment_id: "as-2", assignee_id: "jiho" } as never);
+    const { modal, onNotice } = await openHandoverModal();
+    expect((within(modal).getByLabelText("담당자 변경 사유") as HTMLInputElement).value).toBe("");
+    fireEvent.change(within(modal).getByLabelText("담당자 변경 사유"), { target: { value: "제가 이어서 합니다" } });
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "변경" }));
+      fireEvent.click(within(modal).getByRole("button", { name: "변경" }));
     });
 
     await waitFor(() => expect(api.reassignTask).toHaveBeenCalledTimes(1));
@@ -881,32 +907,31 @@ describe("changing who holds the work", () => {
     expect(onNotice).toHaveBeenCalledWith(expect.stringContaining("담당 변경을 제안했습니다"));
   });
 
-  /* ── WORK-008 F-01 · SPEC-007 §2.9 — 담당자 변경은 업무 상세 위의 작은 모달이다 ── */
-  async function openHandoverModal() {
-    vi.mocked(api.getTaskAssignmentCandidates).mockResolvedValue([{ id: "jiho", display_name: "지호 (팀장)" }] as never);
-    const rendered = renderDrawer({ canAssign: true });
-    fireEvent.click(await screen.findByRole("button", { name: "담당자 변경" }));
-    return { ...rendered, modal: await screen.findByRole("dialog", { name: "담당자 변경" }) };
-  }
-
-  it("opens a small modal over the detail instead of unfolding a form inside it", async () => {
+  it("the reason is optional — an empty one still sends", async () => {
+    vi.mocked(api.reassignTask).mockResolvedValue({ assignment_id: "as-2", assignee_id: "jiho" } as never);
+    vi.mocked(api.getTaskAssignments).mockResolvedValue(null as never);
     const { modal } = await openHandoverModal();
-    expect(modal.className).toContain("scax-modal--sm");
-    // The detail stays underneath; the fields live in the modal, not in the detail body.
-    const detail = screen.getByRole("dialog", { name: "업무 상세" });
-    expect(within(detail).queryByLabelText("담당자 변경 사유")).toBeNull();
-    expect(within(modal).getByLabelText("담당자 변경 대상")).toBeTruthy();
-    expect((within(modal).getByLabelText("담당자 변경 사유") as HTMLInputElement).value).toBe("");
-    expect(within(modal).getByRole("button", { name: "변경" })).toBeTruthy();
-    expect(within(modal).getByRole("button", { name: "취소" })).toBeTruthy();
-    expect(document.querySelector(".link-draft #task-handover-reason-task-1")).toBeNull();
+    const detailReads = vi.mocked(api.getTask).mock.calls.length;
+    const assignmentReads = vi.mocked(api.getTaskAssignments).mock.calls.length;
+    await act(async () => {
+      fireEvent.click(within(modal).getByRole("button", { name: "변경" }));
+    });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "담당자 변경" })).toBeNull());
+    expect(vi.mocked(api.reassignTask).mock.calls[0]).toEqual(["task-1", 1, "jiho", undefined]);
+    // 성공하면 상세와 담당 관계를 **다시 읽는다** — 낙관적 갱신을 하지 않는다.
+    await waitFor(() => expect(vi.mocked(api.getTask).mock.calls.length).toBeGreaterThan(detailReads));
+    await waitFor(() => expect(vi.mocked(api.getTaskAssignments).mock.calls.length).toBeGreaterThan(assignmentReads));
+    expect(screen.getByRole("dialog", { name: "업무 상세" })).toBeTruthy();
   });
 
-  it("Escape closes only the small modal — the detail stays", async () => {
+  it("Escape closes only the small modal — nothing is sent and the detail stays", async () => {
     await openHandoverModal();
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "담당자 변경" })).toBeNull());
     expect(screen.getByRole("dialog", { name: "업무 상세" })).toBeTruthy();
+    expect(api.reassignTask).not.toHaveBeenCalled();
+    // 셀렉트는 원래 담당을 가리킨다
+    expect(screen.getByRole("button", { name: "담당 변경 제안" }).textContent).toContain("민아");
   });
 
   it("a click outside closes only the small modal — the detail stays", async () => {
@@ -917,59 +942,38 @@ describe("changing who holds the work", () => {
   });
 
   it("a refusal is said inside the small modal and what was typed stays", async () => {
-    vi.mocked(api.reassignTask).mockRejectedValue(new Error("이 사람에게는 옮길 수 없습니다."));
+    vi.mocked(api.reassignTask).mockRejectedValue(new Error("이미 대기 중인 담당 변경이 있습니다."));
     const { modal } = await openHandoverModal();
-    fireEvent.click(within(modal).getByLabelText("담당자 변경 대상"));
-    fireEvent.click(screen.getByRole("option", { name: "지호" }));
     fireEvent.change(within(modal).getByLabelText("담당자 변경 사유"), { target: { value: "제가 이어서 합니다" } });
     await act(async () => {
       fireEvent.click(within(modal).getByRole("button", { name: "변경" }));
     });
-    expect(await within(modal).findByRole("alert")).toHaveProperty("textContent", "이 사람에게는 옮길 수 없습니다.");
+    expect(await within(modal).findByRole("alert")).toHaveProperty("textContent", "이미 대기 중인 담당 변경이 있습니다.");
     expect(screen.getByRole("dialog", { name: "담당자 변경" })).toBe(modal);
     expect((within(modal).getByLabelText("담당자 변경 사유") as HTMLInputElement).value).toBe("제가 이어서 합니다");
   });
 
-  it("a missing target is said under the target field, not under the reason", async () => {
-    const { modal } = await openHandoverModal();
-    await act(async () => {
-      fireEvent.click(within(modal).getByRole("button", { name: "변경" }));
+  it("while a proposal is pending the select is gone and the value says who it was offered to", async () => {
+    vi.mocked(api.getTaskAssignments).mockResolvedValue({ current: { assignee_id: "mina" }, pending: { assignee_id: "jiho", decline_reason: null } } as never);
+    renderDrawer({
+      canAssign: true,
+      task: assigned,
+      personas: [
+        { id: "mina", display_name: "민아 (구성원)" },
+        { id: "jiho", display_name: "지호 (팀장)" },
+      ],
     });
-    const alert = within(modal).getByRole("alert");
-    expect(alert.textContent).toBe("옮길 담당자를 골라 주세요.");
-    // 대상 칸(그 field)의 말이다 — 사유 칸 field 에 서지 않는다.
-    const targetField = within(modal).getByLabelText("담당자 변경 대상").closest(".scax-field") as HTMLElement;
-    const reasonField = within(modal).getByLabelText("담당자 변경 사유").closest(".scax-field") as HTMLElement;
-    expect(targetField.contains(alert)).toBe(true);
-    expect(reasonField.contains(alert)).toBe(false);
-    expect(api.reassignTask).not.toHaveBeenCalled();
-    // 대상을 고르면 그 말은 걷힌다.
-    fireEvent.click(within(modal).getByLabelText("담당자 변경 대상"));
-    fireEvent.click(screen.getByRole("option", { name: "지호" }));
-    expect(within(modal).queryByRole("alert")).toBeNull();
+    const meta = await screen.findByLabelText("메타 정보");
+    await waitFor(() => expect(within(meta).getByText("지호에게 변경 제안 중")).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "담당 변경 제안" })).toBeNull();
+    // 「담당 변경 대기」 상자가 메타 정보 아래 선다
+    expect(screen.getByLabelText("담당 변경 대기")).toBeTruthy();
   });
 
-  it("after it lands the small modal closes and the detail is read again", async () => {
-    vi.mocked(api.reassignTask).mockResolvedValue({ assignment_id: "as-2", assignee_id: "jiho" } as never);
-    vi.mocked(api.getTaskAssignments).mockResolvedValue(null as never);
-    const { modal } = await openHandoverModal();
-    fireEvent.click(within(modal).getByLabelText("담당자 변경 대상"));
-    fireEvent.click(screen.getByRole("option", { name: "지호" }));
-    const detailReads = vi.mocked(api.getTask).mock.calls.length;
-    const assignmentReads = vi.mocked(api.getTaskAssignments).mock.calls.length;
-    await act(async () => {
-      fireEvent.click(within(modal).getByRole("button", { name: "변경" }));
-    });
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "담당자 변경" })).toBeNull());
-    expect(vi.mocked(api.reassignTask).mock.calls[0]).toEqual(["task-1", 1, "jiho", undefined]);
-    await waitFor(() => expect(vi.mocked(api.getTask).mock.calls.length).toBeGreaterThan(detailReads));
-    await waitFor(() => expect(vi.mocked(api.getTaskAssignments).mock.calls.length).toBeGreaterThan(assignmentReads));
-    expect(screen.getByRole("dialog", { name: "업무 상세" })).toBeTruthy();
-  });
-
-  it("is not offered to someone who may not put people on work", async () => {
-    renderDrawer({ canAssign: false });
-    await screen.findByLabelText("업무 상세");
-    expect(screen.queryByRole("button", { name: "담당자 변경" })).toBeNull();
+  it("is not offered to someone who may not put people on work — the holder is a plain name", async () => {
+    renderDrawer({ canAssign: false, task: assigned });
+    const meta = await screen.findByLabelText("메타 정보");
+    expect(screen.queryByRole("button", { name: "담당 변경 제안" })).toBeNull();
+    expect(within(meta).getByText("민아")).toBeTruthy();
   });
 });

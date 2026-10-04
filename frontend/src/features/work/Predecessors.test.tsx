@@ -53,6 +53,7 @@ vi.mock("../../lib/api", () => ({
 
 import * as api from "../../lib/api";
 import { TaskDetailDrawer, TaskQuickActions } from "./WorkModals";
+import { chooseState, stateOptions } from "./taskDetailHarness.test-utils";
 
 const base = {
   task_id: "task-1",
@@ -140,31 +141,36 @@ describe("선행업무 표시와 시작 게이트", () => {
     expect(section.querySelector(".cell__n")!.textContent).toBe("2 · 미완 2");
   });
 
-  it("미완 선행이 있으면 [시작] 과 [완료] 가 «누르기 전에» 막히고 막는 이름이 선다", async () => {
+  /*
+   * R5 · SPEC-007 §2.10.5 「선행이 안 끝났을 때」 — **업무 상세는 미리 막지 않는다.** 배너도 푸터 문구도 없고
+   * 셀렉트에 `진행 중`·`완료` 가 그대로 있다. 고르면 보내고, 서버가 409 로 거절하면 그 문장이 부르는 쪽의
+   * 공통 오류 토스트로 간다(여기서는 `onTransition` 이 거절을 돌려준다). 막는 규칙은 서버 하나다.
+   * 목록 행(`TaskQuickActions`)의 미리 막기는 그대로다(W8) — 아래 describe 가 지킨다.
+   */
+  it("미완 선행이 있어도 상세는 미리 막지 않는다 — 셀렉트에 진행 중·완료가 있고 고르면 보낸다", async () => {
     const { onTransition } = renderDetail(withPreceding([{ task_id: "p-1", title: "설계 확정", state: "in_progress" }]));
+    vi.mocked(onTransition).mockResolvedValue(false as never);
     await screen.findByLabelText("체크리스트");
 
-    const start = screen.getByRole("button", { name: "시작" }) as HTMLButtonElement;
-    const complete = screen.getByRole("button", { name: "완료 처리" }) as HTMLButtonElement;
-    expect(start.disabled).toBe(true);
-    // `시작 전 → 완료` 직행이 열려 있으면 그것이 시작 게이트의 우회로가 된다.
-    expect(complete.disabled).toBe(true);
-    fireEvent.click(start);
-    expect(onTransition).not.toHaveBeenCalled();
+    expect(await stateOptions()).toEqual(["시작 전", "진행 중", "완료", "업무 취소"]);
+    expect(screen.queryByText("시작할 수 없습니다")).toBeNull();
+    expect(document.querySelector(".scax-blocked-note")).toBeNull();
+    expect(screen.queryByText(/끝나지 않은 선행업무가 있습니다/)).toBeNull();
 
-    expect(screen.getAllByText("끝나지 않은 선행업무가 있습니다: 설계 확정").length).toBeGreaterThan(0);
+    chooseState("진행 중");
+    await waitFor(() => expect(onTransition).toHaveBeenCalledWith(expect.objectContaining({ task_id: "task-1" }), "start"));
+    // 거절되면 셀렉트는 원래 값(시작 전)이다 — 낙관적으로 바꾸지 않는다.
+    expect(screen.getByRole("button", { name: "진행 상태 바꾸기" }).textContent).toContain("시작 전");
   });
 
-  it("취소된 선행은 막지 않는다 — 전부 완료·취소면 버튼이 열린다", async () => {
+  it("취소된 선행은 막지 않는다 — 전부 완료·취소면 셀렉트로 시작한다", async () => {
     const { onTransition } = renderDetail(withPreceding([
       { task_id: "p-1", title: "접은 설계", state: "cancelled" },
       { task_id: "p-2", title: "예산 승인", state: "done" },
     ]));
     await screen.findByLabelText("체크리스트");
 
-    const start = screen.getByRole("button", { name: "시작" }) as HTMLButtonElement;
-    expect(start.disabled).toBe(false);
-    fireEvent.click(start);
+    chooseState("진행 중");
     await waitFor(() => expect(onTransition).toHaveBeenCalledWith(expect.objectContaining({ task_id: "task-1" }), "start"));
     expect(screen.queryByText(/끝나지 않은 선행업무가 있습니다/)).toBeNull();
   });
@@ -175,9 +181,7 @@ describe("선행업무 표시와 시작 게이트", () => {
     );
     await screen.findByLabelText("체크리스트");
 
-    const complete = screen.getByRole("button", { name: "완료 처리" }) as HTMLButtonElement;
-    expect(complete.disabled).toBe(false);
-    fireEvent.click(complete);
+    chooseState("완료");
     await waitFor(() => expect(onTransition).toHaveBeenCalledWith(expect.objectContaining({ task_id: "task-1" }), "complete"));
   });
 

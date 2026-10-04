@@ -429,7 +429,6 @@ button.metric-card:hover { border-color: var(--scax-color-line-strong); backgrou
 .attachment-row a { color: var(--scax-color-accent); text-decoration: none; }
 .attachment-row a:hover { text-decoration: underline; }
 /* 바퀴 8-C: `.revision-diff` 두 줄을 `styles/shared-blocks.css` 로 옮겼다. 아래 1018행이 `.round-diff` 와 나눠 쓰던 `s` 규칙은 그쪽 반만 남았다. */
-.handover { margin: 0 0 8px; }
 .link-draft { margin: 8px 0 4px; padding: 12px; border: 1px solid var(--scax-color-line-weak); border-radius: var(--scax-radius-sm); background: var(--scax-color-surface-alt); }
 .link-draft .row-actions { display: flex; gap: 8px; }
 /* Where a task came from, beside the work rather than in a fixed metadata row. */

@@ -67,6 +67,7 @@ import {
   WorkRequestDetailDrawer,
   BlockReasonPrompt,
   allowedTaskTransitions,
+  stateTriggerTone,
   displayNameOf,
   type TaskAction,
 } from "./WorkModals";
@@ -523,6 +524,8 @@ export function MyWorkPage({
    */
   const updateTaskFields = async (task: DirectTask, patch: TaskPatch): Promise<DirectTask> => {
     const saved = await updateTask(task.task_id, task.version, patch);
+    // 앞서 떠 있던 전역 오류를 걷는다 — 저장이 됐다는 것이 지금의 사실이다 (WORK-010 2b W5).
+    settleError();
     try {
       await reload();
     } catch {
@@ -1473,13 +1476,7 @@ export function MyWorkPage({
  *   없는 상태(승인 대기 · 취소)는 고를 것이 없으니 역시 글자로 선다.
  * - **저장**은 표·칸반·드로어가 같이 쓰는 `transitionTask` 그대로다. 낙관적 갱신을 하지 않는다.
  */
-const stateTriggerTone: Record<TaskState, string> = {
-  open: " scax-select__trigger--neutral",
-  in_progress: "",
-  blocked: " scax-select__trigger--danger",
-  done: " scax-select__trigger--positive",
-  cancelled: " scax-select__trigger--neutral",
-};
+/* 상태 트리거의 톤 표는 업무 상세의 진행 상태 셀렉트와 **한 벌**이다 — `WorkModals.stateTriggerTone` (WORK-010 2b-1). */
 
 function TaskStateCell({
   task,

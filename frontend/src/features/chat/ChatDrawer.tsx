@@ -4,18 +4,13 @@ import { AssistantCharacter } from "../assistant/AssistantCharacter";
 import { Button } from "../../ds/Button";
 import { deriveAssistantPresentationState, type AssistantPresentationState } from "../assistant/assistantPresentation";
 import { personName } from "../../lib/labels";
-import type { AnswerResource, Conversation, ConversationContextReference, FollowUpCandidate } from "../../lib/viewModels";
+import type { AnswerResource, Conversation, FollowUpCandidate } from "../../lib/viewModels";
 import { MessageList } from "./MessageList";
 import type { ListStatus, LocalFragment } from "./useConversations";
 import { Skeleton } from "../../ds/Skeleton";
 import { Icon } from "../../ds/icons/Icon";
 
-export type LabeledContextReference = ConversationContextReference & { label?: string; pinned?: boolean };
 type UtilityView = "history";
-
-export function contextKey(reference: ConversationContextReference): string {
-  return `${reference.resource_type}:${reference.resource_id}:${reference.resource_version}`;
-}
 
 const summaryStateLabel: Record<string, string> = {
   pending: "접수됨",
@@ -100,9 +95,7 @@ export function ChatDrawer({
   isProcessing,
   localFragments,
   message,
-  selectedContext,
   onMessageChange,
-  onClearContext,
   onClose,
   onStart,
   onSelect,
@@ -132,9 +125,7 @@ export function ChatDrawer({
   localFragments: LocalFragment[];
   /** The unsent draft of the active conversation (kept per conversation by the owner). */
   message: string;
-  selectedContext: LabeledContextReference | undefined;
   onMessageChange: (value: string) => void;
-  onClearContext: () => void;
   onClose: () => void;
   onStart: () => void;
   onSelect: (conversation: Conversation) => void;
@@ -338,20 +329,7 @@ export function ChatDrawer({
           )}
 
           <div className="scax-chat__composer">
-            {selectedContext && (
-              <div aria-label="참고 자료" className="scax-chat__context">
-                <div className="scax-chat__context-chip">
-                  <Icon name="paperclip" size={14} />
-                  <span>
-                    {selectedContext.resource_type === "task" ? "업무" : "업무 요청"} · {selectedContext.label ?? selectedContext.resource_id.slice(0, 8)}
-                  </span>
-                  <button aria-label="참고 자료 떼기" onClick={onClearContext} type="button">
-                    <Icon name="close" />
-                  </button>
-                </div>
-                <small>현재 화면 자료 · 서버가 버전을 확인해 요약만 전달합니다</small>
-              </div>
-            )}
+            {/* ~~「업무 · 제목」 참고 자료 칩~~ 은 지웠다 — 그것을 붙이는 입구(업무 상세 「AX」)가 없어졌다 (WORK-010 2b W2). */}
             <label className="sr-only" htmlFor="ax-message">
               AX 메시지
             </label>

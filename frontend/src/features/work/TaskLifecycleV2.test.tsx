@@ -52,6 +52,7 @@ vi.mock("../../lib/api", () => ({
 
 import * as api from "../../lib/api";
 import { TaskDetailDrawer } from "./WorkModals";
+import { chooseProposal, chooseState, proposalItems, stateOptions } from "./taskDetailHarness.test-utils";
 
 /**
  * v2 가 «상세 화면» 에 새로 여는 자리들 (WORK-002 Phase 7-C · SPEC-003 §2.4 · U-7·U-8·U-9).
@@ -160,7 +161,7 @@ describe("완료를 막는 하위 (U-7 · I-7)", () => {
     renderDrawer({ ...requestTask, derived: { ...requestTask.derived, blocking_children: [] } });
     await screen.findByLabelText("업무 상세");
     expect(screen.queryByLabelText("완료를 막는 하위")).toBeNull();
-    expect(screen.getByRole("button", { name: "완료 보고" })).toBeTruthy();
+    expect(await stateOptions()).toContain("완료");
   });
 });
 
@@ -172,7 +173,7 @@ describe("재개는 봉투와 자리가 함께 정한다 (검수 R-1 · F-1)", (
       { viewerIsRequester: true, viewerIsRecordRequester: true },
     );
     await screen.findByLabelText("업무 상세");
-    expect(screen.queryByRole("button", { name: "재개" })).toBeNull();
+    expect((await stateOptions()) ?? []).not.toContain("진행 중");
   });
 
   /** 요청 업무를 다시 열 수 있는 사람은 **요청자**다 (`_require_may_reopen`). */
@@ -185,7 +186,7 @@ describe("재개는 봉투와 자리가 함께 정한다 (검수 R-1 · F-1)", (
     );
     await screen.findByLabelText("업무 상세");
 
-    fireEvent.click(screen.getByRole("button", { name: "재개" }));
+    chooseState("진행 중");
     const prompt = await screen.findByRole("dialog", { name: "재개 사유" });
     // 사유는 선택이다 — 빈 채로도 보낼 수 있다.
     fireEvent.click(within(prompt).getByRole("button", { name: "재개" }));
@@ -196,7 +197,7 @@ describe("재개는 봉투와 자리가 함께 정한다 (검수 R-1 · F-1)", (
   it("같은 업무에서 담당자에게는 재개가 서지 않는다 — 눌러도 403 인 자리다", async () => {
     renderDrawer({ ...requestTask, state: "done", derived: { ...requestTask.derived, approval: "approved" } });
     await screen.findByLabelText("업무 상세");
-    expect(screen.queryByRole("button", { name: "재개" })).toBeNull();
+    expect((await stateOptions()) ?? []).not.toContain("진행 중");
   });
 
   /**
@@ -224,13 +225,13 @@ describe("재개는 봉투와 자리가 함께 정한다 (검수 R-1 · F-1)", (
     renderDrawer(promoted, {}, { personaId: "mina", viewerIsRequester: true, viewerIsRecordRequester: false });
     await screen.findByLabelText("업무 상세");
 
-    expect(screen.queryByRole("button", { name: "재개" })).toBeNull();
+    expect((await stateOptions()) ?? []).not.toContain("진행 중");
 
     cleanup();
     // 같은 사람이 같은 업무에서 «제안» 은 부를 수 있다 — 끝나지 않은 업무에서 그 자리를 확인한다.
     renderDrawer({ ...promoted, state: "in_progress", derived: { ...requestTask.derived } }, {}, { personaId: "mina", viewerIsRequester: true, viewerIsRecordRequester: false });
     await screen.findByLabelText("업무 상세");
-    expect(screen.getByRole("button", { name: "취소 제안" })).toBeTruthy();
+    expect(await proposalItems()).toContain("취소 제안");
   });
 
   /** 일반 요청은 그대로다 — 좁힌 것은 승격 갈래뿐이고 요청자의 재개를 잃지 않았다. */
@@ -241,7 +242,7 @@ describe("재개는 봉투와 자리가 함께 정한다 (검수 R-1 · F-1)", (
       { personaId: "mina", viewerIsRequester: true, viewerIsRecordRequester: true },
     );
     await screen.findByLabelText("업무 상세");
-    expect(screen.getByRole("button", { name: "재개" })).toBeTruthy();
+    expect(await stateOptions()).toContain("진행 중");
   });
 
   /** 본인·배정 업무는 반대다 — **드는 사람**이 다시 연다. */
@@ -249,7 +250,7 @@ describe("재개는 봉투와 자리가 함께 정한다 (검수 R-1 · F-1)", (
     const own: DirectTask = { ...requestTask, state: "done", origin: null, delivery: null, derived: { ...requestTask.derived, approval: null } };
     renderDrawer(own);
     await screen.findByLabelText("업무 상세");
-    expect(screen.getByRole("button", { name: "재개" })).toBeTruthy();
+    expect(await stateOptions()).toContain("진행 중");
   });
 });
 
@@ -265,26 +266,26 @@ describe("명령 노출은 «이 업무에서의 자리» 가 정한다 (검수 
   it("요청자에게는 제안 둘이 서고 직접 취소는 없다", async () => {
     renderDrawer(accepted, {}, { personaId: "mina", viewerIsRequester: true });
     await screen.findByLabelText("업무 상세");
-    expect(screen.getByRole("button", { name: "취소 제안" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "조건 변경 제안" })).toBeTruthy();
+    expect(await proposalItems()).toContain("취소 제안");
+    expect(await proposalItems()).toContain("조건 변경 제안");
     // 수락된 요청 업무의 직접 취소는 서버가 막는다 (V-19).
-    expect(screen.queryByRole("button", { name: "업무 취소" })).toBeNull();
+    expect((await stateOptions()) ?? []).not.toContain("업무 취소");
   });
 
   it("담당자에게는 제안이 서지 않는다 — 그 명령은 요청자만 부른다", async () => {
     renderDrawer(accepted, {}, { personaId: "jiho" });
     await screen.findByLabelText("업무 상세");
-    expect(screen.queryByRole("button", { name: "취소 제안" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "조건 변경 제안" })).toBeNull();
+    expect((await proposalItems()) ?? []).not.toContain("취소 제안");
+    expect((await proposalItems()) ?? []).not.toContain("조건 변경 제안");
     // 담당자가 부를 수 있는 것은 그대로 남는다 — 자리가 좁아진 것이지 기능이 사라진 것이 아니다.
-    expect(screen.getByRole("button", { name: "완료 보고" })).toBeTruthy();
+    expect(await stateOptions()).toContain("완료");
   });
 
   it("제3자에게는 어느 명령도 서지 않는다", async () => {
     renderDrawer(accepted, {}, { personaId: "sora" });
     await screen.findByLabelText("업무 상세");
-    expect(screen.queryByRole("button", { name: "취소 제안" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "업무 취소" })).toBeNull();
+    expect((await proposalItems()) ?? []).not.toContain("취소 제안");
+    expect((await stateOptions()) ?? []).not.toContain("업무 취소");
   });
 
   /**
@@ -300,14 +301,14 @@ describe("명령 노출은 «이 업무에서의 자리» 가 정한다 (검수 
     };
     renderDrawer(pending, {}, { personaId: "jiho" });
     await screen.findByLabelText("업무 상세");
-    expect(screen.queryByRole("button", { name: "업무 취소" })).toBeNull();
+    expect((await stateOptions()) ?? []).not.toContain("업무 취소");
   });
 
   it("본인 업무와 배정 업무의 직접 취소는 지금까지대로 선다", async () => {
     const own: DirectTask = { ...requestTask, origin: null, delivery: null, assignee: { member_id: "jiho", display_name: "지호 (팀장)" } };
     renderDrawer(own, {}, { personaId: "jiho" });
     await screen.findByLabelText("업무 상세");
-    expect(screen.getByRole("button", { name: "업무 취소" })).toBeTruthy();
+    expect(await stateOptions()).toContain("업무 취소");
 
     cleanup();
     const assigned: DirectTask = {
@@ -318,7 +319,7 @@ describe("명령 노출은 «이 업무에서의 자리» 가 정한다 (검수 
     };
     renderDrawer(assigned, {}, { personaId: "jiho" });
     await screen.findByLabelText("업무 상세");
-    expect(screen.getByRole("button", { name: "업무 취소" })).toBeTruthy();
+    expect(await stateOptions()).toContain("업무 취소");
   });
 
   /** `personaId` 를 넘기지 않는 화면(오늘·캘린더)에서 있던 길을 닫지 않는다. */
@@ -326,7 +327,7 @@ describe("명령 노출은 «이 업무에서의 자리» 가 정한다 (검수 
     const own: DirectTask = { ...requestTask, origin: null, delivery: null };
     renderDrawer(own, {}, { personaId: undefined });
     await screen.findByLabelText("업무 상세");
-    expect(screen.getByRole("button", { name: "업무 취소" })).toBeTruthy();
+    expect(await stateOptions()).toContain("업무 취소");
   });
 });
 
@@ -334,8 +335,8 @@ describe("수락 뒤의 제안 (U-9 · V-19·V-20)", () => {
   it("수락된 요청 업무에는 직접 취소 대신 취소 제안이 선다", async () => {
     renderDrawer(requestTask, {}, { viewerIsRequester: true });
     await screen.findByLabelText("업무 상세");
-    expect(screen.queryByRole("button", { name: "업무 취소" })).toBeNull();
-    expect(screen.getByRole("button", { name: "취소 제안" })).toBeTruthy();
+    expect((await stateOptions()) ?? []).not.toContain("업무 취소");
+    expect(await proposalItems()).toContain("취소 제안");
   });
 
   it("취소 제안은 사유를 싣고, 회차를 함께 보낸다", async () => {
@@ -343,7 +344,7 @@ describe("수락 뒤의 제안 (U-9 · V-19·V-20)", () => {
     renderDrawer(requestTask, {}, { viewerIsRequester: true });
     await screen.findByLabelText("업무 상세");
 
-    fireEvent.click(screen.getByRole("button", { name: "취소 제안" }));
+    chooseProposal("취소 제안");
     const prompt = await screen.findByRole("dialog", { name: "취소 제안" });
     fireEvent.change(within(prompt).getByLabelText("제안 사유"), { target: { value: "범위가 없어졌습니다" } });
     fireEvent.click(within(prompt).getByRole("button", { name: "제안 보내기" }));
@@ -362,7 +363,7 @@ describe("수락 뒤의 제안 (U-9 · V-19·V-20)", () => {
     renderDrawer(requestTask, {}, { viewerIsRequester: true });
     await screen.findByLabelText("업무 상세");
 
-    fireEvent.click(screen.getByRole("button", { name: "조건 변경 제안" }));
+    chooseProposal("조건 변경 제안");
     const prompt = await screen.findByRole("dialog", { name: "조건 변경 제안" });
     // 고친 것이 없으면 보낼 수 없다
     expect((within(prompt).getByRole("button", { name: "제안 보내기" }) as HTMLButtonElement).disabled).toBe(true);
@@ -389,7 +390,7 @@ describe("수락 뒤의 제안 (U-9 · V-19·V-20)", () => {
     renderDrawer(requestTask, {}, { viewerIsRequester: true });
     await screen.findByLabelText("업무 상세");
 
-    fireEvent.click(screen.getByRole("button", { name: "조건 변경 제안" }));
+    chooseProposal("조건 변경 제안");
     const prompt = await screen.findByRole("dialog", { name: "조건 변경 제안" });
     fireEvent.change(within(prompt).getByLabelText("업무 명"), { target: { value: "디자인 시안 두 벌" } });
     // 기한을 «비우는» 것도 조건 변경이다 — 그 뜻은 `null` 이지 빈 문자열이 아니다.
@@ -410,7 +411,7 @@ describe("수락 뒤의 제안 (U-9 · V-19·V-20)", () => {
     renderDrawer(requestTask, {}, { viewerIsRequester: true });
     await screen.findByLabelText("업무 상세");
 
-    fireEvent.click(screen.getByRole("button", { name: "취소 제안" }));
+    chooseProposal("취소 제안");
     const prompt = await screen.findByRole("dialog", { name: "취소 제안" });
     expect((within(prompt).getByRole("button", { name: "제안 보내기" }) as HTMLButtonElement).disabled).toBe(true);
 
@@ -452,8 +453,8 @@ describe("수락 뒤의 제안 (U-9 · V-19·V-20)", () => {
     } as never);
     renderDrawer(requestTask, {}, { viewerIsRequester: true });
     await screen.findByLabelText("응답 대기 제안");
-    expect(screen.queryByRole("button", { name: "취소 제안" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "조건 변경 제안" })).toBeNull();
+    expect((await proposalItems()) ?? []).not.toContain("취소 제안");
+    expect((await proposalItems()) ?? []).not.toContain("조건 변경 제안");
   });
 });
 
@@ -474,7 +475,7 @@ describe("직접 취소 — 사유를 받아 보낸다", () => {
     const { onTransition } = renderDrawer(ownTask, {}, { personaId: "jiho" });
     await screen.findByLabelText("업무 상세");
 
-    fireEvent.click(screen.getByRole("button", { name: "업무 취소" }));
+    chooseState("업무 취소");
     expect(await screen.findByRole("dialog", { name: "취소 사유" })).toBeTruthy();
     // 자리가 열렸을 뿐 아직 아무 명령도 가지 않았다.
     expect(onTransition).not.toHaveBeenCalled();
@@ -483,7 +484,7 @@ describe("직접 취소 — 사유를 받아 보낸다", () => {
   it("공백뿐인 사유는 보내지 않는다 — 서버가 422 로 막는 것을 화면이 먼저 막는다", async () => {
     const { onTransition } = renderDrawer(ownTask, {}, { personaId: "jiho" });
     await screen.findByLabelText("업무 상세");
-    fireEvent.click(screen.getByRole("button", { name: "업무 취소" }));
+    chooseState("업무 취소");
     const prompt = await screen.findByRole("dialog", { name: "취소 사유" });
 
     const confirm = within(prompt).getByRole("button", { name: "업무 취소" }) as HTMLButtonElement;
@@ -497,7 +498,7 @@ describe("직접 취소 — 사유를 받아 보낸다", () => {
   it("사람이 쓴 사유와 «원» 회차를 그대로 보낸다 — 문구를 지어내지 않는다", async () => {
     const { onTransition } = renderDrawer(ownTask, {}, { personaId: "jiho" });
     await screen.findByLabelText("업무 상세");
-    fireEvent.click(screen.getByRole("button", { name: "업무 취소" }));
+    chooseState("업무 취소");
     const prompt = await screen.findByRole("dialog", { name: "취소 사유" });
 
     fireEvent.change(within(prompt).getByLabelText("취소 사유"), { target: { value: " 분기 계획에서 빠졌습니다 " } });
@@ -514,7 +515,7 @@ describe("직접 취소 — 사유를 받아 보낸다", () => {
     const { onTransition } = renderDrawer(ownTask, {}, { personaId: "jiho" });
     vi.mocked(onTransition).mockResolvedValue(true as never);
     await screen.findByLabelText("업무 상세");
-    fireEvent.click(screen.getByRole("button", { name: "업무 취소" }));
+    chooseState("업무 취소");
     const prompt = await screen.findByRole("dialog", { name: "취소 사유" });
     fireEvent.change(within(prompt).getByLabelText("취소 사유"), { target: { value: "범위가 없어졌습니다" } });
     fireEvent.click(within(prompt).getByRole("button", { name: "업무 취소" }));
@@ -527,7 +528,7 @@ describe("직접 취소 — 사유를 받아 보낸다", () => {
     const { onTransition } = renderDrawer(ownTask, {}, { personaId: "jiho" });
     vi.mocked(onTransition).mockResolvedValue(false as never);
     await screen.findByLabelText("업무 상세");
-    fireEvent.click(screen.getByRole("button", { name: "업무 취소" }));
+    chooseState("업무 취소");
     const prompt = await screen.findByRole("dialog", { name: "취소 사유" });
     fireEvent.change(within(prompt).getByLabelText("취소 사유"), { target: { value: "범위가 없어졌습니다" } });
     fireEvent.click(within(prompt).getByRole("button", { name: "업무 취소" }));
@@ -543,7 +544,7 @@ describe("직접 취소 — 사유를 받아 보낸다", () => {
     const { onTransition } = renderDrawer(ownTask, {}, { personaId: "jiho" });
     vi.mocked(onTransition).mockReturnValue(new Promise<boolean>((resolve) => { settle = resolve; }) as never);
     await screen.findByLabelText("업무 상세");
-    fireEvent.click(screen.getByRole("button", { name: "업무 취소" }));
+    chooseState("업무 취소");
     const prompt = await screen.findByRole("dialog", { name: "취소 사유" });
     fireEvent.change(within(prompt).getByLabelText("취소 사유"), { target: { value: "범위가 없어졌습니다" } });
 
@@ -563,8 +564,8 @@ describe("직접 취소 — 사유를 받아 보낸다", () => {
     vi.mocked(api.getTaskProposals).mockResolvedValue({ task_id: "task-1", pending: [], history: [] } as never);
     renderDrawer(requestTask, {}, { personaId: "mina", viewerIsRequester: true });
     await screen.findByLabelText("업무 상세");
-    expect(screen.queryByRole("button", { name: "업무 취소" })).toBeNull();
-    expect(screen.getByRole("button", { name: "취소 제안" })).toBeTruthy();
+    expect((await stateOptions()) ?? []).not.toContain("업무 취소");
+    expect(await proposalItems()).toContain("취소 제안");
   });
 });
 
@@ -574,8 +575,8 @@ describe("완료 보고의 끝 (U-5)", () => {
     renderDrawer({ ...requestTask, state: "done", derived: { ...requestTask.derived, approval: "awaiting_review" } });
     const banner = await screen.findByLabelText("완료 확인 대기");
     expect(banner.textContent).toContain("민아");
-    expect(screen.queryByRole("button", { name: "완료 보고" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "완료 처리" })).toBeNull();
+    expect((await stateOptions()) ?? []).not.toContain("완료");
+    expect((await stateOptions()) ?? []).not.toContain("완료");
   });
 });
 
@@ -584,7 +585,7 @@ describe("시작하지 않고 끝나는 일 (7-C · SPEC-001 §4 State)", () => 
     const own: DirectTask = { ...requestTask, state: "open", origin: null, derived: { ...requestTask.derived } };
     renderDrawer(own);
     await screen.findByLabelText("업무 상세");
-    expect(screen.getByRole("button", { name: "시작" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "완료 처리" })).toBeTruthy();
+    expect(await stateOptions()).toContain("진행 중");
+    expect(await stateOptions()).toContain("완료");
   });
 });

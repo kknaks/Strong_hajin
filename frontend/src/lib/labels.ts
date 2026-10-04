@@ -362,7 +362,8 @@ export const taskDetail = {
   blockRelations: "연관 업무",
   blockRelationsEditing: "연관 업무 편집",
   blockMaterials: "자료",
-  blockProgress: "진행과 판단",
+  /** 「진행과 판단」 구역은 없다 — 걸린 일 상자 묶음의 읽어 주는 이름 (SPEC-007 §2.10.3 · WORK-010 2b-3). */
+  blockers: "걸린 일",
   blockHistory: "이력",
   /** 헤더 바로 아래 첫 구역 — 라벨·값 2열 격자 (SPEC-007 §2.10.2 · WORK-010 2a-2). */
   blockMeta: "메타 정보",
@@ -379,10 +380,23 @@ export const taskDetail = {
   metaCc: "참조",
   /* 메타 정보 격자의 행 (SPEC-007 §2.10.2) */
   metaState: "진행 상태",
+  /** 진행 상태 셀렉트의 읽어 주는 이름 · 맨 아래 빨강 항목 (SPEC-007 §2.10.5). */
+  metaStateSelect: "진행 상태 바꾸기",
+  stateCancel: "업무 취소",
+  /** 담당 셀렉트의 읽어 주는 이름 (§2.10.6). */
+  metaAssigneeSelect: "담당 변경 제안",
+  /** 담당 변경 «제안» 작은 모달의 설명 — 수락 전까지 기존 담당이 그대로다. */
+  handoverDescription: (name: string): string =>
+    `${name}에게 담당 변경을 제안합니다. ${name}가 수락할 때까지 지금 담당이 그대로입니다.`,
+  /** 머리의 `⋯` — 요청자의 제안 메뉴와 그 항목 둘 (§2.10.1). */
+  proposalMenu: "요청자 제안",
+  proposeCancel: "취소 제안",
+  proposeTerms: "조건 변경 제안",
   metaVersion: "버전",
   metaOrigin: "출처",
-  /** 담당 변경 제안이 대기 중일 때 담당 값 옆 (§2.10.2 행 3). */
-  assigneeProposed: "변경 제안 중",
+  /** 담당 변경 제안이 대기 중일 때 담당 값 옆 — 「{대상}에게 변경 제안 중」 (§2.10.2 행 3 · §2.10.6). */
+  assigneeProposed: (name: string): string => `${name}에게 변경 제안 중`,
+  assigneeProposedNobody: "새 담당 후보",
   /** AX 제안에서 생긴 업무의 출처 — 링크 글자가 업무 제목이 아니라 「판단 보기」다 (§2.10.8 · 결정 e). */
   originAx: "AX 제안",
   originOpenDecision: "판단 보기",
@@ -396,6 +410,8 @@ export const taskDetail = {
   /** 422 `task version is stale` — 다시 보내지 않고 최신 값으로 다시 읽었다. */
   inlineStale: "다른 곳에서 바뀌어 최신 값으로 다시 불렀습니다.",
   inlineFailed: "저장하지 못했습니다.",
+  /** 그 칸의 저장이 줄에 서 있거나 나가는 중 — 실패 문장이 서는 자리에 작게 (WORK-010 2b W4). */
+  inlineSaving: "저장 중…",
 
   /* 업무 정보 (§2.3 · 시안 `:152-164`) */
   description: "업무 내용",

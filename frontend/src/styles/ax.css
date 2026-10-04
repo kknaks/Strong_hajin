@@ -309,11 +309,8 @@
 .scax-chat__composer{position:sticky;bottom:0;display:grid;flex:none;gap:var(--scax-space-200);padding:var(--scax-space-250) var(--scax-space-300) var(--scax-space-300);border-top:1px solid var(--scax-color-line);background:var(--scax-color-surface)}
 .scax-chat__composer textarea{resize:none;min-height:44px;max-height:200px;overflow-y:auto;line-height:1.5}
 .scax-chat__composer-actions{display:flex;align-items:center;justify-content:space-between;gap:var(--scax-space-200)}
-.scax-chat__context{display:grid;gap:var(--scax-space-100)}
-.scax-chat__context small{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size)}
-.scax-chat__context-chip{display:inline-flex;align-items:center;gap:var(--scax-space-200);width:max-content;max-width:100%;height:30px;padding:0 var(--scax-space-200) 0 var(--scax-space-300);border-radius:var(--scax-radius-pill);color:var(--scax-color-ink);background:var(--scax-color-fill-weak);font-size:var(--scax-text-caption1-size);font-weight:var(--scax-fw-medium)}
-.scax-chat__context-chip>span:last-of-type{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.scax-chat__context-chip button{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-label1-size)}
+/* ~~`.scax-chat__context*`(채팅 입력 위 「업무 · 제목」 참고 자료 칩)~~ 은 지웠다 — 칩을 붙이던 입구(업무 상세 「AX」)와
+   칩 자체가 없어졌다(WORK-010 2a · 2b W2 · fix1 W3). 이 규칙을 쓰는 요소가 0 이다. */
 
 /* ──────────────────────────────────────────────────────────────── 좁은 화면
    구 styles.css:793 · 801~809 · 840~845 의 내 몫. */

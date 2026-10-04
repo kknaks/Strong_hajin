@@ -61,7 +61,7 @@ import {
 import { axDraftCard, blockingChildReasonLabel, cancelReasonLabel, datePickerLabel, taskDetail, hiddenPredecessorsText, predecessorsUnfinishedText, projectLockedByPredecessorsText, derivedApprovalLabel, derivedAssignmentLabel, dueDayText, emptyActionLabel, formatDate, formatDateTime, formatMonthLong, isOverdue, isoDateInSeoul, personName, proposalFieldLabel, taskDateLabel, proposalKindLabel, selectLabel, seoulToday, taskStateLabel, weekdayNames, workRequestStateLabel } from "../../lib/labels";
 import { DateField } from "../../ds/DateField";
 import { InlineText } from "../../ds/InlineText";
-import { ConfirmModal, Drawer, Modal, type OverlayShellProps } from "../../ds/Modal";
+import { ConfirmModal, Drawer, Modal, useEscape, type OverlayShellProps } from "../../ds/Modal";
 import { Skeleton } from "../../ds/Skeleton";
 import { Checkbox, FieldMessage } from "../../ds/FormControls";
 import { DropZone } from "../../ds/DropZone";
@@ -607,6 +607,21 @@ function RelationAddRow({
 /** 업무 상세가 인라인으로 고치는 네 칸 (SPEC-007 §2.10.4). */
 type InlineField = "title" | "description" | "start_date" | "due_date";
 
+/** 진행 상태 셀렉트의 갈 곳 하나 — `reopen` 은 완료에서 재개(별도 명령 `/reopen`)다 (§2.10.5). */
+type StateMove = { to: TaskState; action: TaskAction | "reopen" };
+
+/**
+ * 상태 트리거의 톤 — **목록의 상태 칸과 같은 규칙**이다(내 업무 `TaskStateCell` 이 이것을 쓴다).
+ * 진행 중만 기본 꼴이고 나머지는 상태 색이다.
+ */
+export const stateTriggerTone: Record<TaskState, string> = {
+  open: " scax-select__trigger--neutral",
+  in_progress: "",
+  blocked: " scax-select__trigger--danger",
+  done: " scax-select__trigger--positive",
+  cancelled: " scax-select__trigger--neutral",
+};
+
 /**
  * **422 `task version is stale`** 인가 — 서버가 회차 어긋남을 이 문장으로 낸다(be-survey §4-3).
  * `instanceof ApiError` 로 가르지 않는다 — 목을 쓰는 테스트에서 그 클래스가 없을 수 있다. 문장과 상태를 본다.
@@ -708,8 +723,8 @@ export function TaskDetailDrawer({
   onClose: () => void;
 }) {
   const today = seoulToday();
-  const [isBlocking, setIsBlocking] = useState(false);
-  const [blockReason, setBlockReason] = useState("");
+  /** 진행 상태 셀렉트에서 「막힘」을 골랐다 — 사유 작은 모달(필수)이 열린다 (SPEC-007 §2.10.5). */
+  const [blockPrompt, setBlockPrompt] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [confirmUnfinished, setConfirmUnfinished] = useState(false);
   const [materials, setMaterials] = useState<TaskMaterial[] | null>(null);
@@ -772,19 +787,23 @@ export function TaskDetailDrawer({
    */
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<InlineField, string>>>({});
   const [pending, setPending] = useState<Partial<Record<InlineField, string>>>({});
+  /** 그 칸의 저장이 줄에 서 있거나 나가는 중 — 칸 옆 「저장 중…」 (WORK-010 2b W4). */
+  const [saving, setSaving] = useState<Partial<Record<InlineField, boolean>>>({});
+  /** 줄에 선 명령 수 — 0 이 아니면 진행 상태·담당 셀렉트가 잠긴다(§2.10.5 「보내는 중」). */
+  const [queued, setQueued] = useState(0);
   const [descDraft, setDescDraft] = useState<string | null>(null);
   /** 업무 내용의 Esc — 초안을 접으며 도는 blur 저장을 건너뛴다(`InlineText` 와 같은 결). */
   const descCancelled = useRef(false);
+  /** 업무 내용을 누른 자리(글자 위치) — 열린 입력의 캐럿을 거기 둔다. 못 잡으면 글 끝이다 (W3). */
+  const descCaret = useRef<number | null>(null);
+  const descArea = useRef<HTMLTextAreaElement | null>(null);
   const [refChoices, setRefChoices] = useState<DirectTask[] | null>(null);
   /** 완료 보고 모달이 열려 있나 — 초안(요약·산출물)은 그 모달이 든다 (5차 발주). */
   const [reporting, setReporting] = useState(false);
-  const [handover, setHandover] = useState<{ assigneeId: string; reason: string } | null>(null);
-  /** 담당자 변경 작은 모달 안에 서는 실패 문장 (SPEC-007 §2.9 — 서버 문장을 모달 안에 낸다). */
+  /** 담당 셀렉트에서 고른 사람 — 사유(선택) 작은 모달이 열린다 (SPEC-007 §2.10.6). */
+  const [handover, setHandover] = useState<{ assigneeId: string } | null>(null);
+  /** 담당 변경 작은 모달 안에 서는 실패 문장 (§2.10.6 — 서버 문장을 모달 안에 낸다). */
   const [handoverError, setHandoverError] = useState<string | null>(null);
-  /** 대상 칸 오류 — 대상을 안 고르고 [변경]을 누른 경우. 대상 칸 «아래» 에 선다 (그 칸의 말이다). */
-  const [handoverTargetError, setHandoverTargetError] = useState<string | null>(null);
-  /** 보내는 중 — 두 번째 누름이 두 번째 명령이 되지 않게 막는다. */
-  const [handoverPending, setHandoverPending] = useState(false);
   const [handoverChoices, setHandoverChoices] = useState<Persona[] | null>(null);
   /**
    * 담당 관계 — **현재와 대기를 각각** 읽는다 (V-18 · P-3). 서버가 이 조회를 아직 내지 않으면 `null` 로
@@ -996,7 +1015,7 @@ export function TaskDetailDrawer({
     onError(null);
     let added = false;
     try {
-      const created = await addChecklistItem(task.task_id, text);
+      const created = await enqueue(() => addChecklistItem(task.task_id, text));
       setChecklist((rows) => [...(rows ?? []), created]);
       moved(created.task_version);
       // Clear only what was sent: a fast typist may already be writing the next step while this one is in flight.
@@ -1015,7 +1034,7 @@ export function TaskDetailDrawer({
   async function toggleStep(item: ChecklistItem, done: boolean) {
     onError(null);
     try {
-      const updated = await updateChecklistItem(task.task_id, item.item_id, { done, expected_version: item.version });
+      const updated = await enqueue(() => updateChecklistItem(task.task_id, item.item_id, { done, expected_version: item.version }));
       setChecklist((rows) => (rows ?? []).map((row) => (row.item_id === item.item_id ? updated : row)));
       moved(updated.task_version);
       await settleVersion();
@@ -1030,7 +1049,7 @@ export function TaskDetailDrawer({
     if (!cleaned || cleaned === item.text) return;
     onError(null);
     try {
-      const updated = await updateChecklistItem(task.task_id, item.item_id, { text: cleaned, expected_version: item.version });
+      const updated = await enqueue(() => updateChecklistItem(task.task_id, item.item_id, { text: cleaned, expected_version: item.version }));
       setChecklist((rows) => (rows ?? []).map((row) => (row.item_id === item.item_id ? updated : row)));
       moved(updated.task_version);
       await settleVersion();
@@ -1048,7 +1067,7 @@ export function TaskDetailDrawer({
     [order[from], order[to]] = [order[to], order[from]];
     onError(null);
     try {
-      const reordered = await reorderChecklist(task.task_id, order);
+      const reordered = await enqueue(() => reorderChecklist(task.task_id, order));
       setChecklist(reordered.checklist);
       moved(reordered.task_version);
       await settleVersion();
@@ -1060,7 +1079,7 @@ export function TaskDetailDrawer({
   async function removeStep(item: ChecklistItem) {
     onError(null);
     try {
-      const removed = await removeChecklistItem(task.task_id, item.item_id, item.version);
+      const removed = await enqueue(() => removeChecklistItem(task.task_id, item.item_id, item.version));
       setChecklist((rows) => (rows ?? []).filter((row) => row.item_id !== item.item_id));
       moved(removed?.task_version);
       await settleVersion();
@@ -1094,8 +1113,21 @@ export function TaskDetailDrawer({
    *   서고, 칸 옆에 「다른 곳에서 바뀌어…」가 선다.
    * - 그 밖의 실패는 칸 옆에 서버 문장. 어느 실패든 **던진다** — 부르는 칸이 원래 값으로 돌아간다.
    */
+  /**
+   * **한 줄** — 인라인 저장 · 진행 상태 전이 · 담당 변경 제안 · 체크리스트 명령이 모두 여기 선다
+   * (SPEC-007 §2.10.4 「회차의 원천」 · §5 · WORK-010 2b W1). 앞 명령이 끝나야 다음이 나가고, 다음 명령은
+   * 그때의 마지막 회차(`versionRef`)를 싣는다 — 저장 중에 상태를 바꿔도 둘이 같은 회차로 부딪히지 않는다.
+   */
+  const enqueue = <T,>(job: () => Promise<T>): Promise<T> => {
+    setQueued((count) => count + 1);
+    const next = saveQueue.current.then(job, job);
+    saveQueue.current = next.catch(() => undefined);
+    return next.finally(() => setQueued((count) => count - 1));
+  };
+
   const saveInline = (field: InlineField, patch: TaskPatch): Promise<void> => {
     setFieldErrors(({ [field]: _cleared, ...rest }) => rest);
+    setSaving((held) => ({ ...held, [field]: true }));
     const run = async () => {
       try {
         const saved = await onUpdate({ ...task, version: versionRef.current }, patch);
@@ -1120,9 +1152,7 @@ export function TaskDetailDrawer({
         throw error;
       }
     };
-    const next = saveQueue.current.then(run, run);
-    saveQueue.current = next.catch(() => undefined);
-    return next;
+    return enqueue(run).finally(() => setSaving(({ [field]: _done, ...rest }) => rest));
   };
 
   /** 보내는 동안 그 칸에 보낸 값을 세우고, 끝나면(성공이든 실패든) 걷는다 — 실패면 그 순간 원래 값이다. */
@@ -1140,10 +1170,24 @@ export function TaskDetailDrawer({
   /** 제목 — `InlineText` 가 빈 값·안 바뀐 값을 이미 걸렀다. 던지면 그 부품이 원래 글자로 돌아간다. */
   const saveTitle = (next: string) => saveInline("title", { title: next });
 
-  const openDescription = () => {
+  const openDescription = (from?: HTMLElement) => {
     descCancelled.current = false;
-    setDescDraft(pending.description ?? (detailTask ?? task).description ?? "");
+    /* 누른 자리 — 클릭이 글자 위에 놓은 선택의 위치다. 비어 있는 칸(안내 문구)이나 글자 밖이면 글 끝이다. */
+    const selection = typeof window.getSelection === "function" ? window.getSelection() : null;
+    const text = pending.description ?? (detailTask ?? task).description ?? "";
+    descCaret.current =
+      from && text && selection?.anchorNode && from.contains(selection.anchorNode) ? Math.min(selection.anchorOffset, text.length) : null;
+    setDescDraft(text);
   };
+  /* 열리는 순간 한 번 — 초점을 주고 캐럿을 누른 자리(없으면 끝)에 둔다. `autoFocus` 는 WebKit 에서 글 맨 앞에 선다. */
+  const descOpen = descDraft !== null;
+  useEffect(() => {
+    const area = descArea.current;
+    if (!descOpen || !area) return;
+    area.focus();
+    const at = descCaret.current ?? area.value.length;
+    area.setSelectionRange(at, at);
+  }, [descOpen]);
   /** 업무 내용 — **blur 저장**(Enter 는 줄바꿈). 안 바뀌었으면 보내지 않는다. 비우는 것은 막지 않는다(§2.10.4). */
   const commitDescription = () => {
     if (descCancelled.current) {
@@ -1258,27 +1302,30 @@ export function TaskDetailDrawer({
     }
   };
 
+  /**
+   * 전이 하나를 **줄에 세워** 보낸다 (SPEC-007 §2.10.5 · WORK-010 2b W1).
+   *
+   * 부르는 쪽(내 업무·홈·캘린더)이 성공 토스트·목록 다시 읽기를 하고, **거부는 서버 문장을 공통 오류 토스트**로
+   * 낸다 — 셀렉트는 낙관적으로 바꾸지 않으므로 거부되면 그대로 원래 값이다. 성공하면 상세를 다시 읽는다
+   * (낙관적 갱신 없음) — 그 응답의 회차가 다음 명령의 `expected_version` 이 된다.
+   */
+  const transition = (action: TaskAction, reason?: string): Promise<boolean> =>
+    enqueue(async () => {
+      const target = { ...task, version: versionRef.current };
+      // 사유가 없는 전이는 사유 자리를 싣지 않는다 — 부르는 쪽 서명(`(task, action, reason?)`) 그대로다.
+      const settled = reason === undefined ? await onTransition(target, action) : await onTransition(target, action, reason);
+      if (settled === false) return false;
+      await readDetail();
+      return true;
+    });
+
   /** Unfinished steps are worth saying out loud, but whether they matter is the holder's call, not a rule. */
   const complete = async () => {
     if (openSteps > 0) {
       setConfirmUnfinished(true);
       return;
     }
-    await onTransition(current, "complete");
-  };
-
-  // Enter 로도 보낼 수 있지만, 빈 채로 눌렀을 때 아무 일도 일어나지 않으면 그건 침묵한 실패다 (v2 09·RULES 12)
-  const [blockReasonError, setBlockReasonError] = useState<string | null>(null);
-  const submitBlock = async () => {
-    const reason = blockReason.trim();
-    if (!reason) {
-      setBlockReasonError("막힘 사유를 적어 주세요.");
-      return;
-    }
-    setBlockReasonError(null);
-    await onTransition(current, "block", reason);
-    setIsBlocking(false);
-    setBlockReason("");
+    await transition("complete");
   };
 
   const upload = async (kind: TaskMaterialKind, file: File | undefined) => {
@@ -1286,7 +1333,7 @@ export function TaskDetailDrawer({
     setUploading(kind);
     onError(null);
     try {
-      const material = await uploadTaskMaterial(task.task_id, kind, file);
+      const material = await enqueue(() => uploadTaskMaterial(task.task_id, kind, file));
       setMaterials((rows) => [...(rows ?? []), material]);
       moved(material.task_version);
       await settleVersion();
@@ -1309,7 +1356,7 @@ export function TaskDetailDrawer({
     setUploading(kind);
     onError(null);
     try {
-      const material = await attachTaskMaterialLink(task.task_id, kind, { url: draft.url.trim(), label: draft.label.trim() });
+      const material = await enqueue(() => attachTaskMaterialLink(task.task_id, kind, { url: draft.url.trim(), label: draft.label.trim() }));
       setMaterials((rows) => [...(rows ?? []), material]);
       moved(material.task_version);
       setLinkDraft(null);
@@ -1323,53 +1370,35 @@ export function TaskDetailDrawer({
   };
 
   /*
-   * 담당자 변경은 **업무 상세 위의 작은 모달**이다 (SPEC-007 §2.9 · WORK-008 F-01).
-   * 상세 안에 펼치지 않는다. 모달 위 모달은 기존 선례 그대로 — 상세 `Shell` 의 형제로 그리고
-   * ESC 는 `useEscape` 스택이 맨 위 한 겹만 닫는다.
+   * 담당 셀렉트 — 고르면 **변경 «제안»** 이다 (SPEC-007 §2.10.6 · WORK-010 2b-2).
+   * 사람을 고르면 사유(선택) 작은 모달이 열리고 「변경」이 `POST /api/tasks/{id}/reassign` 을 **줄에 세워** 보낸다.
+   * 모달을 닫으면 아무것도 보내지 않는다 — 셀렉트는 늘 서버의 담당을 가리키므로 원래 값 그대로다.
    */
-  const openHandover = async () => {
-    if (handover) return;
+  const pickAssignee = (assigneeId: string) => {
+    if (!assigneeId || assigneeId === task.assignee?.member_id) return; // 지금 담당을 다시 골랐다 — 아무 일도 없다
     setHandoverError(null);
-    setHandoverTargetError(null);
-    setHandover({ assigneeId: "", reason: "" });
-    if (handoverChoices === null) {
-      try {
-        setHandoverChoices(await getTaskAssignmentCandidates());
-      } catch {
-        setHandoverChoices([]);
-      }
-    }
+    setHandover({ assigneeId });
   };
 
   const closeHandover = () => {
     setHandover(null);
     setHandoverError(null);
-    setHandoverTargetError(null);
   };
 
-  const submitHandover = async () => {
-    if (!handover || handoverPending) return;
-    if (!handover.assigneeId) {
-      setHandoverTargetError("옮길 담당자를 골라 주세요.");
-      return;
-    }
-    setHandoverTargetError(null);
+  const submitHandover = async (reason: string): Promise<boolean> => {
+    if (!handover) return false;
     setHandoverError(null);
-    setHandoverPending(true);
     try {
-      await reassignTask(task.task_id, current.version, handover.assigneeId, handover.reason.trim() || undefined);
+      await enqueue(() => reassignTask(task.task_id, versionRef.current, handover.assigneeId, reason || undefined));
     } catch (error) {
-      // 실패는 **작은 모달 안에** 말하고 쓰던 입력은 남긴다 (§2.9).
+      // 실패는 **작은 모달 안에** 말하고 쓰던 입력은 남긴다 (§2.10.6).
       setHandoverError(error instanceof Error ? error.message : "담당자를 바꾸지 못했습니다.");
-      setHandoverPending(false);
-      return;
+      return false;
     }
-    setHandoverPending(false);
     closeHandover();
-    /* v2: 제안일 뿐 **기존 담당은 닫히지 않는다**(V-18) — 그래서 「바꿨다」가 아니라 「보냈다」다.
-       상대가 수락하는 순간 교체가 한 덩어리로 일어나고, 중간에 담당 없는 구간이 생기지 않는다. */
+    /* 제안일 뿐 **기존 담당은 닫히지 않는다**(V-18) — 그래서 「바꿨다」가 아니라 「보냈다」다. */
     onNotice?.("담당 변경을 제안했습니다. 상대가 수락할 때까지 기존 담당이 그대로입니다.");
-    /* 성공하면 **상세를 다시 읽어** 서버가 낸 담당 관계대로 선다 — 낙관적 갱신을 하지 않는다 (§2.9). */
+    /* 성공하면 **상세를 다시 읽어** 서버가 낸 담당 관계대로 선다 — 낙관적 갱신을 하지 않는다. */
     await settleVersion();
     await readDetail();
     try {
@@ -1377,6 +1406,7 @@ export function TaskDetailDrawer({
     } catch {
       // 제안 자체는 성공했다 — 다시 읽기 실패를 제안 실패로 말하지 않는다.
     }
+    return true;
   };
 
   /** 제안 목록을 다시 읽는다. 못 읽어도 명령 자체는 성공했으므로 들고 있던 것을 그대로 남긴다. */
@@ -1411,15 +1441,11 @@ export function TaskDetailDrawer({
   const childProgress = childProgressOf(related);
   /** 상위 완료를 막는 하위 — **이름으로** 보여 준다 (U-7 · I-7). */
   const blockingChildren = blockingChildrenOf(related);
-  /**
-   * 시작을 막는 선행 (SPEC-001 U-14 · WORK-003 Phase 6 · SPEC-007 §2.6).
-   *
-   * **하위와 다른 축이다** — 하위는 완료를, 선행은 시작을 막는다. 그래서 목록도 문장도 따로 둔다.
-   * 서버가 거절해도 같은 문장이 나오도록 문구는 `predecessorsUnfinishedText` 한 자리에서 나온다.
+  /*
+   * 시작을 막는 선행은 **업무 상세가 미리 막지 않는다** (R5 · SPEC-007 §2.10.5 · WORK-010 2b-1).
+   * 셀렉트는 `진행 중`·`완료` 를 그대로 내고, 서버가 409 로 거절하면 그 문장(「끝나지 않은 선행업무가 있습니다: …」)이
+   * 공통 오류 토스트로 뜬다. 목록 행(`TaskQuickActions`)의 미리 막기는 그대로다(W8).
    */
-  const blockingPredecessors = blockingPredecessorsOf(related);
-  const startBlocked = startBlockedByPredecessors(related);
-  const blockedText = predecessorsUnfinishedText(blockingPredecessors.map((row) => row.title));
   const hiddenPredecessors = hiddenPrecedingCountOf(related);
   const visiblePredecessors = visiblePredecessorsOf(related);
   /** 선행의 셈 — **못 읽는 것까지 세고 그것을 「미완」으로 둔다** (SPEC-007 §2.4.3 W-2). */
@@ -1546,65 +1572,69 @@ export function TaskDetailDrawer({
       if (!ok) allOk = false;
     };
 
-    /* 상위 — **이 업무**의 값이다. `null` 이면 `clear_parent` 로 나간다. */
-    if (relDraft.parent !== before.parent) {
-      mark(await saveCell("parent", async () => {
-        await updateTask(task.task_id, current.version, { parent_task_id: relDraft.parent || null });
-      }));
-    }
-    /* 프로젝트 — **상위와 한 PATCH 에 싣지 않는다**(서버가 422). 상위를 옮기면 프로젝트가
-       자손 전체로 따라가므로 두 값이 한 요청에 오면 어느 쪽이 이기는지가 정해지지 않는다. */
-    if (relDraft.project !== before.project) {
-      mark(await saveCell("project", async () => {
-        await updateTask(task.task_id, (await getTask(task.task_id)).version, { project_id: relDraft.project || null });
-      }));
-    }
-    /* 하위 — **대상이 그 하위 업무다.** 해제는 그 업무의 `clear_parent`, 추가는 그 업무의
-       `parent_task_id = 이 업무`. 한 칸 안에서 여러 업무를 건드리므로 하나가 거절되면
-       그 칸에 문장이 서고 나머지는 그대로 들어간다. */
-    const childRemoved = before.children.filter((id) => !relDraft.children.includes(id));
-    const childAdded = relDraft.children.filter((id) => !before.children.includes(id));
-    if (childRemoved.length > 0 || childAdded.length > 0) {
-      mark(await saveCell("children", async () => {
-        for (const id of childRemoved) await updateTask(id, await versionOf(id), { parent_task_id: null });
-        for (const id of childAdded) await updateTask(id, await versionOf(id), { parent_task_id: task.task_id });
-      }));
-    }
-    /* 선행 — **배열 전체 교체 한 번**이다. 그 안의 해제·추가가 따로 반영되지 않는다. */
-    /* 순서까지 같은가 — 구분자로 이어 붙여 비교하지 않는다: 어떤 글자를 골라도
-       그것이 `task_id` 안에 없다는 보장이 없고, 있으면 다른 둘을 같다고 말한다. */
-    const precedingChanged =
-      relDraft.preceding.length !== before.preceding.length ||
-      relDraft.preceding.some((id, index) => id !== before.preceding[index]);
-    if (precedingChanged) {
-      mark(await saveCell("preceding", async () => {
-        await updateTask(task.task_id, (await getTask(task.task_id)).version, { preceding_task_ids: relDraft.preceding });
-      }));
-    }
-    /* 참고 — 전용 명령 둘이 이미 있다. 붙이고 떼는 것이 각각 한 건이다. */
-    const refRemoved = references.filter((row) => row.task && !relDraft.references.includes(row.task.task_id));
-    const refAdded = relDraft.references.filter((id) => !before.references.includes(id));
-    if (refRemoved.length > 0 || refAdded.length > 0) {
-      mark(await saveCell("references", async () => {
-        for (const row of refRemoved) await releaseTaskReference(task.task_id, row.reference_id);
-        for (const id of refAdded) await addTaskReference(task.task_id, id);
-      }));
-    }
-    /* 후행 — **해제만** 있다. 대상이 그 후행 업무이고 회차도 그쪽 것이라, 줄이 함께 싣고 온
-       `version` 을 그대로 보낸다. 이미 닫힌 관계면 404 이고 그 문장이 이 칸에 선다. */
-    const succRemoved = (successors ?? []).filter((row) => !relDraft.successors.includes(row.task_id));
-    if (succRemoved.length > 0) {
-      mark(await saveCell("successors", async () => {
-        for (const row of succRemoved) await releaseSuccessor(task.task_id, row.task_id, row.version);
-      }));
-    }
+    /* 칸 저장 전부와 다시 읽기가 **한 줄**에 선다(WORK-010 2b fix1 W1) — 그 사이 인라인 저장이 끼어
+       같은 회차로 부딪히지 않는다. 이 업무의 회차는 보낼 때의 `versionRef` 다. */
+    await enqueue(async () => {
+      /* 상위 — **이 업무**의 값이다. `null` 이면 `clear_parent` 로 나간다. */
+      if (relDraft.parent !== before.parent) {
+        mark(await saveCell("parent", async () => {
+          await updateTask(task.task_id, versionRef.current, { parent_task_id: relDraft.parent || null });
+        }));
+      }
+      /* 프로젝트 — **상위와 한 PATCH 에 싣지 않는다**(서버가 422). 상위를 옮기면 프로젝트가
+         자손 전체로 따라가므로 두 값이 한 요청에 오면 어느 쪽이 이기는지가 정해지지 않는다. */
+      if (relDraft.project !== before.project) {
+        mark(await saveCell("project", async () => {
+          await updateTask(task.task_id, (await getTask(task.task_id)).version, { project_id: relDraft.project || null });
+        }));
+      }
+      /* 하위 — **대상이 그 하위 업무다.** 해제는 그 업무의 `clear_parent`, 추가는 그 업무의
+         `parent_task_id = 이 업무`. 한 칸 안에서 여러 업무를 건드리므로 하나가 거절되면
+         그 칸에 문장이 서고 나머지는 그대로 들어간다. */
+      const childRemoved = before.children.filter((id) => !relDraft.children.includes(id));
+      const childAdded = relDraft.children.filter((id) => !before.children.includes(id));
+      if (childRemoved.length > 0 || childAdded.length > 0) {
+        mark(await saveCell("children", async () => {
+          for (const id of childRemoved) await updateTask(id, await versionOf(id), { parent_task_id: null });
+          for (const id of childAdded) await updateTask(id, await versionOf(id), { parent_task_id: task.task_id });
+        }));
+      }
+      /* 선행 — **배열 전체 교체 한 번**이다. 그 안의 해제·추가가 따로 반영되지 않는다. */
+      /* 순서까지 같은가 — 구분자로 이어 붙여 비교하지 않는다: 어떤 글자를 골라도
+         그것이 `task_id` 안에 없다는 보장이 없고, 있으면 다른 둘을 같다고 말한다. */
+      const precedingChanged =
+        relDraft.preceding.length !== before.preceding.length ||
+        relDraft.preceding.some((id, index) => id !== before.preceding[index]);
+      if (precedingChanged) {
+        mark(await saveCell("preceding", async () => {
+          await updateTask(task.task_id, (await getTask(task.task_id)).version, { preceding_task_ids: relDraft.preceding });
+        }));
+      }
+      /* 참고 — 전용 명령 둘이 이미 있다. 붙이고 떼는 것이 각각 한 건이다. */
+      const refRemoved = references.filter((row) => row.task && !relDraft.references.includes(row.task.task_id));
+      const refAdded = relDraft.references.filter((id) => !before.references.includes(id));
+      if (refRemoved.length > 0 || refAdded.length > 0) {
+        mark(await saveCell("references", async () => {
+          for (const row of refRemoved) await releaseTaskReference(task.task_id, row.reference_id);
+          for (const id of refAdded) await addTaskReference(task.task_id, id);
+        }));
+      }
+      /* 후행 — **해제만** 있다. 대상이 그 후행 업무이고 회차도 그쪽 것이라, 줄이 함께 싣고 온
+         `version` 을 그대로 보낸다. 이미 닫힌 관계면 404 이고 그 문장이 이 칸에 선다. */
+      const succRemoved = (successors ?? []).filter((row) => !relDraft.successors.includes(row.task_id));
+      if (succRemoved.length > 0) {
+        mark(await saveCell("successors", async () => {
+          for (const row of succRemoved) await releaseSuccessor(task.task_id, row.task_id, row.version);
+        }));
+      }
 
-    /*
-     * **낙관적 갱신을 하지 않는다** — 성공했든 아니든 상세를 다시 읽는다.
-     * 그 한 번이 두 가지를 같이 한다: 성공한 칸은 새 값으로, 거절된 칸은 **저장 전 값으로**
-     * 되돌아온다(서버가 안 바꿨으니 읽으면 옛 값이다). 화면이 되돌릴 값을 따로 들고 있지 않아도 된다.
-     */
-    await readDetail();
+      /*
+       * **낙관적 갱신을 하지 않는다** — 성공했든 아니든 상세를 다시 읽는다.
+       * 그 한 번이 두 가지를 같이 한다: 성공한 칸은 새 값으로, 거절된 칸은 **저장 전 값으로**
+       * 되돌아온다(서버가 안 바꿨으니 읽으면 옛 값이다). 화면이 되돌릴 값을 따로 들고 있지 않아도 된다.
+       */
+      await readDetail();
+    });
     await settleVersion();
     await onChanged?.();
     setRelSaving(false);
@@ -1632,20 +1662,97 @@ export function TaskDetailDrawer({
   const pendingProposal = proposals?.pending?.[0] ?? null;
 
   /**
-   * `진행과 판단` 덩어리가 서나 — **안이 전부 비면 그 덩어리도 서지 않는다** (SPEC-007 §2.1).
+   * **걸린 일 상자**가 하나라도 서나 (SPEC-007 §2.10.3 · WORK-010 2b-3).
    *
-   * 여기 선 구획 여덟은 하나같이 조건이 붙어 있어서, 아무 일도 기다리지 않는 업무에서는
-   * **머리만 남은 빈 덩어리**가 된다. 그 머리가 「진행과 판단」이면 사람은 무언가 있는 줄 안다.
+   * 「진행과 판단」 구역은 없다 — 그 안에 있던 구획 중 **조건이 참인 것만** 메타 정보 바로 아래 상자로 선다.
+   * 하나도 없으면 아무것도 서지 않는다(제목도 빈 상태 문구도 없다). 담당자 변경은 담당 셀렉트로,
+   * 막힘 사유 입력은 작은 모달로 갔다.
    */
-  const hasProgressBlock =
+  const hasBlockers =
+    Boolean((detailTask ?? task).block_reason) ||
     awaitingReview ||
     Boolean(delivery?.status === "awaiting_revision" && delivery.last_reason) ||
     Boolean(assignments?.pending) ||
     Boolean(pendingProposal) ||
-    blockingChildren.length > 0 ||
-    (canAssign && !readOnly) ||
-    Boolean((detailTask ?? task).block_reason) ||
-    isBlocking;
+    blockingChildren.length > 0;
+
+  /**
+   * 진행 상태 셀렉트의 **갈 곳** — SPEC-007 §2.10.5 의 상태 × 역할 표 그대로다(서버 허용표 × 명령 권한).
+   *
+   * 화면이 규칙을 새로 만들지 않는다 — 상세 응답에 「허용 전이」 목록이 없어 표를 옮겨 적었을 뿐이고, 최종 판정은
+   * 서버다(거부는 토스트). 표에 없는 칸은 빈 배열 = **셀렉트 없이 상태 글자**다.
+   * - 확인 대기 완료(`derived.approval`)·취소는 갈 곳이 없다 — 「업무 취소」도 없다(W7).
+   * - 수락된 요청 업무의 취소는 제안–동의(`⋯`)로만 간다 — 요청 업무 담당자 칸에 「업무 취소」가 없다.
+   * - 완료에서 재개는 본인 업무는 담당자, 요청 업무는 **요청 행의 요청자**다.
+   */
+  const stateMoves: StateMove[] = (() => {
+    if (!editable || task.state === "cancelled") return [];
+    if (task.state === "done") {
+      if (reopenBlockedByApproval(task) || awaitingReview) return [];
+      /* 완료에서 재개 — 요청 업무는 **요청 행의 요청자**, 본인·배정 업무는 **드는 사람**이다(`_require_may_reopen`).
+         예전 푸터의 「재개」 조건 `reviewed ? viewerIsRecordRequester : viewerDrives` 그대로다. */
+      return (reviewed ? viewerIsRecordRequester : viewerDrives) ? [{ to: "in_progress", action: "reopen" }] : [];
+    }
+    if (viewerDrives) {
+      if (reviewed) {
+        if (task.state === "open") return [{ to: "in_progress", action: "start" }];
+        if (task.state === "in_progress") return [{ to: "blocked", action: "block" }, { to: "done", action: "complete" }];
+        if (task.state === "blocked") return [{ to: "in_progress", action: "resume" }, { to: "done", action: "complete" }];
+        return [];
+      }
+      if (task.state === "open") return [{ to: "in_progress", action: "start" }, { to: "done", action: "complete" }, { to: "cancelled", action: "cancel" }];
+      if (task.state === "in_progress") return [{ to: "blocked", action: "block" }, { to: "done", action: "complete" }, { to: "cancelled", action: "cancel" }];
+      if (task.state === "blocked") return [{ to: "in_progress", action: "resume" }, { to: "cancelled", action: "cancel" }];
+      return [];
+    }
+    return [];
+  })();
+
+  /** 고른 갈 곳 — 사유가 필요한 것은 작은 모달을 먼저 열고, 그 밖은 바로 보낸다 (§2.10.5 「고른 뒤」). */
+  const pickState = (next: string) => {
+    if (next === task.state) return; // 지금 상태를 다시 골랐다 — 아무 일도 없다
+    const move = stateMoves.find((candidate) => candidate.to === next);
+    if (!move) return;
+    if (move.action === "block") setBlockPrompt(true);
+    else if (move.action === "cancel") setConfirmCancel(true);
+    else if (move.action === "reopen") setPrompt({ kind: "reopen" });
+    else if (move.action === "complete") {
+      if (reviewed) setReporting(true); // 요청 업무의 완료는 완료 보고다
+      else void complete();
+    } else void transition(move.action);
+  };
+
+  /** `⋯` — 수락된 요청 업무를 관리 가능한 입구로 연 **요청자**에게만, 응답 대기 제안이 없을 때 (§2.10.1). */
+  const proposalMenu = editable && requestTaskAccepted && viewerIsRequester && !pendingProposal;
+
+  /** 담당 셀렉트 — `task.assign` 이 있고 읽기 전용이 아니고 대기 중인 변경 제안이 없을 때 (§2.10.6). */
+  const assigneeSelect = canAssign && editable && !assignments?.pending;
+  /**
+   * 담당 후보 — **이 상세가 열려 있는 동안 한 번만** 읽는다 (SPEC-007 §2.10.6 · WORK-010 2b fix1 W2).
+   * 셀렉트가 사라졌다 다시 서도(대기 제안이 생겼다 걷힘) 다시 묻지 않는다 — ref 가 «물었다» 를 든다.
+   * 대기 제안이 있어 셀렉트가 없을 때도 `task.assign` 이면 읽는다: 「{대상}에게 변경 제안 중」의 이름을 여기서 찾는다.
+   */
+  const candidatesAsked = useRef(false);
+  useEffect(() => {
+    if (!canAssign || !editable || candidatesAsked.current) return;
+    candidatesAsked.current = true;
+    void Promise.resolve()
+      .then(() => getTaskAssignmentCandidates())
+      .then((rows) => setHandoverChoices(rows ?? []))
+      .catch(() => setHandoverChoices([]));
+  }, [canAssign, editable]);
+
+  /**
+   * 담당 변경 대상의 이름 — **후보 목록 → 화면이 가진 사람 목록** 순서로 찾는다. 담당 관계 응답은 id 만 싣는다.
+   * 못 찾으면 id 를 그대로 내지 않고 기존 대체 문구(「새 담당 후보」)다 — 빈칸도 날 id 도 아니다(W2).
+   */
+  const proposedNameOf = (memberId: string | null | undefined): string => {
+    if (!memberId) return taskDetail.assigneeProposedNobody;
+    const candidate = (handoverChoices ?? []).find((choice) => choice.id === memberId);
+    if (candidate) return personName(candidate.display_name);
+    const persona = (personas ?? []).find((person) => person.id === memberId);
+    return persona ? personName(persona.display_name) : taskDetail.assigneeProposedNobody;
+  };
 
   /**
    * 수락 후의 취소·조건 변경은 **제안이다** (V-19·V-20).
@@ -1654,7 +1761,7 @@ export function TaskDetailDrawer({
   const proposeChange = async (kind: "cancellation" | "terms_change", reason: string, payload?: Record<string, unknown>) => {
     onError(null);
     try {
-      const answered = await createTaskProposal(task.task_id, current.version, { kind, reason: reason || undefined, payload });
+      const answered = await enqueue(() => createTaskProposal(task.task_id, versionRef.current, { kind, reason: reason || undefined, payload }));
       moved(answered?.task_version);
       setProposals(await readProposals());
       await settleVersion();
@@ -1667,7 +1774,7 @@ export function TaskDetailDrawer({
   const respondProposal = async (proposal: TaskProposal, agree: boolean, reason: string) => {
     onError(null);
     try {
-      const answered = await respondTaskProposal(task.task_id, proposal.proposal_id, current.version, { agree, reason: reason || undefined });
+      const answered = await enqueue(() => respondTaskProposal(task.task_id, proposal.proposal_id, versionRef.current, { agree, reason: reason || undefined }));
       moved(answered?.task_version);
       setProposals(await readProposals());
       await settleVersion();
@@ -1680,7 +1787,7 @@ export function TaskDetailDrawer({
   const cancelProposal = async (proposal: TaskProposal) => {
     onError(null);
     try {
-      await withdrawTaskProposal(task.task_id, proposal.proposal_id, current.version);
+      await enqueue(() => withdrawTaskProposal(task.task_id, proposal.proposal_id, versionRef.current));
       setProposals(await readProposals());
       await settleVersion();
       onNotice?.("제안을 철회했습니다.");
@@ -1696,8 +1803,10 @@ export function TaskDetailDrawer({
   const reopen = async (reason: string) => {
     onError(null);
     try {
-      await reopenTask(task.task_id, current.version, reason || undefined);
+      const reopened = await enqueue(() => reopenTask(task.task_id, versionRef.current, reason || undefined));
+      moved(reopened?.version);
       await settleVersion();
+      await readDetail();
       onNotice?.("업무를 재개했습니다. 이전 완료 이력과 회차는 그대로 남습니다.");
     } catch (error) {
       onError(error instanceof Error ? error.message : "업무를 재개하지 못했습니다.");
@@ -1724,7 +1833,7 @@ export function TaskDetailDrawer({
   const detach = async (material: TaskMaterial) => {
     onError(null);
     try {
-      const detached = await detachTaskMaterial(task.task_id, material.binding_id);
+      const detached = await enqueue(() => detachTaskMaterial(task.task_id, material.binding_id));
       setMaterials((rows) => (rows ?? []).filter((item) => item.binding_id !== material.binding_id));
       moved(detached.task_version);
       await settleVersion();
@@ -1863,99 +1972,32 @@ export function TaskDetailDrawer({
           closeLabel="상세 닫기"
         onBack={onBack}
         backLabel={backLabel}
-        footer={
-          canManage ? (
-            <>
-              {/*
-                * **수락된 요청 업무의 직접 취소는 막혀 있다**(V-19 · `WORK_CANCEL_REQUIRES_AGREEMENT`) —
-                * 그 자리에서 `cancelled` 로 가는 길은 «합의 취소» 하나다. 그래서 요청자에게는 「취소 제안」을
-                * 내고, 직접 취소는 본인·배정 업무와 수락 전 요청에만 남긴다. 최종 판정은 서버가 한다.
-                */}
-              {/* 직접 취소는 **내가 드는 업무**에서만 부를 수 있다 — 서버가 활성 담당에게만 연다. */}
-              {!closed && !requestTaskAccepted && viewerDrives && (
-                <Button variant="text" disabled={busy} onClick={() => setConfirmCancel(true)} type="button">
-                  업무 취소
-                </Button>
+        /*
+         * **푸터가 없다** (SPEC-007 §2.10.5 · §2.10.9 · WORK-010 2b-3) — footer 를 넘기지 않으므로 빈 줄도 서지 않는다.
+         * 상태 전이는 메타 정보의 진행 상태 셀렉트, 요청자의 제안은 머리의 `⋯`, 닫기는 머리의 × 다.
+         */
+        headerActions={
+          proposalMenu ? (
+            <Select
+              emptyActionLabel={emptyActionLabel.filter}
+              label={taskDetail.proposalMenu}
+              labels={selectLabel}
+              onChange={(value) => {
+                if (value === "cancellation") setPrompt({ kind: "propose", proposalKind: "cancellation" });
+                if (value === "terms") setPrompt({ kind: "terms" });
+              }}
+              options={[
+                { value: "cancellation", label: taskDetail.proposeCancel },
+                { value: "terms", label: taskDetail.proposeTerms },
+              ]}
+              trigger={({ props }) => (
+                <button {...props} className="scax-icon-button task-detail__more" disabled={busy || queued > 0}>
+                  <span aria-hidden>⋯</span>
+                </button>
               )}
-              {/* 제안은 **요청자의 자리다** (SPEC-003 §5 · `application.py` 의 `_is_request_owner`).
-                  담당자에게도 세우면 그 드로어의 가장 흔한 사용자가 누를 때마다 403 을 본다 (검수 F-1). */}
-              {!closed && requestTaskAccepted && viewerIsRequester && !pendingProposal && (
-                <>
-                  <Button variant="text" disabled={busy} onClick={() => setPrompt({ kind: "propose", proposalKind: "cancellation" })} type="button">
-                    취소 제안
-                  </Button>
-                  {/* 수락 뒤에는 `PATCH` 가 거부된다(V-20 · `WORK_REQUEST_LOCKED_AFTER_ACCEPT`) —
-                      조건을 바꾸는 길은 제안 하나뿐이라 그 자리를 여기 둔다. */}
-                  <Button variant="text" disabled={busy} onClick={() => setPrompt({ kind: "terms" })} type="button">
-                    조건 변경 제안
-                  </Button>
-                </>
-              )}
-              <span className="scax-drawer__spacer" />
-              {task.state === "in_progress" && (
-                <Button disabled={busy || isBlocking} onClick={() => setIsBlocking(true)} type="button">
-                  막힘
-                </Button>
-              )}
-              {/*
-                * **선행이 남았으면 누르기 전에 막는다** (SPEC-001 U-14). 눌린 뒤 서버 거절도 같은
-                * 문장이라, 사람은 두 경로에서 같은 사실을 읽는다.
-                */}
-              {task.state === "open" && (
-                <Button variant="solid" tone="primary" disabled={busy || startBlocked} onClick={() => void onTransition(current, "start")} type="button">
-                  시작
-                </Button>
-              )}
-              {/*
-                * **`open` 에서도 [완료]가 선다** (SPEC-001 §4 State · SPEC-003 §4 · 7-C).
-                * 「시작하지 않고 끝난 일」이 있고, 그 전이는 **상세 상단에서만** 부른다 — 행 액션에는
-                * `open` 의 다음 한 걸음([시작])만 둔다.
-                *
-                * 미완결 하위로 막힐지는 **서버가 판정한다.** 화면이 `blocking` 을 보고 단추를 지우지
-                * 않는다 — 내가 못 읽는 하위도 서버는 세기 때문에, 0 을 「완료해도 된다」로 읽으면 틀린다.
-                */}
-              {(task.state === "in_progress" || task.state === "open") && !reviewed && (
-                /* `시작 전 → 완료` 직행도 같은 게이트를 지난다 — 그 길이 열려 있으면 시작 게이트에
-                   우회로가 생긴다. `진행 중` 의 완료는 선행을 보지 않는다(막는 것은 시작이다). */
-                <Button variant="solid" tone="primary" disabled={busy || startBlocked} onClick={() => void complete()} type="button">
-                  완료 처리
-                </Button>
-              )}
-              {startBlocked && <small className="t-meta scax-blocked-note">{blockedText}</small>}
-              {(task.state === "in_progress" || task.state === "blocked") && reviewed && (
-                <Button variant="solid" tone="primary" disabled={busy} onClick={() => setReporting(true)} type="button">
-                  완료 보고
-                </Button>
-              )}
-              {task.state === "blocked" && (
-                <Button variant="outlined" tone="primary" size="sm" disabled={busy} onClick={() => void onTransition(current, "resume")} type="button">
-                  재개
-                </Button>
-              )}
-              {/*
-                * **재개는 `state` 하나로 서지 않는다** (검수 R-1). 밖에서 보이는 `done` 은 승인 대기와
-                * 최종 완료를 합치므로, 되돌릴 수 있는 자리인지는 `derived.approval` 이 가른다.
-                * 승인 대기 중이면 지금은 상대의 차례이고 여기에는 부를 명령이 없다.
-                */}
-              {/* **재개도 자리가 갈린다** (`_require_may_reopen`): 요청 업무는 **요청자**, 본인·배정 업무는
-                  **담당자**다. 한 조건으로 그리면 둘 중 하나는 늘 403 을 본다. */}
-              {/* 재개의 요청자 판정은 **`requester_id` 하나**다 — 제안과 같은 값으로 묶지 않는다(N-1). */}
-              {task.state === "done" && !reopenBlockedByApproval(task) && (reviewed ? viewerIsRecordRequester : viewerDrives) && (
-                <Button variant="outlined" tone="primary" size="sm" disabled={busy} onClick={() => setPrompt({ kind: "reopen" })} type="button">
-                  재개
-                </Button>
-              )}
-              {closed && (
-                <Button onClick={close} type="button">
-                  닫기
-                </Button>
-              )}
-            </>
-          ) : (
-            <Button onClick={close} type="button">
-              닫기
-            </Button>
-          )
+              value=""
+            />
+          ) : undefined
         }
         /*
          * 머리 = (겹일 때) 뒤로 · **제목** · × (SPEC-007 §2.10.1 · WORK-010 2a-1).
@@ -1970,10 +2012,12 @@ export function TaskDetailDrawer({
             <>
               <InlineText label={taskDetail.titleEdit} onCommit={saveTitle} value={shown.title} />
               {/* 제목 칸 옆 실패 — 머리 `h3` 안이라 `FieldMessage`(p) 대신 같은 클래스의 span 이다. */}
-              {fieldErrors.title && (
+              {fieldErrors.title ? (
                 <span className="scax-field__error" role="alert">
                   {fieldErrors.title}
                 </span>
+              ) : (
+                saving.title && <span className="scax-field__hint">{taskDetail.inlineSaving}</span>
               )}
             </>
           ) : (
@@ -2005,7 +2049,40 @@ export function TaskDetailDrawer({
           <dl className="meta-grid meta-info">
             <div>
               <dt>{taskDetail.metaState}</dt>
-              <dd><StatusText state={task.state} /></dd>
+              <dd>
+                {/*
+                  * 진행 상태 — **갈 곳이 하나라도 있으면 셀렉트**, 없으면 상태 글자 (SPEC-007 §2.10.5 · WORK-010 2b-1).
+                  * 목록은 지금 상태 + 갈 곳이고 「업무 취소」는 맨 아래 빨강이다. 고른 값으로 셀렉트를 바꾸지 않는다 —
+                  * 늘 서버가 준 상태를 가리키므로, 모달을 닫거나 서버가 거절하면 그대로 원래 값이다.
+                  * 트리거 톤은 목록의 상태 칸과 같은 표(`stateTriggerTone`)다.
+                  */}
+                {stateMoves.length > 0 ? (
+                  <Select
+                    emptyActionLabel={emptyActionLabel.filter}
+                    label={taskDetail.metaStateSelect}
+                    labels={selectLabel}
+                    onChange={pickState}
+                    options={[
+                      { value: task.state, label: taskStateLabel[task.state] },
+                      ...stateMoves
+                        .filter((move) => move.action !== "cancel")
+                        .map((move) => ({ value: move.to, label: taskStateLabel[move.to] })),
+                      ...stateMoves
+                        .filter((move) => move.action === "cancel")
+                        .map((move) => ({ value: move.to, label: taskDetail.stateCancel, tone: "danger" as const })),
+                    ]}
+                    trigger={({ label, props }) => (
+                      <button {...props} className={`scax-select__trigger${stateTriggerTone[task.state] ?? ""}`} disabled={busy || queued > 0}>
+                        {label}
+                        <Icon name="chevron-down" size={12} />
+                      </button>
+                    )}
+                    value={task.state}
+                  />
+                ) : (
+                  <StatusText state={task.state} />
+                )}
+              </dd>
             </div>
             <div>
               <dt>{taskDetail.metaVersion}</dt>
@@ -2014,8 +2091,39 @@ export function TaskDetailDrawer({
             <div>
               <dt>{taskDetail.metaAssignee}</dt>
               <dd>
-                {ownerName}
-                {assignments?.pending && <Badge tone="outline">{taskDetail.assigneeProposed}</Badge>}
+                {/*
+                  * 담당 — `task.assign` 이 있고 읽기 전용이 아니면 **셀렉트**(고르면 변경 «제안», SPEC-007 §2.10.6).
+                  * 대기 중인 제안이 있으면 셀렉트를 열지 않고 「{대상}에게 변경 제안 중」을 단다(서버도 409).
+                  */}
+                {assigneeSelect ? (
+                  <Select
+                    emptyActionLabel={emptyActionLabel.filter}
+                    label={taskDetail.metaAssigneeSelect}
+                    labels={selectLabel}
+                    onChange={pickAssignee}
+                    options={[
+                      ...(task.assignee && !(handoverChoices ?? []).some((choice) => choice.id === task.assignee!.member_id)
+                        ? [{ value: task.assignee.member_id, label: ownerName }]
+                        : []),
+                      ...(handoverChoices ?? []).map((choice) => ({ value: choice.id, label: personName(choice.display_name) })),
+                    ]}
+                    placeholder={ownerName}
+                    trigger={({ label, props }) => (
+                      <button {...props} className="scax-select__trigger scax-select__trigger--neutral" disabled={busy || queued > 0}>
+                        {label}
+                        <Icon name="chevron-down" size={12} />
+                      </button>
+                    )}
+                    value={task.assignee?.member_id ?? ""}
+                  />
+                ) : (
+                  ownerName
+                )}
+                {assignments?.pending && (
+                  <Badge tone="outline">
+                    {taskDetail.assigneeProposed(proposedNameOf(assignments.pending.assignee_id))}
+                  </Badge>
+                )}
               </dd>
             </div>
             {(editable || startShown) && (
@@ -2037,7 +2145,7 @@ export function TaskDetailDrawer({
                   ) : (
                     formatDate(startShown)
                   )}
-                  <FieldMessage error={fieldErrors.start_date} />
+                  <FieldMessage error={fieldErrors.start_date} help={saving.start_date ? taskDetail.inlineSaving : undefined} />
                 </dd>
               </div>
             )}
@@ -2079,7 +2187,7 @@ export function TaskDetailDrawer({
                       <Badge tone="danger">{taskDateLabel.overdue}</Badge>
                     )}
                   </span>
-                  <FieldMessage error={fieldErrors.due_date} />
+                  <FieldMessage error={fieldErrors.due_date} help={saving.due_date ? taskDetail.inlineSaving : undefined} />
                 </dd>
               </div>
             )}
@@ -2137,6 +2245,149 @@ export function TaskDetailDrawer({
         </section>
 
         {/*
+          * ── 걸린 일 상자 — 있을 때만, 메타 정보 바로 아래 (SPEC-007 §2.10.3 · WORK-010 2b-3) ──────
+          *
+          * 「진행과 판단」 구역(제목·덩어리)은 **없다**. 그 안에 있던 구획 중 조건이 참인 것만 이 자리에 상자로 선다 —
+          * 순서는 SPEC 표 그대로(막힘 사유 · 완료 확인 대기 · 보완 필요 · 담당 변경 대기 · 취소/조건 변경 제안 · 미완 하위).
+          * **조건·내용·단추·명령은 예전 그대로**이고 자리만 옮겼다. 하나도 없으면 아무것도 서지 않는다.
+          * 「담당자 변경」 단추는 담당 셀렉트로, 막힘 사유 입력은 작은 모달로 갔다.
+          */}
+        {hasBlockers && (
+          <div aria-label={taskDetail.blockers} className="task-blockers" role="group">
+          {shown.block_reason && (
+            <section aria-label="막힘 사유" className="drawer-section notice">
+              <h4>막힘 사유</h4>
+              {/* **빨강을 걷는다** (사용자 지시 2026-09-28) — 구획 제목이 이미 「막힘 사유」라고
+                  말한다. 본문까지 붉으면 «지금 벌어지는 경고»로 읽히는데 이것은 적어 둔 기록이다.
+                  시작 막힘 배너의 빨강은 그대로다 — 그쪽은 경고다.
+
+                  ⚠ `.prewrap` 은 **줄바꿈만** 정한다 — 색이 없어서 `.drawer-section p` 의 회색
+                  (`screens-a.css:279`)이 그대로 남았다. 빨강을 걷었더니 회색이 된 것이다.
+                  겨눌 이름을 하나 주고 이 화면 안에서만 검정으로 세운다. */}
+              <p className="prewrap blocked-reason">{shown.block_reason}</p>
+            </section>
+          )}
+          {/*
+            * 「완료 확인 대기」 (4차 발주 5) — 보고를 낸 쪽에는 **기다린다는 사실**이, 요청자에게는
+            * **판단하는 자리**가 선다. 판단 명령은 새로 만들지 않았다: 예전부터 있던 `task.delivery`
+            * 판단 항목의 커맨드 둘(`accept`·`request_changes`)을 그대로 부른다.
+            */}
+          {awaitingReview && (
+            <section aria-label="완료 확인 대기" className="drawer-section notice">
+              <h4>완료 확인 대기</h4>
+              <p>
+                {deliveryDecision
+                  ? "담당자가 완료 보고를 보냈습니다. 요청한 결과가 충족됐는지 확인해 주세요."
+                  : `${requesterName}에게 결과 확인을 요청했습니다. ${requesterName}가 완료로 인정하면 이 업무가 완료됩니다.`}
+              </p>
+              {delivery?.summary && <p className="prewrap t-meta">보고한 결과: {delivery.summary}</p>}
+              {deliveryDecision && (
+                <div className="row-actions">
+                  <Button disabled={busy} onClick={() => void acceptDelivery()} size="sm" tone="primary" type="button" variant="solid">
+                    완료 인정
+                  </Button>
+                  <Button disabled={busy} onClick={() => setPrompt({ kind: "delivery_changes" })} size="sm" type="button" variant="outlined">
+                    보완 요청
+                  </Button>
+                </div>
+              )}
+            </section>
+          )}
+          {delivery?.status === "awaiting_revision" && delivery.last_reason && (
+            <section aria-label="보완 필요" className="drawer-section notice danger">
+              <h4>보완 필요</h4>
+              <p className="prewrap">{delivery.last_reason}</p>
+              <p className="t-meta">{delivery.rounds}번째 보고까지 진행했습니다. 보완한 뒤 다시 완료 보고를 보내세요.</p>
+            </section>
+          )}
+          {/*
+            * **담당 변경 대기 — 기존 담당과 새 제안이 «각각» 읽힌다** (U-8 · V-18).
+            * 제안이 서도 기존 담당은 닫히지 않으므로, 한 줄로 합쳐 쓰면 책임 공백이 화면에서 생긴다.
+            * 이 조회를 아직 내지 않는 서버에서는 구획 자체를 그리지 않는다 — 「대기 없음」으로 단정하지 않는다.
+            */}
+          {assignments?.pending && (
+            <section aria-label="담당 변경 대기" className="drawer-section notice">
+              <h4>담당 변경 대기</h4>
+              <p>
+                지금 담당은 <b>{displayNameOf(personas ?? [], assignments.current?.assignee_id, ownerName)}</b> 이고,
+                <b> {displayNameOf(personas ?? [], assignments.pending.assignee_id, "새 담당 후보")}</b> 에게 담당 변경을 제안해 두었습니다.
+              </p>
+              <p className="t-meta">
+                상대가 수락하면 그 자리에서 한 덩어리로 바뀝니다. 그때까지 담당은 그대로입니다.
+                {assignments.pending.decline_reason ? ` · 사유: ${assignments.pending.decline_reason}` : ""}
+              </p>
+            </section>
+          )}
+          {/*
+            * **응답을 기다리는 제안** — 취소 합의와 조건 변경 (V-19·V-20 · D-6).
+            * 제안만으로는 아무것도 바뀌지 않는다. 답할 수 있는 사람은 담당자뿐이고, 최종 판정은 서버가 한다.
+            */}
+          {pendingProposal && (
+            <section aria-label="응답 대기 제안" className="drawer-section notice">
+              <h4>{proposalKindLabel[String(pendingProposal.kind)] ?? "제안"}</h4>
+              {pendingProposal.reason && <p className="prewrap">{pendingProposal.reason}</p>}
+              {/* 조건 변경은 **무엇을 바꾸자는 것인지** 보여야 답할 수 있다. 서버가 실어 준 값 그대로 읽는다. */}
+              {pendingProposal.kind === "terms_change" && pendingProposal.payload && (
+                <dl className="meta-grid columns">
+                  {Object.entries(pendingProposal.payload).map(([field, value]) => (
+                    <div key={field}>
+                      <dt>{proposalFieldLabel[field] ?? field}</dt>
+                      <dd>{field === "due_date" && typeof value === "string" ? formatDate(value) : String(value ?? "—")}</dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
+              <p className="t-meta">
+                {pendingProposal.kind === "cancellation"
+                  ? "담당자가 동의하면 이 업무가 취소됩니다. 동의 전에는 아무것도 바뀌지 않습니다."
+                  : "담당자가 동의하면 조건이 바뀝니다. 동의 전에는 원래 조건이 그대로입니다."}
+              </p>
+              <div className="row-actions">
+                {/* 응답은 담당자의 자리다. 서버가 그 판정을 다시 하므로 화면은 자리만 연다. */}
+                {personaId && task.assignee?.member_id === personaId && (
+                  <>
+                    <Button variant="solid" tone="primary" size="sm" disabled={busy} onClick={() => setPrompt({ kind: "respond", proposal: pendingProposal, agree: true })} type="button">
+                      동의
+                    </Button>
+                    <Button variant="outlined" tone="neutral" size="sm" disabled={busy} onClick={() => setPrompt({ kind: "respond", proposal: pendingProposal, agree: false })} type="button">
+                      동의하지 않음
+                    </Button>
+                  </>
+                )}
+                {personaId && pendingProposal.proposed_by === personaId && (
+                  <Button variant="text" size="sm" disabled={busy} onClick={() => void cancelProposal(pendingProposal)} type="button">
+                    제안 철회
+                  </Button>
+                )}
+              </div>
+            </section>
+          )}
+          {/*
+            * **완료를 막는 하위를 이름으로 보여 준다** (U-7 · I-7).
+            *
+            * 이 목록은 **안내이지 관문이 아니다** — 비어 있다고 완료가 통과한다는 뜻이 아니다.
+            * 내가 읽을 수 없는 하위는 여기에도 셈에도 없지만 서버는 그것까지 세고 거절한다(U-15).
+            */}
+          {blockingChildren.length > 0 && (
+            <section aria-label="완료를 막는 하위" className="drawer-section notice">
+              <h4>{taskDetail.childrenBlockHeading}</h4>
+              <ul className="material-list">
+                {blockingChildren.map((child) => (
+                  <li key={child.task_id}>
+                    <Button aria-label={`${child.title} 열기`} variant="inline" onClick={() => openTask(child.task_id)} type="button">
+                      {child.title}
+                    </Button>
+                    <span className="t-meta">{blockingChildReasonLabel[child.why] ?? child.why}</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="t-meta">이 업무를 최종 완료하려면 위 하위가 먼저 끝나야 합니다. 취소된 하위는 세지 않습니다.</p>
+            </section>
+          )}
+          </div>
+        )}
+
+        {/*
           * ── 덩어리 ② 업무 정보 — **1열**, 내용 다음 체크리스트 (§2.3 · 시안 `:149-166`) ──
           *
           * 「시작할 수 없습니다」 배너는 **없다** (R5 · §2.10.9) — 막는 것은 서버이고, 그 문장은 상태를 바꾸려 할 때
@@ -2155,7 +2406,6 @@ export function TaskDetailDrawer({
                  */
                 <textarea
                   aria-label={taskDetail.descriptionEdit}
-                  autoFocus
                   className="desc"
                   onBlur={commitDescription}
                   onChange={(event) => setDescDraft(event.target.value)}
@@ -2168,6 +2418,7 @@ export function TaskDetailDrawer({
                     setDescDraft(null);
                   }}
                   placeholder={taskDetail.descriptionPlaceholder}
+                  ref={descArea}
                   rows={4}
                   value={descDraft}
                 />
@@ -2175,7 +2426,7 @@ export function TaskDetailDrawer({
                 <p
                   aria-label={taskDetail.descriptionEdit}
                   className={descriptionShown ? "desc desc--editable" : "desc desc--empty desc--editable"}
-                  onClick={openDescription}
+                  onClick={(event) => openDescription(event.currentTarget)}
                   onKeyDown={(event) => {
                     if (event.key !== "Enter" && event.key !== " ") return;
                     event.preventDefault();
@@ -2191,7 +2442,7 @@ export function TaskDetailDrawer({
               ) : (
                 <p className="desc desc--empty">{taskDetail.descriptionNone}</p>
               )}
-              <FieldMessage error={fieldErrors.description} />
+              <FieldMessage error={fieldErrors.description} help={saving.description ? taskDetail.inlineSaving : undefined} />
             </div>
             {/*
               * **체크리스트의 읽기 범위·쓰기 범위는 이 판이 건드리지 않는다** (SPEC-007 §6 회귀 ·
@@ -2333,206 +2584,6 @@ export function TaskDetailDrawer({
             )}
           </div>
         </section>
-
-        {/*
-          * ── 덩어리 ③ 진행과 판단 (§2.1 표 · OQ-701) ────────────────────────────────────
-          *
-          * **관계보다 «먼저» 읽힌다** (사용자 지시 2026-09-28) — 막힘 사유·담당자 변경은
-          * **지금 이 업무의 상태**다. 어느 업무와 이어져 있는지보다 그것이 앞이다.
-          *
-          * **판단은 관계와 성격이 다르다.** `연관 업무` 에 섞으면 「이 업무의 구조」를 읽으러 온
-          * 사람이 승인 단추를 함께 본다. 그래서 덩어리를 따로 둔다.
-          *
-          * 여기 선 구획 여덟은 **자리만 옮긴 것**이고 조건·내용·명령이 그대로다.
-          * 「완료를 막는 하위」가 여기 서고 하위 **관계**는 `연관 업무` 에 따로 선다 —
-          * **같은 값을 두 자리에서 다르게 쓴다**: 관계는 구조, 이것은 지금 못 끝내는 이유다.
-          */}
-        {hasProgressBlock && (
-          <section aria-label={taskDetail.blockProgress} className="block">
-            <div className="block__row"><h3>{taskDetail.blockProgress}</h3></div>
-          {/*
-            * 「완료 확인 대기」 (4차 발주 5) — 보고를 낸 쪽에는 **기다린다는 사실**이, 요청자에게는
-            * **판단하는 자리**가 선다. 판단 명령은 새로 만들지 않았다: 예전부터 있던 `task.delivery`
-            * 판단 항목의 커맨드 둘(`accept`·`request_changes`)을 그대로 부른다.
-            */}
-          {awaitingReview && (
-            <section aria-label="완료 확인 대기" className="drawer-section notice">
-              <h4>완료 확인 대기</h4>
-              <p>
-                {deliveryDecision
-                  ? "담당자가 완료 보고를 보냈습니다. 요청한 결과가 충족됐는지 확인해 주세요."
-                  : `${requesterName}에게 결과 확인을 요청했습니다. ${requesterName}가 완료로 인정하면 이 업무가 완료됩니다.`}
-              </p>
-              {delivery?.summary && <p className="prewrap t-meta">보고한 결과: {delivery.summary}</p>}
-              {deliveryDecision && (
-                <div className="row-actions">
-                  <Button disabled={busy} onClick={() => void acceptDelivery()} size="sm" tone="primary" type="button" variant="solid">
-                    완료 인정
-                  </Button>
-                  <Button disabled={busy} onClick={() => setPrompt({ kind: "delivery_changes" })} size="sm" type="button" variant="outlined">
-                    보완 요청
-                  </Button>
-                </div>
-              )}
-            </section>
-          )}
-          {delivery?.status === "awaiting_revision" && delivery.last_reason && (
-            <section aria-label="보완 필요" className="drawer-section notice danger">
-              <h4>보완 필요</h4>
-              <p className="prewrap">{delivery.last_reason}</p>
-              <p className="t-meta">{delivery.rounds}번째 보고까지 진행했습니다. 보완한 뒤 다시 완료 보고를 보내세요.</p>
-            </section>
-          )}
-          {/*
-            * **담당 변경 대기 — 기존 담당과 새 제안이 «각각» 읽힌다** (U-8 · V-18).
-            * 제안이 서도 기존 담당은 닫히지 않으므로, 한 줄로 합쳐 쓰면 책임 공백이 화면에서 생긴다.
-            * 이 조회를 아직 내지 않는 서버에서는 구획 자체를 그리지 않는다 — 「대기 없음」으로 단정하지 않는다.
-            */}
-          {assignments?.pending && (
-            <section aria-label="담당 변경 대기" className="drawer-section notice">
-              <h4>담당 변경 대기</h4>
-              <p>
-                지금 담당은 <b>{displayNameOf(personas ?? [], assignments.current?.assignee_id, ownerName)}</b> 이고,
-                <b> {displayNameOf(personas ?? [], assignments.pending.assignee_id, "새 담당 후보")}</b> 에게 담당 변경을 제안해 두었습니다.
-              </p>
-              <p className="t-meta">
-                상대가 수락하면 그 자리에서 한 덩어리로 바뀝니다. 그때까지 담당은 그대로입니다.
-                {assignments.pending.decline_reason ? ` · 사유: ${assignments.pending.decline_reason}` : ""}
-              </p>
-            </section>
-          )}
-          {/*
-            * **응답을 기다리는 제안** — 취소 합의와 조건 변경 (V-19·V-20 · D-6).
-            * 제안만으로는 아무것도 바뀌지 않는다. 답할 수 있는 사람은 담당자뿐이고, 최종 판정은 서버가 한다.
-            */}
-          {pendingProposal && (
-            <section aria-label="응답 대기 제안" className="drawer-section notice">
-              <h4>{proposalKindLabel[String(pendingProposal.kind)] ?? "제안"}</h4>
-              {pendingProposal.reason && <p className="prewrap">{pendingProposal.reason}</p>}
-              {/* 조건 변경은 **무엇을 바꾸자는 것인지** 보여야 답할 수 있다. 서버가 실어 준 값 그대로 읽는다. */}
-              {pendingProposal.kind === "terms_change" && pendingProposal.payload && (
-                <dl className="meta-grid columns">
-                  {Object.entries(pendingProposal.payload).map(([field, value]) => (
-                    <div key={field}>
-                      <dt>{proposalFieldLabel[field] ?? field}</dt>
-                      <dd>{field === "due_date" && typeof value === "string" ? formatDate(value) : String(value ?? "—")}</dd>
-                    </div>
-                  ))}
-                </dl>
-              )}
-              <p className="t-meta">
-                {pendingProposal.kind === "cancellation"
-                  ? "담당자가 동의하면 이 업무가 취소됩니다. 동의 전에는 아무것도 바뀌지 않습니다."
-                  : "담당자가 동의하면 조건이 바뀝니다. 동의 전에는 원래 조건이 그대로입니다."}
-              </p>
-              <div className="row-actions">
-                {/* 응답은 담당자의 자리다. 서버가 그 판정을 다시 하므로 화면은 자리만 연다. */}
-                {personaId && task.assignee?.member_id === personaId && (
-                  <>
-                    <Button variant="solid" tone="primary" size="sm" disabled={busy} onClick={() => setPrompt({ kind: "respond", proposal: pendingProposal, agree: true })} type="button">
-                      동의
-                    </Button>
-                    <Button variant="outlined" tone="neutral" size="sm" disabled={busy} onClick={() => setPrompt({ kind: "respond", proposal: pendingProposal, agree: false })} type="button">
-                      동의하지 않음
-                    </Button>
-                  </>
-                )}
-                {personaId && pendingProposal.proposed_by === personaId && (
-                  <Button variant="text" size="sm" disabled={busy} onClick={() => void cancelProposal(pendingProposal)} type="button">
-                    제안 철회
-                  </Button>
-                )}
-              </div>
-            </section>
-          )}
-          {/*
-            * **완료를 막는 하위를 이름으로 보여 준다** (U-7 · I-7).
-            *
-            * 이 목록은 **안내이지 관문이 아니다** — 비어 있다고 완료가 통과한다는 뜻이 아니다.
-            * 내가 읽을 수 없는 하위는 여기에도 셈에도 없지만 서버는 그것까지 세고 거절한다(U-15).
-            */}
-          {blockingChildren.length > 0 && (
-            <section aria-label="완료를 막는 하위" className="drawer-section notice">
-              <h4>{taskDetail.childrenBlockHeading}</h4>
-              <ul className="material-list">
-                {blockingChildren.map((child) => (
-                  <li key={child.task_id}>
-                    <Button aria-label={`${child.title} 열기`} variant="inline" onClick={() => openTask(child.task_id)} type="button">
-                      {child.title}
-                    </Button>
-                    <span className="t-meta">{blockingChildReasonLabel[child.why] ?? child.why}</span>
-                  </li>
-                ))}
-              </ul>
-              <p className="t-meta">이 업무를 최종 완료하려면 위 하위가 먼저 끝나야 합니다. 취소된 하위는 세지 않습니다.</p>
-            </section>
-          )}
-            {canAssign && !readOnly && (
-              /* Moving the work is its own act, so it is a command here rather than a field in the form below. */
-              <div className="handover">
-                <Button variant="text" size="sm" onClick={() => void openHandover()} type="button">
-                  담당자 변경
-                </Button>
-              </div>
-            )}
-          {shown.block_reason && (
-            <section className="drawer-section">
-              <h4>막힘 사유</h4>
-              {/* **빨강을 걷는다** (사용자 지시 2026-09-28) — 구획 제목이 이미 「막힘 사유」라고
-                  말한다. 본문까지 붉으면 «지금 벌어지는 경고»로 읽히는데 이것은 적어 둔 기록이다.
-                  시작 막힘 배너의 빨강은 그대로다 — 그쪽은 경고다.
-
-                  ⚠ `.prewrap` 은 **줄바꿈만** 정한다 — 색이 없어서 `.drawer-section p` 의 회색
-                  (`screens-a.css:279`)이 그대로 남았다. 빨강을 걷었더니 회색이 된 것이다.
-                  겨눌 이름을 하나 주고 이 화면 안에서만 검정으로 세운다. */}
-              <p className="prewrap blocked-reason">{shown.block_reason}</p>
-            </section>
-          )}
-          {/*
-            * 막힘 사유 입력 (4차 발주 4).
-            *
-            * 예전에는 입력과 단추 둘이 **한 줄 flex**(`.inline-reason`)로 서서, 좁은 자리에서는 입력칸이
-            * 단추에 밀려 몇 글자만 보였다 — 사유를 적는 칸이 사유를 못 읽는 칸이었다. 이제 입력이 한 줄을
-            * 통째로 쓰고 단추는 그 아래 오른쪽에 선다. **공백이면 「막힘 처리」가 비활성**이고, 그 상태가
-            * 왜인지는 바로 위 도움말이 말한다 — 눌러도 아무 일이 없는 단추를 두지 않는다.
-            */}
-          {isBlocking && (
-            <section aria-label="막힘 사유 입력" className="drawer-section scax-block-reason">
-              <h4>막힘 사유 입력</h4>
-              <div className="scax-field">
-                <label className="scax-field__label" htmlFor={`block-reason-${task.task_id}`}>
-                  막힘 사유
-                </label>
-                <input
-                  aria-invalid={blockReasonError ? true : undefined}
-                  autoFocus
-                  className="scax-block-reason__input"
-                  id={`block-reason-${task.task_id}`}
-                  onChange={(event) => {
-                    setBlockReason(event.target.value);
-                    setBlockReasonError(null);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") void submitBlock();
-                    if (event.key === "Escape") setIsBlocking(false);
-                  }}
-                  placeholder="무엇 때문에 막혔는지 적어 주세요"
-                  value={blockReason}
-                />
-              </div>
-              <FieldMessage error={blockReasonError} help="적어 둔 사유는 카드와 목록에 그대로 보입니다." />
-              <div className="scax-block-reason__actions">
-                <Button variant="text" size="sm" onClick={() => setIsBlocking(false)} type="button">
-                  입력 취소
-                </Button>
-                <Button variant="solid" tone="primary" size="sm" disabled={busy || !blockReason.trim()} onClick={() => void submitBlock()} type="button">
-                  막힘 처리
-                </Button>
-              </div>
-            </section>
-          )}
-          </section>
-        )}
 
         {/*
           * ── 덩어리 ④ 연관 업무 — **2열 여섯 칸** (§2.4 · 시안 `:168-225`·`:329-403`) ──────
@@ -2918,58 +2969,38 @@ export function TaskDetailDrawer({
       </Shell>
       {handover && (
         /*
-         * 담당자 변경 — 기존 DS 의 작은 모달(`Modal size="sm"`, 420)이다 (SPEC-007 §2.9 · WORK-008 F-01).
-         * 내용은 예전 펼침 폼 그대로다: 대상 담당자(빈칸 시작) · 사유(선택) · [변경]·[취소].
-         * ESC · 바깥 클릭 · [취소] 는 이 모달만 닫고 업무 상세는 남는다.
+         * 담당 변경 «제안» — 담당 셀렉트에서 사람을 고르면 사유(선택)를 받는 작은 모달 (SPEC-007 §2.10.6 · WORK-010 2b-2).
+         * 대상은 셀렉트가 이미 골랐다 — 예전 「담당자 변경」 겹 모달의 대상 칸은 없다. 실패 문장은 **이 모달 안**이다.
+         * ESC · 바깥 클릭 · 「돌아가기」는 아무것도 보내지 않고 이 모달만 닫는다.
          */
-        <Modal
-          closeLabel="담당자 변경 닫기"
-          footer={
-            <>
-              <Button variant="text" disabled={handoverPending} onClick={closeHandover} type="button">
-                취소
-              </Button>
-              <Button variant="solid" tone="primary" disabled={busy || handoverPending} onClick={() => void submitHandover()} type="button">
-                변경
-              </Button>
-            </>
-          }
+        <ReasonPrompt
+          busy={busy}
+          confirmLabel="변경"
+          description={taskDetail.handoverDescription(
+            proposedNameOf(handover.assigneeId),
+          )}
+          error={handoverError}
+          fieldLabel="담당자 변경 사유"
+          heading="담당 변경을 제안합니다"
           label="담당자 변경"
           onClose={closeHandover}
-          size="sm"
-          title="담당자 변경"
-        >
-          <div className="form-stack">
-            <div className="scax-field">
-              <span className="scax-field__label">담당자 변경 대상</span>
-              <Select
-                emptyActionLabel={emptyActionLabel.filter}
-                labels={selectLabel}
-                id={`task-handover-${task.task_id}`}
-                label="담당자 변경 대상"
-                onChange={(next) => {
-                  setHandover({ ...handover, assigneeId: next });
-                  setHandoverTargetError(null);
-                }}
-                options={(handoverChoices ?? []).map((choice) => ({ value: choice.id, label: personName(choice.display_name) }))}
-                placeholder="담당자 고르기"
-                value={handover.assigneeId}
-              />
-              <FieldMessage error={handoverTargetError} id={`task-handover-error-${task.task_id}`} />
-            </div>
-            <div className="scax-field">
-              <label className="scax-field__label" htmlFor={`task-handover-reason-${task.task_id}`}>담당자 변경 사유</label>
-              <input
-                id={`task-handover-reason-${task.task_id}`}
-                onChange={(event) => setHandover({ ...handover, reason: event.target.value })}
-                placeholder="왜 옮기는지 적어 두면 이력에 남습니다"
-                value={handover.reason}
-              />
-              {/* 서버가 거절한 문장 등 대상 칸의 말이 아닌 실패는 모달 안 이 자리에 선다 (§2.9). */}
-              <FieldMessage error={handoverError} />
-            </div>
-          </div>
-        </Modal>
+          onSubmit={submitHandover}
+          optional
+          placeholder="왜 옮기는지 적어 두면 이력에 남습니다"
+        />
+      )}
+      {blockPrompt && (
+        /* 막힘 — 사유 **필수** 작은 모달 (§2.10.5). 본문 안에 펼쳐지는 입력은 없다. 거절되면 쓴 사유를 지키려 열어 둔다. */
+        <BlockReasonPrompt
+          busy={busy}
+          onClose={() => setBlockPrompt(false)}
+          onSubmit={async (reason) => {
+            const settled = await transition("block", reason);
+            if (settled) setBlockPrompt(false);
+            return settled;
+          }}
+          task={task}
+        />
       )}
       {/*
         * 완료 보고 (4차 발주 5 · 5차 발주) — **입력 모달 한 벌이다.**
@@ -2993,7 +3024,8 @@ export function TaskDetailDrawer({
           }}
           requesterName={requesterName}
           subtasks={children}
-          task={current}
+          inLine={(job) => enqueue(() => job(versionRef.current))}
+          task={{ ...current, version: Math.max(current.version, versionRef.current) }}
         />
       )}
       {confirmUnfinished && (
@@ -3006,7 +3038,7 @@ export function TaskDetailDrawer({
           onClose={() => setConfirmUnfinished(false)}
           onConfirm={() => {
             setConfirmUnfinished(false);
-            void onTransition(current, "complete");
+            void transition("complete");
           }}
           title="남은 단계가 있습니다"
         />
@@ -3031,7 +3063,7 @@ export function TaskDetailDrawer({
           label="취소 사유"
           onClose={() => setConfirmCancel(false)}
           onSubmit={async (reason) => {
-            const settled = await onTransition(current, "cancel", reason);
+            const settled = await transition("cancel", reason);
             // 부르는 쪽이 성공 여부를 말해 주지 않는 화면에서는 지금까지대로 닫는다.
             if (settled === false) return false;
             setConfirmCancel(false);
@@ -3188,6 +3220,7 @@ export function CompletionReportModal({
   onSubmitted,
   onNotice,
   onError,
+  inLine,
 }: {
   task: DirectTask;
   /** 누구의 확인을 기다리게 되는가. 보내기 전에 그것을 말해 둔다. */
@@ -3203,6 +3236,12 @@ export function CompletionReportModal({
   onSubmitted: (updated: DirectTask) => void | Promise<void>;
   onNotice?: (message: string) => void;
   onError: (message: string | null) => void;
+  /**
+   * 보내기를 부르는 쪽의 **명령 줄**에 세운다 (WORK-010 2b fix1 W1). 업무 상세가 넘긴다 — 모달을 연 채
+   * 제목을 저장해도 보고가 낡은 회차로 나가지 않게, 회차는 **보낼 때** 줄이 준다. 안 넘기면(목록 행·프로젝트)
+   * 예전처럼 `task.version` 으로 바로 보낸다.
+   */
+  inLine?: <T>(job: (version: number) => Promise<T>) => Promise<T>;
 }) {
   const [summary, setSummary] = useState(initialSummary);
   const [outputs, setOutputs] = useState<string[]>([]);
@@ -3266,7 +3305,8 @@ export function CompletionReportModal({
     onError(null);
     setPending(true);
     try {
-      const updated = await submitTaskCompletion(current.task_id, current.version, { summary: clean, output_material_ids: outputs });
+      const send = (version: number) => submitTaskCompletion(current.task_id, version, { summary: clean, output_material_ids: outputs });
+      const updated = inLine ? await inLine(send) : await send(current.version);
       onNotice?.(`완료 보고를 보냈습니다. ${requesterName}의 확인을 기다립니다.`);
       await onSubmitted(updated);
     } catch (error) {
@@ -3356,6 +3396,7 @@ export function ReasonPrompt({
   danger,
   optional,
   busy,
+  error,
   onSubmit,
   onClose,
 }: {
@@ -3368,6 +3409,11 @@ export function ReasonPrompt({
   danger?: boolean;
   optional?: boolean;
   busy?: boolean;
+  /**
+   * 서버가 거절한 문장 — **이 모달 안**에 선다(담당 변경 제안 · SPEC-007 §2.10.6 「실패는 작은 모달 안」).
+   * 안 넘기면 예전과 같다(부르는 쪽이 공통 토스트로 낸다).
+   */
+  error?: string | null;
   /**
    * 사유를 들고 명령을 보낸다.
    *
@@ -3382,6 +3428,9 @@ export function ReasonPrompt({
   const [pending, setPending] = useState(false);
   const inputId = `reason-${label.replace(/\s+/g, "-")}`;
   const blocked = (!reason.trim() && !optional) || Boolean(busy) || pending;
+  /* Esc 는 **이 겹만** 닫는다 — 겹 스택(`useEscape`)에 올라야 아래의 업무 상세까지 닫히지 않는다
+     (WORK-010 2b · SPEC-007 §2.10.5 「모달을 닫으면 업무 상세는 그대로 남는다」). */
+  useEscape(onClose);
   const submit = async () => {
     if (blocked) return;
     setPending(true);
@@ -3406,12 +3455,12 @@ export function ReasonPrompt({
               id={inputId}
               onChange={(event) => setReason(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === "Enter") void submit();
-                if (event.key === "Escape") onClose();
+                if (event.key === "Enter" && !event.nativeEvent.isComposing) void submit();
               }}
               placeholder={placeholder}
               value={reason}
             />
+            <FieldMessage error={error} />
           </div>
         </div>
         <footer className="modal-foot">
@@ -3455,6 +3504,8 @@ export function TermsChangePrompt({
   const [dueDate, setDueDate] = useState(task.due_date ?? "");
   const [description, setDescription] = useState(task.description ?? "");
   const [reason, setReason] = useState("");
+  /* Esc 는 이 겹만 닫는다 — `ReasonPrompt` 와 같은 이유. */
+  useEscape(onClose);
   /**
    * 서버가 **적용하는 칸은 셋뿐이다** — `title` · `description` · `due_date` (`due_date` 는 ISO 문자열
    * 또는 `null`). 고친 칸만 싣고, **빈 `payload` 는 422** 라서 하나도 안 고쳤으면 아예 보내지 않는다.
@@ -3529,7 +3580,8 @@ export function BlockReasonPrompt({
 }: {
   task: DirectTask;
   busy: boolean;
-  onSubmit: (reason: string) => void;
+  /** `false` 를 돌려주면 모달이 열린 채 남는다(서버 거절 — 쓴 사유를 지킨다). `ReasonPrompt` 와 같은 약속이다. */
+  onSubmit: (reason: string) => void | Promise<boolean | void>;
   onClose: () => void;
 }) {
   return (

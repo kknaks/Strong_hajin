@@ -51,6 +51,7 @@ vi.mock("../../lib/api", () => ({
 
 import * as api from "../../lib/api";
 import { TaskDetailDrawer } from "./WorkModals";
+import { chooseProposal, chooseState, proposalItems, stateOptions } from "./taskDetailHarness.test-utils";
 
 const base: DirectTask = {
   task_id: "task-1",
@@ -59,6 +60,8 @@ const base: DirectTask = {
   version: 4,
   block_reason: null,
   origin: { kind: "work_request", actor_role: "요청자", actor: { member_id: "mina", display_name: "민아 (구성원)" } } as never,
+  /* 수락된 요청 업무 — 완료 보고는 **활성 담당자**의 셀렉트에서 연다(SPEC-007 §2.10.5). */
+  assignee: { member_id: "jiho", display_name: "지호 (팀장)" },
 };
 
 const material = {
@@ -110,9 +113,9 @@ describe("handing requested work back", () => {
   it("asks for a report instead of offering to close work someone else asked for", async () => {
     const { onTransition } = renderDrawer({ ...base, delivery: null } as DirectTask);
     await screen.findByLabelText("체크리스트");
-    expect(screen.queryByRole("button", { name: "완료 처리" })).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "완료 보고" }));
+    // 「완료」는 직접 완료가 아니라 **완료 보고 모달**을 연다 (SPEC-007 §2.10.5).
+    chooseState("완료");
+    expect(await screen.findByRole("dialog", { name: "완료 보고" })).toBeTruthy();
     // Nothing is reported until there is something to say.
     fireEvent.click(screen.getByRole("button", { name: "보고 보내기" }));
     expect(api.submitTaskCompletion).not.toHaveBeenCalled();
@@ -124,7 +127,7 @@ describe("handing requested work back", () => {
     const { onChanged } = renderDrawer({ ...base, delivery: null } as DirectTask, [material]);
     await screen.findByLabelText("체크리스트");
 
-    fireEvent.click(screen.getByRole("button", { name: "완료 보고" }));
+    chooseState("완료");
     const form = screen.getByLabelText("완료 보고");
     fireEvent.change(within(form).getByLabelText("결과 요약"), { target: { value: "보고서를 올렸습니다" } });
     fireEvent.click(within(form).getByRole("checkbox", { name: "최종 보고서" }));
@@ -151,8 +154,8 @@ describe("handing requested work back", () => {
     const banner = await screen.findByLabelText("완료 확인 대기");
     expect(banner.textContent).toContain("민아");
     expect(banner.textContent).toContain("1차 결과");
-    expect(screen.queryByRole("button", { name: "완료 보고" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "완료 처리" })).toBeNull();
+    // 확인 대기 — 셀렉트 없이 상태 글자만이다(업무 취소도 없다 · SPEC-007 §2.10.5 · W7).
+    expect(await stateOptions()).toBeNull();
   });
 
   it("shows what was still missing so the work can carry on", async () => {
@@ -163,6 +166,6 @@ describe("handing requested work back", () => {
     const banner = await screen.findByLabelText("보완 필요");
     expect(banner.textContent).toContain("지난달 수치가 빠졌습니다");
     // The next report is another round of the same question.
-    expect(screen.getByRole("button", { name: "완료 보고" })).toBeTruthy();
+    expect(await stateOptions()).toContain("완료");
   });
 });

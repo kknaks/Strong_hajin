@@ -228,7 +228,9 @@ describe("메타 정보 격자 (SPEC-007 §2.10.2)", () => {
     await waitFor(async () => expect(await labels()).toEqual(["진행 상태", "버전", "담당", "시작 예정일", "실제 시작일", "마감일"]));
     expect(within(row("시작 예정일")).getByRole("button", { name: "시작 예정일 달력 열기" })).toBeTruthy();
     expect(within(row("마감일")).getByRole("button", { name: "마감일 달력 열기" })).toBeTruthy();
-    for (const name of ["진행 상태", "버전", "담당", "실제 시작일"]) {
+    // 진행 상태는 셀렉트다(2b) — 갈 곳이 있는 업무라서. 나머지 읽기 행은 입력이 없다.
+    expect(within(row("진행 상태")).getByRole("button", { name: "진행 상태 바꾸기" })).toBeTruthy();
+    for (const name of ["버전", "담당", "실제 시작일"]) {
       expect(within(row(name)).queryByRole("button")).toBeNull();
       expect(row(name).querySelector("input, textarea, [contenteditable='true']")).toBeNull();
     }

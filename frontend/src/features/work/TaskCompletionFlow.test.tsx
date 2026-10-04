@@ -53,6 +53,7 @@ vi.mock("../../lib/api", () => ({
 
 import * as api from "../../lib/api";
 import { TaskDetailDrawer } from "./WorkModals";
+import { chooseProposal, chooseState, proposalItems, stateOptions } from "./taskDetailHarness.test-utils";
 
 const ownTask: DirectTask = {
   task_id: "task-own",
@@ -69,6 +70,8 @@ const requestedTask: DirectTask = {
   version: 4,
   block_reason: null,
   origin: { kind: "work_request", actor_role: "요청자", actor: { member_id: "jiho", display_name: "지호 (팀장)" } },
+  /* 수락된 요청 업무 — 전이는 **활성 담당자**만 부른다(SPEC-007 §2.10.5). 담당이 없으면 아무도 들지 않아 셀렉트가 없다. */
+  assignee: { member_id: "mina", display_name: "민아 (구성원)" },
 } as DirectTask;
 
 function renderDetail(task: DirectTask, extra: Record<string, unknown> = {}, detail: Record<string, unknown> = {}) {
@@ -119,8 +122,8 @@ describe("task detail: one modal, one reason field, two ways to finish", () => {
   it("finishes plain work straight away — no report is asked for", async () => {
     const { onTransition } = renderDetail(ownTask);
     await screen.findByLabelText("체크리스트");
-    expect(screen.queryByRole("button", { name: "완료 보고" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "완료 처리" }));
+    expect(await stateOptions()).toContain("완료");
+    chooseState("완료");
     await waitFor(() => expect(onTransition).toHaveBeenCalledWith(expect.objectContaining({ task_id: "task-own" }), "complete"));
     expect(screen.queryByRole("dialog", { name: "완료 보고" })).toBeNull();
   });
@@ -129,9 +132,9 @@ describe("task detail: one modal, one reason field, two ways to finish", () => {
     vi.mocked(api.submitTaskCompletion).mockResolvedValue({ ...requestedTask, version: 5, delivery: { status: "awaiting_review", rounds: 1 } } as never);
     const { onNotice } = renderDetail(requestedTask);
     await screen.findByLabelText("체크리스트");
-    expect(screen.queryByRole("button", { name: "완료 처리" })).toBeNull();
+    expect(await stateOptions()).toContain("완료");
 
-    fireEvent.click(screen.getByRole("button", { name: "완료 보고" }));
+    chooseState("완료");
     const report = await screen.findByRole("dialog", { name: "완료 보고" });
     const send = within(report).getByRole("button", { name: "보고 보내기" }) as HTMLButtonElement;
     expect(send.disabled).toBe(true);
@@ -152,7 +155,7 @@ describe("task detail: one modal, one reason field, two ways to finish", () => {
     await screen.findByLabelText("체크리스트");
     await waitFor(() => expect(screen.getByLabelText("완료를 막는 하위")).toBeTruthy());
 
-    fireEvent.click(screen.getByRole("button", { name: "완료 보고" }));
+    chooseState("완료");
     const report = await screen.findByRole("dialog", { name: "완료 보고" });
     expect(within(report).getByLabelText("보고를 막는 하위")).toBeTruthy();
     expect(within(report).getByText("자료 정리")).toBeTruthy();
@@ -234,9 +237,11 @@ describe("task detail: one modal, one reason field, two ways to finish", () => {
   it("blocked work asks for a reason in a field that fits it, and refuses an empty one", async () => {
     const { onTransition } = renderDetail(ownTask);
     await screen.findByLabelText("체크리스트");
-    fireEvent.click(screen.getByRole("button", { name: "막힘" }));
+    chooseState("막힘");
 
-    const section = await screen.findByLabelText("막힘 사유 입력");
+    /* 사유는 **작은 모달**이다 — 본문 안에 펼쳐지는 입력은 없다 (SPEC-007 §2.10.5 · WORK-010 2b-1). */
+    expect(screen.queryByLabelText("막힘 사유 입력")).toBeNull();
+    const section = await screen.findByRole("dialog", { name: "막힘 사유" });
     const submit = within(section).getByRole("button", { name: "막힘 처리" }) as HTMLButtonElement;
     // 공백이면 비활성이다 — 눌러도 아무 일이 없는 단추를 두지 않는다.
     expect(submit.disabled).toBe(true);
@@ -244,8 +249,6 @@ describe("task detail: one modal, one reason field, two ways to finish", () => {
     expect(onTransition).not.toHaveBeenCalled();
 
     const field = within(section).getByLabelText("막힘 사유") as HTMLInputElement;
-    // 입력은 한 줄을 통째로 쓴다 — 단추에 밀려 잘리던 자리였다.
-    expect(field.className).toContain("scax-block-reason__input");
     fireEvent.change(field, { target: { value: "법무 검토를 기다립니다" } });
     expect((within(section).getByRole("button", { name: "막힘 처리" }) as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(within(section).getByRole("button", { name: "막힘 처리" }));

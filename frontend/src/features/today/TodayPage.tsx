@@ -229,6 +229,8 @@ export function TodayPage({
    */
   const updateTaskFields = async (task: DirectTask, patch: TaskPatch): Promise<DirectTask> => {
     const saved = await updateTask(task.task_id, task.version, patch);
+    // 앞서 떠 있던 전역 오류를 걷는다 — 저장이 됐다는 것이 지금의 사실이다 (WORK-010 2b W5).
+    onError(null);
     try {
       await reload();
     } catch {
