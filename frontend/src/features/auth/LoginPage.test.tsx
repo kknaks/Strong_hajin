@@ -14,6 +14,17 @@ describe("로그인", () => {
     vi.clearAllMocks();
   });
 
+  it("브랜드 칸은 「메디솔브 AX 프로젝트」 한 줄이고 설명 문장은 없다 (WORK-010 1-1)", async () => {
+    vi.mocked(api.getAuthProviders).mockResolvedValue({ local: true, oidc: false } as never);
+    const { container } = render(<LoginPage onLoggedIn={vi.fn()} />);
+    await screen.findByLabelText("이메일");
+    const brand = container.querySelector(".login-shell > .login-brand") as HTMLElement;
+    expect(brand.querySelector("h1")?.textContent).toBe("메디솔브 AX 프로젝트");
+    expect(brand.querySelector("p")).toBeNull();
+    expect(brand.querySelector(".wordmark")?.textContent).toContain("MEDISOLVE");
+    expect(container.textContent).not.toContain("기록 → 판단 → 수행 → 보고를 한 흐름으로");
+  });
+
   it("signs in with an address and a password, and never lists accounts unless the server offers them", async () => {
     vi.mocked(api.getAuthProviders).mockResolvedValue({ local: true, oidc: false } as never);
     vi.mocked(api.login).mockResolvedValue(profile as never);

@@ -927,8 +927,12 @@ export const meetingScreen = {
     assignee ? `'${title}' 업무가 ${assignee}의 업무가 되었습니다. 수락을 기다리지 않습니다.` : `'${title}' 업무를 보냈습니다.`,
   alreadyRequested: "이미 업무 요청으로 보낸 후보입니다.",
   savedElsewhere: "다른 곳에서 먼저 저장됐습니다. 지금 있는 내용으로 바꿔 두었습니다.",
-  /** 제목이 비었을 때 합성이 낸 후보 — 아직 제목이 아니다. */
-  titleCandidate: (candidate: string) => `제목 후보 ${candidate}`,
+  /** 제목이 비었을 때 합성이 낸 후보 — 아직 제목이 아니다. [적용]을 눌러야 제목이 된다 (WORK-010 1-3). */
+  titleCandidate: (candidate: string) => `제목 후보: ${candidate}`,
+  /** 후보를 그대로 제목으로 저장하는 단추 — `PATCH {title: 후보}` 하나다. */
+  titleCandidateApply: "적용",
+  /** 상세 머리 제목을 그 자리에서 고치는 칸의 읽어 주는 이름. */
+  titleEdit: "회의 제목",
   micDenied: "마이크를 쓸 수 없습니다. 스크립트와 AI 요약은 계속 받습니다.",
   // SPEC-006 U-3 — 절전 방지가 «조용히» 실패하면 원래 문제가 그대로 재현되는데 아무도 모른다.
   // 녹음을 막지 않는 **안내 한 줄**이고, 잘 동작할 때는 아무것도 보이지 않는다.

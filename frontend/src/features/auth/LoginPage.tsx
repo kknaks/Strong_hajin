@@ -65,8 +65,7 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: (profile: OrganizationPr
           <span className="wordmark-mark">M</span>
           MEDISOLVE
         </div>
-        <h1>기록 → 판단 → 수행 → 보고를 한 흐름으로</h1>
-        <p>조직의 업무를 하나의 원장에서 다루고, AX가 허용된 범위 안에서 조회하고 제안합니다.</p>
+        <h1>메디솔브 AX 프로젝트</h1>
       </section>
       <section aria-label="로그인" className="login-panel">
         <header className="login-heading">

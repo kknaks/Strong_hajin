@@ -28,6 +28,7 @@ import { SegmentedControl } from "../../ds/SegmentedControl";
 import { Empty } from "../../ds/Empty";
 import { FileList } from "../../ds/FileList";
 import { Icon } from "../../ds/icons/Icon";
+import { InlineText } from "../../ds/InlineText";
 import { Drawer } from "../../ds/Modal";
 import { Skeleton } from "../../ds/Skeleton";
 import { Spinner } from "../../ds/Spinner";
@@ -552,6 +553,28 @@ export function MeetingDetailPage({
     setRunning(new Set(runningRef.current));
   }
 
+  /**
+   * 회의 제목 하나를 저장한다 — 머리의 인라인 칸과 후보 [적용]이 같은 길을 쓴다 (WORK-010 1-3).
+   *
+   * `PATCH /api/meetings/{id}` 에 `{title}` 하나만 싣는다(서버가 `exclude_unset` 으로 받는다). 응답이
+   * 상세와 같은 모양이라 그것을 그대로 세운다 — 한 번 더 읽지 않는다. 목록 칸은 «다시 읽으라» 는
+   * 신호(`onMeetingChanged`)로 따라온다. 실패하면 서버 문장을 오류 토스트로 내고 **다시 던진다** —
+   * `InlineText` 가 그것을 보고 글자를 원래 값으로 되돌린다.
+   */
+  async function saveTitle(next: string) {
+    if (!claim("title")) throw new Error("busy");
+    try {
+      setRecord(await updateMeetingInfo(meetingId, { title: next }));
+      onError(null);
+      onMeetingChanged?.();
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : "저장하지 못했습니다.");
+      throw reason;
+    } finally {
+      release("title");
+    }
+  }
+
   async function run(key: string, work: () => Promise<unknown>, notice?: string) {
     if (!claim(key)) return;
     try {
@@ -959,11 +982,43 @@ export function MeetingDetailPage({
         */}
       <header className="scax-detail__head">
         <div className="scax-detail__title-row">
-          <h2 className="scax-detail__title">{meeting.title ?? meetingScreen.noTitle}</h2>
-          {/* 합성이 낸 제목 후보 — 아직 제목이 아니다. 목록의 [수정]으로 열어 저장해야 제목이 된다 */}
+          {/*
+            * 제목은 **그 자리에서** 고친다 (WORK-010 1-3) — 고칠 수 있는지는 서버가 말한다(`can_edit_info`:
+            * 참석자 + 「예정」·「완료」). 아니면 지금처럼 글자만 선다. 제목이 비어 있으면 「제목 없는 회의」가
+            * 흐리게 서고, 열면 빈 칸에서 시작한다(값은 `""`, 대체 문구는 placeholder 다).
+            * Enter·blur 저장 · Esc 취소 · 빈 값/안 바뀐 값은 보내지 않는다 — 셋 다 `InlineText` 의 계약이다.
+            */}
+          <h2 className="scax-detail__title">
+            {meeting.can_edit_info ? (
+              <InlineText
+                label={meetingScreen.titleEdit}
+                onCommit={saveTitle}
+                placeholder={meetingScreen.noTitle}
+                value={meeting.title ?? ""}
+              />
+            ) : (
+              meeting.title ?? meetingScreen.noTitle
+            )}
+          </h2>
+          {/* 합성이 낸 제목 후보 — 아직 제목이 아니다. [적용]을 눌러야 제목이 된다.
+              제목이 생기면 이 줄은 서지 않는다 — 서버가 후보를 지우지 않아도 `title` 이 있으면 그리지 않는다. */}
           {!meeting.title && meeting.title_candidate && (
             <span className="t-meta" style={{ fontSize: 12 }}>
               {meetingScreen.titleCandidate(meeting.title_candidate)}
+              {meeting.can_edit_info && (
+                <>
+                  {" "}
+                  <Button
+                    disabled={isBusy("title")}
+                    onClick={() => void saveTitle(meeting.title_candidate!).catch(() => undefined)}
+                    size="sm"
+                    type="button"
+                    variant="inline"
+                  >
+                    {meetingScreen.titleCandidateApply}
+                  </Button>
+                </>
+              )}
             </span>
           )}
           {/* E02 상태 배지 — 정리 중 · 실패 · 취소됨만 */}
@@ -1002,7 +1057,7 @@ export function MeetingDetailPage({
             )}
             {/* 받는 것은 브라우저가 한다 — 서버가 Content-Disposition 을 실어 보낸다. 형식은 HTML 하나다 */}
             {settled && (
-              <a className="scax-button scax-button--outlined-neutral" href={meetingExportUrl(meeting.meeting_id)}>
+              <a className="scax-button scax-button--outlined-neutral scax-button--sm" href={meetingExportUrl(meeting.meeting_id)}>
                 {meetingScreen.export}
               </a>
             )}
