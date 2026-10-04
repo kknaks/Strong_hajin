@@ -1376,3 +1376,12 @@ export const axDraftCard = {
   decided: (subject: string) => `'${subject}' 판단을 반영했습니다.`,
   rejectField: "거절 사유",
 } as const;
+
+/* 데스크톱 셸이 첨부 응답을 다운로드 폴더에 저장한 결과 — 셸은 문구를 그리지 않고 사건만 보낸다
+   (SPEC-006 U-5 5 · OQ-T12 · WORK-010 Phase 3). 공통 토스트로 낸다. */
+export const shellDownload = {
+  saved: (filename: string) => `다운로드 폴더에 저장했습니다: ${filename}`,
+  /* 셸이 이름을 함께 주지 못한 성공(웹뷰 자체 내려받기에서 드물게) — 이름 없이 알린다. */
+  savedUnnamed: "다운로드 폴더에 저장했습니다.",
+  failed: "파일을 저장하지 못했습니다.",
+} as const;

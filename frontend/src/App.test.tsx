@@ -125,6 +125,31 @@ describe("product surfaces", () => {
     expect(await screen.findByLabelText('이메일')).toBeTruthy();
   });
 
+  it("shows the desktop shell's attachment save result in the common toast (SPEC-006 U-5 5)", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/organization/me") return jsonResponse({ member_id: "mina", display_name: "민아", organizations: [], roles: [], capabilities: ["task.read", "action.read"] });
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", withSession(fetchMock));
+    const shellWindow = window as Window & { __TAURI_INTERNALS__?: unknown };
+    shellWindow.__TAURI_INTERNALS__ = {};
+    try {
+      render(<App />);
+      await screen.findByRole("navigation", { name: "제품 탐색" });
+      act(() => {
+        window.dispatchEvent(new CustomEvent("strong-hajin:download", { detail: { ok: true, filename: "주간 회의 (1).html" } }));
+      });
+      expect(await screen.findByText("다운로드 폴더에 저장했습니다: 주간 회의 (1).html")).toBeTruthy();
+      act(() => {
+        window.dispatchEvent(new CustomEvent("strong-hajin:download", { detail: { ok: false, filename: null } }));
+      });
+      expect(await screen.findByText("파일을 저장하지 못했습니다.")).toBeTruthy();
+    } finally {
+      delete shellWindow.__TAURI_INTERNALS__;
+    }
+  });
+
   it("shows a pending manager assignment in the decision panel and moves it into My Work on accept", async () => {
     let assignmentStatus: "pending" | "active" = "pending";
     const assignedTask = {

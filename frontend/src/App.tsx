@@ -17,8 +17,8 @@ import { BrowserInteractionPage } from "./features/browser/BrowserInteractionPag
 import { ChatDrawer, contextKey, type LabeledContextReference } from "./features/chat/ChatDrawer";
 import { NEW_DRAFT_KEY, useConversations } from "./features/chat/useConversations";
 import { DailyReportPage } from "./features/report/DailyReportPage";
-import { axDraftCard, personName } from "./lib/labels";
-import { openExternal } from "./lib/shell";
+import { axDraftCard, personName, shellDownload } from "./lib/labels";
+import { onShellDownload, openExternal } from "./lib/shell";
 import { LoginPage } from "./features/auth/LoginPage";
 import { MeetingWorkspace } from "./features/meetings/MeetingWorkspace";
 import { Toast } from "./ds/Modal";
@@ -119,6 +119,16 @@ export default function App() {
   const setToast = useCallback((message: string | null) => putNotice("success", message), [putNotice]);
   const setStaleProjection = useCallback((message: string | null) => putNotice("stale", message), [putNotice]);
   const dismissNotice = useCallback((id: number) => setNotices((current) => current.filter((notice) => notice.id !== id)), []);
+  /* 데스크톱 셸이 첨부 응답(회의 내보내기·자료·첨부)을 다운로드 폴더에 저장한 결과 — 셸은 사건만 보내고
+     문구는 여기서 같은 토스트 통에 낸다(SPEC-006 U-5 5 · OQ-T12). 브라우저에서는 구독하지 않는다. */
+  useEffect(
+    () =>
+      onShellDownload((result) => {
+        if (!result.ok) putNotice("error", shellDownload.failed);
+        else putNotice("success", result.filename ? shellDownload.saved(result.filename) : shellDownload.savedUnnamed);
+      }),
+    [putNotice],
+  );
   /* main(#10): 파일 업로드·녹음이 도는 중에는 화면을 못 옮긴다.
      ★ 바퀴 12: 이 둘은 **`useCallback` 이어야 한다.** 화면이 자기 머리 액션을 셸에 등록하는 자리
      (바퀴 5a 가 만든 seam)가 `onNavigate` 를 의존성에 두기 때문에, 매 렌더 새 함수가 되면

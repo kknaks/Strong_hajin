@@ -194,3 +194,41 @@ export async function openExternal(url: string): Promise<OpenExternalOutcome> {
     return "failed";
   }
 }
+
+/**
+ * 셸이 첨부 응답을 저장한 결과 — **셸 → 웹 사건**이다(SPEC-006 U-5 5 · `E-15` · OQ-T12).
+ *
+ * 커맨드가 아니다: 셸이 `eval` 로 DOM `CustomEvent` 를 쏘고 여기서 받는다. 그래서 웹에 새 권한
+ * (이벤트 수신 · 파일)이 하나도 열리지 않고 커맨드는 넷 그대로다. 셸은 문구를 만들지 않는다 —
+ * **저장 여부와 파일 이름만** 오고, 문구는 부르는 쪽(App 의 공통 토스트)이 만든다.
+ *
+ * 이름은 셸(`src-tauri/src/download.rs` `EVENT`)과 **같아야 한다** — 셸의 시험이 이 줄을 대조한다.
+ */
+export const SHELL_DOWNLOAD_EVENT = "strong-hajin:download";
+
+export type ShellDownloadResult = { ok: true; filename: string | null } | { ok: false };
+
+function readDownloadDetail(detail: unknown): ShellDownloadResult | null {
+  if (typeof detail !== "object" || detail === null) return null;
+  const { ok, filename } = detail as { ok?: unknown; filename?: unknown };
+  if (ok === false) return { ok: false };
+  if (ok !== true) return null;
+  return { ok: true, filename: typeof filename === "string" && filename.length > 0 ? filename : null };
+}
+
+/**
+ * 저장 결과를 구독한다. 반환값은 구독 해제.
+ * 셸이 없으면(`E-01` · 브라우저) **듣지도 않는다** — 브라우저 동작은 지금 그대로다(AC-T48).
+ */
+export function onShellDownload(
+  handler: (result: ShellDownloadResult) => void,
+  scope: ShellWindow = window,
+): () => void {
+  if (!hasShell(scope)) return () => {};
+  const listener = (event: Event) => {
+    const result = readDownloadDetail((event as CustomEvent<unknown>).detail);
+    if (result) handler(result);
+  };
+  scope.addEventListener(SHELL_DOWNLOAD_EVENT, listener);
+  return () => scope.removeEventListener(SHELL_DOWNLOAD_EVENT, listener);
+}
