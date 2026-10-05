@@ -3,7 +3,7 @@ import type React from "react";
 
 import { Button } from "./ds/Button";
 import { BrowserOperationScope, hasPendingBrowserOperation } from "./lib/browserOperationGuard";
-import { getMemberDirectory, getMyWork, getSession, getWorkRequests, isStaleActionError, logout, setAssistantCharacterPreference } from "./lib/api";
+import { getMemberDirectory, getSession, isStaleActionError, logout, setAssistantCharacterPreference } from "./lib/api";
 import { AppBody, AppHeader, AppShell } from "./shell/AppShell";
 import { AssistantLauncher } from "./features/assistant/AssistantCharacter";
 import { AssistantCharacterPicker } from "./features/assistant/AssistantCharacterPicker";
@@ -14,11 +14,11 @@ import {
 } from "./features/assistant/assistantPresentation";
 import { CalendarPage } from "./features/calendar/CalendarPage";
 import { BrowserInteractionPage } from "./features/browser/BrowserInteractionPage";
-import { ChatDrawer, contextKey, type LabeledContextReference } from "./features/chat/ChatDrawer";
+import { ChatDrawer } from "./features/chat/ChatDrawer";
 import { NEW_DRAFT_KEY, useConversations } from "./features/chat/useConversations";
 import { DailyReportPage } from "./features/report/DailyReportPage";
-import { axDraftCard, personName } from "./lib/labels";
-import { openExternal } from "./lib/shell";
+import { axDraftCard, personName, shellDownload } from "./lib/labels";
+import { onShellDownload, openExternal } from "./lib/shell";
 import { LoginPage } from "./features/auth/LoginPage";
 import { MeetingWorkspace } from "./features/meetings/MeetingWorkspace";
 import { Toast } from "./ds/Modal";
@@ -28,7 +28,7 @@ import { ProjectPage } from "./features/project/ProjectPage";
 import { RelationGraphPage } from "./features/graph/RelationGraphPage";
 import { SideNav } from "./shell/SideNav";
 import { TodayPage } from "./features/today/TodayPage";
-import type { ConversationContextReference, DirectTask, OrganizationProfile, Persona, ProductSurface } from "./lib/viewModels";
+import type { OrganizationProfile, Persona, ProductSurface } from "./lib/viewModels";
 import { type IconName } from "./ds/icons/Icon";
 import { shellNav } from "./lib/labels";
 import { forgetScreenCache, scopeScreenCache } from "./lib/screenCache";
@@ -119,6 +119,16 @@ export default function App() {
   const setToast = useCallback((message: string | null) => putNotice("success", message), [putNotice]);
   const setStaleProjection = useCallback((message: string | null) => putNotice("stale", message), [putNotice]);
   const dismissNotice = useCallback((id: number) => setNotices((current) => current.filter((notice) => notice.id !== id)), []);
+  /* 데스크톱 셸이 첨부 응답(회의 내보내기·자료·첨부)을 다운로드 폴더에 저장한 결과 — 셸은 사건만 보내고
+     문구는 여기서 같은 토스트 통에 낸다(SPEC-006 U-5 5 · OQ-T12). 브라우저에서는 구독하지 않는다. */
+  useEffect(
+    () =>
+      onShellDownload((result) => {
+        if (!result.ok) putNotice("error", shellDownload.failed);
+        else putNotice("success", result.filename ? shellDownload.saved(result.filename) : shellDownload.savedUnnamed);
+      }),
+    [putNotice],
+  );
   /* main(#10): 파일 업로드·녹음이 도는 중에는 화면을 못 옮긴다.
      ★ 바퀴 12: 이 둘은 **`useCallback` 이어야 한다.** 화면이 자기 머리 액션을 셸에 등록하는 자리
      (바퀴 5a 가 만든 seam)가 `onNavigate` 를 의존성에 두기 때문에, 매 렌더 새 함수가 되면
@@ -152,8 +162,6 @@ export default function App() {
   const [isCharacterPickerOpen, setIsCharacterPickerOpen] = useState(false);
   const [characterPreferenceBusy, setCharacterPreferenceBusy] = useState(false);
   const [characterPreferenceError, setCharacterPreferenceError] = useState<string | null>(null);
-  const [contextOptions, setContextOptions] = useState<LabeledContextReference[]>([]);
-  const [selectedContextKey, setSelectedContextKey] = useState("");
   // Settlement seam: the visible surface registers its own reload here, so an approved AX effect can re-read every
   // affected projection in place and the shell can await the result. No page remount, so filters and views survive.
   /* 바퀴 5a J-2: 머리가 두 줄(전역 .canvas-topbar + 페이지 .page-head)이던 것을 AppHeader 한 줄로 합쳤다.
@@ -171,7 +179,6 @@ export default function App() {
   const registerSurfaceRefresh = useCallback((refresh: (() => Promise<void>) | null) => {
     surfaceRefresh.current = refresh;
   }, []);
-  const contextGeneration = useRef(0);
   const reportError = useCallback((text: string) => setError(text), []);
   const chat = useConversations({ personaId, isOpen: isAxOpen, onError: reportError });
   const [assistantObservation, setAssistantObservation] = useState(initialAssistantCompletionObservation);
@@ -228,8 +235,6 @@ export default function App() {
     setFocusMeetingId(null);
     setFocusProjectId(null);
     setIsAxOpen(false);
-    setContextOptions([]);
-    setSelectedContextKey("");
     setError(null);
   }
 
@@ -265,44 +270,12 @@ export default function App() {
     }
   }
 
-  // Current-screen context references: typed resource pointers the server re-validates; the browser never sends content.
-  // Failures propagate to the caller: a post-approval refresh must not quietly present an empty candidate list.
-  const loadContextOptions = useCallback(async () => {
-    const generation = ++contextGeneration.current;
-    const wantsTasks = surface === "today" || surface === "work" || surface === "calendar" || surface === "report";
-    const wantsRequests = (surface === "today" || surface === "work") && (capabilities?.includes("work_request.decide") ?? false);
-    const [tasks, requests] = await Promise.all([
-      wantsTasks ? getMyWork() : Promise.resolve([]),
-      wantsRequests ? getWorkRequests() : Promise.resolve([]),
-    ]);
-    if (generation !== contextGeneration.current) return;
-    const next: LabeledContextReference[] = [
-      ...tasks.map((task) => ({ resource_type: "task" as const, resource_id: task.task_id, resource_version: task.version, included: true, label: task.title })),
-      ...requests.map((request) => ({ resource_type: "work_request" as const, resource_id: request.request_id, resource_version: request.version, included: true, label: request.title })),
-    ];
-    setContextOptions((current) => {
-      const pinned = current.filter((item) => item.pinned && !next.some((candidate) => contextKey(candidate) === contextKey(item)));
-      return [...pinned, ...next];
-    });
-  }, [capabilities, surface]);
-
-  useEffect(() => {
-    if (!isAxOpen) return;
-    let cancelled = false;
-    void loadContextOptions().catch(() => {
-      // A persona switch invalidates this read; its failure must not surface against the new persona.
-      if (!cancelled) setError("현재 화면의 AX 참고 자료를 불러오지 못했습니다.");
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [isAxOpen, loadContextOptions, personaId]);
-
-  useEffect(() => {
-    if (!contextOptions.some((item) => contextKey(item) === selectedContextKey)) {
-      setSelectedContextKey("");
-    }
-  }, [contextOptions, selectedContextKey]);
+  /*
+   * ~~현재 화면 참고 자료(`contextOptions` · `loadContextOptions`)~~ 는 **지웠다** (WORK-010 2b W2).
+   * 업무를 AX 참고 자료로 붙이는 입구가 업무 상세의 「AX」 하나였고 그것이 없어졌다(SPEC-007 §2.10.1 결정 d).
+   * 고를 입구가 없는데 AX 를 열거나 판단할 때마다 `getMyWork`·`getWorkRequests` 를 불러 실패 토스트·갱신 띠까지
+   * 냈다 — 없는 기능 때문에 오류를 보였다. 보내는 말은 이제 참고 자료 없이 간다.
+   */
 
   async function askAx(text: string) {
     setIsAxOpen(true);
@@ -310,46 +283,27 @@ export default function App() {
     await chat.sendCurrent(text, []);
   }
 
-  function askAboutTask(task: DirectTask) {
-    const reference: LabeledContextReference = {
-      resource_type: "task",
-      resource_id: task.task_id,
-      resource_version: task.version,
-      included: true,
-      label: task.title,
-      pinned: true,
-    };
-    setContextOptions((current) => (current.some((item) => contextKey(item) === contextKey(reference)) ? current : [reference, ...current]));
-    setSelectedContextKey(contextKey(reference));
-    // Prefill only when that conversation's draft is empty; drafts stay per conversation.
-    if (!chat.draft.trim()) chat.setDraft(`'${task.title}' 업무에 대해 알려줘.`, chat.activeConversation?.conversation_id ?? NEW_DRAFT_KEY);
-    setIsAxOpen(true);
-  }
-
   async function sendMessage(bodyOverride?: string) {
     const body = bodyOverride ?? chat.draft;
     if (!body.trim()) return;
-    const selectedContext = contextOptions.find((item) => contextKey(item) === selectedContextKey);
     // The optimistic fragment carries the text from here; a rejected send keeps its own retry/discard controls.
-    await chat.sendCurrent(body, selectedContext ? [stripLabel(selectedContext)] : []);
+    await chat.sendCurrent(body, []);
   }
 
   /**
-   * Settles every projection a decided Action may have changed: the visible surface, the AX context candidates, and
-   * the active conversation. Never throws, so a read failure is never mistaken for a failed decision. Returns whether
+   * Settles every projection a decided Action may have changed: the visible surface and the active conversation. Never throws, so a read failure is never mistaken for a failed decision. Returns whether
    * every read settled; callers use that to choose between reflected-on-screen and persisted-only wording, and a
    * failure raises the retryable stale-screen banner.
    */
   const refreshProjections = useCallback(async () => {
     const settled = await Promise.allSettled([
       surfaceRefresh.current ? surfaceRefresh.current() : Promise.resolve(),
-      loadContextOptions(),
       chat.refreshActiveConversation(),
     ]);
     const failed = settled.some((result) => result.status === "rejected");
     setStaleProjection(failed ? "판단은 저장되었지만 화면을 갱신하지 못했습니다." : null);
     return !failed;
-  }, [chat, loadContextOptions]);
+  }, [chat]);
 
   async function decideConversationAction(
     actionId: string,
@@ -384,7 +338,6 @@ export default function App() {
   }
 
   const currentPersonaName = session?.display_name ?? "사용자";
-  const selectedContext = contextOptions.find((item) => contextKey(item) === selectedContextKey);
   const has = (capability: string) => capabilities?.includes(capability) ?? false;
   const canReadActions = has("action.read");
   const visibleNavigation = navigation.filter((item) => {
@@ -404,7 +357,6 @@ export default function App() {
     canAssignTasks: has("task.assign"),
     canReadOrganizationWork: has("work.read.all"),
     canReadActions,
-    onAskAboutTask: askAboutTask,
     onNotice: setToast,
     onDecided: refreshProjections,
   };
@@ -675,7 +627,6 @@ export default function App() {
           localFragments={chat.localFragments}
           message={chat.draft}
           onCancel={() => void chat.cancelActive()}
-          onClearContext={() => setSelectedContextKey("")}
           onClose={() => { if (canNavigate('chat')) setIsAxOpen(false); }}
           onDecide={decideConversationAction}
           onDiscardFragment={chat.discardFragment}
@@ -759,16 +710,10 @@ export default function App() {
           onStart={() => { if (canNavigate('chat')) void chat.start(); }}
           personaId={personaId}
           personaName={currentPersonaName}
-          selectedContext={selectedContext}
           surfaceLabel={surfaceLabel[surface]}
         />
         </BrowserOperationScope.Provider>
       )}
     </AppShell>
   );
-}
-
-function stripLabel(reference: LabeledContextReference): ConversationContextReference {
-  const { label: _label, pinned: _pinned, ...rest } = reference;
-  return rest;
 }

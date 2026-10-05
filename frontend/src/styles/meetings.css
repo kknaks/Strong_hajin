@@ -101,6 +101,8 @@
 /* 설명 줄이 붙은 항목 — 34 는 고정 높이가 아니라 최소 높이가 된다 */
 .popover-item.stacked { height: auto; min-height: 34px; padding: 6px 10px; }
 .popover-item:disabled { cursor: not-allowed; color: var(--scax-color-ink-disabled); }
+/* 되돌리기 어려운 항목 — 「업무 취소」(`SelectOption.tone`, WORK-010 2b-1). 글자색만 바뀐다. */
+.popover-item.danger { color: var(--scax-color-danger); }
 .popover-item .checkbox-box { flex: none; }
 .time-range > .popover-root { flex: 1; }
 /* ---- meeting list and detail: the record SCAX owns for one meeting */

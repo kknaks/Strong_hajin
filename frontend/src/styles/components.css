@@ -781,14 +781,8 @@ input[aria-invalid="true"],select[aria-invalid="true"],textarea[aria-invalid="tr
 .select-list--chips{display:flex;flex-wrap:wrap;align-items:center;gap:var(--scax-space-200);padding:var(--scax-space-200)}
 
 
-/* ── 막힘 사유 입력 (4차 발주 4) ─────────────────────────────────────────────
-   입력이 한 줄을 통째로 쓰고, 단추는 그 아래 오른쪽에 선다. 예전 `.inline-reason` 은 입력과 단추
-   둘을 한 줄 flex 로 세워서 좁은 자리(표의 200px 액션 칸)에서 입력칸이 몇 글자만 보였다.
-   비활성 단추는 DS 의 `:disabled`(회색 채움 + 보조 글자색)를 그대로 쓴다 — 「누를 수 있음」과
-   「누를 수 없음」이 한눈에 갈린다. */
-.scax-block-reason__input { width: 100%; min-width: 0; }
-.scax-block-reason__actions { display: flex; justify-content: flex-end; gap: var(--scax-space-200); margin-top: var(--scax-space-300); }
-.scax-block-reason__actions > .scax-button { min-width: 88px; justify-content: center; }
+/* ~~막힘 사유 입력(`.scax-block-reason*`, 4차 발주 4)~~ 은 지웠다 — 업무 상세의 막힘 사유는 이제 작은 모달(`BlockReasonPrompt`)이다
+   (WORK-010 2b-1 · SPEC-007 §2.10.5). 그 규칙을 쓰는 요소가 0 이 됐다. */
 
 /* 4차 발주 7: 말풍선을 접은 캐릭터 — 오브만 남으므로 통이 오브 폭까지 줄어든다. 캐릭터와 그 애니메이션은
    그대로다. 업무 화면처럼 토스트가 말하는 자리에서만 이 modifier 가 붙는다. */

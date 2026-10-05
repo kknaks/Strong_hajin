@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type React from "react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -49,7 +49,6 @@ function Harness({ canManage = true }: { canManage?: boolean }) {
         canAssignTasks={false}
         canCreateWorkRequests={false}
         canManageOwnTasks={canManage}
-        onAskAboutTask={noop}
         onError={onError}
         onNotice={onNotice}
         onRegisterHeaderActions={setActions}
@@ -456,6 +455,21 @@ describe("회의는 캘린더에서 읽기 전용이다 (§F)", () => {
 });
 
 describe("K3 — 기간이 줄면 몇 건이 해제됐는지 말한다", () => {
+  /* WORK-010 2a-3 · SPEC-007 §2.10.4 — 업무 상세의 날짜는 고르는 즉시 저장되고, 저장마다 성공 토스트를 띄우지 않는다.
+     **시간 배정이 닫혔을 때만** K3 문장이 그대로 뜬다(회귀). */
+  it("업무 상세에서 날짜를 고르면 즉시 저장하고, 배정이 닫혔을 때만 그 건수를 말한다", async () => {
+    getTask.mockResolvedValue({ ...saved({ task_id: "free", title: "기한 없는 업무", state: "open", version: 2 }), checklist: [], predecessors: [], successors: [] });
+    updateTask.mockResolvedValue(saved({ task_id: "free", version: 3, due_date: "2027-03-10", schedule_release: { released_count: 1, reason: "out_of_range" } }));
+    const { container } = await ready();
+    fireEvent.click(container.querySelector('[data-calendar-key="task:free"]') as HTMLElement);
+    const dialog = await screen.findByRole("dialog", { name: "업무 상세" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "마감일 달력 열기" }));
+    fireEvent.click(screen.getByRole("group", { name: "마감일" }).querySelector('[data-date="2027-03-10"]') as HTMLElement);
+    await waitFor(() => expect(updateTask).toHaveBeenCalledWith("free", 2, { due_date: "2027-03-10" }));
+    await waitFor(() => expect(onNotice).toHaveBeenCalledWith("1건의 시간 배정이 기간 밖이라 해제되었습니다."));
+    expect(onNotice).not.toHaveBeenCalledWith(expect.stringContaining("업무 내용을 저장했습니다"));
+  });
+
   it("닫힌 건수가 있으면 성공 문장에 이어 말한다", async () => {
     updateTask.mockResolvedValue(saved({ schedule_release: { released_count: 2, reason: "out_of_range" } }));
     const { container } = await ready();

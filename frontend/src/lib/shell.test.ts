@@ -204,3 +204,52 @@ describe("외부 링크 (U-4 · W-6)", () => {
     expect(warn).toHaveBeenCalled();
   });
 });
+
+describe("첨부 저장 결과 사건 (U-5 5 · OQ-T12)", () => {
+  function fire(detail: unknown) {
+    window.dispatchEvent(new CustomEvent("strong-hajin:download", { detail }));
+  }
+
+  it("셸이 없으면 듣지 않는다 — 브라우저 동작 그대로 (AC-T48)", async () => {
+    const shell = await loadShell();
+    const handler = vi.fn();
+    const stop = shell.onShellDownload(handler);
+    fire({ ok: true, filename: "회의록.html" });
+    stop();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("성공은 파일 이름과 함께, 실패는 실패로 넘긴다", async () => {
+    attachShell();
+    const shell = await loadShell();
+    const handler = vi.fn();
+    const stop = shell.onShellDownload(handler);
+    fire({ ok: true, filename: "회의록 (1).html" });
+    fire({ ok: true, filename: null });
+    fire({ ok: false, filename: null });
+    stop();
+    expect(handler.mock.calls).toEqual([
+      [{ ok: true, filename: "회의록 (1).html" }],
+      [{ ok: true, filename: null }],
+      [{ ok: false }],
+    ]);
+  });
+
+  it("모양이 다른 사건은 버리고, 해제하면 더 듣지 않는다", async () => {
+    attachShell();
+    const shell = await loadShell();
+    const handler = vi.fn();
+    const stop = shell.onShellDownload(handler);
+    fire(null);
+    fire({ ok: "yes" });
+    fire("저장됨");
+    stop();
+    fire({ ok: true, filename: "a.html" });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("사건 이름은 셸과 맞춘 상수 하나다", async () => {
+    const shell = await loadShell();
+    expect(shell.SHELL_DOWNLOAD_EVENT).toBe("strong-hajin:download");
+  });
+});

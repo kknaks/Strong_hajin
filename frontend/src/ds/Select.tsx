@@ -34,6 +34,11 @@ export type SelectOption = {
   disabled?: boolean;
   /** 같은 값이 이어지는 동안 한 번만 머리글이 뜬다. 정렬은 호출부가 한 순서 그대로다 */
   group?: string;
+  /**
+   * 되돌리기 어려운 항목을 **빨강**으로 낸다 — 업무 상세 진행 상태의 「업무 취소」(SPEC-007 §2.10.5
+   * 「맨 아래 · 빨강」 · WORK-010 2b-1). 안 주면 예전과 같다. 자리는 부르는 쪽이 목록 맨 아래에 둔다.
+   */
+  tone?: "danger";
 };
 
 /** `Popover` 가 주는 aria + onClick 에 이 컴포넌트가 필드로서 아는 것(이름·비활성·id)을 얹은 것. */
@@ -236,7 +241,7 @@ function OptionPanel({
       <button
         aria-checked={isSelected}
         aria-selected={isSelected}
-        className={["popover-item", option.description ? "stacked" : "", isActive ? "active" : ""].filter(Boolean).join(" ")}
+        className={["popover-item", option.description ? "stacked" : "", isActive ? "active" : "", option.tone === "danger" ? "danger" : ""].filter(Boolean).join(" ")}
         data-active={isActive || undefined}
         disabled={option.disabled}
         id={`${listId}-option-${index}`}

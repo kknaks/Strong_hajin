@@ -8,6 +8,11 @@
 //! `shell_info` · `wake_guard_acquire` · `wake_guard_release` · `open_external`
 //! 파일 읽기·쓰기, 프로세스 실행, 범용 셸, 임의 경로 열기는 **하나도 없다.**
 //!
+//! ## 첨부 응답 저장 — 커맨드가 아니다 (SPEC-006 U-5 · `E-15`)
+//! 같은 origin 의 `/api/` 이동·새 창 링크는 셸이 **스스로** 가로채 받아 보고, 첨부면 OS 다운로드
+//! 폴더에 저장한다(`download.rs`). 결과는 **셸 → 웹 사건**(`strong-hajin:download`)으로 알리고
+//! 문구는 웹이 만든다. 웹 문서에 파일 권한·경로를 주지 않으므로 커맨드는 그대로 넷이다.
+//!
 //! ## 이 파일이 지는 계약 불변식 (WORK §계약 불변식)
 //! - **I-1** 점유의 수명을 네이티브가 소유한다 — 웹이 조용해도 **셸은 풀지 않는다**
 //! - **I-2** 커맨드는 **넷**이다
@@ -25,6 +30,7 @@
 
 mod config;
 mod connection;
+mod download;
 mod guard;
 mod power;
 mod shell_ui;
@@ -36,9 +42,8 @@ use connection::{LoadWatch, Reach};
 use guard::{OsIntent, Registry};
 use power::{PowerOutcome, PowerThread};
 use serde::Serialize;
-#[cfg(windows)]
-use tauri::Manager;
-use tauri::{Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
+use tauri::webview::{DownloadEvent, NewWindowResponse};
+use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
 /// 이 인터페이스의 판 번호(SPEC-006 §4). **정수 하나만 늘린다.**
 const SHELL_API: u32 = 1;
@@ -80,6 +85,8 @@ struct Shell {
     watch: Arc<LoadWatch>,
     target: Mutex<Option<Url>>,
     last_failure: Mutex<Option<String>>,
+    /// 웹뷰가 직접 내려받는 중인 것(`on_download`) — `download::PendingDownloads` 설명 참고.
+    downloads: Mutex<download::PendingDownloads>,
 }
 
 type SharedShell = Arc<Shell>;
@@ -92,6 +99,7 @@ impl Shell {
             watch: LoadWatch::new(),
             target: Mutex::new(None),
             last_failure: Mutex::new(None),
+            downloads: Mutex::new(download::PendingDownloads::default()),
         }
     }
 
@@ -173,8 +181,8 @@ impl Shell {
     }
 }
 
-/// 셸의 관측 기록. **원격 문서에 이벤트를 쏘지 않는다** — 그것이 다섯째 표면이 되면
-/// I-2(커맨드 넷)가 흐려진다.
+/// 셸의 관측 기록. 원격 문서로 가는 사건은 **첨부 저장 결과 하나뿐**이다(`notify_download`) —
+/// 그것도 웹이 부르는 커맨드가 아니라 I-2(커맨드 넷)는 그대로다.
 fn log_event(tag: &str, message: &str) {
     let at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -273,6 +281,84 @@ fn allow_microphone_on_webview2(webview: &tauri::Webview) -> tauri::Result<()> {
     })
 }
 
+/// 앱 origin 의 `/api/` 이동·새 창 링크를 **셸이 받아 본다**(U-5 · `E-15`).
+///
+/// 부르는 쪽은 이미 이동을 취소(또는 새 창을 거절)했다 — 그래서 **창의 문서는 바뀌지 않고**
+/// `on_page_load Started`(L-09 점유 정리)도 돌지 않는다. 여기서는:
+/// - 첨부면 다운로드 폴더에 저장하고 결과를 웹에 알린다
+/// - 2xx 가 아니면(401 세션 만료 · 3xx · 404 · 5xx) **실패로 알린다**(fix1 W2)
+/// - 2xx 인데 첨부가 아니면(`inline`) **아무것도 하지 않는다** — 다시 navigate 하지 않는다.
+///   macOS 는 `_blank` 도 `on_navigation` 을 먼저 지나 같은 탭과 가를 수 없고, 다시 열면 inline `_blank`
+///   (채팅 근거·AX 링크)가 앱 창을 덮는다(OQ-T13 불변 · 코디 결정 X — `fe-p3-decision.md` §5)
+///
+/// `cookies_for_url` 은 메인 스레드 콜백을 기다리므로 **별도 스레드**에서 부른다(Windows 교착 경고도 같은 이유).
+fn take_over_api_link(app: AppHandle, app_origin: Option<String>, url: Url, via: &'static str) {
+    let spawned = std::thread::Builder::new()
+        .name("shell-download".into())
+        .spawn(move || {
+            let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
+                return;
+            };
+            let path = url.path().to_string();
+            let cookies = match window.cookies_for_url(url.clone()) {
+                Ok(cookies) => cookies,
+                Err(error) => {
+                    log_event("download", &format!("쿠키를 읽지 못했다 via={via} path={path}: {error}"));
+                    notify_download(&window, app_origin.as_deref(), false, None);
+                    return;
+                }
+            };
+            let header = download::cookie_header(cookies.iter().map(|cookie| (cookie.name(), cookie.value())));
+            let dir = match app.path().download_dir() {
+                Ok(dir) => dir,
+                Err(error) => {
+                    log_event("download", &format!("다운로드 폴더를 찾지 못했다: {error}"));
+                    notify_download(&window, app_origin.as_deref(), false, None);
+                    return;
+                }
+            };
+            match download::fetch(&url, &header, &dir) {
+                Ok(download::Fetched::Saved(name)) => {
+                    log_event("download", &format!("saved via={via} path={path} name={name}"));
+                    notify_download(&window, app_origin.as_deref(), true, Some(&name));
+                }
+                Ok(download::Fetched::NotAttachment(status)) => {
+                    // 2xx inline — 창을 바꾸지 않는다(위 설명). 알림도 없다: 실패가 아니다.
+                    log_event("download", &format!("not-attachment via={via} path={path} status={status} — 그대로 둔다"));
+                }
+                Ok(download::Fetched::Refused(status)) => {
+                    // fix1 W2 — 세션 만료·리다이렉트·없음·서버 오류. 「아무 일 없음」으로 삼키지 않는다.
+                    log_event("download", &format!("refused via={via} path={path} status={status}"));
+                    notify_download(&window, app_origin.as_deref(), false, None);
+                }
+                Err(error) => {
+                    log_event("download", &format!("failed via={via} path={path}: {error}"));
+                    notify_download(&window, app_origin.as_deref(), false, None);
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        log_event("download", &format!("받기 스레드를 띄우지 못했다: {error}"));
+    }
+}
+
+/// 저장 결과를 **웹에 사건으로** 알린다(U-5 5 · OQ-T12). 셸은 문구를 그리지 않는다.
+/// 권한이 필요 없는 길(`eval` → DOM `CustomEvent`)이라 capabilities 를 바꾸지 않는다.
+/// 지금 창에 **앱 origin** 의 문서가 떠 있을 때만 보낸다 — 셸 자기 화면·인증 주소에는 보내지 않는다.
+fn notify_download(window: &WebviewWindow, app_origin: Option<&str>, ok: bool, filename: Option<&str>) {
+    let on_app = match (window.url(), app_origin) {
+        (Ok(current), Some(origin)) => guard::origin_of(&current) == origin,
+        _ => false,
+    };
+    if !on_app {
+        log_event("download", "웹 앱 문서가 아니라 결과를 알리지 않는다");
+        return;
+    }
+    if let Err(error) = window.eval(download::event_script(ok, filename)) {
+        log_event("download", &format!("결과를 웹에 알리지 못했다: {error}"));
+    }
+}
+
 /// 로드 감시를 무장하고, 기한이 지나도 안 끝났으면 **U-2 로 넘긴다**.
 ///
 /// Phase 2 의 M-7 이 이 함수의 존재 이유다 — TLS 거절에서는 `on_page_load` 가 **하나도**
@@ -333,6 +419,11 @@ pub fn run() {
         Target::Missing => (Url::parse(NOT_CONFIGURED_URL).expect("내장 주소"), Vec::new()),
     };
     log_event("boot", &format!("url={start_url} nav_allow={navigation_allowlist:?}"));
+    // 첨부 가로채기·저장 알림의 기준 — **앱(운영) origin 하나**(fix1 W3). 인증 흐름용 허용 목록과 섞지 않는다.
+    let app_origin: Option<String> = match &target {
+        Target::Configured { url, .. } => Some(guard::origin_of(url)),
+        Target::Missing => None,
+    };
 
     let protocol_shell = shell.clone();
     let watch_target = target.clone();
@@ -369,6 +460,12 @@ pub fn run() {
             let nav_allow = navigation_allowlist.clone();
             let nav_shell = shell.clone();
             let load_shell = shell.clone();
+            let nav_app = app.handle().clone();
+            let nav_origin = app_origin.clone();
+            let popup_origin = app_origin.clone();
+            let popup_app = app.handle().clone();
+            let saved_origin = app_origin.clone();
+            let saved_shell = shell.clone();
 
             let window =
                 WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::External(start_url.clone()))
@@ -401,8 +498,89 @@ pub fn run() {
                             log_event("nav", &format!("blocked origin={origin} — 점유는 유지한다(L-11)"));
                             return false;
                         }
+                        // U-5 — 같은 origin 의 `/api/` 이동은 **셸이 받아 본다.** 창은 그대로 둔다.
+                        // macOS 는 `_blank` 도 여기를 먼저 지난다 — 그래서 두 번째 창도 뜨지 않는다.
+                        if download::is_api_request(url, nav_origin.as_deref()) {
+                            take_over_api_link(nav_app.clone(), nav_origin.clone(), url.clone(), "navigation");
+                            return false;
+                        }
                         log_event("nav", &format!("allowed origin={origin}"));
                         true
+                    })
+                    // U-5 · AC-T45 — 새 창 링크(Windows 는 `_blank` 가 이쪽으로만 온다).
+                    // `/api/` 가 아니면 **지금 동작을 그대로** 둔다: 핸들러가 없을 때 macOS(wry)는 새 창을
+                    // 만들지 않았고(`nil`), Windows 는 WebView2 기본 동작이었다(OQ-T13 불변).
+                    .on_new_window(move |url, _features| {
+                        if download::is_api_request(&url, popup_origin.as_deref()) {
+                            take_over_api_link(popup_app.clone(), popup_origin.clone(), url, "new-window");
+                            return NewWindowResponse::Deny;
+                        }
+                        if cfg!(target_os = "macos") {
+                            NewWindowResponse::Deny
+                        } else {
+                            NewWindowResponse::Allow
+                        }
+                    })
+                    // 웹뷰가 스스로 내려받기로 넘기는 것(표시할 수 없는 형식 · `<a download>`)도 같은 규칙 —
+                    // 다운로드 폴더 · 대화상자 없음 · 같은 이름이면 번호 · 결과는 웹 사건.
+                    .on_download(move |webview, event| {
+                        let notify = |ok: bool, name: Option<&str>| {
+                            if let Some(window) = webview.app_handle().get_webview_window(MAIN_WINDOW) {
+                                notify_download(&window, saved_origin.as_deref(), ok, name);
+                            }
+                        };
+                        match event {
+                            DownloadEvent::Requested { url, destination } => {
+                                let suggested = destination
+                                    .file_name()
+                                    .map(|name| name.to_string_lossy().to_string())
+                                    .and_then(|name| download::safe_file_name(&name))
+                                    .unwrap_or_else(|| "download".to_string());
+                                let dir = match webview.app_handle().path().download_dir() {
+                                    Ok(dir) => dir,
+                                    Err(error) => {
+                                        // fix1 W6 — 취소하는 길도 실패로 알린다.
+                                        log_event("download", &format!("다운로드 폴더를 찾지 못했다: {error}"));
+                                        notify(false, None);
+                                        return false;
+                                    }
+                                };
+                                let Ok(mut pending) = saved_shell.downloads.lock() else {
+                                    log_event("download", "진행 장부 잠금 실패");
+                                    notify(false, None);
+                                    return false;
+                                };
+                                let Some(path) = download::free_path_avoiding(&dir, &suggested, &pending) else {
+                                    log_event("download", "빈 이름을 찾지 못했다");
+                                    drop(pending);
+                                    notify(false, None);
+                                    return false;
+                                };
+                                pending.start(url.as_str(), path.clone());
+                                *destination = path;
+                                true
+                            }
+                            DownloadEvent::Finished { url, success, .. } => {
+                                let path = saved_shell
+                                    .downloads
+                                    .lock()
+                                    .ok()
+                                    .and_then(|mut pending| pending.finish(url.as_str()));
+                                if success {
+                                    if let Some(path) = &path {
+                                        download::mark_quarantined(path);
+                                    }
+                                }
+                                let name = path
+                                    .as_ref()
+                                    .and_then(|path| path.file_name())
+                                    .map(|name| name.to_string_lossy().to_string());
+                                log_event("download", &format!("webview-download success={success} name={name:?}"));
+                                notify(success, name.as_deref().filter(|_| success));
+                                true
+                            }
+                            _ => true,
+                        }
                     })
                     .on_page_load(move |window, payload| {
                         let label = window.label().to_string();
@@ -488,6 +666,7 @@ mod tests {
             watch: LoadWatch::new(),
             target: Mutex::new(None),
             last_failure: Mutex::new(None),
+            downloads: Mutex::new(download::PendingDownloads::default()),
         }
     }
 
@@ -697,6 +876,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn 제품_창은_첨부_응답을_셸이_받고_웹에_권한을_주지_않는다() {
+        // U-5 · AC-T44 ~ AC-T47 — 이동·새 창·웹뷰 내려받기 세 길이 모두 창 빌더에 걸려 있어야 한다.
+        let source = include_str!("lib.rs");
+        let builder_start = source
+            .find("WebviewWindowBuilder::new(app, MAIN_WINDOW")
+            .expect("제품 창 빌더가 있어야 한다");
+        let builder = &source[builder_start..];
+        let builder = &builder[..builder.find(".build()?").expect("build")];
+        for hook in [".on_navigation(", ".on_new_window(", ".on_download("] {
+            assert!(builder.contains(hook), "{hook} 가 창 빌더에 없다");
+        }
+        // fix1 W3 — 가로채기 기준은 인증 흐름용 허용 목록(`nav_allow`)이 아니라 앱 origin 하나다.
+        assert!(builder.contains("download::is_api_request(url, nav_origin.as_deref())"));
+        assert!(builder.contains("download::is_api_request(&url, popup_origin.as_deref())"));
+        assert!(!builder.contains("is_api_request(url, &nav_allow)"));
+        // 저장 결과는 eval 사건으로 간다 — 이벤트 수신 권한(core:event)도 웹에 열지 않는다.
+        for capability in [PERSONAL_CAPABILITY, COMPANY_CAPABILITY] {
+            assert!(!capability.contains("core:"), "기본 권한이 열렸다");
+            assert!(!capability.contains("fs:"), "파일 권한이 열렸다");
+        }
+    }
+
     fn s_contains_second_window() -> bool {
         // 창은 Rust 가 하나만 만든다(`MAIN_WINDOW`). 설정에 창 목록이 비어 있어야 한다.
         serde_json::from_str::<serde_json::Value>(TAURI_CONF)
@@ -740,6 +942,7 @@ mod tests {
             include_str!("power.rs"),
             include_str!("guard.rs"),
             include_str!("shell_ui.rs"),
+            include_str!("download.rs"),
         ];
         // 바늘을 «이어 붙여» 만든다 — 이 파일 자신도 검사 대상이라, 바늘을 그대로 적으면
         // 시험이 자기 소스에 걸려 언제나 실패한다.

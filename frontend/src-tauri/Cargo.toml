@@ -34,6 +34,11 @@ native-tls = "0.2"
 # 그래서 `open_path`·`reveal_item_in_dir` 같은 파일 시스템 표면이 웹에 열리지 않는다(AC-T23).
 tauri-plugin-opener = "2"
 
+# 첨부 응답 저장(SPEC-006 U-5 · `download.rs`)의 HTTP 클라이언트. **native-tls + OS 신뢰 저장소**만 쓴다 —
+# 웹뷰와 같은 기준으로 인증서를 보고(위 native-tls 와 같은 결), Mozilla 루트 묶음·rustls 를 싣지 않는다.
+# 리다이렉트를 따라가지 않고(쿠키가 다른 주소로 새지 않게) 프록시는 환경변수만 본다(웹뷰와 다를 수 있다).
+ureq = { version = "3.4.2", default-features = false, features = ["native-tls-no-default"] }
+
 # Windows(WebView2) 마이크 권한 — 참조 제품 `app/front/src-tauri/src/lib.rs` 의
 # `allow_microphone_on_webview2` 를 이식한다. 없으면 `getUserMedia` 가 **프롬프트 없이** 실패한다.
 [target.'cfg(windows)'.dependencies]

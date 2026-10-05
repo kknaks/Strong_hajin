@@ -72,7 +72,6 @@ type CalendarPageProps = {
   canManageOwnTasks: boolean;
   canCreateWorkRequests: boolean;
   canAssignTasks: boolean;
-  onAskAboutTask: (task: DirectTask) => void;
   onNotice: (message: string) => void;
   onError: (message: string | null) => void;
   /** Registers this surface's reload so the shell can await it after an approved AX effect (no remount). */
@@ -105,7 +104,6 @@ export function CalendarPage({
   canManageOwnTasks,
   canCreateWorkRequests,
   canAssignTasks,
-  onAskAboutTask,
   onNotice,
   onError,
   onRegisterRefresh,
@@ -588,23 +586,25 @@ export function CalendarPage({
   };
 
   /**
-   * 상세 서랍이 저장한다. **여기서도 날짜가 바뀔 수 있으므로** K3 의 「N건 해제」를 같이 낸다 —
-   * 격자의 드롭·손잡이와 같은 `PATCH /api/tasks` 한 자리다. 0 건이면 아무 말도 하지 않는다.
+   * 업무 상세의 **인라인 저장 한 칸** (SPEC-007 §2.10.4 · WORK-010 2a-3). 격자의 드롭·손잡이와 같은
+   * `PATCH /api/tasks` 한 자리다. 저장된 업무를 돌려주고, 실패는 던진다(상세가 칸 옆에 낸다).
+   * 저장마다 성공 토스트를 띄우지 않는다 — **날짜가 시간 배정을 닫았을 때만** K3 의 「N건 해제」를 낸다.
    */
-  const update = async (target: DirectTask, patch: TaskPatch) => {
-    setBusy(true);
+  const update = async (target: DirectTask, patch: TaskPatch): Promise<DirectTask> => {
+    const saved = await updateTask(target.task_id, target.version, patch);
+    // 앞서 떠 있던 전역 오류를 걷는다 — 저장이 됐다는 것이 지금의 사실이다 (WORK-010 2b W5).
+    onError(null);
+    const released = releaseNotice(saved.schedule_release);
+    if (released) onNotice(released);
     try {
-      const saved = await updateTask(target.task_id, target.version, patch);
       await reload();
       setTask(await getTask(target.task_id));
-      onError(null);
-      announce("업무 내용을 저장했습니다.", saved);
-    } catch (error) {
-      onError(error instanceof Error ? error.message : "업무를 저장하지 못했습니다.");
-    } finally {
-      setBusy(false);
+    } catch {
+      // 저장은 이미 됐다 — 다시 읽기의 실패를 저장의 실패로 말하지 않는다.
     }
+    return saved;
   };
+
 
   return (
     <div className="scax-cal-main">
@@ -701,7 +701,6 @@ export function CalendarPage({
         <TaskDetailDrawer
           busy={busy}
           canManage={canManageOwnTasks}
-          onAskAx={onAskAboutTask}
           onClose={() => setTask(null)}
           onError={onError}
           onNotice={onNotice}

@@ -192,11 +192,18 @@ export function InlineText({
         if (event.key === "Enter") {
           /* 줄바꿈이 아니라 저장이다 */
           event.preventDefault();
+          /* 한글 조합 중의 Enter 는 «글자를 끝내는» 키다 — 저장하지 않는다. 조합이 끝난 뒤의
+             Enter 가 저장한다(체크리스트 단계 수정과 같은 규칙). 여기서 저장하면 칸이 닫힌 뒤
+             이어 오는 Enter 가 닫힌 칸을 다시 연다. */
+          if (event.nativeEvent.isComposing) return;
           commit();
           return;
         }
         if (event.key === "Escape") {
           event.preventDefault();
+          /* 이 Esc 는 «고치기 취소» 다 — 이 칸을 품은 겹(모달·드로어)까지 닫으면 안 된다. 겹의 Esc 는
+             window 에서 받으므로(`useEscape`) 여기서 전파를 끊는다. 닫힌 칸의 Esc 는 그대로 겹에 간다. */
+          event.stopPropagation();
           cancelled.current = true;
           close();
         }

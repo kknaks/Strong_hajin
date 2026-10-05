@@ -49,8 +49,17 @@ export function useEscape(onClose: () => void, active = true) {
 export type OverlayShellProps = {
   label: string;
   kicker?: string;
-  title: string;
+  /**
+   * 머리 제목. 글자가 기본이고, **업무 상세만** 그 자리에 제자리 편집(`InlineText`)을 넣는다
+   * (WORK-010 2a-1 · SPEC-007 §2.10.1 「헤더의 제목이 곧 입력칸」). 글자를 넘기는 다른 표면은 그대로다.
+   */
+  title: ReactNode;
   headerExtra?: ReactNode;
+  /**
+   * 머리 **오른쪽**, 닫기(×) 바로 앞에 서는 것 — 업무 상세의 `⋯` 메뉴가 쓴다(SPEC-007 §2.10.1 · WORK-010 2b-1).
+   * `headerExtra` 는 제목 «아래» 줄이고 이것은 같은 줄 «오른쪽»이다. 안 넘기면 예전과 같다.
+   */
+  headerActions?: ReactNode;
   footer?: ReactNode;
   onClose: () => void;
   /** 닫기 단추의 이름 — 부르는 쪽이 준다 (바퀴 11: 부품은 말을 모른다) */
@@ -80,6 +89,7 @@ export function Drawer({
   kicker,
   title,
   headerExtra,
+  headerActions,
   footer,
   onClose,
   size = "lg",
@@ -110,6 +120,7 @@ export function Drawer({
             <h3 className="scax-drawer__title">{title}</h3>
             {headerExtra}
           </div>
+          {headerActions}
           <IconButton label={closeLabel} name="close" onClick={onClose} size={16} />
         </header>
         <div className="scax-drawer__body">{children}</div>
@@ -137,6 +148,7 @@ export function Modal({
   kicker,
   title,
   headerExtra,
+  headerActions,
   footer,
   onClose,
   size,
@@ -177,6 +189,7 @@ export function Modal({
             <h3 className="scax-modal__title">{title}</h3>
             {headerExtra}
           </div>
+          {headerActions}
           <IconButton label={closeLabel} name="close" onClick={onClose} size={16} />
         </header>
         <div className="scax-modal__body">{children}</div>

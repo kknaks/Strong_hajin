@@ -125,6 +125,31 @@ describe("product surfaces", () => {
     expect(await screen.findByLabelText('이메일')).toBeTruthy();
   });
 
+  it("shows the desktop shell's attachment save result in the common toast (SPEC-006 U-5 5)", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/organization/me") return jsonResponse({ member_id: "mina", display_name: "민아", organizations: [], roles: [], capabilities: ["task.read", "action.read"] });
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", withSession(fetchMock));
+    const shellWindow = window as Window & { __TAURI_INTERNALS__?: unknown };
+    shellWindow.__TAURI_INTERNALS__ = {};
+    try {
+      render(<App />);
+      await screen.findByRole("navigation", { name: "제품 탐색" });
+      act(() => {
+        window.dispatchEvent(new CustomEvent("strong-hajin:download", { detail: { ok: true, filename: "주간 회의 (1).html" } }));
+      });
+      expect(await screen.findByText("다운로드 폴더에 저장했습니다: 주간 회의 (1).html")).toBeTruthy();
+      act(() => {
+        window.dispatchEvent(new CustomEvent("strong-hajin:download", { detail: { ok: false, filename: null } }));
+      });
+      expect(await screen.findByText("파일을 저장하지 못했습니다.")).toBeTruthy();
+    } finally {
+      delete shellWindow.__TAURI_INTERNALS__;
+    }
+  });
+
   it("shows a pending manager assignment in the decision panel and moves it into My Work on accept", async () => {
     let assignmentStatus: "pending" | "active" = "pending";
     const assignedTask = {
@@ -1702,7 +1727,10 @@ describe("product surfaces", () => {
     expect(conversationReads).toBeGreaterThanOrEqual(1);
   });
 
-  it("keeps the AX composer enabled, sends an idempotent queued fragment, and attaches typed current-screen context", async () => {
+  /* WORK-010 2a-1 · SPEC-007 §2.10.1 결정 d — 업무 상세의 「AX에게 이 업무 묻기」가 사라졌다. 업무를 참고 자료로
+     붙이는 입구가 그것 하나였으므로, 이 계약은 「상세에 그 단추가 없다」 + 「AX 를 열어 보내면 참고 자료 없이 간다」로 바뀐다.
+     대기열·멱등 키의 계약은 그대로다. */
+  it("keeps the AX composer enabled and sends an idempotent queued fragment — the task detail no longer attaches itself to AX", async () => {
     const conversation = {
       conversation_id: "conversation-1",
       title: "업무 확인",
@@ -1773,10 +1801,13 @@ describe("product surfaces", () => {
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
     fireEvent.click(within(screen.getByRole("navigation", { name: "제품 탐색" })).getByRole("button", { name: "업무" }));
     fireEvent.click(await screen.findByText("첨부할 현재 업무"));
-    fireEvent.click(await screen.findByRole("button", { name: /AX에게 이 업무 묻기/ }));
+    const detail = await screen.findByRole("dialog", { name: "업무 상세" });
+    expect(within(detail).queryByRole("button", { name: /AX에게 이 업무 묻기/ })).toBeNull();
+    fireEvent.click(within(detail).getByRole("button", { name: "상세 닫기" }));
+    fireEvent.click(await screen.findByRole("button", { name: "AX" }));
 
     await screen.findByText("업무 확인");
-    expect(screen.getByText(/업무 · 첨부할 현재 업무/)).toBeTruthy();
+    expect(screen.queryByText(/업무 · 첨부할 현재 업무/)).toBeNull();
     fireEvent.change(screen.getByLabelText("AX 메시지"), { target: { value: "이 업무를 이어서 진행할게" } });
 
     const send = screen.getByRole("button", { name: "대기열에 보내기" });
@@ -1797,14 +1828,7 @@ describe("product surfaces", () => {
     );
     expect(JSON.parse(String(request?.[1]?.body))).toEqual({
       body: "이 업무를 이어서 진행할게",
-      context: [
-        {
-          resource_type: "task",
-          resource_id: "task-1",
-          resource_version: 3,
-          included: true,
-        },
-      ],
+      context: [],
     });
   });
   it("re-reads the current My Work projection after approving an AX action from the chat without losing the view filter", async () => {

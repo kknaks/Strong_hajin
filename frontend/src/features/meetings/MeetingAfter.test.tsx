@@ -563,7 +563,7 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
      이 화면에 남은 절반(후보를 흐리게 내고 제목인 척하지 않는다)만 여기서 잠근다. */
   it("제목 후보는 제목이 아니다 — 「제목 없는 회의」 옆에 후보로만 선다", async () => {
     renderAfter({ title: null, title_candidate: "DB AX 전환 범위 논의" });
-    expect(await screen.findByText("제목 후보 DB AX 전환 범위 논의")).toBeTruthy();
+    expect(await screen.findByText(/제목 후보: DB AX 전환 범위 논의/)).toBeTruthy();
     expect(screen.getByText("제목 없는 회의")).toBeTruthy();
   });
 

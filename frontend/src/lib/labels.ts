@@ -362,8 +362,11 @@ export const taskDetail = {
   blockRelations: "연관 업무",
   blockRelationsEditing: "연관 업무 편집",
   blockMaterials: "자료",
-  blockProgress: "진행과 판단",
+  /** 「진행과 판단」 구역은 없다 — 걸린 일 상자 묶음의 읽어 주는 이름 (SPEC-007 §2.10.3 · WORK-010 2b-3). */
+  blockers: "걸린 일",
   blockHistory: "이력",
+  /** 헤더 바로 아래 첫 구역 — 라벨·값 2열 격자 (SPEC-007 §2.10.2 · WORK-010 2a-2). */
+  blockMeta: "메타 정보",
 
   /* 업무 메타 한 줄 (§2.2 · 시안 `:134-145`) */
   metaAssignee: "담당",
@@ -375,9 +378,40 @@ export const taskDetail = {
   /** 화면 라벨은 「결재」이고 계약의 이름은 승인자(`approver_id`)다 (SPEC-001 §7 OQ-N). */
   metaApprover: "결재",
   metaCc: "참조",
-  edit: "편집",
-  editDone: "편집 끝내기",
-  ax: "AX",
+  /* 메타 정보 격자의 행 (SPEC-007 §2.10.2) */
+  metaState: "진행 상태",
+  /** 진행 상태 셀렉트의 읽어 주는 이름 · 맨 아래 빨강 항목 (SPEC-007 §2.10.5). */
+  metaStateSelect: "진행 상태 바꾸기",
+  stateCancel: "업무 취소",
+  /** 담당 셀렉트의 읽어 주는 이름 (§2.10.6). */
+  metaAssigneeSelect: "담당 변경 제안",
+  /** 담당 변경 «제안» 작은 모달의 설명 — 수락 전까지 기존 담당이 그대로다. */
+  handoverDescription: (name: string): string =>
+    `${name}에게 담당 변경을 제안합니다. ${name}가 수락할 때까지 지금 담당이 그대로입니다.`,
+  /** 머리의 `⋯` — 요청자의 제안 메뉴와 그 항목 둘 (§2.10.1). */
+  proposalMenu: "요청자 제안",
+  proposeCancel: "취소 제안",
+  proposeTerms: "조건 변경 제안",
+  metaVersion: "버전",
+  metaOrigin: "출처",
+  /** 담당 변경 제안이 대기 중일 때 담당 값 옆 — 「{대상}에게 변경 제안 중」 (§2.10.2 행 3 · §2.10.6). */
+  assigneeProposed: (name: string): string => `${name}에게 변경 제안 중`,
+  assigneeProposedNobody: "새 담당 후보",
+  /** AX 제안에서 생긴 업무의 출처 — 링크 글자가 업무 제목이 아니라 「판단 보기」다 (§2.10.8 · 결정 e). */
+  originAx: "AX 제안",
+  originOpenDecision: "판단 보기",
+
+  /* 인라인 즉시 저장 (SPEC-007 §2.10.4 · WORK-010 2a-3) — 편집 모드·「변경 저장」이 없다 */
+  /** 머리 제목을 그 자리에서 고치는 칸의 읽어 주는 이름. */
+  titleEdit: "업무 제목",
+  /** 업무 내용을 그 자리에서 고치는 칸의 읽어 주는 이름. */
+  descriptionEdit: "업무 내용 고치기",
+  descriptionPlaceholder: "무엇을, 왜, 어디까지 할지 적어 두면 요청자와 AX가 같은 맥락을 봅니다.",
+  /** 422 `task version is stale` — 다시 보내지 않고 최신 값으로 다시 읽었다. */
+  inlineStale: "다른 곳에서 바뀌어 최신 값으로 다시 불렀습니다.",
+  inlineFailed: "저장하지 못했습니다.",
+  /** 그 칸의 저장이 줄에 서 있거나 나가는 중 — 실패 문장이 서는 자리에 작게 (WORK-010 2b W4). */
+  inlineSaving: "저장 중…",
 
   /* 업무 정보 (§2.3 · 시안 `:152-164`) */
   description: "업무 내용",
@@ -442,17 +476,6 @@ export const taskDetail = {
   /** 선행도 **건수 한 줄**이다 — 빈 줄을 늘어놓지 않는다 (§2.4.3 W-1 · (제안)). */
   hiddenPreceding: (count: number): string => `🔒 비공개 선행 업무 ${count}건`,
 
-  /* 시작 막힘 배너 (§2.6 · 시안 `:268-271`) */
-  blockedHeading: "시작할 수 없습니다",
-  /**
-   * 막는 선행의 제목 — **최대 셋**까지 (§2.6). 뒤에 붙는 말과 **갈라 둔다**:
-   * 배너가 **제목만 굵게** 내기 때문이다 (시안 `TaskDetail.html:270`). 한 문장으로 두면
-   * 강조할 조각을 고를 수가 없다.
-   */
-  blockedTitles: (titles: string[]): string => titles.slice(0, 3).join(", "),
-  blockedTitlesSuffix: "이 끝나지 않았습니다.",
-  /** 제목을 쓸 수 없는 선행이 섞였을 때 뒤에 덧붙인다 (§2.6). */
-  blockedHiddenSuffix: (count: number): string => `끝나지 않은 선행 ${count}건`,
   /** 하위는 **완료**를 막는다 — 배너를 공유하지 않는다 (D-11). */
   childrenBlockHeading: "아직 끝나지 않은 하위가 있습니다",
 
@@ -927,8 +950,12 @@ export const meetingScreen = {
     assignee ? `'${title}' 업무가 ${assignee}의 업무가 되었습니다. 수락을 기다리지 않습니다.` : `'${title}' 업무를 보냈습니다.`,
   alreadyRequested: "이미 업무 요청으로 보낸 후보입니다.",
   savedElsewhere: "다른 곳에서 먼저 저장됐습니다. 지금 있는 내용으로 바꿔 두었습니다.",
-  /** 제목이 비었을 때 합성이 낸 후보 — 아직 제목이 아니다. */
-  titleCandidate: (candidate: string) => `제목 후보 ${candidate}`,
+  /** 제목이 비었을 때 합성이 낸 후보 — 아직 제목이 아니다. [적용]을 눌러야 제목이 된다 (WORK-010 1-3). */
+  titleCandidate: (candidate: string) => `제목 후보: ${candidate}`,
+  /** 후보를 그대로 제목으로 저장하는 단추 — `PATCH {title: 후보}` 하나다. */
+  titleCandidateApply: "적용",
+  /** 상세 머리 제목을 그 자리에서 고치는 칸의 읽어 주는 이름. */
+  titleEdit: "회의 제목",
   micDenied: "마이크를 쓸 수 없습니다. 스크립트와 AI 요약은 계속 받습니다.",
   // SPEC-006 U-3 — 절전 방지가 «조용히» 실패하면 원래 문제가 그대로 재현되는데 아무도 모른다.
   // 녹음을 막지 않는 **안내 한 줄**이고, 잘 동작할 때는 아무것도 보이지 않는다.
@@ -1371,4 +1398,13 @@ export const axDraftCard = {
   modalTitle: "AX 제안",
   decided: (subject: string) => `'${subject}' 판단을 반영했습니다.`,
   rejectField: "거절 사유",
+} as const;
+
+/* 데스크톱 셸이 첨부 응답을 다운로드 폴더에 저장한 결과 — 셸은 문구를 그리지 않고 사건만 보낸다
+   (SPEC-006 U-5 5 · OQ-T12 · WORK-010 Phase 3). 공통 토스트로 낸다. */
+export const shellDownload = {
+  saved: (filename: string) => `다운로드 폴더에 저장했습니다: ${filename}`,
+  /* 셸이 이름을 함께 주지 못한 성공(웹뷰 자체 내려받기에서 드물게) — 이름 없이 알린다. */
+  savedUnnamed: "다운로드 폴더에 저장했습니다.",
+  failed: "파일을 저장하지 못했습니다.",
 } as const;
